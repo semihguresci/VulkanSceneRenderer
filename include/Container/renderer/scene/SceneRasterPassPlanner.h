@@ -16,6 +16,8 @@ struct SceneRasterPassPipelineInputs {
 struct SceneRasterPassPlanInputs {
   SceneRasterPassKind kind{SceneRasterPassKind::DepthPrepass};
   bool gpuIndirectAvailable{false};
+  bool occludedGpuIndirectAvailable{false};
+  bool preferOccludedGpuIndirect{false};
   SceneOpaqueDrawLists draws{};
   SceneRasterPassPipelineInputs pipelines{};
 };

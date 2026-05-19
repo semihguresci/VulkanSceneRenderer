@@ -131,6 +131,12 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       config.directionalIntensity =
           parseFloat(requireValue(argc, argv, i, arg), arg);
       config.hasDirectionalIntensityOverride = true;
+    } else if (arg == "--directional-direction") {
+      config.directionalDirection = parseVec3(argc, argv, i, arg);
+      config.hasDirectionalDirectionOverride = true;
+    } else if (arg == "--directional-color") {
+      config.directionalColor = parseVec3(argc, argv, i, arg);
+      config.hasDirectionalColorOverride = true;
     } else if (arg == "--display-mode" || arg == "--render-mode") {
       config.displayModeOverride =
           std::string(requireValue(argc, argv, i, arg));

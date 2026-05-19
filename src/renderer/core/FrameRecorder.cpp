@@ -124,7 +124,7 @@ void FrameRecorder::record(VkCommandBuffer commandBuffer,
 
   if (p.services.telemetry || p.services.gpuProfiler) {
     if (p.services.gpuProfiler) {
-      p.services.gpuProfiler->beginFrame(commandBuffer, p.runtime.imageIndex);
+      p.services.gpuProfiler->beginFrame(commandBuffer, p.runtime.frameSlot);
     }
     RenderPassExecutionHooks hooks{};
     hooks.beginPass = [gpuProfiler = p.services.gpuProfiler](

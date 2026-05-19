@@ -13,12 +13,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -333,6 +335,20 @@ TEST(FrameResourceRegistryTests, BindsProductionFrameResourcesByHandle) {
   EXPECT_EQ(registry.bindingsForFrame(RenderTechniqueId::DeferredRaster, 1u)
                 .size(),
             5u);
+
+  std::vector<std::string> visitedBindingNames;
+  registry.forEachBindingForFrame(
+      RenderTechniqueId::DeferredRaster, 1u,
+      [&visitedBindingNames](const auto& binding) {
+        visitedBindingNames.push_back(binding.key.name);
+      });
+  EXPECT_EQ(visitedBindingNames.size(), 5u);
+  EXPECT_NE(std::find(visitedBindingNames.begin(), visitedBindingNames.end(),
+                      "scene-color"),
+            visitedBindingNames.end());
+  EXPECT_NE(std::find(visitedBindingNames.begin(), visitedBindingNames.end(),
+                      "frame-lighting-descriptor-set"),
+            visitedBindingNames.end());
 
   registry.clearBindings();
   EXPECT_EQ(registry.findBinding(sceneColor), nullptr);
@@ -1217,7 +1233,9 @@ TEST(DeferredRasterTechniqueRegistryTests,
   EXPECT_EQ(cameraBuffer->kind, FrameResourceKind::Buffer);
   EXPECT_EQ(cameraBuffer->lifetime, FrameResourceLifetime::Imported);
   EXPECT_EQ(cameraBuffer->buffer.size, sizeof(container::gpu::CameraData));
-  EXPECT_EQ(cameraBuffer->buffer.usage, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+  EXPECT_EQ(cameraBuffer->buffer.usage,
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
 
   const auto* sceneObjectBuffer = resources.find(TechniqueResourceKey{
       RenderTechniqueId::DeferredRaster, "scene-object-buffer"});
@@ -1243,6 +1261,30 @@ TEST(DeferredRasterTechniqueRegistryTests,
   ASSERT_NE(sampler, nullptr);
   EXPECT_EQ(sampler->kind, FrameResourceKind::Sampler);
   EXPECT_EQ(sampler->lifetime, FrameResourceLifetime::Imported);
+}
+
+TEST(DeferredRasterTechniqueRegistryTests,
+     PickDepthContractMatchesCopyAndAttachmentUsage) {
+  FrameResourceRegistry resources;
+  PipelineRegistry pipelines;
+  DeferredRasterTechnique technique;
+  RenderSystemContext context{
+      .frameResources = &resources,
+      .pipelines = &pipelines,
+  };
+
+  technique.registerTechniqueContracts(context);
+
+  const auto* pickDepth = resources.find(TechniqueResourceKey{
+      RenderTechniqueId::DeferredRaster, "pick-depth"});
+  ASSERT_NE(pickDepth, nullptr);
+  EXPECT_EQ(pickDepth->kind, FrameResourceKind::Image);
+  EXPECT_TRUE((pickDepth->image.usage &
+               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0u);
+  EXPECT_TRUE((pickDepth->image.usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) !=
+              0u);
+  EXPECT_TRUE((pickDepth->image.usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) !=
+              0u);
 }
 
 TEST(DeferredRasterTechniqueRegistryTests,
@@ -1395,11 +1437,352 @@ TEST(TechniqueRegistryGuardrails,
   EXPECT_TRUE(contains(rendererFrontend, "\"pick-depth\""));
   EXPECT_TRUE(contains(rendererFrontend, "\"pick-id\""));
   EXPECT_TRUE(contains(rendererFrontend, "\"oit-node-buffer\""));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "submitReadbackCommandBufferAndWait"));
+  EXPECT_FALSE(contains(
+      rendererFrontend, "vkQueueWaitIdle(svc_.ctx.deviceWrapper->graphicsQueue())"));
   EXPECT_FALSE(contains(rendererFrontend, "frameResourceManager->frame("));
   EXPECT_FALSE(contains(rendererFrontend, "frame->oitNodeCapacity"));
   EXPECT_FALSE(contains(rendererFrontend, "frame->depthStencil.image"));
   EXPECT_FALSE(contains(rendererFrontend, "frame->pickDepth.image"));
   EXPECT_FALSE(contains(rendererFrontend, "frame->pickId.image"));
+}
+
+TEST(TechniqueRegistryGuardrails, RendererFrontendReadbacksAreFrameSlotOwned) {
+  const std::string rendererFrontendHeader =
+      readRepoTextFile("include/Container/renderer/core/RendererFrontend.h");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+
+  EXPECT_TRUE(contains(rendererFrontendHeader, "struct HostReadbackSlot"));
+  EXPECT_TRUE(contains(rendererFrontendHeader,
+                       "std::vector<HostReadbackSlot> readbacks"));
+  EXPECT_TRUE(contains(rendererFrontendHeader, "uint32_t frameSlot"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "ensureScreenshotReadbackBuffer(frame_.currentFrame"));
+  EXPECT_TRUE(
+      contains(rendererFrontend, "writePendingScreenshotPng(frame_.currentFrame"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "ensureDepthVisibilityReadbackBuffer("
+                       "frame->frameSlot"));
+  EXPECT_FALSE(contains(rendererFrontendHeader,
+                        "ScreenshotState {\n"
+                        "    std::filesystem::path outputPath{};\n"
+                        "    bool pending{false};\n"
+                        "    container::gpu::AllocatedBuffer readbackBuffer{}"));
+  EXPECT_FALSE(contains(rendererFrontendHeader,
+                        "DepthVisibilityState {\n"
+                        "    container::gpu::AllocatedBuffer readbackBuffer{}"));
+  EXPECT_FALSE(contains(rendererFrontend, "screenshot_.readbackBuffer"));
+  EXPECT_FALSE(contains(rendererFrontend, "depthVisibility_.readbackBuffer"));
+}
+
+TEST(TechniqueRegistryGuardrails,
+     RendererFrontendDepthVisibilitySnapshotsAreFrameSlotOwned) {
+  const std::string rendererFrontendHeader =
+      readRepoTextFile("include/Container/renderer/core/RendererFrontend.h");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+
+  EXPECT_TRUE(contains(rendererFrontendHeader,
+                       "struct DepthVisibilityFrameSlot"));
+  EXPECT_TRUE(contains(rendererFrontendHeader,
+                       "std::vector<DepthVisibilityFrameSlot> slots"));
+  EXPECT_TRUE(contains(rendererFrontendHeader, "uint32_t latestFrameSlot"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "depthVisibilityFrameSlot(depthVisibility_.latestFrameSlot"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "DepthVisibilityFrameSlot& frame = "
+                       "ensureDepthVisibilityFrameSlot(frameSlot)"));
+  EXPECT_FALSE(contains(rendererFrontendHeader,
+                        "DepthVisibilityState {\n"
+                        "    std::vector<HostReadbackSlot> readbacks{}"));
+  EXPECT_FALSE(contains(rendererFrontendHeader,
+                        "DepthVisibilityState {\n"
+                        "    std::vector<HostReadbackSlot> readbacks{};\n"
+                        "    uint32_t frameSlot"));
+  EXPECT_FALSE(contains(rendererFrontend, "depthVisibility_.renderFence"));
+  EXPECT_FALSE(contains(rendererFrontend, "depthVisibility_.imageIndex"));
+  EXPECT_FALSE(contains(rendererFrontend, "depthVisibility_.cameraData"));
+}
+
+TEST(TechniqueRegistryGuardrails,
+     RendererFrontendResetsFrameFenceOnlyAfterCommandRecording) {
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+
+  const size_t drawFrame = rendererFrontend.find("bool RendererFrontend::drawFrame");
+  ASSERT_NE(drawFrame, std::string::npos);
+  const size_t record = rendererFrontend.find(
+      "recordCommandBuffer(svc_.commandBufferManager.buffer(imageIndex), imageIndex",
+      drawFrame);
+  const size_t reset = rendererFrontend.find(
+      "subs_.frameSyncManager->resetFence(frame_.currentFrame)", drawFrame);
+  const size_t assign = rendererFrontend.find(
+      "frame_.imagesInFlight[imageIndex] =", drawFrame);
+  const size_t submit = rendererFrontend.find("vkQueueSubmit(", drawFrame);
+
+  ASSERT_NE(record, std::string::npos);
+  ASSERT_NE(reset, std::string::npos);
+  ASSERT_NE(assign, std::string::npos);
+  ASSERT_NE(submit, std::string::npos);
+  EXPECT_LT(record, reset);
+  EXPECT_LT(reset, submit);
+  EXPECT_LT(submit, assign);
+}
+
+TEST(TechniqueRegistryGuardrails,
+     FrameRecordParamsCarriesFrameSlotSeparatelyFromImageIndex) {
+  const std::string frameRecorderHeader =
+      readRepoTextFile("include/Container/renderer/core/FrameRecorder.h");
+  const std::string frameRecorder =
+      readRepoTextFile("src/renderer/core/FrameRecorder.cpp");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+
+  EXPECT_TRUE(contains(frameRecorderHeader, "uint32_t frameSlot"));
+  EXPECT_TRUE(contains(frameRecorderHeader, "uint32_t imageIndex"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "p.runtime.frameSlot = frame_.currentFrame"));
+  EXPECT_TRUE(contains(rendererFrontend, "p.runtime.imageIndex = imageIndex"));
+  EXPECT_TRUE(
+      contains(frameRecorder, "beginFrame(commandBuffer, p.runtime.frameSlot)"));
+  EXPECT_TRUE(contains(frameRecorder, "runtime.imageIndex"));
+}
+
+TEST(TechniqueRegistryGuardrails,
+     SceneControllerTracksObjectBufferUploadsPerDestinationBuffer) {
+  const std::string sceneControllerHeader =
+      readRepoTextFile("include/Container/renderer/scene/SceneController.h");
+  const std::string sceneController =
+      readRepoTextFile("src/renderer/scene/SceneController.cpp");
+
+  EXPECT_TRUE(contains(sceneControllerHeader,
+                       "std::unordered_map<VkBuffer, uint64_t> "
+                       "objectBufferUploadRevisions_"));
+  EXPECT_TRUE(
+      contains(sceneControllerHeader, "uint64_t objectBufferUploadRevision_"));
+  EXPECT_TRUE(contains(sceneController, "++objectBufferUploadRevision_"));
+  EXPECT_TRUE(contains(sceneController,
+                       "objectBufferUploadRevisions_.find(objectBuffer.buffer)"));
+  EXPECT_TRUE(contains(sceneController,
+                       "uploadedRevision != objectBufferUploadRevision_"));
+  EXPECT_TRUE(contains(sceneController,
+                       "objectBufferUploadRevisions_[objectBuffer.buffer]"));
+  EXPECT_FALSE(contains(sceneControllerHeader, "objectBufferUploadDirty_"));
+  EXPECT_FALSE(contains(sceneController, "objectBufferUploadDirty_ = false"));
+}
+
+TEST(TechniqueRegistryGuardrails,
+     RuntimePickDepthAndCameraResourcesPublishCopyUsages) {
+  const std::string frameResourceManager =
+      readRepoTextFile("src/renderer/resources/FrameResourceManager.cpp");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+
+  EXPECT_TRUE(contains(frameResourceManager,
+                       "f.pickDepth = createAttachment("
+                       "formats_.depthStencil,\n"
+                       "                   "
+                       "VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |\n"
+                       "                       "
+                       "VK_IMAGE_USAGE_TRANSFER_DST_BIT |\n"
+                       "                       "
+                       "VK_IMAGE_USAGE_TRANSFER_SRC_BIT"));
+  EXPECT_TRUE(contains(frameResourceManager,
+                       "bindImage(\"pick-depth\", f.pickDepth,\n"
+                       "              "
+                       "VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |\n"
+                       "                  VK_IMAGE_USAGE_TRANSFER_DST_BIT |\n"
+                       "                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |\n"
+                       "            VK_BUFFER_USAGE_TRANSFER_SRC_BIT"));
+}
+
+TEST(TechniqueRegistryGuardrails,
+     DirectionalShadowDescriptorFallbacksUseShadowResources) {
+  const std::string frameResourceManagerHeader = readRepoTextFile(
+      "include/Container/renderer/resources/FrameResourceManager.h");
+  const std::string frameResourceManager =
+      readRepoTextFile("src/renderer/resources/FrameResourceManager.cpp");
+
+  EXPECT_TRUE(
+      contains(frameResourceManagerHeader, "fallbackShadowDataBuffer_"));
+  EXPECT_TRUE(contains(frameResourceManagerHeader, "fallbackShadowAtlas_"));
+  EXPECT_TRUE(contains(frameResourceManagerHeader, "fallbackShadowSampler_"));
+  EXPECT_TRUE(contains(frameResourceManagerHeader,
+                       "ensureFallbackShadowDataBuffer"));
+  EXPECT_TRUE(
+      contains(frameResourceManagerHeader, "ensureFallbackShadowResources"));
+
+  EXPECT_TRUE(contains(frameResourceManager,
+                       "allocationMgr_->destroyBuffer("
+                       "fallbackShadowDataBuffer_)"));
+  EXPECT_TRUE(contains(frameResourceManager,
+                       "destroyAttachment(fallbackShadowAtlas_)"));
+  EXPECT_TRUE(contains(frameResourceManager,
+                       "vkDestroySampler(device_->device(), "
+                       "fallbackShadowSampler_"));
+  EXPECT_TRUE(contains(frameResourceManager, "ensureFallbackShadowResources();"));
+  EXPECT_TRUE(contains(frameResourceManager,
+                       "shadowUboInfo = {fallbackShadowDataBuffer_.buffer, 0,"));
+  EXPECT_TRUE(contains(
+      frameResourceManager,
+      "postShadowUboInfo = {fallbackShadowDataBuffer_.buffer, 0,"));
+  EXPECT_TRUE(contains(frameResourceManager,
+                       "shadowAtlasInfo.imageView = "
+                       "fallbackShadowAtlas_.view;"));
+  EXPECT_TRUE(contains(frameResourceManager,
+                       "postShadowAtlasInfo.imageView = "
+                       "fallbackShadowAtlas_.view;"));
+  EXPECT_TRUE(contains(frameResourceManager,
+                       "shadowSamplerInfo.sampler = "
+                       "fallbackShadowSampler_;"));
+  EXPECT_TRUE(contains(frameResourceManager,
+                       "sizeof(container::gpu::ShadowData)"));
+
+  EXPECT_FALSE(contains(frameResourceManager, "shadowUboInfo = camInfo"));
+  EXPECT_FALSE(contains(frameResourceManager, "postShadowUboInfo = camInfo"));
+  EXPECT_FALSE(contains(frameResourceManager, "shadowAtlasInfo = depthImg"));
+  EXPECT_FALSE(
+      contains(frameResourceManager, "postShadowAtlasInfo = depthPostProcess"));
+  EXPECT_FALSE(contains(frameResourceManager, "shadowSamplerInfo = sampInfo"));
+}
+
+TEST(TechniqueRegistryGuardrails,
+     GpuCullIndirectCountPathRequiresMultiDrawIndirect) {
+  const std::string contextInitializer =
+      readRepoTextFile("src/renderer/platform/VulkanContextInitializer.cpp");
+  const std::string vulkanDeviceHeader =
+      readRepoTextFile("include/Container/utility/VulkanDevice.h");
+  const std::string gpuCullManager =
+      readRepoTextFile("src/renderer/culling/GpuCullManager.cpp");
+  const std::string shadowCullManager =
+      readRepoTextFile("src/renderer/shadow/ShadowCullManager.cpp");
+  const std::string bimManager =
+      readRepoTextFile("src/renderer/bim/BimManager.cpp");
+
+  EXPECT_TRUE(contains(contextInitializer,
+                       "ci.optionalFeatures.multiDrawIndirect = VK_TRUE"));
+  EXPECT_TRUE(contains(contextInitializer,
+                       "vulkan12Features.drawIndirectCount = VK_TRUE"));
+  EXPECT_TRUE(contains(vulkanDeviceHeader, "enabledVulkan12Features()"));
+  EXPECT_TRUE(contains(gpuCullManager,
+                       "device_->enabledFeatures().multiDrawIndirect == "
+                       "VK_TRUE"));
+  EXPECT_TRUE(contains(gpuCullManager,
+                       "device_->enabledVulkan12Features().drawIndirectCount "
+                       "== VK_TRUE"));
+  EXPECT_TRUE(contains(shadowCullManager,
+                       "device_->enabledFeatures().multiDrawIndirect == "
+                       "VK_TRUE"));
+  EXPECT_TRUE(contains(shadowCullManager,
+                       "device_->enabledVulkan12Features().drawIndirectCount "
+                       "== VK_TRUE"));
+  EXPECT_TRUE(contains(bimManager,
+                       "device_->enabledFeatures().drawIndirectFirstInstance "
+                       "== VK_TRUE"));
+  EXPECT_TRUE(contains(bimManager,
+                       "device_->enabledFeatures().multiDrawIndirect == "
+                       "VK_TRUE"));
+  EXPECT_TRUE(contains(bimManager,
+                       "device_->enabledVulkan12Features().drawIndirectCount "
+                       "== VK_TRUE"));
+}
+
+TEST(TechniqueRegistryGuardrails,
+     GpuCullUploadPreservesDrawCommandInstanceCounts) {
+  const std::string gpuCullManager =
+      readRepoTextFile("src/renderer/culling/GpuCullManager.cpp");
+  const std::string shadowCullManager =
+      readRepoTextFile("src/renderer/shadow/ShadowCullManager.cpp");
+
+  EXPECT_TRUE(contains(gpuCullManager,
+                       "gpuCmds[i].instanceCount =\n"
+                       "        std::max(commands[i].instanceCount, 1u)"));
+  EXPECT_FALSE(contains(gpuCullManager, "gpuCmds[i].instanceCount = 1;"));
+  EXPECT_TRUE(contains(shadowCullManager,
+                       "std::max(commands[i].instanceCount, 1u)"));
+  EXPECT_FALSE(contains(shadowCullManager, "gpuCmds[i].instanceCount = 1;"));
+}
+
+TEST(TechniqueRegistryGuardrails,
+     GpuCullUploadSkipsUnchangedDrawStreams) {
+  const std::string gpuCullHeader =
+      readRepoTextFile("include/Container/renderer/culling/GpuCullManager.h");
+  const std::string gpuCullManager =
+      readRepoTextFile("src/renderer/culling/GpuCullManager.cpp");
+  const std::string gpuCullUploadPlanner = readRepoTextFile(
+      "include/Container/renderer/culling/GpuCullDrawUploadPlanner.h");
+  const std::string frustumCullRecorder = readRepoTextFile(
+      "src/renderer/deferred/DeferredRasterFrustumCullPassRecorder.cpp");
+
+  EXPECT_TRUE(contains(gpuCullHeader, "uint64_t sourceRevision"));
+  EXPECT_TRUE(contains(gpuCullHeader, "lastUploadSourceData_"));
+  EXPECT_TRUE(contains(gpuCullManager, "buildGpuCullDrawUploadPlan"));
+  EXPECT_TRUE(contains(gpuCullUploadPlanner,
+                       "cache.sourceData[inputs.imageIndex] == "
+                       "inputs.sourceData"));
+  EXPECT_TRUE(contains(gpuCullUploadPlanner,
+                       "cache.sourceRevisions[inputs.imageIndex] =="));
+  EXPECT_TRUE(contains(gpuCullUploadPlanner, "GpuCullDrawUploadAction"));
+  EXPECT_TRUE(contains(frustumCullRecorder,
+                       "inputs.drawSourceRevision"));
+}
+
+TEST(TechniqueRegistryGuardrails,
+     OcclusionCullPassChecksResourcesBeforePublishingDraws) {
+  const std::string gpuCullHeader =
+      readRepoTextFile("include/Container/renderer/culling/GpuCullManager.h");
+  const std::string gpuCullManager =
+      readRepoTextFile("src/renderer/culling/GpuCullManager.cpp");
+  const std::string deferredTechnique =
+      readRepoTextFile("src/renderer/deferred/DeferredRasterTechnique.cpp");
+
+  EXPECT_TRUE(contains(gpuCullHeader, "occlusionCullResourcesReady"));
+  EXPECT_TRUE(contains(gpuCullManager,
+                       "bool GpuCullManager::occlusionCullResourcesReady("
+                       "uint32_t imageIndex) const"));
+  EXPECT_TRUE(contains(deferredTechnique,
+                       "deferred->gpuCullManager()->"
+                       "occlusionCullResourcesReady("));
+}
+
+TEST(TechniqueRegistryGuardrails,
+     BimGpuVisibilityPreparationUsesFrameRoutingFlags) {
+  const std::string recorderHeader = readRepoTextFile(
+      "include/Container/renderer/bim/BimFrameGpuVisibilityRecorder.h");
+  const std::string recorder =
+      readRepoTextFile("src/renderer/bim/BimFrameGpuVisibilityRecorder.cpp");
+  const std::string frameGraphContext = readRepoTextFile(
+      "src/renderer/deferred/DeferredRasterFrameGraphContext.cpp");
+
+  EXPECT_TRUE(contains(recorderHeader,
+                       "prepareBimFrameGpuVisibility("
+                       "BimManager *manager,\n"
+                       "                                  "
+                       "const FrameBimResources &bim)"));
+  EXPECT_TRUE(contains(recorder,
+                       ".meshCompactionEnabled =\n"
+                       "          bim.opaqueMeshDrawsUseGpuVisibility ||\n"
+                       "          bim.transparentMeshDrawsUseGpuVisibility"));
+  EXPECT_TRUE(contains(frameGraphContext,
+                       "prepareBimFrameGpuVisibility(p.services.bimManager, "
+                       "p.bim)"));
+}
+
+TEST(TechniqueRegistryGuardrails,
+     SceneRasterPassesPublishReadinessCallbacks) {
+  const std::string deferredTechnique =
+      readRepoTextFile("src/renderer/deferred/DeferredRasterTechnique.cpp");
+
+  EXPECT_TRUE(contains(deferredTechnique,
+                       "graph.setPassReadiness(\n"
+                       "      RenderPassId::DepthPrepass"));
+  EXPECT_TRUE(contains(deferredTechnique,
+                       "graph.setPassReadiness(\n"
+                       "      RenderPassId::GBuffer"));
 }
 
 TEST(TechniqueRegistryGuardrails,
@@ -1417,6 +1800,8 @@ TEST(TechniqueRegistryGuardrails,
                        "publishFrameRuntimeResourceBindings(imageIndex)"));
   EXPECT_TRUE(contains(rendererFrontend,
                        "subs_.frameRuntimeResourceRegistry.get()"));
+  EXPECT_TRUE(contains(rendererFrontend, "forEachBindingForFrame"));
+  EXPECT_FALSE(contains(rendererFrontend, "bindingsForFrame("));
   EXPECT_TRUE(contains(rendererFrontend,
                        "\"scene-descriptor-set\""));
   EXPECT_TRUE(contains(rendererFrontend,
@@ -1536,6 +1921,12 @@ TEST(TechniqueRegistryGuardrails,
                        "DeferredRasterBufferId::OitCounter"));
   EXPECT_TRUE(contains(oitRecorderHeader, "OitFrameResources resources"));
   EXPECT_TRUE(contains(oitManagerHeader, "struct OitFrameResources"));
+  EXPECT_TRUE(contains(deferredTechnique,
+                       "deferred->isPassActive(RenderPassId::OitResolve)"));
+  EXPECT_TRUE(contains(deferredTechnique,
+                       "graph.setPassReadiness(RenderPassId::PostProcess"));
+  EXPECT_TRUE(contains(deferredTechnique,
+                       "deferredRasterPostProcessReadiness"));
 
   EXPECT_FALSE(contains(deferredTechnique, "p.runtime.frame->depthSamplingView"));
   EXPECT_FALSE(contains(deferredTechnique, "p.runtime.frame->depthStencil.image"));
@@ -1553,6 +1944,8 @@ TEST(TechniqueRegistryGuardrails,
   EXPECT_FALSE(contains(oitManager, "frame.oitHeadPointers"));
   EXPECT_FALSE(contains(oitManager, "frame.oitNodeBuffer"));
   EXPECT_FALSE(contains(oitManager, "frame.oitCounterBuffer"));
+  EXPECT_FALSE(contains(deferredTechnique,
+                        ".transparentOitActive = transparentOit.enabled(p)"));
 }
 
 TEST(TechniqueRegistryGuardrails,
@@ -1722,7 +2115,7 @@ TEST(TechniqueRegistryGuardrails,
   EXPECT_FALSE(contains(frameRecorderHeader, "FrameRenderPassHandles"));
   EXPECT_FALSE(contains(frameRecorderHeader, "FrameDescriptorSets"));
   EXPECT_FALSE(contains(frameRecorderHeader, "VkSampler gBufferSampler"));
-  EXPECT_FALSE(contains(frameRecorder, "runtime.frame"));
+  EXPECT_FALSE(contains(frameRecorder, "runtime.frame->"));
   EXPECT_TRUE(contains(pipelineTypes,
                        "std::shared_ptr<const PipelineRegistry> "
                        "layoutRegistry"));

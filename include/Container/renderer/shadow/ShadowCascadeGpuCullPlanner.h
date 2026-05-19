@@ -10,7 +10,9 @@ struct ShadowCascadeGpuCullPlanInputs {
   bool gpuShadowCullEnabled{false};
   bool shadowCullPassActive{false};
   bool shadowCullManagerReady{false};
+  bool shadowCullDispatchReady{false};
   bool sceneSingleSidedDrawsAvailable{false};
+  bool sourceDrawCommandsAllSingleInstance{true};
   bool cascadeIndexInRange{false};
   VkBuffer indirectDrawBuffer{VK_NULL_HANDLE};
   VkBuffer drawCountBuffer{VK_NULL_HANDLE};
@@ -26,6 +28,7 @@ struct ShadowGpuCullSourceUploadPlanInputs {
   bool gpuShadowCullEnabled{false};
   bool shadowCullManagerReady{false};
   bool sourceDrawCommandsPresent{false};
+  bool sourceDrawCommandsAllSingleInstance{true};
   uint32_t sourceDrawCount{0u};
 };
 

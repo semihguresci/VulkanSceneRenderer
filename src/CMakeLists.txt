@@ -128,6 +128,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/bim/BimSurfaceRasterPassRecorder.cpp
 
     renderer/shadow/ShadowCascadeDrawPlanner.cpp
+    renderer/shadow/ShadowCascadeDepthPlanner.cpp
     renderer/shadow/ShadowCascadeFramePassRecorder.cpp
     renderer/shadow/ShadowCascadeGpuCullPlanner.cpp
     renderer/shadow/ShadowCascadePreparationPlanner.cpp

@@ -199,10 +199,10 @@ private:
   // GPU buffers backing the camera UBO and per-object SSBO.
   struct SceneBufferState {
     std::vector<container::gpu::AllocatedBuffer> cameras;
-    container::gpu::AllocatedBuffer object{};
-    size_t objectCapacity{0};
+    std::vector<container::gpu::AllocatedBuffer> objects;
+    std::vector<size_t> objectCapacities;
     container::gpu::CameraData cameraData{};
-    bool shadowObjectDescriptorReady{false};
+    std::vector<bool> shadowObjectDescriptorReady;
   };
   SceneBufferState buffers_{};
 
@@ -285,19 +285,23 @@ private:
   };
   FrameState frame_{};
 
-  struct ScreenshotState {
-    std::filesystem::path outputPath{};
-    bool pending{false};
+  struct HostReadbackSlot {
     container::gpu::AllocatedBuffer readbackBuffer{};
     VkDeviceSize readbackSize{0};
     VkExtent2D extent{};
     VkFormat format{VK_FORMAT_UNDEFINED};
   };
+
+  struct ScreenshotState {
+    std::filesystem::path outputPath{};
+    bool pending{false};
+    std::vector<HostReadbackSlot> readbacks{};
+  };
   ScreenshotState screenshot_{};
 
-  struct DepthVisibilityState {
-    container::gpu::AllocatedBuffer readbackBuffer{};
-    VkDeviceSize readbackSize{0};
+  struct DepthVisibilityFrameSlot {
+    HostReadbackSlot readback{};
+    uint32_t frameSlot{0};
     uint32_t imageIndex{std::numeric_limits<uint32_t>::max()};
     VkExtent2D extent{};
     VkFormat format{VK_FORMAT_UNDEFINED};
@@ -341,6 +345,11 @@ private:
     VkFence renderFence{VK_NULL_HANDLE};
     bool valid{false};
   };
+
+  struct DepthVisibilityState {
+    std::vector<DepthVisibilityFrameSlot> slots{};
+    uint32_t latestFrameSlot{0};
+  };
   DepthVisibilityState depthVisibility_{};
 
   struct TransformDragSession {
@@ -376,22 +385,40 @@ private:
   void createGeometryBuffers();
   void createFrameResources();
   void ensureCameraBuffers();
+  void ensureObjectBuffers();
   void syncSceneProviders();
 
   // ---- per-frame helpers
   // ------------------------------------------------------
   void updateCameraBuffer(uint32_t imageIndex);
-  void updateObjectBuffer();
+  void refreshSceneObjectData();
+  void updateObjectBuffer(uint32_t imageIndex);
+  void updateAllObjectBuffers();
+  [[nodiscard]] container::gpu::AllocatedBuffer sceneObjectBuffer(
+      uint32_t imageIndex) const;
+  [[nodiscard]] size_t sceneObjectCapacity(uint32_t imageIndex) const;
+  [[nodiscard]] size_t maxSceneObjectCapacity() const;
   void applyBimSemanticColorMode();
   void
   updateFrameDescriptorSets(uint32_t imageIndex = UINT32_MAX,
                             const FrameRecordParams *preparedParams = nullptr);
   void destroyGBufferResources();
   bool growExactOitNodePoolIfNeeded(uint32_t imageIndex);
-  void ensureScreenshotReadbackBuffer(VkExtent2D extent, VkFormat format);
-  void writePendingScreenshotPng();
-  void ensureDepthVisibilityReadbackBuffer();
-  void markDepthVisibilityFrameComplete(uint32_t imageIndex);
+  HostReadbackSlot& ensureReadbackSlot(
+      std::vector<HostReadbackSlot>& readbacks, uint32_t frameSlot);
+  void destroyReadbackSlots(std::vector<HostReadbackSlot>& readbacks);
+  DepthVisibilityFrameSlot& ensureDepthVisibilityFrameSlot(uint32_t frameSlot);
+  DepthVisibilityFrameSlot* depthVisibilityFrameSlot(uint32_t frameSlot);
+  [[nodiscard]] const DepthVisibilityFrameSlot* depthVisibilityFrameSlot(
+      uint32_t frameSlot) const;
+  void invalidateDepthVisibilityFrames();
+  void destroyDepthVisibilityFrameSlots();
+  void ensureScreenshotReadbackBuffer(uint32_t frameSlot, VkExtent2D extent,
+                                      VkFormat format);
+  void writePendingScreenshotPng(uint32_t frameSlot);
+  void ensureDepthVisibilityReadbackBuffer(uint32_t frameSlot);
+  void markDepthVisibilityFrameComplete(uint32_t imageIndex,
+                                        uint32_t frameSlot);
   [[nodiscard]] bool sampleDepthAtCursor(double cursorX, double cursorY,
                                          float &outDepth);
   [[nodiscard]] bool samplePickDepthAtCursor(double cursorX, double cursorY,

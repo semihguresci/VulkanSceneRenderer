@@ -23,6 +23,14 @@ DeferredTransparentOitFrameResourceInputs deferredTransparentOitInputs(
   return inputs;
 }
 
+[[nodiscard]] bool hasOitFrameResources(
+    const DeferredTransparentOitFrameResourceInputs &inputs) {
+  return inputs.oitManager != nullptr &&
+         inputs.resources.headPointerImage != VK_NULL_HANDLE &&
+         inputs.resources.nodeBuffer != VK_NULL_HANDLE &&
+         inputs.resources.counterBuffer != VK_NULL_HANDLE;
+}
+
 }  // namespace
 
 DeferredTransparentOitFramePassRecorder::
@@ -40,7 +48,14 @@ bool DeferredTransparentOitFramePassRecorder::enabled(
 
 RenderPassReadiness DeferredTransparentOitFramePassRecorder::readiness(
     const FrameRecordParams &p) const {
-  return enabled(p) ? renderPassReady() : renderPassNotNeeded();
+  if (!enabled(p)) {
+    return renderPassNotNeeded();
+  }
+  if (!hasOitFrameResources(deferredTransparentOitInputs(
+          p, services_.oitManager))) {
+    return renderPassMissingResource(RenderResourceId::OitStorage);
+  }
+  return renderPassReady();
 }
 
 bool DeferredTransparentOitFramePassRecorder::recordClear(

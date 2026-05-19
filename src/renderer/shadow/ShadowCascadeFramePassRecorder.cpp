@@ -20,6 +20,14 @@ using container::gpu::kShadowCascadeCount;
 
 namespace {
 
+constexpr uint64_t kShadowDrawRevisionOffset = 1469598103934665603ull;
+constexpr uint64_t kShadowDrawRevisionPrime = 1099511628211ull;
+
+void mixShadowDrawRevision(uint64_t &revision, uint32_t value) {
+  revision ^= static_cast<uint64_t>(value);
+  revision *= kShadowDrawRevisionPrime;
+}
+
 [[nodiscard]] bool isPassActive(const ShadowCascadeFramePassContext &context,
                                 RenderPassId id) {
   return context.isPassActive ? context.isPassActive(id) : false;
@@ -44,6 +52,30 @@ usesGpuFilteredBimMeshShadowPath(const FrameRecordParams &p) {
 primaryOpaqueDrawCommands(const FrameDrawLists &draws) {
   return hasSplitOpaqueDrawCommands(draws) ? draws.opaqueSingleSidedDrawCommands
                                            : draws.opaqueDrawCommands;
+}
+
+[[nodiscard]] ShadowCascadeFramePassRecorder::ShadowGpuCullSourceSummary
+summarizeShadowGpuCullSource(const std::vector<DrawCommand> *commands) {
+  ShadowCascadeFramePassRecorder::ShadowGpuCullSourceSummary summary{};
+  uint64_t revision = kShadowDrawRevisionOffset;
+  if (commands == nullptr) {
+    summary.contentRevision = revision;
+    return summary;
+  }
+
+  summary.drawCount = static_cast<uint32_t>(commands->size());
+  mixShadowDrawRevision(revision, summary.drawCount);
+  for (const DrawCommand &command : *commands) {
+    if (command.instanceCount > 1u) {
+      summary.allSingleInstance = false;
+    }
+    mixShadowDrawRevision(revision, command.indexCount);
+    mixShadowDrawRevision(revision, command.instanceCount);
+    mixShadowDrawRevision(revision, command.firstIndex);
+    mixShadowDrawRevision(revision, command.objectIndex);
+  }
+  summary.contentRevision = revision;
+  return summary;
 }
 
 [[nodiscard]] ShadowCascadeSurfaceDrawLists
@@ -83,10 +115,13 @@ shadowPassGpuIndirectBuffers(const FrameRecordParams &p,
     return {};
   }
   return {.drawBuffer =
-              p.shadows.shadowCullManager->indirectDrawBuffer(cascadeIndex),
+              p.shadows.shadowCullManager->indirectDrawBuffer(
+                  p.runtime.imageIndex, cascadeIndex),
           .countBuffer =
-              p.shadows.shadowCullManager->drawCountBuffer(cascadeIndex),
-          .maxDrawCount = p.shadows.shadowCullManager->maxDrawCount()};
+              p.shadows.shadowCullManager->drawCountBuffer(
+                  p.runtime.imageIndex, cascadeIndex),
+          .maxDrawCount =
+              p.shadows.shadowCullManager->maxDrawCount(p.runtime.imageIndex)};
 }
 
 [[nodiscard]] VkPipeline choosePipeline(VkPipeline preferred,
@@ -96,11 +131,34 @@ shadowPassGpuIndirectBuffers(const FrameRecordParams &p,
 
 } // namespace
 
+ShadowCascadeFramePassRecorder::ShadowGpuCullSourceSummary
+ShadowCascadeFramePassRecorder::gpuCullSourceSummary(
+    const FrameRecordParams &params) const {
+  const auto *commands = params.draws.opaqueSingleSidedDrawCommands;
+  const size_t sourceSize = commands != nullptr ? commands->size() : 0u;
+  if (gpuCullSourceCacheValid_ &&
+      gpuCullSourceCacheData_ == static_cast<const void *>(commands) &&
+      gpuCullSourceCacheSize_ == sourceSize &&
+      gpuCullSourceCacheObjectRevision_ == params.scene.objectDataRevision) {
+    return gpuCullSourceCache_;
+  }
+
+  gpuCullSourceCache_ = summarizeShadowGpuCullSource(commands);
+  gpuCullSourceCacheData_ = static_cast<const void *>(commands);
+  gpuCullSourceCacheSize_ = sourceSize;
+  gpuCullSourceCacheObjectRevision_ = params.scene.objectDataRevision;
+  gpuCullSourceCacheValid_ = true;
+  return gpuCullSourceCache_;
+}
+
 void ShadowCascadeFramePassRecorder::prepareFrame(
     const FrameRecordParams &params,
     const ShadowCascadeFramePassContext &context) const {
+  gpuCullSourceCacheValid_ = false;
   const auto *shadowGpuCullSourceDrawCommands =
       params.draws.opaqueSingleSidedDrawCommands;
+  const ShadowGpuCullSourceSummary shadowGpuCullSource =
+      gpuCullSourceSummary(params);
   const ShadowGpuCullSourceUploadPlan shadowGpuCullSourceUploadPlan =
       buildShadowGpuCullSourceUploadPlan(
           {.shadowAtlasVisible = context.shadowAtlasVisible,
@@ -108,13 +166,11 @@ void ShadowCascadeFramePassRecorder::prepareFrame(
            .shadowCullManagerReady =
                params.shadows.shadowCullManager != nullptr &&
                params.shadows.shadowCullManager->isReady(),
-           .sourceDrawCommandsPresent =
-               shadowGpuCullSourceDrawCommands != nullptr,
-           .sourceDrawCount =
-               shadowGpuCullSourceDrawCommands != nullptr
-                   ? static_cast<uint32_t>(
-                         shadowGpuCullSourceDrawCommands->size())
-                   : 0u});
+            .sourceDrawCommandsPresent =
+                shadowGpuCullSourceDrawCommands != nullptr,
+            .sourceDrawCommandsAllSingleInstance =
+                shadowGpuCullSource.allSingleInstance,
+            .sourceDrawCount = shadowGpuCullSource.drawCount});
   if (params.shadows.shadowCullManager != nullptr &&
       shadowGpuCullSourceUploadPlan.uploadSourceDrawCommands &&
       shadowGpuCullSourceDrawCommands != nullptr) {
@@ -122,9 +178,11 @@ void ShadowCascadeFramePassRecorder::prepareFrame(
     // draw list. Upload once so each cascade pass can filter into its own
     // indirect buffer.
     params.shadows.shadowCullManager->ensureBufferCapacity(
+        params.runtime.imageIndex,
         shadowGpuCullSourceUploadPlan.requiredDrawCapacity);
     params.shadows.shadowCullManager->uploadDrawCommands(
-        *shadowGpuCullSourceDrawCommands);
+        params.runtime.imageIndex, *shadowGpuCullSourceDrawCommands,
+        shadowGpuCullSource.contentRevision);
   }
 
   if (shouldPrepareDrawCommands(params, context)) {
@@ -193,25 +251,37 @@ bool ShadowCascadeFramePassRecorder::useGpuCullForCascade(
   const bool cascadeIndexInRange = cascadeIndex < kShadowCascadeCount;
   const VkBuffer gpuShadowIndirectBuffer =
       (params.shadows.shadowCullManager != nullptr && cascadeIndexInRange)
-          ? params.shadows.shadowCullManager->indirectDrawBuffer(cascadeIndex)
+          ? params.shadows.shadowCullManager->indirectDrawBuffer(
+                params.runtime.imageIndex, cascadeIndex)
           : VK_NULL_HANDLE;
   const VkBuffer gpuShadowCountBuffer =
       (params.shadows.shadowCullManager != nullptr && cascadeIndexInRange)
-          ? params.shadows.shadowCullManager->drawCountBuffer(cascadeIndex)
+          ? params.shadows.shadowCullManager->drawCountBuffer(
+                params.runtime.imageIndex, cascadeIndex)
           : VK_NULL_HANDLE;
   const uint32_t gpuShadowMaxDrawCount =
       params.shadows.shadowCullManager != nullptr
-          ? params.shadows.shadowCullManager->maxDrawCount()
+          ? params.shadows.shadowCullManager->maxDrawCount(
+                params.runtime.imageIndex)
           : 0u;
+  const bool shadowCullDispatchReady =
+      params.shadows.shadowCullManager != nullptr && cascadeIndexInRange &&
+      params.shadows.shadowCullManager->canDispatchCascadeCull(
+          params.runtime.imageIndex, cascadeIndex);
+  const ShadowGpuCullSourceSummary shadowGpuCullSource =
+      gpuCullSourceSummary(params);
 
   return buildShadowCascadeGpuCullPlan(
              {.gpuShadowCullEnabled = params.shadows.useGpuShadowCull,
               .shadowCullPassActive = shadowCullPassActive,
-              .shadowCullManagerReady =
-                  params.shadows.shadowCullManager != nullptr &&
-                  params.shadows.shadowCullManager->isReady(),
-              .sceneSingleSidedDrawsAvailable =
-                  hasDrawCommands(params.draws.opaqueSingleSidedDrawCommands),
+               .shadowCullManagerReady =
+                   params.shadows.shadowCullManager != nullptr &&
+                   params.shadows.shadowCullManager->isReady(),
+               .shadowCullDispatchReady = shadowCullDispatchReady,
+               .sceneSingleSidedDrawsAvailable =
+                   hasDrawCommands(params.draws.opaqueSingleSidedDrawCommands),
+               .sourceDrawCommandsAllSingleInstance =
+                   shadowGpuCullSource.allSingleInstance,
               .cascadeIndexInRange = cascadeIndexInRange,
               .indirectDrawBuffer = gpuShadowIndirectBuffer,
               .drawCountBuffer = gpuShadowCountBuffer,

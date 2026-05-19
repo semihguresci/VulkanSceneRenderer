@@ -197,6 +197,24 @@ TEST(BimSurfaceRasterPassRecorderTests,
 }
 
 TEST(BimSurfaceRasterPassRecorderTests,
+     CpuFilteredMeshSourcesDoNotAllowGpuCompaction) {
+  const std::vector<DrawCommand> meshCommands{
+      DrawCommand{.objectIndex = 3u, .firstIndex = 0u, .indexCount = 3u}};
+  const std::array<VkDescriptorSet, 1> descriptorSets = {
+      fakeHandle<VkDescriptorSet>(0x23)};
+  container::gpu::BindlessPushConstants pushConstants{};
+  BimSurfaceFramePassRecordInputs inputs =
+      frameInputs(meshCommands, pushConstants, descriptorSets);
+  inputs.draws.opaqueMeshDrawsUseGpuVisibility = false;
+
+  const auto planInputs = buildBimSurfaceFramePassInputs(inputs);
+
+  ASSERT_GE(planInputs.sourceCount, 1u);
+  EXPECT_FALSE(planInputs.sources[0].gpuCompactionEligible);
+  EXPECT_FALSE(planInputs.sources[0].gpuVisibilityOwnsCpuFallback);
+}
+
+TEST(BimSurfaceRasterPassRecorderTests,
      BuildsFrameBindingWithoutOwningDescriptorStorage) {
   const std::vector<DrawCommand> meshCommands{
       DrawCommand{.objectIndex = 4u, .firstIndex = 0u, .indexCount = 3u}};

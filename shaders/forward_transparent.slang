@@ -491,7 +491,9 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             AreaLightData light = uAreaLights[i];
             AreaLightFrame frame = BuildAreaLightFrame(light);
             float areaShadowVisibility = 1.0;
-            if (LocalShadowMapsEnabled(uLighting, uLocalShadow))
+            uint areaShadowRef = PackedLocalShadowAreaRef(uLocalShadow, i);
+            if (LocalShadowMapsEnabled(uLighting, uLocalShadow) &&
+                areaShadowRef != 0u)
             {
                 // The local-shadow PCF radius already models finite source
                 // size; a reduced weighted shadow estimate avoids a full PCF

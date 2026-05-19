@@ -10,7 +10,9 @@ namespace {
 using container::renderer::buildDeferredPostProcessFrameState;
 using container::renderer::buildDeferredPostProcessPushConstants;
 using container::renderer::DeferredPostProcessFrameInputs;
+using container::renderer::DeferredPostProcessPassRecordInputs;
 using container::renderer::DeferredPostProcessPushConstantInputs;
+using container::renderer::deferredPostProcessPassRecordInputsReady;
 using container::renderer::displayModeRecordsBloom;
 using container::renderer::displayModeRecordsExposureAdaptation;
 using container::renderer::displayModeRecordsGtao;
@@ -18,8 +20,28 @@ using container::renderer::displayModeRecordsShadowAtlas;
 using container::renderer::displayModeRecordsTileCull;
 using container::renderer::FrameRecordParams;
 using container::renderer::currentDisplayMode;
+using container::renderer::recordDeferredPostProcessPassCommands;
 using container::renderer::resolvePostProcessExposure;
 using container::renderer::shouldRecordTransparentOit;
+
+template <typename Handle>
+Handle fakeHandle(uintptr_t value) {
+  return reinterpret_cast<Handle>(value);
+}
+
+DeferredPostProcessPassRecordInputs
+readyPostProcessRecordInputs(std::vector<VkFramebuffer> &framebuffers) {
+  framebuffers = {fakeHandle<VkFramebuffer>(0x101)};
+  return {.commandBuffer = fakeHandle<VkCommandBuffer>(0x102),
+          .renderPass = fakeHandle<VkRenderPass>(0x103),
+          .swapChainFramebuffers = &framebuffers,
+          .imageIndex = 0u,
+          .extent = {1920u, 1080u},
+          .pipeline = fakeHandle<VkPipeline>(0x104),
+          .pipelineLayout = fakeHandle<VkPipelineLayout>(0x105),
+          .descriptorSets = {fakeHandle<VkDescriptorSet>(0x106),
+                             fakeHandle<VkDescriptorSet>(0x107)}};
+}
 
 TEST(DeferredRasterPostProcessTests, MapsExposureCameraBloomAndOitState) {
   container::gpu::ExposureSettings exposure{};
@@ -209,6 +231,71 @@ TEST(DeferredRasterPostProcessTests,
 
   EXPECT_FALSE(shouldRecordTransparentOit(
       params, nullptr, container::ui::GBufferViewMode::ShadowTexelDensity));
+}
+
+TEST(DeferredRasterPostProcessTests,
+     RejectsIncompleteRecordInputsBeforeRecording) {
+  std::vector<VkFramebuffer> framebuffers;
+  DeferredPostProcessPassRecordInputs inputs =
+      readyPostProcessRecordInputs(framebuffers);
+  EXPECT_TRUE(deferredPostProcessPassRecordInputsReady(inputs));
+
+  auto invalid = inputs;
+  invalid.commandBuffer = VK_NULL_HANDLE;
+  EXPECT_FALSE(deferredPostProcessPassRecordInputsReady(invalid));
+
+  invalid = inputs;
+  invalid.renderPass = VK_NULL_HANDLE;
+  EXPECT_FALSE(deferredPostProcessPassRecordInputsReady(invalid));
+
+  invalid = inputs;
+  invalid.swapChainFramebuffers = nullptr;
+  EXPECT_FALSE(deferredPostProcessPassRecordInputsReady(invalid));
+
+  invalid = inputs;
+  invalid.imageIndex = 1u;
+  EXPECT_FALSE(deferredPostProcessPassRecordInputsReady(invalid));
+
+  invalid = inputs;
+  framebuffers[0] = VK_NULL_HANDLE;
+  EXPECT_FALSE(deferredPostProcessPassRecordInputsReady(invalid));
+  framebuffers[0] = fakeHandle<VkFramebuffer>(0x101);
+
+  invalid = inputs;
+  invalid.extent.width = 0u;
+  EXPECT_FALSE(deferredPostProcessPassRecordInputsReady(invalid));
+
+  invalid = inputs;
+  invalid.extent.height = 0u;
+  EXPECT_FALSE(deferredPostProcessPassRecordInputsReady(invalid));
+
+  invalid = inputs;
+  invalid.pipeline = VK_NULL_HANDLE;
+  EXPECT_FALSE(deferredPostProcessPassRecordInputsReady(invalid));
+
+  invalid = inputs;
+  invalid.pipelineLayout = VK_NULL_HANDLE;
+  EXPECT_FALSE(deferredPostProcessPassRecordInputsReady(invalid));
+
+  invalid = inputs;
+  invalid.descriptorSets[0] = VK_NULL_HANDLE;
+  EXPECT_FALSE(deferredPostProcessPassRecordInputsReady(invalid));
+
+  invalid = inputs;
+  invalid.descriptorSets[1] = VK_NULL_HANDLE;
+  EXPECT_FALSE(deferredPostProcessPassRecordInputsReady(invalid));
+}
+
+TEST(DeferredRasterPostProcessTests,
+     RecordReturnsFalseForIncompleteInputs) {
+  EXPECT_FALSE(recordDeferredPostProcessPassCommands({}));
+
+  std::vector<VkFramebuffer> framebuffers;
+  DeferredPostProcessPassRecordInputs inputs =
+      readyPostProcessRecordInputs(framebuffers);
+  inputs.pipeline = VK_NULL_HANDLE;
+
+  EXPECT_FALSE(recordDeferredPostProcessPassCommands(inputs));
 }
 
 } // namespace

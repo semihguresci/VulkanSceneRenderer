@@ -1,6 +1,7 @@
 #include "Container/renderer/shadow/ShadowCascadeDrawPlanner.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <utility>
 
@@ -12,6 +13,12 @@ using container::gpu::kShadowCascadeCount;
 
 [[nodiscard]] uint32_t drawInstanceCount(const DrawCommand &command) {
   return std::max(command.instanceCount, 1u);
+}
+
+[[nodiscard]] bool isValidCascadeBoundingSphere(const glm::vec4 &sphere) {
+  return std::isfinite(sphere.x) && std::isfinite(sphere.y) &&
+         std::isfinite(sphere.z) && std::isfinite(sphere.w) &&
+         sphere.w > 0.0f;
 }
 
 void mixHash(uint64_t &signature, uint64_t value) {
@@ -166,7 +173,8 @@ void filterCommands(const ShadowCascadeDrawPlannerInputs &inputs,
         const glm::vec4 boundingSphere =
             (*scene.objectData)[command.objectIndex + instanceOffset]
                 .boundingSphere;
-        const bool hasValidBounds = boundingSphere.w > 0.0f;
+        const bool hasValidBounds =
+            isValidCascadeBoundingSphere(boundingSphere);
         const bool visible =
             !hasValidBounds ||
             inputs.cascadeIntersectsSphere(cascadeIndex, boundingSphere);

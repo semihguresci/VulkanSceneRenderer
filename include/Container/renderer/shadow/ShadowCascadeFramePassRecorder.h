@@ -4,6 +4,8 @@
 #include "Container/renderer/shadow/ShadowCascadeDrawPlanner.h"
 #include "Container/renderer/shadow/ShadowPassRecorder.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 
 namespace container::renderer {
@@ -27,7 +29,16 @@ public:
                          const ShadowCascadeFramePassContext &context,
                          uint32_t cascadeIndex) const;
 
+  struct ShadowGpuCullSourceSummary {
+    uint32_t drawCount{0};
+    bool allSingleInstance{true};
+    uint64_t contentRevision{0};
+  };
+
 private:
+  [[nodiscard]] ShadowGpuCullSourceSummary
+  gpuCullSourceSummary(const FrameRecordParams &params) const;
+
   [[nodiscard]] bool
   shouldPrepareDrawCommands(const FrameRecordParams &params,
                             const ShadowCascadeFramePassContext &context) const;
@@ -67,6 +78,11 @@ private:
 
   mutable ShadowCascadeDrawPlan drawPlanCache_{};
   mutable bool drawCommandCacheValid_{false};
+  mutable const void *gpuCullSourceCacheData_{nullptr};
+  mutable size_t gpuCullSourceCacheSize_{0};
+  mutable uint64_t gpuCullSourceCacheObjectRevision_{0};
+  mutable ShadowGpuCullSourceSummary gpuCullSourceCache_{};
+  mutable bool gpuCullSourceCacheValid_{false};
 };
 
 } // namespace container::renderer

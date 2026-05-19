@@ -3,6 +3,7 @@
 #include "Container/common/CommonMath.h"
 #include "Container/common/CommonVulkan.h"
 #include "Container/common/CommonVMA.h"
+#include "Container/renderer/shadow/ShadowCascadeDepthPlanner.h"
 #include "Container/utility/SceneData.h"
 #include "Container/utility/VulkanMemoryManager.h"
 
@@ -61,11 +62,13 @@ class ShadowManager {
               float aspectRatio,
               const glm::vec3& lightDirection,
               const container::gpu::ShadowSettings& shadowSettings,
+              const ShadowCasterSceneBounds* casterSceneBounds,
               uint32_t imageIndex);
   void updateLocalShadows(
       std::span<const container::gpu::PointLightData> pointLights,
       std::span<const container::gpu::AreaLightData> areaLights,
       const container::gpu::ShadowSettings& shadowSettings,
+      uint32_t localShadowLayerBudget,
       uint32_t imageIndex);
 
   // ---- Accessors -----------------------------------------------------------
@@ -183,7 +186,8 @@ class ShadowManager {
       const glm::mat4& cameraView,
       const glm::mat4& cameraProj,
       float cameraNear,
-      float cameraFar) const;
+      float cameraFar,
+      const ShadowCasterSceneBounds* casterSceneBounds) const;
   void uploadMappedBuffer(const container::gpu::AllocatedBuffer& buffer,
                           const void* data,
                           VkDeviceSize size) const;

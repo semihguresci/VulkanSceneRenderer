@@ -59,6 +59,60 @@ bool supportsPerformanceQueryFeature(VkPhysicalDevice device) {
   return performanceFeatures.performanceCounterQueryPools == VK_TRUE;
 }
 
+const VkPhysicalDeviceVulkan12Features* requestedVulkan12Features(
+    const void* next) {
+  const auto* feature = static_cast<const VkBaseInStructure*>(next);
+  while (feature != nullptr) {
+    if (feature->sType ==
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES) {
+      return reinterpret_cast<const VkPhysicalDeviceVulkan12Features*>(feature);
+    }
+    feature = feature->pNext;
+  }
+  return nullptr;
+}
+
+bool requestedFeatureSupported(VkBool32 requested, VkBool32 supported) {
+  return requested != VK_TRUE || supported == VK_TRUE;
+}
+
+bool supportsRequestedVulkan12Features(
+    VkPhysicalDevice device,
+    const VkPhysicalDeviceVulkan12Features* requestedFeatures) {
+  if (requestedFeatures == nullptr) {
+    return true;
+  }
+
+  VkPhysicalDeviceVulkan12Features supportedFeatures{};
+  supportedFeatures.sType =
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+  VkPhysicalDeviceFeatures2 features2{};
+  features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+  features2.pNext = &supportedFeatures;
+  vkGetPhysicalDeviceFeatures2(device, &features2);
+
+  return requestedFeatureSupported(requestedFeatures->descriptorIndexing,
+                                   supportedFeatures.descriptorIndexing) &&
+         requestedFeatureSupported(
+             requestedFeatures->runtimeDescriptorArray,
+             supportedFeatures.runtimeDescriptorArray) &&
+         requestedFeatureSupported(
+             requestedFeatures->descriptorBindingPartiallyBound,
+             supportedFeatures.descriptorBindingPartiallyBound) &&
+         requestedFeatureSupported(
+             requestedFeatures->descriptorBindingVariableDescriptorCount,
+             supportedFeatures.descriptorBindingVariableDescriptorCount) &&
+         requestedFeatureSupported(
+             requestedFeatures->shaderSampledImageArrayNonUniformIndexing,
+             supportedFeatures.shaderSampledImageArrayNonUniformIndexing) &&
+         requestedFeatureSupported(requestedFeatures->bufferDeviceAddress,
+                                   supportedFeatures.bufferDeviceAddress) &&
+         requestedFeatureSupported(requestedFeatures->drawIndirectCount,
+                                   supportedFeatures.drawIndirectCount) &&
+         requestedFeatureSupported(requestedFeatures->hostQueryReset,
+                                   supportedFeatures.hostQueryReset);
+}
+
 }  // namespace
 
 VulkanDevice::VulkanDevice(VkInstance instance, VkSurfaceKHR surface,
@@ -145,6 +199,12 @@ void VulkanDevice::createLogicalDevice() {
   }
 
   std::memcpy(&enabledFeatures_, enabledArr.data(), sizeof(VkPhysicalDeviceFeatures));
+  enabledVulkan12Features_.sType =
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+  if (const auto* requestedFeatures = requestedVulkan12Features(createInfo_.next)) {
+    enabledVulkan12Features_ = *requestedFeatures;
+    enabledVulkan12Features_.pNext = nullptr;
+  }
 
   const std::vector<VkExtensionProperties> availableExtensions =
       enumerateDeviceExtensions(physicalDevice_);
@@ -274,7 +334,8 @@ bool VulkanDevice::supportsRequestedFeatures(VkPhysicalDevice device) const {
     }
   }
 
-  return true;
+  return supportsRequestedVulkan12Features(
+      device, requestedVulkan12Features(createInfo_.next));
 }
 
 }  // namespace container::gpu

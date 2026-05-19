@@ -83,6 +83,31 @@ namespace {
 
 using TelemetryClock = std::chrono::steady_clock;
 
+[[nodiscard]] bool submitReadbackCommandBufferAndWait(
+    VkDevice device, VkQueue queue, VkCommandBuffer commandBuffer) {
+  if (device == VK_NULL_HANDLE || queue == VK_NULL_HANDLE ||
+      commandBuffer == VK_NULL_HANDLE) {
+    return false;
+  }
+
+  VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+  VkFence fence{VK_NULL_HANDLE};
+  if (vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+    return false;
+  }
+
+  VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+  submitInfo.commandBufferCount = 1;
+  submitInfo.pCommandBuffers = &commandBuffer;
+  const VkResult submitResult = vkQueueSubmit(queue, 1, &submitInfo, fence);
+  const VkResult waitResult =
+      submitResult == VK_SUCCESS
+          ? vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX)
+          : submitResult;
+  vkDestroyFence(device, fence, nullptr);
+  return submitResult == VK_SUCCESS && waitResult == VK_SUCCESS;
+}
+
 [[nodiscard]] std::string bimFloorPlanDrawingViewName(bool sourceElevation) {
   return sourceElevation ? "Floor plan (source elevation)"
                          : "Floor plan (projected ground)";
@@ -603,6 +628,42 @@ glm::vec3 normalizedOr(const glm::vec3 &value, const glm::vec3 &fallback) {
   return value / length;
 }
 
+void applyConfiguredDirectionalLightOverrides(
+    container::gpu::LightingData &lightingData,
+    const container::app::AppConfig &config) {
+  if (config.hasDirectionalDirectionOverride) {
+    const glm::vec3 direction = arrayToVec3(config.directionalDirection);
+    if (isFiniteVec3(direction)) {
+      lightingData.directionalDirection =
+          glm::vec4(normalizedOr(direction,
+                                 glm::vec3(lightingData.directionalDirection)),
+                    0.0f);
+    }
+  }
+  if (config.hasDirectionalColorOverride) {
+    const glm::vec3 color = arrayToVec3(config.directionalColor);
+    if (isFiniteVec3(color)) {
+      lightingData.directionalColorIntensity =
+          glm::vec4(glm::max(color, glm::vec3(0.0f)),
+                    lightingData.directionalColorIntensity.a);
+    }
+  }
+  if (config.hasDirectionalIntensityOverride &&
+      std::isfinite(config.directionalIntensity)) {
+    lightingData.directionalColorIntensity.a =
+        std::max(config.directionalIntensity, 0.0f);
+  }
+}
+
+void applyConfiguredLightingOverrides(
+    LightingManager *lightingManager, const container::app::AppConfig &config) {
+  if (lightingManager == nullptr) {
+    return;
+  }
+  applyConfiguredDirectionalLightOverrides(lightingManager->lightingData(),
+                                           config);
+}
+
 glm::vec4
 sectionPlaneEquation(const container::ui::SectionPlaneState &sectionPlane) {
   const glm::vec3 normal =
@@ -684,6 +745,11 @@ void includeBoundingSphere(const glm::vec4 &sphere, glm::vec3 &boundsMin,
   boundsMax = glm::max(boundsMax, center + extent);
 }
 
+bool isValidShadowCasterBoundingSphere(const glm::vec4 &sphere) {
+  return isFiniteVec3(glm::vec3{sphere.x, sphere.y, sphere.z}) &&
+         std::isfinite(sphere.w) && sphere.w > 0.0f;
+}
+
 bool accumulateDrawCommandBounds(
     const std::vector<DrawCommand> &commands,
     const std::vector<container::gpu::ObjectData> &objectData,
@@ -701,6 +767,89 @@ bool accumulateDrawCommandBounds(
     }
   }
   return hasBounds;
+}
+
+std::optional<bool> accumulateShadowCasterDrawCommandBounds(
+    const std::vector<DrawCommand> &commands,
+    const std::vector<container::gpu::ObjectData> &objectData,
+    glm::vec3 &boundsMin, glm::vec3 &boundsMax) {
+  bool hasBounds = false;
+  for (const DrawCommand &command : commands) {
+    const uint32_t instanceCount = std::max(command.instanceCount, 1u);
+    for (uint32_t instance = 0; instance < instanceCount; ++instance) {
+      const uint32_t objectIndex = command.objectIndex + instance;
+      if (objectIndex >= objectData.size()) {
+        continue;
+      }
+      const glm::vec4 &sphere = objectData[objectIndex].boundingSphere;
+      if (!isValidShadowCasterBoundingSphere(sphere)) {
+        return std::nullopt;
+      }
+      includeBoundingSphere(sphere, boundsMin, boundsMax, hasBounds);
+    }
+  }
+  return hasBounds;
+}
+
+void includeBounds(const glm::vec3 &sourceMin, const glm::vec3 &sourceMax,
+                   glm::vec3 &boundsMin, glm::vec3 &boundsMax,
+                   bool &hasBounds) {
+  if (!isFiniteVec3(sourceMin) || !isFiniteVec3(sourceMax)) {
+    return;
+  }
+  const glm::vec3 orderedMin = glm::min(sourceMin, sourceMax);
+  const glm::vec3 orderedMax = glm::max(sourceMin, sourceMax);
+  if (!hasBounds) {
+    boundsMin = orderedMin;
+    boundsMax = orderedMax;
+    hasBounds = true;
+    return;
+  }
+  boundsMin = glm::min(boundsMin, orderedMin);
+  boundsMax = glm::max(boundsMax, orderedMax);
+}
+
+std::optional<ShadowCasterSceneBounds> accumulateShadowCasterSceneBounds(
+    const SceneController *sceneController, const BimManager *bimManager) {
+  glm::vec3 boundsMin{0.0f};
+  glm::vec3 boundsMax{0.0f};
+  bool hasBounds = false;
+
+  if (sceneController != nullptr) {
+    glm::vec3 sceneMin{0.0f};
+    glm::vec3 sceneMax{0.0f};
+    const std::optional<bool> sceneBounds =
+        accumulateShadowCasterDrawCommandBounds(
+            sceneController->opaqueDrawCommands(), sceneController->objectData(),
+            sceneMin, sceneMax);
+    if (!sceneBounds.has_value()) {
+      return std::nullopt;
+    }
+    if (*sceneBounds) {
+      includeBounds(sceneMin, sceneMax, boundsMin, boundsMax, hasBounds);
+    }
+  }
+
+  if (bimManager != nullptr) {
+    glm::vec3 bimMin{0.0f};
+    glm::vec3 bimMax{0.0f};
+    const std::optional<bool> bimBounds =
+        accumulateShadowCasterDrawCommandBounds(
+            bimManager->opaqueDrawCommands(), bimManager->objectData(), bimMin,
+            bimMax);
+    if (!bimBounds.has_value()) {
+      return std::nullopt;
+    }
+    if (*bimBounds) {
+      includeBounds(bimMin, bimMax, boundsMin, boundsMax, hasBounds);
+    }
+  }
+
+  if (!hasBounds) {
+    return std::nullopt;
+  }
+  return ShadowCasterSceneBounds{.minBounds = boundsMin,
+                                 .maxBounds = boundsMax};
 }
 
 float transformGizmoScale(const glm::vec3 &origin, float boundsRadius,
@@ -1216,7 +1365,9 @@ void RendererFrontend::initialize() {
   }
   subs_.gpuCullManager = std::make_unique<GpuCullManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
-  subs_.gpuCullManager->createResources(container::util::executableDirectory());
+  subs_.gpuCullManager->createResources(
+      container::util::executableDirectory(),
+      static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
   subs_.bloomManager = std::make_unique<BloomManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager,
       svc_.commandBufferManager.pool());
@@ -1230,7 +1381,8 @@ void RendererFrontend::initialize() {
   subs_.exposureManager = std::make_unique<ExposureManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
   subs_.exposureManager->createResources(
-      container::util::executableDirectory());
+      container::util::executableDirectory(),
+      static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
   subs_.frameResourceManager = std::make_unique<FrameResourceManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager,
       svc_.swapChainManager, svc_.commandBufferManager.pool());
@@ -1399,11 +1551,6 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     subs_.gpuCullManager->collectStats();
   if (subs_.lightingManager)
     subs_.lightingManager->collectStats();
-  if (subs_.exposureManager) {
-    subs_.exposureManager->collectReadback(
-        subs_.guiManager ? subs_.guiManager->exposureSettings()
-                         : container::gpu::ExposureSettings{});
-  }
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::Readbacks,
                            elapsedMilliseconds(phaseStart));
@@ -1456,16 +1603,18 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                            elapsedMilliseconds(phaseStart));
   }
 
+  if (subs_.exposureManager) {
+    subs_.exposureManager->collectReadback(
+        imageIndex, subs_.guiManager ? subs_.guiManager->exposureSettings()
+                                     : container::gpu::ExposureSettings{});
+  }
+
   phaseStart = TelemetryClock::now();
   growExactOitNodePoolIfNeeded(imageIndex);
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::ResourceGrowth,
                            elapsedMilliseconds(phaseStart));
   }
-
-  subs_.frameSyncManager->resetFence(frame_.currentFrame);
-  frame_.imagesInFlight[imageIndex] =
-      subs_.frameSyncManager->fence(frame_.currentFrame);
 
   phaseStart = TelemetryClock::now();
   presentSceneControls();
@@ -1475,28 +1624,39 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   }
 
   phaseStart = TelemetryClock::now();
-  updateObjectBuffer();
+  updateObjectBuffer(imageIndex);
   applyBimSemanticColorMode();
   updateCameraBuffer(imageIndex);
 
   if (subs_.lightingManager && subs_.cameraController) {
     subs_.lightingManager->updateLightingDataForActiveCamera();
+    applyConfiguredLightingOverrides(subs_.lightingManager.get(),
+                                      svc_.config);
   }
 
   if (subs_.shadowManager && subs_.lightingManager && subs_.cameraController) {
     const auto &ld = subs_.lightingManager->lightingData();
+    const auto &currentLightingSettings =
+        subs_.lightingManager->lightingSettings();
     const float aspect =
         static_cast<float>(svc_.swapChainManager.extent().width) /
         static_cast<float>(svc_.swapChainManager.extent().height);
     const container::gpu::ShadowSettings shadowSettings =
         subs_.guiManager ? subs_.guiManager->shadowSettings()
                          : container::gpu::ShadowSettings{};
+    const std::optional<ShadowCasterSceneBounds> shadowCasterBounds =
+        accumulateShadowCasterSceneBounds(subs_.sceneController.get(),
+                                          subs_.bimManager.get());
     subs_.shadowManager->update(subs_.cameraController->camera(), aspect,
                                 glm::vec3(ld.directionalDirection),
-                                shadowSettings, imageIndex);
+                                shadowSettings,
+                                shadowCasterBounds ? &*shadowCasterBounds
+                                                   : nullptr,
+                                imageIndex);
     subs_.shadowManager->updateLocalShadows(
         subs_.lightingManager->pointLightsSsbo(),
-        subs_.lightingManager->areaLightsSsbo(), shadowSettings, imageIndex);
+        subs_.lightingManager->areaLightsSsbo(), shadowSettings,
+        currentLightingSettings.localShadowLayerBudget, imageIndex);
   }
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::SceneUpdate,
@@ -1506,7 +1666,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   const bool screenshotThisFrame = screenshot_.pending;
   if (screenshotThisFrame) {
     phaseStart = TelemetryClock::now();
-    ensureScreenshotReadbackBuffer(svc_.swapChainManager.extent(),
+    ensureScreenshotReadbackBuffer(frame_.currentFrame,
+                                   svc_.swapChainManager.extent(),
                                    svc_.swapChainManager.imageFormat());
     if (telemetry) {
       telemetry->addCpuPhase(RendererTelemetryPhase::ResourceGrowth,
@@ -1568,11 +1729,14 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   submitInfo.pSignalSemaphores = signalSemaphores;
 
   phaseStart = TelemetryClock::now();
+  subs_.frameSyncManager->resetFence(frame_.currentFrame);
+  const VkFence submittedFrameFence =
+      subs_.frameSyncManager->fence(frame_.currentFrame);
   if (vkQueueSubmit(svc_.ctx.deviceWrapper->graphicsQueue(), 1, &submitInfo,
-                    subs_.frameSyncManager->fence(frame_.currentFrame)) !=
-      VK_SUCCESS) {
+                    submittedFrameFence) != VK_SUCCESS) {
     throw std::runtime_error("failed to submit draw command buffer!");
   }
+  frame_.imagesInFlight[imageIndex] = submittedFrameFence;
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::QueueSubmit,
                            elapsedMilliseconds(phaseStart));
@@ -1585,7 +1749,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                         UINT64_MAX) != VK_SUCCESS) {
       throw std::runtime_error("failed to wait for screenshot frame");
     }
-    writePendingScreenshotPng();
+    writePendingScreenshotPng(frame_.currentFrame);
     if (telemetry) {
       telemetry->setCpuPhase(RendererTelemetryPhase::Screenshot,
                              elapsedMilliseconds(phaseStart));
@@ -1613,7 +1777,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   } else if (result != VK_SUCCESS) {
     throw std::runtime_error("failed to present swap chain image!");
   } else {
-    markDepthVisibilityFrameComplete(imageIndex);
+    markDepthVisibilityFrameComplete(imageIndex, frame_.currentFrame);
   }
 
   if (telemetry) {
@@ -1642,7 +1806,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     resources.swapchainImageCount =
         saturatingU32(svc_.swapChainManager.imageCount());
     resources.cameraBufferCount = saturatingU32(buffers_.cameras.size());
-    resources.objectBufferCapacity = saturatingU32(buffers_.objectCapacity);
+    resources.objectBufferCapacity = saturatingU32(maxSceneObjectCapacity());
     resources.oitNodeCapacity = deferredRasterRuntimeOitNodeCapacity(
         subs_.frameResourceManager.get(), imageIndex);
     telemetry->setResources(resources);
@@ -1665,8 +1829,7 @@ void RendererFrontend::handleResize() {
   vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device());
 
   destroyGBufferResources();
-  depthVisibility_.valid = false;
-  depthVisibility_.renderFence = VK_NULL_HANDLE;
+  invalidateDepthVisibilityFrames();
   svc_.swapChainManager.recreate(resources_.renderPasses.postProcess);
   ensureCameraBuffers();
   if (subs_.lightingManager) {
@@ -1679,6 +1842,10 @@ void RendererFrontend::handleResize() {
   }
   if (subs_.shadowCullManager) {
     subs_.shadowCullManager->recreatePerFrameResources(
+        static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
+  }
+  if (subs_.gpuCullManager) {
+    subs_.gpuCullManager->recreatePerFrameResources(
         static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
   }
   createFrameResources();
@@ -1711,9 +1878,9 @@ void RendererFrontend::handleResize() {
        ++imageIndex) {
     updateCameraBuffer(imageIndex);
   }
-  updateObjectBuffer();
+  updateAllObjectBuffers();
   if (subs_.sceneManager) {
-    subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.object);
+    subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.objects);
     if (subs_.bimManager && subs_.bimManager->hasScene()) {
       subs_.sceneManager->updateAuxiliaryDescriptorSets(
           buffers_.cameras, subs_.bimManager->objectAllocatedBuffer());
@@ -1908,9 +2075,12 @@ void RendererFrontend::selectMeshNodeAtCursor(double cursorX, double cursorY) {
     float gpuPickDepth = 0.0f;
     if (samplePickDepthAtCursor(cursorX, cursorY, gpuPickDepth) ||
         sampleDepthAtCursor(cursorX, cursorY, gpuPickDepth)) {
-      gpuPickWorldPoint = unprojectDepthAtCursor(
-          depthVisibility_.cameraData, depthVisibility_.extent, cursorX,
-          cursorY, gpuPickDepth);
+      if (const auto* depthFrame =
+              depthVisibilityFrameSlot(depthVisibility_.latestFrameSlot)) {
+        gpuPickWorldPoint = unprojectDepthAtCursor(
+            depthFrame->cameraData, depthFrame->extent, cursorX, cursorY,
+            gpuPickDepth);
+      }
     }
 
     if (target.kind == GpuPickTargetKind::Bim && subs_.bimManager &&
@@ -2585,7 +2755,7 @@ void RendererFrontend::transformSelectedNodeByDrag(
       subs_.lightingManager) {
     subs_.lightingManager->updateLightingData();
   }
-  updateObjectBuffer();
+  refreshSceneObjectData();
 }
 
 std::optional<container::ui::TransformAxis>
@@ -2767,12 +2937,17 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
   if (!subs_.sceneController || !subs_.sceneManager)
     return false;
 
+  ensureObjectBuffers();
+  if (buffers_.objects.empty() || buffers_.objectCapacities.empty())
+    return false;
+
   const auto cameraBuffer = buffers_.cameras.empty()
                                 ? container::gpu::AllocatedBuffer{}
                                 : buffers_.cameras.front();
   auto reloadPrimary = [&](const std::string &modelPath, float scale) {
     return subs_.sceneController->reloadSceneModel(
-        modelPath, scale, buffers_.object, buffers_.objectCapacity,
+        modelPath, scale, buffers_.objects.front(),
+        buffers_.objectCapacities.front(),
         cameraBuffer, sceneState_.indexType, sceneState_.rootNode,
         sceneState_.selectedMeshNode, sceneState_.cubeNode);
   };
@@ -2792,8 +2967,8 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
         updateCameraBuffer(imageIndex);
       }
     }
-    updateObjectBuffer();
-    subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.object);
+    updateAllObjectBuffers();
+    subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.objects);
     if (subs_.bimManager && subs_.bimManager->hasScene()) {
       subs_.sceneManager->updateAuxiliaryDescriptorSets(
           buffers_.cameras, subs_.bimManager->objectAllocatedBuffer());
@@ -2925,18 +3100,16 @@ void RendererFrontend::shutdown() {
     }
   }
   buffers_.cameras.clear();
-  if (buffers_.object.buffer != VK_NULL_HANDLE)
-    svc_.allocationManager.destroyBuffer(buffers_.object);
-  if (screenshot_.readbackBuffer.buffer != VK_NULL_HANDLE) {
-    svc_.allocationManager.destroyBuffer(screenshot_.readbackBuffer);
+  for (auto &objectBuffer : buffers_.objects) {
+    if (objectBuffer.buffer != VK_NULL_HANDLE) {
+      svc_.allocationManager.destroyBuffer(objectBuffer);
+    }
   }
-  screenshot_.readbackSize = 0;
-  if (depthVisibility_.readbackBuffer.buffer != VK_NULL_HANDLE) {
-    svc_.allocationManager.destroyBuffer(depthVisibility_.readbackBuffer);
-  }
-  depthVisibility_.readbackSize = 0;
-  depthVisibility_.valid = false;
-  depthVisibility_.renderFence = VK_NULL_HANDLE;
+  buffers_.objects.clear();
+  buffers_.objectCapacities.clear();
+  buffers_.shadowObjectDescriptorReady.clear();
+  destroyReadbackSlots(screenshot_.readbacks);
+  destroyDepthVisibilityFrameSlots();
 }
 
 // ---------------------------------------------------------------------------
@@ -3124,8 +3297,7 @@ void RendererFrontend::recreateMsaaResources(
   createGraphicsPipelines();
   createFrameResources();
   updateFrameDescriptorSets();
-  depthVisibility_.valid = false;
-  depthVisibility_.renderFence = VK_NULL_HANDLE;
+  invalidateDepthVisibilityFrames();
   if (subs_.guiManager) {
     subs_.guiManager->setStatusMessage(
         "MSAA set to " + std::to_string(sampleCountToSamples(sampleCount)) +
@@ -3192,6 +3364,7 @@ void RendererFrontend::initializeScene() {
   buildSceneGraph();
   createSceneBuffers();
   subs_.lightingManager->updateLightingData();
+  applyConfiguredLightingOverrides(subs_.lightingManager.get(), svc_.config);
   subs_.lightingManager->createLightVolumeGeometry();
   createFrameResources();
   if (subs_.environmentManager) {
@@ -3204,7 +3377,7 @@ void RendererFrontend::initializeScene() {
     subs_.bloomManager->createTextures(ext.width, ext.height);
   }
   createGeometryBuffers();
-  subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.object);
+  subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.objects);
   if (subs_.bimManager && subs_.bimManager->hasScene()) {
     subs_.sceneManager->updateAuxiliaryDescriptorSets(
         buffers_.cameras, subs_.bimManager->objectAllocatedBuffer());
@@ -3242,25 +3415,56 @@ void RendererFrontend::ensureCameraBuffers() {
   buffers_.cameras.assign(imageCount, {});
   for (auto &cameraBuffer : buffers_.cameras) {
     cameraBuffer = svc_.allocationManager.createBuffer(
-        sizeof(container::gpu::CameraData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        sizeof(container::gpu::CameraData),
+        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VMA_MEMORY_USAGE_AUTO,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-            VMA_ALLOCATION_CREATE_MAPPED_BIT);
+        VMA_ALLOCATION_CREATE_MAPPED_BIT);
   }
+}
+
+void RendererFrontend::ensureObjectBuffers() {
+  const size_t imageCount = svc_.swapChainManager.imageCount();
+  if (buffers_.objects.size() == imageCount &&
+      buffers_.objectCapacities.size() == imageCount &&
+      buffers_.shadowObjectDescriptorReady.size() == imageCount) {
+    return;
+  }
+
+  for (auto &objectBuffer : buffers_.objects) {
+    if (objectBuffer.buffer != VK_NULL_HANDLE) {
+      svc_.allocationManager.destroyBuffer(objectBuffer);
+    }
+  }
+
+  buffers_.objects.assign(imageCount, {});
+  buffers_.objectCapacities.assign(imageCount, 0);
+  buffers_.shadowObjectDescriptorReady.assign(imageCount, false);
 }
 
 void RendererFrontend::createSceneBuffers() {
   ensureCameraBuffers();
+  ensureObjectBuffers();
   if (subs_.sceneController) {
-    subs_.sceneController->createSceneBuffers(
-        buffers_.cameras.front(), buffers_.object, buffers_.objectCapacity);
+    for (uint32_t imageIndex = 0;
+         imageIndex < static_cast<uint32_t>(buffers_.objects.size());
+         ++imageIndex) {
+      const auto cameraBuffer =
+          imageIndex < buffers_.cameras.size()
+              ? buffers_.cameras[imageIndex]
+              : container::gpu::AllocatedBuffer{};
+      subs_.sceneController->createSceneBuffers(
+          cameraBuffer, buffers_.objects[imageIndex],
+          buffers_.objectCapacities[imageIndex]);
+    }
   }
   for (uint32_t imageIndex = 0;
        imageIndex < static_cast<uint32_t>(buffers_.cameras.size());
        ++imageIndex) {
     updateCameraBuffer(imageIndex);
   }
-  updateObjectBuffer();
+  updateAllObjectBuffers();
   updateFrameDescriptorSets();
 }
 
@@ -3272,16 +3476,18 @@ void RendererFrontend::createGeometryBuffers() {
 }
 
 void RendererFrontend::createFrameResources() {
+  ensureObjectBuffers();
   if (subs_.lightingManager) {
     subs_.lightingManager->resizeTiledResources(svc_.swapChainManager.extent());
   }
+  const auto objectBuffer = sceneObjectBuffer(0);
   subs_.frameResourceManager->create(
       resources_.gBufferFormats, resources_.renderPasses.depthPrepass,
       resources_.renderPasses.bimDepthPrepass, resources_.renderPasses.gBuffer,
       resources_.renderPasses.bimGBuffer,
       resources_.renderPasses.transparentPick, resources_.renderPasses.lighting,
       resources_.renderPasses.transformGizmos, msaaSampleCount_, buffers_.cameras,
-      buffers_.object);
+      objectBuffer);
 }
 
 // ---------------------------------------------------------------------------
@@ -3295,24 +3501,85 @@ void RendererFrontend::updateCameraBuffer(uint32_t imageIndex) {
                                              buffers_.cameras[imageIndex]);
 }
 
-void RendererFrontend::updateObjectBuffer() {
+void RendererFrontend::refreshSceneObjectData() {
   if (!subs_.sceneController)
     return;
+
+  const bool showDiagCube =
+      subs_.guiManager && subs_.guiManager->showNormalDiagCube();
+  subs_.sceneController->syncObjectDataFromSceneGraph(showDiagCube);
+  sceneState_.diagCubeObjectIndex =
+      subs_.sceneController->diagCubeObjectIndex();
+}
+
+void RendererFrontend::updateObjectBuffer(uint32_t imageIndex) {
+  if (!subs_.sceneController)
+    return;
+  ensureObjectBuffers();
+  if (imageIndex >= buffers_.objects.size() ||
+      imageIndex >= buffers_.objectCapacities.size()) {
+    return;
+  }
+
+  const auto cameraBuffer =
+      imageIndex < buffers_.cameras.size()
+          ? buffers_.cameras[imageIndex]
+          : container::gpu::AllocatedBuffer{};
   const bool recreated = subs_.sceneController->updateObjectBuffer(
-      buffers_.object, buffers_.objectCapacity,
-      buffers_.cameras.empty() ? container::gpu::AllocatedBuffer{}
-                               : buffers_.cameras.front());
-  if (recreated && subs_.sceneManager)
-    subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.object);
-  if ((recreated || !buffers_.shadowObjectDescriptorReady) &&
-      subs_.shadowCullManager) {
+      buffers_.objects[imageIndex], buffers_.objectCapacities[imageIndex],
+      cameraBuffer);
+  if (subs_.shadowCullManager &&
+      imageIndex < buffers_.shadowObjectDescriptorReady.size() &&
+      (recreated || !buffers_.shadowObjectDescriptorReady[imageIndex])) {
     subs_.shadowCullManager->updateObjectSsboDescriptor(
-        buffers_.object.buffer,
-        sizeof(container::gpu::ObjectData) * buffers_.objectCapacity);
-    buffers_.shadowObjectDescriptorReady = true;
+        imageIndex, buffers_.objects[imageIndex].buffer,
+        sizeof(container::gpu::ObjectData) *
+            buffers_.objectCapacities[imageIndex]);
+    buffers_.shadowObjectDescriptorReady[imageIndex] = true;
+  }
+  if (recreated && subs_.sceneManager) {
+    subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.objects);
   }
   sceneState_.diagCubeObjectIndex =
       subs_.sceneController->diagCubeObjectIndex();
+}
+
+void RendererFrontend::updateAllObjectBuffers() {
+  ensureObjectBuffers();
+  const uint32_t imageCount =
+      static_cast<uint32_t>(std::min(buffers_.objects.size(),
+                                     buffers_.objectCapacities.size()));
+  for (uint32_t imageIndex = 0; imageIndex < imageCount; ++imageIndex) {
+    updateObjectBuffer(imageIndex);
+  }
+}
+
+container::gpu::AllocatedBuffer RendererFrontend::sceneObjectBuffer(
+    uint32_t imageIndex) const {
+  if (imageIndex < buffers_.objects.size()) {
+    return buffers_.objects[imageIndex];
+  }
+  if (!buffers_.objects.empty()) {
+    return buffers_.objects.front();
+  }
+  return {};
+}
+
+size_t RendererFrontend::sceneObjectCapacity(uint32_t imageIndex) const {
+  if (imageIndex < buffers_.objectCapacities.size()) {
+    return buffers_.objectCapacities[imageIndex];
+  }
+  if (!buffers_.objectCapacities.empty()) {
+    return buffers_.objectCapacities.front();
+  }
+  return 0;
+}
+
+size_t RendererFrontend::maxSceneObjectCapacity() const {
+  return buffers_.objectCapacities.empty()
+             ? 0
+             : *std::max_element(buffers_.objectCapacities.begin(),
+                                 buffers_.objectCapacities.end());
 }
 
 void RendererFrontend::applyBimSemanticColorMode() {
@@ -3335,6 +3602,8 @@ void RendererFrontend::updateFrameDescriptorSets(
             imageIndex, preparedParams);
 
     if (subs_.lightingManager) {
+      applyConfiguredLightingOverrides(subs_.lightingManager.get(),
+                                        svc_.config);
       auto &lightingData = subs_.lightingManager->lightingData();
       lightingData.shadowEnabled = featureReadiness.shadowAtlas ? 1u : 0u;
       lightingData.localShadowEnabled =
@@ -3398,19 +3667,21 @@ void RendererFrontend::updateFrameDescriptorSets(
       tileGridBuffer = subs_.lightingManager->tileGridBuffer();
       tileGridBufferSize = subs_.lightingManager->tileGridBufferSize();
     }
-    VkBuffer exposureStateBuffer = VK_NULL_HANDLE;
+    std::span<const container::gpu::AllocatedBuffer> exposureStateBuffers{};
     VkDeviceSize exposureStateBufferSize = 0;
     if (subs_.exposureManager && subs_.exposureManager->isReady()) {
-      exposureStateBuffer = subs_.exposureManager->exposureStateBuffer();
+      exposureStateBuffers =
+          subs_.exposureManager->exposureStateBuffers();
       exposureStateBufferSize =
           subs_.exposureManager->exposureStateBufferSize();
     }
+    const auto objectBuffer = sceneObjectBuffer(0);
     subs_.frameResourceManager->updateDescriptorSets(
-        buffers_.cameras, buffers_.object, shadowView, shadowSampler,
+        buffers_.cameras, objectBuffer, shadowView, shadowSampler,
         shadowUbos, localShadowView, localShadowSampler, localShadowUbos,
         irradianceView, prefilteredView, brdfLutView, envSampler,
         brdfLutSampler, aoTextureView, aoSampler, bloomTextureView,
-        bloomSampler, tileGridBuffer, tileGridBufferSize, exposureStateBuffer,
+        bloomSampler, tileGridBuffer, tileGridBufferSize, exposureStateBuffers,
         exposureStateBufferSize);
   }
 }
@@ -3437,7 +3708,72 @@ bool RendererFrontend::growExactOitNodePoolIfNeeded(uint32_t imageIndex) {
   return grew;
 }
 
-void RendererFrontend::ensureScreenshotReadbackBuffer(VkExtent2D extent,
+RendererFrontend::HostReadbackSlot& RendererFrontend::ensureReadbackSlot(
+    std::vector<HostReadbackSlot>& readbacks, uint32_t frameSlot) {
+  if (readbacks.size() <= frameSlot) {
+    readbacks.resize(static_cast<size_t>(frameSlot) + 1u);
+  }
+  return readbacks[frameSlot];
+}
+
+void RendererFrontend::destroyReadbackSlots(
+    std::vector<HostReadbackSlot>& readbacks) {
+  for (HostReadbackSlot& slot : readbacks) {
+    if (slot.readbackBuffer.buffer != VK_NULL_HANDLE) {
+      svc_.allocationManager.destroyBuffer(slot.readbackBuffer);
+    }
+    slot = {};
+  }
+  readbacks.clear();
+}
+
+RendererFrontend::DepthVisibilityFrameSlot&
+RendererFrontend::ensureDepthVisibilityFrameSlot(uint32_t frameSlot) {
+  if (depthVisibility_.slots.size() <= frameSlot) {
+    depthVisibility_.slots.resize(static_cast<size_t>(frameSlot) + 1u);
+  }
+  DepthVisibilityFrameSlot& frame =
+      depthVisibility_.slots[static_cast<size_t>(frameSlot)];
+  frame.frameSlot = frameSlot;
+  return frame;
+}
+
+RendererFrontend::DepthVisibilityFrameSlot*
+RendererFrontend::depthVisibilityFrameSlot(uint32_t frameSlot) {
+  if (frameSlot >= depthVisibility_.slots.size()) {
+    return nullptr;
+  }
+  return &depthVisibility_.slots[static_cast<size_t>(frameSlot)];
+}
+
+const RendererFrontend::DepthVisibilityFrameSlot*
+RendererFrontend::depthVisibilityFrameSlot(uint32_t frameSlot) const {
+  if (frameSlot >= depthVisibility_.slots.size()) {
+    return nullptr;
+  }
+  return &depthVisibility_.slots[static_cast<size_t>(frameSlot)];
+}
+
+void RendererFrontend::invalidateDepthVisibilityFrames() {
+  for (DepthVisibilityFrameSlot& frame : depthVisibility_.slots) {
+    frame.valid = false;
+    frame.renderFence = VK_NULL_HANDLE;
+  }
+}
+
+void RendererFrontend::destroyDepthVisibilityFrameSlots() {
+  for (DepthVisibilityFrameSlot& frame : depthVisibility_.slots) {
+    if (frame.readback.readbackBuffer.buffer != VK_NULL_HANDLE) {
+      svc_.allocationManager.destroyBuffer(frame.readback.readbackBuffer);
+    }
+    frame = {};
+  }
+  depthVisibility_.slots.clear();
+  depthVisibility_.latestFrameSlot = 0;
+}
+
+void RendererFrontend::ensureScreenshotReadbackBuffer(uint32_t frameSlot,
+                                                      VkExtent2D extent,
                                                       VkFormat format) {
   if (extent.width == 0 || extent.height == 0) {
     throw std::runtime_error("cannot capture a zero-sized swapchain image");
@@ -3449,41 +3785,46 @@ void RendererFrontend::ensureScreenshotReadbackBuffer(VkExtent2D extent,
   const VkDeviceSize requiredSize = static_cast<VkDeviceSize>(extent.width) *
                                     static_cast<VkDeviceSize>(extent.height) *
                                     4u;
-  if (screenshot_.readbackBuffer.buffer != VK_NULL_HANDLE &&
-      screenshot_.readbackSize == requiredSize &&
-      screenshot_.extent.width == extent.width &&
-      screenshot_.extent.height == extent.height &&
-      screenshot_.format == format) {
+  HostReadbackSlot& readback =
+      ensureReadbackSlot(screenshot_.readbacks, frameSlot);
+  if (readback.readbackBuffer.buffer != VK_NULL_HANDLE &&
+      readback.readbackSize == requiredSize &&
+      readback.extent.width == extent.width &&
+      readback.extent.height == extent.height && readback.format == format) {
     return;
   }
 
-  if (screenshot_.readbackBuffer.buffer != VK_NULL_HANDLE) {
-    svc_.allocationManager.destroyBuffer(screenshot_.readbackBuffer);
+  if (readback.readbackBuffer.buffer != VK_NULL_HANDLE) {
+    svc_.allocationManager.destroyBuffer(readback.readbackBuffer);
   }
-  screenshot_.readbackBuffer = svc_.allocationManager.createBuffer(
+  readback.readbackBuffer = svc_.allocationManager.createBuffer(
       requiredSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO,
       VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
           VMA_ALLOCATION_CREATE_MAPPED_BIT);
-  screenshot_.readbackSize = requiredSize;
-  screenshot_.extent = extent;
-  screenshot_.format = format;
+  readback.readbackSize = requiredSize;
+  readback.extent = extent;
+  readback.format = format;
 }
 
-void RendererFrontend::writePendingScreenshotPng() {
+void RendererFrontend::writePendingScreenshotPng(uint32_t frameSlot) {
   if (!screenshot_.pending) {
     return;
   }
-  if (screenshot_.readbackBuffer.buffer == VK_NULL_HANDLE ||
-      screenshot_.readbackBuffer.allocation == nullptr ||
-      screenshot_.readbackSize == 0) {
+  if (frameSlot >= screenshot_.readbacks.size()) {
+    throw std::runtime_error("screenshot readback buffer is not initialized");
+  }
+  HostReadbackSlot& readback = screenshot_.readbacks[frameSlot];
+  if (readback.readbackBuffer.buffer == VK_NULL_HANDLE ||
+      readback.readbackBuffer.allocation == nullptr ||
+      readback.readbackSize == 0) {
     throw std::runtime_error("screenshot readback buffer is not initialized");
   }
 
-  void *mapped = screenshot_.readbackBuffer.allocation_info.pMappedData;
+  void *mapped = readback.readbackBuffer.allocation_info.pMappedData;
   bool mappedHere = false;
   if (mapped == nullptr) {
     if (vmaMapMemory(svc_.allocationManager.memoryManager()->allocator(),
-                     screenshot_.readbackBuffer.allocation,
+                     readback.readbackBuffer.allocation,
                      &mapped) != VK_SUCCESS) {
       throw std::runtime_error("failed to map screenshot readback buffer");
     }
@@ -3492,24 +3833,24 @@ void RendererFrontend::writePendingScreenshotPng() {
 
   if (vmaInvalidateAllocation(
           svc_.allocationManager.memoryManager()->allocator(),
-          screenshot_.readbackBuffer.allocation, 0,
-          screenshot_.readbackSize) != VK_SUCCESS) {
+          readback.readbackBuffer.allocation, 0, readback.readbackSize) !=
+      VK_SUCCESS) {
     if (mappedHere) {
       vmaUnmapMemory(svc_.allocationManager.memoryManager()->allocator(),
-                     screenshot_.readbackBuffer.allocation);
+                     readback.readbackBuffer.allocation);
     }
     throw std::runtime_error("failed to invalidate screenshot readback buffer");
   }
 
   const auto *src = static_cast<const unsigned char *>(mapped);
-  const size_t pixelCount = static_cast<size_t>(screenshot_.extent.width) *
-                            static_cast<size_t>(screenshot_.extent.height);
+  const size_t pixelCount = static_cast<size_t>(readback.extent.width) *
+                            static_cast<size_t>(readback.extent.height);
   std::vector<unsigned char> rgba =
-      convertSwapchainBytesToRgba(src, pixelCount, screenshot_.format);
+      convertSwapchainBytesToRgba(src, pixelCount, readback.format);
 
   if (mappedHere) {
     vmaUnmapMemory(svc_.allocationManager.memoryManager()->allocator(),
-                   screenshot_.readbackBuffer.allocation);
+                   readback.readbackBuffer.allocation);
   }
 
   if (!screenshot_.outputPath.parent_path().empty()) {
@@ -3518,37 +3859,43 @@ void RendererFrontend::writePendingScreenshotPng() {
   const std::string outputPath =
       container::util::pathToUtf8(screenshot_.outputPath);
   const int ok = stbi_write_png(
-      outputPath.c_str(), static_cast<int>(screenshot_.extent.width),
-      static_cast<int>(screenshot_.extent.height), 4, rgba.data(),
-      static_cast<int>(screenshot_.extent.width * 4));
+      outputPath.c_str(), static_cast<int>(readback.extent.width),
+      static_cast<int>(readback.extent.height), 4, rgba.data(),
+      static_cast<int>(readback.extent.width * 4));
   screenshot_.pending = false;
   if (ok == 0) {
     throw std::runtime_error("failed to write screenshot PNG: " + outputPath);
   }
 }
 
-void RendererFrontend::ensureDepthVisibilityReadbackBuffer() {
+void RendererFrontend::ensureDepthVisibilityReadbackBuffer(uint32_t frameSlot) {
   constexpr VkDeviceSize kDepthReadbackSize = sizeof(uint32_t);
-  if (depthVisibility_.readbackBuffer.buffer != VK_NULL_HANDLE &&
-      depthVisibility_.readbackSize == kDepthReadbackSize) {
+  DepthVisibilityFrameSlot& frame = ensureDepthVisibilityFrameSlot(frameSlot);
+  HostReadbackSlot& readback = frame.readback;
+  if (readback.readbackBuffer.buffer != VK_NULL_HANDLE &&
+      readback.readbackSize == kDepthReadbackSize) {
     return;
   }
 
-  if (depthVisibility_.readbackBuffer.buffer != VK_NULL_HANDLE) {
-    svc_.allocationManager.destroyBuffer(depthVisibility_.readbackBuffer);
+  if (readback.readbackBuffer.buffer != VK_NULL_HANDLE) {
+    svc_.allocationManager.destroyBuffer(readback.readbackBuffer);
   }
 
-  depthVisibility_.readbackBuffer = svc_.allocationManager.createBuffer(
+  readback.readbackBuffer = svc_.allocationManager.createBuffer(
       kDepthReadbackSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
       VMA_MEMORY_USAGE_AUTO,
       VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
           VMA_ALLOCATION_CREATE_MAPPED_BIT);
-  depthVisibility_.readbackSize = kDepthReadbackSize;
+  readback.readbackSize = kDepthReadbackSize;
 }
 
-void RendererFrontend::markDepthVisibilityFrameComplete(uint32_t imageIndex) {
-  depthVisibility_.valid = false;
-  depthVisibility_.renderFence = VK_NULL_HANDLE;
+void RendererFrontend::markDepthVisibilityFrameComplete(uint32_t imageIndex,
+                                                        uint32_t frameSlot) {
+  DepthVisibilityFrameSlot& frame =
+      ensureDepthVisibilityFrameSlot(frameSlot);
+  depthVisibility_.latestFrameSlot = frameSlot;
+  frame.valid = false;
+  frame.renderFence = VK_NULL_HANDLE;
   if (!subs_.frameResourceManager ||
       imageIndex >= subs_.frameResourceManager->frameCount()) {
     return;
@@ -3561,72 +3908,73 @@ void RendererFrontend::markDepthVisibilityFrameComplete(uint32_t imageIndex) {
     return;
   }
 
-  depthVisibility_.imageIndex = imageIndex;
-  depthVisibility_.extent = svc_.swapChainManager.extent();
-  depthVisibility_.format = resources_.gBufferFormats.depthStencil;
-  depthVisibility_.cameraData = buffers_.cameraData;
-  depthVisibility_.objectDataRevision =
+  frame.frameSlot = frameSlot;
+  frame.imageIndex = imageIndex;
+  frame.extent = svc_.swapChainManager.extent();
+  frame.format = resources_.gBufferFormats.depthStencil;
+  frame.cameraData = buffers_.cameraData;
+  frame.objectDataRevision =
       subs_.sceneController ? subs_.sceneController->objectDataRevision() : 0u;
-  depthVisibility_.bimObjectDataRevision =
+  frame.bimObjectDataRevision =
       (subs_.bimManager && subs_.bimManager->hasScene())
           ? subs_.bimManager->objectDataRevision()
           : 0u;
-  depthVisibility_.sectionPlane = {0.0f, 1.0f, 0.0f, 0.0f};
-  depthVisibility_.sectionPlaneEnabled = currentSectionPlaneEquation(
-      subs_.guiManager.get(), depthVisibility_.sectionPlane);
+  frame.sectionPlane = {0.0f, 1.0f, 0.0f, 0.0f};
+  frame.sectionPlaneEnabled = currentSectionPlaneEquation(
+      subs_.guiManager.get(), frame.sectionPlane);
   const BimDrawFilter bimFilter = currentBimDrawFilter();
-  depthVisibility_.bimTypeFilterEnabled = bimFilter.typeFilterEnabled;
-  depthVisibility_.bimFilterType = bimFilter.type;
-  depthVisibility_.bimStoreyFilterEnabled = bimFilter.storeyFilterEnabled;
-  depthVisibility_.bimFilterStorey = bimFilter.storey;
-  depthVisibility_.bimMaterialFilterEnabled = bimFilter.materialFilterEnabled;
-  depthVisibility_.bimFilterMaterial = bimFilter.material;
-  depthVisibility_.bimDisciplineFilterEnabled =
+  frame.bimTypeFilterEnabled = bimFilter.typeFilterEnabled;
+  frame.bimFilterType = bimFilter.type;
+  frame.bimStoreyFilterEnabled = bimFilter.storeyFilterEnabled;
+  frame.bimFilterStorey = bimFilter.storey;
+  frame.bimMaterialFilterEnabled = bimFilter.materialFilterEnabled;
+  frame.bimFilterMaterial = bimFilter.material;
+  frame.bimDisciplineFilterEnabled =
       bimFilter.disciplineFilterEnabled;
-  depthVisibility_.bimFilterDiscipline = bimFilter.discipline;
-  depthVisibility_.bimDisciplinePreset = bimFilter.disciplinePreset;
-  depthVisibility_.bimPhaseFilterEnabled = bimFilter.phaseFilterEnabled;
-  depthVisibility_.bimFilterPhase = bimFilter.phase;
-  depthVisibility_.bimPhaseTimelineEnabled = bimFilter.phaseTimelineEnabled;
-  depthVisibility_.bimPhaseTimelineActiveIndex =
+  frame.bimFilterDiscipline = bimFilter.discipline;
+  frame.bimDisciplinePreset = bimFilter.disciplinePreset;
+  frame.bimPhaseFilterEnabled = bimFilter.phaseFilterEnabled;
+  frame.bimFilterPhase = bimFilter.phase;
+  frame.bimPhaseTimelineEnabled = bimFilter.phaseTimelineEnabled;
+  frame.bimPhaseTimelineActiveIndex =
       bimFilter.phaseTimelineActiveIndex;
-  depthVisibility_.bimPhaseTimelineShowExisting =
+  frame.bimPhaseTimelineShowExisting =
       bimFilter.phaseTimelineShowExisting;
-  depthVisibility_.bimPhaseTimelineShowNew = bimFilter.phaseTimelineShowNew;
-  depthVisibility_.bimPhaseTimelineShowDemolished =
+  frame.bimPhaseTimelineShowNew = bimFilter.phaseTimelineShowNew;
+  frame.bimPhaseTimelineShowDemolished =
       bimFilter.phaseTimelineShowDemolished;
-  depthVisibility_.bimPhaseTimelineGhostFuture =
+  frame.bimPhaseTimelineGhostFuture =
       bimFilter.phaseTimelineGhostFuture;
-  depthVisibility_.bimFireRatingFilterEnabled =
+  frame.bimFireRatingFilterEnabled =
       bimFilter.fireRatingFilterEnabled;
-  depthVisibility_.bimFilterFireRating = bimFilter.fireRating;
-  depthVisibility_.bimLoadBearingFilterEnabled =
+  frame.bimFilterFireRating = bimFilter.fireRating;
+  frame.bimLoadBearingFilterEnabled =
       bimFilter.loadBearingFilterEnabled;
-  depthVisibility_.bimFilterLoadBearing = bimFilter.loadBearing;
-  depthVisibility_.bimStatusFilterEnabled = bimFilter.statusFilterEnabled;
-  depthVisibility_.bimFilterStatus = bimFilter.status;
-  depthVisibility_.bimDrawBudgetEnabled = bimFilter.drawBudgetEnabled;
-  depthVisibility_.bimDrawBudgetMaxObjects = bimFilter.drawBudgetMaxObjects;
-  depthVisibility_.bimIsolateSelection = bimFilter.isolateSelection;
-  depthVisibility_.bimHideSelection = bimFilter.hideSelection;
+  frame.bimFilterLoadBearing = bimFilter.loadBearing;
+  frame.bimStatusFilterEnabled = bimFilter.statusFilterEnabled;
+  frame.bimFilterStatus = bimFilter.status;
+  frame.bimDrawBudgetEnabled = bimFilter.drawBudgetEnabled;
+  frame.bimDrawBudgetMaxObjects = bimFilter.drawBudgetMaxObjects;
+  frame.bimIsolateSelection = bimFilter.isolateSelection;
+  frame.bimHideSelection = bimFilter.hideSelection;
   if (subs_.guiManager) {
     const auto &layers = subs_.guiManager->bimLayerVisibilityState();
-    depthVisibility_.bimPointCloudVisible = layers.pointCloudVisible;
-    depthVisibility_.bimCurvesVisible = layers.curvesVisible;
+    frame.bimPointCloudVisible = layers.pointCloudVisible;
+    frame.bimCurvesVisible = layers.curvesVisible;
   } else {
-    depthVisibility_.bimPointCloudVisible = true;
-    depthVisibility_.bimCurvesVisible = true;
+    frame.bimPointCloudVisible = true;
+    frame.bimCurvesVisible = true;
   }
-  depthVisibility_.transparentPickDepthValid = false;
+  frame.transparentPickDepthValid = false;
   if (subs_.sceneController &&
       hasTransparentCommands(
           subs_.sceneController->transparentDrawCommands(),
           subs_.sceneController->transparentSingleSidedDrawCommands(),
           subs_.sceneController->transparentWindingFlippedDrawCommands(),
           subs_.sceneController->transparentDoubleSidedDrawCommands())) {
-    depthVisibility_.transparentPickDepthValid = true;
+    frame.transparentPickDepthValid = true;
   }
-  if (!depthVisibility_.transparentPickDepthValid && subs_.bimManager &&
+  if (!frame.transparentPickDepthValid && subs_.bimManager &&
       subs_.bimManager->hasScene()) {
     // Transparent-pick depth only records mesh and placeholder point/curve
     // surface paths. Native point/curve primitive passes render later in the
@@ -3634,8 +3982,8 @@ void RendererFrontend::markDepthVisibilityFrameComplete(uint32_t imageIndex) {
     // here.
     const bool transparentPickSurfaceGeometry =
         hasTransparentBimSurfaceGeometry(*subs_.bimManager,
-                                         depthVisibility_.bimPointCloudVisible,
-                                         depthVisibility_.bimCurvesVisible);
+                                         frame.bimPointCloudVisible,
+                                         frame.bimCurvesVisible);
     if (bimFilter.active()) {
       const bool gpuOpaqueFiltering = bimFrameGpuVisibilityAvailable(
           bimFrameGpuVisibilityInputs(*subs_.bimManager, bimFilter));
@@ -3645,122 +3993,121 @@ void RendererFrontend::markDepthVisibilityFrameComplete(uint32_t imageIndex) {
         // mask in the transparent-pick pass. Treat the clear/no-draw case as a
         // valid transparent depth surface when the active filter removes all
         // transparent objects.
-        depthVisibility_.transparentPickDepthValid = true;
+        frame.transparentPickDepthValid = true;
       }
       const bool cpuFilteredSurfaceGeometryRequired =
           transparentPickSurfaceGeometry &&
           (!gpuOpaqueFiltering ||
-           (depthVisibility_.bimPointCloudVisible &&
+           (frame.bimPointCloudVisible &&
             hasAnyGeometry(subs_.bimManager->pointDrawLists())) ||
-           (depthVisibility_.bimCurvesVisible &&
+           (frame.bimCurvesVisible &&
             hasAnyGeometry(subs_.bimManager->curveDrawLists())));
-      if (!depthVisibility_.transparentPickDepthValid &&
+      if (!frame.transparentPickDepthValid &&
           cpuFilteredSurfaceGeometryRequired) {
         const BimDrawLists &filteredDraws =
             subs_.bimManager->filteredDrawLists(bimFilter);
-        depthVisibility_.transparentPickDepthValid =
+        frame.transparentPickDepthValid =
             hasTransparentBimSurfaceGeometry(
-                filteredDraws, depthVisibility_.bimPointCloudVisible,
-                depthVisibility_.bimCurvesVisible);
+                filteredDraws, frame.bimPointCloudVisible,
+                frame.bimCurvesVisible);
       }
     } else {
-      depthVisibility_.transparentPickDepthValid =
+      frame.transparentPickDepthValid =
           transparentPickSurfaceGeometry;
     }
   }
-  depthVisibility_.selectedBimObjectIndex = bimFilter.selectedObjectIndex;
-  depthVisibility_.renderFence = frame_.imagesInFlight[imageIndex];
-  depthVisibility_.valid = true;
+  frame.selectedBimObjectIndex = bimFilter.selectedObjectIndex;
+  frame.renderFence = frame_.imagesInFlight[imageIndex];
+  frame.valid = true;
 }
 
 bool RendererFrontend::depthVisibilityFrameMatchesCurrentState() const {
-  if (!depthVisibility_.valid || !subs_.sceneController) {
+  const DepthVisibilityFrameSlot* frame =
+      depthVisibilityFrameSlot(depthVisibility_.latestFrameSlot);
+  if (frame == nullptr || !frame->valid || !subs_.sceneController) {
     return false;
   }
 
   const VkExtent2D extent = svc_.swapChainManager.extent();
-  if (depthVisibility_.extent.width != extent.width ||
-      depthVisibility_.extent.height != extent.height ||
-      depthVisibility_.extent.width == 0 ||
-      depthVisibility_.extent.height == 0) {
+  if (frame->extent.width != extent.width ||
+      frame->extent.height != extent.height || frame->extent.width == 0 ||
+      frame->extent.height == 0) {
     return false;
   }
-  if (!sameCameraData(depthVisibility_.cameraData, buffers_.cameraData)) {
+  if (!sameCameraData(frame->cameraData, buffers_.cameraData)) {
     return false;
   }
-  if (depthVisibility_.objectDataRevision !=
-      subs_.sceneController->objectDataRevision()) {
+  if (frame->objectDataRevision != subs_.sceneController->objectDataRevision()) {
     return false;
   }
   glm::vec4 currentSectionPlane{0.0f, 1.0f, 0.0f, 0.0f};
   const bool currentSectionPlaneEnabled =
       currentSectionPlaneEquation(subs_.guiManager.get(), currentSectionPlane);
-  if (depthVisibility_.sectionPlaneEnabled != currentSectionPlaneEnabled) {
+  if (frame->sectionPlaneEnabled != currentSectionPlaneEnabled) {
     return false;
   }
   if (currentSectionPlaneEnabled &&
-      !sameVec4(depthVisibility_.sectionPlane, currentSectionPlane)) {
+      !sameVec4(frame->sectionPlane, currentSectionPlane)) {
     return false;
   }
 
   const BimDrawFilter currentBimFilter = currentBimDrawFilter();
-  if (depthVisibility_.bimTypeFilterEnabled !=
+  if (frame->bimTypeFilterEnabled !=
           currentBimFilter.typeFilterEnabled ||
-      depthVisibility_.bimFilterType != currentBimFilter.type ||
-      depthVisibility_.bimStoreyFilterEnabled !=
+      frame->bimFilterType != currentBimFilter.type ||
+      frame->bimStoreyFilterEnabled !=
           currentBimFilter.storeyFilterEnabled ||
-      depthVisibility_.bimFilterStorey != currentBimFilter.storey ||
-      depthVisibility_.bimMaterialFilterEnabled !=
+      frame->bimFilterStorey != currentBimFilter.storey ||
+      frame->bimMaterialFilterEnabled !=
           currentBimFilter.materialFilterEnabled ||
-      depthVisibility_.bimFilterMaterial != currentBimFilter.material ||
-      depthVisibility_.bimDisciplineFilterEnabled !=
+      frame->bimFilterMaterial != currentBimFilter.material ||
+      frame->bimDisciplineFilterEnabled !=
           currentBimFilter.disciplineFilterEnabled ||
-      depthVisibility_.bimFilterDiscipline != currentBimFilter.discipline ||
-      depthVisibility_.bimDisciplinePreset !=
+      frame->bimFilterDiscipline != currentBimFilter.discipline ||
+      frame->bimDisciplinePreset !=
           currentBimFilter.disciplinePreset ||
-      depthVisibility_.bimPhaseFilterEnabled !=
+      frame->bimPhaseFilterEnabled !=
           currentBimFilter.phaseFilterEnabled ||
-      depthVisibility_.bimFilterPhase != currentBimFilter.phase ||
-      depthVisibility_.bimPhaseTimelineEnabled !=
+      frame->bimFilterPhase != currentBimFilter.phase ||
+      frame->bimPhaseTimelineEnabled !=
           currentBimFilter.phaseTimelineEnabled ||
-      depthVisibility_.bimPhaseTimelineActiveIndex !=
+      frame->bimPhaseTimelineActiveIndex !=
           currentBimFilter.phaseTimelineActiveIndex ||
-      depthVisibility_.bimPhaseTimelineShowExisting !=
+      frame->bimPhaseTimelineShowExisting !=
           currentBimFilter.phaseTimelineShowExisting ||
-      depthVisibility_.bimPhaseTimelineShowNew !=
+      frame->bimPhaseTimelineShowNew !=
           currentBimFilter.phaseTimelineShowNew ||
-      depthVisibility_.bimPhaseTimelineShowDemolished !=
+      frame->bimPhaseTimelineShowDemolished !=
           currentBimFilter.phaseTimelineShowDemolished ||
-      depthVisibility_.bimPhaseTimelineGhostFuture !=
+      frame->bimPhaseTimelineGhostFuture !=
           currentBimFilter.phaseTimelineGhostFuture ||
-      depthVisibility_.bimFireRatingFilterEnabled !=
+      frame->bimFireRatingFilterEnabled !=
           currentBimFilter.fireRatingFilterEnabled ||
-      depthVisibility_.bimFilterFireRating != currentBimFilter.fireRating ||
-      depthVisibility_.bimLoadBearingFilterEnabled !=
+      frame->bimFilterFireRating != currentBimFilter.fireRating ||
+      frame->bimLoadBearingFilterEnabled !=
           currentBimFilter.loadBearingFilterEnabled ||
-      depthVisibility_.bimFilterLoadBearing != currentBimFilter.loadBearing ||
-      depthVisibility_.bimStatusFilterEnabled !=
+      frame->bimFilterLoadBearing != currentBimFilter.loadBearing ||
+      frame->bimStatusFilterEnabled !=
           currentBimFilter.statusFilterEnabled ||
-      depthVisibility_.bimFilterStatus != currentBimFilter.status ||
-      depthVisibility_.bimDrawBudgetEnabled !=
+      frame->bimFilterStatus != currentBimFilter.status ||
+      frame->bimDrawBudgetEnabled !=
           currentBimFilter.drawBudgetEnabled ||
-      depthVisibility_.bimDrawBudgetMaxObjects !=
+      frame->bimDrawBudgetMaxObjects !=
           currentBimFilter.drawBudgetMaxObjects ||
-      depthVisibility_.bimIsolateSelection !=
+      frame->bimIsolateSelection !=
           currentBimFilter.isolateSelection ||
-      depthVisibility_.bimHideSelection != currentBimFilter.hideSelection ||
-      depthVisibility_.selectedBimObjectIndex !=
+      frame->bimHideSelection != currentBimFilter.hideSelection ||
+      frame->selectedBimObjectIndex !=
           currentBimFilter.selectedObjectIndex) {
     return false;
   }
   if (subs_.guiManager) {
     const auto &layers = subs_.guiManager->bimLayerVisibilityState();
-    if (depthVisibility_.bimPointCloudVisible != layers.pointCloudVisible ||
-        depthVisibility_.bimCurvesVisible != layers.curvesVisible) {
+    if (frame->bimPointCloudVisible != layers.pointCloudVisible ||
+        frame->bimCurvesVisible != layers.curvesVisible) {
       return false;
     }
-  } else if (!depthVisibility_.bimPointCloudVisible ||
-             !depthVisibility_.bimCurvesVisible) {
+  } else if (!frame->bimPointCloudVisible || !frame->bimCurvesVisible) {
     return false;
   }
 
@@ -3768,7 +4115,7 @@ bool RendererFrontend::depthVisibilityFrameMatchesCurrentState() const {
       (subs_.bimManager && subs_.bimManager->hasScene())
           ? subs_.bimManager->objectDataRevision()
           : 0u;
-  return depthVisibility_.bimObjectDataRevision == bimRevision;
+  return frame->bimObjectDataRevision == bimRevision;
 }
 
 BimDrawFilter RendererFrontend::currentBimDrawFilter() const {
@@ -4006,43 +4353,53 @@ bool RendererFrontend::samplePickDepthAtCursor(double cursorX, double cursorY,
 bool RendererFrontend::sampleDepthAtCursor(double cursorX, double cursorY,
                                            float &outDepth, bool pickDepth) {
   if (!depthVisibilityFrameMatchesCurrentState() ||
-      !subs_.frameResourceManager ||
-      depthVisibility_.imageIndex >= subs_.frameResourceManager->frameCount()) {
+      !subs_.frameResourceManager) {
     return false;
   }
-  if (pickDepth && !depthVisibility_.transparentPickDepthValid) {
+  DepthVisibilityFrameSlot* frame =
+      depthVisibilityFrameSlot(depthVisibility_.latestFrameSlot);
+  if (frame == nullptr ||
+      frame->imageIndex >= subs_.frameResourceManager->frameCount()) {
+    return false;
+  }
+  if (pickDepth && !frame->transparentPickDepthValid) {
     return false;
   }
 
   const VkImage depthImage = deferredRasterRuntimeImage(
-      subs_.frameResourceManager.get(), depthVisibility_.imageIndex,
+      subs_.frameResourceManager.get(), frame->imageIndex,
       pickDepth ? "pick-depth" : "depth-stencil");
   if (depthImage == VK_NULL_HANDLE || cursorX < 0.0 || cursorY < 0.0 ||
-      cursorX >= static_cast<double>(depthVisibility_.extent.width) ||
-      cursorY >= static_cast<double>(depthVisibility_.extent.height)) {
+      cursorX >= static_cast<double>(frame->extent.width) ||
+      cursorY >= static_cast<double>(frame->extent.height)) {
     return false;
   }
 
-  if (depthVisibility_.renderFence != VK_NULL_HANDLE) {
+  if (frame->renderFence != VK_NULL_HANDLE) {
     if (vkWaitForFences(svc_.ctx.deviceWrapper->device(), 1,
-                        &depthVisibility_.renderFence, VK_TRUE,
+                        &frame->renderFence, VK_TRUE,
                         UINT64_MAX) != VK_SUCCESS) {
       return false;
     }
   }
 
-  ensureDepthVisibilityReadbackBuffer();
-  if (depthVisibility_.readbackBuffer.buffer == VK_NULL_HANDLE ||
-      depthVisibility_.readbackBuffer.allocation == nullptr) {
+  ensureDepthVisibilityReadbackBuffer(frame->frameSlot);
+  frame = depthVisibilityFrameSlot(depthVisibility_.latestFrameSlot);
+  if (frame == nullptr) {
+    return false;
+  }
+  HostReadbackSlot& readback = frame->readback;
+  if (readback.readbackBuffer.buffer == VK_NULL_HANDLE ||
+      readback.readbackBuffer.allocation == nullptr) {
     return false;
   }
 
   const uint32_t x =
       std::min<uint32_t>(static_cast<uint32_t>(std::floor(cursorX)),
-                         depthVisibility_.extent.width - 1u);
+                         frame->extent.width - 1u);
   const uint32_t y =
       std::min<uint32_t>(static_cast<uint32_t>(std::floor(cursorY)),
-                         depthVisibility_.extent.height - 1u);
+                         frame->extent.height - 1u);
 
   VkCommandBufferAllocateInfo allocInfo{
       VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -4097,16 +4454,16 @@ bool RendererFrontend::sampleDepthAtCursor(double cursorX, double cursorY,
   copyRegion.imageExtent = {1u, 1u, 1u};
   vkCmdCopyImageToBuffer(
       commandBuffer, depthImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-      depthVisibility_.readbackBuffer.buffer, 1, &copyRegion);
+      readback.readbackBuffer.buffer, 1, &copyRegion);
 
   VkBufferMemoryBarrier hostRead{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
   hostRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
   hostRead.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
   hostRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   hostRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  hostRead.buffer = depthVisibility_.readbackBuffer.buffer;
+  hostRead.buffer = readback.readbackBuffer.buffer;
   hostRead.offset = 0;
-  hostRead.size = depthVisibility_.readbackSize;
+  hostRead.size = readback.readbackSize;
   vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
                        VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &hostRead,
                        0, nullptr);
@@ -4128,22 +4485,19 @@ bool RendererFrontend::sampleDepthAtCursor(double cursorX, double cursorY,
     return false;
   }
 
-  VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-  submitInfo.commandBufferCount = 1;
-  submitInfo.pCommandBuffers = &commandBuffer;
-  if (vkQueueSubmit(svc_.ctx.deviceWrapper->graphicsQueue(), 1, &submitInfo,
-                    VK_NULL_HANDLE) != VK_SUCCESS) {
+  if (!submitReadbackCommandBufferAndWait(
+          svc_.ctx.deviceWrapper->device(),
+          svc_.ctx.deviceWrapper->graphicsQueue(), commandBuffer)) {
     freeCommandBuffer();
     return false;
   }
-  vkQueueWaitIdle(svc_.ctx.deviceWrapper->graphicsQueue());
   freeCommandBuffer();
 
-  void *mapped = depthVisibility_.readbackBuffer.allocation_info.pMappedData;
+  void *mapped = readback.readbackBuffer.allocation_info.pMappedData;
   bool mappedHere = false;
   if (mapped == nullptr) {
     if (vmaMapMemory(svc_.allocationManager.memoryManager()->allocator(),
-                     depthVisibility_.readbackBuffer.allocation,
+                     readback.readbackBuffer.allocation,
                      &mapped) != VK_SUCCESS) {
       return false;
     }
@@ -4152,15 +4506,14 @@ bool RendererFrontend::sampleDepthAtCursor(double cursorX, double cursorY,
 
   const VkResult invalidateResult = vmaInvalidateAllocation(
       svc_.allocationManager.memoryManager()->allocator(),
-      depthVisibility_.readbackBuffer.allocation, 0,
-      depthVisibility_.readbackSize);
+      readback.readbackBuffer.allocation, 0, readback.readbackSize);
   const bool decoded =
       invalidateResult == VK_SUCCESS &&
-      decodeDepthReadbackValue(depthVisibility_.format, mapped, outDepth);
+      decodeDepthReadbackValue(frame->format, mapped, outDepth);
 
   if (mappedHere) {
     vmaUnmapMemory(svc_.allocationManager.memoryManager()->allocator(),
-                   depthVisibility_.readbackBuffer.allocation);
+                   readback.readbackBuffer.allocation);
   }
   return decoded;
 }
@@ -4168,39 +4521,49 @@ bool RendererFrontend::sampleDepthAtCursor(double cursorX, double cursorY,
 bool RendererFrontend::samplePickIdAtCursor(double cursorX, double cursorY,
                                             uint32_t &outPickId) {
   if (!depthVisibilityFrameMatchesCurrentState() ||
-      !subs_.frameResourceManager ||
-      depthVisibility_.imageIndex >= subs_.frameResourceManager->frameCount()) {
+      !subs_.frameResourceManager) {
+    return false;
+  }
+  DepthVisibilityFrameSlot* frame =
+      depthVisibilityFrameSlot(depthVisibility_.latestFrameSlot);
+  if (frame == nullptr ||
+      frame->imageIndex >= subs_.frameResourceManager->frameCount()) {
     return false;
   }
 
   const VkImage pickIdImage = deferredRasterRuntimeImage(
-      subs_.frameResourceManager.get(), depthVisibility_.imageIndex, "pick-id");
+      subs_.frameResourceManager.get(), frame->imageIndex, "pick-id");
   if (pickIdImage == VK_NULL_HANDLE || cursorX < 0.0 || cursorY < 0.0 ||
-      cursorX >= static_cast<double>(depthVisibility_.extent.width) ||
-      cursorY >= static_cast<double>(depthVisibility_.extent.height)) {
+      cursorX >= static_cast<double>(frame->extent.width) ||
+      cursorY >= static_cast<double>(frame->extent.height)) {
     return false;
   }
 
-  if (depthVisibility_.renderFence != VK_NULL_HANDLE) {
+  if (frame->renderFence != VK_NULL_HANDLE) {
     if (vkWaitForFences(svc_.ctx.deviceWrapper->device(), 1,
-                        &depthVisibility_.renderFence, VK_TRUE,
+                        &frame->renderFence, VK_TRUE,
                         UINT64_MAX) != VK_SUCCESS) {
       return false;
     }
   }
 
-  ensureDepthVisibilityReadbackBuffer();
-  if (depthVisibility_.readbackBuffer.buffer == VK_NULL_HANDLE ||
-      depthVisibility_.readbackBuffer.allocation == nullptr) {
+  ensureDepthVisibilityReadbackBuffer(frame->frameSlot);
+  frame = depthVisibilityFrameSlot(depthVisibility_.latestFrameSlot);
+  if (frame == nullptr) {
+    return false;
+  }
+  HostReadbackSlot& readback = frame->readback;
+  if (readback.readbackBuffer.buffer == VK_NULL_HANDLE ||
+      readback.readbackBuffer.allocation == nullptr) {
     return false;
   }
 
   const uint32_t x =
       std::min<uint32_t>(static_cast<uint32_t>(std::floor(cursorX)),
-                         depthVisibility_.extent.width - 1u);
+                         frame->extent.width - 1u);
   const uint32_t y =
       std::min<uint32_t>(static_cast<uint32_t>(std::floor(cursorY)),
-                         depthVisibility_.extent.height - 1u);
+                         frame->extent.height - 1u);
 
   VkCommandBufferAllocateInfo allocInfo{
       VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -4252,16 +4615,16 @@ bool RendererFrontend::samplePickIdAtCursor(double cursorX, double cursorY,
   copyRegion.imageExtent = {1u, 1u, 1u};
   vkCmdCopyImageToBuffer(
       commandBuffer, pickIdImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-      depthVisibility_.readbackBuffer.buffer, 1, &copyRegion);
+      readback.readbackBuffer.buffer, 1, &copyRegion);
 
   VkBufferMemoryBarrier hostRead{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
   hostRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
   hostRead.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
   hostRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   hostRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  hostRead.buffer = depthVisibility_.readbackBuffer.buffer;
+  hostRead.buffer = readback.readbackBuffer.buffer;
   hostRead.offset = 0;
-  hostRead.size = depthVisibility_.readbackSize;
+  hostRead.size = readback.readbackSize;
   vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
                        VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &hostRead,
                        0, nullptr);
@@ -4280,22 +4643,19 @@ bool RendererFrontend::samplePickIdAtCursor(double cursorX, double cursorY,
     return false;
   }
 
-  VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-  submitInfo.commandBufferCount = 1;
-  submitInfo.pCommandBuffers = &commandBuffer;
-  if (vkQueueSubmit(svc_.ctx.deviceWrapper->graphicsQueue(), 1, &submitInfo,
-                    VK_NULL_HANDLE) != VK_SUCCESS) {
+  if (!submitReadbackCommandBufferAndWait(
+          svc_.ctx.deviceWrapper->device(),
+          svc_.ctx.deviceWrapper->graphicsQueue(), commandBuffer)) {
     freeCommandBuffer();
     return false;
   }
-  vkQueueWaitIdle(svc_.ctx.deviceWrapper->graphicsQueue());
   freeCommandBuffer();
 
-  void *mapped = depthVisibility_.readbackBuffer.allocation_info.pMappedData;
+  void *mapped = readback.readbackBuffer.allocation_info.pMappedData;
   bool mappedHere = false;
   if (mapped == nullptr) {
     if (vmaMapMemory(svc_.allocationManager.memoryManager()->allocator(),
-                     depthVisibility_.readbackBuffer.allocation,
+                     readback.readbackBuffer.allocation,
                      &mapped) != VK_SUCCESS) {
       return false;
     }
@@ -4304,15 +4664,14 @@ bool RendererFrontend::samplePickIdAtCursor(double cursorX, double cursorY,
 
   const VkResult invalidateResult = vmaInvalidateAllocation(
       svc_.allocationManager.memoryManager()->allocator(),
-      depthVisibility_.readbackBuffer.allocation, 0,
-      depthVisibility_.readbackSize);
+      readback.readbackBuffer.allocation, 0, readback.readbackSize);
   if (invalidateResult == VK_SUCCESS) {
     std::memcpy(&outPickId, mapped, sizeof(outPickId));
   }
 
   if (mappedHere) {
     vmaUnmapMemory(svc_.allocationManager.memoryManager()->allocator(),
-                   depthVisibility_.readbackBuffer.allocation);
+                   readback.readbackBuffer.allocation);
   }
   return invalidateResult == VK_SUCCESS;
 }
@@ -4609,7 +4968,7 @@ void RendererFrontend::presentSceneControls() {
         clearHoveredMeshNode();
         selectedDrawCommands_.clear();
         selectedBimDrawCommands_.clear();
-        updateObjectBuffer();
+        refreshSceneObjectData();
         syncSceneProviders();
       };
   subs_.guiManager->drawSceneControls(
@@ -4642,7 +5001,7 @@ void RendererFrontend::presentSceneControls() {
               sceneState_.rootNode, sceneState_.rootNode, controls);
         if (subs_.lightingManager)
           subs_.lightingManager->updateLightingData();
-        updateObjectBuffer();
+        refreshSceneObjectData();
       },
       subs_.lightingManager ? subs_.lightingManager->directionalLightPosition()
                             : glm::vec3{0.0f},
@@ -4772,7 +5131,7 @@ void RendererFrontend::presentSceneControls() {
         clearHoveredMeshNode();
         selectedDrawCommands_.clear();
         selectedBimDrawCommands_.clear();
-        updateObjectBuffer();
+        refreshSceneObjectData();
         syncSceneProviders();
         if (subs_.guiManager) {
           subs_.guiManager->setStatusMessage(
@@ -4799,7 +5158,7 @@ void RendererFrontend::presentSceneControls() {
         selectedBimDrawCommands_.clear();
         if (subs_.lightingManager)
           subs_.lightingManager->updateLightingData();
-        updateObjectBuffer();
+        refreshSceneObjectData();
         syncSceneProviders();
         if (subs_.guiManager) {
           subs_.guiManager->setStatusMessage("Reparented scene node " +
@@ -4816,7 +5175,7 @@ void RendererFrontend::presentSceneControls() {
               nodeIndex, sceneState_.rootNode, controls);
         if (nodeIndex == sceneState_.rootNode && subs_.lightingManager)
           subs_.lightingManager->updateLightingData();
-        updateObjectBuffer();
+        refreshSceneObjectData();
       });
 
   if (auto msaaRequest = subs_.guiManager->consumeMsaaSampleChange()) {
@@ -5008,7 +5367,9 @@ void RendererFrontend::presentSceneControls() {
         guiLightingSettings.bounceIntensity !=
             currentLightingSettings.bounceIntensity ||
         guiLightingSettings.localShadowPointBudget !=
-            currentLightingSettings.localShadowPointBudget;
+            currentLightingSettings.localShadowPointBudget ||
+        guiLightingSettings.localShadowLayerBudget !=
+            currentLightingSettings.localShadowLayerBudget;
     if (lightingSettingsChanged) {
       subs_.lightingManager->setLightingSettings(guiLightingSettings);
       subs_.lightingManager->updateLightingData();
@@ -5229,13 +5590,11 @@ void RendererFrontend::publishFrameRuntimeResourceBindings(
   };
 
   if (subs_.frameResourceManager != nullptr) {
-    for (const FrameResourceBinding *binding :
-         subs_.frameResourceManager->resourceRegistry().bindingsForFrame(
-             RenderTechniqueId::DeferredRaster, imageIndex)) {
-      if (binding != nullptr) {
-        copyBinding(*binding);
-      }
-    }
+    subs_.frameResourceManager->resourceRegistry().forEachBindingForFrame(
+        RenderTechniqueId::DeferredRaster, imageIndex,
+        [&copyBinding](const FrameResourceBinding &binding) {
+          copyBinding(binding);
+        });
   }
 
   auto bindDescriptorSet = [runtime, imageIndex](std::string name,
@@ -5292,13 +5651,16 @@ void RendererFrontend::publishFrameRuntimeResourceBindings(
         RenderTechniqueId::DeferredRaster, "camera-buffer", imageIndex,
         FrameBufferBinding{.buffer = cameraBuffer,
                            .size = sizeof(container::gpu::CameraData),
-                           .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT});
+                           .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT});
   }
-  if (buffers_.object.buffer != VK_NULL_HANDLE && buffers_.objectCapacity > 0) {
+  const auto objectBuffer = sceneObjectBuffer(imageIndex);
+  const size_t objectCapacity = sceneObjectCapacity(imageIndex);
+  if (objectBuffer.buffer != VK_NULL_HANDLE && objectCapacity > 0) {
     runtime->bindBuffer(
         RenderTechniqueId::DeferredRaster, "scene-object-buffer", imageIndex,
-        FrameBufferBinding{.buffer = buffers_.object.buffer,
-                           .size = buffers_.objectCapacity *
+        FrameBufferBinding{.buffer = objectBuffer.buffer,
+                           .size = objectCapacity *
                                    sizeof(container::gpu::ObjectData),
                            .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT});
   }
@@ -5310,6 +5672,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   syncSceneProviders();
 
   FrameRecordParams p{};
+  p.runtime.frameSlot = frame_.currentFrame;
   p.runtime.imageIndex = imageIndex;
   p.registries.resourceContracts = subs_.frameResourceRegistry.get();
   p.registries.pipelineRecipes = subs_.pipelineRegistry.get();
@@ -5777,16 +6140,20 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
                        : exposureSettingsFromConfig(svc_.config);
   p.postProcess.renderPass = resources_.renderPasses.postProcess;
   if (subs_.sceneProviderRegistry) {
-    p.sceneExtraction =
-        extractProviderSceneFrameInputs(*subs_.sceneProviderRegistry);
+    p.sceneExtraction = extractProviderSceneFrameInputs(
+        *subs_.sceneProviderRegistry);
   }
-  p.scene.objectBuffer = buffers_.object.buffer;
+  const auto objectBuffer = sceneObjectBuffer(imageIndex);
+  p.scene.objectBuffer = objectBuffer.buffer;
   p.scene.objectBufferSize =
-      sizeof(container::gpu::ObjectData) * buffers_.objectCapacity;
+      sizeof(container::gpu::ObjectData) * sceneObjectCapacity(imageIndex);
   if (screenshot_.pending) {
     p.screenshot.enabled = true;
     p.screenshot.swapChainImage = svc_.swapChainManager.image(imageIndex);
-    p.screenshot.readbackBuffer = screenshot_.readbackBuffer.buffer;
+    if (frame_.currentFrame < screenshot_.readbacks.size()) {
+      p.screenshot.readbackBuffer =
+          screenshot_.readbacks[frame_.currentFrame].readbackBuffer.buffer;
+    }
     p.screenshot.extent = svc_.swapChainManager.extent();
   }
   return p;

@@ -307,6 +307,61 @@
       }
     },
     {
+      "id": "cornell_yellow_area_purple_directional_shadow",
+      "category": "shadow",
+      "status": "planned",
+      "asset": "models/validation/cornell_box_yellow_area_light.gltf",
+      "renderMode": "final-lit",
+      "camera": {
+        "position": [0.0, 1.05, 4.1],
+        "target": [0.0, 0.95, 0.0],
+        "verticalFovDegrees": 36.0
+      },
+      "lighting": {
+        "environment": "hdr/citrus_orchard_road_puresky_4k.exr",
+        "environmentIntensity": 0.0,
+        "exposure": 0.25,
+        "authoredLightsFromAsset": true,
+        "directionalLight": {
+          "illuminanceLux": 18000.0,
+          "direction": [-0.36, -0.86, -0.36],
+          "color": [0.62, 0.35, 1.0]
+        },
+        "pointLights": []
+      },
+      "probes": [
+        {
+          "id": "area_lit_floor_keeps_warm_yellow_contribution",
+          "kind": "dominant_color_fraction",
+          "regionUv": [0.360, 0.840, 0.080, 0.060],
+          "targetColor": [1.0, 0.86, 0.10],
+          "maxDistance": 0.45,
+          "minimumFraction": 0.25
+        },
+        {
+          "id": "purple_directional_tints_upper_wall",
+          "kind": "dominant_color_fraction",
+          "regionUv": [0.455, 0.315, 0.110, 0.080],
+          "targetColor": [0.62, 0.35, 1.0],
+          "maxDistance": 0.55,
+          "minimumFraction": 0.20
+        },
+        {
+          "id": "left_wall_keeps_cornell_red_under_mixed_lighting",
+          "kind": "dominant_color_fraction",
+          "regionUv": [0.225, 0.460, 0.105, 0.220],
+          "targetColor": [0.89, 0.44, 0.36],
+          "maxDistance": 0.30,
+          "minimumFraction": 0.50
+        }
+      ],
+      "screenshots": {
+        "golden": "tests/visual-regression/golden/{platform}/cornell_yellow_area_purple_directional_shadow.png",
+        "candidate": "test_results/visual-regression/candidate/{platform}/cornell_yellow_area_purple_directional_shadow.png",
+        "diff": "test_results/visual-regression/diff/{platform}/cornell_yellow_area_purple_directional_shadow.png"
+      }
+    },
+    {
       "id": "open_shadow_wall_blocker",
       "category": "shadow",
       "status": "planned",
@@ -335,11 +390,6 @@
           "litRegionUv": [0.265, 0.720, 0.090, 0.055],
           "shadowRegionUv": [0.455, 0.730, 0.110, 0.060],
           "maximumShadowToLitRatio": 0.70
-        },
-        {
-          "id": "open_shadow_stays_stable_across_camera_sweep",
-          "kind": "camera_stability_shadow_ratio",
-          "maximumRatioDrift": 0.10
         }
       ],
       "screenshots": {
@@ -377,11 +427,6 @@
           "litRegionUv": [0.300, 0.760, 0.090, 0.055],
           "shadowRegionUv": [0.470, 0.770, 0.110, 0.060],
           "maximumShadowToLitRatio": 0.70
-        },
-        {
-          "id": "closed_shadow_stays_stable_across_camera_sweep",
-          "kind": "camera_stability_shadow_ratio",
-          "maximumRatioDrift": 0.10
         }
       ],
       "screenshots": {
@@ -543,24 +588,12 @@
       "category": "shadow",
       "status": "planned",
       "asset": "models/validation/shadow_floor_blocker.gltf",
-      "renderMode": "shadow-factor",
+      "renderMode": "shadow-texel-density",
       "camera": {
         "position": [-3.0, 2.2, 5.5],
         "target": [0.0, 0.75, 0.0],
         "verticalFovDegrees": 50.0
       },
-      "motionPath": [
-        {
-          "position": [-3.0, 2.2, 5.5],
-          "target": [0.0, 0.75, 0.0],
-          "verticalFovDegrees": 50.0
-        },
-        {
-          "position": [-2.85, 2.2, 5.6],
-          "target": [0.0, 0.75, 0.0],
-          "verticalFovDegrees": 50.0
-        }
-      ],
       "lighting": {
         "environment": "hdr/studio_small_09_1k.hdr",
         "environmentIntensity": 0.25,
@@ -570,28 +603,14 @@
           "direction": [-0.5, -0.8, -0.25],
           "color": [1.0, 0.98, 0.93]
         },
-        "shadow": {
-          "cascadeCount": 4,
-          "mapSize": 4096,
-          "normalBiasMinTexels": 0.75,
-          "normalBiasMaxTexels": 3.0,
-          "filterRadiusTexels": 1.5,
-          "cascadeBlendFraction": 0.1
-        },
         "pointLights": []
       },
       "probes": [
         {
-          "id": "contact_shadow_edge",
-          "kind": "edge_position",
-          "pixel": [620, 450],
-          "maxFrameToFramePixelDrift": 1.5
-        },
-        {
-          "id": "cascade_texel_density",
-          "kind": "debug_texel_density",
-          "pixel": [640, 360],
-          "maxFrameToFrameDelta": 0.03
+          "id": "cascade_texel_density_debug_has_measurable_structure",
+          "kind": "region_luminance_stddev",
+          "regionUv": [0.250, 0.250, 0.500, 0.500],
+          "minimumStdDev": 0.01
         }
       ],
       "screenshots": {

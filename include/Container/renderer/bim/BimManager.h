@@ -897,6 +897,7 @@ private:
   void destroyDrawCompactionBuffers();
   void destroyDrawCompactionComputeResources();
   void destroyDrawCompactionBuffers(BimDrawCompactionSlotResources &slot);
+  [[nodiscard]] bool drawCompactionSupported() const;
   void invalidateDrawCompactionOutputs(bool requestDispatch);
   void ensureDrawCompactionCapacity(BimDrawCompactionSlot slot,
                                     size_t inputDrawCount,

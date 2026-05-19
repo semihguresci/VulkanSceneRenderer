@@ -45,6 +45,8 @@ float3 DeferredFinite3Or(float3 value, float3 fallback)
 }
 
 static const float kDiffuseAmbientFloor = 0.04;
+static const float DIRECTIONAL_CONTACT_SHADOW_LIT_THRESHOLD = 0.02;
+static const float DIRECTIONAL_CONTACT_SHADOW_RADIANCE_THRESHOLD = 1.0e-4;
 
 float3 ComputeDiffuseAmbientFloor(float3 albedo,
                                   float occlusion,
@@ -124,7 +126,9 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
     AreaLightFrame frame = BuildAreaLightFrame(light);
     float3 directLighting = 0.0.xxx;
     float areaShadowVisibility = 1.0;
-    if (LocalShadowMapsEnabled(uLighting, uLocalShadow))
+    uint areaShadowRef = PackedLocalShadowAreaRef(uLocalShadow, areaIndex);
+    if (LocalShadowMapsEnabled(uLighting, uLocalShadow) &&
+        areaShadowRef != 0u)
     {
         // The local-shadow PCF radius already models finite source size; a
         // reduced weighted shadow estimate avoids a full PCF for every
@@ -281,6 +285,7 @@ float4 fragMain(VSOutput input) : SV_Target0
         max(DeferredFinite3Or(uLighting.directionalColorIntensity.rgb, 0.0.xxx),
             0.0.xxx) *
         max(DeferredFiniteOr(uLighting.directionalColorIntensity.a, 0.0), 0.0);
+    float directionalRadiance = max(max(lightColor.r, lightColor.g), lightColor.b);
     float NdotV = max(dot(normal, V), 0.0);
 
     // Positive view-axis depth selects the cascade. Camera forward is uploaded
@@ -293,6 +298,7 @@ float4 fragMain(VSOutput input) : SV_Target0
 
     // Shadow evaluation.
     float shadowFactor = 1.0;
+    float contactVisibility = 1.0;
     float NdotLForShadow = dot(geometricNormal, L);
     if (uLighting.shadowEnabled != 0u &&
         (NdotLForShadow > 0.0 || thinSurface))
@@ -300,16 +306,17 @@ float4 fragMain(VSOutput input) : SV_Target0
         shadowFactor = ComputeShadowFactor(
             worldPosition, geometricNormal, uLighting.directionalDirection.xyz,
             viewDepth, uShadow, gShadowAtlas, gShadowSampler);
-        if (ShadowFiniteOr(uShadow.contactShadowSettings.x, 0.0) > 0.0)
+        if (shadowFactor > DIRECTIONAL_CONTACT_SHADOW_LIT_THRESHOLD &&
+            directionalRadiance > DIRECTIONAL_CONTACT_SHADOW_RADIANCE_THRESHOLD &&
+            ShadowFiniteOr(uShadow.contactShadowSettings.x, 0.0) > 0.0)
         {
-            float contactVisibility = ScreenSpaceDirectionalContactVisibility(
+            contactVisibility = ScreenSpaceDirectionalContactVisibility(
                 worldPosition, geometricNormal, L,
                 uShadow.contactShadowSettings.y,
                 uShadow.contactShadowSettings.z,
                 uShadow.contactShadowSettings.w,
                 gDepthTexture, gNormalTexture,
                 uCamera.viewProj, uCamera.inverseViewProj);
-            shadowFactor *= contactVisibility;
         }
     }
 
@@ -320,10 +327,11 @@ float4 fragMain(VSOutput input) : SV_Target0
         albedo.rgb, metallic, specularSample.rgb,
         layerTerms.iridescenceFactor, materialData.iridescenceIor,
         iridescenceThickness, NdotV);
+    float directShadowVisibility = shadowFactor * contactVisibility;
     float3 directLighting = EvaluateDeferredLayeredDirectLight(
         albedo.rgb, F0, metallic, roughness, normal, V, L, lightColor,
         layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,
-        layerTerms.sheenColor, layerTerms.sheenRoughness) * shadowFactor;
+        layerTerms.sheenColor, layerTerms.sheenRoughness) * directShadowVisibility;
     directLighting += EvaluateDiffuseBounceLight(
         albedo.rgb, metallic, normal, geometricNormal, V, L, lightColor,
         shadowFactor, occlusion, bounceIntensity);
@@ -338,7 +346,7 @@ float4 fragMain(VSOutput input) : SV_Target0
         float transmissionScale = thinSurface ? 1.0 : transmissionWeight;
         directLighting += EvaluateThinSurfaceTransmission(
             albedo.rgb, normal, V, L, lightColor, transmissionAlpha, false) *
-            transmissionScale * shadowFactor;
+            transmissionScale * directShadowVisibility;
     }
 
     uint areaLightCount = min(uLighting.areaLightCount, MAX_AREA_LIGHTS);

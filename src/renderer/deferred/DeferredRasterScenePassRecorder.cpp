@@ -1,15 +1,28 @@
 #include "Container/renderer/deferred/DeferredRasterScenePassRecorder.h"
 
 #include "Container/renderer/culling/GpuCullManager.h"
+#include "Container/renderer/deferred/DeferredRasterSceneGpuCullRoutePlanner.h"
 
 namespace container::renderer {
 
 namespace {
 
-bool sceneOpaqueGpuIndirectAvailable(const GpuCullManager *gpuCullManager,
-                                     bool frustumCullActive) {
-  return gpuCullManager != nullptr && gpuCullManager->isReady() &&
-         frustumCullActive && gpuCullManager->frustumDrawsValid();
+DeferredRasterSceneGpuCullRoutePlan sceneOpaqueGpuCullRoutePlan(
+    const DeferredRasterScenePassRecordInputs &inputs) {
+  const GpuCullManager *gpuCullManager = inputs.gpuCullManager;
+  const bool gpuCullManagerReady =
+      gpuCullManager != nullptr && gpuCullManager->isReady();
+  return buildDeferredRasterSceneGpuCullRoutePlan(
+      {.kind = inputs.kind,
+       .gpuCullManagerReady = gpuCullManagerReady,
+       .frustumCullActive = inputs.frustumCullActive,
+       .frustumDrawsValid =
+           gpuCullManagerReady &&
+           gpuCullManager->frustumDrawsValid(inputs.imageIndex),
+       .occlusionCullActive = inputs.occlusionCullActive,
+       .occlusionDrawsValid =
+           gpuCullManagerReady &&
+           gpuCullManager->occlusionDrawsValid(inputs.imageIndex)});
 }
 
 } // namespace
@@ -20,10 +33,20 @@ bool recordDeferredRasterScenePassCommands(
     return false;
   }
 
+  const DeferredRasterSceneGpuCullRoutePlan gpuCullRoutePlan =
+      sceneOpaqueGpuCullRoutePlan(inputs);
+  const bool sceneOpaqueGpuIndirectAvailable =
+      gpuCullRoutePlan.gpuIndirectAvailable;
+  const bool sceneOpaqueOccludedGpuIndirectAvailable =
+      gpuCullRoutePlan.occludedGpuIndirectAvailable;
+
   const SceneRasterPassPlan sceneRasterPlan = buildSceneRasterPassPlan(
       {.kind = inputs.kind,
-       .gpuIndirectAvailable = sceneOpaqueGpuIndirectAvailable(
-           inputs.gpuCullManager, inputs.frustumCullActive),
+       .gpuIndirectAvailable = sceneOpaqueGpuIndirectAvailable,
+       .occludedGpuIndirectAvailable =
+           sceneOpaqueOccludedGpuIndirectAvailable,
+       .preferOccludedGpuIndirect =
+           gpuCullRoutePlan.preferOccludedGpuIndirect,
        .draws = inputs.draws,
        .pipelines = inputs.pipelines});
 
@@ -37,6 +60,7 @@ bool recordDeferredRasterScenePassCommands(
             .pipelines = sceneRasterPlan.pipelines,
             .pipelineLayout = inputs.pipelineLayout,
             .pushConstants = *inputs.pushConstants,
+            .imageIndex = inputs.imageIndex,
             .debugOverlay = inputs.debugOverlay,
             .gpuCullManager = inputs.gpuCullManager,
             .diagnosticCube = inputs.diagnosticCube});

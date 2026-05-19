@@ -8,7 +8,9 @@ buildShadowCascadeGpuCullPlan(const ShadowCascadeGpuCullPlanInputs &inputs) {
   plan.useGpuCull = inputs.gpuShadowCullEnabled &&
                     inputs.shadowCullPassActive &&
                     inputs.shadowCullManagerReady &&
+                    inputs.shadowCullDispatchReady &&
                     inputs.sceneSingleSidedDrawsAvailable &&
+                    inputs.sourceDrawCommandsAllSingleInstance &&
                     inputs.cascadeIndexInRange &&
                     inputs.indirectDrawBuffer != VK_NULL_HANDLE &&
                     inputs.drawCountBuffer != VK_NULL_HANDLE &&
@@ -21,7 +23,9 @@ ShadowGpuCullSourceUploadPlan buildShadowGpuCullSourceUploadPlan(
   ShadowGpuCullSourceUploadPlan plan{};
   plan.uploadSourceDrawCommands =
       inputs.shadowAtlasVisible && inputs.gpuShadowCullEnabled &&
-      inputs.shadowCullManagerReady && inputs.sourceDrawCommandsPresent;
+      inputs.shadowCullManagerReady && inputs.sourceDrawCommandsPresent &&
+      inputs.sourceDrawCommandsAllSingleInstance &&
+      inputs.sourceDrawCount > 0u;
   if (plan.uploadSourceDrawCommands) {
     plan.requiredDrawCapacity = inputs.sourceDrawCount;
   }

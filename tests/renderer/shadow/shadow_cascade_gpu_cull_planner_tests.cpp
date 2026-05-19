@@ -19,6 +19,7 @@ ShadowCascadeGpuCullPlanInputs readyInputs() {
   return {.gpuShadowCullEnabled = true,
           .shadowCullPassActive = true,
           .shadowCullManagerReady = true,
+          .shadowCullDispatchReady = true,
           .sceneSingleSidedDrawsAvailable = true,
           .cascadeIndexInRange = true,
           .indirectDrawBuffer = fakeHandle<VkBuffer>(0x10),
@@ -52,10 +53,14 @@ TEST(ShadowCascadeGpuCullPlannerTests,
   auto unreadyManager = readyInputs();
   unreadyManager.shadowCullManagerReady = false;
 
+  auto unreadyDispatch = readyInputs();
+  unreadyDispatch.shadowCullDispatchReady = false;
+
   auto missingDraws = readyInputs();
   missingDraws.sceneSingleSidedDrawsAvailable = false;
 
   EXPECT_FALSE(buildShadowCascadeGpuCullPlan(unreadyManager).useGpuCull);
+  EXPECT_FALSE(buildShadowCascadeGpuCullPlan(unreadyDispatch).useGpuCull);
   EXPECT_FALSE(buildShadowCascadeGpuCullPlan(missingDraws).useGpuCull);
 }
 
@@ -78,6 +83,14 @@ TEST(ShadowCascadeGpuCullPlannerTests,
 TEST(ShadowCascadeGpuCullPlannerTests, EmptyDrawCapacitySuppressesUse) {
   auto inputs = readyInputs();
   inputs.maxDrawCount = 0u;
+
+  EXPECT_FALSE(buildShadowCascadeGpuCullPlan(inputs).useGpuCull);
+}
+
+TEST(ShadowCascadeGpuCullPlannerTests,
+     MultiInstanceSourceDrawsSuppressGpuCull) {
+  auto inputs = readyInputs();
+  inputs.sourceDrawCommandsAllSingleInstance = false;
 
   EXPECT_FALSE(buildShadowCascadeGpuCullPlan(inputs).useGpuCull);
 }
@@ -129,7 +142,7 @@ TEST(ShadowCascadeGpuCullPlannerTests,
 }
 
 TEST(ShadowCascadeGpuCullPlannerTests,
-     PresentEmptySourceStillPlansUploadWithZeroCapacity) {
+     EmptySourceSuppressesSourceUpload) {
   ShadowGpuCullSourceUploadPlanInputs inputs{
       .shadowAtlasVisible = true,
       .gpuShadowCullEnabled = true,
@@ -139,7 +152,7 @@ TEST(ShadowCascadeGpuCullPlannerTests,
 
   const auto plan = buildShadowGpuCullSourceUploadPlan(inputs);
 
-  EXPECT_TRUE(plan.uploadSourceDrawCommands);
+  EXPECT_FALSE(plan.uploadSourceDrawCommands);
   EXPECT_EQ(plan.requiredDrawCapacity, 0u);
 }
 
@@ -156,4 +169,20 @@ TEST(ShadowCascadeGpuCullPlannerTests,
 
   EXPECT_TRUE(plan.uploadSourceDrawCommands);
   EXPECT_EQ(plan.requiredDrawCapacity, 37u);
+}
+
+TEST(ShadowCascadeGpuCullPlannerTests,
+     MultiInstanceSourceDrawsSuppressSourceUpload) {
+  ShadowGpuCullSourceUploadPlanInputs inputs{
+      .shadowAtlasVisible = true,
+      .gpuShadowCullEnabled = true,
+      .shadowCullManagerReady = true,
+      .sourceDrawCommandsPresent = true,
+      .sourceDrawCommandsAllSingleInstance = false,
+      .sourceDrawCount = 1u};
+
+  const auto plan = buildShadowGpuCullSourceUploadPlan(inputs);
+
+  EXPECT_FALSE(plan.uploadSourceDrawCommands);
+  EXPECT_EQ(plan.requiredDrawCapacity, 0u);
 }

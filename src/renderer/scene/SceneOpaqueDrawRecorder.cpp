@@ -89,6 +89,21 @@ void pushSceneObjectIndex(VkCommandBuffer cmd, VkPipelineLayout layout,
                      0, sizeof(container::gpu::BindlessPushConstants), &pc);
 }
 
+void drawGpuIndirectRoute(VkCommandBuffer cmd,
+                          const SceneOpaqueDrawRoute &route,
+                          uint32_t imageIndex,
+                          const GpuCullManager &gpuCullManager) {
+  switch (route.indirectSource) {
+  case SceneOpaqueIndirectSource::FrustumCull:
+    gpuCullManager.drawIndirect(cmd, imageIndex);
+    return;
+  case SceneOpaqueIndirectSource::OcclusionCull:
+    gpuCullManager.drawIndirectOccluded(cmd, imageIndex);
+    return;
+  }
+  gpuCullManager.drawIndirect(cmd, imageIndex);
+}
+
 } // namespace
 
 bool recordSceneOpaqueDrawCommands(VkCommandBuffer cmd,
@@ -107,7 +122,9 @@ bool recordSceneOpaqueDrawCommands(VkCommandBuffer cmd,
                       inputs.pipelines.primary);
     pushSceneObjectIndex(cmd, inputs.pipelineLayout, pushConstants,
                          kIndirectObjectIndex);
-    inputs.gpuCullManager->drawIndirect(cmd);
+    drawGpuIndirectRoute(cmd, inputs.plan->gpuIndirectRoute,
+                         inputs.imageIndex,
+                         *inputs.gpuCullManager);
     recorded = true;
   }
 

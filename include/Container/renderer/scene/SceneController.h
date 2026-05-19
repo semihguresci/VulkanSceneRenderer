@@ -11,6 +11,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace container::app {
@@ -246,12 +247,13 @@ class SceneController {
   std::vector<DrawCommand>  transparentDoubleSidedDrawCommands_;
   std::vector<PrimitiveBounds> primitiveBounds_;
   std::vector<uint32_t> objectNodeIndices_;
+  std::unordered_map<VkBuffer, uint64_t> objectBufferUploadRevisions_;
 
   uint64_t cachedSceneGraphRevision_{std::numeric_limits<uint64_t>::max()};
   uint64_t objectDataRevision_{0};
+  uint64_t objectBufferUploadRevision_{0};
   bool cachedShowDiagCube_{false};
   bool objectDataCacheValid_{false};
-  bool objectBufferUploadDirty_{true};
 
   container::gpu::BufferSlice vertexSlice_{};
   container::gpu::BufferSlice indexSlice_{};

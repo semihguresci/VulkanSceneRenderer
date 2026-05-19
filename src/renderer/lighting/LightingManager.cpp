@@ -3,6 +3,7 @@
 #include "Container/renderer/deferred/DeferredLightGizmoPlanner.h"
 #include "Container/renderer/deferred/DeferredLightGizmoRecorder.h"
 #include "Container/renderer/lighting/LightGizmoIconAtlas.h"
+#include "Container/renderer/lighting/LocalShadowLayerAllocator.h"
 #include "Container/renderer/scene/SceneController.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/Camera.h"
@@ -26,8 +27,6 @@ namespace container::renderer {
 
 using container::gpu::AreaLightData;
 using container::gpu::kClusterDepthSlices;
-using container::gpu::kLocalShadowPointFaceCount;
-using container::gpu::kLocalShadowSpotLayerCount;
 using container::gpu::kMaxAreaLights;
 using container::gpu::kMaxClusteredLights;
 using container::gpu::kMaxLightsPerTile;
@@ -48,13 +47,6 @@ constexpr uint32_t kClusterCullStartQuery = 0u;
 constexpr uint32_t kClusterCullEndQuery = 1u;
 constexpr uint32_t kClusteredLightingStartQuery = 2u;
 constexpr uint32_t kClusteredLightingEndQuery = 3u;
-constexpr uint32_t kMaxLocalShadowPointBudget =
-    kMaxShadowedLocalLightLayers / kLocalShadowSpotLayerCount;
-
-[[nodiscard]] bool hasFiniteLocalShadowRange(float range) {
-  return std::isfinite(range) && range > 0.0f;
-}
-
 void syncLightingPointCount(LightingData &lightingData,
                             const std::vector<PointLightData> &allPointLights) {
   lightingData.pointLightCount = static_cast<uint32_t>(
@@ -84,15 +76,14 @@ glm::vec3 normalizeOr(const glm::vec3 &value, const glm::vec3 &fallback) {
   return value * (1.0f / std::sqrt(len2));
 }
 
-bool lightingSettingsDiffer(const LightingSettings &lhs,
-                            const LightingSettings &rhs) {
+bool generatedLightingSettingsDiffer(const LightingSettings &lhs,
+                                     const LightingSettings &rhs) {
   return lhs.preset != rhs.preset || lhs.density != rhs.density ||
          lhs.radiusScale != rhs.radiusScale ||
          lhs.intensityScale != rhs.intensityScale ||
          lhs.directionalIntensity != rhs.directionalIntensity ||
          lhs.environmentIntensity != rhs.environmentIntensity ||
-         lhs.bounceIntensity != rhs.bounceIntensity ||
-         lhs.localShadowPointBudget != rhs.localShadowPointBudget;
+         lhs.bounceIntensity != rhs.bounceIntensity;
 }
 
 EditableLightId invalidEditableLightId() { return {}; }
@@ -411,7 +402,7 @@ void LightingManager::uploadLightingData(uint32_t imageIndex) const {
 
 void LightingManager::setLightingSettings(const LightingSettings &settings) {
   const bool generatorSettingsChanged =
-      lightingSettingsDiffer(lightingSettings_, settings);
+      generatedLightingSettingsDiffer(lightingSettings_, settings);
   lightingSettings_.preset = std::min(settings.preset, 3u);
   lightingSettings_.density = std::clamp(settings.density, 0.1f, 16.0f);
   lightingSettings_.radiusScale = std::clamp(settings.radiusScale, 0.05f, 8.0f);
@@ -424,7 +415,10 @@ void LightingManager::setLightingSettings(const LightingSettings &settings) {
   lightingSettings_.bounceIntensity =
       std::clamp(settings.bounceIntensity, 0.0f, 2.0f);
   lightingSettings_.localShadowPointBudget =
-      std::min(settings.localShadowPointBudget, kMaxLocalShadowPointBudget);
+      std::min(settings.localShadowPointBudget,
+               kMaxLocalShadowOmniPointBudget);
+  lightingSettings_.localShadowLayerBudget =
+      std::min(settings.localShadowLayerBudget, kMaxShadowedLocalLightLayers);
   if (generatorSettingsChanged) {
     generatedPointOverrides_.clear();
     generatedAreaOverrides_.clear();
@@ -594,38 +588,10 @@ void LightingManager::appendAuthoredAreaLights(
 }
 
 void LightingManager::assignLocalShadowLayerMetadata() {
-  uint32_t nextLayer = 0u;
-  uint32_t shadowedPointLightCount = 0u;
-  const uint32_t localShadowPointBudget = std::min(
-      lightingSettings_.localShadowPointBudget, kMaxLocalShadowPointBudget);
-  for (PointLightData &light : pointLightsSsbo_) {
-    light.coneOuterCosType.z = 0.0f;
-    light.coneOuterCosType.w = 0.0f;
-
-    if (light.colorIntensity.a <= 0.0f) {
-      continue;
-    }
-    if (!hasFiniteLocalShadowRange(light.positionRadius.w)) {
-      continue;
-    }
-    if (shadowedPointLightCount >= localShadowPointBudget) {
-      continue;
-    }
-
-    const bool isSpot = light.coneOuterCosType.y >= 0.5f;
-    const uint32_t layerCount =
-        isSpot ? kLocalShadowSpotLayerCount : kLocalShadowPointFaceCount;
-    if (nextLayer + layerCount > kMaxShadowedLocalLightLayers) {
-      continue;
-    }
-
-    // z/w are intentionally reserved as local-shadow metadata while keeping
-    // PointLightData at 64 bytes for existing clustered-light paths.
-    light.coneOuterCosType.z = static_cast<float>(nextLayer + 1u);
-    light.coneOuterCosType.w = static_cast<float>(layerCount);
-    nextLayer += layerCount;
-    ++shadowedPointLightCount;
-  }
+  (void)container::renderer::assignLocalShadowLayerMetadata(
+      pointLightsSsbo_,
+      {.omniPointBudget = lightingSettings_.localShadowPointBudget,
+       .layerBudget = lightingSettings_.localShadowLayerBudget});
 }
 
 void LightingManager::publishPointLights() {

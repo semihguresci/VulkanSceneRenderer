@@ -69,7 +69,7 @@ buildBimSurfaceFramePassInputs(const BimSurfaceFramePassRecordInputs &inputs) {
   planInputs.sources[planInputs.sourceCount++] = {
       .source = BimSurfacePassSourceKind::Mesh,
       .draws = inputs.draws.mesh,
-      .gpuCompactionEligible = true,
+      .gpuCompactionEligible = meshGpuVisibilityOwnsCpuFallback,
       .gpuVisibilityOwnsCpuFallback = meshGpuVisibilityOwnsCpuFallback};
   planInputs.sources[planInputs.sourceCount++] = {
       .source = BimSurfacePassSourceKind::PointPlaceholders,

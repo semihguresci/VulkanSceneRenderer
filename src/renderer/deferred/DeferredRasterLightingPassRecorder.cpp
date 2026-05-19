@@ -703,7 +703,6 @@ void DeferredRasterLightingPassRecorder::record(
       p.shadows.shadowSettings.localContactVisibility ? 1u : 0u;
   const uint32_t localShadowEnabled =
       (lightingManager != nullptr &&
-       lightingManager->lightingData().shadowEnabled != 0u &&
        lightingManager->lightingData().localShadowEnabled != 0u &&
        p.shadows.localShadowData != nullptr &&
        p.shadows.localShadowData->counts.w != 0u &&

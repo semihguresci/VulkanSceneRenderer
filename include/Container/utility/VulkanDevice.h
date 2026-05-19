@@ -40,6 +40,10 @@ class VulkanDevice {
   [[nodiscard]] const VkPhysicalDeviceFeatures& enabledFeatures() const noexcept {
     return enabledFeatures_;
   }
+  [[nodiscard]] const VkPhysicalDeviceVulkan12Features&
+  enabledVulkan12Features() const noexcept {
+    return enabledVulkan12Features_;
+  }
 
  private:
   bool isDeviceSuitable(VkPhysicalDevice device) const;
@@ -59,6 +63,7 @@ class VulkanDevice {
   VkQueue presentQueue_{VK_NULL_HANDLE};
   QueueFamilyIndices queueFamilyIndices_{};
   VkPhysicalDeviceFeatures enabledFeatures_{};
+  VkPhysicalDeviceVulkan12Features enabledVulkan12Features_{};
 };
 
 }  // namespace container::gpu

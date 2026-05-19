@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <vector>
 
 namespace {
@@ -97,6 +98,28 @@ TEST(ShadowCascadeDrawPlannerTests, SplitsVisibleInstanceRunsPerCascade) {
 TEST(ShadowCascadeDrawPlannerTests, InvalidBoundsFailOpen) {
   const std::vector<DrawCommand> singleSided = {drawCommand(0u)};
   const std::vector<ObjectData> objectData = {objectWithBounds(0.0f, 0.0f)};
+
+  ShadowCascadeDrawPlannerInputs inputs{};
+  inputs.scene = {.objectData = &objectData};
+  inputs.sceneDraws = {.singleSided = &singleSided};
+  activateAllCascades(inputs);
+  inputs.cascadeIntersectsSphere = [](uint32_t, const glm::vec4 &) {
+    return false;
+  };
+
+  const auto plan = buildShadowCascadeDrawPlan(inputs);
+
+  for (uint32_t cascadeIndex = 0; cascadeIndex < kShadowCascadeCount;
+       ++cascadeIndex) {
+    ASSERT_EQ(plan.sceneSingleSided[cascadeIndex].size(), 1u);
+    EXPECT_EQ(plan.sceneSingleSided[cascadeIndex][0].objectIndex, 0u);
+  }
+}
+
+TEST(ShadowCascadeDrawPlannerTests, NonFiniteBoundsFailOpen) {
+  const std::vector<DrawCommand> singleSided = {drawCommand(0u)};
+  const std::vector<ObjectData> objectData = {
+      objectWithBounds(std::numeric_limits<float>::quiet_NaN(), 1.0f)};
 
   ShadowCascadeDrawPlannerInputs inputs{};
   inputs.scene = {.objectData = &objectData};

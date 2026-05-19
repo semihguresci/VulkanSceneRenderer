@@ -12,7 +12,9 @@ set(TEST_PLATFORM_DIR "${TESTS_DIR}/platform")
 set(TEST_RENDERER_DIR "${TESTS_DIR}/renderer")
 set(TEST_RENDERER_BIM_DIR "${TEST_RENDERER_DIR}/bim")
 set(TEST_RENDERER_CORE_DIR "${TEST_RENDERER_DIR}/core")
+set(TEST_RENDERER_CULLING_DIR "${TEST_RENDERER_DIR}/culling")
 set(TEST_RENDERER_DEFERRED_DIR "${TEST_RENDERER_DIR}/deferred")
+set(TEST_RENDERER_LIGHTING_DIR "${TEST_RENDERER_DIR}/lighting")
 set(TEST_RENDERER_PICKING_DIR "${TEST_RENDERER_DIR}/picking")
 set(TEST_RENDERER_SCENE_DIR "${TEST_RENDERER_DIR}/scene")
 set(TEST_RENDERER_SHADOW_DIR "${TEST_RENDERER_DIR}/shadow")
@@ -212,6 +214,15 @@ add_custom_test(deferred_raster_frustum_cull_pass_planner_tests
 
 add_custom_test(deferred_raster_frustum_cull_pass_recorder_tests
     ${TEST_RENDERER_DEFERRED_DIR}/deferred_raster_frustum_cull_pass_recorder_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+
+add_custom_test(gpu_cull_draw_upload_planner_tests
+    ${TEST_RENDERER_CULLING_DIR}/gpu_cull_draw_upload_planner_tests.cpp  ""  ${TEST_RESULTS_DIR}
+)
+
+add_custom_test(deferred_raster_scene_gpu_cull_route_planner_tests
+    ${TEST_RENDERER_DEFERRED_DIR}/deferred_raster_scene_gpu_cull_route_planner_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_renderer
 )
 
@@ -492,8 +503,17 @@ add_custom_test(bim_surface_raster_pass_recorder_tests
     VulkanSceneRenderer_renderer
 )
 
+add_custom_test(local_shadow_layer_allocator_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/local_shadow_layer_allocator_tests.cpp  ""  ${TEST_RESULTS_DIR}
+)
+
 add_custom_test(shadow_cascade_draw_planner_tests
     ${TEST_RENDERER_SHADOW_DIR}/shadow_cascade_draw_planner_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+
+add_custom_test(shadow_cascade_depth_planner_tests
+    ${TEST_RENDERER_SHADOW_DIR}/shadow_cascade_depth_planner_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_renderer
 )
 

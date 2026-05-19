@@ -9,6 +9,7 @@
 namespace {
 
 using container::renderer::DrawCommand;
+using container::renderer::SceneOpaqueIndirectSource;
 using container::renderer::SceneOpaqueDrawRouteKind;
 using container::renderer::SceneRasterPassKind;
 using container::renderer::SceneRasterPassPlanInputs;
@@ -72,6 +73,24 @@ TEST(SceneRasterPassPlannerTests,
 
   EXPECT_TRUE(plan.drawPlan.useGpuIndirectSingleSided);
   EXPECT_EQ(plan.drawPlan.gpuIndirectRoute.commands, &singleSided);
+  EXPECT_EQ(plan.drawPlan.gpuIndirectRoute.indirectSource,
+            SceneOpaqueIndirectSource::FrustumCull);
+}
+
+TEST(SceneRasterPassPlannerTests,
+     GBufferPrefersOcclusionCullIndirectOutputWhenAvailable) {
+  const auto singleSided = drawCommands();
+  auto inputs = readyInputs(SceneRasterPassKind::GBuffer);
+  inputs.gpuIndirectAvailable = true;
+  inputs.occludedGpuIndirectAvailable = true;
+  inputs.preferOccludedGpuIndirect = true;
+  inputs.draws.singleSided = &singleSided;
+
+  const auto plan = buildSceneRasterPassPlan(inputs);
+
+  EXPECT_TRUE(plan.drawPlan.useGpuIndirectSingleSided);
+  EXPECT_EQ(plan.drawPlan.gpuIndirectRoute.indirectSource,
+            SceneOpaqueIndirectSource::OcclusionCull);
 }
 
 TEST(SceneRasterPassPlannerTests,

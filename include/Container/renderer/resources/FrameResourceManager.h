@@ -132,7 +132,7 @@ class FrameResourceManager {
                             VkSampler   bloomSampler      = VK_NULL_HANDLE,
                             VkBuffer    tileGridBuffer    = VK_NULL_HANDLE,
                             VkDeviceSize tileGridBufferSize = 0,
-                            VkBuffer    exposureStateBuffer = VK_NULL_HANDLE,
+                            std::span<const container::gpu::AllocatedBuffer> exposureStateBuffers = {},
                             VkDeviceSize exposureStateBufferSize = 0);
 
   void validateOitFormatSupport() const;
@@ -171,6 +171,8 @@ class FrameResourceManager {
   void            publishFrameResourceBindings();
   void            ensureFallbackTileGridBuffer();
   void            ensureFallbackExposureStateBuffer();
+  void            ensureFallbackShadowDataBuffer();
+  void            ensureFallbackShadowResources();
   void            ensureFallbackLocalShadowDataBuffer();
   void            ensureFallbackLocalShadowResources();
   VkCommandBuffer beginImmediate() const;
@@ -195,7 +197,7 @@ class FrameResourceManager {
     VkSampler   bloomSampler{VK_NULL_HANDLE};
     VkBuffer    tileGridBuffer{VK_NULL_HANDLE};
     VkDeviceSize tileGridBufferSize{0};
-    VkBuffer    exposureStateBuffer{VK_NULL_HANDLE};
+    std::vector<VkBuffer> exposureStateBuffers{};
     VkDeviceSize exposureStateBufferSize{0};
 
     bool operator==(const DescriptorUpdateKey&) const = default;
@@ -217,6 +219,9 @@ class FrameResourceManager {
   VkDescriptorPool oitPool_{VK_NULL_HANDLE};
   container::gpu::AllocatedBuffer fallbackTileGridBuffer_{};
   container::gpu::AllocatedBuffer fallbackExposureStateBuffer_{};
+  container::gpu::AllocatedBuffer fallbackShadowDataBuffer_{};
+  AttachmentImage                 fallbackShadowAtlas_{};
+  VkSampler                       fallbackShadowSampler_{VK_NULL_HANDLE};
   container::gpu::AllocatedBuffer fallbackLocalShadowDataBuffer_{};
   AttachmentImage                 fallbackLocalShadowAtlas_{};
   VkSampler                       fallbackLocalShadowSampler_{VK_NULL_HANDLE};

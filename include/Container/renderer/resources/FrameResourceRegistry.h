@@ -172,6 +172,16 @@ class FrameResourceRegistry {
       RenderTechniqueId technique) const;
   [[nodiscard]] std::vector<const FrameResourceBinding*> bindingsForFrame(
       RenderTechniqueId technique, uint32_t frameIndex) const;
+  template <typename Visitor>
+  void forEachBindingForFrame(RenderTechniqueId technique, uint32_t frameIndex,
+                              Visitor visitor) const {
+    for (const FrameResourceBinding& binding : bindings_) {
+      if (binding.key.technique == technique &&
+          binding.frameIndex == frameIndex) {
+        visitor(binding);
+      }
+    }
+  }
   [[nodiscard]] std::size_t bindingCount() const { return bindings_.size(); }
 
   void clearTechnique(RenderTechniqueId technique);

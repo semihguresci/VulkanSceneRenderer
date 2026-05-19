@@ -2,6 +2,8 @@
 
 #include "Container/renderer/bim/BimManager.h"
 
+#include <algorithm>
+
 namespace container::renderer {
 
 namespace {
@@ -36,18 +38,20 @@ BimDrawCompactionPlanner::build() const {
   std::vector<BimDrawCompactionPlanSource> plan;
   plan.reserve(kBimDrawCompactionSlotCount);
 
-  appendSource(plan, BimDrawCompactionSlot::OpaqueSingleSided,
-               inputs_.opaqueSingleSided);
-  appendSource(plan, BimDrawCompactionSlot::OpaqueWindingFlipped,
-               inputs_.opaqueWindingFlipped);
-  appendSource(plan, BimDrawCompactionSlot::OpaqueDoubleSided,
-               inputs_.opaqueDoubleSided);
-  appendSource(plan, BimDrawCompactionSlot::TransparentSingleSided,
-               transparentSingleSidedSource(inputs_));
-  appendSource(plan, BimDrawCompactionSlot::TransparentWindingFlipped,
-               inputs_.transparentWindingFlipped);
-  appendSource(plan, BimDrawCompactionSlot::TransparentDoubleSided,
-               inputs_.transparentDoubleSided);
+  if (inputs_.meshCompactionEnabled) {
+    appendSource(plan, BimDrawCompactionSlot::OpaqueSingleSided,
+                 inputs_.opaqueSingleSided);
+    appendSource(plan, BimDrawCompactionSlot::OpaqueWindingFlipped,
+                 inputs_.opaqueWindingFlipped);
+    appendSource(plan, BimDrawCompactionSlot::OpaqueDoubleSided,
+                 inputs_.opaqueDoubleSided);
+    appendSource(plan, BimDrawCompactionSlot::TransparentSingleSided,
+                 transparentSingleSidedSource(inputs_));
+    appendSource(plan, BimDrawCompactionSlot::TransparentWindingFlipped,
+                 inputs_.transparentWindingFlipped);
+    appendSource(plan, BimDrawCompactionSlot::TransparentDoubleSided,
+                 inputs_.transparentDoubleSided);
+  }
   appendSource(plan, BimDrawCompactionSlot::NativePointOpaque,
                inputs_.nativePointOpaque);
   appendSource(plan, BimDrawCompactionSlot::NativePointTransparent,
@@ -82,6 +86,15 @@ makeBimDrawCompactionPlanInputs(const BimManager &bimManager) {
       .nativeCurveTransparent =
           &bimManager.nativeCurveDrawLists().transparentDrawCommands,
   };
+}
+
+size_t
+bimDrawCompactionOutputCapacity(const std::vector<DrawCommand> &commands) {
+  size_t outputCapacity = 0u;
+  for (const DrawCommand &command : commands) {
+    outputCapacity += std::max(command.instanceCount, 1u);
+  }
+  return outputCapacity;
 }
 
 std::vector<BimDrawCompactionPlanSource>

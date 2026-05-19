@@ -6,6 +6,7 @@
 #include "Container/geometry/Model.h"
 #include "Container/geometry/UsdLoader.h"
 #include "Container/renderer/bim/BimDrawFilterState.h"
+#include "Container/renderer/bim/BimDrawCompactionPlanner.h"
 #include "Container/renderer/bim/BimMetadataCatalog.h"
 #include "Container/renderer/bim/BimMetadataIndex.h"
 #include "Container/renderer/scene/SceneController.h"
@@ -3779,7 +3780,8 @@ void BimManager::destroyDrawCompactionBuffers(
   }
   slot.uploadScratch.clear();
   slot.stats = {};
-  slot.stats.computeReady = drawCompactionPipeline_ != VK_NULL_HANDLE;
+  slot.stats.computeReady =
+      drawCompactionSupported() && drawCompactionPipeline_ != VK_NULL_HANDLE;
   slot.inputSourceData = nullptr;
   slot.inputSourceSize = 0u;
   slot.inputSourceRevision = 0u;
@@ -3907,6 +3909,7 @@ void BimManager::createDrawCompactionResources(
   for (size_t index = 0; index < drawCompactionSlots_.size(); ++index) {
     BimDrawCompactionSlotResources &slot = drawCompactionSlots_[index];
     slot.stats.computeReady =
+        drawCompactionSupported() &&
         drawCompactionPipeline_ != VK_NULL_HANDLE &&
         drawCompactionDescriptorSets_[index] != VK_NULL_HANDLE;
     slot.descriptorsDirty = true;
@@ -4131,6 +4134,13 @@ bool BimManager::visibilityMaskReadyForDrawCompaction() const {
   return visibilityFilterStats_.computeReady &&
          !visibilityFilterDescriptorsDirty_ &&
          !visibilityFilterDispatchPending_ && visibilityFilterMaskCurrent_;
+}
+
+bool BimManager::drawCompactionSupported() const {
+  return device_ != nullptr &&
+         device_->enabledFeatures().drawIndirectFirstInstance == VK_TRUE &&
+         device_->enabledFeatures().multiDrawIndirect == VK_TRUE &&
+         device_->enabledVulkan12Features().drawIndirectCount == VK_TRUE;
 }
 
 void BimManager::writeMeshletResidencyDescriptorSet(
@@ -4379,6 +4389,7 @@ void BimManager::ensureDrawCompactionCapacity(BimDrawCompactionSlot slotId,
   slot.stats.countBufferBytes = sizeof(uint32_t);
   slot.stats.outputCapacity = requiredOutputCapacity;
   slot.stats.computeReady =
+      drawCompactionSupported() &&
       drawCompactionPipeline_ != VK_NULL_HANDLE &&
       drawCompactionDescriptorSets_[drawCompactionSlotIndex(slotId)] !=
           VK_NULL_HANDLE;
@@ -4429,7 +4440,8 @@ void BimManager::writeDrawCompactionDescriptorSet(
                          static_cast<uint32_t>(writes.size()), writes.data(), 0,
                          nullptr);
   slot.descriptorsDirty = false;
-  slot.stats.computeReady = drawCompactionPipeline_ != VK_NULL_HANDLE;
+  slot.stats.computeReady =
+      drawCompactionSupported() && drawCompactionPipeline_ != VK_NULL_HANDLE;
   slot.dispatchPending =
       slot.stats.computeReady && slot.stats.inputDrawCount > 0u &&
       !slot.stats.drawsValid && visibilityMaskReadyForDrawCompaction();
@@ -4440,10 +4452,12 @@ void BimManager::prepareDrawCompaction(
     BimDrawCompactionSlot slotId, const std::vector<DrawCommand> &commands) {
   BimDrawCompactionSlotResources &slot =
       drawCompactionSlots_[drawCompactionSlotIndex(slotId)];
-  if (commands.empty() || meshletResidencyBuffer_.buffer == VK_NULL_HANDLE ||
+  if (!drawCompactionSupported() || commands.empty() ||
+      meshletResidencyBuffer_.buffer == VK_NULL_HANDLE ||
       meshletResidencyStats_.objectCount == 0u) {
     slot.stats.drawsValid = false;
     slot.stats.inputDrawCount = 0u;
+    slot.stats.computeReady = false;
     slot.inputSourceData = nullptr;
     slot.inputSourceSize = 0u;
     slot.inputSourceRevision = 0u;
@@ -4481,11 +4495,7 @@ void BimManager::prepareDrawCompaction(
   slot.dispatchPending = false;
   slot.stats.dispatchPending = false;
 
-  size_t outputCapacity = 0u;
-  for (const DrawCommand &command : commands) {
-    outputCapacity += std::max(command.instanceCount, 1u);
-  }
-  outputCapacity = std::min(outputCapacity, objectData_.size());
+  const size_t outputCapacity = bimDrawCompactionOutputCapacity(commands);
   if (outputCapacity == 0u) {
     return;
   }
@@ -4535,7 +4545,8 @@ void BimManager::prepareDrawCompaction(
 }
 
 void BimManager::recordDrawCompactionUpdate(VkCommandBuffer cmd) {
-  if (cmd == VK_NULL_HANDLE || drawCompactionPipeline_ == VK_NULL_HANDLE ||
+  if (!drawCompactionSupported() || cmd == VK_NULL_HANDLE ||
+      drawCompactionPipeline_ == VK_NULL_HANDLE ||
       drawCompactionPipelineLayout_ == VK_NULL_HANDLE ||
       meshletResidencyStats_.objectCount == 0u ||
       !visibilityMaskReadyForDrawCompaction()) {
@@ -4614,7 +4625,8 @@ BimManager::drawCompactionStats(BimDrawCompactionSlot slot) const {
 bool BimManager::drawCompactionReady(BimDrawCompactionSlot slotId) const {
   const size_t slotIndex = drawCompactionSlotIndex(slotId);
   const BimDrawCompactionSlotResources &slot = drawCompactionSlots_[slotIndex];
-  return visibilityMaskReadyForDrawCompaction() && slot.stats.drawsValid &&
+  return drawCompactionSupported() && visibilityMaskReadyForDrawCompaction() &&
+         slot.stats.drawsValid &&
          slot.indirectBuffer.buffer != VK_NULL_HANDLE &&
          slot.countBuffer.buffer != VK_NULL_HANDLE;
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -15,6 +16,7 @@ struct BimDrawCompactionPlanSource {
 };
 
 struct BimDrawCompactionPlanInputs {
+  bool meshCompactionEnabled{true};
   const std::vector<DrawCommand> *opaqueSingleSided{nullptr};
   const std::vector<DrawCommand> *opaqueWindingFlipped{nullptr};
   const std::vector<DrawCommand> *opaqueDoubleSided{nullptr};
@@ -40,6 +42,9 @@ private:
 
 [[nodiscard]] BimDrawCompactionPlanInputs
 makeBimDrawCompactionPlanInputs(const BimManager &bimManager);
+
+[[nodiscard]] size_t
+bimDrawCompactionOutputCapacity(const std::vector<DrawCommand> &commands);
 
 [[nodiscard]] std::vector<BimDrawCompactionPlanSource>
 buildBimDrawCompactionPlan(const BimDrawCompactionPlanInputs &inputs);

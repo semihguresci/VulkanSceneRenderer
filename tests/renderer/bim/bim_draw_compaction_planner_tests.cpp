@@ -9,6 +9,7 @@ namespace {
 
 using container::renderer::BimDrawCompactionPlanInputs;
 using container::renderer::BimDrawCompactionSlot;
+using container::renderer::bimDrawCompactionOutputCapacity;
 using container::renderer::buildBimDrawCompactionPlan;
 using container::renderer::DrawCommand;
 
@@ -108,6 +109,47 @@ TEST(BimDrawCompactionPlannerTests, IncludesNativePointAndCurveSlots) {
   EXPECT_EQ(plan[2].commands, &nativeCurveOpaque);
   EXPECT_EQ(plan[3].slot, BimDrawCompactionSlot::NativeCurveTransparent);
   EXPECT_EQ(plan[3].commands, &nativeCurveTransparent);
+}
+
+TEST(BimDrawCompactionPlannerTests,
+     MeshCompactionCanBeDisabledWithoutDroppingNativePrimitiveSlots) {
+  const auto opaqueSingleSided = drawCommands(30u);
+  const auto transparentSingleSided = drawCommands(31u);
+  const auto nativePointOpaque = drawCommands(32u);
+  const auto nativeCurveTransparent = drawCommands(33u);
+
+  const auto plan = buildBimDrawCompactionPlan(
+      {.meshCompactionEnabled = false,
+       .opaqueSingleSided = &opaqueSingleSided,
+       .transparentSingleSided = &transparentSingleSided,
+       .nativePointOpaque = &nativePointOpaque,
+       .nativeCurveTransparent = &nativeCurveTransparent});
+
+  ASSERT_EQ(plan.size(), 2u);
+  EXPECT_EQ(plan[0].slot, BimDrawCompactionSlot::NativePointOpaque);
+  EXPECT_EQ(plan[0].commands, &nativePointOpaque);
+  EXPECT_EQ(plan[1].slot, BimDrawCompactionSlot::NativeCurveTransparent);
+  EXPECT_EQ(plan[1].commands, &nativeCurveTransparent);
+}
+
+TEST(BimDrawCompactionPlannerTests,
+     OutputCapacityCountsEveryDrawInstanceWithoutObjectCountClamp) {
+  const std::vector<DrawCommand> commands = {
+      DrawCommand{.objectIndex = 0u,
+                  .firstIndex = 0u,
+                  .indexCount = 3u,
+                  .instanceCount = 3u},
+      DrawCommand{.objectIndex = 3u,
+                  .firstIndex = 3u,
+                  .indexCount = 3u,
+                  .instanceCount = 2u},
+      DrawCommand{.objectIndex = 5u,
+                  .firstIndex = 6u,
+                  .indexCount = 3u,
+                  .instanceCount = 0u},
+  };
+
+  EXPECT_EQ(bimDrawCompactionOutputCapacity(commands), 6u);
 }
 
 } // namespace

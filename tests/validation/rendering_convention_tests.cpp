@@ -605,11 +605,18 @@ TEST(RenderingConventionTests,
       readRepoTextFile("shaders/local_shadow_common.slang");
 
   EXPECT_TRUE(contains(localShadow, "LOCAL_SHADOW_POISSON_SAMPLE_COUNT = 32u"));
+  EXPECT_TRUE(
+      contains(localShadow, "LOCAL_SHADOW_PCF_FAST_SAMPLE_COUNT = 12u"));
+  EXPECT_TRUE(contains(localShadow, "LocalShadowPcfSampleCount"));
+  EXPECT_TRUE(contains(localShadow, "filterRadiusTexels <= 1.5"));
   EXPECT_TRUE(contains(localShadow, "LocalShadowPoissonOffset"));
   EXPECT_TRUE(contains(localShadow, "LocalShadowStableRotation"));
   EXPECT_TRUE(contains(localShadow, "RotateLocalShadowPoissonOffset"));
+  EXPECT_TRUE(contains(localShadow,
+                       "uint sampleCount = "
+                       "LocalShadowPcfSampleCount(filterRadiusTexels)"));
   EXPECT_TRUE(
-      contains(localShadow, "sampleIndex < LOCAL_SHADOW_POISSON_SAMPLE_COUNT"));
+      contains(localShadow, "sampleIndex < sampleCount"));
   EXPECT_FALSE(contains(localShadow, "for (int y = -3; y <= 3; ++y)"));
   EXPECT_FALSE(contains(localShadow, "for (int x = -3; x <= 3; ++x)"));
 }
@@ -1287,6 +1294,8 @@ TEST(RenderingConventionTests,
       readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
   const std::string lightingManager =
       readRepoTextFile("src/renderer/lighting/LightingManager.cpp");
+  const std::string localShadowAllocator = readRepoTextFile(
+      "include/Container/renderer/lighting/LocalShadowLayerAllocator.h");
   const std::string shadowManager =
       readRepoTextFile("src/renderer/shadow/ShadowManager.cpp");
 
@@ -1316,14 +1325,29 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(contains(localShadow, "SampleCmpLevelZero"));
   EXPECT_TRUE(contains(localShadow,
                        "bool LocalShadowMapsEnabled(LightingBuffer lighting"));
-  EXPECT_TRUE(contains(localShadow, "lighting.shadowEnabled != 0u"));
+  const size_t lightingBufferLocalShadowStart =
+      localShadow.find("bool LocalShadowMapsEnabled(LightingBuffer lighting");
+  ASSERT_NE(lightingBufferLocalShadowStart, std::string::npos);
+  const size_t lightingBufferLocalShadowEnd =
+      localShadow.find("uint LocalShadowBaseLayerFromPointLight",
+                       lightingBufferLocalShadowStart);
+  ASSERT_NE(lightingBufferLocalShadowEnd, std::string::npos);
+  const std::string lightingBufferLocalShadowBlock = localShadow.substr(
+      lightingBufferLocalShadowStart,
+      lightingBufferLocalShadowEnd - lightingBufferLocalShadowStart);
+  EXPECT_TRUE(contains(lightingBufferLocalShadowBlock,
+                       "LocalShadowMapsEnabled(lighting.localShadowEnabled, "
+                       "localShadow)"));
+  EXPECT_FALSE(contains(lightingBufferLocalShadowBlock,
+                        "lighting.shadowEnabled"));
   EXPECT_TRUE(contains(localShadow, "LocalShadowSoftFilterRadiusTexels"));
   EXPECT_TRUE(contains(localShadow, "localShadow.filterSettings.y"));
   EXPECT_TRUE(contains(localShadow, "layer.params.w"));
   EXPECT_TRUE(contains(localShadow, "sourceRadiusWorld / texelSizeWorld"));
   EXPECT_FALSE(contains(localShadow, "ddx("));
   EXPECT_FALSE(contains(localShadow, "ddy("));
-  EXPECT_TRUE(contains(lightingManager, "hasFiniteLocalShadowRange"));
+  EXPECT_TRUE(contains(localShadowAllocator, "hasFiniteLocalShadowRange"));
+  EXPECT_TRUE(contains(lightingManager, "LocalShadowLayerAllocator.h"));
   EXPECT_TRUE(contains(shadowManager, "hasFiniteLocalShadowRange"));
   EXPECT_TRUE(
       contains(shadowManager, "kLocalShadowSoftFilterRadiusMultiplier"));
@@ -1363,8 +1387,23 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(contains(lightingPassRecorder, ".localShadowEnabled ="));
   EXPECT_TRUE(
       contains(lightingPassRecorder, "shadowSettings.localContactVisibility"));
-  EXPECT_TRUE(contains(lightingPassRecorder,
-                       "lightingManager->lightingData().shadowEnabled != 0u"));
+  const size_t cpuLocalShadowPredicateStart =
+      lightingPassRecorder.find("const uint32_t localShadowEnabled =");
+  ASSERT_NE(cpuLocalShadowPredicateStart, std::string::npos);
+  const size_t cpuLocalShadowPredicateEnd =
+      lightingPassRecorder.find("const DeferredPointLightingDrawPlan",
+                                cpuLocalShadowPredicateStart);
+  ASSERT_NE(cpuLocalShadowPredicateEnd, std::string::npos);
+  const std::string cpuLocalShadowPredicateBlock =
+      lightingPassRecorder.substr(cpuLocalShadowPredicateStart,
+                                  cpuLocalShadowPredicateEnd -
+                                      cpuLocalShadowPredicateStart);
+  EXPECT_TRUE(contains(cpuLocalShadowPredicateBlock,
+                       "lightingManager->lightingData().localShadowEnabled"));
+  EXPECT_TRUE(contains(cpuLocalShadowPredicateBlock,
+                       "p.shadows.localShadowData->counts.w != 0u"));
+  EXPECT_FALSE(contains(cpuLocalShadowPredicateBlock,
+                        "lightingManager->lightingData().shadowEnabled"));
   EXPECT_TRUE(contains(sceneData, "bool localContactVisibility{true}"));
   EXPECT_TRUE(contains(guiManager, "Local contact visibility"));
   EXPECT_TRUE(contains(recorder, "pushConstants.contactVisibilityEnabled"));
@@ -1394,7 +1433,8 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(contains(pointLight, "!isfinite(depth)"));
   EXPECT_TRUE(contains(pointLight, "TryReconstructWorldPosition"));
   EXPECT_TRUE(contains(pointLight, "bool useLocalShadowMap"));
-  EXPECT_TRUE(contains(pointLight, "if (pc.contactVisibilityEnabled != 0u)"));
+  EXPECT_TRUE(
+      contains(pointLight, "if (pc.contactVisibilityEnabled != 0u &&"));
   EXPECT_FALSE(
       contains(pointLight, "else if (pc.contactVisibilityEnabled != 0u)"));
   EXPECT_TRUE(contains(pointLight,
@@ -1419,7 +1459,7 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(contains(tiledLighting, "TryReconstructWorldPosition"));
   EXPECT_TRUE(contains(tiledLighting, "bool useLocalShadowMap"));
   EXPECT_TRUE(
-      contains(tiledLighting, "if (pc.contactVisibilityEnabled != 0u)"));
+      contains(tiledLighting, "if (pc.contactVisibilityEnabled != 0u &&"));
   EXPECT_FALSE(
       contains(tiledLighting, "else if (pc.contactVisibilityEnabled != 0u)"));
   EXPECT_TRUE(contains(tiledLighting,
@@ -1469,6 +1509,60 @@ TEST(
       contains(tiledLighting, "geometricNormal, light.positionRadius.xyz"));
   EXPECT_TRUE(contains(tiledLighting, "gDepthTexture"));
   EXPECT_TRUE(contains(tiledLighting, "gNormalTexture"));
+}
+
+TEST(RenderingConventionTests,
+     LocalPointContactTracingSkipsNegligibleRadianceAndOccludedLights) {
+  const std::string pointLight = readRepoTextFile("shaders/point_light.slang");
+  const std::string tiledLighting =
+      readRepoTextFile("shaders/tiled_lighting.slang");
+
+  auto expectContactGate = [](const std::string &shader,
+                              const char *shaderName) {
+    EXPECT_TRUE(
+        contains(shader, "LOCAL_CONTACT_SHADOW_RADIANCE_THRESHOLD"))
+        << shaderName;
+    EXPECT_TRUE(
+        contains(shader, "LOCAL_CONTACT_SHADOW_VISIBILITY_THRESHOLD"))
+        << shaderName;
+
+    const size_t helperStart =
+        shader.find("bool ShouldTracePointLightContactShadow");
+    ASSERT_NE(helperStart, std::string::npos) << shaderName;
+    const size_t helperEnd = shader.find("[shader(\"fragment\")]", helperStart);
+    ASSERT_NE(helperEnd, std::string::npos) << shaderName;
+    const std::string helperBlock =
+        shader.substr(helperStart, helperEnd - helperStart);
+    EXPECT_TRUE(contains(helperBlock, "all(isfinite(radiance))"))
+        << shaderName;
+    EXPECT_TRUE(contains(helperBlock, "max(radiance, 0.0.xxx)"))
+        << shaderName;
+    EXPECT_TRUE(contains(helperBlock,
+                         "radianceMagnitude > "
+                         "LOCAL_CONTACT_SHADOW_RADIANCE_THRESHOLD"))
+        << shaderName;
+    EXPECT_TRUE(contains(helperBlock,
+                         "lightVisibility > "
+                         "LOCAL_CONTACT_SHADOW_VISIBILITY_THRESHOLD"))
+        << shaderName;
+
+    const size_t contactCall =
+        shader.find("ScreenSpacePointLightContactVisibility(");
+    ASSERT_NE(contactCall, std::string::npos) << shaderName;
+    const size_t contactGate = shader.rfind(
+        "ShouldTracePointLightContactShadow(radiance, lightVisibility)",
+        contactCall);
+    ASSERT_NE(contactGate, std::string::npos) << shaderName;
+    EXPECT_LT(contactGate, contactCall) << shaderName;
+
+    const size_t visibilityScale =
+        shader.find("radiance *= lightVisibility", contactCall);
+    ASSERT_NE(visibilityScale, std::string::npos) << shaderName;
+    EXPECT_LT(contactCall, visibilityScale) << shaderName;
+  };
+
+  expectContactGate(pointLight, "point_light.slang");
+  expectContactGate(tiledLighting, "tiled_lighting.slang");
 }
 
 TEST(RenderingConventionTests,
@@ -1948,6 +2042,61 @@ TEST(RenderingConventionTests, AreaLightShadersUseSampledIntegration) {
 }
 
 TEST(RenderingConventionTests,
+     AreaLightShadowVisibilitySkipsUnshadowedPackedAreaRefs) {
+  const std::string directional =
+      readRepoTextFile("shaders/deferred_directional.slang");
+  const std::string transparent =
+      readRepoTextFile("shaders/forward_transparent.slang");
+
+  const size_t deferredAreaLightStart =
+      directional.find("float3 EvaluateDeferredAreaLight");
+  ASSERT_NE(deferredAreaLightStart, std::string::npos);
+  const size_t deferredAreaLightEnd =
+      directional.find("[shader(\"fragment\")]", deferredAreaLightStart);
+  ASSERT_NE(deferredAreaLightEnd, std::string::npos);
+  const std::string deferredAreaLightBlock = directional.substr(
+      deferredAreaLightStart, deferredAreaLightEnd - deferredAreaLightStart);
+  EXPECT_TRUE(contains(
+      deferredAreaLightBlock,
+      "uint areaShadowRef = PackedLocalShadowAreaRef(uLocalShadow, "
+      "areaIndex)"));
+  EXPECT_TRUE(contains(deferredAreaLightBlock,
+                       "LocalShadowMapsEnabled(uLighting, uLocalShadow) &&\n"
+                       "        areaShadowRef != 0u"));
+  const size_t deferredRefGate =
+      deferredAreaLightBlock.find("areaShadowRef != 0u");
+  ASSERT_NE(deferredRefGate, std::string::npos);
+  const size_t deferredVisibilityLoop = deferredAreaLightBlock.find(
+      "visibilitySample < AREA_LIGHT_SHADOW_VISIBILITY_SAMPLE_COUNT");
+  ASSERT_NE(deferredVisibilityLoop, std::string::npos);
+  EXPECT_LT(deferredRefGate, deferredVisibilityLoop);
+
+  const size_t transparentAreaLightStart =
+      transparent.find("for (uint i = 0u; i < areaLightCount; ++i)");
+  ASSERT_NE(transparentAreaLightStart, std::string::npos);
+  const size_t transparentAreaLightEnd =
+      transparent.find("if ((vertIn.flags & kPbrObjectFlagUnlit) == 0u)",
+                       transparentAreaLightStart);
+  ASSERT_NE(transparentAreaLightEnd, std::string::npos);
+  const std::string transparentAreaLightBlock =
+      transparent.substr(transparentAreaLightStart,
+                         transparentAreaLightEnd - transparentAreaLightStart);
+  EXPECT_TRUE(contains(
+      transparentAreaLightBlock,
+      "uint areaShadowRef = PackedLocalShadowAreaRef(uLocalShadow, i)"));
+  EXPECT_TRUE(contains(transparentAreaLightBlock,
+                       "LocalShadowMapsEnabled(uLighting, uLocalShadow) &&\n"
+                       "                areaShadowRef != 0u"));
+  const size_t transparentRefGate =
+      transparentAreaLightBlock.find("areaShadowRef != 0u");
+  ASSERT_NE(transparentRefGate, std::string::npos);
+  const size_t transparentVisibilityLoop = transparentAreaLightBlock.find(
+      "visibilitySample < AREA_LIGHT_SHADOW_VISIBILITY_SAMPLE_COUNT");
+  ASSERT_NE(transparentVisibilityLoop, std::string::npos);
+  EXPECT_LT(transparentRefGate, transparentVisibilityLoop);
+}
+
+TEST(RenderingConventionTests,
      DeferredPointLightsUseMaterialFlagsForThinSurfaces) {
   const std::string brdfCommon = readRepoTextFile("shaders/brdf_common.slang");
   const std::string pointLight = readRepoTextFile("shaders/point_light.slang");
@@ -2227,8 +2376,8 @@ TEST(RenderingConventionTests, SectionPlanePushConstantsMatchShaderContracts) {
   EXPECT_TRUE(contains(bimManager, "sectionCapCrossesObject"));
   EXPECT_TRUE(
       contains(rendererFrontend, "hoverPickCache_.sectionPlaneEnabled"));
-  EXPECT_TRUE(
-      contains(rendererFrontend, "depthVisibility_.sectionPlaneEnabled"));
+  EXPECT_TRUE(contains(rendererFrontend, "frame.sectionPlaneEnabled"));
+  EXPECT_TRUE(contains(rendererFrontend, "frame->sectionPlaneEnabled"));
 }
 
 TEST(RenderingConventionTests, SectionedSelectionUsesVisibleGpuPickFirst) {
@@ -2630,15 +2779,86 @@ TEST(RenderingConventionTests, LocalPointShadowsHaveRuntimeBudget) {
       readRepoTextFile("include/Container/utility/SceneData.h");
   const std::string lightingManager =
       readRepoTextFile("src/renderer/lighting/LightingManager.cpp");
+  const std::string localShadowAllocator = readRepoTextFile(
+      "include/Container/renderer/lighting/LocalShadowLayerAllocator.h");
+  const std::string shadowHeader =
+      readRepoTextFile("include/Container/renderer/shadow/ShadowManager.h");
+  const std::string shadowManager =
+      readRepoTextFile("src/renderer/shadow/ShadowManager.cpp");
+  const std::string testsCmake =
+      readRepoTextFile("tests/CMakeLists.tests.cmake");
   const std::string gui = readRepoTextFile("src/utility/GuiManager.cpp");
   const std::string frontend =
       readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
 
   EXPECT_TRUE(contains(sceneData, "uint32_t localShadowPointBudget{1}"));
-  EXPECT_TRUE(contains(lightingManager, "shadowedPointLightCount"));
+  EXPECT_TRUE(contains(sceneData, "uint32_t localShadowLayerBudget{8}"));
+  EXPECT_TRUE(contains(lightingManager, "LocalShadowLayerAllocator.h"));
+  EXPECT_TRUE(contains(lightingManager, "generatedLightingSettingsDiffer"));
+  EXPECT_FALSE(contains(lightingManager, "lightingSettingsDiffer"));
+  EXPECT_TRUE(contains(lightingManager, "kMaxLocalShadowOmniPointBudget"));
   EXPECT_TRUE(contains(lightingManager, "localShadowPointBudget"));
+  EXPECT_TRUE(contains(lightingManager, "localShadowLayerBudget"));
+  EXPECT_TRUE(contains(
+      localShadowAllocator,
+      "inline constexpr uint32_t kMaxLocalShadowOmniPointBudget =\n"
+      "    container::gpu::kMaxShadowedLocalLightLayers /\n"
+      "    container::gpu::kLocalShadowPointFaceCount;"));
+  EXPECT_FALSE(contains(
+      localShadowAllocator,
+      "kMaxShadowedLocalLightLayers /\n"
+      "    container::gpu::kLocalShadowSpotLayerCount;"));
+  EXPECT_TRUE(contains(localShadowAllocator, "assignedOmniPointCount"));
+  EXPECT_TRUE(contains(localShadowAllocator, "assignedSpotCount"));
+  EXPECT_TRUE(contains(localShadowAllocator, "usedLayerCount"));
+  EXPECT_TRUE(contains(localShadowAllocator,
+                       "!isSpot && result.assignedOmniPointCount >= "
+                       "settings.omniPointBudget"));
+  EXPECT_TRUE(contains(localShadowAllocator,
+                       "isSpot ? container::gpu::kLocalShadowSpotLayerCount"));
+  EXPECT_TRUE(contains(
+      lightingManager,
+      "lightingSettings_.localShadowLayerBudget =\n"
+      "      std::min(settings.localShadowLayerBudget, "
+      "kMaxShadowedLocalLightLayers)"));
+  const size_t localShadowAssignStart =
+      lightingManager.find("void LightingManager::assignLocalShadowLayerMetadata");
+  ASSERT_NE(localShadowAssignStart, std::string::npos);
+  const size_t localShadowAssignEnd =
+      lightingManager.find("void LightingManager::publishPointLights",
+                           localShadowAssignStart);
+  ASSERT_NE(localShadowAssignEnd, std::string::npos);
+  const std::string localShadowAssignBlock =
+      lightingManager.substr(localShadowAssignStart,
+                             localShadowAssignEnd - localShadowAssignStart);
+  EXPECT_TRUE(contains(localShadowAssignBlock,
+                       "container::renderer::assignLocalShadowLayerMetadata"));
+  EXPECT_TRUE(contains(localShadowAssignBlock,
+                       ".omniPointBudget = "
+                       "lightingSettings_.localShadowPointBudget"));
+  EXPECT_TRUE(contains(localShadowAssignBlock,
+                       ".layerBudget = lightingSettings_.localShadowLayerBudget"));
+  EXPECT_FALSE(contains(localShadowAssignBlock, "shadowedPointLightCount"));
+  EXPECT_TRUE(contains(shadowHeader, "uint32_t localShadowLayerBudget"));
+  EXPECT_TRUE(contains(shadowManager, "uint32_t localShadowLayerBudget"));
+  EXPECT_TRUE(contains(
+      shadowManager,
+      "const uint32_t activeLayerBudget =\n"
+      "      std::min(localShadowLayerBudget, kMaxShadowedLocalLightLayers)"));
+  EXPECT_TRUE(contains(shadowManager,
+                       "baseLayer + layerCount > activeLayerBudget"));
+  EXPECT_TRUE(contains(
+      shadowManager,
+      "nextLayer + kLocalShadowAreaLayerCount > activeLayerBudget"));
+  EXPECT_TRUE(contains(testsCmake, "local_shadow_layer_allocator_tests"));
   EXPECT_TRUE(contains(gui, "Shadowed Point Light Budget"));
+  EXPECT_TRUE(contains(gui, "Local Shadow Layer Budget"));
+  EXPECT_TRUE(contains(gui, "container::gpu::kMaxShadowedLocalLightLayers"));
   EXPECT_TRUE(contains(frontend, "guiLightingSettings.localShadowPointBudget"));
+  EXPECT_TRUE(contains(frontend, "guiLightingSettings.localShadowLayerBudget"));
+  EXPECT_TRUE(contains(frontend,
+                       "currentLightingSettings.localShadowLayerBudget"));
+  EXPECT_TRUE(contains(frontend, "updateLocalShadows("));
 }
 
 TEST(RenderingConventionTests, LightingManagerDoesNotAutoGeneratePointLights) {
@@ -2693,7 +2913,7 @@ TEST(RenderingConventionTests, SceneControlsExposePrimitiveAddMenu) {
   const std::string addPrimitiveBlock =
       frontend.substr(addPrimitiveStart, addPrimitiveEnd - addPrimitiveStart);
   EXPECT_TRUE(contains(addPrimitiveBlock, "syncSceneStateFromController()"));
-  EXPECT_TRUE(contains(addPrimitiveBlock, "updateObjectBuffer()"));
+  EXPECT_TRUE(contains(addPrimitiveBlock, "refreshSceneObjectData()"));
   EXPECT_TRUE(contains(addPrimitiveBlock, "syncSceneProviders()"));
 }
 
@@ -2992,6 +3212,74 @@ TEST(RenderingConventionTests,
       "pushConstants.adaptationRate = inputs.exposureSettings.adaptationRate"));
 }
 
+TEST(RenderingConventionTests,
+     ExposureManagerOwnsAdaptationResourcesPerImage) {
+  const std::string exposureHeader =
+      readRepoTextFile("include/Container/renderer/effects/ExposureManager.h");
+  const std::string exposureManager =
+      readRepoTextFile("src/renderer/effects/ExposureManager.cpp");
+  const std::string deferredRasterTechnique =
+      readRepoTextFile("src/renderer/deferred/DeferredRasterTechnique.cpp");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+  const std::string frameResourceHeader =
+      readRepoTextFile("include/Container/renderer/resources/"
+                       "FrameResourceManager.h");
+  const std::string frameResourceManager =
+      readRepoTextFile("src/renderer/resources/FrameResourceManager.cpp");
+
+  EXPECT_TRUE(contains(exposureHeader,
+                       "void createResources(const std::filesystem::path& "
+                       "shaderDir,\n                       uint32_t "
+                       "descriptorSetCount = 1)"));
+  EXPECT_TRUE(contains(exposureHeader, "void dispatch(uint32_t imageIndex"));
+  EXPECT_TRUE(contains(exposureHeader,
+                       "void collectReadback(uint32_t imageIndex"));
+  EXPECT_TRUE(contains(exposureHeader,
+                       "VkBuffer exposureStateBuffer(uint32_t imageIndex) const"));
+  EXPECT_TRUE(contains(exposureHeader,
+                       "std::span<const container::gpu::AllocatedBuffer>"));
+  EXPECT_TRUE(contains(exposureHeader, "exposureStateBuffers() const"));
+  EXPECT_TRUE(contains(exposureHeader,
+                       "std::vector<container::gpu::AllocatedBuffer> "
+                       "histogramBuffers_"));
+  EXPECT_TRUE(contains(exposureHeader,
+                       "std::vector<container::gpu::AllocatedBuffer> "
+                       "exposureStateBuffers_"));
+  EXPECT_TRUE(contains(exposureHeader,
+                       "std::vector<VkDescriptorSet> descriptorSets_"));
+
+  EXPECT_TRUE(contains(exposureManager, "resizeFrameResources(imageCount)"));
+  EXPECT_TRUE(contains(exposureManager, "histogramBuffers_[imageIndex]"));
+  EXPECT_TRUE(contains(exposureManager, "exposureStateBuffers_[imageIndex]"));
+  EXPECT_TRUE(contains(exposureManager, "descriptorSets_[imageIndex]"));
+  EXPECT_TRUE(contains(exposureManager,
+                       "updateDescriptorSet(imageIndex, sceneColorView)"));
+
+  EXPECT_TRUE(contains(deferredRasterTechnique,
+                       "dispatch(p.runtime.imageIndex"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "exposureManager->createResources(\n"
+                       "      container::util::executableDirectory(),\n"
+                       "      static_cast<uint32_t>("));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "exposureStateBuffers =\n"
+                       "          subs_.exposureManager->exposureStateBuffers()"));
+  EXPECT_TRUE(contains(frameResourceHeader,
+                       "std::span<const container::gpu::AllocatedBuffer> "
+                       "exposureStateBuffers"));
+  EXPECT_TRUE(contains(frameResourceManager,
+                       "const auto& exposureStateBuffer = "
+                       "exposureStateBuffers[std::min("));
+
+  EXPECT_FALSE(contains(exposureHeader,
+                        "container::gpu::AllocatedBuffer histogramBuffer_{}"));
+  EXPECT_FALSE(contains(exposureHeader,
+                        "container::gpu::AllocatedBuffer exposureStateBuffer_{}"));
+  EXPECT_FALSE(contains(exposureHeader,
+                        "VkDescriptorSet descriptorSet_{VK_NULL_HANDLE}"));
+}
+
 TEST(RenderingConventionTests, DeferredDepthReadOnlyTransitionUsesRecorder) {
   const std::string deferredRasterTechnique =
       readRepoTextFile("src/renderer/deferred/DeferredRasterTechnique.cpp");
@@ -3196,6 +3484,442 @@ TEST(RenderingConventionTests, DeferredFrustumCullUsesPlannerAndRecorder) {
       contains(testsCmake, "deferred_raster_frustum_cull_pass_planner_tests"));
   EXPECT_TRUE(
       contains(testsCmake, "deferred_raster_frustum_cull_pass_recorder_tests"));
+}
+
+TEST(RenderingConventionTests,
+     SceneControllerTracksObjectBufferUploadsPerDestinationBuffer) {
+  const std::string sceneControllerHeader =
+      readRepoTextFile("include/Container/renderer/scene/SceneController.h");
+  const std::string sceneController =
+      readRepoTextFile("src/renderer/scene/SceneController.cpp");
+
+  EXPECT_TRUE(contains(sceneControllerHeader,
+                       "std::unordered_map<VkBuffer, uint64_t> "
+                       "objectBufferUploadRevisions_"));
+  EXPECT_TRUE(
+      contains(sceneControllerHeader, "uint64_t objectBufferUploadRevision_"));
+  EXPECT_TRUE(contains(sceneController, "++objectBufferUploadRevision_"));
+  EXPECT_TRUE(contains(sceneController,
+                       "objectBufferUploadRevisions_.find(objectBuffer.buffer)"));
+  EXPECT_TRUE(contains(sceneController,
+                       "uploadedRevision != objectBufferUploadRevision_"));
+  EXPECT_TRUE(contains(sceneController,
+                       "objectBufferUploadRevisions_[objectBuffer.buffer]"));
+  EXPECT_FALSE(contains(sceneControllerHeader, "objectBufferUploadDirty_"));
+  EXPECT_FALSE(contains(sceneController, "objectBufferUploadDirty_ = false"));
+}
+
+TEST(RenderingConventionTests,
+     SceneManagerCanWritePerImageObjectBufferDescriptors) {
+  const std::string sceneManagerHeader =
+      readRepoTextFile("include/Container/utility/SceneManager.h");
+  const std::string sceneManager =
+      readRepoTextFile("src/utility/SceneManager.cpp");
+
+  EXPECT_TRUE(contains(sceneManagerHeader,
+                       "std::span<const container::gpu::AllocatedBuffer> "
+                       "objectBuffers"));
+  EXPECT_TRUE(contains(sceneManager,
+                       "const auto& objectBuffer = objectBuffers[std::min("));
+  EXPECT_TRUE(contains(sceneManager,
+                       "writeDescriptorSetContents(descriptorSets_[i], "
+                       "cameraBuffers[i], objectBuffer)"));
+  EXPECT_TRUE(contains(sceneManager,
+                       "writeDescriptorSetContents(auxiliaryDescriptorSets_[i], "
+                       "cameraBuffers[i],"));
+  EXPECT_TRUE(contains(sceneManager,
+                       "std::span<const container::gpu::AllocatedBuffer>("
+                       "&objectBuffer, 1u)"));
+}
+
+TEST(RenderingConventionTests,
+     ShadowCullManagerTracksObjectSsboDescriptorsPerImage) {
+  const std::string shadowCullHeader =
+      readRepoTextFile("include/Container/renderer/shadow/ShadowCullManager.h");
+  const std::string shadowCullManager =
+      readRepoTextFile("src/renderer/shadow/ShadowCullManager.cpp");
+  const std::string shadowFramePassRecorder = readRepoTextFile(
+      "src/renderer/shadow/ShadowCascadeFramePassRecorder.cpp");
+
+  EXPECT_TRUE(contains(shadowCullHeader,
+                       "void updateObjectSsboDescriptor(uint32_t imageIndex"));
+  EXPECT_TRUE(contains(shadowCullHeader,
+                       "void uploadDrawCommands(uint32_t imageIndex"));
+  EXPECT_TRUE(contains(shadowCullHeader,
+                       "indirectDrawBuffer(uint32_t imageIndex"));
+  EXPECT_TRUE(contains(shadowCullHeader,
+                       "drawCountBuffer(uint32_t imageIndex"));
+  EXPECT_TRUE(contains(shadowCullHeader, "std::vector<VkBuffer> objectSsboBuffers_"));
+  EXPECT_TRUE(contains(shadowCullHeader,
+                       "std::vector<VkDeviceSize> objectSsboSizes_"));
+  EXPECT_TRUE(contains(shadowCullHeader, "std::vector<uint32_t> objectCounts_"));
+  EXPECT_TRUE(contains(shadowCullHeader, "inputDrawBuffers_"));
+  EXPECT_TRUE(contains(shadowCullHeader,
+                       "std::vector<std::array<container::gpu::AllocatedBuffer"));
+  EXPECT_TRUE(contains(shadowCullHeader, "lastUploadSourceRevision_"));
+  EXPECT_TRUE(contains(shadowCullHeader, "std::vector<uint32_t> drawCapacities_"));
+  EXPECT_TRUE(contains(shadowCullHeader,
+                       "bool ensureBufferCapacity(uint32_t imageIndex"));
+  EXPECT_TRUE(contains(shadowCullHeader,
+                       "bool canDispatchCascadeCull(uint32_t imageIndex"));
+  EXPECT_TRUE(contains(shadowCullManager,
+                       "updateObjectSsboDescriptor(i, objectBuffer, "
+                       "objectBufferSize)"));
+  EXPECT_TRUE(contains(shadowCullManager,
+                       "const VkBuffer objectSsboBuffer = "
+                       "objectSsboBuffers_[imageIndex]"));
+  EXPECT_TRUE(contains(shadowCullManager,
+                       "objectSsboBuffers_.resize(setCount, "
+                       "fallbackObjectBuffer)"));
+  EXPECT_TRUE(contains(shadowCullManager,
+                       "inputDrawBuffers_[imageIndex]"));
+  EXPECT_TRUE(contains(shadowCullManager,
+                       "indirectDrawBuffers_[imageIndex][cascadeIndex]"));
+  EXPECT_TRUE(contains(shadowCullManager,
+                       "drawCountBuffers_[imageIndex][cascadeIndex]"));
+  EXPECT_TRUE(contains(shadowCullManager,
+                       "buildGpuCullDrawUploadPlan"));
+  EXPECT_TRUE(contains(shadowCullManager,
+                       "maxDrawCount(imageIndex)"));
+  EXPECT_TRUE(contains(shadowCullManager,
+                       "resizePerImageBufferState(imageCount)"));
+  EXPECT_TRUE(contains(shadowCullManager,
+                       "pc.objectCount  = objectCounts_[imageIndex]"));
+  EXPECT_TRUE(contains(shadowFramePassRecorder,
+                       "ensureBufferCapacity(\n"
+                       "        params.runtime.imageIndex"));
+  EXPECT_TRUE(contains(shadowFramePassRecorder,
+                       "uploadDrawCommands(\n"
+                       "        params.runtime.imageIndex"));
+  EXPECT_TRUE(contains(shadowFramePassRecorder,
+                       "indirectDrawBuffer(\n"
+                       "                  p.runtime.imageIndex"));
+  EXPECT_TRUE(contains(shadowFramePassRecorder,
+                       "drawCountBuffer(\n"
+                       "                  p.runtime.imageIndex"));
+  EXPECT_TRUE(contains(shadowFramePassRecorder,
+                       "canDispatchCascadeCull(\n"
+                       "          params.runtime.imageIndex"));
+  EXPECT_FALSE(contains(shadowCullHeader, "VkBuffer objectSsboBuffer_"));
+  EXPECT_FALSE(contains(shadowCullHeader,
+                        "container::gpu::AllocatedBuffer inputDrawBuffer_{}"));
+  EXPECT_FALSE(contains(shadowCullManager,
+                        "objectSsboBuffers_.assign(setCount"));
+}
+
+TEST(RenderingConventionTests,
+     RendererFrontendRoutesSceneObjectBuffersPerImage) {
+  const std::string rendererFrontendHeader =
+      readRepoTextFile("include/Container/renderer/core/RendererFrontend.h");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+
+  EXPECT_TRUE(contains(rendererFrontendHeader,
+                       "std::vector<container::gpu::AllocatedBuffer> objects"));
+  EXPECT_TRUE(
+      contains(rendererFrontendHeader, "std::vector<size_t> objectCapacities"));
+  EXPECT_TRUE(
+      contains(rendererFrontend, "for (auto &objectBuffer : buffers_.objects)"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "buffers_.objects.assign(imageCount, {})"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "buffers_.objectCapacities.assign(imageCount, 0)"));
+  EXPECT_TRUE(contains(rendererFrontend, "buffers_.objects[imageIndex]"));
+  EXPECT_TRUE(
+      contains(rendererFrontend, "buffers_.objectCapacities[imageIndex]"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "updateDescriptorSets(buffers_.cameras, "
+                       "buffers_.objects)"));
+  EXPECT_TRUE(contains(rendererFrontend, "updateObjectSsboDescriptor("));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "imageIndex, buffers_.objects[imageIndex].buffer"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "p.scene.objectBuffer = objectBuffer.buffer"));
+  EXPECT_FALSE(contains(rendererFrontendHeader,
+                        "container::gpu::AllocatedBuffer object{}"));
+  EXPECT_FALSE(contains(rendererFrontend, "buffers_.object.buffer"));
+}
+
+TEST(RenderingConventionTests,
+     RendererFrontendUpdatesOnlyAcquiredObjectBufferDuringFrame) {
+  const std::string rendererFrontendHeader =
+      readRepoTextFile("include/Container/renderer/core/RendererFrontend.h");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+
+  EXPECT_TRUE(
+      contains(rendererFrontendHeader, "void updateObjectBuffer(uint32_t imageIndex)"));
+  EXPECT_TRUE(contains(rendererFrontendHeader, "void updateAllObjectBuffers()"));
+  EXPECT_TRUE(contains(rendererFrontendHeader, "void refreshSceneObjectData()"));
+  EXPECT_TRUE(contains(rendererFrontend, "updateObjectBuffer(imageIndex);"));
+  EXPECT_TRUE(contains(rendererFrontend, "updateAllObjectBuffers();"));
+  EXPECT_TRUE(contains(rendererFrontend, "refreshSceneObjectData();"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "void RendererFrontend::updateObjectBuffer("
+                       "uint32_t imageIndex)"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "void RendererFrontend::updateAllObjectBuffers()"));
+  EXPECT_FALSE(contains(rendererFrontend, "void RendererFrontend::updateObjectBuffer()"));
+}
+
+TEST(RenderingConventionTests,
+     GpuCullManagerRoutesDescriptorsPerImage) {
+  const std::string gpuCullHeader =
+      readRepoTextFile("include/Container/renderer/culling/GpuCullManager.h");
+  const std::string gpuCullManager =
+      readRepoTextFile("src/renderer/culling/GpuCullManager.cpp");
+  const std::string frustumRecorderHeader = readRepoTextFile(
+      "include/Container/renderer/deferred/"
+      "DeferredRasterFrustumCullPassRecorder.h");
+  const std::string frustumRecorder = readRepoTextFile(
+      "src/renderer/deferred/DeferredRasterFrustumCullPassRecorder.cpp");
+  const std::string deferredTechnique =
+      readRepoTextFile("src/renderer/deferred/DeferredRasterTechnique.cpp");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+
+  EXPECT_TRUE(contains(gpuCullHeader, "uint32_t descriptorSetCount"));
+  EXPECT_TRUE(
+      contains(gpuCullHeader, "void recreatePerFrameResources(uint32_t"));
+  EXPECT_TRUE(
+      contains(gpuCullHeader, "void dispatchFrustumCull(VkCommandBuffer cmd,\n"
+                              "                           uint32_t imageIndex"));
+  EXPECT_TRUE(
+      contains(gpuCullHeader, "void dispatchOcclusionCull(VkCommandBuffer cmd,\n"
+                              "                             uint32_t imageIndex"));
+  EXPECT_TRUE(
+      contains(gpuCullHeader, "void updateObjectSsboDescriptor(uint32_t imageIndex"));
+  EXPECT_TRUE(contains(gpuCullHeader, "std::vector<VkDescriptorSet> frustumCullSets_"));
+  EXPECT_TRUE(
+      contains(gpuCullHeader, "std::vector<VkDescriptorSet> occlusionCullSets_"));
+  EXPECT_TRUE(contains(gpuCullHeader, "std::vector<VkBuffer> objectSsboBuffers_"));
+  EXPECT_TRUE(contains(gpuCullManager, "frustumCullSets_[imageIndex]"));
+  EXPECT_TRUE(contains(gpuCullManager, "occlusionCullSets_[imageIndex]"));
+  EXPECT_TRUE(contains(frustumRecorderHeader, "uint32_t imageIndex{0}"));
+  EXPECT_TRUE(contains(frustumRecorder,
+                       "updateObjectSsboDescriptor(inputs.imageIndex"));
+  EXPECT_TRUE(contains(frustumRecorder,
+                       "dispatchFrustumCull(cmd, inputs.imageIndex"));
+  EXPECT_TRUE(contains(deferredTechnique,
+                       ".imageIndex = p.runtime.imageIndex"));
+  EXPECT_TRUE(contains(deferredTechnique,
+                       "dispatchOcclusionCull(\n"
+                       "          cmd, p.runtime.imageIndex"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "gpuCullManager->recreatePerFrameResources("));
+  EXPECT_FALSE(contains(gpuCullHeader, "VkDescriptorSet      frustumCullSet_"));
+  EXPECT_FALSE(contains(gpuCullHeader, "VkBuffer                        objectSsboBuffer_"));
+}
+
+TEST(RenderingConventionTests,
+     GpuCullManagerOwnsCullDataBuffersPerImage) {
+  const std::string gpuCullHeader =
+      readRepoTextFile("include/Container/renderer/culling/GpuCullManager.h");
+  const std::string gpuCullManager =
+      readRepoTextFile("src/renderer/culling/GpuCullManager.cpp");
+  const std::string frustumRecorder = readRepoTextFile(
+      "src/renderer/deferred/DeferredRasterFrustumCullPassRecorder.cpp");
+  const std::string deferredTechnique =
+      readRepoTextFile("src/renderer/deferred/DeferredRasterTechnique.cpp");
+  const std::string deferredScenePassRecorderHeader = readRepoTextFile(
+      "include/Container/renderer/deferred/DeferredRasterScenePassRecorder.h");
+  const std::string deferredScenePassRecorder = readRepoTextFile(
+      "src/renderer/deferred/DeferredRasterScenePassRecorder.cpp");
+  const std::string deferredSceneGpuCullRoutePlanner = readRepoTextFile(
+      "include/Container/renderer/deferred/"
+      "DeferredRasterSceneGpuCullRoutePlanner.h");
+  const std::string sceneRasterPassRecorderHeader = readRepoTextFile(
+      "include/Container/renderer/scene/SceneRasterPassRecorder.h");
+  const std::string sceneRasterPassRecorder =
+      readRepoTextFile("src/renderer/scene/SceneRasterPassRecorder.cpp");
+  const std::string sceneOpaqueDrawRecorderHeader = readRepoTextFile(
+      "include/Container/renderer/scene/SceneOpaqueDrawRecorder.h");
+  const std::string sceneOpaqueDrawRecorder =
+      readRepoTextFile("src/renderer/scene/SceneOpaqueDrawRecorder.cpp");
+
+  EXPECT_TRUE(contains(gpuCullHeader,
+                       "void uploadDrawCommands(uint32_t imageIndex"));
+  EXPECT_TRUE(contains(gpuCullHeader,
+                       "void drawIndirect(VkCommandBuffer cmd, "
+                       "uint32_t imageIndex) const"));
+  EXPECT_TRUE(contains(gpuCullHeader,
+                       "void drawIndirectOccluded(VkCommandBuffer cmd, "
+                       "uint32_t imageIndex) const"));
+  EXPECT_TRUE(contains(gpuCullHeader,
+                       "void scheduleStatsReadback(VkCommandBuffer cmd, "
+                       "uint32_t imageIndex)"));
+  EXPECT_TRUE(contains(gpuCullHeader,
+                       "std::vector<container::gpu::AllocatedBuffer> "
+                       "inputDrawBuffers_"));
+  EXPECT_TRUE(contains(gpuCullHeader,
+                       "std::vector<container::gpu::AllocatedBuffer> "
+                       "indirectDrawBuffers_"));
+  EXPECT_TRUE(contains(gpuCullHeader,
+                       "std::vector<container::gpu::AllocatedBuffer> "
+                       "drawCountBuffers_"));
+  EXPECT_TRUE(contains(gpuCullHeader,
+                       "std::vector<container::gpu::AllocatedBuffer> "
+                       "occlusionIndirectBuffers_"));
+  EXPECT_TRUE(contains(gpuCullHeader,
+                       "std::vector<container::gpu::AllocatedBuffer> "
+                       "occlusionCountBuffers_"));
+  EXPECT_TRUE(contains(gpuCullHeader,
+                       "std::vector<container::gpu::AllocatedBuffer> "
+                       "statsReadbackBuffers_"));
+  EXPECT_TRUE(contains(gpuCullHeader,
+                       "std::vector<const DrawCommand *> "
+                       "lastUploadSourceData_"));
+  EXPECT_TRUE(
+      contains(gpuCullHeader, "std::vector<bool> frustumDrawsValid_"));
+  EXPECT_TRUE(
+      contains(gpuCullHeader, "std::vector<bool> occlusionDrawsValid_"));
+
+  EXPECT_TRUE(contains(gpuCullManager, "inputDrawBuffers_[imageIndex]"));
+  EXPECT_TRUE(contains(gpuCullManager, "indirectDrawBuffers_[imageIndex]"));
+  EXPECT_TRUE(contains(gpuCullManager, "drawCountBuffers_[imageIndex]"));
+  EXPECT_TRUE(
+      contains(gpuCullManager, "occlusionIndirectBuffers_[imageIndex]"));
+  EXPECT_TRUE(contains(gpuCullManager, "occlusionCountBuffers_[imageIndex]"));
+  EXPECT_TRUE(contains(gpuCullManager, "statsReadbackBuffers_[imageIndex]"));
+  EXPECT_TRUE(contains(frustumRecorder,
+                       "uploadDrawCommands(inputs.imageIndex"));
+  EXPECT_TRUE(
+      contains(deferredTechnique,
+               "scheduleStatsReadback(cmd, p.runtime.imageIndex)"));
+
+  EXPECT_TRUE(
+      contains(deferredScenePassRecorderHeader, "uint32_t imageIndex{0}"));
+  EXPECT_TRUE(contains(deferredScenePassRecorder,
+                       "gpuCullManager->frustumDrawsValid(inputs.imageIndex)"));
+  EXPECT_TRUE(contains(deferredScenePassRecorder,
+                       "gpuCullManager->occlusionDrawsValid(inputs.imageIndex)"));
+  EXPECT_TRUE(contains(deferredScenePassRecorder,
+                       "buildDeferredRasterSceneGpuCullRoutePlan"));
+  EXPECT_TRUE(contains(deferredSceneGpuCullRoutePlanner,
+                       "frustumCullActive"));
+  EXPECT_TRUE(contains(deferredSceneGpuCullRoutePlanner,
+                       "frustumDrawsValid"));
+  EXPECT_TRUE(contains(deferredSceneGpuCullRoutePlanner,
+                       "occlusionCullActive"));
+  EXPECT_TRUE(contains(deferredSceneGpuCullRoutePlanner,
+                       "occlusionDrawsValid"));
+  EXPECT_TRUE(contains(deferredScenePassRecorder,
+                       "const GpuCullManager *gpuCullManager = "
+                       "inputs.gpuCullManager"));
+  EXPECT_TRUE(contains(deferredScenePassRecorder,
+                       ".imageIndex = inputs.imageIndex"));
+  EXPECT_TRUE(
+      contains(sceneRasterPassRecorderHeader, "uint32_t imageIndex{0}"));
+  EXPECT_TRUE(contains(sceneRasterPassRecorder,
+                       ".imageIndex = inputs.imageIndex"));
+  EXPECT_TRUE(
+      contains(sceneOpaqueDrawRecorderHeader, "uint32_t imageIndex{0}"));
+  EXPECT_TRUE(contains(sceneOpaqueDrawRecorder,
+                       "gpuCullManager.drawIndirect(cmd, imageIndex)"));
+  EXPECT_TRUE(contains(sceneOpaqueDrawRecorder,
+                       "gpuCullManager.drawIndirectOccluded(cmd, imageIndex)"));
+
+  EXPECT_FALSE(contains(gpuCullHeader,
+                        "container::gpu::AllocatedBuffer inputDrawBuffer_{}"));
+  EXPECT_FALSE(contains(
+      gpuCullHeader,
+      "container::gpu::AllocatedBuffer indirectDrawBuffer_{}"));
+  EXPECT_FALSE(contains(gpuCullHeader,
+                        "container::gpu::AllocatedBuffer drawCountBuffer_{}"));
+  EXPECT_FALSE(contains(
+      gpuCullHeader,
+      "container::gpu::AllocatedBuffer occlusionIndirectBuffer_{}"));
+  EXPECT_FALSE(contains(
+      gpuCullHeader,
+      "container::gpu::AllocatedBuffer occlusionCountBuffer_{}"));
+}
+
+TEST(RenderingConventionTests,
+     GpuCullManagerOwnsFrozenCullingCameraBuffersPerImage) {
+  const std::string gpuCullHeader =
+      readRepoTextFile("include/Container/renderer/culling/GpuCullManager.h");
+  const std::string gpuCullManager =
+      readRepoTextFile("src/renderer/culling/GpuCullManager.cpp");
+  const std::string frustumRecorder = readRepoTextFile(
+      "src/renderer/deferred/DeferredRasterFrustumCullPassRecorder.cpp");
+
+  EXPECT_TRUE(contains(gpuCullHeader,
+                       "void freezeCulling(uint32_t imageIndex"));
+  EXPECT_TRUE(contains(gpuCullHeader,
+                       "VkBuffer frozenCameraBuffer(uint32_t imageIndex) const"));
+  EXPECT_TRUE(contains(gpuCullHeader,
+                       "std::vector<container::gpu::AllocatedBuffer> "
+                       "frozenCameraBuffers_"));
+  EXPECT_TRUE(contains(gpuCullHeader, "void destroyFrozenCameraBuffers()"));
+
+  EXPECT_TRUE(
+      contains(gpuCullManager, "void GpuCullManager::destroyFrozenCameraBuffers()"));
+  EXPECT_TRUE(contains(gpuCullManager,
+                       "destroyBuffers(allocationManager_, "
+                       "frozenCameraBuffers_)"));
+  EXPECT_TRUE(contains(gpuCullHeader, "frozenCameraBuffers_[imageIndex]"));
+  EXPECT_TRUE(contains(gpuCullHeader,
+                       "const auto& frozenCameraBuffer = "
+                       "frozenCameraBuffers_[imageIndex]"));
+  EXPECT_TRUE(contains(gpuCullManager, "frozenCameraBuffer(imageIndex)"));
+  EXPECT_TRUE(contains(gpuCullManager,
+                       "auto& frozenCameraBuffer = "
+                       "frozenCameraBuffers_[bufferIndex]"));
+  EXPECT_TRUE(contains(gpuCullManager,
+                       "for (uint32_t bufferIndex = 0; "
+                       "bufferIndex < imageCount; ++bufferIndex)"));
+  EXPECT_TRUE(contains(frustumRecorder,
+                       "freezeCulling(inputs.imageIndex"));
+
+  EXPECT_FALSE(contains(gpuCullHeader,
+                        "container::gpu::AllocatedBuffer frozenCameraBuffer_"));
+  EXPECT_FALSE(contains(gpuCullHeader, "frozenCameraBuffer_.buffer"));
+  EXPECT_FALSE(contains(gpuCullManager, "frozenCameraBuffer_.buffer"));
+}
+
+TEST(RenderingConventionTests, GpuCullManagerOwnsHiZResourcesPerImage) {
+  const std::string gpuCullHeader =
+      readRepoTextFile("include/Container/renderer/culling/GpuCullManager.h");
+  const std::string gpuCullManager =
+      readRepoTextFile("src/renderer/culling/GpuCullManager.cpp");
+  const std::string deferredTechnique =
+      readRepoTextFile("src/renderer/deferred/DeferredRasterTechnique.cpp");
+
+  EXPECT_TRUE(
+      contains(gpuCullHeader, "void ensureHiZImage(uint32_t imageIndex"));
+  EXPECT_TRUE(
+      contains(gpuCullHeader, "void dispatchHiZGenerate(VkCommandBuffer cmd,\n"
+                              "                           uint32_t imageIndex"));
+  EXPECT_TRUE(contains(gpuCullHeader, "struct HiZFrameResources"));
+  EXPECT_TRUE(contains(gpuCullHeader, "std::vector<HiZFrameResources> hizFrames_"));
+
+  EXPECT_TRUE(contains(gpuCullManager, "hizFrames_[imageIndex]"));
+  EXPECT_TRUE(contains(gpuCullManager, "hizFrame.image"));
+  EXPECT_TRUE(contains(gpuCullManager, "hizFrame.fullView"));
+  EXPECT_TRUE(contains(gpuCullManager, "hizFrame.mipViews"));
+  EXPECT_TRUE(contains(gpuCullManager, "hizFrame.descriptorSets"));
+  EXPECT_TRUE(contains(gpuCullManager, "hizFrame.generatedThisFrame"));
+  EXPECT_TRUE(contains(gpuCullManager, "hizGeneratedThisFrame(imageIndex)"));
+  EXPECT_TRUE(contains(gpuCullManager, "const uint32_t totalSetCount =\n"
+                                      "      hizMipLevels_ * imageCount"));
+  EXPECT_TRUE(contains(gpuCullManager,
+                       "hizFrame.descriptorSets[mip]"));
+  EXPECT_TRUE(contains(gpuCullManager,
+                       "hizFrames_[imageIndex].fullView"));
+
+  EXPECT_TRUE(contains(deferredTechnique,
+                       "ensureHiZImage(p.runtime.imageIndex"));
+  EXPECT_TRUE(contains(deferredTechnique,
+                       "dispatchHiZGenerate(\n"
+                       "        cmd, p.runtime.imageIndex"));
+
+  EXPECT_FALSE(contains(gpuCullHeader, "std::vector<VkDescriptorSet> hizSets_"));
+  EXPECT_FALSE(contains(gpuCullHeader, "VkImage              hizImage_"));
+  EXPECT_FALSE(contains(gpuCullHeader, "VmaAllocation        hizAllocation_"));
+  EXPECT_FALSE(contains(gpuCullHeader, "VkImageView          hizFullView_"));
+  EXPECT_FALSE(contains(gpuCullHeader, "std::vector<VkImageView> hizMipViews_"));
+  EXPECT_FALSE(contains(gpuCullHeader, "bool                 hizInitialized_"));
+  EXPECT_FALSE(contains(gpuCullHeader, "bool hizGeneratedThisFrame_{false}"));
 }
 
 TEST(RenderingConventionTests, DeferredHiZDepthTransitionsUseRecorder) {
@@ -4188,7 +4912,9 @@ TEST(RenderingConventionTests, SceneOpaqueDrawPlanningUsesPlanner) {
   EXPECT_TRUE(contains(recorder, "vkCmdBindPipeline"));
   EXPECT_TRUE(contains(recorder, "vkCmdBindVertexBuffers"));
   EXPECT_TRUE(contains(recorder, "vkCmdBindIndexBuffer"));
-  EXPECT_TRUE(contains(recorder, "gpuCullManager->drawIndirect"));
+  EXPECT_TRUE(contains(recorder, "drawGpuIndirectRoute"));
+  EXPECT_TRUE(contains(recorder, "gpuCullManager.drawIndirect"));
+  EXPECT_TRUE(contains(recorder, "gpuCullManager.drawIndirectOccluded"));
   EXPECT_TRUE(contains(recorder, "debugOverlay->drawScene"));
   EXPECT_FALSE(contains(recorder, "FrameRecordParams"));
   EXPECT_FALSE(contains(recorder, "BimSurface"));
@@ -5051,6 +5777,9 @@ TEST(RenderingConventionTests, ShadowSettingsMapToShadowBufferVectors) {
                   settings.directionalContactFadeDistance);
   EXPECT_FLOAT_EQ(settings.rasterConstantBias, -4.0f);
   EXPECT_FLOAT_EQ(settings.rasterSlopeBias, -1.5f);
+  EXPECT_FLOAT_EQ(settings.directionalContactMaxDistance, 0.35f);
+  EXPECT_FLOAT_EQ(settings.directionalContactThickness, 0.04f);
+  EXPECT_FLOAT_EQ(settings.directionalContactFadeDistance, 0.30f);
   EXPECT_TRUE(settings.directionalPcssEnabled);
   EXPECT_TRUE(settings.directionalContactVisibility);
   EXPECT_TRUE(settings.localContactVisibility);
@@ -5186,6 +5915,108 @@ TEST(RenderingConventionTests,
 }
 
 TEST(RenderingConventionTests,
+     DirectionalPcssBlockerSearchUsesUnbiasedDepthAndRejectsOutOfBoundsTaps) {
+  const std::string shadowCommon =
+      readRepoTextFile("shaders/shadow_common.slang");
+
+  const size_t blockerStart =
+      shadowCommon.find("float DirectionalPcssAverageBlockerDepth");
+  ASSERT_NE(blockerStart, std::string::npos);
+  const size_t blockerEnd =
+      shadowCommon.find("float DirectionalPcssSearchRadiusTexels",
+                        blockerStart);
+  ASSERT_NE(blockerEnd, std::string::npos);
+  const std::string blockerSearch =
+      shadowCommon.substr(blockerStart, blockerEnd - blockerStart);
+
+  EXPECT_TRUE(contains(blockerSearch, "float receiverDepth"));
+  EXPECT_FALSE(contains(blockerSearch, "float compareDepth"));
+  EXPECT_TRUE(contains(blockerSearch,
+                       "float receiverCompareDepth = saturate(receiverDepth)"));
+  EXPECT_TRUE(contains(blockerSearch,
+                       "int2 baseTexel = clamp(int2(floor(shadowUV * "
+                       "atlasSize))"));
+  EXPECT_TRUE(contains(blockerSearch, "if (any(sampleTexel < minTexel) ||"));
+  EXPECT_TRUE(contains(blockerSearch, "any(sampleTexel > maxTexel)"));
+  EXPECT_TRUE(contains(blockerSearch, "continue;"));
+
+  const size_t filterStart =
+      shadowCommon.find("float DirectionalPcssFilterRadiusTexels");
+  ASSERT_NE(filterStart, std::string::npos);
+  const size_t filterEnd = shadowCommon.find("uint SelectCascade", filterStart);
+  ASSERT_NE(filterEnd, std::string::npos);
+  const std::string filterBlock =
+      shadowCommon.substr(filterStart, filterEnd - filterStart);
+  EXPECT_TRUE(contains(filterBlock, "float receiverDepth"));
+  EXPECT_FALSE(contains(filterBlock, "float compareDepth"));
+  EXPECT_TRUE(contains(
+      filterBlock,
+      "DirectionalPcssAverageBlockerDepth(\n"
+      "        shadowUV, cascadeIndex, receiverDepth, blockerSearchRadiusTexels"));
+
+  const size_t sampleCascadeStart =
+      shadowCommon.find("float SampleCascadeShadow");
+  ASSERT_NE(sampleCascadeStart, std::string::npos);
+  const size_t sampleCascadeEnd =
+      shadowCommon.find("// Compute the shadow factor", sampleCascadeStart);
+  ASSERT_NE(sampleCascadeEnd, std::string::npos);
+  const std::string sampleCascade =
+      shadowCommon.substr(sampleCascadeStart,
+                          sampleCascadeEnd - sampleCascadeStart);
+  EXPECT_TRUE(contains(sampleCascade,
+                       "float receiverDepth = saturate(shadowNDC.z)"));
+  EXPECT_TRUE(contains(sampleCascade, "DirectionalPcssFilterRadiusTexels("));
+  EXPECT_TRUE(contains(sampleCascade, "shadowUV, cascadeIndex, receiverDepth"));
+  EXPECT_TRUE(contains(sampleCascade, "shadowData, shadowAtlas"));
+  EXPECT_TRUE(contains(sampleCascade, "float compareDepth = shadowNDC.z + bias"));
+}
+
+TEST(RenderingConventionTests,
+     DirectionalPcssSkipsRadiusWorkWhenPenumbraCannotExpand) {
+  const std::string shadowCommon =
+      readRepoTextFile("shaders/shadow_common.slang");
+
+  EXPECT_EQ(shadowCommon.find("ClassifyDirectionalLitShadowRegion"),
+            std::string::npos);
+  EXPECT_EQ(shadowCommon.find("SHADOW_DIRECTIONAL_CLASSIFICATION"),
+            std::string::npos);
+
+  const size_t sampleCascadeStart =
+      shadowCommon.find("float SampleCascadeShadow");
+  ASSERT_NE(sampleCascadeStart, std::string::npos);
+  const size_t sampleCascadeEnd =
+      shadowCommon.find("// Compute the shadow factor", sampleCascadeStart);
+  ASSERT_NE(sampleCascadeEnd, std::string::npos);
+  const std::string sampleCascade =
+      shadowCommon.substr(sampleCascadeStart,
+                          sampleCascadeEnd - sampleCascadeStart);
+  const size_t pcssGate =
+      sampleCascade.find("bool pcssCanExpandPenumbra =");
+  const size_t pcssCall =
+      sampleCascade.find("DirectionalPcssFilterRadiusTexels(");
+  ASSERT_NE(pcssGate, std::string::npos);
+  ASSERT_NE(pcssCall, std::string::npos);
+  EXPECT_LT(pcssGate, pcssCall);
+  EXPECT_TRUE(contains(sampleCascade,
+                       "float filterRadiusTexels = baseFilterRadiusTexels"));
+  EXPECT_TRUE(contains(
+      sampleCascade,
+      "ShadowFiniteOr(shadowData.softShadowSettings.x, 0.0) > 0.0"));
+  EXPECT_TRUE(contains(
+      sampleCascade,
+      "ShadowFiniteOr(shadowData.softShadowSettings.y, 0.0) > 0.0"));
+  EXPECT_TRUE(contains(sampleCascade, "if (pcssCanExpandPenumbra)"));
+  EXPECT_TRUE(contains(
+      sampleCascade,
+      "filterRadiusTexels = DirectionalPcssFilterRadiusTexels("));
+  EXPECT_EQ(sampleCascade.find("return 1.0;\n"
+                               "    }\n"
+                               "\n"
+                               "    float filterRadiusTexels"),
+            std::string::npos);
+}
+
+TEST(RenderingConventionTests,
      DirectionalShadowsUseScreenSpaceContactVisibility) {
   const std::string sceneData =
       readRepoTextFile("include/Container/utility/SceneData.h");
@@ -5203,13 +6034,30 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(contains(sceneData, "directionalContactMaxDistance"));
   EXPECT_TRUE(contains(sceneData, "directionalContactThickness"));
   EXPECT_TRUE(contains(sceneData, "directionalContactFadeDistance"));
+  EXPECT_TRUE(
+      contains(sceneData, "kDefaultDirectionalContactMaxDistance = 0.35f"));
+  EXPECT_TRUE(
+      contains(sceneData, "kDefaultDirectionalContactThickness = 0.04f"));
+  EXPECT_TRUE(
+      contains(sceneData, "kDefaultDirectionalContactFadeDistance = 0.30f"));
   EXPECT_TRUE(contains(lightingStructs, "float4 contactShadowSettings"));
   EXPECT_TRUE(contains(shadowManager, "shadowData_.contactShadowSettings"));
+  EXPECT_TRUE(contains(
+      shadowManager,
+      "shadowSettings.directionalContactMaxDistance, 0.0f, 0.75f"));
 
   EXPECT_TRUE(contains(
       screenSpaceShadow, "ScreenSpaceDirectionalContactVisibility"));
   EXPECT_TRUE(contains(screenSpaceShadow,
                        "SCREEN_SPACE_DIRECTIONAL_CONTACT_SHADOW_STEPS"));
+  EXPECT_TRUE(contains(screenSpaceShadow,
+                       "ScreenSpaceDirectionalContactRayJitter("));
+  EXPECT_TRUE(contains(screenSpaceShadow, "float pixelSeed = dot(float2(pixel)"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "52.9829189"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "float rayJitter ="));
+  EXPECT_TRUE(contains(screenSpaceShadow, "* 0.25"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "clamp("));
+  EXPECT_TRUE(contains(screenSpaceShadow, "sampleIndex) + 0.5 + rayJitter"));
   EXPECT_TRUE(contains(screenSpaceShadow, "sampleT * sampleT"));
   EXPECT_TRUE(contains(screenSpaceShadow, "TryProjectWorldToScenePixel"));
   EXPECT_TRUE(contains(screenSpaceShadow, "TryReconstructWorldPosition"));
@@ -5223,10 +6071,32 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(contains(directional, "uShadow.contactShadowSettings.x"));
   EXPECT_TRUE(
       contains(directional, "ScreenSpaceDirectionalContactVisibility("));
-  EXPECT_TRUE(contains(directional, "shadowFactor *= contactVisibility"));
+  EXPECT_TRUE(contains(directional, "float contactVisibility = 1.0"));
+  EXPECT_TRUE(contains(
+      directional, "DIRECTIONAL_CONTACT_SHADOW_LIT_THRESHOLD = 0.02"));
+  EXPECT_TRUE(contains(
+      directional,
+      "DIRECTIONAL_CONTACT_SHADOW_RADIANCE_THRESHOLD = 1.0e-4"));
+  EXPECT_TRUE(contains(
+      directional,
+      "shadowFactor > DIRECTIONAL_CONTACT_SHADOW_LIT_THRESHOLD"));
+  EXPECT_TRUE(contains(
+      directional,
+      "float directionalRadiance = max(max(lightColor.r, lightColor.g), "
+      "lightColor.b)"));
+  EXPECT_TRUE(contains(
+      directional,
+      "directionalRadiance > DIRECTIONAL_CONTACT_SHADOW_RADIANCE_THRESHOLD"));
+  EXPECT_TRUE(contains(directional,
+                       "float directShadowVisibility = shadowFactor * "
+                       "contactVisibility"));
+  EXPECT_TRUE(contains(directional, ") * directShadowVisibility"));
+  EXPECT_TRUE(contains(directional, "shadowFactor, occlusion"));
+  EXPECT_FALSE(contains(directional, "shadowFactor *= contactVisibility"));
 
   EXPECT_TRUE(contains(guiManager, "\"Directional contact shadows\""));
   EXPECT_TRUE(contains(guiManager, "\"Contact Max Distance\""));
+  EXPECT_TRUE(contains(guiManager, "0.0f, 0.75f, \"%.2f\""));
   EXPECT_TRUE(contains(guiManager, "\"Contact Thickness\""));
   EXPECT_TRUE(contains(guiManager, "\"Contact Fade Distance\""));
 }
@@ -5309,6 +6179,83 @@ TEST(RenderingConventionTests, ShadowUploadSanitizesBiasAndFilterSettings) {
   EXPECT_TRUE(contains(shadowManager, "kLocalShadowNormalBiasMaxTexels"));
   EXPECT_TRUE(contains(shadowManager, "localNormalBiasMinTexels"));
   EXPECT_TRUE(contains(shadowManager, "localNormalBiasMaxTexels"));
+}
+
+TEST(RenderingConventionTests,
+     ShadowCasterSceneBoundsFailOpenForInvalidCasterSpheres) {
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "bool isValidShadowCasterBoundingSphere"));
+  EXPECT_TRUE(contains(rendererFrontend, "sphere.w > 0.0f"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "std::optional<bool> accumulateShadowCasterDrawCommandBounds"));
+
+  const size_t shadowDrawBoundsStart =
+      rendererFrontend.find("accumulateShadowCasterDrawCommandBounds");
+  ASSERT_NE(shadowDrawBoundsStart, std::string::npos);
+  const size_t shadowDrawBoundsEnd =
+      rendererFrontend.find("void includeBounds", shadowDrawBoundsStart);
+  ASSERT_NE(shadowDrawBoundsEnd, std::string::npos);
+  const std::string shadowDrawBoundsBlock = rendererFrontend.substr(
+      shadowDrawBoundsStart, shadowDrawBoundsEnd - shadowDrawBoundsStart);
+  EXPECT_TRUE(contains(shadowDrawBoundsBlock, "return std::nullopt"));
+  EXPECT_TRUE(contains(shadowDrawBoundsBlock,
+                       "isValidShadowCasterBoundingSphere"));
+
+  const size_t shadowCasterBoundsStart =
+      rendererFrontend.find("accumulateShadowCasterSceneBounds");
+  ASSERT_NE(shadowCasterBoundsStart, std::string::npos);
+  const size_t shadowCasterBoundsEnd =
+      rendererFrontend.find("float transformGizmoScale", shadowCasterBoundsStart);
+  ASSERT_NE(shadowCasterBoundsEnd, std::string::npos);
+  const std::string shadowCasterBoundsBlock = rendererFrontend.substr(
+      shadowCasterBoundsStart, shadowCasterBoundsEnd - shadowCasterBoundsStart);
+  EXPECT_TRUE(contains(shadowCasterBoundsBlock,
+                       "accumulateShadowCasterDrawCommandBounds"));
+  EXPECT_TRUE(contains(shadowCasterBoundsBlock, "return std::nullopt"));
+  EXPECT_FALSE(contains(shadowCasterBoundsBlock,
+                        "accumulateDrawCommandBounds("));
+}
+
+TEST(RenderingConventionTests,
+     ShadowCascadeLightDistanceRebuildUsesBoundedRetryLoop) {
+  const std::string shadowManager =
+      readRepoTextFile("src/renderer/shadow/ShadowManager.cpp");
+
+  const size_t computeStart =
+      shadowManager.find("ShadowManager::CascadeViewProjData "
+                         "ShadowManager::computeCascadeViewProj");
+  ASSERT_NE(computeStart, std::string::npos);
+  const size_t projectionStart =
+      shadowManager.find("const glm::mat4 lightProj", computeStart);
+  ASSERT_NE(projectionStart, std::string::npos);
+  const std::string rebuildBlock =
+      shadowManager.substr(computeStart, projectionStart - computeStart);
+
+  EXPECT_TRUE(contains(rebuildBlock, "kMaxLightDistanceRebuilds"));
+  EXPECT_TRUE(contains(rebuildBlock, "for (uint32_t rebuild = 0"));
+  EXPECT_TRUE(
+      contains(rebuildBlock, "depthPlan.lightDistanceIncrease > 1.0e-4f"));
+  EXPECT_FALSE(contains(rebuildBlock,
+                        "depthPlan.lightDistanceIncrease = 0.0f"));
+  const size_t finalFallbackStart =
+      rebuildBlock.find("if (depthPlan.lightDistanceIncrease > 1.0e-4f)");
+  if (finalFallbackStart != std::string::npos) {
+    const std::string finalFallbackBlock =
+        rebuildBlock.substr(finalFallbackStart);
+    EXPECT_TRUE(contains(finalFallbackBlock,
+                         "depthPlan = depthPlanForView(lightView, "
+                         "lightDistance)"));
+  }
+  EXPECT_FALSE(containsIgnoringWhitespace(
+      rebuildBlock,
+      "if (depthPlan.lightDistanceIncrease > 0.0f) {"
+      "lightDistance = depthPlan.lightDistance;"
+      "lightView = makeSnappedLightView(lightDistance);"
+      "depthPlan = depthPlanForView(lightView, lightDistance);"
+      "if (depthPlan.lightDistanceIncrease > 1.0e-4f)"));
 }
 
 TEST(RenderingConventionTests, ShadowCascadeSelectionUsesOrderedSplitDepths) {
@@ -5454,6 +6401,24 @@ TEST(RenderingConventionTests, ShadowShadersUseDataDrivenDepthBiasSettings) {
   EXPECT_TRUE(contains(shadowDepth, "ApplyGpuTextureTransform"));
 }
 
+TEST(RenderingConventionTests,
+     DirectionalReceiverPlaneBiasAvoidsScreenDerivatives) {
+  const std::string shadowCommon =
+      readRepoTextFile("shaders/shadow_common.slang");
+
+  const size_t biasStart =
+      shadowCommon.find("float ComputeReceiverPlaneDepthBias");
+  ASSERT_NE(biasStart, std::string::npos);
+  const size_t biasEnd =
+      shadowCommon.find("float ComputeSlopeScaledBias", biasStart);
+  ASSERT_NE(biasEnd, std::string::npos);
+  const std::string receiverPlaneBias =
+      shadowCommon.substr(biasStart, biasEnd - biasStart);
+
+  EXPECT_FALSE(contains(receiverPlaneBias, "ddx("));
+  EXPECT_FALSE(contains(receiverPlaneBias, "ddy("));
+}
+
 TEST(RenderingConventionTests, OcclusionCullSphereBoundsNeedProjectionScale) {
   const glm::mat4 proj = container::math::perspectiveRH_ReverseZ(
       glm::radians(60.0f), 16.0f / 9.0f, 0.1f, 100.0f);
@@ -5547,6 +6512,41 @@ TEST(RenderingConventionTests,
       contains(visualRegression, "args.emplace_back(\"--display-mode\")"));
   EXPECT_TRUE(contains(visualRegression, "CONTAINER_VISUAL_REGRESSION_SCENE"));
   EXPECT_TRUE(contains(visualRegression, "\"skipReason\", \"scene filter\""));
+}
+
+TEST(RenderingConventionTests,
+     VisualRegressionHarnessPassesDirectionalLightOverridesToHeadlessApp) {
+  const std::string appConfig =
+      readRepoTextFile("include/Container/app/AppConfig.h");
+  const std::string main = readRepoTextFile("main.cpp");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+  const std::string visualRegression =
+      readRepoTextFile("tests/validation/visual_regression_gpu_tests.cpp");
+  const std::string fixtures = readRepoTextFile(
+      "tests/fixtures/rendering/realistic_visual_regression.fixtures.json");
+  const std::string yellowAreaLight =
+      readRepoTextFile("models/validation/cornell_box_yellow_area_light.gltf");
+
+  EXPECT_TRUE(contains(appConfig, "hasDirectionalDirectionOverride"));
+  EXPECT_TRUE(contains(appConfig, "hasDirectionalColorOverride"));
+  EXPECT_TRUE(contains(main, "arg == \"--directional-direction\""));
+  EXPECT_TRUE(contains(main, "arg == \"--directional-color\""));
+  EXPECT_TRUE(
+      contains(rendererFrontend, "applyConfiguredDirectionalLightOverrides"));
+  EXPECT_TRUE(contains(visualRegression,
+                       "appendVec3(args, \"--directional-direction\""));
+  EXPECT_TRUE(contains(visualRegression,
+                       "appendVec3(args, \"--directional-color\""));
+  EXPECT_TRUE(contains(
+      fixtures, "cornell_yellow_area_purple_directional_shadow"));
+  EXPECT_TRUE(contains(
+      fixtures, "models/validation/cornell_box_yellow_area_light.gltf"));
+  EXPECT_TRUE(contains(fixtures, "\"color\": [0.62, 0.35, 1.0]"));
+  EXPECT_TRUE(contains(fixtures, "\"targetColor\": [1.0, 0.86, 0.10]"));
+  EXPECT_TRUE(contains(yellowAreaLight, "Ceiling yellow soft area light"));
+  EXPECT_TRUE(contains(yellowAreaLight,
+                       "Cornell box yellow area purple directional shadow"));
 }
 
 TEST(RenderingConventionTests,
@@ -7757,9 +8757,10 @@ TEST(RenderingConventionTests, BimMeshletLodStreamingMetadataIsSurfaced) {
   EXPECT_TRUE(
       contains(drawCompactionShader, "source.firstInstance + instanceIndex"));
   EXPECT_TRUE(contains(drawCompactionShader, "DrawIndexedIndirectCommand"));
-  EXPECT_TRUE(contains(shadersCmake, "bim_meshlet_residency.comp.spv"));
-  EXPECT_TRUE(contains(shadersCmake, "bim_visibility_filter.comp.spv"));
-  EXPECT_TRUE(contains(shadersCmake, "bim_draw_compact.comp.spv"));
+  EXPECT_TRUE(contains(shadersCmake, "bim_meshlet_residency.slang"));
+  EXPECT_TRUE(contains(shadersCmake, "bim_visibility_filter.slang"));
+  EXPECT_TRUE(contains(shadersCmake, "bim_draw_compact.slang"));
+  EXPECT_TRUE(contains(shadersCmake, "${SHADER_BASE}.comp.spv"));
 }
 
 TEST(RenderingConventionTests, BimGpuVisibilityFeedsShadowCasterSlots) {
@@ -7975,8 +8976,13 @@ TEST(RenderingConventionTests, ShadowCascadeGpuCullReadinessUsesPlanner) {
   EXPECT_TRUE(contains(sourceUploadBlock, ".shadowCullManagerReady"));
   EXPECT_TRUE(contains(sourceUploadBlock, ".sourceDrawCommandsPresent"));
   EXPECT_TRUE(contains(sourceUploadBlock, ".sourceDrawCount"));
+  EXPECT_TRUE(contains(sourceUploadBlock, ".sourceDrawCommandsAllSingleInstance"));
   EXPECT_TRUE(contains(sourceUploadBlock,
                        "shadowGpuCullSourceUploadPlan.requiredDrawCapacity"));
+  EXPECT_TRUE(contains(sourceUploadBlock,
+                       "shadowGpuCullSource.contentRevision"));
+  EXPECT_TRUE(contains(sourceUploadBlock,
+                       "gpuCullSourceSummary(params)"));
   EXPECT_FALSE(contains(
       sourceUploadBlock,
       "displayModeRecordsShadowAtlas(currentDisplayMode(guiManager_)) &&"));
@@ -7986,11 +8992,14 @@ TEST(RenderingConventionTests, ShadowCascadeGpuCullReadinessUsesPlanner) {
   EXPECT_TRUE(contains(gpuCullBlock, ".gpuShadowCullEnabled"));
   EXPECT_TRUE(contains(gpuCullBlock, ".shadowCullPassActive"));
   EXPECT_TRUE(contains(gpuCullBlock, ".shadowCullManagerReady"));
+  EXPECT_TRUE(contains(gpuCullBlock, ".shadowCullDispatchReady"));
   EXPECT_TRUE(contains(gpuCullBlock, ".sceneSingleSidedDrawsAvailable"));
+  EXPECT_TRUE(contains(gpuCullBlock, ".sourceDrawCommandsAllSingleInstance"));
   EXPECT_TRUE(contains(gpuCullBlock, ".cascadeIndexInRange"));
   EXPECT_TRUE(contains(gpuCullBlock, ".indirectDrawBuffer"));
   EXPECT_TRUE(contains(gpuCullBlock, ".drawCountBuffer"));
   EXPECT_TRUE(contains(gpuCullBlock, ".maxDrawCount"));
+  EXPECT_TRUE(contains(gpuCullBlock, "canDispatchCascadeCull"));
   EXPECT_FALSE(contains(gpuCullBlock, "&& gpuShadowMaxDrawCount > 0"));
   EXPECT_FALSE(contains(gpuCullBlock, "return p.shadows.useGpuShadowCull"));
 
@@ -8001,6 +9010,7 @@ TEST(RenderingConventionTests, ShadowCascadeGpuCullReadinessUsesPlanner) {
   EXPECT_TRUE(contains(planner, "inputs.gpuShadowCullEnabled"));
   EXPECT_TRUE(contains(planner, "inputs.shadowCullPassActive"));
   EXPECT_TRUE(contains(planner, "inputs.shadowCullManagerReady"));
+  EXPECT_TRUE(contains(planner, "inputs.shadowCullDispatchReady"));
   EXPECT_TRUE(contains(planner, "inputs.sceneSingleSidedDrawsAvailable"));
   EXPECT_TRUE(contains(planner, "inputs.cascadeIndexInRange"));
   EXPECT_TRUE(contains(planner, "inputs.indirectDrawBuffer"));
@@ -8009,7 +9019,9 @@ TEST(RenderingConventionTests, ShadowCascadeGpuCullReadinessUsesPlanner) {
   EXPECT_TRUE(contains(planner, "buildShadowGpuCullSourceUploadPlan"));
   EXPECT_TRUE(contains(planner, "inputs.shadowAtlasVisible"));
   EXPECT_TRUE(contains(planner, "inputs.sourceDrawCommandsPresent"));
+  EXPECT_TRUE(contains(planner, "inputs.sourceDrawCommandsAllSingleInstance"));
   EXPECT_TRUE(contains(planner, "inputs.sourceDrawCount"));
+  EXPECT_TRUE(contains(planner, "inputs.sourceDrawCount > 0u"));
   EXPECT_FALSE(contains(planner, "FrameRecordParams"));
   EXPECT_FALSE(contains(planner, "GuiManager"));
   EXPECT_FALSE(contains(planner, "BimManager"));
@@ -8062,10 +9074,14 @@ TEST(RenderingConventionTests, ShadowCullPassGraphUsesPlannerAndRecorder) {
   EXPECT_TRUE(contains(shadowCullBlock, ".gpuShadowCullEnabled"));
   EXPECT_TRUE(contains(shadowCullBlock, ".shadowCullManagerReady"));
   EXPECT_TRUE(contains(shadowCullBlock, ".sceneSingleSidedDrawsAvailable"));
+  EXPECT_TRUE(
+      contains(shadowCullBlock, ".sourceDrawCommandsAllSingleInstance"));
   EXPECT_TRUE(contains(shadowCullBlock, ".cameraBufferReady"));
   EXPECT_TRUE(contains(shadowCullBlock, ".cascadeIndexInRange"));
   EXPECT_TRUE(contains(shadowCullBlock, ".sourceDrawCount"));
   EXPECT_TRUE(contains(readinessBlock, "buildShadowCullPassPlan"));
+  EXPECT_TRUE(
+      contains(readinessBlock, ".sourceDrawCommandsAllSingleInstance"));
   EXPECT_TRUE(contains(readinessBlock, ".readiness"));
   EXPECT_FALSE(contains(deferredRasterTechnique, "dispatchCascadeCull("));
   EXPECT_FALSE(contains(readinessBlock, "renderPassNotNeeded()"));

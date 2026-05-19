@@ -8,6 +8,7 @@
 #include "brdf_common.slang"
 
 static const uint LOCAL_SHADOW_POISSON_SAMPLE_COUNT = 32u;
+static const uint LOCAL_SHADOW_PCF_FAST_SAMPLE_COUNT = 12u;
 static const float LOCAL_SHADOW_PCF_KERNEL_RADIUS = 1.0;
 
 float LocalShadowFiniteOr(float value, float fallback)
@@ -27,8 +28,7 @@ bool LocalShadowMapsEnabled(uint localShadowEnabled,
 bool LocalShadowMapsEnabled(LightingBuffer lighting,
                             LocalShadowBuffer localShadow)
 {
-    return lighting.shadowEnabled != 0u &&
-           LocalShadowMapsEnabled(lighting.localShadowEnabled, localShadow);
+    return LocalShadowMapsEnabled(lighting.localShadowEnabled, localShadow);
 }
 
 uint LocalShadowBaseLayerFromPointLight(PointLightData light)
@@ -203,6 +203,14 @@ float2 RotateLocalShadowPoissonOffset(float2 offset, float angle)
                   offset.x * s + offset.y * c);
 }
 
+uint LocalShadowPcfSampleCount(float filterRadiusTexels)
+{
+    filterRadiusTexels = max(LocalShadowFiniteOr(filterRadiusTexels, 0.0), 0.0);
+    return filterRadiusTexels <= 1.5
+        ? LOCAL_SHADOW_PCF_FAST_SAMPLE_COUNT
+        : LOCAL_SHADOW_POISSON_SAMPLE_COUNT;
+}
+
 float3 OffsetLocalShadowSamplePosition(
     float3 worldPosition,
     float3 normal,
@@ -248,13 +256,12 @@ float SampleLocalShadowLayerPcf(
         filterRadiusTexels / LOCAL_SHADOW_PCF_KERNEL_RADIUS;
     float2 texelSize = (filterStepTexels * invResolution).xx;
     float rotation = LocalShadowStableRotation(shadowUv, layerIndex);
+    uint sampleCount = LocalShadowPcfSampleCount(filterRadiusTexels);
     float shadow = 0.0;
     float totalWeight = 0.0;
 
-    [unroll]
-    for (uint sampleIndex = 0u;
-         sampleIndex < LOCAL_SHADOW_POISSON_SAMPLE_COUNT;
-         ++sampleIndex)
+    [loop]
+    for (uint sampleIndex = 0u; sampleIndex < sampleCount; ++sampleIndex)
     {
         float2 o = RotateLocalShadowPoissonOffset(
             LocalShadowPoissonOffset(sampleIndex), rotation);

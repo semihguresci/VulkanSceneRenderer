@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <gtest/gtest-spi.h>
 #include <nlohmann/json.hpp>
 
 #include "Container/app/AppConfig.h"
@@ -594,8 +595,10 @@ Json evaluateImageProbes(std::string_view sceneId, const Json& probes,
       continue;
     }
 
-    result["skipped"] = true;
-    result["skipReason"] = "probe kind is not evaluated by this test";
+    result["passed"] = false;
+    result["unsupported"] = true;
+    ADD_FAILURE() << sceneId << "/" << id
+                  << " unsupported visual regression probe kind " << kind;
     results.push_back(std::move(result));
   }
 
@@ -693,6 +696,42 @@ TEST(VisualRegressionGpu, EvaluatesRelativeRegionLuminanceProbes) {
   EXPECT_LT(results.at(0).at("actualShadowToLitRatio").get<double>(), 0.35);
 }
 
+TEST(VisualRegressionGpu, EvaluatesRegionLuminanceStdDevProbes) {
+  Image image;
+  image.width = 4;
+  image.height = 4;
+  image.rgba.assign(4u * 4u * 4u, 255);
+
+  for (int y = 0; y < image.height; ++y) {
+    for (int x = 0; x < image.width; ++x) {
+      const unsigned char value = ((x + y) % 2 == 0) ? 230 : 40;
+      const size_t offset =
+          (static_cast<size_t>(y) * static_cast<size_t>(image.width) +
+           static_cast<size_t>(x)) *
+          4u;
+      image.rgba[offset] = value;
+      image.rgba[offset + 1u] = value;
+      image.rgba[offset + 2u] = value;
+    }
+  }
+
+  const Json probes = Json::array({
+      {
+          {"id", "cascade_texel_density_debug_has_measurable_structure"},
+          {"kind", "region_luminance_stddev"},
+          {"region", Json::array({0, 0, 4, 4})},
+          {"minimumStdDev", 0.1},
+      },
+  });
+
+  const Json results =
+      evaluateImageProbes("synthetic_shadow_cascade_stability", probes, image);
+  ASSERT_EQ(results.size(), 1u);
+  EXPECT_FALSE(results.at(0).value("skipped", false));
+  EXPECT_TRUE(results.at(0).at("passed").get<bool>());
+  EXPECT_GT(results.at(0).at("actualStdDev").get<double>(), 0.1);
+}
+
 TEST(VisualRegressionGpu, EvaluatesShadowSoftnessGradientProbes) {
   Image image;
   image.width = 6;
@@ -736,6 +775,28 @@ TEST(VisualRegressionGpu, EvaluatesShadowSoftnessGradientProbes) {
   EXPECT_GT(results.at(0).at("actualUmbraToPenumbraDelta").get<double>(),
             0.10);
   EXPECT_GT(results.at(0).at("actualPenumbraToLitDelta").get<double>(), 0.20);
+}
+
+TEST(VisualRegressionGpu, ReportsUnsupportedProbeKindsAsFailures) {
+  Image image;
+  image.width = 2;
+  image.height = 2;
+  image.rgba.assign(2u * 2u * 4u, 255);
+
+  const Json probes = Json::array({
+      {
+          {"id", "stability_probe_not_implemented"},
+          {"kind", "camera_stability_shadow_ratio"},
+      },
+  });
+
+  Json results;
+  EXPECT_NONFATAL_FAILURE(
+      results = evaluateImageProbes("unsupported_probe_scene", probes, image),
+      "unsupported visual regression probe kind");
+  ASSERT_EQ(results.size(), 1u);
+  EXPECT_FALSE(results.at(0).value("skipped", false));
+  EXPECT_FALSE(results.at(0).at("passed").get<bool>());
 }
 
 TEST(VisualRegressionGpu, CapturesAndComparesFixtureScenes) {
@@ -893,13 +954,18 @@ TEST(VisualRegressionGpu, CapturesAndComparesFixtureScenes) {
         scene.at("lighting").at("environmentIntensity").get<double>()));
     if (scene.at("lighting").contains("directionalLight") &&
         scene.at("lighting").at("directionalLight").contains("illuminanceLux")) {
+      const Json& directionalLight =
+          scene.at("lighting").at("directionalLight");
       args.emplace_back("--directional-intensity");
       args.emplace_back(std::to_string(
-          scene.at("lighting")
-              .at("directionalLight")
-              .at("illuminanceLux")
-              .get<double>() /
-          10000.0));
+          directionalLight.at("illuminanceLux").get<double>() / 10000.0));
+      if (directionalLight.contains("direction")) {
+        appendVec3(args, "--directional-direction",
+                   directionalLight.at("direction"));
+      }
+      if (directionalLight.contains("color")) {
+        appendVec3(args, "--directional-color", directionalLight.at("color"));
+      }
     }
 
     const int exitCode = runProcess(appExecutable, args);

@@ -74,6 +74,12 @@ FrameResourceManager::~FrameResourceManager() {
   destroy();
   allocationMgr_->destroyBuffer(fallbackTileGridBuffer_);
   allocationMgr_->destroyBuffer(fallbackExposureStateBuffer_);
+  allocationMgr_->destroyBuffer(fallbackShadowDataBuffer_);
+  destroyAttachment(fallbackShadowAtlas_);
+  if (fallbackShadowSampler_ != VK_NULL_HANDLE) {
+    vkDestroySampler(device_->device(), fallbackShadowSampler_, nullptr);
+    fallbackShadowSampler_ = VK_NULL_HANDLE;
+  }
   allocationMgr_->destroyBuffer(fallbackLocalShadowDataBuffer_);
   destroyAttachment(fallbackLocalShadowAtlas_);
   if (fallbackLocalShadowSampler_ != VK_NULL_HANDLE) {
@@ -278,6 +284,7 @@ void FrameResourceManager::create(
   validatePickIdFormatSupport();
   ensureFallbackTileGridBuffer();
   ensureFallbackExposureStateBuffer();
+  ensureFallbackShadowResources();
   ensureFallbackLocalShadowResources();
 
   const uint32_t n = static_cast<uint32_t>(swapChain_->imageCount());
@@ -437,7 +444,8 @@ void FrameResourceManager::create(
     }
     f.pickDepth = createAttachment(formats_.depthStencil,
                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                       VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                       VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                    VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
     transitionToDepthAttachment(
         f.pickDepth.image,
@@ -677,7 +685,7 @@ void FrameResourceManager::updateDescriptorSets(
     VkSampler   bloomSampler,
     VkBuffer    tileGridBuffer,
     VkDeviceSize tileGridBufferSize,
-    VkBuffer    exposureStateBuffer,
+    std::span<const container::gpu::AllocatedBuffer> exposureStateBuffers,
     VkDeviceSize exposureStateBufferSize) {
   (void)objectBuffer;  // reserved for future per-frame object buffer binding
   if (cameraBuffers.empty()) return;
@@ -710,7 +718,10 @@ void FrameResourceManager::updateDescriptorSets(
   nextKey.bloomSampler      = bloomSampler;
   nextKey.tileGridBuffer    = tileGridBuffer;
   nextKey.tileGridBufferSize = tileGridBufferSize;
-  nextKey.exposureStateBuffer = exposureStateBuffer;
+  nextKey.exposureStateBuffers.reserve(exposureStateBuffers.size());
+  for (const auto& exposureStateBuffer : exposureStateBuffers) {
+    nextKey.exposureStateBuffers.push_back(exposureStateBuffer.buffer);
+  }
   nextKey.exposureStateBufferSize = exposureStateBufferSize;
 
   if (descriptorUpdateKeyValid_ && nextKey == descriptorUpdateKey_) {
@@ -777,7 +788,8 @@ void FrameResourceManager::updateDescriptorSets(
       if (shadowUbo.buffer != VK_NULL_HANDLE) {
         shadowUboInfo = {shadowUbo.buffer, 0, sizeof(container::gpu::ShadowData)};
       } else {
-        shadowUboInfo = camInfo;  // fallback to avoid null descriptor
+        shadowUboInfo = {fallbackShadowDataBuffer_.buffer, 0,
+                         sizeof(container::gpu::ShadowData)};
       }
       buf(7, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &shadowUboInfo);
 
@@ -785,14 +797,15 @@ void FrameResourceManager::updateDescriptorSets(
       shadowAtlasInfo.imageView = shadowAtlasView;
       shadowAtlasInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       if (shadowAtlasView == VK_NULL_HANDLE) {
-        shadowAtlasInfo = depthImg;  // fallback
+        shadowAtlasInfo.imageView = fallbackShadowAtlas_.view;
+        shadowAtlasInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       }
       img(8, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &shadowAtlasInfo);
 
       VkDescriptorImageInfo shadowSamplerInfo{};
       shadowSamplerInfo.sampler = shadowSampler;
       if (shadowSampler == VK_NULL_HANDLE) {
-        shadowSamplerInfo = sampInfo;  // fallback
+        shadowSamplerInfo.sampler = fallbackShadowSampler_;
       }
       img(9, VK_DESCRIPTOR_TYPE_SAMPLER, &shadowSamplerInfo);
 
@@ -950,7 +963,8 @@ void FrameResourceManager::updateDescriptorSets(
       if (postShadowUbo.buffer != VK_NULL_HANDLE) {
         postShadowUboInfo = {postShadowUbo.buffer, 0, sizeof(container::gpu::ShadowData)};
       } else {
-        postShadowUboInfo = camInfo;
+        postShadowUboInfo = {fallbackShadowDataBuffer_.buffer, 0,
+                             sizeof(container::gpu::ShadowData)};
       }
       buf(11, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &postShadowUboInfo);
 
@@ -958,16 +972,22 @@ void FrameResourceManager::updateDescriptorSets(
       postShadowAtlasInfo.imageView = shadowAtlasView;
       postShadowAtlasInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       if (shadowAtlasView == VK_NULL_HANDLE) {
-        postShadowAtlasInfo = depthPostProcess;
+        postShadowAtlasInfo.imageView = fallbackShadowAtlas_.view;
+        postShadowAtlasInfo.imageLayout =
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       }
       img(12, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &postShadowAtlasInfo);
 
       VkDescriptorBufferInfo exposureStateInfo{};
-      if (exposureStateBuffer != VK_NULL_HANDLE &&
-          exposureStateBufferSize > 0) {
-        exposureStateInfo = {exposureStateBuffer, 0,
-                             exposureStateBufferSize};
-      } else {
+      if (!exposureStateBuffers.empty() && exposureStateBufferSize > 0) {
+        const auto& exposureStateBuffer = exposureStateBuffers[std::min(
+            frameIndex, exposureStateBuffers.size() - 1u)];
+        if (exposureStateBuffer.buffer != VK_NULL_HANDLE) {
+          exposureStateInfo = {exposureStateBuffer.buffer, 0,
+                               exposureStateBufferSize};
+        }
+      }
+      if (exposureStateInfo.buffer == VK_NULL_HANDLE) {
         exposureStateInfo = {fallbackExposureStateBuffer_.buffer, 0,
                              sizeof(container::gpu::ExposureStateData)};
       }
@@ -1224,7 +1244,8 @@ void FrameResourceManager::publishFrameResourceBindings() {
                   VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
     bindImage("pick-depth", f.pickDepth,
               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                  VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+                  VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
     bindImage("oit-head-pointers", f.oitHeadPointers,
               VK_IMAGE_USAGE_STORAGE_BIT |
                   VK_IMAGE_USAGE_TRANSFER_DST_BIT);
@@ -1338,6 +1359,121 @@ void FrameResourceManager::ensureFallbackExposureStateBuffer() {
   if (mappedHere)
     vmaUnmapMemory(allocationMgr_->memoryManager()->allocator(),
                    fallbackExposureStateBuffer_.allocation);
+}
+
+void FrameResourceManager::ensureFallbackShadowDataBuffer() {
+  if (fallbackShadowDataBuffer_.buffer != VK_NULL_HANDLE) return;
+
+  fallbackShadowDataBuffer_ = allocationMgr_->createBuffer(
+      sizeof(container::gpu::ShadowData),
+      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+      VMA_MEMORY_USAGE_AUTO,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+          VMA_ALLOCATION_CREATE_MAPPED_BIT);
+
+  container::gpu::ShadowData fallbackShadow{};
+  for (auto& cascade : fallbackShadow.cascades) {
+    cascade.viewProj = glm::mat4(0.0f);
+  }
+  fallbackShadow.softShadowSettings.x = 0.0f;
+  fallbackShadow.contactShadowSettings.x = 0.0f;
+
+  void* mapped = fallbackShadowDataBuffer_.allocation_info.pMappedData;
+  bool mappedHere = false;
+  if (!mapped) {
+    if (vmaMapMemory(allocationMgr_->memoryManager()->allocator(),
+                     fallbackShadowDataBuffer_.allocation,
+                     &mapped) != VK_SUCCESS)
+      throw std::runtime_error("failed to map fallback shadow buffer");
+    mappedHere = true;
+  }
+  std::memcpy(mapped, &fallbackShadow, sizeof(fallbackShadow));
+  if (vmaFlushAllocation(allocationMgr_->memoryManager()->allocator(),
+                         fallbackShadowDataBuffer_.allocation, 0,
+                         sizeof(fallbackShadow)) != VK_SUCCESS) {
+    if (mappedHere)
+      vmaUnmapMemory(allocationMgr_->memoryManager()->allocator(),
+                     fallbackShadowDataBuffer_.allocation);
+    throw std::runtime_error("failed to flush fallback shadow buffer");
+  }
+  if (mappedHere)
+    vmaUnmapMemory(allocationMgr_->memoryManager()->allocator(),
+                   fallbackShadowDataBuffer_.allocation);
+}
+
+void FrameResourceManager::ensureFallbackShadowResources() {
+  ensureFallbackShadowDataBuffer();
+
+  if (fallbackShadowAtlas_.image != VK_NULL_HANDLE &&
+      fallbackShadowAtlas_.format != formats_.depthStencil) {
+    destroyAttachment(fallbackShadowAtlas_);
+  }
+
+  if (fallbackShadowAtlas_.image == VK_NULL_HANDLE) {
+    AttachmentImage atlas{};
+    atlas.format = formats_.depthStencil;
+
+    VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.format = formats_.depthStencil;
+    imageInfo.extent = {1u, 1u, 1u};
+    imageInfo.mipLevels = 1u;
+    imageInfo.arrayLayers = 1u;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT |
+                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VmaAllocationCreateInfo allocationInfo{};
+    allocationInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+
+    if (vmaCreateImage(allocationMgr_->memoryManager()->allocator(),
+                       &imageInfo, &allocationInfo, &atlas.image,
+                       &atlas.allocation, nullptr) != VK_SUCCESS) {
+      throw std::runtime_error(
+          "failed to create fallback shadow atlas image");
+    }
+
+    VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    viewInfo.image = atlas.image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    viewInfo.format = formats_.depthStencil;
+    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+
+    if (vkCreateImageView(device_->device(), &viewInfo, nullptr, &atlas.view) !=
+        VK_SUCCESS) {
+      vmaDestroyImage(allocationMgr_->memoryManager()->allocator(),
+                      atlas.image, atlas.allocation);
+      throw std::runtime_error(
+          "failed to create fallback shadow atlas view");
+    }
+
+    fallbackShadowAtlas_ = atlas;
+    transitionToShaderReadOnly(fallbackShadowAtlas_.image,
+                               VK_IMAGE_ASPECT_DEPTH_BIT, 1u);
+  }
+
+  if (fallbackShadowSampler_ == VK_NULL_HANDLE) {
+    VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+    samplerInfo.compareEnable = VK_TRUE;
+    samplerInfo.compareOp = VK_COMPARE_OP_GREATER;
+    samplerInfo.minLod = 0.0f;
+    samplerInfo.maxLod = 0.0f;
+
+    if (vkCreateSampler(device_->device(), &samplerInfo, nullptr,
+                        &fallbackShadowSampler_) != VK_SUCCESS) {
+      throw std::runtime_error(
+          "failed to create fallback shadow sampler");
+    }
+  }
 }
 
 void FrameResourceManager::ensureFallbackLocalShadowDataBuffer() {

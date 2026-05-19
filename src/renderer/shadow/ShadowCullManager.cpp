@@ -1,5 +1,6 @@
 #include "Container/renderer/shadow/ShadowCullManager.h"
 
+#include "Container/renderer/culling/GpuCullDrawUploadPlanner.h"
 #include "Container/renderer/scene/SceneController.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/FileLoader.h"
@@ -19,6 +20,65 @@ using container::gpu::GpuDrawIndexedIndirectCommand;
 using container::gpu::ShadowCullData;
 using container::gpu::ShadowCullPushConstants;
 
+namespace {
+
+void destroyBufferIfAllocated(
+	container::gpu::AllocationManager& allocationManager,
+	container::gpu::AllocatedBuffer& buffer) {
+  if (buffer.buffer == VK_NULL_HANDLE) return;
+  allocationManager.destroyBuffer(buffer);
+  buffer = {};
+}
+
+void destroyBuffers(
+	container::gpu::AllocationManager& allocationManager,
+	std::vector<container::gpu::AllocatedBuffer>& buffers) {
+  for (auto& buffer : buffers) {
+	destroyBufferIfAllocated(allocationManager, buffer);
+  }
+  buffers.clear();
+}
+
+void destroyCascadeBuffers(
+	container::gpu::AllocationManager& allocationManager,
+	std::vector<std::array<container::gpu::AllocatedBuffer,
+	                       container::gpu::kShadowCascadeCount>>& buffers) {
+  for (auto& imageBuffers : buffers) {
+	for (auto& buffer : imageBuffers) {
+	  destroyBufferIfAllocated(allocationManager, buffer);
+	}
+  }
+  buffers.clear();
+}
+
+void destroyCascadeBuffersAt(
+	container::gpu::AllocationManager& allocationManager,
+	std::array<container::gpu::AllocatedBuffer,
+	           container::gpu::kShadowCascadeCount>& buffers) {
+  for (auto& buffer : buffers) {
+	destroyBufferIfAllocated(allocationManager, buffer);
+  }
+}
+
+bool bufferReadyAt(
+	const std::vector<container::gpu::AllocatedBuffer>& buffers,
+	uint32_t imageIndex) {
+  return imageIndex < buffers.size() &&
+	     buffers[imageIndex].buffer != VK_NULL_HANDLE;
+}
+
+bool cascadeBufferReadyAt(
+	const std::vector<std::array<container::gpu::AllocatedBuffer,
+	                             container::gpu::kShadowCascadeCount>>& buffers,
+	uint32_t imageIndex,
+	uint32_t cascadeIndex) {
+  return imageIndex < buffers.size() &&
+	     cascadeIndex < container::gpu::kShadowCascadeCount &&
+	     buffers[imageIndex][cascadeIndex].buffer != VK_NULL_HANDLE;
+}
+
+} // namespace
+
 ShadowCullManager::ShadowCullManager(
 	std::shared_ptr<container::gpu::VulkanDevice> device,
 	container::gpu::AllocationManager&            allocationManager,
@@ -29,18 +89,11 @@ ShadowCullManager::ShadowCullManager(
 }
 
 ShadowCullManager::~ShadowCullManager() {
-  if (inputDrawBuffer_.buffer != VK_NULL_HANDLE)
-	allocationManager_.destroyBuffer(inputDrawBuffer_);
 	if (ownedShadowCullUbo_.buffer != VK_NULL_HANDLE)
 	allocationManager_.destroyBuffer(ownedShadowCullUbo_);
-  for (auto& buffer : indirectDrawBuffers_) {
-	if (buffer.buffer != VK_NULL_HANDLE)
-	  allocationManager_.destroyBuffer(buffer);
-  }
-  for (auto& buffer : drawCountBuffers_) {
-	if (buffer.buffer != VK_NULL_HANDLE)
-	  allocationManager_.destroyBuffer(buffer);
-  }
+  destroyBuffers(allocationManager_, inputDrawBuffers_);
+  destroyCascadeBuffers(allocationManager_, indirectDrawBuffers_);
+  destroyCascadeBuffers(allocationManager_, drawCountBuffers_);
 
   if (shadowCullPipeline_ != VK_NULL_HANDLE)
 	pipelineManager_.destroyPipeline(shadowCullPipeline_);
@@ -54,7 +107,9 @@ ShadowCullManager::~ShadowCullManager() {
 
 bool ShadowCullManager::isReady() const {
   return shadowCullPipeline_ != VK_NULL_HANDLE &&
-         device_->enabledFeatures().drawIndirectFirstInstance == VK_TRUE;
+         device_->enabledFeatures().drawIndirectFirstInstance == VK_TRUE &&
+         device_->enabledFeatures().multiDrawIndirect == VK_TRUE &&
+         device_->enabledVulkan12Features().drawIndirectCount == VK_TRUE;
 }
 
 void ShadowCullManager::createResources(const std::filesystem::path& shaderDir,
@@ -90,6 +145,8 @@ void ShadowCullManager::createResources(const std::filesystem::path& shaderDir,
 
 void ShadowCullManager::recreatePerFrameResources(uint32_t descriptorSetCount) {
 	const uint32_t setCount = std::max<uint32_t>(1u, descriptorSetCount);
+	const std::vector<uint32_t> previousCapacities = drawCapacities_;
+	const uint32_t previousCapacity = maxDrawCount_;
 	if (shadowCullPool_ != VK_NULL_HANDLE) {
 	  pipelineManager_.destroyDescriptorPool(shadowCullPool_);
 	}
@@ -98,8 +155,21 @@ void ShadowCullManager::recreatePerFrameResources(uint32_t descriptorSetCount) {
 		 {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, setCount * container::gpu::kShadowCascadeCount * 4}},
 		setCount * container::gpu::kShadowCascadeCount, 0);
 
+	const VkBuffer fallbackObjectBuffer =
+		objectSsboBuffers_.empty() ? VK_NULL_HANDLE : objectSsboBuffers_.back();
+	const VkDeviceSize fallbackObjectSize =
+		objectSsboSizes_.empty() ? 0 : objectSsboSizes_.back();
+	const uint32_t fallbackObjectCount =
+		objectCounts_.empty() ? 0 : objectCounts_.back();
 	shadowCullSets_.assign(setCount * container::gpu::kShadowCascadeCount, VK_NULL_HANDLE);
 	shadowCullBuffers_.assign(setCount, ownedShadowCullUbo_.buffer);
+	objectSsboBuffers_.resize(setCount, fallbackObjectBuffer);
+	objectSsboSizes_.resize(setCount, fallbackObjectSize);
+	objectCounts_.resize(setCount, fallbackObjectCount);
+	resizePerImageBufferState(setCount);
+	lastUploadSourceData_.assign(setCount, nullptr);
+	lastUploadSourceSize_.assign(setCount, 0u);
+	lastUploadSourceRevision_.assign(setCount, 0u);
 	std::vector<VkDescriptorSetLayout> layouts(shadowCullSets_.size(), shadowCullSetLayout_);
 	VkDescriptorSetAllocateInfo allocInfo{
 		VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -110,87 +180,161 @@ void ShadowCullManager::recreatePerFrameResources(uint32_t descriptorSetCount) {
 							 shadowCullSets_.data()) != VK_SUCCESS) {
 	  throw std::runtime_error("failed to allocate shadow cull descriptor sets");
 	}
+	for (uint32_t imageIndex = 0; imageIndex < setCount; ++imageIndex) {
+	  uint32_t capacity = previousCapacity;
+	  if (!previousCapacities.empty()) {
+		const uint32_t sourceIndex = std::min<uint32_t>(
+			imageIndex, static_cast<uint32_t>(previousCapacities.size() - 1u));
+		capacity = previousCapacities[sourceIndex];
+	  }
+	  if (capacity > 0u) {
+		static_cast<void>(ensureBufferCapacity(imageIndex, capacity));
+	  }
+	}
+	for (uint32_t imageIndex = 0; imageIndex < setCount; ++imageIndex) {
+	  writeDescriptorSets(imageIndex);
+	}
 }
 
 bool ShadowCullManager::ensureBufferCapacity(uint32_t maxDrawCount) {
-  if (maxDrawCount <= maxDrawCount_ && inputDrawBuffer_.buffer != VK_NULL_HANDLE) {
+  const uint32_t imageCount =
+	  std::max<uint32_t>(1u, static_cast<uint32_t>(shadowCullBuffers_.size()));
+  bool resized = false;
+  for (uint32_t imageIndex = 0; imageIndex < imageCount; ++imageIndex) {
+	resized = ensureBufferCapacity(imageIndex, maxDrawCount) || resized;
+  }
+  return resized;
+}
+
+bool ShadowCullManager::ensureBufferCapacity(uint32_t imageIndex,
+                                             uint32_t maxDrawCount) {
+  const uint32_t imageCount =
+	  std::max<uint32_t>(1u, static_cast<uint32_t>(shadowCullBuffers_.size()));
+  if (imageIndex >= imageCount) {
+	return false;
+  }
+  resizePerImageBufferState(imageCount);
+
+  const uint32_t capacity = std::max(maxDrawCount, 64u);
+  const bool buffersReady =
+	  bufferReadyAt(inputDrawBuffers_, imageIndex) &&
+	  cascadeBufferReadyAt(indirectDrawBuffers_, imageIndex,
+	                       container::gpu::kShadowCascadeCount - 1u) &&
+	  cascadeBufferReadyAt(drawCountBuffers_, imageIndex,
+	                       container::gpu::kShadowCascadeCount - 1u);
+  if (imageIndex < drawCapacities_.size() &&
+	  maxDrawCount <= drawCapacities_[imageIndex] && buffersReady) {
 	return false;
   }
 
-  const uint32_t capacity = std::max(maxDrawCount, 64u);
+  destroyBufferIfAllocated(allocationManager_, inputDrawBuffers_[imageIndex]);
+  destroyCascadeBuffersAt(allocationManager_, indirectDrawBuffers_[imageIndex]);
+  destroyCascadeBuffersAt(allocationManager_, drawCountBuffers_[imageIndex]);
 
-  if (inputDrawBuffer_.buffer != VK_NULL_HANDLE)
-	allocationManager_.destroyBuffer(inputDrawBuffer_);
-  for (auto& buffer : indirectDrawBuffers_) {
-	if (buffer.buffer != VK_NULL_HANDLE)
-	  allocationManager_.destroyBuffer(buffer);
-  }
-  for (auto& buffer : drawCountBuffers_) {
-	if (buffer.buffer != VK_NULL_HANDLE)
-	  allocationManager_.destroyBuffer(buffer);
-  }
-
-  inputDrawBuffer_ = allocationManager_.createBuffer(
-	  sizeof(GpuDrawIndexedIndirectCommand) * capacity,
-	  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-	  VMA_MEMORY_USAGE_AUTO,
-	  VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-		  VMA_ALLOCATION_CREATE_MAPPED_BIT);
-
-  for (uint32_t i = 0; i < container::gpu::kShadowCascadeCount; ++i) {
-	indirectDrawBuffers_[i] = allocationManager_.createBuffer(
+	inputDrawBuffers_[imageIndex] = allocationManager_.createBuffer(
 		sizeof(GpuDrawIndexedIndirectCommand) * capacity,
-		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-		VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
-	drawCountBuffers_[i] = allocationManager_.createBuffer(
-		sizeof(uint32_t),
-		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-			VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-			VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-			VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
-  }
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		VMA_MEMORY_USAGE_AUTO,
+		VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+			VMA_ALLOCATION_CREATE_MAPPED_BIT);
 
-  maxDrawCount_ = capacity;
-	for (uint32_t i = 0; i < shadowCullBuffers_.size(); ++i) {
-	writeDescriptorSets(i);
+	for (uint32_t cascadeIndex = 0;
+		 cascadeIndex < container::gpu::kShadowCascadeCount;
+		 ++cascadeIndex) {
+	  indirectDrawBuffers_[imageIndex][cascadeIndex] =
+		  allocationManager_.createBuffer(
+			  sizeof(GpuDrawIndexedIndirectCommand) * capacity,
+			  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+				  VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+			  VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
+	  drawCountBuffers_[imageIndex][cascadeIndex] =
+		  allocationManager_.createBuffer(
+			  sizeof(uint32_t),
+			  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+				  VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+				  VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+				  VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			  VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
+	}
+
+  drawCapacities_[imageIndex] = capacity;
+  updateGlobalDrawCapacity();
+  if (imageIndex < lastUploadSourceData_.size()) {
+	lastUploadSourceData_[imageIndex] = nullptr;
+	lastUploadSourceSize_[imageIndex] = 0u;
+	lastUploadSourceRevision_[imageIndex] = 0u;
   }
+  writeDescriptorSets(imageIndex);
   return true;
 }
 
-void ShadowCullManager::uploadDrawCommands(const std::vector<DrawCommand>& commands) {
-  if (inputDrawBuffer_.buffer == VK_NULL_HANDLE || commands.empty()) return;
+void ShadowCullManager::uploadDrawCommands(
+	uint32_t imageIndex,
+	const std::vector<DrawCommand>& commands,
+	uint64_t sourceRevision) {
+  const GpuCullDrawUploadCacheView uploadCache{
+	  .sourceData = std::span<const DrawCommand *const>(
+		  lastUploadSourceData_.data(), lastUploadSourceData_.size()),
+	  .sourceSizes = std::span<const size_t>(
+		  lastUploadSourceSize_.data(), lastUploadSourceSize_.size()),
+	  .sourceRevisions = std::span<const uint64_t>(
+		  lastUploadSourceRevision_.data(), lastUploadSourceRevision_.size())};
+  const GpuCullDrawUploadPlan uploadPlan = buildGpuCullDrawUploadPlan(
+	  {.inputBufferReady = bufferReadyAt(inputDrawBuffers_, imageIndex),
+	   .cache = uploadCache,
+	   .imageIndex = imageIndex,
+	   .sourceData = commands.data(),
+	   .sourceSize = commands.size(),
+	   .sourceRevision = sourceRevision,
+	   .maxObjectCount = maxDrawCount(imageIndex)});
+  if (!uploadPlan.uploadsBuffer()) return;
 
-  const uint32_t count =
-	  std::min(static_cast<uint32_t>(commands.size()), maxDrawCount_);
+  const uint32_t count = uploadPlan.drawCount;
   uploadScratch_.resize(count);
   auto& gpuCmds = uploadScratch_;
   for (uint32_t i = 0; i < count; ++i) {
 	gpuCmds[i].indexCount    = commands[i].indexCount;
-	gpuCmds[i].instanceCount = 1;
+	gpuCmds[i].instanceCount = std::max(commands[i].instanceCount, 1u);
 	gpuCmds[i].firstIndex    = commands[i].firstIndex;
 	gpuCmds[i].vertexOffset  = 0;
 	gpuCmds[i].firstInstance = commands[i].objectIndex;
   }
 
-  SceneController::writeToBuffer(allocationManager_, inputDrawBuffer_,
+  SceneController::writeToBuffer(allocationManager_,
+								 inputDrawBuffers_[imageIndex],
 								 gpuCmds.data(),
 								 sizeof(GpuDrawIndexedIndirectCommand) * count);
+  lastUploadSourceData_[imageIndex] = commands.data();
+  lastUploadSourceSize_[imageIndex] = commands.size();
+  lastUploadSourceRevision_[imageIndex] = sourceRevision;
 }
 
 void ShadowCullManager::updateObjectSsboDescriptor(
 	VkBuffer objectBuffer,
 	VkDeviceSize objectBufferSize) {
-  if (objectBuffer == objectSsboBuffer_ &&
-      objectBufferSize == objectSsboSize_) {
+	for (uint32_t i = 0; i < shadowCullBuffers_.size(); ++i) {
+	updateObjectSsboDescriptor(i, objectBuffer, objectBufferSize);
+  }
+}
+
+void ShadowCullManager::updateObjectSsboDescriptor(
+	uint32_t imageIndex,
+	VkBuffer objectBuffer,
+	VkDeviceSize objectBufferSize) {
+	if (imageIndex >= objectSsboBuffers_.size() ||
+		imageIndex >= objectSsboSizes_.size() ||
+		imageIndex >= objectCounts_.size()) {
+	  return;
+	}
+  if (objectSsboBuffers_[imageIndex] == objectBuffer &&
+      objectSsboSizes_[imageIndex] == objectBufferSize) {
     return;
   }
-	objectSsboBuffer_  = objectBuffer;
-	objectSsboSize_    = objectBufferSize;
-	objectCount_       = static_cast<uint32_t>(objectBufferSize / sizeof(container::gpu::ObjectData));
-	for (uint32_t i = 0; i < shadowCullBuffers_.size(); ++i) {
-	writeDescriptorSets(i);
-  }
+	objectSsboBuffers_[imageIndex] = objectBuffer;
+	objectSsboSizes_[imageIndex]   = objectBufferSize;
+	objectCounts_[imageIndex]      = static_cast<uint32_t>(
+		objectBufferSize / sizeof(container::gpu::ObjectData));
+	writeDescriptorSets(imageIndex);
 }
 
 void ShadowCullManager::updateShadowCullDescriptor(
@@ -207,24 +351,38 @@ void ShadowCullManager::updateShadowCullDescriptor(
   writeDescriptorSets(imageIndex);
 }
 
-void ShadowCullManager::dispatchCascadeCull(VkCommandBuffer cmd,
+bool ShadowCullManager::canDispatchCascadeCull(uint32_t imageIndex,
+                                               uint32_t cascadeIndex) const {
+  if (!isReady() ||
+	  imageIndex >= shadowCullBuffers_.size() ||
+	  imageIndex >= objectSsboBuffers_.size() ||
+	  imageIndex >= objectCounts_.size() ||
+	  cascadeIndex >= container::gpu::kShadowCascadeCount ||
+	  shadowCullBuffers_[imageIndex] == VK_NULL_HANDLE ||
+	  objectSsboBuffers_[imageIndex] == VK_NULL_HANDLE ||
+	  objectCounts_[imageIndex] == 0u ||
+	  !bufferReadyAt(inputDrawBuffers_, imageIndex) ||
+	  !cascadeBufferReadyAt(indirectDrawBuffers_, imageIndex, cascadeIndex) ||
+	  !cascadeBufferReadyAt(drawCountBuffers_, imageIndex, cascadeIndex) ||
+	  maxDrawCount(imageIndex) == 0u) {
+	return false;
+  }
+  const size_t setIndex = descriptorSetIndex(imageIndex, cascadeIndex);
+  return setIndex < shadowCullSets_.size() &&
+	     shadowCullSets_[setIndex] != VK_NULL_HANDLE;
+}
+
+bool ShadowCullManager::dispatchCascadeCull(VkCommandBuffer cmd,
 									uint32_t imageIndex,
 											uint32_t cascadeIndex,
 											uint32_t drawCount,
 											uint32_t outputOffset) {
-	if (shadowCullPipeline_ == VK_NULL_HANDLE ||
-	  imageIndex >= shadowCullBuffers_.size() ||
-	  cascadeIndex >= container::gpu::kShadowCascadeCount ||
-	  shadowCullBuffers_[imageIndex] == VK_NULL_HANDLE ||
-	  objectSsboBuffer_ == VK_NULL_HANDLE ||
-	  inputDrawBuffer_.buffer == VK_NULL_HANDLE ||
-	  indirectDrawBuffers_[cascadeIndex].buffer == VK_NULL_HANDLE ||
-	  drawCountBuffers_[cascadeIndex].buffer == VK_NULL_HANDLE) {
-	return;
+	if (!canDispatchCascadeCull(imageIndex, cascadeIndex)) {
+	return false;
   }
+	const auto& drawCountBuffer = drawCountBuffers_[imageIndex][cascadeIndex];
 
-	vkCmdFillBuffer(cmd, drawCountBuffers_[cascadeIndex].buffer, 0,
-					 sizeof(uint32_t), 0);
+	vkCmdFillBuffer(cmd, drawCountBuffer.buffer, 0, sizeof(uint32_t), 0);
 
 	VkMemoryBarrier fillBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
 	fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -235,11 +393,12 @@ void ShadowCullManager::dispatchCascadeCull(VkCommandBuffer cmd,
 					 0, 1, &fillBarrier, 0, nullptr, 0, nullptr);
 
 	const size_t setIndex = descriptorSetIndex(imageIndex, cascadeIndex);
-	if (setIndex >= shadowCullSets_.size() ||
-		shadowCullSets_[setIndex] == VK_NULL_HANDLE) {
-	  return;
-	}
 	const VkDescriptorSet descriptorSet = shadowCullSets_[setIndex];
+	const uint32_t groupCount = (drawCount + 63u) / 64u;
+	if (groupCount == 0u) {
+	  return false;
+	}
+
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, shadowCullPipeline_);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
 					shadowCullPipelineLayout_, 0, 1,
@@ -249,15 +408,12 @@ void ShadowCullManager::dispatchCascadeCull(VkCommandBuffer cmd,
 	pc.drawCount    = drawCount;
 	pc.cascadeIndex = cascadeIndex;
 	pc.outputOffset = outputOffset;
-	pc.objectCount  = objectCount_;
+	pc.objectCount  = objectCounts_[imageIndex];
 	vkCmdPushConstants(cmd, shadowCullPipelineLayout_,
 				   VK_SHADER_STAGE_COMPUTE_BIT, 0,
 				   sizeof(ShadowCullPushConstants), &pc);
 
-	const uint32_t groupCount = (drawCount + 63u) / 64u;
-	if (groupCount > 0u) {
-	  vkCmdDispatch(cmd, groupCount, 1, 1);
-	}
+	vkCmdDispatch(cmd, groupCount, 1, 1);
 
 	VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
 	barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -269,6 +425,7 @@ void ShadowCullManager::dispatchCascadeCull(VkCommandBuffer cmd,
 					 VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
 					 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 				 0, 1, &barrier, 0, nullptr, 0, nullptr);
+	return true;
 }
 
 void ShadowCullManager::createShadowCullPipeline(
@@ -315,8 +472,40 @@ size_t ShadowCullManager::descriptorSetIndex(uint32_t imageIndex,
 		 static_cast<size_t>(cascadeIndex);
 }
 
+void ShadowCullManager::resizePerImageBufferState(uint32_t imageCount) {
+  const uint32_t count = std::max<uint32_t>(1u, imageCount);
+  for (uint32_t i = count; i < inputDrawBuffers_.size(); ++i) {
+	destroyBufferIfAllocated(allocationManager_, inputDrawBuffers_[i]);
+  }
+  for (uint32_t i = count; i < indirectDrawBuffers_.size(); ++i) {
+	destroyCascadeBuffersAt(allocationManager_, indirectDrawBuffers_[i]);
+  }
+  for (uint32_t i = count; i < drawCountBuffers_.size(); ++i) {
+	destroyCascadeBuffersAt(allocationManager_, drawCountBuffers_[i]);
+  }
+
+  inputDrawBuffers_.resize(count);
+  indirectDrawBuffers_.resize(count);
+  drawCountBuffers_.resize(count);
+  drawCapacities_.resize(count, 0u);
+  updateGlobalDrawCapacity();
+}
+
+void ShadowCullManager::updateGlobalDrawCapacity() {
+  maxDrawCount_ = 0u;
+  for (const uint32_t capacity : drawCapacities_) {
+	maxDrawCount_ = std::max(maxDrawCount_, capacity);
+  }
+}
+
 void ShadowCullManager::writeDescriptorSets(uint32_t imageIndex) {
   if (imageIndex >= shadowCullBuffers_.size()) return;
+	if (imageIndex >= objectSsboBuffers_.size() ||
+		imageIndex >= objectSsboSizes_.size()) {
+	  return;
+	}
+	const VkBuffer objectSsboBuffer = objectSsboBuffers_[imageIndex];
+	const VkDeviceSize objectSsboSize = objectSsboSizes_[imageIndex];
   for (uint32_t cascadeIndex = 0;
 	   cascadeIndex < container::gpu::kShadowCascadeCount; ++cascadeIndex) {
 	const size_t setIndex = descriptorSetIndex(imageIndex, cascadeIndex);
@@ -327,15 +516,26 @@ void ShadowCullManager::writeDescriptorSets(uint32_t imageIndex) {
 		shadowCullBuffers_[imageIndex], 0,
 	  shadowCullUboSize_ > 0 ? shadowCullUboSize_ : sizeof(ShadowCullData)};
   VkDescriptorBufferInfo objectInfo{
-		objectSsboBuffer_, 0, objectSsboSize_};
+		objectSsboBuffer, 0, objectSsboSize};
   VkDescriptorBufferInfo inputDrawInfo{
-	  inputDrawBuffer_.buffer, 0,
-	  sizeof(GpuDrawIndexedIndirectCommand) * std::max(maxDrawCount_, 1u)};
+	  bufferReadyAt(inputDrawBuffers_, imageIndex)
+		  ? inputDrawBuffers_[imageIndex].buffer
+		  : VK_NULL_HANDLE,
+	  0,
+	  sizeof(GpuDrawIndexedIndirectCommand) *
+		  std::max(maxDrawCount(imageIndex), 1u)};
   VkDescriptorBufferInfo outputDrawInfo{
-	  indirectDrawBuffers_[cascadeIndex].buffer, 0,
-	  sizeof(GpuDrawIndexedIndirectCommand) * std::max(maxDrawCount_, 1u)};
+	  cascadeBufferReadyAt(indirectDrawBuffers_, imageIndex, cascadeIndex)
+		  ? indirectDrawBuffers_[imageIndex][cascadeIndex].buffer
+		  : VK_NULL_HANDLE,
+	  0,
+	  sizeof(GpuDrawIndexedIndirectCommand) *
+		  std::max(maxDrawCount(imageIndex), 1u)};
   VkDescriptorBufferInfo drawCountInfo{
-	  drawCountBuffers_[cascadeIndex].buffer, 0, sizeof(uint32_t)};
+	  cascadeBufferReadyAt(drawCountBuffers_, imageIndex, cascadeIndex)
+		  ? drawCountBuffers_[imageIndex][cascadeIndex].buffer
+		  : VK_NULL_HANDLE,
+	  0, sizeof(uint32_t)};
 
   std::vector<VkWriteDescriptorSet> writes;
   writes.reserve(5);

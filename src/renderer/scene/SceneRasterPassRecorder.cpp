@@ -61,6 +61,7 @@ bool recordSceneRasterPassCommands(VkCommandBuffer cmd,
             .pipelines = inputs.pipelines,
             .pipelineLayout = inputs.pipelineLayout,
             .pushConstants = inputs.pushConstants,
+            .imageIndex = inputs.imageIndex,
             .debugOverlay = inputs.debugOverlay,
             .gpuCullManager = inputs.gpuCullManager}));
   static_cast<void>(

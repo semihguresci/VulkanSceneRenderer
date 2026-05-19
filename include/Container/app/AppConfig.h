@@ -62,6 +62,10 @@ struct AppConfig {
   float environmentIntensity{1.0f};
   bool hasDirectionalIntensityOverride{false};
   float directionalIntensity{2.0f};
+  bool hasDirectionalDirectionOverride{false};
+  std::array<float, 3> directionalDirection{-0.45f, -1.0f, -0.3f};
+  bool hasDirectionalColorOverride{false};
+  std::array<float, 3> directionalColor{1.0f, 0.96f, 0.9f};
   bool hasBloomEnabledOverride{false};
   bool bloomEnabled{true};
   std::vector<const char*> validationLayers{"VK_LAYER_KHRONOS_validation"};

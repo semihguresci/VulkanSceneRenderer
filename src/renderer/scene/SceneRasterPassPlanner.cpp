@@ -17,6 +17,8 @@ buildSceneRasterPassPlan(const SceneRasterPassPlanInputs &inputs) {
   plan.clearValues = sceneRasterPassClearValues(inputs.kind);
   plan.drawPlan = buildSceneOpaqueDrawPlan(
       {.gpuIndirectAvailable = inputs.gpuIndirectAvailable,
+       .occludedGpuIndirectAvailable = inputs.occludedGpuIndirectAvailable,
+       .preferOccludedGpuIndirect = inputs.preferOccludedGpuIndirect,
        .draws = inputs.draws});
   plan.pipelines = {.primary = inputs.pipelines.primary,
                     .frontCull = choosePipeline(inputs.pipelines.frontCull,

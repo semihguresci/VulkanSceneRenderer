@@ -5,7 +5,6 @@
 #include "Container/utility/GuiManager.h"
 
 #include <algorithm>
-#include <stdexcept>
 
 namespace container::renderer {
 
@@ -110,12 +109,33 @@ DeferredPostProcessFrameState buildDeferredPostProcessFrameState(
   return DeferredPostProcessStateBuilder(inputs).build();
 }
 
+bool deferredPostProcessPassRecordInputsReady(
+    const DeferredPostProcessPassRecordInputs &inputs) {
+  if (inputs.commandBuffer == VK_NULL_HANDLE ||
+      inputs.renderPass == VK_NULL_HANDLE ||
+      inputs.swapChainFramebuffers == nullptr ||
+      inputs.imageIndex >= inputs.swapChainFramebuffers->size() ||
+      inputs.extent.width == 0u || inputs.extent.height == 0u ||
+      inputs.pipeline == VK_NULL_HANDLE ||
+      inputs.pipelineLayout == VK_NULL_HANDLE) {
+    return false;
+  }
+
+  if ((*inputs.swapChainFramebuffers)[inputs.imageIndex] == VK_NULL_HANDLE) {
+    return false;
+  }
+
+  return std::all_of(inputs.descriptorSets.begin(),
+                     inputs.descriptorSets.end(),
+                     [](VkDescriptorSet descriptorSet) {
+                       return descriptorSet != VK_NULL_HANDLE;
+                     });
+}
+
 bool recordDeferredPostProcessPassCommands(
     const DeferredPostProcessPassRecordInputs &inputs) {
-  if (!inputs.swapChainFramebuffers ||
-      inputs.imageIndex >= inputs.swapChainFramebuffers->size()) {
-    throw std::runtime_error(
-        "invalid swapChainFramebuffers in FrameRecordParams");
+  if (!deferredPostProcessPassRecordInputsReady(inputs)) {
+    return false;
   }
 
   DeferredPostProcessFrameInputs frameInputs = inputs.frameInputs;

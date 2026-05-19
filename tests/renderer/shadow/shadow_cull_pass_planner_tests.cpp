@@ -14,6 +14,7 @@ ShadowCullPassPlanInputs readyInputs() {
           .gpuShadowCullEnabled = true,
           .shadowCullManagerReady = true,
           .sceneSingleSidedDrawsAvailable = true,
+          .sourceDrawCommandsAllSingleInstance = true,
           .cameraBufferReady = true,
           .cascadeIndexInRange = true,
           .sourceDrawCount = 16u};
@@ -64,6 +65,17 @@ TEST(ShadowCullPassPlannerTests, MissingOrEmptyDrawsReturnNotNeeded) {
   inputs.sourceDrawCount = 0u;
   EXPECT_EQ(buildShadowCullPassPlan(inputs).readiness.skipReason,
             RenderPassSkipReason::NotNeeded);
+}
+
+TEST(ShadowCullPassPlannerTests, MultiInstanceSourceDrawsReturnNotNeeded) {
+  auto inputs = readyInputs();
+  inputs.sourceDrawCommandsAllSingleInstance = false;
+
+  const auto plan = buildShadowCullPassPlan(inputs);
+
+  EXPECT_FALSE(plan.active);
+  EXPECT_FALSE(plan.readiness.ready);
+  EXPECT_EQ(plan.readiness.skipReason, RenderPassSkipReason::NotNeeded);
 }
 
 TEST(ShadowCullPassPlannerTests, MissingCameraBufferReturnsMissingCamera) {

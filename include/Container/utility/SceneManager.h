@@ -79,9 +79,15 @@ class SceneManager {
   void updateDescriptorSets(
       std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
       const container::gpu::AllocatedBuffer& objectBuffer);
+  void updateDescriptorSets(
+      std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
+      std::span<const container::gpu::AllocatedBuffer> objectBuffers);
   void updateAuxiliaryDescriptorSets(
       std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
       const container::gpu::AllocatedBuffer& objectBuffer);
+  void updateAuxiliaryDescriptorSets(
+      std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
+      std::span<const container::gpu::AllocatedBuffer> objectBuffers);
   void updateSceneClipState(const container::gpu::SceneClipState& clipState);
 
   VkDescriptorSetLayout descriptorSetLayout() const {

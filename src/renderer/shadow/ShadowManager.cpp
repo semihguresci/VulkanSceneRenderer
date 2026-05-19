@@ -65,6 +65,37 @@ constexpr float kLocalShadowPointSourceRadiusFraction = 0.025f;
              : glm::vec3(0.0f, 1.0f, 0.0f);
 }
 
+[[nodiscard]] bool finiteVec3(const glm::vec3& value) {
+  return std::isfinite(value.x) && std::isfinite(value.y) &&
+         std::isfinite(value.z);
+}
+
+[[nodiscard]] bool validBounds(const glm::vec3& minBounds,
+                               const glm::vec3& maxBounds) {
+  return finiteVec3(minBounds) && finiteVec3(maxBounds) &&
+         minBounds.x <= maxBounds.x && minBounds.y <= maxBounds.y &&
+         minBounds.z <= maxBounds.z;
+}
+
+[[nodiscard]] bool validCasterSceneBounds(
+    const ShadowCasterSceneBounds* bounds) {
+  return bounds != nullptr && validBounds(bounds->minBounds, bounds->maxBounds);
+}
+
+[[nodiscard]] std::array<glm::vec3, 8> boundsCorners(
+    const ShadowCasterSceneBounds& bounds) {
+  return {{
+      {bounds.minBounds.x, bounds.minBounds.y, bounds.minBounds.z},
+      {bounds.maxBounds.x, bounds.minBounds.y, bounds.minBounds.z},
+      {bounds.minBounds.x, bounds.maxBounds.y, bounds.minBounds.z},
+      {bounds.maxBounds.x, bounds.maxBounds.y, bounds.minBounds.z},
+      {bounds.minBounds.x, bounds.minBounds.y, bounds.maxBounds.z},
+      {bounds.maxBounds.x, bounds.minBounds.y, bounds.maxBounds.z},
+      {bounds.minBounds.x, bounds.maxBounds.y, bounds.maxBounds.z},
+      {bounds.maxBounds.x, bounds.maxBounds.y, bounds.maxBounds.z},
+  }};
+}
+
 [[nodiscard]] uint32_t metadataBaseLayer(const PointLightData& light) {
   const float encoded = light.coneOuterCosType.z;
   if (!std::isfinite(encoded) || encoded < 1.0f) {
@@ -482,7 +513,8 @@ ShadowManager::CascadeViewProjData ShadowManager::computeCascadeViewProj(
     const glm::mat4& cameraView,
     const glm::mat4& cameraProj,
     float cameraNear,
-    float cameraFar) const {
+    float cameraFar,
+    const ShadowCasterSceneBounds* casterSceneBounds) const {
   const float cascadeNear =
       (cascadeIndex == 0) ? cameraNear : cascadeSplits_[cascadeIndex - 1];
   const float cascadeFar = cascadeSplits_[cascadeIndex];
@@ -534,71 +566,120 @@ ShadowManager::CascadeViewProjData ShadowManager::computeCascadeViewProj(
   const glm::vec3 up = (std::abs(glm::dot(lightDir, glm::vec3(0, 1, 0))) > 0.99f)
       ? glm::vec3(0, 0, 1)
       : glm::vec3(0, 1, 0);
-  const float     lightDistance = cascadeRadius * 2.0f;
-  const glm::mat4 unsnappedLightView = container::math::lookAt(
-      -lightDir * lightDistance, glm::vec3(0.0f), up);
-  const glm::vec3 lightSpaceCenter =
-      glm::vec3(unsnappedLightView * glm::vec4(center, 1.0f));
-
   const float cascadeExtent = cascadeRadius * 2.0f;
   const float texelSize =
       cascadeExtent / static_cast<float>(kShadowMapResolution);
-  glm::vec2 snappedLightSpaceCenter{lightSpaceCenter.x, lightSpaceCenter.y};
-  if (texelSize > 1e-6f) {
-    snappedLightSpaceCenter.x =
-        std::floor(snappedLightSpaceCenter.x / texelSize) * texelSize;
-    snappedLightSpaceCenter.y =
-        std::floor(snappedLightSpaceCenter.y / texelSize) * texelSize;
+
+  auto makeSnappedLightView = [&](float lightDistance) {
+    const glm::mat4 unsnappedLightView = container::math::lookAt(
+        -lightDir * lightDistance, glm::vec3(0.0f), up);
+    const glm::vec3 lightSpaceCenter =
+        glm::vec3(unsnappedLightView * glm::vec4(center, 1.0f));
+
+    glm::vec2 snappedLightSpaceCenter{lightSpaceCenter.x, lightSpaceCenter.y};
+    if (texelSize > 1e-6f) {
+      snappedLightSpaceCenter.x =
+          std::floor(snappedLightSpaceCenter.x / texelSize) * texelSize;
+      snappedLightSpaceCenter.y =
+          std::floor(snappedLightSpaceCenter.y / texelSize) * texelSize;
+    }
+
+    const glm::mat4 invUnsnappedLightView = glm::inverse(unsnappedLightView);
+    const glm::vec3 snappedCenter = glm::vec3(
+        invUnsnappedLightView *
+        glm::vec4(snappedLightSpaceCenter, lightSpaceCenter.z, 1.0f));
+    return container::math::lookAt(snappedCenter - lightDir * lightDistance,
+                                   snappedCenter, up);
+  };
+
+  auto receiverBoundsForView = [&](const glm::mat4& lightView) {
+    ShadowCasterSceneBounds bounds{};
+    bounds.minBounds = {-cascadeRadius, -cascadeRadius,
+                        std::numeric_limits<float>::max()};
+    bounds.maxBounds = {cascadeRadius, cascadeRadius,
+                        -std::numeric_limits<float>::max()};
+    for (const auto& corner : sliceCorners) {
+      const glm::vec3 lightSpaceCorner =
+          glm::vec3(lightView * glm::vec4(corner, 1.0f));
+      bounds.minBounds.z = std::min(bounds.minBounds.z, lightSpaceCorner.z);
+      bounds.maxBounds.z = std::max(bounds.maxBounds.z, lightSpaceCorner.z);
+    }
+    return bounds;
+  };
+
+  auto casterBoundsForView = [&](const glm::mat4& lightView,
+                                 ShadowCasterSceneBounds& outBounds) {
+    if (!validCasterSceneBounds(casterSceneBounds)) {
+      return false;
+    }
+    outBounds.minBounds = {-cascadeRadius, -cascadeRadius,
+                           std::numeric_limits<float>::max()};
+    outBounds.maxBounds = {cascadeRadius, cascadeRadius,
+                           -std::numeric_limits<float>::max()};
+    for (const auto& corner : boundsCorners(*casterSceneBounds)) {
+      const glm::vec3 lightSpaceCorner =
+          glm::vec3(lightView * glm::vec4(corner, 1.0f));
+      outBounds.minBounds.z = std::min(outBounds.minBounds.z,
+                                       lightSpaceCorner.z);
+      outBounds.maxBounds.z = std::max(outBounds.maxBounds.z,
+                                       lightSpaceCorner.z);
+    }
+    return std::isfinite(outBounds.minBounds.z) &&
+           std::isfinite(outBounds.maxBounds.z);
+  };
+
+  auto depthPlanForView = [&](const glm::mat4& lightView,
+                              float lightDistance) {
+    const ShadowCasterSceneBounds receiverBounds =
+        receiverBoundsForView(lightView);
+    ShadowCasterSceneBounds casterBounds{};
+    const bool hasFiniteCasterBounds =
+        casterBoundsForView(lightView, casterBounds);
+
+    ShadowCascadeDepthPlanInputs inputs{};
+    inputs.receiverMinBounds = receiverBounds.minBounds;
+    inputs.receiverMaxBounds = receiverBounds.maxBounds;
+    inputs.casterMinBounds = casterBounds.minBounds;
+    inputs.casterMaxBounds = casterBounds.maxBounds;
+    inputs.hasFiniteCasterBounds = hasFiniteCasterBounds;
+    inputs.texelSize = texelSize;
+    inputs.lightDistance = lightDistance;
+    inputs.fallbackCasterDepth = cascadeRadius * 2.0f;
+    return buildShadowCascadeDepthPlan(inputs);
+  };
+
+  float lightDistance = cascadeRadius * 2.0f;
+  glm::mat4 lightView = makeSnappedLightView(lightDistance);
+  ShadowCascadeDepthPlan depthPlan = depthPlanForView(lightView, lightDistance);
+  constexpr uint32_t kMaxLightDistanceRebuilds = 8u;
+  for (uint32_t rebuild = 0u;
+       rebuild < kMaxLightDistanceRebuilds &&
+       depthPlan.lightDistanceIncrease > 1.0e-4f;
+       ++rebuild) {
+    lightDistance = depthPlan.lightDistance;
+    lightView = makeSnappedLightView(lightDistance);
+    depthPlan = depthPlanForView(lightView, lightDistance);
   }
-
-  const glm::mat4 invUnsnappedLightView = glm::inverse(unsnappedLightView);
-  const glm::vec3 snappedCenter = glm::vec3(
-      invUnsnappedLightView *
-      glm::vec4(snappedLightSpaceCenter, lightSpaceCenter.z, 1.0f));
-  const glm::mat4 lightView = container::math::lookAt(
-      snappedCenter - lightDir * lightDistance, snappedCenter, up);
-
-  glm::vec3 minBounds{
-      -cascadeRadius, -cascadeRadius, std::numeric_limits<float>::max()};
-  glm::vec3 maxBounds{
-       cascadeRadius,  cascadeRadius, -std::numeric_limits<float>::max()};
-  for (const auto& corner : sliceCorners) {
-    const glm::vec3 lightSpaceCorner =
-        glm::vec3(lightView * glm::vec4(corner, 1.0f));
-    minBounds.z = std::min(minBounds.z, lightSpaceCorner.z);
-    maxBounds.z = std::max(maxBounds.z, lightSpaceCorner.z);
+  if (depthPlan.lightDistanceIncrease > 1.0e-4f) {
+    lightDistance = depthPlan.lightDistance;
+    lightView = makeSnappedLightView(lightDistance);
+    depthPlan = depthPlanForView(lightView, lightDistance);
   }
-
-  const glm::vec3 receiverMinBounds = minBounds;
-  const glm::vec3 receiverMaxBounds = maxBounds;
-
-  // Extend toward the light so off-frustum casters between the light and the
-  // receiver slice can still project into this cascade. The reverse-Z ortho
-  // helper expects positive near/far distances, so convert the signed
-  // light-view Z bounds after expansion.
-  const float zExtend = std::max(maxBounds.z - minBounds.z, 1.0f);
-
-  glm::vec3 casterMinBounds = minBounds;
-  glm::vec3 casterMaxBounds = maxBounds;
-  maxBounds.z += zExtend;
-  casterMaxBounds.z += zExtend;
-
-  const float nearPlane = std::max(0.01f, -maxBounds.z);
-  const float farPlane  = std::max(nearPlane + 0.01f, -minBounds.z);
 
   const glm::mat4 lightProj = container::math::orthoRH_ReverseZ(
-      minBounds.x, maxBounds.x, minBounds.y, maxBounds.y, nearPlane, farPlane);
+      -cascadeRadius, cascadeRadius, -cascadeRadius, cascadeRadius,
+      depthPlan.nearPlane, depthPlan.farPlane);
 
   CascadeViewProjData result{};
   result.viewProj = lightProj * lightView;
   result.cullBounds.lightView = lightView;
-  result.cullBounds.receiverMinBounds = receiverMinBounds;
-  result.cullBounds.receiverMaxBounds = receiverMaxBounds;
-  result.cullBounds.casterMinBounds = casterMinBounds;
-  result.cullBounds.casterMaxBounds = casterMaxBounds;
+  result.cullBounds.receiverMinBounds = depthPlan.receiverMinBounds;
+  result.cullBounds.receiverMaxBounds = depthPlan.receiverMaxBounds;
+  result.cullBounds.casterMinBounds = depthPlan.casterMinBounds;
+  result.cullBounds.casterMaxBounds = depthPlan.casterMaxBounds;
   result.texelSize = texelSize;
   result.worldRadius = cascadeRadius;
-  result.depthRange = farPlane - nearPlane;
+  result.depthRange = depthPlan.depthRange;
   return result;
 }
 
@@ -607,6 +688,7 @@ void ShadowManager::update(const container::scene::BaseCamera* camera,
                            float aspectRatio,
                            const glm::vec3& lightDirection,
                            const container::gpu::ShadowSettings& shadowSettings,
+                           const ShadowCasterSceneBounds* casterSceneBounds,
                            uint32_t imageIndex) {
   if (!camera) return;
 
@@ -648,12 +730,16 @@ void ShadowManager::update(const container::scene::BaseCamera* camera,
       shadowSettings.directionalPcssMaxFilterRadiusTexels,
       baseFilterRadiusTexels);
   const float directionalContactMaxDistance = std::clamp(
-      shadowSettings.directionalContactMaxDistance, 0.0f, 10.0f);
-  const float directionalContactThickness = std::clamp(
-      shadowSettings.directionalContactThickness, 0.0f, 1.0f);
-  const float directionalContactFadeDistance = std::max(
-      shadowSettings.directionalContactFadeDistance,
-      directionalContactThickness);
+      shadowSettings.directionalContactMaxDistance, 0.0f, 0.75f);
+  const float directionalContactThickness = std::min(
+      std::clamp(shadowSettings.directionalContactThickness, 0.0f, 0.25f),
+      directionalContactMaxDistance);
+  const float directionalContactFadeDistance =
+      directionalContactMaxDistance > 0.0f
+          ? std::clamp(shadowSettings.directionalContactFadeDistance,
+                       directionalContactThickness,
+                       directionalContactMaxDistance)
+          : 0.0f;
   shadowData_.biasSettings = glm::vec4(
       normalBiasMinTexels,
       normalBiasMaxTexels,
@@ -678,7 +764,7 @@ void ShadowManager::update(const container::scene::BaseCamera* camera,
   for (uint32_t i = 0; i < kShadowCascadeCount; ++i) {
     const CascadeViewProjData cascadeData =
         computeCascadeViewProj(i, lightDirection, cameraView, cameraProj,
-                               nearPlane, farPlane);
+                               nearPlane, farPlane, casterSceneBounds);
     shadowData_.cascades[i].viewProj = cascadeData.viewProj;
     shadowData_.cascades[i].splitDepth = cascadeSplits_[i];
     shadowData_.cascades[i].texelSize = cascadeData.texelSize;
@@ -744,10 +830,20 @@ void ShadowManager::updateLocalShadows(
     std::span<const PointLightData> pointLights,
     std::span<const AreaLightData> areaLights,
     const container::gpu::ShadowSettings& shadowSettings,
+    uint32_t localShadowLayerBudget,
     uint32_t imageIndex) {
   localShadowData_ = {};
   localShadowData_.counts = glm::uvec4(0u, kMaxShadowedLocalLightLayers,
                                        kLocalShadowMapResolution, 0u);
+  const uint32_t activeLayerBudget =
+      std::min(localShadowLayerBudget, kMaxShadowedLocalLightLayers);
+  if (activeLayerBudget == 0u) {
+    if (imageIndex < localShadowUbos_.size()) {
+      uploadMappedBuffer(localShadowUbos_[imageIndex], &localShadowData_,
+                         sizeof(LocalShadowData));
+    }
+    return;
+  }
   const float localNormalBiasMinTexels =
       std::clamp(shadowSettings.normalBiasMinTexels, 0.0f,
                  kLocalShadowNormalBiasMinTexels);
@@ -780,7 +876,7 @@ void ShadowManager::updateLocalShadows(
           float texelSize, float depthRange, float outerCos,
           float sourceRadius,
           const glm::mat4& viewProj) {
-        if (layerIndex >= kMaxShadowedLocalLightLayers) {
+        if (layerIndex >= activeLayerBudget) {
           return;
         }
         LocalShadowLayerData layer{};
@@ -803,8 +899,8 @@ void ShadowManager::updateLocalShadows(
     const PointLightData& light = pointLights[lightIndex];
     const uint32_t baseLayer = metadataBaseLayer(light);
     const uint32_t layerCount = metadataLayerCount(light);
-    if (baseLayer >= kMaxShadowedLocalLightLayers || layerCount == 0u ||
-        baseLayer + layerCount > kMaxShadowedLocalLightLayers) {
+    if (baseLayer >= activeLayerBudget || layerCount == 0u ||
+        baseLayer + layerCount > activeLayerBudget) {
       continue;
     }
 
@@ -870,8 +966,7 @@ void ShadowManager::updateLocalShadows(
       std::min<uint32_t>(static_cast<uint32_t>(areaLights.size()),
                          kMaxAreaLights);
   for (uint32_t areaIndex = 0u; areaIndex < areaCount; ++areaIndex) {
-    if (nextLayer + kLocalShadowAreaLayerCount >
-        kMaxShadowedLocalLightLayers) {
+    if (nextLayer + kLocalShadowAreaLayerCount > activeLayerBudget) {
       break;
     }
     const AreaLightData& light = areaLights[areaIndex];

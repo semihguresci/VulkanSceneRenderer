@@ -69,6 +69,12 @@ bool TryProjectWorldToScenePixel(float3 worldPosition,
     return true;
 }
 
+float ScreenSpaceDirectionalContactRayJitter(uint2 pixel)
+{
+    float pixelSeed = dot(float2(pixel), float2(0.06711056, 0.00583715));
+    return frac(52.9829189 * frac(pixelSeed));
+}
+
 float ScreenSpacePointLightContactVisibility(
     float3 worldPosition,
     float3 receiverNormal,
@@ -222,6 +228,11 @@ float ScreenSpaceDirectionalContactVisibility(
     float surfaceBias = max(rayThickness * 1.5, maxDistance * 0.01);
     float2 extent = float2(width, height);
     float visibility = 1.0;
+    uint2 receiverPixel = uint2(0u, 0u);
+    TryProjectWorldToScenePixel(worldPosition, width, height, viewProj,
+                                receiverPixel);
+    float rayJitter =
+        (ScreenSpaceDirectionalContactRayJitter(receiverPixel) - 0.5) * 0.25;
 
     [loop]
     for (uint sampleIndex = 0u;
@@ -229,8 +240,10 @@ float ScreenSpaceDirectionalContactVisibility(
          ++sampleIndex)
     {
         float sampleT =
-            (float(sampleIndex) + 0.5) /
-            float(SCREEN_SPACE_DIRECTIONAL_CONTACT_SHADOW_STEPS);
+            clamp((float(sampleIndex) + 0.5 + rayJitter) /
+                      float(SCREEN_SPACE_DIRECTIONAL_CONTACT_SHADOW_STEPS),
+                  1.0e-4,
+                  1.0);
         float sampleDistance =
             lerp(surfaceBias, maxDistance, sampleT * sampleT);
         float3 samplePosition = worldPosition + lightDir * sampleDistance;

@@ -11,6 +11,7 @@ struct ShadowCullPassPlanInputs {
   bool gpuShadowCullEnabled{false};
   bool shadowCullManagerReady{false};
   bool sceneSingleSidedDrawsAvailable{false};
+  bool sourceDrawCommandsAllSingleInstance{true};
   bool cameraBufferReady{false};
   bool cascadeIndexInRange{false};
   uint32_t sourceDrawCount{0u};

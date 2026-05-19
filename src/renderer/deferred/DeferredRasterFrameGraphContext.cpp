@@ -158,9 +158,9 @@ DeferredRasterFrameGraphContext::shadowCascadeFramePassContext() const {
 }
 
 void DeferredRasterFrameGraphContext::beforePrepareFrame(
-    const FrameRecordParams &) const {
+    const FrameRecordParams &p) const {
   if (services_.gpuCullManager != nullptr) {
-    services_.gpuCullManager->beginFrameCulling();
+    services_.gpuCullManager->beginFrameCulling(p.runtime.imageIndex);
   }
 }
 
@@ -168,7 +168,7 @@ void DeferredRasterFrameGraphContext::afterPrepareFrame(
     const FrameRecordParams &p, const RenderGraph &) const {
   shadowCascadeFramePassRecorder_.prepareFrame(p,
                                                shadowCascadeFramePassContext());
-  prepareBimFrameGpuVisibility(p.services.bimManager);
+  prepareBimFrameGpuVisibility(p.services.bimManager, p.bim);
 }
 
 void DeferredRasterFrameGraphContext::afterCommandBufferBegin(

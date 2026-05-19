@@ -5,6 +5,7 @@
 namespace container::renderer {
 
 class BimManager;
+struct FrameBimResources;
 
 struct BimFrameGpuVisibilityRecordInputs {
   BimManager *manager{nullptr};
@@ -16,6 +17,8 @@ struct BimFrameGpuVisibilityRecordInputs {
 };
 
 void prepareBimFrameGpuVisibility(BimManager *manager);
+void prepareBimFrameGpuVisibility(BimManager *manager,
+                                  const FrameBimResources &bim);
 
 [[nodiscard]] bool recordBimFrameGpuVisibilityCommands(
     const BimFrameGpuVisibilityRecordInputs &inputs);

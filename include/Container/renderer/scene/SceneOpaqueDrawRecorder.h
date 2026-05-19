@@ -28,6 +28,7 @@ struct SceneOpaqueDrawRecordInputs {
   SceneOpaqueDrawPipelineHandles pipelines{};
   VkPipelineLayout pipelineLayout{VK_NULL_HANDLE};
   container::gpu::BindlessPushConstants pushConstants{};
+  uint32_t imageIndex{0};
   const DebugOverlayRenderer *debugOverlay{nullptr};
   const GpuCullManager *gpuCullManager{nullptr};
 };

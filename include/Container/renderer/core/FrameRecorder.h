@@ -55,6 +55,7 @@ struct FrameRecordLifecycleHooks {
 };
 
 struct FrameRuntimeResources {
+  uint32_t frameSlot{0};
   uint32_t imageIndex{0};
 };
 

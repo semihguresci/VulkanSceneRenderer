@@ -19,9 +19,11 @@ struct DeferredRasterScenePassRecordInputs {
   SceneRasterPassPipelineInputs pipelines{};
   VkPipelineLayout pipelineLayout{VK_NULL_HANDLE};
   const container::gpu::BindlessPushConstants *pushConstants{nullptr};
+  uint32_t imageIndex{0};
   SceneDiagnosticCubeRecordInputs diagnosticCube{};
   const GpuCullManager *gpuCullManager{nullptr};
   bool frustumCullActive{false};
+  bool occlusionCullActive{false};
   const DebugOverlayRenderer *debugOverlay{nullptr};
 };
 

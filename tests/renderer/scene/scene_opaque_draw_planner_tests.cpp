@@ -8,6 +8,7 @@
 namespace {
 
 using container::renderer::DrawCommand;
+using container::renderer::SceneOpaqueIndirectSource;
 using container::renderer::SceneOpaqueDrawPipeline;
 using container::renderer::SceneOpaqueDrawRouteKind;
 using container::renderer::buildSceneOpaqueDrawPlan;
@@ -35,6 +36,8 @@ TEST(SceneOpaqueDrawPlannerTests,
   EXPECT_EQ(plan.gpuIndirectRoute.kind,
             SceneOpaqueDrawRouteKind::GpuIndirectSingleSided);
   EXPECT_EQ(plan.gpuIndirectRoute.pipeline, SceneOpaqueDrawPipeline::Primary);
+  EXPECT_EQ(plan.gpuIndirectRoute.indirectSource,
+            SceneOpaqueIndirectSource::FrustumCull);
   EXPECT_EQ(plan.gpuIndirectRoute.commands, &singleSided);
   ASSERT_EQ(plan.cpuRouteCount, 2u);
   EXPECT_EQ(plan.cpuRoutes[0].kind, SceneOpaqueDrawRouteKind::CpuWindingFlipped);
@@ -99,6 +102,36 @@ TEST(SceneOpaqueDrawPlannerTests, EmptyDrawListsProduceNoRoutes) {
 
   EXPECT_FALSE(plan.useGpuIndirectSingleSided);
   EXPECT_EQ(plan.cpuRouteCount, 0u);
+}
+
+TEST(SceneOpaqueDrawPlannerTests,
+     OcclusionIndirectRouteIsSelectedWhenPreferredAndAvailable) {
+  const auto singleSided = drawCommands(9u);
+
+  const auto plan = buildSceneOpaqueDrawPlan(
+      {.gpuIndirectAvailable = true,
+       .occludedGpuIndirectAvailable = true,
+       .preferOccludedGpuIndirect = true,
+       .draws = {.singleSided = &singleSided}});
+
+  EXPECT_TRUE(plan.useGpuIndirectSingleSided);
+  EXPECT_EQ(plan.gpuIndirectRoute.indirectSource,
+            SceneOpaqueIndirectSource::OcclusionCull);
+  EXPECT_EQ(plan.gpuIndirectRoute.commands, &singleSided);
+}
+
+TEST(SceneOpaqueDrawPlannerTests,
+     AggregateDrawsProvideCpuFallbackWhenSplitListsAreMissing) {
+  const auto aggregate = drawCommands(10u);
+
+  const auto plan = buildSceneOpaqueDrawPlan(
+      {.gpuIndirectAvailable = false, .draws = {.aggregate = &aggregate}});
+
+  EXPECT_FALSE(plan.useGpuIndirectSingleSided);
+  ASSERT_EQ(plan.cpuRouteCount, 1u);
+  EXPECT_EQ(plan.cpuRoutes[0].kind, SceneOpaqueDrawRouteKind::CpuSingleSided);
+  EXPECT_EQ(plan.cpuRoutes[0].pipeline, SceneOpaqueDrawPipeline::Primary);
+  EXPECT_EQ(plan.cpuRoutes[0].commands, &aggregate);
 }
 
 } // namespace

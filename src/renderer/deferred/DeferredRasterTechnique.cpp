@@ -71,7 +71,8 @@ void registerDeferredRasterFrameResources(FrameResourceRegistry &registry) {
   registry.registerBuffer(
       kDeferredRasterTechnique, "camera-buffer",
       FrameBufferDesc{.size = sizeof(container::gpu::CameraData),
-                      .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT},
+                      .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                               VK_BUFFER_USAGE_TRANSFER_SRC_BIT},
       FrameResourceLifetime::Imported);
   registry.registerBuffer(
       kDeferredRasterTechnique, "scene-object-buffer",
@@ -161,6 +162,7 @@ void registerDeferredRasterFrameResources(FrameResourceRegistry &registry) {
       FrameImageDesc{.format = VK_FORMAT_UNDEFINED,
                      .extent = {0, 0, 1},
                      .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT});
   registry.registerImage(
       kDeferredRasterTechnique, "oit-head-pointers",
@@ -370,7 +372,8 @@ deferredRasterBimSurfaceDrawSources(const FrameBimResources &bim) {
 
 SceneOpaqueDrawLists
 deferredRasterSceneOpaqueDrawLists(const FrameDrawLists &draws) {
-  return {.singleSided = draws.opaqueSingleSidedDrawCommands,
+  return {.aggregate = draws.opaqueDrawCommands,
+          .singleSided = draws.opaqueSingleSidedDrawCommands,
           .windingFlipped = draws.opaqueWindingFlippedDrawCommands,
           .doubleSided = draws.opaqueDoubleSidedDrawCommands};
 }
@@ -414,6 +417,41 @@ VkSampler deferredRasterGBufferSampler(const FrameRecordParams &p) {
 
 bool deferredRasterGBufferSamplerReady(const FrameRecordParams &p) {
   return deferredRasterGBufferSampler(p) != VK_NULL_HANDLE;
+}
+
+std::array<VkDescriptorSet, 2>
+deferredRasterPostProcessDescriptorSets(const FrameRecordParams &p) {
+  return {deferredRasterDescriptorSet(
+              p, DeferredRasterDescriptorSetId::PostProcess),
+          deferredRasterDescriptorSet(p, DeferredRasterDescriptorSetId::Oit)};
+}
+
+RenderPassReadiness deferredRasterPostProcessReadiness(
+    const FrameRecordParams &p,
+    const DeferredRasterFrameGraphContext &deferred) {
+  const VkExtent2D extent = deferred.swapchainExtent();
+  const auto descriptorSets = deferredRasterPostProcessDescriptorSets(p);
+  const bool descriptorSetsReady =
+      std::all_of(descriptorSets.begin(), descriptorSets.end(),
+                  [](VkDescriptorSet descriptorSet) {
+                    return descriptorSet != VK_NULL_HANDLE;
+                  });
+  const bool framebufferReady =
+      p.swapchain.swapChainFramebuffers != nullptr &&
+      p.runtime.imageIndex < p.swapchain.swapChainFramebuffers->size() &&
+      (*p.swapchain.swapChainFramebuffers)[p.runtime.imageIndex] !=
+          VK_NULL_HANDLE;
+
+  if (extent.width == 0u || extent.height == 0u ||
+      p.postProcess.renderPass == VK_NULL_HANDLE || !framebufferReady ||
+      !descriptorSetsReady ||
+      !deferredRasterPipelineReady(p, DeferredRasterPipelineId::PostProcess) ||
+      !deferredRasterPipelineLayoutReady(
+          p, DeferredRasterPipelineLayoutId::PostProcess)) {
+    return renderPassMissingResource(RenderResourceId::SwapchainImage);
+  }
+
+  return renderPassReady();
 }
 
 SceneOpaqueDrawGeometryBinding
@@ -525,6 +563,40 @@ bool deferredRasterSceneTransparentPickReady(const FrameRecordParams &p) {
          p.scene.vertexSlice.buffer != VK_NULL_HANDLE &&
          p.scene.indexSlice.buffer != VK_NULL_HANDLE &&
          (hasOpaqueDrawCommands(p.draws) || hasTransparentDrawCommands(p.draws));
+}
+
+RenderPassReadiness
+deferredRasterSceneRasterReadiness(const FrameRecordParams &p,
+                                   SceneRasterPassKind kind) {
+  const RenderResourceId attachmentResource =
+      kind == SceneRasterPassKind::DepthPrepass
+          ? RenderResourceId::SceneDepth
+          : RenderResourceId::GBufferAlbedo;
+  if (deferredRasterFramebuffer(p, kind == SceneRasterPassKind::DepthPrepass
+                                       ? DeferredRasterFramebufferId::DepthPrepass
+                                       : DeferredRasterFramebufferId::GBuffer) ==
+          VK_NULL_HANDLE ||
+      deferredRasterRenderPass(p, kind == SceneRasterPassKind::DepthPrepass
+                                      ? DeferredRasterFramebufferId::DepthPrepass
+                                      : DeferredRasterFramebufferId::GBuffer) ==
+          VK_NULL_HANDLE) {
+    return renderPassMissingResource(attachmentResource);
+  }
+  if (!hasOpaqueDrawCommands(p.draws)) {
+    return renderPassNotNeeded();
+  }
+  if (deferredRasterSceneDescriptorSet(p) == VK_NULL_HANDLE ||
+      p.scene.vertexSlice.buffer == VK_NULL_HANDLE ||
+      p.scene.indexSlice.buffer == VK_NULL_HANDLE ||
+      deferredRasterPipelineLayoutReady(
+          p, DeferredRasterPipelineLayoutId::Scene) == false ||
+      !deferredRasterPipelineReady(
+          p, kind == SceneRasterPassKind::DepthPrepass
+                 ? DeferredRasterPipelineId::DepthPrepass
+                 : DeferredRasterPipelineId::GBuffer)) {
+    return renderPassMissingResource(RenderResourceId::SceneGeometry);
+  }
+  return renderPassReady();
 }
 
 bool deferredRasterLightGizmoPickReady(
@@ -681,16 +753,28 @@ deferredRasterScenePassInputs(const FrameRecordParams &p,
           .pipelineLayout = deferredRasterPipelineLayout(
               p, DeferredRasterPipelineLayoutId::Scene),
           .pushConstants = p.pushConstants.bindless,
+          .imageIndex = p.runtime.imageIndex,
           .diagnosticCube = deferredRasterSceneDiagnosticCubeInputs(
               p, kind, deferred.sceneController()),
           .gpuCullManager = deferred.gpuCullManager(),
           .frustumCullActive = deferred.isPassActive(RenderPassId::FrustumCull),
+          .occlusionCullActive =
+              deferred.isPassActive(RenderPassId::OcclusionCull),
           .debugOverlay = deferred.debugOverlay()};
 }
 
 VkPipeline chooseDeferredRasterPipeline(VkPipeline preferred,
                                         VkPipeline fallback) {
   return preferred != VK_NULL_HANDLE ? preferred : fallback;
+}
+
+bool allDrawCommandsSingleInstance(const std::vector<DrawCommand> *commands) {
+  if (commands == nullptr) {
+    return false;
+  }
+  return std::ranges::all_of(*commands, [](const DrawCommand &command) {
+    return command.instanceCount <= 1u;
+  });
 }
 
 ShadowPassGeometryBinding
@@ -1114,10 +1198,12 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
             cmd, {.gpuCullManager = deferred->gpuCullManager(),
                   .plan = frustumCullPlan,
                   .drawCommands = p.draws.opaqueSingleSidedDrawCommands,
+                  .imageIndex = p.runtime.imageIndex,
                   .cameraBuffer = deferredRasterCameraBuffer(p),
                   .cameraBufferSize = deferredRasterCameraBufferSize(p),
                   .objectBuffer = p.scene.objectBuffer,
-                  .objectBufferSize = p.scene.objectBufferSize}));
+                  .objectBufferSize = p.scene.objectBufferSize,
+                  .drawSourceRevision = p.scene.objectDataRevision}));
       });
 
   graph.addPass(
@@ -1159,7 +1245,8 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
       return;
 
     const auto extent = deferred->swapchainExtent();
-    deferred->gpuCullManager()->ensureHiZImage(extent.width, extent.height);
+    deferred->gpuCullManager()->ensureHiZImage(p.runtime.imageIndex,
+                                               extent.width, extent.height);
     const DeferredRasterHiZDepthTransitionPlan hizDepthTransitionPlan =
         buildDeferredRasterHiZDepthTransitionPlan(
             {.depthStencilImage = depthStencilImage});
@@ -1169,8 +1256,8 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
         cmd, hizDepthTransitionPlan));
 
     deferred->gpuCullManager()->dispatchHiZGenerate(
-        cmd, depthSamplingView, deferredRasterGBufferSampler(p), extent.width,
-        extent.height);
+        cmd, p.runtime.imageIndex, depthSamplingView,
+        deferredRasterGBufferSampler(p), extent.width, extent.height);
 
     static_cast<void>(
         recordDeferredRasterHiZDepthToAttachmentTransitionCommands(
@@ -1180,20 +1267,23 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
   graph.addPass(RenderPassId::OcclusionCull, [deferred](
                                                  VkCommandBuffer cmd,
                                                  const FrameRecordParams &p) {
-    if (deferred->gpuCullManager() && deferred->gpuCullManager()->isReady() &&
+    if (deferred->gpuCullManager() &&
+        deferred->gpuCullManager()->occlusionCullResourcesReady(
+            p.runtime.imageIndex) &&
         p.draws.opaqueSingleSidedDrawCommands &&
         !p.draws.opaqueSingleSidedDrawCommands->empty()) {
       deferred->gpuCullManager()->dispatchOcclusionCull(
-          cmd, deferredRasterCameraBuffer(p), deferredRasterCameraBufferSize(p),
+          cmd, p.runtime.imageIndex, deferredRasterCameraBuffer(p),
+          deferredRasterCameraBufferSize(p),
           static_cast<uint32_t>(p.draws.opaqueSingleSidedDrawCommands->size()));
     }
   });
 
   graph.addPass(RenderPassId::CullStatsReadback,
-                [deferred](VkCommandBuffer cmd, const FrameRecordParams &) {
+                [deferred](VkCommandBuffer cmd, const FrameRecordParams &p) {
                   if (deferred->gpuCullManager() &&
                       deferred->gpuCullManager()->isReady()) {
-                    deferred->gpuCullManager()->scheduleStatsReadback(cmd);
+                    deferred->gpuCullManager()->scheduleStatsReadback(cmd, p.runtime.imageIndex);
                   }
                 });
 
@@ -1245,6 +1335,9 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                                      p.shadows.shadowCullManager->isReady(),
            .sceneSingleSidedDrawsAvailable =
                hasDrawCommands(p.draws.opaqueSingleSidedDrawCommands),
+           .sourceDrawCommandsAllSingleInstance =
+               allDrawCommandsSingleInstance(
+                   p.draws.opaqueSingleSidedDrawCommands),
            .cameraBufferReady = deferredRasterCameraBufferReady(p),
            .cascadeIndexInRange = i < kShadowCascadeCount,
            .sourceDrawCount = sourceDrawCount});
@@ -1396,8 +1489,10 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
             cmd, sceneColorReadPlan));
 
         const auto extent = deferred->swapchainExtent();
-        deferred->exposureManager()->dispatch(cmd, sceneColorView, extent.width,
-                                              extent.height, exposureSettings);
+        deferred->exposureManager()->dispatch(p.runtime.imageIndex, cmd,
+                                              sceneColorView, extent.width,
+                                              extent.height,
+                                              exposureSettings);
       });
 
   graph.addPass(
@@ -1432,13 +1527,9 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                                        extent.height);
   });
 
-  graph.addPass(RenderPassId::PostProcess, [deferred, transparentOit](
-                                               VkCommandBuffer cmd,
-                                               const FrameRecordParams &p) {
-    const std::array<VkDescriptorSet, 2> ppSets = {
-        deferredRasterDescriptorSet(p,
-                                    DeferredRasterDescriptorSetId::PostProcess),
-        deferredRasterDescriptorSet(p, DeferredRasterDescriptorSetId::Oit)};
+  graph.addPass(RenderPassId::PostProcess, [deferred](VkCommandBuffer cmd,
+                                                      const FrameRecordParams &p) {
+    const auto ppSets = deferredRasterPostProcessDescriptorSets(p);
     const auto extent = deferred->swapchainExtent();
     const container::gpu::ExposureSettings exposureSettings =
         sanitizeExposureSettings(p.postProcess.exposureSettings);
@@ -1479,7 +1570,8 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                       ? static_cast<uint32_t>(
                             lightingManager->pointLightsSsbo().size())
                       : 0u,
-              .transparentOitActive = transparentOit.enabled(p)},
+              .transparentOitActive =
+                  deferred->isPassActive(RenderPassId::OitResolve)},
          .recordAfterFullscreenDraw = [deferred, &p](VkCommandBuffer passCmd) {
            recordDeferredRasterLightGizmoOverlay(
                passCmd, p, *deferred, deferred->swapchainExtent());
@@ -1512,6 +1604,12 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                         deferred->gpuCullManager()->cullingFrozen(),
                     .sourceDrawCount = sourceDrawCount})
             .readiness;
+      });
+
+  graph.setPassReadiness(
+      RenderPassId::DepthPrepass, [](const FrameRecordParams &p) {
+        return deferredRasterSceneRasterReadiness(
+            p, SceneRasterPassKind::DepthPrepass);
       });
 
   graph.setPassReadiness(
@@ -1565,7 +1663,8 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
   graph.setPassReadiness(
       RenderPassId::OcclusionCull, [deferred](const FrameRecordParams &p) {
         if (!deferred->gpuCullManager() ||
-            !deferred->gpuCullManager()->isReady() ||
+            !deferred->gpuCullManager()->occlusionCullResourcesReady(
+                p.runtime.imageIndex) ||
             !hasDrawCommands(p.draws.opaqueSingleSidedDrawCommands)) {
           return renderPassNotNeeded();
         }
@@ -1579,6 +1678,12 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                                       ? renderPassReady()
                                       : renderPassNotNeeded();
                          });
+
+  graph.setPassReadiness(
+      RenderPassId::GBuffer, [](const FrameRecordParams &p) {
+        return deferredRasterSceneRasterReadiness(p,
+                                                 SceneRasterPassKind::GBuffer);
+      });
 
   graph.setPassReadiness(
       RenderPassId::BimGBuffer, [](const FrameRecordParams &p) {
@@ -1660,6 +1765,9 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                       p.shadows.shadowCullManager->isReady(),
                   .sceneSingleSidedDrawsAvailable =
                       hasDrawCommands(p.draws.opaqueSingleSidedDrawCommands),
+                  .sourceDrawCommandsAllSingleInstance =
+                      allDrawCommandsSingleInstance(
+                          p.draws.opaqueSingleSidedDrawCommands),
                   .cameraBufferReady = deferredRasterCameraBufferReady(p),
                   .cascadeIndexInRange = i < kShadowCascadeCount,
                   .sourceDrawCount = sourceDrawCount})
@@ -1777,6 +1885,11 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
       return renderPassMissingResource(RenderResourceId::SceneColor);
     }
     return renderPassReady();
+  });
+
+  graph.setPassReadiness(RenderPassId::PostProcess,
+                         [deferred](const FrameRecordParams &p) {
+    return deferredRasterPostProcessReadiness(p, *deferred);
   });
 
   graph.compile();

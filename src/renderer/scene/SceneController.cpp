@@ -255,7 +255,7 @@ void SceneController::rebuildPrimitiveBoundsCache() {
 void SceneController::invalidateObjectDataCache() {
   objectDataCacheValid_ = false;
   cachedSceneGraphRevision_ = std::numeric_limits<uint64_t>::max();
-  objectBufferUploadDirty_ = true;
+  objectBufferUploadRevisions_.clear();
 }
 
 void SceneController::refreshObjectDataCache(bool showDiagCube) {
@@ -377,9 +377,15 @@ void SceneController::createSceneBuffers(
     const container::gpu::AllocatedBuffer& cameraBuffer,
     container::gpu::AllocatedBuffer&       objectBuffer,
     size_t&                                 objectBufferCapacity) {
-  ensureObjectBufferCapacity(allocationManager_, objectBuffer,
-                             objectBufferCapacity,
-                             sceneGraph_.renderableNodes().size());
+  const VkBuffer previousObjectBuffer = objectBuffer.buffer;
+  const bool bufferRecreated =
+      ensureObjectBufferCapacity(allocationManager_, objectBuffer,
+                                 objectBufferCapacity,
+                                 sceneGraph_.renderableNodes().size());
+  if (bufferRecreated) {
+    objectBufferUploadRevisions_.erase(previousObjectBuffer);
+    objectBufferUploadRevisions_.erase(objectBuffer.buffer);
+  }
   refreshObjectDataCache(false);
   // Upload is deferred to updateObjectBuffer; descriptor sets updated by caller.
 }
@@ -528,8 +534,8 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
   cachedSceneGraphRevision_ = sceneGraph_.revision();
   cachedShowDiagCube_ = showDiagCube;
   objectDataCacheValid_ = true;
-  objectBufferUploadDirty_ = true;
   ++objectDataRevision_;
+  ++objectBufferUploadRevision_;
 }
 
 // ---------------------------------------------------------------------------
@@ -540,6 +546,7 @@ bool SceneController::updateObjectBuffer(
     container::gpu::AllocatedBuffer&       objectBuffer,
     size_t&                                 objectBufferCapacity,
     const container::gpu::AllocatedBuffer& cameraBuffer) {
+  const VkBuffer previousObjectBuffer = objectBuffer.buffer;
   const bool showDiagCube =
       guiManager_ && guiManager_->showNormalDiagCube() &&
       diagCubeVertexSlice_.buffer != VK_NULL_HANDLE;
@@ -549,15 +556,23 @@ bool SceneController::updateObjectBuffer(
       allocationManager_, objectBuffer, objectBufferCapacity,
       objectData_.size());
   if (bufferRecreated) {
-    objectBufferUploadDirty_ = true;
+    objectBufferUploadRevisions_.erase(previousObjectBuffer);
+    objectBufferUploadRevisions_.erase(objectBuffer.buffer);
   }
   if (objectBuffer.buffer == VK_NULL_HANDLE || objectData_.empty())
     return bufferRecreated;
 
-  if (objectBufferUploadDirty_) {
+  const auto uploadRecord =
+      objectBufferUploadRevisions_.find(objectBuffer.buffer);
+  const uint64_t uploadedRevision =
+      uploadRecord == objectBufferUploadRevisions_.end()
+          ? std::numeric_limits<uint64_t>::max()
+          : uploadRecord->second;
+  if (uploadedRevision != objectBufferUploadRevision_) {
     writeToBuffer(allocationManager_, objectBuffer, objectData_.data(),
                   sizeof(ObjectData) * objectData_.size());
-    objectBufferUploadDirty_ = false;
+    objectBufferUploadRevisions_[objectBuffer.buffer] =
+        objectBufferUploadRevision_;
   }
   return bufferRecreated;
 }

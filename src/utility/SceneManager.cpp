@@ -1119,7 +1119,16 @@ bool SceneManager::reloadModel(
 void SceneManager::updateDescriptorSets(
     std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
     const container::gpu::AllocatedBuffer& objectBuffer) {
-  if (cameraBuffers.empty() || descriptorSets_.empty()) return;
+  updateDescriptorSets(
+      cameraBuffers,
+      std::span<const container::gpu::AllocatedBuffer>(&objectBuffer, 1u));
+}
+
+void SceneManager::updateDescriptorSets(
+    std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
+    std::span<const container::gpu::AllocatedBuffer> objectBuffers) {
+  if (cameraBuffers.empty() || objectBuffers.empty() || descriptorSets_.empty())
+    return;
 
   if (descriptorSets_.size() != cameraBuffers.size() ||
       auxiliaryDescriptorSets_.size() != cameraBuffers.size()) {
@@ -1128,6 +1137,8 @@ void SceneManager::updateDescriptorSets(
 
   const size_t descriptorCount = std::min(descriptorSets_.size(), cameraBuffers.size());
   for (size_t i = 0; i < descriptorCount; ++i) {
+    const auto& objectBuffer = objectBuffers[std::min(
+        i, objectBuffers.size() - 1u)];
     writeDescriptorSetContents(descriptorSets_[i], cameraBuffers[i], objectBuffer);
   }
 }
@@ -1135,7 +1146,15 @@ void SceneManager::updateDescriptorSets(
 void SceneManager::updateAuxiliaryDescriptorSets(
     std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
     const container::gpu::AllocatedBuffer& objectBuffer) {
-  if (cameraBuffers.empty()) return;
+  updateAuxiliaryDescriptorSets(
+      cameraBuffers,
+      std::span<const container::gpu::AllocatedBuffer>(&objectBuffer, 1u));
+}
+
+void SceneManager::updateAuxiliaryDescriptorSets(
+    std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
+    std::span<const container::gpu::AllocatedBuffer> objectBuffers) {
+  if (cameraBuffers.empty() || objectBuffers.empty()) return;
 
   if (descriptorSets_.size() != cameraBuffers.size() ||
       auxiliaryDescriptorSets_.size() != cameraBuffers.size()) {
@@ -1145,6 +1164,8 @@ void SceneManager::updateAuxiliaryDescriptorSets(
   const size_t descriptorCount =
       std::min(auxiliaryDescriptorSets_.size(), cameraBuffers.size());
   for (size_t i = 0; i < descriptorCount; ++i) {
+    const auto& objectBuffer = objectBuffers[std::min(
+        i, objectBuffers.size() - 1u)];
     writeDescriptorSetContents(auxiliaryDescriptorSets_[i], cameraBuffers[i],
                                objectBuffer);
   }

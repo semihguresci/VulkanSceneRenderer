@@ -16,14 +16,18 @@ bool recordDeferredRasterFrustumCullPassCommands(
 
   inputs.gpuCullManager->ensureBufferCapacity(plan.drawCount);
   if (plan.updateObjectDescriptor) {
-    inputs.gpuCullManager->updateObjectSsboDescriptor(inputs.objectBuffer,
+    inputs.gpuCullManager->updateObjectSsboDescriptor(inputs.imageIndex,
+                                                      inputs.objectBuffer,
                                                       inputs.objectBufferSize);
   }
-  inputs.gpuCullManager->uploadDrawCommands(*inputs.drawCommands);
+  inputs.gpuCullManager->uploadDrawCommands(inputs.imageIndex,
+                                            *inputs.drawCommands,
+                                            inputs.drawSourceRevision);
 
   switch (plan.freezeAction) {
   case DeferredRasterFrustumCullFreezeAction::Freeze:
-    inputs.gpuCullManager->freezeCulling(cmd, inputs.cameraBuffer,
+    inputs.gpuCullManager->freezeCulling(inputs.imageIndex, cmd,
+                                         inputs.cameraBuffer,
                                          inputs.cameraBufferSize);
     break;
   case DeferredRasterFrustumCullFreezeAction::Unfreeze:
@@ -33,8 +37,10 @@ bool recordDeferredRasterFrustumCullPassCommands(
     break;
   }
 
-  inputs.gpuCullManager->dispatchFrustumCull(
-      cmd, inputs.cameraBuffer, inputs.cameraBufferSize, plan.drawCount);
+  inputs.gpuCullManager->dispatchFrustumCull(cmd, inputs.imageIndex,
+                                             inputs.cameraBuffer,
+                                             inputs.cameraBufferSize,
+                                             plan.drawCount);
   return true;
 }
 

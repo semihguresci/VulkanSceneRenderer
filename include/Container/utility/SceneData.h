@@ -204,9 +204,9 @@ inline constexpr float kLocalShadowTypeSpot = 1.0f;
 inline constexpr float kLocalShadowTypeArea = 2.0f;
 inline constexpr float kDefaultDirectionalPcssLightRadiusDegrees = 0.27f;
 inline constexpr float kDefaultDirectionalPcssTanLightRadius = 0.004712424f;
-inline constexpr float kDefaultDirectionalContactMaxDistance = 1.5f;
-inline constexpr float kDefaultDirectionalContactThickness = 0.08f;
-inline constexpr float kDefaultDirectionalContactFadeDistance = 1.25f;
+inline constexpr float kDefaultDirectionalContactMaxDistance = 0.35f;
+inline constexpr float kDefaultDirectionalContactThickness = 0.04f;
+inline constexpr float kDefaultDirectionalContactFadeDistance = 0.30f;
 
 struct LightingSettings {
   uint32_t preset{0};
@@ -217,6 +217,7 @@ struct LightingSettings {
   float environmentIntensity{1.0f};
   float bounceIntensity{0.35f};
   uint32_t localShadowPointBudget{1};
+  uint32_t localShadowLayerBudget{8};
 };
 
 struct LightCullingStats {

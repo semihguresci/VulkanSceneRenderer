@@ -21,7 +21,13 @@ enum class SceneOpaqueDrawPipeline : uint32_t {
   NoCull = 2,
 };
 
+enum class SceneOpaqueIndirectSource : uint32_t {
+  FrustumCull = 0,
+  OcclusionCull = 1,
+};
+
 struct SceneOpaqueDrawLists {
+  const std::vector<DrawCommand> *aggregate{nullptr};
   const std::vector<DrawCommand> *singleSided{nullptr};
   const std::vector<DrawCommand> *windingFlipped{nullptr};
   const std::vector<DrawCommand> *doubleSided{nullptr};
@@ -29,12 +35,16 @@ struct SceneOpaqueDrawLists {
 
 struct SceneOpaqueDrawInputs {
   bool gpuIndirectAvailable{false};
+  bool occludedGpuIndirectAvailable{false};
+  bool preferOccludedGpuIndirect{false};
   SceneOpaqueDrawLists draws{};
 };
 
 struct SceneOpaqueDrawRoute {
   SceneOpaqueDrawRouteKind kind{SceneOpaqueDrawRouteKind::CpuSingleSided};
   SceneOpaqueDrawPipeline pipeline{SceneOpaqueDrawPipeline::Primary};
+  SceneOpaqueIndirectSource indirectSource{
+      SceneOpaqueIndirectSource::FrustumCull};
   const std::vector<DrawCommand> *commands{nullptr};
 };
 
@@ -43,6 +53,7 @@ struct SceneOpaqueDrawPlan {
   SceneOpaqueDrawRoute gpuIndirectRoute{
       .kind = SceneOpaqueDrawRouteKind::GpuIndirectSingleSided,
       .pipeline = SceneOpaqueDrawPipeline::Primary,
+      .indirectSource = SceneOpaqueIndirectSource::FrustumCull,
       .commands = nullptr};
   std::array<SceneOpaqueDrawRoute, 3> cpuRoutes{};
   uint32_t cpuRouteCount{0};

@@ -88,6 +88,39 @@ bool contains(std::string_view haystack, std::string_view needle) {
   return haystack.find(needle) != std::string_view::npos;
 }
 
+bool isGpuHarnessRenderMode(std::string_view mode) {
+  const std::set<std::string_view> modes{
+      "final-lit",
+      "albedo",
+      "base-color",
+      "normals",
+      "material",
+      "depth",
+      "emissive",
+      "transparency",
+      "revealage",
+      "overview",
+      "surface-normals",
+      "object-space-normals",
+      "shadow-cascades",
+      "tile-light-heat-map",
+      "tile-light-heatmap",
+      "shadow-texel-density",
+  };
+  return modes.contains(mode);
+}
+
+bool isGpuHarnessProbeKind(std::string_view kind) {
+  const std::set<std::string_view> kinds{
+      "candidate_exists",
+      "region_luminance_stddev",
+      "relative_region_luminance",
+      "shadow_softness_gradient",
+      "dominant_color_fraction",
+  };
+  return kinds.contains(kind);
+}
+
 std::string replaceAll(std::string value, std::string_view from,
                        std::string_view to) {
   size_t pos = 0;
@@ -372,6 +405,115 @@ TEST(RealisticRenderingValidation,
 }
 
 TEST(RealisticRenderingValidation,
+     YellowAreaPurpleDirectionalFixtureUsesDedicatedAssetAndNumericProbes) {
+  const Json fixtures = readJsonFixture(
+      "tests/fixtures/rendering/realistic_visual_regression.fixtures.json");
+  const Json *scene = findSceneById(
+      fixtures.at("scenes"), "cornell_yellow_area_purple_directional_shadow");
+  ASSERT_NE(scene, nullptr);
+
+  EXPECT_EQ(scene->at("status").get<std::string>(), "planned");
+  EXPECT_EQ(scene->at("category").get<std::string>(), "shadow");
+  EXPECT_EQ(scene->at("renderMode").get<std::string>(), "final-lit");
+
+  const std::string asset = scene->at("asset").get<std::string>();
+  EXPECT_EQ(asset, "models/validation/cornell_box_yellow_area_light.gltf");
+  EXPECT_TRUE(std::filesystem::exists(repositoryRoot() / asset))
+      << "Yellow Cornell fixture asset is missing";
+
+  const Json &lighting = scene->at("lighting");
+  EXPECT_EQ(lighting.at("environmentIntensity").get<double>(), 0.0);
+  EXPECT_TRUE(lighting.at("authoredLightsFromAsset").get<bool>());
+  ASSERT_TRUE(lighting.contains("directionalLight"));
+  const Json &directional = lighting.at("directionalLight");
+  EXPECT_NEAR(directional.at("illuminanceLux").get<double>(), 18000.0, 1e-6);
+  ASSERT_EQ(directional.at("direction").size(), 3u);
+  EXPECT_NEAR(directional.at("direction").at(0).get<double>(), -0.36, 1e-6);
+  EXPECT_NEAR(directional.at("direction").at(1).get<double>(), -0.86, 1e-6);
+  EXPECT_NEAR(directional.at("direction").at(2).get<double>(), -0.36, 1e-6);
+  ASSERT_EQ(directional.at("color").size(), 3u);
+  EXPECT_NEAR(directional.at("color").at(0).get<double>(), 0.62, 1e-6);
+  EXPECT_NEAR(directional.at("color").at(1).get<double>(), 0.35, 1e-6);
+  EXPECT_NEAR(directional.at("color").at(2).get<double>(), 1.0, 1e-6);
+
+  const auto targetMatches = [](const Json &color, double r, double g,
+                                double b) {
+    return color.size() == 3u &&
+           std::abs(color.at(0).get<double>() - r) <= 1e-6 &&
+           std::abs(color.at(1).get<double>() - g) <= 1e-6 &&
+           std::abs(color.at(2).get<double>() - b) <= 1e-6;
+  };
+
+  bool foundCandidateExistsProbe = false;
+  bool foundYellowProbe = false;
+  bool foundPurpleProbe = false;
+  size_t dominantColorProbeCount = 0;
+  for (const Json &probe : scene->at("probes")) {
+    const std::string kind = probe.at("kind").get<std::string>();
+    if (kind == "candidate_exists") {
+      foundCandidateExistsProbe = true;
+      continue;
+    }
+    if (kind != "dominant_color_fraction") {
+      continue;
+    }
+
+    ++dominantColorProbeCount;
+    ASSERT_TRUE(probe.contains("targetColor"));
+    const Json &targetColor = probe.at("targetColor");
+    foundYellowProbe =
+        foundYellowProbe || targetMatches(targetColor, 1.0, 0.86, 0.10);
+    foundPurpleProbe =
+        foundPurpleProbe || targetMatches(targetColor, 0.62, 0.35, 1.0);
+  }
+
+  EXPECT_FALSE(foundCandidateExistsProbe)
+      << "Mixed yellow-area/purple-directional fixture needs numeric probes";
+  EXPECT_GE(dominantColorProbeCount, 2u);
+  EXPECT_TRUE(foundYellowProbe);
+  EXPECT_TRUE(foundPurpleProbe);
+}
+
+TEST(RealisticRenderingValidation,
+     ShadowCascadeStabilityFixtureUsesDirectionalNumericCoverage) {
+  const Json fixtures = readJsonFixture(
+      "tests/fixtures/rendering/realistic_visual_regression.fixtures.json");
+  const Json *scene =
+      findSceneById(fixtures.at("scenes"), "shadow_cascade_stability");
+  ASSERT_NE(scene, nullptr);
+
+  EXPECT_EQ(scene->at("status").get<std::string>(), "planned");
+  EXPECT_EQ(scene->at("category").get<std::string>(), "shadow");
+  EXPECT_EQ(scene->at("renderMode").get<std::string>(),
+            "shadow-texel-density");
+  ASSERT_TRUE(scene->at("lighting").contains("directionalLight"));
+  EXPECT_GT(scene->at("lighting")
+                .at("directionalLight")
+                .at("illuminanceLux")
+                .get<double>(),
+            0.0);
+
+  bool foundCandidateExistsProbe = false;
+  bool foundTexelDensityStdDevProbe = false;
+  for (const Json &probe : scene->at("probes")) {
+    const std::string kind = probe.at("kind").get<std::string>();
+    if (kind == "candidate_exists") {
+      foundCandidateExistsProbe = true;
+      continue;
+    }
+    if (kind == "region_luminance_stddev") {
+      foundTexelDensityStdDevProbe = true;
+      EXPECT_TRUE(probe.contains("regionUv"));
+      EXPECT_GT(probe.at("minimumStdDev").get<double>(), 0.0);
+    }
+  }
+
+  EXPECT_FALSE(foundCandidateExistsProbe)
+      << "Cascade stability needs numeric debug-image coverage";
+  EXPECT_TRUE(foundTexelDensityStdDevProbe);
+}
+
+TEST(RealisticRenderingValidation,
      ShadowCorrectnessFixturesCoverOpenAndClosedWorlds) {
   const Json fixtures = readJsonFixture(
       "tests/fixtures/rendering/realistic_visual_regression.fixtures.json");
@@ -394,7 +536,6 @@ TEST(RealisticRenderingValidation,
         << "Shadow correctness fixture asset is missing: " << asset;
 
     bool foundRatioProbe = false;
-    bool foundStabilityProbe = false;
     for (const Json &probe : scene->at("probes")) {
       const std::string kind = probe.at("kind").get<std::string>();
       if (kind == "relative_region_luminance") {
@@ -403,13 +544,41 @@ TEST(RealisticRenderingValidation,
         EXPECT_TRUE(probe.contains("shadowRegionUv"));
         EXPECT_LE(probe.at("maximumShadowToLitRatio").get<double>(), 0.75);
       }
-      if (kind == "camera_stability_shadow_ratio") {
-        foundStabilityProbe = true;
-        EXPECT_LE(probe.at("maximumRatioDrift").get<double>(), 0.10);
-      }
+      EXPECT_TRUE(isGpuHarnessProbeKind(kind))
+          << scene->at("id").get<std::string>()
+          << " declares unsupported GPU probe kind " << kind;
     }
     EXPECT_TRUE(foundRatioProbe);
-    EXPECT_TRUE(foundStabilityProbe);
+  }
+}
+
+TEST(RealisticRenderingValidation,
+     ShadowFixturesOnlyDeclareGpuHarnessExecutableChecks) {
+  const Json fixtures = readJsonFixture(
+      "tests/fixtures/rendering/realistic_visual_regression.fixtures.json");
+
+  for (const Json &scene : fixtures.at("scenes")) {
+    if (scene.at("category").get<std::string>() != "shadow") {
+      continue;
+    }
+
+    const std::string sceneId = scene.at("id").get<std::string>();
+    const std::string renderMode = scene.at("renderMode").get<std::string>();
+    EXPECT_TRUE(isGpuHarnessRenderMode(renderMode))
+        << sceneId << " uses unsupported GPU capture render mode "
+        << renderMode;
+    EXPECT_FALSE(scene.contains("motionPath"))
+        << sceneId << " declares camera motion, but the GPU harness captures "
+        << "only scene.camera";
+    EXPECT_FALSE(scene.at("lighting").contains("shadow"))
+        << sceneId << " declares shadow settings that the GPU capture CLI "
+        << "does not apply";
+
+    for (const Json &probe : scene.at("probes")) {
+      const std::string kind = probe.at("kind").get<std::string>();
+      EXPECT_TRUE(isGpuHarnessProbeKind(kind))
+          << sceneId << " declares unsupported GPU probe kind " << kind;
+    }
   }
 }
 
@@ -456,6 +625,58 @@ TEST(RealisticRenderingValidation,
     EXPECT_NEAR(node.at("rotation").at(3).get<double>(), 0.70710678, 1e-6);
   }
   EXPECT_EQ(punctualLightNodeCount, 1u);
+}
+
+TEST(RealisticRenderingValidation,
+     CornellYellowAreaAssetDeclaresYellowSoftAuthoredAreaLight) {
+  const Json cornell =
+      readJsonFixture("models/validation/cornell_box_yellow_area_light.gltf");
+
+  EXPECT_EQ(cornell.at("asset").at("generator").get<std::string>(),
+            "Container Cornell box yellow area validation fixture");
+  const Json &lights =
+      cornell.at("extensions").at("KHR_lights_punctual").at("lights");
+  ASSERT_EQ(lights.size(), 1u);
+  const Json &light = lights.at(0);
+  EXPECT_EQ(light.at("name").get<std::string>(),
+            "Cornell ceiling yellow soft area light");
+  EXPECT_EQ(light.at("type").get<std::string>(), "point");
+  ASSERT_EQ(light.at("color").size(), 3u);
+  EXPECT_NEAR(light.at("color").at(0).get<double>(), 1.0, 1e-6);
+  EXPECT_NEAR(light.at("color").at(1).get<double>(), 0.86, 1e-6);
+  EXPECT_NEAR(light.at("color").at(2).get<double>(), 0.10, 1e-6);
+  EXPECT_NEAR(light.at("intensity").get<double>(), 300.0, 1e-6);
+  EXPECT_NEAR(light.at("range").get<double>(), 3.2, 1e-6);
+
+  ASSERT_TRUE(light.contains("extras"));
+  const Json &area = light.at("extras").at("areaLight");
+  EXPECT_EQ(area.at("shape").get<std::string>(), "rect");
+  EXPECT_NEAR(area.at("width").get<double>(), 0.8, 1e-6);
+  EXPECT_NEAR(area.at("height").get<double>(), 0.8, 1e-6);
+  EXPECT_NEAR(area.at("range").get<double>(), 3.2, 1e-6);
+
+  size_t punctualLightNodeCount = 0;
+  for (const Json &node : cornell.at("nodes")) {
+    const auto extension = node.find("extensions");
+    if (extension == node.end()) {
+      continue;
+    }
+    const auto punctual = extension->find("KHR_lights_punctual");
+    if (punctual == extension->end()) {
+      continue;
+    }
+
+    ++punctualLightNodeCount;
+    EXPECT_EQ(node.at("name").get<std::string>(),
+              "Ceiling yellow soft area light");
+    EXPECT_EQ(punctual->at("light").get<int>(), 0);
+    ASSERT_TRUE(node.contains("rotation"));
+    EXPECT_NEAR(node.at("rotation").at(0).get<double>(), -0.70710678, 1e-6);
+    EXPECT_NEAR(node.at("rotation").at(3).get<double>(), 0.70710678, 1e-6);
+  }
+  EXPECT_EQ(punctualLightNodeCount, 1u);
+  EXPECT_EQ(cornell.at("scenes").at(0).at("name").get<std::string>(),
+            "Cornell box yellow area purple directional shadow");
 }
 
 TEST(RealisticRenderingValidation,

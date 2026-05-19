@@ -124,6 +124,9 @@ resolvePostProcessExposure(const container::gpu::ExposureSettings &settings);
 [[nodiscard]] DeferredPostProcessFrameState buildDeferredPostProcessFrameState(
     const DeferredPostProcessFrameInputs &inputs);
 
+[[nodiscard]] bool deferredPostProcessPassRecordInputsReady(
+    const DeferredPostProcessPassRecordInputs &inputs);
+
 [[nodiscard]] bool recordDeferredPostProcessPassCommands(
     const DeferredPostProcessPassRecordInputs &inputs);
 

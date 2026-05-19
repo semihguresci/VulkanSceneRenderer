@@ -29,6 +29,7 @@ buildShadowCullPassPlan(const ShadowCullPassPlanInputs &inputs) {
   if (!inputs.shadowAtlasVisible || !inputs.gpuShadowCullEnabled ||
       !inputs.shadowCullManagerReady ||
       !inputs.sceneSingleSidedDrawsAvailable ||
+      !inputs.sourceDrawCommandsAllSingleInstance ||
       inputs.sourceDrawCount == 0u || !inputs.cascadeIndexInRange) {
     plan.readiness = notNeeded();
     return plan;

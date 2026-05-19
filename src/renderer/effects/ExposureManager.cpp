@@ -60,6 +60,14 @@ float clampExposure(float exposure, const ExposureSettings& settings) {
                     settings.minExposure, settings.maxExposure);
 }
 
+void destroyBufferIfAllocated(
+    container::gpu::AllocationManager& allocationManager,
+    container::gpu::AllocatedBuffer& buffer) {
+  if (buffer.buffer == VK_NULL_HANDLE) return;
+  allocationManager.destroyBuffer(buffer);
+  buffer = {};
+}
+
 }  // namespace
 
 ExposureManager::ExposureManager(
@@ -74,30 +82,35 @@ ExposureManager::~ExposureManager() {
   destroy();
 }
 
-void ExposureManager::createResources(const std::filesystem::path& shaderDir) {
+void ExposureManager::createResources(const std::filesystem::path& shaderDir,
+                                      uint32_t descriptorSetCount) {
   createPipeline(shaderDir);
-  createHistogramBuffer();
-  createExposureStateBuffer();
+  const uint32_t imageCount = std::max<uint32_t>(1u, descriptorSetCount);
+  resizeFrameResources(imageCount);
 
   const std::array<VkDescriptorPoolSize, 2> poolSizes = {{
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, imageCount},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, imageCount * 2u},
   }};
   descriptorPool_ = pipelineManager_.createDescriptorPool(
-      {poolSizes.begin(), poolSizes.end()}, 1);
+      {poolSizes.begin(), poolSizes.end()}, imageCount);
+
+  std::vector<VkDescriptorSetLayout> layouts(imageCount, setLayout_);
+  descriptorSets_.assign(imageCount, VK_NULL_HANDLE);
 
   VkDescriptorSetAllocateInfo allocateInfo{
       VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
   allocateInfo.descriptorPool = descriptorPool_;
-  allocateInfo.descriptorSetCount = 1;
-  allocateInfo.pSetLayouts = &setLayout_;
+  allocateInfo.descriptorSetCount = imageCount;
+  allocateInfo.pSetLayouts = layouts.data();
   if (vkAllocateDescriptorSets(device_->device(), &allocateInfo,
-                               &descriptorSet_) != VK_SUCCESS) {
+                               descriptorSets_.data()) != VK_SUCCESS) {
     throw std::runtime_error("failed to allocate exposure descriptor set");
   }
 }
 
 void ExposureManager::dispatch(
+    uint32_t imageIndex,
     VkCommandBuffer cmd,
     VkImageView sceneColorView,
     uint32_t sceneWidth,
@@ -105,15 +118,25 @@ void ExposureManager::dispatch(
     const ExposureSettings& rawSettings) {
   if (!isReady() || cmd == VK_NULL_HANDLE ||
       sceneColorView == VK_NULL_HANDLE || sceneWidth == 0u ||
-      sceneHeight == 0u) {
+      sceneHeight == 0u || imageIndex >= descriptorSets_.size() ||
+      imageIndex >= histogramBuffers_.size() ||
+      imageIndex >= exposureStateBuffers_.size()) {
     return;
   }
 
   const ExposureSettings settings = sanitizeExposureSettings(rawSettings);
+  auto& histogramBuffer = histogramBuffers_[imageIndex];
+  auto& exposureStateBuffer = exposureStateBuffers_[imageIndex];
+  const VkDescriptorSet descriptorSet = descriptorSets_[imageIndex];
+  if (histogramBuffer.buffer == VK_NULL_HANDLE ||
+      exposureStateBuffer.buffer == VK_NULL_HANDLE ||
+      descriptorSet == VK_NULL_HANDLE) {
+    return;
+  }
 
   constexpr VkDeviceSize kHistogramBufferSize =
       sizeof(uint32_t) * (kHistogramBinCount + 1u);
-  vkCmdFillBuffer(cmd, histogramBuffer_.buffer, 0, kHistogramBufferSize, 0);
+  vkCmdFillBuffer(cmd, histogramBuffer.buffer, 0, kHistogramBufferSize, 0);
 
   VkMemoryBarrier fillBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
   fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -123,7 +146,7 @@ void ExposureManager::dispatch(
                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
                        &fillBarrier, 0, nullptr, 0, nullptr);
 
-  updateDescriptorSet(sceneColorView);
+  updateDescriptorSet(imageIndex, sceneColorView);
 
   ExposureHistogramPushConstants histogramPc{};
   histogramPc.width = sceneWidth;
@@ -134,7 +157,7 @@ void ExposureManager::dispatch(
 
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, histogramPipeline_);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                          pipelineLayout_, 0, 1, &descriptorSet_, 0, nullptr);
+                          pipelineLayout_, 0, 1, &descriptorSet, 0, nullptr);
   vkCmdPushConstants(cmd, pipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                      sizeof(histogramPc), &histogramPc);
   vkCmdDispatch(cmd, (sceneWidth + 15u) / 16u, (sceneHeight + 15u) / 16u, 1);
@@ -177,41 +200,48 @@ void ExposureManager::dispatch(
                        &postProcessBarrier, 0, nullptr, 0, nullptr);
 }
 
-void ExposureManager::collectReadback(const ExposureSettings& rawSettings) {
+void ExposureManager::collectReadback(uint32_t imageIndex,
+                                      const ExposureSettings& rawSettings) {
   const ExposureSettings settings = sanitizeExposureSettings(rawSettings);
   if (settings.mode == container::gpu::kExposureModeManual) {
     currentExposure_ = settings.manualExposure;
     averageLuminance_ = settings.targetLuminance;
     hasCurrentExposure_ = true;
-    if (exposureStateBuffer_.buffer != VK_NULL_HANDLE) {
-      ExposureStateData state{};
-      state.exposure = clampExposure(settings.manualExposure, settings);
-      state.averageLuminance = settings.targetLuminance;
-      state.targetExposure = state.exposure;
-      state.initialized = 1.0f;
-      SceneController::writeToBuffer(allocationManager_, exposureStateBuffer_,
-                                     &state, sizeof(state));
+    ExposureStateData state{};
+    state.exposure = clampExposure(settings.manualExposure, settings);
+    state.averageLuminance = settings.targetLuminance;
+    state.targetExposure = state.exposure;
+    state.initialized = 1.0f;
+    for (auto& exposureStateBuffer : exposureStateBuffers_) {
+      if (exposureStateBuffer.buffer != VK_NULL_HANDLE) {
+        SceneController::writeToBuffer(allocationManager_, exposureStateBuffer,
+                                       &state, sizeof(state));
+      }
     }
     return;
   }
 
-  if (exposureStateBuffer_.buffer != VK_NULL_HANDLE &&
-      exposureStateBuffer_.allocation != nullptr) {
-    if (vmaInvalidateAllocation(allocationManager_.memoryManager()->allocator(),
-                                exposureStateBuffer_.allocation, 0,
-                                sizeof(ExposureStateData)) != VK_SUCCESS) {
-      throw std::runtime_error("failed to invalidate exposure state buffer");
-    }
+  if (imageIndex < exposureStateBuffers_.size()) {
+    auto& exposureStateBuffer = exposureStateBuffers_[imageIndex];
+    if (exposureStateBuffer.buffer != VK_NULL_HANDLE &&
+        exposureStateBuffer.allocation != nullptr) {
+      if (vmaInvalidateAllocation(
+              allocationManager_.memoryManager()->allocator(),
+              exposureStateBuffer.allocation, 0,
+              sizeof(ExposureStateData)) != VK_SUCCESS) {
+        throw std::runtime_error("failed to invalidate exposure state buffer");
+      }
 
-    const auto* state = static_cast<const ExposureStateData*>(
-        exposureStateBuffer_.allocation_info.pMappedData);
-    if (state != nullptr && state->initialized > 0.5f &&
-        std::isfinite(state->exposure) &&
-        std::isfinite(state->averageLuminance)) {
-      currentExposure_ = clampExposure(state->exposure, settings);
-      averageLuminance_ = std::max(state->averageLuminance, 0.0f);
-      hasCurrentExposure_ = true;
-      return;
+      const auto* state = static_cast<const ExposureStateData*>(
+          exposureStateBuffer.allocation_info.pMappedData);
+      if (state != nullptr && state->initialized > 0.5f &&
+          std::isfinite(state->exposure) &&
+          std::isfinite(state->averageLuminance)) {
+        currentExposure_ = clampExposure(state->exposure, settings);
+        averageLuminance_ = std::max(state->averageLuminance, 0.0f);
+        hasCurrentExposure_ = true;
+        return;
+      }
     }
   }
 
@@ -236,18 +266,13 @@ VkDeviceSize ExposureManager::exposureStateBufferSize() const {
 }
 
 void ExposureManager::destroy() {
-  if (histogramBuffer_.buffer != VK_NULL_HANDLE) {
-    allocationManager_.destroyBuffer(histogramBuffer_);
-  }
-  if (exposureStateBuffer_.buffer != VK_NULL_HANDLE) {
-    allocationManager_.destroyBuffer(exposureStateBuffer_);
-  }
+  destroyFrameResources();
   pipelineManager_.destroyPipeline(histogramPipeline_);
   pipelineManager_.destroyPipeline(adaptPipeline_);
   pipelineManager_.destroyPipelineLayout(pipelineLayout_);
   pipelineManager_.destroyDescriptorPool(descriptorPool_);
   pipelineManager_.destroyDescriptorSetLayout(setLayout_);
-  descriptorSet_ = VK_NULL_HANDLE;
+  descriptorSets_.clear();
   hasCurrentExposure_ = false;
 }
 
@@ -303,23 +328,43 @@ void ExposureManager::createPipeline(const std::filesystem::path& shaderDir) {
       createComputePipeline("exposure_adapt.comp.spv", "exposure_adapt");
 }
 
-void ExposureManager::createHistogramBuffer() {
-  if (histogramBuffer_.buffer != VK_NULL_HANDLE) {
-    allocationManager_.destroyBuffer(histogramBuffer_);
+void ExposureManager::resizeFrameResources(uint32_t descriptorSetCount) {
+  destroyFrameResources();
+  const uint32_t imageCount = std::max<uint32_t>(1u, descriptorSetCount);
+  histogramBuffers_.resize(imageCount);
+  exposureStateBuffers_.resize(imageCount);
+  for (uint32_t imageIndex = 0; imageIndex < imageCount; ++imageIndex) {
+    createHistogramBuffer(histogramBuffers_[imageIndex]);
+    createExposureStateBuffer(exposureStateBuffers_[imageIndex]);
   }
+}
 
-  histogramBuffer_ = allocationManager_.createBuffer(
+void ExposureManager::destroyFrameResources() {
+  for (auto& histogramBuffer : histogramBuffers_) {
+    destroyBufferIfAllocated(allocationManager_, histogramBuffer);
+  }
+  histogramBuffers_.clear();
+  for (auto& exposureStateBuffer : exposureStateBuffers_) {
+    destroyBufferIfAllocated(allocationManager_, exposureStateBuffer);
+  }
+  exposureStateBuffers_.clear();
+}
+
+void ExposureManager::createHistogramBuffer(
+    container::gpu::AllocatedBuffer& buffer) {
+  destroyBufferIfAllocated(allocationManager_, buffer);
+
+  buffer = allocationManager_.createBuffer(
       sizeof(uint32_t) * (kHistogramBinCount + 1u),
       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
       VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
 }
 
-void ExposureManager::createExposureStateBuffer() {
-  if (exposureStateBuffer_.buffer != VK_NULL_HANDLE) {
-    allocationManager_.destroyBuffer(exposureStateBuffer_);
-  }
+void ExposureManager::createExposureStateBuffer(
+    container::gpu::AllocatedBuffer& buffer) {
+  destroyBufferIfAllocated(allocationManager_, buffer);
 
-  exposureStateBuffer_ = allocationManager_.createBuffer(
+  buffer = allocationManager_.createBuffer(
       sizeof(ExposureStateData), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
       VMA_MEMORY_USAGE_AUTO,
       VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
@@ -330,11 +375,17 @@ void ExposureManager::createExposureStateBuffer() {
   initialState.averageLuminance = averageLuminance_;
   initialState.targetExposure = currentExposure_;
   initialState.initialized = 0.0f;
-  SceneController::writeToBuffer(allocationManager_, exposureStateBuffer_,
+  SceneController::writeToBuffer(allocationManager_, buffer,
                                  &initialState, sizeof(initialState));
 }
 
-void ExposureManager::updateDescriptorSet(VkImageView sceneColorView) {
+void ExposureManager::updateDescriptorSet(uint32_t imageIndex,
+                                          VkImageView sceneColorView) {
+  if (imageIndex >= descriptorSets_.size() ||
+      imageIndex >= histogramBuffers_.size() ||
+      imageIndex >= exposureStateBuffers_.size()) {
+    return;
+  }
   constexpr VkDeviceSize kHistogramBufferSize =
       sizeof(uint32_t) * (kHistogramBinCount + 1u);
 
@@ -343,32 +394,32 @@ void ExposureManager::updateDescriptorSet(VkImageView sceneColorView) {
   sceneInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
   VkDescriptorBufferInfo histogramInfo{};
-  histogramInfo.buffer = histogramBuffer_.buffer;
+  histogramInfo.buffer = histogramBuffers_[imageIndex].buffer;
   histogramInfo.offset = 0;
   histogramInfo.range = kHistogramBufferSize;
 
   VkDescriptorBufferInfo exposureInfo{};
-  exposureInfo.buffer = exposureStateBuffer_.buffer;
+  exposureInfo.buffer = exposureStateBuffers_[imageIndex].buffer;
   exposureInfo.offset = 0;
   exposureInfo.range = sizeof(ExposureStateData);
 
   std::array<VkWriteDescriptorSet, 3> writes{};
   writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-  writes[0].dstSet = descriptorSet_;
+  writes[0].dstSet = descriptorSets_[imageIndex];
   writes[0].dstBinding = 0;
   writes[0].descriptorCount = 1;
   writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
   writes[0].pImageInfo = &sceneInfo;
 
   writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-  writes[1].dstSet = descriptorSet_;
+  writes[1].dstSet = descriptorSets_[imageIndex];
   writes[1].dstBinding = 1;
   writes[1].descriptorCount = 1;
   writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   writes[1].pBufferInfo = &histogramInfo;
 
   writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-  writes[2].dstSet = descriptorSet_;
+  writes[2].dstSet = descriptorSets_[imageIndex];
   writes[2].dstBinding = 2;
   writes[2].descriptorCount = 1;
   writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;

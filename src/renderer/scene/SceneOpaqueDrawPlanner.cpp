@@ -25,6 +25,12 @@ void appendCpuRoute(SceneOpaqueDrawPlan &plan, SceneOpaqueDrawRouteKind kind,
   ++plan.cpuRouteCount;
 }
 
+[[nodiscard]] const std::vector<DrawCommand> *
+primaryCpuSingleSidedCommands(const SceneOpaqueDrawLists &draws) {
+  return hasDrawCommands(draws.singleSided) ? draws.singleSided
+                                            : draws.aggregate;
+}
+
 } // namespace
 
 SceneOpaqueDrawPlanner::SceneOpaqueDrawPlanner(SceneOpaqueDrawInputs inputs)
@@ -32,15 +38,23 @@ SceneOpaqueDrawPlanner::SceneOpaqueDrawPlanner(SceneOpaqueDrawInputs inputs)
 
 SceneOpaqueDrawPlan SceneOpaqueDrawPlanner::build() const {
   SceneOpaqueDrawPlan plan{};
+  const bool useOcclusionIndirect =
+      inputs_.preferOccludedGpuIndirect &&
+      inputs_.occludedGpuIndirectAvailable;
+  const bool gpuIndirectAvailable =
+      useOcclusionIndirect || inputs_.gpuIndirectAvailable;
   plan.useGpuIndirectSingleSided =
-      inputs_.gpuIndirectAvailable && hasDrawCommands(inputs_.draws.singleSided);
+      gpuIndirectAvailable && hasDrawCommands(inputs_.draws.singleSided);
+  plan.gpuIndirectRoute.indirectSource =
+      useOcclusionIndirect ? SceneOpaqueIndirectSource::OcclusionCull
+                           : SceneOpaqueIndirectSource::FrustumCull;
   plan.gpuIndirectRoute.commands =
       plan.useGpuIndirectSingleSided ? inputs_.draws.singleSided : nullptr;
 
   if (!plan.useGpuIndirectSingleSided) {
     appendCpuRoute(plan, SceneOpaqueDrawRouteKind::CpuSingleSided,
                    SceneOpaqueDrawPipeline::Primary,
-                   inputs_.draws.singleSided);
+                   primaryCpuSingleSidedCommands(inputs_.draws));
   }
   appendCpuRoute(plan, SceneOpaqueDrawRouteKind::CpuWindingFlipped,
                  SceneOpaqueDrawPipeline::FrontCull,

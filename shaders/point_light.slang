@@ -47,6 +47,20 @@ VSOutput vertMain(uint vertexIndex : SV_VertexID)
     return output;
 }
 
+static const float LOCAL_CONTACT_SHADOW_RADIANCE_THRESHOLD = 1.0e-4;
+static const float LOCAL_CONTACT_SHADOW_VISIBILITY_THRESHOLD = 0.02;
+
+bool ShouldTracePointLightContactShadow(float3 radiance, float lightVisibility)
+{
+    float3 finiteRadiance =
+        all(isfinite(radiance)) ? max(radiance, 0.0.xxx) : 0.0.xxx;
+    float radianceMagnitude =
+        max(max(finiteRadiance.x, finiteRadiance.y), finiteRadiance.z);
+    return isfinite(lightVisibility) &&
+        radianceMagnitude > LOCAL_CONTACT_SHADOW_RADIANCE_THRESHOLD &&
+        lightVisibility > LOCAL_CONTACT_SHADOW_VISIBILITY_THRESHOLD;
+}
+
 [shader("fragment")]
 float4 fragMain(VSOutput input) : SV_Target0
 {
@@ -129,7 +143,8 @@ float4 fragMain(VSOutput input) : SV_Target0
             lightData, worldPosition, geometricNormal, L, uLocalShadow,
             gLocalShadowAtlas, gLocalShadowSampler);
     }
-    if (pc.contactVisibilityEnabled != 0u)
+    if (pc.contactVisibilityEnabled != 0u &&
+        ShouldTracePointLightContactShadow(radiance, lightVisibility))
     {
         lightVisibility *= ScreenSpacePointLightContactVisibility(
             worldPosition, geometricNormal, pc.positionRadius.xyz, gDepthTexture,

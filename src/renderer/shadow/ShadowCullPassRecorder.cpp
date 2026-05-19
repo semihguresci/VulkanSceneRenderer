@@ -12,9 +12,8 @@ bool recordShadowCullPassCommands(
     return false;
   }
 
-  inputs.shadowCullManager->dispatchCascadeCull(
+  return inputs.shadowCullManager->dispatchCascadeCull(
       cmd, inputs.imageIndex, inputs.cascadeIndex, inputs.plan.drawCount);
-  return true;
 }
 
 } // namespace container::renderer

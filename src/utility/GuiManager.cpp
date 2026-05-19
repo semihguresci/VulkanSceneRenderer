@@ -5746,16 +5746,20 @@ void GuiManager::drawSceneControls(
     if (shadowSettings_.directionalContactVisibility) {
       ImGui::SliderFloat("Contact Max Distance",
                          &shadowSettings_.directionalContactMaxDistance,
-                         0.0f, 5.0f, "%.2f");
+                         0.0f, 0.75f, "%.2f");
       ImGui::SliderFloat("Contact Thickness",
                          &shadowSettings_.directionalContactThickness, 0.0f,
-                         0.5f, "%.3f");
+                         0.25f, "%.3f");
+      shadowSettings_.directionalContactThickness =
+          std::min(shadowSettings_.directionalContactThickness,
+                   shadowSettings_.directionalContactMaxDistance);
       ImGui::SliderFloat("Contact Fade Distance",
                          &shadowSettings_.directionalContactFadeDistance,
-                         0.05f, 5.0f, "%.2f");
+                         0.0f, 0.75f, "%.2f");
       shadowSettings_.directionalContactFadeDistance =
-          std::max(shadowSettings_.directionalContactFadeDistance,
-                   shadowSettings_.directionalContactThickness);
+          std::clamp(shadowSettings_.directionalContactFadeDistance,
+                     shadowSettings_.directionalContactThickness,
+                     shadowSettings_.directionalContactMaxDistance);
     }
     ImGui::SliderFloat("Cascade Blend", &shadowSettings_.cascadeBlendFraction,
                        0.0f, 0.45f, "%.2f");
@@ -5777,6 +5781,16 @@ void GuiManager::drawSceneControls(
                          &localShadowPointBudget, 0, 4)) {
       lightingSettings_.localShadowPointBudget =
           static_cast<uint32_t>(std::max(localShadowPointBudget, 0));
+    }
+    int localShadowLayerBudget =
+        static_cast<int>(lightingSettings_.localShadowLayerBudget);
+    if (ImGui::SliderInt(
+            "Local Shadow Layer Budget", &localShadowLayerBudget, 0,
+            static_cast<int>(container::gpu::kMaxShadowedLocalLightLayers))) {
+      lightingSettings_.localShadowLayerBudget = static_cast<uint32_t>(
+          std::clamp(localShadowLayerBudget, 0,
+                     static_cast<int>(
+                         container::gpu::kMaxShadowedLocalLightLayers)));
     }
     ImGui::TreePop();
   }
