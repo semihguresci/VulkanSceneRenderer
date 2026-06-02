@@ -188,9 +188,13 @@ float2 LocalShadowPoissonOffset(uint sampleIndex)
     return offsets[sampleIndex % LOCAL_SHADOW_POISSON_SAMPLE_COUNT];
 }
 
-float LocalShadowStableRotation(float2 shadowUv, uint layerIndex)
+float LocalShadowStableRotation(float2 shadowUv, uint layerIndex,
+                                float atlasResolution)
 {
-    float seed = dot(shadowUv, float2(127.1, 311.7)) +
+    atlasResolution = max(LocalShadowFiniteOr(atlasResolution, 1.0), 1.0);
+    shadowUv = all(isfinite(shadowUv)) ? saturate(shadowUv) : 0.0.xx;
+    float2 shadowTexel = floor(shadowUv * atlasResolution);
+    float seed = dot(shadowTexel, float2(127.1, 311.7)) +
         float(layerIndex) * 17.17;
     return frac(sin(seed) * 43758.5453123) * 6.28318530718;
 }
@@ -203,12 +207,10 @@ float2 RotateLocalShadowPoissonOffset(float2 offset, float angle)
                   offset.x * s + offset.y * c);
 }
 
-uint LocalShadowPcfSampleCount(float filterRadiusTexels)
+float LocalShadowOuterSampleWeight(float filterRadiusTexels)
 {
     filterRadiusTexels = max(LocalShadowFiniteOr(filterRadiusTexels, 0.0), 0.0);
-    return filterRadiusTexels <= 1.5
-        ? LOCAL_SHADOW_PCF_FAST_SAMPLE_COUNT
-        : LOCAL_SHADOW_POISSON_SAMPLE_COUNT;
+    return smoothstep(1.25, 1.75, filterRadiusTexels);
 }
 
 float3 OffsetLocalShadowSamplePosition(
@@ -248,24 +250,38 @@ float SampleLocalShadowLayerPcf(
     }
 
     compareDepth = saturate(compareDepth);
-    float invResolution =
-        1.0 / max(LocalShadowFiniteOr(float(localShadow.counts.z),
-                                      float(LOCAL_SHADOW_MAP_RESOLUTION)),
-                  float(LOCAL_SHADOW_MAP_RESOLUTION));
+    float atlasResolution =
+        max(LocalShadowFiniteOr(float(localShadow.counts.z),
+                                float(LOCAL_SHADOW_MAP_RESOLUTION)),
+            float(LOCAL_SHADOW_MAP_RESOLUTION));
+    float invResolution = 1.0 / atlasResolution;
     float filterStepTexels =
         filterRadiusTexels / LOCAL_SHADOW_PCF_KERNEL_RADIUS;
     float2 texelSize = (filterStepTexels * invResolution).xx;
-    float rotation = LocalShadowStableRotation(shadowUv, layerIndex);
-    uint sampleCount = LocalShadowPcfSampleCount(filterRadiusTexels);
+    float rotation = LocalShadowStableRotation(
+        shadowUv, layerIndex, atlasResolution);
+    float outerSampleWeight = LocalShadowOuterSampleWeight(filterRadiusTexels);
+    uint outerSampleCount = uint(ceil(outerSampleWeight *
+        float(LOCAL_SHADOW_POISSON_SAMPLE_COUNT -
+              LOCAL_SHADOW_PCF_FAST_SAMPLE_COUNT)));
+    uint activeSampleCount = min(
+        LOCAL_SHADOW_PCF_FAST_SAMPLE_COUNT + outerSampleCount,
+        LOCAL_SHADOW_POISSON_SAMPLE_COUNT);
     float shadow = 0.0;
     float totalWeight = 0.0;
 
     [loop]
-    for (uint sampleIndex = 0u; sampleIndex < sampleCount; ++sampleIndex)
+    for (uint sampleIndex = 0u;
+         sampleIndex < activeSampleCount;
+         ++sampleIndex)
     {
         float2 o = RotateLocalShadowPoissonOffset(
             LocalShadowPoissonOffset(sampleIndex), rotation);
         float weight = exp2(-dot(o, o) * 0.70);
+        if (sampleIndex >= LOCAL_SHADOW_PCF_FAST_SAMPLE_COUNT)
+        {
+            weight *= outerSampleWeight;
+        }
         float2 tapUv = shadowUv + o * texelSize;
         if (all(isfinite(tapUv)) &&
             all(tapUv >= 0.0.xx) && all(tapUv <= 1.0.xx))

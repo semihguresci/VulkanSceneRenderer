@@ -57,6 +57,7 @@ public:
   [[nodiscard]] RenderGraphBuilder graphBuilder() const;
   [[nodiscard]] VkExtent2D swapchainExtent() const;
   [[nodiscard]] container::ui::GBufferViewMode displayMode() const;
+  [[nodiscard]] const OitManager *oitManager() const;
   [[nodiscard]] DeferredTransparentOitFramePassRecorder
   transparentOitFramePassRecorder() const;
   [[nodiscard]] bool isPassActive(RenderPassId id) const;
@@ -75,14 +76,22 @@ public:
 
   void recordShadowPass(VkCommandBuffer cmd, const FrameRecordParams &p,
                         uint32_t cascadeIndex) const;
+  void recordForwardShadowPass(VkCommandBuffer cmd, const FrameRecordParams &p,
+                               uint32_t cascadeIndex) const;
   void renderGui(VkCommandBuffer cmd) const;
 
   [[nodiscard]] bool canRecordShadowPass(const FrameRecordParams &p,
                                          uint32_t cascadeIndex) const;
+  [[nodiscard]] bool canRecordForwardShadowPass(
+      const FrameRecordParams &p, uint32_t cascadeIndex) const;
 
 private:
   [[nodiscard]] ShadowCascadeFramePassContext
   shadowCascadeFramePassContext() const;
+  [[nodiscard]] ShadowCascadeFramePassContext
+  forwardShadowCascadeFramePassContext() const;
+  [[nodiscard]] ShadowCascadeFramePassContext
+  shadowCascadeFramePassContext(const FrameRecordParams &p) const;
   void beforePrepareFrame(const FrameRecordParams &p) const;
   void afterPrepareFrame(const FrameRecordParams &p,
                          const RenderGraph &graph) const;

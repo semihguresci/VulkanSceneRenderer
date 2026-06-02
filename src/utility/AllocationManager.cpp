@@ -32,6 +32,27 @@ void EnsureArenaCapacity(std::unique_ptr<BufferArena>& arena,
   }
 }
 
+uint32_t CalculateTextureMipLevels(uint32_t width, uint32_t height) {
+  uint32_t levels = 1u;
+  uint32_t dimension = std::max(width, height);
+  while (dimension > 1u) {
+    dimension /= 2u;
+    ++levels;
+  }
+  return levels;
+}
+
+bool textureFormatSupportsLinearBlit(VkPhysicalDevice physicalDevice,
+                                     VkFormat format) {
+  VkFormatProperties properties{};
+  vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &properties);
+  constexpr VkFormatFeatureFlags requiredFeatures =
+      VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT |
+      VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+  return (properties.optimalTilingFeatures & requiredFeatures) ==
+         requiredFeatures;
+}
+
 }  // namespace
 
 AllocationManager::~AllocationManager() { cleanup(); }
@@ -229,17 +250,23 @@ AllocationManager::createTextureFromRgbaPixels(
   StagingBuffer stagingBuffer(*memoryManager_, imageSize);
   stagingBuffer.upload(rgbaPixels.first(static_cast<size_t>(imageSize)));
 
+  const uint32_t mipLevels = textureFormatSupportsLinearBlit(physicalDevice_,
+                                                             format)
+                                 ? CalculateTextureMipLevels(width, height)
+                                 : 1u;
+
   VkImageCreateInfo imageInfo{};
   imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
   imageInfo.imageType = VK_IMAGE_TYPE_2D;
   imageInfo.format = format;
   imageInfo.extent = {width, height, 1};
-  imageInfo.mipLevels = 1;
+  imageInfo.mipLevels = mipLevels;
   imageInfo.arrayLayers = 1;
   imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
   imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
   imageInfo.usage =
-      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+      VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+      VK_IMAGE_USAGE_SAMPLED_BIT;
   imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -258,14 +285,20 @@ AllocationManager::createTextureFromRgbaPixels(
   bool registeredTexture = false;
   try {
     transitionImageLayout(image, VK_IMAGE_LAYOUT_UNDEFINED,
-                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u, 0u,
+                          mipLevels);
 
     copyBufferToImage(stagingBuffer.buffer().buffer, image, width, height);
 
-    transitionImageLayout(image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (mipLevels > 1u) {
+      generateTextureMipmaps(image, format, width, height, mipLevels);
+    } else {
+      transitionImageLayout(image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
 
-    imageView = createImageView(image, imageInfo.format);
+    imageView = createImageView(image, imageInfo.format,
+                                VK_IMAGE_VIEW_TYPE_2D, 1u, mipLevels);
 
     textureAllocations_.push_back({image, imageView, allocation});
     registeredTexture = true;
@@ -473,7 +506,9 @@ void AllocationManager::copyBuffer(VkBuffer src, VkBuffer dst,
 void AllocationManager::transitionImageLayout(VkImage image,
                                               VkImageLayout oldLayout,
                                               VkImageLayout newLayout,
-                                              uint32_t layerCount) {
+                                              uint32_t layerCount,
+                                              uint32_t baseMipLevel,
+                                              uint32_t levelCount) {
   VkCommandBuffer cmd = beginSingleTimeCommands();
 
   VkImageMemoryBarrier barrier{};
@@ -484,7 +519,8 @@ void AllocationManager::transitionImageLayout(VkImage image,
   barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   barrier.image = image;
   barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-  barrier.subresourceRange.levelCount = 1;
+  barrier.subresourceRange.baseMipLevel = baseMipLevel;
+  barrier.subresourceRange.levelCount = levelCount;
   barrier.subresourceRange.layerCount = layerCount;
 
   VkPipelineStageFlags srcStage;
@@ -525,16 +561,99 @@ void AllocationManager::copyBufferToImage(VkBuffer buffer, VkImage image,
   endSingleTimeCommands(cmd);
 }
 
+void AllocationManager::generateTextureMipmaps(VkImage image, VkFormat format,
+                                               uint32_t width, uint32_t height,
+                                               uint32_t mipLevels) {
+  if (mipLevels <= 1u) {
+    return;
+  }
+  if (!textureFormatSupportsLinearBlit(physicalDevice_, format)) {
+    throw std::runtime_error(
+        "texture format does not support linear mipmap generation");
+  }
+
+  VkCommandBuffer cmd = beginSingleTimeCommands();
+
+  VkImageMemoryBarrier barrier{};
+  barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  barrier.image = image;
+  barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  barrier.subresourceRange.baseArrayLayer = 0;
+  barrier.subresourceRange.layerCount = 1;
+  barrier.subresourceRange.levelCount = 1;
+
+  int32_t mipWidth = static_cast<int32_t>(width);
+  int32_t mipHeight = static_cast<int32_t>(height);
+
+  for (uint32_t mip = 1u; mip < mipLevels; ++mip) {
+    barrier.subresourceRange.baseMipLevel = mip - 1u;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                         nullptr, 1, &barrier);
+
+    VkImageBlit blit{};
+    blit.srcOffsets[0] = {0, 0, 0};
+    blit.srcOffsets[1] = {mipWidth, mipHeight, 1};
+    blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.srcSubresource.mipLevel = mip - 1u;
+    blit.srcSubresource.baseArrayLayer = 0;
+    blit.srcSubresource.layerCount = 1;
+    blit.dstOffsets[0] = {0, 0, 0};
+    blit.dstOffsets[1] = {std::max(mipWidth / 2, 1),
+                          std::max(mipHeight / 2, 1), 1};
+    blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.dstSubresource.mipLevel = mip;
+    blit.dstSubresource.baseArrayLayer = 0;
+    blit.dstSubresource.layerCount = 1;
+
+    vkCmdBlitImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                   VK_FILTER_LINEAR);
+
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
+                         0, nullptr, 1, &barrier);
+
+    mipWidth = std::max(mipWidth / 2, 1);
+    mipHeight = std::max(mipHeight / 2, 1);
+  }
+
+  barrier.subresourceRange.baseMipLevel = mipLevels - 1u;
+  barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0,
+                       nullptr, 1, &barrier);
+
+  endSingleTimeCommands(cmd);
+}
+
 VkImageView AllocationManager::createImageView(VkImage image, VkFormat format,
                                                VkImageViewType viewType,
-                                               uint32_t layerCount) {
+                                               uint32_t layerCount,
+                                               uint32_t levelCount) {
   VkImageViewCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
   info.image = image;
   info.viewType = viewType;
   info.format = format;
   info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-  info.subresourceRange.levelCount = 1;
+  info.subresourceRange.levelCount = levelCount;
   info.subresourceRange.layerCount = layerCount;
 
   VkImageView view = VK_NULL_HANDLE;

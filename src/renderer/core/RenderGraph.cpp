@@ -1,9 +1,12 @@
 #include "Container/renderer/core/RenderGraph.h"
 
+#include "Container/renderer/core/FrameRecorder.h"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -1083,7 +1086,13 @@ void RenderGraph::execute(VkCommandBuffer cmd,
 }
 
 void RenderGraph::prepareFrame(const FrameRecordParams& params) const {
+  const uint64_t preparedSignature = computePreparedFrameSignature(params);
+  if (!preparedFramePlanDirty_ && !executionOrderDirty_ &&
+      !activePlanDirty_ && preparedSignature == preparedFrameSignature_) {
+    return;
+  }
   rebuildFrameExecutionOrder(params);
+  preparedFrameSignature_ = preparedSignature;
   preparedFramePlanDirty_ = false;
 }
 
@@ -1344,6 +1353,7 @@ void RenderGraph::clear() {
   activePlanDirty_ = true;
   preparedFramePlanDirty_ = true;
   activePlanSignature_ = 0;
+  preparedFrameSignature_ = 0;
   executing_ = false;
 }
 
@@ -1448,8 +1458,115 @@ uint64_t RenderGraph::computeActivePlanSignature() const {
   return signature;
 }
 
+uint64_t RenderGraph::computePreparedFrameSignature(
+    const FrameRecordParams& params) const {
+  uint64_t signature = computeActivePlanSignature();
+  auto mix = [&signature](uint64_t value) {
+    signature ^= value;
+    signature *= 1099511628211ull;
+  };
+  auto mixPointer = [&mix](const void* ptr) {
+    mix(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ptr)));
+  };
+  auto mixFloat = [&mix](float value) {
+    static_assert(sizeof(float) == sizeof(uint32_t));
+    uint32_t bits = 0u;
+    std::memcpy(&bits, &value, sizeof(bits));
+    mix(bits);
+  };
+  auto mixDrawList = [&mix, &mixPointer](const std::vector<DrawCommand>* draws) {
+    mixPointer(draws);
+    mix(draws != nullptr ? static_cast<uint64_t>(draws->size()) : 0u);
+  };
+
+  mix(params.runtime.frameSlot);
+  mix(params.runtime.imageIndex);
+  mix(static_cast<uint64_t>(params.runtime.activeTechnique));
+  mix(params.scene.objectDataRevision);
+  mix(params.bim.scene.objectDataRevision);
+  mixPointer(params.registries.resourceBindings);
+  mixPointer(params.registries.pipelineHandles);
+  mixPointer(params.registries.pipelineLayouts);
+  mix(params.debug.displayMode);
+  mix(params.debug.debugDirectionalOnly ? 1u : 0u);
+  mix(params.debug.debugVisualizePointLightStencil ? 1u : 0u);
+  mix(params.debug.debugFreezeCulling ? 1u : 0u);
+  mixFloat(params.camera.nearPlane);
+  mixFloat(params.camera.farPlane);
+  mix(params.camera.orthographic ? 1u : 0u);
+  mixDrawList(params.draws.opaqueDrawCommands);
+  mixDrawList(params.draws.opaqueSingleSidedDrawCommands);
+  mixDrawList(params.draws.opaqueWindingFlippedDrawCommands);
+  mixDrawList(params.draws.opaqueDoubleSidedDrawCommands);
+  mixDrawList(params.draws.transparentDrawCommands);
+  mixDrawList(params.draws.transparentSingleSidedDrawCommands);
+  mixDrawList(params.draws.transparentWindingFlippedDrawCommands);
+  mixDrawList(params.draws.transparentDoubleSidedDrawCommands);
+  mixDrawList(params.bim.draws.opaqueDrawCommands);
+  mixDrawList(params.bim.draws.opaqueSingleSidedDrawCommands);
+  mixDrawList(params.bim.draws.opaqueWindingFlippedDrawCommands);
+  mixDrawList(params.bim.draws.opaqueDoubleSidedDrawCommands);
+  mixDrawList(params.bim.draws.transparentDrawCommands);
+  mixDrawList(params.bim.draws.transparentSingleSidedDrawCommands);
+  mixDrawList(params.bim.draws.transparentWindingFlippedDrawCommands);
+  mixDrawList(params.bim.draws.transparentDoubleSidedDrawCommands);
+  mix(params.shadows.localShadowLayerCount);
+  mix(params.shadows.useGpuShadowCull ? 1u : 0u);
+  mix(params.shadows.useShadowSecondaryCommandBuffers ? 1u : 0u);
+  mix(params.shadows.renderPass != VK_NULL_HANDLE
+          ? static_cast<uint64_t>(reinterpret_cast<uintptr_t>(
+                params.shadows.renderPass))
+          : 0u);
+  mixPointer(params.shadows.shadowFramebuffers);
+  mixPointer(params.shadows.localShadowFramebuffers);
+  mixPointer(params.shadows.shadowData);
+  mixPointer(params.shadows.localShadowData);
+  mixPointer(params.shadows.shadowManager);
+  mixPointer(params.shadows.shadowCullManager);
+  const auto& shadowSettings = params.shadows.shadowSettings;
+  mixFloat(shadowSettings.normalBiasMinTexels);
+  mixFloat(shadowSettings.normalBiasMaxTexels);
+  mixFloat(shadowSettings.slopeBiasScale);
+  mixFloat(shadowSettings.receiverPlaneBiasScale);
+  mixFloat(shadowSettings.filterRadiusTexels);
+  mixFloat(shadowSettings.cascadeBlendFraction);
+  mixFloat(shadowSettings.constantDepthBias);
+  mixFloat(shadowSettings.maxDepthBias);
+  mixFloat(shadowSettings.rasterConstantBias);
+  mixFloat(shadowSettings.rasterSlopeBias);
+  mixFloat(shadowSettings.directionalPcssLightRadiusDegrees);
+  mixFloat(shadowSettings.directionalPcssBlockerSearchRadiusTexels);
+  mixFloat(shadowSettings.directionalPcssMaxFilterRadiusTexels);
+  mixFloat(shadowSettings.directionalContactMaxDistance);
+  mixFloat(shadowSettings.directionalContactThickness);
+  mixFloat(shadowSettings.directionalContactFadeDistance);
+  mix(shadowSettings.directionalPcssEnabled ? 1u : 0u);
+  mix(shadowSettings.directionalContactVisibility ? 1u : 0u);
+  mix(shadowSettings.localContactVisibility ? 1u : 0u);
+  mixPointer(params.services.gpuCullManager);
+  mixPointer(params.services.bimManager);
+  mixPointer(params.services.bloomManager);
+  mixPointer(params.services.telemetry);
+  mixPointer(params.services.gpuProfiler);
+  mix(params.postProcess.renderPass != VK_NULL_HANDLE
+          ? static_cast<uint64_t>(reinterpret_cast<uintptr_t>(
+                params.postProcess.renderPass))
+          : 0u);
+  const auto& exposureSettings = params.postProcess.exposureSettings;
+  mix(exposureSettings.mode);
+  mixFloat(exposureSettings.manualExposure);
+  mixFloat(exposureSettings.targetLuminance);
+  mixFloat(exposureSettings.minExposure);
+  mixFloat(exposureSettings.maxExposure);
+  mixFloat(exposureSettings.adaptationRate);
+  mixFloat(exposureSettings.meteringLowPercentile);
+  mixFloat(exposureSettings.meteringHighPercentile);
+  return signature;
+}
+
 void RenderGraph::invalidatePreparedFrame() {
   preparedFramePlanDirty_ = true;
+  preparedFrameSignature_ = 0;
 }
 
 void RenderGraph::ensureActivePlan() const {

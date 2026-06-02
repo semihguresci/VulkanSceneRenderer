@@ -67,6 +67,22 @@ std::string executionNoteForPass(const RenderGraph& graph, RenderPassId id) {
   return {};
 }
 
+std::string techniqueDebugControlKindName(TechniqueDebugControlKind kind) {
+  switch (kind) {
+  case TechniqueDebugControlKind::Toggle:
+    return "toggle";
+  case TechniqueDebugControlKind::Integer:
+    return "integer";
+  case TechniqueDebugControlKind::Float:
+    return "float";
+  case TechniqueDebugControlKind::Enum:
+    return "enum";
+  case TechniqueDebugControlKind::Action:
+    return "action";
+  }
+  return {};
+}
+
 bool enforceRenderPassDependencies(
     std::vector<container::ui::RenderPassToggle>& toggles) {
   bool changed = false;
@@ -138,6 +154,36 @@ void DebugUiPresenter::publishRenderGraphDebugModel(
     passList.push_back(std::move(toggle));
   }
   guiManager.setRenderPassList(passList);
+}
+
+void DebugUiPresenter::publishTechniqueDebugModel(
+    container::ui::GuiManager& guiManager,
+    const TechniqueDebugModel& debugModel) {
+  container::ui::GuiRenderTechniqueDebugState state{};
+  state.techniqueName = debugModel.techniqueName;
+  state.displayName = debugModel.displayName;
+  state.displayModes.reserve(debugModel.displayModes.size());
+  for (const TechniqueDisplayModeOption& mode : debugModel.displayModes) {
+    state.displayModes.push_back(
+        {.id = mode.id, .label = mode.label, .value = mode.value});
+  }
+
+  state.panels.reserve(debugModel.panels.size());
+  for (const TechniqueDebugPanel& panel : debugModel.panels) {
+    container::ui::GuiRenderTechniqueDebugPanel uiPanel{};
+    uiPanel.id = panel.id;
+    uiPanel.title = panel.title;
+    uiPanel.controls.reserve(panel.controls.size());
+    for (const TechniqueDebugControl& control : panel.controls) {
+      uiPanel.controls.push_back(
+          {.id = control.id,
+           .label = control.label,
+           .kind = techniqueDebugControlKindName(control.kind)});
+    }
+    state.panels.push_back(std::move(uiPanel));
+  }
+
+  guiManager.setRenderTechniqueDebugState(std::move(state));
 }
 
 void DebugUiPresenter::publishRenderPasses(

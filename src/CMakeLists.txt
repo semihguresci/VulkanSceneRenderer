@@ -103,6 +103,9 @@ add_library(VulkanSceneRenderer_renderer
     renderer/deferred/DeferredTransparentOitFramePassRecorder.cpp
     renderer/deferred/DeferredTransparentOitRecorder.cpp
 
+    renderer/forward/ForwardRasterLightingPassRecorder.cpp
+    renderer/forward/ForwardRasterTechnique.cpp
+
     renderer/bim/BimCoordinationOverlay.cpp
     renderer/bim/BimDrawFilterState.cpp
     renderer/bim/BimDrawingExport.cpp

@@ -177,6 +177,7 @@ float4 fragMain(VSOutput input) : SV_Target0
         float3 radiance =
             light.colorIntensity.rgb * light.colorIntensity.a * attenuation *
             coneAttenuation;
+        float3 unshadowedRadiance = radiance;
         float lightVisibility = 1.0;
         bool useLocalShadowMap =
             LocalShadowMapsEnabled(pc.localShadowEnabled, uLocalShadow) &&
@@ -200,7 +201,7 @@ float4 fragMain(VSOutput input) : SV_Target0
             layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,
             layerTerms.sheenColor, layerTerms.sheenRoughness);
         totalLighting += EvaluateDiffuseBounceLight(
-            albedo.rgb, metallic, normal, geometricNormal, V, L, radiance,
+            albedo.rgb, metallic, normal, geometricNormal, V, L, unshadowedRadiance,
             lightVisibility, saturate(material.z), pc.bounceIntensity);
         if (thinSurface || transmissionWeight > 0.0)
         {

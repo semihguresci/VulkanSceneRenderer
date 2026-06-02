@@ -128,6 +128,7 @@ float4 fragMain(VSOutput input) : SV_Target0
     float3 radiance =
         pc.colorIntensity.rgb * pc.colorIntensity.a * attenuation *
         coneAttenuation;
+    float3 unshadowedRadiance = radiance;
     float lightVisibility = 1.0;
     PointLightData lightData;
     lightData.positionRadius = pc.positionRadius;
@@ -166,7 +167,7 @@ float4 fragMain(VSOutput input) : SV_Target0
             layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,
             layerTerms.sheenColor, layerTerms.sheenRoughness);
     directLighting += EvaluateDiffuseBounceLight(
-        albedo.rgb, metallic, normal, geometricNormal, V, L, radiance,
+        albedo.rgb, metallic, normal, geometricNormal, V, L, unshadowedRadiance,
         lightVisibility, saturate(material.z), pc.bounceIntensity);
 
     float transmissionWeight =

@@ -4,6 +4,7 @@
 #include "Container/renderer/bim/BimManager.h"
 #include "Container/renderer/bim/BimMeasurementSnapping.h"
 #include "Container/renderer/bim/BimSemanticColorMode.h"
+#include "Container/renderer/core/RenderTechnique.h"
 #include "Container/renderer/core/RendererTelemetry.h"
 #include "Container/renderer/scene/ScenePrimitives.h"
 #include "Container/utility/BcfViewpoint.h"
@@ -64,6 +65,28 @@ constexpr std::array<float, 3> kImportScaleValues = {{
     1.0f,
     10.0f,
     100.0f,
+}};
+
+struct DisplayModeDefinition {
+  GBufferViewMode mode;
+  const char *label;
+};
+
+constexpr std::array<DisplayModeDefinition, 14> kDisplayModeDefinitions = {{
+    {GBufferViewMode::Lit, "Lit"},
+    {GBufferViewMode::Albedo, "Albedo"},
+    {GBufferViewMode::Normals, "Normals"},
+    {GBufferViewMode::Material, "Material"},
+    {GBufferViewMode::Depth, "Depth"},
+    {GBufferViewMode::Emissive, "Emissive"},
+    {GBufferViewMode::Transparency, "Transparency"},
+    {GBufferViewMode::Revealage, "Revealage"},
+    {GBufferViewMode::Overview, "Overview"},
+    {GBufferViewMode::SurfaceNormals, "Surface Normals"},
+    {GBufferViewMode::ObjectSpaceNormals, "Object Normals"},
+    {GBufferViewMode::ShadowCascades, "Shadow Cascades"},
+    {GBufferViewMode::TileLightHeatMap, "Tile Light Heat Map"},
+    {GBufferViewMode::ShadowTexelDensity, "Shadow Texel Density"},
 }};
 
 struct KnownSampleAsset {
@@ -134,6 +157,93 @@ std::vector<std::string> SplitBcfTopicLabels(std::string_view value) {
     start = i + 1u;
   }
   return labels;
+}
+
+std::string WrapLongPathForImGui(std::string_view text) {
+  constexpr size_t kPathTooltipSoftBreakColumns = 32u;
+  constexpr size_t kPathTooltipHardBreakColumns = 48u;
+
+  std::string wrapped;
+  wrapped.reserve(text.size() + text.size() / kPathTooltipSoftBreakColumns);
+  size_t column = 0u;
+  size_t unbrokenRun = 0u;
+  for (size_t i = 0u; i < text.size(); ++i) {
+    const char c = text[i];
+    wrapped.push_back(c);
+
+    if (c == '\n') {
+      column = 0u;
+      unbrokenRun = 0u;
+      continue;
+    }
+
+    ++column;
+    if (std::isspace(static_cast<unsigned char>(c)) != 0) {
+      unbrokenRun = 0u;
+      continue;
+    }
+    ++unbrokenRun;
+
+    const bool pathSeparator = c == '\\' || c == '/';
+    const bool softPathBreak =
+        pathSeparator && column >= kPathTooltipSoftBreakColumns;
+    const bool hardTokenBreak = unbrokenRun >= kPathTooltipHardBreakColumns;
+    if ((softPathBreak || hardTokenBreak) && i + 1u < text.size()) {
+      wrapped.push_back('\n');
+      column = 0u;
+      unbrokenRun = 0u;
+    }
+  }
+  return wrapped;
+}
+
+void ShowWrappedTooltip(std::string_view text) {
+  if (text.empty()) {
+    return;
+  }
+
+  constexpr float kMaxWidthEm = 48.0f;
+  constexpr float kMinWidthEm = 20.0f;
+  const float fontSize = std::max(ImGui::GetFontSize(), 1.0f);
+  const ImGuiStyle &style = ImGui::GetStyle();
+  const float desiredWidth = fontSize * kMaxWidthEm;
+  float viewportMaxWidth = desiredWidth;
+  if (const ImGuiViewport *viewport = ImGui::GetMainViewport()) {
+    viewportMaxWidth =
+        std::max(fontSize, viewport->WorkSize.x * 0.45f -
+                               style.WindowPadding.x * 2.0f);
+  }
+  const float minimumWidth = std::min(fontSize * kMinWidthEm, viewportMaxWidth);
+  const float wrapWidth =
+      std::clamp(desiredWidth, minimumWidth, viewportMaxWidth);
+
+  ImGui::SetNextWindowSizeConstraints(
+      ImVec2(0.0f, 0.0f),
+      ImVec2(wrapWidth + style.WindowPadding.x * 2.0f,
+             std::numeric_limits<float>::max()));
+  const std::string tooltipText = WrapLongPathForImGui(text);
+  ImGui::BeginTooltip();
+  ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrapWidth);
+  ImGui::TextUnformatted(tooltipText.data(),
+                         tooltipText.data() + tooltipText.size());
+  ImGui::PopTextWrapPos();
+  ImGui::EndTooltip();
+}
+
+void ShowItemTooltip(std::string_view text, ImGuiHoveredFlags flags = 0) {
+  if (!text.empty() && ImGui::IsItemHovered(flags)) {
+    ShowWrappedTooltip(text);
+  }
+}
+
+void TextWrappedPathValue(std::string_view label, std::string_view value) {
+  const std::string wrappedValue = WrapLongPathForImGui(value);
+  if (label.empty()) {
+    ImGui::TextWrapped("%s", wrappedValue.c_str());
+    return;
+  }
+  ImGui::TextWrapped("%.*s: %s", static_cast<int>(label.size()), label.data(),
+                     wrappedValue.c_str());
 }
 
 std::string SceneHierarchyNodeName(
@@ -352,7 +462,8 @@ void DrawSceneHierarchyNode(const container::scene::SceneGraph &sceneGraph,
     (*actions.selectSceneNode)(nodeIndex);
   }
   if (ImGui::IsItemHovered()) {
-    ImGui::SetTooltip("Select node %u", nodeIndex);
+    const std::string tooltip = "Select node " + std::to_string(nodeIndex);
+    ShowItemTooltip(tooltip);
   }
 
   ImGui::TableNextColumn();
@@ -546,11 +657,54 @@ bool TextFileContains(const std::filesystem::path &path,
   return false;
 }
 
+bool heuristicRenderableIfc5Layer(const std::filesystem::path &path) {
+  const std::filesystem::path dir = path.parent_path();
+  const std::string stem = container::util::pathToUtf8(path.stem());
+  const std::string lowerStem = ToLowerAscii(stem);
+  if (const size_t add = lowerStem.find("-add-");
+      add != std::string::npos && add > 0u) {
+    const std::filesystem::path candidate =
+        dir / container::util::pathFromUtf8(stem.substr(0, add) + ".ifcx");
+    std::error_code existsError;
+    return std::filesystem::exists(candidate, existsError);
+  }
+
+  if ((lowerStem.starts_with("add-") ||
+       ToLowerAscii(container::util::pathToUtf8(dir.filename())) ==
+           "advanced") &&
+      dir.has_parent_path()) {
+    std::error_code iterError;
+    for (const std::filesystem::directory_entry &entry :
+         std::filesystem::directory_iterator(dir.parent_path(), iterError)) {
+      if (iterError) {
+        break;
+      }
+      const std::string candidateExtension =
+          ToLowerAscii(container::util::pathToUtf8(entry.path().extension()));
+      if (!entry.is_regular_file() || candidateExtension != ".ifcx") {
+        continue;
+      }
+      const std::string candidateStem =
+          ToLowerAscii(container::util::pathToUtf8(entry.path().stem()));
+      if (candidateStem.find("-add-") == std::string::npos &&
+          !candidateStem.starts_with("add-")) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 bool HasRenderableAuxiliaryHint(const std::filesystem::path &path) {
   const std::string extension =
       ToLowerAscii(container::util::pathToUtf8(path.extension()));
   if (extension == ".ifcx") {
-    return TextFileContains(path, "usd::usdgeom::mesh");
+    return TextFileContains(path, "usd::usdgeom::mesh") ||
+           TextFileContains(path, "usd::usdgeom::basiscurves") ||
+           TextFileContains(path, "points::array") ||
+           TextFileContains(path, "points::base64") ||
+           TextFileContains(path, "pcd::base64") ||
+           heuristicRenderableIfc5Layer(path);
   }
   if (extension == ".ifc") {
     return TextFileContains(path, "IFCTRIANGULATEDFACESET") ||
@@ -1031,8 +1185,8 @@ bool ToolButton(const char *label, ViewportTool tool, ViewportTool activeTool,
   if (tool == activeTool) {
     ImGui::PopStyleColor();
   }
-  if (tooltip != nullptr && ImGui::IsItemHovered()) {
-    ImGui::SetTooltip("%s", tooltip);
+  if (tooltip != nullptr) {
+    ShowItemTooltip(tooltip);
   }
   return clicked;
 }
@@ -1764,10 +1918,18 @@ int GuiManager::sampleModelIndexForPath(const std::string &path) const {
   return -1;
 }
 
+void GuiManager::queueModelLoadRequest(std::string path, float importScale,
+                                       std::string label) {
+  pendingModelLoadRequest_ = ModelLoadRequest{.path = std::move(path),
+                                              .importScale = importScale,
+                                              .label = std::move(label)};
+}
+
 void GuiManager::shutdown(VkDevice device) {
   if (!initialized_)
     return;
 
+  endFrame();
   ImGui_ImplVulkan_Shutdown();
   ImGui_ImplGlfw_Shutdown();
   ImGui::DestroyContext();
@@ -1778,6 +1940,7 @@ void GuiManager::shutdown(VkDevice device) {
   }
 
   initialized_ = false;
+  imguiFrameOpen_ = false;
 }
 
 void GuiManager::updateSwapchainImageCount(uint32_t imageCount) {
@@ -1801,18 +1964,87 @@ std::optional<uint32_t> GuiManager::consumeMsaaSampleChange() {
   return requested;
 }
 
+void GuiManager::setRenderEngineOptions(
+    std::vector<RenderEngineOption> options,
+    container::renderer::RenderTechniqueId active) {
+  renderEngineOptions_ = std::move(options);
+  activeRenderEngine_ = active;
+  const bool pendingAvailable =
+      pendingRenderEngineChange_.has_value() &&
+      std::ranges::any_of(renderEngineOptions_,
+                          [pending = *pendingRenderEngineChange_](
+                              const RenderEngineOption& option) {
+                            return option.available && option.id == pending;
+                          });
+  if (pendingRenderEngineChange_ == activeRenderEngine_ || !pendingAvailable) {
+    pendingRenderEngineChange_.reset();
+  }
+}
+
+std::optional<container::renderer::RenderTechniqueId>
+GuiManager::consumeRenderEngineChange() {
+  auto requested = pendingRenderEngineChange_;
+  pendingRenderEngineChange_.reset();
+  return requested;
+}
+
+container::renderer::RenderTechniqueId GuiManager::activeRenderEngine() const {
+  return activeRenderEngine_;
+}
+
+void GuiManager::setRenderTechniqueDebugState(
+    GuiRenderTechniqueDebugState state) {
+  renderTechniqueDebugState_ = std::move(state);
+  if (renderTechniqueDebugState_.displayModes.empty()) {
+    return;
+  }
+
+  const uint32_t currentMode = static_cast<uint32_t>(gBufferViewMode_);
+  const bool currentModeSupported =
+      std::ranges::any_of(renderTechniqueDebugState_.displayModes,
+                          [currentMode](
+                              const GuiRenderTechniqueDisplayMode &mode) {
+                            return mode.value == currentMode;
+                          });
+  if (!currentModeSupported) {
+    gBufferViewMode_ = static_cast<GBufferViewMode>(
+        renderTechniqueDebugState_.displayModes.front().value);
+  }
+}
+
+const GuiRenderTechniqueDebugState &
+GuiManager::renderTechniqueDebugState() const {
+  return renderTechniqueDebugState_;
+}
+
+std::optional<ModelLoadRequest> GuiManager::consumeModelLoadRequest() {
+  std::optional<ModelLoadRequest> request = std::move(pendingModelLoadRequest_);
+  pendingModelLoadRequest_.reset();
+  return request;
+}
+
 void GuiManager::startFrame() {
   if (!initialized_)
     return;
+  endFrame();
   ImGui_ImplVulkan_NewFrame();
   ImGui_ImplGlfw_NewFrame();
   ImGui::NewFrame();
+  imguiFrameOpen_ = true;
+}
+
+void GuiManager::endFrame() {
+  if (!initialized_ || !imguiFrameOpen_)
+    return;
+  ImGui::EndFrame();
+  imguiFrameOpen_ = false;
 }
 
 void GuiManager::render(VkCommandBuffer commandBuffer) {
-  if (!initialized_)
+  if (!initialized_ || !imguiFrameOpen_)
     return;
   ImGui::Render();
+  imguiFrameOpen_ = false;
   ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
 }
 
@@ -1826,7 +2058,14 @@ void GuiManager::drawViewportInteractionControls(
   if (!initialized_)
     return;
 
-  ImGui::Begin("Viewport");
+  static constexpr float kViewportControlsMinWidth = 260.0f;
+  static constexpr float kViewportControlsMaxWidth = 420.0f;
+  const ImGuiWindowFlags viewportWindowFlags =
+      ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings;
+  ImGui::SetNextWindowSizeConstraints(
+      ImVec2(kViewportControlsMinWidth, 0.0f),
+      ImVec2(kViewportControlsMaxWidth, std::numeric_limits<float>::max()));
+  ImGui::Begin("Viewport", nullptr, viewportWindowFlags);
   ImGui::Text("Tool");
   if (ToolButton("Select", ViewportTool::Select, state.tool,
                  "Click visible geometry to select it.") &&
@@ -1875,20 +2114,16 @@ void GuiManager::drawViewportInteractionControls(
       setNavigationStyle) {
     setNavigationStyle(static_cast<ViewportNavigationStyle>(navigationStyle));
   }
-  if (ImGui::IsItemHovered()) {
-    ImGui::SetTooltip(state.navigationStyle == ViewportNavigationStyle::Revit
-                          ? "Revit: middle drag pans, Shift+middle orbits."
-                          : "Blender: middle drag orbits, Shift+middle pans.");
-  }
+  ShowItemTooltip(state.navigationStyle == ViewportNavigationStyle::Revit
+                      ? "Revit: middle drag pans, Shift+middle orbits."
+                      : "Blender: middle drag orbits, Shift+middle pans.");
 
   bool transformSnapEnabled = state.transformSnapEnabled;
   if (ImGui::Checkbox("Snap", &transformSnapEnabled) &&
       setTransformSnapEnabled) {
     setTransformSnapEnabled(transformSnapEnabled);
   }
-  if (ImGui::IsItemHovered()) {
-    ImGui::SetTooltip("Snap Move to 0.25, Rotate to 15 deg, Scale to 0.1.");
-  }
+  ShowItemTooltip("Snap Move to 0.25, Rotate to 15 deg, Scale to 0.1.");
 
   ImGui::Text("Gesture: %s", ViewportGestureLabel(state.gesture));
   ImGui::Text("Constraint: %s", TransformAxisLabel(state.transformAxis));
@@ -2069,7 +2304,7 @@ void GuiManager::drawViewportNavigationOverlay(
               ImGuiButtonFlags_MouseButtonMiddle |
               ImGuiButtonFlags_MouseButtonRight);
       if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
-        ImGui::SetTooltip("Drag to rotate. Middle/right drag to pan.");
+        ShowWrappedTooltip("Drag to rotate. Middle/right drag to pan.");
       }
       if ((ImGui::IsItemHovered() || ImGui::IsItemActive()) &&
           ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -2113,13 +2348,19 @@ void GuiManager::drawViewportNavigationOverlay(
     drawList->AddCircle(center, 66.0f, IM_COL32(236, 240, 245, 116), 72, 1.7f);
     drawList->AddCircle(center, 4.0f, IM_COL32(238, 242, 247, 210), 16, 1.5f);
 
-    ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(24, 27, 32, 228));
+    const ImVec2 kViewportNavOptionsButtonSize{28.0f, 24.0f};
+    ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(24, 27, 32, 168));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(44, 49, 58, 242));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(56, 64, 76, 255));
-    ImGui::SetCursorScreenPos(ImVec2(origin.x + 38.0f, origin.y + 8.0f));
-    if (ImGui::Button("Options v", ImVec2(96.0f, 30.0f))) {
+    ImGui::SetCursorScreenPos(
+        ImVec2(origin.x + widgetSize.x - kViewportNavOptionsButtonSize.x -
+                   8.0f,
+               origin.y + 8.0f));
+    if (ImGui::Button("...##viewport-nav-options-button",
+                      kViewportNavOptionsButtonSize)) {
       ImGui::OpenPopup("##viewport-nav-options");
     }
+    ShowItemTooltip("Navigation options");
     if (ImGui::BeginPopup("##viewport-nav-options")) {
       ImGui::TextDisabled("%s", orthographic ? "Orthographic" : "Perspective");
       if (ImGui::Selectable(orthographic ? "Perspective" : "Orthographic") &&
@@ -2239,9 +2480,7 @@ void GuiManager::drawViewportNavigationOverlay(
       ImGui::InvisibleButton(endpoint.id,
                              ImVec2(hitRadius * 2.0f, hitRadius * 2.0f));
       endpoint.hovered = ImGui::IsItemHovered();
-      if (endpoint.hovered) {
-        ImGui::SetTooltip("%s", endpoint.tooltip);
-      }
+      ShowItemTooltip(endpoint.tooltip);
       if (ImGui::IsItemClicked() && setViewPreset) {
         setViewPreset(endpoint.preset);
       }
@@ -2276,8 +2515,6 @@ void GuiManager::drawViewportNavigationOverlay(
 
 void GuiManager::drawSceneControls(
     const container::scene::SceneGraph &sceneGraph,
-    const std::function<bool(const std::string &, float)> &reloadModel,
-    const std::function<bool(float)> &reloadDefault,
     const std::function<void(ScenePrimitiveKind)> &addScenePrimitive,
     const TransformControls &cameraTransform,
     const std::function<void(const TransformControls &)> &applyCameraTransform,
@@ -2306,21 +2543,6 @@ void GuiManager::drawSceneControls(
   if (!initialized_)
     return;
 
-  static constexpr const char *kGBufferViewLabels[] = {"Lit",
-                                                       "Albedo",
-                                                       "Normals",
-                                                       "Material",
-                                                       "Depth",
-                                                       "Emissive",
-                                                       "Transparency",
-                                                       "Revealage",
-                                                       "Overview",
-                                                       "Surface Normals",
-                                                       "Object Normals",
-                                                       "Shadow Cascades",
-                                                       "Tile Light Heat Map",
-                                                       "Shadow Texel Density"};
-
   ImGui::Begin("Scene Controls");
   if (ImGui::Combo("Import scale", &importScaleIndex_,
                    kImportScaleLabels.data(),
@@ -2347,14 +2569,11 @@ void GuiManager::drawSceneControls(
         if (ImGui::Selectable(option.label.c_str(), selected)) {
           selectedSampleModelIndex_ = i;
           modelPathInput_ = option.path;
-          const bool success = reloadModel(modelPathInput_, importScale_);
-          statusMessage_ = success ? "Loaded model: " + option.label + " @ " +
-                                         ImportScaleLabel(importScale_)
-                                   : "Failed to load model: " + option.label;
+          queueModelLoadRequest(modelPathInput_, importScale_, option.label);
+          statusMessage_ = "Model load requested: " + option.label + " @ " +
+                           ImportScaleLabel(importScale_);
         }
-        if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("%s", option.path.c_str());
-        }
+        ShowItemTooltip(option.path);
         if (selected) {
           ImGui::SetItemDefaultFocus();
         }
@@ -2368,22 +2587,20 @@ void GuiManager::drawSceneControls(
   ImGui::InputText("Model path", &modelPathInput_);
 
   if (ImGui::Button("Load model")) {
-    const bool success = reloadModel(modelPathInput_, importScale_);
     selectedSampleModelIndex_ = sampleModelIndexForPath(modelPathInput_);
-    statusMessage_ = success ? "Loaded model: " + modelPathInput_ + " @ " +
-                                   ImportScaleLabel(importScale_)
-                             : "Failed to load model: " + modelPathInput_;
+    queueModelLoadRequest(modelPathInput_, importScale_, modelPathInput_);
+    statusMessage_ = "Model load requested: " + modelPathInput_ + " @ " +
+                     ImportScaleLabel(importScale_);
   }
 
   ImGui::SameLine();
 
   if (ImGui::Button("Reload Default")) {
-    const bool success = reloadDefault(importScale_);
-    statusMessage_ =
-        success ? "Loaded default model @ " + ImportScaleLabel(importScale_)
-                : "Failed to load default model";
     modelPathInput_ = defaultModelPath_;
     selectedSampleModelIndex_ = sampleModelIndexForPath(modelPathInput_);
+    queueModelLoadRequest(modelPathInput_, importScale_, "default model");
+    statusMessage_ = "Model load requested: default model @ " +
+                     ImportScaleLabel(importScale_);
   }
 
   if (ImGui::Button("Add Primitive")) {
@@ -2416,10 +2633,67 @@ void GuiManager::drawSceneControls(
   }
 
   ImGui::Separator();
-  int gBufferView = static_cast<int>(gBufferViewMode_);
-  if (ImGui::Combo("Display", &gBufferView, kGBufferViewLabels,
-                   IM_ARRAYSIZE(kGBufferViewLabels))) {
-    gBufferViewMode_ = static_cast<GBufferViewMode>(gBufferView);
+  if (!renderEngineOptions_.empty()) {
+    std::string renderEnginePreview{
+        container::renderer::renderTechniqueDisplayName(activeRenderEngine_)};
+    for (const RenderEngineOption &option : renderEngineOptions_) {
+      if (option.id == activeRenderEngine_) {
+        renderEnginePreview = option.label;
+        break;
+      }
+    }
+    if (ImGui::BeginCombo("Rendering Engine", renderEnginePreview.c_str())) {
+      for (const RenderEngineOption &option : renderEngineOptions_) {
+        const bool selected = option.id == activeRenderEngine_;
+        ImGui::BeginDisabled(!option.available);
+        if (ImGui::Selectable(option.label.c_str(), selected) &&
+            option.available && !selected) {
+          pendingRenderEngineChange_ = option.id;
+          statusMessage_ = "Rendering engine change pending: " + option.label;
+        }
+        ImGui::EndDisabled();
+        if (!option.available && !option.unavailableReason.empty()) {
+          ShowItemTooltip(option.unavailableReason,
+                          ImGuiHoveredFlags_AllowWhenDisabled);
+        }
+        if (selected) {
+          ImGui::SetItemDefaultFocus();
+        }
+      }
+      ImGui::EndCombo();
+    }
+  }
+
+  std::vector<GBufferViewMode> displayModeValues;
+  std::vector<const char *> displayModeLabels;
+  if (!renderTechniqueDebugState_.displayModes.empty()) {
+    displayModeValues.reserve(renderTechniqueDebugState_.displayModes.size());
+    displayModeLabels.reserve(renderTechniqueDebugState_.displayModes.size());
+    for (const GuiRenderTechniqueDisplayMode &mode :
+         renderTechniqueDebugState_.displayModes) {
+      displayModeValues.push_back(static_cast<GBufferViewMode>(mode.value));
+      displayModeLabels.push_back(mode.label.c_str());
+    }
+  } else {
+    displayModeValues.reserve(kDisplayModeDefinitions.size());
+    displayModeLabels.reserve(kDisplayModeDefinitions.size());
+    for (const DisplayModeDefinition &mode : kDisplayModeDefinitions) {
+      displayModeValues.push_back(mode.mode);
+      displayModeLabels.push_back(mode.label);
+    }
+  }
+  int displayModeIndex = 0;
+  for (size_t i = 0; i < displayModeValues.size(); ++i) {
+    if (displayModeValues[i] == gBufferViewMode_) {
+      displayModeIndex = static_cast<int>(i);
+      break;
+    }
+  }
+  if (!displayModeLabels.empty() &&
+      ImGui::Combo("Display", &displayModeIndex, displayModeLabels.data(),
+                   static_cast<int>(displayModeLabels.size()))) {
+    gBufferViewMode_ =
+        displayModeValues[static_cast<size_t>(displayModeIndex)];
   }
   static constexpr const char *kSceneViewportModeLabels[] = {"Editor",
                                                              "Render Preview"};
@@ -2627,7 +2901,7 @@ void GuiManager::drawSceneControls(
                   bimInspection.uniqueLoadBearingCount);
       ImGui::Text("Statuses: %zu", bimInspection.uniqueStatusCount);
       if (!bimInspection.modelPath.empty()) {
-        ImGui::TextWrapped("Source: %s", bimInspection.modelPath.c_str());
+        TextWrappedPathValue("Source", bimInspection.modelPath);
       }
       if (bimInspection.hasSourceUnits) {
         ImGui::TextWrapped("Source units: %s",
@@ -2688,7 +2962,7 @@ void GuiManager::drawSceneControls(
           if (value.empty()) {
             ImGui::TextDisabled("not exposed");
           } else {
-            ImGui::TextWrapped("%s", value.c_str());
+            TextWrappedPathValue("", value);
           }
         };
         auto drawMetadataFloatRow = [](const char *label, bool present,
@@ -2799,8 +3073,7 @@ void GuiManager::drawSceneControls(
         } else {
           ImGui::Text("Baseline elements: %zu", bimCompareBaseline_.size());
           if (!bimCompareBaselineModelPath_.empty()) {
-            ImGui::TextWrapped("Baseline model: %s",
-                               bimCompareBaselineModelPath_.c_str());
+            TextWrappedPathValue("Baseline model", bimCompareBaselineModelPath_);
           }
           if (bimCompareChanges_.empty()) {
             ImGui::TextDisabled("No detected changes");
@@ -4501,14 +4774,12 @@ void GuiManager::drawSceneControls(
             : bimInspection.optimizedModelMetadataCacheWritten ? "written"
                                                                : "not written");
         if (!bimInspection.optimizedModelMetadataCacheKey.empty()) {
-          ImGui::TextWrapped(
-              "Cache key: %s",
-              bimInspection.optimizedModelMetadataCacheKey.c_str());
+          TextWrappedPathValue("Cache key",
+                               bimInspection.optimizedModelMetadataCacheKey);
         }
         if (!bimInspection.optimizedModelMetadataCachePath.empty()) {
-          ImGui::TextWrapped(
-              "Cache path: %s",
-              bimInspection.optimizedModelMetadataCachePath.c_str());
+          TextWrappedPathValue("Cache path",
+                               bimInspection.optimizedModelMetadataCachePath);
         }
         ImGui::Text("Floor plan draws: %zu", bimInspection.floorPlanDrawCount);
         ImGui::Separator();
@@ -5017,18 +5288,12 @@ void GuiManager::drawSceneControls(
                                     ImGuiSelectableFlags_SpanAllColumns)) {
                 selectedBimMeasurementAnnotationIndex_ = static_cast<int>(i);
               }
-              if (ImGui::IsItemHovered()) {
-                if (annotation.hasPointC) {
-                  ImGui::SetTooltip("%s to %s to %s",
-                                    annotation.pointA.label.c_str(),
-                                    annotation.pointB.label.c_str(),
-                                    annotation.pointC.label.c_str());
-                } else {
-                  ImGui::SetTooltip("%s to %s",
-                                    annotation.pointA.label.c_str(),
-                                    annotation.pointB.label.c_str());
-                }
+              std::string annotationTooltip =
+                  annotation.pointA.label + " to " + annotation.pointB.label;
+              if (annotation.hasPointC) {
+                annotationTooltip += " to " + annotation.pointC.label;
               }
+              ShowItemTooltip(annotationTooltip);
               ImGui::TableNextColumn();
               ImGui::Text("%.3f", annotation.distance);
               ImGui::TableNextColumn();
@@ -5363,7 +5628,7 @@ void GuiManager::drawSceneControls(
                                entry.priority.empty() ? "not specified"
                                                       : entry.priority.c_str());
             if (!entry.path.empty()) {
-              ImGui::TextWrapped("Topic path: %s", entry.path.c_str());
+              TextWrappedPathValue("Topic path", entry.path);
             }
             if (!entry.hasSnapshot) {
               ImGui::BeginDisabled();
@@ -5438,8 +5703,8 @@ void GuiManager::drawSceneControls(
           if (modelMismatch) {
             ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
                                "Snapshot model differs");
-            ImGui::TextWrapped("Snapshot source: %s",
-                               selectedSnapshot.bimModelPath.c_str());
+            TextWrappedPathValue("Snapshot source",
+                                 selectedSnapshot.bimModelPath);
           }
           ImGui::Text("Camera: %.2f, %.2f, %.2f",
                       selectedSnapshot.camera.position.x,
@@ -5614,6 +5879,30 @@ void GuiManager::drawSceneControls(
                         cullStatsFrustum_ - cullStatsOcclusion_);
   }
 
+  if (!renderTechniqueDebugState_.panels.empty()) {
+    ImGui::Separator();
+    const std::string title =
+        renderTechniqueDebugState_.displayName.empty()
+            ? std::string{"Render Technique"}
+            : "Render Technique: " + renderTechniqueDebugState_.displayName;
+    if (ImGui::TreeNode(title.c_str())) {
+      for (const GuiRenderTechniqueDebugPanel &panel :
+           renderTechniqueDebugState_.panels) {
+        const char *panelTitle =
+            panel.title.empty() ? panel.id.c_str() : panel.title.c_str();
+        if (ImGui::TreeNode(panelTitle)) {
+          for (const GuiRenderTechniqueDebugControl &control :
+               panel.controls) {
+            ImGui::BulletText("%s", control.label.c_str());
+            ShowItemTooltip(control.kind);
+          }
+          ImGui::TreePop();
+        }
+      }
+      ImGui::TreePop();
+    }
+  }
+
   if (!renderPassToggles_.empty()) {
     ImGui::Separator();
     if (ImGui::TreeNode("Render Passes")) {
@@ -5648,11 +5937,9 @@ void GuiManager::drawSceneControls(
       drawRenderPassSection("Lighting");
       drawRenderPassSection("Post-process");
 
-      if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip(
-            "Protected passes are shown as locked. Optional passes may be "
-            "auto-disabled when a dependency is off.");
-      }
+      ShowItemTooltip(
+          "Protected passes are shown as locked. Optional passes may be "
+          "auto-disabled when a dependency is off.");
       ImGui::TreePop();
     }
   }
@@ -5841,12 +6128,11 @@ void GuiManager::drawSceneControls(
         if (ImGui::Selectable(light.label.c_str(), selected)) {
           selectEditableLight(light.id);
         }
-        if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip(
-              "%s %s",
-              container::renderer::editableLightSourceLabel(light.source),
-              container::renderer::editableLightTypeLabel(light.type));
-        }
+        const std::string lightTooltip =
+            std::string(container::renderer::editableLightSourceLabel(
+                light.source)) +
+            " " + container::renderer::editableLightTypeLabel(light.type);
+        ShowItemTooltip(lightTooltip);
         if (selected) {
           ImGui::SetItemDefaultFocus();
         }
@@ -5989,13 +6275,15 @@ void GuiManager::drawSceneControls(
   }
 
   if (!statusMessage_.empty()) {
-    ImGui::TextWrapped("%s", statusMessage_.c_str());
+    const std::string statusText = WrapLongPathForImGui(statusMessage_);
+    ImGui::TextWrapped("%s", statusText.c_str());
   }
 
   if (!environmentStatus_.empty()) {
     ImGui::Separator();
     ImGui::Text("Environment");
-    ImGui::TextWrapped("%s", environmentStatus_.c_str());
+    const std::string environmentText = WrapLongPathForImGui(environmentStatus_);
+    ImGui::TextWrapped("%s", environmentText.c_str());
   }
 
   ImGui::End();

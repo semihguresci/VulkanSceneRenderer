@@ -41,6 +41,7 @@ constexpr float kLocalShadowNormalBiasMinTexels = 0.35f;
 constexpr float kLocalShadowNormalBiasMaxTexels = 1.0f;
 constexpr float kLocalShadowSoftFilterRadiusMultiplier = 28.0f;
 constexpr float kLocalShadowPointSourceRadiusFraction = 0.025f;
+constexpr float kDirectionalCascadeGuardTexels = 32.0f;
 
 [[nodiscard]] bool hasFiniteLocalShadowRange(float range) {
   return std::isfinite(range) && range > 0.0f;
@@ -566,7 +567,9 @@ ShadowManager::CascadeViewProjData ShadowManager::computeCascadeViewProj(
   const glm::vec3 up = (std::abs(glm::dot(lightDir, glm::vec3(0, 1, 0))) > 0.99f)
       ? glm::vec3(0, 0, 1)
       : glm::vec3(0, 1, 0);
-  const float cascadeExtent = cascadeRadius * 2.0f;
+  const float projectionRadius = expandShadowCascadeRadiusForFilterGuard(
+      cascadeRadius, kShadowMapResolution, kDirectionalCascadeGuardTexels);
+  const float cascadeExtent = projectionRadius * 2.0f;
   const float texelSize =
       cascadeExtent / static_cast<float>(kShadowMapResolution);
 
@@ -594,9 +597,9 @@ ShadowManager::CascadeViewProjData ShadowManager::computeCascadeViewProj(
 
   auto receiverBoundsForView = [&](const glm::mat4& lightView) {
     ShadowCasterSceneBounds bounds{};
-    bounds.minBounds = {-cascadeRadius, -cascadeRadius,
+    bounds.minBounds = {-projectionRadius, -projectionRadius,
                         std::numeric_limits<float>::max()};
-    bounds.maxBounds = {cascadeRadius, cascadeRadius,
+    bounds.maxBounds = {projectionRadius, projectionRadius,
                         -std::numeric_limits<float>::max()};
     for (const auto& corner : sliceCorners) {
       const glm::vec3 lightSpaceCorner =
@@ -612,9 +615,9 @@ ShadowManager::CascadeViewProjData ShadowManager::computeCascadeViewProj(
     if (!validCasterSceneBounds(casterSceneBounds)) {
       return false;
     }
-    outBounds.minBounds = {-cascadeRadius, -cascadeRadius,
+    outBounds.minBounds = {-projectionRadius, -projectionRadius,
                            std::numeric_limits<float>::max()};
-    outBounds.maxBounds = {cascadeRadius, cascadeRadius,
+    outBounds.maxBounds = {projectionRadius, projectionRadius,
                            -std::numeric_limits<float>::max()};
     for (const auto& corner : boundsCorners(*casterSceneBounds)) {
       const glm::vec3 lightSpaceCorner =
@@ -644,7 +647,7 @@ ShadowManager::CascadeViewProjData ShadowManager::computeCascadeViewProj(
     inputs.hasFiniteCasterBounds = hasFiniteCasterBounds;
     inputs.texelSize = texelSize;
     inputs.lightDistance = lightDistance;
-    inputs.fallbackCasterDepth = cascadeRadius * 2.0f;
+    inputs.fallbackCasterDepth = projectionRadius * 2.0f;
     return buildShadowCascadeDepthPlan(inputs);
   };
 
@@ -667,7 +670,7 @@ ShadowManager::CascadeViewProjData ShadowManager::computeCascadeViewProj(
   }
 
   const glm::mat4 lightProj = container::math::orthoRH_ReverseZ(
-      -cascadeRadius, cascadeRadius, -cascadeRadius, cascadeRadius,
+      -projectionRadius, projectionRadius, -projectionRadius, projectionRadius,
       depthPlan.nearPlane, depthPlan.farPlane);
 
   CascadeViewProjData result{};
@@ -678,7 +681,7 @@ ShadowManager::CascadeViewProjData ShadowManager::computeCascadeViewProj(
   result.cullBounds.casterMinBounds = depthPlan.casterMinBounds;
   result.cullBounds.casterMaxBounds = depthPlan.casterMaxBounds;
   result.texelSize = texelSize;
-  result.worldRadius = cascadeRadius;
+  result.worldRadius = projectionRadius;
   result.depthRange = depthPlan.depthRange;
   return result;
 }

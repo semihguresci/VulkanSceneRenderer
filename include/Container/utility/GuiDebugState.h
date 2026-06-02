@@ -16,6 +16,31 @@ struct RenderPassToggle {
   std::string dependencyNote{};
 };
 
+struct GuiRenderTechniqueDisplayMode {
+  std::string id{};
+  std::string label{};
+  uint32_t value{0};
+};
+
+struct GuiRenderTechniqueDebugControl {
+  std::string id{};
+  std::string label{};
+  std::string kind{};
+};
+
+struct GuiRenderTechniqueDebugPanel {
+  std::string id{};
+  std::string title{};
+  std::vector<GuiRenderTechniqueDebugControl> controls{};
+};
+
+struct GuiRenderTechniqueDebugState {
+  std::string techniqueName{};
+  std::string displayName{};
+  std::vector<GuiRenderTechniqueDisplayMode> displayModes{};
+  std::vector<GuiRenderTechniqueDebugPanel> panels{};
+};
+
 enum class GuiRendererTelemetryPhase : uint8_t {
   Frame,
   WaitForFrame,

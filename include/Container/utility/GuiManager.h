@@ -30,6 +30,7 @@ namespace container::renderer {
 enum class BimDisciplinePreset : uint32_t;
 enum class BimSemanticColorMode : uint32_t;
 enum class BimSnapKind : uint32_t;
+enum class RenderTechniqueId;
 enum class ScenePrimitiveKind : uint32_t;
 struct BimElementProperty;
 class BimRelationshipGraph;
@@ -111,6 +112,19 @@ enum class CameraViewPreset : uint32_t {
   Left = 3,
   Top = 4,
   Bottom = 5,
+};
+
+struct RenderEngineOption {
+  container::renderer::RenderTechniqueId id{};
+  std::string label{};
+  bool available{true};
+  std::string unavailableReason{};
+};
+
+struct ModelLoadRequest {
+  std::string path{};
+  float importScale{1.0f};
+  std::string label{};
 };
 
 struct ViewportInteractionState {
@@ -478,8 +492,20 @@ public:
   void setMsaaSampleState(std::span<const uint32_t> options,
                           uint32_t activeSamples);
   [[nodiscard]] std::optional<uint32_t> consumeMsaaSampleChange();
+  void setRenderEngineOptions(
+      std::vector<RenderEngineOption> options,
+      container::renderer::RenderTechniqueId active);
+  [[nodiscard]] std::optional<container::renderer::RenderTechniqueId>
+  consumeRenderEngineChange();
+  [[nodiscard]] container::renderer::RenderTechniqueId activeRenderEngine()
+      const;
+  void setRenderTechniqueDebugState(GuiRenderTechniqueDebugState state);
+  [[nodiscard]] const GuiRenderTechniqueDebugState &
+  renderTechniqueDebugState() const;
+  [[nodiscard]] std::optional<ModelLoadRequest> consumeModelLoadRequest();
 
   void startFrame();
+  void endFrame();
   void render(VkCommandBuffer commandBuffer);
 
   void drawViewportInteractionControls(
@@ -499,8 +525,6 @@ public:
 
   void drawSceneControls(
       const container::scene::SceneGraph &sceneGraph,
-      const std::function<bool(const std::string &, float)> &reloadModel,
-      const std::function<bool(float)> &reloadDefault,
       const std::function<void(container::renderer::ScenePrimitiveKind)>
           &addScenePrimitive,
       const TransformControls &cameraTransform,
@@ -744,10 +768,13 @@ private:
     ViewpointSnapshotState snapshot{};
   };
 
+  void queueModelLoadRequest(std::string path, float importScale,
+                             std::string label);
   void applyBimElevationDisplayIntent();
 
   VkDescriptorPool descriptorPool_{VK_NULL_HANDLE};
   bool initialized_{false};
+  bool imguiFrameOpen_{false};
   bool showGeometryOverlay_{false};
   bool showLightGizmos_{true};
   bool showNormalDiagCube_{false};
@@ -769,6 +796,12 @@ private:
   std::vector<uint32_t> msaaSampleOptions_{1u};
   uint32_t msaaSamples_{1u};
   std::optional<uint32_t> pendingMsaaSamples_{};
+  std::vector<RenderEngineOption> renderEngineOptions_{};
+  container::renderer::RenderTechniqueId activeRenderEngine_{};
+  std::optional<container::renderer::RenderTechniqueId>
+      pendingRenderEngineChange_{};
+  std::optional<ModelLoadRequest> pendingModelLoadRequest_{};
+  GuiRenderTechniqueDebugState renderTechniqueDebugState_{};
   uint32_t cullStatsTotal_{0};
   uint32_t cullStatsFrustum_{0};
   uint32_t cullStatsOcclusion_{0};

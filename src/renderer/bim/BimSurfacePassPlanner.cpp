@@ -21,6 +21,7 @@ drawKindForSurfacePass(BimSurfacePassKind kind) {
   switch (kind) {
   case BimSurfacePassKind::DepthPrepass:
   case BimSurfacePassKind::GBuffer:
+  case BimSurfacePassKind::OpaqueLighting:
     return BimSurfaceDrawKind::Opaque;
   case BimSurfacePassKind::TransparentPick:
   case BimSurfacePassKind::TransparentLighting:
@@ -38,6 +39,7 @@ drawKindForSurfacePass(BimSurfacePassKind kind) {
 
 [[nodiscard]] bool surfacePassWritesSemanticColor(BimSurfacePassKind kind) {
   return kind == BimSurfacePassKind::GBuffer ||
+         kind == BimSurfacePassKind::OpaqueLighting ||
          kind == BimSurfacePassKind::TransparentLighting;
 }
 

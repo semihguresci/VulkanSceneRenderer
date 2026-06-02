@@ -17,8 +17,8 @@ float4 SamplePbrTexture(uint textureIndex, float2 texCoord, float4 fallback)
     uint samplerIndex = NonUniformResourceIndex(
         min(uTextureMetadata[texIndex].samplerIndex,
             MATERIAL_SAMPLER_DESCRIPTOR_COUNT - 1u));
-    return materialTextures[texIndex].SampleLevel(
-        materialSamplers[samplerIndex], texCoord, 0.0);
+    return materialTextures[texIndex].Sample(
+        materialSamplers[samplerIndex], texCoord);
 }
 
 float4 SamplePbrTextureLevel(uint textureIndex, float2 texCoord, float lod,

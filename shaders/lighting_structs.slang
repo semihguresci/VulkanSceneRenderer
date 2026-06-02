@@ -107,7 +107,7 @@ struct LightingBuffer
     uint areaLightCount;
     uint localShadowEnabled;
     float bounceIntensity;
-    uint padding0;
+    uint localContactVisibility;
     uint padding1;
     uint padding2;
 };

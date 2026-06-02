@@ -51,15 +51,19 @@ static const float DIRECTIONAL_CONTACT_SHADOW_RADIANCE_THRESHOLD = 1.0e-4;
 float3 ComputeDiffuseAmbientFloor(float3 albedo,
                                   float occlusion,
                                   float ssao,
-                                  float environmentIntensity)
+                                  float environmentIntensity,
+                                  float bounceIntensity)
 {
-    float disabledEnvironment =
-        saturate(1.0 - max(DeferredFiniteOr(environmentIntensity, 0.0), 0.0));
+    float environmentFloorScale =
+        saturate(max(DeferredFiniteOr(environmentIntensity, 0.0), 0.0));
+    float bounceFloorScale =
+        saturate(max(DeferredFiniteOr(bounceIntensity, 0.0), 0.0));
+    float ambientFloorScale = max(environmentFloorScale, bounceFloorScale);
     float diffuseOcclusion =
         saturate(DeferredFiniteOr(occlusion, 1.0)) *
         lerp(1.0, saturate(DeferredFiniteOr(ssao, 1.0)), 0.65);
     return max(DeferredFinite3Or(albedo, 0.0.xxx), 0.0.xxx) *
-        (kDiffuseAmbientFloor * disabledEnvironment * diffuseOcclusion);
+        (kDiffuseAmbientFloor * ambientFloorScale * diffuseOcclusion);
 }
 
 bool DeferredValidSceneDepth(float depth)
@@ -175,9 +179,9 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
         float3 radiance = EvaluateAreaLightSampleRadiance(
             light, frame, worldPosition, sampleIndex, L);
         float lightVisibility = areaShadowVisibility;
-        radiance *= lightVisibility;
+        float3 directRadiance = radiance * lightVisibility;
         directLighting += EvaluateDeferredLayeredDirectLight(
-            albedo, F0, metallic, roughness, normal, V, L, radiance,
+            albedo, F0, metallic, roughness, normal, V, L, directRadiance,
             layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,
             layerTerms.sheenColor, layerTerms.sheenRoughness);
         directLighting += EvaluateDiffuseBounceLight(
@@ -190,7 +194,7 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
                 thinSurface ? lerp(alpha, 0.0, transmissionWeight) : 0.0;
             float transmissionScale = thinSurface ? 1.0 : transmissionWeight;
             directLighting += EvaluateThinSurfaceTransmission(
-                albedo, normal, V, L, radiance, transmissionAlpha, false) *
+                albedo, normal, V, L, directRadiance, transmissionAlpha, false) *
                 transmissionScale;
         }
     }
@@ -395,7 +399,7 @@ float4 fragMain(VSOutput input) : SV_Target0
     specularOcclusion = lerp(1.0, specularOcclusion, saturate(1.0 - roughness));
     float3 ambientLighting = kD_ibl * diffuseIBL * diffuseAO + specularIBL * specularOcclusion;
     ambientLighting += ComputeDiffuseAmbientFloor(
-        albedo.rgb, occlusion, ssao, environmentIntensity);
+        albedo.rgb, occlusion, ssao, environmentIntensity, bounceIntensity);
     float3 finalColor =
         DeferredFinite3Or(ambientLighting + directLighting + emissive, 0.0.xxx);
 

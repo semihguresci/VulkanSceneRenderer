@@ -140,6 +140,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     } else if (arg == "--display-mode" || arg == "--render-mode") {
       config.displayModeOverride =
           std::string(requireValue(argc, argv, i, arg));
+    } else if (arg == "--render-technique") {
+      config.renderTechnique = std::string(requireValue(argc, argv, i, arg));
     } else if (arg == "--no-bloom") {
       config.bloomEnabled = false;
       config.hasBloomEnabledOverride = true;

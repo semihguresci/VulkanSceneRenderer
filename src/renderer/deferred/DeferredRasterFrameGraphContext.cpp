@@ -51,19 +51,31 @@ bool DeferredRasterFrameGraphContext::isPassActive(RenderPassId id) const {
   return services_.graph->isPassActive(id);
 }
 
+const OitManager *DeferredRasterFrameGraphContext::oitManager() const {
+  return services_.oitManager;
+}
+
 FrameRecordLifecycleHooks
 DeferredRasterFrameGraphContext::lifecycleHooks() const {
   FrameRecordLifecycleHooks hooks{};
   hooks.beforePrepareFrame = [this](const FrameRecordParams &p) {
-    beforePrepareFrame(p);
+    if (p.runtime.activeTechnique == RenderTechniqueId::DeferredRaster) {
+      beforePrepareFrame(p);
+    }
   };
   hooks.afterPrepareFrame = [this](const FrameRecordParams &p,
                                    const RenderGraph &graph) {
-    afterPrepareFrame(p, graph);
+    if (p.runtime.activeTechnique == RenderTechniqueId::DeferredRaster ||
+        p.runtime.activeTechnique == RenderTechniqueId::ForwardRaster) {
+      afterPrepareFrame(p, graph);
+    }
   };
   hooks.afterCommandBufferBegin = [this](VkCommandBuffer cmd,
                                          const FrameRecordParams &p) {
-    afterCommandBufferBegin(cmd, p);
+    if (p.runtime.activeTechnique == RenderTechniqueId::DeferredRaster ||
+        p.runtime.activeTechnique == RenderTechniqueId::ForwardRaster) {
+      afterCommandBufferBegin(cmd, p);
+    }
   };
   hooks.afterGraphExecution = [this](VkCommandBuffer cmd,
                                      const FrameRecordParams &p) {
@@ -138,7 +150,14 @@ void DeferredRasterFrameGraphContext::recordShadowPass(
     VkCommandBuffer cmd, const FrameRecordParams &p,
     uint32_t cascadeIndex) const {
   shadowCascadeFramePassRecorder_.recordCascadePass(
-      cmd, p, shadowCascadeFramePassContext(), cascadeIndex);
+      cmd, p, shadowCascadeFramePassContext(p), cascadeIndex);
+}
+
+void DeferredRasterFrameGraphContext::recordForwardShadowPass(
+    VkCommandBuffer cmd, const FrameRecordParams &p,
+    uint32_t cascadeIndex) const {
+  shadowCascadeFramePassRecorder_.recordCascadePass(
+      cmd, p, forwardShadowCascadeFramePassContext(), cascadeIndex);
 }
 
 void DeferredRasterFrameGraphContext::renderGui(VkCommandBuffer cmd) const {
@@ -151,10 +170,29 @@ bool DeferredRasterFrameGraphContext::canRecordShadowPass(
   return shadowCascadeFramePassRecorder_.canRecordCascade(p, cascadeIndex);
 }
 
+bool DeferredRasterFrameGraphContext::canRecordForwardShadowPass(
+    const FrameRecordParams &p, uint32_t cascadeIndex) const {
+  return shadowCascadeFramePassRecorder_.canRecordCascade(p, cascadeIndex);
+}
+
 ShadowCascadeFramePassContext
 DeferredRasterFrameGraphContext::shadowCascadeFramePassContext() const {
   return {.shadowAtlasVisible = displayModeRecordsShadowAtlas(displayMode()),
           .isPassActive = [this](RenderPassId id) { return isPassActive(id); }};
+}
+
+ShadowCascadeFramePassContext
+DeferredRasterFrameGraphContext::forwardShadowCascadeFramePassContext() const {
+  return {.shadowAtlasVisible = true,
+          .isPassActive = [this](RenderPassId id) { return isPassActive(id); }};
+}
+
+ShadowCascadeFramePassContext
+DeferredRasterFrameGraphContext::shadowCascadeFramePassContext(
+    const FrameRecordParams &p) const {
+  return p.runtime.activeTechnique == RenderTechniqueId::ForwardRaster
+             ? forwardShadowCascadeFramePassContext()
+             : shadowCascadeFramePassContext();
 }
 
 void DeferredRasterFrameGraphContext::beforePrepareFrame(
@@ -167,7 +205,7 @@ void DeferredRasterFrameGraphContext::beforePrepareFrame(
 void DeferredRasterFrameGraphContext::afterPrepareFrame(
     const FrameRecordParams &p, const RenderGraph &) const {
   shadowCascadeFramePassRecorder_.prepareFrame(p,
-                                               shadowCascadeFramePassContext());
+                                               shadowCascadeFramePassContext(p));
   prepareBimFrameGpuVisibility(p.services.bimManager, p.bim);
 }
 

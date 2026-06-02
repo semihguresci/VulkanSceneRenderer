@@ -7,9 +7,11 @@
 #include "Container/utility/SwapChainManager.h"
 #include "Container/utility/VulkanDevice.h"
 
+#include <algorithm>
 #include <array>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -19,6 +21,29 @@ namespace {
 
 constexpr RenderTechniqueId kDeferredRasterTechnique =
     RenderTechniqueId::DeferredRaster;
+constexpr RenderTechniqueId kForwardRasterTechnique =
+    RenderTechniqueId::ForwardRaster;
+
+constexpr std::array<std::string_view, 6> kForwardRasterSharedImageNames = {
+    "depth-stencil", "depth-sampling-view", "scene-color", "pick-id",
+    "pick-depth", "oit-head-pointers"};
+constexpr std::array<std::string_view, 3> kForwardRasterSharedBufferNames = {
+    "oit-node-buffer", "oit-counter-buffer", "oit-metadata-buffer"};
+constexpr std::array<std::string_view, 3>
+    kForwardRasterSharedDescriptorSetNames = {
+        "frame-lighting-descriptor-set", "post-process-descriptor-set",
+        "oit-descriptor-set"};
+constexpr std::array<std::string_view, 5>
+    kForwardRasterSharedFramebufferNames = {
+        "depth-prepass-framebuffer", "bim-depth-prepass-framebuffer",
+        "transparent-pick-framebuffer", "lighting-framebuffer",
+        "transform-gizmo-framebuffer"};
+
+template <std::size_t N>
+bool containsName(const std::array<std::string_view, N>& names,
+                  std::string_view name) {
+  return std::find(names.begin(), names.end(), name) != names.end();
+}
 
 FrameImageBinding frameImageBinding(VkImage image, VkImageView view,
                                     VkFormat format, VkExtent2D extent,
@@ -407,7 +432,10 @@ void FrameResourceManager::create(
                    VK_IMAGE_ASPECT_COLOR_BIT, sampleCount_);
     }
     f.sceneColor = createAttachment(formats_.sceneColor,
-                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                       VK_IMAGE_USAGE_SAMPLED_BIT |
+                       VK_IMAGE_USAGE_STORAGE_BIT |
+                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
     f.oitHeadPointers = createAttachment(formats_.oitHeadPointer,
                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
@@ -1181,46 +1209,96 @@ void FrameResourceManager::publishFrameResourceBindings() {
   for (uint32_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
     FrameResources& f = frames_[frameIndex];
 
-    auto bindImage = [&](std::string name, const AttachmentImage& image,
+    auto bindImageBinding = [&](RenderTechniqueId technique,
+                                std::string_view name,
+                                const FrameImageBinding& binding) {
+      resourceRegistry_.bindImage(technique, std::string(name), frameIndex,
+                                  binding);
+    };
+    auto bindImage = [&](std::string_view name, const AttachmentImage& image,
                          VkImageUsageFlags usage) {
-      resourceRegistry_.bindImage(
-          kDeferredRasterTechnique, std::move(name), frameIndex,
-          frameImageBinding(image, ext, usage));
+      bindImageBinding(kDeferredRasterTechnique, name,
+                       frameImageBinding(image, ext, usage));
     };
-    auto bindBuffer = [&](std::string name, VkBuffer buffer, VkDeviceSize size,
-                          VkBufferUsageFlags usage) {
-      resourceRegistry_.bindBuffer(
-          kDeferredRasterTechnique, std::move(name), frameIndex,
-          frameBufferBinding(buffer, size, usage));
+    auto bindSharedImage = [&](std::string_view name,
+                               const AttachmentImage& image,
+                               VkImageUsageFlags usage) {
+      const FrameImageBinding binding = frameImageBinding(image, ext, usage);
+      bindImageBinding(kDeferredRasterTechnique, name, binding);
+      if (containsName(kForwardRasterSharedImageNames, name)) {
+        bindImageBinding(kForwardRasterTechnique, name, binding);
+      }
     };
-    auto bindFramebuffer = [&](std::string name, VkFramebuffer framebuffer,
+    auto bindBufferBinding = [&](RenderTechniqueId technique,
+                                 std::string_view name,
+                                 const FrameBufferBinding& binding) {
+      resourceRegistry_.bindBuffer(technique, std::string(name), frameIndex,
+                                   binding);
+    };
+    auto bindSharedBuffer = [&](std::string_view name, VkBuffer buffer,
+                                VkDeviceSize size, VkBufferUsageFlags usage) {
+      const FrameBufferBinding binding = frameBufferBinding(buffer, size, usage);
+      bindBufferBinding(kDeferredRasterTechnique, name, binding);
+      if (containsName(kForwardRasterSharedBufferNames, name)) {
+        bindBufferBinding(kForwardRasterTechnique, name, binding);
+      }
+    };
+    auto bindFramebufferBinding = [&](RenderTechniqueId technique,
+                                      std::string_view name,
+                                      const FrameFramebufferBinding& binding) {
+      resourceRegistry_.bindFramebuffer(technique, std::string(name),
+                                        frameIndex, binding);
+    };
+    auto bindFramebuffer = [&](std::string_view name, VkFramebuffer framebuffer,
                                VkRenderPass renderPass,
                                uint32_t attachmentCount) {
-      resourceRegistry_.bindFramebuffer(
-          kDeferredRasterTechnique, std::move(name), frameIndex,
-          frameFramebufferBinding(framebuffer, renderPass, ext,
-                                  attachmentCount));
+      bindFramebufferBinding(kDeferredRasterTechnique, name,
+                             frameFramebufferBinding(framebuffer, renderPass,
+                                                     ext, attachmentCount));
     };
-    auto bindDescriptorSet = [&](std::string name,
+    auto bindSharedFramebuffer = [&](std::string_view name,
+                                     VkFramebuffer framebuffer,
+                                     VkRenderPass renderPass,
+                                     uint32_t attachmentCount) {
+      const FrameFramebufferBinding binding =
+          frameFramebufferBinding(framebuffer, renderPass, ext,
+                                  attachmentCount);
+      bindFramebufferBinding(kDeferredRasterTechnique, name, binding);
+      if (containsName(kForwardRasterSharedFramebufferNames, name)) {
+        bindFramebufferBinding(kForwardRasterTechnique, name, binding);
+      }
+    };
+    auto bindDescriptorSetBinding = [&](RenderTechniqueId technique,
+                                        std::string_view name,
+                                        const FrameDescriptorBinding& binding) {
+      resourceRegistry_.bindDescriptorSet(technique, std::string(name),
+                                          frameIndex, binding);
+    };
+    auto bindSharedDescriptorSet = [&](std::string_view name,
                                  VkDescriptorSet descriptorSet) {
-      resourceRegistry_.bindDescriptorSet(
-          kDeferredRasterTechnique, std::move(name), frameIndex,
-          FrameDescriptorBinding{.descriptorSet = descriptorSet});
+      const FrameDescriptorBinding binding{.descriptorSet = descriptorSet};
+      bindDescriptorSetBinding(kDeferredRasterTechnique, name, binding);
+      if (containsName(kForwardRasterSharedDescriptorSetNames, name)) {
+        bindDescriptorSetBinding(kForwardRasterTechnique, name, binding);
+      }
     };
 
-    bindImage("depth-stencil", f.depthStencil,
+    bindSharedImage("depth-stencil", f.depthStencil,
               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                   VK_IMAGE_USAGE_SAMPLED_BIT |
                   VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
-    resourceRegistry_.bindImage(
-        kDeferredRasterTechnique, "depth-sampling-view", frameIndex,
+    const FrameImageBinding depthSamplingBinding =
         frameImageBinding(f.depthStencil.image, f.depthSamplingView,
                           f.depthStencil.format, ext,
                           VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                               VK_IMAGE_USAGE_SAMPLED_BIT |
                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                          f.depthStencil.samples));
-    bindImage("scene-color", f.sceneColor,
+                          f.depthStencil.samples);
+    bindImageBinding(kDeferredRasterTechnique, "depth-sampling-view",
+                     depthSamplingBinding);
+    bindImageBinding(kForwardRasterTechnique, "depth-sampling-view",
+                     depthSamplingBinding);
+    bindSharedImage("scene-color", f.sceneColor,
               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                   VK_IMAGE_USAGE_SAMPLED_BIT);
     bindImage("albedo", f.albedo,
@@ -1238,54 +1316,54 @@ void FrameResourceManager::publishFrameResourceBindings() {
     bindImage("specular", f.specular,
               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                   VK_IMAGE_USAGE_SAMPLED_BIT);
-    bindImage("pick-id", f.pickId,
+    bindSharedImage("pick-id", f.pickId,
               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                   VK_IMAGE_USAGE_SAMPLED_BIT |
                   VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
-    bindImage("pick-depth", f.pickDepth,
+    bindSharedImage("pick-depth", f.pickDepth,
               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                   VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                   VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
-    bindImage("oit-head-pointers", f.oitHeadPointers,
+    bindSharedImage("oit-head-pointers", f.oitHeadPointers,
               VK_IMAGE_USAGE_STORAGE_BIT |
                   VK_IMAGE_USAGE_TRANSFER_DST_BIT);
 
-    bindBuffer("oit-node-buffer", f.oitNodeBuffer.buffer,
+    bindSharedBuffer("oit-node-buffer", f.oitNodeBuffer.buffer,
                sizeof(OitNode) * f.oitNodeCapacity,
                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                    VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-    bindBuffer("oit-counter-buffer", f.oitCounterBuffer.buffer,
+    bindSharedBuffer("oit-counter-buffer", f.oitCounterBuffer.buffer,
                sizeof(uint32_t),
                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                    VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-    bindBuffer("oit-metadata-buffer", f.oitMetadataBuffer.buffer,
+    bindSharedBuffer("oit-metadata-buffer", f.oitMetadataBuffer.buffer,
                sizeof(OitMetadata), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
-    bindDescriptorSet("frame-lighting-descriptor-set",
+    bindSharedDescriptorSet("frame-lighting-descriptor-set",
                       f.lightingDescriptorSet);
-    bindDescriptorSet("post-process-descriptor-set",
+    bindSharedDescriptorSet("post-process-descriptor-set",
                       f.postProcessDescriptorSet);
-    bindDescriptorSet("oit-descriptor-set", f.oitDescriptorSet);
+    bindSharedDescriptorSet("oit-descriptor-set", f.oitDescriptorSet);
 
     const uint32_t depthAttachmentCount =
         sampleCount_ == VK_SAMPLE_COUNT_1_BIT ? 1u : 2u;
     const uint32_t gBufferAttachmentCount =
         sampleCount_ == VK_SAMPLE_COUNT_1_BIT ? 7u : 13u;
 
-    bindFramebuffer("depth-prepass-framebuffer", f.depthPrepassFramebuffer,
+    bindSharedFramebuffer("depth-prepass-framebuffer", f.depthPrepassFramebuffer,
                     depthPrepassPass_, depthAttachmentCount);
-    bindFramebuffer("bim-depth-prepass-framebuffer",
+    bindSharedFramebuffer("bim-depth-prepass-framebuffer",
                     f.bimDepthPrepassFramebuffer, bimDepthPrepassPass_,
                     depthAttachmentCount);
     bindFramebuffer("gbuffer-framebuffer", f.gBufferFramebuffer, gBufferPass_,
                     gBufferAttachmentCount);
     bindFramebuffer("bim-gbuffer-framebuffer", f.bimGBufferFramebuffer,
                     bimGBufferPass_, gBufferAttachmentCount);
-    bindFramebuffer("transparent-pick-framebuffer",
+    bindSharedFramebuffer("transparent-pick-framebuffer",
                     f.transparentPickFramebuffer, transparentPickPass_, 2u);
-    bindFramebuffer("lighting-framebuffer", f.lightingFramebuffer,
+    bindSharedFramebuffer("lighting-framebuffer", f.lightingFramebuffer,
                     lightingPass_, 2u);
-    bindFramebuffer("transform-gizmo-framebuffer",
+    bindSharedFramebuffer("transform-gizmo-framebuffer",
                     f.transformGizmoFramebuffer, transformGizmoPass_, 1u);
   }
 }

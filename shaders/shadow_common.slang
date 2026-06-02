@@ -6,6 +6,7 @@
 
 static const float SHADOW_PCF_KERNEL_RADIUS = 2.0;
 static const uint SHADOW_PCSS_BLOCKER_SAMPLE_COUNT = 16u;
+static const uint SHADOW_PCSS_MIN_BLOCKER_SAMPLE_COUNT = 3u;
 
 float ShadowFiniteOr(float value, float fallback)
 {
@@ -43,10 +44,9 @@ float2 DirectionalShadowPoissonOffset(uint sampleIndex)
     return offsets[sampleIndex % SHADOW_PCSS_BLOCKER_SAMPLE_COUNT];
 }
 
-float ShadowStableRotation(float2 shadowUv, uint cascadeIndex)
+float ShadowCascadeStableRotation(uint cascadeIndex)
 {
-    float seed = dot(shadowUv, float2(127.1, 311.7)) +
-        float(cascadeIndex) * 19.19;
+    float seed = float(cascadeIndex) * 19.19 + 0.37;
     return frac(sin(seed) * 43758.5453123) * 6.28318530718;
 }
 
@@ -237,7 +237,7 @@ float DirectionalPcssAverageBlockerDepth(
     int2 baseTexel = clamp(int2(floor(shadowUV * atlasSize)),
                            minTexel,
                            maxTexel);
-    float rotation = ShadowStableRotation(shadowUV, cascadeIndex);
+    float rotation = ShadowCascadeStableRotation(cascadeIndex);
     float avgBlockerDepth = 0.0;
     float receiverCompareDepth = saturate(receiverDepth);
 
@@ -331,7 +331,7 @@ float DirectionalPcssFilterRadiusTexels(
     float avgBlockerDepth = DirectionalPcssAverageBlockerDepth(
         shadowUV, cascadeIndex, receiverDepth, blockerSearchRadiusTexels,
         shadowData, shadowAtlas, blockerCount);
-    if (blockerCount == 0u)
+    if (blockerCount < SHADOW_PCSS_MIN_BLOCKER_SAMPLE_COUNT)
     {
         return baseFilterRadiusTexels;
     }
@@ -347,8 +347,18 @@ float DirectionalPcssFilterRadiusTexels(
     float penumbraTexels =
         depthSeparationWorld * lightTanRadius / texelSizeWorld;
 
-    return clamp(max(baseFilterRadiusTexels, penumbraTexels),
-                 baseFilterRadiusTexels, maxPcssFilterRadiusTexels);
+    float expandedFilterRadiusTexels =
+        clamp(max(baseFilterRadiusTexels, penumbraTexels),
+              baseFilterRadiusTexels, maxPcssFilterRadiusTexels);
+    float blockerSupport =
+        saturate(float(blockerCount - SHADOW_PCSS_MIN_BLOCKER_SAMPLE_COUNT + 1u) /
+                 float(SHADOW_PCSS_BLOCKER_SAMPLE_COUNT -
+                       SHADOW_PCSS_MIN_BLOCKER_SAMPLE_COUNT + 1u));
+    float blockerConfidence =
+        smoothstep(0.0, 1.0, blockerSupport);
+
+    return lerp(baseFilterRadiusTexels, expandedFilterRadiusTexels,
+                blockerConfidence);
 }
 
 // Select the cascade index based on the fragment's view-space depth.

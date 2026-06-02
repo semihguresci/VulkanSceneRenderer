@@ -6,6 +6,7 @@ namespace {
 
 using container::renderer::ShadowCascadeDepthPlanInputs;
 using container::renderer::buildShadowCascadeDepthPlan;
+using container::renderer::expandShadowCascadeRadiusForFilterGuard;
 
 TEST(ShadowCascadeDepthPlannerTests,
      FiniteCasterBoundsTightenReceiverDepthExtension) {
@@ -73,6 +74,56 @@ TEST(ShadowCascadeDepthPlannerTests,
   EXPECT_FLOAT_EQ(plan.casterMaxBounds.z, -9.5f);
   EXPECT_FLOAT_EQ(plan.nearPlane, 9.5f);
   EXPECT_FLOAT_EQ(plan.farPlane, 40.0f);
+}
+
+TEST(ShadowCascadeDepthPlannerTests,
+     FilterGuardExpandsCascadeRadiusByAtLeastTexelMargin) {
+  const float receiverRadius = 100.0f;
+  const uint32_t resolution = 1000u;
+  const float guardTexels = 10.0f;
+
+  const float guardedRadius = expandShadowCascadeRadiusForFilterGuard(
+      receiverRadius, resolution, guardTexels);
+  const float guardedTexelSize =
+      (guardedRadius * 2.0f) / static_cast<float>(resolution);
+
+  EXPECT_GT(guardedRadius, receiverRadius);
+  const float expandedTexels =
+      (guardedRadius - receiverRadius) / guardedTexelSize;
+  EXPECT_GE(expandedTexels, guardTexels);
+  EXPECT_LT(expandedTexels, guardTexels + 8.0f);
+}
+
+TEST(ShadowCascadeDepthPlannerTests,
+     FilterGuardStabilizesSubTexelRadiusNoise) {
+  const uint32_t resolution = 4096u;
+  const float guardTexels = 8.0f;
+
+  const float baseRadius =
+      expandShadowCascadeRadiusForFilterGuard(100.0f, resolution, guardTexels);
+  const float jitteredRadius = expandShadowCascadeRadiusForFilterGuard(
+      100.02f, resolution, guardTexels);
+
+  EXPECT_FLOAT_EQ(jitteredRadius, baseRadius);
+}
+
+TEST(ShadowCascadeDepthPlannerTests,
+     FilterGuardStillTracksRealRadiusGrowth) {
+  const uint32_t resolution = 4096u;
+  const float guardTexels = 8.0f;
+
+  const float baseRadius =
+      expandShadowCascadeRadiusForFilterGuard(100.0f, resolution, guardTexels);
+  const float largerRadius =
+      expandShadowCascadeRadiusForFilterGuard(101.0f, resolution, guardTexels);
+
+  EXPECT_GT(largerRadius, baseRadius);
+}
+
+TEST(ShadowCascadeDepthPlannerTests,
+     FilterGuardLeavesRadiusUnchangedWhenGuardIsDisabled) {
+  EXPECT_FLOAT_EQ(expandShadowCascadeRadiusForFilterGuard(42.0f, 4096u, 0.0f),
+                  42.0f);
 }
 
 }  // namespace

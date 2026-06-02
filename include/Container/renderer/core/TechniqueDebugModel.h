@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -34,9 +35,16 @@ struct TechniqueDebugPanel {
   std::vector<TechniqueDebugControl> controls{};
 };
 
+struct TechniqueDisplayModeOption {
+  std::string id{};
+  std::string label{};
+  uint32_t value{0};
+};
+
 struct TechniqueDebugModel {
   std::string techniqueName{};
   std::string displayName{};
+  std::vector<TechniqueDisplayModeOption> displayModes{};
   std::vector<TechniqueDebugPanel> panels{};
 };
 

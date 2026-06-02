@@ -1721,6 +1721,8 @@ void SceneManager::createSampler() {
       info.addressModeU = materialSamplerAddressMode(wrapS);
       info.addressModeV = materialSamplerAddressMode(wrapT);
       info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+      info.minLod = 0.0f;
+      info.maxLod = VK_LOD_CLAMP_NONE;
       info.anisotropyEnable = VK_TRUE;
       info.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
       info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;

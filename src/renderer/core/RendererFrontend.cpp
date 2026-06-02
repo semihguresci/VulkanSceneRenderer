@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -14,6 +15,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -82,6 +84,25 @@ using container::gpu::LightingData;
 namespace {
 
 using TelemetryClock = std::chrono::steady_clock;
+
+class GuiFrameExceptionGuard {
+public:
+  explicit GuiFrameExceptionGuard(container::ui::GuiManager &gui)
+      : gui_(gui), uncaughtOnEntry_(std::uncaught_exceptions()) {}
+
+  ~GuiFrameExceptionGuard() {
+    if (std::uncaught_exceptions() > uncaughtOnEntry_) {
+      gui_.endFrame();
+    }
+  }
+
+  GuiFrameExceptionGuard(const GuiFrameExceptionGuard &) = delete;
+  GuiFrameExceptionGuard &operator=(const GuiFrameExceptionGuard &) = delete;
+
+private:
+  container::ui::GuiManager &gui_;
+  int uncaughtOnEntry_{0};
+};
 
 [[nodiscard]] bool submitReadbackCommandBufferAndWait(
     VkDevice device, VkQueue queue, VkCommandBuffer commandBuffer) {
@@ -769,7 +790,7 @@ bool accumulateDrawCommandBounds(
   return hasBounds;
 }
 
-std::optional<bool> accumulateShadowCasterDrawCommandBounds(
+bool accumulateShadowCasterDrawCommandBounds(
     const std::vector<DrawCommand> &commands,
     const std::vector<container::gpu::ObjectData> &objectData,
     glm::vec3 &boundsMin, glm::vec3 &boundsMax) {
@@ -783,7 +804,7 @@ std::optional<bool> accumulateShadowCasterDrawCommandBounds(
       }
       const glm::vec4 &sphere = objectData[objectIndex].boundingSphere;
       if (!isValidShadowCasterBoundingSphere(sphere)) {
-        return std::nullopt;
+        continue;
       }
       includeBoundingSphere(sphere, boundsMin, boundsMax, hasBounds);
     }
@@ -818,14 +839,9 @@ std::optional<ShadowCasterSceneBounds> accumulateShadowCasterSceneBounds(
   if (sceneController != nullptr) {
     glm::vec3 sceneMin{0.0f};
     glm::vec3 sceneMax{0.0f};
-    const std::optional<bool> sceneBounds =
-        accumulateShadowCasterDrawCommandBounds(
-            sceneController->opaqueDrawCommands(), sceneController->objectData(),
-            sceneMin, sceneMax);
-    if (!sceneBounds.has_value()) {
-      return std::nullopt;
-    }
-    if (*sceneBounds) {
+    if (accumulateShadowCasterDrawCommandBounds(
+            sceneController->opaqueDrawCommands(),
+            sceneController->objectData(), sceneMin, sceneMax)) {
       includeBounds(sceneMin, sceneMax, boundsMin, boundsMax, hasBounds);
     }
   }
@@ -833,14 +849,9 @@ std::optional<ShadowCasterSceneBounds> accumulateShadowCasterSceneBounds(
   if (bimManager != nullptr) {
     glm::vec3 bimMin{0.0f};
     glm::vec3 bimMax{0.0f};
-    const std::optional<bool> bimBounds =
-        accumulateShadowCasterDrawCommandBounds(
+    if (accumulateShadowCasterDrawCommandBounds(
             bimManager->opaqueDrawCommands(), bimManager->objectData(), bimMin,
-            bimMax);
-    if (!bimBounds.has_value()) {
-      return std::nullopt;
-    }
-    if (*bimBounds) {
+            bimMax)) {
       includeBounds(bimMin, bimMax, boundsMin, boundsMax, hasBounds);
     }
   }
@@ -1123,10 +1134,9 @@ bool deferredRasterLocalShadowBimInputsReady(const FrameRecordParams &p) {
          hasBimOpaqueDrawCommands(p.bim);
 }
 
-bool deferredRasterLocalShadowFrameInputsReady(
-    const FrameRecordParams &p, container::ui::GBufferViewMode displayMode) {
-  if (!displayModeRecordsShadowAtlas(displayMode) ||
-      p.shadows.renderPass == VK_NULL_HANDLE ||
+bool deferredRasterLocalShadowFrameInputsReady(const FrameRecordParams &p,
+                                               bool shadowAtlasVisible) {
+  if (!shadowAtlasVisible || p.shadows.renderPass == VK_NULL_HANDLE ||
       p.shadows.localShadowFramebuffers == nullptr ||
       p.shadows.localShadowData == nullptr ||
       p.shadows.localShadowData->counts.w == 0u ||
@@ -1152,6 +1162,7 @@ bool deferredRasterLocalShadowFrameInputsReady(
 }
 
 FrameFeatureReadiness evaluateFrameFeatureReadiness(
+    RenderTechniqueId activeTechnique,
     container::ui::GBufferViewMode displayMode,
     const FrameRecorder *frameRecorder, const ShadowManager *shadowManager,
     const EnvironmentManager *environmentManager,
@@ -1163,13 +1174,17 @@ FrameFeatureReadiness evaluateFrameFeatureReadiness(
     frameRecorder->graph().prepareFrame(*preparedParams);
   }
 
+  const bool shadowAtlasVisible =
+      activeTechnique == RenderTechniqueId::ForwardRaster ||
+      displayModeRecordsShadowAtlas(displayMode);
+
   FrameFeatureReadiness readiness{};
   readiness.shadowAtlas =
-      displayModeRecordsShadowAtlas(displayMode) &&
+      shadowAtlasVisible &&
       anyShadowCascadeScheduled(frameRecorder, usePreparedFrame) &&
       hasShadowAtlasResources(shadowManager);
   readiness.localShadowAtlas =
-      displayModeRecordsShadowAtlas(displayMode) &&
+      shadowAtlasVisible &&
       graphPassScheduled(frameRecorder, RenderPassId::LocalShadowDepth,
                          usePreparedFrame) &&
       (preparedParams == nullptr ||
@@ -1248,6 +1263,44 @@ std::string sceneProviderDisplayName(std::string_view modelPath,
   const std::string_view fileName =
       slash == std::string_view::npos ? modelPath : modelPath.substr(slash + 1);
   return fileName.empty() ? std::string(fallback) : std::string(fileName);
+}
+
+bool finiteVec3(const glm::vec3 &value) {
+  return std::isfinite(value.x) && std::isfinite(value.y) &&
+         std::isfinite(value.z);
+}
+
+void includeSceneViewBounds(CameraController::SceneViewBounds &target,
+                            const container::scene::SceneProviderBounds &source) {
+  if (!source.valid || !finiteVec3(source.min) || !finiteVec3(source.max)) {
+    return;
+  }
+
+  const glm::vec3 sourceMin = glm::min(source.min, source.max);
+  const glm::vec3 sourceMax = glm::max(source.min, source.max);
+  if (!target.valid) {
+    target.min = sourceMin;
+    target.max = sourceMax;
+    target.valid = true;
+    return;
+  }
+
+  target.min = glm::min(target.min, sourceMin);
+  target.max = glm::max(target.max, sourceMax);
+}
+
+CameraController::SceneViewBounds cameraSceneBoundsFromActiveContent(
+    const container::scene::SceneManager *sceneManager,
+    const BimManager *bimManager) {
+  CameraController::SceneViewBounds bounds{};
+  if (sceneManager != nullptr) {
+    includeSceneViewBounds(
+        bounds, sceneProviderBoundsFromModelBounds(sceneManager->modelBounds()));
+  }
+  if (bimManager != nullptr && bimManager->hasScene()) {
+    includeSceneViewBounds(bounds, sceneProviderBoundsFromBim(*bimManager));
+  }
+  return bounds;
 }
 
 } // namespace
@@ -1451,32 +1504,7 @@ void RendererFrontend::initialize() {
   const RenderTechniqueId requestedTechnique =
       renderTechniqueIdFromName(svc_.config.renderTechnique)
           .value_or(RenderTechniqueId::DeferredRaster);
-  RenderSystemContext techniqueContext{
-      .frameRecorder = subs_.frameRecorder.get(),
-      .deferredRaster = subs_.deferredRasterFrameGraphContext.get(),
-      .deviceCapabilities = &subs_.deviceCapabilities,
-      .sceneProviders = subs_.sceneProviderRegistry.get(),
-      .frameResources = subs_.frameResourceRegistry.get(),
-      .pipelines = subs_.pipelineRegistry.get(),
-  };
-  const RenderTechniqueSelection techniqueSelection =
-      subs_.techniqueRegistry->select(requestedTechnique, techniqueContext);
-  subs_.activeTechnique = techniqueSelection.technique;
-  if (subs_.activeTechnique == nullptr) {
-    throw std::runtime_error(
-        "No available render technique; deferred raster fallback unavailable");
-  }
-  subs_.activeTechnique->registerTechniqueContracts(techniqueContext);
-  subs_.activeTechnique->buildFrameGraph(techniqueContext);
-  if (techniqueSelection.usedFallback) {
-    container::log::ContainerLogger::instance().renderer()->warn(
-        "Requested render technique '{}' unavailable ({}); using '{}'.",
-        svc_.config.renderTechnique, techniqueSelection.unavailableReason,
-        subs_.activeTechnique->name());
-  } else {
-    container::log::ContainerLogger::instance().renderer()->info(
-        "Active render technique: {}", subs_.activeTechnique->name());
-  }
+  initializeRenderTechnique(requestedTechnique, svc_.config.renderTechnique);
 
   svc_.commandBufferManager.allocate(svc_.swapChainManager.imageCount());
   svc_.commandBufferManager.configureSecondaryBuffers(
@@ -1498,6 +1526,116 @@ void RendererFrontend::initialize() {
   subs_.rendererTelemetry = std::make_unique<RendererTelemetry>();
 
   initializeScene();
+}
+
+RenderSystemContext RendererFrontend::renderSystemContext() {
+  return RenderSystemContext{
+      .frameRecorder = subs_.frameRecorder.get(),
+      .deferredRaster = subs_.deferredRasterFrameGraphContext.get(),
+      .deviceCapabilities = &subs_.deviceCapabilities,
+      .sceneProviders = subs_.sceneProviderRegistry.get(),
+      .frameResources = subs_.frameResourceRegistry.get(),
+      .pipelines = subs_.pipelineRegistry.get(),
+  };
+}
+
+void RendererFrontend::initializeRenderTechnique(
+    RenderTechniqueId requested, std::string_view requestLabel) {
+  if (!subs_.techniqueRegistry) {
+    throw std::runtime_error("render technique registry is not initialized");
+  }
+
+  RenderSystemContext context = renderSystemContext();
+  const RenderTechniqueSelection selection =
+      subs_.techniqueRegistry->select(requested, context);
+  subs_.activeTechnique = selection.technique;
+  if (subs_.activeTechnique == nullptr) {
+    throw std::runtime_error(
+        "No available render technique; deferred raster fallback unavailable");
+  }
+
+  subs_.activeTechnique->registerTechniqueContracts(context);
+  subs_.activeTechnique->buildFrameGraph(context);
+
+  if (subs_.guiManager && subs_.frameRecorder) {
+    DebugUiPresenter::publishTechniqueDebugModel(
+        *subs_.guiManager, subs_.activeTechnique->debugModel());
+    DebugUiPresenter::publishRenderPasses(*subs_.guiManager,
+                                          subs_.frameRecorder->graph());
+  }
+
+  if (selection.usedFallback) {
+    container::log::ContainerLogger::instance().renderer()->warn(
+        "Requested render technique '{}' unavailable ({}); using '{}'.",
+        requestLabel, selection.unavailableReason,
+        subs_.activeTechnique->name());
+  } else {
+    container::log::ContainerLogger::instance().renderer()->info(
+        "Active render technique: {}", subs_.activeTechnique->name());
+  }
+}
+
+void RendererFrontend::syncGuiRenderEngineOptions() {
+  if (!subs_.guiManager || !subs_.techniqueRegistry) {
+    return;
+  }
+
+  std::vector<container::ui::RenderEngineOption> options;
+  RenderSystemContext context = renderSystemContext();
+  for (const RenderTechniqueDescriptor &descriptor :
+       knownRenderTechniqueDescriptors()) {
+    RenderTechnique *technique = subs_.techniqueRegistry->find(descriptor.id);
+    if (technique == nullptr && !descriptor.implemented) {
+      continue;
+    }
+
+    container::ui::RenderEngineOption option{};
+    option.id = descriptor.id;
+    option.label = std::string(descriptor.displayName);
+    if (technique == nullptr) {
+      option.available = false;
+      option.unavailableReason = "render technique is not registered";
+    } else {
+      const RenderTechniqueAvailability availability =
+          technique->availability(context);
+      option.available = availability.available;
+      option.unavailableReason = availability.reason;
+    }
+    options.push_back(std::move(option));
+  }
+
+  subs_.guiManager->setRenderEngineOptions(
+      std::move(options),
+      subs_.activeTechnique != nullptr ? subs_.activeTechnique->id()
+                                       : RenderTechniqueId::DeferredRaster);
+}
+
+void RendererFrontend::requestRenderTechnique(RenderTechniqueId requested) {
+  if (subs_.activeTechnique != nullptr &&
+      subs_.activeTechnique->id() == requested) {
+    return;
+  }
+  pendingRenderTechniqueChange_ = requested;
+}
+
+void RendererFrontend::applyPendingRenderTechniqueChange() {
+  if (!pendingRenderTechniqueChange_) {
+    return;
+  }
+
+  const RenderTechniqueId requested = *pendingRenderTechniqueChange_;
+  pendingRenderTechniqueChange_.reset();
+  initializeRenderTechnique(requested, renderTechniqueName(requested));
+  syncGuiRenderEngineOptions();
+
+  if (subs_.guiManager) {
+    const RenderTechniqueId active =
+        subs_.activeTechnique != nullptr ? subs_.activeTechnique->id()
+                                         : RenderTechniqueId::DeferredRaster;
+    subs_.guiManager->setStatusMessage(
+        "Render engine active: " +
+        std::string(renderTechniqueDisplayName(active)));
+  }
 }
 
 bool RendererFrontend::drawFrame(bool &framebufferResized) {
@@ -1533,6 +1671,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
       });
     }
   }
+
+  applyPendingRenderTechniqueChange();
 
   if (pendingMsaaSampleCount_) {
     phaseStart = TelemetryClock::now();
@@ -1676,10 +1816,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   }
 
   FrameRecordParams frameRecordParams = buildFrameRecordParams(imageIndex);
-  if (subs_.deferredRasterFrameGraphContext) {
-    frameRecordParams.lifecycle =
-        subs_.deferredRasterFrameGraphContext->lifecycleHooks();
-  }
+  attachActiveTechniqueLifecycle(frameRecordParams);
 
   phaseStart = TelemetryClock::now();
   updateFrameDescriptorSets(imageIndex, &frameRecordParams);
@@ -1843,6 +1980,8 @@ void RendererFrontend::handleResize() {
   if (subs_.shadowCullManager) {
     subs_.shadowCullManager->recreatePerFrameResources(
         static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
+    std::fill(buffers_.shadowObjectDescriptorReady.begin(),
+              buffers_.shadowObjectDescriptorReady.end(), false);
   }
   if (subs_.gpuCullManager) {
     subs_.gpuCullManager->recreatePerFrameResources(
@@ -2959,8 +3098,7 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
       subs_.lightingManager->createLightVolumeGeometry();
     }
     if (resetCamera) {
-      if (subs_.cameraController)
-        subs_.cameraController->resetCameraForScene();
+      resetCameraForActiveScene();
       for (uint32_t imageIndex = 0;
            imageIndex < static_cast<uint32_t>(buffers_.cameras.size());
            ++imageIndex) {
@@ -3051,6 +3189,38 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
 
   refreshSceneState(result);
   return result;
+}
+
+void RendererFrontend::processPendingGuiModelLoadRequest() {
+  if (!subs_.guiManager) {
+    return;
+  }
+
+  std::optional<container::ui::ModelLoadRequest> request =
+      subs_.guiManager->consumeModelLoadRequest();
+  if (!request) {
+    return;
+  }
+
+  const std::string statusLabel =
+      request->label.empty() ? request->path : request->label;
+  try {
+    const bool success = reloadSceneModel(request->path, request->importScale);
+    if (!success && subs_.guiManager) {
+      subs_.guiManager->setStatusMessage("Failed to load model: " +
+                                         statusLabel);
+    }
+  } catch (const std::exception &e) {
+    if (subs_.guiManager) {
+      subs_.guiManager->setStatusMessage("Failed to load model: " +
+                                         statusLabel + " (" + e.what() + ")");
+    }
+  } catch (...) {
+    if (subs_.guiManager) {
+      subs_.guiManager->setStatusMessage("Failed to load model: " +
+                                         statusLabel + " (unknown error)");
+    }
+  }
 }
 
 void RendererFrontend::shutdown() {
@@ -3235,6 +3405,10 @@ void RendererFrontend::destroyGraphicsPipelines() {
   destroyPipeline(pipelines.transformGizmoSolid);
   destroyPipeline(pipelines.transformGizmoOverlay);
   destroyPipeline(pipelines.transformGizmoSolidOverlay);
+  for (RegisteredPipelineHandle &handle : pipelines.extraHandles) {
+    destroyPipeline(handle.pipeline);
+  }
+  pipelines.extraHandles.clear();
 
   auto &layouts = resources_.builtPipelines.layouts;
   auto destroyLayout = [this](VkPipelineLayout &layout) {
@@ -3251,6 +3425,10 @@ void RendererFrontend::destroyGraphicsPipelines() {
   destroyLayout(layouts.normalValidation);
   destroyLayout(layouts.surfaceNormal);
   destroyLayout(layouts.transformGizmo);
+  for (RegisteredPipelineLayout &layout : layouts.extraLayouts) {
+    destroyLayout(layout.layout);
+  }
+  layouts.extraLayouts.clear();
 
   resources_.builtPipelines = {};
 }
@@ -3311,7 +3489,18 @@ void RendererFrontend::createCamera() {
       sceneGraph_, subs_.sceneManager.get(), subs_.sceneController.get(),
       subs_.sceneController->world(), svc_.inputManager);
   subs_.cameraController->createCamera();
+  resetCameraForActiveScene();
   applyCameraOverride(subs_.cameraController->camera(), svc_.config);
+}
+
+void RendererFrontend::resetCameraForActiveScene() {
+  if (!subs_.cameraController) {
+    return;
+  }
+
+  subs_.cameraController->resetCameraForBounds(
+      cameraSceneBoundsFromActiveContent(subs_.sceneManager.get(),
+                                         subs_.bimManager.get()));
 }
 
 void RendererFrontend::syncCameraSelectionPivotOverride() {
@@ -3597,6 +3786,8 @@ void RendererFrontend::updateFrameDescriptorSets(
         subs_.guiManager.get(), configuredDisplayMode(svc_.config));
     const FrameFeatureReadiness featureReadiness =
         evaluateFrameFeatureReadiness(
+            subs_.activeTechnique != nullptr ? subs_.activeTechnique->id()
+                                             : RenderTechniqueId::DeferredRaster,
             displayMode, subs_.frameRecorder.get(), subs_.shadowManager.get(),
             subs_.environmentManager.get(), subs_.lightingManager.get(),
             imageIndex, preparedParams);
@@ -3605,11 +3796,16 @@ void RendererFrontend::updateFrameDescriptorSets(
       applyConfiguredLightingOverrides(subs_.lightingManager.get(),
                                         svc_.config);
       auto &lightingData = subs_.lightingManager->lightingData();
+      const container::gpu::ShadowSettings shadowSettings =
+          subs_.guiManager ? subs_.guiManager->shadowSettings()
+                           : container::gpu::ShadowSettings{};
       lightingData.shadowEnabled = featureReadiness.shadowAtlas ? 1u : 0u;
       lightingData.localShadowEnabled =
           featureReadiness.localShadowAtlas ? 1u : 0u;
       lightingData.gtaoEnabled = featureReadiness.gtao ? 1u : 0u;
       lightingData.tileCullEnabled = featureReadiness.tileCull ? 1u : 0u;
+      lightingData.localContactVisibility =
+          shadowSettings.localContactVisibility ? 1u : 0u;
       lightingData.prefilteredMipCount =
           subs_.environmentManager
               ? subs_.environmentManager->prefilteredMipCount()
@@ -4716,8 +4912,12 @@ void RendererFrontend::presentSceneControls() {
     DebugUiPresenter::publishRenderPasses(*subs_.guiManager,
                                           subs_.frameRecorder->graph());
   }
+  syncGuiRenderEngineOptions();
+
+  processPendingGuiModelLoadRequest();
 
   subs_.guiManager->startFrame();
+  const GuiFrameExceptionGuard guiFrameExceptionGuard(*subs_.guiManager);
   const std::vector<container::gpu::PointLightData> emptyPointLights;
   const auto &pointLights = subs_.lightingManager
                                 ? subs_.lightingManager->pointLightsSsbo()
@@ -4973,13 +5173,6 @@ void RendererFrontend::presentSceneControls() {
       };
   subs_.guiManager->drawSceneControls(
       sceneGraph_,
-      [this](const std::string &modelPath, float importScale) {
-        return reloadSceneModel(modelPath, importScale);
-      },
-      [this](float importScale) {
-        return reloadSceneModel(container::app::DefaultAppConfig().modelPath,
-                                importScale);
-      },
       addScenePrimitive,
       subs_.cameraController ? subs_.cameraController->cameraTransformControls()
                              : container::ui::TransformControls{},
@@ -5177,6 +5370,10 @@ void RendererFrontend::presentSceneControls() {
           subs_.lightingManager->updateLightingData();
         refreshSceneObjectData();
       });
+
+  if (auto requested = subs_.guiManager->consumeRenderEngineChange()) {
+    requestRenderTechnique(*requested);
+  }
 
   if (auto msaaRequest = subs_.guiManager->consumeMsaaSampleChange()) {
     const RendererMsaaDeviceSupport msaaSupport =
@@ -5410,9 +5607,7 @@ void RendererFrontend::recordCommandBuffer(
     return;
   }
   auto p = buildFrameRecordParams(imageIndex);
-  if (subs_.deferredRasterFrameGraphContext) {
-    p.lifecycle = subs_.deferredRasterFrameGraphContext->lifecycleHooks();
-  }
+  attachActiveTechniqueLifecycle(p);
   subs_.frameRecorder->record(commandBuffer, p);
 }
 
@@ -5562,6 +5757,10 @@ void RendererFrontend::publishFrameRuntimeResourceBindings(
 
   runtime->clearBindings();
 
+  const RenderTechniqueId activeTechnique =
+      subs_.activeTechnique != nullptr ? subs_.activeTechnique->id()
+                                       : RenderTechniqueId::DeferredRaster;
+
   auto copyBinding = [runtime](const FrameResourceBinding &binding) {
     switch (binding.kind) {
     case FrameResourceKind::Image:
@@ -5589,47 +5788,78 @@ void RendererFrontend::publishFrameRuntimeResourceBindings(
     }
   };
 
-  if (subs_.frameResourceManager != nullptr) {
+  auto copyManagerBinding = [this, imageIndex,
+                             &copyBinding](RenderTechniqueId technique) {
+    if (subs_.frameResourceManager == nullptr) {
+      return;
+    }
     subs_.frameResourceManager->resourceRegistry().forEachBindingForFrame(
-        RenderTechniqueId::DeferredRaster, imageIndex,
+        technique, imageIndex,
         [&copyBinding](const FrameResourceBinding &binding) {
           copyBinding(binding);
         });
+  };
+  copyManagerBinding(RenderTechniqueId::DeferredRaster);
+  if (activeTechnique != RenderTechniqueId::DeferredRaster) {
+    copyManagerBinding(activeTechnique);
+  }
+  if (activeTechnique != RenderTechniqueId::ForwardRaster) {
+    copyManagerBinding(RenderTechniqueId::ForwardRaster);
   }
 
-  auto bindDescriptorSet = [runtime, imageIndex](std::string name,
-                                                 VkDescriptorSet set) {
+  auto bindDescriptorSetForTechnique =
+      [runtime, imageIndex](RenderTechniqueId technique, std::string_view name,
+                            VkDescriptorSet set) {
     if (set == VK_NULL_HANDLE) {
       return;
     }
-    runtime->bindDescriptorSet(RenderTechniqueId::DeferredRaster,
-                               std::move(name), imageIndex,
+    runtime->bindDescriptorSet(technique, std::string(name), imageIndex,
                                FrameDescriptorBinding{.descriptorSet = set});
   };
+  auto bindSharedDescriptorSet =
+      [activeTechnique,
+       &bindDescriptorSetForTechnique](std::string_view name,
+                                       VkDescriptorSet set) {
+        bindDescriptorSetForTechnique(RenderTechniqueId::DeferredRaster, name,
+                                      set);
+        if (activeTechnique != RenderTechniqueId::DeferredRaster) {
+          bindDescriptorSetForTechnique(activeTechnique, name, set);
+        }
+        if (activeTechnique != RenderTechniqueId::ForwardRaster) {
+          bindDescriptorSetForTechnique(RenderTechniqueId::ForwardRaster, name,
+                                        set);
+        }
+      };
+  auto bindDeferredDescriptorSet =
+      [&bindDescriptorSetForTechnique](std::string_view name,
+                                       VkDescriptorSet set) {
+        bindDescriptorSetForTechnique(RenderTechniqueId::DeferredRaster, name,
+                                      set);
+      };
 
-  bindDescriptorSet("scene-descriptor-set",
+  bindSharedDescriptorSet("scene-descriptor-set",
                     subs_.sceneManager
                         ? subs_.sceneManager->descriptorSet(imageIndex)
                         : VK_NULL_HANDLE);
-  bindDescriptorSet(
+  bindSharedDescriptorSet(
       "bim-scene-descriptor-set",
       (subs_.bimManager && subs_.bimManager->hasScene() && subs_.sceneManager)
           ? subs_.sceneManager->auxiliaryDescriptorSet(imageIndex)
           : VK_NULL_HANDLE);
-  bindDescriptorSet("light-descriptor-set",
+  bindSharedDescriptorSet("light-descriptor-set",
                     subs_.lightingManager
                         ? subs_.lightingManager->lightDescriptorSet(imageIndex)
                         : VK_NULL_HANDLE);
-  bindDescriptorSet(
+  bindDeferredDescriptorSet(
       "tiled-lighting-descriptor-set",
       (subs_.lightingManager && subs_.lightingManager->isTiledLightingReady())
           ? subs_.lightingManager->tiledDescriptorSet()
           : VK_NULL_HANDLE);
-  bindDescriptorSet("shadow-descriptor-set",
+  bindSharedDescriptorSet("shadow-descriptor-set",
                     subs_.shadowManager
                         ? subs_.shadowManager->descriptorSet(imageIndex)
                         : VK_NULL_HANDLE);
-  bindDescriptorSet(
+  bindSharedDescriptorSet(
       "local-shadow-descriptor-set",
       subs_.shadowManager
           ? subs_.shadowManager->localShadowDescriptorSet(imageIndex)
@@ -5637,6 +5867,8 @@ void RendererFrontend::publishFrameRuntimeResourceBindings(
 
   if (subs_.frameResourceManager != nullptr &&
       subs_.frameResourceManager->gBufferSampler() != VK_NULL_HANDLE) {
+    // Forward raster does not declare G-buffer resources; keep this binding
+    // scoped to deferred passes that sample the G-buffer.
     runtime->bindSampler(
         RenderTechniqueId::DeferredRaster, "g-buffer-sampler", imageIndex,
         FrameSamplerBinding{.sampler =
@@ -5646,19 +5878,38 @@ void RendererFrontend::publishFrameRuntimeResourceBindings(
   const VkBuffer cameraBuffer = imageIndex < buffers_.cameras.size()
                                     ? buffers_.cameras[imageIndex].buffer
                                     : VK_NULL_HANDLE;
+  auto bindBufferForTechnique =
+      [runtime, imageIndex](RenderTechniqueId technique, std::string_view name,
+                            const FrameBufferBinding &binding) {
+        runtime->bindBuffer(technique, std::string(name), imageIndex, binding);
+      };
+  auto bindSharedBuffer =
+      [activeTechnique,
+       &bindBufferForTechnique](std::string_view name,
+                                const FrameBufferBinding &binding) {
+        bindBufferForTechnique(RenderTechniqueId::DeferredRaster, name,
+                               binding);
+        if (activeTechnique != RenderTechniqueId::DeferredRaster) {
+          bindBufferForTechnique(activeTechnique, name, binding);
+        }
+        if (activeTechnique != RenderTechniqueId::ForwardRaster) {
+          bindBufferForTechnique(RenderTechniqueId::ForwardRaster, name,
+                                 binding);
+        }
+      };
   if (cameraBuffer != VK_NULL_HANDLE) {
-    runtime->bindBuffer(
-        RenderTechniqueId::DeferredRaster, "camera-buffer", imageIndex,
-        FrameBufferBinding{.buffer = cameraBuffer,
-                           .size = sizeof(container::gpu::CameraData),
-                           .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT});
+    bindSharedBuffer("camera-buffer",
+                     FrameBufferBinding{
+                         .buffer = cameraBuffer,
+                         .size = sizeof(container::gpu::CameraData),
+                         .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT});
   }
   const auto objectBuffer = sceneObjectBuffer(imageIndex);
   const size_t objectCapacity = sceneObjectCapacity(imageIndex);
   if (objectBuffer.buffer != VK_NULL_HANDLE && objectCapacity > 0) {
-    runtime->bindBuffer(
-        RenderTechniqueId::DeferredRaster, "scene-object-buffer", imageIndex,
+    bindSharedBuffer(
+        "scene-object-buffer",
         FrameBufferBinding{.buffer = objectBuffer.buffer,
                            .size = objectCapacity *
                                    sizeof(container::gpu::ObjectData),
@@ -5674,6 +5925,9 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   FrameRecordParams p{};
   p.runtime.frameSlot = frame_.currentFrame;
   p.runtime.imageIndex = imageIndex;
+  p.runtime.activeTechnique =
+      subs_.activeTechnique != nullptr ? subs_.activeTechnique->id()
+                                       : RenderTechniqueId::DeferredRaster;
   p.registries.resourceContracts = subs_.frameResourceRegistry.get();
   p.registries.pipelineRecipes = subs_.pipelineRegistry.get();
   p.registries.resourceBindings = subs_.frameRuntimeResourceRegistry.get();
@@ -6108,9 +6362,13 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   }
   const auto displayMode = frontendDisplayMode(
       subs_.guiManager.get(), configuredDisplayMode(svc_.config));
+  p.debug.displayMode = static_cast<uint32_t>(displayMode);
+  const bool shadowAtlasVisible =
+      p.runtime.activeTechnique == RenderTechniqueId::ForwardRaster ||
+      container::renderer::displayModeRecordsShadowAtlas(displayMode);
   if (!graphPassScheduled(subs_.frameRecorder.get(),
                           RenderPassId::LocalShadowDepth) ||
-      !deferredRasterLocalShadowFrameInputsReady(p, displayMode)) {
+      !deferredRasterLocalShadowFrameInputsReady(p, shadowAtlasVisible)) {
     p.shadows.localShadowLayerCount = 0u;
   }
   if (subs_.shadowCullManager) {
@@ -6157,6 +6415,24 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     p.screenshot.extent = svc_.swapChainManager.extent();
   }
   return p;
+}
+
+void RendererFrontend::attachActiveTechniqueLifecycle(
+    FrameRecordParams &params) {
+  if (subs_.deferredRasterFrameGraphContext == nullptr) {
+    return;
+  }
+
+  switch (params.runtime.activeTechnique) {
+  case RenderTechniqueId::DeferredRaster:
+  case RenderTechniqueId::ForwardRaster:
+    params.lifecycle =
+        subs_.deferredRasterFrameGraphContext->lifecycleHooks();
+    break;
+  default:
+    params.lifecycle = {};
+    break;
+  }
 }
 
 // ---------------------------------------------------------------------------

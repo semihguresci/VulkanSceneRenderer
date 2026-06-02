@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include <glm/vec3.hpp>
 
 namespace container::renderer {
@@ -35,5 +37,10 @@ struct ShadowCascadeDepthPlan {
 
 [[nodiscard]] ShadowCascadeDepthPlan buildShadowCascadeDepthPlan(
     const ShadowCascadeDepthPlanInputs& inputs);
+
+[[nodiscard]] float expandShadowCascadeRadiusForFilterGuard(
+    float receiverRadius,
+    uint32_t shadowMapResolution,
+    float guardTexels);
 
 }  // namespace container::renderer

@@ -51,7 +51,7 @@ class ExposureManager {
            adaptPipeline_ != VK_NULL_HANDLE &&
            !descriptorSets_.empty() &&
            !histogramBuffers_.empty() &&
-           !exposureStateBuffers_.empty();
+           exposureStateBuffer_.buffer != VK_NULL_HANDLE;
   }
 
   [[nodiscard]] float resolvedExposure(
@@ -59,12 +59,15 @@ class ExposureManager {
   [[nodiscard]] float averageLuminance() const { return averageLuminance_; }
   [[nodiscard]] bool hasExposureDebugState() const { return hasCurrentExposure_; }
   [[nodiscard]] VkBuffer exposureStateBuffer(uint32_t imageIndex) const {
-    return imageIndex < exposureStateBuffers_.size()
-               ? exposureStateBuffers_[imageIndex].buffer
-               : VK_NULL_HANDLE;
+    (void)imageIndex;
+    return exposureStateBuffer_.buffer;
   }
   [[nodiscard]] std::span<const container::gpu::AllocatedBuffer>
-  exposureStateBuffers() const { return exposureStateBuffers_; }
+  exposureStateBuffers() const {
+    if (exposureStateBuffer_.buffer == VK_NULL_HANDLE) return {};
+    return std::span<const container::gpu::AllocatedBuffer>(
+        &exposureStateBuffer_, 1u);
+  }
   [[nodiscard]] VkDeviceSize exposureStateBufferSize() const;
 
  private:
@@ -80,7 +83,9 @@ class ExposureManager {
   container::gpu::PipelineManager& pipelineManager_;
 
   std::vector<container::gpu::AllocatedBuffer> histogramBuffers_{};
-  std::vector<container::gpu::AllocatedBuffer> exposureStateBuffers_{};
+  // Temporal adaptation must be shared across swapchain images; per-image
+  // exposure history presents as brightness flicker in static scenes.
+  container::gpu::AllocatedBuffer exposureStateBuffer_{};
   VkDescriptorSetLayout setLayout_{VK_NULL_HANDLE};
   VkDescriptorPool descriptorPool_{VK_NULL_HANDLE};
   std::vector<VkDescriptorSet> descriptorSets_{};

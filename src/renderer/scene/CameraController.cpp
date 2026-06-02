@@ -60,6 +60,20 @@ float selectedNodeRadius(const container::scene::SceneManager *sceneManager) {
   return 1.0f;
 }
 
+CameraController::SceneViewBounds sceneViewBoundsFromSceneManager(
+    const container::scene::SceneManager *sceneManager) {
+  if (sceneManager == nullptr || !sceneManager->modelBounds().valid) {
+    return {};
+  }
+
+  const auto &bounds = sceneManager->modelBounds();
+  return {
+      .min = bounds.min,
+      .max = bounds.max,
+      .valid = true,
+  };
+}
+
 void copyCameraPose(container::scene::BaseCamera &target,
                     const container::scene::BaseCamera &source) {
   target.setPosition(source.position());
@@ -117,6 +131,10 @@ void CameraController::createCamera() {
 }
 
 void CameraController::resetCameraForScene() {
+  resetCameraForBounds(sceneViewBoundsFromSceneManager(sceneManager_));
+}
+
+void CameraController::resetCameraForBounds(const SceneViewBounds &bounds) {
   if (!camera_)
     return;
   cancelViewAnimation();
@@ -127,16 +145,25 @@ void CameraController::resetCameraForScene() {
   bool hasBounds = false;
   glm::vec3 boundsCenter{0.0f};
   float boundsRadius = 1.0f;
+  glm::vec3 boundsMin{0.0f};
+  glm::vec3 boundsMax{0.0f};
+  glm::vec3 boundsSize{0.0f};
 
-  if (sceneManager_) {
-    const auto &bounds = sceneManager_->modelBounds();
-    if (bounds.valid) {
+  if (bounds.valid) {
+    boundsMin = glm::min(bounds.min, bounds.max);
+    boundsMax = glm::max(bounds.min, bounds.max);
+    boundsSize = boundsMax - boundsMin;
+    boundsCenter = (boundsMin + boundsMax) * 0.5f;
+    const float computedRadius = glm::length(boundsSize) * 0.5f;
+    if (std::isfinite(computedRadius) && computedRadius > 0.0f) {
       hasBounds = true;
-      boundsCenter = bounds.center;
-      boundsRadius = bounds.radius;
-      farPlane =
-          std::max(farPlane, glm::length(boundsCenter) + boundsRadius * 4.0f);
+      boundsRadius = std::max(0.25f, computedRadius);
     }
+  }
+
+  if (hasBounds) {
+    farPlane =
+        std::max(farPlane, glm::length(boundsCenter) + boundsRadius * 4.0f);
   }
   setCameraNearFar(kDefaultNearPlane, farPlane);
 
@@ -144,27 +171,25 @@ void CameraController::resetCameraForScene() {
     // For hall-like scenes (e.g. Sponza), start inside the volume looking down
     // the longest horizontal axis. For roughly cubic scenes, fall back to the
     // default three-quarter overview.
-    const auto &bounds = sceneManager_->modelBounds();
-    const glm::vec3 sz = bounds.size;
-    const bool xIsLong = sz.x >= sz.z;
-    const float longExtent = xIsLong ? sz.x : sz.z;
-    const float crossExtent = xIsLong ? sz.z : sz.x;
+    const bool xIsLong = boundsSize.x >= boundsSize.z;
+    const float longExtent = xIsLong ? boundsSize.x : boundsSize.z;
+    const float crossExtent = xIsLong ? boundsSize.z : boundsSize.x;
     const bool hallLike =
-        longExtent > 1.25f * crossExtent && longExtent > 1.5f * sz.y;
+        longExtent > 1.25f * crossExtent && longExtent > 1.5f * boundsSize.y;
 
     if (hallLike) {
       // RH: front.x = cos(yaw)cos(pitch), front.z = -sin(yaw)cos(pitch).
       // Look +X => yaw = 0; -X => 180; -Z => 90; +Z => -90.
       const float yaw = xIsLong ? 180.0f : 90.0f;
       camera_->setYawPitch(yaw, 0.0f);
-      const float eyeHeight = bounds.min.y + sz.y * 0.32f;
+      const float eyeHeight = boundsMin.y + boundsSize.y * 0.32f;
       const float endInset = longExtent * 0.10f;
       glm::vec3 eye = boundsCenter;
       eye.y = eyeHeight;
       if (xIsLong) {
-        eye.x = bounds.max.x - endInset;
+        eye.x = boundsMax.x - endInset;
       } else {
-        eye.z = bounds.max.z - endInset;
+        eye.z = boundsMax.z - endInset;
       }
       camera_->setPosition(eye);
     } else {

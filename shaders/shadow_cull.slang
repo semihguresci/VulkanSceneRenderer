@@ -56,9 +56,17 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
 	}
 
 	DrawIndexedIndirectCommand draw = uInputDraws[idx];
+	if (idx == 0)
+	{
+		uDrawCount[0] = pc.drawCount;
+	}
+
+	DrawIndexedIndirectCommand outputDraw = draw;
 	uint objectIndex = draw.firstInstance;
 	if (objectIndex >= pc.objectCount)
 	{
+		outputDraw.instanceCount = 0;
+		uOutputDraws[pc.outputOffset + idx] = outputDraw;
 		return;
 	}
 	ObjectBuffer objectData = uObjects[objectIndex];
@@ -72,8 +80,11 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
 
 	if (visible)
 	{
-		uint outIdx;
-		InterlockedAdd(uDrawCount[0], 1, outIdx);
-		uOutputDraws[pc.outputOffset + outIdx] = draw;
+		uOutputDraws[pc.outputOffset + idx] = outputDraw;
+	}
+	else
+	{
+		outputDraw.instanceCount = 0;
+		uOutputDraws[pc.outputOffset + idx] = outputDraw;
 	}
 }

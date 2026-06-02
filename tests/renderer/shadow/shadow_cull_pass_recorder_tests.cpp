@@ -171,3 +171,16 @@ TEST(ShadowCullPassRecorderTests,
   ASSERT_NE(fill, std::string::npos);
   EXPECT_LT(readinessUse, fill);
 }
+
+TEST(ShadowCullPassRecorderTests,
+     ShadowCullShaderPreservesInputDrawOrderByContract) {
+  const std::string shader = readRepoTextFile("shaders/shadow_cull.slang");
+  ASSERT_FALSE(shader.empty());
+
+  EXPECT_EQ(shader.find("InterlockedAdd"), std::string::npos);
+  EXPECT_NE(shader.find("uDrawCount[0] = pc.drawCount"), std::string::npos);
+  EXPECT_NE(shader.find("uOutputDraws[pc.outputOffset + idx]"),
+            std::string::npos);
+  EXPECT_NE(shader.find("outputDraw.instanceCount = 0"),
+            std::string::npos);
+}

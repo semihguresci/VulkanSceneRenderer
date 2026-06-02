@@ -1,0 +1,405 @@
+#include "Container/renderer/forward/ForwardRasterLightingPassRecorder.h"
+
+#include "Container/renderer/bim/BimSurfaceRasterPassRecorder.h"
+#include "Container/renderer/core/RenderPassScopeRecorder.h"
+#include "Container/renderer/debug/DebugOverlayRenderer.h"
+#include "Container/renderer/forward/ForwardRasterPipelineBridge.h"
+#include "Container/renderer/forward/ForwardRasterResourceBridge.h"
+#include "Container/renderer/scene/SceneOpaqueDrawPlanner.h"
+#include "Container/renderer/scene/SceneOpaqueDrawRecorder.h"
+#include "Container/renderer/scene/SceneTransparentDrawPlanner.h"
+#include "Container/renderer/scene/SceneTransparentDrawRecorder.h"
+#include "Container/renderer/scene/SceneViewport.h"
+
+#include <array>
+#include <span>
+
+namespace container::renderer {
+
+namespace {
+
+[[nodiscard]] bool hasDrawCommands(const std::vector<DrawCommand>* commands) {
+  return commands != nullptr && !commands->empty();
+}
+
+[[nodiscard]] RenderPassReadiness ready() { return {}; }
+
+[[nodiscard]] RenderPassReadiness notNeeded() {
+  RenderPassReadiness readiness{};
+  readiness.ready = false;
+  readiness.skipReason = RenderPassSkipReason::NotNeeded;
+  return readiness;
+}
+
+[[nodiscard]] RenderPassReadiness missing(RenderResourceId resource) {
+  RenderPassReadiness readiness{};
+  readiness.ready = false;
+  readiness.skipReason = RenderPassSkipReason::MissingResource;
+  readiness.blockingResource = resource;
+  return readiness;
+}
+
+[[nodiscard]] SceneOpaqueDrawLists sceneOpaqueDrawLists(
+    const FrameDrawLists& draws) {
+  return {.aggregate = draws.opaqueDrawCommands,
+          .singleSided = draws.opaqueSingleSidedDrawCommands,
+          .windingFlipped = draws.opaqueWindingFlippedDrawCommands,
+          .doubleSided = draws.opaqueDoubleSidedDrawCommands};
+}
+
+[[nodiscard]] SceneTransparentDrawLists sceneTransparentDrawLists(
+    const FrameDrawLists& draws) {
+  return {.aggregate = draws.transparentDrawCommands,
+          .singleSided = draws.transparentSingleSidedDrawCommands,
+          .windingFlipped = draws.transparentWindingFlippedDrawCommands,
+          .doubleSided = draws.transparentDoubleSidedDrawCommands};
+}
+
+[[nodiscard]] BimSurfaceDrawLists bimSurfaceDrawLists(
+    const FrameDrawLists& draws) {
+  return {
+      .opaqueDrawCommands = draws.opaqueDrawCommands,
+      .opaqueSingleSidedDrawCommands = draws.opaqueSingleSidedDrawCommands,
+      .opaqueWindingFlippedDrawCommands =
+          draws.opaqueWindingFlippedDrawCommands,
+      .opaqueDoubleSidedDrawCommands = draws.opaqueDoubleSidedDrawCommands,
+      .transparentDrawCommands = draws.transparentDrawCommands,
+      .transparentSingleSidedDrawCommands =
+          draws.transparentSingleSidedDrawCommands,
+      .transparentWindingFlippedDrawCommands =
+          draws.transparentWindingFlippedDrawCommands,
+      .transparentDoubleSidedDrawCommands =
+          draws.transparentDoubleSidedDrawCommands,
+  };
+}
+
+[[nodiscard]] BimSurfaceFramePassDrawSources bimSurfaceDrawSources(
+    const FrameBimResources& bim) {
+  return {.mesh = bimSurfaceDrawLists(bim.draws),
+          .pointPlaceholders = bimSurfaceDrawLists(bim.pointDraws),
+          .curvePlaceholders = bimSurfaceDrawLists(bim.curveDraws),
+          .opaqueMeshDrawsUseGpuVisibility =
+              bim.opaqueMeshDrawsUseGpuVisibility,
+          .transparentMeshDrawsUseGpuVisibility =
+              bim.transparentMeshDrawsUseGpuVisibility};
+}
+
+[[nodiscard]] bool hasSceneOpaqueDraws(const FrameRecordParams& p) {
+  return hasDrawCommands(p.draws.opaqueDrawCommands) ||
+         hasDrawCommands(p.draws.opaqueSingleSidedDrawCommands) ||
+         hasDrawCommands(p.draws.opaqueWindingFlippedDrawCommands) ||
+         hasDrawCommands(p.draws.opaqueDoubleSidedDrawCommands);
+}
+
+[[nodiscard]] bool hasSceneTransparentDraws(const FrameRecordParams& p) {
+  return hasDrawCommands(p.draws.transparentDrawCommands) ||
+         hasDrawCommands(p.draws.transparentSingleSidedDrawCommands) ||
+         hasDrawCommands(p.draws.transparentWindingFlippedDrawCommands) ||
+         hasDrawCommands(p.draws.transparentDoubleSidedDrawCommands);
+}
+
+[[nodiscard]] bool hasBimOpaqueDraws(const FrameBimResources& bim) {
+  const BimSurfaceFramePassDrawSources sources = bimSurfaceDrawSources(bim);
+  return hasBimSurfaceOpaqueDrawCommands(sources.mesh) ||
+         hasBimSurfaceOpaqueDrawCommands(sources.pointPlaceholders) ||
+         hasBimSurfaceOpaqueDrawCommands(sources.curvePlaceholders);
+}
+
+[[nodiscard]] bool hasBimTransparentDraws(const FrameBimResources& bim) {
+  const BimSurfaceFramePassDrawSources sources = bimSurfaceDrawSources(bim);
+  return hasBimSurfaceTransparentDrawCommands(sources.mesh) ||
+         hasBimSurfaceTransparentDrawCommands(sources.pointPlaceholders) ||
+         hasBimSurfaceTransparentDrawCommands(sources.curvePlaceholders);
+}
+
+[[nodiscard]] bool hasAnyDraws(const FrameRecordParams& p) {
+  return hasSceneOpaqueDraws(p) || hasSceneTransparentDraws(p) ||
+         hasBimOpaqueDraws(p.bim) || hasBimTransparentDraws(p.bim);
+}
+
+[[nodiscard]] bool hasLightingFramebuffer(const FrameRecordParams& p) {
+  const FrameFramebufferBinding* binding =
+      forwardRasterFramebufferBinding(p, ForwardRasterFramebufferId::Lighting);
+  return binding != nullptr && binding->framebuffer != VK_NULL_HANDLE &&
+         binding->renderPass != VK_NULL_HANDLE && binding->extent.width > 0u &&
+         binding->extent.height > 0u;
+}
+
+[[nodiscard]] bool hasForwardLightSets(const FrameRecordParams& p) {
+  return forwardRasterDescriptorSetReady(p, ForwardRasterDescriptorSetId::Light) &&
+         forwardRasterDescriptorSetReady(
+             p, ForwardRasterDescriptorSetId::FrameLighting);
+}
+
+[[nodiscard]] bool hasForwardTransparentSets(const FrameRecordParams& p) {
+  return hasForwardLightSets(p) &&
+         forwardRasterDescriptorSetReady(p, ForwardRasterDescriptorSetId::Oit);
+}
+
+[[nodiscard]] bool hasSceneGeometry(const FrameRecordParams& p) {
+  return p.pushConstants.bindless != nullptr &&
+         p.scene.vertexSlice.buffer != VK_NULL_HANDLE &&
+         p.scene.indexSlice.buffer != VK_NULL_HANDLE &&
+         forwardRasterDescriptorSetReady(p, ForwardRasterDescriptorSetId::Scene);
+}
+
+[[nodiscard]] bool hasBimGeometry(const FrameRecordParams& p) {
+  return p.pushConstants.bindless != nullptr &&
+         p.bim.scene.vertexSlice.buffer != VK_NULL_HANDLE &&
+         p.bim.scene.indexSlice.buffer != VK_NULL_HANDLE &&
+         forwardRasterDescriptorSetReady(p,
+                                         ForwardRasterDescriptorSetId::BimScene);
+}
+
+[[nodiscard]] bool hasForwardOpaquePipeline(const FrameRecordParams& p) {
+  return forwardRasterPipelineReady(p, ForwardRasterPipelineId::ForwardOpaque);
+}
+
+[[nodiscard]] bool hasForwardTransparentPipelines(const FrameRecordParams& p) {
+  return forwardRasterPipelineReady(p, ForwardRasterPipelineId::Transparent) &&
+         forwardRasterPipelineReady(p,
+                                    ForwardRasterPipelineId::TransparentFrontCull) &&
+         forwardRasterPipelineReady(p,
+                                    ForwardRasterPipelineId::TransparentNoCull);
+}
+
+[[nodiscard]] std::array<VkClearValue, 2> lightingClearValues() {
+  std::array<VkClearValue, 2> clearValues{};
+  clearValues[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+  clearValues[1].depthStencil = {0.0f, 0u};
+  return clearValues;
+}
+
+[[nodiscard]] container::gpu::BindlessPushConstants bindlessPushConstants(
+    const FrameRecordParams& p) {
+  return p.pushConstants.bindless != nullptr
+             ? *p.pushConstants.bindless
+             : container::gpu::BindlessPushConstants{};
+}
+
+[[nodiscard]] std::array<VkDescriptorSet, 4> forwardDescriptorSets(
+    const FrameRecordParams& p, ForwardRasterDescriptorSetId sceneSet) {
+  return {forwardRasterDescriptorSet(p, sceneSet),
+          forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::Light),
+          forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::Oit),
+          forwardRasterDescriptorSet(p,
+                                     ForwardRasterDescriptorSetId::FrameLighting)};
+}
+
+[[nodiscard]] std::array<VkDescriptorSet, 2> forwardOpaqueDescriptorSets(
+    const FrameRecordParams& p, ForwardRasterDescriptorSetId sceneSet) {
+  return {forwardRasterDescriptorSet(p, sceneSet),
+          forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::Light)};
+}
+
+void bindForwardOpaqueLightingSets(VkCommandBuffer cmd, VkPipelineLayout layout,
+                                   const FrameRecordParams& p) {
+  const VkDescriptorSet lightSet =
+      forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::Light);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 1u, 1u,
+                          &lightSet, 0u, nullptr);
+
+  const VkDescriptorSet frameLightingSet = forwardRasterDescriptorSet(
+      p, ForwardRasterDescriptorSetId::FrameLighting);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 3u, 1u,
+                          &frameLightingSet, 0u, nullptr);
+}
+
+void recordSceneOpaque(VkCommandBuffer cmd, const FrameRecordParams& p,
+                       VkPipelineLayout layout,
+                       const DebugOverlayRenderer& debugOverlay) {
+  if (!hasSceneOpaqueDraws(p)) {
+    return;
+  }
+
+  const SceneOpaqueDrawPlan plan =
+      buildSceneOpaqueDrawPlan({.draws = sceneOpaqueDrawLists(p.draws)});
+  const VkPipeline pipeline =
+      forwardRasterPipelineHandle(p, ForwardRasterPipelineId::ForwardOpaque);
+  bindForwardOpaqueLightingSets(cmd, layout, p);
+  (void)recordSceneOpaqueDrawCommands(
+      cmd, {.plan = &plan,
+            .geometry = {.descriptorSet = forwardRasterDescriptorSet(
+                             p, ForwardRasterDescriptorSetId::Scene),
+                         .vertexSlice = p.scene.vertexSlice,
+                         .indexSlice = p.scene.indexSlice,
+                         .indexType = p.scene.indexType},
+            .pipelines = {.primary = pipeline,
+                          .frontCull = pipeline,
+                          .noCull = pipeline},
+            .pipelineLayout = layout,
+            .pushConstants = bindlessPushConstants(p),
+            .imageIndex = p.runtime.imageIndex,
+            .debugOverlay = &debugOverlay});
+}
+
+void recordSceneTransparent(VkCommandBuffer cmd, const FrameRecordParams& p,
+                            VkPipelineLayout layout,
+                            const DebugOverlayRenderer& debugOverlay) {
+  if (!hasSceneTransparentDraws(p)) {
+    return;
+  }
+
+  const std::array<VkDescriptorSet, 4> descriptorSets =
+      forwardDescriptorSets(p, ForwardRasterDescriptorSetId::Scene);
+  const SceneTransparentDrawPlan plan =
+      buildSceneTransparentDrawPlan(sceneTransparentDrawLists(p.draws));
+  (void)recordSceneTransparentDrawCommands(
+      cmd, {.plan = &plan,
+            .geometry = {.descriptorSets = descriptorSets,
+                         .vertexSlice = p.scene.vertexSlice,
+                         .indexSlice = p.scene.indexSlice,
+                         .indexType = p.scene.indexType},
+            .pipelines = {.primary = forwardRasterPipelineHandle(
+                              p, ForwardRasterPipelineId::Transparent),
+                          .frontCull = forwardRasterPipelineHandle(
+                              p, ForwardRasterPipelineId::TransparentFrontCull),
+                          .noCull = forwardRasterPipelineHandle(
+                              p, ForwardRasterPipelineId::TransparentNoCull)},
+            .pipelineLayout = layout,
+            .pushConstants = bindlessPushConstants(p),
+            .debugOverlay = &debugOverlay});
+}
+
+void recordBimSurface(VkCommandBuffer cmd, const FrameRecordParams& p,
+                      BimSurfacePassKind kind, bool passReady,
+                      VkPipeline singleSided, VkPipeline windingFlipped,
+                      VkPipeline doubleSided, VkPipelineLayout layout,
+                      const DebugOverlayRenderer& debugOverlay) {
+  if (!passReady) {
+    return;
+  }
+
+  const bool transparentPass =
+      kind == BimSurfacePassKind::TransparentLighting;
+  const std::array<VkDescriptorSet, 2> opaqueDescriptorSets =
+      forwardOpaqueDescriptorSets(p, ForwardRasterDescriptorSetId::BimScene);
+  const std::array<VkDescriptorSet, 4> transparentDescriptorSets =
+      forwardDescriptorSets(p, ForwardRasterDescriptorSetId::BimScene);
+  const std::span<const VkDescriptorSet> descriptorSets =
+      transparentPass ? std::span<const VkDescriptorSet>(transparentDescriptorSets)
+                      : std::span<const VkDescriptorSet>(opaqueDescriptorSets);
+  container::gpu::BindlessPushConstants basePushConstants =
+      bindlessPushConstants(p);
+  basePushConstants.semanticColorMode = p.bim.semanticColorMode;
+  if (!transparentPass) {
+    bindForwardOpaqueLightingSets(cmd, layout, p);
+  }
+  const BimSurfacePassPlan plan = buildBimSurfaceFramePassPlan(
+      {.kind = kind,
+       .passReady = true,
+       .draws = bimSurfaceDrawSources(p.bim),
+       .geometry = {.descriptorSets = descriptorSets,
+                    .vertexSlice = p.bim.scene.vertexSlice,
+                    .indexSlice = p.bim.scene.indexSlice,
+                    .indexType = p.bim.scene.indexType},
+       .pipelines = {.singleSided = singleSided,
+                     .windingFlipped = windingFlipped,
+                     .doubleSided = doubleSided},
+       .pushConstants = &basePushConstants,
+       .semanticColorMode = p.bim.semanticColorMode});
+  (void)recordBimSurfacePassCommands(
+      cmd, {.plan = &plan,
+            .geometry = {.descriptorSets = descriptorSets,
+                         .vertexSlice = p.bim.scene.vertexSlice,
+                         .indexSlice = p.bim.scene.indexSlice,
+                         .indexType = p.bim.scene.indexType},
+            .singleSidedPipeline = singleSided,
+            .windingFlippedPipeline = windingFlipped,
+            .doubleSidedPipeline = doubleSided,
+            .pipelineLayout = layout,
+            .pushConstants = bimSurfaceRasterPassPushConstants(
+                basePushConstants, plan),
+            .debugOverlay = &debugOverlay,
+            .bimManager = p.services.bimManager});
+}
+
+}  // namespace
+
+RenderPassReadiness
+checkForwardRasterLightingPassReadiness(const FrameRecordParams& p) {
+  if (!hasAnyDraws(p)) {
+    return notNeeded();
+  }
+
+  const bool sceneOpaqueDraws = hasSceneOpaqueDraws(p);
+  const bool sceneTransparentDraws = hasSceneTransparentDraws(p);
+  const bool bimOpaqueDraws = hasBimOpaqueDraws(p.bim);
+  const bool bimTransparentDraws = hasBimTransparentDraws(p.bim);
+  if (!hasLightingFramebuffer(p) ||
+      !forwardRasterPipelineLayoutReady(
+          p, ForwardRasterPipelineLayoutId::Transparent)) {
+    return missing(RenderResourceId::SceneColor);
+  }
+
+  if ((sceneOpaqueDraws || bimOpaqueDraws) && !hasForwardOpaquePipeline(p)) {
+    return missing(RenderResourceId::SceneColor);
+  }
+  if ((sceneOpaqueDraws || sceneTransparentDraws) && !hasSceneGeometry(p)) {
+    return missing(RenderResourceId::SceneGeometry);
+  }
+  if ((bimOpaqueDraws || bimTransparentDraws) && !hasBimGeometry(p)) {
+    return missing(RenderResourceId::BimGeometry);
+  }
+  if ((sceneOpaqueDraws || bimOpaqueDraws) && !hasForwardLightSets(p)) {
+    return missing(RenderResourceId::SceneGeometry);
+  }
+  if ((sceneTransparentDraws || bimTransparentDraws) &&
+      (!hasForwardTransparentSets(p) || !hasForwardTransparentPipelines(p))) {
+    return missing(RenderResourceId::SceneColor);
+  }
+
+  return ready();
+}
+
+bool recordForwardRasterLightingPassCommands(VkCommandBuffer commandBuffer,
+                                             const FrameRecordParams& p) {
+  if (commandBuffer == VK_NULL_HANDLE ||
+      !checkForwardRasterLightingPassReadiness(p).ready) {
+    return false;
+  }
+
+  const FrameFramebufferBinding* framebuffer =
+      forwardRasterFramebufferBinding(p, ForwardRasterFramebufferId::Lighting);
+  if (framebuffer == nullptr) {
+    return false;
+  }
+
+  const std::array<VkClearValue, 2> clearValues = lightingClearValues();
+  if (!recordRenderPassBeginCommands(
+          commandBuffer,
+          {.renderPass = framebuffer->renderPass,
+           .framebuffer = framebuffer->framebuffer,
+           .renderArea = {.offset = {0, 0}, .extent = framebuffer->extent},
+           .clearValues = clearValues})) {
+    return false;
+  }
+
+  recordSceneViewportAndScissor(commandBuffer, framebuffer->extent);
+  const DebugOverlayRenderer debugOverlay{};
+  const VkPipelineLayout layout = forwardRasterPipelineLayout(
+      p, ForwardRasterPipelineLayoutId::Transparent);
+
+  recordSceneOpaque(commandBuffer, p, layout, debugOverlay);
+
+  const VkPipeline opaquePipeline =
+      forwardRasterPipelineHandle(p, ForwardRasterPipelineId::ForwardOpaque);
+  recordBimSurface(commandBuffer, p, BimSurfacePassKind::OpaqueLighting,
+                   hasBimOpaqueDraws(p.bim), opaquePipeline, opaquePipeline,
+                   opaquePipeline, layout, debugOverlay);
+
+  recordSceneTransparent(commandBuffer, p, layout, debugOverlay);
+  recordBimSurface(
+      commandBuffer, p, BimSurfacePassKind::TransparentLighting,
+      hasBimTransparentDraws(p.bim),
+      forwardRasterPipelineHandle(p, ForwardRasterPipelineId::Transparent),
+      forwardRasterPipelineHandle(p,
+                                  ForwardRasterPipelineId::TransparentFrontCull),
+      forwardRasterPipelineHandle(p, ForwardRasterPipelineId::TransparentNoCull),
+      layout, debugOverlay);
+
+  (void)recordRenderPassEndCommands(commandBuffer);
+  return true;
+}
+
+}  // namespace container::renderer

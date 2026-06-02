@@ -43,6 +43,12 @@ public:
     bool valid{false};
   };
 
+  struct SceneViewBounds {
+    glm::vec3 min{0.0f};
+    glm::vec3 max{0.0f};
+    bool valid{false};
+  };
+
   CameraController(std::shared_ptr<container::gpu::VulkanDevice> device,
                    container::gpu::AllocationManager &allocationManager,
                    container::gpu::SwapChainManager &swapChainManager,
@@ -63,6 +69,7 @@ public:
 
   // Positions the camera relative to the current scene bounds.
   void resetCameraForScene();
+  void resetCameraForBounds(const SceneViewBounds &bounds);
 
   // Viewport navigation helpers used by render-space interactions.
   void frameNodeOrScene(uint32_t nodeIndex);
