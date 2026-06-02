@@ -198,6 +198,31 @@ TEST(BimSurfacePassPlannerTests, GBufferPlanCarriesSemanticColorMode) {
   EXPECT_EQ(plan.semanticColorMode, 42u);
 }
 
+TEST(BimSurfacePassPlannerTests,
+     OpaqueLightingUsesOpaqueRoutesAndCarriesSemanticColorMode) {
+  const auto opaque = drawCommands(23u);
+  auto inputs = readyInputs();
+  inputs.kind = BimSurfacePassKind::OpaqueLighting;
+  inputs.semanticColorMode = 123u;
+  appendSource(inputs, {.draws = {.opaqueDrawCommands = &opaque}});
+
+  const auto plan = buildBimSurfacePassPlan(inputs);
+
+  ASSERT_TRUE(plan.active);
+  EXPECT_TRUE(plan.writesSemanticColorMode);
+  EXPECT_EQ(plan.semanticColorMode, 123u);
+  ASSERT_EQ(plan.sourceCount, 1u);
+  ASSERT_EQ(plan.sources[0].routeCount, 3u);
+  EXPECT_EQ(plan.sources[0].routes[0].kind,
+            BimSurfaceDrawRouteKind::SingleSided);
+  EXPECT_EQ(plan.sources[0].routes[0].gpuSlot,
+            BimDrawCompactionSlot::OpaqueSingleSided);
+  EXPECT_EQ(plan.sources[0].routes[1].gpuSlot,
+            BimDrawCompactionSlot::OpaqueWindingFlipped);
+  EXPECT_EQ(plan.sources[0].routes[2].gpuSlot,
+            BimDrawCompactionSlot::OpaqueDoubleSided);
+}
+
 TEST(BimSurfacePassPlannerTests, DepthPlanDoesNotRequireSemanticColorMode) {
   const auto opaque = drawCommands(16u);
   auto inputs = readyInputs();

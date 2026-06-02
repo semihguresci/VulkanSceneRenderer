@@ -3,6 +3,8 @@
 #pragma once
 
 static const float PI = 3.14159265359;
+static const float kShadowedDiffuseBounceMinReceiverTurn = 1.0;
+static const float kShadowedDiffuseBounceMinVisibility = 0.75;
 
 float Pow5(float x)
 {
@@ -311,12 +313,18 @@ float3 EvaluateDiffuseBounceLight(float3 albedo, float metallic,
     float directNdotL =
         saturate(FiniteScalarOr(dot(geometricNormal, L), 0.0));
     float receiverTurnsFromLight = 1.0 - directNdotL;
+    float indirectReceiverTurn = lerp(
+        receiverTurnsFromLight,
+        max(receiverTurnsFromLight, kShadowedDiffuseBounceMinReceiverTurn),
+        1.0 - directVisibility);
     float visibleReceiver =
         0.35 + 0.65 * saturate(abs(FiniteScalarOr(dot(shadingNormal, V), 0.0)));
     float aoWeight = 0.25 + 0.75 * occlusion;
-    float shadowWeight = 0.2 + 0.8 * directVisibility;
+    float shadowWeight =
+        kShadowedDiffuseBounceMinVisibility +
+        (1.0 - kShadowedDiffuseBounceMinVisibility) * directVisibility;
     float diffuseEnergy = saturate(1.0 - metallic);
-    float bounceWeight = min(bounceIntensity * receiverTurnsFromLight *
+    float bounceWeight = min(bounceIntensity * indirectReceiverTurn *
                                  visibleReceiver * aoWeight * shadowWeight,
                              0.65);
 

@@ -10,8 +10,9 @@ namespace container::renderer {
 enum class BimSurfacePassKind : uint32_t {
   DepthPrepass = 0,
   GBuffer = 1,
-  TransparentPick = 2,
-  TransparentLighting = 3,
+  OpaqueLighting = 2,
+  TransparentPick = 3,
+  TransparentLighting = 4,
 };
 
 enum class BimSurfacePassSourceKind : uint32_t {

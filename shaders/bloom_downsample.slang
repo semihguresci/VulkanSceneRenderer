@@ -10,9 +10,21 @@ ConstantBuffer<BloomDownsamplePushConstants> pc;
 [[vk::binding(1, 0)]] SamplerState linearSampler;
 [[vk::binding(2, 0)]] RWTexture2D<float4> dstTexture;
 
+float3 BloomFinite3Or(float3 value, float3 fallback)
+{
+    return all(isfinite(value)) ? value : fallback;
+}
+
+float3 SampleBloomFinite(Texture2D<float4> tex, SamplerState samp, float2 uv)
+{
+    return max(BloomFinite3Or(tex.SampleLevel(samp, uv, 0.0).rgb, 0.0.xxx),
+               0.0.xxx);
+}
+
 // Soft knee threshold curve (Karis 2014).
 float3 ThresholdFilter(float3 color, float threshold, float knee)
 {
+    color = max(BloomFinite3Or(color, 0.0.xxx), 0.0.xxx);
     float brightness = max(color.r, max(color.g, color.b));
     float soft = brightness - threshold + knee;
     soft = clamp(soft, 0.0, 2.0 * knee);
@@ -26,25 +38,25 @@ float3 ThresholdFilter(float3 color, float threshold, float knee)
 float3 DownsampleBox13(Texture2D<float4> tex, SamplerState samp, float2 uv, float2 texelSize)
 {
     // Center
-    float3 A = tex.SampleLevel(samp, uv, 0.0).rgb;
+    float3 A = SampleBloomFinite(tex, samp, uv);
 
     // 4 corners at half-texel offset
-    float3 B = tex.SampleLevel(samp, uv + float2(-1.0, -1.0) * texelSize, 0.0).rgb;
-    float3 C = tex.SampleLevel(samp, uv + float2( 1.0, -1.0) * texelSize, 0.0).rgb;
-    float3 D = tex.SampleLevel(samp, uv + float2(-1.0,  1.0) * texelSize, 0.0).rgb;
-    float3 E = tex.SampleLevel(samp, uv + float2( 1.0,  1.0) * texelSize, 0.0).rgb;
+    float3 B = SampleBloomFinite(tex, samp, uv + float2(-1.0, -1.0) * texelSize);
+    float3 C = SampleBloomFinite(tex, samp, uv + float2( 1.0, -1.0) * texelSize);
+    float3 D = SampleBloomFinite(tex, samp, uv + float2(-1.0,  1.0) * texelSize);
+    float3 E = SampleBloomFinite(tex, samp, uv + float2( 1.0,  1.0) * texelSize);
 
     // 4 edges at full-texel offset
-    float3 F = tex.SampleLevel(samp, uv + float2(-2.0,  0.0) * texelSize, 0.0).rgb;
-    float3 G = tex.SampleLevel(samp, uv + float2( 2.0,  0.0) * texelSize, 0.0).rgb;
-    float3 H = tex.SampleLevel(samp, uv + float2( 0.0, -2.0) * texelSize, 0.0).rgb;
-    float3 I = tex.SampleLevel(samp, uv + float2( 0.0,  2.0) * texelSize, 0.0).rgb;
+    float3 F = SampleBloomFinite(tex, samp, uv + float2(-2.0,  0.0) * texelSize);
+    float3 G = SampleBloomFinite(tex, samp, uv + float2( 2.0,  0.0) * texelSize);
+    float3 H = SampleBloomFinite(tex, samp, uv + float2( 0.0, -2.0) * texelSize);
+    float3 I = SampleBloomFinite(tex, samp, uv + float2( 0.0,  2.0) * texelSize);
 
     // 4 corners at 2-texel offset
-    float3 J = tex.SampleLevel(samp, uv + float2(-2.0, -2.0) * texelSize, 0.0).rgb;
-    float3 K = tex.SampleLevel(samp, uv + float2( 2.0, -2.0) * texelSize, 0.0).rgb;
-    float3 L = tex.SampleLevel(samp, uv + float2(-2.0,  2.0) * texelSize, 0.0).rgb;
-    float3 M = tex.SampleLevel(samp, uv + float2( 2.0,  2.0) * texelSize, 0.0).rgb;
+    float3 J = SampleBloomFinite(tex, samp, uv + float2(-2.0, -2.0) * texelSize);
+    float3 K = SampleBloomFinite(tex, samp, uv + float2( 2.0, -2.0) * texelSize);
+    float3 L = SampleBloomFinite(tex, samp, uv + float2(-2.0,  2.0) * texelSize);
+    float3 M = SampleBloomFinite(tex, samp, uv + float2( 2.0,  2.0) * texelSize);
 
     // Weighted combination (anti-firefly weights from Jimenez):
     // Center box (A,B,C,D,E): weight 0.5
@@ -78,5 +90,6 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
         color = ThresholdFilter(color, pc.threshold, pc.knee);
     }
 
+    color = max(BloomFinite3Or(color, 0.0.xxx), 0.0.xxx);
     dstTexture[dtid.xy] = float4(color, 1.0);
 }

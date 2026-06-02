@@ -296,6 +296,8 @@ class RenderGraph {
   [[nodiscard]] RenderPassNode* mutablePass(RenderPassId id);
   [[nodiscard]] std::vector<std::vector<uint32_t>> buildResourceDependencies();
   [[nodiscard]] uint64_t computeActivePlanSignature() const;
+  [[nodiscard]] uint64_t
+  computePreparedFrameSignature(const FrameRecordParams& params) const;
   void invalidatePreparedFrame();
   void ensureActivePlan() const;
   void rebuildActiveExecutionOrder() const;
@@ -318,6 +320,7 @@ class RenderGraph {
   mutable bool activePlanDirty_{true};
   mutable bool preparedFramePlanDirty_{true};
   mutable uint64_t activePlanSignature_{0};
+  mutable uint64_t preparedFrameSignature_{0};
   mutable bool executing_{false};
 };
 

@@ -215,7 +215,7 @@ struct LightingSettings {
   float intensityScale{1.0f};
   float directionalIntensity{2.0f};
   float environmentIntensity{1.0f};
-  float bounceIntensity{0.35f};
+  float bounceIntensity{1.0f};
   uint32_t localShadowPointBudget{1};
   uint32_t localShadowLayerBudget{8};
 };
@@ -249,7 +249,7 @@ struct ShadowSettings {
   float directionalContactThickness{kDefaultDirectionalContactThickness};
   float directionalContactFadeDistance{kDefaultDirectionalContactFadeDistance};
   bool directionalPcssEnabled{true};
-  bool directionalContactVisibility{true};
+  bool directionalContactVisibility{false};
   bool localContactVisibility{true};
 };
 
@@ -272,7 +272,7 @@ struct ShadowData {
   // x = directional contact enabled, y = max ray distance in world units,
   // z = ray thickness in world units, w = fade distance in world units.
   alignas(16) glm::vec4 contactShadowSettings{
-      1.0f, kDefaultDirectionalContactMaxDistance,
+      0.0f, kDefaultDirectionalContactMaxDistance,
       kDefaultDirectionalContactThickness,
       kDefaultDirectionalContactFadeDistance};
 };
@@ -416,8 +416,8 @@ struct LightingData {
   alignas(4) float environmentIntensity{1.0f};
   alignas(4) uint32_t areaLightCount{0};
   alignas(4) uint32_t localShadowEnabled{0};
-  alignas(4) float bounceIntensity{0.35f};
-  alignas(4) uint32_t padding0{0};
+  alignas(4) float bounceIntensity{1.0f};
+  alignas(4) uint32_t localContactVisibility{0};
   alignas(4) uint32_t padding1{0};
   alignas(4) uint32_t padding2{0};
 };
@@ -444,7 +444,7 @@ struct TiledLightingPushConstants {
   float cameraFar{100.0f};
   uint32_t contactVisibilityEnabled{0};
   uint32_t localShadowEnabled{0};
-  float bounceIntensity{0.35f};
+  float bounceIntensity{1.0f};
 };
 
 // GPU-driven rendering: matches VkDrawIndexedIndirectCommand layout.
@@ -670,6 +670,8 @@ static_assert(offsetof(LightingData, localShadowEnabled) == 60,
               "LightingData.localShadowEnabled offset");
 static_assert(offsetof(LightingData, bounceIntensity) == 64,
               "LightingData.bounceIntensity offset");
+static_assert(offsetof(LightingData, localContactVisibility) == 68,
+              "LightingData.localContactVisibility offset");
 static_assert(sizeof(ShadowCascadeData) == 80,
               "ShadowCascadeData size mismatch with shader ShadowCascadeData.");
 static_assert(alignof(ShadowCascadeData) == 16,

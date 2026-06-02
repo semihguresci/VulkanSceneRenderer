@@ -19,6 +19,24 @@ namespace {
          minBounds.z <= maxBounds.z;
 }
 
+[[nodiscard]] float quantizeStableCascadeRadius(float radius) {
+  if (!std::isfinite(radius) || radius <= 0.0f) {
+    return radius;
+  }
+
+  constexpr int kRadiusQuantizationBits = 8;
+  constexpr int kMinStepExponent = -18;
+  const int radiusExponent = std::ilogb(radius);
+  const int stepExponent =
+      std::max(radiusExponent - kRadiusQuantizationBits, kMinStepExponent);
+  const float radiusStep = std::ldexp(1.0f, stepExponent);
+  if (!std::isfinite(radiusStep) || radiusStep <= 0.0f) {
+    return radius;
+  }
+
+  return std::ceil(radius / radiusStep) * radiusStep;
+}
+
 }  // namespace
 
 ShadowCascadeDepthPlan buildShadowCascadeDepthPlan(
@@ -71,6 +89,27 @@ ShadowCascadeDepthPlan buildShadowCascadeDepthPlan(
                            -plan.casterMinBounds.z);
   plan.depthRange = plan.farPlane - plan.nearPlane;
   return plan;
+}
+
+float expandShadowCascadeRadiusForFilterGuard(float receiverRadius,
+                                              uint32_t shadowMapResolution,
+                                              float guardTexels) {
+  const float radius = std::max(receiverRadius, 0.0f);
+  if (!std::isfinite(radius) || !std::isfinite(guardTexels) ||
+      shadowMapResolution == 0u || guardTexels <= 0.0f) {
+    return radius;
+  }
+
+  const float resolution = static_cast<float>(shadowMapResolution);
+  const float clampedGuardTexels =
+      std::min(std::max(guardTexels, 0.0f), resolution * 0.25f);
+  const float scaleDenominator =
+      1.0f - (2.0f * clampedGuardTexels / resolution);
+  if (scaleDenominator <= 1.0e-4f) {
+    return radius;
+  }
+
+  return quantizeStableCascadeRadius(radius / scaleDenominator);
 }
 
 }  // namespace container::renderer

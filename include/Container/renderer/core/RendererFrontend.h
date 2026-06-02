@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <glm/vec3.hpp>
@@ -48,7 +49,9 @@ class OitManager;
 class PipelineRegistry;
 class RenderPassGpuProfiler;
 class RenderTechnique;
+enum class RenderTechniqueId;
 class RenderTechniqueRegistry;
+struct RenderSystemContext;
 class RendererTelemetry;
 class SceneController;
 class SceneProviderSynchronizer;
@@ -195,6 +198,7 @@ private:
   VkSampleCountFlagBits msaaSampleCount_{VK_SAMPLE_COUNT_1_BIT};
   std::vector<uint32_t> supportedMsaaSamples_{1u};
   std::optional<VkSampleCountFlagBits> pendingMsaaSampleCount_{};
+  std::optional<RenderTechniqueId> pendingRenderTechniqueChange_{};
 
   // GPU buffers backing the camera UBO and per-object SSBO.
   struct SceneBufferState {
@@ -378,6 +382,7 @@ private:
   void destroyGraphicsPipelines();
   void recreateMsaaResources(VkSampleCountFlagBits sampleCount);
   void createCamera();
+  void resetCameraForActiveScene();
   void syncCameraSelectionPivotOverride();
   void initializeScene();
   void buildSceneGraph();
@@ -428,6 +433,7 @@ private:
   [[nodiscard]] bool samplePickIdAtCursor(double cursorX, double cursorY,
                                           uint32_t &outPickId);
   [[nodiscard]] bool depthVisibilityFrameMatchesCurrentState() const;
+  void processPendingGuiModelLoadRequest();
   [[nodiscard]] BimDrawFilter currentBimDrawFilter() const;
   [[nodiscard]] bool bimObjectVisibleByLayer(uint32_t objectIndex) const;
   [[nodiscard]] container::ui::ViewpointSnapshotState
@@ -449,8 +455,15 @@ private:
   void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex,
                            const FrameRecordParams *preparedParams = nullptr);
   [[nodiscard]] FrameRecordParams buildFrameRecordParams(uint32_t imageIndex);
+  void attachActiveTechniqueLifecycle(FrameRecordParams &params);
   void publishFrameRuntimeResourceBindings(uint32_t imageIndex);
   [[nodiscard]] FrameTransformGizmoState buildTransformGizmoState() const;
+  [[nodiscard]] RenderSystemContext renderSystemContext();
+  void initializeRenderTechnique(RenderTechniqueId requested,
+                                 std::string_view requestLabel);
+  void requestRenderTechnique(RenderTechniqueId requested);
+  void applyPendingRenderTechniqueChange();
+  void syncGuiRenderEngineOptions();
 
   // ---- scene helpers
   // ----------------------------------------------------------

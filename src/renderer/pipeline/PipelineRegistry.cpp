@@ -31,24 +31,37 @@ void validateLayout(const RegisteredPipelineLayout &layout) {
   }
 }
 
-void registerIfPresent(PipelineRegistry &registry, const char *name,
-                       VkPipeline pipeline) {
+void registerIfPresent(PipelineRegistry &registry, RenderTechniqueId technique,
+                       const char *name, VkPipeline pipeline) {
   if (pipeline == VK_NULL_HANDLE) {
     return;
   }
 
-  registry.registerHandle(RegisteredPipelineHandle{
-      .key = {RenderTechniqueId::DeferredRaster, name}, .pipeline = pipeline});
+  registry.registerHandle(
+      RegisteredPipelineHandle{.key = {technique, name}, .pipeline = pipeline});
 }
 
-void registerLayoutIfPresent(PipelineRegistry &registry, const char *name,
+void registerIfPresent(PipelineRegistry &registry, const char *name,
+                       VkPipeline pipeline) {
+  registerIfPresent(registry, RenderTechniqueId::DeferredRaster, name,
+                    pipeline);
+}
+
+void registerLayoutIfPresent(PipelineRegistry &registry,
+                             RenderTechniqueId technique, const char *name,
                              VkPipelineLayout layout) {
   if (layout == VK_NULL_HANDLE) {
     return;
   }
 
-  registry.registerLayout(RegisteredPipelineLayout{
-      .key = {RenderTechniqueId::DeferredRaster, name}, .layout = layout});
+  registry.registerLayout(
+      RegisteredPipelineLayout{.key = {technique, name}, .layout = layout});
+}
+
+void registerLayoutIfPresent(PipelineRegistry &registry, const char *name,
+                             VkPipelineLayout layout) {
+  registerLayoutIfPresent(registry, RenderTechniqueId::DeferredRaster, name,
+                          layout);
 }
 
 } // namespace
@@ -297,6 +310,46 @@ buildGraphicsPipelineHandleRegistry(const GraphicsPipelines &pipelines) {
                     pipelines.transformGizmoOverlay);
   registerIfPresent(*registry, "transform-gizmo-solid-overlay",
                     pipelines.transformGizmoSolidOverlay);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "depth-prepass", pipelines.depthPrepass);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "depth-prepass-front-cull",
+                    pipelines.depthPrepassFrontCull);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "depth-prepass-no-cull", pipelines.depthPrepassNoCull);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "bim-depth-prepass", pipelines.bimDepthPrepass);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "bim-depth-prepass-front-cull",
+                    pipelines.bimDepthPrepassFrontCull);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "bim-depth-prepass-no-cull",
+                    pipelines.bimDepthPrepassNoCull);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "forward-transparent", pipelines.transparent);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "forward-transparent-front-cull",
+                    pipelines.transparentFrontCull);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "forward-transparent-no-cull", pipelines.transparentNoCull);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster, "post-process",
+                    pipelines.postProcess);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster, "light-gizmo",
+                    pipelines.lightGizmo);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "light-gizmo-coverage", pipelines.lightGizmoCoverage);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "transform-gizmo", pipelines.transformGizmo);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "transform-gizmo-solid", pipelines.transformGizmoSolid);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "transform-gizmo-overlay", pipelines.transformGizmoOverlay);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "transform-gizmo-solid-overlay",
+                    pipelines.transformGizmoSolidOverlay);
+  for (const RegisteredPipelineHandle &handle : pipelines.extraHandles) {
+    registry->registerHandle(handle);
+  }
 
   return registry;
 }
@@ -306,17 +359,30 @@ buildGraphicsPipelineLayoutRegistry(const PipelineLayouts &layouts) {
   auto registry = std::make_shared<PipelineRegistry>();
 
   registerLayoutIfPresent(*registry, "scene", layouts.scene);
+  registerLayoutIfPresent(*registry, RenderTechniqueId::ForwardRaster, "scene",
+                          layouts.scene);
   registerLayoutIfPresent(*registry, "transparent", layouts.transparent);
+  registerLayoutIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                          "transparent", layouts.transparent);
   registerLayoutIfPresent(*registry, "lighting", layouts.lighting);
   registerLayoutIfPresent(*registry, "light-gizmo", layouts.lightGizmo);
+  registerLayoutIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                          "light-gizmo", layouts.lightGizmo);
   registerLayoutIfPresent(*registry, "tiled-lighting", layouts.tiledLighting);
   registerLayoutIfPresent(*registry, "shadow", layouts.shadow);
   registerLayoutIfPresent(*registry, "post-process", layouts.postProcess);
+  registerLayoutIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                          "post-process", layouts.postProcess);
   registerLayoutIfPresent(*registry, "wireframe", layouts.wireframe);
   registerLayoutIfPresent(*registry, "normal-validation",
                           layouts.normalValidation);
   registerLayoutIfPresent(*registry, "surface-normal", layouts.surfaceNormal);
   registerLayoutIfPresent(*registry, "transform-gizmo", layouts.transformGizmo);
+  registerLayoutIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                          "transform-gizmo", layouts.transformGizmo);
+  for (const RegisteredPipelineLayout &layout : layouts.extraLayouts) {
+    registry->registerLayout(layout);
+  }
 
   return registry;
 }

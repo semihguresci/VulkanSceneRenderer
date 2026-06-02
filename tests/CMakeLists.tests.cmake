@@ -14,6 +14,7 @@ set(TEST_RENDERER_BIM_DIR "${TEST_RENDERER_DIR}/bim")
 set(TEST_RENDERER_CORE_DIR "${TEST_RENDERER_DIR}/core")
 set(TEST_RENDERER_CULLING_DIR "${TEST_RENDERER_DIR}/culling")
 set(TEST_RENDERER_DEFERRED_DIR "${TEST_RENDERER_DIR}/deferred")
+set(TEST_RENDERER_FORWARD_DIR "${TEST_RENDERER_DIR}/forward")
 set(TEST_RENDERER_LIGHTING_DIR "${TEST_RENDERER_DIR}/lighting")
 set(TEST_RENDERER_PICKING_DIR "${TEST_RENDERER_DIR}/picking")
 set(TEST_RENDERER_SCENE_DIR "${TEST_RENDERER_DIR}/scene")
@@ -384,6 +385,22 @@ add_custom_test(deferred_raster_debug_overlay_planner_tests
 add_custom_test(deferred_raster_debug_overlay_recorder_tests
     ${TEST_RENDERER_DEFERRED_DIR}/deferred_raster_debug_overlay_recorder_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_renderer
+)
+
+add_custom_test(forward_raster_technique_tests
+    ${TEST_RENDERER_FORWARD_DIR}/forward_raster_technique_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+target_compile_definitions(forward_raster_technique_tests PRIVATE
+    CONTAINER_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+add_custom_test(forward_raster_lighting_pass_recorder_tests
+    ${TEST_RENDERER_FORWARD_DIR}/forward_raster_lighting_pass_recorder_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+target_compile_definitions(forward_raster_lighting_pass_recorder_tests PRIVATE
+    CONTAINER_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
 add_custom_test(bim_draw_compaction_planner_tests

@@ -863,6 +863,9 @@ private:
                   container::scene::SceneManager &sceneManager);
   void loadIfc(const std::filesystem::path &path, float importScale,
                container::scene::SceneManager &sceneManager);
+  void loadIfcWithPreparedSidecarFallback(
+      const std::filesystem::path &path, float importScale,
+      container::scene::SceneManager &sceneManager);
   void loadGltfFallback(const std::filesystem::path &path, float importScale,
                         container::scene::SceneManager &sceneManager);
   void loadPreparedModel(const container::geometry::dotbim::Model &model,

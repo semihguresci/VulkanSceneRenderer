@@ -11,22 +11,39 @@ ConstantBuffer<BloomUpsamplePushConstants> pc;
 [[vk::binding(2, 0)]] Texture2D<float4> dstReadTexture; // Current mip to blend with
 [[vk::binding(3, 0)]] RWTexture2D<float4> dstTexture;   // Output
 
+float3 BloomFinite3Or(float3 value, float3 fallback)
+{
+    return all(isfinite(value)) ? value : fallback;
+}
+
+float BloomFiniteOr(float value, float fallback)
+{
+    return isfinite(value) ? value : fallback;
+}
+
+float3 SampleBloomFinite(Texture2D<float4> tex, SamplerState samp, float2 uv)
+{
+    return max(BloomFinite3Or(tex.SampleLevel(samp, uv, 0.0).rgb, 0.0.xxx),
+               0.0.xxx);
+}
+
 // 9-tap tent filter for upsampling (3x3 bilinear taps).
 float3 UpsampleTent9(Texture2D<float4> tex, SamplerState samp, float2 uv, float2 texelSize, float radius)
 {
+    radius = max(BloomFiniteOr(radius, 1.0), 0.0);
     float2 d = texelSize * radius;
 
-    float3 a = tex.SampleLevel(samp, uv + float2(-d.x, -d.y), 0.0).rgb;
-    float3 b = tex.SampleLevel(samp, uv + float2( 0.0, -d.y), 0.0).rgb;
-    float3 c = tex.SampleLevel(samp, uv + float2( d.x, -d.y), 0.0).rgb;
+    float3 a = SampleBloomFinite(tex, samp, uv + float2(-d.x, -d.y));
+    float3 b = SampleBloomFinite(tex, samp, uv + float2( 0.0, -d.y));
+    float3 c = SampleBloomFinite(tex, samp, uv + float2( d.x, -d.y));
 
-    float3 d0 = tex.SampleLevel(samp, uv + float2(-d.x, 0.0), 0.0).rgb;
-    float3 e = tex.SampleLevel(samp, uv, 0.0).rgb;
-    float3 f = tex.SampleLevel(samp, uv + float2( d.x, 0.0), 0.0).rgb;
+    float3 d0 = SampleBloomFinite(tex, samp, uv + float2(-d.x, 0.0));
+    float3 e = SampleBloomFinite(tex, samp, uv);
+    float3 f = SampleBloomFinite(tex, samp, uv + float2( d.x, 0.0));
 
-    float3 g = tex.SampleLevel(samp, uv + float2(-d.x,  d.y), 0.0).rgb;
-    float3 h = tex.SampleLevel(samp, uv + float2( 0.0,  d.y), 0.0).rgb;
-    float3 i = tex.SampleLevel(samp, uv + float2( d.x,  d.y), 0.0).rgb;
+    float3 g = SampleBloomFinite(tex, samp, uv + float2(-d.x,  d.y));
+    float3 h = SampleBloomFinite(tex, samp, uv + float2( 0.0,  d.y));
+    float3 i = SampleBloomFinite(tex, samp, uv + float2( d.x,  d.y));
 
     // Tent filter weights: 1 2 1 / 2 4 2 / 1 2 1 → sum = 16
     float3 result = e * 4.0;
@@ -53,8 +70,8 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
     float3 upsampled = UpsampleTent9(srcTexture, linearSampler, uv, texelSize, pc.filterRadius);
 
     // Additive blend with the destination mip.
-    float3 existing = dstReadTexture.SampleLevel(linearSampler, uv, 0.0).rgb;
-    float3 result = existing + upsampled;
+    float3 existing = SampleBloomFinite(dstReadTexture, linearSampler, uv);
+    float3 result = max(BloomFinite3Or(existing + upsampled, 0.0.xxx), 0.0.xxx);
 
     dstTexture[dtid.xy] = float4(result, 1.0);
 }

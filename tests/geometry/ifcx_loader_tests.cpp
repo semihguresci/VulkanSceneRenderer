@@ -3,8 +3,11 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include <glm/geometric.hpp>
@@ -14,6 +17,41 @@
 #endif
 
 namespace {
+
+std::string readTextFile(const std::filesystem::path &path) {
+  std::ifstream file(path, std::ios::binary);
+  std::string text((std::istreambuf_iterator<char>(file)),
+                   std::istreambuf_iterator<char>());
+  return text;
+}
+
+std::string lowerAscii(std::string value) {
+  std::ranges::transform(value, value.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return value;
+}
+
+bool startsWith(std::string_view value, std::string_view prefix) {
+  return value.size() >= prefix.size() &&
+         value.substr(0, prefix.size()) == prefix;
+}
+
+bool downloadedIfc5SampleLooksRenderable(const std::filesystem::path &path) {
+  const std::string text = readTextFile(path);
+  if (text.find("usd::usdgeom::mesh") != std::string::npos ||
+      text.find("usd::usdgeom::basiscurves") != std::string::npos ||
+      text.find("points::array") != std::string::npos ||
+      text.find("points::base64") != std::string::npos ||
+      text.find("pcd::base64") != std::string::npos) {
+    return true;
+  }
+
+  const std::string stem = lowerAscii(path.stem().string());
+  return stem.find("-add-") != std::string::npos ||
+         startsWith(stem, "add-") ||
+         lowerAscii(path.parent_path().filename().string()) == "advanced";
+}
 
 TEST(IfcxLoader, ParsesUsdMeshWithInheritedMetadataAndTransform) {
   constexpr const char *kIfcJson = R"json(
@@ -777,6 +815,32 @@ TEST(IfcxLoader, PcdBase64UsesOrganizedWidthHeightPointCount) {
   EXPECT_NEAR(fourthPointColor.b, 1.0f, 1.0e-6f);
 }
 
+TEST(IfcxLoader, DecodesCompressedPcdExtendedLzfReferences) {
+  constexpr const char *kIfcJson = R"json(
+{
+  "data": [
+    {
+      "path": "points",
+      "attributes": {
+        "pcd::base64": "IyAuUENEIHYwLjcgLSBQb2ludCBDbG91ZCBEYXRhIGZpbGUgZm9ybWF0ClZFUlNJT04gMC43CkZJRUxEUyB4IHkgegpTSVpFIDQgNCA0ClRZUEUgRiBGIEYKQ09VTlQgMSAxIDEKV0lEVEggNQpIRUlHSFQgMQpQT0lOVFMgNQpEQVRBIGJpbmFyeV9jb21wcmVzc2VkCgUAAAA8AAAAAADgMgA="
+      }
+    }
+  ]
+}
+)json";
+
+  const auto model = container::geometry::ifcx::LoadFromJson(kIfcJson);
+
+  ASSERT_EQ(model.meshRanges.size(), 1u);
+  ASSERT_EQ(model.nativePointRanges.size(), 1u);
+  ASSERT_EQ(model.elements.size(), 1u);
+  EXPECT_EQ(model.nativePointRanges[0].indexCount, 5u);
+  EXPECT_FALSE(model.vertices.empty());
+  EXPECT_FALSE(model.indices.empty());
+  EXPECT_EQ(model.elements[0].geometryKind,
+            container::geometry::dotbim::GeometryKind::Points);
+}
+
 TEST(IfcxLoader, ComposesLocalIfcImports) {
   const std::filesystem::path tempDir =
       std::filesystem::temp_directory_path() / "container_ifcx_import_test";
@@ -914,6 +978,24 @@ TEST(IfcxLoader, LoadsDownloadedBuildingSmartIfc5PointCloudSample) {
   EXPECT_FALSE(model.meshRanges.empty());
   EXPECT_FALSE(model.elements.empty());
   EXPECT_GE(model.elements.size(), 5u);
+}
+
+TEST(IfcxLoader, LoadsDownloadedBuildingSmartIfc5LargeCompressedPointCloud) {
+  const std::filesystem::path sample =
+      std::filesystem::path(CONTAINER_BINARY_DIR) / "models" /
+      "buildingSMART-IFC5-development" / "examples" / "Point Cloud" /
+      "S1-pointcloud.ifcx";
+  if (!std::filesystem::exists(sample)) {
+    GTEST_SKIP() << "buildingSMART IFC5-development files are not available";
+  }
+
+  ASSERT_TRUE(downloadedIfc5SampleLooksRenderable(sample));
+  const auto model = container::geometry::ifcx::LoadFromFile(sample);
+  EXPECT_FALSE(model.vertices.empty());
+  EXPECT_FALSE(model.indices.empty());
+  EXPECT_FALSE(model.meshRanges.empty());
+  EXPECT_FALSE(model.elements.empty());
+  EXPECT_GE(model.elements.size(), 1u);
 }
 
 } // namespace

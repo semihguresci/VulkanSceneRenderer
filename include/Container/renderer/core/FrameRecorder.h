@@ -57,6 +57,7 @@ struct FrameRecordLifecycleHooks {
 struct FrameRuntimeResources {
   uint32_t frameSlot{0};
   uint32_t imageIndex{0};
+  RenderTechniqueId activeTechnique{RenderTechniqueId::DeferredRaster};
 };
 
 struct FrameSceneGeometry {
@@ -269,6 +270,7 @@ struct FrameRegistryState {
 };
 
 struct FrameDebugState {
+  uint32_t displayMode{0};
   bool debugDirectionalOnly{false};
   bool debugVisualizePointLightStencil{false};
   bool debugFreezeCulling{false};

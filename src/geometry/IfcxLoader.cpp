@@ -1443,7 +1443,7 @@ int base64Value(char c) {
 
 std::vector<uint8_t> decodeBase64(std::string_view text) {
   std::vector<uint8_t> result;
-  int accumulator = 0;
+  uint32_t accumulator = 0;
   int bits = -8;
   for (char c : text) {
     if (c == '=') {
@@ -1453,7 +1453,7 @@ std::vector<uint8_t> decodeBase64(std::string_view text) {
     if (value < 0) {
       continue;
     }
-    accumulator = (accumulator << 6) | value;
+    accumulator = (accumulator << 6u) | static_cast<uint32_t>(value);
     bits += 6;
     if (bits >= 0) {
       result.push_back(static_cast<uint8_t>((accumulator >> bits) & 0xff));
@@ -1761,7 +1761,7 @@ std::vector<uint8_t> lzfDecompress(const uint8_t *input, size_t inputSize,
     const uint8_t ctrl = input[in++];
     if (ctrl < 32u) {
       const size_t length = static_cast<size_t>(ctrl) + 1u;
-      if (in + length > inputSize || out + length > outputSize) {
+      if (length > inputSize - in || length > outputSize - out) {
         throw std::runtime_error("IFCX PCD LZF literal overruns buffer");
       }
       std::memcpy(output.data() + out, input + in, length);
@@ -1772,18 +1772,18 @@ std::vector<uint8_t> lzfDecompress(const uint8_t *input, size_t inputSize,
 
     size_t length = ctrl >> 5u;
     size_t referenceOffset = static_cast<size_t>(ctrl & 0x1fu) << 8u;
-    if (in >= inputSize) {
-      throw std::runtime_error("IFCX PCD LZF reference is truncated");
-    }
-    referenceOffset += input[in++] + 1u;
     if (length == 7u) {
       if (in >= inputSize) {
         throw std::runtime_error("IFCX PCD LZF length is truncated");
       }
       length += input[in++];
     }
+    if (in >= inputSize) {
+      throw std::runtime_error("IFCX PCD LZF reference is truncated");
+    }
+    referenceOffset += input[in++] + 1u;
     length += 2u;
-    if (referenceOffset > out || out + length > outputSize) {
+    if (referenceOffset > out || length > outputSize - out) {
       throw std::runtime_error("IFCX PCD LZF reference overruns buffer");
     }
     size_t reference = out - referenceOffset;

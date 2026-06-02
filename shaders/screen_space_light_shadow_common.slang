@@ -8,8 +8,10 @@
 
 static const uint SCREEN_SPACE_LIGHT_SHADOW_STEPS = 24u;
 static const float SCREEN_SPACE_LIGHT_SHADOW_MIN_RAY_RADIUS = 0.075;
+static const float SCREEN_SPACE_POINT_CONTACT_MIN_VISIBILITY = 0.45;
 static const uint SCREEN_SPACE_DIRECTIONAL_CONTACT_SHADOW_STEPS = 16u;
 static const float SCREEN_SPACE_DIRECTIONAL_CONTACT_MIN_THICKNESS = 0.015;
+static const float SCREEN_SPACE_DIRECTIONAL_CONTACT_MIN_VISIBILITY = 0.45;
 
 float2 ProjectWorldToSceneUv(float3 worldPosition,
                              column_major float4x4 viewProj,
@@ -174,8 +176,130 @@ float ScreenSpacePointLightContactVisibility(
         float rayRadius = baseRayRadius + sceneDistanceAlongRay * 0.004;
         if (distanceFromLightRay <= rayRadius)
         {
-            visibility = 0.0;
-            break;
+            float hitStrength =
+                saturate(1.0 - distanceFromLightRay / max(rayRadius, 1.0e-4));
+            hitStrength *= saturate(
+                (sceneDistanceAlongRay - surfaceBias) /
+                max(lightDistance * 0.25, 1.0e-4));
+            float hitVisibility =
+                lerp(1.0, SCREEN_SPACE_POINT_CONTACT_MIN_VISIBILITY,
+                     hitStrength);
+            visibility = min(visibility, hitVisibility);
+            if (visibility <= SCREEN_SPACE_POINT_CONTACT_MIN_VISIBILITY + 0.02)
+            {
+                break;
+            }
+        }
+    }
+
+    return saturate(visibility);
+}
+
+float ScreenSpacePointLightContactVisibilityDepthOnly(
+    float3 worldPosition,
+    float3 receiverNormal,
+    float3 lightPosition,
+    Texture2D<float> depthTexture,
+    column_major float4x4 viewProj,
+    column_major float4x4 inverseViewProj)
+{
+    uint width = 0u;
+    uint height = 0u;
+    depthTexture.GetDimensions(width, height);
+    if (!all(isfinite(worldPosition)) || !all(isfinite(lightPosition)))
+    {
+        return 1.0;
+    }
+
+    if (width == 0u || height == 0u)
+    {
+        return 1.0;
+    }
+
+    float3 lightVector = lightPosition - worldPosition;
+    float lightDistance = length(lightVector);
+    if (!isfinite(lightDistance) || lightDistance <= 1e-4)
+    {
+        return 1.0;
+    }
+
+    float3 lightDir = lightVector / lightDistance;
+    float3 receiverN = SafeNormalize(receiverNormal, -lightDir);
+    float surfaceBias = max(lightDistance * 0.015, 0.03);
+    float baseRayRadius =
+        max(lightDistance * 0.018, SCREEN_SPACE_LIGHT_SHADOW_MIN_RAY_RADIUS);
+    float2 extent = float2(width, height);
+    float visibility = 1.0;
+
+    [loop]
+    for (uint sampleIndex = 1u;
+         sampleIndex <= SCREEN_SPACE_LIGHT_SHADOW_STEPS; ++sampleIndex)
+    {
+        float t = (float(sampleIndex) + 0.35) /
+                  (float(SCREEN_SPACE_LIGHT_SHADOW_STEPS) + 1.35);
+        float sampleDistance = t * lightDistance;
+        if (sampleDistance <= surfaceBias ||
+            sampleDistance >= lightDistance - surfaceBias)
+        {
+            continue;
+        }
+
+        float3 samplePosition = worldPosition + lightDir * sampleDistance;
+        uint2 samplePixel = uint2(0u, 0u);
+        if (!TryProjectWorldToScenePixel(samplePosition, width, height,
+                                         viewProj, samplePixel))
+        {
+            continue;
+        }
+
+        float sceneDepth = depthTexture.Load(int3(samplePixel, 0));
+        if (!isfinite(sceneDepth) || sceneDepth <= 0.0 || sceneDepth > 1.0)
+        {
+            continue;
+        }
+
+        float2 sceneUv = (float2(samplePixel) + 0.5.xx) / extent;
+        float3 sceneWorld;
+        if (!TryReconstructWorldPosition(sceneUv, sceneDepth,
+                                         inverseViewProj, sceneWorld))
+        {
+            continue;
+        }
+
+        float3 receiverToScene = sceneWorld - worldPosition;
+        float receiverPlaneDistance =
+            abs(dot(receiverToScene, receiverN));
+        if (receiverPlaneDistance <= max(0.025, lightDistance * 0.012))
+        {
+            continue;
+        }
+
+        float sceneDistanceAlongRay = dot(receiverToScene, lightDir);
+        if (sceneDistanceAlongRay <= surfaceBias ||
+            sceneDistanceAlongRay >= lightDistance - surfaceBias)
+        {
+            continue;
+        }
+
+        float3 closestRayPoint = lightDir * sceneDistanceAlongRay;
+        float distanceFromLightRay =
+            length(receiverToScene - closestRayPoint);
+        float rayRadius = baseRayRadius + sceneDistanceAlongRay * 0.004;
+        if (distanceFromLightRay <= rayRadius)
+        {
+            float hitStrength =
+                saturate(1.0 - distanceFromLightRay / max(rayRadius, 1.0e-4));
+            hitStrength *= saturate(
+                (sceneDistanceAlongRay - surfaceBias) /
+                max(lightDistance * 0.25, 1.0e-4));
+            float hitVisibility =
+                lerp(1.0, SCREEN_SPACE_POINT_CONTACT_MIN_VISIBILITY,
+                     hitStrength);
+            visibility = min(visibility, hitVisibility);
+            if (visibility <= SCREEN_SPACE_POINT_CONTACT_MIN_VISIBILITY + 0.02)
+            {
+                break;
+            }
         }
     }
 
@@ -229,8 +353,11 @@ float ScreenSpaceDirectionalContactVisibility(
     float2 extent = float2(width, height);
     float visibility = 1.0;
     uint2 receiverPixel = uint2(0u, 0u);
-    TryProjectWorldToScenePixel(worldPosition, width, height, viewProj,
-                                receiverPixel);
+    if (!TryProjectWorldToScenePixel(worldPosition, width, height, viewProj,
+                                     receiverPixel))
+    {
+        return 1.0;
+    }
     float rayJitter =
         (ScreenSpaceDirectionalContactRayJitter(receiverPixel) - 0.5) * 0.25;
 
@@ -272,10 +399,18 @@ float ScreenSpaceDirectionalContactVisibility(
         float3 sceneNormal = SafeNormalize(
             normalTexture.Load(int3(samplePixel, 0)).xyz * 2.0 - 1.0,
             receiverN);
+        float3 receiverToScene = sceneWorld - worldPosition;
+        float receiverSurfaceSeparation =
+            abs(dot(receiverToScene, receiverN));
+        if (receiverSurfaceSeparation <= rayThickness * 0.5)
+        {
+            continue;
+        }
+
         float receiverPlaneDistance =
-            abs(dot(sceneWorld - worldPosition, receiverN));
+            receiverSurfaceSeparation;
         bool coplanarReceiverSurface =
-            dot(sceneNormal, receiverN) > 0.9 &&
+            dot(sceneNormal, receiverN) > 0.65 &&
             receiverPlaneDistance <= max(rayThickness * 1.5,
                                          sampleDistance * 0.025);
         if (coplanarReceiverSurface)
@@ -283,7 +418,6 @@ float ScreenSpaceDirectionalContactVisibility(
             continue;
         }
 
-        float3 receiverToScene = sceneWorld - worldPosition;
         float sceneDistanceAlongRay = dot(receiverToScene, lightDir);
         if (sceneDistanceAlongRay <= surfaceBias ||
             sceneDistanceAlongRay > sampleDistance + rayThickness ||
@@ -299,11 +433,153 @@ float ScreenSpaceDirectionalContactVisibility(
             rayThickness + sceneDistanceAlongRay * 0.02;
         if (distanceFromLightRay <= adaptiveRayThickness)
         {
+            float contactSeparationFade =
+                saturate((receiverSurfaceSeparation - rayThickness * 0.5) /
+                         max(rayThickness * 2.0, 1.0e-4));
+            float hitVisibility =
+                saturate(sceneDistanceAlongRay /
+                         max(fadeDistance, rayThickness));
+            hitVisibility = lerp(1.0, hitVisibility, contactSeparationFade);
             visibility = min(
                 visibility,
+                max(hitVisibility,
+                    SCREEN_SPACE_DIRECTIONAL_CONTACT_MIN_VISIBILITY));
+            if (visibility <=
+                SCREEN_SPACE_DIRECTIONAL_CONTACT_MIN_VISIBILITY + 0.02)
+            {
+                break;
+            }
+        }
+    }
+
+    return lerp(1.0, saturate(visibility), grazingNormalFade);
+}
+
+float ScreenSpaceDirectionalContactVisibilityDepthOnly(
+    float3 worldPosition,
+    float3 receiverNormal,
+    float3 surfaceToLight,
+    float maxRayDistance,
+    float thicknessWorld,
+    float fadeDistanceWorld,
+    Texture2D<float> depthTexture,
+    column_major float4x4 viewProj,
+    column_major float4x4 inverseViewProj)
+{
+    uint width = 0u;
+    uint height = 0u;
+    depthTexture.GetDimensions(width, height);
+    if (width == 0u || height == 0u ||
+        !all(isfinite(worldPosition)) ||
+        !all(isfinite(receiverNormal)) ||
+        !all(isfinite(surfaceToLight)) ||
+        !isfinite(maxRayDistance) || maxRayDistance <= 1.0e-4)
+    {
+        return 1.0;
+    }
+
+    float lightLengthSq = dot(surfaceToLight, surfaceToLight);
+    if (!isfinite(lightLengthSq) || lightLengthSq <= 1.0e-8)
+    {
+        return 1.0;
+    }
+
+    float3 lightDir = surfaceToLight * rsqrt(lightLengthSq);
+    float3 receiverN = SafeNormalize(receiverNormal, -lightDir);
+    float grazingNormalFade =
+        saturate((dot(receiverN, lightDir) - 0.05) / 0.25);
+    if (grazingNormalFade <= 0.0)
+    {
+        return 1.0;
+    }
+
+    float maxDistance = max(maxRayDistance, 1.0e-4);
+    float rayThickness = max(thicknessWorld,
+                             SCREEN_SPACE_DIRECTIONAL_CONTACT_MIN_THICKNESS);
+    float fadeDistance = max(fadeDistanceWorld, rayThickness);
+    float surfaceBias = max(rayThickness * 1.5, maxDistance * 0.01);
+    float2 extent = float2(width, height);
+    float visibility = 1.0;
+    uint2 receiverPixel = uint2(0u, 0u);
+    if (!TryProjectWorldToScenePixel(worldPosition, width, height, viewProj,
+                                     receiverPixel))
+    {
+        return 1.0;
+    }
+    float rayJitter =
+        (ScreenSpaceDirectionalContactRayJitter(receiverPixel) - 0.5) * 0.25;
+
+    [loop]
+    for (uint sampleIndex = 0u;
+         sampleIndex < SCREEN_SPACE_DIRECTIONAL_CONTACT_SHADOW_STEPS;
+         ++sampleIndex)
+    {
+        float sampleT =
+            clamp((float(sampleIndex) + 0.5 + rayJitter) /
+                      float(SCREEN_SPACE_DIRECTIONAL_CONTACT_SHADOW_STEPS),
+                  1.0e-4,
+                  1.0);
+        float sampleDistance =
+            lerp(surfaceBias, maxDistance, sampleT * sampleT);
+        float3 samplePosition = worldPosition + lightDir * sampleDistance;
+
+        uint2 samplePixel = uint2(0u, 0u);
+        if (!TryProjectWorldToScenePixel(samplePosition, width, height,
+                                         viewProj, samplePixel))
+        {
+            continue;
+        }
+
+        float sceneDepth = depthTexture.Load(int3(samplePixel, 0));
+        if (!isfinite(sceneDepth) || sceneDepth <= 0.0 || sceneDepth > 1.0)
+        {
+            continue;
+        }
+
+        float2 sceneUv = (float2(samplePixel) + 0.5.xx) / extent;
+        float3 sceneWorld;
+        if (!TryReconstructWorldPosition(sceneUv, sceneDepth,
+                                         inverseViewProj, sceneWorld))
+        {
+            continue;
+        }
+
+        float3 receiverToScene = sceneWorld - worldPosition;
+        float receiverSurfaceSeparation =
+            abs(dot(receiverToScene, receiverN));
+        if (receiverSurfaceSeparation <= rayThickness * 0.5)
+        {
+            continue;
+        }
+
+        float sceneDistanceAlongRay = dot(receiverToScene, lightDir);
+        if (sceneDistanceAlongRay <= surfaceBias ||
+            sceneDistanceAlongRay > sampleDistance + rayThickness ||
+            sceneDistanceAlongRay >= maxDistance)
+        {
+            continue;
+        }
+
+        float3 closestRayPoint = lightDir * sceneDistanceAlongRay;
+        float distanceFromLightRay =
+            length(receiverToScene - closestRayPoint);
+        float adaptiveRayThickness =
+            rayThickness + sceneDistanceAlongRay * 0.02;
+        if (distanceFromLightRay <= adaptiveRayThickness)
+        {
+            float contactSeparationFade =
+                saturate((receiverSurfaceSeparation - rayThickness * 0.5) /
+                         max(rayThickness * 2.0, 1.0e-4));
+            float hitVisibility =
                 saturate(sceneDistanceAlongRay /
-                         max(fadeDistance, rayThickness)));
-            if (visibility <= 0.02)
+                         max(fadeDistance, rayThickness));
+            hitVisibility = lerp(1.0, hitVisibility, contactSeparationFade);
+            visibility = min(
+                visibility,
+                max(hitVisibility,
+                    SCREEN_SPACE_DIRECTIONAL_CONTACT_MIN_VISIBILITY));
+            if (visibility <=
+                SCREEN_SPACE_DIRECTIONAL_CONTACT_MIN_VISIBILITY + 0.02)
             {
                 break;
             }

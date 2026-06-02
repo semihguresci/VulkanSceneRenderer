@@ -108,6 +108,12 @@ TEST(RenderTechniqueRegistry, ParsesStableTechniqueNames) {
             RenderTechniqueId::DeferredRaster);
   EXPECT_EQ(container::renderer::renderTechniqueIdFromName("forward-raster"),
             RenderTechniqueId::ForwardRaster);
+  EXPECT_EQ(container::renderer::renderTechniqueIdFromName("forward-rendering"),
+            RenderTechniqueId::ForwardRaster);
+  EXPECT_EQ(container::renderer::renderTechniqueIdFromName("real-time-rendering"),
+            RenderTechniqueId::ForwardRaster);
+  EXPECT_EQ(container::renderer::renderTechniqueIdFromName("realtime-rendering"),
+            RenderTechniqueId::ForwardRaster);
   EXPECT_EQ(container::renderer::renderTechniqueIdFromName("ray-tracing"),
             RenderTechniqueId::RayTracing);
   EXPECT_EQ(container::renderer::renderTechniqueIdFromName("path-tracing"),
@@ -139,6 +145,12 @@ TEST(RenderTechniqueRegistry,
   ASSERT_NE(deferred, descriptors.end());
   EXPECT_TRUE(deferred->implemented);
 
+  const auto forwardRaster = findDescriptor(RenderTechniqueId::ForwardRaster);
+  ASSERT_NE(forwardRaster, descriptors.end());
+  EXPECT_TRUE(forwardRaster->implemented);
+  EXPECT_EQ(forwardRaster->displayName,
+            std::string_view{"Forward rendering"});
+
   const auto rayTracing = findDescriptor(RenderTechniqueId::RayTracing);
   ASSERT_NE(rayTracing, descriptors.end());
   EXPECT_FALSE(rayTracing->implemented);
@@ -151,7 +163,7 @@ TEST(RenderTechniqueRegistry,
 
   container::renderer::RenderTechniqueRegistry registry =
       container::renderer::createDefaultRenderTechniqueRegistry();
-  EXPECT_EQ(registry.techniques().size(), 1u);
+  EXPECT_EQ(registry.techniques().size(), 2u);
   EXPECT_EQ(registry.find(RenderTechniqueId::RayTracing), nullptr);
   EXPECT_EQ(registry.find(RenderTechniqueId::PathTracing), nullptr);
 }
@@ -257,14 +269,16 @@ TEST(RendererDeviceCapabilities, ReportsMissingRayAndPathRequirements) {
   EXPECT_TRUE(full.missingPathTracingRequirements().empty());
 }
 
-TEST(RenderTechniqueRegistry, DefaultRegistryRegistersOnlyDeferredRaster) {
+TEST(RenderTechniqueRegistry, DefaultRegistryRegistersDeferredAndForwardRaster) {
   container::renderer::RenderTechniqueRegistry registry =
       container::renderer::createDefaultRenderTechniqueRegistry();
 
   ASSERT_NE(
       registry.find(container::renderer::RenderTechniqueId::DeferredRaster),
       nullptr);
-  EXPECT_EQ(registry.techniques().size(), 1u);
+  ASSERT_NE(registry.find(container::renderer::RenderTechniqueId::ForwardRaster),
+            nullptr);
+  EXPECT_EQ(registry.techniques().size(), 2u);
 }
 
 TEST(RenderTechniqueGuardrails, FrameRecorderDoesNotOwnGraphRegistration) {

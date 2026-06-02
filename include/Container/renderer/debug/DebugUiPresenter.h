@@ -23,6 +23,10 @@ class DebugUiPresenter {
       container::ui::GuiManager& guiManager,
       const RenderGraphDebugModel& debugModel);
 
+  static void publishTechniqueDebugModel(
+      container::ui::GuiManager& guiManager,
+      const TechniqueDebugModel& debugModel);
+
   static void publishRenderPasses(container::ui::GuiManager& guiManager,
                                   const RenderGraph& graph);
 

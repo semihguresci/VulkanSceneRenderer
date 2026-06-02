@@ -1,6 +1,7 @@
 #include "Container/renderer/core/RenderTechnique.h"
 
 #include "Container/renderer/deferred/DeferredRasterTechnique.h"
+#include "Container/renderer/forward/ForwardRasterTechnique.h"
 
 #include <algorithm>
 #include <array>
@@ -23,7 +24,7 @@ constexpr std::array kTechniqueNames{
 
 constexpr std::array kTechniqueDisplayNames{
     std::string_view{"Deferred raster"},
-    std::string_view{"Forward raster"},
+    std::string_view{"Forward rendering"},
     std::string_view{"Ray tracing"},
     std::string_view{"Path tracing"},
     std::string_view{"Gaussian splatting"},
@@ -38,7 +39,8 @@ constexpr std::array<RenderTechniqueDescriptor, kTechniqueNames.size()>
          .implemented = true},
         {.id = RenderTechniqueId::ForwardRaster,
          .name = "forward-raster",
-         .displayName = "Forward raster"},
+         .displayName = "Forward rendering",
+         .implemented = true},
         {.id = RenderTechniqueId::RayTracing,
          .name = "ray-tracing",
          .displayName = "Ray tracing",
@@ -84,6 +86,12 @@ std::span<const RenderTechniqueDescriptor> knownRenderTechniqueDescriptors() {
 
 std::optional<RenderTechniqueId> renderTechniqueIdFromName(
     std::string_view name) {
+  if (name == "forward-rendering" || name == "real-time-rendering" ||
+      name == "realtime-rendering" ||
+      name == "real-time") {
+    return RenderTechniqueId::ForwardRaster;
+  }
+
   const auto it = std::ranges::find(kTechniqueNames, name);
   if (it == kTechniqueNames.end()) {
     return std::nullopt;
@@ -165,6 +173,7 @@ RenderTechniqueSelection RenderTechniqueRegistry::select(
 RenderTechniqueRegistry createDefaultRenderTechniqueRegistry() {
   RenderTechniqueRegistry registry;
   registry.registerTechnique(std::make_unique<DeferredRasterTechnique>());
+  registry.registerTechnique(std::make_unique<ForwardRasterTechnique>());
   return registry;
 }
 

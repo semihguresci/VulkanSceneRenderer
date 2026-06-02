@@ -4,6 +4,7 @@
 #include "Container/renderer/pipeline/PipelineRegistry.h"
 
 #include <memory>
+#include <vector>
 
 namespace container::renderer {
 
@@ -22,6 +23,7 @@ struct PipelineLayouts {
   VkPipelineLayout normalValidation{VK_NULL_HANDLE};
   VkPipelineLayout surfaceNormal{VK_NULL_HANDLE};
   VkPipelineLayout transformGizmo{VK_NULL_HANDLE};
+  std::vector<RegisteredPipelineLayout> extraLayouts{};
 };
 
 [[nodiscard]] std::shared_ptr<const PipelineRegistry>
@@ -94,6 +96,7 @@ struct GraphicsPipelines {
   VkPipeline transformGizmoSolid{VK_NULL_HANDLE};
   VkPipeline transformGizmoOverlay{VK_NULL_HANDLE};
   VkPipeline transformGizmoSolidOverlay{VK_NULL_HANDLE};
+  std::vector<RegisteredPipelineHandle> extraHandles{};
 };
 
 [[nodiscard]] std::shared_ptr<const PipelineRegistry>

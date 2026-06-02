@@ -15,7 +15,7 @@ struct LightPushConstants {
   glm::vec4 coneOuterCosType{0.0f, 0.0f, 0.0f, 0.0f};
   uint32_t contactVisibilityEnabled{0};
   uint32_t localShadowEnabled{0};
-  float bounceIntensity{0.35f};
+  float bounceIntensity{1.0f};
   uint32_t padding2{0};
 };
 static_assert(sizeof(LightPushConstants) == 80,

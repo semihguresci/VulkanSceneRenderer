@@ -1028,6 +1028,21 @@ std::string modelLoadErrorPrefix(std::string_view format,
          container::util::pathToUtf8(path);
 }
 
+std::optional<std::filesystem::path>
+preparedIfcSidecarPath(const std::filesystem::path &path) {
+  if (lowerAscii(path.extension().string()) != ".ifc") {
+    return std::nullopt;
+  }
+
+  std::filesystem::path sidecar = path;
+  sidecar.replace_extension(".ifcx");
+  std::error_code error;
+  if (std::filesystem::is_regular_file(sidecar, error)) {
+    return sidecar;
+  }
+  return std::nullopt;
+}
+
 struct BimFloorPlanBuildResult {
   uint32_t firstIndex{0};
   uint32_t indexCount{0};
@@ -2944,7 +2959,8 @@ void BimManager::loadModel(const std::string &path, float importScale,
   if (extension == ".bim") {
     loadDotBim(resolvedPath, importScale, sceneManager);
   } else if (extension == ".ifc") {
-    loadIfc(resolvedPath, importScale, sceneManager);
+    loadIfcWithPreparedSidecarFallback(resolvedPath, importScale,
+                                       sceneManager);
   } else if (extension == ".ifcx") {
     loadPreparedModel(
         container::geometry::ifcx::LoadFromFile(resolvedPath, importScale),
@@ -2977,6 +2993,25 @@ void BimManager::loadIfc(const std::filesystem::path &path, float importScale,
                          container::scene::SceneManager &sceneManager) {
   const auto model = container::geometry::ifc::LoadFromFile(path, importScale);
   loadPreparedModel(model, path, "IFC", sceneManager);
+}
+
+void BimManager::loadIfcWithPreparedSidecarFallback(
+    const std::filesystem::path &path, float importScale,
+    container::scene::SceneManager &sceneManager) {
+  try {
+    loadIfc(path, importScale, sceneManager);
+    return;
+  } catch (const std::exception &) {
+    const std::optional<std::filesystem::path> sidecar =
+        preparedIfcSidecarPath(path);
+    if (!sidecar) {
+      throw;
+    }
+    clear();
+    loadPreparedModel(container::geometry::ifcx::LoadFromFile(*sidecar,
+                                                              importScale),
+                      *sidecar, "IFCX", sceneManager);
+  }
 }
 
 void BimManager::loadPreparedModel(

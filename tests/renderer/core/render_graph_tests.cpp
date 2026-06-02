@@ -562,6 +562,64 @@ TEST(RenderGraphTests, PrepareFramePublishesRuntimeStatusBeforeExecute) {
   EXPECT_TRUE(graph.isPassActive(RenderPassId::TileCull));
 }
 
+TEST(RenderGraphTests, PrepareFrameIsIdempotentForSameFrameSignature) {
+  RenderGraph graph;
+  int readinessCalls = 0;
+
+  graph.addPass(RenderPassId::TileCull, {}, noopRecord());
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::TileCull, {}, {}, {}));
+  ASSERT_TRUE(graph.setPassReadiness(RenderPassId::TileCull,
+                                     [&](const FrameRecordParams&) {
+                                       ++readinessCalls;
+                                       return RenderPassReadiness{};
+                                     }));
+
+  FrameRecordParams params{};
+  params.runtime.frameSlot = 7u;
+  params.runtime.imageIndex = 2u;
+  graph.prepareFrame(params);
+  graph.prepareFrame(params);
+
+  EXPECT_EQ(readinessCalls, 1);
+
+  params.runtime.imageIndex = 1u;
+  graph.prepareFrame(params);
+
+  EXPECT_EQ(readinessCalls, 2);
+}
+
+TEST(RenderGraphTests, PrepareFrameRebuildsWhenExposureModeChanges) {
+  RenderGraph graph;
+  int readinessCalls = 0;
+
+  graph.addPass(RenderPassId::ExposureAdaptation, {}, noopRecord());
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::ExposureAdaptation, {},
+                                          {}, {}));
+  ASSERT_TRUE(graph.setPassReadiness(
+      RenderPassId::ExposureAdaptation, [&](const FrameRecordParams& params) {
+        ++readinessCalls;
+        return params.postProcess.exposureSettings.mode ==
+                       container::gpu::kExposureModeAuto
+                   ? RenderPassReadiness{}
+                   : notNeeded();
+      }));
+
+  FrameRecordParams params{};
+  params.postProcess.exposureSettings.mode =
+      container::gpu::kExposureModeManual;
+  graph.prepareFrame(params);
+
+  params.postProcess.exposureSettings.mode =
+      container::gpu::kExposureModeAuto;
+  graph.prepareFrame(params);
+
+  EXPECT_EQ(readinessCalls, 2);
+  const auto* exposureStatus = statusFor(graph.lastFrameExecutionStatuses(),
+                                         RenderPassId::ExposureAdaptation);
+  ASSERT_NE(exposureStatus, nullptr);
+  EXPECT_TRUE(exposureStatus->active);
+}
+
 TEST(RenderGraphTests, ExecutePreparedFrameConsumesPreparedPlan) {
   RenderGraph graph;
   std::vector<RenderPassId> recorded;

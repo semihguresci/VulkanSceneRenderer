@@ -2,6 +2,7 @@
 #include "area_light_common.slang"
 #include "local_shadow_common.slang"
 #include "shadow_common.slang"
+#include "screen_space_light_shadow_common.slang"
 #include "oit_common.slang"
 #include "push_constants_common.slang"
 
@@ -32,13 +33,13 @@
 [[vk::binding(18, 3)]] ConstantBuffer<LocalShadowBuffer> uLocalShadow;
 [[vk::binding(19, 3)]] Texture2DArray<float> gLocalShadowAtlas;
 [[vk::binding(20, 3)]] SamplerComparisonState gLocalShadowSampler;
-[[vk::binding(3, 3)]] Texture2D<float4> gSceneNormalTexture;
 [[vk::binding(6, 3)]] Texture2D<float> gSceneDepthTexture;
 
 #include "scene_clip_common.slang"
 #include "object_index_common.slang"
 #include "pbr_material_common.slang"
 #include "surface_normal_common.slang"
+#include "alpha_mask_common.slang"
 
 [[vk::push_constant]]
 ConstantBuffer<BindlessPushConstants> pc;
@@ -46,6 +47,8 @@ ConstantBuffer<BindlessPushConstants> pc;
 static const uint kObjectFlagAlphaCutoff = 0x1u;
 static const uint kObjectFlagTransparentOnly = 0x2u;
 static const uint kObjectFlagDoubleSided = 0x4u;
+static const float DIRECTIONAL_CONTACT_SHADOW_LIT_THRESHOLD = 0.02;
+static const float DIRECTIONAL_CONTACT_SHADOW_RADIANCE_THRESHOLD = 1.0e-4;
 
 float TransparentFiniteOr(float value, float fallback)
 {
@@ -66,13 +69,17 @@ static const float kTransparentAmbientFloor = 0.025;
 
 float3 ComputeTransparentAmbientFloor(float3 baseColor,
                                       float occlusion,
-                                      float environmentIntensity)
+                                      float environmentIntensity,
+                                      float bounceIntensity)
 {
-    float disabledEnvironment =
-        saturate(1.0 - max(TransparentFiniteOr(environmentIntensity, 0.0), 0.0));
+    float environmentFloorScale =
+        saturate(max(TransparentFiniteOr(environmentIntensity, 0.0), 0.0));
+    float bounceFloorScale =
+        saturate(max(TransparentFiniteOr(bounceIntensity, 0.0), 0.0));
+    float ambientFloorScale = max(environmentFloorScale, bounceFloorScale);
     float diffuseOcclusion = saturate(TransparentFiniteOr(occlusion, 1.0));
     return max(TransparentFinite3Or(baseColor, 0.0.xxx), 0.0.xxx) *
-        (kTransparentAmbientFloor * disabledEnvironment * diffuseOcclusion);
+        (kTransparentAmbientFloor * ambientFloorScale * diffuseOcclusion);
 }
 
 struct VSInput
@@ -257,7 +264,8 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         baseAlpha, vertIn.opacityTextureIndex, vertIn.opacityFactor,
         opacityTexCoord, material.opacityTextureTransform);
 
-    if ((vertIn.flags & kObjectFlagAlphaCutoff) != 0u && baseAlpha < vertIn.alphaCutoff)
+    if ((vertIn.flags & kObjectFlagAlphaCutoff) != 0u &&
+        !AlphaMaskPass(baseAlpha, vertIn.alphaCutoff, vertIn.pos))
     {
         discard;
     }
@@ -387,7 +395,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     specularOcclusion = lerp(1.0, specularOcclusion, saturate(1.0 - roughness));
     float3 lighting = kD_ibl * diffuseIBL * diffuseAO + specularIBL * specularOcclusion;
     lighting += ComputeTransparentAmbientFloor(
-        baseColor, occlusion, environmentIntensity);
+        baseColor, occlusion, environmentIntensity, uLighting.bounceIntensity);
 
     if ((vertIn.flags & kPbrObjectFlagUnlit) != 0u)
     {
@@ -395,12 +403,14 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         baseAlpha *= lerp(1.0, 0.35, transmissionFactor);
     }
 
+    float3 directLighting = 0.0.xxx;
     float3 directionalL = SafeNormalize(-uLighting.directionalDirection.xyz,
                                         float3(0.0, 1.0, 0.0));
     float3 directionalRadiance =
         uLighting.directionalColorIntensity.rgb * uLighting.directionalColorIntensity.a;
     const bool thinSurface = IsThinSurfaceGpuMaterial(vertIn.flags);
     float shadowFactor = 1.0;
+    float contactVisibility = 1.0;
     if ((vertIn.flags & kPbrObjectFlagUnlit) == 0u)
     {
         float3 cameraForward =
@@ -416,67 +426,83 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                 vertIn.worldPos, surfaceNormal.geometricNormal,
                 uLighting.directionalDirection.xyz, viewDepth,
                 uShadow, gShadowAtlas, gShadowSampler);
+            float directionalRadianceMagnitude =
+                max(max(directionalRadiance.r, directionalRadiance.g),
+                    directionalRadiance.b);
+            if (shadowFactor > DIRECTIONAL_CONTACT_SHADOW_LIT_THRESHOLD &&
+                directionalRadianceMagnitude >
+                    DIRECTIONAL_CONTACT_SHADOW_RADIANCE_THRESHOLD &&
+                ShadowFiniteOr(uShadow.contactShadowSettings.x, 0.0) > 0.0)
+            {
+                contactVisibility = ScreenSpaceDirectionalContactVisibilityDepthOnly(
+                    vertIn.worldPos, surfaceNormal.geometricNormal,
+                    directionalL, uShadow.contactShadowSettings.y,
+                    uShadow.contactShadowSettings.z,
+                    uShadow.contactShadowSettings.w, gSceneDepthTexture,
+                    uCamera.viewProj, uCamera.inverseViewProj);
+            }
         }
-        lighting += EvaluatePbrDirectLight(
+        float directShadowVisibility = shadowFactor * contactVisibility;
+        directLighting += EvaluateDeferredLayeredDirectLight(
             baseColor, F0, metallic, roughness, surfaceNormal.shadingNormal, V,
-            directionalL, directionalRadiance * shadowFactor);
-        lighting += EvaluateDiffuseBounceLight(
+            directionalL, directionalRadiance * directShadowVisibility,
+            clearcoat, clearcoatRoughness, sheenColor, sheenRoughness);
+        directLighting += EvaluateDiffuseBounceLight(
             baseColor, metallic, surfaceNormal.shadingNormal,
             surfaceNormal.geometricNormal, V, directionalL,
-            directionalRadiance * shadowFactor, shadowFactor, occlusion,
+            directionalRadiance, shadowFactor, occlusion,
             uLighting.bounceIntensity);
-    }
-    if (thinSurface)
-    {
-        if ((vertIn.flags & kPbrObjectFlagUnlit) == 0u)
+        if (thinSurface)
         {
-            lighting += EvaluateThinSurfaceTransmission(
+            directLighting += EvaluateThinSurfaceTransmission(
                 baseColor, surfaceNormal.shadingNormal, V, directionalL,
-                directionalRadiance * shadowFactor, saturate(baseAlpha),
+                directionalRadiance * directShadowVisibility, saturate(baseAlpha),
                 !isFrontFace);
         }
     }
 
-    for (uint i = 0; i < uLighting.pointLightCount && i < MAX_POINT_LIGHTS; ++i)
+    if ((vertIn.flags & kPbrObjectFlagUnlit) == 0u)
     {
-        PointLightData light = uPointLights[i];
-        float3 lightVector = light.positionRadius.xyz - vertIn.worldPos;
-        float lightRadius = light.positionRadius.w;
-        float distanceSq = dot(lightVector, lightVector);
-        if (PointLightHasFiniteRange(lightRadius) &&
-            distanceSq >= lightRadius * lightRadius)
+        for (uint i = 0; i < uLighting.pointLightCount && i < MAX_POINT_LIGHTS; ++i)
         {
-            continue;
-        }
+            PointLightData light = uPointLights[i];
+            float3 lightVector = light.positionRadius.xyz - vertIn.worldPos;
+            float lightRadius = light.positionRadius.w;
+            float distanceSq = dot(lightVector, lightVector);
+            if (PointLightHasFiniteRange(lightRadius) &&
+                distanceSq >= lightRadius * lightRadius)
+            {
+                continue;
+            }
 
-        float invDistance = rsqrt(max(distanceSq, 1e-8));
-        float3 L = lightVector * invDistance;
-        float attenuation = PointLightAttenuation(distanceSq, lightRadius);
-        float coneAttenuation = SpotLightConeAttenuation(
-            light.directionInnerCos, light.coneOuterCosType, L);
-        float3 radiance =
-            light.colorIntensity.rgb * light.colorIntensity.a * attenuation *
-            coneAttenuation;
-        float lightVisibility = 1.0;
-        if (LocalShadowMapsEnabled(uLighting, uLocalShadow))
-        {
-            lightVisibility = LocalPointLightShadowVisibility(
-                light, vertIn.worldPos, surfaceNormal.geometricNormal, L,
-                uLocalShadow, gLocalShadowAtlas, gLocalShadowSampler);
+            float invDistance = rsqrt(max(distanceSq, 1e-8));
+            float3 L = lightVector * invDistance;
+            float attenuation = PointLightAttenuation(distanceSq, lightRadius);
+            float coneAttenuation = SpotLightConeAttenuation(
+                light.directionInnerCos, light.coneOuterCosType, L);
+            float3 radiance =
+                light.colorIntensity.rgb * light.colorIntensity.a * attenuation *
+                coneAttenuation;
+            float3 unshadowedRadiance = radiance;
+            float lightVisibility = 1.0;
+            if (LocalShadowMapsEnabled(uLighting, uLocalShadow))
+            {
+                lightVisibility *= LocalPointLightShadowVisibility(
+                    light, vertIn.worldPos, surfaceNormal.geometricNormal, L,
+                    uLocalShadow, gLocalShadowAtlas, gLocalShadowSampler);
+            }
             radiance *= lightVisibility;
-        }
-        if ((vertIn.flags & kPbrObjectFlagUnlit) == 0u)
-        {
-            lighting += EvaluatePbrDirectLight(
+            directLighting += EvaluateDeferredLayeredDirectLight(
                 baseColor, F0, metallic, roughness, surfaceNormal.shadingNormal,
-                V, L, radiance);
-            lighting += EvaluateDiffuseBounceLight(
+                V, L, radiance, clearcoat, clearcoatRoughness, sheenColor,
+                sheenRoughness);
+            directLighting += EvaluateDiffuseBounceLight(
                 baseColor, metallic, surfaceNormal.shadingNormal,
-                surfaceNormal.geometricNormal, V, L, radiance,
+                surfaceNormal.geometricNormal, V, L, unshadowedRadiance,
                 lightVisibility, occlusion, uLighting.bounceIntensity);
             if (thinSurface)
             {
-                lighting += EvaluateThinSurfaceTransmission(
+                directLighting += EvaluateThinSurfaceTransmission(
                     baseColor, surfaceNormal.shadingNormal, V, L, radiance,
                     saturate(baseAlpha), !isFrontFace);
             }
@@ -537,19 +563,20 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                 float3 radiance = EvaluateAreaLightSampleRadiance(
                     light, frame, vertIn.worldPos, sampleIndex, L);
                 float lightVisibility = areaShadowVisibility;
-                radiance *= lightVisibility;
-                lighting += EvaluatePbrDirectLight(
+                float3 directRadiance = radiance * lightVisibility;
+                directLighting += EvaluateDeferredLayeredDirectLight(
                     baseColor, F0, metallic, roughness,
-                    surfaceNormal.shadingNormal, V, L, radiance);
-                lighting += EvaluateDiffuseBounceLight(
+                    surfaceNormal.shadingNormal, V, L, directRadiance,
+                    clearcoat, clearcoatRoughness, sheenColor, sheenRoughness);
+                directLighting += EvaluateDiffuseBounceLight(
                     baseColor, metallic, surfaceNormal.shadingNormal,
                     surfaceNormal.geometricNormal, V, L, radiance,
                     lightVisibility, occlusion, uLighting.bounceIntensity);
                 if (thinSurface)
                 {
-                    lighting += EvaluateThinSurfaceTransmission(
-                        baseColor, surfaceNormal.shadingNormal, V, L, radiance,
-                        saturate(baseAlpha), !isFrontFace);
+                    directLighting += EvaluateThinSurfaceTransmission(
+                        baseColor, surfaceNormal.shadingNormal, V, L,
+                        directRadiance, saturate(baseAlpha), !isFrontFace);
                 }
             }
         }
@@ -589,11 +616,6 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                     clearcoatPrefiltered, clearcoatF0, clearcoatBrdf);
             lighting = lighting * (1.0 - clearcoat * 0.04) +
                        clearcoatIbl * clearcoat;
-            lighting += EvaluatePbrDirectLight(
-                            0.0.xxx, clearcoatF0, 1.0, clearcoatRoughness,
-                            clearcoatNormal, V, directionalL,
-                            directionalRadiance * shadowFactor) *
-                        clearcoat;
         }
 
         float sheenWeight = MaxComponent(sheenColor);
@@ -602,10 +624,9 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             float grazing = pow(1.0 - NdotV, 2.0);
             float sheenScale = grazing * (1.0 - 0.35 * sheenRoughness);
             lighting = lighting * (1.0 - saturate(sheenWeight * 0.25)) +
-                       sheenColor *
-                           (irradiance + directionalRadiance * shadowFactor) *
-                           sheenScale * 0.35;
+                       sheenColor * irradiance * sheenScale * 0.35;
         }
+        lighting += directLighting;
     }
 
     lighting += emissive;

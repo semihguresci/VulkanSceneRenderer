@@ -607,7 +607,7 @@ bool deferredRasterLightGizmoPickReady(
     return false;
   }
   const container::ui::GuiManager *guiManager = deferred.guiManager();
-  if (guiManager != nullptr && !guiManager->showLightGizmos()) {
+  if (guiManager == nullptr || !guiManager->showLightGizmos()) {
     return false;
   }
   return lightingManager->lightGizmoIconsReady() &&
@@ -701,7 +701,7 @@ bool deferredRasterLightGizmoOverlayReady(
     return false;
   }
   const container::ui::GuiManager *guiManager = deferred.guiManager();
-  if (guiManager != nullptr && !guiManager->showLightGizmos()) {
+  if (guiManager == nullptr || !guiManager->showLightGizmos()) {
     return false;
   }
   return lightingManager->lightGizmoIconsReady() &&
@@ -925,6 +925,7 @@ bool deferredRasterBimSurfacePassReady(const FrameRecordParams &p,
            deferredRasterFramebuffer(
                p, DeferredRasterFramebufferId::BimGBuffer) != VK_NULL_HANDLE;
   case BimSurfacePassKind::TransparentPick:
+  case BimSurfacePassKind::OpaqueLighting:
   case BimSurfacePassKind::TransparentLighting:
     return false;
   }
@@ -960,6 +961,7 @@ VkRenderPass deferredRasterBimSurfaceRenderPass(const FrameRecordParams &p,
   case BimSurfacePassKind::GBuffer:
     return deferredRasterRenderPass(p, DeferredRasterFramebufferId::BimGBuffer);
   case BimSurfacePassKind::TransparentPick:
+  case BimSurfacePassKind::OpaqueLighting:
   case BimSurfacePassKind::TransparentLighting:
     return VK_NULL_HANDLE;
   }
@@ -976,6 +978,7 @@ VkFramebuffer deferredRasterBimSurfaceFramebuffer(const FrameRecordParams &p,
     return deferredRasterFramebuffer(p,
                                      DeferredRasterFramebufferId::BimGBuffer);
   case BimSurfacePassKind::TransparentPick:
+  case BimSurfacePassKind::OpaqueLighting:
   case BimSurfacePassKind::TransparentLighting:
     return VK_NULL_HANDLE;
   }
@@ -1021,6 +1024,7 @@ deferredRasterBimSurfacePipelines(const FrameRecordParams &p,
             .doubleSided = noCullPipeline};
   }
   case BimSurfacePassKind::TransparentPick:
+  case BimSurfacePassKind::OpaqueLighting:
   case BimSurfacePassKind::TransparentLighting:
     return {};
   }
@@ -1124,6 +1128,60 @@ TechniqueDebugModel DeferredRasterTechnique::debugModel() const {
   TechniqueDebugModel model{};
   model.techniqueName = std::string(name());
   model.displayName = std::string(displayName());
+  model.displayModes = {
+      {.id = "lit",
+       .label = "Lit",
+       .value = static_cast<uint32_t>(container::ui::GBufferViewMode::Lit)},
+      {.id = "albedo",
+       .label = "Albedo",
+       .value = static_cast<uint32_t>(container::ui::GBufferViewMode::Albedo)},
+      {.id = "normals",
+       .label = "Normals",
+       .value = static_cast<uint32_t>(container::ui::GBufferViewMode::Normals)},
+      {.id = "material",
+       .label = "Material",
+       .value =
+           static_cast<uint32_t>(container::ui::GBufferViewMode::Material)},
+      {.id = "depth",
+       .label = "Depth",
+       .value = static_cast<uint32_t>(container::ui::GBufferViewMode::Depth)},
+      {.id = "emissive",
+       .label = "Emissive",
+       .value =
+           static_cast<uint32_t>(container::ui::GBufferViewMode::Emissive)},
+      {.id = "transparency",
+       .label = "Transparency",
+       .value =
+           static_cast<uint32_t>(container::ui::GBufferViewMode::Transparency)},
+      {.id = "revealage",
+       .label = "Revealage",
+       .value =
+           static_cast<uint32_t>(container::ui::GBufferViewMode::Revealage)},
+      {.id = "overview",
+       .label = "Overview",
+       .value =
+           static_cast<uint32_t>(container::ui::GBufferViewMode::Overview)},
+      {.id = "surface-normals",
+       .label = "Surface Normals",
+       .value = static_cast<uint32_t>(
+           container::ui::GBufferViewMode::SurfaceNormals)},
+      {.id = "object-space-normals",
+       .label = "Object Normals",
+       .value = static_cast<uint32_t>(
+           container::ui::GBufferViewMode::ObjectSpaceNormals)},
+      {.id = "shadow-cascades",
+       .label = "Shadow Cascades",
+       .value = static_cast<uint32_t>(
+           container::ui::GBufferViewMode::ShadowCascades)},
+      {.id = "tile-light-heat-map",
+       .label = "Tile Light Heat Map",
+       .value = static_cast<uint32_t>(
+           container::ui::GBufferViewMode::TileLightHeatMap)},
+      {.id = "shadow-texel-density",
+       .label = "Shadow Texel Density",
+       .value = static_cast<uint32_t>(
+           container::ui::GBufferViewMode::ShadowTexelDensity)},
+  };
   model.panels.push_back(TechniqueDebugPanel{
       .id = "deferred-frame",
       .title = "Deferred Frame",

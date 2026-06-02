@@ -108,6 +108,10 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       loadModule("spv_shaders/point_light_stencil_debug.vert.spv");
   VkShaderModule pointDbgFrag =
       loadModule("spv_shaders/point_light_stencil_debug.frag.spv");
+  VkShaderModule forwardOpaqueVert =
+      loadModule("spv_shaders/forward_opaque.vert.spv");
+  VkShaderModule forwardOpaqueFrag =
+      loadModule("spv_shaders/forward_opaque.frag.spv");
   VkShaderModule transVert =
       loadModule("spv_shaders/forward_transparent.vert.spv");
   VkShaderModule transFrag =
@@ -176,6 +180,9 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   std::array<VkPipelineShaderStageCreateInfo, 2> pointDbgStages = {
       makeStage(pointDbgVert, VK_SHADER_STAGE_VERTEX_BIT),
       makeStage(pointDbgFrag, VK_SHADER_STAGE_FRAGMENT_BIT)};
+  std::array<VkPipelineShaderStageCreateInfo, 2> forwardOpaqueStages = {
+      makeStage(forwardOpaqueVert, VK_SHADER_STAGE_VERTEX_BIT),
+      makeStage(forwardOpaqueFrag, VK_SHADER_STAGE_FRAGMENT_BIT)};
   std::array<VkPipelineShaderStageCreateInfo, 2> transStages = {
       makeStage(transVert, VK_SHADER_STAGE_VERTEX_BIT),
       makeStage(transFrag, VK_SHADER_STAGE_FRAGMENT_BIT)};
@@ -319,7 +326,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   // winding as the raster front face for scene passes; compensating for the
   // negative-height viewport here causes the G-buffer to shade back faces and
   // makes direct lighting reject visible surfaces.
-  sceneRaster.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  sceneRaster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
   VkPipelineRasterizationStateCreateInfo noCullRaster = sceneRaster;
   noCullRaster.cullMode = VK_CULL_MODE_NONE;
@@ -755,7 +762,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   shadowRaster.depthBiasEnable = VK_TRUE;
   shadowRaster.depthBiasConstantFactor = 0.0f;
   shadowRaster.depthBiasClamp = 0.0f;
-  shadowRaster.depthBiasSlopeFactor    = 0.0f;
+  shadowRaster.depthBiasSlopeFactor = 0.0f;
 
   VkGraphicsPipelineCreateInfo sdPCI = scenePCI;
   sdPCI.stageCount = static_cast<uint32_t>(sdStages.size());
@@ -766,7 +773,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   sdPCI.pMultisampleState = &singleSample;
   sdPCI.pDepthStencilState = &depthPrepassDS;
   sdPCI.pColorBlendState = &noBlend;
-  sdPCI.pDynamicState       = &shadowDynState;
+  sdPCI.pDynamicState = &shadowDynState;
   sdPCI.layout = layouts.shadow;
   sdPCI.renderPass = renderPasses.shadow;
   pipelines.shadowDepth =
@@ -835,6 +842,20 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pointDbgPCI.pColorBlendState = &opaqueBlend;
   pipelines.pointLightStencilDebug = pipelineManager_.createGraphicsPipeline(
       pointDbgPCI, "point_light_stencil_debug_pipeline");
+
+  // Forward opaque
+  VkGraphicsPipelineCreateInfo forwardOpaquePCI = meshPCI;
+  forwardOpaquePCI.stageCount =
+      static_cast<uint32_t>(forwardOpaqueStages.size());
+  forwardOpaquePCI.pStages = forwardOpaqueStages.data();
+  forwardOpaquePCI.pDepthStencilState = &transparentDS;
+  forwardOpaquePCI.pColorBlendState = &opaqueBlend;
+  const VkPipeline forwardOpaquePipeline =
+      pipelineManager_.createGraphicsPipeline(forwardOpaquePCI,
+                                              "forward_opaque_pipeline");
+  pipelines.extraHandles.push_back(RegisteredPipelineHandle{
+      .key = {RenderTechniqueId::ForwardRaster, "forward-opaque"},
+      .pipeline = forwardOpaquePipeline});
 
   // Transparent (OIT)
   pipelines.transparent =

@@ -89,14 +89,19 @@ class AllocationManager {
 
   void transitionImageLayout(VkImage image, VkImageLayout oldLayout,
                              VkImageLayout newLayout,
-                             uint32_t layerCount = 1u);
+                             uint32_t layerCount = 1u,
+                             uint32_t baseMipLevel = 0u,
+                             uint32_t levelCount = 1u);
 
   void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width,
                          uint32_t height, uint32_t layerCount = 1u);
+  void generateTextureMipmaps(VkImage image, VkFormat format, uint32_t width,
+                              uint32_t height, uint32_t mipLevels);
 
   VkImageView createImageView(VkImage image, VkFormat format,
                               VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D,
-                              uint32_t layerCount = 1u);
+                              uint32_t layerCount = 1u,
+                              uint32_t levelCount = 1u);
   container::material::TextureResource createTextureFromRgbaPixels(
       const std::string& textureName,
       std::span<const std::byte> rgbaPixels,

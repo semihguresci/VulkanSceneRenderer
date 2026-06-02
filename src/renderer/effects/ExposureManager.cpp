@@ -119,14 +119,13 @@ void ExposureManager::dispatch(
   if (!isReady() || cmd == VK_NULL_HANDLE ||
       sceneColorView == VK_NULL_HANDLE || sceneWidth == 0u ||
       sceneHeight == 0u || imageIndex >= descriptorSets_.size() ||
-      imageIndex >= histogramBuffers_.size() ||
-      imageIndex >= exposureStateBuffers_.size()) {
+      imageIndex >= histogramBuffers_.size()) {
     return;
   }
 
   const ExposureSettings settings = sanitizeExposureSettings(rawSettings);
   auto& histogramBuffer = histogramBuffers_[imageIndex];
-  auto& exposureStateBuffer = exposureStateBuffers_[imageIndex];
+  auto& exposureStateBuffer = exposureStateBuffer_;
   const VkDescriptorSet descriptorSet = descriptorSets_[imageIndex];
   if (histogramBuffer.buffer == VK_NULL_HANDLE ||
       exposureStateBuffer.buffer == VK_NULL_HANDLE ||
@@ -202,6 +201,7 @@ void ExposureManager::dispatch(
 
 void ExposureManager::collectReadback(uint32_t imageIndex,
                                       const ExposureSettings& rawSettings) {
+  (void)imageIndex;
   const ExposureSettings settings = sanitizeExposureSettings(rawSettings);
   if (settings.mode == container::gpu::kExposureModeManual) {
     currentExposure_ = settings.manualExposure;
@@ -212,36 +212,30 @@ void ExposureManager::collectReadback(uint32_t imageIndex,
     state.averageLuminance = settings.targetLuminance;
     state.targetExposure = state.exposure;
     state.initialized = 1.0f;
-    for (auto& exposureStateBuffer : exposureStateBuffers_) {
-      if (exposureStateBuffer.buffer != VK_NULL_HANDLE) {
-        SceneController::writeToBuffer(allocationManager_, exposureStateBuffer,
-                                       &state, sizeof(state));
-      }
+    if (exposureStateBuffer_.buffer != VK_NULL_HANDLE) {
+      SceneController::writeToBuffer(allocationManager_, exposureStateBuffer_,
+                                     &state, sizeof(state));
     }
     return;
   }
 
-  if (imageIndex < exposureStateBuffers_.size()) {
-    auto& exposureStateBuffer = exposureStateBuffers_[imageIndex];
-    if (exposureStateBuffer.buffer != VK_NULL_HANDLE &&
-        exposureStateBuffer.allocation != nullptr) {
-      if (vmaInvalidateAllocation(
-              allocationManager_.memoryManager()->allocator(),
-              exposureStateBuffer.allocation, 0,
-              sizeof(ExposureStateData)) != VK_SUCCESS) {
-        throw std::runtime_error("failed to invalidate exposure state buffer");
-      }
+  if (exposureStateBuffer_.buffer != VK_NULL_HANDLE &&
+      exposureStateBuffer_.allocation != nullptr) {
+    if (vmaInvalidateAllocation(allocationManager_.memoryManager()->allocator(),
+                                exposureStateBuffer_.allocation, 0,
+                                sizeof(ExposureStateData)) != VK_SUCCESS) {
+      throw std::runtime_error("failed to invalidate exposure state buffer");
+    }
 
-      const auto* state = static_cast<const ExposureStateData*>(
-          exposureStateBuffer.allocation_info.pMappedData);
-      if (state != nullptr && state->initialized > 0.5f &&
-          std::isfinite(state->exposure) &&
-          std::isfinite(state->averageLuminance)) {
-        currentExposure_ = clampExposure(state->exposure, settings);
-        averageLuminance_ = std::max(state->averageLuminance, 0.0f);
-        hasCurrentExposure_ = true;
-        return;
-      }
+    const auto* state = static_cast<const ExposureStateData*>(
+        exposureStateBuffer_.allocation_info.pMappedData);
+    if (state != nullptr && state->initialized > 0.5f &&
+        std::isfinite(state->exposure) &&
+        std::isfinite(state->averageLuminance)) {
+      currentExposure_ = clampExposure(state->exposure, settings);
+      averageLuminance_ = std::max(state->averageLuminance, 0.0f);
+      hasCurrentExposure_ = true;
+      return;
     }
   }
 
@@ -332,11 +326,10 @@ void ExposureManager::resizeFrameResources(uint32_t descriptorSetCount) {
   destroyFrameResources();
   const uint32_t imageCount = std::max<uint32_t>(1u, descriptorSetCount);
   histogramBuffers_.resize(imageCount);
-  exposureStateBuffers_.resize(imageCount);
   for (uint32_t imageIndex = 0; imageIndex < imageCount; ++imageIndex) {
     createHistogramBuffer(histogramBuffers_[imageIndex]);
-    createExposureStateBuffer(exposureStateBuffers_[imageIndex]);
   }
+  createExposureStateBuffer(exposureStateBuffer_);
 }
 
 void ExposureManager::destroyFrameResources() {
@@ -344,10 +337,7 @@ void ExposureManager::destroyFrameResources() {
     destroyBufferIfAllocated(allocationManager_, histogramBuffer);
   }
   histogramBuffers_.clear();
-  for (auto& exposureStateBuffer : exposureStateBuffers_) {
-    destroyBufferIfAllocated(allocationManager_, exposureStateBuffer);
-  }
-  exposureStateBuffers_.clear();
+  destroyBufferIfAllocated(allocationManager_, exposureStateBuffer_);
 }
 
 void ExposureManager::createHistogramBuffer(
@@ -383,7 +373,7 @@ void ExposureManager::updateDescriptorSet(uint32_t imageIndex,
                                           VkImageView sceneColorView) {
   if (imageIndex >= descriptorSets_.size() ||
       imageIndex >= histogramBuffers_.size() ||
-      imageIndex >= exposureStateBuffers_.size()) {
+      exposureStateBuffer_.buffer == VK_NULL_HANDLE) {
     return;
   }
   constexpr VkDeviceSize kHistogramBufferSize =
@@ -399,7 +389,7 @@ void ExposureManager::updateDescriptorSet(uint32_t imageIndex,
   histogramInfo.range = kHistogramBufferSize;
 
   VkDescriptorBufferInfo exposureInfo{};
-  exposureInfo.buffer = exposureStateBuffers_[imageIndex].buffer;
+  exposureInfo.buffer = exposureStateBuffer_.buffer;
   exposureInfo.offset = 0;
   exposureInfo.range = sizeof(ExposureStateData);
 

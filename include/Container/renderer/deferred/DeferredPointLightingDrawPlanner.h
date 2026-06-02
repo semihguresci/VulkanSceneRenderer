@@ -23,7 +23,7 @@ struct DeferredPointLightingDrawInputs {
   float cameraFar{100.0f};
   uint32_t contactVisibilityEnabled{0};
   uint32_t localShadowEnabled{0};
-  float bounceIntensity{0.35f};
+  float bounceIntensity{1.0f};
   std::span<const container::gpu::PointLightData> pointLights{};
   uint32_t lightVolumeIndexCount{0};
 };
@@ -39,7 +39,7 @@ struct DeferredPointLightingDrawPlan {
       DeferredPointLightingStencilPipeline::PointLight};
   uint32_t contactVisibilityEnabled{0};
   uint32_t localShadowEnabled{0};
-  float bounceIntensity{0.35f};
+  float bounceIntensity{1.0f};
   uint32_t lightVolumeIndexCount{0};
   std::array<DeferredPointLightingStencilRoute,
              container::gpu::kMaxDeferredPointLights>
