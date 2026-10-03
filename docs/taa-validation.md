@@ -164,3 +164,28 @@ Extracted-package verification and representative evidence are recorded in
 That directory contains quality, stress, performance and mutation JSON plus
 selected PNGs, configuration sidecars and the final CTest log. Full repeatable
 sequences remain under `out/taa-regression` after running the commands above.
+
+## Extracted Windows preview
+
+`VulkanSceneRenderer-0.2.0-taa-preview-windows-x64.zip` is 75,158,563 bytes,
+built from source commit `dd3d6a58217996a5477c3a44e2b178be7fba85ba` with all
+73 runtime shaders. Its SHA-256 is
+`bf22d10dd042ad2cfeb9e845c4099658b4891c6ba7c655438c9312b9cecb0503`.
+The report/evidence follow-up changes documentation and validation tools only.
+
+Four extracted-package cases pass: deferred glTF TAA, forward USD TAA, forward
+BIM root-motion TAA, and the native forward 4x MSAA route. Captures run from
+`out/taa-package-smoke`, outside the extracted runtime, with PATH containing
+only Windows, System32 and SysWOW64. SDK/layer variables are removed and
+validation is disabled to match an end-user installation. No Visual Studio,
+Slang or SDK runtime path is required. This checks dependency/asset isolation
+on the development GPU; it is not a claim of a clean Windows VM test.
+
+Reproduce after extracting the ZIP:
+
+```powershell
+python -B tests/validation/temporal_package_smoke.py --runtime out/taa-extracted-validation/VulkanSceneRenderer-0.2.0-taa-preview-windows-x64 --output out/taa-package-smoke
+```
+
+[`package-smoke-results.json`](../tests/visual-regression/temporal/windows-nvidia/package-smoke-results.json)
+records effective modes, successful-frame counts, executable hash and GPU.
