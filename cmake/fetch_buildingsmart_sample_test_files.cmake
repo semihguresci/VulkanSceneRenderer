@@ -7,7 +7,7 @@ if(NOT DEFINED STAMP_FILE)
 endif()
 
 if(NOT DEFINED REPO_REF_URL)
-    set(REPO_REF_URL "https://api.github.com/repos/buildingSMART/Sample-Test-Files/git/ref/heads/main")
+    set(REPO_REF_URL "https://api.github.com/repos/buildingsmart-community/Community-Sample-Test-Files/git/ref/heads/main")
 endif()
 
 set(REPO_NAME "Sample-Test-Files")
@@ -60,8 +60,10 @@ if(EXISTS "${STAMP_FILE}" AND EXISTS "${DESTINATION}")
     endif()
 endif()
 
-set(REPO_ARCHIVE_URL
-    "https://github.com/buildingSMART/Sample-Test-Files/archive/${latest_sha}.zip")
+if(NOT DEFINED REPO_ARCHIVE_URL)
+    set(REPO_ARCHIVE_URL
+        "https://github.com/buildingsmart-community/Community-Sample-Test-Files/archive/${latest_sha}.zip")
+endif()
 
 file(REMOVE_RECURSE "${TEMP_DIR}")
 file(MAKE_DIRECTORY "${TEMP_DIR}")
@@ -103,10 +105,19 @@ if(NOT extract_result EQUAL 0)
     message(FATAL_ERROR "Failed to extract buildingSMART Sample-Test-Files archive downloaded to ${ARCHIVE_PATH}.")
 endif()
 
-file(GLOB extracted_dirs LIST_DIRECTORIES true "${TEMP_DIR}/Sample-Test-Files-*")
+# GitHub redirects renamed repositories, changing the archive's root name.
+# Match the resolved revision instead of assuming a repository-name prefix.
+file(GLOB archive_entries LIST_DIRECTORIES true "${TEMP_DIR}/*-${latest_sha}")
+set(extracted_dirs "")
+foreach(entry IN LISTS archive_entries)
+    if(IS_DIRECTORY "${entry}")
+        list(APPEND extracted_dirs "${entry}")
+    endif()
+endforeach()
+list(LENGTH extracted_dirs extracted_count)
 
-if(NOT extracted_dirs)
-    message(FATAL_ERROR "No extracted buildingSMART Sample-Test-Files directory found in ${TEMP_DIR}.")
+if(NOT extracted_count EQUAL 1)
+    message(FATAL_ERROR "Expected one extracted buildingSMART sample directory for revision ${latest_sha} in ${TEMP_DIR}; found ${extracted_count}.")
 endif()
 
 list(GET extracted_dirs 0 extracted_dir)

@@ -99,7 +99,7 @@ if(ENABLE_BIM_SAMPLE_MODEL_DOWNLOAD)
     set(IFC_SAMPLE_MODELS_DIR "${MODELS_OUTPUT_DIR}/buildingSMART-Sample-Test-Files")
     set(IFC_SAMPLE_MODELS_STAMP "${IFC_SAMPLE_MODELS_DIR}/.fetched")
     set(IFC_SAMPLE_MODELS_REF_URL
-        "https://api.github.com/repos/buildingSMART/Sample-Test-Files/git/ref/heads/main")
+        "https://api.github.com/repos/buildingsmart-community/Community-Sample-Test-Files/git/ref/heads/main")
 
     add_custom_target(fetch_bim_sample_models
         COMMAND ${CMAKE_COMMAND}

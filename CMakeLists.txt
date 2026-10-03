@@ -46,6 +46,36 @@ if(TARGET copy_hdr)
     add_dependencies(${PROJECT_NAME} copy_hdr)
 endif()
 
+# Multi-configuration generators place the executable in Debug/Release while
+# asset producers write to the build root. Stage assets on every build so shader
+# changes are copied even when the executable does not need to be relinked.
+if(CMAKE_CONFIGURATION_TYPES)
+    add_custom_target(stage_runtime_assets
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${COMPILED_SHADERS_DIR}"
+                "$<TARGET_FILE_DIR:${PROJECT_NAME}>/spv_shaders"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_BINARY_DIR}/materials"
+                "$<TARGET_FILE_DIR:${PROJECT_NAME}>/materials"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${MODELS_OUTPUT_DIR}"
+                "$<TARGET_FILE_DIR:${PROJECT_NAME}>/models"
+        COMMENT "Staging runtime assets beside the executable"
+        VERBATIM
+    )
+    add_dependencies(stage_runtime_assets shaders copy_materials generate_models)
+    if(TARGET copy_hdr)
+        add_dependencies(stage_runtime_assets copy_hdr)
+        add_custom_command(TARGET stage_runtime_assets POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${CMAKE_BINARY_DIR}/hdr"
+                    "$<TARGET_FILE_DIR:${PROJECT_NAME}>/hdr"
+            VERBATIM
+        )
+    endif()
+    add_dependencies(${PROJECT_NAME} stage_runtime_assets)
+endif()
+
 # Include the tests configuration
 if(ENABLE_TESTS)
     include(${CMAKE_SOURCE_DIR}/tests/CMakeLists.tests.cmake)

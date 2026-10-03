@@ -33,6 +33,14 @@ add_test(
 )
 
 add_test(
+    NAME fetch_buildingsmart_sample_test_files_tests
+    COMMAND ${CMAKE_COMMAND}
+            "-DPROJECT_SOURCE_DIR_FOR_TEST=${CMAKE_SOURCE_DIR}"
+            "-DTEST_WORK_DIR=${CMAKE_BINARY_DIR}/cmake_test_work/fetch_buildingsmart_sample_test_files_tests"
+            -P "${TEST_CMAKE_DIR}/fetch_buildingsmart_sample_test_files_tests.cmake"
+)
+
+add_test(
     NAME shaders_incremental_config_tests
     COMMAND ${CMAKE_COMMAND}
             "-DPROJECT_SOURCE_DIR_FOR_TEST=${CMAKE_SOURCE_DIR}"

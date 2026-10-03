@@ -14,6 +14,44 @@ The CMake project and build targets use `VulkanSceneRenderer`. The public
 include root remains `include/Container`, and the source namespace remains
 `container::`, to avoid a broad source-level API rename.
 
+## Download and Run (Windows x64)
+
+[Download v0.1.0-preview.1](https://github.com/semihguresci/VulkanSceneRenderer/releases/tag/v0.1.0-preview.1)
+and select `VulkanSceneRenderer-v0.1.0-preview.1-windows-x64.zip` under **Assets**.
+This prerelease is intended for testing and feedback.
+
+Requirements:
+
+- Windows 10 or 11, x64.
+- A GPU and current graphics driver supporting Vulkan 1.4. The renderer also
+  checks the required descriptor indexing, buffer device address, dynamic
+  rendering, synchronization2, and indirect drawing features at startup.
+- The [latest Microsoft Visual C++ v14 Redistributable (x64)](https://aka.ms/vc14/vc_redist.x64.exe).
+
+Extract the entire ZIP, then launch `VulkanSceneRenderer.exe` from the extracted
+folder. Keep the DLLs and asset folders beside the executable. Visual Studio,
+the Vulkan SDK, Slang, Python, and model downloads are not needed to run it.
+The package includes precompiled shaders, local sample scenes, and the default
+HDR environment. It opens the Cornell box local-light scene using deferred
+raster rendering.
+
+From PowerShell in the extracted folder:
+
+```powershell
+.\VulkanSceneRenderer.exe
+.\VulkanSceneRenderer.exe --model "C:\Models\scene.glb"
+.\VulkanSceneRenderer.exe --render-technique forward-raster --msaa 4
+```
+
+For `.gltf` files, keep their referenced textures and buffers with the model.
+Large gallery scenes and downloaded BIM/USD collections are not bundled.
+Validation layers are optional and require the Vulkan SDK when using
+`--validation`. The executable is unsigned; Windows may show a download warning.
+Verify the archive against the release's `SHA256SUMS.txt` with `Get-FileHash`.
+Report testing results through [GitHub Issues](https://github.com/semihguresci/VulkanSceneRenderer/issues),
+including the release version, GPU, driver version, launch command, and console
+output or a screenshot.
+
 ## Gallery
 
 VulkanSceneRenderer supports high-detail scene rendering, physically based
@@ -30,12 +68,17 @@ visualization.
 
 ## Quick Start
 
-Windows release:
+Build from source in a Visual Studio Developer Command Prompt, with
+`VCPKG_ROOT` set to your vcpkg checkout and the Vulkan 1.4 SDK installed:
 
 ```powershell
 cmake --preset windows-release
 cmake --build out/build/windows-release --target VulkanSceneRenderer --config Release
 ```
+
+Visual Studio can open the repository folder and select the `windows-debug` or
+`windows-release` CMake preset. For a native Visual Studio solution and Windows
+release packaging instructions, see [Build and Test](docs/build-and-test.md).
 
 Run tests:
 
