@@ -463,7 +463,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
 
     if ((vertIn.flags & kPbrObjectFlagUnlit) == 0u)
     {
-        for (uint i = 0; i < uLighting.pointLightCount && i < MAX_POINT_LIGHTS; ++i)
+        for (uint i = 0; i < uLighting.pointLightCount && i < MAX_CLUSTERED_LIGHTS; ++i)
         {
             PointLightData light = uPointLights[i];
             float3 lightVector = light.positionRadius.xyz - vertIn.worldPos;
@@ -521,31 +521,30 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             if (LocalShadowMapsEnabled(uLighting, uLocalShadow) &&
                 areaShadowRef != 0u)
             {
-                // The local-shadow PCF radius already models finite source
-                // size; a reduced weighted shadow estimate avoids a full PCF
-                // for every lighting integration sample.
+                // Integrate the emitter samples backed by rendered cube maps.
                 areaShadowVisibility = 0.0;
                 float visibilityWeightSum = 0.0;
-                [unroll]
+                uint visibilitySampleCount =
+                    LocalAreaShadowSampleCount(areaShadowRef, uLocalShadow);
+                [loop]
                 for (uint visibilitySample = 0u;
-                     visibilitySample < AREA_LIGHT_SHADOW_VISIBILITY_SAMPLE_COUNT;
+                     visibilitySample < visibilitySampleCount;
                      ++visibilitySample)
                 {
-                    uint areaSampleIndex =
-                        AreaLightShadowVisibilitySampleIndex(visibilitySample);
+                    float3 samplePosition = LocalAreaShadowSamplePosition(
+                        areaShadowRef, visibilitySample, uLocalShadow);
                     float3 visibilitySurfaceToLight;
-                    float weight = AreaLightSampleContributionWeight(
-                        light, frame, vertIn.worldPos, areaSampleIndex,
+                    float weight = AreaLightPositionContributionWeight(
+                        light, frame, vertIn.worldPos, samplePosition,
+                        1.0 / float(visibilitySampleCount),
                         visibilitySurfaceToLight);
                     if (weight <= 0.0)
                     {
                         continue;
                     }
-                    float3 samplePosition =
-                        AreaLightSamplePosition(frame, areaSampleIndex);
                     areaShadowVisibility += weight * LocalAreaLightShadowVisibility(
                         i, vertIn.worldPos, surfaceNormal.geometricNormal,
-                        samplePosition, uLocalShadow, gLocalShadowAtlas,
+                        visibilitySample, uLocalShadow, gLocalShadowAtlas,
                         gLocalShadowSampler);
                     visibilityWeightSum += weight;
                 }

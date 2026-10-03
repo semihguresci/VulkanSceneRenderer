@@ -34,7 +34,7 @@ VkDescriptorSetLayout PipelineManager::createDescriptorSetLayout(
 
   VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
   VkResult res =
-      vkCreateDescriptorSetLayout(device_, &layoutInfo, nullptr, &setLayout);
+      createOwnedDescriptorSetLayout(device_, &layoutInfo, nullptr, &setLayout);
 
   if (res != VK_SUCCESS) {
     throw std::runtime_error("Failed to create descriptor set layout");
@@ -53,7 +53,7 @@ void PipelineManager::destroyDescriptorSetLayout(
     descriptorSetLayouts_.erase(it);
   }
 
-  vkDestroyDescriptorSetLayout(device_, layout, nullptr);
+  destroyOwnedDescriptorSetLayout(device_, layout, nullptr);
   layout = VK_NULL_HANDLE;
 }
 
@@ -68,7 +68,7 @@ VkDescriptorPool PipelineManager::createDescriptorPool(
   poolInfo.flags = flags;
 
   VkDescriptorPool pool = VK_NULL_HANDLE;
-  VkResult res = vkCreateDescriptorPool(device_, &poolInfo, nullptr, &pool);
+  VkResult res = createOwnedDescriptorPool(device_, &poolInfo, nullptr, &pool);
 
   if (res != VK_SUCCESS) {
     throw std::runtime_error("Failed to create descriptor pool");
@@ -86,7 +86,7 @@ void PipelineManager::destroyDescriptorPool(VkDescriptorPool& pool) {
     descriptorPools_.erase(it);
   }
 
-  vkDestroyDescriptorPool(device_, pool, nullptr);
+  destroyOwnedDescriptorPool(device_, pool, nullptr);
   pool = VK_NULL_HANDLE;
 }
 
@@ -105,7 +105,7 @@ VkPipelineLayout PipelineManager::createPipelineLayout(
 
   VkPipelineLayout layout = VK_NULL_HANDLE;
   VkResult res =
-      vkCreatePipelineLayout(device_, &pipelineLayoutInfo, nullptr, &layout);
+      createOwnedPipelineLayout(device_, &pipelineLayoutInfo, nullptr, &layout);
 
   if (res != VK_SUCCESS) {
     throw std::runtime_error("Failed to create pipeline layout");
@@ -123,7 +123,7 @@ void PipelineManager::destroyPipelineLayout(VkPipelineLayout& layout) {
     pipelineLayouts_.erase(it);
   }
 
-  vkDestroyPipelineLayout(device_, layout, nullptr);
+  destroyOwnedPipelineLayout(device_, layout, nullptr);
   layout = VK_NULL_HANDLE;
 }
 
@@ -141,7 +141,7 @@ VkPipelineCache PipelineManager::getOrCreatePipelineCache(
   }
 
   VkPipelineCache cache = VK_NULL_HANDLE;
-  VkResult res = vkCreatePipelineCache(device_, &cacheInfo, nullptr, &cache);
+  VkResult res = createOwnedPipelineCache(device_, &cacheInfo, nullptr, &cache);
 
   if (res != VK_SUCCESS) {
     throw std::runtime_error("Failed to create pipeline cache");
@@ -152,12 +152,17 @@ VkPipelineCache PipelineManager::getOrCreatePipelineCache(
 }
 
 VkPipeline PipelineManager::createGraphicsPipeline(
-    const VkGraphicsPipelineCreateInfo& pipelineInfo,
+    const RenderingGraphicsPipelineCreateInfo& pipelineInfo,
     const std::string& cacheKey) {
   VkPipelineCache cache = getOrCreatePipelineCache(cacheKey, nullptr);
 
   VkPipeline pipeline = VK_NULL_HANDLE;
-  VkResult res = vkCreateGraphicsPipelines(device_, cache, 1, &pipelineInfo,
+  auto renderingInfo = pipelineInfo.renderPass->pipelineInfo();
+  auto dynamicInfo = static_cast<const VkGraphicsPipelineCreateInfo&>(pipelineInfo);
+  renderingInfo.pNext = dynamicInfo.pNext;
+  dynamicInfo.pNext = &renderingInfo;
+  dynamicInfo.renderPass = VK_NULL_HANDLE;
+  VkResult res = createOwnedGraphicsPipelines(device_, cache, 1, &dynamicInfo,
                                            nullptr, &pipeline);
 
   if (res != VK_SUCCESS) {
@@ -174,7 +179,7 @@ VkPipeline PipelineManager::createComputePipeline(
   VkPipelineCache cache = getOrCreatePipelineCache(cacheKey, nullptr);
 
   VkPipeline pipeline = VK_NULL_HANDLE;
-  VkResult res = vkCreateComputePipelines(device_, cache, 1, &pipelineInfo,
+  VkResult res = createOwnedComputePipelines(device_, cache, 1, &pipelineInfo,
                                           nullptr, &pipeline);
 
   if (res != VK_SUCCESS) {
@@ -193,33 +198,33 @@ void PipelineManager::destroyPipeline(VkPipeline& pipeline) {
     pipelines_.erase(it);
   }
 
-  vkDestroyPipeline(device_, pipeline, nullptr);
+  destroyOwnedPipeline(device_, pipeline, nullptr);
   pipeline = VK_NULL_HANDLE;
 }
 
 void PipelineManager::destroyManagedResources() {
   for (VkPipeline pipeline : pipelines_) {
-    vkDestroyPipeline(device_, pipeline, nullptr);
+    destroyOwnedPipeline(device_, pipeline, nullptr);
   }
   pipelines_.clear();
 
   for (VkPipelineLayout layout : pipelineLayouts_) {
-    vkDestroyPipelineLayout(device_, layout, nullptr);
+    destroyOwnedPipelineLayout(device_, layout, nullptr);
   }
   pipelineLayouts_.clear();
 
   for (VkDescriptorPool pool : descriptorPools_) {
-    vkDestroyDescriptorPool(device_, pool, nullptr);
+    destroyOwnedDescriptorPool(device_, pool, nullptr);
   }
   descriptorPools_.clear();
 
   for (VkDescriptorSetLayout layout : descriptorSetLayouts_) {
-    vkDestroyDescriptorSetLayout(device_, layout, nullptr);
+    destroyOwnedDescriptorSetLayout(device_, layout, nullptr);
   }
   descriptorSetLayouts_.clear();
 
   for (auto& [_, cache] : pipelineCaches_) {
-    vkDestroyPipelineCache(device_, cache, nullptr);
+    destroyOwnedPipelineCache(device_, cache, nullptr);
   }
   pipelineCaches_.clear();
 }

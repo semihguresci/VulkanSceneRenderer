@@ -31,7 +31,7 @@ VulkanContextResult VulkanContextInitializer::initialize(
     container::gpu::InstanceCreateInfo ci{};
     ci.applicationName        = "Vulkan Container";
     ci.engineName             = "Vulkan Container Engine";
-    ci.apiVersion             = VK_API_VERSION_1_3;
+    ci.apiVersion             = VK_API_VERSION_1_4;
     ci.enableValidationLayers  = config_.enableValidationLayers;
     ci.validationLayers       = config_.validationLayers;
     ci.requiredExtensions     = requiredWindowExtensions;
@@ -69,10 +69,10 @@ VulkanContextResult VulkanContextInitializer::initialize(
         VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
     ci.pfnUserCallback = debugCallback;
 
-    if (CreateDebugUtilsMessengerEXT(result.instance, &ci, nullptr,
-                                     &result.debugMessenger) != VK_SUCCESS) {
-      throw std::runtime_error("failed to set up debug messenger!");
-    }
+    result.ownedDebugMessenger = vk::raii::DebugUtilsMessengerEXT(
+        result.instanceWrapper->raii(),
+        reinterpret_cast<const vk::DebugUtilsMessengerCreateInfoEXT&>(ci));
+    result.debugMessenger = static_cast<VkDebugUtilsMessengerEXT>(*result.ownedDebugMessenger);
   }
 
   // --- Surface ---
@@ -80,6 +80,7 @@ VulkanContextResult VulkanContextInitializer::initialize(
                               &result.surface) != VK_SUCCESS) {
     throw std::runtime_error("failed to create window surface!");
   }
+  result.ownedSurface = vk::raii::SurfaceKHR(result.instanceWrapper->raii(), result.surface);
 
   // --- Device ---
   {
@@ -91,8 +92,8 @@ VulkanContextResult VulkanContextInitializer::initialize(
     ci.enabledFeatures.samplerAnisotropy       = VK_TRUE;
     ci.enabledFeatures.fragmentStoresAndAtomics = VK_TRUE;
     ci.enabledFeatures.geometryShader          = VK_TRUE;
-    ci.optionalFeatures.drawIndirectFirstInstance = VK_TRUE;
-    ci.optionalFeatures.multiDrawIndirect = VK_TRUE;
+    ci.enabledFeatures.drawIndirectFirstInstance = VK_TRUE;
+    ci.enabledFeatures.multiDrawIndirect = VK_TRUE;
     ci.optionalFeatures.fillModeNonSolid       = VK_TRUE;
     ci.optionalFeatures.wideLines              = VK_TRUE;
 
@@ -119,13 +120,26 @@ VulkanContextResult VulkanContextInitializer::initialize(
     vulkan13Features.dynamicRendering = VK_TRUE;
     vulkan13Features.synchronization2 = VK_TRUE;
     vulkan13Features.maintenance4 = VK_TRUE;
+    vulkan13Features.shaderDemoteToHelperInvocation = VK_TRUE;
+
+    VkPhysicalDeviceVulkan14Features vulkan14Features{};
+    vulkan14Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES;
+    vulkan14Features.maintenance5 = VK_TRUE;
+    vulkan14Features.maintenance6 = VK_TRUE;
+    vulkan14Features.pNext = &vulkan13Features;
 
     vulkan13Features.pNext = &vulkan12Features;
     vulkan12Features.pNext = &vulkan11Features;
-    ci.next = &vulkan13Features;
+    ci.next = &vulkan14Features;
 
     result.deviceWrapper = std::make_shared<container::gpu::VulkanDevice>(
-        result.instance, result.surface, ci);
+        *result.instanceWrapper, result.surface, ci);
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(result.deviceWrapper->physicalDevice(), &properties);
+    container::log::ContainerLogger::instance().renderer()->info(
+        "Vulkan {}.{}.{} on {}: dynamic rendering, synchronization2, GPU indirect counts, Slang SPIR-V 1.6",
+        VK_API_VERSION_MAJOR(properties.apiVersion), VK_API_VERSION_MINOR(properties.apiVersion),
+        VK_API_VERSION_PATCH(properties.apiVersion), properties.deviceName);
 
     const auto& enabled                 = result.deviceWrapper->enabledFeatures();
     result.wireframeRasterModeSupported = enabled.fillModeNonSolid == VK_TRUE;

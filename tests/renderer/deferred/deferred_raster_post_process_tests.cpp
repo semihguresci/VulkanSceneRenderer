@@ -30,10 +30,10 @@ Handle fakeHandle(uintptr_t value) {
 }
 
 DeferredPostProcessPassRecordInputs
-readyPostProcessRecordInputs(std::vector<VkFramebuffer> &framebuffers) {
-  framebuffers = {fakeHandle<VkFramebuffer>(0x101)};
+readyPostProcessRecordInputs(std::vector<RenderingTargetHandle> &framebuffers) {
+  framebuffers = {fakeHandle<RenderingTargetHandle>(0x101)};
   return {.commandBuffer = fakeHandle<VkCommandBuffer>(0x102),
-          .renderPass = fakeHandle<VkRenderPass>(0x103),
+          .renderPass = fakeHandle<RenderingPassHandle>(0x103),
           .swapChainFramebuffers = &framebuffers,
           .imageIndex = 0u,
           .extent = {1920u, 1080u},
@@ -235,7 +235,7 @@ TEST(DeferredRasterPostProcessTests,
 
 TEST(DeferredRasterPostProcessTests,
      RejectsIncompleteRecordInputsBeforeRecording) {
-  std::vector<VkFramebuffer> framebuffers;
+  std::vector<RenderingTargetHandle> framebuffers;
   DeferredPostProcessPassRecordInputs inputs =
       readyPostProcessRecordInputs(framebuffers);
   EXPECT_TRUE(deferredPostProcessPassRecordInputsReady(inputs));
@@ -259,7 +259,7 @@ TEST(DeferredRasterPostProcessTests,
   invalid = inputs;
   framebuffers[0] = VK_NULL_HANDLE;
   EXPECT_FALSE(deferredPostProcessPassRecordInputsReady(invalid));
-  framebuffers[0] = fakeHandle<VkFramebuffer>(0x101);
+  framebuffers[0] = fakeHandle<RenderingTargetHandle>(0x101);
 
   invalid = inputs;
   invalid.extent.width = 0u;
@@ -290,7 +290,7 @@ TEST(DeferredRasterPostProcessTests,
      RecordReturnsFalseForIncompleteInputs) {
   EXPECT_FALSE(recordDeferredPostProcessPassCommands({}));
 
-  std::vector<VkFramebuffer> framebuffers;
+  std::vector<RenderingTargetHandle> framebuffers;
   DeferredPostProcessPassRecordInputs inputs =
       readyPostProcessRecordInputs(framebuffers);
   inputs.pipeline = VK_NULL_HANDLE;

@@ -40,7 +40,7 @@ namespace container::gpu {
   VkShaderModule shaderModule = VK_NULL_HANDLE;
 
   VkResult result =
-      vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule);
+      createOwnedShaderModule(device, &createInfo, nullptr, &shaderModule);
 
   if (result != VK_SUCCESS) {
     throw std::runtime_error("Failed to create shader module");

@@ -482,7 +482,7 @@ public:
 
   void initialize(VkInstance instance, VkDevice device,
                   VkPhysicalDevice physicalDevice, VkQueue graphicsQueue,
-                  uint32_t graphicsQueueFamily, VkRenderPass renderPass,
+                  uint32_t graphicsQueueFamily, RenderingPassHandle renderPass,
                   uint32_t imageCount, GLFWwindow *window,
                   const std::string &defaultModelPath,
                   float defaultImportScale);

@@ -2,6 +2,8 @@
 
 #include <string>
 #include <vector>
+#include <memory>
+#include <vulkan/vulkan_raii.hpp>
 #include "Container/common/CommonVulkan.h"
 
 namespace container::gpu {
@@ -11,7 +13,7 @@ struct InstanceCreateInfo {
   uint32_t applicationVersion{VK_MAKE_VERSION(1, 0, 0)};
   std::string engineName{"VulkanEngine"};
   uint32_t engineVersion{VK_MAKE_VERSION(1, 0, 0)};
-  uint32_t apiVersion{VK_API_VERSION_1_3};
+  uint32_t apiVersion{VK_API_VERSION_1_4};
 
   bool enableValidationLayers{false};
   std::vector<const char*> validationLayers{};
@@ -30,11 +32,14 @@ class VulkanInstance {
   VulkanInstance& operator=(VulkanInstance&& other) noexcept;
 
   [[nodiscard]] VkInstance instance() const noexcept { return instance_; }
+  [[nodiscard]] const vk::raii::Instance& raii() const noexcept { return ownedInstance_; }
 
  private:
   static bool checkValidationLayerSupport(
       const std::vector<const char*>& validationLayers);
 
+  std::unique_ptr<vk::raii::Context> context_;
+  vk::raii::Instance ownedInstance_{nullptr};
   VkInstance instance_{nullptr};
 };
 

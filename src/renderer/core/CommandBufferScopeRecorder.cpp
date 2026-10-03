@@ -33,9 +33,8 @@ bool recordSecondaryCommandBufferBeginCommands(
 
   VkCommandBufferInheritanceInfo inheritanceInfo{};
   inheritanceInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
-  inheritanceInfo.renderPass = inputs.renderPass;
-  inheritanceInfo.subpass = inputs.subpass;
-  inheritanceInfo.framebuffer = inputs.framebuffer;
+  auto renderingInheritance = inputs.renderPass->inheritanceInfo();
+  inheritanceInfo.pNext = &renderingInheritance;
 
   VkCommandBufferBeginInfo beginInfo{};
   beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;

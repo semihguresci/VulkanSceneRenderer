@@ -4,6 +4,12 @@ VulkanSceneRenderer is a C++23 Vulkan renderer for real-time scene rendering,
 glTF, BIM, and USD content, physically based materials, shadows,
 GPU culling, and debug visualization.
 
+The runtime requires a Vulkan 1.4 GPU and driver. Raster passes use dynamic
+rendering and synchronization2; Vulkan-Hpp RAII owns Vulkan objects, VMA owns
+GPU allocations, and Slang compiles shaders to SPIR-V 1.6. Forward and deferred
+opaque rendering use compute culling and indirect draw counts. See
+[the modern rendering architecture](docs/architecture.md#vulkan-14-rendering).
+
 The CMake project and build targets use `VulkanSceneRenderer`. The public
 include root remains `include/Container`, and the source namespace remains
 `container::`, to avoid a broad source-level API rename.
@@ -68,7 +74,7 @@ cmake --build out/build/windows-release --target download_usd_models --config Re
   commands, helper scripts, and known test status.
 - [Development guide](docs/development-guide.md) - renderer conventions,
   shader/C++ layout contracts, and commenting guidance.
-- [MSAA](docs/msaa.md) - deferred raster multisampling configuration,
+- [MSAA](docs/msaa.md) - forward and deferred raster multisampling configuration,
   render-pass resolves, and render graph boundaries.
 - [Renderer telemetry](docs/renderer-telemetry.md) - live frame timing,
   GPU query backends, render graph metrics, and validation commands.

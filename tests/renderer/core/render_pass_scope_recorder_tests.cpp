@@ -18,8 +18,8 @@ template <typename Handle> Handle fakeHandle(uintptr_t value) {
 
 RenderPassScopeRecordInputs requiredInputs() {
   static const std::array<VkClearValue, 1> clearValues = {VkClearValue{}};
-  return {.renderPass = fakeHandle<VkRenderPass>(0x1),
-          .framebuffer = fakeHandle<VkFramebuffer>(0x2),
+  return {.renderPass = fakeHandle<RenderingPassHandle>(0x1),
+          .framebuffer = fakeHandle<RenderingTargetHandle>(0x2),
           .renderArea = {.offset = {0, 0}, .extent = {640u, 480u}},
           .clearValues = clearValues};
 }

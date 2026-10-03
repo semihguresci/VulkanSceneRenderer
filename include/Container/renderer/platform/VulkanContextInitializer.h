@@ -19,6 +19,8 @@ namespace container::renderer {
 // Output produced by VulkanContextInitializer::initialize().
 struct VulkanContextResult {
   std::shared_ptr<container::gpu::VulkanInstance> instanceWrapper;
+  vk::raii::DebugUtilsMessengerEXT ownedDebugMessenger{nullptr};
+  vk::raii::SurfaceKHR ownedSurface{nullptr};
   std::shared_ptr<container::gpu::VulkanDevice>   deviceWrapper;
   VkInstance                                        instance{VK_NULL_HANDLE};
   VkDebugUtilsMessengerEXT                          debugMessenger{VK_NULL_HANDLE};

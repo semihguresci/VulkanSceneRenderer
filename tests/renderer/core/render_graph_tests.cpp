@@ -982,6 +982,33 @@ TEST(RenderGraphTests, DefaultScheduleModelsCurrentFrameFlow) {
       RenderPassId::LocalShadowDepth));
 }
 
+TEST(RenderGraphTests, CullStatsReadbackRunsWhenCullingIsDisabledOrSkipped) {
+  for (const bool runtimeSkip : {false, true}) {
+    SCOPED_TRACE(runtimeSkip);
+    RenderGraph graph;
+    for (const RenderPassId id :
+         {RenderPassId::FrustumCull, RenderPassId::DepthPrepass,
+          RenderPassId::HiZGenerate, RenderPassId::OcclusionCull,
+          RenderPassId::CullStatsReadback}) {
+      graph.addPass(id, noopRecord());
+    }
+    for (const RenderPassId id :
+         {RenderPassId::FrustumCull, RenderPassId::OcclusionCull}) {
+      if (runtimeSkip) {
+        graph.setPassReadiness(id,
+            [](const FrameRecordParams&) { return notNeeded(); });
+      } else {
+        ASSERT_TRUE(graph.setPassEnabled(id, false));
+      }
+    }
+
+    const auto recorded = execute(graph);
+    EXPECT_NE(std::ranges::find(recorded, RenderPassId::CullStatsReadback),
+              recorded.end());
+    EXPECT_TRUE(graph.isPassActive(RenderPassId::CullStatsReadback));
+  }
+}
+
 TEST(RenderGraphTests, OpenWorldFrameDoesNotRequireLocalShadowDepthPass) {
   constexpr std::array passes = {
       RenderPassId::FrustumCull,

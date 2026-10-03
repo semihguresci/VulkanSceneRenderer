@@ -2,6 +2,7 @@
 
 #include "Container/renderer/bim/BimSurfaceRasterPassRecorder.h"
 #include "Container/renderer/core/RenderPassScopeRecorder.h"
+#include "Container/renderer/culling/GpuCullManager.h"
 #include "Container/renderer/debug/DebugOverlayRenderer.h"
 #include "Container/renderer/forward/ForwardRasterPipelineBridge.h"
 #include "Container/renderer/forward/ForwardRasterResourceBridge.h"
@@ -117,9 +118,10 @@ namespace {
          hasBimOpaqueDraws(p.bim) || hasBimTransparentDraws(p.bim);
 }
 
-[[nodiscard]] bool hasLightingFramebuffer(const FrameRecordParams& p) {
+[[nodiscard]] bool hasLightingFramebuffer(const FrameRecordParams& p,
+                                         ForwardRasterFramebufferId id) {
   const FrameFramebufferBinding* binding =
-      forwardRasterFramebufferBinding(p, ForwardRasterFramebufferId::Lighting);
+      forwardRasterFramebufferBinding(p, id);
   return binding != nullptr && binding->framebuffer != VK_NULL_HANDLE &&
          binding->renderPass != VK_NULL_HANDLE && binding->extent.width > 0u &&
          binding->extent.height > 0u;
@@ -213,7 +215,13 @@ void recordSceneOpaque(VkCommandBuffer cmd, const FrameRecordParams& p,
   }
 
   const SceneOpaqueDrawPlan plan =
-      buildSceneOpaqueDrawPlan({.draws = sceneOpaqueDrawLists(p.draws)});
+      buildSceneOpaqueDrawPlan({
+          .gpuIndirectAvailable = p.services.gpuCullManager != nullptr &&
+              p.services.gpuCullManager->frustumDrawsValid(p.runtime.imageIndex),
+          .occludedGpuIndirectAvailable = p.services.gpuCullManager != nullptr &&
+              p.services.gpuCullManager->occlusionDrawsValid(p.runtime.imageIndex),
+          .preferOccludedGpuIndirect = true,
+          .draws = sceneOpaqueDrawLists(p.draws)});
   const VkPipeline pipeline =
       forwardRasterPipelineHandle(p, ForwardRasterPipelineId::ForwardOpaque);
   bindForwardOpaqueLightingSets(cmd, layout, p);
@@ -230,7 +238,8 @@ void recordSceneOpaque(VkCommandBuffer cmd, const FrameRecordParams& p,
             .pipelineLayout = layout,
             .pushConstants = bindlessPushConstants(p),
             .imageIndex = p.runtime.imageIndex,
-            .debugOverlay = &debugOverlay});
+            .debugOverlay = &debugOverlay,
+            .gpuCullManager = p.services.gpuCullManager});
 }
 
 void recordSceneTransparent(VkCommandBuffer cmd, const FrameRecordParams& p,
@@ -326,7 +335,9 @@ checkForwardRasterLightingPassReadiness(const FrameRecordParams& p) {
   const bool sceneTransparentDraws = hasSceneTransparentDraws(p);
   const bool bimOpaqueDraws = hasBimOpaqueDraws(p.bim);
   const bool bimTransparentDraws = hasBimTransparentDraws(p.bim);
-  if (!hasLightingFramebuffer(p) ||
+  if (!hasLightingFramebuffer(p, ForwardRasterFramebufferId::Lighting) ||
+      !hasLightingFramebuffer(p,
+                              ForwardRasterFramebufferId::TransparentLighting) ||
       !forwardRasterPipelineLayoutReady(
           p, ForwardRasterPipelineLayoutId::Transparent)) {
     return missing(RenderResourceId::SceneColor);
@@ -361,7 +372,10 @@ bool recordForwardRasterLightingPassCommands(VkCommandBuffer commandBuffer,
 
   const FrameFramebufferBinding* framebuffer =
       forwardRasterFramebufferBinding(p, ForwardRasterFramebufferId::Lighting);
-  if (framebuffer == nullptr) {
+  const FrameFramebufferBinding* transparentFramebuffer =
+      forwardRasterFramebufferBinding(
+          p, ForwardRasterFramebufferId::TransparentLighting);
+  if (framebuffer == nullptr || transparentFramebuffer == nullptr) {
     return false;
   }
 
@@ -387,6 +401,22 @@ bool recordForwardRasterLightingPassCommands(VkCommandBuffer commandBuffer,
   recordBimSurface(commandBuffer, p, BimSurfacePassKind::OpaqueLighting,
                    hasBimOpaqueDraws(p.bim), opaquePipeline, opaquePipeline,
                    opaquePipeline, layout, debugOverlay);
+
+  (void)recordRenderPassEndCommands(commandBuffer);
+
+  // OIT uses single-sample storage. Load the resolved opaque color and depth
+  // in a separate scope, also preparing depth for post-processing on opaque-only
+  // frames.
+  if (!recordRenderPassBeginCommands(
+          commandBuffer,
+          {.renderPass = transparentFramebuffer->renderPass,
+           .framebuffer = transparentFramebuffer->framebuffer,
+           .renderArea = {.offset = {0, 0},
+                          .extent = transparentFramebuffer->extent},
+           .clearValues = clearValues})) {
+    return false;
+  }
+  recordSceneViewportAndScissor(commandBuffer, transparentFramebuffer->extent);
 
   recordSceneTransparent(commandBuffer, p, layout, debugOverlay);
   recordBimSurface(

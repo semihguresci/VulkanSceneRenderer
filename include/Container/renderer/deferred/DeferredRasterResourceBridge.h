@@ -239,13 +239,13 @@ deferredRasterFramebufferBinding(const FrameRecordParams& p,
   return deferredRasterSampler(p, id) != VK_NULL_HANDLE;
 }
 
-[[nodiscard]] inline VkFramebuffer deferredRasterFramebuffer(
+[[nodiscard]] inline RenderingTargetHandle deferredRasterFramebuffer(
     const FrameRecordParams& p, DeferredRasterFramebufferId id) {
   return p.framebuffer(
       RenderTechniqueId::DeferredRaster, deferredRasterFramebufferKey(id));
 }
 
-[[nodiscard]] inline VkRenderPass deferredRasterRenderPass(
+[[nodiscard]] inline RenderingPassHandle deferredRasterRenderPass(
     const FrameRecordParams& p, DeferredRasterFramebufferId id) {
   const FrameFramebufferBinding* binding =
       deferredRasterFramebufferBinding(p, id);

@@ -198,6 +198,11 @@ add_custom_test(deferred_raster_post_process_tests
     VulkanSceneRenderer_renderer
 )
 
+add_custom_test(dynamic_rendering_tests
+    ${TEST_RENDERER_CORE_DIR}/dynamic_rendering_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+
 add_custom_test(deferred_raster_lighting_tests
     ${TEST_RENDERER_DEFERRED_DIR}/deferred_raster_lighting_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_renderer
@@ -518,6 +523,14 @@ add_custom_test(bim_surface_pass_recorder_tests
 add_custom_test(bim_surface_raster_pass_recorder_tests
     ${TEST_RENDERER_BIM_DIR}/bim_surface_raster_pass_recorder_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_renderer
+)
+
+add_custom_test(lighting_shadow_sampling_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/lighting_shadow_sampling_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_Math
+)
+target_compile_definitions(lighting_shadow_sampling_tests PRIVATE
+    CONTAINER_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
 add_custom_test(local_shadow_layer_allocator_tests

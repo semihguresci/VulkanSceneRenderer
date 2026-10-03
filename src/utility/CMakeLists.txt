@@ -23,6 +23,8 @@ target_link_libraries(VulkanSceneRenderer_log PUBLIC
 
 # ── 2. Vulkan device lifecycle ───────────────────────────────────────────────
 add_library(VulkanSceneRenderer_vulkan_device
+    DynamicRendering.cpp
+    VulkanObjects.cpp
     VulkanDevice.cpp
     VulkanInstance.cpp
     SwapChainManager.cpp

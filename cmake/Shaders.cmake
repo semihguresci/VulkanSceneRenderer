@@ -25,7 +25,7 @@ endif()
 set(SLANG_MATRIX_LAYOUT_FLAG "-matrix-layout-column-major")
 set(SLANG_SPIRV_FLAGS
     -target spirv
-    -profile spirv_1_4
+    -profile spirv_1_6
     -emit-spirv-directly
     -fvk-use-entrypoint-name
     -I "${SHADERS_DIR}"
@@ -34,6 +34,7 @@ set(SLANG_SPIRV_FLAGS
 
 file(GLOB SLANG_SOURCES CONFIGURE_DEPENDS "${SHADERS_DIR}/*.slang")
 set(SLANG_INCLUDE_SHADER_NAMES
+    depth_normal_common.slang
     surface_normal_common.slang
     pbr_material_common.slang
     object_data_common.slang

@@ -68,8 +68,8 @@ private:
 
 struct DeferredPostProcessPassBeginInfo {
   VkCommandBuffer commandBuffer{VK_NULL_HANDLE};
-  VkRenderPass renderPass{VK_NULL_HANDLE};
-  VkFramebuffer framebuffer{VK_NULL_HANDLE};
+  RenderingPassHandle renderPass{VK_NULL_HANDLE};
+  RenderingTargetHandle framebuffer{VK_NULL_HANDLE};
   VkExtent2D extent{};
 };
 
@@ -82,8 +82,8 @@ struct DeferredPostProcessFullscreenDraw {
 
 struct DeferredPostProcessPassRecordInputs {
   VkCommandBuffer commandBuffer{VK_NULL_HANDLE};
-  VkRenderPass renderPass{VK_NULL_HANDLE};
-  const std::vector<VkFramebuffer> *swapChainFramebuffers{nullptr};
+  RenderingPassHandle renderPass{VK_NULL_HANDLE};
+  const std::vector<RenderingTargetHandle> *swapChainFramebuffers{nullptr};
   uint32_t imageIndex{0};
   VkExtent2D extent{};
   VkPipeline pipeline{VK_NULL_HANDLE};

@@ -77,10 +77,10 @@ void EnvironmentManager::destroy() {
   destroyGtaoTextures();
 
   auto destroyView = [&](VkImageView& v) {
-    if (v != VK_NULL_HANDLE) { vkDestroyImageView(dev, v, nullptr); v = VK_NULL_HANDLE; }
+    if (v != VK_NULL_HANDLE) { destroyVulkanImageView(dev, v, nullptr); v = VK_NULL_HANDLE; }
   };
   auto destroySampler = [&](VkSampler& s) {
-    if (s != VK_NULL_HANDLE) { vkDestroySampler(dev, s, nullptr); s = VK_NULL_HANDLE; }
+    if (s != VK_NULL_HANDLE) { destroyOwnedSampler(dev, s, nullptr); s = VK_NULL_HANDLE; }
   };
   auto destroyImage = [&](VkImage& img, VmaAllocation& alloc) {
     if (img != VK_NULL_HANDLE && alloc != nullptr) {
@@ -151,7 +151,7 @@ void EnvironmentManager::createBrdfLut(const std::filesystem::path& shaderDir) {
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vi.format   = VK_FORMAT_R16G16_SFLOAT;
     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    if (vkCreateImageView(dev, &vi, nullptr, &brdfLutView_) != VK_SUCCESS)
+    if (createVulkanImageView(dev, &vi, nullptr, &brdfLutView_) != VK_SUCCESS)
       throw std::runtime_error("failed to create BRDF LUT view");
   }
 
@@ -198,7 +198,7 @@ void EnvironmentManager::createBrdfLut(const std::filesystem::path& shaderDir) {
 
   brdfLutPipeline_ = pipelineManager_.createComputePipeline(ci, "brdf_lut");
 
-  vkDestroyShaderModule(dev, module, nullptr);
+  destroyOwnedShaderModule(dev, module, nullptr);
 
   // Transition image to GENERAL for compute write.
   VkCommandBuffer cmd = VK_NULL_HANDLE;
@@ -287,7 +287,7 @@ void EnvironmentManager::createBrdfLut(const std::filesystem::path& shaderDir) {
 void EnvironmentManager::destroyEnvironmentCubemaps() {
   VkDevice dev = device_->device();
   auto destroyView = [&](VkImageView& v) {
-    if (v != VK_NULL_HANDLE) { vkDestroyImageView(dev, v, nullptr); v = VK_NULL_HANDLE; }
+    if (v != VK_NULL_HANDLE) { destroyVulkanImageView(dev, v, nullptr); v = VK_NULL_HANDLE; }
   };
   auto destroyImage = [&](VkImage& img, VmaAllocation& alloc) {
     if (img != VK_NULL_HANDLE && alloc != nullptr) {
@@ -364,7 +364,7 @@ void EnvironmentManager::createIblPipelines(
 
     VkPipeline pipeline =
         pipelineManager_.createComputePipeline(ci, spv.filename().string());
-    vkDestroyShaderModule(dev, module, nullptr);
+    destroyOwnedShaderModule(dev, module, nullptr);
     return pipeline;
   };
 
@@ -387,7 +387,7 @@ bool EnvironmentManager::loadHdrEnvironment(
 
   auto destroyImageView = [&](VkImageView& view) {
     if (view != VK_NULL_HANDLE) {
-      vkDestroyImageView(dev, view, nullptr);
+      destroyVulkanImageView(dev, view, nullptr);
       view = VK_NULL_HANDLE;
     }
   };
@@ -498,7 +498,7 @@ bool EnvironmentManager::loadHdrEnvironment(
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vi.format   = VK_FORMAT_R32G32B32A32_SFLOAT;
     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCreateImageView(dev, &vi, nullptr, &equirectView);
+    createVulkanImageView(dev, &vi, nullptr, &equirectView);
   }
 
   // ---- 3. Create the three cubemap targets ----------------------------
@@ -533,7 +533,7 @@ bool EnvironmentManager::loadHdrEnvironment(
     vi.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
     vi.format   = VK_FORMAT_R16G16B16A16_SFLOAT;
     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, 6};
-    return vkCreateImageView(dev, &vi, nullptr, &cubeView) == VK_SUCCESS;
+    return createVulkanImageView(dev, &vi, nullptr, &cubeView) == VK_SUCCESS;
   };
 
   VkImage       envImage = VK_NULL_HANDLE;
@@ -578,7 +578,7 @@ bool EnvironmentManager::loadHdrEnvironment(
     vi.format   = VK_FORMAT_R16G16B16A16_SFLOAT;
     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 6};
     VkImageView v = VK_NULL_HANDLE;
-    vkCreateImageView(dev, &vi, nullptr, &v);
+    createVulkanImageView(dev, &vi, nullptr, &v);
     return v;
   };
 
@@ -814,18 +814,18 @@ bool EnvironmentManager::loadHdrEnvironment(
 
   // ---- 6. Cleanup transient resources ---------------------------------
   for (auto v : prefilterStorageViews)
-    if (v != VK_NULL_HANDLE) vkDestroyImageView(dev, v, nullptr);
+    if (v != VK_NULL_HANDLE) destroyVulkanImageView(dev, v, nullptr);
   if (irradianceStorageView != VK_NULL_HANDLE)
-    vkDestroyImageView(dev, irradianceStorageView, nullptr);
+    destroyVulkanImageView(dev, irradianceStorageView, nullptr);
   if (envStorageView != VK_NULL_HANDLE)
-    vkDestroyImageView(dev, envStorageView, nullptr);
+    destroyVulkanImageView(dev, envStorageView, nullptr);
   if (envCubeView != VK_NULL_HANDLE)
-    vkDestroyImageView(dev, envCubeView, nullptr);
+    destroyVulkanImageView(dev, envCubeView, nullptr);
   if (envImage != VK_NULL_HANDLE && envAlloc != nullptr)
     vmaDestroyImage(allocator, envImage, envAlloc);
 
   if (equirectView != VK_NULL_HANDLE)
-    vkDestroyImageView(dev, equirectView, nullptr);
+    destroyVulkanImageView(dev, equirectView, nullptr);
   if (equirectImage != VK_NULL_HANDLE && equirectAlloc != nullptr)
     vmaDestroyImage(allocator, equirectImage, equirectAlloc);
 
@@ -886,7 +886,7 @@ void EnvironmentManager::createPlaceholderCubemaps() {
     vi.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
     vi.format   = VK_FORMAT_R16G16B16A16_SFLOAT;
     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
-    if (vkCreateImageView(dev, &vi, nullptr, &view) != VK_SUCCESS)
+    if (createVulkanImageView(dev, &vi, nullptr, &view) != VK_SUCCESS)
       throw std::runtime_error("failed to create placeholder cubemap view");
   };
 
@@ -998,7 +998,7 @@ void EnvironmentManager::createSamplers() {
     si.minLod       = 0.0f;
     si.maxLod       = 0.0f;
     si.maxAnisotropy = 1.0f;
-    if (vkCreateSampler(dev, &si, nullptr, &brdfLutSampler_) != VK_SUCCESS)
+    if (createOwnedSampler(dev, &si, nullptr, &brdfLutSampler_) != VK_SUCCESS)
       throw std::runtime_error("failed to create BRDF LUT sampler");
   }
 
@@ -1014,7 +1014,7 @@ void EnvironmentManager::createSamplers() {
     si.minLod       = 0.0f;
     si.maxLod       = 16.0f;  // supports runtime prefiltered sampling and compute-time env mip sampling
     si.maxAnisotropy = 1.0f;
-    if (vkCreateSampler(dev, &si, nullptr, &envSampler_) != VK_SUCCESS)
+    if (createOwnedSampler(dev, &si, nullptr, &envSampler_) != VK_SUCCESS)
       throw std::runtime_error("failed to create environment sampler");
   }
 
@@ -1030,7 +1030,7 @@ void EnvironmentManager::createSamplers() {
     si.minLod       = 0.0f;
     si.maxLod       = 0.0f;
     si.maxAnisotropy = 1.0f;
-    if (vkCreateSampler(dev, &si, nullptr, &gtaoSampler_) != VK_SUCCESS)
+    if (createOwnedSampler(dev, &si, nullptr, &gtaoSampler_) != VK_SUCCESS)
       throw std::runtime_error("failed to create GTAO sampler");
   }
 }
@@ -1079,7 +1079,7 @@ void EnvironmentManager::createGtaoPipelines(const std::filesystem::path& shader
     ci.layout = gtaoPipelineLayout_;
 
     gtaoPipeline_ = pipelineManager_.createComputePipeline(ci, "gtao");
-    vkDestroyShaderModule(dev, module, nullptr);
+    destroyOwnedShaderModule(dev, module, nullptr);
   }
 
   // GTAO blur pipeline.
@@ -1118,7 +1118,7 @@ void EnvironmentManager::createGtaoPipelines(const std::filesystem::path& shader
     ci.layout = gtaoBlurPipelineLayout_;
 
     gtaoBlurPipeline_ = pipelineManager_.createComputePipeline(ci, "gtao_blur");
-    vkDestroyShaderModule(dev, module, nullptr);
+    destroyOwnedShaderModule(dev, module, nullptr);
   }
 
   // Descriptor pools.
@@ -1216,7 +1216,7 @@ void EnvironmentManager::createGtaoTextures(uint32_t halfWidth,
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vi.format   = gtaoFormat_;
     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    if (vkCreateImageView(dev, &vi, nullptr, &view) != VK_SUCCESS)
+    if (createVulkanImageView(dev, &vi, nullptr, &view) != VK_SUCCESS)
       throw std::runtime_error("failed to create GTAO texture view");
   };
 
@@ -1312,7 +1312,7 @@ void EnvironmentManager::destroyGtaoTextures() {
   VkDevice dev = device_->device();
 
   auto destroyView = [&](VkImageView& v) {
-    if (v != VK_NULL_HANDLE) { vkDestroyImageView(dev, v, nullptr); v = VK_NULL_HANDLE; }
+    if (v != VK_NULL_HANDLE) { destroyVulkanImageView(dev, v, nullptr); v = VK_NULL_HANDLE; }
   };
   auto destroyImage = [&](VkImage& img, VmaAllocation& alloc) {
     if (img != VK_NULL_HANDLE && alloc != nullptr) {

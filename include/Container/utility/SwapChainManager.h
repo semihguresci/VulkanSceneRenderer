@@ -21,9 +21,9 @@ class SwapChainManager {
   SwapChainManager& operator=(SwapChainManager&&) = delete;
 
   void initialize();
-  void recreate(VkRenderPass renderPass);
+  void recreate(RenderingPassHandle renderPass);
   void cleanup();
-  void createFramebuffers(VkRenderPass renderPass);
+  void createFramebuffers(RenderingPassHandle renderPass);
   void destroyFramebuffers();
 
   [[nodiscard]] VkResult present(VkQueue presentQueue, uint32_t imageIndex,
@@ -37,7 +37,7 @@ class SwapChainManager {
   [[nodiscard]] VkImage image(size_t imageIndex) const {
     return swapChainImages_.at(imageIndex);
   }
-  [[nodiscard]] const std::vector<VkFramebuffer>& framebuffers() const {
+  [[nodiscard]] const std::vector<RenderingTargetHandle>& framebuffers() const {
     return swapChainFramebuffers_;
   }
   [[nodiscard]] VkFormat imageFormat() const { return swapChainImageFormat_; }
@@ -76,7 +76,7 @@ class SwapChainManager {
   VkFormat swapChainImageFormat_{VK_FORMAT_UNDEFINED};
   VkExtent2D swapChainExtent_{};
   std::vector<VkImageView> swapChainImageViews_;
-  std::vector<VkFramebuffer> swapChainFramebuffers_;
+  std::vector<RenderingTargetHandle> swapChainFramebuffers_;
   bool supportsTransferSrc_{false};
 };
 

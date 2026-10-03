@@ -799,6 +799,55 @@ TEST(VisualRegressionGpu, ReportsUnsupportedProbeKindsAsFailures) {
   EXPECT_FALSE(results.at(0).at("passed").get<bool>());
 }
 
+TEST(VisualRegressionGpu, ForwardMsaaPreservesOpaqueSurfaces) {
+  if (!envFlag("CONTAINER_RUN_GPU_VISUAL_REGRESSION")) {
+    GTEST_SKIP() << "set CONTAINER_RUN_GPU_VISUAL_REGRESSION=1 to run GPU captures";
+  }
+  const std::filesystem::path executable = CONTAINER_APP_EXECUTABLE;
+  ASSERT_FALSE(executable.empty());
+  ASSERT_TRUE(std::filesystem::exists(executable));
+  const auto model = sceneAssetPath(
+      "models/validation/cornell_box_yellow_area_light.gltf", executable);
+  ASSERT_TRUE(std::filesystem::exists(model));
+  const auto resultDir = std::filesystem::absolute(
+      std::filesystem::path(CONTAINER_TEST_RESULTS_DIR) /
+      "visual-regression" / "forward-msaa");
+  std::filesystem::create_directories(resultDir);
+
+  std::array<Image, 2> captures;
+  for (size_t i = 0; i < captures.size(); ++i) {
+    const std::string samples = i == 0u ? "1" : "4";
+    const auto screenshot = resultDir / (samples + "x.png");
+    // Remove any earlier result so a failed capture cannot reuse a stale image.
+    std::filesystem::remove(screenshot);
+    const std::vector<std::string> args{
+        "--model", asCliPath(model), "--render-technique", "forward-raster",
+        "--msaa", samples, "--width", "640", "--height", "360",
+        "--hidden", "--no-ui", "--validation", "--screenshot",
+        asCliPath(screenshot), "--warmup-frames", "8", "--capture-frame", "9",
+        "--fixed-dt", "0.016666667", "--camera-position", "0", "1.05", "4.1",
+        "--camera-target", "0", "0.95", "0", "--camera-fov", "36",
+        "--environment-intensity", "0", "--directional-intensity", "0",
+        "--exposure", "0.25", "--display-mode", "lit", "--no-bloom"};
+    ASSERT_EQ(runProcess(executable, args), 0) << samples << "x MSAA";
+    ASSERT_TRUE(std::filesystem::exists(screenshot));
+    captures[i] = loadImage(screenshot);
+    ASSERT_EQ(captures[i].width, 640);
+    ASSERT_EQ(captures[i].height, 360);
+  }
+
+  // The center covers sloped opaque surfaces. Testing single-sample shading
+  // against MAX-resolved MSAA depth previously made most of this region black.
+  const PixelRegion opaqueRegion{192, 96, 256, 200};
+  const double reference =
+      luminanceStats(captures[0], opaqueRegion).meanLinearLuminance;
+  const double multisampled =
+      luminanceStats(captures[1], opaqueRegion).meanLinearLuminance;
+  ASSERT_GT(reference, 0.05);
+  EXPECT_GT(multisampled, 0.8 * reference);
+  EXPECT_LT(multisampled, 1.2 * reference);
+}
+
 TEST(VisualRegressionGpu, CapturesAndComparesFixtureScenes) {
   if (!envFlag("CONTAINER_RUN_GPU_VISUAL_REGRESSION")) {
     GTEST_SKIP() << "set CONTAINER_RUN_GPU_VISUAL_REGRESSION=1 to run GPU "

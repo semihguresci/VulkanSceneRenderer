@@ -9,8 +9,8 @@ struct CommandBufferBeginRecordInputs {
 };
 
 struct SecondaryCommandBufferBeginRecordInputs {
-  VkRenderPass renderPass{VK_NULL_HANDLE};
-  VkFramebuffer framebuffer{VK_NULL_HANDLE};
+  RenderingPassHandle renderPass{VK_NULL_HANDLE};
+  RenderingTargetHandle framebuffer{VK_NULL_HANDLE};
   uint32_t subpass{0u};
   VkCommandBufferUsageFlags flags{
       VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT};

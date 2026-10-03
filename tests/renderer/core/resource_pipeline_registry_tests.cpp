@@ -138,6 +138,13 @@ bool contains(const std::string &text, const std::string &needle) {
   return text.find(needle) != std::string::npos;
 }
 
+bool containsIgnoringWhitespace(std::string text, std::string needle) {
+  const auto whitespace = [](char c) { return c == ' ' || c == '\n' || c == '\r' || c == '\t'; };
+  std::erase_if(text, whitespace);
+  std::erase_if(needle, whitespace);
+  return contains(text, needle);
+}
+
 std::string definitionBlock(const std::string &text,
                             const std::string &declarationName) {
   const std::size_t start = text.find(declarationName);
@@ -317,8 +324,8 @@ TEST(FrameResourceRegistryTests, BindsProductionFrameResourcesByHandle) {
 
   const auto gbufferFramebuffer = registry.bindFramebuffer(
       RenderTechniqueId::DeferredRaster, "gbuffer-framebuffer", 1u,
-      FrameFramebufferBinding{.framebuffer = fakeHandle<VkFramebuffer>(0x40),
-                              .renderPass = fakeHandle<VkRenderPass>(0x41),
+      FrameFramebufferBinding{.framebuffer = fakeHandle<RenderingTargetHandle>(0x40),
+                              .renderPass = fakeHandle<RenderingPassHandle>(0x41),
                               .extent = {1920, 1080},
                               .attachmentCount = 7u});
   ASSERT_TRUE(gbufferFramebuffer.valid());
@@ -326,20 +333,20 @@ TEST(FrameResourceRegistryTests, BindsProductionFrameResourcesByHandle) {
   ASSERT_NE(framebufferBinding, nullptr);
   EXPECT_EQ(framebufferBinding->kind, FrameResourceKind::Framebuffer);
   EXPECT_EQ(framebufferBinding->framebuffer.framebuffer,
-            fakeHandle<VkFramebuffer>(0x40));
+            fakeHandle<RenderingTargetHandle>(0x40));
   EXPECT_EQ(framebufferBinding->framebuffer.renderPass,
-            fakeHandle<VkRenderPass>(0x41));
+            fakeHandle<RenderingPassHandle>(0x41));
   EXPECT_EQ(framebufferBinding->framebuffer.attachmentCount, 7u);
 
   const auto reboundGbufferFramebuffer = registry.bindFramebuffer(
       RenderTechniqueId::DeferredRaster, "gbuffer-framebuffer", 1u,
-      FrameFramebufferBinding{.framebuffer = fakeHandle<VkFramebuffer>(0x42),
-                              .renderPass = fakeHandle<VkRenderPass>(0x43),
+      FrameFramebufferBinding{.framebuffer = fakeHandle<RenderingTargetHandle>(0x42),
+                              .renderPass = fakeHandle<RenderingPassHandle>(0x43),
                               .extent = {1280, 720},
                               .attachmentCount = 7u});
   EXPECT_EQ(reboundGbufferFramebuffer, gbufferFramebuffer);
   EXPECT_EQ(registry.findBinding(gbufferFramebuffer)->framebuffer.framebuffer,
-            fakeHandle<VkFramebuffer>(0x42));
+            fakeHandle<RenderingTargetHandle>(0x42));
 
   const auto frameLightingDescriptor = registry.bindDescriptorSet(
       RenderTechniqueId::DeferredRaster, "frame-lighting-descriptor-set", 1u,
@@ -981,20 +988,20 @@ TEST(FrameRecordParamsRegistryTests, ResolvesRuntimeFramebufferBindings) {
 
   resources.bindFramebuffer(
       RenderTechniqueId::DeferredRaster, "lighting-framebuffer", 3u,
-      FrameFramebufferBinding{.framebuffer = fakeHandle<VkFramebuffer>(0x501),
-                              .renderPass = fakeHandle<VkRenderPass>(0x502),
+      FrameFramebufferBinding{.framebuffer = fakeHandle<RenderingTargetHandle>(0x501),
+                              .renderPass = fakeHandle<RenderingPassHandle>(0x502),
                               .extent = {1280, 720},
                               .attachmentCount = 2u});
 
   const auto *binding = params.framebufferBinding(
       RenderTechniqueId::DeferredRaster, "lighting-framebuffer");
   ASSERT_NE(binding, nullptr);
-  EXPECT_EQ(binding->framebuffer, fakeHandle<VkFramebuffer>(0x501));
-  EXPECT_EQ(binding->renderPass, fakeHandle<VkRenderPass>(0x502));
+  EXPECT_EQ(binding->framebuffer, fakeHandle<RenderingTargetHandle>(0x501));
+  EXPECT_EQ(binding->renderPass, fakeHandle<RenderingPassHandle>(0x502));
   EXPECT_EQ(binding->attachmentCount, 2u);
   EXPECT_EQ(params.framebuffer(RenderTechniqueId::DeferredRaster,
                                "lighting-framebuffer"),
-            fakeHandle<VkFramebuffer>(0x501));
+            fakeHandle<RenderingTargetHandle>(0x501));
   EXPECT_EQ(params.imageBinding(RenderTechniqueId::DeferredRaster,
                                 "lighting-framebuffer"),
             nullptr);
@@ -1016,21 +1023,21 @@ TEST(DeferredRasterResourceBridgeTests,
 
   resources.bindFramebuffer(
       RenderTechniqueId::DeferredRaster, "gbuffer-framebuffer", 5u,
-      FrameFramebufferBinding{.framebuffer = fakeHandle<VkFramebuffer>(0x602),
-                              .renderPass = fakeHandle<VkRenderPass>(0x603),
+      FrameFramebufferBinding{.framebuffer = fakeHandle<RenderingTargetHandle>(0x602),
+                              .renderPass = fakeHandle<RenderingPassHandle>(0x603),
                               .extent = {1920, 1080},
                               .attachmentCount = 7u});
 
   const FrameFramebufferBinding *binding = deferredRasterFramebufferBinding(
       params, DeferredRasterFramebufferId::GBuffer);
   ASSERT_NE(binding, nullptr);
-  EXPECT_EQ(binding->framebuffer, fakeHandle<VkFramebuffer>(0x602));
+  EXPECT_EQ(binding->framebuffer, fakeHandle<RenderingTargetHandle>(0x602));
   EXPECT_EQ(
       deferredRasterFramebuffer(params, DeferredRasterFramebufferId::GBuffer),
-      fakeHandle<VkFramebuffer>(0x602));
+      fakeHandle<RenderingTargetHandle>(0x602));
   EXPECT_EQ(
       deferredRasterRenderPass(params, DeferredRasterFramebufferId::GBuffer),
-      fakeHandle<VkRenderPass>(0x603));
+      fakeHandle<RenderingPassHandle>(0x603));
 }
 
 TEST(DeferredRasterResourceBridgeTests, ResolvesImageBindingsFromRegistryOnly) {
@@ -1291,7 +1298,7 @@ TEST(ForwardRasterResourceBridgeTests, ResolvesBindingsFromRegistryOnly) {
     EXPECT_TRUE(forwardRasterDescriptorSetReady(params, id)) << key;
   }
 
-  const std::array<std::pair<ForwardRasterFramebufferId, const char *>, 5>
+  const std::array<std::pair<ForwardRasterFramebufferId, const char *>, 6>
       framebuffers = {
           {{ForwardRasterFramebufferId::DepthPrepass,
             "depth-prepass-framebuffer"},
@@ -1300,6 +1307,8 @@ TEST(ForwardRasterResourceBridgeTests, ResolvesBindingsFromRegistryOnly) {
            {ForwardRasterFramebufferId::TransparentPick,
             "transparent-pick-framebuffer"},
            {ForwardRasterFramebufferId::Lighting, "lighting-framebuffer"},
+           {ForwardRasterFramebufferId::TransparentLighting,
+            "transparent-lighting-framebuffer"},
            {ForwardRasterFramebufferId::TransformGizmo,
             "transform-gizmo-framebuffer"}}};
   uintptr_t nextFramebuffer = 0xd00;
@@ -1307,8 +1316,8 @@ TEST(ForwardRasterResourceBridgeTests, ResolvesBindingsFromRegistryOnly) {
     resources.bindFramebuffer(
         RenderTechniqueId::ForwardRaster, key, 8u,
         FrameFramebufferBinding{
-            .framebuffer = fakeHandle<VkFramebuffer>(nextFramebuffer++),
-            .renderPass = fakeHandle<VkRenderPass>(nextFramebuffer++),
+            .framebuffer = fakeHandle<RenderingTargetHandle>(nextFramebuffer++),
+            .renderPass = fakeHandle<RenderingPassHandle>(nextFramebuffer++),
             .extent = {1920, 1080},
             .attachmentCount = 2u});
     const FrameFramebufferBinding *binding =
@@ -2078,7 +2087,7 @@ TEST(TechniqueRegistryGuardrails,
       "subs_.frameSyncManager->resetFence(frame_.currentFrame)", drawFrame);
   const size_t assign =
       rendererFrontend.find("frame_.imagesInFlight[imageIndex] =", drawFrame);
-  const size_t submit = rendererFrontend.find("vkQueueSubmit(", drawFrame);
+  const size_t submit = rendererFrontend.find("vkQueueSubmit2(", drawFrame);
 
   ASSERT_NE(record, std::string::npos);
   ASSERT_NE(reset, std::string::npos);
@@ -2139,7 +2148,7 @@ TEST(TechniqueRegistryGuardrails,
   const std::string rendererFrontend =
       readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
 
-  EXPECT_TRUE(contains(frameResourceManager,
+  EXPECT_TRUE(containsIgnoringWhitespace(frameResourceManager,
                        "f.pickDepth = createAttachment("
                        "formats_.depthStencil,\n"
                        "                   "
@@ -2148,13 +2157,13 @@ TEST(TechniqueRegistryGuardrails,
                        "VK_IMAGE_USAGE_TRANSFER_DST_BIT |\n"
                        "                       "
                        "VK_IMAGE_USAGE_TRANSFER_SRC_BIT"));
-  EXPECT_TRUE(contains(frameResourceManager,
+  EXPECT_TRUE(containsIgnoringWhitespace(frameResourceManager,
                        "bindSharedImage(\"pick-depth\", f.pickDepth,\n"
                        "              "
                        "VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |\n"
                        "                  VK_IMAGE_USAGE_TRANSFER_DST_BIT |\n"
                        "                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT"));
-  EXPECT_TRUE(contains(rendererFrontend,
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend,
                        "VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |\n"
                        "            VK_BUFFER_USAGE_TRANSFER_SRC_BIT"));
 }
@@ -2180,7 +2189,7 @@ TEST(TechniqueRegistryGuardrails,
   EXPECT_TRUE(contains(frameResourceManager,
                        "destroyAttachment(fallbackShadowAtlas_)"));
   EXPECT_TRUE(contains(frameResourceManager,
-                       "vkDestroySampler(device_->device(), "
+                       "destroyOwnedSampler(device_->device(), "
                        "fallbackShadowSampler_"));
   EXPECT_TRUE(
       contains(frameResourceManager, "ensureFallbackShadowResources();"));
@@ -2221,7 +2230,7 @@ TEST(TechniqueRegistryGuardrails,
       readRepoTextFile("src/renderer/bim/BimManager.cpp");
 
   EXPECT_TRUE(contains(contextInitializer,
-                       "ci.optionalFeatures.multiDrawIndirect = VK_TRUE"));
+                       "ci.enabledFeatures.multiDrawIndirect = VK_TRUE"));
   EXPECT_TRUE(contains(contextInitializer,
                        "vulkan12Features.drawIndirectCount = VK_TRUE"));
   EXPECT_TRUE(contains(vulkanDeviceHeader, "enabledVulkan12Features()"));
@@ -2329,9 +2338,9 @@ TEST(TechniqueRegistryGuardrails, SceneRasterPassesPublishReadinessCallbacks) {
   const std::string deferredTechnique =
       readRepoTextFile("src/renderer/deferred/DeferredRasterTechnique.cpp");
 
-  EXPECT_TRUE(contains(deferredTechnique, "graph.setPassReadiness(\n"
+  EXPECT_TRUE(containsIgnoringWhitespace(deferredTechnique, "graph.setPassReadiness(\n"
                                           "      RenderPassId::DepthPrepass"));
-  EXPECT_TRUE(contains(deferredTechnique, "graph.setPassReadiness(\n"
+  EXPECT_TRUE(containsIgnoringWhitespace(deferredTechnique, "graph.setPassReadiness(\n"
                                           "      RenderPassId::GBuffer"));
 }
 
@@ -2430,38 +2439,38 @@ TEST(TechniqueRegistryGuardrails,
   const std::string rendererFrontend =
       readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
 
-  EXPECT_TRUE(contains(rendererFrontend, "copyManagerBinding"));
-  EXPECT_TRUE(contains(rendererFrontend,
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend, "copyManagerBinding"));
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend,
                        "copyManagerBinding(RenderTechniqueId::DeferredRaster"));
-  EXPECT_TRUE(contains(rendererFrontend,
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend,
                        "copyManagerBinding(RenderTechniqueId::ForwardRaster"));
-  EXPECT_TRUE(contains(rendererFrontend, "bindSharedDescriptorSet"));
-  EXPECT_TRUE(contains(rendererFrontend, "bindSharedBuffer"));
-  EXPECT_TRUE(contains(rendererFrontend, "bindDeferredDescriptorSet"));
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend, "bindSharedDescriptorSet"));
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend, "bindSharedBuffer"));
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend, "bindDeferredDescriptorSet"));
 
-  EXPECT_TRUE(contains(rendererFrontend,
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend,
                        "bindSharedDescriptorSet(\"scene-descriptor-set\""));
-  EXPECT_TRUE(contains(rendererFrontend, "bindSharedDescriptorSet(\n"
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend, "bindSharedDescriptorSet(\n"
                                          "      \"bim-scene-descriptor-set\""));
-  EXPECT_TRUE(contains(rendererFrontend,
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend,
                        "bindSharedDescriptorSet(\"light-descriptor-set\""));
-  EXPECT_TRUE(contains(rendererFrontend,
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend,
                        "bindSharedDescriptorSet(\"shadow-descriptor-set\""));
-  EXPECT_TRUE(contains(rendererFrontend,
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend,
                        "bindSharedDescriptorSet(\n"
                        "      \"local-shadow-descriptor-set\""));
 
-  EXPECT_TRUE(contains(rendererFrontend,
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend,
                        "bindDeferredDescriptorSet(\n"
                        "      \"tiled-lighting-descriptor-set\""));
-  EXPECT_TRUE(contains(rendererFrontend, "bindSharedBuffer(\"camera-buffer\""));
-  EXPECT_TRUE(contains(rendererFrontend, "bindSharedBuffer(\n"
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend, "bindSharedBuffer(\"camera-buffer\""));
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend, "bindSharedBuffer(\n"
                                          "        \"scene-object-buffer\""));
-  EXPECT_TRUE(contains(rendererFrontend, "RenderTechniqueId::DeferredRaster, "
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend, "RenderTechniqueId::DeferredRaster, "
                                          "\"g-buffer-sampler\""));
-  EXPECT_FALSE(contains(rendererFrontend, "RenderTechniqueId::ForwardRaster, "
+  EXPECT_FALSE(containsIgnoringWhitespace(rendererFrontend, "RenderTechniqueId::ForwardRaster, "
                                           "\"tiled-lighting-descriptor-set\""));
-  EXPECT_FALSE(contains(rendererFrontend, "RenderTechniqueId::ForwardRaster, "
+  EXPECT_FALSE(containsIgnoringWhitespace(rendererFrontend, "RenderTechniqueId::ForwardRaster, "
                                           "\"g-buffer-sampler\""));
 }
 

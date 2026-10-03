@@ -164,7 +164,7 @@ bool recordDeferredPostProcessPassCommands(
 DeferredPostProcessPassScope::DeferredPostProcessPassScope(
     const DeferredPostProcessPassBeginInfo &beginInfo)
     : commandBuffer_(beginInfo.commandBuffer), extent_(beginInfo.extent) {
-  VkRenderPassBeginInfo info{};
+  RenderingBeginInfo info{};
   info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
   info.renderPass = beginInfo.renderPass;
   info.framebuffer = beginInfo.framebuffer;
@@ -175,12 +175,12 @@ DeferredPostProcessPassScope::DeferredPostProcessPassScope(
   info.clearValueCount = 1;
   info.pClearValues = &clearVal;
 
-  vkCmdBeginRenderPass(commandBuffer_, &info, VK_SUBPASS_CONTENTS_INLINE);
+  beginDynamicRendering(commandBuffer_, &info, VK_SUBPASS_CONTENTS_INLINE);
 }
 
 DeferredPostProcessPassScope::~DeferredPostProcessPassScope() {
   if (commandBuffer_ != VK_NULL_HANDLE) {
-    vkCmdEndRenderPass(commandBuffer_);
+    endDynamicRendering(commandBuffer_);
   }
 }
 

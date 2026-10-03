@@ -1,4 +1,5 @@
 #include "Container/renderer/shadow/ShadowManager.h"
+#include "Container/renderer/lighting/AreaLightShadowSampling.h"
 #include "Container/renderer/scene/SceneController.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/Camera.h"
@@ -113,26 +114,6 @@ constexpr float kDirectionalCascadeGuardTexels = 32.0f;
   return static_cast<uint32_t>(encoded + 0.5f);
 }
 
-[[nodiscard]] std::array<glm::vec3, kLocalShadowPointFaceCount>
-pointShadowDirections() {
-  return {{{1.0f, 0.0f, 0.0f},
-           {-1.0f, 0.0f, 0.0f},
-           {0.0f, 1.0f, 0.0f},
-           {0.0f, -1.0f, 0.0f},
-           {0.0f, 0.0f, 1.0f},
-           {0.0f, 0.0f, -1.0f}}};
-}
-
-[[nodiscard]] std::array<glm::vec3, kLocalShadowPointFaceCount>
-pointShadowUps() {
-  return {{{0.0f, -1.0f, 0.0f},
-           {0.0f, -1.0f, 0.0f},
-           {0.0f, 0.0f, 1.0f},
-           {0.0f, 0.0f, -1.0f},
-           {0.0f, -1.0f, 0.0f},
-           {0.0f, -1.0f, 0.0f}}};
-}
-
 void setPackedAreaRef(LocalShadowData& data, uint32_t areaIndex,
                       uint32_t encodedLayer) {
   if (areaIndex >= kMaxAreaLights) {
@@ -173,7 +154,7 @@ void ShadowManager::createResources(VkFormat depthFormat,
     ii.samples     = VK_SAMPLE_COUNT_1_BIT;
     ii.tiling      = VK_IMAGE_TILING_OPTIMAL;
     ii.usage       = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                     VK_IMAGE_USAGE_SAMPLED_BIT;
+                     VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     ii.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
     ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -193,7 +174,7 @@ void ShadowManager::createResources(VkFormat depthFormat,
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
     vi.format   = depthFormat_;
     vi.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, kShadowCascadeCount};
-    if (vkCreateImageView(dev, &vi, nullptr, &shadowAtlasArrayView_) != VK_SUCCESS)
+    if (createVulkanImageView(dev, &vi, nullptr, &shadowAtlasArrayView_) != VK_SUCCESS)
       throw std::runtime_error("failed to create shadow atlas array view");
   }
 
@@ -204,7 +185,7 @@ void ShadowManager::createResources(VkFormat depthFormat,
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vi.format   = depthFormat_;
     vi.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, i, 1};
-    if (vkCreateImageView(dev, &vi, nullptr, &cascadeViews_[i]) != VK_SUCCESS)
+    if (createVulkanImageView(dev, &vi, nullptr, &cascadeViews_[i]) != VK_SUCCESS)
       throw std::runtime_error("failed to create shadow cascade view");
   }
 
@@ -219,7 +200,7 @@ void ShadowManager::createResources(VkFormat depthFormat,
     ii.samples     = VK_SAMPLE_COUNT_1_BIT;
     ii.tiling      = VK_IMAGE_TILING_OPTIMAL;
     ii.usage       = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                     VK_IMAGE_USAGE_SAMPLED_BIT;
+                     VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     ii.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
     ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -231,6 +212,74 @@ void ShadowManager::createResources(VkFormat depthFormat,
                        &localShadowAtlasAllocation_, nullptr) != VK_SUCCESS)
       throw std::runtime_error("failed to create local shadow atlas image");
   }
+  // Descriptors cover the complete arrays, including layers the current frame
+  // does not render. Initialize every layer to reverse-Z far depth and a valid
+  // sampled layout so dynamic light budgets never expose undefined subresources.
+  {
+    struct TemporaryCommandPool {
+      VkDevice device;
+      VkCommandPool pool = VK_NULL_HANDLE;
+      ~TemporaryCommandPool() {
+        if (pool != VK_NULL_HANDLE) destroyOwnedCommandPool(device, pool, nullptr);
+      }
+    } temporaryPool{dev};
+    VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    poolInfo.queueFamilyIndex = device_->queueFamilyIndices().graphicsFamily.value();
+    if (createOwnedCommandPool(dev, &poolInfo, nullptr, &temporaryPool.pool) != VK_SUCCESS)
+      throw std::runtime_error("failed to create shadow initialization command pool");
+    VkCommandBufferAllocateInfo allocateInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    allocateInfo.commandPool = temporaryPool.pool;
+    allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocateInfo.commandBufferCount = 1u;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(dev, &allocateInfo, &cmd) != VK_SUCCESS)
+      throw std::runtime_error("failed to allocate shadow initialization commands");
+    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
+      throw std::runtime_error("failed to begin shadow initialization commands");
+    VkImageAspectFlags aspects = VK_IMAGE_ASPECT_DEPTH_BIT;
+    if (depthFormat_ == VK_FORMAT_D32_SFLOAT_S8_UINT ||
+        depthFormat_ == VK_FORMAT_D24_UNORM_S8_UINT ||
+        depthFormat_ == VK_FORMAT_D16_UNORM_S8_UINT) {
+      aspects |= VK_IMAGE_ASPECT_STENCIL_BIT;
+    }
+    const auto initializeAtlas = [&](VkImage image, uint32_t layers) {
+      VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+      barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      barrier.image = image;
+      barrier.subresourceRange = {aspects, 0u, 1u, 0u, layers};
+      barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0u,
+                           0u, nullptr, 0u, nullptr, 1u, &barrier);
+      const VkClearDepthStencilValue clear{0.0f, 0u};
+      vkCmdClearDepthStencilImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 &clear, 1u, &barrier.subresourceRange);
+      barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0u,
+                           0u, nullptr, 0u, nullptr, 1u, &barrier);
+    };
+    initializeAtlas(shadowAtlasImage_, kShadowCascadeCount);
+    initializeAtlas(localShadowAtlasImage_, kMaxShadowedLocalLightLayers);
+    if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
+      throw std::runtime_error("failed to end shadow initialization commands");
+    VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submitInfo.commandBufferCount = 1u;
+    submitInfo.pCommandBuffers = &cmd;
+    if (vkQueueSubmit(device_->graphicsQueue(), 1u, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
+      throw std::runtime_error("failed to submit shadow initialization commands");
+    if (vkQueueWaitIdle(device_->graphicsQueue()) != VK_SUCCESS)
+      throw std::runtime_error("failed to wait for shadow initialization");
+  }
   {
     VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vi.image = localShadowAtlasImage_;
@@ -238,7 +287,7 @@ void ShadowManager::createResources(VkFormat depthFormat,
     vi.format = depthFormat_;
     vi.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0,
                            kMaxShadowedLocalLightLayers};
-    if (vkCreateImageView(dev, &vi, nullptr,
+    if (createVulkanImageView(dev, &vi, nullptr,
                           &localShadowAtlasArrayView_) != VK_SUCCESS)
       throw std::runtime_error("failed to create local shadow atlas view");
   }
@@ -248,7 +297,7 @@ void ShadowManager::createResources(VkFormat depthFormat,
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vi.format = depthFormat_;
     vi.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, i, 1};
-    if (vkCreateImageView(dev, &vi, nullptr,
+    if (createVulkanImageView(dev, &vi, nullptr,
                           &localShadowLayerViews_[i]) != VK_SUCCESS)
       throw std::runtime_error("failed to create local shadow layer view");
   }
@@ -270,7 +319,7 @@ void ShadowManager::createResources(VkFormat depthFormat,
     si.compareOp     = VK_COMPARE_OP_GREATER;
     si.minLod       = 0.0f;
     si.maxLod       = 0.0f;
-    if (vkCreateSampler(dev, &si, nullptr, &shadowSampler_) != VK_SUCCESS)
+    if (createOwnedSampler(dev, &si, nullptr, &shadowSampler_) != VK_SUCCESS)
       throw std::runtime_error("failed to create shadow sampler");
   }
 
@@ -373,29 +422,29 @@ void ShadowManager::recreatePerFrameResources(uint32_t descriptorSetCount) {
 }
 
 // ---------------------------------------------------------------------------
-void ShadowManager::createFramebuffers(VkRenderPass shadowRenderPass) {
+void ShadowManager::createFramebuffers(RenderingPassHandle shadowRenderPass) {
   destroyFramebuffers();
   VkDevice dev = device_->device();
   for (uint32_t i = 0; i < kShadowCascadeCount; ++i) {
-    VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    RenderingTargetCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
     fbi.renderPass      = shadowRenderPass;
     fbi.attachmentCount = 1;
     fbi.pAttachments    = &cascadeViews_[i];
     fbi.width           = kShadowMapResolution;
     fbi.height          = kShadowMapResolution;
     fbi.layers          = 1;
-    if (vkCreateFramebuffer(dev, &fbi, nullptr, &framebuffers_[i]) != VK_SUCCESS)
+    if (createRenderingTarget(dev, &fbi, nullptr, &framebuffers_[i]) != VK_SUCCESS)
       throw std::runtime_error("failed to create shadow framebuffer");
   }
   for (uint32_t i = 0; i < kMaxShadowedLocalLightLayers; ++i) {
-    VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    RenderingTargetCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
     fbi.renderPass = shadowRenderPass;
     fbi.attachmentCount = 1;
     fbi.pAttachments = &localShadowLayerViews_[i];
     fbi.width = kLocalShadowMapResolution;
     fbi.height = kLocalShadowMapResolution;
     fbi.layers = 1;
-    if (vkCreateFramebuffer(dev, &fbi, nullptr,
+    if (createRenderingTarget(dev, &fbi, nullptr,
                             &localShadowFramebuffers_[i]) != VK_SUCCESS)
       throw std::runtime_error("failed to create local shadow framebuffer");
   }
@@ -406,13 +455,13 @@ void ShadowManager::destroyFramebuffers() {
   VkDevice dev = device_->device();
   for (auto& fb : framebuffers_) {
     if (fb != VK_NULL_HANDLE) {
-      vkDestroyFramebuffer(dev, fb, nullptr);
+      destroyRenderingTarget(dev, fb, nullptr);
       fb = VK_NULL_HANDLE;
     }
   }
   for (auto& fb : localShadowFramebuffers_) {
     if (fb != VK_NULL_HANDLE) {
-      vkDestroyFramebuffer(dev, fb, nullptr);
+      destroyRenderingTarget(dev, fb, nullptr);
       fb = VK_NULL_HANDLE;
     }
   }
@@ -426,28 +475,28 @@ void ShadowManager::destroy() {
   destroyFramebuffers();
 
   if (shadowSampler_ != VK_NULL_HANDLE) {
-    vkDestroySampler(dev, shadowSampler_, nullptr);
+    destroyOwnedSampler(dev, shadowSampler_, nullptr);
     shadowSampler_ = VK_NULL_HANDLE;
   }
 
   for (auto& v : cascadeViews_) {
     if (v != VK_NULL_HANDLE) {
-      vkDestroyImageView(dev, v, nullptr);
+      destroyVulkanImageView(dev, v, nullptr);
       v = VK_NULL_HANDLE;
     }
   }
   for (auto& v : localShadowLayerViews_) {
     if (v != VK_NULL_HANDLE) {
-      vkDestroyImageView(dev, v, nullptr);
+      destroyVulkanImageView(dev, v, nullptr);
       v = VK_NULL_HANDLE;
     }
   }
   if (shadowAtlasArrayView_ != VK_NULL_HANDLE) {
-    vkDestroyImageView(dev, shadowAtlasArrayView_, nullptr);
+    destroyVulkanImageView(dev, shadowAtlasArrayView_, nullptr);
     shadowAtlasArrayView_ = VK_NULL_HANDLE;
   }
   if (localShadowAtlasArrayView_ != VK_NULL_HANDLE) {
-    vkDestroyImageView(dev, localShadowAtlasArrayView_, nullptr);
+    destroyVulkanImageView(dev, localShadowAtlasArrayView_, nullptr);
     localShadowAtlasArrayView_ = VK_NULL_HANDLE;
   }
   if (shadowAtlasImage_ != VK_NULL_HANDLE && shadowAtlasAllocation_ != nullptr) {
@@ -893,8 +942,8 @@ void ShadowManager::updateLocalShadows(
         usedLayerCount = std::max(usedLayerCount, layerIndex + 1u);
       };
 
-  const auto pointDirs = pointShadowDirections();
-  const auto pointUps = pointShadowUps();
+  const auto pointDirs = localShadowCubeDirections();
+  const auto pointUps = localShadowCubeUps();
   for (uint32_t lightIndex = 0u;
        lightIndex < pointLights.size() &&
        lightIndex < container::gpu::kMaxClusteredLights;
@@ -946,7 +995,7 @@ void ShadowManager::updateLocalShadows(
         container::math::perspectiveRH_ReverseZ(kHalfPi, 1.0f, nearPlane,
                                                 farPlane);
     const float texelSize =
-        farPlane / static_cast<float>(kLocalShadowMapResolution);
+        2.0f * farPlane / static_cast<float>(kLocalShadowMapResolution);
     const float sourceRadius =
         std::max(range * kLocalShadowPointSourceRadiusFraction,
                  texelSize * 2.0f);
@@ -977,10 +1026,6 @@ void ShadowManager::updateLocalShadows(
       continue;
     }
 
-    const glm::vec3 position = glm::vec3(light.positionRange);
-    const glm::vec3 direction =
-        normalizeOr(glm::vec3(light.directionType),
-                    glm::vec3(0.0f, 0.0f, -1.0f));
     if (!hasFiniteLocalShadowRange(light.positionRange.w)) {
       continue;
     }
@@ -991,21 +1036,33 @@ void ShadowManager::updateLocalShadows(
         std::max(std::abs(light.tangentHalfSize.w),
                  std::abs(light.bitangentHalfSize.w)),
         0.05f);
-    const float halfExtent = std::max(maxHalfSize * 2.0f, farPlane * 0.5f);
-    const glm::mat4 view =
-        container::math::lookAt(position, position + direction,
-                                upForDirection(direction));
-    const glm::mat4 proj =
-        container::math::orthoRH_ReverseZ(-halfExtent, halfExtent,
-                                          -halfExtent, halfExtent, nearPlane,
-                                          farPlane);
-    writeLayer(nextLayer, areaIndex, 0u, kLocalShadowAreaLayerCount, position,
-               range, direction, kLocalShadowTypeArea,
-               (halfExtent * 2.0f) /
-                   static_cast<float>(kLocalShadowMapResolution),
-               farPlane - nearPlane, 0.0f, maxHalfSize, proj * view);
-    setPackedAreaRef(localShadowData_, areaIndex, nextLayer + 1u);
-    ++nextLayer;
+    uint32_t remainingLights = 0u;
+    for (uint32_t remaining = areaIndex; remaining < areaCount; ++remaining) {
+      if (areaLights[remaining].colorIntensity.a > 0.0f &&
+          hasFiniteLocalShadowRange(areaLights[remaining].positionRange.w)) {
+        ++remainingLights;
+      }
+    }
+    const uint32_t sampleCount = areaShadowSampleCount(
+        activeLayerBudget - nextLayer, remainingLights);
+    const uint32_t layerCount = sampleCount * kLocalShadowPointFaceCount;
+    const uint32_t baseLayer = nextLayer;
+    const glm::mat4 proj = container::math::perspectiveRH_ReverseZ(
+        kHalfPi, 1.0f, nearPlane, farPlane);
+    const float texelSize = 2.0f * farPlane /
+                           static_cast<float>(kLocalShadowMapResolution);
+    for (uint32_t sample = 0u; sample < sampleCount; ++sample) {
+      const glm::vec3 samplePosition = areaShadowSamplePosition(light, sample, sampleCount);
+      for (uint32_t face = 0u; face < kLocalShadowPointFaceCount; ++face) {
+        const glm::mat4 view = container::math::lookAt(
+            samplePosition, samplePosition + pointDirs[face], pointUps[face]);
+        writeLayer(nextLayer++, areaIndex, face, layerCount, samplePosition,
+                   range, pointDirs[face], kLocalShadowTypeArea, texelSize,
+                   farPlane - nearPlane, 0.0f,
+                   sampleCount == 1u ? maxHalfSize : 0.0f, proj * view);
+      }
+    }
+    setPackedAreaRef(localShadowData_, areaIndex, baseLayer + 1u);
   }
 
   localShadowData_.counts.x = usedLayerCount = std::max(usedLayerCount, nextLayer);

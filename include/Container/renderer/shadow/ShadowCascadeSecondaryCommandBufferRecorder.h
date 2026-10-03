@@ -29,8 +29,8 @@ struct ShadowCascadeSecondaryCommandBufferRecordPlan {
 
 struct ShadowCascadeSecondaryCommandBufferCommands {
   VkCommandBuffer commandBuffer{VK_NULL_HANDLE};
-  VkRenderPass renderPass{VK_NULL_HANDLE};
-  VkFramebuffer framebuffer{VK_NULL_HANDLE};
+  RenderingPassHandle renderPass{VK_NULL_HANDLE};
+  RenderingTargetHandle framebuffer{VK_NULL_HANDLE};
   std::function<void(VkCommandBuffer)> recordBody{};
 };
 

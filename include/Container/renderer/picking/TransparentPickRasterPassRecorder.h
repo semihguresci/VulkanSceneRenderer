@@ -11,8 +11,8 @@ namespace container::renderer {
 
 struct TransparentPickRasterPassRecordInputs {
   bool active{false};
-  VkRenderPass renderPass{VK_NULL_HANDLE};
-  VkFramebuffer framebuffer{VK_NULL_HANDLE};
+  RenderingPassHandle renderPass{VK_NULL_HANDLE};
+  RenderingTargetHandle framebuffer{VK_NULL_HANDLE};
   VkExtent2D extent{};
   TransparentPickPassRecordInputs pass{};
   bool extraPassWorkActive{false};
@@ -22,8 +22,8 @@ struct TransparentPickRasterPassRecordInputs {
 struct TransparentPickFramePassRecordInputs {
   bool scenePassReady{false};
   bool bimPassReady{false};
-  VkRenderPass renderPass{VK_NULL_HANDLE};
-  VkFramebuffer framebuffer{VK_NULL_HANDLE};
+  RenderingPassHandle renderPass{VK_NULL_HANDLE};
+  RenderingTargetHandle framebuffer{VK_NULL_HANDLE};
   VkExtent2D extent{};
   VkImage sourceDepthStencilImage{VK_NULL_HANDLE};
   VkImage pickDepthImage{VK_NULL_HANDLE};

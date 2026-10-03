@@ -11,6 +11,8 @@
 #include <vector>
 
 namespace container::gpu {
+void registerRaiiDevice(const vk::raii::Device&);
+void unregisterRaiiDevice(VkDevice);
 
 namespace {
 
@@ -115,16 +117,20 @@ bool supportsRequestedVulkan12Features(
 
 }  // namespace
 
-VulkanDevice::VulkanDevice(VkInstance instance, VkSurfaceKHR surface,
+VulkanDevice::VulkanDevice(const VulkanInstance& instance, VkSurfaceKHR surface,
                            const DeviceCreateInfo& createInfo)
-    : instance_(instance), surface_(surface), createInfo_(createInfo) {
+    : instance_(instance.instance()), instanceOwner_(instance), surface_(surface), createInfo_(createInfo) {
   pickPhysicalDevice();
   createLogicalDevice();
+  registerRaiiDevice(ownedDevice_);
 }
 
 VulkanDevice::~VulkanDevice() {
   if (device_ != VK_NULL_HANDLE) {
-    vkDestroyDevice(device_, nullptr);
+    // A lost device still needs its host-side RAII objects released.
+    try { ownedDevice_.waitIdle(); } catch (const vk::SystemError&) {}
+    unregisterRaiiDevice(device_);
+    ownedDevice_.clear();
     device_ = VK_NULL_HANDLE;
   }
 }
@@ -150,7 +156,7 @@ void VulkanDevice::pickPhysicalDevice() {
   }
 
   if (physicalDevice_ == VK_NULL_HANDLE) {
-    throw std::runtime_error("failed to find a suitable GPU!");
+    throw std::runtime_error("Vulkan 1.4 GPU with dynamic rendering, synchronization2, descriptor indexing, and indirect counts required");
   }
 }
 
@@ -268,12 +274,10 @@ void VulkanDevice::createLogicalDevice() {
     deviceCreateInfo.ppEnabledLayerNames = nullptr;
   }
 
-  VkResult res =
-      vkCreateDevice(physicalDevice_, &deviceCreateInfo, nullptr, &device_);
-
-  if (res != VK_SUCCESS || device_ == VK_NULL_HANDLE) {
-    throw std::runtime_error("failed to create logical device!");
-  }
+  const vk::raii::PhysicalDevice physical(instanceOwner_.raii(), physicalDevice_);
+  ownedDevice_ = vk::raii::Device(physical,
+      reinterpret_cast<const vk::DeviceCreateInfo&>(deviceCreateInfo));
+  device_ = static_cast<VkDevice>(*ownedDevice_);
 
   vkGetDeviceQueue(device_, queueFamilyIndices_.graphicsFamily.value(), 0,
                    &graphicsQueue_);
@@ -282,6 +286,19 @@ void VulkanDevice::createLogicalDevice() {
 }
 
 bool VulkanDevice::isDeviceSuitable(VkPhysicalDevice device) const {
+  VkPhysicalDeviceProperties properties{};
+  vkGetPhysicalDeviceProperties(device, &properties);
+  if (properties.apiVersion < VK_API_VERSION_1_4) return false;
+  VkPhysicalDeviceVulkan13Features modernFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+  VkPhysicalDeviceVulkan14Features newestFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES};
+  modernFeatures.pNext = &newestFeatures;
+  VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+  features.pNext = &modernFeatures;
+  vkGetPhysicalDeviceFeatures2(device, &features);
+  if (!modernFeatures.dynamicRendering || !modernFeatures.synchronization2 ||
+      !modernFeatures.maintenance4 || !modernFeatures.shaderDemoteToHelperInvocation ||
+      !newestFeatures.maintenance5 || !newestFeatures.maintenance6)
+    return false;
   QueueFamilyIndices indices =
       SwapChainManager::FindQueueFamilies(device, surface_);
 

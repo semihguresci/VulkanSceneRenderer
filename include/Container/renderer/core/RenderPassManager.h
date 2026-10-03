@@ -8,15 +8,17 @@
 namespace container::renderer {
 
 struct RenderPasses {
-  VkRenderPass depthPrepass{VK_NULL_HANDLE};
-  VkRenderPass bimDepthPrepass{VK_NULL_HANDLE};
-  VkRenderPass gBuffer{VK_NULL_HANDLE};
-  VkRenderPass bimGBuffer{VK_NULL_HANDLE};
-  VkRenderPass transparentPick{VK_NULL_HANDLE};
-  VkRenderPass shadow{VK_NULL_HANDLE};
-  VkRenderPass lighting{VK_NULL_HANDLE};
-  VkRenderPass transformGizmos{VK_NULL_HANDLE};
-  VkRenderPass postProcess{VK_NULL_HANDLE};
+  RenderingPassHandle depthPrepass{VK_NULL_HANDLE};
+  RenderingPassHandle bimDepthPrepass{VK_NULL_HANDLE};
+  RenderingPassHandle gBuffer{VK_NULL_HANDLE};
+  RenderingPassHandle bimGBuffer{VK_NULL_HANDLE};
+  RenderingPassHandle transparentPick{VK_NULL_HANDLE};
+  RenderingPassHandle shadow{VK_NULL_HANDLE};
+  RenderingPassHandle lighting{VK_NULL_HANDLE};
+  RenderingPassHandle transformGizmos{VK_NULL_HANDLE};
+  RenderingPassHandle postProcess{VK_NULL_HANDLE};
+  RenderingPassHandle forwardLighting{VK_NULL_HANDLE};
+  RenderingPassHandle forwardTransparent{VK_NULL_HANDLE};
 };
 
 class RenderPassManager {

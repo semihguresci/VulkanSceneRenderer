@@ -27,16 +27,16 @@ TEST(ShadowPassRasterRecorderTests, NullCommandBufferReturnsFalse) {
 
   EXPECT_FALSE(recordShadowPassRasterCommands(
       VK_NULL_HANDLE, {.plan = &plan,
-                       .renderPass = fakeHandle<VkRenderPass>(0x1),
-                       .framebuffer = fakeHandle<VkFramebuffer>(0x2),
+                       .renderPass = fakeHandle<RenderingPassHandle>(0x1),
+                       .framebuffer = fakeHandle<RenderingTargetHandle>(0x2),
                        .recordBody = [](VkCommandBuffer) {}}));
 }
 
 TEST(ShadowPassRasterRecorderTests, NullPlanReturnsFalse) {
   EXPECT_FALSE(recordShadowPassRasterCommands(
       fakeHandle<VkCommandBuffer>(0x3),
-      {.renderPass = fakeHandle<VkRenderPass>(0x1),
-       .framebuffer = fakeHandle<VkFramebuffer>(0x2),
+      {.renderPass = fakeHandle<RenderingPassHandle>(0x1),
+       .framebuffer = fakeHandle<RenderingTargetHandle>(0x2),
        .recordBody = [](VkCommandBuffer) {}}));
 }
 
@@ -47,8 +47,8 @@ TEST(ShadowPassRasterRecorderTests, InactivePlanDoesNotInvokeCallback) {
   EXPECT_FALSE(recordShadowPassRasterCommands(
       fakeHandle<VkCommandBuffer>(0x3),
       {.plan = &plan,
-       .renderPass = fakeHandle<VkRenderPass>(0x1),
-       .framebuffer = fakeHandle<VkFramebuffer>(0x2),
+       .renderPass = fakeHandle<RenderingPassHandle>(0x1),
+       .framebuffer = fakeHandle<RenderingTargetHandle>(0x2),
        .recordBody = [&invoked](VkCommandBuffer) { invoked = true; }}));
   EXPECT_FALSE(invoked);
 }
@@ -59,12 +59,12 @@ TEST(ShadowPassRasterRecorderTests, MissingRenderPassOrFramebufferReturnsFalse) 
   EXPECT_FALSE(recordShadowPassRasterCommands(
       fakeHandle<VkCommandBuffer>(0x3),
       {.plan = &plan,
-       .framebuffer = fakeHandle<VkFramebuffer>(0x2),
+       .framebuffer = fakeHandle<RenderingTargetHandle>(0x2),
        .recordBody = [](VkCommandBuffer) {}}));
   EXPECT_FALSE(recordShadowPassRasterCommands(
       fakeHandle<VkCommandBuffer>(0x3),
       {.plan = &plan,
-       .renderPass = fakeHandle<VkRenderPass>(0x1),
+       .renderPass = fakeHandle<RenderingPassHandle>(0x1),
        .recordBody = [](VkCommandBuffer) {}}));
 }
 
@@ -74,6 +74,6 @@ TEST(ShadowPassRasterRecorderTests, InlinePlanRequiresCallback) {
   EXPECT_FALSE(recordShadowPassRasterCommands(
       fakeHandle<VkCommandBuffer>(0x3),
       {.plan = &plan,
-       .renderPass = fakeHandle<VkRenderPass>(0x1),
-       .framebuffer = fakeHandle<VkFramebuffer>(0x2)}));
+       .renderPass = fakeHandle<RenderingPassHandle>(0x1),
+       .framebuffer = fakeHandle<RenderingTargetHandle>(0x2)}));
 }

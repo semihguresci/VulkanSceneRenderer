@@ -113,7 +113,7 @@ private:
 
   VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
   VkFence fence{VK_NULL_HANDLE};
-  if (vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+  if (createOwnedFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
     return false;
   }
 
@@ -125,7 +125,7 @@ private:
       submitResult == VK_SUCCESS
           ? vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX)
           : submitResult;
-  vkDestroyFence(device, fence, nullptr);
+  destroyOwnedFence(device, fence, nullptr);
   return submitResult == VK_SUCCESS && waitResult == VK_SUCCESS;
 }
 
@@ -1837,8 +1837,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     }
   }
 
-  VkSubmitInfo submitInfo{};
-  submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  VkSubmitInfo2 submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
   VkPerformanceQuerySubmitInfoKHR performanceSubmitInfo{};
   if (subs_.renderPassGpuProfiler &&
       subs_.renderPassGpuProfiler->usesPerformanceQueries()) {
@@ -1848,28 +1847,29 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     submitInfo.pNext = &performanceSubmitInfo;
   }
 
-  VkSemaphore waitSemaphores[] = {
-      subs_.frameSyncManager->imageAvailable(frame_.currentFrame)};
-  VkPipelineStageFlags waitStages[] = {
-      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-  submitInfo.waitSemaphoreCount = 1;
-  submitInfo.pWaitSemaphores = waitSemaphores;
-  submitInfo.pWaitDstStageMask = waitStages;
+  VkSemaphoreSubmitInfo waitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+  waitInfo.semaphore = subs_.frameSyncManager->imageAvailable(frame_.currentFrame);
+  waitInfo.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  submitInfo.waitSemaphoreInfoCount = 1;
+  submitInfo.pWaitSemaphoreInfos = &waitInfo;
 
   VkCommandBuffer cmdHandle = svc_.commandBufferManager.buffer(imageIndex);
-  submitInfo.commandBufferCount = 1;
-  submitInfo.pCommandBuffers = &cmdHandle;
+  VkCommandBufferSubmitInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+  commandInfo.commandBuffer = cmdHandle;
+  submitInfo.commandBufferInfoCount = 1;
+  submitInfo.pCommandBufferInfos = &commandInfo;
 
-  VkSemaphore signalSemaphores[] = {
-      subs_.frameSyncManager->renderFinishedForImage(imageIndex)};
-  submitInfo.signalSemaphoreCount = 1;
-  submitInfo.pSignalSemaphores = signalSemaphores;
+  VkSemaphoreSubmitInfo signalInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+  signalInfo.semaphore = subs_.frameSyncManager->renderFinishedForImage(imageIndex);
+  signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+  submitInfo.signalSemaphoreInfoCount = 1;
+  submitInfo.pSignalSemaphoreInfos = &signalInfo;
 
   phaseStart = TelemetryClock::now();
   subs_.frameSyncManager->resetFence(frame_.currentFrame);
   const VkFence submittedFrameFence =
       subs_.frameSyncManager->fence(frame_.currentFrame);
-  if (vkQueueSubmit(svc_.ctx.deviceWrapper->graphicsQueue(), 1, &submitInfo,
+  if (vkQueueSubmit2(svc_.ctx.deviceWrapper->graphicsQueue(), 1, &submitInfo,
                     submittedFrameFence) != VK_SUCCESS) {
     throw std::runtime_error("failed to submit draw command buffer!");
   }
@@ -3326,7 +3326,8 @@ void RendererFrontend::createGraphicsPipelines() {
                                 resources_.renderPasses.shadow,
                                 resources_.renderPasses.lighting,
                                 resources_.renderPasses.transformGizmos,
-                                resources_.renderPasses.postProcess};
+                                resources_.renderPasses.postProcess,
+                                resources_.renderPasses.forwardLighting};
   resources_.builtPipelines = subs_.pipelineBuilder->build(
       container::util::executableDirectory(), descLayouts, rp,
       msaaSampleCount_);
@@ -3675,6 +3676,8 @@ void RendererFrontend::createFrameResources() {
       resources_.renderPasses.bimDepthPrepass, resources_.renderPasses.gBuffer,
       resources_.renderPasses.bimGBuffer,
       resources_.renderPasses.transparentPick, resources_.renderPasses.lighting,
+      resources_.renderPasses.forwardLighting,
+      resources_.renderPasses.forwardTransparent,
       resources_.renderPasses.transformGizmos, msaaSampleCount_, buffers_.cameras,
       objectBuffer);
 }
@@ -5867,8 +5870,10 @@ void RendererFrontend::publishFrameRuntimeResourceBindings(
 
   if (subs_.frameResourceManager != nullptr &&
       subs_.frameResourceManager->gBufferSampler() != VK_NULL_HANDLE) {
-    // Forward raster does not declare G-buffer resources; keep this binding
-    // scoped to deferred passes that sample the G-buffer.
+    // Both techniques use point depth sampling for their Hi-Z culling passes.
+    runtime->bindSampler(
+        RenderTechniqueId::ForwardRaster, "depth-cull-sampler", imageIndex,
+        FrameSamplerBinding{.sampler = subs_.frameResourceManager->gBufferSampler()});
     runtime->bindSampler(
         RenderTechniqueId::DeferredRaster, "g-buffer-sampler", imageIndex,
         FrameSamplerBinding{.sampler =

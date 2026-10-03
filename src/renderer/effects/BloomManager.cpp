@@ -45,7 +45,7 @@ void BloomManager::createResources(const std::filesystem::path& shaderDir) {
   si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-  if (vkCreateSampler(device_->device(), &si, nullptr, &linearSampler_) != VK_SUCCESS)
+  if (createOwnedSampler(device_->device(), &si, nullptr, &linearSampler_) != VK_SUCCESS)
     throw std::runtime_error("failed to create bloom sampler");
 }
 
@@ -86,7 +86,7 @@ void BloomManager::createTextures(uint32_t width, uint32_t height) {
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vi.format   = VK_FORMAT_R16G16B16A16_SFLOAT;
     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    if (vkCreateImageView(device_->device(), &vi, nullptr, &mip.view) != VK_SUCCESS)
+    if (createVulkanImageView(device_->device(), &vi, nullptr, &mip.view) != VK_SUCCESS)
       throw std::runtime_error("failed to create bloom mip view");
 
     mips_.push_back(mip);
@@ -126,7 +126,7 @@ void BloomManager::createTextures(uint32_t width, uint32_t height) {
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vi.format   = VK_FORMAT_R16G16B16A16_SFLOAT;
     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    if (vkCreateImageView(device_->device(), &vi, nullptr, &mip.view) != VK_SUCCESS)
+    if (createVulkanImageView(device_->device(), &vi, nullptr, &mip.view) != VK_SUCCESS)
       throw std::runtime_error("failed to create bloom upsample view");
 
     upsampleMips_.push_back(mip);
@@ -180,11 +180,11 @@ void BloomManager::createTextures(uint32_t width, uint32_t height) {
   VkDevice dev = device_->device();
 
   if (downsampleDescriptorPool_ != VK_NULL_HANDLE) {
-    vkDestroyDescriptorPool(dev, downsampleDescriptorPool_, nullptr);
+    destroyOwnedDescriptorPool(dev, downsampleDescriptorPool_, nullptr);
     downsampleDescriptorPool_ = VK_NULL_HANDLE;
   }
   if (upsampleDescriptorPool_ != VK_NULL_HANDLE) {
-    vkDestroyDescriptorPool(dev, upsampleDescriptorPool_, nullptr);
+    destroyOwnedDescriptorPool(dev, upsampleDescriptorPool_, nullptr);
     upsampleDescriptorPool_ = VK_NULL_HANDLE;
   }
   downsampleSets_.clear();
@@ -203,7 +203,7 @@ void BloomManager::createTextures(uint32_t width, uint32_t height) {
     pi.maxSets       = mipCount_;
     pi.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     pi.pPoolSizes    = poolSizes.data();
-    if (vkCreateDescriptorPool(dev, &pi, nullptr, &downsampleDescriptorPool_) != VK_SUCCESS)
+    if (createOwnedDescriptorPool(dev, &pi, nullptr, &downsampleDescriptorPool_) != VK_SUCCESS)
       throw std::runtime_error("failed to create bloom downsample descriptor pool");
 
     std::vector<VkDescriptorSetLayout> layouts(mipCount_, downsampleSetLayout_);
@@ -228,7 +228,7 @@ void BloomManager::createTextures(uint32_t width, uint32_t height) {
     pi.maxSets       = upsampleCount;
     pi.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     pi.pPoolSizes    = poolSizes.data();
-    if (vkCreateDescriptorPool(dev, &pi, nullptr, &upsampleDescriptorPool_) != VK_SUCCESS)
+    if (createOwnedDescriptorPool(dev, &pi, nullptr, &upsampleDescriptorPool_) != VK_SUCCESS)
       throw std::runtime_error("failed to create bloom upsample descriptor pool");
 
     std::vector<VkDescriptorSetLayout> layouts(upsampleCount, upsampleSetLayout_);
@@ -421,7 +421,7 @@ void BloomManager::destroy() {
 
   VkDevice dev = device_->device();
   if (linearSampler_ != VK_NULL_HANDLE) {
-    vkDestroySampler(dev, linearSampler_, nullptr);
+    destroyOwnedSampler(dev, linearSampler_, nullptr);
     linearSampler_ = VK_NULL_HANDLE;
   }
   // Pipelines, layouts, pools, and set layouts are managed by PipelineManager.
@@ -474,7 +474,7 @@ void BloomManager::createPipelines(const std::filesystem::path& shaderDir) {
     ci.layout = downsamplePipelineLayout_;
 
     downsamplePipeline_ = pipelineManager_.createComputePipeline(ci, "bloom_downsample");
-    vkDestroyShaderModule(dev, module, nullptr);
+    destroyOwnedShaderModule(dev, module, nullptr);
   }
 
   // ---- Upsample pipeline ----
@@ -512,7 +512,7 @@ void BloomManager::createPipelines(const std::filesystem::path& shaderDir) {
     ci.layout = upsamplePipelineLayout_;
 
     upsamplePipeline_ = pipelineManager_.createComputePipeline(ci, "bloom_upsample");
-    vkDestroyShaderModule(dev, module, nullptr);
+    destroyOwnedShaderModule(dev, module, nullptr);
   }
 }
 
@@ -520,11 +520,11 @@ void BloomManager::destroyTextures() {
   VkDevice dev = device_->device();
 
   if (downsampleDescriptorPool_ != VK_NULL_HANDLE) {
-    vkDestroyDescriptorPool(dev, downsampleDescriptorPool_, nullptr);
+    destroyOwnedDescriptorPool(dev, downsampleDescriptorPool_, nullptr);
     downsampleDescriptorPool_ = VK_NULL_HANDLE;
   }
   if (upsampleDescriptorPool_ != VK_NULL_HANDLE) {
-    vkDestroyDescriptorPool(dev, upsampleDescriptorPool_, nullptr);
+    destroyOwnedDescriptorPool(dev, upsampleDescriptorPool_, nullptr);
     upsampleDescriptorPool_ = VK_NULL_HANDLE;
   }
   downsampleSets_.clear();
@@ -532,7 +532,7 @@ void BloomManager::destroyTextures() {
 
   for (auto& m : mips_) {
     if (m.view != VK_NULL_HANDLE) {
-      vkDestroyImageView(dev, m.view, nullptr);
+      destroyVulkanImageView(dev, m.view, nullptr);
     }
     if (m.image != VK_NULL_HANDLE) {
       vmaDestroyImage(allocationManager_.memoryManager()->allocator(), m.image, m.allocation);
@@ -542,7 +542,7 @@ void BloomManager::destroyTextures() {
   mipViews_.clear();
   for (auto& m : upsampleMips_) {
     if (m.view != VK_NULL_HANDLE) {
-      vkDestroyImageView(dev, m.view, nullptr);
+      destroyVulkanImageView(dev, m.view, nullptr);
     }
     if (m.image != VK_NULL_HANDLE) {
       vmaDestroyImage(allocationManager_.memoryManager()->allocator(), m.image, m.allocation);

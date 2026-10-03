@@ -8,6 +8,11 @@
 namespace container::gpu {
 
 VulkanInstance::VulkanInstance(const InstanceCreateInfo& createInfo) {
+  context_ = std::make_unique<vk::raii::Context>();
+  uint32_t loaderVersion = VK_API_VERSION_1_0;
+  if (vkEnumerateInstanceVersion(&loaderVersion) != VK_SUCCESS ||
+      loaderVersion < createInfo.apiVersion)
+    throw std::runtime_error("Vulkan 1.4 loader required; update the Vulkan runtime");
   if (createInfo.enableValidationLayers &&
       !checkValidationLayerSupport(createInfo.validationLayers)) {
     throw std::runtime_error("validation layers requested, but not available!");
@@ -41,28 +46,30 @@ VulkanInstance::VulkanInstance(const InstanceCreateInfo& createInfo) {
   instanceCreateInfo.ppEnabledExtensionNames =
       createInfo.requiredExtensions.data();
 
-  VkResult res = vkCreateInstance(&instanceCreateInfo, nullptr, &instance_);
-  if (res != VK_SUCCESS) {
-    throw std::runtime_error("failed to create instance (vkCreateInstance)");
-  }
+  ownedInstance_ = vk::raii::Instance(*context_,
+      reinterpret_cast<const vk::InstanceCreateInfo&>(instanceCreateInfo));
+  instance_ = static_cast<VkInstance>(*ownedInstance_);
 }
 
 VulkanInstance::~VulkanInstance() {
   if (instance_ != VK_NULL_HANDLE) {
-    vkDestroyInstance(instance_, nullptr);
+    ownedInstance_.clear();
     instance_ = VK_NULL_HANDLE;
   }
 }
 
 VulkanInstance::VulkanInstance(VulkanInstance&& other) noexcept
-    : instance_{std::exchange(other.instance_, VK_NULL_HANDLE)} {}
+    : context_(std::move(other.context_)), ownedInstance_(std::move(other.ownedInstance_)),
+      instance_{std::exchange(other.instance_, VK_NULL_HANDLE)} {}
 
 VulkanInstance& VulkanInstance::operator=(VulkanInstance&& other) noexcept {
   if (this != &other) {
     if (instance_ != VK_NULL_HANDLE) {
-      vkDestroyInstance(instance_, nullptr);
+      ownedInstance_.clear();
     }
     instance_ = std::exchange(other.instance_, VK_NULL_HANDLE);
+    ownedInstance_ = std::move(other.ownedInstance_);
+    context_ = std::move(other.context_);
   }
   return *this;
 }

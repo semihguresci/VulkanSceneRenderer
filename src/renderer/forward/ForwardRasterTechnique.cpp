@@ -2,6 +2,9 @@
 
 #include "Container/renderer/bim/BimSurfaceRasterPassRecorder.h"
 #include "Container/renderer/core/FrameRecorder.h"
+#include "Container/renderer/culling/GpuCullManager.h"
+#include "Container/renderer/deferred/DeferredRasterFrustumCullPassPlanner.h"
+#include "Container/renderer/deferred/DeferredRasterFrustumCullPassRecorder.h"
 #include "Container/renderer/deferred/DeferredRasterBimSurfacePassRecorder.h"
 #include "Container/renderer/deferred/DeferredRasterDepthReadOnlyTransitionRecorder.h"
 #include "Container/renderer/deferred/DeferredRasterFrameGraphContext.h"
@@ -55,6 +58,8 @@ void registerForwardRasterFrameResources(FrameResourceRegistry &registry) {
   registry.registerExternal(kForwardRasterTechnique, "bim-geometry");
   registry.registerExternal(kForwardRasterTechnique, "shadow-atlas");
   registry.registerExternal(kForwardRasterTechnique, "local-shadow-atlas");
+  registry.registerSampler(kForwardRasterTechnique, "depth-cull-sampler",
+                           {}, FrameResourceLifetime::Imported);
 
   registry.registerBuffer(
       kForwardRasterTechnique, "camera-buffer",
@@ -148,6 +153,9 @@ void registerForwardRasterFrameResources(FrameResourceRegistry &registry) {
                                "transparent-pick-framebuffer",
                                FrameFramebufferDesc{.attachmentCount = 2u});
   registry.registerFramebuffer(kForwardRasterTechnique, "lighting-framebuffer",
+                               FrameFramebufferDesc{.attachmentCount = 2u});
+  registry.registerFramebuffer(kForwardRasterTechnique,
+                               "transparent-lighting-framebuffer",
                                FrameFramebufferDesc{.attachmentCount = 2u});
   registry.registerFramebuffer(kForwardRasterTechnique,
                                "transform-gizmo-framebuffer",
@@ -377,6 +385,9 @@ void recordForwardRasterDepthPrepass(
                 p, ForwardRasterPipelineLayoutId::Scene),
             .pushConstants = p.pushConstants.bindless,
             .imageIndex = p.runtime.imageIndex,
+            .gpuCullManager = p.services.gpuCullManager,
+            .frustumCullActive = p.services.gpuCullManager != nullptr &&
+                p.services.gpuCullManager->frustumDrawsValid(p.runtime.imageIndex),
             .debugOverlay = sharedContext.debugOverlay()}));
 }
 
@@ -518,7 +529,7 @@ void recordForwardRasterLocalShadowPass(VkCommandBuffer cmd,
                                      kLocalShadowMapResolution};
 
   for (uint32_t layerIndex = 0u; layerIndex < layerCount; ++layerIndex) {
-    const VkFramebuffer framebuffer =
+    const RenderingTargetHandle framebuffer =
         p.shadows.localShadowFramebuffers[layerIndex];
     if (framebuffer == VK_NULL_HANDLE) {
       continue;
@@ -1074,8 +1085,33 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
   RenderGraph &graph = context.frameRecorder->graph();
   graph.clear();
 
+  graph.addPass(RenderPassId::FrustumCull, {},
+                [](VkCommandBuffer cmd, const FrameRecordParams& p) {
+    const auto* camera = forwardRasterBufferBinding(p, ForwardRasterBufferId::Camera);
+    const auto* draws = p.draws.opaqueSingleSidedDrawCommands;
+    auto* culling = p.services.gpuCullManager;
+    const auto plan = buildDeferredRasterFrustumCullPassPlan({
+        .gpuCullManagerReady = culling != nullptr && culling->isReady(),
+        .sceneSingleSidedDrawsAvailable = draws != nullptr && !draws->empty(),
+        .cameraBufferReady = camera != nullptr && camera->buffer != VK_NULL_HANDLE,
+        .objectBufferReady = p.scene.objectBuffer != VK_NULL_HANDLE && p.scene.objectBufferSize > 0u,
+        .debugFreezeCulling = p.debug.debugFreezeCulling,
+        .cullingFrozen = culling != nullptr && culling->cullingFrozen(),
+        .sourceDrawCount = draws != nullptr ? static_cast<uint32_t>(draws->size()) : 0u});
+    if (!plan.active || camera == nullptr) return;
+    static_cast<void>(recordDeferredRasterFrustumCullPassCommands(cmd, {
+        .gpuCullManager = culling, .plan = plan, .drawCommands = draws,
+        .imageIndex = p.runtime.imageIndex, .cameraBuffer = camera->buffer,
+        .cameraBufferSize = camera->size, .objectBuffer = p.scene.objectBuffer,
+        .objectBufferSize = p.scene.objectBufferSize,
+        .drawSourceRevision = p.scene.objectDataRevision}));
+  });
+  graph.setPassResourceAccess(RenderPassId::FrustumCull,
+      {RenderResourceId::SceneGeometry, RenderResourceId::CameraBuffer, RenderResourceId::ObjectBuffer},
+      {}, {RenderResourceId::FrustumCullDraws, RenderResourceId::CullStats});
+
   if (context.deferredRaster != nullptr) {
-    graph.addPass(RenderPassId::DepthPrepass, {},
+    graph.addPass(RenderPassId::DepthPrepass, {RenderPassId::FrustumCull},
                   [sharedContext = context.deferredRaster](
                       VkCommandBuffer cmd, const FrameRecordParams &p) {
                     recordForwardRasterDepthPrepass(cmd, p, *sharedContext);
@@ -1094,7 +1130,7 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                              return forwardRasterBimDepthPrepassReadiness(p);
                            });
   } else {
-    graph.addPass(RenderPassId::DepthPrepass, {},
+    graph.addPass(RenderPassId::DepthPrepass, {RenderPassId::FrustumCull},
                   [](VkCommandBuffer cmd, const FrameRecordParams &p) {
                     (void)cmd;
                     (void)p;
@@ -1160,8 +1196,51 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                          [](const FrameRecordParams &p) {
                            return forwardRasterDepthReadOnlyReadiness(p);
                          });
+  graph.addPass(RenderPassId::HiZGenerate, {RenderPassId::DepthToReadOnly},
+                [](VkCommandBuffer cmd, const FrameRecordParams& p) {
+    auto* culling = p.services.gpuCullManager;
+    const auto depth = forwardRasterImageView(p, ForwardRasterImageId::DepthSamplingView);
+    const auto sampler = p.sampler(kForwardRasterTechnique, "depth-cull-sampler");
+    if (culling == nullptr || !culling->isReady() || depth == VK_NULL_HANDLE ||
+        sampler == VK_NULL_HANDLE || !culling->frustumDrawsValid(p.runtime.imageIndex)) return;
+    const auto* binding = forwardRasterImageBinding(p, ForwardRasterImageId::DepthSamplingView);
+    const auto extent = binding->extent;
+    culling->ensureHiZImage(p.runtime.imageIndex, extent.width, extent.height);
+    culling->dispatchHiZGenerate(cmd, p.runtime.imageIndex, depth, sampler, extent.width, extent.height);
+  });
+  graph.setPassResourceAccess(RenderPassId::HiZGenerate,
+      {RenderResourceId::SceneDepth}, {}, {RenderResourceId::HiZPyramid});
+  graph.addPass(RenderPassId::OcclusionCull, {RenderPassId::HiZGenerate},
+                [](VkCommandBuffer cmd, const FrameRecordParams& p) {
+    auto* culling = p.services.gpuCullManager;
+    const auto* camera = forwardRasterBufferBinding(p, ForwardRasterBufferId::Camera);
+    const auto* draws = p.draws.opaqueSingleSidedDrawCommands;
+    if (culling == nullptr || !culling->hizGeneratedThisFrame(p.runtime.imageIndex) ||
+        !culling->canRecordOcclusionCull(p.runtime.imageIndex) || camera == nullptr ||
+        draws == nullptr || draws->empty()) return;
+    culling->dispatchOcclusionCull(cmd, p.runtime.imageIndex, camera->buffer,
+        camera->size, static_cast<uint32_t>(draws->size()));
+  });
+  graph.setPassResourceAccess(RenderPassId::OcclusionCull,
+      {RenderResourceId::HiZPyramid, RenderResourceId::FrustumCullDraws,
+       RenderResourceId::CameraBuffer, RenderResourceId::ObjectBuffer},
+      {}, {RenderResourceId::OcclusionCullDraws, RenderResourceId::CullStats});
+  graph.addPass(RenderPassId::CullStatsReadback, {RenderPassId::OcclusionCull},
+                [](VkCommandBuffer cmd, const FrameRecordParams &p) {
+                  if (auto *culling = p.services.gpuCullManager;
+                      culling != nullptr && culling->isReady()) {
+                    culling->scheduleStatsReadback(cmd, p.runtime.imageIndex);
+                  }
+                });
+  graph.setPassReadiness(RenderPassId::CullStatsReadback,
+                        [](const FrameRecordParams &p) {
+                          return p.services.gpuCullManager != nullptr &&
+                                         p.services.gpuCullManager->isReady()
+                                     ? renderPassReady()
+                                     : renderPassNotNeeded();
+                        });
   if (context.deferredRaster != nullptr) {
-    graph.addPass(RenderPassId::OitClear, {RenderPassId::DepthToReadOnly},
+    graph.addPass(RenderPassId::OitClear, {RenderPassId::CullStatsReadback},
                   [sharedContext = context.deferredRaster](
                       VkCommandBuffer cmd, const FrameRecordParams &p) {
                     static_cast<void>(
@@ -1177,7 +1256,7 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
     graph.setPassResourceTransitions(RenderPassId::OitClear, {});
   } else {
     addForwardShellPass(graph, RenderPassId::OitClear,
-                        {RenderPassId::DepthToReadOnly});
+                        {RenderPassId::CullStatsReadback});
   }
   graph.addPass(RenderPassId::Lighting, {RenderPassId::OitClear},
                 [](VkCommandBuffer cmd, const FrameRecordParams &p) {
@@ -1194,7 +1273,8 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
        RenderResourceId::BimObjectBuffer, RenderResourceId::LightingData,
        RenderResourceId::EnvironmentMaps, RenderResourceId::SceneDepth},
       {RenderResourceId::ShadowAtlas, RenderResourceId::LocalShadowAtlas,
-       RenderResourceId::OitStorage},
+       RenderResourceId::OitStorage, RenderResourceId::FrustumCullDraws,
+       RenderResourceId::OcclusionCullDraws},
       {RenderResourceId::SceneColor, RenderResourceId::OitStorage});
   graph.setPassResourceTransitions(RenderPassId::Lighting, {});
   graph.addPass(RenderPassId::TransformGizmos, {RenderPassId::Lighting},

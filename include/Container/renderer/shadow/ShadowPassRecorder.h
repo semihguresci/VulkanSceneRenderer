@@ -49,8 +49,8 @@ struct ShadowPassRecordInputs {
 struct ShadowCascadePassRecordInputs {
   bool cascadePassActive{false};
   ShadowPassRasterPlanInputs raster{};
-  VkRenderPass renderPass{VK_NULL_HANDLE};
-  VkFramebuffer framebuffer{VK_NULL_HANDLE};
+  RenderingPassHandle renderPass{VK_NULL_HANDLE};
+  RenderingTargetHandle framebuffer{VK_NULL_HANDLE};
   VkExtent2D extent{};
   ShadowPassGeometryBinding scene{};
   ShadowPassGeometryBinding bim{};

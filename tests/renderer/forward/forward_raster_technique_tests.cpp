@@ -76,9 +76,17 @@ size_t executionPosition(const RenderGraph &graph, RenderPassId id) {
 }
 
 std::string_view lightingResourceAccessBlock(std::string_view source) {
-  const std::string_view marker =
-      "graph.setPassResourceAccess(\n      RenderPassId::Lighting";
-  const size_t begin = source.find(marker);
+  constexpr std::string_view call = "graph.setPassResourceAccess(";
+  constexpr std::string_view marker = "RenderPassId::Lighting";
+  size_t begin = std::string_view::npos;
+  for (size_t access = source.find(call); access != std::string_view::npos;
+       access = source.find(call, access + call.size())) {
+    const size_t argument = source.find_first_not_of(" \t\r\n", access + call.size());
+    if (argument != std::string_view::npos && source.substr(argument).starts_with(marker)) {
+      begin = argument;
+      break;
+    }
+  }
   if (begin == std::string_view::npos) {
     return {};
   }
@@ -108,6 +116,8 @@ TEST(ForwardRasterTechniqueTests, PublishesForwardContracts) {
       TechniqueResourceKey{RenderTechniqueId::ForwardRaster, "depth-stencil"}));
   EXPECT_TRUE(frameResources.contains(TechniqueResourceKey{
       RenderTechniqueId::ForwardRaster, "lighting-framebuffer"}));
+  EXPECT_TRUE(frameResources.contains(TechniqueResourceKey{
+      RenderTechniqueId::ForwardRaster, "transparent-lighting-framebuffer"}));
 
   EXPECT_TRUE(pipelines.contains(TechniquePipelineKey{
       RenderTechniqueId::ForwardRaster, "forward-opaque"}));
@@ -273,6 +283,10 @@ TEST(ForwardRasterTechniqueTests, BuildsForwardGraphWithoutGBufferOnlyPasses) {
 
   const RenderGraphDebugModel model = recorder.graph().debugModel();
   EXPECT_TRUE(hasPass(model, "DepthPrepass"));
+  EXPECT_TRUE(hasPass(model, "FrustumCull"));
+  EXPECT_TRUE(hasPass(model, "HiZGenerate"));
+  EXPECT_TRUE(hasPass(model, "OcclusionCull"));
+  EXPECT_TRUE(hasPass(model, "CullStatsReadback"));
   EXPECT_TRUE(hasPass(model, "Lighting"));
   EXPECT_TRUE(hasPass(model, "PostProcess"));
   EXPECT_TRUE(hasPass(model, "ShadowCascade0"));
@@ -324,6 +338,14 @@ TEST(ForwardRasterTechniqueTests, BuildsForwardGraphWithoutGBufferOnlyPasses) {
 
   EXPECT_LT(executionPosition(graph, RenderPassId::LocalShadowDepth),
             executionPosition(graph, RenderPassId::DepthToReadOnly));
+  EXPECT_LT(executionPosition(graph, RenderPassId::FrustumCull),
+            executionPosition(graph, RenderPassId::DepthPrepass));
+  EXPECT_LT(executionPosition(graph, RenderPassId::HiZGenerate),
+            executionPosition(graph, RenderPassId::OcclusionCull));
+  EXPECT_LT(executionPosition(graph, RenderPassId::OcclusionCull),
+            executionPosition(graph, RenderPassId::CullStatsReadback));
+  EXPECT_LT(executionPosition(graph, RenderPassId::CullStatsReadback),
+            executionPosition(graph, RenderPassId::Lighting));
   EXPECT_LT(executionPosition(graph, RenderPassId::BimDepthPrepass),
             executionPosition(graph, RenderPassId::ShadowCullCascade0));
   EXPECT_LT(executionPosition(graph, RenderPassId::ShadowCullCascade0),
@@ -345,6 +367,41 @@ TEST(ForwardRasterTechniqueTests, BuildsForwardGraphWithoutGBufferOnlyPasses) {
   EXPECT_FALSE(hasPass(model, "BimGBuffer"));
   EXPECT_FALSE(hasPass(model, "TileCull"));
   EXPECT_FALSE(hasPass(model, "GTAO"));
+}
+
+TEST(ForwardRasterTechniqueTests,
+     DisablingCullingPreservesLightingAndStatsFallbacks) {
+  for (const RenderPassId disabled :
+       {RenderPassId::FrustumCull, RenderPassId::HiZGenerate,
+        RenderPassId::OcclusionCull}) {
+    SCOPED_TRACE(container::renderer::renderPassName(disabled));
+    FrameRecorder recorder;
+    ForwardRasterTechnique technique;
+    RenderSystemContext context{.frameRecorder = &recorder};
+    technique.buildFrameGraph(context);
+    RenderGraph &graph = recorder.graph();
+
+    ASSERT_TRUE(graph.setPassEnabled(disabled, false));
+
+    EXPECT_TRUE(graph.isPassActive(RenderPassId::Lighting));
+    EXPECT_TRUE(graph.isPassActive(RenderPassId::CullStatsReadback));
+    EXPECT_TRUE(graph.isPassActive(RenderPassId::PostProcess));
+  }
+}
+
+TEST(ForwardRasterTechniqueTests,
+     StatsReadbackWithoutGpuCullManagerIsNotNeeded) {
+  FrameRecorder recorder;
+  ForwardRasterTechnique technique;
+  RenderSystemContext context{.frameRecorder = &recorder};
+  technique.buildFrameGraph(context);
+
+  const auto *readback = recorder.graph().findPass(RenderPassId::CullStatsReadback);
+  ASSERT_NE(readback, nullptr);
+  ASSERT_TRUE(readback->readiness);
+  const auto readiness = readback->readiness(FrameRecordParams{});
+  EXPECT_FALSE(readiness.ready);
+  EXPECT_EQ(readiness.skipReason, RenderPassSkipReason::NotNeeded);
 }
 
 TEST(ForwardRasterTechniqueTests,

@@ -61,7 +61,7 @@ const FrameSamplerBinding *FrameRecordParams::samplerBinding(
              : nullptr;
 }
 
-VkFramebuffer FrameRecordParams::framebuffer(RenderTechniqueId technique,
+RenderingTargetHandle FrameRecordParams::framebuffer(RenderTechniqueId technique,
                                              std::string_view name) const {
   const FrameFramebufferBinding *binding = framebufferBinding(technique, name);
   return binding != nullptr ? binding->framebuffer : VK_NULL_HANDLE;

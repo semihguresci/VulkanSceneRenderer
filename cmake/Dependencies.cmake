@@ -15,7 +15,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(FetchContent)
 
 # ── Find Vulkan SDK ──────────────────────────────────────────────────────────
-find_package(Vulkan REQUIRED)
+find_package(Vulkan 1.4 REQUIRED)
 
 if(Vulkan_FOUND)
     message(STATUS "✅ Vulkan found - Version: ${Vulkan_VERSION}")

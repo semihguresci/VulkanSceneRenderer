@@ -473,7 +473,7 @@ SceneDiagnosticCubeGeometry deferredRasterSceneDiagnosticCubeGeometry(
           .indexCount = sceneController->diagCubeIndexCount()};
 }
 
-VkRenderPass deferredRasterSceneRenderPass(const FrameRecordParams &p,
+RenderingPassHandle deferredRasterSceneRenderPass(const FrameRecordParams &p,
                                            SceneRasterPassKind kind) {
   switch (kind) {
   case SceneRasterPassKind::DepthPrepass:
@@ -485,7 +485,7 @@ VkRenderPass deferredRasterSceneRenderPass(const FrameRecordParams &p,
   return VK_NULL_HANDLE;
 }
 
-VkFramebuffer deferredRasterSceneFramebuffer(const FrameRecordParams &p,
+RenderingTargetHandle deferredRasterSceneFramebuffer(const FrameRecordParams &p,
                                              SceneRasterPassKind kind) {
   switch (kind) {
   case SceneRasterPassKind::DepthPrepass:
@@ -858,7 +858,7 @@ void recordDeferredRasterLocalShadowPass(VkCommandBuffer cmd,
                                      kLocalShadowMapResolution};
 
   for (uint32_t layerIndex = 0u; layerIndex < layerCount; ++layerIndex) {
-    const VkFramebuffer framebuffer =
+    const RenderingTargetHandle framebuffer =
         p.shadows.localShadowFramebuffers[layerIndex];
     if (framebuffer == VK_NULL_HANDLE) {
       continue;
@@ -952,7 +952,7 @@ bool deferredRasterBimProviderExtractionPresent(const FrameRecordParams &p) {
   return false;
 }
 
-VkRenderPass deferredRasterBimSurfaceRenderPass(const FrameRecordParams &p,
+RenderingPassHandle deferredRasterBimSurfaceRenderPass(const FrameRecordParams &p,
                                                 BimSurfacePassKind kind) {
   switch (kind) {
   case BimSurfacePassKind::DepthPrepass:
@@ -968,7 +968,7 @@ VkRenderPass deferredRasterBimSurfaceRenderPass(const FrameRecordParams &p,
   return VK_NULL_HANDLE;
 }
 
-VkFramebuffer deferredRasterBimSurfaceFramebuffer(const FrameRecordParams &p,
+RenderingTargetHandle deferredRasterBimSurfaceFramebuffer(const FrameRecordParams &p,
                                                   BimSurfacePassKind kind) {
   switch (kind) {
   case BimSurfacePassKind::DepthPrepass:

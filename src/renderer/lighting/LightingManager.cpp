@@ -112,12 +112,12 @@ LightingManager::LightingManager(
 LightingManager::~LightingManager() {
   if (lightGizmoIconSampler_ != VK_NULL_HANDLE && device_ &&
       device_->device() != VK_NULL_HANDLE) {
-    vkDestroySampler(device_->device(), lightGizmoIconSampler_, nullptr);
+    destroyOwnedSampler(device_->device(), lightGizmoIconSampler_, nullptr);
     lightGizmoIconSampler_ = VK_NULL_HANDLE;
   }
   if (timestampQueryPool_ != VK_NULL_HANDLE && device_ &&
       device_->device() != VK_NULL_HANDLE) {
-    vkDestroyQueryPool(device_->device(), timestampQueryPool_, nullptr);
+    destroyOwnedQueryPool(device_->device(), timestampQueryPool_, nullptr);
     timestampQueryPool_ = VK_NULL_HANDLE;
   }
   allocationManager_.destroyBuffer(lightStatsBuffer_);
@@ -296,7 +296,7 @@ void LightingManager::loadLightGizmoIconResources(
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     samplerInfo.minLod = 0.0f;
     samplerInfo.maxLod = 0.0f;
-    if (vkCreateSampler(device_->device(), &samplerInfo, nullptr,
+    if (createOwnedSampler(device_->device(), &samplerInfo, nullptr,
                         &lightGizmoIconSampler_) != VK_SUCCESS) {
       throw std::runtime_error("failed to create light gizmo icon sampler");
     }
@@ -1052,7 +1052,7 @@ void LightingManager::allocateClusterBuffers(VkExtent2D extent) {
 
   const VkDeviceSize tileGridSize = sizeof(TileLightGrid) * maxClusterCount_;
   tileGridSsbo_ = allocationManager_.createBuffer(
-      tileGridSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+      tileGridSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
       VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
 
   const VkDeviceSize lightIndexListSize =
@@ -1202,7 +1202,7 @@ void LightingManager::createTiledResources(
       queryPoolInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
       queryPoolInfo.queryCount = kTimingQueryFrameSlots * kTimingQueryCount;
       timestampQueriesSupported_ =
-          vkCreateQueryPool(device_->device(), &queryPoolInfo, nullptr,
+          createOwnedQueryPool(device_->device(), &queryPoolInfo, nullptr,
                             &timestampQueryPool_) == VK_SUCCESS;
       if (!timestampQueriesSupported_) {
         timestampQueryPool_ = VK_NULL_HANDLE;
@@ -1322,7 +1322,7 @@ void LightingManager::createTiledResources(
     tileCullPipeline_ =
         pipelineManager_.createComputePipeline(ci, "tile_light_cull");
 
-    vkDestroyShaderModule(device_->device(), compModule, nullptr);
+    destroyOwnedShaderModule(device_->device(), compModule, nullptr);
   }
 }
 

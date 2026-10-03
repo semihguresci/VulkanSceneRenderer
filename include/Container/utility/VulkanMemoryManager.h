@@ -56,7 +56,7 @@ class VulkanMemoryManager {
  public:
   VulkanMemoryManager(VkInstance instance, VkPhysicalDevice physical_device,
                       VkDevice device,
-                      uint32_t vulkan_api_version = VK_API_VERSION_1_3);
+                      uint32_t vulkan_api_version = VK_API_VERSION_1_4);
   ~VulkanMemoryManager();
 
   VulkanMemoryManager(const VulkanMemoryManager&) = delete;

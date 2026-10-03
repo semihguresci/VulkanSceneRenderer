@@ -1,6 +1,7 @@
 #include <Container/utility/VulkanMemoryManager.h>
 
 #include <cstring>
+#include <algorithm>
 #include <stdexcept>
 
 #include "Container/utility/VulkanAlignment.h"
@@ -103,7 +104,9 @@ VulkanMemoryManager::VulkanMemoryManager(VkInstance instance,
   info.instance = instance;
   info.physicalDevice = physical_device;
   info.device = device;
-  info.vulkanApiVersion = vulkan_api_version;
+  // The bundled VMA dispatch table supports core entry points through 1.3.
+  // Those entry points are also valid on the required Vulkan 1.4 device.
+  info.vulkanApiVersion = std::min(vulkan_api_version, VK_API_VERSION_1_3);
   info.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
   info.pVulkanFunctions = &vulkanFunctions;
 

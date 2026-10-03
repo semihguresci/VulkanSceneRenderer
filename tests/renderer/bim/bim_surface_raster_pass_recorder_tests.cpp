@@ -35,8 +35,8 @@ BimSurfacePassPlan activePlan() {
 
 BimSurfaceRasterPassRecordInputs
 requiredInputs(const BimSurfacePassPlan &plan) {
-  return {.renderPass = fakeHandle<VkRenderPass>(0x1),
-          .framebuffer = fakeHandle<VkFramebuffer>(0x2),
+  return {.renderPass = fakeHandle<RenderingPassHandle>(0x1),
+          .framebuffer = fakeHandle<RenderingTargetHandle>(0x2),
           .extent = {640u, 480u},
           .plan = &plan};
 }
@@ -49,8 +49,8 @@ frameInputs(const std::vector<DrawCommand> &meshCommands,
           .passReady = true,
           .draws = {.mesh = {.opaqueSingleSidedDrawCommands = &meshCommands},
                     .opaqueMeshDrawsUseGpuVisibility = true},
-          .renderPass = fakeHandle<VkRenderPass>(0x10),
-          .framebuffer = fakeHandle<VkFramebuffer>(0x11),
+          .renderPass = fakeHandle<RenderingPassHandle>(0x10),
+          .framebuffer = fakeHandle<RenderingTargetHandle>(0x11),
           .extent = {1280u, 720u},
           .geometry = {.descriptorSets = descriptorSets,
                        .vertexSlice = {.buffer = fakeHandle<VkBuffer>(0x12)},

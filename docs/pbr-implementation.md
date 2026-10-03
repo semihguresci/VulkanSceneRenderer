@@ -285,8 +285,20 @@ Direct lighting uses Cook-Torrance GGX:
 - Metallic workflow diffuse suppression.
 - F0 derived from IOR and `KHR_materials_specular` for dielectrics, then mixed
   with base color for metals.
-- Rectangular and disk area lights evaluate four deterministic samples across
-  the emitter instead of collapsing all lighting to the closest point.
+- Rectangular and disk area lights integrate 25 samples across the emitter.
+  Rectangles use tensor-product Gauss-Legendre quadrature; disks use
+  Gauss-Legendre quadrature in squared radius with five angles per ring.
+- Area-light shadows render complete perspective cubes from one to four
+  emitter positions. Each emitter sample consumes six local-shadow layers;
+  the shared layer budget determines the available sample count. Point/spot
+  allocations consume their existing share first, then remaining layers are
+  distributed across eligible area lights. Lights without six remaining
+  layers receive no shadow map.
+- Point and area shadow filters remap taps across cube faces and compare depth
+  in the destination face. Deferred shadow bias reconstructs geometric normals
+  with explicit depth neighbors, avoiding derivatives after divergent returns.
+- Forward opaque and transparent lighting evaluate the uploaded point/spot
+  light count, bounded by the 8,192-light storage capacity.
 
 IBL remains required:
 

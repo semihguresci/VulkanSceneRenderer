@@ -20,8 +20,8 @@ struct SceneRasterPassClearValues {
 };
 
 struct SceneRasterPassRecordInputs {
-  VkRenderPass renderPass{VK_NULL_HANDLE};
-  VkFramebuffer framebuffer{VK_NULL_HANDLE};
+  RenderingPassHandle renderPass{VK_NULL_HANDLE};
+  RenderingTargetHandle framebuffer{VK_NULL_HANDLE};
   VkExtent2D extent{};
   SceneRasterPassClearValues clearValues{};
   const SceneOpaqueDrawPlan *plan{nullptr};

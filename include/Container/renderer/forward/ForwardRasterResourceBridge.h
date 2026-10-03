@@ -12,6 +12,7 @@ enum class ForwardRasterFramebufferId {
   BimDepthPrepass,
   TransparentPick,
   Lighting,
+  TransparentLighting,
   TransformGizmo,
 };
 
@@ -54,6 +55,8 @@ enum class ForwardRasterDescriptorSetId {
     return "transparent-pick-framebuffer";
   case ForwardRasterFramebufferId::Lighting:
     return "lighting-framebuffer";
+  case ForwardRasterFramebufferId::TransparentLighting:
+    return "transparent-lighting-framebuffer";
   case ForwardRasterFramebufferId::TransformGizmo:
     return "transform-gizmo-framebuffer";
   }
@@ -207,7 +210,7 @@ forwardRasterFramebufferBinding(const FrameRecordParams& p,
   return forwardRasterDescriptorSet(p, id) != VK_NULL_HANDLE;
 }
 
-[[nodiscard]] inline VkFramebuffer forwardRasterFramebuffer(
+[[nodiscard]] inline RenderingTargetHandle forwardRasterFramebuffer(
     const FrameRecordParams& p, ForwardRasterFramebufferId id) {
   return p.framebuffer(RenderTechniqueId::ForwardRaster,
                        forwardRasterFramebufferKey(id));
@@ -218,7 +221,7 @@ forwardRasterFramebufferBinding(const FrameRecordParams& p,
   return forwardRasterFramebuffer(p, id) != VK_NULL_HANDLE;
 }
 
-[[nodiscard]] inline VkRenderPass forwardRasterRenderPass(
+[[nodiscard]] inline RenderingPassHandle forwardRasterRenderPass(
     const FrameRecordParams& p, ForwardRasterFramebufferId id) {
   const FrameFramebufferBinding* binding =
       forwardRasterFramebufferBinding(p, id);

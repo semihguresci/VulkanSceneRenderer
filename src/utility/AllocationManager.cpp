@@ -304,7 +304,7 @@ AllocationManager::createTextureFromRgbaPixels(
     registeredTexture = true;
   } catch (...) {
     if (imageView != VK_NULL_HANDLE) {
-      vkDestroyImageView(device_, imageView, nullptr);
+      destroyVulkanImageView(device_, imageView, nullptr);
     }
     if (!registeredTexture && image != VK_NULL_HANDLE) {
       vmaDestroyImage(memoryManager_->allocator(), image, allocation);
@@ -387,7 +387,7 @@ AllocationManager::createTexture2DArrayFromRgbaPixels(
     registeredTexture = true;
   } catch (...) {
     if (imageView != VK_NULL_HANDLE) {
-      vkDestroyImageView(device_, imageView, nullptr);
+      destroyVulkanImageView(device_, imageView, nullptr);
     }
     if (!registeredTexture && image != VK_NULL_HANDLE) {
       vmaDestroyImage(memoryManager_->allocator(), image, allocation);
@@ -423,7 +423,7 @@ void AllocationManager::resetTextureAllocations(
     }
 
     if (texture.imageView != VK_NULL_HANDLE) {
-      vkDestroyImageView(device_, texture.imageView, nullptr);
+      destroyVulkanImageView(device_, texture.imageView, nullptr);
       texture.imageView = VK_NULL_HANDLE;
     }
 
@@ -657,7 +657,7 @@ VkImageView AllocationManager::createImageView(VkImage image, VkFormat format,
   info.subresourceRange.layerCount = layerCount;
 
   VkImageView view = VK_NULL_HANDLE;
-  if (vkCreateImageView(device_, &info, nullptr, &view) != VK_SUCCESS) {
+  if (createVulkanImageView(device_, &info, nullptr, &view) != VK_SUCCESS) {
     throw std::runtime_error("failed to create texture image view");
   }
   return view;
