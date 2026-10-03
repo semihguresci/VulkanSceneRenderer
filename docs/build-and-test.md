@@ -128,6 +128,8 @@ official x64 redistributable link in the included quick start guide.
 
 Before publishing, extract the ZIP into a fresh directory and run both the
 default deferred renderer and `--render-technique forward-raster --msaa 4`.
+Also launch the executable from a different working directory to verify that
+bundled materials and other runtime assets resolve beside the executable.
 Run the capture with `--validation` on a development machine to check Vulkan
 errors. Attach the ZIP and `SHA256SUMS.txt` to a GitHub release pointing to the
 same commit recorded in `build-info.json`. Mark preview builds as prereleases.

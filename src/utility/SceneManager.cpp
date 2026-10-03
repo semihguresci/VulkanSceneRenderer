@@ -1742,7 +1742,9 @@ void SceneManager::loadMaterialXMaterial() {
   container::material::Material material{};
 
   try {
-    auto doc = materialXBridge_.loadDocument("materials/base.mtlx");
+    const auto materialPath = resolveSceneAssetPath("materials/base.mtlx");
+    auto doc = materialXBridge_.loadDocument(
+        container::util::pathToUtf8(materialPath));
     material.baseColor = materialXBridge_.extractBaseColor(doc);
     material.opacityFactor =
         materialXBridge_.extractFloatInput(doc, "opacity", material.opacityFactor);
