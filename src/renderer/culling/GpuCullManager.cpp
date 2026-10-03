@@ -67,7 +67,7 @@ GpuCullManager::~GpuCullManager() {
 
   destroyHiZImage();
   if (hizSampler_ != VK_NULL_HANDLE)
-    vkDestroySampler(device_->device(), hizSampler_, nullptr);
+    destroyOwnedSampler(device_->device(), hizSampler_, nullptr);
   pipelineManager_.destroyPipeline(hizPipeline_);
   pipelineManager_.destroyPipelineLayout(hizPipelineLayout_);
   pipelineManager_.destroyDescriptorPool(hizPool_);
@@ -405,7 +405,7 @@ void GpuCullManager::dispatchFrustumCull(VkCommandBuffer cmd,
 
 void GpuCullManager::createHiZSampler() {
   if (hizSampler_ != VK_NULL_HANDLE) {
-    vkDestroySampler(device_->device(), hizSampler_, nullptr);
+    destroyOwnedSampler(device_->device(), hizSampler_, nullptr);
     hizSampler_ = VK_NULL_HANDLE;
   }
 
@@ -418,7 +418,7 @@ void GpuCullManager::createHiZSampler() {
   si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   si.minLod = 0.0f;
   si.maxLod = static_cast<float>(hizMipLevels_ - 1u);
-  if (vkCreateSampler(device_->device(), &si, nullptr, &hizSampler_) !=
+  if (createOwnedSampler(device_->device(), &si, nullptr, &hizSampler_) !=
       VK_SUCCESS) {
     throw std::runtime_error("failed to create Hi-Z sampler");
   }
@@ -478,7 +478,7 @@ void GpuCullManager::ensureHiZImage(uint32_t imageIndex, uint32_t width,
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vi.format = VK_FORMAT_R32_SFLOAT;
     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, hizMipLevels_, 0, 1};
-    if (vkCreateImageView(device_->device(), &vi, nullptr,
+    if (createVulkanImageView(device_->device(), &vi, nullptr,
                           &hizFrame.fullView) != VK_SUCCESS) {
       throw std::runtime_error("failed to create Hi-Z full image view");
     }
@@ -491,7 +491,7 @@ void GpuCullManager::ensureHiZImage(uint32_t imageIndex, uint32_t width,
       mvi.viewType = VK_IMAGE_VIEW_TYPE_2D;
       mvi.format = VK_FORMAT_R32_SFLOAT;
       mvi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, m, 1, 0, 1};
-      if (vkCreateImageView(device_->device(), &mvi, nullptr,
+      if (createVulkanImageView(device_->device(), &mvi, nullptr,
                             &hizFrame.mipViews[m]) != VK_SUCCESS) {
         throw std::runtime_error("failed to create Hi-Z mip view " +
                                  std::to_string(m));
@@ -510,11 +510,11 @@ void GpuCullManager::destroyHiZImage() {
   for (auto& hizFrame : hizFrames_) {
     hizFrame.descriptorSets.clear();
     for (auto view : hizFrame.mipViews) {
-      if (view != VK_NULL_HANDLE) vkDestroyImageView(dev, view, nullptr);
+      if (view != VK_NULL_HANDLE) destroyVulkanImageView(dev, view, nullptr);
     }
     hizFrame.mipViews.clear();
     if (hizFrame.fullView != VK_NULL_HANDLE) {
-      vkDestroyImageView(dev, hizFrame.fullView, nullptr);
+      destroyVulkanImageView(dev, hizFrame.fullView, nullptr);
       hizFrame.fullView = VK_NULL_HANDLE;
     }
     if (hizFrame.image != VK_NULL_HANDLE) {
@@ -879,7 +879,7 @@ void GpuCullManager::createFrustumCullPipeline(
   frustumCullPipeline_ =
       pipelineManager_.createComputePipeline(ci, "frustum_cull");
 
-  vkDestroyShaderModule(device_->device(), compModule, nullptr);
+  destroyOwnedShaderModule(device_->device(), compModule, nullptr);
 }
 
 void GpuCullManager::createHiZPipeline(
@@ -921,7 +921,7 @@ void GpuCullManager::createHiZPipeline(
   ci.layout = hizPipelineLayout_;
 
   hizPipeline_ = pipelineManager_.createComputePipeline(ci, "hiz_generate");
-  vkDestroyShaderModule(device_->device(), compModule, nullptr);
+  destroyOwnedShaderModule(device_->device(), compModule, nullptr);
 }
 
 void GpuCullManager::createHiZDescriptorSets() {
@@ -1009,7 +1009,7 @@ void GpuCullManager::createOcclusionCullPipeline(
 
   occlusionCullPipeline_ =
       pipelineManager_.createComputePipeline(ci, "occlusion_cull");
-  vkDestroyShaderModule(device_->device(), compModule, nullptr);
+  destroyOwnedShaderModule(device_->device(), compModule, nullptr);
 }
 
 void GpuCullManager::allocateFrustumCullDescriptorSets(

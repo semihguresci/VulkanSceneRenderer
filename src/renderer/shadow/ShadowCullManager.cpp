@@ -463,7 +463,7 @@ void ShadowCullManager::createShadowCullPipeline(
 
 	shadowCullPipeline_ =
 		pipelineManager_.createComputePipeline(ci, "shadow_cull");
-	vkDestroyShaderModule(device_->device(), compModule, nullptr);
+	destroyOwnedShaderModule(device_->device(), compModule, nullptr);
 }
 
 size_t ShadowCullManager::descriptorSetIndex(uint32_t imageIndex,

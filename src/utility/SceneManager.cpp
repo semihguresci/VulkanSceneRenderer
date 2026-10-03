@@ -839,7 +839,7 @@ SceneManager::~SceneManager() {
   VkDevice device = deviceWrapper_->device();
   for (VkSampler& sampler : materialSamplers_) {
     if (sampler != VK_NULL_HANDLE) {
-      vkDestroySampler(device, sampler, nullptr);
+      destroyOwnedSampler(device, sampler, nullptr);
       sampler = VK_NULL_HANDLE;
     }
   }
@@ -1726,7 +1726,7 @@ void SceneManager::createSampler() {
       info.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
       info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
 
-      if (vkCreateSampler(deviceWrapper_->device(), &info, nullptr,
+      if (createOwnedSampler(deviceWrapper_->device(), &info, nullptr,
                           &materialSamplers_[samplerIndex]) != VK_SUCCESS) {
         throw std::runtime_error("failed to create scene texture sampler");
       }

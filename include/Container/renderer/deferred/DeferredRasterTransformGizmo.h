@@ -25,8 +25,8 @@ struct DeferredTransformGizmoDrawInputs {
 };
 
 struct DeferredTransformGizmoPassInputs {
-  VkRenderPass renderPass{VK_NULL_HANDLE};
-  VkFramebuffer framebuffer{VK_NULL_HANDLE};
+  RenderingPassHandle renderPass{VK_NULL_HANDLE};
+  RenderingTargetHandle framebuffer{VK_NULL_HANDLE};
   DeferredTransformGizmoDrawInputs draw{};
 };
 

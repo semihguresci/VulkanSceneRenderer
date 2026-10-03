@@ -9,16 +9,15 @@ VulkanContext::VulkanContext(VulkanContextResult result,
     , enableValidationLayers_(enableValidationLayers) {}
 
 VulkanContext::~VulkanContext() {
-  // Device must already be destroyed before this runs (caller's responsibility).
+  result_.deviceWrapper.reset();
   if (enableValidationLayers_ &&
       result_.debugMessenger != VK_NULL_HANDLE) {
-    container::gpu::DestroyDebugUtilsMessengerEXT(
-        result_.instance, result_.debugMessenger, nullptr);
+    result_.ownedDebugMessenger.clear();
     result_.debugMessenger = VK_NULL_HANDLE;
   }
 
   if (result_.surface != VK_NULL_HANDLE) {
-    vkDestroySurfaceKHR(result_.instance, result_.surface, nullptr);
+    result_.ownedSurface.clear();
     result_.surface = VK_NULL_HANDLE;
   }
 

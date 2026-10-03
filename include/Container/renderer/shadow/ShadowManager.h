@@ -126,7 +126,7 @@ class ShadowManager {
                ? localShadowLayerViews_[layerIndex]
                : VK_NULL_HANDLE;
   }
-  [[nodiscard]] VkFramebuffer localShadowFramebuffer(uint32_t layerIndex) const {
+  [[nodiscard]] RenderingTargetHandle localShadowFramebuffer(uint32_t layerIndex) const {
     return layerIndex < localShadowFramebuffers_.size()
                ? localShadowFramebuffers_[layerIndex]
                : VK_NULL_HANDLE;
@@ -155,15 +155,15 @@ class ShadowManager {
     return localShadowLayerCount() > 0u;
   }
 
-  [[nodiscard]] const std::array<VkFramebuffer, container::gpu::kShadowCascadeCount>&
+  [[nodiscard]] const std::array<RenderingTargetHandle, container::gpu::kShadowCascadeCount>&
       framebuffers() const { return framebuffers_; }
-  [[nodiscard]] const std::array<VkFramebuffer,
+  [[nodiscard]] const std::array<RenderingTargetHandle,
                                  container::gpu::kMaxShadowedLocalLightLayers>&
       localShadowFramebuffers() const {
     return localShadowFramebuffers_;
   }
 
-  void createFramebuffers(VkRenderPass shadowRenderPass);
+  void createFramebuffers(RenderingPassHandle shadowRenderPass);
   void destroyFramebuffers();
 
   [[nodiscard]] bool cascadeIntersectsSphere(
@@ -202,7 +202,7 @@ class ShadowManager {
   VkImageView   shadowAtlasArrayView_{VK_NULL_HANDLE};
   std::array<VkImageView, container::gpu::kShadowCascadeCount>
       cascadeViews_{};
-  std::array<VkFramebuffer, container::gpu::kShadowCascadeCount>
+  std::array<RenderingTargetHandle, container::gpu::kShadowCascadeCount>
       framebuffers_{};
   VkSampler     shadowSampler_{VK_NULL_HANDLE};
 
@@ -211,7 +211,7 @@ class ShadowManager {
   VkImageView   localShadowAtlasArrayView_{VK_NULL_HANDLE};
   std::array<VkImageView, container::gpu::kMaxShadowedLocalLightLayers>
       localShadowLayerViews_{};
-  std::array<VkFramebuffer, container::gpu::kMaxShadowedLocalLightLayers>
+  std::array<RenderingTargetHandle, container::gpu::kMaxShadowedLocalLightLayers>
       localShadowFramebuffers_{};
 
   std::vector<container::gpu::AllocatedBuffer> shadowUbos_{};

@@ -311,7 +311,7 @@ void ExposureManager::createPipeline(const std::filesystem::path& shaderDir) {
 
         VkPipeline pipeline =
             pipelineManager_.createComputePipeline(pipelineInfo, pipelineName);
-        vkDestroyShaderModule(device_->device(), module, nullptr);
+        destroyOwnedShaderModule(device_->device(), module, nullptr);
         return pipeline;
       };
 

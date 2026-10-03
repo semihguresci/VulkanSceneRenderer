@@ -7,8 +7,8 @@
 namespace container::renderer {
 
 struct RenderPassScopeRecordInputs {
-  VkRenderPass renderPass{VK_NULL_HANDLE};
-  VkFramebuffer framebuffer{VK_NULL_HANDLE};
+  RenderingPassHandle renderPass{VK_NULL_HANDLE};
+  RenderingTargetHandle framebuffer{VK_NULL_HANDLE};
   VkRect2D renderArea{};
   std::span<const VkClearValue> clearValues{};
   VkSubpassContents contents{VK_SUBPASS_CONTENTS_INLINE};

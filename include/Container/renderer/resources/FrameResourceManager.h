@@ -100,13 +100,15 @@ class FrameResourceManager {
   // Create / recreate per-swapchain-image attachments, descriptor sets, and
   // OIT storage. Call after swapchain resize or any layout-affecting resource change.
   void create(const GBufferFormats&                    formats,
-              VkRenderPass                             depthPrepassPass,
-              VkRenderPass                             bimDepthPrepassPass,
-              VkRenderPass                             gBufferPass,
-              VkRenderPass                             bimGBufferPass,
-              VkRenderPass                             transparentPickPass,
-              VkRenderPass                             lightingPass,
-              VkRenderPass                             transformGizmoPass,
+              RenderingPassHandle                             depthPrepassPass,
+              RenderingPassHandle                             bimDepthPrepassPass,
+              RenderingPassHandle                             gBufferPass,
+              RenderingPassHandle                             bimGBufferPass,
+              RenderingPassHandle                             transparentPickPass,
+              RenderingPassHandle                             lightingPass,
+              RenderingPassHandle                             forwardLightingPass,
+              RenderingPassHandle                             forwardTransparentPass,
+              RenderingPassHandle                             transformGizmoPass,
               VkSampleCountFlagBits                    msaaSampleCount,
               std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
               const container::gpu::AllocatedBuffer& objectBuffer);
@@ -227,13 +229,15 @@ class FrameResourceManager {
   VkSampler                       fallbackLocalShadowSampler_{VK_NULL_HANDLE};
 
   GBufferFormats formats_{};
-  VkRenderPass   depthPrepassPass_{VK_NULL_HANDLE};
-  VkRenderPass   bimDepthPrepassPass_{VK_NULL_HANDLE};
-  VkRenderPass   gBufferPass_{VK_NULL_HANDLE};
-  VkRenderPass   bimGBufferPass_{VK_NULL_HANDLE};
-  VkRenderPass   transparentPickPass_{VK_NULL_HANDLE};
-  VkRenderPass   lightingPass_{VK_NULL_HANDLE};
-  VkRenderPass   transformGizmoPass_{VK_NULL_HANDLE};
+  RenderingPassHandle   depthPrepassPass_{VK_NULL_HANDLE};
+  RenderingPassHandle   bimDepthPrepassPass_{VK_NULL_HANDLE};
+  RenderingPassHandle   gBufferPass_{VK_NULL_HANDLE};
+  RenderingPassHandle   bimGBufferPass_{VK_NULL_HANDLE};
+  RenderingPassHandle   transparentPickPass_{VK_NULL_HANDLE};
+  RenderingPassHandle   lightingPass_{VK_NULL_HANDLE};
+  RenderingPassHandle   forwardLightingPass_{VK_NULL_HANDLE};
+  RenderingPassHandle   forwardTransparentPass_{VK_NULL_HANDLE};
+  RenderingPassHandle   transformGizmoPass_{VK_NULL_HANDLE};
   VkSampleCountFlagBits sampleCount_{VK_SAMPLE_COUNT_1_BIT};
 
   std::vector<FrameResources> frames_;

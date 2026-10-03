@@ -25,7 +25,7 @@ endif()
 set(SLANG_MATRIX_LAYOUT_FLAG "-matrix-layout-column-major")
 set(SLANG_SPIRV_FLAGS
     -target spirv
-    -profile spirv_1_4
+    -profile spirv_1_6
     -emit-spirv-directly
     -fvk-use-entrypoint-name
     -I "${SHADERS_DIR}"

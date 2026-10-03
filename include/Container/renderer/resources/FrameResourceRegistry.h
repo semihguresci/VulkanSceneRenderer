@@ -90,8 +90,8 @@ struct FrameBufferBinding {
 };
 
 struct FrameFramebufferBinding {
-  VkFramebuffer framebuffer{VK_NULL_HANDLE};
-  VkRenderPass renderPass{VK_NULL_HANDLE};
+  RenderingTargetHandle framebuffer{VK_NULL_HANDLE};
+  RenderingPassHandle renderPass{VK_NULL_HANDLE};
   VkExtent2D extent{};
   uint32_t attachmentCount{0};
 };

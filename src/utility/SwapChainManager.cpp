@@ -23,7 +23,7 @@ void SwapChainManager::initialize() {
   createImageViews();
 }
 
-void SwapChainManager::recreate(VkRenderPass renderPass) {
+void SwapChainManager::recreate(RenderingPassHandle renderPass) {
   waitForNonZeroFramebufferExtent();
 
   const VkSwapchainKHR oldSwapchain = swapChain_;
@@ -32,7 +32,7 @@ void SwapChainManager::recreate(VkRenderPass renderPass) {
   destroyFramebuffers();
   destroyImageViews();
   if (oldSwapchain != VK_NULL_HANDLE) {
-    vkDestroySwapchainKHR(device_, oldSwapchain, nullptr);
+    destroyOwnedSwapchainKHR(device_, oldSwapchain, nullptr);
   }
 
   createImageViews();
@@ -44,22 +44,22 @@ void SwapChainManager::cleanup() {
   destroyImageViews();
 
   if (swapChain_ != VK_NULL_HANDLE) {
-    vkDestroySwapchainKHR(device_, swapChain_, nullptr);
+    destroyOwnedSwapchainKHR(device_, swapChain_, nullptr);
     swapChain_ = VK_NULL_HANDLE;
   }
   swapChainImages_.clear();
 }
 
 void SwapChainManager::destroyFramebuffers() {
-  for (VkFramebuffer framebuffer : swapChainFramebuffers_) {
-    vkDestroyFramebuffer(device_, framebuffer, nullptr);
+  for (RenderingTargetHandle framebuffer : swapChainFramebuffers_) {
+    destroyRenderingTarget(device_, framebuffer, nullptr);
   }
   swapChainFramebuffers_.clear();
 }
 
 void SwapChainManager::destroyImageViews() {
   for (VkImageView imageView : swapChainImageViews_) {
-    vkDestroyImageView(device_, imageView, nullptr);
+    destroyVulkanImageView(device_, imageView, nullptr);
   }
   swapChainImageViews_.clear();
 }
@@ -129,7 +129,7 @@ void SwapChainManager::createSwapChain(VkSwapchainKHR oldSwapchain) {
 
   VkSwapchainKHR newSwapchain = VK_NULL_HANDLE;
   VkResult res =
-      vkCreateSwapchainKHR(device_, &createInfo, nullptr, &newSwapchain);
+      createOwnedSwapchainKHR(device_, &createInfo, nullptr, &newSwapchain);
 
   if (res != VK_SUCCESS) {
     throw std::runtime_error("failed to create swap chain!");
@@ -169,7 +169,7 @@ void SwapChainManager::createImageViews() {
     createInfo.subresourceRange.baseArrayLayer = 0;
     createInfo.subresourceRange.layerCount = 1;
 
-    VkResult res = vkCreateImageView(device_, &createInfo, nullptr,
+    VkResult res = createVulkanImageView(device_, &createInfo, nullptr,
                                      &swapChainImageViews_[i]);
 
     if (res != VK_SUCCESS) {
@@ -178,13 +178,13 @@ void SwapChainManager::createImageViews() {
   }
 }
 
-void SwapChainManager::createFramebuffers(VkRenderPass renderPass) {
+void SwapChainManager::createFramebuffers(RenderingPassHandle renderPass) {
   swapChainFramebuffers_.resize(swapChainImageViews_.size());
 
   for (size_t i = 0; i < swapChainImageViews_.size(); ++i) {
     VkImageView attachments[] = {swapChainImageViews_[i]};
 
-    VkFramebufferCreateInfo framebufferInfo{};
+    RenderingTargetCreateInfo framebufferInfo{};
     framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     framebufferInfo.renderPass = renderPass;
     framebufferInfo.attachmentCount = 1;
@@ -193,7 +193,7 @@ void SwapChainManager::createFramebuffers(VkRenderPass renderPass) {
     framebufferInfo.height = swapChainExtent_.height;
     framebufferInfo.layers = 1;
 
-    VkResult res = vkCreateFramebuffer(device_, &framebufferInfo, nullptr,
+    VkResult res = createRenderingTarget(device_, &framebufferInfo, nullptr,
                                        &swapChainFramebuffers_[i]);
 
     if (res != VK_SUCCESS) {

@@ -3521,8 +3521,8 @@ TEST(RenderingConventionTests,
                        "DeferredPostProcessPassRecordInputs"));
   EXPECT_TRUE(contains(deferredPostProcessHeader,
                        "recordDeferredPostProcessPassCommands"));
-  EXPECT_TRUE(contains(deferredPostProcess, "vkCmdBeginRenderPass"));
-  EXPECT_TRUE(contains(deferredPostProcess, "vkCmdEndRenderPass"));
+  EXPECT_TRUE(contains(deferredPostProcess, "beginDynamicRendering"));
+  EXPECT_TRUE(contains(deferredPostProcess, "endDynamicRendering"));
   EXPECT_TRUE(contains(deferredPostProcess, "vkCmdPushConstants"));
   EXPECT_TRUE(contains(deferredPostProcess,
                        "displayModeRecordsBloom(inputs_.displayMode)"));
@@ -5239,9 +5239,9 @@ TEST(RenderingConventionTests, SceneOpaqueDrawPlanningUsesPlanner) {
   EXPECT_FALSE(contains(deferredScenePassRecorder, "SceneController"));
   EXPECT_FALSE(contains(scenePassBlock, "buildSceneOpaqueDrawPlan"));
   EXPECT_FALSE(contains(scenePassBlock, "sceneRasterPassClearValues"));
-  EXPECT_FALSE(contains(scenePassBlock, "VkRenderPassBeginInfo"));
-  EXPECT_FALSE(contains(scenePassBlock, "vkCmdBeginRenderPass"));
-  EXPECT_FALSE(contains(scenePassBlock, "vkCmdEndRenderPass"));
+  EXPECT_FALSE(contains(scenePassBlock, "RenderingBeginInfo"));
+  EXPECT_FALSE(contains(scenePassBlock, "beginDynamicRendering"));
+  EXPECT_FALSE(contains(scenePassBlock, "endDynamicRendering"));
   EXPECT_FALSE(contains(scenePassBlock, "recordSceneViewportAndScissor"));
   EXPECT_FALSE(contains(scenePassBlock, "recordSceneOpaqueDrawCommands"));
   EXPECT_FALSE(contains(scenePassBlock, "recordSceneDiagnosticCubeCommands"));
@@ -5313,7 +5313,7 @@ TEST(RenderingConventionTests, SceneOpaqueDrawPlanningUsesPlanner) {
   EXPECT_FALSE(contains(recorder, "LightingManager"));
   EXPECT_FALSE(contains(recorder, "GuiManager"));
   EXPECT_FALSE(contains(recorder, "RenderPass"));
-  EXPECT_FALSE(contains(recorder, "vkCmdBeginRenderPass"));
+  EXPECT_FALSE(contains(recorder, "beginDynamicRendering"));
   EXPECT_TRUE(
       contains(diagnosticRecorderHeader, "SceneDiagnosticCubeRecordInputs"));
   EXPECT_TRUE(
@@ -5328,20 +5328,20 @@ TEST(RenderingConventionTests, SceneOpaqueDrawPlanningUsesPlanner) {
   EXPECT_FALSE(contains(diagnosticRecorder, "SceneController"));
   EXPECT_FALSE(contains(diagnosticRecorder, "DebugOverlayRenderer"));
   EXPECT_FALSE(contains(diagnosticRecorder, "BimManager"));
-  EXPECT_FALSE(contains(diagnosticRecorder, "vkCmdBeginRenderPass"));
-  EXPECT_FALSE(contains(diagnosticRecorder, "vkCmdEndRenderPass"));
+  EXPECT_FALSE(contains(diagnosticRecorder, "beginDynamicRendering"));
+  EXPECT_FALSE(contains(diagnosticRecorder, "endDynamicRendering"));
   EXPECT_TRUE(contains(rasterPassRecorderHeader, "SceneRasterPassKind"));
   EXPECT_TRUE(contains(rasterPassRecorderHeader, "SceneRasterPassClearValues"));
   EXPECT_TRUE(
       contains(rasterPassRecorderHeader, "SceneRasterPassRecordInputs"));
   EXPECT_TRUE(contains(rasterPassRecorder, "recordSceneRasterPassCommands"));
   EXPECT_TRUE(contains(rasterPassRecorder, "sceneRasterPassClearValues"));
-  EXPECT_TRUE(contains(rasterPassRecorder, "vkCmdBeginRenderPass"));
+  EXPECT_TRUE(contains(rasterPassRecorder, "beginDynamicRendering"));
   EXPECT_TRUE(contains(rasterPassRecorder, "recordSceneViewportAndScissor"));
   EXPECT_TRUE(contains(rasterPassRecorder, "recordSceneOpaqueDrawCommands"));
   EXPECT_TRUE(
       contains(rasterPassRecorder, "recordSceneDiagnosticCubeCommands"));
-  EXPECT_TRUE(contains(rasterPassRecorder, "vkCmdEndRenderPass"));
+  EXPECT_TRUE(contains(rasterPassRecorder, "endDynamicRendering"));
   EXPECT_FALSE(contains(rasterPassRecorder, "FrameRecordParams"));
   EXPECT_FALSE(contains(rasterPassRecorder, "FrameRecorder.h"));
   EXPECT_FALSE(contains(rasterPassRecorder, "GuiManager"));
@@ -5470,11 +5470,11 @@ TEST(RenderingConventionTests, SceneTransparentDrawPlanningUsesPlanner) {
   ASSERT_NE(depthCopyCall, std::string::npos);
   ASSERT_NE(rasterPickCall, std::string::npos);
   EXPECT_LT(depthCopyCall, rasterPickCall);
-  EXPECT_FALSE(contains(pickBlock, "VkRenderPassBeginInfo"));
-  EXPECT_FALSE(contains(pickBlock, "vkCmdBeginRenderPass"));
+  EXPECT_FALSE(contains(pickBlock, "RenderingBeginInfo"));
+  EXPECT_FALSE(contains(pickBlock, "beginDynamicRendering"));
   EXPECT_FALSE(contains(pickBlock, "recordSceneViewportAndScissor"));
   EXPECT_FALSE(contains(pickBlock, "recordTransparentPickPassCommands"));
-  EXPECT_FALSE(contains(pickBlock, "vkCmdEndRenderPass"));
+  EXPECT_FALSE(contains(pickBlock, "endDynamicRendering"));
   EXPECT_FALSE(contains(pickBlock, "recordSceneTransparentDrawCommands"));
   EXPECT_TRUE(contains(lightingBlock, "recordDeferredTransparentOitCommands"));
   EXPECT_FALSE(
@@ -5542,7 +5542,7 @@ TEST(RenderingConventionTests, SceneTransparentDrawPlanningUsesPlanner) {
   EXPECT_FALSE(contains(recorder, "LightingManager"));
   EXPECT_FALSE(contains(recorder, "GuiManager"));
   EXPECT_FALSE(contains(recorder, "RenderPass"));
-  EXPECT_FALSE(contains(recorder, "vkCmdBeginRenderPass"));
+  EXPECT_FALSE(contains(recorder, "beginDynamicRendering"));
   EXPECT_FALSE(contains(recorder, "vkCmdPipelineBarrier"));
   EXPECT_TRUE(contains(transparentPickRecorderHeader,
                        "TransparentPickPassRecordInputs"));
@@ -5561,8 +5561,8 @@ TEST(RenderingConventionTests, SceneTransparentDrawPlanningUsesPlanner) {
   EXPECT_FALSE(contains(transparentPickRecorder, "FrameRecordParams"));
   EXPECT_FALSE(contains(transparentPickRecorder, "LightingManager"));
   EXPECT_FALSE(contains(transparentPickRecorder, "GuiManager"));
-  EXPECT_FALSE(contains(transparentPickRecorder, "vkCmdBeginRenderPass"));
-  EXPECT_FALSE(contains(transparentPickRecorder, "vkCmdEndRenderPass"));
+  EXPECT_FALSE(contains(transparentPickRecorder, "beginDynamicRendering"));
+  EXPECT_FALSE(contains(transparentPickRecorder, "endDynamicRendering"));
   EXPECT_FALSE(contains(transparentPickRecorder, "vkCmdPipelineBarrier"));
   EXPECT_TRUE(contains(transparentPickRasterRecorderHeader,
                        "TransparentPickRasterPassRecordInputs"));
@@ -5572,12 +5572,12 @@ TEST(RenderingConventionTests, SceneTransparentDrawPlanningUsesPlanner) {
                        "recordTransparentPickRasterPassCommands"));
   EXPECT_TRUE(contains(transparentPickRasterRecorder,
                        "recordTransparentPickFramePassCommands"));
-  EXPECT_TRUE(contains(transparentPickRasterRecorder, "vkCmdBeginRenderPass"));
+  EXPECT_TRUE(contains(transparentPickRasterRecorder, "beginDynamicRendering"));
   EXPECT_TRUE(
       contains(transparentPickRasterRecorder, "recordSceneViewportAndScissor"));
   EXPECT_TRUE(contains(transparentPickRasterRecorder,
                        "recordTransparentPickPassCommands"));
-  EXPECT_TRUE(contains(transparentPickRasterRecorder, "vkCmdEndRenderPass"));
+  EXPECT_TRUE(contains(transparentPickRasterRecorder, "endDynamicRendering"));
   EXPECT_FALSE(contains(transparentPickRasterRecorder, "FrameRecordParams"));
   EXPECT_FALSE(contains(transparentPickRasterRecorder, "GuiManager"));
   EXPECT_FALSE(contains(transparentPickRasterRecorder, "LightingManager"));
@@ -5609,9 +5609,9 @@ TEST(RenderingConventionTests, SceneTransparentDrawPlanningUsesPlanner) {
   EXPECT_FALSE(
       contains(transparentPickDepthCopyRecorder, "SceneTransparentDrawPlan"));
   EXPECT_FALSE(
-      contains(transparentPickDepthCopyRecorder, "vkCmdBeginRenderPass"));
+      contains(transparentPickDepthCopyRecorder, "beginDynamicRendering"));
   EXPECT_FALSE(
-      contains(transparentPickDepthCopyRecorder, "vkCmdEndRenderPass"));
+      contains(transparentPickDepthCopyRecorder, "endDynamicRendering"));
   EXPECT_TRUE(contains(transparentOitRecorderHeader,
                        "DeferredTransparentOitRecordInputs"));
   EXPECT_TRUE(contains(transparentOitRecorderHeader,
@@ -5645,8 +5645,8 @@ TEST(RenderingConventionTests, SceneTransparentDrawPlanningUsesPlanner) {
   EXPECT_FALSE(contains(transparentOitRecorder, "FrameRecordParams"));
   EXPECT_FALSE(contains(transparentOitRecorder, "GuiManager"));
   EXPECT_FALSE(contains(transparentOitRecorder, "LightingManager"));
-  EXPECT_FALSE(contains(transparentOitRecorder, "vkCmdBeginRenderPass"));
-  EXPECT_FALSE(contains(transparentOitRecorder, "vkCmdEndRenderPass"));
+  EXPECT_FALSE(contains(transparentOitRecorder, "beginDynamicRendering"));
+  EXPECT_FALSE(contains(transparentOitRecorder, "endDynamicRendering"));
   EXPECT_TRUE(
       contains(srcCmake, "renderer/scene/SceneTransparentDrawPlanner.cpp"));
   EXPECT_TRUE(
@@ -5713,10 +5713,10 @@ TEST(RenderingConventionTests, FrameRecorderUsesSharedRenderPassScopeRecorder) {
   EXPECT_TRUE(contains(lightingBlock, "recordRenderPassBeginCommands"));
   EXPECT_TRUE(contains(lightingBlock, "recordRenderPassEndCommands"));
   EXPECT_TRUE(contains(lightingBlock, "recordSceneViewportAndScissor"));
-  EXPECT_FALSE(contains(frameRecorder, "VkRenderPassBeginInfo"));
-  EXPECT_FALSE(contains(frameRecorder, "vkCmdBeginRenderPass"));
+  EXPECT_FALSE(contains(frameRecorder, "RenderingBeginInfo"));
+  EXPECT_FALSE(contains(frameRecorder, "beginDynamicRendering"));
   EXPECT_FALSE(contains(frameRecorder, "vkCmdExecuteCommands"));
-  EXPECT_FALSE(contains(frameRecorder, "vkCmdEndRenderPass"));
+  EXPECT_FALSE(contains(frameRecorder, "endDynamicRendering"));
   EXPECT_FALSE(contains(shadowBlock, "recordSceneViewportAndScissor"));
   EXPECT_FALSE(contains(frameRecorder, "FrameRecorder::recordLightingPass"));
 
@@ -5725,10 +5725,10 @@ TEST(RenderingConventionTests, FrameRecorderUsesSharedRenderPassScopeRecorder) {
   EXPECT_TRUE(contains(scopeRecorderHeader,
                        "recordRenderPassExecuteSecondaryCommands"));
   EXPECT_TRUE(contains(scopeRecorderHeader, "recordRenderPassEndCommands"));
-  EXPECT_TRUE(contains(scopeRecorder, "VkRenderPassBeginInfo"));
-  EXPECT_TRUE(contains(scopeRecorder, "vkCmdBeginRenderPass"));
+  EXPECT_TRUE(contains(scopeRecorder, "RenderingBeginInfo"));
+  EXPECT_TRUE(contains(scopeRecorder, "beginDynamicRendering"));
   EXPECT_TRUE(contains(scopeRecorder, "vkCmdExecuteCommands"));
-  EXPECT_TRUE(contains(scopeRecorder, "vkCmdEndRenderPass"));
+  EXPECT_TRUE(contains(scopeRecorder, "endDynamicRendering"));
   EXPECT_TRUE(contains(shadowRasterRecorder, "recordRenderPassBeginCommands"));
   EXPECT_TRUE(contains(shadowRasterRecorder,
                        "recordRenderPassExecuteSecondaryCommands"));
@@ -8265,9 +8265,9 @@ TEST(RenderingConventionTests, BimSurfaceDrawRoutingUsesPlanner) {
   EXPECT_FALSE(contains(lightingBlock, "buildBimSurfacePassPlan"));
   EXPECT_TRUE(contains(pickBlock, "buildBimSurfaceFramePassPlan"));
   EXPECT_TRUE(contains(lightingBlock, "buildBimSurfaceFramePassPlan"));
-  EXPECT_FALSE(contains(deferredBimBlock, "VkRenderPassBeginInfo"));
-  EXPECT_FALSE(contains(deferredBimBlock, "vkCmdBeginRenderPass"));
-  EXPECT_FALSE(contains(deferredBimBlock, "vkCmdEndRenderPass"));
+  EXPECT_FALSE(contains(deferredBimBlock, "RenderingBeginInfo"));
+  EXPECT_FALSE(contains(deferredBimBlock, "beginDynamicRendering"));
+  EXPECT_FALSE(contains(deferredBimBlock, "endDynamicRendering"));
   EXPECT_FALSE(contains(deferredBimBlock, "recordSceneViewportAndScissor"));
   EXPECT_FALSE(contains(deferredBimBlock, "recordBimSurfacePassCommands"));
   EXPECT_FALSE(contains(deferredBimBlock, "vkCmdBindDescriptorSets"));
@@ -8304,10 +8304,10 @@ TEST(RenderingConventionTests, BimSurfaceDrawRoutingUsesPlanner) {
       contains(rasterPassRecorderHeader, "BimSurfaceRasterPassRecordInputs"));
   EXPECT_TRUE(
       contains(rasterPassRecorder, "recordBimSurfaceRasterPassCommands"));
-  EXPECT_TRUE(contains(rasterPassRecorder, "vkCmdBeginRenderPass"));
+  EXPECT_TRUE(contains(rasterPassRecorder, "beginDynamicRendering"));
   EXPECT_TRUE(contains(rasterPassRecorder, "recordSceneViewportAndScissor"));
   EXPECT_TRUE(contains(rasterPassRecorder, "recordBimSurfacePassCommands"));
-  EXPECT_TRUE(contains(rasterPassRecorder, "vkCmdEndRenderPass"));
+  EXPECT_TRUE(contains(rasterPassRecorder, "endDynamicRendering"));
   EXPECT_TRUE(
       contains(rasterPassRecorder, "bimSurfaceRasterPassPushConstants"));
   EXPECT_FALSE(contains(rasterPassRecorderHeader, "FrameRecordParams"));
@@ -9856,8 +9856,8 @@ TEST(RenderingConventionTests, ShadowPassDrawPlanningUsesPlanner) {
   EXPECT_TRUE(contains(recorder, "bimManager->drawCompacted"));
   EXPECT_FALSE(contains(recorder, "FrameRecordParams"));
   EXPECT_FALSE(contains(recorder, "FrameSceneGeometry"));
-  EXPECT_FALSE(contains(recorder, "vkCmdBeginRenderPass"));
-  EXPECT_FALSE(contains(recorder, "vkCmdEndRenderPass"));
+  EXPECT_FALSE(contains(recorder, "beginDynamicRendering"));
+  EXPECT_FALSE(contains(recorder, "endDynamicRendering"));
   EXPECT_FALSE(contains(recorder, "recordShadowPassBody"));
   EXPECT_TRUE(contains(srcCmake, "renderer/shadow/ShadowPassRecorder.cpp"));
   EXPECT_TRUE(contains(testsCmake, "shadow_pass_draw_planner_tests"));

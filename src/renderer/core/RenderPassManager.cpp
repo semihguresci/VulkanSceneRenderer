@@ -220,7 +220,7 @@ void RenderPassManager::create(VkFormat swapchainFormat,
     rpInfo2.pSubpasses = &depthSubpass2;
     rpInfo2.dependencyCount = static_cast<uint32_t>(depthDeps2.size());
     rpInfo2.pDependencies = depthDeps2.data();
-    if (vkCreateRenderPass2(dev, &rpInfo2, nullptr,
+    if (createRenderingPass2(dev, &rpInfo2, nullptr,
                             &passes_.depthPrepass) != VK_SUCCESS) {
       throw std::runtime_error("failed to create depth prepass render pass");
     }
@@ -228,7 +228,7 @@ void RenderPassManager::create(VkFormat swapchainFormat,
     rpInfo.attachmentCount = 1;
     rpInfo.pAttachments = &ds;
     rpInfo.pSubpasses = &depthSubpass;
-    if (vkCreateRenderPass(dev, &rpInfo, nullptr, &passes_.depthPrepass) !=
+    if (createRenderingPass(dev, &rpInfo, nullptr, &passes_.depthPrepass) !=
         VK_SUCCESS) {
       throw std::runtime_error("failed to create depth prepass render pass");
     }
@@ -299,7 +299,7 @@ void RenderPassManager::create(VkFormat swapchainFormat,
     rpInfo2.pSubpasses = &bimDepthSubpass2;
     rpInfo2.dependencyCount = static_cast<uint32_t>(bimDepthDeps2.size());
     rpInfo2.pDependencies = bimDepthDeps2.data();
-    if (vkCreateRenderPass2(dev, &rpInfo2, nullptr,
+    if (createRenderingPass2(dev, &rpInfo2, nullptr,
                             &passes_.bimDepthPrepass) != VK_SUCCESS) {
       throw std::runtime_error(
           "failed to create BIM depth prepass render pass");
@@ -310,7 +310,7 @@ void RenderPassManager::create(VkFormat swapchainFormat,
     rpInfo.pSubpasses = &bimDepthSubpass;
     rpInfo.dependencyCount = static_cast<uint32_t>(bimDepthDeps.size());
     rpInfo.pDependencies = bimDepthDeps.data();
-    if (vkCreateRenderPass(dev, &rpInfo, nullptr,
+    if (createRenderingPass(dev, &rpInfo, nullptr,
                            &passes_.bimDepthPrepass) != VK_SUCCESS) {
       throw std::runtime_error("failed to create BIM depth prepass render pass");
     }
@@ -470,7 +470,7 @@ void RenderPassManager::create(VkFormat swapchainFormat,
     rpInfo2.pSubpasses = &gbSubpass2;
     rpInfo2.dependencyCount = static_cast<uint32_t>(gbDeps2.size());
     rpInfo2.pDependencies = gbDeps2.data();
-    if (vkCreateRenderPass2(dev, &rpInfo2, nullptr, &passes_.gBuffer) !=
+    if (createRenderingPass2(dev, &rpInfo2, nullptr, &passes_.gBuffer) !=
         VK_SUCCESS) {
       throw std::runtime_error("failed to create GBuffer render pass");
     }
@@ -480,7 +480,7 @@ void RenderPassManager::create(VkFormat swapchainFormat,
     rpInfo.pSubpasses = &gbSubpass;
     rpInfo.dependencyCount = static_cast<uint32_t>(gbDeps.size());
     rpInfo.pDependencies = gbDeps.data();
-    if (vkCreateRenderPass(dev, &rpInfo, nullptr, &passes_.gBuffer) !=
+    if (createRenderingPass(dev, &rpInfo, nullptr, &passes_.gBuffer) !=
         VK_SUCCESS) {
       throw std::runtime_error("failed to create GBuffer render pass");
     }
@@ -629,7 +629,7 @@ void RenderPassManager::create(VkFormat swapchainFormat,
     rpInfo2.pSubpasses = &bimGbSubpass2;
     rpInfo2.dependencyCount = static_cast<uint32_t>(bimGbDeps2.size());
     rpInfo2.pDependencies = bimGbDeps2.data();
-    if (vkCreateRenderPass2(dev, &rpInfo2, nullptr,
+    if (createRenderingPass2(dev, &rpInfo2, nullptr,
                             &passes_.bimGBuffer) != VK_SUCCESS) {
       throw std::runtime_error("failed to create BIM GBuffer render pass");
     }
@@ -640,7 +640,7 @@ void RenderPassManager::create(VkFormat swapchainFormat,
     rpInfo.pSubpasses = &gbSubpass;
     rpInfo.dependencyCount = static_cast<uint32_t>(bimGbDeps.size());
     rpInfo.pDependencies = bimGbDeps.data();
-    if (vkCreateRenderPass(dev, &rpInfo, nullptr, &passes_.bimGBuffer) !=
+    if (createRenderingPass(dev, &rpInfo, nullptr, &passes_.bimGBuffer) !=
         VK_SUCCESS) {
       throw std::runtime_error("failed to create BIM GBuffer render pass");
     }
@@ -714,7 +714,7 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   rpInfo.pSubpasses = &transparentPickSubpass;
   rpInfo.dependencyCount = static_cast<uint32_t>(transparentPickDeps.size());
   rpInfo.pDependencies = transparentPickDeps.data();
-  if (vkCreateRenderPass(dev, &rpInfo, nullptr,
+  if (createRenderingPass(dev, &rpInfo, nullptr,
                          &passes_.transparentPick) != VK_SUCCESS) {
     throw std::runtime_error("failed to create transparent pick render pass");
   }
@@ -786,8 +786,57 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   rpInfo.pSubpasses      = &lightSubpass;
   rpInfo.dependencyCount = static_cast<uint32_t>(lightDeps.size());
   rpInfo.pDependencies   = lightDeps.data();
-  if (vkCreateRenderPass(dev, &rpInfo, nullptr, &passes_.lighting) != VK_SUCCESS)
+  if (createRenderingPass(dev, &rpInfo, nullptr, &passes_.lighting) != VK_SUCCESS)
     throw std::runtime_error("failed to create lighting render pass");
+
+  // Forward opaque shading must depth-test at the prepass sample locations.
+  // Testing pixel-center depth against a MAX-resolved depth rejects sloped
+  // surfaces. Resolve shaded HDR color instead; transparency then uses the
+  // single-sample targets shared with OIT and post processing.
+  auto forwardColor = lightColor;
+  forwardColor.samples = msaaSamples;
+  if (useMsaa) {
+    forwardColor.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    forwardColor.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  }
+  auto forwardDepth = lightDs;
+  forwardDepth.samples = msaaSamples;
+  forwardDepth.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  forwardDepth.initialLayout = useMsaa
+      ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+      : VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+  forwardDepth.finalLayout =
+      VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+  auto forwardResolve = lightColor;
+  forwardResolve.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  const std::array forwardAttachments{forwardColor, forwardDepth,
+                                       forwardResolve};
+  const VkAttachmentReference forwardResolveRef{
+      2u, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+  auto forwardSubpass = lightSubpass;
+  forwardSubpass.pResolveAttachments = useMsaa ? &forwardResolveRef : nullptr;
+  rpInfo.attachmentCount = useMsaa ? 3u : 2u;
+  rpInfo.pAttachments = forwardAttachments.data();
+  rpInfo.pSubpasses = &forwardSubpass;
+  if (createRenderingPass(dev, &rpInfo, nullptr, &passes_.forwardLighting) !=
+      VK_SUCCESS) {
+    throw std::runtime_error("failed to create forward lighting pass");
+  }
+
+  auto forwardTransparentColor = lightColor;
+  forwardTransparentColor.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+  forwardTransparentColor.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  auto forwardTransparentDepth = lightDs;
+  forwardTransparentDepth.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  const std::array forwardTransparentAttachments{
+      forwardTransparentColor, forwardTransparentDepth};
+  rpInfo.attachmentCount = 2u;
+  rpInfo.pAttachments = forwardTransparentAttachments.data();
+  rpInfo.pSubpasses = &lightSubpass;
+  if (createRenderingPass(dev, &rpInfo, nullptr, &passes_.forwardTransparent) !=
+      VK_SUCCESS) {
+    throw std::runtime_error("failed to create forward transparency pass");
+  }
 
   // ---- Transform Gizmos ----
   // Renderer-native transform handles are composited after lighting into the
@@ -835,7 +884,7 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   rpInfo.pSubpasses = &gizmoSubpass;
   rpInfo.dependencyCount = static_cast<uint32_t>(gizmoDeps.size());
   rpInfo.pDependencies = gizmoDeps.data();
-  if (vkCreateRenderPass(dev, &rpInfo, nullptr,
+  if (createRenderingPass(dev, &rpInfo, nullptr,
                          &passes_.transformGizmos) != VK_SUCCESS) {
     throw std::runtime_error("failed to create transform gizmo render pass");
   }
@@ -880,7 +929,7 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   rpInfo.pSubpasses      = &shadowSubpass;
   rpInfo.dependencyCount = static_cast<uint32_t>(shadowDeps.size());
   rpInfo.pDependencies   = shadowDeps.data();
-  if (vkCreateRenderPass(dev, &rpInfo, nullptr, &passes_.shadow) != VK_SUCCESS)
+  if (createRenderingPass(dev, &rpInfo, nullptr, &passes_.shadow) != VK_SUCCESS)
     throw std::runtime_error("failed to create shadow render pass");
 
   // ---- Post Process ----
@@ -921,15 +970,15 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   rpInfo.pSubpasses      = &postSubpass;
   rpInfo.dependencyCount = static_cast<uint32_t>(postDeps.size());
   rpInfo.pDependencies   = postDeps.data();
-  if (vkCreateRenderPass(dev, &rpInfo, nullptr, &passes_.postProcess) != VK_SUCCESS)
+  if (createRenderingPass(dev, &rpInfo, nullptr, &passes_.postProcess) != VK_SUCCESS)
     throw std::runtime_error("failed to create post-process render pass");
 }
 
 void RenderPassManager::destroy() {
   VkDevice dev = device_->device();
-  auto destroyPass = [&](VkRenderPass& rp) {
+  auto destroyPass = [&](RenderingPassHandle& rp) {
     if (rp != VK_NULL_HANDLE) {
-      vkDestroyRenderPass(dev, rp, nullptr);
+      destroyRenderingPass(dev, rp, nullptr);
       rp = VK_NULL_HANDLE;
     }
   };
@@ -940,6 +989,8 @@ void RenderPassManager::destroy() {
   destroyPass(passes_.transparentPick);
   destroyPass(passes_.shadow);
   destroyPass(passes_.lighting);
+  destroyPass(passes_.forwardLighting);
+  destroyPass(passes_.forwardTransparent);
   destroyPass(passes_.transformGizmos);
   destroyPass(passes_.postProcess);
 }

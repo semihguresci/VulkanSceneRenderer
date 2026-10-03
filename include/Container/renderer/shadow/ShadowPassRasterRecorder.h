@@ -11,8 +11,8 @@ using ShadowPassRasterRecordBody = std::function<void(VkCommandBuffer)>;
 
 struct ShadowPassRasterRecordInputs {
   const ShadowPassRasterPlan *plan{nullptr};
-  VkRenderPass renderPass{VK_NULL_HANDLE};
-  VkFramebuffer framebuffer{VK_NULL_HANDLE};
+  RenderingPassHandle renderPass{VK_NULL_HANDLE};
+  RenderingTargetHandle framebuffer{VK_NULL_HANDLE};
   ShadowPassRasterRecordBody recordBody{};
 };
 

@@ -15,7 +15,7 @@ CommandBufferManager::CommandBufferManager(
 CommandBufferManager::~CommandBufferManager() {
   free();
   if (pool_ != VK_NULL_HANDLE) {
-    vkDestroyCommandPool(device_->device(), pool_, nullptr);
+    destroyOwnedCommandPool(device_->device(), pool_, nullptr);
     pool_ = VK_NULL_HANDLE;
   }
 }
@@ -27,7 +27,7 @@ VkCommandPool CommandBufferManager::createPool() const {
   poolInfo.queueFamilyIndex = graphicsQueueFamily_;
 
   VkCommandPool commandPool{VK_NULL_HANDLE};
-  if (vkCreateCommandPool(device_->device(), &poolInfo, nullptr, &commandPool) !=
+  if (createOwnedCommandPool(device_->device(), &poolInfo, nullptr, &commandPool) !=
       VK_SUCCESS) {
     throw std::runtime_error("failed to create command pool!");
   }
@@ -76,7 +76,7 @@ void CommandBufferManager::freeSecondary() {
       workerBuffers.clear();
     }
     if (workerPool != VK_NULL_HANDLE) {
-      vkDestroyCommandPool(device_->device(), workerPool, nullptr);
+      destroyOwnedCommandPool(device_->device(), workerPool, nullptr);
     }
   }
   secondaryPools_.clear();

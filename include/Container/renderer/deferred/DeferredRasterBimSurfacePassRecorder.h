@@ -11,8 +11,8 @@ class DebugOverlayRenderer;
 struct DeferredRasterBimSurfacePassRecordInputs {
   BimSurfacePassKind kind{BimSurfacePassKind::DepthPrepass};
   bool passReady{false};
-  VkRenderPass renderPass{VK_NULL_HANDLE};
-  VkFramebuffer framebuffer{VK_NULL_HANDLE};
+  RenderingPassHandle renderPass{VK_NULL_HANDLE};
+  RenderingTargetHandle framebuffer{VK_NULL_HANDLE};
   VkExtent2D extent{};
   BimSurfaceFrameBinding binding{};
   BimSurfaceRasterPassPipelines pipelines{};

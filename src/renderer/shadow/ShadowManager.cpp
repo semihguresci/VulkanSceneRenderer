@@ -174,7 +174,7 @@ void ShadowManager::createResources(VkFormat depthFormat,
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
     vi.format   = depthFormat_;
     vi.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, kShadowCascadeCount};
-    if (vkCreateImageView(dev, &vi, nullptr, &shadowAtlasArrayView_) != VK_SUCCESS)
+    if (createVulkanImageView(dev, &vi, nullptr, &shadowAtlasArrayView_) != VK_SUCCESS)
       throw std::runtime_error("failed to create shadow atlas array view");
   }
 
@@ -185,7 +185,7 @@ void ShadowManager::createResources(VkFormat depthFormat,
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vi.format   = depthFormat_;
     vi.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, i, 1};
-    if (vkCreateImageView(dev, &vi, nullptr, &cascadeViews_[i]) != VK_SUCCESS)
+    if (createVulkanImageView(dev, &vi, nullptr, &cascadeViews_[i]) != VK_SUCCESS)
       throw std::runtime_error("failed to create shadow cascade view");
   }
 
@@ -220,13 +220,13 @@ void ShadowManager::createResources(VkFormat depthFormat,
       VkDevice device;
       VkCommandPool pool = VK_NULL_HANDLE;
       ~TemporaryCommandPool() {
-        if (pool != VK_NULL_HANDLE) vkDestroyCommandPool(device, pool, nullptr);
+        if (pool != VK_NULL_HANDLE) destroyOwnedCommandPool(device, pool, nullptr);
       }
     } temporaryPool{dev};
     VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
     poolInfo.queueFamilyIndex = device_->queueFamilyIndices().graphicsFamily.value();
-    if (vkCreateCommandPool(dev, &poolInfo, nullptr, &temporaryPool.pool) != VK_SUCCESS)
+    if (createOwnedCommandPool(dev, &poolInfo, nullptr, &temporaryPool.pool) != VK_SUCCESS)
       throw std::runtime_error("failed to create shadow initialization command pool");
     VkCommandBufferAllocateInfo allocateInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     allocateInfo.commandPool = temporaryPool.pool;
@@ -287,7 +287,7 @@ void ShadowManager::createResources(VkFormat depthFormat,
     vi.format = depthFormat_;
     vi.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0,
                            kMaxShadowedLocalLightLayers};
-    if (vkCreateImageView(dev, &vi, nullptr,
+    if (createVulkanImageView(dev, &vi, nullptr,
                           &localShadowAtlasArrayView_) != VK_SUCCESS)
       throw std::runtime_error("failed to create local shadow atlas view");
   }
@@ -297,7 +297,7 @@ void ShadowManager::createResources(VkFormat depthFormat,
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vi.format = depthFormat_;
     vi.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, i, 1};
-    if (vkCreateImageView(dev, &vi, nullptr,
+    if (createVulkanImageView(dev, &vi, nullptr,
                           &localShadowLayerViews_[i]) != VK_SUCCESS)
       throw std::runtime_error("failed to create local shadow layer view");
   }
@@ -319,7 +319,7 @@ void ShadowManager::createResources(VkFormat depthFormat,
     si.compareOp     = VK_COMPARE_OP_GREATER;
     si.minLod       = 0.0f;
     si.maxLod       = 0.0f;
-    if (vkCreateSampler(dev, &si, nullptr, &shadowSampler_) != VK_SUCCESS)
+    if (createOwnedSampler(dev, &si, nullptr, &shadowSampler_) != VK_SUCCESS)
       throw std::runtime_error("failed to create shadow sampler");
   }
 
@@ -422,29 +422,29 @@ void ShadowManager::recreatePerFrameResources(uint32_t descriptorSetCount) {
 }
 
 // ---------------------------------------------------------------------------
-void ShadowManager::createFramebuffers(VkRenderPass shadowRenderPass) {
+void ShadowManager::createFramebuffers(RenderingPassHandle shadowRenderPass) {
   destroyFramebuffers();
   VkDevice dev = device_->device();
   for (uint32_t i = 0; i < kShadowCascadeCount; ++i) {
-    VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    RenderingTargetCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
     fbi.renderPass      = shadowRenderPass;
     fbi.attachmentCount = 1;
     fbi.pAttachments    = &cascadeViews_[i];
     fbi.width           = kShadowMapResolution;
     fbi.height          = kShadowMapResolution;
     fbi.layers          = 1;
-    if (vkCreateFramebuffer(dev, &fbi, nullptr, &framebuffers_[i]) != VK_SUCCESS)
+    if (createRenderingTarget(dev, &fbi, nullptr, &framebuffers_[i]) != VK_SUCCESS)
       throw std::runtime_error("failed to create shadow framebuffer");
   }
   for (uint32_t i = 0; i < kMaxShadowedLocalLightLayers; ++i) {
-    VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    RenderingTargetCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
     fbi.renderPass = shadowRenderPass;
     fbi.attachmentCount = 1;
     fbi.pAttachments = &localShadowLayerViews_[i];
     fbi.width = kLocalShadowMapResolution;
     fbi.height = kLocalShadowMapResolution;
     fbi.layers = 1;
-    if (vkCreateFramebuffer(dev, &fbi, nullptr,
+    if (createRenderingTarget(dev, &fbi, nullptr,
                             &localShadowFramebuffers_[i]) != VK_SUCCESS)
       throw std::runtime_error("failed to create local shadow framebuffer");
   }
@@ -455,13 +455,13 @@ void ShadowManager::destroyFramebuffers() {
   VkDevice dev = device_->device();
   for (auto& fb : framebuffers_) {
     if (fb != VK_NULL_HANDLE) {
-      vkDestroyFramebuffer(dev, fb, nullptr);
+      destroyRenderingTarget(dev, fb, nullptr);
       fb = VK_NULL_HANDLE;
     }
   }
   for (auto& fb : localShadowFramebuffers_) {
     if (fb != VK_NULL_HANDLE) {
-      vkDestroyFramebuffer(dev, fb, nullptr);
+      destroyRenderingTarget(dev, fb, nullptr);
       fb = VK_NULL_HANDLE;
     }
   }
@@ -475,28 +475,28 @@ void ShadowManager::destroy() {
   destroyFramebuffers();
 
   if (shadowSampler_ != VK_NULL_HANDLE) {
-    vkDestroySampler(dev, shadowSampler_, nullptr);
+    destroyOwnedSampler(dev, shadowSampler_, nullptr);
     shadowSampler_ = VK_NULL_HANDLE;
   }
 
   for (auto& v : cascadeViews_) {
     if (v != VK_NULL_HANDLE) {
-      vkDestroyImageView(dev, v, nullptr);
+      destroyVulkanImageView(dev, v, nullptr);
       v = VK_NULL_HANDLE;
     }
   }
   for (auto& v : localShadowLayerViews_) {
     if (v != VK_NULL_HANDLE) {
-      vkDestroyImageView(dev, v, nullptr);
+      destroyVulkanImageView(dev, v, nullptr);
       v = VK_NULL_HANDLE;
     }
   }
   if (shadowAtlasArrayView_ != VK_NULL_HANDLE) {
-    vkDestroyImageView(dev, shadowAtlasArrayView_, nullptr);
+    destroyVulkanImageView(dev, shadowAtlasArrayView_, nullptr);
     shadowAtlasArrayView_ = VK_NULL_HANDLE;
   }
   if (localShadowAtlasArrayView_ != VK_NULL_HANDLE) {
-    vkDestroyImageView(dev, localShadowAtlasArrayView_, nullptr);
+    destroyVulkanImageView(dev, localShadowAtlasArrayView_, nullptr);
     localShadowAtlasArrayView_ = VK_NULL_HANDLE;
   }
   if (shadowAtlasImage_ != VK_NULL_HANDLE && shadowAtlasAllocation_ != nullptr) {

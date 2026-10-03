@@ -43,7 +43,7 @@ bool recordTransparentPickRasterPassCommands(
     return false;
   }
 
-  VkRenderPassBeginInfo info{};
+  RenderingBeginInfo info{};
   info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
   info.renderPass = inputs.renderPass;
   info.framebuffer = inputs.framebuffer;
@@ -54,13 +54,13 @@ bool recordTransparentPickRasterPassCommands(
   info.clearValueCount = 1u;
   info.pClearValues = &pickClear;
 
-  vkCmdBeginRenderPass(cmd, &info, VK_SUBPASS_CONTENTS_INLINE);
+  beginDynamicRendering(cmd, &info, VK_SUBPASS_CONTENTS_INLINE);
   recordSceneViewportAndScissor(cmd, inputs.extent);
   static_cast<void>(recordTransparentPickPassCommands(cmd, inputs.pass));
   if (inputs.extraPassWorkActive && inputs.recordAfterGeometry) {
     inputs.recordAfterGeometry(cmd);
   }
-  vkCmdEndRenderPass(cmd);
+  endDynamicRendering(cmd);
   return true;
 }
 

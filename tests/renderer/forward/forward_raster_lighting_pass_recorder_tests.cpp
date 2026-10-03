@@ -68,8 +68,15 @@ void bindForwardLightingFramebuffer(FrameResourceRegistry& resources) {
   resources.bindFramebuffer(
       RenderTechniqueId::ForwardRaster, "lighting-framebuffer", 0u,
       FrameFramebufferBinding{
-          .framebuffer = fakeHandle<VkFramebuffer>(0x1001),
-          .renderPass = fakeHandle<VkRenderPass>(0x1002),
+          .framebuffer = fakeHandle<RenderingTargetHandle>(0x1001),
+          .renderPass = fakeHandle<RenderingPassHandle>(0x1002),
+          .extent = {1280u, 720u},
+          .attachmentCount = 2u});
+  resources.bindFramebuffer(
+      RenderTechniqueId::ForwardRaster, "transparent-lighting-framebuffer", 0u,
+      FrameFramebufferBinding{
+          .framebuffer = fakeHandle<RenderingTargetHandle>(0x1003),
+          .renderPass = fakeHandle<RenderingPassHandle>(0x1004),
           .extent = {1280u, 720u},
           .attachmentCount = 2u});
 }
@@ -164,6 +171,28 @@ TEST(ForwardRasterLightingPassRecorderTests,
   std::vector<DrawCommand> opaqueDraws(1u);
   FrameRecordParams params{};
   params.draws.opaqueDrawCommands = &opaqueDraws;
+
+  const auto readiness = checkForwardRasterLightingPassReadiness(params);
+
+  EXPECT_FALSE(readiness.ready);
+  EXPECT_EQ(readiness.skipReason, RenderPassSkipReason::MissingResource);
+  EXPECT_EQ(readiness.blockingResource, RenderResourceId::SceneColor);
+}
+
+TEST(ForwardRasterLightingPassRecorderTests,
+     ReadinessMissingTransparencyTargetReturnsMissingSceneColor) {
+  std::vector<DrawCommand> opaqueDraws(1u);
+  FrameResourceRegistry resources;
+  PipelineRegistry pipelines;
+  container::gpu::BindlessPushConstants bindless{};
+  FrameRecordParams params{};
+  params.draws.opaqueDrawCommands = &opaqueDraws;
+  params.pushConstants.bindless = &bindless;
+  makeSceneGeometryReady(params);
+  makeForwardBindingsReady(params, resources, pipelines);
+  resources.bindFramebuffer(
+      RenderTechniqueId::ForwardRaster, "transparent-lighting-framebuffer", 0u,
+      FrameFramebufferBinding{});
 
   const auto readiness = checkForwardRasterLightingPassReadiness(params);
 

@@ -44,7 +44,7 @@ bool recordSceneRasterPassCommands(VkCommandBuffer cmd,
     return false;
   }
 
-  VkRenderPassBeginInfo info{};
+  RenderingBeginInfo info{};
   info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
   info.renderPass = inputs.renderPass;
   info.framebuffer = inputs.framebuffer;
@@ -53,7 +53,7 @@ bool recordSceneRasterPassCommands(VkCommandBuffer cmd,
   info.clearValueCount = inputs.clearValues.count;
   info.pClearValues = inputs.clearValues.values.data();
 
-  vkCmdBeginRenderPass(cmd, &info, VK_SUBPASS_CONTENTS_INLINE);
+  beginDynamicRendering(cmd, &info, VK_SUBPASS_CONTENTS_INLINE);
   recordSceneViewportAndScissor(cmd, inputs.extent);
   static_cast<void>(recordSceneOpaqueDrawCommands(
       cmd, {.plan = inputs.plan,
@@ -66,7 +66,7 @@ bool recordSceneRasterPassCommands(VkCommandBuffer cmd,
             .gpuCullManager = inputs.gpuCullManager}));
   static_cast<void>(
       recordSceneDiagnosticCubeCommands(cmd, inputs.diagnosticCube));
-  vkCmdEndRenderPass(cmd);
+  endDynamicRendering(cmd);
   return true;
 }
 

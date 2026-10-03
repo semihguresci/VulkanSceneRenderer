@@ -121,7 +121,7 @@ void recordDeferredTransformGizmoPass(
     return;
   }
 
-  VkRenderPassBeginInfo info{};
+  RenderingBeginInfo info{};
   info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
   info.renderPass = inputs.renderPass;
   info.framebuffer = inputs.framebuffer;
@@ -130,10 +130,10 @@ void recordDeferredTransformGizmoPass(
   info.clearValueCount = 0;
   info.pClearValues = nullptr;
 
-  vkCmdBeginRenderPass(inputs.draw.commandBuffer, &info,
+  beginDynamicRendering(inputs.draw.commandBuffer, &info,
                        VK_SUBPASS_CONTENTS_INLINE);
   recordDeferredTransformGizmoDraw(inputs.draw);
-  vkCmdEndRenderPass(inputs.draw.commandBuffer);
+  endDynamicRendering(inputs.draw.commandBuffer);
 }
 
 void recordDeferredTransformGizmoOverlay(

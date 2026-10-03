@@ -1775,7 +1775,7 @@ void GuiManager::applyBimElevationDisplayIntent() {
 void GuiManager::initialize(VkInstance instance, VkDevice device,
                             VkPhysicalDevice physicalDevice,
                             VkQueue graphicsQueue, uint32_t graphicsQueueFamily,
-                            VkRenderPass renderPass, uint32_t imageCount,
+                            RenderingPassHandle renderPass, uint32_t imageCount,
                             GLFWwindow *window,
                             const std::string &defaultModelPath,
                             float defaultImportScale) {
@@ -1809,7 +1809,7 @@ void GuiManager::initialize(VkInstance instance, VkDevice device,
   poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
   poolInfo.pPoolSizes = poolSizes.data();
 
-  if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool_) !=
+  if (createOwnedDescriptorPool(device, &poolInfo, nullptr, &descriptorPool_) !=
       VK_SUCCESS) {
     throw std::runtime_error("Failed to create ImGui descriptor pool");
   }
@@ -1821,7 +1821,8 @@ void GuiManager::initialize(VkInstance instance, VkDevice device,
   initInfo.QueueFamily = graphicsQueueFamily;
   initInfo.Queue = graphicsQueue;
   initInfo.DescriptorPool = descriptorPool_;
-  initInfo.RenderPass = renderPass;
+  initInfo.UseDynamicRendering = true;
+  initInfo.PipelineRenderingCreateInfo = renderPass->pipelineInfo();
   initInfo.Subpass = 0;
   initInfo.MinImageCount = imageCount;
   initInfo.ImageCount = imageCount;
@@ -1935,7 +1936,7 @@ void GuiManager::shutdown(VkDevice device) {
   ImGui::DestroyContext();
 
   if (descriptorPool_ != VK_NULL_HANDLE) {
-    vkDestroyDescriptorPool(device, descriptorPool_, nullptr);
+    destroyOwnedDescriptorPool(device, descriptorPool_, nullptr);
     descriptorPool_ = VK_NULL_HANDLE;
   }
 

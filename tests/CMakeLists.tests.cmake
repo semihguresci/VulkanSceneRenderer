@@ -198,6 +198,11 @@ add_custom_test(deferred_raster_post_process_tests
     VulkanSceneRenderer_renderer
 )
 
+add_custom_test(dynamic_rendering_tests
+    ${TEST_RENDERER_CORE_DIR}/dynamic_rendering_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+
 add_custom_test(deferred_raster_lighting_tests
     ${TEST_RENDERER_DEFERRED_DIR}/deferred_raster_lighting_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_renderer

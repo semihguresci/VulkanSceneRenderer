@@ -38,7 +38,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
     ~ShaderModuleStore() {
       for (VkShaderModule module : modules) {
         if (module != VK_NULL_HANDLE) {
-          vkDestroyShaderModule(device, module, nullptr);
+          destroyOwnedShaderModule(device, module, nullptr);
         }
       }
     }
@@ -628,7 +628,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
 
   // ---- base pipeline create info --------------------------------------------
   // scene geometry base (depth prepass / gbuffer)
-  VkGraphicsPipelineCreateInfo scenePCI{};
+  RenderingGraphicsPipelineCreateInfo scenePCI{};
   scenePCI.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
   scenePCI.pVertexInputState = &posTexInput;
   scenePCI.pInputAssemblyState = &triAssembly;
@@ -642,7 +642,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   scenePCI.renderPass = renderPasses.depthPrepass;
 
   // fullscreen quad base (lighting passes)
-  VkGraphicsPipelineCreateInfo fsPCI{};
+  RenderingGraphicsPipelineCreateInfo fsPCI{};
   fsPCI.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
   fsPCI.pVertexInputState = &emptyVertexInput;
   fsPCI.pInputAssemblyState = &triAssembly;
@@ -656,7 +656,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   fsPCI.renderPass = renderPasses.lighting;
 
   // scene mesh base (transparent / debug variants)
-  VkGraphicsPipelineCreateInfo meshPCI{};
+  RenderingGraphicsPipelineCreateInfo meshPCI{};
   meshPCI.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
   meshPCI.pVertexInputState = &posColorTexNormTangentInput;
   meshPCI.pInputAssemblyState = &triAssembly;
@@ -671,7 +671,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   meshPCI.stageCount = static_cast<uint32_t>(transStages.size());
   meshPCI.pStages = transStages.data();
 
-  VkGraphicsPipelineCreateInfo transparentPickPCI = meshPCI;
+  RenderingGraphicsPipelineCreateInfo transparentPickPCI = meshPCI;
   transparentPickPCI.stageCount = static_cast<uint32_t>(transPickStages.size());
   transparentPickPCI.pStages = transPickStages.data();
   transparentPickPCI.pDepthStencilState = &transparentPickDS;
@@ -689,33 +689,33 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.depthPrepass = pipelineManager_.createGraphicsPipeline(
       scenePCI, "depth_prepass_pipeline");
 
-  VkGraphicsPipelineCreateInfo depthFrontCullPCI = scenePCI;
+  RenderingGraphicsPipelineCreateInfo depthFrontCullPCI = scenePCI;
   depthFrontCullPCI.pRasterizationState = &frontCullRaster;
   pipelines.depthPrepassFrontCull = pipelineManager_.createGraphicsPipeline(
       depthFrontCullPCI, "depth_prepass_front_cull_pipeline");
 
-  VkGraphicsPipelineCreateInfo depthNoCullPCI = scenePCI;
+  RenderingGraphicsPipelineCreateInfo depthNoCullPCI = scenePCI;
   depthNoCullPCI.pRasterizationState = &noCullRaster;
   pipelines.depthPrepassNoCull = pipelineManager_.createGraphicsPipeline(
       depthNoCullPCI, "depth_prepass_no_cull_pipeline");
 
-  VkGraphicsPipelineCreateInfo bimDepthPCI = scenePCI;
+  RenderingGraphicsPipelineCreateInfo bimDepthPCI = scenePCI;
   bimDepthPCI.renderPass = renderPasses.bimDepthPrepass;
   pipelines.bimDepthPrepass = pipelineManager_.createGraphicsPipeline(
       bimDepthPCI, "bim_depth_prepass_pipeline");
 
-  VkGraphicsPipelineCreateInfo bimDepthFrontCullPCI = bimDepthPCI;
+  RenderingGraphicsPipelineCreateInfo bimDepthFrontCullPCI = bimDepthPCI;
   bimDepthFrontCullPCI.pRasterizationState = &frontCullRaster;
   pipelines.bimDepthPrepassFrontCull = pipelineManager_.createGraphicsPipeline(
       bimDepthFrontCullPCI, "bim_depth_prepass_front_cull_pipeline");
 
-  VkGraphicsPipelineCreateInfo bimDepthNoCullPCI = bimDepthPCI;
+  RenderingGraphicsPipelineCreateInfo bimDepthNoCullPCI = bimDepthPCI;
   bimDepthNoCullPCI.pRasterizationState = &noCullRaster;
   pipelines.bimDepthPrepassNoCull = pipelineManager_.createGraphicsPipeline(
       bimDepthNoCullPCI, "bim_depth_prepass_no_cull_pipeline");
 
   // GBuffer
-  VkGraphicsPipelineCreateInfo gBufPCI = scenePCI;
+  RenderingGraphicsPipelineCreateInfo gBufPCI = scenePCI;
   gBufPCI.stageCount = static_cast<uint32_t>(gBufferStages.size());
   gBufPCI.pStages = gBufferStages.data();
   // The deferred G-buffer shader consumes vertex color, normal, tangent, and
@@ -727,27 +727,27 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.gBuffer =
       pipelineManager_.createGraphicsPipeline(gBufPCI, "gbuffer_pipeline");
 
-  VkGraphicsPipelineCreateInfo gBufFrontCullPCI = gBufPCI;
+  RenderingGraphicsPipelineCreateInfo gBufFrontCullPCI = gBufPCI;
   gBufFrontCullPCI.pRasterizationState = &frontCullRaster;
   pipelines.gBufferFrontCull = pipelineManager_.createGraphicsPipeline(
       gBufFrontCullPCI, "gbuffer_front_cull_pipeline");
 
-  VkGraphicsPipelineCreateInfo gBufNoCullPCI = gBufPCI;
+  RenderingGraphicsPipelineCreateInfo gBufNoCullPCI = gBufPCI;
   gBufNoCullPCI.pRasterizationState = &noCullRaster;
   pipelines.gBufferNoCull = pipelineManager_.createGraphicsPipeline(
       gBufNoCullPCI, "gbuffer_no_cull_pipeline");
 
-  VkGraphicsPipelineCreateInfo bimGBufPCI = gBufPCI;
+  RenderingGraphicsPipelineCreateInfo bimGBufPCI = gBufPCI;
   bimGBufPCI.renderPass = renderPasses.bimGBuffer;
   pipelines.bimGBuffer = pipelineManager_.createGraphicsPipeline(
       bimGBufPCI, "bim_gbuffer_pipeline");
 
-  VkGraphicsPipelineCreateInfo bimGBufFrontCullPCI = bimGBufPCI;
+  RenderingGraphicsPipelineCreateInfo bimGBufFrontCullPCI = bimGBufPCI;
   bimGBufFrontCullPCI.pRasterizationState = &frontCullRaster;
   pipelines.bimGBufferFrontCull = pipelineManager_.createGraphicsPipeline(
       bimGBufFrontCullPCI, "bim_gbuffer_front_cull_pipeline");
 
-  VkGraphicsPipelineCreateInfo bimGBufNoCullPCI = bimGBufPCI;
+  RenderingGraphicsPipelineCreateInfo bimGBufNoCullPCI = bimGBufPCI;
   bimGBufNoCullPCI.pRasterizationState = &noCullRaster;
   pipelines.bimGBufferNoCull = pipelineManager_.createGraphicsPipeline(
       bimGBufNoCullPCI, "bim_gbuffer_no_cull_pipeline");
@@ -764,7 +764,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   shadowRaster.depthBiasClamp = 0.0f;
   shadowRaster.depthBiasSlopeFactor = 0.0f;
 
-  VkGraphicsPipelineCreateInfo sdPCI = scenePCI;
+  RenderingGraphicsPipelineCreateInfo sdPCI = scenePCI;
   sdPCI.stageCount = static_cast<uint32_t>(sdStages.size());
   sdPCI.pStages = sdStages.data();
   sdPCI.pVertexInputState = &posTexNormInput;
@@ -782,7 +782,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkPipelineRasterizationStateCreateInfo shadowFrontCullRaster = shadowRaster;
   shadowFrontCullRaster.cullMode = VK_CULL_MODE_FRONT_BIT;
 
-  VkGraphicsPipelineCreateInfo sdFrontCullPCI = sdPCI;
+  RenderingGraphicsPipelineCreateInfo sdFrontCullPCI = sdPCI;
   sdFrontCullPCI.pRasterizationState = &shadowFrontCullRaster;
   pipelines.shadowDepthFrontCull = pipelineManager_.createGraphicsPipeline(
       sdFrontCullPCI, "shadow_depth_front_cull_pipeline");
@@ -790,23 +790,23 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkPipelineRasterizationStateCreateInfo shadowNoCullRaster = shadowRaster;
   shadowNoCullRaster.cullMode = VK_CULL_MODE_NONE;
 
-  VkGraphicsPipelineCreateInfo sdNoCullPCI = sdPCI;
+  RenderingGraphicsPipelineCreateInfo sdNoCullPCI = sdPCI;
   sdNoCullPCI.pRasterizationState = &shadowNoCullRaster;
   pipelines.shadowDepthNoCull = pipelineManager_.createGraphicsPipeline(
       sdNoCullPCI, "shadow_depth_no_cull_pipeline");
 
-  VkGraphicsPipelineCreateInfo localSdPCI = sdPCI;
+  RenderingGraphicsPipelineCreateInfo localSdPCI = sdPCI;
   localSdPCI.stageCount = static_cast<uint32_t>(lsdStages.size());
   localSdPCI.pStages = lsdStages.data();
   pipelines.localShadowDepth = pipelineManager_.createGraphicsPipeline(
       localSdPCI, "local_shadow_depth_pipeline");
 
-  VkGraphicsPipelineCreateInfo localSdFrontCullPCI = localSdPCI;
+  RenderingGraphicsPipelineCreateInfo localSdFrontCullPCI = localSdPCI;
   localSdFrontCullPCI.pRasterizationState = &shadowFrontCullRaster;
   pipelines.localShadowDepthFrontCull = pipelineManager_.createGraphicsPipeline(
       localSdFrontCullPCI, "local_shadow_depth_front_cull_pipeline");
 
-  VkGraphicsPipelineCreateInfo localSdNoCullPCI = localSdPCI;
+  RenderingGraphicsPipelineCreateInfo localSdNoCullPCI = localSdPCI;
   localSdNoCullPCI.pRasterizationState = &shadowNoCullRaster;
   pipelines.localShadowDepthNoCull = pipelineManager_.createGraphicsPipeline(
       localSdNoCullPCI, "local_shadow_depth_no_cull_pipeline");
@@ -818,7 +818,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       fsPCI, "directional_light_pipeline");
 
   // Stencil volume
-  VkGraphicsPipelineCreateInfo stencilPCI = fsPCI;
+  RenderingGraphicsPipelineCreateInfo stencilPCI = fsPCI;
   stencilPCI.stageCount = static_cast<uint32_t>(stencilStages.size());
   stencilPCI.pStages = stencilStages.data();
   stencilPCI.pDepthStencilState = &stencilDS;
@@ -827,7 +827,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       stencilPCI, "stencil_volume_pipeline");
 
   // Point light
-  VkGraphicsPipelineCreateInfo pointPCI = fsPCI;
+  RenderingGraphicsPipelineCreateInfo pointPCI = fsPCI;
   pointPCI.stageCount = static_cast<uint32_t>(pointStages.size());
   pointPCI.pStages = pointStages.data();
   pointPCI.pDepthStencilState = &pointLightDS;
@@ -836,7 +836,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       pipelineManager_.createGraphicsPipeline(pointPCI, "point_light_pipeline");
 
   // Point light stencil debug
-  VkGraphicsPipelineCreateInfo pointDbgPCI = pointPCI;
+  RenderingGraphicsPipelineCreateInfo pointDbgPCI = pointPCI;
   pointDbgPCI.stageCount = static_cast<uint32_t>(pointDbgStages.size());
   pointDbgPCI.pStages = pointDbgStages.data();
   pointDbgPCI.pColorBlendState = &opaqueBlend;
@@ -844,7 +844,10 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       pointDbgPCI, "point_light_stencil_debug_pipeline");
 
   // Forward opaque
-  VkGraphicsPipelineCreateInfo forwardOpaquePCI = meshPCI;
+  RenderingGraphicsPipelineCreateInfo forwardOpaquePCI = meshPCI;
+  // Compare against the original prepass samples, then resolve shaded color.
+  forwardOpaquePCI.renderPass = renderPasses.forwardLighting;
+  forwardOpaquePCI.pMultisampleState = &sceneMsaa;
   forwardOpaquePCI.stageCount =
       static_cast<uint32_t>(forwardOpaqueStages.size());
   forwardOpaquePCI.pStages = forwardOpaqueStages.data();
@@ -861,12 +864,12 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.transparent =
       pipelineManager_.createGraphicsPipeline(meshPCI, "transparent_pipeline");
 
-  VkGraphicsPipelineCreateInfo transparentFrontCullPCI = meshPCI;
+  RenderingGraphicsPipelineCreateInfo transparentFrontCullPCI = meshPCI;
   transparentFrontCullPCI.pRasterizationState = &frontCullRaster;
   pipelines.transparentFrontCull = pipelineManager_.createGraphicsPipeline(
       transparentFrontCullPCI, "transparent_front_cull_pipeline");
 
-  VkGraphicsPipelineCreateInfo transparentNoCullPCI = meshPCI;
+  RenderingGraphicsPipelineCreateInfo transparentNoCullPCI = meshPCI;
   transparentNoCullPCI.pRasterizationState = &noCullRaster;
   pipelines.transparentNoCull = pipelineManager_.createGraphicsPipeline(
       transparentNoCullPCI, "transparent_no_cull_pipeline");
@@ -875,18 +878,18 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.transparentPick = pipelineManager_.createGraphicsPipeline(
       transparentPickPCI, "transparent_pick_pipeline");
 
-  VkGraphicsPipelineCreateInfo transparentPickFrontCullPCI = transparentPickPCI;
+  RenderingGraphicsPipelineCreateInfo transparentPickFrontCullPCI = transparentPickPCI;
   transparentPickFrontCullPCI.pRasterizationState = &frontCullRaster;
   pipelines.transparentPickFrontCull = pipelineManager_.createGraphicsPipeline(
       transparentPickFrontCullPCI, "transparent_pick_front_cull_pipeline");
 
-  VkGraphicsPipelineCreateInfo transparentPickNoCullPCI = transparentPickPCI;
+  RenderingGraphicsPipelineCreateInfo transparentPickNoCullPCI = transparentPickPCI;
   transparentPickNoCullPCI.pRasterizationState = &noCullRaster;
   pipelines.transparentPickNoCull = pipelineManager_.createGraphicsPipeline(
       transparentPickNoCullPCI, "transparent_pick_no_cull_pipeline");
 
   // Post process
-  VkGraphicsPipelineCreateInfo postPCI = fsPCI;
+  RenderingGraphicsPipelineCreateInfo postPCI = fsPCI;
   postPCI.stageCount = static_cast<uint32_t>(postStages.size());
   postPCI.pStages = postStages.data();
   postPCI.layout = layouts.postProcess;
@@ -895,7 +898,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       pipelineManager_.createGraphicsPipeline(postPCI, "post_process_pipeline");
 
   // Geometry debug
-  VkGraphicsPipelineCreateInfo dbgPCI = meshPCI;
+  RenderingGraphicsPipelineCreateInfo dbgPCI = meshPCI;
   dbgPCI.stageCount = static_cast<uint32_t>(dbgStages.size());
   dbgPCI.pStages = dbgStages.data();
   dbgPCI.pVertexInputState = &posOnlyInput;
@@ -907,7 +910,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       dbgPCI, "geometry_debug_pipeline");
 
   // Normal validation
-  VkGraphicsPipelineCreateInfo nvPCI = meshPCI;
+  RenderingGraphicsPipelineCreateInfo nvPCI = meshPCI;
   nvPCI.stageCount = static_cast<uint32_t>(nvStages.size());
   nvPCI.pStages = nvStages.data();
   nvPCI.pVertexInputState = &posTexNormNoTex1Input;
@@ -919,12 +922,12 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.normalValidation = pipelineManager_.createGraphicsPipeline(
       nvPCI, "normal_validation_pipeline");
 
-  VkGraphicsPipelineCreateInfo nvFrontCullPCI = nvPCI;
+  RenderingGraphicsPipelineCreateInfo nvFrontCullPCI = nvPCI;
   nvFrontCullPCI.pRasterizationState = &frontCullRaster;
   pipelines.normalValidationFrontCull = pipelineManager_.createGraphicsPipeline(
       nvFrontCullPCI, "normal_validation_front_cull_pipeline");
 
-  VkGraphicsPipelineCreateInfo nvNoCullPCI = nvPCI;
+  RenderingGraphicsPipelineCreateInfo nvNoCullPCI = nvPCI;
   nvNoCullPCI.pRasterizationState = &noCullRaster;
   pipelines.normalValidationNoCull = pipelineManager_.createGraphicsPipeline(
       nvNoCullPCI, "normal_validation_no_cull_pipeline");
@@ -933,7 +936,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   const bool useNativeWireframe =
       device_->enabledFeatures().fillModeNonSolid == VK_TRUE;
 
-  VkGraphicsPipelineCreateInfo wfPCI = meshPCI;
+  RenderingGraphicsPipelineCreateInfo wfPCI = meshPCI;
   wfPCI.pVertexInputState = &posTexNormNoTex1Input;
   wfPCI.pInputAssemblyState = &triAssembly;
   wfPCI.pColorBlendState = &overlayBlend;
@@ -980,7 +983,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.wireframeNoDepthFrontCull = pipelineManager_.createGraphicsPipeline(
       wfPCI, "wireframe_no_depth_front_cull_pipeline");
 
-  VkGraphicsPipelineCreateInfo selectionMaskPCI = meshPCI;
+  RenderingGraphicsPipelineCreateInfo selectionMaskPCI = meshPCI;
   selectionMaskPCI.stageCount = static_cast<uint32_t>(wfStages.size());
   selectionMaskPCI.pStages = wfStages.data();
   selectionMaskPCI.pVertexInputState = &posTexNormNoTex1Input;
@@ -994,7 +997,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.selectionMask = pipelineManager_.createGraphicsPipeline(
       selectionMaskPCI, "selection_mask_pipeline");
 
-  VkGraphicsPipelineCreateInfo selectionOutlinePCI = meshPCI;
+  RenderingGraphicsPipelineCreateInfo selectionOutlinePCI = meshPCI;
   selectionOutlinePCI.stageCount =
       static_cast<uint32_t>(selOutlineStages.size());
   selectionOutlinePCI.pStages = selOutlineStages.data();
@@ -1009,7 +1012,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.selectionOutline = pipelineManager_.createGraphicsPipeline(
       selectionOutlinePCI, "selection_outline_pipeline");
 
-  VkGraphicsPipelineCreateInfo floorPlanPCI = wfPCI;
+  RenderingGraphicsPipelineCreateInfo floorPlanPCI = wfPCI;
   floorPlanPCI.stageCount = static_cast<uint32_t>(wfStages.size());
   floorPlanPCI.pStages = wfStages.data();
   floorPlanPCI.pInputAssemblyState = &lineAssembly;
@@ -1026,7 +1029,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.bimFloorPlanNoDepth = pipelineManager_.createGraphicsPipeline(
       floorPlanPCI, "bim_floor_plan_no_depth_pipeline");
 
-  VkGraphicsPipelineCreateInfo pointCloudPCI = meshPCI;
+  RenderingGraphicsPipelineCreateInfo pointCloudPCI = meshPCI;
   pointCloudPCI.stageCount = static_cast<uint32_t>(wfStages.size());
   pointCloudPCI.pStages = wfStages.data();
   pointCloudPCI.pVertexInputState = &posTexNormNoTex1Input;
@@ -1044,7 +1047,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.bimPointCloudNoDepth = pipelineManager_.createGraphicsPipeline(
       pointCloudPCI, "bim_point_cloud_no_depth_pipeline");
 
-  VkGraphicsPipelineCreateInfo curvePCI = pointCloudPCI;
+  RenderingGraphicsPipelineCreateInfo curvePCI = pointCloudPCI;
   curvePCI.pInputAssemblyState = &lineAssembly;
   curvePCI.pRasterizationState = &normalLineRaster;
   curvePCI.pDynamicState = &lineDynState;
@@ -1056,7 +1059,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.bimCurveNoDepth = pipelineManager_.createGraphicsPipeline(
       curvePCI, "bim_curve_no_depth_pipeline");
 
-  VkGraphicsPipelineCreateInfo capFillPCI = pointCloudPCI;
+  RenderingGraphicsPipelineCreateInfo capFillPCI = pointCloudPCI;
   capFillPCI.pInputAssemblyState = &triAssembly;
   capFillPCI.pRasterizationState = &noCullRaster;
   capFillPCI.pDynamicState = &dynState;
@@ -1064,7 +1067,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.bimSectionClipCapFill = pipelineManager_.createGraphicsPipeline(
       capFillPCI, "bim_section_clip_cap_fill_pipeline");
 
-  VkGraphicsPipelineCreateInfo capHatchPCI = capFillPCI;
+  RenderingGraphicsPipelineCreateInfo capHatchPCI = capFillPCI;
   capHatchPCI.pInputAssemblyState = &lineAssembly;
   capHatchPCI.pRasterizationState = &normalLineRaster;
   capHatchPCI.pDynamicState = &lineDynState;
@@ -1072,7 +1075,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       capHatchPCI, "bim_section_clip_cap_hatch_pipeline");
 
   // Surface normal lines
-  VkGraphicsPipelineCreateInfo snPCI = meshPCI;
+  RenderingGraphicsPipelineCreateInfo snPCI = meshPCI;
   snPCI.stageCount = static_cast<uint32_t>(snStages.size());
   snPCI.pStages = snStages.data();
   snPCI.pVertexInputState = &posTexNormNoTex1Input;
@@ -1087,7 +1090,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       snPCI, "surface_normal_line_pipeline");
 
   // Object normals debug
-  VkGraphicsPipelineCreateInfo onPCI = meshPCI;
+  RenderingGraphicsPipelineCreateInfo onPCI = meshPCI;
   onPCI.stageCount = static_cast<uint32_t>(onStages.size());
   onPCI.pStages = onStages.data();
   onPCI.pVertexInputState = &posTexNormNoTex1Input;
@@ -1097,19 +1100,19 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.objectNormalDebug = pipelineManager_.createGraphicsPipeline(
       onPCI, "object_normal_debug_pipeline");
 
-  VkGraphicsPipelineCreateInfo onFrontCullPCI = onPCI;
+  RenderingGraphicsPipelineCreateInfo onFrontCullPCI = onPCI;
   onFrontCullPCI.pRasterizationState = &frontCullRaster;
   pipelines.objectNormalDebugFrontCull =
       pipelineManager_.createGraphicsPipeline(
           onFrontCullPCI, "object_normal_debug_front_cull_pipeline");
 
-  VkGraphicsPipelineCreateInfo onNoCullPCI = onPCI;
+  RenderingGraphicsPipelineCreateInfo onNoCullPCI = onPCI;
   onNoCullPCI.pRasterizationState = &noCullRaster;
   pipelines.objectNormalDebugNoCull = pipelineManager_.createGraphicsPipeline(
       onNoCullPCI, "object_normal_debug_no_cull_pipeline");
 
   // Light gizmo
-  VkGraphicsPipelineCreateInfo lgPCI = fsPCI;
+  RenderingGraphicsPipelineCreateInfo lgPCI = fsPCI;
   lgPCI.stageCount = static_cast<uint32_t>(lgStages.size());
   lgPCI.pStages = lgStages.data();
   lgPCI.pVertexInputState = &emptyVertexInput;
@@ -1121,12 +1124,12 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.lightGizmo =
       pipelineManager_.createGraphicsPipeline(lgPCI, "light_gizmo_pipeline");
 
-  VkGraphicsPipelineCreateInfo lgCoveragePCI = lgPCI;
+  RenderingGraphicsPipelineCreateInfo lgCoveragePCI = lgPCI;
   lgCoveragePCI.pInputAssemblyState = &lineAssembly;
   pipelines.lightGizmoCoverage = pipelineManager_.createGraphicsPipeline(
       lgCoveragePCI, "light_gizmo_coverage_pipeline");
 
-  VkGraphicsPipelineCreateInfo lgPickPCI = lgPCI;
+  RenderingGraphicsPipelineCreateInfo lgPickPCI = lgPCI;
   lgPickPCI.stageCount = static_cast<uint32_t>(lgPickStages.size());
   lgPickPCI.pStages = lgPickStages.data();
   lgPickPCI.pColorBlendState = &opaqueBlend;
@@ -1135,7 +1138,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       lgPickPCI, "light_gizmo_pick_pipeline");
 
   // Transform gizmo
-  VkGraphicsPipelineCreateInfo tgPCI = fsPCI;
+  RenderingGraphicsPipelineCreateInfo tgPCI = fsPCI;
   tgPCI.stageCount = static_cast<uint32_t>(tgStages.size());
   tgPCI.pStages = tgStages.data();
   tgPCI.pVertexInputState = &emptyVertexInput;
@@ -1147,23 +1150,23 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   tgPCI.renderPass = renderPasses.transformGizmos;
   pipelines.transformGizmo = pipelineManager_.createGraphicsPipeline(
       tgPCI, "transform_gizmo_pipeline");
-  VkGraphicsPipelineCreateInfo tgSolidPCI = tgPCI;
+  RenderingGraphicsPipelineCreateInfo tgSolidPCI = tgPCI;
   tgSolidPCI.pInputAssemblyState = &triAssembly;
   tgSolidPCI.pDynamicState = &dynState;
   pipelines.transformGizmoSolid = pipelineManager_.createGraphicsPipeline(
       tgSolidPCI, "transform_gizmo_solid_pipeline");
-  VkGraphicsPipelineCreateInfo tgOverlayPCI = tgPCI;
+  RenderingGraphicsPipelineCreateInfo tgOverlayPCI = tgPCI;
   tgOverlayPCI.renderPass = renderPasses.postProcess;
   pipelines.transformGizmoOverlay = pipelineManager_.createGraphicsPipeline(
       tgOverlayPCI, "transform_gizmo_overlay_pipeline");
-  VkGraphicsPipelineCreateInfo tgSolidOverlayPCI = tgSolidPCI;
+  RenderingGraphicsPipelineCreateInfo tgSolidOverlayPCI = tgSolidPCI;
   tgSolidOverlayPCI.renderPass = renderPasses.postProcess;
   pipelines.transformGizmoSolidOverlay =
       pipelineManager_.createGraphicsPipeline(
           tgSolidOverlayPCI, "transform_gizmo_solid_overlay_pipeline");
 
   // Tiled point light (fullscreen, additive blend, no stencil)
-  VkGraphicsPipelineCreateInfo tlPCI = fsPCI;
+  RenderingGraphicsPipelineCreateInfo tlPCI = fsPCI;
   tlPCI.stageCount = static_cast<uint32_t>(tlStages.size());
   tlPCI.pStages = tlStages.data();
   tlPCI.pVertexInputState = &emptyVertexInput;

@@ -17,15 +17,15 @@ template <typename Handle> Handle fakeHandle(uintptr_t value) {
 
 TransparentPickRasterPassRecordInputs requiredInputs() {
   return {.active = true,
-          .renderPass = fakeHandle<VkRenderPass>(0x1),
-          .framebuffer = fakeHandle<VkFramebuffer>(0x2),
+          .renderPass = fakeHandle<RenderingPassHandle>(0x1),
+          .framebuffer = fakeHandle<RenderingTargetHandle>(0x2),
           .extent = {640u, 480u}};
 }
 
 TransparentPickFramePassRecordInputs requiredFrameInputs() {
   static container::gpu::BindlessPushConstants pushConstants{};
-  return {.renderPass = fakeHandle<VkRenderPass>(0x1),
-          .framebuffer = fakeHandle<VkFramebuffer>(0x2),
+  return {.renderPass = fakeHandle<RenderingPassHandle>(0x1),
+          .framebuffer = fakeHandle<RenderingTargetHandle>(0x2),
           .extent = {640u, 480u},
           .sourceDepthStencilImage = fakeHandle<VkImage>(0x3),
           .pickDepthImage = fakeHandle<VkImage>(0x4),

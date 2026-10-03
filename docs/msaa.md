@@ -1,9 +1,9 @@
 # MSAA
 
-The renderer supports multisample anti-aliasing for the deferred raster scene
-path. MSAA is implemented as private multisampled render targets for the scene
-depth and G-buffer passes, with resolves back into the existing single-sample
-images consumed by lighting, compute, readback, and post-processing.
+The renderer supports multisample anti-aliasing for forward and deferred raster
+scenes. Private multisampled targets hold scene depth, deferred G-buffer data,
+and forward opaque HDR color. Resolves feed the single-sample images consumed
+by compute, transparency, readback, and post-processing.
 
 ## User Configuration
 
@@ -33,7 +33,7 @@ MSAA sample discovery and conversion helpers live in:
 runtime recreation path. `FrameResourceManager` owns the actual multisampled
 attachments. `RenderPassManager` owns render-pass attachment descriptions and
 resolve wiring. `GraphicsPipelineBuilder` applies the sample count to scene
-depth and G-buffer pipelines.
+depth, G-buffer, and forward opaque lighting pipelines.
 
 ## Resource Model
 
@@ -41,6 +41,7 @@ The graph-visible frame resources remain single-sample. These images keep their
 existing descriptor, compute, and post-process contracts:
 
 - scene depth/stencil
+- HDR scene color
 - albedo
 - normal
 - material
@@ -52,6 +53,7 @@ When MSAA is enabled, `FrameResourceManager` additionally creates private
 multisampled attachments:
 
 - `depthStencilMsaa`
+- `sceneColorMsaa`
 - `albedoMsaa`
 - `normalMsaa`
 - `materialMsaa`
@@ -65,6 +67,14 @@ color attachments, MSAA depth, five single-sample color resolve attachments,
 and single-sample depth. The graph-visible attachments are still the resolved
 single-sample outputs.
 
+Forward opaque lighting targets contain multisampled HDR color and the original
+multisampled prepass depth, followed by a single-sample color resolve target.
+Using matching depth samples avoids rejecting sloped surfaces against the
+nearest depth sample selected by a MAX resolve. A separate single-sample
+transparency scope loads the resolved opaque color and depth and writes OIT
+storage. Even opaque-only frames run this scope to prepare depth for
+post-processing.
+
 ## Render Passes
 
 MSAA affects these passes:
@@ -73,14 +83,14 @@ MSAA affects these passes:
 - BIM depth prepass
 - Scene G-buffer
 - BIM G-buffer
+- Forward opaque lighting
 
-The depth and G-buffer render passes use `vkCreateRenderPass2` when MSAA is
-enabled so `VkSubpassDescriptionDepthStencilResolve` can be chained legally.
-Single-sample render passes still use the existing `vkCreateRenderPass` path.
+These passes use Vulkan dynamic rendering. CPU attachment recipes supply
+resolve views, layouts, and modes to `VkRenderingAttachmentInfo`; the renderer
+records explicit synchronization2 transitions around each rendering scope.
 
-Color resolves are wired with `pResolveAttachments` for the float/UNORM
-G-buffer targets. The integer pick ID target is not color-resolved, because
-Vulkan does not allow normal multisample color resolves for integer formats.
+Float/UNORM G-buffer targets and forward HDR color use average color resolves.
+The integer pick ID target is not color-resolved.
 Picking is handled by a later single-sample transparent-pick pass that clears
 and repopulates the pick ID target from opaque and transparent draw plans.
 
@@ -98,6 +108,7 @@ active scene sample count:
 - BIM depth prepass
 - scene G-buffer
 - BIM G-buffer
+- Forward opaque lighting
 
 Fullscreen, compute-fed, transparent, shadow, debug, GUI, and post-process
 pipelines remain single-sample because they render into single-sample targets
@@ -109,7 +120,7 @@ The current render graph does not model attachment sample counts or resolve
 edges directly. That is intentional for the current implementation.
 
 MSAA is treated as an implementation detail inside frame-resource creation,
-framebuffer creation, render-pass creation, and pipeline creation. The graph
+rendering targets, attachment recipes, and pipeline creation. The graph
 continues to see the same single-sample resource contracts it saw before MSAA:
 G-buffer outputs and depth are available after the same passes, in the same
 layouts, with the same consumers.
@@ -154,4 +165,11 @@ For compile coverage of the app entry point and all renderer targets:
 
 ```powershell
 cmake --build out/build/windows-release --config Release
+```
+
+The GPU regression test compares lit opaque surfaces at 1× and 4× MSAA:
+
+```powershell
+$env:CONTAINER_RUN_GPU_VISUAL_REGRESSION = '1'
+.\out\build\windows-release\tests\visual_regression_gpu_tests.exe --gtest_filter=VisualRegressionGpu.ForwardMsaaPreservesOpaqueSurfaces
 ```

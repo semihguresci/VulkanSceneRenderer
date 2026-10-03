@@ -33,7 +33,7 @@ bool recordRenderPassBeginCommands(
     return false;
   }
 
-  VkRenderPassBeginInfo info{};
+  RenderingBeginInfo info{};
   info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
   info.renderPass = inputs.renderPass;
   info.framebuffer = inputs.framebuffer;
@@ -41,7 +41,7 @@ bool recordRenderPassBeginCommands(
   info.clearValueCount = static_cast<uint32_t>(inputs.clearValues.size());
   info.pClearValues = inputs.clearValues.data();
 
-  vkCmdBeginRenderPass(cmd, &info, inputs.contents);
+  beginDynamicRendering(cmd, &info, inputs.contents);
   return true;
 }
 
@@ -61,7 +61,7 @@ bool recordRenderPassEndCommands(VkCommandBuffer cmd) {
     return false;
   }
 
-  vkCmdEndRenderPass(cmd);
+  endDynamicRendering(cmd);
   return true;
 }
 

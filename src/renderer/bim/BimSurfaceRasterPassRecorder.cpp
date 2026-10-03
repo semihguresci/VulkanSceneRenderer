@@ -101,14 +101,14 @@ bool recordBimSurfaceRasterPassCommands(
     return false;
   }
 
-  VkRenderPassBeginInfo info{};
+  RenderingBeginInfo info{};
   info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
   info.renderPass = inputs.renderPass;
   info.framebuffer = inputs.framebuffer;
   info.renderArea.offset = {0, 0};
   info.renderArea.extent = inputs.extent;
 
-  vkCmdBeginRenderPass(cmd, &info, VK_SUBPASS_CONTENTS_INLINE);
+  beginDynamicRendering(cmd, &info, VK_SUBPASS_CONTENTS_INLINE);
   recordSceneViewportAndScissor(cmd, inputs.extent);
   static_cast<void>(recordBimSurfacePassCommands(
       cmd, {.plan = inputs.plan,
@@ -121,7 +121,7 @@ bool recordBimSurfaceRasterPassCommands(
                 inputs.pushConstants, *inputs.plan),
             .debugOverlay = inputs.debugOverlay,
             .bimManager = inputs.bimManager}));
-  vkCmdEndRenderPass(cmd);
+  endDynamicRendering(cmd);
   return true;
 }
 

@@ -103,7 +103,7 @@ void RenderPassGpuProfiler::shutdown() {
   }
   profilingLockAcquired_ = false;
   if (queryPool_ != VK_NULL_HANDLE && device_ != VK_NULL_HANDLE) {
-    vkDestroyQueryPool(device_, queryPool_, nullptr);
+    destroyOwnedQueryPool(device_, queryPool_, nullptr);
   }
   queryPool_ = VK_NULL_HANDLE;
   frameSlots_ = 0;
@@ -424,7 +424,7 @@ bool RenderPassGpuProfiler::initializePerformanceQueryBackend() {
   queryPoolInfo.pNext = &performanceCreateInfo;
   queryPoolInfo.queryType = VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR;
   queryPoolInfo.queryCount = frameSlots_ * kPerformanceQueriesPerFrame;
-  if (vkCreateQueryPool(device_, &queryPoolInfo, nullptr, &queryPool_) !=
+  if (createOwnedQueryPool(device_, &queryPoolInfo, nullptr, &queryPool_) !=
       VK_SUCCESS) {
     releaseProfilingLock_(device_);
     profilingLockAcquired_ = false;
@@ -467,7 +467,7 @@ bool RenderPassGpuProfiler::initializeTimestampBackend() {
       VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
   queryPoolInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
   queryPoolInfo.queryCount = frameSlots_ * kQueriesPerFrame;
-  if (vkCreateQueryPool(device_, &queryPoolInfo, nullptr, &queryPool_) !=
+  if (createOwnedQueryPool(device_, &queryPoolInfo, nullptr, &queryPool_) !=
       VK_SUCCESS) {
     queryPool_ = VK_NULL_HANDLE;
     backendStatus_ =

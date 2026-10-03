@@ -19,8 +19,8 @@ template <typename Handle> Handle fakeHandle(uintptr_t value) {
 }
 
 SceneRasterPassRecordInputs requiredInputs(const SceneOpaqueDrawPlan &plan) {
-  return {.renderPass = fakeHandle<VkRenderPass>(0x1),
-          .framebuffer = fakeHandle<VkFramebuffer>(0x2),
+  return {.renderPass = fakeHandle<RenderingPassHandle>(0x1),
+          .framebuffer = fakeHandle<RenderingTargetHandle>(0x2),
           .extent = {640u, 480u},
           .clearValues = sceneRasterPassClearValues(
               SceneRasterPassKind::DepthPrepass),

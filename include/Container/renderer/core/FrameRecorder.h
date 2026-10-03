@@ -291,9 +291,9 @@ struct FrameShadowResources {
   // Shadow cascade framebuffers. GPU-cull buffers are owned by
   // ShadowCullManager, which keeps the frame parameter contract to high-level
   // pass services.
-  VkRenderPass renderPass{VK_NULL_HANDLE};
-  const VkFramebuffer *shadowFramebuffers{nullptr};
-  const VkFramebuffer *localShadowFramebuffers{nullptr};
+  RenderingPassHandle renderPass{VK_NULL_HANDLE};
+  const RenderingTargetHandle *shadowFramebuffers{nullptr};
+  const RenderingTargetHandle *localShadowFramebuffers{nullptr};
   const container::gpu::ShadowData *shadowData{nullptr};
   const container::gpu::LocalShadowData *localShadowData{nullptr};
   container::gpu::ShadowSettings shadowSettings{};
@@ -310,7 +310,7 @@ struct FrameShadowResources {
 };
 
 struct FrameSwapchainResources {
-  const std::vector<VkFramebuffer> *swapChainFramebuffers{nullptr};
+  const std::vector<RenderingTargetHandle> *swapChainFramebuffers{nullptr};
 };
 
 struct FrameScreenshotCapture {
@@ -329,7 +329,7 @@ struct FramePassServices {
 };
 
 struct FramePostProcessState {
-  VkRenderPass renderPass{VK_NULL_HANDLE};
+  RenderingPassHandle renderPass{VK_NULL_HANDLE};
   container::gpu::ExposureSettings exposureSettings{};
 };
 
@@ -364,7 +364,7 @@ struct FrameRecordParams {
       RenderTechniqueId technique, std::string_view name) const;
   [[nodiscard]] const FrameSamplerBinding *samplerBinding(
       RenderTechniqueId technique, std::string_view name) const;
-  [[nodiscard]] VkFramebuffer framebuffer(RenderTechniqueId technique,
+  [[nodiscard]] RenderingTargetHandle framebuffer(RenderTechniqueId technique,
                                           std::string_view name) const;
   [[nodiscard]] VkDescriptorSet descriptorSet(RenderTechniqueId technique,
                                               std::string_view name) const;

@@ -11,8 +11,8 @@ class GpuCullManager;
 
 struct DeferredRasterScenePassRecordInputs {
   SceneRasterPassKind kind{SceneRasterPassKind::DepthPrepass};
-  VkRenderPass renderPass{VK_NULL_HANDLE};
-  VkFramebuffer framebuffer{VK_NULL_HANDLE};
+  RenderingPassHandle renderPass{VK_NULL_HANDLE};
+  RenderingTargetHandle framebuffer{VK_NULL_HANDLE};
   VkExtent2D extent{};
   SceneOpaqueDrawLists draws{};
   SceneOpaqueDrawGeometryBinding geometry{};

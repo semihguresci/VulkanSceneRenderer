@@ -611,8 +611,6 @@ std::span<const RenderPassId> renderPassDependencies(RenderPassId id) {
       return kOcclusionDependencies;
     case RenderPassId::BimGBuffer:
       return kBimGBufferDependencies;
-    case RenderPassId::CullStatsReadback:
-      return kCullStatsDependencies;
     case RenderPassId::ShadowCullCascade0:
     case RenderPassId::ShadowCullCascade1:
     case RenderPassId::ShadowCullCascade2:
@@ -723,8 +721,6 @@ std::span<const RenderResourceId> renderPassResourceReads(RenderPassId id) {
       return kHiZReads;
     case RenderPassId::OcclusionCull:
       return kOcclusionCullReads;
-    case RenderPassId::CullStatsReadback:
-      return kCullStatsReadbackReads;
     case RenderPassId::GBuffer:
       return kGBufferReads;
     case RenderPassId::BimGBuffer:
@@ -769,6 +765,9 @@ std::span<const RenderResourceId> renderPassResourceReads(RenderPassId id) {
 std::span<const RenderResourceId> renderPassOptionalResourceReads(
     RenderPassId id) {
   switch (id) {
+    case RenderPassId::CullStatsReadback:
+      // Readback reports frustum counts or zeros when later culling is skipped.
+      return kCullStatsReadbackReads;
     case RenderPassId::DepthPrepass:
       return kDepthPrepassOptionalReads;
     case RenderPassId::GBuffer:

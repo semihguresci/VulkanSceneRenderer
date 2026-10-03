@@ -43,7 +43,7 @@ class PipelineManager {
       const VkPipelineCacheCreateInfo* createInfo = nullptr);
 
   VkPipeline createGraphicsPipeline(
-      const VkGraphicsPipelineCreateInfo& pipelineInfo,
+      const RenderingGraphicsPipelineCreateInfo& pipelineInfo,
       const std::string& cacheKey);
 
   VkPipeline createComputePipeline(

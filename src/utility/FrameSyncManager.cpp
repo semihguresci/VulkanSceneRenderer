@@ -25,7 +25,7 @@ void FrameSyncManager::initialize(size_t swapChainImageCount) {
 
   imageAvailableSemaphores_.resize(framesInFlight_);
   for (size_t i = 0; i < framesInFlight_; ++i) {
-    VkResult res = vkCreateSemaphore(device_, &semaphoreInfo, nullptr,
+    VkResult res = createOwnedSemaphore(device_, &semaphoreInfo, nullptr,
                                      &imageAvailableSemaphores_[i]);
     if (res != VK_SUCCESS) {
       throw std::runtime_error("Failed to create imageAvailable semaphore!");
@@ -34,7 +34,7 @@ void FrameSyncManager::initialize(size_t swapChainImageCount) {
 
   renderFinishedSemaphores_.resize(swapChainImageCount_);
   for (size_t i = 0; i < swapChainImageCount_; ++i) {
-    VkResult res = vkCreateSemaphore(device_, &semaphoreInfo, nullptr,
+    VkResult res = createOwnedSemaphore(device_, &semaphoreInfo, nullptr,
                                      &renderFinishedSemaphores_[i]);
     if (res != VK_SUCCESS) {
       throw std::runtime_error("Failed to create renderFinished semaphore!");
@@ -44,7 +44,7 @@ void FrameSyncManager::initialize(size_t swapChainImageCount) {
   inFlightFences_.resize(framesInFlight_);
   for (size_t i = 0; i < framesInFlight_; ++i) {
     VkResult res =
-        vkCreateFence(device_, &fenceInfo, nullptr, &inFlightFences_[i]);
+        createOwnedFence(device_, &fenceInfo, nullptr, &inFlightFences_[i]);
     if (res != VK_SUCCESS) {
       throw std::runtime_error("Failed to create inFlight fence!");
     }
@@ -56,14 +56,14 @@ void FrameSyncManager::cleanup() {
 
   for (VkSemaphore sem : imageAvailableSemaphores_) {
     if (sem != VK_NULL_HANDLE) {
-      vkDestroySemaphore(device_, sem, nullptr);
+      destroyOwnedSemaphore(device_, sem, nullptr);
     }
   }
   imageAvailableSemaphores_.clear();
 
   for (VkFence f : inFlightFences_) {
     if (f != VK_NULL_HANDLE) {
-      vkDestroyFence(device_, f, nullptr);
+      destroyOwnedFence(device_, f, nullptr);
     }
   }
   inFlightFences_.clear();
@@ -126,7 +126,7 @@ void FrameSyncManager::recreateRenderFinishedSemaphores(
 
   renderFinishedSemaphores_.resize(swapChainImageCount_);
   for (size_t i = 0; i < swapChainImageCount_; ++i) {
-    VkResult res = vkCreateSemaphore(device_, &semaphoreInfo, nullptr,
+    VkResult res = createOwnedSemaphore(device_, &semaphoreInfo, nullptr,
                                      &renderFinishedSemaphores_[i]);
     if (res != VK_SUCCESS) {
       throw std::runtime_error("Failed to recreate renderFinished semaphore!");
@@ -137,7 +137,7 @@ void FrameSyncManager::recreateRenderFinishedSemaphores(
 void FrameSyncManager::destroyRenderFinishedSemaphores() {
   for (VkSemaphore sem : renderFinishedSemaphores_) {
     if (sem != VK_NULL_HANDLE) {
-      vkDestroySemaphore(device_, sem, nullptr);
+      destroyOwnedSemaphore(device_, sem, nullptr);
     }
   }
   renderFinishedSemaphores_.clear();

@@ -324,8 +324,8 @@ TEST(FrameResourceRegistryTests, BindsProductionFrameResourcesByHandle) {
 
   const auto gbufferFramebuffer = registry.bindFramebuffer(
       RenderTechniqueId::DeferredRaster, "gbuffer-framebuffer", 1u,
-      FrameFramebufferBinding{.framebuffer = fakeHandle<VkFramebuffer>(0x40),
-                              .renderPass = fakeHandle<VkRenderPass>(0x41),
+      FrameFramebufferBinding{.framebuffer = fakeHandle<RenderingTargetHandle>(0x40),
+                              .renderPass = fakeHandle<RenderingPassHandle>(0x41),
                               .extent = {1920, 1080},
                               .attachmentCount = 7u});
   ASSERT_TRUE(gbufferFramebuffer.valid());
@@ -333,20 +333,20 @@ TEST(FrameResourceRegistryTests, BindsProductionFrameResourcesByHandle) {
   ASSERT_NE(framebufferBinding, nullptr);
   EXPECT_EQ(framebufferBinding->kind, FrameResourceKind::Framebuffer);
   EXPECT_EQ(framebufferBinding->framebuffer.framebuffer,
-            fakeHandle<VkFramebuffer>(0x40));
+            fakeHandle<RenderingTargetHandle>(0x40));
   EXPECT_EQ(framebufferBinding->framebuffer.renderPass,
-            fakeHandle<VkRenderPass>(0x41));
+            fakeHandle<RenderingPassHandle>(0x41));
   EXPECT_EQ(framebufferBinding->framebuffer.attachmentCount, 7u);
 
   const auto reboundGbufferFramebuffer = registry.bindFramebuffer(
       RenderTechniqueId::DeferredRaster, "gbuffer-framebuffer", 1u,
-      FrameFramebufferBinding{.framebuffer = fakeHandle<VkFramebuffer>(0x42),
-                              .renderPass = fakeHandle<VkRenderPass>(0x43),
+      FrameFramebufferBinding{.framebuffer = fakeHandle<RenderingTargetHandle>(0x42),
+                              .renderPass = fakeHandle<RenderingPassHandle>(0x43),
                               .extent = {1280, 720},
                               .attachmentCount = 7u});
   EXPECT_EQ(reboundGbufferFramebuffer, gbufferFramebuffer);
   EXPECT_EQ(registry.findBinding(gbufferFramebuffer)->framebuffer.framebuffer,
-            fakeHandle<VkFramebuffer>(0x42));
+            fakeHandle<RenderingTargetHandle>(0x42));
 
   const auto frameLightingDescriptor = registry.bindDescriptorSet(
       RenderTechniqueId::DeferredRaster, "frame-lighting-descriptor-set", 1u,
@@ -988,20 +988,20 @@ TEST(FrameRecordParamsRegistryTests, ResolvesRuntimeFramebufferBindings) {
 
   resources.bindFramebuffer(
       RenderTechniqueId::DeferredRaster, "lighting-framebuffer", 3u,
-      FrameFramebufferBinding{.framebuffer = fakeHandle<VkFramebuffer>(0x501),
-                              .renderPass = fakeHandle<VkRenderPass>(0x502),
+      FrameFramebufferBinding{.framebuffer = fakeHandle<RenderingTargetHandle>(0x501),
+                              .renderPass = fakeHandle<RenderingPassHandle>(0x502),
                               .extent = {1280, 720},
                               .attachmentCount = 2u});
 
   const auto *binding = params.framebufferBinding(
       RenderTechniqueId::DeferredRaster, "lighting-framebuffer");
   ASSERT_NE(binding, nullptr);
-  EXPECT_EQ(binding->framebuffer, fakeHandle<VkFramebuffer>(0x501));
-  EXPECT_EQ(binding->renderPass, fakeHandle<VkRenderPass>(0x502));
+  EXPECT_EQ(binding->framebuffer, fakeHandle<RenderingTargetHandle>(0x501));
+  EXPECT_EQ(binding->renderPass, fakeHandle<RenderingPassHandle>(0x502));
   EXPECT_EQ(binding->attachmentCount, 2u);
   EXPECT_EQ(params.framebuffer(RenderTechniqueId::DeferredRaster,
                                "lighting-framebuffer"),
-            fakeHandle<VkFramebuffer>(0x501));
+            fakeHandle<RenderingTargetHandle>(0x501));
   EXPECT_EQ(params.imageBinding(RenderTechniqueId::DeferredRaster,
                                 "lighting-framebuffer"),
             nullptr);
@@ -1023,21 +1023,21 @@ TEST(DeferredRasterResourceBridgeTests,
 
   resources.bindFramebuffer(
       RenderTechniqueId::DeferredRaster, "gbuffer-framebuffer", 5u,
-      FrameFramebufferBinding{.framebuffer = fakeHandle<VkFramebuffer>(0x602),
-                              .renderPass = fakeHandle<VkRenderPass>(0x603),
+      FrameFramebufferBinding{.framebuffer = fakeHandle<RenderingTargetHandle>(0x602),
+                              .renderPass = fakeHandle<RenderingPassHandle>(0x603),
                               .extent = {1920, 1080},
                               .attachmentCount = 7u});
 
   const FrameFramebufferBinding *binding = deferredRasterFramebufferBinding(
       params, DeferredRasterFramebufferId::GBuffer);
   ASSERT_NE(binding, nullptr);
-  EXPECT_EQ(binding->framebuffer, fakeHandle<VkFramebuffer>(0x602));
+  EXPECT_EQ(binding->framebuffer, fakeHandle<RenderingTargetHandle>(0x602));
   EXPECT_EQ(
       deferredRasterFramebuffer(params, DeferredRasterFramebufferId::GBuffer),
-      fakeHandle<VkFramebuffer>(0x602));
+      fakeHandle<RenderingTargetHandle>(0x602));
   EXPECT_EQ(
       deferredRasterRenderPass(params, DeferredRasterFramebufferId::GBuffer),
-      fakeHandle<VkRenderPass>(0x603));
+      fakeHandle<RenderingPassHandle>(0x603));
 }
 
 TEST(DeferredRasterResourceBridgeTests, ResolvesImageBindingsFromRegistryOnly) {
@@ -1298,7 +1298,7 @@ TEST(ForwardRasterResourceBridgeTests, ResolvesBindingsFromRegistryOnly) {
     EXPECT_TRUE(forwardRasterDescriptorSetReady(params, id)) << key;
   }
 
-  const std::array<std::pair<ForwardRasterFramebufferId, const char *>, 5>
+  const std::array<std::pair<ForwardRasterFramebufferId, const char *>, 6>
       framebuffers = {
           {{ForwardRasterFramebufferId::DepthPrepass,
             "depth-prepass-framebuffer"},
@@ -1307,6 +1307,8 @@ TEST(ForwardRasterResourceBridgeTests, ResolvesBindingsFromRegistryOnly) {
            {ForwardRasterFramebufferId::TransparentPick,
             "transparent-pick-framebuffer"},
            {ForwardRasterFramebufferId::Lighting, "lighting-framebuffer"},
+           {ForwardRasterFramebufferId::TransparentLighting,
+            "transparent-lighting-framebuffer"},
            {ForwardRasterFramebufferId::TransformGizmo,
             "transform-gizmo-framebuffer"}}};
   uintptr_t nextFramebuffer = 0xd00;
@@ -1314,8 +1316,8 @@ TEST(ForwardRasterResourceBridgeTests, ResolvesBindingsFromRegistryOnly) {
     resources.bindFramebuffer(
         RenderTechniqueId::ForwardRaster, key, 8u,
         FrameFramebufferBinding{
-            .framebuffer = fakeHandle<VkFramebuffer>(nextFramebuffer++),
-            .renderPass = fakeHandle<VkRenderPass>(nextFramebuffer++),
+            .framebuffer = fakeHandle<RenderingTargetHandle>(nextFramebuffer++),
+            .renderPass = fakeHandle<RenderingPassHandle>(nextFramebuffer++),
             .extent = {1920, 1080},
             .attachmentCount = 2u});
     const FrameFramebufferBinding *binding =
@@ -2085,7 +2087,7 @@ TEST(TechniqueRegistryGuardrails,
       "subs_.frameSyncManager->resetFence(frame_.currentFrame)", drawFrame);
   const size_t assign =
       rendererFrontend.find("frame_.imagesInFlight[imageIndex] =", drawFrame);
-  const size_t submit = rendererFrontend.find("vkQueueSubmit(", drawFrame);
+  const size_t submit = rendererFrontend.find("vkQueueSubmit2(", drawFrame);
 
   ASSERT_NE(record, std::string::npos);
   ASSERT_NE(reset, std::string::npos);
@@ -2187,7 +2189,7 @@ TEST(TechniqueRegistryGuardrails,
   EXPECT_TRUE(contains(frameResourceManager,
                        "destroyAttachment(fallbackShadowAtlas_)"));
   EXPECT_TRUE(contains(frameResourceManager,
-                       "vkDestroySampler(device_->device(), "
+                       "destroyOwnedSampler(device_->device(), "
                        "fallbackShadowSampler_"));
   EXPECT_TRUE(
       contains(frameResourceManager, "ensureFallbackShadowResources();"));
@@ -2228,7 +2230,7 @@ TEST(TechniqueRegistryGuardrails,
       readRepoTextFile("src/renderer/bim/BimManager.cpp");
 
   EXPECT_TRUE(contains(contextInitializer,
-                       "ci.optionalFeatures.multiDrawIndirect = VK_TRUE"));
+                       "ci.enabledFeatures.multiDrawIndirect = VK_TRUE"));
   EXPECT_TRUE(contains(contextInitializer,
                        "vulkan12Features.drawIndirectCount = VK_TRUE"));
   EXPECT_TRUE(contains(vulkanDeviceHeader, "enabledVulkan12Features()"));

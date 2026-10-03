@@ -2,6 +2,7 @@
 
 #include "Container/common/CommonVulkan.h"
 #include "Container/common/VulkanTypes.h"
+#include "Container/utility/VulkanInstance.h"
 
 #include <vector>
 
@@ -19,7 +20,7 @@ struct DeviceCreateInfo {
 
 class VulkanDevice {
  public:
-  VulkanDevice(VkInstance instance, VkSurfaceKHR surface,
+  VulkanDevice(const VulkanInstance& instance, VkSurfaceKHR surface,
                const DeviceCreateInfo& createInfo);
   ~VulkanDevice();
 
@@ -32,6 +33,7 @@ class VulkanDevice {
     return physicalDevice_;
   }
   [[nodiscard]] VkDevice device() const noexcept { return device_; }
+  [[nodiscard]] const vk::raii::Device& raii() const noexcept { return ownedDevice_; }
   [[nodiscard]] VkQueue graphicsQueue() const noexcept { return graphicsQueue_; }
   [[nodiscard]] VkQueue presentQueue() const noexcept { return presentQueue_; }
   [[nodiscard]] QueueFamilyIndices queueFamilyIndices() const noexcept {
@@ -54,6 +56,8 @@ class VulkanDevice {
   void createLogicalDevice();
 
   VkInstance instance_{VK_NULL_HANDLE};
+  const VulkanInstance& instanceOwner_;
+  vk::raii::Device ownedDevice_{nullptr};
   VkSurfaceKHR surface_{VK_NULL_HANDLE};
   DeviceCreateInfo createInfo_{};
 

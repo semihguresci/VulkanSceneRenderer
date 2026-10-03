@@ -15,8 +15,8 @@ struct BimSurfaceRasterPassPipelines {
 };
 
 struct BimSurfaceRasterPassRecordInputs {
-  VkRenderPass renderPass{VK_NULL_HANDLE};
-  VkFramebuffer framebuffer{VK_NULL_HANDLE};
+  RenderingPassHandle renderPass{VK_NULL_HANDLE};
+  RenderingTargetHandle framebuffer{VK_NULL_HANDLE};
   VkExtent2D extent{};
   const BimSurfacePassPlan *plan{nullptr};
   BimSurfacePassGeometryBinding geometry{};
@@ -54,8 +54,8 @@ struct BimSurfaceFramePassRecordInputs {
   BimSurfacePassKind kind{BimSurfacePassKind::DepthPrepass};
   bool passReady{false};
   BimSurfaceFramePassDrawSources draws{};
-  VkRenderPass renderPass{VK_NULL_HANDLE};
-  VkFramebuffer framebuffer{VK_NULL_HANDLE};
+  RenderingPassHandle renderPass{VK_NULL_HANDLE};
+  RenderingTargetHandle framebuffer{VK_NULL_HANDLE};
   VkExtent2D extent{};
   BimSurfacePassGeometryBinding geometry{};
   BimSurfaceRasterPassPipelines pipelines{};

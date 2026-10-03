@@ -3752,7 +3752,7 @@ void BimManager::createVisibilityFilterResources(
   visibilityFilterPipeline_ = pipelineManager_.createComputePipeline(
       pipelineInfo, "bim_visibility_filter");
 
-  vkDestroyShaderModule(device_->device(), compModule, nullptr);
+  destroyOwnedShaderModule(device_->device(), compModule, nullptr);
   visibilityFilterStats_.computeReady =
       visibilityFilterPipeline_ != VK_NULL_HANDLE &&
       visibilityFilterDescriptorSet_ != VK_NULL_HANDLE;
@@ -3940,7 +3940,7 @@ void BimManager::createDrawCompactionResources(
   drawCompactionPipeline_ =
       pipelineManager_.createComputePipeline(pipelineInfo, "bim_draw_compact");
 
-  vkDestroyShaderModule(device_->device(), compModule, nullptr);
+  destroyOwnedShaderModule(device_->device(), compModule, nullptr);
   for (size_t index = 0; index < drawCompactionSlots_.size(); ++index) {
     BimDrawCompactionSlotResources &slot = drawCompactionSlots_[index];
     slot.stats.computeReady =
@@ -4034,7 +4034,7 @@ void BimManager::createMeshletResidencyResources(
   meshletResidencyPipeline_ = pipelineManager_.createComputePipeline(
       pipelineInfo, "bim_meshlet_residency");
 
-  vkDestroyShaderModule(device_->device(), compModule, nullptr);
+  destroyOwnedShaderModule(device_->device(), compModule, nullptr);
   meshletResidencyStats_.computeReady =
       meshletResidencyPipeline_ != VK_NULL_HANDLE &&
       meshletResidencyDescriptorSet_ != VK_NULL_HANDLE;

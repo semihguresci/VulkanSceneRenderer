@@ -24,13 +24,13 @@ template <typename Handle> Handle fakeHandle(uintptr_t value) {
 }
 
 [[nodiscard]] FrameRecordParams recordableShadowParams(
-    std::array<VkFramebuffer, kShadowCascadeCount> &framebuffers,
+    std::array<RenderingTargetHandle, kShadowCascadeCount> &framebuffers,
     const PipelineRegistry *pipelineHandles,
     const FrameResourceRegistry *resourceBindings) {
-  framebuffers[0] = fakeHandle<VkFramebuffer>(0x4);
+  framebuffers[0] = fakeHandle<RenderingTargetHandle>(0x4);
 
   FrameRecordParams params{};
-  params.shadows.renderPass = fakeHandle<VkRenderPass>(0x1);
+  params.shadows.renderPass = fakeHandle<RenderingPassHandle>(0x1);
   params.registries.pipelineHandles = pipelineHandles;
   params.registries.resourceBindings = resourceBindings;
   params.shadows.shadowFramebuffers = framebuffers.data();
@@ -41,7 +41,7 @@ template <typename Handle> Handle fakeHandle(uintptr_t value) {
 
 TEST(ShadowCascadeFramePassRecorderTests,
      CanRecordCascadeRequiresShadowPassResources) {
-  std::array<VkFramebuffer, kShadowCascadeCount> framebuffers{};
+  std::array<RenderingTargetHandle, kShadowCascadeCount> framebuffers{};
   GraphicsPipelines pipelines;
   pipelines.shadowDepth = fakeHandle<VkPipeline>(0x2);
   const auto pipelineRegistry = buildGraphicsPipelineHandleRegistry(pipelines);
@@ -61,7 +61,7 @@ TEST(ShadowCascadeFramePassRecorderTests,
 
 TEST(ShadowCascadeFramePassRecorderTests,
      CanRecordCascadeRejectsMissingFramebuffer) {
-  std::array<VkFramebuffer, kShadowCascadeCount> framebuffers{};
+  std::array<RenderingTargetHandle, kShadowCascadeCount> framebuffers{};
   GraphicsPipelines pipelines;
   pipelines.shadowDepth = fakeHandle<VkPipeline>(0x2);
   const auto pipelineRegistry = buildGraphicsPipelineHandleRegistry(pipelines);
@@ -81,7 +81,7 @@ TEST(ShadowCascadeFramePassRecorderTests,
 
 TEST(ShadowCascadeFramePassRecorderTests,
      CanRecordCascadeRejectsMissingPipeline) {
-  std::array<VkFramebuffer, kShadowCascadeCount> framebuffers{};
+  std::array<RenderingTargetHandle, kShadowCascadeCount> framebuffers{};
   FrameResourceRegistry resourceBindings;
   resourceBindings.bindDescriptorSet(
       RenderTechniqueId::DeferredRaster, "shadow-descriptor-set", 0u,
