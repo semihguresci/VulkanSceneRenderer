@@ -51,6 +51,7 @@ set(SLANG_INCLUDE_SHADER_NAMES
     push_constants_common.slang
     scene_clip_common.slang
     draw_indirect_common.slang
+    temporal_common.slang
 )
 
 set(SLANG_COMPUTE_SHADER_NAMES

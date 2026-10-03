@@ -105,6 +105,12 @@ for feature-specific Vulkan resources.
 
 ## MSAA
 
+The planned motion-vector and TAA work follows
+[Temporal rendering contracts](temporal-rendering.md): stable submitted-frame
+snapshots, unjittered physical motion, separate raster/color history grids, and
+a focused temporal owner. The first delivery supports TAA at 1x samples;
+combining it with MSAA requires a later explicit design. TAA is not yet enabled.
+
 Deferred raster MSAA is documented in [MSAA](msaa.md). The short version:
 multisampled depth and G-buffer attachments are private `FrameResourceManager`
 resources, while the render graph and downstream passes continue to consume the
