@@ -49,6 +49,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/effects/BloomManager.cpp
     renderer/effects/ExposureManager.cpp
     renderer/effects/OitManager.cpp
+    renderer/temporal/TemporalManager.cpp
 
     renderer/culling/GpuCullManager.cpp
 

@@ -39,6 +39,15 @@ $requiredFiles = @(
     'spdlog.dll', 'vulkan-1.dll', 'models/basic_cube.gltf',
     'models/basic_triangle.gltf',
     'models/validation/cornell_box_local_light.gltf',
+    'models/validation/taa_scene.gltf',
+    'models/validation/taa_equivalent.gltf',
+    'models/validation/taa_equivalent.bim',
+    'models/validation/taa_equivalent.usda',
+    'models/validation/taa_object.json',
+    'spv_shaders/temporal_velocity.vert.spv',
+    'spv_shaders/temporal_velocity.frag.spv',
+    'spv_shaders/temporal_compose.comp.spv',
+    'spv_shaders/temporal_resolve.comp.spv',
     'hdr/citrus_orchard_road_puresky_4k.exr'
 )
 foreach ($relativePath in $requiredFiles) {

@@ -28,6 +28,13 @@ struct CameraBuffer
     column_major float4x4 inverseViewProj;
     float4 cameraWorldPosition;
     float4 cameraForward;
+    column_major float4x4 unjitteredViewProj;
+    column_major float4x4 previousViewProj;
+    column_major float4x4 previousJitteredViewProj;
+    column_major float4x4 previousInverseViewProj;
+    float4 jitterUv;
+    uint4 temporalInfo;
+    float4 renderExtent;
 };
 
 struct PointLightData

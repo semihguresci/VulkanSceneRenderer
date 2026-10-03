@@ -23,6 +23,10 @@
 
 struct GLFWwindow;
 
+namespace container::temporal {
+struct CaptureSample;
+}
+
 // Forward declarations — full headers are only needed in RendererFrontend.cpp.
 namespace container::app {
 struct AppConfig;
@@ -30,6 +34,7 @@ struct AppConfig;
 
 namespace container::renderer {
 class BloomManager;
+class TemporalManager;
 class BimManager;
 enum class BimDisciplinePreset : uint32_t;
 struct BimDrawFilter;
@@ -122,6 +127,8 @@ public:
 
   // Capture the next submitted swapchain image to an sRGB PNG.
   void requestScreenshot(std::filesystem::path outputPath);
+  void applyTemporalCapture(const container::temporal::CaptureSample &sample);
+  void writeCaptureTelemetry(const std::filesystem::path &path) const;
 
   // Scene operations forwarded from the application.
   bool reloadSceneModel(const std::string &path, float importScale = 1.0f);
@@ -136,6 +143,14 @@ public:
   const SceneState &sceneState() const { return sceneState_; }
 
 private:
+  std::optional<float> captureExposure_{};
+  std::optional<glm::vec4> captureSectionPlane_{};
+  std::optional<uint32_t> captureBimHiddenObject_{};
+  std::optional<int> captureBimLodBias_{};
+  std::optional<uint64_t> temporalClipRevision_{};
+  bool captureAcquireOutOfDate_{false}, capturePresentSuboptimal_{false};
+  std::optional<glm::mat4> captureObjectBase_{};
+  uint32_t captureObjectNode_{std::numeric_limits<uint32_t>::max()};
   // Owned subsystems are listed roughly in construction/use order. shutdown()
   // releases them in dependency-aware order because many destructors touch
   // Vulkan objects owned by earlier services.
@@ -153,6 +168,7 @@ private:
     std::unique_ptr<EnvironmentManager> environmentManager;
     std::unique_ptr<GpuCullManager> gpuCullManager;
     std::unique_ptr<BloomManager> bloomManager;
+    std::unique_ptr<TemporalManager> temporalManager;
     std::unique_ptr<ExposureManager> exposureManager;
     std::unique_ptr<GraphicsPipelineBuilder> pipelineBuilder;
     std::unique_ptr<FrameRecorder> frameRecorder;

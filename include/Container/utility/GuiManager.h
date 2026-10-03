@@ -17,6 +17,7 @@
 #include "Container/renderer/bim/BimModelCompare.h"
 #include "Container/renderer/bim/BimScheduleExtractor.h"
 #include "Container/renderer/lighting/EditableLight.h"
+#include "Container/renderer/temporal/TemporalState.h"
 #include "Container/utility/GuiDebugState.h"
 #include "Container/utility/SceneData.h"
 
@@ -56,6 +57,11 @@ enum class GBufferViewMode : uint32_t {
   ShadowCascades = 11,
   TileLightHeatMap = 12,
   ShadowTexelDensity = 13,
+  TemporalVelocity = 100,
+  TemporalHistoryAge = 101,
+  TemporalRejection = 102,
+  TemporalBlend = 103,
+  TemporalReactive = 104,
 };
 
 enum class SceneViewportMode : uint32_t {
@@ -681,6 +687,25 @@ public:
   void setFreezeCulling(bool frozen);
   [[nodiscard]] bool freezeCullingRequested() const { return freezeCulling_; }
 
+  void setTemporalSettings(const container::temporal::Settings &settings,
+                           uint64_t bytes, uint64_t frame, uint32_t epoch,
+                           const std::string &reason, glm::uvec2 extent,
+                           uint64_t allocatedBytes, float resolveGpuMs) {
+    temporalSettings_ = settings;
+    temporalBytes_ = bytes;
+    temporalFrame_ = frame;
+    temporalEpoch_ = epoch;
+    temporalResetReason_ = reason;
+    temporalExtent_ = extent;
+    temporalAllocatedBytes_ = allocatedBytes;
+    temporalResolveGpuMs_ = resolveGpuMs;
+  }
+  const container::temporal::Settings &temporalSettings() const {
+    return temporalSettings_;
+  }
+  bool consumeTemporalReset() {
+    return std::exchange(temporalResetRequested_, false);
+  }
   // Bloom settings (bidirectional sync with BloomManager).
   void setBloomSettings(bool enabled, float threshold, float knee,
                         float intensity, float radius);
@@ -706,6 +731,14 @@ public:
   }
 
 private:
+  container::temporal::Settings temporalSettings_{};
+  uint64_t temporalBytes_{0}, temporalFrame_{0};
+  glm::uvec2 temporalExtent_{};
+  uint64_t temporalAllocatedBytes_{0};
+  float temporalResolveGpuMs_{0};
+  uint32_t temporalEpoch_{0};
+  std::string temporalResetReason_{};
+  bool temporalResetRequested_{false};
   void ensureInitialized() const;
   void discoverSampleModels();
   void drawRendererTelemetryWindow();

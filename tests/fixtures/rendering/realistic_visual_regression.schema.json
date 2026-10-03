@@ -142,7 +142,8 @@
               "material",
               "exposure",
               "lighting",
-              "shadow"
+              "shadow",
+              "temporal"
             ]
           },
           "status": {
@@ -214,6 +215,52 @@
               },
               "diff": {
                 "type": "string"
+              }
+            }
+          },
+          "temporal": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "jitterSeed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "historyWeight": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 0.98
+              },
+              "varianceGamma": {
+                "type": "number",
+                "minimum": 0.5,
+                "maximum": 4
+              },
+              "resetFrame": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "sequence": {
+                "type": "string"
+              },
+              "msaaSamples": {
+                "type": "integer",
+                "enum": [
+                  1,
+                  2,
+                  4,
+                  8
+                ]
+              },
+              "renderTechnique": {
+                "type": "string",
+                "enum": [
+                  "deferred-raster",
+                  "forward-raster"
+                ]
               }
             }
           }

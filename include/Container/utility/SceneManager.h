@@ -11,8 +11,8 @@
 #include "tiny_gltf.h"
 
 #include "Container/app/AppConfig.h"
-#include "Container/common/CommonVulkan.h"
 #include "Container/common/CommonMath.h"
+#include "Container/common/CommonVulkan.h"
 #include "Container/geometry/Model.h"
 #include "Container/utility/MaterialManager.h"
 #include "Container/utility/MaterialXIntegration.h"
@@ -114,6 +114,9 @@ class SceneManager {
   [[nodiscard]] size_t materialCount() const {
     return materialManager_.materialCount();
   }
+  // Cached hash of uploaded shader-visible fields (excluding C++ ABI padding).
+  // Only affected surfaces lose compatibility after a material upload changes.
+  [[nodiscard]] uint64_t temporalMaterialRevision(uint32_t gpuIndex) const;
   uint32_t diagnosticMaterialIndex() const;
   uint32_t resolveGpuMaterialIndex(uint32_t materialIndex) const;
   uint32_t createSolidMaterial(const glm::vec4& baseColor,
@@ -254,6 +257,7 @@ class SceneManager {
   uint32_t gltfMaterialBaseIndex_{0};
 
   std::vector<container::gpu::GpuMaterial> gpuMaterials_{};
+  std::vector<uint64_t> gpuMaterialTemporalRevisions_{};
   container::gpu::AllocatedBuffer materialBuffer_{};
   size_t materialBufferCapacity_{0};
   std::vector<container::gpu::GpuTextureMetadata> textureMetadata_{};

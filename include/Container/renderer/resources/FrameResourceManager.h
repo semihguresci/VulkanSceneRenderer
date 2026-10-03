@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Container/common/CommonVulkan.h"
 #include "Container/common/CommonMath.h"
+#include "Container/common/CommonVulkan.h"
 #include "Container/renderer/resources/FrameResourceRegistry.h"
 #include "Container/renderer/resources/FrameResources.h"
 
@@ -98,7 +98,8 @@ class FrameResourceManager {
   [[nodiscard]] VkSampler             gBufferSampler()    const { return gBufferSampler_; }
 
   // Create / recreate per-swapchain-image attachments, descriptor sets, and
-  // OIT storage. Call after swapchain resize or any layout-affecting resource change.
+  // OIT storage. Call after swapchain resize or any layout-affecting resource
+  // change.
   void create(const GBufferFormats&                    formats,
               RenderingPassHandle                             depthPrepassPass,
               RenderingPassHandle                             bimDepthPrepassPass,
@@ -114,6 +115,7 @@ class FrameResourceManager {
               const container::gpu::AllocatedBuffer& objectBuffer);
 
   void destroy();
+  void ensureTemporalAttachments();
 
   void updateDescriptorSets(std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
                             const container::gpu::AllocatedBuffer& objectBuffer,

@@ -1,5 +1,10 @@
 #include "Container/app/Application.h"
 
+#include "Container/renderer/temporal/TemporalCapture.h"
+#include <fstream>
+#include <iomanip>
+#include <sstream>
+
 #include "Container/common/CommonGLFW.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/InputManager.h"
@@ -7,11 +12,11 @@
 #include "Container/utility/SwapChainManager.h"
 #include "Container/utility/WindowManager.h"
 
-#include "Container/renderer/resources/CommandBufferManager.h"
 #include "Container/renderer/core/RendererFrontend.h"
 #include "Container/renderer/platform/VulkanContext.h"
 #include "Container/renderer/platform/VulkanContextInitializer.h"
 #include "Container/renderer/platform/WindowInputBridge.h"
+#include "Container/renderer/resources/CommandBufferManager.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -107,7 +112,8 @@ void Application::initVulkan() {
 }
 
 void Application::mainLoop() {
-  if (!config_.screenshotCapturePath.empty()) {
+  if (!config_.screenshotCapturePath.empty() ||
+      !config_.temporalCaptureSequencePath.empty()) {
     screenshotCaptureLoop();
     return;
   }
@@ -128,8 +134,17 @@ void Application::mainLoop() {
 }
 
 void Application::screenshotCaptureLoop() {
+  std::optional<container::temporal::CaptureSequence> sequence;
+  if (!config_.temporalCaptureSequencePath.empty()) {
+    std::ifstream stream(config_.temporalCaptureSequencePath);
+    if (!stream)
+      throw std::runtime_error("Cannot open capture sequence");
+    sequence.emplace(nlohmann::json::parse(stream));
+  }
+  bool minimized = false;
   const uint32_t captureFrame =
-      std::max(config_.screenshotCaptureFrame,
+      sequence ? sequence->frameCount
+               : std::max(config_.screenshotCaptureFrame,
                config_.screenshotWarmupFrames + 1u);
   const float fixedDt = config_.screenshotFixedTimestepSeconds > 0.0f
                             ? config_.screenshotFixedTimestepSeconds
@@ -140,10 +155,53 @@ void Application::screenshotCaptureLoop() {
        ++frameNumber) {
     window_->pollEvents();
     renderer_->processInput(fixedDt);
-    if (frameNumber == captureFrame) {
-      renderer_->requestScreenshot(config_.screenshotCapturePath);
+    bool skip = false;
+    if (sequence) {
+      const auto sample = sequence->sample(frameNumber);
+      renderer_->applyTemporalCapture(sample);
+      if (sample.event.minimized) {
+        minimized = *sample.event.minimized;
+        if (minimized)
+          window_->iconify();
+        else
+          window_->restore();
+      }
+      if (sample.event.resize) {
+        window_->setSize(static_cast<int>(sample.event.resize->x),
+                         static_cast<int>(sample.event.resize->y));
+        window_->pollEvents();
+        renderer_->handleResize();
+        framebufferResized_ = false;
+      }
+      skip = sample.event.skip || minimized;
     }
-    renderer_->drawFrame(framebufferResized_);
+    if (skip)
+      continue;
+    std::filesystem::path capturePath;
+    if (!config_.screenshotCapturePath.empty() &&
+        (sequence ? sequence->captures(frameNumber)
+                  : frameNumber == captureFrame)) {
+      capturePath = config_.screenshotCapturePath;
+      if (sequence && frameNumber != captureFrame) {
+        std::ostringstream suffix;
+        suffix << ".frame-" << std::setw(4) << std::setfill('0') << frameNumber;
+        capturePath = capturePath.parent_path() /
+                      (capturePath.stem().string() + suffix.str() +
+                       capturePath.extension().string());
+      }
+      renderer_->requestScreenshot(capturePath);
+    }
+    bool submitted = false;
+    for (uint32_t retry = 0; retry < 4 && !submitted; ++retry)
+      submitted = renderer_->drawFrame(framebufferResized_);
+    if (!submitted)
+      throw std::runtime_error(
+          "Capture could not submit after swapchain recovery");
+    if (!capturePath.empty()) {
+      auto telemetryPath = capturePath;
+      telemetryPath.replace_extension(".telemetry.json");
+      renderer_->writeCaptureTelemetry(telemetryPath);
+    }
   }
   vkDeviceWaitIdle(vulkanContext_->result().deviceWrapper->device());
 

@@ -5654,7 +5654,7 @@ void GuiManager::drawSceneControls(
                   restored
                       ? (modelMismatch
                              ? "Restored archived BCF topic camera; kept current BIM filters"
-                             : "Restored archived BCF topic viewpoint")
+                                  : "Restored archived BCF topic viewpoint")
                       : "Failed to restore archived BCF topic viewpoint";
             }
             if (!entry.hasSnapshot) {
@@ -5978,6 +5978,42 @@ void GuiManager::drawSceneControls(
     exposureSettings_.meteringHighPercentile =
         std::max(exposureSettings_.meteringHighPercentile,
                  exposureSettings_.meteringLowPercentile + 0.01f);
+  }
+  if (ImGui::TreeNode("Temporal anti-aliasing")) {
+    ImGui::BeginDisabled(msaaSamples_ != 1u);
+    ImGui::Checkbox("Enable TAA", &temporalSettings_.enabled);
+    ImGui::EndDisabled();
+    if (msaaSamples_ != 1u)
+      ImGui::TextDisabled("Select MSAA 1x to enable TAA.");
+    ImGui::SliderFloat("History weight", &temporalSettings_.historyWeight, 0.0f,
+                       0.98f);
+    ImGui::SliderFloat("Variance clipping", &temporalSettings_.varianceGamma,
+                       0.5f, 4.0f);
+    ImGui::SliderFloat("Depth tolerance (world units)",
+                       &temporalSettings_.depthAbsoluteTolerance, 0.0f, 0.1f,
+                       "%.4f");
+    ImGui::SliderFloat("Relative depth tolerance",
+                       &temporalSettings_.depthRelativeTolerance, 0.0f, 0.05f,
+                       "%.4f");
+    ImGui::Text("Submitted frame %llu, epoch %u",
+                static_cast<unsigned long long>(temporalFrame_),
+                temporalEpoch_);
+    ImGui::Text("Image payload: %.1f MiB",
+                double(temporalBytes_) / (1024.0 * 1024.0));
+    ImGui::Text("Effective AA: %s; raster/history %ux%u",
+                temporalSettings_.enabled ? "TAA (1x)" : "MSAA / native raster",
+                temporalExtent_.x, temporalExtent_.y);
+    ImGui::Text("Allocated images: %.1f MiB; resolve GPU %.3f ms",
+                double(temporalAllocatedBytes_) / (1024.0 * 1024.0),
+                temporalResolveGpuMs_);
+    ImGui::TextWrapped("Last reset: %s", temporalResetReason_.c_str());
+    ImGui::TextWrapped("Transparent and emissive pixels use current color. TAA "
+                       "runs before exposure, bloom and tone mapping.");
+    ImGui::TextDisabled(
+        "GPU times: TemporalVelocity / TemporalResolve in renderer telemetry.");
+    if (ImGui::Button("Reset temporal history"))
+      temporalResetRequested_ = true;
+    ImGui::TreePop();
   }
   ImGui::Text("Bloom");
   ImGui::Checkbox("Bloom Enabled", &bloomEnabled_);

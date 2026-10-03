@@ -1,4 +1,7 @@
 #include "Container/renderer/core/RendererFrontend.h"
+#include "Container/renderer/temporal/TemporalCapture.h"
+#include "Container/renderer/temporal/TemporalManager.h"
+#include <fstream>
 
 #include <algorithm>
 #include <array>
@@ -328,6 +331,16 @@ exposureSettingsFromConfig(const container::app::AppConfig &config) {
 std::optional<container::ui::GBufferViewMode>
 displayModeFromName(std::string_view value) {
   const std::string mode = lowerAscii(value);
+  if (mode == "taa-velocity")
+    return container::ui::GBufferViewMode::TemporalVelocity;
+  if (mode == "taa-age")
+    return container::ui::GBufferViewMode::TemporalHistoryAge;
+  if (mode == "taa-rejection")
+    return container::ui::GBufferViewMode::TemporalRejection;
+  if (mode == "taa-blend")
+    return container::ui::GBufferViewMode::TemporalBlend;
+  if (mode == "taa-reactive")
+    return container::ui::GBufferViewMode::TemporalReactive;
   if (mode.empty()) {
     return std::nullopt;
   }
@@ -997,18 +1010,21 @@ frontendDisplayMode(const container::ui::GuiManager *guiManager,
 }
 
 bool displayModeRecordsShadowAtlas(container::ui::GBufferViewMode mode) {
-  return mode == container::ui::GBufferViewMode::Lit ||
+  return static_cast<uint32_t>(mode) >= 100u ||
+         mode == container::ui::GBufferViewMode::Lit ||
          mode == container::ui::GBufferViewMode::Overview;
 }
 
 bool displayModeRecordsTileCull(container::ui::GBufferViewMode mode) {
-  return mode == container::ui::GBufferViewMode::Lit ||
+  return static_cast<uint32_t>(mode) >= 100u ||
+         mode == container::ui::GBufferViewMode::Lit ||
          mode == container::ui::GBufferViewMode::Overview ||
          mode == container::ui::GBufferViewMode::TileLightHeatMap;
 }
 
 bool displayModeRecordsGtao(container::ui::GBufferViewMode mode) {
-  return mode == container::ui::GBufferViewMode::Lit ||
+  return static_cast<uint32_t>(mode) >= 100u ||
+         mode == container::ui::GBufferViewMode::Lit ||
          mode == container::ui::GBufferViewMode::Overview;
 }
 
@@ -1436,6 +1452,9 @@ void RendererFrontend::initialize() {
   subs_.exposureManager->createResources(
       container::util::executableDirectory(),
       static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
+  subs_.temporalManager = std::make_unique<TemporalManager>(
+      svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
+  subs_.temporalManager->settings() = svc_.config.taa;
   subs_.frameResourceManager = std::make_unique<FrameResourceManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager,
       svc_.swapChainManager, svc_.commandBufferManager.pool());
@@ -1625,6 +1644,8 @@ void RendererFrontend::applyPendingRenderTechniqueChange() {
 
   const RenderTechniqueId requested = *pendingRenderTechniqueChange_;
   pendingRenderTechniqueChange_.reset();
+  if (subs_.temporalManager)
+    subs_.temporalManager->reset("render technique changed");
   initializeRenderTechnique(requested, renderTechniqueName(requested));
   syncGuiRenderEngineOptions();
 
@@ -1705,7 +1726,10 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
 
   uint32_t imageIndex = 0;
   phaseStart = TelemetryClock::now();
-  VkResult result = vkAcquireNextImageKHR(
+  VkResult result =
+      std::exchange(captureAcquireOutOfDate_, false)
+          ? VK_ERROR_OUT_OF_DATE_KHR
+          : vkAcquireNextImageKHR(
       svc_.ctx.deviceWrapper->device(), svc_.swapChainManager.swapChain(),
       UINT64_MAX, subs_.frameSyncManager->imageAvailable(frame_.currentFrame),
       VK_NULL_HANDLE, &imageIndex);
@@ -1724,8 +1748,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                              elapsedMilliseconds(frameStart));
       telemetry->endFrame();
     }
-    ++frame_.submittedFrameCount;
-    return true;
+    framebufferResized = false;
+    return false;
   } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
     throw std::runtime_error("failed to acquire swap chain image!");
   }
@@ -1764,9 +1788,114 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   }
 
   phaseStart = TelemetryClock::now();
-  updateObjectBuffer(imageIndex);
   applyBimSemanticColorMode();
+  auto &temporal = *subs_.temporalManager;
+  // Section coverage changes invalidate the whole clipped surface domain;
+  // material/topology revisions below remain local to their provider/object.
+  uint64_t clipRevision = 1469598103934665603ull;
+  auto hashClip = [&](const auto &value) {
+    const auto *bytes = reinterpret_cast<const unsigned char *>(&value);
+    for (size_t i = 0; i < sizeof(value); ++i) {
+      clipRevision ^= bytes[i];
+      clipRevision *= 1099511628211ull;
+    }
+  };
+  glm::vec4 plane{};
+  bool planeEnabled =
+      currentSectionPlaneEquation(subs_.guiManager.get(), plane);
+  if (captureSectionPlane_) {
+    planeEnabled = true;
+    plane = *captureSectionPlane_;
+  }
+  hashClip(planeEnabled);
+  if (planeEnabled)
+    hashClip(plane);
+  if (subs_.guiManager) {
+    const auto &box = subs_.guiManager->bimBoxClipState();
+    hashClip(box.enabled);
+    if (box.enabled) {
+      hashClip(box.invert);
+      const auto planes = makeBoxClipPlanes(box);
+      for (const auto &equation : planes)
+        hashClip(equation);
+    }
+  }
+  if (temporalClipRevision_ && *temporalClipRevision_ != clipRevision)
+    temporal.reset("section coverage changed");
+  temporalClipRevision_ = clipRevision;
+  container::temporal::validateSettings(
+      temporal.settings(), static_cast<uint32_t>(msaaSampleCount_));
+  if (temporal.settings().enabled) {
+    temporal.createPipelines(container::util::executableDirectory(),
+                             subs_.sceneManager->descriptorSetLayout(),
+                             resources_.gBufferFormats.depthStencil);
+    temporal.prepare(*subs_.frameResourceManager,
+                     svc_.swapChainManager.extent(),
+                     static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
+  }
+  if (svc_.config.taaResetFrame != 0 &&
+      frame_.submittedFrameCount + 1 == svc_.config.taaResetFrame)
+    temporal.reset("configured capture reset");
   updateCameraBuffer(imageIndex);
+  const auto temporalExtent = svc_.swapChainManager.extent();
+  const auto *temporalCamera = subs_.cameraController->camera();
+  auto frameTemporalSettings = temporal.settings();
+  const auto mode = static_cast<uint32_t>(frontendDisplayMode(
+      subs_.guiManager.get(), configuredDisplayMode(svc_.config)));
+  frameTemporalSettings.enabled =
+      frameTemporalSettings.enabled &&
+      (mode == 0u || mode == 8u || (mode >= 100u && mode <= 104u));
+  temporal.state().prepareCamera(
+      buffers_.cameraData, {temporalExtent.width, temporalExtent.height},
+      frameTemporalSettings,
+      temporalCamera->projectionMatrix(float(temporalExtent.width) /
+                                       float(temporalExtent.height)));
+  SceneController::writeToBuffer(
+      svc_.allocationManager, buffers_.cameras[imageIndex],
+      &buffers_.cameraData, sizeof(buffers_.cameraData));
+  updateObjectBuffer(imageIndex);
+  if (frameTemporalSettings.enabled) {
+    auto objects = subs_.sceneController->objectData();
+    for (auto &object : objects) {
+      const uint64_t key = uint64_t(object.temporalInfo.z) |
+                           (uint64_t(object.temporalInfo.w) << 32u);
+      temporal.state().prepareObject(
+          object, {1, key},
+          (subs_.sceneManager->temporalMaterialRevision(object.objectInfo.x) ^
+           (uint64_t(object.objectInfo.y) << 32u)));
+    }
+    if (!objects.empty())
+      SceneController::writeToBuffer(
+          svc_.allocationManager, buffers_.objects[imageIndex], objects.data(),
+          objects.size() * sizeof(objects[0]));
+    if (subs_.bimManager && subs_.bimManager->objectAllocatedBuffer().buffer) {
+      uint64_t providerRevision = 0;
+      // Residency policy changes invalidate only the sidecar provider;
+      // root/instance motion keeps correspondence and retains its history.
+      if (subs_.guiManager) {
+        const auto &lod = subs_.guiManager->bimLodStreamingUiState();
+        providerRevision =
+            uint64_t(lod.lodBias + 8) ^ (uint64_t(lod.autoLod) << 8u);
+      }
+      if (captureBimLodBias_)
+        providerRevision = uint64_t(*captureBimLodBias_ + 8);
+      auto bimObjects = subs_.bimManager->objectData();
+      for (size_t index = 0; index < bimObjects.size(); ++index) {
+        auto &object = bimObjects[index];
+        temporal.state().prepareObject(
+            object,
+            {2, uint64_t(object.temporalInfo.z) |
+                    (uint64_t(object.temporalInfo.w) << 32u)},
+            (subs_.sceneManager->temporalMaterialRevision(object.objectInfo.x) ^
+             (uint64_t(object.objectInfo.y) << 32u) ^
+             (providerRevision << 16u)));
+      }
+      if (!bimObjects.empty())
+        SceneController::writeToBuffer(
+            svc_.allocationManager, subs_.bimManager->objectAllocatedBuffer(),
+            bimObjects.data(), bimObjects.size() * sizeof(bimObjects[0]));
+    }
+  }
 
   if (subs_.lightingManager && subs_.cameraController) {
     subs_.lightingManager->updateLightingDataForActiveCamera();
@@ -1873,6 +2002,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                     submittedFrameFence) != VK_SUCCESS) {
     throw std::runtime_error("failed to submit draw command buffer!");
   }
+  subs_.temporalManager->commit();
   frame_.imagesInFlight[imageIndex] = submittedFrameFence;
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::QueueSubmit,
@@ -1902,6 +2032,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                            elapsedMilliseconds(phaseStart));
   }
 
+  if (std::exchange(capturePresentSuboptimal_, false) && result == VK_SUCCESS)
+    result = VK_SUBOPTIMAL_KHR;
   if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
       framebufferResized) {
     framebufferResized = false;
@@ -1956,6 +2088,149 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
       (frame_.currentFrame + 1) % svc_.config.maxFramesInFlight;
   ++frame_.submittedFrameCount;
   return true;
+}
+
+void RendererFrontend::applyTemporalCapture(
+    const container::temporal::CaptureSample &sample) {
+  // Capture events can replace shared scene/provider buffers. Retire submitted
+  // readers with the existing frame-fence policy before changing those buffers.
+  FrameConcurrencyPolicy::serializedGpuResources("capture scene mutation")
+      .waitBeforeAcquire(*subs_.frameSyncManager, frame_.currentFrame);
+  const auto &event = sample.event;
+  if (!event.reload.empty()) {
+    captureObjectBase_.reset();
+    reloadSceneModel(event.reload);
+  }
+  if (event.taa)
+    subs_.temporalManager->settings().enabled = *event.taa;
+  if (event.samples)
+    recreateMsaaResources(sampleCountFromSamples(*event.samples));
+  if (event.reset)
+    subs_.temporalManager->reset("capture sequence reset");
+  captureAcquireOutOfDate_ = event.acquireOutOfDate;
+  capturePresentSuboptimal_ = event.presentSuboptimal;
+  if (event.sectionPlane)
+    captureSectionPlane_ = *event.sectionPlane;
+  if (event.bimHiddenObject)
+    captureBimHiddenObject_ = *event.bimHiddenObject;
+  if (event.bimLodBias)
+    captureBimLodBias_ = *event.bimLodBias;
+  if (!event.technique.empty()) {
+    const auto technique = renderTechniqueIdFromName(event.technique);
+    if (!technique)
+      throw std::invalid_argument("Invalid capture technique");
+    pendingRenderTechniqueChange_ = *technique;
+  }
+  if (event.orthographic)
+    subs_.cameraController->setOrthographic(sceneState_.selectedMeshNode,
+                                            *event.orthographic);
+  if (sample.camera) {
+    container::app::AppConfig poseConfig = svc_.config;
+    poseConfig.hasCameraOverride = true;
+    for (uint32_t component = 0; component < 3; ++component) {
+      poseConfig.cameraPosition[component] = sample.camera->position[component];
+      poseConfig.cameraTarget[component] = sample.camera->target[component];
+    }
+    applyCameraOverride(subs_.cameraController->camera(), poseConfig);
+  }
+  uint32_t objectNode = sample.objectNode;
+  if (!sample.objectName.empty()) {
+    bool found = false;
+    for (uint32_t node = 0; node < sceneGraph_.nodeCount(); ++node)
+      if (sceneGraph_.getNode(node)->name == sample.objectName) {
+        objectNode = node;
+        found = true;
+        break;
+      }
+    if (!found)
+      throw std::invalid_argument("Capture objectName does not exist");
+  }
+  if (sample.objectTranslation) {
+    const uint32_t nodeIndex = objectNode;
+    const auto *node = sceneGraph_.getNode(nodeIndex);
+    if (!node)
+      throw std::invalid_argument("Capture objectNode does not exist");
+    if (!captureObjectBase_ || captureObjectNode_ != nodeIndex) {
+      captureObjectBase_ = node->localTransform;
+      captureObjectNode_ = nodeIndex;
+    }
+    glm::mat4 transform = *captureObjectBase_;
+    transform[3] += glm::vec4(*sample.objectTranslation, 0);
+    sceneGraph_.setLocalTransform(nodeIndex, transform);
+    sceneGraph_.updateWorldTransforms();
+    refreshSceneObjectData();
+  }
+  if (event.objectVisible) {
+    sceneGraph_.setVisible(objectNode, *event.objectVisible);
+    refreshSceneObjectData();
+  }
+  if (sample.bimTranslation && subs_.bimManager)
+    subs_.bimManager->setRootTranslation(*sample.bimTranslation);
+  if (event.exposure)
+    captureExposure_ = *event.exposure;
+}
+
+void RendererFrontend::writeCaptureTelemetry(
+    const std::filesystem::path &path) const {
+  const auto &temporal = *subs_.temporalManager;
+  const auto &settings = temporal.settings();
+  const auto extent = svc_.swapChainManager.extent();
+  VkPhysicalDeviceProperties gpu{};
+  vkGetPhysicalDeviceProperties(svc_.ctx.deviceWrapper->physicalDevice(), &gpu);
+  nlohmann::json json{
+      {"schemaVersion", 1},
+      {"gpu", gpu.deviceName},
+      {"driverVersion", gpu.driverVersion},
+      {"vulkanApiVersion", gpu.apiVersion},
+      {"technique", std::string(subs_.activeTechnique->name())},
+      {"resolution", {extent.width, extent.height}},
+      {"msaaSamples", sampleCountToSamples(msaaSampleCount_)},
+      {"taa",
+       {{"enabled", settings.enabled},
+        {"historyWeight", settings.historyWeight},
+        {"varianceGamma", settings.varianceGamma},
+        {"depthAbsoluteTolerance", settings.depthAbsoluteTolerance},
+        {"depthRelativeTolerance", settings.depthRelativeTolerance},
+        {"jitterSeed", settings.jitterSeed},
+        {"submittedFrame", temporal.state().frameId()},
+        {"epoch", temporal.state().epoch()},
+        {"resetReason", temporal.state().resetReason()},
+        {"imagePayloadBytes", temporal.memoryBytes()},
+        {"allocatedImageBytes", temporal.allocatedBytes()}}}};
+  if (subs_.rendererTelemetry) {
+    const auto &snapshot = subs_.rendererTelemetry->latest();
+    json["gpuKnownMs"] = snapshot.timing.gpuKnownMs;
+    json["cpuPhasesMs"] = nlohmann::json::object();
+    for (size_t phase = 0; phase < snapshot.timing.cpuMs.size(); ++phase)
+      json["cpuPhasesMs"][std::string(rendererTelemetryPhaseName(
+          static_cast<RendererTelemetryPhase>(phase)))] =
+          snapshot.timing.cpuMs[phase];
+    json["passes"] = nlohmann::json::array();
+    for (const auto &pass : snapshot.passes)
+      json["passes"].push_back({{"name", pass.name},
+                                {"active", pass.active},
+                                {"gpuTimed", pass.gpuTimed},
+                                {"gpuMs", pass.gpuKnownMs},
+                                {"cpuMs", pass.cpuRecordMs},
+                                {"status", pass.status}});
+    json["swapchainRecreates"] = snapshot.sync.swapchainRecreateCount;
+    json["deviceIdleWaits"] = snapshot.sync.deviceWaitIdleCount;
+    json["framesInFlight"] = snapshot.sync.maxFramesInFlight;
+    json["serializedConcurrency"] = snapshot.sync.serializedConcurrency;
+    json["swapchainImages"] = svc_.swapChainManager.imageCount();
+    json["taa"]["imageAllocationCount"] = temporal.memoryBytes() == 0 ? 0 : 6 + 5 * svc_.swapChainManager.imageCount();
+    bool temporalWrites = false;
+    for (const auto& pass : snapshot.passes) temporalWrites |= pass.name == "TemporalResolve" && pass.active;
+    json["taa"]["logicalImageWriteBytesPerFrame"] = temporalWrites ? uint64_t(extent.width) * extent.height * 57 : 0;
+  }
+  if (!path.parent_path().empty())
+    std::filesystem::create_directories(path.parent_path());
+  std::ofstream stream(path);
+  if (!stream)
+    throw std::runtime_error("Cannot write capture telemetry");
+  stream << json.dump(2);
+  if (!stream)
+    throw std::runtime_error("Capture telemetry write failed");
 }
 
 void RendererFrontend::handleResize() {
@@ -3239,6 +3514,7 @@ void RendererFrontend::shutdown() {
   subs_.frameRuntimeResourceRegistry.reset();
   subs_.frameResourceRegistry.reset();
 
+  subs_.temporalManager.reset();
   destroyGBufferResources();
   subs_.frameResourceManager.reset();
 
@@ -3436,6 +3712,12 @@ void RendererFrontend::destroyGraphicsPipelines() {
 
 void RendererFrontend::recreateMsaaResources(
     VkSampleCountFlagBits sampleCount) {
+  if (subs_.temporalManager && subs_.temporalManager->settings().enabled &&
+      sampleCount != VK_SAMPLE_COUNT_1_BIT) {
+    if (subs_.guiManager)
+      subs_.guiManager->setStatusMessage("Disable TAA before enabling MSAA");
+    return;
+  }
   if (sampleCount == msaaSampleCount_) {
     return;
   }
@@ -3495,6 +3777,8 @@ void RendererFrontend::createCamera() {
 }
 
 void RendererFrontend::resetCameraForActiveScene() {
+  if (subs_.temporalManager)
+    subs_.temporalManager->reset("scene/camera reset");
   if (!subs_.cameraController) {
     return;
   }
@@ -3666,6 +3950,8 @@ void RendererFrontend::createGeometryBuffers() {
 }
 
 void RendererFrontend::createFrameResources() {
+  if (subs_.temporalManager)
+    subs_.temporalManager->destroyImages();
   ensureObjectBuffers();
   if (subs_.lightingManager) {
     subs_.lightingManager->resizeTiledResources(svc_.swapChainManager.extent());
@@ -3883,9 +4169,20 @@ void RendererFrontend::updateFrameDescriptorSets(
         bloomSampler, tileGridBuffer, tileGridBufferSize, exposureStateBuffers,
         exposureStateBufferSize);
   }
+  if (subs_.temporalManager && preparedParams &&
+      imageIndex < buffers_.cameras.size()) {
+    if (const auto *frame = subs_.frameResourceManager->frame(imageIndex))
+      subs_.temporalManager->updateDescriptors(
+          imageIndex, *frame, buffers_.cameras[imageIndex],
+          preparedParams->debug.displayMode == 0 ||
+              preparedParams->debug.displayMode == 8 ||
+              preparedParams->debug.displayMode >= 100);
+  }
 }
 
 void RendererFrontend::destroyGBufferResources() {
+  if (subs_.temporalManager)
+    subs_.temporalManager->destroyImages();
   if (subs_.frameResourceManager)
     subs_.frameResourceManager->destroy();
 }
@@ -4319,6 +4616,10 @@ bool RendererFrontend::depthVisibilityFrameMatchesCurrentState() const {
 
 BimDrawFilter RendererFrontend::currentBimDrawFilter() const {
   BimDrawFilter filter{};
+  if (captureBimHiddenObject_) {
+    filter.hideSelection = true;
+    filter.selectedObjectIndex = *captureBimHiddenObject_;
+  }
   if (!subs_.guiManager) {
     return filter;
   }
@@ -4352,6 +4653,10 @@ BimDrawFilter RendererFrontend::currentBimDrawFilter() const {
   filter.isolateSelection = guiFilter.isolateSelection;
   filter.hideSelection = guiFilter.hideSelection;
   filter.selectedObjectIndex = selectedBimObjectIndex_;
+  if (captureBimHiddenObject_) {
+    filter.hideSelection = true;
+    filter.selectedObjectIndex = *captureBimHiddenObject_;
+  }
   return filter;
 }
 
@@ -4902,6 +5207,21 @@ void RendererFrontend::presentSceneControls() {
                                 supportedMsaaSamples_.size()),
       sampleCountToSamples(msaaSampleCount_));
 
+  if (subs_.temporalManager)
+    subs_.guiManager->setTemporalSettings(
+        subs_.temporalManager->settings(), subs_.temporalManager->memoryBytes(),
+        subs_.temporalManager->state().frameId(),
+        subs_.temporalManager->state().epoch(),
+        subs_.temporalManager->state().resetReason(),
+        {svc_.swapChainManager.extent().width,
+         svc_.swapChainManager.extent().height},
+        subs_.temporalManager->allocatedBytes(), [&] {
+          if (subs_.rendererTelemetry)
+            for (const auto &pass : subs_.rendererTelemetry->latest().passes)
+              if (pass.name == "TemporalResolve" && pass.gpuTimed)
+                return pass.gpuKnownMs;
+          return 0.0f;
+        }());
   // Sync bloom: push BloomManager settings into GUI before rendering.
   if (subs_.bloomManager) {
     subs_.guiManager->setBloomSettings(
@@ -5540,6 +5860,11 @@ void RendererFrontend::presentSceneControls() {
       subs_.gpuCullManager->unfreezeCulling();
   }
 
+  if (subs_.temporalManager) {
+    subs_.temporalManager->settings() = subs_.guiManager->temporalSettings();
+    if (subs_.guiManager->consumeTemporalReset())
+      subs_.temporalManager->reset("user requested reset");
+  }
   // Sync bloom: pull GUI state back into BloomManager.
   if (subs_.bloomManager) {
     subs_.bloomManager->enabled() = subs_.guiManager->bloomEnabled();
@@ -5979,6 +6304,8 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       residencySettings.screenErrorPixels = lodUi.screenErrorPixels;
       residencySettings.forceResident = false;
     }
+    if (captureBimLodBias_)
+      residencySettings.lodBias = *captureBimLodBias_;
     subs_.bimManager->updateMeshletResidencySettings(residencySettings);
     // Exact type/storey/material/discipline/phase/status filters still route
     // through the existing GPU metadata IDs. Timeline and discipline-preset
@@ -6199,6 +6526,12 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       }
     }
   }
+  if (captureSectionPlane_) {
+    sectionPlaneActive = true;
+    activeSectionPlane = *captureSectionPlane_;
+    pushConstants_.bindless.sectionPlaneEnabled = 1u;
+    pushConstants_.bindless.sectionPlane = activeSectionPlane;
+  }
   if (subs_.sceneManager != nullptr) {
     subs_.sceneManager->updateSceneClipState(sceneClipState);
   }
@@ -6367,6 +6700,9 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   }
   const auto displayMode = frontendDisplayMode(
       subs_.guiManager.get(), configuredDisplayMode(svc_.config));
+  p.debug.temporalForceReactive =
+      subs_.guiManager && (subs_.guiManager->showGeometryOverlay() ||
+                           subs_.guiManager->showNormalValidation());
   p.debug.displayMode = static_cast<uint32_t>(displayMode);
   const bool shadowAtlasVisible =
       p.runtime.activeTechnique == RenderTechniqueId::ForwardRaster ||
@@ -6393,6 +6729,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     p.shadows.shadowSecondaryCommandBuffers[cascadeIndex] =
         svc_.commandBufferManager.secondaryBuffer(imageIndex, cascadeIndex, 0);
   }
+  p.services.temporalManager = subs_.temporalManager.get();
   p.services.gpuCullManager = subs_.gpuCullManager.get();
   p.services.bimManager = subs_.bimManager.get();
   p.services.bloomManager = subs_.bloomManager.get();
@@ -6401,6 +6738,10 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   p.postProcess.exposureSettings =
       subs_.guiManager ? subs_.guiManager->exposureSettings()
                        : exposureSettingsFromConfig(svc_.config);
+  if (captureExposure_) {
+    p.postProcess.exposureSettings.mode = container::gpu::kExposureModeManual;
+    p.postProcess.exposureSettings.manualExposure = *captureExposure_;
+  }
   p.postProcess.renderPass = resources_.renderPasses.postProcess;
   if (subs_.sceneProviderRegistry) {
     p.sceneExtraction = extractProviderSceneFrameInputs(

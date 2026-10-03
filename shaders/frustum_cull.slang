@@ -98,8 +98,16 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
     float  radius = bs.w;
 
     // If bounding sphere radius is 0, always pass (degenerate / not computed).
+    // Stable unjittered planes with a fixed half-pixel guard band. Hi-Z uses
+    // the jittered matrix because its depth was rasterized with that matrix.
+    float4x4 cullingViewProj = uCamera.viewProj;
+    if (uCamera.temporalInfo.w != 0u) {
+        cullingViewProj = uCamera.unjitteredViewProj;
+        cullingViewProj[0] *= uCamera.renderExtent.x / (uCamera.renderExtent.x + 1.0);
+        cullingViewProj[1] *= uCamera.renderExtent.y / (uCamera.renderExtent.y + 1.0);
+    }
     bool visible = (radius <= 0.0) ? true
-                 : SphereFrustumTest(ExtractFrustumPlanes(uCamera.viewProj),
+                 : SphereFrustumTest(ExtractFrustumPlanes(cullingViewProj),
                                      center, radius);
 
     if (visible)

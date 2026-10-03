@@ -2953,8 +2953,14 @@ TEST(RenderingConventionTests,
 
   EXPECT_TRUE(contains(rendererFrontend, "consumeBimElevationViewRequest"));
   EXPECT_TRUE(contains(rendererFrontend, "setBimElevationView"));
-  EXPECT_FALSE(contains(rendererFrontend,
-                        "setOrthographic(sceneState_.selectedMeshNode"));
+  // Capture scripts may change projection explicitly. The elevation control
+  // itself must continue to use the dedicated camera-view preset path.
+  const auto captureStart = rendererFrontend.find("void RendererFrontend::applyTemporalCapture");
+  const auto captureEnd = rendererFrontend.find("void RendererFrontend::writeCaptureTelemetry", captureStart);
+  ASSERT_NE(captureStart, std::string::npos);
+  ASSERT_NE(captureEnd, std::string::npos);
+  const auto controls = rendererFrontend.substr(0, captureStart) + rendererFrontend.substr(captureEnd);
+  EXPECT_FALSE(contains(controls, "setOrthographic(sceneState_.selectedMeshNode"));
   EXPECT_TRUE(contains(cameraController, "CameraViewPreset::Front"));
   EXPECT_TRUE(contains(cameraController, "CameraViewPreset::Back"));
   EXPECT_TRUE(contains(cameraController, "CameraViewPreset::Right"));
@@ -3589,7 +3595,7 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(containsIgnoringWhitespace(exposureManager, "exposureStateBuffer_"));
   EXPECT_TRUE(containsIgnoringWhitespace(exposureManager, "descriptorSets_[imageIndex]"));
   EXPECT_TRUE(containsIgnoringWhitespace(exposureManager,
-                       "updateDescriptorSet(imageIndex, sceneColorView)"));
+                       "updateDescriptorSet(imageIndex, sceneColorView, sourceLayout)"));
   EXPECT_FALSE(containsIgnoringWhitespace(exposureManager, "exposureStateBuffers_[imageIndex]"));
 
   EXPECT_TRUE(containsIgnoringWhitespace(deferredRasterTechnique,
@@ -5173,8 +5179,7 @@ TEST(RenderingConventionTests, SceneOpaqueDrawPlanningUsesPlanner) {
   const std::string deferredRasterTechnique =
       readRepoTextFile("src/renderer/deferred/DeferredRasterTechnique.cpp");
   const std::string deferredScenePassRecorderHeader =
-      readRepoTextFile("include/Container/renderer/deferred/"
-                       "DeferredRasterScenePassRecorder.h");
+      readRepoTextFile("include/Container/renderer/deferred/DeferredRasterScenePassRecorder.h");
   const std::string deferredScenePassRecorder = readRepoTextFile(
       "src/renderer/deferred/DeferredRasterScenePassRecorder.cpp");
   const std::string plannerHeader = readRepoTextFile(
@@ -6667,8 +6672,7 @@ TEST(RenderingConventionTests,
 
   EXPECT_TRUE(contains(opaque, "uLighting.localContactVisibility != 0u"));
   EXPECT_TRUE(contains(opaque,
-                       "ShouldTracePointLightContactShadow(radiance, "
-                       "lightVisibility)"));
+                       "ShouldTracePointLightContactShadow(radiance, lightVisibility)"));
   EXPECT_TRUE(
       contains(opaque, "ScreenSpacePointLightContactVisibilityDepthOnly("));
   EXPECT_TRUE(contains(opaque, "radiance *= lightVisibility"));
@@ -10369,8 +10373,7 @@ TEST(RenderingConventionTests, BimSectionPlaneVisualIsEditableAndRendered) {
   const std::string bimManager =
       readRepoTextFile("src/renderer/bim/BimManager.cpp");
   const std::string overlayPlannerHeader =
-      readRepoTextFile("include/Container/renderer/bim/"
-                       "BimLightingOverlayPlanner.h");
+      readRepoTextFile("include/Container/renderer/bim/BimLightingOverlayPlanner.h");
   const std::string overlayRecorder =
       readRepoTextFile("src/renderer/bim/BimLightingOverlayRecorder.cpp");
   const std::string lightingPassRecorder = readRepoTextFile(

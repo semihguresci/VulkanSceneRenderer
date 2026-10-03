@@ -1,0 +1,4138 @@
+{
+  "schemaVersion": 1,
+  "platform": "windows-nvidia",
+  "quality": {},
+  "performance": {},
+  "stress": {
+    "gltf": {
+      "captures": 17,
+      "validation": "passed"
+    },
+    "bim": {
+      "captures": 17,
+      "validation": "passed"
+    },
+    "usda": {
+      "captures": 17,
+      "validation": "passed"
+    },
+    "deferred-staticVelocity": [
+      0.5027790069580078,
+      0.5027790069580078,
+      0.5027790069580078
+    ],
+    "deferred-reset": {
+      "resetGrayFraction": 1.0,
+      "exposureRetainsEpoch": true
+    },
+    "forward-staticVelocity": [
+      0.5027790069580078,
+      0.5027790069580078,
+      0.5027790069580078
+    ],
+    "forward-reset": {
+      "resetGrayFraction": 1.0,
+      "exposureRetainsEpoch": true
+    },
+    "lifecycle": {
+      "captures": 15,
+      "telemetry": [
+        {
+          "cpuPhasesMs": {
+            "Acquire image": 0.009100000374019146,
+            "Command record": 2.0346999168395996,
+            "Descriptors": 0.05249999836087227,
+            "Frame": 29.871400833129883,
+            "Frame wait": 0.001500000013038516,
+            "GUI": 0.0003000000142492354,
+            "Image fence": 0.0,
+            "Present": 0.6897000074386597,
+            "Queue submit": 0.26269999146461487,
+            "Readbacks": 0.0038999998942017555,
+            "Resource growth": 0.007600000128149986,
+            "Scene update": 1.3458000421524048,
+            "Screenshot": 25.409099578857422
+          },
+          "deviceIdleWaits": 2,
+          "driverVersion": 2480242688,
+          "framesInFlight": 2,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "gpuKnownMs": 0.0,
+          "msaaSamples": 1,
+          "passes": [
+            {
+              "active": true,
+              "cpuMs": 0.08460000157356262,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "FrustumCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.10520000010728836,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "DepthPrepass",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimDepthPrepass",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.40790000557899475,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "HiZGenerate",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "OcclusionCull",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.017000000923871994,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "CullStatsReadback",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.1437000036239624,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "GBuffer",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimGBuffer",
+              "status": "missing pass dependency"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.18979999423027039,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TransparentPick",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.026399999856948853,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "OitClear",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.02410000003874302,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCullCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.07680000364780426,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.021700000390410423,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCullCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.065700002014637,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.026200000196695328,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCullCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.0681999996304512,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.021700000390410423,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCullCascade3",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06499999761581421,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCascade3",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "LocalShadowDepth",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.010200000368058681,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "DepthToReadOnly",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.015200000256299973,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TileCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.0575999990105629,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "GTAO",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.1720999926328659,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "Lighting",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.10830000042915344,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TemporalVelocity",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.10769999772310257,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TemporalResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TransformGizmos",
+              "status": "not needed"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ExposureAdaptation",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014999999664723873,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "OitResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "Bloom",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06300000101327896,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "PostProcess",
+              "status": "Active"
+            }
+          ],
+          "resolution": [
+            640,
+            360
+          ],
+          "schemaVersion": 1,
+          "serializedConcurrency": true,
+          "swapchainImages": 3,
+          "swapchainRecreates": 2,
+          "taa": {
+            "allocatedImageBytes": 37109760,
+            "depthAbsoluteTolerance": 0.019999999552965164,
+            "depthRelativeTolerance": 0.009999999776482582,
+            "enabled": true,
+            "epoch": 10,
+            "historyWeight": 0.8999999761581421,
+            "imageAllocationCount": 21,
+            "imagePayloadBytes": 34790400,
+            "jitterSeed": 0,
+            "logicalImageWriteBytesPerFrame": 13132800,
+            "resetReason": "history resources recreated",
+            "submittedFrame": 7,
+            "varianceGamma": 1.25
+          },
+          "technique": "deferred-raster",
+          "vulkanApiVersion": 4211013
+        },
+        {
+          "cpuPhasesMs": {
+            "Acquire image": 0.011099999770522118,
+            "Command record": 1.7877000570297241,
+            "Descriptors": 0.07020000368356705,
+            "Frame": 26.871000289916992,
+            "Frame wait": 0.0013000000035390258,
+            "GUI": 0.0003000000142492354,
+            "Image fence": 9.999999747378752e-05,
+            "Present": 0.5954999923706055,
+            "Queue submit": 0.24160000681877136,
+            "Readbacks": 0.0031999999191612005,
+            "Resource growth": 0.018799999728798866,
+            "Scene update": 0.023800000548362732,
+            "Screenshot": 24.043800354003906
+          },
+          "deviceIdleWaits": 2,
+          "driverVersion": 2480242688,
+          "framesInFlight": 2,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "gpuKnownMs": 0.7168959379196167,
+          "msaaSamples": 1,
+          "passes": [
+            {
+              "active": true,
+              "cpuMs": 0.04910000041127205,
+              "gpuMs": 0.0144640002399683,
+              "gpuTimed": true,
+              "name": "FrustumCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.11150000244379044,
+              "gpuMs": 0.014336000196635723,
+              "gpuTimed": true,
+              "name": "DepthPrepass",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimDepthPrepass",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.19529999792575836,
+              "gpuMs": 0.03129599988460541,
+              "gpuTimed": true,
+              "name": "HiZGenerate",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.0364999994635582,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "OcclusionCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.01549999974668026,
+              "gpuMs": 0.0030400000978261232,
+              "gpuTimed": true,
+              "name": "CullStatsReadback",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.14169999957084656,
+              "gpuMs": 0.03920000046491623,
+              "gpuTimed": true,
+              "name": "GBuffer",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimGBuffer",
+              "status": "missing pass dependency"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.20069999992847443,
+              "gpuMs": 0.02252800017595291,
+              "gpuTimed": true,
+              "name": "TransparentPick",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.02710000053048134,
+              "gpuMs": 0.001408000010997057,
+              "gpuTimed": true,
+              "name": "OitClear",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.023399999365210533,
+              "gpuMs": 0.008320000022649765,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.07660000026226044,
+              "gpuMs": 0.03299200162291527,
+              "gpuTimed": true,
+              "name": "ShadowCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.021700000390410423,
+              "gpuMs": 0.009344000369310379,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06710000336170197,
+              "gpuMs": 0.036928001791238785,
+              "gpuTimed": true,
+              "name": "ShadowCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.021199999377131462,
+              "gpuMs": 0.0080960001796484,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06390000134706497,
+              "gpuMs": 0.029920000582933426,
+              "gpuTimed": true,
+              "name": "ShadowCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.021900000050663948,
+              "gpuMs": 0.008320000022649765,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade3",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06629999727010727,
+              "gpuMs": 0.029152000322937965,
+              "gpuTimed": true,
+              "name": "ShadowCascade3",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "LocalShadowDepth",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.010099999606609344,
+              "gpuMs": 0.002047999994829297,
+              "gpuTimed": true,
+              "name": "DepthToReadOnly",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.015399999916553497,
+              "gpuMs": 0.006976000033318996,
+              "gpuTimed": true,
+              "name": "TileCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.060600001364946365,
+              "gpuMs": 0.05177599936723709,
+              "gpuTimed": true,
+              "name": "GTAO",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.17409999668598175,
+              "gpuMs": 0.21135999262332916,
+              "gpuTimed": true,
+              "name": "Lighting",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.11479999870061874,
+              "gpuMs": 0.040063999593257904,
+              "gpuTimed": true,
+              "name": "TemporalVelocity",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.04309999942779541,
+              "gpuMs": 0.09984000027179718,
+              "gpuTimed": true,
+              "name": "TemporalResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TransformGizmos",
+              "status": "not needed"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ExposureAdaptation",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.015699999406933784,
+              "gpuMs": 0.0009599999757483602,
+              "gpuTimed": true,
+              "name": "OitResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "Bloom",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06419999897480011,
+              "gpuMs": 0.014527999795973301,
+              "gpuTimed": true,
+              "name": "PostProcess",
+              "status": "Active"
+            }
+          ],
+          "resolution": [
+            640,
+            360
+          ],
+          "schemaVersion": 1,
+          "serializedConcurrency": true,
+          "swapchainImages": 3,
+          "swapchainRecreates": 2,
+          "taa": {
+            "allocatedImageBytes": 37109760,
+            "depthAbsoluteTolerance": 0.019999999552965164,
+            "depthRelativeTolerance": 0.009999999776482582,
+            "enabled": true,
+            "epoch": 11,
+            "historyWeight": 0.8999999761581421,
+            "imageAllocationCount": 21,
+            "imagePayloadBytes": 34790400,
+            "jitterSeed": 0,
+            "logicalImageWriteBytesPerFrame": 13132800,
+            "resetReason": "capture sequence reset",
+            "submittedFrame": 8,
+            "varianceGamma": 1.25
+          },
+          "technique": "deferred-raster",
+          "vulkanApiVersion": 4211013
+        },
+        {
+          "cpuPhasesMs": {
+            "Acquire image": 0.01140000019222498,
+            "Command record": 2.035399913787842,
+            "Descriptors": 0.05700000002980232,
+            "Frame": 39.93510055541992,
+            "Frame wait": 0.006300000008195639,
+            "GUI": 0.00039999998989515007,
+            "Image fence": 9.999999747378752e-05,
+            "Present": 1.1521999835968018,
+            "Queue submit": 0.25699999928474426,
+            "Readbacks": 0.00430000014603138,
+            "Resource growth": 0.0210999995470047,
+            "Scene update": 0.6464999914169312,
+            "Screenshot": 35.67359924316406
+          },
+          "deviceIdleWaits": 3,
+          "driverVersion": 2480242688,
+          "framesInFlight": 2,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "gpuKnownMs": 0.0,
+          "msaaSamples": 1,
+          "passes": [
+            {
+              "active": true,
+              "cpuMs": 0.05310000106692314,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "FrustumCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.11779999732971191,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "DepthPrepass",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimDepthPrepass",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.4133000075817108,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "HiZGenerate",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "OcclusionCull",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.017000000923871994,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "CullStatsReadback",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.1379999965429306,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "GBuffer",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimGBuffer",
+              "status": "missing pass dependency"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.19020000100135803,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TransparentPick",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.027400000020861626,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "OitClear",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.028300000354647636,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCullCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.07940000295639038,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.022099999710917473,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCullCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06560000032186508,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.030899999663233757,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCullCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06949999928474426,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.021400000900030136,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCullCascade3",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06509999930858612,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCascade3",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "LocalShadowDepth",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.010200000368058681,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "DepthToReadOnly",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.015599999576807022,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TileCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.0551999993622303,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "GTAO",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.17640000581741333,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "Lighting",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.10779999941587448,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TemporalVelocity",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.10729999840259552,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TemporalResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TransformGizmos",
+              "status": "not needed"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ExposureAdaptation",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014999999664723873,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "OitResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "Bloom",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06400000303983688,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "PostProcess",
+              "status": "Active"
+            }
+          ],
+          "resolution": [
+            800,
+            450
+          ],
+          "schemaVersion": 1,
+          "serializedConcurrency": true,
+          "swapchainImages": 3,
+          "swapchainRecreates": 3,
+          "taa": {
+            "allocatedImageBytes": 61898752,
+            "depthAbsoluteTolerance": 0.019999999552965164,
+            "depthRelativeTolerance": 0.009999999776482582,
+            "enabled": true,
+            "epoch": 15,
+            "historyWeight": 0.8999999761581421,
+            "imageAllocationCount": 21,
+            "imagePayloadBytes": 54360000,
+            "jitterSeed": 0,
+            "logicalImageWriteBytesPerFrame": 20520000,
+            "resetReason": "render extent changed",
+            "submittedFrame": 11,
+            "varianceGamma": 1.25
+          },
+          "technique": "deferred-raster",
+          "vulkanApiVersion": 4211013
+        },
+        {
+          "cpuPhasesMs": {
+            "Acquire image": 0.010900000110268593,
+            "Command record": 2.0209999084472656,
+            "Descriptors": 0.05350000038743019,
+            "Frame": 28.343299865722656,
+            "Frame wait": 0.005799999926239252,
+            "GUI": 0.0003000000142492354,
+            "Image fence": 0.0,
+            "Present": 1.1485999822616577,
+            "Queue submit": 0.25189998745918274,
+            "Readbacks": 0.00419999985024333,
+            "Resource growth": 0.00029999998514540493,
+            "Scene update": 0.6223000288009644,
+            "Screenshot": 24.164899826049805
+          },
+          "deviceIdleWaits": 4,
+          "driverVersion": 2480242688,
+          "framesInFlight": 2,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "gpuKnownMs": 0.0,
+          "msaaSamples": 1,
+          "passes": [
+            {
+              "active": true,
+              "cpuMs": 0.0494999997317791,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "FrustumCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.1088000014424324,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "DepthPrepass",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimDepthPrepass",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.40470001101493835,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "HiZGenerate",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "OcclusionCull",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.023900000378489494,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "CullStatsReadback",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.14139999449253082,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "GBuffer",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimGBuffer",
+              "status": "missing pass dependency"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.1907999962568283,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TransparentPick",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.028699999675154686,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "OitClear",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.024800000712275505,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCullCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.08110000193119049,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.022099999710917473,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCullCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06400000303983688,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.022099999710917473,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCullCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06449999660253525,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.021199999377131462,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCullCascade3",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.065700002014637,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ShadowCascade3",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "LocalShadowDepth",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.013199999928474426,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "DepthToReadOnly",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.015599999576807022,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TileCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06289999932050705,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "GTAO",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.17409999668598175,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "Lighting",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.10809999704360962,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TemporalVelocity",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.11079999804496765,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TemporalResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TransformGizmos",
+              "status": "not needed"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ExposureAdaptation",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.015599999576807022,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "OitResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "Bloom",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06509999930858612,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "PostProcess",
+              "status": "Active"
+            }
+          ],
+          "resolution": [
+            640,
+            360
+          ],
+          "schemaVersion": 1,
+          "serializedConcurrency": true,
+          "swapchainImages": 3,
+          "swapchainRecreates": 4,
+          "taa": {
+            "allocatedImageBytes": 37109760,
+            "depthAbsoluteTolerance": 0.019999999552965164,
+            "depthRelativeTolerance": 0.009999999776482582,
+            "enabled": true,
+            "epoch": 19,
+            "historyWeight": 0.8999999761581421,
+            "imageAllocationCount": 21,
+            "imagePayloadBytes": 34790400,
+            "jitterSeed": 0,
+            "logicalImageWriteBytesPerFrame": 13132800,
+            "resetReason": "render extent changed",
+            "submittedFrame": 14,
+            "varianceGamma": 1.25
+          },
+          "technique": "deferred-raster",
+          "vulkanApiVersion": 4211013
+        },
+        {
+          "cpuPhasesMs": {
+            "Acquire image": 0.00930000003427267,
+            "Command record": 1.695199966430664,
+            "Descriptors": 0.0560000017285347,
+            "Frame": 25.78619956970215,
+            "Frame wait": 0.001500000013038516,
+            "GUI": 0.00039999998989515007,
+            "Image fence": 9.999999747378752e-05,
+            "Present": 0.6198999881744385,
+            "Queue submit": 0.23090000450611115,
+            "Readbacks": 0.0017000000225380063,
+            "Resource growth": 0.00039999998989515007,
+            "Scene update": 0.021800000220537186,
+            "Screenshot": 23.089599609375
+          },
+          "deviceIdleWaits": 4,
+          "driverVersion": 2480242688,
+          "framesInFlight": 2,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "gpuKnownMs": 0.7115839719772339,
+          "msaaSamples": 1,
+          "passes": [
+            {
+              "active": true,
+              "cpuMs": 0.03629999980330467,
+              "gpuMs": 0.014336000196635723,
+              "gpuTimed": true,
+              "name": "FrustumCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.08020000159740448,
+              "gpuMs": 0.013151999562978745,
+              "gpuTimed": true,
+              "name": "DepthPrepass",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimDepthPrepass",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.19349999725818634,
+              "gpuMs": 0.031199999153614044,
+              "gpuTimed": true,
+              "name": "HiZGenerate",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.033399999141693115,
+              "gpuMs": 0.01196799986064434,
+              "gpuTimed": true,
+              "name": "OcclusionCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014399999752640724,
+              "gpuMs": 0.0033599999733269215,
+              "gpuTimed": true,
+              "name": "CullStatsReadback",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.13120000064373016,
+              "gpuMs": 0.03884800150990486,
+              "gpuTimed": true,
+              "name": "GBuffer",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimGBuffer",
+              "status": "missing pass dependency"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.17960000038146973,
+              "gpuMs": 0.02252800017595291,
+              "gpuTimed": true,
+              "name": "TransparentPick",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.030500000342726707,
+              "gpuMs": 0.002240000059828162,
+              "gpuTimed": true,
+              "name": "OitClear",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.02280000038444996,
+              "gpuMs": 0.008960000239312649,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.07169999927282333,
+              "gpuMs": 0.032607998698949814,
+              "gpuTimed": true,
+              "name": "ShadowCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.02160000056028366,
+              "gpuMs": 0.008191999979317188,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06669999659061432,
+              "gpuMs": 0.03574400022625923,
+              "gpuTimed": true,
+              "name": "ShadowCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.021900000050663948,
+              "gpuMs": 0.008191999979317188,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.10260000079870224,
+              "gpuMs": 0.030368000268936157,
+              "gpuTimed": true,
+              "name": "ShadowCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.025299999862909317,
+              "gpuMs": 0.009503999724984169,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade3",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06769999861717224,
+              "gpuMs": 0.028672000393271446,
+              "gpuTimed": true,
+              "name": "ShadowCascade3",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "LocalShadowDepth",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.009999999776482582,
+              "gpuMs": 0.0007680000271648169,
+              "gpuTimed": true,
+              "name": "DepthToReadOnly",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.015200000256299973,
+              "gpuMs": 0.0077760000713169575,
+              "gpuTimed": true,
+              "name": "TileCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.054099999368190765,
+              "gpuMs": 0.05119999870657921,
+              "gpuTimed": true,
+              "name": "GTAO",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.15520000457763672,
+              "gpuMs": 0.21353599429130554,
+              "gpuTimed": true,
+              "name": "Lighting",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.10859999805688858,
+              "gpuMs": 0.039103999733924866,
+              "gpuTimed": true,
+              "name": "TemporalVelocity",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.03959999978542328,
+              "gpuMs": 0.08191999793052673,
+              "gpuTimed": true,
+              "name": "TemporalResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TransformGizmos",
+              "status": "not needed"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ExposureAdaptation",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.015200000256299973,
+              "gpuMs": 0.0008319999906234443,
+              "gpuTimed": true,
+              "name": "OitResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "Bloom",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06129999831318855,
+              "gpuMs": 0.016575999557971954,
+              "gpuTimed": true,
+              "name": "PostProcess",
+              "status": "Active"
+            }
+          ],
+          "resolution": [
+            640,
+            360
+          ],
+          "schemaVersion": 1,
+          "serializedConcurrency": true,
+          "swapchainImages": 3,
+          "swapchainRecreates": 4,
+          "taa": {
+            "allocatedImageBytes": 37109760,
+            "depthAbsoluteTolerance": 0.019999999552965164,
+            "depthRelativeTolerance": 0.009999999776482582,
+            "enabled": true,
+            "epoch": 19,
+            "historyWeight": 0.8999999761581421,
+            "imageAllocationCount": 21,
+            "imagePayloadBytes": 34790400,
+            "jitterSeed": 0,
+            "logicalImageWriteBytesPerFrame": 13132800,
+            "resetReason": "render extent changed",
+            "submittedFrame": 16,
+            "varianceGamma": 1.25
+          },
+          "technique": "deferred-raster",
+          "vulkanApiVersion": 4211013
+        },
+        {
+          "cpuPhasesMs": {
+            "Acquire image": 0.036400001496076584,
+            "Command record": 1.8761999607086182,
+            "Descriptors": 0.0989999994635582,
+            "Frame": 48.94070053100586,
+            "Frame wait": 0.01850000023841858,
+            "GUI": 0.0005000000237487257,
+            "Image fence": 0.0019000000320374966,
+            "Present": 0.566100001335144,
+            "Queue submit": 0.2694000005722046,
+            "Readbacks": 0.005400000140070915,
+            "Resource growth": 21.622600555419922,
+            "Scene update": 0.03750000149011612,
+            "Screenshot": 24.353700637817383
+          },
+          "deviceIdleWaits": 5,
+          "driverVersion": 2480242688,
+          "framesInFlight": 2,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "gpuKnownMs": 0.687391996383667,
+          "msaaSamples": 1,
+          "passes": [
+            {
+              "active": true,
+              "cpuMs": 0.06750000268220901,
+              "gpuMs": 0.012896000407636166,
+              "gpuTimed": true,
+              "name": "FrustumCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.13349999487400055,
+              "gpuMs": 0.01119999960064888,
+              "gpuTimed": true,
+              "name": "DepthPrepass",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimDepthPrepass",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.20730000734329224,
+              "gpuMs": 0.031039999797940254,
+              "gpuTimed": true,
+              "name": "HiZGenerate",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.03680000081658363,
+              "gpuMs": 0.01190400030463934,
+              "gpuTimed": true,
+              "name": "OcclusionCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.01640000008046627,
+              "gpuMs": 0.003263999940827489,
+              "gpuTimed": true,
+              "name": "CullStatsReadback",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.1428000032901764,
+              "gpuMs": 0.03840000182390213,
+              "gpuTimed": true,
+              "name": "GBuffer",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimGBuffer",
+              "status": "missing pass dependency"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.19030000269412994,
+              "gpuMs": 0.021983999758958817,
+              "gpuTimed": true,
+              "name": "TransparentPick",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.02879999950528145,
+              "gpuMs": 0.0016959999920800328,
+              "gpuTimed": true,
+              "name": "OitClear",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.025100000202655792,
+              "gpuMs": 0.009503999724984169,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.08110000193119049,
+              "gpuMs": 0.030719999223947525,
+              "gpuTimed": true,
+              "name": "ShadowCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.02250000089406967,
+              "gpuMs": 0.008287999778985977,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.07249999791383743,
+              "gpuMs": 0.03481600061058998,
+              "gpuTimed": true,
+              "name": "ShadowCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.023800000548362732,
+              "gpuMs": 0.008448000065982342,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.066600002348423,
+              "gpuMs": 0.02812799997627735,
+              "gpuTimed": true,
+              "name": "ShadowCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.021900000050663948,
+              "gpuMs": 0.00940799992531538,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade3",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06390000134706497,
+              "gpuMs": 0.026623999699950218,
+              "gpuTimed": true,
+              "name": "ShadowCascade3",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "LocalShadowDepth",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.010099999606609344,
+              "gpuMs": 0.0016639999812468886,
+              "gpuTimed": true,
+              "name": "DepthToReadOnly",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.015699999406933784,
+              "gpuMs": 0.007903999648988247,
+              "gpuTimed": true,
+              "name": "TileCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.0608999989926815,
+              "gpuMs": 0.05056000128388405,
+              "gpuTimed": true,
+              "name": "GTAO",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.17489999532699585,
+              "gpuMs": 0.19811199605464935,
+              "gpuTimed": true,
+              "name": "Lighting",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.07000000029802322,
+              "gpuMs": 0.03891199827194214,
+              "gpuTimed": true,
+              "name": "TemporalVelocity",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.04540000110864639,
+              "gpuMs": 0.0822720006108284,
+              "gpuTimed": true,
+              "name": "TemporalResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TransformGizmos",
+              "status": "not needed"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ExposureAdaptation",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.015599999576807022,
+              "gpuMs": 0.002047999994829297,
+              "gpuTimed": true,
+              "name": "OitResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "Bloom",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.0640999972820282,
+              "gpuMs": 0.01759999990463257,
+              "gpuTimed": true,
+              "name": "PostProcess",
+              "status": "Active"
+            }
+          ],
+          "resolution": [
+            640,
+            360
+          ],
+          "schemaVersion": 1,
+          "serializedConcurrency": true,
+          "swapchainImages": 3,
+          "swapchainRecreates": 5,
+          "taa": {
+            "allocatedImageBytes": 0,
+            "depthAbsoluteTolerance": 0.019999999552965164,
+            "depthRelativeTolerance": 0.009999999776482582,
+            "enabled": true,
+            "epoch": 22,
+            "historyWeight": 0.8999999761581421,
+            "imageAllocationCount": 0,
+            "imagePayloadBytes": 0,
+            "jitterSeed": 0,
+            "logicalImageWriteBytesPerFrame": 13132800,
+            "resetReason": "history resources recreated",
+            "submittedFrame": 17,
+            "varianceGamma": 1.25
+          },
+          "technique": "deferred-raster",
+          "vulkanApiVersion": 4211013
+        },
+        {
+          "cpuPhasesMs": {
+            "Acquire image": 0.008799999952316284,
+            "Command record": 1.5161999464035034,
+            "Descriptors": 0.022700000554323196,
+            "Frame": 26.45050048828125,
+            "Frame wait": 0.001500000013038516,
+            "GUI": 9.999999747378752e-05,
+            "Image fence": 0.0,
+            "Present": 0.2856999933719635,
+            "Queue submit": 0.21610000729560852,
+            "Readbacks": 0.0017000000225380063,
+            "Resource growth": 0.00029999998514540493,
+            "Scene update": 0.010599999688565731,
+            "Screenshot": 24.32069969177246
+          },
+          "deviceIdleWaits": 5,
+          "driverVersion": 2480242688,
+          "framesInFlight": 2,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "gpuKnownMs": 0.7040640115737915,
+          "msaaSamples": 1,
+          "passes": [
+            {
+              "active": true,
+              "cpuMs": 0.03779999911785126,
+              "gpuMs": 0.014879999682307243,
+              "gpuTimed": true,
+              "name": "FrustumCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.08060000091791153,
+              "gpuMs": 0.013311999849975109,
+              "gpuTimed": true,
+              "name": "DepthPrepass",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimDepthPrepass",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.18770000338554382,
+              "gpuMs": 0.030912000685930252,
+              "gpuTimed": true,
+              "name": "HiZGenerate",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.033799998462200165,
+              "gpuMs": 0.010847999714314938,
+              "gpuTimed": true,
+              "name": "OcclusionCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014700000174343586,
+              "gpuMs": 0.0036800000816583633,
+              "gpuTimed": true,
+              "name": "CullStatsReadback",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.13330000638961792,
+              "gpuMs": 0.03868800029158592,
+              "gpuTimed": true,
+              "name": "GBuffer",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimGBuffer",
+              "status": "missing pass dependency"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.1835000067949295,
+              "gpuMs": 0.022431999444961548,
+              "gpuTimed": true,
+              "name": "TransparentPick",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.027499999850988388,
+              "gpuMs": 0.0015360000543296337,
+              "gpuTimed": true,
+              "name": "OitClear",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.023399999365210533,
+              "gpuMs": 0.009184000082314014,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.07259999960660934,
+              "gpuMs": 0.03276799991726875,
+              "gpuTimed": true,
+              "name": "ShadowCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.022199999541044235,
+              "gpuMs": 0.008352000266313553,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06809999793767929,
+              "gpuMs": 0.03484800085425377,
+              "gpuTimed": true,
+              "name": "ShadowCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.023499999195337296,
+              "gpuMs": 0.0081599997356534,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06499999761581421,
+              "gpuMs": 0.02848000079393387,
+              "gpuTimed": true,
+              "name": "ShadowCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.022600000724196434,
+              "gpuMs": 0.00979200005531311,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade3",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06669999659061432,
+              "gpuMs": 0.02816000021994114,
+              "gpuTimed": true,
+              "name": "ShadowCascade3",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "LocalShadowDepth",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.010400000028312206,
+              "gpuMs": 0.0019199999514967203,
+              "gpuTimed": true,
+              "name": "DepthToReadOnly",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014999999664723873,
+              "gpuMs": 0.008191999979317188,
+              "gpuTimed": true,
+              "name": "TileCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.057500001043081284,
+              "gpuMs": 0.04915200173854828,
+              "gpuTimed": true,
+              "name": "GTAO",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.16030000150203705,
+              "gpuMs": 0.20947200059890747,
+              "gpuTimed": true,
+              "name": "Lighting",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.03920000046491623,
+              "gpuTimed": true,
+              "name": "TemporalVelocity",
+              "status": "not needed"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.08191999793052673,
+              "gpuTimed": true,
+              "name": "TemporalResolve",
+              "status": "missing resource"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TransformGizmos",
+              "status": "not needed"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ExposureAdaptation",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.013799999840557575,
+              "gpuMs": 0.0016639999812468886,
+              "gpuTimed": true,
+              "name": "OitResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "Bloom",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.060100000351667404,
+              "gpuMs": 0.01651199907064438,
+              "gpuTimed": true,
+              "name": "PostProcess",
+              "status": "Active"
+            }
+          ],
+          "resolution": [
+            640,
+            360
+          ],
+          "schemaVersion": 1,
+          "serializedConcurrency": true,
+          "swapchainImages": 3,
+          "swapchainRecreates": 5,
+          "taa": {
+            "allocatedImageBytes": 37109760,
+            "depthAbsoluteTolerance": 0.019999999552965164,
+            "depthRelativeTolerance": 0.009999999776482582,
+            "enabled": false,
+            "epoch": 24,
+            "historyWeight": 0.8999999761581421,
+            "imageAllocationCount": 21,
+            "imagePayloadBytes": 34790400,
+            "jitterSeed": 0,
+            "logicalImageWriteBytesPerFrame": 0,
+            "resetReason": "AA mode/jitter changed",
+            "submittedFrame": 20,
+            "varianceGamma": 1.25
+          },
+          "technique": "deferred-raster",
+          "vulkanApiVersion": 4211013
+        },
+        {
+          "cpuPhasesMs": {
+            "Acquire image": 0.01640000008046627,
+            "Command record": 1.6642999649047852,
+            "Descriptors": 0.06300000101327896,
+            "Frame": 26.179500579833984,
+            "Frame wait": 0.004600000102072954,
+            "GUI": 9.999999747378752e-05,
+            "Image fence": 0.00139999995008111,
+            "Present": 0.34119999408721924,
+            "Queue submit": 0.23160000145435333,
+            "Readbacks": 0.0020000000949949026,
+            "Resource growth": 0.0004000000189989805,
+            "Scene update": 0.018799999728798866,
+            "Screenshot": 23.805599212646484
+          },
+          "deviceIdleWaits": 5,
+          "driverVersion": 2480242688,
+          "framesInFlight": 2,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "gpuKnownMs": 0.5665920376777649,
+          "msaaSamples": 1,
+          "passes": [
+            {
+              "active": true,
+              "cpuMs": 0.04100000113248825,
+              "gpuMs": 0.00979200005531311,
+              "gpuTimed": true,
+              "name": "FrustumCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.0738999992609024,
+              "gpuMs": 0.012256000190973282,
+              "gpuTimed": true,
+              "name": "DepthPrepass",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimDepthPrepass",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.19679999351501465,
+              "gpuMs": 0.030719999223947525,
+              "gpuTimed": true,
+              "name": "HiZGenerate",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.03269999846816063,
+              "gpuMs": 0.010463999584317207,
+              "gpuTimed": true,
+              "name": "OcclusionCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014000000432133675,
+              "gpuMs": 0.002816000021994114,
+              "gpuTimed": true,
+              "name": "CullStatsReadback",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.12770000100135803,
+              "gpuMs": 0.03843199834227562,
+              "gpuTimed": true,
+              "name": "GBuffer",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimGBuffer",
+              "status": "missing pass dependency"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.17679999768733978,
+              "gpuMs": 0.021247999742627144,
+              "gpuTimed": true,
+              "name": "TransparentPick",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.026000000536441803,
+              "gpuMs": 0.0017600000137463212,
+              "gpuTimed": true,
+              "name": "OitClear",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.02419999986886978,
+              "gpuMs": 0.009247999638319016,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.07660000026226044,
+              "gpuMs": 0.030688000842928886,
+              "gpuTimed": true,
+              "name": "ShadowCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.02199999988079071,
+              "gpuMs": 0.008191999979317188,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06499999761581421,
+              "gpuMs": 0.035232000052928925,
+              "gpuTimed": true,
+              "name": "ShadowCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.021299999207258224,
+              "gpuMs": 0.008191999979317188,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06260000169277191,
+              "gpuMs": 0.027008000761270523,
+              "gpuTimed": true,
+              "name": "ShadowCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.020999999716877937,
+              "gpuMs": 0.009472000412642956,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade3",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06289999932050705,
+              "gpuMs": 0.026623999699950218,
+              "gpuTimed": true,
+              "name": "ShadowCascade3",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "LocalShadowDepth",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.010099999606609344,
+              "gpuMs": 0.0016639999812468886,
+              "gpuTimed": true,
+              "name": "DepthToReadOnly",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014399999752640724,
+              "gpuMs": 0.007615999784320593,
+              "gpuTimed": true,
+              "name": "TileCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.053300000727176666,
+              "gpuMs": 0.04915200173854828,
+              "gpuTimed": true,
+              "name": "GTAO",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.15129999816417694,
+              "gpuMs": 0.21395200490951538,
+              "gpuTimed": true,
+              "name": "Lighting",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.11240000277757645,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TemporalVelocity",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.04280000180006027,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TemporalResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TransformGizmos",
+              "status": "not needed"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ExposureAdaptation",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.015399999916553497,
+              "gpuMs": 0.0016319999704137444,
+              "gpuTimed": true,
+              "name": "OitResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "Bloom",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.060100000351667404,
+              "gpuMs": 0.010432000271975994,
+              "gpuTimed": true,
+              "name": "PostProcess",
+              "status": "Active"
+            }
+          ],
+          "resolution": [
+            640,
+            360
+          ],
+          "schemaVersion": 1,
+          "serializedConcurrency": true,
+          "swapchainImages": 3,
+          "swapchainRecreates": 5,
+          "taa": {
+            "allocatedImageBytes": 37109760,
+            "depthAbsoluteTolerance": 0.019999999552965164,
+            "depthRelativeTolerance": 0.009999999776482582,
+            "enabled": true,
+            "epoch": 25,
+            "historyWeight": 0.8999999761581421,
+            "imageAllocationCount": 21,
+            "imagePayloadBytes": 34790400,
+            "jitterSeed": 0,
+            "logicalImageWriteBytesPerFrame": 13132800,
+            "resetReason": "AA mode/jitter changed",
+            "submittedFrame": 23,
+            "varianceGamma": 1.25
+          },
+          "technique": "deferred-raster",
+          "vulkanApiVersion": 4211013
+        },
+        {
+          "cpuPhasesMs": {
+            "Acquire image": 0.014399999752640724,
+            "Command record": 1.1734000444412231,
+            "Descriptors": 0.19629999995231628,
+            "Frame": 25.588199615478516,
+            "Frame wait": 0.00139999995008111,
+            "GUI": 9.999999747378752e-05,
+            "Image fence": 0.002099999925121665,
+            "Present": 0.2721000015735626,
+            "Queue submit": 0.16859999299049377,
+            "Readbacks": 0.0024999999441206455,
+            "Resource growth": 0.00019999999494757503,
+            "Scene update": 0.014499999582767487,
+            "Screenshot": 23.59760093688965
+          },
+          "deviceIdleWaits": 5,
+          "driverVersion": 2480242688,
+          "framesInFlight": 2,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "gpuKnownMs": 0.7038080096244812,
+          "msaaSamples": 1,
+          "passes": [
+            {
+              "active": true,
+              "cpuMs": 0.0357000008225441,
+              "gpuMs": 0.011744000017642975,
+              "gpuTimed": true,
+              "name": "FrustumCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.07429999858140945,
+              "gpuMs": 0.01228800043463707,
+              "gpuTimed": true,
+              "name": "DepthPrepass",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimDepthPrepass",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.020899999886751175,
+              "gpuMs": 0.008415999822318554,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014999999664723873,
+              "gpuMs": 0.008191999979317188,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014700000174343586,
+              "gpuMs": 0.008191999979317188,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014000000432133675,
+              "gpuMs": 0.008927999995648861,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade3",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.07699999958276749,
+              "gpuMs": 0.030400000512599945,
+              "gpuTimed": true,
+              "name": "ShadowCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.057999998331069946,
+              "gpuMs": 0.03481600061058998,
+              "gpuTimed": true,
+              "name": "ShadowCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.05660000070929527,
+              "gpuMs": 0.028672000393271446,
+              "gpuTimed": true,
+              "name": "ShadowCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.05570000037550926,
+              "gpuMs": 0.02723200060427189,
+              "gpuTimed": true,
+              "name": "ShadowCascade3",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "LocalShadowDepth",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.009600000455975533,
+              "gpuMs": 0.0008319999906234443,
+              "gpuTimed": true,
+              "name": "DepthToReadOnly",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.17229999601840973,
+              "gpuMs": 0.030880000442266464,
+              "gpuTimed": true,
+              "name": "HiZGenerate",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.03180000185966492,
+              "gpuMs": 0.010239999741315842,
+              "gpuTimed": true,
+              "name": "OcclusionCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.013899999670684338,
+              "gpuMs": 0.002816000021994114,
+              "gpuTimed": true,
+              "name": "CullStatsReadback",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.025299999862909317,
+              "gpuMs": 0.0013760000001639128,
+              "gpuTimed": true,
+              "name": "OitClear",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.17970000207424164,
+              "gpuMs": 0.23756800591945648,
+              "gpuTimed": true,
+              "name": "Lighting",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06040000170469284,
+              "gpuMs": 0.0225600004196167,
+              "gpuTimed": true,
+              "name": "TemporalVelocity",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.03909999877214432,
+              "gpuMs": 0.08396799862384796,
+              "gpuTimed": true,
+              "name": "TemporalResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TransformGizmos",
+              "status": "not needed"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ExposureAdaptation",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014499999582767487,
+              "gpuMs": 0.002047999994829297,
+              "gpuTimed": true,
+              "name": "OitResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "Bloom",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.05719999969005585,
+              "gpuMs": 0.016672000288963318,
+              "gpuTimed": true,
+              "name": "PostProcess",
+              "status": "Active"
+            }
+          ],
+          "resolution": [
+            640,
+            360
+          ],
+          "schemaVersion": 1,
+          "serializedConcurrency": true,
+          "swapchainImages": 3,
+          "swapchainRecreates": 5,
+          "taa": {
+            "allocatedImageBytes": 37109760,
+            "depthAbsoluteTolerance": 0.019999999552965164,
+            "depthRelativeTolerance": 0.009999999776482582,
+            "enabled": true,
+            "epoch": 26,
+            "historyWeight": 0.8999999761581421,
+            "imageAllocationCount": 21,
+            "imagePayloadBytes": 34790400,
+            "jitterSeed": 0,
+            "logicalImageWriteBytesPerFrame": 13132800,
+            "resetReason": "render technique changed",
+            "submittedFrame": 26,
+            "varianceGamma": 1.25
+          },
+          "technique": "forward-raster",
+          "vulkanApiVersion": 4211013
+        },
+        {
+          "cpuPhasesMs": {
+            "Acquire image": 0.013000000268220901,
+            "Command record": 1.1394000053405762,
+            "Descriptors": 0.06159999966621399,
+            "Frame": 25.11079978942871,
+            "Frame wait": 0.00139999995008111,
+            "GUI": 9.999999747378752e-05,
+            "Image fence": 0.0013000000035390258,
+            "Present": 0.3479999899864197,
+            "Queue submit": 0.16820000112056732,
+            "Readbacks": 0.00039999998989515007,
+            "Resource growth": 0.00039999998989515007,
+            "Scene update": 0.014999999664723873,
+            "Screenshot": 23.33340072631836
+          },
+          "deviceIdleWaits": 5,
+          "driverVersion": 2480242688,
+          "framesInFlight": 2,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "gpuKnownMs": 0.5608000159263611,
+          "msaaSamples": 1,
+          "passes": [
+            {
+              "active": true,
+              "cpuMs": 0.03290000185370445,
+              "gpuMs": 0.010623999871313572,
+              "gpuTimed": true,
+              "name": "FrustumCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.07289999723434448,
+              "gpuMs": 0.01235199999064207,
+              "gpuTimed": true,
+              "name": "DepthPrepass",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimDepthPrepass",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.020899999886751175,
+              "gpuMs": 0.008191999979317188,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014399999752640724,
+              "gpuMs": 0.00800000037997961,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014399999752640724,
+              "gpuMs": 0.008128000423312187,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014700000174343586,
+              "gpuMs": 0.00940799992531538,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade3",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06859999895095825,
+              "gpuMs": 0.030719999223947525,
+              "gpuTimed": true,
+              "name": "ShadowCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.050599999725818634,
+              "gpuMs": 0.032607998698949814,
+              "gpuTimed": true,
+              "name": "ShadowCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.04879999905824661,
+              "gpuMs": 0.02457600086927414,
+              "gpuTimed": true,
+              "name": "ShadowCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.04910000041127205,
+              "gpuMs": 0.023135999217629433,
+              "gpuTimed": true,
+              "name": "ShadowCascade3",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "LocalShadowDepth",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.009100000374019146,
+              "gpuMs": 0.0016319999704137444,
+              "gpuTimed": true,
+              "name": "DepthToReadOnly",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.17069999873638153,
+              "gpuMs": 0.0306560005992651,
+              "gpuTimed": true,
+              "name": "HiZGenerate",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.031700000166893005,
+              "gpuMs": 0.011839999817311764,
+              "gpuTimed": true,
+              "name": "OcclusionCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.0142000000923872,
+              "gpuMs": 0.0035200000274926424,
+              "gpuTimed": true,
+              "name": "CullStatsReadback",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.025599999353289604,
+              "gpuMs": 0.004224000032991171,
+              "gpuTimed": true,
+              "name": "OitClear",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.1761000007390976,
+              "gpuMs": 0.21955199539661407,
+              "gpuTimed": true,
+              "name": "Lighting",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06239999830722809,
+              "gpuMs": 0.021695999428629875,
+              "gpuTimed": true,
+              "name": "TemporalVelocity",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.03880000114440918,
+              "gpuMs": 0.08191999793052673,
+              "gpuTimed": true,
+              "name": "TemporalResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TransformGizmos",
+              "status": "not needed"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ExposureAdaptation",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014700000174343586,
+              "gpuMs": 0.0016319999704137444,
+              "gpuTimed": true,
+              "name": "OitResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "Bloom",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.058400001376867294,
+              "gpuMs": 0.016383999958634377,
+              "gpuTimed": true,
+              "name": "PostProcess",
+              "status": "Active"
+            }
+          ],
+          "resolution": [
+            640,
+            360
+          ],
+          "schemaVersion": 1,
+          "serializedConcurrency": true,
+          "swapchainImages": 3,
+          "swapchainRecreates": 5,
+          "taa": {
+            "allocatedImageBytes": 37109760,
+            "depthAbsoluteTolerance": 0.019999999552965164,
+            "depthRelativeTolerance": 0.009999999776482582,
+            "enabled": true,
+            "epoch": 27,
+            "historyWeight": 0.8999999761581421,
+            "imageAllocationCount": 21,
+            "imagePayloadBytes": 34790400,
+            "jitterSeed": 0,
+            "logicalImageWriteBytesPerFrame": 13132800,
+            "resetReason": "camera projection changed",
+            "submittedFrame": 29,
+            "varianceGamma": 1.25
+          },
+          "technique": "forward-raster",
+          "vulkanApiVersion": 4211013
+        },
+        {
+          "cpuPhasesMs": {
+            "Acquire image": 0.013399999588727951,
+            "Command record": 1.1517000198364258,
+            "Descriptors": 0.0608999989926815,
+            "Frame": 25.17259979248047,
+            "Frame wait": 0.00139999995008111,
+            "GUI": 9.999999747378752e-05,
+            "Image fence": 0.0013000000035390258,
+            "Present": 0.2773999869823456,
+            "Queue submit": 0.16339999437332153,
+            "Readbacks": 0.00039999998989515007,
+            "Resource growth": 0.00039999998989515007,
+            "Scene update": 0.014399999752640724,
+            "Screenshot": 23.45989990234375
+          },
+          "deviceIdleWaits": 5,
+          "driverVersion": 2480242688,
+          "framesInFlight": 2,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "gpuKnownMs": 0.41756799817085266,
+          "msaaSamples": 1,
+          "passes": [
+            {
+              "active": true,
+              "cpuMs": 0.03280000016093254,
+              "gpuMs": 0.011680000461637974,
+              "gpuTimed": true,
+              "name": "FrustumCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.07360000163316727,
+              "gpuMs": 0.010239999741315842,
+              "gpuTimed": true,
+              "name": "DepthPrepass",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimDepthPrepass",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.020899999886751175,
+              "gpuMs": 0.009279999881982803,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.01510000042617321,
+              "gpuMs": 0.008031999692320824,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014499999582767487,
+              "gpuMs": 0.008191999979317188,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.01360000018030405,
+              "gpuMs": 0.00863999966531992,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade3",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.07339999824762344,
+              "gpuMs": 0.03884800150990486,
+              "gpuTimed": true,
+              "name": "ShadowCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.058800000697374344,
+              "gpuMs": 0.028672000393271446,
+              "gpuTimed": true,
+              "name": "ShadowCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.05620000138878822,
+              "gpuMs": 0.022816000506281853,
+              "gpuTimed": true,
+              "name": "ShadowCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.05510000139474869,
+              "gpuMs": 0.02252800017595291,
+              "gpuTimed": true,
+              "name": "ShadowCascade3",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "LocalShadowDepth",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.009200000204145908,
+              "gpuMs": 0.0017600000137463212,
+              "gpuTimed": true,
+              "name": "DepthToReadOnly",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.1712999939918518,
+              "gpuMs": 0.030719999223947525,
+              "gpuTimed": true,
+              "name": "HiZGenerate",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.03200000151991844,
+              "gpuMs": 0.011264000087976456,
+              "gpuTimed": true,
+              "name": "OcclusionCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.013899999670684338,
+              "gpuMs": 0.0027840000111609697,
+              "gpuTimed": true,
+              "name": "CullStatsReadback",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.025200000032782555,
+              "gpuMs": 0.004191999789327383,
+              "gpuTimed": true,
+              "name": "OitClear",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.1680999994277954,
+              "gpuMs": 0.10294400155544281,
+              "gpuTimed": true,
+              "name": "Lighting",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06030000001192093,
+              "gpuMs": 0.014336000196635723,
+              "gpuTimed": true,
+              "name": "TemporalVelocity",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.03869999945163727,
+              "gpuMs": 0.06579200178384781,
+              "gpuTimed": true,
+              "name": "TemporalResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TransformGizmos",
+              "status": "not needed"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ExposureAdaptation",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.0142000000923872,
+              "gpuMs": 0.0008640000014565885,
+              "gpuTimed": true,
+              "name": "OitResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "Bloom",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.05770000070333481,
+              "gpuMs": 0.01398400031030178,
+              "gpuTimed": true,
+              "name": "PostProcess",
+              "status": "Active"
+            }
+          ],
+          "resolution": [
+            640,
+            360
+          ],
+          "schemaVersion": 1,
+          "serializedConcurrency": true,
+          "swapchainImages": 3,
+          "swapchainRecreates": 5,
+          "taa": {
+            "allocatedImageBytes": 37109760,
+            "depthAbsoluteTolerance": 0.019999999552965164,
+            "depthRelativeTolerance": 0.009999999776482582,
+            "enabled": true,
+            "epoch": 28,
+            "historyWeight": 0.8999999761581421,
+            "imageAllocationCount": 21,
+            "imagePayloadBytes": 34790400,
+            "jitterSeed": 0,
+            "logicalImageWriteBytesPerFrame": 13132800,
+            "resetReason": "camera projection changed",
+            "submittedFrame": 32,
+            "varianceGamma": 1.25
+          },
+          "technique": "forward-raster",
+          "vulkanApiVersion": 4211013
+        },
+        {
+          "cpuPhasesMs": {
+            "Acquire image": 0.0203000009059906,
+            "Command record": 1.246899962425232,
+            "Descriptors": 0.019200000911951065,
+            "Frame": 26.833499908447266,
+            "Frame wait": 0.007699999958276749,
+            "GUI": 0.000699999975040555,
+            "Image fence": 0.0017999999690800905,
+            "Present": 0.34369999170303345,
+            "Queue submit": 0.1914999932050705,
+            "Readbacks": 0.0013000000035390258,
+            "Resource growth": 0.00019999999494757503,
+            "Scene update": 0.016899999231100082,
+            "Screenshot": 24.93939971923828
+          },
+          "deviceIdleWaits": 5,
+          "driverVersion": 2480242688,
+          "framesInFlight": 2,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "gpuKnownMs": 0.5549760460853577,
+          "msaaSamples": 4,
+          "passes": [
+            {
+              "active": true,
+              "cpuMs": 0.049400001764297485,
+              "gpuMs": 0.012032000347971916,
+              "gpuTimed": true,
+              "name": "FrustumCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.13670000433921814,
+              "gpuMs": 0.01228800043463707,
+              "gpuTimed": true,
+              "name": "DepthPrepass",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimDepthPrepass",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.024700000882148743,
+              "gpuMs": 0.008704000152647495,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.01600000075995922,
+              "gpuMs": 0.008191999979317188,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.015599999576807022,
+              "gpuMs": 0.008063999935984612,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014999999664723873,
+              "gpuMs": 0.008287999778985977,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade3",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.07940000295639038,
+              "gpuMs": 0.030719999223947525,
+              "gpuTimed": true,
+              "name": "ShadowCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.060499999672174454,
+              "gpuMs": 0.0307839997112751,
+              "gpuTimed": true,
+              "name": "ShadowCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.05920000001788139,
+              "gpuMs": 0.024320000782608986,
+              "gpuTimed": true,
+              "name": "ShadowCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.05790000036358833,
+              "gpuMs": 0.02412799932062626,
+              "gpuTimed": true,
+              "name": "ShadowCascade3",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "LocalShadowDepth",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.010200000368058681,
+              "gpuMs": 0.002015999983996153,
+              "gpuTimed": true,
+              "name": "DepthToReadOnly",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.19050000607967377,
+              "gpuMs": 0.03190400078892708,
+              "gpuTimed": true,
+              "name": "HiZGenerate",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.03539999946951866,
+              "gpuMs": 0.011327999643981457,
+              "gpuTimed": true,
+              "name": "OcclusionCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.015799999237060547,
+              "gpuMs": 0.0030400000978261232,
+              "gpuTimed": true,
+              "name": "CullStatsReadback",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.02850000001490116,
+              "gpuMs": 0.004064000211656094,
+              "gpuTimed": true,
+              "name": "OitClear",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.20919999480247498,
+              "gpuMs": 0.2149440050125122,
+              "gpuTimed": true,
+              "name": "Lighting",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.021503999829292297,
+              "gpuTimed": true,
+              "name": "TemporalVelocity",
+              "status": "not needed"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.08064000308513641,
+              "gpuTimed": true,
+              "name": "TemporalResolve",
+              "status": "missing resource"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TransformGizmos",
+              "status": "not needed"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ExposureAdaptation",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.013899999670684338,
+              "gpuMs": 0.0016319999704137444,
+              "gpuTimed": true,
+              "name": "OitResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "Bloom",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06239999830722809,
+              "gpuMs": 0.016383999958634377,
+              "gpuTimed": true,
+              "name": "PostProcess",
+              "status": "Active"
+            }
+          ],
+          "resolution": [
+            640,
+            360
+          ],
+          "schemaVersion": 1,
+          "serializedConcurrency": true,
+          "swapchainImages": 3,
+          "swapchainRecreates": 5,
+          "taa": {
+            "allocatedImageBytes": 0,
+            "depthAbsoluteTolerance": 0.019999999552965164,
+            "depthRelativeTolerance": 0.009999999776482582,
+            "enabled": false,
+            "epoch": 31,
+            "historyWeight": 0.8999999761581421,
+            "imageAllocationCount": 0,
+            "imagePayloadBytes": 0,
+            "jitterSeed": 0,
+            "logicalImageWriteBytesPerFrame": 0,
+            "resetReason": "AA mode/jitter changed",
+            "submittedFrame": 35,
+            "varianceGamma": 1.25
+          },
+          "technique": "forward-raster",
+          "vulkanApiVersion": 4211013
+        },
+        {
+          "cpuPhasesMs": {
+            "Acquire image": 0.017999999225139618,
+            "Command record": 1.5448999404907227,
+            "Descriptors": 0.0697999969124794,
+            "Frame": 27.064599990844727,
+            "Frame wait": 0.0066999997943639755,
+            "GUI": 0.0003000000142492354,
+            "Image fence": 0.0017000000225380063,
+            "Present": 0.31869998574256897,
+            "Queue submit": 0.2526000142097473,
+            "Readbacks": 0.0010000000474974513,
+            "Resource growth": 0.00029999998514540493,
+            "Scene update": 0.6898000240325928,
+            "Screenshot": 24.11549949645996
+          },
+          "deviceIdleWaits": 5,
+          "driverVersion": 2480242688,
+          "framesInFlight": 2,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "gpuKnownMs": 0.4724480211734772,
+          "msaaSamples": 1,
+          "passes": [
+            {
+              "active": true,
+              "cpuMs": 0.051500000059604645,
+              "gpuMs": 0.012512000277638435,
+              "gpuTimed": true,
+              "name": "FrustumCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.11249999701976776,
+              "gpuMs": 0.02252800017595291,
+              "gpuTimed": true,
+              "name": "DepthPrepass",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimDepthPrepass",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.024299999698996544,
+              "gpuMs": 0.009824000298976898,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.01679999940097332,
+              "gpuMs": 0.008191999979317188,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.016200000420212746,
+              "gpuMs": 0.00800000037997961,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.01549999974668026,
+              "gpuMs": 0.008191999979317188,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade3",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.07890000194311142,
+              "gpuMs": 0.03097599931061268,
+              "gpuTimed": true,
+              "name": "ShadowCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.066600002348423,
+              "gpuMs": 0.03254399821162224,
+              "gpuTimed": true,
+              "name": "ShadowCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.0722000002861023,
+              "gpuMs": 0.02457600086927414,
+              "gpuTimed": true,
+              "name": "ShadowCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06199999898672104,
+              "gpuMs": 0.022816000506281853,
+              "gpuTimed": true,
+              "name": "ShadowCascade3",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "LocalShadowDepth",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.01080000028014183,
+              "gpuMs": 0.0016319999704137444,
+              "gpuTimed": true,
+              "name": "DepthToReadOnly",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.22100000083446503,
+              "gpuMs": 0.030719999223947525,
+              "gpuTimed": true,
+              "name": "HiZGenerate",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.040300000458955765,
+              "gpuMs": 0.010528000071644783,
+              "gpuTimed": true,
+              "name": "OcclusionCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.01850000023841858,
+              "gpuMs": 0.002816000021994114,
+              "gpuTimed": true,
+              "name": "CullStatsReadback",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.04540000110864639,
+              "gpuMs": 0.004352000076323748,
+              "gpuTimed": true,
+              "name": "OitClear",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.2094999998807907,
+              "gpuMs": 0.23148800432682037,
+              "gpuTimed": true,
+              "name": "Lighting",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.10540000349283218,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TemporalVelocity",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.10809999704360962,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TemporalResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TransformGizmos",
+              "status": "not needed"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ExposureAdaptation",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.01730000041425228,
+              "gpuMs": 0.002047999994829297,
+              "gpuTimed": true,
+              "name": "OitResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "Bloom",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06669999659061432,
+              "gpuMs": 0.008704000152647495,
+              "gpuTimed": true,
+              "name": "PostProcess",
+              "status": "Active"
+            }
+          ],
+          "resolution": [
+            640,
+            360
+          ],
+          "schemaVersion": 1,
+          "serializedConcurrency": true,
+          "swapchainImages": 3,
+          "swapchainRecreates": 5,
+          "taa": {
+            "allocatedImageBytes": 37109760,
+            "depthAbsoluteTolerance": 0.019999999552965164,
+            "depthRelativeTolerance": 0.009999999776482582,
+            "enabled": true,
+            "epoch": 35,
+            "historyWeight": 0.8999999761581421,
+            "imageAllocationCount": 21,
+            "imagePayloadBytes": 34790400,
+            "jitterSeed": 0,
+            "logicalImageWriteBytesPerFrame": 13132800,
+            "resetReason": "AA mode/jitter changed",
+            "submittedFrame": 38,
+            "varianceGamma": 1.25
+          },
+          "technique": "forward-raster",
+          "vulkanApiVersion": 4211013
+        },
+        {
+          "cpuPhasesMs": {
+            "Acquire image": 0.018200000748038292,
+            "Command record": 1.305999994277954,
+            "Descriptors": 0.07270000129938126,
+            "Frame": 25.482799530029297,
+            "Frame wait": 0.005100000184029341,
+            "GUI": 0.0003000000142492354,
+            "Image fence": 0.0015999999595806003,
+            "Present": 0.2851000130176544,
+            "Queue submit": 0.1762000024318695,
+            "Readbacks": 0.0008999999845400453,
+            "Resource growth": 0.0005999999702908099,
+            "Scene update": 0.019700000062584877,
+            "Screenshot": 23.558900833129883
+          },
+          "deviceIdleWaits": 5,
+          "driverVersion": 2480242688,
+          "framesInFlight": 2,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "gpuKnownMs": 0.5754560232162476,
+          "msaaSamples": 1,
+          "passes": [
+            {
+              "active": true,
+              "cpuMs": 0.0494999997317791,
+              "gpuMs": 0.010400000028312206,
+              "gpuTimed": true,
+              "name": "FrustumCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.11460000276565552,
+              "gpuMs": 0.012128000147640705,
+              "gpuTimed": true,
+              "name": "DepthPrepass",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimDepthPrepass",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.023600000888109207,
+              "gpuMs": 0.008224000222980976,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014700000174343586,
+              "gpuMs": 0.008063999935984612,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.01549999974668026,
+              "gpuMs": 0.008191999979317188,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014700000174343586,
+              "gpuMs": 0.009568000212311745,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade3",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.08250000327825546,
+              "gpuMs": 0.030719999223947525,
+              "gpuTimed": true,
+              "name": "ShadowCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.05990000069141388,
+              "gpuMs": 0.03155200183391571,
+              "gpuTimed": true,
+              "name": "ShadowCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.057500001043081284,
+              "gpuMs": 0.02505600079894066,
+              "gpuTimed": true,
+              "name": "ShadowCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.05660000070929527,
+              "gpuMs": 0.02457600086927414,
+              "gpuTimed": true,
+              "name": "ShadowCascade3",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "LocalShadowDepth",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.00989999994635582,
+              "gpuMs": 0.0009919999865815043,
+              "gpuTimed": true,
+              "name": "DepthToReadOnly",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.18569999933242798,
+              "gpuMs": 0.03129599988460541,
+              "gpuTimed": true,
+              "name": "HiZGenerate",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.03669999912381172,
+              "gpuMs": 0.010751999914646149,
+              "gpuTimed": true,
+              "name": "OcclusionCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014499999582767487,
+              "gpuMs": 0.0033279999624937773,
+              "gpuTimed": true,
+              "name": "CullStatsReadback",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.027699999511241913,
+              "gpuMs": 0.0041600000113248825,
+              "gpuTimed": true,
+              "name": "OitClear",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.18700000643730164,
+              "gpuMs": 0.21753600239753723,
+              "gpuTimed": true,
+              "name": "Lighting",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06700000166893005,
+              "gpuMs": 0.03891199827194214,
+              "gpuTimed": true,
+              "name": "TemporalVelocity",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.043699998408555984,
+              "gpuMs": 0.08169600367546082,
+              "gpuTimed": true,
+              "name": "TemporalResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TransformGizmos",
+              "status": "not needed"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ExposureAdaptation",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.01489999983459711,
+              "gpuMs": 0.0019199999514967203,
+              "gpuTimed": true,
+              "name": "OitResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "Bloom",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06509999930858612,
+              "gpuMs": 0.016383999958634377,
+              "gpuTimed": true,
+              "name": "PostProcess",
+              "status": "Active"
+            }
+          ],
+          "resolution": [
+            640,
+            360
+          ],
+          "schemaVersion": 1,
+          "serializedConcurrency": true,
+          "swapchainImages": 3,
+          "swapchainRecreates": 5,
+          "taa": {
+            "allocatedImageBytes": 37109760,
+            "depthAbsoluteTolerance": 0.019999999552965164,
+            "depthRelativeTolerance": 0.009999999776482582,
+            "enabled": true,
+            "epoch": 36,
+            "historyWeight": 0.8999999761581421,
+            "imageAllocationCount": 21,
+            "imagePayloadBytes": 34790400,
+            "jitterSeed": 0,
+            "logicalImageWriteBytesPerFrame": 13132800,
+            "resetReason": "scene/camera reset",
+            "submittedFrame": 41,
+            "varianceGamma": 1.25
+          },
+          "technique": "forward-raster",
+          "vulkanApiVersion": 4211013
+        },
+        {
+          "cpuPhasesMs": {
+            "Acquire image": 0.013399999588727951,
+            "Command record": 1.1371999979019165,
+            "Descriptors": 0.05779999867081642,
+            "Frame": 24.547100067138672,
+            "Frame wait": 0.00139999995008111,
+            "GUI": 0.00019999999494757503,
+            "Image fence": 0.0013000000035390258,
+            "Present": 0.29840001463890076,
+            "Queue submit": 0.1678999960422516,
+            "Readbacks": 0.00039999998989515007,
+            "Resource growth": 0.00029999998514540493,
+            "Scene update": 0.01269999984651804,
+            "Screenshot": 22.828899383544922
+          },
+          "deviceIdleWaits": 5,
+          "driverVersion": 2480242688,
+          "framesInFlight": 2,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "gpuKnownMs": 0.555296003818512,
+          "msaaSamples": 1,
+          "passes": [
+            {
+              "active": true,
+              "cpuMs": 0.03310000151395798,
+              "gpuMs": 0.011711999773979187,
+              "gpuTimed": true,
+              "name": "FrustumCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.07320000231266022,
+              "gpuMs": 0.01228800043463707,
+              "gpuTimed": true,
+              "name": "DepthPrepass",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "BimDepthPrepass",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.020800000056624413,
+              "gpuMs": 0.009696000255644321,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014000000432133675,
+              "gpuMs": 0.008191999979317188,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014000000432133675,
+              "gpuMs": 0.008224000222980976,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.013399999588727951,
+              "gpuMs": 0.008287999778985977,
+              "gpuTimed": true,
+              "name": "ShadowCullCascade3",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.0681999996304512,
+              "gpuMs": 0.03094400092959404,
+              "gpuTimed": true,
+              "name": "ShadowCascade0",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.06480000168085098,
+              "gpuMs": 0.03190400078892708,
+              "gpuTimed": true,
+              "name": "ShadowCascade1",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.05950000137090683,
+              "gpuMs": 0.024607999250292778,
+              "gpuTimed": true,
+              "name": "ShadowCascade2",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.05649999901652336,
+              "gpuMs": 0.02457600086927414,
+              "gpuTimed": true,
+              "name": "ShadowCascade3",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "LocalShadowDepth",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.009200000204145908,
+              "gpuMs": 0.0009280000231228769,
+              "gpuTimed": true,
+              "name": "DepthToReadOnly",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.16920000314712524,
+              "gpuMs": 0.0306560005992651,
+              "gpuTimed": true,
+              "name": "HiZGenerate",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.03150000050663948,
+              "gpuMs": 0.01190400030463934,
+              "gpuTimed": true,
+              "name": "OcclusionCull",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014000000432133675,
+              "gpuMs": 0.0032319999299943447,
+              "gpuTimed": true,
+              "name": "CullStatsReadback",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.02459999918937683,
+              "gpuMs": 0.003967999946326017,
+              "gpuTimed": true,
+              "name": "OitClear",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.1687999963760376,
+              "gpuMs": 0.21465599536895752,
+              "gpuTimed": true,
+              "name": "Lighting",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.05999999865889549,
+              "gpuMs": 0.020927999168634415,
+              "gpuTimed": true,
+              "name": "TemporalVelocity",
+              "status": "Active"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.03920000046491623,
+              "gpuMs": 0.08057600259780884,
+              "gpuTimed": true,
+              "name": "TemporalResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "TransformGizmos",
+              "status": "not needed"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "ExposureAdaptation",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.014299999922513962,
+              "gpuMs": 0.0016319999704137444,
+              "gpuTimed": true,
+              "name": "OitResolve",
+              "status": "Active"
+            },
+            {
+              "active": false,
+              "cpuMs": 0.0,
+              "gpuMs": 0.0,
+              "gpuTimed": false,
+              "name": "Bloom",
+              "status": "not needed"
+            },
+            {
+              "active": true,
+              "cpuMs": 0.05820000171661377,
+              "gpuMs": 0.016383999958634377,
+              "gpuTimed": true,
+              "name": "PostProcess",
+              "status": "Active"
+            }
+          ],
+          "resolution": [
+            640,
+            360
+          ],
+          "schemaVersion": 1,
+          "serializedConcurrency": true,
+          "swapchainImages": 3,
+          "swapchainRecreates": 5,
+          "taa": {
+            "allocatedImageBytes": 37109760,
+            "depthAbsoluteTolerance": 0.019999999552965164,
+            "depthRelativeTolerance": 0.009999999776482582,
+            "enabled": true,
+            "epoch": 36,
+            "historyWeight": 0.8999999761581421,
+            "imageAllocationCount": 21,
+            "imagePayloadBytes": 34790400,
+            "jitterSeed": 0,
+            "logicalImageWriteBytesPerFrame": 13132800,
+            "resetReason": "scene/camera reset",
+            "submittedFrame": 45,
+            "varianceGamma": 1.25
+          },
+          "technique": "forward-raster",
+          "vulkanApiVersion": 4211013
+        }
+      ]
+    },
+    "equivalentVelocity": {
+      "linearRgb": {
+        "gltf": [
+          0.5271149277687073,
+          0.5028849244117737,
+          0.5028849244117737
+        ],
+        "bim": [
+          0.5271149277687073,
+          0.5028849244117737,
+          0.5028849244117737
+        ],
+        "usda": [
+          0.5271149277687073,
+          0.5028849244117737,
+          0.5028849244117737
+        ]
+      },
+      "maxDifference": {
+        "gltf": 0.0,
+        "bim": 0.0,
+        "usda": 0.0
+      }
+    }
+  },
+  "mutations": {}
+}

@@ -253,7 +253,7 @@ VSOutput vertMain(uint vertexIndex : SV_VertexID)
         axis = vertexIndex / 3 + 1;
         const uint localVertex = vertexIndex % 3;
         worldPosition = axisHeadTrianglePosition(axis, localVertex);
-        output.pos = mul(uCamera.viewProj, float4(worldPosition, 1.0));
+        output.pos = mul(uCamera.temporalInfo.w != 0u ? uCamera.unjitteredViewProj : uCamera.viewProj, float4(worldPosition, 1.0));
         output.color = axisColor(axis);
         return output;
     }
@@ -284,7 +284,7 @@ VSOutput vertMain(uint vertexIndex : SV_VertexID)
         worldPosition = axisLinePosition(axis, localVertex);
     }
 
-    output.pos = mul(uCamera.viewProj, float4(worldPosition, 1.0));
+    output.pos = mul(uCamera.temporalInfo.w != 0u ? uCamera.unjitteredViewProj : uCamera.viewProj, float4(worldPosition, 1.0));
     output.color = axisColor(axis);
     return output;
 }

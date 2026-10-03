@@ -1,5 +1,21 @@
 # VulkanSceneRenderer Windows x64 Preview
 
+Try temporal anti-aliasing with `VulkanSceneRenderer.exe --taa --msaa 1 --display-mode lit`.
+Use `--render-technique forward-raster` for the forward path. TAA currently
+supports native-resolution rigid surfaces at 1x samples; transparent and emissive
+pixels use current color. Existing MSAA remains available with `--no-taa`.
+
+From the extracted directory, this reproducible motion capture also works without
+build tools:
+
+```powershell
+.\VulkanSceneRenderer.exe --hidden --no-ui --no-validation --taa --model models/validation/taa_scene.gltf --width 640 --height 360 --capture-sequence models/validation/taa_object.json --screenshot motion.png --fixed-dt 0.016666667
+```
+
+Selected frames produce PNGs and effective-setting/timing JSON sidecars. Debug
+views include `taa-velocity`, `taa-age`, `taa-rejection`, `taa-blend`, and
+`taa-reactive` through `--display-mode`.
+
 Extract the entire ZIP before starting `VulkanSceneRenderer.exe`. Keep the DLLs,
 `spv_shaders`, `materials`, `models`, and `hdr` folders beside the executable.
 

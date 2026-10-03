@@ -111,6 +111,17 @@ add_custom_test(temporal_convention_tests
     Dep_Math
 )
 
+target_sources(temporal_convention_tests PRIVATE ${TEST_RENDERER_CORE_DIR}/temporal_state_tests.cpp)
+
+add_custom_test(temporal_capture_tests
+    ${TEST_RENDERER_CORE_DIR}/temporal_capture_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_Math nlohmann_json::nlohmann_json
+)
+
+add_test(NAME temporal_quality_metrics
+    COMMAND "${Python3_EXECUTABLE}" "${TEST_VALIDATION_DIR}/temporal_regression.py" --self-test)
+set_tests_properties(temporal_quality_metrics PROPERTIES SKIP_RETURN_CODE 77)
+
 # Exercise all Slang temporal helpers with dynamic inputs, outside runtime
 # assets. Building the math test also compiles this probe with engine flags.
 set(TEMPORAL_CONTRACT_SPIRV "${CMAKE_BINARY_DIR}/test_shaders/temporal_contract.comp.spv")

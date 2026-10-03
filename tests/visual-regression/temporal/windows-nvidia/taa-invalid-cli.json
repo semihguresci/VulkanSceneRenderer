@@ -1,0 +1,43 @@
+[
+  {
+    "arguments": [
+      "--taa",
+      "--msaa",
+      "4"
+    ],
+    "exit": 1,
+    "diagnostic": "TAA requires --msaa 1; disable TAA to use MSAA\n"
+  },
+  {
+    "arguments": [
+      "--taa-history-weight",
+      "nan"
+    ],
+    "exit": 1,
+    "diagnostic": "invalid float for --taa-history-weight: nan\n"
+  },
+  {
+    "arguments": [
+      "--taa-history-weight",
+      "0.4junk"
+    ],
+    "exit": 1,
+    "diagnostic": "invalid float for --taa-history-weight: 0.4junk\n"
+  },
+  {
+    "arguments": [
+      "--taa-jitter-seed",
+      "-1"
+    ],
+    "exit": 1,
+    "diagnostic": "invalid integer for --taa-jitter-seed: -1\n"
+  },
+  {
+    "arguments": [
+      "--taa-variance-gamma",
+      "5"
+    ],
+    "exit": 1,
+    "diagnostic": "Invalid TAA settings: history weight [0,0.98], variance gamma [0.5,4], absolute depth tolerance [0,1000], relative depth tolerance [0,1]\n"
+  }
+]

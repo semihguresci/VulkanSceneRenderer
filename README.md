@@ -123,8 +123,9 @@ cmake --build out/build/windows-release --target download_usd_models --config Re
   GPU query backends, render graph metrics, and validation commands.
 - [Coordinate conventions](docs/coordinate-conventions.md) - source of truth
   for coordinate systems, reverse-Z depth, viewports, culling, and matrix rules.
-- [Temporal rendering contracts](docs/temporal-rendering.md) - planned motion
-  vectors and TAA: jitter, history grids, rejection, formats, and math tests.
+- [Temporal anti-aliasing](docs/temporal-rendering.md) - `--taa --msaa 1` in
+  forward/deferred rendering, signed velocity and history diagnostics, deterministic
+  motion captures, and [validation results](docs/taa-validation.md).
 - [Lighting system plan](docs/lighting-system-improvement-plan.md) - lighting,
   shadows, tiled culling, GTAO, GPU-driven rendering, and bloom rationale.
 - [Refactoring plan](docs/refactoring-plan.md) - ownership boundaries,

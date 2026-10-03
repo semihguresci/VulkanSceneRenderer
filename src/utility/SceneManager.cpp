@@ -16,13 +16,14 @@
 #include "Container/geometry/GltfModelLoader.h"
 #include "Container/geometry/Mesh.h"
 #include "Container/utility/AllocationManager.h"
-#include "Container/utility/Platform.h"
 #include "Container/utility/PipelineManager.h"
+#include "Container/utility/Platform.h"
 #include "Container/utility/SceneData.h"
 #include "Container/utility/SceneGraph.h"
 #include "Container/utility/SceneManager.h"
-#include "Container/utility/VulkanMemoryManager.h"
+#include "Container/renderer/temporal/TemporalMaterialRevision.h"
 #include "Container/utility/VulkanDevice.h"
+#include "Container/utility/VulkanMemoryManager.h"
 
 #include <glm/gtc/quaternion.hpp>
 
@@ -881,6 +882,10 @@ uint32_t SceneManager::resolveLoadedMaterialIndex(int32_t materialIndex) const {
   }
 
   return gltfMaterialBaseIndex_ + static_cast<uint32_t>(materialIndex);
+}
+
+uint64_t SceneManager::temporalMaterialRevision(uint32_t gpuIndex) const {
+  return gpuIndex < gpuMaterialTemporalRevisions_.size() ? gpuMaterialTemporalRevisions_[gpuIndex] : 0;
 }
 
 uint32_t SceneManager::diagnosticMaterialIndex() const {
@@ -2078,6 +2083,9 @@ void SceneManager::uploadMaterialBuffer() {
   if (gpuMaterials_.empty()) {
     gpuMaterials_.push_back(container::gpu::GpuMaterial{});
   }
+  gpuMaterialTemporalRevisions_.clear();
+  gpuMaterialTemporalRevisions_.reserve(gpuMaterials_.size());
+  for (const auto& material : gpuMaterials_) gpuMaterialTemporalRevisions_.push_back(container::temporal::materialRevision(material));
 
   const size_t requiredCount = gpuMaterials_.size();
   const VkDeviceSize requiredSize =

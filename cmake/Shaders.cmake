@@ -51,6 +51,7 @@ set(SLANG_INCLUDE_SHADER_NAMES
     push_constants_common.slang
     scene_clip_common.slang
     draw_indirect_common.slang
+    oit_resolve_common.slang
     temporal_common.slang
 )
 
@@ -72,6 +73,8 @@ set(SLANG_COMPUTE_SHADER_NAMES
     bloom_downsample.slang
     bloom_upsample.slang
     exposure_histogram.slang
+    temporal_compose.slang
+    temporal_resolve.slang
     exposure_adapt.slang
 )
 

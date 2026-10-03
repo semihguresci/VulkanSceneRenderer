@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "Container/common/CommonVulkan.h"
+#include "Container/renderer/temporal/TemporalState.h"
 
 namespace container::app {
 
@@ -36,12 +37,15 @@ struct AppConfig {
   uint32_t windowWidth{800};
   uint32_t windowHeight{600};
   uint32_t maxFramesInFlight{2};
-  // Upper bound for the per-object SSBO. This is scene capacity, not a draw-call budget.
+  // Upper bound for the per-object SSBO. This is scene capacity, not a
+  // draw-call budget.
   uint32_t maxSceneObjects{4096};
   bool enableValidationLayers{false};
   bool enableGui{true};
   bool windowVisible{true};
   uint32_t msaaSamples{1};
+  container::temporal::Settings taa{};
+  uint32_t taaResetFrame{0};
   std::string renderTechnique{"deferred-raster"};
   std::string displayModeOverride{};
   std::string modelPath{std::string(kDefaultModelRelativePath)};
@@ -49,6 +53,7 @@ struct AppConfig {
   std::string bimModelPath{};
   float bimImportScale{1.0f};
   std::string screenshotCapturePath{};
+  std::string temporalCaptureSequencePath{};
   uint32_t screenshotWarmupFrames{8};
   uint32_t screenshotCaptureFrame{9};
   float screenshotFixedTimestepSeconds{1.0f / 60.0f};

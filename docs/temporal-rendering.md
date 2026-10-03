@@ -2,10 +2,87 @@
 
 This is the contract for [TAA epic #39](https://github.com/semihguresci/VulkanSceneRenderer/issues/39),
 established by [issue #48](https://github.com/semihguresci/VulkanSceneRenderer/issues/48).
-The math helpers and convention tests exist now. Camera/object snapshots,
-jitter, velocity attachments, history ownership, and the TAA resolve are
-subsequent issues; this document does not describe an enabled runtime feature.
+Runtime TAA is available in both raster techniques with 1x samples. It is opt-in
+(`--taa`); the default is the existing non-temporal raster route. Camera/object
+snapshots, signed velocity, scene-linear HDR history and diagnostics share the
+contracts below. See [validation results](taa-validation.md) for measured limits.
 It builds on [coordinate conventions](coordinate-conventions.md).
+
+## Running TAA
+
+```powershell
+.\VulkanSceneRenderer.exe --taa --msaa 1 --display-mode lit
+.\VulkanSceneRenderer.exe --taa --render-technique forward-raster --display-mode lit
+.\VulkanSceneRenderer.exe --hidden --no-ui --taa --model models/validation/taa_scene.gltf --width 640 --height 360 --capture-sequence models/validation/taa_object.json --screenshot motion.png --fixed-dt 0.016666667
+```
+
+Launch from the executable directory for relative capture-sequence paths. Each
+selected frame creates a PNG and a `.telemetry.json` sidecar; intermediate images
+carry `.frame-XXXX` suffixes. Keyframes use simulation frame numbers; failed
+acquisition retries do not advance the submitted history or jitter. Minimized and
+explicitly skipped frames preserve the last submission. Capture events can inject
+an acquire out-of-date result before acquisition or a suboptimal result after real
+presentation, exercising recovery without leaking a signaled semaphore.
+
+Controls: `--taa-history-weight` (default 0.9, range 0–0.98),
+`--taa-variance-gamma` (1.25, range 0.5–4), `--taa-depth-absolute` (0.02 world units,
+range 0–1000), `--taa-depth-relative` (0.01, range 0–1), `--taa-jitter-seed`
+(default 0), and `--taa-reset-frame` (successful submission number, 0 disables).
+Invalid/nonfinite values and TAA with MSAA greater than 1 produce errors.
+The UI offers the same settings, reset, effective resolution, allocation size,
+resolve timing and reset reason. Weight 0 provides the reconstructed current-frame
+fallback. History age starts at 1; useful convergence takes roughly 8–32 frames.
+
+`--display-mode taa-velocity` maps signed UV motion around neutral gray, preserving
+direction. `taa-age` shows age/64; `taa-blend` shows the actual weight;
+`taa-reactive` shows bounded reactive coverage. `taa-rejection` uses green for
+accepted, gray for first/reset, black for uncovered, magenta for invalid, blue
+for offscreen, yellow for identity, red for depth and cyan for reactive rejection.
+Lit and overview accumulate scene HDR; other raw views
+bypass temporal work and jitter. UI and transform/light gizmos render afterwards
+on the stable camera. HDR geometry/debug overlays and native point/curve displays
+use a conservative current-frame fallback because they lack matching velocity.
+
+## Runtime policy and costs
+
+Rigid triangles, alpha masks (including height displacement), mirrored and double
+sided glTF surfaces, native BIM triangles and USD triangle imports use the shared
+velocity pass with depth equality. BIM point/curve triangle placeholders also
+participate; native point lists/line lists, skinning/deformation without previous
+vertices and sky have no valid surface history. Stable node/primitive identities
+and monotonically assigned provider lifetime IDs survive compaction and filtering.
+Material revision rejection is local. Section coverage resets history; changing
+BIM LOD policy invalidates only that provider. Current GPU meshlet LOD selection
+controls residency metadata, not replacement triangle topology; future topology
+replacement must supply a changed object/lifetime revision.
+
+Every covered OIT layer and emissive material requests current color; a dilated
+mask includes the reconstruction footprint, and old reactive coverage prevents
+borrowing history after a transparent layer moves away. OIT overflow rejects
+history conservatively across the frame. Alpha-tested holes retain their exact
+opaque coverage. Layered transparency/refraction has no per-layer temporal
+reprojection in this version and can still alias. Rapid highlight changes reduce
+weight, while Catmull-Rom reconstruction and variance bounds limit blur/ringing.
+No mandatory sharpening is applied.
+
+History contains two sets of color (8), depth/reactivity (8), identity (4) bytes
+per pixel: **40 bytes/pixel** total. Current attachments contain motion (16),
+identity (4), reactive (1), HDR composite (8) and diagnostics (8): **37 bytes/pixel
+per swapchain image**. The payload is `width × height × (40 + 37 × imageCount)`;
+telemetry also reports actual VMA allocation bytes including alignment. Resources
+are allocated only on first TAA use, retained while disabled, and recreated on
+extent/image-count changes. Disabled TAA executes no velocity/compose/resolve
+passes. The extra velocity rasterization and two HDR compute dispatches trade
+bandwidth and memory for a shared implementation independent of G-buffer MRT
+limits. Full-width motion/depth preserve signed range and expected-depth precision.
+
+All histories stay in `GENERAL`. Sync2 barriers order all previous graphics-queue
+read/write consumers before the next compute access, including RAW and WAR across
+submissions. Per-image/parity descriptors prevent mutation of in-flight bindings.
+The existing frame-fence policy retires shared scene buffers; TAA adds no per-frame
+device-wide idle. Resize/destruction retires existing submitted work before views,
+descriptors or VMA allocations are freed. A submission failure is fatal and never
+commits pending temporal state.
 
 ## Frame and surface identity
 
@@ -78,7 +155,7 @@ surface position correctly before the perspective divide; interpolating
 already-divided vertex velocities is not a general perspective-correct solution.
 
 Jitter is the projected image displacement in **render pixels**, +X right and
-+Y down. A zero-mean subpixel sequence will be supplied by #50. Its conversion
++Y down. A centered 32-sample Halton(2,3) cycle supplies bounded, zero-mean subpixel jitter. Its conversion
 and application are:
 
 ```text
@@ -122,7 +199,7 @@ surface depth there. Then color reprojection simplifies to `outputUv +
 velocityUv`. A raster pixel center used directly as `currentRasterUv` produces
 a result located at `currentRasterUv - currentJitterUv`, so it cannot be written
 as though it were the unjittered output center. The spatial reconstruction and
-edge handling belong to #55, and must preserve this distinction.
+edge handling in `temporal_resolve.slang` preserve this distinction.
 
 Homogeneous clips must be finite with `w > 0`. Divided reverse-Z depth must be
 finite in `[0, 1]`; UV may project outside the image. An address is usable only
@@ -158,8 +235,9 @@ For orthographic projection it is `f - depth * (f - n)`. Infinite-far
 perspective, if introduced, needs its own declared reconstruction rule.
 Reject nonfinite reconstruction, uncovered samples, mismatched stable identity
 or revisions, invalid object/frame history, and disocclusion based on absolute
-plus relative **view-distance** tolerance. #55 must establish and test those
-tolerances across depth ranges. Velocity alone is not disocclusion evidence.
+plus relative **view-distance** tolerance (defaults: 0.02 world units and 1%).
+Projection tests cover perspective/orthographic depth ranges. Velocity alone is
+not disocclusion evidence.
 Future normal checks can reduce confidence but cannot repair missing identity
 or invalid depth. Never blend across a reset or missing metadata.
 
@@ -193,14 +271,13 @@ surfaces without trustworthy correspondence must be reactive; emissive,
 animated, and rapidly changing lighting can reduce history weight. #57 defines
 mask generation and coverage, including mixed opaque/transparent pixels.
 
-Preferred initial resources, subject to queried Vulkan format features:
+Runtime resources, checked against queried Vulkan format features:
 
 | Resource | Format / grid | Access contract |
 | --- | --- | --- |
-| Physical velocity | `R16G16_SFLOAT`, current raster | Signed UV; no jitter; reject nonrepresentable values instead of encoding Inf |
-| Motion validity | `R8_UINT`, current raster | 0 invalid, 1 valid; integer point reads |
+| Motion + expected previous depth + validity | `R32G32B32A32_SFLOAT`, current raster | XY signed UV; Z previous reverse-Z depth; W binary validity |
 | Resolved HDR color / color history | `R16G16B16A16_SFLOAT`, unjittered | Linear floating-point sampled/storage images |
-| Retained depth | `R32_SFLOAT`, previous raster | Reverse-Z copy, explicit previous camera/jitter metadata |
+| Retained depth + reactivity | `R32G32_SFLOAT`, previous raster | Raw reverse-Z depth and old reactive coverage |
 | Retained identity | `R32_UINT`, previous raster | Epoch-stable surface token for identity/revisions; 0 uncovered |
 | Confidence / reactive | `R8_UNORM`, current raster | Normalized masks with a declared reconstruction filter |
 
@@ -232,19 +309,18 @@ policy when the runtime feature exists.
 
 ## Ownership and integration
 
-| Existing seam | Planned responsibility |
+| Component | Runtime responsibility |
 | --- | --- |
-| `CameraData` / `lighting_structs.slang` | Currently current view-projection/inverse only; #49/#50 add explicit temporal camera data, with CPU/Slang ABI checks |
-| `ObjectData` / `object_data_common.slang` | Currently current model only; #49 adds previous transform and validity via a deliberate upload layout change |
-| `SceneProviderId`, `SceneProviderRevision`, `RenderExtraction` | Supply stable instance identity and current geometry/material/instance evidence; extraction does not own persistent history |
-| A focused temporal manager | Own snapshot lookup/commit, reset epoch, successful frame ID, jitter index, and persistent history metadata/resources; orchestrated by `RendererFrontend` |
-| `FrameResourceManager` | Own current per-image raster velocity/masks (#51); do not make swapchain image index select previous temporal history |
-| `FrameRecorder` and raster graph contexts | #56 declares current reads, previous history reads, new history writes, and synchronization2 ordering for both raster techniques |
-| `DeferredRasterPostProcess` / `post_process.slang` | Currently composes OIT during post-process; #56/#57 establish an HDR composition seam before TAA, bloom, and final tone mapping |
-| Deterministic capture and visual regression harness | Fixed delta time, repeatable successful frame/jitter count, explicit reset/warmup; #59 adds temporal sequences and diagnostic captures |
+| `CameraData` / `lighting_structs.slang` | 464-byte ABI: current raster/inverse, current/previous unjittered and previous raster/inverse, jitter UV, frame/epoch/validity and extent |
+| `ObjectData` / `object_data_common.slang` | 224-byte ABI: current/previous rigid model, lifetime identity and compatible surface token |
+| `TemporalState` | Pending and submitted snapshot maps; commits only after successful graphics submission |
+| `TemporalManager` | Three-MRT dynamic velocity pass, HDR OIT compose, compute resolve, ping-pong histories, descriptors and queue barriers |
+| `FrameResourceManager` | Five current-frame attachments per swapchain image, allocated lazily for TAA |
+| Shared render graph registration | `Lighting -> TemporalVelocity -> TemporalResolve -> Exposure -> Bloom -> PostProcess` in both techniques |
+| `post_process.slang` | Uses resolved HDR with OIT already composed when TAA runs; native path retains its original OIT composition |
+| Deterministic capture runner | Fixed-step keyframes, lifecycle events, selected PNGs and effective configuration/timing/memory JSON sidecars |
 
-The architecture above is a design contract, not a new manager implementation
-in #48. Shared helper result structs are local math values, not buffer layouts.
+The architecture above is implemented by `TemporalManager` and `TemporalState`. Shared helper result structs are local math values, not buffer layouts.
 Do not upload their C++/Slang `bool` fields as a shared ABI.
 
 ## Future consumers
@@ -283,7 +359,8 @@ engine's Slang/SPIR-V 1.6 and column-major flags, referencing every helper throu
 dynamic buffers. If `spirv-val` is available, CTest registers
 `temporal_contract_spirv_validation` for Vulkan 1.4. This probe validates shader
 compilation and SPIR-V legality; it does not execute a GPU parity test or claim
-TAA image-quality validation. Those require the later runtime implementation.
+TAA image-quality validation. The opt-in `temporal_regression.py` suite supplies
+runtime sequence, reference, lifecycle and performance evidence.
 
 In a Visual Studio Developer Command Prompt, after configuring the project:
 

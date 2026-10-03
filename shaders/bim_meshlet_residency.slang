@@ -57,15 +57,14 @@ float projectedRadiusPixels(float3 center, float radius)
         return 0.0;
     }
 
-    float4 clipCenter = mul(uCamera.viewProj, float4(center, 1.0));
+    float4x4 stableViewProj = uCamera.temporalInfo.w != 0u ? uCamera.unjitteredViewProj : uCamera.viewProj;
+    float4 clipCenter = mul(stableViewProj, float4(center, 1.0));
     if (abs(clipCenter.w) <= 1e-5)
     {
         return 0.0;
     }
 
-    float3 cameraRight = float3(uCamera.viewProj[0][0],
-                                uCamera.viewProj[0][1],
-                                uCamera.viewProj[0][2]);
+    float3 cameraRight = float3(stableViewProj[0][0], stableViewProj[0][1], stableViewProj[0][2]);
     const float rightLengthSq = dot(cameraRight, cameraRight);
     if (rightLengthSq <= 1e-8)
     {
@@ -76,7 +75,7 @@ float projectedRadiusPixels(float3 center, float radius)
         cameraRight *= rsqrt(rightLengthSq);
     }
 
-    float4 clipOffset = mul(uCamera.viewProj,
+    float4 clipOffset = mul(stableViewProj,
                             float4(center + cameraRight * radius, 1.0));
     if (abs(clipOffset.w) <= 1e-5)
     {

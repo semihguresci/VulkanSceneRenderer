@@ -10,4 +10,6 @@ struct ObjectBuffer
     // x = material index; y = object flags; z = pick ID source mask; w reserved.
     uint4 objectInfo;
     float4 boundingSphere;
+    column_major float4x4 previousModel;
+    uint4 temporalInfo;
 };

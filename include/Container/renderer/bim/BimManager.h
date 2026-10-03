@@ -698,6 +698,7 @@ public:
     return semanticColorMode_;
   }
   bool setSemanticColorMode(BimSemanticColorMode mode);
+  void setRootTranslation(glm::vec3 translation);
   [[nodiscard]] BimSceneStats sceneStats() const;
   [[nodiscard]] std::vector<container::scene::SceneProviderTriangleBatch>
   sceneProviderTriangleBatches() const;
@@ -929,6 +930,8 @@ private:
 
   std::vector<container::geometry::Vertex> vertices_{};
   std::vector<uint32_t> indices_{};
+  glm::vec3 temporalRootTranslation_{0};
+  uint64_t nextTemporalObjectId_{1};
   std::vector<container::gpu::ObjectData> objectData_{};
   std::vector<BimElementMetadata> elementMetadata_{};
   BimRelationshipGraph relationshipGraph_{};

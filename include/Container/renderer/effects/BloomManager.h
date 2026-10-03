@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Container/common/CommonVulkan.h"
 #include "Container/common/CommonVMA.h"
+#include "Container/common/CommonVulkan.h"
 #include "Container/utility/VulkanMemoryManager.h"
 
 #include <cstdint>
@@ -17,8 +17,9 @@ class VulkanDevice;
 
 namespace container::renderer {
 
-// Manages bloom post-processing via a dual-filter downsample/upsample mip chain.
-// Uses compute shaders with 13-tap downsample and 9-tap tent upsample (Jimenez 2014).
+// Manages bloom post-processing via a dual-filter downsample/upsample mip
+// chain. Uses compute shaders with 13-tap downsample and 9-tap tent upsample
+// (Jimenez 2014).
 class BloomManager {
  public:
   static constexpr uint32_t kMaxBloomMips = 6;
@@ -44,7 +45,9 @@ class BloomManager {
   void dispatch(VkCommandBuffer cmd,
                 VkImageView     sceneColorView,
                 uint32_t        sceneWidth,
-                uint32_t        sceneHeight) const;
+                uint32_t        sceneHeight,
+                VkImageLayout sourceLayout =
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) const;
 
   void destroy();
 

@@ -192,7 +192,8 @@ void BloomManager::createTextures(uint32_t width, uint32_t height) {
 
   if (mipCount_ == 0) return;
 
-  // Downsample descriptor pool: mipCount_ sets, each with (sampled_image, sampler, storage_image)
+  // Downsample descriptor pool: mipCount_ sets, each with (sampled_image,
+  // sampler, storage_image)
   {
     std::vector<VkDescriptorPoolSize> poolSizes = {
         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  mipCount_},
@@ -245,7 +246,8 @@ void BloomManager::createTextures(uint32_t width, uint32_t height) {
 void BloomManager::dispatch(VkCommandBuffer cmd,
                             VkImageView     sceneColorView,
                             uint32_t        sceneWidth,
-                            uint32_t        sceneHeight) const {
+                            uint32_t        sceneHeight,
+                            VkImageLayout sourceLayout) const {
   if (!enabled_ || downsamplePipeline_ == VK_NULL_HANDLE || mipCount_ == 0)
     return;
 
@@ -258,8 +260,7 @@ void BloomManager::dispatch(VkCommandBuffer cmd,
     // Source: scene color (i==0) or previous mip
     VkDescriptorImageInfo srcInfo{};
     srcInfo.imageView   = (i == 0) ? sceneColorView : mipViews_[i - 1];
-    srcInfo.imageLayout = (i == 0) ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                                   : VK_IMAGE_LAYOUT_GENERAL;
+    srcInfo.imageLayout = (i == 0) ? sourceLayout : VK_IMAGE_LAYOUT_GENERAL;
 
     VkDescriptorImageInfo sampInfo{};
     sampInfo.sampler = linearSampler_;

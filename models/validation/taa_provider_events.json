@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "frames": 64,
+  "sampleFrames": [
+    1,
+    12,
+    20,
+    26,
+    34,
+    42,
+    50,
+    64
+  ],
+  "camera": [
+    {
+      "frame": 1,
+      "position": [
+        0,
+        1.8,
+        6.5
+      ],
+      "target": [
+        0,
+        0.8,
+        0
+      ]
+    }
+  ],
+  "events": [
+    {
+      "frame": 12,
+      "bimHiddenObject": 2
+    },
+    {
+      "frame": 20,
+      "bimHiddenObject": 4294967295
+    },
+    {
+      "frame": 26,
+      "bimLodBias": 2
+    },
+    {
+      "frame": 34,
+      "sectionPlane": [
+        1,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "frame": 42,
+      "sectionPlane": [
+        1,
+        0,
+        0,
+        4
+      ]
+    },
+    {
+      "frame": 50,
+      "reset": true
+    }
+  ]
+}

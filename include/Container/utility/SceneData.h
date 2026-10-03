@@ -16,6 +16,14 @@ struct CameraData {
   // Unit world-space forward vector. Lighting uses this for cascade selection
   // without reconstructing camera basis vectors per shaded pixel.
   alignas(16) glm::vec4 cameraForward{0.0f, 0.0f, -1.0f, 0.0f};
+  alignas(16) glm::mat4 unjitteredViewProj{1.0f};
+  alignas(16) glm::mat4 previousViewProj{1.0f};
+  alignas(16) glm::mat4 previousJitteredViewProj{1.0f};
+  alignas(16) glm::mat4 previousInverseViewProj{1.0f};
+  alignas(16) glm::vec4 jitterUv{0.0f}; // current.xy, previous.zw
+  alignas(16) glm::uvec4 temporalInfo{
+      0u}; // valid, submitted frame, epoch, TAA enabled
+  alignas(16) glm::vec4 renderExtent{0.0f}; // width, height, reciprocals
 };
 
 struct ObjectData {
@@ -30,6 +38,9 @@ struct ObjectData {
   alignas(16) glm::uvec4 objectInfo{0, 0, 0, 0};
   // Bounding sphere in world space: xyz = center, w = radius.
   alignas(16) glm::vec4 boundingSphere{0.0f, 0.0f, 0.0f, 0.0f};
+  alignas(16) glm::mat4 previousModel{1.0f};
+  alignas(16) glm::uvec4 temporalInfo{
+      0u}; // token, previous valid, source identity low/high
 };
 
 struct GpuTextureTransform {
@@ -602,7 +613,7 @@ struct BlurPushConstants {
 // uniform or storage buffers.
 // ---------------------------------------------------------------------------
 
-static_assert(sizeof(CameraData) == 160,
+static_assert(sizeof(CameraData) == 464,
               "CameraData size mismatch with shaders/lighting_structs.slang "
               "CameraBuffer. Update shader layout in lockstep.");
 static_assert(alignof(CameraData) == 16, "CameraData must be 16-byte aligned.");
@@ -1183,7 +1194,7 @@ static_assert(offsetof(BlurPushConstants, pad1) == 24,
 static_assert(offsetof(BlurPushConstants, pad2) == 28,
               "BlurPushConstants.pad2 offset");
 
-static_assert(sizeof(ObjectData) == 144,
+static_assert(sizeof(ObjectData) == 224,
               "ObjectData size mismatch with shaders/object_data_common.slang. "
               "Update shader ObjectBuffer in lockstep.");
 static_assert(alignof(ObjectData) == 16, "ObjectData must be 16-byte aligned.");
@@ -1367,3 +1378,9 @@ static_assert(kMaterialTextureDescriptorCapacity - 1u <=
               "indices and the thin-surface half-bit.");
 
 } // namespace container::gpu
+
+static_assert(offsetof(container::gpu::CameraData, unjitteredViewProj) == 160);
+static_assert(offsetof(container::gpu::CameraData, temporalInfo) == 432);
+static_assert(offsetof(container::gpu::CameraData, renderExtent) == 448);
+static_assert(offsetof(container::gpu::ObjectData, previousModel) == 144);
+static_assert(offsetof(container::gpu::ObjectData, temporalInfo) == 208);
