@@ -1,4 +1,5 @@
 #include "brdf_common.slang"
+#include "depth_normal_common.slang"
 #include "lighting_structs.slang"
 #include "material_data_common.slang"
 #include "push_constants_common.slang"
@@ -103,10 +104,9 @@ float4 fragMain(VSOutput input) : SV_Target0
     {
         return 0.0.xxxx;
     }
-    float3 geometricNormal = SafeNormalize(
-        cross(ddy(worldPosition), ddx(worldPosition)), normal);
-    geometricNormal =
-        dot(geometricNormal, normal) < 0.0 ? -geometricNormal : geometricNormal;
+    float3 geometricNormal = ReconstructDepthGeometricNormal(
+        pixelCoord, uint2(width, height), worldPosition, normal,
+        gDepthTexture, uCamera.inverseViewProj);
 
     float3 lightVector = pc.positionRadius.xyz - worldPosition;
     float lightRadius = pc.positionRadius.w;

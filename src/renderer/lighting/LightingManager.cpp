@@ -1052,7 +1052,7 @@ void LightingManager::allocateClusterBuffers(VkExtent2D extent) {
 
   const VkDeviceSize tileGridSize = sizeof(TileLightGrid) * maxClusterCount_;
   tileGridSsbo_ = allocationManager_.createBuffer(
-      tileGridSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+      tileGridSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
       VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
 
   const VkDeviceSize lightIndexListSize =

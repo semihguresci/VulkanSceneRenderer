@@ -196,7 +196,7 @@ inline constexpr uint32_t kLocalShadowMapResolution = 2048;
 inline constexpr uint32_t kMaxShadowedLocalLightLayers = 24;
 inline constexpr uint32_t kLocalShadowPointFaceCount = 6;
 inline constexpr uint32_t kLocalShadowSpotLayerCount = 1;
-inline constexpr uint32_t kLocalShadowAreaLayerCount = 1;
+inline constexpr uint32_t kLocalShadowAreaLayerCount = kLocalShadowPointFaceCount;
 inline constexpr uint32_t kLocalShadowAreaRefPackedCount =
     (kMaxAreaLights + 3u) / 4u;
 inline constexpr float kLocalShadowTypePoint = 0.0f;
@@ -283,8 +283,8 @@ struct LocalShadowLayerData {
   alignas(16) glm::vec4 positionRange{0.0f, 0.0f, 0.0f, 10.0f};
   // xyz = layer forward direction, w = kLocalShadowType*.
   alignas(16) glm::vec4 directionType{0.0f, 0.0f, -1.0f, kLocalShadowTypePoint};
-  // x = source light index, y = face/sample index, z = layer count for the
-  // source light, w = enabled.
+  // x = source light index, y = cube face index, z = layer count for the
+  // source light (all emitter cubes for an area light), w = enabled.
   alignas(16) glm::uvec4 meta{0u, 0u, 0u, 0u};
   // x = texel size in world units, y = depth range, z = outer cone cosine,
   // w = source radius in world units for soft local-shadow filtering.

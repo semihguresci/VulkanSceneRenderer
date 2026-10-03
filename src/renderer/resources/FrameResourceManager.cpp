@@ -392,24 +392,24 @@ void FrameResourceManager::create(
     f.oitDescriptorSet         = oitSets[i];
 
     f.albedo   = createAttachment(formats_.albedo,
-                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
     f.normal   = createAttachment(formats_.normal,
-                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
     f.material = createAttachment(formats_.material,
-                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
     f.emissive = createAttachment(formats_.emissive,
-                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
     f.specular = createAttachment(formats_.specular,
-                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
     f.pickId = createAttachment(formats_.pickId,
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                        VK_IMAGE_USAGE_SAMPLED_BIT |
-                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
     if (useMsaa) {
       f.albedoMsaa = createAttachment(formats_.albedo,
@@ -435,8 +435,40 @@ void FrameResourceManager::create(
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                        VK_IMAGE_USAGE_SAMPLED_BIT |
                        VK_IMAGE_USAGE_STORAGE_BIT |
-                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
+    // Forward rendering skips the G-buffer pass, but the shared post-process
+    // shader still declares these sampled resources for debug views. Scene color
+    // and picking also need valid initial values while resources are loading.
+    {
+      const VkCommandBuffer cmd = beginImmediate();
+      for (VkImage image : {f.albedo.image, f.normal.image, f.material.image,
+                            f.emissive.image, f.specular.image, f.sceneColor.image,
+                            f.pickId.image}) {
+        VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = image;
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 0u, 1u};
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0u,
+                             0u, nullptr, 0u, nullptr, 1u, &barrier);
+        const VkClearColorValue clear{};
+        vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             &clear, 1u, &barrier.subresourceRange);
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0u,
+                             0u, nullptr, 0u, nullptr, 1u, &barrier);
+      }
+      endImmediate(cmd);
+    }
     f.oitHeadPointers = createAttachment(formats_.oitHeadPointer,
                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
@@ -1529,7 +1561,7 @@ void FrameResourceManager::ensureFallbackShadowResources() {
 
     fallbackShadowAtlas_ = atlas;
     transitionToShaderReadOnly(fallbackShadowAtlas_.image,
-                               VK_IMAGE_ASPECT_DEPTH_BIT, 1u);
+                               VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 1u);
   }
 
   if (fallbackShadowSampler_ == VK_NULL_HANDLE) {
@@ -1638,7 +1670,7 @@ void FrameResourceManager::ensureFallbackLocalShadowResources() {
 
     fallbackLocalShadowAtlas_ = atlas;
     transitionToShaderReadOnly(fallbackLocalShadowAtlas_.image,
-                               VK_IMAGE_ASPECT_DEPTH_BIT, 1u);
+                               VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 1u);
   }
 
   if (fallbackLocalShadowSampler_ == VK_NULL_HANDLE) {

@@ -1,4 +1,5 @@
 #include "brdf_common.slang"
+#include "depth_normal_common.slang"
 #include "area_light_common.slang"
 #include "material_data_common.slang"
 #include "local_shadow_common.slang"
@@ -134,30 +135,30 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
     if (LocalShadowMapsEnabled(uLighting, uLocalShadow) &&
         areaShadowRef != 0u)
     {
-        // The local-shadow PCF radius already models finite source size; a
-        // reduced weighted shadow estimate avoids a full PCF for every
-        // lighting integration sample.
+        // Integrate visibility from the emitter origins rendered into cube maps.
+        // The budget determines how many emitter samples are available.
         areaShadowVisibility = 0.0;
         float visibilityWeightSum = 0.0;
-        [unroll]
+        uint visibilitySampleCount =
+            LocalAreaShadowSampleCount(areaShadowRef, uLocalShadow);
+        [loop]
         for (uint visibilitySample = 0u;
-             visibilitySample < AREA_LIGHT_SHADOW_VISIBILITY_SAMPLE_COUNT;
+             visibilitySample < visibilitySampleCount;
              ++visibilitySample)
         {
-            uint areaSampleIndex =
-                AreaLightShadowVisibilitySampleIndex(visibilitySample);
+            float3 samplePosition = LocalAreaShadowSamplePosition(
+                    areaShadowRef, visibilitySample, uLocalShadow);
             float3 visibilitySurfaceToLight;
-            float weight = AreaLightSampleContributionWeight(
-                light, frame, worldPosition, areaSampleIndex,
+            float weight = AreaLightPositionContributionWeight(
+                light, frame, worldPosition, samplePosition,
+                1.0 / float(visibilitySampleCount),
                 visibilitySurfaceToLight);
             if (weight <= 0.0)
             {
                 continue;
             }
-            float3 samplePosition =
-                AreaLightSamplePosition(frame, areaSampleIndex);
             areaShadowVisibility += weight * LocalAreaLightShadowVisibility(
-                areaIndex, worldPosition, geometricNormal, samplePosition,
+                areaIndex, worldPosition, geometricNormal, visibilitySample,
                 uLocalShadow, gLocalShadowAtlas, gLocalShadowSampler);
             visibilityWeightSum += weight;
         }
@@ -279,10 +280,9 @@ float4 fragMain(VSOutput input) : SV_Target0
     {
         return float4(emissive, 1.0);
     }
-    float3 geometricNormal = SafeNormalize(
-        cross(ddy(worldPosition), ddx(worldPosition)), normal);
-    geometricNormal =
-        dot(geometricNormal, normal) < 0.0 ? -geometricNormal : geometricNormal;
+    float3 geometricNormal = ReconstructDepthGeometricNormal(
+        pixelCoord, uint2(width, height), worldPosition, normal,
+        gDepthTexture, uCamera.inverseViewProj);
     float3 V = SafeNormalize(uCamera.cameraWorldPosition.xyz - worldPosition, float3(0.0, 0.0, 1.0));
     float3 L = SafeNormalize(-uLighting.directionalDirection.xyz, float3(0.0, 1.0, 0.0));
     float3 lightColor =

@@ -76,9 +76,17 @@ size_t executionPosition(const RenderGraph &graph, RenderPassId id) {
 }
 
 std::string_view lightingResourceAccessBlock(std::string_view source) {
-  const std::string_view marker =
-      "graph.setPassResourceAccess(\n      RenderPassId::Lighting";
-  const size_t begin = source.find(marker);
+  constexpr std::string_view call = "graph.setPassResourceAccess(";
+  constexpr std::string_view marker = "RenderPassId::Lighting";
+  size_t begin = std::string_view::npos;
+  for (size_t access = source.find(call); access != std::string_view::npos;
+       access = source.find(call, access + call.size())) {
+    const size_t argument = source.find_first_not_of(" \t\r\n", access + call.size());
+    if (argument != std::string_view::npos && source.substr(argument).starts_with(marker)) {
+      begin = argument;
+      break;
+    }
+  }
   if (begin == std::string_view::npos) {
     return {};
   }

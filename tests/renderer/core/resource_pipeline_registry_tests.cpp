@@ -138,6 +138,13 @@ bool contains(const std::string &text, const std::string &needle) {
   return text.find(needle) != std::string::npos;
 }
 
+bool containsIgnoringWhitespace(std::string text, std::string needle) {
+  const auto whitespace = [](char c) { return c == ' ' || c == '\n' || c == '\r' || c == '\t'; };
+  std::erase_if(text, whitespace);
+  std::erase_if(needle, whitespace);
+  return contains(text, needle);
+}
+
 std::string definitionBlock(const std::string &text,
                             const std::string &declarationName) {
   const std::size_t start = text.find(declarationName);
@@ -2139,7 +2146,7 @@ TEST(TechniqueRegistryGuardrails,
   const std::string rendererFrontend =
       readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
 
-  EXPECT_TRUE(contains(frameResourceManager,
+  EXPECT_TRUE(containsIgnoringWhitespace(frameResourceManager,
                        "f.pickDepth = createAttachment("
                        "formats_.depthStencil,\n"
                        "                   "
@@ -2148,13 +2155,13 @@ TEST(TechniqueRegistryGuardrails,
                        "VK_IMAGE_USAGE_TRANSFER_DST_BIT |\n"
                        "                       "
                        "VK_IMAGE_USAGE_TRANSFER_SRC_BIT"));
-  EXPECT_TRUE(contains(frameResourceManager,
+  EXPECT_TRUE(containsIgnoringWhitespace(frameResourceManager,
                        "bindSharedImage(\"pick-depth\", f.pickDepth,\n"
                        "              "
                        "VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |\n"
                        "                  VK_IMAGE_USAGE_TRANSFER_DST_BIT |\n"
                        "                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT"));
-  EXPECT_TRUE(contains(rendererFrontend,
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend,
                        "VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |\n"
                        "            VK_BUFFER_USAGE_TRANSFER_SRC_BIT"));
 }
@@ -2329,9 +2336,9 @@ TEST(TechniqueRegistryGuardrails, SceneRasterPassesPublishReadinessCallbacks) {
   const std::string deferredTechnique =
       readRepoTextFile("src/renderer/deferred/DeferredRasterTechnique.cpp");
 
-  EXPECT_TRUE(contains(deferredTechnique, "graph.setPassReadiness(\n"
+  EXPECT_TRUE(containsIgnoringWhitespace(deferredTechnique, "graph.setPassReadiness(\n"
                                           "      RenderPassId::DepthPrepass"));
-  EXPECT_TRUE(contains(deferredTechnique, "graph.setPassReadiness(\n"
+  EXPECT_TRUE(containsIgnoringWhitespace(deferredTechnique, "graph.setPassReadiness(\n"
                                           "      RenderPassId::GBuffer"));
 }
 
@@ -2430,38 +2437,38 @@ TEST(TechniqueRegistryGuardrails,
   const std::string rendererFrontend =
       readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
 
-  EXPECT_TRUE(contains(rendererFrontend, "copyManagerBinding"));
-  EXPECT_TRUE(contains(rendererFrontend,
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend, "copyManagerBinding"));
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend,
                        "copyManagerBinding(RenderTechniqueId::DeferredRaster"));
-  EXPECT_TRUE(contains(rendererFrontend,
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend,
                        "copyManagerBinding(RenderTechniqueId::ForwardRaster"));
-  EXPECT_TRUE(contains(rendererFrontend, "bindSharedDescriptorSet"));
-  EXPECT_TRUE(contains(rendererFrontend, "bindSharedBuffer"));
-  EXPECT_TRUE(contains(rendererFrontend, "bindDeferredDescriptorSet"));
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend, "bindSharedDescriptorSet"));
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend, "bindSharedBuffer"));
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend, "bindDeferredDescriptorSet"));
 
-  EXPECT_TRUE(contains(rendererFrontend,
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend,
                        "bindSharedDescriptorSet(\"scene-descriptor-set\""));
-  EXPECT_TRUE(contains(rendererFrontend, "bindSharedDescriptorSet(\n"
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend, "bindSharedDescriptorSet(\n"
                                          "      \"bim-scene-descriptor-set\""));
-  EXPECT_TRUE(contains(rendererFrontend,
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend,
                        "bindSharedDescriptorSet(\"light-descriptor-set\""));
-  EXPECT_TRUE(contains(rendererFrontend,
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend,
                        "bindSharedDescriptorSet(\"shadow-descriptor-set\""));
-  EXPECT_TRUE(contains(rendererFrontend,
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend,
                        "bindSharedDescriptorSet(\n"
                        "      \"local-shadow-descriptor-set\""));
 
-  EXPECT_TRUE(contains(rendererFrontend,
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend,
                        "bindDeferredDescriptorSet(\n"
                        "      \"tiled-lighting-descriptor-set\""));
-  EXPECT_TRUE(contains(rendererFrontend, "bindSharedBuffer(\"camera-buffer\""));
-  EXPECT_TRUE(contains(rendererFrontend, "bindSharedBuffer(\n"
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend, "bindSharedBuffer(\"camera-buffer\""));
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend, "bindSharedBuffer(\n"
                                          "        \"scene-object-buffer\""));
-  EXPECT_TRUE(contains(rendererFrontend, "RenderTechniqueId::DeferredRaster, "
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend, "RenderTechniqueId::DeferredRaster, "
                                          "\"g-buffer-sampler\""));
-  EXPECT_FALSE(contains(rendererFrontend, "RenderTechniqueId::ForwardRaster, "
+  EXPECT_FALSE(containsIgnoringWhitespace(rendererFrontend, "RenderTechniqueId::ForwardRaster, "
                                           "\"tiled-lighting-descriptor-set\""));
-  EXPECT_FALSE(contains(rendererFrontend, "RenderTechniqueId::ForwardRaster, "
+  EXPECT_FALSE(containsIgnoringWhitespace(rendererFrontend, "RenderTechniqueId::ForwardRaster, "
                                           "\"g-buffer-sampler\""));
 }
 

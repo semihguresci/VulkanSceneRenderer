@@ -3,6 +3,7 @@
 // Replaces the per-light stencil draw loop.
 
 #include "brdf_common.slang"
+#include "depth_normal_common.slang"
 #include "lighting_structs.slang"
 #include "material_data_common.slang"
 #include "push_constants_common.slang"
@@ -129,10 +130,9 @@ float4 fragMain(VSOutput input) : SV_Target0
     {
         return 0.0.xxxx;
     }
-    float3 geometricNormal = SafeNormalize(
-        cross(ddy(worldPosition), ddx(worldPosition)), normal);
-    geometricNormal =
-        dot(geometricNormal, normal) < 0.0 ? -geometricNormal : geometricNormal;
+    float3 geometricNormal = ReconstructDepthGeometricNormal(
+        pixelCoord, uint2(width, height), worldPosition, normal,
+        gDepthTexture, uCamera.inverseViewProj);
 
     float metallic = saturate(material.x);
     float roughness = clamp(material.y, 0.045, 1.0);

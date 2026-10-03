@@ -5,7 +5,6 @@
 #include "brdf_common.slang"
 
 static const uint AREA_LIGHT_INTEGRATION_SAMPLE_COUNT = 25u;
-static const uint AREA_LIGHT_SHADOW_VISIBILITY_SAMPLE_COUNT = 5u;
 static const float AREA_LIGHT_MIN_DISTANCE_SQ = 0.01;
 
 struct AreaLightFrame
@@ -72,34 +71,12 @@ float2 AreaLightRectSampleOffset(uint sampleIndex)
 
 float2 AreaLightDiskSampleOffset(uint sampleIndex)
 {
-    static const float2 offsets[25] = {
-        float2(0.0, 0.0),
-        float2(0.230000, 0.000000),
-        float2(0.000000, 0.230000),
-        float2(-0.230000, 0.000000),
-        float2(0.000000, -0.230000),
-        float2(0.310000, 0.310000),
-        float2(-0.310000, 0.310000),
-        float2(0.310000, -0.310000),
-        float2(-0.310000, -0.310000),
-        float2(0.540000, 0.000000),
-        float2(0.000000, 0.540000),
-        float2(-0.540000, 0.000000),
-        float2(0.000000, -0.540000),
-        float2(0.515000, 0.305000),
-        float2(-0.305000, 0.515000),
-        float2(-0.515000, -0.305000),
-        float2(0.305000, -0.515000),
-        float2(0.750000, 0.000000),
-        float2(0.000000, 0.750000),
-        float2(-0.750000, 0.000000),
-        float2(0.000000, -0.750000),
-        float2(0.612000, 0.612000),
-        float2(-0.612000, 0.612000),
-        float2(0.612000, -0.612000),
-        float2(-0.612000, -0.612000),
-    };
-    return offsets[sampleIndex % AREA_LIGHT_INTEGRATION_SAMPLE_COUNT];
+    // Gauss-Legendre integration in squared radius has the correct disk
+    // area measure: dA = pi * d(radius^2). Five uniform angles per ring.
+    uint index = sampleIndex % AREA_LIGHT_INTEGRATION_SAMPLE_COUNT;
+    float radius = sqrt(0.5 * (AreaLightGauss5Node(index / 5u) + 1.0));
+    float angle = 2.0 * PI * float(index % 5u) / 5.0;
+    return radius * float2(cos(angle), sin(angle));
 }
 
 float AreaLightGauss5Node(uint index)
@@ -137,7 +114,8 @@ float AreaLightSampleWeight(AreaLightFrame frame, uint sampleIndex)
 {
     if (abs(frame.type - AREA_LIGHT_TYPE_DISK) < 0.5)
     {
-        return 1.0 / float(AREA_LIGHT_INTEGRATION_SAMPLE_COUNT);
+        return 0.1 * AreaLightGauss5Weight(
+            (sampleIndex % AREA_LIGHT_INTEGRATION_SAMPLE_COUNT) / 5u);
     }
     return AreaLightRectSampleWeight(sampleIndex);
 }
@@ -152,20 +130,12 @@ float3 AreaLightSamplePosition(AreaLightFrame frame, uint sampleIndex)
         frame.bitangent * offset.y;
 }
 
-uint AreaLightShadowVisibilitySampleIndex(uint visibilitySampleIndex)
-{
-    static const uint indices[5] = { 12u, 2u, 10u, 14u, 22u };
-    return indices[visibilitySampleIndex %
-                   AREA_LIGHT_SHADOW_VISIBILITY_SAMPLE_COUNT];
-}
-
-float AreaLightSampleContributionWeight(AreaLightData light,
+float AreaLightPositionContributionWeight(AreaLightData light,
                                         AreaLightFrame frame,
                                         float3 worldPosition,
-                                        uint sampleIndex,
+                                        float3 samplePosition, float sampleWeight,
                                         out float3 surfaceToLight)
 {
-    float3 samplePosition = AreaLightSamplePosition(frame, sampleIndex);
     float3 lightVector = samplePosition - worldPosition;
     float distanceSq = dot(lightVector, lightVector);
     float range = light.positionRange.w;
@@ -184,8 +154,19 @@ float AreaLightSampleContributionWeight(AreaLightData light,
     }
 
     return SmoothRangeAttenuation(distanceSq, range) * sourceFacing *
-        frame.area * AreaLightSampleWeight(frame, sampleIndex) /
+        frame.area * sampleWeight /
         max(distanceSq, AREA_LIGHT_MIN_DISTANCE_SQ);
+}
+
+float AreaLightSampleContributionWeight(AreaLightData light,
+                                        AreaLightFrame frame,
+                                        float3 worldPosition,
+                                        uint sampleIndex,
+                                        out float3 surfaceToLight)
+{
+    return AreaLightPositionContributionWeight(light, frame, worldPosition,
+        AreaLightSamplePosition(frame, sampleIndex),
+        AreaLightSampleWeight(frame, sampleIndex), surfaceToLight);
 }
 
 float3 EvaluateAreaLightSampleRadiance(AreaLightData light,

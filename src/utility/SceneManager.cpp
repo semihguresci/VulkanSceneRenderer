@@ -1684,8 +1684,7 @@ void SceneManager::createDescriptorSetLayout() {
 
   std::array<VkDescriptorBindingFlags, 7> bindingFlags{
       0, 0, 0, 0, 0,
-      VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-          VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT,
+      VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT,
       0};
 
   descriptorSetLayout_ = pipelineManager_->createDescriptorSetLayout(
@@ -2406,13 +2405,8 @@ void SceneManager::allocateDescriptorSets(uint32_t descriptorSetCount) {
   std::vector<VkDescriptorSetLayout> layouts(setCount, descriptorSetLayout_);
   allocInfo.pSetLayouts = layouts.data();
 
-  VkDescriptorSetVariableDescriptorCountAllocateInfo countInfo{};
-  countInfo.sType =
-      VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
-  countInfo.descriptorSetCount = setCount;
-  std::vector<uint32_t> descriptorCounts(setCount, textureDescriptorCapacity_);
-  countInfo.pDescriptorCounts = descriptorCounts.data();
-  allocInfo.pNext = &countInfo;
+  // Binding 5 has a fixed device-sized capacity. Variable descriptor counts
+  // would require it to be the highest binding; camera data lives at binding 6.
 
   std::vector<VkDescriptorSet> allocatedSets(setCount, VK_NULL_HANDLE);
   if (vkAllocateDescriptorSets(deviceWrapper_->device(), &allocInfo,

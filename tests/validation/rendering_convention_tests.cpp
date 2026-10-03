@@ -2219,12 +2219,12 @@ TEST(RenderingConventionTests, AreaLightShadersUseSampledIntegration) {
   EXPECT_TRUE(contains(areaLightCommon, "AreaLightSampleWeight"));
   EXPECT_TRUE(contains(areaLightCommon, "AreaLightGauss5Node"));
   EXPECT_TRUE(contains(areaLightCommon, "AreaLightGauss5Weight"));
-  EXPECT_TRUE(contains(areaLightCommon, "float2(0.0, 0.0)"));
+  EXPECT_TRUE(contains(localShadow, "LocalAreaShadowSampleCount"));
   EXPECT_TRUE(contains(areaLightCommon, "EvaluateAreaLightSampleRadiance"));
-  EXPECT_TRUE(contains(areaLightCommon, "frame.area * AreaLightSampleWeight"));
+  EXPECT_TRUE(contains(areaLightCommon, "frame.area * sampleWeight"));
   EXPECT_TRUE(
-      contains(areaLightCommon, "AREA_LIGHT_SHADOW_VISIBILITY_SAMPLE_COUNT = 5u"));
-  EXPECT_TRUE(contains(areaLightCommon, "AreaLightShadowVisibilitySampleIndex"));
+      contains(readRepoTextFile("shaders/lighting_structs.slang"), "AREA_LIGHT_SHADOW_VISIBILITY_SAMPLE_COUNT = 4u"));
+  EXPECT_TRUE(contains(localShadow, "LocalAreaShadowSamplePosition"));
   EXPECT_TRUE(contains(areaLightCommon, "AreaLightSampleContributionWeight"));
   EXPECT_TRUE(contains(localShadow, "LocalAreaLightShadowVisibility"));
   EXPECT_TRUE(contains(localShadow, "PackedLocalShadowAreaRef"));
@@ -2313,18 +2313,18 @@ TEST(RenderingConventionTests,
   ASSERT_NE(deferredAreaLightEnd, std::string::npos);
   const std::string deferredAreaLightBlock = directional.substr(
       deferredAreaLightStart, deferredAreaLightEnd - deferredAreaLightStart);
-  EXPECT_TRUE(contains(
+  EXPECT_TRUE(containsIgnoringWhitespace(
       deferredAreaLightBlock,
       "uint areaShadowRef = PackedLocalShadowAreaRef(uLocalShadow, "
       "areaIndex)"));
-  EXPECT_TRUE(contains(deferredAreaLightBlock,
+  EXPECT_TRUE(containsIgnoringWhitespace(deferredAreaLightBlock,
                        "LocalShadowMapsEnabled(uLighting, uLocalShadow) &&\n"
                        "        areaShadowRef != 0u"));
   const size_t deferredRefGate =
       deferredAreaLightBlock.find("areaShadowRef != 0u");
   ASSERT_NE(deferredRefGate, std::string::npos);
   const size_t deferredVisibilityLoop = deferredAreaLightBlock.find(
-      "visibilitySample < AREA_LIGHT_SHADOW_VISIBILITY_SAMPLE_COUNT");
+      "visibilitySample < visibilitySampleCount");
   ASSERT_NE(deferredVisibilityLoop, std::string::npos);
   EXPECT_LT(deferredRefGate, deferredVisibilityLoop);
 
@@ -2338,17 +2338,17 @@ TEST(RenderingConventionTests,
   const std::string transparentAreaLightBlock =
       transparent.substr(transparentAreaLightStart,
                          transparentAreaLightEnd - transparentAreaLightStart);
-  EXPECT_TRUE(contains(
+  EXPECT_TRUE(containsIgnoringWhitespace(
       transparentAreaLightBlock,
       "uint areaShadowRef = PackedLocalShadowAreaRef(uLocalShadow, i)"));
-  EXPECT_TRUE(contains(transparentAreaLightBlock,
+  EXPECT_TRUE(containsIgnoringWhitespace(transparentAreaLightBlock,
                        "LocalShadowMapsEnabled(uLighting, uLocalShadow) &&\n"
                        "                areaShadowRef != 0u"));
   const size_t transparentRefGate =
       transparentAreaLightBlock.find("areaShadowRef != 0u");
   ASSERT_NE(transparentRefGate, std::string::npos);
   const size_t transparentVisibilityLoop = transparentAreaLightBlock.find(
-      "visibilitySample < AREA_LIGHT_SHADOW_VISIBILITY_SAMPLE_COUNT");
+      "visibilitySample < visibilitySampleCount");
   ASSERT_NE(transparentVisibilityLoop, std::string::npos);
   EXPECT_LT(transparentRefGate, transparentVisibilityLoop);
 }
@@ -3124,32 +3124,32 @@ TEST(RenderingConventionTests, LocalPointShadowsHaveRuntimeBudget) {
   const std::string frontend =
       readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
 
-  EXPECT_TRUE(contains(sceneData, "uint32_t localShadowPointBudget{1}"));
-  EXPECT_TRUE(contains(sceneData, "uint32_t localShadowLayerBudget{8}"));
-  EXPECT_TRUE(contains(lightingManager, "LocalShadowLayerAllocator.h"));
-  EXPECT_TRUE(contains(lightingManager, "generatedLightingSettingsDiffer"));
-  EXPECT_FALSE(contains(lightingManager, "lightingSettingsDiffer"));
-  EXPECT_TRUE(contains(lightingManager, "kMaxLocalShadowOmniPointBudget"));
-  EXPECT_TRUE(contains(lightingManager, "localShadowPointBudget"));
-  EXPECT_TRUE(contains(lightingManager, "localShadowLayerBudget"));
-  EXPECT_TRUE(contains(
+  EXPECT_TRUE(containsIgnoringWhitespace(sceneData, "uint32_t localShadowPointBudget{1}"));
+  EXPECT_TRUE(containsIgnoringWhitespace(sceneData, "uint32_t localShadowLayerBudget{8}"));
+  EXPECT_TRUE(containsIgnoringWhitespace(lightingManager, "LocalShadowLayerAllocator.h"));
+  EXPECT_TRUE(containsIgnoringWhitespace(lightingManager, "generatedLightingSettingsDiffer"));
+  EXPECT_FALSE(containsIgnoringWhitespace(lightingManager, "lightingSettingsDiffer"));
+  EXPECT_TRUE(containsIgnoringWhitespace(lightingManager, "kMaxLocalShadowOmniPointBudget"));
+  EXPECT_TRUE(containsIgnoringWhitespace(lightingManager, "localShadowPointBudget"));
+  EXPECT_TRUE(containsIgnoringWhitespace(lightingManager, "localShadowLayerBudget"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
       localShadowAllocator,
       "inline constexpr uint32_t kMaxLocalShadowOmniPointBudget =\n"
       "    container::gpu::kMaxShadowedLocalLightLayers /\n"
       "    container::gpu::kLocalShadowPointFaceCount;"));
-  EXPECT_FALSE(contains(
+  EXPECT_FALSE(containsIgnoringWhitespace(
       localShadowAllocator,
       "kMaxShadowedLocalLightLayers /\n"
       "    container::gpu::kLocalShadowSpotLayerCount;"));
-  EXPECT_TRUE(contains(localShadowAllocator, "assignedOmniPointCount"));
-  EXPECT_TRUE(contains(localShadowAllocator, "assignedSpotCount"));
-  EXPECT_TRUE(contains(localShadowAllocator, "usedLayerCount"));
-  EXPECT_TRUE(contains(localShadowAllocator,
+  EXPECT_TRUE(containsIgnoringWhitespace(localShadowAllocator, "assignedOmniPointCount"));
+  EXPECT_TRUE(containsIgnoringWhitespace(localShadowAllocator, "assignedSpotCount"));
+  EXPECT_TRUE(containsIgnoringWhitespace(localShadowAllocator, "usedLayerCount"));
+  EXPECT_TRUE(containsIgnoringWhitespace(localShadowAllocator,
                        "!isSpot && result.assignedOmniPointCount >= "
                        "settings.omniPointBudget"));
-  EXPECT_TRUE(contains(localShadowAllocator,
+  EXPECT_TRUE(containsIgnoringWhitespace(localShadowAllocator,
                        "isSpot ? container::gpu::kLocalShadowSpotLayerCount"));
-  EXPECT_TRUE(contains(
+  EXPECT_TRUE(containsIgnoringWhitespace(
       lightingManager,
       "lightingSettings_.localShadowLayerBudget =\n"
       "      std::min(settings.localShadowLayerBudget, "
@@ -3164,34 +3164,34 @@ TEST(RenderingConventionTests, LocalPointShadowsHaveRuntimeBudget) {
   const std::string localShadowAssignBlock =
       lightingManager.substr(localShadowAssignStart,
                              localShadowAssignEnd - localShadowAssignStart);
-  EXPECT_TRUE(contains(localShadowAssignBlock,
+  EXPECT_TRUE(containsIgnoringWhitespace(localShadowAssignBlock,
                        "container::renderer::assignLocalShadowLayerMetadata"));
-  EXPECT_TRUE(contains(localShadowAssignBlock,
+  EXPECT_TRUE(containsIgnoringWhitespace(localShadowAssignBlock,
                        ".omniPointBudget = "
                        "lightingSettings_.localShadowPointBudget"));
-  EXPECT_TRUE(contains(localShadowAssignBlock,
+  EXPECT_TRUE(containsIgnoringWhitespace(localShadowAssignBlock,
                        ".layerBudget = lightingSettings_.localShadowLayerBudget"));
-  EXPECT_FALSE(contains(localShadowAssignBlock, "shadowedPointLightCount"));
-  EXPECT_TRUE(contains(shadowHeader, "uint32_t localShadowLayerBudget"));
-  EXPECT_TRUE(contains(shadowManager, "uint32_t localShadowLayerBudget"));
-  EXPECT_TRUE(contains(
+  EXPECT_FALSE(containsIgnoringWhitespace(localShadowAssignBlock, "shadowedPointLightCount"));
+  EXPECT_TRUE(containsIgnoringWhitespace(shadowHeader, "uint32_t localShadowLayerBudget"));
+  EXPECT_TRUE(containsIgnoringWhitespace(shadowManager, "uint32_t localShadowLayerBudget"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
       shadowManager,
       "const uint32_t activeLayerBudget =\n"
       "      std::min(localShadowLayerBudget, kMaxShadowedLocalLightLayers)"));
-  EXPECT_TRUE(contains(shadowManager,
+  EXPECT_TRUE(containsIgnoringWhitespace(shadowManager,
                        "baseLayer + layerCount > activeLayerBudget"));
-  EXPECT_TRUE(contains(
+  EXPECT_TRUE(containsIgnoringWhitespace(
       shadowManager,
       "nextLayer + kLocalShadowAreaLayerCount > activeLayerBudget"));
-  EXPECT_TRUE(contains(testsCmake, "local_shadow_layer_allocator_tests"));
-  EXPECT_TRUE(contains(gui, "Shadowed Point Light Budget"));
-  EXPECT_TRUE(contains(gui, "Local Shadow Layer Budget"));
-  EXPECT_TRUE(contains(gui, "container::gpu::kMaxShadowedLocalLightLayers"));
-  EXPECT_TRUE(contains(frontend, "guiLightingSettings.localShadowPointBudget"));
-  EXPECT_TRUE(contains(frontend, "guiLightingSettings.localShadowLayerBudget"));
-  EXPECT_TRUE(contains(frontend,
+  EXPECT_TRUE(containsIgnoringWhitespace(testsCmake, "local_shadow_layer_allocator_tests"));
+  EXPECT_TRUE(containsIgnoringWhitespace(gui, "Shadowed Point Light Budget"));
+  EXPECT_TRUE(containsIgnoringWhitespace(gui, "Local Shadow Layer Budget"));
+  EXPECT_TRUE(containsIgnoringWhitespace(gui, "container::gpu::kMaxShadowedLocalLightLayers"));
+  EXPECT_TRUE(containsIgnoringWhitespace(frontend, "guiLightingSettings.localShadowPointBudget"));
+  EXPECT_TRUE(containsIgnoringWhitespace(frontend, "guiLightingSettings.localShadowLayerBudget"));
+  EXPECT_TRUE(containsIgnoringWhitespace(frontend,
                        "currentLightingSettings.localShadowLayerBudget"));
-  EXPECT_TRUE(contains(frontend, "updateLocalShadows("));
+  EXPECT_TRUE(containsIgnoringWhitespace(frontend, "updateLocalShadows("));
 }
 
 TEST(RenderingConventionTests, LightingManagerDoesNotAutoGeneratePointLights) {
@@ -3563,57 +3563,57 @@ TEST(RenderingConventionTests,
   const std::string frameResourceManager =
       readRepoTextFile("src/renderer/resources/FrameResourceManager.cpp");
 
-  EXPECT_TRUE(contains(exposureHeader,
+  EXPECT_TRUE(containsIgnoringWhitespace(exposureHeader,
                        "void createResources(const std::filesystem::path& "
                        "shaderDir,\n                       uint32_t "
                        "descriptorSetCount = 1)"));
-  EXPECT_TRUE(contains(exposureHeader, "void dispatch(uint32_t imageIndex"));
-  EXPECT_TRUE(contains(exposureHeader,
+  EXPECT_TRUE(containsIgnoringWhitespace(exposureHeader, "void dispatch(uint32_t imageIndex"));
+  EXPECT_TRUE(containsIgnoringWhitespace(exposureHeader,
                        "void collectReadback(uint32_t imageIndex"));
-  EXPECT_TRUE(contains(exposureHeader,
+  EXPECT_TRUE(containsIgnoringWhitespace(exposureHeader,
                        "VkBuffer exposureStateBuffer(uint32_t imageIndex) const"));
-  EXPECT_TRUE(contains(exposureHeader,
+  EXPECT_TRUE(containsIgnoringWhitespace(exposureHeader,
                        "std::span<const container::gpu::AllocatedBuffer>"));
-  EXPECT_TRUE(contains(exposureHeader, "exposureStateBuffers() const"));
-  EXPECT_TRUE(contains(exposureHeader,
+  EXPECT_TRUE(containsIgnoringWhitespace(exposureHeader, "exposureStateBuffers() const"));
+  EXPECT_TRUE(containsIgnoringWhitespace(exposureHeader,
                        "std::vector<container::gpu::AllocatedBuffer> "
                        "histogramBuffers_"));
-  EXPECT_TRUE(contains(exposureHeader,
+  EXPECT_TRUE(containsIgnoringWhitespace(exposureHeader,
                        "container::gpu::AllocatedBuffer "
                        "exposureStateBuffer_{}"));
-  EXPECT_TRUE(contains(exposureHeader,
+  EXPECT_TRUE(containsIgnoringWhitespace(exposureHeader,
                        "std::vector<VkDescriptorSet> descriptorSets_"));
 
-  EXPECT_TRUE(contains(exposureManager, "resizeFrameResources(imageCount)"));
-  EXPECT_TRUE(contains(exposureManager, "histogramBuffers_[imageIndex]"));
-  EXPECT_TRUE(contains(exposureManager, "exposureStateBuffer_"));
-  EXPECT_TRUE(contains(exposureManager, "descriptorSets_[imageIndex]"));
-  EXPECT_TRUE(contains(exposureManager,
+  EXPECT_TRUE(containsIgnoringWhitespace(exposureManager, "resizeFrameResources(imageCount)"));
+  EXPECT_TRUE(containsIgnoringWhitespace(exposureManager, "histogramBuffers_[imageIndex]"));
+  EXPECT_TRUE(containsIgnoringWhitespace(exposureManager, "exposureStateBuffer_"));
+  EXPECT_TRUE(containsIgnoringWhitespace(exposureManager, "descriptorSets_[imageIndex]"));
+  EXPECT_TRUE(containsIgnoringWhitespace(exposureManager,
                        "updateDescriptorSet(imageIndex, sceneColorView)"));
-  EXPECT_FALSE(contains(exposureManager, "exposureStateBuffers_[imageIndex]"));
+  EXPECT_FALSE(containsIgnoringWhitespace(exposureManager, "exposureStateBuffers_[imageIndex]"));
 
-  EXPECT_TRUE(contains(deferredRasterTechnique,
+  EXPECT_TRUE(containsIgnoringWhitespace(deferredRasterTechnique,
                        "dispatch(p.runtime.imageIndex"));
-  EXPECT_TRUE(contains(rendererFrontend,
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend,
                        "exposureManager->createResources(\n"
                        "      container::util::executableDirectory(),\n"
                        "      static_cast<uint32_t>("));
-  EXPECT_TRUE(contains(rendererFrontend,
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend,
                        "exposureStateBuffers =\n"
                        "          subs_.exposureManager->exposureStateBuffers()"));
-  EXPECT_TRUE(contains(frameResourceHeader,
+  EXPECT_TRUE(containsIgnoringWhitespace(frameResourceHeader,
                        "std::span<const container::gpu::AllocatedBuffer> "
                        "exposureStateBuffers"));
-  EXPECT_TRUE(contains(frameResourceManager,
+  EXPECT_TRUE(containsIgnoringWhitespace(frameResourceManager,
                        "const auto& exposureStateBuffer = "
                        "exposureStateBuffers[std::min("));
 
-  EXPECT_FALSE(contains(exposureHeader,
+  EXPECT_FALSE(containsIgnoringWhitespace(exposureHeader,
                         "container::gpu::AllocatedBuffer histogramBuffer_{}"));
-  EXPECT_FALSE(contains(exposureHeader,
+  EXPECT_FALSE(containsIgnoringWhitespace(exposureHeader,
                         "std::vector<container::gpu::AllocatedBuffer> "
                         "exposureStateBuffers_"));
-  EXPECT_FALSE(contains(exposureHeader,
+  EXPECT_FALSE(containsIgnoringWhitespace(exposureHeader,
                         "VkDescriptorSet descriptorSet_{VK_NULL_HANDLE}"));
 }
 
@@ -4019,37 +4019,37 @@ TEST(RenderingConventionTests,
   const std::string rendererFrontend =
       readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
 
-  EXPECT_TRUE(contains(gpuCullHeader, "uint32_t descriptorSetCount"));
+  EXPECT_TRUE(containsIgnoringWhitespace(gpuCullHeader, "uint32_t descriptorSetCount"));
   EXPECT_TRUE(
-      contains(gpuCullHeader, "void recreatePerFrameResources(uint32_t"));
+      containsIgnoringWhitespace(gpuCullHeader, "void recreatePerFrameResources(uint32_t"));
   EXPECT_TRUE(
-      contains(gpuCullHeader, "void dispatchFrustumCull(VkCommandBuffer cmd,\n"
+      containsIgnoringWhitespace(gpuCullHeader, "void dispatchFrustumCull(VkCommandBuffer cmd,\n"
                               "                           uint32_t imageIndex"));
   EXPECT_TRUE(
-      contains(gpuCullHeader, "void dispatchOcclusionCull(VkCommandBuffer cmd,\n"
+      containsIgnoringWhitespace(gpuCullHeader, "void dispatchOcclusionCull(VkCommandBuffer cmd,\n"
                               "                             uint32_t imageIndex"));
   EXPECT_TRUE(
-      contains(gpuCullHeader, "void updateObjectSsboDescriptor(uint32_t imageIndex"));
-  EXPECT_TRUE(contains(gpuCullHeader, "std::vector<VkDescriptorSet> frustumCullSets_"));
+      containsIgnoringWhitespace(gpuCullHeader, "void updateObjectSsboDescriptor(uint32_t imageIndex"));
+  EXPECT_TRUE(containsIgnoringWhitespace(gpuCullHeader, "std::vector<VkDescriptorSet> frustumCullSets_"));
   EXPECT_TRUE(
-      contains(gpuCullHeader, "std::vector<VkDescriptorSet> occlusionCullSets_"));
-  EXPECT_TRUE(contains(gpuCullHeader, "std::vector<VkBuffer> objectSsboBuffers_"));
-  EXPECT_TRUE(contains(gpuCullManager, "frustumCullSets_[imageIndex]"));
-  EXPECT_TRUE(contains(gpuCullManager, "occlusionCullSets_[imageIndex]"));
-  EXPECT_TRUE(contains(frustumRecorderHeader, "uint32_t imageIndex{0}"));
-  EXPECT_TRUE(contains(frustumRecorder,
+      containsIgnoringWhitespace(gpuCullHeader, "std::vector<VkDescriptorSet> occlusionCullSets_"));
+  EXPECT_TRUE(containsIgnoringWhitespace(gpuCullHeader, "std::vector<VkBuffer> objectSsboBuffers_"));
+  EXPECT_TRUE(containsIgnoringWhitespace(gpuCullManager, "frustumCullSets_[imageIndex]"));
+  EXPECT_TRUE(containsIgnoringWhitespace(gpuCullManager, "occlusionCullSets_[imageIndex]"));
+  EXPECT_TRUE(containsIgnoringWhitespace(frustumRecorderHeader, "uint32_t imageIndex{0}"));
+  EXPECT_TRUE(containsIgnoringWhitespace(frustumRecorder,
                        "updateObjectSsboDescriptor(inputs.imageIndex"));
-  EXPECT_TRUE(contains(frustumRecorder,
+  EXPECT_TRUE(containsIgnoringWhitespace(frustumRecorder,
                        "dispatchFrustumCull(cmd, inputs.imageIndex"));
-  EXPECT_TRUE(contains(deferredTechnique,
+  EXPECT_TRUE(containsIgnoringWhitespace(deferredTechnique,
                        ".imageIndex = p.runtime.imageIndex"));
-  EXPECT_TRUE(contains(deferredTechnique,
+  EXPECT_TRUE(containsIgnoringWhitespace(deferredTechnique,
                        "dispatchOcclusionCull(\n"
                        "          cmd, p.runtime.imageIndex"));
-  EXPECT_TRUE(contains(rendererFrontend,
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend,
                        "gpuCullManager->recreatePerFrameResources("));
-  EXPECT_FALSE(contains(gpuCullHeader, "VkDescriptorSet      frustumCullSet_"));
-  EXPECT_FALSE(contains(gpuCullHeader, "VkBuffer                        objectSsboBuffer_"));
+  EXPECT_FALSE(containsIgnoringWhitespace(gpuCullHeader, "VkDescriptorSet      frustumCullSet_"));
+  EXPECT_FALSE(containsIgnoringWhitespace(gpuCullHeader, "VkBuffer                        objectSsboBuffer_"));
 }
 
 TEST(RenderingConventionTests,
@@ -4227,40 +4227,40 @@ TEST(RenderingConventionTests, GpuCullManagerOwnsHiZResourcesPerImage) {
       readRepoTextFile("src/renderer/deferred/DeferredRasterTechnique.cpp");
 
   EXPECT_TRUE(
-      contains(gpuCullHeader, "void ensureHiZImage(uint32_t imageIndex"));
+      containsIgnoringWhitespace(gpuCullHeader, "void ensureHiZImage(uint32_t imageIndex"));
   EXPECT_TRUE(
-      contains(gpuCullHeader, "void dispatchHiZGenerate(VkCommandBuffer cmd,\n"
+      containsIgnoringWhitespace(gpuCullHeader, "void dispatchHiZGenerate(VkCommandBuffer cmd,\n"
                               "                           uint32_t imageIndex"));
-  EXPECT_TRUE(contains(gpuCullHeader, "struct HiZFrameResources"));
-  EXPECT_TRUE(contains(gpuCullHeader, "std::vector<HiZFrameResources> hizFrames_"));
+  EXPECT_TRUE(containsIgnoringWhitespace(gpuCullHeader, "struct HiZFrameResources"));
+  EXPECT_TRUE(containsIgnoringWhitespace(gpuCullHeader, "std::vector<HiZFrameResources> hizFrames_"));
 
-  EXPECT_TRUE(contains(gpuCullManager, "hizFrames_[imageIndex]"));
-  EXPECT_TRUE(contains(gpuCullManager, "hizFrame.image"));
-  EXPECT_TRUE(contains(gpuCullManager, "hizFrame.fullView"));
-  EXPECT_TRUE(contains(gpuCullManager, "hizFrame.mipViews"));
-  EXPECT_TRUE(contains(gpuCullManager, "hizFrame.descriptorSets"));
-  EXPECT_TRUE(contains(gpuCullManager, "hizFrame.generatedThisFrame"));
-  EXPECT_TRUE(contains(gpuCullManager, "hizGeneratedThisFrame(imageIndex)"));
-  EXPECT_TRUE(contains(gpuCullManager, "const uint32_t totalSetCount =\n"
+  EXPECT_TRUE(containsIgnoringWhitespace(gpuCullManager, "hizFrames_[imageIndex]"));
+  EXPECT_TRUE(containsIgnoringWhitespace(gpuCullManager, "hizFrame.image"));
+  EXPECT_TRUE(containsIgnoringWhitespace(gpuCullManager, "hizFrame.fullView"));
+  EXPECT_TRUE(containsIgnoringWhitespace(gpuCullManager, "hizFrame.mipViews"));
+  EXPECT_TRUE(containsIgnoringWhitespace(gpuCullManager, "hizFrame.descriptorSets"));
+  EXPECT_TRUE(containsIgnoringWhitespace(gpuCullManager, "hizFrame.generatedThisFrame"));
+  EXPECT_TRUE(containsIgnoringWhitespace(gpuCullManager, "hizGeneratedThisFrame(imageIndex)"));
+  EXPECT_TRUE(containsIgnoringWhitespace(gpuCullManager, "const uint32_t totalSetCount =\n"
                                       "      hizMipLevels_ * imageCount"));
-  EXPECT_TRUE(contains(gpuCullManager,
+  EXPECT_TRUE(containsIgnoringWhitespace(gpuCullManager,
                        "hizFrame.descriptorSets[mip]"));
-  EXPECT_TRUE(contains(gpuCullManager,
+  EXPECT_TRUE(containsIgnoringWhitespace(gpuCullManager,
                        "hizFrames_[imageIndex].fullView"));
 
-  EXPECT_TRUE(contains(deferredTechnique,
+  EXPECT_TRUE(containsIgnoringWhitespace(deferredTechnique,
                        "ensureHiZImage(p.runtime.imageIndex"));
-  EXPECT_TRUE(contains(deferredTechnique,
+  EXPECT_TRUE(containsIgnoringWhitespace(deferredTechnique,
                        "dispatchHiZGenerate(\n"
                        "        cmd, p.runtime.imageIndex"));
 
-  EXPECT_FALSE(contains(gpuCullHeader, "std::vector<VkDescriptorSet> hizSets_"));
-  EXPECT_FALSE(contains(gpuCullHeader, "VkImage              hizImage_"));
-  EXPECT_FALSE(contains(gpuCullHeader, "VmaAllocation        hizAllocation_"));
-  EXPECT_FALSE(contains(gpuCullHeader, "VkImageView          hizFullView_"));
-  EXPECT_FALSE(contains(gpuCullHeader, "std::vector<VkImageView> hizMipViews_"));
-  EXPECT_FALSE(contains(gpuCullHeader, "bool                 hizInitialized_"));
-  EXPECT_FALSE(contains(gpuCullHeader, "bool hizGeneratedThisFrame_{false}"));
+  EXPECT_FALSE(containsIgnoringWhitespace(gpuCullHeader, "std::vector<VkDescriptorSet> hizSets_"));
+  EXPECT_FALSE(containsIgnoringWhitespace(gpuCullHeader, "VkImage              hizImage_"));
+  EXPECT_FALSE(containsIgnoringWhitespace(gpuCullHeader, "VmaAllocation        hizAllocation_"));
+  EXPECT_FALSE(containsIgnoringWhitespace(gpuCullHeader, "VkImageView          hizFullView_"));
+  EXPECT_FALSE(containsIgnoringWhitespace(gpuCullHeader, "std::vector<VkImageView> hizMipViews_"));
+  EXPECT_FALSE(containsIgnoringWhitespace(gpuCullHeader, "bool                 hizInitialized_"));
+  EXPECT_FALSE(containsIgnoringWhitespace(gpuCullHeader, "bool hizGeneratedThisFrame_{false}"));
 }
 
 TEST(RenderingConventionTests, DeferredHiZDepthTransitionsUseRecorder) {
@@ -6340,16 +6340,16 @@ TEST(RenderingConventionTests,
   const std::string blockerSearch =
       shadowCommon.substr(blockerStart, blockerEnd - blockerStart);
 
-  EXPECT_TRUE(contains(blockerSearch, "float receiverDepth"));
-  EXPECT_FALSE(contains(blockerSearch, "float compareDepth"));
-  EXPECT_TRUE(contains(blockerSearch,
+  EXPECT_TRUE(containsIgnoringWhitespace(blockerSearch, "float receiverDepth"));
+  EXPECT_FALSE(containsIgnoringWhitespace(blockerSearch, "float compareDepth"));
+  EXPECT_TRUE(containsIgnoringWhitespace(blockerSearch,
                        "float receiverCompareDepth = saturate(receiverDepth)"));
-  EXPECT_TRUE(contains(blockerSearch,
+  EXPECT_TRUE(containsIgnoringWhitespace(blockerSearch,
                        "int2 baseTexel = clamp(int2(floor(shadowUV * "
                        "atlasSize))"));
-  EXPECT_TRUE(contains(blockerSearch, "if (any(sampleTexel < minTexel) ||"));
-  EXPECT_TRUE(contains(blockerSearch, "any(sampleTexel > maxTexel)"));
-  EXPECT_TRUE(contains(blockerSearch, "continue;"));
+  EXPECT_TRUE(containsIgnoringWhitespace(blockerSearch, "if (any(sampleTexel < minTexel) ||"));
+  EXPECT_TRUE(containsIgnoringWhitespace(blockerSearch, "any(sampleTexel > maxTexel)"));
+  EXPECT_TRUE(containsIgnoringWhitespace(blockerSearch, "continue;"));
 
   const size_t filterStart =
       shadowCommon.find("float DirectionalPcssFilterRadiusTexels");
@@ -6358,9 +6358,9 @@ TEST(RenderingConventionTests,
   ASSERT_NE(filterEnd, std::string::npos);
   const std::string filterBlock =
       shadowCommon.substr(filterStart, filterEnd - filterStart);
-  EXPECT_TRUE(contains(filterBlock, "float receiverDepth"));
-  EXPECT_FALSE(contains(filterBlock, "float compareDepth"));
-  EXPECT_TRUE(contains(
+  EXPECT_TRUE(containsIgnoringWhitespace(filterBlock, "float receiverDepth"));
+  EXPECT_FALSE(containsIgnoringWhitespace(filterBlock, "float compareDepth"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
       filterBlock,
       "DirectionalPcssAverageBlockerDepth(\n"
       "        shadowUV, cascadeIndex, receiverDepth, blockerSearchRadiusTexels"));
@@ -6374,12 +6374,12 @@ TEST(RenderingConventionTests,
   const std::string sampleCascade =
       shadowCommon.substr(sampleCascadeStart,
                           sampleCascadeEnd - sampleCascadeStart);
-  EXPECT_TRUE(contains(sampleCascade,
+  EXPECT_TRUE(containsIgnoringWhitespace(sampleCascade,
                        "float receiverDepth = saturate(shadowNDC.z)"));
-  EXPECT_TRUE(contains(sampleCascade, "DirectionalPcssFilterRadiusTexels("));
-  EXPECT_TRUE(contains(sampleCascade, "shadowUV, cascadeIndex, receiverDepth"));
-  EXPECT_TRUE(contains(sampleCascade, "shadowData, shadowAtlas"));
-  EXPECT_TRUE(contains(sampleCascade, "float compareDepth = shadowNDC.z + bias"));
+  EXPECT_TRUE(containsIgnoringWhitespace(sampleCascade, "DirectionalPcssFilterRadiusTexels("));
+  EXPECT_TRUE(containsIgnoringWhitespace(sampleCascade, "shadowUV, cascadeIndex, receiverDepth"));
+  EXPECT_TRUE(containsIgnoringWhitespace(sampleCascade, "shadowData, shadowAtlas"));
+  EXPECT_TRUE(containsIgnoringWhitespace(sampleCascade, "float compareDepth = shadowNDC.z + bias"));
 }
 
 TEST(RenderingConventionTests,
@@ -6599,7 +6599,7 @@ TEST(RenderingConventionTests,
 TEST(RenderingConventionTests,
      ForwardRasterUsesDirectionalContactShadowVisibility) {
   const std::string forwardTechnique =
-      readRepoTextFile("src/renderer/forward/ForwardRasterTechnique.cpp");
+      stripAsciiWhitespace(readRepoTextFile("src/renderer/forward/ForwardRasterTechnique.cpp"));
   const std::array<std::string_view, 2> shaderPaths = {{
       "shaders/forward_opaque.slang",
       "shaders/forward_transparent.slang",
@@ -6633,16 +6633,15 @@ TEST(RenderingConventionTests,
   }
 
   const size_t lightingPass =
-      forwardTechnique.find("graph.setPassResourceAccess(\n"
-                            "      RenderPassId::Lighting");
+      forwardTechnique.find("graph.setPassResourceAccess(RenderPassId::Lighting");
   ASSERT_NE(lightingPass, std::string::npos);
   const size_t lightingEnd =
       forwardTechnique.find("graph.setPassResourceTransitions", lightingPass);
   ASSERT_NE(lightingEnd, std::string::npos);
   const std::string lightingAccess =
       forwardTechnique.substr(lightingPass, lightingEnd - lightingPass);
-  EXPECT_TRUE(contains(lightingAccess, "RenderResourceId::SceneDepth"));
-  EXPECT_FALSE(contains(lightingAccess, "RenderResourceId::GBufferNormal"));
+  EXPECT_TRUE(containsIgnoringWhitespace(lightingAccess, "RenderResourceId::SceneDepth"));
+  EXPECT_FALSE(containsIgnoringWhitespace(lightingAccess, "RenderResourceId::GBufferNormal"));
 }
 
 TEST(RenderingConventionTests,

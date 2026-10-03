@@ -95,6 +95,60 @@ uint PackedLocalShadowAreaRef(LocalShadowBuffer localShadow, uint areaIndex)
     return packed[areaIndex & 3u];
 }
 
+uint LocalAreaShadowSampleCount(uint encodedLayer, LocalShadowBuffer localShadow)
+{
+    if (encodedLayer == 0u || encodedLayer > localShadow.counts.x) return 0u;
+    uint layerCount = localShadow.layers[encodedLayer - 1u].meta.z;
+    if (layerCount > localShadow.counts.x - (encodedLayer - 1u)) return 0u;
+    return min(layerCount / LOCAL_SHADOW_POINT_FACE_COUNT,
+               AREA_LIGHT_SHADOW_VISIBILITY_SAMPLE_COUNT);
+}
+
+float3 LocalAreaShadowSamplePosition(uint encodedLayer, uint sampleIndex,
+                                    LocalShadowBuffer localShadow)
+{
+    uint sampleBase = encodedLayer - 1u + sampleIndex * LOCAL_SHADOW_POINT_FACE_COUNT;
+    return localShadow.layers[sampleBase].positionRange.xyz;
+}
+
+// The CPU cube views use -Y up except for the two Y faces.
+float3 LocalShadowCubeUp(uint face)
+{
+    if (face == 2u) return float3(0.0, 0.0, 1.0);
+    if (face == 3u) return float3(0.0, 0.0, -1.0);
+    return float3(0.0, -1.0, 0.0);
+}
+
+// Convert the filter direction to the neighboring face and its own perspective
+// depth. Array-layer border samples otherwise turn a blocked seam into light.
+float SampleLocalShadowCubeTap(uint layerIndex, float2 tapUv,
+    float3 receiverPosition, float bias, LocalShadowBuffer localShadow,
+    Texture2DArray<float> atlas, SamplerComparisonState sampler,
+    float invResolution)
+{
+    LocalShadowLayerData layer = localShadow.layers[layerIndex];
+    float3 forward = layer.directionType.xyz;
+    float3 up = LocalShadowCubeUp(layer.meta.y);
+    float3 right = cross(forward, up);
+    float2 ndc = tapUv * 2.0 - 1.0;
+    float3 direction = SafeNormalize(forward + right * ndc.x + up * ndc.y, forward);
+    uint face = SelectPointLocalShadowFace(direction);
+    uint cubeBase = layerIndex - layer.meta.y;
+    uint tapLayer = cubeBase + face;
+    if (tapLayer >= localShadow.counts.x) return 1.0;
+    float receiverDistance = length(receiverPosition - layer.positionRange.xyz);
+    float3 tapPosition = layer.positionRange.xyz + direction * receiverDistance;
+    float4 clip = mul(localShadow.layers[tapLayer].viewProj, float4(tapPosition, 1.0));
+    if (!all(isfinite(clip)) || clip.w <= 1e-6) return 1.0;
+    float3 projected = clip.xyz / clip.w;
+    float2 uv = projected.xy * 0.5 + 0.5;
+    // Keep the hardware bilinear footprint inside the selected layer. Filter
+    // tap directions already cross the seam explicitly.
+    uv = clamp(uv, (0.5 * invResolution).xx, (1.0 - 0.5 * invResolution).xx);
+    return atlas.SampleCmpLevelZero(sampler, float3(uv, float(tapLayer)),
+                                   saturate(projected.z + bias));
+}
+
 float LocalShadowSlopeBias(float3 normal, float3 surfaceToLight,
                            LocalShadowBuffer localShadow)
 {
@@ -240,6 +294,8 @@ float SampleLocalShadowLayerPcf(
     float2 shadowUv,
     float compareDepth,
     float filterRadiusTexels,
+    float3 receiverPosition,
+    float bias,
     LocalShadowBuffer localShadow,
     Texture2DArray<float> localShadowAtlas,
     SamplerComparisonState localShadowSampler)
@@ -283,7 +339,16 @@ float SampleLocalShadowLayerPcf(
             weight *= outerSampleWeight;
         }
         float2 tapUv = shadowUv + o * texelSize;
-        if (all(isfinite(tapUv)) &&
+        LocalShadowLayerData layer = localShadow.layers[layerIndex];
+        bool cubeLayer = layer.directionType.w == LOCAL_SHADOW_TYPE_POINT ||
+                         layer.directionType.w == LOCAL_SHADOW_TYPE_AREA;
+        if (cubeLayer)
+        {
+            shadow += SampleLocalShadowCubeTap(layerIndex, tapUv,
+                receiverPosition, bias, localShadow, localShadowAtlas,
+                localShadowSampler, invResolution) * weight;
+        }
+        else if (all(isfinite(tapUv)) &&
             all(tapUv >= 0.0.xx) && all(tapUv <= 1.0.xx))
         {
             shadow += localShadowAtlas.SampleCmpLevelZero(
@@ -345,6 +410,16 @@ float SampleLocalShadowLayer(
     float3 normal = SafeNormalize(receiverNormal, -surfaceToLight);
     float3 samplePosition = OffsetLocalShadowSamplePosition(
         worldPosition, normal, surfaceToLight, layer, localShadow);
+    bool cubeLayer = layer.directionType.w == LOCAL_SHADOW_TYPE_POINT ||
+                     layer.directionType.w == LOCAL_SHADOW_TYPE_AREA;
+    if (cubeLayer)
+    {
+        // Normal bias can move a receiver across a face boundary before PCF.
+        layerIndex = layerIndex - layer.meta.y + SelectPointLocalShadowFace(
+            samplePosition - layer.positionRange.xyz);
+        if (layerIndex >= localShadow.counts.x) return 1.0;
+        layer = localShadow.layers[layerIndex];
+    }
     float4 shadowClip = mul(layer.viewProj, float4(samplePosition, 1.0));
     if (!all(isfinite(shadowClip)) || shadowClip.w <= 1e-6)
     {
@@ -371,7 +446,7 @@ float SampleLocalShadowLayer(
         layer, distanceToLight, localShadow);
     float shadow = SampleLocalShadowLayerPcf(
         layerIndex, shadowUv, shadowNdc.z + bias, filterRadiusTexels,
-        localShadow, localShadowAtlas, localShadowSampler);
+        samplePosition, bias, localShadow, localShadowAtlas, localShadowSampler);
     return lerp(1.0, shadow, rangeVisibility);
 }
 
@@ -412,7 +487,7 @@ float LocalAreaLightShadowVisibility(
     uint areaIndex,
     float3 worldPosition,
     float3 receiverNormal,
-    float3 samplePosition,
+    uint visibilitySample,
     LocalShadowBuffer localShadow,
     Texture2DArray<float> localShadowAtlas,
     SamplerComparisonState localShadowSampler)
@@ -423,9 +498,14 @@ float LocalAreaLightShadowVisibility(
         return 1.0;
     }
 
-    float3 surfaceToLight =
-        SafeNormalize(samplePosition - worldPosition, float3(0.0, 1.0, 0.0));
+    uint sampleCount = LocalAreaShadowSampleCount(encodedLayer, localShadow);
+    if (visibilitySample >= sampleCount) return 1.0;
+    uint sampleBase = encodedLayer - 1u + visibilitySample * LOCAL_SHADOW_POINT_FACE_COUNT;
+    float3 samplePosition = localShadow.layers[sampleBase].positionRange.xyz;
+    float3 surfaceToLight = SafeNormalize(samplePosition - worldPosition,
+                                          float3(0.0, 1.0, 0.0));
+    uint face = SelectPointLocalShadowFace(worldPosition - samplePosition);
     return SampleLocalShadowLayer(
-        encodedLayer - 1u, worldPosition, receiverNormal, surfaceToLight,
+        sampleBase + face, worldPosition, receiverNormal, surfaceToLight,
         localShadow, localShadowAtlas, localShadowSampler);
 }
