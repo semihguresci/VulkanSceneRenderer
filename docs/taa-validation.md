@@ -167,6 +167,9 @@ sequences remain under `out/taa-regression` after running the commands above.
 
 ## Extracted Windows preview
 
+[Download the GitHub prerelease](https://github.com/semihguresci/VulkanSceneRenderer/releases/tag/v0.2.0-taa-preview).
+The uploaded asset digest matches the locally verified ZIP hash below.
+
 `VulkanSceneRenderer-0.2.0-taa-preview-windows-x64.zip` is 75,158,563 bytes,
 built from source commit `dd3d6a58217996a5477c3a44e2b178be7fba85ba` with all
 73 runtime shaders. Its SHA-256 is

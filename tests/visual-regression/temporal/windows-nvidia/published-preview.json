@@ -1,0 +1,20 @@
+{
+  "release": "https://github.com/semihguresci/VulkanSceneRenderer/releases/tag/v0.2.0-taa-preview",
+  "tag": "v0.2.0-taa-preview",
+  "sourceCommit": "dd3d6a58217996a5477c3a44e2b178be7fba85ba",
+  "prReady": true,
+  "assets": [
+    {
+      "name": "SHA256SUMS.txt",
+      "size": 121,
+      "url": "https://github.com/semihguresci/VulkanSceneRenderer/releases/download/v0.2.0-taa-preview/SHA256SUMS.txt",
+      "digest": "sha256:1564e5f11271ac8a842e093f177656210b1926602d0651b2719d5d57fb321c70"
+    },
+    {
+      "name": "VulkanSceneRenderer-0.2.0-taa-preview-windows-x64.zip",
+      "size": 75158563,
+      "url": "https://github.com/semihguresci/VulkanSceneRenderer/releases/download/v0.2.0-taa-preview/VulkanSceneRenderer-0.2.0-taa-preview-windows-x64.zip",
+      "digest": "sha256:bf22d10dd042ad2cfeb9e845c4099658b4891c6ba7c655438c9312b9cecb0503"
+    }
+  ]
+}

@@ -16,9 +16,13 @@ include root remains `include/Container`, and the source namespace remains
 
 ## Download and Run (Windows x64)
 
-[Download v0.1.0-preview.1](https://github.com/semihguresci/VulkanSceneRenderer/releases/tag/v0.1.0-preview.1)
-and select `VulkanSceneRenderer-v0.1.0-preview.1-windows-x64.zip` under **Assets**.
+[Download the TAA preview](https://github.com/semihguresci/VulkanSceneRenderer/releases/tag/v0.2.0-taa-preview)
+and select `VulkanSceneRenderer-0.2.0-taa-preview-windows-x64.zip` under **Assets**.
 This prerelease is intended for testing and feedback.
+
+Run `VulkanSceneRenderer.exe --taa --msaa 1 --display-mode lit` to try native HDR
+temporal anti-aliasing. Forward rendering also supports TAA with
+`--render-technique forward-raster`. See the [measured results and limits](docs/taa-validation.md).
 
 Requirements:
 
