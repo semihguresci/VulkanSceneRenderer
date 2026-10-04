@@ -685,6 +685,7 @@ public:
     return shadowSettings_;
   }
   void setFreezeCulling(bool frozen);
+  void setGfxCaptureStatus(std::string status) { gfxCaptureStatus_ = std::move(status); }
   [[nodiscard]] bool freezeCullingRequested() const { return freezeCulling_; }
 
   void setTemporalSettings(const container::temporal::Settings &settings,
@@ -732,6 +733,7 @@ public:
 
 private:
   container::temporal::Settings temporalSettings_{};
+  std::string gfxCaptureStatus_{"Disabled. Launch with tools/gfxreconstruct.ps1 capture to collect Vulkan captures and runtime metadata."};
   uint64_t temporalBytes_{0}, temporalFrame_{0};
   glm::uvec2 temporalExtent_{};
   uint64_t temporalAllocatedBytes_{0};

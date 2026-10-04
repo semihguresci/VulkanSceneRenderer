@@ -158,6 +158,9 @@ same commit recorded in `build-info.json`. Mark preview builds as prereleases.
 
 ## Tests
 
+See [GFXReconstruct debugging](gfxreconstruct.md) for optional API capture,
+replay, mapped-memory troubleshooting, and the opt-in GPU replay smoke test.
+
 CPU tests are enabled by default through `ENABLE_TESTS`. Window/Vulkan tests are
 opt-in with `ENABLE_WINDOWED_TESTS=ON`.
 

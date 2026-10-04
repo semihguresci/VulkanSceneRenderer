@@ -25,7 +25,10 @@
 namespace container::app {
 
 Application::Application(AppConfig config)
-    : config_(std::move(config)) {}
+    : config_(std::move(config)) {
+  if (config_.gfxrecon.enabled())
+    config_.gfxrecon = container::capture::loadSession(config_.gfxrecon.sessionPath);
+}
 
 Application::~Application() {
   if (vulkanContext_) {
@@ -107,6 +110,7 @@ void Application::initVulkan() {
           .nativeWindow         = window_->getNativeWindow(),
           .inputManager         = inputManager_.get()});
   renderer_->initialize();
+  renderer_->startGfxCapture();
 
   onInitVulkan();
 }
@@ -119,6 +123,7 @@ void Application::mainLoop() {
   }
 
   lastFrameTimeSeconds_ = windowManager_->getTime();
+  uint64_t captureTick = 0;
   while (!window_->shouldClose()) {
     const double now = windowManager_->getTime();
     const float  dt  = static_cast<float>(now - lastFrameTimeSeconds_);
@@ -126,7 +131,9 @@ void Application::mainLoop() {
 
     window_->pollEvents();
     renderer_->processInput(dt);
+    renderer_->gfxCaptureTick(++captureTick, false);
     renderer_->drawFrame(framebufferResized_);
+    if (renderer_->gfxCaptureComplete()) break;
   }
   vkDeviceWaitIdle(vulkanContext_->result().deviceWrapper->device());
 
@@ -175,6 +182,7 @@ void Application::screenshotCaptureLoop() {
       }
       skip = sample.event.skip || minimized;
     }
+    renderer_->gfxCaptureTick(frameNumber, skip);
     if (skip)
       continue;
     std::filesystem::path capturePath;
@@ -202,6 +210,7 @@ void Application::screenshotCaptureLoop() {
       telemetryPath.replace_extension(".telemetry.json");
       renderer_->writeCaptureTelemetry(telemetryPath);
     }
+    if (renderer_->gfxCaptureComplete()) break;
   }
   vkDeviceWaitIdle(vulkanContext_->result().deviceWrapper->device());
 

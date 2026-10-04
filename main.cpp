@@ -134,6 +134,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     } else if (arg == "--capture-sequence") {
       config.temporalCaptureSequencePath =
           std::string(requireValue(argc, argv, i, arg));
+    } else if (arg == "--gfxrecon-session") {
+      config.gfxrecon.sessionPath = std::string(requireValue(argc, argv, i, arg));
     } else if (arg == "--warmup-frames") {
       config.screenshotWarmupFrames =
           parseUint(requireValue(argc, argv, i, arg), arg);

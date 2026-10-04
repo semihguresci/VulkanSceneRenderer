@@ -55,6 +55,7 @@ add_library(VulkanSceneRenderer_renderer
 
     renderer/debug/DebugOverlayRenderer.cpp
     renderer/debug/DebugUiPresenter.cpp
+    app/GfxCapture.cpp
 
     renderer/scene/CameraController.cpp
     renderer/scene/SceneController.cpp
@@ -150,6 +151,22 @@ add_library(VulkanSceneRenderer_renderer
 )
 
 target_compile_features(VulkanSceneRenderer_renderer PUBLIC cxx_std_23)
+find_package(Git QUIET)
+set(CONTAINER_GIT_REVISION "unknown")
+if(GIT_FOUND)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" OUTPUT_VARIABLE CONTAINER_GIT_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" diff --quiet HEAD
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" RESULT_VARIABLE CONTAINER_GIT_DIRTY)
+    if(CONTAINER_GIT_DIRTY)
+        string(APPEND CONTAINER_GIT_REVISION "-dirty")
+    endif()
+endif()
+target_compile_definitions(VulkanSceneRenderer_renderer PRIVATE
+    CONTAINER_GIT_REVISION="${CONTAINER_GIT_REVISION}"
+    CONTAINER_BUILD_CONFIG="$<CONFIG>"
+    CONTAINER_BUILD_COMPILER="${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}"
+)
 target_include_directories(VulkanSceneRenderer_renderer PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
 )

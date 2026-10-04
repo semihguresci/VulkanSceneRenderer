@@ -50,3 +50,5 @@ imgui.ini
 /tests/visual-regression/candidate/
 /tests/visual-regression/diff/
 __pycache__/
+/captures/
+*.gfxr

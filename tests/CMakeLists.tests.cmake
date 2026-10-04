@@ -1,4 +1,15 @@
 enable_testing()
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME gfx_capture_launcher_tests COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_SOURCE_DIR}/tests/validation/gfx_capture_launcher_tests.py")
+    add_test(NAME gfx_capture_replay_smoke COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_SOURCE_DIR}/tests/validation/gfx_capture_replay_smoke.py"
+        --exe "$<TARGET_FILE:VulkanSceneRenderer>"
+        --output "${CMAKE_BINARY_DIR}/test_results/gfxreconstruct")
+    set_tests_properties(gfx_capture_replay_smoke PROPERTIES
+        LABELS "requires-vulkan;requires-display;gfxreconstruct" SKIP_RETURN_CODE 77)
+endif()
 find_package(GTest CONFIG REQUIRED)
 
 set(TESTS_DIR "${CMAKE_SOURCE_DIR}/tests")
@@ -738,6 +749,10 @@ add_custom_test(renderer_telemetry_tests
 )
 
 # ── Tests that need Vulkan / windowing runtime ───────────────────────────────
+add_custom_test(gfx_capture_tests
+    ${TEST_RENDERER_CORE_DIR}/gfx_capture_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
 
 if(ENABLE_WINDOWED_TESTS)
     add_custom_test(triangle_test

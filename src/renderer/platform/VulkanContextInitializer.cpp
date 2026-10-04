@@ -35,7 +35,9 @@ VulkanContextResult VulkanContextInitializer::initialize(
     ci.enableValidationLayers  = config_.enableValidationLayers;
     ci.validationLayers       = config_.validationLayers;
     ci.requiredExtensions     = requiredWindowExtensions;
-    if (config_.enableValidationLayers) {
+    if (config_.gfxrecon.enabled())
+      ci.additionalLayers.push_back(container::capture::kLayerName);
+    if (config_.enableValidationLayers || config_.gfxrecon.enabled()) {
       ci.requiredExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     }
 

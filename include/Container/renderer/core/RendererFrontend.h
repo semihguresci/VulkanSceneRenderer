@@ -12,6 +12,7 @@
 #include <glm/vec3.hpp>
 
 #include "Container/app/SceneLightingDefaults.h"
+#include "Container/app/GfxCapture.h"
 #include "Container/renderer/core/PushConstantBlock.h"
 #include "Container/renderer/core/RendererDeviceCapabilities.h"
 #include "Container/renderer/debug/DebugRenderState.h"
@@ -130,6 +131,9 @@ public:
   void requestScreenshot(std::filesystem::path outputPath);
   void applyTemporalCapture(const container::temporal::CaptureSample &sample);
   void writeCaptureTelemetry(const std::filesystem::path &path) const;
+  void startGfxCapture();
+  void gfxCaptureTick(uint64_t tick, bool skipped);
+  [[nodiscard]] bool gfxCaptureComplete() const;
 
   // Scene operations forwarded from the application.
   bool reloadSceneModel(const std::string &path, float importScale = 1.0f);
@@ -144,6 +148,8 @@ public:
   const SceneState &sceneState() const { return sceneState_; }
 
 private:
+  container::capture::Journal gfxJournal_;
+  [[nodiscard]] nlohmann::json captureTelemetry() const;
   std::optional<float> captureExposure_{};
   std::optional<glm::vec4> captureSectionPlane_{};
   std::optional<uint32_t> captureBimHiddenObject_{};

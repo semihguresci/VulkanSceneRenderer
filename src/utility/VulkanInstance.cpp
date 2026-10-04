@@ -13,10 +13,11 @@ VulkanInstance::VulkanInstance(const InstanceCreateInfo& createInfo) {
   if (vkEnumerateInstanceVersion(&loaderVersion) != VK_SUCCESS ||
       loaderVersion < createInfo.apiVersion)
     throw std::runtime_error("Vulkan 1.4 loader required; update the Vulkan runtime");
-  if (createInfo.enableValidationLayers &&
-      !checkValidationLayerSupport(createInfo.validationLayers)) {
-    throw std::runtime_error("validation layers requested, but not available!");
-  }
+  auto layers = createInfo.additionalLayers;
+  if (createInfo.enableValidationLayers)
+    layers.insert(layers.end(), createInfo.validationLayers.begin(), createInfo.validationLayers.end());
+  if (!layers.empty() && !checkValidationLayerSupport(layers))
+    throw std::runtime_error("Requested Vulkan instance layer unavailable; check validation installation or GFXReconstruct layer path");
 
   VkApplicationInfo appInfo{};
   appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -26,14 +27,8 @@ VulkanInstance::VulkanInstance(const InstanceCreateInfo& createInfo) {
   appInfo.engineVersion = createInfo.engineVersion;
   appInfo.apiVersion = createInfo.apiVersion;
 
-  const uint32_t enabledLayerCount =
-      createInfo.enableValidationLayers
-          ? static_cast<uint32_t>(createInfo.validationLayers.size())
-          : 0u;
-
-  const char* const* enabledLayerNames =
-      createInfo.enableValidationLayers ? createInfo.validationLayers.data()
-                                        : nullptr;
+  const uint32_t enabledLayerCount = static_cast<uint32_t>(layers.size());
+  const char* const* enabledLayerNames = layers.empty() ? nullptr : layers.data();
 
   VkInstanceCreateInfo instanceCreateInfo{};
   instanceCreateInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;

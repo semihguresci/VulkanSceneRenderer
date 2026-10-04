@@ -10,6 +10,12 @@ GPU allocations, and Slang compiles shaders to SPIR-V 1.6. Forward and deferred
 opaque rendering use compute culling and indirect draw counts. See
 [the modern rendering architecture](docs/architecture.md#vulkan-14-rendering).
 
+For replayable Vulkan runtime debugging, use the optional
+[GFXReconstruct capture/replay workflow](docs/gfxreconstruct.md). It supports
+selected frame ranges and runtime hotkeys, with shader/build identities and a
+frame journal linking captures to lighting and TAA state. Capture tools are
+installed separately; ordinary rendering has no additional dependency.
+
 The CMake project and build targets use `VulkanSceneRenderer`. The public
 include root remains `include/Container`, and the source namespace remains
 `container::`, to avoid a broad source-level API rename.

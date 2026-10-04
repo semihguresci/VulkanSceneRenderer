@@ -2447,7 +2447,9 @@ void SceneManager::writeDescriptorSetContents(
 
   VkDescriptorBufferInfo cameraInfo{cameraBuffer.buffer, 0, sizeof(container::gpu::CameraData)};
   VkDescriptorBufferInfo objectInfo{
-      objectBuffer.buffer, 0, objectBuffer.allocation_info.size};
+      // Memory requirements may be padded by the driver/capture layer. Bind
+      // the logical VkBuffer, never its potentially larger VMA allocation.
+      objectBuffer.buffer, 0, VK_WHOLE_SIZE};
   VkDescriptorBufferInfo materialInfo{
       materialBuffer_.buffer, 0,
       static_cast<VkDeviceSize>(
