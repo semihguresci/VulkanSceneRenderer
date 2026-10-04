@@ -64,17 +64,34 @@ output or a screenshot.
 
 ## Gallery
 
-VulkanSceneRenderer supports high-detail scene rendering, physically based
-materials, live renderer telemetry, and debug-oriented render target
-visualization.
+Fresh captures from VulkanSceneRenderer show textured glTF scenes, USD meshes,
+IFCX buildings, point-light shadows, and render target diagnostics. Images use
+deferred raster rendering with TAA at 1600 × 900.
 
-![Sponza hallway rendered with textured banners, stone surfaces, and scene lighting](docs/images/readme/sponza-hallway.jpg)
+![Sponza courtyard with steep directional sunlight, a bright floor strip, and visible arcade and column shadows](docs/images/readme/sponza-hallway.jpg)
 
-| Debug visualization | Material and scene rendering |
+| Flight Helmet · glTF PBR materials | Toy Car · glTF textures and reflections |
 | --- | --- |
-| ![Render target debug views showing the shaded scene, color attachments, normals, depth, wireframe, and telemetry panes](docs/images/readme/debug-render-targets.png) | ![glTF camera model shown across debug render targets including shaded, normal, depth, wireframe, and blurred views](docs/images/readme/gltf-camera-debug-views.png) |
-| ![Aviator mask model rendered with textured PBR materials against an environment map](docs/images/readme/aviator-mask-pbr.png) | ![PBR material grid comparing specular factors, specular textures, color factors, color textures, and high color factor values](docs/images/readme/pbr-material-grid.png) |
-| ![Side-by-side comparison of metallic roughness and KHR materials pbrSpecularGlossiness rendering on bottle models](docs/images/readme/pbr-extension-comparison.png) | ![Textured stylized car model rendered on a red cloth surface with scene controls visible](docs/images/readme/textured-car-scene.png) |
+| ![Flight Helmet with leather, glass, metal, rubber, and wood materials](docs/images/readme/flight-helmet-pbr.jpg) | ![Textured green toy car on red cloth with reflective paint and trim](docs/images/readme/toy-car-pbr.jpg) |
+
+| USD · Teapot (USDC) | USD · Suzanne (USDA) |
+| --- | --- |
+| ![USD teapot mesh with a tan PBR material and environment lighting](docs/images/readme/usd-teapot.jpg) | ![USD Suzanne mesh with a green PBR material and environment lighting](docs/images/readme/usd-suzanne.jpg) |
+
+| BIM · Tekla House (IFCX) | BIM · ACCA Building (IFCX) |
+| --- | --- |
+| ![Tekla House IFCX building with colored structural elements, slabs, and foundations](docs/images/readme/bim-tekla-house.jpg) | ![ACCA IFCX house with roof, terrace, landscaping, and surrounding site](docs/images/readme/bim-acca-building.jpg) |
+
+| Point-light shadows · Cube and thin blockers | Point-light shadows · Lamp |
+| --- | --- |
+| ![An orange cube and a row of thin white blockers casting shadows onto a gray floor](docs/images/readme/geometric-shadows.jpg) | ![A curved lamp casting a shadow onto a floor under a separate key light](docs/images/readme/lamp-shadows.jpg) |
+
+**Render target diagnostics**
+
+![Flight Helmet shown across lit, albedo, normal, material, depth, transparency, and other diagnostic render targets](docs/images/readme/debug-render-targets.jpg)
+
+See [model credits and capture settings](docs/images/readme/README.md) for asset
+sources and the lighting variants used in the shadow examples.
 
 ## Quick Start
 
