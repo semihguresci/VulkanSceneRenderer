@@ -64,6 +64,12 @@ Config loadSession(const std::filesystem::path& path) {
   } else if (config.mode == "hotkey") {
     if (!config.frames.empty() || config.trigger.empty() || config.stopAfterPresent != 0)
       throw std::invalid_argument("Inconsistent GFXReconstruct hotkey session");
+    if (config.trigger == "F6" || config.trigger == "F7" || config.trigger == "F8")
+      throw std::invalid_argument("Capture hotkey conflicts with renderer debug controls; launch with --trigger F3");
+#if defined(_WIN32)
+    if (config.trigger == "F12")
+      throw std::invalid_argument("F12 is reserved by the Windows debugger; create a new capture session with --trigger F3");
+#endif
   } else if (config.mode != "all" || !config.frames.empty() || !config.trigger.empty() || config.stopAfterPresent != 0) {
     throw std::invalid_argument("Invalid GFXReconstruct capture mode");
   }

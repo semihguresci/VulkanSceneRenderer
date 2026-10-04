@@ -93,15 +93,35 @@ class LauncherTests(unittest.TestCase):
     def test_cli_rejects_conflicting_modes_and_reserved_hotkeys(self):
         with redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit) as result:
-                gfx.main(["capture", "--exe", "missing.exe", "--frames", "9", "--trigger", "F12"])
+                gfx.main(["capture", "--exe", "missing.exe", "--frames", "9", "--trigger", "F3"])
             self.assertEqual(result.exception.code, 2)
-            self.assertEqual(gfx.main(["capture", "--exe", "missing.exe", "--trigger", "F8"]), 2)
+            reserved = ["F6", "F7", "F8", "TAB", "CONTROL"] + (["F12"] if os.name == "nt" else [])
+            with patch.object(gfx, "discover_tools") as discover:
+                for key in reserved:
+                    self.assertEqual(gfx.main(["capture", "--exe", __file__, "--trigger", key]), 2)
+                discover.assert_not_called()
             self.assertEqual(gfx.main(["capture", "--exe", "missing.exe", "--frames", "0"]), 2)
             self.assertEqual(gfx.main(["capture", "--exe", "missing.exe", "--frames", ""]), 2)
             self.assertEqual(gfx.main(["capture", "--exe", "missing.exe", "--trigger", ""]), 2)
             self.assertEqual(gfx.main(["capture", "--exe", "missing.exe", "--trigger-frames", "0"]), 2)
             for name in ("", "../capture", "CON", "NUL.gfxr", "COM1", "capture."):
                 self.assertEqual(gfx.main(["capture", "--exe", "missing.exe", "--capture-name", name]), 2)
+
+    def test_default_hotkey_arms_f3_without_mutating_inherited_settings(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            exe = root / "renderer.exe"
+            pe(exe)
+            layer = {"machine": "x64", "manifestPath": str(root / "layer.json"),
+                     "supportedSettings": ["capture_frames", "capture_trigger", "capture_file", "memory_tracking_mode"]}
+            output = io.StringIO()
+            with patch.dict(os.environ, {"GFXRECON_CAPTURE_TRIGGER": "F12"}), patch.object(gfx, "discover_tools", return_value=(root, layer, "1.0.5")), redirect_stdout(output):
+                self.assertEqual(gfx.main(["capture", "--exe", str(exe), "--dry-run"]), 0)
+                self.assertEqual(os.environ["GFXRECON_CAPTURE_TRIGGER"], "F12")
+            session = json.loads(output.getvalue())["session"]
+            self.assertEqual(session["mode"], "hotkey")
+            self.assertEqual(session["trigger"], "F3")
+            self.assertEqual(session["environment"]["GFXRECON_CAPTURE_TRIGGER"], "F3")
 
     def test_unsupported_tool_option_fails_before_running_capture(self):
         with patch.object(gfx, "run_text", return_value="--help --version"), self.assertRaises(ValueError):

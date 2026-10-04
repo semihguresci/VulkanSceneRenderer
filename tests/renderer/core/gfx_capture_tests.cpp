@@ -15,6 +15,24 @@ TEST(GfxCaptureConfig, InvalidRangesCannotSilentlyCaptureAllFrames) {
                                   "2,1", "1,", "1--2", "1, 2", "4294967296", "1foo"})
     EXPECT_THROW(validateFrameRanges(value), std::invalid_argument) << value;
 }
+TEST(GfxCaptureConfig, LegacySessionsCannotArmReservedDebugHotkeys) {
+  const auto folder = std::filesystem::temp_directory_path() /
+      ("container-gfx-hotkey-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(folder);
+  std::vector<std::string> keys{"F6", "F7", "F8"};
+#if defined(_WIN32)
+  keys.push_back("F12");
+#endif
+  const auto path = folder / "session.json";
+  for (const auto& key : keys) {
+    const nlohmann::json session{{"schemaVersion", 1}, {"outputDirectory", folder.string()},
+        {"mode", "hotkey"}, {"frames", ""}, {"trigger", key}, {"toolVersion", "1.0.5"},
+        {"stopAfterPresent", 0}, {"environment", nlohmann::json::object()}};
+    { std::ofstream stream(path); stream << session.dump(); }
+    EXPECT_THROW(loadSession(path), std::invalid_argument) << key;
+  }
+  std::filesystem::remove_all(folder);
+}
 TEST(GfxCaptureJournal, TicksAcquireFailuresSubmitsAndPresentsAreIndependent) {
   const auto folder = std::filesystem::temp_directory_path() /
       ("container-gfx-journal-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));

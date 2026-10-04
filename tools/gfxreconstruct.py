@@ -17,8 +17,11 @@ import time
 import uuid
 
 LAYER = "VK_LAYER_LUNARG_gfxreconstruct"
+DEFAULT_HOTKEY = "F3"
 HOTKEYS = {f"F{i}" for i in range(1, 13)}  # TAB/CONTROL conflict with navigation/UI.
-HOTKEYS.remove("F8")  # Renderer freeze-culling shortcut.
+HOTKEYS -= {"F6", "F7", "F8"}  # Directional/stencil debug views and freeze-culling.
+if os.name == "nt":
+    HOTKEYS.discard("F12")  # Windows reserves F12 for breaking into a debugger.
 
 
 def frame_ranges(value: str) -> int:
@@ -171,9 +174,11 @@ def capture(args) -> int:
     else:
         stop = 0
     if not args.frames and not args.all_frames and not args.trigger:
-        args.trigger = "F12"
+        args.trigger = DEFAULT_HOTKEY
+    if os.name == "nt" and args.trigger == "F12":
+        raise ValueError("F12 is reserved by the Windows debugger and can pause the application; use --trigger F3")
     if args.trigger and args.trigger not in HOTKEYS:
-        raise ValueError("Use F1-F12 except F8; TAB/CONTROL/F8 conflict with renderer controls")
+        raise ValueError("Use F1-F5 or F9-F11 (F12 is also available outside Windows); TAB/CONTROL/F6/F7/F8 conflict with renderer controls")
     if args.trigger_frames is not None and (not args.trigger or not 1 <= args.trigger_frames <= 0xFFFFFFFF):
         raise ValueError("--trigger-frames requires a hotkey and a positive frame count")
     executable = Path(args.exe).expanduser().resolve()

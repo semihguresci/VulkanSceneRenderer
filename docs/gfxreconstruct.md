@@ -70,16 +70,17 @@ preserved. The renderer explicitly enables the capture layer independently of
 ```powershell
 .\tools\gfxreconstruct.ps1 capture `
   --exe out/build/visual-studio/Release/VulkanSceneRenderer.exe `
-  --trigger F12 --output-dir out/captures/interactive `
+  --trigger F3 --output-dir out/captures/interactive `
   '--' --taa --msaa 1 --render-technique deferred-raster
 ```
 
-Capture is armed when the scene opens. Press F12 to start recording, reproduce
-the artifact, then press F12 to stop. Repeat to collect another trim during the
+Capture is armed when the scene opens. Focus the renderer window and press F3
+to start recording, reproduce the artifact, then press F3 to stop. Repeat during the
 same session. `--trigger-frames 1` records one frame per trigger instead.
-F1–F12 are accepted except F8, which freezes renderer culling; TAB and CONTROL
-are excluded because they conflict with UI/navigation. F12 is the default when
-no explicit mode is supplied. The renderer's **Vulkan runtime capture** panel
+F3 is the default when no explicit mode is supplied. F1–F5 and F9–F11 are
+accepted; F12 is accepted only outside Windows. F6/F7/F8 change renderer debug
+views/culling, and TAB/CONTROL conflict with UI/navigation, so they are excluded.
+The renderer's **Vulkan runtime capture** panel
 shows mode, key, and output path. The layer's `layer.log` provides recording
 feedback: the UI does not invent recording/completion state from keypresses.
 
@@ -156,6 +157,14 @@ bug report. Capture output is ignored by Git. Keep large traces outside source
 history; bound ranges and select compression with `--compression LZ4|ZLIB|ZSTD|NONE`.
 
 ## Mapped memory and Visual Studio
+
+Windows reserves F12 for the debugger. Pressing it with Visual Studio attached
+can pause the app on a breakpoint (`0x80000003`), which can look like a crash.
+Use F5/Continue to resume and F3 for capture; the launcher rejects F12 on Windows.
+See [Microsoft's debugger reservation](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey#remarks).
+An ordinary Visual Studio launch does not arm GFXReconstruct. To debug with
+capture, launch through the capture helper, then attach Visual Studio to the
+renderer process. Keep the renderer window focused when using the trigger.
 
 Default `--memory-mode page_guard` tracks mapped writes, including host-coherent
 and persistent VMA mappings. It can use handled access violations on Windows,
