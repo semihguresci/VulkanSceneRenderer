@@ -16,9 +16,13 @@ include root remains `include/Container`, and the source namespace remains
 
 ## Download and Run (Windows x64)
 
-[Download v0.1.0-preview.1](https://github.com/semihguresci/VulkanSceneRenderer/releases/tag/v0.1.0-preview.1)
-and select `VulkanSceneRenderer-v0.1.0-preview.1-windows-x64.zip` under **Assets**.
+[Download the TAA preview](https://github.com/semihguresci/VulkanSceneRenderer/releases/tag/v0.2.0-taa-preview)
+and select `VulkanSceneRenderer-0.2.0-taa-preview-windows-x64.zip` under **Assets**.
 This prerelease is intended for testing and feedback.
+
+Run `VulkanSceneRenderer.exe --taa --msaa 1 --display-mode lit` to try native HDR
+temporal anti-aliasing. Forward rendering also supports TAA with
+`--render-technique forward-raster`. See the [measured results and limits](docs/taa-validation.md).
 
 Requirements:
 
@@ -93,6 +97,19 @@ $bim = "models\buildingSMART-IFC5-development\examples\Hello Wall\hello-wall.ifc
 .\out\build\windows-release\VulkanSceneRenderer.exe --bim-model $bim
 ```
 
+The isolated Cornell samples use their authored ceiling lights. Loading a
+building model restores viewer lighting (directional intensity 2, environment
+intensity 1); values edited in Lighting Settings and explicit command-line
+overrides are preserved. `Bounce Intensity` is an artistic fill approximation,
+so use zero when inspecting direct-light occlusion.
+
+The STEP IFC importer currently supports triangulated face sets and selected
+extruded solids. Complex Boolean, B-rep, polygonal-face-set and swept-disk
+representations can be omitted. The Tekla House IFC and IFCX samples therefore
+do not currently render equivalent geometry. See the
+[sample scene review](docs/sample-scene-review.md) for verified rendering issues
+and regression results.
+
 The sidecar path also accepts USD, USDA, USDC, and USDZ mesh files through the
 TinyUSDZ-backed importer:
 
@@ -123,6 +140,9 @@ cmake --build out/build/windows-release --target download_usd_models --config Re
   GPU query backends, render graph metrics, and validation commands.
 - [Coordinate conventions](docs/coordinate-conventions.md) - source of truth
   for coordinate systems, reverse-Z depth, viewports, culling, and matrix rules.
+- [Temporal anti-aliasing](docs/temporal-rendering.md) - `--taa --msaa 1` in
+  forward/deferred rendering, signed velocity and history diagnostics, deterministic
+  motion captures, and [validation results](docs/taa-validation.md).
 - [Lighting system plan](docs/lighting-system-improvement-plan.md) - lighting,
   shadows, tiled culling, GTAO, GPU-driven rendering, and bloom rationale.
 - [Refactoring plan](docs/refactoring-plan.md) - ownership boundaries,

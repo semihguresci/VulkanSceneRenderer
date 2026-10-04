@@ -1,4 +1,5 @@
 #include "Container/renderer/core/RenderGraph.h"
+#include "Container/renderer/temporal/TemporalManager.h"
 
 #include "Container/renderer/core/FrameRecorder.h"
 
@@ -52,6 +53,8 @@ constexpr std::array<std::string_view, kRenderPassIdCount> kRenderPassNames = {
     "OitResolve",
     "Bloom",
     "PostProcess",
+    "TemporalVelocity",
+    "TemporalResolve",
 };
 
 static_assert(kRenderPassNames.size() == kRenderPassIdCount);
@@ -92,6 +95,8 @@ constexpr std::array<std::string_view, kRenderResourceIdCount>
         "ExposureState",
         "BloomTexture",
         "SwapchainImage",
+        "TemporalMotion",
+        "TemporalColor",
 };
 
 static_assert(kRenderResourceNames.size() == kRenderResourceIdCount);
@@ -195,7 +200,10 @@ constexpr std::array kLightingScheduleDependencies{
 };
 constexpr std::array kTransformGizmosScheduleDependencies{
     RenderPassId::Lighting,
+    RenderPassId::TemporalResolve,
 };
+constexpr std::array kTemporalVelocityScheduleDependencies{RenderPassId::Lighting};
+constexpr std::array kTemporalResolveScheduleDependencies{RenderPassId::TemporalVelocity};
 constexpr std::array kExposureAdaptationScheduleDependencies{
     RenderPassId::TransformGizmos,
 };
@@ -222,11 +230,11 @@ constexpr std::array kFrustumCullWrites{
     RenderResourceId::CullStats,
 };
 constexpr std::array kDepthPrepassReads{
-    RenderResourceId::SceneGeometry,
     RenderResourceId::CameraBuffer,
-    RenderResourceId::ObjectBuffer,
 };
 constexpr std::array kDepthPrepassOptionalReads{
+    RenderResourceId::SceneGeometry,
+    RenderResourceId::ObjectBuffer,
     RenderResourceId::FrustumCullDraws,
 };
 constexpr std::array kDepthPrepassWrites{
@@ -263,12 +271,12 @@ constexpr std::array kCullStatsReadbackReads{
     RenderResourceId::CullStats,
 };
 constexpr std::array kGBufferReads{
-    RenderResourceId::SceneGeometry,
     RenderResourceId::CameraBuffer,
-    RenderResourceId::ObjectBuffer,
     RenderResourceId::SceneDepth,
 };
 constexpr std::array kGBufferOptionalReads{
+    RenderResourceId::SceneGeometry,
+    RenderResourceId::ObjectBuffer,
     RenderResourceId::OcclusionCullDraws,
 };
 constexpr std::array kGBufferWrites{
@@ -442,8 +450,10 @@ constexpr std::array kPostProcessReads{
     RenderResourceId::GBufferEmissive,
     RenderResourceId::SceneDepth,
 };
+constexpr std::array kTemporalColorOptionalReads{
+    RenderResourceId::TemporalColor};
 constexpr std::array kPostProcessOptionalReads{
-    RenderResourceId::OitStorage,
+    RenderResourceId::TemporalColor, RenderResourceId::OitStorage,
     RenderResourceId::BloomTexture,
     RenderResourceId::ExposureState,
     RenderResourceId::ShadowAtlas,
@@ -597,7 +607,9 @@ bool isProtectedRenderPass(RenderPassId id) {
     case RenderPassId::ExposureAdaptation:
     case RenderPassId::OitResolve:
     case RenderPassId::PostProcess:
-      return true;
+  case RenderPassId::TemporalVelocity:
+  case RenderPassId::TemporalResolve:
+    return true;
     default:
       return false;
   }
@@ -672,6 +684,10 @@ std::span<const RenderPassId> renderPassScheduleDependencies(RenderPassId id) {
       return kGtaoDependencies;
     case RenderPassId::Lighting:
       return kLightingScheduleDependencies;
+    case RenderPassId::TemporalVelocity:
+      return kTemporalVelocityScheduleDependencies;
+    case RenderPassId::TemporalResolve:
+      return kTemporalResolveScheduleDependencies;
     case RenderPassId::TransformGizmos:
       return kTransformGizmosScheduleDependencies;
     case RenderPassId::ExposureAdaptation:
@@ -782,6 +798,9 @@ std::span<const RenderResourceId> renderPassOptionalResourceReads(
       return kShadowCascade3OptionalReads;
     case RenderPassId::Lighting:
       return kLightingOptionalReads;
+  case RenderPassId::ExposureAdaptation:
+  case RenderPassId::Bloom:
+    return kTemporalColorOptionalReads;
     case RenderPassId::PostProcess:
       return kPostProcessOptionalReads;
     default:
@@ -1490,6 +1509,8 @@ uint64_t RenderGraph::computePreparedFrameSignature(
   mix(params.debug.debugDirectionalOnly ? 1u : 0u);
   mix(params.debug.debugVisualizePointLightStencil ? 1u : 0u);
   mix(params.debug.debugFreezeCulling ? 1u : 0u);
+  mixPointer(params.services.temporalManager);
+  mix(params.services.temporalManager && params.services.temporalManager->active() ? 1u : 0u);
   mixFloat(params.camera.nearPlane);
   mixFloat(params.camera.farPlane);
   mix(params.camera.orthographic ? 1u : 0u);

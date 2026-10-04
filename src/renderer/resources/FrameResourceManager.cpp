@@ -155,20 +155,35 @@ void FrameResourceManager::createDescriptorSetLayouts() {
   }
 
   if (postProcessLayout_ == VK_NULL_HANDLE) {
-    const std::array<VkDescriptorSetLayoutBinding, 14> b = {{
-        {0, VK_DESCRIPTOR_TYPE_SAMPLER,       1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-        {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-        {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-        {3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-        {4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-        {5, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-        {6, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-        {7, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},  // bloom texture
-        {8, VK_DESCRIPTOR_TYPE_SAMPLER,       1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},  // bloom sampler
-        {9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // tile grid SSBO
-        {10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // camera UBO
-        {11, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // shadow UBO
-        {12, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},  // shadow atlas
+    const std::array<VkDescriptorSetLayoutBinding, 16> b = {{
+        {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+         nullptr},
+        {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+         nullptr},
+        {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+         nullptr},
+        {3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+         nullptr},
+        {4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+         nullptr},
+        {5, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+         nullptr},
+        {6, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+         nullptr},
+        {7, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+         nullptr}, // bloom texture
+        {8, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+         nullptr}, // bloom sampler
+        {9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+         nullptr}, // tile grid SSBO
+        {10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+         nullptr}, // camera UBO
+        {11, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+         nullptr}, // shadow UBO
+        {12, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+         nullptr}, // shadow atlas
+        {14, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,       1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // temporal motion
+        {15, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // temporal diagnostics
         {13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // exposure state
     }};
     const std::vector<VkDescriptorBindingFlags> flags(b.size(), 0);
@@ -326,9 +341,11 @@ void FrameResourceManager::create(
     std::array<VkDescriptorPoolSize, 3> sizes = {{
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, n * 3},
         {VK_DESCRIPTOR_TYPE_SAMPLER, n * 6},    // gbuf + shadow + local shadow + env + BRDF LUT + AO
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 9}, // 5(gbuf) + 1(shadow) + 1(irrad) + 1(prefilt) + 1(brdfLut) + ... err: 5+1+3+1=10 → use 10
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 9}, // 5(gbuf) + 1(shadow) + 1(irrad) + 1(prefilt) + 1(brdfLut) +
+                 // ... err: 5+1+3+1=10 → use 10
     }};
-    // Corrected: samplers=5/frame, sampled_images=5(gbuf)+1(shadow)+3(IBL)+1(AO)=10/frame
+    // Corrected: samplers=5/frame,
+    // sampled_images=5(gbuf)+1(shadow)+3(IBL)+1(AO)=10/frame
     sizes[1].descriptorCount = n * 6;
     sizes[2].descriptorCount = n * 12;
     VkDescriptorPoolCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -341,7 +358,7 @@ void FrameResourceManager::create(
   {
     std::array<VkDescriptorPoolSize, 4> sizes = {{
         {VK_DESCRIPTOR_TYPE_SAMPLER, n * 2},          // gBuffer sampler + bloom sampler
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 8},    // sceneColor + 4 gbuf + depth + bloom + shadow atlas
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 10},    // sceneColor + 4 gbuf + depth + bloom + shadow atlas
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, n * 2},   // tile grid SSBO + exposure state
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, n * 2},   // camera + shadow UBO
     }};
@@ -447,8 +464,9 @@ void FrameResourceManager::create(
           sampleCount_);
     }
     // Forward rendering skips the G-buffer pass, but the shared post-process
-    // shader still declares these sampled resources for debug views. Scene color
-    // and picking also need valid initial values while resources are loading.
+    // shader still declares these sampled resources for debug views. Scene
+    // color and picking also need valid initial values while resources are
+    // loading.
     {
       const VkCommandBuffer cmd = beginImmediate();
       for (VkImage image : {f.albedo.image, f.normal.image, f.material.image,
@@ -728,6 +746,11 @@ void FrameResourceManager::destroy() {
     }
     destroyAttachment(f.depthStencil);
     destroyAttachment(f.depthStencilMsaa);
+    destroyAttachment(f.temporalMotion);
+    destroyAttachment(f.temporalIdentity);
+    destroyAttachment(f.temporalReactive);
+    destroyAttachment(f.temporalComposite);
+    destroyAttachment(f.temporalDiagnostics);
     destroyAttachment(f.sceneColor);
     destroyAttachment(f.sceneColorMsaa);
     destroyAttachment(f.oitHeadPointers);
@@ -752,6 +775,65 @@ void FrameResourceManager::destroy() {
   destroyPool(lightingPool_);
   destroyPool(postProcessPool_);
   destroyPool(oitPool_);
+}
+
+void FrameResourceManager::ensureTemporalAttachments() {
+  if (sampleCount_ != VK_SAMPLE_COUNT_1_BIT)
+    throw std::runtime_error("TAA requires single-sample rendering");
+  VkPhysicalDeviceProperties properties{};
+  vkGetPhysicalDeviceProperties(device_->physicalDevice(), &properties);
+  if (properties.limits.maxColorAttachments < 3)
+    throw std::runtime_error(
+        "TAA velocity pass requires three color attachments");
+  const auto check = [&](VkFormat format, VkFormatFeatureFlags required) {
+    VkFormatProperties features{};
+    vkGetPhysicalDeviceFormatProperties(device_->physicalDevice(), format,
+                                        &features);
+    if ((features.optimalTilingFeatures & required) != required)
+      throw std::runtime_error(
+          "GPU lacks required TAA attachment format support; disable TAA");
+  };
+  constexpr auto rasterFeatures = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+                                  VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+  check(VK_FORMAT_R32G32B32A32_SFLOAT, rasterFeatures);
+  check(VK_FORMAT_R32_UINT, rasterFeatures);
+  check(VK_FORMAT_R8_UNORM, rasterFeatures);
+  check(VK_FORMAT_R16G16B16A16_SFLOAT,
+        VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
+            VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+            VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
+  constexpr auto rasterUsage =
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  constexpr auto storageUsage =
+      VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  try {
+    for (auto &frame : frames_) {
+      if (frame.temporalMotion.image)
+        continue;
+      frame.temporalMotion =
+          createAttachment(VK_FORMAT_R32G32B32A32_SFLOAT, rasterUsage,
+                           VK_IMAGE_ASPECT_COLOR_BIT);
+      frame.temporalIdentity = createAttachment(VK_FORMAT_R32_UINT, rasterUsage,
+                                                VK_IMAGE_ASPECT_COLOR_BIT);
+      frame.temporalReactive = createAttachment(VK_FORMAT_R8_UNORM, rasterUsage,
+                                                VK_IMAGE_ASPECT_COLOR_BIT);
+      frame.temporalComposite =
+          createAttachment(VK_FORMAT_R16G16B16A16_SFLOAT, storageUsage,
+                           VK_IMAGE_ASPECT_COLOR_BIT);
+      frame.temporalDiagnostics =
+          createAttachment(VK_FORMAT_R16G16B16A16_SFLOAT, storageUsage,
+                           VK_IMAGE_ASPECT_COLOR_BIT);
+    }
+  } catch (...) {
+    for (auto &frame : frames_) {
+      destroyAttachment(frame.temporalMotion);
+      destroyAttachment(frame.temporalIdentity);
+      destroyAttachment(frame.temporalReactive);
+      destroyAttachment(frame.temporalComposite);
+      destroyAttachment(frame.temporalDiagnostics);
+    }
+    throw;
+  }
 }
 
 const FrameResources* FrameResourceManager::frame(uint32_t imageIndex) const {
@@ -1001,7 +1083,7 @@ void FrameResourceManager::updateDescriptorSets(
 
     // Post-process set
     {
-      std::array<VkWriteDescriptorSet, 14> w{};
+      std::array<VkWriteDescriptorSet, 16> w{};
       auto set = f.postProcessDescriptorSet;
       auto buf = [&](int b, VkDescriptorType t, const VkDescriptorBufferInfo* i) {
         w[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1090,6 +1172,9 @@ void FrameResourceManager::updateDescriptorSets(
                              sizeof(container::gpu::ExposureStateData)};
       }
       buf(13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &exposureStateInfo);
+      // Valid initialized fallbacks while temporal rendering is disabled.
+      img(14, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &normal);
+      img(15, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &emissive);
 
       vkUpdateDescriptorSets(dev, static_cast<uint32_t>(w.size()), w.data(), 0, nullptr);
     }

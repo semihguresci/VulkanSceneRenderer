@@ -387,7 +387,8 @@ void SceneController::createSceneBuffers(
     objectBufferUploadRevisions_.erase(objectBuffer.buffer);
   }
   refreshObjectDataCache(false);
-  // Upload is deferred to updateObjectBuffer; descriptor sets updated by caller.
+  // Upload is deferred to updateObjectBuffer; descriptor sets updated by
+  // caller.
 }
 
 // ---------------------------------------------------------------------------
@@ -441,6 +442,8 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
         ObjectData object{};
         object.model = transform.worldTransform;
         object.objectInfo.x = materialIndex;
+        object.temporalInfo.z = nodeRef.nodeIndex;
+        object.temporalInfo.w = mesh.primitiveIndex;
         {
           const glm::mat3 model3  = glm::mat3(transform.worldTransform);
           const glm::mat3 normal3 = glm::transpose(glm::inverse(model3));
@@ -526,6 +529,8 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
     cubeObject.normalMatrix1 = glm::vec4(cubeNormal[1], 0.0f);
     cubeObject.normalMatrix2 = glm::vec4(cubeNormal[2], 0.0f);
     cubeObject.objectInfo.x = sceneManager_.diagnosticMaterialIndex();
+    cubeObject.temporalInfo.z = container::scene::SceneGraph::kInvalidNode;
+    cubeObject.temporalInfo.w = std::numeric_limits<uint32_t>::max();
     diagCubeObjectIndex_ = static_cast<uint32_t>(objectData_.size());
     objectData_.push_back(cubeObject);
     objectNodeIndices_.push_back(container::scene::SceneGraph::kInvalidNode);

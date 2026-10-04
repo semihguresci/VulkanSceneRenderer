@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Container/common/CommonVulkan.h"
 #include "Container/common/CommonVMA.h"
+#include "Container/common/CommonVulkan.h"
 #include "Container/utility/VulkanMemoryManager.h"
 
 #include <cstdint>
@@ -35,6 +35,12 @@ struct FrameResources {
   VkImageView     depthSamplingView{VK_NULL_HANDLE};
   AttachmentImage sceneColor{};
   AttachmentImage sceneColorMsaa{};
+  AttachmentImage
+      temporalMotion{}; // signed UV, expected previous depth, validity
+  AttachmentImage temporalIdentity{};
+  AttachmentImage temporalReactive{};
+  AttachmentImage temporalComposite{};
+  AttachmentImage temporalDiagnostics{};
   AttachmentImage oitHeadPointers{};
   container::gpu::AllocatedBuffer oitNodeBuffer{};
   container::gpu::AllocatedBuffer oitCounterBuffer{};

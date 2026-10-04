@@ -21,6 +21,7 @@
 // Forward declarations — full headers only needed in FrameRecorder.cpp.
 namespace container::renderer {
 class BloomManager;
+class TemporalManager;
 class BimManager;
 class GpuCullManager;
 class FrameResourceRegistry;
@@ -270,6 +271,7 @@ struct FrameRegistryState {
 };
 
 struct FrameDebugState {
+  bool temporalForceReactive{false};
   uint32_t displayMode{0};
   bool debugDirectionalOnly{false};
   bool debugVisualizePointLightStencil{false};
@@ -324,6 +326,7 @@ struct FramePassServices {
   GpuCullManager *gpuCullManager{nullptr};
   BimManager *bimManager{nullptr};
   BloomManager *bloomManager{nullptr};
+  TemporalManager *temporalManager{nullptr};
   RendererTelemetry *telemetry{nullptr};
   RenderPassGpuProfiler *gpuProfiler{nullptr};
 };

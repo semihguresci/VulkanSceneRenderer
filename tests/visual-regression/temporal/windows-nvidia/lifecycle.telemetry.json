@@ -1,0 +1,250 @@
+{
+  "cpuPhasesMs": {
+    "Acquire image": 0.013399999588727951,
+    "Command record": 1.1371999979019165,
+    "Descriptors": 0.05779999867081642,
+    "Frame": 24.547100067138672,
+    "Frame wait": 0.00139999995008111,
+    "GUI": 0.00019999999494757503,
+    "Image fence": 0.0013000000035390258,
+    "Present": 0.29840001463890076,
+    "Queue submit": 0.1678999960422516,
+    "Readbacks": 0.00039999998989515007,
+    "Resource growth": 0.00029999998514540493,
+    "Scene update": 0.01269999984651804,
+    "Screenshot": 22.828899383544922
+  },
+  "deviceIdleWaits": 5,
+  "driverVersion": 2480242688,
+  "framesInFlight": 2,
+  "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+  "gpuKnownMs": 0.555296003818512,
+  "msaaSamples": 1,
+  "passes": [
+    {
+      "active": true,
+      "cpuMs": 0.03310000151395798,
+      "gpuMs": 0.011711999773979187,
+      "gpuTimed": true,
+      "name": "FrustumCull",
+      "status": "Active"
+    },
+    {
+      "active": true,
+      "cpuMs": 0.07320000231266022,
+      "gpuMs": 0.01228800043463707,
+      "gpuTimed": true,
+      "name": "DepthPrepass",
+      "status": "Active"
+    },
+    {
+      "active": false,
+      "cpuMs": 0.0,
+      "gpuMs": 0.0,
+      "gpuTimed": false,
+      "name": "BimDepthPrepass",
+      "status": "not needed"
+    },
+    {
+      "active": true,
+      "cpuMs": 0.020800000056624413,
+      "gpuMs": 0.009696000255644321,
+      "gpuTimed": true,
+      "name": "ShadowCullCascade0",
+      "status": "Active"
+    },
+    {
+      "active": true,
+      "cpuMs": 0.014000000432133675,
+      "gpuMs": 0.008191999979317188,
+      "gpuTimed": true,
+      "name": "ShadowCullCascade1",
+      "status": "Active"
+    },
+    {
+      "active": true,
+      "cpuMs": 0.014000000432133675,
+      "gpuMs": 0.008224000222980976,
+      "gpuTimed": true,
+      "name": "ShadowCullCascade2",
+      "status": "Active"
+    },
+    {
+      "active": true,
+      "cpuMs": 0.013399999588727951,
+      "gpuMs": 0.008287999778985977,
+      "gpuTimed": true,
+      "name": "ShadowCullCascade3",
+      "status": "Active"
+    },
+    {
+      "active": true,
+      "cpuMs": 0.0681999996304512,
+      "gpuMs": 0.03094400092959404,
+      "gpuTimed": true,
+      "name": "ShadowCascade0",
+      "status": "Active"
+    },
+    {
+      "active": true,
+      "cpuMs": 0.06480000168085098,
+      "gpuMs": 0.03190400078892708,
+      "gpuTimed": true,
+      "name": "ShadowCascade1",
+      "status": "Active"
+    },
+    {
+      "active": true,
+      "cpuMs": 0.05950000137090683,
+      "gpuMs": 0.024607999250292778,
+      "gpuTimed": true,
+      "name": "ShadowCascade2",
+      "status": "Active"
+    },
+    {
+      "active": true,
+      "cpuMs": 0.05649999901652336,
+      "gpuMs": 0.02457600086927414,
+      "gpuTimed": true,
+      "name": "ShadowCascade3",
+      "status": "Active"
+    },
+    {
+      "active": false,
+      "cpuMs": 0.0,
+      "gpuMs": 0.0,
+      "gpuTimed": false,
+      "name": "LocalShadowDepth",
+      "status": "not needed"
+    },
+    {
+      "active": true,
+      "cpuMs": 0.009200000204145908,
+      "gpuMs": 0.0009280000231228769,
+      "gpuTimed": true,
+      "name": "DepthToReadOnly",
+      "status": "Active"
+    },
+    {
+      "active": true,
+      "cpuMs": 0.16920000314712524,
+      "gpuMs": 0.0306560005992651,
+      "gpuTimed": true,
+      "name": "HiZGenerate",
+      "status": "Active"
+    },
+    {
+      "active": true,
+      "cpuMs": 0.03150000050663948,
+      "gpuMs": 0.01190400030463934,
+      "gpuTimed": true,
+      "name": "OcclusionCull",
+      "status": "Active"
+    },
+    {
+      "active": true,
+      "cpuMs": 0.014000000432133675,
+      "gpuMs": 0.0032319999299943447,
+      "gpuTimed": true,
+      "name": "CullStatsReadback",
+      "status": "Active"
+    },
+    {
+      "active": true,
+      "cpuMs": 0.02459999918937683,
+      "gpuMs": 0.003967999946326017,
+      "gpuTimed": true,
+      "name": "OitClear",
+      "status": "Active"
+    },
+    {
+      "active": true,
+      "cpuMs": 0.1687999963760376,
+      "gpuMs": 0.21465599536895752,
+      "gpuTimed": true,
+      "name": "Lighting",
+      "status": "Active"
+    },
+    {
+      "active": true,
+      "cpuMs": 0.05999999865889549,
+      "gpuMs": 0.020927999168634415,
+      "gpuTimed": true,
+      "name": "TemporalVelocity",
+      "status": "Active"
+    },
+    {
+      "active": true,
+      "cpuMs": 0.03920000046491623,
+      "gpuMs": 0.08057600259780884,
+      "gpuTimed": true,
+      "name": "TemporalResolve",
+      "status": "Active"
+    },
+    {
+      "active": false,
+      "cpuMs": 0.0,
+      "gpuMs": 0.0,
+      "gpuTimed": false,
+      "name": "TransformGizmos",
+      "status": "not needed"
+    },
+    {
+      "active": false,
+      "cpuMs": 0.0,
+      "gpuMs": 0.0,
+      "gpuTimed": false,
+      "name": "ExposureAdaptation",
+      "status": "not needed"
+    },
+    {
+      "active": true,
+      "cpuMs": 0.014299999922513962,
+      "gpuMs": 0.0016319999704137444,
+      "gpuTimed": true,
+      "name": "OitResolve",
+      "status": "Active"
+    },
+    {
+      "active": false,
+      "cpuMs": 0.0,
+      "gpuMs": 0.0,
+      "gpuTimed": false,
+      "name": "Bloom",
+      "status": "not needed"
+    },
+    {
+      "active": true,
+      "cpuMs": 0.05820000171661377,
+      "gpuMs": 0.016383999958634377,
+      "gpuTimed": true,
+      "name": "PostProcess",
+      "status": "Active"
+    }
+  ],
+  "resolution": [
+    640,
+    360
+  ],
+  "schemaVersion": 1,
+  "serializedConcurrency": true,
+  "swapchainImages": 3,
+  "swapchainRecreates": 5,
+  "taa": {
+    "allocatedImageBytes": 37109760,
+    "depthAbsoluteTolerance": 0.019999999552965164,
+    "depthRelativeTolerance": 0.009999999776482582,
+    "enabled": true,
+    "epoch": 36,
+    "historyWeight": 0.8999999761581421,
+    "imageAllocationCount": 21,
+    "imagePayloadBytes": 34790400,
+    "jitterSeed": 0,
+    "logicalImageWriteBytesPerFrame": 13132800,
+    "resetReason": "scene/camera reset",
+    "submittedFrame": 45,
+    "varianceGamma": 1.25
+  },
+  "technique": "forward-raster",
+  "vulkanApiVersion": 4211013
+}

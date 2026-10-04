@@ -41,7 +41,8 @@ class ExposureManager {
                 VkImageView sceneColorView,
                 uint32_t sceneWidth,
                 uint32_t sceneHeight,
-                const container::gpu::ExposureSettings& settings);
+                const container::gpu::ExposureSettings& settings,
+      VkImageLayout sourceLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
   void collectReadback(uint32_t imageIndex,
                        const container::gpu::ExposureSettings& settings);
   void destroy();
@@ -76,7 +77,8 @@ class ExposureManager {
   void createHistogramBuffer(container::gpu::AllocatedBuffer& buffer);
   void createExposureStateBuffer(container::gpu::AllocatedBuffer& buffer);
   void destroyFrameResources();
-  void updateDescriptorSet(uint32_t imageIndex, VkImageView sceneColorView);
+  void updateDescriptorSet(uint32_t imageIndex, VkImageView sceneColorView,
+                           VkImageLayout sourceLayout);
 
   std::shared_ptr<container::gpu::VulkanDevice> device_;
   container::gpu::AllocationManager& allocationManager_;

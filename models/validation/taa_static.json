@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "frames": 64,
+  "sampleFrames": [
+    1,
+    8,
+    16,
+    32,
+    64
+  ],
+  "camera": [
+    {
+      "frame": 1,
+      "position": [
+        0,
+        1.8,
+        6.5
+      ],
+      "target": [
+        0,
+        0.8,
+        0
+      ]
+    }
+  ]
+}

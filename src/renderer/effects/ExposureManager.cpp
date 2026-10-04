@@ -115,7 +115,8 @@ void ExposureManager::dispatch(
     VkImageView sceneColorView,
     uint32_t sceneWidth,
     uint32_t sceneHeight,
-    const ExposureSettings& rawSettings) {
+    const ExposureSettings& rawSettings,
+                               VkImageLayout sourceLayout) {
   if (!isReady() || cmd == VK_NULL_HANDLE ||
       sceneColorView == VK_NULL_HANDLE || sceneWidth == 0u ||
       sceneHeight == 0u || imageIndex >= descriptorSets_.size() ||
@@ -145,7 +146,7 @@ void ExposureManager::dispatch(
                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
                        &fillBarrier, 0, nullptr, 0, nullptr);
 
-  updateDescriptorSet(imageIndex, sceneColorView);
+  updateDescriptorSet(imageIndex, sceneColorView, sourceLayout);
 
   ExposureHistogramPushConstants histogramPc{};
   histogramPc.width = sceneWidth;
@@ -370,7 +371,8 @@ void ExposureManager::createExposureStateBuffer(
 }
 
 void ExposureManager::updateDescriptorSet(uint32_t imageIndex,
-                                          VkImageView sceneColorView) {
+                                          VkImageView sceneColorView,
+                                          VkImageLayout sourceLayout) {
   if (imageIndex >= descriptorSets_.size() ||
       imageIndex >= histogramBuffers_.size() ||
       exposureStateBuffer_.buffer == VK_NULL_HANDLE) {
@@ -381,7 +383,7 @@ void ExposureManager::updateDescriptorSet(uint32_t imageIndex,
 
   VkDescriptorImageInfo sceneInfo{};
   sceneInfo.imageView = sceneColorView;
-  sceneInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  sceneInfo.imageLayout = sourceLayout;
 
   VkDescriptorBufferInfo histogramInfo{};
   histogramInfo.buffer = histogramBuffers_[imageIndex].buffer;

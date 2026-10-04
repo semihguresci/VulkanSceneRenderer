@@ -1,0 +1,294 @@
+{
+  "schemaVersion": 1,
+  "platform": "windows-nvidia",
+  "quality": {
+    "deferred": {
+      "off": {
+        "residualFlickerRms": 0.022924965247511864,
+        "referenceMae": 0.006352913565933704,
+        "errorP95": 0.006672353949397802,
+        "edgeEnergyRatio": 0.9687657356262207,
+        "ghostPersistenceMae": 0.006370171904563904
+      },
+      "on": {
+        "residualFlickerRms": 0.02075999230146408,
+        "referenceMae": 0.0060641951858997345,
+        "errorP95": 0.014003396034240723,
+        "edgeEnergyRatio": 0.8659833073616028,
+        "ghostPersistenceMae": 0.006133001297712326
+      },
+      "flickerRatio": 0.90556265090597,
+      "passed": true,
+      "movingObject": {
+        "on": {
+          "residualFlickerRms": 0.020157303661108017,
+          "referenceMae": 0.006305871531367302,
+          "errorP95": 0.014832913875579834,
+          "edgeEnergyRatio": 0.8883264660835266,
+          "ghostPersistenceMae": 0.006261072587221861
+        },
+        "off": {
+          "residualFlickerRms": 0.01451079361140728,
+          "referenceMae": 0.006519655231386423,
+          "errorP95": 0.009672045707702637,
+          "edgeEnergyRatio": 0.9828123450279236,
+          "ghostPersistenceMae": 0.006507862359285355
+        },
+        "passed": true
+      }
+    },
+    "forward": {
+      "off": {
+        "residualFlickerRms": 0.02318824641406536,
+        "referenceMae": 0.0022556735202670097,
+        "errorP95": 0.001510024070739746,
+        "edgeEnergyRatio": 1.034963846206665,
+        "ghostPersistenceMae": 0.002260032808408141
+      },
+      "on": {
+        "residualFlickerRms": 0.019927160814404488,
+        "referenceMae": 0.002448541112244129,
+        "errorP95": 0.0069618821144104,
+        "edgeEnergyRatio": 0.9089142680168152,
+        "ghostPersistenceMae": 0.0024895688984543085
+      },
+      "flickerRatio": 0.8593647168729935,
+      "passed": true,
+      "movingObject": {
+        "on": {
+          "residualFlickerRms": 0.01642637699842453,
+          "referenceMae": 0.00278667313978076,
+          "errorP95": 0.007012426853179932,
+          "edgeEnergyRatio": 0.9240745902061462,
+          "ghostPersistenceMae": 0.0028246804140508175
+        },
+        "off": {
+          "residualFlickerRms": 0.009019347839057446,
+          "referenceMae": 0.002702809404581785,
+          "errorP95": 0.002843111753463745,
+          "edgeEnergyRatio": 1.039147973060608,
+          "ghostPersistenceMae": 0.002710409229621291
+        },
+        "passed": true
+      }
+    }
+  },
+  "performance": {
+    "deferred-640-off": {
+      "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+      "driverVersion": 2480242688,
+      "resolution": [
+        640,
+        360
+      ],
+      "taa": {
+        "allocatedImageBytes": 0,
+        "depthAbsoluteTolerance": 0.019999999552965164,
+        "depthRelativeTolerance": 0.009999999776482582,
+        "enabled": false,
+        "epoch": 3,
+        "historyWeight": 0.8999999761581421,
+        "imagePayloadBytes": 0,
+        "jitterSeed": 0,
+        "resetReason": "render extent changed",
+        "submittedFrame": 64,
+        "varianceGamma": 1.25
+      },
+      "medianGpuKnownMs": 0.5634880065917969,
+      "medianCpuSubmitMs": 0.18279999494552612,
+      "medianCpuSceneMs": 0.01679999940097332,
+      "medianPassGpuMs": {
+        "BimDepthPrepass": 0,
+        "BimGBuffer": 0,
+        "Bloom": 0,
+        "CullStatsReadback": 0.0035200000274926424,
+        "DepthPrepass": 0.013535999692976475,
+        "DepthToReadOnly": 0.002047999994829297,
+        "ExposureAdaptation": 0,
+        "FrustumCull": 0.014175999909639359,
+        "GBuffer": 0.039712000638246536,
+        "GTAO": 0.05718399956822395,
+        "HiZGenerate": 0.0323840007185936,
+        "Lighting": 0.18544000387191772,
+        "LocalShadowDepth": 0,
+        "OcclusionCull": 0.011839999817311764,
+        "OitClear": 0,
+        "OitResolve": 0,
+        "PostProcess": 0.014495999552309513,
+        "ShadowCascade0": 0.03081599995493889,
+        "ShadowCascade1": 0.03657599911093712,
+        "ShadowCascade2": 0.029120000079274178,
+        "ShadowCascade3": 0.02860799990594387,
+        "ShadowCullCascade0": 0.010208000428974628,
+        "ShadowCullCascade1": 0.009216000325977802,
+        "ShadowCullCascade2": 0.008352000266313553,
+        "ShadowCullCascade3": 0.009855999611318111,
+        "TemporalResolve": 0,
+        "TemporalVelocity": 0,
+        "TileCull": 0.008191999979317188,
+        "TransformGizmos": 0,
+        "TransparentPick": 0.021888000890612602
+      }
+    },
+    "deferred-640-on": {
+      "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+      "driverVersion": 2480242688,
+      "resolution": [
+        640,
+        360
+      ],
+      "taa": {
+        "allocatedImageBytes": 37109760,
+        "depthAbsoluteTolerance": 0.019999999552965164,
+        "depthRelativeTolerance": 0.009999999776482582,
+        "enabled": true,
+        "epoch": 4,
+        "historyWeight": 0.8999999761581421,
+        "imagePayloadBytes": 34790400,
+        "jitterSeed": 0,
+        "resetReason": "render extent changed",
+        "submittedFrame": 64,
+        "varianceGamma": 1.25
+      },
+      "medianGpuKnownMs": 0.6141759753227234,
+      "medianCpuSubmitMs": 0.19689999520778656,
+      "medianCpuSceneMs": 0.040699999779462814,
+      "medianPassGpuMs": {
+        "BimDepthPrepass": 0,
+        "BimGBuffer": 0,
+        "Bloom": 0,
+        "CullStatsReadback": 0.003008000086992979,
+        "DepthPrepass": 0.012128000147640705,
+        "DepthToReadOnly": 0.0016639999812468886,
+        "ExposureAdaptation": 0,
+        "FrustumCull": 0.012927999719977379,
+        "GBuffer": 0.038176000118255615,
+        "GTAO": 0.049056001007556915,
+        "HiZGenerate": 0.031072000041604042,
+        "Lighting": 0.15705600380897522,
+        "LocalShadowDepth": 0,
+        "OcclusionCull": 0.010784000158309937,
+        "OitClear": 0,
+        "OitResolve": 0,
+        "PostProcess": 0.014336000196635723,
+        "ShadowCascade0": 0.030079999938607216,
+        "ShadowCascade1": 0.03481600061058998,
+        "ShadowCascade2": 0.02848000079393387,
+        "ShadowCascade3": 0.027648000046610832,
+        "ShadowCullCascade0": 0.008671999908983707,
+        "ShadowCullCascade1": 0.008287999778985977,
+        "ShadowCullCascade2": 0.008224000222980976,
+        "ShadowCullCascade3": 0.009759999811649323,
+        "TemporalResolve": 0.0711359977722168,
+        "TemporalVelocity": 0.022655999287962914,
+        "TileCull": 0.0074880002066493034,
+        "TransformGizmos": 0,
+        "TransparentPick": 0.020320000126957893
+      }
+    },
+    "forward-640-off": {
+      "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+      "driverVersion": 2480242688,
+      "resolution": [
+        640,
+        360
+      ],
+      "taa": {
+        "allocatedImageBytes": 0,
+        "depthAbsoluteTolerance": 0.019999999552965164,
+        "depthRelativeTolerance": 0.009999999776482582,
+        "enabled": false,
+        "epoch": 3,
+        "historyWeight": 0.8999999761581421,
+        "imagePayloadBytes": 0,
+        "jitterSeed": 0,
+        "resetReason": "render extent changed",
+        "submittedFrame": 64,
+        "varianceGamma": 1.25
+      },
+      "medianGpuKnownMs": 0.37596800923347473,
+      "medianCpuSubmitMs": 0.1363999992609024,
+      "medianCpuSceneMs": 0.014800000004470348,
+      "medianPassGpuMs": {
+        "BimDepthPrepass": 0,
+        "Bloom": 0,
+        "CullStatsReadback": 0.0032319999299943447,
+        "DepthPrepass": 0.012256000190973282,
+        "DepthToReadOnly": 0.0016639999812468886,
+        "ExposureAdaptation": 0,
+        "FrustumCull": 0.01228800043463707,
+        "HiZGenerate": 0.030719999223947525,
+        "Lighting": 0.14902399480342865,
+        "LocalShadowDepth": 0,
+        "OcclusionCull": 0.010784000158309937,
+        "OitClear": 0,
+        "OitResolve": 0,
+        "PostProcess": 0.01228800043463707,
+        "ShadowCascade0": 0.030719999223947525,
+        "ShadowCascade1": 0.03152000159025192,
+        "ShadowCascade2": 0.02457600086927414,
+        "ShadowCascade3": 0.02393599972128868,
+        "ShadowCullCascade0": 0.008608000352978706,
+        "ShadowCullCascade1": 0.008191999979317188,
+        "ShadowCullCascade2": 0.008191999979317188,
+        "ShadowCullCascade3": 0.008704000152647495,
+        "TemporalResolve": 0,
+        "TemporalVelocity": 0,
+        "TransformGizmos": 0
+      }
+    },
+    "forward-640-on": {
+      "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+      "driverVersion": 2480242688,
+      "resolution": [
+        640,
+        360
+      ],
+      "taa": {
+        "allocatedImageBytes": 37109760,
+        "depthAbsoluteTolerance": 0.019999999552965164,
+        "depthRelativeTolerance": 0.009999999776482582,
+        "enabled": true,
+        "epoch": 4,
+        "historyWeight": 0.8999999761581421,
+        "imagePayloadBytes": 34790400,
+        "jitterSeed": 0,
+        "resetReason": "render extent changed",
+        "submittedFrame": 64,
+        "varianceGamma": 1.25
+      },
+      "medianGpuKnownMs": 0.47043198347091675,
+      "medianCpuSubmitMs": 0.14000000059604645,
+      "medianCpuSceneMs": 0.038600001484155655,
+      "medianPassGpuMs": {
+        "BimDepthPrepass": 0,
+        "Bloom": 0,
+        "CullStatsReadback": 0.0028800000436604023,
+        "DepthPrepass": 0.01228800043463707,
+        "DepthToReadOnly": 0.002015999983996153,
+        "ExposureAdaptation": 0,
+        "FrustumCull": 0.012480000033974648,
+        "HiZGenerate": 0.030719999223947525,
+        "Lighting": 0.14895999431610107,
+        "LocalShadowDepth": 0,
+        "OcclusionCull": 0.011327999643981457,
+        "OitClear": 0,
+        "OitResolve": 0,
+        "PostProcess": 0.014336000196635723,
+        "ShadowCascade0": 0.03062400035560131,
+        "ShadowCascade1": 0.0318400003015995,
+        "ShadowCascade2": 0.02457600086927414,
+        "ShadowCascade3": 0.02412799932062626,
+        "ShadowCullCascade0": 0.008736000396311283,
+        "ShadowCullCascade1": 0.008191999979317188,
+        "ShadowCullCascade2": 0.0080960001796484,
+        "ShadowCullCascade3": 0.008767999708652496,
+        "TemporalResolve": 0.06963200122117996,
+        "TemporalVelocity": 0.022112000733613968,
+        "TransformGizmos": 0
+      }
+    }
+  },
+  "stress": {},
+  "mutations": {}
+}

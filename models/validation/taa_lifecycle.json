@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "frames": 48,
+  "sampleFrames": [
+    7,
+    9,
+    12,
+    15,
+    17,
+    20,
+    23,
+    26,
+    29,
+    32,
+    35,
+    38,
+    41,
+    44,
+    48
+  ],
+  "camera": [
+    {
+      "frame": 1,
+      "position": [
+        0,
+        1.8,
+        6.5
+      ],
+      "target": [
+        0,
+        0.8,
+        0
+      ]
+    }
+  ],
+  "events": [
+    {
+      "frame": 4,
+      "acquireOutOfDate": true
+    },
+    {
+      "frame": 6,
+      "presentSuboptimal": true
+    },
+    {
+      "frame": 8,
+      "skip": true
+    },
+    {
+      "frame": 9,
+      "reset": true
+    },
+    {
+      "frame": 12,
+      "resize": [
+        800,
+        450
+      ]
+    },
+    {
+      "frame": 15,
+      "resize": [
+        640,
+        360
+      ]
+    },
+    {
+      "frame": 18,
+      "minimized": true
+    },
+    {
+      "frame": 20,
+      "minimized": false,
+      "reset": true
+    },
+    {
+      "frame": 23,
+      "taa": false
+    },
+    {
+      "frame": 26,
+      "taa": true
+    },
+    {
+      "frame": 29,
+      "technique": "forward-raster"
+    },
+    {
+      "frame": 32,
+      "orthographic": true
+    },
+    {
+      "frame": 35,
+      "orthographic": false
+    },
+    {
+      "frame": 38,
+      "taa": false,
+      "samples": 4
+    },
+    {
+      "frame": 41,
+      "samples": 1,
+      "taa": true
+    },
+    {
+      "frame": 44,
+      "reload": "models/validation/taa_scene.gltf"
+    }
+  ]
+}

@@ -52,7 +52,7 @@ VSOutput vertMain(uint vertexIndex : SV_VertexID)
         pc.positionRadius.xyz + (right * corner.x + up * corner.y) * gizmoRadius;
 
     VSOutput output;
-    output.pos = mul(uCamera.viewProj, float4(worldPosition, 1.0));
+    output.pos = mul(uCamera.temporalInfo.w != 0u ? uCamera.unjitteredViewProj : uCamera.viewProj, float4(worldPosition, 1.0));
     output.uv = kQuadUvs[vertexIndex];
     output.iconLayer = max(pc.coneOuterCosType.x, 0.0);
     return output;

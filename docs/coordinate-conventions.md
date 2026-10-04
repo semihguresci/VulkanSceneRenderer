@@ -27,6 +27,12 @@ Use these files as the concrete implementation points for the conventions below:
 - `shaders/brdf_common.slang` reconstructs world positions from scene depth.
 - `shaders/shadow_common.slang` converts shadow NDC to atlas UV.
 - `shaders/lighting_structs.slang` holds shared reverse-Z depth helpers.
+- `include/Container/renderer/temporal/TemporalConventions.h` and
+  `shaders/temporal_common.slang` define temporal projection/reprojection math.
+
+Temporal velocity, jitter, history grids, and reset rules are specified in
+[Temporal rendering contracts](temporal-rendering.md). Consult that contract
+before adding motion-vector or history consumers.
 
 When adding a pass, add a short local comment at the conversion point if it
 depends on viewport orientation, reverse-Z depth, or glTF double-sided normal

@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "frames": 32,
+  "sampleFrames": [
+    16,
+    17,
+    18,
+    32
+  ],
+  "camera": [
+    {
+      "frame": 1,
+      "position": [
+        0,
+        1.8,
+        6.5
+      ],
+      "target": [
+        0,
+        0.8,
+        0
+      ]
+    }
+  ],
+  "events": [
+    {
+      "frame": 17,
+      "reset": true
+    },
+    {
+      "frame": 18,
+      "exposure": 0.5
+    }
+  ]
+}

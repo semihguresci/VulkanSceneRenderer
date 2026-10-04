@@ -1,0 +1,16 @@
+{
+  "baseline": "Existing pre-TAA windows-release executable, built 2026-10-03 18:04 local",
+  "baselineExeSha256": "4952253332fc24f8240afe5650b92cf8ac1dd4c015b5efdce90d14831870525c",
+  "candidateExeSha256": "c4400e48faf3cccddcb54cd001d3195b42cded7addb807313d7fd74ed2f3afe9",
+  "scene": "cornell_box_local_light_occlusion",
+  "meanAbsoluteByteDifference": 0,
+  "maximumAbsoluteByteDifference": 0,
+  "historicalGolden": "fails identically before and after TAA; retained",
+  "resolution": [
+    1280,
+    720
+  ],
+  "captureFrame": 9,
+  "warmupFrames": 8,
+  "fixedDt": 0.016666667
+}

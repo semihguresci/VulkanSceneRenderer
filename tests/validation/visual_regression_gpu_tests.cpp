@@ -1,5 +1,5 @@
-#include <gtest/gtest.h>
 #include <gtest/gtest-spi.h>
+#include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 #include "Container/app/AppConfig.h"
@@ -974,6 +974,32 @@ TEST(VisualRegressionGpu, CapturesAndComparesFixtureScenes) {
     args.emplace_back(asset == container::app::kDefaultSceneModelToken
                           ? asset
                           : asCliPath(modelPath));
+    if (scene.contains("temporal")) {
+      const auto &temporal = scene.at("temporal");
+      args.emplace_back(temporal.value("enabled", false) ? "--taa"
+                                                         : "--no-taa");
+      for (const auto &[key, flag] :
+           std::array<std::pair<const char *, const char *>, 5>{
+               {{"jitterSeed", "--taa-jitter-seed"},
+                {"historyWeight", "--taa-history-weight"},
+                {"varianceGamma", "--taa-variance-gamma"},
+                {"resetFrame", "--taa-reset-frame"},
+                {"msaaSamples", "--msaa"}}}) {
+        if (temporal.contains(key)) {
+          args.emplace_back(flag);
+          args.emplace_back(temporal.at(key).dump());
+        }
+      }
+      if (temporal.contains("renderTechnique")) {
+        args.emplace_back("--render-technique");
+        args.emplace_back(temporal.at("renderTechnique").get<std::string>());
+      }
+      if (temporal.contains("sequence")) {
+        args.emplace_back("--capture-sequence");
+        args.emplace_back(asCliPath(
+            repositoryRoot() / temporal.at("sequence").get<std::string>()));
+      }
+    }
     args.emplace_back("--width");
     args.emplace_back(std::to_string(resolution.at(0).get<uint32_t>()));
     args.emplace_back("--height");

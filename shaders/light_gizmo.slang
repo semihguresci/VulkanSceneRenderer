@@ -235,7 +235,7 @@ VSOutput vertMain(uint vertexIndex : SV_VertexID)
     if (pc.contactVisibilityEnabled != 0u)
     {
         float3 worldPosition = coverageLinePosition(vertexIndex);
-        output.pos = mul(uCamera.viewProj, float4(worldPosition, 1.0));
+        output.pos = mul(uCamera.temporalInfo.w != 0u ? uCamera.unjitteredViewProj : uCamera.viewProj, float4(worldPosition, 1.0));
         output.color = pc.colorIntensity.rgb;
         output.uv = float2(0.0, 0.0);
         output.iconLayer = 0.0;
@@ -257,7 +257,7 @@ VSOutput vertMain(uint vertexIndex : SV_VertexID)
     float2 corner = kQuadCorners[vertexIndex];
     float3 worldPosition =
         pc.positionRadius.xyz + (right * corner.x + up * corner.y) * gizmoRadius;
-    output.pos = mul(uCamera.viewProj, float4(worldPosition, 1.0));
+    output.pos = mul(uCamera.temporalInfo.w != 0u ? uCamera.unjitteredViewProj : uCamera.viewProj, float4(worldPosition, 1.0));
     output.color = pc.colorIntensity.rgb;
     output.alpha = 1.0;
     output.uv = kQuadUvs[vertexIndex];

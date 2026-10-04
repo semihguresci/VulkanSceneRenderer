@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "platform": "windows-nvidia",
+  "quality": {},
+  "performance": {},
+  "stress": {},
+  "mutations": {
+    "inverted-velocity": {
+      "baseline": {
+        "residualFlickerRms": 0.02075999230146408,
+        "referenceMae": 0.0060641951858997345,
+        "errorP95": 0.014003396034240723,
+        "edgeEnergyRatio": 0.8659833073616028,
+        "ghostPersistenceMae": 0.006133001297712326
+      },
+      "mutated": {
+        "residualFlickerRms": 0.02203788422048092,
+        "referenceMae": 0.006117524113506079,
+        "errorP95": 0.010098052211105824,
+        "edgeEnergyRatio": 0.9173036217689514,
+        "ghostPersistenceMae": 0.0061971028335392475
+      },
+      "detected": true
+    },
+    "stale-history": {
+      "baseline": {
+        "residualFlickerRms": 0.02075999230146408,
+        "referenceMae": 0.0060641951858997345,
+        "errorP95": 0.014003396034240723,
+        "edgeEnergyRatio": 0.8659833073616028,
+        "ghostPersistenceMae": 0.006133001297712326
+      },
+      "mutated": {
+        "residualFlickerRms": 0.022010184824466705,
+        "referenceMae": 0.006270071491599083,
+        "errorP95": 0.013877034187316895,
+        "edgeEnergyRatio": 0.8797624111175537,
+        "ghostPersistenceMae": 0.006235865410417318
+      },
+      "detected": true
+    },
+    "skipped-invalidation": {
+      "expectedResetGrayFraction": 0.0,
+      "detected": true
+    }
+  }
+}

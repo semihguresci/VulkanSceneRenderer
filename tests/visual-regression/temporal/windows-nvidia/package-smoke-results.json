@@ -1,0 +1,59 @@
+{
+  "sourceCommit": "dd3d6a58217996a5477c3a44e2b178be7fba85ba",
+  "compiledShaderCount": 73,
+  "exeSha256": "c4400e48faf3cccddcb54cd001d3195b42cded7addb807313d7fd74ed2f3afe9",
+  "workingDirectory": "F:\\Projects\\Container\\out\\taa-package-smoke",
+  "path": "Windows, System32 and SysWOW64 only",
+  "sdkVariablesRemoved": true,
+  "validationEnabled": false,
+  "captures": [
+    {
+      "name": "deferred-taa",
+      "technique": "deferred-raster",
+      "model": "taa_scene.gltf",
+      "taa": true,
+      "msaa": 1,
+      "submittedFrame": 64,
+      "exitCode": 0,
+      "imageProduced": true,
+      "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+      "imagePayloadBytes": 34790400
+    },
+    {
+      "name": "forward-usd-taa",
+      "technique": "forward-raster",
+      "model": "taa_equivalent.usda",
+      "taa": true,
+      "msaa": 1,
+      "submittedFrame": 64,
+      "exitCode": 0,
+      "imageProduced": true,
+      "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+      "imagePayloadBytes": 34790400
+    },
+    {
+      "name": "forward-bim-taa",
+      "technique": "forward-raster",
+      "model": "taa_equivalent.bim",
+      "taa": true,
+      "msaa": 1,
+      "submittedFrame": 64,
+      "exitCode": 0,
+      "imageProduced": true,
+      "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+      "imagePayloadBytes": 34790400
+    },
+    {
+      "name": "forward-msaa4",
+      "technique": "forward-raster",
+      "model": "taa_scene.gltf",
+      "taa": false,
+      "msaa": 4,
+      "submittedFrame": 9,
+      "exitCode": 0,
+      "imageProduced": true,
+      "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+      "imagePayloadBytes": 0
+    }
+  ]
+}

@@ -916,6 +916,8 @@ TEST(RenderGraphTests, DefaultScheduleModelsCurrentFrameFlow) {
       RenderPassId::TileCull,
       RenderPassId::GTAO,
       RenderPassId::Lighting,
+      RenderPassId::TemporalVelocity,
+      RenderPassId::TemporalResolve,
       RenderPassId::TransformGizmos,
       RenderPassId::ExposureAdaptation,
       RenderPassId::OitResolve,
@@ -947,6 +949,10 @@ TEST(RenderGraphTests, DefaultScheduleModelsCurrentFrameFlow) {
   EXPECT_LT(executionPosition(graph, RenderPassId::DepthToReadOnly),
             executionPosition(graph, RenderPassId::Lighting));
   EXPECT_LT(executionPosition(graph, RenderPassId::Lighting),
+            executionPosition(graph, RenderPassId::TemporalVelocity));
+  EXPECT_LT(executionPosition(graph, RenderPassId::TemporalVelocity),
+            executionPosition(graph, RenderPassId::TemporalResolve));
+  EXPECT_LT(executionPosition(graph, RenderPassId::TemporalResolve),
             executionPosition(graph, RenderPassId::TransformGizmos));
   EXPECT_LT(executionPosition(graph, RenderPassId::TransformGizmos),
             executionPosition(graph, RenderPassId::ExposureAdaptation));
@@ -1064,6 +1070,8 @@ TEST(RenderGraphTests, BimPassesSlotIntoFrameOrderWhenRegistered) {
       RenderPassId::TileCull,
       RenderPassId::GTAO,
       RenderPassId::Lighting,
+      RenderPassId::TemporalVelocity,
+      RenderPassId::TemporalResolve,
       RenderPassId::TransformGizmos,
   };
 

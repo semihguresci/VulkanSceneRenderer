@@ -86,28 +86,33 @@ currentDisplayMode(const container::ui::GuiManager *guiManager,
 }
 
 bool displayModeRecordsShadowAtlas(container::ui::GBufferViewMode mode) {
-  return mode == container::ui::GBufferViewMode::Lit ||
+  return static_cast<uint32_t>(mode) >= 100u ||
+         mode == container::ui::GBufferViewMode::Lit ||
          mode == container::ui::GBufferViewMode::Overview;
 }
 
 bool displayModeRecordsTileCull(container::ui::GBufferViewMode mode) {
-  return mode == container::ui::GBufferViewMode::Lit ||
+  return static_cast<uint32_t>(mode) >= 100u ||
+         mode == container::ui::GBufferViewMode::Lit ||
          mode == container::ui::GBufferViewMode::Overview ||
          mode == container::ui::GBufferViewMode::TileLightHeatMap;
 }
 
 bool displayModeRecordsGtao(container::ui::GBufferViewMode mode) {
-  return mode == container::ui::GBufferViewMode::Lit ||
+  return static_cast<uint32_t>(mode) >= 100u ||
+         mode == container::ui::GBufferViewMode::Lit ||
          mode == container::ui::GBufferViewMode::Overview;
 }
 
 bool displayModeRecordsExposureAdaptation(container::ui::GBufferViewMode mode) {
-  return mode == container::ui::GBufferViewMode::Lit ||
+  return static_cast<uint32_t>(mode) >= 100u ||
+         mode == container::ui::GBufferViewMode::Lit ||
          mode == container::ui::GBufferViewMode::Overview;
 }
 
 bool displayModeRecordsBloom(container::ui::GBufferViewMode mode) {
-  return mode == container::ui::GBufferViewMode::Lit ||
+  return static_cast<uint32_t>(mode) >= 100u ||
+         mode == container::ui::GBufferViewMode::Lit ||
          mode == container::ui::GBufferViewMode::Overview;
 }
 
@@ -156,7 +161,8 @@ bool shouldRecordTransparentOit(
   }
 
   const auto displayMode = currentDisplayMode(guiManager, fallbackDisplayMode);
-  if (displayMode != container::ui::GBufferViewMode::Lit &&
+  if (static_cast<uint32_t>(displayMode) < 100u &&
+      displayMode != container::ui::GBufferViewMode::Lit &&
       displayMode != container::ui::GBufferViewMode::Overview &&
       displayMode != container::ui::GBufferViewMode::Transparency &&
       displayMode != container::ui::GBufferViewMode::Revealage) {

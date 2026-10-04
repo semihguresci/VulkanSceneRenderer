@@ -15,6 +15,8 @@
 [[vk::binding(11, 0)]] ConstantBuffer<ShadowBuffer> uShadow;
 [[vk::binding(12, 0)]] Texture2DArray<float> gShadowAtlas;
 [[vk::binding(13, 0)]] StructuredBuffer<ExposureStateData> uExposureState;
+[[vk::binding(14, 0)]] Texture2D<float4> temporalMotion;
+[[vk::binding(15, 0)]] Texture2D<float4> temporalDiagnostics;
 
 [[vk::binding(9, 0)]] StructuredBuffer<TileLightGrid> uTileGrid;
 [[vk::binding(0, 1)]] RWTexture2D<uint> headPointerImage;
@@ -94,96 +96,7 @@ float ResolveExposureForToneMapping()
     return clamp(max(exposure, 0.0), minExposure, maxExposure);
 }
 
-float4 CompositeFrontToBack(float3 sceneColor, uint sortedIndices[MAX_OIT_NODES_PER_PIXEL], uint nodeCount,
-                            out float3 transparentColor, out float revealage)
-{
-    // Transparent nodes are already sorted nearest-to-farthest by the caller.
-    // Front-to-back compositing lets revealage track how much opaque scene
-    // color remains visible through the accumulated alpha.
-    float3 safeSceneColor = FiniteColorOr(sceneColor, 0.0.xxx);
-    float3 accumColor = 0.0.xxx;
-    float accumAlpha = 0.0;
-
-    for (uint i = 0u; i < nodeCount; ++i)
-    {
-        TransparentNode node = transparentNodes[sortedIndices[i]];
-        float alpha = saturate(FiniteOr(node.color.a, 0.0));
-        float weight =
-            saturate(FiniteOr((1.0 - accumAlpha) * alpha, 0.0));
-        accumColor += FiniteColorOr(node.color.rgb, 0.0.xxx) * weight;
-        accumAlpha = saturate(FiniteOr(accumAlpha + weight, accumAlpha));
-    }
-
-    transparentColor = FiniteColorOr(accumColor, 0.0.xxx);
-    revealage = saturate(FiniteOr(1.0 - accumAlpha, 1.0));
-    return float4(FiniteColorOr(accumColor + safeSceneColor * revealage,
-                                safeSceneColor),
-                  1.0);
-}
-
-struct OitResolveResult
-{
-    float3 compositedColor;
-    float3 transparentColor;
-    float revealage;
-};
-
-OitResolveResult ResolveOitPixel(uint2 pixelCoord, float3 sceneColor)
-{
-    OitResolveResult result;
-    result.compositedColor = FiniteColorOr(sceneColor, 0.0.xxx);
-    result.transparentColor = 0.0.xxx;
-    result.revealage = 1.0;
-
-    if (pc.oitEnabled == 0u ||
-        pixelCoord.x >= uOit.viewportWidth ||
-        pixelCoord.y >= uOit.viewportHeight)
-    {
-        return result;
-    }
-
-    uint current = headPointerImage.Load(int2(pixelCoord));
-    if (current == INVALID_NODE_INDEX)
-    {
-        return result;
-    }
-
-    uint sortedIndices[MAX_OIT_NODES_PER_PIXEL];
-    uint nodeCount = 0u;
-    while (current != INVALID_NODE_INDEX && nodeCount < MAX_OIT_NODES_PER_PIXEL)
-    {
-        if (current >= uOit.nodeCapacity)
-        {
-            break;
-        }
-
-        TransparentNode node = transparentNodes[current];
-        float nodeDepth = FiniteOr(node.depth, 0.0);
-        uint insertAt = nodeCount;
-        while (insertAt > 0u)
-        {
-            TransparentNode prevNode = transparentNodes[sortedIndices[insertAt - 1u]];
-            if (FiniteOr(prevNode.depth, 0.0) >= nodeDepth)
-            {
-                break;
-            }
-            sortedIndices[insertAt] = sortedIndices[insertAt - 1u];
-            --insertAt;
-        }
-        sortedIndices[insertAt] = current;
-        ++nodeCount;
-        current = node.next;
-    }
-
-    if (nodeCount > 0u)
-    {
-        float4 composited = CompositeFrontToBack(
-            sceneColor, sortedIndices, nodeCount,
-            result.transparentColor, result.revealage);
-        result.compositedColor = composited.rgb;
-    }
-    return result;
-}
+#include "oit_resolve_common.slang"
 
 bool InRect(float2 uv, Rect rect)
 {
@@ -327,7 +240,7 @@ float3 LitViewColor(float2 uv, uint2 pixelCoord, float resolvedExposure,
         FiniteColorOr(sceneColorTexture.SampleLevel(gBufferSampler, uv, 0.0).rgb,
                       0.0.xxx);
     float3 compositedColor = litColor;
-    if (oitAvailable)
+    if (oitAvailable && uCamera.temporalInfo.w == 0u)
     {
         OitResolveResult oit = ResolveOitPixel(pixelCoord, litColor);
         compositedColor = oit.compositedColor;
@@ -587,12 +500,28 @@ float4 fragMain(VSOutput input) : SV_Target0
     sceneColor.a = FiniteOr(sceneColor.a, 1.0);
 
     uint outputMode = pc.outputMode;
+    if (outputMode >= 100u && outputMode <= 104u) {
+        if (uCamera.temporalInfo.w == 0u) return float4(0.0, 0.0, 0.0, 1.0);
+        float4 diagnostic = temporalDiagnostics.Load(int3(pixelCoord, 0));
+        if (outputMode == 100u) {
+            float4 motion = temporalMotion.Load(int3(pixelCoord, 0));
+            return float4(motion.w > 0.5 ? saturate(float3(0.5.xx + motion.xy * float2(width, height) / 16.0, 0.5)) : float3(1,0,1), 1);
+        }
+        if (outputMode == 101u) return float4(diagnostic.xxx, 1);
+        if (outputMode == 102u) {
+            uint reason = uint(round(diagnostic.y * 7.0));
+            static const float3 palette[8] = {float3(0,0.65,0), float3(0.25,0.25,0.25), float3(0,0,0), float3(1,0,1), float3(0,0,1), float3(1,1,0), float3(1,0,0), float3(0,1,1)};
+            return float4(palette[min(reason,7u)],1);
+        }
+        if (outputMode == 103u) return float4(diagnostic.zzz, 1);
+        return float4(diagnostic.www, 1);
+    }
     float3 compositedColor = sceneColor.rgb;
     float resolvedExposure = ResolveExposureForToneMapping();
 
     bool oitAvailable = pc.oitEnabled != 0u;
     bool resolveCurrentPixelOit =
-        oitAvailable && outputMode == 0u;
+        oitAvailable && outputMode == 0u && uCamera.temporalInfo.w == 0u;
 
     if (resolveCurrentPixelOit)
     {
@@ -670,7 +599,7 @@ float4 fragMain(VSOutput input) : SV_Target0
         }
 
         float3 overviewCompositedColor = sceneColor.rgb;
-        if (oitAvailable)
+        if (oitAvailable && uCamera.temporalInfo.w == 0u)
         {
             OitResolveResult overviewOit =
                 ResolveOitPixel(pixelCoord, sceneColor.rgb);

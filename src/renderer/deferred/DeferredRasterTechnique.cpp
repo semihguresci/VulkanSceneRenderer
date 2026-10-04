@@ -1,4 +1,5 @@
 #include "Container/renderer/deferred/DeferredRasterTechnique.h"
+#include "Container/renderer/temporal/TemporalManager.h"
 
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/culling/GpuCullManager.h"
@@ -583,7 +584,9 @@ deferredRasterSceneRasterReadiness(const FrameRecordParams &p,
     return renderPassMissingResource(attachmentResource);
   }
   if (!hasOpaqueDrawCommands(p.draws)) {
-    return renderPassNotNeeded();
+    // Clear the shared depth/G-buffer even when the only scene is a sidecar.
+    // BIM LOAD attachments and sky/post-process still require this producer.
+    return renderPassReady();
   }
   if (deferredRasterSceneDescriptorSet(p) == VK_NULL_HANDLE ||
       p.scene.vertexSlice.buffer == VK_NULL_HANDLE ||
@@ -1182,6 +1185,19 @@ TechniqueDebugModel DeferredRasterTechnique::debugModel() const {
        .value = static_cast<uint32_t>(
            container::ui::GBufferViewMode::ShadowTexelDensity)},
   };
+  model.displayModes.insert(
+      model.displayModes.end(),
+      {
+          {.id = "taa-velocity",
+           .label = "TAA Velocity (magenta = invalid)",
+           .value = 100},
+          {.id = "taa-age", .label = "TAA History Age", .value = 101},
+          {.id = "taa-rejection",
+           .label = "TAA Rejection Reason",
+           .value = 102},
+          {.id = "taa-blend", .label = "TAA History Blend", .value = 103},
+          {.id = "taa-reactive", .label = "TAA Reactive Mask", .value = 104},
+      });
   model.panels.push_back(TechniqueDebugPanel{
       .id = "deferred-frame",
       .title = "Deferred Frame",
@@ -1513,8 +1529,13 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                                             lightingSets, transparentSets);
   });
 
+  registerTemporalPasses(graph);
+
   graph.addPass(RenderPassId::TransformGizmos,
                 [deferred](VkCommandBuffer cmd, const FrameRecordParams &p) {
+                  if (p.services.temporalManager &&
+                      p.services.temporalManager->active())
+                    return;
                   recordDeferredRasterTransformGizmoFramePass(
                       cmd, p, deferred->swapchainExtent());
                 });
@@ -1529,8 +1550,8 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
           return;
         const VkImage sceneColorImage =
             deferredRasterImage(p, DeferredRasterImageId::SceneColor);
-        const VkImageView sceneColorView =
-            deferredRasterImageView(p, DeferredRasterImageId::SceneColor);
+        const VkImageView sceneColorView = temporalSceneColorView(
+            p, deferredRasterImageView(p, DeferredRasterImageId::SceneColor));
         if (sceneColorView == VK_NULL_HANDLE ||
             sceneColorImage == VK_NULL_HANDLE)
           return;
@@ -1550,7 +1571,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
         deferred->exposureManager()->dispatch(p.runtime.imageIndex, cmd,
                                               sceneColorView, extent.width,
                                               extent.height,
-                                              exposureSettings);
+                                              exposureSettings, temporalSceneColorLayout(p));
       });
 
   graph.addPass(
@@ -1569,8 +1590,8 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
       return;
     const VkImage sceneColorImage =
         deferredRasterImage(p, DeferredRasterImageId::SceneColor);
-    const VkImageView sceneColorView =
-        deferredRasterImageView(p, DeferredRasterImageId::SceneColor);
+    const VkImageView sceneColorView = temporalSceneColorView(
+        p, deferredRasterImageView(p, DeferredRasterImageId::SceneColor));
     if (sceneColorView == VK_NULL_HANDLE || sceneColorImage == VK_NULL_HANDLE)
       return;
 
@@ -1582,7 +1603,8 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
 
     const auto extent = deferred->swapchainExtent();
     deferred->bloomManager()->dispatch(cmd, sceneColorView, extent.width,
-                                       extent.height);
+                                       extent.height,
+                                       temporalSceneColorLayout(p));
   });
 
   graph.addPass(RenderPassId::PostProcess, [deferred](VkCommandBuffer cmd,

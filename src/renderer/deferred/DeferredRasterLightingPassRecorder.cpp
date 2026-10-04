@@ -38,6 +38,8 @@ bool hasRenderableDrawCommands(const FrameDrawLists &draws) {
 
 DeferredLightingDisplayMode
 deferredLightingDisplayMode(container::ui::GBufferViewMode mode) {
+  if (static_cast<uint32_t>(mode) >= 100u)
+    return DeferredLightingDisplayMode::Lit;
   switch (mode) {
   case container::ui::GBufferViewMode::Lit:
     return DeferredLightingDisplayMode::Lit;

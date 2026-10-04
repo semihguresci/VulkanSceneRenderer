@@ -106,6 +106,60 @@ add_custom_test(glm_tests
     Dep_Math
 )
 
+add_custom_test(temporal_convention_tests
+    ${TEST_RENDERER_CORE_DIR}/temporal_convention_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_Math
+)
+
+target_sources(temporal_convention_tests PRIVATE ${TEST_RENDERER_CORE_DIR}/temporal_state_tests.cpp)
+
+add_custom_test(temporal_capture_tests
+    ${TEST_RENDERER_CORE_DIR}/temporal_capture_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_Math nlohmann_json::nlohmann_json
+)
+
+add_custom_test(scene_lighting_defaults_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/scene_lighting_defaults_tests.cpp "" ${TEST_RESULTS_DIR}
+)
+
+add_test(NAME temporal_quality_metrics
+    COMMAND "${Python3_EXECUTABLE}" "${TEST_VALIDATION_DIR}/temporal_regression.py" --self-test)
+set_tests_properties(temporal_quality_metrics PROPERTIES SKIP_RETURN_CODE 77)
+
+add_test(NAME scene_lighting_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/scene_lighting_regression.py"
+            --exe "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/scene-lighting")
+set_tests_properties(scene_lighting_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 TIMEOUT 360 LABELS "requires-vulkan;requires-display;visual-regression")
+
+# Exercise all Slang temporal helpers with dynamic inputs, outside runtime
+# assets. Building the math test also compiles this probe with engine flags.
+set(TEMPORAL_CONTRACT_SPIRV "${CMAKE_BINARY_DIR}/test_shaders/temporal_contract.comp.spv")
+add_custom_command(
+    OUTPUT "${TEMPORAL_CONTRACT_SPIRV}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/test_shaders"
+    COMMAND "${SLANGC_EXECUTABLE}" "${DEFAULT_SHADER_DIR}/temporal_contract.slang"
+            ${SLANG_SPIRV_FLAGS} -entry computeMain -o "${TEMPORAL_CONTRACT_SPIRV}"
+    DEPENDS "${DEFAULT_SHADER_DIR}/temporal_contract.slang"
+            "${SHADERS_DIR}/temporal_common.slang"
+            "${CMAKE_CURRENT_LIST_FILE}"
+            "${CMAKE_SOURCE_DIR}/cmake/Shaders.cmake"
+            "${SLANGC_EXECUTABLE}"
+    COMMENT "Compiling the temporal convention Slang probe"
+    VERBATIM
+)
+add_custom_target(temporal_contract_shader DEPENDS "${TEMPORAL_CONTRACT_SPIRV}")
+add_dependencies(temporal_convention_tests temporal_contract_shader)
+
+find_program(TEMPORAL_SPIRV_VAL_EXECUTABLE NAMES spirv-val
+    HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin")
+if(TEMPORAL_SPIRV_VAL_EXECUTABLE)
+    add_test(NAME temporal_contract_spirv_validation
+        COMMAND "${TEMPORAL_SPIRV_VAL_EXECUTABLE}" --target-env vulkan1.4
+                "${TEMPORAL_CONTRACT_SPIRV}")
+endif()
+
 add_custom_test(ecs_tests
     ${TEST_CORE_DIR}/ecs_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_ecs  VulkanSceneRenderer_scene

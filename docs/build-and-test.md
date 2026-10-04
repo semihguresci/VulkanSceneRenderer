@@ -1,5 +1,27 @@
 # Build and Test
 
+Temporal anti-aliasing is opt-in with `--taa --msaa 1` for both raster techniques.
+Build `temporal_convention_tests` and `temporal_capture_tests`; run CTest with
+`-R "^temporal_"`. The metric CPU test requires Python Pillow and NumPy and gives
+an explicit skip if they are unavailable. GPU tests stay opt-in:
+
+```powershell
+$env:CONTAINER_RUN_TAA_REGRESSION = '1'
+python tests/validation/temporal_regression.py --exe out/build/visual-studio/Release/VulkanSceneRenderer.exe --suite all
+```
+
+The script enables synchronization validation and writes selected PNGs,
+effective settings/timing/allocation sidecars and result JSON under
+`out/taa-regression`. Use `--suite quality`, `stress`, or `performance` to narrow
+the run, and `--analyze` to recompute metrics from existing captures.
+Run `--suite mutations --slangc C:/VulkanSDK/1.4.328.1/Bin/slangc.exe` after
+the quality suite to verify detection of deliberately inverted velocity, stale
+history addressing and skipped invalidation. This temporarily replaces runtime
+SPIR-V, restores it in `finally`, and must run without concurrent builds/captures.
+See
+[temporal contracts and capture controls](temporal-rendering.md) and
+[measured validation](taa-validation.md).
+
 ## Requirements
 
 - CMake 3.23 or newer.

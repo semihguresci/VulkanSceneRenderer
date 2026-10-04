@@ -618,6 +618,65 @@
         "candidate": "test_results/visual-regression/candidate/{platform}/shadow_cascade_stability.png",
         "diff": "test_results/visual-regression/diff/{platform}/shadow_cascade_stability.png"
       }
+    },
+    {
+      "id": "taa_thin_edges",
+      "category": "temporal",
+      "status": "active",
+      "asset": "models/validation/taa_equivalent.gltf",
+      "renderMode": "final-lit",
+      "camera": {
+        "position": [
+          0,
+          1.8,
+          6.5
+        ],
+        "target": [
+          0,
+          0.8,
+          0
+        ],
+        "verticalFovDegrees": 50
+      },
+      "lighting": {
+        "environment": "hdr/citrus_orchard_road_puresky_4k.exr",
+        "environmentIntensity": 0.5,
+        "exposure": 0.25,
+        "directionalLight": {
+          "illuminanceLux": 3,
+          "direction": [
+            -0.35,
+            -0.75,
+            -0.55
+          ],
+          "color": [
+            1,
+            0.96,
+            0.9
+          ]
+        },
+        "pointLights": []
+      },
+      "temporal": {
+        "enabled": true,
+        "jitterSeed": 0,
+        "historyWeight": 0.9,
+        "varianceGamma": 1.25,
+        "sequence": "models/validation/taa_pan.json",
+        "msaaSamples": 1,
+        "renderTechnique": "deferred-raster"
+      },
+      "screenshots": {
+        "golden": "tests/visual-regression/golden/{platform}/taa_thin_edges.png",
+        "candidate": "tests/visual-regression/candidate/{platform}/taa_thin_edges.png",
+        "diff": "tests/visual-regression/diff/{platform}/taa_thin_edges.png"
+      },
+      "probes": [
+        {
+          "id": "temporal_sequence_final_frame",
+          "kind": "candidate_exists"
+        }
+      ]
     }
   ]
 }

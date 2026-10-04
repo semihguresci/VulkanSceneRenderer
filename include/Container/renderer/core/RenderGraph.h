@@ -53,6 +53,8 @@ enum class RenderPassId : uint8_t {
   OitResolve,
   Bloom,
   PostProcess,
+  TemporalVelocity,
+  TemporalResolve,
   Count,
   Invalid = Count,
 };
@@ -95,6 +97,8 @@ enum class RenderResourceId : uint8_t {
   ExposureState,
   BloomTexture,
   SwapchainImage,
+  TemporalMotion,
+  TemporalColor,
   Count,
   Invalid = Count,
 };
@@ -152,8 +156,8 @@ struct RenderPassReadiness {
 [[nodiscard]] std::string_view renderPassName(RenderPassId id);
 [[nodiscard]] RenderPassId renderPassIdFromName(std::string_view name);
 [[nodiscard]] bool isProtectedRenderPass(RenderPassId id);
-// Enable dependencies gate optional passes when their producer pass is disabled.
-// Schedule dependencies only constrain graph order.
+// Enable dependencies gate optional passes when their producer pass is
+// disabled. Schedule dependencies only constrain graph order.
 [[nodiscard]] std::span<const RenderPassId> renderPassDependencies(RenderPassId id);
 [[nodiscard]] std::span<const RenderPassId> renderPassScheduleDependencies(RenderPassId id);
 [[nodiscard]] std::string_view renderResourceName(RenderResourceId id);

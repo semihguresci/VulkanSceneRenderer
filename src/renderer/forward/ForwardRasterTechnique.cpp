@@ -1,14 +1,15 @@
 #include "Container/renderer/forward/ForwardRasterTechnique.h"
+#include "Container/renderer/temporal/TemporalManager.h"
 
 #include "Container/renderer/bim/BimSurfaceRasterPassRecorder.h"
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/culling/GpuCullManager.h"
-#include "Container/renderer/deferred/DeferredRasterFrustumCullPassPlanner.h"
-#include "Container/renderer/deferred/DeferredRasterFrustumCullPassRecorder.h"
 #include "Container/renderer/deferred/DeferredRasterBimSurfacePassRecorder.h"
 #include "Container/renderer/deferred/DeferredRasterDepthReadOnlyTransitionRecorder.h"
 #include "Container/renderer/deferred/DeferredRasterFrameGraphContext.h"
 #include "Container/renderer/deferred/DeferredRasterFrameState.h"
+#include "Container/renderer/deferred/DeferredRasterFrustumCullPassPlanner.h"
+#include "Container/renderer/deferred/DeferredRasterFrustumCullPassRecorder.h"
 #include "Container/renderer/deferred/DeferredRasterPostProcess.h"
 #include "Container/renderer/deferred/DeferredRasterSceneColorReadBarrierRecorder.h"
 #include "Container/renderer/deferred/DeferredRasterScenePassRecorder.h"
@@ -741,8 +742,10 @@ void recordForwardRasterExposureAdaptation(
   const auto extent = sharedContext.swapchainExtent();
   exposureManager->dispatch(
       p.runtime.imageIndex, cmd,
-      forwardRasterImageView(p, ForwardRasterImageId::SceneColor), extent.width,
-      extent.height, exposureSettings);
+      temporalSceneColorView(
+          p, forwardRasterImageView(p, ForwardRasterImageId::SceneColor)), extent.width,
+      extent.height, exposureSettings,
+      temporalSceneColorLayout(p));
 }
 
 [[nodiscard]] RenderPassReadiness forwardRasterBloomReadiness(
@@ -771,8 +774,10 @@ void recordForwardRasterBloom(
   recordForwardRasterSceneColorReadBarrier(cmd, p);
   const auto extent = sharedContext.swapchainExtent();
   bloomManager->dispatch(
-      cmd, forwardRasterImageView(p, ForwardRasterImageId::SceneColor),
-      extent.width, extent.height);
+      cmd,
+      temporalSceneColorView(
+          p, forwardRasterImageView(p, ForwardRasterImageId::SceneColor)),
+      extent.width, extent.height, temporalSceneColorLayout(p));
 }
 
 [[nodiscard]] bool forwardRasterLightGizmoOverlayReady(
@@ -1045,6 +1050,19 @@ TechniqueDebugModel ForwardRasterTechnique::debugModel() const {
        .value = static_cast<uint32_t>(
            container::ui::GBufferViewMode::ShadowTexelDensity)},
   };
+  model.displayModes.insert(
+      model.displayModes.end(),
+      {
+          {.id = "taa-velocity",
+           .label = "TAA Velocity (magenta = invalid)",
+           .value = 100},
+          {.id = "taa-age", .label = "TAA History Age", .value = 101},
+          {.id = "taa-rejection",
+           .label = "TAA Rejection Reason",
+           .value = 102},
+          {.id = "taa-blend", .label = "TAA History Blend", .value = 103},
+          {.id = "taa-reactive", .label = "TAA Reactive Mask", .value = 104},
+      });
   model.panels.push_back(TechniqueDebugPanel{
       .id = "forward-frame",
       .title = "Forward Frame",
@@ -1277,7 +1295,10 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
        RenderResourceId::OcclusionCullDraws},
       {RenderResourceId::SceneColor, RenderResourceId::OitStorage});
   graph.setPassResourceTransitions(RenderPassId::Lighting, {});
-  graph.addPass(RenderPassId::TransformGizmos, {RenderPassId::Lighting},
+  RenderGraphBuilder temporalGraph(graph);
+  registerTemporalPasses(temporalGraph);
+
+  graph.addPass(RenderPassId::TransformGizmos, {RenderPassId::TemporalResolve},
                 [](VkCommandBuffer cmd, const FrameRecordParams &p) {
                   (void)cmd;
                   (void)p;
@@ -1350,7 +1371,7 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
         RenderPassId::PostProcess,
         {RenderResourceId::SceneColor, RenderResourceId::CameraBuffer,
          RenderResourceId::SceneDepth},
-        {RenderResourceId::OitStorage, RenderResourceId::BloomTexture,
+        {RenderResourceId::TemporalColor, RenderResourceId::OitStorage, RenderResourceId::BloomTexture,
          RenderResourceId::ExposureState, RenderResourceId::ShadowAtlas},
         {RenderResourceId::SwapchainImage});
     graph.setPassResourceTransitions(

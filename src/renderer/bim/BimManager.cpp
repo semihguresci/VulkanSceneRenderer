@@ -5,8 +5,8 @@
 #include "Container/geometry/IfcxLoader.h"
 #include "Container/geometry/Model.h"
 #include "Container/geometry/UsdLoader.h"
-#include "Container/renderer/bim/BimDrawFilterState.h"
 #include "Container/renderer/bim/BimDrawCompactionPlanner.h"
+#include "Container/renderer/bim/BimDrawFilterState.h"
 #include "Container/renderer/bim/BimMetadataCatalog.h"
 #include "Container/renderer/bim/BimMetadataIndex.h"
 #include "Container/renderer/scene/SceneController.h"
@@ -24,8 +24,8 @@
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
-#include <functional>
 #include <fstream>
+#include <functional>
 #include <initializer_list>
 #include <iterator>
 #include <limits>
@@ -1500,6 +1500,7 @@ void BimManager::clear() {
   vertices_.clear();
   indices_.clear();
   objectData_.clear();
+  temporalRootTranslation_ = glm::vec3(0);
   elementMetadata_.clear();
   relationshipGraph_.clear();
   objectDrawCommands_.clear();
@@ -3362,7 +3363,11 @@ void BimManager::buildDrawDataFromModel(
   auto appendPendingDraw = [this, &clusterSpansByMeshId, &productIdentityIds](
                                const PendingDraw &pending, bool allowMerge) {
     const uint32_t objectIndex = static_cast<uint32_t>(objectData_.size());
-    objectData_.push_back(pending.object);
+    auto object = pending.object;
+    const uint64_t temporalIdentity = nextTemporalObjectId_++;
+    object.temporalInfo.z = static_cast<uint32_t>(temporalIdentity);
+    object.temporalInfo.w = static_cast<uint32_t>(temporalIdentity >> 32u);
+    objectData_.push_back(object);
     objectDrawCommandOffsets_.push_back(
         static_cast<uint32_t>(objectDrawCommands_.size()));
     objectDrawCommands_.push_back(DrawCommand{
@@ -3500,7 +3505,11 @@ void BimManager::buildDrawDataFromModel(
                            true, overlay.boundsCenter, overlay.boundsRadius);
         floorPlanObject.objectInfo.y = container::gpu::kObjectFlagDoubleSided;
         floorPlanObject.objectInfo.w = 0u;
-        objectData_.push_back(floorPlanObject);
+    const uint64_t temporalIdentity = nextTemporalObjectId_++;
+    floorPlanObject.temporalInfo.z = static_cast<uint32_t>(temporalIdentity);
+    floorPlanObject.temporalInfo.w =
+        static_cast<uint32_t>(temporalIdentity >> 32u);
+    objectData_.push_back(floorPlanObject);
         DrawCommand floorPlanDrawCommand{
             .objectIndex = overlay.objectIndex,
             .firstIndex = overlay.firstIndex,
@@ -3541,6 +3550,9 @@ void BimManager::loadGltfFallback(
   container::gpu::ObjectData object =
       makeObjectData(transform, materialIndex, false, glm::vec3(0.0f), 0.0f);
   object.objectInfo.w = 1u;
+  const uint64_t temporalIdentity = nextTemporalObjectId_++;
+  object.temporalInfo.z = static_cast<uint32_t>(temporalIdentity);
+  object.temporalInfo.w = static_cast<uint32_t>(temporalIdentity >> 32u);
   objectData_.push_back(object);
   objectDrawCommandOffsets_.push_back(
       static_cast<uint32_t>(objectDrawCommands_.size()));
@@ -4840,6 +4852,19 @@ void BimManager::uploadMeshletResidencyBuffers() {
       meshletResidencyDescriptorSet_ != VK_NULL_HANDLE;
   meshletResidencyDescriptorsDirty_ = true;
   writeMeshletResidencyDescriptorSet();
+}
+
+void BimManager::setRootTranslation(glm::vec3 translation) {
+  const glm::vec3 delta = translation - temporalRootTranslation_;
+  if (delta == glm::vec3(0))
+    return;
+  for (auto &object : objectData_) {
+    object.model[3] += glm::vec4(delta, 0);
+    object.boundingSphere += glm::vec4(delta, 0);
+  }
+  temporalRootTranslation_ = translation;
+  ++objectDataRevision_;
+  uploadObjects();
 }
 
 void BimManager::uploadObjects() {

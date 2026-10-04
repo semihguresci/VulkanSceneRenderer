@@ -1,6 +1,6 @@
 
-#include "Container/app/Application.h"
 #include "Container/app/AppConfig.h"
+#include "Container/app/Application.h"
 
 #include <algorithm>
 #include <array>
@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <print>
 #include <stdexcept>
 #include <string>
@@ -47,7 +48,11 @@ std::string_view requireValue(int argc, char** argv, int& index,
 
 float parseFloat(std::string_view value, std::string_view option) {
   try {
-    return std::stof(std::string(value));
+    size_t consumed = 0;
+    const float result = std::stof(std::string(value), &consumed);
+    if (consumed != value.size() || !std::isfinite(result))
+      throw std::invalid_argument("finite float required");
+    return result;
   } catch (...) {
     throw std::runtime_error("invalid float for " + std::string(option) +
                              ": " + std::string(value));
@@ -56,7 +61,12 @@ float parseFloat(std::string_view value, std::string_view option) {
 
 uint32_t parseUint(std::string_view value, std::string_view option) {
   try {
-    return static_cast<uint32_t>(std::stoul(std::string(value)));
+    size_t consumed = 0;
+    const auto result = std::stoull(std::string(value), &consumed);
+    if (value.starts_with("-") || consumed != value.size() ||
+        result > std::numeric_limits<uint32_t>::max())
+      throw std::invalid_argument("uint32 required");
+    return static_cast<uint32_t>(result);
   } catch (...) {
     throw std::runtime_error("invalid integer for " + std::string(option) +
                              ": " + std::string(value));
@@ -86,6 +96,26 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       config.windowWidth = parseUint(requireValue(argc, argv, i, arg), arg);
     } else if (arg == "--height") {
       config.windowHeight = parseUint(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == "--taa") {
+      config.taa.enabled = true;
+    } else if (arg == "--no-taa") {
+      config.taa.enabled = false;
+    } else if (arg == "--taa-history-weight") {
+      config.taa.historyWeight =
+          parseFloat(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == "--taa-depth-absolute") {
+      config.taa.depthAbsoluteTolerance =
+          parseFloat(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == "--taa-depth-relative") {
+      config.taa.depthRelativeTolerance =
+          parseFloat(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == "--taa-variance-gamma") {
+      config.taa.varianceGamma =
+          parseFloat(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == "--taa-jitter-seed") {
+      config.taa.jitterSeed = parseUint(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == "--taa-reset-frame") {
+      config.taaResetFrame = parseUint(requireValue(argc, argv, i, arg), arg);
     } else if (arg == "--msaa") {
       config.msaaSamples = parseUint(requireValue(argc, argv, i, arg), arg);
     } else if (arg == "--import-scale") {
@@ -100,6 +130,9 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     } else if (arg == "--visual-regression-capture" ||
                arg == "--screenshot") {
       config.screenshotCapturePath =
+          std::string(requireValue(argc, argv, i, arg));
+    } else if (arg == "--capture-sequence") {
+      config.temporalCaptureSequencePath =
           std::string(requireValue(argc, argv, i, arg));
     } else if (arg == "--warmup-frames") {
       config.screenshotWarmupFrames =
@@ -164,6 +197,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     }
   }
 
+  container::temporal::validateSettings(config.taa, config.msaaSamples);
+
   if (!explicitBimModel && isAuxiliaryRenderModelPath(config.modelPath)) {
     config.bimModelPath = config.modelPath;
     if (!explicitBimImportScale) {
@@ -187,4 +222,3 @@ int main(int argc, char** argv) {
   }
   return EXIT_SUCCESS;
 }
-
