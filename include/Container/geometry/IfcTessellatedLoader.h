@@ -8,7 +8,8 @@
 namespace container::geometry::ifc {
 
 // Reuses the BIM mesh/interior instance representation while parsing IFC STEP
-// files with tessellated mesh geometry or simple extruded closed profiles.
+// files with triangulated/polygonal face sets, planar faceted BReps, and
+// polyline-profile extrusions. Model::importReport records omitted shapes.
 using Model = container::geometry::dotbim::Model;
 
 [[nodiscard]] Model LoadFromFile(const std::filesystem::path& path,

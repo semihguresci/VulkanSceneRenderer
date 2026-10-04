@@ -73,22 +73,73 @@ does not count as a passing golden-image test.
 
 ## Remaining findings
 
-### P1: STEP IFC silently loses unsupported shape representations
+### P1: STEP IFC geometry recovery (#61)
 
-Tekla House's STEP IFC capture contains isolated components, while the IFCX
-capture contains a substantially more complete building. This is independent
+The original Tekla House STEP capture contained isolated components, while IFCX
+contained a substantially more complete building. This was independent
 of light intensity: both captures report directional intensity 2 and
 environment intensity 1.
 
-[`IfcTessellatedLoader.cpp`](../src/geometry/IfcTessellatedLoader.cpp) accepts
-triangulated face sets and selected extruded solids in geometry traversal. The
-Tekla source contains 2,786 Boolean results, 448 Boolean clipping results, 3,887
-swept disk solids and 14 faceted B-reps that this traversal does not handle.
-Hello Wall also contains six polygonal face sets. Import completion currently
-does not expose an unsupported-shape warning to the user.
+The original traversal accepted triangulated face sets and selected extruded
+solids. The Tekla source contains 2,786 Boolean results, 448 Boolean clipping
+results, 3,887 swept disk solids and 14 faceted B-reps; Hello Wall contains six
+polygonal face sets. Unsupported shapes originally disappeared without warnings.
 
-Add representation diagnostics and explicit partial-import status. Supporting
-these shapes needs geometry conversion/CSG work, rather than a lighting change.
+The native #61 implementation adds polygonal faces, planar faceted B-reps,
+circular/hollow and structural profiles with fillets, curved profile outlines,
+straight/curved swept disks and Manifold Boolean/clipping/opening subtraction.
+It exposes complete/partial/failed status and per-product diagnostics. Hello Wall
+imports 4/4 represented products and Tekla imports 10,042/10,042 with none skipped.
+Native polylines, indexed line/arc curves and geometric curve sets now recover
+11 Hello Wall and 43 Tekla curve instances. Both samples report complete imports
+with zero representation warnings. These product counts differ from source
+representation occurrences.
+The upgraded Tekla STEP capture recovers the represented building and completes
+in 15.02 seconds on the review machine. Quadratic relationship-graph construction
+was fixed; its stage now takes 1.86 seconds. Four fresh fixed-camera captures and
+unsupported-only/fallback startup checks remain free of VUID/synchronization
+hazards. Six curve-only captures in deferred/forward, with MSAA 1/4 and TAA,
+verify unlit source colors and native line submission. The forward native-primitive
+pass and primitive-only depth/color initialization are now implemented.
+Native handlers now cover every IFC 4.3 concrete curve family, including conics,
+rational B-splines, trims/composites, offsets, surface curves, polynomial curves,
+all six spirals, gradients and segmented reference/cant curves. Independent
+analytic fixtures and isolated buildingSMART road/railway alignment checks pass.
+An eight-panel curve gallery also renders in deferred and forward, with MSAA
+and TAA checks, without VUID or synchronization hazards. Pcurve bases now also
+include extrusion/revolution surfaces and rectangular/curve-bounded trims, with
+hole-crossing checks and cycle rejection. Solid/hollow spline sweeps, closed-loop
+seams and mitered bends have independent volume and topology checks. Four six-product
+sweep captures in deferred/forward, with and without TAA, show no seam-cap
+artifacts or VUID/synchronization hazards. Polygonal fillets, unbranched sectioned
+surface meshes/pcurves, and boxed/polygon-bounded half-space operations are now
+implemented. Their independent volume, area and topology checks pass. A further six-product gallery
+renders in both techniques with TAA off/on, without VUID/synchronization hazards.
+Sloped L/U/I profiles, faceted cavity shells and planar advanced B-reps are now
+implemented. Tests cover radians/degrees, signed tapers, tangent fillets,
+rotated profiles, line/polyline/spline edge trimming, face holes, face colors,
+multiple cavities, millimetre units and Boolean operands. Invalid winding,
+broken edge connectivity, touching/nested/outside cavities and open shells
+reject before geometry buffers are changed. The six-product profile/B-rep
+gallery renders in deferred/forward with TAA off/on without VUID or
+synchronization hazards; the cut-open cavity exposes its inward-facing walls.
+The reviewed Hello Wall and Tekla files still report complete imports.
+Curved advanced faces now reuse elementary, explicit-knot spline and supported
+swept surface evaluators. Independent volumes, shared edges, holes, unit scales,
+explicit seams and surface-normal checks pass. The six-product curved gallery
+renders smoothly in deferred/forward with TAA off/on; its toroidal opening and
+spline curvature remain visible. Captures under `out/ifc-review/curved-brep/`
+contain no VUID/synchronization hazards.
+All 113 IFC importer/core cases and ten selected suites pass in the final
+Visual Studio Release build; ten optional USD cases lack their sample assets.
+Branching/guide-curve section transitions, unsupported swept profile families,
+singular/vertex-loop advanced faces and periodic bands without a common seam
+sample remain outside coverage.
+Hello Wall body surfaces and representative shared Tekla structural
+bodies pass independent cross-format surface checks. The IFCX export contains
+no reinforcing-bar meshes and is not a complete geometry oracle.
+See [IFC coverage and limitations](ifc-import.md) for fixed-camera captures,
+representation limits and verification. The changes are local pending commit and review.
 
 ### P2: Forward rendering has a black environment background
 

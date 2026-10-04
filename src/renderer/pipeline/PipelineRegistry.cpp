@@ -332,6 +332,14 @@ buildGraphicsPipelineHandleRegistry(const GraphicsPipelines &pipelines) {
                     pipelines.transparentFrontCull);
   registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
                     "forward-transparent-no-cull", pipelines.transparentNoCull);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "bim-point-cloud-depth", pipelines.bimPointCloudDepth);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "bim-point-cloud-no-depth", pipelines.bimPointCloudNoDepth);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "bim-curve-depth", pipelines.bimCurveDepth);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "bim-curve-no-depth", pipelines.bimCurveNoDepth);
   registerIfPresent(*registry, RenderTechniqueId::ForwardRaster, "post-process",
                     pipelines.postProcess);
   registerIfPresent(*registry, RenderTechniqueId::ForwardRaster, "light-gizmo",
@@ -374,6 +382,8 @@ buildGraphicsPipelineLayoutRegistry(const PipelineLayouts &layouts) {
   registerLayoutIfPresent(*registry, RenderTechniqueId::ForwardRaster,
                           "post-process", layouts.postProcess);
   registerLayoutIfPresent(*registry, "wireframe", layouts.wireframe);
+  registerLayoutIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                          "wireframe", layouts.wireframe);
   registerLayoutIfPresent(*registry, "normal-validation",
                           layouts.normalValidation);
   registerLayoutIfPresent(*registry, "surface-normal", layouts.surfaceNormal);

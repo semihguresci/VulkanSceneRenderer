@@ -17,6 +17,10 @@ enum class ForwardRasterPipelineId {
   Transparent,
   TransparentFrontCull,
   TransparentNoCull,
+  BimPointCloudDepth,
+  BimPointCloudNoDepth,
+  BimCurveDepth,
+  BimCurveNoDepth,
   PostProcess,
   LightGizmo,
   LightGizmoCoverage,
@@ -49,6 +53,14 @@ forwardRasterPipelineName(ForwardRasterPipelineId id) {
     return "forward-transparent-front-cull";
   case ForwardRasterPipelineId::TransparentNoCull:
     return "forward-transparent-no-cull";
+  case ForwardRasterPipelineId::BimPointCloudDepth:
+    return "bim-point-cloud-depth";
+  case ForwardRasterPipelineId::BimPointCloudNoDepth:
+    return "bim-point-cloud-no-depth";
+  case ForwardRasterPipelineId::BimCurveDepth:
+    return "bim-curve-depth";
+  case ForwardRasterPipelineId::BimCurveNoDepth:
+    return "bim-curve-no-depth";
   case ForwardRasterPipelineId::PostProcess:
     return "post-process";
   case ForwardRasterPipelineId::LightGizmo:
@@ -73,6 +85,7 @@ enum class ForwardRasterPipelineLayoutId {
   PostProcess,
   LightGizmo,
   TransformGizmo,
+  Wireframe,
 };
 
 [[nodiscard]] inline std::string_view
@@ -88,6 +101,8 @@ forwardRasterPipelineLayoutName(ForwardRasterPipelineLayoutId id) {
     return "light-gizmo";
   case ForwardRasterPipelineLayoutId::TransformGizmo:
     return "transform-gizmo";
+  case ForwardRasterPipelineLayoutId::Wireframe:
+    return "wireframe";
   }
   return {};
 }

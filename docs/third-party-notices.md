@@ -3,12 +3,19 @@
 VulkanSceneRenderer is distributed under the MIT license in `LICENSE`.
 
 The package includes compiled code from EnTT, fmt, GLFW, GLM, Dear ImGui,
-MaterialX, MikkTSpace, miniz, nlohmann/json, spdlog, stb, TinyEXR, TinyGLTF,
+Mapbox Earcut, Manifold, Clipper2, MaterialX, MikkTSpace, miniz, nlohmann/json, spdlog, stb, TinyEXR, TinyGLTF,
 Vulkan headers/loader, Vulkan Memory Allocator, and TinyUSDZ. Copies of the
 dependency license notices from the build are in `THIRD_PARTY_LICENSES`.
 Slang compiler notices are included alongside those of the shader dependencies.
 TinyUSDZ is Apache 2.0 licensed and contains additional third-party code;
 its license files and bundled dependency notices are included separately.
+
+Manifold 3.5.4 (Copyright 2021 The Manifold Authors) is Apache-2.0 licensed.
+Its vcpkg build uses Clipper2 2.0.1 (Copyright Angus Johnson 2010-2025),
+licensed under Boost Software License 1.0. Their license texts are included as
+`Manifold-Apache-2.0.txt` and `Clipper2-Boost-1.0.txt`. Mapbox Earcut 3.2.4 is
+ISC licensed and its notice is included as `Earcut-ISC.txt`. Manifold's shared
+library is staged beside Windows executables and included in release packages.
 
 The HDR environment `hdr/citrus_orchard_road_puresky_4k.exr` is
 [Citrus Orchard Road (Pure Sky)](https://polyhaven.com/a/citrus_orchard_road_puresky)

@@ -229,6 +229,42 @@ TEST(ForwardRasterLightingPassRecorderTests, ReadinessNoDrawsReturnsNotNeeded) {
 }
 
 TEST(ForwardRasterLightingPassRecorderTests,
+     NativeOnlyCurvesInitializeLightingAndRequireTheirPipeline) {
+  std::vector<DrawCommand> curves(1u);
+  FrameResourceRegistry resources;
+  PipelineRegistry pipelines;
+  container::gpu::BindlessPushConstants bindless{};
+  container::renderer::WireframePushConstants wireframe{};
+  FrameRecordParams params{};
+  params.pushConstants.bindless = &bindless;
+  params.pushConstants.wireframe = &wireframe;
+  params.bim.primitivePasses.curves.enabled = true;
+  params.bim.nativeCurveDraws.opaqueDrawCommands = &curves;
+  makeBimGeometryReady(params);
+  makeForwardBindingsReady(params, resources, pipelines);
+  EXPECT_TRUE(
+      container::renderer::hasForwardRasterNativePrimitiveDraws(params));
+  EXPECT_FALSE(checkForwardRasterLightingPassReadiness(params).ready);
+  registerForwardPipeline(pipelines, "bim-curve-depth", 0x2101);
+  pipelines.registerLayout(RegisteredPipelineLayout{
+      .key = {RenderTechniqueId::ForwardRaster, "wireframe"},
+      .layout = fakeHandle<VkPipelineLayout>(0x3101)});
+  EXPECT_TRUE(checkForwardRasterLightingPassReadiness(params).ready);
+  params.bim.primitivePasses.curves.depthTest = false;
+  EXPECT_FALSE(checkForwardRasterLightingPassReadiness(params).ready);
+  registerForwardPipeline(pipelines, "bim-curve-no-depth", 0x2102);
+  EXPECT_TRUE(checkForwardRasterLightingPassReadiness(params).ready);
+  params.pushConstants.wireframe = nullptr;
+  EXPECT_EQ(checkForwardRasterLightingPassReadiness(params).blockingResource,
+            RenderResourceId::BimGeometry);
+  params.bim.primitivePasses.curves.enabled = false;
+  EXPECT_FALSE(
+      container::renderer::hasForwardRasterNativePrimitiveDraws(params));
+  EXPECT_EQ(checkForwardRasterLightingPassReadiness(params).skipReason,
+            RenderPassSkipReason::NotNeeded);
+}
+
+TEST(ForwardRasterLightingPassRecorderTests,
      ReadinessWithOpaqueDrawsAndForwardBindingsReadyReturnsReady) {
   std::vector<DrawCommand> opaqueDraws(1u);
   FrameResourceRegistry resources;

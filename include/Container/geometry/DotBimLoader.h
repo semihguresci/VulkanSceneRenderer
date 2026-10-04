@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Container/common/CommonMath.h"
+#include "Container/geometry/ImportReport.h"
 #include "Container/geometry/Vertex.h"
 #include "Container/utility/Material.h"
 
@@ -147,6 +148,7 @@ struct ElementRelationship {
 };
 
 struct Model {
+  container::geometry::ImportReport importReport{};
   std::vector<Vertex> vertices{};
   std::vector<uint32_t> indices{};
   std::vector<MeshRange> meshRanges{};

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Container/common/CommonVulkan.h"
+#include "Container/geometry/ImportReport.h"
 #include "Container/geometry/Vertex.h"
 #include "Container/renderer/bim/BimCoordinationOverlay.h"
 #include "Container/renderer/bim/BimDrawingExport.h"
@@ -636,6 +637,9 @@ public:
 
   [[nodiscard]] bool hasScene() const;
   [[nodiscard]] const std::string &modelPath() const { return modelPath_; }
+  [[nodiscard]] const container::geometry::ImportReport &importReport() const {
+    return importReport_;
+  }
 
   [[nodiscard]] container::gpu::BufferSlice vertexSlice() const {
     return vertexSlice_;
@@ -916,6 +920,7 @@ private:
   container::gpu::AllocationManager &allocationManager_;
   container::gpu::PipelineManager &pipelineManager_;
   std::string modelPath_{};
+  container::geometry::ImportReport importReport_{};
 
   container::gpu::BufferSlice vertexSlice_{};
   container::gpu::BufferSlice indexSlice_{};

@@ -1,5 +1,7 @@
 #include "Container/renderer/forward/ForwardRasterLightingPassRecorder.h"
 
+#include "Container/renderer/bim/BimLightingOverlayRecorder.h"
+#include "Container/renderer/bim/BimPrimitivePassRecorder.h"
 #include "Container/renderer/bim/BimSurfaceRasterPassRecorder.h"
 #include "Container/renderer/core/RenderPassScopeRecorder.h"
 #include "Container/renderer/culling/GpuCullManager.h"
@@ -115,7 +117,117 @@ namespace {
 
 [[nodiscard]] bool hasAnyDraws(const FrameRecordParams& p) {
   return hasSceneOpaqueDraws(p) || hasSceneTransparentDraws(p) ||
-         hasBimOpaqueDraws(p.bim) || hasBimTransparentDraws(p.bim);
+         hasBimOpaqueDraws(p.bim) || hasBimTransparentDraws(p.bim) ||
+         hasForwardRasterNativePrimitiveDraws(p);
+}
+
+[[nodiscard]] BimPrimitivePassDrawLists
+primitiveDrawLists(const FrameDrawLists &draws) {
+  return {.opaqueDrawCommands = draws.opaqueDrawCommands,
+          .opaqueSingleSidedDrawCommands = draws.opaqueSingleSidedDrawCommands,
+          .opaqueWindingFlippedDrawCommands =
+              draws.opaqueWindingFlippedDrawCommands,
+          .opaqueDoubleSidedDrawCommands = draws.opaqueDoubleSidedDrawCommands,
+          .transparentDrawCommands = draws.transparentDrawCommands,
+          .transparentSingleSidedDrawCommands =
+              draws.transparentSingleSidedDrawCommands,
+          .transparentWindingFlippedDrawCommands =
+              draws.transparentWindingFlippedDrawCommands,
+          .transparentDoubleSidedDrawCommands =
+              draws.transparentDoubleSidedDrawCommands};
+}
+
+[[nodiscard]] bool hasNativePoints(const FrameRecordParams &p) {
+  return p.bim.primitivePasses.pointCloud.enabled &&
+         hasBimPrimitivePassDrawCommands(
+             primitiveDrawLists(p.bim.nativePointDraws));
+}
+
+[[nodiscard]] bool hasNativeCurves(const FrameRecordParams &p) {
+  return p.bim.primitivePasses.curves.enabled &&
+         hasBimPrimitivePassDrawCommands(
+             primitiveDrawLists(p.bim.nativeCurveDraws));
+}
+
+void recordNativePrimitives(VkCommandBuffer cmd, const FrameRecordParams &p,
+                            const DebugOverlayRenderer &overlay,
+                            VkExtent2D extent) {
+  const auto layout =
+      forwardRasterPipelineLayout(p, ForwardRasterPipelineLayoutId::Wireframe);
+  const BimPrimitivePassGeometryBinding geometry{
+      .sceneDescriptorSet =
+          forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::BimScene),
+      .vertexSlice = p.bim.scene.vertexSlice,
+      .indexSlice = p.bim.scene.indexSlice,
+      .indexType = p.bim.scene.indexType};
+  const auto &points = p.bim.primitivePasses.pointCloud;
+  const auto &curves = p.bim.primitivePasses.curves;
+  const auto pointDepth = forwardRasterPipelineHandle(
+      p, ForwardRasterPipelineId::BimPointCloudDepth);
+  const auto curveDepth =
+      forwardRasterPipelineHandle(p, ForwardRasterPipelineId::BimCurveDepth);
+  (void)recordBimPrimitiveFramePassCommands(
+      cmd,
+      {.style = {.kind = BimPrimitivePassKind::Points,
+                 .enabled = points.enabled,
+                 .depthTest = points.depthTest,
+                 .nativeDrawsUseGpuVisibility =
+                     p.bim.nativePointDrawsUseGpuVisibility,
+                 .opacity = points.opacity,
+                 .primitiveSize = points.pointSize,
+                 .color = points.color},
+       .nativeDraws = primitiveDrawLists(p.bim.nativePointDraws),
+       .geometry = geometry,
+       .pipelines = {.depth = pointDepth,
+                     .noDepth = forwardRasterPipelineHandle(
+                         p, ForwardRasterPipelineId::BimPointCloudNoDepth)},
+       .wireframeLayout = layout,
+       .pushConstants = p.pushConstants.wireframe,
+       .debugOverlay = &overlay,
+       .bimManager = p.services.bimManager});
+  (void)recordBimPrimitiveFramePassCommands(
+      cmd,
+      {.style = {.kind = BimPrimitivePassKind::Curves,
+                 .enabled = curves.enabled,
+                 .depthTest = curves.depthTest,
+                 .nativeDrawsUseGpuVisibility =
+                     p.bim.nativeCurveDrawsUseGpuVisibility,
+                 .opacity = curves.opacity,
+                 .primitiveSize = curves.lineWidth,
+                 .color = curves.color,
+                 .recordLineWidth = true,
+                 .wideLinesSupported = p.debug.wireframeWideLinesSupported},
+       .nativeDraws = primitiveDrawLists(p.bim.nativeCurveDraws),
+       .geometry = geometry,
+       .pipelines = {.depth = curveDepth,
+                     .noDepth = forwardRasterPipelineHandle(
+                         p, ForwardRasterPipelineId::BimCurveNoDepth)},
+       .wireframeLayout = layout,
+       .pushConstants = p.pushConstants.wireframe,
+       .debugOverlay = &overlay,
+       .bimManager = p.services.bimManager});
+  (void)recordBimLightingOverlayFrameCommands(
+      cmd,
+      {.bimGeometryReady = hasBimPrimitiveFramePassGeometry(geometry),
+       .framebufferExtent = extent,
+       .draws = {.nativePointHover = p.bim.nativePointDraws.hoveredDrawCommands,
+                 .nativeCurveHover = p.bim.nativeCurveDraws.hoveredDrawCommands,
+                 .nativePointSelection =
+                     p.bim.nativePointDraws.selectedDrawCommands,
+                 .nativeCurveSelection =
+                     p.bim.nativeCurveDraws.selectedDrawCommands},
+       .nativePointSize = points.pointSize,
+       .nativeCurveLineWidth = curves.lineWidth,
+       .pipelines = {.bimPointCloudDepth = pointDepth,
+                     .bimCurveDepth = curveDepth},
+       .wireframeLayout = layout,
+       .bim = {.descriptorSet = geometry.sceneDescriptorSet,
+               .vertexSlice = geometry.vertexSlice,
+               .indexSlice = geometry.indexSlice,
+               .indexType = geometry.indexType},
+       .wireframePushConstants = p.pushConstants.wireframe,
+       .debugOverlay = &overlay,
+       .wireframeWideLinesSupported = p.debug.wireframeWideLinesSupported});
 }
 
 [[nodiscard]] bool hasLightingFramebuffer(const FrameRecordParams& p,
@@ -325,6 +437,10 @@ void recordBimSurface(VkCommandBuffer cmd, const FrameRecordParams& p,
 
 }  // namespace
 
+bool hasForwardRasterNativePrimitiveDraws(const FrameRecordParams &p) {
+  return hasNativePoints(p) || hasNativeCurves(p);
+}
+
 RenderPassReadiness
 checkForwardRasterLightingPassReadiness(const FrameRecordParams& p) {
   if (!hasAnyDraws(p)) {
@@ -335,6 +451,23 @@ checkForwardRasterLightingPassReadiness(const FrameRecordParams& p) {
   const bool sceneTransparentDraws = hasSceneTransparentDraws(p);
   const bool bimOpaqueDraws = hasBimOpaqueDraws(p.bim);
   const bool bimTransparentDraws = hasBimTransparentDraws(p.bim);
+  if (hasForwardRasterNativePrimitiveDraws(p)) {
+    if (p.pushConstants.wireframe == nullptr || !hasBimGeometry(p))
+      return missing(RenderResourceId::BimGeometry);
+    if (!forwardRasterPipelineLayoutReady(
+            p, ForwardRasterPipelineLayoutId::Wireframe) ||
+        (hasNativePoints(p) &&
+         !forwardRasterPipelineReady(
+             p, p.bim.primitivePasses.pointCloud.depthTest
+                    ? ForwardRasterPipelineId::BimPointCloudDepth
+                    : ForwardRasterPipelineId::BimPointCloudNoDepth)) ||
+        (hasNativeCurves(p) &&
+         !forwardRasterPipelineReady(
+             p, p.bim.primitivePasses.curves.depthTest
+                    ? ForwardRasterPipelineId::BimCurveDepth
+                    : ForwardRasterPipelineId::BimCurveNoDepth)))
+      return missing(RenderResourceId::SceneColor);
+  }
   if (!hasLightingFramebuffer(p, ForwardRasterFramebufferId::Lighting) ||
       !hasLightingFramebuffer(p,
                               ForwardRasterFramebufferId::TransparentLighting) ||
@@ -427,6 +560,9 @@ bool recordForwardRasterLightingPassCommands(VkCommandBuffer commandBuffer,
                                   ForwardRasterPipelineId::TransparentFrontCull),
       forwardRasterPipelineHandle(p, ForwardRasterPipelineId::TransparentNoCull),
       layout, debugOverlay);
+
+  recordNativePrimitives(commandBuffer, p, debugOverlay,
+                         transparentFramebuffer->extent);
 
   (void)recordRenderPassEndCommands(commandBuffer);
   return true;

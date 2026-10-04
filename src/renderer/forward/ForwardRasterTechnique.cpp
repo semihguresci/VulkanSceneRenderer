@@ -215,6 +215,13 @@ void registerForwardRasterPipelineRecipes(PipelineRegistry &registry) {
   registerTransparentRecipe("forward-transparent");
   registerTransparentRecipe("forward-transparent-front-cull");
   registerTransparentRecipe("forward-transparent-no-cull");
+  for (const auto name : {"bim-point-cloud-depth", "bim-point-cloud-no-depth",
+                          "bim-curve-depth", "bim-curve-no-depth"}) {
+    registerGraphicsRecipe(name,
+                           {"spv_shaders/wireframe_debug.vert.spv",
+                            "spv_shaders/wireframe_debug.frag.spv"},
+                           "wireframe");
+  }
   registerGraphicsRecipe("post-process",
                          {"spv_shaders/post_process.vert.spv",
                           "spv_shaders/post_process.frag.spv"},
@@ -341,7 +348,8 @@ forwardRasterDepthPrepassReadiness(const FrameRecordParams &p) {
   const bool sceneOpaqueDraws = hasOpaqueDrawCommands(p.draws);
   const bool bimOpaqueDraws = hasBimOpaqueDrawCommands(p.bim);
   const bool transparentDraws = hasTransparentDrawCommands(p);
-  if (!sceneOpaqueDraws && !bimOpaqueDraws && !transparentDraws) {
+  if (!sceneOpaqueDraws && !bimOpaqueDraws && !transparentDraws &&
+      !hasForwardRasterNativePrimitiveDraws(p)) {
     return renderPassNotNeeded();
   }
   if (!forwardRasterRenderPassReady(p,
@@ -586,7 +594,8 @@ void recordForwardRasterLocalShadowPass(VkCommandBuffer cmd,
 [[nodiscard]] RenderPassReadiness
 forwardRasterDepthReadOnlyReadiness(const FrameRecordParams &p) {
   if (!hasOpaqueDrawCommands(p.draws) && !hasBimOpaqueDrawCommands(p.bim) &&
-      !hasTransparentDrawCommands(p)) {
+      !hasTransparentDrawCommands(p) &&
+      !hasForwardRasterNativePrimitiveDraws(p)) {
     return renderPassNotNeeded();
   }
   return forwardRasterImageReady(p, ForwardRasterImageId::DepthStencil)

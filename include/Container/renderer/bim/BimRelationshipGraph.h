@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace container::geometry::dotbim {
@@ -86,6 +87,17 @@ public:
   propertySetsForObject(uint32_t objectIndex) const;
 
 private:
+  struct EdgeIdentity {
+    uint32_t from;
+    uint32_t to;
+    BimRelationshipKind kind;
+    std::string label;
+    bool operator==(const EdgeIdentity &) const = default;
+  };
+  struct EdgeIdentityHash {
+    size_t operator()(const EdgeIdentity &edge) const noexcept;
+  };
+
   struct SearchField {
     uint32_t objectIndex{std::numeric_limits<uint32_t>::max()};
     std::string text{};
@@ -118,6 +130,7 @@ private:
 
   std::vector<BimRelationshipNode> nodes_{};
   std::vector<BimRelationshipEdge> edges_{};
+  std::unordered_set<EdgeIdentity, EdgeIdentityHash> edgeIdentities_{};
   std::unordered_map<uint32_t, uint32_t> nodeByObjectIndex_{};
   std::unordered_map<std::string, std::vector<uint32_t>> nodeByGuid_{};
   std::unordered_map<std::string, std::vector<uint32_t>> nodeBySourceId_{};

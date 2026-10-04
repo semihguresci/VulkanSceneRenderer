@@ -92,6 +92,7 @@ bool recordBimPrimitivePassCommands(
   bindGeometry(cmd, inputs.vertexSlice, inputs.indexSlice, inputs.indexType);
 
   WireframePushConstants pc = *inputs.pushConstants;
+  pc.useObjectColor = plan.useObjectColor ? 1u : 0u;
   if (plan.gpuCompaction) {
     for (uint32_t slotIndex = 0; slotIndex < plan.gpuSlotCount; ++slotIndex) {
       const BimDrawCompactionSlot slot = plan.gpuSlots[slotIndex];

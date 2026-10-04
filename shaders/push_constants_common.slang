@@ -171,7 +171,7 @@ struct WireframePushConstants
 {
     uint objectIndex;
     uint sectionPlaneEnabled;
-    uint padding0;
+    uint useObjectColor;
     uint padding1;
     float4 sectionPlane;
     float4 colorIntensity;

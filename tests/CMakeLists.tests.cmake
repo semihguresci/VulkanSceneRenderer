@@ -77,6 +77,7 @@ function(add_custom_test TARGET_NAME SOURCE_FILE SHADER_DIR TEST_RESULTS_DIR)
         GTest::gtest
         GTest::gtest_main
     )
+    container_stage_runtime_dlls(${TARGET_NAME})
 
     target_include_directories(${TARGET_NAME} PRIVATE
         ${CMAKE_SOURCE_DIR}/include
@@ -199,6 +200,10 @@ add_custom_test(dotbim_loader_tests
 add_custom_test(ifc_tessellated_loader_tests
     ${TEST_GEOMETRY_DIR}/ifc_tessellated_loader_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_geometry
+)
+target_sources(ifc_tessellated_loader_tests PRIVATE
+    ${TEST_GEOMETRY_DIR}/ifc_curve_family_tests.cpp
+    ${TEST_GEOMETRY_DIR}/ifc_brep_profile_tests.cpp
 )
 
 add_custom_test(ifcx_loader_tests

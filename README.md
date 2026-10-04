@@ -126,10 +126,28 @@ intensity 1); values edited in Lighting Settings and explicit command-line
 overrides are preserved. `Bounce Intensity` is an artistic fill approximation,
 so use zero when inspecting direct-light occlusion.
 
-The STEP IFC importer currently supports triangulated face sets and selected
-extruded solids. Complex Boolean, B-rep, polygonal-face-set and swept-disk
-representations can be omitted. The Tekla House IFC and IFCX samples therefore
-do not currently render equivalent geometry. See the
+The STEP IFC importer supports triangulated and polygonal face sets (including
+concave faces and holes), faceted B-reps with cavity shells, planar and regular
+curved advanced B-reps with smooth surface normals, circular/hollow and sloped L/U/I profiles with fillets,
+closed curve profile extrusions, solid/hollow swept disks on bounded curves
+(including splines, closed loops, mitered bends and polygonal fillets),
+sectioned surface meshes, Boolean/clipping results (including boxed and
+polygon-bounded half-spaces), solid opening cuts, and native IFC curves. Curve handlers
+cover the IFC 4.3 families: conics, rational B-splines, trims/composites, offsets,
+surface curves, polynomials, all six spirals, gradients and cant alignments,
+alongside polylines/indexed arcs and mapped geometric curve sets. Unsupported
+representations produce a partial-import warning with source product/entity IDs
+in the BIM inspector.
+The reviewed Hello Wall and Tekla House import all 4 and 10,042 represented
+products respectively, including auxiliary curves, with zero representation
+warnings. Surface curves support elementary/spline bases, extrusion/revolution
+surfaces, rectangular/curve-bounded trims and unbranched sectioned surfaces.
+Advanced faces support elementary surfaces, explicit-knot splines and supported
+swept surfaces, including periodic bands and seam curves. Singular vertex-loop
+faces, some periodic charts and branching/guide-curve section transitions remain
+outside native coverage.
+See the
+[IFC coverage and limitations](docs/ifc-import.md) and
 [sample scene review](docs/sample-scene-review.md) for verified rendering issues
 and regression results.
 
