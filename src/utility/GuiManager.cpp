@@ -6195,6 +6195,9 @@ void GuiManager::drawSceneControls(
                          "%.2f");
       ImGui::SliderFloat("Bounce Intensity", &lightingSettings_.bounceIntensity,
                          0.0f, 2.0f, "%.2f");
+      ShowItemTooltip("Artistic fill without traced indirect visibility. "
+                      "High values brighten occluded surfaces; use zero to "
+                      "inspect direct-light shadows.");
       ImGui::TreePop();
     }
 

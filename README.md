@@ -97,6 +97,19 @@ $bim = "models\buildingSMART-IFC5-development\examples\Hello Wall\hello-wall.ifc
 .\out\build\windows-release\VulkanSceneRenderer.exe --bim-model $bim
 ```
 
+The isolated Cornell samples use their authored ceiling lights. Loading a
+building model restores viewer lighting (directional intensity 2, environment
+intensity 1); values edited in Lighting Settings and explicit command-line
+overrides are preserved. `Bounce Intensity` is an artistic fill approximation,
+so use zero when inspecting direct-light occlusion.
+
+The STEP IFC importer currently supports triangulated face sets and selected
+extruded solids. Complex Boolean, B-rep, polygonal-face-set and swept-disk
+representations can be omitted. The Tekla House IFC and IFCX samples therefore
+do not currently render equivalent geometry. See the
+[sample scene review](docs/sample-scene-review.md) for verified rendering issues
+and regression results.
+
 The sidecar path also accepts USD, USDA, USDC, and USDZ mesh files through the
 TinyUSDZ-backed importer:
 

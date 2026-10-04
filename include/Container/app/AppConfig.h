@@ -31,7 +31,11 @@ inline constexpr std::string_view kDefaultModelRelativePath =
     "models/validation/cornell_box_local_light.gltf";
 inline constexpr float kDefaultAuthoredLocalLightEnvironmentIntensity = 0.0f;
 inline constexpr float kDefaultAuthoredLocalLightDirectionalIntensity = 0.0f;
+// This fixture tests direct-light occlusion. The artistic bounce approximation
+// adds untraced radiance even to blocked receivers and would mask shadow errors.
+inline constexpr float kDefaultAuthoredLocalLightBounceIntensity = 0.0f;
 inline constexpr bool kDefaultAuthoredLocalLightBloomEnabled = false;
+inline constexpr uint32_t kDefaultAuthoredLocalLightShadowLayerBudget = 24;
 
 struct AppConfig {
   uint32_t windowWidth{800};
@@ -96,17 +100,20 @@ struct AppConfig {
         std::tolower(static_cast<unsigned char>(ch)));
   }
 
-  constexpr std::string_view target = kDefaultModelRelativePath;
-  if (normalized == target) {
-    return true;
+  constexpr std::array<std::string_view, 2> targets{
+      kDefaultModelRelativePath,
+      "models/validation/cornell_box_yellow_area_light.gltf"};
+  for (const auto target : targets) {
+    if (normalized == target)
+      return true;
+    if (normalized.size() > target.size()) {
+      const size_t offset = normalized.size() - target.size();
+      if (normalized[offset - 1] == '/' &&
+          normalized.compare(offset, target.size(), target) == 0)
+        return true;
+    }
   }
-  if (normalized.size() <= target.size()) {
-    return false;
-  }
-
-  const size_t targetOffset = normalized.size() - target.size();
-  return normalized[targetOffset - 1] == '/' &&
-         normalized.compare(targetOffset, target.size(), target) == 0;
+  return false;
 }
 
 }  // namespace container::app

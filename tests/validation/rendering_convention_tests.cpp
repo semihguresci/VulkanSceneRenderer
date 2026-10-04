@@ -7175,7 +7175,9 @@ TEST(RenderingConventionTests,
       contains(rendererFrontend, "svc_.config.hasBloomEnabledOverride"));
   EXPECT_TRUE(
       contains(rendererFrontend,
-               "subs_.bloomManager->enabled() = svc_.config.bloomEnabled"));
+               "current.bloomEnabled = svc_.config.bloomEnabled"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "subs_.bloomManager->enabled() = current.bloomEnabled"));
   EXPECT_TRUE(contains(visualRegression, "args.emplace_back(\"--no-bloom\")"));
 }
 
@@ -7193,6 +7195,18 @@ TEST(RenderingConventionTests,
       "copyCandidateToGolden(candidatePath, goldenPath, overwriteGoldens)"));
 }
 
+TEST(RenderingConventionTests, CornellLightingProfileMatchesOnlyBundledSamples) {
+  using container::app::IsDefaultAuthoredLocalLightScene;
+  EXPECT_TRUE(IsDefaultAuthoredLocalLightScene(
+      "models/validation/cornell_box_local_light.gltf"));
+  EXPECT_TRUE(IsDefaultAuthoredLocalLightScene(
+      "F:\\Assets\\MODELS\\VALIDATION\\CORNELL_BOX_YELLOW_AREA_LIGHT.GLTF"));
+  EXPECT_FALSE(IsDefaultAuthoredLocalLightScene(
+      "models/validation/taa_equivalent.bim"));
+  EXPECT_FALSE(IsDefaultAuthoredLocalLightScene(
+      "othermodels/validation/cornell_box_local_light.gltf"));
+}
+
 TEST(RenderingConventionTests,
      DefaultCornellStartupDisablesBloomUnlessExplicitlyOverridden) {
   const std::string appConfig =
@@ -7207,7 +7221,7 @@ TEST(RenderingConventionTests,
       contains(rendererFrontend, "svc_.config.hasBloomEnabledOverride"));
   EXPECT_TRUE(
       contains(rendererFrontend,
-               "IsDefaultAuthoredLocalLightScene(svc_.config.modelPath)"));
+               "IsDefaultAuthoredLocalLightScene(activePrimaryModelPath_)"));
 }
 
 TEST(RenderingConventionTests, HeadlessDisplayModeOverrideIsConfigDriven) {

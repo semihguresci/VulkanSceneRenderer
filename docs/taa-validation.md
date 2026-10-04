@@ -146,6 +146,11 @@ failure, and its TAA-off Cornell capture is **pixel-identical** to the new build
 a pre-existing lighting/golden discrepancy, not a passing baseline test; its
 capture, comparison metadata and failure log are included with the evidence.
 
+That comparison records the TAA preview before the subsequent lighting fixes.
+The [sample scene review](sample-scene-review.md) documents restored BIM
+lighting defaults and the revised Cornell profile. Its independent Cornell
+shadow/colour probes now pass; the historical image comparison still differs.
+
 Run builds from the Visual Studio Developer Console, then:
 
 ```powershell

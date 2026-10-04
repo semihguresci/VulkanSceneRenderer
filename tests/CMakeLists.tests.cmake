@@ -118,9 +118,20 @@ add_custom_test(temporal_capture_tests
     Dep_Math nlohmann_json::nlohmann_json
 )
 
+add_custom_test(scene_lighting_defaults_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/scene_lighting_defaults_tests.cpp "" ${TEST_RESULTS_DIR}
+)
+
 add_test(NAME temporal_quality_metrics
     COMMAND "${Python3_EXECUTABLE}" "${TEST_VALIDATION_DIR}/temporal_regression.py" --self-test)
 set_tests_properties(temporal_quality_metrics PROPERTIES SKIP_RETURN_CODE 77)
+
+add_test(NAME scene_lighting_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/scene_lighting_regression.py"
+            --exe "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/scene-lighting")
+set_tests_properties(scene_lighting_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 TIMEOUT 360 LABELS "requires-vulkan;requires-display;visual-regression")
 
 # Exercise all Slang temporal helpers with dynamic inputs, outside runtime
 # assets. Building the math test also compiles this probe with engine flags.

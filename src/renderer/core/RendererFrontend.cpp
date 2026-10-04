@@ -1387,27 +1387,6 @@ void RendererFrontend::initialize() {
   subs_.lightingManager = std::make_unique<LightingManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager,
       subs_.sceneManager.get(), sceneGraph_, subs_.sceneController->world());
-  {
-    auto lightingSettings = subs_.lightingManager->lightingSettings();
-    const bool defaultAuthoredLocalLightScene =
-        container::app::IsDefaultAuthoredLocalLightScene(svc_.config.modelPath) &&
-        subs_.sceneManager &&
-        (!subs_.sceneManager->authoredPointLights().empty() ||
-         !subs_.sceneManager->authoredAreaLights().empty());
-    if (defaultAuthoredLocalLightScene) {
-      lightingSettings.environmentIntensity =
-          container::app::kDefaultAuthoredLocalLightEnvironmentIntensity;
-      lightingSettings.directionalIntensity =
-          container::app::kDefaultAuthoredLocalLightDirectionalIntensity;
-    }
-    if (svc_.config.hasEnvironmentIntensityOverride) {
-      lightingSettings.environmentIntensity = svc_.config.environmentIntensity;
-    }
-    if (svc_.config.hasDirectionalIntensityOverride) {
-      lightingSettings.directionalIntensity = svc_.config.directionalIntensity;
-    }
-    subs_.lightingManager->setLightingSettings(lightingSettings);
-  }
   subs_.shadowManager = std::make_unique<ShadowManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
   subs_.shadowManager->createResources(
@@ -1441,12 +1420,7 @@ void RendererFrontend::initialize() {
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager,
       svc_.commandBufferManager.pool());
   subs_.bloomManager->createResources(container::util::executableDirectory());
-  if (svc_.config.hasBloomEnabledOverride) {
-    subs_.bloomManager->enabled() = svc_.config.bloomEnabled;
-  } else if (container::app::IsDefaultAuthoredLocalLightScene(svc_.config.modelPath)) {
-    subs_.bloomManager->enabled() =
-        container::app::kDefaultAuthoredLocalLightBloomEnabled;
-  }
+  applySceneLightingDefaults();
   subs_.exposureManager = std::make_unique<ExposureManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
   subs_.exposureManager->createResources(
@@ -2197,6 +2171,20 @@ void RendererFrontend::writeCaptureTelemetry(
         {"resetReason", temporal.state().resetReason()},
         {"imagePayloadBytes", temporal.memoryBytes()},
         {"allocatedImageBytes", temporal.allocatedBytes()}}}};
+  if (subs_.lightingManager) {
+    const auto &lighting = subs_.lightingManager->lightingData();
+    json["lighting"] = {
+        {"directionalIntensity", lighting.directionalColorIntensity.w},
+        {"environmentIntensity", lighting.environmentIntensity},
+        {"bounceIntensity", lighting.bounceIntensity},
+        {"pointLightCount", lighting.pointLightCount},
+        {"areaLightCount", lighting.areaLightCount},
+        {"localShadowLayerBudget",
+         subs_.lightingManager->lightingSettings().localShadowLayerBudget}};
+    if (subs_.shadowManager)
+      json["lighting"]["activeLocalShadowLayers"] =
+          subs_.shadowManager->localShadowData().counts.x;
+  }
   if (subs_.rendererTelemetry) {
     const auto &snapshot = subs_.rendererTelemetry->latest();
     json["gpuKnownMs"] = snapshot.timing.gpuKnownMs;
@@ -3367,6 +3355,7 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
   };
   auto refreshSceneState = [&](bool resetCamera) {
     syncSceneStateFromController();
+    applySceneLightingDefaults();
     if (subs_.lightingManager) {
       subs_.lightingManager->setRootNode(sceneState_.rootNode);
       subs_.lightingManager->updateLightingData();
@@ -3774,6 +3763,52 @@ void RendererFrontend::createCamera() {
   subs_.cameraController->createCamera();
   resetCameraForActiveScene();
   applyCameraOverride(subs_.cameraController->camera(), svc_.config);
+}
+
+void RendererFrontend::applySceneLightingDefaults() {
+  if (!subs_.lightingManager || !subs_.bloomManager)
+    return;
+
+  auto settings = subs_.lightingManager->lightingSettings();
+  const container::gpu::LightingSettings viewerSettings{};
+  container::app::SceneLightingValues defaults{
+      viewerSettings.directionalIntensity, viewerSettings.environmentIntensity,
+      viewerSettings.bounceIntensity, true, viewerSettings.localShadowLayerBudget};
+  const bool isolatedAuthoredLocalScene =
+      container::app::IsDefaultAuthoredLocalLightScene(activePrimaryModelPath_) &&
+      (!subs_.bimManager || !subs_.bimManager->hasScene()) &&
+      subs_.sceneManager &&
+      (!subs_.sceneManager->authoredPointLights().empty() ||
+       !subs_.sceneManager->authoredAreaLights().empty());
+  if (isolatedAuthoredLocalScene) {
+    defaults = {container::app::kDefaultAuthoredLocalLightDirectionalIntensity,
+                container::app::kDefaultAuthoredLocalLightEnvironmentIntensity,
+                container::app::kDefaultAuthoredLocalLightBounceIntensity,
+                container::app::kDefaultAuthoredLocalLightBloomEnabled,
+                container::app::kDefaultAuthoredLocalLightShadowLayerBudget};
+  }
+
+  container::app::SceneLightingValues current{
+      settings.directionalIntensity, settings.environmentIntensity,
+      settings.bounceIntensity, subs_.bloomManager->enabled(),
+      settings.localShadowLayerBudget};
+  if (svc_.config.hasDirectionalIntensityOverride)
+    current.directionalIntensity = svc_.config.directionalIntensity;
+  if (svc_.config.hasEnvironmentIntensityOverride)
+    current.environmentIntensity = svc_.config.environmentIntensity;
+  if (svc_.config.hasBloomEnabledOverride)
+    current.bloomEnabled = svc_.config.bloomEnabled;
+  current = sceneLightingDefaults_.apply(
+      current, defaults,
+      {svc_.config.hasDirectionalIntensityOverride,
+       svc_.config.hasEnvironmentIntensityOverride,
+       svc_.config.hasBloomEnabledOverride});
+  settings.directionalIntensity = current.directionalIntensity;
+  settings.environmentIntensity = current.environmentIntensity;
+  settings.bounceIntensity = current.bounceIntensity;
+  settings.localShadowLayerBudget = current.localShadowLayerBudget;
+  subs_.lightingManager->setLightingSettings(settings);
+  subs_.bloomManager->enabled() = current.bloomEnabled;
 }
 
 void RendererFrontend::resetCameraForActiveScene() {

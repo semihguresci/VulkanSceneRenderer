@@ -11,6 +11,7 @@
 
 #include <glm/vec3.hpp>
 
+#include "Container/app/SceneLightingDefaults.h"
 #include "Container/renderer/core/PushConstantBlock.h"
 #include "Container/renderer/core/RendererDeviceCapabilities.h"
 #include "Container/renderer/debug/DebugRenderState.h"
@@ -293,6 +294,7 @@ private:
   std::vector<DrawCommand> hoveredDrawCommands_{};
   std::vector<DrawCommand> selectedDrawCommands_{};
   std::string activePrimaryModelPath_{};
+  container::app::SceneLightingDefaults sceneLightingDefaults_{};
   float activePrimaryImportScale_{1.0f};
   std::string activeAuxiliaryModelPath_{};
   float activeAuxiliaryImportScale_{1.0f};
@@ -399,6 +401,7 @@ private:
   void recreateMsaaResources(VkSampleCountFlagBits sampleCount);
   void createCamera();
   void resetCameraForActiveScene();
+  void applySceneLightingDefaults();
   void syncCameraSelectionPivotOverride();
   void initializeScene();
   void buildSceneGraph();
