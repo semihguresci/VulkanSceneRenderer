@@ -1713,6 +1713,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   }
 
   if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+    gfxJournal_.acquireFailed(static_cast<int32_t>(result));
     phaseStart = TelemetryClock::now();
     handleResize();
     if (telemetry) {
@@ -1725,6 +1726,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     framebufferResized = false;
     return false;
   } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+    gfxJournal_.acquireFailed(static_cast<int32_t>(result));
     throw std::runtime_error("failed to acquire swap chain image!");
   }
   if (telemetry) {
@@ -1977,6 +1979,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     throw std::runtime_error("failed to submit draw command buffer!");
   }
   subs_.temporalManager->commit();
+  gfxJournal_.submitted();
   frame_.imagesInFlight[imageIndex] = submittedFrameFence;
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::QueueSubmit,
@@ -2006,8 +2009,13 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                            elapsedMilliseconds(phaseStart));
   }
 
+  const VkResult actualPresentResult = result;
   if (std::exchange(capturePresentSuboptimal_, false) && result == VK_SUCCESS)
     result = VK_SUBOPTIMAL_KHR;
+  if (gfxJournal_.enabled())
+    gfxJournal_.presented(static_cast<int32_t>(actualPresentResult),
+                          static_cast<int32_t>(result), imageIndex,
+                          frame_.currentFrame, captureTelemetry());
   if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
       framebufferResized) {
     framebufferResized = false;
@@ -2144,8 +2152,7 @@ void RendererFrontend::applyTemporalCapture(
     captureExposure_ = *event.exposure;
 }
 
-void RendererFrontend::writeCaptureTelemetry(
-    const std::filesystem::path &path) const {
+nlohmann::json RendererFrontend::captureTelemetry() const {
   const auto &temporal = *subs_.temporalManager;
   const auto &settings = temporal.settings();
   const auto extent = svc_.swapChainManager.extent();
@@ -2174,6 +2181,8 @@ void RendererFrontend::writeCaptureTelemetry(
   if (subs_.lightingManager) {
     const auto &lighting = subs_.lightingManager->lightingData();
     json["lighting"] = {
+        {"directionalColor", {lighting.directionalColorIntensity.x, lighting.directionalColorIntensity.y, lighting.directionalColorIntensity.z}},
+        {"directionalDirection", {lighting.directionalDirection.x, lighting.directionalDirection.y, lighting.directionalDirection.z}},
         {"directionalIntensity", lighting.directionalColorIntensity.w},
         {"environmentIntensity", lighting.environmentIntensity},
         {"bounceIntensity", lighting.bounceIntensity},
@@ -2184,6 +2193,54 @@ void RendererFrontend::writeCaptureTelemetry(
     if (subs_.shadowManager)
       json["lighting"]["activeLocalShadowLayers"] =
           subs_.shadowManager->localShadowData().counts.x;
+    if (svc_.config.gfxrecon.enabled()) {
+      auto vector = [](const glm::vec4& value) {
+        return nlohmann::json::array({value.x, value.y, value.z, value.w});
+      };
+      json["lighting"]["pointLights"] = nlohmann::json::array();
+      for (const auto& light : subs_.lightingManager->pointLightsSsbo())
+        json["lighting"]["pointLights"].push_back({
+            {"positionRadius", vector(light.positionRadius)},
+            {"colorIntensity", vector(light.colorIntensity)},
+            {"directionInnerCos", vector(light.directionInnerCos)},
+            {"coneOuterCosType", vector(light.coneOuterCosType)}});
+      json["lighting"]["areaLights"] = nlohmann::json::array();
+      for (const auto& light : subs_.lightingManager->areaLightsSsbo())
+        json["lighting"]["areaLights"].push_back({
+            {"positionRange", vector(light.positionRange)},
+            {"colorIntensity", vector(light.colorIntensity)},
+            {"directionType", vector(light.directionType)},
+            {"tangentHalfSize", vector(light.tangentHalfSize)},
+            {"bitangentHalfSize", vector(light.bitangentHalfSize)}});
+      const auto shadow = subs_.guiManager ? subs_.guiManager->shadowSettings()
+                                           : container::gpu::ShadowSettings{};
+      json["shadows"] = {
+          {"directionalEnabled", lighting.shadowEnabled != 0},
+          {"localEnabled", lighting.localShadowEnabled != 0},
+          {"normalBiasMinTexels", shadow.normalBiasMinTexels},
+          {"normalBiasMaxTexels", shadow.normalBiasMaxTexels},
+          {"slopeBiasScale", shadow.slopeBiasScale},
+          {"receiverPlaneBiasScale", shadow.receiverPlaneBiasScale},
+          {"filterRadiusTexels", shadow.filterRadiusTexels},
+          {"cascadeBlendFraction", shadow.cascadeBlendFraction},
+          {"constantDepthBias", shadow.constantDepthBias},
+          {"maxDepthBias", shadow.maxDepthBias},
+          {"rasterConstantBias", shadow.rasterConstantBias},
+          {"rasterSlopeBias", shadow.rasterSlopeBias},
+          {"directionalPcssEnabled", shadow.directionalPcssEnabled},
+          {"directionalPcssLightRadiusDegrees", shadow.directionalPcssLightRadiusDegrees},
+          {"directionalPcssBlockerSearchRadiusTexels", shadow.directionalPcssBlockerSearchRadiusTexels},
+          {"directionalPcssMaxFilterRadiusTexels", shadow.directionalPcssMaxFilterRadiusTexels},
+          {"directionalContactVisibility", shadow.directionalContactVisibility},
+          {"directionalContactMaxDistance", shadow.directionalContactMaxDistance},
+          {"directionalContactThickness", shadow.directionalContactThickness},
+          {"directionalContactFadeDistance", shadow.directionalContactFadeDistance},
+          {"localContactVisibility", shadow.localContactVisibility}};
+      if (subs_.environmentManager)
+        json["environment"] = {
+            {"hdrPath", container::app::kDefaultEnvironmentHdrRelativePath},
+            {"status", subs_.environmentManager->environmentStatus()}};
+    }
   }
   if (subs_.rendererTelemetry) {
     const auto &snapshot = subs_.rendererTelemetry->latest();
@@ -2211,6 +2268,24 @@ void RendererFrontend::writeCaptureTelemetry(
     for (const auto& pass : snapshot.passes) temporalWrites |= pass.name == "TemporalResolve" && pass.active;
     json["taa"]["logicalImageWriteBytesPerFrame"] = temporalWrites ? uint64_t(extent.width) * extent.height * 57 : 0;
   }
+  json["scene"] = {{"primary", activePrimaryModelPath_}, {"auxiliary", activeAuxiliaryModelPath_},
+                    {"primaryImportScale", activePrimaryImportScale_}, {"auxiliaryImportScale", activeAuxiliaryImportScale_}};
+  const auto& camera = buffers_.cameraData;
+  json["camera"] = {{"position", {camera.cameraWorldPosition.x, camera.cameraWorldPosition.y, camera.cameraWorldPosition.z}},
+                     {"jitterUv", {camera.jitterUv.x, camera.jitterUv.y, camera.jitterUv.z, camera.jitterUv.w}}};
+  auto matrix = [](const glm::mat4& value) {
+    nlohmann::json columns = nlohmann::json::array();
+    for (int c = 0; c < 4; ++c) columns.push_back({value[c][0], value[c][1], value[c][2], value[c][3]});
+    return columns;
+  };
+  json["camera"]["viewProjColumns"] = matrix(camera.viewProj);
+  json["camera"]["unjitteredViewProjColumns"] = matrix(camera.unjitteredViewProj);
+  return json;
+}
+
+void RendererFrontend::writeCaptureTelemetry(
+    const std::filesystem::path &path) const {
+  const auto json = captureTelemetry();
   if (!path.parent_path().empty())
     std::filesystem::create_directories(path.parent_path());
   std::ofstream stream(path);
@@ -2219,6 +2294,35 @@ void RendererFrontend::writeCaptureTelemetry(
   stream << json.dump(2);
   if (!stream)
     throw std::runtime_error("Capture telemetry write failed");
+}
+
+void RendererFrontend::startGfxCapture() {
+  const auto& capture = svc_.config.gfxrecon;
+  if (!capture.enabled()) return;
+  auto runtime = captureTelemetry();
+  runtime["build"] = {{"revision", CONTAINER_GIT_REVISION}, {"configuration", CONTAINER_BUILD_CONFIG},
+                      {"compiler", CONTAINER_BUILD_COMPILER}};
+  runtime["validationEnabled"] = svc_.config.enableValidationLayers;
+  runtime["fixedTimestepSeconds"] = (svc_.config.screenshotCapturePath.empty() && svc_.config.temporalCaptureSequencePath.empty())
+      ? nlohmann::json(nullptr) : nlohmann::json(svc_.config.screenshotFixedTimestepSeconds);
+  gfxJournal_.open(capture, std::move(runtime));
+  if (subs_.guiManager)
+    subs_.guiManager->setGfxCaptureStatus(
+        "GFXReconstruct " + capture.toolVersion + " armed (" + capture.mode + "). " +
+        (capture.mode == "all" ? "All presentation boundaries" :
+         capture.trigger.empty() ? "Selected frames: " + capture.frames : "Start/stop hotkey: " + capture.trigger) +
+        "\nOutput: " + capture.outputDirectory.string() +
+        "\nRecording feedback: layer.log. Recording state is not exposed by this layer API.");
+  container::log::ContainerLogger::instance().renderer()->info(
+      "GFXReconstruct {} armed: mode={}, frames={}, hotkey={}, output={}. Recording state is reported by the layer log.",
+      capture.toolVersion, capture.mode, capture.frames, capture.trigger, capture.outputDirectory.string());
+}
+void RendererFrontend::gfxCaptureTick(uint64_t tick, bool skipped) {
+  if (gfxJournal_.enabled()) gfxJournal_.tick(tick, skipped);
+}
+bool RendererFrontend::gfxCaptureComplete() const {
+  const auto end = svc_.config.gfxrecon.stopAfterPresent;
+  return end != 0 && gfxJournal_.presentCalls() >= end;
 }
 
 void RendererFrontend::handleResize() {
@@ -3354,6 +3458,11 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
         sceneState_.selectedMeshNode, sceneState_.cubeNode);
   };
   auto refreshSceneState = [&](bool resetCamera) {
+    // reloadPrimary can replace the first object buffer before
+    // updateObjectBuffer sees it. Rebind shadow-cull sets even when the new
+    // scene fits the already-created buffer capacity.
+    std::fill(buffers_.shadowObjectDescriptorReady.begin(),
+              buffers_.shadowObjectDescriptorReady.end(), false);
     syncSceneStateFromController();
     applySceneLightingDefaults();
     if (subs_.lightingManager) {

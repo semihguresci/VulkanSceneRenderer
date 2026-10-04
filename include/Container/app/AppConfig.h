@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "Container/common/CommonVulkan.h"
+#include "Container/app/GfxCapture.h"
 #include "Container/renderer/temporal/TemporalState.h"
 
 namespace container::app {
@@ -38,6 +39,7 @@ inline constexpr bool kDefaultAuthoredLocalLightBloomEnabled = false;
 inline constexpr uint32_t kDefaultAuthoredLocalLightShadowLayerBudget = 24;
 
 struct AppConfig {
+  container::capture::Config gfxrecon{};
   uint32_t windowWidth{800};
   uint32_t windowHeight{600};
   uint32_t maxFramesInFlight{2};

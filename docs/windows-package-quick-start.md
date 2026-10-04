@@ -1,5 +1,9 @@
 # VulkanSceneRenderer Windows x64 Preview
 
+New packages include optional capture launchers in `tools` and a
+`GFXRECONSTRUCT.md` guide. Vulkan API capture/replay requires a separate
+GFXReconstruct installation and Python 3; normal rendering needs neither.
+
 Try temporal anti-aliasing with `VulkanSceneRenderer.exe --taa --msaa 1 --display-mode lit`.
 Use `--render-technique forward-raster` for the forward path. TAA currently
 supports native-resolution rigid surfaces at 1x samples; transparent and emissive

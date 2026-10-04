@@ -6015,6 +6015,11 @@ void GuiManager::drawSceneControls(
       temporalResetRequested_ = true;
     ImGui::TreePop();
   }
+  if (ImGui::TreeNode("Vulkan runtime capture")) {
+    ImGui::TextWrapped("%s", gfxCaptureStatus_.c_str());
+    ImGui::TextDisabled("Capture must be armed before instance creation.");
+    ImGui::TreePop();
+  }
   ImGui::Text("Bloom");
   ImGui::Checkbox("Bloom Enabled", &bloomEnabled_);
   if (bloomEnabled_) {

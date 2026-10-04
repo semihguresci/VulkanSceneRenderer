@@ -17,6 +17,7 @@ struct InstanceCreateInfo {
 
   bool enableValidationLayers{false};
   std::vector<const char*> validationLayers{};
+  std::vector<const char*> additionalLayers{};
   std::vector<const char*> requiredExtensions{};
   const void* next{nullptr};
 };
