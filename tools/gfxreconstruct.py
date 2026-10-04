@@ -132,7 +132,8 @@ def managed_environment(args, directory: Path) -> dict[str, str]:
         "GFXRECON_CAPTURE_TRIGGER_FRAMES": str(args.trigger_frames or ""),
         "GFXRECON_CAPTURE_QUEUE_SUBMITS": "",
         "GFXRECON_CAPTURE_USE_ASSET_FILE": "false",
-        "GFXRECON_CAPTURE_FILE_TIMESTAMP": "false",
+        # Repeated hotkey trims reuse the same stem; timestamps preserve them.
+        "GFXRECON_CAPTURE_FILE_TIMESTAMP": "true" if args.trigger else "false",
         "GFXRECON_QUIT_AFTER_CAPTURE_FRAMES": "false",  # Let the renderer finish its boundary/journal.
         "GFXRECON_CAPTURE_COMPRESSION_TYPE": args.compression,
         "GFXRECON_MEMORY_TRACKING_MODE": args.memory_mode,

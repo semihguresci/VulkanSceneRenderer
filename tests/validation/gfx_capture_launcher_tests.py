@@ -73,6 +73,7 @@ class LauncherTests(unittest.TestCase):
                 env = kwargs["env"]
                 self.assertEqual(env["GFXRECON_CAPTURE_FRAMES"], "9")
                 self.assertEqual(env["GFXRECON_CAPTURE_TRIGGER"], "")
+                self.assertEqual(env["GFXRECON_CAPTURE_FILE_TIMESTAMP"], "false")
                 self.assertEqual(Path(env["GFXRECON_CAPTURE_FILE"]).name, "cornell-shadow.gfxr")
                 self.assertNotIn("GFXRECON_DISABLE", env)
                 self.assertEqual(env["VK_INSTANCE_LAYERS"], "VK_LAYER_KHRONOS_validation")
@@ -122,6 +123,7 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(session["mode"], "hotkey")
             self.assertEqual(session["trigger"], "F3")
             self.assertEqual(session["environment"]["GFXRECON_CAPTURE_TRIGGER"], "F3")
+            self.assertEqual(session["environment"]["GFXRECON_CAPTURE_FILE_TIMESTAMP"], "true")
 
     def test_unsupported_tool_option_fails_before_running_capture(self):
         with patch.object(gfx, "run_text", return_value="--help --version"), self.assertRaises(ValueError):
