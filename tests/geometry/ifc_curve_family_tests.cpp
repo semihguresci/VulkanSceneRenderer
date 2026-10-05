@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 #include <map>
 #include <numbers>
+#include <set>
 #include <sstream>
 
 namespace {
@@ -1201,6 +1202,387 @@ TEST(IfcCurveFamilies,
     EXPECT_LE(edge.first, 2u);
     if (edge.first == 2)
       EXPECT_EQ(edge.second, 0);
+  }
+}
+
+const std::string branchingSectionedFixture =
+    "#2=IFCCARTESIANPOINT((0.,0.,0.)); #3=IFCCARTESIANPOINT((10.,0.,0.));"
+    "#4=IFCPOLYLINE((#2,#3));"
+    "#20=IFCPOINTBYDISTANCEEXPRESSION(IFCLENGTHMEASURE(0.),$,$,$,#4);"
+    "#21=IFCPOINTBYDISTANCEEXPRESSION(IFCLENGTHMEASURE(10.),$,$,$,#4);"
+    "#22=IFCAXIS2PLACEMENTLINEAR(#20,$,$); "
+    "#23=IFCAXIS2PLACEMENTLINEAR(#21,$,$);"
+    "#24=IFCCARTESIANPOINT((-2.,0.));"
+    "#30=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(2.,2.),(0.,0.),('left','branch',"
+    "'right'),#24);"
+    "#31=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(1.,2.,1.),(0.,0.,0.),('left','"
+    "branch','branch','right'),#24);"
+    "#40=IFCSECTIONEDSURFACE(#4,(#22,#23),(#30,#31));";
+
+void replace(std::string &value, const std::string &from,
+             const std::string &to) {
+  const auto at = value.find(from);
+  ASSERT_NE(at, std::string::npos) << from;
+  value.replace(at, from.size(), to);
+}
+void exportSectionedFixture(const char *name, const std::string &source) {
+  if (const auto *root = std::getenv("CONTAINER_IFC_SECTIONED_FIXTURE_ROOT")) {
+    std::filesystem::create_directories(root);
+    std::ofstream stream(std::filesystem::path(root) /
+                         (std::string(name) + ".ifc"));
+    stream << source;
+    ASSERT_TRUE(stream.good());
+  }
+}
+double checkSectionedMesh(const Model &model, glm::dvec3 up = {0, 0, 1}) {
+  for (const auto &d : model.importReport.diagnostics)
+    ADD_FAILURE() << d.reason;
+  EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Complete);
+  EXPECT_FALSE(model.indices.empty());
+  EXPECT_TRUE(model.nativeCurveRanges.empty());
+  using Key = std::array<float, 3>;
+  std::map<std::pair<Key, Key>, std::pair<unsigned, int>> edges;
+  std::set<Key> used;
+  double area = 0;
+  for (size_t i = 0; i < model.indices.size(); i += 3) {
+    std::array<glm::dvec3, 3> p;
+    std::array<Key, 3> keys;
+    for (unsigned j = 0; j < 3; ++j) {
+      const auto v = model.vertices.at(model.indices.at(i + j)).position;
+      p[j] = v;
+      keys[j] = {v.x, v.y, v.z};
+      used.insert(keys[j]);
+    }
+    const auto normal = glm::cross(p[1] - p[0], p[2] - p[0]);
+    EXPECT_GT(glm::dot(normal, up), 0);
+    area += glm::length(normal) / 2;
+    for (unsigned j = 0; j < 3; ++j) {
+      const auto a = keys[j], b = keys[(j + 1) % 3];
+      EXPECT_NE(a, b);
+      auto &use = edges[std::minmax(a, b)];
+      ++use.first;
+      use.second += a < b ? 1 : -1;
+    }
+  }
+  std::map<Key, std::vector<Key>> boundary;
+  for (const auto &[edge, use] : edges) {
+    EXPECT_LE(use.first, 2u);
+    if (use.first == 2)
+      EXPECT_EQ(use.second, 0);
+    else if (use.first == 1) {
+      boundary[edge.first].push_back(edge.second);
+      boundary[edge.second].push_back(edge.first);
+    }
+  }
+  // These fixtures are topological disks. Interior cracks and T-junctions
+  // create extra boundary uses, and a disconnected patch changes Euler count.
+  EXPECT_EQ(static_cast<int64_t>(used.size()) -
+                static_cast<int64_t>(edges.size()) +
+                static_cast<int64_t>(model.indices.size() / 3),
+            1);
+  EXPECT_FALSE(boundary.empty());
+  for (const auto &[_, neighbors] : boundary)
+    EXPECT_EQ(neighbors.size(), 2u);
+  if (!boundary.empty()) {
+    std::set<Key> visited;
+    std::vector<Key> pending{boundary.begin()->first};
+    while (!pending.empty()) {
+      const auto p = pending.back();
+      pending.pop_back();
+      if (visited.insert(p).second)
+        for (const auto &q : boundary.at(p))
+          pending.push_back(q);
+    }
+    EXPECT_EQ(visited.size(), boundary.size());
+  }
+  return area;
+}
+
+TEST(IfcCurveFamilies, SectionedTagsSplitAndMergeWithoutLosingBreaklines) {
+  for (bool merge : {false, true}) {
+    auto definitions = branchingSectionedFixture;
+    if (merge) {
+      replace(definitions, "(#30,#31)", "(#31,#30)");
+    }
+    const auto source = fixture(definitions, "#40");
+    const auto model = container::geometry::ifc::LoadFromStep(source);
+    EXPECT_NEAR(checkSectionedMesh(model), 40., 1e-6);
+    EXPECT_EQ(model.indices.size(), 15u);
+    for (const auto &[v, sign] : std::array<std::pair<double, double>, 2>{
+             {{1. / 3, -1}, {2. / 3, 1}}}) {
+      std::ostringstream stream;
+      stream.precision(17);
+      stream << definitions << "#41=IFCCARTESIANPOINT((0.," << v << "));"
+             << "#42=IFCCARTESIANPOINT((1.," << v << "));"
+             << "#43=IFCPOLYLINE((#41,#42)); #10=IFCPCURVE(#40,#43);";
+      const auto line =
+          container::geometry::ifc::LoadFromStep(fixture(stream.str()));
+      complete(line);
+      for (auto p : vertices(line))
+        EXPECT_NEAR(p.y, sign * (merge ? 1 - p.x / 10 : p.x / 10), 1e-6);
+    }
+    exportSectionedFixture(merge ? "tag-merge" : "tag-split", source);
+  }
+}
+
+TEST(IfcCurveFamilies,
+     MultipleSectionedTagTransitionsPreserveStationsAndUnits) {
+  for (bool millimetres : {false, true}) {
+    auto definitions = branchingSectionedFixture;
+    definitions +=
+        "#50=IFCPOINTBYDISTANCEEXPRESSION(IFCLENGTHMEASURE(5.),$,$,$,#4);"
+        "#51=IFCAXIS2PLACEMENTLINEAR(#50,$,$);";
+    replace(definitions, "(#22,#23),(#30,#31)", "(#22,#51,#23),(#30,#31,#30)");
+    if (millimetres) {
+      for (const auto &[from, to] :
+           std::vector<std::pair<std::string, std::string>>{
+               {"((10.,0.,0.))", "((10000.,0.,0.))"},
+               {"IFCLENGTHMEASURE(10.)", "IFCLENGTHMEASURE(10000.)"},
+               {"IFCLENGTHMEASURE(5.)", "IFCLENGTHMEASURE(5000.)"},
+               {"((-2.,0.))", "((-2000.,0.))"},
+               {"(2.,2.),(0.,0.)", "(2000.,2000.),(0.,0.)"},
+               {"(1.,2.,1.),(0.,0.,0.)", "(1000.,2000.,1000.),(0.,0.,0.)"}})
+        replace(definitions, from, to);
+    }
+    auto source = fixture(definitions, "#40");
+    if (millimetres)
+      replace(source, ".LENGTHUNIT.,$,.METRE.", ".LENGTHUNIT.,.MILLI.,.METRE.");
+    const auto model = container::geometry::ifc::LoadFromStep(source);
+    const double scale = millimetres ? 1000 : 1;
+    EXPECT_NEAR(checkSectionedMesh(model) / (scale * scale), 40., 1e-6);
+    EXPECT_EQ(model.indices.size(), 30u);
+    bool foundFirst = false, foundSecond = false;
+    for (const auto &vertex : model.vertices) {
+      const auto p = vertex.position / static_cast<float>(scale);
+      foundFirst |= p == glm::vec3(5, -1, 0);
+      foundSecond |= p == glm::vec3(5, 1, 0);
+    }
+    EXPECT_TRUE(foundFirst);
+    EXPECT_TRUE(foundSecond);
+  }
+}
+
+TEST(IfcCurveFamilies, SectionedMultiwayBranchesRetainEverySourceCorner) {
+  auto definitions = branchingSectionedFixture;
+  replace(definitions, "(2.,2.),(0.,0.),('left','branch','right')",
+          "(1.,1.,1.,1.),(0.,0.,0.,0.),('left','branch','branch','branch','"
+          "right')");
+  replace(definitions,
+          "(1.,2.,1.),(0.,0.,0.),('left','branch','branch','right')",
+          "(0.5,1.,1.,1.,0.5),(0.,0.,0.,0.,0.),('left','branch','branch','"
+          "branch','branch','right')");
+  const auto model =
+      container::geometry::ifc::LoadFromStep(fixture(definitions, "#40"));
+  EXPECT_NEAR(checkSectionedMesh(model), 40., 1e-6);
+  for (const auto &[station, positions] :
+       std::array<std::pair<float, std::vector<float>>, 2>{
+           {{0.f, {-2, -1, 0, 1, 2}}, {10.f, {-2, -1.5f, -.5f, .5f, 1.5f, 2}}}})
+    for (float y : positions) {
+      bool found = false;
+      for (const auto &vertex : model.vertices)
+        found |= vertex.position == glm::vec3(station, y, 0);
+      EXPECT_TRUE(found) << station << ", " << y;
+    }
+}
+
+TEST(IfcCurveFamilies, ZeroWidthSectionedBranchesRetainSharedTips) {
+  for (bool opens : {false, true}) {
+    for (bool tagged : {false, true}) {
+      auto definitions = branchingSectionedFixture;
+      replace(definitions, "(2.,2.),(0.,0.),('left','branch','right')",
+              "(2.,0.,2.),(0.,0.,0.),('left','branch','branch','right')");
+      if (!opens)
+        replace(definitions, "(1.,2.,1.)", "(2.,0.,2.)");
+      if (!tagged) {
+        replace(definitions, "('left','branch','branch','right')", "$");
+        replace(definitions, "('left','branch','branch','right')", "$");
+      }
+      const auto model =
+          container::geometry::ifc::LoadFromStep(fixture(definitions, "#40"));
+      EXPECT_NEAR(checkSectionedMesh(model), 40., 1e-6);
+      EXPECT_EQ(model.indices.size(), opens ? 15u : 12u);
+    }
+  }
+  for (const auto &widths : {"(0.,0.)", "(-1.,2.)"}) {
+    auto definitions = branchingSectionedFixture;
+    replace(definitions, "(2.,2.)", widths);
+    const auto model =
+        container::geometry::ifc::LoadFromStep(fixture(definitions, "#40"));
+    EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Failed);
+    EXPECT_TRUE(model.vertices.empty());
+    EXPECT_TRUE(model.indices.empty());
+    ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+    EXPECT_EQ(model.importReport.diagnostics.front().entityId, 40u);
+  }
+}
+
+TEST(IfcCurveFamilies, SlopedSectionedBranchesRetainCrownAndChordAccuracy) {
+  for (bool merge : {false, true}) {
+    auto definitions = branchingSectionedFixture;
+    replace(definitions, "(2.,2.),(0.,0.)",
+            "(2.,2.),(0.09966865249116204,-0.09966865249116204)");
+    replace(definitions, "(1.,2.,1.),(0.,0.,0.)",
+            "(1.,2.,1.),(0.19739555984988078,0.,-0.19739555984988078)");
+    if (merge)
+      replace(definitions, "(#30,#31)", "(#31,#30)");
+    const auto source = fixture(definitions, "#40");
+    const auto model = container::geometry::ifc::LoadFromStep(source);
+    checkSectionedMesh(model);
+    const auto height = [merge](glm::dvec3 p) {
+      const double width = merge ? 1 - p.x / 10 : p.x / 10;
+      return std::abs(p.y) <= width ? .2
+                                    : .2 * (2 - std::abs(p.y)) / (2 - width);
+    };
+    double projectedArea = 0;
+    for (size_t i = 0; i < model.indices.size(); i += 3) {
+      std::array<glm::dvec3, 3> p;
+      for (unsigned j = 0; j < 3; ++j) {
+        p[j] = model.vertices.at(model.indices.at(i + j)).position;
+        EXPECT_NEAR(p[j].z, height(p[j]), 1e-6);
+      }
+      projectedArea += glm::cross(p[1] - p[0], p[2] - p[0]).z / 2;
+      for (auto q : {(p[0] + p[1] + p[2]) / 3., (p[0] + p[1]) / 2.,
+                     (p[1] + p[2]) / 2., (p[2] + p[0]) / 2.})
+        EXPECT_NEAR(q.z, height(q), .001);
+    }
+    EXPECT_NEAR(projectedArea, 40., 1e-5);
+    exportSectionedFixture(merge ? "tag-merge-crown" : "tag-split-crown",
+                           source);
+  }
+}
+
+TEST(IfcCurveFamilies, CurvedSectionedBranchesKeepAnnularAreaAndSharedTips) {
+  auto definitions = branchingSectionedFixture;
+  replace(definitions, "#4=IFCPOLYLINE((#2,#3));",
+          "#5=IFCAXIS2PLACEMENT3D(#2,$,$); #4=IFCCIRCLE(#5,5.);");
+  replace(definitions, "IFCLENGTHMEASURE(10.)",
+          "IFCPARAMETERVALUE(1.5707963267948966)");
+  const auto source = fixture(definitions, "#40");
+  const auto model = container::geometry::ifc::LoadFromStep(source);
+  EXPECT_NEAR(checkSectionedMesh(model), 10 * pi, .012);
+  for (const auto &vertex : model.vertices) {
+    EXPECT_GE(glm::length(glm::vec2(vertex.position)), 3 - 1e-6);
+    EXPECT_LE(glm::length(glm::vec2(vertex.position)), 7 + 1e-6);
+  }
+  exportSectionedFixture("curved-branch", source);
+}
+
+const std::string miterSectionedFixture =
+    "#2=IFCCARTESIANPOINT((0.,0.,0.)); #3=IFCCARTESIANPOINT((10.,0.,0.));"
+    "#5=IFCCARTESIANPOINT((10.,10.,0.)); #4=IFCPOLYLINE((#2,#3,#5));"
+    "#20=IFCPOINTBYDISTANCEEXPRESSION(IFCLENGTHMEASURE(0.),$,$,$,#4);"
+    "#21=IFCPOINTBYDISTANCEEXPRESSION(IFCLENGTHMEASURE(20.),$,$,$,#4);"
+    "#22=IFCAXIS2PLACEMENTLINEAR(#20,$,$); "
+    "#23=IFCAXIS2PLACEMENTLINEAR(#21,$,$);"
+    "#24=IFCCARTESIANPOINT((-2.,0.));"
+    "#30=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(2.,2.),(0.,0.),('left','crown','"
+    "right'),#24);"
+    "#40=IFCSECTIONEDSURFACE(#4,(#22,#23),(#30,#30));";
+
+TEST(IfcCurveFamilies, SectionedSharpJoinsUseSharedHalfAngleMiters) {
+  for (bool reversed : {false, true}) {
+    for (bool branched : {false, true}) {
+      auto definitions = miterSectionedFixture;
+      if (reversed)
+        replace(definitions, "IFCPOLYLINE((#2,#3,#5))",
+                "IFCPOLYLINE((#5,#3,#2))");
+      if (branched) {
+        definitions +=
+            "#31=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(1.,2.,1.),(0.,0.,0.),"
+            "('left','crown','crown','right'),#24);";
+        replace(definitions, "(#30,#30)", "(#30,#31)");
+      }
+      const auto source = fixture(definitions, "#40");
+      const auto model = container::geometry::ifc::LoadFromStep(source);
+      EXPECT_NEAR(checkSectionedMesh(model), 80., 1e-6);
+      bool inner = false, outer = false;
+      for (const auto &vertex : model.vertices) {
+        inner |= vertex.position == glm::vec3(8, 2, 0);
+        outer |= vertex.position == glm::vec3(12, -2, 0);
+      }
+      EXPECT_TRUE(inner);
+      EXPECT_TRUE(outer);
+      for (double v : {0., 1.}) {
+        auto lineDefs = definitions + "#41=IFCCARTESIANPOINT((0.," +
+                        std::to_string(v) +
+                        "));"
+                        "#42=IFCCARTESIANPOINT((2.," +
+                        std::to_string(v) +
+                        "));"
+                        "#43=IFCPOLYLINE((#41,#42)); #10=IFCPCURVE(#40,#43);";
+        const auto line =
+            container::geometry::ifc::LoadFromStep(fixture(lineDefs));
+        complete(line);
+        EXPECT_NEAR(length(vertices(line)), (v == 0) != reversed ? 24 : 16,
+                    1e-5);
+      }
+      if (!reversed)
+        exportSectionedFixture(branched ? "miter-branch" : "miter", source);
+    }
+  }
+}
+
+TEST(IfcCurveFamilies, SectionedMitersPreserveRotatedCrossPlanes) {
+  auto definitions = miterSectionedFixture;
+  replace(definitions, "((10.,10.,0.))", "((10.,0.,-10.))");
+  definitions += "#6=IFCDIRECTION((0.,1.,0.));";
+  replace(definitions, "(#20,$,$)", "(#20,#6,$)");
+  replace(definitions, "(#21,$,$)", "(#21,#6,$)");
+  const auto model =
+      container::geometry::ifc::LoadFromStep(fixture(definitions, "#40"));
+  EXPECT_NEAR(checkSectionedMesh(model, {0, 1, 0}), 80., 1e-6);
+  bool inner = false, outer = false;
+  for (const auto &vertex : model.vertices) {
+    inner |= vertex.position == glm::vec3(8, 0, -2);
+    outer |= vertex.position == glm::vec3(12, 0, 2);
+  }
+  EXPECT_TRUE(inner);
+  EXPECT_TRUE(outer);
+}
+
+TEST(IfcCurveFamilies, MalformedBranchesAndUnsafeMitersRejectAtomically) {
+  std::vector<std::string> invalid;
+  for (const auto &[from, to] :
+       std::vector<std::pair<std::string, std::string>>{
+           {"('left','branch','branch','right')",
+            "('left','branch','right','branch')"},
+           {"('left','branch','branch','right')",
+            "('left','new','branch','right')"},
+           {"('left','branch','branch','right')", "$"}}) {
+    auto definitions = branchingSectionedFixture;
+    replace(definitions, from, to);
+    invalid.push_back(definitions);
+  }
+  auto crossing = miterSectionedFixture;
+  crossing += "#6=IFCCARTESIANPOINT((0.,10.,0.));"
+              "#7=IFCCARTESIANPOINT((0.,-10.,0.));";
+  replace(crossing, "IFCPOLYLINE((#2,#3,#5))", "IFCPOLYLINE((#2,#3,#5,#6,#7))");
+  replace(crossing, "IFCLENGTHMEASURE(20.)", "IFCPARAMETERVALUE(4.)");
+  invalid.push_back(crossing);
+  for (const auto &[from, to] :
+       std::vector<std::pair<std::string, std::string>>{
+           {"((10.,10.,0.))", "((0.,0.1,0.))"},
+           {"(2.,2.),(0.,0.)", "(20.,20.),(0.,0.)"},
+           {"((10.,10.,0.))", "((10.,10.,1.))"}}) {
+    auto definitions = miterSectionedFixture;
+    replace(definitions, from, to);
+    if (from == "(2.,2.),(0.,0.)")
+      replace(definitions, "((-2.,0.))", "((-20.,0.))");
+    // Parameter positions let these malformed directrices reach join
+    // validation.
+    replace(definitions, "IFCLENGTHMEASURE(20.)", "IFCPARAMETERVALUE(2.)");
+    invalid.push_back(definitions);
+  }
+  for (const auto &definitions : invalid) {
+    const auto model =
+        container::geometry::ifc::LoadFromStep(fixture(definitions, "#40"));
+    EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Failed)
+        << definitions;
+    EXPECT_TRUE(model.vertices.empty());
+    EXPECT_TRUE(model.indices.empty());
+    ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+    EXPECT_EQ(model.importReport.diagnostics.front().entityId, 40u);
+    EXPECT_FALSE(model.importReport.diagnostics.front().reason.empty());
   }
 }
 

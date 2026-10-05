@@ -141,10 +141,13 @@ in the BIM inspector.
 The reviewed Hello Wall and Tekla House import all 4 and 10,042 represented
 products respectively, including auxiliary curves, with zero representation
 warnings. Surface curves support elementary/spline bases, extrusion/revolution
-surfaces, rectangular/curve-bounded trims and unbranched sectioned surfaces.
+surfaces, rectangular/curve-bounded trims and sectioned surfaces, including
+ordered tag splits/merges and planar polygonal miters.
 Advanced faces support elementary surfaces, explicit-knot splines and supported
-swept surfaces, including periodic bands and seam curves. Singular vertex-loop
-faces, some periodic charts and branching/guide-curve section transitions remain
+swept surfaces, including periodic bands with different boundary seam locations,
+seam curves, and spherical pole vertex loops for closed spheres and caps.
+Non-spherical singular charts, edges through spherical poles, some periodic
+charts, guide-curve transitions and nonplanar sharp sectioned joins remain
 outside native coverage.
 See the
 [IFC coverage and limitations](docs/ifc-import.md) and

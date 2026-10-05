@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <numbers>
+#include <set>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -1120,15 +1121,12 @@ ParametricCurve Reader::profile(uint32_t id) {
       throw std::runtime_error("Open cross profile width/slope counts differ");
     if (!omitted(arg(e, 5))) {
       const auto &tags = list(arg(e, 5), 4097);
-      std::unordered_set<std::string> unique;
       if (tags.size() != widths.size() + 1)
         throw std::runtime_error(
             "Open cross profile tag count differs from points");
       for (const auto &tag : tags)
-        if (tag.kind != StepValue::Kind::String || tag.text.empty() ||
-            !unique.insert(tag.text).second)
-          throw std::runtime_error(
-              "Invalid or duplicate open cross profile tags");
+        if (tag.kind != StepValue::Kind::String || tag.text.empty())
+          throw std::runtime_error("Invalid open cross profile tag");
     }
     glm::dvec3 start(0);
     if (!omitted(arg(e, 6))) {
@@ -1141,7 +1139,7 @@ ParametricCurve Reader::profile(uint32_t id) {
     std::vector<double> knots{0, 0};
     for (size_t i = 0; i < widths.size(); ++i) {
       const double radians = slopes[i] * *angle_, cosine = std::cos(radians);
-      if (widths[i] <= 0 || (horizontal && std::abs(cosine) < 1e-12))
+      if (widths[i] < 0 || (horizontal && std::abs(cosine) < 1e-12))
         throw std::runtime_error("Degenerate open cross profile width/slope");
       points.push_back(points.back() +
                        glm::dvec3(horizontal ? widths[i] : widths[i] * cosine,
@@ -1273,10 +1271,11 @@ Surface Reader::surfaceImpl(uint32_t id) {
       double parameter, station;
       ParametricCurve curve;
       glm::dvec3 up, normal;
+      std::vector<std::string> tags;
     };
     auto sections = std::make_shared<std::vector<Section>>();
-    std::vector<std::string> previousTags;
     std::string family;
+    bool coincidentEdges = false;
     for (size_t i = 0; i < positions.size(); ++i) {
       const auto &position = get(reference(&positions[i])),
                  &p = get(reference(&profiles[i]));
@@ -1312,27 +1311,20 @@ Surface Reader::surfaceImpl(uint32_t id) {
         throw std::runtime_error(
             "Sectioned surface requires regular open cross sections");
       c = remap(std::move(c), endpoints.first, endpoints.second, 1);
-      if (i && c.breaks != sections->front().curve.breaks)
-        throw std::runtime_error(
-            "Sectioned profile topology differs between sections");
       std::vector<std::string> tags;
+      if (p.type == "IFCOPENCROSSPROFILEDEF")
+        for (const auto &width : list(arg(p, 3), 4096))
+          coincidentEdges |= number(&width) == 0;
       if (p.type == "IFCOPENCROSSPROFILEDEF" && !omitted(arg(p, 5))) {
-        std::unordered_set<std::string> unique;
         for (const auto &tag : list(arg(p, 5), 4097)) {
-          if (tag.kind != StepValue::Kind::String || tag.text.empty() ||
-              !unique.insert(tag.text).second)
-            throw std::runtime_error(
-                "Invalid or duplicate sectioned profile tags");
+          if (tag.kind != StepValue::Kind::String || tag.text.empty())
+            throw std::runtime_error("Invalid sectioned profile tag");
           tags.push_back(tag.text);
         }
         if (tags.size() != list(arg(p, 3), 4096).size() + 1)
           throw std::runtime_error(
               "Sectioned profile tag count differs from points");
       }
-      if (i && tags != previousTags)
-        throw std::runtime_error("Branching section tags or guide-curve "
-                                 "transitions are unsupported");
-      previousTags = tags;
       const auto up = omitted(arg(position, 1))
                           ? base->z
                           : direction(reference(arg(position, 1)), 3);
@@ -1344,20 +1336,114 @@ Surface Reader::surfaceImpl(uint32_t id) {
         return glm::dvec3(glm::dot(p, base->x), glm::dot(p, base->y),
                           glm::dot(p, base->z));
       };
-      sections->push_back(
-          {t, *station, std::move(c), local(up), local(normal)});
+      sections->push_back({t, *station, std::move(c), local(up), local(normal),
+                           std::move(tags)});
+    }
+    bool branching = false;
+    if (sections->front().tags.empty()) {
+      for (const auto &s : *sections)
+        if (!s.tags.empty() || s.curve.breaks != sections->front().curve.breaks)
+          throw std::runtime_error(
+              "Untagged section profiles require matching topology");
+    } else {
+      // Consecutive occurrences of one tag identify a split/merge breakline.
+      // Refine each ordered run at every authored occurrence fraction. A
+      // single source point becomes the common tip of all its branches, while
+      // larger runs retain their original corners when multiplicities differ.
+      using Run = std::pair<std::string, size_t>;
+      std::vector<std::vector<Run>> runs;
+      std::vector<std::set<double>> divisions;
+      for (const auto &s : *sections) {
+        auto &current = runs.emplace_back();
+        std::unordered_set<std::string> seen;
+        for (const auto &tag : s.tags) {
+          if (!current.empty() && current.back().first == tag) {
+            ++current.back().second;
+          } else {
+            if (!seen.insert(tag).second)
+              throw std::runtime_error(
+                  "Crossing or reordered sectioned tag branches");
+            current.push_back({tag, 1});
+          }
+        }
+        if (current.size() < 2 ||
+            (!divisions.empty() && current.size() != divisions.size()))
+          throw std::runtime_error(
+              "Sectioned tag transitions require matching ordered runs");
+        if (divisions.empty())
+          divisions.resize(current.size());
+        for (size_t j = 0; j < current.size(); ++j) {
+          if (current[j].first != runs.front()[j].first)
+            throw std::runtime_error(
+                "Sectioned tag transitions require matching ordered runs");
+          divisions[j].insert(0);
+          if (current[j].second > 1)
+            for (size_t k = 0; k < current[j].second; ++k)
+              divisions[j].insert(double(k) / (current[j].second - 1));
+          branching |= current[j].second != runs.front()[j].second;
+        }
+      }
+      size_t total = 0;
+      for (const auto &run : divisions)
+        total += run.size();
+      if (total > 4097)
+        throw std::runtime_error(
+            "Sectioned tag branches exceed their point budget");
+      for (size_t i = 0; i < sections->size(); ++i) {
+        auto &s = (*sections)[i];
+        std::vector<double> parameters;
+        size_t source = 0;
+        for (size_t j = 0; j < divisions.size(); ++j) {
+          for (double fraction : divisions[j])
+            parameters.push_back((source + fraction * (runs[i][j].second - 1)) /
+                                 (s.tags.size() - 1));
+          source += runs[i][j].second;
+        }
+        std::vector<glm::dvec3> points;
+        std::vector<double> knots{0, 0};
+        for (size_t k = 0; k < total; ++k) {
+          const auto p = s.curve.point(parameters[k]);
+          if (!p)
+            throw std::runtime_error("Undefined sectioned branch point");
+          points.push_back(*p);
+          if (k)
+            knots.push_back(double(k) / (total - 1));
+        }
+        knots.push_back(1);
+        consumePoints(points.size());
+        auto aligned =
+            makeBSplineCurve(1, std::move(points), std::move(knots), {}, 2);
+        if (!aligned)
+          throw std::runtime_error("Invalid sectioned branch profile");
+        s.curve = sharedCurve(std::move(*aligned));
+      }
     }
     const double first = sections->front().parameter,
                  last = sections->back().parameter;
-    for (double t : directrix.breaks) {
-      if (t <= first || t >= last)
-        continue;
-      const double h = std::min(t - first, last - t) * 1e-8;
+    std::vector<double> uBreaks{first, last};
+    for (double t : directrix.breaks)
+      if (t > first && t < last)
+        uBreaks.push_back(t);
+    for (const auto &s : *sections)
+      uBreaks.push_back(s.parameter);
+    std::ranges::sort(uBreaks);
+    uBreaks.erase(std::unique(uBreaks.begin(), uBreaks.end()), uBreaks.end());
+    std::map<double, glm::dvec3> miters;
+    for (size_t i = 1; i + 1 < uBreaks.size(); ++i) {
+      const double t = uBreaks[i],
+                   h = std::min(t - uBreaks[i - 1], uBreaks[i + 1] - t) * 1e-7;
       auto a = curveTangent(directrix, t - h),
            b = curveTangent(directrix, t + h);
-      if (!a || !b || glm::dot(*a, *b) < 1 - 1e-6)
+      if (!a || !b)
+        throw std::runtime_error("Undefined sectioned directrix tangent");
+      const double cosine = glm::dot(*a, *b);
+      if (cosine >= 1 - 1e-6)
+        continue;
+      const double halfCosine = std::sqrt(std::max(0., (1 + cosine) / 2));
+      if (halfCosine < .1)
         throw std::runtime_error(
-            "Sectioned surface directrix must be tangent continuous");
+            "Sectioned directrix miter exceeds its 10x extension limit");
+      miters[t] = normalized(*a + *b) / halfCosine;
     }
     Surface result{
         .point = [directrix, sections, tolerance = tolerance_ * .01](
@@ -1400,11 +1486,129 @@ Surface Reader::surfaceImpl(uint32_t id) {
         .angularScale = {directrix.period ? 2 * pi / directrix.period : 0, 0},
         .uDomain = {{first, last}},
         .vDomain = {{0, 1}}};
-    std::vector<double> uBreaks = directrix.breaks;
-    for (const auto &s : *sections)
-      uBreaks.push_back(s.parameter);
-    std::ranges::sort(uBreaks);
-    uBreaks.erase(std::unique(uBreaks.begin(), uBreaks.end()), uBreaks.end());
+    result.allowCoincidentEdges = branching || coincidentEdges;
+    if (!miters.empty()) {
+      if (uBreaks.size() > 4097)
+        throw std::runtime_error("Sectioned miter exceeds its anchor budget");
+      const auto frame = curveFrame(directrix, first);
+      if (!frame)
+        throw std::runtime_error("Undefined sectioned miter frame");
+      const auto &initial = sections->front();
+      const auto up =
+          normalized(frame->x * initial.up.x + frame->y * initial.up.y +
+                     frame->z * initial.up.z);
+      for (const auto &s : *sections) {
+        const auto f = curveFrame(directrix, s.parameter);
+        if (!f)
+          throw std::runtime_error("Undefined sectioned miter section frame");
+        const auto worldUp = f->x * s.up.x + f->y * s.up.y + f->z * s.up.z,
+                   worldNormal = f->x * s.normal.x + f->y * s.normal.y +
+                                 f->z * s.normal.z;
+        if (glm::dot(worldUp, up) < 1 - 1e-8 ||
+            glm::dot(worldNormal, f->x) < 1 - 1e-8)
+          throw std::runtime_error(
+              "Sectioned miters require a common perpendicular axis and "
+              "tangent profile normals");
+      }
+      std::vector<glm::dvec3> anchors;
+      std::vector<double> stations;
+      for (double u : uBreaks) {
+        const auto point = directrix.point(u);
+        const auto station = curveLength(directrix, first, u, tolerance_ * .01);
+        if (!point || !station || !finite(*point))
+          throw std::runtime_error("Undefined sectioned miter anchor");
+        anchors.push_back(*point);
+        stations.push_back(*station);
+      }
+      for (size_t i = 1; i < anchors.size(); ++i) {
+        const auto d = anchors[i] - anchors[i - 1];
+        if (glm::length(d) <= tolerance_ * .01 ||
+            std::abs(glm::dot(normalized(d), up)) > 1e-7)
+          throw std::runtime_error(
+              "Sectioned miters require planar nonzero directrix segments");
+        for (double t : {.25, .5, .75}) {
+          const auto p =
+              directrix.point(std::lerp(uBreaks[i - 1], uBreaks[i], t));
+          if (!p ||
+              glm::length(*p - (anchors[i - 1] + d * t)) > tolerance_ * .01)
+            throw std::runtime_error("Sharp sectioned joins require piecewise "
+                                     "linear directrix spans");
+        }
+      }
+      const auto x = normalized(anchors[1] - anchors[0]), y = glm::cross(up, x);
+      const auto uv = [&](glm::dvec3 p) {
+        const auto d = p - anchors.front();
+        return glm::dvec2(glm::dot(d, x), glm::dot(d, y));
+      };
+      const auto orient = [](glm::dvec2 a, glm::dvec2 b, glm::dvec2 c) {
+        const auto p = b - a, q = c - a;
+        return p.x * q.y - p.y * q.x;
+      };
+      size_t checks = 0;
+      for (size_t i = 1; i < anchors.size(); ++i)
+        for (size_t j = i + 2; j < anchors.size(); ++j) {
+          if (++checks > 8000000)
+            throw std::runtime_error(
+                "Sectioned directrix intersection budget exceeded");
+          const auto a = uv(anchors[i - 1]), b = uv(anchors[i]),
+                     c = uv(anchors[j - 1]), d = uv(anchors[j]);
+          const auto on = [&](glm::dvec2 p, glm::dvec2 q, glm::dvec2 r) {
+            const double tolerance = tolerance_ * .01;
+            return std::abs(orient(q, r, p)) <=
+                       tolerance * glm::length(r - q) &&
+                   p.x >= std::min(q.x, r.x) - tolerance &&
+                   p.x <= std::max(q.x, r.x) + tolerance &&
+                   p.y >= std::min(q.y, r.y) - tolerance &&
+                   p.y <= std::max(q.y, r.y) + tolerance;
+          };
+          if ((orient(a, b, c) * orient(a, b, d) < 0 &&
+               orient(c, d, a) * orient(c, d, b) < 0) ||
+              on(a, c, d) || on(b, c, d) || on(c, a, b) || on(d, a, b))
+            throw std::runtime_error("Sectioned directrix intersects itself");
+        }
+      // Straight spans are ruled between authored sections and miter anchors.
+      // Both incident spans reuse the same half-angle cross section exactly.
+      const auto control = [=](size_t k,
+                               double v) -> std::optional<glm::dvec3> {
+        const double u = uBreaks[k];
+        auto upper = std::upper_bound(
+            sections->begin(), sections->end(), u,
+            [](double t, const Section &s) { return t < s.parameter; });
+        const size_t i =
+            upper == sections->end()
+                ? sections->size() - 2
+                : std::max(size_t(1), size_t(upper - sections->begin())) - 1;
+        const auto &a = (*sections)[i], &b = (*sections)[i + 1];
+        const auto p = a.curve.point(v), q = b.curve.point(v);
+        if (!p || !q)
+          return std::nullopt;
+        const double fraction = std::clamp(
+            (stations[k] - a.station) / (b.station - a.station), 0., 1.);
+        const auto local = *p * (1 - fraction) + *q * fraction;
+        const auto direction =
+            miters.contains(u) ? miters.at(u)
+                               : normalized(k + 1 < anchors.size()
+                                                ? anchors[k + 1] - anchors[k]
+                                                : anchors[k] - anchors[k - 1]);
+        return anchors[k] + glm::cross(up, direction) * local.x + up * local.y;
+      };
+      result.point = [=](double u, double v) -> std::optional<glm::dvec3> {
+        if (!std::isfinite(u) || !std::isfinite(v) || u < first || u > last ||
+            v < 0 || v > 1)
+          return std::nullopt;
+        const auto upper = std::upper_bound(uBreaks.begin(), uBreaks.end(), u);
+        const size_t i =
+            upper == uBreaks.end()
+                ? uBreaks.size() - 2
+                : std::max(size_t(1), size_t(upper - uBreaks.begin())) - 1;
+        const auto a = control(i, v), b = control(i + 1, v);
+        if (!a || !b)
+          return std::nullopt;
+        return *a * (1 - (u - uBreaks[i]) / (uBreaks[i + 1] - uBreaks[i])) +
+               *b * ((u - uBreaks[i]) / (uBreaks[i + 1] - uBreaks[i]));
+      };
+      result.meshUp = up;
+    }
     const auto vBreaks = sections->front().curve.breaks;
     if (meshing_) {
       auto samples =
@@ -1896,8 +2100,10 @@ Surface Reader::surfaceImpl(uint32_t id) {
       .angularScale = {radians, type == "IFCCYLINDRICALSURFACE" ? 0 : radians},
       .periods = {2 * pi / radians,
                   type == "IFCTOROIDALSURFACE" ? 2 * pi / radians : 0}};
-  if (type == "IFCSPHERICALSURFACE")
+  if (type == "IFCSPHERICALSURFACE") {
     result.vDomain = {{-pi / (2 * radians), pi / (2 * radians)}};
+    result.sphere = SphericalSurface{f, radius};
+  }
   result.inverse = [=](glm::dvec3 p) -> std::optional<glm::dvec2> {
     const auto d = p - f.origin;
     const double x = glm::dot(d, f.x), y = glm::dot(d, f.y),
@@ -2060,10 +2266,21 @@ std::vector<std::array<glm::dvec3, 3>> Reader::sectionedMesh(uint32_t id) {
                  c = eval(u[i], v[j]), d = eval(u[i - 1], v[j]);
       for (const std::array<glm::dvec3, 3> triangle :
            {std::array{a, b, c}, std::array{a, c, d}}) {
-        if (glm::length(glm::cross(triangle[1] - triangle[0],
-                                   triangle[2] - triangle[0])) <= 1e-15)
+        const auto normal =
+            glm::cross(triangle[1] - triangle[0], triangle[2] - triangle[0]);
+        if (glm::length(normal) <= 1e-15) {
+          if (s.allowCoincidentEdges && triangle[0] != triangle[1] &&
+              (triangle[0] == triangle[2] || triangle[1] == triangle[2]))
+            continue;
+          if (s.allowCoincidentEdges && triangle[0] == triangle[1] &&
+              triangle[0] != triangle[2])
+            continue;
           throw std::runtime_error(
               "Sectioned surface has a collapsed mesh triangle");
+        }
+        if (s.meshUp && glm::dot(normal, *s.meshUp) <= 0)
+          throw std::runtime_error(
+              "Sectioned miter folds or reverses its surface");
         triangles.push_back(triangle);
       }
     }

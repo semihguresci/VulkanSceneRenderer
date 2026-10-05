@@ -9,6 +9,10 @@
 #include <unordered_map>
 
 namespace container::geometry::ifc::detail {
+struct SphericalSurface {
+  CurveFrame frame;
+  double radius;
+};
 struct ParametricSurface {
   std::function<std::optional<glm::dvec3>(double, double)> point;
   glm::dvec2 angularScale{0};
@@ -18,6 +22,11 @@ struct ParametricSurface {
   std::vector<double> meshU, meshV;
   // Analytic inverses return a canonical parameter; callers unwrap periods.
   std::function<std::optional<glm::dvec2>(glm::dvec3)> inverse;
+  // Polar topology needs regular local charts instead of angular coordinates.
+  std::optional<SphericalSurface> sphere;
+  // Branch tips and zero-width profile segments create coincident mesh edges.
+  bool allowCoincidentEdges = false;
+  std::optional<glm::dvec3> meshUp;
 };
 [[nodiscard]] bool isCurveEntity(std::string_view type);
 // Pure conversion: errors cannot leave partial geometry in the model buffers.

@@ -6,6 +6,7 @@
 #include <glm/geometric.hpp>
 #include <map>
 #include <mapbox/earcut.hpp>
+#include <numbers>
 #include <set>
 #include <stdexcept>
 
@@ -48,9 +49,11 @@ struct Vertex {
 
 class Mesher {
 public:
-  Mesher(const ParametricSurface &surface, double units, double extent)
+  Mesher(const ParametricSurface &surface, double units, double extent,
+         std::optional<glm::vec3> fanPoint = {})
       : s_(surface), chord_(.001 / units),
-        tolerance_(std::max(1e-7 / units, extent * 2e-7)) {}
+        tolerance_(std::max(1e-7 / units, extent * 2e-7)), fanPoint_(fanPoint) {
+  }
   std::vector<CurvedFaceTriangle>
   run(const std::vector<std::vector<glm::vec3>> &boundaries, bool explicitOuter,
       bool sameSense);
@@ -157,6 +160,7 @@ private:
   size_t flipChecks_ = 0;
   size_t bandFirstSize_ = 0;
   unsigned bandAxis_ = 0;
+  std::optional<glm::vec3> fanPoint_;
   std::map<Edge, std::set<uint32_t>> adjacent_;
 };
 
@@ -365,12 +369,23 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
   }
   std::vector<uint32_t> indices;
   bool bandGrid = false;
-  if (bandFirstSize_ && vertices_.size() == 2 * bandFirstSize_) {
+  if (fanPoint_) {
+    if (rings.size() != 1)
+      throw std::runtime_error("Polar chart requires a single enclosing ring");
+    const auto uv = inverse(Point(*fanPoint_));
+    const auto center = insert(uv);
+    vertices_[center].point = *fanPoint_;
+    normalized.push_back((uv - low_) / scale_);
+    for (uint32_t i = 0; i < center; ++i)
+      indices.insert(indices.end(), {i, (i + 1) % center, center});
+  } else if (bandFirstSize_ && vertices_.size() == 2 * bandFirstSize_) {
     const auto count = static_cast<uint32_t>(bandFirstSize_);
+    const double offset =
+        vertices_.back().uv[bandAxis_] - vertices_.front().uv[bandAxis_];
     bandGrid = true;
     for (uint32_t i = 0; i < count; ++i)
       if (std::abs(vertices_[i].uv[bandAxis_] -
-                   vertices_[2 * count - 1 - i].uv[bandAxis_]) >
+                   vertices_[2 * count - 1 - i].uv[bandAxis_] + offset) >
           scale_[bandAxis_] * 1e-10)
         bandGrid = false;
     if (bandGrid) {
@@ -378,7 +393,7 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
       for (uint32_t i = 0; i < count; ++i) {
         const auto a = vertices_[i].uv;
         auto &b = vertices_[2 * count - 1 - i].uv;
-        b[bandAxis_] = a[bandAxis_];
+        b[bandAxis_] = a[bandAxis_] + offset;
         normalized[2 * count - 1 - i] = (b - low_) / scale_;
         ParametricCurve curve;
         curve.domain = {{0, 1}};
@@ -436,21 +451,24 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
                endB = static_cast<uint32_t>(bandFirstSize_);
     const double sense =
         vertices_[endA].uv[bandAxis_] > vertices_[0].uv[bandAxis_] ? 1 : -1;
+    const double offset =
+        vertices_[b].uv[bandAxis_] - vertices_[a].uv[bandAxis_];
     while (a < endA || b > endB) {
       if (a < endA && b > endB &&
           std::abs(vertices_[a + 1].uv[bandAxis_] -
-                   vertices_[b - 1].uv[bandAxis_]) <
+                   vertices_[b - 1].uv[bandAxis_] + offset) <
               scale_[bandAxis_] * 1e-10) {
-        vertices_[b - 1].uv[bandAxis_] = vertices_[a + 1].uv[bandAxis_];
+        vertices_[b - 1].uv[bandAxis_] =
+            vertices_[a + 1].uv[bandAxis_] + offset;
         normalized[b - 1] = (vertices_[b - 1].uv - low_) / scale_;
         indices.insert(indices.end(), {a, a + 1, b, a + 1, b - 1, b});
         ++a;
         --b;
         continue;
       }
-      if (a < endA &&
-          (b == endB || sense * vertices_[a + 1].uv[bandAxis_] <=
-                            sense * vertices_[b - 1].uv[bandAxis_])) {
+      if (a < endA && (b == endB ||
+                       sense * vertices_[a + 1].uv[bandAxis_] <=
+                           sense * (vertices_[b - 1].uv[bandAxis_] - offset))) {
         indices.insert(indices.end(), {a, a + 1, b});
         ++a;
       } else {
@@ -458,7 +476,7 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
         --b;
       }
     }
-  } else if (!bandGrid)
+  } else if (!bandGrid && !fanPoint_)
     indices = mapbox::earcut<uint32_t>(polygon);
   std::vector<Triangle> initial;
   std::vector<bool> used(vertices_.size(), false);
@@ -750,8 +768,9 @@ Mesher::run(const std::vector<std::vector<glm::vec3>> &boundaries,
   const auto winds = [](UV w) { return glm::length(w) > 1e-10; };
   if (!explicitOuter) {
     // Two oppositely wound noncontractible rings describe a periodic band.
-    // Cut at a shared authored angular sample; both seam sides retain exact
-    // copies of the same 3D endpoints and are welded by shell validation.
+    // Join existing samples with a possibly slanted cut in parameter space.
+    // Its two sides differ by exactly one period and share exact 3D endpoints.
+    // No real boundary is resampled independently of its adjacent cap.
     if (rings.size() != 2 || !winds(winding[0]) ||
         glm::length(winding[0] + winding[1]) > 1e-8 * glm::length(winding[0]))
       throw std::runtime_error(
@@ -784,18 +803,17 @@ Mesher::run(const std::vector<std::vector<glm::vec3>> &boundaries,
       }
     }
     const double end = first.front().uv[axis] + winding[0][axis];
-    std::optional<size_t> start;
+    size_t start = 0;
+    double distance = period;
     for (size_t i = 0; i < second.size(); ++i) {
       const double d = (second[i].uv[axis] - end) / period;
-      if (std::abs(d - std::round(d)) < 1e-8) {
+      const double candidate = std::abs(d - std::round(d)) * period;
+      if (candidate < distance) {
         start = i;
-        break;
+        distance = candidate;
       }
     }
-    if (!start)
-      throw std::runtime_error(
-          "Periodic band bounds require a common seam sample");
-    std::rotate(second.begin(), second.begin() + *start, second.end());
+    std::rotate(second.begin(), second.begin() + start, second.end());
     second.front().uv[axis] +=
         std::round((end - second.front().uv[axis]) / period) * period;
     for (size_t i = 1; i < second.size(); ++i)
@@ -859,6 +877,149 @@ Mesher::run(const std::vector<std::vector<glm::vec3>> &boundaries,
     }
   return result;
 }
+
+std::vector<CurvedFaceTriangle>
+meshSphericalPoleFace(const ParametricSurface &surface,
+                      const std::vector<std::vector<glm::vec3>> &boundaries,
+                      bool explicitOuter, bool sameSense, double units) {
+  const auto &sphere = *surface.sphere;
+  const auto &f = sphere.frame;
+  const double radius = sphere.radius;
+  if (!std::isfinite(radius) || radius <= 0)
+    throw std::runtime_error("Invalid polar sphere radius");
+  const double tolerance = std::max(1e-7 / units, radius * 4e-7);
+  std::optional<glm::vec3> authoredPole;
+  std::optional<int> poleSign;
+  const std::vector<glm::vec3> *ring = nullptr;
+  for (const auto &loop : boundaries) {
+    if (loop.size() == 1) {
+      if (authoredPole)
+        throw std::runtime_error(
+            "Spherical face requires a single vertex loop");
+      const Point p(loop.front());
+      const double north = glm::length(p - f.origin - f.z * radius),
+                   south = glm::length(p - f.origin + f.z * radius);
+      if (std::min(north, south) > tolerance)
+        throw std::runtime_error(
+            "Spherical vertex loop must identify a surface pole");
+      authoredPole = loop.front();
+      poleSign = north < south ? 1 : -1;
+    } else if (loop.size() >= 3 && !ring)
+      ring = &loop;
+    else
+      throw std::runtime_error("Unsupported spherical vertex-loop bounds");
+  }
+  if (!authoredPole ||
+      (ring && explicitOuter && boundaries.front().size() == 1))
+    throw std::runtime_error("Spherical cap outer bound must be its edge loop");
+  const auto chart = [&](int sign) {
+    ParametricSurface s;
+    // Stereographic coordinates stay regular at the selected pole. Reflecting
+    // the southern chart's V axis keeps both charts' normals outward.
+    s.point = [=](double u, double v) -> std::optional<Point> {
+      const double squared = u * u + v * v, denominator = 1 + squared;
+      const auto p = f.origin + radius / denominator *
+                                    (2 * u * f.x + 2 * sign * v * f.y +
+                                     sign * (1 - squared) * f.z);
+      return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z)
+                 ? std::optional(p)
+                 : std::nullopt;
+    };
+    s.inverse = [=](Point p) -> std::optional<UV> {
+      const auto d = p - f.origin;
+      const double denominator = radius + sign * glm::dot(d, f.z);
+      if (std::abs(glm::length(d) - radius) > tolerance ||
+          denominator <= radius * 1e-12)
+        return std::nullopt;
+      return UV(glm::dot(d, f.x), sign * glm::dot(d, f.y)) / denominator;
+    };
+    return s;
+  };
+  const auto cap = [&](const auto &loop, int sign, glm::vec3 pole) {
+    const auto s = chart(sign);
+    // One monotone revolution must enclose the pole. The ordinary chart
+    // validation then rejects intersections and conflicting face orientation.
+    double winding = 0;
+    std::optional<double> previous;
+    double first = 0;
+    for (const auto &p : loop) {
+      const auto uv = s.inverse(Point(p));
+      if (!uv || glm::length(*uv) <= 1e-12)
+        throw std::runtime_error("Polar face boundary meets a singular pole");
+      const double angle = std::atan2(uv->y, uv->x);
+      if (previous) {
+        const double step =
+            std::remainder(angle - *previous, 2 * std::numbers::pi);
+        if (step * (sameSense ? 1 : -1) <= 0)
+          throw std::runtime_error(
+              "Polar face boundary must wind monotonically around its pole");
+        winding += step;
+      } else
+        first = angle;
+      previous = angle;
+    }
+    winding += std::remainder(first - *previous, 2 * std::numbers::pi);
+    if (std::abs(winding - (sameSense ? 2 : -2) * std::numbers::pi) > 1e-8)
+      throw std::runtime_error("Polar face boundary must wind exactly once");
+    return Mesher(s, units, 2 * radius, pole).run({loop}, true, sameSense);
+  };
+  const auto latitudeRing = [&](double height) {
+    const double radialRadius = std::sqrt(radius * radius - height * height);
+    ParametricCurve circle;
+    circle.domain = {{0, 2 * std::numbers::pi}};
+    circle.point = [=](double u) -> std::optional<Point> {
+      return f.origin + height * f.z +
+             radialRadius * (std::cos(u) * f.x + std::sin(u) * f.y);
+    };
+    const auto samples =
+        sampleCurve(circle, 0, 2 * std::numbers::pi, .0005 / units, 4097);
+    if (samples.size() < 4)
+      throw std::runtime_error("Spherical latitude exceeds its sample budget");
+    std::vector<glm::vec3> result;
+    for (size_t i = 0; i + 1 < samples.size(); ++i)
+      result.emplace_back(samples[i].point);
+    return result;
+  };
+  if (ring) {
+    // Keep the pole chart within its hemisphere. The original ring can lie
+    // past the equator; a regular angular band joins it to an interior latitude
+    // without moving or adding any source boundary samples.
+    double highest = -radius;
+    const auto s = chart(*poleSign);
+    for (const auto &p : *ring) {
+      if (!s.inverse(Point(p)))
+        throw std::runtime_error(
+            "Polar boundary is outside its spherical chart");
+      highest =
+          std::max(highest, *poleSign * glm::dot(Point(p) - f.origin, f.z));
+    }
+    auto collar =
+        latitudeRing(*poleSign * std::max(0., (highest + radius) / 2));
+    if ((sameSense ? 1 : -1) * *poleSign < 0)
+      std::ranges::reverse(collar);
+    auto result = cap(collar, *poleSign, *authoredPole);
+    std::ranges::reverse(collar);
+    const auto band = Mesher(surface, units, 2 * radius)
+                          .run({*ring, collar}, false, sameSense);
+    result.insert(result.end(), band.begin(), band.end());
+    return result;
+  }
+
+  // A spherical face bounded only by its degenerate pole loop covers the
+  // closed sphere. Two regular hemispheres share one exact sampled equator.
+  auto equatorialRing = latitudeRing(0);
+  if (!sameSense)
+    std::ranges::reverse(equatorialRing);
+  auto north =
+      cap(equatorialRing, 1,
+          *poleSign == 1 ? *authoredPole : glm::vec3(f.origin + radius * f.z));
+  std::ranges::reverse(equatorialRing);
+  auto south =
+      cap(equatorialRing, -1,
+          *poleSign == -1 ? *authoredPole : glm::vec3(f.origin - radius * f.z));
+  north.insert(north.end(), south.begin(), south.end());
+  return north;
+}
 } // namespace
 
 std::optional<std::vector<CurvedFaceTriangle>>
@@ -874,6 +1035,13 @@ meshIfcCurvedFace(const ParametricSurface &surface,
     double extent = 0;
     if (boundaries.front().empty())
       throw std::runtime_error("Empty curved face outer loop");
+    if (std::ranges::any_of(
+            boundaries, [](const auto &loop) { return loop.size() == 1; })) {
+      if (!surface.sphere)
+        throw std::runtime_error("Unsupported vertex-loop surface chart");
+      return meshSphericalPoleFace(surface, boundaries, explicitOuter,
+                                   sameSense, units);
+    }
     const Point origin(boundaries.front().front());
     for (const auto &loop : boundaries)
       for (auto p : loop)

@@ -2854,10 +2854,9 @@ private:
       return std::nullopt;
     }
     // Reserve part of the face's 1 mm budget for float storage and surface
-    // interpolation. Sampling exactly at the limit can reject otherwise valid
+    // chart interpolation. Sampling exactly at the limit can reject valid
     // large-radius edges after rounding their shared positions.
-    auto samples =
-        sampleCurve(*curve, *first, *last, .00075 / unitScale_, 4097);
+    auto samples = sampleCurve(*curve, *first, *last, .0005 / unitScale_, 4097);
     if (samples.size() < 2 ||
         glm::length(samples.front().point - *a) > tolerance ||
         glm::length(samples.back().point - *b) > tolerance) {
@@ -2944,6 +2943,28 @@ private:
             return faceFail("Invalid boundary orientation");
           const auto loopRef = firstRef(*bound, 0);
           const auto *poly = loopRef ? entity(*loopRef) : nullptr;
+          if (advanced && poly && poly->type == "IFCVERTEXLOOP") {
+            const auto vertexRef = firstRef(*poly, 0);
+            const auto *vertex = vertexRef ? entity(*vertexRef) : nullptr;
+            const auto pointRef = vertex && vertex->type == "IFCVERTEXPOINT"
+                                      ? firstRef(*vertex, 0)
+                                      : std::nullopt;
+            const auto point =
+                pointRef ? readBrepPoint(*pointRef) : std::nullopt;
+            if (!point || !std::isfinite(point->x) ||
+                !std::isfinite(point->y) || !std::isfinite(point->z))
+              return faceFail("Vertex loop requires a finite 3D vertex point");
+            if (++faceVertexCount > 8192)
+              return faceFail("Face exceeds its boundary vertex budget");
+            if (bound->type == "IFCFACEOUTERBOUND") {
+              if (hasOuterBound)
+                return faceFail("Multiple outer bounds");
+              hasOuterBound = true;
+              loops.insert(loops.begin(), {glm::vec3(*point)});
+            } else
+              loops.push_back({glm::vec3(*point)});
+            continue;
+          }
           if (!poly || poly->type != (advanced ? "IFCEDGELOOP" : "IFCPOLYLOOP"))
             return faceFail("Unsupported boundary loop");
           const auto refs = refList(argAt(*poly, 0));
@@ -3039,6 +3060,11 @@ private:
           const auto sameSense = enumValue(argAt(*face, 2)).value_or("");
           if (!surface || (sameSense != "T" && sameSense != "F"))
             return faceFail("Invalid face surface or SameSense");
+          if (surface->type != "IFCSPHERICALSURFACE" &&
+              std::ranges::any_of(
+                  loops, [](const auto &loop) { return loop.size() == 1; }))
+            return faceFail(
+                "Vertex-loop charts are only supported on spherical faces");
           if (surface->type != "IFCPLANE") {
             if (surface->type != "IFCCYLINDRICALSURFACE" &&
                 surface->type != "IFCSPHERICALSURFACE" &&

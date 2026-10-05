@@ -388,15 +388,24 @@ struct CurvedBuilder : StepBuilder {
                     add("IFCCIRCLE(" + placement({0, 0, z}) + "," +
                         number(radius) + ")"))};
   }
+  std::string vertexBound(glm::dvec3 location, bool outer = false,
+                          bool orientation = true) {
+    return add(std::string(outer ? "IFCFACEOUTERBOUND(" : "IFCFACEBOUND(") +
+               add("IFCVERTEXLOOP(" +
+                   add("IFCVERTEXPOINT(" + point(location) + ")") + ")") +
+               (orientation ? ",.T.)" : ",.F.)"));
+  }
   std::string finish() {
     return add("IFCADVANCEDBREP(" +
                add("IFCCLOSEDSHELL((" + refs(faces) + "))") + ")");
   }
   std::string band(const std::string &type, double radius, double z1, double z2,
                    double ringRadius, bool reversedBounds = false,
-                   double minor = 0, double topStart = 0) {
-    const auto bottom = circle(ringRadius, z1),
-               top = circle(ringRadius, z2, topStart);
+                   double minor = 0, double topStart = 0,
+                   double bottomStart = 0, double topRadius = -1) {
+    const auto bottom = circle(ringRadius, z1, bottomStart),
+               top =
+                   circle(topRadius > 0 ? topRadius : ringRadius, z2, topStart);
     const auto surface =
         add(type + "(" + placement({0, 0, 0}) + "," + number(radius) +
             (minor ? "," + number(minor) : "") + ")");
@@ -501,42 +510,310 @@ TEST(IfcCurvedBrep, SphericalBandsMatchIndependentSlabVolumeAndNormals) {
   exportCurvedFixture("sphere", fixture(step.definitions, brep));
 }
 
-TEST(IfcCurvedBrep, ToroidalBandsRetainAnnularCapsAndInnerSurfaceSense) {
+TEST(IfcCurvedBrep, OffsetPeriodicSeamsPreserveSharedCapsAndPhysicalUnits) {
+  for (double start : {.17, 3.13, 6.271})
+    for (bool reversed : {false, true})
+      for (bool millimetres : {false, true}) {
+        SCOPED_TRACE(::testing::Message() << start << ", reversed=" << reversed
+                                          << ", millimetres=" << millimetres);
+        CurvedBuilder step;
+        const double scale = millimetres ? 1000 : 1;
+        const auto brep =
+            step.band("IFCCYLINDRICALSURFACE", 2 * scale, 0, 3 * scale,
+                      2 * scale, reversed, 0, start, -.29);
+        auto source = fixture(step.definitions + degrees(), brep);
+        if (millimetres)
+          source.replace(source.find(".LENGTHUNIT.,$,.METRE."),
+                         std::string(".LENGTHUNIT.,$,.METRE.").size(),
+                         ".LENGTHUNIT.,.MILLI.,.METRE.");
+        const auto model = LoadFromStep(source);
+        complete(model);
+        ASSERT_FALSE(model.indices.empty());
+        watertight(model);
+        EXPECT_NEAR(volume(model) / (scale * scale * scale), 12 * pi, .03);
+        for (const auto &vertex : model.vertices)
+          if (std::abs(vertex.normal.z) < .9f) {
+            EXPECT_GT(vertex.position.x * vertex.normal.x +
+                          vertex.position.y * vertex.normal.y,
+                      1.99f * static_cast<float>(scale));
+            EXPECT_NEAR(std::hypot(vertex.position.x, vertex.position.y),
+                        2 * scale, .0011 * scale);
+          }
+        if (start == .17 && !reversed && !millimetres)
+          exportCurvedFixture("offset-cylinder", source);
+      }
+}
+
+TEST(IfcCurvedBrep, OffsetSphericalBandsRetainUnequalBoundarySampling) {
+  const double radius = 2, low = 0, high = 1.98;
+  for (bool reversed : {false, true}) {
+    CurvedBuilder step;
+    const auto brep =
+        step.band("IFCSPHERICALSURFACE", radius, low, high, radius, reversed, 0,
+                  .173, -.31, std::sqrt(radius * radius - high * high));
+    const auto source = fixture(step.definitions, brep);
+    const auto model = LoadFromStep(source);
+    complete(model);
+    ASSERT_FALSE(model.indices.empty());
+    watertight(model);
+    EXPECT_NEAR(volume(model),
+                pi * (radius * radius * (high - low) -
+                      (high * high * high - low * low * low) / 3),
+                .025);
+    for (const auto &vertex : model.vertices)
+      if (std::abs(vertex.normal.z) < .999f)
+        EXPECT_GT(glm::dot(vertex.position, vertex.normal), 1.995f);
+    if (!reversed)
+      exportCurvedFixture("offset-sphere", source);
+  }
+}
+
+TEST(IfcCurvedBrep, OffsetBandsSupportEitherPeriodicAxisAndSurfaceSense) {
+  using container::geometry::ifc::detail::meshIfcCurvedFace;
+  using container::geometry::ifc::detail::ParametricSurface;
+  for (bool swapped : {false, true})
+    for (bool sameSense : {false, true}) {
+      ParametricSurface surface;
+      const unsigned axis = swapped ? 1 : 0;
+      surface.periods[axis] = 360;
+      surface.point = [swapped](double u,
+                                double v) -> std::optional<glm::dvec3> {
+        const double angle = (swapped ? v : u) * pi / 180, z = swapped ? u : v;
+        return glm::dvec3(2 * std::cos(angle), 2 * std::sin(angle), z);
+      };
+      surface.inverse = [swapped](glm::dvec3 p) -> std::optional<glm::dvec2> {
+        const double angle = std::atan2(p.y, p.x) * 180 / pi;
+        return swapped ? glm::dvec2(p.z, angle) : glm::dvec2(angle, p.z);
+      };
+      const double direction = (sameSense != swapped) ? 1 : -1;
+      const auto ring = [&](unsigned count, double start, double z,
+                            double sense) {
+        std::vector<glm::vec3> points;
+        for (unsigned i = 0; i < count; ++i) {
+          const double angle = start + sense * 360 * i / count;
+          points.emplace_back(
+              *surface.point(swapped ? z : angle, swapped ? angle : z));
+        }
+        return points;
+      };
+      const auto bottom = ring(128, -13, 0, direction),
+                 top = ring(160, 19.1, 3, -direction);
+      std::string error;
+      const auto mesh =
+          meshIfcCurvedFace(surface, {bottom, top}, false, sameSense, 1, error);
+      ASSERT_TRUE(mesh) << error;
+      using Key = std::array<float, 3>;
+      const auto key = [](glm::vec3 p) { return Key{p.x, p.y, p.z}; };
+      std::map<std::pair<Key, Key>, std::pair<unsigned, int>> edges;
+      for (const auto &triangle : *mesh)
+        for (unsigned i = 0; i < 3; ++i) {
+          const auto p = triangle.positions[i], n = triangle.normals[i];
+          const double radialSense = swapped == sameSense ? -1 : 1;
+          EXPECT_GT((p.x * n.x + p.y * n.y) * radialSense, 1.995);
+          EXPECT_NEAR(std::hypot(p.x, p.y), 2., .0011);
+          const auto a = key(p), b = key(triangle.positions[(i + 1) % 3]);
+          ASSERT_NE(a, b);
+          auto &use = edges[std::minmax(a, b)];
+          ++use.first;
+          use.second += a < b ? 1 : -1;
+        }
+      size_t boundaries = 0;
+      for (const auto &[_, use] : edges) {
+        EXPECT_LE(use.first, 2u);
+        if (use.first == 1)
+          ++boundaries;
+        else
+          EXPECT_EQ(use.second, 0);
+      }
+      EXPECT_EQ(boundaries, bottom.size() + top.size());
+      for (const auto *loop : {&bottom, &top})
+        for (size_t i = 0; i < loop->size(); ++i) {
+          const auto a = key((*loop)[i]),
+                     b = key((*loop)[(i + 1) % loop->size()]);
+          const auto found = edges.find(std::minmax(a, b));
+          ASSERT_NE(found, edges.end());
+          EXPECT_EQ(found->second.first, 1u);
+          EXPECT_EQ(found->second.second, a < b ? 1 : -1);
+        }
+      // A twice-wound loop is not a single periodic band, even if its paired
+      // loop winds oppositely. It must be rejected before creating geometry.
+      auto twiceBottom = bottom, twiceTop = top;
+      twiceBottom.insert(twiceBottom.end(), bottom.begin(), bottom.end());
+      twiceTop.insert(twiceTop.end(), top.begin(), top.end());
+      EXPECT_FALSE(meshIfcCurvedFace(surface, {twiceBottom, twiceTop}, false,
+                                     sameSense, 1, error));
+      EXPECT_NE(error.find("multiple winding"), std::string::npos) << error;
+    }
+}
+
+TEST(IfcCurvedBrep, SphericalVertexLoopsMeshClosedSpheresWithSmoothPoles) {
+  for (int pole : {-1, 1})
+    for (bool millimetres : {false, true}) {
+      CurvedBuilder step;
+      const double scale = millimetres ? 1000 : 1, radius = 2 * scale;
+      const glm::dvec3 center(3 * scale, -4 * scale, 2 * scale), axis(0, 1, 0);
+      const auto surface =
+          step.add("IFCSPHERICALSURFACE(" + step.placement(center, axis) + "," +
+                   number(radius) + ")");
+      step.face({step.vertexBound(center + axis * (pole * radius), pole == 1,
+                                  pole == 1)},
+                surface);
+      const auto brep = step.finish();
+      auto source = fixture(step.definitions + degrees(), brep);
+      if (millimetres)
+        source.replace(source.find(".LENGTHUNIT.,$,.METRE."),
+                       std::string(".LENGTHUNIT.,$,.METRE.").size(),
+                       ".LENGTHUNIT.,.MILLI.,.METRE.");
+      const auto model = LoadFromStep(source);
+      complete(model);
+      ASSERT_FALSE(model.indices.empty());
+      watertight(model);
+      EXPECT_NEAR(volume(model) / (scale * scale * scale), 32 * pi / 3, .06);
+      bool foundPole = false;
+      for (const auto &vertex : model.vertices) {
+        const auto relative = glm::dvec3(vertex.position) - center;
+        EXPECT_NEAR(glm::length(relative) / scale, 2., .0011);
+        EXPECT_GT(glm::dot(relative / radius, glm::dvec3(vertex.normal)),
+                  .99999);
+        foundPole |=
+            glm::length(relative - axis * (pole * radius)) < scale * 1e-6;
+      }
+      EXPECT_TRUE(foundPole);
+      if (pole == 1 && !millimetres)
+        exportCurvedFixture("pole-sphere", source);
+    }
+}
+
+TEST(IfcCurvedBrep, SphericalPoleCapsRetainSharedRingAndAnalyticVolume) {
+  for (int pole : {-1, 1})
+    for (bool outer : {false, true})
+      for (double latitude : {.8, -1.8}) {
+        SCOPED_TRACE(::testing::Message()
+                     << "pole=" << pole << ", outer=" << outer
+                     << ", latitude=" << latitude);
+        CurvedBuilder step;
+        const double radius = 2, z = pole * latitude,
+                     ringRadius = std::sqrt(radius * radius - z * z);
+        const auto ring = step.circle(ringRadius, z, .193);
+        const auto surface = step.add("IFCSPHERICALSURFACE(" +
+                                      step.placement({0, 0, 0}) + ",2.)");
+        step.face({step.vertexBound({0, 0, pole * radius}),
+                   step.bound({{ring.edge, pole == 1}}, outer, false)},
+                  surface);
+        step.plane({{ring.edge, pole == -1}}, {0, 0, z},
+                   {0, 0, static_cast<double>(-pole)});
+        const auto brep = step.finish();
+        const auto source = fixture(step.definitions, brep);
+        const auto model = LoadFromStep(source);
+        complete(model);
+        ASSERT_FALSE(model.indices.empty());
+        watertight(model);
+        const double height = radius - latitude;
+        EXPECT_NEAR(volume(model), pi * height * height * (radius - height / 3),
+                    .06);
+        for (const auto &vertex : model.vertices)
+          if (std::hypot(vertex.normal.x, vertex.normal.y) > .001f)
+            EXPECT_GT(glm::dot(vertex.position, vertex.normal), 1.995f);
+        if (pole == 1 && outer && latitude == .8)
+          exportCurvedFixture("pole-cap", source);
+      }
+}
+
+TEST(IfcCurvedBrep, SphericalVertexLoopVoidsKeepInwardNormalsAndVolume) {
   CurvedBuilder step;
-  const double major = 3, minor = 1, angle = .6, z = minor * std::sin(angle),
-               radius = major + minor * std::cos(angle);
-  const auto bottom = step.circle(radius, -z), top = step.circle(radius, z),
-             innerBottom = step.circle(major, -z),
-             innerTop = step.circle(major, z);
-  const auto torus = step.add("IFCTOROIDALSURFACE(" +
-                              step.placement({0, 0, 0}) + ",3.,1.)"),
-             cylinder = step.add("IFCCYLINDRICALSURFACE(" +
-                                 step.placement({0, 0, 0}) + ",3.)");
-  step.face({step.bound({{bottom.edge, true}}, false),
-             step.bound({{top.edge, false}}, false)},
-            torus);
-  step.face({step.bound({{innerTop.edge, true}}, false),
-             step.bound({{innerBottom.edge, false}}, false)},
-            cylinder, false);
-  step.face({step.bound({{top.edge, true}}),
-             step.bound({{innerTop.edge, false}}, false)},
-            step.add("IFCPLANE(" + step.placement({0, 0, z}) + ")"));
-  step.face(
-      {step.bound({{bottom.edge, false}}),
-       step.bound({{innerBottom.edge, true}}, false)},
-      step.add("IFCPLANE(" + step.placement({0, 0, -z}, {0, 0, -1}) + ")"));
-  const auto brep = step.finish();
+  std::vector<std::string> shells;
+  for (double radius : {3., 1.}) {
+    const auto surface =
+        step.add("IFCSPHERICALSURFACE(" + step.placement({0, 0, 0}) + "," +
+                 number(radius) + ")");
+    step.face({step.vertexBound({0, 0, radius})}, surface, radius == 3);
+    shells.push_back(step.add("IFCCLOSEDSHELL((" + step.faces.back() + "))"));
+  }
+  const auto brep = step.add("IFCADVANCEDBREPWITHVOIDS(" + shells[0] + ",(" +
+                             shells[1] + "))");
   const auto model = LoadFromStep(fixture(step.definitions, brep));
   complete(model);
   ASSERT_FALSE(model.indices.empty());
   watertight(model);
-  const double expected =
-      pi *
-      (2 * major * minor * minor * (angle + std::sin(angle) * std::cos(angle)) +
-       2 * minor * minor * minor *
-           (std::sin(angle) - std::pow(std::sin(angle), 3) / 3));
-  EXPECT_NEAR(volume(model), expected, .045);
-  exportCurvedFixture("torus", fixture(step.definitions, brep));
+  EXPECT_NEAR(volume(model), 4 * pi * (27 - 1) / 3, .1);
+  for (const auto &vertex : model.vertices) {
+    const float radius = glm::length(vertex.position);
+    EXPECT_NEAR(glm::dot(vertex.position / radius, vertex.normal),
+                radius > 2 ? 1.f : -1.f, .00001f);
+  }
+}
+
+TEST(IfcCurvedBrep, MalformedAndUnsupportedVertexLoopsRejectAtomically) {
+  for (unsigned invalid = 0; invalid < 5; ++invalid) {
+    CurvedBuilder step;
+    const auto surface =
+        step.add(std::string(invalid == 4 ? "IFCCYLINDRICALSURFACE("
+                                          : "IFCSPHERICALSURFACE(") +
+                 step.placement({0, 0, 0}) + ",2.)");
+    auto bound = step.vertexBound(invalid == 0   ? glm::dvec3(2, 0, 0)
+                                  : invalid == 1 ? glm::dvec3(0, 0, 1.9)
+                                                 : glm::dvec3(0, 0, 2));
+    std::vector bounds{bound};
+    if (invalid == 2)
+      bounds.push_back(step.vertexBound({0, 0, -2}));
+    if (invalid == 3) {
+      const auto at = step.definitions.find("=IFCVERTEXPOINT(");
+      step.definitions.replace(at + 1, std::string("IFCVERTEXPOINT").size(),
+                               "IFCVERTEX");
+    }
+    step.face(bounds, surface);
+    const auto brep = step.finish();
+    const auto model = LoadFromStep(fixture(step.definitions, brep));
+    EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Failed);
+    EXPECT_TRUE(model.vertices.empty());
+    ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+    EXPECT_NE(model.importReport.diagnostics.front().reason.find("loop"),
+              std::string::npos)
+        << model.importReport.diagnostics.front().reason;
+  }
+}
+
+TEST(IfcCurvedBrep, ToroidalBandsRetainAnnularCapsAndInnerSurfaceSense) {
+  for (bool offset : {false, true}) {
+    SCOPED_TRACE(offset);
+    CurvedBuilder step;
+    const double major = 3, minor = 1, angle = .6, z = minor * std::sin(angle),
+                 radius = major + minor * std::cos(angle);
+    const auto bottom = step.circle(radius, -z, offset ? -.32 : 0),
+               top = step.circle(radius, z, offset ? .19 : 0),
+               innerBottom = step.circle(major, -z, offset ? .47 : 0),
+               innerTop = step.circle(major, z, offset ? -.18 : 0);
+    const auto torus = step.add("IFCTOROIDALSURFACE(" +
+                                step.placement({0, 0, 0}) + ",3.,1.)"),
+               cylinder = step.add("IFCCYLINDRICALSURFACE(" +
+                                   step.placement({0, 0, 0}) + ",3.)");
+    step.face({step.bound({{bottom.edge, true}}, false, !offset),
+               step.bound({{top.edge, false}}, false, !offset)},
+              torus);
+    step.face({step.bound({{innerTop.edge, true}}, false),
+               step.bound({{innerBottom.edge, false}}, false)},
+              cylinder, false);
+    step.face({step.bound({{top.edge, true}}),
+               step.bound({{innerTop.edge, false}}, false)},
+              step.add("IFCPLANE(" + step.placement({0, 0, z}) + ")"));
+    step.face(
+        {step.bound({{bottom.edge, false}}),
+         step.bound({{innerBottom.edge, true}}, false)},
+        step.add("IFCPLANE(" + step.placement({0, 0, -z}, {0, 0, -1}) + ")"));
+    const auto brep = step.finish();
+    const auto model = LoadFromStep(fixture(step.definitions, brep));
+    complete(model);
+    ASSERT_FALSE(model.indices.empty());
+    watertight(model);
+    const double expected =
+        pi * (2 * major * minor * minor *
+                  (angle + std::sin(angle) * std::cos(angle)) +
+              2 * minor * minor * minor *
+                  (std::sin(angle) - std::pow(std::sin(angle), 3) / 3));
+    EXPECT_NEAR(volume(model), expected, .045);
+    exportCurvedFixture(offset ? "offset-torus" : "torus",
+                        fixture(step.definitions, brep));
+  }
 }
 
 TEST(IfcCurvedBrep, BilinearSplineBoxPreservesNonplanarInteriorAndFaceNormals) {
@@ -674,12 +951,12 @@ TEST(IfcCurvedBrep,
   }
 }
 
-TEST(IfcCurvedBrep, InvalidSurfacesAndUnsupportedChartsRejectAtomically) {
-  for (unsigned invalid = 0; invalid < 4; ++invalid) {
+TEST(IfcCurvedBrep, InvalidSurfacesAndOrientationRejectAtomically) {
+  for (unsigned invalid = 0; invalid < 3; ++invalid) {
     CurvedBuilder step;
     const auto brep =
         step.band("IFCCYLINDRICALSURFACE", invalid == 0 ? 1.9 : 2., 0, 3, 2,
-                  false, 0, invalid == 3 ? .17 : 0);
+                  false, 0, .17);
     if (invalid == 1) {
       const auto p = step.definitions.find("=IFCADVANCEDFACE(");
       const auto flag = step.definitions.find(",.T.);", p);

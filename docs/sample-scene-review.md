@@ -111,7 +111,7 @@ include extrusion/revolution surfaces and rectangular/curve-bounded trims, with
 hole-crossing checks and cycle rejection. Solid/hollow spline sweeps, closed-loop
 seams and mitered bends have independent volume and topology checks. Four six-product
 sweep captures in deferred/forward, with and without TAA, show no seam-cap
-artifacts or VUID/synchronization hazards. Polygonal fillets, unbranched sectioned
+artifacts or VUID/synchronization hazards. Polygonal fillets, sectioned
 surface meshes/pcurves, and boxed/polygon-bounded half-space operations are now
 implemented. Their independent volume, area and topology checks pass. A further six-product gallery
 renders in both techniques with TAA off/on, without VUID/synchronization hazards.
@@ -130,16 +130,36 @@ explicit seams and surface-normal checks pass. The six-product curved gallery
 renders smoothly in deferred/forward with TAA off/on; its toroidal opening and
 spline curvature remain visible. Captures under `out/ifc-review/curved-brep/`
 contain no VUID/synchronization hazards.
-All 113 IFC importer/core cases and ten selected suites pass in the final
+Periodic bands now accept different boundary seam locations and unequal cyclic
+sampling without moving shared cap edges. Spherical pole vertex loops mesh
+closed spheres and caps, including caps larger than a hemisphere, with smooth
+pole normals. Rotated and unit-scaled spheres, inward cavities, paired edges
+and independent analytic volumes pass the regression checks.
+The six-product periodic/pole gallery renders in deferred/forward with TAA
+off/on, all products complete and no VUID/synchronization hazards. Captures under
+`out/ifc-review/periodic-poles/` show smooth poles and continuous shared seams.
+Sectioned surfaces now support ordered tag splits/merges and multiway branches,
+retaining every source corner and authored station, including zero-width
+profile segments. Planar polygonal sharp joins
+reuse shared half-angle miters, including branched cross sections. Tests check
+sloped crowns, chord accuracy, analytic areas, metre/millimetre units, reversed
+and rotated joins, exact edge uses, Euler count and one continuous boundary.
+Unsafe miters, folded patches, intersecting directrices and reordered tag runs
+reject atomically. A nine-product gallery containing four surfaces, four branch
+pcurve overlays and a floor renders in deferred/forward with TAA off/on without
+VUID/synchronization hazards. Captures are under `out/ifc-review/sectioned-gaps/`.
+All 129 IFC importer/core cases and ten selected suites pass in the final
 Visual Studio Release build; ten optional USD cases lack their sample assets.
-Branching/guide-curve section transitions, unsupported swept profile families,
-singular/vertex-loop advanced faces and periodic bands without a common seam
-sample remain outside coverage.
+Guide-curve transitions, missing/reordered tag runs, curved/nonplanar sharp
+sectioned joins, unsupported swept profile families,
+non-spherical singular charts and edge loops passing through spherical poles
+remain outside coverage.
 Hello Wall body surfaces and representative shared Tekla structural
 bodies pass independent cross-format surface checks. The IFCX export contains
 no reinforcing-bar meshes and is not a complete geometry oracle.
 See [IFC coverage and limitations](ifc-import.md) for fixed-camera captures,
-representation limits and verification. The changes are local pending commit and review.
+representation limits and verification. The base coverage is committed; the
+periodic seam/pole and sectioned branch/miter increments are local pending review.
 
 ### P2: Forward rendering has a black environment background
 
