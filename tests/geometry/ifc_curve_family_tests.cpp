@@ -1586,6 +1586,282 @@ TEST(IfcCurveFamilies, MalformedBranchesAndUnsafeMitersRejectAtomically) {
   }
 }
 
+void exportProfileFixture(const char *name, const std::string &source) {
+  if (const auto *root = std::getenv("CONTAINER_IFC_PROFILE_FIXTURE_ROOT")) {
+    std::filesystem::create_directories(root);
+    std::ofstream stream(std::filesystem::path(root) /
+                         (std::string(name) + ".ifc"));
+    stream << source;
+    ASSERT_TRUE(stream.good());
+  }
+}
+
+const std::string derivedEllipseFixture =
+    "#2=IFCCARTESIANPOINT((1.,2.)); #3=IFCDIRECTION((0.,1.));"
+    "#4=IFCAXIS2PLACEMENT2D(#2,#3);"
+    "#5=IFCCIRCLEPROFILEDEF(.CURVE.,$,#4,2.);"
+    "#6=IFCCARTESIANPOINT((4.,-1.)); #7=IFCDIRECTION((1.,0.));"
+    "#8=IFCCARTESIANTRANSFORMATIONOPERATOR2DNONUNIFORM(#3,#7,#6,3.,0.5);"
+    "#9=IFCDERIVEDPROFILEDEF(.CURVE.,$,#5,#8,$);"
+    "#11=IFCMIRROREDPROFILEDEF(.CURVE.,$,#9,*,$);"
+    "#20=IFCCARTESIANPOINT((10.,20.,30.));"
+    "#21=IFCDIRECTION((0.,1.,0.)); #22=IFCDIRECTION((0.,0.,1.));"
+    "#23=IFCAXIS2PLACEMENT3D(#20,$,#21);"
+    "#24=IFCCARTESIANPOINT((0.,0.,0.)); #25=IFCAXIS1PLACEMENT(#24,$);";
+
+TEST(IfcCurveFamilies,
+     DerivedAndMirroredSweptProfilesPreservePlacedParameters) {
+  for (bool mirror : {false, true}) {
+    for (bool revolution : {false, true}) {
+      const std::string parent = mirror ? "#11" : "#9";
+      const auto source = fixture(
+          derivedEllipseFixture +
+          (revolution ? "#30=IFCSURFACEOFREVOLUTION(" + parent + ",#23,#25);"
+                      : "#30=IFCSURFACEOFLINEAREXTRUSION(" + parent +
+                            ",#23,#22,2.);") +
+          "#31=IFCCARTESIANPOINT((0.,0.));"
+          "#32=IFCCARTESIANPOINT((6.283185307179586," +
+          std::string(revolution ? "0." : "1.") +
+          ")); #33=IFCPOLYLINE((#31,#32)); #10=IFCPCURVE(#30,#33);");
+      const auto model = container::geometry::ifc::LoadFromStep(source);
+      complete(model);
+      const auto points = vertices(model);
+      ASSERT_FALSE(points.empty());
+      EXPECT_EQ(points.front(), glm::dvec3(8, mirror ? 14 : 26, 30));
+      EXPECT_NEAR(points.back().z, revolution ? 30 : 32, 1e-6);
+      for (const auto p : points) {
+        if (revolution) {
+          EXPECT_NEAR((p.x - 10) * (p.x - 10) + (p.y - 20) * (p.y - 20), 40,
+                      4e-5);
+          EXPECT_EQ(p.z, 30);
+        } else {
+          const double cy = mirror ? 15 : 25;
+          EXPECT_NEAR((p.x - 8) * (p.x - 8) / 36 + (p.y - cy) * (p.y - cy), 1,
+                      4e-6);
+        }
+      }
+      if (!revolution)
+        exportProfileFixture(mirror ? "mirrored-ellipse" : "derived-ellipse",
+                             source);
+    }
+  }
+}
+
+TEST(IfcCurveFamilies, DerivedProfileAxesHonorDefaultsAndPerpendicularSenses) {
+  const std::string definitions =
+      "#2=IFCCARTESIANPOINT((1.,2.)); #3=IFCCARTESIANPOINT((3.,4.));"
+      "#4=IFCPOLYLINE((#2,#3)); #5=IFCARBITRARYOPENPROFILEDEF(.CURVE.,$,#4);"
+      "#6=IFCCARTESIANPOINT((10.,20.)); #7=IFCDIRECTION((3.,4.));"
+      "#8=IFCDIRECTION((-4.,3.)); #11=IFCDIRECTION((4.,0.));"
+      "#20=IFCDIRECTION((0.,0.,1.));"
+      "#14=IFCDERIVEDPROFILEDEF(.CURVE.,$,#5,#9,$);"
+      "#30=IFCSURFACEOFLINEAREXTRUSION(#14,$,#20,1.);"
+      "#31=IFCCARTESIANPOINT((0.,0.)); #32=IFCCARTESIANPOINT((1.,0.));"
+      "#33=IFCPOLYLINE((#31,#32)); #10=IFCPCURVE(#30,#33);";
+  struct Case {
+    std::string op;
+    glm::dvec3 first, last;
+  };
+  for (const auto &test : std::vector<Case>{
+           {"IFCCARTESIANTRANSFORMATIONOPERATOR2D($,$,#6,$)",
+            {11, 22, 0},
+            {13, 24, 0}},
+           {"IFCCARTESIANTRANSFORMATIONOPERATOR2D(#7,$,#6,2.)",
+            {8, 24, 0},
+            {7.2, 29.6, 0}},
+           {"IFCCARTESIANTRANSFORMATIONOPERATOR2D($,#8,#6,2.)",
+            {8, 24, 0},
+            {7.2, 29.6, 0}},
+           {"IFCCARTESIANTRANSFORMATIONOPERATOR2D(#7,#11,#6,2.)",
+            {14.4, 19.2, 0},
+            {20, 20, 0}},
+           {"IFCCARTESIANTRANSFORMATIONOPERATOR2DNONUNIFORM($,$,#6,2.,$)",
+            {12, 24, 0},
+            {16, 28, 0}},
+           {"IFCCARTESIANTRANSFORMATIONOPERATOR2DNONUNIFORM($,$,#6,$,3.)",
+            {11, 26, 0},
+            {13, 32, 0}}}) {
+    const auto model = container::geometry::ifc::LoadFromStep(
+        fixture(definitions + "#9=" + test.op + ";"));
+    complete(model);
+    const auto points = vertices(model);
+    ASSERT_FALSE(points.empty());
+    EXPECT_LT(glm::length(points.front() - test.first), 2e-6);
+    EXPECT_LT(glm::length(points.back() - test.last), 2e-6);
+  }
+  auto largeSource = definitions;
+  replace(largeSource, "((1.,2.))", "((1.E18,2.E18))");
+  replace(largeSource, "((3.,4.))", "((3.E18,4.E18))");
+  largeSource += "#9=IFCCARTESIANTRANSFORMATIONOPERATOR2DNONUNIFORM($,$,#6,1.E-"
+                 "18,2.E-18);";
+  const auto reduced =
+      container::geometry::ifc::LoadFromStep(fixture(largeSource));
+  complete(reduced);
+  const auto points = vertices(reduced);
+  ASSERT_FALSE(points.empty());
+  EXPECT_EQ(points.front(), glm::dvec3(11, 24, 0));
+  EXPECT_EQ(points.back(), glm::dvec3(13, 28, 0));
+}
+
+TEST(IfcCurveFamilies, ScaledSplineProfilesKeepChordAccuracyAndSurfaceInverse) {
+  auto definitions = sectionedFixture;
+  replace(definitions, "(#30,#31)", "(#60,#60)");
+  definitions +=
+      "#50=IFCCARTESIANPOINT((1.,0.)); #51=IFCCARTESIANPOINT((1.,1.));"
+      "#52=IFCCARTESIANPOINT((0.,1.));"
+      "#53=IFCRATIONALBSPLINECURVEWITHKNOTS(2,(#50,#51,#52),.UNSPECIFIED.,"
+      ".F.,.F.,(3,3),(2.,4.),.UNSPECIFIED.,(1.,0.7071067811865476,1.));"
+      "#54=IFCARBITRARYOPENPROFILEDEF(.CURVE.,$,#53);"
+      "#55=IFCCARTESIANPOINT((0.,0.));"
+      "#56=IFCCARTESIANTRANSFORMATIONOPERATOR2DNONUNIFORM($,$,#55,100.,1.);"
+      "#60=IFCDERIVEDPROFILEDEF(.CURVE.,$,#54,#56,$);";
+  const auto model =
+      container::geometry::ifc::LoadFromStep(fixture(definitions, "#40"));
+  checkSectionedMesh(model, {0, 0, -1});
+  std::map<double, glm::dvec2> boundary;
+  for (const auto &vertex : model.vertices) {
+    const auto p = vertex.position;
+    EXPECT_NEAR(double(p.y) * p.y / 10000 + double(p.z) * p.z, 1, 2e-7);
+    if (p.x == 0)
+      boundary[std::atan2(p.z, p.y / 100.)] = {p.y, p.z};
+  }
+  ASSERT_GT(boundary.size(), 2u);
+  auto previous = boundary.begin();
+  for (auto current = std::next(previous); current != boundary.end();
+       ++current) {
+    const double angle = (current->first + previous->first) / 2;
+    const glm::dvec2 exact(100 * std::cos(angle), std::sin(angle));
+    const auto a = previous->second, d = current->second - a;
+    const auto nearest =
+        a + d * std::clamp(glm::dot(exact - a, d) / glm::dot(d, d), 0., 1.);
+    EXPECT_LE(glm::length(exact - nearest), .001);
+    previous = current;
+  }
+
+  using container::geometry::ifc::detail::Entity;
+  using container::geometry::ifc::detail::StepValue;
+  const auto numeric = [](double n) {
+    StepValue v;
+    v.kind = StepValue::Kind::Number;
+    v.number = n;
+    return v;
+  };
+  const auto ref = [](uint32_t id) {
+    StepValue v;
+    v.kind = StepValue::Kind::Ref;
+    v.ref = id;
+    return v;
+  };
+  const auto values = [](std::initializer_list<StepValue> a) {
+    StepValue v;
+    v.kind = StepValue::Kind::List;
+    v.list = a;
+    return v;
+  };
+  StepValue curveType;
+  curveType.kind = StepValue::Kind::Enum;
+  curveType.text = "CURVE";
+  std::unordered_map<uint32_t, Entity> entities;
+  const auto add = [&](uint32_t id, const char *type,
+                       std::initializer_list<StepValue> a) {
+    entities.emplace(id, Entity{id, type, values(a)});
+  };
+  add(1, "IFCCARTESIANPOINT", {values({numeric(0), numeric(0)})});
+  add(2, "IFCAXIS2PLACEMENT2D", {ref(1), {}});
+  add(3, "IFCCIRCLE", {ref(2), numeric(1)});
+  add(4, "IFCARBITRARYCLOSEDPROFILEDEF", {curveType, {}, ref(3)});
+  add(5, "IFCCARTESIANPOINT", {values({numeric(10), numeric(20)})});
+  add(6, "IFCCARTESIANTRANSFORMATIONOPERATOR2DNONUNIFORM",
+      {{}, {}, ref(5), numeric(100), numeric(1)});
+  add(7, "IFCDERIVEDPROFILEDEF", {curveType, {}, ref(4), ref(6), {}});
+  add(8, "IFCMIRROREDPROFILEDEF", {curveType, {}, ref(7), {}, {}});
+  add(9, "IFCDIRECTION", {values({numeric(0), numeric(0), numeric(1)})});
+  add(10, "IFCSURFACEOFLINEAREXTRUSION", {ref(8), {}, ref(9), numeric(3)});
+  std::string error;
+  const auto surface = container::geometry::ifc::detail::readIfcSurface(
+      entities, 10, 1, 1, error);
+  ASSERT_TRUE(surface) << error;
+  ASSERT_TRUE(surface->inverse);
+  const auto p = surface->point(.7, 1.2);
+  ASSERT_TRUE(p);
+  EXPECT_NEAR(p->x, -10 - 100 * std::cos(.7), 1e-12);
+  EXPECT_NEAR(p->y, 20 + std::sin(.7), 1e-12);
+  const auto uv = surface->inverse(*p);
+  ASSERT_TRUE(uv);
+  EXPECT_NEAR(uv->x, .7, 1e-12);
+  EXPECT_NEAR(uv->y, 1.2, 1e-12);
+}
+
+TEST(IfcCurveFamilies, DerivedSectionedProfilesRetainTagsAndMiterOrientation) {
+  for (bool sharp : {false, true}) {
+    for (bool mirror : {false, true}) {
+      auto definitions =
+          sharp ? miterSectionedFixture : branchingSectionedFixture;
+      if (sharp) {
+        definitions +=
+            "#31=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(1.,2.,1.),(0.,0.,0.),"
+            "('left','crown','crown','right'),#24);";
+        replace(definitions, "(#30,#30)", "(#30,#31)");
+      }
+      definitions +=
+          "#62=IFCCARTESIANPOINT((0.,0.));"
+          "#63=IFCCARTESIANTRANSFORMATIONOPERATOR2DNONUNIFORM($,$,#62,1.5,0.5);"
+          "#60=IFCDERIVEDPROFILEDEF(.CURVE.,$,#30,#63,$);"
+          "#61=IFCDERIVEDPROFILEDEF(.CURVE.,$,#31,#63,$);"
+          "#64=IFCMIRROREDPROFILEDEF(.CURVE.,$,#60,*,$);"
+          "#65=IFCMIRROREDPROFILEDEF(.CURVE.,$,#61,*,$);";
+      replace(definitions, "(#30,#31)", mirror ? "(#64,#65)" : "(#60,#61)");
+      const auto source = fixture(definitions, "#40");
+      const auto model = container::geometry::ifc::LoadFromStep(source);
+      EXPECT_NEAR(checkSectionedMesh(model, {0, 0, mirror ? -1 : 1}),
+                  sharp ? 120 : 60, 1e-6);
+      if (mirror == sharp)
+        exportProfileFixture(sharp ? "mirrored-miter" : "derived-section",
+                             source);
+    }
+  }
+}
+
+TEST(IfcCurveFamilies, InvalidAndRecursiveDerivedProfilesRejectAtomically) {
+  std::vector<std::string> sources;
+  for (const auto &[from, to] :
+       std::vector<std::pair<std::string, std::string>>{
+           {"#5,#8,$", "#9,#8,$"},
+           {"#5,#8,$", "#99,#8,$"},
+           {"#5,#8,$", "#11,#8,$"},
+           {"IFCDERIVEDPROFILEDEF(.CURVE.", "IFCDERIVEDPROFILEDEF(.AREA."},
+           {"#6,3.,0.5", "#6,0.,0.5"},
+           {"#6,3.,0.5", "#6,3.,-0.5"},
+           {"IFCCARTESIANPOINT((4.,-1.))", "IFCCARTESIANPOINT((4.,-1.,0.))"},
+           {"IFCDIRECTION((1.,0.))", "IFCDIRECTION((0.,0.))"},
+           {"IFCDIRECTION((1.,0.))", "IFCDIRECTION((1.,0.,0.))"},
+           {"IFCCARTESIANTRANSFORMATIONOPERATOR2DNONUNIFORM",
+            "IFCCARTESIANTRANSFORMATIONOPERATOR3DNONUNIFORM"}}) {
+    auto definitions = derivedEllipseFixture;
+    replace(definitions, from, to);
+    sources.push_back(definitions);
+  }
+  auto excessive = derivedEllipseFixture;
+  for (unsigned i = 100; i < 170; ++i)
+    excessive += "#" + std::to_string(i) + "=IFCDERIVEDPROFILEDEF(.CURVE.,$,#" +
+                 std::to_string(i == 169 ? 5 : i + 1) + ",#8,$);";
+  replace(excessive, "#5,#8,$", "#100,#8,$");
+  sources.push_back(excessive);
+  for (const auto &definitions : sources) {
+    const auto model = container::geometry::ifc::LoadFromStep(fixture(
+        definitions +
+        "#30=IFCSURFACEOFLINEAREXTRUSION(#9,#23,#22,2.);"
+        "#31=IFCCARTESIANPOINT((0.,0.)); #32=IFCCARTESIANPOINT((1.,1.));"
+        "#33=IFCPOLYLINE((#31,#32)); #10=IFCPCURVE(#30,#33);"));
+    EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Failed);
+    EXPECT_TRUE(model.vertices.empty());
+    EXPECT_TRUE(model.indices.empty());
+    ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+    EXPECT_EQ(model.importReport.diagnostics.front().entityId, 10u);
+    EXPECT_FALSE(model.importReport.diagnostics.front().reason.empty());
+  }
+}
+
 const std::string halfspaceFixture =
     "#2=IFCCARTESIANPOINT((0.,0.,0.)); #3=IFCAXIS2PLACEMENT3D(#2,$,$);"
     "#4=IFCDIRECTION((0.,0.,1.)); #5=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,4.);"

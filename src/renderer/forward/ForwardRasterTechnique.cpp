@@ -208,10 +208,13 @@ void registerForwardRasterPipelineRecipes(PipelineRegistry &registry) {
   registerDepthRecipe("bim-depth-prepass");
   registerDepthRecipe("bim-depth-prepass-front-cull");
   registerDepthRecipe("bim-depth-prepass-no-cull");
-  registerGraphicsRecipe("forward-opaque",
-                         {"spv_shaders/forward_opaque.vert.spv",
-                          "spv_shaders/forward_opaque.frag.spv"},
-                         "transparent");
+  for (const auto name : {"forward-opaque", "forward-opaque-front-cull",
+                          "forward-opaque-no-cull"}) {
+    registerGraphicsRecipe(name,
+                           {"spv_shaders/forward_opaque.vert.spv",
+                            "spv_shaders/forward_opaque.frag.spv"},
+                           "transparent");
+  }
   registerTransparentRecipe("forward-transparent");
   registerTransparentRecipe("forward-transparent-front-cull");
   registerTransparentRecipe("forward-transparent-no-cull");

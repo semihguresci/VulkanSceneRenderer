@@ -91,6 +91,8 @@ void registerForwardPipeline(PipelineRegistry& pipelines, std::string name,
 
 void bindForwardPipelines(PipelineRegistry& pipelines) {
   registerForwardPipeline(pipelines, "forward-opaque", 0x2001);
+  registerForwardPipeline(pipelines, "forward-opaque-front-cull", 0x2005);
+  registerForwardPipeline(pipelines, "forward-opaque-no-cull", 0x2006);
   registerForwardPipeline(pipelines, "forward-transparent", 0x2002);
   registerForwardPipeline(pipelines, "forward-transparent-front-cull", 0x2003);
   registerForwardPipeline(pipelines, "forward-transparent-no-cull", 0x2004);
@@ -112,6 +114,8 @@ void bindForwardTransparentOnlyPipelines(PipelineRegistry& pipelines) {
 
 void bindForwardOpaqueOnlyPipelines(PipelineRegistry& pipelines) {
   registerForwardPipeline(pipelines, "forward-opaque", 0x2001);
+  registerForwardPipeline(pipelines, "forward-opaque-front-cull", 0x2005);
+  registerForwardPipeline(pipelines, "forward-opaque-no-cull", 0x2006);
   pipelines.registerLayout(
       RegisteredPipelineLayout{.key = {RenderTechniqueId::ForwardRaster,
                                        "transparent"},
@@ -306,6 +310,45 @@ TEST(ForwardRasterLightingPassRecorderTests,
 }
 
 TEST(ForwardRasterLightingPassRecorderTests,
+     OpaqueSceneAndBimRejectMissingCullingVariants) {
+  for (bool bim : {false, true}) {
+    for (const char *missing :
+         {"forward-opaque-front-cull", "forward-opaque-no-cull"}) {
+      SCOPED_TRACE(std::string(bim ? "BIM " : "scene ") + missing);
+      std::vector<DrawCommand> draws(1u);
+      FrameResourceRegistry resources;
+      PipelineRegistry pipelines;
+      container::gpu::BindlessPushConstants bindless{};
+      FrameRecordParams params{};
+      params.pushConstants.bindless = &bindless;
+      if (bim) {
+        params.bim.draws.opaqueDrawCommands = &draws;
+        params.bim.draws.opaqueDoubleSidedDrawCommands = &draws;
+        makeBimGeometryReady(params);
+      } else {
+        params.draws.opaqueDrawCommands = &draws;
+        params.draws.opaqueWindingFlippedDrawCommands = &draws;
+        makeSceneGeometryReady(params);
+      }
+      makeForwardBindingsReady(params, resources, pipelines);
+      ASSERT_TRUE(checkForwardRasterLightingPassReadiness(params).ready);
+      pipelines.clearHandles();
+      registerForwardPipeline(pipelines, "forward-opaque", 0x2001);
+      for (const char *variant :
+           {"forward-opaque-front-cull", "forward-opaque-no-cull"}) {
+        if (std::string_view(variant) != missing) {
+          registerForwardPipeline(pipelines, variant, 0x2005);
+        }
+      }
+      const auto readiness = checkForwardRasterLightingPassReadiness(params);
+      EXPECT_FALSE(readiness.ready);
+      EXPECT_EQ(readiness.skipReason, RenderPassSkipReason::MissingResource);
+      EXPECT_EQ(readiness.blockingResource, RenderResourceId::SceneColor);
+    }
+  }
+}
+
+TEST(ForwardRasterLightingPassRecorderTests,
      ReadinessWithOpaqueBimOnlyDrawsDoesNotRequireOitDescriptorSet) {
   std::vector<DrawCommand> opaqueBimDraws(1u);
   FrameResourceRegistry resources;
@@ -356,7 +399,5 @@ TEST(ForwardRasterLightingPassRecorderTests,
   EXPECT_FALSE(contains(source, "TileCull"));
   EXPECT_FALSE(contains(source, "GTAO"));
   EXPECT_FALSE(contains(source, "p.postProcess.renderPass"));
-  EXPECT_FALSE(contains(source, "ForwardOpaqueFrontCull"));
-  EXPECT_FALSE(contains(source, "ForwardOpaqueNoCull"));
   EXPECT_FALSE(contains(source, "g-buffer-sampler"));
 }

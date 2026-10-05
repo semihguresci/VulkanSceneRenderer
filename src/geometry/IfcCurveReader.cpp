@@ -213,6 +213,55 @@ ParametricCurve transformed(ParametricCurve parent, CurveFrame placement) {
   return sharedCurve(std::move(r));
 }
 
+ParametricCurve transformedProfile(ParametricCurve parent,
+                                   ProfileTransform2D transform) {
+  const auto vector = [transform](glm::dvec3 p) {
+    return glm::dvec3(transform.x * p.x + transform.y * p.y, p.z);
+  };
+  const glm::dvec3 origin(transform.origin, 0);
+  ParametricCurve r = parent;
+  // An affine transform preserves parameters, but not speed, curvature or
+  // orthonormal frames. Recompute those from the transformed derivatives.
+  r.constantSpeed.reset();
+  r.curvature = {};
+  r.frame = {};
+  r.inverse = {};
+  r.point = [parent, origin, vector](double t) -> std::optional<glm::dvec3> {
+    const auto p = parent.point(t);
+    if (!p)
+      return std::nullopt;
+    const auto q = origin + vector(*p);
+    return finite(q) ? std::optional(q) : std::nullopt;
+  };
+  r.derivative = [parent, vector](double t) -> std::optional<glm::dvec3> {
+    const auto d = curveDerivative(parent, t);
+    if (!d)
+      return std::nullopt;
+    const auto q = vector(*d);
+    return finite(q) ? std::optional(q) : std::nullopt;
+  };
+  r.sampler = [parent, transform, origin, vector](double a, double b,
+                                                  double error, size_t n) {
+    auto points = sampleCurve(parent, a, b, error / transform.maxScale, n);
+    for (auto &p : points) {
+      p.point = origin + vector(p.point);
+      if (!finite(p.point))
+        return std::vector<CurveSample>{};
+    }
+    return points;
+  };
+  if (parent.inverse) {
+    const auto sx = std::hypot(transform.x.x, transform.x.y),
+               sy = std::hypot(transform.y.x, transform.y.y);
+    const auto x = transform.x / sx, y = transform.y / sy;
+    r.inverse = [parent, transform, sx, sy, x, y](glm::dvec3 p) {
+      const glm::dvec2 d = glm::dvec2(p) - transform.origin;
+      return parent.inverse({glm::dot(d, x) / sx, glm::dot(d, y) / sy, p.z});
+    };
+  }
+  return sharedCurve(std::move(r));
+}
+
 class Reader {
 public:
   Reader(const std::unordered_map<uint32_t, Entity> &entities, double units,
@@ -223,6 +272,7 @@ public:
   ParametricCurve readImpl(uint32_t id, double spiralLength);
   std::vector<std::array<glm::dvec3, 3>> sectionedMesh(uint32_t id);
   Surface surface(uint32_t id);
+  ProfileTransform2D profileTransform(uint32_t id);
 
 private:
   const Entity &get(uint32_t id) const {
@@ -267,6 +317,8 @@ private:
   ParametricCurve pcurve(const Entity &);
   Surface surfaceImpl(uint32_t id);
   ParametricCurve profile(uint32_t id);
+  ParametricCurve profileImpl(uint32_t id);
+  const Entity &profileBasis(const Entity &e) const;
   ParametricCurve parameterCurve(uint32_t id, uint32_t basis);
   double toParameter(const ParametricCurve &c, Measure m, double origin) const {
     if (m.parameter)
@@ -1109,8 +1161,94 @@ ParametricCurve Reader::offset(const Entity &e) {
   return c;
 }
 
-ParametricCurve Reader::profile(uint32_t id) {
+ProfileTransform2D Reader::profileTransform(uint32_t id) {
   const auto &e = get(id);
+  if (e.type != "IFCDERIVEDPROFILEDEF" && e.type != "IFCMIRROREDPROFILEDEF")
+    throw std::runtime_error("Expected a derived or mirrored profile");
+  const auto &parent = referenced(e, 2);
+  const auto type = enumeration(arg(e, 0));
+  if ((type != "AREA" && type != "CURVE") ||
+      type != enumeration(arg(parent, 0)))
+    throw std::runtime_error("Derived profile type differs from its parent");
+  ProfileTransform2D result{.parent = parent.id};
+  if (e.type == "IFCMIRROREDPROFILEDEF") {
+    if (!omitted(arg(e, 3)))
+      throw std::runtime_error("Mirrored profile operator must be derived");
+    result.x = {-1, 0};
+    return result;
+  }
+  const auto &op = referenced(e, 3);
+  const bool nonuniform =
+      op.type == "IFCCARTESIANTRANSFORMATIONOPERATOR2DNONUNIFORM";
+  if (!nonuniform && op.type != "IFCCARTESIANTRANSFORMATIONOPERATOR2D")
+    throw std::runtime_error("Derived profile operator must be 2D");
+  const auto origin = point(reference(arg(op, 2)));
+  if (origin.second != 2)
+    throw std::runtime_error("Derived profile translation must be 2D");
+  result.origin = glm::dvec2(origin.first);
+  // IfcBaseAxis: Axis1 determines X; Axis2 supplies the sense of its
+  // perpendicular Y. With only Axis2, derive X from that direction instead.
+  if (!omitted(arg(op, 0))) {
+    result.x = glm::dvec2(direction(reference(arg(op, 0)), 2));
+    result.y = {-result.x.y, result.x.x};
+    if (!omitted(arg(op, 1)) &&
+        glm::dot(glm::dvec2(direction(reference(arg(op, 1)), 2)), result.y) < 0)
+      result.y = -result.y;
+  } else if (!omitted(arg(op, 1))) {
+    result.y = glm::dvec2(direction(reference(arg(op, 1)), 2));
+    result.x = {result.y.y, -result.y.x};
+  }
+  const double sx = omitted(arg(op, 3)) ? 1 : number(arg(op, 3)),
+               sy =
+                   nonuniform && !omitted(arg(op, 4)) ? number(arg(op, 4)) : sx;
+  if (sx <= 0 || sy <= 0)
+    throw std::runtime_error("Derived profile scales must be positive");
+  result.x *= sx;
+  result.y *= sy;
+  result.maxScale = std::max(sx, sy);
+  const double xLength = std::hypot(result.x.x, result.x.y),
+               yLength = std::hypot(result.y.x, result.y.y);
+  if (!std::isfinite(xLength) || !std::isfinite(yLength) || xLength == 0 ||
+      yLength == 0)
+    throw std::runtime_error("Derived profile scale exceeds numeric precision");
+  return result;
+}
+
+const Entity &Reader::profileBasis(const Entity &e) const {
+  const Entity *base = &e;
+  size_t depth = 0;
+  while (base->type == "IFCDERIVEDPROFILEDEF" ||
+         base->type == "IFCMIRROREDPROFILEDEF") {
+    if (++depth >= 64)
+      throw std::runtime_error("Cyclic or excessive profile reference tree");
+    base = &referenced(*base, 2);
+  }
+  return *base;
+}
+
+ParametricCurve Reader::profile(uint32_t id) {
+  if (++nodes_ > 4096 || visiting_.size() >= 64 || !visiting_.insert(id).second)
+    throw std::runtime_error("Cyclic or excessive profile reference tree");
+  struct Visit {
+    std::unordered_set<uint32_t> &set;
+    uint32_t id;
+    ~Visit() { set.erase(id); }
+  } visit{visiting_, id};
+  try {
+    return profileImpl(id);
+  } catch (const std::runtime_error &error) {
+    const auto &e = get(id);
+    throw std::runtime_error(e.type + " #" + std::to_string(id) + ": " +
+                             error.what());
+  }
+}
+
+ParametricCurve Reader::profileImpl(uint32_t id) {
+  const auto &e = get(id);
+  if (e.type == "IFCDERIVEDPROFILEDEF" || e.type == "IFCMIRROREDPROFILEDEF") {
+    const auto transform = profileTransform(id);
+    return transformedProfile(profile(transform.parent), transform);
+  }
   if (e.type == "IFCOPENCROSSPROFILEDEF") {
     if (enumeration(arg(e, 0)) != "CURVE" || !angle_ || *angle_ <= 0)
       throw std::runtime_error("Invalid open cross profile type/angle units");
@@ -1312,16 +1450,18 @@ Surface Reader::surfaceImpl(uint32_t id) {
             "Sectioned surface requires regular open cross sections");
       c = remap(std::move(c), endpoints.first, endpoints.second, 1);
       std::vector<std::string> tags;
-      if (p.type == "IFCOPENCROSSPROFILEDEF")
-        for (const auto &width : list(arg(p, 3), 4096))
+      const auto &baseProfile = profileBasis(p);
+      if (baseProfile.type == "IFCOPENCROSSPROFILEDEF")
+        for (const auto &width : list(arg(baseProfile, 3), 4096))
           coincidentEdges |= number(&width) == 0;
-      if (p.type == "IFCOPENCROSSPROFILEDEF" && !omitted(arg(p, 5))) {
-        for (const auto &tag : list(arg(p, 5), 4097)) {
+      if (baseProfile.type == "IFCOPENCROSSPROFILEDEF" &&
+          !omitted(arg(baseProfile, 5))) {
+        for (const auto &tag : list(arg(baseProfile, 5), 4097)) {
           if (tag.kind != StepValue::Kind::String || tag.text.empty())
             throw std::runtime_error("Invalid sectioned profile tag");
           tags.push_back(tag.text);
         }
-        if (tags.size() != list(arg(p, 3), 4096).size() + 1)
+        if (tags.size() != list(arg(baseProfile, 3), 4096).size() + 1)
           throw std::runtime_error(
               "Sectioned profile tag count differs from points");
       }
@@ -1607,7 +1747,11 @@ Surface Reader::surfaceImpl(uint32_t id) {
         return *a * (1 - (u - uBreaks[i]) / (uBreaks[i + 1] - uBreaks[i])) +
                *b * ((u - uBreaks[i]) / (uBreaks[i + 1] - uBreaks[i]));
       };
-      result.meshUp = up;
+      const auto start = initial.curve.point(0), end = initial.curve.point(1);
+      if (!start || !end || std::abs(end->x - start->x) <= tolerance_ * .01)
+        throw std::runtime_error(
+            "Sectioned miter profile has no lateral extent");
+      result.meshUp = end->x > start->x ? up : -up;
     }
     const auto vBreaks = sections->front().curve.breaks;
     if (meshing_) {
@@ -2846,6 +2990,16 @@ bool isCurveEntity(std::string_view type) {
                              "IFCSEGMENTEDREFERENCECURVE",
                              "IFCCURVESEGMENT"};
   return std::ranges::find(types, type) != types.end();
+}
+std::optional<ProfileTransform2D>
+readIfcProfileTransform(const std::unordered_map<uint32_t, Entity> &entities,
+                        uint32_t id, std::string &error) {
+  try {
+    return Reader(entities, 1, {}).profileTransform(id);
+  } catch (const std::runtime_error &e) {
+    error = "Profile #" + std::to_string(id) + ": " + e.what();
+    return std::nullopt;
+  }
 }
 std::optional<ParametricCurve>
 readIfcCurve(const std::unordered_map<uint32_t, Entity> &entities, uint32_t id,

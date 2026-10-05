@@ -14,6 +14,8 @@ enum class ForwardRasterPipelineId {
   BimDepthPrepassFrontCull,
   BimDepthPrepassNoCull,
   ForwardOpaque,
+  ForwardOpaqueFrontCull,
+  ForwardOpaqueNoCull,
   Transparent,
   TransparentFrontCull,
   TransparentNoCull,
@@ -47,6 +49,10 @@ forwardRasterPipelineName(ForwardRasterPipelineId id) {
     return "bim-depth-prepass-no-cull";
   case ForwardRasterPipelineId::ForwardOpaque:
     return "forward-opaque";
+  case ForwardRasterPipelineId::ForwardOpaqueFrontCull:
+    return "forward-opaque-front-cull";
+  case ForwardRasterPipelineId::ForwardOpaqueNoCull:
+    return "forward-opaque-no-cull";
   case ForwardRasterPipelineId::Transparent:
     return "forward-transparent";
   case ForwardRasterPipelineId::TransparentFrontCull:

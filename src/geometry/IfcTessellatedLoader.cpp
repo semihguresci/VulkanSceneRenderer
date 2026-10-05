@@ -820,10 +820,45 @@ private:
     return points;
   }
 
-  std::vector<std::vector<glm::vec3>> readProfileLoops(uint32_t ref) const {
+  std::vector<std::vector<glm::vec3>>
+  readProfileLoops(uint32_t ref, std::string &error, size_t depth = 0,
+                   double samplingScale = 1) const {
+    if (depth >= 64 || !std::isfinite(samplingScale) || samplingScale <= 0) {
+      error =
+          "Cyclic/excessive profile references or invalid accumulated scale";
+      return {};
+    }
     const Entity *profile = entity(ref);
     if (profile == nullptr) {
       return {};
+    }
+    if (profile->type == "IFCDERIVEDPROFILEDEF" ||
+        profile->type == "IFCMIRROREDPROFILEDEF") {
+      const auto transform =
+          detail::readIfcProfileTransform(entities_, ref, error);
+      if (!transform)
+        return {};
+      if (enumValue(argAt(*profile, 0)) != "AREA") {
+        error = "Extruded profile must have AREA type";
+        return {};
+      }
+      auto loops = readProfileLoops(transform->parent, error, depth + 1,
+                                    samplingScale * transform->maxScale);
+      for (auto &loop : loops)
+        for (auto &p : loop) {
+          const glm::vec3 q(glm::dvec3(transform->origin +
+                                           transform->x * double(p.x) +
+                                           transform->y * double(p.y),
+                                       double(p.z)));
+          if (!std::isfinite(q.x) || !std::isfinite(q.y) ||
+              !std::isfinite(q.z)) {
+            error =
+                "Derived profile point exceeds renderer coordinate precision";
+            return {};
+          }
+          p = q;
+        }
+      return loops;
     }
     if (profile->type == "IFCRECTANGLEPROFILEDEF" ||
         profile->type == "IFCCIRCLEPROFILEDEF" ||
@@ -846,7 +881,7 @@ private:
         const auto radius = numberValue(argAt(*profile, 3));
         if (!radius || !std::isfinite(*radius) || *radius <= 0)
           return {};
-        const auto segments = circleSegmentCount(*radius);
+        const auto segments = circleSegmentCount(*radius, samplingScale);
         if (!segments)
           return {};
         loops.push_back(circleLoop(*radius, *segments));
@@ -858,7 +893,7 @@ private:
           loops.push_back(circleLoop(*radius - *thickness, *segments));
         }
       } else {
-        auto loop = readStructuralProfile(*profile);
+        auto loop = readStructuralProfile(*profile, samplingScale);
         if (loop.empty())
           return {};
         loops.push_back(std::move(loop));
@@ -886,26 +921,29 @@ private:
       const auto curveRef = firstRef(*profile, 2);
       if (!curveRef)
         return {};
-      std::vector<std::vector<glm::vec3>> loops{readProfileCurve(*curveRef)};
+      std::vector<std::vector<glm::vec3>> loops{
+          readProfileCurve(*curveRef, samplingScale)};
       if (profile->type == "IFCARBITRARYPROFILEDEFWITHVOIDS") {
         const auto innerRefs = refList(argAt(*profile, 3));
         if (innerRefs.empty() ||
             innerRefs.size() != asList(argAt(*profile, 3)).size())
           return {};
         for (uint32_t inner : innerRefs)
-          loops.push_back(readProfileCurve(inner));
+          loops.push_back(readProfileCurve(inner, samplingScale));
       }
       return loops;
     }
     return {};
   }
 
-  std::optional<size_t> circleSegmentCount(double radius) const {
+  std::optional<size_t> circleSegmentCount(double radius,
+                                           double samplingScale = 1) const {
     // Bound chord sagitta by both 1 mm in authored units and 0.5% of radius.
     // Reject excessive tessellation instead of silently exceeding the budget.
     if (!std::isfinite(radius) || radius <= 0 || unitScale_ <= 0)
       return std::nullopt;
-    const double tolerance = std::min(radius * .005, .001 / unitScale_);
+    const double tolerance =
+        std::min(radius * .005, .001 / unitScale_ / samplingScale);
     const double angle = std::acos(1.0 - tolerance / radius);
     const double count = std::ceil(std::acos(-1.0) / angle / 4.0) * 4.0;
     if (!std::isfinite(count) || count > 4096)
@@ -924,7 +962,8 @@ private:
     return points;
   }
 
-  std::vector<glm::vec3> readStructuralProfile(const Entity &profile) const {
+  std::vector<glm::vec3> readStructuralProfile(const Entity &profile,
+                                               double samplingScale = 1) const {
     const bool angle = profile.type == "IFCLSHAPEPROFILEDEF";
     const bool channel = profile.type == "IFCUSHAPEPROFILEDEF";
     const auto dimension = [&](size_t index,
@@ -1050,7 +1089,7 @@ private:
       const double start = std::atan2(va.y, va.x);
       const double sweep =
           std::atan2(va.x * vb.y - va.y * vb.x, glm::dot(va, vb));
-      const auto circleSegments = circleSegmentCount(radii[i]);
+      const auto circleSegments = circleSegmentCount(radii[i], samplingScale);
       if (!circleSegments)
         return {};
       const size_t segments = std::max(
@@ -3808,7 +3847,8 @@ private:
     return result;
   }
 
-  std::vector<glm::vec3> readProfileCurve(uint32_t ref) const {
+  std::vector<glm::vec3> readProfileCurve(uint32_t ref,
+                                          double samplingScale = 1) const {
     if (auto points = readPolylinePoints(ref); !points.empty())
       return points;
     std::string error;
@@ -3816,7 +3856,7 @@ private:
                                             projectPlaneAngleScale(), error);
     if (!curve || curve->dimension != 2)
       return {};
-    auto points = readRenderCurve(ref, error, 4097);
+    auto points = readRenderCurve(ref, error, 4097, samplingScale);
     if (points.size() < 4 ||
         glm::length(points.front() - points.back()) > 1e-5 / unitScale_)
       return {};
@@ -3825,10 +3865,18 @@ private:
   }
 
   std::vector<glm::vec3> readRenderCurve(uint32_t ref, std::string &error,
-                                         size_t limit = 65536) const {
+                                         size_t limit = 65536,
+                                         double samplingScale = 1) const {
     const auto *source = entity(ref);
-    if (source && (source->type == "IFCPOLYLINE" ||
-                   source->type == "IFCINDEXEDPOLYCURVE")) {
+    const bool scaledArcs =
+        source && source->type == "IFCINDEXEDPOLYCURVE" && samplingScale != 1 &&
+        std::ranges::any_of(asList(argAt(*source, 1)), [](const auto &segment) {
+          return segment.text == "IFCARCINDEX";
+        });
+    if (source &&
+        (source->type == "IFCPOLYLINE" ||
+         source->type == "IFCINDEXEDPOLYCURVE") &&
+        !scaledArcs) {
       auto points = readPolylinePoints(ref, true);
       if (points.size() > limit)
         return {};
@@ -3844,7 +3892,7 @@ private:
     }
     const auto samples =
         sampleCurve(*curve, curve->domain->first, curve->domain->second,
-                    .001 / unitScale_, limit);
+                    .001 / unitScale_ / samplingScale, limit);
     if (samples.empty()) {
       error = "Curve evaluation failed, contains an undefined tangent/surface "
               "point, or exceeds its tessellation budget";
@@ -4090,7 +4138,10 @@ private:
       return std::nullopt;
     }
 
-    auto profileLoops = readProfileLoops(*profileRef);
+    std::string profileError;
+    auto profileLoops = readProfileLoops(*profileRef, profileError);
+    if (!profileError.empty())
+      conversionErrors_[solid.id] = std::move(profileError);
     auto capTriangles = triangulatePlanarLoops(profileLoops);
     if (!capTriangles)
       return std::nullopt;

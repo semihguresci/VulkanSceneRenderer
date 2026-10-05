@@ -148,7 +148,18 @@ Unsafe miters, folded patches, intersecting directrices and reordered tag runs
 reject atomically. A nine-product gallery containing four surfaces, four branch
 pcurve overlays and a floor renders in deferred/forward with TAA off/on without
 VUID/synchronization hazards. Captures are under `out/ifc-review/sectioned-gaps/`.
-All 129 IFC importer/core cases and ten selected suites pass in the final
+Derived and mirrored profiles now preserve placed/nested transforms in swept
+surfaces and extruded solids, including inherited section tags and void loops.
+Independent bounds, volumes, inward/outward normals, mirrored miters, inverses,
+Boolean cuts and scaled circle/indexed-arc/spline chord checks pass.
+The seven-product derived-profile gallery imports completely in deferred/forward
+with TAA off/on without VUID/synchronization hazards. Inspecting the mirrored
+sectioned miter exposed a forward culling mismatch; matching opaque lighting
+pipelines now preserve visible back faces and reflected instances in both scene
+and BIM draws. A separate opt-in pixel regression covers these culling routes
+and hidden single-sided back faces in glTF and IFCX. Captures and reports are
+under `out/ifc-review/derived-profiles/` and `out/ifc-review/forward-culling/`.
+All 138 IFC importer/core cases and ten selected suites pass in the final
 Visual Studio Release build; ten optional USD cases lack their sample assets.
 Guide-curve transitions, missing/reordered tag runs, curved/nonplanar sharp
 sectioned joins, unsupported swept profile families,
@@ -158,8 +169,8 @@ Hello Wall body surfaces and representative shared Tekla structural
 bodies pass independent cross-format surface checks. The IFCX export contains
 no reinforcing-bar meshes and is not a complete geometry oracle.
 See [IFC coverage and limitations](ifc-import.md) for fixed-camera captures,
-representation limits and verification. The base coverage is committed; the
-periodic seam/pole and sectioned branch/miter increments are local pending review.
+representation limits and verification. Further native IFC coverage is tracked
+in [#67](https://github.com/semihguresci/VulkanSceneRenderer/issues/67).
 
 ### P2: Forward rendering has a black environment background
 

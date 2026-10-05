@@ -266,7 +266,12 @@ void recordNativePrimitives(VkCommandBuffer cmd, const FrameRecordParams &p,
 }
 
 [[nodiscard]] bool hasForwardOpaquePipeline(const FrameRecordParams& p) {
-  return forwardRasterPipelineReady(p, ForwardRasterPipelineId::ForwardOpaque);
+  return forwardRasterPipelineReady(p,
+                                    ForwardRasterPipelineId::ForwardOpaque) &&
+         forwardRasterPipelineReady(
+             p, ForwardRasterPipelineId::ForwardOpaqueFrontCull) &&
+         forwardRasterPipelineReady(
+             p, ForwardRasterPipelineId::ForwardOpaqueNoCull);
 }
 
 [[nodiscard]] bool hasForwardTransparentPipelines(const FrameRecordParams& p) {
@@ -338,20 +343,23 @@ void recordSceneOpaque(VkCommandBuffer cmd, const FrameRecordParams& p,
       forwardRasterPipelineHandle(p, ForwardRasterPipelineId::ForwardOpaque);
   bindForwardOpaqueLightingSets(cmd, layout, p);
   (void)recordSceneOpaqueDrawCommands(
-      cmd, {.plan = &plan,
-            .geometry = {.descriptorSet = forwardRasterDescriptorSet(
-                             p, ForwardRasterDescriptorSetId::Scene),
-                         .vertexSlice = p.scene.vertexSlice,
-                         .indexSlice = p.scene.indexSlice,
-                         .indexType = p.scene.indexType},
-            .pipelines = {.primary = pipeline,
-                          .frontCull = pipeline,
-                          .noCull = pipeline},
-            .pipelineLayout = layout,
-            .pushConstants = bindlessPushConstants(p),
-            .imageIndex = p.runtime.imageIndex,
-            .debugOverlay = &debugOverlay,
-            .gpuCullManager = p.services.gpuCullManager});
+      cmd,
+      {.plan = &plan,
+       .geometry = {.descriptorSet = forwardRasterDescriptorSet(
+                        p, ForwardRasterDescriptorSetId::Scene),
+                    .vertexSlice = p.scene.vertexSlice,
+                    .indexSlice = p.scene.indexSlice,
+                    .indexType = p.scene.indexType},
+       .pipelines = {.primary = pipeline,
+                     .frontCull = forwardRasterPipelineHandle(
+                         p, ForwardRasterPipelineId::ForwardOpaqueFrontCull),
+                     .noCull = forwardRasterPipelineHandle(
+                         p, ForwardRasterPipelineId::ForwardOpaqueNoCull)},
+       .pipelineLayout = layout,
+       .pushConstants = bindlessPushConstants(p),
+       .imageIndex = p.runtime.imageIndex,
+       .debugOverlay = &debugOverlay,
+       .gpuCullManager = p.services.gpuCullManager});
 }
 
 void recordSceneTransparent(VkCommandBuffer cmd, const FrameRecordParams& p,
@@ -532,8 +540,12 @@ bool recordForwardRasterLightingPassCommands(VkCommandBuffer commandBuffer,
   const VkPipeline opaquePipeline =
       forwardRasterPipelineHandle(p, ForwardRasterPipelineId::ForwardOpaque);
   recordBimSurface(commandBuffer, p, BimSurfacePassKind::OpaqueLighting,
-                   hasBimOpaqueDraws(p.bim), opaquePipeline, opaquePipeline,
-                   opaquePipeline, layout, debugOverlay);
+                   hasBimOpaqueDraws(p.bim), opaquePipeline,
+                   forwardRasterPipelineHandle(
+                       p, ForwardRasterPipelineId::ForwardOpaqueFrontCull),
+                   forwardRasterPipelineHandle(
+                       p, ForwardRasterPipelineId::ForwardOpaqueNoCull),
+                   layout, debugOverlay);
 
   (void)recordRenderPassEndCommands(commandBuffer);
 

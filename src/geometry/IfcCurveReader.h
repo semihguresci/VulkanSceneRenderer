@@ -9,6 +9,15 @@
 #include <unordered_map>
 
 namespace container::geometry::ifc::detail {
+struct ProfileTransform2D {
+  uint32_t parent;
+  // Columns include scale; the origin is applied after the parent placement.
+  glm::dvec2 origin{0}, x{1, 0}, y{0, 1};
+  double maxScale{1};
+};
+[[nodiscard]] std::optional<ProfileTransform2D>
+readIfcProfileTransform(const std::unordered_map<uint32_t, Entity> &entities,
+                        uint32_t id, std::string &error);
 struct SphericalSurface {
   CurveFrame frame;
   double radius;

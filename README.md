@@ -143,6 +143,8 @@ products respectively, including auxiliary curves, with zero representation
 warnings. Surface curves support elementary/spline bases, extrusion/revolution
 surfaces, rectangular/curve-bounded trims and sectioned surfaces, including
 ordered tag splits/merges and planar polygonal miters.
+Derived and mirrored profiles retain their parent placement, nested transforms
+and scale-aware tessellation in supported swept surfaces and extruded solids.
 Advanced faces support elementary surfaces, explicit-knot splines and supported
 swept surfaces, including periodic bands with different boundary seam locations,
 seam curves, and spherical pole vertex loops for closed spheres and caps.

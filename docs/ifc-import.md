@@ -50,6 +50,7 @@ checks are free of validation and synchronization errors.
 | `IFCADVANCEDBREP`, `IFCADVANCEDBREPWITHVOIDS` | Planar and regular curved `IFCADVANCEDFACE` geometry on planes, cylinders, spheres, tori, explicit-knot polynomial/rational spline surfaces and supported extrusion/revolution surfaces. Shared `IFCEDGECURVE`/`IFCORIENTEDEDGE` topology, face holes, periodic bands with independent seams, seam curves and the same cavity validation are retained. Spherical pole `IFCVERTEXLOOP` bounds mesh closed spheres and caps. Edge vertices trim their native 3D curves; SameSense, boundary orientation, surface membership and opposite edge reuse are checked. Other singular charts and some periodic charts remain unsupported. |
 | `IFCEXTRUDEDAREASOLID` | Arbitrary supported closed 2D curves, inner void loops, rectangles, circles/hollow circles, and L/U/I profiles with signed slopes, fillet/edge radii and 2D placements. Project plane-angle units are honored; invalid tapers and overlapping fillets reject atomically. Caps and side walls face outward, including negative extrusion directions. |
 | Profile curves | Closed 2D polylines/indexed arcs, conics, B-splines, trims and composites use the shared curve evaluator, with at most 4,097 sampled points. Repeated consecutive polyline points are removed. Profiles must pass planarity, closure, intersection and triangulation checks. |
+| `IfcDerivedProfileDef`, `IfcMirroredProfileDef` | Transform already-supported parent profiles after their 2D placement. Translation, rotation, uniform/non-uniform positive scales and axis mirroring are supported, including nested chains. Extruded profiles retain inner loops and outward winding; swept-surface curves retain source domains, periods and section tags. Parent/profile types must agree. |
 | Opening relations | Analytic rectangular through-openings, with Manifold subtraction for supported closed solids including circular, rotated and overlapping cuts. Source placements/mapped transforms are applied in host coordinates. Failed cuts retain the original host with diagnostics; cut faces inherit the host material. |
 | Mapped instances | Existing representation maps, local placements, uniform/non-uniform and mirrored transforms. Units, source IDs, GUIDs, semantic metadata and supported surface colors are retained. |
 | Boolean/clipping results | Nested union/difference/intersection of supported closed, oriented mesh solids; plane, boxed and polygon-bounded half-space difference/intersection honors IFC agreement flags. Cycles, invalid operators, open/nonmanifold operands and unbounded unions are rejected with diagnostics. Styled results override operand colors; otherwise source face colors are retained. |
@@ -271,8 +272,37 @@ ellipses and rectangles, including 2D placement.
 [Open cross profiles](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcOpenCrossProfileDef.htm)
 retain their offset point, project angle units, and horizontal or along-slope
 widths. Other profile families and void/multi-component profiles are diagnosed.
+Derived and mirrored wrappers work with these supported parent families.
 Supporting a surface as a pcurve basis does not generally add standalone surface
 meshing; `IfcSectionedSurface` additionally has a dedicated mesh converter.
+
+### Derived and mirrored profiles
+
+[Derived profiles](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcDerivedProfileDef.htm)
+apply their operator after the parent's position and rotation, including parent
+translations. The evaluator follows the formal
+[2D base-axis rules](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcBaseAxis.htm):
+Axis1 sets X and Axis2 sets the sense of its perpendicular Y; when only Axis2
+is supplied, X is derived from it. Non-orthogonal authored directions supply
+orientation and sense, rather than shear. Scale defaults to one; omitted Scale2
+defaults to Scale. Both scales must be positive.
+[Mirrored profiles](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcMirroredProfileDef.htm)
+reflect X about the profile coordinate system's Y axis after the parent placement.
+The Operator slot must be derived (`*` in STEP); the native parser treats omitted
+and derived slots alike.
+
+The same transform evaluator is used for swept-surface curves and extruded
+profile loops. Nested transforms preserve source parameters and break points.
+Cached speed, curvature and frame metadata are discarded when applying affine
+transforms; derivatives transform with the scaled axes, and analytic inverses
+apply their inverse. Parent sampling tolerance is divided by the largest axis
+scale at each level, including circles,
+structural fillets, splines and indexed arcs in area profiles. This retains the
+physical chord target when profiles are enlarged. The existing reference-depth
+and sampling budgets apply; invalid references/types, nonpositive scales and
+nonfinite output positions reject before geometry buffers are changed.
+
+### Sectioned profile interpolation and meshes
 
 Sectioned surfaces allow up to 128 ordered cross sections with no position
 offsets. The profile X axis faces left and Y follows the placed upward axis;
@@ -385,7 +415,7 @@ review test was run separately. Ten USD cases needing additional sample assets
 and the manifest sample regression case requiring the absent glTF collection
 were skipped; those assets were not downloaded for this change.
 
-The curve/surface/sweep/profile/B-rep increments pass all 129 importer/core cases with the optional
+The curve/surface/sweep/profile/B-rep increments pass all 138 importer/core cases with the optional
 buildingSMART assets present, including every road/railway gradient curve in
 the reviewed samples. Tests independently check rational ellipse-profile volume,
 unclamped spline basis values, spline chord error, spiral integration, signed
@@ -426,6 +456,13 @@ curved annular area, reversed/rotated miters and combined branches at miters.
 Exact-position edge uses, Euler count and a single degree-two boundary loop
 independently check mesh connectivity. Reordered tags, unsafe angles, folded
 patches, nonplanar sharp joins and intersecting directrices reject atomically.
+Derived-profile regressions independently check placement/transform order,
+axis defaults and reflected senses, nested/metre/millimetre bounds, signed
+extrusion winding, analytic volumes and scaled circle/indexed-arc/spline chord
+error. Tests also cover surface parameters and inverses, inherited section tags,
+mirrored miter orientation, inner-wall normals and solid Boolean cuts through
+derived structural/void profiles. Invalid and recursive profile chains reject
+atomically.
 The full model checks still report Hello Wall 4/4 and Tekla 10,042/10,042 complete.
 All ten selected importer/BIM/forward test suites pass after relinking.
 
@@ -446,6 +483,22 @@ hazards. Camera position is `(15,19,25)`, target `(0,1,0)`, directional/environm
 intensities are `2`/`0.2`, and exposure is `0.3`. Shared branch tips and miter
 corners remain continuous in the inspected images. Images, exported fixtures,
 telemetry and results are local under `out/ifc-review/sectioned-gaps/`.
+
+Four derived-profile captures display a mirrored structural Boolean cut, a
+mirrored hollow ellipse, a mirrored sectioned miter, a derived sectioned surface,
+two ellipse pcurves and a floor. All seven products import completely in
+deferred/forward with TAA off/on at 1280x720, MSAA 1 and validation enabled,
+without VUID/synchronization hazards. Camera position is `(29,31,44)`, target
+`(0,5,0)`, directional/environment intensities are `2`/`0.2` and exposure
+is `0.3`. Images and reports are under `out/ifc-review/derived-profiles/`.
+This gallery exposed a forward lighting culling mismatch: the depth pass
+rendered double-sided back faces while the lighting pass culled them. Forward
+opaque lighting now uses matching single-sided, reflected and double-sided
+pipelines for both scene and BIM draws. The opt-in
+`forward_culling_gpu_regression` checks each visible material and hidden back
+face separately in glTF/IFCX, deferred/forward and TAA off/on captures. Enable it
+with `CONTAINER_RUN_GPU_FORWARD_CULLING=1` and run the named CTest; Pillow is
+required.
 
 Four additional runtime captures display an eight-panel curve gallery at
 1280x720 in deferred/forward rendering: MSAA 1 in both, deferred MSAA 4, and
@@ -532,10 +585,14 @@ not claim complete IFC conformance.
 
 ## Remaining coverage and review
 
+The remaining capabilities below and IFC source curve fonts/widths are tracked
+in [#67](https://github.com/semihguresci/VulkanSceneRenderer/issues/67), with
+implementation tasks and independent geometry/rendering acceptance criteria.
+
 Guide-curve transitions, missing/reordered tag runs, curved or nonplanar sharp joins,
 unsupported swept-surface profile families, non-spherical singular charts and
 edge loops through spherical poles remain outside native coverage.
-Swept-surface profile gaps include center-line, derived/mirrored, hollow and
+Swept-surface profile gaps include center-line, hollow and
 composite definitions; swept-area solid profile support is listed separately
 above.
 Multiple-winding and otherwise ambiguous periodic spline charts also require
@@ -550,5 +607,6 @@ shared wall, column, beam, slab and footing bodies pass bidirectional corner and
 centroid surface checks with a 2 mm combined chord-error budget. IFCX has no
 reinforcing-bar meshes in this export; swept disks instead have independent
 analytic volume and normal tests. These checks do not establish equivalence for
-every product or material. #61 remains open pending review of the
-implementation.
+every product or material. The sampled recovery requirements from
+[#61](https://github.com/semihguresci/VulkanSceneRenderer/issues/61) are implemented;
+further native IFC coverage is tracked separately in #67.
