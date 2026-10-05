@@ -102,6 +102,8 @@ set(REQUIRED_PACKAGES
     VulkanMemoryAllocator
     MaterialX
     glm
+    earcut_hpp
+    manifold
     fmt
     glfw3
     imgui
@@ -113,6 +115,19 @@ set(REQUIRED_PACKAGES
 foreach(pkg IN LISTS REQUIRED_PACKAGES)
     find_package(${pkg} CONFIG REQUIRED)
 endforeach()
+
+# Stage known shared-library dependencies even when packages come from separate
+# prefixes (vcpkg's app-local hook only searches its active installation).
+function(container_stage_runtime_dlls target)
+    if(WIN32)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND}
+                "-DRUNTIME_DLLS=$<JOIN:$<TARGET_RUNTIME_DLLS:${target}>,|>"
+                "-DDESTINATION=$<TARGET_FILE_DIR:${target}>"
+                -P "${CMAKE_SOURCE_DIR}/cmake/StageRuntimeDlls.cmake"
+            VERBATIM)
+    endif()
+endfunction()
 
 # Handle TinyGLTF separately
 find_package(tinygltf CONFIG QUIET)

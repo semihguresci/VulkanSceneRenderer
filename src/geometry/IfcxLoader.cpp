@@ -1,6 +1,7 @@
 #include "Container/geometry/IfcxLoader.h"
 
 #include "Container/geometry/CoordinateSystem.h"
+#include "Container/geometry/PolylineGeometry.h"
 #include "Container/utility/Platform.h"
 
 #include <nlohmann/json.hpp>
@@ -1218,47 +1219,6 @@ void appendNativePointRange(Model &model, const PointCloud &cloud,
   }
 }
 
-void appendNativeCurveRange(Model &model, const std::vector<glm::vec3> &points,
-                            const std::vector<size_t> &curveVertexCounts,
-                            uint32_t meshId,
-                            const glm::vec3 &boundsCenter,
-                            float boundsRadius) {
-  if (points.size() < 2u) {
-    return;
-  }
-
-  dotbim::NativePrimitiveRange range{};
-  range.meshId = meshId;
-  range.firstIndex = static_cast<uint32_t>(model.indices.size());
-  range.boundsCenter = boundsCenter;
-  range.boundsRadius = boundsRadius;
-  size_t cursor = 0;
-  for (const size_t count : curveVertexCounts) {
-    for (size_t segment = 0; segment + 1u < count; ++segment) {
-      const glm::vec3 a = points[cursor + segment];
-      const glm::vec3 b = points[cursor + segment + 1u];
-      if (glm::dot(b - a, b - a) <= 1.0e-12f) {
-        continue;
-      }
-      const uint32_t base = static_cast<uint32_t>(model.vertices.size());
-      constexpr glm::vec3 color{1.0f, 1.0f, 1.0f};
-      model.vertices.push_back(makeVertex(a, glm::vec3(0.0f, 1.0f, 0.0f),
-                                          glm::vec3(1.0f, 0.0f, 0.0f),
-                                          color));
-      model.vertices.push_back(makeVertex(b, glm::vec3(0.0f, 1.0f, 0.0f),
-                                          glm::vec3(1.0f, 0.0f, 0.0f),
-                                          color));
-      model.indices.insert(model.indices.end(), {base, base + 1u});
-    }
-    cursor += count;
-  }
-  range.indexCount =
-      static_cast<uint32_t>(model.indices.size()) - range.firstIndex;
-  if (range.indexCount > 0u) {
-    model.nativeCurveRanges.push_back(range);
-  }
-}
-
 void appendMeshletClustersForRange(Model &model,
                                    const dotbim::MeshRange &range) {
   constexpr uint32_t kMeshletTriangleBudget = 64u;
@@ -1367,59 +1327,11 @@ bool appendBasisCurves(Model &model, const Json &curves, uint32_t meshId,
     curveVertexCounts.push_back(points.size());
   }
 
-  dotbim::MeshRange range{};
-  range.meshId = meshId;
-  range.firstIndex = static_cast<uint32_t>(model.indices.size());
   const auto [center, radius] = computeBounds(points);
   const float tubeRadius =
       radius > 0.0f ? std::clamp(radius * 0.004f, 0.01f, 0.05f) : 0.02f;
-  range.boundsCenter = center;
-  range.boundsRadius = radius + tubeRadius;
-
-  size_t cursor = 0;
-  for (const size_t count : curveVertexCounts) {
-    for (size_t segment = 0; segment + 1u < count; ++segment) {
-      const glm::vec3 a = points[cursor + segment];
-      const glm::vec3 b = points[cursor + segment + 1u];
-      const glm::vec3 dir = b - a;
-      if (glm::dot(dir, dir) <= 1.0e-12f) {
-        continue;
-      }
-      const glm::vec3 forward = normalizeOrFallback(dir, {0.0f, 0.0f, 1.0f});
-      const glm::vec3 axis = std::abs(forward.y) < 0.9f
-                                 ? glm::vec3(0.0f, 1.0f, 0.0f)
-                                 : glm::vec3(1.0f, 0.0f, 0.0f);
-      const glm::vec3 side =
-          normalizeOrFallback(glm::cross(axis, forward), {1.0f, 0.0f, 0.0f}) *
-          tubeRadius;
-      const glm::vec3 up =
-          normalizeOrFallback(glm::cross(forward, side), {0.0f, 1.0f, 0.0f}) *
-          tubeRadius;
-
-      const std::array<glm::vec3, 4> start{a + side + up, a - side + up,
-                                           a - side - up, a + side - up};
-      const std::array<glm::vec3, 4> end{b + side + up, b - side + up,
-                                         b - side - up, b + side - up};
-      constexpr glm::vec3 color{1.0f, 1.0f, 1.0f};
-      appendQuad(model, start[0], end[0], end[1], start[1], color);
-      appendQuad(model, start[1], end[1], end[2], start[2], color);
-      appendQuad(model, start[2], end[2], end[3], start[3], color);
-      appendQuad(model, start[3], end[3], end[0], start[0], color);
-      appendQuad(model, start[0], start[1], start[2], start[3], color);
-      appendQuad(model, end[3], end[2], end[1], end[0], color);
-    }
-    cursor += count;
-  }
-
-  range.indexCount =
-      static_cast<uint32_t>(model.indices.size()) - range.firstIndex;
-  if (range.indexCount == 0u) {
-    return false;
-  }
-  model.meshRanges.push_back(range);
-  appendNativeCurveRange(model, points, curveVertexCounts, meshId, center,
-                         radius);
-  return true;
+  return appendPolylineGeometry(model, points, curveVertexCounts, meshId,
+                                tubeRadius);
 }
 
 int base64Value(char c) {

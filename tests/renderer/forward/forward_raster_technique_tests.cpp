@@ -145,7 +145,7 @@ TEST(ForwardRasterTechniqueTests, PublishesForwardRecipesBackedByShaderSource) {
 
   technique.registerTechniqueContracts(context);
 
-  const std::array<std::string_view, 17> expectedRecipeNames = {
+  const std::array<std::string_view, 19> expectedRecipeNames = {
       "depth-prepass",
       "depth-prepass-front-cull",
       "depth-prepass-no-cull",
@@ -153,6 +153,8 @@ TEST(ForwardRasterTechniqueTests, PublishesForwardRecipesBackedByShaderSource) {
       "bim-depth-prepass-front-cull",
       "bim-depth-prepass-no-cull",
       "forward-opaque",
+      "forward-opaque-front-cull",
+      "forward-opaque-no-cull",
       "forward-transparent",
       "forward-transparent-front-cull",
       "forward-transparent-no-cull",
@@ -494,8 +496,6 @@ TEST(ForwardRasterTechniqueTests,
   EXPECT_FALSE(contains(source, "RenderPassId::BimGBuffer"));
   EXPECT_FALSE(contains(source, "RenderPassId::TileCull"));
   EXPECT_FALSE(contains(source, "RenderPassId::GTAO"));
-  EXPECT_FALSE(contains(source, "ForwardOpaqueFrontCull"));
-  EXPECT_FALSE(contains(source, "ForwardOpaqueNoCull"));
   EXPECT_FALSE(contains(source, "g-buffer-sampler"));
 }
 

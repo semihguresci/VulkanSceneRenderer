@@ -12,6 +12,7 @@
 
 #include "Container/common/CommonMath.h"
 #include "Container/common/CommonVulkan.h"
+#include "Container/geometry/ImportReport.h"
 #include "Container/renderer/bim/BimCoordinationOverlay.h"
 #include "Container/renderer/bim/BimGeoreferenceTransform.h"
 #include "Container/renderer/bim/BimModelCompare.h"
@@ -333,6 +334,7 @@ struct BimClipCapHatchingUiState {
 struct BimInspectionState {
   bool hasScene{false};
   std::string modelPath{};
+  const container::geometry::ImportReport *importReport{nullptr};
   size_t objectCount{0};
   size_t meshObjectCount{0};
   size_t pointObjectCount{0};

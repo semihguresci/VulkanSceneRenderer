@@ -29,6 +29,7 @@ struct VSOutput
     float4 pos : SV_Position;
     float pointSize : SV_PointSize;
     [[vk::location(0)]] float3 worldPos;
+    [[vk::location(1)]] nointerpolation float4 objectColor;
 };
 
 [shader("vertex")]
@@ -48,6 +49,7 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
     output.pos = mul(uCamera.viewProj, worldPos);
     output.pointSize = max(pc.lineWidth, 1.0);
     output.worldPos = worldPos.xyz;
+    output.objectColor = material.color;
     return output;
 }
 
@@ -59,7 +61,9 @@ float4 fragMain(VSOutput input) : SV_Target0
         discard;
     }
 
-    return float4(pc.colorIntensity.rgb, saturate(pc.colorIntensity.a));
+    float4 color = pc.useObjectColor != 0
+        ? input.objectColor : float4(pc.colorIntensity.rgb, 1.0);
+    return float4(color.rgb, saturate(color.a * pc.colorIntensity.a));
 }
 
 

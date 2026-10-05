@@ -76,14 +76,6 @@ relationshipKindFromString(std::string_view text) {
   return std::string(bimRelationshipKindLabel(kind));
 }
 
-void appendUniqueNode(std::vector<uint32_t> &nodes, uint32_t nodeIndex) {
-  if (nodeIndex == kInvalidNodeIndex ||
-      std::ranges::contains(nodes, nodeIndex)) {
-    return;
-  }
-  nodes.push_back(nodeIndex);
-}
-
 void appendIdentityMatches(
     const std::unordered_map<std::string, std::vector<uint32_t>> &index,
     std::string_view key, std::vector<uint32_t> &nodes) {
@@ -94,9 +86,12 @@ void appendIdentityMatches(
   if (it == index.end()) {
     return;
   }
-  for (const uint32_t nodeIndex : it->second) {
-    appendUniqueNode(nodes, nodeIndex);
-  }
+  // Identity indexes are appended in node order. Merge the two sorted lists
+  // once rather than scanning every preceding match for each draw element.
+  const auto previousSize = nodes.size();
+  nodes.insert(nodes.end(), it->second.begin(), it->second.end());
+  std::inplace_merge(nodes.begin(), nodes.begin() + previousSize, nodes.end());
+  nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
 }
 
 [[nodiscard]] bool compatibleSyntheticClass(std::string_view requested,
@@ -135,6 +130,7 @@ std::string_view bimRelationshipKindLabel(BimRelationshipKind kind) noexcept {
 void BimRelationshipGraph::clear() {
   nodes_.clear();
   edges_.clear();
+  edgeIdentities_.clear();
   nodeByObjectIndex_.clear();
   nodeByGuid_.clear();
   nodeBySourceId_.clear();
@@ -155,6 +151,7 @@ void BimRelationshipGraph::build(
   nodeBySourceId_.reserve(metadata.size());
   nodeByLabel_.reserve(metadata.size());
   propertySetsByObject_.reserve(metadata.size());
+  edgeIdentities_.reserve(metadata.size());
 
   for (const BimElementMetadata &element : metadata) {
     (void)addObjectNode(element);
@@ -447,6 +444,17 @@ uint32_t BimRelationshipGraph::existingObjectNodeForSynthetic(
   return kInvalidNodeIndex;
 }
 
+size_t BimRelationshipGraph::EdgeIdentityHash::operator()(
+    const EdgeIdentity &edge) const noexcept {
+  size_t hash = std::hash<std::string>{}(edge.label);
+  for (uint32_t value :
+       {edge.from, edge.to, static_cast<uint32_t>(edge.kind)}) {
+    hash ^= std::hash<uint32_t>{}(value) + size_t{0x9e3779b9u} + (hash << 6u) +
+            (hash >> 2u);
+  }
+  return hash;
+}
+
 void BimRelationshipGraph::addEdge(uint32_t from, uint32_t to,
                                    BimRelationshipKind kind,
                                    std::string label) {
@@ -457,12 +465,7 @@ void BimRelationshipGraph::addEdge(uint32_t from, uint32_t to,
   if (label.empty()) {
     label = defaultRelationshipLabel(kind);
   }
-  const auto duplicate = std::ranges::find_if(
-      edges_, [&](const BimRelationshipEdge &edge) {
-        return edge.from == from && edge.to == to && edge.kind == kind &&
-               edge.label == label;
-      });
-  if (duplicate == edges_.end()) {
+  if (edgeIdentities_.insert(EdgeIdentity{from, to, kind, label}).second) {
     edges_.push_back(BimRelationshipEdge{
         .from = from,
         .to = to,
@@ -487,14 +490,18 @@ void BimRelationshipGraph::addSearchField(uint32_t objectIndex,
 
 void BimRelationshipGraph::indexNodeIdentity(
     uint32_t nodeIndex, const BimRelationshipNode &node) {
+  // Each new node is indexed exactly once, so these lists remain sorted.
   if (!node.guid.empty()) {
-    appendUniqueNode(nodeByGuid_[node.guid], nodeIndex);
+    nodeByGuid_[node.guid].push_back(nodeIndex);
   }
   if (!node.sourceId.empty()) {
-    appendUniqueNode(nodeBySourceId_[node.sourceId], nodeIndex);
+    nodeBySourceId_[node.sourceId].push_back(nodeIndex);
   }
-  if (!node.label.empty()) {
-    appendUniqueNode(nodeByLabel_[node.label], nodeIndex);
+  // Label matching is only used to reuse real object nodes. Property-set and
+  // other synthetic nodes can share a label thousands of times; indexing
+  // them here makes every new synthetic-node lookup scan all previous ones.
+  if (!node.label.empty() && isValidObjectIndex(node.objectIndex)) {
+    nodeByLabel_[node.label].push_back(nodeIndex);
   }
 }
 

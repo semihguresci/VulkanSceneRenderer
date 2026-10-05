@@ -860,6 +860,23 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       .key = {RenderTechniqueId::ForwardRaster, "forward-opaque"},
       .pipeline = forwardOpaquePipeline});
 
+  // Lighting must use the same culling routes as the depth prepass. Otherwise
+  // a visible back face writes depth but leaves the cleared HDR color behind.
+  RenderingGraphicsPipelineCreateInfo forwardOpaqueFrontCullPCI =
+      forwardOpaquePCI;
+  forwardOpaqueFrontCullPCI.pRasterizationState = &frontCullRaster;
+  pipelines.extraHandles.push_back(RegisteredPipelineHandle{
+      .key = {RenderTechniqueId::ForwardRaster, "forward-opaque-front-cull"},
+      .pipeline = pipelineManager_.createGraphicsPipeline(
+          forwardOpaqueFrontCullPCI, "forward_opaque_front_cull_pipeline")});
+
+  RenderingGraphicsPipelineCreateInfo forwardOpaqueNoCullPCI = forwardOpaquePCI;
+  forwardOpaqueNoCullPCI.pRasterizationState = &noCullRaster;
+  pipelines.extraHandles.push_back(RegisteredPipelineHandle{
+      .key = {RenderTechniqueId::ForwardRaster, "forward-opaque-no-cull"},
+      .pipeline = pipelineManager_.createGraphicsPipeline(
+          forwardOpaqueNoCullPCI, "forward_opaque_no_cull_pipeline")});
+
   // Transparent (OIT)
   pipelines.transparent =
       pipelineManager_.createGraphicsPipeline(meshPCI, "transparent_pipeline");

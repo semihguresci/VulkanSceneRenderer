@@ -2904,6 +2904,40 @@ void GuiManager::drawSceneControls(
       if (!bimInspection.modelPath.empty()) {
         TextWrappedPathValue("Source", bimInspection.modelPath);
       }
+      if (const auto *report = bimInspection.importReport;
+          report && report->completeness !=
+                        container::geometry::ImportCompleteness::Unreported) {
+        const bool complete = report->completeness ==
+                              container::geometry::ImportCompleteness::Complete;
+        if (!complete)
+          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.7f, 0.25f, 1.0f));
+        ImGui::TextWrapped("%s", report->summary().c_str());
+        if (!complete)
+          ImGui::PopStyleColor();
+        if (!report->diagnostics.empty() &&
+            ImGui::TreeNode("Import warnings")) {
+          for (const auto &[type, count] : report->representationWarnings)
+            ImGui::Text("%s: %zu product/representation pairs", type.c_str(),
+                        count);
+          if (ImGui::BeginChild("Import warning details", ImVec2(0, 200),
+                                ImGuiChildFlags_Borders,
+                                ImGuiWindowFlags_HorizontalScrollbar)) {
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(report->diagnostics.size()));
+            while (clipper.Step()) {
+              for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+                const auto &d = report->diagnostics[static_cast<size_t>(i)];
+                ImGui::Text("%s #%u / product #%u (%s): %s",
+                            d.representationType.c_str(), d.entityId,
+                            d.productId, d.productGuid.c_str(),
+                            d.reason.c_str());
+              }
+            }
+          }
+          ImGui::EndChild();
+          ImGui::TreePop();
+        }
+      }
       if (bimInspection.hasSourceUnits) {
         ImGui::TextWrapped("Source units: %s",
                            bimInspection.sourceUnits.c_str());

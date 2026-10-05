@@ -1,0 +1,7 @@
+if(RUNTIME_DLLS)
+    string(REPLACE "|" ";" runtime_files "${RUNTIME_DLLS}")
+    foreach(runtime_file IN LISTS runtime_files)
+        get_filename_component(runtime_name "${runtime_file}" NAME)
+        file(COPY_FILE "${runtime_file}" "${DESTINATION}/${runtime_name}" ONLY_IF_DIFFERENT)
+    endforeach()
+endif()

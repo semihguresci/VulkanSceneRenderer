@@ -100,6 +100,8 @@ BimPrimitivePassPlan BimPrimitivePassPlanner::build() const {
   plan.active = active;
   plan.depthTest = inputs_.depthTest;
   plan.nativeDrawsSelected = hasNativeDraws;
+  plan.useObjectColor =
+      hasNativeDraws && inputs_.kind == BimPrimitivePassKind::Curves;
   plan.gpuCompaction = gpuCompaction;
   plan.opacity = std::clamp(inputs_.opacity, 0.0f, 1.0f);
   plan.primitiveSize = std::max(inputs_.primitiveSize, 1.0f);

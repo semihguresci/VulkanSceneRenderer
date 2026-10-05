@@ -86,6 +86,7 @@ TEST(BimPrimitivePassPlannerTests, PlaceholderDrawsRequirePreviewFlag) {
   EXPECT_FALSE(hidden.active);
   EXPECT_TRUE(visible.active);
   EXPECT_FALSE(visible.nativeDrawsSelected);
+  EXPECT_FALSE(visible.useObjectColor);
   ASSERT_EQ(visible.cpuDrawSources.size(), 1u);
   EXPECT_EQ(visible.cpuDrawSources[0], &commands);
 }
@@ -117,10 +118,29 @@ TEST(BimPrimitivePassPlannerTests, NativeGpuVisibilityMapsPointSlots) {
        .nativeDraws = opaqueAggregate(nativeCommands)});
 
   ASSERT_TRUE(plan.gpuCompaction);
+  EXPECT_FALSE(plan.useObjectColor);
   ASSERT_EQ(plan.gpuSlotCount, 2u);
   EXPECT_TRUE(plan.cpuDrawSources.empty());
   EXPECT_EQ(plan.gpuSlots[0], BimDrawCompactionSlot::NativePointOpaque);
   EXPECT_EQ(plan.gpuSlots[1], BimDrawCompactionSlot::NativePointTransparent);
+}
+
+TEST(BimPrimitivePassPlannerTests, CpuCurvesUseObjectColorOnlyForNativeDraws) {
+  const auto commands = drawCommands(8u);
+  const auto native =
+      buildBimPrimitivePassPlan({.kind = BimPrimitivePassKind::Curves,
+                                 .enabled = true,
+                                 .nativeDraws = opaqueAggregate(commands)});
+  EXPECT_TRUE(native.active);
+  EXPECT_TRUE(native.useObjectColor);
+  EXPECT_FALSE(native.gpuCompaction);
+  const auto placeholder = buildBimPrimitivePassPlan(
+      {.kind = BimPrimitivePassKind::Curves,
+       .enabled = true,
+       .placeholderRangePreviewEnabled = true,
+       .placeholderDraws = opaqueAggregate(commands)});
+  EXPECT_TRUE(placeholder.active);
+  EXPECT_FALSE(placeholder.useObjectColor);
 }
 
 TEST(BimPrimitivePassPlannerTests, NativeGpuVisibilityMapsCurveSlots) {
@@ -133,6 +153,7 @@ TEST(BimPrimitivePassPlannerTests, NativeGpuVisibilityMapsCurveSlots) {
        .nativeDraws = opaqueAggregate(nativeCommands)});
 
   ASSERT_TRUE(plan.gpuCompaction);
+  EXPECT_TRUE(plan.useObjectColor);
   ASSERT_EQ(plan.gpuSlotCount, 2u);
   EXPECT_TRUE(plan.cpuDrawSources.empty());
   EXPECT_EQ(plan.gpuSlots[0], BimDrawCompactionSlot::NativeCurveOpaque);

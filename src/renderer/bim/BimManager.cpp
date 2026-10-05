@@ -12,6 +12,7 @@
 #include "Container/renderer/scene/SceneController.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/FileLoader.h"
+#include "Container/utility/Logger.h"
 #include "Container/utility/Material.h"
 #include "Container/utility/PipelineManager.h"
 #include "Container/utility/Platform.h"
@@ -21,6 +22,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
@@ -716,7 +718,7 @@ meshletClusterCountForModel(const container::geometry::dotbim::Model &model) {
   }
   size_t clusterCount = 0;
   for (const auto &range : model.meshRanges) {
-    if (!meshGeometryIds.empty() && !meshGeometryIds.contains(range.meshId)) {
+    if (!meshGeometryIds.contains(range.meshId)) {
       continue;
     }
     clusterCount += meshletClusterCountForRange(range.indexCount);
@@ -767,7 +769,7 @@ std::vector<BimMeshletClusterMetadata> buildMeshletClusterMetadataForModel(
     constexpr uint32_t kMeshletTriangleBudget = 64u;
     constexpr uint32_t kMeshletIndexBudget = kMeshletTriangleBudget * 3u;
     for (const auto &range : model.meshRanges) {
-      if (!meshGeometryIds.empty() && !meshGeometryIds.contains(range.meshId)) {
+      if (!meshGeometryIds.contains(range.meshId)) {
         continue;
       }
       const uint32_t endIndex = range.firstIndex + range.indexCount;
@@ -1533,6 +1535,7 @@ void BimManager::clear() {
   semanticColorMode_ = BimSemanticColorMode::Off;
   semanticColorIdsDirty_ = true;
   modelPath_.clear();
+  importReport_ = {};
   ++objectDataRevision_;
 }
 
@@ -2956,6 +2959,8 @@ void BimManager::loadModel(const std::string &path, float importScale,
   }
 
   const std::filesystem::path resolvedPath = resolveModelPath(path);
+  container::log::ContainerLogger::instance().renderer()->info(
+      "Loading BIM model: {}", container::util::pathToUtf8(resolvedPath));
   const std::string extension = lowerAscii(resolvedPath.extension().string());
   if (extension == ".bim") {
     loadDotBim(resolvedPath, importScale, sceneManager);
@@ -2980,6 +2985,18 @@ void BimManager::loadModel(const std::string &path, float importScale,
         ".usdc, .usdz, .gltf, and .glb");
   }
   modelPath_ = path;
+  if (importReport_.completeness !=
+      container::geometry::ImportCompleteness::Unreported) {
+    const auto logger = container::log::ContainerLogger::instance().renderer();
+    if (importReport_.completeness ==
+        container::geometry::ImportCompleteness::Complete)
+      logger->info("{}: {}", path, importReport_.summary());
+    else
+      logger->warn("{}: {}", path, importReport_.summary());
+    for (const auto &[type, count] : importReport_.representationWarnings)
+      logger->warn("  {}: {} affected product/representation pairs", type,
+                   count);
+  }
 }
 
 void BimManager::loadDotBim(const std::filesystem::path &path,
@@ -3002,16 +3019,27 @@ void BimManager::loadIfcWithPreparedSidecarFallback(
   try {
     loadIfc(path, importScale, sceneManager);
     return;
-  } catch (const std::exception &) {
+  } catch (const std::exception &error) {
     const std::optional<std::filesystem::path> sidecar =
         preparedIfcSidecarPath(path);
     if (!sidecar) {
       throw;
     }
+    auto originalReport = importReport_;
+    if (originalReport.completeness ==
+        container::geometry::ImportCompleteness::Unreported) {
+      originalReport.completeness =
+          container::geometry::ImportCompleteness::Failed;
+      originalReport.diagnostics.push_back(
+          {"IFC_FILE", 0, 0, {}, error.what()});
+      originalReport.representationWarnings["IFC_FILE"] = 1;
+    }
     clear();
     loadPreparedModel(container::geometry::ifcx::LoadFromFile(*sidecar,
                                                               importScale),
                       *sidecar, "IFCX", sceneManager);
+    originalReport.fallbackSource = sidecar->string();
+    importReport_ = std::move(originalReport);
   }
 }
 
@@ -3019,8 +3047,35 @@ void BimManager::loadPreparedModel(
     const container::geometry::dotbim::Model &model,
     const std::filesystem::path &path, std::string_view format,
     container::scene::SceneManager &sceneManager) {
+  const auto logger = container::log::ContainerLogger::instance().renderer();
+  auto stageStart = std::chrono::steady_clock::now();
+  auto logStage = [&](std::string_view stage) {
+    const auto now = std::chrono::steady_clock::now();
+    logger->debug(
+        "BIM {}: {} ms", stage,
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - stageStart)
+            .count());
+    logger->flush();
+    stageStart = now;
+  };
+  logger->debug("BIM parsed: {} elements, {} vertices, {} indices",
+                model.elements.size(), model.vertices.size(),
+                model.indices.size());
+  logger->flush();
+  importReport_ = model.importReport;
   if (!hasRenderableSourceGeometry(model)) {
-    throw std::runtime_error(modelLoadErrorPrefix(format, path));
+    std::string message = modelLoadErrorPrefix(format, path);
+    if (importReport_.completeness !=
+        container::geometry::ImportCompleteness::Unreported) {
+      message += ": " + importReport_.summary();
+      if (!importReport_.diagnostics.empty()) {
+        const auto &d = importReport_.diagnostics.front();
+        message += "; " + d.representationType + " #" +
+                   std::to_string(d.entityId) + " (product #" +
+                   std::to_string(d.productId) + "): " + d.reason;
+      }
+    }
+    throw std::runtime_error(message);
   }
 
   metadataCatalog_->setModelUnitMetadata(
@@ -3031,11 +3086,13 @@ void BimManager::loadPreparedModel(
   meshletClusterCount_ = meshletClusters_.size();
   optimizedModelMetadata_ =
       buildOptimizedModelMetadata(path, model, meshletClusters_);
+  logStage("meshlet metadata");
   std::vector<container::geometry::Vertex> uploadVertices = model.vertices;
   std::vector<uint32_t> uploadIndices = model.indices;
   const BimFloorPlanBuildResult floorPlanGround =
       appendFloorPlanOverlayGeometry(model, uploadVertices, uploadIndices,
                                      false);
+  logStage("ground floor plan");
   floorPlanGround_.firstIndex = floorPlanGround.firstIndex;
   floorPlanGround_.indexCount = floorPlanGround.indexCount;
   floorPlanGround_.boundsCenter = floorPlanGround.boundsCenter;
@@ -3043,6 +3100,7 @@ void BimManager::loadPreparedModel(
   const BimFloorPlanBuildResult floorPlanSourceElevation =
       appendFloorPlanOverlayGeometry(model, uploadVertices, uploadIndices,
                                      true);
+  logStage("storey floor plan");
   floorPlanSourceElevation_.firstIndex = floorPlanSourceElevation.firstIndex;
   floorPlanSourceElevation_.indexCount = floorPlanSourceElevation.indexCount;
   floorPlanSourceElevation_.boundsCenter =
@@ -3051,9 +3109,13 @@ void BimManager::loadPreparedModel(
       floorPlanSourceElevation.boundsRadius;
 
   uploadGeometry(uploadVertices, uploadIndices);
+  logStage("geometry upload");
   buildDrawDataFromModel(model, sceneManager);
+  logStage("draw metadata");
   relationshipGraph_.build(elementMetadata_, model.relationships);
+  logStage("relationship graph");
   uploadMeshletResidencyBuffers();
+  logStage("residency upload");
   if (!hasScene()) {
     clear();
     throw std::runtime_error(modelLoadErrorPrefix(format, path));

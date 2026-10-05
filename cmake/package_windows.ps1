@@ -36,7 +36,7 @@ try {
 $requiredFiles = @(
     'VulkanSceneRenderer.exe', 'fmt.dll', 'glfw3.dll',
     'MaterialXCore.dll', 'MaterialXFormat.dll', 'miniz.dll',
-    'spdlog.dll', 'vulkan-1.dll', 'models/basic_cube.gltf',
+    'spdlog.dll', 'vulkan-1.dll', 'manifold.dll', 'models/basic_cube.gltf',
     'models/basic_triangle.gltf',
     'models/validation/cornell_box_local_light.gltf',
     'models/validation/taa_scene.gltf',
@@ -90,6 +90,9 @@ foreach ($package in @('entt', 'fmt', 'glfw3', 'glm', 'imgui', 'MaterialX', 'mik
 }
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'cmake/licenses/Apache-2.0.txt') -Destination $licensesDirectory
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'cmake/licenses/Boost-1.0.txt') -Destination $licensesDirectory
+Copy-Item -LiteralPath (Join-Path $sourceDirectory 'cmake/licenses/Earcut-ISC.txt') -Destination $licensesDirectory
+Copy-Item -LiteralPath (Join-Path $sourceDirectory 'cmake/licenses/Manifold-Apache-2.0.txt') -Destination $licensesDirectory
+Copy-Item -LiteralPath (Join-Path $sourceDirectory 'cmake/licenses/Clipper2-Boost-1.0.txt') -Destination $licensesDirectory
 Copy-Item -LiteralPath (Join-Path $tinyDirectory 'LICENSE') -Destination (Join-Path $licensesDirectory 'tinyusdz.txt')
 Copy-Item -LiteralPath (Join-Path $tinyDirectory 'README.md') -Destination (Join-Path $licensesDirectory 'tinyusdz-third-party.md')
 $tinyLicenses = Join-Path $licensesDirectory 'tinyusdz-bundled'

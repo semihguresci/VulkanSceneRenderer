@@ -77,6 +77,7 @@ function(add_custom_test TARGET_NAME SOURCE_FILE SHADER_DIR TEST_RESULTS_DIR)
         GTest::gtest
         GTest::gtest_main
     )
+    container_stage_runtime_dlls(${TARGET_NAME})
 
     target_include_directories(${TARGET_NAME} PRIVATE
         ${CMAKE_SOURCE_DIR}/include
@@ -144,6 +145,13 @@ add_test(NAME scene_lighting_gpu_regression
 set_tests_properties(scene_lighting_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 TIMEOUT 360 LABELS "requires-vulkan;requires-display;visual-regression")
 
+add_test(NAME forward_culling_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/forward_culling_regression.py"
+            --exe "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/forward-culling")
+set_tests_properties(forward_culling_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 TIMEOUT 360 LABELS "requires-vulkan;requires-display;visual-regression")
+
 # Exercise all Slang temporal helpers with dynamic inputs, outside runtime
 # assets. Building the math test also compiles this probe with engine flags.
 set(TEMPORAL_CONTRACT_SPIRV "${CMAKE_BINARY_DIR}/test_shaders/temporal_contract.comp.spv")
@@ -199,6 +207,10 @@ add_custom_test(dotbim_loader_tests
 add_custom_test(ifc_tessellated_loader_tests
     ${TEST_GEOMETRY_DIR}/ifc_tessellated_loader_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_geometry
+)
+target_sources(ifc_tessellated_loader_tests PRIVATE
+    ${TEST_GEOMETRY_DIR}/ifc_curve_family_tests.cpp
+    ${TEST_GEOMETRY_DIR}/ifc_brep_profile_tests.cpp
 )
 
 add_custom_test(ifcx_loader_tests

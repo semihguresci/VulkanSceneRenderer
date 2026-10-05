@@ -4,6 +4,8 @@
     "fmt",
     "nlohmann-json",
     "glm",
+    "earcut-hpp",
+    "manifold",
     "glfw3",
     {
       "name": "imgui",

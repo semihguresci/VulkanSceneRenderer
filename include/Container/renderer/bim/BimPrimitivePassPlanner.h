@@ -42,6 +42,7 @@ struct BimPrimitivePassPlan {
   bool active{false};
   bool depthTest{true};
   bool nativeDrawsSelected{false};
+  bool useObjectColor{false};
   bool gpuCompaction{false};
   float opacity{1.0f};
   float primitiveSize{1.0f};

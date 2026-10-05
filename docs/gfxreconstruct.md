@@ -77,6 +77,10 @@ preserved. The renderer explicitly enables the capture layer independently of
 Capture is armed when the scene opens. Focus the renderer window and press F3
 to start recording, reproduce the artifact, then press F3 to stop. Repeat during the
 same session. `--trigger-frames 1` records one frame per trigger instead.
+Hotkey captures retain the layer's filename timestamps so later recordings
+preserve earlier files. GFXReconstruct 1.0.5 timestamps have one-second
+resolution; start recordings at least one second apart. Frame-range captures
+retain deterministic filenames.
 F3 is the default when no explicit mode is supplied. F1–F5 and F9–F11 are
 accepted; F12 is accepted only outside Windows. F6/F7/F8 change renderer debug
 views/culling, and TAB/CONTROL conflict with UI/navigation, so they are excluded.
@@ -262,10 +266,13 @@ cube: a missing normal and damaged UV encoding prevented glTF loading. The
 840-byte buffer now contains all 24 positions/normals/UVs and 36 indices; the
 generator validates its base64 encoding and declared size before writing it.
 
-Interactive hotkey presses and repeated hotkey captures still require a manual
-Windows session check. Tool settings and launcher arming are verified; the test
-results above do not establish interactive hotkey behavior. Keep issue #64 open
-until that acceptance check is recorded.
+Interactive F3 start/stop and repeated recording were exercised in a Windows
+session. That check exposed same-session overwrite when filename timestamps
+were disabled; the launcher now enables timestamps for hotkey mode. Two
+one-frame F3 captures from the same TAA session produced separate files
+(25,995,286 and 26,000,505 bytes). Both were inspected and replayed with
+validation and screenshot export. Local evidence is under
+`out/capture-validation/hotkey-preserve-20261004/`.
 
 References: [LunarG Part 2 setup guide](https://www.lunarg.com/mastering-gfxreconstruct-part-2/),
 [Vulkan usage](https://github.com/LunarG/gfxreconstruct/blob/dev/USAGE_desktop_Vulkan.md),

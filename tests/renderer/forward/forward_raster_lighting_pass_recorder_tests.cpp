@@ -91,6 +91,8 @@ void registerForwardPipeline(PipelineRegistry& pipelines, std::string name,
 
 void bindForwardPipelines(PipelineRegistry& pipelines) {
   registerForwardPipeline(pipelines, "forward-opaque", 0x2001);
+  registerForwardPipeline(pipelines, "forward-opaque-front-cull", 0x2005);
+  registerForwardPipeline(pipelines, "forward-opaque-no-cull", 0x2006);
   registerForwardPipeline(pipelines, "forward-transparent", 0x2002);
   registerForwardPipeline(pipelines, "forward-transparent-front-cull", 0x2003);
   registerForwardPipeline(pipelines, "forward-transparent-no-cull", 0x2004);
@@ -112,6 +114,8 @@ void bindForwardTransparentOnlyPipelines(PipelineRegistry& pipelines) {
 
 void bindForwardOpaqueOnlyPipelines(PipelineRegistry& pipelines) {
   registerForwardPipeline(pipelines, "forward-opaque", 0x2001);
+  registerForwardPipeline(pipelines, "forward-opaque-front-cull", 0x2005);
+  registerForwardPipeline(pipelines, "forward-opaque-no-cull", 0x2006);
   pipelines.registerLayout(
       RegisteredPipelineLayout{.key = {RenderTechniqueId::ForwardRaster,
                                        "transparent"},
@@ -229,6 +233,42 @@ TEST(ForwardRasterLightingPassRecorderTests, ReadinessNoDrawsReturnsNotNeeded) {
 }
 
 TEST(ForwardRasterLightingPassRecorderTests,
+     NativeOnlyCurvesInitializeLightingAndRequireTheirPipeline) {
+  std::vector<DrawCommand> curves(1u);
+  FrameResourceRegistry resources;
+  PipelineRegistry pipelines;
+  container::gpu::BindlessPushConstants bindless{};
+  container::renderer::WireframePushConstants wireframe{};
+  FrameRecordParams params{};
+  params.pushConstants.bindless = &bindless;
+  params.pushConstants.wireframe = &wireframe;
+  params.bim.primitivePasses.curves.enabled = true;
+  params.bim.nativeCurveDraws.opaqueDrawCommands = &curves;
+  makeBimGeometryReady(params);
+  makeForwardBindingsReady(params, resources, pipelines);
+  EXPECT_TRUE(
+      container::renderer::hasForwardRasterNativePrimitiveDraws(params));
+  EXPECT_FALSE(checkForwardRasterLightingPassReadiness(params).ready);
+  registerForwardPipeline(pipelines, "bim-curve-depth", 0x2101);
+  pipelines.registerLayout(RegisteredPipelineLayout{
+      .key = {RenderTechniqueId::ForwardRaster, "wireframe"},
+      .layout = fakeHandle<VkPipelineLayout>(0x3101)});
+  EXPECT_TRUE(checkForwardRasterLightingPassReadiness(params).ready);
+  params.bim.primitivePasses.curves.depthTest = false;
+  EXPECT_FALSE(checkForwardRasterLightingPassReadiness(params).ready);
+  registerForwardPipeline(pipelines, "bim-curve-no-depth", 0x2102);
+  EXPECT_TRUE(checkForwardRasterLightingPassReadiness(params).ready);
+  params.pushConstants.wireframe = nullptr;
+  EXPECT_EQ(checkForwardRasterLightingPassReadiness(params).blockingResource,
+            RenderResourceId::BimGeometry);
+  params.bim.primitivePasses.curves.enabled = false;
+  EXPECT_FALSE(
+      container::renderer::hasForwardRasterNativePrimitiveDraws(params));
+  EXPECT_EQ(checkForwardRasterLightingPassReadiness(params).skipReason,
+            RenderPassSkipReason::NotNeeded);
+}
+
+TEST(ForwardRasterLightingPassRecorderTests,
      ReadinessWithOpaqueDrawsAndForwardBindingsReadyReturnsReady) {
   std::vector<DrawCommand> opaqueDraws(1u);
   FrameResourceRegistry resources;
@@ -267,6 +307,45 @@ TEST(ForwardRasterLightingPassRecorderTests,
 
   EXPECT_TRUE(readiness.ready);
   EXPECT_EQ(readiness.skipReason, RenderPassSkipReason::None);
+}
+
+TEST(ForwardRasterLightingPassRecorderTests,
+     OpaqueSceneAndBimRejectMissingCullingVariants) {
+  for (bool bim : {false, true}) {
+    for (const char *missing :
+         {"forward-opaque-front-cull", "forward-opaque-no-cull"}) {
+      SCOPED_TRACE(std::string(bim ? "BIM " : "scene ") + missing);
+      std::vector<DrawCommand> draws(1u);
+      FrameResourceRegistry resources;
+      PipelineRegistry pipelines;
+      container::gpu::BindlessPushConstants bindless{};
+      FrameRecordParams params{};
+      params.pushConstants.bindless = &bindless;
+      if (bim) {
+        params.bim.draws.opaqueDrawCommands = &draws;
+        params.bim.draws.opaqueDoubleSidedDrawCommands = &draws;
+        makeBimGeometryReady(params);
+      } else {
+        params.draws.opaqueDrawCommands = &draws;
+        params.draws.opaqueWindingFlippedDrawCommands = &draws;
+        makeSceneGeometryReady(params);
+      }
+      makeForwardBindingsReady(params, resources, pipelines);
+      ASSERT_TRUE(checkForwardRasterLightingPassReadiness(params).ready);
+      pipelines.clearHandles();
+      registerForwardPipeline(pipelines, "forward-opaque", 0x2001);
+      for (const char *variant :
+           {"forward-opaque-front-cull", "forward-opaque-no-cull"}) {
+        if (std::string_view(variant) != missing) {
+          registerForwardPipeline(pipelines, variant, 0x2005);
+        }
+      }
+      const auto readiness = checkForwardRasterLightingPassReadiness(params);
+      EXPECT_FALSE(readiness.ready);
+      EXPECT_EQ(readiness.skipReason, RenderPassSkipReason::MissingResource);
+      EXPECT_EQ(readiness.blockingResource, RenderResourceId::SceneColor);
+    }
+  }
 }
 
 TEST(ForwardRasterLightingPassRecorderTests,
@@ -320,7 +399,5 @@ TEST(ForwardRasterLightingPassRecorderTests,
   EXPECT_FALSE(contains(source, "TileCull"));
   EXPECT_FALSE(contains(source, "GTAO"));
   EXPECT_FALSE(contains(source, "p.postProcess.renderPass"));
-  EXPECT_FALSE(contains(source, "ForwardOpaqueFrontCull"));
-  EXPECT_FALSE(contains(source, "ForwardOpaqueNoCull"));
   EXPECT_FALSE(contains(source, "g-buffer-sampler"));
 }

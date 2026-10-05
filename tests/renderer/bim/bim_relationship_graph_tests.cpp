@@ -224,4 +224,55 @@ TEST(BimRelationshipGraphTests,
   EXPECT_TRUE(hasSearchHit(graph, "2HR", 4u, "property value"));
 }
 
+TEST(BimRelationshipGraphTests,
+     LargeSharedGroupsRetainDistinctEdgesAndRebuild) {
+  constexpr uint32_t count = 20000;
+  std::vector<BimElementMetadata> metadata;
+  metadata.reserve(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    auto element = makeElement(i, "shared-product", "shared-source", "IfcWall",
+                               "Repeated wall");
+    element.storeyName = "Level 01";
+    element.materialName = "Concrete";
+    element.properties.push_back({.set = "Repeated property set",
+                                  .name = "LoadBearing",
+                                  .value = "true"});
+    metadata.push_back(std::move(element));
+  }
+  std::vector<ElementRelationship> relationships{{.fromGuid = "system-guid",
+                                                  .toGuid = "shared-product",
+                                                  .kind = "system",
+                                                  .label = "Supply"},
+                                                 {.fromGuid = "system-guid",
+                                                  .toGuid = "shared-product",
+                                                  .kind = "system",
+                                                  .label = "Supply"},
+                                                 {.fromGuid = "system-guid",
+                                                  .toGuid = "shared-product",
+                                                  .kind = "system",
+                                                  .label = "Return"},
+                                                 {.fromGuid = "system-guid",
+                                                  .toGuid = "shared-product",
+                                                  .kind = "zone",
+                                                  .label = "Supply"}};
+  BimRelationshipGraph graph;
+  graph.build(metadata, relationships);
+  EXPECT_EQ(graph.edges().size(), size_t{count} * 7);
+  const auto edges = graph.edgesForObject(count - 1);
+  EXPECT_EQ(edges.size(), 7u);
+  EXPECT_EQ(std::ranges::count_if(
+                edges,
+                [](const auto &edge) {
+                  return edge.kind == BimRelationshipKind::SystemAssignment &&
+                         edge.label == "Supply";
+                }),
+            1);
+  metadata.resize(1);
+  graph.build(metadata, relationships);
+  EXPECT_EQ(graph.edges().size(), 7u);
+  graph.clear();
+  EXPECT_TRUE(graph.edges().empty());
+  EXPECT_TRUE(graph.nodes().empty());
+}
+
 } // namespace

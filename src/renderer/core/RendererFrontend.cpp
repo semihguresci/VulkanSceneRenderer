@@ -2270,6 +2270,18 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   }
   json["scene"] = {{"primary", activePrimaryModelPath_}, {"auxiliary", activeAuxiliaryModelPath_},
                     {"primaryImportScale", activePrimaryImportScale_}, {"auxiliaryImportScale", activeAuxiliaryImportScale_}};
+  if (subs_.bimManager) {
+    const auto &report = subs_.bimManager->importReport();
+    json["scene"]["import"] = {
+        {"status",
+         container::geometry::importCompletenessName(report.completeness)},
+        {"sourceProducts", report.sourceProductCount},
+        {"importedProducts", report.importedProductCount},
+        {"skippedProducts", report.skippedProductCount},
+        {"partialProducts", report.partialProductCount},
+        {"representationWarnings", report.representationWarnings},
+        {"fallbackSource", report.fallbackSource}};
+  }
   const auto& camera = buffers_.cameraData;
   json["camera"] = {{"position", {camera.cameraWorldPosition.x, camera.cameraWorldPosition.y, camera.cameraWorldPosition.z}},
                      {"jitterUv", {camera.jitterUv.x, camera.jitterUv.y, camera.jitterUv.z, camera.jitterUv.w}}};
@@ -3503,7 +3515,8 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
 
     try {
       subs_.bimManager->loadModel(path, importScale, *subs_.sceneManager);
-    } catch (const std::exception &) {
+    } catch (const std::exception &error) {
+      const std::string loadError = error.what();
       subs_.bimManager->clear();
       (void)reloadPrimary(previousPrimaryPath, previousPrimaryScale);
       if (!previousAuxiliaryPath.empty()) {
@@ -3518,7 +3531,8 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
       }
       refreshSceneState(true);
       if (subs_.guiManager) {
-        subs_.guiManager->setStatusMessage("Failed to load model: " + path);
+        subs_.guiManager->setStatusMessage("Failed to load model: " + path +
+                                           "\n" + loadError);
       }
       return false;
     }
@@ -3529,7 +3543,9 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
     activeAuxiliaryImportScale_ = importScale;
     refreshSceneState(true);
     if (subs_.guiManager) {
-      subs_.guiManager->setStatusMessage("Loaded model: " + path);
+      const auto summary = subs_.bimManager->importReport().summary();
+      subs_.guiManager->setStatusMessage(
+          "Loaded model: " + path + (summary.empty() ? "" : "\n" + summary));
     }
     return subs_.bimManager->hasScene();
   }
@@ -5430,6 +5446,7 @@ void RendererFrontend::presentSceneControls() {
     bimModelCompareElements = buildBimModelCompareElements(elementMetadata);
     bimInspection.hasScene = true;
     bimInspection.modelPath = subs_.bimManager->modelPath();
+    bimInspection.importReport = &subs_.bimManager->importReport();
     bimInspection.objectCount = stats.objectCount;
     bimInspection.meshObjectCount = stats.meshObjectCount;
     bimInspection.pointObjectCount = stats.pointObjectCount;
