@@ -262,6 +262,8 @@ struct ShadowSettings {
   bool directionalPcssEnabled{true};
   bool directionalContactVisibility{false};
   bool localContactVisibility{true};
+  // 0 = fixed origins, 1/2/3 = 16/32/64 emitter-domain PCSS filter taps.
+  uint32_t areaShadowQuality{2};
 };
 
 struct ShadowCascadeData {
@@ -299,6 +301,7 @@ struct LocalShadowLayerData {
   alignas(16) glm::uvec4 meta{0u, 0u, 0u, 0u};
   // x = texel size in world units, y = depth range, z = outer cone cosine,
   // w = source radius in world units for soft local-shadow filtering.
+  // Area layers instead use z = perspective near plane, w = area quality [0,3].
   alignas(16) glm::vec4 params{0.0f, 0.0f, 0.0f, 0.0f};
 };
 
@@ -698,7 +701,7 @@ static_assert(offsetof(ShadowCascadeData, worldRadius) == 72,
 static_assert(offsetof(ShadowCascadeData, depthRange) == 76,
               "ShadowCascadeData.depthRange offset");
 
-static_assert(sizeof(ShadowSettings) == 68,
+static_assert(sizeof(ShadowSettings) == 72,
               "ShadowSettings stores shader vectors, PCSS controls, raster "
               "depth-bias controls, and contact-visibility state.");
 static_assert(offsetof(ShadowSettings, normalBiasMinTexels) == 0,

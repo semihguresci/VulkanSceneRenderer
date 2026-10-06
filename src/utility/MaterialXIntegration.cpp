@@ -885,10 +885,13 @@ std::vector<MaterialX::DocumentPtr> SlangMaterialXBridge::loadGltfMaterials(
 }
 
 std::vector<uint32_t> SlangMaterialXBridge::loadTexturesForGltf(
-    const tinygltf::Model& model, const std::filesystem::path& baseDir,
-    container::material::TextureManager& textureManager,
+    const tinygltf::Model &model, const std::filesystem::path &baseDir,
+    container::material::TextureManager &textureManager,
     const std::function<container::material::TextureResource(
-        const std::string&, bool)>& textureLoader) const {
+        const std::string &, bool)> &textureLoader,
+    const std::function<container::material::TextureResource(
+        const std::string &, std::span<const std::byte>, uint32_t, uint32_t,
+        bool)> &embeddedLoader) const {
   std::vector<uint32_t> textureToResource(
       model.textures.size(), std::numeric_limits<uint32_t>::max());
 
@@ -989,25 +992,72 @@ std::vector<uint32_t> SlangMaterialXBridge::loadTexturesForGltf(
 
     const size_t imageIndex = static_cast<size_t>(texture.source);
     const auto& image = model.images[imageIndex];
-    if (image.uri.empty()) continue;
+    const bool embedded = image.uri.empty() || image.uri.starts_with("data:") ||
+                          image.bufferView >= 0;
+    if (embedded && !embeddedLoader)
+      continue;
 
     const auto fullPath = container::util::pathToUtf8(
-        (baseDir / container::util::pathFromUtf8(image.uri)).lexically_normal());
+        (baseDir / container::util::pathFromUtf8(
+                       embedded ? "embedded-image-" + std::to_string(imageIndex)
+                                : image.uri))
+            .lexically_normal());
     const uint32_t samplerIndex = gltfTextureSamplerIndex(model, texture);
-    const std::string textureCacheKey =
-        fullPath + "|sampler=" + std::to_string(samplerIndex);
+    const std::string textureCacheKey = [&] {
+      std::string key = (embedded ? "gltf-embedded:" : "file:") + fullPath;
+      if (embedded) {
+        // Multiple glTF models may share a directory and image index.
+        // Identify decoded content too, so their embedded images cannot alias.
+        uint64_t hash = 14695981039346656037ull;
+        for (unsigned char byte : image.image)
+          hash = (hash ^ byte) * 1099511628211ull;
+        key += "|pixels=" + std::to_string(hash) +
+               "|size=" + std::to_string(image.width) + "x" +
+               std::to_string(image.height) +
+               "|format=" + std::to_string(image.bits) + ":" +
+               std::to_string(image.component);
+      }
+      return key + "|sampler=" + std::to_string(samplerIndex) +
+             "|srgb=" + std::to_string(imageIsSrgb[imageIndex]);
+    }();
 
-    if (const auto cachedIndex = textureManager.findTextureIndex(textureCacheKey)) {
+    if (const auto cachedIndex =
+            textureManager.findTextureIndex(textureCacheKey)) {
       textureToResource[i] = *cachedIndex;
       continue;
     }
 
     try {
-      auto resource = textureLoader(fullPath, imageIsSrgb[imageIndex]);
+      container::material::TextureResource resource;
+      if (embedded) {
+        if (image.width <= 0 || image.height <= 0 || image.bits != 8 ||
+            image.component < 1 || image.component > 4)
+          throw std::runtime_error("unsupported decoded glTF image format");
+        const uint64_t pixels = uint64_t(image.width) * uint64_t(image.height);
+        if (pixels > std::numeric_limits<size_t>::max() / 4 ||
+            pixels * uint64_t(image.component) > image.image.size())
+          throw std::runtime_error("truncated decoded glTF image");
+        std::vector<std::byte> rgba(size_t(pixels) * 4);
+        for (size_t pixel = 0; pixel < pixels; ++pixel) {
+          const auto *source = image.image.data() + pixel * image.component;
+          const bool grey = image.component <= 2;
+          rgba[pixel * 4] = std::byte(source[0]);
+          rgba[pixel * 4 + 1] = std::byte(grey ? source[0] : source[1]);
+          rgba[pixel * 4 + 2] = std::byte(grey ? source[0] : source[2]);
+          rgba[pixel * 4 + 3] = std::byte(image.component == 2   ? source[1]
+                                          : image.component == 4 ? source[3]
+                                                                 : 255);
+        }
+        resource =
+            embeddedLoader(fullPath, rgba, uint32_t(image.width),
+                           uint32_t(image.height), imageIsSrgb[imageIndex]);
+      } else {
+        resource = textureLoader(fullPath, imageIsSrgb[imageIndex]);
+      }
       resource.name = textureCacheKey;
       resource.samplerIndex = samplerIndex;
       textureToResource[i] = textureManager.registerTexture(resource);
-    } catch (const std::exception& exc) {
+    } catch (const std::exception &exc) {
       std::println(stderr, "Texture load failed for {}: {}", fullPath, exc.what());
     }
   }

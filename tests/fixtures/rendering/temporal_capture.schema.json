@@ -21,8 +21,14 @@
       "samples": {"enum": [1, 2, 4, 8]}, "exposure": {"type": "number", "minimum": 0},
       "resize": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 1, "maximum": 16384}},
       "technique": {"enum": ["forward-raster", "deferred-raster"]}, "reload": {"type": "string"},
+      "guiReload": {"type": "string", "description": "Queue a model load through the Scene Controls request path"},
+      "guiSampleModel": {"type": "string", "description": "Select a discovered Sample model by its UI label"},
       "bimHiddenObject": {"type": "integer", "minimum": 0, "maximum": 4294967295},
       "bimLodBias": {"type": "integer", "minimum": -8, "maximum": 8},
+      "areaLightPosition": {"$ref": "#/$defs/vec3"},
+      "rayShadows": {"enum": ["raster", "hard", "soft"]},
+      "rayShadowSamples": {"type": "integer", "minimum": 1, "maximum": 32},
+      "rayShadowDenoise": {"type": "boolean"},
       "sectionPlane": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}}
     }}}
   },

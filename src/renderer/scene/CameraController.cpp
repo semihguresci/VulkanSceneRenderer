@@ -134,7 +134,8 @@ void CameraController::resetCameraForScene() {
   resetCameraForBounds(sceneViewBoundsFromSceneManager(sceneManager_));
 }
 
-void CameraController::resetCameraForBounds(const SceneViewBounds &bounds) {
+void CameraController::resetCameraForBounds(const SceneViewBounds &bounds,
+                                            bool allowInteriorView) {
   if (!camera_)
     return;
   cancelViewAnimation();
@@ -174,8 +175,9 @@ void CameraController::resetCameraForBounds(const SceneViewBounds &bounds) {
     const bool xIsLong = boundsSize.x >= boundsSize.z;
     const float longExtent = xIsLong ? boundsSize.x : boundsSize.z;
     const float crossExtent = xIsLong ? boundsSize.z : boundsSize.x;
-    const bool hallLike =
-        longExtent > 1.25f * crossExtent && longExtent > 1.5f * boundsSize.y;
+    const bool hallLike = allowInteriorView &&
+                          longExtent > 1.25f * crossExtent &&
+                          longExtent > 1.5f * boundsSize.y;
 
     if (hallLike) {
       // RH: front.x = cos(yaw)cos(pitch), front.z = -sin(yaw)cos(pitch).

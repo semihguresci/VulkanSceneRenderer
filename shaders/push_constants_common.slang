@@ -18,7 +18,7 @@ struct LightPushConstants
     uint contactVisibilityEnabled;
     uint localShadowEnabled;
     float bounceIntensity;
-    uint padding2;
+    uint padding2; // point-light SSBO index, or gizmo pick ID
 };
 
 struct ShadowPushConstants

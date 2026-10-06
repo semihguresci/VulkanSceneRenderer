@@ -648,6 +648,11 @@ public:
     return indexSlice_;
   }
   [[nodiscard]] VkIndexType indexType() const { return VK_INDEX_TYPE_UINT32; }
+  [[nodiscard]] std::span<const container::geometry::Vertex> vertices() const {
+    return vertices_;
+  }
+  [[nodiscard]] std::span<const uint32_t> indices() const { return indices_; }
+  [[nodiscard]] uint64_t geometryRevision() const { return geometryRevision_; }
 
   [[nodiscard]] const std::vector<container::gpu::ObjectData> &
   objectData() const {
@@ -935,6 +940,7 @@ private:
 
   std::vector<container::geometry::Vertex> vertices_{};
   std::vector<uint32_t> indices_{};
+  uint64_t geometryRevision_{0};
   glm::vec3 temporalRootTranslation_{0};
   uint64_t nextTemporalObjectId_{1};
   std::vector<container::gpu::ObjectData> objectData_{};

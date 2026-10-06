@@ -32,17 +32,16 @@ inline uint32_t areaShadowSampleCount(uint32_t remainingLayers,
 inline glm::vec2 areaShadowSampleOffset(uint32_t sample, uint32_t count,
                                        bool disk) {
   if (count <= 1u) return glm::vec2(0.0f);
-  if (count == 2u) {
-    const float x = sample == 0u ? -0.5f : 0.5f;
-    return {x, x};
+  if (disk) {
+    // Centroids of equal-area angular sectors, matching the shader's domains.
+    const float halfAngle = 3.14159265359f / float(count);
+    const float angle = 2.0f * halfAngle * (float(sample) + 0.5f);
+    const float radius = (2.0f / 3.0f) * std::sin(halfAngle) / halfAngle;
+    return glm::vec2(std::cos(angle), std::sin(angle)) * radius;
   }
-  if (count == 3u) {
-    const float angle = 6.28318530718f * static_cast<float>(sample) / 3.0f;
-    return glm::vec2(std::cos(angle), std::sin(angle)) * 0.70710678118f;
-  }
-  const float radius = disk ? 0.5f : 0.57735026919f;
-  return glm::vec2((sample & 1u) ? radius : -radius,
-                   (sample & 2u) ? radius : -radius);
+  if (count < 4u)
+    return {2.0f * (float(sample) + 0.5f) / float(count) - 1.0f, 0};
+  return glm::vec2((sample & 1u) ? 0.5f : -0.5f, (sample & 2u) ? 0.5f : -0.5f);
 }
 
 inline glm::vec3 areaShadowSamplePosition(const container::gpu::AreaLightData& light,

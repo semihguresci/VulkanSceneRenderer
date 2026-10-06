@@ -35,8 +35,9 @@ void copyLightPushConstants(LightPushConstants &pushConstants,
   pushConstants.bounceIntensity = bounceIntensity;
 }
 
+template <size_t N>
 [[nodiscard]] bool hasReadyDescriptorSets(
-    const std::array<VkDescriptorSet, 3u> &descriptorSets) noexcept {
+    const std::array<VkDescriptorSet, N> &descriptorSets) noexcept {
   for (const VkDescriptorSet descriptorSet : descriptorSets) {
     if (descriptorSet == VK_NULL_HANDLE) {
       return false;
@@ -116,6 +117,7 @@ bool recordDeferredPointLightingCommands(
     copyLightPushConstants(*inputs.lightPushConstants, light,
                            plan.contactVisibilityEnabled,
                            plan.localShadowEnabled, plan.bounceIntensity);
+    inputs.lightPushConstants->padding2 = routeIndex;
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       inputs.stencilVolumePipeline);

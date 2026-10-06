@@ -2,6 +2,7 @@
 
 #include "Container/common/CommonVulkan.h"
 #include "Container/common/VulkanTypes.h"
+#include "Container/utility/RayQuerySupport.h"
 #include "Container/utility/VulkanInstance.h"
 
 #include <vector>
@@ -13,6 +14,7 @@ struct DeviceCreateInfo {
   std::vector<const char*> optionalExtensions{};
   std::vector<const char*> validationLayers{};
   bool enableValidationLayers{false};
+  bool enableRayQueries{false}; // Optional: never disqualifies a raster device.
   VkPhysicalDeviceFeatures enabledFeatures{};  // Required features.
   VkPhysicalDeviceFeatures optionalFeatures{}; // Enabled when supported.
   const void* next{nullptr};
@@ -46,6 +48,12 @@ class VulkanDevice {
   enabledVulkan12Features() const noexcept {
     return enabledVulkan12Features_;
   }
+  [[nodiscard]] const RayQuerySupport &rayQuerySupport() const noexcept {
+    return rayQuerySupport_;
+  }
+  [[nodiscard]] bool rayQueriesEnabled() const noexcept {
+    return rayQueriesEnabled_;
+  }
 
  private:
   bool isDeviceSuitable(VkPhysicalDevice device) const;
@@ -68,6 +76,8 @@ class VulkanDevice {
   QueueFamilyIndices queueFamilyIndices_{};
   VkPhysicalDeviceFeatures enabledFeatures_{};
   VkPhysicalDeviceVulkan12Features enabledVulkan12Features_{};
+  RayQuerySupport rayQuerySupport_{};
+  bool rayQueriesEnabled_{false};
 };
 
 }  // namespace container::gpu

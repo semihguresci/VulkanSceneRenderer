@@ -1,4 +1,6 @@
 #include "Container/renderer/core/RendererFrontend.h"
+#include "Container/renderer/raytracing/RaySceneAcceleration.h"
+#include "Container/renderer/raytracing/RayShadowManager.h"
 #include "Container/renderer/temporal/TemporalCapture.h"
 #include "Container/renderer/temporal/TemporalManager.h"
 #include <fstream>
@@ -1436,6 +1438,13 @@ void RendererFrontend::initialize() {
   subs_.frameResourceManager->createGBufferSampler();
   subs_.lightingManager->createDescriptorResources(
       static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
+  subs_.rayShadowManager = std::make_unique<RayShadowManager>(
+      svc_.ctx.deviceWrapper, *svc_.allocationManager.memoryManager());
+  subs_.rayShadowManager->settings() = svc_.config.rayShadows;
+  subs_.rayShadowManager->createPipelines(
+      container::util::executableDirectory(),
+      subs_.sceneManager->descriptorSetLayout(),
+      subs_.lightingManager->lightDescriptorSetLayout());
   subs_.lightingManager->createTiledResources(
       container::util::executableDirectory(), svc_.swapChainManager.extent());
   createGraphicsPipelines();
@@ -1456,6 +1465,17 @@ void RendererFrontend::initialize() {
     subs_.guiManager->setWireframeCapabilities(
         svc_.ctx.wireframeSupported, svc_.ctx.wireframeRasterModeSupported,
         svc_.ctx.wireframeWideLinesSupported);
+    subs_.guiManager->setAreaShadowQuality(svc_.config.areaShadowQuality);
+    subs_.guiManager->rayShadowSettings() = svc_.config.rayShadows;
+    subs_.guiManager->setRayShadowSupport(
+        subs_.rayShadowManager->supported(),
+        subs_.rayShadowManager->supported()
+            ? "Supported"
+            : (svc_.ctx.deviceWrapper->rayQueriesEnabled()
+                   ? std::string(svc_.ctx.deviceWrapper->rayQuerySupport()
+                                     .unavailableReason())
+                   : "Disabled or unavailable; raster fallback"));
+    subs_.guiManager->setGBufferViewMode(configuredDisplayMode(svc_.config));
     if (subs_.environmentManager) {
       subs_.guiManager->setEnvironmentStatus(
           subs_.environmentManager->environmentStatus());
@@ -1766,7 +1786,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   phaseStart = TelemetryClock::now();
   applyBimSemanticColorMode();
   auto &temporal = *subs_.temporalManager;
-  // Section coverage changes invalidate the whole clipped surface domain;
+  // Section coverage and shadow routing changes invalidate the history domain;
   // material/topology revisions below remain local to their provider/object.
   uint64_t clipRevision = 1469598103934665603ull;
   auto hashClip = [&](const auto &value) {
@@ -1796,8 +1816,17 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
         hashClip(equation);
     }
   }
+  if (subs_.rayShadowManager) {
+    const auto &ray = subs_.guiManager ? subs_.guiManager->rayShadowSettings()
+                                      : subs_.rayShadowManager->settings();
+    hashClip(ray.mode);
+    hashClip(ray.areaSamples);
+    hashClip(ray.localLightBudget);
+    hashClip(ray.denoise);
+    hashClip(ray.debugLayer);
+  }
   if (temporalClipRevision_ && *temporalClipRevision_ != clipRevision)
-    temporal.reset("section coverage changed");
+    temporal.reset("section coverage or ray shadow controls changed");
   temporalClipRevision_ = clipRevision;
   container::temporal::validateSettings(
       temporal.settings(), static_cast<uint32_t>(msaaSampleCount_));
@@ -1886,9 +1915,11 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     const float aspect =
         static_cast<float>(svc_.swapChainManager.extent().width) /
         static_cast<float>(svc_.swapChainManager.extent().height);
-    const container::gpu::ShadowSettings shadowSettings =
+    container::gpu::ShadowSettings shadowSettings =
         subs_.guiManager ? subs_.guiManager->shadowSettings()
                          : container::gpu::ShadowSettings{};
+    if (!subs_.guiManager)
+      shadowSettings.areaShadowQuality = svc_.config.areaShadowQuality;
     const std::optional<ShadowCasterSceneBounds> shadowCasterBounds =
         accumulateShadowCasterSceneBounds(subs_.sceneController.get(),
                                           subs_.bimManager.get());
@@ -1979,6 +2010,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     throw std::runtime_error("failed to submit draw command buffer!");
   }
   subs_.temporalManager->commit();
+  subs_.rayShadowManager->commit();
   gfxJournal_.submitted();
   frame_.imagesInFlight[imageIndex] = submittedFrameFence;
   if (telemetry) {
@@ -2079,9 +2111,39 @@ void RendererFrontend::applyTemporalCapture(
   FrameConcurrencyPolicy::serializedGpuResources("capture scene mutation")
       .waitBeforeAcquire(*subs_.frameSyncManager, frame_.currentFrame);
   const auto &event = sample.event;
+  if (subs_.rayShadowManager &&
+      (!event.rayShadows.empty() || event.rayShadowSamples ||
+       event.rayShadowDenoise)) {
+    auto &settings = subs_.rayShadowManager->settings();
+    if (!event.rayShadows.empty())
+      settings.mode = event.rayShadows == "soft"   ? RayShadowMode::Soft
+                      : event.rayShadows == "hard" ? RayShadowMode::Hard
+                                                   : RayShadowMode::Raster;
+    if (event.rayShadowSamples)
+      settings.areaSamples = *event.rayShadowSamples;
+    if (event.rayShadowDenoise)
+      settings.denoise = *event.rayShadowDenoise;
+    if (subs_.guiManager)
+      subs_.guiManager->rayShadowSettings() = settings;
+  }
   if (!event.reload.empty()) {
     captureObjectBase_.reset();
     reloadSceneModel(event.reload);
+  }
+  if (!event.guiReload.empty()) {
+    if (!subs_.guiManager)
+      throw std::runtime_error(
+          "GUI reload requires an initialized GUI manager");
+    captureObjectBase_.reset();
+    subs_.guiManager->queueModelLoadRequest(event.guiReload, 1.0f,
+                                            event.guiReload);
+  }
+  if (!event.guiSampleModel.empty()) {
+    if (!subs_.guiManager ||
+        !subs_.guiManager->queueSampleModelLoadRequest(event.guiSampleModel))
+      throw std::runtime_error("GUI sample model not found: " +
+                               event.guiSampleModel);
+    captureObjectBase_.reset();
   }
   if (event.taa)
     subs_.temporalManager->settings().enabled = *event.taa;
@@ -2150,6 +2212,19 @@ void RendererFrontend::applyTemporalCapture(
     subs_.bimManager->setRootTranslation(*sample.bimTranslation);
   if (event.exposure)
     captureExposure_ = *event.exposure;
+  if (event.areaLightPosition) {
+    const auto &lights = subs_.lightingManager->editableLights();
+    const auto it = std::ranges::find_if(lights, [](const auto &light) {
+      return light.type == EditableLightType::Area;
+    });
+    if (it == lights.end())
+      throw std::invalid_argument(
+          "Capture areaLightPosition needs an area light");
+    auto light = *it;
+    light.position = *event.areaLightPosition;
+    if (!subs_.lightingManager->updateEditableLight(light))
+      throw std::runtime_error("Capture area light update failed");
+  }
 }
 
 nlohmann::json RendererFrontend::captureTelemetry() const {
@@ -2190,9 +2265,51 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"areaLightCount", lighting.areaLightCount},
         {"localShadowLayerBudget",
          subs_.lightingManager->lightingSettings().localShadowLayerBudget}};
-    if (subs_.shadowManager)
+    json["lighting"]["areaLightPositions"] = nlohmann::json::array();
+    for (const auto &light : subs_.lightingManager->areaLightsSsbo())
+      json["lighting"]["areaLightPositions"].push_back({light.positionRange.x,
+                                                        light.positionRange.y,
+                                                        light.positionRange.z});
+    if (subs_.shadowManager) {
       json["lighting"]["activeLocalShadowLayers"] =
           subs_.shadowManager->localShadowData().counts.x;
+      const auto &local = subs_.shadowManager->localShadowData();
+      uint32_t areaOrigins = 0;
+      uint32_t seedTaps = 0;
+      uint32_t quality =
+          subs_.guiManager
+              ? subs_.guiManager->shadowSettings().areaShadowQuality
+              : svc_.config.areaShadowQuality;
+      for (uint32_t i = 0; i < local.counts.x; ++i) {
+        const auto &layer = local.layers[i];
+        if (layer.directionType.w == container::gpu::kLocalShadowTypeArea &&
+            layer.meta.y == 0u) {
+          ++areaOrigins;
+          quality = uint32_t(layer.params.w);
+          seedTaps = std::max(seedTaps,
+                              layer.meta.z /
+                                  container::gpu::kLocalShadowPointFaceCount);
+        }
+      }
+      json["lighting"]["areaShadowQuality"] = quality;
+      json["lighting"]["areaShadowOrigins"] = areaOrigins;
+      json["lighting"]["areaShadowSeedTapsPerOrigin"] =
+          quality == 0 ? 0 : seedTaps;
+      json["lighting"]["areaShadowBlockerTapsPerOrigin"] =
+          quality == 0 ? 0 : 16;
+      json["lighting"]["areaShadowFilterTapsPerOrigin"] =
+          quality == 0 ? 12 : (8u << quality);
+      json["lighting"]["localShadowAtlasPayloadBytes"] =
+          uint64_t(container::gpu::kLocalShadowMapResolution) *
+          container::gpu::kLocalShadowMapResolution *
+          container::gpu::kMaxShadowedLocalLightLayers *
+          (subs_.shadowManager->depthFormat() == VK_FORMAT_D32_SFLOAT_S8_UINT
+               ? 8u
+               : 4u);
+      json["lighting"]["localShadowAtlasAllocatedBytes"] =
+          subs_.shadowManager->localShadowAtlasAllocatedBytes();
+      json["lighting"]["areaShadowHistoryBytes"] = 0;
+    }
     if (svc_.config.gfxrecon.enabled()) {
       auto vector = [](const glm::vec4& value) {
         return nlohmann::json::array({value.x, value.y, value.z, value.w});
@@ -2270,7 +2387,33 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   }
   json["scene"] = {{"primary", activePrimaryModelPath_}, {"auxiliary", activeAuxiliaryModelPath_},
                     {"primaryImportScale", activePrimaryImportScale_}, {"auxiliaryImportScale", activeAuxiliaryImportScale_}};
+  if (subs_.rayShadowManager) {
+    auto &ray = *subs_.rayShadowManager;
+    json["rayShadows"] = {{"supported", ray.supported()},
+                          {"active", ray.active()},
+                          {"mode", uint32_t(ray.settings().mode)},
+                          {"areaSamples", ray.settings().areaSamples},
+                          {"localLightBudget", ray.settings().localLightBudget},
+                          {"denoise", ray.settings().denoise},
+                          {"totalAllocatedBytes", ray.allocatedBytes()},
+                          {"generation", ray.sceneGeneration()},
+                          {"historyResets", ray.historyResets()}};
+    if (const auto *stats = ray.buildStats())
+      json["rayShadows"]["build"] = {
+          {"blasBuilt", stats->blasBuilt},
+          {"blasReused", stats->blasReused},
+          {"instances", stats->instanceCount},
+          {"asAllocatedBytes", stats->accelerationAllocatedBytes},
+          {"inputAllocatedBytes", stats->inputAllocatedBytes},
+          {"scratchAllocatedBytes", stats->scratchAllocatedBytes}};
+  }
+  if (subs_.guiManager)
+    json["gui"] = {{"status", subs_.guiManager->statusMessage()},
+                   {"displayMode", static_cast<uint32_t>(
+                                       subs_.guiManager->gBufferViewMode())}};
   if (subs_.bimManager) {
+    json["scene"]["auxiliaryObjectCount"] =
+        subs_.bimManager->objectData().size();
     const auto &report = subs_.bimManager->importReport();
     json["scene"]["import"] = {
         {"status",
@@ -3517,6 +3660,8 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
       subs_.bimManager->loadModel(path, importScale, *subs_.sceneManager);
     } catch (const std::exception &error) {
       const std::string loadError = error.what();
+      container::log::ContainerLogger::instance().renderer()->error(
+          "Failed to load model '{}': {}", path, loadError);
       subs_.bimManager->clear();
       (void)reloadPrimary(previousPrimaryPath, previousPrimaryScale);
       if (!previousAuxiliaryPath.empty()) {
@@ -3593,13 +3738,17 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
 
   const std::string statusLabel =
       request->label.empty() ? request->path : request->label;
+  const std::string loadingStatus = "Loading model: " + statusLabel;
+  subs_.guiManager->setStatusMessage(loadingStatus);
   try {
     const bool success = reloadSceneModel(request->path, request->importScale);
-    if (!success && subs_.guiManager) {
+    if (!success && subs_.guiManager->statusMessage() == loadingStatus) {
       subs_.guiManager->setStatusMessage("Failed to load model: " +
                                          statusLabel);
     }
   } catch (const std::exception &e) {
+    container::log::ContainerLogger::instance().renderer()->error(
+        "Failed to load model '{}': {}", request->path, e.what());
     if (subs_.guiManager) {
       subs_.guiManager->setStatusMessage("Failed to load model: " +
                                          statusLabel + " (" + e.what() + ")");
@@ -3629,6 +3778,7 @@ void RendererFrontend::shutdown() {
   subs_.frameResourceRegistry.reset();
 
   subs_.temporalManager.reset();
+  subs_.rayShadowManager.reset();
   destroyGBufferResources();
   subs_.frameResourceManager.reset();
 
@@ -3945,7 +4095,8 @@ void RendererFrontend::resetCameraForActiveScene() {
 
   subs_.cameraController->resetCameraForBounds(
       cameraSceneBoundsFromActiveContent(subs_.sceneManager.get(),
-                                         subs_.bimManager.get()));
+                                         subs_.bimManager.get()),
+      !subs_.bimManager || !subs_.bimManager->hasScene());
 }
 
 void RendererFrontend::syncCameraSelectionPivotOverride() {
@@ -4126,6 +4277,10 @@ void RendererFrontend::createFrameResources() {
       resources_.renderPasses.forwardTransparent,
       resources_.renderPasses.transformGizmos, msaaSampleCount_, buffers_.cameras,
       objectBuffer);
+  if (subs_.rayShadowManager)
+    subs_.rayShadowManager->prepare(
+        svc_.swapChainManager.extent(),
+        static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
 }
 
 // ---------------------------------------------------------------------------
@@ -4230,6 +4385,19 @@ void RendererFrontend::applyBimSemanticColorMode() {
 
 void RendererFrontend::updateFrameDescriptorSets(
     uint32_t imageIndex, const FrameRecordParams *preparedParams) {
+  // createSceneBuffers also calls this before the first createFrameResources.
+  if (subs_.rayShadowManager && subs_.lightingManager &&
+      subs_.rayShadowManager->visibilityView()) {
+    const uint32_t begin = imageIndex == UINT32_MAX ? 0u : imageIndex;
+    const uint32_t end = imageIndex == UINT32_MAX
+                             ? uint32_t(svc_.swapChainManager.imageCount())
+                             : imageIndex + 1;
+    for (uint32_t i = begin; i < end; ++i)
+      subs_.lightingManager->updateRayShadowDescriptors(
+          i, subs_.rayShadowManager->readSettings(i),
+          subs_.rayShadowManager->readSettingsSize(),
+          subs_.rayShadowManager->visibilityView());
+  }
   if (subs_.frameResourceManager) {
     const auto displayMode = frontendDisplayMode(
         subs_.guiManager.get(), configuredDisplayMode(svc_.config));
@@ -5344,6 +5512,10 @@ void RendererFrontend::presentSceneControls() {
   if (!subs_.guiManager)
     return;
 
+  // A load replaces scene lighting/bloom defaults. Publish the new scene's
+  // values below, otherwise GUI writeback restores the previous scene's values.
+  processPendingGuiModelLoadRequest();
+
   if (subs_.gpuCullManager) {
     const auto stats = subs_.gpuCullManager->cullStats();
     subs_.guiManager->setCullStats(stats.totalInputCount,
@@ -5396,8 +5568,6 @@ void RendererFrontend::presentSceneControls() {
                                           subs_.frameRecorder->graph());
   }
   syncGuiRenderEngineOptions();
-
-  processPendingGuiModelLoadRequest();
 
   subs_.guiManager->startFrame();
   const GuiFrameExceptionGuard guiFrameExceptionGuard(*subs_.guiManager);
@@ -6855,6 +7025,9 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     p.shadows.shadowSettings = subs_.guiManager
                                    ? subs_.guiManager->shadowSettings()
                                    : container::gpu::ShadowSettings{};
+    if (!subs_.guiManager)
+      p.shadows.shadowSettings.areaShadowQuality =
+          svc_.config.areaShadowQuality;
     p.shadows.localShadowLayerCount =
         subs_.shadowManager->localShadowLayerCount();
     p.shadows.shadowManager = subs_.shadowManager.get();
@@ -6896,6 +7069,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   p.services.bloomManager = subs_.bloomManager.get();
   p.services.telemetry = subs_.rendererTelemetry.get();
   p.services.gpuProfiler = subs_.renderPassGpuProfiler.get();
+  p.services.rayShadowManager = subs_.rayShadowManager.get();
   p.postProcess.exposureSettings =
       subs_.guiManager ? subs_.guiManager->exposureSettings()
                        : exposureSettingsFromConfig(svc_.config);
@@ -6920,6 +7094,87 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
           screenshot_.readbacks[frame_.currentFrame].readbackBuffer.buffer;
     }
     p.screenshot.extent = svc_.swapChainManager.extent();
+  }
+  if (subs_.rayShadowManager && subs_.lightingManager) {
+    std::vector<RaySceneProviderSource> sources;
+    if (subs_.guiManager)
+      subs_.rayShadowManager->settings() =
+          subs_.guiManager->rayShadowSettings();
+    const auto meshProvider = subs_.sceneProviderRegistry->providersForKind(
+        container::scene::SceneProviderKind::Mesh);
+    if (!meshProvider.empty() && subs_.rayShadowManager->supported() &&
+        subs_.rayShadowManager->settings().mode != RayShadowMode::Raster)
+      sources.push_back({meshProvider.front()->snapshot().id,
+                         subs_.sceneManager->geometryRevision(),
+                         subs_.sceneManager->vertices(),
+                         subs_.sceneManager->indices(),
+                         subs_.sceneController->objectData(),
+                         subs_.sceneController->opaqueDrawCommands()});
+    std::vector<DrawCommand> bimDraws;
+    if (subs_.bimManager && subs_.bimManager->hasScene() &&
+        subs_.rayShadowManager->supported() &&
+        subs_.rayShadowManager->settings().mode != RayShadowMode::Raster) {
+      auto filter = currentBimDrawFilter();
+      // Draw budget/LOD and screen visibility limit raster work, not blockers.
+      filter.drawBudgetEnabled = false;
+      filter.drawBudgetMaxObjects = 0;
+      for (const auto &draw : subs_.bimManager->opaqueDrawCommands())
+        if (subs_.bimManager->objectMatchesFilter(draw.objectIndex, filter) &&
+            bimObjectVisibleByLayer(draw.objectIndex))
+          bimDraws.push_back(draw);
+      const auto bimProvider = subs_.sceneProviderRegistry->providersForKind(
+          container::scene::SceneProviderKind::Bim);
+      if (!bimProvider.empty())
+        sources.push_back({bimProvider.front()->snapshot().id,
+                           subs_.bimManager->geometryRevision(),
+                           subs_.bimManager->vertices(),
+                           subs_.bimManager->indices(),
+                           subs_.bimManager->objectData(), bimDraws});
+    }
+    bool rayGeometryCompatible = true;
+    for (const auto &source : sources)
+      for (const auto &draw : source.draws)
+        for (uint32_t instance = 0; instance < draw.instanceCount; ++instance) {
+          const auto object = size_t(draw.objectIndex) + instance;
+          if (object >= source.objects.size() ||
+              !subs_.sceneManager->rayGeometryCompatible(
+                  source.objects[object].objectInfo.x))
+            rayGeometryCompatible = false;
+        }
+    subs_.rayShadowManager->update(
+        imageIndex, buffers_.cameraData,
+        *subs_.frameResourceManager->frame(imageIndex),
+        subs_.sceneManager->descriptorSet(imageIndex),
+        subs_.lightingManager->lightDescriptorSet(imageIndex), sources,
+        subs_.lightingManager->lightingData(),
+        subs_.lightingManager->pointLightsSsbo(),
+        subs_.lightingManager->areaLightsSsbo(),
+        pushConstants_.bindless.sectionPlaneEnabled,
+        pushConstants_.bindless.sectionPlane, sceneClipState,
+        [this](uint32_t material) {
+          return subs_.sceneManager->temporalMaterialRevision(material);
+        },
+        rayGeometryCompatible);
+    if (subs_.guiManager && subs_.rayShadowManager->supported()) {
+      const auto &ray = *subs_.rayShadowManager;
+      std::string status =
+          "Supported; allocations " +
+          std::to_string(ray.allocatedBytes() / (1024 * 1024)) + " MiB";
+      if (!rayGeometryCompatible)
+        status += "; raster fallback for height-displaced geometry";
+      if (const auto *stats = ray.buildStats())
+        status += "; BLAS built/reused " + std::to_string(stats->blasBuilt) +
+                  "/" + std::to_string(stats->blasReused) + "; instances " +
+                  std::to_string(stats->instanceCount);
+      if (subs_.rendererTelemetry) {
+        for (const auto &pass : subs_.rendererTelemetry->latest().passes)
+          if (pass.name == "RaySceneBuild" || pass.name == "RayShadowTrace" ||
+              pass.name == "RayShadowFilter")
+            status += "\n" + pass.name + ": " +
+                      std::to_string(pass.gpuKnownMs) + " ms";
+      }
+      subs_.guiManager->setRayShadowSupport(true, std::move(status));
+    }
   }
   return p;
 }
@@ -6985,7 +7240,7 @@ void RendererFrontend::syncSceneProviders() {
         .instanceCount = meshAsset.instanceCount,
         .triangleBatches = meshAsset.triangleBatches,
         .bounds = meshAsset.bounds,
-        .geometryRevision = objectRevision,
+        .geometryRevision = sceneManager.geometryRevision(),
         .instanceRevision = objectRevision,
         .displayName = sceneProviderDisplayName(activePrimaryModelPath_,
                                                 "Primary mesh scene"),
@@ -7014,7 +7269,7 @@ void RendererFrontend::syncSceneProviders() {
             stats.nativeCurveTransparentDrawCount,
         .triangleBatches = subs_.bimManager->sceneProviderTriangleBatches(),
         .bounds = sceneProviderBoundsFromBim(*subs_.bimManager),
-        .geometryRevision = objectRevision,
+        .geometryRevision = subs_.bimManager->geometryRevision(),
         .instanceRevision = objectRevision,
         .displayName =
             sceneProviderDisplayName(activeAuxiliaryModelPath_, "BIM scene"),

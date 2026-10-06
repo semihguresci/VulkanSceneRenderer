@@ -214,6 +214,35 @@ void VulkanDevice::createLogicalDevice() {
 
   const std::vector<VkExtensionProperties> availableExtensions =
       enumerateDeviceExtensions(physicalDevice_);
+  rayQuerySupport_.accelerationStructureExtension = hasExtension(
+      availableExtensions, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+  rayQuerySupport_.rayQueryExtension =
+      hasExtension(availableExtensions, VK_KHR_RAY_QUERY_EXTENSION_NAME);
+  rayQuerySupport_.deferredHostOperationsExtension = hasExtension(
+      availableExtensions, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+  rayQuerySupport_.bufferDeviceAddressEnabled =
+      enabledVulkan12Features_.bufferDeviceAddress == VK_TRUE;
+  VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationFeatures{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+  VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+  // Only query extension structs advertised by the selected device.
+  VkPhysicalDeviceFeatures2 rayFeatures{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+  if (rayQuerySupport_.accelerationStructureExtension) {
+    accelerationFeatures.pNext = rayFeatures.pNext;
+    rayFeatures.pNext = &accelerationFeatures;
+  }
+  if (rayQuerySupport_.rayQueryExtension) {
+    rayQueryFeatures.pNext = rayFeatures.pNext;
+    rayFeatures.pNext = &rayQueryFeatures;
+  }
+  vkGetPhysicalDeviceFeatures2(physicalDevice_, &rayFeatures);
+  rayQuerySupport_.accelerationStructureFeature =
+      accelerationFeatures.accelerationStructure == VK_TRUE;
+  rayQuerySupport_.rayQueryFeature = rayQueryFeatures.rayQuery == VK_TRUE;
+  rayQueriesEnabled_ =
+      createInfo_.enableRayQueries && rayQuerySupport_.supported();
   std::vector<const char*> enabledExtensions;
   enabledExtensions.reserve(createInfo_.requiredExtensions.size() +
                             createInfo_.optionalExtensions.size());
@@ -226,6 +255,11 @@ void VulkanDevice::createLogicalDevice() {
 
   for (const char* requiredExtension : createInfo_.requiredExtensions) {
     addEnabledExtension(requiredExtension);
+  }
+  if (rayQueriesEnabled_) {
+    addEnabledExtension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+    addEnabledExtension(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+    addEnabledExtension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
   }
 
   bool enablePerformanceQuery = false;
@@ -253,14 +287,29 @@ void VulkanDevice::createLogicalDevice() {
       enablePerformanceQuery ? VK_TRUE : VK_FALSE;
   performanceQueryFeatures.pNext = const_cast<void*>(createInfo_.next);
 
+  // Enable only the base features used by the shared backend. Do not copy the
+  // queried structs: that would opt into capture/replay or host-build features.
+  VkPhysicalDeviceAccelerationStructureFeaturesKHR enabledAcceleration{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+  VkPhysicalDeviceRayQueryFeaturesKHR enabledRayQuery{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+  const void *featureChain =
+      enablePerformanceQuery ? &performanceQueryFeatures : createInfo_.next;
+  if (rayQueriesEnabled_) {
+    enabledAcceleration.accelerationStructure = VK_TRUE;
+    enabledAcceleration.pNext = const_cast<void *>(featureChain);
+    enabledRayQuery.rayQuery = VK_TRUE;
+    enabledRayQuery.pNext = &enabledAcceleration;
+    featureChain = &enabledRayQuery;
+  }
+
   VkDeviceCreateInfo deviceCreateInfo{};
   deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
   deviceCreateInfo.queueCreateInfoCount =
       static_cast<uint32_t>(queueCreateInfos.size());
   deviceCreateInfo.pQueueCreateInfos = queueCreateInfos.data();
   deviceCreateInfo.pEnabledFeatures = &enabledFeatures_;
-  deviceCreateInfo.pNext =
-      enablePerformanceQuery ? &performanceQueryFeatures : createInfo_.next;
+  deviceCreateInfo.pNext = featureChain;
   deviceCreateInfo.enabledExtensionCount =
       static_cast<uint32_t>(enabledExtensions.size());
   deviceCreateInfo.ppEnabledExtensionNames = enabledExtensions.data();

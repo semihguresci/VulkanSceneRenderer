@@ -27,6 +27,19 @@ TEST(TemporalCapture, InterpolatesNamedObjectAndCameraAtSubmittedScriptFrame) {
 }
 TEST(TemporalCapture, RejectsInvalidTracksAndEventsBeforeGpuExecution) {
   EXPECT_THROW(
+      CaptureSequence(json::parse(
+          R"({"schemaVersion":1,"frames":2,"events":[{"frame":1,"rayShadows":"bad"}]})")),
+      std::invalid_argument);
+  EXPECT_THROW(
+      CaptureSequence(json::parse(
+          R"({"schemaVersion":1,"frames":2,"events":[{"frame":1,"rayShadowSamples":33}]})")),
+      std::invalid_argument);
+  CaptureSequence ray(json::parse(
+      R"({"schemaVersion":1,"frames":2,"events":[{"frame":1,"rayShadows":"soft","rayShadowSamples":8,"rayShadowDenoise":false}]})"));
+  EXPECT_EQ(ray.sample(1).event.rayShadows, "soft");
+  EXPECT_EQ(ray.sample(1).event.rayShadowSamples, 8u);
+  EXPECT_EQ(ray.sample(1).event.rayShadowDenoise, false);
+  EXPECT_THROW(
       CaptureSequence(json::parse(R"({"schemaVersion":1,"frames":0})")),
       std::invalid_argument);
   EXPECT_THROW(CaptureSequence(json::parse(
@@ -59,5 +72,37 @@ TEST(TemporalCapture, ClampsOutsideTracksAndPreservesExactResetFrame) {
   EXPECT_FALSE(sequence.sample(5).event.skip);
   EXPECT_TRUE(sequence.sample(7).event.reset);
   EXPECT_FALSE(sequence.sample(8).event.reset);
+}
+TEST(TemporalCapture, AreaLightEventsAreFiniteAndApplyOnce) {
+  CaptureSequence sequence(json::parse(R"({"schemaVersion":1,"frames":8,
+    "events":[{"frame":4,"areaLightPosition":[0.3,1.8,0.2]}]})"));
+  ASSERT_TRUE(sequence.sample(4).event.areaLightPosition);
+  EXPECT_EQ(*sequence.sample(4).event.areaLightPosition,
+            glm::vec3(.3f, 1.8f, .2f));
+  EXPECT_FALSE(sequence.sample(5).event.areaLightPosition);
+  EXPECT_THROW(CaptureSequence(json::parse(R"({"schemaVersion":1,"frames":8,
+    "events":[{"frame":4,"areaLightPosition":[1,2]}]})")),
+               std::invalid_argument);
+  EXPECT_THROW(CaptureSequence(json::parse(R"({"schemaVersion":1,"frames":8,
+    "events":[{"frame":4,"areaLightPosition":[1e39,2,3]}]})")),
+               std::invalid_argument);
+}
+TEST(TemporalCapture, GuiReloadUsesAnExactEventAndRejectsConflictingReloads) {
+  CaptureSequence sequence(json::parse(R"({"schemaVersion":1,"frames":8,
+    "events":[{"frame":4,"guiReload":"models/hello-wall.ifcx"}]})"));
+  EXPECT_EQ(sequence.sample(4).event.guiReload, "models/hello-wall.ifcx");
+  EXPECT_TRUE(sequence.sample(4).event.reload.empty());
+  EXPECT_TRUE(sequence.sample(5).event.guiReload.empty());
+  EXPECT_THROW(CaptureSequence(json::parse(R"({"schemaVersion":1,"frames":8,
+    "events":[{"frame":4,"reload":"a.ifc","guiReload":"b.ifcx"}]})")),
+               std::invalid_argument);
+  CaptureSequence sample(json::parse(R"({"schemaVersion":1,"frames":8,
+    "events":[{"frame":4,"guiSampleModel":"IFC5 / Hello Wall / hello-wall"}]})"));
+  EXPECT_EQ(sample.sample(4).event.guiSampleModel,
+            "IFC5 / Hello Wall / hello-wall");
+  EXPECT_TRUE(sample.sample(5).event.guiSampleModel.empty());
+  EXPECT_THROW(CaptureSequence(json::parse(R"({"schemaVersion":1,"frames":8,
+    "events":[{"frame":4,"guiSampleModel":"sample","guiReload":"b.ifcx"}]})")),
+               std::invalid_argument);
 }
 } // namespace

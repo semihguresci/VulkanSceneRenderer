@@ -37,6 +37,7 @@ struct AppConfig;
 namespace container::renderer {
 class BloomManager;
 class TemporalManager;
+class RayShadowManager;
 class BimManager;
 enum class BimDisciplinePreset : uint32_t;
 struct BimDrawFilter;
@@ -176,6 +177,7 @@ private:
     std::unique_ptr<GpuCullManager> gpuCullManager;
     std::unique_ptr<BloomManager> bloomManager;
     std::unique_ptr<TemporalManager> temporalManager;
+    std::unique_ptr<RayShadowManager> rayShadowManager;
     std::unique_ptr<ExposureManager> exposureManager;
     std::unique_ptr<GraphicsPipelineBuilder> pipelineBuilder;
     std::unique_ptr<FrameRecorder> frameRecorder;

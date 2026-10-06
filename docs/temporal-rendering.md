@@ -17,7 +17,19 @@ It builds on [coordinate conventions](coordinate-conventions.md).
 ```
 
 Launch from the executable directory for relative capture-sequence paths. Each
-selected frame creates a PNG and a `.telemetry.json` sidecar; intermediate images
+capture event can use `guiReload` (a file path) or `guiSampleModel` (the exact
+Sample model label) to exercise Scene Controls with the UI enabled. These use
+the widgets' normal request queue, processed before publishing scene controls
+and starting an ImGui frame. Choose one of `reload`, `guiReload`, or
+`guiSampleModel` per event. GUI captures include the status message and auxiliary
+object count in their telemetry; this allows load failures and restored scenes
+to be checked without relying on a screenshot alone.
+
+Ray-shadow capture events accept `rayShadows` (`raster`, `hard`, `soft`),
+`rayShadowSamples` (1–32) and `rayShadowDenoise` (boolean). Their visibility
+history is independent of TAA and follows the [ray-shadow contract](ray-query-rendering.md).
+
+Each selected frame creates a PNG and a `.telemetry.json` sidecar; intermediate images
 carry `.frame-XXXX` suffixes. Keyframes use simulation frame numbers; failed
 acquisition retries do not advance the submitted history or jitter. Minimized and
 explicitly skipped frames preserve the last submission. Capture events can inject

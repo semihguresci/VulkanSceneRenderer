@@ -65,6 +65,10 @@ class AllocationManager {
       const std::string& textureName,
       std::span<const std::byte> encodedBytes,
       VkFormat format = VK_FORMAT_R8G8B8A8_SRGB);
+  container::material::TextureResource
+  createTextureFromRgbaPixels(const std::string &textureName,
+                              std::span<const std::byte> rgbaPixels,
+                              uint32_t width, uint32_t height, VkFormat format);
   container::material::TextureArrayResource createTexture2DArrayFromRgbaPixels(
       const std::string& textureName,
       std::span<const std::byte> rgbaPixels,
@@ -102,12 +106,6 @@ class AllocationManager {
                               VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D,
                               uint32_t layerCount = 1u,
                               uint32_t levelCount = 1u);
-  container::material::TextureResource createTextureFromRgbaPixels(
-      const std::string& textureName,
-      std::span<const std::byte> rgbaPixels,
-      uint32_t width,
-      uint32_t height,
-      VkFormat format);
 
   VkInstance instance_{VK_NULL_HANDLE};
   VkPhysicalDevice physicalDevice_{VK_NULL_HANDLE};

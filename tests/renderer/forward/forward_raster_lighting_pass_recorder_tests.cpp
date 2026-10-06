@@ -90,6 +90,7 @@ void registerForwardPipeline(PipelineRegistry& pipelines, std::string name,
 }
 
 void bindForwardPipelines(PipelineRegistry& pipelines) {
+  registerForwardPipeline(pipelines, "forward-sky", 0x2007);
   registerForwardPipeline(pipelines, "forward-opaque", 0x2001);
   registerForwardPipeline(pipelines, "forward-opaque-front-cull", 0x2005);
   registerForwardPipeline(pipelines, "forward-opaque-no-cull", 0x2006);
@@ -103,6 +104,7 @@ void bindForwardPipelines(PipelineRegistry& pipelines) {
 }
 
 void bindForwardTransparentOnlyPipelines(PipelineRegistry& pipelines) {
+  registerForwardPipeline(pipelines, "forward-sky", 0x2007);
   registerForwardPipeline(pipelines, "forward-transparent", 0x2002);
   registerForwardPipeline(pipelines, "forward-transparent-front-cull", 0x2003);
   registerForwardPipeline(pipelines, "forward-transparent-no-cull", 0x2004);
@@ -113,6 +115,7 @@ void bindForwardTransparentOnlyPipelines(PipelineRegistry& pipelines) {
 }
 
 void bindForwardOpaqueOnlyPipelines(PipelineRegistry& pipelines) {
+  registerForwardPipeline(pipelines, "forward-sky", 0x2007);
   registerForwardPipeline(pipelines, "forward-opaque", 0x2001);
   registerForwardPipeline(pipelines, "forward-opaque-front-cull", 0x2005);
   registerForwardPipeline(pipelines, "forward-opaque-no-cull", 0x2006);
@@ -233,6 +236,18 @@ TEST(ForwardRasterLightingPassRecorderTests, ReadinessNoDrawsReturnsNotNeeded) {
 }
 
 TEST(ForwardRasterLightingPassRecorderTests,
+     BackgroundOnlyFrameInitializesLighting) {
+  FrameResourceRegistry resources;
+  PipelineRegistry pipelines;
+  FrameRecordParams params{};
+  makeForwardBindingsReady(params, resources, pipelines);
+  EXPECT_TRUE(container::renderer::hasForwardRasterSkyInputs(params));
+  EXPECT_TRUE(checkForwardRasterLightingPassReadiness(params).ready);
+  pipelines.clearTechnique(RenderTechniqueId::ForwardRaster);
+  EXPECT_FALSE(checkForwardRasterLightingPassReadiness(params).ready);
+}
+
+TEST(ForwardRasterLightingPassRecorderTests,
      NativeOnlyCurvesInitializeLightingAndRequireTheirPipeline) {
   std::vector<DrawCommand> curves(1u);
   FrameResourceRegistry resources;
@@ -264,8 +279,8 @@ TEST(ForwardRasterLightingPassRecorderTests,
   params.bim.primitivePasses.curves.enabled = false;
   EXPECT_FALSE(
       container::renderer::hasForwardRasterNativePrimitiveDraws(params));
-  EXPECT_EQ(checkForwardRasterLightingPassReadiness(params).skipReason,
-            RenderPassSkipReason::NotNeeded);
+  // Disabling the last native draw still leaves an environment background.
+  EXPECT_TRUE(checkForwardRasterLightingPassReadiness(params).ready);
 }
 
 TEST(ForwardRasterLightingPassRecorderTests,

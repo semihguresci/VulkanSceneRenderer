@@ -117,9 +117,10 @@ constexpr std::array<KnownSampleAsset, 4> kKnownAuxiliarySampleAssets = {{
      "ReferenceView_V1.2/tessellated-item.ifc"},
 }};
 
-constexpr std::array<KnownSampleDirectory, 1> kKnownAuxiliarySampleDirectories =
+constexpr std::array<KnownSampleDirectory, 2> kKnownAuxiliarySampleDirectories =
     {{
         {"IFC5", "models/buildingSMART-IFC5-development/examples"},
+        {"IFC", "models/buildingSMART-Sample-Test-Files"},
     }};
 
 std::string ToLowerAscii(std::string value) {
@@ -707,8 +708,9 @@ bool HasRenderableAuxiliaryHint(const std::filesystem::path &path) {
            heuristicRenderableIfc5Layer(path);
   }
   if (extension == ".ifc") {
-    return TextFileContains(path, "IFCTRIANGULATEDFACESET") ||
-           TextFileContains(path, "IFCEXTRUDEDAREASOLID");
+    // The native importer also supports BReps, sweeps, curves and surfaces.
+    // Two token hints no longer describe its supported representation families.
+    return true;
   }
   return true;
 }
@@ -733,6 +735,8 @@ std::string AuxiliarySampleLabel(std::string_view prefix,
   std::string label(prefix);
   label += " / ";
   label += relativeLabel;
+  if (ToLowerAscii(container::util::pathToUtf8(path.extension())) == ".ifc")
+    label += " (STEP)";
   return label;
 }
 
@@ -754,13 +758,6 @@ std::vector<DiscoveredSampleAsset> DiscoverAuxiliarySampleAssets() {
       std::error_code fileError;
       if (!it->is_regular_file(fileError) ||
           !IsAuxiliaryModelFile(it->path())) {
-        continue;
-      }
-
-      const std::string extension =
-          ToLowerAscii(container::util::pathToUtf8(it->path().extension()));
-      if (std::string_view(directory.labelPrefix) == "IFC5" &&
-          extension == ".ifc") {
         continue;
       }
 
@@ -1926,6 +1923,20 @@ void GuiManager::queueModelLoadRequest(std::string path, float importScale,
                                               .label = std::move(label)};
 }
 
+bool GuiManager::queueSampleModelLoadRequest(std::string_view label) {
+  const auto found =
+      std::ranges::find(sampleModelOptions_, label, &SampleModelOption::label);
+  if (found == sampleModelOptions_.end())
+    return false;
+  selectedSampleModelIndex_ =
+      static_cast<int>(found - sampleModelOptions_.begin());
+  modelPathInput_ = found->path;
+  queueModelLoadRequest(modelPathInput_, importScale_, found->label);
+  statusMessage_ = "Model load requested: " + found->label + " @ " +
+                   ImportScaleLabel(importScale_);
+  return true;
+}
+
 void GuiManager::shutdown(VkDevice device) {
   if (!initialized_)
     return;
@@ -2568,11 +2579,7 @@ void GuiManager::drawSceneControls(
         const auto &option = sampleModelOptions_[i];
         const bool selected = i == selectedSampleModelIndex_;
         if (ImGui::Selectable(option.label.c_str(), selected)) {
-          selectedSampleModelIndex_ = i;
-          modelPathInput_ = option.path;
-          queueModelLoadRequest(modelPathInput_, importScale_, option.label);
-          statusMessage_ = "Model load requested: " + option.label + " @ " +
-                           ImportScaleLabel(importScale_);
+          (void)queueSampleModelLoadRequest(option.label);
         }
         ShowItemTooltip(option.path);
         if (selected) {
@@ -6064,6 +6071,28 @@ void GuiManager::drawSceneControls(
   }
 
   if (ImGui::TreeNode("Shadows")) {
+    ImGui::TextWrapped("Ray queries: %s", rayShadowStatus_.c_str());
+    ImGui::BeginDisabled(!rayShadowSupported_);
+    int rayMode = static_cast<int>(rayShadowSettings_.mode);
+    if (ImGui::Combo("Shadow visibility", &rayMode,
+                     "Raster\0Ray hard\0Ray soft\0"))
+      rayShadowSettings_.mode =
+          static_cast<container::renderer::RayShadowMode>(rayMode);
+    int raySamples = static_cast<int>(rayShadowSettings_.areaSamples);
+    if (ImGui::SliderInt("Emitter rays", &raySamples, 1, 32))
+      rayShadowSettings_.areaSamples = uint32_t(raySamples);
+    int rayBudget = static_cast<int>(rayShadowSettings_.localLightBudget);
+    if (ImGui::SliderInt("Traced local lights", &rayBudget, 0, 8))
+      rayShadowSettings_.localLightBudget = uint32_t(rayBudget);
+    ImGui::Checkbox("Denoise ray soft shadows", &rayShadowSettings_.denoise);
+    int rayDebug = static_cast<int>(rayShadowSettings_.debugLayer);
+    if (ImGui::SliderInt("Ray shadow debug view", &rayDebug, 0, 10))
+      rayShadowSettings_.debugLayer = uint32_t(rayDebug);
+    ImGui::TextDisabled(
+        "Views: 0 shaded, 1 directional, 2-5 point/spot, 6-9 area, 10 budget.");
+    ImGui::TextDisabled(
+        "Budget RGB: emitter samples / 32, local lights / 8, directional.");
+    ImGui::EndDisabled();
     ImGui::Text("Directional shadow atlas: %u x %u",
                 container::gpu::kShadowMapResolution,
                 container::gpu::kShadowMapResolution);
@@ -6138,6 +6167,11 @@ void GuiManager::drawSceneControls(
                        -8.0f, 0.0f, "%.2f");
     ImGui::Checkbox("Local contact visibility",
                     &shadowSettings_.localContactVisibility);
+    int areaQuality = static_cast<int>(shadowSettings_.areaShadowQuality);
+    if (ImGui::Combo("Area shadow quality", &areaQuality,
+                     "Fixed origins\0Fast (16 taps)\0Balanced (32 taps)\0High "
+                     "(64 taps)\0"))
+      shadowSettings_.areaShadowQuality = static_cast<uint32_t>(areaQuality);
     int localShadowPointBudget =
         static_cast<int>(lightingSettings_.localShadowPointBudget);
     if (ImGui::SliderInt("Shadowed Point Light Budget",

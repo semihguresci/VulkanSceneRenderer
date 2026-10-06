@@ -445,13 +445,21 @@ void recordBimSurface(VkCommandBuffer cmd, const FrameRecordParams& p,
 
 }  // namespace
 
+bool hasForwardRasterSkyInputs(const FrameRecordParams &p) {
+  return hasForwardLightSets(p) &&
+         (forwardRasterDescriptorSetReady(
+              p, ForwardRasterDescriptorSetId::Scene) ||
+          forwardRasterDescriptorSetReady(
+              p, ForwardRasterDescriptorSetId::BimScene));
+}
+
 bool hasForwardRasterNativePrimitiveDraws(const FrameRecordParams &p) {
   return hasNativePoints(p) || hasNativeCurves(p);
 }
 
 RenderPassReadiness
 checkForwardRasterLightingPassReadiness(const FrameRecordParams& p) {
-  if (!hasAnyDraws(p)) {
+  if (!hasAnyDraws(p) && !hasForwardRasterSkyInputs(p)) {
     return notNeeded();
   }
 
@@ -501,6 +509,10 @@ checkForwardRasterLightingPassReadiness(const FrameRecordParams& p) {
     return missing(RenderResourceId::SceneColor);
   }
 
+  if (!hasForwardRasterSkyInputs(p))
+    return missing(RenderResourceId::CameraBuffer);
+  if (!forwardRasterPipelineReady(p, ForwardRasterPipelineId::Sky))
+    return missing(RenderResourceId::SceneColor);
   return ready();
 }
 
@@ -547,6 +559,27 @@ bool recordForwardRasterLightingPassCommands(VkCommandBuffer commandBuffer,
                        p, ForwardRasterPipelineId::ForwardOpaqueNoCull),
                    layout, debugOverlay);
 
+  // The scene and BIM camera descriptors contain the same per-frame camera.
+  // No vertex/object data is read by the sky shader, including empty scenes.
+  const auto cameraSet =
+      forwardRasterDescriptorSetReady(p, ForwardRasterDescriptorSetId::Scene)
+          ? forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::Scene)
+          : forwardRasterDescriptorSet(p,
+                                       ForwardRasterDescriptorSetId::BimScene);
+  const auto lightSet =
+      forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::Light);
+  const auto environmentSet = forwardRasterDescriptorSet(
+      p, ForwardRasterDescriptorSetId::FrameLighting);
+  vkCmdBindPipeline(
+      commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+      forwardRasterPipelineHandle(p, ForwardRasterPipelineId::Sky));
+  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          layout, 0, 1, &cameraSet, 0, nullptr);
+  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          layout, 1, 1, &lightSet, 0, nullptr);
+  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          layout, 3, 1, &environmentSet, 0, nullptr);
+  vkCmdDraw(commandBuffer, 3, 1, 0, 0);
   (void)recordRenderPassEndCommands(commandBuffer);
 
   // OIT uses single-sample storage. Load the resolved opaque color and depth

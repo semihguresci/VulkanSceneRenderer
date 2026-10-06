@@ -9,6 +9,8 @@ namespace container::renderer {
 [[nodiscard]] bool
 hasForwardRasterNativePrimitiveDraws(const FrameRecordParams &p);
 
+[[nodiscard]] bool hasForwardRasterSkyInputs(const FrameRecordParams &p);
+
 [[nodiscard]] RenderPassReadiness
 checkForwardRasterLightingPassReadiness(const FrameRecordParams& p);
 

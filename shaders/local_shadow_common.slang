@@ -6,6 +6,7 @@
 
 #include "lighting_structs.slang"
 #include "brdf_common.slang"
+#include "area_light_common.slang"
 
 static const uint LOCAL_SHADOW_POISSON_SAMPLE_COUNT = 32u;
 static const uint LOCAL_SHADOW_PCF_FAST_SAMPLE_COUNT = 12u;
@@ -483,8 +484,159 @@ float LocalPointLightShadowVisibility(
         localShadow, localShadowAtlas, localShadowSampler);
 }
 
+// Equal-area emitter domains match CPU cube origins. Filtering integrates
+// residual area within each domain, rather than stacking four hard silhouettes.
+float3 AreaShadowDomainPosition(AreaLightFrame frame, uint domain, uint domains,
+                               uint tap, uint taps, float2 jitter)
+{
+    uint columns = taps == 16u ? 4u : 8u;
+    uint rows = taps / columns;
+    float2 subcell = frac(float(tap) * float2(0.754877666, 0.569840296) + jitter);
+    float2 q = float2((float(tap % columns) + subcell.x) / float(columns),
+                      (float(tap / columns) + subcell.y) / float(rows));
+    float2 offset;
+    if (abs(frame.type - AREA_LIGHT_TYPE_DISK) < 0.5)
+    {
+        float angle = 2.0 * PI * (float(domain) + q.y) / float(domains);
+        offset = sqrt(q.x) * float2(cos(angle), sin(angle));
+    }
+    else if (domains == 4u)
+    {
+        offset = q + float2(float(domain & 1u), float((domain >> 1u) & 1u)) - 1.0;
+    }
+    else
+    {
+        offset = float2(2.0 * (float(domain) + q.x) / float(domains) - 1.0,
+                        2.0 * q.y - 1.0);
+    }
+    return frame.position + frame.tangent * (offset.x * frame.halfSize.x) +
+           frame.bitangent * (offset.y * frame.halfSize.y);
+}
+
+// Project a filter ray onto the actual receiver plane. Comparing at a constant
+// radial distance would shadow the sloping receiver itself near cube seams.
+bool AreaShadowProjectTap(uint cubeBase, float3 target, float3 receiver,
+                          float3 normal, LocalShadowBuffer localShadow,
+                          out uint layerIndex, out float3 projected,
+                          out float3 direction)
+{
+    float3 origin = localShadow.layers[cubeBase].positionRange.xyz;
+    layerIndex = cubeBase;
+    projected = 0.0.xxx;
+    direction = SafeNormalize(target - origin, normal);
+    float denominator = dot(direction, normal);
+    float distance = dot(receiver - origin, normal) / denominator;
+    if (!isfinite(distance) || abs(denominator) < 1e-5 || distance <= 1e-5) return false;
+    layerIndex = cubeBase + SelectPointLocalShadowFace(direction);
+    float4 clip = mul(localShadow.layers[layerIndex].viewProj,
+                      float4(origin + direction * distance, 1.0));
+    projected = clip.xyz / clip.w;
+    // Local shadow maps use a positive-height viewport: no scene Y inversion.
+    projected.xy = projected.xy * 0.5 + 0.5;
+    return all(isfinite(projected)) && clip.w > 1e-5 &&
+           projected.z >= 0.0 && projected.z <= 1.0;
+}
+
+float AreaShadowBlockerDepth(uint cubeBase, float3 target, float3 receiver,
+    float3 normal, float3 lightNormal, float bias, LocalShadowBuffer localShadow,
+    Texture2DArray<float> atlas)
+{
+    uint layerIndex; float3 projected, direction;
+    if (!AreaShadowProjectTap(cubeBase, target, receiver, normal, localShadow,
+                              layerIndex, projected, direction)) return 0.0;
+    int resolution = int(localShadow.counts.z);
+    int2 texel = clamp(int2(projected.xy * float(resolution)),
+                       int2(0, 0), int2(resolution - 1, resolution - 1));
+    float stored = atlas.Load(int4(texel, int(layerIndex), 0));
+    if (!isfinite(stored) || stored <= projected.z + bias) return 0.0;
+    LocalShadowLayerData layer = localShadow.layers[layerIndex];
+    float nearPlane = layer.params.z;
+    float farPlane = nearPlane + layer.params.y;
+    // Linearize finite perspective reverse-Z before averaging blocker depth.
+    float axialDistance = nearPlane * farPlane /
+        max(nearPlane + stored * (farPlane - nearPlane), 1e-6);
+    float radialDistance = axialDistance / max(dot(direction, layer.directionType.xyz), 1e-5);
+    float depth = radialDistance * dot(direction, lightNormal);
+    return isfinite(depth) && depth > nearPlane ? depth : 0.0;
+}
+
+float SampleAreaShadowDomain(uint encodedLayer, uint domain, uint domains,
+    AreaLightData light, float3 worldPosition, float3 receiverNormal,
+    LocalShadowBuffer localShadow, Texture2DArray<float> atlas,
+    SamplerComparisonState sampler)
+{
+    uint cubeBase = encodedLayer - 1u + domain * LOCAL_SHADOW_POINT_FACE_COUNT;
+    LocalShadowLayerData layer = localShadow.layers[cubeBase];
+    uint quality = uint(clamp(layer.params.w, 0.0, 3.0));
+    float3 surfaceToLight = SafeNormalize(layer.positionRange.xyz - worldPosition,
+                                          float3(0, 1, 0));
+    uint centerFace = SelectPointLocalShadowFace(worldPosition - layer.positionRange.xyz);
+    if (quality == 0u)
+        return SampleLocalShadowLayer(cubeBase + centerFace, worldPosition,
+            receiverNormal, surfaceToLight, localShadow, atlas, sampler);
+    AreaLightFrame frame = BuildAreaLightFrame(light);
+    float3 normal = SafeNormalize(receiverNormal, -surfaceToLight);
+    float3 receiver = OffsetLocalShadowSamplePosition(worldPosition, normal,
+        surfaceToLight, layer, localShadow);
+    float receiverDepth = dot(receiver - layer.positionRange.xyz, frame.normal);
+    if (!isfinite(receiverDepth) || receiverDepth <= layer.params.z) return 1.0;
+    float bias = LocalShadowSlopeBias(normal, surfaceToLight, localShadow);
+
+    // Other domain centers seed the search even when this center ray is lit.
+    float blockerSum = 0.0; float blockers = 0.0;
+    [loop] for (uint seed = 0u; seed < domains; ++seed)
+    {
+        uint seedBase = encodedLayer - 1u + seed * LOCAL_SHADOW_POINT_FACE_COUNT;
+        float depth = AreaShadowBlockerDepth(seedBase, receiver, receiver,
+            normal, frame.normal, bias, localShadow, atlas);
+        if (depth > 0.0 && depth < receiverDepth) { blockerSum += depth; blockers += 1.0; }
+    }
+    float searchScale = blockers > 0.0 ?
+        max(receiverDepth / (blockerSum / blockers) - 1.0, 0.0) : 3.0;
+    [loop] for (uint tap = 0u; tap < 16u; ++tap)
+    {
+        float3 emitter = AreaShadowDomainPosition(frame, domain, domains, tap, 16u, 0.5.xx);
+        float3 target = receiver + (emitter - layer.positionRange.xyz) * searchScale;
+        float depth = AreaShadowBlockerDepth(cubeBase, target, receiver,
+            normal, frame.normal, bias, localShadow, atlas);
+        if (depth > 0.0 && depth < receiverDepth) { blockerSum += depth; blockers += 1.0; }
+    }
+    if (blockers == 0.0) return 1.0;
+    float blockerDepth = blockerSum / blockers;
+    float penumbraScale = max(receiverDepth / max(blockerDepth, layer.params.z) - 1.0, 0.0);
+    uint taps = 8u << quality;
+    float visibility = 0.0;
+    float halfTexel = 0.5 / float(localShadow.counts.z);
+    float4 centerClip = mul(localShadow.layers[cubeBase + centerFace].viewProj,
+                             float4(receiver, 1.0));
+    float2 centerUv = centerClip.xy / max(centerClip.w, 1e-5) * 0.5 + 0.5;
+    float rotation = LocalShadowStableRotation(centerUv, cubeBase, float(localShadow.counts.z));
+    // World/light-texel seeds break aligned finite-sample bands without needing
+    // submitted-frame randomness or a visibility history. TAA remains optional.
+    float2 jitter = frac(float2(rotation * 0.159154943, rotation * 0.618033989));
+    [loop] for (uint tap = 0u; tap < taps; ++tap)
+    {
+        float3 emitter = AreaShadowDomainPosition(frame, domain, domains, tap, taps, jitter);
+        float3 target = receiver + (emitter - layer.positionRange.xyz) * penumbraScale;
+        uint tapLayer; float3 projected, direction;
+        if (AreaShadowProjectTap(cubeBase, target, receiver, normal, localShadow,
+                                 tapLayer, projected, direction))
+        {
+            float2 uv = clamp(projected.xy, halfTexel.xx, (1.0 - halfTexel).xx);
+            visibility += atlas.SampleCmpLevelZero(sampler, float3(uv, float(tapLayer)),
+                saturate(projected.z + bias));
+        }
+        else visibility += 1.0;
+    }
+    float distance = length(worldPosition - layer.positionRange.xyz);
+    float fade = saturate((layer.positionRange.w - distance) /
+                           max(layer.positionRange.w * 0.05, 1e-4));
+    return lerp(1.0, visibility / float(taps), fade);
+}
+
 float LocalAreaLightShadowVisibility(
     uint areaIndex,
+    AreaLightData light,
     float3 worldPosition,
     float3 receiverNormal,
     uint visibilitySample,
@@ -500,12 +652,7 @@ float LocalAreaLightShadowVisibility(
 
     uint sampleCount = LocalAreaShadowSampleCount(encodedLayer, localShadow);
     if (visibilitySample >= sampleCount) return 1.0;
-    uint sampleBase = encodedLayer - 1u + visibilitySample * LOCAL_SHADOW_POINT_FACE_COUNT;
-    float3 samplePosition = localShadow.layers[sampleBase].positionRange.xyz;
-    float3 surfaceToLight = SafeNormalize(samplePosition - worldPosition,
-                                          float3(0.0, 1.0, 0.0));
-    uint face = SelectPointLocalShadowFace(worldPosition - samplePosition);
-    return SampleLocalShadowLayer(
-        sampleBase + face, worldPosition, receiverNormal, surfaceToLight,
+    return SampleAreaShadowDomain(encodedLayer, visibilitySample, sampleCount,
+        light, worldPosition, receiverNormal,
         localShadow, localShadowAtlas, localShadowSampler);
 }

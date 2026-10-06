@@ -8,6 +8,8 @@
 #include "material_data_common.slang"
 #include "push_constants_common.slang"
 #include "local_shadow_common.slang"
+#define RAY_SHADOW_READ_SET 3
+#include "ray_shadow_read.slang"
 #include "screen_space_light_shadow_common.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
@@ -75,6 +77,7 @@ bool ShouldTracePointLightContactShadow(float3 radiance, float lightVisibility)
 [shader("fragment")]
 float4 fragMain(VSOutput input) : SV_Target0
 {
+    if (RayDirectionalSelected() && uRayShadowRead.options.y != 0u) return 0.0.xxxx;
     uint width = 0u;
     uint height = 0u;
     gDepthTexture.GetDimensions(width, height);
@@ -182,19 +185,20 @@ float4 fragMain(VSOutput input) : SV_Target0
         bool useLocalShadowMap =
             LocalShadowMapsEnabled(pc.localShadowEnabled, uLocalShadow) &&
             PointLightHasLocalShadowLayers(light, uLocalShadow);
-        if (useLocalShadowMap)
+        if (!RayPointSelected(lightIdx) && useLocalShadowMap)
         {
             lightVisibility *= LocalPointLightShadowVisibility(
                 light, worldPosition, geometricNormal, L, uLocalShadow,
                 gLocalShadowAtlas, gLocalShadowSampler);
         }
-        if (pc.contactVisibilityEnabled != 0u &&
+        if (!RayPointSelected(lightIdx) && pc.contactVisibilityEnabled != 0u &&
             ShouldTracePointLightContactShadow(radiance, lightVisibility))
         {
             lightVisibility *= ScreenSpacePointLightContactVisibility(
                 worldPosition, geometricNormal, light.positionRadius.xyz, gDepthTexture,
                 gNormalTexture, uCamera.viewProj, uCamera.inverseViewProj);
         }
+        if (RayPointSelected(lightIdx)) lightVisibility = RayShadowVisibility(input.pos, 1u + lightIdx);
         radiance *= lightVisibility;
         totalLighting += EvaluateDeferredLayeredDirectLight(
             albedo.rgb, F0, metallic, roughness, normal, V, L, radiance,

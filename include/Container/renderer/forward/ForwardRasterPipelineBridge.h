@@ -16,6 +16,7 @@ enum class ForwardRasterPipelineId {
   ForwardOpaque,
   ForwardOpaqueFrontCull,
   ForwardOpaqueNoCull,
+  Sky,
   Transparent,
   TransparentFrontCull,
   TransparentNoCull,
@@ -53,6 +54,8 @@ forwardRasterPipelineName(ForwardRasterPipelineId id) {
     return "forward-opaque-front-cull";
   case ForwardRasterPipelineId::ForwardOpaqueNoCull:
     return "forward-opaque-no-cull";
+  case ForwardRasterPipelineId::Sky:
+    return "forward-sky";
   case ForwardRasterPipelineId::Transparent:
     return "forward-transparent";
   case ForwardRasterPipelineId::TransparentFrontCull:

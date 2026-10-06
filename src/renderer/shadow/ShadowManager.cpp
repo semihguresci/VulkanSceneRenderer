@@ -1032,10 +1032,6 @@ void ShadowManager::updateLocalShadows(
     const float range = clampLocalShadowRange(light.positionRange.w);
     const float nearPlane = std::min(kLocalShadowNearPlane, range * 0.25f);
     const float farPlane = std::max(range, nearPlane + 0.01f);
-    const float maxHalfSize = std::max(
-        std::max(std::abs(light.tangentHalfSize.w),
-                 std::abs(light.bitangentHalfSize.w)),
-        0.05f);
     uint32_t remainingLights = 0u;
     for (uint32_t remaining = areaIndex; remaining < areaCount; ++remaining) {
       if (areaLights[remaining].colorIntensity.a > 0.0f &&
@@ -1058,8 +1054,9 @@ void ShadowManager::updateLocalShadows(
             samplePosition, samplePosition + pointDirs[face], pointUps[face]);
         writeLayer(nextLayer++, areaIndex, face, layerCount, samplePosition,
                    range, pointDirs[face], kLocalShadowTypeArea, texelSize,
-                   farPlane - nearPlane, 0.0f,
-                   sampleCount == 1u ? maxHalfSize : 0.0f, proj * view);
+                   farPlane - nearPlane, nearPlane,
+                   float(std::min(shadowSettings.areaShadowQuality, 3u)),
+                   proj * view);
       }
     }
     setPackedAreaRef(localShadowData_, areaIndex, baseLayer + 1u);
@@ -1072,6 +1069,15 @@ void ShadowManager::updateLocalShadows(
     uploadMappedBuffer(localShadowUbos_[imageIndex], &localShadowData_,
                        sizeof(LocalShadowData));
   }
+}
+
+uint64_t ShadowManager::localShadowAtlasAllocatedBytes() const {
+  if (!localShadowAtlasAllocation_ || !allocationManager_.memoryManager())
+    return 0;
+  VmaAllocationInfo info{};
+  vmaGetAllocationInfo(allocationManager_.memoryManager()->allocator(),
+                       localShadowAtlasAllocation_, &info);
+  return info.size;
 }
 
 bool ShadowManager::cascadeIntersectsSphere(

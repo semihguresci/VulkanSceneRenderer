@@ -118,6 +118,7 @@ class ShadowManager {
   [[nodiscard]] VkImage localShadowAtlasImage() const {
     return localShadowAtlasImage_;
   }
+  [[nodiscard]] uint64_t localShadowAtlasAllocatedBytes() const;
   [[nodiscard]] VkImageView localShadowAtlasArrayView() const {
     return localShadowAtlasArrayView_;
   }

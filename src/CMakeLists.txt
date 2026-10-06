@@ -51,6 +51,11 @@ add_library(VulkanSceneRenderer_renderer
     renderer/effects/OitManager.cpp
     renderer/temporal/TemporalManager.cpp
 
+    renderer/raytracing/RayScene.cpp
+    renderer/raytracing/RaySceneExtraction.cpp
+    renderer/raytracing/RaySceneAcceleration.cpp
+    renderer/raytracing/RayShadowManager.cpp
+
     renderer/culling/GpuCullManager.cpp
 
     renderer/debug/DebugOverlayRenderer.cpp

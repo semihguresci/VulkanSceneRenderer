@@ -145,7 +145,7 @@ TEST(ForwardRasterTechniqueTests, PublishesForwardRecipesBackedByShaderSource) {
 
   technique.registerTechniqueContracts(context);
 
-  const std::array<std::string_view, 19> expectedRecipeNames = {
+  const std::array<std::string_view, 20> expectedRecipeNames = {
       "depth-prepass",
       "depth-prepass-front-cull",
       "depth-prepass-no-cull",
@@ -155,6 +155,7 @@ TEST(ForwardRasterTechniqueTests, PublishesForwardRecipesBackedByShaderSource) {
       "forward-opaque",
       "forward-opaque-front-cull",
       "forward-opaque-no-cull",
+      "forward-sky",
       "forward-transparent",
       "forward-transparent-front-cull",
       "forward-transparent-no-cull",

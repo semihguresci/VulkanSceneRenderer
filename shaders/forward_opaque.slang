@@ -1,6 +1,7 @@
 #include "brdf_common.slang"
 #include "area_light_common.slang"
 #include "local_shadow_common.slang"
+#include "ray_shadow_read.slang"
 #include "shadow_common.slang"
 #include "screen_space_light_shadow_common.slang"
 #include "push_constants_common.slang"
@@ -431,7 +432,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             max(dot(vertIn.worldPos - uCamera.cameraWorldPosition.xyz,
                     cameraForward), 0.0);
         float NdotLForShadow = dot(surfaceNormal.geometricNormal, directionalL);
-        if (uLighting.shadowEnabled != 0u &&
+        if (!RayDirectionalSelected() && uLighting.shadowEnabled != 0u &&
             (NdotLForShadow > 0.0 || thinSurface))
         {
             shadowFactor = ComputeShadowFactor(
@@ -454,6 +455,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                     uCamera.viewProj, uCamera.inverseViewProj);
             }
         }
+        if (RayDirectionalSelected()) shadowFactor = RayShadowVisibility(vertIn.pos, 0u);
         float directShadowVisibility = shadowFactor * contactVisibility;
         directLighting += EvaluateDeferredLayeredDirectLight(
             baseColor, F0, metallic, roughness, surfaceNormal.shadingNormal, V,
@@ -497,13 +499,13 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                 coneAttenuation;
             float3 unshadowedRadiance = radiance;
             float lightVisibility = 1.0;
-            if (LocalShadowMapsEnabled(uLighting, uLocalShadow))
+            if (!RayPointSelected(i) && LocalShadowMapsEnabled(uLighting, uLocalShadow))
             {
                 lightVisibility *= LocalPointLightShadowVisibility(
                     light, vertIn.worldPos, surfaceNormal.geometricNormal, L,
                     uLocalShadow, gLocalShadowAtlas, gLocalShadowSampler);
             }
-            if (uLighting.localContactVisibility != 0u &&
+            if (!RayPointSelected(i) && uLighting.localContactVisibility != 0u &&
                 ShouldTracePointLightContactShadow(radiance, lightVisibility))
             {
                 lightVisibility *= ScreenSpacePointLightContactVisibilityDepthOnly(
@@ -511,6 +513,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                     light.positionRadius.xyz, gSceneDepthTexture,
                     uCamera.viewProj, uCamera.inverseViewProj);
             }
+            if (RayPointSelected(i)) lightVisibility = RayShadowVisibility(vertIn.pos, 1u + i);
             radiance *= lightVisibility;
             directLighting += EvaluateDeferredLayeredDirectLight(
                 baseColor, F0, metallic, roughness, surfaceNormal.shadingNormal,
@@ -538,7 +541,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             AreaLightFrame frame = BuildAreaLightFrame(light);
             float areaShadowVisibility = 1.0;
             uint areaShadowRef = PackedLocalShadowAreaRef(uLocalShadow, i);
-            if (LocalShadowMapsEnabled(uLighting, uLocalShadow) &&
+            if (!RayAreaSelected(i) && LocalShadowMapsEnabled(uLighting, uLocalShadow) &&
                 areaShadowRef != 0u)
             {
                 // Integrate the emitter samples backed by rendered cube maps.
@@ -563,7 +566,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                         continue;
                     }
                     areaShadowVisibility += weight * LocalAreaLightShadowVisibility(
-                        i, vertIn.worldPos, surfaceNormal.geometricNormal,
+                        i, light, vertIn.worldPos, surfaceNormal.geometricNormal,
                         visibilitySample, uLocalShadow, gLocalShadowAtlas,
                         gLocalShadowSampler);
                     visibilityWeightSum += weight;
@@ -573,6 +576,8 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                         ? areaShadowVisibility / visibilityWeightSum
                         : 1.0;
             }
+            if (RayAreaSelected(i))
+                areaShadowVisibility = RayShadowVisibility(vertIn.pos, 5u + i);
             [unroll]
             for (uint sampleIndex = 0u;
                  sampleIndex < AREA_LIGHT_INTEGRATION_SAMPLE_COUNT;
@@ -714,5 +719,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         baseAlpha *= lerp(1.0, 0.35, transmissionWeight);
     }
 
+    if (RayDirectionalSelected() && uRayShadowRead.options.y != 0u)
+        return float4(RayShadowDebug(vertIn.pos), 1.0);
     return float4(lighting, 1.0);
 }

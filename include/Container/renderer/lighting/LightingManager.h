@@ -65,6 +65,9 @@ public:
   // Creates lightDescriptorSetLayout, lightingBuffer, lightDescriptorPool,
   // lightDescriptorSet, and writes the initial descriptor.
   void createDescriptorResources(uint32_t descriptorSetCount);
+  void updateRayShadowDescriptors(uint32_t imageIndex, VkBuffer settings,
+                                  VkDeviceSize settingsSize,
+                                  VkImageView visibility);
 
   // Creates the tiled light culling compute pipeline, descriptor sets,
   // and SSBO buffers.  Must be called after createDescriptorResources().

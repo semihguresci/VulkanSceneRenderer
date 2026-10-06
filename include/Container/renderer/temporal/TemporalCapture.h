@@ -21,13 +21,17 @@ struct CaptureEvent {
   bool reset{false}, skip{false};
   bool acquireOutOfDate{false}, presentSuboptimal{false};
   std::optional<bool> taa, orthographic, objectVisible, minimized;
+  std::optional<bool> rayShadowDenoise;
+  std::optional<uint32_t> rayShadowSamples;
   std::optional<uint32_t> samples;
   std::optional<uint32_t> bimHiddenObject;
   std::optional<int> bimLodBias;
   std::optional<glm::vec4> sectionPlane;
+  std::optional<glm::vec3> areaLightPosition;
   std::optional<float> exposure;
   std::optional<glm::uvec2> resize;
-  std::string technique{}, reload{};
+  std::string technique{}, reload{}, guiReload{}, guiSampleModel{};
+  std::string rayShadows{};
 };
 struct CaptureSample {
   std::optional<CaptureCamera> camera;
@@ -94,6 +98,19 @@ public:
               "Section plane must have a finite nonzero normal");
         event.sectionPlane = equation / glm::length(glm::vec3(equation));
       }
+      if (value.contains("areaLightPosition"))
+        event.areaLightPosition = vec3(value.at("areaLightPosition"));
+      event.rayShadows = value.value("rayShadows", std::string{});
+      if (!event.rayShadows.empty() && event.rayShadows != "raster" &&
+          event.rayShadows != "hard" && event.rayShadows != "soft")
+        throw std::invalid_argument("Invalid capture ray shadow mode");
+      if (value.contains("rayShadowSamples")) {
+        event.rayShadowSamples = value.at("rayShadowSamples").get<uint32_t>();
+        if (!*event.rayShadowSamples || *event.rayShadowSamples > 32)
+          throw std::invalid_argument("Invalid capture ray shadow samples");
+      }
+      if (value.contains("rayShadowDenoise"))
+        event.rayShadowDenoise = value.at("rayShadowDenoise").get<bool>();
       auto boolean = [&](const char *name, std::optional<bool> &target) {
         if (value.contains(name))
           target = value.at(name).get<bool>();
@@ -128,6 +145,12 @@ public:
           event.technique != "deferred-raster")
         throw std::invalid_argument("Invalid capture render technique");
       event.reload = value.value("reload", std::string{});
+      event.guiReload = value.value("guiReload", std::string{});
+      event.guiSampleModel = value.value("guiSampleModel", std::string{});
+      if (unsigned(!event.reload.empty()) + unsigned(!event.guiReload.empty()) +
+              unsigned(!event.guiSampleModel.empty()) >
+          1u)
+        throw std::invalid_argument("Choose one model reload route per event");
       events_.push_back(std::move(event));
     }
     validateOrder(events_);

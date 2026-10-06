@@ -49,6 +49,8 @@ TEST(DeferredLightingDescriptorPlannerTests,
             inputs.frameLightingDescriptorSet);
   EXPECT_EQ(plan.tiledLightingDescriptorSets[1], inputs.tiledDescriptorSet);
   EXPECT_EQ(plan.tiledLightingDescriptorSets[2], inputs.sceneDescriptorSet);
+  EXPECT_EQ(plan.tiledLightingDescriptorSets[3],
+            inputs.lightingDescriptorSets[1]);
 }
 
 TEST(DeferredLightingDescriptorPlannerTests, NullHandlesArePropagated) {

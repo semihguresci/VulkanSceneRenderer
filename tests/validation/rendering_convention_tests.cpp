@@ -988,8 +988,9 @@ TEST(RenderingConventionTests, SamplePickerDiscoversIfc5Examples) {
   EXPECT_TRUE(contains(guiManager, "points::base64"));
   EXPECT_TRUE(contains(guiManager, "pcd::base64"));
   EXPECT_TRUE(contains(guiManager, "heuristicRenderableIfc5Layer"));
-  EXPECT_TRUE(contains(guiManager, "IFCTRIANGULATEDFACESET"));
-  EXPECT_TRUE(contains(guiManager, "IFCEXTRUDEDAREASOLID"));
+  EXPECT_TRUE(contains(guiManager, "models/buildingSMART-Sample-Test-Files"));
+  EXPECT_FALSE(
+      contains(guiManager, "extension == \".ifc\") {\n        continue;"));
 
   EXPECT_TRUE(
       contains(sampleManifest, "ifc5_domestic_hot_water_ifcx_renderable"));
@@ -1722,8 +1723,8 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(contains(transparent, "surfaceNormal.geometricNormal"));
   EXPECT_TRUE(
       contains(transparent, "vertIn.worldPos, surfaceNormal.geometricNormal"));
-  EXPECT_TRUE(contains(transparent,
-                       "i, vertIn.worldPos, surfaceNormal.geometricNormal"));
+  EXPECT_TRUE(contains(
+      transparent, "i, light, vertIn.worldPos, surfaceNormal.geometricNormal"));
 }
 
 TEST(RenderingConventionTests,
@@ -6144,7 +6145,8 @@ TEST(RenderingConventionTests, ShadowSettingsMapToShadowBufferVectors) {
   using container::gpu::ShadowData;
   using container::gpu::ShadowSettings;
 
-  EXPECT_EQ(sizeof(ShadowSettings), 68u);
+  EXPECT_EQ(sizeof(ShadowSettings), 72u);
+  EXPECT_EQ(offsetof(ShadowSettings, areaShadowQuality), 68u);
   EXPECT_EQ(offsetof(ShadowSettings, normalBiasMinTexels), 0u);
   EXPECT_EQ(offsetof(ShadowSettings, normalBiasMaxTexels), 4u);
   EXPECT_EQ(offsetof(ShadowSettings, slopeBiasScale), 8u);

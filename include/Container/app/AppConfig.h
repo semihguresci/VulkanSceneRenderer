@@ -8,8 +8,9 @@
 #include <string_view>
 #include <vector>
 
-#include "Container/common/CommonVulkan.h"
 #include "Container/app/GfxCapture.h"
+#include "Container/common/CommonVulkan.h"
+#include "Container/renderer/raytracing/RayShadowSettings.h"
 #include "Container/renderer/temporal/TemporalState.h"
 
 namespace container::app {
@@ -47,9 +48,12 @@ struct AppConfig {
   // draw-call budget.
   uint32_t maxSceneObjects{4096};
   bool enableValidationLayers{false};
+  bool enableRayQueries{true};
+  container::renderer::RayShadowSettings rayShadows{};
   bool enableGui{true};
   bool windowVisible{true};
   uint32_t msaaSamples{1};
+  uint32_t areaShadowQuality{2};
   container::temporal::Settings taa{};
   uint32_t taaResetFrame{0};
   std::string renderTechnique{"deferred-raster"};

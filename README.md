@@ -16,6 +16,14 @@ selected frame ranges and runtime hotkeys, with shader/build identities and a
 frame journal linking captures to lighting and TAA state. Capture tools are
 installed separately; ordinary rendering has no additional dependency.
 
+Optional [ray-query shadows](docs/ray-query-rendering.md) share acceleration
+structures across glTF, BIM and USD. Use `--ray-shadows hard` for geometric
+directional/local shadows or `--ray-shadows soft --ray-shadow-samples 8` for
+filtered rectangle/disk emitters. Raster shadows remain the default and the
+fallback on devices without ray-query support. These options require a current
+source build or a package produced from this branch; the older TAA preview does
+not include them.
+
 The CMake project and build targets use `VulkanSceneRenderer`. The public
 include root remains `include/Container`, and the source namespace remains
 `container::`, to avoid a broad source-level API rename.
@@ -125,6 +133,11 @@ building model restores viewer lighting (directional intensity 2, environment
 intensity 1); values edited in Lighting Settings and explicit command-line
 overrides are preserved. `Bounce Intensity` is an artistic fill approximation,
 so use zero when inspecting direct-light occlusion.
+
+Forward and deferred rendering share the HDR environment background. Area-light
+shadows offer fast, balanced and high sampling quality in Lighting Settings;
+`--area-shadow-quality 1`, `2` (default) or `3` selects the same modes for captures.
+See [area-light shadow quality and validation](docs/area-shadows.md).
 
 The STEP IFC importer supports triangulated and polygonal face sets (including
 concave faces and holes), faceted B-reps with cavity shells, planar and regular

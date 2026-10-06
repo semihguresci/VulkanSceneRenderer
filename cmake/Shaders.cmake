@@ -53,6 +53,10 @@ set(SLANG_INCLUDE_SHADER_NAMES
     draw_indirect_common.slang
     oit_resolve_common.slang
     temporal_common.slang
+    environment_sky_common.slang
+    ray_shadow_data.slang
+    ray_shadow_read.slang
+    ray_visibility_common.slang
 )
 
 set(SLANG_COMPUTE_SHADER_NAMES
@@ -76,6 +80,8 @@ set(SLANG_COMPUTE_SHADER_NAMES
     temporal_compose.slang
     temporal_resolve.slang
     exposure_adapt.slang
+    ray_shadow_trace.slang
+    ray_shadow_filter.slang
 )
 
 set(SLANG_GEOMETRY_SHADER_NAMES
@@ -114,6 +120,7 @@ function(add_slang_output OUTPUTS_VAR SLANG_SOURCE ENTRY_POINT OUTPUT_PATH)
         COMMAND ${CMAKE_COMMAND} -E make_directory "${COMPILED_SHADERS_DIR}"
         COMMAND "${SLANGC_EXECUTABLE}" "${SLANG_SOURCE}"
                 ${SLANG_SPIRV_FLAGS}
+                ${ARGN}
                 -entry "${ENTRY_POINT}"
                 -o "${OUTPUT_PATH}"
         DEPENDS
@@ -157,8 +164,12 @@ foreach(SLANG_COMPUTE_SHADER_NAME IN LISTS SLANG_COMPUTE_SHADER_NAMES)
     if(EXISTS "${SLANG_SOURCE}")
         get_filename_component(SHADER_BASE "${SLANG_SOURCE}" NAME_WE)
         set(COMP_OUTPUT "${COMPILED_SHADERS_DIR}/${SHADER_BASE}.comp.spv")
+        set(SLANG_OPTIONAL_CAPABILITIES)
+        if(SHADER_BASE STREQUAL "ray_shadow_trace")
+            set(SLANG_OPTIONAL_CAPABILITIES -capability spvRayQueryKHR)
+        endif()
         add_slang_output(
-            SLANG_OUTPUTS "${SLANG_SOURCE}" "computeMain" "${COMP_OUTPUT}")
+            SLANG_OUTPUTS "${SLANG_SOURCE}" "computeMain" "${COMP_OUTPUT}" ${SLANG_OPTIONAL_CAPABILITIES})
     endif()
 endforeach()
 
