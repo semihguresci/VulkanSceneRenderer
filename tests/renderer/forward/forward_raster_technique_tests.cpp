@@ -145,7 +145,7 @@ TEST(ForwardRasterTechniqueTests, PublishesForwardRecipesBackedByShaderSource) {
 
   technique.registerTechniqueContracts(context);
 
-  const std::array<std::string_view, 20> expectedRecipeNames = {
+  const std::array<std::string_view, 23> expectedRecipeNames = {
       "depth-prepass",
       "depth-prepass-front-cull",
       "depth-prepass-no-cull",
@@ -155,6 +155,9 @@ TEST(ForwardRasterTechniqueTests, PublishesForwardRecipesBackedByShaderSource) {
       "forward-opaque",
       "forward-opaque-front-cull",
       "forward-opaque-no-cull",
+      "forward-opaque-ray",
+      "forward-opaque-ray-front-cull",
+      "forward-opaque-ray-no-cull",
       "forward-sky",
       "forward-transparent",
       "forward-transparent-front-cull",
@@ -178,6 +181,17 @@ TEST(ForwardRasterTechniqueTests, PublishesForwardRecipesBackedByShaderSource) {
       TechniquePipelineKey{RenderTechniqueId::ForwardRaster, "forward-opaque"});
   ASSERT_NE(opaque, nullptr);
   EXPECT_EQ(opaque->layoutName, "transparent");
+
+  for (const auto *name : {"forward-opaque-ray", "forward-opaque-ray-front-cull",
+                           "forward-opaque-ray-no-cull"}) {
+    const auto *rayOpaque = pipelines.find(
+        TechniquePipelineKey{RenderTechniqueId::ForwardRaster, name});
+    ASSERT_NE(rayOpaque, nullptr);
+    EXPECT_EQ(rayOpaque->layoutName, "forward-ray");
+    EXPECT_EQ(rayOpaque->shaderStages,
+              (std::vector<std::string>{"spv_shaders/forward_opaque.vert.spv",
+                                        "spv_shaders/forward_opaque_ray.frag.spv"}));
+  }
 
   const auto *transparent = pipelines.find(TechniquePipelineKey{
       RenderTechniqueId::ForwardRaster, "forward-transparent"});
@@ -316,6 +330,8 @@ TEST(ForwardRasterTechniqueTests, BuildsForwardGraphWithoutGBufferOnlyPasses) {
       resourceListContains(lighting->reads, RenderResourceId::GBufferNormal));
   EXPECT_TRUE(resourceListContains(lighting->optionalReads,
                                    RenderResourceId::LocalShadowAtlas));
+  EXPECT_TRUE(resourceListContains(lighting->optionalReads,
+                                   RenderResourceId::RayScene));
   EXPECT_TRUE(
       resourceListContains(lighting->writes, RenderResourceId::OitStorage));
 

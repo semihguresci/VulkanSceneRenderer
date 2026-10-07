@@ -6,7 +6,9 @@ static const uint RAY_SHADOW_LAYERS = 9u;
 struct RayShadowReadData
 {
     uint4 limits; // enabled, first point count, first area count, area samples
-    uint4 options; // denoise, debug layer (1 based), soft mode, unused
+    // w: standard MSAA sample count in low 8 bits; bit 8 selects SAMPLE_ZERO
+    // depth resolve (otherwise MAX). Zero disables verified fragment reuse.
+    uint4 options; // denoise, debug layer (1 based), soft mode, MSAA receiver policy
 };
 struct RayShadowTraceData
 {

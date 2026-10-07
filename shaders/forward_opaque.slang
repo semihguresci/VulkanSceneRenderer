@@ -31,6 +31,12 @@
 [[vk::binding(20, 3)]] SamplerComparisonState gLocalShadowSampler;
 [[vk::binding(6, 3)]] Texture2D<float> gSceneDepthTexture;
 
+#ifdef FORWARD_RAY_QUERY
+#define RAY_SCENE_SET 2
+#include "ray_visibility_common.slang"
+#include "ray_shadow_receiver_common.slang"
+#endif
+
 #include "scene_clip_common.slang"
 #include "object_index_common.slang"
 #include "pbr_material_common.slang"
@@ -47,6 +53,191 @@ static const float DIRECTIONAL_CONTACT_SHADOW_LIT_THRESHOLD = 0.02;
 static const float DIRECTIONAL_CONTACT_SHADOW_RADIANCE_THRESHOLD = 1.0e-4;
 static const float LOCAL_CONTACT_SHADOW_RADIANCE_THRESHOLD = 1.0e-4;
 static const float LOCAL_CONTACT_SHADOW_VISIBILITY_THRESHOLD = 0.02;
+
+float ForwardReceiverDepthTolerance(float depth)
+{
+    return max(abs(depth) * 2.0e-6, 1.0e-12);
+}
+
+#ifdef FORWARD_RAY_QUERY
+bool ForwardTraceReceiver(float2 pixelPosition, out uint instanceId,
+                          out float3 hit, out float depth)
+{
+    instanceId = 0xffffffffu;
+    hit = 0.0.xxx;
+    depth = 0.0;
+    float2 uv = pixelPosition * uCamera.renderExtent.zw;
+    // Reverse-Z scene projection and negative-height scene viewport.
+    float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    float4 nearClip = mul(uCamera.inverseViewProj, float4(ndc, 1.0, 1.0));
+    float4 farClip = mul(uCamera.inverseViewProj, float4(ndc, 0.0, 1.0));
+    if (!all(isfinite(nearClip)) || !all(isfinite(farClip)) ||
+        abs(nearClip.w) <= 1e-20 || abs(farClip.w) <= 1e-20)
+        return false;
+    float3 nearWorld = nearClip.xyz / nearClip.w;
+    float3 farWorld = farClip.xyz / farClip.w;
+    float3 delta = farWorld - nearWorld;
+    float distance = length(delta);
+    if (!isfinite(distance) || distance <= 1e-5) return false;
+    RayDesc ray;
+    ray.Origin = nearWorld;
+    ray.Direction = delta / distance;
+    ray.TMin = 0.0;
+    ray.TMax = distance;
+    // Camera rays use the scene's front-face policy. Unlike visibility rays,
+    // they need the closest accepted hit, so traversal must not end at the first.
+    RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES> query;
+    query.TraceRayInline(gRayScene, RAY_FLAG_NONE, 0xffu, ray);
+    float ambiguousDistance = distance;
+    while (query.Proceed())
+    {
+        if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
+        RayInstanceData instance = uRayInstances[query.CandidateInstanceID()];
+        float candidateDistance = query.CandidateTriangleRayT();
+        float3 candidateHit = ray.Origin + ray.Direction * candidateDistance;
+        if (SectionPlaneClips(candidateHit, uRayTrace.frame.z, uRayTrace.sectionPlane) ||
+            BoxClipPlanesClip(candidateHit, uRayTrace.boxClip)) continue;
+        GpuMaterial material = uMaterials[instance.info.y];
+        uint flags = instance.info.z | material.flags;
+        if ((flags & kObjectFlagTransparentOnly) != 0u || material.transmissionFactor > 0.0)
+            continue;
+        // Raster alpha coverage uses derivatives/dithering, and vertex height
+        // displacement has no TLAS representation. Neither can prove identity.
+        if ((flags & kObjectFlagAlphaCutoff) != 0u ||
+            (material.heightTextureIndex != 0xffffffffu && abs(material.heightScale) > 1e-7))
+        {
+            ambiguousDistance = min(ambiguousDistance, candidateDistance);
+            continue;
+        }
+        query.CommitNonOpaqueTriangleHit();
+    }
+    if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT ||
+        ambiguousDistance <= query.CommittedRayT()) return false;
+    instanceId = query.CommittedInstanceID();
+    hit = ray.Origin + ray.Direction * query.CommittedRayT();
+    float4 clip = mul(uCamera.viewProj, float4(hit, 1.0));
+    if (!all(isfinite(clip)) || clip.w <= 0.0) return false;
+    depth = clip.z / clip.w;
+    return isfinite(depth) && depth > 0.0;
+}
+
+bool ForwardVerifyMsaaReceiver(float4 position, float3 world,
+                               float3 geometricNormal, float resolvedDepth)
+{
+    uint samples = uRayTrace.read.options.w & 0xffu;
+    if ((samples != 2u && samples != 4u && samples != 8u && samples != 16u) ||
+        dot(geometricNormal, geometricNormal) < 0.5) return false;
+    float planeTolerance = RayShadowReceiverPlaneTolerance(world, uCamera);
+    uint centerInstance;
+    float3 centerHit;
+    float centerDepth;
+    if (!ForwardTraceReceiver(position.xy, centerInstance, centerHit, centerDepth) ||
+        abs(centerDepth - position.z) > ForwardReceiverDepthTolerance(position.z))
+        return false;
+    if (length(centerHit - world) > planeTolerance) return false;
+    float expectedResolvedDepth = 0.0;
+    bool sampleZeroResolve = (uRayTrace.read.options.w & 0x100u) != 0u;
+    for (uint i = 0u; i < samples; ++i)
+    {
+        uint sampleInstance;
+        float3 sampleHit;
+        float sampleDepth;
+        float2 samplePosition = floor(position.xy) + RayShadowStandardSampleLocation(samples, i);
+        if (!ForwardTraceReceiver(samplePosition, sampleInstance, sampleHit, sampleDepth) ||
+            sampleInstance != centerInstance ||
+            abs(dot(sampleHit - world, geometricNormal)) > planeTolerance)
+            return false;
+        if (!sampleZeroResolve || i == 0u)
+            expectedResolvedDepth = max(expectedResolvedDepth, sampleDepth);
+    }
+    // Query identity and the raster triangle plane must agree at every sample,
+    // and reproduce the actual depth resolve. A slope bound alone would admit
+    // another close parallel surface in a mixed pixel.
+    return abs(expectedResolvedDepth - resolvedDepth) <=
+           ForwardReceiverDepthTolerance(resolvedDepth);
+}
+
+bool ForwardHasRenderableSelectedArea()
+{
+    for (uint i = 0u; i < uRayTrace.read.limits.z; ++i)
+    {
+        float4 colorIntensity = uAreaLights[i].colorIntensity;
+        if (all(isfinite(colorIntensity)) && colorIntensity.a > 0.0 &&
+            any(colorIntensity.rgb > 0.0.xxx)) return true;
+    }
+    return false;
+}
+#endif
+
+bool ForwardRayReceiverMatches(float4 position, float3 world,
+                               float3 geometricNormal, out bool depthMatches)
+{
+    depthMatches = false;
+    float resolvedDepth = gSceneDepthTexture.Load(int3(uint2(position.xy), 0));
+    // Reverse-Z MSAA depth resolves to the nearest sample. Visibility traced
+    // for that surface must not shadow a different primitive in this pixel.
+    // A slope-based allowance can admit another nearby primitive. Only allow
+    // numerical depth error; the query variant traces unmatched fragments.
+    if (!isfinite(resolvedDepth) || resolvedDepth <= 0.0) return false;
+    depthMatches = abs(resolvedDepth - position.z) <= ForwardReceiverDepthTolerance(position.z);
+#ifdef FORWARD_RAY_QUERY
+    if (RayShadowHasStandardMsaa(uRayTrace.read.options.w))
+    {
+        bool reconstructionReliable;
+        float2 resolvedOffset;
+        float3 tracedWorld = RayShadowReceiverWorld(uint2(position.xy), resolvedDepth,
+            gSceneDepthTexture, uCamera, uRayTrace.read.options.w,
+            reconstructionReliable, resolvedOffset);
+        // This is the exact compute/filter origin. Require its receiver plane
+        // for every shared MSAA lookup, including the numeric-depth fast path.
+        // Uncertain edge gradients use per-fragment rays for hard lights too.
+        if (!reconstructionReliable || dot(geometricNormal, geometricNormal) < 0.5 ||
+            abs(dot(tracedWorld - world, geometricNormal)) >
+                RayShadowReceiverPlaneTolerance(world, uCamera))
+        {
+            depthMatches = false;
+            return false;
+        }
+        // Binary visibility belongs to a point, not just its receiver plane.
+        // A MAX-depth tie on a flat surface can select a sample away from the
+        // fragment centre and miss a thin blocker. Require the raster address
+        // as well as the world position to agree; world precision tolerances
+        // must not admit a deliberate subpixel shift. Filtered soft visibility
+        // keeps its independent plane/coverage verification below.
+        float2 tracedPosition = floor(position.xy) + resolvedOffset;
+        depthMatches = depthMatches &&
+            all(abs(tracedPosition - position.xy) <= 1e-4.xx) &&
+            length(tracedWorld - world) <=
+                RayShadowReceiverPlaneTolerance(world, uCamera);
+    }
+    if (uRayTrace.read.options.x != 0u && uRayTrace.read.options.z != 0u &&
+        RayShadowHasStandardMsaa(uRayTrace.read.options.w) && ForwardHasRenderableSelectedArea())
+        return ForwardVerifyMsaaReceiver(position, world, geometricNormal, resolvedDepth);
+#endif
+    return depthMatches;
+}
+
+float ForwardSelectedRayVisibility(float4 position, float3 world,
+    float3 geometricNormal, float3 direction, float distance, uint layer,
+    bool receiverMatches)
+{
+#ifdef FORWARD_RAY_QUERY
+    if (!receiverMatches)
+        return TraceRayVisibility(world, geometricNormal, direction, distance);
+#endif
+    return RayShadowVisibility(position, layer);
+}
+
+float ForwardSelectedAreaRayVisibility(float4 position, AreaLightData light,
+    float3 world, float3 geometricNormal, uint layer, bool receiverMatches)
+{
+#ifdef FORWARD_RAY_QUERY
+    if (!receiverMatches)
+        return TraceAreaRayVisibility(light, world, geometricNormal,
+                                      uint2(position.xy), layer);
+#endif
+    return RayShadowVisibility(position, layer);
+}
 
 bool ShouldTracePointLightContactShadow(float3 radiance, float lightVisibility)
 {
@@ -193,6 +384,15 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
 {
+    float3 rayReceiverNormal = 0.0.xxx;
+#ifdef FORWARD_RAY_QUERY
+    // World-position derivatives describe the raster triangle, including
+    // smooth-shaded meshes. Evaluate them before discards or light divergence;
+    // zero tangents request the shared conservative ray-direction bias.
+    float3 receiverDx = SafeNormalize(ddx(vertIn.worldPos), 0.0.xxx);
+    float3 receiverDy = SafeNormalize(ddy(vertIn.worldPos), 0.0.xxx);
+    rayReceiverNormal = SafeNormalize(cross(receiverDx, receiverDy), 0.0.xxx);
+#endif
     if ((vertIn.flags & kObjectFlagTransparentOnly) != 0u)
     {
         discard;
@@ -287,6 +487,16 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     {
         discard;
     }
+
+    bool rayReceiverDepthMatches = false;
+    bool rayReceiverMatches = (vertIn.flags & kPbrObjectFlagUnlit) == 0u &&
+        RayDirectionalSelected() &&
+        ForwardRayReceiverMatches(vertIn.pos, vertIn.worldPos, rayReceiverNormal,
+                                  rayReceiverDepthMatches);
+    bool useRayVisibility = RayDirectionalSelected();
+#ifndef FORWARD_RAY_QUERY
+    useRayVisibility = useRayVisibility && rayReceiverMatches;
+#endif
 
     float sampledMetallic = EvaluateMetalness(
         vertIn.metallicRoughness.x, vertIn.metallicRoughnessTextureIndex,
@@ -432,7 +642,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             max(dot(vertIn.worldPos - uCamera.cameraWorldPosition.xyz,
                     cameraForward), 0.0);
         float NdotLForShadow = dot(surfaceNormal.geometricNormal, directionalL);
-        if (!RayDirectionalSelected() && uLighting.shadowEnabled != 0u &&
+        if (!useRayVisibility && uLighting.shadowEnabled != 0u &&
             (NdotLForShadow > 0.0 || thinSurface))
         {
             shadowFactor = ComputeShadowFactor(
@@ -455,7 +665,12 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                     uCamera.viewProj, uCamera.inverseViewProj);
             }
         }
-        if (RayDirectionalSelected()) shadowFactor = RayShadowVisibility(vertIn.pos, 0u);
+        if (useRayVisibility)
+            shadowFactor = any(directionalRadiance > 0.0.xxx)
+                ? ForwardSelectedRayVisibility(vertIn.pos, vertIn.worldPos,
+                    rayReceiverNormal, directionalL, 1e20, 0u,
+                    rayReceiverDepthMatches)
+                : 1.0;
         float directShadowVisibility = shadowFactor * contactVisibility;
         directLighting += EvaluateDeferredLayeredDirectLight(
             baseColor, F0, metallic, roughness, surfaceNormal.shadingNormal, V,
@@ -480,6 +695,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         for (uint i = 0; i < uLighting.pointLightCount && i < MAX_CLUSTERED_LIGHTS; ++i)
         {
             PointLightData light = uPointLights[i];
+            bool rayPointSelected = useRayVisibility && RayPointSelected(i);
             float3 lightVector = light.positionRadius.xyz - vertIn.worldPos;
             float lightRadius = light.positionRadius.w;
             float distanceSq = dot(lightVector, lightVector);
@@ -499,13 +715,13 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                 coneAttenuation;
             float3 unshadowedRadiance = radiance;
             float lightVisibility = 1.0;
-            if (!RayPointSelected(i) && LocalShadowMapsEnabled(uLighting, uLocalShadow))
+            if (!rayPointSelected && LocalShadowMapsEnabled(uLighting, uLocalShadow))
             {
                 lightVisibility *= LocalPointLightShadowVisibility(
                     light, vertIn.worldPos, surfaceNormal.geometricNormal, L,
                     uLocalShadow, gLocalShadowAtlas, gLocalShadowSampler);
             }
-            if (!RayPointSelected(i) && uLighting.localContactVisibility != 0u &&
+            if (!rayPointSelected && uLighting.localContactVisibility != 0u &&
                 ShouldTracePointLightContactShadow(radiance, lightVisibility))
             {
                 lightVisibility *= ScreenSpacePointLightContactVisibilityDepthOnly(
@@ -513,7 +729,13 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                     light.positionRadius.xyz, gSceneDepthTexture,
                     uCamera.viewProj, uCamera.inverseViewProj);
             }
-            if (RayPointSelected(i)) lightVisibility = RayShadowVisibility(vertIn.pos, 1u + i);
+            if (rayPointSelected)
+                lightVisibility = PointLightHasRenderableIntensity(light) &&
+                    distanceSq > 1e-10 && any(radiance > 0.0.xxx)
+                    ? ForwardSelectedRayVisibility(vertIn.pos, vertIn.worldPos,
+                        rayReceiverNormal, L, sqrt(distanceSq), 1u + i,
+                        rayReceiverDepthMatches)
+                    : 1.0;
             radiance *= lightVisibility;
             directLighting += EvaluateDeferredLayeredDirectLight(
                 baseColor, F0, metallic, roughness, surfaceNormal.shadingNormal,
@@ -538,10 +760,11 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         for (uint i = 0u; i < areaLightCount; ++i)
         {
             AreaLightData light = uAreaLights[i];
+            bool rayAreaSelected = useRayVisibility && RayAreaSelected(i);
             AreaLightFrame frame = BuildAreaLightFrame(light);
             float areaShadowVisibility = 1.0;
             uint areaShadowRef = PackedLocalShadowAreaRef(uLocalShadow, i);
-            if (!RayAreaSelected(i) && LocalShadowMapsEnabled(uLighting, uLocalShadow) &&
+            if (!rayAreaSelected && LocalShadowMapsEnabled(uLighting, uLocalShadow) &&
                 areaShadowRef != 0u)
             {
                 // Integrate the emitter samples backed by rendered cube maps.
@@ -576,8 +799,10 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                         ? areaShadowVisibility / visibilityWeightSum
                         : 1.0;
             }
-            if (RayAreaSelected(i))
-                areaShadowVisibility = RayShadowVisibility(vertIn.pos, 5u + i);
+            if (rayAreaSelected)
+                areaShadowVisibility = ForwardSelectedAreaRayVisibility(
+                    vertIn.pos, light, vertIn.worldPos, rayReceiverNormal,
+                    5u + i, rayReceiverMatches);
             [unroll]
             for (uint sampleIndex = 0u;
                  sampleIndex < AREA_LIGHT_INTEGRATION_SAMPLE_COUNT;

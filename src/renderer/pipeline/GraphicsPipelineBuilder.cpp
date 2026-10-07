@@ -112,6 +112,10 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       loadModule("spv_shaders/forward_opaque.vert.spv");
   VkShaderModule forwardOpaqueFrag =
       loadModule("spv_shaders/forward_opaque.frag.spv");
+  VkShaderModule forwardOpaqueRayFrag =
+      descriptorLayouts.rayShadowTrace != VK_NULL_HANDLE
+          ? loadModule("spv_shaders/forward_opaque_ray.frag.spv")
+          : VK_NULL_HANDLE;
   VkShaderModule skyVert = loadModule("spv_shaders/forward_sky.vert.spv");
   VkShaderModule skyFrag = loadModule("spv_shaders/forward_sky.frag.spv");
   VkShaderModule transVert =
@@ -607,6 +611,12 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       {descriptorLayouts.scene, descriptorLayouts.light, descriptorLayouts.oit,
        descriptorLayouts.lighting},
       {scenePCR});
+  if (descriptorLayouts.rayShadowTrace != VK_NULL_HANDLE) {
+    layouts.forwardRay = pipelineManager_.createPipelineLayout(
+        {descriptorLayouts.scene, descriptorLayouts.light,
+         descriptorLayouts.rayShadowTrace, descriptorLayouts.lighting},
+        {scenePCR});
+  }
   layouts.lighting = pipelineManager_.createPipelineLayout(
       {descriptorLayouts.lighting, descriptorLayouts.light,
        descriptorLayouts.scene},
@@ -881,6 +891,30 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       .key = {RenderTechniqueId::ForwardRaster, "forward-opaque-no-cull"},
       .pipeline = pipelineManager_.createGraphicsPipeline(
           forwardOpaqueNoCullPCI, "forward_opaque_no_cull_pipeline")});
+
+  if (layouts.forwardRay != VK_NULL_HANDLE) {
+    const std::array<VkPipelineShaderStageCreateInfo, 2> forwardOpaqueRayStages = {
+        makeStage(forwardOpaqueVert, VK_SHADER_STAGE_VERTEX_BIT),
+        makeStage(forwardOpaqueRayFrag, VK_SHADER_STAGE_FRAGMENT_BIT)};
+    RenderingGraphicsPipelineCreateInfo forwardOpaqueRayPCI = forwardOpaquePCI;
+    forwardOpaqueRayPCI.layout = layouts.forwardRay;
+    forwardOpaqueRayPCI.pStages = forwardOpaqueRayStages.data();
+    pipelines.extraHandles.push_back(RegisteredPipelineHandle{
+        .key = {RenderTechniqueId::ForwardRaster, "forward-opaque-ray"},
+        .pipeline = pipelineManager_.createGraphicsPipeline(
+            forwardOpaqueRayPCI, "forward_opaque_ray_pipeline")});
+    forwardOpaqueRayPCI.pRasterizationState = &frontCullRaster;
+    pipelines.extraHandles.push_back(RegisteredPipelineHandle{
+        .key = {RenderTechniqueId::ForwardRaster,
+                "forward-opaque-ray-front-cull"},
+        .pipeline = pipelineManager_.createGraphicsPipeline(
+            forwardOpaqueRayPCI, "forward_opaque_ray_front_cull_pipeline")});
+    forwardOpaqueRayPCI.pRasterizationState = &noCullRaster;
+    pipelines.extraHandles.push_back(RegisteredPipelineHandle{
+        .key = {RenderTechniqueId::ForwardRaster, "forward-opaque-ray-no-cull"},
+        .pipeline = pipelineManager_.createGraphicsPipeline(
+            forwardOpaqueRayPCI, "forward_opaque_ray_no_cull_pipeline")});
+  }
 
   // Fill only clear depth samples before the opaque color resolve. Using the
   // MSAA prepass depth avoids painting sky over partially covered silhouettes.

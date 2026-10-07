@@ -61,6 +61,7 @@ struct Blas {
   std::string provider;
   uint64_t id{};
   uint64_t revision{};
+  RaySceneStorageIdentity storageIdentity{};
   bool opaque{};
   size_t vertexCount{};
   size_t indexCount{};
@@ -115,6 +116,8 @@ void buildBarrier(const vk::raii::CommandBuffer &command, bool tracing) {
       vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR;
   barrier.srcAccessMask = vk::AccessFlagBits2::eAccelerationStructureWriteKHR;
   barrier.dstStageMask =
+      // Both depth-derived compute visibility and forward fragment queries
+      // consume the generation after this build on the graphics queue.
       tracing ? vk::PipelineStageFlagBits2::eFragmentShader |
                     vk::PipelineStageFlagBits2::eComputeShader
               : vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR;
@@ -213,6 +216,7 @@ std::shared_ptr<const RaySceneGeneration> RaySceneAcceleration::recordBuild(
         found != reusable.end()) {
       const auto &candidate = found->second;
       if (candidate->revision == source.revision &&
+          candidate->storageIdentity == source.storageIdentity &&
           candidate->opaque == source.opaque &&
           candidate->vertexCount == source.vertices.size() &&
           candidate->indexCount == source.indices.size())
@@ -225,6 +229,7 @@ std::shared_ptr<const RaySceneGeneration> RaySceneAcceleration::recordBuild(
       bottom->provider = source.provider.value;
       bottom->id = source.geometryId;
       bottom->revision = source.revision;
+      bottom->storageIdentity = source.storageIdentity;
       bottom->opaque = source.opaque;
       bottom->vertexCount = source.vertices.size();
       bottom->indexCount = source.indices.size();

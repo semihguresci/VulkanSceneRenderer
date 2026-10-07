@@ -26,11 +26,228 @@ def blocked(points, emitter, translation=0):
     return enter <= leave
 
 
+def receiver_artifact_fixture(path, grazing=False, blocker=True,
+                             close_parallel=False, same_instance=False):
+    """Opaque colour-separated planes make each receiver's lighting measurable."""
+    blob, views, accessors, meshes = bytearray(), [], [], []
+
+    def attribute(values):
+        offset = len(blob)
+        flat = [component for value in values for component in value]
+        blob.extend(struct.pack("<" + "f" * len(flat), *flat))
+        views.append(dict(buffer=0, byteOffset=offset, byteLength=len(blob) - offset))
+        accessors.append(dict(bufferView=len(views) - 1, componentType=5126,
+            count=len(values), type="VEC3", min=np.min(values, axis=0).tolist(),
+            max=np.max(values, axis=0).tolist()))
+        return len(accessors) - 1
+
+    def quad(name, positions, normal, material):
+        vertices = [positions[i] for i in (0, 1, 2, 0, 2, 3)]
+        meshes.append(dict(name=name, primitives=[dict(mode=4, material=material,
+            attributes=dict(POSITION=attribute(vertices), NORMAL=attribute([normal] * 6)))]))
+
+    if grazing:
+        # At this camera distance the projected width is 0.57 pixels, centred
+        # on column 128. The light faces the receiver but is nearly tangent.
+        tangent = np.array([.1, 0, np.sqrt(.99)])
+        normal = [-np.sqrt(.99), 0, .1]
+        center, half = np.array([.00142, 0, 0]), .008
+        foreground = [(center + side * half * tangent + [0, y, 0]).tolist()
+                      for side, y in ((-1, -2), (1, -2), (1, 2), (-1, 2))]
+        quad("Thin grazing receiver", foreground, normal, 0)
+        quad("Background behind the receiver",
+             [[-3, -2, -.1], [3, -2, -.1], [3, 2, -.1], [-3, 2, -.1]], [0, 0, 1], 1)
+    elif close_parallel:
+        # Three millimetres separate two equally tilted receivers. Their depth
+        # separation fits a half-pixel slope bound, so plane/instance identity
+        # must discriminate them rather than widening the depth tolerance.
+        normal = [-1 / np.sqrt(5), 0, 2 / np.sqrt(5)]
+        foreground = [[x, y, .5 * x] for x, y in
+                      ((-3, -2), (-.17, -2), (.17, 2), (-3, 2))]
+        background = [[x, y, .5 * x - .003] for x, y in
+                      ((-3, -2), (3, -2), (3, 2), (-3, 2))]
+        if same_instance:
+            # Vertex colours distinguish two planes in one primitive/BLAS
+            # instance: instance identity alone cannot make this case pass.
+            vertices = [positions[i] for positions in (foreground, background)
+                        for i in (0, 1, 2, 0, 2, 3)]
+            colors = [[1, 0, 0]] * 6 + [[0, 1, 0]] * 6
+            meshes.append(dict(name="Two receivers in one instance", primitives=[dict(
+                mode=4, material=0, attributes=dict(POSITION=attribute(vertices),
+                    NORMAL=attribute([normal] * 12), COLOR_0=attribute(colors)))]))
+        else:
+            quad("Close red receiver", foreground, normal, 0)
+            quad("Close green receiver", background, normal, 1)
+        if blocker:
+            # L=(1,0,.5005): the background reaches this off-camera plane
+            # after three world units in X, while foreground rays leave it.
+            quad("Off-axis close-receiver blocker",
+                 [[x, y, .5 * x - .0015] for x, y in
+                  ((2, -3), (4, -3), (4, 3), (2, 3))], normal, 2)
+    else:
+        foreground = [[-3, -2, 0], [-.17, -2, 0], [.17, 2, 0], [-3, 2, 0]]
+        quad("Lit red foreground", foreground, [0, 0, 1], 0)
+        quad("Shadowed green background",
+             [[-3, -2, -1], [3, -2, -1], [3, 2, -1], [-3, 2, -1]], [0, 0, 1], 1)
+        if blocker:
+            # The +X/+Z shadow ray reaches x in [1,2] from the background,
+            # while foreground rays pass to the left of this off-axis plane.
+            quad("Off-axis blocker", [[1, -3, .5], [2, -3, .5], [2, 3, .5], [1, 3, .5]],
+                 [0, 0, 1], 2)
+    materials = [dict(name=name, doubleSided=True, pbrMetallicRoughness=dict(
+        baseColorFactor=[*color, 1], metallicFactor=1, roughnessFactor=1))
+        for name, color in (("Red receiver", [1, 0, 0]), ("Green receiver", [0, 1, 0]),
+                            ("Black blocker", [0, 0, 0]))]
+    if close_parallel and same_instance:
+        materials[0]["pbrMetallicRoughness"]["baseColorFactor"] = [1, 1, 1, 1]
+    doc = dict(asset=dict(version="2.0"), buffers=[dict(byteLength=len(blob),
+        uri="data:application/octet-stream;base64," + base64.b64encode(blob).decode())],
+        bufferViews=views, accessors=accessors, meshes=meshes, materials=materials,
+        nodes=[dict(mesh=i) for i in range(len(meshes))],
+        scenes=[dict(nodes=list(range(len(meshes))))], scene=0)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return foreground
+
+
+def projected_quad_mask(vertices, telemetry):
+    width, height = telemetry["resolution"]
+    matrix = np.array(telemetry["camera"]["unjitteredViewProjColumns"]).T
+    clip = np.column_stack((vertices, np.ones(4))) @ matrix.T
+    ndc = clip[:, :2] / clip[:, 3:4]
+    # Scene viewport has negative height: positive NDC Y maps toward the top.
+    polygon = (ndc * [.5, -.5] + .5) * [width, height]
+    y, x = np.mgrid[:height, :width]
+    pixels = np.stack((x + .5, y + .5), axis=-1)
+    sides = []
+    for start, end in zip(polygon, np.roll(polygon, -1, axis=0)):
+        edge, delta = end - start, pixels - start
+        sides.append(edge[0] * delta[:, :, 1] - edge[1] * delta[:, :, 0])
+    sides = np.array(sides)
+    return np.all(sides >= 0, axis=0) | np.all(sides <= 0, axis=0)
+
+
+def mixed_receiver_metrics(shadowed, clear):
+    # Both channels must have measurable coverage in the clear 4x resolve.
+    # Pure-metal red/green materials keep their direct radiance in one channel.
+    mixed = (clear[:, :, 0] > .1) & (clear[:, :, 1] > .1)
+    mixed[:50] = False
+    mixed[206:] = False
+    assert mixed.sum() >= 80, ("fixture lacks mixed MSAA receivers", mixed.sum())
+    red = shadowed[:, :, 0][mixed] / clear[:, :, 0][mixed]
+    green = shadowed[:, :, 1][mixed] / clear[:, :, 1][mixed]
+    return dict(mixedPixels=int(mixed.sum()), foregroundP05=float(np.percentile(red, 5)),
+                foregroundP95Error=float(np.percentile(abs(red - 1), 95)),
+                backgroundP95=float(np.percentile(green, 95)))
+
+
+def grazing_receiver_metrics(raster, ray, visibility, vertices, telemetry):
+    mask = projected_quad_mask(vertices, telemetry)
+    mask[:50] = False
+    mask[206:] = False
+    assert mask.sum() == 156 and np.max(mask.sum(axis=1)) == 1, "receiver must be one pixel wide"
+    assert np.min(raster[:, :, 0][mask]) > .1, "unblocked raster receiver is not lit"
+    assert np.max(raster[:, :, 1][mask]) < 1e-5, "mask includes background"
+    direct_visibility = visibility.mean(axis=2)[mask]
+    lighting_ratio = ray[:, :, 0][mask] / raster[:, :, 0][mask]
+    return dict(receiverPixels=int(mask.sum()), visibilityP05=float(np.percentile(direct_visibility, 5)),
+                lightingP05=float(np.percentile(lighting_ratio, 5)),
+                lightingP95Error=float(np.percentile(abs(lighting_ratio - 1), 95)))
+
+
+def hard_msaa_receiver_fixture(path, kind="directional", slope=0.0, blocker=True):
+    """A subpixel off-axis blocker shadows pixel centres on one covered plane."""
+    blob, views, accessors, meshes = bytearray(), [], [], []
+
+    def attribute(values):
+        offset = len(blob)
+        flat = [component for value in values for component in value]
+        blob.extend(struct.pack("<" + "f" * len(flat), *flat))
+        views.append(dict(buffer=0, byteOffset=offset, byteLength=len(blob) - offset))
+        accessors.append(dict(bufferView=len(views) - 1, componentType=5126,
+            count=len(values), type="VEC3", min=np.min(values, axis=0).tolist(),
+            max=np.max(values, axis=0).tolist()))
+        return len(accessors) - 1
+
+    def quad(positions, normal, material):
+        vertices = [positions[i] for i in (0, 1, 2, 0, 2, 3)]
+        meshes.append(dict(primitives=[dict(mode=4, material=material,
+            attributes=dict(POSITION=attribute(vertices), NORMAL=attribute([normal] * 6)))]))
+
+    normal = np.array([-slope, 0, 1]) / np.sqrt(1 + slope * slope)
+    quad([[x, y, slope * x] for x, y in ((-3, -2), (3, -2), (3, 2), (-3, 2))], normal, 0)
+    if blocker:
+        # Row 128 shades at world Y=-0.007109 for the 256px/40-degree
+        # camera. This strip blocks that centre, but misses all standard MSAA
+        # MAX sample origins on both the flat and shallow positive-X plane.
+        quad([[2.5, -.008, 1], [3.5, -.008, 1], [3.5, -.006, 1], [2.5, -.006, 1]],
+             [0, 0, 1], 1)
+    materials = [dict(doubleSided=True, pbrMetallicRoughness=dict(
+        baseColorFactor=[value, value, value, 1], metallicFactor=1, roughnessFactor=1))
+        for value in (1, 0)]
+    doc = dict(asset=dict(version="2.0"), buffers=[dict(byteLength=len(blob),
+        uri="data:application/octet-stream;base64," + base64.b64encode(blob).decode())],
+        bufferViews=views, accessors=accessors, meshes=meshes, materials=materials,
+        nodes=[dict(mesh=i) for i in range(len(meshes))],
+        scenes=[dict(nodes=list(range(len(meshes))))], scene=0)
+    if kind != "directional":
+        light = dict(type="point", intensity=5e8, color=[1, 1, 1])
+        if kind == "area":
+            # Hard mode queries the emitter centre. Keep sufficient solid
+            # angle for the existing contribution-weight cutoff at this range.
+            light["extras"] = dict(areaLight=dict(shape="rect", width=1, height=1))
+        doc["extensionsUsed"] = ["KHR_lights_punctual"]
+        doc["extensions"] = dict(KHR_lights_punctual=dict(lights=[light]))
+        yaw = np.arctan2(3000, 1000)
+        doc["nodes"].append(dict(name=f"Distant hard {kind} emitter", translation=[3000, 0, 1000],
+            rotation=[0, float(np.sin(yaw / 2)), 0, float(np.cos(yaw / 2))],
+            extensions=dict(KHR_lights_punctual=dict(light=0))))
+        doc["scenes"][0]["nodes"].append(len(doc["nodes"]) - 1)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+
+def hard_msaa_receiver_metrics(shadowed, clear, telemetry, kind, slope):
+    # Intersect camera rays with z=slope*x, then intersect the receiver-to-light
+    # ray with the independent blocker plane z=1. No renderer depth or query
+    # output participates in this reference, including MSAA sample selection.
+    width, height = telemetry["resolution"]
+    matrix = np.array(telemetry["camera"]["unjitteredViewProjColumns"]).T
+    inverse = np.linalg.inv(matrix)
+    y, x = np.mgrid[126:132, 112:144]
+    uv = np.column_stack(((x.ravel() + .5) / width, (y.ravel() + .5) / height))
+    # Negative-height scene viewport: framebuffer +Y is opposite NDC +Y.
+    ndc = uv * [2, -2] + [-1, 1]
+    near = np.column_stack((ndc, np.ones(len(ndc)), np.ones(len(ndc)))) @ inverse.T
+    far = np.column_stack((ndc, np.zeros(len(ndc)), np.ones(len(ndc)))) @ inverse.T
+    near, far = near[:, :3] / near[:, 3:4], far[:, :3] / far[:, 3:4]
+    direction = far - near
+    distance = -(near[:, 2] - slope * near[:, 0]) / (direction[:, 2] - slope * direction[:, 0])
+    points = near + direction * distance[:, None]
+    light_direction = (np.broadcast_to([3, 0, 1], points.shape) if kind == "directional"
+                       else np.array([3000, 0, 1000]) - points)
+    hit_distance = (1 - points[:, 2]) / light_direction[:, 2]
+    hit = points + light_direction * hit_distance[:, None]
+    expected_blocked = ((hit[:, 0] > 2.5) & (hit[:, 0] < 3.5) &
+                        (hit[:, 1] > -.008) & (hit[:, 1] < -.006) & (hit_distance > 0))
+    if kind != "directional":
+        expected_blocked &= hit_distance < 1
+    assert expected_blocked.sum() == 32 and (~expected_blocked).sum() >= 32, "fixture lacks the blocked centre strip"
+    clear_values = clear[y, x].mean(axis=2).ravel()
+    assert np.min(clear_values) > .1, "clear hard-shadow receiver is not lit"
+    visibility = shadowed[y, x].mean(axis=2).ravel() / clear_values
+    dark, lit = visibility[expected_blocked], visibility[~expected_blocked]
+    return dict(blockedPixels=int(len(dark)), litPixels=int(len(lit)),
+        blockedP95=float(np.percentile(dark, 95)), litP95Error=float(np.percentile(abs(lit - 1), 95)),
+        incorrectBlockedPixels=int(np.count_nonzero(dark > .08)),
+        incorrectLitPixels=int(np.count_nonzero(abs(lit - 1) > .05)))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--exe", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--case", choices=("all", "quality", "coverage", "motion", "lifecycle", "budget"), default="all")
+    parser.add_argument("--case", choices=("all", "quality", "coverage", "motion", "lifecycle", "budget", "artifacts", "msaa", "msaa-motion", "msaa-hard"), default="all")
     args = parser.parse_args()
     if os.environ.get("CONTAINER_RUN_GPU_RAY_SHADOW") != "1":
         print("SKIP: set CONTAINER_RUN_GPU_RAY_SHADOW=1")
@@ -98,6 +315,277 @@ def main():
             assert telemetry["rayShadows"]["active"], telemetry["rayShadows"]
             assert telemetry["rayShadows"]["build"]["instances"] > 0
         return screenshot, telemetry
+
+    if args.case in ("all", "artifacts", "msaa", "msaa-hard"):
+        # Flat depth does not identify one MSAA sample: all samples tie. A
+        # shallow slope can also fit the numerical centre/resolved depth test.
+        # Exact hard visibility must still be evaluated at the raster shading
+        # centre, rather than borrowing a laterally displaced compute query.
+        hard_output = output / "hard-msaa-receivers"
+        camera_options = ("--width", "256", "--height", "256", "--camera-position", "0", "0", "5",
+            "--camera-target", "0", "0", "0", "--camera-fov", "40", "--directional-color", "1", "1", "1",
+            "--directional-direction", "-3", "0", "-1", "--exposure", "1", "--warmup-frames", "8", "--capture-frame", "9")
+        for kind in ("directional", "point", "area"):
+            for slope in (0.0, 1e-4):
+                receiver = "flat" if slope == 0 else "shallow"
+                models = {}
+                for label, with_blocker in (("blocked", True), ("clear", False)):
+                    model = hard_output / f"{receiver}-{kind}-{label}.gltf"
+                    hard_msaa_receiver_fixture(model, kind, slope, with_blocker)
+                    models[label] = model
+                for samples in (1, 2, 4, 8):
+                    name = f"hard-msaa{samples}-{receiver}-{kind}"
+                    extra = (*camera_options, "--msaa", str(samples), "--directional-intensity",
+                             "50" if kind == "directional" else "0")
+                    clear_image, info = capture(name + "-clear", models["clear"], "forward-raster", "hard", extra=extra)
+                    if info["msaaSamples"] != samples:
+                        assert samples in (2, 8), ("required MSAA mode unavailable", samples, info["msaaSamples"])
+                        records.append(dict(case="msaa-hard", name=name, samples=samples,
+                            skipped="unsupported sample count"))
+                        continue
+                    assert not info["taa"]["enabled"] and info["rayShadows"]["mode"] == 1
+                    if kind != "directional":
+                        assert info["lighting"]["pointLightCount"] == (1 if kind == "point" else 0)
+                        assert info["lighting"]["areaLightCount"] == (1 if kind == "area" else 0)
+                        assert info["rayShadows"]["localLightBudget"] >= 1
+                    shadowed_image, blocked_info = capture(name + "-blocked", models["blocked"],
+                        "forward-raster", "hard", extra=extra)
+                    assert blocked_info["msaaSamples"] == samples
+                    metrics = hard_msaa_receiver_metrics(hdr(shadowed_image), hdr(clear_image), info, kind, slope)
+                    assert metrics["incorrectBlockedPixels"] == 0 and metrics["incorrectLitPixels"] == 0, (name, metrics)
+                    records.append(dict(case="msaa-hard", name=name, samples=samples,
+                        light=kind, receiverSlope=slope, **metrics))
+                    print(name, metrics, flush=True)
+
+    if args.case in ("all", "artifacts", "msaa"):
+        artifact_output = output / "receiver-artifacts"
+        edge_model, clear_model = artifact_output / "msaa-edge.gltf", artifact_output / "msaa-clear.gltf"
+        receiver_artifact_fixture(edge_model)
+        receiver_artifact_fixture(clear_model, blocker=False)
+        camera_options = ("--width", "256", "--height", "256", "--camera-position", "0", "0", "5",
+            "--camera-target", "0", "0", "0", "--camera-fov", "40", "--directional-intensity", "20",
+            "--directional-color", "1", "1", "1", "--directional-direction", "-1", "0", "-1",
+            "--exposure", "1", "--warmup-frames", "8", "--capture-frame", "9")
+        captures = {}
+        for samples in (1, 4):
+            for label, model in (("blocked", edge_model), ("clear", clear_model)):
+                image, telemetry = capture(f"artifact-msaa{samples}-{label}", model,
+                    "forward-raster", "hard", extra=(*camera_options, "--msaa", str(samples)))
+                assert telemetry["msaaSamples"] == samples
+                assert not telemetry["taa"]["enabled"]
+                captures[samples, label] = hdr(image), telemetry
+        shadowed, clear = captures[4, "blocked"][0], captures[4, "clear"][0]
+        metrics = mixed_receiver_metrics(shadowed, clear)
+        # The foreground retains ray visibility. Background samples resolve a
+        # different receiver and must use its per-fragment raster visibility.
+        assert metrics["foregroundP05"] > .95 and metrics["foregroundP95Error"] < .05, metrics
+        assert metrics["backgroundP95"] < .12, metrics
+
+        # Fully covered interiors still use the ray path at 1x and 4x. The
+        # blocker is analytically between the background and directional light
+        # for world X in (-.5,.5), independent of any visibility-buffer code.
+        interior_results = []
+        for samples in (1, 4):
+            shadowed, telemetry = captures[samples, "blocked"]
+            clear = captures[samples, "clear"][0]
+            matrix = np.array(telemetry["camera"]["unjitteredViewProjColumns"]).T
+            scale = matrix[0, 0]
+            world_x = (2 * (np.arange(256) + .5) / 256 - 1) * 6 / scale
+            central = (abs(world_x) < .35)[None, :] & (np.arange(256)[:, None] >= 50) & (np.arange(256)[:, None] < 206)
+            foreground = central & (clear[:, :, 0] > .1) & (clear[:, :, 1] < 1e-5)
+            background = central & (clear[:, :, 1] > .1) & (clear[:, :, 0] < 1e-5)
+            assert foreground.sum() > 100 and background.sum() > 100
+            lit = shadowed[:, :, 0][foreground] / clear[:, :, 0][foreground]
+            dark = shadowed[:, :, 1][background] / clear[:, :, 1][background]
+            assert np.percentile(abs(lit - 1), 95) < .05 and np.percentile(dark, 95) < .08
+            interior_results.append(dict(samples=samples, foregroundPixels=int(foreground.sum()),
+                backgroundPixels=int(background.sum()), foregroundP95Error=float(np.percentile(abs(lit - 1), 95)),
+                backgroundP95=float(np.percentile(dark, 95))))
+        records.append(dict(case="artifacts", name="forward-msaa-mixed-receivers", **metrics,
+                            interiors=interior_results))
+        print("forward MSAA mixed receivers", metrics, flush=True)
+
+        for same_instance in (False, True):
+            close_captures = {}
+            for label, with_blocker in (("blocked", True), ("clear", False)):
+                model = artifact_output / f"msaa-close-instance{int(same_instance)}-{label}.gltf"
+                receiver_artifact_fixture(model, blocker=with_blocker,
+                    close_parallel=True, same_instance=same_instance)
+                doc = json.loads(model.read_text())
+                # A negligible renderable area selects the soft receiver-reuse
+                # path while the grazing directional light isolates visibility.
+                doc["extensionsUsed"] = ["KHR_lights_punctual"]
+                doc["extensions"] = dict(KHR_lights_punctual=dict(lights=[dict(
+                    type="point", intensity=1e-5, color=[1, 1, 1], range=3.2,
+                    extras=dict(areaLight=dict(shape="rect", width=.8, height=.8)))]))
+                doc["nodes"].append(dict(name="Receiver verification area",
+                    translation=[0, 1.86, .18],
+                    extensions=dict(KHR_lights_punctual=dict(light=0))))
+                doc["scenes"][0]["nodes"].append(len(doc["nodes"]) - 1)
+                model.write_text(json.dumps(doc))
+                for mode in ("hard", "soft"):
+                    image, info = capture(f"artifact-msaa-close-instance{int(same_instance)}-{mode}-{label}",
+                        model, "forward-raster", mode, extra=(*camera_options,
+                            "--msaa", "4", "--directional-intensity", "40000",
+                            "--directional-direction", "-1", "0", "-.5005",
+                            "--ray-shadow-samples", "8"))
+                    assert info["msaaSamples"] == 4 and info["rayShadows"]["denoise"]
+                    close_captures[mode, label] = hdr(image)
+            for mode in ("hard", "soft"):
+                metrics = mixed_receiver_metrics(close_captures[mode, "blocked"], close_captures[mode, "clear"])
+                assert metrics["foregroundP05"] > .9 and metrics["foregroundP95Error"] < .1, metrics
+                assert metrics["backgroundP95"] < .12, metrics
+                records.append(dict(case="artifacts", name="forward-msaa-close-parallel-receivers",
+                                    sameInstance=same_instance, mode=mode, **metrics))
+                print("close parallel receivers", same_instance, mode, metrics, flush=True)
+
+            # A narrow distant emitter has the same grazing direction as above,
+            # but contributes all lighting through the verified soft-area path.
+            # Its physical radiance is intensity * area / distance squared.
+            area_captures = {}
+            for label, with_blocker in (("blocked", True), ("clear", False)):
+                model = artifact_output / f"msaa-close-area-instance{int(same_instance)}-{label}.gltf"
+                receiver_artifact_fixture(model, blocker=with_blocker,
+                    close_parallel=True, same_instance=same_instance)
+                doc = json.loads(model.read_text())
+                yaw = np.arctan2(4000, 2002)
+                doc["extensionsUsed"] = ["KHR_lights_punctual"]
+                doc["extensions"] = dict(KHR_lights_punctual=dict(lights=[dict(
+                    type="point", intensity=2.0008e11, color=[1, 1, 1],
+                    extras=dict(areaLight=dict(shape="rect", width=.01, height=400)))]))
+                doc["nodes"].append(dict(name="Grazing soft-area emitter",
+                    translation=[4000, 0, 2002], rotation=[0, float(np.sin(yaw / 2)), 0, float(np.cos(yaw / 2))],
+                    extensions=dict(KHR_lights_punctual=dict(light=0))))
+                doc["scenes"][0]["nodes"].append(len(doc["nodes"]) - 1)
+                model.write_text(json.dumps(doc))
+                for denoise in (True, False):
+                    extra = (*camera_options, "--msaa", "4", "--directional-intensity", "0", "--ray-shadow-samples", "8")
+                    if not denoise:
+                        extra += ("--no-ray-shadow-denoise",)
+                    image, info = capture(f"artifact-msaa-close-area-instance{int(same_instance)}-filter{int(denoise)}-{label}",
+                        model, "forward-raster", "soft", extra=extra)
+                    assert info["lighting"]["areaLightCount"] == 1
+                    area_captures[denoise, label] = hdr(image)
+            for denoise in (True, False):
+                metrics = mixed_receiver_metrics(area_captures[denoise, "blocked"], area_captures[denoise, "clear"])
+                assert metrics["foregroundP05"] > .9 and metrics["foregroundP95Error"] < .1, metrics
+                assert metrics["backgroundP95"] < .12, metrics
+                matrix = np.array(info["camera"]["unjitteredViewProjColumns"]).T
+                ratio = (2 * (np.arange(256) + .5) / 256 - 1) / matrix[0, 0]
+                world_x = ratio * 5.003 / (1 + .5 * ratio)
+                central = (abs(world_x) < .35)[None, :] & (np.arange(256)[:, None] >= 50) & (np.arange(256)[:, None] < 206)
+                clear = area_captures[denoise, "clear"]
+                background = central & (clear[:, :, 1] > .1) & (clear[:, :, 0] < 1e-5)
+                foreground = central & (clear[:, :, 0] > .1) & (clear[:, :, 1] < 1e-5)
+                assert background.sum() > 500 and foreground.sum() > 500, "close-area fixture lacks covered interiors"
+                dark = area_captures[denoise, "blocked"][:, :, 1][background] / clear[:, :, 1][background]
+                lit = area_captures[denoise, "blocked"][:, :, 0][foreground] / clear[:, :, 0][foreground]
+                metrics.update(backgroundInteriorPixels=int(background.sum()),
+                    foregroundInteriorPixels=int(foreground.sum()),
+                    backgroundInteriorP95=float(np.percentile(dark, 95)),
+                    backgroundIncorrectLitPixels=int(np.count_nonzero(dark > .12)),
+                    foregroundInteriorP95Error=float(np.percentile(abs(lit - 1), 95)))
+                assert metrics["backgroundIncorrectLitPixels"] == 0, metrics
+                assert metrics["foregroundInteriorP95Error"] < .1, metrics
+                records.append(dict(case="artifacts", name="forward-msaa-close-soft-area-receivers",
+                                    sameInstance=same_instance, denoise=denoise, **metrics))
+                print("close soft-area receivers", same_instance, denoise, metrics, flush=True)
+
+        # Ray-selected local lights need receiver-specific queries even when
+        # the raster atlas cannot provide a fallback for those lights. Soft mode
+        # also exercises identity verification in mixed area-light receivers.
+        for kind in ("point", "area"):
+            local_captures = {}
+            for label, with_blocker in (("blocked", True), ("clear", False)):
+                model = artifact_output / f"msaa-{kind}-{label}.gltf"
+                receiver_artifact_fixture(model, blocker=with_blocker)
+                doc = json.loads(model.read_text())
+                if kind == "point":
+                    # The default one-point atlas budget shadows only one of
+                    # these identical emitters, regardless of ECS light order.
+                    lights = [dict(type="point", intensity=160, range=20,
+                                   color=[1, 1, 1]) for _ in range(2)]
+                else:
+                    # This black point still takes six raster atlas layers;
+                    # the remaining two cannot fit an area-light cube map.
+                    lights = [dict(type="point", intensity=1, range=20,
+                                   color=[0, 0, 0]),
+                              dict(type="point", intensity=3000, range=20,
+                                   color=[1, 1, 1], extras=dict(areaLight=dict(
+                                       shape="rect", width=.4, height=.4)))]
+                doc["extensionsUsed"] = ["KHR_lights_punctual"]
+                doc["extensions"] = dict(KHR_lights_punctual=dict(lights=lights))
+                for index in range(2):
+                    doc["nodes"].append(dict(name=f"MSAA {kind} emitter {index}",
+                        translation=[3, 0, 2], rotation=[0, .3826834324, 0, .9238795325],
+                        extensions=dict(KHR_lights_punctual=dict(light=index))))
+                    doc["scenes"][0]["nodes"].append(len(doc["nodes"]) - 1)
+                model.write_text(json.dumps(doc))
+                for mode in ("hard", "soft"):
+                    image, telemetry = capture(f"artifact-msaa-{kind}-{mode}-{label}", model,
+                        "forward-raster", mode, extra=(*camera_options, "--msaa", "4",
+                            "--directional-intensity", "0", "--ray-shadow-samples", "8"))
+                    assert telemetry["lighting"]["activeLocalShadowLayers"] == 6, telemetry["lighting"]
+                    assert telemetry["lighting"]["pointLightCount"] == (2 if kind == "point" else 1)
+                    if kind == "area":
+                        assert telemetry["lighting"]["areaLightCount"] == 1
+                        assert telemetry["lighting"]["areaShadowOrigins"] == 0
+                    local_captures[mode, label] = hdr(image)
+            for mode in ("hard", "soft"):
+                metrics = mixed_receiver_metrics(local_captures[mode, "blocked"], local_captures[mode, "clear"])
+                assert metrics["foregroundP05"] > .95 and metrics["foregroundP95Error"] < .05, (kind, mode, metrics)
+                assert metrics["backgroundP95"] < .12, (kind, mode, metrics)
+                records.append(dict(case="artifacts", name=f"forward-msaa-{kind}-without-raster-fallback", mode=mode, **metrics))
+                print("forward MSAA", kind, mode, "without raster fallback", metrics, flush=True)
+
+        grazing_model = artifact_output / "grazing-no-blocker.gltf"
+        grazing_vertices = receiver_artifact_fixture(grazing_model, grazing=True)
+        grazing_options = (*camera_options, "--camera-position", "0", "0", "1",
+                           "--directional-direction", "-.08", "0", "-1")
+        for technique in ("deferred-raster", "forward-raster"):
+            raster, _ = capture(technique + "-artifact-grazing-raster", grazing_model, technique,
+                                "raster", extra=grazing_options)
+            ray, telemetry = capture(technique + "-artifact-grazing-ray", grazing_model, technique,
+                                     "hard", extra=grazing_options)
+            visibility, _ = capture(technique + "-artifact-grazing-visibility", grazing_model, technique,
+                "hard", extra=(*grazing_options, "--ray-shadow-debug-layer", "1"))
+            metrics = grazing_receiver_metrics(hdr(raster), hdr(ray), hdr(visibility),
+                                               grazing_vertices, telemetry)
+            # All rays point away from both planes. Incompatible depth normals
+            # must not offset this grazing receiver back into its own triangles.
+            assert metrics["visibilityP05"] > .98, (technique, metrics)
+            assert metrics["lightingP05"] > .9 and metrics["lightingP95Error"] < .1, (technique, metrics)
+            records.append(dict(case="artifacts", name="grazing-no-blocker", technique=technique, **metrics))
+            print(technique, "grazing receiver", metrics, flush=True)
+
+        # Disabled emitter layers stay lit rather than retaining/querying
+        # occlusion for an area light that contributes no radiance.
+        enabled_area = fixture("artifact-enabled-area")
+        enabled, telemetry = capture("artifact-enabled-area-visibility", enabled_area, "forward-raster", "hard",
+            extra=("--ray-shadow-debug-layer", "6", "--exposure", "1", "--warmup-frames", "8", "--capture-frame", "9"))
+        enabled_visibility = hdr(enabled).mean(axis=2)
+        formerly_blocked = np.zeros(enabled_visibility.shape, dtype=bool)
+        for row in (485, 490, 495):
+            points, mask = floor_points(telemetry, row)
+            occluded = blocked(points, [0, 1.86, .18])
+            selected = np.flatnonzero(mask)[occluded]
+            formerly_blocked[row, selected] = True
+        assert formerly_blocked.sum() > 30
+        assert np.percentile(enabled_visibility[formerly_blocked], 95) < .02
+        for disabled in ("intensity", "rgb"):
+            model = fixture("artifact-disabled-area-" + disabled)
+            doc = json.loads(model.read_text())
+            light = doc["extensions"]["KHR_lights_punctual"]["lights"][0]
+            light["intensity" if disabled == "intensity" else "color"] = 0 if disabled == "intensity" else [0, 0, 0]
+            model.write_text(json.dumps(doc))
+            image, info = capture("artifact-disabled-area-" + disabled, model, "forward-raster", "hard",
+                extra=("--ray-shadow-debug-layer", "6", "--exposure", "1", "--warmup-frames", "8", "--capture-frame", "9"))
+            assert info["lighting"]["areaLightCount"] == 1, "disabled area light must retain its traced layer"
+            minimum_visibility = float(np.min(hdr(image).mean(axis=2)[formerly_blocked]))
+            assert minimum_visibility > .98, (disabled, minimum_visibility)
+            records.append(dict(case="artifacts", name="disabled-area-light", disabled=disabled,
+                                previouslyBlockedPixels=int(formerly_blocked.sum()), minimumVisibility=minimum_visibility))
+            print("disabled area light", disabled, "minimum visibility", minimum_visibility, flush=True)
 
     for technique in (() if args.case not in ("all", "quality") else ("deferred-raster", "forward-raster")):
         prefix = technique
@@ -321,6 +809,33 @@ def main():
                 previous = ray
                 print(name, frame, "MAE", mae, flush=True)
 
+    if args.case in ("all", "msaa", "msaa-motion"):
+        # Current/previous receiver worlds must use the same sample convention
+        # while the camera moves, not just when static history accumulates.
+        model = fixture("msaa-camera-motion")
+        samples = [1, 16, 17, 32, 48, 49, 64, 80]
+        sequence = dict(schemaVersion=1, frames=80, sampleFrames=samples,
+            camera=[dict(frame=f, position=[x, 1.05, 4.1], target=[x, .95, 0])
+                    for f, x in ((1, 0), (40, .15), (80, 0))])
+        name = "forward-raster-msaa4-camera-motion"
+        image, _ = capture(name, model, "forward-raster", "soft", sequence,
+            extra=("--msaa", "4", "--ray-shadow-debug-layer", "6", "--exposure", "1", "--ray-shadow-samples", "8"))
+        for frame in samples:
+            path = image if frame == 80 else image.with_name(image.stem + f".frame-{frame:04d}.png")
+            telemetry = json.loads(path.with_suffix(".telemetry.json").read_text())
+            assert telemetry["msaaSamples"] == 4 and telemetry["rayShadows"]["denoise"]
+            visibility = hdr(path).mean(axis=2)
+            errors = []
+            for row in (485, 490, 495):
+                points, mask = floor_points(telemetry, row)
+                expected = oracle(points, (.8, .8), 1.86, False, 128)
+                errors.extend(abs(visibility[row, mask] - expected))
+            mae = float(np.mean(errors))
+            assert mae < (.085 if frame in (1, 17, 49) else .035), (name, frame, mae)
+            records.append(dict(case="msaa-motion", name=name, frame=frame, samples=4, mae=mae,
+                                ray=telemetry["rayShadows"], passes=telemetry["passes"]))
+            print(name, frame, "MAE", mae, flush=True)
+
     if args.case in ("all", "lifecycle"):
         model = fixture("lifecycle")
         empty = fixture("empty", "point", False)
@@ -357,6 +872,48 @@ def main():
                 previous_epoch = telemetry["taa"]["epoch"]
                 records.append(dict(case="lifecycle", technique=technique, frame=frame, ray=ray,
                                     passes=telemetry["passes"]))
+
+    if args.case in ("all", "budget", "msaa"):
+        # The floor is tilted relative to the camera and has fully covered
+        # penumbra interiors. Pixel-center depth differs from MAX sample depth;
+        # those fragments must retain spatial/temporal denoising under MSAA.
+        tilted = fixture("msaa-tilted")
+        tilted_clear = fixture("msaa-tilted-clear", blocker=False)
+        msaa_errors = {}
+        for msaa in (1, 2, 4, 8):
+            white, info = capture(f"forward-msaa{msaa}-tilted-clear", tilted_clear,
+                "forward-raster", "soft", extra=("--msaa", str(msaa), "--ray-shadow-samples", "8"))
+            if info["msaaSamples"] != msaa:
+                assert msaa in (2, 8), ("required MSAA mode unavailable", msaa, info["msaaSamples"])
+                records.append(dict(case="msaa", samples=msaa, skipped="unsupported sample count"))
+                continue
+            clear_hdr = hdr(white)
+            images = {}
+            for denoise in (True, False):
+                extra = ("--msaa", str(msaa), "--ray-shadow-samples", "8")
+                if not denoise:
+                    extra += ("--no-ray-shadow-denoise",)
+                image, telemetry = capture(f"forward-msaa{msaa}-tilted-filter{int(denoise)}",
+                    tilted, "forward-raster", "soft", extra=extra)
+                actual_hdr = hdr(image)
+                errors, profile = [], []
+                for row in (485, 490, 495):
+                    points, mask = floor_points(telemetry, row)
+                    expected = oracle(points, (.8, .8), 1.86)
+                    actual = (actual_hdr[row, mask] / np.maximum(clear_hdr[row, mask], 1e-5)).mean(axis=1)
+                    penumbra = (expected > .05) & (expected < .95)
+                    errors.extend(abs(actual[penumbra] - expected[penumbra]))
+                    profile.extend(actual[penumbra])
+                mae = float(np.mean(errors))
+                msaa_errors[msaa, denoise] = mae
+                images[denoise] = np.array(profile)
+                records.append(dict(case="msaa", samples=msaa, denoise=denoise, penumbraMae=mae,
+                                    ray=telemetry["rayShadows"], passes=telemetry["passes"]))
+            filtered, raw = msaa_errors[msaa, True], msaa_errors[msaa, False]
+            assert filtered < raw * .8 and filtered < .035, ("tilted MSAA denoise", msaa, filtered, raw)
+            assert np.mean(abs(images[True] - images[False])) > .02, ("filter has no visible effect", msaa)
+            assert abs(filtered - msaa_errors[1, True]) < .015, ("MSAA filtering quality changed", msaa)
+            print("tilted MSAA", msaa, "filtered/raw MAE", filtered, raw, flush=True)
 
     if args.case in ("all", "budget"):
         model = fixture("budget")

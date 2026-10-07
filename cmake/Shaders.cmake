@@ -55,6 +55,7 @@ set(SLANG_INCLUDE_SHADER_NAMES
     temporal_common.slang
     environment_sky_common.slang
     ray_shadow_data.slang
+    ray_shadow_receiver_common.slang
     ray_shadow_read.slang
     ray_visibility_common.slang
 )
@@ -146,6 +147,14 @@ foreach(SLANG_SOURCE ${SLANG_SOURCES})
     add_slang_output(
         SLANG_OUTPUTS "${SLANG_SOURCE}" "fragMain" "${FRAG_OUTPUT}")
 endforeach()
+
+# Optional forward fragment queries handle opaque MSAA receivers that differ
+# from the single resolved-depth visibility buffer. Baseline lighting shaders
+# remain usable on devices without ray-query support.
+add_slang_output(
+    SLANG_OUTPUTS "${SHADERS_DIR}/forward_opaque.slang" "fragMain"
+    "${COMPILED_SHADERS_DIR}/forward_opaque_ray.frag.spv"
+    -DFORWARD_RAY_QUERY=1 -capability spvRayQueryKHR)
 
 # Geometry shaders for specific files.
 foreach(SLANG_GEOMETRY_SHADER_NAME IN LISTS SLANG_GEOMETRY_SHADER_NAMES)

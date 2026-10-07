@@ -11,6 +11,7 @@ struct RendererMsaaDeviceSupport {
   VkSampleCountFlags color{VK_SAMPLE_COUNT_1_BIT};
   VkSampleCountFlags depth{VK_SAMPLE_COUNT_1_BIT};
   VkResolveModeFlags depthResolveModes{VK_RESOLVE_MODE_SAMPLE_ZERO_BIT};
+  bool standardSampleLocations{false};
 };
 
 [[nodiscard]] uint32_t sampleCountToSamples(VkSampleCountFlagBits sampleCount);

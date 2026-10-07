@@ -17,9 +17,10 @@ not itself imply ray support. The device must expose
 `VK_KHR_acceleration_structure`, `VK_KHR_ray_query`,
 `VK_KHR_deferred_host_operations`, enabled buffer device addresses and both
 extension feature bits. Missing optional features preserve raster device
-selection. Only the separate trace compute module requires `spvRayQueryKHR`;
-unsupported devices never create its pipeline. All packaged lighting modules
-read a visibility texture without requiring ray capabilities.
+selection. The separate trace compute module and optional forward ray fragment
+module require `spvRayQueryKHR`; unsupported devices never create their pipelines.
+The baseline lighting modules read a visibility texture without requiring ray
+capabilities.
 
 ## Quality and diagnostics
 
@@ -62,12 +63,21 @@ build a new TLAS while matching BLAS are reused. Validation rejects invalid
 indices, nonfinite positions, duplicate provider identities and singular or
 nonaffine transforms before recording. Empty scenes build valid empty TLAS.
 
+Compact geometry and triangle UV metadata are cached independently of instance
+transforms and material assignments. Transform-only updates refresh instances
+without compacting the meshes again. Generations share the immutable GPU
+triangle metadata through fence retirement; replacement geometry invalidates
+the cache and the corresponding acceleration data. Source-buffer identity is
+tracked per provider, so adding or replacing one provider preserves BLAS reuse
+for unchanged providers, including BIM geometry when a mesh primitive is added.
+
 Each immutable generation owns its TLAS, VMA input/scratch/storage allocations,
 BLAS references and material metadata. Frame slots retain generations through GPU
 fence retirement. Shared allocations are counted once in aggregate telemetry.
 The device and allocator outlive all generations; AS handles are destroyed before
-their VMA backing buffers. Builds, queries and filters run outside dynamic
-rendering on the graphics queue with synchronization2 dependencies. The service
+their VMA backing buffers. Builds, compute queries and filters run outside dynamic
+rendering; optional forward fragment queries run inside the opaque rendering pass.
+All use the graphics queue with synchronization2 dependencies. The service
 adds no queue/device idle to normal updates. Existing reload/resize retirement
 protects replacement resources. Failed recording/submission must abandon the
 command buffer before releasing its generation.
@@ -96,6 +106,32 @@ or volumetric attenuation. Height-displaced materials trigger a complete raster
 fallback until displaced vertex positions can be shared with AS builds; the UI
 reports that fallback rather than tracing the undeformed mesh.
 
+Forward MSAA pixels may cover several receivers while the ray visibility image
+stores the receiver selected by resolved reverse-Z depth. Forward fragments
+compare their depth and full ray origin with that receiver before reading hard
+or unfiltered visibility. The raster sample address must agree too: a different
+point on the same plane can lie across a thin blocker's shadow edge. Matching
+fragments retain buffered ray shadows; other covered fragments trace visibility
+from their own world position and geometric normal. An optional forward fragment
+shader uses the same inline-query material, clipping and emitter-sampling policy
+as the compute pass. This remains correct when a selected local light has no
+raster atlas allocation. Devices with ray queries disabled use the original
+raster shader and pipelines.
+
+With soft-shadow denoising enabled, a sloped MSAA surface can have a different
+fragment-centre depth from the resolved sample even when the pixel covers one
+receiver. On devices with standard 2x, 4x, 8x or 16x sample locations, camera
+queries verify the receiver instance, triangle plane and resolved depth before
+reusing filtered visibility. Tracing reconstructs depth at the selected sample
+position: SAMPLE_ZERO uses sample zero, while MAX uses the depth gradient of a
+consistent planar neighbourhood. Forward reuse also verifies that this exact
+trace origin lies on the fragment's plane. Mixed receivers, ambiguous coverage,
+inconsistent depth gradients and unknown sample layouts retain the conservative
+per-fragment query path.
+Receiver verification adds a camera-centre query and one query per MSAA sample
+when a standard MSAA receiver needs filtered area visibility. Disabled area
+emitters skip that verification as well as emitter queries.
+
 ## Visibility history
 
 Only soft emitter visibility is filtered. Exact directional, point and spot
@@ -105,6 +141,15 @@ jittered camera matrix, tests depth/normal compatibility and clamps history to a
 compatible current neighbourhood. A subsequent spatial pass filters compatible
 neighbours. Depth derivatives select the nearer valid neighbour on each axis to
 avoid crossing silhouettes or background pixels.
+MSAA tracing, normal derivatives and history reconstruction use the same resolved
+sample position. Filtering also checks world-space plane compatibility so close
+parallel receivers cannot exchange visibility merely because their normals and
+depth values are similar.
+
+A receiver narrower than one pixel cannot always supply valid depth neighbours
+for both normal derivatives. Derivatives that span incompatible depth surfaces
+are rejected; an unreliable normal requests a conservative query bias instead
+of a camera-facing normal offset that could move the ray into the receiver.
 
 Geometry/transforms, semantic visibility, materials, lights, clipping and quality
 changes invalidate the entire visibility history. This conservative policy avoids
@@ -154,6 +199,72 @@ raised total allocations to 108,189,936 bytes. Geometry/light changes rejected
 history immediately; settled visibility error was below 0.016. Validation and
 synchronization checks stayed clean across all lifecycle captures.
 
+The targeted receiver-artifact regressions can also be run independently:
+
+```powershell
+$env:CONTAINER_RUN_GPU_RAY_SHADOW = '1'
+python -B tests/validation/ray_shadow_regression.py --exe out/build/visual-studio/Release/VulkanSceneRenderer.exe --output out/review-ray-receiver-artifacts --case artifacts
+python -B tests/validation/ray_shadow_regression.py --exe out/build/visual-studio/Release/VulkanSceneRenderer.exe --output out/review-ray-msaa --case msaa
+python -B tests/validation/ray_shadow_regression.py --exe out/build/visual-studio/Release/VulkanSceneRenderer.exe --output out/review-ray-msaa-hard --case msaa-hard
+```
+
+These cases measure the red foreground and green background contributions of a
+mixed 4x MSAA pixel against an unblocked capture, including selected point and
+area lights without a raster atlas fallback, check fully covered interiors
+at 1x and 4x, and require an unblocked one-pixel grazing receiver to retain white
+visibility and its raster-reference lighting in both techniques. Disabled area
+lights must return white visibility over pixels that the enabled emitter
+shadowed. This group is included in the full runtime suite; its results are
+written to its own `results.json` and are separate from the measurements above.
+The MSAA group also compares filtered and raw eight-sample penumbrae at 1x, 2x,
+4x and 8x against independent emitter integration, skipping optional sample
+counts that the device cannot provide. Close parallel receivers exercise both
+separate instances and two planes within one instance; a grazing area emitter
+checks mixed pixels and fully covered shadowed interiors.
+The MSAA group includes a moving-camera sequence; `--case msaa-motion` runs only
+that sequence. `--case msaa-hard` isolates thin hard shadows on flat and shallow
+receivers under directional, point and area lights at 1x, 2x, 4x and 8x. An
+independent camera-ray/blocker intersection checks both the blocked centre strip
+and the adjacent lit pixels against clear captures. This group is also included
+in the full runtime suite and the `artifacts` and `msaa` cases.
+
+The hard-shadow receiver fix passed all 24 light/slope/MSAA combinations. Each
+capture retained all 32 analytically blocked pixels and all 160 adjacent lit
+pixels. The blocked-to-clear lighting ratio was 0.0125 at the 95th percentile;
+the adjacent lit pixels matched their clear reference. Before the fix, 2x and
+4x MSAA lost the entire blocked strip in the flat directional-light fixture.
+The targeted `msaa` run passed all 57 evidence records: these 24 hard-shadow
+comparisons, 17 receiver-artifact checks, eight camera-motion frames and eight
+filtered/raw penumbra comparisons. All 98 capture logs remained free of
+validation and synchronization errors; soft-shadow quality stayed unchanged.
+
+The 2026-10-07 MSAA receiver run reduced eight-sample penumbra mean absolute
+visibility error from 0.1057 without filtering to 0.0147, 0.0151, 0.0156 and
+0.0159 at 1x, 2x, 4x and 8x respectively. A grazing area-light fixture with
+receivers 3 mm apart retained correct lighting for every checked mixed pixel and
+all 3,843 blocked background interior pixels, with both separate instances and
+two planes in one instance. Both filtered and raw visibility passed these checks.
+In the 960×540 tilted fixture, one settled 4x capture measured 0.38 ms forward
+lighting, 0.56 ms ray tracing and 0.59 ms filtering on RTX 2080 SUPER. These
+single-capture timings describe this fixture, rather than a general frame cost.
+A separate 4x camera-motion run passed all eight captured frames. Settled
+visibility error remained 0.0148–0.0160 against independent emitter integration,
+with clean validation and synchronization checks.
+
+The earlier 2026-10-07 Release run passed all 163 runtime evidence records, including
+17 receiver-artifact checks and eight MSAA quality comparisons, with no
+validation or synchronization errors.
+The mixed-receiver tests retained fully lit foregrounds while the blocked
+background contribution stayed below 0.027 at the 95th percentile. Both grazing
+receivers matched their unshadowed raster lighting, and disabled emitters returned
+full visibility. All six targeted CTest suites and Vulkan 1.4 SPIR-V validation
+of the four affected shader modules passed.
+
+On Ryzen 9 3900X, a one-million-triangle, 1,000-instance CPU fixture measured
+114.0 ms median full extraction versus 0.43 ms for the production cache's
+transform-only update. This measures extraction and instance validation; backend
+geometry validation and GPU acceleration-structure work are excluded.
+
 The same isolated rectangle-light fixture, with matched exposure and camera:
 
 | Raster area shadows | Ray-query area shadows, 32 samples and filtering |
@@ -161,7 +272,8 @@ The same isolated rectangle-light fixture, with matched exposure and camera:
 | ![Raster rectangle visibility](images/ray-shadows/raster-rectangle.png) | ![Ray-query rectangle visibility](images/ray-shadows/ray-rectangle.png) |
 
 Runtime evidence is written to `out/build/visual-studio/test_results/ray-shadows`.
-The Windows packaging script requires both ray compute SPIR-V files. The package
+The Windows packaging script includes the ray compute and optional forward ray
+fragment SPIR-V files. The package
 smoke runner verifies extracted forward/deferred queries and forced fallback
 from an unrelated directory with SDK/build-tool environment paths removed.
 

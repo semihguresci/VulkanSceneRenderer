@@ -97,6 +97,8 @@ RendererMsaaDeviceSupport queryRendererMsaaDeviceSupport(
   support.depth =
       properties2.properties.limits.framebufferDepthSampleCounts;
   support.depthResolveModes = depthResolveProperties.supportedDepthResolveModes;
+  support.standardSampleLocations =
+      properties2.properties.limits.standardSampleLocations == VK_TRUE;
   if ((support.color & VK_SAMPLE_COUNT_1_BIT) == 0u) {
     support.color |= VK_SAMPLE_COUNT_1_BIT;
   }

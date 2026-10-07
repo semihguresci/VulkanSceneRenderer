@@ -142,6 +142,7 @@ add_custom_test(ray_scene_gpu_tests
 target_sources(ray_scene_gpu_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/renderer/raytracing/RayScene.cpp
     ${CMAKE_SOURCE_DIR}/src/renderer/raytracing/RaySceneAcceleration.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/raytracing/RaySceneExtraction.cpp
 )
 target_compile_definitions(ray_scene_gpu_tests PRIVATE
     CONTAINER_RAY_QUERY_CONTRACT_SPIRV="${RAY_QUERY_CONTRACT_SPIRV}")

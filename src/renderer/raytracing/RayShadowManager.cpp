@@ -2,6 +2,7 @@
 
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/core/RenderGraph.h"
+#include "Container/renderer/core/RendererMsaa.h"
 #include "Container/renderer/raytracing/RaySceneAcceleration.h"
 #include "Container/utility/FileLoader.h"
 
@@ -9,6 +10,7 @@
 #include <cstring>
 #include <optional>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace container::renderer {
 namespace {
@@ -145,10 +147,13 @@ struct RayShadowManager::Impl {
   container::gpu::VulkanMemoryManager &memory;
   RaySceneAcceleration acceleration;
   RayShadowSettings settings;
+  RendererMsaaDeviceSupport msaaSupport;
   VkExtent2D extent{};
   struct Generation {
     std::shared_ptr<const RaySceneGeneration> as;
-    std::unique_ptr<Buffer> triangles, instances;
+    std::weak_ptr<const ExtractedRayScene> geometry;
+    std::shared_ptr<const Buffer> triangles;
+    std::unique_ptr<Buffer> instances;
   };
   struct Slot {
     std::unique_ptr<Buffer> read, trace;
@@ -160,7 +165,8 @@ struct RayShadowManager::Impl {
   };
   std::vector<Slot> slots;
   std::shared_ptr<Generation> current;
-  std::optional<ExtractedRayScene> pending;
+  RaySceneExtractionCache extractionCache;
+  std::optional<RaySceneExtractionCache::Snapshot> pending;
   std::unique_ptr<Image> fallback, raw, visibility;
   std::array<std::unique_ptr<Image>, 2> history, surface;
   vk::raii::DescriptorSetLayout traceSetLayout{nullptr},
@@ -178,7 +184,9 @@ struct RayShadowManager::Impl {
   Impl(std::shared_ptr<container::gpu::VulkanDevice> device,
        container::gpu::VulkanMemoryManager &memory)
       : device(std::move(device)), memory(memory),
-        acceleration(*this->device, memory) {}
+        acceleration(*this->device, memory),
+        msaaSupport(
+            queryRendererMsaaDeviceSupport(this->device->physicalDevice())) {}
   void invalidate() {
     validHistory = false;
     ++resets;
@@ -267,6 +275,14 @@ VkImageView RayShadowManager::visibilityView() const {
   const auto &image = impl_->visibility ? impl_->visibility : impl_->fallback;
   return image ? static_cast<VkImageView>(*image->view) : VK_NULL_HANDLE;
 }
+VkDescriptorSetLayout RayShadowManager::traceDescriptorLayout() const {
+  return supported() ? static_cast<VkDescriptorSetLayout>(*impl_->traceSetLayout)
+                     : VK_NULL_HANDLE;
+}
+VkDescriptorSet RayShadowManager::traceDescriptorSet(uint32_t image) const {
+  return active() && image < impl_->slots.size() ? impl_->slots[image].traceSet
+                                                : VK_NULL_HANDLE;
+}
 uint64_t RayShadowManager::sceneGeneration() const {
   return impl_->generationId;
 }
@@ -289,7 +305,11 @@ void RayShadowManager::createPipelines(const std::filesystem::path &root,
                       : i < 4  ? vk::DescriptorType::eStorageBuffer
                       : i == 4 ? vk::DescriptorType::eSampledImage
                                : vk::DescriptorType::eStorageImage;
-    bindings.emplace_back(i, type, 1, vk::ShaderStageFlagBits::eCompute);
+    const auto stages =
+        i < 4 ? vk::ShaderStageFlagBits::eCompute |
+                    vk::ShaderStageFlagBits::eFragment
+              : vk::ShaderStageFlags(vk::ShaderStageFlagBits::eCompute);
+    bindings.emplace_back(i, type, 1, stages);
   }
   p.traceSetLayout = vk::raii::DescriptorSetLayout(
       vk, vk::DescriptorSetLayoutCreateInfo({}, bindings));
@@ -337,6 +357,7 @@ void RayShadowManager::prepare(VkExtent2D extent, uint32_t imageCount) {
   p.slots.clear();
   p.current.reset();
   p.pending.reset();
+  p.extractionCache.clear();
   p.raw.reset();
   p.visibility.reset();
   for (auto &image : p.history)
@@ -427,8 +448,23 @@ void RayShadowManager::update(
   p.data.read.limits.z =
       std::min({uint32_t(areas.size()), 4u,
                 p.settings.localLightBudget - p.data.read.limits.y});
+  const uint32_t samples = sampleCountToSamples(
+      frame.depthStencilMsaa.image != VK_NULL_HANDLE
+          ? frame.depthStencilMsaa.samples
+          : frame.depthStencil.samples);
+  const auto resolveMode =
+      preferredDepthResolveMode(p.msaaSupport.depthResolveModes);
+  // The shader may verify same-receiver coverage at the standard Vulkan sample
+  // positions. Unknown patterns/counts keep conservative fragment queries.
+  const uint32_t receiverSamples =
+      p.msaaSupport.standardSampleLocations && samples >= 2u && samples <= 16u &&
+              (resolveMode == VK_RESOLVE_MODE_MAX_BIT ||
+               resolveMode == VK_RESOLVE_MODE_SAMPLE_ZERO_BIT)
+          ? samples | (resolveMode == VK_RESOLVE_MODE_SAMPLE_ZERO_BIT ? 0x100u : 0u)
+          : 0u;
   p.data.read.options = {p.settings.denoise ? 1u : 0u, p.settings.debugLayer,
-                         p.settings.mode == RayShadowMode::Soft ? 1u : 0u, 0u};
+                         p.settings.mode == RayShadowMode::Soft ? 1u : 0u,
+                         receiverSamples};
   if (!p.enabled) {
     if (p.validHistory)
       p.invalidate();
@@ -447,6 +483,12 @@ void RayShadowManager::update(
     sceneHash = hashBytes(sceneHash, source.provider.value.data(),
                           source.provider.value.size());
     sceneHash = hashValue(sceneHash, source.geometryRevision);
+    sceneHash = hashValue(sceneHash, source.vertices.size());
+    sceneHash = hashValue(sceneHash, source.indices.size());
+    sceneHash = hashValue(sceneHash,
+                          reinterpret_cast<uintptr_t>(source.vertices.data()));
+    sceneHash = hashValue(sceneHash,
+                          reinterpret_cast<uintptr_t>(source.indices.data()));
     sceneHash = hashValue(sceneHash, source.draws.size());
     for (const auto &draw : source.draws) {
       sceneHash = hashValue(sceneHash, draw.objectIndex);
@@ -479,7 +521,7 @@ void RayShadowManager::update(
   if (sceneHash != p.sceneHash || lightHash != p.lightingHash || !p.enabled)
     p.invalidate();
   if (p.enabled && (!p.current || sceneHash != p.sceneHash))
-    p.pending = extractRayScene(sources);
+    p.pending = p.extractionCache.update(sources);
   p.sceneHash = sceneHash;
   p.lightingHash = lightHash;
   p.data.frame = {p.validHistory ? 1u : 0u, uint32_t(p.frameId),
@@ -530,30 +572,41 @@ void RayShadowManager::recordBuild(VkCommandBuffer cmd, uint32_t image) {
     return;
   if (p.pending) {
     auto generation = std::make_shared<Impl::Generation>();
-    const auto views = p.pending->geometryViews();
+    generation->geometry = p.pending->geometry;
+    const auto &geometry = *p.pending->geometry;
+    const auto views = geometry.geometryViews();
     // The command buffer belongs to CommandBufferManager. Release the temporary
     // Vulkan-Hpp wrapper on both success and failure; it must never free it.
     vk::raii::CommandBuffer borrowed(p.device->raii(), cmd, VK_NULL_HANDLE);
     try {
       generation->as =
-          p.acceleration.recordBuild(borrowed, {views, p.pending->instances},
+          p.acceleration.recordBuild(borrowed,
+                                     {views, p.pending->instances.instances},
                                      p.current ? p.current->as : nullptr);
       (void)borrowed.release();
     } catch (...) {
       (void)borrowed.release();
       throw;
     }
-    generation->triangles = std::make_unique<Buffer>(
-        p.memory, p.pending->triangles.size() * sizeof(RayTriangleData),
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    // Triangle UV metadata is immutable with the compact geometry. Share it
+    // through the same fence-retained generations as reused BLAS allocations.
+    if (p.current && p.current->geometry.lock() == p.pending->geometry) {
+      generation->triangles = p.current->triangles;
+    } else {
+      auto triangles = std::make_shared<Buffer>(
+          p.memory,
+          geometry.triangles.size() * sizeof(RayTriangleData),
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+      triangles->write(geometry.triangles.data(),
+                       geometry.triangles.size() * sizeof(RayTriangleData));
+      generation->triangles = std::move(triangles);
+    }
     generation->instances = std::make_unique<Buffer>(
-        p.memory, p.pending->instanceData.size() * sizeof(RayInstanceData),
+        p.memory,
+        p.pending->instances.instanceData.size() * sizeof(RayInstanceData),
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    generation->triangles->write(p.pending->triangles.data(),
-                                 p.pending->triangles.size() *
-                                     sizeof(RayTriangleData));
-    generation->instances->write(p.pending->instanceData.data(),
-                                 p.pending->instanceData.size() *
+    generation->instances->write(p.pending->instances.instanceData.data(),
+                                 p.pending->instances.instanceData.size() *
                                      sizeof(RayInstanceData));
     p.current = std::move(generation);
     p.pending.reset();
@@ -632,13 +685,16 @@ uint64_t RayShadowManager::allocatedBytes() const {
     add(image);
   // Count shared live metadata generations once rather than once per frame.
   std::vector<const Impl::Generation *> seen;
+  std::unordered_set<const Buffer *> triangles;
   std::vector<std::shared_ptr<const RaySceneGeneration>> acceleration;
   auto generation = [&](const auto &entry) {
     if (!entry ||
         std::find(seen.begin(), seen.end(), entry.get()) != seen.end())
       return;
     seen.push_back(entry.get());
-    total += entry->triangles->allocated() + entry->instances->allocated();
+    if (triangles.insert(entry->triangles.get()).second)
+      total += entry->triangles->allocated();
+    total += entry->instances->allocated();
     acceleration.push_back(entry->as);
   };
   generation(p.current);

@@ -50,6 +50,10 @@ public:
   [[nodiscard]] VkBuffer readSettings(uint32_t image) const;
   [[nodiscard]] VkDeviceSize readSettingsSize() const;
   [[nodiscard]] VkImageView visibilityView() const;
+  // Layout is available once supported pipelines exist. The per-image set is
+  // populated by recordBuild before fragment/compute query consumers execute.
+  [[nodiscard]] VkDescriptorSetLayout traceDescriptorLayout() const;
+  [[nodiscard]] VkDescriptorSet traceDescriptorSet(uint32_t image) const;
   [[nodiscard]] uint64_t allocatedBytes() const;
   [[nodiscard]] const RaySceneBuildStats *buildStats() const;
   [[nodiscard]] uint64_t sceneGeneration() const;

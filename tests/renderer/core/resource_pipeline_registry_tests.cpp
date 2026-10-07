@@ -158,6 +158,30 @@ std::string definitionBlock(const std::string &text,
   return text.substr(start, end - start);
 }
 
+std::string functionDefinitionBlocks(const std::string &text,
+                                     const std::string &qualifiedName) {
+  std::string blocks;
+  for (std::size_t start = text.find(qualifiedName);
+       start != std::string::npos; start = text.find(qualifiedName, start)) {
+    const std::size_t body = text.find('{', start);
+    if (body == std::string::npos)
+      return {};
+    std::size_t depth = 1u;
+    std::size_t end = body + 1u;
+    for (; end < text.size() && depth != 0u; ++end) {
+      if (text[end] == '{')
+        ++depth;
+      else if (text[end] == '}')
+        --depth;
+    }
+    if (depth != 0u)
+      return {};
+    blocks += text.substr(start, end - start);
+    start = end;
+  }
+  return blocks;
+}
+
 template <typename Handle> Handle fakeHandle(uintptr_t value) {
   return reinterpret_cast<Handle>(value);
 }
@@ -1597,9 +1621,72 @@ TEST(ForwardRasterPipelineBridgeTests, ResolvesRegistriesOnly) {
       params, ForwardRasterPipelineLayoutId::TransformGizmo));
 }
 
+TEST(ForwardRasterPipelineBridgeTests, RayQueryVariantsAreOptionalAndForwardOnly) {
+  GraphicsPipelines pipelines;
+  pipelines.extraHandles.push_back(RegisteredPipelineHandle{
+      .key = {RenderTechniqueId::ForwardRaster, "forward-opaque"},
+      .pipeline = fakeHandle<VkPipeline>(0xe10)});
+  PipelineLayouts layouts;
+  layouts.transparent = fakeHandle<VkPipelineLayout>(0xf10);
+  auto handles = buildGraphicsPipelineHandleRegistry(pipelines);
+  auto layoutRegistry = buildGraphicsPipelineLayoutRegistry(layouts);
+  FrameRecordParams params;
+  params.registries.pipelineHandles = handles.get();
+  params.registries.pipelineLayouts = layoutRegistry.get();
+  const std::array rayIds = {
+      ForwardRasterPipelineId::ForwardOpaqueRay,
+      ForwardRasterPipelineId::ForwardOpaqueRayFrontCull,
+      ForwardRasterPipelineId::ForwardOpaqueRayNoCull};
+  for (const auto id : rayIds) {
+    EXPECT_FALSE(forwardRasterPipelineReady(params, id));
+  }
+  EXPECT_FALSE(forwardRasterPipelineLayoutReady(
+      params, ForwardRasterPipelineLayoutId::ForwardRay));
+  EXPECT_EQ(forwardRasterPipelineHandle(params,
+                                       ForwardRasterPipelineId::ForwardOpaque),
+            fakeHandle<VkPipeline>(0xe10));
+  EXPECT_EQ(forwardRasterPipelineLayout(
+                params, ForwardRasterPipelineLayoutId::Transparent),
+            layouts.transparent);
+
+  uintptr_t nextPipeline = 0xe11;
+  for (const auto id : rayIds) {
+    pipelines.extraHandles.push_back(RegisteredPipelineHandle{
+        .key = {RenderTechniqueId::ForwardRaster,
+                std::string(container::renderer::forwardRasterPipelineName(id))},
+        .pipeline = fakeHandle<VkPipeline>(nextPipeline++)});
+  }
+  layouts.forwardRay = fakeHandle<VkPipelineLayout>(0xf11);
+  handles = buildGraphicsPipelineHandleRegistry(pipelines);
+  layoutRegistry = buildGraphicsPipelineLayoutRegistry(layouts);
+  params.registries.pipelineHandles = handles.get();
+  params.registries.pipelineLayouts = layoutRegistry.get();
+  nextPipeline = 0xe11;
+  for (const auto id : rayIds) {
+    EXPECT_EQ(forwardRasterPipelineHandle(params, id),
+              fakeHandle<VkPipeline>(nextPipeline++));
+    EXPECT_EQ(handles->pipelineHandle(
+                  {RenderTechniqueId::DeferredRaster,
+                   std::string(container::renderer::forwardRasterPipelineName(id))}),
+              VK_NULL_HANDLE);
+  }
+  EXPECT_EQ(forwardRasterPipelineLayout(
+                params, ForwardRasterPipelineLayoutId::ForwardRay),
+            layouts.forwardRay);
+  EXPECT_EQ(layoutRegistry->pipelineLayout(
+                {RenderTechniqueId::DeferredRaster, "forward-ray"}),
+            VK_NULL_HANDLE);
+  EXPECT_EQ(forwardRasterPipelineHandle(params,
+                                       ForwardRasterPipelineId::ForwardOpaque),
+            fakeHandle<VkPipeline>(0xe10));
+  EXPECT_EQ(forwardRasterPipelineLayout(
+                params, ForwardRasterPipelineLayoutId::Transparent),
+            layouts.transparent);
+}
+
 TEST(ForwardRasterPipelineBridgeTests, CoversEveryExposedPipelineAndLayoutId) {
   PipelineRegistry pipelineHandles;
-  const std::array<std::pair<ForwardRasterPipelineId, const char *>, 17>
+  const std::array<std::pair<ForwardRasterPipelineId, const char *>, 20>
       pipelineNames = {
           {{ForwardRasterPipelineId::DepthPrepass, "depth-prepass"},
            {ForwardRasterPipelineId::DepthPrepassFrontCull,
@@ -1612,6 +1699,11 @@ TEST(ForwardRasterPipelineBridgeTests, CoversEveryExposedPipelineAndLayoutId) {
            {ForwardRasterPipelineId::BimDepthPrepassNoCull,
             "bim-depth-prepass-no-cull"},
            {ForwardRasterPipelineId::ForwardOpaque, "forward-opaque"},
+           {ForwardRasterPipelineId::ForwardOpaqueRay, "forward-opaque-ray"},
+           {ForwardRasterPipelineId::ForwardOpaqueRayFrontCull,
+            "forward-opaque-ray-front-cull"},
+           {ForwardRasterPipelineId::ForwardOpaqueRayNoCull,
+            "forward-opaque-ray-no-cull"},
            {ForwardRasterPipelineId::Transparent, "forward-transparent"},
            {ForwardRasterPipelineId::TransparentFrontCull,
             "forward-transparent-front-cull"},
@@ -1647,10 +1739,11 @@ TEST(ForwardRasterPipelineBridgeTests, CoversEveryExposedPipelineAndLayoutId) {
   }
 
   PipelineRegistry pipelineLayouts;
-  const std::array<std::pair<ForwardRasterPipelineLayoutId, const char *>, 5>
+  const std::array<std::pair<ForwardRasterPipelineLayoutId, const char *>, 6>
       layoutNames = {
           {{ForwardRasterPipelineLayoutId::Scene, "scene"},
            {ForwardRasterPipelineLayoutId::Transparent, "transparent"},
+           {ForwardRasterPipelineLayoutId::ForwardRay, "forward-ray"},
            {ForwardRasterPipelineLayoutId::PostProcess, "post-process"},
            {ForwardRasterPipelineLayoutId::LightGizmo, "light-gizmo"},
            {ForwardRasterPipelineLayoutId::TransformGizmo, "transform-gizmo"}}};
@@ -2004,11 +2097,31 @@ TEST(TechniqueRegistryGuardrails,
   EXPECT_FALSE(
       contains(rendererFrontend,
                "vkQueueWaitIdle(svc_.ctx.deviceWrapper->graphicsQueue())"));
-  EXPECT_FALSE(contains(rendererFrontend, "frameResourceManager->frame("));
-  EXPECT_FALSE(contains(rendererFrontend, "frame->oitNodeCapacity"));
-  EXPECT_FALSE(contains(rendererFrontend, "frame->depthStencil.image"));
-  EXPECT_FALSE(contains(rendererFrontend, "frame->pickDepth.image"));
-  EXPECT_FALSE(contains(rendererFrontend, "frame->pickId.image"));
+  // Temporal and ray descriptor updates legitimately access complete frame
+  // resources. Readback paths must consume the published technique bindings.
+  std::string readbacks;
+  for (const auto *name : {"RendererFrontend::markDepthVisibilityFrameComplete(",
+                           "RendererFrontend::sampleDepthAtCursor(",
+                           "RendererFrontend::samplePickIdAtCursor("}) {
+    const std::string block = functionDefinitionBlocks(rendererFrontend, name);
+    ASSERT_FALSE(block.empty()) << name;
+    EXPECT_TRUE(contains(block, "deferredRasterRuntimeImage(")) << name;
+    readbacks += block;
+  }
+  const std::string oitCapacity = functionDefinitionBlocks(
+      rendererFrontend,
+      "deferredRasterRuntimeOitNodeCapacity(const FrameResourceManager");
+  ASSERT_FALSE(oitCapacity.empty());
+  EXPECT_TRUE(contains(oitCapacity, "deferredRasterRuntimeBufferBinding("));
+  EXPECT_TRUE(contains(oitCapacity, "\"oit-node-buffer\""));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      oitCapacity, "binding->size / sizeof(OitNode)"));
+  readbacks += oitCapacity;
+  EXPECT_FALSE(contains(readbacks, "frameResourceManager->frame("));
+  EXPECT_FALSE(contains(readbacks, "frame->oitNodeCapacity"));
+  EXPECT_FALSE(contains(readbacks, "frame->depthStencil.image"));
+  EXPECT_FALSE(contains(readbacks, "frame->pickDepth.image"));
+  EXPECT_FALSE(contains(readbacks, "frame->pickId.image"));
 }
 
 TEST(TechniqueRegistryGuardrails, RendererFrontendReadbacksAreFrameSlotOwned) {
@@ -2264,13 +2377,16 @@ TEST(TechniqueRegistryGuardrails,
   const std::string shadowCullManager =
       readRepoTextFile("src/renderer/shadow/ShadowCullManager.cpp");
 
-  EXPECT_TRUE(contains(gpuCullManager,
+  EXPECT_TRUE(containsIgnoringWhitespace(gpuCullManager,
                        "gpuCmds[i].instanceCount =\n"
                        "        std::max(commands[i].instanceCount, 1u)"));
-  EXPECT_FALSE(contains(gpuCullManager, "gpuCmds[i].instanceCount = 1;"));
+  EXPECT_FALSE(containsIgnoringWhitespace(gpuCullManager,
+                                        "gpuCmds[i].instanceCount = 1;"));
   EXPECT_TRUE(
-      contains(shadowCullManager, "std::max(commands[i].instanceCount, 1u)"));
-  EXPECT_FALSE(contains(shadowCullManager, "gpuCmds[i].instanceCount = 1;"));
+      containsIgnoringWhitespace(shadowCullManager,
+                                 "std::max(commands[i].instanceCount, 1u)"));
+  EXPECT_FALSE(containsIgnoringWhitespace(shadowCullManager,
+                                        "gpuCmds[i].instanceCount = 1;"));
 }
 
 TEST(TechniqueRegistryGuardrails, GpuCullUploadSkipsUnchangedDrawStreams) {
@@ -2553,8 +2669,12 @@ TEST(TechniqueRegistryGuardrails,
 
   EXPECT_FALSE(contains(resourceBridge, "g-buffer-sampler"));
   EXPECT_FALSE(contains(resourceBridge, "ForwardRasterSamplerId"));
-  EXPECT_FALSE(contains(pipelineBridge, "ForwardOpaqueFrontCull"));
-  EXPECT_FALSE(contains(pipelineBridge, "ForwardOpaqueNoCull"));
+  EXPECT_TRUE(contains(pipelineBridge, "ForwardOpaqueFrontCull"));
+  EXPECT_TRUE(contains(pipelineBridge, "ForwardOpaqueNoCull"));
+  EXPECT_TRUE(contains(pipelineBridge, "\"forward-opaque-front-cull\""));
+  EXPECT_TRUE(contains(pipelineBridge, "\"forward-opaque-no-cull\""));
+  EXPECT_FALSE(contains(pipelineBridge, "RenderTechniqueId::DeferredRaster"));
+  EXPECT_FALSE(contains(pipelineBridge, "\"gbuffer\""));
 }
 
 TEST(TechniqueRegistryGuardrails,

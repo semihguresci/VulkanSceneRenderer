@@ -3,12 +3,22 @@
 #include "Container/geometry/Vertex.h"
 #include "Container/scene/SceneProvider.h"
 
+#include <cstdint>
 #include <glm/mat4x4.hpp>
 #include <span>
 #include <string>
 #include <vector>
 
 namespace container::renderer {
+
+// Source buffers distinguish a replacement provider whose geometry revision
+// restarts. Keep this identity local to each provider so unrelated providers
+// remain eligible for BLAS reuse. Direct backend callers may leave it zero
+// when their revisions already uniquely identify all geometry changes.
+struct RaySceneStorageIdentity {
+  uintptr_t vertices{0}, indices{0};
+  bool operator==(const RaySceneStorageIdentity &) const = default;
+};
 
 // Provider-local stable identity plus revision. Views need only survive the
 // build call; the resulting generation owns its GPU copies of the geometry.
@@ -19,6 +29,7 @@ struct RaySceneGeometry {
   std::span<const container::geometry::Vertex> vertices{};
   std::span<const uint32_t> indices{};
   bool opaque{true}; // Alpha-tested geometry must remain non-opaque.
+  RaySceneStorageIdentity storageIdentity{};
 };
 
 struct RaySceneInstance {

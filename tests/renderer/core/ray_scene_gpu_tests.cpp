@@ -1,5 +1,6 @@
 #include "Container/common/CommonGLFW.h"
 #include "Container/renderer/raytracing/RaySceneAcceleration.h"
+#include "Container/renderer/raytracing/RaySceneExtraction.h"
 #include <gtest/gtest.h>
 
 #include <array>
@@ -359,5 +360,75 @@ TEST_F(RaySceneGpu,
               static_cast<unsigned long long>(first->stats().accelerationBytes),
               static_cast<unsigned long long>(first->stats().inputBytes),
               static_cast<unsigned long long>(first->stats().scratchBytes));
+}
+
+TEST_F(RaySceneGpu, KeepsUnchangedProviderBlasAcrossProviderChanges) {
+  if (!device->rayQueriesEnabled())
+    GTEST_SKIP() << device->rayQuerySupport().unavailableReason();
+  std::vector<container::geometry::Vertex> bimVertices(3);
+  bimVertices[0].position = {-1, -1, 0};
+  bimVertices[1].position = {1, -1, 0};
+  bimVertices[2].position = {0, 1, 0};
+  const auto meshVertices = bimVertices;
+  const std::vector<uint32_t> indices{0, 1, 2};
+  std::vector<container::gpu::ObjectData> bimObjects(1), meshObjects(1);
+  meshObjects[0].model =
+      glm::translate(glm::mat4(1), glm::vec3(4, 0, 0));
+  const std::vector<DrawCommand> draws{{0, 0, 3}};
+  std::vector<RaySceneProviderSource> providers{
+      {{"bim"}, 7, bimVertices, indices, bimObjects, draws}};
+  RaySceneExtractionCache cache;
+  RaySceneAcceleration backend(*device, *memory);
+  auto build = [&](const std::shared_ptr<const RaySceneGeneration> &previous) {
+    const auto snapshot = cache.update(providers);
+    const auto views = snapshot.geometry->geometryViews();
+    begin();
+    auto generation = backend.recordBuild(
+        command, {views, snapshot.instances.instances}, previous);
+    submit();
+    return generation;
+  };
+
+  const auto first = build({});
+  EXPECT_EQ(first->stats().blasBuilt, 1u);
+  providers.insert(providers.begin(),
+                   {{"mesh"}, 1, meshVertices, indices, meshObjects, draws});
+  const auto added = build(first);
+  EXPECT_EQ(added->stats().blasBuilt, 1u);
+  EXPECT_EQ(added->stats().blasReused, 1u);
+  std::swap(providers[0], providers[1]);
+  const auto reordered = build(added);
+  EXPECT_EQ(reordered->stats().blasBuilt, 0u);
+  EXPECT_EQ(reordered->stats().blasReused, 2u);
+
+  // Replacement storage has the same provider ID, topology and revision, but
+  // different positions. Reuse the BIM BLAS and rebuild only the mesh BLAS.
+  auto replacement = meshVertices;
+  for (auto &vertex : replacement)
+    vertex.position.z = -1;
+  providers[1].vertices = replacement;
+  (void)cache.update(providers); // A second CPU update may precede submission.
+  const auto replaced = build(reordered);
+  EXPECT_EQ(replaced->stats().blasBuilt, 1u);
+  EXPECT_EQ(replaced->stats().blasReused, 1u);
+  const std::array<Probe, 2> probes{
+      Probe{{0, 0, 2, 0.001f}, {0, 0, -1, 4}, {0xff, 1, 0, 0}},
+      Probe{{4, 0, 2, 0.001f}, {0, 0, -1, 4}, {0xff, 1, 0, 0}}};
+  const auto replacementHits = trace(*replaced, probes);
+  ASSERT_EQ(replacementHits[0].x, 1u);
+  ASSERT_EQ(replacementHits[1].x, 1u);
+  EXPECT_NEAR(std::bit_cast<float>(replacementHits[0].w), 2.f, 0.0001f);
+  EXPECT_NEAR(std::bit_cast<float>(replacementHits[1].w), 3.f, 0.0001f);
+  // The retained generation still traces its original mesh storage.
+  const auto originalHits = trace(*reordered, probes);
+  EXPECT_NEAR(std::bit_cast<float>(originalHits[1].w), 2.f, 0.0001f);
+
+  providers.pop_back();
+  const auto removed = build(replaced);
+  EXPECT_EQ(removed->stats().blasBuilt, 0u);
+  EXPECT_EQ(removed->stats().blasReused, 1u);
+  const auto removedHits = trace(*removed, probes);
+  EXPECT_EQ(removedHits[0].x, 1u);
+  EXPECT_EQ(removedHits[1].x, 0u);
 }
 } // namespace

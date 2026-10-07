@@ -50,6 +50,8 @@ public:
   // be reused only after its builds were submitted on that same queue. Returned
   // resources own input and scratch data; abandon the command buffer before
   // releasing them if recording/submission fails. No device-wide idle is added.
+  // Reuse is decided independently for each provider-local geometry using its
+  // source storage identity, revision, topology and opacity classification.
   [[nodiscard]] std::shared_ptr<const RaySceneGeneration> recordBuild(
       const vk::raii::CommandBuffer &command, const RaySceneInput &input,
       const std::shared_ptr<const RaySceneGeneration> &previous = {}) const;

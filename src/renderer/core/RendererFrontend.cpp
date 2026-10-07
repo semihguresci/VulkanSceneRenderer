@@ -3857,7 +3857,9 @@ void RendererFrontend::createGraphicsPipelines() {
           : subs_.lightingManager->lightDescriptorSetLayout(),
       subs_.shadowManager->descriptorSetLayout(),
       subs_.frameResourceManager->postProcessLayout(),
-      subs_.frameResourceManager->oitLayout()};
+      subs_.frameResourceManager->oitLayout(),
+      subs_.rayShadowManager ? subs_.rayShadowManager->traceDescriptorLayout()
+                             : VK_NULL_HANDLE};
   const PipelineRenderPasses rp{resources_.renderPasses.depthPrepass,
                                 resources_.renderPasses.bimDepthPrepass,
                                 resources_.renderPasses.gBuffer,
@@ -3957,6 +3959,7 @@ void RendererFrontend::destroyGraphicsPipelines() {
   };
   destroyLayout(layouts.scene);
   destroyLayout(layouts.transparent);
+  destroyLayout(layouts.forwardRay);
   destroyLayout(layouts.lighting);
   destroyLayout(layouts.lightGizmo);
   destroyLayout(layouts.tiledLighting);

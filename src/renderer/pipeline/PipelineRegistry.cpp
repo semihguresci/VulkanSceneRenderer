@@ -372,6 +372,8 @@ buildGraphicsPipelineLayoutRegistry(const PipelineLayouts &layouts) {
   registerLayoutIfPresent(*registry, "transparent", layouts.transparent);
   registerLayoutIfPresent(*registry, RenderTechniqueId::ForwardRaster,
                           "transparent", layouts.transparent);
+  registerLayoutIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                          "forward-ray", layouts.forwardRay);
   registerLayoutIfPresent(*registry, "lighting", layouts.lighting);
   registerLayoutIfPresent(*registry, "light-gizmo", layouts.lightGizmo);
   registerLayoutIfPresent(*registry, RenderTechniqueId::ForwardRaster,

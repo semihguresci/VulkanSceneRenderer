@@ -216,6 +216,13 @@ void registerForwardRasterPipelineRecipes(PipelineRegistry &registry) {
                             "spv_shaders/forward_opaque.frag.spv"},
                            "transparent");
   }
+  for (const auto name : {"forward-opaque-ray", "forward-opaque-ray-front-cull",
+                          "forward-opaque-ray-no-cull"}) {
+    registerGraphicsRecipe(name,
+                           {"spv_shaders/forward_opaque.vert.spv",
+                            "spv_shaders/forward_opaque_ray.frag.spv"},
+                           "forward-ray");
+  }
   registerTransparentRecipe("forward-transparent");
   registerGraphicsRecipe(
       "forward-sky",
@@ -1309,7 +1316,8 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
        RenderResourceId::CameraBuffer, RenderResourceId::ObjectBuffer,
        RenderResourceId::BimObjectBuffer, RenderResourceId::LightingData,
        RenderResourceId::EnvironmentMaps, RenderResourceId::SceneDepth},
-      {RenderResourceId::RayShadowVisibility, RenderResourceId::ShadowAtlas,
+      {RenderResourceId::RayShadowVisibility, RenderResourceId::RayScene,
+       RenderResourceId::ShadowAtlas,
        RenderResourceId::LocalShadowAtlas, RenderResourceId::OitStorage,
        RenderResourceId::FrustumCullDraws,
        RenderResourceId::OcclusionCullDraws},
