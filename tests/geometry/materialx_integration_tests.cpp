@@ -114,6 +114,98 @@ TEST(MaterialXIntegration, LoadsSeparateTextureResourcesForDistinctGltfSamplers)
             container::gpu::kMaterialSamplerWrapMirroredRepeat);
 }
 
+TEST(MaterialXIntegration,
+     UploadsEmbeddedPixelsWithAlphaAndRejectsTruncatedData) {
+  container::material::SlangMaterialXBridge bridge;
+  for (int components = 1; components <= 4; ++components) {
+    tinygltf::Model model;
+    model.images.resize(1);
+    auto &image = model.images[0];
+    image.width = 1;
+    image.height = 1;
+    image.bits = 8;
+    image.component = components;
+    image.image = {32, 64, 96, 128};
+    image.image.resize(components);
+    model.textures.resize(2);
+    for (auto &texture : model.textures)
+      texture.source = 0;
+    container::material::TextureManager textures;
+    uint32_t uploads = 0;
+    auto upload = [&](const std::string &, std::span<const std::byte> rgba,
+                      uint32_t width, uint32_t height, bool) {
+      ++uploads;
+      EXPECT_EQ(width, 1u);
+      EXPECT_EQ(height, 1u);
+      EXPECT_EQ(rgba.size(), 4u);
+      EXPECT_EQ(std::to_integer<unsigned>(rgba[0]), 32u);
+      EXPECT_EQ(std::to_integer<unsigned>(rgba[1]),
+                components <= 2 ? 32u : 64u);
+      EXPECT_EQ(std::to_integer<unsigned>(rgba[2]),
+                components <= 2 ? 32u : 96u);
+      EXPECT_EQ(std::to_integer<unsigned>(rgba[3]), components == 2   ? 64u
+                                                    : components == 4 ? 128u
+                                                                      : 255u);
+      return container::material::TextureResource{};
+    };
+    auto external = [](const std::string &, bool) {
+      ADD_FAILURE() << "Embedded glTF must not use filesystem loading";
+      return container::material::TextureResource{};
+    };
+    const auto mapping =
+        bridge.loadTexturesForGltf(model, {}, textures, external, upload);
+    ASSERT_EQ(mapping.size(), 2u);
+    EXPECT_NE(mapping[0], UINT32_MAX);
+    EXPECT_EQ(mapping[0], mapping[1]);
+    EXPECT_EQ(uploads, 1u);
+    image.width = 2; // Raw payload no longer covers the declared dimensions.
+    container::material::TextureManager fresh;
+    const auto invalid =
+        bridge.loadTexturesForGltf(model, {}, fresh, external, upload);
+    EXPECT_EQ(invalid[0], UINT32_MAX);
+    EXPECT_EQ(uploads, 1u);
+  }
+}
+
+TEST(MaterialXIntegration, EmbeddedImageCacheIncludesContentAndColorSpace) {
+  container::material::SlangMaterialXBridge bridge;
+  container::material::TextureManager textures;
+  tinygltf::Model model;
+  model.images.resize(1);
+  auto &image = model.images[0];
+  image.width = image.height = 1;
+  image.bits = 8;
+  image.component = 4;
+  image.image = {255, 0, 0, 255};
+  model.textures.resize(1);
+  model.textures[0].source = 0;
+  std::vector<bool> uploadColorSpaces;
+  auto external = [](const std::string &, bool) {
+    ADD_FAILURE() << "Embedded image requested a file";
+    return container::material::TextureResource{};
+  };
+  auto upload = [&](const std::string &, std::span<const std::byte>, uint32_t,
+                    uint32_t, bool srgb) {
+    uploadColorSpaces.push_back(srgb);
+    return container::material::TextureResource{};
+  };
+  auto load = [&] {
+    return bridge
+        .loadTexturesForGltf(model, "shared", textures, external, upload)
+        .at(0);
+  };
+  const auto red = load();
+  EXPECT_EQ(load(), red);
+  image.image = {0, 255, 0, 255};
+  const auto green = load();
+  EXPECT_NE(green, red);
+  EXPECT_EQ(load(), green);
+  model.materials.resize(1);
+  model.materials[0].normalTexture.index = 0;
+  EXPECT_NE(load(), green);
+  EXPECT_EQ(uploadColorSpaces, (std::vector<bool>{true, true, false}));
+}
+
 TEST(MaterialXIntegration, ImportsKhrMaterialsPbrSpecularGlossiness) {
   tinygltf::Model model;
   model.images.resize(2);

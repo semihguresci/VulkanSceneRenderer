@@ -16,7 +16,10 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     exe = root / "VulkanSceneRenderer.exe"
     info = json.loads((root / "build-info.json").read_text(encoding="utf-8-sig"))
-    assert len(list((root / "spv_shaders").glob("*.spv"))) == info["compiled_shader_count"] == 73
+    shader_count = len(list((root / "spv_shaders").glob("*.spv")))
+    assert shader_count == info["compiled_shader_count"] and shader_count >= 73
+    for name in ("ray_shadow_trace.comp.spv", "ray_shadow_filter.comp.spv"):
+        assert (root / "spv_shaders" / name).is_file(), name
     for name in ["taa_coverage.gltf", "taa_scene.gltf", "taa_equivalent.gltf", "taa_equivalent.bim",
                  "taa_equivalent.usda", "taa_lifecycle.json", "taa_reset.json"]:
         assert (root / "models/validation" / name).is_file(), name
@@ -26,7 +29,7 @@ def main():
     for key in list(env):
         if key.upper() in ["VULKAN_SDK", "VK_LAYER_PATH", "VK_ADD_LAYER_PATH", "VK_LAYER_SETTINGS_PATH", "VK_INSTANCE_LAYERS"]:
             del env[key]
-    results = {"sourceCommit": info["source_commit"], "compiledShaderCount": 73,
+    results = {"sourceCommit": info["source_commit"], "compiledShaderCount": shader_count,
                "exeSha256": hashlib.sha256(exe.read_bytes()).hexdigest(),
                "workingDirectory": str(output), "path": "Windows, System32 and SysWOW64 only",
                "sdkVariablesRemoved": True, "validationEnabled": False, "captures": []}
@@ -50,6 +53,22 @@ def main():
                                    "submittedFrame": telemetry["taa"]["submittedFrame"], "exitCode": completed.returncode,
                                    "imageProduced": True, "gpu": telemetry["gpu"], "imagePayloadBytes": telemetry["taa"]["imagePayloadBytes"]})
         print(name + ": extracted package capture passed without SDK/build-tool paths", flush=True)
+    for technique, mode, disabled in (("deferred-raster", "soft", False),
+                                      ("forward-raster", "hard", False),
+                                      ("forward-raster", "soft", True)):
+        name = technique + "-ray-" + ("disabled" if disabled else mode)
+        command = [str(exe), "--hidden", "--no-ui", "--no-validation", "--no-taa", "--msaa", "1",
+                   "--model", "models/validation/cornell_box_local_light.gltf", "--width", "640", "--height", "360",
+                   "--render-technique", technique, "--display-mode", "lit", "--ray-shadows", mode,
+                   "--capture-frame", "8", "--screenshot", str(output / (name + ".png"))]
+        if disabled: command.append("--no-ray-query")
+        with (output / (name + ".log")).open("w") as log:
+            completed = subprocess.run(command, cwd=output, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=120)
+        assert completed.returncode == 0, name
+        ray = json.loads((output / (name + ".telemetry.json")).read_text())["rayShadows"]
+        assert ray["active"] == (ray["supported"] and not disabled), (name, ray)
+        results["captures"].append(dict(name=name, rayShadows=ray, exitCode=completed.returncode))
+        print(name + ": extracted ray shadow capture passed without SDK/build-tool paths", flush=True)
     (output / "package-smoke-results.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
 
 

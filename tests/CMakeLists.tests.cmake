@@ -113,6 +113,42 @@ endfunction()
 
 # ── CPU-only tests (no shaders needed) ───────────────────────────────────────
 
+add_custom_test(ray_scene_tests
+    ${TEST_RENDERER_CORE_DIR}/ray_scene_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_VulkanCore Dep_Math
+)
+target_sources(ray_scene_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/renderer/raytracing/RayScene.cpp)
+target_sources(ray_scene_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/renderer/raytracing/RaySceneExtraction.cpp)
+
+# Ray-query SPIR-V is a separate optional consumer. Raster shaders must never
+# acquire RayQueryKHR capabilities on unsupported devices.
+set(RAY_QUERY_CONTRACT_SPIRV "${CMAKE_BINARY_DIR}/test_shaders/ray_query_contract.comp.spv")
+add_custom_command(
+    OUTPUT "${RAY_QUERY_CONTRACT_SPIRV}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/test_shaders"
+    COMMAND "${SLANGC_EXECUTABLE}" "${DEFAULT_SHADER_DIR}/ray_query_contract.slang"
+            ${SLANG_SPIRV_FLAGS} -capability spvRayQueryKHR -entry computeMain
+            -o "${RAY_QUERY_CONTRACT_SPIRV}"
+    DEPENDS "${DEFAULT_SHADER_DIR}/ray_query_contract.slang"
+            "${CMAKE_CURRENT_LIST_FILE}" "${CMAKE_SOURCE_DIR}/cmake/Shaders.cmake"
+            "${SLANGC_EXECUTABLE}"
+    VERBATIM
+)
+add_custom_target(ray_query_contract_shader DEPENDS "${RAY_QUERY_CONTRACT_SPIRV}")
+add_custom_test(ray_scene_gpu_tests
+    ${TEST_RENDERER_CORE_DIR}/ray_scene_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_gpu_resource VulkanSceneRenderer_geometry Dep_Windowing
+)
+target_sources(ray_scene_gpu_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/raytracing/RayScene.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/raytracing/RaySceneAcceleration.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/raytracing/RaySceneExtraction.cpp
+)
+target_compile_definitions(ray_scene_gpu_tests PRIVATE
+    CONTAINER_RAY_QUERY_CONTRACT_SPIRV="${RAY_QUERY_CONTRACT_SPIRV}")
+add_dependencies(ray_scene_gpu_tests ray_query_contract_shader)
+set_tests_properties(ray_scene_gpu_tests PROPERTIES LABELS "requires-vulkan;requires-display;ray-query")
+
 add_custom_test(glm_tests
     ${TEST_CORE_DIR}/glm_tests.cpp  ""  ${TEST_RESULTS_DIR}
     Dep_Math
@@ -138,6 +174,9 @@ add_test(NAME temporal_quality_metrics
     COMMAND "${Python3_EXECUTABLE}" "${TEST_VALIDATION_DIR}/temporal_regression.py" --self-test)
 set_tests_properties(temporal_quality_metrics PROPERTIES SKIP_RETURN_CODE 77)
 
+add_test(NAME model_asset_lfs_tests
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/model_asset_lfs_tests.py")
+
 add_test(NAME scene_lighting_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/scene_lighting_regression.py"
             --exe "$<TARGET_FILE:VulkanSceneRenderer>"
@@ -145,12 +184,39 @@ add_test(NAME scene_lighting_gpu_regression
 set_tests_properties(scene_lighting_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 TIMEOUT 360 LABELS "requires-vulkan;requires-display;visual-regression")
 
+add_test(NAME gui_model_loading_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/gui_model_loading_regression.py"
+            --exe "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/gui-model-loading")
+set_tests_properties(gui_model_loading_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 TIMEOUT 600 LABELS "requires-vulkan;requires-display;visual-regression")
+
 add_test(NAME forward_culling_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/forward_culling_regression.py"
             --exe "$<TARGET_FILE:VulkanSceneRenderer>"
             --output "${TEST_RESULTS_DIR}/forward-culling")
 set_tests_properties(forward_culling_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 TIMEOUT 360 LABELS "requires-vulkan;requires-display;visual-regression")
+
+add_test(NAME forward_sky_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/forward_sky_regression.py"
+            --exe "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/forward-sky")
+set_tests_properties(forward_sky_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 TIMEOUT 360 LABELS "requires-vulkan;requires-display;visual-regression")
+
+add_test(NAME area_shadow_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/area_shadow_regression.py"
+            --exe "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/area-shadows")
+add_test(NAME ray_shadow_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/ray_shadow_regression.py"
+            --exe "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/ray-shadows")
+set_tests_properties(ray_shadow_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 TIMEOUT 900 LABELS "requires-vulkan;requires-display;ray-query")
+set_tests_properties(area_shadow_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 TIMEOUT 600 LABELS "requires-vulkan;requires-display;visual-regression")
 
 # Exercise all Slang temporal helpers with dynamic inputs, outside runtime
 # assets. Building the math test also compiles this probe with engine flags.
@@ -174,6 +240,9 @@ add_dependencies(temporal_convention_tests temporal_contract_shader)
 find_program(TEMPORAL_SPIRV_VAL_EXECUTABLE NAMES spirv-val
     HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin")
 if(TEMPORAL_SPIRV_VAL_EXECUTABLE)
+    add_test(NAME ray_query_contract_spirv_validation
+        COMMAND "${TEMPORAL_SPIRV_VAL_EXECUTABLE}" --target-env vulkan1.4
+                "${RAY_QUERY_CONTRACT_SPIRV}")
     add_test(NAME temporal_contract_spirv_validation
         COMMAND "${TEMPORAL_SPIRV_VAL_EXECUTABLE}" --target-env vulkan1.4
                 "${TEMPORAL_CONTRACT_SPIRV}")

@@ -105,6 +105,7 @@ class SceneManager {
 
   const std::vector<container::geometry::Vertex>& vertices() const { return vertices_; }
   const std::vector<uint32_t>& indices() const { return indices_; }
+  [[nodiscard]] uint64_t geometryRevision() const { return geometryRevision_; }
   const std::vector<container::geometry::PrimitiveRange>& primitiveRanges() const {
     return model_.primitiveRanges();
   }
@@ -117,6 +118,7 @@ class SceneManager {
   // Cached hash of uploaded shader-visible fields (excluding C++ ABI padding).
   // Only affected surfaces lose compatibility after a material upload changes.
   [[nodiscard]] uint64_t temporalMaterialRevision(uint32_t gpuIndex) const;
+  [[nodiscard]] bool rayGeometryCompatible(uint32_t gpuIndex) const;
   uint32_t diagnosticMaterialIndex() const;
   uint32_t resolveGpuMaterialIndex(uint32_t materialIndex) const;
   uint32_t createSolidMaterial(const glm::vec4& baseColor,
@@ -244,6 +246,7 @@ class SceneManager {
   tinygltf::Model gltfModel_{};
   std::vector<container::geometry::Vertex> vertices_{};
   std::vector<uint32_t> indices_{};
+  uint64_t geometryRevision_{0};
   ModelBounds modelBounds_{};
   std::vector<container::gpu::PointLightData> authoredPointLights_{};
   std::vector<AuthoredDirectionalLight> authoredDirectionalLights_{};

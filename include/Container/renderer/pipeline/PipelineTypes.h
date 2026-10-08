@@ -14,6 +14,7 @@ struct PipelineLayouts {
 
   VkPipelineLayout scene{VK_NULL_HANDLE};
   VkPipelineLayout transparent{VK_NULL_HANDLE};
+  VkPipelineLayout forwardRay{VK_NULL_HANDLE};
   VkPipelineLayout lighting{VK_NULL_HANDLE};
   VkPipelineLayout lightGizmo{VK_NULL_HANDLE};
   VkPipelineLayout tiledLighting{VK_NULL_HANDLE};
@@ -112,6 +113,7 @@ struct PipelineDescriptorLayouts {
   VkDescriptorSetLayout shadow{VK_NULL_HANDLE};
   VkDescriptorSetLayout postProcess{VK_NULL_HANDLE};
   VkDescriptorSetLayout oit{VK_NULL_HANDLE};
+  VkDescriptorSetLayout rayShadowTrace{VK_NULL_HANDLE};
 };
 
 // Input render passes required to create the pipelines.

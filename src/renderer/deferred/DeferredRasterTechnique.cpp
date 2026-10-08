@@ -1,4 +1,5 @@
 #include "Container/renderer/deferred/DeferredRasterTechnique.h"
+#include "Container/renderer/raytracing/RayShadowManager.h"
 #include "Container/renderer/temporal/TemporalManager.h"
 
 #include "Container/renderer/core/FrameRecorder.h"
@@ -1530,6 +1531,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
   });
 
   registerTemporalPasses(graph);
+  registerRayShadowPasses(graph);
 
   graph.addPass(RenderPassId::TransformGizmos,
                 [deferred](VkCommandBuffer cmd, const FrameRecordParams &p) {

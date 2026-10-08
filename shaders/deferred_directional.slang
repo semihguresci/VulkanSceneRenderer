@@ -5,6 +5,8 @@
 #include "local_shadow_common.slang"
 #include "screen_space_light_shadow_common.slang"
 #include "shadow_common.slang"
+#include "environment_sky_common.slang"
+#include "ray_shadow_read.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(2, 0)]] Texture2D<float4> gAlbedoTexture;
@@ -101,22 +103,8 @@ VSOutput vertMain(uint vertexIndex : SV_VertexID)
 
 float3 SampleBackgroundSky(float2 uv, float environmentIntensity)
 {
-    // Reverse-Z scene depth clears to 0. Sample a view ray through the empty
-    // pixel and scale the sky with the same environment control as IBL.
-    float3 nearWorld;
-    float3 farWorld;
-    if (!TryReconstructWorldPosition(uv, 1.0, uCamera.inverseViewProj,
-                                     nearWorld) ||
-        !TryReconstructWorldPosition(uv, 1e-4, uCamera.inverseViewProj,
-                                     farWorld))
-    {
-        return 0.0.xxx;
-    }
-    float3 viewDir = SafeNormalize(farWorld - nearWorld, float3(0.0, 0.0, -1.0));
-    float3 sky =
-        DeferredFinite3Or(gPrefilteredCubemap.SampleLevel(envSampler, viewDir, 0.0).rgb,
-                          0.0.xxx);
-    return sky * max(DeferredFiniteOr(environmentIntensity, 0.0), 0.0);
+    return SampleEnvironmentBackground(uv, uCamera.inverseViewProj,
+        environmentIntensity, gPrefilteredCubemap, envSampler);
 }
 
 float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
@@ -126,13 +114,13 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
                                  float3 worldPosition,
                                  DeferredMaterialLayerTerms layerTerms,
                                  bool thinSurface, float alpha,
-                                 float occlusion, float bounceIntensity)
+                                 float occlusion, float bounceIntensity, float4 pixelPosition)
 {
     AreaLightFrame frame = BuildAreaLightFrame(light);
     float3 directLighting = 0.0.xxx;
     float areaShadowVisibility = 1.0;
     uint areaShadowRef = PackedLocalShadowAreaRef(uLocalShadow, areaIndex);
-    if (LocalShadowMapsEnabled(uLighting, uLocalShadow) &&
+    if (!RayAreaSelected(areaIndex) && LocalShadowMapsEnabled(uLighting, uLocalShadow) &&
         areaShadowRef != 0u)
     {
         // Integrate visibility from the emitter origins rendered into cube maps.
@@ -158,7 +146,7 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
                 continue;
             }
             areaShadowVisibility += weight * LocalAreaLightShadowVisibility(
-                areaIndex, worldPosition, geometricNormal, visibilitySample,
+                areaIndex, light, worldPosition, geometricNormal, visibilitySample,
                 uLocalShadow, gLocalShadowAtlas, gLocalShadowSampler);
             visibilityWeightSum += weight;
         }
@@ -168,6 +156,8 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
                 : 1.0;
     }
 
+    if (RayAreaSelected(areaIndex))
+        areaShadowVisibility = RayShadowVisibility(pixelPosition, 5u + areaIndex);
     float transmissionWeight =
         saturate(DeferredFiniteOr(layerTerms.transmissionFactor, 0.0) *
                  (1.0 - metallic));
@@ -231,6 +221,8 @@ float4 fragMain(VSOutput input) : SV_Target0
     }
 
     float4 albedo = gAlbedoTexture.Load(int3(pixelCoord, 0));
+    if (RayDirectionalSelected() && uRayShadowRead.options.y != 0u)
+        return float4(RayShadowDebug(input.pos), 1.0);
     albedo.rgb = max(DeferredFinite3Or(albedo.rgb, 0.0.xxx), 0.0.xxx);
     albedo.a = saturate(DeferredFiniteOr(albedo.a, 0.0));
     if (albedo.a <= 0.0)
@@ -304,7 +296,7 @@ float4 fragMain(VSOutput input) : SV_Target0
     float shadowFactor = 1.0;
     float contactVisibility = 1.0;
     float NdotLForShadow = dot(geometricNormal, L);
-    if (uLighting.shadowEnabled != 0u &&
+    if (!RayDirectionalSelected() && uLighting.shadowEnabled != 0u &&
         (NdotLForShadow > 0.0 || thinSurface))
     {
         shadowFactor = ComputeShadowFactor(
@@ -331,6 +323,7 @@ float4 fragMain(VSOutput input) : SV_Target0
         albedo.rgb, metallic, specularSample.rgb,
         layerTerms.iridescenceFactor, materialData.iridescenceIor,
         iridescenceThickness, NdotV);
+    if (RayDirectionalSelected()) shadowFactor = RayShadowVisibility(input.pos, 0u);
     float directShadowVisibility = shadowFactor * contactVisibility;
     float3 directLighting = EvaluateDeferredLayeredDirectLight(
         albedo.rgb, F0, metallic, roughness, normal, V, L, lightColor,
@@ -359,7 +352,7 @@ float4 fragMain(VSOutput input) : SV_Target0
         directLighting += EvaluateDeferredAreaLight(
             areaIndex, uAreaLights[areaIndex], albedo.rgb, F0, metallic, roughness,
             geometricNormal, normal, V, worldPosition, layerTerms, thinSurface,
-            albedo.a, occlusion, bounceIntensity);
+            albedo.a, occlusion, bounceIntensity, input.pos);
     }
 
     // IBL ambient lighting (split-sum approximation).

@@ -297,6 +297,14 @@ TEST(TechniqueDebugModelGuardrails,
   ASSERT_NE(processRequest, std::string::npos);
   ASSERT_NE(startFrame, std::string::npos);
   EXPECT_LT(processRequest, startFrame);
+  const size_t publishLighting = rendererFrontend.find(
+      "subs_.guiManager->setLightingSettings(", presentSceneControls);
+  const size_t publishBloom = rendererFrontend.find(
+      "subs_.guiManager->setBloomSettings(", presentSceneControls);
+  ASSERT_NE(publishLighting, std::string::npos);
+  ASSERT_NE(publishBloom, std::string::npos);
+  EXPECT_LT(processRequest, publishLighting);
+  EXPECT_LT(processRequest, publishBloom);
 }
 
 TEST(TechniqueDebugModelGuardrails,

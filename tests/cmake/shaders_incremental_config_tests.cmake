@@ -25,6 +25,9 @@ file(WRITE "${TEST_WORK_DIR}/fixture/CMakeLists.txt"
 file(WRITE "${TEST_WORK_DIR}/fixture/shaders/gbuffer.slang"
     "void vertMain() {}\n"
     "void fragMain() {}\n")
+file(WRITE "${TEST_WORK_DIR}/fixture/shaders/forward_opaque.slang"
+    "void vertMain() {}\n"
+    "void fragMain() {}\n")
 file(WRITE "${TEST_WORK_DIR}/fixture/shaders/surface_normals.slang"
     "void vertMain() {}\n"
     "void geomMain() {}\n"
@@ -87,6 +90,24 @@ function(count_slang_invocations output_var)
     set(${output_var} "${count}" PARENT_SCOPE)
 endfunction()
 
+function(expect_output_invocations expected_count)
+    file(STRINGS "${invocation_log}" invocations)
+    foreach(expected_output IN LISTS ARGN)
+        set(count 0)
+        foreach(invocation IN LISTS invocations)
+            string(FIND "${invocation}" "${expected_output}" output_position)
+            if(NOT output_position EQUAL -1)
+                math(EXPR count "${count} + 1")
+            endif()
+        endforeach()
+        if(NOT count EQUAL expected_count)
+            message(FATAL_ERROR
+                "Expected ${expected_output} to compile ${expected_count} times, "
+                "but observed ${count} invocations.")
+        endif()
+    endforeach()
+endfunction()
+
 set(ENV{VULKAN_SDK} "${TEST_WORK_DIR}/fake-vulkan")
 set(ENV{FAKE_SLANGC_LOG} "${invocation_log}")
 
@@ -129,13 +150,17 @@ if(NOT first_build_result EQUAL 0)
 endif()
 
 set(spv_dir "${TEST_WORK_DIR}/build/spv_shaders")
-foreach(expected_output IN ITEMS
+set(expected_outputs
         gbuffer.vert.spv
         gbuffer.frag.spv
+        forward_opaque.vert.spv
+        forward_opaque.frag.spv
+        forward_opaque_ray.frag.spv
         surface_normals.vert.spv
         surface_normals.geom.spv
         surface_normals.frag.spv
         tile_light_cull.comp.spv)
+foreach(expected_output IN LISTS expected_outputs)
     if(NOT EXISTS "${spv_dir}/${expected_output}")
         message(FATAL_ERROR "Expected shader output ${expected_output} to be generated.")
     endif()
@@ -146,9 +171,29 @@ if(EXISTS "${spv_dir}/brdf_common.vert.spv" OR EXISTS "${spv_dir}/brdf_common.fr
 endif()
 
 count_slang_invocations(first_invocation_count)
-if(first_invocation_count EQUAL 0)
-    message(FATAL_ERROR "Expected first shader build to invoke fake slangc.")
+list(LENGTH expected_outputs expected_invocation_count)
+if(NOT first_invocation_count EQUAL expected_invocation_count)
+    message(FATAL_ERROR
+        "Expected first shader build to compile ${expected_invocation_count} "
+        "outputs once, but observed ${first_invocation_count} invocations.")
 endif()
+expect_output_invocations(1 ${expected_outputs})
+
+file(STRINGS "${invocation_log}" invocations)
+foreach(invocation IN LISTS invocations)
+    string(FIND "${invocation}" "forward_opaque_ray.frag.spv" ray_output)
+    string(FIND "${invocation}" "-DFORWARD_RAY_QUERY=1" ray_define)
+    string(FIND "${invocation}" "-capability spvRayQueryKHR" ray_capability)
+    if(NOT ray_output EQUAL -1)
+        if(ray_define EQUAL -1 OR ray_capability EQUAL -1)
+            message(FATAL_ERROR
+                "Forward ray variant must enable its define and ray-query capability: ${invocation}")
+        endif()
+    elseif(NOT ray_define EQUAL -1 OR NOT ray_capability EQUAL -1)
+        message(FATAL_ERROR
+            "Forward ray compiler flags leaked into a baseline shader: ${invocation}")
+    endif()
+endforeach()
 
 execute_process(
     COMMAND "${CMAKE_COMMAND}" --build "${TEST_WORK_DIR}/build" --target shaders
@@ -195,3 +240,38 @@ if(NOT changed_invocation_delta EQUAL 2)
         "Expected changing gbuffer.slang to rebuild only vert/frag outputs, "
         "but fake slangc invocation delta was ${changed_invocation_delta}.")
 endif()
+expect_output_invocations(2 gbuffer.vert.spv gbuffer.frag.spv)
+expect_output_invocations(1
+    forward_opaque.vert.spv forward_opaque.frag.spv forward_opaque_ray.frag.spv)
+
+file(APPEND "${TEST_WORK_DIR}/fixture/shaders/forward_opaque.slang"
+    "float changedForwardFixtureValue() { return 3.0; }\n")
+
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" --build "${TEST_WORK_DIR}/build" --target shaders
+    RESULT_VARIABLE forward_changed_build_result
+    OUTPUT_VARIABLE forward_changed_build_stdout
+    ERROR_VARIABLE forward_changed_build_stderr
+)
+if(NOT forward_changed_build_result EQUAL 0)
+    message(FATAL_ERROR
+        "Expected changed forward shader build to succeed.\n"
+        "stdout:\n${forward_changed_build_stdout}\n"
+        "stderr:\n${forward_changed_build_stderr}")
+endif()
+
+count_slang_invocations(forward_changed_invocation_count)
+math(EXPR forward_changed_invocation_delta
+    "${forward_changed_invocation_count} - ${changed_invocation_count}")
+if(NOT forward_changed_invocation_delta EQUAL 3)
+    message(FATAL_ERROR
+        "Expected changing forward_opaque.slang to rebuild only its vertex, "
+        "baseline fragment and ray fragment outputs, but fake slangc invocation "
+        "delta was ${forward_changed_invocation_delta}.")
+endif()
+expect_output_invocations(2
+    gbuffer.vert.spv gbuffer.frag.spv
+    forward_opaque.vert.spv forward_opaque.frag.spv forward_opaque_ray.frag.spv)
+expect_output_invocations(1
+    surface_normals.vert.spv surface_normals.geom.spv surface_normals.frag.spv
+    tile_light_cull.comp.spv)

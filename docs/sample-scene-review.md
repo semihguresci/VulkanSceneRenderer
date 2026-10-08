@@ -7,6 +7,41 @@ published preview binary.
 
 ## Fixed scene lighting problems
 
+### UI model loading follow-up (2026-10-05)
+
+The Scene Controls queue exposed a separate ordering error: lighting and bloom
+were copied into the UI before processing the requested model load. GUI writeback
+then restored the old scene's defaults. A reproduced Cornell-to-IFCX switch
+loaded 14 objects but kept directional/environment intensity at zero. Model
+requests now execute before publishing controls and opening the ImGui frame.
+Detailed importer failures are retained and logged rather than replaced with a
+generic failure message. BIM startup/reload uses an exterior overview, avoiding
+the hall heuristic placing the camera inside a thin wall's bounds. The UI also
+honors the initial `--display-mode` selection.
+
+`gui_model_loading_gpu_regression` exercises the same selection/request methods
+as the widgets with the UI enabled; it does not simulate OS mouse clicks. Both
+renderers pass Cornell → native Hello Wall → IFCX → IFCX metadata layer → two
+failed loads → Tekla IFCX → Tekla STEP → Cornell. Native imports represent 4/4
+and 10,042/10,042 products. The UI-loaded IFC image matches direct startup exactly
+outside the UI controls; failed-load restoration RGB MAE is at most 1e-8. Captures
+contain no VUID or synchronization hazards. The five selected CPU suites pass
+369 cases with the downloaded/archived assets enabled and no skips. The two
+Python asset tests additionally verify LFS URL encoding, payload integrity,
+cache reuse and preservation of pointers after failed downloads.
+
+The classic IFC archive originally contained 171 Git LFS pointers, all of which
+were materialized and SHA-256/size-verified before staging. An additional UI
+sample selection loads `basin-tessellation.ifc` from that collection in both
+renderers (1/1 represented product). This verifies payload recovery and the
+classic sample-picker path; it does not establish importer coverage for all
+171 files.
+
+Run the GPU check with `CONTAINER_RUN_GPU_GUI_MODEL_LOADING=1` and CTest filter
+`^gui_model_loading_gpu_regression$`. Captures are under
+`test_results/gui-model-loading/`. The original zero-intensity reproduction is
+retained locally under `out/gui-model-review/repro.*`.
+
 The default Cornell sample intentionally set directional and environment
 intensity to zero. The model reload path kept those settings when replacing
 Cornell with BIM content. Without authored lights, that content rendered almost
@@ -172,24 +207,48 @@ See [IFC coverage and limitations](ifc-import.md) for fixed-camera captures,
 representation limits and verification. Further native IFC coverage is tracked
 in [#67](https://github.com/semihguresci/VulkanSceneRenderer/issues/67).
 
-### P2: Forward rendering has a black environment background
+### Fixed: Forward HDR environment background (#62)
 
-The same coverage sample has an HDR sky in deferred rendering and a black
-background in forward rendering, with and without TAA. Forward surfaces still
-receive environment illumination. The
-[`forward lighting recorder`](../src/renderer/forward/ForwardRasterLightingPassRecorder.cpp)
-clears HDR scene colour to black and does not record a background sky draw.
-Add environment-background rendering to the forward technique and test sky
-pixels independently of surface coverage.
+Forward lighting now fills uncovered reverse-Z depth samples with the HDR
+environment, using the same ray reconstruction, orientation, intensity and
+finite-value handling as deferred lighting. The draw uses the existing camera,
+lighting and environment descriptors and their declared graph reads. It runs
+after opaque lighting and before transparent composition, with depth writes
+disabled and a depth-equal-zero test at the selected MSAA sample count.
 
-### P2: Area-light penumbrae still show discrete visibility bands
+The native Visual Studio Release build and forward recorder/technique tests
+pass. On 2026-10-05 the opt-in GPU regression also passed: uncovered sky pixels
+match deferred exactly with TAA off/on and forward MSAA 4x. Isolated cutout and
+glass captures have whole-image RGB MAE 0.00097 and 0.00117 respectively;
+their P99 error is zero. Resize, camera motion and technique changes preserve
+the sky, and static covered surfaces retain valid temporal motion. The existing
+Cornell forward MSAA surface regression passes. Captures contain no VUID or
+synchronization hazards. Sky pixels keep the existing current-frame temporal
+fallback rather than contributing geometry motion.
 
-Four emitter visibility samples restore the expected penumbra and pass the
-fixture probes, but their discrete levels remain visible around the blocker.
-The atlas/shader budget currently allows at most four complete cubes for one
-area light. Higher-quality visibility needs more samples, stochastic sampling
-with temporal accumulation, or traced visibility. The artistic bounce slider
-can conceal these bands, but does not resolve their cause.
+Run `forward_sky_gpu_regression` with `CONTAINER_RUN_GPU_FORWARD_SKY=1`.
+Its captures and measured results are under
+`out/build/visual-studio/test_results/forward-sky/`. The original black-sky
+capture is retained locally at `out/ray-query/pre-sky-forward.png`.
+
+### Fixed: Sampled area-light penumbra bands (#63)
+
+Multiple-origin layers previously uploaded zero source radius, leaving nearly
+hard shadow edges that averaged to discrete levels. The raster path now divides
+the emitter into equal-area domains and applies blocker-distance PCSS filtering
+within them. It preserves emitter shape/aspect ratio, receiver-plane depth and
+cube seams, and shares the helper across deferred, forward and transparency.
+Fast, balanced and high modes use 16/32/64 filter taps per origin. Balanced is
+the default; no extra atlas or visibility history allocation is required.
+
+Independent segment/AABB visibility profiles cover rectangle/disk emitters,
+size/height/aspect changes, transparent receivers and cube seams in both paths.
+All 48 static records and 24 moving-light/blocker TAA comparisons pass. Balanced
+penumbra MAE is 0.0092--0.0166, versus 0.0962--0.1268 for the fixed-origin mutation;
+its plateau fraction is at most 0.05, versus up to 1.0 before filtering. High
+quality has no detected plateaus. No VUID or synchronization hazards occur with
+ray-query device features disabled. See [area shadows](area-shadows.md) for the
+approximation limits, controls, sample/memory budgets and reproduction.
 
 ## Capture coverage and limitations
 

@@ -31,7 +31,7 @@ Before making changes to rendering code, shaders, or coordinate/math-related log
 ### Winding & Culling
 - Front face: `VK_FRONT_FACE_COUNTER_CLOCKWISE`.
 - Scene cull: `VK_CULL_MODE_BACK_BIT`.
-- Shadow cull: `VK_CULL_MODE_FRONT_BIT`.
+- Shadow cull: `VK_CULL_MODE_BACK_BIT`.
 
 ### Matrix Convention
 - GLM column-major matrices are uploaded directly to Slang shaders — **no transpose**.

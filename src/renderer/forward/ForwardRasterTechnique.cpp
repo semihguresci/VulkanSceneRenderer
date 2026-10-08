@@ -1,4 +1,5 @@
 #include "Container/renderer/forward/ForwardRasterTechnique.h"
+#include "Container/renderer/raytracing/RayShadowManager.h"
 #include "Container/renderer/temporal/TemporalManager.h"
 
 #include "Container/renderer/bim/BimSurfaceRasterPassRecorder.h"
@@ -215,7 +216,18 @@ void registerForwardRasterPipelineRecipes(PipelineRegistry &registry) {
                             "spv_shaders/forward_opaque.frag.spv"},
                            "transparent");
   }
+  for (const auto name : {"forward-opaque-ray", "forward-opaque-ray-front-cull",
+                          "forward-opaque-ray-no-cull"}) {
+    registerGraphicsRecipe(name,
+                           {"spv_shaders/forward_opaque.vert.spv",
+                            "spv_shaders/forward_opaque_ray.frag.spv"},
+                           "forward-ray");
+  }
   registerTransparentRecipe("forward-transparent");
+  registerGraphicsRecipe(
+      "forward-sky",
+      {"spv_shaders/forward_sky.vert.spv", "spv_shaders/forward_sky.frag.spv"},
+      "transparent");
   registerTransparentRecipe("forward-transparent-front-cull");
   registerTransparentRecipe("forward-transparent-no-cull");
   for (const auto name : {"bim-point-cloud-depth", "bim-point-cloud-no-depth",
@@ -352,7 +364,8 @@ forwardRasterDepthPrepassReadiness(const FrameRecordParams &p) {
   const bool bimOpaqueDraws = hasBimOpaqueDrawCommands(p.bim);
   const bool transparentDraws = hasTransparentDrawCommands(p);
   if (!sceneOpaqueDraws && !bimOpaqueDraws && !transparentDraws &&
-      !hasForwardRasterNativePrimitiveDraws(p)) {
+      !hasForwardRasterNativePrimitiveDraws(p) &&
+      !hasForwardRasterSkyInputs(p)) {
     return renderPassNotNeeded();
   }
   if (!forwardRasterRenderPassReady(p,
@@ -598,7 +611,8 @@ void recordForwardRasterLocalShadowPass(VkCommandBuffer cmd,
 forwardRasterDepthReadOnlyReadiness(const FrameRecordParams &p) {
   if (!hasOpaqueDrawCommands(p.draws) && !hasBimOpaqueDrawCommands(p.bim) &&
       !hasTransparentDrawCommands(p) &&
-      !hasForwardRasterNativePrimitiveDraws(p)) {
+      !hasForwardRasterNativePrimitiveDraws(p) &&
+      !hasForwardRasterSkyInputs(p)) {
     return renderPassNotNeeded();
   }
   return forwardRasterImageReady(p, ForwardRasterImageId::DepthStencil)
@@ -1302,13 +1316,16 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
        RenderResourceId::CameraBuffer, RenderResourceId::ObjectBuffer,
        RenderResourceId::BimObjectBuffer, RenderResourceId::LightingData,
        RenderResourceId::EnvironmentMaps, RenderResourceId::SceneDepth},
-      {RenderResourceId::ShadowAtlas, RenderResourceId::LocalShadowAtlas,
-       RenderResourceId::OitStorage, RenderResourceId::FrustumCullDraws,
+      {RenderResourceId::RayShadowVisibility, RenderResourceId::RayScene,
+       RenderResourceId::ShadowAtlas,
+       RenderResourceId::LocalShadowAtlas, RenderResourceId::OitStorage,
+       RenderResourceId::FrustumCullDraws,
        RenderResourceId::OcclusionCullDraws},
       {RenderResourceId::SceneColor, RenderResourceId::OitStorage});
   graph.setPassResourceTransitions(RenderPassId::Lighting, {});
   RenderGraphBuilder temporalGraph(graph);
   registerTemporalPasses(temporalGraph);
+  registerRayShadowPasses(temporalGraph);
 
   graph.addPass(RenderPassId::TransformGizmos, {RenderPassId::TemporalResolve},
                 [](VkCommandBuffer cmd, const FrameRecordParams &p) {

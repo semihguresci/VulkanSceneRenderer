@@ -888,6 +888,16 @@ uint64_t SceneManager::temporalMaterialRevision(uint32_t gpuIndex) const {
   return gpuIndex < gpuMaterialTemporalRevisions_.size() ? gpuMaterialTemporalRevisions_[gpuIndex] : 0;
 }
 
+bool SceneManager::rayGeometryCompatible(uint32_t gpuIndex) const {
+  if (gpuIndex >= gpuMaterials_.size())
+    return false;
+  const auto &material = gpuMaterials_[gpuIndex];
+  // Raster vertices sample height maps at mip zero. Until displaced positions
+  // are shared with AS builds, keep the complete frame on the raster route.
+  return material.heightTextureIndex == UINT32_MAX ||
+         std::abs(material.heightScale) <= 1e-7f;
+}
+
 uint32_t SceneManager::diagnosticMaterialIndex() const {
   return resolveGpuMaterialIndex(diagnosticMaterialIndex_);
 }
@@ -1060,6 +1070,7 @@ void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
 }
 
 uint32_t SceneManager::appendRuntimeMesh(container::geometry::Mesh mesh) {
+  ++geometryRevision_;
   if (mesh.empty()) {
     return std::numeric_limits<uint32_t>::max();
   }
@@ -1687,6 +1698,8 @@ void SceneManager::createDescriptorSetLayout() {
                      VK_SHADER_STAGE_FRAGMENT_BIT,
                  nullptr};
 
+  for (auto &binding : bindings)
+    binding.stageFlags |= VK_SHADER_STAGE_COMPUTE_BIT;
   std::array<VkDescriptorBindingFlags, 7> bindingFlags{
       0, 0, 0, 0, 0,
       VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT,
@@ -1821,10 +1834,16 @@ void SceneManager::loadGltfAssets() {
 
       auto imageToTexture = materialXBridge_.loadTexturesForGltf(
           gltfModel_, baseDir, textureManager_,
-          [this](const std::string& path, bool isSrgb) {
+          [this](const std::string &path, bool isSrgb) {
             return allocationManager_->createTextureFromFile(
                 path, isSrgb ? VK_FORMAT_R8G8B8A8_SRGB
                              : VK_FORMAT_R8G8B8A8_UNORM);
+          },
+          [this](const std::string &name, std::span<const std::byte> rgba,
+                 uint32_t width, uint32_t height, bool isSrgb) {
+            return allocationManager_->createTextureFromRgbaPixels(
+                name, rgba, width, height,
+                isSrgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM);
           });
 
       const uint32_t fallbackMaterialIndex = defaultMaterialIndex_;
@@ -1893,17 +1912,23 @@ void SceneManager::appendSceneAsset(
 
   const auto imageToTexture = materialXBridge_.loadTexturesForGltf(
       result.gltfModel, assetPath.parent_path(), textureManager_,
-      [this](const std::string& path, bool isSrgb) {
+      [this](const std::string &path, bool isSrgb) {
         return allocationManager_->createTextureFromFile(
-            path, isSrgb ? VK_FORMAT_R8G8B8A8_SRGB
-                         : VK_FORMAT_R8G8B8A8_UNORM);
+            path, isSrgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM);
+      },
+      [this](const std::string &name, std::span<const std::byte> rgba,
+             uint32_t width, uint32_t height, bool isSrgb) {
+        return allocationManager_->createTextureFromRgbaPixels(
+            name, rgba, width, height,
+            isSrgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM);
       });
 
   const uint32_t fallbackMaterialIndex = defaultMaterialIndex_;
   const uint32_t materialBaseIndex =
       static_cast<uint32_t>(materialManager_.materialCount());
-  materialXBridge_.loadMaterialsForGltf(
-      result.gltfModel, imageToTexture, materialManager_, defaultMaterialIndex_);
+  materialXBridge_.loadMaterialsForGltf(result.gltfModel, imageToTexture,
+                                        materialManager_,
+                                        defaultMaterialIndex_);
   defaultMaterialIndex_ = fallbackMaterialIndex;
 
   std::vector<uint32_t> primitiveBaseByMesh(result.gltfModel.meshes.size(), 0);
@@ -2562,6 +2587,7 @@ void SceneManager::writeDescriptorSetContents(
 }
 
 void SceneManager::resetLoadedAssets() {
+  ++geometryRevision_;
   if (materialBuffer_.buffer != VK_NULL_HANDLE) {
     allocationManager_->destroyBuffer(materialBuffer_);
   }

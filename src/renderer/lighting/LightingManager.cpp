@@ -135,16 +135,20 @@ void LightingManager::createDescriptorResources(uint32_t descriptorSetCount) {
   const uint32_t setCount = std::max<uint32_t>(1u, descriptorSetCount);
 
   if (lightDescriptorSetLayout_ == VK_NULL_HANDLE) {
-    const std::array<VkDescriptorSetLayoutBinding, 3> bindings = {{
-        {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+    const std::array<VkDescriptorSetLayoutBinding, 5> bindings = {{
+        {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+         VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+         VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+         VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
          nullptr},
-        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
-         nullptr},
-        {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+        {4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
          nullptr},
     }};
     lightDescriptorSetLayout_ = pipelineManager_.createDescriptorSetLayout(
-        {bindings.begin(), bindings.end()}, {0, 0, 0});
+        {bindings.begin(), bindings.end()}, {0, 0, 0, 0, 0});
   }
 
   for (auto &buffer : lightingBuffers_) {
@@ -165,7 +169,8 @@ void LightingManager::createDescriptorResources(uint32_t descriptorSetCount) {
     pipelineManager_.destroyDescriptorPool(lightDescriptorPool_);
   }
   lightDescriptorPool_ = pipelineManager_.createDescriptorPool(
-      {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, setCount},
+      {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, setCount * 2u},
+       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, setCount},
        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, setCount * 2u}},
       setCount, 0);
 
@@ -236,6 +241,21 @@ void LightingManager::writeLightDescriptorStorageBuffers() const {
   vkUpdateDescriptorSets(device_->device(),
                          static_cast<uint32_t>(writes.size()), writes.data(), 0,
                          nullptr);
+}
+
+void LightingManager::updateRayShadowDescriptors(uint32_t imageIndex,
+                                                 VkBuffer settings,
+                                                 VkDeviceSize settingsSize,
+                                                 VkImageView visibility) {
+  vk::DescriptorBufferInfo buffer(settings, 0, settingsSize);
+  vk::DescriptorImageInfo image({}, visibility, vk::ImageLayout::eGeneral);
+  const std::array writes{
+      vk::WriteDescriptorSet(lightDescriptorSet(imageIndex), 3, 0, 1,
+                             vk::DescriptorType::eUniformBuffer, nullptr,
+                             &buffer),
+      vk::WriteDescriptorSet(lightDescriptorSet(imageIndex), 4, 0, 1,
+                             vk::DescriptorType::eSampledImage, &image)};
+  device_->raii().updateDescriptorSets(writes, {});
 }
 
 void LightingManager::createLightGizmoIconDescriptorResources() {

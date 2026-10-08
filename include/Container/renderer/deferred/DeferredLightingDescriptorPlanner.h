@@ -16,7 +16,7 @@ struct DeferredLightingDescriptorPlanInputs {
 struct DeferredLightingDescriptorPlan {
   std::array<VkDescriptorSet, 3> directionalLightingDescriptorSets{};
   std::array<VkDescriptorSet, 3> pointLightingDescriptorSets{};
-  std::array<VkDescriptorSet, 3> tiledLightingDescriptorSets{};
+  std::array<VkDescriptorSet, 4> tiledLightingDescriptorSets{};
 };
 
 [[nodiscard]] DeferredLightingDescriptorPlan

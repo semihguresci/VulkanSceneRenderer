@@ -55,6 +55,9 @@ enum class RenderPassId : uint8_t {
   PostProcess,
   TemporalVelocity,
   TemporalResolve,
+  RaySceneBuild,
+  RayShadowTrace,
+  RayShadowFilter,
   Count,
   Invalid = Count,
 };
@@ -99,6 +102,9 @@ enum class RenderResourceId : uint8_t {
   SwapchainImage,
   TemporalMotion,
   TemporalColor,
+  RayScene,
+  RayShadowRaw,
+  RayShadowVisibility,
   Count,
   Invalid = Count,
 };

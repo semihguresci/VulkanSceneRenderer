@@ -4,6 +4,14 @@ New packages include optional capture launchers in `tools` and a
 `GFXRECONSTRUCT.md` guide. Vulkan API capture/replay requires a separate
 GFXReconstruct installation and Python 3; normal rendering needs neither.
 
+New source-built packages also include optional ray shadows:
+`VulkanSceneRenderer.exe --ray-shadows soft --ray-shadow-samples 8`.
+Use `--ray-shadows hard` for hard visibility, or `--no-ray-query` to force raster
+fallback. Ray support is optional; Vulkan 1.4 alone does not imply it. The Shadows
+panel reports support, memory and build/query/filter timings. Transparent
+receivers retain raster shadows; blended/transmissive blockers do not cast binary
+ray shadows. Height-displaced meshes trigger raster fallback.
+
 Try temporal anti-aliasing with `VulkanSceneRenderer.exe --taa --msaa 1 --display-mode lit`.
 Use `--render-technique forward-raster` for the forward path. TAA currently
 supports native-resolution rigid surfaces at 1x samples; transparent and emissive

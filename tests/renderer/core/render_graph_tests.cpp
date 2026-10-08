@@ -804,6 +804,39 @@ TEST(RenderGraphTests, ResourceEdgeCanScheduleWriterBeforeReader) {
             executionPosition(graph, RenderPassId::FrustumCull));
 }
 
+TEST(RenderGraphTests,
+     RayVisibilityProducerOrdersBeforeLightingAndRemainsOptional) {
+  const auto optional = container::renderer::renderPassOptionalResourceReads(
+      RenderPassId::Lighting);
+  EXPECT_NE(std::find(optional.begin(), optional.end(),
+                      RenderResourceId::RayShadowVisibility),
+            optional.end());
+  RenderGraph graph;
+  graph.addPass(RenderPassId::Lighting, {}, noopRecord());
+  ASSERT_TRUE(graph.setPassResourceAccess(
+      RenderPassId::Lighting, {}, {RenderResourceId::RayShadowVisibility}, {}));
+  EXPECT_NO_THROW(
+      graph.compile()); // Raster-only graphs do not need a producer.
+  graph.addPass(RenderPassId::RayShadowFilter, {}, noopRecord());
+  ASSERT_TRUE(graph.setPassResourceAccess(
+      RenderPassId::RayShadowFilter, {RenderResourceId::RayShadowRaw}, {},
+      {RenderResourceId::RayShadowVisibility}));
+  graph.addPass(RenderPassId::RayShadowTrace, {}, noopRecord());
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::RayShadowTrace,
+                                          {RenderResourceId::RayScene}, {},
+                                          {RenderResourceId::RayShadowRaw}));
+  graph.addPass(RenderPassId::RaySceneBuild, {}, noopRecord());
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::RaySceneBuild, {}, {},
+                                          {RenderResourceId::RayScene}));
+  graph.compile();
+  EXPECT_LT(executionPosition(graph, RenderPassId::RaySceneBuild),
+            executionPosition(graph, RenderPassId::RayShadowTrace));
+  EXPECT_LT(executionPosition(graph, RenderPassId::RayShadowTrace),
+            executionPosition(graph, RenderPassId::RayShadowFilter));
+  EXPECT_LT(executionPosition(graph, RenderPassId::RayShadowFilter),
+            executionPosition(graph, RenderPassId::Lighting));
+}
+
 TEST(RenderGraphTests, ResourceAccessMutationInvalidatesCompiledSchedule) {
   RenderGraph graph;
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());

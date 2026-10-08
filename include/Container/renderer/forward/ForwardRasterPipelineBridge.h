@@ -16,6 +16,10 @@ enum class ForwardRasterPipelineId {
   ForwardOpaque,
   ForwardOpaqueFrontCull,
   ForwardOpaqueNoCull,
+  ForwardOpaqueRay,
+  ForwardOpaqueRayFrontCull,
+  ForwardOpaqueRayNoCull,
+  Sky,
   Transparent,
   TransparentFrontCull,
   TransparentNoCull,
@@ -53,6 +57,14 @@ forwardRasterPipelineName(ForwardRasterPipelineId id) {
     return "forward-opaque-front-cull";
   case ForwardRasterPipelineId::ForwardOpaqueNoCull:
     return "forward-opaque-no-cull";
+  case ForwardRasterPipelineId::ForwardOpaqueRay:
+    return "forward-opaque-ray";
+  case ForwardRasterPipelineId::ForwardOpaqueRayFrontCull:
+    return "forward-opaque-ray-front-cull";
+  case ForwardRasterPipelineId::ForwardOpaqueRayNoCull:
+    return "forward-opaque-ray-no-cull";
+  case ForwardRasterPipelineId::Sky:
+    return "forward-sky";
   case ForwardRasterPipelineId::Transparent:
     return "forward-transparent";
   case ForwardRasterPipelineId::TransparentFrontCull:
@@ -88,6 +100,7 @@ forwardRasterPipelineName(ForwardRasterPipelineId id) {
 enum class ForwardRasterPipelineLayoutId {
   Scene,
   Transparent,
+  ForwardRay,
   PostProcess,
   LightGizmo,
   TransformGizmo,
@@ -101,6 +114,8 @@ forwardRasterPipelineLayoutName(ForwardRasterPipelineLayoutId id) {
     return "scene";
   case ForwardRasterPipelineLayoutId::Transparent:
     return "transparent";
+  case ForwardRasterPipelineLayoutId::ForwardRay:
+    return "forward-ray";
   case ForwardRasterPipelineLayoutId::PostProcess:
     return "post-process";
   case ForwardRasterPipelineLayoutId::LightGizmo:

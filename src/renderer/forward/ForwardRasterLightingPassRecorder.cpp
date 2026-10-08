@@ -8,6 +8,7 @@
 #include "Container/renderer/debug/DebugOverlayRenderer.h"
 #include "Container/renderer/forward/ForwardRasterPipelineBridge.h"
 #include "Container/renderer/forward/ForwardRasterResourceBridge.h"
+#include "Container/renderer/raytracing/RayShadowManager.h"
 #include "Container/renderer/scene/SceneOpaqueDrawPlanner.h"
 #include "Container/renderer/scene/SceneOpaqueDrawRecorder.h"
 #include "Container/renderer/scene/SceneTransparentDrawPlanner.h"
@@ -265,13 +266,36 @@ void recordNativePrimitives(VkCommandBuffer cmd, const FrameRecordParams &p,
                                          ForwardRasterDescriptorSetId::BimScene);
 }
 
+[[nodiscard]] bool usesForwardRayQueries(const FrameRecordParams& p) {
+  return p.services.rayShadowManager != nullptr &&
+         p.services.rayShadowManager->active();
+}
+
+[[nodiscard]] std::array<ForwardRasterPipelineId, 3>
+forwardOpaquePipelineIds(const FrameRecordParams& p) {
+  if (usesForwardRayQueries(p)) {
+    return {ForwardRasterPipelineId::ForwardOpaqueRay,
+            ForwardRasterPipelineId::ForwardOpaqueRayFrontCull,
+            ForwardRasterPipelineId::ForwardOpaqueRayNoCull};
+  }
+  return {ForwardRasterPipelineId::ForwardOpaque,
+          ForwardRasterPipelineId::ForwardOpaqueFrontCull,
+          ForwardRasterPipelineId::ForwardOpaqueNoCull};
+}
+
+[[nodiscard]] VkPipelineLayout
+forwardOpaquePipelineLayout(const FrameRecordParams& p) {
+  return forwardRasterPipelineLayout(
+      p, usesForwardRayQueries(p) ? ForwardRasterPipelineLayoutId::ForwardRay
+                                 : ForwardRasterPipelineLayoutId::Transparent);
+}
+
 [[nodiscard]] bool hasForwardOpaquePipeline(const FrameRecordParams& p) {
-  return forwardRasterPipelineReady(p,
-                                    ForwardRasterPipelineId::ForwardOpaque) &&
-         forwardRasterPipelineReady(
-             p, ForwardRasterPipelineId::ForwardOpaqueFrontCull) &&
-         forwardRasterPipelineReady(
-             p, ForwardRasterPipelineId::ForwardOpaqueNoCull);
+  const auto ids = forwardOpaquePipelineIds(p);
+  return forwardOpaquePipelineLayout(p) != VK_NULL_HANDLE &&
+         forwardRasterPipelineReady(p, ids[0]) &&
+         forwardRasterPipelineReady(p, ids[1]) &&
+         forwardRasterPipelineReady(p, ids[2]);
 }
 
 [[nodiscard]] bool hasForwardTransparentPipelines(const FrameRecordParams& p) {
@@ -322,6 +346,12 @@ void bindForwardOpaqueLightingSets(VkCommandBuffer cmd, VkPipelineLayout layout,
       p, ForwardRasterDescriptorSetId::FrameLighting);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 3u, 1u,
                           &frameLightingSet, 0u, nullptr);
+  if (usesForwardRayQueries(p) && layout == forwardOpaquePipelineLayout(p)) {
+    const VkDescriptorSet traceSet =
+        p.services.rayShadowManager->traceDescriptorSet(p.runtime.imageIndex);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 2u, 1u,
+                            &traceSet, 0u, nullptr);
+  }
 }
 
 void recordSceneOpaque(VkCommandBuffer cmd, const FrameRecordParams& p,
@@ -339,8 +369,8 @@ void recordSceneOpaque(VkCommandBuffer cmd, const FrameRecordParams& p,
               p.services.gpuCullManager->occlusionDrawsValid(p.runtime.imageIndex),
           .preferOccludedGpuIndirect = true,
           .draws = sceneOpaqueDrawLists(p.draws)});
-  const VkPipeline pipeline =
-      forwardRasterPipelineHandle(p, ForwardRasterPipelineId::ForwardOpaque);
+  const auto pipelineIds = forwardOpaquePipelineIds(p);
+  const VkPipeline pipeline = forwardRasterPipelineHandle(p, pipelineIds[0]);
   bindForwardOpaqueLightingSets(cmd, layout, p);
   (void)recordSceneOpaqueDrawCommands(
       cmd,
@@ -351,10 +381,8 @@ void recordSceneOpaque(VkCommandBuffer cmd, const FrameRecordParams& p,
                     .indexSlice = p.scene.indexSlice,
                     .indexType = p.scene.indexType},
        .pipelines = {.primary = pipeline,
-                     .frontCull = forwardRasterPipelineHandle(
-                         p, ForwardRasterPipelineId::ForwardOpaqueFrontCull),
-                     .noCull = forwardRasterPipelineHandle(
-                         p, ForwardRasterPipelineId::ForwardOpaqueNoCull)},
+                     .frontCull = forwardRasterPipelineHandle(p, pipelineIds[1]),
+                     .noCull = forwardRasterPipelineHandle(p, pipelineIds[2])},
        .pipelineLayout = layout,
        .pushConstants = bindlessPushConstants(p),
        .imageIndex = p.runtime.imageIndex,
@@ -445,13 +473,21 @@ void recordBimSurface(VkCommandBuffer cmd, const FrameRecordParams& p,
 
 }  // namespace
 
+bool hasForwardRasterSkyInputs(const FrameRecordParams &p) {
+  return hasForwardLightSets(p) &&
+         (forwardRasterDescriptorSetReady(
+              p, ForwardRasterDescriptorSetId::Scene) ||
+          forwardRasterDescriptorSetReady(
+              p, ForwardRasterDescriptorSetId::BimScene));
+}
+
 bool hasForwardRasterNativePrimitiveDraws(const FrameRecordParams &p) {
   return hasNativePoints(p) || hasNativeCurves(p);
 }
 
 RenderPassReadiness
 checkForwardRasterLightingPassReadiness(const FrameRecordParams& p) {
-  if (!hasAnyDraws(p)) {
+  if (!hasAnyDraws(p) && !hasForwardRasterSkyInputs(p)) {
     return notNeeded();
   }
 
@@ -487,6 +523,11 @@ checkForwardRasterLightingPassReadiness(const FrameRecordParams& p) {
   if ((sceneOpaqueDraws || bimOpaqueDraws) && !hasForwardOpaquePipeline(p)) {
     return missing(RenderResourceId::SceneColor);
   }
+  if ((sceneOpaqueDraws || bimOpaqueDraws) && usesForwardRayQueries(p) &&
+      p.services.rayShadowManager->traceDescriptorSet(p.runtime.imageIndex) ==
+          VK_NULL_HANDLE) {
+    return missing(RenderResourceId::RayScene);
+  }
   if ((sceneOpaqueDraws || sceneTransparentDraws) && !hasSceneGeometry(p)) {
     return missing(RenderResourceId::SceneGeometry);
   }
@@ -501,6 +542,10 @@ checkForwardRasterLightingPassReadiness(const FrameRecordParams& p) {
     return missing(RenderResourceId::SceneColor);
   }
 
+  if (!hasForwardRasterSkyInputs(p))
+    return missing(RenderResourceId::CameraBuffer);
+  if (!forwardRasterPipelineReady(p, ForwardRasterPipelineId::Sky))
+    return missing(RenderResourceId::SceneColor);
   return ready();
 }
 
@@ -534,19 +579,42 @@ bool recordForwardRasterLightingPassCommands(VkCommandBuffer commandBuffer,
   const DebugOverlayRenderer debugOverlay{};
   const VkPipelineLayout layout = forwardRasterPipelineLayout(
       p, ForwardRasterPipelineLayoutId::Transparent);
+  const VkPipelineLayout opaqueLayout = forwardOpaquePipelineLayout(p);
+  const auto opaquePipelineIds = forwardOpaquePipelineIds(p);
 
-  recordSceneOpaque(commandBuffer, p, layout, debugOverlay);
+  recordSceneOpaque(commandBuffer, p, opaqueLayout, debugOverlay);
 
   const VkPipeline opaquePipeline =
-      forwardRasterPipelineHandle(p, ForwardRasterPipelineId::ForwardOpaque);
+      forwardRasterPipelineHandle(p, opaquePipelineIds[0]);
   recordBimSurface(commandBuffer, p, BimSurfacePassKind::OpaqueLighting,
                    hasBimOpaqueDraws(p.bim), opaquePipeline,
                    forwardRasterPipelineHandle(
-                       p, ForwardRasterPipelineId::ForwardOpaqueFrontCull),
+                       p, opaquePipelineIds[1]),
                    forwardRasterPipelineHandle(
-                       p, ForwardRasterPipelineId::ForwardOpaqueNoCull),
-                   layout, debugOverlay);
+                       p, opaquePipelineIds[2]),
+                   opaqueLayout, debugOverlay);
 
+  // The scene and BIM camera descriptors contain the same per-frame camera.
+  // No vertex/object data is read by the sky shader, including empty scenes.
+  const auto cameraSet =
+      forwardRasterDescriptorSetReady(p, ForwardRasterDescriptorSetId::Scene)
+          ? forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::Scene)
+          : forwardRasterDescriptorSet(p,
+                                       ForwardRasterDescriptorSetId::BimScene);
+  const auto lightSet =
+      forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::Light);
+  const auto environmentSet = forwardRasterDescriptorSet(
+      p, ForwardRasterDescriptorSetId::FrameLighting);
+  vkCmdBindPipeline(
+      commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+      forwardRasterPipelineHandle(p, ForwardRasterPipelineId::Sky));
+  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          layout, 0, 1, &cameraSet, 0, nullptr);
+  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          layout, 1, 1, &lightSet, 0, nullptr);
+  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          layout, 3, 1, &environmentSet, 0, nullptr);
+  vkCmdDraw(commandBuffer, 3, 1, 0, 0);
   (void)recordRenderPassEndCommands(commandBuffer);
 
   // OIT uses single-sample storage. Load the resolved opaque color and depth

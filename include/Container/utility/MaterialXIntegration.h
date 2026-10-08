@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cstddef>
+#include <span>
+
 #include "Container/common/CommonMath.h"
 #include "Container/utility/MaterialManager.h"
 #include "Container/utility/TextureManager.h"
@@ -47,10 +50,13 @@ class SlangMaterialXBridge {
         const tinygltf::Model& model) const;
 
     std::vector<uint32_t> loadTexturesForGltf(
-        const tinygltf::Model& model, const std::filesystem::path& baseDir,
-        container::material::TextureManager& textureManager,
+        const tinygltf::Model &model, const std::filesystem::path &baseDir,
+        container::material::TextureManager &textureManager,
         const std::function<container::material::TextureResource(
-            const std::string&, bool /*isSrgb*/)>& textureLoader) const;
+            const std::string &, bool /*isSrgb*/)> &textureLoader,
+        const std::function<container::material::TextureResource(
+            const std::string &, std::span<const std::byte>, uint32_t, uint32_t,
+            bool)> &embeddedLoader = {}) const;
 
     void loadMaterialsForGltf(
         const tinygltf::Model& model,

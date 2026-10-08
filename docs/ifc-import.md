@@ -585,6 +585,22 @@ not claim complete IFC conformance.
 
 ## Remaining coverage and review
 
+Scene Controls discovers both IFCX layers and native STEP IFC examples.
+Native files have a `(STEP)` suffix in the sample picker, so the two formats
+have distinct labels and ImGui IDs. Discovery includes the buildingSMART IFC
+sample repository, rather than requiring tessellation/extrusion token hints.
+Failed loads retain the detailed importer error in the UI and renderer log.
+The previous scene is restored when an auxiliary load fails.
+GitHub archive downloads can contain Git LFS pointer files. Asset generation
+materializes IFC/IFCX payloads at the archive's recorded Git revision and verifies
+their declared SHA-256 and byte size before replacing each pointer. Cached real
+model files require no further LFS download. A failed or corrupt download keeps
+the pointer intact and fails the asset target, so packaging cannot silently
+include placeholder models.
+BIM loads use an exterior camera overview. The interior hall heuristic remains
+available for primary glTF scenes such as Sponza; applying it to a thin IFC wall
+could start the camera inside the model's bounds and show a blank-looking view.
+
 The remaining capabilities below and IFC source curve fonts/widths are tracked
 in [#67](https://github.com/semihguresci/VulkanSceneRenderer/issues/67), with
 implementation tasks and independent geometry/rendering acceptance criteria.

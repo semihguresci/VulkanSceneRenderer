@@ -48,6 +48,8 @@ $requiredFiles = @(
     'spv_shaders/temporal_velocity.frag.spv',
     'spv_shaders/temporal_compose.comp.spv',
     'spv_shaders/temporal_resolve.comp.spv',
+    'spv_shaders/ray_shadow_trace.comp.spv',
+    'spv_shaders/ray_shadow_filter.comp.spv',
     'hdr/citrus_orchard_road_puresky_4k.exr'
 )
 foreach ($relativePath in $requiredFiles) {

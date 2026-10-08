@@ -543,7 +543,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                         continue;
                     }
                     areaShadowVisibility += weight * LocalAreaLightShadowVisibility(
-                        i, vertIn.worldPos, surfaceNormal.geometricNormal,
+                        i, light, vertIn.worldPos, surfaceNormal.geometricNormal,
                         visibilitySample, uLocalShadow, gLocalShadowAtlas,
                         gLocalShadowSampler);
                     visibilityWeightSum += weight;

@@ -92,6 +92,7 @@ VulkanContextResult VulkanContextInitializer::initialize(
     ci.validationLayers       = config_.validationLayers;
     ci.enableValidationLayers  = config_.enableValidationLayers;
     ci.enabledFeatures.samplerAnisotropy       = VK_TRUE;
+    ci.enableRayQueries = config_.enableRayQueries;
     ci.enabledFeatures.fragmentStoresAndAtomics = VK_TRUE;
     ci.enabledFeatures.geometryShader          = VK_TRUE;
     ci.enabledFeatures.drawIndirectFirstInstance = VK_TRUE;
@@ -144,6 +145,15 @@ VulkanContextResult VulkanContextInitializer::initialize(
         VK_API_VERSION_PATCH(properties.apiVersion), properties.deviceName);
 
     const auto& enabled                 = result.deviceWrapper->enabledFeatures();
+    const auto &raySupport = result.deviceWrapper->rayQuerySupport();
+    container::log::ContainerLogger::instance().renderer()->info(
+        "Ray queries: {} ({})",
+        result.deviceWrapper->rayQueriesEnabled() ? "enabled" : "disabled",
+        raySupport.supported()
+            ? (config_.enableRayQueries
+                   ? "supported; raster lighting remains default"
+                   : "disabled by configuration")
+            : raySupport.unavailableReason());
     result.wireframeRasterModeSupported = enabled.fillModeNonSolid == VK_TRUE;
     result.wireframeWideLinesSupported  = result.wireframeRasterModeSupported
                                               ? (enabled.wideLines == VK_TRUE)

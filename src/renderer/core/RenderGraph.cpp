@@ -55,6 +55,9 @@ constexpr std::array<std::string_view, kRenderPassIdCount> kRenderPassNames = {
     "PostProcess",
     "TemporalVelocity",
     "TemporalResolve",
+    "RaySceneBuild",
+    "RayShadowTrace",
+    "RayShadowFilter",
 };
 
 static_assert(kRenderPassNames.size() == kRenderPassIdCount);
@@ -97,6 +100,9 @@ constexpr std::array<std::string_view, kRenderResourceIdCount>
         "SwapchainImage",
         "TemporalMotion",
         "TemporalColor",
+        "RayScene",
+        "RayShadowRaw",
+        "RayShadowVisibility",
 };
 
 static_assert(kRenderResourceNames.size() == kRenderResourceIdCount);
@@ -410,11 +416,9 @@ constexpr std::array kLightingReads{
     RenderResourceId::EnvironmentMaps,
 };
 constexpr std::array kLightingOptionalReads{
-    RenderResourceId::ShadowAtlas,
-    RenderResourceId::LocalShadowAtlas,
-    RenderResourceId::TileLightGrid,
-    RenderResourceId::AmbientOcclusion,
-    RenderResourceId::OitStorage,
+    RenderResourceId::RayShadowVisibility, RenderResourceId::ShadowAtlas,
+    RenderResourceId::LocalShadowAtlas,    RenderResourceId::TileLightGrid,
+    RenderResourceId::AmbientOcclusion,    RenderResourceId::OitStorage,
 };
 constexpr std::array kLightingWrites{
     RenderResourceId::SceneColor,
@@ -598,15 +602,18 @@ RenderPassId renderPassIdFromName(std::string_view name) {
 
 bool isProtectedRenderPass(RenderPassId id) {
   switch (id) {
-    case RenderPassId::DepthPrepass:
-    case RenderPassId::GBuffer:
-    case RenderPassId::OitClear:
-    case RenderPassId::TransparentPick:
-    case RenderPassId::DepthToReadOnly:
-    case RenderPassId::Lighting:
-    case RenderPassId::ExposureAdaptation:
-    case RenderPassId::OitResolve:
-    case RenderPassId::PostProcess:
+  case RenderPassId::RaySceneBuild:
+  case RenderPassId::RayShadowTrace:
+  case RenderPassId::RayShadowFilter:
+  case RenderPassId::DepthPrepass:
+  case RenderPassId::GBuffer:
+  case RenderPassId::OitClear:
+  case RenderPassId::TransparentPick:
+  case RenderPassId::DepthToReadOnly:
+  case RenderPassId::Lighting:
+  case RenderPassId::ExposureAdaptation:
+  case RenderPassId::OitResolve:
+  case RenderPassId::PostProcess:
   case RenderPassId::TemporalVelocity:
   case RenderPassId::TemporalResolve:
     return true;
@@ -1563,6 +1570,7 @@ uint64_t RenderGraph::computePreparedFrameSignature(
   mix(shadowSettings.directionalPcssEnabled ? 1u : 0u);
   mix(shadowSettings.directionalContactVisibility ? 1u : 0u);
   mix(shadowSettings.localContactVisibility ? 1u : 0u);
+  mix(shadowSettings.areaShadowQuality);
   mixPointer(params.services.gpuCullManager);
   mixPointer(params.services.bimManager);
   mixPointer(params.services.bloomManager);

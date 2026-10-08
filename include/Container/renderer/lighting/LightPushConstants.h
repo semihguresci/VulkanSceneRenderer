@@ -16,7 +16,7 @@ struct LightPushConstants {
   uint32_t contactVisibilityEnabled{0};
   uint32_t localShadowEnabled{0};
   float bounceIntensity{1.0f};
-  uint32_t padding2{0};
+  uint32_t padding2{0}; // point-light SSBO index, or gizmo pick ID
 };
 static_assert(sizeof(LightPushConstants) == 80,
               "LightPushConstants size mismatch with "

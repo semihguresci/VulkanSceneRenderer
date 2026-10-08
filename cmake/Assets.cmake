@@ -107,7 +107,10 @@ if(ENABLE_BIM_SAMPLE_MODEL_DOWNLOAD)
                 "-DSTAMP_FILE:FILEPATH=${BIM_SAMPLE_MODELS_STAMP}"
                 "-DREPO_REF_URL:STRING=${BIM_SAMPLE_MODELS_REF_URL}"
                 -P "${CMAKE_SOURCE_DIR}/cmake/fetch_buildingsmart_ifc5_models.cmake"
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/cmake/materialize_lfs_models.py"
+                --root "${BIM_SAMPLE_MODELS_DIR}" --repository buildingSMART/IFC5-development
         DEPENDS "${CMAKE_SOURCE_DIR}/cmake/fetch_buildingsmart_ifc5_models.cmake"
+                "${CMAKE_SOURCE_DIR}/cmake/materialize_lfs_models.py"
         COMMENT "Checking latest buildingSMART IFC5-development archive"
         VERBATIM
     )
@@ -118,7 +121,10 @@ if(ENABLE_BIM_SAMPLE_MODEL_DOWNLOAD)
                 "-DSTAMP_FILE:FILEPATH=${IFC_SAMPLE_MODELS_STAMP}"
                 "-DREPO_REF_URL:STRING=${IFC_SAMPLE_MODELS_REF_URL}"
                 -P "${CMAKE_SOURCE_DIR}/cmake/fetch_buildingsmart_sample_test_files.cmake"
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/cmake/materialize_lfs_models.py"
+                --root "${IFC_SAMPLE_MODELS_DIR}" --repository buildingsmart-community/Community-Sample-Test-Files
         DEPENDS "${CMAKE_SOURCE_DIR}/cmake/fetch_buildingsmart_sample_test_files.cmake"
+                "${CMAKE_SOURCE_DIR}/cmake/materialize_lfs_models.py"
         COMMENT "Checking latest buildingSMART Sample-Test-Files archive"
         VERBATIM
     )

@@ -22,6 +22,7 @@
 namespace container::renderer {
 class BloomManager;
 class TemporalManager;
+class RayShadowManager;
 class BimManager;
 class GpuCullManager;
 class FrameResourceRegistry;
@@ -323,6 +324,7 @@ struct FrameScreenshotCapture {
 };
 
 struct FramePassServices {
+  RayShadowManager *rayShadowManager{nullptr};
   GpuCullManager *gpuCullManager{nullptr};
   BimManager *bimManager{nullptr};
   BloomManager *bloomManager{nullptr};

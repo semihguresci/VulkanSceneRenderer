@@ -3670,6 +3670,7 @@ void BimManager::loadGltfFallback(
 void BimManager::uploadGeometry(
     std::span<const container::geometry::Vertex> vertices,
     std::span<const uint32_t> indices) {
+  ++geometryRevision_;
   vertices_.clear();
   indices_.clear();
   if (vertices.empty() || indices.empty()) {

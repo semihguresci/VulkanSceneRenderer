@@ -69,7 +69,9 @@ public:
 
   // Positions the camera relative to the current scene bounds.
   void resetCameraForScene();
-  void resetCameraForBounds(const SceneViewBounds &bounds);
+  // Interior hall views suit walk-through scenes; BIM loads need an overview.
+  void resetCameraForBounds(const SceneViewBounds &bounds,
+                            bool allowInteriorView = true);
 
   // Viewport navigation helpers used by render-space interactions.
   void frameNodeOrScene(uint32_t nodeIndex);

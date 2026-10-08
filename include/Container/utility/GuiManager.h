@@ -1,4 +1,5 @@
 #pragma once
+#include "Container/renderer/raytracing/RayShadowSettings.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -7,6 +8,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -511,6 +513,10 @@ public:
   [[nodiscard]] const GuiRenderTechniqueDebugState &
   renderTechniqueDebugState() const;
   [[nodiscard]] std::optional<ModelLoadRequest> consumeModelLoadRequest();
+  // Shared by widgets and deterministic captures; consumed before NewFrame.
+  void queueModelLoadRequest(std::string path, float importScale,
+                             std::string label);
+  [[nodiscard]] bool queueSampleModelLoadRequest(std::string_view label);
 
   void startFrame();
   void endFrame();
@@ -601,6 +607,7 @@ public:
   [[nodiscard]] GBufferViewMode gBufferViewMode() const {
     return gBufferViewMode_;
   }
+  void setGBufferViewMode(GBufferViewMode mode) { gBufferViewMode_ = mode; }
   [[nodiscard]] const WireframeSettings &wireframeSettings() const {
     return wireframeSettings_;
   }
@@ -686,7 +693,17 @@ public:
   [[nodiscard]] const container::gpu::ShadowSettings& shadowSettings() const {
     return shadowSettings_;
   }
+  void setAreaShadowQuality(uint32_t quality) {
+    shadowSettings_.areaShadowQuality = std::min(quality, 3u);
+  }
   void setFreezeCulling(bool frozen);
+  [[nodiscard]] container::renderer::RayShadowSettings &rayShadowSettings() {
+    return rayShadowSettings_;
+  }
+  void setRayShadowSupport(bool supported, std::string status) {
+    rayShadowSupported_ = supported;
+    rayShadowStatus_ = std::move(status);
+  }
   void setGfxCaptureStatus(std::string status) { gfxCaptureStatus_ = std::move(status); }
   [[nodiscard]] bool freezeCullingRequested() const { return freezeCulling_; }
 
@@ -805,8 +822,6 @@ private:
     ViewpointSnapshotState snapshot{};
   };
 
-  void queueModelLoadRequest(std::string path, float importScale,
-                             std::string label);
   void applyBimElevationDisplayIntent();
 
   VkDescriptorPool descriptorPool_{VK_NULL_HANDLE};
@@ -846,6 +861,9 @@ private:
   GuiRendererTelemetryView rendererTelemetry_{};
   container::gpu::LightingSettings lightingSettings_{};
   container::gpu::ShadowSettings shadowSettings_{};
+  container::renderer::RayShadowSettings rayShadowSettings_{};
+  bool rayShadowSupported_{false};
+  std::string rayShadowStatus_{};
   bool freezeCulling_{false};
   bool bloomEnabled_{true};
   float bloomThreshold_{1.0f};

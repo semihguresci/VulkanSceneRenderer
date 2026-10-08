@@ -118,6 +118,40 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       config.taaResetFrame = parseUint(requireValue(argc, argv, i, arg), arg);
     } else if (arg == "--msaa") {
       config.msaaSamples = parseUint(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == "--ray-shadows") {
+      const auto mode = requireValue(argc, argv, i, arg);
+      if (mode == "raster")
+        config.rayShadows.mode = container::renderer::RayShadowMode::Raster;
+      else if (mode == "hard")
+        config.rayShadows.mode = container::renderer::RayShadowMode::Hard;
+      else if (mode == "soft")
+        config.rayShadows.mode = container::renderer::RayShadowMode::Soft;
+      else
+        throw std::invalid_argument(
+            "Ray shadow mode must be raster, hard or soft");
+    } else if (arg == "--ray-shadow-samples") {
+      config.rayShadows.areaSamples =
+          parseUint(requireValue(argc, argv, i, arg), arg);
+      if (!config.rayShadows.areaSamples || config.rayShadows.areaSamples > 32u)
+        throw std::invalid_argument("Ray shadow samples must be in [1,32]");
+    } else if (arg == "--ray-shadow-light-budget") {
+      config.rayShadows.localLightBudget =
+          parseUint(requireValue(argc, argv, i, arg), arg);
+      if (config.rayShadows.localLightBudget > 8u)
+        throw std::invalid_argument(
+            "Ray shadow local light budget must be in [0,8]");
+    } else if (arg == "--no-ray-shadow-denoise") {
+      config.rayShadows.denoise = false;
+    } else if (arg == "--ray-shadow-debug-layer") {
+      config.rayShadows.debugLayer =
+          parseUint(requireValue(argc, argv, i, arg), arg);
+      if (config.rayShadows.debugLayer > 10u)
+        throw std::invalid_argument("Ray shadow debug view must be in [0,10]");
+    } else if (arg == "--area-shadow-quality") {
+      config.areaShadowQuality =
+          parseUint(requireValue(argc, argv, i, arg), arg);
+      if (config.areaShadowQuality > 3u)
+        throw std::invalid_argument("Area shadow quality must be in [0,3]");
     } else if (arg == "--import-scale") {
       config.importScale = parseFloat(requireValue(argc, argv, i, arg), arg);
     } else if (arg == "--bim-model") {
@@ -127,8 +161,7 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       config.bimImportScale =
           parseFloat(requireValue(argc, argv, i, arg), arg);
       explicitBimImportScale = true;
-    } else if (arg == "--visual-regression-capture" ||
-               arg == "--screenshot") {
+    } else if (arg == "--visual-regression-capture" || arg == "--screenshot") {
       config.screenshotCapturePath =
           std::string(requireValue(argc, argv, i, arg));
     } else if (arg == "--capture-sequence") {
@@ -183,6 +216,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     } else if (arg == "--bloom") {
       config.bloomEnabled = true;
       config.hasBloomEnabledOverride = true;
+    } else if (arg == "--no-ray-query") {
+      config.enableRayQueries = false;
     } else if (arg == "--validation") {
       config.enableValidationLayers = true;
     } else if (arg == "--no-validation") {
