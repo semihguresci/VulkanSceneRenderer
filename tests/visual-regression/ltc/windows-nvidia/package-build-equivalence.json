@@ -1,0 +1,8 @@
+{
+  "rendererSourceUnchanged": true,
+  "runtimeShadersUnchanged": true,
+  "matrixExecutableSha256": "403e67ad15a60931101d536e5f95c2340ca1c99a017bb0ef77f1d59e50193920",
+  "packageExecutableSha256": "f71d4297c4a4fa95de749e5e2685e8b6fc0858b660135b570f74a68f7116c3ff",
+  "compiledSourceCommit": "d7eb6a25ae1170a405d9315e12a3980eb4fa17fd",
+  "note": "Clean revision stamp rebuild; renderer source and SPIR-V compared against full matrix snapshot."
+}

@@ -25,3 +25,17 @@ are checked against this matrix snapshot.
 Rectangle integration accelerates the measured dense-light fixtures. Disk LTC
 is slower than sampled integration on this GPU despite its near-field accuracy
 improvement; see `validation-summary.json` for timings and measured limits.
+
+The clean package was built from `d7eb6a25ae1170a405d9315e12a3980eb4fa17fd`.
+`cpu-test-results.txt` records ten passing suites. All eight LTC and seven
+temporal/provider/MSAA/ray package launches passed with SDK/Vulkan overrides
+removed and Windows-only PATH. These runs disable validation, while the full
+matrix above enables it. `package-build-info.json` binds the archive to its
+91 executable/DLL/SPIR-V/LTC hashes; `package-SHA256SUMS.txt` records the ZIP
+checksum. The original extracted payload stayed unchanged after both suites.
+
+`package-build-equivalence.json` records the clean revision rebuild: executable
+hash changed, renderer source and SPIR-V hashes stayed identical to the matrix.
+Screenshot telemetry has no build revision field; that limitation is recorded
+in the smoke results rather than presented as a captured revision check.
+The ZIP is a local validation artifact, not a published GitHub release.

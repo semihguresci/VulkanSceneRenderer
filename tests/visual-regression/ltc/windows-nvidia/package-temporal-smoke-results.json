@@ -1,0 +1,120 @@
+{
+  "sourceCommit": "d7eb6a25ae1170a405d9315e12a3980eb4fa17fd",
+  "compiledShaderCount": 78,
+  "exeSha256": "f71d4297c4a4fa95de749e5e2685e8b6fc0858b660135b570f74a68f7116c3ff",
+  "workingDirectory": "F:\\Projects\\Container\\out\\review-40\\completion-package-verified\\temporal-smoke",
+  "path": "Windows, System32 and SysWOW64 only",
+  "sdkVariablesRemoved": true,
+  "validationEnabled": false,
+  "captures": [
+    {
+      "name": "deferred-taa",
+      "technique": "deferred-raster",
+      "model": "taa_scene.gltf",
+      "taa": true,
+      "msaa": 1,
+      "submittedFrame": 64,
+      "exitCode": 0,
+      "imageProduced": true,
+      "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+      "imagePayloadBytes": 34790400
+    },
+    {
+      "name": "forward-usd-taa",
+      "technique": "forward-raster",
+      "model": "taa_equivalent.usda",
+      "taa": true,
+      "msaa": 1,
+      "submittedFrame": 64,
+      "exitCode": 0,
+      "imageProduced": true,
+      "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+      "imagePayloadBytes": 34790400
+    },
+    {
+      "name": "forward-bim-taa",
+      "technique": "forward-raster",
+      "model": "taa_equivalent.bim",
+      "taa": true,
+      "msaa": 1,
+      "submittedFrame": 64,
+      "exitCode": 0,
+      "imageProduced": true,
+      "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+      "imagePayloadBytes": 34790400
+    },
+    {
+      "name": "forward-msaa4",
+      "technique": "forward-raster",
+      "model": "taa_scene.gltf",
+      "taa": false,
+      "msaa": 4,
+      "submittedFrame": 9,
+      "exitCode": 0,
+      "imageProduced": true,
+      "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+      "imagePayloadBytes": 0
+    },
+    {
+      "name": "deferred-raster-ray-soft",
+      "rayShadows": {
+        "active": true,
+        "areaSamples": 8,
+        "build": {
+          "asAllocatedBytes": 32000,
+          "blasBuilt": 11,
+          "blasReused": 0,
+          "inputAllocatedBytes": 6400,
+          "instances": 11,
+          "scratchAllocatedBytes": 22400
+        },
+        "denoise": true,
+        "generation": 1,
+        "historyResets": 3,
+        "localLightBudget": 8,
+        "mode": 2,
+        "supported": true,
+        "totalAllocatedBytes": 43318800
+      },
+      "exitCode": 0
+    },
+    {
+      "name": "forward-raster-ray-hard",
+      "rayShadows": {
+        "active": true,
+        "areaSamples": 8,
+        "build": {
+          "asAllocatedBytes": 32000,
+          "blasBuilt": 11,
+          "blasReused": 0,
+          "inputAllocatedBytes": 6400,
+          "instances": 11,
+          "scratchAllocatedBytes": 22400
+        },
+        "denoise": true,
+        "generation": 1,
+        "historyResets": 3,
+        "localLightBudget": 8,
+        "mode": 1,
+        "supported": true,
+        "totalAllocatedBytes": 43318800
+      },
+      "exitCode": 0
+    },
+    {
+      "name": "forward-raster-ray-disabled",
+      "rayShadows": {
+        "active": false,
+        "areaSamples": 8,
+        "denoise": true,
+        "generation": 0,
+        "historyResets": 1,
+        "localLightBudget": 8,
+        "mode": 2,
+        "supported": false,
+        "totalAllocatedBytes": 3008
+      },
+      "exitCode": 0
+    }
+  ]
+}

@@ -91,6 +91,13 @@ Directional, point, tiled and area lighting consume these values. Deferred
 environment lighting evaluates clearcoat and sheen separately, matching the
 forward layer ordering. Core PBR texture sampling remains supported.
 
+The two RGBA16F layer targets add 16 bytes per pixel per swapchain image at
+1× samples. At MSAA sample count S, their multisample targets plus resolves add
+`16 × width × height × (S + 1)` bytes per image, before allocation alignment.
+At 960×540 this is 7.91 MiB per image at 1× or 39.55 MiB at 4×. This metadata
+also adds G-buffer bandwidth; the Lighting-pass benchmarks below do not include
+that pass's cost.
+
 The renderer's NDF denominator floor produces a flattened low-roughness lobe
 that a single LTC cannot fit accurately. Base or active clearcoat roughness
 below 0.28 retains sampled lighting; a smooth transition from 0.28 to 0.34 avoids
@@ -360,3 +367,24 @@ performance remains device/workload dependent. The complete result records,
 numeric checks, hash manifests, material-layer checks and eight untouched
 comparison images are saved in
 [the repository validation evidence](../tests/visual-regression/ltc/windows-nvidia/README.md).
+
+The clean package checkpoint is `d7eb6a25ae1170a405d9315e12a3980eb4fa17fd`.
+Its Visual Studio Release rebuild passed all ten focused CPU suites, including
+authored emitter-overlay geometry. The rebuilt executable's revision stamp
+changed its hash; all recorded renderer sources and runtime SPIR-V files
+remained identical to the full matrix snapshot. The extracted validation ZIP
+passed eight LTC/sample/fallback launches and seven TAA, BIM/USD, MSAA and ray
+shadow launches from unrelated working directories with Windows-only PATH and
+SDK/Vulkan overrides removed. Its 78 shaders, eight DLLs and four LTC files
+matched all 91 payload hashes before and after testing. The original extraction
+was preserved. Package launches disable validation; the full matrix above
+provides synchronization-validation coverage. Screenshot telemetry currently
+does not expose a build revision, so package provenance uses the clean build
+log, source checkpoint, archive checksum and payload hashes.
+
+This local test archive is `VulkanSceneRenderer-v0.1.0-ltc-validation-windows-x64.zip`
+(77,108,924 bytes), SHA-256
+`1a82936f4bb6a072d70f573cde1713b15d0fc444f7cdfc11656fbb939b84e422`.
+Package/CPU result records and the source/SPIR-V equivalence check are saved
+with the repository evidence. The archive is a local validation artifact;
+GitHub publication and merge remain separate delivery steps.
