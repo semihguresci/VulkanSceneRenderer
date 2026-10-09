@@ -4,9 +4,9 @@ Area-light visibility uses up to four complete perspective shadow cubes inside
 the existing 24-layer local atlas. Each cube now represents an equal-area
 emitter domain: rectangle strips/quadrants or disk sectors. CPU origins are
 domain centroids; Slang integrates residual emitter area around each origin.
-Unoccluded 25-sample BRDF integration, light intensity and area conventions are
-unchanged. Deferred, forward opaque and forward transparent evaluation share
-the visibility helper.
+Unoccluded lighting uses the selected [LTC or sampled integration](ltc-area-lighting.md).
+Light intensity and area conventions are preserved. Deferred, forward opaque
+and forward transparent evaluation share the visibility helper.
 
 The previous four-origin path combined nearly hard edges because multiple-origin
 layers uploaded zero source radius. That produced quarter-level plateaus.
@@ -21,9 +21,9 @@ break aligned filter bands. The method builds on
 This is a raster approximation using average blocker depth and a locally planar
 receiver. Multiple separated blocker depths, very near emitters and highly
 nonplanar receivers can still differ from full ray visibility. The bounded
-blocker search can miss very small isolated blockers. Traced visibility remains
-future work in #41; enabling optional ray-query device features does not change
-this raster lighting path.
+blocker search can miss very small isolated blockers. Optional
+[ray-query shadows](ray-query-rendering.md) provide geometry visibility when
+selected; enabling device features alone leaves the raster mode selected.
 
 | Fixed-origin diagnostic | Balanced raster filtering |
 | --- | --- |

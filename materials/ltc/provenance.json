@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "tableFormat": "CLTC little-endian version 1, 64x64 RGBA float32",
+  "generator": "tools/ltc_fit/fit_renderer_ltc.cpp",
+  "upstream": "https://github.com/selfshadow/ltc_code",
+  "upstreamRevision": "31e5e96b54f98f33098f8503003119ba2231a1c6",
+  "license": "LICENSE.txt",
+  "samplesPerAxis": 64,
+  "maximumIterations": 200,
+  "workerThreads": 8,
+  "command": "out/fit_renderer_ltc.exe materials/ltc 64 200 8",
+  "target": "shaders/brdf_common.slang: roughness clamp, floored GGX distribution, Schlick-GGX masking, floored direct denominator",
+  "physicalHemisphereNormalization": "(1+MrowZ.z/length(MrowZ))/2",
+  "files": {
+    "matrix.bin": {
+      "bytes": 65552,
+      "sha256": "7a4622c1c884c69c5234964d2894a284ac3af1a53e229891edf0a2636b55ec1a"
+    },
+    "amplitude.bin": {
+      "bytes": 65552,
+      "sha256": "06809ef6aaec42de7426152e8260e8b64baee425686919b0f6e47fa567990f71"
+    }
+  }
+}

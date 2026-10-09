@@ -34,6 +34,8 @@ class SceneManager;
 
 namespace container::renderer {
 
+class LtcLutResources;
+
 // Struct carrying the scene-space anchor used for light positioning.
 struct SceneLightingAnchor {
   glm::mat4 sceneTransform{1.0f};
@@ -126,6 +128,9 @@ public:
     return lightingSettings_;
   }
   void setLightingSettings(const container::gpu::LightingSettings &settings);
+  [[nodiscard]] bool ltcReady() const;
+  [[nodiscard]] const std::string &ltcStatus() const;
+  [[nodiscard]] uint64_t ltcMemoryBytes() const;
   const container::gpu::LightCullingStats &lightCullingStats() const {
     return lastStats_;
   }
@@ -222,6 +227,7 @@ private:
   void publishAreaLights();
   void rebuildPointLightSsboFromEcs();
   void writeLightDescriptorStorageBuffers() const;
+  void writeLtcDescriptors() const;
   void allocateClusterBuffers(VkExtent2D extent);
   void writeTiledResourceDescriptors() const;
   void createLightGizmoIconDescriptorResources();
@@ -236,6 +242,7 @@ private:
 
   container::gpu::LightingData lightingData_{};
   container::gpu::LightingSettings lightingSettings_{};
+  std::unique_ptr<LtcLutResources> ltcLuts_;
   container::gpu::LightCullingStats lastStats_{};
   uint32_t lightVolumeIndexCount_{0};
   uint32_t rootNode_{container::scene::SceneGraph::kInvalidNode};

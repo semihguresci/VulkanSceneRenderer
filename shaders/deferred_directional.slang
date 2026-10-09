@@ -1,6 +1,7 @@
 #include "brdf_common.slang"
 #include "depth_normal_common.slang"
 #include "area_light_common.slang"
+#include "area_light_ltc.slang"
 #include "material_data_common.slang"
 #include "local_shadow_common.slang"
 #include "screen_space_light_shadow_common.slang"
@@ -28,6 +29,8 @@
 [[vk::binding(18, 0)]] ConstantBuffer<LocalShadowBuffer> uLocalShadow;
 [[vk::binding(19, 0)]] Texture2DArray<float> gLocalShadowAtlas;
 [[vk::binding(20, 0)]] SamplerComparisonState gLocalShadowSampler;
+[[vk::binding(21, 0)]] Texture2D<float4> gMaterialLayersTexture;
+[[vk::binding(22, 0)]] Texture2D<float4> gMaterialSheenTexture;
 [[vk::binding(0, 1)]] ConstantBuffer<LightingBuffer> uLighting;
 [[vk::binding(2, 1)]] StructuredBuffer<AreaLightData> uAreaLights;
 [[vk::binding(3, 2)]] StructuredBuffer<GpuMaterial> uMaterials;
@@ -116,6 +119,7 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
                                  bool thinSurface, float alpha,
                                  float occlusion, float bounceIntensity, float4 pixelPosition)
 {
+    if (!AreaLightHasRenderableRadiance(light)) return 0.0.xxx;
     AreaLightFrame frame = BuildAreaLightFrame(light);
     float3 directLighting = 0.0.xxx;
     float areaShadowVisibility = 1.0;
@@ -162,22 +166,57 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
         saturate(DeferredFiniteOr(layerTerms.transmissionFactor, 0.0) *
                  (1.0 - metallic));
 
-    [unroll]
+    AreaLightLtcTerms ltcTerms;
+    bool useLtc = TryEvaluateAreaLightLtc(uLighting, light, frame,
+        worldPosition, albedo, F0, metallic, roughness, normal, V,
+        layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,
+        layerTerms.sheenColor, layerTerms.sheenRoughness,
+        thinSurface || transmissionWeight > 0.0, ltcTerms);
+    bool correctDiffuseFresnel = useLtc && any(ltcTerms.diffuseCorrectionScale > 0.0.xxx);
+    bool sampleDirectTerms = useLtc &&
+        (ltcTerms.stableWeight < 1.0 || ltcTerms.fresnelWeight < 1.0);
+    if (useLtc && !sampleDirectTerms && bounceIntensity <= 0.0 && !correctDiffuseFresnel)
+    {
+        directLighting += (ltcTerms.lighting.stable + ltcTerms.lighting.fresnel) *
+            areaShadowVisibility;
+        return directLighting;
+    }
+
+    uint integrationSampleCount = AreaLightIntegrationSampleCount(uLighting);
+    float3 diffuseCorrection = 0.0.xxx;
+    AreaLightDirectTerms sampledTerms;
+    sampledTerms.stable = 0.0.xxx;
+    sampledTerms.fresnel = 0.0.xxx;
+    [loop]
     for (uint sampleIndex = 0u;
-         sampleIndex < AREA_LIGHT_INTEGRATION_SAMPLE_COUNT; ++sampleIndex)
+         sampleIndex < integrationSampleCount; ++sampleIndex)
     {
         float3 L;
         float3 radiance = EvaluateAreaLightSampleRadiance(
-            light, frame, worldPosition, sampleIndex, L);
+            light, frame, worldPosition, sampleIndex, integrationSampleCount, L);
         float lightVisibility = areaShadowVisibility;
         float3 directRadiance = radiance * lightVisibility;
-        directLighting += EvaluateDeferredLayeredDirectLight(
-            albedo, F0, metallic, roughness, normal, V, L, directRadiance,
-            layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,
-            layerTerms.sheenColor, layerTerms.sheenRoughness);
-        directLighting += EvaluateDiffuseBounceLight(
-            albedo, metallic, normal, geometricNormal, V, L, radiance,
-            lightVisibility, occlusion, bounceIntensity);
+        if (!useLtc)
+            directLighting += EvaluateDeferredLayeredDirectLight(
+                albedo, F0, metallic, roughness, normal, V, L, directRadiance,
+                layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,
+                layerTerms.sheenColor, layerTerms.sheenRoughness);
+        else if (sampleDirectTerms)
+        {
+            AreaLightDirectTerms sample = EvaluateAreaLightSampledDirectTerms(
+                albedo, F0, metallic, roughness, normal, V, L, directRadiance,
+                layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,
+                layerTerms.sheenColor, layerTerms.sheenRoughness);
+            sampledTerms.stable += sample.stable;
+            sampledTerms.fresnel += sample.fresnel;
+        }
+        if (bounceIntensity > 0.0)
+            directLighting += EvaluateDiffuseBounceLight(
+                albedo, metallic, normal, geometricNormal, V, L, radiance,
+                lightVisibility, occlusion, bounceIntensity);
+        if (correctDiffuseFresnel)
+            diffuseCorrection += EvaluateAreaLightDiffuseFresnelCorrection(
+                ltcTerms.diffuseCorrectionScale, normal, V, L, directRadiance);
 
         if (thinSurface || transmissionWeight > 0.0)
         {
@@ -188,6 +227,25 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
                 albedo, normal, V, L, directRadiance, transmissionAlpha, false) *
                 transmissionScale;
         }
+    }
+
+    if (useLtc)
+    {
+        float3 ltcContribution;
+        if (!TryCombineAreaLightLtcTerms(ltcTerms, areaShadowVisibility,
+                diffuseCorrection, sampledTerms, ltcContribution))
+        {
+            // A coarse quadrature correction must not remove more energy
+            // than the analytic diffuse term. Recover the sampled BRDF.
+            ltcContribution = sampleDirectTerms ?
+                sampledTerms.stable + sampledTerms.fresnel :
+                EvaluateAreaLightSampledLayeredDirect(light,
+                    frame, worldPosition, integrationSampleCount, albedo, F0,
+                    metallic, roughness, normal, V, layerTerms.clearcoatFactor,
+                    layerTerms.clearcoatRoughness, layerTerms.sheenColor,
+                    layerTerms.sheenRoughness) * areaShadowVisibility;
+        }
+        directLighting += max(Finite3Or(ltcContribution, 0.0.xxx), 0.0.xxx);
     }
 
     return directLighting;
@@ -242,12 +300,10 @@ float4 fragMain(VSOutput input) : SV_Target0
     float3 emissive = DeferredFinite3Or(emissiveSample.rgb, emissiveTexel);
     uint materialIndex = DecodeGBufferMaterialIndex(material.w);
     GpuMaterial materialData = uMaterials[materialIndex];
-    // Resolve materialData.clearcoatFactor,
-    // materialData.clearcoatRoughnessFactor, materialData.sheenColorFactor.rgb,
-    // materialData.sheenRoughnessFactor, materialData.iridescenceFactor, and
-    // materialData.transmissionFactor with texture-only deferred fallbacks.
     DeferredMaterialLayerTerms layerTerms =
-        ResolveDeferredMaterialLayerTerms(materialData);
+        DecodeDeferredMaterialLayerTerms(materialData,
+            gMaterialLayersTexture.Load(int3(pixelCoord, 0)),
+            gMaterialSheenTexture.Load(int3(pixelCoord, 0)));
     layerTerms.transmissionFactor =
         saturate(DeferredFiniteOr(layerTerms.transmissionFactor, 0.0));
     layerTerms.clearcoatFactor =
@@ -316,9 +372,7 @@ float4 fragMain(VSOutput input) : SV_Target0
         }
     }
 
-    float iridescenceThickness = EstimateDeferredIridescenceThickness(
-        materialData.iridescenceThicknessMinimum,
-        materialData.iridescenceThicknessMaximum);
+    float iridescenceThickness = layerTerms.iridescenceThickness;
     float3 F0 = EvaluateDeferredPbrF0FromDielectricColor(
         albedo.rgb, metallic, specularSample.rgb,
         layerTerms.iridescenceFactor, materialData.iridescenceIor,
@@ -393,6 +447,31 @@ float4 fragMain(VSOutput input) : SV_Target0
     float3 ambientLighting = kD_ibl * diffuseIBL * diffuseAO + specularIBL * specularOcclusion;
     ambientLighting += ComputeDiffuseAmbientFloor(
         albedo.rgb, occlusion, ssao, environmentIntensity, bounceIntensity);
+    // Layer the environment response exactly once, using the geometry pass's
+    // sampled factors. Direct lighting already evaluates these layers above.
+    if (layerTerms.clearcoatFactor > 0.0)
+    {
+        float clearcoatRoughness = layerTerms.clearcoatRoughness;
+        float3 clearcoatPrefiltered = DeferredFinite3Or(
+            gPrefilteredCubemap.SampleLevel(envSampler, R,
+                clearcoatRoughness * maxMipLevel).rgb, 0.0.xxx) * environmentIntensity;
+        float2 clearcoatBrdf = max(DeferredFinite2Or(
+            gBrdfLUT.Sample(brdfSampler, float2(NdotV, clearcoatRoughness)),
+            0.0.xx), 0.0.xx);
+        float3 clearcoatIbl = EvaluateSpecularIblMultipleScattering(
+            clearcoatPrefiltered, IorToF0(1.5).xxx, clearcoatBrdf);
+        ambientLighting = ambientLighting *
+            DeferredClearcoatBaseEnergyScale(layerTerms.clearcoatFactor) +
+            clearcoatIbl * layerTerms.clearcoatFactor;
+    }
+    if (MaxComponent3(layerTerms.sheenColor) > 0.0)
+    {
+        float sheenScale = pow(1.0 - NdotV, 2.0) *
+            (1.0 - 0.35 * layerTerms.sheenRoughness);
+        ambientLighting = ambientLighting *
+            DeferredSheenBaseEnergyScale(layerTerms.sheenColor) +
+            layerTerms.sheenColor * irradiance * sheenScale * 0.35;
+    }
     float3 finalColor =
         DeferredFinite3Or(ambientLighting + directLighting + emissive, 0.0.xxx);
 

@@ -1,0 +1,335 @@
+{
+  "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+  "driverVersion": 2480242688,
+  "qualityRecords": 140,
+  "parityRecords": 36,
+  "fullGeometryReferenceError": 0.03541496006301672,
+  "parityError": 0.0,
+  "spatialCenterError": 0.0022683474329130413,
+  "spatialLocalError": 0.004709953432064252,
+  "shadowMae": 0.0012367934967405108,
+  "shadowP95": 0.00563909223598039,
+  "taaMae": 0.00015555555555555564,
+  "benchmarks": [
+    {
+      "case": "benchmark",
+      "shape": "rect",
+      "lights": 1,
+      "mode": "sampled",
+      "lightingMedianGpuMs": 0.973008006811142,
+      "lightingP95GpuMs": 1.2244608163833617,
+      "frames": 8,
+      "resolution": [
+        960,
+        540
+      ],
+      "shadows": false,
+      "metallic": 1.0,
+      "roughness": 0.6,
+      "validationClean": true
+    },
+    {
+      "case": "benchmark",
+      "shape": "rect",
+      "lights": 1,
+      "mode": "ltc",
+      "lightingMedianGpuMs": 0.8212319910526276,
+      "lightingP95GpuMs": 0.9048095941543578,
+      "frames": 8,
+      "resolution": [
+        960,
+        540
+      ],
+      "shadows": false,
+      "metallic": 1.0,
+      "roughness": 0.6,
+      "validationClean": true
+    },
+    {
+      "case": "benchmark-comparison",
+      "shape": "rect",
+      "lights": 1,
+      "sampledToLtcSpeedup": 1.1848150308464884
+    },
+    {
+      "case": "benchmark",
+      "shape": "rect",
+      "lights": 8,
+      "mode": "sampled",
+      "lightingMedianGpuMs": 4.387888193130493,
+      "lightingP95GpuMs": 4.730508708953858,
+      "frames": 8,
+      "resolution": [
+        960,
+        540
+      ],
+      "shadows": false,
+      "metallic": 1.0,
+      "roughness": 0.6,
+      "validationClean": true
+    },
+    {
+      "case": "benchmark",
+      "shape": "rect",
+      "lights": 8,
+      "mode": "ltc",
+      "lightingMedianGpuMs": 2.3377599716186523,
+      "lightingP95GpuMs": 2.57918404340744,
+      "frames": 8,
+      "resolution": [
+        960,
+        540
+      ],
+      "shadows": false,
+      "metallic": 1.0,
+      "roughness": 0.6,
+      "validationClean": true
+    },
+    {
+      "case": "benchmark-comparison",
+      "shape": "rect",
+      "lights": 8,
+      "sampledToLtcSpeedup": 1.8769626678535107
+    },
+    {
+      "case": "benchmark",
+      "shape": "rect",
+      "lights": 32,
+      "mode": "sampled",
+      "lightingMedianGpuMs": 16.6278715133667,
+      "lightingP95GpuMs": 16.820051288604738,
+      "frames": 8,
+      "resolution": [
+        960,
+        540
+      ],
+      "shadows": false,
+      "metallic": 1.0,
+      "roughness": 0.6,
+      "validationClean": true
+    },
+    {
+      "case": "benchmark",
+      "shape": "rect",
+      "lights": 32,
+      "mode": "ltc",
+      "lightingMedianGpuMs": 7.728447914123535,
+      "lightingP95GpuMs": 8.029400181770324,
+      "frames": 8,
+      "resolution": [
+        960,
+        540
+      ],
+      "shadows": false,
+      "metallic": 1.0,
+      "roughness": 0.6,
+      "validationClean": true
+    },
+    {
+      "case": "benchmark-comparison",
+      "shape": "rect",
+      "lights": 32,
+      "sampledToLtcSpeedup": 2.1515149869846053
+    },
+    {
+      "case": "benchmark",
+      "shape": "rect",
+      "lights": 128,
+      "mode": "sampled",
+      "lightingMedianGpuMs": 64.55883026123047,
+      "lightingP95GpuMs": 65.16298866271973,
+      "frames": 8,
+      "resolution": [
+        960,
+        540
+      ],
+      "shadows": false,
+      "metallic": 1.0,
+      "roughness": 0.6,
+      "validationClean": true
+    },
+    {
+      "case": "benchmark",
+      "shape": "rect",
+      "lights": 128,
+      "mode": "ltc",
+      "lightingMedianGpuMs": 29.00444793701172,
+      "lightingP95GpuMs": 30.127908802032472,
+      "frames": 8,
+      "resolution": [
+        960,
+        540
+      ],
+      "shadows": false,
+      "metallic": 1.0,
+      "roughness": 0.6,
+      "validationClean": true
+    },
+    {
+      "case": "benchmark-comparison",
+      "shape": "rect",
+      "lights": 128,
+      "sampledToLtcSpeedup": 2.2258251700370706
+    },
+    {
+      "case": "benchmark",
+      "shape": "disk",
+      "lights": 1,
+      "mode": "sampled",
+      "lightingMedianGpuMs": 0.9954400062561035,
+      "lightingP95GpuMs": 1.1238928109407424,
+      "frames": 8,
+      "resolution": [
+        960,
+        540
+      ],
+      "shadows": false,
+      "metallic": 1.0,
+      "roughness": 0.6,
+      "validationClean": true
+    },
+    {
+      "case": "benchmark",
+      "shape": "disk",
+      "lights": 1,
+      "mode": "ltc",
+      "lightingMedianGpuMs": 1.065712034702301,
+      "lightingP95GpuMs": 1.0743807971477508,
+      "frames": 8,
+      "resolution": [
+        960,
+        540
+      ],
+      "shadows": false,
+      "metallic": 1.0,
+      "roughness": 0.6,
+      "validationClean": true
+    },
+    {
+      "case": "benchmark-comparison",
+      "shape": "disk",
+      "lights": 1,
+      "sampledToLtcSpeedup": 0.9340609600361438
+    },
+    {
+      "case": "benchmark",
+      "shape": "disk",
+      "lights": 8,
+      "mode": "sampled",
+      "lightingMedianGpuMs": 4.4561920166015625,
+      "lightingP95GpuMs": 4.755497550964355,
+      "frames": 8,
+      "resolution": [
+        960,
+        540
+      ],
+      "shadows": false,
+      "metallic": 1.0,
+      "roughness": 0.6,
+      "validationClean": true
+    },
+    {
+      "case": "benchmark",
+      "shape": "disk",
+      "lights": 8,
+      "mode": "ltc",
+      "lightingMedianGpuMs": 4.981504201889038,
+      "lightingP95GpuMs": 5.32726571559906,
+      "frames": 8,
+      "resolution": [
+        960,
+        540
+      ],
+      "shadows": false,
+      "metallic": 1.0,
+      "roughness": 0.6,
+      "validationClean": true
+    },
+    {
+      "case": "benchmark-comparison",
+      "shape": "disk",
+      "lights": 8,
+      "sampledToLtcSpeedup": 0.8945474772282092
+    },
+    {
+      "case": "benchmark",
+      "shape": "disk",
+      "lights": 32,
+      "mode": "sampled",
+      "lightingMedianGpuMs": 16.932991981506348,
+      "lightingP95GpuMs": 17.31975393295288,
+      "frames": 8,
+      "resolution": [
+        960,
+        540
+      ],
+      "shadows": false,
+      "metallic": 1.0,
+      "roughness": 0.6,
+      "validationClean": true
+    },
+    {
+      "case": "benchmark",
+      "shape": "disk",
+      "lights": 32,
+      "mode": "ltc",
+      "lightingMedianGpuMs": 18.62440013885498,
+      "lightingP95GpuMs": 18.82220516204834,
+      "frames": 8,
+      "resolution": [
+        960,
+        540
+      ],
+      "shadows": false,
+      "metallic": 1.0,
+      "roughness": 0.6,
+      "validationClean": true
+    },
+    {
+      "case": "benchmark-comparison",
+      "shape": "disk",
+      "lights": 32,
+      "sampledToLtcSpeedup": 0.909183214238404
+    },
+    {
+      "case": "benchmark",
+      "shape": "disk",
+      "lights": 128,
+      "mode": "sampled",
+      "lightingMedianGpuMs": 66.66854476928711,
+      "lightingP95GpuMs": 68.26616973876953,
+      "frames": 8,
+      "resolution": [
+        960,
+        540
+      ],
+      "shadows": false,
+      "metallic": 1.0,
+      "roughness": 0.6,
+      "validationClean": true
+    },
+    {
+      "case": "benchmark",
+      "shape": "disk",
+      "lights": 128,
+      "mode": "ltc",
+      "lightingMedianGpuMs": 71.99875259399414,
+      "lightingP95GpuMs": 72.65250282287597,
+      "frames": 8,
+      "resolution": [
+        960,
+        540
+      ],
+      "shadows": false,
+      "metallic": 1.0,
+      "roughness": 0.6,
+      "validationClean": true
+    },
+    {
+      "case": "benchmark-comparison",
+      "shape": "disk",
+      "lights": 128,
+      "sampledToLtcSpeedup": 0.9259680531583036
+    }
+  ]
+}

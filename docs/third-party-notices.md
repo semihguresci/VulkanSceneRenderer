@@ -7,6 +7,14 @@ Mapbox Earcut, Manifold, Clipper2, MaterialX, MikkTSpace, miniz, nlohmann/json, 
 Vulkan headers/loader, Vulkan Memory Allocator, and TinyUSDZ. Copies of the
 dependency license notices from the build are in `THIRD_PARTY_LICENSES`.
 Slang compiler notices are included alongside those of the shader dependencies.
+The LTC fitter and polygon integration adapt
+[selfshadow/ltc_code](https://github.com/selfshadow/ltc_code), Copyright 2017
+Eric Heitz, Jonathan Dupuy, Stephen Hill and David Neubelt. Its permissive license
+requires retention of its notice and a citation to *Real-Time Polygonal-Light
+Shading with Linearly Transformed Cosines*, ACM SIGGRAPH 2016. The complete
+notice is included with the fitted assets in `materials/ltc/LICENSE.txt`.
+The lookup tables are regenerated for this renderer's BRDF; they are not the
+original Smith-GGX fit. See [LTC area lighting](ltc-area-lighting.md).
 TinyUSDZ is Apache 2.0 licensed and contains additional third-party code;
 its license files and bundled dependency notices are included separately.
 

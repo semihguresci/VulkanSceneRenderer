@@ -1,0 +1,200 @@
+[
+  {
+    "radius": 1.0,
+    "planeDistance": 0.13,
+    "angle": 0.0,
+    "vertices": 88,
+    "exactCosine": 0.46756843945865995,
+    "polygonCosine": 0.4673228892932104,
+    "independentBrdf": 0.4675492466620637,
+    "referenceConvergence": 7.717315033211292e-15,
+    "guardedLtc": [
+      0.46729790929573556,
+      0.46729790929573556,
+      0.46729790929573556
+    ],
+    "relativeError": 0.0005375634077533116
+  },
+  {
+    "radius": 1.0,
+    "planeDistance": 0.13,
+    "angle": 0.04908738521234052,
+    "vertices": 86,
+    "exactCosine": 0.46756843945865995,
+    "polygonCosine": 0.4673110882453533,
+    "independentBrdf": 0.4675492466620637,
+    "referenceConvergence": 7.717315033211292e-15,
+    "guardedLtc": [
+      0.4672861089867354,
+      0.4672861089867354,
+      0.4672861089867354
+    ],
+    "relativeError": 0.0005628020517772514
+  },
+  {
+    "radius": 1.0,
+    "planeDistance": 0.13,
+    "angle": 0.09817477042468103,
+    "vertices": 82,
+    "exactCosine": 0.46756843945865995,
+    "polygonCosine": 0.4672043210622166,
+    "independentBrdf": 0.4675492466620637,
+    "referenceConvergence": 7.717315033211292e-15,
+    "guardedLtc": [
+      0.4671793510134422,
+      0.4671793510134422,
+      0.4671793510134422
+    ],
+    "relativeError": 0.0007911373000005127
+  },
+  {
+    "radius": 10.0,
+    "planeDistance": 0.13,
+    "angle": 0.0,
+    "vertices": 104,
+    "exactCosine": 0.4967500686540745,
+    "polygonCosine": 0.49626931491346904,
+    "independentBrdf": 0.49672348018358914,
+    "referenceConvergence": 1.1063708866477075e-14,
+    "guardedLtc": [
+      0.49624248839308766,
+      0.49624248839308766,
+      0.49624248839308766
+    ],
+    "relativeError": 0.000968329079840778
+  },
+  {
+    "radius": 10.0,
+    "planeDistance": 0.13,
+    "angle": 0.04908738521234052,
+    "vertices": 98,
+    "exactCosine": 0.4967500686540745,
+    "polygonCosine": 0.49626470302409964,
+    "independentBrdf": 0.49672348018358914,
+    "referenceConvergence": 1.1063708866477075e-14,
+    "guardedLtc": [
+      0.49623787681126963,
+      0.49623787681126963,
+      0.49623787681126963
+    ],
+    "relativeError": 0.0009776130819103429
+  },
+  {
+    "radius": 10.0,
+    "planeDistance": 0.13,
+    "angle": 0.09817477042468103,
+    "vertices": 98,
+    "exactCosine": 0.4967500686540745,
+    "polygonCosine": 0.4962685815867219,
+    "independentBrdf": 0.49672348018358914,
+    "referenceConvergence": 1.1063708866477075e-14,
+    "guardedLtc": [
+      0.4962417551145337,
+      0.4962417551145337,
+      0.4962417551145337
+    ],
+    "relativeError": 0.0009698053107482875
+  },
+  {
+    "radius": 100.0,
+    "planeDistance": 0.13,
+    "angle": 0.0,
+    "vertices": 200,
+    "exactCosine": 0.4996750000686562,
+    "polygonCosine": 0.49942165866608446,
+    "independentBrdf": 0.49964762188090783,
+    "referenceConvergence": 6.221325257774432e-08,
+    "guardedLtc": [
+      0.4993946229644283,
+      0.4993946229644283,
+      0.4993946229644283
+    ],
+    "relativeError": 0.0005063546895852344
+  },
+  {
+    "radius": 100.0,
+    "planeDistance": 0.13,
+    "angle": 0.04908738521234052,
+    "vertices": 146,
+    "exactCosine": 0.4996750000686562,
+    "polygonCosine": 0.49942159093113264,
+    "independentBrdf": 0.49964762188090783,
+    "referenceConvergence": 6.221325257774432e-08,
+    "guardedLtc": [
+      0.49939455523423765,
+      0.49939455523423765,
+      0.49939455523423765
+    ],
+    "relativeError": 0.0005064902455004677
+  },
+  {
+    "radius": 100.0,
+    "planeDistance": 0.13,
+    "angle": 0.09817477042468103,
+    "vertices": 146,
+    "exactCosine": 0.4996750000686562,
+    "polygonCosine": 0.4994216471932161,
+    "independentBrdf": 0.49964762188090783,
+    "referenceConvergence": 6.221325257774432e-08,
+    "guardedLtc": [
+      0.4993946114923664,
+      0.4993946114923664,
+      0.4993946114923664
+    ],
+    "relativeError": 0.0005063776498904759
+  },
+  {
+    "case": "physical-horizon",
+    "roughness": 0.35,
+    "NdotV": 0.02,
+    "vertices": 240,
+    "denseBoundaryReference": 0.015204682262058511,
+    "adaptiveBoundaryIntegral": 0.015201369211525819,
+    "relativeError": 0.00021789672915161932
+  },
+  {
+    "case": "physical-horizon",
+    "roughness": 0.7,
+    "NdotV": 0.2,
+    "vertices": 148,
+    "denseBoundaryReference": 0.19015041458984358,
+    "adaptiveBoundaryIntegral": 0.1901015819714144,
+    "relativeError": 0.00025681047571997204
+  },
+  {
+    "case": "physical-horizon",
+    "roughness": 1.0,
+    "NdotV": 0.7,
+    "vertices": 104,
+    "denseBoundaryReference": 0.35449183984037425,
+    "adaptiveBoundaryIntegral": 0.3542161138909592,
+    "relativeError": 0.000777806195875225
+  },
+  {
+    "case": "rim",
+    "roughness": 0.35,
+    "NdotV": 0.02,
+    "vertices": 216,
+    "denseBoundaryReference": 0.04356872761418302,
+    "adaptiveBoundaryIntegral": 0.04356864211729714,
+    "relativeError": 1.962345254460106e-06
+  },
+  {
+    "case": "rim",
+    "roughness": 0.7,
+    "NdotV": 0.2,
+    "vertices": 136,
+    "denseBoundaryReference": 0.40758940589122034,
+    "adaptiveBoundaryIntegral": 0.40757894120365584,
+    "relativeError": 2.5674581854284062e-05
+  },
+  {
+    "case": "rim",
+    "roughness": 1.0,
+    "NdotV": 0.7,
+    "vertices": 104,
+    "denseBoundaryReference": 0.6389154499838852,
+    "adaptiveBoundaryIntegral": 0.6386279325391376,
+    "relativeError": 0.000450008596215326
+  }
+]

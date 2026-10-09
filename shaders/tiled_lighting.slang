@@ -22,6 +22,8 @@
 [[vk::binding(18, 0)]] ConstantBuffer<LocalShadowBuffer> uLocalShadow;
 [[vk::binding(19, 0)]] Texture2DArray<float> gLocalShadowAtlas;
 [[vk::binding(20, 0)]] SamplerComparisonState gLocalShadowSampler;
+[[vk::binding(21, 0)]] Texture2D<float4> gMaterialLayersTexture;
+[[vk::binding(22, 0)]] Texture2D<float4> gMaterialSheenTexture;
 // Bindings 7-9 remain reserved for directional shadow inputs.
 
 // Set 1: tile resources.
@@ -119,12 +121,10 @@ float4 fragMain(VSOutput input) : SV_Target0
     float4 specularSample = gSpecularTexture.Load(int3(pixelCoord, 0));
     uint materialIndex = DecodeGBufferMaterialIndex(material.w);
     GpuMaterial materialData = uMaterials[materialIndex];
-    // Resolve materialData.clearcoatFactor,
-    // materialData.clearcoatRoughnessFactor, materialData.sheenColorFactor.rgb,
-    // materialData.sheenRoughnessFactor, materialData.iridescenceFactor, and
-    // materialData.transmissionFactor with texture-only deferred fallbacks.
     DeferredMaterialLayerTerms layerTerms =
-        ResolveDeferredMaterialLayerTerms(materialData);
+        DecodeDeferredMaterialLayerTerms(materialData,
+            gMaterialLayersTexture.Load(int3(pixelCoord, 0)),
+            gMaterialSheenTexture.Load(int3(pixelCoord, 0)));
 
     float2 uv = (float2(pixelCoord) + 0.5.xx) / float2(max(width, 1u), max(height, 1u));
     float3 worldPosition;
@@ -142,9 +142,7 @@ float4 fragMain(VSOutput input) : SV_Target0
     bool thinSurface = IsThinSurfaceGpuMaterial(materialData.flags);
     float3 V = SafeNormalize(uCamera.cameraWorldPosition.xyz - worldPosition, float3(0.0, 0.0, 1.0));
     float NdotV = max(dot(normal, V), 0.0);
-    float iridescenceThickness = EstimateDeferredIridescenceThickness(
-        materialData.iridescenceThicknessMinimum,
-        materialData.iridescenceThicknessMaximum);
+    float iridescenceThickness = layerTerms.iridescenceThickness;
     float3 F0 = EvaluateDeferredPbrF0FromDielectricColor(
         albedo.rgb, metallic, specularSample.rgb,
         layerTerms.iridescenceFactor, materialData.iridescenceIor,

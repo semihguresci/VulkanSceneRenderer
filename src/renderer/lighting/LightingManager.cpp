@@ -3,12 +3,14 @@
 #include "Container/renderer/deferred/DeferredLightGizmoPlanner.h"
 #include "Container/renderer/deferred/DeferredLightGizmoRecorder.h"
 #include "Container/renderer/lighting/LightGizmoIconAtlas.h"
+#include "Container/renderer/lighting/LtcLutResources.h"
 #include "Container/renderer/lighting/LocalShadowLayerAllocator.h"
 #include "Container/renderer/scene/SceneController.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/Camera.h"
 #include "Container/utility/FileLoader.h"
 #include "Container/utility/PipelineManager.h"
+#include "Container/utility/Platform.h"
 #include "Container/utility/SceneManager.h"
 #include "Container/utility/ShaderModule.h"
 #include "Container/utility/VulkanDevice.h"
@@ -134,8 +136,14 @@ LightingManager::~LightingManager() {
 void LightingManager::createDescriptorResources(uint32_t descriptorSetCount) {
   const uint32_t setCount = std::max<uint32_t>(1u, descriptorSetCount);
 
+  if (!ltcLuts_) {
+    ltcLuts_ = std::make_unique<LtcLutResources>(
+        device_, *allocationManager_.memoryManager());
+    ltcLuts_->load(container::util::executableDirectory());
+  }
+
   if (lightDescriptorSetLayout_ == VK_NULL_HANDLE) {
-    const std::array<VkDescriptorSetLayoutBinding, 5> bindings = {{
+    const std::array<VkDescriptorSetLayoutBinding, 8> bindings = {{
         {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
          VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
@@ -146,9 +154,15 @@ void LightingManager::createDescriptorResources(uint32_t descriptorSetCount) {
          nullptr},
         {4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
          nullptr},
+        {5, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+         nullptr},
+        {6, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+         nullptr},
+        {7, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+         nullptr},
     }};
     lightDescriptorSetLayout_ = pipelineManager_.createDescriptorSetLayout(
-        {bindings.begin(), bindings.end()}, {0, 0, 0, 0, 0});
+        {bindings.begin(), bindings.end()}, std::vector<VkDescriptorBindingFlags>(bindings.size(), 0));
   }
 
   for (auto &buffer : lightingBuffers_) {
@@ -170,7 +184,8 @@ void LightingManager::createDescriptorResources(uint32_t descriptorSetCount) {
   }
   lightDescriptorPool_ = pipelineManager_.createDescriptorPool(
       {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, setCount * 2u},
-       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, setCount},
+       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, setCount * 3u},
+       {VK_DESCRIPTOR_TYPE_SAMPLER, setCount},
        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, setCount * 2u}},
       setCount, 0);
 
@@ -200,7 +215,39 @@ void LightingManager::createDescriptorResources(uint32_t descriptorSetCount) {
     vkUpdateDescriptorSets(device_->device(), 1, &write, 0, nullptr);
   }
   writeLightDescriptorStorageBuffers();
+  writeLtcDescriptors();
   createLightGizmoIconDescriptorResources();
+}
+
+bool LightingManager::ltcReady() const {
+  return ltcLuts_ && ltcLuts_->ready();
+}
+const std::string &LightingManager::ltcStatus() const {
+  static const std::string uninitialized = "LTC resources not initialized";
+  return ltcLuts_ ? ltcLuts_->status() : uninitialized;
+}
+uint64_t LightingManager::ltcMemoryBytes() const {
+  return ltcLuts_ ? ltcLuts_->allocatedBytes() : 0;
+}
+
+void LightingManager::writeLtcDescriptors() const {
+  if (!ltcLuts_)
+    return;
+  const std::array info{
+      vk::DescriptorImageInfo({}, ltcLuts_->matrixView(),
+                               vk::ImageLayout::eShaderReadOnlyOptimal),
+      vk::DescriptorImageInfo({}, ltcLuts_->amplitudeView(),
+                               vk::ImageLayout::eShaderReadOnlyOptimal),
+      vk::DescriptorImageInfo(ltcLuts_->sampler(), {}, {})};
+  std::vector<vk::WriteDescriptorSet> writes;
+  writes.reserve(lightDescriptorSets_.size() * info.size());
+  for (const auto set : lightDescriptorSets_)
+    for (uint32_t i = 0; i < info.size(); ++i)
+      writes.emplace_back(set, 5u + i, 0, 1,
+                          i < 2 ? vk::DescriptorType::eSampledImage
+                                : vk::DescriptorType::eSampler,
+                          &info[i]);
+  device_->raii().updateDescriptorSets(writes, {});
 }
 
 void LightingManager::writeLightDescriptorStorageBuffers() const {
@@ -439,6 +486,13 @@ void LightingManager::setLightingSettings(const LightingSettings &settings) {
                kMaxLocalShadowOmniPointBudget);
   lightingSettings_.localShadowLayerBudget =
       std::min(settings.localShadowLayerBudget, kMaxShadowedLocalLightLayers);
+  lightingSettings_.areaLightingMode = std::min(settings.areaLightingMode, 1u);
+  lightingSettings_.areaLightSampleCount = settings.areaLightSampleCount <= 9u
+                                             ? 9u
+                                             : settings.areaLightSampleCount <= 25u
+                                                   ? 25u
+                                                   : 64u;
+  lightingSettings_.areaEmitterDebug = settings.areaEmitterDebug;
   if (generatorSettingsChanged) {
     generatedPointOverrides_.clear();
     generatedAreaOverrides_.clear();
@@ -922,6 +976,9 @@ void LightingManager::updateLightingData() {
   lightingData_ = {};
   lightingData_.environmentIntensity = lightingSettings_.environmentIntensity;
   lightingData_.bounceIntensity = lightingSettings_.bounceIntensity;
+  lightingData_.areaLightingMode =
+      lightingSettings_.areaLightingMode != 0u && ltcReady() ? 1u : 0u;
+  lightingData_.areaLightSampleCount = lightingSettings_.areaLightSampleCount;
   const glm::vec3 baseDir = glm::normalize(glm::vec3(-0.45f, -1.0f, -0.3f));
   lightingData_.directionalDirection = glm::vec4(
       glm::normalize(glm::vec3(sceneTransform * glm::vec4(baseDir, 0.0f))),
@@ -993,7 +1050,8 @@ void LightingManager::drawLightGizmos(
        .directionalDirection = glm::vec3(lightingData_.directionalDirection),
        .directionalColor = glm::vec3(lightingData_.directionalColorIntensity),
        .editableLights = std::span<const EditableLightEntity>(
-           editableLights_.data(), editableLights_.size())});
+           editableLights_.data(), editableLights_.size()),
+       .areaEmitterDebug = lightingSettings_.areaEmitterDebug});
 
   static_cast<void>(recordDeferredLightGizmoCommands(
       commandBuffer,

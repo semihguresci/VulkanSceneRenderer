@@ -112,6 +112,7 @@ struct DeferredMaterialLayerTerms
     float3 sheenColor;
     float sheenRoughness;
     float iridescenceFactor;
+    float iridescenceThickness;
 };
 
 bool HasGpuMaterialTexture(uint textureIndex)
@@ -217,6 +218,25 @@ DeferredMaterialLayerTerms ResolveDeferredMaterialLayerTerms(GpuMaterial materia
         material.sheenRoughnessFactor, material.sheenRoughnessTextureIndex);
     terms.iridescenceFactor = ResolveDeferredTextureBackedFactor(
         material.iridescenceFactor, material.iridescenceTextureIndex);
+    terms.iridescenceThickness = material.iridescenceThicknessMaximum;
+    return terms;
+}
+
+DeferredMaterialLayerTerms DecodeDeferredMaterialLayerTerms(
+    GpuMaterial material, float4 layers, float4 sheen)
+{
+    // Texture sampling and UV transforms happen once in the geometry pass.
+    // Lighting must use the sampled values, rather than texture-presence
+    // guesses from the material record.
+    DeferredMaterialLayerTerms terms;
+    terms.transmissionFactor = ResolveDeferredTextureBackedFactor(
+        material.transmissionFactor, material.transmissionTextureIndex);
+    terms.clearcoatFactor = saturate(isfinite(layers.x) ? layers.x : 0.0);
+    terms.clearcoatRoughness = clamp(isfinite(layers.y) ? layers.y : 1.0, 0.045, 1.0);
+    terms.iridescenceFactor = saturate(isfinite(layers.z) ? layers.z : 0.0);
+    terms.iridescenceThickness = max(isfinite(layers.w) ? layers.w : 0.0, 0.0);
+    terms.sheenColor = all(isfinite(sheen.rgb)) ? max(sheen.rgb, 0.0.xxx) : 0.0.xxx;
+    terms.sheenRoughness = clamp(isfinite(sheen.w) ? sheen.w : 1.0, 0.045, 1.0);
     return terms;
 }
 

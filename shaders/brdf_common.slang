@@ -100,7 +100,7 @@ float EvaluateDielectricF0(float specularFactor, float3 specularColorFactor,
                            float ior)
 {
     specularFactor = saturate(FiniteScalarOr(specularFactor, 1.0));
-    float3 color = max(Finite3Or(specularColorFactor, 1.0.xxx), 0.0.xxx);
+    float3 color = saturate(Finite3Or(specularColorFactor, 1.0.xxx));
     float colorMagnitude = max(max(color.x, color.y), color.z);
     return saturate(IorToF0(ior) * saturate(specularFactor) * colorMagnitude);
 }
@@ -110,9 +110,32 @@ float3 EvaluateDielectricF0Color(float specularFactor,
 {
     specularFactor = saturate(FiniteScalarOr(specularFactor, 1.0));
     specularColorFactor =
-        max(Finite3Or(specularColorFactor, 1.0.xxx), 0.0.xxx);
+        saturate(Finite3Or(specularColorFactor, 1.0.xxx));
     return saturate(IorToF0(ior).xxx * saturate(specularFactor) *
-                    max(specularColorFactor, 0.0.xxx));
+                    specularColorFactor);
+}
+
+float3 EvaluatePbrF0FromDielectricColor(float3 albedo, float metallic,
+                                       float3 dielectricF0Color,
+                                       float3 dielectricTint)
+{
+    albedo = saturate(Finite3Or(albedo, 0.0.xxx));
+    metallic = saturate(FiniteScalarOr(metallic, 0.0));
+    dielectricF0Color = saturate(Finite3Or(dielectricF0Color, 0.04.xxx));
+    dielectricTint = max(Finite3Or(dielectricTint, 1.0.xxx), 0.0.xxx);
+    // The film coats both dielectric and conductor substrates. Apply its
+    // view-dependent tint after mixing F0 so metallic=1 retains iridescence.
+    return saturate(lerp(dielectricF0Color, albedo, metallic) * dielectricTint);
+}
+
+float3 EvaluatePbrF0WithDielectricTint(float3 albedo, float metallic,
+                                      float specularFactor,
+                                      float3 specularColorFactor, float ior,
+                                      float3 dielectricTint)
+{
+    return EvaluatePbrF0FromDielectricColor(albedo, metallic,
+        EvaluateDielectricF0Color(specularFactor, specularColorFactor, ior),
+        dielectricTint);
 }
 
 float3 EvaluatePbrF0FromDielectricF0(float3 albedo, float metallic,
@@ -135,6 +158,19 @@ float EstimateDeferredIridescenceThickness(float minimumThickness,
     minimumThickness = FiniteScalarOr(minimumThickness, 0.0);
     maximumThickness = FiniteScalarOr(maximumThickness, minimumThickness);
     return 0.5 * (max(minimumThickness, 0.0) + max(maximumThickness, 0.0));
+}
+
+float EstimateDeferredIridescenceThickness(float minimumThickness,
+                                           float maximumThickness,
+                                           uint thicknessTextureIndex)
+{
+    // Forward EvaluateIridescenceThickness uses the maximum thickness when
+    // no texture is authored. Retain the midpoint approximation only for a
+    // texture-backed thickness that deferred lighting cannot sample here.
+    if (thicknessTextureIndex == 0xffffffffu)
+        return max(FiniteScalarOr(maximumThickness,
+            FiniteScalarOr(minimumThickness, 0.0)), 0.0);
+    return EstimateDeferredIridescenceThickness(minimumThickness, maximumThickness);
 }
 
 float3 ApproximateDeferredIridescenceTint(float factor, float ior,
@@ -200,13 +236,10 @@ float3 EvaluateDeferredPbrF0FromDielectricColor(
     float iridescenceFactor, float iridescenceIor,
     float iridescenceThicknessNm, float NdotV)
 {
-    albedo = saturate(Finite3Or(albedo, 0.0.xxx));
-    metallic = saturate(FiniteScalarOr(metallic, 0.0));
-    dielectricF0Color = saturate(Finite3Or(dielectricF0Color, 0.04.xxx));
     float3 iridescenceTint = ApproximateDeferredIridescenceTint(
         iridescenceFactor, iridescenceIor, iridescenceThicknessNm, NdotV);
-    return lerp(saturate(dielectricF0Color * iridescenceTint), albedo,
-                saturate(metallic));
+    return EvaluatePbrF0FromDielectricColor(albedo, metallic,
+        dielectricF0Color, iridescenceTint);
 }
 
 float3 EvaluateSpecularIblMultipleScattering(float3 prefilteredColor,

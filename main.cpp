@@ -147,6 +147,23 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
           parseUint(requireValue(argc, argv, i, arg), arg);
       if (config.rayShadows.debugLayer > 10u)
         throw std::invalid_argument("Ray shadow debug view must be in [0,10]");
+    } else if (arg == "--area-emitter-debug") {
+      config.areaEmitterDebug = true;
+    } else if (arg == "--area-lighting") {
+      const auto mode = requireValue(argc, argv, i, arg);
+      if (mode == "sampled")
+        config.areaLightingMode = 0u;
+      else if (mode == "ltc")
+        config.areaLightingMode = 1u;
+      else
+        throw std::invalid_argument("Area lighting must be sampled or ltc");
+    } else if (arg == "--area-light-samples") {
+      config.areaLightSampleCount =
+          parseUint(requireValue(argc, argv, i, arg), arg);
+      if (config.areaLightSampleCount != 9u &&
+          config.areaLightSampleCount != 25u &&
+          config.areaLightSampleCount != 64u)
+        throw std::invalid_argument("Area light samples must be 9, 25 or 64");
     } else if (arg == "--area-shadow-quality") {
       config.areaShadowQuality =
           parseUint(requireValue(argc, argv, i, arg), arg);

@@ -103,7 +103,7 @@ TEST(SceneRasterPassRecorderTests, GBufferClearValuesMatchContract) {
   const SceneRasterPassClearValues clearValues =
       sceneRasterPassClearValues(SceneRasterPassKind::GBuffer);
 
-  ASSERT_EQ(clearValues.count, 6u);
+  ASSERT_EQ(clearValues.count, 8u);
   EXPECT_FLOAT_EQ(clearValues.values[0].color.float32[0], 0.0f);
   EXPECT_FLOAT_EQ(clearValues.values[0].color.float32[1], 0.0f);
   EXPECT_FLOAT_EQ(clearValues.values[0].color.float32[2], 0.0f);
@@ -120,6 +120,14 @@ TEST(SceneRasterPassRecorderTests, GBufferClearValuesMatchContract) {
   EXPECT_FLOAT_EQ(clearValues.values[3].color.float32[1], 0.0f);
   EXPECT_FLOAT_EQ(clearValues.values[3].color.float32[2], 0.0f);
   EXPECT_FLOAT_EQ(clearValues.values[3].color.float32[3], 0.0f);
+  EXPECT_FLOAT_EQ(clearValues.values[6].color.float32[0], 0.0f);
+  EXPECT_FLOAT_EQ(clearValues.values[6].color.float32[1], 1.0f);
+  EXPECT_FLOAT_EQ(clearValues.values[6].color.float32[2], 0.0f);
+  EXPECT_FLOAT_EQ(clearValues.values[6].color.float32[3], 0.0f);
+  EXPECT_FLOAT_EQ(clearValues.values[7].color.float32[0], 0.0f);
+  EXPECT_FLOAT_EQ(clearValues.values[7].color.float32[1], 0.0f);
+  EXPECT_FLOAT_EQ(clearValues.values[7].color.float32[2], 0.0f);
+  EXPECT_FLOAT_EQ(clearValues.values[7].color.float32[3], 1.0f);
   EXPECT_FLOAT_EQ(clearValues.values[4].color.float32[0], 0.0f);
   EXPECT_FLOAT_EQ(clearValues.values[4].color.float32[1], 0.0f);
   EXPECT_FLOAT_EQ(clearValues.values[4].color.float32[2], 0.0f);

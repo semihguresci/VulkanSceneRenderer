@@ -1,0 +1,12 @@
+{
+  "executable": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+  "executableSha256": "403e67ad15a60931101d536e5f95c2340ca1c99a017bb0ef77f1d59e50193920",
+  "requestedCase": "all",
+  "parityMeanByteLimit": 3.0,
+  "parityP95ByteLimit": 7.0,
+  "buildHashes": "build-hashes.json",
+  "passed": true,
+  "captureCount": 52,
+  "recordCount": 67,
+  "elapsedSeconds": 170.34400000000005
+}

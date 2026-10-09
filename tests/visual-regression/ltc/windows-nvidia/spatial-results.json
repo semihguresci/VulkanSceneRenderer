@@ -1,0 +1,302 @@
+[
+  {
+    "case": "spatial-quality",
+    "name": "disk-near-annulus",
+    "mode": "sampled",
+    "samples": 9,
+    "technique": "deferred-raster",
+    "pixels": 73,
+    "referenceMaximumCenterNormalizedError": 1.4176273844080909,
+    "referenceMaximumLocalNormalizedError": 2.4285601312064107,
+    "policyMaximumCenterNormalizedError": 0.00475574807599736,
+    "referenceConvergence": 1.8389214388677584e-09,
+    "expectedGeometryWeightRange": [
+      1.0,
+      1.0
+    ],
+    "expectedFresnelWeightRange": [
+      0.0,
+      1.0
+    ],
+    "validationClean": true
+  },
+  {
+    "case": "spatial-quality",
+    "name": "disk-near-annulus",
+    "mode": "ltc",
+    "samples": 9,
+    "technique": "deferred-raster",
+    "pixels": 73,
+    "referenceMaximumCenterNormalizedError": 0.0022683474329130413,
+    "referenceMaximumLocalNormalizedError": 0.004709953432064252,
+    "policyMaximumCenterNormalizedError": 0.0022545346495178985,
+    "referenceConvergence": 1.8389214388677584e-09,
+    "expectedGeometryWeightRange": [
+      1.0,
+      1.0
+    ],
+    "expectedFresnelWeightRange": [
+      0.0,
+      1.0
+    ],
+    "validationClean": true
+  },
+  {
+    "case": "spatial-quality",
+    "name": "disk-near-annulus",
+    "mode": "sampled",
+    "samples": 9,
+    "technique": "forward-raster",
+    "pixels": 73,
+    "referenceMaximumCenterNormalizedError": 1.4176273844080909,
+    "referenceMaximumLocalNormalizedError": 2.4285601312064107,
+    "policyMaximumCenterNormalizedError": 0.00046716623182251554,
+    "referenceConvergence": 1.8389214388677584e-09,
+    "expectedGeometryWeightRange": [
+      1.0,
+      1.0
+    ],
+    "expectedFresnelWeightRange": [
+      0.0,
+      1.0
+    ],
+    "validationClean": true
+  },
+  {
+    "case": "spatial-quality",
+    "name": "disk-near-annulus",
+    "mode": "ltc",
+    "samples": 9,
+    "technique": "forward-raster",
+    "pixels": 73,
+    "referenceMaximumCenterNormalizedError": 0.0008009837036593888,
+    "referenceMaximumLocalNormalizedError": 0.0018167413646837261,
+    "policyMaximumCenterNormalizedError": 0.0002575133406709329,
+    "referenceConvergence": 1.8389214388677584e-09,
+    "expectedGeometryWeightRange": [
+      1.0,
+      1.0
+    ],
+    "expectedFresnelWeightRange": [
+      0.0,
+      1.0
+    ],
+    "validationClean": true
+  },
+  {
+    "case": "spatial-parity",
+    "name": "disk-near-annulus",
+    "mode": "sampled",
+    "samples": 9,
+    "maximumCenterNormalizedError": 0.0,
+    "validationClean": true
+  },
+  {
+    "case": "spatial-parity",
+    "name": "disk-near-annulus",
+    "mode": "ltc",
+    "samples": 9,
+    "maximumCenterNormalizedError": 0.0,
+    "validationClean": true
+  },
+  {
+    "case": "spatial-quality",
+    "name": "disk-near-annulus",
+    "mode": "sampled",
+    "samples": 25,
+    "technique": "deferred-raster",
+    "pixels": 73,
+    "referenceMaximumCenterNormalizedError": 0.9469002150124807,
+    "referenceMaximumLocalNormalizedError": 1.2829583898009045,
+    "policyMaximumCenterNormalizedError": 0.0039626926217223545,
+    "referenceConvergence": 1.8389214388677584e-09,
+    "expectedGeometryWeightRange": [
+      1.0,
+      1.0
+    ],
+    "expectedFresnelWeightRange": [
+      0.0,
+      1.0
+    ],
+    "validationClean": true
+  },
+  {
+    "case": "spatial-quality",
+    "name": "disk-near-annulus",
+    "mode": "ltc",
+    "samples": 25,
+    "technique": "deferred-raster",
+    "pixels": 73,
+    "referenceMaximumCenterNormalizedError": 0.0022683474329130413,
+    "referenceMaximumLocalNormalizedError": 0.004709953432064252,
+    "policyMaximumCenterNormalizedError": 0.0022545346495178985,
+    "referenceConvergence": 1.8389214388677584e-09,
+    "expectedGeometryWeightRange": [
+      1.0,
+      1.0
+    ],
+    "expectedFresnelWeightRange": [
+      0.0,
+      1.0
+    ],
+    "validationClean": true
+  },
+  {
+    "case": "spatial-quality",
+    "name": "disk-near-annulus",
+    "mode": "sampled",
+    "samples": 25,
+    "technique": "forward-raster",
+    "pixels": 73,
+    "referenceMaximumCenterNormalizedError": 0.9469002150124807,
+    "referenceMaximumLocalNormalizedError": 1.2829583898009045,
+    "policyMaximumCenterNormalizedError": 0.0006781332997920162,
+    "referenceConvergence": 1.8389214388677584e-09,
+    "expectedGeometryWeightRange": [
+      1.0,
+      1.0
+    ],
+    "expectedFresnelWeightRange": [
+      0.0,
+      1.0
+    ],
+    "validationClean": true
+  },
+  {
+    "case": "spatial-quality",
+    "name": "disk-near-annulus",
+    "mode": "ltc",
+    "samples": 25,
+    "technique": "forward-raster",
+    "pixels": 73,
+    "referenceMaximumCenterNormalizedError": 0.0008009837036593888,
+    "referenceMaximumLocalNormalizedError": 0.0018167413646837261,
+    "policyMaximumCenterNormalizedError": 0.0002575259560472593,
+    "referenceConvergence": 1.8389214388677584e-09,
+    "expectedGeometryWeightRange": [
+      1.0,
+      1.0
+    ],
+    "expectedFresnelWeightRange": [
+      0.0,
+      1.0
+    ],
+    "validationClean": true
+  },
+  {
+    "case": "spatial-parity",
+    "name": "disk-near-annulus",
+    "mode": "sampled",
+    "samples": 25,
+    "maximumCenterNormalizedError": 0.0,
+    "validationClean": true
+  },
+  {
+    "case": "spatial-parity",
+    "name": "disk-near-annulus",
+    "mode": "ltc",
+    "samples": 25,
+    "maximumCenterNormalizedError": 0.0,
+    "validationClean": true
+  },
+  {
+    "case": "spatial-quality",
+    "name": "disk-near-annulus",
+    "mode": "sampled",
+    "samples": 64,
+    "technique": "deferred-raster",
+    "pixels": 73,
+    "referenceMaximumCenterNormalizedError": 0.38421209053339744,
+    "referenceMaximumLocalNormalizedError": 0.5205705933424887,
+    "policyMaximumCenterNormalizedError": 0.0020844588154570343,
+    "referenceConvergence": 1.8389214388677584e-09,
+    "expectedGeometryWeightRange": [
+      1.0,
+      1.0
+    ],
+    "expectedFresnelWeightRange": [
+      0.0,
+      1.0
+    ],
+    "validationClean": true
+  },
+  {
+    "case": "spatial-quality",
+    "name": "disk-near-annulus",
+    "mode": "ltc",
+    "samples": 64,
+    "technique": "deferred-raster",
+    "pixels": 73,
+    "referenceMaximumCenterNormalizedError": 0.0022683474329130413,
+    "referenceMaximumLocalNormalizedError": 0.004709953432064252,
+    "policyMaximumCenterNormalizedError": 0.0022545346495178985,
+    "referenceConvergence": 1.8389214388677584e-09,
+    "expectedGeometryWeightRange": [
+      1.0,
+      1.0
+    ],
+    "expectedFresnelWeightRange": [
+      0.0,
+      1.0
+    ],
+    "validationClean": true
+  },
+  {
+    "case": "spatial-quality",
+    "name": "disk-near-annulus",
+    "mode": "sampled",
+    "samples": 64,
+    "technique": "forward-raster",
+    "pixels": 73,
+    "referenceMaximumCenterNormalizedError": 0.38421209053339744,
+    "referenceMaximumLocalNormalizedError": 0.5205705933424887,
+    "policyMaximumCenterNormalizedError": 0.00026379895448779174,
+    "referenceConvergence": 1.8389214388677584e-09,
+    "expectedGeometryWeightRange": [
+      1.0,
+      1.0
+    ],
+    "expectedFresnelWeightRange": [
+      0.0,
+      1.0
+    ],
+    "validationClean": true
+  },
+  {
+    "case": "spatial-quality",
+    "name": "disk-near-annulus",
+    "mode": "ltc",
+    "samples": 64,
+    "technique": "forward-raster",
+    "pixels": 73,
+    "referenceMaximumCenterNormalizedError": 0.0008009837036593888,
+    "referenceMaximumLocalNormalizedError": 0.0018167413646837261,
+    "policyMaximumCenterNormalizedError": 0.0002573876979843027,
+    "referenceConvergence": 1.8389214388677584e-09,
+    "expectedGeometryWeightRange": [
+      1.0,
+      1.0
+    ],
+    "expectedFresnelWeightRange": [
+      0.0,
+      1.0
+    ],
+    "validationClean": true
+  },
+  {
+    "case": "spatial-parity",
+    "name": "disk-near-annulus",
+    "mode": "sampled",
+    "samples": 64,
+    "maximumCenterNormalizedError": 0.0,
+    "validationClean": true
+  },
+  {
+    "case": "spatial-parity",
+    "name": "disk-near-annulus",
+    "mode": "ltc",
+    "samples": 64,
+    "maximumCenterNormalizedError": 0.0,
+    "validationClean": true
+  }
+]

@@ -1,5 +1,6 @@
 #include "brdf_common.slang"
 #include "area_light_common.slang"
+#include "area_light_ltc.slang"
 #include "local_shadow_common.slang"
 #include "shadow_common.slang"
 #include "screen_space_light_shadow_common.slang"
@@ -360,9 +361,9 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     float NdotV = max(dot(surfaceNormal.shadingNormal, V), 0.0);
     float3 iridescenceTint = ApproximateIridescenceTint(
         iridescence, material.iridescenceIor, iridescenceThickness, NdotV);
-    float3 F0 = EvaluatePbrF0(
-        baseColor, metallic, specularFactor, specularColor * iridescenceTint,
-        material.ior);
+    float3 F0 = EvaluatePbrF0WithDielectricTint(
+        baseColor, metallic, specularFactor, specularColor,
+        material.ior, iridescenceTint);
 
     float3 F_ibl = FresnelSchlickRoughness(NdotV, F0, roughness);
     float3 kD_ibl = (1.0 - F_ibl) * (1.0 - metallic);
@@ -515,6 +516,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         for (uint i = 0u; i < areaLightCount; ++i)
         {
             AreaLightData light = uAreaLights[i];
+            if (!AreaLightHasRenderableRadiance(light)) continue;
             AreaLightFrame frame = BuildAreaLightFrame(light);
             float areaShadowVisibility = 1.0;
             uint areaShadowRef = PackedLocalShadowAreaRef(uLocalShadow, i);
@@ -553,30 +555,82 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                         ? areaShadowVisibility / visibilityWeightSum
                         : 1.0;
             }
-            [unroll]
+            AreaLightLtcTerms ltcTerms;
+            bool useLtc = TryEvaluateAreaLightLtc(uLighting, light, frame,
+                vertIn.worldPos, baseColor, F0, metallic, roughness,
+                surfaceNormal.shadingNormal, V, clearcoat, clearcoatRoughness,
+                sheenColor, sheenRoughness,
+                thinSurface || transmissionFactor > 0.0, ltcTerms);
+            bool correctDiffuseFresnel = useLtc && any(ltcTerms.diffuseCorrectionScale > 0.0.xxx);
+            bool sampleDirectTerms = useLtc &&
+                (ltcTerms.stableWeight < 1.0 || ltcTerms.fresnelWeight < 1.0);
+            if (useLtc && !sampleDirectTerms && uLighting.bounceIntensity <= 0.0 && !correctDiffuseFresnel)
+            {
+                directLighting += (ltcTerms.lighting.stable + ltcTerms.lighting.fresnel) *
+                    areaShadowVisibility;
+                continue;
+            }
+            uint integrationSampleCount = AreaLightIntegrationSampleCount(uLighting);
+            float3 diffuseCorrection = 0.0.xxx;
+            AreaLightDirectTerms sampledTerms;
+            sampledTerms.stable = 0.0.xxx;
+            sampledTerms.fresnel = 0.0.xxx;
+            [loop]
             for (uint sampleIndex = 0u;
-                 sampleIndex < AREA_LIGHT_INTEGRATION_SAMPLE_COUNT;
+                 sampleIndex < integrationSampleCount;
                  ++sampleIndex)
             {
                 float3 L;
                 float3 radiance = EvaluateAreaLightSampleRadiance(
-                    light, frame, vertIn.worldPos, sampleIndex, L);
+                    light, frame, vertIn.worldPos, sampleIndex,
+                    integrationSampleCount, L);
                 float lightVisibility = areaShadowVisibility;
                 float3 directRadiance = radiance * lightVisibility;
-                directLighting += EvaluateDeferredLayeredDirectLight(
-                    baseColor, F0, metallic, roughness,
-                    surfaceNormal.shadingNormal, V, L, directRadiance,
-                    clearcoat, clearcoatRoughness, sheenColor, sheenRoughness);
-                directLighting += EvaluateDiffuseBounceLight(
-                    baseColor, metallic, surfaceNormal.shadingNormal,
-                    surfaceNormal.geometricNormal, V, L, radiance,
-                    lightVisibility, occlusion, uLighting.bounceIntensity);
+                if (!useLtc)
+                    directLighting += EvaluateDeferredLayeredDirectLight(
+                        baseColor, F0, metallic, roughness,
+                        surfaceNormal.shadingNormal, V, L, directRadiance,
+                        clearcoat, clearcoatRoughness, sheenColor, sheenRoughness);
+                else if (sampleDirectTerms)
+                {
+                    AreaLightDirectTerms sample = EvaluateAreaLightSampledDirectTerms(
+                        baseColor, F0, metallic, roughness,
+                        surfaceNormal.shadingNormal, V, L, directRadiance,
+                        clearcoat, clearcoatRoughness, sheenColor, sheenRoughness);
+                    sampledTerms.stable += sample.stable;
+                    sampledTerms.fresnel += sample.fresnel;
+                }
+                if (uLighting.bounceIntensity > 0.0)
+                    directLighting += EvaluateDiffuseBounceLight(
+                        baseColor, metallic, surfaceNormal.shadingNormal,
+                        surfaceNormal.geometricNormal, V, L, radiance,
+                        lightVisibility, occlusion, uLighting.bounceIntensity);
+                if (correctDiffuseFresnel)
+                    diffuseCorrection += EvaluateAreaLightDiffuseFresnelCorrection(
+                        ltcTerms.diffuseCorrectionScale, surfaceNormal.shadingNormal,
+                        V, L, directRadiance);
                 if (thinSurface)
                 {
                     directLighting += EvaluateThinSurfaceTransmission(
                         baseColor, surfaceNormal.shadingNormal, V, L,
                         directRadiance, saturate(baseAlpha), !isFrontFace);
                 }
+            }
+            if (useLtc)
+            {
+                float3 ltcContribution;
+                if (!TryCombineAreaLightLtcTerms(ltcTerms, areaShadowVisibility,
+                        diffuseCorrection, sampledTerms, ltcContribution))
+                {
+                    ltcContribution = sampleDirectTerms ?
+                        sampledTerms.stable + sampledTerms.fresnel :
+                        EvaluateAreaLightSampledLayeredDirect(light,
+                            frame, vertIn.worldPos, integrationSampleCount, baseColor,
+                            F0, metallic, roughness, surfaceNormal.shadingNormal, V,
+                            clearcoat, clearcoatRoughness, sheenColor, sheenRoughness) *
+                            areaShadowVisibility;
+                }
+                directLighting += max(Finite3Or(ltcContribution, 0.0.xxx), 0.0.xxx);
             }
         }
     }

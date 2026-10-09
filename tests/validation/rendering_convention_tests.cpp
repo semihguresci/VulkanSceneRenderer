@@ -1228,40 +1228,41 @@ TEST(RenderingConventionTests, DeferredMaterialParityUsesSharedLayeredHelpers) {
   EXPECT_TRUE(
       contains(directional, "EvaluateDeferredPbrF0FromDielectricColor("));
   EXPECT_TRUE(contains(directional, "specularSample.rgb"));
-  EXPECT_TRUE(contains(directional, "materialData.iridescenceFactor"));
-  EXPECT_TRUE(contains(directional, "materialData.clearcoatFactor"));
-  EXPECT_TRUE(contains(directional, "materialData.clearcoatRoughnessFactor"));
-  EXPECT_TRUE(contains(directional, "materialData.sheenColorFactor.rgb"));
-  EXPECT_TRUE(contains(directional, "materialData.sheenRoughnessFactor"));
+  EXPECT_TRUE(contains(directional, "DecodeDeferredMaterialLayerTerms(materialData"));
+  EXPECT_TRUE(contains(directional, "gMaterialLayersTexture.Load"));
+  EXPECT_TRUE(contains(directional, "gMaterialSheenTexture.Load"));
+  EXPECT_TRUE(contains(directional, "layerTerms.iridescenceThickness"));
   EXPECT_TRUE(contains(directional, "EvaluateDeferredLayeredDirectLight("));
 
   EXPECT_TRUE(contains(pointLight, "gSpecularTexture"));
   EXPECT_TRUE(
       contains(pointLight, "EvaluateDeferredPbrF0FromDielectricColor("));
   EXPECT_TRUE(contains(pointLight, "specularSample.rgb"));
+  EXPECT_TRUE(contains(pointLight, "DecodeDeferredMaterialLayerTerms(materialData"));
+  EXPECT_TRUE(contains(pointLight, "gMaterialLayersTexture.Load"));
+  EXPECT_TRUE(contains(pointLight, "gMaterialSheenTexture.Load"));
+  EXPECT_TRUE(contains(pointLight, "layerTerms.iridescenceThickness"));
   EXPECT_TRUE(contains(pointLight, "EvaluateDeferredLayeredDirectLight("));
   EXPECT_TRUE(contains(
       pointLight,
       "[[vk::binding(3, 2)]] StructuredBuffer<GpuMaterial> uMaterials"));
   EXPECT_TRUE(contains(pointLight,
                        "GpuMaterial materialData = uMaterials[materialIndex]"));
-  EXPECT_TRUE(contains(pointLight, "materialData.iridescenceFactor"));
-  EXPECT_TRUE(contains(pointLight, "materialData.clearcoatFactor"));
-  EXPECT_TRUE(contains(pointLight, "materialData.sheenColorFactor.rgb"));
   EXPECT_FALSE(contains(pointLight, "0.0, 1.0, 0.0.xxx, 1.0"));
   EXPECT_TRUE(contains(tiledLighting, "gSpecularTexture"));
   EXPECT_TRUE(
       contains(tiledLighting, "EvaluateDeferredPbrF0FromDielectricColor("));
   EXPECT_TRUE(contains(tiledLighting, "specularSample.rgb"));
+  EXPECT_TRUE(contains(tiledLighting, "DecodeDeferredMaterialLayerTerms(materialData"));
+  EXPECT_TRUE(contains(tiledLighting, "gMaterialLayersTexture.Load"));
+  EXPECT_TRUE(contains(tiledLighting, "gMaterialSheenTexture.Load"));
+  EXPECT_TRUE(contains(tiledLighting, "layerTerms.iridescenceThickness"));
   EXPECT_TRUE(contains(tiledLighting, "EvaluateDeferredLayeredDirectLight("));
   EXPECT_TRUE(contains(
       tiledLighting,
       "[[vk::binding(3, 2)]] StructuredBuffer<GpuMaterial> uMaterials"));
   EXPECT_TRUE(contains(tiledLighting,
                        "GpuMaterial materialData = uMaterials[materialIndex]"));
-  EXPECT_TRUE(contains(tiledLighting, "materialData.iridescenceFactor"));
-  EXPECT_TRUE(contains(tiledLighting, "materialData.clearcoatFactor"));
-  EXPECT_TRUE(contains(tiledLighting, "materialData.sheenColorFactor.rgb"));
   EXPECT_FALSE(contains(tiledLighting, "0.0, 1.0, 0.0.xxx, 1.0"));
 
   EXPECT_TRUE(contains(
@@ -1527,7 +1528,8 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(contains(pointLight, "TryReconstructWorldPosition"));
   EXPECT_TRUE(contains(pointLight, "bool useLocalShadowMap"));
   EXPECT_TRUE(
-      contains(pointLight, "if (pc.contactVisibilityEnabled != 0u &&"));
+      contains(pointLight, "if (!RayPointSelected(pc.padding2) && "
+                           "pc.contactVisibilityEnabled != 0u &&"));
   EXPECT_FALSE(
       contains(pointLight, "else if (pc.contactVisibilityEnabled != 0u)"));
   EXPECT_TRUE(contains(pointLight,
@@ -1552,7 +1554,8 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(contains(tiledLighting, "TryReconstructWorldPosition"));
   EXPECT_TRUE(contains(tiledLighting, "bool useLocalShadowMap"));
   EXPECT_TRUE(
-      contains(tiledLighting, "if (pc.contactVisibilityEnabled != 0u &&"));
+      contains(tiledLighting, "if (!RayPointSelected(lightIdx) && "
+                              "pc.contactVisibilityEnabled != 0u &&"));
   EXPECT_FALSE(
       contains(tiledLighting, "else if (pc.contactVisibilityEnabled != 0u)"));
   EXPECT_TRUE(contains(tiledLighting,
@@ -2233,7 +2236,7 @@ TEST(RenderingConventionTests, AreaLightShadersUseSampledIntegration) {
   EXPECT_TRUE(contains(directional, "#include \"area_light_common.slang\""));
   EXPECT_TRUE(contains(directional, "#include \"local_shadow_common.slang\""));
   EXPECT_TRUE(contains(directional,
-                       "sampleIndex < AREA_LIGHT_INTEGRATION_SAMPLE_COUNT"));
+                       "sampleIndex < integrationSampleCount"));
   EXPECT_TRUE(contains(directional, "EvaluateAreaLightSampleRadiance"));
   EXPECT_TRUE(
       contains(directional, "LocalShadowMapsEnabled(uLighting, uLocalShadow)"));
@@ -2243,7 +2246,7 @@ TEST(RenderingConventionTests, AreaLightShadersUseSampledIntegration) {
       directional.find("float3 EvaluateDeferredAreaLight");
   ASSERT_NE(deferredAreaLightStart, std::string::npos);
   const size_t deferredAreaLightSampleLoop =
-      directional.find("sampleIndex < AREA_LIGHT_INTEGRATION_SAMPLE_COUNT",
+      directional.find("sampleIndex < integrationSampleCount",
                        deferredAreaLightStart);
   ASSERT_NE(deferredAreaLightSampleLoop, std::string::npos);
   const size_t deferredAreaLightEnd =
@@ -2266,7 +2269,7 @@ TEST(RenderingConventionTests, AreaLightShadersUseSampledIntegration) {
   EXPECT_TRUE(contains(transparent, "#include \"area_light_common.slang\""));
   EXPECT_TRUE(contains(transparent, "#include \"local_shadow_common.slang\""));
   EXPECT_TRUE(contains(transparent,
-                       "sampleIndex < AREA_LIGHT_INTEGRATION_SAMPLE_COUNT"));
+                       "sampleIndex < integrationSampleCount"));
   EXPECT_TRUE(contains(transparent, "EvaluateAreaLightSampleRadiance"));
   EXPECT_TRUE(
       contains(transparent, "LocalShadowMapsEnabled(uLighting, uLocalShadow)"));
@@ -2276,7 +2279,7 @@ TEST(RenderingConventionTests, AreaLightShadersUseSampledIntegration) {
       transparent.find("for (uint i = 0u; i < areaLightCount; ++i)");
   ASSERT_NE(transparentAreaLightLoop, std::string::npos);
   const size_t transparentAreaLightSampleLoop =
-      transparent.find("sampleIndex < AREA_LIGHT_INTEGRATION_SAMPLE_COUNT",
+      transparent.find("sampleIndex < integrationSampleCount",
                        transparentAreaLightLoop);
   ASSERT_NE(transparentAreaLightSampleLoop, std::string::npos);
   const size_t transparentAreaLightShadowBeforeSampleLoop =

@@ -144,8 +144,15 @@ void RenderPassManager::create(VkFormat swapchainFormat,
                                VkFormat emissiveFormat,
                                VkFormat specularFormat,
                                VkFormat pickIdFormat,
+                               VkFormat materialLayersFormat,
+                               VkFormat materialSheenFormat,
                                VkSampleCountFlagBits msaaSamples) {
   VkDevice dev = device_->device();
+  VkPhysicalDeviceProperties properties{};
+  vkGetPhysicalDeviceProperties(device_->physicalDevice(), &properties);
+  if (properties.limits.maxColorAttachments < 8u)
+    throw std::runtime_error(
+        "Deferred material layers require eight color attachments");
   const bool useMsaa = msaaSamples != VK_SAMPLE_COUNT_1_BIT;
   const VkResolveModeFlagBits depthResolveMode = preferredDepthResolveMode(
       queryRendererMsaaDeviceSupport(device_->physicalDevice())
@@ -340,7 +347,7 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   gbDs.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
   gbDs.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-  std::array<VkAttachmentDescription, 7> gbAttachments = {
+  std::array<VkAttachmentDescription, 9> gbAttachments = {
       makeColor(albedoFormat, VK_SAMPLE_COUNT_1_BIT,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
       makeColor(normalFormat, VK_SAMPLE_COUNT_1_BIT,
@@ -353,8 +360,12 @@ void RenderPassManager::create(VkFormat swapchainFormat,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
       makeColor(pickIdFormat, VK_SAMPLE_COUNT_1_BIT,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeColor(materialLayersFormat, VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeColor(materialSheenFormat, VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
       gbDs};
-  std::array<VkAttachmentDescription, 13> gbMsaaAttachments = {{
+  std::array<VkAttachmentDescription, 17> gbMsaaAttachments = {{
       makeColor(albedoFormat, msaaSamples,
                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
       makeColor(normalFormat, msaaSamples,
@@ -367,6 +378,10 @@ void RenderPassManager::create(VkFormat swapchainFormat,
                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
       makeColor(pickIdFormat, msaaSamples,
                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+      makeColor(materialLayersFormat, msaaSamples,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+      makeColor(materialSheenFormat, msaaSamples,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
       gbDs,
       makeColor(albedoFormat, VK_SAMPLE_COUNT_1_BIT,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
@@ -378,35 +393,43 @@ void RenderPassManager::create(VkFormat swapchainFormat,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
       makeColor(specularFormat, VK_SAMPLE_COUNT_1_BIT,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeColor(materialLayersFormat, VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeColor(materialSheenFormat, VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
       ds,
   }};
-  for (uint32_t i = 7u; i <= 12u; ++i) {
+  for (uint32_t i = 9u; i <= 16u; ++i) {
     gbMsaaAttachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   }
-  gbMsaaAttachments[12].initialLayout =
+  gbMsaaAttachments[16].initialLayout =
       VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-  gbMsaaAttachments[12].finalLayout =
+  gbMsaaAttachments[16].finalLayout =
       VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-  std::array<VkAttachmentReference, 6> colorRefs = {{
+  std::array<VkAttachmentReference, 8> colorRefs = {{
       {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {4, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {5, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
-  }};
-  VkAttachmentReference gbDsRef{6, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-  std::array<VkAttachmentReference, 6> colorResolveRefs = {{
+      {6, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {7, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
-      {8, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+  }};
+  VkAttachmentReference gbDsRef{8, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+  std::array<VkAttachmentReference, 8> colorResolveRefs = {{
       {9, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {10, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {11, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+      {12, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+      {13, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_UNDEFINED},
+      {14, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+      {15, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
   }};
   VkAttachmentReference gbDepthResolveRef{
-      12, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+      16, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
   VkSubpassDescriptionDepthStencilResolve gbDepthResolve{
       VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE};
 
@@ -510,7 +533,7 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   bimGbDs.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
   bimGbDs.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-  std::array<VkAttachmentDescription, 7> bimGbAttachments = {
+  std::array<VkAttachmentDescription, 9> bimGbAttachments = {
       makeLoadedColor(albedoFormat, VK_SAMPLE_COUNT_1_BIT,
                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
@@ -529,8 +552,14 @@ void RenderPassManager::create(VkFormat swapchainFormat,
       makeLoadedColor(pickIdFormat, VK_SAMPLE_COUNT_1_BIT,
                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeLoadedColor(materialLayersFormat, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeLoadedColor(materialSheenFormat, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
       bimGbDs};
-  std::array<VkAttachmentDescription, 13> bimGbMsaaAttachments = {{
+  std::array<VkAttachmentDescription, 17> bimGbMsaaAttachments = {{
       makeLoadedColor(albedoFormat, msaaSamples,
                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
@@ -549,6 +578,12 @@ void RenderPassManager::create(VkFormat swapchainFormat,
       makeLoadedColor(pickIdFormat, msaaSamples,
                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+      makeLoadedColor(materialLayersFormat, msaaSamples,
+                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+      makeLoadedColor(materialSheenFormat, msaaSamples,
+                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
       bimGbDs,
       makeLoadedColor(albedoFormat, VK_SAMPLE_COUNT_1_BIT,
                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -565,14 +600,20 @@ void RenderPassManager::create(VkFormat swapchainFormat,
       makeLoadedColor(specularFormat, VK_SAMPLE_COUNT_1_BIT,
                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeLoadedColor(materialLayersFormat, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeLoadedColor(materialSheenFormat, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
       ds,
   }};
-  for (uint32_t i = 7u; i <= 12u; ++i) {
+  for (uint32_t i = 9u; i <= 16u; ++i) {
     bimGbMsaaAttachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   }
-  bimGbMsaaAttachments[12].initialLayout =
+  bimGbMsaaAttachments[16].initialLayout =
       VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-  bimGbMsaaAttachments[12].finalLayout =
+  bimGbMsaaAttachments[16].finalLayout =
       VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
   std::array<VkSubpassDependency, 2> bimGbDeps{};

@@ -54,6 +54,9 @@ struct AppConfig {
   bool windowVisible{true};
   uint32_t msaaSamples{1};
   uint32_t areaShadowQuality{2};
+  uint32_t areaLightingMode{1};
+  uint32_t areaLightSampleCount{25};
+  bool areaEmitterDebug{false};
   container::temporal::Settings taa{};
   uint32_t taaResetFrame{0};
   std::string renderTechnique{"deferred-raster"};

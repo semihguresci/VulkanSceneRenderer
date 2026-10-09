@@ -84,6 +84,8 @@ enum class RenderResourceId : uint8_t {
   GBufferMaterial,
   GBufferEmissive,
   GBufferSpecular,
+  GBufferMaterialLayers,
+  GBufferMaterialSheen,
   PickId,
   PickDepth,
   OitStorage,

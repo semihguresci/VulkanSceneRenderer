@@ -407,3 +407,42 @@ TEST(DeferredLightGizmoPlannerTests, EditableLightPickIdsRejectInvalidValues) {
             std::nullopt);
   EXPECT_EQ(decodeEditableLightPickId(1u), std::nullopt);
 }
+
+TEST(DeferredLightGizmoPlannerTests, EmitterDebugKeepsAuthoredSizeAndOrientation) {
+  auto light = editableLight(container::renderer::EditableLightType::Area,
+                             0u, {2.0f, 3.0f, 4.0f}, false);
+  light.areaHalfSize = {7.0f, 0.003f};
+  light.direction = {0.0f, 0.0f, -1.0f};
+  light.tangent = {1.0f, 0.0f, 0.0f};
+  const std::array lights{light};
+  DeferredLightGizmoPlanInputs inputs{};
+  inputs.editableLights = lights;
+  inputs.areaEmitterDebug = true;
+  const auto plan = buildDeferredLightGizmoPlan(inputs);
+  ASSERT_EQ(plan.coveragePushConstantCount, 1u);
+  const auto &coverage = plan.coveragePushConstants[0];
+  EXPECT_FLOAT_EQ(coverage.directionInnerCos.w, 7.0f);
+  EXPECT_FLOAT_EQ(coverage.coneOuterCosType.w, 0.003f);
+  expectVec3Near(glm::vec3(coverage.positionRadius), light.position);
+  expectVec3Near(glm::vec3(coverage.directionInnerCos), light.direction);
+  expectVec3Near(glm::vec3(coverage.coneOuterCosType), light.tangent);
+  EXPECT_FLOAT_EQ(coverage.bounceIntensity,
+                  container::gpu::kAreaLightTypeRectangle);
+}
+
+TEST(DeferredLightGizmoPlannerTests, EmitterDebugPreservesDiskRadiusAndShape) {
+  auto light = editableLight(container::renderer::EditableLightType::Area,
+                             0u, {0.0f, 1.0f, 0.0f}, false);
+  light.areaShape = container::gpu::kAreaLightTypeDisk;
+  light.areaHalfSize = {3.0f, 0.1f};
+  const std::array lights{light};
+  DeferredLightGizmoPlanInputs inputs{};
+  inputs.editableLights = lights;
+  inputs.areaEmitterDebug = true;
+  const auto plan = buildDeferredLightGizmoPlan(inputs);
+  ASSERT_EQ(plan.coveragePushConstantCount, 1u);
+  const auto &coverage = plan.coveragePushConstants[0];
+  EXPECT_FLOAT_EQ(coverage.directionInnerCos.w, 3.0f);
+  EXPECT_FLOAT_EQ(coverage.coneOuterCosType.w, 3.0f);
+  EXPECT_FLOAT_EQ(coverage.bounceIntensity, container::gpu::kAreaLightTypeDisk);
+}

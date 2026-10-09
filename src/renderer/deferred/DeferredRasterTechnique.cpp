@@ -154,6 +154,18 @@ void registerDeferredRasterFrameResources(FrameResourceRegistry &registry) {
                      .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                               VK_IMAGE_USAGE_SAMPLED_BIT});
   registry.registerImage(
+      kDeferredRasterTechnique, "material-layers",
+      FrameImageDesc{.format = VK_FORMAT_R16G16B16A16_SFLOAT,
+                     .extent = {0, 0, 1},
+                     .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                              VK_IMAGE_USAGE_SAMPLED_BIT});
+  registry.registerImage(
+      kDeferredRasterTechnique, "material-sheen",
+      FrameImageDesc{.format = VK_FORMAT_R16G16B16A16_SFLOAT,
+                     .extent = {0, 0, 1},
+                     .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                              VK_IMAGE_USAGE_SAMPLED_BIT});
+  registry.registerImage(
       kDeferredRasterTechnique, "pick-id",
       FrameImageDesc{.format = VK_FORMAT_R32_UINT,
                      .extent = {0, 0, 1},
@@ -202,10 +214,10 @@ void registerDeferredRasterFrameResources(FrameResourceRegistry &registry) {
                                "bim-depth-prepass-framebuffer",
                                FrameFramebufferDesc{.attachmentCount = 1u});
   registry.registerFramebuffer(kDeferredRasterTechnique, "gbuffer-framebuffer",
-                               FrameFramebufferDesc{.attachmentCount = 7u});
+                               FrameFramebufferDesc{.attachmentCount = 9u});
   registry.registerFramebuffer(kDeferredRasterTechnique,
                                "bim-gbuffer-framebuffer",
-                               FrameFramebufferDesc{.attachmentCount = 7u});
+                               FrameFramebufferDesc{.attachmentCount = 9u});
   registry.registerFramebuffer(kDeferredRasterTechnique,
                                "transparent-pick-framebuffer",
                                FrameFramebufferDesc{.attachmentCount = 2u});

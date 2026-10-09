@@ -71,6 +71,8 @@ struct PSOutput
     float4 emissive : SV_Target3;
     float4 specular : SV_Target4;
     uint pickId : SV_Target5;
+    float4 materialLayers : SV_Target6;
+    float4 materialSheen : SV_Target7;
 };
 
 [shader("vertex")]
@@ -172,24 +174,6 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
     float2 specularColorTexCoord = ApplyGpuTextureTransform(
         vertIn.texCoord, vertIn.texCoord1,
         material.specularColorTextureTransform);
-    float2 clearcoatTexCoord = ApplyGpuTextureTransform(
-        vertIn.texCoord, vertIn.texCoord1,
-        material.clearcoatTextureTransform);
-    float2 clearcoatRoughnessTexCoord = ApplyGpuTextureTransform(
-        vertIn.texCoord, vertIn.texCoord1,
-        material.clearcoatRoughnessTextureTransform);
-    float2 sheenColorTexCoord = ApplyGpuTextureTransform(
-        vertIn.texCoord, vertIn.texCoord1,
-        material.sheenColorTextureTransform);
-    float2 sheenRoughnessTexCoord = ApplyGpuTextureTransform(
-        vertIn.texCoord, vertIn.texCoord1,
-        material.sheenRoughnessTextureTransform);
-    float2 iridescenceTexCoord = ApplyGpuTextureTransform(
-        vertIn.texCoord, vertIn.texCoord1,
-        material.iridescenceTextureTransform);
-    float2 iridescenceThicknessTexCoord = ApplyGpuTextureTransform(
-        vertIn.texCoord, vertIn.texCoord1,
-        material.iridescenceThicknessTextureTransform);
 
     float3 baseColor = vertIn.baseColor.rgb;
     float baseAlpha = vertIn.baseColor.a;
@@ -256,56 +240,38 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
     }
     emissive *= vertIn.emissiveStrength;
 
-    float3 V = SafeNormalize(uCamera.cameraWorldPosition.xyz - vertIn.worldPos,
-                             float3(0.0, 0.0, 1.0));
-    float NdotV = saturate(dot(surfaceNormal.shadingNormal, V));
-
+    // Store sampled layer inputs separately from the authored base material.
+    // Every deferred light and the IBL pass consume these same values.
     float clearcoat = EvaluateClearcoatFactor(
         material.clearcoatFactor, material.clearcoatTextureIndex,
-        clearcoatTexCoord, material.clearcoatTextureTransform);
-    if (clearcoat > 0.0)
-    {
-        float clearcoatRoughness = EvaluateClearcoatRoughness(
-            material.clearcoatRoughnessFactor,
-            material.clearcoatRoughnessTextureIndex,
-            clearcoatRoughnessTexCoord,
-            material.clearcoatRoughnessTextureTransform);
-        sampledRoughness =
-            lerp(sampledRoughness, min(sampledRoughness, clearcoatRoughness),
-                 clearcoat * 0.35);
-        dielectricF0 = saturate(dielectricF0 + clearcoat * 0.01);
-    }
-
+        ApplyGpuTextureTransform(vertIn.texCoord, vertIn.texCoord1,
+                                 material.clearcoatTextureTransform),
+        material.clearcoatTextureTransform);
+    float clearcoatRoughness = EvaluateClearcoatRoughness(
+        material.clearcoatRoughnessFactor, material.clearcoatRoughnessTextureIndex,
+        ApplyGpuTextureTransform(vertIn.texCoord, vertIn.texCoord1,
+                                 material.clearcoatRoughnessTextureTransform),
+        material.clearcoatRoughnessTextureTransform);
     float3 sheenColor = EvaluateSheenColor(
         material.sheenColorFactor.rgb, material.sheenColorTextureIndex,
-        sheenColorTexCoord);
-    float sheenWeight = MaxComponent(sheenColor);
-    if (sheenWeight > 0.0)
-    {
-        float sheenRoughness = EvaluateSheenRoughness(
-            material.sheenRoughnessFactor,
-            material.sheenRoughnessTextureIndex, sheenRoughnessTexCoord,
-            material.sheenRoughnessTextureTransform);
-        float grazing = pow(1.0 - NdotV, 2.0) * (1.0 - 0.35 * sheenRoughness);
-        emissive += sheenColor * grazing * 0.08;
-        dielectricF0 = saturate(dielectricF0 + sheenWeight * grazing * 0.004);
-    }
-
+        ApplyGpuTextureTransform(vertIn.texCoord, vertIn.texCoord1,
+                                 material.sheenColorTextureTransform));
+    float sheenRoughness = EvaluateSheenRoughness(
+        material.sheenRoughnessFactor, material.sheenRoughnessTextureIndex,
+        ApplyGpuTextureTransform(vertIn.texCoord, vertIn.texCoord1,
+                                 material.sheenRoughnessTextureTransform),
+        material.sheenRoughnessTextureTransform);
     float iridescence = EvaluateIridescenceFactor(
         material.iridescenceFactor, material.iridescenceTextureIndex,
-        iridescenceTexCoord, material.iridescenceTextureTransform);
-    if (iridescence > 0.0)
-    {
-        float thickness = EvaluateIridescenceThickness(
-            material.iridescenceThicknessMinimum,
-            material.iridescenceThicknessMaximum,
-            material.iridescenceThicknessTextureIndex,
-            iridescenceThicknessTexCoord,
-            material.iridescenceThicknessTextureTransform);
-        baseColor *= ApproximateIridescenceTint(
-            iridescence * 0.25, material.iridescenceIor, thickness, NdotV);
-        dielectricF0 = saturate(dielectricF0 + iridescence * 0.006);
-    }
+        ApplyGpuTextureTransform(vertIn.texCoord, vertIn.texCoord1,
+                                 material.iridescenceTextureTransform),
+        material.iridescenceTextureTransform);
+    float iridescenceThickness = EvaluateIridescenceThickness(
+        material.iridescenceThicknessMinimum, material.iridescenceThicknessMaximum,
+        material.iridescenceThicknessTextureIndex,
+        ApplyGpuTextureTransform(vertIn.texCoord, vertIn.texCoord1,
+                                 material.iridescenceThicknessTextureTransform),
+        material.iridescenceThicknessTextureTransform);
 
     if (pc.semanticColorMode != kBimSemanticColorModeOff)
     {
@@ -316,6 +282,9 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
         emissive = 0.0.xxx;
         dielectricF0Color = 0.04.xxx;
         dielectricF0 = 0.04;
+        clearcoat = 0.0;
+        sheenColor = 0.0.xxx;
+        iridescence = 0.0;
     }
 
     if ((vertIn.flags & kPbrObjectFlagUnlit) != 0u)
@@ -327,6 +296,8 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
         unlitOutput.material = float4(0.0, 1.0, 1.0, materialMetadata);
         unlitOutput.emissive = float4(baseColor + emissive, 0.0);
         unlitOutput.specular = 0.0.xxxx;
+        unlitOutput.materialLayers = float4(0.0, 1.0, 0.0, 0.0);
+        unlitOutput.materialSheen = float4(0.0, 0.0, 0.0, 1.0);
         unlitOutput.pickId =
             uObjects[vertIn.objectIndex].objectInfo.z | (vertIn.objectIndex + 1u);
         return unlitOutput;
@@ -339,6 +310,9 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
                              materialMetadata);
     output.emissive = float4(emissive, dielectricF0);
     output.specular = float4(dielectricF0Color, dielectricF0);
+    output.materialLayers = float4(clearcoat, clearcoatRoughness,
+                                   iridescence, iridescenceThickness);
+    output.materialSheen = float4(sheenColor, sheenRoughness);
     output.pickId =
         uObjects[vertIn.objectIndex].objectInfo.z | (vertIn.objectIndex + 1u);
     return output;

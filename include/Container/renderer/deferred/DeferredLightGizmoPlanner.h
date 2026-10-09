@@ -33,6 +33,7 @@ struct DeferredLightGizmoPlanInputs {
   glm::vec3 directionalColor{1.0f, 1.0f, 1.0f};
   std::span<const EditableLightEntity> editableLights{};
   std::span<const container::gpu::PointLightData> pointLights{};
+  bool areaEmitterDebug{false};
 };
 
 struct DeferredLightGizmoPlan {

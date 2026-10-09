@@ -7,6 +7,13 @@
 static const uint AREA_LIGHT_INTEGRATION_SAMPLE_COUNT = 25u;
 static const float AREA_LIGHT_MIN_DISTANCE_SQ = 0.01;
 
+bool AreaLightHasRenderableRadiance(AreaLightData light)
+{
+    float3 radiance = Finite3Or(
+        light.colorIntensity.rgb * light.colorIntensity.a, 0.0.xxx);
+    return any(radiance > 0.0.xxx);
+}
+
 struct AreaLightFrame
 {
     float3 position;
@@ -103,6 +110,50 @@ float AreaLightGauss5Weight(uint index)
     return weights[min(index, 4u)];
 }
 
+uint AreaLightIntegrationSampleCount(LightingBuffer lighting)
+{
+    return lighting.areaLightSampleCount == 9u ? 9u :
+           lighting.areaLightSampleCount == 64u ? 64u :
+           AREA_LIGHT_INTEGRATION_SAMPLE_COUNT;
+}
+
+uint AreaLightQuadratureOrder(uint sampleCount)
+{
+    return sampleCount == 9u ? 3u : sampleCount == 64u ? 8u : 5u;
+}
+
+float AreaLightGaussNode(uint order, uint index)
+{
+    static const float nodes3[3] = {
+        -0.774596669241483, 0.0, 0.774596669241483,
+    };
+    static const float nodes8[8] = {
+        -0.960289856497536, -0.796666477413627,
+        -0.525532409916329, -0.183434642495650,
+         0.183434642495650,  0.525532409916329,
+         0.796666477413627,  0.960289856497536,
+    };
+    if (order == 3u) return nodes3[min(index, 2u)];
+    if (order == 8u) return nodes8[min(index, 7u)];
+    return AreaLightGauss5Node(index);
+}
+
+float AreaLightGaussWeight(uint order, uint index)
+{
+    static const float weights3[3] = {
+        0.555555555555556, 0.888888888888889, 0.555555555555556,
+    };
+    static const float weights8[8] = {
+        0.101228536290376, 0.222381034453374,
+        0.313706645877887, 0.362683783378362,
+        0.362683783378362, 0.313706645877887,
+        0.222381034453374, 0.101228536290376,
+    };
+    if (order == 3u) return weights3[min(index, 2u)];
+    if (order == 8u) return weights8[min(index, 7u)];
+    return AreaLightGauss5Weight(index);
+}
+
 float AreaLightRectSampleWeight(uint sampleIndex)
 {
     uint index = sampleIndex % AREA_LIGHT_INTEGRATION_SAMPLE_COUNT;
@@ -181,4 +232,40 @@ float3 EvaluateAreaLightSampleRadiance(AreaLightData light,
         light, frame, worldPosition, sampleIndex, surfaceToLight);
     return light.colorIntensity.rgb * light.colorIntensity.a *
         contributionWeight;
+}
+
+float3 EvaluateAreaLightSampleRadiance(AreaLightData light,
+                                       AreaLightFrame frame,
+                                       float3 worldPosition,
+                                       uint sampleIndex, uint sampleCount,
+                                       out float3 surfaceToLight)
+{
+    if (sampleCount == AREA_LIGHT_INTEGRATION_SAMPLE_COUNT)
+        return EvaluateAreaLightSampleRadiance(
+            light, frame, worldPosition, sampleIndex, surfaceToLight);
+
+    uint order = AreaLightQuadratureOrder(sampleCount);
+    uint x = sampleIndex % order;
+    uint y = sampleIndex / order;
+    float2 offset;
+    float weight;
+    if (abs(frame.type - AREA_LIGHT_TYPE_DISK) < 0.5)
+    {
+        float radius = sqrt(0.5 * (AreaLightGaussNode(order, y) + 1.0));
+        float angle = 2.0 * PI * float(x) / float(order);
+        offset = radius * float2(cos(angle), sin(angle)) * frame.halfSize.x;
+        weight = 0.5 * AreaLightGaussWeight(order, y) / float(order);
+    }
+    else
+    {
+        offset = float2(AreaLightGaussNode(order, x),
+                        AreaLightGaussNode(order, y)) * frame.halfSize;
+        weight = 0.25 * AreaLightGaussWeight(order, x) *
+                        AreaLightGaussWeight(order, y);
+    }
+    float3 samplePosition = frame.position + frame.tangent * offset.x +
+        frame.bitangent * offset.y;
+    return light.colorIntensity.rgb * light.colorIntensity.a *
+        AreaLightPositionContributionWeight(light, frame, worldPosition,
+            samplePosition, weight, surfaceToLight);
 }

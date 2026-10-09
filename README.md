@@ -139,6 +139,13 @@ shadows offer fast, balanced and high sampling quality in Lighting Settings;
 `--area-shadow-quality 1`, `2` (default) or `3` selects the same modes for captures.
 See [area-light shadow quality and validation](docs/area-shadows.md).
 
+Rectangular and disk emitters use fitted LTC integration by default, shared by
+forward, deferred and transparent lighting. Lighting Settings offers the
+sampled baseline at 9, 25 or 64 samples and emitter outlines at authored size.
+Use `--area-lighting ltc` or `--area-lighting sampled --area-light-samples 25`
+for reproducible comparisons. See [LTC area lighting](docs/ltc-area-lighting.md)
+for table provenance, conservative fallbacks and validation.
+
 The STEP IFC importer supports triangulated and polygonal face sets (including
 concave faces and holes), faceted B-reps with cavity shells, planar and regular
 curved advanced B-reps with smooth surface normals, circular/hollow and sloped L/U/I profiles with fillets,

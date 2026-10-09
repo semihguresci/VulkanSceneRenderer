@@ -1,0 +1,25 @@
+{
+  "case": "cpu-continuity",
+  "receiverHeight": 0.15,
+  "emitterRadius": 0.5,
+  "camera": [
+    0.477,
+    0,
+    0.15
+  ],
+  "points": 1001,
+  "boundaries": [
+    {
+      "distance": 0.5,
+      "intervalChange": 2.805443916620298e-07,
+      "confidenceChange": 0.0
+    },
+    {
+      "distance": 0.55,
+      "intervalChange": 7.26530670984416e-09,
+      "confidenceChange": 0.0
+    }
+  ],
+  "maximumAdjacentConfidenceChange": 0.030355819562052633,
+  "maximumStepAfterSubdivision": 0.01518274967378852
+}

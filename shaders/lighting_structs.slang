@@ -49,6 +49,8 @@ struct PointLightData
 
 static const float AREA_LIGHT_TYPE_RECTANGLE = 0.0;
 static const float AREA_LIGHT_TYPE_DISK = 1.0;
+static const uint AREA_LIGHTING_MODE_SAMPLED = 0u;
+static const uint AREA_LIGHTING_MODE_LTC = 1u;
 
 struct AreaLightData
 {
@@ -116,8 +118,8 @@ struct LightingBuffer
     uint localShadowEnabled;
     float bounceIntensity;
     uint localContactVisibility;
-    uint padding1;
-    uint padding2;
+    uint areaLightingMode; // 0: sampled; 1: LTC, when its LUTs are available.
+    uint areaLightSampleCount; // 9, 25 (legacy/default), or 64.
 };
 
 struct ExposureStateData

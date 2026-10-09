@@ -1,0 +1,22 @@
+{
+  "passed": true,
+  "returncode": 0,
+  "elapsedSeconds": 1199.1400000000003,
+  "captureCount": 232,
+  "imageCount": 386,
+  "recordCount": 238,
+  "groups": {
+    "quality": 140,
+    "parity": 36,
+    "disk-rim": 8,
+    "benchmark": 16,
+    "benchmark-comparison": 8,
+    "shadows": 12,
+    "assets": 2,
+    "runtime-switch": 16
+  },
+  "reusedQualityRecords": 0,
+  "buildUnchanged": true,
+  "invalidLogs": [],
+  "executableSha256": "403e67ad15a60931101d536e5f95c2340ca1c99a017bb0ef77f1d59e50193920"
+}

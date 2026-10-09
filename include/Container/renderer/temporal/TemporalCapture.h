@@ -23,6 +23,7 @@ struct CaptureEvent {
   std::optional<bool> taa, orthographic, objectVisible, minimized;
   std::optional<bool> rayShadowDenoise;
   std::optional<uint32_t> rayShadowSamples;
+  std::optional<uint32_t> areaLightSamples;
   std::optional<uint32_t> samples;
   std::optional<uint32_t> bimHiddenObject;
   std::optional<int> bimLodBias;
@@ -32,6 +33,7 @@ struct CaptureEvent {
   std::optional<glm::uvec2> resize;
   std::string technique{}, reload{}, guiReload{}, guiSampleModel{};
   std::string rayShadows{};
+  std::string areaLighting{};
 };
 struct CaptureSample {
   std::optional<CaptureCamera> camera;
@@ -111,6 +113,21 @@ public:
       }
       if (value.contains("rayShadowDenoise"))
         event.rayShadowDenoise = value.at("rayShadowDenoise").get<bool>();
+      if (value.contains("areaLighting")) {
+        const auto &mode = value.at("areaLighting");
+        if (!mode.is_string() || (mode != "ltc" && mode != "sampled"))
+          throw std::invalid_argument("Invalid capture area lighting mode");
+        event.areaLighting = mode.get<std::string>();
+      }
+      if (value.contains("areaLightSamples")) {
+        const auto &samples = value.at("areaLightSamples");
+        // Check the original numeric value before conversion can truncate a
+        // fraction or wrap an out-of-range integer into an allowed count.
+        if (!samples.is_number() ||
+            (samples != 9u && samples != 25u && samples != 64u))
+          throw std::invalid_argument("Capture area light samples must be 9,25,64");
+        event.areaLightSamples = samples.get<uint32_t>();
+      }
       auto boolean = [&](const char *name, std::optional<bool> &target) {
         if (value.contains(name))
           target = value.at(name).get<bool>();

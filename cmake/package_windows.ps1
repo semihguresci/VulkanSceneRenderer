@@ -50,6 +50,8 @@ $requiredFiles = @(
     'spv_shaders/temporal_resolve.comp.spv',
     'spv_shaders/ray_shadow_trace.comp.spv',
     'spv_shaders/ray_shadow_filter.comp.spv',
+    'materials/ltc/matrix.bin', 'materials/ltc/amplitude.bin',
+    'materials/ltc/LICENSE.txt',
     'hdr/citrus_orchard_road_puresky_4k.exr'
 )
 foreach ($relativePath in $requiredFiles) {
@@ -78,6 +80,7 @@ Get-ChildItem -LiteralPath (Join-Path $runtimeDirectory 'models') -File |
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'LICENSE') -Destination $stagingDirectory
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/windows-package-quick-start.md') -Destination (Join-Path $stagingDirectory 'README.md')
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/third-party-notices.md') -Destination (Join-Path $stagingDirectory 'THIRD_PARTY_NOTICES.md')
+Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/ltc-area-lighting.md') -Destination (Join-Path $stagingDirectory 'ltc-area-lighting.md')
 $captureToolsDirectory = New-Item -ItemType Directory -Path (Join-Path $stagingDirectory 'tools')
 foreach ($captureTool in @('gfxreconstruct.py', 'gfxreconstruct.ps1')) {
     Copy-Item -LiteralPath (Join-Path $sourceDirectory "tools/$captureTool") -Destination $captureToolsDirectory.FullName
@@ -123,6 +126,21 @@ Get-ChildItem -LiteralPath $tinySource -File -Recurse |
     }
 $embeddedNotices | Set-Content -LiteralPath (Join-Path $licensesDirectory 'tinyusdz-embedded-notices.txt') -Encoding UTF8
 
+# Bind the build manifest to the staged payload that is actually archived.
+$runtimeDlls = @(Get-ChildItem -LiteralPath $stagingDirectory -Filter '*.dll' -File)
+$ltcAssets = @(Get-ChildItem -LiteralPath (Join-Path $stagingDirectory 'materials/ltc') -File)
+$hashedRuntimeFiles = @(
+    Get-Item -LiteralPath (Join-Path $stagingDirectory 'VulkanSceneRenderer.exe')
+    $runtimeDlls
+    Get-ChildItem -LiteralPath (Join-Path $stagingDirectory 'spv_shaders') -Filter '*.spv' -File
+    $ltcAssets
+)
+$runtimeHashes = [ordered]@{}
+foreach ($file in ($hashedRuntimeFiles | Sort-Object FullName)) {
+    $relativePath = $file.FullName.Substring($stagingDirectory.Length + 1).Replace([char]92, [char]47)
+    $runtimeHashes[$relativePath] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
 [ordered]@{
     version = $Version
     source_commit = $sourceCommit
@@ -132,6 +150,9 @@ $embeddedNotices | Set-Content -LiteralPath (Join-Path $licensesDirectory 'tinyu
     vulkan_api = '1.4'
     shader_format = 'SPIR-V 1.6'
     compiled_shader_count = $shaders.Count
+    runtime_dll_count = $runtimeDlls.Count
+    ltc_asset_file_count = $ltcAssets.Count
+    runtime_sha256 = $runtimeHashes
     packaged_at_utc = [DateTime]::UtcNow.ToString('o')
 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $stagingDirectory 'build-info.json') -Encoding UTF8
 
