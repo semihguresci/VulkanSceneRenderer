@@ -26,6 +26,9 @@ Rectangle integration accelerates the measured dense-light fixtures. Disk LTC
 is slower than sampled integration on this GPU despite its near-field accuracy
 improvement; see `validation-summary.json` for timings and measured limits.
 
+Follow-up work is tracked in [#70: disk integration optimization](https://github.com/semihguresci/VulkanSceneRenderer/issues/70)
+and [#71: profiling and performance regression checks](https://github.com/semihguresci/VulkanSceneRenderer/issues/71).
+
 The clean package was built from `d7eb6a25ae1170a405d9315e12a3980eb4fa17fd`.
 `cpu-test-results.txt` records ten passing suites. All eight LTC and seven
 temporal/provider/MSAA/ray package launches passed with SDK/Vulkan overrides

@@ -368,6 +368,9 @@ numeric checks, hash manifests, material-layer checks and eight untouched
 comparison images are saved in
 [the repository validation evidence](../tests/visual-regression/ltc/windows-nvidia/README.md).
 
+Follow-up work is tracked in [#70: disk integration optimization](https://github.com/semihguresci/VulkanSceneRenderer/issues/70)
+and [#71: profiling and performance regression checks](https://github.com/semihguresci/VulkanSceneRenderer/issues/71).
+
 The clean package checkpoint is `d7eb6a25ae1170a405d9315e12a3980eb4fa17fd`.
 Its Visual Studio Release rebuild passed all ten focused CPU suites, including
 authored emitter-overlay geometry. The rebuilt executable's revision stamp
