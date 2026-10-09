@@ -82,6 +82,8 @@ constexpr std::array<std::string_view, kRenderResourceIdCount>
         "GBufferMaterial",
         "GBufferEmissive",
         "GBufferSpecular",
+        "GBufferMaterialLayers",
+        "GBufferMaterialSheen",
         "PickId",
         "PickDepth",
         "OitStorage",
@@ -292,6 +294,8 @@ constexpr std::array kGBufferWrites{
     RenderResourceId::GBufferMaterial,
     RenderResourceId::GBufferEmissive,
     RenderResourceId::GBufferSpecular,
+    RenderResourceId::GBufferMaterialLayers,
+    RenderResourceId::GBufferMaterialSheen,
     RenderResourceId::PickId,
 };
 constexpr std::array kBimGBufferReads{
@@ -304,6 +308,8 @@ constexpr std::array kBimGBufferReads{
     RenderResourceId::GBufferMaterial,
     RenderResourceId::GBufferEmissive,
     RenderResourceId::GBufferSpecular,
+    RenderResourceId::GBufferMaterialLayers,
+    RenderResourceId::GBufferMaterialSheen,
     RenderResourceId::PickId,
 };
 constexpr std::array kBimGBufferWrites{
@@ -313,6 +319,8 @@ constexpr std::array kBimGBufferWrites{
     RenderResourceId::GBufferMaterial,
     RenderResourceId::GBufferEmissive,
     RenderResourceId::GBufferSpecular,
+    RenderResourceId::GBufferMaterialLayers,
+    RenderResourceId::GBufferMaterialSheen,
     RenderResourceId::PickId,
 };
 constexpr std::array kTransparentPickReads{
@@ -412,6 +420,8 @@ constexpr std::array kLightingReads{
     RenderResourceId::GBufferMaterial,
     RenderResourceId::GBufferEmissive,
     RenderResourceId::GBufferSpecular,
+    RenderResourceId::GBufferMaterialLayers,
+    RenderResourceId::GBufferMaterialSheen,
     RenderResourceId::LightingData,
     RenderResourceId::EnvironmentMaps,
 };

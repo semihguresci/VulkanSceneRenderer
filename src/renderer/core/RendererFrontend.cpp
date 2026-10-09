@@ -1447,6 +1447,11 @@ void RendererFrontend::initialize() {
       subs_.lightingManager->lightDescriptorSetLayout());
   subs_.lightingManager->createTiledResources(
       container::util::executableDirectory(), svc_.swapChainManager.extent());
+  auto initialLighting = subs_.lightingManager->lightingSettings();
+  initialLighting.areaLightingMode = svc_.config.areaLightingMode;
+  initialLighting.areaLightSampleCount = svc_.config.areaLightSampleCount;
+  initialLighting.areaEmitterDebug = svc_.config.areaEmitterDebug;
+  subs_.lightingManager->setLightingSettings(initialLighting);
   createGraphicsPipelines();
   svc_.swapChainManager.createFramebuffers(resources_.renderPasses.postProcess);
 
@@ -1466,6 +1471,7 @@ void RendererFrontend::initialize() {
         svc_.ctx.wireframeSupported, svc_.ctx.wireframeRasterModeSupported,
         svc_.ctx.wireframeWideLinesSupported);
     subs_.guiManager->setAreaShadowQuality(svc_.config.areaShadowQuality);
+    subs_.guiManager->setLtcStatus(subs_.lightingManager->ltcStatus());
     subs_.guiManager->rayShadowSettings() = svc_.config.rayShadows;
     subs_.guiManager->setRayShadowSupport(
         subs_.rayShadowManager->supported(),
@@ -2111,6 +2117,23 @@ void RendererFrontend::applyTemporalCapture(
   FrameConcurrencyPolicy::serializedGpuResources("capture scene mutation")
       .waitBeforeAcquire(*subs_.frameSyncManager, frame_.currentFrame);
   const auto &event = sample.event;
+  if (subs_.lightingManager &&
+      (!event.areaLighting.empty() || event.areaLightSamples)) {
+    const auto &currentSettings = subs_.lightingManager->lightingSettings();
+    auto settings = currentSettings;
+    if (!event.areaLighting.empty())
+      settings.areaLightingMode = event.areaLighting == "ltc" ? 1u : 0u;
+    if (event.areaLightSamples)
+      settings.areaLightSampleCount = *event.areaLightSamples;
+    const bool areaLightingChanged =
+        settings.areaLightingMode != currentSettings.areaLightingMode ||
+        settings.areaLightSampleCount != currentSettings.areaLightSampleCount;
+    subs_.lightingManager->setLightingSettings(settings);
+    if (subs_.guiManager)
+      subs_.guiManager->setLightingSettings(settings);
+    if (areaLightingChanged && subs_.temporalManager)
+      subs_.temporalManager->reset("area light integration changed");
+  }
   if (subs_.rayShadowManager &&
       (!event.rayShadows.empty() || event.rayShadowSamples ||
        event.rayShadowDenoise)) {
@@ -2263,6 +2286,15 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"bounceIntensity", lighting.bounceIntensity},
         {"pointLightCount", lighting.pointLightCount},
         {"areaLightCount", lighting.areaLightCount},
+        {"areaLightingMode", lighting.areaLightingMode},
+        {"areaLightingRequestedMode",
+         subs_.lightingManager->lightingSettings().areaLightingMode},
+        {"areaLightSampleCount", lighting.areaLightSampleCount},
+        {"ltcReady", subs_.lightingManager->ltcReady()},
+        {"ltcStatus", subs_.lightingManager->ltcStatus()},
+        {"ltcAllocatedImageBytes", subs_.lightingManager->ltcMemoryBytes()},
+        {"areaEmitterDebug",
+         subs_.lightingManager->lightingSettings().areaEmitterDebug},
         {"localShadowLayerBudget",
          subs_.lightingManager->lightingSettings().localShadowLayerBudget}};
     json["lighting"]["areaLightPositions"] = nlohmann::json::array();
@@ -3835,7 +3867,8 @@ void RendererFrontend::createRenderPasses() {
       resources_.gBufferFormats.sceneColor, resources_.gBufferFormats.albedo,
       resources_.gBufferFormats.normal, resources_.gBufferFormats.material,
       resources_.gBufferFormats.emissive, resources_.gBufferFormats.specular,
-      resources_.gBufferFormats.pickId, msaaSampleCount_);
+      resources_.gBufferFormats.pickId, resources_.gBufferFormats.materialLayers,
+      resources_.gBufferFormats.materialSheen, msaaSampleCount_);
   resources_.renderPasses = subs_.renderPassManager->passes();
 }
 
@@ -6228,8 +6261,16 @@ void RendererFrontend::presentSceneControls() {
         guiLightingSettings.localShadowPointBudget !=
             currentLightingSettings.localShadowPointBudget ||
         guiLightingSettings.localShadowLayerBudget !=
-            currentLightingSettings.localShadowLayerBudget;
+            currentLightingSettings.localShadowLayerBudget ||
+        guiLightingSettings.areaLightingMode !=
+            currentLightingSettings.areaLightingMode ||
+        guiLightingSettings.areaLightSampleCount !=
+            currentLightingSettings.areaLightSampleCount ||
+        guiLightingSettings.areaEmitterDebug !=
+            currentLightingSettings.areaEmitterDebug;
     if (lightingSettingsChanged) {
+      if (subs_.temporalManager)
+        subs_.temporalManager->reset("lighting settings changed");
       subs_.lightingManager->setLightingSettings(guiLightingSettings);
       subs_.lightingManager->updateLightingData();
       updateFrameDescriptorSets();

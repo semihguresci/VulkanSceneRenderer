@@ -122,7 +122,7 @@ FrameResourceManager::~FrameResourceManager() {
 // -----------------------------------------------------------------------
 void FrameResourceManager::createDescriptorSetLayouts() {
   if (lightingLayout_ == VK_NULL_HANDLE) {
-    const std::array<VkDescriptorSetLayoutBinding, 21> b = {{
+    const std::array<VkDescriptorSetLayoutBinding, 23> b = {{
         {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,  1,
          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_SAMPLER,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -148,6 +148,8 @@ void FrameResourceManager::createDescriptorSetLayouts() {
         {18, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,   1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {19, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {20, VK_DESCRIPTOR_TYPE_SAMPLER,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {21, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // material layers
+        {22, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // material sheen
     }};
     const std::vector<VkDescriptorBindingFlags> flags(b.size(), 0);
     lightingLayout_ = pipelineMgr_->createDescriptorSetLayout(
@@ -341,13 +343,8 @@ void FrameResourceManager::create(
     std::array<VkDescriptorPoolSize, 3> sizes = {{
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, n * 3},
         {VK_DESCRIPTOR_TYPE_SAMPLER, n * 6},    // gbuf + shadow + local shadow + env + BRDF LUT + AO
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 9}, // 5(gbuf) + 1(shadow) + 1(irrad) + 1(prefilt) + 1(brdfLut) +
-                 // ... err: 5+1+3+1=10 → use 10
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 14}, // 8(gbuf/depth) + 2(shadows) + 3(IBL) + 1(AO)
     }};
-    // Corrected: samplers=5/frame,
-    // sampled_images=5(gbuf)+1(shadow)+3(IBL)+1(AO)=10/frame
-    sizes[1].descriptorCount = n * 6;
-    sizes[2].descriptorCount = n * 12;
     VkDescriptorPoolCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     ci.maxSets       = n;
     ci.poolSizeCount = static_cast<uint32_t>(sizes.size());
@@ -432,6 +429,12 @@ void FrameResourceManager::create(
                        VK_IMAGE_USAGE_SAMPLED_BIT |
                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
+    f.materialLayers = createAttachment(formats_.materialLayers,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                   VK_IMAGE_ASPECT_COLOR_BIT);
+    f.materialSheen = createAttachment(formats_.materialSheen,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                   VK_IMAGE_ASPECT_COLOR_BIT);
     if (useMsaa) {
       f.albedoMsaa = createAttachment(formats_.albedo,
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
@@ -449,6 +452,12 @@ void FrameResourceManager::create(
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT, sampleCount_);
       f.pickIdMsaa = createAttachment(formats_.pickId,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                   VK_IMAGE_ASPECT_COLOR_BIT, sampleCount_);
+      f.materialLayersMsaa = createAttachment(formats_.materialLayers,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                   VK_IMAGE_ASPECT_COLOR_BIT, sampleCount_);
+      f.materialSheenMsaa = createAttachment(formats_.materialSheen,
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT, sampleCount_);
     }
@@ -471,7 +480,8 @@ void FrameResourceManager::create(
       const VkCommandBuffer cmd = beginImmediate();
       for (VkImage image : {f.albedo.image, f.normal.image, f.material.image,
                             f.emissive.image, f.specular.image, f.sceneColor.image,
-                            f.pickId.image}) {
+                            f.pickId.image, f.materialLayers.image,
+                            f.materialSheen.image}) {
         VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -512,6 +522,19 @@ void FrameResourceManager::create(
         VMA_MEMORY_USAGE_AUTO,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
             VMA_ALLOCATION_CREATE_MAPPED_BIT);
+    // Pool growth reads this counter before recording the frame's GPU clear.
+    // A newly created frame (also after MSAA/resize) has no prior submission,
+    // so initialize its mapped occupancy rather than interpreting reused
+    // allocation contents as an overflow and growing the pool to that value.
+    auto *initialCounter = static_cast<uint32_t *>(
+        f.oitCounterBuffer.allocation_info.pMappedData);
+    if (!initialCounter)
+      throw std::runtime_error("OIT counter buffer is not persistently mapped");
+    *initialCounter = 0;
+    if (vmaFlushAllocation(allocationMgr_->memoryManager()->allocator(),
+                           f.oitCounterBuffer.allocation, 0,
+                           sizeof(uint32_t)) != VK_SUCCESS)
+      throw std::runtime_error("failed to initialize OIT counter buffer");
     f.oitMetadataBuffer = allocationMgr_->createBuffer(
         sizeof(OitMetadata),
         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
@@ -586,15 +609,18 @@ void FrameResourceManager::create(
 
     // GBuffer framebuffer
     {
-      std::array<VkImageView, 7> views = {
+      std::array<VkImageView, 9> views = {
           f.albedo.view, f.normal.view,   f.material.view, f.emissive.view,
-          f.specular.view, f.pickId.view, f.depthStencil.view};
-      std::array<VkImageView, 13> msaaViews = {
+          f.specular.view, f.pickId.view, f.materialLayers.view,
+          f.materialSheen.view, f.depthStencil.view};
+      std::array<VkImageView, 17> msaaViews = {
           f.albedoMsaa.view,   f.normalMsaa.view,   f.materialMsaa.view,
           f.emissiveMsaa.view, f.specularMsaa.view, f.pickIdMsaa.view,
+          f.materialLayersMsaa.view, f.materialSheenMsaa.view,
           f.depthStencilMsaa.view,
           f.albedo.view,       f.normal.view,       f.material.view,
-          f.emissive.view,     f.specular.view,     f.depthStencil.view};
+          f.emissive.view,     f.specular.view,     f.materialLayers.view,
+          f.materialSheen.view, f.depthStencil.view};
       RenderingTargetCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
       fbi.renderPass      = gBufferPass_;
       fbi.attachmentCount = useMsaa ? static_cast<uint32_t>(msaaViews.size())
@@ -609,15 +635,18 @@ void FrameResourceManager::create(
 
     // BIM GBuffer framebuffer
     {
-      std::array<VkImageView, 7> views = {
+      std::array<VkImageView, 9> views = {
           f.albedo.view, f.normal.view,   f.material.view, f.emissive.view,
-          f.specular.view, f.pickId.view, f.depthStencil.view};
-      std::array<VkImageView, 13> msaaViews = {
+          f.specular.view, f.pickId.view, f.materialLayers.view,
+          f.materialSheen.view, f.depthStencil.view};
+      std::array<VkImageView, 17> msaaViews = {
           f.albedoMsaa.view,   f.normalMsaa.view,   f.materialMsaa.view,
           f.emissiveMsaa.view, f.specularMsaa.view, f.pickIdMsaa.view,
+          f.materialLayersMsaa.view, f.materialSheenMsaa.view,
           f.depthStencilMsaa.view,
           f.albedo.view,       f.normal.view,       f.material.view,
-          f.emissive.view,     f.specular.view,     f.depthStencil.view};
+          f.emissive.view,     f.specular.view,     f.materialLayers.view,
+          f.materialSheen.view, f.depthStencil.view};
       RenderingTargetCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
       fbi.renderPass      = bimGBufferPass_;
       fbi.attachmentCount = useMsaa ? static_cast<uint32_t>(msaaViews.size())
@@ -739,6 +768,10 @@ void FrameResourceManager::destroy() {
     destroyAttachment(f.specularMsaa);
     destroyAttachment(f.pickId);
     destroyAttachment(f.pickIdMsaa);
+    destroyAttachment(f.materialLayers);
+    destroyAttachment(f.materialLayersMsaa);
+    destroyAttachment(f.materialSheen);
+    destroyAttachment(f.materialSheenMsaa);
     destroyAttachment(f.pickDepth);
     if (f.depthSamplingView != VK_NULL_HANDLE) {
       destroyVulkanImageView(dev, f.depthSamplingView, nullptr);
@@ -930,6 +963,8 @@ void FrameResourceManager::updateDescriptorSets(
     auto material = imgInfo(f.material.view,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     auto emissive = imgInfo(f.emissive.view,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     auto specular = imgInfo(f.specular.view,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    auto materialLayers = imgInfo(f.materialLayers.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    auto materialSheen = imgInfo(f.materialSheen.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     auto depthImg = imgInfo(f.depthSamplingView,
                             VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL);
     auto scColor  = imgInfo(f.sceneColor.view,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -938,7 +973,7 @@ void FrameResourceManager::updateDescriptorSets(
 
     // Lighting set
     {
-      std::array<VkWriteDescriptorSet, 21> w{};
+      std::array<VkWriteDescriptorSet, 23> w{};
       auto set = f.lightingDescriptorSet;
       auto buf = [&](int b, VkDescriptorType t, const VkDescriptorBufferInfo* i) {
         w[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1077,6 +1112,8 @@ void FrameResourceManager::updateDescriptorSets(
       }
       img(16, VK_DESCRIPTOR_TYPE_SAMPLER, &aoSamplerInfo);
       img(17, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &specular);
+      img(21, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &materialLayers);
+      img(22, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &materialSheen);
 
       vkUpdateDescriptorSets(dev, static_cast<uint32_t>(w.size()), w.data(), 0, nullptr);
     }
@@ -1471,6 +1508,12 @@ void FrameResourceManager::publishFrameResourceBindings() {
     bindImage("specular", f.specular,
               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                   VK_IMAGE_USAGE_SAMPLED_BIT);
+    bindImage("material-layers", f.materialLayers,
+              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                  VK_IMAGE_USAGE_SAMPLED_BIT);
+    bindImage("material-sheen", f.materialSheen,
+              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                  VK_IMAGE_USAGE_SAMPLED_BIT);
     bindSharedImage("pick-id", f.pickId,
               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                   VK_IMAGE_USAGE_SAMPLED_BIT |
@@ -1503,7 +1546,7 @@ void FrameResourceManager::publishFrameResourceBindings() {
     const uint32_t depthAttachmentCount =
         sampleCount_ == VK_SAMPLE_COUNT_1_BIT ? 1u : 2u;
     const uint32_t gBufferAttachmentCount =
-        sampleCount_ == VK_SAMPLE_COUNT_1_BIT ? 7u : 13u;
+        sampleCount_ == VK_SAMPLE_COUNT_1_BIT ? 9u : 17u;
 
     bindSharedFramebuffer("depth-prepass-framebuffer", f.depthPrepassFramebuffer,
                     depthPrepassPass_, depthAttachmentCount);

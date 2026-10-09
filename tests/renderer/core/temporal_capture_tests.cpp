@@ -73,6 +73,74 @@ TEST(TemporalCapture, ClampsOutsideTracksAndPreservesExactResetFrame) {
   EXPECT_TRUE(sequence.sample(7).event.reset);
   EXPECT_FALSE(sequence.sample(8).event.reset);
 }
+
+TEST(TemporalCapture, AreaLightingChangesApplyOnlyAtTheirNamedFrame) {
+  CaptureSequence sequence(json::parse(R"({"schemaVersion":1,"frames":10,
+    "events":[{"frame":4,"areaLighting":"sampled","areaLightSamples":64},
+              {"frame":7,"areaLighting":"ltc"}]})"));
+  EXPECT_EQ(sequence.sample(4).event.areaLighting, "sampled");
+  EXPECT_EQ(sequence.sample(4).event.areaLightSamples, 64u);
+  EXPECT_TRUE(sequence.sample(5).event.areaLighting.empty());
+  EXPECT_FALSE(sequence.sample(5).event.areaLightSamples);
+  EXPECT_EQ(sequence.sample(7).event.areaLighting, "ltc");
+  EXPECT_THROW(CaptureSequence(json::parse(
+      R"({"schemaVersion":1,"frames":2,"events":[{"frame":1,"areaLighting":"invalid"}]})")),
+      std::invalid_argument);
+  EXPECT_THROW(CaptureSequence(json::parse(
+      R"({"schemaVersion":1,"frames":2,"events":[{"frame":1,"areaLightSamples":16}]})")),
+      std::invalid_argument);
+}
+TEST(TemporalCapture, AcceptsExactAreaLightSampleCountsInNumericForms) {
+  const auto fixture = json::parse(
+      R"({"schemaVersion":1,"frames":2,"events":[{"frame":1}]})");
+  for (const uint32_t count : {9u, 25u, 64u}) {
+    // JSON Schema numeric enum values also accept an integral float such as
+    // 9.0. Preserve that equivalence while checking the exact value.
+    for (const auto &encoded :
+         json::array({count, static_cast<double>(count)})) {
+      SCOPED_TRACE(encoded.dump());
+      auto input = fixture;
+      input["events"][0]["areaLightSamples"] = encoded;
+      CaptureSequence sequence(input);
+      EXPECT_EQ(sequence.sample(1).event.areaLightSamples, count);
+      EXPECT_FALSE(sequence.sample(2).event.areaLightSamples);
+    }
+  }
+}
+TEST(TemporalCapture, AcceptsSupportedAreaLightingModesAndOmission) {
+  CaptureSequence sequence(json::parse(R"({"schemaVersion":1,"frames":4,
+    "events":[{"frame":1,"areaLighting":"ltc"},
+              {"frame":2,"areaLighting":"sampled"},
+              {"frame":3,"areaLightSamples":25}]})"));
+  EXPECT_EQ(sequence.sample(1).event.areaLighting, "ltc");
+  EXPECT_EQ(sequence.sample(2).event.areaLighting, "sampled");
+  EXPECT_TRUE(sequence.sample(3).event.areaLighting.empty());
+  EXPECT_EQ(sequence.sample(3).event.areaLightSamples, 25u);
+  EXPECT_TRUE(sequence.sample(4).event.areaLighting.empty());
+}
+TEST(TemporalCapture, RejectsEmptyUnsupportedAndNonStringAreaLightingModes) {
+  const auto fixture = json::parse(
+      R"({"schemaVersion":1,"frames":2,"events":[{"frame":1}]})");
+  for (const char *encoded : {"\"\"", "\"invalid\"", "\"LTC\"", "\"sampled \"",
+                              "0", "1.0", "true", "null", "[]", "{}"}) {
+    SCOPED_TRACE(encoded);
+    auto input = fixture;
+    input["events"][0]["areaLighting"] = json::parse(encoded);
+    EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+  }
+}
+TEST(TemporalCapture, RejectsAreaLightSampleValuesBeforeNarrowing) {
+  const auto fixture = json::parse(
+      R"({"schemaVersion":1,"frames":2,"events":[{"frame":1}]})");
+  for (const char *encoded : {"9.5", "25.9", "64.1", "4294967305",
+                              "-4294967287", "-9", "0", "16", "65",
+                              "\"9\"", "true", "null", "[]", "{}"}) {
+    SCOPED_TRACE(encoded);
+    auto input = fixture;
+    input["events"][0]["areaLightSamples"] = json::parse(encoded);
+    EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+  }
+}
 TEST(TemporalCapture, AreaLightEventsAreFiniteAndApplyOnce) {
   CaptureSequence sequence(json::parse(R"({"schemaVersion":1,"frames":8,
     "events":[{"frame":4,"areaLightPosition":[0.3,1.8,0.2]}]})"));

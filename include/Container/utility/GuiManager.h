@@ -696,6 +696,7 @@ public:
   void setAreaShadowQuality(uint32_t quality) {
     shadowSettings_.areaShadowQuality = std::min(quality, 3u);
   }
+  void setLtcStatus(std::string status) { ltcStatus_ = std::move(status); }
   void setFreezeCulling(bool frozen);
   [[nodiscard]] container::renderer::RayShadowSettings &rayShadowSettings() {
     return rayShadowSettings_;
@@ -860,6 +861,7 @@ private:
   container::gpu::LightCullingStats lightCullingStats_{};
   GuiRendererTelemetryView rendererTelemetry_{};
   container::gpu::LightingSettings lightingSettings_{};
+  std::string ltcStatus_{};
   container::gpu::ShadowSettings shadowSettings_{};
   container::renderer::RayShadowSettings rayShadowSettings_{};
   bool rayShadowSupported_{false};

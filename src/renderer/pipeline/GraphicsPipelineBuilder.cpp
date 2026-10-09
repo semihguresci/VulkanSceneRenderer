@@ -418,9 +418,9 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkPipelineColorBlendAttachmentState noColorAttach = opaqueAttach;
   noColorAttach.colorWriteMask = 0;
 
-  std::array<VkPipelineColorBlendAttachmentState, 6> gBufAttachs = {
+  std::array<VkPipelineColorBlendAttachmentState, 8> gBufAttachs = {
       opaqueAttach, opaqueAttach, opaqueAttach,
-      opaqueAttach, opaqueAttach, opaqueAttach};
+      opaqueAttach, opaqueAttach, opaqueAttach, opaqueAttach, opaqueAttach};
   std::array<VkPipelineColorBlendAttachmentState, 1> opaqueArr = {opaqueAttach};
   std::array<VkPipelineColorBlendAttachmentState, 1> additiveArr = {
       additiveAttach};

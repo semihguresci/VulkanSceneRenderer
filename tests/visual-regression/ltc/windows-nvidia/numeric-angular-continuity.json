@@ -1,0 +1,46 @@
+{
+  "boundaries": [
+    {
+      "boundary": 0.0001,
+      "samples": [
+        {
+          "distance": 4999.995,
+          "angularBound": 0.0001000001000001,
+          "confidence": 3.0000039998494536e-12
+        },
+        {
+          "distance": 5000.0,
+          "angularBound": 0.0001,
+          "confidence": 0.0
+        },
+        {
+          "distance": 5000.004999999999,
+          "angularBound": 9.999990000010002e-05,
+          "confidence": 0.0
+        }
+      ]
+    },
+    {
+      "boundary": 0.0002,
+      "samples": [
+        {
+          "distance": 2499.9975,
+          "angularBound": 0.0002000002000002,
+          "confidence": 1.0
+        },
+        {
+          "distance": 2500.0,
+          "angularBound": 0.0002,
+          "confidence": 1.0
+        },
+        {
+          "distance": 2500.0024999999996,
+          "angularBound": 0.00019999980000020003,
+          "confidence": 0.999999999988
+        }
+      ]
+    }
+  ],
+  "maximumSweepStep": 0.0017999965439999266,
+  "refinedMaximumSweepStep": 0.0008999995679999095
+}

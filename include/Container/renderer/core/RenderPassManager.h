@@ -38,6 +38,8 @@ class RenderPassManager {
               VkFormat emissiveFormat,
               VkFormat specularFormat,
               VkFormat pickIdFormat,
+              VkFormat materialLayersFormat,
+              VkFormat materialSheenFormat,
               VkSampleCountFlagBits msaaSamples);
 
   void destroy();

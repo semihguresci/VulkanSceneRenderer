@@ -148,7 +148,8 @@ directionalCoverageLengthForDisplay(float sceneWorldRadius) {
 
 void appendCoverage(DeferredLightGizmoPlan &plan,
                     const EditableLightEntity &light,
-                    const glm::vec3 &displayColor, float sceneWorldRadius) {
+                    const glm::vec3 &displayColor, float sceneWorldRadius,
+                    bool areaEmitterDebug) {
   if (plan.coveragePushConstantCount >= plan.coveragePushConstants.size()) {
     return;
   }
@@ -190,12 +191,17 @@ void appendCoverage(DeferredLightGizmoPlan &plan,
     break;
   }
   case EditableLightType::Area: {
-    const glm::vec2 areaHalfSize =
-        coverageAreaHalfSizeForDisplay(light.areaHalfSize, sceneWorldRadius);
+    const glm::vec2 areaHalfSize = areaEmitterDebug
+        ? glm::max(light.areaHalfSize, glm::vec2(0.001f))
+        : coverageAreaHalfSizeForDisplay(light.areaHalfSize, sceneWorldRadius);
     coverage.localShadowEnabled = kLightGizmoCoverageArea;
     coverage.positionRadius.w = 0.0f;
     coverage.directionInnerCos.w = areaHalfSize.x;
     coverage.coneOuterCosType.w = areaHalfSize.y;
+    // Coverage uses this otherwise-unused scalar as the authored emitter type.
+    coverage.bounceIntensity = light.areaShape;
+    if (std::abs(light.areaShape - container::gpu::kAreaLightTypeDisk) < 0.5f)
+      coverage.coneOuterCosType.w = areaHalfSize.x;
     if (coverage.directionInnerCos.w <= 0.0f ||
         coverage.coneOuterCosType.w <= 0.0f) {
       return;
@@ -270,7 +276,8 @@ void appendGizmo(DeferredLightGizmoPlan &plan, const EditableLightEntity &light,
       0.0f, 0.0f);
   pushConstants.padding2 = light.editable ? encodeEditableLightPickId(light.id)
                                           : container::gpu::kPickIdNone;
-  appendCoverage(plan, light, displayColor, inputs.sceneWorldRadius);
+  appendCoverage(plan, light, displayColor, inputs.sceneWorldRadius,
+                 inputs.areaEmitterDebug);
 }
 
 } // namespace
@@ -353,7 +360,7 @@ buildDeferredLightGizmoPlan(const DeferredLightGizmoPlanInputs &inputs) {
   legacyDirectional.direction = inputs.directionalDirection;
   legacyDirectional.tangent = {1.0f, 0.0f, 0.0f};
   appendCoverage(plan, legacyDirectional, directionalColor,
-                 inputs.sceneWorldRadius);
+                 inputs.sceneWorldRadius, inputs.areaEmitterDebug);
 
   const uint32_t pointCount =
       std::min<uint32_t>(static_cast<uint32_t>(inputs.pointLights.size()),

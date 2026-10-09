@@ -43,6 +43,7 @@ set(SLANG_INCLUDE_SHADER_NAMES
     object_index_common.slang
     brdf_common.slang
     area_light_common.slang
+    area_light_ltc.slang
     lighting_structs.slang
     shadow_common.slang
     local_shadow_common.slang

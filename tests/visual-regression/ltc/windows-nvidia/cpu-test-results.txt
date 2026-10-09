@@ -1,0 +1,22 @@
+      Start   6: ltc_lut_data_tests
+ 1/10 Test   #6: ltc_lut_data_tests ...................   Passed    0.09 sec
+      Start   7: submitted_upload_wait_tests
+ 2/10 Test   #7: submitted_upload_wait_tests ..........   Passed    0.05 sec
+      Start  12: temporal_capture_tests
+ 3/10 Test  #12: temporal_capture_tests ...............   Passed    0.03 sec
+      Start  21: ltc_area_light_numeric_oracle
+ 4/10 Test  #21: ltc_area_light_numeric_oracle ........   Passed    7.79 sec
+      Start  38: rendering_convention_tests
+ 5/10 Test  #38: rendering_convention_tests ...........   Passed    0.52 sec
+      Start  59: deferred_light_gizmo_planner_tests
+ 6/10 Test  #59: deferred_light_gizmo_planner_tests ...   Passed    0.08 sec
+      Start  71: scene_raster_pass_planner_tests
+ 7/10 Test  #71: scene_raster_pass_planner_tests ......   Passed    0.09 sec
+      Start  72: scene_raster_pass_recorder_tests
+ 8/10 Test  #72: scene_raster_pass_recorder_tests .....   Passed    0.09 sec
+      Start 121: resource_pipeline_registry_tests
+ 9/10 Test #121: resource_pipeline_registry_tests .....   Passed    0.16 sec
+      Start 128: render_graph_tests
+10/10 Test #128: render_graph_tests ...................   Passed    0.08 sec
+100% tests passed, 0 tests failed out of 10
+Total Test time (real) =   9.02 sec

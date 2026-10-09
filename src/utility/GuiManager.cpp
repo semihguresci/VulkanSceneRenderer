@@ -6271,6 +6271,30 @@ void GuiManager::drawSceneControls(
       ShowItemTooltip("Artistic fill without traced indirect visibility. "
                       "High values brighten occluded surfaces; use zero to "
                       "inspect direct-light shadows.");
+      int areaMode = static_cast<int>(lightingSettings_.areaLightingMode);
+      if (ImGui::Combo("Area light integration", &areaMode,
+                       "Sampled quadrature\0LTC\0"))
+        lightingSettings_.areaLightingMode = static_cast<uint32_t>(areaMode);
+      ShowItemTooltip("LTC integrates unoccluded emitter lighting. Shadow "
+                      "visibility keeps its selected raster or ray mode.");
+      int areaSamples = lightingSettings_.areaLightSampleCount == 9u ? 0 :
+                        lightingSettings_.areaLightSampleCount == 64u ? 2 : 1;
+      if (ImGui::Combo("Sampled area quality", &areaSamples,
+                       "Fast (9 samples)\0Baseline (25 samples)\0High (64 samples)\0")) {
+        static constexpr uint32_t counts[]{9u, 25u, 64u};
+        lightingSettings_.areaLightSampleCount = counts[areaSamples];
+      }
+      ShowItemTooltip("Quadrature quality for sampled lighting and LTC "
+                      "fallback cases; independent of shadow sample quality.");
+      ImGui::Checkbox("Emitter geometry at authored size",
+                      &lightingSettings_.areaEmitterDebug);
+      ShowItemTooltip("Show rectangle or disk outlines and their emission "
+                      "direction in the light overlay.");
+      if (lightingSettings_.areaLightingMode != 0u &&
+          lightingData.areaLightingMode == 0u)
+        ImGui::TextDisabled("LTC tables unavailable; using sampled lighting.");
+      if (!ltcStatus_.empty())
+        ImGui::TextWrapped("%s", ltcStatus_.c_str());
       ImGui::TreePop();
     }
 

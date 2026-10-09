@@ -1,0 +1,8 @@
+{
+  "path": "C:\\WINDOWS;C:\\WINDOWS\\System32;C:\\WINDOWS\\SysWOW64",
+  "removedEnvironmentVariables": [
+    "VK_SDK_PATH",
+    "VULKAN_SDK"
+  ],
+  "sdkAndBuildPathsRemoved": true
+}

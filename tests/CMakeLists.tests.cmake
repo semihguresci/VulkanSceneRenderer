@@ -113,6 +113,19 @@ endfunction()
 
 # ── CPU-only tests (no shaders needed) ───────────────────────────────────────
 
+add_custom_test(ltc_lut_data_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/ltc_lut_data_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_Math
+)
+target_sources(ltc_lut_data_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/LtcLutData.cpp
+)
+
+add_custom_test(submitted_upload_wait_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/submitted_upload_wait_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_VulkanCore
+)
+
 add_custom_test(ray_scene_tests
     ${TEST_RENDERER_CORE_DIR}/ray_scene_tests.cpp "" ${TEST_RESULTS_DIR}
     Dep_VulkanCore Dep_Math
@@ -209,6 +222,24 @@ add_test(NAME area_shadow_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/area_shadow_regression.py"
             --exe "$<TARGET_FILE:VulkanSceneRenderer>"
             --output "${TEST_RESULTS_DIR}/area-shadows")
+add_test(NAME ltc_area_light_numeric_oracle
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/ltc_area_light_regression.py"
+            --case cpu --assets "${CMAKE_SOURCE_DIR}/materials/ltc"
+            --output "${TEST_RESULTS_DIR}/ltc-area-numeric")
+set_tests_properties(ltc_area_light_numeric_oracle PROPERTIES
+    SKIP_RETURN_CODE 77 TIMEOUT 60 LABELS "lighting;numeric-reference")
+add_test(NAME ltc_area_light_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/ltc_area_light_regression.py"
+            --exe "$<TARGET_FILE:VulkanSceneRenderer>" --assets "${CMAKE_SOURCE_DIR}/materials/ltc"
+            --output "${TEST_RESULTS_DIR}/ltc-area-gpu")
+set_tests_properties(ltc_area_light_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 TIMEOUT 3600 LABELS "requires-vulkan;requires-display;lighting;visual-regression")
+add_test(NAME material_layer_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/material_layer_regression.py"
+            --exe "$<TARGET_FILE:VulkanSceneRenderer>" --assets "${CMAKE_SOURCE_DIR}/materials/ltc"
+            --output "${TEST_RESULTS_DIR}/material-layers")
+set_tests_properties(material_layer_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 TIMEOUT 1800 LABELS "requires-vulkan;requires-display;lighting;visual-regression")
 add_test(NAME ray_shadow_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/ray_shadow_regression.py"
             --exe "$<TARGET_FILE:VulkanSceneRenderer>"

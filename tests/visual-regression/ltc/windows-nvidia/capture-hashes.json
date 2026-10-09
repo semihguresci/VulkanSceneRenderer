@@ -1,0 +1,10 @@
+{
+  "spatial-disk-near-deferred-raster-sampled-n25.png": "a19deb50463ce2965c1a03d5e26b2226f7b3f758cdd427b1cd613f2478748265",
+  "spatial-disk-near-deferred-raster-ltc-n25.png": "9d882fdc31dda44f7b660d6ec3d587867de3f2e624297a5840361d6deee8c0d8",
+  "disk-rim-r10-deferred-raster-edge-midpoint.png": "ff109384b1e0c93ee85fe558646cdb0f24456743c01f22a5225b09631ad128e9",
+  "disk-rim-r10-forward-raster-edge-midpoint.png": "b9ef61c98ab62222c197c7da22f2667e3dd8c5ee6e70097c32818947b2ff97b5",
+  "layered-ltc-deferred-raster-ltc-n25.png": "d0ad72e350a0316bac77e21dd241d956ddcac3cf29ab74999136269caaa42ef9",
+  "layered-ltc-forward-raster-ltc-n25.png": "05ea255e8b2ed9854f5eace1e305946b977b7d4cbb977de6690bdddf48b310e4",
+  "shadow-disk-deferred-raster-soft-ltc-blocked.png": "0236789a1ce547007a928f3a858c1cd4d2957a8078d73f17a8c3a9bb83211fa5",
+  "shadow-disk-deferred-raster-soft-ltc-clear.png": "8daef9113efabab032c3ffa11face303912cd1c5698c108d21b137dfaa5f134a"
+}

@@ -1,0 +1,43 @@
+{
+  "passed": true,
+  "sourceCommit": "d7eb6a25ae1170a405d9315e12a3980eb4fa17fd",
+  "packageVersion": "v0.1.0-ltc-validation",
+  "archive": "F:\\Projects\\Container\\out\\review-40\\completion-package-verified\\VulkanSceneRenderer-v0.1.0-ltc-validation-windows-x64.zip",
+  "archiveBytes": 77108924,
+  "archiveSha256": "1a82936f4bb6a072d70f573cde1713b15d0fc444f7cdfc11656fbb939b84e422",
+  "exeSha256": "f71d4297c4a4fa95de749e5e2685e8b6fc0858b660135b570f74a68f7116c3ff",
+  "buildInfoSha256": "c1501a21ae87e040d107d0af18e14e4981bb711fd9e9c5abcf0cbaeb763e26e5",
+  "payloadHashCount": 91,
+  "compiledShaderCount": 78,
+  "runtimeDllCount": 8,
+  "ltcAssetFileCount": 4,
+  "totalSuccessfulCaptures": 15,
+  "ltcCaptures": [
+    "deferred-raster-ltc",
+    "deferred-raster-sampled",
+    "forward-raster-ltc",
+    "forward-raster-sampled",
+    "deferred-raster-fallback-missing",
+    "forward-raster-fallback-missing",
+    "deferred-raster-fallback-corrupt",
+    "forward-raster-fallback-corrupt"
+  ],
+  "temporalCaptures": [
+    "deferred-taa",
+    "forward-usd-taa",
+    "forward-bim-taa",
+    "forward-msaa4",
+    "deferred-raster-ray-soft",
+    "forward-raster-ray-hard",
+    "forward-raster-ray-disabled"
+  ],
+  "sdkAndBuildPathsRemoved": true,
+  "validationEnabled": false,
+  "originalRuntimePayloadPreservedAfterBothSuites": true,
+  "capturedBuildMetadataAvailable": false,
+  "sourceRevisionEvidence": "Clean checkpoint configure/rebuild log and package build-info; screenshot telemetry does not expose build metadata",
+  "results": {
+    "ltc": "ltc-smoke/ltc-package-smoke-results.json",
+    "temporal": "temporal-smoke/package-smoke-results.json"
+  }
+}

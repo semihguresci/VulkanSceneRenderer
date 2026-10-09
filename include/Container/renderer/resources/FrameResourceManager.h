@@ -66,6 +66,8 @@ struct GBufferFormats {
   VkFormat emissive{VK_FORMAT_R16G16B16A16_SFLOAT};
   VkFormat specular{VK_FORMAT_R16G16B16A16_SFLOAT};
   VkFormat pickId{VK_FORMAT_R32_UINT};
+  VkFormat materialLayers{VK_FORMAT_R16G16B16A16_SFLOAT};
+  VkFormat materialSheen{VK_FORMAT_R16G16B16A16_SFLOAT};
   VkFormat oitHeadPointer{VK_FORMAT_R32_UINT};
 
   // Returns a GBufferFormats initialised with all defaults except

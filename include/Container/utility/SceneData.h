@@ -229,6 +229,10 @@ struct LightingSettings {
   float bounceIntensity{1.0f};
   uint32_t localShadowPointBudget{1};
   uint32_t localShadowLayerBudget{8};
+  // 0 = sampled quadrature, 1 = LTC when its lookup tables are available.
+  uint32_t areaLightingMode{1};
+  uint32_t areaLightSampleCount{25};
+  bool areaEmitterDebug{false};
 };
 
 struct LightCullingStats {
@@ -432,8 +436,8 @@ struct LightingData {
   alignas(4) uint32_t localShadowEnabled{0};
   alignas(4) float bounceIntensity{1.0f};
   alignas(4) uint32_t localContactVisibility{0};
-  alignas(4) uint32_t padding1{0};
-  alignas(4) uint32_t padding2{0};
+  alignas(4) uint32_t areaLightingMode{0};
+  alignas(4) uint32_t areaLightSampleCount{25};
 };
 
 struct TileLightGrid {
@@ -686,6 +690,10 @@ static_assert(offsetof(LightingData, bounceIntensity) == 64,
               "LightingData.bounceIntensity offset");
 static_assert(offsetof(LightingData, localContactVisibility) == 68,
               "LightingData.localContactVisibility offset");
+static_assert(offsetof(LightingData, areaLightingMode) == 72,
+              "LightingData.areaLightingMode offset");
+static_assert(offsetof(LightingData, areaLightSampleCount) == 76,
+              "LightingData.areaLightSampleCount offset");
 static_assert(sizeof(ShadowCascadeData) == 80,
               "ShadowCascadeData size mismatch with shader ShadowCascadeData.");
 static_assert(alignof(ShadowCascadeData) == 16,

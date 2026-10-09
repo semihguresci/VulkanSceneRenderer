@@ -15,7 +15,7 @@ static const uint kCoverageDirectional = 4u;
 static const uint kCoverageRingSegments = 32u;
 static const uint kCoveragePointVertexCount = kCoverageRingSegments * 6u;
 static const uint kCoverageSpotVertexCount = kCoverageRingSegments * 2u + 8u;
-static const uint kCoverageAreaVertexCount = 12u;
+static const uint kCoverageAreaVertexCount = 14u;
 static const uint kCoverageDirectionalVertexCount = 10u;
 static const float kTau = 6.28318530718;
 
@@ -117,7 +117,10 @@ float3 areaCoverageCorner(float3 center, float3 tangent, float3 bitangent,
 
 float3 areaCoveragePosition(uint vertexIndex)
 {
-    if (vertexIndex >= kCoverageAreaVertexCount)
+    bool disk = abs(pc.bounceIntensity - AREA_LIGHT_TYPE_DISK) < 0.5;
+    uint boundarySegments = disk ? kCoverageRingSegments : 4u;
+    uint vertexCount = disk ? (boundarySegments + 3u) * 2u : kCoverageAreaVertexCount;
+    if (vertexIndex >= vertexCount)
     {
         return float3(0.0, 0.0, 0.0);
     }
@@ -130,17 +133,28 @@ float3 areaCoveragePosition(uint vertexIndex)
     uint segment = vertexIndex / 2u;
     uint endpoint = vertexIndex & 1u;
 
-    if (segment < 4u)
+    if (disk && segment < boundarySegments)
+    {
+        float angle = float(segment + endpoint) * kTau / float(boundarySegments);
+        return pc.positionRadius.xyz +
+            (tangent * cos(angle) + bitangent * sin(angle)) * halfX;
+    }
+    if (!disk && segment < boundarySegments)
     {
         uint corner = endpoint == 0u ? segment : ((segment + 1u) % 4u);
         return areaCoverageCorner(pc.positionRadius.xyz, tangent, bitangent,
                                   halfX, halfY, corner);
     }
-    if (segment == 4u)
+    if (segment == boundarySegments)
     {
         return pc.positionRadius.xyz + tangent * (endpoint == 0u ? -halfX : halfX);
     }
-    return pc.positionRadius.xyz + bitangent * (endpoint == 0u ? -halfY : halfY);
+    if (segment == boundarySegments + 1u)
+        return pc.positionRadius.xyz + bitangent * (endpoint == 0u ? -halfY : halfY);
+    // The normal marks the emitting side; positions remain in the shared world
+    // convention and the existing negative-height scene viewport handles Y.
+    return pc.positionRadius.xyz + normal *
+        (endpoint == 0u ? 0.0 : clamp(max(halfX, halfY) * 0.35, 0.02, 0.5));
 }
 
 float3 directionalCoveragePosition(uint vertexIndex)

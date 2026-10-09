@@ -44,7 +44,7 @@ TEST(SceneRasterPassPlannerTests, GBufferUsesFullAttachmentClearContract) {
   const auto plan =
       buildSceneRasterPassPlan(readyInputs(SceneRasterPassKind::GBuffer));
 
-  EXPECT_EQ(plan.clearValues.count, 6u);
+  EXPECT_EQ(plan.clearValues.count, 8u);
   EXPECT_FLOAT_EQ(plan.clearValues.values[1].color.float32[0], 0.5f);
   EXPECT_FLOAT_EQ(plan.clearValues.values[1].color.float32[2], 1.0f);
   EXPECT_EQ(plan.clearValues.values[5].color.uint32[0], 0u);

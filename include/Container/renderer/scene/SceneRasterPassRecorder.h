@@ -15,7 +15,7 @@ enum class SceneRasterPassKind : uint32_t {
 };
 
 struct SceneRasterPassClearValues {
-  std::array<VkClearValue, 6> values{};
+  std::array<VkClearValue, 8> values{};
   uint32_t count{0};
 };
 

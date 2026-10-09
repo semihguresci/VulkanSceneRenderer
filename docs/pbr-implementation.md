@@ -54,9 +54,9 @@ The parts that need adjustment for this renderer:
   volume behavior comes from `KHR_materials_volume`, where thickness and
   attenuation are applied.
 - Opaque deferred shading stores compact per-pixel channels plus material
-  metadata. Directional, point, and tiled lighting decode the material index and
-  fetch `GpuMaterial` for factor-level layered BRDF terms that do not fit in the
-  G-buffer.
+  metadata. Directional, point, and tiled lighting read sampled clearcoat,
+  sheen, and iridescence values from the material-layer attachments and fetch
+  `GpuMaterial` for additional factors that do not fit in the G-buffer.
 
 ## Current Renderer Shape
 
@@ -321,10 +321,10 @@ Current renderer support for the requested PBR stack:
 | Emissive | Emissive texture/factor plus `KHR_materials_emissive_strength` |
 | Occlusion | R-channel occlusion texture with `occlusionStrength`, combined with GTAO in deferred lighting |
 | Specular | `KHR_materials_specular` intensity/color import; forward keeps color F0, deferred stores per-pixel dielectric F0 color in a dedicated specular G-buffer attachment |
-| Clearcoat | Factor, roughness, textures, and clearcoat normal; compact opaque approximation, deferred direct-light factor-level clearcoat lobe, and forward second specular lobe |
-| Sheen | Sheen color/roughness factors and textures with grazing-angle cloth approximation in forward and deferred direct lighting |
+| Clearcoat | Sampled factor/roughness with direct and environment specular lobes in deferred and forward paths; clearcoat normal map in forward IBL |
+| Sheen | Sampled color/roughness with grazing-angle cloth approximation in deferred and forward direct/environment lighting |
 | Transmission + volume | Thin-surface transmission, thickness texture/factor, attenuation color/distance, and Beer-Lambert absorption in forward transparent path |
-| Iridescence | Factor, IOR, thickness range/texture with angle/thickness tint approximation |
+| Iridescence | Sampled factor/thickness with angle/thickness tint approximation on dielectric and metallic reflectance |
 | Dispersion | Optional per-channel IOR spread for transmitted forward transparent sampling |
 | Multiple scattering compensation | GGX specular IBL compensation in deferred and forward paths, including clearcoat IBL |
 
@@ -369,18 +369,19 @@ Clearcoat:
 - Factor, roughness, factor textures, roughness texture, and clearcoat normal
   texture are imported.
 - Forward transparent shading evaluates a second specular lobe.
-- Opaque G-buffer shading bakes roughness/F0 channels for every deferred light.
-  Directional, point, and tiled deferred lighting also fetch `GpuMaterial` and
-  evaluate a factor-level clearcoat direct lobe using the material clearcoat
-  factor and roughness.
+- Opaque G-buffer shading preserves sampled clearcoat factor and roughness in
+  a separate material-layer attachment. Directional, point, tiled and area
+  lights evaluate the clearcoat direct lobe; deferred environment lighting
+  evaluates its second specular IBL lobe. Clearcoat normal textures are evaluated
+  in the forward environment path; deferred clearcoat uses the shading normal.
 
 Sheen:
 
 - Sheen color and roughness factors/textures are imported.
 - The current shader uses a grazing-angle cloth reflection approximation.
-- Opaque G-buffer shading keeps compact emissive/F0 channels. Directional,
-  point, and tiled deferred lighting add a factor-level sheen direct
-  contribution from `GpuMaterial`.
+- Opaque G-buffer shading stores sampled sheen colour and roughness in a
+  separate attachment. Deferred direct and environment lighting evaluate these
+  values without baking sheen into base colour or emission.
 
 Transmission and volume:
 
@@ -393,9 +394,10 @@ Iridescence:
 
 - Factor, IOR, thickness range, and thickness texture are imported.
 - The shader uses an angle/thickness tint approximation.
-- Deferred direct lighting applies the factor-level iridescence tint to
-  dielectric F0 using the decoded material index. The compact G-buffer fallback
-  still stores only the scalar F0 and pre-tinted base color.
+- The G-buffer preserves sampled iridescence factor and thickness. Deferred and
+  forward direct/environment lighting apply the angle/thickness tint to mixed
+  dielectric/conductor F0, including fully metallic materials, while preserving
+  the authored base colour.
 
 Dispersion:
 
@@ -422,7 +424,7 @@ Supported importer target:
 | `KHR_texture_transform` | offset, rotation, scale, alternate `texCoord` | Supported for core glTF texture slots in G-buffer and forward transparent paths |
 | `KHR_materials_pbrSpecularGlossiness` | diffuse, specular, glossiness, textures | Converted to metallic-roughness approximation; glossiness alpha converted to roughness |
 | `KHR_materials_specular` | specular intensity and specular color | Modifies dielectric F0 |
-| `KHR_materials_clearcoat` | clearcoat, roughness, normal | Adds second specular lobe in forward; compact approximation in G-buffer |
+| `KHR_materials_clearcoat` | clearcoat, roughness, normal | Second direct and environment specular lobe; sampled factor/roughness in G-buffer; normal map in forward IBL |
 | `KHR_materials_transmission` | transmission factor/texture | Thin-surface transmission term |
 | `KHR_materials_volume` | thickness, attenuation color/distance | Beer-Lambert absorption for transmitted color |
 | `KHR_materials_sheen` | sheen color and roughness | Grazing-angle cloth reflection approximation |
@@ -453,9 +455,11 @@ Opaque deferred path:
   Directional, point, and tiled deferred lighting fetch `GpuMaterial` through
   the scene material SSBO when they need full material flags or factors that do
   not fit in the compact channels.
-- All deferred direct-light passes use shared deferred BRDF helpers to recover
-  factor-level colored dielectric specular, clearcoat direct lighting, sheen
-  direct lighting, and iridescence F0 tint from that material record.
+- Two RGBA16F attachments store sampled clearcoat factor/roughness, iridescence
+  factor/thickness, and sheen colour/roughness. MSAA resolves them with the other
+  material channels. All deferred direct-light passes use those values with
+  shared layered BRDF helpers; the directional pass also evaluates clearcoat
+  and sheen IBL. No material layer is baked into base colour or emission.
 
 Transparent forward path:
 
@@ -470,8 +474,8 @@ Implemented material-index bridge:
 - `deferred_directional.slang`, `point_light.slang`, and
   `tiled_lighting.slang` decode that index and fetch `GpuMaterial` from the
   scene descriptor set.
-- This keeps compact G-buffer channels for per-pixel data while letting all
-  deferred direct-light passes share factor-level layered material terms.
+- Per-pixel extension data comes from the two material-layer attachments;
+  the material-index bridge supplies flags and authored IOR/transmission data.
 
 ## Pipeline Strategy
 

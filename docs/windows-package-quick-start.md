@@ -12,6 +12,22 @@ panel reports support, memory and build/query/filter timings. Transparent
 receivers retain raster shadows; blended/transmissive blockers do not cast binary
 ray shadows. Height-displaced meshes trigger raster fallback.
 
+Rectangular and disk lights use LTC integration when the packaged lookup tables
+are valid. Compare the integration modes from the extracted directory:
+
+```powershell
+.\VulkanSceneRenderer.exe --area-lighting ltc
+.\VulkanSceneRenderer.exe --area-lighting sampled --area-light-samples 25
+```
+
+`--area-light-samples` accepts 9, 25 or 64 for sampled integration and LTC
+fallback; it is independent of shadow quality and ray sample counts. Keep
+`materials/ltc` beside the executable. Missing or invalid tables automatically
+select sampled lighting; Lighting Settings and capture telemetry report the
+effective mode and fallback reason. See the included
+[LTC guide](ltc-area-lighting.md)
+for approximation limits and measured GPU costs.
+
 Try temporal anti-aliasing with `VulkanSceneRenderer.exe --taa --msaa 1 --display-mode lit`.
 Use `--render-technique forward-raster` for the forward path. TAA currently
 supports native-resolution rigid surfaces at 1x samples; transparent and emissive

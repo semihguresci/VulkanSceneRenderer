@@ -32,7 +32,9 @@ SceneRasterPassClearValues sceneRasterPassClearValues(
     clearValues.values[3].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
     clearValues.values[4].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
     clearValues.values[5].color = {{0u, 0u, 0u, 0u}};
-    clearValues.count = 6u;
+    clearValues.values[6].color = {{0.0f, 1.0f, 0.0f, 0.0f}};
+    clearValues.values[7].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+    clearValues.count = 8u;
     break;
   }
   return clearValues;

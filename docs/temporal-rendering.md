@@ -28,6 +28,11 @@ to be checked without relying on a screenshot alone.
 Ray-shadow capture events accept `rayShadows` (`raster`, `hard`, `soft`),
 `rayShadowSamples` (1–32) and `rayShadowDenoise` (boolean). Their visibility
 history is independent of TAA and follows the [ray-shadow contract](ray-query-rendering.md).
+Area-light comparison events accept `areaLighting` (`ltc` or `sampled`) and
+`areaLightSamples` (9, 25 or 64). Either change resets TAA colour history before
+the next sample so incompatible lighting does not linger across a comparison.
+Events that repeat the current mode and sample count retain TAA history and
+the jitter sequence.
 
 Each selected frame creates a PNG and a `.telemetry.json` sidecar; intermediate images
 carry `.frame-XXXX` suffixes. Keyframes use simulation frame numbers; failed

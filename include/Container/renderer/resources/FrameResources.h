@@ -29,6 +29,10 @@ struct FrameResources {
   AttachmentImage specularMsaa{};
   AttachmentImage pickId{};
   AttachmentImage pickIdMsaa{};
+  AttachmentImage materialLayers{};
+  AttachmentImage materialLayersMsaa{};
+  AttachmentImage materialSheen{};
+  AttachmentImage materialSheenMsaa{};
   AttachmentImage pickDepth{};
   AttachmentImage depthStencil{};
   AttachmentImage depthStencilMsaa{};

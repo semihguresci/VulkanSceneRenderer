@@ -1,0 +1,919 @@
+[
+  {
+    "case": "material-parity",
+    "name": "sheen-ibl-off",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.8585069444444444,
+    "p95AbsByteDelta": 1.0,
+    "maxAbsByteDelta": 1.0,
+    "meanChannelByteDelta": [
+      0.9214409722222222,
+      1.0,
+      0.6540798611111112
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "sheen-ibl-on",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.5619212962962963,
+    "p95AbsByteDelta": 1.0,
+    "maxAbsByteDelta": 1.0,
+    "meanChannelByteDelta": [
+      0.2947048611111111,
+      0.9973958333333334,
+      0.3936631944444444
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "sheen-ibl",
+    "technique": "deferred-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 34.657407407407405,
+    "p95AbsByteDelta": 90.0,
+    "maxAbsByteDelta": 93.0,
+    "meanChannelByteDelta": [
+      83.04991319444444,
+      -10.002604166666666,
+      -10.91970486111111
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "sheen-ibl",
+    "technique": "forward-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 34.778645833333336,
+    "p95AbsByteDelta": 90.0,
+    "maxAbsByteDelta": 94.0,
+    "meanChannelByteDelta": [
+      83.67664930555556,
+      -10.0,
+      -10.659288194444445
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "clearcoat-ibl-off",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.8504050925925926,
+    "p95AbsByteDelta": 1.0,
+    "maxAbsByteDelta": 1.0,
+    "meanChannelByteDelta": [
+      0.9709201388888888,
+      0.9704861111111112,
+      0.6098090277777778
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "clearcoat-ibl-on",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.7362557870370371,
+    "p95AbsByteDelta": 1.0,
+    "maxAbsByteDelta": 1.0,
+    "meanChannelByteDelta": [
+      0.7578125,
+      0.7387152777777778,
+      0.7122395833333334
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "clearcoat-ibl",
+    "technique": "deferred-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 4.49927662037037,
+    "p95AbsByteDelta": 5.0,
+    "maxAbsByteDelta": 6.0,
+    "meanChannelByteDelta": [
+      4.049913194444445,
+      4.569878472222222,
+      4.878038194444445
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "clearcoat-ibl",
+    "technique": "forward-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 4.613425925925926,
+    "p95AbsByteDelta": 5.0,
+    "maxAbsByteDelta": 6.0,
+    "meanChannelByteDelta": [
+      4.263020833333333,
+      4.801649305555555,
+      4.775607638888889
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "metal-iridescence-direct-off",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.0,
+    "p95AbsByteDelta": 0.0,
+    "maxAbsByteDelta": 0.0,
+    "meanChannelByteDelta": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "metal-iridescence-direct-on",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.0,
+    "p95AbsByteDelta": 0.0,
+    "maxAbsByteDelta": 0.0,
+    "meanChannelByteDelta": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "metal-iridescence-direct",
+    "technique": "deferred-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 6.0,
+    "p95AbsByteDelta": 9.0,
+    "maxAbsByteDelta": 9.0,
+    "meanChannelByteDelta": [
+      -9.0,
+      5.0,
+      4.0
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "metal-iridescence-direct",
+    "technique": "forward-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 6.0,
+    "p95AbsByteDelta": 9.0,
+    "maxAbsByteDelta": 9.0,
+    "meanChannelByteDelta": [
+      -9.0,
+      5.0,
+      4.0
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "metal-iridescence-ibl-off",
+    "validationClean": true,
+    "meanAbsByteDelta": 1.11328125,
+    "p95AbsByteDelta": 2.0,
+    "maxAbsByteDelta": 2.0,
+    "meanChannelByteDelta": [
+      1.1653645833333333,
+      1.1176215277777777,
+      1.0568576388888888
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "metal-iridescence-ibl-on",
+    "validationClean": true,
+    "meanAbsByteDelta": 1.1278935185185186,
+    "p95AbsByteDelta": 2.0,
+    "maxAbsByteDelta": 2.0,
+    "meanChannelByteDelta": [
+      1.3342013888888888,
+      1.0559895833333333,
+      0.9934895833333334
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "metal-iridescence-ibl",
+    "technique": "deferred-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 10.965277777777779,
+    "p95AbsByteDelta": 17.0,
+    "maxAbsByteDelta": 18.0,
+    "meanChannelByteDelta": [
+      -16.50043402777778,
+      8.47873263888889,
+      7.916666666666667
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "metal-iridescence-ibl",
+    "technique": "forward-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 11.06322337962963,
+    "p95AbsByteDelta": 17.0,
+    "maxAbsByteDelta": 18.0,
+    "meanChannelByteDelta": [
+      -16.669270833333332,
+      8.540364583333334,
+      7.980034722222222
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "clearcoat-texture-low",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.3333333333333333,
+    "p95AbsByteDelta": 1.0,
+    "maxAbsByteDelta": 1.0,
+    "meanChannelByteDelta": [
+      1.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "clearcoat-texture-high",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.1527777777777778,
+    "p95AbsByteDelta": 1.0,
+    "maxAbsByteDelta": 1.0,
+    "meanChannelByteDelta": [
+      0.16145833333333334,
+      0.1579861111111111,
+      0.1388888888888889
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "clearcoat-texture",
+    "technique": "deferred-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 71.41030092592592,
+    "p95AbsByteDelta": 80.0,
+    "maxAbsByteDelta": 83.0,
+    "meanChannelByteDelta": [
+      73.52083333333333,
+      72.17534722222223,
+      68.53472222222223
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "clearcoat-texture",
+    "technique": "forward-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 71.59085648148148,
+    "p95AbsByteDelta": 81.0,
+    "maxAbsByteDelta": 83.0,
+    "meanChannelByteDelta": [
+      74.359375,
+      72.01736111111111,
+      68.39583333333333
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "clearcoat-roughness-texture-low",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.0,
+    "p95AbsByteDelta": 0.0,
+    "maxAbsByteDelta": 0.0,
+    "meanChannelByteDelta": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "clearcoat-roughness-texture-high",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.3333333333333333,
+    "p95AbsByteDelta": 1.0,
+    "maxAbsByteDelta": 1.0,
+    "meanChannelByteDelta": [
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "clearcoat-roughness-texture",
+    "technique": "deferred-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 2.0,
+    "p95AbsByteDelta": 2.0,
+    "maxAbsByteDelta": 2.0,
+    "meanChannelByteDelta": [
+      2.0,
+      2.0,
+      2.0
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "clearcoat-roughness-texture",
+    "technique": "forward-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 1.6666666666666667,
+    "p95AbsByteDelta": 2.0,
+    "maxAbsByteDelta": 2.0,
+    "meanChannelByteDelta": [
+      2.0,
+      2.0,
+      1.0
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "sheen-color-texture-low",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.8585069444444444,
+    "p95AbsByteDelta": 1.0,
+    "maxAbsByteDelta": 1.0,
+    "meanChannelByteDelta": [
+      0.9214409722222222,
+      1.0,
+      0.6540798611111112
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "sheen-color-texture-high",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.5619212962962963,
+    "p95AbsByteDelta": 1.0,
+    "maxAbsByteDelta": 1.0,
+    "meanChannelByteDelta": [
+      0.2947048611111111,
+      0.9973958333333334,
+      0.3936631944444444
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "sheen-color-texture",
+    "technique": "deferred-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 34.657407407407405,
+    "p95AbsByteDelta": 90.0,
+    "maxAbsByteDelta": 93.0,
+    "meanChannelByteDelta": [
+      83.04991319444444,
+      -10.002604166666666,
+      -10.91970486111111
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "sheen-color-texture",
+    "technique": "forward-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 34.778645833333336,
+    "p95AbsByteDelta": 90.0,
+    "maxAbsByteDelta": 94.0,
+    "meanChannelByteDelta": [
+      83.67664930555556,
+      -10.0,
+      -10.659288194444445
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "sheen-roughness-texture-low",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.5425347222222222,
+    "p95AbsByteDelta": 1.0,
+    "maxAbsByteDelta": 1.0,
+    "meanChannelByteDelta": [
+      0.2365451388888889,
+      0.9973958333333334,
+      0.3936631944444444
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "sheen-roughness-texture-high",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.5782696759259259,
+    "p95AbsByteDelta": 1.0,
+    "maxAbsByteDelta": 1.0,
+    "meanChannelByteDelta": [
+      0.34375,
+      0.9973958333333334,
+      0.3936631944444444
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "sheen-roughness-texture",
+    "technique": "deferred-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 8.135850694444445,
+    "p95AbsByteDelta": 25.0,
+    "maxAbsByteDelta": 26.0,
+    "meanChannelByteDelta": [
+      -24.407552083333332,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "sheen-roughness-texture",
+    "technique": "forward-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 8.171585648148149,
+    "p95AbsByteDelta": 25.0,
+    "maxAbsByteDelta": 26.0,
+    "meanChannelByteDelta": [
+      -24.514756944444443,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "iridescence-factor-texture-low",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.0,
+    "p95AbsByteDelta": 0.0,
+    "maxAbsByteDelta": 0.0,
+    "meanChannelByteDelta": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "iridescence-factor-texture-high",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.0,
+    "p95AbsByteDelta": 0.0,
+    "maxAbsByteDelta": 0.0,
+    "meanChannelByteDelta": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "iridescence-factor-texture",
+    "technique": "deferred-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 6.0,
+    "p95AbsByteDelta": 9.0,
+    "maxAbsByteDelta": 9.0,
+    "meanChannelByteDelta": [
+      -9.0,
+      5.0,
+      4.0
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "iridescence-factor-texture",
+    "technique": "forward-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 6.0,
+    "p95AbsByteDelta": 9.0,
+    "maxAbsByteDelta": 9.0,
+    "meanChannelByteDelta": [
+      -9.0,
+      5.0,
+      4.0
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "iridescence-thickness-texture-low",
+    "validationClean": true,
+    "meanAbsByteDelta": 1.1345486111111112,
+    "p95AbsByteDelta": 2.0,
+    "maxAbsByteDelta": 2.0,
+    "meanChannelByteDelta": [
+      1.2816840277777777,
+      0.9861111111111112,
+      1.1358506944444444
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "iridescence-thickness-texture-high",
+    "validationClean": true,
+    "meanAbsByteDelta": 1.1278935185185186,
+    "p95AbsByteDelta": 2.0,
+    "maxAbsByteDelta": 2.0,
+    "meanChannelByteDelta": [
+      1.3342013888888888,
+      1.0559895833333333,
+      0.9934895833333334
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "iridescence-thickness-texture",
+    "technique": "deferred-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 9.541377314814815,
+    "p95AbsByteDelta": 16.0,
+    "maxAbsByteDelta": 17.0,
+    "meanChannelByteDelta": [
+      -6.859809027777778,
+      -6.8046875,
+      14.959635416666666
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "iridescence-thickness-texture",
+    "technique": "forward-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 9.62962962962963,
+    "p95AbsByteDelta": 16.0,
+    "maxAbsByteDelta": 17.0,
+    "meanChannelByteDelta": [
+      -6.912326388888889,
+      -6.874565972222222,
+      15.101996527777779
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "clearcoat-uv0",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.3333333333333333,
+    "p95AbsByteDelta": 1.0,
+    "maxAbsByteDelta": 1.0,
+    "meanChannelByteDelta": [
+      1.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "clearcoat-transform",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.1527777777777778,
+    "p95AbsByteDelta": 1.0,
+    "maxAbsByteDelta": 1.0,
+    "meanChannelByteDelta": [
+      0.16145833333333334,
+      0.1579861111111111,
+      0.1388888888888889
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "clearcoat-uv1",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.1527777777777778,
+    "p95AbsByteDelta": 1.0,
+    "maxAbsByteDelta": 1.0,
+    "meanChannelByteDelta": [
+      0.16145833333333334,
+      0.1579861111111111,
+      0.1388888888888889
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "clearcoat-uv-transform",
+    "technique": "deferred-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 71.41030092592592,
+    "p95AbsByteDelta": 80.0,
+    "maxAbsByteDelta": 83.0,
+    "meanChannelByteDelta": [
+      73.52083333333333,
+      72.17534722222223,
+      68.53472222222223
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "clearcoat-uv-transform",
+    "technique": "forward-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 71.59085648148148,
+    "p95AbsByteDelta": 81.0,
+    "maxAbsByteDelta": 83.0,
+    "meanChannelByteDelta": [
+      74.359375,
+      72.01736111111111,
+      68.39583333333333
+    ]
+  },
+  {
+    "case": "material-texture-coordinates",
+    "name": "uv0-low",
+    "technique": "deferred-raster",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.0,
+    "p95AbsByteDelta": 0.0,
+    "maxAbsByteDelta": 0.0,
+    "meanChannelByteDelta": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "case": "material-texture-coordinates",
+    "name": "transform-high",
+    "technique": "deferred-raster",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.0,
+    "p95AbsByteDelta": 0.0,
+    "maxAbsByteDelta": 0.0,
+    "meanChannelByteDelta": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "case": "material-texture-coordinates",
+    "name": "uv1-high",
+    "technique": "deferred-raster",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.0,
+    "p95AbsByteDelta": 0.0,
+    "maxAbsByteDelta": 0.0,
+    "meanChannelByteDelta": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "case": "material-texture-coordinates",
+    "name": "uv0-low",
+    "technique": "forward-raster",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.0,
+    "p95AbsByteDelta": 0.0,
+    "maxAbsByteDelta": 0.0,
+    "meanChannelByteDelta": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "case": "material-texture-coordinates",
+    "name": "transform-high",
+    "technique": "forward-raster",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.0,
+    "p95AbsByteDelta": 0.0,
+    "maxAbsByteDelta": 0.0,
+    "meanChannelByteDelta": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "case": "material-texture-coordinates",
+    "name": "uv1-high",
+    "technique": "forward-raster",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.0,
+    "p95AbsByteDelta": 0.0,
+    "maxAbsByteDelta": 0.0,
+    "meanChannelByteDelta": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "clearcoat-point-low",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.18229166666666666,
+    "p95AbsByteDelta": 1.0,
+    "maxAbsByteDelta": 1.0,
+    "meanChannelByteDelta": [
+      0.18229166666666666,
+      0.18229166666666666,
+      0.18229166666666666
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "clearcoat-point-high",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.13368055555555555,
+    "p95AbsByteDelta": 1.0,
+    "maxAbsByteDelta": 1.0,
+    "meanChannelByteDelta": [
+      0.13368055555555555,
+      0.13368055555555555,
+      0.13368055555555555
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "clearcoat-punctual-point-texture",
+    "technique": "deferred-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 38.13368055555556,
+    "p95AbsByteDelta": 98.0,
+    "maxAbsByteDelta": 117.0,
+    "meanChannelByteDelta": [
+      38.13368055555556,
+      38.13368055555556,
+      38.13368055555556
+    ]
+  },
+  {
+    "case": "material-response",
+    "name": "clearcoat-punctual-point-texture",
+    "technique": "forward-raster",
+    "minimumMeanAbsByteDelta": 0.75,
+    "validationClean": true,
+    "meanAbsByteDelta": 38.182291666666664,
+    "p95AbsByteDelta": 98.0,
+    "maxAbsByteDelta": 117.0,
+    "meanChannelByteDelta": [
+      38.182291666666664,
+      38.182291666666664,
+      38.182291666666664
+    ]
+  },
+  {
+    "case": "material-lifecycle",
+    "technique": "deferred-raster",
+    "frame": 17,
+    "msaa": 1,
+    "resolution": [
+      320,
+      240
+    ],
+    "meanChannelDriftBytes": 0.0,
+    "validationClean": true
+  },
+  {
+    "case": "material-lifecycle",
+    "technique": "deferred-raster",
+    "frame": 25,
+    "msaa": 4,
+    "resolution": [
+      320,
+      240
+    ],
+    "meanChannelDriftBytes": 0.0,
+    "validationClean": true
+  },
+  {
+    "case": "material-lifecycle",
+    "technique": "deferred-raster",
+    "frame": 33,
+    "msaa": 4,
+    "resolution": [
+      400,
+      300
+    ],
+    "meanChannelDriftBytes": 0.0013020833333333333,
+    "validationClean": true
+  },
+  {
+    "case": "material-lifecycle",
+    "technique": "deferred-raster",
+    "frame": 41,
+    "msaa": 1,
+    "resolution": [
+      320,
+      240
+    ],
+    "meanChannelDriftBytes": 0.0,
+    "validationClean": true
+  },
+  {
+    "case": "material-lifecycle",
+    "technique": "forward-raster",
+    "frame": 17,
+    "msaa": 1,
+    "resolution": [
+      320,
+      240
+    ],
+    "meanChannelDriftBytes": 0.0,
+    "validationClean": true
+  },
+  {
+    "case": "material-lifecycle",
+    "technique": "forward-raster",
+    "frame": 25,
+    "msaa": 4,
+    "resolution": [
+      320,
+      240
+    ],
+    "meanChannelDriftBytes": 0.0,
+    "validationClean": true
+  },
+  {
+    "case": "material-lifecycle",
+    "technique": "forward-raster",
+    "frame": 33,
+    "msaa": 4,
+    "resolution": [
+      400,
+      300
+    ],
+    "meanChannelDriftBytes": 0.004328703703706083,
+    "validationClean": true
+  },
+  {
+    "case": "material-lifecycle",
+    "technique": "forward-raster",
+    "frame": 41,
+    "msaa": 1,
+    "resolution": [
+      320,
+      240
+    ],
+    "meanChannelDriftBytes": 0.0,
+    "validationClean": true
+  },
+  {
+    "case": "material-parity",
+    "name": "layered-lifecycle-17",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.40523726851851855,
+    "p95AbsByteDelta": 1.0,
+    "maxAbsByteDelta": 1.0,
+    "meanChannelByteDelta": [
+      0.1037326388888889,
+      0.4483506944444444,
+      0.6636284722222222
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "layered-lifecycle-25",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.40523726851851855,
+    "p95AbsByteDelta": 1.0,
+    "maxAbsByteDelta": 1.0,
+    "meanChannelByteDelta": [
+      0.1037326388888889,
+      0.4483506944444444,
+      0.6636284722222222
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "layered-lifecycle-33",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.4051851851851852,
+    "p95AbsByteDelta": 1.0,
+    "maxAbsByteDelta": 1.0,
+    "meanChannelByteDelta": [
+      0.10555555555555556,
+      0.4425,
+      0.6675
+    ]
+  },
+  {
+    "case": "material-parity",
+    "name": "layered-lifecycle-41",
+    "validationClean": true,
+    "meanAbsByteDelta": 0.40523726851851855,
+    "p95AbsByteDelta": 1.0,
+    "maxAbsByteDelta": 1.0,
+    "meanChannelByteDelta": [
+      0.1037326388888889,
+      0.4483506944444444,
+      0.6636284722222222
+    ]
+  }
+]
