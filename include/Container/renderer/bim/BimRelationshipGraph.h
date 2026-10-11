@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <span>
 #include <string>
@@ -62,11 +63,12 @@ struct BimPropertySetGroup {
 
 class BimRelationshipGraph {
 public:
-  void clear();
+  void clear(const std::function<void()> &progress = {});
   void build(
       std::span<const BimElementMetadata> metadata,
       std::span<const container::geometry::dotbim::ElementRelationship>
-          relationships = {});
+          relationships = {},
+      const std::function<void()> &progress = {});
 
   [[nodiscard]] std::span<const BimRelationshipNode> nodes() const noexcept {
     return nodes_;

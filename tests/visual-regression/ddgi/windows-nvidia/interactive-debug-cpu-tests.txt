@@ -1,0 +1,15 @@
+Test project F:/Projects/Container/out/build/visual-studio
+    Start   6: ddgi_probe_volume_tests
+1/5 Test   #6: ddgi_probe_volume_tests ..............   Passed    0.10 sec
+    Start   7: ddgi_settings_tests
+2/5 Test   #7: ddgi_settings_tests ..................   Passed    0.09 sec
+    Start  48: deferred_raster_post_process_tests
+3/5 Test  #48: deferred_raster_post_process_tests ...   Passed    0.11 sec
+    Start 129: technique_debug_model_tests
+4/5 Test #129: technique_debug_model_tests ..........   Passed    0.12 sec
+    Start 134: render_graph_tests
+5/5 Test #134: render_graph_tests ...................   Passed    0.09 sec
+
+100% tests passed, 0 tests failed out of 5
+
+Total Test time (real) =   0.53 sec

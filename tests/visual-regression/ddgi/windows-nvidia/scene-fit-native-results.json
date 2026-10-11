@@ -1,0 +1,2333 @@
+{
+  "schemaVersion": 1,
+  "startedUtc": "2026-10-10T08:21:27.162192+00:00",
+  "exe": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+  "exeSha256": "941a3508bee7649e90b5d82ece53e283d801e635c756f35f0306ab9e0a64ddd7",
+  "environmentOverrides": {
+    "VK_LAYER_SETTINGS_PATH": "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation"
+  },
+  "nativeCases": [
+    {
+      "name": "fit-cornell-deferred-scale-0.001",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf",
+        "--import-scale",
+        "0.001",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--display-mode",
+        "lit",
+        "--render-technique",
+        "deferred-raster",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ray-shadows",
+        "raster",
+        "--ddgi",
+        "--ddgi-fit-scene",
+        "--ddgi-rays",
+        "64",
+        "--ddgi-probes-per-frame",
+        "256",
+        "--ddgi-ray-budget",
+        "16384",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-cornell-deferred-scale-0.001.png",
+        "--warmup-frames",
+        "5",
+        "--capture-frame",
+        "6",
+        "--ddgi-fit-probes",
+        "512"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf --import-scale 0.001 --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --display-mode lit --render-technique deferred-raster --exposure .04 --environment-intensity 0 --directional-intensity 0 --ray-shadows raster --ddgi --ddgi-fit-scene --ddgi-rays 64 --ddgi-probes-per-frame 256 --ddgi-ray-budget 16384 --screenshot F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-cornell-deferred-scale-0.001.png --warmup-frames 5 --capture-frame 6 --ddgi-fit-probes 512",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-cornell-deferred-scale-0.001.log",
+      "frames": [
+        {
+          "frame": 6,
+          "png": "fit-cornell-deferred-scale-0.001.png",
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "active": true,
+            "contentEpoch": 1,
+            "debugProbeRadius": 0.00012000001879641786,
+            "debugView": 0,
+            "enabled": true,
+            "firstProbe": 0,
+            "historyResets": 1,
+            "nextProbe": 0,
+            "paused": false,
+            "refreshRemainingProbes": 0,
+            "sceneFit": {
+              "applied": true,
+              "boundsMax": [
+                0.0010000000474974513,
+                0.0020000000949949026,
+                0.0010000000474974513
+              ],
+              "boundsMin": [
+                -0.0010000000474974513,
+                0.0,
+                -0.0010000000474974513
+              ],
+              "payloadBytes": 939840,
+              "probeBudget": 512,
+              "probeCount": 125,
+              "status": "Fitted 125 probes; spacing 0.001000 world units; probe payload 0.896301 MiB."
+            },
+            "schedulingCursor": 0,
+            "settings": {
+              "counts": [
+                5,
+                5,
+                5
+              ],
+              "hysteresis": 0.949999988079071,
+              "intensity": 1.0,
+              "maxDistance": 0.00692820455878973,
+              "maxProbesPerFrame": 256,
+              "maxRaysPerFrame": 16384,
+              "normalBias": 6.000000939820893e-05,
+              "origin": [
+                -0.0020000003278255463,
+                -0.0010000001639127731,
+                -0.0020000003278255463
+              ],
+              "raysPerProbe": 64,
+              "spacing": [
+                0.0010000001639127731,
+                0.0010000001639127731,
+                0.0010000001639127731
+              ],
+              "viewBias": 2.000000313273631e-05,
+              "visibilityBias": 0.00010000001930166036
+            },
+            "status": "DDGI active: bounded world-space volume",
+            "supported": true,
+            "totalAllocatedBytes": 1252768,
+            "tracedRays": 8000,
+            "updateFrame": 6,
+            "updatedProbes": 125
+          }
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 8.407,
+      "validationErrors": [],
+      "fitChecks": [
+        {
+          "probeCount": 125,
+          "spacing": 0.0010000001639127731,
+          "paddedMin": [
+            -0.0020000003278255463,
+            -0.0010000001639127731,
+            -0.0020000003278255463
+          ],
+          "paddedMax": [
+            0.0020000003278255463,
+            0.0030000004917383194,
+            0.0020000003278255463
+          ],
+          "payloadBytes": 939840
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "fit-cornell-forward-scale-0.001",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf",
+        "--import-scale",
+        "0.001",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--display-mode",
+        "lit",
+        "--render-technique",
+        "forward-raster",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ray-shadows",
+        "raster",
+        "--ddgi",
+        "--ddgi-fit-scene",
+        "--ddgi-rays",
+        "64",
+        "--ddgi-probes-per-frame",
+        "256",
+        "--ddgi-ray-budget",
+        "16384",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-cornell-forward-scale-0.001.png",
+        "--warmup-frames",
+        "5",
+        "--capture-frame",
+        "6",
+        "--ddgi-fit-probes",
+        "512"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf --import-scale 0.001 --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --display-mode lit --render-technique forward-raster --exposure .04 --environment-intensity 0 --directional-intensity 0 --ray-shadows raster --ddgi --ddgi-fit-scene --ddgi-rays 64 --ddgi-probes-per-frame 256 --ddgi-ray-budget 16384 --screenshot F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-cornell-forward-scale-0.001.png --warmup-frames 5 --capture-frame 6 --ddgi-fit-probes 512",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-cornell-forward-scale-0.001.log",
+      "frames": [
+        {
+          "frame": 6,
+          "png": "fit-cornell-forward-scale-0.001.png",
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "forward-raster",
+          "ddgi": {
+            "active": true,
+            "contentEpoch": 1,
+            "debugProbeRadius": 0.00012000001879641786,
+            "debugView": 0,
+            "enabled": true,
+            "firstProbe": 0,
+            "historyResets": 1,
+            "nextProbe": 0,
+            "paused": false,
+            "refreshRemainingProbes": 0,
+            "sceneFit": {
+              "applied": true,
+              "boundsMax": [
+                0.0010000000474974513,
+                0.0020000000949949026,
+                0.0010000000474974513
+              ],
+              "boundsMin": [
+                -0.0010000000474974513,
+                0.0,
+                -0.0010000000474974513
+              ],
+              "payloadBytes": 939840,
+              "probeBudget": 512,
+              "probeCount": 125,
+              "status": "Fitted 125 probes; spacing 0.001000 world units; probe payload 0.896301 MiB."
+            },
+            "schedulingCursor": 0,
+            "settings": {
+              "counts": [
+                5,
+                5,
+                5
+              ],
+              "hysteresis": 0.949999988079071,
+              "intensity": 1.0,
+              "maxDistance": 0.00692820455878973,
+              "maxProbesPerFrame": 256,
+              "maxRaysPerFrame": 16384,
+              "normalBias": 6.000000939820893e-05,
+              "origin": [
+                -0.0020000003278255463,
+                -0.0010000001639127731,
+                -0.0020000003278255463
+              ],
+              "raysPerProbe": 64,
+              "spacing": [
+                0.0010000001639127731,
+                0.0010000001639127731,
+                0.0010000001639127731
+              ],
+              "viewBias": 2.000000313273631e-05,
+              "visibilityBias": 0.00010000001930166036
+            },
+            "status": "DDGI active: bounded world-space volume",
+            "supported": true,
+            "totalAllocatedBytes": 1252768,
+            "tracedRays": 8000,
+            "updateFrame": 6,
+            "updatedProbes": 125
+          }
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 6.453,
+      "validationErrors": [],
+      "fitChecks": [
+        {
+          "probeCount": 125,
+          "spacing": 0.0010000001639127731,
+          "paddedMin": [
+            -0.0020000003278255463,
+            -0.0010000001639127731,
+            -0.0020000003278255463
+          ],
+          "paddedMax": [
+            0.0020000003278255463,
+            0.0030000004917383194,
+            0.0020000003278255463
+          ],
+          "payloadBytes": 939840
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "fit-cornell-deferred-scale-1",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf",
+        "--import-scale",
+        "1.0",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--display-mode",
+        "lit",
+        "--render-technique",
+        "deferred-raster",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ray-shadows",
+        "raster",
+        "--ddgi",
+        "--ddgi-fit-scene",
+        "--ddgi-rays",
+        "64",
+        "--ddgi-probes-per-frame",
+        "256",
+        "--ddgi-ray-budget",
+        "16384",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-cornell-deferred-scale-1.png",
+        "--warmup-frames",
+        "5",
+        "--capture-frame",
+        "6"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf --import-scale 1.0 --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --display-mode lit --render-technique deferred-raster --exposure .04 --environment-intensity 0 --directional-intensity 0 --ray-shadows raster --ddgi --ddgi-fit-scene --ddgi-rays 64 --ddgi-probes-per-frame 256 --ddgi-ray-budget 16384 --screenshot F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-cornell-deferred-scale-1.png --warmup-frames 5 --capture-frame 6",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-cornell-deferred-scale-1.log",
+      "frames": [
+        {
+          "frame": 6,
+          "png": "fit-cornell-deferred-scale-1.png",
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "active": true,
+            "contentEpoch": 1,
+            "debugProbeRadius": 0.0266667939722538,
+            "debugView": 0,
+            "enabled": true,
+            "firstProbe": 1280,
+            "historyResets": 1,
+            "nextProbe": 1536,
+            "paused": false,
+            "refreshRemainingProbes": 192,
+            "sceneFit": {
+              "applied": true,
+              "boundsMax": [
+                1.0,
+                2.0,
+                1.0
+              ],
+              "boundsMin": [
+                -1.0,
+                0.0,
+                -1.0
+              ],
+              "payloadBytes": 9643008,
+              "probeBudget": 2048,
+              "probeCount": 1728,
+              "status": "Fitted 1728 probes; spacing 0.222223 world units; probe payload 9.196289 MiB."
+            },
+            "schedulingCursor": 1536,
+            "settings": {
+              "counts": [
+                12,
+                12,
+                12
+              ],
+              "hysteresis": 0.949999988079071,
+              "intensity": 1.0,
+              "maxDistance": 4.233922481536865,
+              "maxProbesPerFrame": 256,
+              "maxRaysPerFrame": 16384,
+              "normalBias": 0.0133333969861269,
+              "origin": [
+                -1.2222232818603516,
+                -0.22222328186035156,
+                -1.2222232818603516
+              ],
+              "raysPerProbe": 64,
+              "spacing": [
+                0.22222328186035156,
+                0.22222328186035156,
+                0.22222328186035156
+              ],
+              "viewBias": 0.004444465506821871,
+              "visibilityBias": 0.022222328931093216
+            },
+            "status": "DDGI active: bounded world-space volume",
+            "supported": true,
+            "totalAllocatedBytes": 10943168,
+            "tracedRays": 16384,
+            "updateFrame": 6,
+            "updatedProbes": 256
+          }
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 7.281,
+      "validationErrors": [],
+      "fitChecks": [
+        {
+          "probeCount": 1728,
+          "spacing": 0.22222328186035156,
+          "paddedMin": [
+            -1.2222232818603516,
+            -0.22222328186035156,
+            -1.2222232818603516
+          ],
+          "paddedMax": [
+            1.2222328186035156,
+            2.2222328186035156,
+            1.2222328186035156
+          ],
+          "payloadBytes": 9643008
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "fit-cornell-forward-scale-1",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf",
+        "--import-scale",
+        "1.0",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--display-mode",
+        "lit",
+        "--render-technique",
+        "forward-raster",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ray-shadows",
+        "raster",
+        "--ddgi",
+        "--ddgi-fit-scene",
+        "--ddgi-rays",
+        "64",
+        "--ddgi-probes-per-frame",
+        "256",
+        "--ddgi-ray-budget",
+        "16384",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-cornell-forward-scale-1.png",
+        "--warmup-frames",
+        "5",
+        "--capture-frame",
+        "6",
+        "--ddgi-fit-probes",
+        "64",
+        "--ddgi-memory-mb",
+        "1"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf --import-scale 1.0 --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --display-mode lit --render-technique forward-raster --exposure .04 --environment-intensity 0 --directional-intensity 0 --ray-shadows raster --ddgi --ddgi-fit-scene --ddgi-rays 64 --ddgi-probes-per-frame 256 --ddgi-ray-budget 16384 --screenshot F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-cornell-forward-scale-1.png --warmup-frames 5 --capture-frame 6 --ddgi-fit-probes 64 --ddgi-memory-mb 1",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-cornell-forward-scale-1.log",
+      "frames": [
+        {
+          "frame": 6,
+          "png": "fit-cornell-forward-scale-1.png",
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "forward-raster",
+          "ddgi": {
+            "active": true,
+            "contentEpoch": 1,
+            "debugProbeRadius": 0.23999999463558197,
+            "debugView": 0,
+            "enabled": true,
+            "firstProbe": 0,
+            "historyResets": 1,
+            "nextProbe": 0,
+            "paused": false,
+            "refreshRemainingProbes": 0,
+            "sceneFit": {
+              "applied": true,
+              "boundsMax": [
+                1.0,
+                2.0,
+                1.0
+              ],
+              "boundsMin": [
+                -1.0,
+                0.0,
+                -1.0
+              ],
+              "payloadBytes": 462848,
+              "probeBudget": 64,
+              "probeCount": 64,
+              "status": "Fitted 64 probes; spacing 2.000000 world units; probe payload 0.441406 MiB."
+            },
+            "schedulingCursor": 0,
+            "settings": {
+              "counts": [
+                4,
+                4,
+                4
+              ],
+              "hysteresis": 0.949999988079071,
+              "intensity": 1.0,
+              "maxDistance": 10.392305374145508,
+              "maxProbesPerFrame": 256,
+              "maxRaysPerFrame": 16384,
+              "normalBias": 0.11999999731779099,
+              "origin": [
+                -3.0,
+                -2.0,
+                -3.0
+              ],
+              "raysPerProbe": 64,
+              "spacing": [
+                2.0,
+                2.0,
+                2.0
+              ],
+              "viewBias": 0.03999999910593033,
+              "visibilityBias": 0.20000000298023224
+            },
+            "status": "DDGI active: bounded world-space volume",
+            "supported": true,
+            "totalAllocatedBytes": 466624,
+            "tracedRays": 4096,
+            "updateFrame": 6,
+            "updatedProbes": 64
+          }
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 6.406,
+      "validationErrors": [],
+      "fitChecks": [
+        {
+          "probeCount": 64,
+          "spacing": 2.0,
+          "paddedMin": [
+            -3.0,
+            -2.0,
+            -3.0
+          ],
+          "paddedMax": [
+            3.0,
+            4.0,
+            3.0
+          ],
+          "payloadBytes": 462848
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "fit-cornell-deferred-scale-1000",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf",
+        "--import-scale",
+        "1000.0",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--display-mode",
+        "lit",
+        "--render-technique",
+        "deferred-raster",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ray-shadows",
+        "raster",
+        "--ddgi",
+        "--ddgi-fit-scene",
+        "--ddgi-rays",
+        "64",
+        "--ddgi-probes-per-frame",
+        "256",
+        "--ddgi-ray-budget",
+        "16384",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-cornell-deferred-scale-1000.png",
+        "--warmup-frames",
+        "5",
+        "--capture-frame",
+        "6",
+        "--ddgi-fit-probes",
+        "512"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf --import-scale 1000.0 --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --display-mode lit --render-technique deferred-raster --exposure .04 --environment-intensity 0 --directional-intensity 0 --ray-shadows raster --ddgi --ddgi-fit-scene --ddgi-rays 64 --ddgi-probes-per-frame 256 --ddgi-ray-budget 16384 --screenshot F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-cornell-deferred-scale-1000.png --warmup-frames 5 --capture-frame 6 --ddgi-fit-probes 512",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-cornell-deferred-scale-1000.log",
+      "frames": [
+        {
+          "frame": 6,
+          "png": "fit-cornell-deferred-scale-1000.png",
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "active": true,
+            "contentEpoch": 1,
+            "debugProbeRadius": 48.0,
+            "debugView": 0,
+            "enabled": true,
+            "firstProbe": 256,
+            "historyResets": 1,
+            "nextProbe": 0,
+            "paused": false,
+            "refreshRemainingProbes": 0,
+            "sceneFit": {
+              "applied": true,
+              "boundsMax": [
+                1000.0,
+                2000.0,
+                1000.0
+              ],
+              "boundsMin": [
+                -1000.0,
+                0.0,
+                -1000.0
+              ],
+              "payloadBytes": 3261440,
+              "probeBudget": 512,
+              "probeCount": 512,
+              "status": "Fitted 512 probes; spacing 400.000000 world units; probe payload 3.110352 MiB."
+            },
+            "schedulingCursor": 0,
+            "settings": {
+              "counts": [
+                8,
+                8,
+                8
+              ],
+              "hysteresis": 0.949999988079071,
+              "intensity": 1.0,
+              "maxDistance": 4849.74267578125,
+              "maxProbesPerFrame": 256,
+              "maxRaysPerFrame": 16384,
+              "normalBias": 24.0,
+              "origin": [
+                -1400.0,
+                -400.0,
+                -1400.0
+              ],
+              "raysPerProbe": 64,
+              "spacing": [
+                400.0,
+                400.0,
+                400.0
+              ],
+              "viewBias": 8.0,
+              "visibilityBias": 40.0
+            },
+            "status": "DDGI active: bounded world-space volume",
+            "supported": true,
+            "totalAllocatedBytes": 3577536,
+            "tracedRays": 16384,
+            "updateFrame": 6,
+            "updatedProbes": 256
+          }
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 7.141,
+      "validationErrors": [],
+      "fitChecks": [
+        {
+          "probeCount": 512,
+          "spacing": 400.0,
+          "paddedMin": [
+            -1400.0,
+            -400.0,
+            -1400.0
+          ],
+          "paddedMax": [
+            1400.0,
+            2400.0,
+            1400.0
+          ],
+          "payloadBytes": 3261440
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "fit-cornell-forward-scale-1000",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf",
+        "--import-scale",
+        "1000.0",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--display-mode",
+        "lit",
+        "--render-technique",
+        "forward-raster",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ray-shadows",
+        "raster",
+        "--ddgi",
+        "--ddgi-fit-scene",
+        "--ddgi-rays",
+        "64",
+        "--ddgi-probes-per-frame",
+        "256",
+        "--ddgi-ray-budget",
+        "16384",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-cornell-forward-scale-1000.png",
+        "--warmup-frames",
+        "5",
+        "--capture-frame",
+        "6",
+        "--ddgi-fit-probes",
+        "512"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf --import-scale 1000.0 --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --display-mode lit --render-technique forward-raster --exposure .04 --environment-intensity 0 --directional-intensity 0 --ray-shadows raster --ddgi --ddgi-fit-scene --ddgi-rays 64 --ddgi-probes-per-frame 256 --ddgi-ray-budget 16384 --screenshot F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-cornell-forward-scale-1000.png --warmup-frames 5 --capture-frame 6 --ddgi-fit-probes 512",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-cornell-forward-scale-1000.log",
+      "frames": [
+        {
+          "frame": 6,
+          "png": "fit-cornell-forward-scale-1000.png",
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "forward-raster",
+          "ddgi": {
+            "active": true,
+            "contentEpoch": 1,
+            "debugProbeRadius": 48.0,
+            "debugView": 0,
+            "enabled": true,
+            "firstProbe": 256,
+            "historyResets": 1,
+            "nextProbe": 0,
+            "paused": false,
+            "refreshRemainingProbes": 0,
+            "sceneFit": {
+              "applied": true,
+              "boundsMax": [
+                1000.0,
+                2000.0,
+                1000.0
+              ],
+              "boundsMin": [
+                -1000.0,
+                0.0,
+                -1000.0
+              ],
+              "payloadBytes": 3261440,
+              "probeBudget": 512,
+              "probeCount": 512,
+              "status": "Fitted 512 probes; spacing 400.000000 world units; probe payload 3.110352 MiB."
+            },
+            "schedulingCursor": 0,
+            "settings": {
+              "counts": [
+                8,
+                8,
+                8
+              ],
+              "hysteresis": 0.949999988079071,
+              "intensity": 1.0,
+              "maxDistance": 4849.74267578125,
+              "maxProbesPerFrame": 256,
+              "maxRaysPerFrame": 16384,
+              "normalBias": 24.0,
+              "origin": [
+                -1400.0,
+                -400.0,
+                -1400.0
+              ],
+              "raysPerProbe": 64,
+              "spacing": [
+                400.0,
+                400.0,
+                400.0
+              ],
+              "viewBias": 8.0,
+              "visibilityBias": 40.0
+            },
+            "status": "DDGI active: bounded world-space volume",
+            "supported": true,
+            "totalAllocatedBytes": 3577536,
+            "tracedRays": 16384,
+            "updateFrame": 6,
+            "updatedProbes": 256
+          }
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 6.437,
+      "validationErrors": [],
+      "fitChecks": [
+        {
+          "probeCount": 512,
+          "spacing": 400.0,
+          "paddedMin": [
+            -1400.0,
+            -400.0,
+            -1400.0
+          ],
+          "paddedMax": [
+            1400.0,
+            2400.0,
+            1400.0
+          ],
+          "payloadBytes": 3261440
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "fit-equivalent-gltf",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\models\\validation\\taa_equivalent.gltf",
+        "--import-scale",
+        "1.0",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--display-mode",
+        "lit",
+        "--render-technique",
+        "deferred-raster",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ray-shadows",
+        "raster",
+        "--ddgi",
+        "--ddgi-fit-scene",
+        "--ddgi-rays",
+        "64",
+        "--ddgi-probes-per-frame",
+        "256",
+        "--ddgi-ray-budget",
+        "16384",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-equivalent-gltf.png",
+        "--warmup-frames",
+        "5",
+        "--capture-frame",
+        "6",
+        "--ddgi-fit-probes",
+        "512"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\models\\validation\\taa_equivalent.gltf --import-scale 1.0 --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --display-mode lit --render-technique deferred-raster --exposure .04 --environment-intensity 0 --directional-intensity 0 --ray-shadows raster --ddgi --ddgi-fit-scene --ddgi-rays 64 --ddgi-probes-per-frame 256 --ddgi-ray-budget 16384 --screenshot F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-equivalent-gltf.png --warmup-frames 5 --capture-frame 6 --ddgi-fit-probes 512",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-equivalent-gltf.log",
+      "frames": [
+        {
+          "frame": 6,
+          "png": "fit-equivalent-gltf.png",
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "active": true,
+            "contentEpoch": 1,
+            "debugProbeRadius": 0.16800017654895782,
+            "debugView": 0,
+            "enabled": true,
+            "firstProbe": 384,
+            "historyResets": 1,
+            "nextProbe": 192,
+            "paused": false,
+            "refreshRemainingProbes": 0,
+            "sceneFit": {
+              "applied": true,
+              "boundsMax": [
+                3.5,
+                3.799999952316284,
+                3.5
+              ],
+              "boundsMin": [
+                -3.5,
+                -0.6376252770423889,
+                -3.5
+              ],
+              "payloadBytes": 2915328,
+              "probeBudget": 512,
+              "probeCount": 448,
+              "status": "Fitted 448 probes; spacing 1.400002 world units; probe payload 2.780273 MiB."
+            },
+            "schedulingCursor": 192,
+            "settings": {
+              "counts": [
+                8,
+                7,
+                8
+              ],
+              "hysteresis": 0.949999988079071,
+              "intensity": 1.0,
+              "maxDistance": 16.20619010925293,
+              "maxProbesPerFrame": 256,
+              "maxRaysPerFrame": 16384,
+              "normalBias": 0.08400008827447891,
+              "origin": [
+                -4.900001525878906,
+                -2.037628173828125,
+                -4.900001525878906
+              ],
+              "raysPerProbe": 64,
+              "spacing": [
+                1.4000015258789062,
+                1.4000015258789062,
+                1.4000015258789062
+              ],
+              "viewBias": 0.028000030666589737,
+              "visibilityBias": 0.1400001496076584
+            },
+            "status": "DDGI active: bounded world-space volume",
+            "supported": true,
+            "totalAllocatedBytes": 3443392,
+            "tracedRays": 16384,
+            "updateFrame": 6,
+            "updatedProbes": 256
+          }
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 3.141,
+      "validationErrors": [],
+      "fitChecks": [
+        {
+          "probeCount": 448,
+          "spacing": 1.4000015258789062,
+          "paddedMin": [
+            -4.900001525878906,
+            -2.037628173828125,
+            -4.900001525878906
+          ],
+          "paddedMax": [
+            4.9000091552734375,
+            6.3623809814453125,
+            4.9000091552734375
+          ],
+          "payloadBytes": 2915328
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "fit-equivalent-bim",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\models\\validation\\taa_equivalent.bim",
+        "--import-scale",
+        "1.0",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--display-mode",
+        "lit",
+        "--render-technique",
+        "deferred-raster",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ray-shadows",
+        "raster",
+        "--ddgi",
+        "--ddgi-fit-scene",
+        "--ddgi-rays",
+        "64",
+        "--ddgi-probes-per-frame",
+        "256",
+        "--ddgi-ray-budget",
+        "16384",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-equivalent-bim.png",
+        "--warmup-frames",
+        "5",
+        "--capture-frame",
+        "6",
+        "--ddgi-fit-probes",
+        "512"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\models\\validation\\taa_equivalent.bim --import-scale 1.0 --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --display-mode lit --render-technique deferred-raster --exposure .04 --environment-intensity 0 --directional-intensity 0 --ray-shadows raster --ddgi --ddgi-fit-scene --ddgi-rays 64 --ddgi-probes-per-frame 256 --ddgi-ray-budget 16384 --screenshot F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-equivalent-bim.png --warmup-frames 5 --capture-frame 6 --ddgi-fit-probes 512",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-equivalent-bim.log",
+      "frames": [
+        {
+          "frame": 6,
+          "png": "fit-equivalent-bim.png",
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "active": true,
+            "contentEpoch": 1,
+            "debugProbeRadius": 0.16800017654895782,
+            "debugView": 0,
+            "enabled": true,
+            "firstProbe": 384,
+            "historyResets": 1,
+            "nextProbe": 192,
+            "paused": false,
+            "refreshRemainingProbes": 0,
+            "sceneFit": {
+              "applied": true,
+              "boundsMax": [
+                3.5,
+                3.799999952316284,
+                3.5
+              ],
+              "boundsMin": [
+                -3.5,
+                -0.6376252770423889,
+                -3.5
+              ],
+              "payloadBytes": 2915328,
+              "probeBudget": 512,
+              "probeCount": 448,
+              "status": "Fitted 448 probes; spacing 1.400002 world units; probe payload 2.780273 MiB."
+            },
+            "schedulingCursor": 192,
+            "settings": {
+              "counts": [
+                8,
+                7,
+                8
+              ],
+              "hysteresis": 0.949999988079071,
+              "intensity": 1.0,
+              "maxDistance": 16.20619010925293,
+              "maxProbesPerFrame": 256,
+              "maxRaysPerFrame": 16384,
+              "normalBias": 0.08400008827447891,
+              "origin": [
+                -4.900001525878906,
+                -2.037628173828125,
+                -4.900001525878906
+              ],
+              "raysPerProbe": 64,
+              "spacing": [
+                1.4000015258789062,
+                1.4000015258789062,
+                1.4000015258789062
+              ],
+              "viewBias": 0.028000030666589737,
+              "visibilityBias": 0.1400001496076584
+            },
+            "status": "DDGI active: bounded world-space volume",
+            "supported": true,
+            "totalAllocatedBytes": 3443392,
+            "tracedRays": 16384,
+            "updateFrame": 6,
+            "updatedProbes": 256
+          }
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 3.125,
+      "validationErrors": [],
+      "fitChecks": [
+        {
+          "probeCount": 448,
+          "spacing": 1.4000015258789062,
+          "paddedMin": [
+            -4.900001525878906,
+            -2.037628173828125,
+            -4.900001525878906
+          ],
+          "paddedMax": [
+            4.9000091552734375,
+            6.3623809814453125,
+            4.9000091552734375
+          ],
+          "payloadBytes": 2915328
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "fit-equivalent-usda",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\models\\validation\\taa_equivalent.usda",
+        "--import-scale",
+        "1.0",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--display-mode",
+        "lit",
+        "--render-technique",
+        "deferred-raster",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ray-shadows",
+        "raster",
+        "--ddgi",
+        "--ddgi-fit-scene",
+        "--ddgi-rays",
+        "64",
+        "--ddgi-probes-per-frame",
+        "256",
+        "--ddgi-ray-budget",
+        "16384",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-equivalent-usda.png",
+        "--warmup-frames",
+        "5",
+        "--capture-frame",
+        "6",
+        "--ddgi-fit-probes",
+        "512"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\models\\validation\\taa_equivalent.usda --import-scale 1.0 --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --display-mode lit --render-technique deferred-raster --exposure .04 --environment-intensity 0 --directional-intensity 0 --ray-shadows raster --ddgi --ddgi-fit-scene --ddgi-rays 64 --ddgi-probes-per-frame 256 --ddgi-ray-budget 16384 --screenshot F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-equivalent-usda.png --warmup-frames 5 --capture-frame 6 --ddgi-fit-probes 512",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-equivalent-usda.log",
+      "frames": [
+        {
+          "frame": 6,
+          "png": "fit-equivalent-usda.png",
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "active": true,
+            "contentEpoch": 1,
+            "debugProbeRadius": 0.16800017654895782,
+            "debugView": 0,
+            "enabled": true,
+            "firstProbe": 384,
+            "historyResets": 1,
+            "nextProbe": 192,
+            "paused": false,
+            "refreshRemainingProbes": 0,
+            "sceneFit": {
+              "applied": true,
+              "boundsMax": [
+                3.5,
+                3.799999952316284,
+                3.5
+              ],
+              "boundsMin": [
+                -3.5,
+                -0.6376252770423889,
+                -3.5
+              ],
+              "payloadBytes": 2915328,
+              "probeBudget": 512,
+              "probeCount": 448,
+              "status": "Fitted 448 probes; spacing 1.400002 world units; probe payload 2.780273 MiB."
+            },
+            "schedulingCursor": 192,
+            "settings": {
+              "counts": [
+                8,
+                7,
+                8
+              ],
+              "hysteresis": 0.949999988079071,
+              "intensity": 1.0,
+              "maxDistance": 16.20619010925293,
+              "maxProbesPerFrame": 256,
+              "maxRaysPerFrame": 16384,
+              "normalBias": 0.08400008827447891,
+              "origin": [
+                -4.900001525878906,
+                -2.037628173828125,
+                -4.900001525878906
+              ],
+              "raysPerProbe": 64,
+              "spacing": [
+                1.4000015258789062,
+                1.4000015258789062,
+                1.4000015258789062
+              ],
+              "viewBias": 0.028000030666589737,
+              "visibilityBias": 0.1400001496076584
+            },
+            "status": "DDGI active: bounded world-space volume",
+            "supported": true,
+            "totalAllocatedBytes": 3443392,
+            "tracedRays": 16384,
+            "updateFrame": 6,
+            "updatedProbes": 256
+          }
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 3.203,
+      "validationErrors": [],
+      "fitChecks": [
+        {
+          "probeCount": 448,
+          "spacing": 1.4000015258789062,
+          "paddedMin": [
+            -4.900001525878906,
+            -2.037628173828125,
+            -4.900001525878906
+          ],
+          "paddedMax": [
+            4.9000091552734375,
+            6.3623809814453125,
+            4.9000091552734375
+          ],
+          "payloadBytes": 2915328
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "fit-no-ray-query",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf",
+        "--import-scale",
+        "1.0",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--display-mode",
+        "lit",
+        "--render-technique",
+        "deferred-raster",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ray-shadows",
+        "raster",
+        "--ddgi",
+        "--ddgi-fit-scene",
+        "--ddgi-rays",
+        "64",
+        "--ddgi-probes-per-frame",
+        "256",
+        "--ddgi-ray-budget",
+        "16384",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-no-ray-query.png",
+        "--warmup-frames",
+        "5",
+        "--capture-frame",
+        "6",
+        "--ddgi-fit-probes",
+        "512",
+        "--no-ray-query"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf --import-scale 1.0 --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --display-mode lit --render-technique deferred-raster --exposure .04 --environment-intensity 0 --directional-intensity 0 --ray-shadows raster --ddgi --ddgi-fit-scene --ddgi-rays 64 --ddgi-probes-per-frame 256 --ddgi-ray-budget 16384 --screenshot F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-no-ray-query.png --warmup-frames 5 --capture-frame 6 --ddgi-fit-probes 512 --no-ray-query",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-no-ray-query.log",
+      "frames": [
+        {
+          "frame": 6,
+          "png": "fit-no-ray-query.png",
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "active": false,
+            "contentEpoch": 0,
+            "debugProbeRadius": 0.04800018295645714,
+            "debugView": 0,
+            "enabled": true,
+            "firstProbe": 0,
+            "historyResets": 0,
+            "nextProbe": 0,
+            "paused": false,
+            "refreshRemainingProbes": 0,
+            "sceneFit": {
+              "applied": true,
+              "boundsMax": [
+                1.0,
+                2.0,
+                1.0
+              ],
+              "boundsMin": [
+                -1.0,
+                0.0,
+                -1.0
+              ],
+              "payloadBytes": 3261440,
+              "probeBudget": 512,
+              "probeCount": 512,
+              "status": "Fitted 512 probes; spacing 0.400002 world units; probe payload 3.110352 MiB."
+            },
+            "schedulingCursor": 0,
+            "settings": {
+              "counts": [
+                8,
+                8,
+                8
+              ],
+              "hysteresis": 0.949999988079071,
+              "intensity": 1.0,
+              "maxDistance": 4.849761009216309,
+              "maxProbesPerFrame": 256,
+              "maxRaysPerFrame": 16384,
+              "normalBias": 0.02400009147822857,
+              "origin": [
+                -1.4000015258789062,
+                -0.40000152587890625,
+                -1.4000015258789062
+              ],
+              "raysPerProbe": 64,
+              "spacing": [
+                0.40000152587890625,
+                0.40000152587890625,
+                0.40000152587890625
+              ],
+              "viewBias": 0.008000030182301998,
+              "visibilityBias": 0.040000151842832565
+            },
+            "status": "DDGI unavailable: ray queries, descriptor limits or atlas formats unsupported",
+            "supported": false,
+            "totalAllocatedBytes": 3904,
+            "tracedRays": 0,
+            "updateFrame": 0,
+            "updatedProbes": 0
+          }
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 6.609,
+      "validationErrors": [],
+      "fitChecks": [
+        {
+          "probeCount": 512,
+          "spacing": 0.40000152587890625,
+          "paddedMin": [
+            -1.4000015258789062,
+            -0.40000152587890625,
+            -1.4000015258789062
+          ],
+          "paddedMax": [
+            1.4000091552734375,
+            2.4000091552734375,
+            1.4000091552734375
+          ],
+          "payloadBytes": 3261440
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "fit-disabled",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf",
+        "--import-scale",
+        "1.0",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--display-mode",
+        "lit",
+        "--render-technique",
+        "deferred-raster",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ray-shadows",
+        "raster",
+        "--no-ddgi",
+        "--ddgi-fit-scene",
+        "--ddgi-rays",
+        "64",
+        "--ddgi-probes-per-frame",
+        "256",
+        "--ddgi-ray-budget",
+        "16384",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-disabled.png",
+        "--warmup-frames",
+        "5",
+        "--capture-frame",
+        "6",
+        "--ddgi-fit-probes",
+        "512"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf --import-scale 1.0 --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --display-mode lit --render-technique deferred-raster --exposure .04 --environment-intensity 0 --directional-intensity 0 --ray-shadows raster --no-ddgi --ddgi-fit-scene --ddgi-rays 64 --ddgi-probes-per-frame 256 --ddgi-ray-budget 16384 --screenshot F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-disabled.png --warmup-frames 5 --capture-frame 6 --ddgi-fit-probes 512",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-disabled.log",
+      "frames": [
+        {
+          "frame": 6,
+          "png": "fit-disabled.png",
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "active": false,
+            "contentEpoch": 0,
+            "debugProbeRadius": 0.04800018295645714,
+            "debugView": 0,
+            "enabled": false,
+            "firstProbe": 0,
+            "historyResets": 0,
+            "nextProbe": 0,
+            "paused": false,
+            "refreshRemainingProbes": 0,
+            "sceneFit": {
+              "applied": true,
+              "boundsMax": [
+                1.0,
+                2.0,
+                1.0
+              ],
+              "boundsMin": [
+                -1.0,
+                0.0,
+                -1.0
+              ],
+              "payloadBytes": 3261440,
+              "probeBudget": 512,
+              "probeCount": 512,
+              "status": "Fitted 512 probes; spacing 0.400002 world units; probe payload 3.110352 MiB."
+            },
+            "schedulingCursor": 0,
+            "settings": {
+              "counts": [
+                8,
+                8,
+                8
+              ],
+              "hysteresis": 0.949999988079071,
+              "intensity": 1.0,
+              "maxDistance": 4.849761009216309,
+              "maxProbesPerFrame": 256,
+              "maxRaysPerFrame": 16384,
+              "normalBias": 0.02400009147822857,
+              "origin": [
+                -1.4000015258789062,
+                -0.40000152587890625,
+                -1.4000015258789062
+              ],
+              "raysPerProbe": 64,
+              "spacing": [
+                0.40000152587890625,
+                0.40000152587890625,
+                0.40000152587890625
+              ],
+              "viewBias": 0.008000030182301998,
+              "visibilityBias": 0.040000151842832565
+            },
+            "status": "DDGI disabled",
+            "supported": true,
+            "totalAllocatedBytes": 3904,
+            "tracedRays": 0,
+            "updateFrame": 0,
+            "updatedProbes": 0
+          }
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 6.969,
+      "validationErrors": [],
+      "fitChecks": [
+        {
+          "probeCount": 512,
+          "spacing": 0.40000152587890625,
+          "paddedMin": [
+            -1.4000015258789062,
+            -0.40000152587890625,
+            -1.4000015258789062
+          ],
+          "paddedMax": [
+            1.4000091552734375,
+            2.4000091552734375,
+            1.4000091552734375
+          ],
+          "payloadBytes": 3261440
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "fit-live-partition",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\architecture-fit-doorway.gltf",
+        "--import-scale",
+        "1.0",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--display-mode",
+        "lit",
+        "--render-technique",
+        "deferred-raster",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ray-shadows",
+        "raster",
+        "--ddgi",
+        "--ddgi-fit-scene",
+        "--ddgi-rays",
+        "64",
+        "--ddgi-probes-per-frame",
+        "256",
+        "--ddgi-ray-budget",
+        "16384",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-live-partition.png",
+        "--warmup-frames",
+        "7",
+        "--capture-frame",
+        "8",
+        "--ddgi-fit-probes",
+        "512",
+        "--capture-sequence",
+        "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\volume-fit-sequence.json"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\architecture-fit-doorway.gltf --import-scale 1.0 --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --display-mode lit --render-technique deferred-raster --exposure .04 --environment-intensity 0 --directional-intensity 0 --ray-shadows raster --ddgi --ddgi-fit-scene --ddgi-rays 64 --ddgi-probes-per-frame 256 --ddgi-ray-budget 16384 --screenshot F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-live-partition.png --warmup-frames 7 --capture-frame 8 --ddgi-fit-probes 512 --capture-sequence F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\volume-fit-sequence.json",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-volume-fit-validation\\fit-live-partition.log",
+      "frames": [
+        {
+          "frame": 1,
+          "png": "fit-live-partition.frame-0001.png",
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "active": true,
+            "contentEpoch": 1,
+            "debugProbeRadius": 0.10285720229148865,
+            "debugView": 0,
+            "enabled": true,
+            "firstProbe": 0,
+            "historyResets": 1,
+            "nextProbe": 256,
+            "paused": false,
+            "refreshRemainingProbes": 234,
+            "sceneFit": {
+              "applied": true,
+              "boundsMax": [
+                3.0,
+                2.799999952316284,
+                1.0
+              ],
+              "boundsMin": [
+                -3.0,
+                0.0,
+                -2.0
+              ],
+              "payloadBytes": 3142624,
+              "probeBudget": 512,
+              "probeCount": 490,
+              "status": "Fitted 490 probes; spacing 0.857143 world units; probe payload 2.997040 MiB."
+            },
+            "schedulingCursor": 256,
+            "settings": {
+              "counts": [
+                10,
+                7,
+                7
+              ],
+              "hysteresis": 0.949999988079071,
+              "intensity": 1.0,
+              "maxDistance": 10.602278709411621,
+              "maxProbesPerFrame": 256,
+              "maxRaysPerFrame": 16384,
+              "normalBias": 0.051428601145744324,
+              "origin": [
+                -3.8571434020996094,
+                -0.8571434020996094,
+                -2.8571434020996094
+              ],
+              "raysPerProbe": 64,
+              "spacing": [
+                0.8571434020996094,
+                0.8571434020996094,
+                0.8571434020996094
+              ],
+              "viewBias": 0.017142867669463158,
+              "visibilityBias": 0.08571434020996094
+            },
+            "status": "DDGI active: bounded world-space volume",
+            "supported": true,
+            "totalAllocatedBytes": 3576480,
+            "tracedRays": 16384,
+            "updateFrame": 1,
+            "updatedProbes": 256
+          }
+        },
+        {
+          "frame": 3,
+          "png": "fit-live-partition.frame-0003.png",
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "active": true,
+            "contentEpoch": 1,
+            "debugProbeRadius": 0.10285720229148865,
+            "debugView": 0,
+            "enabled": true,
+            "firstProbe": 22,
+            "historyResets": 1,
+            "nextProbe": 278,
+            "paused": false,
+            "refreshRemainingProbes": 0,
+            "sceneFit": {
+              "applied": true,
+              "boundsMax": [
+                3.0,
+                2.799999952316284,
+                1.0
+              ],
+              "boundsMin": [
+                -3.0,
+                0.0,
+                -2.0
+              ],
+              "payloadBytes": 3142624,
+              "probeBudget": 512,
+              "probeCount": 490,
+              "status": "Fitted 490 probes; spacing 0.857143 world units; probe payload 2.997040 MiB."
+            },
+            "schedulingCursor": 278,
+            "settings": {
+              "counts": [
+                10,
+                7,
+                7
+              ],
+              "hysteresis": 0.949999988079071,
+              "intensity": 1.0,
+              "maxDistance": 10.602278709411621,
+              "maxProbesPerFrame": 256,
+              "maxRaysPerFrame": 16384,
+              "normalBias": 0.051428601145744324,
+              "origin": [
+                -3.8571434020996094,
+                -0.8571434020996094,
+                -2.8571434020996094
+              ],
+              "raysPerProbe": 64,
+              "spacing": [
+                0.8571434020996094,
+                0.8571434020996094,
+                0.8571434020996094
+              ],
+              "viewBias": 0.017142867669463158,
+              "visibilityBias": 0.08571434020996094
+            },
+            "status": "DDGI active: bounded world-space volume",
+            "supported": true,
+            "totalAllocatedBytes": 3576480,
+            "tracedRays": 16384,
+            "updateFrame": 3,
+            "updatedProbes": 256
+          }
+        },
+        {
+          "frame": 4,
+          "png": "fit-live-partition.frame-0004.png",
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "active": true,
+            "contentEpoch": 1,
+            "debugProbeRadius": 0.11200012266635895,
+            "debugView": 0,
+            "enabled": true,
+            "firstProbe": 0,
+            "historyResets": 2,
+            "nextProbe": 256,
+            "paused": false,
+            "refreshRemainingProbes": 248,
+            "sceneFit": {
+              "applied": true,
+              "boundsMax": [
+                5.03000020980835,
+                2.799999952316284,
+                1.0
+              ],
+              "boundsMin": [
+                -3.0,
+                0.0,
+                -2.0
+              ],
+              "payloadBytes": 3143296,
+              "probeBudget": 512,
+              "probeCount": 504,
+              "status": "Fitted 504 probes; spacing 0.933334 world units; probe payload 2.997681 MiB."
+            },
+            "schedulingCursor": 256,
+            "settings": {
+              "counts": [
+                12,
+                6,
+                7
+              ],
+              "hysteresis": 0.949999988079071,
+              "intensity": 1.0,
+              "maxDistance": 12.59136962890625,
+              "maxProbesPerFrame": 256,
+              "maxRaysPerFrame": 16384,
+              "normalBias": 0.056000061333179474,
+              "origin": [
+                -3.9333343505859375,
+                -0.9333343505859375,
+                -2.9333343505859375
+              ],
+              "raysPerProbe": 64,
+              "spacing": [
+                0.9333343505859375,
+                0.9333343505859375,
+                0.9333343505859375
+              ],
+              "viewBias": 0.018666686490178108,
+              "visibilityBias": 0.09333343803882599
+            },
+            "status": "DDGI active: bounded world-space volume",
+            "supported": true,
+            "totalAllocatedBytes": 3577152,
+            "tracedRays": 16384,
+            "updateFrame": 1,
+            "updatedProbes": 256
+          }
+        },
+        {
+          "frame": 5,
+          "png": "fit-live-partition.frame-0005.png",
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "active": true,
+            "contentEpoch": 1,
+            "debugProbeRadius": 0.11200012266635895,
+            "debugView": 0,
+            "enabled": true,
+            "firstProbe": 256,
+            "historyResets": 2,
+            "nextProbe": 8,
+            "paused": false,
+            "refreshRemainingProbes": 0,
+            "sceneFit": {
+              "applied": true,
+              "boundsMax": [
+                5.03000020980835,
+                2.799999952316284,
+                1.0
+              ],
+              "boundsMin": [
+                -3.0,
+                0.0,
+                -2.0
+              ],
+              "payloadBytes": 3143296,
+              "probeBudget": 512,
+              "probeCount": 504,
+              "status": "Fitted 504 probes; spacing 0.933334 world units; probe payload 2.997681 MiB."
+            },
+            "schedulingCursor": 8,
+            "settings": {
+              "counts": [
+                12,
+                6,
+                7
+              ],
+              "hysteresis": 0.949999988079071,
+              "intensity": 1.0,
+              "maxDistance": 12.59136962890625,
+              "maxProbesPerFrame": 256,
+              "maxRaysPerFrame": 16384,
+              "normalBias": 0.056000061333179474,
+              "origin": [
+                -3.9333343505859375,
+                -0.9333343505859375,
+                -2.9333343505859375
+              ],
+              "raysPerProbe": 64,
+              "spacing": [
+                0.9333343505859375,
+                0.9333343505859375,
+                0.9333343505859375
+              ],
+              "viewBias": 0.018666686490178108,
+              "visibilityBias": 0.09333343803882599
+            },
+            "status": "DDGI active: bounded world-space volume",
+            "supported": true,
+            "totalAllocatedBytes": 3577152,
+            "tracedRays": 16384,
+            "updateFrame": 2,
+            "updatedProbes": 256
+          }
+        },
+        {
+          "frame": 6,
+          "png": "fit-live-partition.frame-0006.png",
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "active": true,
+            "contentEpoch": 1,
+            "debugProbeRadius": 0.11200012266635895,
+            "debugView": 0,
+            "enabled": true,
+            "firstProbe": 8,
+            "historyResets": 2,
+            "nextProbe": 264,
+            "paused": false,
+            "refreshRemainingProbes": 0,
+            "sceneFit": {
+              "applied": true,
+              "boundsMax": [
+                5.03000020980835,
+                2.799999952316284,
+                1.0
+              ],
+              "boundsMin": [
+                -3.0,
+                0.0,
+                -2.0
+              ],
+              "payloadBytes": 3143296,
+              "probeBudget": 512,
+              "probeCount": 504,
+              "status": "Fitted 504 probes; spacing 0.933334 world units; probe payload 2.997681 MiB."
+            },
+            "schedulingCursor": 264,
+            "settings": {
+              "counts": [
+                12,
+                6,
+                7
+              ],
+              "hysteresis": 0.949999988079071,
+              "intensity": 1.0,
+              "maxDistance": 12.59136962890625,
+              "maxProbesPerFrame": 256,
+              "maxRaysPerFrame": 16384,
+              "normalBias": 0.056000061333179474,
+              "origin": [
+                -3.9333343505859375,
+                -0.9333343505859375,
+                -2.9333343505859375
+              ],
+              "raysPerProbe": 64,
+              "spacing": [
+                0.9333343505859375,
+                0.9333343505859375,
+                0.9333343505859375
+              ],
+              "viewBias": 0.018666686490178108,
+              "visibilityBias": 0.09333343803882599
+            },
+            "status": "DDGI active: bounded world-space volume",
+            "supported": true,
+            "totalAllocatedBytes": 3577152,
+            "tracedRays": 16384,
+            "updateFrame": 3,
+            "updatedProbes": 256
+          }
+        },
+        {
+          "frame": 8,
+          "png": "fit-live-partition.png",
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "active": true,
+            "contentEpoch": 1,
+            "debugProbeRadius": 0.11200012266635895,
+            "debugView": 0,
+            "enabled": true,
+            "firstProbe": 16,
+            "historyResets": 2,
+            "nextProbe": 272,
+            "paused": false,
+            "refreshRemainingProbes": 0,
+            "sceneFit": {
+              "applied": true,
+              "boundsMax": [
+                5.03000020980835,
+                2.799999952316284,
+                1.0
+              ],
+              "boundsMin": [
+                -3.0,
+                0.0,
+                -2.0
+              ],
+              "payloadBytes": 3143296,
+              "probeBudget": 512,
+              "probeCount": 504,
+              "status": "Fitted 504 probes; spacing 0.933334 world units; probe payload 2.997681 MiB."
+            },
+            "schedulingCursor": 272,
+            "settings": {
+              "counts": [
+                12,
+                6,
+                7
+              ],
+              "hysteresis": 0.949999988079071,
+              "intensity": 1.0,
+              "maxDistance": 12.59136962890625,
+              "maxProbesPerFrame": 256,
+              "maxRaysPerFrame": 16384,
+              "normalBias": 0.056000061333179474,
+              "origin": [
+                -3.9333343505859375,
+                -0.9333343505859375,
+                -2.9333343505859375
+              ],
+              "raysPerProbe": 64,
+              "spacing": [
+                0.9333343505859375,
+                0.9333343505859375,
+                0.9333343505859375
+              ],
+              "viewBias": 0.018666686490178108,
+              "visibilityBias": 0.09333343803882599
+            },
+            "status": "DDGI active: bounded world-space volume",
+            "supported": true,
+            "totalAllocatedBytes": 3577152,
+            "tracedRays": 16384,
+            "updateFrame": 5,
+            "updatedProbes": 256
+          }
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 7.015,
+      "validationErrors": [],
+      "fitChecks": [
+        {
+          "probeCount": 490,
+          "spacing": 0.8571434020996094,
+          "paddedMin": [
+            -3.8571434020996094,
+            -0.8571434020996094,
+            -2.8571434020996094
+          ],
+          "paddedMax": [
+            3.857147216796875,
+            4.285717010498047,
+            2.285717010498047
+          ],
+          "payloadBytes": 3142624
+        },
+        {
+          "probeCount": 490,
+          "spacing": 0.8571434020996094,
+          "paddedMin": [
+            -3.8571434020996094,
+            -0.8571434020996094,
+            -2.8571434020996094
+          ],
+          "paddedMax": [
+            3.857147216796875,
+            4.285717010498047,
+            2.285717010498047
+          ],
+          "payloadBytes": 3142624
+        },
+        {
+          "probeCount": 504,
+          "spacing": 0.9333343505859375,
+          "paddedMin": [
+            -3.9333343505859375,
+            -0.9333343505859375,
+            -2.9333343505859375
+          ],
+          "paddedMax": [
+            6.333343505859375,
+            3.73333740234375,
+            2.6666717529296875
+          ],
+          "payloadBytes": 3143296
+        },
+        {
+          "probeCount": 504,
+          "spacing": 0.9333343505859375,
+          "paddedMin": [
+            -3.9333343505859375,
+            -0.9333343505859375,
+            -2.9333343505859375
+          ],
+          "paddedMax": [
+            6.333343505859375,
+            3.73333740234375,
+            2.6666717529296875
+          ],
+          "payloadBytes": 3143296
+        },
+        {
+          "probeCount": 504,
+          "spacing": 0.9333343505859375,
+          "paddedMin": [
+            -3.9333343505859375,
+            -0.9333343505859375,
+            -2.9333343505859375
+          ],
+          "paddedMax": [
+            6.333343505859375,
+            3.73333740234375,
+            2.6666717529296875
+          ],
+          "payloadBytes": 3143296
+        },
+        {
+          "probeCount": 504,
+          "spacing": 0.9333343505859375,
+          "paddedMin": [
+            -3.9333343505859375,
+            -0.9333343505859375,
+            -2.9333343505859375
+          ],
+          "paddedMax": [
+            6.333343505859375,
+            3.73333740234375,
+            2.6666717529296875
+          ],
+          "payloadBytes": 3143296
+        }
+      ],
+      "passed": true
+    }
+  ],
+  "parserCases": [
+    {
+      "name": "fit-conflict-origin",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--hidden",
+        "--no-ui",
+        "--ddgi-fit-scene",
+        "--ddgi-origin",
+        "0",
+        "0",
+        "0"
+      ],
+      "expectedError": "cannot be combined",
+      "failures": [],
+      "returnCode": 1,
+      "passed": true
+    },
+    {
+      "name": "fit-conflict-spacing",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--hidden",
+        "--no-ui",
+        "--ddgi-fit-scene",
+        "--ddgi-spacing",
+        "1",
+        "1",
+        "1"
+      ],
+      "expectedError": "cannot be combined",
+      "failures": [],
+      "returnCode": 1,
+      "passed": true
+    },
+    {
+      "name": "fit-conflict-counts",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--hidden",
+        "--no-ui",
+        "--ddgi-fit-scene",
+        "--ddgi-counts",
+        "3",
+        "3",
+        "3"
+      ],
+      "expectedError": "cannot be combined",
+      "failures": [],
+      "returnCode": 1,
+      "passed": true
+    },
+    {
+      "name": "fit-conflict-distance",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--hidden",
+        "--no-ui",
+        "--ddgi-fit-scene",
+        "--ddgi-max-distance",
+        "20"
+      ],
+      "expectedError": "cannot be combined",
+      "failures": [],
+      "returnCode": 1,
+      "passed": true
+    },
+    {
+      "name": "fit-conflict-normal-bias",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--hidden",
+        "--no-ui",
+        "--ddgi-fit-scene",
+        "--ddgi-normal-bias",
+        ".03"
+      ],
+      "expectedError": "cannot be combined",
+      "failures": [],
+      "returnCode": 1,
+      "passed": true
+    },
+    {
+      "name": "fit-conflict-view-bias",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--hidden",
+        "--no-ui",
+        "--ddgi-fit-scene",
+        "--ddgi-view-bias",
+        ".01"
+      ],
+      "expectedError": "cannot be combined",
+      "failures": [],
+      "returnCode": 1,
+      "passed": true
+    },
+    {
+      "name": "fit-conflict-visibility-bias",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--hidden",
+        "--no-ui",
+        "--ddgi-fit-scene",
+        "--ddgi-visibility-bias",
+        ".05"
+      ],
+      "expectedError": "cannot be combined",
+      "failures": [],
+      "returnCode": 1,
+      "passed": true
+    },
+    {
+      "name": "fit-conflict-radius",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--hidden",
+        "--no-ui",
+        "--ddgi-fit-scene",
+        "--ddgi-probe-radius",
+        ".06"
+      ],
+      "expectedError": "cannot be combined",
+      "failures": [],
+      "returnCode": 1,
+      "passed": true
+    },
+    {
+      "name": "fit-conflict-origin-reversed",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--hidden",
+        "--no-ui",
+        "--ddgi-origin",
+        "0",
+        "0",
+        "0",
+        "--ddgi-fit-scene"
+      ],
+      "expectedError": "cannot be combined",
+      "failures": [],
+      "returnCode": 1,
+      "passed": true
+    },
+    {
+      "name": "fit-budget-too-small",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--hidden",
+        "--no-ui",
+        "--ddgi-fit-scene",
+        "--ddgi-fit-probes",
+        "26"
+      ],
+      "expectedError": "at least 27",
+      "failures": [],
+      "returnCode": 1,
+      "passed": true
+    },
+    {
+      "name": "fit-budget-without-fit",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--hidden",
+        "--no-ui",
+        "--ddgi-fit-probes",
+        "512"
+      ],
+      "expectedError": "requires --ddgi-fit-scene",
+      "failures": [],
+      "returnCode": 1,
+      "passed": true
+    }
+  ],
+  "passed": true,
+  "finishedUtc": "2026-10-10T08:26:56.269926+00:00"
+}

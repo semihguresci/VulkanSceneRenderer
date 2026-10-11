@@ -1,0 +1,442 @@
+UpdateCTestConfiguration  from :F:/Projects/Container/out/build/visual-studio/DartConfiguration.tcl
+Test project F:/Projects/Container/out/build/visual-studio
+Constructing a list of tests
+Done constructing a list of tests
+Updating test list for fixtures
+Added 0 tests to meet fixture requirements
+Checking test dependency graph...
+Checking test dependency graph end
+test 6
+    Start   6: ddgi_probe_volume_tests
+
+6: Test command: F:\Projects\Container\out\build\visual-studio\tests\ddgi_probe_volume_tests.exe "--gtest_output=xml:F:/Projects/Container/out/build/visual-studio/test_results/ddgi_probe_volume_tests.xml"
+6: Working Directory: F:/Projects/Container/out/build/visual-studio
+6: Test timeout computed to be: 10000000
+6: Running main() from F:\Projects\vcpkg\buildtrees\gtest\src\v1.16.0-a2e0b328c1.clean\googletest\src\gtest_main.cc
+6: [==========] Running 22 tests from 3 test suites.
+6: [----------] Global test environment set-up.
+6: [----------] 12 tests from DdgiProbeVolumeTests
+6: [ RUN      ] DdgiProbeVolumeTests.InclusiveBoundsAndXFastIndexingAreWorldSpace
+6: [       OK ] DdgiProbeVolumeTests.InclusiveBoundsAndXFastIndexingAreWorldSpace (0 ms)
+6: [ RUN      ] DdgiProbeVolumeTests.RejectsCoordinatesAndLinearIndicesOutsideVolume
+6: [       OK ] DdgiProbeVolumeTests.RejectsCoordinatesAndLinearIndicesOutsideVolume (0 ms)
+6: [ RUN      ] DdgiProbeVolumeTests.TrilinearNeighborsAndWeightsMatchKnownNonCubicCell
+6: [       OK ] DdgiProbeVolumeTests.TrilinearNeighborsAndWeightsMatchKnownNonCubicCell (0 ms)
+6: [ RUN      ] DdgiProbeVolumeTests.CubeCenterProducesEightEqualContributions
+6: [       OK ] DdgiProbeVolumeTests.CubeCenterProducesEightEqualContributions (0 ms)
+6: [ RUN      ] DdgiProbeVolumeTests.ExactEndpointsAndInteriorProbeSelectOneProbe
+6: [       OK ] DdgiProbeVolumeTests.ExactEndpointsAndInteriorProbeSelectOneProbe (0 ms)
+6: [ RUN      ] DdgiProbeVolumeTests.OutOfVolumeIsRejectedUnlessClampIsExplicit
+6: [       OK ] DdgiProbeVolumeTests.OutOfVolumeIsRejectedUnlessClampIsExplicit (0 ms)
+6: [ RUN      ] DdgiProbeVolumeTests.LargeOriginUsesActualRoundedProbeCentersForInterpolation
+6: [       OK ] DdgiProbeVolumeTests.LargeOriginUsesActualRoundedProbeCentersForInterpolation (0 ms)
+6: [ RUN      ] DdgiProbeVolumeTests.SingletonAxesDoNotIntroduceDuplicateEnergy
+6: [       OK ] DdgiProbeVolumeTests.SingletonAxesDoNotIntroduceDuplicateEnergy (0 ms)
+6: [ RUN      ] DdgiProbeVolumeTests.RejectsZeroCountsAndNonPositiveSpacingOnEveryAxis
+6: [       OK ] DdgiProbeVolumeTests.RejectsZeroCountsAndNonPositiveSpacingOnEveryAxis (0 ms)
+6: [ RUN      ] DdgiProbeVolumeTests.RejectsNonfiniteDescriptionAndInterpolation
+6: [       OK ] DdgiProbeVolumeTests.RejectsNonfiniteDescriptionAndInterpolation (0 ms)
+6: [ RUN      ] DdgiProbeVolumeTests.RejectsIndexProductOverflowWithoutAllocatingProbes
+6: [       OK ] DdgiProbeVolumeTests.RejectsIndexProductOverflowWithoutAllocatingProbes (0 ms)
+6: [ RUN      ] DdgiProbeVolumeTests.RejectsInfiniteAndCollapsedFloatWorldBounds
+6: [       OK ] DdgiProbeVolumeTests.RejectsInfiniteAndCollapsedFloatWorldBounds (0 ms)
+6: [----------] 12 tests from DdgiProbeVolumeTests (0 ms total)
+6: 
+6: [----------] 4 tests from DdgiProbeUpdateTests
+6: [ RUN      ] DdgiProbeUpdateTests.BoundedScheduleWrapsWithoutPartialRaySets
+6: [       OK ] DdgiProbeUpdateTests.BoundedScheduleWrapsWithoutPartialRaySets (0 ms)
+6: [ RUN      ] DdgiProbeUpdateTests.EachBoundCapsWorkAndZeroBudgetPreservesCursor
+6: [       OK ] DdgiProbeUpdateTests.EachBoundCapsWorkAndZeroBudgetPreservesCursor (0 ms)
+6: [ RUN      ] DdgiProbeUpdateTests.MaximumRayBudgetDoesNotOverflowMultiplicationOrWrap
+6: [       OK ] DdgiProbeUpdateTests.MaximumRayBudgetDoesNotOverflowMultiplicationOrWrap (0 ms)
+6: [ RUN      ] DdgiProbeUpdateTests.RejectsMalformedBatchAndShortSpanBeforeWriting
+6: [       OK ] DdgiProbeUpdateTests.RejectsMalformedBatchAndShortSpanBeforeWriting (0 ms)
+6: [----------] 4 tests from DdgiProbeUpdateTests (0 ms total)
+6: 
+6: [----------] 6 tests from DdgiProbeResourceTests
+6: [ RUN      ] DdgiProbeResourceTests.PlansOctahedralBordersPaddingHistoryAndAllBuffers
+6: [       OK ] DdgiProbeResourceTests.PlansOctahedralBordersPaddingHistoryAndAllBuffers (0 ms)
+6: [ RUN      ] DdgiProbeResourceTests.PlansNonSquareAtlasAndDisabledScratch
+6: [       OK ] DdgiProbeResourceTests.PlansNonSquareAtlasAndDisabledScratch (0 ms)
+6: [ RUN      ] DdgiProbeResourceTests.EachDeviceAndPayloadLimitRejectsWithActionableResource
+6: [       OK ] DdgiProbeResourceTests.EachDeviceAndPayloadLimitRejectsWithActionableResource (0 ms)
+6: [ RUN      ] DdgiProbeResourceTests.ExactImageLimitAcceptsAndRoundedPaddingIsBudgeted
+6: [       OK ] DdgiProbeResourceTests.ExactImageLimitAcceptsAndRoundedPaddingIsBudgeted (0 ms)
+6: [ RUN      ] DdgiProbeResourceTests.RejectsInvalidTileSizeAndCheckedUint64PayloadOverflow
+6: [       OK ] DdgiProbeResourceTests.RejectsInvalidTileSizeAndCheckedUint64PayloadOverflow (0 ms)
+6: [ RUN      ] DdgiProbeResourceTests.DefaultProbeStateDoesNotAdvertiseInitializedLighting
+6: [       OK ] DdgiProbeResourceTests.DefaultProbeStateDoesNotAdvertiseInitializedLighting (0 ms)
+6: [----------] 6 tests from DdgiProbeResourceTests (0 ms total)
+6: 
+6: [----------] Global test environment tear-down
+6: [==========] 22 tests from 3 test suites ran. (0 ms total)
+6: [  PASSED  ] 22 tests.
+1/9 Test   #6: ddgi_probe_volume_tests ..........   Passed    0.03 sec
+test 7
+    Start   7: ddgi_settings_tests
+
+7: Test command: F:\Projects\Container\out\build\visual-studio\tests\ddgi_settings_tests.exe "--gtest_output=xml:F:/Projects/Container/out/build/visual-studio/test_results/ddgi_settings_tests.xml"
+7: Working Directory: F:/Projects/Container/out/build/visual-studio
+7: Test timeout computed to be: 10000000
+7: Running main() from F:\Projects\vcpkg\buildtrees\gtest\src\v1.16.0-a2e0b328c1.clean\googletest\src\gtest_main.cc
+7: [==========] Running 13 tests from 1 test suite.
+7: [----------] Global test environment set-up.
+7: [----------] 13 tests from DdgiSettingsTests
+7: [ RUN      ] DdgiSettingsTests.DefaultIsOptionalBoundedAndIncludesLocalFloor
+7: [       OK ] DdgiSettingsTests.DefaultIsOptionalBoundedAndIncludesLocalFloor (0 ms)
+7: [ RUN      ] DdgiSettingsTests.PauseRetainsTheConfiguredResourceCapacity
+7: [       OK ] DdgiSettingsTests.PauseRetainsTheConfiguredResourceCapacity (0 ms)
+7: [ RUN      ] DdgiSettingsTests.DiagnosticsRejectInvalidEnumsAndNonpositiveRadius
+7: [       OK ] DdgiSettingsTests.DiagnosticsRejectInvalidEnumsAndNonpositiveRadius (0 ms)
+7: [ RUN      ] DdgiSettingsTests.RejectsEveryNonfiniteScalarEvenWhenDisabled
+7: [       OK ] DdgiSettingsTests.RejectsEveryNonfiniteScalarEvenWhenDisabled (0 ms)
+7: [ RUN      ] DdgiSettingsTests.TraceDistanceRequiresPositiveFiniteBound
+7: [       OK ] DdgiSettingsTests.TraceDistanceRequiresPositiveFiniteBound (0 ms)
+7: [ RUN      ] DdgiSettingsTests.HysteresisAndIntensityAcceptEndpointsAndRejectExcess
+7: [       OK ] DdgiSettingsTests.HysteresisAndIntensityAcceptEndpointsAndRejectExcess (0 ms)
+7: [ RUN      ] DdgiSettingsTests.EachWorldSpaceBiasMustFitTheTraceDistance
+7: [       OK ] DdgiSettingsTests.EachWorldSpaceBiasMustFitTheTraceDistance (0 ms)
+7: [ RUN      ] DdgiSettingsTests.PerProbeRayLimitsRejectZeroAndLargeLoops
+7: [       OK ] DdgiSettingsTests.PerProbeRayLimitsRejectZeroAndLargeLoops (0 ms)
+7: [ RUN      ] DdgiSettingsTests.ZeroFrameBudgetsPauseWithoutRejectingValidConfiguration
+7: [       OK ] DdgiSettingsTests.ZeroFrameBudgetsPauseWithoutRejectingValidConfiguration (0 ms)
+7: [ RUN      ] DdgiSettingsTests.LatticeContractRejectsInvalidAndOverflowingInputs
+7: [       OK ] DdgiSettingsTests.LatticeContractRejectsInvalidAndOverflowingInputs (0 ms)
+7: [ RUN      ] DdgiSettingsTests.ConfiguredPayloadBudgetRejectsOversizedPlansExactly
+7: [       OK ] DdgiSettingsTests.ConfiguredPayloadBudgetRejectsOversizedPlansExactly (0 ms)
+7: [ RUN      ] DdgiSettingsTests.ResourceSettingsRejectUnsupportedTilesAndPayloadOverflow
+7: [       OK ] DdgiSettingsTests.ResourceSettingsRejectUnsupportedTilesAndPayloadOverflow (0 ms)
+7: [ RUN      ] DdgiSettingsTests.ZeroMemoryBudgetsAreInvalidEvenWhenDisabled
+7: [       OK ] DdgiSettingsTests.ZeroMemoryBudgetsAreInvalidEvenWhenDisabled (0 ms)
+7: [----------] 13 tests from DdgiSettingsTests (0 ms total)
+7: 
+7: [----------] Global test environment tear-down
+7: [==========] 13 tests from 1 test suite ran. (0 ms total)
+7: [  PASSED  ] 13 tests.
+2/9 Test   #7: ddgi_settings_tests ..............   Passed    0.03 sec
+test 8
+    Start   8: ddgi_gpu_tests
+
+8: Test command: F:\Projects\Container\out\build\visual-studio\tests\ddgi_gpu_tests.exe "--gtest_output=xml:F:/Projects/Container/out/build/visual-studio/test_results/ddgi_gpu_tests.xml"
+8: Working Directory: F:/Projects/Container/out/build/visual-studio
+8: Test timeout computed to be: 10000000
+8: Running main() from F:\Projects\vcpkg\buildtrees\gtest\src\v1.16.0-a2e0b328c1.clean\googletest\src\gtest_main.cc
+8: [==========] Running 8 tests from 1 test suite.
+8: [----------] Global test environment set-up.
+8: [----------] 8 tests from DdgiGpu
+8: [ RUN      ] DdgiGpu.ConstantSphericalRadianceIntegratesToPiLiAndPreservesOtherProbes
+8: [       OK ] DdgiGpu.ConstantSphericalRadianceIntegratesToPiLiAndPreservesOtherProbes (504 ms)
+8: [ RUN      ] DdgiGpu.HysteresisBlendsExistingActiveHistoryAndDistanceMoments
+8: [       OK ] DdgiGpu.HysteresisBlendsExistingActiveHistoryAndDistanceMoments (116 ms)
+8: [ RUN      ] DdgiGpu.ContentEpochRefreshesOnlySelectedProbeWithoutBlendingStaleHistory
+8: [       OK ] DdgiGpu.ContentEpochRefreshesOnlySelectedProbeWithoutBlendingStaleHistory (113 ms)
+8: [ RUN      ] DdgiGpu.PartialInvalidRaySetsKeepGeneratedDirectionDenominator
+8: [       OK ] DdgiGpu.PartialInvalidRaySetsKeepGeneratedDirectionDenominator (118 ms)
+8: [ RUN      ] DdgiGpu.FiniteHdrRadianceSaturatesHalfAtlasAndPublishesClampFlag
+8: [       OK ] DdgiGpu.FiniteHdrRadianceSaturatesHalfAtlasAndPublishesClampFlag (116 ms)
+8: [ RUN      ] DdgiGpu.ClassificationRejectsBackfacesAndNonfiniteRaysButRetainsOccluders
+8: [       OK ] DdgiGpu.ClassificationRejectsBackfacesAndNonfiniteRaysButRetainsOccluders (112 ms)
+8: [ RUN      ] DdgiGpu.PausedUpdatePreservesSubmittedAtlasAndProbeStateBitwise
+8: [       OK ] DdgiGpu.PausedUpdatePreservesSubmittedAtlasAndProbeStateBitwise (117 ms)
+8: [ RUN      ] DdgiGpu.RelocationRemainsScaleRelativeAndInvalidUntilRetraced
+8: [       OK ] DdgiGpu.RelocationRemainsScaleRelativeAndInvalidUntilRetraced (151 ms)
+8: [----------] 8 tests from DdgiGpu (1350 ms total)
+8: 
+8: [----------] Global test environment tear-down
+8: [==========] 8 tests from 1 test suite ran. (1350 ms total)
+8: [  PASSED  ] 8 tests.
+3/9 Test   #8: ddgi_gpu_tests ...................   Passed    1.46 sec
+test 9
+    Start   9: ddgi_lookup_gpu_tests
+
+9: Test command: F:\Projects\Container\out\build\visual-studio\tests\ddgi_lookup_gpu_tests.exe "--gtest_output=xml:F:/Projects/Container/out/build/visual-studio/test_results/ddgi_lookup_gpu_tests.xml"
+9: Working Directory: F:/Projects/Container/out/build/visual-studio
+9: Test timeout computed to be: 10000000
+9: Running main() from F:\Projects\vcpkg\buildtrees\gtest\src\v1.16.0-a2e0b328c1.clean\googletest\src\gtest_main.cc
+9: [==========] Running 6 tests from 1 test suite.
+9: [----------] Global test environment set-up.
+9: [----------] 6 tests from DdgiLookupGpu
+9: [ RUN      ] DdgiLookupGpu.FullyVisibleConstantFieldPreservesPhysicalIrradiance
+9: [       OK ] DdgiLookupGpu.FullyVisibleConstantFieldPreservesPhysicalIrradiance (597 ms)
+9: [ RUN      ] DdgiLookupGpu.FacingRejectionIsInvariantUnderWorldUnitScaling
+9: [       OK ] DdgiLookupGpu.FacingRejectionIsInvariantUnderWorldUnitScaling (110 ms)
+9: [ RUN      ] DdgiLookupGpu.MomentVisibilityRatioIsInvariantUnderWorldUnitScaling
+9: [       OK ] DdgiLookupGpu.MomentVisibilityRatioIsInvariantUnderWorldUnitScaling (105 ms)
+9: [ RUN      ] DdgiLookupGpu.CompleteOcclusionIsValidBlackAndDoesNotRestoreFallback
+9: [       OK ] DdgiLookupGpu.CompleteOcclusionIsValidBlackAndDoesNotRestoreFallback (106 ms)
+9: [ RUN      ] DdgiLookupGpu.VisibleProbeWinsOverCompletelyBlockedBrightProbe
+9: [       OK ] DdgiLookupGpu.VisibleProbeWinsOverCompletelyBlockedBrightProbe (107 ms)
+9: [ RUN      ] DdgiLookupGpu.InvalidMissingAndOutsideFieldsPreserveFallbackCoverage
+9: [       OK ] DdgiLookupGpu.InvalidMissingAndOutsideFieldsPreserveFallbackCoverage (107 ms)
+9: [----------] 6 tests from DdgiLookupGpu (1135 ms total)
+9: 
+9: [----------] Global test environment tear-down
+9: [==========] 6 tests from 1 test suite ran. (1135 ms total)
+9: [  PASSED  ] 6 tests.
+4/9 Test   #9: ddgi_lookup_gpu_tests ............   Passed    1.35 sec
+test 13
+    Start  13: ddgi_lookup_spirv_validation
+
+13: Test command: C:\VulkanSDK\1.4.328.1\Bin\spirv-val.exe "--target-env" "vulkan1.4" "F:/Projects/Container/out/build/visual-studio/test_shaders/ddgi_lookup_contract.comp.spv"
+13: Working Directory: F:/Projects/Container/out/build/visual-studio
+13: Test timeout computed to be: 10000000
+5/9 Test  #13: ddgi_lookup_spirv_validation .....   Passed    0.03 sec
+test 17
+    Start  17: ddgi_manager_gpu_tests
+
+17: Test command: F:\Projects\Container\out\build\visual-studio\tests\ddgi_manager_gpu_tests.exe "--gtest_output=xml:F:/Projects/Container/out/build/visual-studio/test_results/ddgi_manager_gpu_tests.xml"
+17: Working Directory: F:/Projects/Container/out/build/visual-studio
+17: Test timeout computed to be: 10000000
+17: Running main() from F:\Projects\vcpkg\buildtrees\gtest\src\v1.16.0-a2e0b328c1.clean\googletest\src\gtest_main.cc
+17: [==========] Running 7 tests from 1 test suite.
+17: [----------] Global test environment set-up.
+17: [----------] 7 tests from DdgiManagerGpu
+17: [ RUN      ] DdgiManagerGpu.EnableAfterDisabledPreparationProducesSubmittedHistory
+17: [       OK ] DdgiManagerGpu.EnableAfterDisabledPreparationProducesSubmittedHistory (1406 ms)
+17: [ RUN      ] DdgiManagerGpu.PauseAndReducedBudgetsPreserveResourcesAndRoundRobinCursor
+17: [       OK ] DdgiManagerGpu.PauseAndReducedBudgetsPreserveResourcesAndRoundRobinCursor (187 ms)
+17: [ RUN      ] DdgiManagerGpu.LiveTransportRetuningRefreshesContentWithoutRebuilding
+17: [       OK ] DdgiManagerGpu.LiveTransportRetuningRefreshesContentWithoutRebuilding (186 ms)
+17: [ RUN      ] DdgiManagerGpu.CapacityGrowthAndLatticeChangeRetirePendingGpuResources
+17: [       OK ] DdgiManagerGpu.CapacityGrowthAndLatticeChangeRetirePendingGpuResources (185 ms)
+17: [ RUN      ] DdgiManagerGpu.InvalidLiveEditLeavesSubmittedHistoryAndConfigurationUsable
+17: [       OK ] DdgiManagerGpu.InvalidLiveEditLeavesSubmittedHistoryAndConfigurationUsable (194 ms)
+17: [ RUN      ] DdgiManagerGpu.NearPlaneCrossingDebugSphereRemainsVisibleAndOccluded
+17: [       OK ] DdgiManagerGpu.NearPlaneCrossingDebugSphereRemainsVisibleAndOccluded (201 ms)
+17: [ RUN      ] DdgiManagerGpu.OffAxisOrthographicDebugSphereCoversFullSilhouette
+17: [       OK ] DdgiManagerGpu.OffAxisOrthographicDebugSphereCoversFullSilhouette (192 ms)
+17: [----------] 7 tests from DdgiManagerGpu (2554 ms total)
+17: 
+17: [----------] Global test environment tear-down
+17: [==========] 7 tests from 1 test suite ran. (2554 ms total)
+17: [  PASSED  ] 7 tests.
+6/9 Test  #17: ddgi_manager_gpu_tests ...........   Passed    2.76 sec
+test 20
+    Start  20: temporal_capture_tests
+
+20: Test command: F:\Projects\Container\out\build\visual-studio\tests\temporal_capture_tests.exe "--gtest_output=xml:F:/Projects/Container/out/build/visual-studio/test_results/temporal_capture_tests.xml"
+20: Working Directory: F:/Projects/Container/out/build/visual-studio
+20: Test timeout computed to be: 10000000
+20: Running main() from F:\Projects\vcpkg\buildtrees\gtest\src\v1.16.0-a2e0b328c1.clean\googletest\src\gtest_main.cc
+20: [==========] Running 14 tests from 1 test suite.
+20: [----------] Global test environment set-up.
+20: [----------] 14 tests from TemporalCapture
+20: [ RUN      ] TemporalCapture.InterpolatesNamedObjectAndCameraAtSubmittedScriptFrame
+20: [       OK ] TemporalCapture.InterpolatesNamedObjectAndCameraAtSubmittedScriptFrame (0 ms)
+20: [ RUN      ] TemporalCapture.ConstantNonzeroTracksPreserveBitsAcrossSixtyFrames
+20: [       OK ] TemporalCapture.ConstantNonzeroTracksPreserveBitsAcrossSixtyFrames (1 ms)
+20: [ RUN      ] TemporalCapture.MovingTracksKeepStationaryComponentsAndExactKeys
+20: [       OK ] TemporalCapture.MovingTracksKeepStationaryComponentsAndExactKeys (0 ms)
+20: [ RUN      ] TemporalCapture.RejectsInvalidTracksAndEventsBeforeGpuExecution
+20: [       OK ] TemporalCapture.RejectsInvalidTracksAndEventsBeforeGpuExecution (0 ms)
+20: [ RUN      ] TemporalCapture.ClampsOutsideTracksAndPreservesExactResetFrame
+20: [       OK ] TemporalCapture.ClampsOutsideTracksAndPreservesExactResetFrame (0 ms)
+20: [ RUN      ] TemporalCapture.AreaLightingChangesApplyOnlyAtTheirNamedFrame
+20: [       OK ] TemporalCapture.AreaLightingChangesApplyOnlyAtTheirNamedFrame (0 ms)
+20: [ RUN      ] TemporalCapture.AcceptsExactAreaLightSampleCountsInNumericForms
+20: [       OK ] TemporalCapture.AcceptsExactAreaLightSampleCountsInNumericForms (0 ms)
+20: [ RUN      ] TemporalCapture.AcceptsSupportedAreaLightingModesAndOmission
+20: [       OK ] TemporalCapture.AcceptsSupportedAreaLightingModesAndOmission (0 ms)
+20: [ RUN      ] TemporalCapture.RejectsEmptyUnsupportedAndNonStringAreaLightingModes
+20: [       OK ] TemporalCapture.RejectsEmptyUnsupportedAndNonStringAreaLightingModes (0 ms)
+20: [ RUN      ] TemporalCapture.RejectsAreaLightSampleValuesBeforeNarrowing
+20: [       OK ] TemporalCapture.RejectsAreaLightSampleValuesBeforeNarrowing (0 ms)
+20: [ RUN      ] TemporalCapture.AreaLightEventsAreFiniteAndApplyOnce
+20: [       OK ] TemporalCapture.AreaLightEventsAreFiniteAndApplyOnce (0 ms)
+20: [ RUN      ] TemporalCapture.DdgiFlagsApplyOnceIncludingFalse
+20: [       OK ] TemporalCapture.DdgiFlagsApplyOnceIncludingFalse (0 ms)
+20: [ RUN      ] TemporalCapture.RejectsNonBooleanDdgiFlags
+20: [       OK ] TemporalCapture.RejectsNonBooleanDdgiFlags (0 ms)
+20: [ RUN      ] TemporalCapture.GuiReloadUsesAnExactEventAndRejectsConflictingReloads
+20: [       OK ] TemporalCapture.GuiReloadUsesAnExactEventAndRejectsConflictingReloads (0 ms)
+20: [----------] 14 tests from TemporalCapture (3 ms total)
+20: 
+20: [----------] Global test environment tear-down
+20: [==========] 14 tests from 1 test suite ran. (3 ms total)
+20: [  PASSED  ] 14 tests.
+7/9 Test  #20: temporal_capture_tests ...........   Passed    0.03 sec
+test 131
+    Start 131: technique_debug_model_tests
+
+131: Test command: F:\Projects\Container\out\build\visual-studio\tests\technique_debug_model_tests.exe "--gtest_output=xml:F:/Projects/Container/out/build/visual-studio/test_results/technique_debug_model_tests.xml"
+131: Working Directory: F:/Projects/Container/out/build/visual-studio
+131: Test timeout computed to be: 10000000
+131: Running main() from F:\Projects\vcpkg\buildtrees\gtest\src\v1.16.0-a2e0b328c1.clean\googletest\src\gtest_main.cc
+131: [==========] Running 17 tests from 3 test suites.
+131: [----------] Global test environment set-up.
+131: [----------] 5 tests from DdgiGuiControlsTests
+131: [ RUN      ] DdgiGuiControlsTests.PauseRetainsConfiguredBudgetsAcrossFrameSync
+131: [       OK ] DdgiGuiControlsTests.PauseRetainsConfiguredBudgetsAcrossFrameSync (0 ms)
+131: [ RUN      ] DdgiGuiControlsTests.InvalidVolumeEditPreservesWorkingLighting
+131: [       OK ] DdgiGuiControlsTests.InvalidVolumeEditPreservesWorkingLighting (0 ms)
+131: [ RUN      ] DdgiGuiControlsTests.RejectsNonfiniteImmediateEditAndInvalidRayQuality
+131: [       OK ] DdgiGuiControlsTests.RejectsNonfiniteImmediateEditAndInvalidRayQuality (0 ms)
+131: [ RUN      ] DdgiGuiControlsTests.ReportsResourceBudgetRejectionWithoutPublishingEdit
+131: [       OK ] DdgiGuiControlsTests.ReportsResourceBudgetRejectionWithoutPublishingEdit (0 ms)
+131: [ RUN      ] DdgiGuiControlsTests.OwnerRejectionRestoresTheAcceptedControlState
+131: [       OK ] DdgiGuiControlsTests.OwnerRejectionRestoresTheAcceptedControlState (0 ms)
+131: [----------] 5 tests from DdgiGuiControlsTests (0 ms total)
+131: 
+131: [----------] 6 tests from TechniqueDebugModelTests
+131: [ RUN      ] TechniqueDebugModelTests.DefaultTechniqueModelUsesTechniqueIdentity
+131: [       OK ] TechniqueDebugModelTests.DefaultTechniqueModelUsesTechniqueIdentity (0 ms)
+131: [ RUN      ] TechniqueDebugModelTests.DeferredRasterPublishesDebugPanels
+131: [       OK ] TechniqueDebugModelTests.DeferredRasterPublishesDebugPanels (0 ms)
+131: [ RUN      ] TechniqueDebugModelTests.ForwardRasterPublishesForwardCompatibleDisplayModes
+131: [       OK ] TechniqueDebugModelTests.ForwardRasterPublishesForwardCompatibleDisplayModes (0 ms)
+131: [ RUN      ] TechniqueDebugModelTests.DebugPresenterPublishesRenderGraphDebugModelRows
+131: [       OK ] TechniqueDebugModelTests.DebugPresenterPublishesRenderGraphDebugModelRows (0 ms)
+131: [ RUN      ] TechniqueDebugModelTests.DebugPresenterPublishesTechniqueDebugStateAndDisplayModes
+131: [       OK ] TechniqueDebugModelTests.DebugPresenterPublishesTechniqueDebugStateAndDisplayModes (0 ms)
+131: [ RUN      ] TechniqueDebugModelTests.GuiClampsUnsupportedDisplayModeWhenTechniqueChanges
+131: [       OK ] TechniqueDebugModelTests.GuiClampsUnsupportedDisplayModeWhenTechniqueChanges (0 ms)
+131: [----------] 6 tests from TechniqueDebugModelTests (0 ms total)
+131: 
+131: [----------] 6 tests from TechniqueDebugModelGuardrails
+131: [ RUN      ] TechniqueDebugModelGuardrails.DebugModelsStayUiBackendNeutral
+131: [       OK ] TechniqueDebugModelGuardrails.DebugModelsStayUiBackendNeutral (0 ms)
+131: [ RUN      ] TechniqueDebugModelGuardrails.GuiHeaderKeepsRendererDebugModelsNeutral
+131: [       OK ] TechniqueDebugModelGuardrails.GuiHeaderKeepsRendererDebugModelsNeutral (4 ms)
+131: [ RUN      ] TechniqueDebugModelGuardrails.RendererFrontendOwnsRuntimeTechniqueSwitch
+131: [       OK ] TechniqueDebugModelGuardrails.RendererFrontendOwnsRuntimeTechniqueSwitch (3 ms)
+131: [ RUN      ] TechniqueDebugModelGuardrails.SceneModelLoadsAreDeferredOutsideTheActiveImGuiFrame
+131: [       OK ] TechniqueDebugModelGuardrails.SceneModelLoadsAreDeferredOutsideTheActiveImGuiFrame (4 ms)
+131: [ RUN      ] TechniqueDebugModelGuardrails.GuiFrameLifecycleCanRecoverWhenFramePreparationThrows
+131: [       OK ] TechniqueDebugModelGuardrails.GuiFrameLifecycleCanRecoverWhenFramePreparationThrows (4 ms)
+131: [ RUN      ] TechniqueDebugModelGuardrails.BimModelLoadsResetCameraUsingAuxiliaryBounds
+131: [       OK ] TechniqueDebugModelGuardrails.BimModelLoadsResetCameraUsingAuxiliaryBounds (3 ms)
+131: [----------] 6 tests from TechniqueDebugModelGuardrails (21 ms total)
+131: 
+131: [----------] Global test environment tear-down
+131: [==========] 17 tests from 3 test suites ran. (21 ms total)
+131: [  PASSED  ] 17 tests.
+8/9 Test #131: technique_debug_model_tests ......   Passed    0.13 sec
+test 136
+    Start 136: render_graph_tests
+
+136: Test command: F:\Projects\Container\out\build\visual-studio\tests\render_graph_tests.exe "--gtest_output=xml:F:/Projects/Container/out/build/visual-studio/test_results/render_graph_tests.xml"
+136: Working Directory: F:/Projects/Container/out/build/visual-studio
+136: Test timeout computed to be: 10000000
+136: Running main() from F:\Projects\vcpkg\buildtrees\gtest\src\v1.16.0-a2e0b328c1.clean\googletest\src\gtest_main.cc
+136: [==========] Running 46 tests from 1 test suite.
+136: [----------] Global test environment set-up.
+136: [----------] 46 tests from RenderGraphTests
+136: [ RUN      ] RenderGraphTests.CompileOrdersPassesByScheduleDependency
+136: [       OK ] RenderGraphTests.CompileOrdersPassesByScheduleDependency (0 ms)
+136: [ RUN      ] RenderGraphTests.AddPassRejectsInvalidPassId
+136: [       OK ] RenderGraphTests.AddPassRejectsInvalidPassId (0 ms)
+136: [ RUN      ] RenderGraphTests.AddPassRejectsInvalidScheduleDependency
+136: [       OK ] RenderGraphTests.AddPassRejectsInvalidScheduleDependency (0 ms)
+136: [ RUN      ] RenderGraphTests.AddPassRejectsDuplicateScheduleDependency
+136: [       OK ] RenderGraphTests.AddPassRejectsDuplicateScheduleDependency (0 ms)
+136: [ RUN      ] RenderGraphTests.FindPassUsesStablePassId
+136: [       OK ] RenderGraphTests.FindPassUsesStablePassId (0 ms)
+136: [ RUN      ] RenderGraphTests.ExecutionPassIdsAreClearedWithGraph
+136: [       OK ] RenderGraphTests.ExecutionPassIdsAreClearedWithGraph (0 ms)
+136: [ RUN      ] RenderGraphTests.ActiveExecutionPassIdsRefreshAfterToggleChange
+136: [       OK ] RenderGraphTests.ActiveExecutionPassIdsRefreshAfterToggleChange (0 ms)
+136: [ RUN      ] RenderGraphTests.DebugModelReportsPassStatusWithoutUiCoupling
+136: [       OK ] RenderGraphTests.DebugModelReportsPassStatusWithoutUiCoupling (0 ms)
+136: [ RUN      ] RenderGraphTests.ExecuteSkipsPassWhenRequiredDependencyIsDisabled
+136: [       OK ] RenderGraphTests.ExecuteSkipsPassWhenRequiredDependencyIsDisabled (0 ms)
+136: [ RUN      ] RenderGraphTests.DisabledScheduleOnlyDependencyDoesNotSkipProtectedPass
+136: [       OK ] RenderGraphTests.DisabledScheduleOnlyDependencyDoesNotSkipProtectedPass (0 ms)
+136: [ RUN      ] RenderGraphTests.CompileThrowsForMissingScheduleDependency
+136: [       OK ] RenderGraphTests.CompileThrowsForMissingScheduleDependency (0 ms)
+136: [ RUN      ] RenderGraphTests.CompileThrowsForDependencyCycle
+136: [       OK ] RenderGraphTests.CompileThrowsForDependencyCycle (0 ms)
+136: [ RUN      ] RenderGraphTests.CompileBuildsResourceEdgesFromPriorWriters
+136: [       OK ] RenderGraphTests.CompileBuildsResourceEdgesFromPriorWriters (0 ms)
+136: [ RUN      ] RenderGraphTests.ActiveExecutionSkipsRequiredResourceConsumerWhenWriterDisabled
+136: [       OK ] RenderGraphTests.ActiveExecutionSkipsRequiredResourceConsumerWhenWriterDisabled (0 ms)
+136: [ RUN      ] RenderGraphTests.ActiveExecutionKeepsConsumerWithOnlyDisabledOptionalRead
+136: [       OK ] RenderGraphTests.ActiveExecutionKeepsConsumerWithOnlyDisabledOptionalRead (0 ms)
+136: [ RUN      ] RenderGraphTests.ExecutionStatusReportsMissingRequiredResource
+136: [       OK ] RenderGraphTests.ExecutionStatusReportsMissingRequiredResource (0 ms)
+136: [ RUN      ] RenderGraphTests.SetPassResourceAccessRejectsInvalidResources
+136: [       OK ] RenderGraphTests.SetPassResourceAccessRejectsInvalidResources (0 ms)
+136: [ RUN      ] RenderGraphTests.AddPassCopiesDefaultTransitionMetadata
+136: [       OK ] RenderGraphTests.AddPassCopiesDefaultTransitionMetadata (0 ms)
+136: [ RUN      ] RenderGraphTests.SetPassResourceTransitionsRejectsInvalidResource
+136: [       OK ] RenderGraphTests.SetPassResourceTransitionsRejectsInvalidResource (0 ms)
+136: [ RUN      ] RenderGraphTests.ActivePredicateFollowsExecutionStatus
+136: [       OK ] RenderGraphTests.ActivePredicateFollowsExecutionStatus (0 ms)
+136: [ RUN      ] RenderGraphTests.SetPassRecordUpdatesActivePlan
+136: [       OK ] RenderGraphTests.SetPassRecordUpdatesActivePlan (0 ms)
+136: [ RUN      ] RenderGraphTests.ExecuteSkipsPassWhenReadinessFailsAtRuntime
+136: [       OK ] RenderGraphTests.ExecuteSkipsPassWhenReadinessFailsAtRuntime (0 ms)
+136: [ RUN      ] RenderGraphTests.PrepareFramePublishesRuntimeStatusBeforeExecute
+136: [       OK ] RenderGraphTests.PrepareFramePublishesRuntimeStatusBeforeExecute (0 ms)
+136: [ RUN      ] RenderGraphTests.PrepareFrameIsIdempotentForSameFrameSignature
+136: [       OK ] RenderGraphTests.PrepareFrameIsIdempotentForSameFrameSignature (0 ms)
+136: [ RUN      ] RenderGraphTests.PrepareFrameRebuildsWhenExposureModeChanges
+136: [       OK ] RenderGraphTests.PrepareFrameRebuildsWhenExposureModeChanges (0 ms)
+136: [ RUN      ] RenderGraphTests.ExecutePreparedFrameConsumesPreparedPlan
+136: [       OK ] RenderGraphTests.ExecutePreparedFrameConsumesPreparedPlan (0 ms)
+136: [ RUN      ] RenderGraphTests.ExecutePreparedFrameRebuildsAfterReadinessMutation
+136: [       OK ] RenderGraphTests.ExecutePreparedFrameRebuildsAfterReadinessMutation (0 ms)
+136: [ RUN      ] RenderGraphTests.RuntimeSkippedWriterSkipsRequiredResourceReader
+136: [       OK ] RenderGraphTests.RuntimeSkippedWriterSkipsRequiredResourceReader (0 ms)
+136: [ RUN      ] RenderGraphTests.IsPassActiveUsesRuntimeStateInsideCallbacks
+136: [       OK ] RenderGraphTests.IsPassActiveUsesRuntimeStateInsideCallbacks (0 ms)
+136: [ RUN      ] RenderGraphTests.ExecuteAllowsActiveQueriesInsidePassCallbacks
+136: [       OK ] RenderGraphTests.ExecuteAllowsActiveQueriesInsidePassCallbacks (0 ms)
+136: [ RUN      ] RenderGraphTests.CompileThrowsWhenRequiredInternalReadHasNoWriter
+136: [       OK ] RenderGraphTests.CompileThrowsWhenRequiredInternalReadHasNoWriter (0 ms)
+136: [ RUN      ] RenderGraphTests.OptionalInternalReadDoesNotRequireWriter
+136: [       OK ] RenderGraphTests.OptionalInternalReadDoesNotRequireWriter (0 ms)
+136: [ RUN      ] RenderGraphTests.ResourceEdgeCanScheduleWriterBeforeReader
+136: [       OK ] RenderGraphTests.ResourceEdgeCanScheduleWriterBeforeReader (0 ms)
+136: [ RUN      ] RenderGraphTests.RayVisibilityProducerOrdersBeforeLightingAndRemainsOptional
+136: [       OK ] RenderGraphTests.RayVisibilityProducerOrdersBeforeLightingAndRemainsOptional (0 ms)
+136: [ RUN      ] RenderGraphTests.DdgiResourceChainOrdersEveryRegistrationPermutation
+136: [       OK ] RenderGraphTests.DdgiResourceChainOrdersEveryRegistrationPermutation (1 ms)
+136: [ RUN      ] RenderGraphTests.DdgiProducerPassesAreProtectedAndEnabledByDefault
+136: [       OK ] RenderGraphTests.DdgiProducerPassesAreProtectedAndEnabledByDefault (0 ms)
+136: [ RUN      ] RenderGraphTests.LightingDoesNotRequireDdgiProducers
+136: [       OK ] RenderGraphTests.LightingDoesNotRequireDdgiProducers (0 ms)
+136: [ RUN      ] RenderGraphTests.SkippedDdgiUpdateKeepsLightingFallbackLookupAvailable
+136: [       OK ] RenderGraphTests.SkippedDdgiUpdateKeepsLightingFallbackLookupAvailable (0 ms)
+136: [ RUN      ] RenderGraphTests.ResourceAccessMutationInvalidatesCompiledSchedule
+136: [       OK ] RenderGraphTests.ResourceAccessMutationInvalidatesCompiledSchedule (0 ms)
+136: [ RUN      ] RenderGraphTests.ScheduleDependencyMutationInvalidatesCompiledSchedule
+136: [       OK ] RenderGraphTests.ScheduleDependencyMutationInvalidatesCompiledSchedule (0 ms)
+136: [ RUN      ] RenderGraphTests.ScheduleDependencyMutationRejectsInvalidDependency
+136: [       OK ] RenderGraphTests.ScheduleDependencyMutationRejectsInvalidDependency (0 ms)
+136: [ RUN      ] RenderGraphTests.CompileThrowsForResourceDependencyCycle
+136: [       OK ] RenderGraphTests.CompileThrowsForResourceDependencyCycle (0 ms)
+136: [ RUN      ] RenderGraphTests.DefaultScheduleModelsCurrentFrameFlow
+136: [       OK ] RenderGraphTests.DefaultScheduleModelsCurrentFrameFlow (0 ms)
+136: [ RUN      ] RenderGraphTests.CullStatsReadbackRunsWhenCullingIsDisabledOrSkipped
+136: [       OK ] RenderGraphTests.CullStatsReadbackRunsWhenCullingIsDisabledOrSkipped (0 ms)
+136: [ RUN      ] RenderGraphTests.OpenWorldFrameDoesNotRequireLocalShadowDepthPass
+136: [       OK ] RenderGraphTests.OpenWorldFrameDoesNotRequireLocalShadowDepthPass (0 ms)
+136: [ RUN      ] RenderGraphTests.BimPassesSlotIntoFrameOrderWhenRegistered
+136: [       OK ] RenderGraphTests.BimPassesSlotIntoFrameOrderWhenRegistered (0 ms)
+136: [----------] 46 tests from RenderGraphTests (2 ms total)
+136: 
+136: [----------] Global test environment tear-down
+136: [==========] 46 tests from 1 test suite ran. (2 ms total)
+136: [  PASSED  ] 46 tests.
+9/9 Test #136: render_graph_tests ...............   Passed    0.08 sec
+
+The following tests passed:
+	ddgi_probe_volume_tests
+	ddgi_settings_tests
+	ddgi_gpu_tests
+	ddgi_lookup_gpu_tests
+	ddgi_lookup_spirv_validation
+	ddgi_manager_gpu_tests
+	temporal_capture_tests
+	technique_debug_model_tests
+	render_graph_tests
+
+100% tests passed, 0 tests failed out of 9
+
+Label Time Summary:
+ddgi                =   5.57 sec*proc (3 tests)
+ray-query           =   2.76 sec*proc (1 test)
+requires-display    =   5.57 sec*proc (3 tests)
+requires-vulkan     =   5.57 sec*proc (3 tests)
+
+Total Test time (real) =   5.92 sec

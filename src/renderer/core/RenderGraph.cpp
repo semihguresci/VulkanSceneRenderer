@@ -58,6 +58,8 @@ constexpr std::array<std::string_view, kRenderPassIdCount> kRenderPassNames = {
     "RaySceneBuild",
     "RayShadowTrace",
     "RayShadowFilter",
+    "DdgiTrace",
+    "DdgiUpdate",
 };
 
 static_assert(kRenderPassNames.size() == kRenderPassIdCount);
@@ -105,6 +107,8 @@ constexpr std::array<std::string_view, kRenderResourceIdCount>
         "RayScene",
         "RayShadowRaw",
         "RayShadowVisibility",
+        "DdgiRays",
+        "DdgiIrradiance",
 };
 
 static_assert(kRenderResourceNames.size() == kRenderResourceIdCount);
@@ -426,6 +430,7 @@ constexpr std::array kLightingReads{
     RenderResourceId::EnvironmentMaps,
 };
 constexpr std::array kLightingOptionalReads{
+    RenderResourceId::DdgiIrradiance,
     RenderResourceId::RayShadowVisibility, RenderResourceId::ShadowAtlas,
     RenderResourceId::LocalShadowAtlas,    RenderResourceId::TileLightGrid,
     RenderResourceId::AmbientOcclusion,    RenderResourceId::OitStorage,
@@ -467,6 +472,7 @@ constexpr std::array kPostProcessReads{
 constexpr std::array kTemporalColorOptionalReads{
     RenderResourceId::TemporalColor};
 constexpr std::array kPostProcessOptionalReads{
+    RenderResourceId::DdgiIrradiance,
     RenderResourceId::TemporalColor, RenderResourceId::OitStorage,
     RenderResourceId::BloomTexture,
     RenderResourceId::ExposureState,
@@ -615,6 +621,8 @@ bool isProtectedRenderPass(RenderPassId id) {
   case RenderPassId::RaySceneBuild:
   case RenderPassId::RayShadowTrace:
   case RenderPassId::RayShadowFilter:
+  case RenderPassId::DdgiTrace:
+  case RenderPassId::DdgiUpdate:
   case RenderPassId::DepthPrepass:
   case RenderPassId::GBuffer:
   case RenderPassId::OitClear:

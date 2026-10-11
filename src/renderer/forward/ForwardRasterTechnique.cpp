@@ -1,5 +1,6 @@
 #include "Container/renderer/forward/ForwardRasterTechnique.h"
 #include "Container/renderer/raytracing/RayShadowManager.h"
+#include "Container/renderer/lighting/DdgiManager.h"
 #include "Container/renderer/temporal/TemporalManager.h"
 
 #include "Container/renderer/bim/BimSurfaceRasterPassRecorder.h"
@@ -951,8 +952,11 @@ void recordForwardRasterPostProcessPass(
                     : 0u,
             .transparentOitActive =
                 sharedContext.isPassActive(RenderPassId::OitResolve)},
-       .recordAfterFullscreenDraw = [&sharedContext,
-                                     &p](VkCommandBuffer passCmd) {
+       .recordAfterFullscreenDraw = [&sharedContext, &p,
+                                     postProcessSets](VkCommandBuffer passCmd) {
+         if (p.services.ddgiManager)
+           p.services.ddgiManager->recordDebug(passCmd, p.runtime.imageIndex,
+                                               postProcessSets[0]);
          recordForwardRasterLightGizmoOverlay(passCmd, p, sharedContext,
                                               sharedContext.swapchainExtent());
          recordForwardRasterTransformGizmoOverlay(
@@ -1316,7 +1320,7 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
        RenderResourceId::CameraBuffer, RenderResourceId::ObjectBuffer,
        RenderResourceId::BimObjectBuffer, RenderResourceId::LightingData,
        RenderResourceId::EnvironmentMaps, RenderResourceId::SceneDepth},
-      {RenderResourceId::RayShadowVisibility, RenderResourceId::RayScene,
+      {RenderResourceId::DdgiIrradiance, RenderResourceId::RayShadowVisibility, RenderResourceId::RayScene,
        RenderResourceId::ShadowAtlas,
        RenderResourceId::LocalShadowAtlas, RenderResourceId::OitStorage,
        RenderResourceId::FrustumCullDraws,
@@ -1326,6 +1330,7 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
   RenderGraphBuilder temporalGraph(graph);
   registerTemporalPasses(temporalGraph);
   registerRayShadowPasses(temporalGraph);
+  registerDdgiPasses(temporalGraph);
 
   graph.addPass(RenderPassId::TransformGizmos, {RenderPassId::TemporalResolve},
                 [](VkCommandBuffer cmd, const FrameRecordParams &p) {
@@ -1400,7 +1405,8 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
         RenderPassId::PostProcess,
         {RenderResourceId::SceneColor, RenderResourceId::CameraBuffer,
          RenderResourceId::SceneDepth},
-        {RenderResourceId::TemporalColor, RenderResourceId::OitStorage, RenderResourceId::BloomTexture,
+        {RenderResourceId::DdgiIrradiance, RenderResourceId::TemporalColor,
+         RenderResourceId::OitStorage, RenderResourceId::BloomTexture,
          RenderResourceId::ExposureState, RenderResourceId::ShadowAtlas},
         {RenderResourceId::SwapchainImage});
     graph.setPassResourceTransitions(

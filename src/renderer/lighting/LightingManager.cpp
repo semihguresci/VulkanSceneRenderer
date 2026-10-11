@@ -503,6 +503,19 @@ void LightingManager::setLightingSettings(const LightingSettings &settings) {
   }
 }
 
+void LightingManager::clearSceneLightOverrides() {
+  importedPointOverrides_.clear();
+  importedAreaOverrides_.clear();
+  generatedPointOverrides_.clear();
+  generatedAreaOverrides_.clear();
+  if (directionalOverride_ &&
+      directionalOverride_->source != EditableLightSource::Manual) {
+    directionalOverride_.reset();
+  }
+  selectedEditableLight_ = invalidEditableLightId();
+  updateLightingData();
+}
+
 void LightingManager::collectStats() {
   if (lightStatsBuffer_.buffer == VK_NULL_HANDLE ||
       lightStatsBuffer_.allocation == nullptr) {

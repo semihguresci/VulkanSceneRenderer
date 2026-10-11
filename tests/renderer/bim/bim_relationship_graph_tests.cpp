@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -273,6 +274,132 @@ TEST(BimRelationshipGraphTests,
   graph.clear();
   EXPECT_TRUE(graph.edges().empty());
   EXPECT_TRUE(graph.nodes().empty());
+}
+
+TEST(BimRelationshipGraphTests,
+     CooperativeBuildPreservesNodesEdgesPropertiesAndSearch) {
+  constexpr uint32_t count = 300u;
+  std::vector<BimElementMetadata> metadata;
+  std::vector<ElementRelationship> relationships;
+  metadata.reserve(count);
+  relationships.reserve(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    auto element = makeElement(i, "wall-guid-" + std::to_string(i),
+                               "wall-source-" + std::to_string(i), "IfcWall",
+                               "Wall " + std::to_string(i));
+    element.storeyName = "Level " + std::to_string(i % 4u);
+    element.materialName = "Concrete";
+    element.properties.push_back({.set = "Pset_WallCommon",
+                                  .name = "FireRating",
+                                  .value = "2HR",
+                                  .category = "IfcPropertySet"});
+    metadata.push_back(std::move(element));
+    relationships.push_back({.fromGuid = "system-guid",
+                              .toGuid = "wall-guid-" + std::to_string(i),
+                              .toSourceId = "wall-source-" + std::to_string(i),
+                              .kind = "system",
+                              .label = "Supply Air"});
+  }
+
+  BimRelationshipGraph expected;
+  expected.build(metadata, relationships);
+  BimRelationshipGraph actual;
+  size_t checkpoints = 0u;
+  actual.build(metadata, relationships, [&] { ++checkpoints; });
+  EXPECT_GE(checkpoints, 8u);
+
+  ASSERT_EQ(actual.nodes().size(), expected.nodes().size());
+  for (size_t i = 0; i < expected.nodes().size(); ++i) {
+    SCOPED_TRACE(i);
+    const auto &lhs = actual.nodes()[i];
+    const auto &rhs = expected.nodes()[i];
+    EXPECT_EQ(lhs.objectIndex, rhs.objectIndex);
+    EXPECT_EQ(lhs.guid, rhs.guid);
+    EXPECT_EQ(lhs.sourceId, rhs.sourceId);
+    EXPECT_EQ(lhs.label, rhs.label);
+    EXPECT_EQ(lhs.ifcClass, rhs.ifcClass);
+  }
+  ASSERT_EQ(actual.edges().size(), expected.edges().size());
+  for (size_t i = 0; i < expected.edges().size(); ++i) {
+    SCOPED_TRACE(i);
+    const auto &lhs = actual.edges()[i];
+    const auto &rhs = expected.edges()[i];
+    EXPECT_EQ(lhs.from, rhs.from);
+    EXPECT_EQ(lhs.to, rhs.to);
+    EXPECT_EQ(lhs.kind, rhs.kind);
+    EXPECT_EQ(lhs.label, rhs.label);
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    SCOPED_TRACE(i);
+    const auto lhs = actual.propertySetsForObject(i);
+    const auto rhs = expected.propertySetsForObject(i);
+    ASSERT_EQ(lhs.size(), rhs.size());
+    ASSERT_EQ(lhs.size(), 1u);
+    EXPECT_EQ(lhs[0].set, rhs[0].set);
+    EXPECT_EQ(lhs[0].category, rhs[0].category);
+    ASSERT_EQ(lhs[0].properties.size(), rhs[0].properties.size());
+    ASSERT_EQ(lhs[0].properties.size(), 1u);
+    EXPECT_EQ(lhs[0].properties[0].name, rhs[0].properties[0].name);
+    EXPECT_EQ(lhs[0].properties[0].value, rhs[0].properties[0].value);
+    EXPECT_EQ(lhs[0].properties[0].category, rhs[0].properties[0].category);
+  }
+  for (const std::string_view query : {"Wall", "Supply Air", "2HR"}) {
+    SCOPED_TRACE(query);
+    const auto lhs = actual.search(query);
+    const auto rhs = expected.search(query);
+    ASSERT_EQ(lhs.size(), rhs.size());
+    for (size_t i = 0; i < rhs.size(); ++i) {
+      EXPECT_EQ(lhs[i].objectIndex, rhs[i].objectIndex);
+      EXPECT_EQ(lhs[i].matchedText, rhs[i].matchedText);
+      EXPECT_EQ(lhs[i].reason, rhs[i].reason);
+    }
+  }
+}
+
+TEST(BimRelationshipGraphTests,
+     CooperativeClearDropsIndexesPropertiesAndAllowsFreshRebuild) {
+  std::vector<BimElementMetadata> metadata;
+  for (uint32_t i = 0; i < 300u; ++i) {
+    auto element = makeElement(i, "old-guid-" + std::to_string(i),
+                               "old-source-" + std::to_string(i), "IfcWall",
+                               "Old wall " + std::to_string(i));
+    element.storeyName = "Old storey";
+    element.properties.push_back({.set = "Old property set",
+                                  .name = "Old property",
+                                  .value = "Old value"});
+    metadata.push_back(std::move(element));
+  }
+  BimRelationshipGraph graph;
+  graph.build(metadata);
+  ASSERT_FALSE(graph.nodes().empty());
+  ASSERT_FALSE(graph.edges().empty());
+  ASSERT_FALSE(graph.search("Old").empty());
+  size_t checkpoints = 0u;
+  graph.clear([&] { ++checkpoints; });
+  EXPECT_GE(checkpoints, 6u);
+  EXPECT_TRUE(graph.nodes().empty());
+  EXPECT_TRUE(graph.edges().empty());
+  EXPECT_TRUE(graph.search("Old").empty());
+  for (uint32_t i = 0; i < 300u; ++i) {
+    EXPECT_TRUE(graph.propertySetsForObject(i).empty());
+    EXPECT_TRUE(graph.parentsForObject(i).empty());
+    EXPECT_TRUE(graph.childrenForObject(i).empty());
+  }
+
+  auto fresh = makeElement(0u, "fresh-guid", "fresh-source", "IfcDoor",
+                           "Fresh door");
+  fresh.storeyName = "Fresh storey";
+  const std::vector<ElementRelationship> relationships{
+      {.fromGuid = "fresh-system", .toGuid = "fresh-guid", .kind = "system",
+       .label = "Fresh system"}};
+  graph.build(std::vector<BimElementMetadata>{fresh}, relationships);
+  EXPECT_TRUE(graph.search("Old").empty());
+  EXPECT_TRUE(hasSearchHit(graph, "Fresh system", 0u, "relationship"));
+  EXPECT_TRUE(hasEdge(graph.edgesForObject(0u),
+                      BimRelationshipKind::SystemAssignment));
+  EXPECT_EQ(graph.parentsForObject(0u).size(), 3u);
+  EXPECT_TRUE(graph.propertySetsForObject(0u).empty());
+  EXPECT_TRUE(graph.edgesForObject(299u).empty());
 }
 
 } // namespace

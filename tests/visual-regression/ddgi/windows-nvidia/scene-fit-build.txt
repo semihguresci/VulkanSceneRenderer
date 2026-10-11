@@ -1,0 +1,109 @@
+**********************************************************************
+** Visual Studio 2026 Developer Command Prompt v18.11.0-insiders
+** Copyright (c) 2026 Microsoft Corporation
+**********************************************************************
+[vcvarsall.bat] Environment initialized for: 'x64'
+-- Selecting Windows SDK version 10.0.26100.0 to target Windows 10.0.26200.
+-- Found Vulkan: F:/Projects/Container/out/build/windows-release/vcpkg_installed/x64-windows/debug/lib/vulkan-1.lib (found suitable version "1.4.304", minimum required is "1.4") found components: glslc glslangValidator
+-- ✅ Vulkan found - Version: 1.4.304
+-- ---- VMA targets check ----
+-- Found target: GPUOpen::VulkanMemoryAllocator
+-- ---------------------------
+-- VMA include dirs: F:/Projects/Container/out/build/windows-release/vcpkg_installed/x64-windows/include/vma
+-- ✅ Found validation layer manifest: C:/VulkanSDK/1.4.328.1/Bin/VkLayer_khronos_validation.json
+--    Suggested VK_LAYER_PATH: C:/VulkanSDK/1.4.328.1/Bin
+-- Found Vulkan: F:/Projects/Container/out/build/windows-release/vcpkg_installed/x64-windows/debug/lib/vulkan-1.lib (found version "1.4.304") found components: glslc glslangValidator
+-- ✅ TinyGLTF found (manual)
+-- ✅ TinyEXR found (config)
+-- ✅ STB found (manual): F:/Projects/Container/out/build/windows-release/vcpkg_installed/x64-windows/include
+-- Use procesors : 24
+-- ✅ TinyUSDZ found (FetchContent)
+-- --------------------------------------------------
+-- Dependency Configuration Summary:
+-- Vulkan: 1.4.304
+-- spdlog: 1.15.1
+-- --------------------------------------------------
+-- Found 27 render Slang shaders in F:/Projects/Container/shaders
+-- Configuring done (2.0s)
+-- Generating done (3.2s)
+-- Build files have been written to: F:/Projects/Container/out/build/visual-studio
+MSBuild version 18.11.0-1.26427.13+9353559c2 for .NET Framework
+
+  Checking File Globs
+  Copying validation glTF assets to build directory
+  Copying HDR environment maps to build directory
+  Copying MaterialX assets to build directory
+  Building Slang shaders
+  Checking latest buildingSMART Sample-Test-Files archive
+  Checking latest buildingSMART IFC5-development archive
+  -- buildingSMART Sample-Test-Files already present at F:/Projects/Container/out/build/visual-studio/models/buildingSMART-Sample-Test-Files (7ddf57a201f88a0c213d5322b02ed15e94a60a40); skipping download.
+  -- buildingSMART IFC5-development already present at F:/Projects/Container/out/build/visual-studio/models/buildingSMART-IFC5-development (1a63082ada967c683cfacee2005f8f749c8e1b79); skipping download.
+  IFC LFS payloads: 0 resolved, 0 failed
+  IFC LFS payloads: 0 resolved, 0 failed
+  Staging runtime assets beside the executable
+  VulkanSceneRenderer_bim_ui_support.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\Release\VulkanSceneRenderer_bim_ui_support.lib
+  VulkanSceneRenderer_log.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\utility\Release\VulkanSceneRenderer_log.lib
+  VulkanSceneRenderer_window.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\utility\Release\VulkanSceneRenderer_window.lib
+  VulkanSceneRenderer_vulkan_device.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\utility\Release\VulkanSceneRenderer_vulkan_device.lib
+  tinyusdz_static.vcxproj -> F:\Projects\Container\out\build\visual-studio\_deps\tinyusdz-build\Release\tinyusdz_static.lib
+  VulkanSceneRenderer_gpu_resource.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\utility\Release\VulkanSceneRenderer_gpu_resource.lib
+  VulkanSceneRenderer_geometry.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\geometry\Release\VulkanSceneRenderer_geometry.lib
+  VulkanSceneRenderer_scene.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\utility\Release\VulkanSceneRenderer_scene.lib
+  VulkanSceneRenderer_ui.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\utility\Release\VulkanSceneRenderer_ui.lib
+  VulkanSceneRenderer_ecs.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\ecs\Release\VulkanSceneRenderer_ecs.lib
+  VulkanSceneRenderer_renderer.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\Release\VulkanSceneRenderer_renderer.lib
+  Application.cpp
+  VulkanSceneRenderer_Core.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\Release\VulkanSceneRenderer_Core.lib
+  VulkanSceneRenderer.vcxproj -> F:\Projects\Container\out\build\visual-studio\Release\VulkanSceneRenderer.exe
+MSBuild version 18.11.0-1.26427.13+9353559c2 for .NET Framework
+
+  Checking File Globs
+  ddgi_volume_fit_tests.cpp
+  ddgi_volume_fit_tests.vcxproj -> F:\Projects\Container\out\build\visual-studio\tests\ddgi_volume_fit_tests.exe
+MSBuild version 18.11.0-1.26427.13+9353559c2 for .NET Framework
+
+  Checking File Globs
+  ddgi_scene_bounds_tests.vcxproj -> F:\Projects\Container\out\build\visual-studio\tests\ddgi_scene_bounds_tests.exe
+MSBuild version 18.11.0-1.26427.13+9353559c2 for .NET Framework
+
+  Checking File Globs
+  ddgi_settings_tests.vcxproj -> F:\Projects\Container\out\build\visual-studio\tests\ddgi_settings_tests.exe
+MSBuild version 18.11.0-1.26427.13+9353559c2 for .NET Framework
+
+  Checking File Globs
+  ddgi_probe_volume_tests.vcxproj -> F:\Projects\Container\out\build\visual-studio\tests\ddgi_probe_volume_tests.exe
+MSBuild version 18.11.0-1.26427.13+9353559c2 for .NET Framework
+
+  Checking File Globs
+  VulkanSceneRenderer_vulkan_device.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\utility\Release\VulkanSceneRenderer_vulkan_device.lib
+  VulkanSceneRenderer_bim_ui_support.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\Release\VulkanSceneRenderer_bim_ui_support.lib
+  VulkanSceneRenderer_log.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\utility\Release\VulkanSceneRenderer_log.lib
+  VulkanSceneRenderer_window.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\utility\Release\VulkanSceneRenderer_window.lib
+  tinyusdz_static.vcxproj -> F:\Projects\Container\out\build\visual-studio\_deps\tinyusdz-build\Release\tinyusdz_static.lib
+  VulkanSceneRenderer_gpu_resource.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\utility\Release\VulkanSceneRenderer_gpu_resource.lib
+  VulkanSceneRenderer_geometry.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\geometry\Release\VulkanSceneRenderer_geometry.lib
+  VulkanSceneRenderer_scene.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\utility\Release\VulkanSceneRenderer_scene.lib
+  VulkanSceneRenderer_ui.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\utility\Release\VulkanSceneRenderer_ui.lib
+  VulkanSceneRenderer_ecs.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\ecs\Release\VulkanSceneRenderer_ecs.lib
+  VulkanSceneRenderer_renderer.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\Release\VulkanSceneRenderer_renderer.lib
+  technique_debug_model_tests.vcxproj -> F:\Projects\Container\out\build\visual-studio\tests\technique_debug_model_tests.exe
+MSBuild version 18.11.0-1.26427.13+9353559c2 for .NET Framework
+
+  Checking File Globs
+  temporal_capture_tests.vcxproj -> F:\Projects\Container\out\build\visual-studio\tests\temporal_capture_tests.exe
+MSBuild version 18.11.0-1.26427.13+9353559c2 for .NET Framework
+
+  Checking File Globs
+  Building Slang shaders
+  VulkanSceneRenderer_bim_ui_support.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\Release\VulkanSceneRenderer_bim_ui_support.lib
+  VulkanSceneRenderer_log.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\utility\Release\VulkanSceneRenderer_log.lib
+  VulkanSceneRenderer_window.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\utility\Release\VulkanSceneRenderer_window.lib
+  VulkanSceneRenderer_vulkan_device.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\utility\Release\VulkanSceneRenderer_vulkan_device.lib
+  tinyusdz_static.vcxproj -> F:\Projects\Container\out\build\visual-studio\_deps\tinyusdz-build\Release\tinyusdz_static.lib
+  VulkanSceneRenderer_gpu_resource.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\utility\Release\VulkanSceneRenderer_gpu_resource.lib
+  VulkanSceneRenderer_geometry.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\geometry\Release\VulkanSceneRenderer_geometry.lib
+  VulkanSceneRenderer_scene.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\utility\Release\VulkanSceneRenderer_scene.lib
+  VulkanSceneRenderer_ecs.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\ecs\Release\VulkanSceneRenderer_ecs.lib
+  VulkanSceneRenderer_ui.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\utility\Release\VulkanSceneRenderer_ui.lib
+  VulkanSceneRenderer_renderer.vcxproj -> F:\Projects\Container\out\build\visual-studio\src\Release\VulkanSceneRenderer_renderer.lib
+  ddgi_manager_gpu_tests.vcxproj -> F:\Projects\Container\out\build\visual-studio\tests\ddgi_manager_gpu_tests.exe

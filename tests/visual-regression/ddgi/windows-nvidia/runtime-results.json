@@ -1,0 +1,5609 @@
+{
+  "schemaVersion": 1,
+  "startedUtc": "2026-10-09T10:36:18.471973+00:00",
+  "exe": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+  "exeSha256": "9b117a527f77d3f5457d87a6ba8f3ee07536613e3d89d56edbe936abd072b52d",
+  "environmentOverrides": {
+    "VK_LAYER_SETTINGS_PATH": "F:\\Projects\\Container\\out\\ddgi-validation"
+  },
+  "probeMemoryFallbackIsDeviceDependent": false,
+  "cases": [
+    {
+      "name": "cornell-deferred-gi0",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--render-technique",
+        "deferred-raster",
+        "--display-mode",
+        "lit",
+        "--camera-position",
+        "0",
+        "1",
+        "3.5",
+        "--camera-target",
+        "0",
+        "1",
+        "0",
+        "--camera-fov",
+        "50",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ddgi",
+        "--ddgi-origin",
+        "-1.05",
+        "-.1",
+        "-1.05",
+        "--ddgi-spacing",
+        ".35",
+        ".35",
+        ".35",
+        "--ddgi-counts",
+        "7",
+        "7",
+        "7",
+        "--ddgi-rays",
+        "128",
+        "--ddgi-probes-per-frame",
+        "128",
+        "--ddgi-ray-budget",
+        "16384",
+        "--ray-shadows",
+        "raster",
+        "--area-lighting",
+        "sampled",
+        "--area-light-samples",
+        "25",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-validation\\cornell-deferred-gi0.png",
+        "--warmup-frames",
+        "39",
+        "--capture-frame",
+        "40",
+        "--ddgi-intensity",
+        "0"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --render-technique deferred-raster --display-mode lit --camera-position 0 1 3.5 --camera-target 0 1 0 --camera-fov 50 --exposure .04 --environment-intensity 0 --directional-intensity 0 --ddgi --ddgi-origin -1.05 -.1 -1.05 --ddgi-spacing .35 .35 .35 --ddgi-counts 7 7 7 --ddgi-rays 128 --ddgi-probes-per-frame 128 --ddgi-ray-budget 16384 --ray-shadows raster --area-lighting sampled --area-light-samples 25 --screenshot F:\\Projects\\Container\\out\\ddgi-validation\\cornell-deferred-gi0.png --warmup-frames 39 --capture-frame 40 --ddgi-intensity 0",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-validation\\cornell-deferred-gi0.log",
+      "frames": [
+        {
+          "frame": 40,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 40,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 190,
+            "nextProbe": 318,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3038992
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": false,
+            "epoch": 3,
+            "submittedFrame": 40,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 5.391,
+      "validationErrors": [],
+      "passed": true
+    },
+    {
+      "name": "cornell-deferred-gi1",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--render-technique",
+        "deferred-raster",
+        "--display-mode",
+        "lit",
+        "--camera-position",
+        "0",
+        "1",
+        "3.5",
+        "--camera-target",
+        "0",
+        "1",
+        "0",
+        "--camera-fov",
+        "50",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ddgi",
+        "--ddgi-origin",
+        "-1.05",
+        "-.1",
+        "-1.05",
+        "--ddgi-spacing",
+        ".35",
+        ".35",
+        ".35",
+        "--ddgi-counts",
+        "7",
+        "7",
+        "7",
+        "--ddgi-rays",
+        "128",
+        "--ddgi-probes-per-frame",
+        "128",
+        "--ddgi-ray-budget",
+        "16384",
+        "--ray-shadows",
+        "raster",
+        "--area-lighting",
+        "sampled",
+        "--area-light-samples",
+        "25",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-validation\\cornell-deferred-gi1.png",
+        "--warmup-frames",
+        "39",
+        "--capture-frame",
+        "40",
+        "--ddgi-intensity",
+        "1"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --render-technique deferred-raster --display-mode lit --camera-position 0 1 3.5 --camera-target 0 1 0 --camera-fov 50 --exposure .04 --environment-intensity 0 --directional-intensity 0 --ddgi --ddgi-origin -1.05 -.1 -1.05 --ddgi-spacing .35 .35 .35 --ddgi-counts 7 7 7 --ddgi-rays 128 --ddgi-probes-per-frame 128 --ddgi-ray-budget 16384 --ray-shadows raster --area-lighting sampled --area-light-samples 25 --screenshot F:\\Projects\\Container\\out\\ddgi-validation\\cornell-deferred-gi1.png --warmup-frames 39 --capture-frame 40 --ddgi-intensity 1",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-validation\\cornell-deferred-gi1.log",
+      "frames": [
+        {
+          "frame": 40,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 40,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 190,
+            "nextProbe": 318,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3038992
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": false,
+            "epoch": 3,
+            "submittedFrame": 40,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 3.953,
+      "validationErrors": [],
+      "passed": true
+    },
+    {
+      "name": "cornell-forward-gi0",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--render-technique",
+        "forward-raster",
+        "--display-mode",
+        "lit",
+        "--camera-position",
+        "0",
+        "1",
+        "3.5",
+        "--camera-target",
+        "0",
+        "1",
+        "0",
+        "--camera-fov",
+        "50",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ddgi",
+        "--ddgi-origin",
+        "-1.05",
+        "-.1",
+        "-1.05",
+        "--ddgi-spacing",
+        ".35",
+        ".35",
+        ".35",
+        "--ddgi-counts",
+        "7",
+        "7",
+        "7",
+        "--ddgi-rays",
+        "128",
+        "--ddgi-probes-per-frame",
+        "128",
+        "--ddgi-ray-budget",
+        "16384",
+        "--ray-shadows",
+        "raster",
+        "--area-lighting",
+        "sampled",
+        "--area-light-samples",
+        "25",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-validation\\cornell-forward-gi0.png",
+        "--warmup-frames",
+        "39",
+        "--capture-frame",
+        "40",
+        "--ddgi-intensity",
+        "0"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --render-technique forward-raster --display-mode lit --camera-position 0 1 3.5 --camera-target 0 1 0 --camera-fov 50 --exposure .04 --environment-intensity 0 --directional-intensity 0 --ddgi --ddgi-origin -1.05 -.1 -1.05 --ddgi-spacing .35 .35 .35 --ddgi-counts 7 7 7 --ddgi-rays 128 --ddgi-probes-per-frame 128 --ddgi-ray-budget 16384 --ray-shadows raster --area-lighting sampled --area-light-samples 25 --screenshot F:\\Projects\\Container\\out\\ddgi-validation\\cornell-forward-gi0.png --warmup-frames 39 --capture-frame 40 --ddgi-intensity 0",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-validation\\cornell-forward-gi0.log",
+      "frames": [
+        {
+          "frame": 40,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "forward-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 40,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 190,
+            "nextProbe": 318,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3038992
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": false,
+            "epoch": 3,
+            "submittedFrame": 40,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 4.062,
+      "validationErrors": [],
+      "passed": true
+    },
+    {
+      "name": "cornell-forward-gi1",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--render-technique",
+        "forward-raster",
+        "--display-mode",
+        "lit",
+        "--camera-position",
+        "0",
+        "1",
+        "3.5",
+        "--camera-target",
+        "0",
+        "1",
+        "0",
+        "--camera-fov",
+        "50",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ddgi",
+        "--ddgi-origin",
+        "-1.05",
+        "-.1",
+        "-1.05",
+        "--ddgi-spacing",
+        ".35",
+        ".35",
+        ".35",
+        "--ddgi-counts",
+        "7",
+        "7",
+        "7",
+        "--ddgi-rays",
+        "128",
+        "--ddgi-probes-per-frame",
+        "128",
+        "--ddgi-ray-budget",
+        "16384",
+        "--ray-shadows",
+        "raster",
+        "--area-lighting",
+        "sampled",
+        "--area-light-samples",
+        "25",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-validation\\cornell-forward-gi1.png",
+        "--warmup-frames",
+        "39",
+        "--capture-frame",
+        "40",
+        "--ddgi-intensity",
+        "1"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --render-technique forward-raster --display-mode lit --camera-position 0 1 3.5 --camera-target 0 1 0 --camera-fov 50 --exposure .04 --environment-intensity 0 --directional-intensity 0 --ddgi --ddgi-origin -1.05 -.1 -1.05 --ddgi-spacing .35 .35 .35 --ddgi-counts 7 7 7 --ddgi-rays 128 --ddgi-probes-per-frame 128 --ddgi-ray-budget 16384 --ray-shadows raster --area-lighting sampled --area-light-samples 25 --screenshot F:\\Projects\\Container\\out\\ddgi-validation\\cornell-forward-gi1.png --warmup-frames 39 --capture-frame 40 --ddgi-intensity 1",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-validation\\cornell-forward-gi1.log",
+      "frames": [
+        {
+          "frame": 40,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "forward-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 40,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 190,
+            "nextProbe": 318,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3038992
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": false,
+            "epoch": 3,
+            "submittedFrame": 40,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 4.015,
+      "validationErrors": [],
+      "passed": true
+    },
+    {
+      "name": "cornell-no-ray-query",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--render-technique",
+        "deferred-raster",
+        "--display-mode",
+        "lit",
+        "--camera-position",
+        "0",
+        "1",
+        "3.5",
+        "--camera-target",
+        "0",
+        "1",
+        "0",
+        "--camera-fov",
+        "50",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ddgi",
+        "--ddgi-origin",
+        "-1.05",
+        "-.1",
+        "-1.05",
+        "--ddgi-spacing",
+        ".35",
+        ".35",
+        ".35",
+        "--ddgi-counts",
+        "7",
+        "7",
+        "7",
+        "--ddgi-rays",
+        "128",
+        "--ddgi-probes-per-frame",
+        "128",
+        "--ddgi-ray-budget",
+        "16384",
+        "--ray-shadows",
+        "raster",
+        "--area-lighting",
+        "sampled",
+        "--area-light-samples",
+        "25",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-validation\\cornell-no-ray-query.png",
+        "--warmup-frames",
+        "39",
+        "--capture-frame",
+        "40",
+        "--no-ray-query"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --render-technique deferred-raster --display-mode lit --camera-position 0 1 3.5 --camera-target 0 1 0 --camera-fov 50 --exposure .04 --environment-intensity 0 --directional-intensity 0 --ddgi --ddgi-origin -1.05 -.1 -1.05 --ddgi-spacing .35 .35 .35 --ddgi-counts 7 7 7 --ddgi-rays 128 --ddgi-probes-per-frame 128 --ddgi-ray-budget 16384 --ray-shadows raster --area-lighting sampled --area-light-samples 25 --screenshot F:\\Projects\\Container\\out\\ddgi-validation\\cornell-no-ray-query.png --warmup-frames 39 --capture-frame 40 --no-ray-query",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-validation\\cornell-no-ray-query.log",
+      "frames": [
+        {
+          "frame": 40,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": false,
+            "enabled": true,
+            "active": false,
+            "status": "DDGI unavailable: ray queries, descriptor limits or atlas formats unsupported",
+            "contentEpoch": 0,
+            "historyResets": 0,
+            "updateFrame": 0,
+            "updatedProbes": 0,
+            "tracedRays": 0,
+            "firstProbe": 0,
+            "nextProbe": 0,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3904
+          },
+          "rayShadows": {
+            "supported": false,
+            "active": false,
+            "mode": 0,
+            "generation": 0,
+            "historyResets": 1,
+            "build": null
+          },
+          "taa": {
+            "enabled": false,
+            "epoch": 3,
+            "submittedFrame": 40,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 3.703,
+      "validationErrors": [],
+      "passed": true
+    },
+    {
+      "name": "cornell-paused",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--render-technique",
+        "deferred-raster",
+        "--display-mode",
+        "lit",
+        "--camera-position",
+        "0",
+        "1",
+        "3.5",
+        "--camera-target",
+        "0",
+        "1",
+        "0",
+        "--camera-fov",
+        "50",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ddgi",
+        "--ddgi-origin",
+        "-1.05",
+        "-.1",
+        "-1.05",
+        "--ddgi-spacing",
+        ".35",
+        ".35",
+        ".35",
+        "--ddgi-counts",
+        "7",
+        "7",
+        "7",
+        "--ddgi-rays",
+        "128",
+        "--ddgi-probes-per-frame",
+        "128",
+        "--ddgi-ray-budget",
+        "16384",
+        "--ray-shadows",
+        "raster",
+        "--area-lighting",
+        "sampled",
+        "--area-light-samples",
+        "25",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-validation\\cornell-paused.png",
+        "--warmup-frames",
+        "39",
+        "--capture-frame",
+        "40",
+        "--ddgi-ray-budget",
+        "0"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --render-technique deferred-raster --display-mode lit --camera-position 0 1 3.5 --camera-target 0 1 0 --camera-fov 50 --exposure .04 --environment-intensity 0 --directional-intensity 0 --ddgi --ddgi-origin -1.05 -.1 -1.05 --ddgi-spacing .35 .35 .35 --ddgi-counts 7 7 7 --ddgi-rays 128 --ddgi-probes-per-frame 128 --ddgi-ray-budget 16384 --ray-shadows raster --area-lighting sampled --area-light-samples 25 --screenshot F:\\Projects\\Container\\out\\ddgi-validation\\cornell-paused.png --warmup-frames 39 --capture-frame 40 --ddgi-ray-budget 0",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-validation\\cornell-paused.log",
+      "frames": [
+        {
+          "frame": 40,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI waiting: update budget paused, no probe history",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 0,
+            "updatedProbes": 0,
+            "tracedRays": 0,
+            "firstProbe": 0,
+            "nextProbe": 0,
+            "refreshRemainingProbes": 343,
+            "totalAllocatedBytes": 2508624
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": false,
+            "epoch": 3,
+            "submittedFrame": 40,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 3.953,
+      "validationErrors": [],
+      "passed": true
+    },
+    {
+      "name": "cornell-dynamic",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--render-technique",
+        "deferred-raster",
+        "--display-mode",
+        "lit",
+        "--camera-position",
+        "0",
+        "1",
+        "3.5",
+        "--camera-target",
+        "0",
+        "1",
+        "0",
+        "--camera-fov",
+        "50",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ddgi",
+        "--ddgi-origin",
+        "-1.05",
+        "-.1",
+        "-1.05",
+        "--ddgi-spacing",
+        ".35",
+        ".35",
+        ".35",
+        "--ddgi-counts",
+        "7",
+        "7",
+        "7",
+        "--ddgi-rays",
+        "128",
+        "--ddgi-probes-per-frame",
+        "128",
+        "--ddgi-ray-budget",
+        "16384",
+        "--ray-shadows",
+        "raster",
+        "--area-lighting",
+        "sampled",
+        "--area-light-samples",
+        "25",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-validation\\cornell-dynamic.png",
+        "--warmup-frames",
+        "59",
+        "--capture-frame",
+        "60",
+        "--ddgi-counts",
+        "7",
+        "8",
+        "7",
+        "--taa",
+        "--capture-sequence",
+        "F:\\Projects\\Container\\out\\ddgi-validation\\dynamic-sequence.json"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --render-technique deferred-raster --display-mode lit --camera-position 0 1 3.5 --camera-target 0 1 0 --camera-fov 50 --exposure .04 --environment-intensity 0 --directional-intensity 0 --ddgi --ddgi-origin -1.05 -.1 -1.05 --ddgi-spacing .35 .35 .35 --ddgi-counts 7 7 7 --ddgi-rays 128 --ddgi-probes-per-frame 128 --ddgi-ray-budget 16384 --ray-shadows raster --area-lighting sampled --area-light-samples 25 --screenshot F:\\Projects\\Container\\out\\ddgi-validation\\cornell-dynamic.png --warmup-frames 59 --capture-frame 60 --ddgi-counts 7 8 7 --taa --capture-sequence F:\\Projects\\Container\\out\\ddgi-validation\\dynamic-sequence.json",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-validation\\cornell-dynamic.log",
+      "frames": [
+        {
+          "frame": 1,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 1,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 0,
+            "nextProbe": 128,
+            "refreshRemainingProbes": 264,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 1,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 2,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 2,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 128,
+            "nextProbe": 256,
+            "refreshRemainingProbes": 136,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 2,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.005263158120214939,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 3,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 3,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 256,
+            "nextProbe": 384,
+            "refreshRemainingProbes": 8,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 3,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.010526316240429878,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 4,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 4,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 384,
+            "nextProbe": 120,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 4,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.015789473429322243,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 5,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 5,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 120,
+            "nextProbe": 248,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 5,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.021052632480859756,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 6,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 6,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 248,
+            "nextProbe": 376,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 6,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.02631579153239727,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 7,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 7,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 376,
+            "nextProbe": 112,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 7,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.031578946858644485,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 8,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 8,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 112,
+            "nextProbe": 240,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 8,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.03684210404753685,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 9,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 9,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 240,
+            "nextProbe": 368,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 9,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.04210526496171951,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 10,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 10,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 368,
+            "nextProbe": 104,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 10,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.04736842215061188,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 11,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 11,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 104,
+            "nextProbe": 232,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 11,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.05263158306479454,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 12,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 12,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 232,
+            "nextProbe": 360,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 12,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.057894736528396606,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 13,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 13,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 360,
+            "nextProbe": 96,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 13,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.06315789371728897,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 14,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 14,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 96,
+            "nextProbe": 224,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 14,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.06842105835676193,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 15,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 15,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 224,
+            "nextProbe": 352,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 15,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0736842080950737,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 16,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 16,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 352,
+            "nextProbe": 88,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 16,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.07894737273454666,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 17,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 17,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 88,
+            "nextProbe": 216,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 17,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.08421052992343903,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 18,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 18,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 216,
+            "nextProbe": 344,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 18,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.08947368711233139,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 19,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 19,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 344,
+            "nextProbe": 80,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 19,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.09473684430122375,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 20,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 20,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 80,
+            "nextProbe": 208,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 20,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 21,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 21,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 208,
+            "nextProbe": 336,
+            "refreshRemainingProbes": 264,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 21,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 22,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 22,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 336,
+            "nextProbe": 72,
+            "refreshRemainingProbes": 136,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 22,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 23,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 23,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 72,
+            "nextProbe": 200,
+            "refreshRemainingProbes": 8,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 23,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 24,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 24,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 200,
+            "nextProbe": 328,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 24,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 25,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 25,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 328,
+            "nextProbe": 64,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 25,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 26,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 26,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 64,
+            "nextProbe": 192,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 26,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 27,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 27,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 192,
+            "nextProbe": 320,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 27,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 28,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 28,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 320,
+            "nextProbe": 56,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 28,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 29,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 29,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 56,
+            "nextProbe": 184,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 29,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 30,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 30,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 184,
+            "nextProbe": 312,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 30,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 31,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 31,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 312,
+            "nextProbe": 48,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 31,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 32,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 32,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 48,
+            "nextProbe": 176,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 32,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 33,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 33,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 176,
+            "nextProbe": 304,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 33,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 34,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 34,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 304,
+            "nextProbe": 40,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 34,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 35,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 35,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 40,
+            "nextProbe": 168,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 35,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 36,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 36,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 168,
+            "nextProbe": 296,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 36,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 37,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 37,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 296,
+            "nextProbe": 32,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 37,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 38,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 38,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 32,
+            "nextProbe": 160,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 38,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 39,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 39,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 160,
+            "nextProbe": 288,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 39,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 40,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 40,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 288,
+            "nextProbe": 24,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 40,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 41,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 41,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 24,
+            "nextProbe": 152,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 41,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 42,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 3,
+            "historyResets": 3,
+            "updateFrame": 42,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 152,
+            "nextProbe": 280,
+            "refreshRemainingProbes": 264,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 2,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 42,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 43,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 3,
+            "historyResets": 3,
+            "updateFrame": 43,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 280,
+            "nextProbe": 16,
+            "refreshRemainingProbes": 136,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 2,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 43,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 44,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 3,
+            "historyResets": 3,
+            "updateFrame": 44,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 16,
+            "nextProbe": 144,
+            "refreshRemainingProbes": 8,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 2,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 44,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 45,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 3,
+            "historyResets": 3,
+            "updateFrame": 45,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 144,
+            "nextProbe": 272,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 2,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 45,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 46,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 3,
+            "historyResets": 3,
+            "updateFrame": 46,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 272,
+            "nextProbe": 8,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 2,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 46,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 47,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 3,
+            "historyResets": 3,
+            "updateFrame": 47,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 8,
+            "nextProbe": 136,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 2,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 47,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 48,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 3,
+            "historyResets": 3,
+            "updateFrame": 48,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 136,
+            "nextProbe": 264,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 2,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 48,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 49,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 3,
+            "historyResets": 3,
+            "updateFrame": 49,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 264,
+            "nextProbe": 0,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 2,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 49,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 50,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 3,
+            "historyResets": 3,
+            "updateFrame": 50,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 0,
+            "nextProbe": 128,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 2,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 50,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 51,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 3,
+            "historyResets": 3,
+            "updateFrame": 51,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 128,
+            "nextProbe": 256,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 2,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 51,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 52,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 3,
+            "historyResets": 3,
+            "updateFrame": 52,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 256,
+            "nextProbe": 384,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 2,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 52,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 53,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 3,
+            "historyResets": 3,
+            "updateFrame": 53,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 384,
+            "nextProbe": 120,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 2,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 53,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 54,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 3,
+            "historyResets": 3,
+            "updateFrame": 54,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 120,
+            "nextProbe": 248,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 2,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 54,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 55,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 3,
+            "historyResets": 3,
+            "updateFrame": 55,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 248,
+            "nextProbe": 376,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 2,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 55,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 56,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 3,
+            "historyResets": 3,
+            "updateFrame": 56,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 376,
+            "nextProbe": 112,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 2,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 56,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 57,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 3,
+            "historyResets": 3,
+            "updateFrame": 57,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 112,
+            "nextProbe": 240,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 2,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 57,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 58,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 3,
+            "historyResets": 3,
+            "updateFrame": 58,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 240,
+            "nextProbe": 368,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 2,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 58,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 59,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 3,
+            "historyResets": 3,
+            "updateFrame": 59,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 368,
+            "nextProbe": 104,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 2,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 59,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 60,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 3,
+            "historyResets": 3,
+            "updateFrame": 60,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 104,
+            "nextProbe": 232,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 2,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 60,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.10000000149011612,
+            1.0,
+            3.5
+          ]
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 5.25,
+      "validationErrors": [],
+      "passed": true
+    },
+    {
+      "name": "cornell-continuous",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--render-technique",
+        "deferred-raster",
+        "--display-mode",
+        "lit",
+        "--camera-position",
+        "0",
+        "1",
+        "3.5",
+        "--camera-target",
+        "0",
+        "1",
+        "0",
+        "--camera-fov",
+        "50",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ddgi",
+        "--ddgi-origin",
+        "-1.05",
+        "-.1",
+        "-1.05",
+        "--ddgi-spacing",
+        ".35",
+        ".35",
+        ".35",
+        "--ddgi-counts",
+        "7",
+        "7",
+        "7",
+        "--ddgi-rays",
+        "128",
+        "--ddgi-probes-per-frame",
+        "128",
+        "--ddgi-ray-budget",
+        "16384",
+        "--ray-shadows",
+        "raster",
+        "--area-lighting",
+        "sampled",
+        "--area-light-samples",
+        "25",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-validation\\cornell-continuous.png",
+        "--warmup-frames",
+        "29",
+        "--capture-frame",
+        "30",
+        "--ddgi-counts",
+        "7",
+        "8",
+        "7",
+        "--taa",
+        "--capture-sequence",
+        "F:\\Projects\\Container\\out\\ddgi-validation\\continuous-sequence.json"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --render-technique deferred-raster --display-mode lit --camera-position 0 1 3.5 --camera-target 0 1 0 --camera-fov 50 --exposure .04 --environment-intensity 0 --directional-intensity 0 --ddgi --ddgi-origin -1.05 -.1 -1.05 --ddgi-spacing .35 .35 .35 --ddgi-counts 7 7 7 --ddgi-rays 128 --ddgi-probes-per-frame 128 --ddgi-ray-budget 16384 --ray-shadows raster --area-lighting sampled --area-light-samples 25 --screenshot F:\\Projects\\Container\\out\\ddgi-validation\\cornell-continuous.png --warmup-frames 29 --capture-frame 30 --ddgi-counts 7 8 7 --taa --capture-sequence F:\\Projects\\Container\\out\\ddgi-validation\\continuous-sequence.json",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-validation\\cornell-continuous.log",
+      "frames": [
+        {
+          "frame": 1,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 1,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 0,
+            "nextProbe": 128,
+            "refreshRemainingProbes": 264,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 1,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 2,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 2,
+            "historyResets": 2,
+            "updateFrame": 2,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 128,
+            "nextProbe": 256,
+            "refreshRemainingProbes": 264,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 2,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 2,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 3,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 3,
+            "historyResets": 3,
+            "updateFrame": 3,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 256,
+            "nextProbe": 384,
+            "refreshRemainingProbes": 264,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 3,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 3,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 4,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 4,
+            "historyResets": 4,
+            "updateFrame": 4,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 384,
+            "nextProbe": 120,
+            "refreshRemainingProbes": 264,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 4,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 4,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 5,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 5,
+            "historyResets": 5,
+            "updateFrame": 5,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 120,
+            "nextProbe": 248,
+            "refreshRemainingProbes": 264,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 5,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 5,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 6,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 6,
+            "historyResets": 6,
+            "updateFrame": 6,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 248,
+            "nextProbe": 376,
+            "refreshRemainingProbes": 264,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 6,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 6,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 7,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 7,
+            "historyResets": 7,
+            "updateFrame": 7,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 376,
+            "nextProbe": 112,
+            "refreshRemainingProbes": 264,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 7,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 7,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 8,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 8,
+            "historyResets": 8,
+            "updateFrame": 8,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 112,
+            "nextProbe": 240,
+            "refreshRemainingProbes": 264,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 8,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 8,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 9,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 9,
+            "historyResets": 9,
+            "updateFrame": 9,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 240,
+            "nextProbe": 368,
+            "refreshRemainingProbes": 264,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 9,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 9,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 10,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 10,
+            "historyResets": 10,
+            "updateFrame": 10,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 368,
+            "nextProbe": 104,
+            "refreshRemainingProbes": 264,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 10,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 10,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 11,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 11,
+            "historyResets": 11,
+            "updateFrame": 11,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 104,
+            "nextProbe": 232,
+            "refreshRemainingProbes": 264,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 11,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 11,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 12,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 12,
+            "historyResets": 12,
+            "updateFrame": 12,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 232,
+            "nextProbe": 360,
+            "refreshRemainingProbes": 264,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 12,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 12,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 13,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 13,
+            "historyResets": 13,
+            "updateFrame": 13,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 360,
+            "nextProbe": 96,
+            "refreshRemainingProbes": 264,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 13,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 13,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 14,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 14,
+            "historyResets": 14,
+            "updateFrame": 14,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 96,
+            "nextProbe": 224,
+            "refreshRemainingProbes": 264,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 14,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 14,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 15,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 15,
+            "historyResets": 15,
+            "updateFrame": 15,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 224,
+            "nextProbe": 352,
+            "refreshRemainingProbes": 264,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 15,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 15,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 16,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 16,
+            "historyResets": 16,
+            "updateFrame": 16,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 352,
+            "nextProbe": 88,
+            "refreshRemainingProbes": 264,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 16,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 16,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 17,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 16,
+            "historyResets": 16,
+            "updateFrame": 17,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 88,
+            "nextProbe": 216,
+            "refreshRemainingProbes": 136,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 16,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 17,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 18,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 16,
+            "historyResets": 16,
+            "updateFrame": 18,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 216,
+            "nextProbe": 344,
+            "refreshRemainingProbes": 8,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 16,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 18,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 19,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 16,
+            "historyResets": 16,
+            "updateFrame": 19,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 344,
+            "nextProbe": 80,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 16,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 19,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 20,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 16,
+            "historyResets": 16,
+            "updateFrame": 20,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 80,
+            "nextProbe": 208,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 16,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 20,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 21,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 16,
+            "historyResets": 16,
+            "updateFrame": 21,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 208,
+            "nextProbe": 336,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 16,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 21,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 22,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 16,
+            "historyResets": 16,
+            "updateFrame": 22,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 336,
+            "nextProbe": 72,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 16,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 22,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 23,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 16,
+            "historyResets": 16,
+            "updateFrame": 23,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 72,
+            "nextProbe": 200,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 16,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 23,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 24,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 16,
+            "historyResets": 16,
+            "updateFrame": 24,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 200,
+            "nextProbe": 328,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 16,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 24,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 25,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 16,
+            "historyResets": 16,
+            "updateFrame": 25,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 328,
+            "nextProbe": 64,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 16,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 25,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 26,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 16,
+            "historyResets": 16,
+            "updateFrame": 26,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 64,
+            "nextProbe": 192,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 16,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 26,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 27,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 16,
+            "historyResets": 16,
+            "updateFrame": 27,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 192,
+            "nextProbe": 320,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 16,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 27,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 28,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 16,
+            "historyResets": 16,
+            "updateFrame": 28,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 320,
+            "nextProbe": 56,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 16,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 28,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 29,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 16,
+            "historyResets": 16,
+            "updateFrame": 29,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 56,
+            "nextProbe": 184,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 16,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 29,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 30,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 16,
+            "historyResets": 16,
+            "updateFrame": 30,
+            "updatedProbes": 128,
+            "tracedRays": 16384,
+            "firstProbe": 184,
+            "nextProbe": 312,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3172416
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 16,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 0,
+              "blasReused": 11,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": true,
+            "epoch": 4,
+            "submittedFrame": 30,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 4.187,
+      "validationErrors": [],
+      "passed": true
+    },
+    {
+      "name": "surface-budget-raster",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\out\\ddgi-validation\\large_surface.gltf",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--render-technique",
+        "deferred-raster",
+        "--display-mode",
+        "lit",
+        "--camera-position",
+        "0",
+        "1",
+        "3.5",
+        "--camera-target",
+        "0",
+        "1",
+        "0",
+        "--camera-fov",
+        "50",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ddgi",
+        "--ddgi-origin",
+        "-1.05",
+        "-.1",
+        "-1.05",
+        "--ddgi-spacing",
+        ".35",
+        ".35",
+        ".35",
+        "--ddgi-counts",
+        "7",
+        "7",
+        "7",
+        "--ddgi-rays",
+        "128",
+        "--ddgi-probes-per-frame",
+        "128",
+        "--ddgi-ray-budget",
+        "16384",
+        "--ray-shadows",
+        "raster",
+        "--area-lighting",
+        "sampled",
+        "--area-light-samples",
+        "25",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-validation\\surface-budget-raster.png",
+        "--warmup-frames",
+        "3",
+        "--capture-frame",
+        "4",
+        "--ddgi-surface-memory-mb",
+        "1"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\out\\ddgi-validation\\large_surface.gltf --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --render-technique deferred-raster --display-mode lit --camera-position 0 1 3.5 --camera-target 0 1 0 --camera-fov 50 --exposure .04 --environment-intensity 0 --directional-intensity 0 --ddgi --ddgi-origin -1.05 -.1 -1.05 --ddgi-spacing .35 .35 .35 --ddgi-counts 7 7 7 --ddgi-rays 128 --ddgi-probes-per-frame 128 --ddgi-ray-budget 16384 --ray-shadows raster --area-lighting sampled --area-light-samples 25 --screenshot F:\\Projects\\Container\\out\\ddgi-validation\\surface-budget-raster.png --warmup-frames 3 --capture-frame 4 --ddgi-surface-memory-mb 1",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-validation\\surface-budget-raster.log",
+      "frames": [
+        {
+          "frame": 4,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": false,
+            "status": "DDGI fallback: DDGI surface metadata exceeds configured surface budget",
+            "contentEpoch": 0,
+            "historyResets": 0,
+            "updateFrame": 0,
+            "updatedProbes": 0,
+            "tracedRays": 0,
+            "firstProbe": 0,
+            "nextProbe": 0,
+            "refreshRemainingProbes": 0,
+            "totalAllocatedBytes": 3038992
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 0,
+            "historyResets": 1,
+            "build": null
+          },
+          "taa": {
+            "enabled": false,
+            "epoch": 3,
+            "submittedFrame": 4,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 3.172,
+      "validationErrors": [],
+      "passed": true
+    },
+    {
+      "name": "surface-budget-hard",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\out\\ddgi-validation\\large_surface.gltf",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--render-technique",
+        "deferred-raster",
+        "--display-mode",
+        "lit",
+        "--camera-position",
+        "0",
+        "1",
+        "3.5",
+        "--camera-target",
+        "0",
+        "1",
+        "0",
+        "--camera-fov",
+        "50",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ddgi",
+        "--ddgi-origin",
+        "-1.05",
+        "-.1",
+        "-1.05",
+        "--ddgi-spacing",
+        ".35",
+        ".35",
+        ".35",
+        "--ddgi-counts",
+        "7",
+        "7",
+        "7",
+        "--ddgi-rays",
+        "128",
+        "--ddgi-probes-per-frame",
+        "128",
+        "--ddgi-ray-budget",
+        "16384",
+        "--ray-shadows",
+        "raster",
+        "--area-lighting",
+        "sampled",
+        "--area-light-samples",
+        "25",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-validation\\surface-budget-hard.png",
+        "--warmup-frames",
+        "3",
+        "--capture-frame",
+        "4",
+        "--ddgi-surface-memory-mb",
+        "1",
+        "--ray-shadows",
+        "hard"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\out\\ddgi-validation\\large_surface.gltf --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --render-technique deferred-raster --display-mode lit --camera-position 0 1 3.5 --camera-target 0 1 0 --camera-fov 50 --exposure .04 --environment-intensity 0 --directional-intensity 0 --ddgi --ddgi-origin -1.05 -.1 -1.05 --ddgi-spacing .35 .35 .35 --ddgi-counts 7 7 7 --ddgi-rays 128 --ddgi-probes-per-frame 128 --ddgi-ray-budget 16384 --ray-shadows raster --area-lighting sampled --area-light-samples 25 --screenshot F:\\Projects\\Container\\out\\ddgi-validation\\surface-budget-hard.png --warmup-frames 3 --capture-frame 4 --ddgi-surface-memory-mb 1 --ray-shadows hard",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-validation\\surface-budget-hard.log",
+      "frames": [
+        {
+          "frame": 4,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": false,
+            "status": "DDGI fallback: DDGI surface metadata exceeds configured surface budget",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 0,
+            "updatedProbes": 0,
+            "tracedRays": 0,
+            "firstProbe": 0,
+            "nextProbe": 0,
+            "refreshRemainingProbes": 343,
+            "totalAllocatedBytes": 3038992
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": true,
+            "mode": 1,
+            "generation": 1,
+            "historyResets": 3,
+            "build": {
+              "asAllocatedBytes": 396544,
+              "blasBuilt": 1,
+              "blasReused": 0,
+              "inputAllocatedBytes": 66560,
+              "instances": 1,
+              "scratchAllocatedBytes": 120960
+            }
+          },
+          "taa": {
+            "enabled": false,
+            "epoch": 3,
+            "submittedFrame": 4,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 3.172,
+      "validationErrors": [],
+      "passed": true
+    },
+    {
+      "name": "cornell-one-probe-budget",
+      "command": [
+        "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe",
+        "--model",
+        "F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf",
+        "--width",
+        "400",
+        "--height",
+        "360",
+        "--hidden",
+        "--no-ui",
+        "--validation",
+        "--no-bloom",
+        "--no-taa",
+        "--msaa",
+        "1",
+        "--render-technique",
+        "deferred-raster",
+        "--display-mode",
+        "lit",
+        "--camera-position",
+        "0",
+        "1",
+        "3.5",
+        "--camera-target",
+        "0",
+        "1",
+        "0",
+        "--camera-fov",
+        "50",
+        "--exposure",
+        ".04",
+        "--environment-intensity",
+        "0",
+        "--directional-intensity",
+        "0",
+        "--ddgi",
+        "--ddgi-origin",
+        "-1.05",
+        "-.1",
+        "-1.05",
+        "--ddgi-spacing",
+        ".35",
+        ".35",
+        ".35",
+        "--ddgi-counts",
+        "7",
+        "7",
+        "7",
+        "--ddgi-rays",
+        "128",
+        "--ddgi-probes-per-frame",
+        "128",
+        "--ddgi-ray-budget",
+        "16384",
+        "--ray-shadows",
+        "raster",
+        "--area-lighting",
+        "sampled",
+        "--area-light-samples",
+        "25",
+        "--screenshot",
+        "F:\\Projects\\Container\\out\\ddgi-validation\\cornell-one-probe-budget.png",
+        "--warmup-frames",
+        "3",
+        "--capture-frame",
+        "4",
+        "--ddgi-probes-per-frame",
+        "1",
+        "--ddgi-ray-budget",
+        "128",
+        "--capture-sequence",
+        "F:\\Projects\\Container\\out\\ddgi-validation\\one-probe-sequence.json"
+      ],
+      "commandLine": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release\\VulkanSceneRenderer.exe --model F:\\Projects\\Container\\models\\validation\\cornell_box_local_light.gltf --width 400 --height 360 --hidden --no-ui --validation --no-bloom --no-taa --msaa 1 --render-technique deferred-raster --display-mode lit --camera-position 0 1 3.5 --camera-target 0 1 0 --camera-fov 50 --exposure .04 --environment-intensity 0 --directional-intensity 0 --ddgi --ddgi-origin -1.05 -.1 -1.05 --ddgi-spacing .35 .35 .35 --ddgi-counts 7 7 7 --ddgi-rays 128 --ddgi-probes-per-frame 128 --ddgi-ray-budget 16384 --ray-shadows raster --area-lighting sampled --area-light-samples 25 --screenshot F:\\Projects\\Container\\out\\ddgi-validation\\cornell-one-probe-budget.png --warmup-frames 3 --capture-frame 4 --ddgi-probes-per-frame 1 --ddgi-ray-budget 128 --capture-sequence F:\\Projects\\Container\\out\\ddgi-validation\\one-probe-sequence.json",
+      "cwd": "F:\\Projects\\Container\\out\\build\\visual-studio\\Release",
+      "log": "F:\\Projects\\Container\\out\\ddgi-validation\\cornell-one-probe-budget.log",
+      "frames": [
+        {
+          "frame": 1,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 1,
+            "updatedProbes": 1,
+            "tracedRays": 128,
+            "firstProbe": 0,
+            "nextProbe": 1,
+            "refreshRemainingProbes": 342,
+            "totalAllocatedBytes": 2512704
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": false,
+            "epoch": 3,
+            "submittedFrame": 1,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 2,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 2,
+            "updatedProbes": 1,
+            "tracedRays": 128,
+            "firstProbe": 1,
+            "nextProbe": 2,
+            "refreshRemainingProbes": 341,
+            "totalAllocatedBytes": 2512704
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": false,
+            "epoch": 3,
+            "submittedFrame": 2,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 3,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 3,
+            "updatedProbes": 1,
+            "tracedRays": 128,
+            "firstProbe": 2,
+            "nextProbe": 3,
+            "refreshRemainingProbes": 340,
+            "totalAllocatedBytes": 2512704
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": false,
+            "epoch": 3,
+            "submittedFrame": 3,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        },
+        {
+          "frame": 4,
+          "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+          "technique": "deferred-raster",
+          "ddgi": {
+            "supported": true,
+            "enabled": true,
+            "active": true,
+            "status": "DDGI active: bounded world-space volume",
+            "contentEpoch": 1,
+            "historyResets": 1,
+            "updateFrame": 4,
+            "updatedProbes": 1,
+            "tracedRays": 128,
+            "firstProbe": 3,
+            "nextProbe": 4,
+            "refreshRemainingProbes": 339,
+            "totalAllocatedBytes": 2512704
+          },
+          "rayShadows": {
+            "supported": true,
+            "active": false,
+            "mode": 0,
+            "generation": 1,
+            "historyResets": 1,
+            "build": {
+              "asAllocatedBytes": 32000,
+              "blasBuilt": 11,
+              "blasReused": 0,
+              "inputAllocatedBytes": 6400,
+              "instances": 11,
+              "scratchAllocatedBytes": 22400
+            }
+          },
+          "taa": {
+            "enabled": false,
+            "epoch": 3,
+            "submittedFrame": 4,
+            "resetReason": "render extent changed"
+          },
+          "cameraPosition": [
+            0.0,
+            1.0,
+            3.5
+          ]
+        }
+      ],
+      "failures": [],
+      "returnCode": 0,
+      "durationSeconds": 4.031,
+      "validationErrors": [],
+      "passed": true
+    }
+  ],
+  "passed": true,
+  "finishedUtc": "2026-10-09T10:37:03.562808+00:00"
+}

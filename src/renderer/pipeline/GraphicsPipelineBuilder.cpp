@@ -99,11 +99,15 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkShaderModule dirVert =
       loadModule("spv_shaders/deferred_directional.vert.spv");
   VkShaderModule dirFrag =
-      loadModule("spv_shaders/deferred_directional.frag.spv");
+      loadModule(descriptorLayouts.ddgiRead != VK_NULL_HANDLE
+          ? "spv_shaders/deferred_directional.frag.spv"
+          : "spv_shaders/deferred_directional_no_ddgi.frag.spv");
   VkShaderModule stencilVert = loadModule("spv_shaders/light_stencil.vert.spv");
   VkShaderModule stencilFrag = loadModule("spv_shaders/light_stencil.frag.spv");
   VkShaderModule pointVert = loadModule("spv_shaders/point_light.vert.spv");
-  VkShaderModule pointFrag = loadModule("spv_shaders/point_light.frag.spv");
+  VkShaderModule pointFrag = loadModule(descriptorLayouts.ddgiRead != VK_NULL_HANDLE
+      ? "spv_shaders/point_light.frag.spv"
+      : "spv_shaders/point_light_no_ddgi.frag.spv");
   VkShaderModule pointDbgVert =
       loadModule("spv_shaders/point_light_stencil_debug.vert.spv");
   VkShaderModule pointDbgFrag =
@@ -111,10 +115,14 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkShaderModule forwardOpaqueVert =
       loadModule("spv_shaders/forward_opaque.vert.spv");
   VkShaderModule forwardOpaqueFrag =
-      loadModule("spv_shaders/forward_opaque.frag.spv");
+      loadModule(descriptorLayouts.ddgiRead != VK_NULL_HANDLE
+          ? "spv_shaders/forward_opaque.frag.spv"
+          : "spv_shaders/forward_opaque_no_ddgi.frag.spv");
   VkShaderModule forwardOpaqueRayFrag =
       descriptorLayouts.rayShadowTrace != VK_NULL_HANDLE
-          ? loadModule("spv_shaders/forward_opaque_ray.frag.spv")
+          ? loadModule(descriptorLayouts.ddgiRead != VK_NULL_HANDLE
+              ? "spv_shaders/forward_opaque_ray.frag.spv"
+              : "spv_shaders/forward_opaque_ray_no_ddgi.frag.spv")
           : VK_NULL_HANDLE;
   VkShaderModule skyVert = loadModule("spv_shaders/forward_sky.vert.spv");
   VkShaderModule skyFrag = loadModule("spv_shaders/forward_sky.frag.spv");
@@ -165,7 +173,9 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkShaderModule lsdFrag =
       loadModule("spv_shaders/local_shadow_depth.frag.spv");
   VkShaderModule tlVert = loadModule("spv_shaders/tiled_lighting.vert.spv");
-  VkShaderModule tlFrag = loadModule("spv_shaders/tiled_lighting.frag.spv");
+  VkShaderModule tlFrag = loadModule(descriptorLayouts.ddgiRead != VK_NULL_HANDLE
+      ? "spv_shaders/tiled_lighting.frag.spv"
+      : "spv_shaders/tiled_lighting_no_ddgi.frag.spv");
 
   // ---- shader stage arrays --------------------------------------------------
   std::array<VkPipelineShaderStageCreateInfo, 2> depthPrepassStages = {
@@ -604,29 +614,49 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   tiledLightPCR.size = sizeof(TiledLightingPushConstants);
 
   // ---- pipeline layouts -----------------------------------------------------
+  // Deferred shaders reserve set 4 for DDGI, leaving set 3 unused. The empty
+  // layout does not inflate per-stage descriptor counts. Pipeline layouts keep
+  // their compatibility definition after this local RAII owner is destroyed.
+  const vk::raii::DescriptorSetLayout emptyDescriptorLayout(
+      device_->raii(), vk::DescriptorSetLayoutCreateInfo{});
+  const VkDescriptorSetLayout emptySet =
+      static_cast<VkDescriptorSetLayout>(*emptyDescriptorLayout);
   PipelineLayouts layouts;
   layouts.scene = pipelineManager_.createPipelineLayout(
       {descriptorLayouts.scene}, {scenePCR});
-  layouts.transparent = pipelineManager_.createPipelineLayout(
-      {descriptorLayouts.scene, descriptorLayouts.light, descriptorLayouts.oit,
-       descriptorLayouts.lighting},
-      {scenePCR});
+  std::vector<VkDescriptorSetLayout> transparentSets{
+      descriptorLayouts.scene, descriptorLayouts.light, descriptorLayouts.oit,
+      descriptorLayouts.lighting};
+  if (descriptorLayouts.ddgiRead != VK_NULL_HANDLE)
+    transparentSets.push_back(descriptorLayouts.ddgiRead);
+  layouts.transparent =
+      pipelineManager_.createPipelineLayout(transparentSets, {scenePCR});
   if (descriptorLayouts.rayShadowTrace != VK_NULL_HANDLE) {
-    layouts.forwardRay = pipelineManager_.createPipelineLayout(
-        {descriptorLayouts.scene, descriptorLayouts.light,
-         descriptorLayouts.rayShadowTrace, descriptorLayouts.lighting},
-        {scenePCR});
+    std::vector<VkDescriptorSetLayout> forwardRaySets{
+        descriptorLayouts.scene, descriptorLayouts.light,
+        descriptorLayouts.rayShadowTrace, descriptorLayouts.lighting};
+    if (descriptorLayouts.ddgiRead != VK_NULL_HANDLE)
+      forwardRaySets.push_back(descriptorLayouts.ddgiRead);
+    layouts.forwardRay =
+        pipelineManager_.createPipelineLayout(forwardRaySets, {scenePCR});
   }
-  layouts.lighting = pipelineManager_.createPipelineLayout(
-      {descriptorLayouts.lighting, descriptorLayouts.light,
-       descriptorLayouts.scene},
-      {lightPCR});
+  std::vector<VkDescriptorSetLayout> lightingSets{
+      descriptorLayouts.lighting, descriptorLayouts.light, descriptorLayouts.scene};
+  if (descriptorLayouts.ddgiRead != VK_NULL_HANDLE) {
+    lightingSets.push_back(emptySet);
+    lightingSets.push_back(descriptorLayouts.ddgiRead);
+  }
+  layouts.lighting =
+      pipelineManager_.createPipelineLayout(lightingSets, {lightPCR});
   layouts.lightGizmo = pipelineManager_.createPipelineLayout(
       {descriptorLayouts.lighting, descriptorLayouts.lightGizmo}, {lightPCR});
-  layouts.tiledLighting = pipelineManager_.createPipelineLayout(
-      {descriptorLayouts.lighting, descriptorLayouts.tiled,
-       descriptorLayouts.scene, descriptorLayouts.light},
-      {tiledLightPCR});
+  std::vector<VkDescriptorSetLayout> tiledSets{
+      descriptorLayouts.lighting, descriptorLayouts.tiled,
+      descriptorLayouts.scene, descriptorLayouts.light};
+  if (descriptorLayouts.ddgiRead != VK_NULL_HANDLE)
+    tiledSets.push_back(descriptorLayouts.ddgiRead);
+  layouts.tiledLighting =
+      pipelineManager_.createPipelineLayout(tiledSets, {tiledLightPCR});
   layouts.shadow = pipelineManager_.createPipelineLayout(
       {descriptorLayouts.scene, descriptorLayouts.shadow}, {shadowPCR});
   layouts.postProcess = pipelineManager_.createPipelineLayout(

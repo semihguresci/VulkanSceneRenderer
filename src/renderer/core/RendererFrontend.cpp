@@ -1,6 +1,11 @@
 #include "Container/renderer/core/RendererFrontend.h"
 #include "Container/renderer/raytracing/RaySceneAcceleration.h"
 #include "Container/renderer/raytracing/RayShadowManager.h"
+#include "Container/renderer/lighting/DdgiManager.h"
+#include "Container/renderer/lighting/DdgiPreset.h"
+#include "Container/renderer/lighting/DdgiSceneBounds.h"
+#include "Container/renderer/lighting/DdgiVolumeFit.h"
+#include "Container/renderer/lighting/DdgiVolumePlacement.h"
 #include "Container/renderer/temporal/TemporalCapture.h"
 #include "Container/renderer/temporal/TemporalManager.h"
 #include <fstream>
@@ -22,6 +27,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -31,8 +37,6 @@
 #include "Container/renderer/bim/BimFrameDrawRoutingPlanner.h"
 #include "Container/renderer/bim/BimGeoreferenceTransform.h"
 #include "Container/renderer/bim/BimManager.h"
-#include "Container/renderer/bim/BimModelCompare.h"
-#include "Container/renderer/bim/BimScheduleExtractor.h"
 #include "Container/renderer/core/FrameConcurrencyPolicy.h"
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/core/RenderExtraction.h"
@@ -68,6 +72,7 @@
 #include "Container/scene/MeshSceneProviderAssetAdapter.h"
 #include "Container/scene/SceneProvider.h"
 #include "Container/utility/AllocationManager.h"
+#include "Container/utility/AsyncModelPreparation.h"
 #include "Container/utility/Camera.h"
 #include "Container/utility/DebugMessengerExt.h"
 #include "Container/utility/FrameSyncManager.h"
@@ -85,6 +90,21 @@ namespace container::renderer {
 
 using container::gpu::CameraData;
 using container::gpu::LightingData;
+
+struct RendererFrontend::ModelLoadState {
+  struct Prepared {
+    std::optional<container::geometry::GltfLoadResult> gltf;
+    std::optional<BimManager::PreparedScene> bim;
+  };
+  container::util::AsyncModelPreparation<std::unique_ptr<Prepared>> worker;
+  std::optional<container::ui::ModelLoadRequest> request;
+  std::unique_ptr<Prepared> ready;
+  bool committing{false};
+  std::exception_ptr presentationFailure;
+  uint64_t requests{0}, completed{0}, cancelled{0}, preparationFrames{0}, progressFrames{0}, eventPumps{0};
+  std::string stage;
+  std::chrono::steady_clock::time_point lastProgressFrame{};
+};
 
 namespace {
 
@@ -147,56 +167,6 @@ private:
       container::util::pathFromUtf8(bimManager->modelPath());
   const std::string filename = container::util::pathToUtf8(modelPath.filename());
   return filename.empty() ? "BIM drawing" : filename;
-}
-
-[[nodiscard]] BimScheduleBounds
-bimScheduleBounds(const BimElementBounds &bounds) {
-  return {.valid = bounds.valid, .min = bounds.min, .max = bounds.max};
-}
-
-[[nodiscard]] BimModelCompareBounds
-bimModelCompareBounds(const BimElementBounds &bounds) {
-  return {.valid = bounds.valid, .min = bounds.min, .max = bounds.max};
-}
-
-[[nodiscard]] std::vector<BimScheduleElement> buildBimScheduleElements(
-    std::span<const BimElementMetadata> metadata) {
-  std::vector<BimScheduleElement> elements;
-  elements.reserve(metadata.size());
-  for (const BimElementMetadata &element : metadata) {
-    elements.push_back({.guid = element.guid,
-                        .sourceId = element.sourceId,
-                        .ifcClass = element.type,
-                        .type = element.objectType,
-                        .storey = !element.storeyName.empty()
-                                      ? element.storeyName
-                                      : element.storeyId,
-                        .material = !element.materialName.empty()
-                                        ? element.materialName
-                                        : element.materialCategory,
-                        .bounds = bimScheduleBounds(element.bounds)});
-  }
-  return elements;
-}
-
-[[nodiscard]] std::vector<BimModelCompareElement> buildBimModelCompareElements(
-    std::span<const BimElementMetadata> metadata) {
-  std::vector<BimModelCompareElement> elements;
-  elements.reserve(metadata.size());
-  for (const BimElementMetadata &element : metadata) {
-    elements.push_back({.guid = element.guid,
-                        .sourceId = element.sourceId,
-                        .ifcClass = element.type,
-                        .type = element.objectType,
-                        .storey = !element.storeyName.empty()
-                                      ? element.storeyName
-                                      : element.storeyId,
-                        .material = !element.materialName.empty()
-                                        ? element.materialName
-                                        : element.materialCategory,
-                        .bounds = bimModelCompareBounds(element.bounds)});
-  }
-  return elements;
 }
 
 [[nodiscard]] BimGeoreferenceMetadata buildBimGeoreferenceMetadata(
@@ -1445,6 +1415,15 @@ void RendererFrontend::initialize() {
       container::util::executableDirectory(),
       subs_.sceneManager->descriptorSetLayout(),
       subs_.lightingManager->lightDescriptorSetLayout());
+  subs_.ddgiManager = std::make_unique<DdgiManager>(
+      svc_.ctx.deviceWrapper, *svc_.allocationManager.memoryManager(),
+      *subs_.rayShadowManager, svc_.config.ddgi);
+  subs_.ddgiManager->createPipelines(
+      container::util::executableDirectory(),
+      subs_.sceneManager->descriptorSetLayout(),
+      subs_.lightingManager->lightDescriptorSetLayout(),
+      subs_.frameResourceManager->postProcessLayout(),
+      svc_.swapChainManager.imageFormat());
   subs_.lightingManager->createTiledResources(
       container::util::executableDirectory(), svc_.swapChainManager.extent());
   auto initialLighting = subs_.lightingManager->lightingSettings();
@@ -1545,6 +1524,13 @@ void RendererFrontend::initialize() {
   subs_.rendererTelemetry = std::make_unique<RendererTelemetry>();
 
   initializeScene();
+  if (svc_.config.ddgiFitScene)
+    fitDdgiToActiveScene(svc_.config.ddgiFit.maxProbes);
+  if (!svc_.config.ddgiDetailNode.empty())
+    fitDdgiDetailToSelection(svc_.config.ddgiDetailProbeBudget, svc_.config.ddgiDetailNode);
+  if (!svc_.config.ddgiSavePresetPath.empty())
+    saveDdgiPreset(container::util::pathFromUtf8(svc_.config.ddgiSavePresetPath),
+                   {ddgiActiveSceneIdentity(), subs_.ddgiManager->settings()});
 }
 
 RenderSystemContext RendererFrontend::renderSystemContext() {
@@ -1660,6 +1646,11 @@ void RendererFrontend::applyPendingRenderTechniqueChange() {
 }
 
 bool RendererFrontend::drawFrame(bool &framebufferResized) {
+  // Commit outside the ImGui frame and before acquiring a swapchain image:
+  // cooperative loading frames must own their acquire/submit/present cycle.
+  processPendingGuiModelLoadRequest();
+  if (modelLoad_ && modelLoad_->request && !modelLoad_->committing)
+    ++modelLoad_->preparationFrames;
   const auto frameStart = TelemetryClock::now();
   const auto concurrencyPolicy = FrameConcurrencyPolicy::serializedGpuResources(
       "shared object buffer plus GPU cull, tile cull, GTAO, bloom, "
@@ -1764,6 +1755,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     vkWaitForFences(svc_.ctx.deviceWrapper->device(), 1,
                     &frame_.imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
   }
+  if (subs_.ddgiManager)
+    subs_.ddgiManager->retireImage(imageIndex);
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::ImageFenceWait,
                            elapsedMilliseconds(phaseStart));
@@ -1784,6 +1777,9 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
 
   phaseStart = TelemetryClock::now();
   presentSceneControls();
+  processPendingDdgiSceneFit();
+  processPendingDdgiDetailFit();
+  processPendingDdgiPreset();
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::Gui,
                            elapsedMilliseconds(phaseStart));
@@ -1992,8 +1988,12 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   VkSemaphoreSubmitInfo waitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
   waitInfo.semaphore = subs_.frameSyncManager->imageAvailable(frame_.currentFrame);
   waitInfo.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  std::array<VkSemaphoreSubmitInfo, 2> frameWaits{waitInfo};
   submitInfo.waitSemaphoreInfoCount = 1;
-  submitInfo.pWaitSemaphoreInfos = &waitInfo;
+  if (subs_.ddgiManager)
+    if (const auto giWait = subs_.ddgiManager->graphicsWait())
+      frameWaits[submitInfo.waitSemaphoreInfoCount++] = *giWait;
+  submitInfo.pWaitSemaphoreInfos = frameWaits.data();
 
   VkCommandBuffer cmdHandle = svc_.commandBufferManager.buffer(imageIndex);
   VkCommandBufferSubmitInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
@@ -2004,8 +2004,12 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   VkSemaphoreSubmitInfo signalInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
   signalInfo.semaphore = subs_.frameSyncManager->renderFinishedForImage(imageIndex);
   signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+  std::array<VkSemaphoreSubmitInfo, 2> frameSignals{signalInfo};
   submitInfo.signalSemaphoreInfoCount = 1;
-  submitInfo.pSignalSemaphoreInfos = &signalInfo;
+  if (subs_.ddgiManager)
+    if (const auto giSignal = subs_.ddgiManager->graphicsSignal())
+      frameSignals[submitInfo.signalSemaphoreInfoCount++] = *giSignal;
+  submitInfo.pSignalSemaphoreInfos = frameSignals.data();
 
   phaseStart = TelemetryClock::now();
   subs_.frameSyncManager->resetFence(frame_.currentFrame);
@@ -2017,6 +2021,10 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   }
   subs_.temporalManager->commit();
   subs_.rayShadowManager->commit();
+  if (subs_.ddgiManager) {
+    subs_.ddgiManager->commit();
+    subs_.ddgiManager->submitAsync(imageIndex);
+  }
   gfxJournal_.submitted();
   frame_.imagesInFlight[imageIndex] = submittedFrameFence;
   if (telemetry) {
@@ -2117,6 +2125,28 @@ void RendererFrontend::applyTemporalCapture(
   FrameConcurrencyPolicy::serializedGpuResources("capture scene mutation")
       .waitBeforeAcquire(*subs_.frameSyncManager, frame_.currentFrame);
   const auto &event = sample.event;
+  if (event.bimSelectedObject) {
+    if (!subs_.bimManager ||
+        !subs_.bimManager->metadataForObject(*event.bimSelectedObject))
+      throw std::runtime_error("Capture BIM selection index is not present in the active model");
+    selectBimObject(*event.bimSelectedObject);
+  }
+  if (event.ddgiFitProbes)
+    pendingDdgiSceneFit_ = *event.ddgiFitProbes;
+  if (subs_.ddgiManager && (event.ddgiPaused || event.ddgiEnabled)) {
+    auto settings = subs_.ddgiManager->settings();
+    if (event.ddgiPaused)
+      settings.paused = *event.ddgiPaused;
+    if (event.ddgiEnabled)
+      settings.enabled = *event.ddgiEnabled;
+    const bool appearanceChanged =
+        settings.enabled != subs_.ddgiManager->settings().enabled;
+    subs_.ddgiManager->applySettings(settings);
+    if (subs_.guiManager)
+      subs_.guiManager->trySetDdgiSettings(settings);
+    if (appearanceChanged && subs_.temporalManager)
+      subs_.temporalManager->reset("capture DDGI enable changed");
+  }
   if (subs_.lightingManager &&
       (!event.areaLighting.empty() || event.areaLightSamples)) {
     const auto &currentSettings = subs_.lightingManager->lightingSettings();
@@ -2150,6 +2180,7 @@ void RendererFrontend::applyTemporalCapture(
       subs_.guiManager->rayShadowSettings() = settings;
   }
   if (!event.reload.empty()) {
+    settlePendingModelLoads();
     captureObjectBase_.reset();
     reloadSceneModel(event.reload);
   }
@@ -2168,6 +2199,15 @@ void RendererFrontend::applyTemporalCapture(
                                event.guiSampleModel);
     captureObjectBase_.reset();
   }
+  if (event.guiUnload) {
+    if (!subs_.guiManager)
+      throw std::runtime_error("GUI unload requires an initialized GUI manager");
+    captureObjectBase_.reset();
+    subs_.guiManager->queueModelUnloadRequest();
+  }
+  if (event.guiWaitForLoad &&
+      (!event.guiReload.empty() || !event.guiSampleModel.empty() || event.guiUnload))
+    settlePendingModelLoads();
   if (event.taa)
     subs_.temporalManager->settings().enabled = *event.taa;
   if (event.samples)
@@ -2394,11 +2434,27 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   if (subs_.rendererTelemetry) {
     const auto &snapshot = subs_.rendererTelemetry->latest();
     json["gpuKnownMs"] = snapshot.timing.gpuKnownMs;
+    json["gpuProfiler"] = {
+        {"available", snapshot.gpuProfiler.available},
+        {"source", std::string(rendererGpuTimingSourceName(
+                       snapshot.gpuProfiler.source))},
+        {"resultLatencyFrames", snapshot.gpuProfiler.resultLatencyFrames},
+        {"status", snapshot.gpuProfiler.status}};
     json["cpuPhasesMs"] = nlohmann::json::object();
     for (size_t phase = 0; phase < snapshot.timing.cpuMs.size(); ++phase)
       json["cpuPhasesMs"][std::string(rendererTelemetryPhaseName(
           static_cast<RendererTelemetryPhase>(phase)))] =
           snapshot.timing.cpuMs[phase];
+    json["frameHistory"] = nlohmann::json::array();
+    for (const auto &sample : subs_.rendererTelemetry->view().history) {
+      nlohmann::json phases = nlohmann::json::object();
+      for (size_t phase = 0; phase < sample.cpuPhasesMs.size(); ++phase)
+        phases[std::string(rendererTelemetryPhaseName(
+            static_cast<RendererTelemetryPhase>(phase)))] = sample.cpuPhasesMs[phase];
+      json["frameHistory"].push_back({{"frameIndex", sample.frameIndex},
+                                       {"cpuPhasesMs", std::move(phases)},
+                                       {"gpuKnownMs", sample.gpuKnownMs}});
+    }
     json["passes"] = nlohmann::json::array();
     for (const auto &pass : snapshot.passes)
       json["passes"].push_back({{"name", pass.name},
@@ -2419,6 +2475,18 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   }
   json["scene"] = {{"primary", activePrimaryModelPath_}, {"auxiliary", activeAuxiliaryModelPath_},
                     {"primaryImportScale", activePrimaryImportScale_}, {"auxiliaryImportScale", activeAuxiliaryImportScale_}};
+  // Count imported content rather than the diagnostic geometry appended to
+  // renderer buffers, so an unloaded scene has an unambiguous zero count.
+  json["scene"]["primaryObjectCount"] = sceneGraph_.renderableNodes().size();
+  json["scene"]["primaryNodeCount"] = sceneGraph_.nodeCount();
+  json["scene"]["primaryVertexCount"] =
+      subs_.sceneManager ? subs_.sceneManager->vertices().size() : 0u;
+  json["scene"]["primaryIndexCount"] =
+      subs_.sceneManager ? subs_.sceneManager->indices().size() : 0u;
+  json["scene"]["auxiliaryObjectCount"] =
+      subs_.bimManager ? subs_.bimManager->objectData().size() : 0u;
+  json["scene"]["geometryArenaCapacityBytes"] =
+      svc_.allocationManager.geometryArenaCapacityBytes();
   if (subs_.rayShadowManager) {
     auto &ray = *subs_.rayShadowManager;
     json["rayShadows"] = {{"supported", ray.supported()},
@@ -2439,10 +2507,85 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
           {"inputAllocatedBytes", stats->inputAllocatedBytes},
           {"scratchAllocatedBytes", stats->scratchAllocatedBytes}};
   }
+  if (subs_.ddgiManager) {
+    const auto &gi = *subs_.ddgiManager;
+    const auto batch = gi.lastBatch();
+    const auto &settings = gi.settings();
+    json["ddgi"] = {
+        {"supported", gi.supported()},
+        {"enabled", settings.enabled},
+        {"paused", settings.paused},
+        {"active", gi.active()},
+        {"status", gi.status()},
+        {"totalAllocatedBytes", gi.allocatedBytes()},
+        {"historyResets", gi.historyResets()},
+        {"updateFrame", gi.frameNumber()},
+        {"contentEpoch", gi.contentEpoch()},
+        {"refreshRemainingProbes", gi.refreshRemainingProbes()},
+        {"updatedProbes", batch.probeCount},
+        {"tracedRays", batch.rayCount},
+        {"firstProbe", batch.firstProbe},
+        {"nextProbe", batch.nextProbe},
+        {"schedulingCursor", gi.schedulingCursor()},
+        {"debugView", static_cast<uint32_t>(settings.debugView)},
+        {"debugProbeRadius", settings.debugProbeRadius},
+        {"settings",
+         {{"origin",
+           {settings.volume.origin.x, settings.volume.origin.y,
+            settings.volume.origin.z}},
+          {"spacing",
+           {settings.volume.spacing.x, settings.volume.spacing.y,
+            settings.volume.spacing.z}},
+          {"counts",
+           {settings.volume.counts.x, settings.volume.counts.y,
+            settings.volume.counts.z}},
+          {"raysPerProbe", settings.resources.updates.raysPerProbe},
+          {"maxProbesPerFrame", settings.resources.updates.maxProbesPerFrame},
+          {"maxRaysPerFrame", settings.resources.updates.maxRaysPerFrame},
+          {"maxDistance", settings.maxDistance},
+          {"hysteresis", settings.hysteresis},
+          {"normalBias", settings.normalBias},
+          {"viewBias", settings.viewBias},
+          {"visibilityBias", settings.visibilityBias},
+          {"intensity", settings.intensity}}}};
+    json["ddgi"]["sceneFit"] = {
+        {"applied", fittedDdgiVolume_ && *fittedDdgiVolume_ == settings.volume},
+        {"boundsMin",
+         {ddgiFitBoundsMin_.x, ddgiFitBoundsMin_.y, ddgiFitBoundsMin_.z}},
+        {"boundsMax",
+         {ddgiFitBoundsMax_.x, ddgiFitBoundsMax_.y, ddgiFitBoundsMax_.z}},
+        {"probeBudget", ddgiFitProbeBudget_},
+        {"probeCount", ddgiFitProbeCount_},
+        {"payloadBytes", ddgiFitPayloadBytes_},
+        {"status", ddgiFitStatus_}};
+    json["ddgi"]["selectedProbes"] = nlohmann::json::array();
+    for (const auto &update : gi.lastUpdates())
+      json["ddgi"]["selectedProbes"].push_back(update.probeIndex);
+    json["ddgi"]["settings"]["volumeBlendCells"] = settings.volumeBlendCells;
+    json["ddgi"]["settings"]["thinGlassTransmission"] = settings.thinGlassTransmission;
+    json["ddgi"]["settings"]["dielectricTransmission"] = settings.dielectricTransmission;
+    json["ddgi"]["settings"]["cameraFollow"] = settings.cameraFollow;
+    json["ddgi"]["settings"]["asyncCompute"] = settings.asyncCompute;
+    json["ddgi"]["asyncActive"] = gi.asyncActive();
+    json["ddgi"]["asyncSubmittedUpdates"] = gi.asyncSubmittedUpdates();
+    json["ddgi"]["asyncPublishedUpdates"] = gi.asyncPublishedUpdates();
+    const auto runtimeVolume = gi.currentPrimaryVolume();
+    json["ddgi"]["scroll"] = {
+        {"count", gi.scrollCount()}, {"preservedProbes", gi.lastScrollPreservedProbes()},
+        {"origin", {runtimeVolume.origin.x, runtimeVolume.origin.y, runtimeVolume.origin.z}}};
+    json["ddgi"]["settings"]["additionalVolumes"] = nlohmann::json::array();
+    for (const auto &volume : settings.additionalVolumes)
+      json["ddgi"]["settings"]["additionalVolumes"].push_back({
+          {"origin", {volume.origin.x, volume.origin.y, volume.origin.z}},
+          {"spacing", {volume.spacing.x, volume.spacing.y, volume.spacing.z}},
+          {"counts", {volume.counts.x, volume.counts.y, volume.counts.z}}});
+  }
   if (subs_.guiManager)
     json["gui"] = {{"status", subs_.guiManager->statusMessage()},
                    {"displayMode", static_cast<uint32_t>(
-                                       subs_.guiManager->gBufferViewMode())}};
+                                       subs_.guiManager->gBufferViewMode())},
+                   {"selectedMeshNodeId", sceneState_.selectedMeshNode == container::scene::SceneGraph::kInvalidNode ? -1 : int64_t(sceneState_.selectedMeshNode)},
+                   {"selectedBimObjectIndex", selectedBimObjectIndex_ == std::numeric_limits<uint32_t>::max() ? -1 : int64_t(selectedBimObjectIndex_)}};
   if (subs_.bimManager) {
     json["scene"]["auxiliaryObjectCount"] =
         subs_.bimManager->objectData().size();
@@ -2457,6 +2600,15 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"representationWarnings", report.representationWarnings},
         {"fallbackSource", report.fallbackSource}};
   }
+  if (subs_.guiManager)
+    json["gui"]["modelLoading"] = {
+        {"pending", modelLoad_ && modelLoad_->request.has_value()},
+        {"requests", modelLoad_ ? modelLoad_->requests : 0u},
+        {"completed", modelLoad_ ? modelLoad_->completed : 0u},
+        {"cancelled", modelLoad_ ? modelLoad_->cancelled : 0u},
+        {"preparationFrames", modelLoad_ ? modelLoad_->preparationFrames : 0u},
+        {"progressFrames", modelLoad_ ? modelLoad_->progressFrames : 0u},
+        {"eventPumps", modelLoad_ ? modelLoad_->eventPumps : 0u}};
   const auto& camera = buffers_.cameraData;
   json["camera"] = {{"position", {camera.cameraWorldPosition.x, camera.cameraWorldPosition.y, camera.cameraWorldPosition.z}},
                      {"jitterUv", {camera.jitterUv.x, camera.jitterUv.y, camera.jitterUv.z, camera.jitterUv.w}}};
@@ -2656,6 +2808,36 @@ void RendererFrontend::processInput(float deltaTime) {
   }
 }
 
+void RendererFrontend::selectBimObject(uint32_t objectIndex,
+                                      std::optional<glm::vec3> anchorPoint) {
+  if (!subs_.bimManager || !subs_.bimManager->metadataForObject(objectIndex))
+    return;
+  sceneState_.selectedMeshNode = container::scene::SceneGraph::kInvalidNode;
+  selectedBimObjectIndex_ = objectIndex;
+  if (subs_.lightingManager)
+    subs_.lightingManager->selectEditableLight({});
+  selectionNavigationAnchor_ = {};
+  if (anchorPoint && isFiniteVec3(*anchorPoint)) {
+    const BimElementBounds bounds =
+        subs_.bimManager->elementBoundsForObject(objectIndex);
+    selectionNavigationAnchor_ = SelectionNavigationAnchor{
+        .valid = true, .point = *anchorPoint,
+        .radius = bounds.valid ? std::max(bounds.radius, 0.25f) : 1.0f,
+        .sceneNode = container::scene::SceneGraph::kInvalidNode,
+        .bimObject = objectIndex};
+  }
+  clearHoveredMeshNode();
+  selectedDrawCommands_.clear();
+  selectedBimDrawCommands_.clear();
+  selectedBimNativePointDrawCommands_.clear();
+  selectedBimNativeCurveDrawCommands_.clear();
+  if (subs_.guiManager) {
+    subs_.guiManager->setSectionPlaneVisualEditable(false);
+    subs_.guiManager->setStatusMessage(
+        bimSelectionLabel(*subs_.bimManager->metadataForObject(objectIndex)));
+  }
+}
+
 void RendererFrontend::selectMeshNodeAtCursor(double cursorX, double cursorY) {
   if (!subs_.sceneController) {
     return;
@@ -2677,45 +2859,6 @@ void RendererFrontend::selectMeshNodeAtCursor(double cursorX, double cursorY) {
     if (subs_.guiManager) {
       subs_.guiManager->setSectionPlaneVisualEditable(false);
       subs_.guiManager->setStatusMessage("Selected editable light");
-    }
-  };
-
-  auto selectBimObject = [&](uint32_t objectIndex,
-                             std::optional<glm::vec3> anchorPoint =
-                                 std::nullopt) {
-    sceneState_.selectedMeshNode = container::scene::SceneGraph::kInvalidNode;
-    selectedBimObjectIndex_ = objectIndex;
-    if (subs_.lightingManager) {
-      subs_.lightingManager->selectEditableLight({});
-    }
-    selectionNavigationAnchor_ = {};
-    if (anchorPoint && isFiniteVec3(*anchorPoint) && subs_.bimManager) {
-      const BimElementBounds bounds =
-          subs_.bimManager->elementBoundsForObject(objectIndex);
-      selectionNavigationAnchor_ = SelectionNavigationAnchor{
-          .valid = true,
-          .point = *anchorPoint,
-          .radius = bounds.valid ? std::max(bounds.radius, 0.25f) : 1.0f,
-          .sceneNode = container::scene::SceneGraph::kInvalidNode,
-          .bimObject = objectIndex,
-      };
-    }
-    clearHoveredMeshNode();
-    selectedDrawCommands_.clear();
-    selectedBimDrawCommands_.clear();
-    selectedBimNativePointDrawCommands_.clear();
-    selectedBimNativeCurveDrawCommands_.clear();
-    if (subs_.guiManager) {
-      subs_.guiManager->setSectionPlaneVisualEditable(false);
-      if (subs_.bimManager) {
-        if (const auto *metadata =
-                subs_.bimManager->metadataForObject(objectIndex)) {
-          subs_.guiManager->setStatusMessage(bimSelectionLabel(*metadata));
-          return;
-        }
-      }
-      subs_.guiManager->setStatusMessage("Selected BIM object " +
-                                         std::to_string(objectIndex));
     }
   };
 
@@ -3638,26 +3781,42 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
                                 ? container::gpu::AllocatedBuffer{}
                                 : buffers_.cameras.front();
   auto reloadPrimary = [&](const std::string &modelPath, float scale) {
+    auto *prepared = modelLoad_ && modelLoad_->committing && modelLoad_->ready &&
+                             modelLoad_->request && modelLoad_->request->path == modelPath &&
+                             modelLoad_->ready->gltf
+                         ? &*modelLoad_->ready->gltf : nullptr;
     return subs_.sceneController->reloadSceneModel(
         modelPath, scale, buffers_.objects.front(),
         buffers_.objectCapacities.front(),
         cameraBuffer, sceneState_.indexType, sceneState_.rootNode,
-        sceneState_.selectedMeshNode, sceneState_.cubeNode);
+        sceneState_.selectedMeshNode, sceneState_.cubeNode, prepared);
   };
-  auto refreshSceneState = [&](bool resetCamera) {
+  auto refreshSceneState = [&](bool replacedModel) {
     // reloadPrimary can replace the first object buffer before
     // updateObjectBuffer sees it. Rebind shadow-cull sets even when the new
     // scene fits the already-created buffer capacity.
     std::fill(buffers_.shadowObjectDescriptorReady.begin(),
               buffers_.shadowObjectDescriptorReady.end(), false);
     syncSceneStateFromController();
-    applySceneLightingDefaults();
+    if (replacedModel) {
+      clearSelectedMeshNode();
+      clearHoveredMeshNode();
+      captureObjectBase_.reset();
+      transformDragSession_.active = false;
+      if (subs_.guiManager)
+        subs_.guiManager->resetModelInspectionState();
+      if (subs_.ddgiManager)
+        subs_.ddgiManager->resetSceneHistory();
+      applySceneLightingDefaults();
+    }
     if (subs_.lightingManager) {
       subs_.lightingManager->setRootNode(sceneState_.rootNode);
+      if (replacedModel)
+        subs_.lightingManager->clearSceneLightOverrides();
       subs_.lightingManager->updateLightingData();
       subs_.lightingManager->createLightVolumeGeometry();
     }
-    if (resetCamera) {
+    if (replacedModel) {
       resetCameraForActiveScene();
       for (uint32_t imageIndex = 0;
            imageIndex < static_cast<uint32_t>(buffers_.cameras.size());
@@ -3680,33 +3839,61 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
     const std::string previousAuxiliaryPath = activeAuxiliaryModelPath_;
     const float previousAuxiliaryScale = activeAuxiliaryImportScale_;
 
-    (void)reloadPrimary("", 1.0f);
     if (!subs_.bimManager) {
       subs_.bimManager = std::make_unique<BimManager>(
           svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
       subs_.bimManager->createMeshletResidencyResources(
           container::util::executableDirectory());
+      if (modelLoad_ && modelLoad_->committing)
+        subs_.bimManager->setLoadProgressCallback([this](std::string_view stage) {
+          pumpModelLoadProgress(stage);
+        });
     }
 
+    bool retiredPreviousScene = false;
     try {
-      subs_.bimManager->loadModel(path, importScale, *subs_.sceneManager);
+      // Parse and validate CPU geometry before replacing either live provider.
+      // A bad BIM path must preserve glTF edits and existing material indices.
+      std::optional<BimManager::PreparedScene> localPrepared;
+      const BimManager::PreparedScene *prepared = nullptr;
+      if (modelLoad_ && modelLoad_->committing && modelLoad_->ready && modelLoad_->ready->bim)
+        prepared = &*modelLoad_->ready->bim;
+      else {
+        localPrepared = BimManager::prepareScene(path, importScale);
+        prepared = &*localPrepared;
+      }
+      retiredPreviousScene = true;
+      if (!reloadPrimary("", 1.0f))
+        throw std::runtime_error("Failed to clear the primary scene");
+      subs_.bimManager->loadPreparedScene(*prepared, *subs_.sceneManager);
     } catch (const std::exception &error) {
       const std::string loadError = error.what();
       container::log::ContainerLogger::instance().renderer()->error(
           "Failed to load model '{}': {}", path, loadError);
-      subs_.bimManager->clear();
-      (void)reloadPrimary(previousPrimaryPath, previousPrimaryScale);
-      if (!previousAuxiliaryPath.empty()) {
-        try {
-          subs_.bimManager->loadModel(previousAuxiliaryPath,
-                                      previousAuxiliaryScale,
-                                      *subs_.sceneManager);
-        } catch (const std::exception &) {
-          subs_.bimManager->clear();
-          activeAuxiliaryModelPath_.clear();
+      if (retiredPreviousScene) {
+        subs_.bimManager->clear();
+        if (!reloadPrimary(previousPrimaryPath, previousPrimaryScale)) {
+          activePrimaryModelPath_.clear();
+          activePrimaryImportScale_ = 1.0f;
+        }
+        if (!previousAuxiliaryPath.empty()) {
+          try {
+            subs_.bimManager->loadModel(previousAuxiliaryPath,
+                                        previousAuxiliaryScale,
+                                        *subs_.sceneManager);
+          } catch (const std::exception &restoreError) {
+            container::log::ContainerLogger::instance().renderer()->error(
+                "Failed to restore auxiliary model '{}': {}",
+                previousAuxiliaryPath, restoreError.what());
+            subs_.bimManager->clear();
+            activeAuxiliaryModelPath_.clear();
+            activeAuxiliaryImportScale_ = 1.0f;
+            clearSelectedMeshNode();
+          }
         }
       }
-      refreshSceneState(true);
+      if (retiredPreviousScene)
+        refreshSceneState(false);
       if (subs_.guiManager) {
         subs_.guiManager->setStatusMessage("Failed to load model: " + path +
                                            "\n" + loadError);
@@ -3727,6 +3914,8 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
     return subs_.bimManager->hasScene();
   }
 
+  const uint64_t previousGeometryRevision =
+      subs_.sceneManager->geometryRevision();
   const bool result = reloadPrimary(path, importScale);
   if (result) {
     activePrimaryModelPath_ = path;
@@ -3737,63 +3926,222 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
     if (subs_.bimManager) {
       subs_.bimManager->clear();
     }
-    if (!svc_.config.bimModelPath.empty()) {
-      if (!subs_.bimManager) {
-        subs_.bimManager = std::make_unique<BimManager>(svc_.ctx.deviceWrapper,
-                                                        svc_.allocationManager,
-                                                        svc_.pipelineManager);
-        subs_.bimManager->createMeshletResidencyResources(
-            container::util::executableDirectory());
-      }
-      subs_.bimManager->loadModel(svc_.config.bimModelPath,
-                                  svc_.config.bimImportScale,
+  } else if (subs_.sceneManager->geometryRevision() != previousGeometryRevision &&
+             subs_.bimManager && !activeAuxiliaryModelPath_.empty()) {
+    // SceneManager rebuilds its shared material/texture table on rollback.
+    // Recreate the retained auxiliary scene against that restored table before
+    // exposing its draw commands again.
+    subs_.bimManager->clear();
+    try {
+      subs_.bimManager->loadModel(activeAuxiliaryModelPath_,
+                                  activeAuxiliaryImportScale_,
                                   *subs_.sceneManager);
-      activeAuxiliaryModelPath_ = svc_.config.bimModelPath;
-      activeAuxiliaryImportScale_ = svc_.config.bimImportScale;
+    } catch (const std::exception &error) {
+      container::log::ContainerLogger::instance().renderer()->error(
+          "Failed to restore auxiliary model '{}': {}",
+          activeAuxiliaryModelPath_, error.what());
+      subs_.bimManager->clear();
+      activeAuxiliaryModelPath_.clear();
+      activeAuxiliaryImportScale_ = 1.0f;
+      clearSelectedMeshNode();
+      clearHoveredMeshNode();
     }
   }
 
   refreshSceneState(result);
+  if (subs_.guiManager)
+    subs_.guiManager->setStatusMessage(result ? "Loaded model: " + path
+                                              : "Failed to load model: " + path);
   return result;
 }
 
 void RendererFrontend::processPendingGuiModelLoadRequest() {
-  if (!subs_.guiManager) {
-    return;
-  }
-
-  std::optional<container::ui::ModelLoadRequest> request =
-      subs_.guiManager->consumeModelLoadRequest();
-  if (!request) {
-    return;
-  }
-
-  const std::string statusLabel =
-      request->label.empty() ? request->path : request->label;
-  const std::string loadingStatus = "Loading model: " + statusLabel;
-  subs_.guiManager->setStatusMessage(loadingStatus);
-  try {
-    const bool success = reloadSceneModel(request->path, request->importScale);
-    if (!success && subs_.guiManager->statusMessage() == loadingStatus) {
-      subs_.guiManager->setStatusMessage("Failed to load model: " +
-                                         statusLabel);
+  if (!subs_.guiManager) return;
+  if (auto request = subs_.guiManager->consumeModelLoadRequest()) {
+    if (!modelLoad_) modelLoad_ = std::make_unique<ModelLoadState>();
+    if (modelLoad_->request) {
+      ++modelLoad_->cancelled;
+      ++modelLoad_->completed;
     }
+    modelLoad_->worker.cancel();
+    if (modelLoad_->ready) modelLoad_->worker.discard(std::move(modelLoad_->ready));
+    modelLoad_->request = std::move(request);
+    ++modelLoad_->requests;
+    const auto &action = *modelLoad_->request;
+    modelLoad_->stage = action.unload ? "Unloading models" : "Reading and preparing model";
+    subs_.guiManager->setStatusMessage(modelLoad_->stage + ": " +
+        (action.label.empty() ? action.path : action.label));
+    if (action.unload || action.path.empty() || action.path == "__default_test_scene__") {
+      modelLoad_->ready = std::make_unique<ModelLoadState::Prepared>();
+    } else {
+      (void)modelLoad_->worker.start([path = action.path, scale = action.importScale] {
+        auto prepared = std::make_unique<ModelLoadState::Prepared>();
+        if (isAuxiliaryRenderModelPath(path))
+          prepared->bim = BimManager::prepareScene(path, scale);
+        else
+          prepared->gltf = container::scene::SceneManager::prepareGltfModel(path);
+        return prepared;
+      });
+      // Keep at least the request frame interactive, even for tiny models.
+      return;
+    }
+  }
+  if (!modelLoad_ || !modelLoad_->request) return;
+  auto &state = *modelLoad_;
+  const auto request = *state.request;
+  const std::string statusLabel = request.label.empty() ? request.path : request.label;
+  try {
+    if (!state.ready) {
+      auto completion = state.worker.tryTake();
+      if (!completion) return;
+      if (const auto *error = std::get_if<std::exception_ptr>(&completion->outcome))
+        std::rethrow_exception(*error);
+      state.ready = std::move(std::get<std::unique_ptr<ModelLoadState::Prepared>>(completion->outcome));
+    }
+    state.committing = true;
+    state.lastProgressFrame = {};
+    pumpModelLoadProgress(request.unload ? "Releasing scene resources" : "Installing prepared model");
+    svc_.allocationManager.setLoadProgressCallback([this](bool render) {
+      pumpModelLoadProgress(modelLoad_->stage, render);
+    });
+    if (subs_.bimManager)
+      subs_.bimManager->setLoadProgressCallback([this](std::string_view stage) {
+        pumpModelLoadProgress(stage);
+      });
+    const bool success = reloadSceneModel(request.unload ? "" : request.path,
+        request.unload ? 1.0f : request.importScale);
+    if (success && request.unload)
+      subs_.guiManager->setStatusMessage("Unloaded models.");
+    if (!success && subs_.guiManager->statusMessage().empty())
+      subs_.guiManager->setStatusMessage("Failed to load model: " + statusLabel);
   } catch (const std::exception &e) {
     container::log::ContainerLogger::instance().renderer()->error(
-        "Failed to load model '{}': {}", request->path, e.what());
-    if (subs_.guiManager) {
-      subs_.guiManager->setStatusMessage("Failed to load model: " +
-                                         statusLabel + " (" + e.what() + ")");
-    }
+        "Failed to load model '{}': {}", request.path, e.what());
+    subs_.guiManager->setStatusMessage("Failed to load model: " + statusLabel + "\n" + e.what());
   } catch (...) {
-    if (subs_.guiManager) {
-      subs_.guiManager->setStatusMessage("Failed to load model: " +
-                                         statusLabel + " (unknown error)");
-    }
+    subs_.guiManager->setStatusMessage("Failed to load model: " + statusLabel + " (unknown error)");
+  }
+  svc_.allocationManager.setLoadProgressCallback({});
+  if (subs_.bimManager) subs_.bimManager->setLoadProgressCallback({});
+  state.committing = false;
+  if (state.ready) state.worker.discard(std::move(state.ready));
+  state.request.reset();
+  ++state.completed;
+  // Acquired images/semaphores and reset submission fences cannot be recovered
+  // as a bad model request. Propagate presentation errors after callback cleanup.
+  if (state.presentationFailure)
+    std::rethrow_exception(state.presentationFailure);
+}
+
+void RendererFrontend::settlePendingModelLoads() {
+  processPendingGuiModelLoadRequest();
+  while (modelLoad_ && modelLoad_->request) {
+    pumpModelLoadProgress("Reading and preparing model");
+    processPendingGuiModelLoadRequest();
+    if (modelLoad_->request) std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 }
 
+void RendererFrontend::pumpModelLoadProgress(std::string_view stage, bool render) {
+  if (!modelLoad_) return;
+  if (modelLoad_->presentationFailure)
+    std::rethrow_exception(modelLoad_->presentationFailure);
+  modelLoad_->stage = std::string(stage);
+  // GLFW event processing stays on the application thread, including during
+  // uploads and CPU destruction. Never inspect partially replaced scene data.
+  if (svc_.nativeWindow) {
+    glfwPollEvents();
+    ++modelLoad_->eventPumps;
+  }
+  const auto now = TelemetryClock::now();
+  if (!render || now - modelLoad_->lastProgressFrame < std::chrono::milliseconds(33))
+    return;
+  modelLoad_->lastProgressFrame = now;
+  try {
+    drawModelLoadProgressFrame();
+  } catch (...) {
+    modelLoad_->presentationFailure = std::current_exception();
+    throw;
+  }
+}
+
+void RendererFrontend::drawModelLoadProgressFrame() {
+  if (!subs_.guiManager || !modelLoad_ || !modelLoad_->request ||
+      (svc_.nativeWindow && glfwWindowShouldClose(svc_.nativeWindow))) return;
+  int width = 0, height = 0;
+  if (svc_.nativeWindow) glfwGetFramebufferSize(svc_.nativeWindow, &width, &height);
+  if (width <= 0 || height <= 0) return;
+  const auto device = svc_.ctx.deviceWrapper->device();
+  subs_.frameSyncManager->waitForAllFrames();
+  uint32_t imageIndex = 0;
+  // A resized/minimized surface is recovered by the regular frame loop after
+  // commit. Bounded acquire keeps event processing alive in the meantime.
+  const auto acquire = vkAcquireNextImageKHR(device, svc_.swapChainManager.swapChain(),
+      1000000, subs_.frameSyncManager->imageAvailable(frame_.currentFrame),
+      VK_NULL_HANDLE, &imageIndex);
+  if (acquire == VK_TIMEOUT || acquire == VK_NOT_READY || acquire == VK_ERROR_OUT_OF_DATE_KHR)
+    return;
+  if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR)
+    throw std::runtime_error("Failed to acquire loading view");
+  if (subs_.ddgiManager) subs_.ddgiManager->retireImage(imageIndex);
+  const auto command = svc_.commandBufferManager.buffer(imageIndex);
+  if (vkResetCommandBuffer(command, 0) != VK_SUCCESS)
+    throw std::runtime_error("Failed to reset loading view commands");
+  VkCommandBufferBeginInfo commandBegin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+  if (vkBeginCommandBuffer(command, &commandBegin) != VK_SUCCESS)
+    throw std::runtime_error("Failed to begin loading view commands");
+  const auto extent = svc_.swapChainManager.extent();
+  VkClearValue clear{};
+  clear.color = {{0.045f, 0.055f, 0.075f, 1.0f}};
+  RenderingBeginInfo begin{};
+  begin.renderPass = resources_.renderPasses.postProcess;
+  begin.framebuffer = svc_.swapChainManager.framebuffers()[imageIndex];
+  begin.renderArea = {{0, 0}, extent};
+  begin.clearValueCount = 1;
+  begin.pClearValues = &clear;
+  beginDynamicRendering(command, &begin, VK_SUBPASS_CONTENTS_INLINE);
+  subs_.guiManager->startFrame();
+  const auto &request = *modelLoad_->request;
+  subs_.guiManager->drawModelLoadingProgress(
+      request.label.empty() ? request.path : request.label,
+      request.unload, modelLoad_->stage);
+  subs_.guiManager->render(command);
+  endDynamicRendering(command);
+  if (vkEndCommandBuffer(command) != VK_SUCCESS)
+    throw std::runtime_error("Failed to end loading view commands");
+  VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+  wait.semaphore = subs_.frameSyncManager->imageAvailable(frame_.currentFrame);
+  wait.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+  signal.semaphore = subs_.frameSyncManager->renderFinishedForImage(imageIndex);
+  signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+  VkCommandBufferSubmitInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+  commandInfo.commandBuffer = command;
+  VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+  submit.waitSemaphoreInfoCount = 1;
+  submit.pWaitSemaphoreInfos = &wait;
+  submit.commandBufferInfoCount = 1;
+  submit.pCommandBufferInfos = &commandInfo;
+  submit.signalSemaphoreInfoCount = 1;
+  submit.pSignalSemaphoreInfos = &signal;
+  subs_.frameSyncManager->resetFence(frame_.currentFrame);
+  const auto fence = subs_.frameSyncManager->fence(frame_.currentFrame);
+  if (vkQueueSubmit2(svc_.ctx.deviceWrapper->graphicsQueue(), 1, &submit, fence) != VK_SUCCESS)
+    throw std::runtime_error("Failed to submit loading view");
+  frame_.imagesInFlight[imageIndex] = fence;
+  const auto present = svc_.swapChainManager.present(svc_.ctx.deviceWrapper->presentQueue(),
+      imageIndex, signal.semaphore);
+  if (present != VK_SUCCESS && present != VK_SUBOPTIMAL_KHR && present != VK_ERROR_OUT_OF_DATE_KHR)
+    throw std::runtime_error("Failed to present loading view");
+  // Keep loading-view submissions out of scene temporal/history counters.
+  frame_.currentFrame = (frame_.currentFrame + 1) % svc_.config.maxFramesInFlight;
+  ++modelLoad_->progressFrames;
+  if (!modelLoad_->committing) ++modelLoad_->preparationFrames;
+}
+
 void RendererFrontend::shutdown() {
+  // Import jobs own only CPU payloads; join before releasing scene services.
+  modelLoad_.reset();
   if (!svc_.ctx.deviceWrapper)
     return;
 
@@ -3810,6 +4158,7 @@ void RendererFrontend::shutdown() {
   subs_.frameResourceRegistry.reset();
 
   subs_.temporalManager.reset();
+  subs_.ddgiManager.reset();
   subs_.rayShadowManager.reset();
   destroyGBufferResources();
   subs_.frameResourceManager.reset();
@@ -3892,7 +4241,8 @@ void RendererFrontend::createGraphicsPipelines() {
       subs_.frameResourceManager->postProcessLayout(),
       subs_.frameResourceManager->oitLayout(),
       subs_.rayShadowManager ? subs_.rayShadowManager->traceDescriptorLayout()
-                             : VK_NULL_HANDLE};
+                             : VK_NULL_HANDLE,
+      subs_.ddgiManager ? subs_.ddgiManager->descriptorLayout() : VK_NULL_HANDLE};
   const PipelineRenderPasses rp{resources_.renderPasses.depthPrepass,
                                 resources_.renderPasses.bimDepthPrepass,
                                 resources_.renderPasses.gBuffer,
@@ -4317,6 +4667,11 @@ void RendererFrontend::createFrameResources() {
     subs_.rayShadowManager->prepare(
         svc_.swapChainManager.extent(),
         static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
+  if (subs_.ddgiManager)
+    subs_.ddgiManager->prepare(
+        static_cast<uint32_t>(svc_.swapChainManager.imageCount()),
+        subs_.environmentManager->prefilteredView(),
+        subs_.environmentManager->envSampler());
 }
 
 // ---------------------------------------------------------------------------
@@ -4367,6 +4722,9 @@ void RendererFrontend::updateObjectBuffer(uint32_t imageIndex) {
     buffers_.shadowObjectDescriptorReady[imageIndex] = true;
   }
   if (recreated && subs_.sceneManager) {
+    // All scene sets share material/texture bindings. An image graphics fence
+    // alone does not retire compute work borrowing another image's set.
+    if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
     subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.objects);
   }
   sceneState_.diagCubeObjectIndex =
@@ -5544,13 +5902,220 @@ bool RendererFrontend::samplePickIdAtCursor(double cursorX, double cursorY,
   return invalidateResult == VK_SUCCESS;
 }
 
+void RendererFrontend::fitDdgiToActiveScene(uint32_t maxProbes) {
+  if (!subs_.ddgiManager)
+    throw std::invalid_argument(
+        "DDGI manager is unavailable for scene fitting");
+  // Fit is an explicit, one-shot CPU operation. Refresh current transforms;
+  // import-time bounds and transformed spheres can be stale or miss shear.
+  refreshSceneObjectData();
+  std::vector<DrawCommand> meshDraws, bimDraws;
+  std::vector<RaySceneProviderSource> sources;
+  if (subs_.sceneController && subs_.sceneManager) {
+    meshDraws = subs_.sceneController->opaqueDrawCommands();
+    const auto &transparent = subs_.sceneController->transparentDrawCommands();
+    meshDraws.insert(meshDraws.end(), transparent.begin(), transparent.end());
+    sources.push_back({{"mesh-fit"},
+                       subs_.sceneManager->geometryRevision(),
+                       subs_.sceneManager->vertices(),
+                       subs_.sceneManager->indices(),
+                       subs_.sceneController->objectData(),
+                       meshDraws});
+  }
+  if (subs_.bimManager && subs_.bimManager->hasScene()) {
+    auto filter = currentBimDrawFilter();
+    filter.drawBudgetEnabled = false;
+    filter.drawBudgetMaxObjects = 0;
+    auto append = [&](const auto &draws) {
+      for (const auto &draw : draws)
+        if (subs_.bimManager->objectMatchesFilter(draw.objectIndex, filter) &&
+            bimObjectVisibleByLayer(draw.objectIndex))
+          bimDraws.push_back(draw);
+    };
+    append(subs_.bimManager->opaqueDrawCommands());
+    append(subs_.bimManager->transparentDrawCommands());
+    sources.push_back({{"bim-fit"},
+                       subs_.bimManager->geometryRevision(),
+                       subs_.bimManager->vertices(),
+                       subs_.bimManager->indices(),
+                       subs_.bimManager->objectData(),
+                       bimDraws});
+  }
+  const auto bounds = computeDdgiSceneBounds(sources);
+  if (!bounds.valid)
+    throw std::invalid_argument(
+        "No visible triangle geometry to fit. Load a mesh/BIM/USD model or "
+        "use manual probe-volume settings.");
+  const auto fitted =
+      fitDdgiVolume(subs_.ddgiManager->settings(), bounds.minimum,
+                    bounds.maximum, {maxProbes});
+  const auto previous = subs_.ddgiManager->settings();
+  subs_.ddgiManager->applySettings(fitted.settings);
+  if (previous != fitted.settings && subs_.temporalManager)
+    subs_.temporalManager->reset("DDGI scene volume fitted");
+  fittedDdgiVolume_ = fitted.settings.volume;
+  ddgiFitBoundsMin_ = bounds.minimum;
+  ddgiFitBoundsMax_ = bounds.maximum;
+  ddgiFitProbeBudget_ = maxProbes;
+  ddgiFitProbeCount_ = fitted.probeCount;
+  ddgiFitPayloadBytes_ = fitted.payloadBytes;
+  ddgiFitStatus_ =
+      "Fitted " + std::to_string(fitted.probeCount) + " probes; spacing " +
+      std::to_string(fitted.settings.volume.spacing.x) +
+      " world units; probe payload " +
+      std::to_string(double(fitted.payloadBytes) / (1024. * 1024.)) + " MiB.";
+  if (subs_.guiManager)
+    subs_.guiManager->acceptDdgiSceneFit(fitted.settings, ddgiFitStatus_);
+}
+
+void RendererFrontend::processPendingDdgiSceneFit() {
+  if (subs_.guiManager)
+    if (const auto request = subs_.guiManager->consumeDdgiSceneFitRequest())
+      pendingDdgiSceneFit_ = request;
+  if (!pendingDdgiSceneFit_)
+    return;
+  const auto budget = *std::exchange(pendingDdgiSceneFit_, std::nullopt);
+  try {
+    fitDdgiToActiveScene(budget);
+  } catch (const std::invalid_argument &error) {
+    ddgiFitStatus_ = "Scene fit rejected: " + std::string(error.what());
+    if (subs_.guiManager && subs_.ddgiManager)
+      subs_.guiManager->rejectDdgiSettings(subs_.ddgiManager->settings(),
+                                           ddgiFitStatus_);
+    // An invalid live request retains the last working lighting; startup fits
+    // propagate their actionable error directly to the caller instead.
+  }
+}
+
+void RendererFrontend::fitDdgiDetailToSelection(uint32_t maxProbes, std::string_view nodeName) {
+  if (!subs_.ddgiManager)
+    throw std::invalid_argument("DDGI manager is unavailable for detail fitting");
+  refreshSceneObjectData();
+  auto meshNode = sceneState_.selectedMeshNode;
+  auto bimObject = selectedBimObjectIndex_;
+  constexpr auto invalid = std::numeric_limits<uint32_t>::max();
+  if (!nodeName.empty()) {
+    meshNode = bimObject = invalid;
+    for (uint32_t node = 0; node < sceneGraph_.nodeCount(); ++node)
+      if (sceneGraph_.getNode(node)->name == nodeName) {
+        if (meshNode != invalid) throw std::invalid_argument("DDGI detail node name is ambiguous");
+        meshNode = node;
+      }
+    if (subs_.bimManager)
+      for (uint32_t object = 0; object < subs_.bimManager->objectData().size(); ++object)
+        if (const auto *metadata = subs_.bimManager->metadataForObject(object);
+            metadata && (metadata->displayName == nodeName || metadata->guid == nodeName)) {
+          if (bimObject != invalid && !sameBimProductIdentity(
+                *subs_.bimManager->metadataForObject(bimObject), *metadata))
+            throw std::invalid_argument("DDGI detail element name is ambiguous; use its GUID");
+          bimObject = object;
+        }
+    if ((meshNode == invalid) == (bimObject == invalid))
+      throw std::invalid_argument("DDGI detail node/element is missing or ambiguous");
+  }
+  std::vector<DrawCommand> draws;
+  std::vector<RaySceneProviderSource> sources;
+  if (bimObject != invalid && subs_.bimManager && subs_.bimManager->hasScene()) {
+    const auto *selected = subs_.bimManager->metadataForObject(bimObject);
+    if (!selected) throw std::invalid_argument("Selected BIM element has no metadata");
+    auto append = [&](const auto &commands) {
+      for (const auto &command : commands)
+        for (uint32_t instance = 0; instance < command.instanceCount; ++instance) {
+          const auto object = uint64_t(command.objectIndex) + instance;
+          if (object >= subs_.bimManager->objectData().size()) continue;
+          if (const auto *metadata = subs_.bimManager->metadataForObject(uint32_t(object));
+              metadata && sameBimProductIdentity(*selected, *metadata))
+            draws.push_back({uint32_t(object), command.firstIndex, command.indexCount, 1});
+        }
+    };
+    append(subs_.bimManager->opaqueDrawCommands());
+    append(subs_.bimManager->transparentDrawCommands());
+    sources.push_back({{"bim-detail"}, subs_.bimManager->geometryRevision(),
+        subs_.bimManager->vertices(), subs_.bimManager->indices(),
+        subs_.bimManager->objectData(), draws});
+  } else if (meshNode != invalid && subs_.sceneController && subs_.sceneManager) {
+    std::vector<uint32_t> nodes{meshNode};
+    std::vector<DrawCommand> selected;
+    for (size_t index = 0; index < nodes.size(); ++index) {
+      const auto *node = sceneGraph_.getNode(nodes[index]);
+      if (!node) continue;
+      nodes.insert(nodes.end(), node->children.begin(), node->children.end());
+      subs_.sceneController->collectDrawCommandsForNode(nodes[index], selected);
+      draws.insert(draws.end(), selected.begin(), selected.end());
+    }
+    sources.push_back({{"mesh-detail"}, subs_.sceneManager->geometryRevision(),
+        subs_.sceneManager->vertices(), subs_.sceneManager->indices(),
+        subs_.sceneController->objectData(), draws});
+  }
+  const auto bounds = computeDdgiSceneBounds(sources);
+  if (!bounds.valid)
+    throw std::invalid_argument("Select a room or element with triangle geometry to fit a detail volume");
+  const auto result = fitDdgiDetailVolume(subs_.ddgiManager->settings(), bounds, {maxProbes});
+  subs_.ddgiManager->applySettings(result.settings);
+  if (subs_.temporalManager) subs_.temporalManager->reset("DDGI detail volume fitted");
+  ddgiFitStatus_ = "Added a padded detail volume with " + std::to_string(result.addedProbeCount) + " probes.";
+  if (subs_.guiManager) {
+    subs_.guiManager->acceptDdgiSceneFit(result.settings, ddgiFitStatus_);
+    subs_.guiManager->selectDdgiVolume(result.volumeIndex);
+  }
+}
+
+void RendererFrontend::processPendingDdgiDetailFit() {
+  if (!subs_.guiManager || !subs_.ddgiManager) return;
+  if (const auto request = subs_.guiManager->consumeDdgiDetailFitRequest()) {
+    try { fitDdgiDetailToSelection(*request); }
+    catch (const std::invalid_argument &error) {
+      ddgiFitStatus_ = "Detail fit rejected: " + std::string(error.what());
+      subs_.guiManager->rejectDdgiSettings(subs_.ddgiManager->settings(), ddgiFitStatus_);
+    }
+  }
+}
+
+std::string RendererFrontend::ddgiActiveSceneIdentity() const {
+  return ddgiSceneIdentity(container::util::pathFromUtf8(activePrimaryModelPath_),
+                           container::util::pathFromUtf8(activeAuxiliaryModelPath_),
+                           activePrimaryImportScale_, activeAuxiliaryImportScale_);
+}
+
+void RendererFrontend::processPendingDdgiPreset() {
+  if (!subs_.guiManager || !subs_.ddgiManager)
+    return;
+  const auto action = subs_.guiManager->consumeDdgiPresetRequest();
+  if (!action)
+    return;
+  std::filesystem::path path;
+  try {
+    const auto identity = ddgiActiveSceneIdentity();
+    path = ddgiScenePresetPath(identity);
+    if (*action == container::ui::GuiManager::DdgiPresetAction::Save) {
+      saveDdgiPreset(path, {identity, subs_.ddgiManager->settings()});
+      subs_.guiManager->setDdgiPresetStatus(container::util::pathToUtf8(path),
+                                            "Scene GI preset saved.");
+    } else {
+      const auto preset = loadDdgiPreset(path);
+      if (preset.sceneIdentity != identity)
+        throw std::invalid_argument("Preset belongs to a different scene or import scale.");
+      const auto previous = subs_.ddgiManager->settings();
+      subs_.ddgiManager->applySettings(preset.settings);
+      subs_.guiManager->acceptDdgiSceneFit(preset.settings, "Loaded saved scene volumes.");
+      if (previous != preset.settings && subs_.temporalManager)
+        subs_.temporalManager->reset("DDGI scene preset loaded");
+      fittedDdgiVolume_.reset();
+      subs_.guiManager->setDdgiPresetStatus(container::util::pathToUtf8(path),
+                                            "Scene GI preset loaded.");
+    }
+  } catch (const std::exception &error) {
+    subs_.guiManager->setDdgiPresetStatus(container::util::pathToUtf8(path),
+                                          "Preset operation failed: " + std::string(error.what()));
+  }
+}
+
 void RendererFrontend::presentSceneControls() {
   if (!subs_.guiManager)
     return;
 
   // A load replaces scene lighting/bloom defaults. Publish the new scene's
   // values below, otherwise GUI writeback restores the previous scene's values.
-  processPendingGuiModelLoadRequest();
 
   if (subs_.gpuCullManager) {
     const auto stats = subs_.gpuCullManager->cullStats();
@@ -5590,6 +6155,29 @@ void RendererFrontend::presentSceneControls() {
                 return pass.gpuKnownMs;
           return 0.0f;
         }());
+  if (subs_.ddgiManager) {
+    const auto &gi = *subs_.ddgiManager;
+    const auto batch = gi.lastBatch();
+    container::ui::GuiDdgiRuntimeState runtime{
+        .supported = gi.supported(),
+        .active = gi.active(),
+        .status = gi.status(),
+        .allocatedBytes = gi.allocatedBytes(),
+        .updateFrame = gi.frameNumber(),
+        .contentEpoch = gi.contentEpoch(),
+        .refreshRemainingProbes = gi.refreshRemainingProbes(),
+        .schedulingCursor = gi.schedulingCursor(),
+        .updatedProbes = batch.probeCount,
+        .tracedRays = batch.rayCount};
+    if (subs_.rendererTelemetry)
+      for (const auto &pass : subs_.rendererTelemetry->latest().passes) {
+        if (pass.gpuTimed && pass.name == "DdgiTrace")
+          runtime.traceGpuMs = pass.gpuKnownMs;
+        if (pass.gpuTimed && pass.name == "DdgiUpdate")
+          runtime.updateGpuMs = pass.gpuKnownMs;
+      }
+    subs_.guiManager->setDdgiState(gi.settings(), std::move(runtime));
+  }
   // Sync bloom: push BloomManager settings into GUI before rendering.
   if (subs_.bloomManager) {
     subs_.guiManager->setBloomSettings(
@@ -5619,12 +6207,9 @@ void RendererFrontend::presentSceneControls() {
   const auto selectedEditableLight =
       subs_.lightingManager ? subs_.lightingManager->selectedEditableLightId()
                             : container::renderer::EditableLightId{};
-  std::vector<BimScheduleElement> bimScheduleElements;
-  std::vector<BimScheduleRow> bimScheduleByClassAndStoreyRows;
-  std::vector<BimScheduleRow> bimScheduleByTypeAndStoreyRows;
-  std::vector<BimScheduleRow> bimScheduleByMaterialRows;
-  std::vector<BimModelCompareElement> bimModelCompareElements;
   container::ui::BimInspectionState bimInspection{};
+  if (!subs_.bimManager || !subs_.bimManager->hasScene())
+    bimInspectionCache_.clear();
   if (subs_.bimManager && subs_.bimManager->hasScene()) {
     const BimSceneStats stats = subs_.bimManager->sceneStats();
     const BimOptimizedModelMetadata &optimizedMetadata =
@@ -5642,15 +6227,22 @@ void RendererFrontend::presentSceneControls() {
     const auto &elementStatuses = subs_.bimManager->elementStatuses();
     const auto &elementStoreyRanges = subs_.bimManager->elementStoreyRanges();
     const auto &elementMetadata = subs_.bimManager->elementMetadata();
-    bimScheduleElements = buildBimScheduleElements(elementMetadata);
-    bimScheduleByClassAndStoreyRows =
-        buildBimScheduleByIfcClassAndStorey(bimScheduleElements);
-    bimScheduleByTypeAndStoreyRows =
-        buildBimScheduleByTypeAndStorey(bimScheduleElements);
-    bimScheduleByMaterialRows =
-        buildBimScheduleMaterialTotals(bimScheduleElements);
-    bimModelCompareElements = buildBimModelCompareElements(elementMetadata);
+    bimInspectionCache_.refresh(subs_.bimManager.get(),
+                                subs_.bimManager->geometryRevision(),
+                                elementMetadata);
     bimInspection.hasScene = true;
+    bimInspection.elements = elementMetadata;
+    bimInspection.selectObject = [this](uint32_t objectIndex) {
+      selectBimObject(objectIndex);
+    };
+    bimInspection.focusObject = [this](uint32_t objectIndex) {
+      selectBimObject(objectIndex);
+      if (selectedBimObjectIndex_ != objectIndex || !subs_.cameraController)
+        return;
+      syncCameraSelectionPivotOverride();
+      subs_.cameraController->frameNodeOrScene(
+          container::scene::SceneGraph::kInvalidNode);
+    };
     bimInspection.modelPath = subs_.bimManager->modelPath();
     bimInspection.importReport = &subs_.bimManager->importReport();
     bimInspection.objectCount = stats.objectCount;
@@ -5739,17 +6331,12 @@ void RendererFrontend::presentSceneControls() {
     const BimGeoreferenceMetadata coordinateReadoutMetadata =
         buildBimGeoreferenceMetadata(unitMetadata, georeferenceMetadata);
     bimInspection.scheduleByClassAndStoreyRows =
-        std::span<const BimScheduleRow>(bimScheduleByClassAndStoreyRows.data(),
-                                        bimScheduleByClassAndStoreyRows.size());
+        bimInspectionCache_.byClassAndStorey();
     bimInspection.scheduleByTypeAndStoreyRows =
-        std::span<const BimScheduleRow>(bimScheduleByTypeAndStoreyRows.data(),
-                                        bimScheduleByTypeAndStoreyRows.size());
+        bimInspectionCache_.byTypeAndStorey();
     bimInspection.scheduleByMaterialRows =
-        std::span<const BimScheduleRow>(bimScheduleByMaterialRows.data(),
-                                        bimScheduleByMaterialRows.size());
-    bimInspection.modelCompareElements =
-        std::span<const BimModelCompareElement>(bimModelCompareElements.data(),
-                                                bimModelCompareElements.size());
+        bimInspectionCache_.byMaterial();
+    bimInspection.modelCompareElements = bimInspectionCache_.compareElements();
     bimInspection.hasOriginRebaseRecommendation =
         hasBimGeoreferenceReadoutMetadata(coordinateReadoutMetadata);
     bimInspection.originRebaseRecommendation =
@@ -5835,6 +6422,7 @@ void RendererFrontend::presentSceneControls() {
         if (!subs_.sceneController) {
           return;
         }
+        if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
         const uint32_t node = subs_.sceneController->addScenePrimitive(
             kind, glm::mat4(1.0f), sceneState_.rootNode);
         if (node == container::scene::SceneGraph::kInvalidNode) {
@@ -6231,6 +6819,38 @@ void RendererFrontend::presentSceneControls() {
     subs_.temporalManager->settings() = subs_.guiManager->temporalSettings();
     if (subs_.guiManager->consumeTemporalReset())
       subs_.temporalManager->reset("user requested reset");
+  }
+  if (subs_.ddgiManager) {
+    auto &gi = *subs_.ddgiManager;
+    const auto previous = gi.settings();
+    const auto resetsBefore = gi.historyResets();
+    const auto frameBefore = gi.frameNumber();
+    try {
+      // The manager validates edits and retires GPU work before replacing
+      // shared resources. Settings reach wantsScene/update in this frame.
+      gi.applySettings(subs_.guiManager->ddgiSettings());
+      const auto &current = gi.settings();
+      const bool appearanceChanged =
+          previous.enabled != current.enabled ||
+          previous.intensity != current.intensity ||
+          previous.volume != current.volume ||
+          previous.additionalVolumes != current.additionalVolumes ||
+          previous.volumeBlendCells != current.volumeBlendCells ||
+          previous.thinGlassTransmission != current.thinGlassTransmission ||
+          previous.dielectricTransmission != current.dielectricTransmission ||
+          previous.cameraFollow != current.cameraFollow ||
+          previous.resources.irradianceInteriorTexels !=
+              current.resources.irradianceInteriorTexels ||
+          previous.resources.visibilityInteriorTexels !=
+              current.resources.visibilityInteriorTexels ||
+          previous.resources.updates.raysPerProbe !=
+              current.resources.updates.raysPerProbe ||
+          resetsBefore != gi.historyResets() || frameBefore != gi.frameNumber();
+      if (appearanceChanged && subs_.temporalManager)
+        subs_.temporalManager->reset("DDGI settings changed");
+    } catch (const std::invalid_argument &error) {
+      subs_.guiManager->rejectDdgiSettings(gi.settings(), error.what());
+    }
   }
   // Sync bloom: pull GUI state back into BloomManager.
   if (subs_.bloomManager) {
@@ -7114,6 +7734,9 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   p.services.telemetry = subs_.rendererTelemetry.get();
   p.services.gpuProfiler = subs_.renderPassGpuProfiler.get();
   p.services.rayShadowManager = subs_.rayShadowManager.get();
+  p.services.ddgiManager = subs_.ddgiManager.get();
+  p.services.ddgiReadDescriptorSet = subs_.ddgiManager
+      ? subs_.ddgiManager->readDescriptors(imageIndex) : VK_NULL_HANDLE;
   p.postProcess.exposureSettings =
       subs_.guiManager ? subs_.guiManager->exposureSettings()
                        : exposureSettingsFromConfig(svc_.config);
@@ -7141,23 +7764,43 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   }
   if (subs_.rayShadowManager && subs_.lightingManager) {
     std::vector<RaySceneProviderSource> sources;
+    const bool hasSceneContent = !sceneGraph_.renderableNodes().empty() ||
+        (subs_.bimManager && subs_.bimManager->hasScene());
+    const bool giCompatible = p.bim.semanticColorMode == 0u;
+    const bool giScene = subs_.ddgiManager && subs_.ddgiManager->wantsScene() &&
+                         giCompatible && hasSceneContent;
+    subs_.rayShadowManager->requestSurfaceScene(
+        giScene, subs_.ddgiManager
+                     ? subs_.ddgiManager->settings().surfaceBudgetBytes
+                     : svc_.config.ddgi.surfaceBudgetBytes);
     if (subs_.guiManager)
       subs_.rayShadowManager->settings() =
           subs_.guiManager->rayShadowSettings();
     const auto meshProvider = subs_.sceneProviderRegistry->providersForKind(
         container::scene::SceneProviderKind::Mesh);
+    std::vector<DrawCommand> meshRayDraws;
+    if (giScene) {
+      meshRayDraws = subs_.sceneController->opaqueDrawCommands();
+      const auto &transparent =
+          subs_.sceneController->transparentDrawCommands();
+      meshRayDraws.insert(meshRayDraws.end(), transparent.begin(),
+                          transparent.end());
+    }
     if (!meshProvider.empty() && subs_.rayShadowManager->supported() &&
-        subs_.rayShadowManager->settings().mode != RayShadowMode::Raster)
-      sources.push_back({meshProvider.front()->snapshot().id,
-                         subs_.sceneManager->geometryRevision(),
-                         subs_.sceneManager->vertices(),
-                         subs_.sceneManager->indices(),
-                         subs_.sceneController->objectData(),
-                         subs_.sceneController->opaqueDrawCommands()});
+        (giScene ||
+         subs_.rayShadowManager->settings().mode != RayShadowMode::Raster))
+      sources.push_back(
+          {meshProvider.front()->snapshot().id,
+           subs_.sceneManager->geometryRevision(),
+           subs_.sceneManager->vertices(), subs_.sceneManager->indices(),
+           subs_.sceneController->objectData(),
+           giScene ? std::span<const DrawCommand>(meshRayDraws)
+                   : std::span<const DrawCommand>(
+                         subs_.sceneController->opaqueDrawCommands())});
     std::vector<DrawCommand> bimDraws;
     if (subs_.bimManager && subs_.bimManager->hasScene() &&
         subs_.rayShadowManager->supported() &&
-        subs_.rayShadowManager->settings().mode != RayShadowMode::Raster) {
+        (giScene || subs_.rayShadowManager->settings().mode != RayShadowMode::Raster)) {
       auto filter = currentBimDrawFilter();
       // Draw budget/LOD and screen visibility limit raster work, not blockers.
       filter.drawBudgetEnabled = false;
@@ -7166,6 +7809,11 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         if (subs_.bimManager->objectMatchesFilter(draw.objectIndex, filter) &&
             bimObjectVisibleByLayer(draw.objectIndex))
           bimDraws.push_back(draw);
+      if (giScene)
+        for (const auto &draw : subs_.bimManager->transparentDrawCommands())
+          if (subs_.bimManager->objectMatchesFilter(draw.objectIndex, filter) &&
+              bimObjectVisibleByLayer(draw.objectIndex))
+            bimDraws.push_back(draw);
       const auto bimProvider = subs_.sceneProviderRegistry->providersForKind(
           container::scene::SceneProviderKind::Bim);
       if (!bimProvider.empty())
@@ -7199,6 +7847,50 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
           return subs_.sceneManager->temporalMaterialRevision(material);
         },
         rayGeometryCompatible);
+    if (subs_.ddgiManager) {
+      DdgiSchedulingHints scheduling;
+      scheduling.cameraPosition = glm::vec3(buffers_.cameraData.cameraWorldPosition);
+      scheduling.cameraForward = glm::vec3(buffers_.cameraData.cameraForward);
+      const auto sceneRevision = subs_.rayShadowManager->sceneRevision();
+      if (giScene && sceneRevision != ddgiTrackedSceneRevision_) {
+        try {
+          scheduling.dirtyRegions = ddgiSceneChanges_.update(sources, [this](uint32_t material) {
+            return subs_.sceneManager->temporalMaterialRevision(material);
+          });
+          // A blocker can change transport for probes outside its own bounds.
+          const glm::vec3 influence(subs_.ddgiManager->settings().maxDistance);
+          bool finite = true;
+          for (auto &region : scheduling.dirtyRegions) {
+            region.minimum -= influence;
+            region.maximum += influence;
+            for (int axis = 0; axis < 3; ++axis)
+              finite &= std::isfinite(region.minimum[axis]) && std::isfinite(region.maximum[axis]);
+          }
+          if (!finite)
+            scheduling.dirtyRegions.clear(); // Conservative global priority.
+          ddgiTrackedSceneRevision_ = sceneRevision;
+        } catch (const std::invalid_argument &) {
+          // Surface extraction already reports a raster fallback for malformed
+          // geometry. Priority hints must not turn that fallback into a crash.
+          ddgiSceneChanges_.clear();
+          scheduling.dirtyRegions.clear();
+          ddgiTrackedSceneRevision_ = 0;
+        }
+      } else if (!giScene) {
+        ddgiSceneChanges_.clear();
+        ddgiTrackedSceneRevision_ = 0;
+      }
+      subs_.ddgiManager->update(
+          imageIndex, subs_.sceneManager->descriptorSet(imageIndex),
+          subs_.lightingManager->lightDescriptorSet(imageIndex),
+          subs_.lightingManager->lightingData(),
+          subs_.lightingManager->pointLightsSsbo(),
+          subs_.lightingManager->areaLightsSsbo(),
+          pushConstants_.bindless.sectionPlaneEnabled,
+          pushConstants_.bindless.sectionPlane, sceneClipState,
+          subs_.environmentManager->prefilteredView(),
+          subs_.environmentManager->envSampler(), giCompatible, scheduling);
+    }
     if (subs_.guiManager && subs_.rayShadowManager->supported()) {
       const auto &ray = *subs_.rayShadowManager;
       std::string status =

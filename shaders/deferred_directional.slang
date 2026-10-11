@@ -3,6 +3,7 @@
 #include "area_light_common.slang"
 #include "area_light_ltc.slang"
 #include "material_data_common.slang"
+#include "ddgi_lighting_common.slang"
 #include "local_shadow_common.slang"
 #include "screen_space_light_shadow_common.slang"
 #include "shadow_common.slang"
@@ -332,6 +333,13 @@ float4 fragMain(VSOutput input) : SV_Target0
         pixelCoord, uint2(width, height), worldPosition, normal,
         gDepthTexture, uCamera.inverseViewProj);
     float3 V = SafeNormalize(uCamera.cameraWorldPosition.xyz - worldPosition, float3(0.0, 0.0, 1.0));
+    // GBuffer metadata also retains thin flags authored on the object.
+    uint ddgiReceiverFlags = DecodeGBufferThinSurface(material.w) ?
+        (kGpuMaterialFlagDoubleSided | kGpuMaterialFlagAlphaMask) : 0u;
+    DdgiLookupResult ddgi = LookupDdgiDiffuseReceiver(materialData, ddgiReceiverFlags,
+        layerTerms.transmissionFactor, worldPosition, geometricNormal, normal, V);
+    float ddgiCoverage = saturate(ddgi.coverage);
+    bounceIntensity *= 1.0 - ddgiCoverage;
     float3 L = SafeNormalize(-uLighting.directionalDirection.xyz, float3(0.0, 1.0, 0.0));
     float3 lightColor =
         max(DeferredFinite3Or(uLighting.directionalColorIntensity.rgb, 0.0.xxx),
@@ -417,6 +425,7 @@ float4 fragMain(VSOutput input) : SV_Target0
         DeferredFinite3Or(gIrradianceCubemap.Sample(envSampler, normal).rgb,
                           0.0.xxx) *
         environmentIntensity;
+    irradiance = lerp(irradiance, DdgiDiffuseIrradiance(ddgi), ddgiCoverage);
     float3 diffuseIBL = irradiance * albedo.rgb;
 
     float3 R = reflect(-V, normal);
@@ -446,7 +455,8 @@ float4 fragMain(VSOutput input) : SV_Target0
     specularOcclusion = lerp(1.0, specularOcclusion, saturate(1.0 - roughness));
     float3 ambientLighting = kD_ibl * diffuseIBL * diffuseAO + specularIBL * specularOcclusion;
     ambientLighting += ComputeDiffuseAmbientFloor(
-        albedo.rgb, occlusion, ssao, environmentIntensity, bounceIntensity);
+        albedo.rgb, occlusion, ssao, environmentIntensity, bounceIntensity) *
+        (1.0 - ddgiCoverage);
     // Layer the environment response exactly once, using the geometry pass's
     // sampled factors. Direct lighting already evaluates these layers above.
     if (layerTerms.clearcoatFactor > 0.0)

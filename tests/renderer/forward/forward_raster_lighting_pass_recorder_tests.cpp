@@ -163,6 +163,7 @@ void makeForwardBindingsReady(FrameRecordParams& params,
   params.registries.resourceBindings = &resources;
   params.registries.pipelineHandles = &pipelines;
   params.registries.pipelineLayouts = &pipelines;
+  params.services.ddgiReadDescriptorSet = fakeHandle<VkDescriptorSet>(0x4008);
 }
 
 }  // namespace
@@ -379,11 +380,30 @@ TEST(ForwardRasterLightingPassRecorderTests,
   params.registries.resourceBindings = &resources;
   params.registries.pipelineHandles = &pipelines;
   params.registries.pipelineLayouts = &pipelines;
+  params.services.ddgiReadDescriptorSet = fakeHandle<VkDescriptorSet>(0x4008);
 
   const auto readiness = checkForwardRasterLightingPassReadiness(params);
 
   EXPECT_TRUE(readiness.ready);
   EXPECT_EQ(readiness.skipReason, RenderPassSkipReason::None);
+}
+
+TEST(ForwardRasterLightingPassRecorderTests,
+     OpaqueLightingRequiresDdgiFallbackDescriptorSnapshot) {
+  std::vector<DrawCommand> opaqueDraws(1u);
+  FrameResourceRegistry resources;
+  PipelineRegistry pipelines;
+  container::gpu::BindlessPushConstants bindless{};
+  FrameRecordParams params{};
+  params.draws.opaqueDrawCommands = &opaqueDraws;
+  params.pushConstants.bindless = &bindless;
+  makeSceneGeometryReady(params);
+  makeForwardBindingsReady(params, resources, pipelines);
+  ASSERT_TRUE(checkForwardRasterLightingPassReadiness(params).ready);
+  params.services.ddgiReadDescriptorSet = VK_NULL_HANDLE;
+  const auto readiness = checkForwardRasterLightingPassReadiness(params);
+  EXPECT_FALSE(readiness.ready);
+  EXPECT_EQ(readiness.blockingResource, RenderResourceId::SceneColor);
 }
 
 TEST(ForwardRasterLightingPassRecorderTests, SourceUsesForwardBridgesAndHelpers) {

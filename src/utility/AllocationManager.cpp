@@ -74,6 +74,7 @@ void AllocationManager::initialize(VkInstance instance,
 }
 
 void AllocationManager::cleanup() {
+  loadProgress_ = {};
   resetTextureAllocations(TextureAllocationResetScope::All);
   indexArena_.reset();
   vertexArena_.reset();
@@ -84,6 +85,18 @@ void AllocationManager::cleanup() {
   device_ = VK_NULL_HANDLE;
   graphicsQueue_ = VK_NULL_HANDLE;
   commandPool_ = VK_NULL_HANDLE;
+}
+
+void AllocationManager::resetGeometryAllocations() {
+  if (vertexArena_)
+    vertexArena_->reset();
+  if (indexArena_)
+    indexArena_->reset();
+}
+
+VkDeviceSize AllocationManager::geometryArenaCapacityBytes() const {
+  return (vertexArena_ ? vertexArena_->totalSize() : 0u) +
+         (indexArena_ ? indexArena_->totalSize() : 0u);
 }
 
 BufferSlice AllocationManager::uploadVertices(
@@ -417,6 +430,7 @@ void AllocationManager::resetTextureAllocations(
            texture.lifetime == TextureAllocationLifetime::Scene;
   };
 
+  size_t retired = 0;
   for (auto& texture : textureAllocations_) {
     if (!shouldReset(texture)) {
       continue;
@@ -433,6 +447,7 @@ void AllocationManager::resetTextureAllocations(
       texture.image = VK_NULL_HANDLE;
       texture.allocation = nullptr;
     }
+    if (loadProgress_ && ++retired % 32u == 0u) loadProgress_(true);
   }
 
   std::erase_if(textureAllocations_, shouldReset);
@@ -475,17 +490,31 @@ void AllocationManager::endSingleTimeCommands(VkCommandBuffer commandBuffer) {
   submitInfo.commandBufferCount = 1;
   submitInfo.pCommandBuffers = &commandBuffer;
 
-  if (vkQueueSubmit(graphicsQueue_, 1, &submitInfo, VK_NULL_HANDLE) !=
+  VkFence fence = VK_NULL_HANDLE;
+  VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+  if (createOwnedFence(device_, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+    vkFreeCommandBuffers(device_, commandPool_, 1, &commandBuffer);
+    throw std::runtime_error("failed to create upload fence");
+  }
+  if (vkQueueSubmit(graphicsQueue_, 1, &submitInfo, fence) !=
       VK_SUCCESS) {
+    destroyOwnedFence(device_, fence, nullptr);
     vkFreeCommandBuffers(device_, commandPool_, 1, &commandBuffer);
     throw std::runtime_error("failed to submit single-use command buffer");
   }
-  if (vkQueueWaitIdle(graphicsQueue_) != VK_SUCCESS) {
+  VkResult wait;
+  do {
+    wait = vkWaitForFences(device_, 1, &fence, VK_TRUE, 4000000);
+    if (wait == VK_TIMEOUT && loadProgress_) loadProgress_(false);
+  } while (wait == VK_TIMEOUT);
+  destroyOwnedFence(device_, fence, nullptr);
+  if (wait != VK_SUCCESS) {
     vkFreeCommandBuffers(device_, commandPool_, 1, &commandBuffer);
     throw std::runtime_error("failed to wait for single-use command buffer");
   }
 
   vkFreeCommandBuffers(device_, commandPool_, 1, &commandBuffer);
+  if (loadProgress_) loadProgress_(true);
 }
 
 void AllocationManager::copyBuffer(VkBuffer src, VkBuffer dst,

@@ -1,19 +1,24 @@
 
 #include "Container/app/AppConfig.h"
 #include "Container/app/Application.h"
+#include "Container/renderer/lighting/DdgiPreset.h"
+#include "Container/utility/Platform.h"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <print>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -82,11 +87,111 @@ std::array<float, 3> parseVec3(int argc, char** argv, int& index,
   return result;
 }
 
+glm::uvec3 parseCounts(int argc, char** argv, int& index,
+                       std::string_view option) {
+  glm::uvec3 result{};
+  for (int axis = 0; axis < 3; ++axis)
+    result[axis] = parseUint(requireValue(argc, argv, index, option), option);
+  return result;
+}
+
+void printCommandLineHelp() {
+  std::println(R"(Usage: VulkanSceneRenderer [model] [options]
+  --model PATH                  glTF model or auxiliary BIM/IFC/USD model
+  --bim-model PATH              Additional BIM/IFC/USD model
+  --import-scale F              Model import scale
+  --bim-import-scale F          Auxiliary model import scale
+  --width N --height N          Window dimensions
+  --render-technique NAME       Render technique
+  --display-mode NAME           Display mode (--render-mode is an alias)
+  --msaa N                     MSAA sample count
+  --taa / --no-taa              Enable/disable temporal antialiasing
+  --taa-history-weight F        History blend [0,0.98]
+  --taa-depth-absolute F         Absolute depth tolerance [0,1000]
+  --taa-depth-relative F         Relative depth tolerance [0,1]
+  --taa-variance-gamma F         Variance gamma [0.5,4]
+  --taa-jitter-seed N            Jitter sequence seed
+  --taa-reset-frame N            Reset history at a capture frame
+  --ray-shadows raster|hard|soft Ray shadow mode
+  --ray-shadow-samples N         Area samples [1,32]
+  --ray-shadow-light-budget N    Local light budget [0,8]
+  --ray-shadow-debug-layer N     Debug view [0,10]
+  --no-ray-shadow-denoise        Disable ray shadow denoising
+  --no-ray-query                Disable optional ray queries
+  --area-lighting sampled|ltc    Area light integration mode
+  --area-light-samples 9|25|64    Sampled area light count
+  --area-shadow-quality N        Raster area shadow quality [0,3]
+  --area-emitter-debug           Display area emitters
+  --ddgi / --no-ddgi             Enable/disable diffuse probe GI (default off)
+  --ddgi-pause                  Pause updates while retaining frame budgets
+  --ddgi-preset PATH             Load this scene's saved configuration
+                                Explicit DDGI options override the preset
+  --ddgi-save-preset PATH        Save configuration after startup scene fitting
+  --ddgi-thin-glass / --no-ddgi-thin-glass
+  --ddgi-dielectric / --no-ddgi-dielectric
+                                Refract rough/solid glass in secondary GI rays
+  --ddgi-camera-follow / --no-ddgi-camera-follow
+                                Scroll the primary grid with the camera
+  --ddgi-async / --no-ddgi-async  Use an available second compute queue
+  --ddgi-detail-node NAME        Fit a detail volume to a named scene node/element
+  --ddgi-detail-probes N         Maximum new detail probes, >=27 (512)
+                                Enable/disable supported thin-glass transmission
+  --ddgi-fit-scene              Fit probes and trace settings once to scene bounds
+  --ddgi-fit-probes N           Maximum fitted probes, >=27 (2048); requires fit
+  --ddgi-debug VIEW             off|irradiance|visibility|classification|relocation
+  --ddgi-probe-radius F         Diagnostic sphere radius in world units (0.06)
+  --ddgi-origin X Y Z            First world-space probe (-1.5,-0.1,-1.5)
+  --ddgi-spacing X Y Z           Positive world-space spacing (0.5,0.5,0.5)
+  --ddgi-counts X Y Z            Positive lattice counts (7,5,7)
+  --ddgi-rays N                  Rays per updated probe [1,4096] (128)
+  --ddgi-probes-per-frame N      Maximum updated probes (128); 0 pauses
+  --ddgi-ray-budget N            Maximum rays per frame (16384); 0 pauses
+  --ddgi-max-distance F          Ray distance (0,1000000] world units (20)
+  --ddgi-hysteresis F            Previous-history weight [0,0.99] (0.95)
+  --ddgi-normal-bias F           Normal offset [0,max-distance] (0.03)
+  --ddgi-view-bias F             View offset [0,max-distance] (0.01)
+  --ddgi-visibility-bias F       Distance-test bias [0,max-distance] (0.05)
+  --ddgi-intensity F             Indirect light multiplier [0,10000] (1)
+  --ddgi-memory-mb N             Positive probe payload cap in MiB (64)
+  --ddgi-surface-memory-mb N     Positive hit-surface payload cap in MiB (128)
+                                Fit origin/spacing/counts to each scene's bounds
+  --camera-position X Y Z        Override world-space camera position
+  --camera-target X Y Z          Override world-space camera target
+  --camera-fov F                 Camera vertical field of view in degrees
+  --exposure F                   Manual exposure
+  --environment-intensity F      Environment intensity
+  --directional-intensity F      Directional light intensity
+  --directional-direction X Y Z  Directional light direction
+  --directional-color R G B      Directional light color
+  --bloom / --no-bloom            Enable/disable bloom
+  --screenshot PATH             Capture PNG (--visual-regression-capture alias)
+  --capture-sequence PATH        Capture temporal sequence
+  --warmup-frames N              Capture warmup frames
+  --capture-frame N              Screenshot frame
+  --fixed-dt F                   Capture timestep in seconds
+  --gfxrecon-session PATH        GFXReconstruct session
+  --validation / --no-validation Enable/disable Vulkan validation
+  --no-ui                       Disable GUI
+  --hidden                      Hide window
+  --help                        Show this help without starting the renderer)");
+}
+
 void applyCommandLine(container::app::AppConfig& config, int argc,
                       char** argv) {
   bool positionalModelConsumed = false;
   bool explicitBimModel = false;
   bool explicitBimImportScale = false;
+  bool explicitDdgiFitField = false;
+  bool explicitDdgiFitBudget = false;
+  bool explicitDdgiDetailBudget = false;
+  std::vector<std::function<void(container::renderer::DdgiSettings &)>>
+      ddgiOverrides;
+  const auto rememberDdgi = [&](auto accessor) {
+    const auto value = accessor(config.ddgi);
+    ddgiOverrides.emplace_back([accessor, value](auto &settings) {
+      accessor(settings) = value;
+    });
+  };
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i] ? std::string_view(argv[i]) : "";
     if (arg == "--model") {
@@ -96,6 +201,130 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       config.windowWidth = parseUint(requireValue(argc, argv, i, arg), arg);
     } else if (arg == "--height") {
       config.windowHeight = parseUint(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == "--ddgi") {
+      config.ddgi.enabled = true;
+      rememberDdgi([](auto &s) -> auto & { return s.enabled; });
+    } else if (arg == "--no-ddgi") {
+      config.ddgi.enabled = false;
+      rememberDdgi([](auto &s) -> auto & { return s.enabled; });
+    } else if (arg == "--ddgi-preset") {
+      if (!config.ddgiPresetPath.empty())
+        throw std::invalid_argument("--ddgi-preset may be specified only once");
+      config.ddgiPresetPath = std::string(requireValue(argc, argv, i, arg));
+      if (config.ddgiPresetPath.empty())
+        throw std::invalid_argument("--ddgi-preset requires a file path");
+    } else if (arg == "--ddgi-save-preset") {
+      config.ddgiSavePresetPath = std::string(requireValue(argc, argv, i, arg));
+      if (config.ddgiSavePresetPath.empty())
+        throw std::invalid_argument("--ddgi-save-preset requires a file path");
+    } else if (arg == "--ddgi-thin-glass" || arg == "--no-ddgi-thin-glass") {
+      config.ddgi.thinGlassTransmission = arg == "--ddgi-thin-glass";
+      rememberDdgi([](auto &s) -> auto & { return s.thinGlassTransmission; });
+    } else if (arg == "--ddgi-dielectric" || arg == "--no-ddgi-dielectric") {
+      config.ddgi.dielectricTransmission = arg == "--ddgi-dielectric";
+      rememberDdgi([](auto &s) -> auto & { return s.dielectricTransmission; });
+    } else if (arg == "--ddgi-camera-follow" || arg == "--no-ddgi-camera-follow") {
+      config.ddgi.cameraFollow = arg == "--ddgi-camera-follow";
+      rememberDdgi([](auto &s) -> auto & { return s.cameraFollow; });
+    } else if (arg == "--ddgi-async" || arg == "--no-ddgi-async") {
+      config.ddgi.asyncCompute = arg == "--ddgi-async";
+      rememberDdgi([](auto &s) -> auto & { return s.asyncCompute; });
+    } else if (arg == "--ddgi-detail-node") {
+      config.ddgiDetailNode = std::string(requireValue(argc, argv, i, arg));
+      if (config.ddgiDetailNode.empty())
+        throw std::invalid_argument("--ddgi-detail-node requires a nonempty node name");
+    } else if (arg == "--ddgi-detail-probes") {
+      explicitDdgiDetailBudget = true;
+      config.ddgiDetailProbeBudget = parseUint(requireValue(argc, argv, i, arg), arg);
+      if (config.ddgiDetailProbeBudget < 27)
+        throw std::invalid_argument("--ddgi-detail-probes must be at least 27");
+    } else if (arg == "--ddgi-fit-scene") {
+      config.ddgiFitScene = true;
+    } else if (arg == "--ddgi-fit-probes") {
+      config.ddgiFit.maxProbes = parseUint(requireValue(argc, argv, i, arg), arg);
+      explicitDdgiFitBudget = true;
+    } else if (arg == "--ddgi-origin" || arg == "--ddgi-spacing") {
+      explicitDdgiFitField = true;
+      const auto value = parseVec3(argc, argv, i, arg);
+      const glm::vec3 vector(value[0], value[1], value[2]);
+      if (arg == "--ddgi-origin") {
+        config.ddgi.volume.origin = vector;
+        rememberDdgi([](auto &s) -> auto & { return s.volume.origin; });
+      } else {
+        config.ddgi.volume.spacing = vector;
+        rememberDdgi([](auto &s) -> auto & { return s.volume.spacing; });
+      }
+    } else if (arg == "--ddgi-counts") {
+      explicitDdgiFitField = true;
+      config.ddgi.volume.counts = parseCounts(argc, argv, i, arg);
+      rememberDdgi([](auto &s) -> auto & { return s.volume.counts; });
+    } else if (arg == "--ddgi-rays") {
+      config.ddgi.resources.updates.raysPerProbe =
+          parseUint(requireValue(argc, argv, i, arg), arg);
+      rememberDdgi([](auto &s) -> auto & { return s.resources.updates.raysPerProbe; });
+    } else if (arg == "--ddgi-probes-per-frame") {
+      config.ddgi.resources.updates.maxProbesPerFrame =
+          parseUint(requireValue(argc, argv, i, arg), arg);
+      rememberDdgi([](auto &s) -> auto & { return s.resources.updates.maxProbesPerFrame; });
+    } else if (arg == "--ddgi-ray-budget") {
+      config.ddgi.resources.updates.maxRaysPerFrame =
+          parseUint(requireValue(argc, argv, i, arg), arg);
+      rememberDdgi([](auto &s) -> auto & { return s.resources.updates.maxRaysPerFrame; });
+    } else if (arg == "--ddgi-max-distance") {
+      explicitDdgiFitField = true;
+      config.ddgi.maxDistance = parseFloat(requireValue(argc, argv, i, arg), arg);
+      rememberDdgi([](auto &s) -> auto & { return s.maxDistance; });
+    } else if (arg == "--ddgi-hysteresis") {
+      config.ddgi.hysteresis = parseFloat(requireValue(argc, argv, i, arg), arg);
+      rememberDdgi([](auto &s) -> auto & { return s.hysteresis; });
+    } else if (arg == "--ddgi-normal-bias") {
+      explicitDdgiFitField = true;
+      config.ddgi.normalBias = parseFloat(requireValue(argc, argv, i, arg), arg);
+      rememberDdgi([](auto &s) -> auto & { return s.normalBias; });
+    } else if (arg == "--ddgi-view-bias") {
+      explicitDdgiFitField = true;
+      config.ddgi.viewBias = parseFloat(requireValue(argc, argv, i, arg), arg);
+      rememberDdgi([](auto &s) -> auto & { return s.viewBias; });
+    } else if (arg == "--ddgi-visibility-bias") {
+      explicitDdgiFitField = true;
+      config.ddgi.visibilityBias =
+          parseFloat(requireValue(argc, argv, i, arg), arg);
+      rememberDdgi([](auto &s) -> auto & { return s.visibilityBias; });
+    } else if (arg == "--ddgi-intensity") {
+      config.ddgi.intensity = parseFloat(requireValue(argc, argv, i, arg), arg);
+      rememberDdgi([](auto &s) -> auto & { return s.intensity; });
+    } else if (arg == "--ddgi-pause") {
+      config.ddgi.paused = true;
+      rememberDdgi([](auto &s) -> auto & { return s.paused; });
+    } else if (arg == "--ddgi-debug") {
+      const auto view = requireValue(argc, argv, i, arg);
+      using container::renderer::DdgiDebugView;
+      if (view == "off")
+        config.ddgi.debugView = DdgiDebugView::Off;
+      else if (view == "irradiance")
+        config.ddgi.debugView = DdgiDebugView::Irradiance;
+      else if (view == "visibility")
+        config.ddgi.debugView = DdgiDebugView::Visibility;
+      else if (view == "classification")
+        config.ddgi.debugView = DdgiDebugView::Classification;
+      else if (view == "relocation")
+        config.ddgi.debugView = DdgiDebugView::Relocation;
+      else
+        throw std::invalid_argument("Unknown DDGI debug view");
+      rememberDdgi([](auto &s) -> auto & { return s.debugView; });
+    } else if (arg == "--ddgi-probe-radius") {
+      explicitDdgiFitField = true;
+      config.ddgi.debugProbeRadius =
+          parseFloat(requireValue(argc, argv, i, arg), arg);
+      rememberDdgi([](auto &s) -> auto & { return s.debugProbeRadius; });
+    } else if (arg == "--ddgi-memory-mb") {
+      config.ddgi.payloadBudgetBytes =
+          uint64_t(parseUint(requireValue(argc, argv, i, arg), arg)) * 1024 * 1024;
+      rememberDdgi([](auto &s) -> auto & { return s.payloadBudgetBytes; });
+    } else if (arg == "--ddgi-surface-memory-mb") {
+      config.ddgi.surfaceBudgetBytes =
+          uint64_t(parseUint(requireValue(argc, argv, i, arg), arg)) * 1024 * 1024;
+      rememberDdgi([](auto &s) -> auto & { return s.surfaceBudgetBytes; });
     } else if (arg == "--taa") {
       config.taa.enabled = true;
     } else if (arg == "--no-taa") {
@@ -251,21 +480,56 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     }
   }
 
-  container::temporal::validateSettings(config.taa, config.msaaSamples);
-
   if (!explicitBimModel && isAuxiliaryRenderModelPath(config.modelPath)) {
     config.bimModelPath = config.modelPath;
-    if (!explicitBimImportScale) {
+    if (!explicitBimImportScale)
       config.bimImportScale = config.importScale;
-    }
     config.modelPath.clear();
   }
+  if (!config.ddgiPresetPath.empty()) {
+    auto preset = container::renderer::loadDdgiPreset(
+        container::util::pathFromUtf8(config.ddgiPresetPath));
+    const auto sceneIdentity = container::renderer::ddgiSceneIdentity(
+        container::util::pathFromUtf8(config.modelPath),
+        container::util::pathFromUtf8(config.bimModelPath), config.importScale,
+        config.bimImportScale);
+    if (preset.sceneIdentity != sceneIdentity)
+      throw std::invalid_argument(
+          "DDGI preset scene paths/import scales do not match the selected scene");
+    for (const auto &overrideSettings : ddgiOverrides)
+      overrideSettings(preset.settings);
+    config.ddgi = std::move(preset.settings);
+  }
+
+  container::temporal::validateSettings(config.taa, config.msaaSamples);
+  if (config.ddgiFitScene && explicitDdgiFitField)
+    throw std::invalid_argument(
+        "--ddgi-fit-scene cannot be combined with explicit DDGI volume, trace "
+        "distance, bias or probe-radius settings; use manual setup instead.");
+  if (explicitDdgiFitBudget && !config.ddgiFitScene)
+    throw std::invalid_argument("--ddgi-fit-probes requires --ddgi-fit-scene");
+  if (explicitDdgiDetailBudget && config.ddgiDetailNode.empty())
+    throw std::invalid_argument("--ddgi-detail-probes requires --ddgi-detail-node");
+  if (config.ddgiFitScene && config.ddgiFit.maxProbes < 27)
+    throw std::invalid_argument("--ddgi-fit-probes must be at least 27");
+  // Scene bounds become available after importing. Validate/prepare the
+  // minimum padded lattice meanwhile, so a small fit budget is not rejected
+  // against the unrelated default volume or allocated before fitting.
+  if (config.ddgiFitScene)
+    config.ddgi.volume.counts = {3, 3, 3};
+  container::renderer::validateDdgiSettings(config.ddgi);
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
   try {
+    for (int i = 1; i < argc; ++i) {
+      if (argv[i] && std::string_view(argv[i]) == "--help") {
+        printCommandLineHelp();
+        return EXIT_SUCCESS;
+      }
+    }
     auto config = container::app::DefaultAppConfig();
     applyCommandLine(config, argc, argv);
     container::app::Application application{std::move(config)};

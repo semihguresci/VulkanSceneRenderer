@@ -206,6 +206,212 @@ TEST(MaterialXIntegration, EmbeddedImageCacheIncludesContentAndColorSpace) {
   EXPECT_EQ(uploadColorSpaces, (std::vector<bool>{true, true, false}));
 }
 
+TEST(MaterialXIntegration,
+     ReusesDecodedExternalPixelsAndPreservesFileSamplerColorSpaceCache) {
+  tinygltf::Model model;
+  model.images.resize(1);
+  auto &image = model.images[0];
+  image.uri = "shared.png";
+  image.width = image.height = 1;
+  image.bits = 8;
+  image.pixel_type = TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE;
+  image.component = 4;
+  image.image = {32, 64, 96, 128};
+  model.textures.resize(3);
+  model.samplers.resize(3);
+  for (size_t i = 0; i < model.textures.size(); ++i) {
+    model.textures[i].source = 0;
+    model.textures[i].sampler = static_cast<int>(i);
+    model.samplers[i].wrapT = TINYGLTF_TEXTURE_WRAP_REPEAT;
+    model.samplers[i].wrapS = i == 1 ? TINYGLTF_TEXTURE_WRAP_MIRRORED_REPEAT
+                                    : TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE;
+  }
+  model.materials.resize(1);
+  model.materials[0].pbrMetallicRoughness.baseColorTexture.index = 0;
+
+  container::material::SlangMaterialXBridge bridge;
+  container::material::TextureManager textures;
+  std::vector<bool> uploadedColorSpaces;
+  std::string uploadedName;
+  const auto external = [](const std::string &, bool) {
+    ADD_FAILURE() << "Prepared external pixels must not reopen the file";
+    return container::material::TextureResource{};
+  };
+  const auto upload = [&](const std::string &name,
+                          std::span<const std::byte> rgba, uint32_t width,
+                          uint32_t height, bool srgb) {
+    uploadedName = name;
+    uploadedColorSpaces.push_back(srgb);
+    EXPECT_EQ(std::filesystem::path(name).lexically_normal(),
+              std::filesystem::path("assets/shared.png").lexically_normal());
+    EXPECT_EQ(width, 1u);
+    EXPECT_EQ(height, 1u);
+    EXPECT_EQ(rgba.size(), 4u);
+    EXPECT_EQ(rgba.data(),
+              reinterpret_cast<const std::byte *>(image.image.data()));
+    EXPECT_EQ(std::to_integer<unsigned>(rgba[0]), 32u);
+    EXPECT_EQ(std::to_integer<unsigned>(rgba[3]), 128u);
+    return container::material::TextureResource{};
+  };
+  const auto load = [&] {
+    return bridge.loadTexturesForGltf(model, "assets", textures, external,
+                                      upload);
+  };
+  const auto colorMapping = load();
+  ASSERT_EQ(colorMapping.size(), 3u);
+  EXPECT_NE(colorMapping[0], UINT32_MAX);
+  EXPECT_NE(colorMapping[0], colorMapping[1]);
+  EXPECT_EQ(colorMapping[0], colorMapping[2]);
+  ASSERT_EQ(uploadedColorSpaces.size(), 2u);
+  const auto *colorTexture = textures.getTexture(colorMapping[0]);
+  ASSERT_NE(colorTexture, nullptr);
+  EXPECT_EQ(colorTexture->name,
+            "file:" + uploadedName + "|sampler=" +
+                std::to_string(container::gpu::kMaterialSamplerWrapClampToEdge) +
+                "|srgb=1");
+  EXPECT_EQ(load(), colorMapping);
+
+  // The former file-loading path must resolve to the same existing resources.
+  image.image.clear();
+  EXPECT_EQ(load(), colorMapping);
+  EXPECT_EQ(uploadedColorSpaces.size(), 2u);
+  image.image = {32, 64, 96, 128};
+  model.materials[0].normalTexture.index = 0;
+  const auto dataMapping = load();
+  EXPECT_NE(dataMapping[0], colorMapping[0]);
+  EXPECT_NE(dataMapping[1], colorMapping[1]);
+  EXPECT_EQ(uploadedColorSpaces, (std::vector<bool>{true, true, false, false}));
+}
+
+TEST(MaterialXIntegration, ConvertsDecodedExternalGrayscaleAlphaAndRgbPixels) {
+  container::material::SlangMaterialXBridge bridge;
+  for (int components = 1; components <= 3; ++components) {
+    SCOPED_TRACE(components);
+    tinygltf::Model model;
+    model.images.resize(1);
+    auto &image = model.images[0];
+    image.uri = "decoded.png";
+    image.width = image.height = 1;
+    image.bits = 8;
+    image.pixel_type = TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE;
+    image.component = components;
+    image.image = {32, 64, 96};
+    image.image.resize(components);
+    model.textures.resize(1);
+    model.textures[0].source = 0;
+    container::material::TextureManager textures;
+    uint32_t uploads = 0;
+    const auto mapping = bridge.loadTexturesForGltf(
+        model, {}, textures,
+        [](const std::string &, bool) {
+          ADD_FAILURE() << "Decoded external image requested a file";
+          return container::material::TextureResource{};
+        },
+        [&](const std::string &, std::span<const std::byte> rgba, uint32_t,
+            uint32_t, bool) {
+          ++uploads;
+          EXPECT_EQ(rgba.size(), 4u);
+          EXPECT_EQ(std::to_integer<unsigned>(rgba[0]), 32u);
+          EXPECT_EQ(std::to_integer<unsigned>(rgba[1]),
+                    components <= 2 ? 32u : 64u);
+          EXPECT_EQ(std::to_integer<unsigned>(rgba[2]),
+                    components <= 2 ? 32u : 96u);
+          EXPECT_EQ(std::to_integer<unsigned>(rgba[3]),
+                    components == 2 ? 64u : 255u);
+          return container::material::TextureResource{};
+        });
+    ASSERT_EQ(mapping.size(), 1u);
+    EXPECT_NE(mapping[0], UINT32_MAX);
+    EXPECT_EQ(uploads, 1u);
+  }
+}
+
+TEST(MaterialXIntegration, FallsBackToFileForUnsupportedExternalDecodedPixels) {
+  container::material::SlangMaterialXBridge bridge;
+  for (int mode = 0; mode < 6; ++mode) {
+    SCOPED_TRACE(mode);
+    tinygltf::Model model;
+    model.images.resize(1);
+    auto &image = model.images[0];
+    image.uri = "fallback.png";
+    image.width = image.height = 1;
+    image.bits = 8;
+    image.pixel_type = TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE;
+    image.component = 4;
+    image.image = {32, 64, 96, 128};
+    switch (mode) {
+    case 0:
+      image.bits = 16;
+      image.pixel_type = TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT;
+      image.image.resize(8);
+      break;
+    case 1:
+      image.as_is = true;
+      break;
+    case 2:
+      image.image.resize(3);
+      break;
+    case 3:
+      image.image.clear();
+      break;
+    case 4:
+      image.width = -1;
+      break;
+    case 5:
+      image.pixel_type = TINYGLTF_COMPONENT_TYPE_FLOAT;
+      break;
+    }
+    model.textures.resize(1);
+    model.textures[0].source = 0;
+    model.materials.resize(1);
+    model.materials[0].normalTexture.index = 0;
+    container::material::TextureManager textures;
+    uint32_t fileLoads = 0;
+    const auto mapping = bridge.loadTexturesForGltf(
+        model, {}, textures,
+        [&](const std::string &name, bool srgb) {
+          ++fileLoads;
+          EXPECT_EQ(name, "fallback.png");
+          EXPECT_FALSE(srgb);
+          return container::material::TextureResource{};
+        },
+        [](const std::string &, std::span<const std::byte>, uint32_t, uint32_t,
+           bool) {
+          ADD_FAILURE() << "Unsupported decoded payload requested pixel upload";
+          return container::material::TextureResource{};
+        });
+    ASSERT_EQ(mapping.size(), 1u);
+    EXPECT_NE(mapping[0], UINT32_MAX);
+    EXPECT_EQ(fileLoads, 1u);
+  }
+}
+
+TEST(MaterialXIntegration, ExternalDecodedPixelsStillSupportFileOnlyLoader) {
+  tinygltf::Model model;
+  model.images.resize(1);
+  auto &image = model.images[0];
+  image.uri = "fallback.png";
+  image.width = image.height = 1;
+  image.bits = 8;
+  image.pixel_type = TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE;
+  image.component = 4;
+  image.image = {32, 64, 96, 128};
+  model.textures.resize(1);
+  model.textures[0].source = 0;
+  container::material::SlangMaterialXBridge bridge;
+  container::material::TextureManager textures;
+  uint32_t fileLoads = 0;
+  const auto mapping = bridge.loadTexturesForGltf(
+      model, {}, textures, [&](const std::string &, bool srgb) {
+        ++fileLoads;
+        EXPECT_TRUE(srgb);
+        return container::material::TextureResource{};
+      });
+  ASSERT_EQ(mapping.size(), 1u);
+  EXPECT_NE(mapping[0], UINT32_MAX);
+  EXPECT_EQ(fileLoads, 1u);
+}
+
 TEST(MaterialXIntegration, ImportsKhrMaterialsPbrSpecularGlossiness) {
   tinygltf::Model model;
   model.images.resize(2);

@@ -9,6 +9,7 @@
 
 #include "object_data_common.slang"
 #include "material_data_common.slang"
+#include "ddgi_lighting_common.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(1, 0)]] StructuredBuffer<ObjectBuffer> uObjects;
@@ -588,6 +589,13 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         baseColor, metallic, specularFactor, specularColor,
         material.ior, iridescenceTint);
 
+    DdgiLookupResult ddgi = LookupDdgiDiffuseReceiver(material, vertIn.flags,
+        transmissionFactor, vertIn.worldPos, surfaceNormal.geometricNormal,
+        surfaceNormal.shadingNormal, V);
+    float ddgiCoverage = saturate(ddgi.coverage);
+    float bounceIntensity = max(ForwardFiniteOr(uLighting.bounceIntensity, 0.0), 0.0) *
+        (1.0 - ddgiCoverage);
+
     float3 F_ibl = FresnelSchlickRoughness(NdotV, F0, roughness);
     float3 kD_ibl = (1.0 - F_ibl) * (1.0 - metallic);
     float environmentIntensity =
@@ -597,6 +605,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             gIrradianceCubemap.Sample(envSampler, surfaceNormal.shadingNormal).rgb,
             0.0.xxx) *
         environmentIntensity;
+    irradiance = lerp(irradiance, DdgiDiffuseIrradiance(ddgi), ddgiCoverage);
     float3 diffuseIBL = irradiance * baseColor;
     float3 R = reflect(-V, surfaceNormal.shadingNormal);
     float maxMipLevel = max(float(uLighting.prefilteredMipCount) - 1.0, 0.0);
@@ -619,7 +628,8 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     specularOcclusion = lerp(1.0, specularOcclusion, saturate(1.0 - roughness));
     float3 lighting = kD_ibl * diffuseIBL * diffuseAO + specularIBL * specularOcclusion;
     lighting += ComputeForwardAmbientFloor(
-        baseColor, occlusion, environmentIntensity, uLighting.bounceIntensity);
+        baseColor, occlusion, environmentIntensity, bounceIntensity) *
+        (1.0 - ddgiCoverage);
 
     if ((vertIn.flags & kPbrObjectFlagUnlit) != 0u)
     {
@@ -681,7 +691,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             baseColor, metallic, surfaceNormal.shadingNormal,
             surfaceNormal.geometricNormal, V, directionalL,
             directionalRadiance, shadowFactor, occlusion,
-            uLighting.bounceIntensity);
+            bounceIntensity);
         if (thinSurface)
         {
             directLighting += EvaluateThinSurfaceTransmission(
@@ -745,7 +755,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             directLighting += EvaluateDiffuseBounceLight(
                 baseColor, metallic, surfaceNormal.shadingNormal,
                 surfaceNormal.geometricNormal, V, L, unshadowedRadiance,
-                lightVisibility, occlusion, uLighting.bounceIntensity);
+                lightVisibility, occlusion, bounceIntensity);
             if (thinSurface)
             {
                 directLighting += EvaluateThinSurfaceTransmission(
@@ -814,7 +824,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             bool correctDiffuseFresnel = useLtc && any(ltcTerms.diffuseCorrectionScale > 0.0.xxx);
             bool sampleDirectTerms = useLtc &&
                 (ltcTerms.stableWeight < 1.0 || ltcTerms.fresnelWeight < 1.0);
-            if (useLtc && !sampleDirectTerms && uLighting.bounceIntensity <= 0.0 && !correctDiffuseFresnel)
+            if (useLtc && !sampleDirectTerms && bounceIntensity <= 0.0 && !correctDiffuseFresnel)
             {
                 directLighting += (ltcTerms.lighting.stable + ltcTerms.lighting.fresnel) *
                     areaShadowVisibility;
@@ -850,11 +860,11 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                     sampledTerms.stable += sample.stable;
                     sampledTerms.fresnel += sample.fresnel;
                 }
-                if (uLighting.bounceIntensity > 0.0)
+                if (bounceIntensity > 0.0)
                     directLighting += EvaluateDiffuseBounceLight(
                         baseColor, metallic, surfaceNormal.shadingNormal,
                         surfaceNormal.geometricNormal, V, L, radiance,
-                        lightVisibility, occlusion, uLighting.bounceIntensity);
+                        lightVisibility, occlusion, bounceIntensity);
                 if (correctDiffuseFresnel)
                     diffuseCorrection += EvaluateAreaLightDiffuseFresnelCorrection(
                         ltcTerms.diffuseCorrectionScale, surfaceNormal.shadingNormal,

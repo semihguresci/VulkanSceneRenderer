@@ -20,6 +20,8 @@ struct DeferredPointLightingRecordInputs {
   VkPipelineLayout tiledLightingLayout{VK_NULL_HANDLE};
   std::array<VkDescriptorSet, 3> pointLightingDescriptorSets{};
   std::array<VkDescriptorSet, 4> tiledLightingDescriptorSets{};
+  VkDescriptorSet ddgiDescriptorSet{VK_NULL_HANDLE};
+  bool ddgiDescriptorsRequired{true};
   VkExtent2D framebufferExtent{};
   LightPushConstants *lightPushConstants{nullptr};
   const LightingManager *lightingManager{nullptr};

@@ -1,0 +1,52 @@
+UpdateCTestConfiguration  from :F:/Projects/Container/out/build/visual-studio/DartConfiguration.tcl
+Test project F:/Projects/Container/out/build/visual-studio
+Constructing a list of tests
+Done constructing a list of tests
+Updating test list for fixtures
+Added 0 tests to meet fixture requirements
+Checking test dependency graph...
+Checking test dependency graph end
+test 8
+    Start 8: ddgi_gpu_tests
+
+8: Test command: F:\Projects\Container\out\build\visual-studio\tests\ddgi_gpu_tests.exe "--gtest_output=xml:F:/Projects/Container/out/build/visual-studio/test_results/ddgi_gpu_tests.xml"
+8: Working Directory: F:/Projects/Container/out/build/visual-studio
+8: Test timeout computed to be: 10000000
+8: Running main() from F:\Projects\vcpkg\buildtrees\gtest\src\v1.16.0-a2e0b328c1.clean\googletest\src\gtest_main.cc
+8: [==========] Running 8 tests from 1 test suite.
+8: [----------] Global test environment set-up.
+8: [----------] 8 tests from DdgiGpu
+8: [ RUN      ] DdgiGpu.ConstantSphericalRadianceIntegratesToPiLiAndPreservesOtherProbes
+8: [       OK ] DdgiGpu.ConstantSphericalRadianceIntegratesToPiLiAndPreservesOtherProbes (601 ms)
+8: [ RUN      ] DdgiGpu.HysteresisBlendsExistingActiveHistoryAndDistanceMoments
+8: [       OK ] DdgiGpu.HysteresisBlendsExistingActiveHistoryAndDistanceMoments (121 ms)
+8: [ RUN      ] DdgiGpu.ContentEpochRefreshesOnlySelectedProbeWithoutBlendingStaleHistory
+8: [       OK ] DdgiGpu.ContentEpochRefreshesOnlySelectedProbeWithoutBlendingStaleHistory (122 ms)
+8: [ RUN      ] DdgiGpu.PartialInvalidRaySetsKeepGeneratedDirectionDenominator
+8: [       OK ] DdgiGpu.PartialInvalidRaySetsKeepGeneratedDirectionDenominator (120 ms)
+8: [ RUN      ] DdgiGpu.FiniteHdrRadianceSaturatesHalfAtlasAndPublishesClampFlag
+8: [       OK ] DdgiGpu.FiniteHdrRadianceSaturatesHalfAtlasAndPublishesClampFlag (117 ms)
+8: [ RUN      ] DdgiGpu.ClassificationRejectsBackfacesAndNonfiniteRaysButRetainsOccluders
+8: [       OK ] DdgiGpu.ClassificationRejectsBackfacesAndNonfiniteRaysButRetainsOccluders (117 ms)
+8: [ RUN      ] DdgiGpu.PausedUpdatePreservesSubmittedAtlasAndProbeStateBitwise
+8: [       OK ] DdgiGpu.PausedUpdatePreservesSubmittedAtlasAndProbeStateBitwise (121 ms)
+8: [ RUN      ] DdgiGpu.RelocationRemainsScaleRelativeAndInvalidUntilRetraced
+8: [       OK ] DdgiGpu.RelocationRemainsScaleRelativeAndInvalidUntilRetraced (153 ms)
+8: [----------] 8 tests from DdgiGpu (1476 ms total)
+8: 
+8: [----------] Global test environment tear-down
+8: [==========] 8 tests from 1 test suite ran. (1476 ms total)
+8: [  PASSED  ] 8 tests.
+1/1 Test #8: ddgi_gpu_tests ...................   Passed    1.64 sec
+
+The following tests passed:
+	ddgi_gpu_tests
+
+100% tests passed, 0 tests failed out of 1
+
+Label Time Summary:
+ddgi                =   1.64 sec*proc (1 test)
+requires-display    =   1.64 sec*proc (1 test)
+requires-vulkan     =   1.64 sec*proc (1 test)
+
+Total Test time (real) =   1.66 sec

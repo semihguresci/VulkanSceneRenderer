@@ -19,7 +19,8 @@ DeferredDirectionalLightingRecordInputs requiredInputs() {
       .pipelineLayout = fakeHandle<VkPipelineLayout>(0x2),
       .descriptorSets = {fakeHandle<VkDescriptorSet>(0x3),
                          fakeHandle<VkDescriptorSet>(0x4),
-                         fakeHandle<VkDescriptorSet>(0x5)}};
+                         fakeHandle<VkDescriptorSet>(0x5)},
+      .ddgiDescriptorSet = fakeHandle<VkDescriptorSet>(0x6)};
 }
 
 } // namespace
@@ -64,6 +65,14 @@ TEST(DeferredDirectionalLightingRecorderTests,
   DeferredDirectionalLightingRecordInputs inputs = requiredInputs();
   inputs.descriptorSets[2] = VK_NULL_HANDLE;
 
+  EXPECT_FALSE(recordDeferredDirectionalLightingCommands(VK_NULL_HANDLE,
+                                                        inputs));
+}
+
+TEST(DeferredDirectionalLightingRecorderTests,
+     MissingDdgiFallbackDescriptorSetReturnsFalse) {
+  DeferredDirectionalLightingRecordInputs inputs = requiredInputs();
+  inputs.ddgiDescriptorSet = VK_NULL_HANDLE;
   EXPECT_FALSE(recordDeferredDirectionalLightingCommands(VK_NULL_HANDLE,
                                                         inputs));
 }

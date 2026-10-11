@@ -41,6 +41,21 @@ struct GuiRenderTechniqueDebugState {
   std::vector<GuiRenderTechniqueDebugPanel> panels{};
 };
 
+struct GuiDdgiRuntimeState {
+  bool supported{false};
+  bool active{false};
+  std::string status{};
+  uint64_t allocatedBytes{0};
+  uint64_t updateFrame{0};
+  uint32_t contentEpoch{0};
+  uint32_t refreshRemainingProbes{0};
+  uint32_t schedulingCursor{0};
+  uint32_t updatedProbes{0};
+  uint32_t tracedRays{0};
+  float traceGpuMs{0.f};
+  float updateGpuMs{0.f};
+};
+
 enum class GuiRendererTelemetryPhase : uint8_t {
   Frame,
   WaitForFrame,

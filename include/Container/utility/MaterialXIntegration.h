@@ -49,6 +49,8 @@ class SlangMaterialXBridge {
     std::vector<MaterialX::DocumentPtr> loadGltfMaterials(
         const tinygltf::Model& model) const;
 
+    // The decoded-pixel uploader also handles prepared external 8-bit images;
+    // the file loader remains the fallback for unsupported decoded formats.
     std::vector<uint32_t> loadTexturesForGltf(
         const tinygltf::Model &model, const std::filesystem::path &baseDir,
         container::material::TextureManager &textureManager,

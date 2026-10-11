@@ -1,0 +1,12 @@
+Test project F:/Projects/Container/out/build/visual-studio
+    Start 8: ddgi_gpu_tests
+1/1 Test #8: ddgi_gpu_tests ...................   Passed    1.35 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Label Time Summary:
+ddgi                =   1.35 sec*proc (1 test)
+requires-display    =   1.35 sec*proc (1 test)
+requires-vulkan     =   1.35 sec*proc (1 test)
+
+Total Test time (real) =   1.37 sec

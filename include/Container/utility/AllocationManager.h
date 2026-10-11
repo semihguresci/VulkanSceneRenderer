@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <glm/glm.hpp>
 #include <memory>
 #include <span>
@@ -45,9 +46,16 @@ class AllocationManager {
                   VkCommandPool commandPool, const app::AppConfig& config);
 
   void cleanup();
+  // False pumps events during a transfer; true may draw the loading view.
+  void setLoadProgressCallback(std::function<void(bool)> callback) {
+    loadProgress_ = std::move(callback);
+  }
 
   BufferSlice uploadVertices(std::span<const geometry::Vertex> vertices);
   BufferSlice uploadIndices(std::span<const uint32_t> indices);
+  // Caller must retire all GPU readers before reusing scene geometry storage.
+  void resetGeometryAllocations();
+  [[nodiscard]] VkDeviceSize geometryArenaCapacityBytes() const;
   AllocatedBuffer uploadBuffer(std::span<const std::byte> bytes,
                                VkBufferUsageFlags usage);
 
@@ -119,6 +127,7 @@ class AllocationManager {
   std::unique_ptr<BufferArena> indexArena_;
 
   std::vector<TextureAllocation> textureAllocations_{};
+  std::function<void(bool)> loadProgress_;
 };
 
 }  // namespace container::gpu

@@ -1,4 +1,5 @@
 #include <Container/utility/VulkanDevice.h>
+#include "Container/utility/AsyncComputeQueue.h"
 #include "Container/utility/SwapChainManager.h"  // FindQueueFamilies, QuerySwapChainSupport
 
 #include <array>
@@ -112,7 +113,9 @@ bool supportsRequestedVulkan12Features(
          requestedFeatureSupported(requestedFeatures->drawIndirectCount,
                                    supportedFeatures.drawIndirectCount) &&
          requestedFeatureSupported(requestedFeatures->hostQueryReset,
-                                   supportedFeatures.hostQueryReset);
+                                   supportedFeatures.hostQueryReset) &&
+         requestedFeatureSupported(requestedFeatures->timelineSemaphore,
+                                   supportedFeatures.timelineSemaphore);
 }
 
 }  // namespace
@@ -170,13 +173,20 @@ void VulkanDevice::createLogicalDevice() {
       queueFamilyIndices_.graphicsFamily.value(),
       queueFamilyIndices_.presentFamily.value()};
 
-  float queuePriority = 1.0f;
+  uint32_t familyCount = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice_, &familyCount, nullptr);
+  std::vector<VkQueueFamilyProperties> families(familyCount);
+  vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice_, &familyCount, families.data());
+  const auto asyncIndex = selectAsyncComputeQueueIndex(
+      families, queueFamilyIndices_.graphicsFamily.value());
+  const std::array queuePriorities{1.0f, 0.5f};
   for (uint32_t queueFamily : uniqueQueueFamilies) {
     VkDeviceQueueCreateInfo queueCreateInfo{};
     queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
     queueCreateInfo.queueFamilyIndex = queueFamily;
-    queueCreateInfo.queueCount = 1;
-    queueCreateInfo.pQueuePriorities = &queuePriority;
+    queueCreateInfo.queueCount = asyncIndex &&
+        queueFamily == queueFamilyIndices_.graphicsFamily.value() ? 2u : 1u;
+    queueCreateInfo.pQueuePriorities = queuePriorities.data();
     queueCreateInfos.push_back(queueCreateInfo);
   }
 
@@ -332,6 +342,9 @@ void VulkanDevice::createLogicalDevice() {
                    &graphicsQueue_);
   vkGetDeviceQueue(device_, queueFamilyIndices_.presentFamily.value(), 0,
                    &presentQueue_);
+  if (asyncIndex)
+    vkGetDeviceQueue(device_, queueFamilyIndices_.graphicsFamily.value(),
+                     *asyncIndex, &asyncComputeQueue_);
 }
 
 bool VulkanDevice::isDeviceSuitable(VkPhysicalDevice device) const {

@@ -127,7 +127,39 @@ std::string_view bimRelationshipKindLabel(BimRelationshipKind kind) noexcept {
   return "Relationship";
 }
 
-void BimRelationshipGraph::clear() {
+void BimRelationshipGraph::clear(const std::function<void()> &progress) {
+  if (progress) {
+    // Metadata destruction can take significant time for large BIM models.
+    // Pop vectors and erase hash entries in bounded chunks without shifting.
+    const auto drainVector = [&progress](auto &values) {
+      while (!values.empty()) {
+        for (size_t count = 0; count < 128u && !values.empty(); ++count) {
+          values.pop_back();
+        }
+        progress();
+      }
+    };
+    const auto drainIndex = [&progress](auto &values) {
+      while (!values.empty()) {
+        auto it = values.begin();
+        for (size_t count = 0; count < 128u && it != values.end(); ++count) {
+          it = values.erase(it);
+        }
+        progress();
+      }
+    };
+    drainVector(nodes_);
+    drainVector(edges_);
+    drainIndex(edgeIdentities_);
+    drainIndex(nodeByObjectIndex_);
+    drainIndex(nodeByGuid_);
+    drainIndex(nodeBySourceId_);
+    drainIndex(nodeByLabel_);
+    drainIndex(syntheticNodeByKey_);
+    drainIndex(propertySetsByObject_);
+    drainVector(searchFields_);
+    return;
+  }
   nodes_.clear();
   edges_.clear();
   edgeIdentities_.clear();
@@ -143,8 +175,15 @@ void BimRelationshipGraph::clear() {
 void BimRelationshipGraph::build(
     std::span<const BimElementMetadata> metadata,
     std::span<const container::geometry::dotbim::ElementRelationship>
-        relationships) {
-  clear();
+        relationships,
+    const std::function<void()> &progress) {
+  clear(progress);
+  size_t completedSteps = 0u;
+  const auto checkpoint = [&]() {
+    if (progress && (completedSteps++ % 128u) == 0u) {
+      progress();
+    }
+  };
   nodes_.reserve(metadata.size());
   nodeByObjectIndex_.reserve(metadata.size());
   nodeByGuid_.reserve(metadata.size());
@@ -154,10 +193,12 @@ void BimRelationshipGraph::build(
   edgeIdentities_.reserve(metadata.size());
 
   for (const BimElementMetadata &element : metadata) {
+    checkpoint();
     (void)addObjectNode(element);
   }
 
   for (const BimElementMetadata &element : metadata) {
+    checkpoint();
     const uint32_t elementNode = objectNodeIndex(element.objectIndex);
     if (elementNode == kInvalidNodeIndex) {
       continue;
@@ -196,6 +237,7 @@ void BimRelationshipGraph::build(
 
   for (const container::geometry::dotbim::ElementRelationship &relationship :
        relationships) {
+    checkpoint();
     const BimRelationshipKind kind =
         relationshipKindFromString(relationship.kind);
     const std::string label =
@@ -206,6 +248,7 @@ void BimRelationshipGraph::build(
         relationship.toGuid, relationship.toSourceId, label, kind);
     for (const uint32_t from : fromNodes) {
       for (const uint32_t to : toNodes) {
+        checkpoint();
         if (from == kInvalidNodeIndex || to == kInvalidNodeIndex) {
           continue;
         }
@@ -222,6 +265,9 @@ void BimRelationshipGraph::build(
         }
       }
     }
+  }
+  if (progress) {
+    progress();
   }
 }
 

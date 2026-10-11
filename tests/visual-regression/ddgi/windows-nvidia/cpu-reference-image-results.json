@@ -1,0 +1,145 @@
+{
+  "schemaVersion": 1,
+  "startedUtc": "2026-10-09T12:26:04.054043+00:00",
+  "model": "independent CPU opaque Lambertian exact-quad transport",
+  "resolution": [
+    192,
+    128
+  ],
+  "cosinePathsPerPixel": 128,
+  "scatteringVertices": 8,
+  "directEmitterQuadratureOrder": 12,
+  "primarySampling": "one pixel-center camera ray; no antialiasing or spatial filter",
+  "batchPixels": 128,
+  "seed": 42,
+  "exposure": 0.04,
+  "displayTransform": "ACES fitted curve then sRGB",
+  "sourceSha256": {
+    "render_reference.py": "821529e62b1a75509c2ccd879fbf3a5073050232bc40728dad5069d039896121",
+    "quality_fixtures.py": "d777aa1f0b6762357c8807e51cb5eeae6d3d8fc8aeaead59dc89d04a3ed17092",
+    "reference.py": "8110a17034eca6d605a4fdf9b18d32835f573af33185b84526dcf1c82e0a07ca"
+  },
+  "limitations": [
+    "finite scattering depth truncates remaining diffuse transport",
+    "64 or 128 paths/pixel visibly retain Monte Carlo noise",
+    "standard error covers indirect Monte Carlo variance only",
+    "direct quadrature can bias partially occluded emitter visibility",
+    "low resolution and pixel-center sampling alias thin edges",
+    "GPU diffuse PBR includes Fresnel energy attenuation absent here",
+    "no glossy, transmission, emission, environment or image denoising"
+  ],
+  "scenes": {
+    "doorway": {
+      "camera": {
+        "position": [
+          0.0,
+          1.65,
+          7.0
+        ],
+        "target": [
+          0.0,
+          1.15,
+          -0.5
+        ],
+        "fov": 50.0
+      },
+      "light": {
+        "position": [
+          -1.5,
+          2.6,
+          -0.6
+        ],
+        "normal": [
+          0,
+          -1,
+          0
+        ],
+        "u": [
+          0.4,
+          0,
+          0
+        ],
+        "v": [
+          0,
+          0,
+          -0.4
+        ],
+        "radiance": [
+          100.0,
+          100.0,
+          100.0
+        ],
+        "range": 0.0
+      },
+      "geometryGltfSha256": "4c41afb178c190af2eb2857cef64d709ec87dd1268fd333a195c4edfbf58ee15",
+      "seed": 42,
+      "png": "architecture-doorway-cpu-reference.png",
+      "pngSha256": "ec108810b71d0f0bad3ffa005a3bd965d171a4458798fb28b0c586d22b6c6448",
+      "linearData": "architecture-doorway-cpu-reference.npz",
+      "linearDataSha256": "fccd18d23db0e90578fe011826ee22f77e2ae3e7d7308c585ab5bba54684f416",
+      "elapsedSeconds": 4.982323599997471,
+      "frontFacingPixels": 8784,
+      "totalPixels": 24576,
+      "meanLuminanceStandardError": 0.031935694522873266,
+      "p95LuminanceStandardError": 0.06718761124712153,
+      "maximumLuminanceStandardError": 0.0779567777231471
+    },
+    "sealed-thin": {
+      "camera": {
+        "position": [
+          0.0,
+          1.65,
+          7.0
+        ],
+        "target": [
+          0.0,
+          1.15,
+          -0.5
+        ],
+        "fov": 50.0
+      },
+      "light": {
+        "position": [
+          -1.5,
+          2.6,
+          -0.6
+        ],
+        "normal": [
+          0,
+          -1,
+          0
+        ],
+        "u": [
+          0.4,
+          0,
+          0
+        ],
+        "v": [
+          0,
+          0,
+          -0.4
+        ],
+        "radiance": [
+          100.0,
+          100.0,
+          100.0
+        ],
+        "range": 0.0
+      },
+      "geometryGltfSha256": "e848ee0b2a6238bc5e8302748cb6ba1a2a3310ccb34e0dbae0de1f60e06fea94",
+      "seed": 43,
+      "png": "architecture-sealed-thin-cpu-reference.png",
+      "pngSha256": "fe57725b438879f46cafc7f1300add74694d832d8d5bc0c711bd23b3ca312cd9",
+      "linearData": "architecture-sealed-thin-cpu-reference.npz",
+      "linearDataSha256": "8aa42cec95bab97902d8a72f70b122e2acc296cc209bfc0ac8a716fe59aa4ca5",
+      "elapsedSeconds": 3.605264599998918,
+      "frontFacingPixels": 8784,
+      "totalPixels": 24576,
+      "meanLuminanceStandardError": 0.02449255764854802,
+      "p95LuminanceStandardError": 0.06912819016670914,
+      "maximumLuminanceStandardError": 0.08026982859073317
+    }
+  },
+  "finishedUtc": "2026-10-09T12:26:12.729598+00:00",
+  "elapsedSeconds": 8.675555
+}

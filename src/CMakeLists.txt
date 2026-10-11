@@ -43,6 +43,18 @@ add_library(VulkanSceneRenderer_renderer
     renderer/lighting/EnvironmentManager.cpp
     renderer/lighting/EditableLight.cpp
     renderer/lighting/LightGizmoIconAtlas.cpp
+    renderer/lighting/DdgiProbeVolume.cpp
+    renderer/lighting/DdgiSettings.cpp
+    renderer/lighting/DdgiVolumeFit.cpp
+    renderer/lighting/DdgiSceneBounds.cpp
+    renderer/lighting/DdgiSceneChanges.cpp
+    renderer/lighting/DdgiVolumePlacement.cpp
+    renderer/lighting/DdgiVolumeScroll.cpp
+    renderer/lighting/DdgiVolumeSet.cpp
+    renderer/lighting/DdgiPriorityScheduler.cpp
+    renderer/lighting/DdgiPreset.cpp
+    renderer/lighting/DdgiManager.cpp
+    renderer/debug/DdgiDebugRenderer.cpp
     renderer/lighting/LtcLutData.cpp
     renderer/lighting/LtcLutResources.cpp
     renderer/lighting/LightingManager.cpp
@@ -124,6 +136,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/bim/BimGeoreferenceTransform.cpp
     renderer/bim/BimLightingOverlayPlanner.cpp
     renderer/bim/BimLightingOverlayRecorder.cpp
+    renderer/bim/BimInspectionCache.cpp
     renderer/bim/BimManager.cpp
     renderer/bim/BimMetadataCatalog.cpp
     renderer/bim/BimMetadataIndex.cpp

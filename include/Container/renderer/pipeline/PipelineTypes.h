@@ -114,6 +114,7 @@ struct PipelineDescriptorLayouts {
   VkDescriptorSetLayout postProcess{VK_NULL_HANDLE};
   VkDescriptorSetLayout oit{VK_NULL_HANDLE};
   VkDescriptorSetLayout rayShadowTrace{VK_NULL_HANDLE};
+  VkDescriptorSetLayout ddgiRead{VK_NULL_HANDLE};
 };
 
 // Input render passes required to create the pipelines.

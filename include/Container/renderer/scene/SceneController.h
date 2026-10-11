@@ -28,6 +28,10 @@ class PipelineManager;
 class VulkanDevice;
 }  // namespace container::gpu
 
+namespace container::geometry {
+struct GltfLoadResult;
+}  // namespace container::geometry
+
 namespace container::scene {
 class SceneGraph;
 class SceneManager;
@@ -125,7 +129,8 @@ class SceneController {
       VkIndexType&                            outIndexType,
       uint32_t&                               outRootNode,
       uint32_t&                               outSelectedMeshNode,
-      uint32_t&                               outCubeNode);
+      uint32_t&                               outCubeNode,
+      container::geometry::GltfLoadResult*      prepared = nullptr);
 
   [[nodiscard]] uint32_t pickRenderableNode(
       const container::gpu::CameraData& cameraData,
