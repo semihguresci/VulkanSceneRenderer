@@ -3,13 +3,12 @@
 #include "material_data_common.slang"
 #include "brdf_common.slang"
 #include "area_light_common.slang"
+#include "ray_scene_data.slang"
 
 #ifndef RAY_SCENE_SET
 #define RAY_SCENE_SET 2
 #endif
 
-struct RayTriangleData { float4 uv[3]; };
-struct RayInstanceData { uint4 info; };
 [[vk::binding(0, RAY_SCENE_SET)]] ConstantBuffer<RayShadowTraceData> uRayTrace;
 [[vk::binding(1, RAY_SCENE_SET)]] RaytracingAccelerationStructure gRayScene;
 [[vk::binding(2, RAY_SCENE_SET)]] StructuredBuffer<RayTriangleData> uRayTriangles;

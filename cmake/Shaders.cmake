@@ -59,6 +59,12 @@ set(SLANG_INCLUDE_SHADER_NAMES
     ray_shadow_receiver_common.slang
     ray_shadow_read.slang
     ray_visibility_common.slang
+    ray_scene_data.slang
+    ray_surface_common.slang
+    ddgi_data.slang
+    ddgi_lookup_common.slang
+    ddgi_lighting_common.slang
+    ddgi_transport_common.slang
 )
 
 set(SLANG_COMPUTE_SHADER_NAMES
@@ -84,6 +90,8 @@ set(SLANG_COMPUTE_SHADER_NAMES
     exposure_adapt.slang
     ray_shadow_trace.slang
     ray_shadow_filter.slang
+    ddgi_trace.slang
+    ddgi_update.slang
 )
 
 set(SLANG_GEOMETRY_SHADER_NAMES
@@ -157,6 +165,16 @@ add_slang_output(
     "${COMPILED_SHADERS_DIR}/forward_opaque_ray.frag.spv"
     -DFORWARD_RAY_QUERY=1 -capability spvRayQueryKHR)
 
+# Vulkan guarantees only four bound descriptor sets. Keep raster lighting
+# usable on that limit without reserving a fifth set for optional DDGI.
+foreach(DDGI_LIGHTING_SHADER forward_opaque deferred_directional point_light tiled_lighting)
+    add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/${DDGI_LIGHTING_SHADER}.slang" "fragMain"
+        "${COMPILED_SHADERS_DIR}/${DDGI_LIGHTING_SHADER}_no_ddgi.frag.spv" -DDDGI_DISABLED=1)
+endforeach()
+add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/forward_opaque.slang" "fragMain"
+    "${COMPILED_SHADERS_DIR}/forward_opaque_ray_no_ddgi.frag.spv"
+    -DDDGI_DISABLED=1 -DFORWARD_RAY_QUERY=1 -capability spvRayQueryKHR)
+
 # Geometry shaders for specific files.
 foreach(SLANG_GEOMETRY_SHADER_NAME IN LISTS SLANG_GEOMETRY_SHADER_NAMES)
     set(SLANG_SOURCE "${SHADERS_DIR}/${SLANG_GEOMETRY_SHADER_NAME}")
@@ -175,7 +193,7 @@ foreach(SLANG_COMPUTE_SHADER_NAME IN LISTS SLANG_COMPUTE_SHADER_NAMES)
         get_filename_component(SHADER_BASE "${SLANG_SOURCE}" NAME_WE)
         set(COMP_OUTPUT "${COMPILED_SHADERS_DIR}/${SHADER_BASE}.comp.spv")
         set(SLANG_OPTIONAL_CAPABILITIES)
-        if(SHADER_BASE STREQUAL "ray_shadow_trace")
+        if(SHADER_BASE STREQUAL "ray_shadow_trace" OR SHADER_BASE STREQUAL "ddgi_trace")
             set(SLANG_OPTIONAL_CAPABILITIES -capability spvRayQueryKHR)
         endif()
         add_slang_output(

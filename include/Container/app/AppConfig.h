@@ -10,6 +10,8 @@
 
 #include "Container/app/GfxCapture.h"
 #include "Container/common/CommonVulkan.h"
+#include "Container/renderer/lighting/DdgiSettings.h"
+#include "Container/renderer/lighting/DdgiVolumeFit.h"
 #include "Container/renderer/raytracing/RayShadowSettings.h"
 #include "Container/renderer/temporal/TemporalState.h"
 
@@ -50,6 +52,14 @@ struct AppConfig {
   bool enableValidationLayers{false};
   bool enableRayQueries{true};
   container::renderer::RayShadowSettings rayShadows{};
+  container::renderer::DdgiSettings ddgi{};
+  // Explicit preset operations only; no implicit loading changes defaults.
+  std::string ddgiPresetPath{};
+  std::string ddgiSavePresetPath{};
+  std::string ddgiDetailNode{};
+  uint32_t ddgiDetailProbeBudget{512};
+  bool ddgiFitScene{false};
+  container::renderer::DdgiVolumeFitOptions ddgiFit{};
   bool enableGui{true};
   bool windowVisible{true};
   uint32_t msaaSamples{1};

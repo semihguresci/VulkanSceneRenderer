@@ -37,6 +37,7 @@ class VulkanDevice {
   [[nodiscard]] VkDevice device() const noexcept { return device_; }
   [[nodiscard]] const vk::raii::Device& raii() const noexcept { return ownedDevice_; }
   [[nodiscard]] VkQueue graphicsQueue() const noexcept { return graphicsQueue_; }
+  [[nodiscard]] VkQueue asyncComputeQueue() const noexcept { return asyncComputeQueue_; }
   [[nodiscard]] VkQueue presentQueue() const noexcept { return presentQueue_; }
   [[nodiscard]] QueueFamilyIndices queueFamilyIndices() const noexcept {
     return queueFamilyIndices_;
@@ -72,6 +73,7 @@ class VulkanDevice {
   VkPhysicalDevice physicalDevice_{VK_NULL_HANDLE};
   VkDevice device_{VK_NULL_HANDLE};
   VkQueue graphicsQueue_{VK_NULL_HANDLE};
+  VkQueue asyncComputeQueue_{VK_NULL_HANDLE};
   VkQueue presentQueue_{VK_NULL_HANDLE};
   QueueFamilyIndices queueFamilyIndices_{};
   VkPhysicalDeviceFeatures enabledFeatures_{};

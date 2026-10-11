@@ -1477,13 +1477,27 @@ BimManager::BimManager(std::shared_ptr<container::gpu::VulkanDevice> device,
       drawFilterState_(std::make_unique<BimDrawFilterState>()) {}
 
 BimManager::~BimManager() {
+  // The frontend's progress renderer may already be gone during teardown.
+  loadProgressCallback_ = {};
   clear();
   destroyDrawCompactionComputeResources();
   destroyVisibilityFilterComputeResources();
   destroyMeshletResidencyComputeResources();
 }
 
+void BimManager::setLoadProgressCallback(
+    std::function<void(std::string_view)> callback) {
+  loadProgressCallback_ = std::move(callback);
+}
+
+void BimManager::notifyLoadProgress(std::string_view stage) const {
+  if (loadProgressCallback_) {
+    loadProgressCallback_(stage);
+  }
+}
+
 void BimManager::clear() {
+  notifyLoadProgress("Releasing BIM GPU resources");
   if (vertexBuffer_.buffer != VK_NULL_HANDLE) {
     allocationManager_.destroyBuffer(vertexBuffer_);
   }
@@ -1503,8 +1517,20 @@ void BimManager::clear() {
   indices_.clear();
   objectData_.clear();
   temporalRootTranslation_ = glm::vec3(0);
+  if (loadProgressCallback_) {
+    // Releasing thousands of property strings can itself be expensive.
+    // Drain from the end so checkpoints do not add quadratic vector erases.
+    while (!elementMetadata_.empty()) {
+      for (size_t count = 0; count < 128 && !elementMetadata_.empty(); ++count) {
+        elementMetadata_.pop_back();
+      }
+      notifyLoadProgress("Releasing BIM metadata");
+    }
+  }
   elementMetadata_.clear();
-  relationshipGraph_.clear();
+  relationshipGraph_.clear(loadProgressCallback_
+      ? std::function<void()>([this] { notifyLoadProgress("Releasing BIM relationships"); })
+      : std::function<void()>{});
   objectDrawCommands_.clear();
   objectDrawCommandOffsets_.clear();
   objectDrawCommandCounts_.clear();
@@ -1537,6 +1563,7 @@ void BimManager::clear() {
   modelPath_.clear();
   importReport_ = {};
   ++objectDataRevision_;
+  notifyLoadProgress("BIM resources released");
 }
 
 bool BimManager::hasScene() const {
@@ -2937,7 +2964,7 @@ void BimManager::collectNativeDrawCommandsForObject(
 }
 
 std::filesystem::path
-BimManager::resolveModelPath(const std::string &path) const {
+BimManager::resolveModelPath(const std::string &path) {
   std::filesystem::path resolved = container::util::pathFromUtf8(path);
   if (!resolved.is_relative() || std::filesystem::exists(resolved)) {
     return resolved;
@@ -2949,6 +2976,85 @@ BimManager::resolveModelPath(const std::string &path) const {
     return exeRelative;
   }
   return resolved;
+}
+
+BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
+                                                   float importScale) {
+  PreparedScene prepared{.assetPath = resolveModelPath(path),
+                         .requestedPath = path};
+  const auto extension = lowerAscii(prepared.assetPath.extension().string());
+  auto requireGeometry = [&]() {
+    if (!hasRenderableSourceGeometry(prepared.model)) {
+      const auto &report = prepared.model.importReport;
+      std::string message = modelLoadErrorPrefix(prepared.format, prepared.assetPath);
+      if (report.completeness != container::geometry::ImportCompleteness::Unreported)
+        message += ": " + report.summary();
+      if (!report.diagnostics.empty())
+        message += "; " + report.diagnostics.front().reason;
+      throw std::runtime_error(message);
+    }
+  };
+  if (extension == ".bim") {
+    prepared.format = "dotbim";
+    prepared.model = container::geometry::dotbim::LoadFromFile(prepared.assetPath, importScale);
+  } else if (extension == ".ifcx") {
+    prepared.format = "IFCX";
+    prepared.model = container::geometry::ifcx::LoadFromFile(prepared.assetPath, importScale);
+  } else if (extension == ".ifc") {
+    prepared.format = "IFC";
+    try {
+      prepared.model = container::geometry::ifc::LoadFromFile(prepared.assetPath, importScale);
+      requireGeometry();
+    } catch (const std::exception &error) {
+      const auto sidecar = preparedIfcSidecarPath(prepared.assetPath);
+      if (!sidecar)
+        throw;
+      auto originalReport = prepared.model.importReport;
+      if (originalReport.completeness == container::geometry::ImportCompleteness::Unreported) {
+        originalReport.completeness = container::geometry::ImportCompleteness::Failed;
+        originalReport.diagnostics.push_back({"IFC_FILE", 0, 0, {}, error.what()});
+        originalReport.representationWarnings["IFC_FILE"] = 1;
+      }
+      prepared.model = container::geometry::ifcx::LoadFromFile(*sidecar, importScale);
+      originalReport.fallbackSource = sidecar->string();
+      prepared.model.importReport = std::move(originalReport);
+      prepared.assetPath = *sidecar;
+      prepared.format = "IFCX";
+    }
+  } else if (extension == ".usd" || extension == ".usda" ||
+             extension == ".usdc" || extension == ".usdz") {
+    prepared.format = "USD";
+    prepared.model = container::geometry::usd::LoadFromFile(prepared.assetPath, importScale);
+  } else {
+    throw std::runtime_error("unsupported auxiliary model format '" + extension + "'");
+  }
+  requireGeometry();
+  prepared.meshletClusters = buildMeshletClusterMetadataForModel(prepared.model);
+  prepared.optimizedMetadata = buildOptimizedModelMetadata(
+      prepared.assetPath, prepared.model, prepared.meshletClusters);
+  prepared.uploadVertices = prepared.model.vertices;
+  prepared.uploadIndices = prepared.model.indices;
+  const auto prepareFloorPlan = [&](bool preserveElevation,
+                                    BimFloorPlanOverlayData &overlay) {
+    const auto result = appendFloorPlanOverlayGeometry(
+        prepared.model, prepared.uploadVertices, prepared.uploadIndices,
+        preserveElevation);
+    overlay.firstIndex = result.firstIndex;
+    overlay.indexCount = result.indexCount;
+    overlay.boundsCenter = result.boundsCenter;
+    overlay.boundsRadius = result.boundsRadius;
+  };
+  prepareFloorPlan(false, prepared.floorPlanGround);
+  prepareFloorPlan(true, prepared.floorPlanSourceElevation);
+  return prepared;
+}
+
+void BimManager::loadPreparedScene(const PreparedScene &prepared,
+                                    container::scene::SceneManager &sceneManager) {
+  clear();
+  loadPreparedModel(prepared.model, prepared.assetPath, prepared.format,
+                    sceneManager, &prepared);
+  modelPath_ = prepared.requestedPath;
 }
 
 void BimManager::loadModel(const std::string &path, float importScale,
@@ -3046,7 +3152,8 @@ void BimManager::loadIfcWithPreparedSidecarFallback(
 void BimManager::loadPreparedModel(
     const container::geometry::dotbim::Model &model,
     const std::filesystem::path &path, std::string_view format,
-    container::scene::SceneManager &sceneManager) {
+    container::scene::SceneManager &sceneManager,
+    const PreparedScene *prepared) {
   const auto logger = container::log::ContainerLogger::instance().renderer();
   auto stageStart = std::chrono::steady_clock::now();
   auto logStage = [&](std::string_view stage) {
@@ -3082,38 +3189,53 @@ void BimManager::loadPreparedModel(
       bimModelUnitMetadata(model.unitMetadata));
   metadataCatalog_->setModelGeoreferenceMetadata(
       bimModelGeoreferenceMetadata(model.georeferenceMetadata));
-  meshletClusters_ = buildMeshletClusterMetadataForModel(model);
+  notifyLoadProgress("Preparing BIM upload metadata");
+  meshletClusters_ = prepared ? prepared->meshletClusters
+                             : buildMeshletClusterMetadataForModel(model);
   meshletClusterCount_ = meshletClusters_.size();
-  optimizedModelMetadata_ =
-      buildOptimizedModelMetadata(path, model, meshletClusters_);
+  optimizedModelMetadata_ = prepared ? prepared->optimizedMetadata
+      : buildOptimizedModelMetadata(path, model, meshletClusters_);
   logStage("meshlet metadata");
-  std::vector<container::geometry::Vertex> uploadVertices = model.vertices;
-  std::vector<uint32_t> uploadIndices = model.indices;
-  const BimFloorPlanBuildResult floorPlanGround =
-      appendFloorPlanOverlayGeometry(model, uploadVertices, uploadIndices,
-                                     false);
-  logStage("ground floor plan");
-  floorPlanGround_.firstIndex = floorPlanGround.firstIndex;
-  floorPlanGround_.indexCount = floorPlanGround.indexCount;
-  floorPlanGround_.boundsCenter = floorPlanGround.boundsCenter;
-  floorPlanGround_.boundsRadius = floorPlanGround.boundsRadius;
-  const BimFloorPlanBuildResult floorPlanSourceElevation =
-      appendFloorPlanOverlayGeometry(model, uploadVertices, uploadIndices,
-                                     true);
-  logStage("storey floor plan");
-  floorPlanSourceElevation_.firstIndex = floorPlanSourceElevation.firstIndex;
-  floorPlanSourceElevation_.indexCount = floorPlanSourceElevation.indexCount;
-  floorPlanSourceElevation_.boundsCenter =
-      floorPlanSourceElevation.boundsCenter;
-  floorPlanSourceElevation_.boundsRadius =
-      floorPlanSourceElevation.boundsRadius;
+  std::vector<container::geometry::Vertex> localUploadVertices;
+  std::vector<uint32_t> localUploadIndices;
+  if (prepared) {
+    floorPlanGround_ = prepared->floorPlanGround;
+    floorPlanSourceElevation_ = prepared->floorPlanSourceElevation;
+  } else {
+    localUploadVertices = model.vertices;
+    localUploadIndices = model.indices;
+    const auto buildFloorPlan = [&](bool preserveElevation,
+                                    BimFloorPlanOverlayData &overlay) {
+      notifyLoadProgress("Building BIM floor plans");
+      const auto result = appendFloorPlanOverlayGeometry(
+          model, localUploadVertices, localUploadIndices, preserveElevation);
+      overlay.firstIndex = result.firstIndex;
+      overlay.indexCount = result.indexCount;
+      overlay.boundsCenter = result.boundsCenter;
+      overlay.boundsRadius = result.boundsRadius;
+    };
+    buildFloorPlan(false, floorPlanGround_);
+    logStage("ground floor plan");
+    buildFloorPlan(true, floorPlanSourceElevation_);
+    logStage("storey floor plan");
+  }
 
-  uploadGeometry(uploadVertices, uploadIndices);
+  notifyLoadProgress("Uploading BIM geometry");
+  uploadGeometry(prepared ? std::span<const container::geometry::Vertex>(prepared->uploadVertices)
+                          : std::span<const container::geometry::Vertex>(localUploadVertices),
+                 prepared ? std::span<const uint32_t>(prepared->uploadIndices)
+                          : std::span<const uint32_t>(localUploadIndices));
   logStage("geometry upload");
+  notifyLoadProgress("Building BIM draw metadata");
   buildDrawDataFromModel(model, sceneManager);
   logStage("draw metadata");
-  relationshipGraph_.build(elementMetadata_, model.relationships);
+  notifyLoadProgress("Building BIM relationships");
+  relationshipGraph_.build(elementMetadata_, model.relationships,
+      loadProgressCallback_
+          ? std::function<void()>([this] { notifyLoadProgress("Building BIM relationships"); })
+          : std::function<void()>{});
   logStage("relationship graph");
+  notifyLoadProgress("Uploading BIM residency data");
   uploadMeshletResidencyBuffers();
   logStage("residency upload");
   if (!hasScene()) {
@@ -3187,6 +3309,9 @@ void BimManager::buildDrawDataFromModel(
                                        model.indices.size() - firstIndex);
     const size_t endIndex = firstIndex + indexCount;
     for (size_t index = firstIndex; index < endIndex; ++index) {
+      if (index != firstIndex && ((index - firstIndex) % 65536u) == 0u) {
+        notifyLoadProgress("Computing BIM object bounds");
+      }
       const uint32_t vertexIndex = model.indices[index];
       if (vertexIndex >= model.vertices.size()) {
         continue;
@@ -3211,6 +3336,9 @@ void BimManager::buildDrawDataFromModel(
 
   for (size_t elementIndex = 0; elementIndex < model.elements.size();
        ++elementIndex) {
+    if ((elementIndex % 128u) == 0u) {
+      notifyLoadProgress("Building BIM draw metadata");
+    }
     const auto &element = model.elements[elementIndex];
     const auto rangeIt = rangesByMeshId.find(element.meshId);
     if (rangeIt == rangesByMeshId.end() || rangeIt->second.indexCount == 0u) {
@@ -3425,6 +3553,9 @@ void BimManager::buildDrawDataFromModel(
   auto appendPendingDraw = [this, &clusterSpansByMeshId, &productIdentityIds](
                                const PendingDraw &pending, bool allowMerge) {
     const uint32_t objectIndex = static_cast<uint32_t>(objectData_.size());
+    if ((objectIndex % 128u) == 0u) {
+      notifyLoadProgress("Indexing BIM objects");
+    }
     auto object = pending.object;
     const uint64_t temporalIdentity = nextTemporalObjectId_++;
     object.temporalInfo.z = static_cast<uint32_t>(temporalIdentity);
@@ -3590,8 +3721,11 @@ void BimManager::buildDrawDataFromModel(
   if (objectData_.empty()) {
     return;
   }
+  notifyLoadProgress("Uploading BIM materials");
   sceneManager.uploadMaterialResources();
+  notifyLoadProgress("Uploading BIM objects");
   uploadObjects();
+  notifyLoadProgress("Uploading BIM visibility data");
   uploadVisibilityFilterBuffers();
 }
 
@@ -3677,8 +3811,23 @@ void BimManager::uploadGeometry(
     return;
   }
 
-  vertices_.assign(vertices.begin(), vertices.end());
-  indices_.assign(indices.begin(), indices.end());
+  if (loadProgressCallback_) {
+    const auto copyWithProgress = [this](auto &destination, auto source) {
+      constexpr size_t kCopyChunk = 65536u;
+      destination.reserve(source.size());
+      for (size_t offset = 0; offset < source.size(); offset += kCopyChunk) {
+        const size_t count = std::min(kCopyChunk, source.size() - offset);
+        destination.insert(destination.end(), source.begin() + offset,
+                            source.begin() + offset + count);
+        notifyLoadProgress("Staging BIM geometry");
+      }
+    };
+    copyWithProgress(vertices_, vertices);
+    copyWithProgress(indices_, indices);
+  } else {
+    vertices_.assign(vertices.begin(), vertices.end());
+    indices_.assign(indices.begin(), indices.end());
+  }
 
   const VkDeviceSize vertexBufferSize = static_cast<VkDeviceSize>(
       sizeof(container::geometry::Vertex) * vertices.size());
@@ -3689,6 +3838,7 @@ void BimManager::uploadGeometry(
       {reinterpret_cast<const std::byte *>(vertices.data()),
        static_cast<size_t>(vertexBufferSize)},
       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+  notifyLoadProgress("Uploading BIM indices");
   indexBuffer_ = allocationManager_.uploadBuffer(
       {reinterpret_cast<const std::byte *>(indices.data()),
        static_cast<size_t>(indexBufferSize)},

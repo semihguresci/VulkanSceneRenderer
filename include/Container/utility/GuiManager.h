@@ -1,4 +1,5 @@
 #pragma once
+#include "Container/renderer/lighting/DdgiSettings.h"
 #include "Container/renderer/raytracing/RayShadowSettings.h"
 
 #include <cstddef>
@@ -37,6 +38,7 @@ enum class BimSnapKind : uint32_t;
 enum class RenderTechniqueId;
 enum class ScenePrimitiveKind : uint32_t;
 struct BimElementProperty;
+struct BimElementMetadata;
 class BimRelationshipGraph;
 struct BimStoreyRange;
 struct CullStats;
@@ -134,6 +136,7 @@ struct ModelLoadRequest {
   std::string path{};
   float importScale{1.0f};
   std::string label{};
+  bool unload{false};
 };
 
 struct ViewportInteractionState {
@@ -336,6 +339,9 @@ struct BimClipCapHatchingUiState {
 struct BimInspectionState {
   bool hasScene{false};
   std::string modelPath{};
+  std::span<const container::renderer::BimElementMetadata> elements{};
+  std::function<void(uint32_t)> selectObject{};
+  std::function<void(uint32_t)> focusObject{};
   const container::geometry::ImportReport *importReport{nullptr};
   size_t objectCount{0};
   size_t meshObjectCount{0};
@@ -485,6 +491,27 @@ struct SceneHierarchyParentCandidateCacheState {
   std::vector<SceneHierarchyParentCandidateRow> rows{};
 };
 
+struct GuiPanelBounds {
+  glm::vec2 position{};
+  glm::vec2 size{};
+};
+
+// Keeps restored/resized floating panels inside the current viewport, even
+// after switching from a large monitor to a smaller render window.
+[[nodiscard]] GuiPanelBounds constrainGuiPanelToWorkArea(
+    glm::vec2 workPosition, glm::vec2 workSize, GuiPanelBounds panel);
+
+struct SampleModelOption {
+  std::string label{};
+  std::string path{};
+};
+
+// Reusable CPU ImGui widget: call inside an active window/popup. The returned
+// index always refers to the original catalog, even after filtering/clipping.
+[[nodiscard]] std::optional<size_t> drawSampleModelList(
+    std::span<const SampleModelOption> models, std::string &filter,
+    int selectedIndex);
+
 class GuiManager {
 public:
   GuiManager() = default;
@@ -516,11 +543,17 @@ public:
   // Shared by widgets and deterministic captures; consumed before NewFrame.
   void queueModelLoadRequest(std::string path, float importScale,
                              std::string label);
+  void queueModelUnloadRequest();
+  // Only call once a model replacement/unload has succeeded.
+  void resetModelInspectionState();
   [[nodiscard]] bool queueSampleModelLoadRequest(std::string_view label);
 
   void startFrame();
   void endFrame();
   void render(VkCommandBuffer commandBuffer);
+  // Safe while scene resources are being replaced: uses only ImGui state.
+  void drawModelLoadingProgress(std::string_view label, bool unloading,
+                                std::string_view stage);
 
   void drawViewportInteractionControls(
       const ViewportInteractionState &state,
@@ -571,6 +604,17 @@ public:
       const TransformControls &meshTransform,
       const std::function<void(uint32_t, const TransformControls &)>
           &applyMeshTransform);
+
+  // Widget-only entry point; caller owns the current ImGui frame/window.
+  void drawSceneHierarchy(
+      const container::scene::SceneGraph &sceneGraph, uint32_t rootSceneNode,
+      uint32_t selectedMeshNode,
+      const std::function<void(uint32_t)> &selectSceneNode,
+      const std::function<void(uint32_t)> &focusSceneNode,
+      const std::function<void(uint32_t, bool)> &setSceneNodeVisible,
+      const std::function<void(uint32_t, std::optional<uint32_t>)>
+          &reparentSceneNode);
+  void drawBimElementBrowser(const BimInspectionState &inspection);
 
   [[nodiscard]] bool isCapturingInput() const;
   [[nodiscard]] bool isCapturingMouse() const;
@@ -705,7 +749,40 @@ public:
     rayShadowSupported_ = supported;
     rayShadowStatus_ = std::move(status);
   }
-  void setGfxCaptureStatus(std::string status) { gfxCaptureStatus_ = std::move(status); }
+  void setDdgiState(const container::renderer::DdgiSettings &settings,
+                    GuiDdgiRuntimeState runtime);
+  [[nodiscard]] const container::renderer::DdgiSettings &ddgiSettings() const {
+    return ddgiSettings_;
+  }
+  // Validate an edit before exposing it to the Vulkan owner. Failed edits keep
+  // the last valid settings and a message for the controls panel.
+  bool trySetDdgiSettings(const container::renderer::DdgiSettings &settings);
+  // A one-shot request. The frontend computes current world bounds and applies
+  // the fit after the UI frame; controls never replace submitted GPU resources.
+  bool requestDdgiSceneFit(uint32_t maxProbes);
+  bool requestDdgiDetailFit(uint32_t maxProbes);
+  [[nodiscard]] std::optional<uint32_t> consumeDdgiDetailFitRequest();
+  enum class DdgiPresetAction { Save, Load };
+  void requestDdgiPreset(DdgiPresetAction action) { pendingDdgiPreset_ = action; }
+  [[nodiscard]] std::optional<DdgiPresetAction> consumeDdgiPresetRequest();
+  void setDdgiPresetStatus(std::string path, std::string status) {
+    ddgiPresetPath_ = std::move(path);
+    ddgiPresetStatus_ = std::move(status);
+  }
+  bool selectDdgiVolume(uint32_t index);
+  bool addDdgiDetailVolume();
+  bool removeDdgiDetailVolume(uint32_t index);
+  [[nodiscard]] std::optional<uint32_t> consumeDdgiSceneFitRequest();
+  void acceptDdgiSceneFit(const container::renderer::DdgiSettings &settings,
+                         std::string status);
+  void rejectDdgiSettings(const container::renderer::DdgiSettings &retained,
+                          std::string error);
+  [[nodiscard]] const std::string &ddgiControlError() const {
+    return ddgiControlError_;
+  }
+  void setGfxCaptureStatus(std::string status) {
+    gfxCaptureStatus_ = std::move(status);
+  }
   [[nodiscard]] bool freezeCullingRequested() const { return freezeCulling_; }
 
   void setTemporalSettings(const container::temporal::Settings &settings,
@@ -764,12 +841,8 @@ private:
   void ensureInitialized() const;
   void discoverSampleModels();
   void drawRendererTelemetryWindow();
+  void drawDdgiControls();
   [[nodiscard]] int sampleModelIndexForPath(const std::string &path) const;
-
-  struct SampleModelOption {
-    std::string label;
-    std::string path;
-  };
 
   struct BimMeasurementPointState {
     bool captured{false};
@@ -841,6 +914,7 @@ private:
   std::string modelPathInput_{};
   std::string defaultModelPath_{};
   std::vector<SampleModelOption> sampleModelOptions_;
+  std::string sampleModelFilter_{};
   int selectedSampleModelIndex_{-1};
   int importScaleIndex_{0};
   float importScale_{1.0f};
@@ -866,6 +940,20 @@ private:
   container::renderer::RayShadowSettings rayShadowSettings_{};
   bool rayShadowSupported_{false};
   std::string rayShadowStatus_{};
+  container::renderer::DdgiSettings ddgiSettings_{};
+  GuiDdgiRuntimeState ddgiRuntime_{};
+  container::renderer::DdgiProbeVolumeDesc ddgiVolumeDraft_{};
+  uint32_t ddgiSelectedVolume_{0};
+  uint32_t ddgiRaysPerProbeDraft_{128};
+  bool ddgiVolumeDraftDirty_{false};
+  std::string ddgiControlError_{};
+  uint32_t ddgiFitProbeBudget_{2048};
+  std::optional<uint32_t> pendingDdgiSceneFit_{};
+  std::optional<uint32_t> pendingDdgiDetailFit_{};
+  uint32_t ddgiDetailProbeBudget_{512};
+  std::string ddgiFitStatus_{};
+  std::optional<DdgiPresetAction> pendingDdgiPreset_{};
+  std::string ddgiPresetPath_{}, ddgiPresetStatus_{};
   bool freezeCulling_{false};
   bool bloomEnabled_{true};
   float bloomThreshold_{1.0f};
@@ -884,6 +972,7 @@ private:
   std::string bimQuickFilterSearch_{};
   std::string bimPropertySearch_{};
   std::string bimRelationshipSearch_{};
+  std::string bimElementSearch_{};
   container::renderer::BimSemanticColorMode bimSemanticColorMode_{};
   SectionPlaneState sectionPlaneState_{};
   BimBoxClipUiState bimBoxClipState_{};

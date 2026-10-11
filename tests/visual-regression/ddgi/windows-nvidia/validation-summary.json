@@ -1,0 +1,291 @@
+{
+  "date": "2026-10-09T10:37:03.562808+00:00",
+  "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+  "vulkanApiVersion": 4211013,
+  "nativeCases": 11,
+  "nativeSequenceFrames": 90,
+  "validationErrors": 0,
+  "tests": {
+    "ddgi_probe_volume_tests": {
+      "tests": 22,
+      "failures": 0,
+      "skipped": 0,
+      "timestamp": "2026-10-09T12:31:17.700"
+    },
+    "ddgi_settings_tests": {
+      "tests": 11,
+      "failures": 0,
+      "skipped": 0,
+      "timestamp": "2026-10-09T12:31:17.734"
+    },
+    "ray_scene_tests": {
+      "tests": 19,
+      "failures": 0,
+      "skipped": 0,
+      "timestamp": "2026-10-09T12:31:17.764"
+    },
+    "temporal_capture_tests": {
+      "tests": 12,
+      "failures": 0,
+      "skipped": 0,
+      "timestamp": "2026-10-09T12:31:17.792"
+    },
+    "deferred_directional_lighting_recorder_tests": {
+      "tests": 6,
+      "failures": 0,
+      "skipped": 0,
+      "timestamp": "2026-10-09T12:31:17.828"
+    },
+    "forward_raster_lighting_pass_recorder_tests": {
+      "tests": 14,
+      "failures": 0,
+      "skipped": 0,
+      "timestamp": "2026-10-09T12:31:17.860"
+    },
+    "render_graph_tests": {
+      "tests": 46,
+      "failures": 0,
+      "skipped": 0,
+      "timestamp": "2026-10-09T12:31:17.893"
+    },
+    "ddgi_gpu_tests": {
+      "tests": 7,
+      "failures": 0,
+      "skipped": 0,
+      "timestamp": "2026-10-09T12:32:26.623"
+    }
+  },
+  "spirvValidatedModules": 12,
+  "probeAllocatedBytes": 3038992,
+  "sharedRayAllocatedBytes": 70496,
+  "probeCount": 343,
+  "probesPerFrame": 128,
+  "raysPerFrame": 16384,
+  "sweepFrames": 3,
+  "displayPixelMetrics": {
+    "deferred": {
+      "ceiling": {
+        "rectangleXYXY": [
+          150,
+          50,
+          250,
+          70
+        ],
+        "directOnlyMeanDisplayRgb": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "giMeanDisplayRgb": [
+          0.3298490196078495,
+          0.2716274509803939,
+          0.18218039215686213
+        ],
+        "displayLumaIncrease": 0.277547278823532
+      },
+      "leftFloor": {
+        "rectangleXYXY": [
+          115,
+          290,
+          155,
+          320
+        ],
+        "directOnlyMeanDisplayRgb": [
+          0.469522875817,
+          0.443359477124179,
+          0.3974705882352927
+        ],
+        "giMeanDisplayRgb": [
+          0.5651764705882252,
+          0.48398366013072436,
+          0.42624509803921967
+        ],
+        "displayLumaIncrease": 0.05146788954248724
+      },
+      "rightFloor": {
+        "rectangleXYXY": [
+          245,
+          290,
+          285,
+          320
+        ],
+        "directOnlyMeanDisplayRgb": [
+          0.47193464052288325,
+          0.44568300653594234,
+          0.399696078431372
+        ],
+        "giMeanDisplayRgb": [
+          0.5253660130718893,
+          0.5203137254901928,
+          0.4314869281045778
+        ],
+        "displayLumaIncrease": 0.06703069934640411
+      },
+      "leftBackWall": {
+        "rectangleXYXY": [
+          130,
+          120,
+          160,
+          180
+        ],
+        "directOnlyMeanDisplayRgb": [
+          0.5049738562091516,
+          0.4788627450980392,
+          0.43225054466230883
+        ],
+        "giMeanDisplayRgb": [
+          0.6115098039215621,
+          0.529821350762528,
+          0.46824183006535935
+        ],
+        "displayLumaIncrease": 0.0616937080610011
+      },
+      "rightBackWall": {
+        "rectangleXYXY": [
+          240,
+          120,
+          270,
+          180
+        ],
+        "directOnlyMeanDisplayRgb": [
+          0.5049738562091513,
+          0.4788627450980393,
+          0.4322505446623088
+        ],
+        "giMeanDisplayRgb": [
+          0.5692657952069727,
+          0.560246187363838,
+          0.4702919389978209
+        ],
+        "displayLumaIncrease": 0.07462049281046008
+      }
+    },
+    "forward": {
+      "ceiling": {
+        "rectangleXYXY": [
+          150,
+          50,
+          250,
+          70
+        ],
+        "directOnlyMeanDisplayRgb": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "giMeanDisplayRgb": [
+          0.32978235294118285,
+          0.27180196078431546,
+          0.1826372549019599
+        ],
+        "displayLumaIncrease": 0.2776909003921594
+      },
+      "leftFloor": {
+        "rectangleXYXY": [
+          115,
+          290,
+          155,
+          320
+        ],
+        "directOnlyMeanDisplayRgb": [
+          0.46929738562092144,
+          0.4434411764705842,
+          0.39812091503267943
+        ],
+        "giMeanDisplayRgb": [
+          0.5650130718954143,
+          0.48405555555556096,
+          0.42683333333333745
+        ],
+        "displayLumaIncrease": 0.05146959542484008
+      },
+      "rightFloor": {
+        "rectangleXYXY": [
+          245,
+          290,
+          285,
+          320
+        ],
+        "directOnlyMeanDisplayRgb": [
+          0.47172549019608595,
+          0.4457712418300599,
+          0.40038235294117713
+        ],
+        "giMeanDisplayRgb": [
+          0.5251830065359416,
+          0.5204313725490164,
+          0.432150326797388
+        ],
+        "displayLumaIncrease": 0.06705564117646944
+      },
+      "leftBackWall": {
+        "rectangleXYXY": [
+          130,
+          120,
+          160,
+          180
+        ],
+        "directOnlyMeanDisplayRgb": [
+          0.5048148148148162,
+          0.47891503267973856,
+          0.4328300653594768
+        ],
+        "giMeanDisplayRgb": [
+          0.6113159041394269,
+          0.5298692810457524,
+          0.46888453159041393
+        ],
+        "displayLumaIncrease": 0.06168774248365899
+      },
+      "rightBackWall": {
+        "rectangleXYXY": [
+          240,
+          120,
+          270,
+          180
+        ],
+        "directOnlyMeanDisplayRgb": [
+          0.5048148148148158,
+          0.4789150326797387,
+          0.4328300653594767
+        ],
+        "giMeanDisplayRgb": [
+          0.5690392156862754,
+          0.5603180827886746,
+          0.4708758169934638
+        ],
+        "displayLumaIncrease": 0.07462047233115711
+      }
+    }
+  },
+  "forwardDeferredGi1DisplayRgbMeanAbsoluteError": 0.0013275145243282498,
+  "forwardDeferredGi1DisplayRgbP95AbsoluteError": 0.00392156862745098,
+  "singleFrameGpuMs": {
+    "cornell-deferred-gi0": {
+      "Lighting": 1.820255994796753,
+      "DdgiTrace": 0.06348799914121628,
+      "DdgiUpdate": 0.14374400675296783
+    },
+    "cornell-deferred-gi1": {
+      "Lighting": 1.9299520254135132,
+      "DdgiTrace": 0.06348799914121628,
+      "DdgiUpdate": 0.1446399986743927
+    },
+    "cornell-forward-gi0": {
+      "Lighting": 2.847520112991333,
+      "DdgiTrace": 0.06348799914121628,
+      "DdgiUpdate": 0.14448000490665436
+    },
+    "cornell-forward-gi1": {
+      "Lighting": 2.738271951675415,
+      "DdgiTrace": 0.06377600133419037,
+      "DdgiUpdate": 0.14336000382900238
+    }
+  },
+  "limitations": [
+    "PNG display-space measurements include tone mapping and quantization; they are not HDR reference error bounds.",
+    "Single-frame GPU timestamps are observations, not a performance benchmark; lookup is included in Lighting.",
+    "One local Cornell volume on one GPU; architectural, thin-wall and multi-device quality sweeps remain.",
+    "Native logs retain pre-existing unused-vertex-attribute warnings; no VUID or synchronization errors were observed."
+  ]
+}

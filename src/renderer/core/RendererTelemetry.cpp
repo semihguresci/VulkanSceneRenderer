@@ -295,6 +295,7 @@ void RendererTelemetry::endFrame() {
           latest_.timing.cpuMs[phaseIndex(RendererTelemetryPhase::WaitForFrame)],
       .presentMs =
           latest_.timing.cpuMs[phaseIndex(RendererTelemetryPhase::Present)],
+      .cpuPhasesMs = latest_.timing.cpuMs,
   });
   activeRecording_ = false;
 }

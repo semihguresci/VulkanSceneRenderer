@@ -5,6 +5,7 @@
 #include "Container/renderer/core/RendererMsaa.h"
 #include "Container/renderer/raytracing/RaySceneAcceleration.h"
 #include "Container/utility/FileLoader.h"
+#include "Container/utility/Logger.h"
 
 #include <array>
 #include <cstring>
@@ -154,6 +155,9 @@ struct RayShadowManager::Impl {
     std::weak_ptr<const ExtractedRayScene> geometry;
     std::shared_ptr<const Buffer> triangles;
     std::unique_ptr<Buffer> instances;
+    std::shared_ptr<const Buffer> surfaceTriangles;
+    std::unique_ptr<Buffer> surfaceInstances;
+    bool hasSurfaceData{false};
   };
   struct Slot {
     std::unique_ptr<Buffer> read, trace;
@@ -176,8 +180,14 @@ struct RayShadowManager::Impl {
   vk::raii::DescriptorPool pool{nullptr};
   std::vector<vk::raii::DescriptorSet> ownedSets;
   uint64_t sceneHash{0}, lightingHash{0}, frameId{0}, generationId{0},
-      resets{0};
-  bool validHistory{false}, recorded{false}, enabled{false};
+      resets{0}, sceneRevision{0};
+  VkDeviceSize maxStorageBufferRange{0};
+  uint64_t surfaceBudgetBytes{128ull * 1024 * 1024};
+  std::string surfaceUnsupported;
+  std::optional<uint64_t> rejectedSurfaceScene;
+  std::string rejectedSurfaceReason;
+  bool validHistory{false}, recorded{false}, enabled{false},
+      surfaceRequested{false}, surfaceEnabled{false}, sceneEnabled{false};
   glm::mat4 previousViewProj{1}, previousInverseViewProj{1};
   TraceData data{};
 
@@ -186,7 +196,57 @@ struct RayShadowManager::Impl {
       : device(std::move(device)), memory(memory),
         acceleration(*this->device, memory),
         msaaSupport(
-            queryRendererMsaaDeviceSupport(this->device->physicalDevice())) {}
+            queryRendererMsaaDeviceSupport(this->device->physicalDevice())) {
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(this->device->physicalDevice(), &properties);
+    maxStorageBufferRange = properties.limits.maxStorageBufferRange;
+  }
+  VkDeviceSize storageBytes(size_t count, size_t stride) const {
+    if (!stride || count > maxStorageBufferRange / stride ||
+        maxStorageBufferRange < 16)
+      throw std::length_error(
+          "ray scene metadata exceeds storage buffer range");
+    return VkDeviceSize(count) * stride;
+  }
+  std::string
+  surfaceBudgetFailure(std::span<const RaySceneProviderSource> sources) const {
+    uint64_t triangles = 0, instances = 0;
+    for (const auto &source : sources) {
+      std::unordered_set<uint64_t> ranges;
+      for (const auto &draw : source.draws) {
+        if (!draw.indexCount || !draw.instanceCount)
+          continue;
+        // This is the same provider-local deduplication used by extraction.
+        const auto id = (uint64_t(draw.firstIndex) << 32) | draw.indexCount;
+        if (ranges.insert(id).second)
+          triangles += draw.indexCount / 3u;
+        instances += draw.instanceCount;
+        // Check before multiplication; bounded counts cannot overflow the sum
+        // or the byte calculations even for malformed enormous provider lists.
+        if (triangles >
+                maxStorageBufferRange / sizeof(RaySurfaceTriangleData) ||
+            instances >
+                maxStorageBufferRange / sizeof(RaySurfaceInstanceData) ||
+            maxStorageBufferRange < 16)
+          return "DDGI surface metadata exceeds device maxStorageBufferRange";
+        const auto bytes =
+            std::max<uint64_t>(triangles * sizeof(RaySurfaceTriangleData), 16) +
+            std::max<uint64_t>(instances * sizeof(RaySurfaceInstanceData), 16);
+        if (bytes > surfaceBudgetBytes)
+          return "DDGI surface metadata exceeds configured surface budget";
+      }
+    }
+    if (surfaceBudgetBytes < 32)
+      return "DDGI surface metadata exceeds configured surface budget";
+    return {};
+  }
+  void rejectSurface(std::string reason) {
+    if (reason != surfaceUnsupported)
+      container::log::ContainerLogger::instance().renderer()->warn(
+          "Ray surface scene unavailable: {}", reason);
+    surfaceUnsupported = std::move(reason);
+    surfaceEnabled = false;
+  }
   void invalidate() {
     validHistory = false;
     ++resets;
@@ -222,6 +282,8 @@ struct RayShadowManager::Impl {
     device->raii().updateDescriptorSets(write, {});
   }
   void traceDescriptors(uint32_t image) {
+    if (!enabled)
+      return;
     auto &slot = slots.at(image);
     if (!slot.generation)
       return;
@@ -265,6 +327,11 @@ bool RayShadowManager::supported() const {
   return impl_->acceleration.supported();
 }
 bool RayShadowManager::active() const { return impl_->enabled; }
+void RayShadowManager::requestSurfaceScene(bool requested,
+                                           uint64_t budgetBytes) {
+  impl_->surfaceRequested = requested;
+  impl_->surfaceBudgetBytes = budgetBytes;
+}
 VkBuffer RayShadowManager::readSettings(uint32_t image) const {
   return impl_->slots.at(image).read->value.buffer;
 }
@@ -276,15 +343,41 @@ VkImageView RayShadowManager::visibilityView() const {
   return image ? static_cast<VkImageView>(*image->view) : VK_NULL_HANDLE;
 }
 VkDescriptorSetLayout RayShadowManager::traceDescriptorLayout() const {
-  return supported() ? static_cast<VkDescriptorSetLayout>(*impl_->traceSetLayout)
-                     : VK_NULL_HANDLE;
+  return supported()
+             ? static_cast<VkDescriptorSetLayout>(*impl_->traceSetLayout)
+             : VK_NULL_HANDLE;
 }
 VkDescriptorSet RayShadowManager::traceDescriptorSet(uint32_t image) const {
   return active() && image < impl_->slots.size() ? impl_->slots[image].traceSet
-                                                : VK_NULL_HANDLE;
+                                                 : VK_NULL_HANDLE;
+}
+RaySurfaceGpuBindings RayShadowManager::surfaceBindings(uint32_t image) const {
+  const auto &p = *impl_;
+  if (!p.sceneEnabled || !p.surfaceEnabled || image >= p.slots.size())
+    return {};
+  const auto &generation = p.slots[image].generation;
+  if (!generation || !generation->hasSurfaceData)
+    return {};
+  return {generation->as->tlas(),
+          generation->triangles->value.buffer,
+          generation->triangles->size,
+          generation->instances->value.buffer,
+          generation->instances->size,
+          generation->surfaceTriangles->value.buffer,
+          generation->surfaceTriangles->size,
+          generation->surfaceInstances->value.buffer,
+          generation->surfaceInstances->size,
+          uint32_t(generation->triangles->size / sizeof(RayTriangleData)),
+          generation->as->stats().instanceCount};
+}
+const std::string &RayShadowManager::surfaceUnsupportedReason() const {
+  return impl_->surfaceUnsupported;
 }
 uint64_t RayShadowManager::sceneGeneration() const {
   return impl_->generationId;
+}
+uint64_t RayShadowManager::sceneRevision() const {
+  return impl_->sceneRevision;
 }
 uint64_t RayShadowManager::historyResets() const { return impl_->resets; }
 const RaySceneBuildStats *RayShadowManager::buildStats() const {
@@ -366,8 +459,12 @@ void RayShadowManager::prepare(VkExtent2D extent, uint32_t imageCount) {
     image.reset();
   p.extent = extent;
   p.frameId = 0;
-  p.sceneHash = p.lightingHash = 0;
-  p.enabled = false;
+  p.sceneHash = p.lightingHash = p.sceneRevision = 0;
+  p.enabled = p.sceneEnabled = p.surfaceEnabled = false;
+  p.surfaceUnsupported.clear();
+  p.rejectedSurfaceScene.reset();
+  p.rejectedSurfaceReason.clear();
+  p.recorded = false;
   p.invalidate();
   if (!p.fallback)
     p.fallback =
@@ -428,8 +525,37 @@ void RayShadowManager::update(
     bool geometryCompatible) {
   auto &p = *impl_;
   p.settings = sanitizeRayShadowSettings(p.settings);
-  p.enabled = supported() && geometryCompatible &&
+  const bool hasRayGeometry = std::any_of(
+      sources.begin(), sources.end(), [](const auto &source) {
+        return std::any_of(source.draws.begin(), source.draws.end(),
+                           [](const auto &draw) {
+                             return draw.indexCount != 0u &&
+                                    draw.instanceCount != 0u;
+                           });
+      });
+  p.enabled = hasRayGeometry && supported() && geometryCompatible &&
               p.settings.mode != RayShadowMode::Raster && *p.tracePipeline;
+  p.surfaceEnabled = p.surfaceRequested && hasRayGeometry;
+  if (!hasRayGeometry) {
+    // Unloading or filtering out every triangle is a normal empty scene, not
+    // an optional-surface failure. Keep requests/modes for the next loaded model.
+    p.rejectedSurfaceScene.reset();
+    p.rejectedSurfaceReason.clear();
+    p.surfaceUnsupported.clear();
+  } else if (p.surfaceRequested) {
+    if (!supported())
+      p.rejectSurface("DDGI requires supported and enabled ray queries");
+    else if (!geometryCompatible)
+      p.rejectSurface("DDGI ray scene is incompatible with active geometry");
+    else if (auto reason = p.surfaceBudgetFailure(sources); !reason.empty())
+      p.rejectSurface(std::move(reason));
+    else if (!p.rejectedSurfaceScene)
+      p.surfaceUnsupported.clear();
+  } else {
+    p.surfaceUnsupported.clear();
+  }
+  p.sceneEnabled =
+      supported() && geometryCompatible && (p.enabled || p.surfaceEnabled);
   auto &slot = p.slots.at(image);
   p.data = {};
   p.data.camera = camera;
@@ -448,30 +574,41 @@ void RayShadowManager::update(
   p.data.read.limits.z =
       std::min({uint32_t(areas.size()), 4u,
                 p.settings.localLightBudget - p.data.read.limits.y});
-  const uint32_t samples = sampleCountToSamples(
-      frame.depthStencilMsaa.image != VK_NULL_HANDLE
-          ? frame.depthStencilMsaa.samples
-          : frame.depthStencil.samples);
+  const uint32_t samples =
+      sampleCountToSamples(frame.depthStencilMsaa.image != VK_NULL_HANDLE
+                               ? frame.depthStencilMsaa.samples
+                               : frame.depthStencil.samples);
   const auto resolveMode =
       preferredDepthResolveMode(p.msaaSupport.depthResolveModes);
   // The shader may verify same-receiver coverage at the standard Vulkan sample
   // positions. Unknown patterns/counts keep conservative fragment queries.
   const uint32_t receiverSamples =
-      p.msaaSupport.standardSampleLocations && samples >= 2u && samples <= 16u &&
+      p.msaaSupport.standardSampleLocations && samples >= 2u &&
+              samples <= 16u &&
               (resolveMode == VK_RESOLVE_MODE_MAX_BIT ||
                resolveMode == VK_RESOLVE_MODE_SAMPLE_ZERO_BIT)
-          ? samples | (resolveMode == VK_RESOLVE_MODE_SAMPLE_ZERO_BIT ? 0x100u : 0u)
+          ? samples |
+                (resolveMode == VK_RESOLVE_MODE_SAMPLE_ZERO_BIT ? 0x100u : 0u)
           : 0u;
   p.data.read.options = {p.settings.denoise ? 1u : 0u, p.settings.debugLayer,
                          p.settings.mode == RayShadowMode::Soft ? 1u : 0u,
                          receiverSamples};
-  if (!p.enabled) {
+  const auto retireDisabledScene = [&] {
     if (p.validHistory)
       p.invalidate();
-    p.sceneHash = 0;
+    p.sceneHash = p.sceneRevision = 0;
     p.lightingHash = 0;
+    p.pending.reset();
+    // Older image slots still retain submitted compact or surface generations
+    // until their fences retire. Unload drops only idle current/cache references
+    // and this already-retired image; never retain a stale compact buildStats.
+    p.current.reset();
+    p.extractionCache.clear();
     slot.read->write(&p.data.read, sizeof(ReadData));
     slot.generation.reset();
+  };
+  if (!p.sceneEnabled) {
+    retireDisabledScene();
     return;
   }
   p.data.previousViewProj = p.previousViewProj;
@@ -479,7 +616,9 @@ void RayShadowManager::update(
   p.data.sectionPlane = sectionPlane;
   p.data.boxClip = boxClip;
   uint64_t sceneHash = 1469598103934665603ull;
+  sceneHash = hashValue(sceneHash, sources.size());
   for (const auto &source : sources) {
+    sceneHash = hashValue(sceneHash, source.provider.value.size());
     sceneHash = hashBytes(sceneHash, source.provider.value.data(),
                           source.provider.value.size());
     sceneHash = hashValue(sceneHash, source.geometryRevision);
@@ -508,6 +647,24 @@ void RayShadowManager::update(
       }
     }
   }
+  if (p.surfaceEnabled) {
+    if (p.rejectedSurfaceScene == sceneHash) {
+      // Repeating a failed optional extraction every frame would rebuild the
+      // compact shadow generation and discard otherwise reusable CPU data.
+      // Geometry, topology, transforms and material revisions all enter this
+      // hash, so repaired inputs get another attempt.
+      p.rejectSurface(p.rejectedSurfaceReason);
+      p.sceneEnabled = p.enabled;
+      if (!p.sceneEnabled) {
+        retireDisabledScene();
+        return;
+      }
+    } else {
+      p.rejectedSurfaceScene.reset();
+      p.rejectedSurfaceReason.clear();
+      p.surfaceUnsupported.clear();
+    }
+  }
   uint64_t lightHash = hashValue(1469598103934665603ull, p.data.read);
   lightHash = hashValue(lightHash, sectionPlaneEnabled);
   lightHash = hashValue(lightHash, sectionPlane);
@@ -518,18 +675,48 @@ void RayShadowManager::update(
     lightHash = hashValue(lightHash, light);
   for (const auto &light : areas)
     lightHash = hashValue(lightHash, light);
-  if (sceneHash != p.sceneHash || lightHash != p.lightingHash || !p.enabled)
+  if ((p.enabled &&
+       (sceneHash != p.sceneHash || lightHash != p.lightingHash)) ||
+      (!p.enabled && p.validHistory))
     p.invalidate();
-  if (p.enabled && (!p.current || sceneHash != p.sceneHash))
-    p.pending = p.extractionCache.update(sources);
+  if (!p.current || sceneHash != p.sceneHash ||
+      p.current->hasSurfaceData != p.surfaceEnabled) {
+    try {
+      p.pending = p.extractionCache.update(sources, {p.surfaceEnabled});
+    } catch (const std::exception &error) {
+      if (!p.surfaceEnabled)
+        throw;
+      // Validate the required compact scene as well. Invalid positions/index
+      // ranges/transforms still propagate; only optional surface failures may
+      // fall back. The extraction cache publishes snapshots atomically.
+      auto compact = p.extractionCache.update(sources);
+      p.rejectSurface(std::string("DDGI surface metadata unavailable: ") +
+                      error.what());
+      p.rejectedSurfaceScene = sceneHash;
+      p.rejectedSurfaceReason = p.surfaceUnsupported;
+      p.sceneEnabled = p.enabled;
+      if (!p.sceneEnabled) {
+        p.current.reset();
+        p.extractionCache.clear();
+        retireDisabledScene();
+        return;
+      }
+      p.pending = std::move(compact);
+    }
+  }
   p.sceneHash = sceneHash;
+  // Scene clipping is semantic visibility even though candidate acceptance,
+  // rather than AS topology, applies it. Camera motion and lighting changes
+  // must not discard accumulated probe irradiance.
+  p.sceneRevision = hashValue(sceneHash, sectionPlaneEnabled);
+  p.sceneRevision = hashValue(p.sceneRevision, sectionPlane);
+  p.sceneRevision = hashValue(p.sceneRevision, boxClip);
   p.lightingHash = lightHash;
   p.data.frame = {p.validHistory ? 1u : 0u, uint32_t(p.frameId),
                   sectionPlaneEnabled, 0u};
   slot.read->write(&p.data.read, sizeof(ReadData));
   slot.trace->write(&p.data, sizeof(TraceData));
   if (!p.enabled) {
-    slot.generation.reset();
     return;
   }
   p.ensureImages();
@@ -568,46 +755,77 @@ void RayShadowManager::recordBuild(VkCommandBuffer cmd, uint32_t image) {
                          &white, 1, &range);
     imageBarrier(cmd, *p.fallback);
   }
-  if (!p.enabled)
+  if (!p.sceneEnabled)
     return;
   if (p.pending) {
     auto generation = std::make_shared<Impl::Generation>();
     generation->geometry = p.pending->geometry;
     const auto &geometry = *p.pending->geometry;
-    const auto views = geometry.geometryViews();
-    // The command buffer belongs to CommandBufferManager. Release the temporary
-    // Vulkan-Hpp wrapper on both success and failure; it must never free it.
-    vk::raii::CommandBuffer borrowed(p.device->raii(), cmd, VK_NULL_HANDLE);
-    try {
-      generation->as =
-          p.acceleration.recordBuild(borrowed,
-                                     {views, p.pending->instances.instances},
-                                     p.current ? p.current->as : nullptr);
-      (void)borrowed.release();
-    } catch (...) {
-      (void)borrowed.release();
-      throw;
-    }
+    // Validate every descriptor range before allocating or recording AS work.
+    const auto triangleBytes =
+        p.storageBytes(geometry.triangles.size(), sizeof(RayTriangleData));
+    const auto instanceBytes = p.storageBytes(
+        p.pending->instances.instanceData.size(), sizeof(RayInstanceData));
+    const auto surfaceTriangleBytes =
+        geometry.hasSurfaceData
+            ? p.storageBytes(geometry.surfaceTriangles.size(),
+                             sizeof(RaySurfaceTriangleData))
+            : 0;
+    const auto surfaceInstanceBytes =
+        geometry.hasSurfaceData
+            ? p.storageBytes(p.pending->instances.surfaceInstanceData.size(),
+                             sizeof(RaySurfaceInstanceData))
+            : 0;
+    if (geometry.hasSurfaceData &&
+        (geometry.surfaceTriangles.size() != geometry.triangles.size() ||
+         p.pending->instances.surfaceInstanceData.size() !=
+             p.pending->instances.instanceData.size()))
+      throw std::runtime_error("incomplete ray scene surface metadata");
+    generation->hasSurfaceData = geometry.hasSurfaceData;
     // Triangle UV metadata is immutable with the compact geometry. Share it
     // through the same fence-retained generations as reused BLAS allocations.
     if (p.current && p.current->geometry.lock() == p.pending->geometry) {
       generation->triangles = p.current->triangles;
     } else {
       auto triangles = std::make_shared<Buffer>(
-          p.memory,
-          geometry.triangles.size() * sizeof(RayTriangleData),
-          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-      triangles->write(geometry.triangles.data(),
-                       geometry.triangles.size() * sizeof(RayTriangleData));
+          p.memory, triangleBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+      triangles->write(geometry.triangles.data(), triangleBytes);
       generation->triangles = std::move(triangles);
     }
     generation->instances = std::make_unique<Buffer>(
-        p.memory,
-        p.pending->instances.instanceData.size() * sizeof(RayInstanceData),
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        p.memory, instanceBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     generation->instances->write(p.pending->instances.instanceData.data(),
-                                 p.pending->instances.instanceData.size() *
-                                     sizeof(RayInstanceData));
+                                 instanceBytes);
+    if (geometry.hasSurfaceData) {
+      if (p.current && p.current->hasSurfaceData &&
+          p.current->geometry.lock() == p.pending->geometry) {
+        generation->surfaceTriangles = p.current->surfaceTriangles;
+      } else {
+        auto triangles = std::make_shared<Buffer>(
+            p.memory, surfaceTriangleBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        triangles->write(geometry.surfaceTriangles.data(),
+                         surfaceTriangleBytes);
+        generation->surfaceTriangles = std::move(triangles);
+      }
+      generation->surfaceInstances = std::make_unique<Buffer>(
+          p.memory, surfaceInstanceBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+      generation->surfaceInstances->write(
+          p.pending->instances.surfaceInstanceData.data(),
+          surfaceInstanceBytes);
+    }
+    const auto views = geometry.geometryViews();
+    // The command buffer belongs to CommandBufferManager. Release the temporary
+    // Vulkan-Hpp wrapper on both success and failure; it must never free it.
+    vk::raii::CommandBuffer borrowed(p.device->raii(), cmd, VK_NULL_HANDLE);
+    try {
+      generation->as = p.acceleration.recordBuild(
+          borrowed, {views, p.pending->instances.instances},
+          p.current ? p.current->as : nullptr);
+      (void)borrowed.release();
+    } catch (...) {
+      (void)borrowed.release();
+      throw;
+    }
     p.current = std::move(generation);
     p.pending.reset();
     ++p.generationId;
@@ -695,6 +913,11 @@ uint64_t RayShadowManager::allocatedBytes() const {
     if (triangles.insert(entry->triangles.get()).second)
       total += entry->triangles->allocated();
     total += entry->instances->allocated();
+    if (entry->surfaceTriangles &&
+        triangles.insert(entry->surfaceTriangles.get()).second)
+      total += entry->surfaceTriangles->allocated();
+    if (entry->surfaceInstances)
+      total += entry->surfaceInstances->allocated();
     acceleration.push_back(entry->as);
   };
   generation(p.current);

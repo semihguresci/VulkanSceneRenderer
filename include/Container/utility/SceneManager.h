@@ -13,6 +13,7 @@
 #include "Container/app/AppConfig.h"
 #include "Container/common/CommonMath.h"
 #include "Container/common/CommonVulkan.h"
+#include "Container/geometry/GltfModelLoader.h"
 #include "Container/geometry/Model.h"
 #include "Container/utility/MaterialManager.h"
 #include "Container/utility/MaterialXIntegration.h"
@@ -71,10 +72,16 @@ class SceneManager {
                   float importScale,
                   uint32_t descriptorSetCount);
 
+  // CPU-only file/image decode and mesh conversion. Safe on the serial import
+  // worker; the returned payload is consumed by reloadModel on the render thread.
+  [[nodiscard]] static container::geometry::GltfLoadResult prepareGltfModel(
+      const std::string& path);
+
   bool reloadModel(const std::string& path,
                    float importScale,
                    std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
-                   const container::gpu::AllocatedBuffer& objectBuffer);
+                   const container::gpu::AllocatedBuffer& objectBuffer,
+                   container::geometry::GltfLoadResult* prepared = nullptr);
 
   void updateDescriptorSets(
       std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
@@ -213,7 +220,7 @@ class SceneManager {
   void createDescriptorSetLayout();
   void createSampler();
   void loadMaterialXMaterial();
-  void loadGltfAssets();
+  void loadGltfAssets(container::geometry::GltfLoadResult* prepared = nullptr);
   void loadDefaultTestSceneAssets();
   void uploadMaterialBuffer();
   void uploadTextureMetadataBuffer();
@@ -230,8 +237,8 @@ class SceneManager {
   void appendSceneAsset(const std::filesystem::path& assetPath,
                         const glm::mat4& transform,
                         std::vector<container::geometry::Mesh>& mergedMeshes);
-  [[nodiscard]] std::filesystem::path resolveSceneAssetPath(
-      std::string_view relativePath) const;
+  [[nodiscard]] static std::filesystem::path resolveSceneAssetPath(
+      std::string_view relativePath);
 
   container::gpu::AllocationManager* allocationManager_{nullptr};
   container::gpu::PipelineManager* pipelineManager_{nullptr};

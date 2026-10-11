@@ -50,6 +50,15 @@ $requiredFiles = @(
     'spv_shaders/temporal_resolve.comp.spv',
     'spv_shaders/ray_shadow_trace.comp.spv',
     'spv_shaders/ray_shadow_filter.comp.spv',
+    'spv_shaders/ddgi_trace.comp.spv',
+    'spv_shaders/ddgi_update.comp.spv',
+    'spv_shaders/ddgi_debug.vert.spv',
+    'spv_shaders/ddgi_debug.frag.spv',
+    'spv_shaders/deferred_directional_no_ddgi.frag.spv',
+    'spv_shaders/forward_opaque_no_ddgi.frag.spv',
+    'spv_shaders/forward_opaque_ray_no_ddgi.frag.spv',
+    'spv_shaders/point_light_no_ddgi.frag.spv',
+    'spv_shaders/tiled_lighting_no_ddgi.frag.spv',
     'materials/ltc/matrix.bin', 'materials/ltc/amplitude.bin',
     'materials/ltc/LICENSE.txt',
     'hdr/citrus_orchard_road_puresky_4k.exr'
@@ -81,6 +90,7 @@ Copy-Item -LiteralPath (Join-Path $sourceDirectory 'LICENSE') -Destination $stag
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/windows-package-quick-start.md') -Destination (Join-Path $stagingDirectory 'README.md')
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/third-party-notices.md') -Destination (Join-Path $stagingDirectory 'THIRD_PARTY_NOTICES.md')
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/ltc-area-lighting.md') -Destination (Join-Path $stagingDirectory 'ltc-area-lighting.md')
+Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/ddgi-probe-foundation.md') -Destination (Join-Path $stagingDirectory 'ddgi-probe-foundation.md')
 $captureToolsDirectory = New-Item -ItemType Directory -Path (Join-Path $stagingDirectory 'tools')
 foreach ($captureTool in @('gfxreconstruct.py', 'gfxreconstruct.ps1')) {
     Copy-Item -LiteralPath (Join-Path $sourceDirectory "tools/$captureTool") -Destination $captureToolsDirectory.FullName

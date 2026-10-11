@@ -9,6 +9,7 @@
 #include "Container/renderer/forward/ForwardRasterPipelineBridge.h"
 #include "Container/renderer/forward/ForwardRasterResourceBridge.h"
 #include "Container/renderer/raytracing/RayShadowManager.h"
+#include "Container/renderer/lighting/DdgiManager.h"
 #include "Container/renderer/scene/SceneOpaqueDrawPlanner.h"
 #include "Container/renderer/scene/SceneOpaqueDrawRecorder.h"
 #include "Container/renderer/scene/SceneTransparentDrawPlanner.h"
@@ -346,6 +347,14 @@ void bindForwardOpaqueLightingSets(VkCommandBuffer cmd, VkPipelineLayout layout,
       p, ForwardRasterDescriptorSetId::FrameLighting);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 3u, 1u,
                           &frameLightingSet, 0u, nullptr);
+  const VkDescriptorSet ddgiSet =
+      p.services.ddgiManager
+          ? p.services.ddgiManager->readDescriptors(p.runtime.imageIndex)
+          : p.services.ddgiReadDescriptorSet;
+  if (p.services.ddgiManager == nullptr ||
+      p.services.ddgiManager->descriptorLayout() != VK_NULL_HANDLE)
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 4u, 1u,
+                            &ddgiSet, 0u, nullptr);
   if (usesForwardRayQueries(p) && layout == forwardOpaquePipelineLayout(p)) {
     const VkDescriptorSet traceSet =
         p.services.rayShadowManager->traceDescriptorSet(p.runtime.imageIndex);
@@ -536,6 +545,12 @@ checkForwardRasterLightingPassReadiness(const FrameRecordParams& p) {
   }
   if ((sceneOpaqueDraws || bimOpaqueDraws) && !hasForwardLightSets(p)) {
     return missing(RenderResourceId::SceneGeometry);
+  }
+  if ((sceneOpaqueDraws || bimOpaqueDraws) &&
+      (p.services.ddgiManager == nullptr ||
+       p.services.ddgiManager->descriptorLayout() != VK_NULL_HANDLE) &&
+      p.services.ddgiReadDescriptorSet == VK_NULL_HANDLE) {
+    return missing(RenderResourceId::SceneColor);
   }
   if ((sceneTransparentDraws || bimTransparentDraws) &&
       (!hasForwardTransparentSets(p) || !hasForwardTransparentPipelines(p))) {

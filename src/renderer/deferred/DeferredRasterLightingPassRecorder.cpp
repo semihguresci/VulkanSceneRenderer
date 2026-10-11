@@ -19,6 +19,7 @@
 #include "Container/renderer/deferred/DeferredRasterResourceBridge.h"
 #include "Container/renderer/deferred/DeferredTransparentOitRecorder.h"
 #include "Container/renderer/lighting/LightingManager.h"
+#include "Container/renderer/lighting/DdgiManager.h"
 #include "Container/renderer/scene/SceneController.h"
 #include "Container/renderer/scene/SceneTransparentDrawPlanner.h"
 #include "Container/renderer/scene/SceneViewport.h"
@@ -696,7 +697,12 @@ void DeferredRasterLightingPassRecorder::record(
               .pipelineLayout = deferredRasterPipelineLayout(
                   p, DeferredRasterPipelineLayoutId::Lighting),
               .descriptorSets =
-                  lightingDescriptorPlan.directionalLightingDescriptorSets});
+                  lightingDescriptorPlan.directionalLightingDescriptorSets,
+              .ddgiDescriptorSet = p.services.ddgiManager
+                  ? p.services.ddgiManager->readDescriptors(p.runtime.imageIndex)
+                  : p.services.ddgiReadDescriptorSet,
+              .ddgiDescriptorsRequired = p.services.ddgiManager == nullptr ||
+                  p.services.ddgiManager->descriptorLayout() != VK_NULL_HANDLE});
   }
 
   const std::vector<container::gpu::PointLightData> *pointLights =
@@ -752,6 +758,11 @@ void DeferredRasterLightingPassRecorder::record(
                 lightingDescriptorPlan.pointLightingDescriptorSets,
             .tiledLightingDescriptorSets =
                 lightingDescriptorPlan.tiledLightingDescriptorSets,
+            .ddgiDescriptorSet = p.services.ddgiManager
+                ? p.services.ddgiManager->readDescriptors(p.runtime.imageIndex)
+                : p.services.ddgiReadDescriptorSet,
+            .ddgiDescriptorsRequired = p.services.ddgiManager == nullptr ||
+                p.services.ddgiManager->descriptorLayout() != VK_NULL_HANDLE,
             .framebufferExtent = lightingExtent,
             .lightPushConstants = p.pushConstants.light,
             .lightingManager = lightingManager});

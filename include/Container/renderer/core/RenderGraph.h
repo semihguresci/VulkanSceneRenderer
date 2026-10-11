@@ -58,6 +58,8 @@ enum class RenderPassId : uint8_t {
   RaySceneBuild,
   RayShadowTrace,
   RayShadowFilter,
+  DdgiTrace,
+  DdgiUpdate,
   Count,
   Invalid = Count,
 };
@@ -107,6 +109,8 @@ enum class RenderResourceId : uint8_t {
   RayScene,
   RayShadowRaw,
   RayShadowVisibility,
+  DdgiRays,
+  DdgiIrradiance,
   Count,
   Invalid = Count,
 };

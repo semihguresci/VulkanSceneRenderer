@@ -1,0 +1,59 @@
+UpdateCTestConfiguration  from :F:/Projects/Container/out/build/visual-studio/DartConfiguration.tcl
+Test project F:/Projects/Container/out/build/visual-studio
+Constructing a list of tests
+Done constructing a list of tests
+Updating test list for fixtures
+Added 0 tests to meet fixture requirements
+Checking test dependency graph...
+Checking test dependency graph end
+test 18
+    Start 18: temporal_capture_tests
+
+18: Test command: F:\Projects\Container\out\build\visual-studio\tests\temporal_capture_tests.exe "--gtest_output=xml:F:/Projects/Container/out/build/visual-studio/test_results/temporal_capture_tests.xml"
+18: Working Directory: F:/Projects/Container/out/build/visual-studio
+18: Test timeout computed to be: 10000000
+18: Running main() from F:\Projects\vcpkg\buildtrees\gtest\src\v1.16.0-a2e0b328c1.clean\googletest\src\gtest_main.cc
+18: [==========] Running 14 tests from 1 test suite.
+18: [----------] Global test environment set-up.
+18: [----------] 14 tests from TemporalCapture
+18: [ RUN      ] TemporalCapture.InterpolatesNamedObjectAndCameraAtSubmittedScriptFrame
+18: [       OK ] TemporalCapture.InterpolatesNamedObjectAndCameraAtSubmittedScriptFrame (0 ms)
+18: [ RUN      ] TemporalCapture.ConstantNonzeroTracksPreserveBitsAcrossSixtyFrames
+18: [       OK ] TemporalCapture.ConstantNonzeroTracksPreserveBitsAcrossSixtyFrames (1 ms)
+18: [ RUN      ] TemporalCapture.MovingTracksKeepStationaryComponentsAndExactKeys
+18: [       OK ] TemporalCapture.MovingTracksKeepStationaryComponentsAndExactKeys (0 ms)
+18: [ RUN      ] TemporalCapture.RejectsInvalidTracksAndEventsBeforeGpuExecution
+18: [       OK ] TemporalCapture.RejectsInvalidTracksAndEventsBeforeGpuExecution (0 ms)
+18: [ RUN      ] TemporalCapture.ClampsOutsideTracksAndPreservesExactResetFrame
+18: [       OK ] TemporalCapture.ClampsOutsideTracksAndPreservesExactResetFrame (0 ms)
+18: [ RUN      ] TemporalCapture.AreaLightingChangesApplyOnlyAtTheirNamedFrame
+18: [       OK ] TemporalCapture.AreaLightingChangesApplyOnlyAtTheirNamedFrame (0 ms)
+18: [ RUN      ] TemporalCapture.AcceptsExactAreaLightSampleCountsInNumericForms
+18: [       OK ] TemporalCapture.AcceptsExactAreaLightSampleCountsInNumericForms (0 ms)
+18: [ RUN      ] TemporalCapture.AcceptsSupportedAreaLightingModesAndOmission
+18: [       OK ] TemporalCapture.AcceptsSupportedAreaLightingModesAndOmission (0 ms)
+18: [ RUN      ] TemporalCapture.RejectsEmptyUnsupportedAndNonStringAreaLightingModes
+18: [       OK ] TemporalCapture.RejectsEmptyUnsupportedAndNonStringAreaLightingModes (0 ms)
+18: [ RUN      ] TemporalCapture.RejectsAreaLightSampleValuesBeforeNarrowing
+18: [       OK ] TemporalCapture.RejectsAreaLightSampleValuesBeforeNarrowing (0 ms)
+18: [ RUN      ] TemporalCapture.AreaLightEventsAreFiniteAndApplyOnce
+18: [       OK ] TemporalCapture.AreaLightEventsAreFiniteAndApplyOnce (0 ms)
+18: [ RUN      ] TemporalCapture.DdgiFlagsApplyOnceIncludingFalse
+18: [       OK ] TemporalCapture.DdgiFlagsApplyOnceIncludingFalse (0 ms)
+18: [ RUN      ] TemporalCapture.RejectsNonBooleanDdgiFlags
+18: [       OK ] TemporalCapture.RejectsNonBooleanDdgiFlags (0 ms)
+18: [ RUN      ] TemporalCapture.GuiReloadUsesAnExactEventAndRejectsConflictingReloads
+18: [       OK ] TemporalCapture.GuiReloadUsesAnExactEventAndRejectsConflictingReloads (0 ms)
+18: [----------] 14 tests from TemporalCapture (2 ms total)
+18: 
+18: [----------] Global test environment tear-down
+18: [==========] 14 tests from 1 test suite ran. (2 ms total)
+18: [  PASSED  ] 14 tests.
+1/1 Test #18: temporal_capture_tests ...........   Passed    0.03 sec
+
+The following tests passed:
+	temporal_capture_tests
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =   0.05 sec

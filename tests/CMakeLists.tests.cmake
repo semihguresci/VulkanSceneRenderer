@@ -11,6 +11,7 @@ if(Python3_Interpreter_FOUND)
         LABELS "requires-vulkan;requires-display;gfxreconstruct" SKIP_RETURN_CODE 77)
 endif()
 find_package(GTest CONFIG REQUIRED)
+find_package(Threads REQUIRED)
 
 set(TESTS_DIR "${CMAKE_SOURCE_DIR}/tests")
 set(TEST_RESULTS_DIR "${CMAKE_BINARY_DIR}/test_results")
@@ -111,7 +112,177 @@ function(add_custom_test TARGET_NAME SOURCE_FILE SHADER_DIR TEST_RESULTS_DIR)
     endif()
 endfunction()
 
+add_custom_test(async_model_preparation_tests
+    ${CMAKE_SOURCE_DIR}/tests/utility/async_model_preparation_tests.cpp "" ${TEST_RESULTS_DIR}
+    Threads::Threads)
+
 # ── CPU-only tests (no shaders needed) ───────────────────────────────────────
+
+add_test(NAME ddgi_python_regressions
+    COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover
+            -s "${CMAKE_SOURCE_DIR}/tests/visual-regression/ddgi" -p "test_*.py"
+)
+set_tests_properties(ddgi_python_regressions PROPERTIES LABELS "ddgi;cpu")
+
+add_custom_test(ddgi_probe_volume_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/ddgi_probe_volume_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_Math
+)
+target_sources(ddgi_probe_volume_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiProbeVolume.cpp
+)
+
+add_custom_test(ddgi_settings_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/ddgi_settings_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_Math
+)
+target_sources(ddgi_settings_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiProbeVolume.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiSettings.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiVolumeSet.cpp
+)
+
+add_custom_test(ddgi_volume_fit_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/ddgi_volume_fit_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_Math
+)
+target_sources(ddgi_volume_fit_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiProbeVolume.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiSettings.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiVolumeSet.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiVolumeFit.cpp
+)
+
+add_custom_test(ddgi_scene_bounds_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/ddgi_scene_bounds_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_VulkanCore Dep_Math
+)
+
+add_custom_test(ddgi_volume_set_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/ddgi_volume_set_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_Math
+)
+target_sources(ddgi_volume_set_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiVolumeSet.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiProbeVolume.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiSettings.cpp
+)
+add_custom_test(ddgi_priority_scheduler_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/ddgi_priority_scheduler_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_Math
+)
+target_sources(ddgi_priority_scheduler_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiPriorityScheduler.cpp
+)
+add_custom_test(ddgi_preset_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/ddgi_preset_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_Math nlohmann_json::nlohmann_json
+)
+
+add_custom_test(ddgi_async_history_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/ddgi_async_history_tests.cpp "" ${TEST_RESULTS_DIR}
+)
+add_custom_test(ddgi_volume_placement_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/ddgi_volume_placement_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_Math
+)
+target_sources(ddgi_volume_placement_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiVolumePlacement.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiVolumeFit.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiVolumeSet.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiSettings.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiProbeVolume.cpp
+)
+add_custom_test(ddgi_volume_scroll_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/ddgi_volume_scroll_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_Math
+)
+target_sources(ddgi_volume_scroll_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiVolumeScroll.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiProbeVolume.cpp
+)
+target_sources(ddgi_preset_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiPreset.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiSettings.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiVolumeSet.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiProbeVolume.cpp
+)
+add_custom_test(ddgi_scene_changes_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/ddgi_scene_changes_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_VulkanCore Dep_Math
+)
+target_sources(ddgi_scene_changes_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiSceneChanges.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiSceneBounds.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/raytracing/RayScene.cpp
+)
+target_sources(ddgi_scene_bounds_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiSceneBounds.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/raytracing/RayScene.cpp
+)
+
+add_custom_test(ddgi_gpu_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/ddgi_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_gpu_resource VulkanSceneRenderer_geometry Dep_Windowing Dep_Math
+)
+target_compile_definitions(ddgi_gpu_tests PRIVATE
+    CONTAINER_DDGI_UPDATE_SPIRV="${CMAKE_BINARY_DIR}/spv_shaders/ddgi_update.comp.spv"
+)
+add_dependencies(ddgi_gpu_tests shaders_all)
+target_sources(ddgi_gpu_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiVolumeSet.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiSettings.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiProbeVolume.cpp
+)
+set_tests_properties(ddgi_gpu_tests PROPERTIES LABELS "requires-vulkan;requires-display;ddgi")
+
+set(DDGI_LOOKUP_CONTRACT_SPIRV "${CMAKE_BINARY_DIR}/test_shaders/ddgi_lookup_contract.comp.spv")
+add_custom_command(
+    OUTPUT "${DDGI_LOOKUP_CONTRACT_SPIRV}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/test_shaders"
+    COMMAND "${SLANGC_EXECUTABLE}" "${DEFAULT_SHADER_DIR}/ddgi_lookup_contract.slang"
+            ${SLANG_SPIRV_FLAGS} -entry computeMain -o "${DDGI_LOOKUP_CONTRACT_SPIRV}"
+    DEPENDS "${DEFAULT_SHADER_DIR}/ddgi_lookup_contract.slang"
+            ${SLANG_INCLUDE_SOURCES}
+            "${CMAKE_CURRENT_LIST_FILE}" "${CMAKE_SOURCE_DIR}/cmake/Shaders.cmake"
+            "${SLANGC_EXECUTABLE}"
+    VERBATIM
+)
+add_custom_target(ddgi_lookup_contract_shader DEPENDS "${DDGI_LOOKUP_CONTRACT_SPIRV}")
+add_custom_test(ddgi_lookup_gpu_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/ddgi_lookup_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_gpu_resource VulkanSceneRenderer_geometry Dep_Windowing Dep_Math
+)
+target_compile_definitions(ddgi_lookup_gpu_tests PRIVATE
+    CONTAINER_DDGI_LOOKUP_SPIRV="${DDGI_LOOKUP_CONTRACT_SPIRV}"
+)
+add_dependencies(ddgi_lookup_gpu_tests ddgi_lookup_contract_shader)
+target_sources(ddgi_lookup_gpu_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiVolumeSet.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiSettings.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiProbeVolume.cpp
+)
+set(DDGI_TRANSPORT_CONTRACT_SPIRV "${CMAKE_BINARY_DIR}/test_shaders/ddgi_transport_contract.comp.spv")
+add_custom_command(
+    OUTPUT "${DDGI_TRANSPORT_CONTRACT_SPIRV}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/test_shaders"
+    COMMAND "${SLANGC_EXECUTABLE}" "${DEFAULT_SHADER_DIR}/ddgi_transport_contract.slang"
+            ${SLANG_SPIRV_FLAGS} -entry computeMain -o "${DDGI_TRANSPORT_CONTRACT_SPIRV}"
+    DEPENDS "${DEFAULT_SHADER_DIR}/ddgi_transport_contract.slang"
+            ${SLANG_INCLUDE_SOURCES} "${CMAKE_CURRENT_LIST_FILE}" "${SLANGC_EXECUTABLE}"
+    VERBATIM
+)
+add_custom_target(ddgi_transport_contract_shader DEPENDS "${DDGI_TRANSPORT_CONTRACT_SPIRV}")
+add_custom_test(ddgi_transport_gpu_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/ddgi_transport_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_gpu_resource VulkanSceneRenderer_geometry Dep_Windowing Dep_Math
+)
+target_compile_definitions(ddgi_transport_gpu_tests PRIVATE
+    CONTAINER_DDGI_TRANSPORT_SPIRV="${DDGI_TRANSPORT_CONTRACT_SPIRV}"
+)
+add_dependencies(ddgi_transport_gpu_tests ddgi_transport_contract_shader)
+set_tests_properties(ddgi_transport_gpu_tests PROPERTIES LABELS "requires-vulkan;requires-display;ddgi")
+set_tests_properties(ddgi_lookup_gpu_tests PROPERTIES LABELS "requires-vulkan;requires-display;ddgi")
 
 add_custom_test(ltc_lut_data_tests
     ${TEST_RENDERER_LIGHTING_DIR}/ltc_lut_data_tests.cpp "" ${TEST_RESULTS_DIR}
@@ -148,6 +319,36 @@ add_custom_command(
     VERBATIM
 )
 add_custom_target(ray_query_contract_shader DEPENDS "${RAY_QUERY_CONTRACT_SPIRV}")
+
+# Closest-hit surface attributes are a separate future GI/reflection consumer.
+# Compile its host-layout/reconstruction/traversal contract without adding any
+# ray-query capability or surface buffer allocation to raster/shadow modules.
+set(RAY_SURFACE_CONTRACT_SPIRV "${CMAKE_BINARY_DIR}/test_shaders/ray_surface_contract.comp.spv")
+add_custom_command(
+    OUTPUT "${RAY_SURFACE_CONTRACT_SPIRV}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/test_shaders"
+    COMMAND "${SLANGC_EXECUTABLE}" "${DEFAULT_SHADER_DIR}/ray_surface_contract.slang"
+            ${SLANG_SPIRV_FLAGS} -capability spvRayQueryKHR -entry computeMain
+            -o "${RAY_SURFACE_CONTRACT_SPIRV}"
+    DEPENDS "${DEFAULT_SHADER_DIR}/ray_surface_contract.slang"
+            "${CMAKE_SOURCE_DIR}/shaders/ray_scene_data.slang"
+            "${CMAKE_SOURCE_DIR}/shaders/ray_surface_common.slang"
+            "${CMAKE_CURRENT_LIST_FILE}" "${CMAKE_SOURCE_DIR}/cmake/Shaders.cmake"
+            "${SLANGC_EXECUTABLE}"
+    VERBATIM
+)
+add_custom_target(ray_surface_contract_shader DEPENDS "${RAY_SURFACE_CONTRACT_SPIRV}")
+add_dependencies(ray_scene_tests ray_surface_contract_shader)
+find_program(SPIRV_VAL_EXECUTABLE spirv-val
+    HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin")
+if(SPIRV_VAL_EXECUTABLE)
+    add_test(NAME ddgi_lookup_spirv_validation
+        COMMAND "${SPIRV_VAL_EXECUTABLE}" --target-env vulkan1.4 "${DDGI_LOOKUP_CONTRACT_SPIRV}")
+    add_test(NAME ddgi_transport_spirv_validation
+        COMMAND "${SPIRV_VAL_EXECUTABLE}" --target-env vulkan1.4 "${DDGI_TRANSPORT_CONTRACT_SPIRV}")
+    add_test(NAME ray_surface_spirv_validation
+        COMMAND "${SPIRV_VAL_EXECUTABLE}" --target-env vulkan1.4 "${RAY_SURFACE_CONTRACT_SPIRV}")
+endif()
 add_custom_test(ray_scene_gpu_tests
     ${TEST_RENDERER_CORE_DIR}/ray_scene_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_gpu_resource VulkanSceneRenderer_geometry Dep_Windowing
@@ -161,6 +362,28 @@ target_compile_definitions(ray_scene_gpu_tests PRIVATE
     CONTAINER_RAY_QUERY_CONTRACT_SPIRV="${RAY_QUERY_CONTRACT_SPIRV}")
 add_dependencies(ray_scene_gpu_tests ray_query_contract_shader)
 set_tests_properties(ray_scene_gpu_tests PROPERTIES LABELS "requires-vulkan;requires-display;ray-query")
+
+add_custom_test(ray_shadow_surface_gpu_tests
+    ${TEST_RENDERER_CORE_DIR}/ray_shadow_surface_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+target_compile_definitions(ray_shadow_surface_gpu_tests PRIVATE
+    CONTAINER_RAY_SHADOW_SHADER_ROOT="${CMAKE_BINARY_DIR}"
+)
+add_dependencies(ray_shadow_surface_gpu_tests shaders_all)
+set_tests_properties(ray_shadow_surface_gpu_tests PROPERTIES
+    LABELS "requires-vulkan;requires-display;ray-query;ddgi")
+
+add_custom_test(ddgi_manager_gpu_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/ddgi_manager_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+target_compile_definitions(ddgi_manager_gpu_tests PRIVATE
+    CONTAINER_DDGI_SHADER_ROOT="${CMAKE_BINARY_DIR}"
+)
+add_dependencies(ddgi_manager_gpu_tests shaders_all)
+set_tests_properties(ddgi_manager_gpu_tests PROPERTIES
+    LABELS "requires-vulkan;requires-display;ray-query;ddgi")
 
 add_custom_test(glm_tests
     ${TEST_CORE_DIR}/glm_tests.cpp  ""  ${TEST_RESULTS_DIR}
@@ -200,9 +423,23 @@ set_tests_properties(scene_lighting_gpu_regression PROPERTIES
 add_test(NAME gui_model_loading_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/gui_model_loading_regression.py"
             --exe "$<TARGET_FILE:VulkanSceneRenderer>"
+            --suite legacy
             --output "${TEST_RESULTS_DIR}/gui-model-loading")
 set_tests_properties(gui_model_loading_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 TIMEOUT 600 LABELS "requires-vulkan;requires-display;visual-regression")
+
+add_test(NAME gui_model_lifecycle_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/gui_model_loading_regression.py"
+            --exe "$<TARGET_FILE:VulkanSceneRenderer>"
+            --suite lifecycle
+            --output "${TEST_RESULTS_DIR}/gui-model-lifecycle")
+set_tests_properties(gui_model_lifecycle_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 TIMEOUT 600 LABELS "requires-vulkan;requires-display;visual-regression")
+
+add_test(NAME gui_model_loading_harness_tests
+    COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover
+            -s "${TEST_VALIDATION_DIR}" -p "test_gui_model_loading_regression.py")
+set_tests_properties(gui_model_loading_harness_tests PROPERTIES LABELS "cpu")
 
 add_test(NAME forward_culling_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/forward_culling_regression.py"
@@ -632,6 +869,11 @@ add_custom_test(bim_model_compare_tests
 )
 target_sources(bim_model_compare_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/renderer/bim/BimModelCompare.cpp
+)
+
+add_custom_test(bim_inspection_cache_tests
+    ${TEST_RENDERER_BIM_DIR}/bim_inspection_cache_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
 )
 
 add_custom_test(bim_georeference_transform_tests

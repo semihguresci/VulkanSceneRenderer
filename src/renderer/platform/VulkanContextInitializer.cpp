@@ -99,6 +99,7 @@ VulkanContextResult VulkanContextInitializer::initialize(
     ci.enabledFeatures.multiDrawIndirect = VK_TRUE;
     ci.optionalFeatures.fillModeNonSolid       = VK_TRUE;
     ci.optionalFeatures.wideLines              = VK_TRUE;
+    ci.optionalFeatures.shaderStorageImageExtendedFormats = VK_TRUE;
 
     VkPhysicalDeviceVulkan11Features vulkan11Features{};
     vulkan11Features.sType =
@@ -116,6 +117,7 @@ VulkanContextResult VulkanContextInitializer::initialize(
     vulkan12Features.bufferDeviceAddress = VK_TRUE;
     vulkan12Features.drawIndirectCount = VK_TRUE;
     vulkan12Features.hostQueryReset = VK_TRUE;
+    vulkan12Features.timelineSemaphore = VK_TRUE;
 
     VkPhysicalDeviceVulkan13Features vulkan13Features{};
     vulkan13Features.sType =

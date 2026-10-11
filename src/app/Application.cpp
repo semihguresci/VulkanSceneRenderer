@@ -126,7 +126,9 @@ void Application::mainLoop() {
   uint64_t captureTick = 0;
   while (!window_->shouldClose()) {
     const double now = windowManager_->getTime();
-    const float  dt  = static_cast<float>(now - lastFrameTimeSeconds_);
+    // Resource commits may present their own loading frames. Avoid applying
+    // their entire elapsed duration to camera motion on the next normal tick.
+    const float dt = std::min(static_cast<float>(now - lastFrameTimeSeconds_), 0.1f);
     lastFrameTimeSeconds_ = now;
 
     window_->pollEvents();

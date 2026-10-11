@@ -1,4 +1,8 @@
 #include "Container/renderer/lighting/EditableLight.h"
+#include "Container/renderer/lighting/LightingManager.h"
+#include "Container/ecs/World.h"
+#include "Container/utility/AllocationManager.h"
+#include "Container/utility/PipelineManager.h"
 
 #include <gtest/gtest.h>
 
@@ -73,6 +77,74 @@ TEST(EditableLightTests, AreaEntityRoundTripsShapeAndHalfSize) {
                   container::gpu::kAreaLightTypeDisk);
   EXPECT_FLOAT_EQ(roundTrip.tangentHalfSize.w, 4.0f);
   EXPECT_FLOAT_EQ(roundTrip.bitangentHalfSize.w, 5.0f);
+}
+
+TEST(EditableLightTests, SceneReplacementDropsSourceEditsAndKeepsManualLights) {
+  container::gpu::AllocationManager allocations;
+  container::gpu::PipelineManager pipelines(VK_NULL_HANDLE);
+  container::scene::SceneGraph graph;
+  container::ecs::World world;
+  container::renderer::LightingManager manager(
+      {}, allocations, pipelines, nullptr, graph, world);
+  manager.updateLightingData();
+  const float defaultIntensity = manager.lightingData().directionalColorIntensity.w;
+  auto sceneLight = manager.editableLights().front();
+  sceneLight.intensity = 9.0f;
+  ASSERT_TRUE(manager.updateEditableLight(sceneLight));
+  const auto point = manager.addManualEditableLight(
+      container::renderer::EditableLightType::Spot);
+  const auto area = manager.addManualEditableLight(
+      container::renderer::EditableLightType::Area);
+  manager.updateLightingData();
+  ASSERT_FLOAT_EQ(manager.lightingData().directionalColorIntensity.w, 9.0f);
+  ASSERT_EQ(manager.pointLightsSsbo().size(), 1u);
+  ASSERT_EQ(manager.areaLightsSsbo().size(), 1u);
+  const auto manualPoint = manager.pointLightsSsbo().front();
+  const auto manualArea = manager.areaLightsSsbo().front();
+
+  manager.clearSceneLightOverrides();
+
+  EXPECT_FLOAT_EQ(manager.lightingData().directionalColorIntensity.w,
+                  defaultIntensity);
+  EXPECT_FALSE(manager.selectedEditableLight().has_value());
+  ASSERT_EQ(manager.pointLightsSsbo().size(), 1u);
+  ASSERT_EQ(manager.areaLightsSsbo().size(), 1u);
+  ASSERT_EQ(manager.editableLights().size(), 3u);
+  EXPECT_EQ(manager.pointLightsSsbo().front().positionRadius,
+            manualPoint.positionRadius);
+  EXPECT_EQ(manager.pointLightsSsbo().front().colorIntensity,
+            manualPoint.colorIntensity);
+  EXPECT_EQ(manager.areaLightsSsbo().front().positionRange,
+            manualArea.positionRange);
+  EXPECT_EQ(manager.areaLightsSsbo().front().colorIntensity,
+            manualArea.colorIntensity);
+  EXPECT_EQ(manager.editableLights()[1].id, point);
+  EXPECT_EQ(manager.editableLights()[2].id, area);
+  for (const auto &light : manager.editableLights()) EXPECT_FALSE(light.selected);
+}
+
+TEST(EditableLightTests, SceneReplacementPreservesManualDirectionalEdit) {
+  container::gpu::AllocationManager allocations;
+  container::gpu::PipelineManager pipelines(VK_NULL_HANDLE);
+  container::scene::SceneGraph graph;
+  container::ecs::World world;
+  container::renderer::LightingManager manager(
+      {}, allocations, pipelines, nullptr, graph, world);
+  manager.updateLightingData();
+  const auto id = manager.addManualEditableLight(
+      container::renderer::EditableLightType::Directional);
+  manager.updateLightingData();
+  auto light = manager.selectedEditableLight();
+  ASSERT_TRUE(light.has_value());
+  light->intensity = 5.0f;
+  ASSERT_TRUE(manager.updateEditableLight(*light));
+
+  manager.clearSceneLightOverrides();
+
+  EXPECT_FLOAT_EQ(manager.lightingData().directionalColorIntensity.w, 5.0f);
+  EXPECT_EQ(manager.editableLights().front().id, id);
+  EXPECT_FALSE(manager.selectedEditableLight().has_value());
+  EXPECT_FALSE(manager.editableLights().front().selected);
 }
 
 } // namespace

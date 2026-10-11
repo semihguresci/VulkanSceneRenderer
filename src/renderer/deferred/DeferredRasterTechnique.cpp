@@ -1,5 +1,6 @@
 #include "Container/renderer/deferred/DeferredRasterTechnique.h"
 #include "Container/renderer/raytracing/RayShadowManager.h"
+#include "Container/renderer/lighting/DdgiManager.h"
 #include "Container/renderer/temporal/TemporalManager.h"
 
 #include "Container/renderer/core/FrameRecorder.h"
@@ -1544,6 +1545,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
 
   registerTemporalPasses(graph);
   registerRayShadowPasses(graph);
+  registerDdgiPasses(graph);
 
   graph.addPass(RenderPassId::TransformGizmos,
                 [deferred](VkCommandBuffer cmd, const FrameRecordParams &p) {
@@ -1666,7 +1668,11 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                       : 0u,
               .transparentOitActive =
                   deferred->isPassActive(RenderPassId::OitResolve)},
-         .recordAfterFullscreenDraw = [deferred, &p](VkCommandBuffer passCmd) {
+         .recordAfterFullscreenDraw = [deferred, &p,
+                                       ppSets](VkCommandBuffer passCmd) {
+           if (p.services.ddgiManager)
+             p.services.ddgiManager->recordDebug(passCmd, p.runtime.imageIndex,
+                                                 ppSets[0]);
            recordDeferredRasterLightGizmoOverlay(
                passCmd, p, *deferred, deferred->swapchainExtent());
            recordDeferredRasterTransformGizmoOverlay(

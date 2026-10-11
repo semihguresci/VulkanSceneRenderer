@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -20,12 +21,17 @@ struct CaptureEvent {
   uint32_t frame{0};
   bool reset{false}, skip{false};
   bool acquireOutOfDate{false}, presentSuboptimal{false};
+  bool guiUnload{false};
+  bool guiWaitForLoad{true};
   std::optional<bool> taa, orthographic, objectVisible, minimized;
   std::optional<bool> rayShadowDenoise;
+  std::optional<bool> ddgiPaused, ddgiEnabled;
+  std::optional<uint32_t> ddgiFitProbes;
   std::optional<uint32_t> rayShadowSamples;
   std::optional<uint32_t> areaLightSamples;
   std::optional<uint32_t> samples;
   std::optional<uint32_t> bimHiddenObject;
+  std::optional<uint32_t> bimSelectedObject;
   std::optional<int> bimLodBias;
   std::optional<glm::vec4> sectionPlane;
   std::optional<glm::vec3> areaLightPosition;
@@ -82,6 +88,15 @@ public:
       event.presentSuboptimal = value.value("presentSuboptimal", false);
       if (value.contains("bimHiddenObject"))
         event.bimHiddenObject = value.at("bimHiddenObject").get<uint32_t>();
+      if (value.contains("bimSelectedObject")) {
+        const auto &object = value.at("bimSelectedObject");
+        const double index = object.is_number() ? object.get<double>() : -1.0;
+        if (!std::isfinite(index) || index < 0.0 ||
+            index > double(std::numeric_limits<uint32_t>::max()) ||
+            std::floor(index) != index)
+          throw std::invalid_argument("Capture BIM selection must be a uint32 index");
+        event.bimSelectedObject = object.get<uint32_t>();
+      }
       if (value.contains("bimLodBias")) {
         event.bimLodBias = value.at("bimLodBias").get<int>();
         if (*event.bimLodBias < -8 || *event.bimLodBias > 8)
@@ -136,6 +151,24 @@ public:
       boolean("orthographic", event.orthographic);
       boolean("objectVisible", event.objectVisible);
       boolean("minimized", event.minimized);
+      for (const char *name : {"ddgiPaused", "ddgiEnabled"}) {
+        if (value.contains(name) && !value.at(name).is_boolean())
+          throw std::invalid_argument("Capture DDGI flags must be booleans");
+      }
+      boolean("ddgiPaused", event.ddgiPaused);
+      boolean("ddgiEnabled", event.ddgiEnabled);
+      if (value.contains("ddgiFitProbes")) {
+        const auto &probes = value.at("ddgiFitProbes");
+        const double count = probes.is_number() ? probes.get<double>() : -1.0;
+        // JSON Schema's integer type includes exact integral numbers such as
+        // 27.0. Validate that value before narrowing, matching other captures.
+        if (!std::isfinite(count) || count < 27.0 ||
+            count > double(std::numeric_limits<uint32_t>::max()) ||
+            std::floor(count) != count)
+          throw std::invalid_argument(
+              "Capture ddgiFitProbes must be a uint32 integer >=27");
+        event.ddgiFitProbes = probes.get<uint32_t>();
+      }
       if (value.contains("samples")) {
         event.samples = value.at("samples").get<uint32_t>();
         if (*event.samples != 1 && *event.samples != 2 && *event.samples != 4 &&
@@ -164,10 +197,21 @@ public:
       event.reload = value.value("reload", std::string{});
       event.guiReload = value.value("guiReload", std::string{});
       event.guiSampleModel = value.value("guiSampleModel", std::string{});
+      if (value.contains("guiUnload") && !value.at("guiUnload").is_boolean())
+        throw std::invalid_argument("Capture guiUnload must be a boolean");
+      event.guiUnload = value.value("guiUnload", false);
       if (unsigned(!event.reload.empty()) + unsigned(!event.guiReload.empty()) +
-              unsigned(!event.guiSampleModel.empty()) >
+              unsigned(!event.guiSampleModel.empty()) + unsigned(event.guiUnload) >
           1u)
         throw std::invalid_argument("Choose one model reload route per event");
+      if (value.contains("guiWaitForLoad") &&
+          !value.at("guiWaitForLoad").is_boolean())
+        throw std::invalid_argument("Capture guiWaitForLoad must be a boolean");
+      event.guiWaitForLoad = value.value("guiWaitForLoad", true);
+      if (!event.guiWaitForLoad && event.guiReload.empty() &&
+          event.guiSampleModel.empty() && !event.guiUnload)
+        throw std::invalid_argument(
+            "Capture guiWaitForLoad=false requires a GUI model action");
       events_.push_back(std::move(event));
     }
     validateOrder(events_);
@@ -182,19 +226,19 @@ public:
       result.camera = interpolate(
           cameras_, frame,
           [](const CaptureCamera &a, const CaptureCamera &b, float t) {
-            return CaptureCamera{glm::mix(a.position, b.position, t),
-                                 glm::mix(a.target, b.target, t)};
+            return CaptureCamera{mixVector(a.position, b.position, t),
+                                 mixVector(a.target, b.target, t)};
           });
     }
     if (!objects_.empty())
       result.objectTranslation =
           interpolate(objects_, frame, [](auto a, auto b, float t) {
-            return glm::mix(a, b, t);
+            return mixVector(a, b, t);
           });
     if (!bim_.empty())
       result.bimTranslation =
           interpolate(bim_, frame, [](auto a, auto b, float t) {
-            return glm::mix(a, b, t);
+            return mixVector(a, b, t);
           });
     for (const auto &event : events_)
       if (event.frame == frame)
@@ -249,6 +293,14 @@ private:
     }
     validateOrder(keys);
   }
+  static glm::vec3 mixVector(const glm::vec3 &a, const glm::vec3 &b, float t) {
+    glm::vec3 result;
+    for (int axis = 0; axis < 3; ++axis)
+      // Weighted sums of identical floats can round differently as t changes.
+      // Preserve stationary components so capture does not report false motion.
+      result[axis] = a[axis] == b[axis] ? a[axis] : glm::mix(a[axis], b[axis], t);
+    return result;
+  }
   template <class T, class Mix>
   static T interpolate(const std::vector<Key<T>> &keys, uint32_t frame,
                        Mix mix) {
@@ -256,6 +308,8 @@ private:
       return keys.front().value;
     for (size_t i = 1; i < keys.size(); ++i)
       if (frame <= keys[i].frame) {
+        if (frame == keys[i].frame)
+          return keys[i].value;
         const float t = float(frame - keys[i - 1].frame) /
                         float(keys[i].frame - keys[i - 1].frame);
         return mix(keys[i - 1].value, keys[i].value, t);

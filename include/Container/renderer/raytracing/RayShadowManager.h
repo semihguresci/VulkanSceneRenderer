@@ -9,11 +9,32 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <string>
 
 namespace container::renderer {
 class RenderGraphBuilder;
 struct FrameRecordParams;
 struct RaySceneBuildStats;
+
+// Borrowed handles from a fence-retained scene generation. Valid after
+// recordBuild for this image and until that image's next fence retirement.
+// Compact visibility metadata retains its default 48/16-byte layouts; closest
+// hit surface attributes are allocated only for an opted-in consumer.
+struct RaySurfaceGpuBindings {
+  VkAccelerationStructureKHR tlas{};
+  VkBuffer triangles{};
+  VkDeviceSize trianglesSize{};
+  VkBuffer instances{};
+  VkDeviceSize instancesSize{};
+  VkBuffer surfaceTriangles{};
+  VkDeviceSize surfaceTrianglesSize{};
+  VkBuffer surfaceInstances{};
+  VkDeviceSize surfaceInstancesSize{};
+  uint32_t triangleCount{}, instanceCount{};
+  [[nodiscard]] explicit operator bool() const {
+    return tlas && triangles && instances && surfaceTriangles && surfaceInstances;
+  }
+};
 
 // Graphics-queue AS generations and independent visibility history. The
 // frontend calls prepare only after resize idle, and update after image fence
@@ -29,6 +50,10 @@ public:
                        VkDescriptorSetLayout scene,
                        VkDescriptorSetLayout light);
   void prepare(VkExtent2D extent, uint32_t imageCount);
+  // Call before update. Surface consumers share the shadow AS, including when
+  // shadow mode is Raster, without enabling shadow tracing/history images.
+  void requestSurfaceScene(bool requested,
+                           uint64_t budgetBytes = 128ull * 1024 * 1024);
   void update(uint32_t image, const container::gpu::CameraData &camera,
               const FrameResources &frame, VkDescriptorSet sceneSet,
               VkDescriptorSet lightSet,
@@ -54,9 +79,14 @@ public:
   // populated by recordBuild before fragment/compute query consumers execute.
   [[nodiscard]] VkDescriptorSetLayout traceDescriptorLayout() const;
   [[nodiscard]] VkDescriptorSet traceDescriptorSet(uint32_t image) const;
+  [[nodiscard]] RaySurfaceGpuBindings surfaceBindings(uint32_t image) const;
+  [[nodiscard]] const std::string &surfaceUnsupportedReason() const;
   [[nodiscard]] uint64_t allocatedBytes() const;
   [[nodiscard]] const RaySceneBuildStats *buildStats() const;
   [[nodiscard]] uint64_t sceneGeneration() const;
+  // Camera/light-independent content revision, available after update. Zero
+  // means no compatible ray scene is enabled for either consumer.
+  [[nodiscard]] uint64_t sceneRevision() const;
   [[nodiscard]] uint64_t historyResets() const;
 
 private:

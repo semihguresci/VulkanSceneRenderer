@@ -6,6 +6,7 @@
 #include "depth_normal_common.slang"
 #include "lighting_structs.slang"
 #include "material_data_common.slang"
+#include "ddgi_lighting_common.slang"
 #include "push_constants_common.slang"
 #include "local_shadow_common.slang"
 #define RAY_SHADOW_READ_SET 3
@@ -141,6 +142,15 @@ float4 fragMain(VSOutput input) : SV_Target0
     float roughness = clamp(material.y, 0.045, 1.0);
     bool thinSurface = IsThinSurfaceGpuMaterial(materialData.flags);
     float3 V = SafeNormalize(uCamera.cameraWorldPosition.xyz - worldPosition, float3(0.0, 0.0, 1.0));
+    float bounceIntensity = pc.bounceIntensity;
+    if (bounceIntensity > 0.0)
+    {
+        uint ddgiReceiverFlags = DecodeGBufferThinSurface(material.w) ?
+            (kGpuMaterialFlagDoubleSided | kGpuMaterialFlagAlphaMask) : 0u;
+        DdgiLookupResult ddgi = LookupDdgiDiffuseReceiver(materialData, ddgiReceiverFlags,
+            layerTerms.transmissionFactor, worldPosition, geometricNormal, normal, V);
+        bounceIntensity *= 1.0 - saturate(ddgi.coverage);
+    }
     float NdotV = max(dot(normal, V), 0.0);
     float iridescenceThickness = layerTerms.iridescenceThickness;
     float3 F0 = EvaluateDeferredPbrF0FromDielectricColor(
@@ -204,7 +214,7 @@ float4 fragMain(VSOutput input) : SV_Target0
             layerTerms.sheenColor, layerTerms.sheenRoughness);
         totalLighting += EvaluateDiffuseBounceLight(
             albedo.rgb, metallic, normal, geometricNormal, V, L, unshadowedRadiance,
-            lightVisibility, saturate(material.z), pc.bounceIntensity);
+            lightVisibility, saturate(material.z), bounceIntensity);
         if (thinSurface || transmissionWeight > 0.0)
         {
             float transmissionAlpha =

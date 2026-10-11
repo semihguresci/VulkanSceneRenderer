@@ -33,6 +33,20 @@ Use `--render-technique forward-raster` for the forward path. TAA currently
 supports native-resolution rigid surfaces at 1x samples; transparent and emissive
 pixels use current color. Existing MSAA remains available with `--no-taa`.
 
+Try diffuse irradiance probes on the Cornell sample:
+
+```powershell
+.\VulkanSceneRenderer.exe --ddgi --ddgi-origin -1.05 -.1 -1.05 --ddgi-spacing .35 .35 .35 --ddgi-counts 7 7 7
+```
+
+Lighting Settings provides live DDGI enable/pause, budgets, volume controls and
+irradiance/visibility/classification/relocation views. The field supports up to
+four world-space volumes and needs ray-query support; unsupported devices retain
+raster lighting and report the fallback. Coarse grids can leak light through
+thin walls. See the included [probe guide](ddgi-probe-foundation.md) for limits,
+controls and validation commands. All compiled probe and fallback shaders are
+included; no capture SDK or additional runtime is needed.
+
 From the extracted directory, this reproducible motion capture also works without
 build tools:
 

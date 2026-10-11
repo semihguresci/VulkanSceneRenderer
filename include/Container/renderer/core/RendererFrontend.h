@@ -13,10 +13,13 @@
 
 #include "Container/app/SceneLightingDefaults.h"
 #include "Container/app/GfxCapture.h"
+#include "Container/renderer/bim/BimInspectionCache.h"
 #include "Container/renderer/core/PushConstantBlock.h"
 #include "Container/renderer/core/RendererDeviceCapabilities.h"
 #include "Container/renderer/debug/DebugRenderState.h"
 #include "Container/renderer/lighting/EditableLight.h"
+#include "Container/renderer/lighting/DdgiProbeVolume.h"
+#include "Container/renderer/lighting/DdgiSceneChanges.h"
 #include "Container/renderer/picking/RenderSurfaceInteractionController.h"
 #include "Container/renderer/resources/RenderResources.h"
 #include "Container/renderer/scene/DrawCommand.h"
@@ -38,6 +41,7 @@ namespace container::renderer {
 class BloomManager;
 class TemporalManager;
 class RayShadowManager;
+class DdgiManager;
 class BimManager;
 enum class BimDisciplinePreset : uint32_t;
 struct BimDrawFilter;
@@ -138,6 +142,8 @@ public:
 
   // Scene operations forwarded from the application.
   bool reloadSceneModel(const std::string &path, float importScale = 1.0f);
+  // Deterministic captures settle requests while continuing event/UI processing.
+  void settlePendingModelLoads();
 
   // Shutdown: wait idle and release all Vulkan resources in dependency order.
   void shutdown();
@@ -149,12 +155,30 @@ public:
   const SceneState &sceneState() const { return sceneState_; }
 
 private:
+  struct ModelLoadState;
+  std::unique_ptr<ModelLoadState> modelLoad_;
+  void pumpModelLoadProgress(std::string_view stage, bool render = true);
+  void drawModelLoadProgressFrame();
   container::capture::Journal gfxJournal_;
   [[nodiscard]] nlohmann::json captureTelemetry() const;
   std::optional<float> captureExposure_{};
   std::optional<glm::vec4> captureSectionPlane_{};
   std::optional<uint32_t> captureBimHiddenObject_{};
   std::optional<int> captureBimLodBias_{};
+  std::optional<uint32_t> pendingDdgiSceneFit_{};
+  std::optional<DdgiProbeVolumeDesc> fittedDdgiVolume_{};
+  glm::vec3 ddgiFitBoundsMin_{}, ddgiFitBoundsMax_{};
+  uint32_t ddgiFitProbeBudget_{0}, ddgiFitProbeCount_{0};
+  uint64_t ddgiFitPayloadBytes_{0};
+  std::string ddgiFitStatus_{"No scene fit requested"};
+  DdgiSceneChangeTracker ddgiSceneChanges_{};
+  uint64_t ddgiTrackedSceneRevision_{0};
+  void fitDdgiToActiveScene(uint32_t maxProbes);
+  void processPendingDdgiSceneFit();
+  void fitDdgiDetailToSelection(uint32_t maxProbes, std::string_view nodeName = {});
+  void processPendingDdgiDetailFit();
+  [[nodiscard]] std::string ddgiActiveSceneIdentity() const;
+  void processPendingDdgiPreset();
   std::optional<uint64_t> temporalClipRevision_{};
   bool captureAcquireOutOfDate_{false}, capturePresentSuboptimal_{false};
   std::optional<glm::mat4> captureObjectBase_{};
@@ -178,6 +202,7 @@ private:
     std::unique_ptr<BloomManager> bloomManager;
     std::unique_ptr<TemporalManager> temporalManager;
     std::unique_ptr<RayShadowManager> rayShadowManager;
+    std::unique_ptr<DdgiManager> ddgiManager;
     std::unique_ptr<ExposureManager> exposureManager;
     std::unique_ptr<GraphicsPipelineBuilder> pipelineBuilder;
     std::unique_ptr<FrameRecorder> frameRecorder;
@@ -242,6 +267,7 @@ private:
   uint32_t hoveredMeshNode_{container::scene::SceneGraph::kInvalidNode};
   uint32_t hoveredBimObjectIndex_{std::numeric_limits<uint32_t>::max()};
   uint32_t selectedBimObjectIndex_{std::numeric_limits<uint32_t>::max()};
+  BimInspectionCache bimInspectionCache_{};
   struct SelectionNavigationAnchor {
     bool valid{false};
     glm::vec3 point{0.0f};
@@ -469,6 +495,8 @@ private:
       const container::ui::ViewpointSnapshotState &snapshot);
   void presentSceneControls();
   void selectMeshNodeAtCursor(double cursorX, double cursorY);
+  void selectBimObject(uint32_t objectIndex,
+                       std::optional<glm::vec3> anchorPoint = std::nullopt);
   void hoverMeshNodeAtCursor(double cursorX, double cursorY);
   void clearHoveredMeshNode();
   void clearSelectedMeshNode();

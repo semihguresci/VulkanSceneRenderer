@@ -178,7 +178,8 @@ void FrameResourceManager::createDescriptorSetLayouts() {
          nullptr}, // bloom sampler
         {9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
          nullptr}, // tile grid SSBO
-        {10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+        {10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
          nullptr}, // camera UBO
         {11, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
          nullptr}, // shadow UBO

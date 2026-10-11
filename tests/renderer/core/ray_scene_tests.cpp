@@ -4,10 +4,230 @@
 #include "Container/utility/RayQuerySupport.h"
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
 #include <limits>
 
 using namespace container::renderer;
+
+namespace {
+std::vector<container::geometry::Vertex> surfaceTestVertices() {
+  std::vector<container::geometry::Vertex> vertices(3);
+  vertices[0].position = {0, 0, 0};
+  vertices[1].position = {2, 0, 0};
+  vertices[2].position = {0, 4, 0};
+  for (auto &vertex : vertices) {
+    vertex.normal = {0, 0, 1};
+    vertex.tangent = {1, 0, 0, 1};
+  }
+  vertices[0].color = {1, 0, 0};
+  vertices[1].color = {0, 1, 0};
+  vertices[2].color = {0, 0, 1};
+  vertices[0].texCoord = {0, 0};
+  vertices[1].texCoord = {1, 0};
+  vertices[2].texCoord = {0, 1};
+  vertices[0].texCoord1 = {1, 1};
+  vertices[1].texCoord1 = {0, 1};
+  vertices[2].texCoord1 = {1, 0};
+  return vertices;
+}
+void expectSurfaceVector(glm::vec3 actual, glm::vec3 expected) {
+  for (uint32_t axis = 0; axis < 3; ++axis)
+    EXPECT_NEAR(actual[axis], expected[axis], 1e-6f);
+}
+} // namespace
+
+TEST(RaySurface, MetadataIsOptionalAndRetainsSourceCornerAttributes) {
+  const auto vertices = surfaceTestVertices();
+  const std::vector<uint32_t> indices{0, 1, 2};
+  std::vector<container::gpu::ObjectData> objects(2);
+  const std::vector<DrawCommand> draws{{0, 0, 3, 2}};
+  const std::array providers{
+      RaySceneProviderSource{{"mesh"}, 1, vertices, indices, objects, draws}};
+  const auto shadows = extractRayScene(providers);
+  EXPECT_FALSE(shadows.hasSurfaceData);
+  EXPECT_TRUE(shadows.surfaceTriangles.empty());
+  EXPECT_TRUE(shadows.surfaceInstanceData.empty());
+  const auto surfaces =
+      extractRayScene(providers, {.includeSurfaceData = true});
+  EXPECT_TRUE(surfaces.hasSurfaceData);
+  ASSERT_EQ(surfaces.surfaceTriangles.size(), 1u);
+  ASSERT_EQ(surfaces.surfaceInstanceData.size(), 2u);
+  EXPECT_EQ(surfaces.instanceData[0].info.x, surfaces.instanceData[1].info.x);
+  for (uint32_t corner = 0; corner < 3; ++corner) {
+    const auto &surface = surfaces.surfaceTriangles[0];
+    EXPECT_EQ(surface.positions[corner],
+              glm::vec4(vertices[corner].position, 1));
+    EXPECT_EQ(surface.normals[corner], glm::vec4(vertices[corner].normal, 0));
+    EXPECT_EQ(surface.tangents[corner], vertices[corner].tangent);
+    EXPECT_EQ(surface.colors[corner], glm::vec4(vertices[corner].color, 1));
+    EXPECT_EQ(surfaces.triangles[0].uv[corner],
+              glm::vec4(vertices[corner].texCoord, vertices[corner].texCoord1));
+  }
+}
+
+TEST(RaySurface, ReconstructsMirroredFrameAndKeepsBackFacePolicyExplicit) {
+  const auto vertices = surfaceTestVertices();
+  const std::vector<uint32_t> indices{0, 1, 2};
+  std::vector<container::gpu::ObjectData> objects(1);
+  objects[0].model = glm::translate(glm::mat4(1), glm::vec3(10, 20, 30)) *
+                     glm::scale(glm::mat4(1), glm::vec3(-2, 3, 0.5f));
+  objects[0].objectInfo = {17, 4, 0, 0};
+  const std::vector<DrawCommand> draws{{0, 0, 3}};
+  const std::array providers{
+      RaySceneProviderSource{{"bim"}, 1, vertices, indices, objects, draws}};
+  const auto scene = extractRayScene(providers, {.includeSurfaceData = true});
+  const auto point = reconstructRaySurface(
+      scene.triangles[0], scene.surfaceTriangles[0], scene.instanceData[0],
+      scene.surfaceInstanceData[0], {0.25f, 0.25f}, false);
+  ASSERT_TRUE(point.has_value());
+  expectSurfaceVector(point->position, {9, 23, 30});
+  // Crossing mirrored world edges would incorrectly return -Z here.
+  expectSurfaceVector(point->geometricNormal, {0, 0, 1});
+  expectSurfaceVector(point->shadingNormal, {0, 0, 1});
+  expectSurfaceVector(glm::vec3(point->tangent), {-1, 0, 0});
+  EXPECT_EQ(point->tangent.w, -1.0f);
+  expectSurfaceVector(point->bitangent, {0, 1, 0});
+  expectSurfaceVector(point->color, {0.5f, 0.25f, 0.25f});
+  EXPECT_EQ(point->uv, glm::vec4(0.25f, 0.25f, 0.75f, 0.75f));
+  EXPECT_EQ(point->materialIndex, 17u);
+  EXPECT_EQ(point->objectFlags, 4u);
+  EXPECT_FALSE(point->frontFace);
+}
+
+TEST(RaySurface,
+     MatchesVertexNormalizedRasterInterpolationUnderNonuniformScale) {
+  auto vertices = surfaceTestVertices();
+  vertices[0].normal = {1, 0, 0};
+  vertices[1].normal = {0, 1, 0};
+  vertices[2].normal = {1, 1, 0};
+  const std::vector<uint32_t> indices{0, 1, 2};
+  std::vector<container::gpu::ObjectData> objects(1);
+  objects[0].model = glm::scale(glm::mat4(1), glm::vec3(2, 1, 1));
+  const std::vector<DrawCommand> draws{{0, 0, 3}};
+  const std::array providers{
+      RaySceneProviderSource{{"mesh"}, 1, vertices, indices, objects, draws}};
+  const auto scene = extractRayScene(providers, {.includeSurfaceData = true});
+  const auto point = reconstructRaySurface(
+      scene.triangles[0], scene.surfaceTriangles[0], scene.instanceData[0],
+      scene.surfaceInstanceData[0], {0.25f, 0.5f}, true);
+  ASSERT_TRUE(point.has_value());
+  // Analytic per-vertex transformed normals: X, Y, (1,2,0)/sqrt(5).
+  const float expectedX = 0.25f + 0.5f / std::sqrt(5.0f);
+  const float expectedY = 0.25f + 1.0f / std::sqrt(5.0f);
+  const float length = std::sqrt(expectedX * expectedX + expectedY * expectedY);
+  expectSurfaceVector(point->shadingNormal,
+                      {expectedX / length, expectedY / length, 0});
+  EXPECT_NEAR(glm::dot(point->shadingNormal, glm::vec3(point->tangent)), 0,
+              1e-6f);
+  EXPECT_NEAR(glm::length(glm::vec3(point->tangent)), 1, 1e-6f);
+  EXPECT_NEAR(glm::length(point->bitangent), 1, 1e-6f);
+}
+
+TEST(RaySurface,
+     RejectsNonfiniteOptionalAttributesWithoutChangingShadowPolicy) {
+  auto vertices = surfaceTestVertices();
+  const std::vector<uint32_t> indices{0, 1, 2};
+  const std::vector<container::gpu::ObjectData> objects(1);
+  const std::vector<DrawCommand> draws{{0, 0, 3}};
+  const std::array providers{
+      RaySceneProviderSource{{"mesh"}, 1, vertices, indices, objects, draws}};
+  const auto original = vertices[1];
+  const float invalid = std::numeric_limits<float>::quiet_NaN();
+  for (uint32_t attribute = 0; attribute < 6; ++attribute) {
+    vertices[1] = original;
+    switch (attribute) {
+    case 0:
+      vertices[1].position.x = invalid;
+      break;
+    case 1:
+      vertices[1].normal.y = invalid;
+      break;
+    case 2:
+      vertices[1].tangent.w = invalid;
+      break;
+    case 3:
+      vertices[1].color.z = invalid;
+      break;
+    case 4:
+      vertices[1].texCoord.x = invalid;
+      break;
+    case 5:
+      vertices[1].texCoord1.y = invalid;
+      break;
+    }
+    EXPECT_THROW(extractRayScene(providers, {.includeSurfaceData = true}),
+                 std::invalid_argument)
+        << "attribute " << attribute;
+    if (attribute != 0)
+      EXPECT_NO_THROW(extractRayScene(providers)) << "attribute " << attribute;
+  }
+}
+
+TEST(RaySurface,
+     RejectsUnrepresentableNormalTransformAndInvalidReconstruction) {
+  const auto vertices = surfaceTestVertices();
+  const std::vector<uint32_t> indices{0, 1, 2};
+  std::vector<container::gpu::ObjectData> objects(1);
+  objects[0].model = glm::scale(glm::mat4(1), glm::vec3(1e-39f, 1, 1));
+  const std::vector<DrawCommand> draws{{0, 0, 3}};
+  const std::array providers{
+      RaySceneProviderSource{{"mesh"}, 1, vertices, indices, objects, draws}};
+  EXPECT_NO_THROW(extractRayScene(providers));
+  EXPECT_THROW(extractRayScene(providers, {.includeSurfaceData = true}),
+               std::invalid_argument);
+  objects[0].model = glm::mat4(1);
+  auto scene = extractRayScene(providers, {.includeSurfaceData = true});
+  const auto reconstruct = [&](glm::vec2 barycentrics) {
+    return reconstructRaySurface(
+        scene.triangles[0], scene.surfaceTriangles[0], scene.instanceData[0],
+        scene.surfaceInstanceData[0], barycentrics, true);
+  };
+  EXPECT_FALSE(reconstruct({-0.1f, 0.2f}));
+  EXPECT_FALSE(reconstruct({0.6f, 0.6f}));
+  EXPECT_FALSE(reconstruct({std::numeric_limits<float>::quiet_NaN(), 0}));
+  scene.surfaceInstanceData[0].normalColumns[0].w =
+      std::numeric_limits<float>::quiet_NaN();
+  EXPECT_FALSE(reconstruct({0.2f, 0.2f}));
+  scene.surfaceInstanceData[0].normalColumns[0].w = 1;
+  scene.surfaceInstanceData[0].model[3][0] =
+      std::numeric_limits<float>::infinity();
+  EXPECT_FALSE(reconstruct({0.2f, 0.2f}));
+  scene.surfaceInstanceData[0].model = glm::mat4(1);
+  scene.surfaceTriangles[0].positions[2] =
+      scene.surfaceTriangles[0].positions[1];
+  EXPECT_FALSE(reconstruct({0.2f, 0.2f}));
+}
+
+TEST(RaySurface, CacheRetainsOptionalGeometryAndRefreshesInstanceFrames) {
+  const auto vertices = surfaceTestVertices();
+  const std::vector<uint32_t> indices{0, 1, 2};
+  std::vector<container::gpu::ObjectData> objects(1);
+  const std::vector<DrawCommand> draws{{0, 0, 3}};
+  const std::array providers{
+      RaySceneProviderSource{{"mesh"}, 1, vertices, indices, objects, draws}};
+  RaySceneExtractionCache cache;
+  const auto shadows = cache.update(providers);
+  const auto initial = cache.update(providers, {.includeSurfaceData = true});
+  EXPECT_NE(shadows.geometry, initial.geometry);
+  EXPECT_TRUE(shadows.instances.surfaceInstanceData.empty());
+  ASSERT_EQ(initial.instances.surfaceInstanceData.size(), 1u);
+  EXPECT_TRUE(initial.geometry->surfaceInstanceData.empty());
+  objects[0].model = glm::scale(glm::mat4(1), glm::vec3(-2, 3, 4));
+  const auto moved = cache.update(providers, {.includeSurfaceData = true});
+  EXPECT_EQ(moved.geometry, initial.geometry);
+  EXPECT_EQ(moved.geometry->surfaceTriangles.data(),
+            initial.geometry->surfaceTriangles.data());
+  EXPECT_EQ(initial.instances.surfaceInstanceData[0].model, glm::mat4(1));
+  EXPECT_EQ(moved.instances.surfaceInstanceData[0].model, objects[0].model);
+  EXPECT_EQ(initial.instances.surfaceInstanceData[0].normalColumns[0].w, 1.0f);
+  EXPECT_EQ(moved.instances.surfaceInstanceData[0].normalColumns[0].w, -1.0f);
+  const auto disabled = cache.update(providers);
+  EXPECT_NE(disabled.geometry, moved.geometry);
+  EXPECT_TRUE(disabled.geometry->surfaceTriangles.empty());
+  EXPECT_TRUE(disabled.instances.surfaceInstanceData.empty());
+  EXPECT_EQ(initial.geometry->surfaceTriangles.size(), 1u);
+}
 
 TEST(RayQuerySupport, EveryDependencyIsRequired) {
   const container::gpu::RayQuerySupport complete{true, true, true,
@@ -329,8 +549,8 @@ TEST(RayExtraction, StorageIdentityChangesOnlyForTheReplacedProvider) {
   const std::vector<uint32_t> indices{0, 1, 2};
   const std::vector<container::gpu::ObjectData> objects(1);
   const std::vector<DrawCommand> draws{{0, 0, 3}};
-  const RaySceneProviderSource bim{{"bim"}, 7, bimVertices, indices, objects,
-                                   draws};
+  const RaySceneProviderSource bim{{"bim"}, 7,       bimVertices,
+                                   indices, objects, draws};
   std::vector<RaySceneProviderSource> providers{bim};
   RaySceneExtractionCache cache;
   const auto first = cache.update(providers);

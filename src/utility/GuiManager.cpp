@@ -518,7 +518,10 @@ void DrawSceneHierarchyPanel(const container::scene::SceneGraph &sceneGraph,
                         ImGuiTableFlags_BordersInnerV |
                             ImGuiTableFlags_RowBg |
                             ImGuiTableFlags_Resizable |
-                            ImGuiTableFlags_SizingStretchProp)) {
+                            ImGuiTableFlags_SizingStretchProp |
+                            ImGuiTableFlags_ScrollY |
+                            ImGuiTableFlags_ScrollX,
+                        ImVec2(0.0f, 300.0f), 720.0f)) {
     SceneHierarchyParentChange parentChange{};
     ImGui::TableSetupColumn("Node", ImGuiTableColumnFlags_WidthStretch, 0.48f);
     ImGui::TableSetupColumn("Visible", ImGuiTableColumnFlags_WidthFixed,
@@ -526,6 +529,7 @@ void DrawSceneHierarchyPanel(const container::scene::SceneGraph &sceneGraph,
     ImGui::TableSetupColumn("Focus", ImGuiTableColumnFlags_WidthFixed, 72.0f);
     ImGui::TableSetupColumn("Parent", ImGuiTableColumnFlags_WidthStretch,
                             0.32f);
+    ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableHeadersRow();
     for (const uint32_t root : sceneGraph.rootNodes()) {
       DrawSceneHierarchyNode(sceneGraph, root, actions, parentChange,
@@ -1706,6 +1710,173 @@ void DrawSemanticLegendEntry(container::renderer::BimSemanticColorMode mode,
 
 } // namespace
 
+GuiPanelBounds constrainGuiPanelToWorkArea(glm::vec2 workPosition,
+                                          glm::vec2 workSize,
+                                          GuiPanelBounds panel) {
+  for (int axis = 0; axis < 2; ++axis) {
+    if (!std::isfinite(workPosition[axis])) workPosition[axis] = 0.0f;
+    if (!std::isfinite(workSize[axis])) workSize[axis] = 1.0f;
+    workSize[axis] = std::max(workSize[axis], 1.0f);
+    const float margin = std::min(8.0f, (workSize[axis] - 1.0f) * 0.5f);
+    const float maximumSize = workSize[axis] - 2.0f * margin;
+    const float minimumSize = std::min(maximumSize, axis == 0 ? 360.0f : 180.0f);
+    if (!std::isfinite(panel.size[axis])) panel.size[axis] = minimumSize;
+    panel.size[axis] = std::clamp(panel.size[axis], minimumSize, maximumSize);
+    if (!std::isfinite(panel.position[axis]))
+      panel.position[axis] = workPosition[axis] + margin;
+    panel.position[axis] = std::clamp(
+        panel.position[axis], workPosition[axis] + margin,
+        workPosition[axis] + workSize[axis] - margin - panel.size[axis]);
+  }
+  return panel;
+}
+
+std::optional<size_t> drawSampleModelList(
+    std::span<const SampleModelOption> models, std::string &filter,
+    int selectedIndex) {
+  ImGui::InputTextWithHint("##SampleModelFilter", "Search model or path", &filter);
+  const std::string search = ToLowerAscii(filter);
+  std::vector<size_t> matches;
+  matches.reserve(models.size());
+  int selectedMatch = -1;
+  for (size_t index = 0; index < models.size(); ++index) {
+    if (!search.empty() &&
+        ToLowerAscii(models[index].label).find(search) == std::string::npos &&
+        ToLowerAscii(models[index].path).find(search) == std::string::npos)
+      continue;
+    if (selectedIndex >= 0 && index == static_cast<size_t>(selectedIndex))
+      selectedMatch = static_cast<int>(matches.size());
+    matches.push_back(index);
+  }
+  ImGui::Text("%zu / %zu models", matches.size(), models.size());
+  const float height = std::min(
+      ImGui::GetTextLineHeightWithSpacing() * 12.0f,
+      std::max(60.0f, ImGui::GetMainViewport()->WorkSize.y * 0.5f));
+  std::optional<size_t> choice;
+  if (ImGui::BeginChild("SampleModelList", ImVec2(0.0f, height))) {
+    ImGuiListClipper clipper;
+    clipper.Begin(static_cast<int>(std::min<size_t>(
+        matches.size(), static_cast<size_t>(std::numeric_limits<int>::max()))));
+    if (ImGui::IsWindowAppearing() && selectedMatch >= 0)
+      clipper.IncludeItemByIndex(selectedMatch);
+    while (clipper.Step()) {
+      for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
+        const size_t index = matches[static_cast<size_t>(row)];
+        const bool selected = static_cast<int>(index) == selectedIndex;
+        ImGui::PushID(static_cast<int>(index));
+        if (ImGui::Selectable(models[index].label.c_str(), selected))
+          choice = index;
+        ShowItemTooltip(models[index].path);
+        if (selected) ImGui::SetItemDefaultFocus();
+        ImGui::PopID();
+      }
+    }
+    if (matches.empty()) ImGui::TextDisabled("No matching models");
+  }
+  ImGui::EndChild();
+  return choice;
+}
+
+void GuiManager::drawSceneHierarchy(
+    const container::scene::SceneGraph &sceneGraph, uint32_t rootSceneNode,
+    uint32_t selectedMeshNode,
+    const std::function<void(uint32_t)> &selectSceneNode,
+    const std::function<void(uint32_t)> &focusSceneNode,
+    const std::function<void(uint32_t, bool)> &setSceneNodeVisible,
+    const std::function<void(uint32_t, std::optional<uint32_t>)>
+        &reparentSceneNode) {
+  DrawSceneHierarchyPanel(
+      sceneGraph,
+      SceneHierarchyPanelActions{.rootSceneNode = rootSceneNode,
+                                 .selectedMeshNode = selectedMeshNode,
+                                 .selectSceneNode = &selectSceneNode,
+                                 .focusSceneNode = &focusSceneNode,
+                                 .setSceneNodeVisible = &setSceneNodeVisible,
+                                 .reparentSceneNode = &reparentSceneNode},
+      sceneHierarchyParentCandidateCache_);
+}
+
+void GuiManager::drawBimElementBrowser(const BimInspectionState &inspection) {
+  if (!inspection.hasScene || !ImGui::TreeNode("BIM Elements")) return;
+  ImGui::InputTextWithHint("##BimElementSearch",
+                            "Search identity, type, name, storey or material",
+                            &bimElementSearch_);
+  const std::string search = ToLowerAscii(bimElementSearch_);
+  std::vector<size_t> matches;
+  matches.reserve(inspection.elements.size());
+  for (size_t index = 0; index < inspection.elements.size(); ++index) {
+    const auto &element = inspection.elements[index];
+    if (!search.empty() &&
+        ToLowerAscii(element.guid).find(search) == std::string::npos &&
+        ToLowerAscii(element.sourceId).find(search) == std::string::npos &&
+        ToLowerAscii(element.type).find(search) == std::string::npos &&
+        ToLowerAscii(element.displayName).find(search) == std::string::npos &&
+        ToLowerAscii(element.storeyName).find(search) == std::string::npos &&
+        ToLowerAscii(element.materialName).find(search) == std::string::npos)
+      continue;
+    matches.push_back(index);
+  }
+  ImGui::Text("%zu / %zu elements", matches.size(), inspection.elements.size());
+  if (ImGui::BeginTable("BimElementsTable", 7,
+                        ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg |
+                            ImGuiTableFlags_Resizable |
+                            ImGuiTableFlags_SizingFixedFit |
+                            ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX,
+                        ImVec2(0.0f, 300.0f), 1300.0f)) {
+    ImGui::TableSetupColumn("Identity", ImGuiTableColumnFlags_WidthFixed, 220.0f);
+    ImGui::TableSetupColumn("Focus", ImGuiTableColumnFlags_WidthFixed, 65.0f);
+    ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 140.0f);
+    ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 240.0f);
+    ImGui::TableSetupColumn("Storey", ImGuiTableColumnFlags_WidthFixed, 160.0f);
+    ImGui::TableSetupColumn("Material", ImGuiTableColumnFlags_WidthFixed, 180.0f);
+    ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthFixed, 160.0f);
+    ImGui::TableSetupScrollFreeze(2, 1);
+    ImGui::TableHeadersRow();
+    ImGuiListClipper clipper;
+    clipper.Begin(static_cast<int>(std::min<size_t>(
+        matches.size(), static_cast<size_t>(std::numeric_limits<int>::max()))),
+        ImGui::GetFrameHeight() + ImGui::GetStyle().CellPadding.y * 2.0f);
+    while (clipper.Step()) {
+      for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
+        const auto &element = inspection.elements[matches[static_cast<size_t>(row)]];
+        ImGui::PushID(static_cast<int>(matches[static_cast<size_t>(row)]));
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        const bool valid = element.objectIndex != std::numeric_limits<uint32_t>::max();
+        const std::string identity = !element.guid.empty() ? element.guid :
+            (!element.sourceId.empty() ? element.sourceId :
+             "Object " + std::to_string(element.objectIndex));
+        ImGui::BeginDisabled(!valid || !inspection.selectObject);
+        if (ImGui::Selectable(identity.c_str(),
+                               inspection.hasSelection &&
+                                   inspection.selectedObjectIndex == element.objectIndex,
+                               ImGuiSelectableFlags_None,
+                               ImVec2(0.0f, ImGui::GetFrameHeight())))
+          inspection.selectObject(element.objectIndex);
+        ImGui::EndDisabled();
+        ShowItemTooltip(identity);
+        ImGui::TableNextColumn();
+        ImGui::BeginDisabled(!valid || !inspection.focusObject);
+        if (ImGui::Button("Focus")) inspection.focusObject(element.objectIndex);
+        ImGui::EndDisabled();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(element.type.c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(element.displayName.c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(element.storeyName.c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(element.materialName.c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(element.sourceId.c_str());
+        ImGui::PopID();
+      }
+    }
+    ImGui::EndTable();
+  }
+  ImGui::TreePop();
+}
+
 std::optional<BimMeasurementCapturedPoint>
 CaptureBimMeasurementPointFromSelection(
     const BimInspectionState &inspection,
@@ -1923,6 +2094,44 @@ void GuiManager::queueModelLoadRequest(std::string path, float importScale,
                                               .label = std::move(label)};
 }
 
+void GuiManager::queueModelUnloadRequest() {
+  pendingModelLoadRequest_ = ModelLoadRequest{.label = "unload model",
+                                             .unload = true};
+}
+
+void GuiManager::resetModelInspectionState() {
+  bimFilterState_ = {};
+  bimPhaseTimelineUiState_ = {};
+  bimFloorPlanOverlayState_ = {};
+  bimElevationViewState_ = {};
+  bimElevationViewRequest_.reset();
+  bimDrawingExportUiState_.exportRequested = false;
+  bimLayerVisibilityState_ = {};
+  bimQuickFilterSearch_.clear();
+  bimPropertySearch_.clear();
+  bimRelationshipSearch_.clear();
+  bimElementSearch_.clear();
+  sectionPlaneState_ = {};
+  sectionPlaneAxis_ = 1;
+  bimBoxClipState_ = {};
+  selectedBimStoreyRangeIndex_ = -1;
+  bimSelectionSets_.clear();
+  selectedBimSelectionSetIndex_ = -1;
+  nextBimSelectionSetId_ = 1;
+  bcfIssueOverlayPins_.clear();
+  sceneHierarchyParentCandidateCache_ = {};
+  bimMeasurementModelPath_.clear();
+  bimMeasurementEffectiveImportScale_ = 1.0f;
+  bimMeasurementObjectCount_ = 0;
+  bimMeasurementPointA_ = {};
+  bimMeasurementPointB_ = {};
+  bimMeasurementPointC_ = {};
+  bimMeasurementAnnotations_.clear();
+  nextBimMeasurementAnnotationId_ = 1;
+  selectedBimMeasurementAnnotationIndex_ = -1;
+  viewportNavFreeRotateActive_ = viewportNavPanActive_ = false;
+}
+
 bool GuiManager::queueSampleModelLoadRequest(std::string_view label) {
   const auto found =
       std::ranges::find(sampleModelOptions_, label, &SampleModelOption::label);
@@ -2058,6 +2267,95 @@ void GuiManager::render(VkCommandBuffer commandBuffer) {
   ImGui::Render();
   imguiFrameOpen_ = false;
   ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
+}
+
+void GuiManager::drawModelLoadingProgress(std::string_view label,
+                                          bool unloading,
+                                          std::string_view stage) {
+  if (!initialized_ || !imguiFrameOpen_)
+    return;
+
+  const ImGuiViewport *viewport = ImGui::GetMainViewport();
+  const ImVec2 workSize(std::max(1.0f, viewport->WorkSize.x),
+                        std::max(1.0f, viewport->WorkSize.y));
+  ImGui::SetNextWindowPos(viewport->WorkPos);
+  ImGui::SetNextWindowSize(workSize);
+  ImGui::SetNextWindowBgAlpha(0.88f);
+  constexpr ImGuiWindowFlags flags =
+      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs |
+      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+      ImGuiWindowFlags_NoBringToFrontOnFocus;
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+  if (ImGui::Begin("##ModelLoadingProgress", nullptr, flags)) {
+    const float panelWidth = std::min(440.0f, workSize.x);
+    const float panelHeight = std::min(220.0f, workSize.y);
+    const ImVec2 panelPosition(
+        viewport->WorkPos.x + (workSize.x - panelWidth) * 0.5f,
+        viewport->WorkPos.y + (workSize.y - panelHeight) * 0.5f);
+    ImDrawList *drawList = ImGui::GetWindowDrawList();
+    drawList->AddRectFilled(
+        panelPosition,
+        ImVec2(panelPosition.x + panelWidth, panelPosition.y + panelHeight),
+        ImGui::GetColorU32(ImGuiCol_PopupBg), 8.0f);
+    drawList->AddRect(
+        panelPosition,
+        ImVec2(panelPosition.x + panelWidth, panelPosition.y + panelHeight),
+        ImGui::GetColorU32(ImGuiCol_Border), 8.0f);
+
+    constexpr float tau = 6.28318530718f;
+    const float time = static_cast<float>(ImGui::GetTime());
+    const ImVec2 spinnerCenter(panelPosition.x + 32.0f,
+                               panelPosition.y + 34.0f);
+    const ImVec4 accent = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
+    for (int dot = 0; dot < 12; ++dot) {
+      const float angle = tau * static_cast<float>(dot) / 12.0f + time * 3.0f;
+      ImVec4 color = accent;
+      color.w *= 0.2f + 0.8f * static_cast<float>(dot + 1) / 12.0f;
+      drawList->AddCircleFilled(
+          ImVec2(spinnerCenter.x + std::cos(angle) * 10.0f,
+                 spinnerCenter.y + std::sin(angle) * 10.0f),
+          2.3f, ImGui::ColorConvertFloat4ToU32(color));
+    }
+    ImGui::SetCursorScreenPos(
+        ImVec2(panelPosition.x + 56.0f, panelPosition.y + 26.0f));
+    ImGui::TextUnformatted(unloading ? "Unloading model" : "Loading model");
+
+    ImGui::SetCursorScreenPos(
+        ImVec2(panelPosition.x + 20.0f, panelPosition.y + 62.0f));
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() +
+                           std::max(1.0f, panelWidth - 40.0f));
+    if (!label.empty()) {
+      ImGui::TextUnformatted(label.data(), label.data() + label.size());
+      ImGui::Spacing();
+    }
+    if (stage.empty()) {
+      ImGui::TextUnformatted(unloading ? "Releasing scene resources..."
+                                      : "Preparing scene resources...");
+    } else {
+      ImGui::TextUnformatted(stage.data(), stage.data() + stage.size());
+    }
+    ImGui::PopTextWrapPos();
+
+    const float barWidth = std::max(1.0f, panelWidth - 40.0f);
+    const ImVec2 barPosition(panelPosition.x + 20.0f,
+                             panelPosition.y + panelHeight - 24.0f);
+    drawList->AddRectFilled(
+        barPosition, ImVec2(barPosition.x + barWidth, barPosition.y + 4.0f),
+        ImGui::GetColorU32(ImGuiCol_FrameBg), 2.0f);
+    const float segmentWidth = barWidth * 0.3f;
+    const float segmentOffset =
+        (barWidth - segmentWidth) * (0.5f + 0.5f * std::sin(time * 2.0f));
+    drawList->AddRectFilled(
+        ImVec2(barPosition.x + segmentOffset, barPosition.y),
+        ImVec2(barPosition.x + segmentOffset + segmentWidth,
+               barPosition.y + 4.0f),
+        ImGui::GetColorU32(ImGuiCol_CheckMark), 2.0f);
+  }
+  ImGui::End();
+  ImGui::PopStyleVar(3);
 }
 
 void GuiManager::drawViewportInteractionControls(
@@ -2555,7 +2853,34 @@ void GuiManager::drawSceneControls(
   if (!initialized_)
     return;
 
-  ImGui::Begin("Scene Controls");
+  const ImGuiViewport *viewport = ImGui::GetMainViewport();
+  const glm::vec2 workPosition{viewport->WorkPos.x, viewport->WorkPos.y};
+  const glm::vec2 workSize{viewport->WorkSize.x, viewport->WorkSize.y};
+  const GuiPanelBounds defaults = constrainGuiPanelToWorkArea(
+      workPosition, workSize, {workPosition + glm::vec2(8.0f), {500.0f, 700.0f}});
+  const GuiPanelBounds limits = constrainGuiPanelToWorkArea(
+      workPosition, workSize, {workPosition, workSize});
+  const glm::vec2 minimum = glm::min(limits.size, glm::vec2(360.0f, 180.0f));
+  ImGui::SetNextWindowPos(ImVec2(defaults.position.x, defaults.position.y),
+                          ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(defaults.size.x, defaults.size.y),
+                           ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSizeConstraints(ImVec2(minimum.x, minimum.y),
+                                     ImVec2(limits.size.x, limits.size.y));
+  const bool controlsVisible = ImGui::Begin("Scene Controls");
+  const ImVec2 position = ImGui::GetWindowPos();
+  const ImVec2 size = ImGui::GetWindowSize();
+  const GuiPanelBounds constrained = constrainGuiPanelToWorkArea(
+      workPosition, workSize, {{position.x, position.y}, {size.x, size.y}});
+  if (constrained.position != glm::vec2(position.x, position.y))
+    ImGui::SetWindowPos(ImVec2(constrained.position.x, constrained.position.y));
+  if (controlsVisible && constrained.size != glm::vec2(size.x, size.y))
+    ImGui::SetWindowSize(ImVec2(constrained.size.x, constrained.size.y));
+  if (!controlsVisible) {
+    ImGui::End();
+    drawRendererTelemetryWindow();
+    return;
+  }
   if (ImGui::Combo("Import scale", &importScaleIndex_,
                    kImportScaleLabels.data(),
                    static_cast<int>(kImportScaleLabels.size()))) {
@@ -2574,17 +2899,21 @@ void GuiManager::drawSceneControls(
         hasSelection
             ? sampleModelOptions_[selectedSampleModelIndex_].label.c_str()
             : "Select sample model";
-    if (ImGui::BeginCombo("Sample model", preview)) {
-      for (int i = 0; i < static_cast<int>(sampleModelOptions_.size()); ++i) {
-        const auto &option = sampleModelOptions_[i];
-        const bool selected = i == selectedSampleModelIndex_;
-        if (ImGui::Selectable(option.label.c_str(), selected)) {
-          (void)queueSampleModelLoadRequest(option.label);
-        }
-        ShowItemTooltip(option.path);
-        if (selected) {
-          ImGui::SetItemDefaultFocus();
-        }
+    ImGui::SetNextWindowSizeConstraints(
+        ImVec2(0.0f, 0.0f),
+        ImVec2(std::max(1.0f, viewport->WorkSize.x - 16.0f),
+               std::max(1.0f, viewport->WorkSize.y - 16.0f)));
+    if (ImGui::BeginCombo("Sample model", preview,
+                          ImGuiComboFlags_HeightLargest)) {
+      if (const auto choice = drawSampleModelList(
+              sampleModelOptions_, sampleModelFilter_, selectedSampleModelIndex_)) {
+        const auto &option = sampleModelOptions_[*choice];
+        selectedSampleModelIndex_ = static_cast<int>(*choice);
+        modelPathInput_ = option.path;
+        queueModelLoadRequest(option.path, importScale_, option.label);
+        statusMessage_ = "Model load requested: " + option.label + " @ " +
+                         ImportScaleLabel(importScale_);
+        ImGui::CloseCurrentPopup();
       }
       ImGui::EndCombo();
     }
@@ -2609,6 +2938,12 @@ void GuiManager::drawSceneControls(
     queueModelLoadRequest(modelPathInput_, importScale_, "default model");
     statusMessage_ = "Model load requested: default model @ " +
                      ImportScaleLabel(importScale_);
+  }
+
+  ImGui::SameLine();
+  if (ImGui::Button("Unload model")) {
+    queueModelUnloadRequest();
+    statusMessage_ = "Model unload requested";
   }
 
   if (ImGui::Button("Add Primitive")) {
@@ -2801,15 +3136,8 @@ void GuiManager::drawSceneControls(
   ImGui::Text("Renderable primitives: %zu",
               sceneGraph.renderableNodes().size());
 
-  DrawSceneHierarchyPanel(
-      sceneGraph,
-      SceneHierarchyPanelActions{.rootSceneNode = rootSceneNode,
-                                 .selectedMeshNode = selectedMeshNode,
-                                 .selectSceneNode = &selectMeshNode,
-                                 .focusSceneNode = &focusSceneNode,
-                                 .setSceneNodeVisible = &setSceneNodeVisible,
-                                 .reparentSceneNode = &reparentSceneNode},
-      sceneHierarchyParentCandidateCache_);
+  drawSceneHierarchy(sceneGraph, rootSceneNode, selectedMeshNode, selectMeshNode,
+                     focusSceneNode, setSceneNodeVisible, reparentSceneNode);
 
   if (!bimInspection.hasScene) {
     bimMeasurementModelPath_.clear();
@@ -2855,6 +3183,7 @@ void GuiManager::drawSceneControls(
   if (bimInspection.hasScene) {
     ImGui::Separator();
     if (ImGui::TreeNode("BIM")) {
+      drawBimElementBrowser(bimInspection);
       ImGui::Text("Objects: %zu", bimInspection.objectCount);
       ImGui::Text("Objects by geometry: %zu mesh, %zu point-cloud, %zu curve",
                   bimInspection.meshObjectCount, bimInspection.pointObjectCount,
@@ -3122,15 +3451,17 @@ void GuiManager::drawSceneControls(
           } else if (ImGui::BeginTable("BimModelCompareChanges", 4,
                                        ImGuiTableFlags_BordersInnerV |
                                            ImGuiTableFlags_RowBg |
-                                           ImGuiTableFlags_SizingStretchProp)) {
+                                           ImGuiTableFlags_SizingStretchProp |
+                                           ImGuiTableFlags_ScrollY |
+                                           ImGuiTableFlags_ScrollX,
+                                       ImVec2(0.0f, 240.0f), 1000.0f)) {
             ImGui::TableSetupColumn("Kind");
             ImGui::TableSetupColumn("Element");
             ImGui::TableSetupColumn("Before");
             ImGui::TableSetupColumn("After");
+            ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableHeadersRow();
-            const size_t visibleChanges =
-                std::min<size_t>(bimCompareChanges_.size(), 32u);
-            for (size_t i = 0; i < visibleChanges; ++i) {
+            for (size_t i = 0; i < bimCompareChanges_.size(); ++i) {
               const auto &change = bimCompareChanges_[i];
               ImGui::TableNextRow();
               ImGui::TableNextColumn();
@@ -3207,16 +3538,11 @@ void GuiManager::drawSceneControls(
             ImGui::TextDisabled("No legend values exposed for this mode");
           } else {
             ImGui::TextDisabled("Palette matches the active BIM semantic mode");
-            const size_t visibleLegendCount =
-                std::min<size_t>(legendValues.size(), 48u);
-            for (size_t i = 0; i < visibleLegendCount; ++i) {
-              DrawSemanticLegendEntry(bimSemanticColorMode_, i,
-                                      legendValues[i]);
+            if (ImGui::BeginChild("BimSemanticLegend", ImVec2(0.0f, 220.0f))) {
+              for (size_t i = 0; i < legendValues.size(); ++i)
+                DrawSemanticLegendEntry(bimSemanticColorMode_, i, legendValues[i]);
             }
-            if (visibleLegendCount < legendValues.size()) {
-              ImGui::TextDisabled("%zu more legend values",
-                                  legendValues.size() - visibleLegendCount);
-            }
+            ImGui::EndChild();
           }
         }
         ImGui::TreePop();
@@ -3501,11 +3827,14 @@ void GuiManager::drawSceneControls(
         } else if (ImGui::BeginTable("BimQuickFilterMatches", 3,
                                      ImGuiTableFlags_Borders |
                                          ImGuiTableFlags_RowBg |
-                                         ImGuiTableFlags_SizingStretchProp,
-                                     ImVec2(0.0f, 220.0f))) {
+                                         ImGuiTableFlags_SizingStretchProp |
+                                         ImGuiTableFlags_ScrollY |
+                                         ImGuiTableFlags_ScrollX,
+                                     ImVec2(0.0f, 220.0f), 800.0f)) {
           ImGui::TableSetupColumn("Category");
           ImGui::TableSetupColumn("Value");
           ImGui::TableSetupColumn("Action");
+          ImGui::TableSetupScrollFreeze(0, 1);
           ImGui::TableHeadersRow();
           size_t visibleMatches = 0u;
           size_t totalMatches = 0u;
@@ -3517,9 +3846,6 @@ void GuiManager::drawSceneControls(
                     continue;
                   }
                   ++totalMatches;
-                  if (visibleMatches >= 96u) {
-                    continue;
-                  }
                   ImGui::PushID(category);
                   ImGui::PushID(static_cast<int>(visibleMatches));
                   ImGui::TableNextRow();
@@ -3565,9 +3891,6 @@ void GuiManager::drawSceneControls(
           ImGui::EndTable();
           if (totalMatches == 0u) {
             ImGui::TextDisabled("No filter values match the search");
-          } else if (visibleMatches < totalMatches) {
-            ImGui::TextDisabled("%zu more matches",
-                                totalMatches - visibleMatches);
           }
         }
         ImGui::TreePop();
@@ -3822,14 +4145,16 @@ void GuiManager::drawSceneControls(
               if (ImGui::BeginTable("BimExtendedProperties", 4,
                                     ImGuiTableFlags_Borders |
                                         ImGuiTableFlags_RowBg |
-                                        ImGuiTableFlags_SizingStretchProp,
-                                    ImVec2(0.0f, 220.0f))) {
+                                        ImGuiTableFlags_SizingStretchProp |
+                                        ImGuiTableFlags_ScrollY |
+                                        ImGuiTableFlags_ScrollX,
+                                    ImVec2(0.0f, 220.0f), 1000.0f)) {
                 ImGui::TableSetupColumn("Set");
                 ImGui::TableSetupColumn("Name");
                 ImGui::TableSetupColumn("Value");
                 ImGui::TableSetupColumn("Category");
+                ImGui::TableSetupScrollFreeze(0, 1);
                 ImGui::TableHeadersRow();
-                size_t visiblePropertyCount = 0u;
                 size_t matchedPropertyCount = 0u;
                 for (size_t i = 0; i < bimInspection.properties.size(); ++i) {
                   const container::renderer::BimElementProperty &property =
@@ -3838,10 +4163,6 @@ void GuiManager::drawSceneControls(
                     continue;
                   }
                   ++matchedPropertyCount;
-                  if (visiblePropertyCount >= 128u) {
-                    continue;
-                  }
-                  ++visiblePropertyCount;
                   ImGui::TableNextRow();
                   ImGui::TableNextColumn();
                   ImGui::TextWrapped("%s", property.set.c_str());
@@ -3855,10 +4176,6 @@ void GuiManager::drawSceneControls(
                 ImGui::EndTable();
                 if (matchedPropertyCount == 0u) {
                   ImGui::TextDisabled("No properties match the search");
-                } else if (visiblePropertyCount < matchedPropertyCount) {
-                  ImGui::TextDisabled("%zu more matching properties",
-                                      matchedPropertyCount -
-                                          visiblePropertyCount);
                 }
               }
             }
@@ -3891,14 +4208,15 @@ void GuiManager::drawSceneControls(
             } else if (ImGui::BeginTable(
                            "BimRelationshipSearchResults", 3,
                            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                               ImGuiTableFlags_SizingStretchProp,
-                           ImVec2(0.0f, 140.0f))) {
+                               ImGuiTableFlags_SizingStretchProp |
+                               ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX,
+                           ImVec2(0.0f, 140.0f), 800.0f)) {
               ImGui::TableSetupColumn("Object");
               ImGui::TableSetupColumn("Reason");
               ImGui::TableSetupColumn("Match");
+              ImGui::TableSetupScrollFreeze(0, 1);
               ImGui::TableHeadersRow();
-              const size_t visibleHitCount = std::min<size_t>(hits.size(), 64u);
-              for (size_t i = 0; i < visibleHitCount; ++i) {
+              for (size_t i = 0; i < hits.size(); ++i) {
                 const auto &hit = hits[i];
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
@@ -3909,10 +4227,6 @@ void GuiManager::drawSceneControls(
                 ImGui::TextWrapped("%s", hit.matchedText.c_str());
               }
               ImGui::EndTable();
-              if (visibleHitCount < hits.size()) {
-                ImGui::TextDisabled("%zu more matches",
-                                    hits.size() - visibleHitCount);
-              }
             }
           }
         }
@@ -3959,17 +4273,18 @@ void GuiManager::drawSceneControls(
                 ImGui::BeginTable("BimSelectedRelationshipEdges", 4,
                                   ImGuiTableFlags_Borders |
                                       ImGuiTableFlags_RowBg |
-                                      ImGuiTableFlags_SizingStretchProp,
-                                  ImVec2(0.0f, 150.0f))) {
+                                      ImGuiTableFlags_SizingStretchProp |
+                                      ImGuiTableFlags_ScrollY |
+                                      ImGuiTableFlags_ScrollX,
+                                  ImVec2(0.0f, 150.0f), 900.0f)) {
               ImGui::TableSetupColumn("Relationship");
               ImGui::TableSetupColumn("Direction");
               ImGui::TableSetupColumn("Related node");
               ImGui::TableSetupColumn("Label");
+              ImGui::TableSetupScrollFreeze(0, 1);
               ImGui::TableHeadersRow();
               const auto nodes = relationshipGraph->nodes();
-              const size_t visibleEdgeCount =
-                  std::min<size_t>(selectedEdges.size(), 64u);
-              for (size_t i = 0; i < visibleEdgeCount; ++i) {
+              for (size_t i = 0; i < selectedEdges.size(); ++i) {
                 const auto &edge = selectedEdges[i];
                 if (edge.from >= nodes.size() || edge.to >= nodes.size()) {
                   continue;
@@ -3996,10 +4311,6 @@ void GuiManager::drawSceneControls(
                 ImGui::TextWrapped("%s", edge.label.c_str());
               }
               ImGui::EndTable();
-              if (visibleEdgeCount < selectedEdges.size()) {
-                ImGui::TextDisabled("%zu more relationships",
-                                    selectedEdges.size() - visibleEdgeCount);
-              }
             }
           }
           if (ImGui::BeginTable("BimIfcRelationshipBrowser", 3,
@@ -4071,9 +4382,7 @@ void GuiManager::drawSceneControls(
                         bimInspection.selectedObjectIndex)
                   : std::span<const container::renderer::BimPropertySetGroup>{};
           if (!graphPropertySets.empty()) {
-            const size_t visiblePropertySetCount =
-                std::min<size_t>(graphPropertySets.size(), 32u);
-            for (size_t setIndex = 0; setIndex < visiblePropertySetCount;
+            for (size_t setIndex = 0; setIndex < graphPropertySets.size();
                  ++setIndex) {
               const auto &group = graphPropertySets[setIndex];
               ImGui::PushID(static_cast<int>(setIndex));
@@ -4084,10 +4393,14 @@ void GuiManager::drawSceneControls(
                 if (ImGui::BeginTable("BimIfcPropertySetProperties", 3,
                                       ImGuiTableFlags_Borders |
                                           ImGuiTableFlags_RowBg |
-                                          ImGuiTableFlags_SizingStretchProp)) {
+                                          ImGuiTableFlags_SizingStretchProp |
+                                          ImGuiTableFlags_ScrollY |
+                                          ImGuiTableFlags_ScrollX,
+                                      ImVec2(0.0f, 180.0f), 900.0f)) {
                   ImGui::TableSetupColumn("Name");
                   ImGui::TableSetupColumn("Value");
                   ImGui::TableSetupColumn("Category");
+                  ImGui::TableSetupScrollFreeze(0, 1);
                   ImGui::TableHeadersRow();
                   for (const auto &property : group.properties) {
                     ImGui::TableNextRow();
@@ -4104,24 +4417,21 @@ void GuiManager::drawSceneControls(
               }
               ImGui::PopID();
             }
-            if (visiblePropertySetCount < graphPropertySets.size()) {
-              ImGui::TextDisabled("%zu more property sets",
-                                  graphPropertySets.size() -
-                                      visiblePropertySetCount);
-            }
           } else if (bimInspection.properties.empty()) {
             ImGui::TextDisabled(
                 "No property-set relationships are exposed for this element");
           } else if (ImGui::BeginTable("BimIfcPropertySetSummary", 3,
                                        ImGuiTableFlags_Borders |
                                            ImGuiTableFlags_RowBg |
-                                           ImGuiTableFlags_SizingStretchProp,
-                                       ImVec2(0.0f, 160.0f))) {
+                                           ImGuiTableFlags_SizingStretchProp |
+                                           ImGuiTableFlags_ScrollY |
+                                           ImGuiTableFlags_ScrollX,
+                                       ImVec2(0.0f, 160.0f), 800.0f)) {
             ImGui::TableSetupColumn("Property set");
             ImGui::TableSetupColumn("Category");
             ImGui::TableSetupColumn("Properties");
+            ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableHeadersRow();
-            size_t visiblePropertySetCount = 0u;
             std::vector<std::string> visiblePropertySetKeys;
             for (const container::renderer::BimElementProperty &property :
                  bimInspection.properties) {
@@ -4148,10 +4458,6 @@ void GuiManager::drawSceneControls(
                 }
               }
               visiblePropertySetKeys.push_back(key);
-              if (visiblePropertySetCount >= 32u) {
-                continue;
-              }
-              ++visiblePropertySetCount;
               ImGui::TableNextRow();
               ImGui::TableNextColumn();
               ImGui::TextWrapped("%s", setName.c_str());
@@ -4161,11 +4467,6 @@ void GuiManager::drawSceneControls(
               ImGui::Text("%zu", propertyCount);
             }
             ImGui::EndTable();
-            if (visiblePropertySetCount < visiblePropertySetKeys.size()) {
-              ImGui::TextDisabled("%zu more property sets",
-                                  visiblePropertySetKeys.size() -
-                                  visiblePropertySetCount);
-            }
           }
         } else {
           ImGui::TextDisabled(
@@ -4183,25 +4484,21 @@ void GuiManager::drawSceneControls(
           if (ImGui::BeginTable("BimGraphSpatialEdges", 3,
                                 ImGuiTableFlags_Borders |
                                     ImGuiTableFlags_RowBg |
-                                    ImGuiTableFlags_SizingStretchProp,
-                                ImVec2(0.0f, 180.0f))) {
+                                    ImGuiTableFlags_SizingStretchProp |
+                                    ImGuiTableFlags_ScrollY |
+                                    ImGuiTableFlags_ScrollX,
+                                ImVec2(0.0f, 180.0f), 900.0f)) {
             ImGui::TableSetupColumn("Parent");
             ImGui::TableSetupColumn("Child");
             ImGui::TableSetupColumn("Label");
+            ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableHeadersRow();
-            size_t visibleSpatialEdgeCount = 0u;
-            size_t spatialEdgeCount = 0u;
             for (const auto &edge : edges) {
               if (edge.kind !=
                       container::renderer::BimRelationshipKind::SpatialParent ||
                   edge.from >= nodes.size() || edge.to >= nodes.size()) {
                 continue;
               }
-              ++spatialEdgeCount;
-              if (visibleSpatialEdgeCount >= 128u) {
-                continue;
-              }
-              ++visibleSpatialEdgeCount;
               const std::string parent = RelationshipNodeLabel(nodes[edge.from]);
               const std::string child = RelationshipNodeLabel(nodes[edge.to]);
               ImGui::TableNextRow();
@@ -4213,10 +4510,6 @@ void GuiManager::drawSceneControls(
               ImGui::TextWrapped("%s", edge.label.c_str());
             }
             ImGui::EndTable();
-            if (visibleSpatialEdgeCount < spatialEdgeCount) {
-              ImGui::TextDisabled("%zu more spatial edges",
-                                  spatialEdgeCount - visibleSpatialEdgeCount);
-            }
           }
           ImGui::TreePop();
         }
@@ -4332,12 +4625,15 @@ void GuiManager::drawSceneControls(
           if (ImGui::BeginTable("BimSpatialStoreys", 4,
                                 ImGuiTableFlags_Borders |
                                     ImGuiTableFlags_RowBg |
-                                    ImGuiTableFlags_SizingStretchProp,
-                                ImVec2(0.0f, 220.0f))) {
+                                    ImGuiTableFlags_SizingStretchProp |
+                                    ImGuiTableFlags_ScrollY |
+                                    ImGuiTableFlags_ScrollX,
+                                ImVec2(0.0f, 220.0f), 800.0f)) {
             ImGui::TableSetupColumn("Storey");
             ImGui::TableSetupColumn("Elevation");
             ImGui::TableSetupColumn("Objects");
             ImGui::TableSetupColumn("Preset");
+            ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableHeadersRow();
             for (int i = 0; i < storeyRangeCount; ++i) {
               const auto &storeyRange =
@@ -4370,23 +4666,25 @@ void GuiManager::drawSceneControls(
             ImGui::EndTable();
           }
         } else {
-          const size_t visibleStoreyCount =
-              std::min<size_t>(bimInspection.elementStoreys.size(), 64u);
-          for (size_t i = 0; i < visibleStoreyCount; ++i) {
-            ImGui::PushID(static_cast<int>(i));
-            ImGui::BulletText("%s", bimInspection.elementStoreys[i].c_str());
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Filter")) {
-              bimFilterState_.storeyFilterEnabled = true;
-              bimFilterState_.storey = bimInspection.elementStoreys[i];
+          if (ImGui::BeginChild("BimStoreyList", ImVec2(0.0f, 220.0f))) {
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(std::min<size_t>(
+                bimInspection.elementStoreys.size(),
+                static_cast<size_t>(std::numeric_limits<int>::max()))));
+            while (clipper.Step()) {
+              for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+                ImGui::PushID(i);
+                ImGui::BulletText("%s", bimInspection.elementStoreys[i].c_str());
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Filter")) {
+                  bimFilterState_.storeyFilterEnabled = true;
+                  bimFilterState_.storey = bimInspection.elementStoreys[i];
+                }
+                ImGui::PopID();
+              }
             }
-            ImGui::PopID();
           }
-          if (visibleStoreyCount < bimInspection.elementStoreys.size()) {
-            ImGui::TextDisabled("%zu more storeys",
-                                bimInspection.elementStoreys.size() -
-                                    visibleStoreyCount);
-          }
+          ImGui::EndChild();
           ImGui::TextDisabled(
               "Storey elevation ranges are not exposed for plan slicing");
         }
@@ -6061,6 +6359,7 @@ void GuiManager::drawSceneControls(
     ImGui::TextDisabled("Capture must be armed before instance creation.");
     ImGui::TreePop();
   }
+  drawDdgiControls();
   ImGui::Text("Bloom");
   ImGui::Checkbox("Bloom Enabled", &bloomEnabled_);
   if (bloomEnabled_) {
@@ -6428,6 +6727,310 @@ void GuiManager::drawSceneControls(
   drawRendererTelemetryWindow();
 }
 
+void GuiManager::setDdgiState(const container::renderer::DdgiSettings &settings,
+                              GuiDdgiRuntimeState runtime) {
+  ddgiSettings_ = settings;
+  ddgiRuntime_ = std::move(runtime);
+  // Keep an unfinished volume edit across frames. Only an explicit Apply or
+  // Cancel replaces it; telemetry/settings synchronization must not erase it.
+  if (!ddgiVolumeDraftDirty_) {
+    if (ddgiSelectedVolume_ > settings.additionalVolumes.size())
+      ddgiSelectedVolume_ = 0;
+    ddgiVolumeDraft_ = ddgiSelectedVolume_ == 0 ? settings.volume :
+        settings.additionalVolumes[ddgiSelectedVolume_ - 1];
+    ddgiRaysPerProbeDraft_ = settings.resources.updates.raysPerProbe;
+  }
+}
+
+bool GuiManager::trySetDdgiSettings(
+    const container::renderer::DdgiSettings &settings) {
+  try {
+    container::renderer::validateDdgiSettings(settings);
+    ddgiSettings_ = settings;
+    ddgiControlError_.clear();
+    return true;
+  } catch (const std::invalid_argument &error) {
+    ddgiControlError_ = error.what();
+    return false;
+  }
+}
+
+void GuiManager::rejectDdgiSettings(
+    const container::renderer::DdgiSettings &retained, std::string error) {
+  if (ddgiSettings_.volume != retained.volume ||
+      ddgiSettings_.additionalVolumes != retained.additionalVolumes ||
+      ddgiSettings_.resources.updates.raysPerProbe !=
+          retained.resources.updates.raysPerProbe) {
+    ddgiVolumeDraft_ = ddgiSelectedVolume_ == 0 ? ddgiSettings_.volume :
+        ddgiSettings_.additionalVolumes[ddgiSelectedVolume_ - 1];
+    ddgiRaysPerProbeDraft_ = ddgiSettings_.resources.updates.raysPerProbe;
+    ddgiVolumeDraftDirty_ = true;
+  }
+  ddgiSettings_ = retained;
+  if (ddgiSelectedVolume_ > retained.additionalVolumes.size()) {
+    ddgiSelectedVolume_ = 0;
+    ddgiVolumeDraft_ = retained.volume;
+    ddgiVolumeDraftDirty_ = false;
+    ddgiRaysPerProbeDraft_ = retained.resources.updates.raysPerProbe;
+  }
+  ddgiControlError_ = std::move(error);
+}
+
+bool GuiManager::requestDdgiSceneFit(uint32_t maxProbes) {
+  if (maxProbes < 27) {
+    ddgiControlError_ = "Scene fitting needs at least 27 probes (3 per axis).";
+    return false;
+  }
+  pendingDdgiSceneFit_ = maxProbes;
+  ddgiControlError_.clear();
+  return true;
+}
+
+std::optional<uint32_t> GuiManager::consumeDdgiSceneFitRequest() {
+  return std::exchange(pendingDdgiSceneFit_, std::nullopt);
+}
+
+bool GuiManager::requestDdgiDetailFit(uint32_t maxProbes) {
+  if (maxProbes < 27 || ddgiSettings_.additionalVolumes.size() >= 3 || ddgiVolumeDraftDirty_) {
+    ddgiControlError_ = "Detail fitting needs at least 27 probes, an available volume slot and no unfinished edit.";
+    return false;
+  }
+  pendingDdgiDetailFit_ = maxProbes;
+  ddgiControlError_.clear();
+  return true;
+}
+
+std::optional<uint32_t> GuiManager::consumeDdgiDetailFitRequest() {
+  return std::exchange(pendingDdgiDetailFit_, std::nullopt);
+}
+
+std::optional<GuiManager::DdgiPresetAction> GuiManager::consumeDdgiPresetRequest() {
+  return std::exchange(pendingDdgiPreset_, std::nullopt);
+}
+
+bool GuiManager::selectDdgiVolume(uint32_t index) {
+  if (index > ddgiSettings_.additionalVolumes.size())
+    return false;
+  ddgiSelectedVolume_ = index;
+  ddgiVolumeDraft_ = index == 0 ? ddgiSettings_.volume :
+      ddgiSettings_.additionalVolumes[index - 1];
+  ddgiRaysPerProbeDraft_ = ddgiSettings_.resources.updates.raysPerProbe;
+  ddgiVolumeDraftDirty_ = false;
+  return true;
+}
+
+bool GuiManager::addDdgiDetailVolume() {
+  if (ddgiSettings_.additionalVolumes.size() >= 3) {
+    ddgiControlError_ = "At most four probe volumes are supported.";
+    return false;
+  }
+  auto candidate = ddgiSettings_;
+  auto volume = ddgiSelectedVolume_ == 0 ? candidate.volume :
+      candidate.additionalVolumes[ddgiSelectedVolume_ - 1];
+  // Start a detail volume centered inside the selected coverage. The user can
+  // move its bounds before applying finer room coverage.
+  const glm::vec3 extent = volume.spacing * glm::vec3(volume.counts - glm::uvec3(1));
+  volume.origin += extent * .25f;
+  volume.spacing *= .5f;
+  candidate.additionalVolumes.push_back(volume);
+  if (!trySetDdgiSettings(candidate))
+    return false;
+  return selectDdgiVolume(static_cast<uint32_t>(candidate.additionalVolumes.size()));
+}
+
+bool GuiManager::removeDdgiDetailVolume(uint32_t index) {
+  if (index == 0 || index > ddgiSettings_.additionalVolumes.size())
+    return false;
+  auto candidate = ddgiSettings_;
+  candidate.additionalVolumes.erase(candidate.additionalVolumes.begin() + index - 1);
+  if (!trySetDdgiSettings(candidate))
+    return false;
+  return selectDdgiVolume(0);
+}
+
+void GuiManager::acceptDdgiSceneFit(
+    const container::renderer::DdgiSettings &settings, std::string status) {
+  ddgiSettings_ = settings;
+  ddgiSelectedVolume_ = 0;
+  ddgiVolumeDraft_ = settings.volume;
+  ddgiRaysPerProbeDraft_ = settings.resources.updates.raysPerProbe;
+  ddgiVolumeDraftDirty_ = false;
+  ddgiControlError_.clear();
+  ddgiFitStatus_ = std::move(status);
+}
+
+void GuiManager::drawDdgiControls() {
+  if (!ImGui::TreeNode("Probe global illumination (DDGI)"))
+    return;
+
+  ImGui::TextWrapped("%s", ddgiRuntime_.status.c_str());
+  ImGui::Text("GI contribution: %s",
+              ddgiRuntime_.active ? "active" : "inactive");
+  ImGui::BeginDisabled(!ddgiRuntime_.supported);
+  auto candidate = ddgiSettings_;
+  bool changed = ImGui::Checkbox("Enable probe GI", &candidate.enabled);
+  changed |= ImGui::Checkbox("Pause probe updates", &candidate.paused);
+  changed |= ImGui::Checkbox("Transmit light through thin glass", &candidate.thinGlassTransmission);
+  changed |= ImGui::Checkbox("Refract rough and solid glass", &candidate.dielectricTransmission);
+  changed |= ImGui::Checkbox("Scroll scene volume with camera", &candidate.cameraFollow);
+  changed |= ImGui::Checkbox("Asynchronous probe updates", &candidate.asyncCompute);
+  changed |= ImGui::DragFloat("GI intensity", &candidate.intensity, .01f, 0.f,
+                              container::renderer::kMaxDdgiIntensity, "%.3f");
+  changed |= ImGui::InputScalar("Probes per frame", ImGuiDataType_U32,
+                                &candidate.resources.updates.maxProbesPerFrame);
+  changed |= ImGui::InputScalar("Rays per frame", ImGuiDataType_U32,
+                                &candidate.resources.updates.maxRaysPerFrame);
+  ImGui::TextWrapped("Pausing retains the current lighting and frame budgets. "
+                     "A zero budget also pauses updates; each probe requires "
+                     "a complete ray set.");
+
+  if (ImGui::TreeNode("Probe tracing and blending")) {
+    const bool distanceChanged = ImGui::DragFloat(
+        "Maximum trace distance", &candidate.maxDistance, .05f, .001f,
+        container::renderer::kMaxDdgiTraceDistance, "%.3f");
+    changed |= distanceChanged;
+    if (distanceChanged && candidate.maxDistance > 0.f) {
+      candidate.normalBias =
+          std::min(candidate.normalBias, candidate.maxDistance);
+      candidate.viewBias = std::min(candidate.viewBias, candidate.maxDistance);
+      candidate.visibilityBias =
+          std::min(candidate.visibilityBias, candidate.maxDistance);
+    }
+    changed |= ImGui::SliderFloat("Probe hysteresis", &candidate.hysteresis,
+                                  0.f, .99f, "%.3f");
+    changed |= ImGui::DragFloat("Normal bias", &candidate.normalBias, .001f,
+                                0.f, candidate.maxDistance, "%.4f");
+    changed |= ImGui::DragFloat("View bias", &candidate.viewBias, .001f, 0.f,
+                                candidate.maxDistance, "%.4f");
+    changed |= ImGui::DragFloat("Visibility bias", &candidate.visibilityBias,
+                                .001f, 0.f, candidate.maxDistance, "%.4f");
+    ImGui::TextDisabled("Distances and biases use scene world units.");
+    ImGui::TreePop();
+  }
+
+  int debugView = static_cast<int>(candidate.debugView);
+  if (ImGui::Combo(
+          "Probe visualization", &debugView,
+          "Off\0Irradiance\0Visibility\0Classification\0Relocation\0")) {
+    candidate.debugView =
+        static_cast<container::renderer::DdgiDebugView>(debugView);
+    changed = true;
+  }
+  changed |= ImGui::DragFloat("Probe visualization radius",
+                              &candidate.debugProbeRadius, .005f, .0001f,
+                              1000000.f, "%.4f");
+  if (changed)
+    trySetDdgiSettings(candidate);
+
+  if (ImGui::TreeNode("Probe volume and ray quality")) {
+    changed = ImGui::SliderFloat("Volume blend width (cells)", &candidate.volumeBlendCells,
+                                  .1f, 4.f, "%.2f");
+    if (changed)
+      trySetDdgiSettings(candidate);
+    for (uint32_t index = 0; index <= ddgiSettings_.additionalVolumes.size(); ++index) {
+      ImGui::PushID(static_cast<int>(index));
+      if (ImGui::RadioButton(index == 0 ? "Scene volume" : "Detail volume",
+                            ddgiSelectedVolume_ == index))
+        selectDdgiVolume(index);
+      ImGui::PopID();
+    }
+    ImGui::BeginDisabled(ddgiVolumeDraftDirty_ || ddgiSettings_.additionalVolumes.size() >= 3);
+    if (ImGui::Button("Add detail volume"))
+      addDdgiDetailVolume();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(ddgiSelectedVolume_ == 0);
+    if (ImGui::Button("Remove selected detail volume"))
+      removeDdgiDetailVolume(ddgiSelectedVolume_);
+    ImGui::EndDisabled();
+    ImGui::InputScalar("Maximum fitted probes", ImGuiDataType_U32,
+                       &ddgiFitProbeBudget_);
+    if (ImGui::Button("Fit probe volume to scene"))
+      requestDdgiSceneFit(ddgiFitProbeBudget_);
+    ImGui::InputScalar("Maximum detail probes", ImGuiDataType_U32,
+                       &ddgiDetailProbeBudget_);
+    ImGui::BeginDisabled(ddgiVolumeDraftDirty_ || ddgiSettings_.additionalVolumes.size() >= 3);
+    if (ImGui::Button("Fit detail volume to selected room or element"))
+      requestDdgiDetailFit(ddgiDetailProbeBudget_);
+    ImGui::EndDisabled();
+    ImGui::TextWrapped("Select scene geometry or a BIM room/element, then fit a padded detail grid. "
+                       "Existing grids and the shared memory budget are retained.");
+    ImGui::TextWrapped(
+        "Fits the loaded model with equal cell spacing and a "
+        "margin around its bounds. Larger probe budgets allow "
+        "finer spacing. Fits the scene volume; detail volumes remain. Enable GI separately; refit after moving "
+        "or loading a model.");
+    if (!ddgiFitStatus_.empty())
+      ImGui::TextWrapped("%s", ddgiFitStatus_.c_str());
+    ImGui::Separator();
+    ddgiVolumeDraftDirty_ |=
+        ImGui::InputFloat3("First probe center", &ddgiVolumeDraft_.origin.x);
+    ddgiVolumeDraftDirty_ |=
+        ImGui::InputFloat3("Probe spacing", &ddgiVolumeDraft_.spacing.x);
+    ddgiVolumeDraftDirty_ |=
+        ImGui::InputScalarN("Probe counts (X/Y/Z)", ImGuiDataType_U32,
+                            &ddgiVolumeDraft_.counts.x, 3);
+    ddgiVolumeDraftDirty_ |= ImGui::InputScalar(
+        "Rays per probe", ImGuiDataType_U32, &ddgiRaysPerProbeDraft_);
+    ImGui::TextWrapped(
+        "The origin is the first probe center. Coverage ends at "
+        "origin + spacing * (counts - 1). Apply rebuilds the "
+        "volume when needed and refreshes its lighting history.");
+    ImGui::BeginDisabled(!ddgiVolumeDraftDirty_);
+    if (ImGui::Button("Apply probe volume")) {
+      auto draft = ddgiSettings_;
+      if (ddgiSelectedVolume_ == 0)
+        draft.volume = ddgiVolumeDraft_;
+      else
+        draft.additionalVolumes[ddgiSelectedVolume_ - 1] = ddgiVolumeDraft_;
+      draft.resources.updates.raysPerProbe = ddgiRaysPerProbeDraft_;
+      if (trySetDdgiSettings(draft))
+        ddgiVolumeDraftDirty_ = false;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel probe volume edit")) {
+      selectDdgiVolume(ddgiSelectedVolume_);
+      ddgiControlError_.clear();
+    }
+    ImGui::EndDisabled();
+    ImGui::TreePop();
+  }
+  ImGui::EndDisabled();
+
+  ImGui::BeginDisabled(ddgiVolumeDraftDirty_);
+  if (ImGui::Button("Save scene GI preset"))
+    requestDdgiPreset(DdgiPresetAction::Save);
+  ImGui::SameLine();
+  if (ImGui::Button("Load scene GI preset"))
+    requestDdgiPreset(DdgiPresetAction::Load);
+  ImGui::EndDisabled();
+  if (!ddgiPresetStatus_.empty())
+    ImGui::TextWrapped("%s", ddgiPresetStatus_.c_str());
+  if (!ddgiPresetPath_.empty())
+    ImGui::TextDisabled("%s", ddgiPresetPath_.c_str());
+
+  if (!ddgiControlError_.empty())
+    ImGui::TextWrapped("Settings were not applied: %s",
+                       ddgiControlError_.c_str());
+  uint64_t probeCount = uint64_t(ddgiSettings_.volume.counts.x) *
+                              ddgiSettings_.volume.counts.y *
+                              ddgiSettings_.volume.counts.z;
+  for (const auto &volume : ddgiSettings_.additionalVolumes)
+    probeCount += uint64_t(volume.counts.x) * volume.counts.y * volume.counts.z;
+  ImGui::Text("%llu probes; %u awaiting refresh; content epoch %u",
+              static_cast<unsigned long long>(probeCount),
+              ddgiRuntime_.refreshRemainingProbes, ddgiRuntime_.contentEpoch);
+  ImGui::Text("Updated %u probes / %u rays; update frame %llu",
+              ddgiRuntime_.updatedProbes, ddgiRuntime_.tracedRays,
+              static_cast<unsigned long long>(ddgiRuntime_.updateFrame));
+  ImGui::Text("Next scheduled probe: %u", ddgiRuntime_.schedulingCursor);
+  ImGui::Text("Probe allocations %.2f MiB; trace %.3f ms; update %.3f ms",
+              double(ddgiRuntime_.allocatedBytes) / (1024. * 1024.),
+              ddgiRuntime_.traceGpuMs, ddgiRuntime_.updateGpuMs);
+  ImGui::TextDisabled("GPU timings describe the latest completed frame.");
+  ImGui::TreePop();
+}
+
 void GuiManager::drawRendererTelemetryWindow() {
   if (!initialized_)
     return;
@@ -6459,6 +7062,8 @@ void GuiManager::drawRendererTelemetryWindow() {
     ImGui::TableNextColumn();
     ImGui::TextDisabled("CPU frame");
     ImGui::Text("%.3f ms", frameMs);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Elapsed draw-frame time, including GPU/image waits, presentation and screenshots. See CPU phases for processing costs.");
     ImGui::TableNextColumn();
     ImGui::TextDisabled("GPU known");
     ImGui::Text("%.3f ms", gpuKnownMs);

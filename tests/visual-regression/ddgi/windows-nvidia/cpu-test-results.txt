@@ -1,0 +1,19 @@
+Test project F:/Projects/Container/out/build/visual-studio
+    Start   6: ddgi_probe_volume_tests
+1/7 Test   #6: ddgi_probe_volume_tests ........................   Passed    0.03 sec
+    Start   7: ddgi_settings_tests
+2/7 Test   #7: ddgi_settings_tests ............................   Passed    0.03 sec
+    Start  11: ray_scene_tests
+3/7 Test  #11: ray_scene_tests ................................   Passed    0.03 sec
+    Start  16: temporal_capture_tests
+4/7 Test  #16: temporal_capture_tests .........................   Passed    0.03 sec
+    Start  62: deferred_directional_lighting_recorder_tests
+5/7 Test  #62: deferred_directional_lighting_recorder_tests ...   Passed    0.03 sec
+    Start  87: forward_raster_lighting_pass_recorder_tests
+6/7 Test  #87: forward_raster_lighting_pass_recorder_tests ....   Passed    0.04 sec
+    Start 132: render_graph_tests
+7/7 Test #132: render_graph_tests .............................   Passed    0.03 sec
+
+100% tests passed, 0 tests failed out of 7
+
+Total Test time (real) =   0.24 sec

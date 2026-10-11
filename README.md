@@ -24,6 +24,23 @@ fallback on devices without ray-query support. These options require a current
 source build or a package produced from this branch; the older TAA preview does
 not include them.
 
+Optional [dynamic diffuse GI](docs/ddgi-probe-foundation.md) uses bounded probe
+ray queries, irradiance and visibility atlases, and shared scene acceleration.
+Enable it with `--ddgi --ddgi-fit-scene` to fit a bounded probe volume to the
+loaded model, or set `--ddgi-origin`, `--ddgi-spacing`, and `--ddgi-counts`
+manually. Opaque forward/deferred receivers use probe
+lighting where valid; unsupported devices retain the existing raster lighting.
+The scene controls include **Fit probe volume to scene**, saved scene presets,
+up to four blended volumes, automatic detail fitting around selected rooms or
+elements, camera-follow scrolling, priority updates, optional thin/rough/solid
+glass transport, and asynchronous probe updates with a serialized queue fallback.
+Use `--ddgi-detail-node NAME`, `--ddgi-camera-follow`, `--ddgi-dielectric`, or
+`--ddgi-async` to opt into these additions. Controls also provide pause and
+quality budgets, plus
+irradiance, visibility, classification and relocation probe views. Use
+`--ddgi-debug classification` for a diagnostic capture without the UI.
+This feature is under development in epic #42 and requires a current source build.
+
 The CMake project and build targets use `VulkanSceneRenderer`. The public
 include root remains `include/Container`, and the source namespace remains
 `container::`, to avoid a broad source-level API rename.
@@ -198,6 +215,12 @@ cmake --build out/build/windows-release --target download_usd_models --config Re
   subsystem boundaries.
 - [Build and test](docs/build-and-test.md) - requirements, presets, build
   commands, helper scripts, and known test status.
+- [Model loading and UI tests](docs/model-loading-validation.md) - glTF/BIM
+  load/unload cycles, failed-load recovery, and hierarchy/model-list scrolling.
+- [BIM performance](docs/bim-performance.md) - Tekla House profiling and
+  inspection-cache measurements in Visual Studio Debug and Release builds.
+- [Renderer follow-ups](docs/renderer-follow-ups.md) - remaining improvements
+  and their GitHub issues.
 - [Development guide](docs/development-guide.md) - renderer conventions,
   shader/C++ layout contracts, and commenting guidance.
 - [MSAA](docs/msaa.md) - forward and deferred raster multisampling configuration,

@@ -135,6 +135,9 @@ struct RendererTelemetryHistorySample {
   float gpuKnownMs{0.0f};
   float waitForFrameMs{0.0f};
   float presentMs{0.0f};
+  // Retain the phase breakdown so diagnostics can distinguish CPU work,
+  // synchronization and capture overhead across completed frames.
+  std::array<float, kRendererTelemetryPhaseCount> cpuPhasesMs{};
 };
 
 struct RendererTelemetrySummary {

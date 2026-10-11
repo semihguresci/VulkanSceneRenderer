@@ -971,17 +971,28 @@ bool SceneController::reloadSceneModel(
     VkIndexType&                            outIndexType,
     uint32_t&                               outRootNode,
     uint32_t&                               outSelectedMeshNode,
-    uint32_t&                               outCubeNode) {
+    uint32_t&                               outCubeNode,
+    container::geometry::GltfLoadResult*      prepared) {
   vkDeviceWaitIdle(device_->device());
   const std::array<container::gpu::AllocatedBuffer, 1> cameraBuffers = {
       cameraBuffer};
+  const uint64_t previousGeometryRevision = sceneManager_.geometryRevision();
   const bool result =
-      sceneManager_.reloadModel(path, importScale, cameraBuffers, objectBuffer);
+      sceneManager_.reloadModel(path, importScale, cameraBuffers, objectBuffer,
+                               prepared);
+  if (!result && sceneManager_.geometryRevision() == previousGeometryRevision) {
+    if (guiManager_)
+      guiManager_->setStatusMessage("Failed to load model: " + path);
+    return false;
+  }
   outIndexType = sceneManager_.indexType();
   buildSceneGraph(outRootNode, outSelectedMeshNode, outCubeNode);
   ensureObjectBufferCapacity(allocationManager_, objectBuffer,
                              objectBufferCapacity,
                              sceneGraph_.renderableNodes().size());
+  // The device-idle wait above retired all previous geometry readers. Reuse
+  // the arenas from offset zero rather than growing them on every model load.
+  allocationManager_.resetGeometryAllocations();
   createGeometryBuffers();
   if (guiManager_) {
     guiManager_->setStatusMessage(

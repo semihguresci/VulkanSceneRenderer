@@ -1086,13 +1086,36 @@ uint32_t SceneManager::appendRuntimeMesh(container::geometry::Mesh mesh) {
   return primitiveIndex;
 }
 
+container::geometry::GltfLoadResult SceneManager::prepareGltfModel(
+    const std::string& path) {
+  auto resolvedPath = container::util::pathFromUtf8(path);
+  if (resolvedPath.is_relative() && !std::filesystem::exists(resolvedPath)) {
+    resolvedPath = resolveSceneAssetPath(path);
+  }
+  return container::geometry::gltf::LoadModelWithSource(
+      container::util::pathToUtf8(resolvedPath));
+}
+
 bool SceneManager::reloadModel(
     const std::string& path,
     float importScale,
     std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
-    const container::gpu::AllocatedBuffer& objectBuffer) {
+    const container::gpu::AllocatedBuffer& objectBuffer,
+    container::geometry::GltfLoadResult* prepared) {
   const std::string previousModelPath = config_.modelPath;
   const float previousImportScale = config_.importScale;
+  // Decode before retiring live assets. Bad paths, malformed files and missing
+  // buffers must leave runtime edits and auxiliary material registrations intact.
+  std::optional<container::geometry::GltfLoadResult> locallyPrepared;
+  if (prepared == nullptr && !path.empty() && !isDefaultSceneRequest(path)) {
+    try {
+      locallyPrepared = prepareGltfModel(path);
+      prepared = &*locallyPrepared;
+    } catch (const std::exception& error) {
+      std::println(stderr, "glTF load failed: {}", error.what());
+      return false;
+    }
+  }
   auto resetForLoad = [this]() {
     resetLoadedAssets();
     loadMaterialXMaterial();
@@ -1102,12 +1125,11 @@ bool SceneManager::reloadModel(
     model_ = container::geometry::Model{};
   };
 
-  resetForLoad();
-  config_.modelPath = path;
-  config_.importScale = sanitizeImportScale(importScale);
-
   try {
-    loadGltfAssets();
+    resetForLoad();
+    config_.modelPath = path;
+    config_.importScale = sanitizeImportScale(importScale);
+    loadGltfAssets(prepared);
     uploadMaterialBuffer();
     uploadTextureMetadataBuffer();
     updateDescriptorSets(cameraBuffers, objectBuffer);
@@ -1127,6 +1149,7 @@ bool SceneManager::reloadModel(
       resetForLoad();
       uploadMaterialBuffer();
       uploadTextureMetadataBuffer();
+      updateDescriptorSets(cameraBuffers, objectBuffer);
     }
     return false;
   }
@@ -1802,7 +1825,7 @@ void SceneManager::loadMaterialXMaterial() {
   }
 }
 
-void SceneManager::loadGltfAssets() {
+void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared) {
   model_ = container::geometry::Model{};
   gltfModel_ = tinygltf::Model{};
   authoredPointLights_.clear();
@@ -1825,8 +1848,9 @@ void SceneManager::loadGltfAssets() {
       if (resolvedPath.is_relative() && !std::filesystem::exists(resolvedPath)) {
         resolvedPath = resolveSceneAssetPath(config_.modelPath);
       }
-      auto result = container::geometry::gltf::LoadModelWithSource(
-          container::util::pathToUtf8(resolvedPath));
+      auto result = prepared ? std::move(*prepared)
+                             : container::geometry::gltf::LoadModelWithSource(
+                                   container::util::pathToUtf8(resolvedPath));
       gltfModel_ = std::move(result.gltfModel);
       model_ = std::move(result.model);
 
@@ -2250,7 +2274,7 @@ void SceneManager::writeSceneClipStateBuffer() {
 }
 
 std::filesystem::path SceneManager::resolveSceneAssetPath(
-    std::string_view relativePath) const {
+    std::string_view relativePath) {
   const std::filesystem::path requestedPath =
       container::util::pathFromUtf8(relativePath);
   const std::filesystem::path exeRelative =

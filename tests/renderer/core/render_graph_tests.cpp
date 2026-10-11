@@ -15,21 +15,20 @@ using container::renderer::FrameRecordParams;
 using container::renderer::RenderGraph;
 using container::renderer::RenderPassExecutionHooks;
 using container::renderer::RenderPassId;
+using container::renderer::RenderPassNode;
 using container::renderer::RenderPassReadiness;
 using container::renderer::RenderPassSkipReason;
-using container::renderer::RenderPassNode;
 using container::renderer::RenderResourceId;
 
-RenderPassNode::RecordFn recordPass(
-    std::vector<RenderPassId>& recorded,
-    RenderPassId id) {
-  return [&recorded, id](VkCommandBuffer, const FrameRecordParams&) {
+RenderPassNode::RecordFn recordPass(std::vector<RenderPassId> &recorded,
+                                    RenderPassId id) {
+  return [&recorded, id](VkCommandBuffer, const FrameRecordParams &) {
     recorded.push_back(id);
   };
 }
 
 RenderPassNode::RecordFn noopRecord() {
-  return [](VkCommandBuffer, const FrameRecordParams&) {};
+  return [](VkCommandBuffer, const FrameRecordParams &) {};
 }
 
 RenderPassReadiness notNeeded() {
@@ -39,9 +38,9 @@ RenderPassReadiness notNeeded() {
   return readiness;
 }
 
-std::vector<RenderPassId> execute(RenderGraph& graph) {
+std::vector<RenderPassId> execute(RenderGraph &graph) {
   std::vector<RenderPassId> recorded;
-  for (const auto& pass : graph.passes()) {
+  for (const auto &pass : graph.passes()) {
     const RenderPassId id = pass.id;
     graph.setPassRecord(id, recordPass(recorded, id));
   }
@@ -51,15 +50,16 @@ std::vector<RenderPassId> execute(RenderGraph& graph) {
   return recorded;
 }
 
-size_t executionPosition(const RenderGraph& graph, RenderPassId id) {
+size_t executionPosition(const RenderGraph &graph, RenderPassId id) {
   const auto order = graph.executionPassIds();
   for (size_t i = 0; i < order.size(); ++i) {
-    if (order[i] == id) return i;
+    if (order[i] == id)
+      return i;
   }
   return order.size();
 }
 
-bool activeContains(const RenderGraph& graph, RenderPassId id) {
+bool activeContains(const RenderGraph &graph, RenderPassId id) {
   const auto order = graph.activeExecutionPassIds();
   return std::ranges::find(order, id) != order.end();
 }
@@ -73,27 +73,43 @@ bool passSpanContains(std::span<const RenderPassId> passes, RenderPassId id) {
   return std::ranges::find(passes, id) != passes.end();
 }
 
-const container::renderer::RenderPassExecutionStatus* statusFor(
+bool setDdgiResourceAccess(RenderGraph &graph, RenderPassId id) {
+  switch (id) {
+  case RenderPassId::RaySceneBuild:
+    return graph.setPassResourceAccess(id, {}, {},
+                                       {RenderResourceId::RayScene});
+  case RenderPassId::DdgiTrace:
+    return graph.setPassResourceAccess(id, {RenderResourceId::RayScene}, {},
+                                       {RenderResourceId::DdgiRays});
+  case RenderPassId::DdgiUpdate:
+    return graph.setPassResourceAccess(id, {RenderResourceId::DdgiRays}, {},
+                                       {RenderResourceId::DdgiIrradiance});
+  case RenderPassId::Lighting:
+    return graph.setPassResourceAccess(id, {},
+                                       {RenderResourceId::DdgiIrradiance}, {});
+  default:
+    return false;
+  }
+}
+
+const container::renderer::RenderPassExecutionStatus *statusFor(
     std::span<const container::renderer::RenderPassExecutionStatus> statuses,
     RenderPassId id) {
-  const auto it = std::ranges::find_if(statuses, [&](const auto& status) {
-    return status.id == id;
-  });
+  const auto it = std::ranges::find_if(
+      statuses, [&](const auto &status) { return status.id == id; });
   return it == statuses.end() ? nullptr : &*it;
 }
 
-const container::renderer::RenderPassExecutionStatus* statusFor(
-    const RenderGraph& graph,
-    RenderPassId id) {
+const container::renderer::RenderPassExecutionStatus *
+statusFor(const RenderGraph &graph, RenderPassId id) {
   return statusFor(graph.executionStatuses(), id);
 }
 
-}  // namespace
+} // namespace
 
 TEST(RenderGraphTests, CompileOrdersPassesByScheduleDependency) {
   RenderGraph graph;
-  graph.addPass(RenderPassId::DepthPrepass,
-                {RenderPassId::FrustumCull},
+  graph.addPass(RenderPassId::DepthPrepass, {RenderPassId::FrustumCull},
                 noopRecord());
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
 
@@ -116,12 +132,9 @@ TEST(RenderGraphTests, AddPassRejectsInvalidPassId) {
 TEST(RenderGraphTests, AddPassRejectsInvalidScheduleDependency) {
   RenderGraph graph;
 
-  EXPECT_THROW(
-      graph.addPass(
-          RenderPassId::DepthPrepass,
-          {RenderPassId::Invalid},
-          noopRecord()),
-      std::runtime_error);
+  EXPECT_THROW(graph.addPass(RenderPassId::DepthPrepass,
+                             {RenderPassId::Invalid}, noopRecord()),
+               std::runtime_error);
   EXPECT_EQ(graph.passCount(), 0u);
 }
 
@@ -129,10 +142,9 @@ TEST(RenderGraphTests, AddPassRejectsDuplicateScheduleDependency) {
   RenderGraph graph;
 
   EXPECT_THROW(
-      graph.addPass(
-          RenderPassId::DepthPrepass,
-          {RenderPassId::FrustumCull, RenderPassId::FrustumCull},
-          noopRecord()),
+      graph.addPass(RenderPassId::DepthPrepass,
+                    {RenderPassId::FrustumCull, RenderPassId::FrustumCull},
+                    noopRecord()),
       std::runtime_error);
   EXPECT_EQ(graph.passCount(), 0u);
 }
@@ -141,7 +153,7 @@ TEST(RenderGraphTests, FindPassUsesStablePassId) {
   RenderGraph graph;
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
 
-  const RenderPassNode* pass = graph.findPass(RenderPassId::FrustumCull);
+  const RenderPassNode *pass = graph.findPass(RenderPassId::FrustumCull);
   ASSERT_NE(pass, nullptr);
   EXPECT_EQ(pass->id, RenderPassId::FrustumCull);
   EXPECT_EQ(graph.findPass(RenderPassId::PostProcess), nullptr);
@@ -149,8 +161,7 @@ TEST(RenderGraphTests, FindPassUsesStablePassId) {
 
 TEST(RenderGraphTests, ExecutionPassIdsAreClearedWithGraph) {
   RenderGraph graph;
-  graph.addPass(RenderPassId::DepthPrepass,
-                {RenderPassId::FrustumCull},
+  graph.addPass(RenderPassId::DepthPrepass, {RenderPassId::FrustumCull},
                 noopRecord());
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
 
@@ -166,11 +177,9 @@ TEST(RenderGraphTests, ExecutionPassIdsAreClearedWithGraph) {
 TEST(RenderGraphTests, ActiveExecutionPassIdsRefreshAfterToggleChange) {
   RenderGraph graph;
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
-  graph.addPass(RenderPassId::DepthPrepass,
-                {RenderPassId::FrustumCull},
+  graph.addPass(RenderPassId::DepthPrepass, {RenderPassId::FrustumCull},
                 noopRecord());
-  graph.addPass(RenderPassId::HiZGenerate,
-                {RenderPassId::DepthPrepass},
+  graph.addPass(RenderPassId::HiZGenerate, {RenderPassId::DepthPrepass},
                 noopRecord());
 
   ASSERT_TRUE(graph.setPassEnabled(RenderPassId::HiZGenerate, false));
@@ -184,8 +193,8 @@ TEST(RenderGraphTests, DebugModelReportsPassStatusWithoutUiCoupling) {
   RenderGraph graph;
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
   graph.addPass(RenderPassId::HiZGenerate, {}, noopRecord());
-  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::HiZGenerate, {}, {},
-                                          {}));
+  ASSERT_TRUE(
+      graph.setPassResourceAccess(RenderPassId::HiZGenerate, {}, {}, {}));
   ASSERT_TRUE(graph.setPassEnabled(RenderPassId::HiZGenerate, false));
 
   const container::renderer::RenderGraphDebugModel debugModel =
@@ -205,11 +214,9 @@ TEST(RenderGraphTests, DebugModelReportsPassStatusWithoutUiCoupling) {
 TEST(RenderGraphTests, ExecuteSkipsPassWhenRequiredDependencyIsDisabled) {
   RenderGraph graph;
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
-  graph.addPass(RenderPassId::DepthPrepass,
-                {RenderPassId::FrustumCull},
+  graph.addPass(RenderPassId::DepthPrepass, {RenderPassId::FrustumCull},
                 noopRecord());
-  graph.addPass(RenderPassId::HiZGenerate,
-                {RenderPassId::DepthPrepass},
+  graph.addPass(RenderPassId::HiZGenerate, {RenderPassId::DepthPrepass},
                 noopRecord());
   graph.addPass(RenderPassId::OcclusionCull,
                 {RenderPassId::FrustumCull, RenderPassId::HiZGenerate},
@@ -229,8 +236,7 @@ TEST(RenderGraphTests, ExecuteSkipsPassWhenRequiredDependencyIsDisabled) {
 TEST(RenderGraphTests, DisabledScheduleOnlyDependencyDoesNotSkipProtectedPass) {
   RenderGraph graph;
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
-  graph.addPass(RenderPassId::DepthPrepass,
-                {RenderPassId::FrustumCull},
+  graph.addPass(RenderPassId::DepthPrepass, {RenderPassId::FrustumCull},
                 noopRecord());
 
   ASSERT_TRUE(graph.setPassEnabled(RenderPassId::FrustumCull, false));
@@ -245,8 +251,7 @@ TEST(RenderGraphTests, DisabledScheduleOnlyDependencyDoesNotSkipProtectedPass) {
 
 TEST(RenderGraphTests, CompileThrowsForMissingScheduleDependency) {
   RenderGraph graph;
-  graph.addPass(RenderPassId::DepthPrepass,
-                {RenderPassId::FrustumCull},
+  graph.addPass(RenderPassId::DepthPrepass, {RenderPassId::FrustumCull},
                 noopRecord());
 
   EXPECT_THROW(graph.compile(), std::runtime_error);
@@ -254,11 +259,9 @@ TEST(RenderGraphTests, CompileThrowsForMissingScheduleDependency) {
 
 TEST(RenderGraphTests, CompileThrowsForDependencyCycle) {
   RenderGraph graph;
-  graph.addPass(RenderPassId::FrustumCull,
-                {RenderPassId::DepthPrepass},
+  graph.addPass(RenderPassId::FrustumCull, {RenderPassId::DepthPrepass},
                 noopRecord());
-  graph.addPass(RenderPassId::DepthPrepass,
-                {RenderPassId::FrustumCull},
+  graph.addPass(RenderPassId::DepthPrepass, {RenderPassId::FrustumCull},
                 noopRecord());
 
   EXPECT_THROW(graph.compile(), std::runtime_error);
@@ -266,35 +269,31 @@ TEST(RenderGraphTests, CompileThrowsForDependencyCycle) {
 
 TEST(RenderGraphTests, CompileBuildsResourceEdgesFromPriorWriters) {
   RenderGraph graph;
-  graph.addPass(RenderPassId::DepthPrepass,
-                {RenderPassId::FrustumCull},
+  graph.addPass(RenderPassId::DepthPrepass, {RenderPassId::FrustumCull},
                 noopRecord());
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
-  graph.addPass(RenderPassId::HiZGenerate,
-                {RenderPassId::DepthPrepass},
+  graph.addPass(RenderPassId::HiZGenerate, {RenderPassId::DepthPrepass},
                 noopRecord());
 
   graph.compile();
 
   const auto edges = graph.resourceEdges();
-  const auto depthToHiz =
-      std::ranges::find_if(edges, [](const auto& edge) {
-        return edge.resource == RenderResourceId::SceneDepth &&
-               edge.writer == RenderPassId::DepthPrepass &&
-               edge.reader == RenderPassId::HiZGenerate;
-      });
+  const auto depthToHiz = std::ranges::find_if(edges, [](const auto &edge) {
+    return edge.resource == RenderResourceId::SceneDepth &&
+           edge.writer == RenderPassId::DepthPrepass &&
+           edge.reader == RenderPassId::HiZGenerate;
+  });
 
   EXPECT_NE(depthToHiz, edges.end());
 }
 
-TEST(RenderGraphTests, ActiveExecutionSkipsRequiredResourceConsumerWhenWriterDisabled) {
+TEST(RenderGraphTests,
+     ActiveExecutionSkipsRequiredResourceConsumerWhenWriterDisabled) {
   RenderGraph graph;
-  graph.addPass(RenderPassId::DepthPrepass,
-                {RenderPassId::FrustumCull},
+  graph.addPass(RenderPassId::DepthPrepass, {RenderPassId::FrustumCull},
                 noopRecord());
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
-  graph.addPass(RenderPassId::HiZGenerate,
-                {RenderPassId::DepthPrepass},
+  graph.addPass(RenderPassId::HiZGenerate, {RenderPassId::DepthPrepass},
                 noopRecord());
 
   ASSERT_TRUE(graph.setPassEnabled(RenderPassId::DepthPrepass, false));
@@ -302,17 +301,17 @@ TEST(RenderGraphTests, ActiveExecutionSkipsRequiredResourceConsumerWhenWriterDis
   EXPECT_FALSE(activeContains(graph, RenderPassId::DepthPrepass));
   EXPECT_FALSE(activeContains(graph, RenderPassId::HiZGenerate));
 
-  const auto* status = statusFor(graph, RenderPassId::HiZGenerate);
+  const auto *status = statusFor(graph, RenderPassId::HiZGenerate);
   ASSERT_NE(status, nullptr);
   EXPECT_EQ(status->skipReason, RenderPassSkipReason::MissingPassDependency);
   EXPECT_EQ(status->blockingPass, RenderPassId::DepthPrepass);
 }
 
-TEST(RenderGraphTests, ActiveExecutionKeepsConsumerWithOnlyDisabledOptionalRead) {
+TEST(RenderGraphTests,
+     ActiveExecutionKeepsConsumerWithOnlyDisabledOptionalRead) {
   RenderGraph graph;
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
-  graph.addPass(RenderPassId::DepthPrepass,
-                {RenderPassId::FrustumCull},
+  graph.addPass(RenderPassId::DepthPrepass, {RenderPassId::FrustumCull},
                 noopRecord());
 
   ASSERT_TRUE(graph.setPassEnabled(RenderPassId::FrustumCull, false));
@@ -320,7 +319,7 @@ TEST(RenderGraphTests, ActiveExecutionKeepsConsumerWithOnlyDisabledOptionalRead)
   EXPECT_FALSE(activeContains(graph, RenderPassId::FrustumCull));
   EXPECT_TRUE(activeContains(graph, RenderPassId::DepthPrepass));
 
-  const auto* status = statusFor(graph, RenderPassId::DepthPrepass);
+  const auto *status = statusFor(graph, RenderPassId::DepthPrepass);
   ASSERT_NE(status, nullptr);
   EXPECT_TRUE(status->active);
   EXPECT_EQ(status->skipReason, RenderPassSkipReason::None);
@@ -329,22 +328,16 @@ TEST(RenderGraphTests, ActiveExecutionKeepsConsumerWithOnlyDisabledOptionalRead)
 TEST(RenderGraphTests, ExecutionStatusReportsMissingRequiredResource) {
   RenderGraph graph;
   graph.addPass(RenderPassId::Bloom, {}, noopRecord());
-  ASSERT_TRUE(graph.setPassResourceAccess(
-      RenderPassId::Bloom,
-      {},
-      {},
-      {RenderResourceId::BloomTexture}));
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::Bloom, {}, {},
+                                          {RenderResourceId::BloomTexture}));
 
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
   ASSERT_TRUE(graph.setPassResourceAccess(
-      RenderPassId::FrustumCull,
-      {RenderResourceId::BloomTexture},
-      {},
-      {}));
+      RenderPassId::FrustumCull, {RenderResourceId::BloomTexture}, {}, {}));
 
   ASSERT_TRUE(graph.setPassEnabled(RenderPassId::Bloom, false));
 
-  const auto* status = statusFor(graph, RenderPassId::FrustumCull);
+  const auto *status = statusFor(graph, RenderPassId::FrustumCull);
   ASSERT_NE(status, nullptr);
   EXPECT_FALSE(status->active);
   EXPECT_EQ(status->skipReason, RenderPassSkipReason::MissingResource);
@@ -355,63 +348,38 @@ TEST(RenderGraphTests, SetPassResourceAccessRejectsInvalidResources) {
   RenderGraph graph;
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
   ASSERT_TRUE(graph.setPassResourceAccess(
-      RenderPassId::FrustumCull,
-      {},
-      {},
-      {RenderResourceId::FrustumCullDraws}));
+      RenderPassId::FrustumCull, {}, {}, {RenderResourceId::FrustumCullDraws}));
 
+  EXPECT_THROW(graph.setPassResourceAccess(RenderPassId::FrustumCull,
+                                           {RenderResourceId::Invalid}, {}, {}),
+               std::runtime_error);
+  EXPECT_THROW(graph.setPassResourceAccess(RenderPassId::FrustumCull, {},
+                                           {RenderResourceId::Invalid}, {}),
+               std::runtime_error);
+  EXPECT_THROW(graph.setPassResourceAccess(RenderPassId::FrustumCull, {}, {},
+                                           {RenderResourceId::Invalid}),
+               std::runtime_error);
+  EXPECT_THROW(graph.setPassResourceAccess(RenderPassId::FrustumCull,
+                                           {RenderResourceId::BloomTexture,
+                                            RenderResourceId::BloomTexture},
+                                           {}, {}),
+               std::runtime_error);
+  EXPECT_THROW(graph.setPassResourceAccess(RenderPassId::FrustumCull, {},
+                                           {RenderResourceId::BloomTexture,
+                                            RenderResourceId::BloomTexture},
+                                           {}),
+               std::runtime_error);
   EXPECT_THROW(
-      graph.setPassResourceAccess(
-          RenderPassId::FrustumCull,
-          {RenderResourceId::Invalid},
-          {},
-          {}),
+      graph.setPassResourceAccess(RenderPassId::FrustumCull, {}, {},
+                                  {RenderResourceId::FrustumCullDraws,
+                                   RenderResourceId::FrustumCullDraws}),
       std::runtime_error);
-  EXPECT_THROW(
-      graph.setPassResourceAccess(
-          RenderPassId::FrustumCull,
-          {},
-          {RenderResourceId::Invalid},
-          {}),
-      std::runtime_error);
-  EXPECT_THROW(
-      graph.setPassResourceAccess(
-          RenderPassId::FrustumCull,
-          {},
-          {},
-          {RenderResourceId::Invalid}),
-      std::runtime_error);
-  EXPECT_THROW(
-      graph.setPassResourceAccess(
-          RenderPassId::FrustumCull,
-          {RenderResourceId::BloomTexture, RenderResourceId::BloomTexture},
-          {},
-          {}),
-      std::runtime_error);
-  EXPECT_THROW(
-      graph.setPassResourceAccess(
-          RenderPassId::FrustumCull,
-          {},
-          {RenderResourceId::BloomTexture, RenderResourceId::BloomTexture},
-          {}),
-      std::runtime_error);
-  EXPECT_THROW(
-      graph.setPassResourceAccess(
-          RenderPassId::FrustumCull,
-          {},
-          {},
-          {RenderResourceId::FrustumCullDraws,
-           RenderResourceId::FrustumCullDraws}),
-      std::runtime_error);
-  EXPECT_THROW(
-      graph.setPassResourceAccess(
-          RenderPassId::FrustumCull,
-          {RenderResourceId::BloomTexture},
-          {RenderResourceId::BloomTexture},
-          {}),
-      std::runtime_error);
+  EXPECT_THROW(graph.setPassResourceAccess(
+                   RenderPassId::FrustumCull, {RenderResourceId::BloomTexture},
+                   {RenderResourceId::BloomTexture}, {}),
+               std::runtime_error);
 
-  const auto* pass = graph.findPass(RenderPassId::FrustumCull);
+  const auto *pass = graph.findPass(RenderPassId::FrustumCull);
   ASSERT_NE(pass, nullptr);
   EXPECT_TRUE(pass->reads.empty());
   EXPECT_TRUE(pass->optionalReads.empty());
@@ -423,7 +391,7 @@ TEST(RenderGraphTests, AddPassCopiesDefaultTransitionMetadata) {
   RenderGraph graph;
   graph.addPass(RenderPassId::DepthToReadOnly, {}, noopRecord());
 
-  const RenderPassNode* pass = graph.findPass(RenderPassId::DepthToReadOnly);
+  const RenderPassNode *pass = graph.findPass(RenderPassId::DepthToReadOnly);
   ASSERT_NE(pass, nullptr);
   ASSERT_EQ(pass->transitions.size(), 1u);
   EXPECT_EQ(pass->transitions.front().resource, RenderResourceId::SceneDepth);
@@ -437,13 +405,12 @@ TEST(RenderGraphTests, SetPassResourceTransitionsRejectsInvalidResource) {
   RenderGraph graph;
   graph.addPass(RenderPassId::Bloom, {}, noopRecord());
 
-  EXPECT_THROW(
-      graph.setPassResourceTransitions(
-          RenderPassId::Bloom,
-          {{RenderResourceId::Invalid,
-            container::renderer::RenderResourceState::ColorAttachment,
-            container::renderer::RenderResourceState::ShaderRead}}),
-      std::runtime_error);
+  EXPECT_THROW(graph.setPassResourceTransitions(
+                   RenderPassId::Bloom,
+                   {{RenderResourceId::Invalid,
+                     container::renderer::RenderResourceState::ColorAttachment,
+                     container::renderer::RenderResourceState::ShaderRead}}),
+               std::runtime_error);
 
   ASSERT_TRUE(graph.setPassResourceTransitions(
       RenderPassId::Bloom,
@@ -451,7 +418,7 @@ TEST(RenderGraphTests, SetPassResourceTransitionsRejectsInvalidResource) {
         container::renderer::RenderResourceState::ColorAttachment,
         container::renderer::RenderResourceState::ShaderRead}}));
 
-  const RenderPassNode* pass = graph.findPass(RenderPassId::Bloom);
+  const RenderPassNode *pass = graph.findPass(RenderPassId::Bloom);
   ASSERT_NE(pass, nullptr);
   ASSERT_EQ(pass->transitions.size(), 1u);
   EXPECT_EQ(pass->transitions.front().resource, RenderResourceId::SceneColor);
@@ -460,22 +427,16 @@ TEST(RenderGraphTests, SetPassResourceTransitionsRejectsInvalidResource) {
 TEST(RenderGraphTests, ActivePredicateFollowsExecutionStatus) {
   RenderGraph graph;
   graph.addPass(RenderPassId::Bloom, {}, noopRecord());
-  ASSERT_TRUE(graph.setPassResourceAccess(
-      RenderPassId::Bloom,
-      {},
-      {},
-      {RenderResourceId::BloomTexture}));
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::Bloom, {}, {},
+                                          {RenderResourceId::BloomTexture}));
 
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
   ASSERT_TRUE(graph.setPassResourceAccess(
-      RenderPassId::FrustumCull,
-      {RenderResourceId::BloomTexture},
-      {},
-      {}));
+      RenderPassId::FrustumCull, {RenderResourceId::BloomTexture}, {}, {}));
 
   ASSERT_TRUE(graph.setPassEnabled(RenderPassId::Bloom, false));
 
-  const auto* status = graph.executionStatus(RenderPassId::FrustumCull);
+  const auto *status = graph.executionStatus(RenderPassId::FrustumCull);
   ASSERT_NE(status, nullptr);
   EXPECT_FALSE(status->active);
   EXPECT_FALSE(graph.isPassActive(RenderPassId::FrustumCull));
@@ -494,7 +455,7 @@ TEST(RenderGraphTests, SetPassRecordUpdatesActivePlan) {
   RenderGraph graph;
   graph.addPass(RenderPassId::FrustumCull, {}, {});
 
-  const auto* status = graph.executionStatus(RenderPassId::FrustumCull);
+  const auto *status = graph.executionStatus(RenderPassId::FrustumCull);
   ASSERT_NE(status, nullptr);
   EXPECT_FALSE(status->active);
   EXPECT_EQ(status->skipReason, RenderPassSkipReason::MissingRecordCallback);
@@ -512,13 +473,11 @@ TEST(RenderGraphTests, ExecuteSkipsPassWhenReadinessFailsAtRuntime) {
   std::vector<RenderPassId> recorded;
   std::vector<RenderPassId> began;
 
-  graph.addPass(RenderPassId::FrustumCull,
-                {},
+  graph.addPass(RenderPassId::FrustumCull, {},
                 recordPass(recorded, RenderPassId::FrustumCull));
-  ASSERT_TRUE(graph.setPassReadiness(RenderPassId::FrustumCull,
-                                     [](const FrameRecordParams&) {
-                                       return notNeeded();
-                                     }));
+  ASSERT_TRUE(graph.setPassReadiness(
+      RenderPassId::FrustumCull,
+      [](const FrameRecordParams &) { return notNeeded(); }));
 
   RenderPassExecutionHooks hooks{};
   hooks.beginPass = [&](RenderPassId id, VkCommandBuffer) {
@@ -530,8 +489,8 @@ TEST(RenderGraphTests, ExecuteSkipsPassWhenReadinessFailsAtRuntime) {
   EXPECT_TRUE(recorded.empty());
   EXPECT_TRUE(began.empty());
 
-  const auto* status = statusFor(graph.lastFrameExecutionStatuses(),
-                                 RenderPassId::FrustumCull);
+  const auto *status =
+      statusFor(graph.lastFrameExecutionStatuses(), RenderPassId::FrustumCull);
   ASSERT_NE(status, nullptr);
   EXPECT_FALSE(status->active);
   EXPECT_EQ(status->skipReason, RenderPassSkipReason::NotNeeded);
@@ -543,16 +502,15 @@ TEST(RenderGraphTests, PrepareFramePublishesRuntimeStatusBeforeExecute) {
 
   graph.addPass(RenderPassId::TileCull, {}, noopRecord());
   ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::TileCull, {}, {}, {}));
-  ASSERT_TRUE(graph.setPassReadiness(RenderPassId::TileCull,
-                                     [](const FrameRecordParams&) {
-                                       return notNeeded();
-                                     }));
+  ASSERT_TRUE(graph.setPassReadiness(
+      RenderPassId::TileCull,
+      [](const FrameRecordParams &) { return notNeeded(); }));
 
   FrameRecordParams params{};
   graph.prepareFrame(params);
 
-  const auto* status = statusFor(graph.lastFrameExecutionStatuses(),
-                                 RenderPassId::TileCull);
+  const auto *status =
+      statusFor(graph.lastFrameExecutionStatuses(), RenderPassId::TileCull);
   ASSERT_NE(status, nullptr);
   EXPECT_FALSE(status->active);
   EXPECT_EQ(status->skipReason, RenderPassSkipReason::NotNeeded);
@@ -569,7 +527,7 @@ TEST(RenderGraphTests, PrepareFrameIsIdempotentForSameFrameSignature) {
   graph.addPass(RenderPassId::TileCull, {}, noopRecord());
   ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::TileCull, {}, {}, {}));
   ASSERT_TRUE(graph.setPassReadiness(RenderPassId::TileCull,
-                                     [&](const FrameRecordParams&) {
+                                     [&](const FrameRecordParams &) {
                                        ++readinessCalls;
                                        return RenderPassReadiness{};
                                      }));
@@ -596,7 +554,7 @@ TEST(RenderGraphTests, PrepareFrameRebuildsWhenExposureModeChanges) {
   ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::ExposureAdaptation, {},
                                           {}, {}));
   ASSERT_TRUE(graph.setPassReadiness(
-      RenderPassId::ExposureAdaptation, [&](const FrameRecordParams& params) {
+      RenderPassId::ExposureAdaptation, [&](const FrameRecordParams &params) {
         ++readinessCalls;
         return params.postProcess.exposureSettings.mode ==
                        container::gpu::kExposureModeAuto
@@ -609,12 +567,11 @@ TEST(RenderGraphTests, PrepareFrameRebuildsWhenExposureModeChanges) {
       container::gpu::kExposureModeManual;
   graph.prepareFrame(params);
 
-  params.postProcess.exposureSettings.mode =
-      container::gpu::kExposureModeAuto;
+  params.postProcess.exposureSettings.mode = container::gpu::kExposureModeAuto;
   graph.prepareFrame(params);
 
   EXPECT_EQ(readinessCalls, 2);
-  const auto* exposureStatus = statusFor(graph.lastFrameExecutionStatuses(),
+  const auto *exposureStatus = statusFor(graph.lastFrameExecutionStatuses(),
                                          RenderPassId::ExposureAdaptation);
   ASSERT_NE(exposureStatus, nullptr);
   EXPECT_TRUE(exposureStatus->active);
@@ -626,16 +583,14 @@ TEST(RenderGraphTests, ExecutePreparedFrameConsumesPreparedPlan) {
   int readinessCalls = 0;
   bool ready = false;
 
-  graph.addPass(RenderPassId::TileCull,
-                {},
+  graph.addPass(RenderPassId::TileCull, {},
                 recordPass(recorded, RenderPassId::TileCull));
   ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::TileCull, {}, {}, {}));
-  ASSERT_TRUE(graph.setPassReadiness(RenderPassId::TileCull,
-                                     [&](const FrameRecordParams&) {
-                                       ++readinessCalls;
-                                       return ready ? RenderPassReadiness{}
-                                                    : notNeeded();
-                                     }));
+  ASSERT_TRUE(graph.setPassReadiness(
+      RenderPassId::TileCull, [&](const FrameRecordParams &) {
+        ++readinessCalls;
+        return ready ? RenderPassReadiness{} : notNeeded();
+      }));
 
   FrameRecordParams params{};
   graph.prepareFrame(params);
@@ -651,12 +606,11 @@ TEST(RenderGraphTests, ExecutePreparedFrameRebuildsAfterReadinessMutation) {
   std::vector<RenderPassId> recorded;
   int readinessCalls = 0;
 
-  graph.addPass(RenderPassId::TileCull,
-                {},
+  graph.addPass(RenderPassId::TileCull, {},
                 recordPass(recorded, RenderPassId::TileCull));
   ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::TileCull, {}, {}, {}));
   ASSERT_TRUE(graph.setPassReadiness(RenderPassId::TileCull,
-                                     [&](const FrameRecordParams&) {
+                                     [&](const FrameRecordParams &) {
                                        ++readinessCalls;
                                        return notNeeded();
                                      }));
@@ -664,7 +618,7 @@ TEST(RenderGraphTests, ExecutePreparedFrameRebuildsAfterReadinessMutation) {
   FrameRecordParams params{};
   graph.prepareFrame(params);
   ASSERT_TRUE(graph.setPassReadiness(RenderPassId::TileCull,
-                                     [&](const FrameRecordParams&) {
+                                     [&](const FrameRecordParams &) {
                                        ++readinessCalls;
                                        return RenderPassReadiness{};
                                      }));
@@ -680,33 +634,26 @@ TEST(RenderGraphTests, RuntimeSkippedWriterSkipsRequiredResourceReader) {
   RenderGraph graph;
   std::vector<RenderPassId> recorded;
 
-  graph.addPass(RenderPassId::Bloom, {}, recordPass(recorded, RenderPassId::Bloom));
-  ASSERT_TRUE(graph.setPassResourceAccess(
+  graph.addPass(RenderPassId::Bloom, {},
+                recordPass(recorded, RenderPassId::Bloom));
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::Bloom, {}, {},
+                                          {RenderResourceId::BloomTexture}));
+  ASSERT_TRUE(graph.setPassReadiness(
       RenderPassId::Bloom,
-      {},
-      {},
-      {RenderResourceId::BloomTexture}));
-  ASSERT_TRUE(graph.setPassReadiness(RenderPassId::Bloom,
-                                     [](const FrameRecordParams&) {
-                                       return notNeeded();
-                                     }));
+      [](const FrameRecordParams &) { return notNeeded(); }));
 
-  graph.addPass(RenderPassId::FrustumCull,
-                {},
+  graph.addPass(RenderPassId::FrustumCull, {},
                 recordPass(recorded, RenderPassId::FrustumCull));
   ASSERT_TRUE(graph.setPassResourceAccess(
-      RenderPassId::FrustumCull,
-      {RenderResourceId::BloomTexture},
-      {},
-      {}));
+      RenderPassId::FrustumCull, {RenderResourceId::BloomTexture}, {}, {}));
 
   FrameRecordParams params{};
   graph.execute(VK_NULL_HANDLE, params);
 
   EXPECT_TRUE(recorded.empty());
 
-  const auto* readerStatus = statusFor(graph.lastFrameExecutionStatuses(),
-                                       RenderPassId::FrustumCull);
+  const auto *readerStatus =
+      statusFor(graph.lastFrameExecutionStatuses(), RenderPassId::FrustumCull);
   ASSERT_NE(readerStatus, nullptr);
   EXPECT_FALSE(readerStatus->active);
   EXPECT_EQ(readerStatus->skipReason, RenderPassSkipReason::MissingResource);
@@ -719,14 +666,12 @@ TEST(RenderGraphTests, IsPassActiveUsesRuntimeStateInsideCallbacks) {
 
   graph.addPass(RenderPassId::TileCull, {}, noopRecord());
   ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::TileCull, {}, {}, {}));
-  ASSERT_TRUE(graph.setPassReadiness(RenderPassId::TileCull,
-                                     [](const FrameRecordParams&) {
-                                       return notNeeded();
-                                     }));
+  ASSERT_TRUE(graph.setPassReadiness(
+      RenderPassId::TileCull,
+      [](const FrameRecordParams &) { return notNeeded(); }));
 
-  graph.addPass(RenderPassId::Lighting,
-                {RenderPassId::TileCull},
-                [&](VkCommandBuffer, const FrameRecordParams&) {
+  graph.addPass(RenderPassId::Lighting, {RenderPassId::TileCull},
+                [&](VkCommandBuffer, const FrameRecordParams &) {
                   EXPECT_FALSE(graph.isPassActive(RenderPassId::TileCull));
                   recorded.push_back(RenderPassId::Lighting);
                 });
@@ -744,13 +689,12 @@ TEST(RenderGraphTests, ExecuteAllowsActiveQueriesInsidePassCallbacks) {
   RenderGraph graph;
   std::vector<RenderPassId> recorded;
 
-  graph.addPass(RenderPassId::FrustumCull, {}, [&](VkCommandBuffer,
-                                                   const FrameRecordParams&) {
-    EXPECT_TRUE(graph.isPassActive(RenderPassId::DepthPrepass));
-    recorded.push_back(RenderPassId::FrustumCull);
-  });
-  graph.addPass(RenderPassId::DepthPrepass,
-                {RenderPassId::FrustumCull},
+  graph.addPass(RenderPassId::FrustumCull, {},
+                [&](VkCommandBuffer, const FrameRecordParams &) {
+                  EXPECT_TRUE(graph.isPassActive(RenderPassId::DepthPrepass));
+                  recorded.push_back(RenderPassId::FrustumCull);
+                });
+  graph.addPass(RenderPassId::DepthPrepass, {RenderPassId::FrustumCull},
                 recordPass(recorded, RenderPassId::DepthPrepass));
 
   FrameRecordParams params{};
@@ -774,10 +718,7 @@ TEST(RenderGraphTests, OptionalInternalReadDoesNotRequireWriter) {
   RenderGraph graph;
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
   ASSERT_TRUE(graph.setPassResourceAccess(
-      RenderPassId::FrustumCull,
-      {},
-      {RenderResourceId::BloomTexture},
-      {}));
+      RenderPassId::FrustumCull, {}, {RenderResourceId::BloomTexture}, {}));
 
   EXPECT_NO_THROW(graph.compile());
 }
@@ -786,17 +727,11 @@ TEST(RenderGraphTests, ResourceEdgeCanScheduleWriterBeforeReader) {
   RenderGraph graph;
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
   ASSERT_TRUE(graph.setPassResourceAccess(
-      RenderPassId::FrustumCull,
-      {RenderResourceId::BloomTexture},
-      {},
-      {}));
+      RenderPassId::FrustumCull, {RenderResourceId::BloomTexture}, {}, {}));
 
   graph.addPass(RenderPassId::Bloom, {}, noopRecord());
-  ASSERT_TRUE(graph.setPassResourceAccess(
-      RenderPassId::Bloom,
-      {},
-      {},
-      {RenderResourceId::BloomTexture}));
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::Bloom, {}, {},
+                                          {RenderResourceId::BloomTexture}));
 
   graph.compile();
 
@@ -837,27 +772,143 @@ TEST(RenderGraphTests,
             executionPosition(graph, RenderPassId::Lighting));
 }
 
+TEST(RenderGraphTests, DdgiResourceChainOrdersEveryRegistrationPermutation) {
+  // Do not add explicit schedule dependencies: these edges must also order the
+  // producer's command-buffer barriers when passes are registered differently.
+  std::array registrationOrder{
+      RenderPassId::Lighting, RenderPassId::RaySceneBuild,
+      RenderPassId::DdgiTrace, RenderPassId::DdgiUpdate};
+  const std::vector expectedOrder{
+      RenderPassId::RaySceneBuild, RenderPassId::DdgiTrace,
+      RenderPassId::DdgiUpdate, RenderPassId::Lighting};
+  const std::array expectedEdges{
+      container::renderer::RenderResourceEdge{RenderResourceId::RayScene,
+                                              RenderPassId::RaySceneBuild,
+                                              RenderPassId::DdgiTrace},
+      container::renderer::RenderResourceEdge{RenderResourceId::DdgiRays,
+                                              RenderPassId::DdgiTrace,
+                                              RenderPassId::DdgiUpdate},
+      container::renderer::RenderResourceEdge{RenderResourceId::DdgiIrradiance,
+                                              RenderPassId::DdgiUpdate,
+                                              RenderPassId::Lighting}};
+  uint32_t permutationCount = 0;
+  do {
+    SCOPED_TRACE(permutationCount);
+    RenderGraph graph;
+    for (const auto id : registrationOrder) {
+      graph.addPass(id, {}, noopRecord());
+      ASSERT_TRUE(setDdgiResourceAccess(graph, id));
+    }
+    graph.compile();
+    const auto order = graph.executionPassIds();
+    EXPECT_EQ(std::vector(order.begin(), order.end()), expectedOrder);
+    const auto edges = graph.resourceEdges();
+    ASSERT_EQ(edges.size(), expectedEdges.size());
+    for (const auto &expected : expectedEdges) {
+      EXPECT_NE(std::ranges::find_if(edges,
+                                     [&](const auto &edge) {
+                                       return edge.resource ==
+                                                  expected.resource &&
+                                              edge.writer == expected.writer &&
+                                              edge.reader == expected.reader;
+                                     }),
+                edges.end());
+    }
+    EXPECT_EQ(execute(graph), expectedOrder);
+    ++permutationCount;
+  } while (std::next_permutation(registrationOrder.begin(),
+                                 registrationOrder.end()));
+  EXPECT_EQ(permutationCount, 24u);
+}
+
+TEST(RenderGraphTests, DdgiProducerPassesAreProtectedAndEnabledByDefault) {
+  RenderGraph graph;
+  for (const auto id : {RenderPassId::RaySceneBuild, RenderPassId::DdgiTrace,
+                        RenderPassId::DdgiUpdate, RenderPassId::Lighting}) {
+    EXPECT_TRUE(container::renderer::isProtectedRenderPass(id));
+    graph.addPass(id, {}, noopRecord());
+    ASSERT_TRUE(setDdgiResourceAccess(graph, id));
+    ASSERT_NE(graph.findPass(id), nullptr);
+    EXPECT_TRUE(graph.findPass(id)->enabled);
+  }
+  const auto recorded = execute(graph);
+  ASSERT_EQ(recorded.size(), 4u);
+  EXPECT_EQ(recorded.back(), RenderPassId::Lighting);
+  EXPECT_TRUE(activeContains(graph, RenderPassId::DdgiTrace));
+  EXPECT_TRUE(activeContains(graph, RenderPassId::DdgiUpdate));
+}
+
+TEST(RenderGraphTests, LightingDoesNotRequireDdgiProducers) {
+  EXPECT_TRUE(
+      resourceSpanContains(container::renderer::renderPassOptionalResourceReads(
+                               RenderPassId::Lighting),
+                           RenderResourceId::DdgiIrradiance));
+  EXPECT_FALSE(resourceSpanContains(
+      container::renderer::renderPassResourceReads(RenderPassId::Lighting),
+      RenderResourceId::DdgiIrradiance));
+  RenderGraph graph;
+  graph.addPass(RenderPassId::Lighting, {}, noopRecord());
+  ASSERT_TRUE(setDdgiResourceAccess(graph, RenderPassId::Lighting));
+  EXPECT_NO_THROW(graph.compile());
+  EXPECT_TRUE(graph.resourceEdges().empty());
+  EXPECT_EQ(execute(graph), std::vector{RenderPassId::Lighting});
+}
+
+TEST(RenderGraphTests, SkippedDdgiUpdateKeepsLightingFallbackLookupAvailable) {
+  RenderGraph graph;
+  std::vector<RenderPassId> recorded;
+  // A disabled/unsupported DDGI manager provides this initialized fallback
+  // descriptor before graph execution, independently of this frame's updates.
+  const auto fallbackSet = reinterpret_cast<VkDescriptorSet>(uintptr_t{0xDD61});
+  FrameRecordParams params{};
+  params.services.ddgiReadDescriptorSet = fallbackSet;
+  graph.addPass(RenderPassId::Lighting, {},
+                [&](VkCommandBuffer, const FrameRecordParams &frame) {
+                  EXPECT_EQ(frame.services.ddgiReadDescriptorSet, fallbackSet);
+                  recorded.push_back(RenderPassId::Lighting);
+                });
+  ASSERT_TRUE(setDdgiResourceAccess(graph, RenderPassId::Lighting));
+  for (const auto id : {RenderPassId::DdgiUpdate, RenderPassId::DdgiTrace,
+                        RenderPassId::RaySceneBuild}) {
+    graph.addPass(id, {}, recordPass(recorded, id));
+    ASSERT_TRUE(setDdgiResourceAccess(graph, id));
+  }
+  ASSERT_TRUE(graph.setPassReadiness(
+      RenderPassId::DdgiTrace,
+      [](const FrameRecordParams &) { return notNeeded(); }));
+  graph.execute(VK_NULL_HANDLE, params);
+  EXPECT_EQ(recorded,
+            (std::vector{RenderPassId::RaySceneBuild, RenderPassId::Lighting}));
+  const auto statuses = graph.lastFrameExecutionStatuses();
+  const auto *traceStatus = statusFor(statuses, RenderPassId::DdgiTrace);
+  ASSERT_NE(traceStatus, nullptr);
+  EXPECT_EQ(traceStatus->skipReason, RenderPassSkipReason::NotNeeded);
+  const auto *updateStatus = statusFor(statuses, RenderPassId::DdgiUpdate);
+  ASSERT_NE(updateStatus, nullptr);
+  EXPECT_EQ(updateStatus->skipReason, RenderPassSkipReason::MissingResource);
+  EXPECT_EQ(updateStatus->blockingResource, RenderResourceId::DdgiRays);
+  const auto *lightingStatus = statusFor(statuses, RenderPassId::Lighting);
+  ASSERT_NE(lightingStatus, nullptr);
+  EXPECT_TRUE(lightingStatus->active);
+  EXPECT_EQ(lightingStatus->skipReason, RenderPassSkipReason::None);
+}
+
 TEST(RenderGraphTests, ResourceAccessMutationInvalidatesCompiledSchedule) {
   RenderGraph graph;
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
-  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::FrustumCull, {}, {}, {}));
+  ASSERT_TRUE(
+      graph.setPassResourceAccess(RenderPassId::FrustumCull, {}, {}, {}));
 
   graph.addPass(RenderPassId::Bloom, {}, noopRecord());
-  ASSERT_TRUE(graph.setPassResourceAccess(
-      RenderPassId::Bloom,
-      {},
-      {},
-      {RenderResourceId::BloomTexture}));
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::Bloom, {}, {},
+                                          {RenderResourceId::BloomTexture}));
 
   graph.compile();
   EXPECT_LT(executionPosition(graph, RenderPassId::FrustumCull),
             executionPosition(graph, RenderPassId::Bloom));
 
   ASSERT_TRUE(graph.setPassResourceAccess(
-      RenderPassId::FrustumCull,
-      {RenderResourceId::BloomTexture},
-      {},
-      {}));
+      RenderPassId::FrustumCull, {RenderResourceId::BloomTexture}, {}, {}));
 
   EXPECT_LT(executionPosition(graph, RenderPassId::Bloom),
             executionPosition(graph, RenderPassId::FrustumCull));
@@ -866,18 +917,19 @@ TEST(RenderGraphTests, ResourceAccessMutationInvalidatesCompiledSchedule) {
 TEST(RenderGraphTests, ScheduleDependencyMutationInvalidatesCompiledSchedule) {
   RenderGraph graph;
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
-  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::FrustumCull, {}, {}, {}));
+  ASSERT_TRUE(
+      graph.setPassResourceAccess(RenderPassId::FrustumCull, {}, {}, {}));
 
   graph.addPass(RenderPassId::DepthPrepass, {}, noopRecord());
-  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::DepthPrepass, {}, {}, {}));
+  ASSERT_TRUE(
+      graph.setPassResourceAccess(RenderPassId::DepthPrepass, {}, {}, {}));
 
   graph.compile();
   EXPECT_LT(executionPosition(graph, RenderPassId::FrustumCull),
             executionPosition(graph, RenderPassId::DepthPrepass));
 
-  ASSERT_TRUE(graph.setPassScheduleDependencies(
-      RenderPassId::FrustumCull,
-      {RenderPassId::DepthPrepass}));
+  ASSERT_TRUE(graph.setPassScheduleDependencies(RenderPassId::FrustumCull,
+                                                {RenderPassId::DepthPrepass}));
 
   EXPECT_LT(executionPosition(graph, RenderPassId::DepthPrepass),
             executionPosition(graph, RenderPassId::FrustumCull));
@@ -886,22 +938,18 @@ TEST(RenderGraphTests, ScheduleDependencyMutationInvalidatesCompiledSchedule) {
 TEST(RenderGraphTests, ScheduleDependencyMutationRejectsInvalidDependency) {
   RenderGraph graph;
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
-  graph.addPass(RenderPassId::DepthPrepass,
-                {RenderPassId::FrustumCull},
+  graph.addPass(RenderPassId::DepthPrepass, {RenderPassId::FrustumCull},
                 noopRecord());
 
-  EXPECT_THROW(
-      graph.setPassScheduleDependencies(
-          RenderPassId::DepthPrepass,
-          {RenderPassId::Invalid}),
-      std::runtime_error);
-  EXPECT_THROW(
-      graph.setPassScheduleDependencies(
-          RenderPassId::DepthPrepass,
-          {RenderPassId::FrustumCull, RenderPassId::FrustumCull}),
-      std::runtime_error);
+  EXPECT_THROW(graph.setPassScheduleDependencies(RenderPassId::DepthPrepass,
+                                                 {RenderPassId::Invalid}),
+               std::runtime_error);
+  EXPECT_THROW(graph.setPassScheduleDependencies(
+                   RenderPassId::DepthPrepass,
+                   {RenderPassId::FrustumCull, RenderPassId::FrustumCull}),
+               std::runtime_error);
 
-  const auto* pass = graph.findPass(RenderPassId::DepthPrepass);
+  const auto *pass = graph.findPass(RenderPassId::DepthPrepass);
   ASSERT_NE(pass, nullptr);
   ASSERT_EQ(pass->scheduleDependencies.size(), 1u);
   EXPECT_EQ(pass->scheduleDependencies.front(), RenderPassId::FrustumCull);
@@ -910,18 +958,14 @@ TEST(RenderGraphTests, ScheduleDependencyMutationRejectsInvalidDependency) {
 TEST(RenderGraphTests, CompileThrowsForResourceDependencyCycle) {
   RenderGraph graph;
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
-  ASSERT_TRUE(graph.setPassResourceAccess(
-      RenderPassId::FrustumCull,
-      {RenderResourceId::BloomTexture},
-      {},
-      {RenderResourceId::SceneColor}));
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::FrustumCull,
+                                          {RenderResourceId::BloomTexture}, {},
+                                          {RenderResourceId::SceneColor}));
 
   graph.addPass(RenderPassId::Bloom, {}, noopRecord());
-  ASSERT_TRUE(graph.setPassResourceAccess(
-      RenderPassId::Bloom,
-      {RenderResourceId::SceneColor},
-      {},
-      {RenderResourceId::BloomTexture}));
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::Bloom,
+                                          {RenderResourceId::SceneColor}, {},
+                                          {RenderResourceId::BloomTexture}));
 
   EXPECT_THROW(graph.compile(), std::runtime_error);
 }
@@ -995,30 +1039,29 @@ TEST(RenderGraphTests, DefaultScheduleModelsCurrentFrameFlow) {
             executionPosition(graph, RenderPassId::Bloom));
   EXPECT_LT(executionPosition(graph, RenderPassId::Bloom),
             executionPosition(graph, RenderPassId::PostProcess));
-  EXPECT_TRUE(resourceSpanContains(
-      container::renderer::renderPassResourceReads(
-          RenderPassId::LocalShadowDepth),
-      RenderResourceId::LocalShadowData));
-  EXPECT_TRUE(resourceSpanContains(
-      container::renderer::renderPassResourceWrites(
-          RenderPassId::LocalShadowDepth),
-      RenderResourceId::LocalShadowAtlas));
-  EXPECT_TRUE(resourceSpanContains(
-      container::renderer::renderPassOptionalResourceReads(
-          RenderPassId::Lighting),
-      RenderResourceId::LocalShadowAtlas));
-  EXPECT_FALSE(passSpanContains(
-      container::renderer::renderPassScheduleDependencies(
-          RenderPassId::LocalShadowDepth),
-      RenderPassId::ShadowCascade0));
-  EXPECT_FALSE(passSpanContains(
-      container::renderer::renderPassScheduleDependencies(
-          RenderPassId::LocalShadowDepth),
-      RenderPassId::ShadowCascade3));
-  EXPECT_FALSE(passSpanContains(
-      container::renderer::renderPassScheduleDependencies(
-          RenderPassId::DepthToReadOnly),
-      RenderPassId::LocalShadowDepth));
+  EXPECT_TRUE(resourceSpanContains(container::renderer::renderPassResourceReads(
+                                       RenderPassId::LocalShadowDepth),
+                                   RenderResourceId::LocalShadowData));
+  EXPECT_TRUE(
+      resourceSpanContains(container::renderer::renderPassResourceWrites(
+                               RenderPassId::LocalShadowDepth),
+                           RenderResourceId::LocalShadowAtlas));
+  EXPECT_TRUE(
+      resourceSpanContains(container::renderer::renderPassOptionalResourceReads(
+                               RenderPassId::Lighting),
+                           RenderResourceId::LocalShadowAtlas));
+  EXPECT_FALSE(
+      passSpanContains(container::renderer::renderPassScheduleDependencies(
+                           RenderPassId::LocalShadowDepth),
+                       RenderPassId::ShadowCascade0));
+  EXPECT_FALSE(
+      passSpanContains(container::renderer::renderPassScheduleDependencies(
+                           RenderPassId::LocalShadowDepth),
+                       RenderPassId::ShadowCascade3));
+  EXPECT_FALSE(
+      passSpanContains(container::renderer::renderPassScheduleDependencies(
+                           RenderPassId::DepthToReadOnly),
+                       RenderPassId::LocalShadowDepth));
 }
 
 TEST(RenderGraphTests, CullStatsReadbackRunsWhenCullingIsDisabledOrSkipped) {
@@ -1034,8 +1077,8 @@ TEST(RenderGraphTests, CullStatsReadbackRunsWhenCullingIsDisabledOrSkipped) {
     for (const RenderPassId id :
          {RenderPassId::FrustumCull, RenderPassId::OcclusionCull}) {
       if (runtimeSkip) {
-        graph.setPassReadiness(id,
-            [](const FrameRecordParams&) { return notNeeded(); });
+        graph.setPassReadiness(
+            id, [](const FrameRecordParams &) { return notNeeded(); });
       } else {
         ASSERT_TRUE(graph.setPassEnabled(id, false));
       }
@@ -1050,22 +1093,14 @@ TEST(RenderGraphTests, CullStatsReadbackRunsWhenCullingIsDisabledOrSkipped) {
 
 TEST(RenderGraphTests, OpenWorldFrameDoesNotRequireLocalShadowDepthPass) {
   constexpr std::array passes = {
-      RenderPassId::FrustumCull,
-      RenderPassId::DepthPrepass,
-      RenderPassId::HiZGenerate,
-      RenderPassId::OcclusionCull,
-      RenderPassId::CullStatsReadback,
-      RenderPassId::GBuffer,
-      RenderPassId::TransparentPick,
-      RenderPassId::ShadowCullCascade0,
-      RenderPassId::ShadowCullCascade1,
-      RenderPassId::ShadowCullCascade2,
-      RenderPassId::ShadowCullCascade3,
-      RenderPassId::ShadowCascade0,
-      RenderPassId::ShadowCascade1,
-      RenderPassId::ShadowCascade2,
-      RenderPassId::ShadowCascade3,
-      RenderPassId::DepthToReadOnly,
+      RenderPassId::FrustumCull,        RenderPassId::DepthPrepass,
+      RenderPassId::HiZGenerate,        RenderPassId::OcclusionCull,
+      RenderPassId::CullStatsReadback,  RenderPassId::GBuffer,
+      RenderPassId::TransparentPick,    RenderPassId::ShadowCullCascade0,
+      RenderPassId::ShadowCullCascade1, RenderPassId::ShadowCullCascade2,
+      RenderPassId::ShadowCullCascade3, RenderPassId::ShadowCascade0,
+      RenderPassId::ShadowCascade1,     RenderPassId::ShadowCascade2,
+      RenderPassId::ShadowCascade3,     RenderPassId::DepthToReadOnly,
   };
 
   RenderGraph graph;

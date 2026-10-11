@@ -1029,29 +1029,50 @@ std::vector<uint32_t> SlangMaterialXBridge::loadTexturesForGltf(
 
     try {
       container::material::TextureResource resource;
-      if (embedded) {
-        if (image.width <= 0 || image.height <= 0 || image.bits != 8 ||
-            image.component < 1 || image.component > 4)
+      const bool decodedFormat =
+          !image.as_is && image.width > 0 && image.height > 0 &&
+          image.bits == 8 && image.component >= 1 && image.component <= 4 &&
+          (image.pixel_type == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE ||
+           image.pixel_type == -1);
+      const uint64_t pixels = decodedFormat
+                                  ? uint64_t(image.width) * uint64_t(image.height)
+                                  : 0;
+      const bool decodedPayload =
+          decodedFormat && pixels <= std::numeric_limits<size_t>::max() / 4 &&
+          pixels * uint64_t(image.component) <= image.image.size();
+      // tinygltf decodes external images during CPU preparation too. Reuse
+      // those pixels rather than opening and decoding the file on the render
+      // thread. Keep the file cache identity and GPU color-space format.
+      if (embedded || (embeddedLoader && decodedPayload)) {
+        if (!decodedFormat)
           throw std::runtime_error("unsupported decoded glTF image format");
-        const uint64_t pixels = uint64_t(image.width) * uint64_t(image.height);
-        if (pixels > std::numeric_limits<size_t>::max() / 4 ||
-            pixels * uint64_t(image.component) > image.image.size())
+        if (!decodedPayload)
           throw std::runtime_error("truncated decoded glTF image");
-        std::vector<std::byte> rgba(size_t(pixels) * 4);
-        for (size_t pixel = 0; pixel < pixels; ++pixel) {
-          const auto *source = image.image.data() + pixel * image.component;
-          const bool grey = image.component <= 2;
-          rgba[pixel * 4] = std::byte(source[0]);
-          rgba[pixel * 4 + 1] = std::byte(grey ? source[0] : source[1]);
-          rgba[pixel * 4 + 2] = std::byte(grey ? source[0] : source[2]);
-          rgba[pixel * 4 + 3] = std::byte(image.component == 2   ? source[1]
-                                          : image.component == 4 ? source[3]
-                                                                 : 255);
+        if (image.component == 4) {
+          resource = embeddedLoader(
+              fullPath,
+              {reinterpret_cast<const std::byte *>(image.image.data()),
+               size_t(pixels) * 4},
+              uint32_t(image.width), uint32_t(image.height),
+              imageIsSrgb[imageIndex]);
+        } else {
+          std::vector<std::byte> rgba(size_t(pixels) * 4);
+          for (size_t pixel = 0; pixel < pixels; ++pixel) {
+            const auto *source = image.image.data() + pixel * image.component;
+            const bool grey = image.component <= 2;
+            rgba[pixel * 4] = std::byte(source[0]);
+            rgba[pixel * 4 + 1] = std::byte(grey ? source[0] : source[1]);
+            rgba[pixel * 4 + 2] = std::byte(grey ? source[0] : source[2]);
+            rgba[pixel * 4 + 3] =
+                std::byte(image.component == 2 ? source[1] : 255);
+          }
+          resource =
+              embeddedLoader(fullPath, rgba, uint32_t(image.width),
+                             uint32_t(image.height), imageIsSrgb[imageIndex]);
         }
-        resource =
-            embeddedLoader(fullPath, rgba, uint32_t(image.width),
-                           uint32_t(image.height), imageIsSrgb[imageIndex]);
       } else {
+        // Preserve the file decoder's downconversion for 16-bit images and
+        // callers that do not provide the decoded-pixel uploader.
         resource = textureLoader(fullPath, imageIsSrgb[imageIndex]);
       }
       resource.name = textureCacheKey;

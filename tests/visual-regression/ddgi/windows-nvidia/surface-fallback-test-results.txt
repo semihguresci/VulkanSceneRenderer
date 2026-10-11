@@ -1,0 +1,15 @@
+Test project F:/Projects/Container/out/build/visual-studio
+    Start 11: ray_scene_tests
+1/2 Test #11: ray_scene_tests ..................   Passed    0.03 sec
+    Start 14: ray_shadow_surface_gpu_tests
+2/2 Test #14: ray_shadow_surface_gpu_tests .....   Passed    3.30 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Label Time Summary:
+ddgi                =   3.30 sec*proc (1 test)
+ray-query           =   3.30 sec*proc (1 test)
+requires-display    =   3.30 sec*proc (1 test)
+requires-vulkan     =   3.30 sec*proc (1 test)
+
+Total Test time (real) =   3.35 sec

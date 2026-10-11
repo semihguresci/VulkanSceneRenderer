@@ -51,6 +51,7 @@ template <size_t N>
 bool recordDeferredPointLightingCommands(
     VkCommandBuffer cmd, const DeferredPointLightingRecordInputs &inputs) {
   if (inputs.plan == nullptr ||
+      (inputs.ddgiDescriptorsRequired && inputs.ddgiDescriptorSet == VK_NULL_HANDLE) ||
       inputs.plan->path == DeferredPointLightingPath::None) {
     return false;
   }
@@ -70,6 +71,10 @@ bool recordDeferredPointLightingCommands(
         cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, inputs.tiledLightingLayout, 0,
         static_cast<uint32_t>(inputs.tiledLightingDescriptorSets.size()),
         inputs.tiledLightingDescriptorSets.data(), 0, nullptr);
+    if (inputs.ddgiDescriptorsRequired)
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              inputs.tiledLightingLayout, 4, 1,
+                              &inputs.ddgiDescriptorSet, 0, nullptr);
     vkCmdPushConstants(cmd, inputs.tiledLightingLayout,
                        VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(plan.tiledPushConstants),
@@ -107,6 +112,10 @@ bool recordDeferredPointLightingCommands(
       cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, inputs.lightingLayout, 0,
       static_cast<uint32_t>(inputs.pointLightingDescriptorSets.size()),
       inputs.pointLightingDescriptorSets.data(), 0, nullptr);
+  if (inputs.ddgiDescriptorsRequired)
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            inputs.lightingLayout, 4, 1,
+                            &inputs.ddgiDescriptorSet, 0, nullptr);
 
   for (uint32_t routeIndex = 0u; routeIndex < plan.stencilRouteCount;
        ++routeIndex) {

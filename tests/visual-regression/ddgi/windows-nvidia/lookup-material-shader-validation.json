@@ -1,0 +1,102 @@
+[
+  {
+    "name": "ddgi_debug.frag.spv",
+    "passed": true,
+    "output": ""
+  },
+  {
+    "name": "ddgi_debug.vert.spv",
+    "passed": true,
+    "output": ""
+  },
+  {
+    "name": "ddgi_trace.comp.spv",
+    "passed": true,
+    "output": ""
+  },
+  {
+    "name": "ddgi_update.comp.spv",
+    "passed": true,
+    "output": ""
+  },
+  {
+    "name": "deferred_directional_no_ddgi.frag.spv",
+    "passed": true,
+    "output": ""
+  },
+  {
+    "name": "deferred_directional.frag.spv",
+    "passed": true,
+    "output": ""
+  },
+  {
+    "name": "deferred_directional.vert.spv",
+    "passed": true,
+    "output": ""
+  },
+  {
+    "name": "forward_opaque_no_ddgi.frag.spv",
+    "passed": true,
+    "output": ""
+  },
+  {
+    "name": "forward_opaque_ray_no_ddgi.frag.spv",
+    "passed": true,
+    "output": ""
+  },
+  {
+    "name": "forward_opaque_ray.frag.spv",
+    "passed": true,
+    "output": ""
+  },
+  {
+    "name": "forward_opaque.frag.spv",
+    "passed": true,
+    "output": ""
+  },
+  {
+    "name": "forward_opaque.vert.spv",
+    "passed": true,
+    "output": ""
+  },
+  {
+    "name": "point_light_no_ddgi.frag.spv",
+    "passed": true,
+    "output": ""
+  },
+  {
+    "name": "point_light_stencil_debug.frag.spv",
+    "passed": true,
+    "output": ""
+  },
+  {
+    "name": "point_light_stencil_debug.vert.spv",
+    "passed": true,
+    "output": ""
+  },
+  {
+    "name": "point_light.frag.spv",
+    "passed": true,
+    "output": ""
+  },
+  {
+    "name": "point_light.vert.spv",
+    "passed": true,
+    "output": ""
+  },
+  {
+    "name": "tiled_lighting_no_ddgi.frag.spv",
+    "passed": true,
+    "output": ""
+  },
+  {
+    "name": "tiled_lighting.frag.spv",
+    "passed": true,
+    "output": ""
+  },
+  {
+    "name": "tiled_lighting.vert.spv",
+    "passed": true,
+    "output": ""
+  }
+]

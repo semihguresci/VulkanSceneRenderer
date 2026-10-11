@@ -61,6 +61,31 @@ TEST(RendererTelemetryTests, LimitsHistoryToCapacity) {
   EXPECT_EQ(view.history[1].frameIndex, 3u);
 }
 
+TEST(RendererTelemetryTests, KeepsIndependentPhaseBreakdownsForCompletedFrames) {
+  RendererTelemetry telemetry{2};
+  telemetry.beginFrame(1u, 0u, 2u, true, "shared resources");
+  telemetry.setCpuPhase(RendererTelemetryPhase::Frame, 300.0f);
+  telemetry.setCpuPhase(RendererTelemetryPhase::WaitForFrame, 280.0f);
+  telemetry.setCpuPhase(RendererTelemetryPhase::Gui, 12.0f);
+  telemetry.endFrame();
+
+  telemetry.beginFrame(2u, 1u, 2u, true, "shared resources");
+  telemetry.setCpuPhase(RendererTelemetryPhase::Frame, 80.0f);
+  telemetry.setCpuPhase(RendererTelemetryPhase::Screenshot, 60.0f);
+  telemetry.setCpuPhase(RendererTelemetryPhase::Gui, 1.0f);
+  telemetry.endFrame();
+
+  const auto history = telemetry.view().history;
+  ASSERT_EQ(history.size(), 2u);
+  const auto phase = [](RendererTelemetryPhase value) { return static_cast<size_t>(value); };
+  EXPECT_FLOAT_EQ(history[0].cpuPhasesMs[phase(RendererTelemetryPhase::WaitForFrame)], 280.0f);
+  EXPECT_FLOAT_EQ(history[0].cpuPhasesMs[phase(RendererTelemetryPhase::Gui)], 12.0f);
+  EXPECT_FLOAT_EQ(history[0].cpuPhasesMs[phase(RendererTelemetryPhase::Screenshot)], 0.0f);
+  EXPECT_FLOAT_EQ(history[1].cpuPhasesMs[phase(RendererTelemetryPhase::WaitForFrame)], 0.0f);
+  EXPECT_FLOAT_EQ(history[1].cpuPhasesMs[phase(RendererTelemetryPhase::Gui)], 1.0f);
+  EXPECT_FLOAT_EQ(history[1].cpuPhasesMs[phase(RendererTelemetryPhase::Screenshot)], 60.0f);
+}
+
 TEST(RendererTelemetryTests, BuildsSummaryFromHistory) {
   RendererTelemetry telemetry{8};
 

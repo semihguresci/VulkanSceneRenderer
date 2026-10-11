@@ -128,6 +128,10 @@ public:
     return lightingSettings_;
   }
   void setLightingSettings(const container::gpu::LightingSettings &settings);
+  // Scene light indices belong to one loaded source. Drop their edits and
+  // selection when replacing that source; preserve user-created manual lights.
+  // Recomputes CPU lighting only. The caller uploads after retiring GPU reads.
+  void clearSceneLightOverrides();
   [[nodiscard]] bool ltcReady() const;
   [[nodiscard]] const std::string &ltcStatus() const;
   [[nodiscard]] uint64_t ltcMemoryBytes() const;

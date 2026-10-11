@@ -2,6 +2,7 @@
 
 #include "Container/common/CommonVulkan.h"
 #include "Container/geometry/ImportReport.h"
+#include "Container/geometry/DotBimLoader.h"
 #include "Container/geometry/Vertex.h"
 #include "Container/renderer/bim/BimCoordinationOverlay.h"
 #include "Container/renderer/bim/BimDrawingExport.h"
@@ -618,6 +619,26 @@ public:
 
   void loadModel(const std::string &path, float importScale,
                  container::scene::SceneManager &sceneManager);
+  struct PreparedScene {
+    container::geometry::dotbim::Model model;
+    std::filesystem::path assetPath;
+    std::string format;
+    std::string requestedPath;
+    std::vector<container::geometry::Vertex> uploadVertices;
+    std::vector<uint32_t> uploadIndices;
+    BimFloorPlanOverlayData floorPlanGround;
+    BimFloorPlanOverlayData floorPlanSourceElevation;
+    std::vector<BimMeshletClusterMetadata> meshletClusters;
+    BimOptimizedModelMetadata optimizedMetadata;
+  };
+  // CPU-only staging: no live renderer state, callback or Vulkan access.
+  [[nodiscard]] static PreparedScene prepareScene(const std::string &path,
+                                                  float importScale);
+  void loadPreparedScene(const PreparedScene &prepared,
+                         container::scene::SceneManager &sceneManager);
+  // Commit/unload checkpoints run on the calling render thread. The callback
+  // may present a standalone progress frame, but must not reenter scene APIs.
+  void setLoadProgressCallback(std::function<void(std::string_view)> callback);
   void clear();
   void createMeshletResidencyResources(const std::filesystem::path &shaderDir);
   void
@@ -866,8 +887,9 @@ private:
     float boundsRadius{0.0f};
   };
 
-  [[nodiscard]] std::filesystem::path
-  resolveModelPath(const std::string &path) const;
+  [[nodiscard]] static std::filesystem::path
+  resolveModelPath(const std::string &path);
+  void notifyLoadProgress(std::string_view stage) const;
 
   void loadDotBim(const std::filesystem::path &path, float importScale,
                   container::scene::SceneManager &sceneManager);
@@ -881,7 +903,8 @@ private:
   void loadPreparedModel(const container::geometry::dotbim::Model &model,
                          const std::filesystem::path &path,
                          std::string_view format,
-                         container::scene::SceneManager &sceneManager);
+                         container::scene::SceneManager &sceneManager,
+                         const PreparedScene *prepared = nullptr);
   void buildDrawDataFromModel(const container::geometry::dotbim::Model &model,
                               container::scene::SceneManager &sceneManager);
   [[nodiscard]] BimDrawFilterStateInputs drawFilterStateInputs() const;
@@ -926,6 +949,7 @@ private:
   container::gpu::PipelineManager &pipelineManager_;
   std::string modelPath_{};
   container::geometry::ImportReport importReport_{};
+  std::function<void(std::string_view)> loadProgressCallback_{};
 
   container::gpu::BufferSlice vertexSlice_{};
   container::gpu::BufferSlice indexSlice_{};

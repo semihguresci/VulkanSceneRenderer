@@ -57,6 +57,11 @@ Hi-Z and drawing-budget culling, so off-screen geometry still blocks rays.
 Semantic object/layer visibility and section/box clipping remain effective.
 Native point and polyline primitives have no triangle shadow representation.
 
+The [DDGI foundation](ddgi-probe-foundation.md) adds opt-in surface attributes
+for future closest-hit shading. Shadow extraction keeps its existing 48-byte
+UV triangles and 16-byte instance metadata; the additional positions, normals,
+tangents, vertex colors and transforms are requested separately by consumers.
+
 Providers advance geometry revisions on changed positions/indices or reloads.
 Geometry changes rebuild affected BLAS; transforms, visibility and sidedness
 build a new TLAS while matching BLAS are reused. Validation rejects invalid
