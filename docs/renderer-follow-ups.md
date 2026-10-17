@@ -6,11 +6,12 @@ responsive imports, complete scrolling and cached BIM inspection tables.
 The October 11 review found no correctness merge blockers. The following issues
 track the remaining measured costs and deliberately unsupported extensions.
 Each issue contains its scope, acceptance criteria and required validation.
+Static BIM statistics and immutable provider metadata caching (#74) is now
+implemented and validated; see [BIM frame caching](bim-frame-cache.md).
 
 | Issue | Remaining improvement |
 | --- | --- |
 | [#73](https://github.com/semihguresci/VulkanSceneRenderer/issues/73) | Enable concurrent graphics frames with frame-owned GPU resources |
-| [#74](https://github.com/semihguresci/VulkanSceneRenderer/issues/74) | Cache static BIM statistics and provider batch metadata between frames |
 | [#75](https://github.com/semihguresci/VulkanSceneRenderer/issues/75) | Virtualize expanded scene hierarchy and cache BIM element searches |
 | [#76](https://github.com/semihguresci/VulkanSceneRenderer/issues/76) | Profile and reduce BIM import and relationship-graph preparation cost |
 | [#77](https://github.com/semihguresci/VulkanSceneRenderer/issues/77) | Add cooperative cancellation checkpoints to active model import jobs |
@@ -22,9 +23,9 @@ Each issue contains its scope, acceptance criteria and required validation.
 | [#83](https://github.com/semihguresci/VulkanSceneRenderer/issues/83) | Plan DDGI detail volumes automatically from BIM rooms |
 | [#84](https://github.com/semihguresci/VulkanSceneRenderer/issues/84) | Extend bounded DDGI dielectric transport to nested media |
 
-Start with the CPU improvements that have a reproducible benchmark: BIM provider
-and statistics caching (#74), UI virtualization/search (#75), and unchanged
-camera-follow planning (#78). Active importer cancellation (#77) improves rapid
+Continue with the CPU improvements that have a reproducible benchmark:
+UI virtualization/search (#75), and unchanged camera-follow planning (#78).
+Active importer cancellation (#77) improves rapid
 replacement and shutdown. Graphics concurrency (#73) needs resource lifetime
 work before the serialized safety policy can change.
 

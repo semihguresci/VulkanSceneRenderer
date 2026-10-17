@@ -219,6 +219,8 @@ cmake --build out/build/windows-release --target download_usd_models --config Re
   load/unload cycles, failed-load recovery, and hierarchy/model-list scrolling.
 - [BIM performance](docs/bim-performance.md) - Tekla House profiling and
   inspection-cache measurements in Visual Studio Debug and Release builds.
+- [BIM frame caching](docs/bim-frame-cache.md) - scene statistics, shared
+  provider topology, cache invalidation and CPU allocation benchmarks.
 - [Renderer follow-ups](docs/renderer-follow-ups.md) - remaining improvements
   and their GitHub issues.
 - [Development guide](docs/development-guide.md) - renderer conventions,

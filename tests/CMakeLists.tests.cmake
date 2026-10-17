@@ -876,6 +876,11 @@ add_custom_test(bim_inspection_cache_tests
     VulkanSceneRenderer_renderer
 )
 
+add_custom_test(bim_statistics_cache_tests
+    ${TEST_RENDERER_BIM_DIR}/bim_statistics_cache_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+
 add_custom_test(bim_georeference_transform_tests
     ${TEST_RENDERER_BIM_DIR}/bim_georeference_transform_tests.cpp  ""  ${TEST_RESULTS_DIR}
     Dep_Math
@@ -1049,6 +1054,35 @@ add_custom_test(scene_provider_extraction_tests
 target_compile_definitions(scene_provider_extraction_tests PRIVATE
     CONTAINER_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+
+# CPU measurements are opt-in and have no timing thresholds in CTest.
+if(ENABLE_BIM_FRAME_CACHE_BENCHMARK)
+    add_executable(bim_frame_cache_benchmark
+        ${TESTS_DIR}/benchmarks/bim_frame_cache_benchmark.cpp)
+    target_link_libraries(bim_frame_cache_benchmark PRIVATE VulkanSceneRenderer_renderer)
+    target_compile_definitions(bim_frame_cache_benchmark PRIVATE
+        CONTAINER_BIM_BENCHMARK_CONFIG="$<CONFIG>")
+    set_target_properties(bim_frame_cache_benchmark PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/benchmarks)
+    container_stage_runtime_dlls(bim_frame_cache_benchmark)
+
+    if(CONTAINER_BIM_CACHE_BASELINE_INCLUDE_DIR)
+        if(NOT EXISTS "${CONTAINER_BIM_CACHE_BASELINE_INCLUDE_DIR}/Container/scene/SceneProvider.h")
+            message(FATAL_ERROR "BIM benchmark baseline must contain captured Container headers")
+        endif()
+        add_executable(bim_frame_cache_baseline
+            ${TESTS_DIR}/benchmarks/bim_frame_cache_benchmark.cpp)
+        target_include_directories(bim_frame_cache_baseline BEFORE PRIVATE
+            ${CONTAINER_BIM_CACHE_BASELINE_INCLUDE_DIR} ${CMAKE_SOURCE_DIR}/include)
+        target_link_libraries(bim_frame_cache_baseline PRIVATE Dep_Math Dep_VulkanCore)
+        target_compile_features(bim_frame_cache_baseline PRIVATE cxx_std_23)
+        target_compile_definitions(bim_frame_cache_baseline PRIVATE
+            CONTAINER_BIM_CACHE_BASELINE CONTAINER_BIM_BENCHMARK_CONFIG="$<CONFIG>")
+        set_target_properties(bim_frame_cache_baseline PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/benchmarks)
+        container_stage_runtime_dlls(bim_frame_cache_baseline)
+    endif()
+endif()
 
 add_custom_test(technique_debug_model_tests
     ${TEST_RENDERER_CORE_DIR}/technique_debug_model_tests.cpp  ""  ${TEST_RESULTS_DIR}

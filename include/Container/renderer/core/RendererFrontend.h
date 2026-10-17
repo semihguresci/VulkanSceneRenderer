@@ -24,6 +24,7 @@
 #include "Container/renderer/resources/RenderResources.h"
 #include "Container/renderer/scene/DrawCommand.h"
 #include "Container/renderer/scene/SceneState.h"
+#include "Container/scene/MeshSceneProviderAssetAdapter.h"
 #include "Container/utility/VulkanMemoryManager.h"
 
 struct GLFWwindow;
@@ -268,6 +269,7 @@ private:
   uint32_t hoveredBimObjectIndex_{std::numeric_limits<uint32_t>::max()};
   uint32_t selectedBimObjectIndex_{std::numeric_limits<uint32_t>::max()};
   BimInspectionCache bimInspectionCache_{};
+  container::scene::MeshSceneProviderAssetCache meshProviderAssetCache_{};
   struct SelectionNavigationAnchor {
     bool valid{false};
     glm::vec3 point{0.0f};

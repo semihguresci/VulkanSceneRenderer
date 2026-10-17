@@ -800,6 +800,140 @@ TEST(SceneDebugModelTests, BuildsUiNeutralProviderDebugState) {
   EXPECT_EQ(debugModel.providers[1].kind, "gaussian-splatting");
 }
 
+TEST(MeshSceneProviderCacheTests, ReusesTopologyAndPublishesLiveInstanceMetadata) {
+  std::vector<container::geometry::PrimitiveRange> ranges{
+      {.firstIndex = 3, .indexCount = 6, .materialIndex = 0},
+      {.firstIndex = 9, .indexCount = 0, .materialIndex = 0}};
+  int resolverCalls = 0;
+  container::scene::MeshSceneProviderAssetAdapterInput input{
+      .primitiveRanges = ranges,
+      .materialCount = 1,
+      .instanceCount = 2,
+      .bounds = {.min = {-1, -1, -1}, .max = {1, 1, 1}, .valid = true},
+      .materialFactsAt = [&](uint32_t) {
+        ++resolverCalls;
+        return MeshSceneProviderMaterialFacts{.doubleSided = true};
+      }};
+  container::scene::MeshSceneProviderAssetCache cache;
+  const auto first = cache.get(input, {.geometry = 1, .materials = 2}, &ranges);
+  ASSERT_EQ(first.triangleBatches.size(), 1u);
+  EXPECT_EQ(resolverCalls, 1);
+  input.instanceCount = 7;
+  input.bounds.max = {9, 8, 7};
+  for (uint64_t instanceRevision = 3; instanceRevision < 10; ++instanceRevision) {
+    const auto& next = cache.get(input, {.geometry = 1, .materials = 2,
+                                        .instances = instanceRevision}, &ranges);
+    EXPECT_EQ(next.triangleBatches.data(), first.triangleBatches.data());
+    EXPECT_EQ(next.instanceCount, 7u);
+    EXPECT_EQ(next.bounds.max, glm::vec3(9, 8, 7));
+    EXPECT_TRUE(next.triangleBatches.front().doubleSided);
+  }
+  EXPECT_EQ(resolverCalls, 1);
+  EXPECT_EQ(first.instanceCount, 2u);
+}
+
+TEST(MeshSceneProviderCacheTests, RebuildsEqualSizedGeometryAndMaterialEdits) {
+  std::vector<container::geometry::PrimitiveRange> ranges{
+      {.firstIndex = 3, .indexCount = 6, .materialIndex = 0}};
+  MeshSceneProviderMaterialFacts facts{};
+  int resolverCalls = 0;
+  container::scene::MeshSceneProviderAssetAdapterInput input{
+      .primitiveRanges = ranges,
+      .materialCount = 1,
+      .materialFactsAt = [&](uint32_t) { ++resolverCalls; return facts; }};
+  container::scene::MeshSceneProviderAssetCache cache;
+  const auto original = cache.get(input, {.geometry = 1, .materials = 1}, &ranges);
+  ranges.front().firstIndex = 90;
+  const auto geometry = cache.get(input, {.geometry = 2, .materials = 1}, &ranges);
+  EXPECT_NE(geometry.triangleBatches.data(), original.triangleBatches.data());
+  EXPECT_EQ(geometry.triangleBatches.front().firstIndex, 90u);
+  facts = {.transparent = true, .doubleSided = true};
+  const auto material = cache.get(input, {.geometry = 2, .materials = 2}, &ranges);
+  EXPECT_NE(material.triangleBatches.data(), geometry.triangleBatches.data());
+  EXPECT_TRUE(material.triangleBatches.front().transparent);
+  EXPECT_TRUE(material.triangleBatches.front().doubleSided);
+  EXPECT_FALSE(original.triangleBatches.front().transparent);
+  EXPECT_EQ(resolverCalls, 3);
+  input.materialCount = 2;
+  const auto addedMaterial = cache.get(input, {.geometry = 2, .materials = 2}, &ranges);
+  EXPECT_NE(addedMaterial.triangleBatches.data(), material.triangleBatches.data());
+  EXPECT_EQ(resolverCalls, 5);
+}
+
+TEST(MeshSceneProviderCacheTests, InvalidatesSourceReplacementAndExplicitUnload) {
+  std::vector<container::geometry::PrimitiveRange> ranges{
+      {.firstIndex = 3, .indexCount = 6}};
+  container::scene::MeshSceneProviderAssetAdapterInput input{.primitiveRanges = ranges};
+  container::scene::MeshSceneProviderAssetCache cache;
+  int sourceA = 0;
+  int sourceB = 0;
+  const auto first = cache.get(input, {.geometry = 1}, &sourceA);
+  ranges.front().firstIndex = 9;
+  const auto replacement = cache.get(input, {.geometry = 1}, &sourceB);
+  EXPECT_NE(first.triangleBatches.data(), replacement.triangleBatches.data());
+  EXPECT_EQ(replacement.triangleBatches.front().firstIndex, 9u);
+  cache.clear();
+  ranges.front().firstIndex = 15;
+  const auto reloaded = cache.get(input, {.geometry = 1}, &sourceB);
+  EXPECT_NE(reloaded.triangleBatches.data(), replacement.triangleBatches.data());
+  EXPECT_EQ(reloaded.triangleBatches.front().firstIndex, 15u);
+  EXPECT_EQ(first.triangleBatches.front().firstIndex, 3u);
+}
+
+TEST(SceneProviderSynchronizerTests, SharesTopologyThroughRepeatedExtraction) {
+  std::vector<SceneProviderTriangleBatch> batches(8790);
+  for (uint32_t i = 0; i < batches.size(); ++i) {
+    batches[i] = {.firstIndex = i * 3u, .indexCount = 3, .materialIndex = 2};
+  }
+  const auto* originalData = batches.data();
+  SceneProviderSyncInput input{.bim = {
+      .available = true, .elementCount = 8790, .meshPrimitiveCount = 8790,
+      .meshOpaqueBatchCount = 8790, .triangleBatches = std::move(batches),
+      .geometryRevision = 1}};
+  SceneProviderSynchronizer synchronizer;
+  SceneProviderRegistry registry;
+  ProviderSceneExtraction retained;
+  for (uint64_t revision = 1; revision <= 3; ++revision) {
+    input.bim.instanceRevision = revision;
+    input.bim.bounds = {.min = {-1, -1, -1}, .max = {float(revision), 2, 3}, .valid = true};
+    synchronizer.sync(registry, input);
+    auto extraction = extractProviderSceneFrameInputs(registry);
+    ASSERT_EQ(extraction.snapshots.size(), 1u);
+    ASSERT_EQ(extraction.rayTracingBuildInputs.size(), 1u);
+    EXPECT_EQ(extraction.snapshots.front().triangleBatches.data(), originalData);
+    EXPECT_EQ(extraction.rayTracingBuildInputs.front().triangleBatches.data(), originalData);
+    EXPECT_EQ(extraction.snapshots.front().revision.instances, revision);
+    EXPECT_EQ(extraction.snapshots.front().bounds.max.x, float(revision));
+    EXPECT_EQ(extraction.rayTracingBuildInputs.front().triangleBatches[8789].firstIndex, 26367u);
+    retained = std::move(extraction);
+  }
+  input = {};
+  synchronizer.sync(registry, input);
+  EXPECT_TRUE(registry.snapshots().empty());
+  EXPECT_EQ(retained.snapshots.front().triangleBatches.data(), originalData);
+  EXPECT_EQ(retained.rayTracingBuildInputs.front().triangleBatches[8789].firstIndex, 26367u);
+}
+
+TEST(SceneProviderSynchronizerTests, RetainedFramesSurviveReplacementWithSameRevisions) {
+  SceneProviderSyncInput input{.mesh = {
+      .available = true, .primitiveCount = 1, .instanceCount = 1,
+      .triangleBatches = {{.firstIndex = 3, .indexCount = 6}}, .geometryRevision = 1}};
+  SceneProviderSynchronizer synchronizer;
+  SceneProviderRegistry registry;
+  synchronizer.sync(registry, input);
+  const auto oldFrame = extractProviderSceneFrameInputs(registry);
+  input.mesh.triangleBatches = {{.firstIndex = 9, .indexCount = 12, .transparent = true}};
+  input.mesh.instanceRevision = 2;
+  synchronizer.sync(registry, input);
+  const auto newFrame = extractProviderSceneFrameInputs(registry);
+  EXPECT_EQ(oldFrame.snapshots.front().triangleBatches.front().firstIndex, 3u);
+  EXPECT_EQ(oldFrame.rayTracingBuildInputs.front().triangleBatches.front().indexCount, 6u);
+  EXPECT_EQ(newFrame.snapshots.front().triangleBatches.front().firstIndex, 9u);
+  EXPECT_TRUE(newFrame.rayTracingBuildInputs.front().triangleBatches.front().transparent);
+  EXPECT_NE(newFrame.snapshots.front().triangleBatches.data(),
+            oldFrame.snapshots.front().triangleBatches.data());
+}
+
 TEST(RenderExtractionGuardrails, ProviderContractsStayBackendNeutral) {
   const std::string providerHeader =
       readRepoTextFile("include/Container/scene/SceneProvider.h");

@@ -9,6 +9,7 @@
 #include "Container/renderer/bim/BimDrawFilterState.h"
 #include "Container/renderer/bim/BimMetadataCatalog.h"
 #include "Container/renderer/bim/BimMetadataIndex.h"
+#include "Container/renderer/bim/BimStatisticsCache.h"
 #include "Container/renderer/scene/SceneController.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/FileLoader.h"
@@ -1474,7 +1475,8 @@ BimManager::BimManager(std::shared_ptr<container::gpu::VulkanDevice> device,
       pipelineManager_(pipelineManager),
       metadataCatalog_(std::make_unique<BimMetadataCatalog>()),
       metadataIndex_(std::make_unique<BimMetadataIndex>()),
-      drawFilterState_(std::make_unique<BimDrawFilterState>()) {}
+      drawFilterState_(std::make_unique<BimDrawFilterState>()),
+      statisticsCache_(std::make_unique<BimStatisticsCache>()) {}
 
 BimManager::~BimManager() {
   // The frontend's progress renderer may already be gone during teardown.
@@ -1497,6 +1499,11 @@ void BimManager::notifyLoadProgress(std::string_view stage) const {
 }
 
 void BimManager::clear() {
+  // Clear before callbacks can render a progress frame. Geometry revisions are
+  // advanced during upload, which is earlier than final draw metadata install.
+  statisticsCache_->clear();
+  ++statisticsRevision_;
+  ++visibilityFilterRevision_;
   notifyLoadProgress("Releasing BIM GPU resources");
   if (vertexBuffer_.buffer != VK_NULL_HANDLE) {
     allocationManager_.destroyBuffer(vertexBuffer_);
@@ -2392,45 +2399,15 @@ bool BimManager::setSemanticColorMode(BimSemanticColorMode mode) {
 }
 
 BimSceneStats BimManager::sceneStats() const {
-  size_t meshObjectCount = 0;
-  size_t pointObjectCount = 0;
-  size_t curveObjectCount = 0;
-  for (const BimElementMetadata &metadata : elementMetadata_) {
-    switch (metadata.geometryKind) {
-    case BimGeometryKind::Points:
-      ++pointObjectCount;
-      break;
-    case BimGeometryKind::Curves:
-      ++curveObjectCount;
-      break;
-    case BimGeometryKind::Mesh:
-    default:
-      ++meshObjectCount;
-      break;
-    }
+  std::array<BimDrawCompactionStats, kBimDrawCompactionSlotCount> compaction{};
+  for (size_t i = 0; i < compaction.size(); ++i) {
+    compaction[i] = drawCompactionSlots_[i].stats;
   }
+  return statisticsCache_->sceneStats(meshletResidencyStats_, compaction);
+}
 
-  size_t gpuCompactionInputDrawCount = 0u;
-  size_t gpuCompactionOutputCapacity = 0u;
-  VkDeviceSize gpuCompactionBufferBytes = 0u;
-  bool gpuCompactionReady = false;
-  bool gpuCompactionDispatchPending = false;
-  for (const BimDrawCompactionSlotResources &slot : drawCompactionSlots_) {
-    gpuCompactionInputDrawCount += slot.stats.inputDrawCount;
-    gpuCompactionOutputCapacity += slot.stats.outputCapacity;
-    gpuCompactionBufferBytes += slot.stats.inputBufferBytes +
-                                slot.stats.outputBufferBytes +
-                                slot.stats.countBufferBytes;
-    gpuCompactionReady = gpuCompactionReady || slot.stats.computeReady;
-    gpuCompactionDispatchPending =
-        gpuCompactionDispatchPending || slot.stats.dispatchPending;
-  }
-
-  return BimSceneStats{
-      .objectCount = elementMetadata_.size(),
-      .meshObjectCount = meshObjectCount,
-      .pointObjectCount = pointObjectCount,
-      .curveObjectCount = curveObjectCount,
+void BimManager::rebuildSceneStatisticsCache() {
+  const BimSceneStats modelStats{
       .opaqueDrawCount = opaqueDrawCommands_.size(),
       .transparentDrawCount = transparentDrawCommands_.size(),
       .pointOpaqueDrawCount = pointDrawLists_.opaqueDrawCommands.size(),
@@ -2454,21 +2431,7 @@ BimSceneStats BimManager::sceneStats() const {
           optimizedModelMetadata_.estimatedMeshletClusterCount,
       .meshletObjectReferenceCount =
           optimizedModelMetadata_.objectClusterReferenceCount,
-      .meshletGpuResidentObjectCount =
-          meshletResidencyStats_.residentObjectCount,
-      .meshletGpuResidentClusterCount =
-          meshletResidencyStats_.residentClusterCount,
-      .meshletGpuBufferBytes = meshletResidencyStats_.clusterBufferBytes +
-                               meshletResidencyStats_.objectLodBufferBytes +
-                               meshletResidencyStats_.residencyBufferBytes,
-      .meshletGpuComputeReady = meshletResidencyStats_.computeReady,
-      .meshletGpuDispatchPending = meshletResidencyStats_.dispatchPending,
       .meshletMaxLodLevel = optimizedModelMetadata_.maxLodLevel,
-      .gpuCompactionInputDrawCount = gpuCompactionInputDrawCount,
-      .gpuCompactionOutputCapacity = gpuCompactionOutputCapacity,
-      .gpuCompactionBufferBytes = gpuCompactionBufferBytes,
-      .gpuCompactionReady = gpuCompactionReady,
-      .gpuCompactionDispatchPending = gpuCompactionDispatchPending,
       .optimizedModelMetadataCacheable = optimizedModelMetadata_.cacheable,
       .optimizedModelMetadataCacheHit = optimizedModelMetadata_.cacheHit,
       .optimizedModelMetadataCacheStale = optimizedModelMetadata_.cacheStale,
@@ -2485,95 +2448,25 @@ BimSceneStats BimManager::sceneStats() const {
       .uniqueLoadBearingCount = metadataCatalog_->loadBearingValues().size(),
       .uniqueStatusCount = metadataCatalog_->statuses().size(),
   };
+  statisticsCache_->rebuild(modelStats, elementMetadata_, objectData_,
+                            opaqueDrawCommands_, transparentDrawCommands_);
+  ++statisticsRevision_;
 }
 
-std::vector<container::scene::SceneProviderTriangleBatch>
+const container::scene::ImmutableSceneTriangleBatches &
 BimManager::sceneProviderTriangleBatches() const {
-  std::vector<container::scene::SceneProviderTriangleBatch> batches;
-  batches.reserve(opaqueDrawCommands_.size() + transparentDrawCommands_.size());
+  return statisticsCache_->triangleBatches();
+}
 
-  auto toSceneProviderMaterialIndex = [](uint32_t materialIndex) {
-    if (materialIndex >
-        static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
-      return int32_t{-1};
-    }
-    return static_cast<int32_t>(materialIndex);
-  };
-
-  auto appendBatches = [&](const std::vector<DrawCommand> &commands,
-                           bool transparent) {
-    for (const DrawCommand &command : commands) {
-      if (command.indexCount == 0u) {
-        continue;
-      }
-
-      const BimElementMetadata *metadata =
-          metadataForObject(command.objectIndex);
-      if (metadata != nullptr &&
-          metadata->geometryKind != BimGeometryKind::Mesh) {
-        continue;
-      }
-
-      uint32_t materialIndex = std::numeric_limits<uint32_t>::max();
-      bool doubleSided = false;
-      bool batchTransparent = transparent;
-      if (metadata != nullptr) {
-        materialIndex = metadata->materialIndex;
-        doubleSided = metadata->doubleSided;
-        batchTransparent = batchTransparent || metadata->transparent;
-      } else if (command.objectIndex < objectData_.size()) {
-        const container::gpu::ObjectData &object =
-            objectData_[command.objectIndex];
-        materialIndex = object.objectInfo.x;
-        doubleSided =
-            (object.objectInfo.y & container::gpu::kObjectFlagDoubleSided) !=
-            0u;
-      }
-
-      batches.push_back(container::scene::SceneProviderTriangleBatch{
-          .firstIndex = command.firstIndex,
-          .indexCount = command.indexCount,
-          .materialIndex = toSceneProviderMaterialIndex(materialIndex),
-          .doubleSided = doubleSided,
-          .transparent = batchTransparent,
-          .instanceCount = std::max(command.instanceCount, 1u),
-      });
-    }
-  };
-
-  appendBatches(opaqueDrawCommands_, false);
-  appendBatches(transparentDrawCommands_, true);
-  return batches;
+container::scene::SceneProviderBounds BimManager::sceneProviderBounds() const {
+  return statisticsCache_->sceneProviderBounds(temporalRootTranslation_);
 }
 
 BimDrawBudgetLodStats
 BimManager::drawBudgetLodStats(const BimDrawFilter &filter) const {
-  BimDrawBudgetLodStats stats{};
-  stats.enabled = filter.drawBudgetEnabled;
-  stats.maxObjects = filter.drawBudgetMaxObjects;
-
-  const BimDrawFilterStateInputs inputs = drawFilterStateInputs();
-  for (uint32_t objectIndex = 0u; objectIndex < elementMetadata_.size();
-       ++objectIndex) {
-    const BimElementMetadata &metadata = elementMetadata_[objectIndex];
-    if (!drawFilterState_->objectMatchesFilter(objectIndex, filter, inputs)) {
-      continue;
-    }
-    ++stats.visibleObjectCount;
-    if (metadata.geometryKind != BimGeometryKind::Mesh) {
-      continue;
-    }
-    ++stats.visibleMeshObjectCount;
-    if (objectIndex >= objectLodMetadata_.size()) {
-      continue;
-    }
-    const BimObjectLodStreamingMetadata &lod = objectLodMetadata_[objectIndex];
-    stats.visibleMeshletClusterReferences += lod.clusterCount;
-    stats.visibleMaxLodLevel =
-        std::max(stats.visibleMaxLodLevel, lod.maxLodLevel);
-  }
-
-  return stats;
+  return statisticsCache_->drawBudgetLodStats(
+      filter, drawFilterStateInputs(), objectLodMetadata_, statisticsRevision_,
+      visibilityFilterRevision_);
 }
 
 BimDrawFilterStateInputs BimManager::drawFilterStateInputs() const {
@@ -3242,6 +3135,7 @@ void BimManager::loadPreparedModel(
     clear();
     throw std::runtime_error(modelLoadErrorPrefix(format, path));
   }
+  rebuildSceneStatisticsCache();
 }
 
 void BimManager::buildDrawDataFromModel(
@@ -3799,6 +3693,7 @@ void BimManager::loadGltfFallback(
     clear();
     throw std::runtime_error(modelLoadErrorPrefix("glTF", path));
   }
+  rebuildSceneStatisticsCache();
 }
 
 void BimManager::uploadGeometry(
@@ -4343,6 +4238,7 @@ void BimManager::updateVisibilityFilterSettings(const BimDrawFilter &filter) {
 
   const bool settingsChanged =
       !sameVisibilityFilterSettings(visibilityFilterSettings_, settings);
+  if (settingsChanged) ++visibilityFilterRevision_;
   const bool activeMask = visibilityFilterHasActiveMask(settings);
   visibilityFilterSettings_ = settings;
 

@@ -26,7 +26,7 @@ struct RayTracingGeometryBuildInput {
   uint64_t instanceRevision{0};
   container::scene::SceneProviderBounds bounds{};
   bool hasOpaqueGeometry{false};
-  std::vector<container::scene::SceneProviderTriangleBatch> triangleBatches{};
+  container::scene::ImmutableSceneTriangleBatches triangleBatches{};
 };
 
 struct SplattingDispatchInput {

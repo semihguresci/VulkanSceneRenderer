@@ -137,6 +137,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/bim/BimLightingOverlayPlanner.cpp
     renderer/bim/BimLightingOverlayRecorder.cpp
     renderer/bim/BimInspectionCache.cpp
+    renderer/bim/BimStatisticsCache.cpp
     renderer/bim/BimManager.cpp
     renderer/bim/BimMetadataCatalog.cpp
     renderer/bim/BimMetadataIndex.cpp

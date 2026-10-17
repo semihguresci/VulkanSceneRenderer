@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -23,7 +25,7 @@ enum class SceneProviderKind {
 struct SceneProviderId {
   std::string value{};
 
-  [[nodiscard]] bool operator==(const SceneProviderId& other) const {
+  [[nodiscard]] bool operator==(const SceneProviderId &other) const {
     return value == other.value;
   }
 };
@@ -49,11 +51,57 @@ struct SceneProviderTriangleBatch {
   uint32_t instanceCount{1};
 };
 
+// Topology is published once and shared by providers, snapshots and extraction.
+// Retained snapshots own their data even after the source model is unloaded.
+class ImmutableSceneTriangleBatches {
+public:
+  ImmutableSceneTriangleBatches() = default;
+  ImmutableSceneTriangleBatches(
+      std::vector<SceneProviderTriangleBatch> batches) {
+    if (!batches.empty()) {
+      batches_ =
+          std::make_shared<const std::vector<SceneProviderTriangleBatch>>(
+              std::move(batches));
+    }
+  }
+  ImmutableSceneTriangleBatches(
+      std::initializer_list<SceneProviderTriangleBatch> batches)
+      : ImmutableSceneTriangleBatches(
+            std::vector<SceneProviderTriangleBatch>(batches)) {}
+
+  [[nodiscard]] std::size_t size() const {
+    return batches_ ? batches_->size() : 0u;
+  }
+  [[nodiscard]] bool empty() const { return size() == 0u; }
+  [[nodiscard]] const SceneProviderTriangleBatch *data() const {
+    return batches_ ? batches_->data() : nullptr;
+  }
+  [[nodiscard]] const SceneProviderTriangleBatch *begin() const {
+    return data();
+  }
+  [[nodiscard]] const SceneProviderTriangleBatch *end() const {
+    return batches_ ? batches_->data() + batches_->size() : nullptr;
+  }
+  [[nodiscard]] const SceneProviderTriangleBatch &
+  operator[](std::size_t index) const {
+    return (*batches_)[index];
+  }
+  [[nodiscard]] const SceneProviderTriangleBatch &front() const {
+    return batches_->front();
+  }
+  [[nodiscard]] std::span<const SceneProviderTriangleBatch> view() const {
+    return {data(), size()};
+  }
+
+private:
+  std::shared_ptr<const std::vector<SceneProviderTriangleBatch>> batches_{};
+};
+
 struct MeshSceneAsset {
   std::size_t primitiveCount{0};
   std::size_t materialCount{0};
   std::size_t instanceCount{0};
-  std::vector<SceneProviderTriangleBatch> triangleBatches{};
+  ImmutableSceneTriangleBatches triangleBatches{};
   SceneProviderBounds bounds{};
 };
 
@@ -68,7 +116,7 @@ struct BimSceneAsset {
   std::size_t nativePointTransparentRangeCount{0};
   std::size_t nativeCurveOpaqueRangeCount{0};
   std::size_t nativeCurveTransparentRangeCount{0};
-  std::vector<SceneProviderTriangleBatch> triangleBatches{};
+  ImmutableSceneTriangleBatches triangleBatches{};
   SceneProviderBounds bounds{};
 };
 
@@ -96,7 +144,7 @@ struct SceneProviderSnapshot {
   std::size_t instanceCount{0};
   std::size_t opaqueBatchCount{0};
   std::size_t transparentBatchCount{0};
-  std::vector<SceneProviderTriangleBatch> triangleBatches{};
+  ImmutableSceneTriangleBatches triangleBatches{};
   std::size_t nativePointRangeCount{0};
   std::size_t nativeCurveRangeCount{0};
   std::size_t nativePointOpaqueRangeCount{0};
@@ -110,22 +158,21 @@ struct SceneProviderSnapshot {
 };
 
 class IRenderSceneProvider {
- public:
+public:
   virtual ~IRenderSceneProvider() = default;
 
   [[nodiscard]] virtual SceneProviderSnapshot snapshot() const = 0;
 };
 
 class MeshSceneProvider final : public IRenderSceneProvider {
- public:
+public:
   explicit MeshSceneProvider(SceneProviderId id,
                              std::string displayName = "Mesh scene")
       : id_(std::move(id)), displayName_(std::move(displayName)) {}
 
-  void update(MeshSceneAsset asset,
-              SceneProviderRevision revision,
+  void update(MeshSceneAsset asset, SceneProviderRevision revision,
               std::string displayName = {}) {
-    asset_ = asset;
+    asset_ = std::move(asset);
     revision_ = revision;
     if (!displayName.empty()) {
       displayName_ = std::move(displayName);
@@ -149,9 +196,9 @@ class MeshSceneProvider final : public IRenderSceneProvider {
     };
   }
 
-  [[nodiscard]] const MeshSceneAsset& asset() const { return asset_; }
+  [[nodiscard]] const MeshSceneAsset &asset() const { return asset_; }
 
- private:
+private:
   SceneProviderId id_{};
   std::string displayName_{};
   MeshSceneAsset asset_{};
@@ -159,15 +206,14 @@ class MeshSceneProvider final : public IRenderSceneProvider {
 };
 
 class BimSceneProvider final : public IRenderSceneProvider {
- public:
+public:
   explicit BimSceneProvider(SceneProviderId id,
                             std::string displayName = "BIM scene")
       : id_(std::move(id)), displayName_(std::move(displayName)) {}
 
-  void update(BimSceneAsset asset,
-              SceneProviderRevision revision,
+  void update(BimSceneAsset asset, SceneProviderRevision revision,
               std::string displayName = {}) {
-    asset_ = asset;
+    asset_ = std::move(asset);
     revision_ = revision;
     if (!displayName.empty()) {
       displayName_ = std::move(displayName);
@@ -198,9 +244,9 @@ class BimSceneProvider final : public IRenderSceneProvider {
     };
   }
 
-  [[nodiscard]] const BimSceneAsset& asset() const { return asset_; }
+  [[nodiscard]] const BimSceneAsset &asset() const { return asset_; }
 
- private:
+private:
   SceneProviderId id_{};
   std::string displayName_{};
   BimSceneAsset asset_{};
@@ -208,14 +254,12 @@ class BimSceneProvider final : public IRenderSceneProvider {
 };
 
 class GaussianSplatSceneProvider final : public IRenderSceneProvider {
- public:
+public:
   explicit GaussianSplatSceneProvider(
-      SceneProviderId id,
-      std::string displayName = "Gaussian splat scene")
+      SceneProviderId id, std::string displayName = "Gaussian splat scene")
       : id_(std::move(id)), displayName_(std::move(displayName)) {}
 
-  void update(GaussianSplatSceneAsset asset,
-              SceneProviderRevision revision,
+  void update(GaussianSplatSceneAsset asset, SceneProviderRevision revision,
               std::string displayName = {}) {
     asset_ = asset;
     revision_ = revision;
@@ -238,11 +282,9 @@ class GaussianSplatSceneProvider final : public IRenderSceneProvider {
     };
   }
 
-  [[nodiscard]] const GaussianSplatSceneAsset& asset() const {
-    return asset_;
-  }
+  [[nodiscard]] const GaussianSplatSceneAsset &asset() const { return asset_; }
 
- private:
+private:
   SceneProviderId id_{};
   std::string displayName_{};
   GaussianSplatSceneAsset asset_{};
@@ -250,14 +292,12 @@ class GaussianSplatSceneProvider final : public IRenderSceneProvider {
 };
 
 class RadianceFieldSceneProvider final : public IRenderSceneProvider {
- public:
+public:
   explicit RadianceFieldSceneProvider(
-      SceneProviderId id,
-      std::string displayName = "Radiance field scene")
+      SceneProviderId id, std::string displayName = "Radiance field scene")
       : id_(std::move(id)), displayName_(std::move(displayName)) {}
 
-  void update(RadianceFieldSceneAsset asset,
-              SceneProviderRevision revision,
+  void update(RadianceFieldSceneAsset asset, SceneProviderRevision revision,
               std::string displayName = {}) {
     asset_ = asset;
     revision_ = revision;
@@ -279,11 +319,9 @@ class RadianceFieldSceneProvider final : public IRenderSceneProvider {
     };
   }
 
-  [[nodiscard]] const RadianceFieldSceneAsset& asset() const {
-    return asset_;
-  }
+  [[nodiscard]] const RadianceFieldSceneAsset &asset() const { return asset_; }
 
- private:
+private:
   SceneProviderId id_{};
   std::string displayName_{};
   RadianceFieldSceneAsset asset_{};
@@ -291,8 +329,8 @@ class RadianceFieldSceneProvider final : public IRenderSceneProvider {
 };
 
 class SceneProviderRegistry {
- public:
-  void registerProvider(const IRenderSceneProvider& provider) {
+public:
+  void registerProvider(const IRenderSceneProvider &provider) {
     const SceneProviderSnapshot providerSnapshot = provider.snapshot();
     if (providerSnapshot.id.value.empty()) {
       throw std::invalid_argument("scene provider id must not be empty");
@@ -303,9 +341,9 @@ class SceneProviderRegistry {
     providers_.push_back(&provider);
   }
 
-  [[nodiscard]] const IRenderSceneProvider* find(
-      const SceneProviderId& id) const {
-    for (const IRenderSceneProvider* provider : providers_) {
+  [[nodiscard]] const IRenderSceneProvider *
+  find(const SceneProviderId &id) const {
+    for (const IRenderSceneProvider *provider : providers_) {
       if (provider != nullptr && provider->snapshot().id == id) {
         return provider;
       }
@@ -313,10 +351,10 @@ class SceneProviderRegistry {
     return nullptr;
   }
 
-  [[nodiscard]] std::vector<const IRenderSceneProvider*> providersForKind(
-      SceneProviderKind kind) const {
-    std::vector<const IRenderSceneProvider*> matches;
-    for (const IRenderSceneProvider* provider : providers_) {
+  [[nodiscard]] std::vector<const IRenderSceneProvider *>
+  providersForKind(SceneProviderKind kind) const {
+    std::vector<const IRenderSceneProvider *> matches;
+    for (const IRenderSceneProvider *provider : providers_) {
       if (provider != nullptr && provider->snapshot().kind == kind) {
         matches.push_back(provider);
       }
@@ -327,7 +365,7 @@ class SceneProviderRegistry {
   [[nodiscard]] std::vector<SceneProviderSnapshot> snapshots() const {
     std::vector<SceneProviderSnapshot> result;
     result.reserve(providers_.size());
-    for (const IRenderSceneProvider* provider : providers_) {
+    for (const IRenderSceneProvider *provider : providers_) {
       if (provider != nullptr) {
         result.push_back(provider->snapshot());
       }
@@ -335,14 +373,14 @@ class SceneProviderRegistry {
     return result;
   }
 
-  [[nodiscard]] std::span<const IRenderSceneProvider* const> providers() const {
+  [[nodiscard]] std::span<const IRenderSceneProvider *const> providers() const {
     return {providers_.data(), providers_.size()};
   }
 
   void clear() { providers_.clear(); }
 
- private:
-  std::vector<const IRenderSceneProvider*> providers_{};
+private:
+  std::vector<const IRenderSceneProvider *> providers_{};
 };
 
-}  // namespace container::scene
+} // namespace container::scene
