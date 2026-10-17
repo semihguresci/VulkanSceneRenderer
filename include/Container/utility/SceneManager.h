@@ -113,6 +113,7 @@ class SceneManager {
   const std::vector<container::geometry::Vertex>& vertices() const { return vertices_; }
   const std::vector<uint32_t>& indices() const { return indices_; }
   [[nodiscard]] uint64_t geometryRevision() const { return geometryRevision_; }
+  [[nodiscard]] uint64_t materialRevision() const { return materialRevision_; }
   const std::vector<container::geometry::PrimitiveRange>& primitiveRanges() const {
     return model_.primitiveRanges();
   }
@@ -254,6 +255,7 @@ class SceneManager {
   std::vector<container::geometry::Vertex> vertices_{};
   std::vector<uint32_t> indices_{};
   uint64_t geometryRevision_{0};
+  uint64_t materialRevision_{0};
   ModelBounds modelBounds_{};
   std::vector<container::gpu::PointLightData> authoredPointLights_{};
   std::vector<AuthoredDirectionalLight> authoredDirectionalLights_{};

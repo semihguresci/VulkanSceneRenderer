@@ -1231,12 +1231,14 @@ uint32_t SceneManager::createSolidMaterial(const glm::vec4& baseColor,
   material.roughnessFactor = 0.82f;
   material.doubleSided = doubleSided;
   material.alphaMode = alphaMode;
-  return materialManager_.createMaterial(material);
+  return createMaterial(material);
 }
 
 uint32_t SceneManager::createMaterial(
     const container::material::Material& material) {
-  return materialManager_.createMaterial(material);
+  const uint32_t index = materialManager_.createMaterial(material);
+  ++materialRevision_;
+  return index;
 }
 
 uint32_t SceneManager::loadMaterialTexture(
@@ -2121,6 +2123,8 @@ void SceneManager::collectAuthoredPunctualLights() {
 }
 
 void SceneManager::uploadMaterialBuffer() {
+  // Uploads publish imported or edited material classification as well as color.
+  ++materialRevision_;
   gpuMaterials_.clear();
   const size_t materialCount = materialManager_.materialCount();
   gpuMaterials_.reserve(std::max<size_t>(1, materialCount));
@@ -2612,6 +2616,7 @@ void SceneManager::writeDescriptorSetContents(
 
 void SceneManager::resetLoadedAssets() {
   ++geometryRevision_;
+  ++materialRevision_;
   if (materialBuffer_.buffer != VK_NULL_HANDLE) {
     allocationManager_->destroyBuffer(materialBuffer_);
   }

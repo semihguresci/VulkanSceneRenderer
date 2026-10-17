@@ -28,18 +28,19 @@ struct MeshSceneAssetBuildInput {
   SceneProviderBounds bounds{};
 };
 
-[[nodiscard]] inline MeshSceneAsset buildMeshSceneAsset(
-    const MeshSceneAssetBuildInput& input) {
+[[nodiscard]] inline MeshSceneAsset
+buildMeshSceneAsset(const MeshSceneAssetBuildInput &input) {
   MeshSceneAsset asset{
       .primitiveCount = input.primitives.size(),
-      .materialCount =
-          input.materialCount > 0u ? input.materialCount : input.materials.size(),
+      .materialCount = input.materialCount > 0u ? input.materialCount
+                                                : input.materials.size(),
       .instanceCount = input.instanceCount,
       .bounds = input.bounds,
   };
-  asset.triangleBatches.reserve(input.primitives.size());
+  std::vector<SceneProviderTriangleBatch> batches;
+  batches.reserve(input.primitives.size());
 
-  for (const MeshSceneProviderPrimitive& primitive : input.primitives) {
+  for (const MeshSceneProviderPrimitive &primitive : input.primitives) {
     if (primitive.indexCount == 0u) {
       continue;
     }
@@ -53,7 +54,7 @@ struct MeshSceneAssetBuildInput {
       }
     }
 
-    asset.triangleBatches.push_back(SceneProviderTriangleBatch{
+    batches.push_back(SceneProviderTriangleBatch{
         .firstIndex = primitive.firstIndex,
         .indexCount = primitive.indexCount,
         .materialIndex = primitive.materialIndex,
@@ -63,7 +64,8 @@ struct MeshSceneAssetBuildInput {
     });
   }
 
+  asset.triangleBatches = ImmutableSceneTriangleBatches(std::move(batches));
   return asset;
 }
 
-}  // namespace container::scene
+} // namespace container::scene

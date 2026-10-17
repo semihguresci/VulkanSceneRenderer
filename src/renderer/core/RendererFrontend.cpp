@@ -1221,25 +1221,7 @@ container::scene::SceneProviderBounds sceneProviderBoundsFromModelBounds(
 
 container::scene::SceneProviderBounds
 sceneProviderBoundsFromBim(const BimManager &bimManager) {
-  container::scene::SceneProviderBounds bounds{};
-  for (const BimElementMetadata &metadata : bimManager.elementMetadata()) {
-    if (!metadata.bounds.valid) {
-      continue;
-    }
-    if (!bounds.valid) {
-      bounds.min = metadata.bounds.min;
-      bounds.max = metadata.bounds.max;
-      bounds.valid = true;
-      continue;
-    }
-    bounds.min.x = std::min(bounds.min.x, metadata.bounds.min.x);
-    bounds.min.y = std::min(bounds.min.y, metadata.bounds.min.y);
-    bounds.min.z = std::min(bounds.min.z, metadata.bounds.min.z);
-    bounds.max.x = std::max(bounds.max.x, metadata.bounds.max.x);
-    bounds.max.y = std::max(bounds.max.y, metadata.bounds.max.y);
-    bounds.max.z = std::max(bounds.max.z, metadata.bounds.max.z);
-  }
-  return bounds;
+  return bimManager.sceneProviderBounds();
 }
 
 std::string sceneProviderDisplayName(std::string_view modelPath,
@@ -4142,6 +4124,7 @@ void RendererFrontend::drawModelLoadProgressFrame() {
 void RendererFrontend::shutdown() {
   // Import jobs own only CPU payloads; join before releasing scene services.
   modelLoad_.reset();
+  meshProviderAssetCache_.clear();
   if (!svc_.ctx.deviceWrapper)
     return;
 
@@ -7950,8 +7933,7 @@ void RendererFrontend::syncSceneProviders() {
         sceneProviderBoundsFromModelBounds(sceneManager.modelBounds());
     const std::size_t meshInstanceCount =
         subs_.sceneController ? subs_.sceneController->objectData().size() : 0u;
-    const container::scene::MeshSceneAsset meshAsset =
-        container::scene::buildMeshSceneProviderAsset({
+    const auto &meshAsset = meshProviderAssetCache_.get({
             .primitiveRanges = sceneManager.primitiveRanges(),
             .materialCount = sceneManager.materialCount(),
             .instanceCount = meshInstanceCount,
@@ -7965,7 +7947,8 @@ void RendererFrontend::syncSceneProviders() {
                       .doubleSided = properties.doubleSided,
                   };
                 },
-        });
+        }, {.geometry = sceneManager.geometryRevision(),
+            .materials = sceneManager.materialRevision()}, &sceneManager);
     const uint64_t objectRevision =
         subs_.sceneController ? subs_.sceneController->objectDataRevision()
                               : 0u;
@@ -7977,10 +7960,13 @@ void RendererFrontend::syncSceneProviders() {
         .triangleBatches = meshAsset.triangleBatches,
         .bounds = meshAsset.bounds,
         .geometryRevision = sceneManager.geometryRevision(),
+        .materialRevision = sceneManager.materialRevision(),
         .instanceRevision = objectRevision,
         .displayName = sceneProviderDisplayName(activePrimaryModelPath_,
                                                 "Primary mesh scene"),
     };
+  } else {
+    meshProviderAssetCache_.clear();
   }
 
   if (subs_.bimManager && subs_.bimManager->hasScene()) {

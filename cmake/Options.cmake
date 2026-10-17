@@ -1,4 +1,7 @@
 option(ENABLE_TESTS "Enable building and running tests" ON)
+option(ENABLE_BIM_FRAME_CACHE_BENCHMARK "Build the opt-in BIM CPU cache benchmark" OFF)
+set(CONTAINER_BIM_CACHE_BASELINE_INCLUDE_DIR "" CACHE PATH
+    "Optional captured provider headers for a before/after BIM cache benchmark")
 option(ENABLE_WINDOWED_TESTS "Build tests that require a Vulkan runtime and display" OFF)
 option(ENABLE_VULKAN_VALIDATION_LAYERS "Enable Vulkan Validation Layers" ON)
 option(ENABLE_SAMPLE_MODEL_DOWNLOAD "Download pinned glTF Sample Models during asset generation" ON)

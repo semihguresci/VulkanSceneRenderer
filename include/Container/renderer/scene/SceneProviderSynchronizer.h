@@ -15,7 +15,7 @@ struct MeshSceneProviderSyncInput {
   std::size_t primitiveCount{0};
   std::size_t materialCount{0};
   std::size_t instanceCount{0};
-  std::vector<container::scene::SceneProviderTriangleBatch> triangleBatches{};
+  container::scene::ImmutableSceneTriangleBatches triangleBatches{};
   container::scene::SceneProviderBounds bounds{};
   uint64_t geometryRevision{0};
   uint64_t materialRevision{0};
@@ -35,7 +35,7 @@ struct BimSceneProviderSyncInput {
   std::size_t nativePointTransparentRangeCount{0};
   std::size_t nativeCurveOpaqueRangeCount{0};
   std::size_t nativeCurveTransparentRangeCount{0};
-  std::vector<container::scene::SceneProviderTriangleBatch> triangleBatches{};
+  container::scene::ImmutableSceneTriangleBatches triangleBatches{};
   container::scene::SceneProviderBounds bounds{};
   uint64_t geometryRevision{0};
   uint64_t materialRevision{0};

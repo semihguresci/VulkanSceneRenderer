@@ -52,6 +52,7 @@ namespace container::renderer {
 class BimDrawFilterState;
 class BimMetadataCatalog;
 class BimMetadataIndex;
+class BimStatisticsCache;
 struct BimDrawFilterStateInputs;
 
 struct BimPickHit {
@@ -730,8 +731,10 @@ public:
   bool setSemanticColorMode(BimSemanticColorMode mode);
   void setRootTranslation(glm::vec3 translation);
   [[nodiscard]] BimSceneStats sceneStats() const;
-  [[nodiscard]] std::vector<container::scene::SceneProviderTriangleBatch>
+  [[nodiscard]] const container::scene::ImmutableSceneTriangleBatches &
   sceneProviderTriangleBatches() const;
+  [[nodiscard]] container::scene::SceneProviderBounds
+  sceneProviderBounds() const;
   [[nodiscard]] const BimOptimizedModelMetadata &
   optimizedModelMetadata() const {
     return optimizedModelMetadata_;
@@ -908,6 +911,7 @@ private:
   void buildDrawDataFromModel(const container::geometry::dotbim::Model &model,
                               container::scene::SceneManager &sceneManager);
   [[nodiscard]] BimDrawFilterStateInputs drawFilterStateInputs() const;
+  void rebuildSceneStatisticsCache();
   [[nodiscard]] BimPickHit pickRenderableObjectForDraws(
       const container::gpu::CameraData &cameraData, VkExtent2D viewportExtent,
       double cursorX, double cursorY, bool includeOpaque,
@@ -961,6 +965,9 @@ private:
   std::unique_ptr<BimMetadataCatalog> metadataCatalog_{};
   std::unique_ptr<BimMetadataIndex> metadataIndex_{};
   std::unique_ptr<BimDrawFilterState> drawFilterState_{};
+  std::unique_ptr<BimStatisticsCache> statisticsCache_{};
+  uint64_t statisticsRevision_{0};
+  uint64_t visibilityFilterRevision_{0};
 
   std::vector<container::geometry::Vertex> vertices_{};
   std::vector<uint32_t> indices_{};

@@ -30,11 +30,14 @@ frames reuse the owning table data. This avoids rebuilding static string/map
 aggregations for every imported element while the inspection panels are closed.
 The Tekla House performance measurements and remaining work are documented in
 [BIM performance](bim-performance.md).
+Static category counts, bounds, provider triangle batches and unchanged filtered
+LOD totals are also cached; their live-field and lifetime contracts are documented
+in [BIM frame caching](bim-frame-cache.md).
 
 Run the CPU UI and capture tests after a Release build:
 
 ```powershell
-ctest --test-dir out/build/visual-studio -C Release --output-on-failure -R '^(async_model_preparation_tests|materialx_integration_tests|bim_relationship_graph_tests|bim_inspection_cache_tests|renderer_telemetry_tests|technique_debug_model_tests|temporal_capture_tests|editable_light_tests|gui_model_loading_harness_tests)$'
+ctest --test-dir out/build/visual-studio -C Release --output-on-failure -R '^(async_model_preparation_tests|materialx_integration_tests|bim_relationship_graph_tests|bim_inspection_cache_tests|bim_statistics_cache_tests|scene_provider_extraction_tests|renderer_telemetry_tests|technique_debug_model_tests|temporal_capture_tests|editable_light_tests|gui_model_loading_harness_tests)$'
 ```
 
 The UI tests run real ImGui frames with generated catalogs and hierarchies,

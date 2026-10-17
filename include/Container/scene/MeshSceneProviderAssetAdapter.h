@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -33,7 +34,7 @@ meshSceneProviderPrimitivesFromImport(
   std::vector<MeshSceneProviderPrimitive> primitives;
   primitives.reserve(primitiveRanges.size());
 
-  for (const container::geometry::PrimitiveRange& primitive : primitiveRanges) {
+  for (const container::geometry::PrimitiveRange &primitive : primitiveRanges) {
     primitives.push_back(MeshSceneProviderPrimitive{
         .firstIndex = primitive.firstIndex,
         .indexCount = primitive.indexCount,
@@ -48,16 +49,15 @@ meshSceneProviderPrimitivesFromImport(
 [[nodiscard]] inline std::vector<MeshSceneMaterialProperties>
 meshSceneMaterialPropertiesFromImport(
     std::size_t materialCount,
-    const MeshSceneProviderMaterialResolver& materialFactsAt) {
+    const MeshSceneProviderMaterialResolver &materialFactsAt) {
   std::vector<MeshSceneMaterialProperties> materials;
   materials.reserve(materialCount);
 
   for (std::size_t materialIndex = 0; materialIndex < materialCount;
        ++materialIndex) {
     const MeshSceneProviderMaterialFacts facts =
-        materialFactsAt
-            ? materialFactsAt(static_cast<uint32_t>(materialIndex))
-            : MeshSceneProviderMaterialFacts{};
+        materialFactsAt ? materialFactsAt(static_cast<uint32_t>(materialIndex))
+                        : MeshSceneProviderMaterialFacts{};
     materials.push_back(MeshSceneMaterialProperties{
         .transparent = facts.transparent,
         .doubleSided = facts.doubleSided,
@@ -67,8 +67,8 @@ meshSceneMaterialPropertiesFromImport(
   return materials;
 }
 
-[[nodiscard]] inline MeshSceneAsset buildMeshSceneProviderAsset(
-    const MeshSceneProviderAssetAdapterInput& input) {
+[[nodiscard]] inline MeshSceneAsset
+buildMeshSceneProviderAsset(const MeshSceneProviderAssetAdapterInput &input) {
   const std::vector<MeshSceneProviderPrimitive> primitives =
       meshSceneProviderPrimitivesFromImport(input.primitiveRanges);
   const std::vector<MeshSceneMaterialProperties> materials =
@@ -84,4 +84,45 @@ meshSceneMaterialPropertiesFromImport(
   });
 }
 
-}  // namespace container::scene
+// Instances and bounds are live metadata. Rebuild classification/topology only
+// after an explicit source, geometry or material change, never on a transform.
+class MeshSceneProviderAssetCache {
+public:
+  [[nodiscard]] const MeshSceneAsset &
+  get(const MeshSceneProviderAssetAdapterInput &input,
+      SceneProviderRevision revision, const void *sourceIdentity) {
+    const Key next{sourceIdentity,
+                   input.primitiveRanges.data(),
+                   input.primitiveRanges.size(),
+                   input.materialCount,
+                   revision.geometry,
+                   revision.materials};
+    if (!key_ || *key_ != next) {
+      asset_ = buildMeshSceneProviderAsset(input);
+      key_ = next;
+    }
+    asset_.instanceCount = input.instanceCount;
+    asset_.bounds = input.bounds;
+    return asset_;
+  }
+
+  void clear() {
+    asset_ = {};
+    key_.reset();
+  }
+
+private:
+  struct Key {
+    const void *sourceIdentity{};
+    const container::geometry::PrimitiveRange *ranges{};
+    std::size_t primitiveCount{};
+    std::size_t materialCount{};
+    uint64_t geometryRevision{};
+    uint64_t materialRevision{};
+    bool operator==(const Key &) const = default;
+  };
+  std::optional<Key> key_{};
+  MeshSceneAsset asset_{};
+};
+
+} // namespace container::scene
