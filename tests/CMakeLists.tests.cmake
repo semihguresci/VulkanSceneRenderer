@@ -1161,3 +1161,26 @@ if(ENABLE_WINDOWED_TESTS)
     set_tests_properties(triangle_test vulkan_tests window_creation_test
         PROPERTIES LABELS "requires-vulkan;requires-display")
 endif()
+
+# Standalone reference transport numerical contracts.
+set(PATH_TRANSPORT_CONTRACT_SPIRV "${CMAKE_BINARY_DIR}/test_shaders/path_transport_contract.comp.spv")
+add_custom_command(
+    OUTPUT "${PATH_TRANSPORT_CONTRACT_SPIRV}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/test_shaders"
+    COMMAND "${SLANGC_EXECUTABLE}" "${DEFAULT_SHADER_DIR}/path_transport_contract.slang"
+            ${SLANG_SPIRV_FLAGS} -entry computeMain -o "${PATH_TRANSPORT_CONTRACT_SPIRV}"
+    DEPENDS "${DEFAULT_SHADER_DIR}/path_transport_contract.slang"
+            ${SLANG_INCLUDE_SOURCES} "${CMAKE_CURRENT_LIST_FILE}" "${SLANGC_EXECUTABLE}"
+    VERBATIM
+)
+add_custom_target(path_transport_contract_shader DEPENDS "${PATH_TRANSPORT_CONTRACT_SPIRV}")
+add_custom_test(path_transport_gpu_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/path_transport_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_gpu_resource VulkanSceneRenderer_geometry Dep_Windowing Dep_Math
+)
+target_compile_definitions(path_transport_gpu_tests PRIVATE
+    CONTAINER_PATH_TRANSPORT_SPIRV="${PATH_TRANSPORT_CONTRACT_SPIRV}"
+)
+add_dependencies(path_transport_gpu_tests path_transport_contract_shader)
+set_tests_properties(path_transport_gpu_tests PROPERTIES
+    LABELS "requires-vulkan;requires-display;path-tracing" RUN_SERIAL TRUE TIMEOUT 180)
