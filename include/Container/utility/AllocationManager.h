@@ -59,6 +59,12 @@ class AllocationManager {
   AllocatedBuffer uploadBuffer(std::span<const std::byte> bytes,
                                VkBufferUsageFlags usage);
 
+  // Records detached resource preparation on the graphics queue and waits for
+  // completion before returning, including when a progress callback throws.
+  // The caller retains every resource referenced by record through this call.
+  // A recording exception frees the unsubmitted command without executing it.
+  void executeStagedCommands(const std::function<void(VkCommandBuffer)>& record);
+
   [[nodiscard]] AllocatedBuffer createBuffer(
       VkDeviceSize size, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage,
       VmaAllocationCreateFlags allocationFlags = 0,
@@ -93,6 +99,18 @@ class AllocationManager {
   [[nodiscard]] VulkanMemoryManager* memoryManager() const { return memoryManager_.get(); }
 
  private:
+  // Declared before staging/image locals so the allocator remains protected
+  // until their normal destruction or complete exception unwinding.
+  class UploadOperation {
+   public:
+    explicit UploadOperation(AllocationManager& owner);
+    ~UploadOperation();
+    UploadOperation(const UploadOperation&) = delete;
+    UploadOperation& operator=(const UploadOperation&) = delete;
+   private:
+    AllocationManager& owner_;
+  };
+
   VkCommandBuffer beginSingleTimeCommands();
   void endSingleTimeCommands(VkCommandBuffer commandBuffer);
 
@@ -127,6 +145,8 @@ class AllocationManager {
   std::unique_ptr<BufferArena> indexArena_;
 
   std::vector<TextureAllocation> textureAllocations_{};
+  bool textureRetirementInProgress_{};
+  uint32_t activeUploadOperations_{};
   std::function<void(bool)> loadProgress_;
 };
 

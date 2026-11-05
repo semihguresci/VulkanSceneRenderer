@@ -14,7 +14,7 @@ add_library(VulkanSceneRenderer_geometry
     UsdLoader.cpp
     tinygltf_impl.cpp
     vma_impl.cpp
-    stb_impl.cpp)
+    )
 
 target_compile_features(VulkanSceneRenderer_geometry PUBLIC cxx_std_23)
 
@@ -31,3 +31,5 @@ target_link_libraries(VulkanSceneRenderer_geometry PUBLIC
     PRIVATE earcut_hpp::earcut_hpp
     manifold::manifold
 )
+
+target_link_libraries(VulkanSceneRenderer_geometry PUBLIC VulkanSceneRenderer_stb)

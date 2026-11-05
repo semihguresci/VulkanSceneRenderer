@@ -1234,3 +1234,20 @@ target_compile_definitions(managed_compute_owner_gpu_tests PRIVATE
 add_dependencies(managed_compute_owner_gpu_tests shaders_all)
 set_tests_properties(managed_compute_owner_gpu_tests PROPERTIES
     LABELS "requires-vulkan;requires-display;pipeline-reload" RUN_SERIAL TRUE TIMEOUT 120)
+
+add_custom_test(texture_image_data_tests
+    ${TESTS_DIR}/utility/texture_image_data_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_texture_codecs Dep_TextureCodecs Dep_SceneIO)
+
+set(CONTAINER_ENVIRONMENT_SAMPLE_SPIRV "${CMAKE_BINARY_DIR}/test_shaders/environment_sample_contract.comp.spv")
+add_custom_command(OUTPUT "${CONTAINER_ENVIRONMENT_SAMPLE_SPIRV}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/test_shaders"
+    COMMAND "${SLANGC_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/shaders/environment_sample_contract.slang"
+            ${SLANG_SPIRV_FLAGS} -entry computeMain -o "${CONTAINER_ENVIRONMENT_SAMPLE_SPIRV}"
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/shaders/environment_sample_contract.slang"
+            "${SLANGC_EXECUTABLE}" "${CMAKE_CURRENT_LIST_FILE}"
+    VERBATIM)
+add_custom_target(environment_sample_contract_shader DEPENDS "${CONTAINER_ENVIRONMENT_SAMPLE_SPIRV}")
+target_compile_definitions(managed_compute_owner_gpu_tests PRIVATE
+    CONTAINER_ENVIRONMENT_SAMPLE_SPIRV="${CONTAINER_ENVIRONMENT_SAMPLE_SPIRV}")
+add_dependencies(managed_compute_owner_gpu_tests environment_sample_contract_shader)

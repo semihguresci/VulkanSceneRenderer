@@ -14,6 +14,46 @@ namespace container::gpu {
 
 namespace {
 
+struct TextureRetirementGuard {
+  bool& flag;
+  explicit TextureRetirementGuard(bool& value) noexcept : flag(value) { flag = true; }
+  ~TextureRetirementGuard() { flag = false; }
+};
+
+struct ScopedUploadSubmission {
+  VkDevice device{};
+  VkCommandPool pool{};
+  VkCommandBuffer command{};
+  VkFence fence{};
+  bool submitted{}, retired{};
+
+  ScopedUploadSubmission(VkDevice ownerDevice, VkCommandPool ownerPool,
+                         VkCommandBuffer ownedCommand) noexcept
+      : device(ownerDevice), pool(ownerPool), command(ownedCommand) {}
+  ScopedUploadSubmission(const ScopedUploadSubmission&) = delete;
+  ScopedUploadSubmission& operator=(const ScopedUploadSubmission&) = delete;
+
+  void release() noexcept {
+    if (submitted && !retired) {
+      // An exception from the event pump must not release a pending command,
+      // image or staging allocation. Do not reenter callbacks while retiring.
+      for (;;) {
+        const auto wait = vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+        if (wait == VK_SUCCESS || wait == VK_ERROR_DEVICE_LOST) break;
+        if (wait == VK_TIMEOUT) continue;
+        const auto idle = vkDeviceWaitIdle(device);
+        if (idle == VK_SUCCESS || idle == VK_ERROR_DEVICE_LOST) break;
+        // Retry failed waits: freeing referenced allocations is not safe until
+        // completion is established or the device reports loss.
+      }
+      retired = true;
+    }
+    if (fence) { destroyOwnedFence(device, fence, nullptr); fence = VK_NULL_HANDLE; }
+    if (command) { vkFreeCommandBuffers(device, pool, 1, &command); command = VK_NULL_HANDLE; }
+  }
+  ~ScopedUploadSubmission() { release(); }
+};
+
 void EnsureArenaCapacity(std::unique_ptr<BufferArena>& arena,
                          VulkanMemoryManager& memoryManager,
                          VkDeviceSize requiredSize,
@@ -55,6 +95,19 @@ bool textureFormatSupportsLinearBlit(VkPhysicalDevice physicalDevice,
 
 }  // namespace
 
+AllocationManager::UploadOperation::UploadOperation(AllocationManager& owner)
+    : owner_(owner) {
+  if (owner_.textureRetirementInProgress_)
+    throw std::logic_error("cannot upload during texture retirement");
+  if (owner_.activeUploadOperations_ == std::numeric_limits<uint32_t>::max())
+    throw std::overflow_error("allocation upload nesting exceeds its limit");
+  ++owner_.activeUploadOperations_;
+}
+
+AllocationManager::UploadOperation::~UploadOperation() {
+  --owner_.activeUploadOperations_;
+}
+
 AllocationManager::~AllocationManager() { cleanup(); }
 
 void AllocationManager::initialize(VkInstance instance,
@@ -74,6 +127,10 @@ void AllocationManager::initialize(VkInstance instance,
 }
 
 void AllocationManager::cleanup() {
+  if (activeUploadOperations_)
+    throw std::logic_error("cannot clean up during an allocation upload");
+  if (textureRetirementInProgress_)
+    throw std::logic_error("cannot clean up during texture retirement");
   loadProgress_ = {};
   resetTextureAllocations(TextureAllocationResetScope::All);
   indexArena_.reset();
@@ -88,6 +145,8 @@ void AllocationManager::cleanup() {
 }
 
 void AllocationManager::resetGeometryAllocations() {
+  if (activeUploadOperations_)
+    throw std::logic_error("cannot reset geometry during an allocation upload");
   if (vertexArena_)
     vertexArena_->reset();
   if (indexArena_)
@@ -101,6 +160,7 @@ VkDeviceSize AllocationManager::geometryArenaCapacityBytes() const {
 
 BufferSlice AllocationManager::uploadVertices(
     std::span<const container::geometry::Vertex> vertices) {
+  const UploadOperation operation(*this);
   if (vertices.empty()) return {};
   VkDeviceSize bufferSize = sizeof(container::geometry::Vertex) * vertices.size();
 
@@ -125,6 +185,7 @@ BufferSlice AllocationManager::uploadVertices(
 
 BufferSlice AllocationManager::uploadIndices(
     std::span<const uint32_t> indices) {
+  const UploadOperation operation(*this);
   if (indices.empty()) return {};
   VkDeviceSize bufferSize = sizeof(uint32_t) * indices.size();
 
@@ -150,6 +211,7 @@ BufferSlice AllocationManager::uploadIndices(
 AllocatedBuffer AllocationManager::uploadBuffer(
     std::span<const std::byte> bytes,
     VkBufferUsageFlags usage) {
+  const UploadOperation operation(*this);
   if (bytes.empty()) return {};
 
   const VkDeviceSize bufferSize = static_cast<VkDeviceSize>(bytes.size());
@@ -180,6 +242,7 @@ void AllocationManager::destroyBuffer(AllocatedBuffer& buffer) {
 
 container::material::TextureResource AllocationManager::createTextureFromFile(
     const std::string& texturePath, VkFormat format) {
+  const UploadOperation operation(*this);
   int texWidth = 0;
   int texHeight = 0;
   int texChannels = 0;
@@ -209,6 +272,7 @@ AllocationManager::createTextureFromEncodedBytes(
     const std::string& textureName,
     std::span<const std::byte> encodedBytes,
     VkFormat format) {
+  const UploadOperation operation(*this);
   if (encodedBytes.empty()) {
     throw std::runtime_error("texture byte payload is empty: " + textureName);
   }
@@ -249,6 +313,7 @@ AllocationManager::createTextureFromRgbaPixels(
     uint32_t width,
     uint32_t height,
     VkFormat format) {
+  const UploadOperation operation(*this);
   if (width == 0u || height == 0u) {
     throw std::runtime_error("texture dimensions are invalid: " + textureName);
   }
@@ -342,6 +407,7 @@ AllocationManager::createTexture2DArrayFromRgbaPixels(
     uint32_t layerCount,
     VkFormat format,
     TextureAllocationLifetime lifetime) {
+  const UploadOperation operation(*this);
   if (width == 0u || height == 0u || layerCount == 0u) {
     throw std::runtime_error("texture array dimensions are invalid: " +
                              textureName);
@@ -420,6 +486,11 @@ AllocationManager::createTexture2DArrayFromRgbaPixels(
 
 void AllocationManager::resetTextureAllocations(
     TextureAllocationResetScope scope) {
+  if (activeUploadOperations_)
+    throw std::logic_error("cannot reset textures during an allocation upload");
+  if (textureRetirementInProgress_)
+    throw std::logic_error("cannot reset during texture retirement");
+  TextureRetirementGuard retiring(textureRetirementInProgress_);
   if (!memoryManager_) {
     textureAllocations_.clear();
     return;
@@ -455,6 +526,23 @@ void AllocationManager::resetTextureAllocations(
 
 /* ---------- Command helpers ---------- */
 
+void AllocationManager::executeStagedCommands(
+    const std::function<void(VkCommandBuffer)>& record) {
+  const UploadOperation operation(*this);
+  if (!record || !device_ || !memoryManager_ || !graphicsQueue_ || !commandPool_)
+    throw std::invalid_argument("staged commands require an initialized allocator and recorder");
+  const auto command = beginSingleTimeCommands();
+  try {
+    record(command);
+  } catch (...) {
+    vkFreeCommandBuffers(device_, commandPool_, 1, &command);
+    throw;
+  }
+  // endSingleTimeCommands assumes command ownership immediately and retires
+  // submitted work before unwinding a failing event/progress callback.
+  endSingleTimeCommands(command);
+}
+
 VkCommandBuffer AllocationManager::beginSingleTimeCommands() {
   VkCommandBufferAllocateInfo allocInfo{};
   allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -480,8 +568,8 @@ VkCommandBuffer AllocationManager::beginSingleTimeCommands() {
 }
 
 void AllocationManager::endSingleTimeCommands(VkCommandBuffer commandBuffer) {
+  ScopedUploadSubmission submission{device_, commandPool_, commandBuffer};
   if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
-    vkFreeCommandBuffers(device_, commandPool_, 1, &commandBuffer);
     throw std::runtime_error("failed to end single-use command buffer");
   }
 
@@ -490,30 +578,26 @@ void AllocationManager::endSingleTimeCommands(VkCommandBuffer commandBuffer) {
   submitInfo.commandBufferCount = 1;
   submitInfo.pCommandBuffers = &commandBuffer;
 
-  VkFence fence = VK_NULL_HANDLE;
   VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-  if (createOwnedFence(device_, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
-    vkFreeCommandBuffers(device_, commandPool_, 1, &commandBuffer);
+  if (createOwnedFence(device_, &fenceInfo, nullptr, &submission.fence) != VK_SUCCESS) {
     throw std::runtime_error("failed to create upload fence");
   }
-  if (vkQueueSubmit(graphicsQueue_, 1, &submitInfo, fence) !=
+  if (vkQueueSubmit(graphicsQueue_, 1, &submitInfo, submission.fence) !=
       VK_SUCCESS) {
-    destroyOwnedFence(device_, fence, nullptr);
-    vkFreeCommandBuffers(device_, commandPool_, 1, &commandBuffer);
     throw std::runtime_error("failed to submit single-use command buffer");
   }
+  submission.submitted = true;
   VkResult wait;
   do {
-    wait = vkWaitForFences(device_, 1, &fence, VK_TRUE, 4000000);
+    wait = vkWaitForFences(device_, 1, &submission.fence, VK_TRUE, 4000000);
     if (wait == VK_TIMEOUT && loadProgress_) loadProgress_(false);
   } while (wait == VK_TIMEOUT);
-  destroyOwnedFence(device_, fence, nullptr);
+  submission.retired = wait == VK_SUCCESS || wait == VK_ERROR_DEVICE_LOST;
   if (wait != VK_SUCCESS) {
-    vkFreeCommandBuffers(device_, commandPool_, 1, &commandBuffer);
     throw std::runtime_error("failed to wait for single-use command buffer");
   }
 
-  vkFreeCommandBuffers(device_, commandPool_, 1, &commandBuffer);
+  submission.release();
   if (loadProgress_) loadProgress_(true);
 }
 

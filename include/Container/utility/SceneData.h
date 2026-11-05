@@ -595,6 +595,14 @@ struct ExposureAdaptPushConstants {
 struct EquirectPushConstants {
   uint32_t faceIndex{0};
   uint32_t faceSize{0};
+  uint32_t skyMode{0};
+  uint32_t reserved{0};
+  alignas(16) glm::vec4 horizon{};
+  alignas(16) glm::vec4 zenith{};
+  alignas(16) glm::vec4 ground{};
+  alignas(16) glm::vec4 sun{};
+  alignas(16) glm::vec4 atmosphereGeometry{};
+  alignas(16) glm::vec4 atmosphereDensity{};
 };
 
 struct IrradiancePushConstants {
@@ -1170,13 +1178,20 @@ static_assert(offsetof(ExposureAdaptPushConstants, deltaSeconds) == 40,
 static_assert(offsetof(ExposureAdaptPushConstants, manualExposure) == 44,
               "ExposureAdaptPushConstants.manualExposure offset");
 
-static_assert(sizeof(EquirectPushConstants) == 8,
+static_assert(sizeof(EquirectPushConstants) == 112,
               "EquirectPushConstants size mismatch with "
               "shaders/push_constants_common.slang EquirectPushConstants.");
 static_assert(offsetof(EquirectPushConstants, faceIndex) == 0,
               "EquirectPushConstants.faceIndex offset");
 static_assert(offsetof(EquirectPushConstants, faceSize) == 4,
               "EquirectPushConstants.faceSize offset");
+static_assert(offsetof(EquirectPushConstants, skyMode) == 8);
+static_assert(offsetof(EquirectPushConstants, horizon) == 16);
+static_assert(offsetof(EquirectPushConstants, zenith) == 32);
+static_assert(offsetof(EquirectPushConstants, ground) == 48);
+static_assert(offsetof(EquirectPushConstants, sun) == 64);
+static_assert(offsetof(EquirectPushConstants, atmosphereGeometry) == 80);
+static_assert(offsetof(EquirectPushConstants, atmosphereDensity) == 96);
 
 static_assert(sizeof(IrradiancePushConstants) == 8,
               "IrradiancePushConstants size mismatch with "

@@ -41,6 +41,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/pipeline/PipelineRegistry.cpp
 
     renderer/lighting/EnvironmentManager.cpp
+    renderer/lighting/AtmosphereLut.cpp
     renderer/lighting/EditableLight.cpp
     renderer/lighting/LightGizmoIconAtlas.cpp
     renderer/lighting/DdgiProbeVolume.cpp
@@ -206,6 +207,17 @@ target_link_libraries(VulkanSceneRenderer_renderer PUBLIC
     VulkanSceneRenderer_bim_ui_support
     VulkanSceneRenderer_ecs
 )
+
+# Shared CPU image decoding has no scene/UI ownership.
+add_library(VulkanSceneRenderer_stb geometry/stb_impl.cpp)
+target_compile_features(VulkanSceneRenderer_stb PUBLIC cxx_std_23)
+target_link_libraries(VulkanSceneRenderer_stb PUBLIC Dep_SceneIO)
+add_library(VulkanSceneRenderer_texture_codecs utility/TextureImageData.cpp)
+target_compile_features(VulkanSceneRenderer_texture_codecs PUBLIC cxx_std_23)
+target_include_directories(VulkanSceneRenderer_texture_codecs PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(VulkanSceneRenderer_texture_codecs PUBLIC Dep_VulkanCore
+    PRIVATE Dep_TextureCodecs VulkanSceneRenderer_stb)
+target_link_libraries(VulkanSceneRenderer_renderer PUBLIC VulkanSceneRenderer_texture_codecs)
 
 # Add subdirectories
 add_subdirectory(geometry)

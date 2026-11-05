@@ -7,6 +7,7 @@ param(
     [Parameter(Mandatory = $true)][string]$RuntimeDirectory,
     [Parameter(Mandatory = $true)][string]$VcpkgInstalledDirectory,
     [Parameter(Mandatory = $true)][string]$TinyUsdzSourceDirectory,
+    [string]$BuildDirectory = '',
     [string]$OutputDirectory = (Join-Path $PSScriptRoot '../out/packages')
 )
 
@@ -20,6 +21,60 @@ $outputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 $packageName = "VulkanSceneRenderer-$Version-windows-x64"
 $stagingDirectory = Join-Path $outputDirectory $packageName
 $archivePath = Join-Path $outputDirectory "$packageName.zip"
+
+# Native Visual Studio builds stage executables in Release/, while single-
+# configuration builds keep them at the build root. Read the actual cache so
+# a disabled backend cannot accidentally inherit a stale enabled-build notice.
+$buildTreeDirectory = ''
+if ($BuildDirectory) {
+    $buildTreeDirectory = (Resolve-Path -LiteralPath $BuildDirectory).Path
+} else {
+    foreach ($candidate in @($runtimeDirectory, (Split-Path -Parent $runtimeDirectory))) {
+        if (Test-Path -LiteralPath (Join-Path $candidate 'CMakeCache.txt') -PathType Leaf) {
+            $buildTreeDirectory = $candidate
+            break
+        }
+    }
+}
+if (-not $buildTreeDirectory) {
+    throw 'Cannot locate the build cache. Pass -BuildDirectory for a separately staged runtime.'
+}
+$cachePath = Join-Path $buildTreeDirectory 'CMakeCache.txt'
+if (-not (Test-Path -LiteralPath $cachePath -PathType Leaf)) {
+    throw "Missing build cache: $cachePath"
+}
+$textureCodecsEnabled = @{}
+$textureCodecNotices = @{}
+foreach ($backend in @('KTX', 'WEBP')) {
+    $codecOption = @(Select-String -LiteralPath $cachePath -Pattern "^ENABLE_TEXTURE_${backend}:BOOL=(.*)$")
+    $enabled = $codecOption.Count -eq 1 -and
+        $codecOption[0].Matches[0].Groups[1].Value -notmatch '^(|0|OFF|NO|FALSE|N|IGNORE|NOTFOUND)$' -and
+        $codecOption[0].Matches[0].Groups[1].Value -notmatch '-NOTFOUND$'
+    $textureCodecsEnabled[$backend] = $enabled
+    if ($enabled) {
+        $noticeRoot = Join-Path $buildTreeDirectory 'third_party_licenses'
+        $packageNotice = Join-Path $noticeRoot "${backend}-package-notices.txt"
+        if (Test-Path -LiteralPath $packageNotice -PathType Leaf) {
+            $textureCodecNotices["${backend}-package-notices.txt"] = $packageNotice
+        } elseif ($backend -eq 'KTX') {
+            $ktxNotices = Join-Path $noticeRoot 'KTX'
+            foreach ($required in @('LICENSE.md', 'NOTICE.md', 'external-basisu-LICENSE', 'external-basisu-zstd-LICENSE', 'external-dfdutils-LICENSE.adoc', 'uthash-notice.txt')) {
+                if (-not (Test-Path -LiteralPath (Join-Path $ktxNotices $required) -PathType Leaf)) {
+                    throw "The enabled KTX codec is missing its upstream notice: $required"
+                }
+            }
+            $textureCodecNotices['KTX'] = $ktxNotices
+        } else {
+            foreach ($name in @('WebP-COPYING.txt', 'WebP-PATENTS.txt')) {
+                $notice = Join-Path $noticeRoot $name
+                if (-not (Test-Path -LiteralPath $notice -PathType Leaf)) {
+                    throw "The enabled WebP codec is missing its upstream notice: $notice"
+                }
+                $textureCodecNotices[$name] = $notice
+            }
+        }
+    }
+}
 
 Push-Location $sourceDirectory
 try {
@@ -103,6 +158,9 @@ foreach ($package in @('entt', 'fmt', 'glfw3', 'glm', 'imgui', 'MaterialX', 'mik
         'vulkan', 'vulkan-headers', 'vulkan-loader', 'vulkan-memory-allocator')) {
     Copy-Item -LiteralPath (Join-Path $dependencyDirectory "$package/copyright") -Destination (Join-Path $licensesDirectory "$package.txt")
 }
+foreach ($noticeName in $textureCodecNotices.Keys) {
+    Copy-Item -LiteralPath $textureCodecNotices[$noticeName] -Destination (Join-Path $licensesDirectory $noticeName) -Recurse
+}
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'cmake/licenses/Apache-2.0.txt') -Destination $licensesDirectory
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'cmake/licenses/Boost-1.0.txt') -Destination $licensesDirectory
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'cmake/licenses/Earcut-ISC.txt') -Destination $licensesDirectory
@@ -159,6 +217,8 @@ foreach ($file in ($hashedRuntimeFiles | Sort-Object FullName)) {
     configuration = 'Release'
     vulkan_api = '1.4'
     shader_format = 'SPIR-V 1.6'
+    texture_ktx_enabled = $textureCodecsEnabled['KTX']
+    texture_webp_enabled = $textureCodecsEnabled['WEBP']
     compiled_shader_count = $shaders.Count
     runtime_dll_count = $runtimeDlls.Count
     ltc_asset_file_count = $ltcAssets.Count

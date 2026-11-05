@@ -96,6 +96,7 @@ target_link_libraries(VulkanSceneRenderer_scene PUBLIC
 # ── 6. UI (ImGui) ───────────────────────────────────────────────────────────
 add_library(VulkanSceneRenderer_ui
     BcfViewpoint.cpp
+    SolarPosition.cpp
     GuiManager.cpp
 )
 target_compile_features(VulkanSceneRenderer_ui PUBLIC cxx_std_23)

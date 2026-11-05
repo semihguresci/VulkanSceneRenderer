@@ -57,6 +57,7 @@ set(SLANG_INCLUDE_SHADER_NAMES
     oit_resolve_common.slang
     temporal_common.slang
     environment_sky_common.slang
+    atmosphere_scattering.slang
     ray_shadow_data.slang
     ray_shadow_receiver_common.slang
     ray_shadow_read.slang

@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <stb_image_write.h>
 
 namespace {
 using namespace container::gpu;
@@ -130,6 +131,63 @@ class ManagedComputeOwnerGpu : public ::testing::Test {
     queue.submit(info, nullptr);
     queue.waitIdle();
     command.reset();
+  }
+  std::array<std::array<float, 4>, 6> sampleEnvironment(const EnvironmentManager& environment) {
+    const std::array<vk::DescriptorSetLayoutBinding, 3> bindings{{
+        {0, vk::DescriptorType::eSampledImage, 1, vk::ShaderStageFlagBits::eCompute},
+        {1, vk::DescriptorType::eSampler, 1, vk::ShaderStageFlagBits::eCompute},
+        {2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute}}};
+    vk::raii::DescriptorSetLayout setLayout(device->raii(), vk::DescriptorSetLayoutCreateInfo({}, bindings));
+    vk::raii::PipelineLayout layout(device->raii(), vk::PipelineLayoutCreateInfo({}, *setLayout));
+    auto pipeline = pipelines->createComputePipeline(CONTAINER_ENVIRONMENT_SAMPLE_SPIRV, *layout, "environment.sample");
+    const std::array<vk::DescriptorPoolSize, 3> sizes{{
+        {vk::DescriptorType::eSampledImage, 1}, {vk::DescriptorType::eSampler, 1},
+        {vk::DescriptorType::eStorageBuffer, 1}}};
+    vk::raii::DescriptorPool descriptors(device->raii(),
+        vk::DescriptorPoolCreateInfo(vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 1, sizes));
+    auto sets = device->raii().allocateDescriptorSets(vk::DescriptorSetAllocateInfo(*descriptors, *setLayout));
+    std::array<std::array<float, 4>, 6> values{};
+    auto output = allocation->createBuffer(sizeof(values), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT);
+    struct BufferCleanup {
+      AllocationManager* owner; AllocatedBuffer* buffer;
+      ~BufferCleanup() { owner->destroyBuffer(*buffer); }
+    } cleanup{allocation.get(), &output};
+    const vk::DescriptorImageInfo image({}, environment.radianceView(), vk::ImageLayout::eShaderReadOnlyOptimal);
+    const vk::DescriptorImageInfo sampler(environment.envSampler(), {}, {});
+    const vk::DescriptorBufferInfo buffer(output.buffer, 0, sizeof(values));
+    const std::array<vk::WriteDescriptorSet, 3> writes{{
+        {*sets.front(), 0, 0, 1, vk::DescriptorType::eSampledImage, &image},
+        {*sets.front(), 1, 0, 1, vk::DescriptorType::eSampler, &sampler},
+        {*sets.front(), 2, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr, &buffer}}};
+    device->raii().updateDescriptorSets(writes, {});
+    command.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+    command.bindPipeline(vk::PipelineBindPoint::eCompute, VkPipeline(pipeline));
+    command.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *layout, 0, *sets.front(), {});
+    command.dispatch(6, 1, 1);
+    vk::MemoryBarrier2 host(vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite,
+                           vk::PipelineStageFlagBits2::eHost, vk::AccessFlagBits2::eHostRead);
+    vk::DependencyInfo dependency; dependency.memoryBarrierCount = 1; dependency.pMemoryBarriers = &host;
+    command.pipelineBarrier2(dependency);
+    submit();
+    EXPECT_EQ(vmaInvalidateAllocation(allocation->memoryManager()->allocator(), output.allocation, 0, sizeof(values)), VK_SUCCESS);
+    std::memcpy(values.data(), output.allocation_info.pMappedData, sizeof(values));
+    return values;
+  }
+  std::filesystem::path writeHdr() {
+    const auto path = scratch / std::filesystem::path(u8"environment-\u00e7.hdr");
+    std::vector<char> encoded;
+    const auto append = [](void* context, void* data, int count) {
+      auto& bytes = *static_cast<std::vector<char>*>(context);
+      const auto* first = static_cast<const char*>(data);
+      bytes.insert(bytes.end(), first, first + count);
+    };
+    const std::array<float, 6> pixels{4.0f, 0.5f, 0.25f, 4.0f, 0.5f, 0.25f};
+    EXPECT_NE(stbi_write_hdr_to_func(append, &encoded, 2, 1, 3, pixels.data()), 0);
+    std::ofstream stream(path, std::ios::binary); stream.write(encoded.data(), encoded.size());
+    EXPECT_TRUE(stream);
+    return path;
   }
   std::atomic_uint errors{};
   bool started{};
@@ -274,5 +332,180 @@ TEST_F(ManagedComputeOwnerGpu, EnvironmentRegistersAllSixBrdfIblAndGtaoExecutabl
   EXPECT_EQ(pipelines->prepareComputeReload(scratch).size(), 0u);
   environment.destroy();
   EXPECT_EQ(pipelines->prepareComputeReload(root).size(), 0u);
+}
+
+TEST_F(ManagedComputeOwnerGpu, PlainGradientAndAtmosphereGenerateActualCubeRadiance) {
+  EnvironmentManager environment(device, *allocation, *pipelines, *pool);
+  environment.createResources(root);
+  SkySettings sky;
+  sky.mode = SkyMode::Plain;
+  sky.horizon = {.125f, .25f, .5f};
+  ASSERT_TRUE(environment.loadSkyEnvironment(sky));
+  const auto plain = sampleEnvironment(environment);
+  for (const auto& pixel : plain) for (size_t c = 0; c < 3; ++c)
+    EXPECT_NEAR(pixel[c], sky.horizon[c], 0.001f);
+  const auto revision = environment.environmentRevision();
+  sky.mode = SkyMode::Gradient;
+  sky.zenith = {.8f, .9f, 1.0f};
+  sky.ground = {.05f, .1f, .2f};
+  ASSERT_TRUE(environment.loadSkyEnvironment(sky));
+  EXPECT_GT(environment.environmentRevision(), revision);
+  const auto gradient = sampleEnvironment(environment);
+  for (size_t c = 0; c < 3; ++c) {
+    EXPECT_NEAR(gradient[0][c], sky.horizon[c], .005f);
+    EXPECT_NEAR(gradient[2][c], sky.zenith[c], .005f);
+    EXPECT_NEAR(gradient[3][c], sky.ground[c], .005f);
+  }
+  sky.mode = SkyMode::Atmosphere;
+  sky.atmosphere.multipleScattering = true;
+  sky.atmosphere.localSun = {.enabled=true, .latitudeDegrees=40, .longitudeDegrees=0,
+      .year=2026, .month=6, .day=21, .hour=12};
+  ASSERT_TRUE(environment.loadSkyEnvironment(sky));
+  const auto atmosphere = sampleEnvironment(environment);
+  for (const auto& pixel : atmosphere) for (size_t c = 0; c < 3; ++c) {
+    EXPECT_TRUE(std::isfinite(pixel[c]));
+    EXPECT_GE(pixel[c], 0.0f);
+  }
+  EXPECT_GT(atmosphere[2][2], atmosphere[2][0]);
+  EXPECT_EQ(environment.activeSkyMode(), SkyMode::Atmosphere);
+  const auto& sun = environment.activeSun().direction;
+  EXPECT_NEAR(sun[0]*sun[0]+sun[1]*sun[1]+sun[2]*sun[2], 1.0f, 1e-5f);
+  float scattering = 0;
+  for (const auto& texel : environment.activeAtmosphereLut()) scattering += texel[0]+texel[1]+texel[2];
+  EXPECT_GT(scattering, 0.0f);
+}
+
+TEST_F(ManagedComputeOwnerGpu, AsyncHdrAndFailedPublicationPreserveTheActiveGeneration) {
+  EnvironmentManager environment(device, *allocation, *pipelines, *pool);
+  environment.createResources(root);
+  const auto previous = environment.radianceView();
+  const auto revision = environment.environmentRevision();
+  const auto path = writeHdr();
+  ASSERT_TRUE(environment.requestHdrEnvironment(path));
+  ASSERT_TRUE(environment.environmentLoading());
+  EXPECT_EQ(environment.radianceView(), previous);
+  EXPECT_EQ(environment.environmentRevision(), revision);
+  SkySettings sky; sky.mode = SkyMode::Plain;
+  EXPECT_FALSE(environment.requestSkyEnvironment(sky));
+  uint32_t retired = 0;
+  ASSERT_TRUE(environment.pollEnvironment(true, [&] {
+    EXPECT_EQ(environment.radianceView(), previous);
+    EXPECT_EQ(environment.environmentRevision(), revision);
+    device->raii().waitIdle(); ++retired;
+  }));
+  EXPECT_EQ(retired, 1u);
+  EXPECT_FALSE(environment.environmentLoading());
+  EXPECT_EQ(environment.activeHdrPath(), path);
+  EXPECT_EQ(environment.activeSkyMode(), SkyMode::Hdr);
+  const auto hdr = sampleEnvironment(environment);
+  for (const auto& pixel : hdr) {
+    EXPECT_NEAR(pixel[0], 4.0f, .01f);
+    EXPECT_NEAR(pixel[1], .5f, .002f);
+    EXPECT_NEAR(pixel[2], .25f, .001f);
+  }
+  const auto active = environment.radianceView();
+  const auto activeRevision = environment.environmentRevision();
+  const auto invalid = scratch / "broken.hdr";
+  { std::ofstream stream(invalid); stream << "#?RADIANCE\ntruncated"; }
+  ASSERT_TRUE(environment.requestHdrEnvironment(invalid));
+  EXPECT_FALSE(environment.pollEnvironment(true, {}));
+  EXPECT_FALSE(environment.environmentLoading());
+  EXPECT_EQ(environment.radianceView(), active);
+  EXPECT_EQ(environment.environmentRevision(), activeRevision);
+  ASSERT_TRUE(environment.requestSkyEnvironment(sky));
+  EXPECT_FALSE(environment.pollEnvironment(true, [] { throw std::runtime_error("retirement failed"); }));
+  EXPECT_FALSE(environment.environmentLoading());
+  EXPECT_EQ(environment.radianceView(), active);
+  EXPECT_EQ(environment.environmentRevision(), activeRevision);
+  EXPECT_EQ(sampleEnvironment(environment), hdr);
+}
+
+TEST_F(ManagedComputeOwnerGpu, RetainedHdrBytesRebakeAfterFileRemovalAndStaleCandidatesAreRejected) {
+  EnvironmentManager environment(device, *allocation, *pipelines, *pool);
+  environment.createResources(root);
+  const auto path = writeHdr();
+  ASSERT_TRUE(environment.loadHdrEnvironment(path));
+  const auto original = sampleEnvironment(environment);
+  ASSERT_EQ(path.parent_path(), scratch);
+  ASSERT_TRUE(std::filesystem::remove(path));
+  auto bake = environment.prepareShaderBake(root, true, true);
+  ASSERT_TRUE(bake);
+  ASSERT_TRUE(environment.canPublishShaderBake(*bake));
+  const auto revision = environment.environmentRevision();
+  environment.publishShaderBake(*bake);
+  EXPECT_GT(environment.environmentRevision(), revision);
+  EXPECT_FALSE(environment.canPublishShaderBake(*bake));
+  EXPECT_EQ(sampleEnvironment(environment), original);
+  bake.reset();
+  auto stale = environment.prepareShaderBake(root, false, true);
+  ASSERT_TRUE(stale);
+  SkySettings sky; sky.mode = SkyMode::Plain; sky.horizon = {.25f, .5f, .75f};
+  ASSERT_TRUE(environment.loadSkyEnvironment(sky));
+  EXPECT_FALSE(environment.canPublishShaderBake(*stale));
+  const auto changed = sampleEnvironment(environment);
+  stale.reset();
+  EXPECT_EQ(sampleEnvironment(environment), changed);
+}
+
+TEST_F(ManagedComputeOwnerGpu, BrdfOnlyPublicationKeepsRadianceRevisionAndRejectsOlderCandidates) {
+  EnvironmentManager environment(device, *allocation, *pipelines, *pool);
+  environment.createResources(root);
+  SkySettings sky; sky.mode = SkyMode::Plain;
+  ASSERT_TRUE(environment.loadSkyEnvironment(sky));
+  auto older = environment.prepareShaderBake(root, false, true);
+  auto brdf = environment.prepareShaderBake(root, true, false);
+  ASSERT_TRUE(older && brdf);
+  ASSERT_TRUE(environment.canPublishShaderBake(*brdf));
+  const auto revision = environment.environmentRevision();
+  const auto radiance = environment.radianceView();
+  environment.publishShaderBake(*brdf);
+  EXPECT_EQ(environment.environmentRevision(), revision);
+  EXPECT_EQ(environment.radianceView(), radiance);
+  EXPECT_FALSE(environment.canPublishShaderBake(*older));
+}
+
+TEST_F(ManagedComputeOwnerGpu, StagedCommandExceptionsRetireGpuWorkAndBlockReentrantAllocatorReset) {
+  auto buffer = allocation->createBuffer(4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+      VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT);
+  struct Cleanup {
+    AllocationManager* owner; AllocatedBuffer* buffer;
+    ~Cleanup() { owner->destroyBuffer(*buffer); }
+  } cleanup{allocation.get(), &buffer};
+  uint32_t initial = 17;
+  std::memcpy(buffer.allocation_info.pMappedData, &initial, sizeof(initial));
+  ASSERT_EQ(vmaFlushAllocation(allocation->memoryManager()->allocator(), buffer.allocation, 0, 4), VK_SUCCESS);
+  EXPECT_THROW(allocation->executeStagedCommands({}), std::invalid_argument);
+  EXPECT_THROW(allocation->executeStagedCommands([&](VkCommandBuffer cmd) {
+    vkCmdFillBuffer(cmd, buffer.buffer, 0, 4, 29);
+    throw std::runtime_error("recording failed");
+  }), std::runtime_error);
+  uint32_t readback{};
+  ASSERT_EQ(vmaInvalidateAllocation(allocation->memoryManager()->allocator(), buffer.allocation, 0, 4), VK_SUCCESS);
+  std::memcpy(&readback, buffer.allocation_info.pMappedData, 4);
+  EXPECT_EQ(readback, 17u); // The discarded recording was never submitted.
+  uint32_t completed = 0;
+  allocation->setLoadProgressCallback([&](bool finished) {
+    if (!finished) return;
+    ++completed;
+    EXPECT_THROW(allocation->resetTextureAllocations(), std::logic_error);
+    EXPECT_THROW(allocation->resetGeometryAllocations(), std::logic_error);
+    EXPECT_THROW(allocation->cleanup(), std::logic_error);
+    throw std::runtime_error("progress callback failed");
+  });
+  EXPECT_THROW(allocation->executeStagedCommands([&](VkCommandBuffer cmd) {
+    vkCmdFillBuffer(cmd, buffer.buffer, 0, 4, 29);
+    VkMemoryBarrier host{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                         0, 1, &host, 0, nullptr, 0, nullptr);
+  }), std::runtime_error);
+  allocation->setLoadProgressCallback({});
+  EXPECT_EQ(completed, 1u);
+  ASSERT_EQ(vmaInvalidateAllocation(allocation->memoryManager()->allocator(), buffer.allocation, 0, 4), VK_SUCCESS);
+  std::memcpy(&readback, buffer.allocation_info.pMappedData, 4);
+  EXPECT_EQ(readback, 29u);
+  EXPECT_NO_THROW(allocation->executeStagedCommands([](VkCommandBuffer) {}));
 }
 } // namespace

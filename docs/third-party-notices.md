@@ -35,3 +35,13 @@ buildingSMART, and OpenUSD sample collections are not included in the package.
 The Microsoft Visual C++ runtime is a separate prerequisite, available from
 [Microsoft](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
 No Microsoft redistributable installer is bundled.
+
+
+Optional `ENABLE_TEXTURE_KTX` builds include KTX-Software 4.4.2 and its Basis
+Universal, ASTC, Zstd, DFD and uthash components. Upstream license/notice files
+are staged under `THIRD_PARTY_LICENSES/KTX`, or the installed package's aggregate
+notice is retained. The restricted Ericsson ETC unpacker is disabled. Optional
+`ENABLE_TEXTURE_WEBP` builds include libwebp 1.6.0; both COPYING and PATENTS are
+retained. These options default off. Package build-info records each enabled
+backend, and packaging fails if its required upstream notices are missing. See
+[typed texture dependencies](texture-image-data.md) for exact pinned sources.

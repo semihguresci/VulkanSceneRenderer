@@ -1362,7 +1362,7 @@ void RendererFrontend::initialize() {
     const std::filesystem::path hdrPath =
         exeDir / container::app::kDefaultEnvironmentHdrRelativePath;
     if (std::filesystem::exists(hdrPath)) {
-      subs_.environmentManager->loadHdrEnvironment(exeDir, hdrPath);
+      subs_.environmentManager->loadHdrEnvironment(hdrPath);
     }
   }
   subs_.gpuCullManager = std::make_unique<GpuCullManager>(

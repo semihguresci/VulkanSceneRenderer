@@ -280,6 +280,14 @@ struct EquirectPushConstants
 {
     uint faceIndex;
     uint faceSize;
+    uint skyMode;
+    uint reserved;
+    float4 horizon;
+    float4 zenith;
+    float4 ground;
+    float4 sun;
+    float4 atmosphereGeometry;
+    float4 atmosphereDensity;
 };
 
 struct IrradiancePushConstants
