@@ -42,6 +42,7 @@ namespace container::renderer {
 class BloomManager;
 class TemporalManager;
 class RayShadowManager;
+class ReferencePathTracePass;
 class DdgiManager;
 class BimManager;
 enum class BimDisciplinePreset : uint32_t;
@@ -134,7 +135,7 @@ public:
   void processInput(float deltaTime);
 
   // Capture the next submitted swapchain image to an sRGB PNG.
-  void requestScreenshot(std::filesystem::path outputPath);
+  void requestScreenshot(std::filesystem::path outputPath, bool viewportOnly = false);
   void applyTemporalCapture(const container::temporal::CaptureSample &sample);
   void writeCaptureTelemetry(const std::filesystem::path &path) const;
   void startGfxCapture();
@@ -203,6 +204,7 @@ private:
     std::unique_ptr<BloomManager> bloomManager;
     std::unique_ptr<TemporalManager> temporalManager;
     std::unique_ptr<RayShadowManager> rayShadowManager;
+    std::unique_ptr<ReferencePathTracePass> referencePathTracePass;
     std::unique_ptr<DdgiManager> ddgiManager;
     std::unique_ptr<ExposureManager> exposureManager;
     std::unique_ptr<GraphicsPipelineBuilder> pipelineBuilder;
@@ -352,10 +354,15 @@ private:
 
   struct ScreenshotState {
     std::filesystem::path outputPath{};
+    bool sceneLinear{false};
+    bool viewportOnly{false};
+    bool interactive{false};
     bool pending{false};
     std::vector<HostReadbackSlot> readbacks{};
   };
   ScreenshotState screenshot_{};
+  uint64_t referenceUnsupported_{}, referenceRejected_{};
+  std::string referenceStatus_;
 
   struct DepthVisibilityFrameSlot {
     HostReadbackSlot readback{};
@@ -475,7 +482,8 @@ private:
   void destroyDepthVisibilityFrameSlots();
   void ensureScreenshotReadbackBuffer(uint32_t frameSlot, VkExtent2D extent,
                                       VkFormat format);
-  void writePendingScreenshotPng(uint32_t frameSlot);
+  void writePendingScreenshot(uint32_t frameSlot, const FrameRecordParams& params);
+  bool referencePathActive() const;
   void ensureDepthVisibilityReadbackBuffer(uint32_t frameSlot);
   void markDepthVisibilityFrameComplete(uint32_t imageIndex,
                                         uint32_t frameSlot);

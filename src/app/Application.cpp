@@ -9,6 +9,7 @@
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/InputManager.h"
 #include "Container/utility/PipelineManager.h"
+#include "Container/utility/Platform.h"
 #include "Container/utility/SwapChainManager.h"
 #include "Container/utility/WindowManager.h"
 
@@ -191,15 +192,16 @@ void Application::screenshotCaptureLoop() {
     if (!config_.screenshotCapturePath.empty() &&
         (sequence ? sequence->captures(frameNumber)
                   : frameNumber == captureFrame)) {
-      capturePath = config_.screenshotCapturePath;
+      capturePath = container::util::pathFromUtf8(config_.screenshotCapturePath);
       if (sequence && frameNumber != captureFrame) {
         std::ostringstream suffix;
         suffix << ".frame-" << std::setw(4) << std::setfill('0') << frameNumber;
-        capturePath = capturePath.parent_path() /
-                      (capturePath.stem().string() + suffix.str() +
-                       capturePath.extension().string());
+        auto filename = capturePath.stem();
+        filename += suffix.str();
+        filename += capturePath.extension();
+        capturePath.replace_filename(filename);
       }
-      renderer_->requestScreenshot(capturePath);
+      renderer_->requestScreenshot(capturePath, config_.screenshotViewportOnly);
     }
     bool submitted = false;
     for (uint32_t retry = 0; retry < 4 && !submitted; ++retry)

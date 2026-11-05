@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/renderer/effects/DisplayGrade.h"
+
 #include "Container/common/CommonVulkan.h"
 #include "Container/renderer/core/RenderExtraction.h"
 #include "Container/renderer/core/RenderGraph.h"
@@ -319,7 +321,9 @@ struct FrameSwapchainResources {
 
 struct FrameScreenshotCapture {
   bool enabled{false};
-  VkImage swapChainImage{VK_NULL_HANDLE};
+  bool viewportOnly{false};
+  bool sceneLinear{false};
+  VkImage sourceImage{VK_NULL_HANDLE};
   VkBuffer readbackBuffer{VK_NULL_HANDLE};
   VkExtent2D extent{};
 };
@@ -339,6 +343,7 @@ struct FramePassServices {
 struct FramePostProcessState {
   RenderingPassHandle renderPass{VK_NULL_HANDLE};
   container::gpu::ExposureSettings exposureSettings{};
+  DisplayGrade displayGrade{};
 };
 
 // All per-frame render state needed by FrameRecorder::record().

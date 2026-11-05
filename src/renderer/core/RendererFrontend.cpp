@@ -1,4 +1,8 @@
+#include <tinyexr.h>
 #include "Container/renderer/core/RendererFrontend.h"
+#include "Container/renderer/picking/DepthReadback.h"
+#include "Container/utility/AtomicFile.h"
+#include "Container/renderer/pathtracing/ReferencePathTracePass.h"
 #include "Container/renderer/raytracing/RaySceneAcceleration.h"
 #include "Container/renderer/raytracing/RayShadowManager.h"
 #include "Container/renderer/lighting/DdgiManager.h"
@@ -1443,6 +1447,9 @@ void RendererFrontend::initialize() {
                                      .unavailableReason())
                    : "Disabled or unavailable; raster fallback"));
     subs_.guiManager->setGBufferViewMode(configuredDisplayMode(svc_.config));
+    subs_.guiManager->setDisplayGrade(svc_.config.displayGrade);
+    if (svc_.config.hasManualExposureOverride)
+      subs_.guiManager->setExposureSettings(exposureSettingsFromConfig(svc_.config));
     if (subs_.environmentManager) {
       subs_.guiManager->setEnvironmentStatus(
           subs_.environmentManager->environmentStatus());
@@ -1923,12 +1930,30 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                            elapsedMilliseconds(phaseStart));
   }
 
-  const bool screenshotThisFrame = screenshot_.pending;
+  if (!screenshot_.pending && subs_.guiManager) {
+    const auto request = subs_.guiManager->consumeImageExportRequest();
+    if (!request.path.empty()) {
+      try {
+        requestScreenshot(container::util::pathFromUtf8(request.path), request.viewportOnly);
+        screenshot_.interactive = true;
+      } catch (const std::exception& error) {
+        subs_.guiManager->setStatusMessage(error.what());
+      }
+    }
+  }
+  bool screenshotThisFrame = screenshot_.pending;
   if (screenshotThisFrame) {
     phaseStart = TelemetryClock::now();
-    ensureScreenshotReadbackBuffer(frame_.currentFrame,
-                                   svc_.swapChainManager.extent(),
-                                   svc_.swapChainManager.imageFormat());
+    try {
+      ensureScreenshotReadbackBuffer(frame_.currentFrame, svc_.swapChainManager.extent(),
+          screenshot_.sceneLinear ? VK_FORMAT_R32G32B32A32_SFLOAT
+                                  : svc_.swapChainManager.imageFormat());
+    } catch (const std::exception& error) {
+      if (!screenshot_.interactive)
+        throw;
+      screenshot_.pending = screenshotThisFrame = false;
+      subs_.guiManager->setStatusMessage(error.what());
+    }
     if (telemetry) {
       telemetry->addCpuPhase(RendererTelemetryPhase::ResourceGrowth,
                              elapsedMilliseconds(phaseStart));
@@ -1940,6 +1965,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
 
   phaseStart = TelemetryClock::now();
   updateFrameDescriptorSets(imageIndex, &frameRecordParams);
+  if (frameRecordParams.screenshot.sceneLinear)
+    subs_.frameResourceManager->setLinearCaptureTarget(imageIndex, frameRecordParams.screenshot.readbackBuffer);
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::DescriptorUpdate,
                            elapsedMilliseconds(phaseStart));
@@ -2021,7 +2048,19 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                         UINT64_MAX) != VK_SUCCESS) {
       throw std::runtime_error("failed to wait for screenshot frame");
     }
-    writePendingScreenshotPng(frame_.currentFrame);
+    if (frameRecordParams.screenshot.sceneLinear)
+      subs_.frameResourceManager->setLinearCaptureTarget(imageIndex);
+    try {
+      writePendingScreenshot(frame_.currentFrame, frameRecordParams);
+      if (screenshot_.interactive)
+        subs_.guiManager->setStatusMessage("Saved image: " +
+            container::util::pathToUtf8(screenshot_.outputPath));
+    } catch (const std::exception& error) {
+      screenshot_.pending = false;
+      if (!screenshot_.interactive)
+        throw;
+      subs_.guiManager->setStatusMessage(error.what());
+    }
     if (telemetry) {
       telemetry->setCpuPhase(RendererTelemetryPhase::Screenshot,
                              elapsedMilliseconds(phaseStart));
@@ -3734,19 +3773,37 @@ RendererFrontend::pickTransformGizmoAxisAtCursor(double cursorX,
   return bestAxis;
 }
 
-void RendererFrontend::requestScreenshot(std::filesystem::path outputPath) {
+bool RendererFrontend::referencePathActive() const {
+  return subs_.activeTechnique && subs_.activeTechnique->id() == RenderTechniqueId::PathTracing;
+}
+
+void RendererFrontend::requestScreenshot(std::filesystem::path outputPath, bool viewportOnly) {
   if (outputPath.empty()) {
     throw std::runtime_error("screenshot output path is empty");
   }
-  if (!svc_.swapChainManager.supportsTransferSrc()) {
+  auto extension = container::util::pathToUtf8(outputPath.extension());
+  std::ranges::transform(extension, extension.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  const bool sceneLinear = extension == ".exr";
+  if (!sceneLinear && extension != ".png")
+    throw std::runtime_error("screenshot path must end in .png or .exr");
+  if (sceneLinear &&
+      frontendDisplayMode(subs_.guiManager.get(), configuredDisplayMode(svc_.config)) !=
+          container::ui::GBufferViewMode::Lit)
+    throw std::runtime_error("select Lit view before exporting a scene-linear EXR");
+  if (!sceneLinear && !svc_.swapChainManager.supportsTransferSrc()) {
     throw std::runtime_error(
         "swapchain does not support VK_IMAGE_USAGE_TRANSFER_SRC_BIT");
   }
-  if (!isSupportedScreenshotFormat(svc_.swapChainManager.imageFormat())) {
+  if (!sceneLinear && !isSupportedScreenshotFormat(svc_.swapChainManager.imageFormat())) {
     throw std::runtime_error("unsupported swapchain screenshot format");
   }
 
   screenshot_.outputPath = std::move(outputPath);
+  screenshot_.sceneLinear = sceneLinear;
+  screenshot_.viewportOnly = viewportOnly && !sceneLinear;
+  screenshot_.interactive = false;
   screenshot_.pending = true;
 }
 
@@ -4979,13 +5036,20 @@ void RendererFrontend::ensureScreenshotReadbackBuffer(uint32_t frameSlot,
   if (extent.width == 0 || extent.height == 0) {
     throw std::runtime_error("cannot capture a zero-sized swapchain image");
   }
-  if (!isSupportedScreenshotFormat(format)) {
-    throw std::runtime_error("unsupported swapchain screenshot format");
+  if (screenshot_.sceneLinear ? format != VK_FORMAT_R32G32B32A32_SFLOAT
+                              : !isSupportedScreenshotFormat(format)) {
+    throw std::runtime_error("unsupported screenshot source format");
   }
 
   const VkDeviceSize requiredSize = static_cast<VkDeviceSize>(extent.width) *
                                     static_cast<VkDeviceSize>(extent.height) *
-                                    4u;
+                                    (screenshot_.sceneLinear ? 16u : 4u);
+  if (screenshot_.sceneLinear) {
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(svc_.ctx.deviceWrapper->physicalDevice(), &properties);
+    if (requiredSize > properties.limits.maxStorageBufferRange)
+      throw std::runtime_error("scene-linear capture exceeds the Vulkan storage buffer size limit");
+  }
   HostReadbackSlot& readback =
       ensureReadbackSlot(screenshot_.readbacks, frameSlot);
   if (readback.readbackBuffer.buffer != VK_NULL_HANDLE &&
@@ -4999,7 +5063,9 @@ void RendererFrontend::ensureScreenshotReadbackBuffer(uint32_t frameSlot,
     svc_.allocationManager.destroyBuffer(readback.readbackBuffer);
   }
   readback.readbackBuffer = svc_.allocationManager.createBuffer(
-      requiredSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO,
+      requiredSize, screenshot_.sceneLinear ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+                                            : VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+      VMA_MEMORY_USAGE_AUTO,
       VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
           VMA_ALLOCATION_CREATE_MAPPED_BIT);
   readback.readbackSize = requiredSize;
@@ -5007,7 +5073,7 @@ void RendererFrontend::ensureScreenshotReadbackBuffer(uint32_t frameSlot,
   readback.format = format;
 }
 
-void RendererFrontend::writePendingScreenshotPng(uint32_t frameSlot) {
+void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRecordParams& params) {
   if (!screenshot_.pending) {
     return;
   }
@@ -5046,8 +5112,16 @@ void RendererFrontend::writePendingScreenshotPng(uint32_t frameSlot) {
   const auto *src = static_cast<const unsigned char *>(mapped);
   const size_t pixelCount = static_cast<size_t>(readback.extent.width) *
                             static_cast<size_t>(readback.extent.height);
-  std::vector<unsigned char> rgba =
-      convertSwapchainBytesToRgba(src, pixelCount, readback.format);
+  std::vector<unsigned char> rgba;
+  std::vector<float> radiance;
+  if (screenshot_.sceneLinear) {
+    radiance.resize(pixelCount * 3u);
+    for (size_t pixel = 0; pixel < pixelCount; ++pixel)
+      std::memcpy(radiance.data() + pixel * 3u, src + pixel * 4u * sizeof(float),
+                  3u * sizeof(float));
+  } else {
+    rgba = convertSwapchainBytesToRgba(src, pixelCount, readback.format);
+  }
 
   if (mappedHere) {
     vmaUnmapMemory(svc_.allocationManager.memoryManager()->allocator(),
@@ -5059,14 +5133,62 @@ void RendererFrontend::writePendingScreenshotPng(uint32_t frameSlot) {
   }
   const std::string outputPath =
       container::util::pathToUtf8(screenshot_.outputPath);
-  const int ok = stbi_write_png(
-      outputPath.c_str(), static_cast<int>(readback.extent.width),
-      static_cast<int>(readback.extent.height), 4, rgba.data(),
-      static_cast<int>(readback.extent.width * 4));
   screenshot_.pending = false;
-  if (ok == 0) {
-    throw std::runtime_error("failed to write screenshot PNG: " + outputPath);
+  auto metadataPath = screenshot_.outputPath;
+  metadataPath += ".capture.json";
+  const bool srgb = readback.format == VK_FORMAT_B8G8R8A8_SRGB ||
+                    readback.format == VK_FORMAT_R8G8B8A8_SRGB;
+  nlohmann::json metadata{{"schemaVersion", 1},
+                          {"width", readback.extent.width}, {"height", readback.extent.height},
+                          {"colorSpace", screenshot_.sceneLinear ? "linear-sRGB" : srgb ? "sRGB" : "linear-sRGB"},
+                          {"includesUi", !screenshot_.sceneLinear && !screenshot_.viewportOnly && subs_.guiManager != nullptr}};
+  const bool referenceCapture = referencePathActive() && subs_.referencePathTracePass;
+  if (referenceCapture) {
+    metadata["referencePath"] = {
+        {"attemptedSamplesPerPixel", subs_.referencePathTracePass->attemptedSamples()},
+        {"sampleLimitReached", subs_.referencePathTracePass->attemptedSamples() >= svc_.config.pathSampleLimit},
+        {"historyResets", subs_.referencePathTracePass->historyResets()},
+        {"unsupportedSamples", referenceUnsupported_}, {"rejectedSamples", referenceRejected_},
+        {"hasDiagnostics", referenceUnsupported_ != 0 || referenceRejected_ != 0},
+        {"status", referenceStatus_}};
   }
+  if (screenshot_.sceneLinear) {
+    unsigned char* encoded = nullptr;
+    const char* error = nullptr;
+    const int size = SaveEXRToMemory(radiance.data(), static_cast<int>(readback.extent.width),
+        static_cast<int>(readback.extent.height), 3, 0, &encoded, &error);
+    const std::unique_ptr<unsigned char, decltype(&std::free)> bytes(encoded, &std::free);
+    if (size <= 0 || !bytes) {
+      const std::string reason = error ? error : "unknown encoder error";
+      if (error)
+        FreeEXRErrorMessage(error);
+      throw std::runtime_error("failed to encode scene-linear EXR: " + reason);
+    }
+    container::util::writeFileAtomically(screenshot_.outputPath,
+        {reinterpret_cast<const char*>(bytes.get()), static_cast<size_t>(size)});
+    metadata["source"] = referenceCapture ? "path-trace-mean" : "raster-scene-composite";
+    metadata["exposureApplied"] = false;
+    metadata["toneMappingApplied"] = false;
+  } else {
+    std::string png;
+    const auto append = [](void* context, void* data, int size) {
+      static_cast<std::string*>(context)->append(static_cast<const char*>(data), size);
+    };
+    if (!stbi_write_png_to_func(append, &png, static_cast<int>(readback.extent.width),
+                                static_cast<int>(readback.extent.height), 4, rgba.data(),
+                                static_cast<int>(readback.extent.width * 4))) {
+      throw std::runtime_error("failed to encode screenshot PNG: " + outputPath);
+    }
+    container::util::writeFileAtomically(screenshot_.outputPath, png);
+    const auto exposure = sanitizeExposureSettings(params.postProcess.exposureSettings);
+    const bool automatic = exposure.mode == container::gpu::kExposureModeAuto;
+    metadata["source"] = screenshot_.viewportOnly ? "viewport" : "window";
+    metadata["displayMode"] = params.debug.displayMode;
+    metadata["exposureMode"] = automatic ? "auto" : "manual";
+    metadata["manualExposure"] = automatic ? nlohmann::json(nullptr) : nlohmann::json(exposure.manualExposure);
+    metadata["toneMapper"] = static_cast<uint32_t>(params.postProcess.displayGrade.toneMapper);
+  }
+  container::util::writeFileAtomically(metadataPath, metadata.dump(2) + '\n');
 }
 
 void RendererFrontend::ensureDepthVisibilityReadbackBuffer(uint32_t frameSlot) {
@@ -5650,7 +5772,7 @@ bool RendererFrontend::sampleDepthAtCursor(double cursorX, double cursorY,
   toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   toTransfer.image = depthImage;
-  toTransfer.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+  toTransfer.subresourceRange = {depthReadbackBarrierAspects(frame->format), 0, 1, 0, 1};
   vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
                        nullptr, 1, &toTransfer);
@@ -7727,6 +7849,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     p.postProcess.exposureSettings.mode = container::gpu::kExposureModeManual;
     p.postProcess.exposureSettings.manualExposure = *captureExposure_;
   }
+  p.postProcess.displayGrade = subs_.guiManager ? subs_.guiManager->displayGrade() : svc_.config.displayGrade;
   p.postProcess.renderPass = resources_.renderPasses.postProcess;
   if (subs_.sceneProviderRegistry) {
     p.sceneExtraction = extractProviderSceneFrameInputs(
@@ -7738,7 +7861,9 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       sizeof(container::gpu::ObjectData) * sceneObjectCapacity(imageIndex);
   if (screenshot_.pending) {
     p.screenshot.enabled = true;
-    p.screenshot.swapChainImage = svc_.swapChainManager.image(imageIndex);
+    p.screenshot.viewportOnly = screenshot_.viewportOnly;
+    p.screenshot.sceneLinear = screenshot_.sceneLinear;
+    p.screenshot.sourceImage = svc_.swapChainManager.image(imageIndex);
     if (frame_.currentFrame < screenshot_.readbacks.size()) {
       p.screenshot.readbackBuffer =
           screenshot_.readbacks[frame_.currentFrame].readbackBuffer.buffer;

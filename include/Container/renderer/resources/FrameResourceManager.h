@@ -161,6 +161,9 @@ class FrameResourceManager {
   [[nodiscard]] const FrameResources* frame(uint32_t imageIndex) const;
   [[nodiscard]] FrameResources*       frame(uint32_t imageIndex);
 
+  void setLinearCaptureTarget(uint32_t imageIndex, VkBuffer buffer = VK_NULL_HANDLE);
+  void setPostProcessColorSource(uint32_t imageIndex,VkImageView,VkImageLayout);
+
  private:
   AttachmentImage createAttachment(VkFormat fmt, VkImageUsageFlags usage,
                                    VkImageAspectFlags aspect,

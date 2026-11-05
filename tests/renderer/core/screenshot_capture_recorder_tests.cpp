@@ -24,22 +24,22 @@ VkBuffer fakeReadbackBuffer() {
 TEST(ScreenshotCaptureRecorderTests, RejectsIncompleteCopyInputs) {
   EXPECT_FALSE(hasScreenshotCopyWork({}));
   EXPECT_FALSE(hasScreenshotCopyWork({.commandBuffer = fakeCommandBuffer(),
-                                      .swapChainImage = fakeSwapChainImage(),
+                                      .sourceImage = fakeSwapChainImage(),
                                       .readbackBuffer = fakeReadbackBuffer(),
                                       .extent = {0u, 16u}}));
   EXPECT_FALSE(hasScreenshotCopyWork({.commandBuffer = fakeCommandBuffer(),
-                                      .swapChainImage = fakeSwapChainImage(),
+                                      .sourceImage = fakeSwapChainImage(),
                                       .readbackBuffer = fakeReadbackBuffer(),
                                       .extent = {16u, 0u}}));
   EXPECT_FALSE(hasScreenshotCopyWork({.commandBuffer = fakeCommandBuffer(),
-                                      .swapChainImage = VK_NULL_HANDLE,
+                                      .sourceImage = VK_NULL_HANDLE,
                                       .readbackBuffer = fakeReadbackBuffer(),
                                       .extent = {16u, 16u}}));
 }
 
 TEST(ScreenshotCaptureRecorderTests, AcceptsCompleteCopyInputs) {
   const ScreenshotCopyInputs inputs{.commandBuffer = fakeCommandBuffer(),
-                                    .swapChainImage = fakeSwapChainImage(),
+                                    .sourceImage = fakeSwapChainImage(),
                                     .readbackBuffer = fakeReadbackBuffer(),
                                     .extent = {1280u, 720u}};
   EXPECT_TRUE(hasScreenshotCopyWork(inputs));

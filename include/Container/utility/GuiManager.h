@@ -1,4 +1,6 @@
 #pragma once
+
+#include "Container/renderer/effects/DisplayGrade.h"
 #include "Container/renderer/lighting/DdgiSettings.h"
 #include "Container/renderer/raytracing/RayShadowSettings.h"
 
@@ -548,6 +550,13 @@ public:
   void resetModelInspectionState();
   [[nodiscard]] bool queueSampleModelLoadRequest(std::string_view label);
 
+  struct ImageExportRequest {
+    std::string path;
+    bool viewportOnly{};
+  };
+  [[nodiscard]] ImageExportRequest consumeImageExportRequest() {
+    return std::exchange(imageExportRequest_, {});
+  }
   void startFrame();
   void endFrame();
   void render(VkCommandBuffer commandBuffer);
@@ -828,6 +837,12 @@ public:
     return renderPassToggles_;
   }
 
+  [[nodiscard]] auto displayGrade() const { return displayGrade_; }
+  void setDisplayGrade(container::renderer::DisplayGrade grade) { displayGrade_ = grade; }
+  void setExposureSettings(const container::gpu::ExposureSettings& settings) {
+    exposureSettings_ = settings;
+  }
+
 private:
   container::temporal::Settings temporalSettings_{};
   std::string gfxCaptureStatus_{"Disabled. Launch with tools/gfxreconstruct.ps1 capture to collect Vulkan captures and runtime metadata."};
@@ -960,6 +975,11 @@ private:
   float bloomKnee_{0.1f};
   float bloomIntensity_{0.3f};
   float bloomRadius_{1.0f};
+  std::string imageExportPathInput_{"capture"};
+  ImageExportRequest imageExportRequest_{};
+  container::renderer::DisplayGrade displayGrade_{};
+  std::string displayGradePath_{"display-grade.json"};
+  std::string displayGradeMessage_;
   container::gpu::ExposureSettings exposureSettings_{};
   std::vector<RenderPassToggle> renderPassToggles_;
   BimFilterState bimFilterState_{};

@@ -52,6 +52,7 @@ set(SLANG_INCLUDE_SHADER_NAMES
     screen_space_light_shadow_common.slang
     oit_common.slang
     push_constants_common.slang
+    display_tone_curves.slang
     scene_clip_common.slang
     draw_indirect_common.slang
     oit_resolve_common.slang

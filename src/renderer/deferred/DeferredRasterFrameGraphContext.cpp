@@ -66,14 +66,16 @@ DeferredRasterFrameGraphContext::lifecycleHooks() const {
   hooks.afterPrepareFrame = [this](const FrameRecordParams &p,
                                    const RenderGraph &graph) {
     if (p.runtime.activeTechnique == RenderTechniqueId::DeferredRaster ||
-        p.runtime.activeTechnique == RenderTechniqueId::ForwardRaster) {
+        p.runtime.activeTechnique == RenderTechniqueId::ForwardRaster ||
+        p.runtime.activeTechnique == RenderTechniqueId::PathTracing) {
       afterPrepareFrame(p, graph);
     }
   };
   hooks.afterCommandBufferBegin = [this](VkCommandBuffer cmd,
                                          const FrameRecordParams &p) {
     if (p.runtime.activeTechnique == RenderTechniqueId::DeferredRaster ||
-        p.runtime.activeTechnique == RenderTechniqueId::ForwardRaster) {
+        p.runtime.activeTechnique == RenderTechniqueId::ForwardRaster ||
+        p.runtime.activeTechnique == RenderTechniqueId::PathTracing) {
       afterCommandBufferBegin(cmd, p);
     }
   };
@@ -229,8 +231,12 @@ void DeferredRasterFrameGraphContext::afterGraphExecution(
   if (!p.screenshot.enabled) {
     return;
   }
+  if (p.screenshot.sceneLinear) {
+    recordLinearCaptureHostBarrier(cmd, p.screenshot.readbackBuffer);
+    return;
+  }
   recordScreenshotCaptureCopy({.commandBuffer = cmd,
-                               .swapChainImage = p.screenshot.swapChainImage,
+                               .sourceImage = p.screenshot.sourceImage,
                                .readbackBuffer = p.screenshot.readbackBuffer,
                                .extent = p.screenshot.extent});
 }

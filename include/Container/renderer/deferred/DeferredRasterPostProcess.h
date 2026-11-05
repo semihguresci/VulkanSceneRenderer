@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/renderer/effects/DisplayGrade.h"
+
 #include "Container/common/CommonVulkan.h"
 #include "Container/utility/SceneData.h"
 
@@ -19,6 +21,7 @@ struct DeferredPostProcessPushConstantInputs {
   bool bloomEnabled{false};
   float bloomIntensity{0.0f};
   container::gpu::ExposureSettings exposureSettings{};
+  DisplayGrade displayGrade{};
   float resolvedExposure{0.25f};
   float cameraNear{0.1f};
   float cameraFar{100.0f};
@@ -38,6 +41,7 @@ struct DeferredPostProcessFrameInputs {
   bool bloomEnabled{false};
   float bloomIntensity{0.0f};
   container::gpu::ExposureSettings exposureSettings{};
+  DisplayGrade displayGrade{};
   float resolvedExposure{0.25f};
   float cameraNear{0.1f};
   float cameraFar{100.0f};
@@ -90,6 +94,7 @@ struct DeferredPostProcessPassRecordInputs {
   VkPipelineLayout pipelineLayout{VK_NULL_HANDLE};
   std::array<VkDescriptorSet, 2> descriptorSets{};
   DeferredPostProcessFrameInputs frameInputs{};
+  bool captureSceneLinear{false};
   std::function<void(VkCommandBuffer)> recordAfterFullscreenDraw{};
 };
 

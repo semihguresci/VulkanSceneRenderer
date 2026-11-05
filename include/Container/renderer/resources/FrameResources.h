@@ -47,6 +47,7 @@ struct FrameResources {
   AttachmentImage temporalDiagnostics{};
   AttachmentImage oitHeadPointers{};
   container::gpu::AllocatedBuffer oitNodeBuffer{};
+  container::gpu::AllocatedBuffer linearCaptureFallback{};
   container::gpu::AllocatedBuffer oitCounterBuffer{};
   container::gpu::AllocatedBuffer oitMetadataBuffer{};
   uint32_t oitNodeCapacity{0};

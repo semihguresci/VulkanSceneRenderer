@@ -127,6 +127,13 @@ struct PostProcessPushConstants
     float minExposure;
     float maxExposure;
     float adaptationRate;
+    uint toneMapper;
+    float saturation;
+    float contrast;
+    float whiteBalanceGain[3];
+    float vibrance;
+    float shadowTone[3];
+    float highlightTone[3];
 };
 
 struct TileCullPushConstants

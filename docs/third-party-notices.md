@@ -7,6 +7,15 @@ Mapbox Earcut, Manifold, Clipper2, MaterialX, MikkTSpace, miniz, nlohmann/json, 
 Vulkan headers/loader, Vulkan Memory Allocator, and TinyUSDZ. Copies of the
 dependency license notices from the build are in `THIRD_PARTY_LICENSES`.
 Slang compiler notices are included alongside those of the shader dependencies.
+The display pass adapts Filmic, Uncharted 2, the minimal AgX fit, and
+CMCCAT2000 white balance from
+[`nvpro_core2`](https://github.com/nvpro-samples/nvpro_core2/blob/7cfe3ca9dc53ab23aeb8b55787fa676f1ff6c3d0/nvshaders/tonemap_functions.h.slang),
+copyright 2022–2026 NVIDIA Corporation, and PBR Neutral from
+[Khronos ToneMapping](https://github.com/KhronosGroup/ToneMapping/blob/180b1a7bddec33f73fe41712a2963cc3ad8e5547/PBR_Neutral/pbrNeutral.glsl),
+copyright 2024 The Khronos Group, Inc. The shader adapts the curves to a
+display-linear output before Vulkan's sRGB conversion. The Apache 2.0 license
+is in `docs/tone-curves-Apache-2.0.txt` and packaged as
+`THIRD_PARTY_LICENSES/ToneCurves-Apache-2.0.txt`.
 The LTC fitter and polygon integration adapt
 [selfshadow/ltc_code](https://github.com/selfshadow/ltc_code), Copyright 2017
 Eric Heitz, Jonathan Dupuy, Stephen Hill and David Neubelt. Its permissive license

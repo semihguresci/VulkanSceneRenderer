@@ -936,6 +936,7 @@ void recordForwardRasterPostProcessPass(
             .bloomIntensity =
                 bloomManager != nullptr ? bloomManager->intensity() : 0.0f,
             .exposureSettings = exposureSettings,
+            .displayGrade = p.postProcess.displayGrade,
             .resolvedExposure =
                 exposureManager != nullptr
                     ? exposureManager->resolvedExposure(exposureSettings)
@@ -952,8 +953,14 @@ void recordForwardRasterPostProcessPass(
                     : 0u,
             .transparentOitActive =
                 sharedContext.isPassActive(RenderPassId::OitResolve)},
+       .captureSceneLinear = p.screenshot.sceneLinear,
        .recordAfterFullscreenDraw = [&sharedContext, &p,
                                      postProcessSets](VkCommandBuffer passCmd) {
+         if (p.screenshot.viewportOnly) {
+           if (auto* gui = sharedContext.guiManager())
+             gui->endFrame();
+           return;
+         }
          if (p.services.ddgiManager)
            p.services.ddgiManager->recordDebug(passCmd, p.runtime.imageIndex,
                                                postProcessSets[0]);

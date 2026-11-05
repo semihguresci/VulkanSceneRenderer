@@ -438,6 +438,13 @@ struct PostProcessPushConstants {
   float minExposure{0.03125f};
   float maxExposure{8.0f};
   float adaptationRate{1.5f};
+  uint32_t toneMapper{0};
+  float saturation{1.0f};
+  float contrast{1.0f};
+  float whiteBalanceGain[3]{1.0f, 1.0f, 1.0f};
+  float vibrance{0.0f};
+  float shadowTone[3]{1.0f, 1.0f, 1.0f};
+  float highlightTone[3]{1.0f, 1.0f, 1.0f};
 };
 
 struct LightingData {
@@ -932,7 +939,7 @@ static_assert(offsetof(ExposureSettings, meteringLowPercentile) == 24,
 static_assert(offsetof(ExposureSettings, meteringHighPercentile) == 28,
               "ExposureSettings.meteringHighPercentile offset");
 
-static_assert(sizeof(PostProcessPushConstants) == 76,
+static_assert(sizeof(PostProcessPushConstants) == 128,
               "PostProcessPushConstants size mismatch with "
               "shaders/push_constants_common.slang PostProcessPushConstants.");
 static_assert(offsetof(PostProcessPushConstants, outputMode) == 0,
@@ -967,6 +974,13 @@ static_assert(offsetof(PostProcessPushConstants, maxExposure) == 68,
               "PostProcessPushConstants.maxExposure offset");
 static_assert(offsetof(PostProcessPushConstants, adaptationRate) == 72,
               "PostProcessPushConstants.adaptationRate offset");
+static_assert(offsetof(PostProcessPushConstants, toneMapper) == 76);
+static_assert(offsetof(PostProcessPushConstants, saturation) == 80);
+static_assert(offsetof(PostProcessPushConstants, contrast) == 84);
+static_assert(offsetof(PostProcessPushConstants, whiteBalanceGain) == 88);
+static_assert(offsetof(PostProcessPushConstants, vibrance) == 100);
+static_assert(offsetof(PostProcessPushConstants, shadowTone) == 104);
+static_assert(offsetof(PostProcessPushConstants, highlightTone) == 116);
 
 static_assert(sizeof(TileLightGrid) == 8,
               "TileLightGrid size mismatch with shaders/lighting_structs.slang "

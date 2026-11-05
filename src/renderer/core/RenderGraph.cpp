@@ -1600,6 +1600,14 @@ uint64_t RenderGraph::computePreparedFrameSignature(
           : 0u);
   const auto& exposureSettings = params.postProcess.exposureSettings;
   mix(exposureSettings.mode);
+  mix(static_cast<uint32_t>(params.postProcess.displayGrade.toneMapper));
+  mixFloat(params.postProcess.displayGrade.saturation);
+  mixFloat(params.postProcess.displayGrade.contrast);
+  mixFloat(params.postProcess.displayGrade.temperatureKelvin);
+  mixFloat(params.postProcess.displayGrade.tintDuv);
+  mixFloat(params.postProcess.displayGrade.vibrance);
+  for (float channel : params.postProcess.displayGrade.shadowTone) mixFloat(channel);
+  for (float channel : params.postProcess.displayGrade.highlightTone) mixFloat(channel);
   mixFloat(exposureSettings.manualExposure);
   mixFloat(exposureSettings.targetLuminance);
   mixFloat(exposureSettings.minExposure);

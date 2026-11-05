@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/renderer/effects/DisplayGrade.h"
+
 #include <array>
 #include <cctype>
 #include <cstddef>
@@ -69,6 +71,7 @@ struct AppConfig {
   bool areaEmitterDebug{false};
   container::temporal::Settings taa{};
   uint32_t taaResetFrame{0};
+  uint32_t pathSamplesPerFrame{1},pathSampleLimit{65536},pathMaxBounces{8},pathSeed{1};
   std::string renderTechnique{"deferred-raster"};
   std::string displayModeOverride{};
   std::string modelPath{std::string(kDefaultModelRelativePath)};
@@ -76,6 +79,7 @@ struct AppConfig {
   std::string bimModelPath{};
   float bimImportScale{1.0f};
   std::string screenshotCapturePath{};
+  bool screenshotViewportOnly{false};
   std::string temporalCaptureSequencePath{};
   uint32_t screenshotWarmupFrames{8};
   uint32_t screenshotCaptureFrame{9};
@@ -86,6 +90,7 @@ struct AppConfig {
   float cameraVerticalFovDegrees{60.0f};
   bool hasManualExposureOverride{false};
   float manualExposure{0.25f};
+  container::renderer::DisplayGrade displayGrade{};
   bool hasEnvironmentIntensityOverride{false};
   float environmentIntensity{1.0f};
   bool hasDirectionalIntensityOverride{false};

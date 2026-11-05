@@ -1650,6 +1650,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
               .bloomEnabled = bloomManager && bloomManager->enabled(),
               .bloomIntensity = bloomManager ? bloomManager->intensity() : 0.0f,
               .exposureSettings = exposureSettings,
+              .displayGrade = p.postProcess.displayGrade,
               .resolvedExposure =
                   exposureManager
                       ? exposureManager->resolvedExposure(exposureSettings)
@@ -1668,8 +1669,14 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                       : 0u,
               .transparentOitActive =
                   deferred->isPassActive(RenderPassId::OitResolve)},
+         .captureSceneLinear = p.screenshot.sceneLinear,
          .recordAfterFullscreenDraw = [deferred, &p,
                                        ppSets](VkCommandBuffer passCmd) {
+           if (p.screenshot.viewportOnly) {
+             if (auto* gui = deferred->guiManager())
+               gui->endFrame();
+             return;
+           }
            if (p.services.ddgiManager)
              p.services.ddgiManager->recordDebug(passCmd, p.runtime.imageIndex,
                                                  ppSets[0]);

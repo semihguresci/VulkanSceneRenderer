@@ -1,4 +1,5 @@
 #include "Container/utility/GuiManager.h"
+#include "Container/renderer/effects/DisplayGradePreset.h"
 
 #include "Container/renderer/bim/BimCoordinationOverlay.h"
 #include "Container/renderer/bim/BimManager.h"
@@ -6284,8 +6285,66 @@ void GuiManager::drawSceneControls(
     }
   }
 
+  if (ImGui::TreeNode("Export Image")) {
+    ImGui::InputText("Output path without extension", &imageExportPathInput_);
+    ImGui::BeginDisabled(imageExportPathInput_.empty());
+    if (ImGui::Button("Scene EXR"))
+      imageExportRequest_ = {imageExportPathInput_ + ".exr", false};
+    ImGui::SameLine();
+    if (ImGui::Button("Viewport PNG"))
+      imageExportRequest_ = {imageExportPathInput_ + "-viewport.png", true};
+    ImGui::SameLine();
+    if (ImGui::Button("Window PNG"))
+      imageExportRequest_ = {imageExportPathInput_ + "-window.png", false};
+    ImGui::EndDisabled();
+    ImGui::TreePop();
+  }
+
   ImGui::Separator();
   ImGui::Text("Post-process");
+  int toneMapper = static_cast<int>(displayGrade_.toneMapper);
+  static constexpr const char *kToneMapperLabels[] = {
+      "ACES", "Reinhard", "Clipping", "Filmic", "Uncharted 2", "AgX", "Khronos PBR Neutral"};
+  if (ImGui::Combo("Tone Mapping", &toneMapper, kToneMapperLabels,
+                   IM_ARRAYSIZE(kToneMapperLabels))) {
+    displayGrade_.toneMapper = static_cast<container::renderer::ToneMapper>(toneMapper);
+  }
+  ImGui::SliderFloat("Saturation", &displayGrade_.saturation, 0.0f, 2.0f, "%.2f",
+                     ImGuiSliderFlags_AlwaysClamp);
+  ImGui::SliderFloat("Contrast", &displayGrade_.contrast, 0.5f, 2.0f, "%.2f",
+                     ImGuiSliderFlags_AlwaysClamp);
+  if (ImGui::TreeNode("Color Grading")) {
+    ImGui::SliderFloat("White Balance (K)", &displayGrade_.temperatureKelvin, 2000.0f,
+                       15000.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SliderFloat("Tint (Duv)", &displayGrade_.tintDuv, -0.025f, 0.025f, "%.4f",
+                       ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SliderFloat("Vibrance", &displayGrade_.vibrance, -1.0f, 1.0f, "%.2f",
+                       ImGuiSliderFlags_AlwaysClamp);
+    ImGui::ColorEdit3("Shadow Tone", displayGrade_.shadowTone.data());
+    ImGui::ColorEdit3("Highlight Tone", displayGrade_.highlightTone.data());
+    if (ImGui::Button("Reset Color Grading")) {
+      const auto toneMapper = displayGrade_.toneMapper;
+      displayGrade_ = {};
+      displayGrade_.toneMapper = toneMapper;
+    }
+    ImGui::InputText("Preset file", &displayGradePath_);
+    const bool saveGrade = ImGui::Button("Save Preset##DisplayGrade");
+    ImGui::SameLine();
+    const bool loadGrade = ImGui::Button("Load Preset##DisplayGrade");
+    if (saveGrade || loadGrade) {
+      try {
+        const auto path = container::util::pathFromUtf8(displayGradePath_);
+        if (saveGrade) container::renderer::saveDisplayGrade(path, displayGrade_);
+        else displayGrade_ = container::renderer::loadDisplayGrade(path);
+        displayGradeMessage_ = saveGrade ? "Preset saved." : "Preset loaded.";
+      } catch (const std::exception &error) {
+        displayGradeMessage_ = error.what();
+      }
+    }
+    if (!displayGradeMessage_.empty())
+      ImGui::TextWrapped("%s", displayGradeMessage_.c_str());
+    ImGui::TreePop();
+  }
   int exposureMode =
       exposureSettings_.mode == container::gpu::kExposureModeAuto ? 1 : 0;
   static constexpr const char *kExposureModeLabels[] = {"Manual", "Auto"};

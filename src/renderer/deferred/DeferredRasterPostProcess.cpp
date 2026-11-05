@@ -5,10 +5,43 @@
 #include "Container/utility/GuiManager.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace container::renderer {
 
 namespace {
+
+// Krystek's Planckian-locus approximation and CMCCAT2000 adaptation, adapted
+// from nvpro_core2. See docs/third-party-notices.md.
+glm::vec3 whiteBalanceGain(const DisplayGrade &grade) {
+  constexpr DisplayGrade neutral{};
+  if (grade.temperatureKelvin == neutral.temperatureKelvin &&
+      grade.tintDuv == neutral.tintDuv)
+    return glm::vec3(1.0f);
+
+  const double t = std::isfinite(grade.temperatureKelvin)
+      ? std::clamp(double(grade.temperatureKelvin), 2000.0, 15000.0)
+      : neutral.temperatureKelvin;
+  const double tint = std::isfinite(grade.tintDuv)
+      ? std::clamp(double(grade.tintDuv), -0.025, 0.025) : neutral.tintDuv;
+  const double uDenom = (7.08145163e-7 * t + 8.42420235e-4) * t + 1.0;
+  const double vDenom = (1.61456053e-7 * t - 2.89741816e-5) * t + 1.0;
+  glm::dvec2 uv(((1.28641212e-7 * t + 1.54118254e-4) * t + 0.860117757) / uDenom,
+                ((4.20481691e-8 * t + 4.22806245e-5) * t + 0.317398726) / vDenom);
+  const auto derivative = glm::normalize(glm::dvec2(
+      ((-7.68136056380576e-13 * t - 9.60894034459919e-7) * t - 0.000570462348979613) /
+          (uDenom * uDenom),
+      ((-8.04477403759601e-12 * t - 1.8395552854377e-8) * t + 5.14769928267326e-5) /
+          (vDenom * vDenom)));
+  uv += tint * glm::dvec2(derivative.y, -derivative.x);
+  const glm::dvec2 xy = uv * glm::dvec2(3.0, 2.0) / (2.0 * uv.x - 8.0 * uv.y + 4.0);
+  const glm::dvec3 xyz(xy.x / xy.y, 1.0, std::max(1.0 - xy.x - xy.y, 0.0) / xy.y);
+  const glm::dvec3 cone(glm::dot(glm::dvec3(0.7982, 0.3389, -0.1371), xyz),
+                       glm::dot(glm::dvec3(-0.5918, 1.5512, 0.0406), xyz),
+                       glm::dot(glm::dvec3(0.0008, 0.0239, 0.9753), xyz));
+  return glm::vec3(glm::dvec3(0.948287308, 1.03290749, 1.08676255) /
+                   glm::max(cone, glm::dvec3(0.05)));
+}
 
 [[nodiscard]] bool
 displayModeUsesShadowCascadeSplits(container::ui::GBufferViewMode mode) {
@@ -30,6 +63,16 @@ container::gpu::PostProcessPushConstants buildDeferredPostProcessPushConstants(
   pushConstants.bloomEnabled = inputs.bloomEnabled ? 1u : 0u;
   pushConstants.bloomIntensity = inputs.bloomIntensity;
   pushConstants.exposure = inputs.resolvedExposure;
+  pushConstants.toneMapper = static_cast<uint32_t>(inputs.displayGrade.toneMapper);
+  pushConstants.saturation = inputs.displayGrade.saturation;
+  pushConstants.contrast = inputs.displayGrade.contrast;
+  const auto gain = whiteBalanceGain(inputs.displayGrade);
+  pushConstants.whiteBalanceGain[0] = gain.x;
+  pushConstants.whiteBalanceGain[1] = gain.y;
+  pushConstants.whiteBalanceGain[2] = gain.z;
+  pushConstants.vibrance = inputs.displayGrade.vibrance;
+  std::ranges::copy(inputs.displayGrade.shadowTone, pushConstants.shadowTone);
+  std::ranges::copy(inputs.displayGrade.highlightTone, pushConstants.highlightTone);
   pushConstants.exposureMode = inputs.exposureSettings.mode;
   pushConstants.targetLuminance = inputs.exposureSettings.targetLuminance;
   pushConstants.minExposure = inputs.exposureSettings.minExposure;
@@ -87,6 +130,7 @@ DeferredPostProcessFrameState DeferredPostProcessStateBuilder::build() const {
            .bloomEnabled = bloomActive,
            .bloomIntensity = inputs_.bloomIntensity,
            .exposureSettings = inputs_.exposureSettings,
+           .displayGrade = inputs_.displayGrade,
            .resolvedExposure = inputs_.resolvedExposure,
            .cameraNear = inputs_.cameraNear,
            .cameraFar = inputs_.cameraFar,
@@ -140,8 +184,11 @@ bool recordDeferredPostProcessPassCommands(
 
   DeferredPostProcessFrameInputs frameInputs = inputs.frameInputs;
   frameInputs.framebufferWidth = inputs.extent.width;
-  const DeferredPostProcessFrameState postProcessState =
+  DeferredPostProcessFrameState postProcessState =
       buildDeferredPostProcessFrameState(frameInputs);
+  // Keep the 128-byte push constant ABI. The low bits still select the display mode.
+  if (inputs.captureSceneLinear)
+    postProcessState.pushConstants.outputMode |= 0x80000000u;
 
   const DeferredPostProcessPassScope postProcessPass(
       {.commandBuffer = inputs.commandBuffer,

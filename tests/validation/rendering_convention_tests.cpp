@@ -3356,7 +3356,7 @@ TEST(RenderingConventionTests,
   EXPECT_EQ(offsetof(ExposureSettings, meteringLowPercentile), 24u);
   EXPECT_EQ(offsetof(ExposureSettings, meteringHighPercentile), 28u);
 
-  EXPECT_EQ(sizeof(PostProcessPushConstants), 76u);
+  EXPECT_EQ(sizeof(PostProcessPushConstants), 128u);
   EXPECT_EQ(offsetof(PostProcessPushConstants, outputMode), 0u);
   EXPECT_EQ(offsetof(PostProcessPushConstants, bloomEnabled), 4u);
   EXPECT_EQ(offsetof(PostProcessPushConstants, bloomIntensity), 8u);
@@ -3373,6 +3373,13 @@ TEST(RenderingConventionTests,
   EXPECT_EQ(offsetof(PostProcessPushConstants, minExposure), 64u);
   EXPECT_EQ(offsetof(PostProcessPushConstants, maxExposure), 68u);
   EXPECT_EQ(offsetof(PostProcessPushConstants, adaptationRate), 72u);
+  EXPECT_EQ(offsetof(PostProcessPushConstants, toneMapper), 76u);
+  EXPECT_EQ(offsetof(PostProcessPushConstants, saturation), 80u);
+  EXPECT_EQ(offsetof(PostProcessPushConstants, contrast), 84u);
+  EXPECT_EQ(offsetof(PostProcessPushConstants, whiteBalanceGain), 88u);
+  EXPECT_EQ(offsetof(PostProcessPushConstants, vibrance), 100u);
+  EXPECT_EQ(offsetof(PostProcessPushConstants, shadowTone), 104u);
+  EXPECT_EQ(offsetof(PostProcessPushConstants, highlightTone), 116u);
 
   const ExposureSettings exposureSettings{};
   EXPECT_EQ(exposureSettings.mode, container::gpu::kExposureModeManual);

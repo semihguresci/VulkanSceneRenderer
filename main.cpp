@@ -1,5 +1,6 @@
 
 #include "Container/app/AppConfig.h"
+#include "Container/renderer/effects/DisplayGradePreset.h"
 #include "Container/app/Application.h"
 #include "Container/renderer/lighting/DdgiPreset.h"
 #include "Container/utility/Platform.h"
@@ -158,6 +159,15 @@ void printCommandLineHelp() {
   --camera-position X Y Z        Override world-space camera position
   --camera-target X Y Z          Override world-space camera target
   --camera-fov F                 Camera vertical field of view in degrees
+  --tone-map NAME                aces/reinhard/clip/filmic/uncharted/agx/neutral
+  --saturation F / --contrast F   Display color controls
+  --white-balance K / --tint F    White balance and Duv tint
+  --vibrance F                   Display vibrance [-1,1]
+  --shadow-tone R G B            Shadow color grade [0,1]
+  --highlight-tone R G B         Highlight color grade [0,1]
+  --display-grade PATH           Load a display grading preset
+  --save-display-grade PATH      Save a validated preset and exit
+  --screenshot-viewport          Exclude editor overlays from PNG capture
   --exposure F                   Manual exposure
   --environment-intensity F      Environment intensity
   --directional-intensity F      Directional light intensity
@@ -177,7 +187,7 @@ void printCommandLineHelp() {
 }
 
 void applyCommandLine(container::app::AppConfig& config, int argc,
-                      char** argv) {
+                      char** argv, std::filesystem::path& displayGradeOutput) {
   bool positionalModelConsumed = false;
   bool explicitBimModel = false;
   bool explicitBimImportScale = false;
@@ -407,6 +417,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       config.bimImportScale =
           parseFloat(requireValue(argc, argv, i, arg), arg);
       explicitBimImportScale = true;
+    } else if (arg == "--screenshot-viewport") {
+      config.screenshotViewportOnly = true;
     } else if (arg == "--visual-regression-capture" || arg == "--screenshot") {
       config.screenshotCapturePath =
           std::string(requireValue(argc, argv, i, arg));
@@ -437,6 +449,39 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     } else if (arg == "--exposure") {
       config.manualExposure = parseFloat(requireValue(argc, argv, i, arg), arg);
       config.hasManualExposureOverride = true;
+    } else if (arg == "--tone-map") {
+      config.displayGrade.toneMapper =
+          container::renderer::parseToneMapper(requireValue(argc, argv, i, arg));
+    } else if (arg == "--display-grade" || arg == "--save-display-grade") {
+      const auto path = container::util::pathFromUtf8(
+          std::string(requireValue(argc, argv, i, arg)));
+      if (path.empty()) throw std::invalid_argument(std::string(arg) + " requires a path");
+      if (arg == "--display-grade") config.displayGrade = container::renderer::loadDisplayGrade(path);
+      else displayGradeOutput = path;
+    } else if (arg == "--saturation" || arg == "--contrast") {
+      const float value = parseFloat(requireValue(argc, argv, i, arg), arg);
+      const bool saturation = arg == "--saturation";
+      if (value < (saturation ? 0.0f : 0.5f) || value > 2.0f)
+        throw std::runtime_error(std::string(arg) + " is outside its supported range");
+      if (saturation) config.displayGrade.saturation = value;
+      else config.displayGrade.contrast = value;
+    } else if (arg == "--white-balance" || arg == "--tint" || arg == "--vibrance") {
+      const float value = parseFloat(requireValue(argc, argv, i, arg), arg);
+      auto& grade = config.displayGrade;
+      const auto setBounded = [&](float& field, float min, float max) {
+        if (value < min || value > max)
+          throw std::runtime_error(std::string(arg) + " is outside its supported range");
+        field = value;
+      };
+      if (arg == "--white-balance") setBounded(grade.temperatureKelvin, 2000.0f, 15000.0f);
+      else if (arg == "--tint") setBounded(grade.tintDuv, -0.025f, 0.025f);
+      else setBounded(grade.vibrance, -1.0f, 1.0f);
+    } else if (arg == "--shadow-tone" || arg == "--highlight-tone") {
+      const auto color = parseVec3(argc, argv, i, arg);
+      if (std::ranges::any_of(color, [](float channel) { return channel < 0.0f || channel > 1.0f; }))
+        throw std::runtime_error(std::string(arg) + " channels must be in [0,1]");
+      if (arg == "--shadow-tone") config.displayGrade.shadowTone = color;
+      else config.displayGrade.highlightTone = color;
     } else if (arg == "--environment-intensity") {
       config.environmentIntensity =
           parseFloat(requireValue(argc, argv, i, arg), arg);
@@ -522,7 +567,7 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
 
 }  // namespace
 
-int main(int argc, char** argv) {
+static int runApplication(int argc, char** argv) {
   try {
     for (int i = 1; i < argc; ++i) {
       if (argv[i] && std::string_view(argv[i]) == "--help") {
@@ -531,7 +576,12 @@ int main(int argc, char** argv) {
       }
     }
     auto config = container::app::DefaultAppConfig();
-    applyCommandLine(config, argc, argv);
+    std::filesystem::path displayGradeOutput;
+    applyCommandLine(config, argc, argv, displayGradeOutput);
+    if (!displayGradeOutput.empty()) {
+      container::renderer::saveDisplayGrade(displayGradeOutput, config.displayGrade);
+      return EXIT_SUCCESS;
+    }
     container::app::Application application{std::move(config)};
     application.run();
   } catch (const std::exception& e) {
@@ -540,3 +590,25 @@ int main(int argc, char** argv) {
   }
   return EXIT_SUCCESS;
 }
+
+#ifdef _WIN32
+// Preserve the original Unicode arguments instead of the CRT ANSI-code-page
+// argv. Every path/selector in AppConfig uses UTF-8, including async snapshots.
+int wmain(int argc,wchar_t** wideArguments) {
+  try {
+    std::vector<std::string> arguments;arguments.reserve(size_t(argc));
+    for(int i=0;i<argc;++i) {
+      const auto utf8=std::filesystem::path(wideArguments[i]).u8string();
+      arguments.emplace_back(utf8.begin(),utf8.end());
+    }
+    std::vector<char*> pointers;pointers.reserve(arguments.size()+1);
+    for(auto& argument:arguments)pointers.push_back(argument.data());
+    pointers.push_back(nullptr); // Retain the standard argv[argc] sentinel.
+    return runApplication(argc,pointers.data());
+  } catch(const std::exception& error) {
+    std::println(stderr,"Command line: {}",error.what());return EXIT_FAILURE;
+  }
+}
+#else
+int main(int argc,char** argv){return runApplication(argc,argv);}
+#endif

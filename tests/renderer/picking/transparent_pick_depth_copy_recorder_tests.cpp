@@ -1,4 +1,5 @@
 #include "Container/renderer/picking/TransparentPickDepthCopyRecorder.h"
+#include "Container/renderer/picking/DepthReadback.h"
 
 #include <gtest/gtest.h>
 
@@ -21,6 +22,26 @@ TransparentPickDepthCopyInputs readyInputs() {
 }
 
 } // namespace
+
+TEST(DepthReadbackTests, PackedDepthStencilTransitionsIncludeBothAspects) {
+  for (const auto format : {VK_FORMAT_D16_UNORM_S8_UINT,
+                            VK_FORMAT_D24_UNORM_S8_UINT,
+                            VK_FORMAT_D32_SFLOAT_S8_UINT}) {
+    SCOPED_TRACE(format);
+    EXPECT_EQ(container::renderer::depthReadbackBarrierAspects(format),
+              VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+  }
+}
+
+TEST(DepthReadbackTests, PureDepthTransitionsDoNotInventAStencilAspect) {
+  for (const auto format : {VK_FORMAT_D16_UNORM,
+                            VK_FORMAT_X8_D24_UNORM_PACK32,
+                            VK_FORMAT_D32_SFLOAT}) {
+    SCOPED_TRACE(format);
+    EXPECT_EQ(container::renderer::depthReadbackBarrierAspects(format),
+              VK_IMAGE_ASPECT_DEPTH_BIT);
+  }
+}
 
 TEST(TransparentPickDepthCopyRecorderTests, NullSourceImageReturnsInactive) {
   TransparentPickDepthCopyInputs inputs = readyInputs();
