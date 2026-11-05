@@ -27,6 +27,7 @@ struct VSInput
     [[vk::location(3)]] float3 inNormal;
     [[vk::location(4)]] float4 inTangent;
     [[vk::location(5)]] float2 inTexCoord1;
+    [[vk::location(8)]] float inColorAlpha;
 };
 
 struct VSOutput
@@ -63,7 +64,7 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
     float4 worldPos = mul(obj.model, float4(objectPosition, 1.0));
 
     output.pos = mul(uCamera.viewProj, worldPos);
-    output.baseColor = material.color * float4(input.inColor, 1.0);
+    output.baseColor = material.color * float4(input.inColor, input.inColorAlpha);
     output.texCoord = input.inTexCoord;
     output.texCoord1 = input.inTexCoord1;
     output.baseColorTextureIndex = material.baseColorTextureIndex;
@@ -102,6 +103,7 @@ uint fragMain(VSOutput vertIn) : SV_Target0
     baseAlpha = EvaluateOpacity(
         baseAlpha, vertIn.opacityTextureIndex, vertIn.opacityFactor,
         opacityTexCoord, material.opacityTextureTransform);
+    baseAlpha = ResolveGpuMaterialAlpha(baseAlpha, material.flags);
 
     if ((vertIn.flags & kObjectFlagAlphaCutoff) != 0u &&
         baseAlpha < vertIn.alphaCutoff)

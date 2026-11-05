@@ -274,14 +274,14 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       attribDescs[0]};
   std::array<VkVertexInputAttributeDescription, 2> posTexAttribs = {
       attribDescs[0], attribDescs[2]};
-  std::array<VkVertexInputAttributeDescription, 4> posTexNormAttribs = {
-      attribDescs[0], attribDescs[2], attribDescs[3], attribDescs[5]};
+  std::array<VkVertexInputAttributeDescription, 5> posTexNormAttribs = {
+      attribDescs[0], attribDescs[2], attribDescs[3], attribDescs[5], attribDescs[6]};
   std::array<VkVertexInputAttributeDescription, 3> posTexNormNoTex1Attribs = {
       attribDescs[0], attribDescs[2], attribDescs[3]};
-  std::array<VkVertexInputAttributeDescription, 6>
+  std::array<VkVertexInputAttributeDescription, 7>
       posColorTexNormTangentAttribs = {attribDescs[0], attribDescs[1],
                                        attribDescs[2], attribDescs[3],
-                                       attribDescs[4], attribDescs[5]};
+                                       attribDescs[4], attribDescs[5], attribDescs[6]};
 
   VkPipelineVertexInputStateCreateInfo posOnlyInput = fullVertexInput;
   posOnlyInput.vertexAttributeDescriptionCount = 1;
@@ -1198,7 +1198,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   RenderingGraphicsPipelineCreateInfo onPCI = meshPCI;
   onPCI.stageCount = static_cast<uint32_t>(onStages.size());
   onPCI.pStages = onStages.data();
-  onPCI.pVertexInputState = &posTexNormNoTex1Input;
+  onPCI.pVertexInputState = &posTexNormInput;
   onPCI.pColorBlendState = &overlayBlend;
   onPCI.pDepthStencilState = &normalLineDS;
   onPCI.layout = layouts.scene;

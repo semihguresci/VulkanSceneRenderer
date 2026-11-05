@@ -29,6 +29,7 @@ struct VSInput
     [[vk::location(2)]] float2 inTexCoord;
     [[vk::location(3)]] float3 inNormal;
     [[vk::location(5)]] float2 inTexCoord1;
+    [[vk::location(8)]] float inColorAlpha;
 };
 
 struct VSOutput
@@ -70,7 +71,7 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
     output.baseColorTextureIndex = material.baseColorTextureIndex;
     output.flags = material.flags | obj.objectInfo.y;
     output.alphaCutoff = material.alphaCutoff;
-    output.baseColorAlpha = material.color.a;
+    output.baseColorAlpha = material.color.a * input.inColorAlpha;
     output.opacityTextureIndex = material.opacityTextureIndex;
     output.opacityFactor = material.opacityFactor;
     output.objectIndex = objectIndex;
@@ -105,6 +106,7 @@ void fragMain(VSOutput input)
         ApplyGpuTextureTransform(input.texCoord, input.texCoord1,
                                  material.opacityTextureTransform),
         material.opacityTextureTransform);
+    alpha = ResolveGpuMaterialAlpha(alpha, material.flags);
 
     if ((input.flags & kObjectFlagAlphaMask) != 0u &&
         !AlphaMaskPass(alpha, input.alphaCutoff, input.pos))

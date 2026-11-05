@@ -27,12 +27,12 @@ smooth reflection events merge their discrete masses. Transmission is weighted
 by the dielectric fraction once.
 
 Numerical validation uses the real Vulkan compute pipeline with synchronization
-validation, GPU buffers and readback. The **41 cases** compare independent
+validation, GPU buffers and readback. The **44 cases** compare independent
 double-precision BRDF/BTDF/PDF/throughput references, reciprocity, furnace energy,
 sphere quadrature, Snell/TIR limits, camera conventions, sampling sequences,
 batching, moments and absorption endpoints. Null sampling outcomes are kept
-separate from invalid-input rejections. Roughness is not clamped to disguise
-unrepresentable inputs.
+separate from invalid-input rejections. The transport BSDFs do not clamp roughness to disguise
+unrepresentable inputs. The raster material-input helper retains its existing 0.045 floor. Three further GPU cases exercise the shared raster material inputs: zero texture factors keep layers inactive, positive scalar/HDR color factors retain their authored values, and nonfinite components are sanitized.
 
 Build `path_transport_gpu_tests` with tests enabled and a configured Vulkan SDK,
 then run:

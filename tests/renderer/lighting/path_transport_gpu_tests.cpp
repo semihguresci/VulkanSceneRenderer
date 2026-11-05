@@ -998,4 +998,39 @@ TEST_F(PathTransportGpu, ConductorMixtureEndpointsPreservePureSamplersAndRejectI
   for(float weight:{-.1f,1.1f,std::numeric_limits<float>::quiet_NaN()}) {auto item=q;item.controls.x=21;item.previousMoment.x=weight;item.light={.2f,.3f,.4f,0};invalid.push_back(item);}
   for(const auto& r:run(invalid)) {EXPECT_EQ(r.weightValid.w,0);EXPECT_EQ(r.auxiliary.y,1);}
 }
+TEST_F(PathTransportGpu, MaterialTextureZeroFactorsStayInactive) {
+  std::vector<Query> input;
+  for (uint32_t texture : {UINT32_MAX, 0u, 4095u}) {
+    Query q; q.controls = {23, texture, 0, 0}; q.diffuseRoughness = glm::vec4(0);
+    input.push_back(q);
+  }
+  for (const auto& value : run(input)) {
+    EXPECT_EQ(value.valuePdf, glm::vec4(0));
+    EXPECT_FLOAT_EQ(value.auxiliary.x, .045f);
+  }
+}
+TEST_F(PathTransportGpu, MaterialTextureFactorsPreserveAuthoredValuesAndHdrColor) {
+  std::vector<Query> input(3);
+  for (auto& q : input) q.controls = {23, 7, 0, 0};
+  input[0].diffuseRoughness = {.25f, 1.5f, -1, 0};
+  input[1].diffuseRoughness = {2, -2, 0, 0};
+  input[2].diffuseRoughness = {.02f, 0, .5f, 0};
+  const auto output = run(input);
+  const std::array expected{glm::vec4(.25f, 1.5f, 0, .25f),
+      glm::vec4(2, 0, 0, 1), glm::vec4(.02f, 0, .5f, .02f)};
+  const std::array roughness{.25f, 1.f, .045f};
+  for (size_t i = 0; i < output.size(); ++i) {
+    EXPECT_EQ(output[i].valuePdf, expected[i]);
+    EXPECT_FLOAT_EQ(output[i].auxiliary.x, roughness[i]);
+  }
+}
+TEST_F(PathTransportGpu, MaterialTextureFactorsSanitizeNonfiniteInputsPerChannel) {
+  Query q; q.controls = {23, 1, 0, 0};
+  q.diffuseRoughness = {std::numeric_limits<float>::quiet_NaN(), .75f,
+      std::numeric_limits<float>::infinity(), 0};
+  const auto output = run(std::array{q});
+  ASSERT_EQ(output.size(), 1u);
+  EXPECT_EQ(output[0].valuePdf, glm::vec4(0, .75f, 0, 0));
+  EXPECT_FLOAT_EQ(output[0].auxiliary.x, .045f);
+}
 } // namespace

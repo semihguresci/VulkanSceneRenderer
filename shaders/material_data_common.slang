@@ -179,35 +179,33 @@ float MaxGpuMaterialComponent(float3 value)
     return max(max(value.x, value.y), value.z);
 }
 
+// Authored factors multiply sampled values. A texture never enables a layer
+// whose factor is zero; omission/defaults are resolved by material conversion.
+float ResolveMaterialScalarFactor(float factor)
+{
+    return max(isfinite(factor) ? factor : 0.0, 0.0);
+}
+
+float3 ResolveMaterialColorFactor(float3 factor)
+{
+    return float3(ResolveMaterialScalarFactor(factor.r),
+                  ResolveMaterialScalarFactor(factor.g),
+                  ResolveMaterialScalarFactor(factor.b));
+}
+
 float ResolveDeferredTextureBackedFactor(float factor, uint textureIndex)
 {
-    float value = saturate(factor);
-    if (HasGpuMaterialTexture(textureIndex) && value <= 0.0)
-    {
-        value = 1.0;
-    }
-    return value;
+    return saturate(ResolveMaterialScalarFactor(factor));
 }
 
 float ResolveDeferredTextureBackedRoughness(float factor, uint textureIndex)
 {
-    float value = factor;
-    if (HasGpuMaterialTexture(textureIndex) && value <= 0.0)
-    {
-        value = 0.5;
-    }
-    return clamp(value, 0.045, 1.0);
+    return clamp(ResolveMaterialScalarFactor(factor), 0.045, 1.0);
 }
 
 float3 ResolveDeferredTextureBackedColor(float3 factor, uint textureIndex)
 {
-    float3 value = max(factor, 0.0.xxx);
-    if (HasGpuMaterialTexture(textureIndex) &&
-        MaxGpuMaterialComponent(value) <= 0.0)
-    {
-        value = 1.0.xxx;
-    }
-    return value;
+    return ResolveMaterialColorFactor(factor);
 }
 
 DeferredMaterialLayerTerms ResolveDeferredMaterialLayerTerms(GpuMaterial material)

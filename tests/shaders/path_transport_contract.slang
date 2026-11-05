@@ -1,5 +1,6 @@
 #include "path_transport_common.slang"
 #include "path_dielectric_common.slang"
+#include "material_data_common.slang"
 
 struct Query
 {
@@ -237,6 +238,13 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
                 result.weightValid.rgb = estimate;
             }
         }
+    }
+    if (operation == 23u)
+    {
+        // Exercise the production raster material inputs independently of BSDFs.
+        result.valuePdf = float4(ResolveDeferredTextureBackedColor(query.diffuseRoughness.rgb, query.controls.y),
+            ResolveDeferredTextureBackedFactor(query.diffuseRoughness.x, query.controls.y));
+        result.auxiliary.x = ResolveDeferredTextureBackedRoughness(query.diffuseRoughness.x, query.controls.y);
     }
     results[tid.x] = result;
 }

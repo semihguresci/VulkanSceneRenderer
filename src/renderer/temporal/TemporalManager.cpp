@@ -188,8 +188,8 @@ void TemporalManager::createPipelines(const std::filesystem::path &root,
         container::geometry::Vertex::bindingDescription();
     const auto allAttributes =
         container::geometry::Vertex::attributeDescriptions();
-    const std::array<VkVertexInputAttributeDescription, 4> attributes = {
-        allAttributes[0], allAttributes[2], allAttributes[3], allAttributes[5]};
+    const std::array<VkVertexInputAttributeDescription, 5> attributes = {
+        allAttributes[0], allAttributes[2], allAttributes[3], allAttributes[5], allAttributes[6]};
     VkPipelineVertexInputStateCreateInfo input{
         VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     input.vertexBindingDescriptionCount = 1;

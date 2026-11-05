@@ -124,8 +124,7 @@ void writeHostVisibleBuffer(container::gpu::AllocationManager& allocationManager
 bool isForwardTransparentMaterial(
     const container::material::Material& material) {
   return material.alphaMode == container::material::AlphaMode::Blend ||
-         material.transmissionFactor > 0.001f ||
-         hasMaterialTexture(material.transmissionTextureIndex);
+         material.transmissionFactor > 0.0f;
 }
 
 float sanitizeImportScale(float scale) {

@@ -1514,9 +1514,7 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
 
     if (material.alphaMode == AlphaMode::Opaque &&
         (material.opacityFactor < 0.999f ||
-         material.opacityTextureIndex != std::numeric_limits<uint32_t>::max() ||
-         material.transmissionFactor > 0.001f ||
-         material.transmissionTextureIndex != std::numeric_limits<uint32_t>::max())) {
+         material.opacityTextureIndex != std::numeric_limits<uint32_t>::max())) {
       material.alphaMode = AlphaMode::Blend;
     }
 
