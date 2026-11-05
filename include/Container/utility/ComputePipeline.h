@@ -10,6 +10,8 @@ class PipelineManager;
 
 // Owners keep this slot across reloads and obtain the current handle when
 // recording. The manager observes slots weakly, including during recreation.
+// Recording, reload publication and owner retirement are serialized by the
+// owning render thread; concurrent handle reads/publication are not supported.
 class ComputePipeline {
  public:
   ComputePipeline() = default;

@@ -17,6 +17,8 @@ candidate containing the old pipelines. The pipeline layout and device remain
 borrowed resources. Manager shutdown also requires retired readers; it clears
 the handles in any surviving shared slots. The existing raw-pipeline creation
 overload remains available while renderer owners migrate to managed slots.
+Recording and reload publication must be serialized on the owning render thread;
+the shared slots do not provide concurrent publication or recording guarantees.
 
 Three real Vulkan tests dispatch distinguishable shader programs and verify
 prepare/publish behavior, shared-slot updates, partial preparation failure,
