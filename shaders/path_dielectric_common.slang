@@ -149,6 +149,102 @@ bool PtValidAbsorption(float3 color, float distance)
     return all(isfinite(color)) && all(color >= 0.0.xxx) && all(color <= 1.0.xxx) &&
         !isnan(distance) && distance > 0.0;
 }
+
+// A metallic/dielectric material is a weighted mixture of distinct surfaces.
+// TIR affects only the dielectric fraction; it must not whiten the conductor
+// or attenuate the diffuse/transmitted base by the metallic Fresnel a second time.
+struct PtVolumeMixture
+{
+    PtVolumeBsdf dielectric;
+    float3 conductor;
+    float metallic;
+};
+PtBsdf PtVolumeConductor(PtVolumeMixture material)
+{
+    PtBsdf result = (PtBsdf)0;
+    result.f0 = material.conductor;
+    result.specularScale = 1.0;
+    result.roughness = material.dielectric.reflection.roughness;
+    return result;
+}
+bool PtValidVolumeMixture(PtVolumeMixture material)
+{
+    return PtValidVolumeBsdf(material.dielectric) && all(isfinite(material.conductor)) &&
+        all(material.conductor >= 0.0.xxx) && all(material.conductor <= 1.0.xxx) &&
+        isfinite(material.metallic) && material.metallic >= 0.0 && material.metallic <= 1.0;
+}
+PtBsdfEvaluation PtEvaluateVolumeMixture(PtVolumeMixture material, float3 view, float3 light)
+{
+    if (!PtValidVolumeMixture(material)) return (PtBsdfEvaluation)0;
+    if (material.metallic == 0.0) return PtEvaluateVolumeBsdf(material.dielectric, view, light);
+    if (material.metallic == 1.0) return PtEvaluateBsdf(PtVolumeConductor(material), view, light);
+    PtBsdfEvaluation a = PtEvaluateVolumeBsdf(material.dielectric, view, light);
+    PtBsdfEvaluation b = PtEvaluateBsdf(PtVolumeConductor(material), view, light);
+    if (a.valid == 0u || b.valid == 0u) return (PtBsdfEvaluation)0;
+    PtBsdfEvaluation result;
+    result.value = a.value * (1.0 - material.metallic) + b.value * material.metallic;
+    result.pdf = a.pdf * (1.0 - material.metallic) + b.pdf * material.metallic;
+    result.valid = 1u;
+    return result;
+}
+PtBsdfSample PtSampleVolumeMixture(PtVolumeMixture material, float3 view, float3 u)
+{
+    if (!PtValidVolumeMixture(material)) return PtRejectedBsdfSample();
+    if (material.metallic == 0.0) return PtSampleVolumeBsdf(material.dielectric, view, u);
+    if (material.metallic == 1.0) return PtSampleBsdf(PtVolumeConductor(material), view, u);
+    if (!PtValidDirection(view) || view.z <= 0.0 || !all(isfinite(u)) || any(u < 0.0.xxx) || any(u >= 1.0.xxx))
+        return PtRejectedBsdfSample();
+    PtBsdfSample result;
+    if (u.x < material.metallic)
+    {
+        u.x = min(u.x / material.metallic, asfloat(0x3f7fffffu));
+        result = PtSampleBsdf(PtVolumeConductor(material), view, u);
+    }
+    else
+    {
+        u.x = min((u.x - material.metallic) / (1.0 - material.metallic), asfloat(0x3f7fffffu));
+        result = PtSampleVolumeBsdf(material.dielectric, view, u);
+    }
+    if (result.valid == 0u) return result;
+    if (result.delta != 0u)
+    {
+        if (result.direction.z < 0.0)
+        {
+            // Only the dielectric contributes a transmitted delta. Its weight
+            // and proposal probability have the same outer mixture factor.
+            result.pdf *= 1.0 - material.metallic;
+            return result;
+        }
+        // Both smooth reflection proposals address the same discrete event.
+        // Merge their masses and values rather than returning a branch PDF.
+        float unused;
+        float3 dielectricFresnel = PtVolumeFresnel(material.dielectric, view.z, unused);
+        float dielectricPdf = PtVolumeMicrofacetProbability(material.dielectric, view) *
+            PtVolumeReflectionProbability(material.dielectric, dielectricFresnel);
+        if (material.dielectric.eta == 1.0)
+        {
+            PtThinBsdf matched = PtIndexMatchedBsdf(material.dielectric);
+            dielectricPdf = (1.0 - PtThinProbability(matched, view)) * PtSpecularProbability(matched.reflection, view);
+        }
+        result.pdf = (1.0 - material.metallic) * dielectricPdf + material.metallic;
+        result.weight = ((1.0 - material.metallic) * dielectricFresnel +
+            material.metallic * PtFresnel(material.conductor, view.z)) / result.pdf;
+        return result;
+    }
+    PtBsdfEvaluation evaluated = PtEvaluateVolumeMixture(material, view, result.direction);
+    if (evaluated.valid == 0u || evaluated.pdf <= 0.0) return PtRejectedBsdfSample();
+    result.pdf = evaluated.pdf;
+    result.weight = evaluated.value * (abs(result.direction.z) / result.pdf);
+    if (!all(isfinite(result.weight))) return PtRejectedBsdfSample();
+    return result;
+}
+float3 PtVolumeNullTransmission(PtVolumeMixture material, float3 view, out float probability)
+{
+    PtThinBsdf dielectric = PtIndexMatchedBsdf(material.dielectric);
+    probability = (1.0 - material.metallic) * PtThinProbability(dielectric, view);
+    return (1.0 - material.metallic) * dielectric.transmission *
+        (1.0.xxx - PtFresnel(dielectric.reflection.f0, view.z) * dielectric.reflection.specularScale);
+}
 float3 PtAbsorption(float3 color, float attenuationDistance, float distance)
 {
     if (distance == 0.0 || isinf(attenuationDistance)) return 1.0.xxx;

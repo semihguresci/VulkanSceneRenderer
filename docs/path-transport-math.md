@@ -20,8 +20,14 @@ caller supplies the media on either side and applies absorption over actual
 world distances. Index-matched transmission is a straight-through delta even
 when the surface has nonzero roughness.
 
+Metallic volume surfaces use a weighted conductor/dielectric mixture. Total
+internal reflection affects the dielectric fraction while the conductor retains
+its color. Evaluation and sampling use the complete mixture PDF, and coincident
+smooth reflection events merge their discrete masses. Transmission is weighted
+by the dielectric fraction once.
+
 Numerical validation uses the real Vulkan compute pipeline with synchronization
-validation, GPU buffers and readback. The **36 cases** compare independent
+validation, GPU buffers and readback. The **41 cases** compare independent
 double-precision BRDF/BTDF/PDF/throughput references, reciprocity, furnace energy,
 sphere quadrature, Snell/TIR limits, camera conventions, sampling sequences,
 batching, moments and absorption endpoints. Null sampling outcomes are kept

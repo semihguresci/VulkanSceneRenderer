@@ -200,5 +200,43 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
             }
         }
     }
+    if (operation >= 19u && operation <= 22u)
+    {
+        PtVolumeMixture material;
+        material.dielectric.reflection = bsdf;
+        material.dielectric.transmission = query.sampleValue.rgb;
+        material.dielectric.eta = query.previousMoment.w;
+        material.conductor = query.previousMean.rgb;
+        material.metallic = query.previousMoment.x;
+        if (operation == 19u)
+        {
+            PtBsdfEvaluation evaluated = PtEvaluateVolumeMixture(material, query.view.xyz, query.light.xyz);
+            result.valuePdf = float4(evaluated.value, evaluated.pdf);
+            result.auxiliary.z = float(evaluated.valid);
+        }
+        else
+        {
+            float3 u = float3(PtRandom(query.controls.z, query.controls.w, 0u, 0u, query.controls.y),
+                             PtRandom(query.controls.z, query.controls.w, 0u, 1u, query.controls.y),
+                             PtRandom(query.controls.z, query.controls.w, 0u, 2u, query.controls.y));
+            if (operation == 21u) u = query.light.xyz;
+            PtBsdfSample sampled = PtSampleVolumeMixture(material, query.view.xyz, u);
+            PtBsdfEvaluation evaluated = PtEvaluateVolumeMixture(material, query.view.xyz, sampled.direction);
+            result.valuePdf = float4(evaluated.value, evaluated.pdf);
+            result.directionPdf = float4(sampled.direction, sampled.pdf);
+            result.weightValid = float4(sampled.weight, float(sampled.valid));
+            result.auxiliary = float4(float(sampled.delta), float(sampled.rejected), float(evaluated.valid), 0);
+            if (operation == 22u)
+            {
+                float3 light = PtUniformSphere(float2(PtRandom(query.controls.z, query.controls.w, 0u, 3u, query.controls.y),
+                    PtRandom(query.controls.z, query.controls.w, 0u, 4u, query.controls.y)));
+                PtBsdfEvaluation direct = PtEvaluateVolumeMixture(material, query.view.xyz, light);
+                float lightPdf = 1.0 / (4.0 * PT_PI);
+                float3 estimate = direct.value * abs(light.z) * PtPowerHeuristic(lightPdf, direct.pdf) / lightPdf;
+                if (sampled.valid != 0u) estimate += sampled.weight * (sampled.delta != 0u ? 1.0 : PtPowerHeuristic(sampled.pdf, lightPdf));
+                result.weightValid.rgb = estimate;
+            }
+        }
+    }
     results[tid.x] = result;
 }

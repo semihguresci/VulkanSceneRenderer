@@ -937,4 +937,65 @@ TEST_F(PathTransportGpu, InvalidVolumeInputsRejectWithoutFabricatedTransport) {
   q=base;q.previousMean.x=1;input.push_back(q);q=base;q.view.z=-1;input.push_back(q);
   for(const auto& result:run(input)) {EXPECT_EQ(result.weightValid.w,0);EXPECT_EQ(result.auxiliary.y,1);}
 }
+glm::dvec4 volumeMixtureReference(const Query& q,glm::dvec3 v,glm::dvec3 l) {
+  Query metal=q;metal.diffuseRoughness=glm::vec4(0,0,0,q.diffuseRoughness.w);metal.f0Scale=glm::vec4(glm::vec3(q.previousMean),1);
+  const double weight=q.previousMoment.x;
+  return volumeReference(q,v,l)*(1-weight)+glm::dvec4(reference(metal,v,l),referencePdf(metal,v,l))*weight;
+}
+TEST_F(PathTransportGpu, VolumeConductorMixtureMatchesIndependentWeightedBsdfAndCompletePdf) {
+  std::vector<Query> input;
+  for(float eta:{1.5f,1.f/1.5f}) for(float m:{.1f,.5f,.9f}) for(float rough:{.2f,.6f,1.f}) for(float side:{-1.f,1.f}) {
+    auto q=volumeQuery(eta,rough);q.controls.x=19;q.diffuseRoughness.x=.1f;q.sampleValue={.6f,.4f,.2f,0};
+    q.previousMean={.2f,.4f,.8f,0};q.previousMoment.x=m;q.view={.8f,0,.6f,0};q.light={0,.6f,side*.8f,0};input.push_back(q);
+  }
+  const auto output=run(input);
+  for(size_t i=0;i<input.size();++i) {
+    const auto expected=volumeMixtureReference(input[i],glm::dvec3(input[i].view),glm::dvec3(input[i].light));
+    ASSERT_EQ(output[i].auxiliary.z,1);for(int c=0;c<4;++c) EXPECT_NEAR(output[i].valuePdf[c],expected[c],2e-6+std::abs(expected[c])*.001);
+  }
+}
+TEST_F(PathTransportGpu, VolumeConductorSamplesCarryFullWeightedDensityAndThroughput) {
+  std::vector<Query> input;
+  for(float eta:{1.5f,1.f/1.5f}) for(float m:{.1f,.5f,.9f}) for(float rough:{.3f,.8f}) {
+    auto q=volumeQuery(eta,rough);q.diffuseRoughness.x=.1f;q.sampleValue={.6f,.4f,.2f,0};q.previousMean={.2f,.4f,.8f,0};q.previousMoment.x=m;q.view={.8f,0,.6f,0};
+    auto batch=sampling(q,512,20);input.insert(input.end(),batch.begin(),batch.end());
+  }
+  const auto output=run(input);
+  for(size_t i=0;i<input.size();++i) {
+    const auto& r=output[i];ASSERT_EQ(r.auxiliary.y,0);if(r.weightValid.w==0) continue;
+    const auto l=glm::dvec3(r.directionPdf);const auto expected=volumeMixtureReference(input[i],glm::dvec3(input[i].view),l);
+    ASSERT_GT(expected.w,0);EXPECT_NEAR(r.directionPdf.w,expected.w,3e-5+expected.w*.003);
+    for(int c=0;c<3;++c) EXPECT_NEAR(r.weightValid[c],expected[c]*std::abs(l.z)/expected.w,3e-5+std::abs(r.weightValid[c])*.003);
+  }
+}
+TEST_F(PathTransportGpu, MixedMetalTirMergesCoincidentDeltaMassesWithoutWhiteningConductor) {
+  auto base=volumeQuery(1.f/1.5f,0);base.f0Scale.w=0;base.previousMean={.2f,.4f,.8f,0};base.previousMoment.x=.25f;base.view={.8f,0,.6f,0};
+  const auto output=run(sampling(base,4096,20));const auto metal=glm::dvec3(base.previousMean);
+  const auto expected=glm::dvec3(.75)+.25*(metal+(glm::dvec3(1)-metal)*std::pow(.4,5));
+  for(const auto& r:output) {
+    ASSERT_EQ(r.weightValid.w,1);EXPECT_EQ(r.auxiliary.x,1);EXPECT_EQ(r.directionPdf.w,1);
+    for(int c=0;c<3;++c) EXPECT_NEAR(r.weightValid[c],expected[c],2e-7);
+  }
+}
+TEST_F(PathTransportGpu, VolumeConductorEnvironmentMisMatchesIndependentMixtureQuadrature) {
+  auto q=volumeQuery(1.5f,.8f);q.diffuseRoughness.x=.1f;q.sampleValue={.6f,.4f,.2f,0};q.previousMean={.2f,.4f,.8f,0};q.previousMoment.x=.35f;q.view={.8f,0,.6f,0};
+  glm::dvec3 expected{};constexpr int zCount=256,phiCount=512;
+  for(int z=0;z<zCount;++z) for(int p=0;p<phiCount;++p) for(double side:{-1.,1.}) {
+    const double cosine=(z+.5)/zCount,r=std::sqrt(1-cosine*cosine),phi=2*pi*(p+.5)/phiCount;
+    expected+=glm::dvec3(volumeMixtureReference(q,glm::dvec3(q.view),{r*std::cos(phi),r*std::sin(phi),side*cosine}))*cosine;
+  }
+  expected*=2*pi/(zCount*phiCount);const auto mean=meanWeights(run(sampling(q,131072,22)));
+  for(int c=0;c<3;++c) EXPECT_NEAR(mean[c],expected[c],.005);
+}
+TEST_F(PathTransportGpu, ConductorMixtureEndpointsPreservePureSamplersAndRejectInvalidWeights) {
+  auto q=volumeQuery(1.5f,.6f);q.previousMean={.2f,.4f,.8f,0};q.previousMoment.x=0;
+  const auto pure=run(sampling(q,512,14)),mixed=run(sampling(q,512,20));
+  for(size_t i=0;i<pure.size();++i) {EXPECT_EQ(pure[i].directionPdf,mixed[i].directionPdf);EXPECT_EQ(pure[i].weightValid,mixed[i].weightValid);}
+  q.previousMoment.x=1;auto metal=q;metal.diffuseRoughness={0,0,0,q.diffuseRoughness.w};metal.f0Scale=glm::vec4(glm::vec3(q.previousMean),1);
+  const auto endpoint=run(sampling(q,512,20)),conductor=run(sampling(metal,512,1));
+  for(size_t i=0;i<endpoint.size();++i) {EXPECT_EQ(endpoint[i].directionPdf,conductor[i].directionPdf);EXPECT_EQ(endpoint[i].weightValid,conductor[i].weightValid);}
+  std::vector<Query> invalid;
+  for(float weight:{-.1f,1.1f,std::numeric_limits<float>::quiet_NaN()}) {auto item=q;item.controls.x=21;item.previousMoment.x=weight;item.light={.2f,.3f,.4f,0};invalid.push_back(item);}
+  for(const auto& r:run(invalid)) {EXPECT_EQ(r.weightValid.w,0);EXPECT_EQ(r.auxiliary.y,1);}
+}
 } // namespace
