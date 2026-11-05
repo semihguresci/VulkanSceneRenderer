@@ -60,14 +60,17 @@ an allocator-owned image. Prepared append/retirement operations retain finite
 budgets and validate table identities and revisions before publication; their
 commit moves prepared state without allocating.
 
-The complete glTF encoded-source selection, sampler-descriptor integration and
-interactive texture authoring are separate integration steps. Publishing these
-upload and ownership APIs alone does not complete those parts of #94/#95/#108.
-Table mutation does not update a scene's descriptors. A live consumer must
-publish matching image/sampler/metadata descriptors, including a fallback for
-every inactive slot, before releasing old image leases. The legacy scene
-publisher continues to use active, append-only tables; live table retirement
-belongs to the forthcoming sampling-publisher integration.
+The scene consumer now publishes dense sampler policies, matching texture
+metadata and stable image descriptors, including a private fallback for every
+inactive slot and empty catalogs. It validates allocation identities and table
+revisions before writing descriptors and retains actual image ownership. See
+[glTF material sampler integration](material-sampler-publication.md).
+
+Table mutation alone does not update a scene's descriptors. A live consumer must
+publish matching image/sampler/metadata descriptors before releasing old image
+leases. Complete glTF encoded-source selection, mixed color/data-role mapping
+and interactive texture authoring remain separate integration steps under
+#94/#95/#108; publishing these backend APIs alone does not complete their scopes.
 
 ## Verification
 
