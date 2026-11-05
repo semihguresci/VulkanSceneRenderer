@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/utility/ComputePipeline.h"
+
 #include "Container/common/CommonVulkan.h"
 #include "Container/renderer/debug/DebugOverlayRenderer.h"
 #include "Container/utility/SceneData.h"
@@ -110,7 +112,7 @@ class ShadowCullManager {
 	  drawCountBuffers_{};
   std::vector<uint32_t> drawCapacities_{};
 
-  VkPipeline            shadowCullPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline shadowCullPipeline_{};
   VkPipelineLayout      shadowCullPipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout shadowCullSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool      shadowCullPool_{VK_NULL_HANDLE};

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/utility/ComputePipeline.h"
+
 #include "Container/common/CommonVMA.h"
 #include "Container/common/CommonVulkan.h"
 #include "Container/utility/VulkanMemoryManager.h"
@@ -92,8 +94,8 @@ class ExposureManager {
   VkDescriptorPool descriptorPool_{VK_NULL_HANDLE};
   std::vector<VkDescriptorSet> descriptorSets_{};
   VkPipelineLayout pipelineLayout_{VK_NULL_HANDLE};
-  VkPipeline histogramPipeline_{VK_NULL_HANDLE};
-  VkPipeline adaptPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline histogramPipeline_{};
+  container::gpu::ComputePipeline adaptPipeline_{};
 
   float currentExposure_{0.25f};
   float averageLuminance_{0.18f};

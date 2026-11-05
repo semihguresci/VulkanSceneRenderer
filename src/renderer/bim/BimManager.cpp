@@ -3855,24 +3855,8 @@ void BimManager::createVisibilityFilterResources(
     return;
   }
 
-  const auto spvData = container::util::readFile(compPath);
-  VkShaderModule compModule =
-      container::gpu::createShaderModule(device_->device(), spvData);
-
-  VkPipelineShaderStageCreateInfo stage{};
-  stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-  stage.module = compModule;
-  stage.pName = "computeMain";
-
-  VkComputePipelineCreateInfo pipelineInfo{};
-  pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-  pipelineInfo.stage = stage;
-  pipelineInfo.layout = visibilityFilterPipelineLayout_;
   visibilityFilterPipeline_ = pipelineManager_.createComputePipeline(
-      pipelineInfo, "bim_visibility_filter");
-
-  destroyOwnedShaderModule(device_->device(), compModule, nullptr);
+      compPath, visibilityFilterPipelineLayout_, "bim_visibility_filter");
   visibilityFilterStats_.computeReady =
       visibilityFilterPipeline_ != VK_NULL_HANDLE &&
       visibilityFilterDescriptorSet_ != VK_NULL_HANDLE;
@@ -4043,24 +4027,8 @@ void BimManager::createDrawCompactionResources(
     return;
   }
 
-  const auto spvData = container::util::readFile(compPath);
-  VkShaderModule compModule =
-      container::gpu::createShaderModule(device_->device(), spvData);
-
-  VkPipelineShaderStageCreateInfo stage{};
-  stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-  stage.module = compModule;
-  stage.pName = "computeMain";
-
-  VkComputePipelineCreateInfo pipelineInfo{};
-  pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-  pipelineInfo.stage = stage;
-  pipelineInfo.layout = drawCompactionPipelineLayout_;
-  drawCompactionPipeline_ =
-      pipelineManager_.createComputePipeline(pipelineInfo, "bim_draw_compact");
-
-  destroyOwnedShaderModule(device_->device(), compModule, nullptr);
+  drawCompactionPipeline_ = pipelineManager_.createComputePipeline(
+      compPath, drawCompactionPipelineLayout_, "bim_draw_compact");
   for (size_t index = 0; index < drawCompactionSlots_.size(); ++index) {
     BimDrawCompactionSlotResources &slot = drawCompactionSlots_[index];
     slot.stats.computeReady =
@@ -4137,24 +4105,8 @@ void BimManager::createMeshletResidencyResources(
     return;
   }
 
-  const auto spvData = container::util::readFile(compPath);
-  VkShaderModule compModule =
-      container::gpu::createShaderModule(device_->device(), spvData);
-
-  VkPipelineShaderStageCreateInfo stage{};
-  stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-  stage.module = compModule;
-  stage.pName = "computeMain";
-
-  VkComputePipelineCreateInfo pipelineInfo{};
-  pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-  pipelineInfo.stage = stage;
-  pipelineInfo.layout = meshletResidencyPipelineLayout_;
   meshletResidencyPipeline_ = pipelineManager_.createComputePipeline(
-      pipelineInfo, "bim_meshlet_residency");
-
-  destroyOwnedShaderModule(device_->device(), compModule, nullptr);
+      compPath, meshletResidencyPipelineLayout_, "bim_meshlet_residency");
   meshletResidencyStats_.computeReady =
       meshletResidencyPipeline_ != VK_NULL_HANDLE &&
       meshletResidencyDescriptorSet_ != VK_NULL_HANDLE;

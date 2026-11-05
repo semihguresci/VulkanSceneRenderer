@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/utility/ComputePipeline.h"
+
 #include "Container/common/CommonVulkan.h"
 #include "Container/geometry/ImportReport.h"
 #include "Container/geometry/DotBimLoader.h"
@@ -1006,7 +1008,7 @@ private:
   VkDescriptorPool meshletResidencyDescriptorPool_{VK_NULL_HANDLE};
   VkDescriptorSet meshletResidencyDescriptorSet_{VK_NULL_HANDLE};
   VkPipelineLayout meshletResidencyPipelineLayout_{VK_NULL_HANDLE};
-  VkPipeline meshletResidencyPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline meshletResidencyPipeline_{};
   BimMeshletResidencySettings meshletResidencySettings_{};
   VkBuffer meshletResidencyCameraBuffer_{VK_NULL_HANDLE};
   VkDeviceSize meshletResidencyCameraBufferSize_{0};
@@ -1023,7 +1025,7 @@ private:
   VkDescriptorPool visibilityFilterDescriptorPool_{VK_NULL_HANDLE};
   VkDescriptorSet visibilityFilterDescriptorSet_{VK_NULL_HANDLE};
   VkPipelineLayout visibilityFilterPipelineLayout_{VK_NULL_HANDLE};
-  VkPipeline visibilityFilterPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline visibilityFilterPipeline_{};
   bool visibilityFilterDescriptorsDirty_{false};
   bool visibilityFilterDispatchPending_{false};
   bool visibilityFilterMaskCurrent_{false};
@@ -1035,7 +1037,7 @@ private:
   std::array<VkDescriptorSet, kBimDrawCompactionSlotCount>
       drawCompactionDescriptorSets_{};
   VkPipelineLayout drawCompactionPipelineLayout_{VK_NULL_HANDLE};
-  VkPipeline drawCompactionPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline drawCompactionPipeline_{};
   BimFloorPlanOverlayData floorPlanGround_{};
   BimFloorPlanOverlayData floorPlanSourceElevation_{};
   BimSectionClipCapDrawData sectionClipCapDrawData_{};

@@ -52,10 +52,6 @@ class PipelineManager {
   ComputePipeline createComputePipeline(const std::filesystem::path& shader,
                                         VkPipelineLayout layout, const std::string& cacheKey);
 
-  // Existing callers migrate independently of the managed-slot API.
-  VkPipeline createComputePipeline(const VkComputePipelineCreateInfo& pipelineInfo,
-                                   const std::string& cacheKey);
-
   class ComputeReload {
    public:
     ComputeReload() = default;

@@ -76,6 +76,16 @@ void EnvironmentManager::destroy() {
 
   destroyGtaoTextures();
 
+  pipelineManager_.destroyPipeline(gtaoPipeline_);
+  pipelineManager_.destroyPipeline(gtaoBlurPipeline_);
+  pipelineManager_.destroyPipelineLayout(gtaoPipelineLayout_);
+  pipelineManager_.destroyPipelineLayout(gtaoBlurPipelineLayout_);
+  pipelineManager_.destroyDescriptorPool(gtaoDescriptorPool_);
+  pipelineManager_.destroyDescriptorPool(gtaoBlurDescriptorPool_);
+  pipelineManager_.destroyDescriptorSetLayout(gtaoSetLayout_);
+  pipelineManager_.destroyDescriptorSetLayout(gtaoBlurSetLayout_);
+  gtaoSet_ = gtaoBlurSet_ = VK_NULL_HANDLE;
+
   auto destroyView = [&](VkImageView& v) {
     if (v != VK_NULL_HANDLE) { destroyVulkanImageView(dev, v, nullptr); v = VK_NULL_HANDLE; }
   };
@@ -182,23 +192,8 @@ void EnvironmentManager::createBrdfLut(const std::filesystem::path& shaderDir) {
       {lutSetLayout}, {});
 
   std::filesystem::path spvPath = shaderDir / "spv_shaders" / "brdf_lut.comp.spv";
-  const auto spvData = container::util::readFile(spvPath);
-  VkShaderModule module = container::gpu::createShaderModule(dev, spvData);
-
-  VkPipelineShaderStageCreateInfo stage{};
-  stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
-  stage.module = module;
-  stage.pName  = "computeMain";
-
-  VkComputePipelineCreateInfo ci{};
-  ci.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-  ci.stage  = stage;
-  ci.layout = brdfLutPipelineLayout_;
-
-  brdfLutPipeline_ = pipelineManager_.createComputePipeline(ci, "brdf_lut");
-
-  destroyOwnedShaderModule(dev, module, nullptr);
+  brdfLutPipeline_ = pipelineManager_.createComputePipeline(
+      spvPath, brdfLutPipelineLayout_, "brdf_lut");
 
   // Transition image to GENERAL for compute write.
   VkCommandBuffer cmd = VK_NULL_HANDLE;
@@ -313,11 +308,6 @@ std::string EnvironmentStatusWithPath(std::string_view state,
   return std::string(state) + ": " + path.string();
 }
 
-VkShaderModule loadComputeModule(VkDevice dev,
-                                  const std::filesystem::path& spv) {
-  const auto data = container::util::readFile(spv);
-  return container::gpu::createShaderModule(dev, data);
-}
 
 }  // namespace
 
@@ -350,22 +340,7 @@ void EnvironmentManager::createIblPipelines(
     outLayout = pipelineManager_.createPipelineLayout(
         {iblSetLayout_}, {pushConstants});
 
-    VkShaderModule module = loadComputeModule(dev, spv);
-    VkPipelineShaderStageCreateInfo stage{};
-    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = module;
-    stage.pName = "computeMain";
-
-    VkComputePipelineCreateInfo ci{};
-    ci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    ci.stage = stage;
-    ci.layout = outLayout;
-
-    VkPipeline pipeline =
-        pipelineManager_.createComputePipeline(ci, spv.filename().string());
-    destroyOwnedShaderModule(dev, module, nullptr);
-    return pipeline;
+    return pipelineManager_.createComputePipeline(spv, outLayout, spv.filename().string());
   };
 
   equirectToCubemapPipeline_ = buildPipeline(
@@ -1064,22 +1039,8 @@ void EnvironmentManager::createGtaoPipelines(const std::filesystem::path& shader
         {gtaoSetLayout_}, {pcRange});
 
     std::filesystem::path spvPath = shaderDir / "spv_shaders" / "gtao.comp.spv";
-    const auto spvData = container::util::readFile(spvPath);
-    VkShaderModule module = container::gpu::createShaderModule(dev, spvData);
-
-    VkPipelineShaderStageCreateInfo stage{};
-    stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = module;
-    stage.pName  = "computeMain";
-
-    VkComputePipelineCreateInfo ci{};
-    ci.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    ci.stage  = stage;
-    ci.layout = gtaoPipelineLayout_;
-
-    gtaoPipeline_ = pipelineManager_.createComputePipeline(ci, "gtao");
-    destroyOwnedShaderModule(dev, module, nullptr);
+    gtaoPipeline_ = pipelineManager_.createComputePipeline(
+        spvPath, gtaoPipelineLayout_, "gtao");
   }
 
   // GTAO blur pipeline.
@@ -1103,22 +1064,8 @@ void EnvironmentManager::createGtaoPipelines(const std::filesystem::path& shader
         {gtaoBlurSetLayout_}, {pcRange});
 
     std::filesystem::path spvPath = shaderDir / "spv_shaders" / "gtao_blur.comp.spv";
-    const auto spvData = container::util::readFile(spvPath);
-    VkShaderModule module = container::gpu::createShaderModule(dev, spvData);
-
-    VkPipelineShaderStageCreateInfo stage{};
-    stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = module;
-    stage.pName  = "computeMain";
-
-    VkComputePipelineCreateInfo ci{};
-    ci.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    ci.stage  = stage;
-    ci.layout = gtaoBlurPipelineLayout_;
-
-    gtaoBlurPipeline_ = pipelineManager_.createComputePipeline(ci, "gtao_blur");
-    destroyOwnedShaderModule(dev, module, nullptr);
+    gtaoBlurPipeline_ = pipelineManager_.createComputePipeline(
+        spvPath, gtaoBlurPipelineLayout_, "gtao_blur");
   }
 
   // Descriptor pools.

@@ -446,24 +446,8 @@ void ShadowCullManager::createShadowCullPipeline(
 
 	if (shadowCullPipelineLayout_ == VK_NULL_HANDLE) return;
 
-	const auto spvData = container::util::readFile(compPath);
-	VkShaderModule compModule =
-		container::gpu::createShaderModule(device_->device(), spvData);
-
-	VkPipelineShaderStageCreateInfo stage{};
-	stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
-	stage.module = compModule;
-	stage.pName  = "computeMain";
-
-	VkComputePipelineCreateInfo ci{};
-	ci.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-	ci.stage  = stage;
-	ci.layout = shadowCullPipelineLayout_;
-
-	shadowCullPipeline_ =
-		pipelineManager_.createComputePipeline(ci, "shadow_cull");
-	destroyOwnedShaderModule(device_->device(), compModule, nullptr);
+	shadowCullPipeline_ = pipelineManager_.createComputePipeline(
+	    compPath, shadowCullPipelineLayout_, "shadow_cull");
 }
 
 size_t ShadowCullManager::descriptorSetIndex(uint32_t imageIndex,

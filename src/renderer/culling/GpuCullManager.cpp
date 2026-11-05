@@ -861,25 +861,8 @@ void GpuCullManager::createFrustumCullPipeline(
       {frustumCullSetLayout_}, {pcRange});
 
   auto compPath = shaderDir / "spv_shaders" / "frustum_cull.comp.spv";
-  const auto spvData = container::util::readFile(compPath);
-  VkShaderModule compModule =
-      container::gpu::createShaderModule(device_->device(), spvData);
-
-  VkPipelineShaderStageCreateInfo stage{};
-  stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
-  stage.module = compModule;
-  stage.pName  = "computeMain";
-
-  VkComputePipelineCreateInfo ci{};
-  ci.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-  ci.stage  = stage;
-  ci.layout = frustumCullPipelineLayout_;
-
-  frustumCullPipeline_ =
-      pipelineManager_.createComputePipeline(ci, "frustum_cull");
-
-  destroyOwnedShaderModule(device_->device(), compModule, nullptr);
+  frustumCullPipeline_ = pipelineManager_.createComputePipeline(
+      compPath, frustumCullPipelineLayout_, "frustum_cull");
 }
 
 void GpuCullManager::createHiZPipeline(
@@ -905,23 +888,8 @@ void GpuCullManager::createHiZPipeline(
   hizPipelineLayout_ = pipelineManager_.createPipelineLayout(
       {hizSetLayout_}, {pcRange});
 
-  const auto spvData = container::util::readFile(compPath);
-  VkShaderModule compModule =
-      container::gpu::createShaderModule(device_->device(), spvData);
-
-  VkPipelineShaderStageCreateInfo stage{};
-  stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
-  stage.module = compModule;
-  stage.pName  = "computeMain";
-
-  VkComputePipelineCreateInfo ci{};
-  ci.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-  ci.stage  = stage;
-  ci.layout = hizPipelineLayout_;
-
-  hizPipeline_ = pipelineManager_.createComputePipeline(ci, "hiz_generate");
-  destroyOwnedShaderModule(device_->device(), compModule, nullptr);
+  hizPipeline_ = pipelineManager_.createComputePipeline(
+      compPath, hizPipelineLayout_, "hiz_generate");
 }
 
 void GpuCullManager::createHiZDescriptorSets() {
@@ -992,24 +960,8 @@ void GpuCullManager::createOcclusionCullPipeline(
   occlusionCullPipelineLayout_ = pipelineManager_.createPipelineLayout(
       {occlusionCullSetLayout_}, {pcRange});
 
-  const auto spvData = container::util::readFile(compPath);
-  VkShaderModule compModule =
-      container::gpu::createShaderModule(device_->device(), spvData);
-
-  VkPipelineShaderStageCreateInfo stage{};
-  stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
-  stage.module = compModule;
-  stage.pName  = "computeMain";
-
-  VkComputePipelineCreateInfo ci{};
-  ci.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-  ci.stage  = stage;
-  ci.layout = occlusionCullPipelineLayout_;
-
-  occlusionCullPipeline_ =
-      pipelineManager_.createComputePipeline(ci, "occlusion_cull");
-  destroyOwnedShaderModule(device_->device(), compModule, nullptr);
+  occlusionCullPipeline_ = pipelineManager_.createComputePipeline(
+      compPath, occlusionCullPipelineLayout_, "occlusion_cull");
 }
 
 void GpuCullManager::allocateFrustumCullDescriptorSets(

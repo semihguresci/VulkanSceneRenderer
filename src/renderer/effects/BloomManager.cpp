@@ -426,10 +426,10 @@ void BloomManager::destroy() {
     linearSampler_ = VK_NULL_HANDLE;
   }
   // Pipelines, layouts, pools, and set layouts are managed by PipelineManager.
-  downsamplePipeline_ = VK_NULL_HANDLE;
+  downsamplePipeline_.reset();
   downsamplePipelineLayout_ = VK_NULL_HANDLE;
   downsampleSetLayout_ = VK_NULL_HANDLE;
-  upsamplePipeline_ = VK_NULL_HANDLE;
+  upsamplePipeline_.reset();
   upsamplePipelineLayout_ = VK_NULL_HANDLE;
   upsampleSetLayout_ = VK_NULL_HANDLE;
 }
@@ -439,8 +439,6 @@ void BloomManager::destroy() {
 // ---------------------------------------------------------------------------
 
 void BloomManager::createPipelines(const std::filesystem::path& shaderDir) {
-  VkDevice dev = device_->device();
-
   // ---- Downsample pipeline ----
   {
     const std::array<VkDescriptorSetLayoutBinding, 3> bindings = {{
@@ -460,22 +458,8 @@ void BloomManager::createPipelines(const std::filesystem::path& shaderDir) {
         {downsampleSetLayout_}, {pcRange});
 
     std::filesystem::path spvPath = shaderDir / "spv_shaders" / "bloom_downsample.comp.spv";
-    const auto spvData = container::util::readFile(spvPath);
-    VkShaderModule module = container::gpu::createShaderModule(dev, spvData);
-
-    VkPipelineShaderStageCreateInfo stage{};
-    stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = module;
-    stage.pName  = "computeMain";
-
-    VkComputePipelineCreateInfo ci{};
-    ci.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    ci.stage  = stage;
-    ci.layout = downsamplePipelineLayout_;
-
-    downsamplePipeline_ = pipelineManager_.createComputePipeline(ci, "bloom_downsample");
-    destroyOwnedShaderModule(dev, module, nullptr);
+    downsamplePipeline_ = pipelineManager_.createComputePipeline(
+        spvPath, downsamplePipelineLayout_, "bloom_downsample");
   }
 
   // ---- Upsample pipeline ----
@@ -498,22 +482,8 @@ void BloomManager::createPipelines(const std::filesystem::path& shaderDir) {
         {upsampleSetLayout_}, {pcRange});
 
     std::filesystem::path spvPath = shaderDir / "spv_shaders" / "bloom_upsample.comp.spv";
-    const auto spvData = container::util::readFile(spvPath);
-    VkShaderModule module = container::gpu::createShaderModule(dev, spvData);
-
-    VkPipelineShaderStageCreateInfo stage{};
-    stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = module;
-    stage.pName  = "computeMain";
-
-    VkComputePipelineCreateInfo ci{};
-    ci.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    ci.stage  = stage;
-    ci.layout = upsamplePipelineLayout_;
-
-    upsamplePipeline_ = pipelineManager_.createComputePipeline(ci, "bloom_upsample");
-    destroyOwnedShaderModule(dev, module, nullptr);
+    upsamplePipeline_ = pipelineManager_.createComputePipeline(
+        spvPath, upsamplePipelineLayout_, "bloom_upsample");
   }
 }
 

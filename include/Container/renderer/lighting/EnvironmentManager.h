@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/utility/ComputePipeline.h"
+
 #include "Container/common/CommonVulkan.h"
 #include "Container/common/CommonVMA.h"
 #include "Container/utility/VulkanMemoryManager.h"
@@ -133,17 +135,17 @@ class EnvironmentManager {
   VkSampler     envSampler_{VK_NULL_HANDLE};
 
   // ---- BRDF LUT compute pipeline ----
-  VkPipeline              brdfLutPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline brdfLutPipeline_{};
   VkPipelineLayout        brdfLutPipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout   brdfLutSetLayout_{VK_NULL_HANDLE};
 
   // ---- HDR -> IBL compute pipelines ----
   VkDescriptorSetLayout   iblSetLayout_{VK_NULL_HANDLE};
-  VkPipeline              equirectToCubemapPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline equirectToCubemapPipeline_{};
   VkPipelineLayout        equirectToCubemapPipelineLayout_{VK_NULL_HANDLE};
-  VkPipeline              irradiancePipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline irradiancePipeline_{};
   VkPipelineLayout        irradiancePipelineLayout_{VK_NULL_HANDLE};
-  VkPipeline              prefilterPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline prefilterPipeline_{};
   VkPipelineLayout        prefilterPipelineLayout_{VK_NULL_HANDLE};
 
   // ---- GTAO ----
@@ -161,13 +163,13 @@ class EnvironmentManager {
   uint32_t      gtaoHeight_{0};
 
   // GTAO compute pipelines
-  VkPipeline            gtaoPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline gtaoPipeline_{};
   VkPipelineLayout      gtaoPipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout gtaoSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool      gtaoDescriptorPool_{VK_NULL_HANDLE};
   VkDescriptorSet       gtaoSet_{VK_NULL_HANDLE};
 
-  VkPipeline            gtaoBlurPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline gtaoBlurPipeline_{};
   VkPipelineLayout      gtaoBlurPipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout gtaoBlurSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool      gtaoBlurDescriptorPool_{VK_NULL_HANDLE};

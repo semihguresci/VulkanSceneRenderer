@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/utility/ComputePipeline.h"
+
 #include "Container/common/CommonVulkan.h"
 #include "Container/common/CommonMath.h"
 #include "Container/renderer/debug/DebugOverlayRenderer.h"
@@ -212,14 +214,14 @@ class GpuCullManager {
   std::vector<container::gpu::AllocatedBuffer> occlusionCountBuffers_{};
 
   // Frustum cull compute pipeline.
-  VkPipeline           frustumCullPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline frustumCullPipeline_{};
   VkPipelineLayout     frustumCullPipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout frustumCullSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool     frustumCullPool_{VK_NULL_HANDLE};
   std::vector<VkDescriptorSet> frustumCullSets_{};
 
   // Hi-Z generation.
-  VkPipeline           hizPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline hizPipeline_{};
   VkPipelineLayout     hizPipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout hizSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool     hizPool_{VK_NULL_HANDLE};
@@ -230,7 +232,7 @@ class GpuCullManager {
   uint32_t             hizMipLevels_{0};
 
   // Occlusion cull compute pipeline.
-  VkPipeline           occlusionCullPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline occlusionCullPipeline_{};
   VkPipelineLayout     occlusionCullPipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout occlusionCullSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool     occlusionCullPool_{VK_NULL_HANDLE};

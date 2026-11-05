@@ -227,23 +227,6 @@ ComputePipeline PipelineManager::buildComputePipeline(
   return result;
 }
 
-VkPipeline PipelineManager::createComputePipeline(
-    const VkComputePipelineCreateInfo& pipelineInfo,
-    const std::string& cacheKey) {
-  VkPipelineCache cache = getOrCreatePipelineCache(cacheKey, nullptr);
-
-  VkPipeline pipeline = VK_NULL_HANDLE;
-  VkResult res = createOwnedComputePipelines(device_, cache, 1, &pipelineInfo,
-                                          nullptr, &pipeline);
-
-  if (res != VK_SUCCESS) {
-    throw std::runtime_error("Failed to create compute pipeline");
-  }
-
-  pipelines_.push_back(pipeline);
-  return pipeline;
-}
-
 ComputePipeline PipelineManager::createComputePipeline(
     const std::filesystem::path& shader, VkPipelineLayout layout, const std::string& cacheKey) {
   const auto active = activeComputeDirectory_ / "spv_shaders" / shader.filename();

@@ -139,30 +139,11 @@ void TemporalManager::createPipelines(const std::filesystem::path &root,
       {sceneLayout},
       {{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
         sizeof(container::gpu::BindlessPushConstants)}});
-  auto compute = [&](const char *file, VkPipelineLayout layout,
-                     const char *key) {
-    VkShaderModule shader = module(file);
-    VkComputePipelineCreateInfo info{
-        VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    info.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-    info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    info.stage.module = shader;
-    info.stage.pName = "computeMain";
-    info.layout = layout;
-    VkPipeline pipeline{};
-    try {
-      pipeline = pipelines_.createComputePipeline(info, key);
-    } catch (...) {
-      destroyOwnedShaderModule(device, shader, nullptr);
-      throw;
-    }
-    destroyOwnedShaderModule(device, shader, nullptr);
-    return pipeline;
-  };
-  resolvePipeline_ =
-      compute("temporal_resolve.comp.spv", resolveLayout_, "taa.resolve");
-  composePipeline_ =
-      compute("temporal_compose.comp.spv", composeLayout_, "taa.compose");
+  const auto shaders = root / "spv_shaders";
+  resolvePipeline_ = pipelines_.createComputePipeline(
+      shaders / "temporal_resolve.comp.spv", resolveLayout_, "taa.resolve");
+  composePipeline_ = pipelines_.createComputePipeline(
+      shaders / "temporal_compose.comp.spv", composeLayout_, "taa.compose");
   VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
   samplerInfo.magFilter = samplerInfo.minFilter = VK_FILTER_LINEAR;
   samplerInfo.addressModeU = samplerInfo.addressModeV =

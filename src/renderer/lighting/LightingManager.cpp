@@ -1395,25 +1395,8 @@ void LightingManager::createTiledResources(
 
     std::filesystem::path compPath =
         shaderDir / "spv_shaders" / "tile_light_cull.comp.spv";
-    const auto spvData = container::util::readFile(compPath);
-    VkShaderModule compModule =
-        container::gpu::createShaderModule(device_->device(), spvData);
-
-    VkPipelineShaderStageCreateInfo stage{};
-    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = compModule;
-    stage.pName = "computeMain";
-
-    VkComputePipelineCreateInfo ci{};
-    ci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    ci.stage = stage;
-    ci.layout = tileCullPipelineLayout_;
-
-    tileCullPipeline_ =
-        pipelineManager_.createComputePipeline(ci, "tile_light_cull");
-
-    destroyOwnedShaderModule(device_->device(), compModule, nullptr);
+    tileCullPipeline_ = pipelineManager_.createComputePipeline(
+        compPath, tileCullPipelineLayout_, "tile_light_cull");
   }
 }
 

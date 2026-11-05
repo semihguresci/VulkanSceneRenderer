@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/utility/ComputePipeline.h"
+
 #include "Container/common/CommonVMA.h"
 #include "Container/common/CommonVulkan.h"
 #include "Container/utility/VulkanMemoryManager.h"
@@ -95,14 +97,14 @@ class BloomManager {
   VkSampler linearSampler_{VK_NULL_HANDLE};
 
   // Downsample pipeline
-  VkPipeline            downsamplePipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline downsamplePipeline_{};
   VkPipelineLayout      downsamplePipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout downsampleSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool      downsampleDescriptorPool_{VK_NULL_HANDLE};
   std::vector<VkDescriptorSet> downsampleSets_;  // one per mip transition
 
   // Upsample pipeline
-  VkPipeline            upsamplePipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline upsamplePipeline_{};
   VkPipelineLayout      upsamplePipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout upsampleSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool      upsampleDescriptorPool_{VK_NULL_HANDLE};

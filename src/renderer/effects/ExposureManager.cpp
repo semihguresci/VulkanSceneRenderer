@@ -291,36 +291,11 @@ void ExposureManager::createPipeline(const std::filesystem::path& shaderDir) {
   pipelineLayout_ =
       pipelineManager_.createPipelineLayout({setLayout_}, {pcRange});
 
-  const auto createComputePipeline =
-      [&](const char* shaderName, const char* pipelineName) {
-        const std::filesystem::path spvPath =
-            shaderDir / "spv_shaders" / shaderName;
-        const auto spvData = container::util::readFile(spvPath);
-        const VkShaderModule module =
-            container::gpu::createShaderModule(device_->device(), spvData);
-
-        VkPipelineShaderStageCreateInfo stage{};
-        stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        stage.module = module;
-        stage.pName = "computeMain";
-
-        VkComputePipelineCreateInfo pipelineInfo{};
-        pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        pipelineInfo.stage = stage;
-        pipelineInfo.layout = pipelineLayout_;
-
-        VkPipeline pipeline =
-            pipelineManager_.createComputePipeline(pipelineInfo, pipelineName);
-        destroyOwnedShaderModule(device_->device(), module, nullptr);
-        return pipeline;
-      };
-
-  histogramPipeline_ =
-      createComputePipeline("exposure_histogram.comp.spv",
-                            "exposure_histogram");
-  adaptPipeline_ =
-      createComputePipeline("exposure_adapt.comp.spv", "exposure_adapt");
+  const auto shaders = shaderDir / "spv_shaders";
+  histogramPipeline_ = pipelineManager_.createComputePipeline(
+      shaders / "exposure_histogram.comp.spv", pipelineLayout_, "exposure_histogram");
+  adaptPipeline_ = pipelineManager_.createComputePipeline(
+      shaders / "exposure_adapt.comp.spv", pipelineLayout_, "exposure_adapt");
 }
 
 void ExposureManager::resizeFrameResources(uint32_t descriptorSetCount) {

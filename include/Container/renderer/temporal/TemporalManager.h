@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/utility/ComputePipeline.h"
+
 #include "Container/renderer/resources/FrameResources.h"
 #include "Container/renderer/temporal/TemporalState.h"
 #include <array>
@@ -76,7 +78,7 @@ private:
   VkExtent2D extent_{};
   VkDescriptorSetLayout resolveSetLayout_{}, composeSetLayout_{};
   VkPipelineLayout resolveLayout_{}, composeLayout_{}, velocityLayout_{};
-  VkPipeline resolvePipeline_{}, composePipeline_{};
+  container::gpu::ComputePipeline resolvePipeline_{}, composePipeline_{};
   std::array<VkPipeline, 3> velocityPipelines_{};
   VkDescriptorPool pool_{};
   VkSampler sampler_{};

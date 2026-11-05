@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/utility/ComputePipeline.h"
+
 #include "Container/common/CommonMath.h"
 #include "Container/common/CommonVulkan.h"
 #include "Container/renderer/lighting/EditableLight.h"
@@ -287,7 +289,7 @@ private:
   mutable bool timingQueriesWritten_{false};
 
   // Compute pipeline
-  VkPipeline tileCullPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline tileCullPipeline_{};
   VkPipelineLayout tileCullPipelineLayout_{VK_NULL_HANDLE};
 
   // Descriptor resources for the compute cull shader (set 0 = camera+depth,
