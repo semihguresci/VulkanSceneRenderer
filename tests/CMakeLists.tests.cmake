@@ -1184,3 +1184,26 @@ target_compile_definitions(path_transport_gpu_tests PRIVATE
 add_dependencies(path_transport_gpu_tests path_transport_contract_shader)
 set_tests_properties(path_transport_gpu_tests PROPERTIES
     LABELS "requires-vulkan;requires-display;path-tracing" RUN_SERIAL TRUE TIMEOUT 180)
+
+# Managed compute lifetime and transactional replacement contracts.
+set(MANAGED_COMPUTE_A_SPIRV "${CMAKE_BINARY_DIR}/test_shaders/managed_compute_a.comp.spv")
+set(MANAGED_COMPUTE_B_SPIRV "${CMAKE_BINARY_DIR}/test_shaders/managed_compute_b.comp.spv")
+add_custom_command(
+    OUTPUT "${MANAGED_COMPUTE_A_SPIRV}" "${MANAGED_COMPUTE_B_SPIRV}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/test_shaders"
+    COMMAND "${SLANGC_EXECUTABLE}" "${DEFAULT_SHADER_DIR}/managed_compute_contract.slang"
+            ${SLANG_SPIRV_FLAGS} -entry computeMain -DMANAGED_COMPUTE_VALUE=17 -o "${MANAGED_COMPUTE_A_SPIRV}"
+    COMMAND "${SLANGC_EXECUTABLE}" "${DEFAULT_SHADER_DIR}/managed_compute_contract.slang"
+            ${SLANG_SPIRV_FLAGS} -entry computeMain -DMANAGED_COMPUTE_VALUE=29 -o "${MANAGED_COMPUTE_B_SPIRV}"
+    DEPENDS "${DEFAULT_SHADER_DIR}/managed_compute_contract.slang" "${CMAKE_CURRENT_LIST_FILE}" "${SLANGC_EXECUTABLE}"
+    VERBATIM)
+add_custom_target(managed_compute_contract_shader DEPENDS "${MANAGED_COMPUTE_A_SPIRV}" "${MANAGED_COMPUTE_B_SPIRV}")
+add_custom_test(managed_compute_pipeline_gpu_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/managed_compute_pipeline_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_gpu_resource VulkanSceneRenderer_geometry Dep_Windowing Dep_Math)
+target_compile_definitions(managed_compute_pipeline_gpu_tests PRIVATE
+    CONTAINER_MANAGED_COMPUTE_A_SPIRV="${MANAGED_COMPUTE_A_SPIRV}"
+    CONTAINER_MANAGED_COMPUTE_B_SPIRV="${MANAGED_COMPUTE_B_SPIRV}")
+add_dependencies(managed_compute_pipeline_gpu_tests managed_compute_contract_shader)
+set_tests_properties(managed_compute_pipeline_gpu_tests PROPERTIES
+    LABELS "requires-vulkan;requires-display;pipeline-reload" RUN_SERIAL TRUE TIMEOUT 120)

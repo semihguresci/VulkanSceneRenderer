@@ -1,9 +1,31 @@
 #include "Container/utility/PipelineManager.h"
+#include "Container/utility/FileLoader.h"
+#include "Container/utility/ShaderModule.h"
 
 #include <algorithm>
 #include <stdexcept>
+#include <utility>
 
 namespace container::gpu {
+
+struct ComputePipeline::State {
+  VkDevice device{};
+  VkPipeline pipeline{};
+  VkPipelineLayout layout{};
+  std::filesystem::path shader;
+  std::string cacheKey;
+  std::vector<char> code;
+
+  void destroy() noexcept {
+    if (pipeline)
+      destroyOwnedPipeline(device, std::exchange(pipeline, VK_NULL_HANDLE), nullptr);
+  }
+  ~State() { destroy(); }
+};
+
+ComputePipeline::operator VkPipeline() const noexcept {
+  return state_ ? state_->pipeline : VK_NULL_HANDLE;
+}
 
 PipelineManager::PipelineManager(VkDevice device) : device_(device) {}
 
@@ -173,6 +195,33 @@ VkPipeline PipelineManager::createGraphicsPipeline(
   return pipeline;
 }
 
+ComputePipeline PipelineManager::buildComputePipeline(
+    const std::filesystem::path& shader, VkPipelineLayout layout,
+    const std::string& cacheKey, std::vector<char> code) {
+  ComputePipeline result;
+  result.state_ = std::make_shared<ComputePipeline::State>();
+  auto& state = *result.state_;
+  state.device = device_;
+  state.layout = layout;
+  state.shader = shader;
+  state.cacheKey = cacheKey;
+  state.code = std::move(code);
+  VkPipelineCache cache = getOrCreatePipelineCache(cacheKey, nullptr);
+  VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+  info.layout = layout;
+  info.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+  info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+  info.stage.pName = "computeMain";
+  info.stage.module = createShaderModule(device_, state.code);
+  const VkResult res = createOwnedComputePipelines(device_, cache, 1, &info,
+                                                  nullptr, &state.pipeline);
+  destroyOwnedShaderModule(device_, info.stage.module, nullptr);
+  if (res != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create compute pipeline: " + cacheKey);
+  }
+  return result;
+}
+
 VkPipeline PipelineManager::createComputePipeline(
     const VkComputePipelineCreateInfo& pipelineInfo,
     const std::string& cacheKey) {
@@ -190,6 +239,47 @@ VkPipeline PipelineManager::createComputePipeline(
   return pipeline;
 }
 
+ComputePipeline PipelineManager::createComputePipeline(
+    const std::filesystem::path& shader, VkPipelineLayout layout, const std::string& cacheKey) {
+  const auto active = activeComputeDirectory_ / "spv_shaders" / shader.filename();
+  auto result = buildComputePipeline(shader, layout, cacheKey,
+      container::util::readFile(activeComputeDirectory_.empty() ? shader : active));
+  std::erase_if(computePipelines_, [](const auto& slot) { return slot.expired(); });
+  computePipelines_.push_back(result.state_);
+  return result;
+}
+
+PipelineManager::ComputeReload PipelineManager::prepareComputeReload(
+    const std::filesystem::path& directory) {
+  ComputeReload candidate;
+  candidate.directory_ = directory;
+  for (const auto& slot : computePipelines_) {
+    if (auto active = slot.lock()) {
+      auto code = container::util::readFile(directory / "spv_shaders" / active->shader.filename());
+      if (code != active->code) {
+        auto replacement = buildComputePipeline(active->shader, active->layout, active->cacheKey,
+                                                std::move(code));
+        candidate.changes_.emplace_back(std::move(active), std::move(replacement));
+      }
+    }
+  }
+  return candidate;
+}
+
+bool PipelineManager::ComputeReload::changesShader(std::string_view filename) const {
+  return std::ranges::any_of(changes_, [&](const auto& change) {
+    return change.first->shader.filename() == filename;
+  });
+}
+
+void PipelineManager::publishComputeReload(ComputeReload& candidate) noexcept {
+  for (auto& [active, replacement] : candidate.changes_) {
+    std::swap(active->pipeline, replacement.state_->pipeline);
+    active->code.swap(replacement.state_->code);
+  }
+  activeComputeDirectory_.swap(candidate.directory_);
+}
+
 void PipelineManager::destroyPipeline(VkPipeline& pipeline) {
   if (pipeline == VK_NULL_HANDLE) return;
 
@@ -203,6 +293,11 @@ void PipelineManager::destroyPipeline(VkPipeline& pipeline) {
 }
 
 void PipelineManager::destroyManagedResources() {
+  for (const auto& slot : computePipelines_)
+    if (auto state = slot.lock())
+      state->destroy();
+  computePipelines_.clear();
+  activeComputeDirectory_.clear();
   for (VkPipeline pipeline : pipelines_) {
     destroyOwnedPipeline(device_, pipeline, nullptr);
   }
