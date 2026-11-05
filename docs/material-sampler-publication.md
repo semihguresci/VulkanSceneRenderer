@@ -32,8 +32,8 @@ default and catches shader clamps to the former nine-entry prefix. The two
 minification scales sample distinct colored/averaged mip levels; scales that
 only reach uniform checkerboard mips cannot establish a filtering difference.
 
-This publishes filtering and scene descriptor integration. The complete glTF
-encoded-image selection, mixed color/data-role mapping, interactive texture
-authoring and persistence remain separate steps under #94/#108/#121. Raster
-derivatives select texture mips; existing ray transport still uses explicit LOD
-and retains its separate footprint/filtering requirement under #47.
+See [glTF image ingestion](gltf-texture-ingestion.md) for encoded-source
+selection and color/data roles. Interactive texture authoring and persistence
+remain under #108/#121. Raster derivatives select texture mips; existing ray
+transport still uses explicit LOD and retains its separate footprint/filtering
+requirement under #47.

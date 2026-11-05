@@ -68,9 +68,9 @@ revisions before writing descriptors and retains actual image ownership. See
 
 Table mutation alone does not update a scene's descriptors. A live consumer must
 publish matching image/sampler/metadata descriptors before releasing old image
-leases. Complete glTF encoded-source selection, mixed color/data-role mapping
-and interactive texture authoring remain separate integration steps under
-#94/#95/#108; publishing these backend APIs alone does not complete their scopes.
+leases. [glTF image ingestion](gltf-texture-ingestion.md) describes the published
+encoded-source selection and color/data-role mapping. Interactive texture
+authoring and persistence remain under #108.
 
 ## Verification
 

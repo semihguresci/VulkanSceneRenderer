@@ -182,13 +182,12 @@ $runtimeStageArguments += @('-P', (Join-Path $PSScriptRoot 'StageWindowsPackageR
 if ($LASTEXITCODE -ne 0) {
     throw 'Cannot stage the complete package runtime dependency closure.'
 }
-foreach ($directory in @('spv_shaders', 'materials', 'hdr')) {
-    Copy-Item -LiteralPath (Join-Path $runtimeDirectory $directory) -Destination $stagingDirectory -Recurse
-}
-$modelsDirectory = New-Item -ItemType Directory -Path (Join-Path $stagingDirectory 'models')
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'LICENSE') -Destination $stagingDirectory
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/windows-package-quick-start.md') -Destination (Join-Path $stagingDirectory 'README.md')
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/third-party-notices.md') -Destination (Join-Path $stagingDirectory 'THIRD_PARTY_NOTICES.md')
+foreach ($guide in @('gltf-texture-ingestion.md', 'texture-image-data.md', 'material-sampler-publication.md', 'texture-upload-and-ownership.md')) {
+    Copy-Item -LiteralPath (Join-Path $sourceDirectory "docs/$guide") -Destination $stagingDirectory
+}
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/ltc-area-lighting.md') -Destination (Join-Path $stagingDirectory 'ltc-area-lighting.md')
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/ddgi-probe-foundation.md') -Destination (Join-Path $stagingDirectory 'ddgi-probe-foundation.md')
 $captureToolsDirectory = New-Item -ItemType Directory -Path (Join-Path $stagingDirectory 'tools')
