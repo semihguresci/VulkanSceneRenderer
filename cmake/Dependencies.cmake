@@ -120,9 +120,13 @@ endforeach()
 # prefixes (vcpkg's app-local hook only searches its active installation).
 function(container_stage_runtime_dlls target)
     if(WIN32)
+        # Keep DLL paths out of cmd.exe's pipe/metacharacter parsing.
+        set(runtime_manifest "${CMAKE_CURRENT_BINARY_DIR}/runtime-dlls/${target}-$<CONFIG>.txt")
+        file(GENERATE OUTPUT "${runtime_manifest}"
+            CONTENT "$<JOIN:$<TARGET_RUNTIME_DLLS:${target}>,\n>")
         add_custom_command(TARGET ${target} POST_BUILD
             COMMAND ${CMAKE_COMMAND}
-                "-DRUNTIME_DLLS=$<JOIN:$<TARGET_RUNTIME_DLLS:${target}>,|>"
+                "-DRUNTIME_DLLS_FILE=${runtime_manifest}"
                 "-DDESTINATION=$<TARGET_FILE_DIR:${target}>"
                 -P "${CMAKE_SOURCE_DIR}/cmake/StageRuntimeDlls.cmake"
             VERBATIM)
