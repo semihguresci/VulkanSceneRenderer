@@ -51,22 +51,47 @@ std::vector<unsigned int> indices(const Bytes& bytes, size_t count, size_t strid
   }
   return result;
 }
+
+Bytes filterVertices(const Bytes& input, size_t count, size_t stride, const std::string& filter) {
+  const size_t inputStride = filter == "EXPONENTIAL" ? stride : 4 * sizeof(float);
+  require(input.size() == count * inputStride, "Meshopt filter source byte count differs");
+  std::vector<float> values(input.size() / sizeof(float));
+  std::memcpy(values.data(), input.data(), input.size());
+  Bytes output(count * stride);
+  if (filter == "OCTAHEDRAL") {
+    require(stride == 4, "The octahedral fixture requires four byte output");
+    meshopt_encodeFilterOct(output.data(), count, stride, 8, values.data());
+  } else if (filter == "QUATERNION") {
+    require(stride == 8, "The quaternion fixture requires eight byte output");
+    meshopt_encodeFilterQuat(output.data(), count, stride, 16, values.data());
+  } else if (filter == "EXPONENTIAL") {
+    meshopt_encodeFilterExp(output.data(), count, stride, 24, values.data(), meshopt_EncodeExpSharedVector);
+  } else {
+    require(filter == "COLOR" && stride == 4, "The color fixture requires four byte output");
+    meshopt_encodeFilterColor(output.data(), count, stride, 8, values.data());
+  }
+  return output;
+}
+
 void meshopt(const Json& job) {
   const auto count = bounded(job, "count", 4096);
   const auto stride = bounded(job, "stride", 256);
   const auto input = read(job.at("input").get<std::string>());
-  require(input.size() == count * stride, "Meshopt source byte count differs");
   const auto mode = job.at("mode").get<std::string>();
+  const auto filter = job.value("filter", std::string("NONE"));
   Bytes encoded;
   size_t length = 0;
   if (mode == "ATTRIBUTES") {
     require(stride % 4 == 0, "Vertex source is not four-byte aligned");
     const int version = job.at("version").get<int>();
     require(version == 0 || version == 1, "Unsupported fixture vertex version");
+    const auto vertices = filter == "NONE" ? input : filterVertices(input, count, stride, filter);
+    require(vertices.size() == count * stride, "Meshopt source byte count differs");
     meshopt_encodeVertexVersion(version);
     encoded.resize(meshopt_encodeVertexBufferBound(count, stride));
-    length = meshopt_encodeVertexBuffer(encoded.data(), encoded.size(), input.data(), count, stride);
+    length = meshopt_encodeVertexBuffer(encoded.data(), encoded.size(), vertices.data(), count, stride);
   } else {
+    require(filter == "NONE", "Index fixtures cannot use vertex filters");
     const auto source = indices(input, count, stride);
     const size_t vertices = *std::max_element(source.begin(), source.end()) + size_t(1);
     require(vertices <= 4096, "Fixture vertex index exceeds its bound");

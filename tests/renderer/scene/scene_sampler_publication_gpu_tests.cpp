@@ -1,4 +1,5 @@
 #include <Container/common/CommonGLFW.h>
+#include <Container/geometry/GltfCompression.h>
 #include <Container/geometry/GltfModelLoader.h>
 #include <Container/utility/AllocationManager.h>
 #include <Container/utility/FileLoader.h>
@@ -22,6 +23,8 @@
 #include <fstream>
 #include <memory>
 #include <span>
+#include <stdexcept>
+#include <string_view>
 #include <vector>
 
 #ifndef CONTAINER_SCENE_TEXTURE_SAMPLING_SHADER_PATH
@@ -282,6 +285,70 @@ TEST_F(SceneTextureSamplingGpu,MalformedRetainedTextureRejectsBeforeTheLiveScene
   EXPECT_FALSE(manager->reloadModel("bad-retained-image.gltf",1,cameras,objects[0],&incoming));
   EXPECT_EQ(manager->descriptorSet(0),descriptor);
   EXPECT_EQ(Access::table(*manager).textureCount(),3u);expectThree(*manager,descriptor,false);
+}
+
+TEST_F(SceneTextureSamplingGpu,MalformedCompressedReloadKeepsLiveGeometryAndDescriptors) {
+  installThree();
+  ASSERT_EQ(manager->vertices().size(),3u);
+  const std::array positions{manager->vertices()[0].position, manager->vertices()[1].position,
+                             manager->vertices()[2].position};
+  const auto indices = manager->indices();
+  ASSERT_EQ(indices.size(),3u);
+  const std::array descriptors{manager->descriptorSet(0), manager->descriptorSet(1)};
+
+  struct InvalidAsset {
+    const char* extension;
+    const char* payload;
+    const char* decoderDiagnostic;
+    bool decoderEnabled;
+  };
+  constexpr auto badMeshopt = R"(
+    "buffers":[{"uri":"data:application/octet-stream;base64,oA==","byteLength":1},{"byteLength":36}],
+    "bufferViews":[{"buffer":1,"byteLength":36,"byteStride":12,"extensions":{
+      "EXT_meshopt_compression":{"buffer":0,"byteLength":1,"byteStride":12,"count":3,"mode":"ATTRIBUTES"}
+    }}],
+    "accessors":[{"bufferView":0,"componentType":5126,"type":"VEC3","count":3}],
+    "meshes":[{"primitives":[{"attributes":{"POSITION":0},"mode":4}]}])";
+  constexpr auto badDraco = R"(
+    "accessors":[{"componentType":5126,"type":"VEC3","count":3}],
+    "meshes":[{"primitives":[{"attributes":{"POSITION":0},"mode":4,"extensions":{
+      "KHR_draco_mesh_compression":{"bufferView":0,"attributes":{"POSITION":0}}
+    }}]}])";
+  const std::array assets{
+    InvalidAsset{"EXT_meshopt_compression",badMeshopt,"malformed meshopt bitstream",HasMeshoptDecoder()},
+    InvalidAsset{"KHR_draco_mesh_compression",badDraco,"Draco buffer view index is out of range",HasDracoDecoder()},
+  };
+
+  for (const auto& asset : assets) {
+    SCOPED_TRACE(asset.extension);
+    const auto path = temp / (std::string(asset.extension) + ".gltf");
+    {
+      std::ofstream file(path);
+      file << R"({"asset":{"version":"2.0"},"nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0,)"
+           << R"("extensionsUsed":[")" << asset.extension << R"("],"extensionsRequired":[")"
+           << asset.extension << R"("],)" << asset.payload << '}';
+      ASSERT_TRUE(file.good());
+    }
+    try {
+      (void)manager->prepareGltfModel(path.string());
+      FAIL() << "Malformed compressed source unexpectedly passed preparation";
+    } catch (const std::runtime_error& error) {
+      const std::string_view message(error.what());
+      EXPECT_NE(message.find(path.filename().string()),std::string_view::npos);
+      EXPECT_NE(message.find(asset.decoderEnabled ? asset.decoderDiagnostic : asset.extension),
+                std::string_view::npos) << message;
+    }
+    EXPECT_FALSE(manager->reloadModel(path.string(),1,cameras,objects[0]));
+    ASSERT_EQ(manager->vertices().size(),positions.size());
+    for (size_t i = 0; i < positions.size(); ++i)
+      EXPECT_EQ(manager->vertices()[i].position,positions[i]);
+    EXPECT_EQ(manager->indices(),indices);
+    ASSERT_EQ(Access::table(*manager).textureCount(),3u);
+    for (uint32_t frame = 0; frame < descriptors.size(); ++frame) {
+      ASSERT_EQ(manager->descriptorSet(frame),descriptors[frame]);
+      expectThree(*manager,descriptors[frame],false);
+    }
+  }
 }
 
 TEST_F(SceneTextureSamplingGpu,ImageDescriptorBudgetRejectsBeforeTheLiveSceneRetires) {

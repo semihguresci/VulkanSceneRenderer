@@ -1,13 +1,13 @@
 """Independent native #93 compression fixtures and plain export/reload checks.
 
-Five scenes cover EXT/KHR meshopt ASCII external+embedded encoded buffers and
+Six scenes cover EXT/KHR meshopt ASCII external+embedded encoded buffers and
 GLB BIN storage with genuine URI-less destination placeholders, ATTRIBUTES,
-TRIANGLES, INDICES, combined animation/morph/skin, and sequential lossless Draco
-raw NORMAL/normalized UV/RGB/RGBA plus untouched TANGENT and a lit normal map.
+TRIANGLES, INDICES, all four vertex filters, combined animation/morph/skin, and
+lossless Draco NORMAL/normalized UV/RGB/RGBA plus an untouched TANGENT.
 An encoder-only C++ helper compresses independently authored arrays. Reference
 and negative-control assets are generated directly; no production decoder or
 animation evaluator supplies their expected values. --generate-only never
-launches the renderer. Full --roundtrip runs produce 50 captures.
+launches the renderer.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ import numpy as np
 from gltf_accessor_runtime_regression import (Asset, NativeRun, TECHNIQUES, compare,
     decode_accessor, f32, load_asset, mesh, normalized, require, textured_material)
 
-CASES = ('ext-ascii', 'ext-glb-deform', 'khr-ascii-indices', 'khr-glb', 'draco-material')
+CASES = ('ext-ascii', 'ext-glb-deform', 'khr-ascii-indices', 'khr-glb', 'khr-glb-filters', 'draco-material')
 COMPRESSION = {'EXT_meshopt_compression', 'KHR_meshopt_compression', 'KHR_draco_mesh_compression'}
 POSITION = np.asarray(f32([[-.85, -.7, 0], [.7, -.7, 0], [.85, .8, 0], [-.65, .65, 0]]))
 NORMAL = np.asarray(f32([[-.3, 0, .9539392], [.2, .15, .9682458], [.25, 0, .9682458], [0, -.3, .9539392]]))
@@ -39,6 +39,17 @@ RGBA = np.asarray([[255, 155, 110, 0], [190, 255, 125, 255], [155, 190, 255, 255
 INDICES = np.asarray([0, 1, 2, 0, 2, 3], dtype='<u2')
 DELTA = np.asarray(f32([[0, 0, 0], [.3, .06, 0], [.35, .1, 0], [0, .05, 0]]))
 SHIFT = np.asarray(f32([.15, .1, 0]))
+ROTATIONS = np.array([[0, 0, 0, 1], [0, 0, 1, 0]])
+# Dyadic values, axis normals and binary colors avoid encoder rounding in
+# the independent plain reference. Each filtered attribute varies by vertex.
+FILTER_POSITION = np.array([[-.875, -.75, 0], [.75, -.625, 0], [.875, .8125, 0], [-.625, .625, 0]])
+FILTER_NORMAL = np.array([[0, 0, 1], [0, 1, 0], [0, 0, 1], [0, -1, 0]])
+FILTER_COLOR = np.array([[1, 1, 1, 1], [0, 0, 0, 1], [1, 1, 1, 0], [0, 0, 0, 0]])
+
+
+def deformed_positions():
+    # The joint rotates 180 degrees about +Z after the morph and then translates.
+    return (POSITION + DELTA * np.float32(.8)) * [-1, -1, 1] + SHIFT
 
 
 def uri(data):
@@ -69,27 +80,37 @@ def raw_rows(asset, accessor_index):
 def base_asset(case, kind):
     animated = case == 'ext-glb-deform'
     draco = case == 'draco-material'
+    filtered = case == 'khr-glb-filters'
+    source = kind == 'source'
     asset = Asset()
-    p = POSITION.copy()
-    if animated and kind != 'source':
-        p = np.asarray(f32(p + DELTA * np.float32(.8) + SHIFT))
+    p = FILTER_POSITION.copy() if filtered else POSITION.copy()
+    if animated and not source:
+        p = deformed_positions()
     if kind == 'dropped' and not draco:
         p = np.asarray(f32(p * [.45, .6, 1]))
-    normal = NORMAL.copy() if draco else np.asarray([[0., 0., 1.]] * 4)
+    normal = NORMAL.copy() if draco else FILTER_NORMAL if filtered else np.asarray([[0., 0., 1.]] * 4)
     uv = normalized(UV, 5121)
     rgba = normalized(RGBA, 5121)
     if kind == 'dropped' and draco:
         uv, rgba, normal = [[0., 0.]] * 4, [[1., 1., 1., 1.]] * 4, [[0., 0., 1.]] * 4
     pos = asset.accessor('VEC3', f32(p))
-    norm = asset.accessor('VEC3', f32(normal))
+    norm = (asset.accessor('VEC3', normal * 127, 5120, normalize=True, stride=4)
+            if filtered and source else asset.accessor('VEC3', f32(normal)))
     tex = asset.accessor('VEC2', UV if draco and kind == 'source' else f32(uv),
                          5121 if draco and kind == 'source' else 5126,
                          **(dict(normalize=True, stride=4) if draco and kind == 'source' else {}))
     tangent = asset.accessor('VEC4', DRACO_TANGENT if draco else [[1., 0., 0., 1.]] * 4)
     color = asset.accessor('VEC4', RGBA if kind == 'source' else f32(rgba),
                            5121 if kind == 'source' else 5126, normalize=kind == 'source') if draco else None
+    if filtered:
+        color = (asset.accessor('VEC4', FILTER_COLOR * 255, 5121, normalize=True)
+                 if source else asset.accessor('VEC4', f32(FILTER_COLOR)))
     primitive = mesh(asset, pos, norm, tex, tangent=tangent, colors=color)
-    textured_material(asset, lit=draco)
+    textured_material(asset, lit=draco or filtered)
+    if filtered:
+        asset.model['materials'][0].update(alphaMode='MASK', alphaCutoff=.35, doubleSided=True)
+        asset.model['extensionsUsed'] = ['KHR_mesh_quantization']
+        asset.model['extensionsRequired'] = ['KHR_mesh_quantization']
     if draco:
         asset.model['materials'][0].update(alphaMode='MASK', alphaCutoff=.35, doubleSided=True)
         # A second independent compressed primitive exercises 3-byte RGB values
@@ -116,11 +137,14 @@ def base_asset(case, kind):
         times = asset.accessor('SCALAR', [0., 1.])
         weights = asset.accessor('SCALAR', [0., .8])
         translations = asset.accessor('VEC3', [[0., 0., 0.], SHIFT.tolist()])
+        rotations = asset.accessor('VEC4', ROTATIONS * 32767, 5122, normalize=True)
         asset.model['animations'] = [dict(name='Compressed morph then skin', samplers=[
             dict(input=times, output=weights, interpolation='LINEAR'),
-            dict(input=times, output=translations, interpolation='LINEAR')], channels=[
+            dict(input=times, output=translations, interpolation='LINEAR'),
+            dict(input=times, output=rotations, interpolation='LINEAR')], channels=[
             dict(sampler=0, target=dict(node=0, path='weights')),
-            dict(sampler=1, target=dict(node=1, path='translation'))])]
+            dict(sampler=1, target=dict(node=1, path='translation')),
+            dict(sampler=2, target=dict(node=1, path='rotation'))])]
     return asset
 
 
@@ -134,6 +158,23 @@ def run_encoder(generator, directory, jobs):
     require('no decoder called' in result.stdout, 'Unexpected fixture generator executable')
 
 
+def filter_views(asset, case):
+    def view(accessor):
+        return asset.model['accessors'][accessor]['bufferView']
+
+    if case == 'ext-glb-deform':
+        sampler = asset.model['animations'][0]['samplers'][2]
+        return {view(sampler['output']): ('QUATERNION', ROTATIONS)}
+    if case == 'khr-glb-filters':
+        attributes = asset.model['meshes'][0]['primitives'][0]['attributes']
+        return {
+            view(attributes['POSITION']): ('EXPONENTIAL', FILTER_POSITION),
+            view(attributes['NORMAL']): ('OCTAHEDRAL', np.column_stack((FILTER_NORMAL, np.zeros(4)))),
+            view(attributes['COLOR_0']): ('COLOR', FILTER_COLOR),
+        }
+    return {}
+
+
 def compressed_meshopt(asset, directory, case, generator):
     extension = 'EXT_meshopt_compression' if case.startswith('ext-') else 'KHR_meshopt_compression'
     binary = 'glb' in case
@@ -141,13 +182,14 @@ def compressed_meshopt(asset, directory, case, generator):
     original = bytes(asset.data)
     model['buffers'] = [dict(byteLength=len(original), uri=uri(original))]
     jobs, records = [], []
+    filters = filter_views(asset, case)
     # Compress every original view, including deformation/animation/IBM arrays.
     # Each view has an independent buffer, preventing accidental fallback reads.
     for index, view in enumerate(model['bufferViews']):
         index_accessors = [a for a in model['accessors'] if a.get('bufferView') == index]
         accessor = index_accessors[0]
         width = {'SCALAR': 1, 'VEC2': 2, 'VEC3': 3, 'VEC4': 4, 'MAT4': 16}[accessor['type']]
-        size = {5121: 1, 5123: 2, 5126: 4}[accessor['componentType']]
+        size = {5120: 1, 5121: 1, 5122: 2, 5123: 2, 5126: 4}[accessor['componentType']]
         is_index = view.get('target') == 34963
         mode = ('INDICES' if 'indices' in case else 'TRIANGLES') if is_index else 'ATTRIBUTES'
         stride = size * width if is_index else max(4, view.get('byteStride', size * width))
@@ -159,16 +201,17 @@ def compressed_meshopt(asset, directory, case, generator):
         # Meshopt ATTRIBUTES can store animation SCALAR values, joints, IBM,
         # morphs and all ordinary arrays without changing their consumer role.
         raw, encoded = directory/f'view-{index}.raw', directory/f'view-{index}.encoded'
-        raw.write_bytes(payload)
+        filter_name = filters[index][0] if index in filters else 'NONE'
+        raw.write_bytes(np.asarray(filters[index][1], dtype='<f4').tobytes() if index in filters else payload)
         jobs.append(dict(codec='meshopt', input=str(raw), output=str(encoded), count=count, stride=stride,
-                         mode=mode, version=0 if case.startswith('ext-') else 1))
-        records.append((index, encoded, payload, mode, stride, count, size * width))
+                         mode=mode, filter=filter_name, version=0 if case.startswith('ext-') else 1))
+        records.append((index, encoded, len(payload), mode, filter_name, stride, count, size * width))
     run_encoder(generator, directory, jobs)
     # GLB uses buffer0 for the encoded BIN payload; ASCII alternates real
     # external .bin and data URI encoded sources in a single scene.
     encoded_bin = bytearray()
     model['buffers'] = [dict(byteLength=0)] if binary else []
-    for index, encoded, payload, mode, stride, count, element in records:
+    for index, encoded, decoded_bytes, mode, filter_name, stride, count, element in records:
         data = encoded.read_bytes()
         if binary:
             while len(encoded_bin) % 4:
@@ -184,11 +227,11 @@ def compressed_meshopt(asset, directory, case, generator):
                 location = external.name
             model['buffers'].append(dict(byteLength=len(data), uri=location))
         destination = len(model['buffers'])
-        model['buffers'].append(dict(byteLength=len(payload), extensions={extension: dict(fallback=True)}))
+        model['buffers'].append(dict(byteLength=decoded_bytes, extensions={extension: dict(fallback=True)}))
         view = model['bufferViews'][index]
-        view.update(buffer=destination, byteOffset=0, byteLength=len(payload),
+        view.update(buffer=destination, byteOffset=0, byteLength=decoded_bytes,
                     extensions={extension: dict(buffer=source_buffer, byteOffset=source_offset,
-                        byteLength=len(data), byteStride=stride, count=count, mode=mode, filter='NONE')})
+                        byteLength=len(data), byteStride=stride, count=count, mode=mode, filter=filter_name)})
         if mode == 'ATTRIBUTES' and (view.get('byteStride') or stride != element):
             view['byteStride'] = stride
     model.setdefault('extensionsUsed', []).append(extension)
@@ -245,14 +288,15 @@ def compressed_draco(asset, directory, generator):
     return path
 
 
-def fixture_cpu_checks(case, paths):
+def fixture_cpu_checks(case, paths, ordinary):
     source, buffers = load_asset(paths['source'])
     reference, _ = load_asset(paths['reference'])
     require(not any(name in COMPRESSION for name in reference.get('extensionsUsed', [])), 'Reference is compressed')
     for mesh_index, entry in enumerate(reference['meshes']):
         primitive = entry['primitives'][0]
         actual = decode_accessor(paths['reference'], primitive['attributes']['POSITION'])
-        expected = POSITION + DELTA * np.float32(.8) + SHIFT if case == 'ext-glb-deform' else POSITION
+        expected = deformed_positions() if case == 'ext-glb-deform' else (
+            FILTER_POSITION if case == 'khr-glb-filters' else POSITION)
         require(np.max(np.abs(actual - expected)) < 3e-7, 'Independent reference pose is wrong')
         require(np.array_equal(decode_accessor(paths['reference'], primitive['indices']).ravel(), INDICES), 'Reference topology differs')
         if case == 'draco-material':
@@ -261,7 +305,7 @@ def fixture_cpu_checks(case, paths):
                 require(np.max(np.abs(decode_accessor(paths['reference'], primitive['attributes'][semantic]) - values)) < 1e-7,
                         f'Independent {semantic} normalized oracle differs')
     if case != 'draco-material':
-        locations, modes = set(), set()
+        locations, modes, filters = set(), set(), set()
         for view in source['bufferViews']:
             extension = next(value for name, value in view['extensions'].items() if name in COMPRESSION)
             destination = source['buffers'][view['buffer']]
@@ -273,8 +317,11 @@ def fixture_cpu_checks(case, paths):
             location = source['buffers'][extension['buffer']].get('uri', '')
             locations.add('embedded' if location.startswith('data:') else 'external' if location else 'BIN')
             modes.add(extension['mode'])
+            filters.add(extension['filter'])
         require(locations == ({'BIN'} if 'glb' in case else {'embedded', 'external'}), 'Required storage mix is absent')
         require({'ATTRIBUTES', 'INDICES' if 'indices' in case else 'TRIANGLES'} <= modes, 'Required codec modes are absent')
+        require(filters == {'NONE', *(name for name, _ in filter_views(ordinary, case).values())},
+                'Required codec filters are absent')
     else:
         for entry in source['meshes']:
             primitive = entry['primitives'][0]
@@ -287,12 +334,12 @@ def fixture_cpu_checks(case, paths):
                     'Independent ordinary tangent is not the authored perpendicular unit frame')
             require(all('bufferView' not in source['accessors'][primitive['attributes'][name]] for name in mapping),
                     'Draco fixture unexpectedly has decoded fallback arrays')
-    validate_encoder_inputs(case, paths, source)
+    validate_encoder_inputs(case, paths, source, ordinary)
     return dict(storage='GLB BIN' if 'glb' in case else 'ASCII embedded+external' if case != 'draco-material' else 'ASCII Draco',
                 independentReference=True, untouchedTangent=case == 'draco-material', animated=case == 'ext-glb-deform')
 
 
-def validate_encoder_inputs(case, paths, source):
+def validate_encoder_inputs(case, paths, source, ordinary):
     """Decode original raw encoder inputs using only Python struct/NumPy."""
     directory = paths['source'].parent
     jobs = json.loads((directory/'encoder-jobs.json').read_text(encoding='utf-8'))
@@ -315,8 +362,17 @@ def validate_encoder_inputs(case, paths, source):
     plain = copy.deepcopy(source)
     plain['buffers'] = []
     require(len(jobs) == len(plain['bufferViews']), 'Meshopt raw stream count differs')
+    filters = filter_views(ordinary, case)
     for index, (view, job) in enumerate(zip(plain['bufferViews'], jobs)):
         data = Path(job['input']).read_bytes()
+        if index in filters:
+            filter_name, values = filters[index]
+            require(job['filter'] == filter_name and data == np.asarray(values, dtype='<f4').tobytes(),
+                    f'Wrong float input for meshopt {filter_name}')
+            # Check the independent target layout without decoding encoder output.
+            source_view = ordinary.model['bufferViews'][index]
+            start = source_view['byteOffset']
+            data = ordinary.data[start:start+source_view['byteLength']]
         require(job['codec'] == 'meshopt' and len(data) == job['count'] * job['stride'] == view['byteLength'],
                 'Meshopt raw encoder input byte count differs')
         plain['buffers'].append(dict(byteLength=len(data), uri=uri(data)))
@@ -327,8 +383,13 @@ def validate_encoder_inputs(case, paths, source):
     path = directory/'encoder-input-plain.gltf'
     path.write_text(json.dumps(plain, indent=2), encoding='utf-8')
     primitive = plain['meshes'][0]['primitives'][0]
-    for semantic, expected in [('POSITION', POSITION), ('NORMAL', [[0., 0., 1.]] * 4),
-                              ('TEXCOORD_0', normalized(UV, 5121)), ('TANGENT', [[1., 0., 0., 1.]] * 4)]:
+    filtered = case == 'khr-glb-filters'
+    expected_attributes = [('POSITION', FILTER_POSITION if filtered else POSITION),
+                           ('NORMAL', FILTER_NORMAL if filtered else [[0., 0., 1.]] * 4),
+                           ('TEXCOORD_0', normalized(UV, 5121)), ('TANGENT', [[1., 0., 0., 1.]] * 4)]
+    if filtered:
+        expected_attributes.append(('COLOR_0', FILTER_COLOR))
+    for semantic, expected in expected_attributes:
         require(np.max(np.abs(decode_accessor(path, primitive['attributes'][semantic]) - expected)) < 1e-7,
                 f'Meshopt raw {semantic} input differs from independent constants')
     require(np.array_equal(decode_accessor(path, primitive['indices']).ravel(), INDICES), 'Meshopt raw input topology differs')
@@ -346,6 +407,8 @@ def validate_encoder_inputs(case, paths, source):
                 'Raw animation morph weights differ')
         require(np.max(np.abs(decode_accessor(path, samplers[1]['output']) - [[0, 0, 0], SHIFT])) < 1e-7,
                 'Raw animation joint translations differ')
+        require(np.array_equal(decode_accessor(path, samplers[2]['output']), ROTATIONS),
+                'Raw normalized joint rotations differ')
 
 
 def reject_compression_declarations(value):
@@ -389,6 +452,9 @@ def verify_roundtrip(path, reference_path, case):
                 'Plain export changed uncompressed morph deltas')
         require(len(model.get('skins', [])) == 1 and len(model.get('animations', [])) == 1,
                 'Plain export lost skin/animation consumers')
+        rotation = model['animations'][0]['samplers'][2]['output']
+        require(np.array_equal(decode_accessor(path, rotation), ROTATIONS),
+                'Plain export changed normalized joint rotations')
 
 
 def main():
@@ -417,7 +483,7 @@ def main():
             source = base_asset(case, 'source')
             paths['source'] = (compressed_draco(source, directory, generator) if case == 'draco-material' else
                                compressed_meshopt(source, directory, case, generator))
-            info = fixture_cpu_checks(case, paths)
+            info = fixture_cpu_checks(case, paths, source)
             fixture_hashes = {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
                               for path in directory.iterdir() if path.is_file()}
             run.report['fixtures'].append(dict(case=case, paths={key: str(path) for key, path in paths.items()},
@@ -427,7 +493,7 @@ def main():
                 continue
             for technique in args.technique or TECHNIQUES:
                 stem = technique+'-'+case
-                lit, animated = case == 'draco-material', case == 'ext-glb-deform'
+                lit, animated = case in ('draco-material', 'khr-glb-filters'), case == 'ext-glb-deform'
                 destination = directory/(stem+'-saved.glb') if args.roundtrip else None
                 actual = run.capture(paths['source'], stem+'-source', technique, animated=animated, lit=lit, destination=destination)
                 reference = run.capture(paths['reference'], stem+'-reference', technique, lit=lit)
