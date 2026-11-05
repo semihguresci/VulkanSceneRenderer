@@ -100,6 +100,9 @@ VulkanContextResult VulkanContextInitializer::initialize(
     ci.optionalFeatures.fillModeNonSolid       = VK_TRUE;
     ci.optionalFeatures.wideLines              = VK_TRUE;
     ci.optionalFeatures.shaderStorageImageExtendedFormats = VK_TRUE;
+    ci.optionalFeatures.textureCompressionBC = VK_TRUE;
+    ci.optionalFeatures.textureCompressionETC2 = VK_TRUE;
+    ci.optionalFeatures.textureCompressionASTC_LDR = VK_TRUE;
 
     VkPhysicalDeviceVulkan11Features vulkan11Features{};
     vulkan11Features.sType =

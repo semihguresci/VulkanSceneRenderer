@@ -21,7 +21,7 @@ class Asset:
                           meshes=[], materials=[], bufferViews=[], accessors=[])
 
     def accessor(self, kind, values, component=5126, *, indices=False):
-        width = {"SCALAR": 1, "VEC3": 3}[kind]
+        width = {"SCALAR": 1, "VEC2": 2, "VEC3": 3}[kind]
         rows = [[value] for value in values] if width == 1 else values
         code = {5123: "H", 5126: "f"}[component]
         payload = b"".join(struct.pack("<" + code * width, *row) for row in rows)

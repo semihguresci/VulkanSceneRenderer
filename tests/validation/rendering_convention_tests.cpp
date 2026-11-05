@@ -2498,10 +2498,6 @@ TEST(RenderingConventionTests,
      MaterialTexturesUseRuntimeMipSelectionToAvoidTemporalShimmer) {
   const std::string pbrCommon =
       readRepoTextFile("shaders/pbr_material_common.slang");
-  const std::string allocationManager =
-      readRepoTextFile("src/utility/AllocationManager.cpp");
-  const std::string allocationManagerHeader =
-      readRepoTextFile("include/Container/utility/AllocationManager.h");
   const std::string sceneManager =
       readRepoTextFile("src/utility/SceneManager.cpp");
 
@@ -2522,25 +2518,8 @@ TEST(RenderingConventionTests,
   const std::string explicitSample = pbrCommon.substr(explicitSampleStart);
   EXPECT_TRUE(contains(explicitSample, ".SampleLevel("));
 
-  EXPECT_TRUE(contains(allocationManager, "CalculateTextureMipLevels"));
-  EXPECT_TRUE(contains(allocationManager, "textureFormatSupportsLinearBlit"));
-  EXPECT_TRUE(contains(allocationManager, "VK_FORMAT_FEATURE_BLIT_SRC_BIT"));
-  EXPECT_TRUE(contains(allocationManager, "VK_FORMAT_FEATURE_BLIT_DST_BIT"));
-  EXPECT_TRUE(contains(allocationManager, "generateTextureMipmaps"));
-  EXPECT_TRUE(contains(allocationManager, "vkCmdBlitImage"));
-  EXPECT_TRUE(contains(allocationManager,
-                       "VK_IMAGE_USAGE_TRANSFER_SRC_BIT"));
-  EXPECT_TRUE(contains(allocationManager, "imageInfo.mipLevels = mipLevels"));
-  EXPECT_TRUE(containsIgnoringWhitespace(
-      allocationManager,
-      "VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u, 0u, mipLevels"));
-  EXPECT_TRUE(containsIgnoringWhitespace(
-      allocationManager,
-      "createImageView(image, imageInfo.format, VK_IMAGE_VIEW_TYPE_2D, 1u, "
-      "mipLevels)"));
-  EXPECT_TRUE(contains(allocationManagerHeader, "generateTextureMipmaps"));
-  EXPECT_TRUE(contains(allocationManagerHeader, "uint32_t levelCount = 1u"));
-
+  // Authored and generated mip behavior is checked by real typed-upload
+  // GPU readback and image-view sampling in texture_upload_gpu_tests.
   EXPECT_TRUE(contains(sceneManager,
                        "info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR"));
   EXPECT_TRUE(contains(sceneManager, "info.minLod = 0.0f"));

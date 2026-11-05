@@ -212,7 +212,7 @@ target_link_libraries(VulkanSceneRenderer_renderer PUBLIC
 add_library(VulkanSceneRenderer_stb geometry/stb_impl.cpp)
 target_compile_features(VulkanSceneRenderer_stb PUBLIC cxx_std_23)
 target_link_libraries(VulkanSceneRenderer_stb PUBLIC Dep_SceneIO)
-add_library(VulkanSceneRenderer_texture_codecs utility/TextureImageData.cpp)
+add_library(VulkanSceneRenderer_texture_codecs utility/TextureImageData.cpp utility/TextureUploadPlan.cpp)
 target_compile_features(VulkanSceneRenderer_texture_codecs PUBLIC cxx_std_23)
 target_include_directories(VulkanSceneRenderer_texture_codecs PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(VulkanSceneRenderer_texture_codecs PUBLIC Dep_VulkanCore

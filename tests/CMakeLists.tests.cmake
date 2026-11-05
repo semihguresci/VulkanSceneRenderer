@@ -1251,3 +1251,35 @@ add_custom_target(environment_sample_contract_shader DEPENDS "${CONTAINER_ENVIRO
 target_compile_definitions(managed_compute_owner_gpu_tests PRIVATE
     CONTAINER_ENVIRONMENT_SAMPLE_SPIRV="${CONTAINER_ENVIRONMENT_SAMPLE_SPIRV}")
 add_dependencies(managed_compute_owner_gpu_tests environment_sample_contract_shader)
+
+add_custom_test(texture_manager_tests
+    ${CMAKE_SOURCE_DIR}/tests/utility/texture_manager_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_gpu_resource
+)
+set_tests_properties(texture_manager_tests PROPERTIES LABELS "editor;resource;texture;lifecycle;cpu" TIMEOUT 60)
+
+add_custom_test(texture_upload_plan_tests
+    ${TEST_GEOMETRY_DIR}/texture_upload_plan_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_texture_codecs
+)
+
+add_custom_test(texture_upload_gpu_tests
+    ${TEST_RENDERER_CORE_DIR}/texture_upload_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_gpu_resource VulkanSceneRenderer_geometry
+)
+set_tests_properties(texture_upload_gpu_tests PROPERTIES
+    LABELS "requires-vulkan;materials;textures" RUN_SERIAL TRUE TIMEOUT 120)
+set(TEXTURE_UPLOAD_SAMPLE_SPV "${CMAKE_BINARY_DIR}/test_shaders/texture_upload_sample_contract.comp.spv")
+add_custom_command(
+    OUTPUT "${TEXTURE_UPLOAD_SAMPLE_SPV}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/test_shaders"
+    COMMAND "${SLANGC_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/shaders/texture_upload_sample_contract.slang"
+            ${SLANG_SPIRV_FLAGS} -entry computeMain -o "${TEXTURE_UPLOAD_SAMPLE_SPV}"
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/shaders/texture_upload_sample_contract.slang"
+            "${CMAKE_SOURCE_DIR}/cmake/Shaders.cmake" "${SLANGC_EXECUTABLE}"
+    VERBATIM
+)
+add_custom_target(texture_upload_sample_shader DEPENDS "${TEXTURE_UPLOAD_SAMPLE_SPV}")
+add_dependencies(texture_upload_gpu_tests texture_upload_sample_shader)
+target_compile_definitions(texture_upload_gpu_tests PRIVATE
+    CONTAINER_TEXTURE_UPLOAD_SAMPLE_SPV="${TEXTURE_UPLOAD_SAMPLE_SPV}")

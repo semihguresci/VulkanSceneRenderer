@@ -1775,7 +1775,7 @@ void SceneManager::createSampler() {
       info.maxLod = VK_LOD_CLAMP_NONE;
       info.anisotropyEnable = VK_TRUE;
       info.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
-      info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+      info.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
 
       if (createOwnedSampler(deviceWrapper_->device(), &info, nullptr,
                           &materialSamplers_[samplerIndex]) != VK_SUCCESS) {

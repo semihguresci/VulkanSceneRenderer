@@ -99,6 +99,7 @@ void Application::initVulkan() {
       ctx.deviceWrapper->device(),
       ctx.deviceWrapper->graphicsQueue(),
       commandBufferManager_->pool(), config_);
+  allocationManager_->setTextureCompressionFeatures(ctx.deviceWrapper->enabledFeatures());
 
   renderer_ = std::make_unique<container::renderer::RendererFrontend>(
       container::renderer::RendererFrontendCreateInfo{

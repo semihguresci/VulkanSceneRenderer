@@ -43,6 +43,7 @@ target_link_libraries(VulkanSceneRenderer_vulkan_device PUBLIC
 # ── 3. GPU resources (memory, buffers, textures, pipelines) ──────────────────
 add_library(VulkanSceneRenderer_gpu_resource
     AllocationManager.cpp
+    AllocationManagerTextures.cpp
     VulkanMemoryManager.cpp
     TextureManager.cpp
     PipelineManager.cpp
@@ -56,6 +57,7 @@ target_link_libraries(VulkanSceneRenderer_gpu_resource PUBLIC
     Dep_Math
     Dep_SceneIO
     VulkanSceneRenderer_vulkan_device
+    VulkanSceneRenderer_texture_codecs
 )
 
 # ── 4. Window + input ───────────────────────────────────────────────────────
