@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <bit>
 #include <cstdio>
@@ -148,21 +149,30 @@ protected:
     queue.waitIdle();
   }
   std::vector<glm::uvec4> trace(const RaySceneGeneration &generation,
-                                std::span<const Probe> probes) {
+                                std::span<const Probe> probes,
+                                std::span<const RayTriangleData> triangles = {}) {
     TestBuffer inputs(*memory, probes.size_bytes());
     TestBuffer output(*memory, probes.size() * sizeof(glm::uvec4));
+    TestBuffer attributes(*memory, std::max(triangles.size_bytes(), sizeof(RayTriangleData)));
+    if (!triangles.empty())
+      std::memcpy(attributes.buffer.allocation_info.pMappedData, triangles.data(), triangles.size_bytes());
+    if (vmaFlushAllocation(memory->allocator(), attributes.buffer.allocation, 0,
+                           VK_WHOLE_SIZE) != VK_SUCCESS)
+      throw std::runtime_error("triangle metadata upload failed");
     std::memcpy(inputs.buffer.allocation_info.pMappedData, probes.data(),
                 probes.size_bytes());
     if (vmaFlushAllocation(memory->allocator(), inputs.buffer.allocation, 0,
                            VK_WHOLE_SIZE) != VK_SUCCESS)
       throw std::runtime_error("probe upload failed");
-    std::array<vk::DescriptorSetLayoutBinding, 3> bindings{
+    std::array<vk::DescriptorSetLayoutBinding, 4> bindings{
         vk::DescriptorSetLayoutBinding(
             0, vk::DescriptorType::eAccelerationStructureKHR, 1,
             vk::ShaderStageFlagBits::eCompute),
         vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eStorageBuffer, 1,
                                        vk::ShaderStageFlagBits::eCompute),
         vk::DescriptorSetLayoutBinding(2, vk::DescriptorType::eStorageBuffer, 1,
+                                       vk::ShaderStageFlagBits::eCompute),
+        vk::DescriptorSetLayoutBinding(3, vk::DescriptorType::eStorageBuffer, 1,
                                        vk::ShaderStageFlagBits::eCompute)};
     vk::raii::DescriptorSetLayout layout(
         device->raii(), vk::DescriptorSetLayoutCreateInfo({}, bindings));
@@ -172,7 +182,7 @@ protected:
     std::array<vk::DescriptorPoolSize, 2> sizes{
         vk::DescriptorPoolSize(vk::DescriptorType::eAccelerationStructureKHR,
                                1),
-        vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, 2)};
+        vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, 3)};
     vk::raii::DescriptorPool descriptorPool(
         device->raii(),
         vk::DescriptorPoolCreateInfo(
@@ -181,11 +191,12 @@ protected:
         vk::DescriptorSetAllocateInfo(*descriptorPool, layoutHandle));
     const vk::AccelerationStructureKHR tlas = generation.tlas();
     vk::WriteDescriptorSetAccelerationStructureKHR accelerationWrite(tlas);
-    std::array<vk::DescriptorBufferInfo, 2> bufferInfo{
+    std::array<vk::DescriptorBufferInfo, 3> bufferInfo{
         vk::DescriptorBufferInfo(inputs.buffer.buffer, 0, VK_WHOLE_SIZE),
-        vk::DescriptorBufferInfo(output.buffer.buffer, 0, VK_WHOLE_SIZE)};
-    std::array<vk::WriteDescriptorSet, 3> writes{};
-    for (uint32_t i = 0; i < 3; ++i) {
+        vk::DescriptorBufferInfo(output.buffer.buffer, 0, VK_WHOLE_SIZE),
+        vk::DescriptorBufferInfo(attributes.buffer.buffer, 0, VK_WHOLE_SIZE)};
+    std::array<vk::WriteDescriptorSet, 4> writes{};
+    for (uint32_t i = 0; i < writes.size(); ++i) {
       writes[i].dstSet = *sets.front();
       writes[i].dstBinding = i;
       writes[i].descriptorCount = 1;
@@ -360,6 +371,44 @@ TEST_F(RaySceneGpu,
               static_cast<unsigned long long>(first->stats().accelerationBytes),
               static_cast<unsigned long long>(first->stats().inputBytes),
               static_cast<unsigned long long>(first->stats().scratchBytes));
+}
+
+TEST_F(RaySceneGpu, InterpolatedVertexAlphaMasksCandidatesAndOpaqueIgnoresAlpha) {
+  if (!device->rayQueriesEnabled())
+    GTEST_SKIP() << device->rayQuerySupport().unavailableReason();
+  std::vector<container::geometry::Vertex> vertices(3);
+  vertices[0].position = {-1, -1, 0};
+  vertices[1].position = {1, -1, 0};
+  vertices[2].position = {-1, 1, 0};
+  vertices[0].colorAlpha = 0;
+  vertices[1].colorAlpha = 1;
+  vertices[2].colorAlpha = .5f;
+  const std::vector<uint32_t> indices{0, 1, 2};
+  const std::vector<container::gpu::ObjectData> objects(1);
+  const std::vector<DrawCommand> draws{{0, 0, 3}};
+  const std::array providers{
+      RaySceneProviderSource{{"rgba"}, 1, vertices, indices, objects, draws}};
+  const auto extracted = extractRayScene(providers);
+  const auto views = extracted.geometryViews();
+  RaySceneAcceleration backend(*device, *memory);
+  begin();
+  const auto generation = backend.recordBuild(command, {views, extracted.instances});
+  submit();
+  const auto probe = [](float x, float y, uint32_t flags) {
+    return Probe{{x, y, 2, .001f}, {0, 0, -1, 4},
+        {0xff, std::bit_cast<uint32_t>(.8f), std::bit_cast<uint32_t>(.4f), flags + 1}};
+  };
+  // Barycentrics (1/4,1/4) -> alpha .375*.8=.3; (3/4,1/8)
+  // -> .8125*.8=.65. OPAQUE must accept even the zero-alpha corner.
+  const std::array probes{probe(-.5f, -.5f, 1), probe(.5f, -.75f, 1),
+      probe(-.99f, -.99f, 0), probe(-.5f, -.5f, 2)};
+  const auto results = trace(*generation, probes, extracted.triangles);
+  const std::array<uint32_t, 4> expected{0, 1, 1, 0};
+  ASSERT_EQ(results.size(), expected.size());
+  for (size_t i = 0; i < results.size(); ++i) {
+    EXPECT_EQ(results[i].z, 1u) << "candidate " << i;
+    EXPECT_EQ(results[i].x, expected[i]) << "alpha probe " << i;
+  }
 }
 
 TEST_F(RaySceneGpu, KeepsUnchangedProviderBlasAcrossProviderChanges) {

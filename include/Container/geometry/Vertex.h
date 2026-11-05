@@ -18,6 +18,7 @@ struct Vertex {
   glm::vec2 texCoord1{0.0f, 0.0f};
   glm::vec3 normal{0.0f, 1.0f, 0.0f};
   glm::vec4 tangent{1.0f, 0.0f, 0.0f, 1.0f};
+  float colorAlpha{1.0f};
 
   static VkVertexInputBindingDescription bindingDescription() {
     VkVertexInputBindingDescription bindingDescription{};
@@ -64,6 +65,15 @@ struct Vertex {
     return attributeDescriptions;
   }
 };
+
+static_assert(offsetof(Vertex, position) == 0);
+static_assert(offsetof(Vertex, color) == 12);
+static_assert(offsetof(Vertex, texCoord) == 24);
+static_assert(offsetof(Vertex, texCoord1) == 32);
+static_assert(offsetof(Vertex, normal) == 40);
+static_assert(offsetof(Vertex, tangent) == 52);
+static_assert(offsetof(Vertex, colorAlpha) == 68);
+static_assert(sizeof(Vertex) == 72);
 
 }  // namespace container::geometry
 

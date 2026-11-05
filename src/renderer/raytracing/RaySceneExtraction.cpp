@@ -36,7 +36,7 @@ glm::vec3 surfaceFallbackTangent(glm::vec3 normal) {
 }
 void validateSurfaceVertex(const container::geometry::Vertex &vertex) {
   if (!finite(vertex.position) || !finite(vertex.normal) ||
-      !finite(vertex.tangent) || !finite(vertex.color) ||
+      !finite(vertex.tangent) || !finite(vertex.color) || !std::isfinite(vertex.colorAlpha) ||
       !finite(glm::vec4(vertex.texCoord, vertex.texCoord1)))
     throw std::invalid_argument("ray surface attributes must be finite");
 }
@@ -191,6 +191,7 @@ std::optional<RaySurfacePoint> reconstructRaySurface(
     worldTangent += tangent * weights[i];
     tangentHandedness += handedness * weights[i];
     result.color += glm::vec3(triangle.colors[i]) * weights[i];
+    result.colorAlpha += triangle.colors[i].w * weights[i];
     result.uv += uv.uv[i] * weights[i];
   }
   result.position = glm::vec3(instance.model * glm::vec4(objectPosition, 1));
@@ -210,7 +211,8 @@ std::optional<RaySurfacePoint> reconstructRaySurface(
   result.frontFace = frontFace;
   if (!finite(result.position) || !finite(result.geometricNormal) ||
       !finite(result.shadingNormal) || !finite(result.tangent) ||
-      !finite(result.bitangent) || !finite(result.color) || !finite(result.uv))
+      !finite(result.bitangent) || !finite(result.color) ||
+      !std::isfinite(result.colorAlpha) || !finite(result.uv))
     return std::nullopt;
   return result;
 }
@@ -274,8 +276,11 @@ extractRayScene(std::span<const RaySceneProviderSource> providers,
           if (i % 3 == 0)
             scene.triangles.emplace_back();
           const auto &vertex = provider.vertices[sourceIndex];
+          if (!std::isfinite(vertex.colorAlpha))
+            throw std::invalid_argument("ray vertex alpha must be finite");
           scene.triangles.back().uv[i % 3] =
               glm::vec4(vertex.texCoord, vertex.texCoord1);
+          scene.triangles.back().vertexAlpha[i % 3] = vertex.colorAlpha;
           if (options.includeSurfaceData) {
             validateSurfaceVertex(vertex);
             if (i % 3 == 0)
@@ -284,7 +289,7 @@ extractRayScene(std::span<const RaySceneProviderSource> providers,
             surface.positions[i % 3] = glm::vec4(vertex.position, 1.0f);
             surface.normals[i % 3] = glm::vec4(vertex.normal, 0.0f);
             surface.tangents[i % 3] = vertex.tangent;
-            surface.colors[i % 3] = glm::vec4(vertex.color, 1.0f);
+            surface.colors[i % 3] = glm::vec4(vertex.color, vertex.colorAlpha);
           }
         }
       }

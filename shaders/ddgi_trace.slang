@@ -55,7 +55,8 @@ bool DdgiCandidateAccepted(uint instanceIndex, uint primitive, float2 bary, floa
     {
         RayTriangleData triangle = uDdgiTriangles[instance.info.x + primitive];
         float4 uv = triangle.uv[0] * (1.0 - bary.x - bary.y) + triangle.uv[1] * bary.x + triangle.uv[2] * bary.y;
-        float alpha = material.color.a * saturate(material.opacityFactor) *
+        float alpha = material.color.a * RayTriangleColorAlpha(triangle, bary) *
+            saturate(material.opacityFactor) *
             DdgiTexture(material.baseColorTextureIndex, uv, material.baseColorTextureTransform).a;
         alpha *= SelectGpuTextureChannel(DdgiTexture(material.opacityTextureIndex, uv,
             material.opacityTextureTransform), material.opacityTextureTransform, 0u);
@@ -106,7 +107,7 @@ DdgiSurfaceTransmission DdgiResolveSurfaceTransmission(RaySurfacePoint point, Gp
 {
     DdgiSurfaceTransmission result = (DdgiSurfaceTransmission)0;
     float4 baseColor = DdgiTexture(material.baseColorTextureIndex, point.uv, material.baseColorTextureTransform);
-    float alpha = material.color.a * material.opacityFactor * baseColor.a *
+    float alpha = material.color.a * point.colorAlpha * material.opacityFactor * baseColor.a *
         SelectGpuTextureChannel(DdgiTexture(material.opacityTextureIndex, point.uv,
             material.opacityTextureTransform), material.opacityTextureTransform, 0u);
     float transmission = DdgiScalar(material.transmissionFactor, material.transmissionTextureIndex,

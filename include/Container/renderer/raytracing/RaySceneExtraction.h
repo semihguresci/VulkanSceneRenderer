@@ -23,17 +23,19 @@ struct RaySceneProviderSource {
   std::span<const DrawCommand> draws;
 };
 
-// UV0/UV1 at each triangle corner. Matches ray_visibility_common.slang.
+// UV0/UV1 and COLOR_0 alpha at each corner. Matches ray_scene_data.slang.
 struct RayTriangleData {
   std::array<glm::vec4, 3> uv{};
+  glm::vec4 vertexAlpha{1.0f}; // xyz = triangle corners; w reserved
 };
 struct RayInstanceData {
   glm::uvec4 info{
       0}; // first triangle, GPU material, object flags, provider kind
 };
-static_assert(sizeof(RayTriangleData) == 48);
+static_assert(sizeof(RayTriangleData) == 64);
 static_assert(sizeof(RayInstanceData) == 16);
 static_assert(offsetof(RayTriangleData, uv) == 0);
+static_assert(offsetof(RayTriangleData, vertexAlpha) == 48);
 static_assert(offsetof(RayInstanceData, info) == 0);
 
 // Optional closest-hit attributes, separate from the small shadow metadata.
@@ -74,6 +76,7 @@ struct RaySurfacePoint {
   glm::vec4 tangent{};
   glm::vec3 bitangent{};
   glm::vec3 color{};
+  float colorAlpha{};
   glm::vec4 uv{};
   uint32_t materialIndex{0}, objectFlags{0};
   bool frontFace{true};

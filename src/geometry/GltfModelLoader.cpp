@@ -855,8 +855,9 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
         primitiveData.vertices[i].color =
             readVec3f(colorAccessor, colorView, colorBuffer, i);
       } else {
-        primitiveData.vertices[i].color =
-            glm::vec3(readVec4f(colorAccessor, colorView, colorBuffer, i));
+        const auto rgba = readVec4f(colorAccessor, colorView, colorBuffer, i);
+        primitiveData.vertices[i].color = glm::vec3(rgba);
+        primitiveData.vertices[i].colorAlpha = std::clamp(rgba.a, 0.0f, 1.0f);
       }
     }
   }

@@ -69,7 +69,8 @@ float TraceRayVisibility(float3 world, float3 normal, float3 direction, float di
             float2 bary = query.CandidateTriangleBarycentrics();
             float4 uv = triangle.uv[0] * (1.0 - bary.x - bary.y) +
                         triangle.uv[1] * bary.x + triangle.uv[2] * bary.y;
-            float alpha = material.color.a * saturate(material.opacityFactor);
+            float alpha = material.color.a * RayTriangleColorAlpha(triangle, bary) *
+                saturate(material.opacityFactor);
             alpha *= RayTexture(material.baseColorTextureIndex,
                 ApplyGpuTextureTransform(uv.xy, uv.zw, material.baseColorTextureTransform)).a;
             alpha *= SelectGpuTextureChannel(RayTexture(material.opacityTextureIndex,

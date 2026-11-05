@@ -314,6 +314,8 @@ add_custom_command(
             ${SLANG_SPIRV_FLAGS} -capability spvRayQueryKHR -entry computeMain
             -o "${RAY_QUERY_CONTRACT_SPIRV}"
     DEPENDS "${DEFAULT_SHADER_DIR}/ray_query_contract.slang"
+            "${CMAKE_SOURCE_DIR}/shaders/ray_scene_data.slang"
+            "${CMAKE_SOURCE_DIR}/shaders/material_data_common.slang"
             "${CMAKE_CURRENT_LIST_FILE}" "${CMAKE_SOURCE_DIR}/cmake/Shaders.cmake"
             "${SLANGC_EXECUTABLE}"
     VERBATIM
@@ -529,6 +531,11 @@ add_custom_test(scene_graph_tests
 add_custom_test(input_manager_tests
     ${TEST_PLATFORM_DIR}/input_manager_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_window
+)
+
+add_custom_test(gltf_vertex_alpha_tests
+    ${TEST_GEOMETRY_DIR}/gltf_vertex_alpha_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry
 )
 
 add_custom_test(gltf_loader_tests

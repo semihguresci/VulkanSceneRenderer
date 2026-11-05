@@ -12,6 +12,14 @@ static const uint MAX_EXACT_GBUFFER_MATERIAL_INDEX = 8388607u;
 static const uint kGpuMaterialFlagAlphaMask = 0x1u;
 static const uint kGpuMaterialFlagAlphaBlend = 0x2u;
 static const uint kGpuMaterialFlagDoubleSided = 0x4u;
+
+// glTF OPAQUE ignores every alpha source, including COLOR_0.w. Resolve after
+// interpolation and texture/opacity evaluation so all coverage passes agree.
+float ResolveGpuMaterialAlpha(float alpha, uint flags)
+{
+    return (flags & (kGpuMaterialFlagAlphaMask | kGpuMaterialFlagAlphaBlend)) == 0u
+        ? 1.0 : alpha;
+}
 static const float kGBufferMaterialThinSurfaceBit = 0.5;
 static const uint kBimSemanticColorModeOff = 0u;
 

@@ -25,6 +25,7 @@ struct RaySurfacePoint
     float4 tangent;
     float3 bitangent;
     float3 color;
+    float colorAlpha;
     float4 uv;
     uint materialIndex;
     uint objectFlags;
@@ -112,9 +113,20 @@ RaySurfacePoint ReconstructRaySurface(RayTriangleData uv,
         worldNormal += normal * weights[corner];
         worldTangent += tangent * weights[corner];
         tangentHandedness += handedness * weights[corner];
-        result.color += triangle.colors[corner].xyz * weights[corner];
         result.uv += uv.uv[corner] * weights[corner];
     }
+    // Affine differences preserve constant attributes exactly. Summing three
+    // independently rounded barycentric products can turn white into >1 and
+    // incorrectly reject a physically valid unit-albedo reference material.
+    float4 color = triangle.colors[0] +
+        (triangle.colors[1] - triangle.colors[0]) * barycentrics.x +
+        (triangle.colors[2] - triangle.colors[0]) * barycentrics.y;
+    // A valid triangle's interpolant lies in its componentwise vertex hull.
+    // Enforce that bound against rounding, preserving authored HDR values.
+    color = clamp(color, min(triangle.colors[0], min(triangle.colors[1], triangle.colors[2])),
+                         max(triangle.colors[0], max(triangle.colors[1], triangle.colors[2])));
+    result.color = color.xyz;
+    result.colorAlpha = color.w;
     result.position = mul(instance.model, float4(objectPosition, 1.0)).xyz;
     result.shadingNormal = RaySurfaceNormalize(worldNormal, result.geometricNormal);
     worldTangent -= result.shadingNormal * dot(result.shadingNormal, worldTangent);
@@ -125,6 +137,7 @@ RaySurfacePoint ReconstructRaySurface(RayTriangleData uv,
     result.bitangent = RaySurfaceNormalize(
         cross(result.shadingNormal, worldTangent) * sign, 0.0.xxx);
     result.valid = all(isfinite(result.position)) && all(isfinite(result.color)) &&
+        isfinite(result.colorAlpha) &&
         all(isfinite(result.uv)) && all(isfinite(result.shadingNormal)) &&
         all(isfinite(result.tangent)) && all(isfinite(result.bitangent)) ? 1u : 0u;
     return result;

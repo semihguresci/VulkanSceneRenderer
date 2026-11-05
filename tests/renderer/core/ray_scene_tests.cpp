@@ -23,6 +23,9 @@ std::vector<container::geometry::Vertex> surfaceTestVertices() {
   vertices[0].color = {1, 0, 0};
   vertices[1].color = {0, 1, 0};
   vertices[2].color = {0, 0, 1};
+  vertices[0].colorAlpha = 0.0f;
+  vertices[1].colorAlpha = 0.5f;
+  vertices[2].colorAlpha = 1.0f;
   vertices[0].texCoord = {0, 0};
   vertices[1].texCoord = {1, 0};
   vertices[2].texCoord = {0, 1};
@@ -60,7 +63,8 @@ TEST(RaySurface, MetadataIsOptionalAndRetainsSourceCornerAttributes) {
               glm::vec4(vertices[corner].position, 1));
     EXPECT_EQ(surface.normals[corner], glm::vec4(vertices[corner].normal, 0));
     EXPECT_EQ(surface.tangents[corner], vertices[corner].tangent);
-    EXPECT_EQ(surface.colors[corner], glm::vec4(vertices[corner].color, 1));
+    EXPECT_EQ(surface.colors[corner], glm::vec4(vertices[corner].color, vertices[corner].colorAlpha));
+    EXPECT_FLOAT_EQ(shadows.triangles[0].vertexAlpha[corner], vertices[corner].colorAlpha);
     EXPECT_EQ(surfaces.triangles[0].uv[corner],
               glm::vec4(vertices[corner].texCoord, vertices[corner].texCoord1));
   }
@@ -89,10 +93,26 @@ TEST(RaySurface, ReconstructsMirroredFrameAndKeepsBackFacePolicyExplicit) {
   EXPECT_EQ(point->tangent.w, -1.0f);
   expectSurfaceVector(point->bitangent, {0, 1, 0});
   expectSurfaceVector(point->color, {0.5f, 0.25f, 0.25f});
+  EXPECT_FLOAT_EQ(point->colorAlpha, 0.375f);
   EXPECT_EQ(point->uv, glm::vec4(0.25f, 0.25f, 0.75f, 0.75f));
   EXPECT_EQ(point->materialIndex, 17u);
   EXPECT_EQ(point->objectFlags, 4u);
   EXPECT_FALSE(point->frontFace);
+}
+
+TEST(RaySurface, VertexAlphaMetadataDefaultsOpaqueAndRejectsNonfiniteInput) {
+  EXPECT_EQ(sizeof(RayTriangleData), 64u);
+  EXPECT_EQ(offsetof(RayTriangleData, vertexAlpha), 48u);
+  EXPECT_EQ(RayTriangleData{}.vertexAlpha, glm::vec4(1));
+  auto vertices = surfaceTestVertices();
+  const std::vector<uint32_t> indices{0, 1, 2};
+  const std::vector<container::gpu::ObjectData> objects(1);
+  const std::vector<DrawCommand> draws{{0, 0, 3}};
+  const std::array providers{
+      RaySceneProviderSource{{"mesh"}, 1, vertices, indices, objects, draws}};
+  vertices[0].colorAlpha = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_THROW(extractRayScene(providers), std::invalid_argument);
+  EXPECT_THROW(extractRayScene(providers, {.includeSurfaceData = true}), std::invalid_argument);
 }
 
 TEST(RaySurface,
