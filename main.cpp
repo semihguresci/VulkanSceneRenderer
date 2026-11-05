@@ -178,6 +178,12 @@ void printCommandLineHelp() {
   --capture-sequence PATH        Capture temporal sequence
   --warmup-frames N              Capture warmup frames
   --capture-frame N              Screenshot frame
+  --animation-clip N             Select glTF animation N (zero based)
+  --animation-time F             Initial clip time in seconds
+  --animation-speed F            Playback multiplier (negative reverses)
+  --animation-paused             Hold the configured glTF pose
+  --animation-no-loop            Pause at the end of playback
+  --gltf-camera-node N            Use the camera on source glTF node N
   --fixed-dt F                   Capture timestep in seconds
   --gfxrecon-session PATH        GFXReconstruct session
   --validation / --no-validation Enable/disable Vulkan validation
@@ -433,6 +439,20 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     } else if (arg == "--capture-frame") {
       config.screenshotCaptureFrame =
           parseUint(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == "--animation-clip" || arg == "--gltf-camera-node") {
+      const auto index = parseUint(requireValue(argc, argv, i, arg), arg);
+      if (index > uint32_t(std::numeric_limits<int>::max()))
+        throw std::runtime_error("glTF clip or camera index is too large");
+      if (arg == "--animation-clip") config.gltfAnimationClip = static_cast<int>(index);
+      else config.gltfCameraNode = static_cast<int>(index);
+    } else if (arg == "--animation-time") {
+      config.gltfAnimationTime = parseFloat(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == "--animation-speed") {
+      config.gltfAnimationSpeed = parseFloat(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == "--animation-paused") {
+      config.gltfAnimationPlaying = false;
+    } else if (arg == "--animation-no-loop") {
+      config.gltfAnimationLoop = false;
     } else if (arg == "--fixed-dt") {
       config.screenshotFixedTimestepSeconds =
           parseFloat(requireValue(argc, argv, i, arg), arg);

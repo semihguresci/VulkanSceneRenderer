@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Container/geometry/GltfAnimationRuntime.h>
+
 #include <cstdint>
 #include <filesystem>
 #include <limits>
@@ -31,6 +33,7 @@ struct GLFWwindow;
 
 namespace container::temporal {
 struct CaptureSample;
+struct CaptureEvent;
 }
 
 // Forward declarations — full headers are only needed in RendererFrontend.cpp.
@@ -264,6 +267,19 @@ private:
   SceneBufferState buffers_{};
 
   container::scene::SceneGraph sceneGraph_{};
+  std::unique_ptr<container::geometry::gltf::AnimationPlayer> gltfAnimation_;
+  std::optional<uint64_t> gltfAnimationSourceRevision_;
+  std::optional<size_t> gltfAnimationCameraNode_;
+  std::optional<container::geometry::gltf::AnimatedCameraState> gltfAnimationCamera_;
+  double pendingGltfAnimationDeltaSeconds_{};
+  void resetGltfAnimation(bool applyStartupOptions);
+  void updateGltfAnimation();
+  void applyGltfAnimationCapture(const container::temporal::CaptureEvent& event);
+  void publishGltfAnimation(const container::geometry::gltf::AnimationDirtySet& dirty,
+                            bool discontinuity);
+  void refreshGltfCameraChoices();
+  void selectGltfCamera(std::optional<size_t> node);
+  void appendGltfAnimationTelemetry(nlohmann::json& json) const;
   SceneState sceneState_{};
   DebugRenderState debugState_{};
   RenderSurfaceInteractionController interactionController_{};

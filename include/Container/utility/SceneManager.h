@@ -32,6 +32,8 @@ class VulkanDevice;
 struct AllocatedBuffer;
 }  // namespace container::gpu
 
+namespace container::geometry::gltf { struct AnimationDirtySet; class AnimationPlayer; }
+
 namespace container::scene {
 class SceneGraph;
 }  // namespace container::scene
@@ -160,6 +162,12 @@ class SceneManager {
   }
   bool isDefaultTestSceneActive() const;
   void populateSceneGraph(SceneGraph& sceneGraph) const;
+  [[nodiscard]] tinygltf::Model& animationSource() noexcept { return gltfModel_; }
+  [[nodiscard]] const tinygltf::Model& animationSource() const noexcept { return gltfModel_; }
+  std::unique_ptr<container::geometry::gltf::AnimationPlayer> takePreparedAnimation() noexcept;
+  [[nodiscard]] uint64_t animationSourceRevision() const noexcept { return animationSourceRevision_; }
+  void publishAnimationChanges(const container::geometry::gltf::AnimationDirtySet& dirty,
+                               const SceneGraph& graph, uint32_t editorRoot);
   [[nodiscard]] uint32_t appendRuntimeMesh(
       container::geometry::Mesh mesh);
   [[nodiscard]] MaterialRenderProperties materialRenderProperties(
@@ -237,13 +245,15 @@ class SceneManager {
   void createSampler();
   void loadMaterialXMaterial();
   void loadGltfAssets(container::geometry::GltfLoadResult* prepared = nullptr,
-      const container::material::PreparedGltfTextures* preparedTextures = nullptr);
+      const container::material::PreparedGltfTextures* preparedTextures = nullptr,
+                      std::unique_ptr<container::geometry::gltf::AnimationPlayer>* preparedAnimation = nullptr);
   void loadDefaultTestSceneAssets();
   void uploadMaterialBuffer();
   void uploadTextureMetadataBuffer();
   void createSceneClipStateBuffer();
   void writeSceneClipStateBuffer();
-  void collectAuthoredPunctualLights();
+  void collectAuthoredPunctualLights(
+      const SceneGraph* graph = nullptr, uint32_t editorRoot = std::numeric_limits<uint32_t>::max());
   void updateModelBounds();
   void allocateDescriptorSets(uint32_t descriptorSetCount);
   void writeDescriptorSetContents(
@@ -271,6 +281,8 @@ class SceneManager {
   std::vector<container::geometry::Vertex> vertices_{};
   std::vector<uint32_t> indices_{};
   uint64_t geometryRevision_{0};
+  uint64_t animationSourceRevision_{0};
+  std::unique_ptr<container::geometry::gltf::AnimationPlayer> pendingAnimation_;
   uint64_t materialRevision_{0};
   ModelBounds modelBounds_{};
   std::vector<container::gpu::PointLightData> authoredPointLights_{};

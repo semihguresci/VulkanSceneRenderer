@@ -44,6 +44,13 @@ inline constexpr bool kDefaultAuthoredLocalLightBloomEnabled = false;
 inline constexpr uint32_t kDefaultAuthoredLocalLightShadowLayerBudget = 24;
 
 struct AppConfig {
+  int gltfAnimationClip{-1};
+  int gltfCameraNode{-1};
+  double gltfAnimationTime{};
+  double gltfAnimationSpeed{1.0};
+  bool gltfAnimationPlaying{true};
+  bool gltfAnimationLoop{true};
+
   container::capture::Config gfxrecon{};
   uint32_t windowWidth{800};
   uint32_t windowHeight{600};

@@ -19,6 +19,8 @@ struct SceneNode {
   uint32_t primitiveIndex = std::numeric_limits<uint32_t>::max();
   bool renderable = false;
   bool visible = true;
+  // Identity of an authored node. Generated primitive children have no source node.
+  int32_t sourceNodeIndex{-1};
   std::string name{};
   std::vector<uint32_t> children{};
 };

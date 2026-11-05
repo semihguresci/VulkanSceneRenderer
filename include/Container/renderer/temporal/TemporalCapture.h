@@ -24,6 +24,9 @@ struct CaptureEvent {
   bool guiUnload{false};
   bool guiWaitForLoad{true};
   std::optional<bool> taa, orthographic, objectVisible, minimized;
+  std::optional<int> animationClip;
+  std::optional<double> animationTime;
+  std::optional<bool> animationPlaying;
   std::optional<bool> rayShadowDenoise;
   std::optional<bool> ddgiPaused, ddgiEnabled;
   std::optional<uint32_t> ddgiFitProbes;
@@ -194,6 +197,24 @@ public:
       if (!event.technique.empty() && event.technique != "forward-raster" &&
           event.technique != "deferred-raster")
         throw std::invalid_argument("Invalid capture render technique");
+      if (value.contains("animationClip")) {
+        const auto& index = value.at("animationClip");
+        if (!index.is_number_integer() || index.get<double>() < -1 ||
+            index.get<double>() > std::numeric_limits<int>::max())
+          throw std::invalid_argument("Capture animationClip must be -1 or a nonnegative clip index");
+        event.animationClip = index.get<int>();
+      }
+      if (value.contains("animationTime")) {
+        const auto& time = value.at("animationTime");
+        if (!time.is_number() || !std::isfinite(time.get<double>()) || time.get<double>() < 0)
+          throw std::invalid_argument("Capture animationTime must be finite and nonnegative");
+        event.animationTime = time.get<double>();
+      }
+      if (value.contains("animationPlaying")) {
+        if (!value.at("animationPlaying").is_boolean())
+          throw std::invalid_argument("Capture animationPlaying must be a boolean");
+        event.animationPlaying = value.at("animationPlaying").get<bool>();
+      }
       event.reload = value.value("reload", std::string{});
       event.guiReload = value.value("guiReload", std::string{});
       event.guiSampleModel = value.value("guiSampleModel", std::string{});

@@ -5,6 +5,7 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <format>
 #include <initializer_list>
 #include <limits>
 #include <optional>
@@ -21,6 +22,7 @@
 #include "Container/utility/SceneData.h"
 #include "Container/utility/SceneGraph.h"
 #include "Container/utility/SceneManager.h"
+#include "Container/geometry/GltfAnimationRuntime.h"
 #include "Container/renderer/temporal/TemporalMaterialRevision.h"
 #include "Container/utility/VulkanDevice.h"
 #include "Container/utility/VulkanMemoryManager.h"
@@ -814,13 +816,50 @@ container::gpu::GpuMaterial makeGpuMaterial(
 }  // namespace
 
 namespace {
+std::unique_ptr<container::geometry::gltf::AnimationPlayer>
+prepareAnimationPlayback(const tinygltf::Model& model, std::string_view path) {
+  using namespace container::geometry::gltf;
+  if (model.animations.empty()) return {};
+  AnimationLibrary library;
+  try {
+    library = ParseAnimations(model);
+  } catch (const std::invalid_argument& error) {
+    throw std::invalid_argument(std::format("glTF asset '{}': {}", path, error.what()));
+  }
+  const bool required = std::ranges::find(model.extensionsRequired, "KHR_animation_pointer")
+                        != model.extensionsRequired.end();
+  for (size_t index = 0; index < library.clips.size(); ++index) {
+    auto& clip = library.clips[index];
+    std::erase_if(clip.tracks, [&](const AnimationTrack& track) {
+      const bool geometry = track.target.kind == AnimationTargetKind::NodeWeights;
+      const bool deferredMaterial = track.target.kind == AnimationTargetKind::Material &&
+          (track.target.property.starts_with("extensions/KHR_materials_anisotropy/") ||
+           track.target.property.starts_with("extensions/KHR_materials_diffuse_transmission/"));
+      if (geometry || deferredMaterial)
+        library.diagnostics.push_back({index, track.sourceChannel, geometry ?
+            "Morph weight playback requires the deformation renderer" :
+            "The target material extension is unavailable in this renderer"});
+      return geometry || deferredMaterial;
+    });
+  }
+  for (const auto& diagnostic : library.diagnostics) {
+    const auto& channel = model.animations.at(diagnostic.clip).channels.at(diagnostic.channel);
+    const auto message = std::format("glTF asset '{}', animation {} channel {}: {}", path,
+                                    diagnostic.clip, diagnostic.channel, diagnostic.message);
+    if (required && channel.target_path == "pointer")
+      throw std::invalid_argument(message + " (required KHR_animation_pointer)");
+    std::println(stderr, "{}", message);
+  }
+  return std::make_unique<AnimationPlayer>(std::move(library));
+}
+
 container::geometry::gltf::LoadOptions sceneTextureLoadOptions() {
   container::geometry::gltf::LoadOptions options;
   options.maxInputBytes=512ull*1024*1024;
   options.retainEncodedImages=true;
   options.unavailableRuntimeExtensions={"KHR_materials_anisotropy","KHR_materials_diffuse_transmission",
       "EXT_mesh_gpu_instancing","KHR_node_visibility","KHR_node_selectability","KHR_node_hoverability",
-      "KHR_materials_variants","KHR_animation_pointer"};
+      "KHR_materials_variants"};
   return options;
 }
 } // namespace
@@ -997,7 +1036,7 @@ bool SceneManager::isDefaultTestSceneActive() const {
 void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
   sceneGraph = SceneGraph{};
 
-  if (primitiveRanges().empty()) {
+  if (primitiveRanges().empty() && gltfModel_.nodes.empty()) {
     return;
   }
 
@@ -1048,6 +1087,7 @@ void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
         const uint32_t graphNode = sceneGraph.createNode(
             nodeLocalTransform(gltfNode), defaultMaterialIndex_, false,
             SceneGraph::kInvalidNode, nodeName);
+        sceneGraph.getNode(graphNode)->sourceNodeIndex = gltfNodeIndex;
         sceneGraph.setParent(graphNode, parentNode);
 
         if (gltfNode.mesh >= 0 &&
@@ -1157,13 +1197,16 @@ bool SceneManager::reloadModel(
     }
   }
   std::optional<container::material::PreparedGltfTextures> incomingTextures;
+  std::unique_ptr<container::geometry::gltf::AnimationPlayer> incomingAnimation;
   if(prepared) {
-    try { validateGltfSamplerPolicies(prepared->gltfModel,true);
+    try {
+      incomingAnimation = prepareAnimationPlayback(prepared->gltfModel, path);
+      validateGltfSamplerPolicies(prepared->gltfModel,true);
       incomingTextures=container::material::PrepareGltfTextures(prepared->gltfModel,
           allocationManager_->textureDecodeOptions(false));
       if(container::material::CountPreparedGltfTextureResources(*incomingTextures)>textureDescriptorCapacity_)
         throw std::runtime_error("Incoming glTF textures exceed the scene image descriptor capacity"); }
-    catch(const std::exception& error) {std::println(stderr,"glTF sampler preflight failed: {}",error.what());return false;}
+    catch(const std::exception& error) {std::println(stderr,"glTF scene preflight failed: {}",error.what());return false;}
   }
   auto resetForLoad = [this]() {
     resetLoadedAssets();
@@ -1178,7 +1221,7 @@ bool SceneManager::reloadModel(
     resetForLoad();
     config_.modelPath = path;
     config_.importScale = sanitizeImportScale(importScale);
-    loadGltfAssets(prepared,incomingTextures?&*incomingTextures:nullptr);
+    loadGltfAssets(prepared,incomingTextures?&*incomingTextures:nullptr, &incomingAnimation);
     uploadMaterialBuffer();
     uploadTextureMetadataBuffer();
     updateDescriptorSets(cameraBuffers, objectBuffer);
@@ -1872,8 +1915,14 @@ void SceneManager::loadMaterialXMaterial() {
   }
 }
 
+std::unique_ptr<container::geometry::gltf::AnimationPlayer> SceneManager::takePreparedAnimation() noexcept {
+  return std::move(pendingAnimation_);
+}
+
 void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
-    const container::material::PreparedGltfTextures* preparedTextures) {
+    const container::material::PreparedGltfTextures* preparedTextures,
+    std::unique_ptr<container::geometry::gltf::AnimationPlayer>* preparedAnimation) {
+  pendingAnimation_.reset();
   model_ = container::geometry::Model{};
   gltfModel_ = tinygltf::Model{};
   authoredPointLights_.clear();
@@ -1900,6 +1949,8 @@ void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
                              : container::geometry::gltf::LoadModelWithSource(
                                    container::util::pathToUtf8(resolvedPath),sceneTextureLoadOptions());
       validateGltfSamplerPolicies(result.gltfModel,false);
+      if (preparedAnimation) pendingAnimation_ = std::move(*preparedAnimation);
+      else pendingAnimation_ = prepareAnimationPlayback(result.gltfModel, config_.modelPath);
       gltfModel_ = std::move(result.gltfModel);
       model_ = std::move(result.model);
 
@@ -2037,123 +2088,150 @@ void SceneManager::appendSceneAsset(
   }
 }
 
-void SceneManager::collectAuthoredPunctualLights() {
+void SceneManager::collectAuthoredPunctualLights(const SceneGraph* graph, uint32_t editorRoot) {
   authoredPointLights_.clear();
   authoredDirectionalLights_.clear();
   authoredAreaLights_.clear();
-  if (gltfModel_.nodes.empty()) {
+  if (gltfModel_.nodes.empty()) return;
+
+  const auto appendLight = [&](const tinygltf::Node& node, const glm::mat4& sceneLocalTransform) {
+    if (node.light >= 0 &&
+        node.light < static_cast<int>(gltfModel_.lights.size())) {
+      const tinygltf::Light& lightDefinition =
+          gltfModel_.lights[static_cast<size_t>(node.light)];
+      if (const std::optional<container::gpu::AreaLightData> areaLight =
+              makeGltfAreaLightData(lightDefinition, sceneLocalTransform,
+                                    config_.importScale)) {
+        authoredAreaLights_.push_back(*areaLight);
+      } else if (lightDefinition.type == "point") {
+        const glm::vec3 sceneLocalPosition =
+            glm::vec3(sceneLocalTransform * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
+
+        container::gpu::PointLightData pointLight{};
+        pointLight.positionRadius =
+            glm::vec4(sceneLocalPosition,
+                      gltfPointLightRange(lightDefinition,
+                                          config_.importScale));
+        pointLight.colorIntensity =
+            glm::vec4(pointLightColorOrDefault(lightDefinition),
+                      pointLightIntensityOrDefault(lightDefinition));
+        authoredPointLights_.push_back(pointLight);
+      } else if (lightDefinition.type == "directional") {
+        AuthoredDirectionalLight directionalLight{};
+        directionalLight.direction =
+            glm::vec4(gltfDirectionalLightDirection(sceneLocalTransform),
+                      0.0f);
+        directionalLight.colorIntensity =
+            glm::vec4(pointLightColorOrDefault(lightDefinition),
+                      pointLightIntensityOrDefault(lightDefinition));
+        authoredDirectionalLights_.push_back(directionalLight);
+      } else if (lightDefinition.type == "spot") {
+        const glm::vec3 sceneLocalPosition =
+            glm::vec3(sceneLocalTransform *
+                      glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
+        const glm::vec3 sceneLocalDirection =
+            gltfDirectionalLightDirection(sceneLocalTransform);
+        const auto [innerCos, outerCos] =
+            gltfSpotConeCosines(lightDefinition);
+
+        container::gpu::PointLightData spotLight{};
+        spotLight.positionRadius =
+            glm::vec4(sceneLocalPosition,
+                      gltfPointLightRange(lightDefinition,
+                                          config_.importScale));
+        spotLight.colorIntensity =
+            glm::vec4(pointLightColorOrDefault(lightDefinition),
+                      pointLightIntensityOrDefault(lightDefinition));
+        spotLight.directionInnerCos =
+            glm::vec4(sceneLocalDirection, innerCos);
+        spotLight.coneOuterCosType =
+            glm::vec4(outerCos, container::gpu::kLightTypeSpot, 0.0f, 0.0f);
+        authoredPointLights_.push_back(spotLight);
+      }
+    }
+
+    for (const char* extensionName : kKnownAreaLightExtensions) {
+      const auto extensionIt = node.extensions.find(extensionName);
+      if (extensionIt == node.extensions.end()) {
+        continue;
+      }
+
+      const std::optional<int> areaLightIndex =
+          readAreaLightIndex(extensionIt->second);
+      if (!areaLightIndex) {
+        continue;
+      }
+
+      const tinygltf::Value* areaLightValue =
+          findModelAreaLightDefinition(gltfModel_, extensionName,
+                                       *areaLightIndex);
+      if (areaLightValue == nullptr) {
+        continue;
+      }
+
+      const tinygltf::Light areaDefinition =
+          areaLightDefinitionFromValue(*areaLightValue);
+      if (const std::optional<container::gpu::AreaLightData> areaLight =
+              makeGltfAreaLightData(areaDefinition, sceneLocalTransform,
+                                    config_.importScale)) {
+        authoredAreaLights_.push_back(*areaLight);
+      }
+    }
+
+  };
+
+  if (graph) {
+    // The lighting manager applies the synthetic editor root to these records.
+    // Accumulate relative transforms so even a singular editor root is safe.
+    struct Work { uint32_t node; glm::mat4 parent; };
+    std::vector<Work> pending;
+    for (auto root = graph->rootNodes().rbegin(); root != graph->rootNodes().rend(); ++root)
+      pending.push_back({*root, glm::mat4(1.0f)});
+    while (!pending.empty()) {
+      const auto work = pending.back();
+      pending.pop_back();
+      const auto* node = graph->getNode(work.node);
+      if (!node) continue;
+      const auto transform = work.node == editorRoot ? work.parent : work.parent * node->localTransform;
+      if (node->sourceNodeIndex >= 0 && size_t(node->sourceNodeIndex) < gltfModel_.nodes.size())
+        appendLight(gltfModel_.nodes[size_t(node->sourceNodeIndex)], transform);
+      for (auto child = node->children.rbegin(); child != node->children.rend(); ++child)
+        pending.push_back({*child, transform});
+    }
     return;
   }
 
   std::vector<bool> visited(gltfModel_.nodes.size(), false);
   std::function<void(int, const glm::mat4&)> traverseNode =
-      [&](int nodeIndex, const glm::mat4& parentTransform) {
-        if (nodeIndex < 0 ||
-            nodeIndex >= static_cast<int>(gltfModel_.nodes.size())) {
-          return;
-        }
-        if (visited[static_cast<size_t>(nodeIndex)]) {
-          return;
-        }
-        visited[static_cast<size_t>(nodeIndex)] = true;
-
-        const tinygltf::Node& node =
-            gltfModel_.nodes[static_cast<size_t>(nodeIndex)];
-        const glm::mat4 sceneLocalTransform =
-            parentTransform * nodeLocalTransform(node);
-
-        if (node.light >= 0 &&
-            node.light < static_cast<int>(gltfModel_.lights.size())) {
-          const tinygltf::Light& lightDefinition =
-              gltfModel_.lights[static_cast<size_t>(node.light)];
-          if (const std::optional<container::gpu::AreaLightData> areaLight =
-                  makeGltfAreaLightData(lightDefinition, sceneLocalTransform,
-                                        config_.importScale)) {
-            authoredAreaLights_.push_back(*areaLight);
-          } else if (lightDefinition.type == "point") {
-            const glm::vec3 sceneLocalPosition =
-                glm::vec3(sceneLocalTransform * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
-
-            container::gpu::PointLightData pointLight{};
-            pointLight.positionRadius =
-                glm::vec4(sceneLocalPosition,
-                          gltfPointLightRange(lightDefinition,
-                                              config_.importScale));
-            pointLight.colorIntensity =
-                glm::vec4(pointLightColorOrDefault(lightDefinition),
-                          pointLightIntensityOrDefault(lightDefinition));
-            authoredPointLights_.push_back(pointLight);
-          } else if (lightDefinition.type == "directional") {
-            AuthoredDirectionalLight directionalLight{};
-            directionalLight.direction =
-                glm::vec4(gltfDirectionalLightDirection(sceneLocalTransform),
-                          0.0f);
-            directionalLight.colorIntensity =
-                glm::vec4(pointLightColorOrDefault(lightDefinition),
-                          pointLightIntensityOrDefault(lightDefinition));
-            authoredDirectionalLights_.push_back(directionalLight);
-          } else if (lightDefinition.type == "spot") {
-            const glm::vec3 sceneLocalPosition =
-                glm::vec3(sceneLocalTransform *
-                          glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
-            const glm::vec3 sceneLocalDirection =
-                gltfDirectionalLightDirection(sceneLocalTransform);
-            const auto [innerCos, outerCos] =
-                gltfSpotConeCosines(lightDefinition);
-
-            container::gpu::PointLightData spotLight{};
-            spotLight.positionRadius =
-                glm::vec4(sceneLocalPosition,
-                          gltfPointLightRange(lightDefinition,
-                                              config_.importScale));
-            spotLight.colorIntensity =
-                glm::vec4(pointLightColorOrDefault(lightDefinition),
-                          pointLightIntensityOrDefault(lightDefinition));
-            spotLight.directionInnerCos =
-                glm::vec4(sceneLocalDirection, innerCos);
-            spotLight.coneOuterCosType =
-                glm::vec4(outerCos, container::gpu::kLightTypeSpot, 0.0f, 0.0f);
-            authoredPointLights_.push_back(spotLight);
-          }
-        }
-
-        for (const char* extensionName : kKnownAreaLightExtensions) {
-          const auto extensionIt = node.extensions.find(extensionName);
-          if (extensionIt == node.extensions.end()) {
-            continue;
-          }
-
-          const std::optional<int> areaLightIndex =
-              readAreaLightIndex(extensionIt->second);
-          if (!areaLightIndex) {
-            continue;
-          }
-
-          const tinygltf::Value* areaLightValue =
-              findModelAreaLightDefinition(gltfModel_, extensionName,
-                                           *areaLightIndex);
-          if (areaLightValue == nullptr) {
-            continue;
-          }
-
-          const tinygltf::Light areaDefinition =
-              areaLightDefinitionFromValue(*areaLightValue);
-          if (const std::optional<container::gpu::AreaLightData> areaLight =
-                  makeGltfAreaLightData(areaDefinition, sceneLocalTransform,
-                                        config_.importScale)) {
-            authoredAreaLights_.push_back(*areaLight);
-          }
-        }
-
-        for (int childIndex : node.children) {
-          traverseNode(childIndex, sceneLocalTransform);
-        }
+      [&](int index, const glm::mat4& parent) {
+        if (index < 0 || size_t(index) >= gltfModel_.nodes.size() || visited[size_t(index)]) return;
+        visited[size_t(index)] = true;
+        const auto& node = gltfModel_.nodes[size_t(index)];
+        const auto transform = parent * nodeLocalTransform(node);
+        appendLight(node, transform);
+        for (const int child : node.children) traverseNode(child, transform);
       };
+  const auto importRoot = importScaleTransform(config_.importScale);
+  for (const int root : activeSceneRootNodes(gltfModel_)) traverseNode(root, importRoot);
+}
 
-  const glm::mat4 rootTransform = importScaleTransform(config_.importScale);
-  for (int rootNodeIndex : activeSceneRootNodes(gltfModel_)) {
-    traverseNode(rootNodeIndex, rootTransform);
+void SceneManager::publishAnimationChanges(
+    const container::geometry::gltf::AnimationDirtySet& dirty,
+    const SceneGraph& graph, uint32_t editorRoot) {
+  for (const size_t index : dirty.materials) {
+    if (index >= gltfModel_.materials.size())
+      throw std::invalid_argument("Animated source material index is out of range");
+    if (!materialManager_.getMaterial(resolveLoadedMaterialIndex(static_cast<int32_t>(index))))
+      throw std::runtime_error("Animated source material has no runtime binding");
   }
+  for (const size_t index : dirty.materials) {
+    const auto runtime = resolveLoadedMaterialIndex(static_cast<int32_t>(index));
+    auto material = *materialManager_.getMaterial(runtime);
+    container::geometry::gltf::UpdateAnimatedMaterialProperties(gltfModel_.materials[index], material);
+    materialManager_.updateMaterial(runtime, material);
+  }
+  if (!dirty.materials.empty()) uploadMaterialBuffer();
+  if (!dirty.nodes.empty() || !dirty.lights.empty()) collectAuthoredPunctualLights(&graph, editorRoot);
 }
 
 void SceneManager::uploadMaterialBuffer() {
@@ -2637,6 +2715,7 @@ void SceneManager::writeDescriptorSetContents(
 }
 
 void SceneManager::resetLoadedAssets() {
+  ++animationSourceRevision_;
   ++geometryRevision_;
   ++materialRevision_;
   if (materialBuffer_.buffer != VK_NULL_HANDLE) {

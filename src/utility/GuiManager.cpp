@@ -3137,6 +3137,7 @@ void GuiManager::drawSceneControls(
   ImGui::Text("Renderable primitives: %zu",
               sceneGraph.renderableNodes().size());
 
+  DrawGltfAnimationControls(gltfAnimationControls_);
   drawSceneHierarchy(sceneGraph, rootSceneNode, selectedMeshNode, selectMeshNode,
                      focusSceneNode, setSceneNodeVisible, reparentSceneNode);
 

@@ -1776,6 +1776,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
 
   phaseStart = TelemetryClock::now();
   applyBimSemanticColorMode();
+  updateGltfAnimation();
   auto &temporal = *subs_.temporalManager;
   // Section coverage and shadow routing changes invalidate the history domain;
   // material/topology revisions below remain local to their provider/object.
@@ -1844,8 +1845,9 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   temporal.state().prepareCamera(
       buffers_.cameraData, {temporalExtent.width, temporalExtent.height},
       frameTemporalSettings,
-      temporalCamera->projectionMatrix(float(temporalExtent.width) /
-                                       float(temporalExtent.height)));
+      gltfAnimationCamera_ ? gltfAnimationCamera_->projection :
+          temporalCamera->projectionMatrix(float(temporalExtent.width) /
+                                           float(temporalExtent.height)));
   SceneController::writeToBuffer(
       svc_.allocationManager, buffers_.cameras[imageIndex],
       &buffers_.cameraData, sizeof(buffers_.cameraData));
@@ -1914,12 +1916,16 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     const std::optional<ShadowCasterSceneBounds> shadowCasterBounds =
         accumulateShadowCasterSceneBounds(subs_.sceneController.get(),
                                           subs_.bimManager.get());
-    subs_.shadowManager->update(subs_.cameraController->camera(), aspect,
-                                glm::vec3(ld.directionalDirection),
-                                shadowSettings,
-                                shadowCasterBounds ? &*shadowCasterBounds
-                                                   : nullptr,
-                                imageIndex);
+    if (gltfAnimationCamera_) {
+      const auto& camera = *gltfAnimationCamera_;
+      subs_.shadowManager->update(camera.view, camera.shadowProjection, camera.nearPlane, camera.farPlane,
+                                  glm::vec3(ld.directionalDirection), shadowSettings,
+                                  shadowCasterBounds ? &*shadowCasterBounds : nullptr, imageIndex);
+    } else {
+      subs_.shadowManager->update(subs_.cameraController->camera(), aspect,
+                                  glm::vec3(ld.directionalDirection), shadowSettings,
+                                  shadowCasterBounds ? &*shadowCasterBounds : nullptr, imageIndex);
+    }
     subs_.shadowManager->updateLocalShadows(
         subs_.lightingManager->pointLightsSsbo(),
         subs_.lightingManager->areaLightsSsbo(), shadowSettings,
@@ -2229,6 +2235,7 @@ void RendererFrontend::applyTemporalCapture(
   if (event.guiWaitForLoad &&
       (!event.guiReload.empty() || !event.guiSampleModel.empty() || event.guiUnload))
     settlePendingModelLoads();
+  applyGltfAnimationCapture(event);
   if (event.taa)
     subs_.temporalManager->settings().enabled = *event.taa;
   if (event.samples)
@@ -2640,6 +2647,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   };
   json["camera"]["viewProjColumns"] = matrix(camera.viewProj);
   json["camera"]["unjitteredViewProjColumns"] = matrix(camera.unjitteredViewProj);
+  appendGltfAnimationTelemetry(json);
   return json;
 }
 
@@ -2756,6 +2764,8 @@ void RendererFrontend::handleResize() {
 }
 
 void RendererFrontend::processInput(float deltaTime) {
+  if (std::isfinite(deltaTime) && deltaTime > 0)
+    pendingGltfAnimationDeltaSeconds_ += deltaTime;
   if (!subs_.cameraController) {
     svc_.inputManager.endFrame();
     return;
@@ -4723,6 +4733,25 @@ void RendererFrontend::updateCameraBuffer(uint32_t imageIndex) {
     return;
   subs_.cameraController->updateCameraBuffer(buffers_.cameraData,
                                              buffers_.cameras[imageIndex]);
+  gltfAnimationCamera_.reset();
+  if (!gltfAnimationCameraNode_ || !subs_.sceneManager ||
+      gltfAnimationSourceRevision_ != subs_.sceneManager->animationSourceRevision()) return;
+  const auto extent = svc_.swapChainManager.extent();
+  if (!extent.width || !extent.height) return;
+  try {
+    gltfAnimationCamera_ = container::geometry::gltf::EvaluateAnimatedCamera(
+        subs_.sceneManager->animationSource(), sceneGraph_, *gltfAnimationCameraNode_,
+        float(extent.width) / float(extent.height));
+    if (!gltfAnimationCamera_) return;
+    buffers_.cameraData = gltfAnimationCamera_->data;
+    if (subs_.sceneController)
+      (void)subs_.sceneController->world().setActiveCamera(
+          buffers_.cameraData, gltfAnimationCamera_->nearPlane, gltfAnimationCamera_->farPlane);
+    SceneController::writeToBuffer(svc_.allocationManager, buffers_.cameras[imageIndex],
+                                   &buffers_.cameraData, sizeof(buffers_.cameraData));
+  } catch (const std::exception& error) {
+    if (subs_.guiManager) subs_.guiManager->gltfAnimationControls().error = error.what();
+  }
 }
 
 void RendererFrontend::refreshSceneObjectData() {
@@ -7781,9 +7810,8 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       p.camera.farPlane = perspCam->farPlane();
     }
   }
-  p.camera.orthographic =
-      subs_.cameraController != nullptr &&
-      subs_.cameraController->isOrthographic();
+  p.camera.orthographic = gltfAnimationCamera_ ? gltfAnimationCamera_->orthographic :
+      subs_.cameraController != nullptr && subs_.cameraController->isOrthographic();
   if (subs_.shadowManager) {
     p.shadows.renderPass = resources_.renderPasses.shadow;
     p.shadows.shadowFramebuffers = subs_.shadowManager->framebuffers().data();

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Container/utility/GltfAnimationControls.h>
+
 #include "Container/renderer/effects/DisplayGrade.h"
 #include "Container/renderer/lighting/DdgiSettings.h"
 #include "Container/renderer/raytracing/RayShadowSettings.h"
@@ -515,6 +517,11 @@ struct SampleModelOption {
     int selectedIndex);
 
 class GuiManager {
+ public:
+  GltfAnimationControls& gltfAnimationControls() noexcept { return gltfAnimationControls_; }
+
+ private:
+  GltfAnimationControls gltfAnimationControls_;
 public:
   GuiManager() = default;
   ~GuiManager();

@@ -1410,6 +1410,10 @@ add_custom_test(gltf_node_flags_tests
 set_tests_properties(gltf_node_flags_tests PROPERTIES LABELS "gltf;scene;cpu" TIMEOUT 60)
 
 
+add_custom_test(gltf_animation_tests
+    ${TEST_GEOMETRY_DIR}/gltf_animation_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry VulkanSceneRenderer_scene
+)
 add_custom_test(gltf_deformation_tests
     ${TEST_GEOMETRY_DIR}/gltf_deformation_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_geometry

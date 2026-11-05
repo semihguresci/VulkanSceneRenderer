@@ -105,6 +105,7 @@ add_library(VulkanSceneRenderer_ui
     SolarPosition.cpp
     DisplayGradePreset.cpp
     GuiManager.cpp
+    GltfAnimationControls.cpp
 )
 target_compile_features(VulkanSceneRenderer_ui PUBLIC cxx_std_23)
 target_include_directories(VulkanSceneRenderer_ui PUBLIC

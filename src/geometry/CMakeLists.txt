@@ -11,6 +11,10 @@ add_library(VulkanSceneRenderer_geometry
     GltfNodeFlags.cpp
     GltfExtendedMaterials.cpp
     GltfMaterialTextureAuthoring.cpp
+    GltfAnimation.cpp
+    GltfAnimationRuntime.cpp
+    GltfAnimatedMaterial.cpp
+    GltfCameraEvaluation.cpp
     GltfDeformation.cpp
     GltfDeformationFrames.cpp
     GltfModelLoader.cpp
