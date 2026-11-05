@@ -18,7 +18,7 @@ struct RaySceneBuildStats;
 
 // Borrowed handles from a fence-retained scene generation. Valid after
 // recordBuild for this image and until that image's next fence retirement.
-// Compact visibility metadata retains its default 48/16-byte layouts; closest
+// Compact visibility metadata retains its default 64/16-byte layouts; closest
 // hit surface attributes are allocated only for an opted-in consumer.
 struct RaySurfaceGpuBindings {
   VkAccelerationStructureKHR tlas{};

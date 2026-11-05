@@ -63,7 +63,8 @@ class ManagedComputeGpu : public ::testing::Test {
     std::filesystem::copy_file(CONTAINER_MANAGED_COMPUTE_A_SPIRV,path);return path;
   }
   void replacement(const char* name) {
-    std::filesystem::copy_file(CONTAINER_MANAGED_COMPUTE_B_SPIRV,scratch/"replacement"/"spv_shaders"/name);
+    std::filesystem::copy_file(CONTAINER_MANAGED_COMPUTE_B_SPIRV,scratch/"replacement"/"spv_shaders"/name,
+        std::filesystem::copy_options::overwrite_existing);
   }
   uint32_t run(VkPipeline pipeline) {
     auto buffer=memory->createBuffer(sizeof(uint32_t),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
@@ -94,10 +95,12 @@ class ManagedComputeGpu : public ::testing::Test {
 };
 TEST_F(ManagedComputeGpu, PreparedReloadChangesExecutionOnlyAfterPublicationAndUpdatesSharedSlots) {
   const auto file=source("one.comp.spv");auto owner=manager->createComputePipeline(file,*layout,"one");auto shared=owner.share();
+  const auto identity=owner.contentIdentity();ASSERT_TRUE(identity);EXPECT_EQ(shared.contentIdentity(),identity);
   EXPECT_EQ(run(owner),17u);replacement("one.comp.spv");const VkPipeline old=owner;
   auto reload=manager->prepareComputeReload(scratch/"replacement");EXPECT_EQ(reload.size(),1u);EXPECT_TRUE(reload.changesShader("one.comp.spv"));
-  EXPECT_EQ(VkPipeline(owner),old);EXPECT_EQ(run(owner),17u);
+  EXPECT_EQ(VkPipeline(owner),old);EXPECT_EQ(run(owner),17u);EXPECT_EQ(owner.contentIdentity(),identity);
   manager->publishComputeReload(reload);EXPECT_NE(VkPipeline(owner),old);EXPECT_EQ(VkPipeline(owner),VkPipeline(shared));EXPECT_EQ(run(shared),29u);
+  EXPECT_NE(owner.contentIdentity(),identity);EXPECT_EQ(shared.contentIdentity(),owner.contentIdentity());
   auto unchanged=manager->prepareComputeReload(scratch/"replacement");EXPECT_EQ(unchanged.size(),0u);
   auto newlyCreated=manager->createComputePipeline(file,*layout,"new-after-reload");EXPECT_EQ(run(newlyCreated),29u);
 }
@@ -112,6 +115,21 @@ TEST_F(ManagedComputeGpu, PartialReloadFailureKeepsEveryLivePipelineAndItsExecut
 }
 TEST_F(ManagedComputeGpu, SharedOwnersCanRetireBeforeOrAfterManagerWithoutDoubleDestruction) {
   auto owner=manager->createComputePipeline(source("shared.comp.spv"),*layout,"shared");auto shared=owner.share();
-  owner.reset();EXPECT_EQ(run(shared),17u);manager.reset();EXPECT_EQ(VkPipeline(shared),VK_NULL_HANDLE);shared.reset();
+  owner.reset();EXPECT_FALSE(owner.contentIdentity());EXPECT_EQ(run(shared),17u);manager.reset();EXPECT_EQ(VkPipeline(shared),VK_NULL_HANDLE);EXPECT_FALSE(shared.contentIdentity());shared.reset();
+}
+TEST_F(ManagedComputeGpu, PublishedContentIdentitiesRemainDistinctAcrossRepeatedAndAbandonedReloads) {
+  const auto file=source("identity.comp.spv");auto owner=manager->createComputePipeline(file,*layout,"identity");
+  const auto original=owner.contentIdentity();ASSERT_TRUE(original);
+  replacement("identity.comp.spv");auto first=manager->prepareComputeReload(scratch/"replacement");
+  manager->publishComputeReload(first);const auto middle=owner.contentIdentity();
+  EXPECT_NE(middle,original);EXPECT_EQ(run(owner),29u);
+  std::filesystem::copy_file(file,scratch/"replacement"/"spv_shaders"/file.filename(),std::filesystem::copy_options::overwrite_existing);
+  auto second=manager->prepareComputeReload(scratch/"replacement");manager->publishComputeReload(second);
+  const auto final=owner.contentIdentity();EXPECT_NE(final,original);EXPECT_NE(final,middle);EXPECT_EQ(run(owner),17u);
+  replacement("identity.comp.spv");{
+    auto abandoned=manager->prepareComputeReload(scratch/"replacement");EXPECT_EQ(abandoned.size(),1u);
+    EXPECT_EQ(owner.contentIdentity(),final);EXPECT_EQ(run(owner),17u);
+  }
+  EXPECT_EQ(owner.contentIdentity(),final);EXPECT_TRUE(original);EXPECT_TRUE(middle);
 }
 } // namespace

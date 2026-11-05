@@ -283,7 +283,7 @@ std::shared_ptr<const RaySceneGeneration> RaySceneAcceleration::recordBuild(
     instance.transform = rayInstanceTransform(source.transform);
     instance.instanceCustomIndex = source.customIndex;
     instance.mask = source.mask;
-    instance.flags = rayInstanceFlags(source.doubleSided);
+    instance.flags = rayInstanceFlags(source.doubleSided, source.flipFacing);
     instance.accelerationStructureReference =
         state.bottom[source.geometryIndex]->structure.address;
     instances.push_back(instance);

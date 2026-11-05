@@ -38,6 +38,9 @@ struct RaySceneInstance {
   glm::mat4 transform{1.0f};
   bool doubleSided{false};
   uint8_t mask{0xff};
+  // Local vertex deformation can reverse authored winding independently of
+  // the instance model transform, whose determinant never sets this flag.
+  bool flipFacing{false};
 };
 
 struct RaySceneInput {
@@ -49,6 +52,7 @@ struct RaySceneInput {
 void validateRayScene(const RaySceneInput &input);
 [[nodiscard]] VkTransformMatrixKHR
 rayInstanceTransform(const glm::mat4 &transform);
-[[nodiscard]] VkGeometryInstanceFlagsKHR rayInstanceFlags(bool doubleSided);
+[[nodiscard]] VkGeometryInstanceFlagsKHR rayInstanceFlags(
+    bool doubleSided, bool flipFacing = false);
 
 } // namespace container::renderer

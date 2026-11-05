@@ -120,7 +120,22 @@ struct LightingBuffer
     uint localContactVisibility;
     uint areaLightingMode; // 0: sampled; 1: LTC, when its LUTs are available.
     uint areaLightSampleCount; // 9, 25 (legacy/default), or 64.
+    float4 environmentOrientation; // cos(yaw), sin(yaw), sky blur, reserved
+    float4 environmentBackground; // scene-linear RGB, solid override
+    float4 environmentSunDirection; // local direction toward the solar disk
+    float4 environmentSunRadiance; // RGB scene-linear radiance, W enables higher-order aerial scattering
+    float4 aerialGeometry; // planet radius, atmosphere height, observer height, kilometres per world unit
+    float4 aerialDensity; // Rayleigh, Mie, ozone, solar irradiance
+    float4 atmosphereLut[128]; // 16 solar cosine samples by 8 altitude samples
 };
+
+float3 RotateEnvironmentDirection(float3 direction, float2 yaw)
+{
+    if (all(yaw == float2(1.0, 0.0)))
+        return direction;
+    return float3(yaw.x * direction.x - yaw.y * direction.z, direction.y,
+                  yaw.y * direction.x + yaw.x * direction.z);
+}
 
 struct ExposureStateData
 {

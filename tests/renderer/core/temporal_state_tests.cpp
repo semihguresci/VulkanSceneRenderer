@@ -267,8 +267,27 @@ TEST(TemporalState, MaterialPaddingDoesNotCauseUnrelatedHistoryRejection) {
     bytes[index] = 0xa5;
   EXPECT_EQ(container::temporal::materialRevision(a),
             container::temporal::materialRevision(b));
+  b.extendedPadding = 0xa5a5a5a5;
+  EXPECT_EQ(container::temporal::materialRevision(a),
+            container::temporal::materialRevision(b));
   b.baseColorTextureTransform.row0.x = 2;
   EXPECT_NE(container::temporal::materialRevision(a),
             container::temporal::materialRevision(b));
+}
+
+TEST(TemporalState, ExtendedMaterialFactorsAndTextureCoordinatesRejectStaleHistory) {
+  container::gpu::GpuMaterial original{};
+  for (int field = 0; field < 7; ++field) {
+    auto edited = original;
+    if (field == 0) edited.anisotropyDiffuseFactors.x = .8f;
+    if (field == 1) edited.anisotropyDiffuseFactors.y = .6f;
+    if (field == 2) edited.anisotropyDiffuseFactors.z = .4f;
+    if (field == 3) edited.diffuseTransmissionColorFactor.y = .1f;
+    if (field == 4) edited.anisotropyTextureIndex = 0;
+    if (field == 5) edited.diffuseTransmissionTextureTransform.row0.z = .25f;
+    if (field == 6) edited.diffuseTransmissionColorTextureTransform.row1.y = 2;
+    EXPECT_NE(container::temporal::materialRevision(original),
+              container::temporal::materialRevision(edited)) << field;
+  }
 }
 } // namespace

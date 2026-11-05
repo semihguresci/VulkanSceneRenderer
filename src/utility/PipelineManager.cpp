@@ -9,6 +9,7 @@
 namespace container::gpu {
 
 struct ComputePipeline::State {
+  std::shared_ptr<const void> identity{std::make_shared<const unsigned char>(0)};
   VkDevice device{};
   VkPipeline pipeline{};
   VkPipelineLayout layout{};
@@ -25,6 +26,10 @@ struct ComputePipeline::State {
 
 ComputePipeline::operator VkPipeline() const noexcept {
   return state_ ? state_->pipeline : VK_NULL_HANDLE;
+}
+
+std::shared_ptr<const void> ComputePipeline::contentIdentity() const noexcept {
+  return state_ && state_->pipeline ? state_->identity : nullptr;
 }
 
 PipelineManager::PipelineManager(VkDevice device) : device_(device) {}
@@ -276,6 +281,7 @@ void PipelineManager::publishComputeReload(ComputeReload& candidate) noexcept {
   for (auto& [active, replacement] : candidate.changes_) {
     std::swap(active->pipeline, replacement.state_->pipeline);
     active->code.swap(replacement.state_->code);
+    active->identity.swap(replacement.state_->identity);
   }
   activeComputeDirectory_.swap(candidate.directory_);
 }

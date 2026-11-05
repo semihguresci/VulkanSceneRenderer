@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/renderer/lighting/AtmosphereLutData.h"
+
 #include <glm/glm.hpp>
 
 #include <array>
@@ -141,6 +143,18 @@ struct GpuMaterial {
   alignas(16) GpuTextureTransform sheenRoughnessTextureTransform{};
   alignas(16) GpuTextureTransform iridescenceTextureTransform{};
   alignas(16) GpuTextureTransform iridescenceThicknessTextureTransform{};
+  // Appended fields preserve the established offsets of the base material.
+  // x/y = anisotropy strength/rotation, z = diffuse transmission.
+  // w = scene-wide auxiliary availability, copied into every uploaded material.
+  alignas(16) glm::vec4 anisotropyDiffuseFactors{0.0f};
+  alignas(16) glm::vec4 diffuseTransmissionColorFactor{1.0f, 1.0f, 1.0f, 0.0f};
+  alignas(4) uint32_t anisotropyTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t diffuseTransmissionTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t diffuseTransmissionColorTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t extendedPadding{0};
+  alignas(16) GpuTextureTransform anisotropyTextureTransform{};
+  alignas(16) GpuTextureTransform diffuseTransmissionTextureTransform{};
+  alignas(16) GpuTextureTransform diffuseTransmissionColorTextureTransform{};
 };
 
 struct NormalValidationSettings {
@@ -173,6 +187,9 @@ inline constexpr uint32_t kObjectFlagAlphaBlend = 1u << 1;
 inline constexpr uint32_t kObjectFlagDoubleSided = 1u << 2;
 inline constexpr uint32_t kObjectFlagSpecularGlossiness = 1u << 3;
 inline constexpr uint32_t kObjectFlagUnlit = 1u << 4;
+// Uniformly mirrored deformation reverses winding in the local vertex stream.
+// Instance model mirrors are handled separately by the raster/ray conventions.
+inline constexpr uint32_t kObjectFlagDeformationWindingFlipped = 1u << 5;
 inline constexpr uint32_t kMaterialTextureDescriptorCapacity = 4096;
 inline constexpr uint32_t kMaterialSamplerWrapModeCount = 3;
 inline constexpr uint32_t kMaterialSamplerDescriptorCapacity =
@@ -185,7 +202,7 @@ inline constexpr uint32_t kMaxExactGBufferMaterialMetadataIndex =
 
 struct GpuTextureMetadata {
   alignas(4) uint32_t samplerIndex{0};
-  alignas(4) uint32_t padding0{0};
+  alignas(4) uint32_t samplerCount{1};
   alignas(4) uint32_t padding1{0};
   alignas(4) uint32_t padding2{0};
 };
@@ -438,6 +455,13 @@ struct LightingData {
   alignas(4) uint32_t localContactVisibility{0};
   alignas(4) uint32_t areaLightingMode{0};
   alignas(4) uint32_t areaLightSampleCount{25};
+  alignas(16) glm::vec4 environmentOrientation{1.0f, 0.0f, 0.0f, 0.0f};
+  alignas(16) glm::vec4 environmentBackground{0.0f};
+  alignas(16) glm::vec4 environmentSunDirection{0.0f};
+  alignas(16) glm::vec4 environmentSunRadiance{0.0f};
+  alignas(16) glm::vec4 aerialGeometry{0.0f};
+  alignas(16) glm::vec4 aerialDensity{0.0f};
+  alignas(16) renderer::AtmosphereLut atmosphereLut{};
 };
 
 struct TileLightGrid {
@@ -495,6 +519,8 @@ static_assert(alignof(GpuTextureMetadata) == 4,
               "GpuTextureMetadata must remain scalar-aligned.");
 static_assert(offsetof(GpuTextureMetadata, samplerIndex) == 0,
               "GpuTextureMetadata.samplerIndex offset");
+static_assert(offsetof(GpuTextureMetadata, samplerCount) == 4,
+              "GpuTextureMetadata.samplerCount offset");
 
 struct CullPushConstants {
   uint32_t objectCount{0};
@@ -661,7 +687,7 @@ static_assert(offsetof(AreaLightData, tangentHalfSize) == 48,
 static_assert(offsetof(AreaLightData, bitangentHalfSize) == 64,
               "AreaLightData.bitangentHalfSize offset");
 
-static_assert(sizeof(LightingData) == 80,
+static_assert(sizeof(LightingData) == 2224,
               "LightingData size mismatch with shaders/lighting_structs.slang "
               "LightingBuffer. Update shader layout in lockstep.");
 static_assert(alignof(LightingData) == 16,
@@ -694,6 +720,13 @@ static_assert(offsetof(LightingData, areaLightingMode) == 72,
               "LightingData.areaLightingMode offset");
 static_assert(offsetof(LightingData, areaLightSampleCount) == 76,
               "LightingData.areaLightSampleCount offset");
+static_assert(offsetof(LightingData, environmentOrientation) == 80);
+static_assert(offsetof(LightingData, environmentBackground) == 96);
+static_assert(offsetof(LightingData, environmentSunDirection) == 112);
+static_assert(offsetof(LightingData, environmentSunRadiance) == 128);
+static_assert(offsetof(LightingData, aerialGeometry) == 144);
+static_assert(offsetof(LightingData, aerialDensity) == 160);
+static_assert(offsetof(LightingData, atmosphereLut) == 176);
 static_assert(sizeof(ShadowCascadeData) == 80,
               "ShadowCascadeData size mismatch with shader ShadowCascadeData.");
 static_assert(alignof(ShadowCascadeData) == 16,
@@ -1243,7 +1276,7 @@ static_assert(offsetof(GpuTextureTransform, row0) == 0,
 static_assert(offsetof(GpuTextureTransform, row1) == 16,
               "GpuTextureTransform.row1 offset");
 
-static_assert(sizeof(GpuMaterial) == 896,
+static_assert(sizeof(GpuMaterial) == 1040,
               "GpuMaterial size mismatch with "
               "shaders/material_data_common.slang. Update shader GpuMaterial "
               "in lockstep.");
@@ -1383,6 +1416,15 @@ static_assert(offsetof(GpuMaterial, iridescenceTextureTransform) == 832,
 static_assert(offsetof(GpuMaterial, iridescenceThicknessTextureTransform) ==
                   864,
               "GpuMaterial.iridescenceThicknessTextureTransform offset");
+static_assert(offsetof(GpuMaterial, anisotropyDiffuseFactors) == 896);
+static_assert(offsetof(GpuMaterial, diffuseTransmissionColorFactor) == 912);
+static_assert(offsetof(GpuMaterial, anisotropyTextureIndex) == 928);
+static_assert(offsetof(GpuMaterial, diffuseTransmissionTextureIndex) == 932);
+static_assert(offsetof(GpuMaterial, diffuseTransmissionColorTextureIndex) == 936);
+static_assert(offsetof(GpuMaterial, extendedPadding) == 940);
+static_assert(offsetof(GpuMaterial, anisotropyTextureTransform) == 944);
+static_assert(offsetof(GpuMaterial, diffuseTransmissionTextureTransform) == 976);
+static_assert(offsetof(GpuMaterial, diffuseTransmissionColorTextureTransform) == 1008);
 static_assert(kMaterialTextureDescriptorCapacity - 1u <=
                   kMaxExactGBufferMaterialMetadataIndex,
               "G-buffer float material metadata must round-trip all material "

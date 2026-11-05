@@ -34,10 +34,15 @@ struct GpuTextureTransform
 struct GpuTextureMetadata
 {
     uint samplerIndex;
-    uint padding0;
+    uint samplerCount;
     uint padding1;
     uint padding2;
 };
+
+uint ResolveMaterialSamplerIndex(GpuTextureMetadata metadata)
+{
+    return min(metadata.samplerIndex, max(metadata.samplerCount, 1u) - 1u);
+}
 
 struct GpuMaterial
 {
@@ -110,6 +115,16 @@ struct GpuMaterial
     GpuTextureTransform sheenRoughnessTextureTransform;
     GpuTextureTransform iridescenceTextureTransform;
     GpuTextureTransform iridescenceThicknessTextureTransform;
+    // xyz = anisotropy strength/rotation, diffuse factor; w = scene-wide aux flag.
+    float4 anisotropyDiffuseFactors;
+    float4 diffuseTransmissionColorFactor;
+    uint anisotropyTextureIndex;
+    uint diffuseTransmissionTextureIndex;
+    uint diffuseTransmissionColorTextureIndex;
+    uint extendedPadding;
+    GpuTextureTransform anisotropyTextureTransform;
+    GpuTextureTransform diffuseTransmissionTextureTransform;
+    GpuTextureTransform diffuseTransmissionColorTextureTransform;
 };
 
 struct DeferredMaterialLayerTerms

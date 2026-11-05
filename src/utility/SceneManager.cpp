@@ -794,6 +794,15 @@ container::gpu::GpuMaterial makeGpuMaterial(
       makeGpuTextureTransform(material.iridescenceTextureTransform);
   gpuMaterial.iridescenceThicknessTextureTransform =
       makeGpuTextureTransform(material.iridescenceThicknessTextureTransform);
+  gpuMaterial.anisotropyDiffuseFactors = glm::vec4(material.anisotropyStrength,
+      material.anisotropyRotation, material.diffuseTransmissionFactor, 0.0f);
+  gpuMaterial.diffuseTransmissionColorFactor = glm::vec4(material.diffuseTransmissionColorFactor, 0.0f);
+  gpuMaterial.anisotropyTextureIndex = material.anisotropyTextureIndex;
+  gpuMaterial.diffuseTransmissionTextureIndex = material.diffuseTransmissionTextureIndex;
+  gpuMaterial.diffuseTransmissionColorTextureIndex = material.diffuseTransmissionColorTextureIndex;
+  gpuMaterial.anisotropyTextureTransform = makeGpuTextureTransform(material.anisotropyTextureTransform);
+  gpuMaterial.diffuseTransmissionTextureTransform = makeGpuTextureTransform(material.diffuseTransmissionTextureTransform);
+  gpuMaterial.diffuseTransmissionColorTextureTransform = makeGpuTextureTransform(material.diffuseTransmissionColorTextureTransform);
 
   if (material.alphaMode == container::material::AlphaMode::Mask) {
     gpuMaterial.flags |= container::gpu::kObjectFlagAlphaMask;
@@ -2192,6 +2201,7 @@ void SceneManager::uploadTextureMetadataBuffer() {
   textureMetadata_.reserve(std::max<size_t>(1, textureCount));
   for (uint32_t i = 0; i < textureCount; ++i) {
     container::gpu::GpuTextureMetadata metadata{};
+    metadata.samplerCount = static_cast<uint32_t>(materialSamplers_.size());
     if (const auto* texture = textureManager_.getTexture(i)) {
       metadata.samplerIndex = std::min(
           texture->samplerIndex,

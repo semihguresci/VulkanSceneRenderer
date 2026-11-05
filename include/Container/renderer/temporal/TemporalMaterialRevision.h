@@ -17,6 +17,9 @@ inline uint64_t materialRevision(const container::gpu::GpuMaterial &material) {
   for (size_t i = 0; i < sizeof(Material); ++i) {
     if (i >= scalarEnd && i < vectorBegin)
       continue;
+    if (i >= offsetof(Material, extendedPadding) &&
+        i < offsetof(Material, extendedPadding) + sizeof(uint32_t))
+      continue;
     hash ^= bytes[i];
     hash *= 1099511628211ull;
   }

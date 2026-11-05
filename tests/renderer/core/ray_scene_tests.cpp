@@ -115,6 +115,38 @@ TEST(RaySurface, VertexAlphaMetadataDefaultsOpaqueAndRejectsNonfiniteInput) {
   EXPECT_THROW(extractRayScene(providers, {.includeSurfaceData = true}), std::invalid_argument);
 }
 
+TEST(RaySurface, MirroredDeformationKeepsAuthoredNormalAndSingleHandednessChange) {
+  auto vertices = surfaceTestVertices();
+  // A uniform skin mirror changes local positions/tangents and tangent.w.
+  // Its inverse-transpose leaves the authored +Z normal pointing outward.
+  for (auto& vertex : vertices) {
+    vertex.position.x = -vertex.position.x;
+    vertex.tangent = {-1, 0, 0, -1};
+  }
+  const std::vector<uint32_t> indices{0, 1, 2};
+  std::vector<container::gpu::ObjectData> objects(1);
+  objects[0].objectInfo.y = container::gpu::kObjectFlagDeformationWindingFlipped;
+  const std::vector<DrawCommand> draws{{0, 0, 3}};
+  const std::array providers{
+      RaySceneProviderSource{{"mesh"}, 1, vertices, indices, objects, draws}};
+  for (const bool modelMirror : {false, true}) {
+    SCOPED_TRACE(modelMirror);
+    objects[0].model = glm::scale(glm::mat4(1), glm::vec3(modelMirror ? -1.f : 1.f, 1, 1));
+    const auto scene = extractRayScene(providers, {.includeSurfaceData = true});
+    ASSERT_TRUE(scene.instances[0].flipFacing);
+    const auto point = reconstructRaySurface(
+        scene.triangles[0], scene.surfaceTriangles[0], scene.instanceData[0],
+        scene.surfaceInstanceData[0], {0.25f, 0.25f}, true);
+    ASSERT_TRUE(point.has_value());
+    expectSurfaceVector(point->geometricNormal, {0, 0, 1});
+    expectSurfaceVector(point->shadingNormal, {0, 0, 1});
+    expectSurfaceVector(glm::vec3(point->tangent), {modelMirror ? 1.f : -1.f, 0, 0});
+    EXPECT_FLOAT_EQ(point->tangent.w, modelMirror ? 1.f : -1.f);
+    expectSurfaceVector(point->bitangent, {0, 1, 0});
+    EXPECT_TRUE(point->frontFace);
+  }
+}
+
 TEST(RaySurface,
      MatchesVertexNormalizedRasterInterpolationUnderNonuniformScale) {
   auto vertices = surfaceTestVertices();
@@ -299,6 +331,16 @@ TEST(RayScene, ConvertsAffineTransformToVulkanRowsWithoutChangingHandedness) {
             VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR);
 }
 
+TEST(RayScene, LocalDeformationFacingCombinesWithDoubleSidedCullingFlags) {
+  EXPECT_EQ(rayInstanceFlags(false, true),
+            VK_GEOMETRY_INSTANCE_TRIANGLE_FLIP_FACING_BIT_KHR);
+  EXPECT_EQ(rayInstanceFlags(true, true),
+            VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR |
+            VK_GEOMETRY_INSTANCE_TRIANGLE_FLIP_FACING_BIT_KHR);
+  EXPECT_EQ(rayInstanceFlags(true, false),
+            VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR);
+}
+
 TEST(RayScene, RejectsInvalidTransformsAndAcceptsSmallInvertibleScales) {
   EXPECT_NO_THROW(
       (void)rayInstanceTransform(glm::scale(glm::mat4(1), glm::vec3(1e-9f))));
@@ -382,6 +424,40 @@ TEST(RayExtraction, CompactsReferencedVerticesAndSharesInstancedGeometry) {
   auto views = moved.geometryViews();
   EXPECT_NO_THROW(validateRayScene({views, moved.instances}));
   EXPECT_FALSE(views[0].opaque);
+}
+
+TEST(RayExtraction, LocalWindingFlagIsIndependentOfInstanceModelMirrors) {
+  const auto vertices = surfaceTestVertices();
+  const std::vector<uint32_t> indices{0, 1, 2};
+  std::vector<container::gpu::ObjectData> objects(4);
+  objects[1].model = glm::scale(glm::mat4(1), glm::vec3(-1, 1, 1));
+  objects[2].objectInfo.y = container::gpu::kObjectFlagDeformationWindingFlipped;
+  objects[3].model = objects[1].model;
+  objects[3].objectInfo.y = container::gpu::kObjectFlagDeformationWindingFlipped |
+                          container::gpu::kObjectFlagDoubleSided;
+  const std::vector<DrawCommand> draws{{0, 0, 3, 4}};
+  const std::array providers{
+      RaySceneProviderSource{{"mesh"}, 1, vertices, indices, objects, draws}};
+  RaySceneExtractionCache cache;
+  const auto first = cache.update(providers);
+  ASSERT_EQ(first.instances.instances.size(), 4u);
+  EXPECT_FALSE(first.instances.instances[0].flipFacing);
+  EXPECT_FALSE(first.instances.instances[1].flipFacing);
+  EXPECT_TRUE(first.instances.instances[2].flipFacing);
+  EXPECT_TRUE(first.instances.instances[3].flipFacing);
+  EXPECT_TRUE(first.instances.instances[3].doubleSided);
+  EXPECT_EQ(first.instances.instanceData[2].info.z,
+            container::gpu::kObjectFlagDeformationWindingFlipped);
+  // Reclassifying a compatible local winding changes only the instance view;
+  // immutable compact geometry remains shared with previous submissions.
+  objects[0].objectInfo.y = container::gpu::kObjectFlagDeformationWindingFlipped;
+  objects[2].objectInfo.y = 0;
+  const auto next = cache.update(providers);
+  EXPECT_EQ(next.geometry, first.geometry);
+  EXPECT_TRUE(next.instances.instances[0].flipFacing);
+  EXPECT_FALSE(next.instances.instances[2].flipFacing);
+  EXPECT_FALSE(first.instances.instances[0].flipFacing);
+  EXPECT_TRUE(first.instances.instances[2].flipFacing);
 }
 
 TEST(RayExtraction, ProviderNamespacesAndDistinctRangesStayIndependent) {

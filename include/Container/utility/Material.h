@@ -52,6 +52,10 @@ struct Material {
   float iridescenceIor{1.3f};
   float iridescenceThicknessMinimum{100.0f};
   float iridescenceThicknessMaximum{400.0f};
+  float anisotropyStrength{0.0f};
+  float anisotropyRotation{0.0f};
+  float diffuseTransmissionFactor{0.0f};
+  glm::vec3 diffuseTransmissionColorFactor{1.0f};
   uint32_t baseColorTextureIndex{std::numeric_limits<uint32_t>::max()};
   uint32_t normalTextureIndex{std::numeric_limits<uint32_t>::max()};
   uint32_t occlusionTextureIndex{std::numeric_limits<uint32_t>::max()};
@@ -72,6 +76,9 @@ struct Material {
   uint32_t sheenRoughnessTextureIndex{std::numeric_limits<uint32_t>::max()};
   uint32_t iridescenceTextureIndex{std::numeric_limits<uint32_t>::max()};
   uint32_t iridescenceThicknessTextureIndex{std::numeric_limits<uint32_t>::max()};
+  uint32_t anisotropyTextureIndex{std::numeric_limits<uint32_t>::max()};
+  uint32_t diffuseTransmissionTextureIndex{std::numeric_limits<uint32_t>::max()};
+  uint32_t diffuseTransmissionColorTextureIndex{std::numeric_limits<uint32_t>::max()};
   TextureTransform baseColorTextureTransform{};
   TextureTransform normalTextureTransform{};
   TextureTransform occlusionTextureTransform{};
@@ -92,6 +99,13 @@ struct Material {
   TextureTransform sheenRoughnessTextureTransform{};
   TextureTransform iridescenceTextureTransform{};
   TextureTransform iridescenceThicknessTextureTransform{};
+  TextureTransform anisotropyTextureTransform{};
+  TextureTransform diffuseTransmissionTextureTransform = [] {
+    TextureTransform transform;
+    transform.channel = 3;
+    return transform;
+  }();
+  TextureTransform diffuseTransmissionColorTextureTransform{};
   AlphaMode alphaMode{AlphaMode::Opaque};
   bool doubleSided{false};
   bool specularGlossinessWorkflow{false};

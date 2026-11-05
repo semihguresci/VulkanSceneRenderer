@@ -1,6 +1,10 @@
 #pragma once
 #include "ray_scene_data.slang"
 
+// Matches Container/utility/SceneData.h. This describes local deformation,
+// independently of the instance model determinant stored below.
+static const uint kObjectFlagDeformationWindingFlipped = 1u << 5;
+
 // Dedicated optional buffers: 192 bytes/triangle and 112 bytes/instance.
 // Matches RaySurfaceTriangleData/RaySurfaceInstanceData in RaySceneExtraction.h.
 // No bindings are declared here; each consumer owns its buffers/lifetime.
@@ -81,8 +85,11 @@ RaySurfacePoint ReconstructRaySurface(RayTriangleData uv,
         triangle.positions[2].xyz - triangle.positions[0].xyz, 0.0.xxx);
     float3 objectGeometricNormal = RaySurfaceNormalize(cross(edge0, edge1), 0.0.xxx);
     if (dot(objectGeometricNormal, objectGeometricNormal) == 0.0) return result;
+    if ((metadata.info.z & kObjectFlagDeformationWindingFlipped) != 0u)
+        objectGeometricNormal = -objectGeometricNormal;
     // Vulkan's ray-facing classification uses object-space winding. Transform
-    // the authored face normal, rather than crossing mirrored world edges.
+    // the authored face normal, correcting local mirrored deformation just as
+    // the TLAS facing flag does. Normals/tangent.w already contain skinning.
     result.geometricNormal = RaySurfaceNormalize(
         RaySurfaceTransformNormal(instance, objectGeometricNormal), 0.0.xxx);
     if (dot(result.geometricNormal, result.geometricNormal) == 0.0) return result;
@@ -154,4 +161,28 @@ RaySurfacePoint OrientRaySurfaceForShading(RaySurfacePoint point, uint materialF
         point.bitangent = -point.bitangent;
     }
     return point;
+}
+
+// point.shadingNormal is the oriented interpolated normal BEFORE normal-map
+// evaluation; geometricNormal is the triangle face normal and cannot replace
+// it on a smooth surface. TANGENT.w already contains instance/deformation
+// handedness. Project the authored rotated frame onto the final sampled normal.
+float3 ResolveRayAnisotropyTangent(RaySurfacePoint point, float3 finalNormal,
+                                  float2 textureRG, float rotation)
+{
+    float3 normal = RaySurfaceNormalize(point.shadingNormal, float3(0, 1, 0));
+    float3 tangent = point.tangent.xyz - normal * dot(normal, point.tangent.xyz);
+    tangent = RaySurfaceNormalize(tangent, RaySurfaceFallbackTangent(normal));
+    float sign = isfinite(point.tangent.w) && point.tangent.w < 0.0 ? -1.0 : 1.0;
+    float3 bitangent = cross(normal, tangent) * sign;
+    float2 direction = all(isfinite(textureRG)) ? textureRG * 2.0 - 1.0 : float2(1, 0);
+    direction = RaySurfaceNormalize(float3(direction, 0), float3(1, 0, 0)).xy;
+    float angle = isfinite(rotation) ? rotation : 0.0;
+    float c = cos(angle), s = sin(angle);
+    float2 rotated = float2(c * direction.x - s * direction.y,
+                            s * direction.x + c * direction.y);
+    float3 result = tangent * rotated.x + bitangent * rotated.y;
+    finalNormal = RaySurfaceNormalize(finalNormal, normal);
+    result -= finalNormal * dot(finalNormal, result);
+    return RaySurfaceNormalize(result, RaySurfaceFallbackTangent(finalNormal));
 }

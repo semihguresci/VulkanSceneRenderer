@@ -1214,3 +1214,14 @@ target_compile_definitions(managed_compute_pipeline_gpu_tests PRIVATE
 add_dependencies(managed_compute_pipeline_gpu_tests managed_compute_contract_shader)
 set_tests_properties(managed_compute_pipeline_gpu_tests PROPERTIES
     LABELS "requires-vulkan;requires-display;pipeline-reload" RUN_SERIAL TRUE TIMEOUT 120)
+
+# Full reference transport producer, independent of the viewport frontend.
+add_custom_test(reference_path_trace_gpu_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/reference_path_trace_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+target_compile_definitions(reference_path_trace_gpu_tests PRIVATE
+    CONTAINER_REFERENCE_PATH_SHADER_ROOT="${CMAKE_BINARY_DIR}")
+add_dependencies(reference_path_trace_gpu_tests shaders_all)
+set_tests_properties(reference_path_trace_gpu_tests PROPERTIES
+    LABELS "requires-vulkan;requires-display;ray-query;path-tracing" RUN_SERIAL TRUE TIMEOUT 240)

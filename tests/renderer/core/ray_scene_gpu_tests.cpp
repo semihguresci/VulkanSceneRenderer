@@ -411,6 +411,45 @@ TEST_F(RaySceneGpu, InterpolatedVertexAlphaMasksCandidatesAndOpaqueIgnoresAlpha)
   }
 }
 
+TEST_F(RaySceneGpu, LocalMirroredGeometryFacingIsIndependentOfInstanceTransform) {
+  if (!device->rayQueriesEnabled())
+    GTEST_SKIP() << device->rayQuerySupport().unavailableReason();
+  std::vector<container::geometry::Vertex> mirrored(3);
+  mirrored[0].position = {1, -1, 0};
+  mirrored[1].position = {-1, -1, 0};
+  mirrored[2].position = {0, 1, 0};
+  const std::vector<uint32_t> indices{0, 1, 2};
+  const std::array geometries{
+      RaySceneGeometry{{"locally-mirrored-skin"}, 1, 1, mirrored, indices, true}};
+  std::vector<RaySceneInstance> instances;
+  for (uint32_t i = 0; i < 4; ++i) {
+    RaySceneInstance instance;
+    instance.customIndex = i;
+    instance.transform = glm::translate(glm::mat4(1), glm::vec3(i * 4, 0, 0));
+    instance.flipFacing = i != 0;
+    instance.doubleSided = i == 3;
+    if (i == 2)
+      instance.transform *= glm::scale(glm::mat4(1), glm::vec3(-1, 1, 1));
+    instances.push_back(instance);
+  }
+  RaySceneAcceleration backend(*device, *memory);
+  begin();
+  auto generation = backend.recordBuild(command, {geometries, instances});
+  submit();
+  std::vector<Probe> probes;
+  for (uint32_t instance = 0; instance < 4; ++instance)
+    for (const bool back : {false, true})
+      probes.push_back({{float(instance * 4), 0, back ? -2.f : 2.f, 0.001f},
+                        {0, 0, back ? 1.f : -1.f, 4}, {0xff, 0, 0, 0}});
+  const auto hits = trace(*generation, probes);
+  // Uncorrected local mirror accepts the wrong side. Correcting it accepts
+  // authored +Z, including under a model mirror; no-cull accepts both sides.
+  const std::array<uint32_t, 8> expected{0, 1, 1, 0, 1, 0, 1, 1};
+  ASSERT_EQ(hits.size(), expected.size());
+  for (size_t i = 0; i < hits.size(); ++i)
+    EXPECT_EQ(hits[i].x, expected[i]) << "probe " << i;
+}
+
 TEST_F(RaySceneGpu, KeepsUnchangedProviderBlasAcrossProviderChanges) {
   if (!device->rayQueriesEnabled())
     GTEST_SKIP() << device->rayQuerySupport().unavailableReason();

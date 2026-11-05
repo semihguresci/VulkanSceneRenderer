@@ -90,8 +90,13 @@ void appendInstances(std::vector<RaySceneInstance> &instances,
     const auto &object = provider.objects[draw.objectIndex + i];
     (void)rayInstanceTransform(object.model);
     const auto customIndex = static_cast<uint32_t>(instances.size());
-    instances.push_back({geometryIndex, customIndex, object.model,
-                         (object.objectInfo.y & 4u) != 0u});
+    instances.push_back({
+        .geometryIndex = geometryIndex,
+        .customIndex = customIndex,
+        .transform = object.model,
+        .doubleSided = (object.objectInfo.y & container::gpu::kObjectFlagDoubleSided) != 0u,
+        .flipFacing = (object.objectInfo.y & container::gpu::kObjectFlagDeformationWindingFlipped) != 0u
+    });
     metadata.push_back({glm::uvec4(firstTriangle, object.objectInfo.x,
                                    object.objectInfo.y, 0u)});
     if (surfaces)
@@ -156,10 +161,14 @@ std::optional<RaySurfacePoint> reconstructRaySurface(
       glm::vec3(triangle.positions[1] - triangle.positions[0]), glm::vec3(0));
   const glm::vec3 edge1 = surfaceNormalize(
       glm::vec3(triangle.positions[2] - triangle.positions[0]), glm::vec3(0));
-  const glm::vec3 objectGeometricNormal =
+  glm::vec3 objectGeometricNormal =
       surfaceNormalize(glm::cross(edge0, edge1), glm::vec3(0));
   if (glm::dot(objectGeometricNormal, objectGeometricNormal) == 0.0f)
     return std::nullopt;
+  // Match the TLAS facing inversion for local mirrored deformation. Shading
+  // normals and tangent.w already include skinning's normal/handedness change.
+  if ((metadata.info.z & container::gpu::kObjectFlagDeformationWindingFlipped) != 0u)
+    objectGeometricNormal = -objectGeometricNormal;
 
   RaySurfacePoint result;
   result.geometricNormal =

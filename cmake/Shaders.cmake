@@ -93,6 +93,8 @@ set(SLANG_COMPUTE_SHADER_NAMES
     ray_shadow_trace.slang
     ray_shadow_filter.slang
     ddgi_trace.slang
+    reference_pathtrace.slang
+    reference_background.slang
     ddgi_update.slang
 )
 
@@ -195,7 +197,8 @@ foreach(SLANG_COMPUTE_SHADER_NAME IN LISTS SLANG_COMPUTE_SHADER_NAMES)
         get_filename_component(SHADER_BASE "${SLANG_SOURCE}" NAME_WE)
         set(COMP_OUTPUT "${COMPILED_SHADERS_DIR}/${SHADER_BASE}.comp.spv")
         set(SLANG_OPTIONAL_CAPABILITIES)
-        if(SHADER_BASE STREQUAL "ray_shadow_trace" OR SHADER_BASE STREQUAL "ddgi_trace")
+        if(SHADER_BASE STREQUAL "ray_shadow_trace" OR SHADER_BASE STREQUAL "ddgi_trace" OR
+           SHADER_BASE STREQUAL "reference_pathtrace")
             set(SLANG_OPTIONAL_CAPABILITIES -capability spvRayQueryKHR)
         endif()
         add_slang_output(

@@ -2102,7 +2102,14 @@ TEST(RenderingConventionTests, AreaLightDataLayoutMatchesShaderContract) {
   EXPECT_EQ(offsetof(AreaLightData, tangentHalfSize), 48u);
   EXPECT_EQ(offsetof(AreaLightData, bitangentHalfSize), 64u);
 
-  EXPECT_EQ(sizeof(LightingData), 80u);
+  EXPECT_EQ(sizeof(LightingData), 2224u);
+  EXPECT_EQ(offsetof(LightingData, environmentOrientation), 80u);
+  EXPECT_EQ(offsetof(LightingData, environmentBackground), 96u);
+  EXPECT_EQ(offsetof(LightingData, environmentSunDirection), 112u);
+  EXPECT_EQ(offsetof(LightingData, environmentSunRadiance), 128u);
+  EXPECT_EQ(offsetof(LightingData, aerialGeometry), 144u);
+  EXPECT_EQ(offsetof(LightingData, aerialDensity), 160u);
+  EXPECT_EQ(offsetof(LightingData, atmosphereLut), 176u);
   EXPECT_EQ(offsetof(LightingData, areaLightCount), 56u);
   EXPECT_EQ(offsetof(LightingData, localShadowEnabled), 60u);
   EXPECT_EQ(offsetof(LightingData, bounceIntensity), 64u);

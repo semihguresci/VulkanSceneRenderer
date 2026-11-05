@@ -12,6 +12,12 @@ active shader directory unchanged. `publishComputeReload()` swaps all prepared
 slots together and makes the directory apply to subsequently created pipelines.
 Unchanged shader bytes do not create replacements.
 
+Temporal consumers can retain `ComputePipeline::contentIdentity()`. Publication
+swaps this identity with the executable; preparation and abandonment leave the
+live identity unchanged. Retaining it prevents identity reuse while old history
+still refers to those bytes, without retaining a Vulkan object. A reset owner or
+manager-retired slot returns an empty identity.
+
 The caller must retire queue readers before publishing and disposing of the
 candidate containing the old pipelines. The pipeline layout and device remain
 borrowed resources. Manager shutdown also requires retired readers; it clears
@@ -20,10 +26,12 @@ overload remains available while renderer owners migrate to managed slots.
 Recording and reload publication must be serialized on the owning render thread;
 the shared slots do not provide concurrent publication or recording guarantees.
 
-Three real Vulkan tests dispatch distinguishable shader programs and verify
+Four real Vulkan tests dispatch distinguishable shader programs and verify
 prepare/publish behavior, shared-slot updates, partial preparation failure,
 unchanged shaders, subsequent creation and both owner/manager destruction orders.
-They use synchronization validation and GPU buffer readback.
+Repeated publications retain distinct content receipts, including when a shader
+returns to its earlier program. They use synchronization validation and GPU
+buffer readback.
 
 Build `managed_compute_pipeline_gpu_tests`, then run:
 

@@ -21,6 +21,9 @@ class ComputePipeline {
   ComputePipeline& operator=(const ComputePipeline&) = delete;
 
   operator VkPipeline() const noexcept;
+  // Retain this identity with temporal history. It changes on executable
+  // replacement and does not retain any Vulkan object or borrow its handle.
+  [[nodiscard]] std::shared_ptr<const void> contentIdentity() const noexcept;
   [[nodiscard]] ComputePipeline share() const noexcept {
     ComputePipeline copy;
     copy.state_ = state_;
