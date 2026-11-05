@@ -46,6 +46,9 @@ add_library(VulkanSceneRenderer_gpu_resource
     AllocationManagerTextures.cpp
     VulkanMemoryManager.cpp
     TextureManager.cpp
+    MaterialSamplerKey.cpp
+    TextureSamplingPlan.cpp
+    TextureImageOwnership.cpp
     PipelineManager.cpp
 )
 target_compile_features(VulkanSceneRenderer_gpu_resource PUBLIC cxx_std_23)

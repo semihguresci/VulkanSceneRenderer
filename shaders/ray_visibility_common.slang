@@ -26,8 +26,7 @@ float4 RayTexture(uint index, float2 uv)
 {
     if (index == 0xffffffffu) return 1.0.xxxx;
     uint textureIndex = NonUniformResourceIndex(index);
-    uint samplerIndex = NonUniformResourceIndex(min(
-        uTextureMetadata[textureIndex].samplerIndex, MATERIAL_SAMPLER_DESCRIPTOR_COUNT - 1u));
+    uint samplerIndex = NonUniformResourceIndex(ResolveMaterialSamplerIndex(uTextureMetadata[textureIndex]));
     // Inline traversal has no raster derivatives. Base mip preserves thin
     // cutouts; texture transforms, UV sets, opacity factors/channels are shared.
     return materialTextures[textureIndex].SampleLevel(materialSamplers[samplerIndex], uv, 0.0);

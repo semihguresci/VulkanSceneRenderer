@@ -1283,3 +1283,38 @@ add_custom_target(texture_upload_sample_shader DEPENDS "${TEXTURE_UPLOAD_SAMPLE_
 add_dependencies(texture_upload_gpu_tests texture_upload_sample_shader)
 target_compile_definitions(texture_upload_gpu_tests PRIVATE
     CONTAINER_TEXTURE_UPLOAD_SAMPLE_SPV="${TEXTURE_UPLOAD_SAMPLE_SPV}")
+
+add_custom_test(material_sampler_key_tests
+    ${TEST_GEOMETRY_DIR}/material_sampler_key_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_gpu_resource
+)
+
+add_custom_test(material_sampler_gpu_tests
+    ${TEST_RENDERER_CORE_DIR}/material_sampler_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_gpu_resource VulkanSceneRenderer_geometry
+)
+target_compile_definitions(material_sampler_gpu_tests PRIVATE
+    CONTAINER_MATERIAL_SAMPLER_SHADER_DIR="${CMAKE_BINARY_DIR}")
+add_dependencies(material_sampler_gpu_tests shaders_all)
+set_tests_properties(material_sampler_gpu_tests PROPERTIES
+    LABELS "requires-vulkan;materials;samplers" RUN_SERIAL TRUE TIMEOUT 120)
+
+set(SAMPLER_PUBLICATION_SPIRV "${CMAKE_BINARY_DIR}/spv_shaders/scene_sampler_publication.comp.spv")
+add_custom_command(OUTPUT "${SAMPLER_PUBLICATION_SPIRV}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/spv_shaders"
+    COMMAND ${SLANGC_EXECUTABLE} "${CMAKE_SOURCE_DIR}/tests/shaders/scene_texture_sampling_contract.slang"
+        -entry computeMain -stage compute -target spirv -profile spirv_1_6
+        -emit-spirv-directly -fvk-use-entrypoint-name -matrix-layout-column-major
+        -I "${CMAKE_SOURCE_DIR}/shaders" -o "${SAMPLER_PUBLICATION_SPIRV}"
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/shaders/scene_texture_sampling_contract.slang"
+        "${CMAKE_SOURCE_DIR}/shaders/material_data_common.slang"
+    VERBATIM)
+add_custom_target(scene_sampler_publication_shader DEPENDS "${SAMPLER_PUBLICATION_SPIRV}")
+add_custom_test(scene_sampler_publication_gpu_tests
+    ${CMAKE_SOURCE_DIR}/tests/renderer/scene/scene_sampler_publication_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_scene)
+target_compile_definitions(scene_sampler_publication_gpu_tests PRIVATE
+    CONTAINER_SCENE_TEXTURE_SAMPLING_SHADER_PATH="${SAMPLER_PUBLICATION_SPIRV}")
+add_dependencies(scene_sampler_publication_gpu_tests scene_sampler_publication_shader shaders_all)
+set_tests_properties(scene_sampler_publication_gpu_tests PROPERTIES
+    LABELS "requires-vulkan;materials;samplers" RUN_SERIAL TRUE TIMEOUT 120)

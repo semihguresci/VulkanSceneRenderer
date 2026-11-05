@@ -2,8 +2,6 @@
 
 // Must match container::gpu::kMaterialTextureDescriptorCapacity.
 static const uint MATERIAL_TEXTURE_DESCRIPTOR_COUNT = 4096u;
-// Must match container::gpu::kMaterialSamplerDescriptorCapacity.
-static const uint MATERIAL_SAMPLER_DESCRIPTOR_COUNT = 9u;
 static const uint kInvalidGpuMaterialTexture = 0xffffffffu;
 // Float metadata stores materialIndex plus a 0.5 thin-surface bit. Keep the
 // material index range below 2^23 so the integer and half-bit round-trip in

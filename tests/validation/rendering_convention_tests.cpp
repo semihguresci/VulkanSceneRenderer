@@ -2454,6 +2454,8 @@ TEST(RenderingConventionTests, MaterialTextureSamplersUsePerTextureMetadata) {
   EXPECT_EQ(container::gpu::kMaterialSamplerWrapMirroredRepeat, 2u);
   EXPECT_EQ(sizeof(GpuTextureMetadata), 16u);
   EXPECT_EQ(offsetof(GpuTextureMetadata, samplerIndex), 0u);
+  EXPECT_EQ(offsetof(GpuTextureMetadata, samplerCount), 4u);
+  EXPECT_EQ(GpuTextureMetadata{}.samplerCount, 1u);
 
   const std::string sceneManager =
       readRepoTextFile("src/utility/SceneManager.cpp");
@@ -2466,27 +2468,25 @@ TEST(RenderingConventionTests, MaterialTextureSamplersUsePerTextureMetadata) {
   const std::string gbuffer = readRepoTextFile("shaders/gbuffer.slang");
 
   EXPECT_TRUE(contains(materialX, "gltfTextureSamplerIndex"));
-  EXPECT_TRUE(contains(materialX, "TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE"));
-  EXPECT_TRUE(contains(materialX, "TINYGLTF_TEXTURE_WRAP_MIRRORED_REPEAT"));
+  EXPECT_TRUE(contains(materialX, "NormalizeMaterialSamplerKey"));
   EXPECT_TRUE(contains(materialX, "textureCacheKey"));
   EXPECT_TRUE(contains(materialX, "resource.samplerIndex = samplerIndex"));
 
-  EXPECT_TRUE(contains(sceneManager, "materialSamplerAddressMode"));
-  EXPECT_TRUE(contains(sceneManager, "VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE"));
-  EXPECT_TRUE(
-      contains(sceneManager, "VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT"));
+  EXPECT_TRUE(contains(sceneManager, "MakeMaterialSamplerCreateInfo"));
+  EXPECT_TRUE(contains(sceneManager, "PlanMaterialSamplerSlots"));
+  // Dense sampler behavior is independently checked by real compute sampling
+  // and the native scene with twelve authored policies.
   EXPECT_TRUE(contains(sceneManager, "uploadTextureMetadataBuffer"));
   EXPECT_TRUE(contains(sceneManager, "dstBinding = 4"));
   EXPECT_TRUE(contains(sceneManager, "dstBinding = 5"));
 
-  EXPECT_TRUE(
-      contains(materialCommon, "MATERIAL_SAMPLER_DESCRIPTOR_COUNT = 9u"));
   EXPECT_TRUE(contains(materialCommon, "struct GpuTextureMetadata"));
-  EXPECT_TRUE(contains(pbrCommon, "uTextureMetadata[texIndex].samplerIndex"));
+  EXPECT_TRUE(contains(materialCommon, "uint samplerCount"));
+  EXPECT_TRUE(contains(pbrCommon, "ResolveMaterialSamplerIndex(uTextureMetadata[texIndex])"));
   EXPECT_TRUE(contains(pbrCommon, "materialSamplers[samplerIndex]"));
   EXPECT_TRUE(contains(
       gbuffer,
-      "SamplerState materialSamplers[MATERIAL_SAMPLER_DESCRIPTOR_COUNT]"));
+      "SamplerState materialSamplers[]"));
   EXPECT_TRUE(contains(
       gbuffer, "StructuredBuffer<GpuTextureMetadata> uTextureMetadata"));
   EXPECT_TRUE(
@@ -2521,9 +2521,9 @@ TEST(RenderingConventionTests,
   // Authored and generated mip behavior is checked by real typed-upload
   // GPU readback and image-view sampling in texture_upload_gpu_tests.
   EXPECT_TRUE(contains(sceneManager,
-                       "info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR"));
-  EXPECT_TRUE(contains(sceneManager, "info.minLod = 0.0f"));
-  EXPECT_TRUE(contains(sceneManager, "info.maxLod = VK_LOD_CLAMP_NONE"));
+                       "MakeMaterialSamplerCreateInfo(key)"));
+  EXPECT_TRUE(contains(sceneManager, "MakeTextureSamplingPlan"));
+  EXPECT_TRUE(contains(sceneManager, "materialSamplerSlots_ = plan.samplerSlots;"));
 }
 
 TEST(RenderingConventionTests, IndirectDrawObjectIndexUsesBaseInstance) {

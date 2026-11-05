@@ -95,6 +95,7 @@ set(SLANG_COMPUTE_SHADER_NAMES
     ray_shadow_trace.slang
     ray_shadow_filter.slang
     ddgi_trace.slang
+    material_sampler_contract.slang
     reference_pathtrace.slang
     reference_background.slang
     ddgi_update.slang

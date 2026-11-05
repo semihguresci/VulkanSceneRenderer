@@ -4,6 +4,7 @@
 #include "Container/utility/TextureResource.h"
 #include "Container/utility/TextureManager.h"
 #include "Container/utility/MaterialManager.h"
+#include "Container/utility/MaterialSamplerKey.h"
 #include "Container/utility/Platform.h"
 #include "Container/utility/SceneData.h"
 #include <MaterialXCore/Material.h>
@@ -367,31 +368,16 @@ uint32_t resolveTextureIndex(const tinygltf::Model& model,
   return textureToResource[static_cast<size_t>(textureIndex)];
 }
 
-uint32_t gltfWrapModeToMaterialSamplerAxis(int wrapMode) {
-  switch (wrapMode) {
-    case TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE:
-      return container::gpu::kMaterialSamplerWrapClampToEdge;
-    case TINYGLTF_TEXTURE_WRAP_MIRRORED_REPEAT:
-      return container::gpu::kMaterialSamplerWrapMirroredRepeat;
-    case TINYGLTF_TEXTURE_WRAP_REPEAT:
-    default:
-      return container::gpu::kMaterialSamplerWrapRepeat;
-  }
-}
-
 uint32_t gltfTextureSamplerIndex(const tinygltf::Model& model,
                                  const tinygltf::Texture& texture) {
-  uint32_t wrapS = container::gpu::kMaterialSamplerWrapRepeat;
-  uint32_t wrapT = container::gpu::kMaterialSamplerWrapRepeat;
   if (texture.sampler >= 0 &&
       texture.sampler < static_cast<int>(model.samplers.size())) {
     const tinygltf::Sampler& sampler =
         model.samplers[static_cast<size_t>(texture.sampler)];
-    wrapS = gltfWrapModeToMaterialSamplerAxis(sampler.wrapS);
-    wrapT = gltfWrapModeToMaterialSamplerAxis(sampler.wrapT);
+    return container::material::NormalizeMaterialSamplerKey(
+        sampler.minFilter, sampler.magFilter, sampler.wrapS, sampler.wrapT).value;
   }
-
-  return wrapS + wrapT * container::gpu::kMaterialSamplerWrapModeCount;
+  return container::material::NormalizeMaterialSamplerKey().value;
 }
 
 float maxComponent(const glm::vec3& color) {

@@ -1,5 +1,8 @@
 #pragma once
 
+#include "Container/utility/TextureSamplingPlan.h"
+#include "Container/utility/TextureImageOwnership.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <limits>
@@ -217,6 +220,16 @@ class SceneManager {
 
  private:
   uint32_t queryTextureDescriptorCapacity() const;
+  uint32_t queryMaterialSamplerDescriptorCapacity() const;
+  void validateGltfSamplerPolicies(const tinygltf::Model& model, bool replacement) const;
+  void ensureTextureSamplingFallback();
+  void finishTextureImageOwnershipPublication();
+  friend struct SceneSamplerPublicationTestAccess;
+  struct TextureSamplingFallback {
+    container::material::TextureResource resource;
+    std::shared_ptr<const container::gpu::AllocationManager::TextureAllocationLease> lease;
+  };
+
   uint32_t resolveLoadedMaterialIndex(int32_t materialIndex) const;
   void createDescriptorSetLayout();
   void createSampler();
@@ -273,6 +286,12 @@ class SceneManager {
   container::gpu::AllocatedBuffer materialBuffer_{};
   size_t materialBufferCapacity_{0};
   std::vector<container::gpu::GpuTextureMetadata> textureMetadata_{};
+  container::material::TextureSamplingPlan textureSamplingPlan_{};
+  std::shared_ptr<const TextureSamplingFallback> textureSamplingFallback_{};
+  container::material::TextureImageOwnershipPtr textureImageOwnership_{};
+  container::material::MaterialSamplerSlotPlan materialSamplerSlots_{};
+  uint32_t materialSamplerDescriptorCapacity_{1};
+
   container::gpu::AllocatedBuffer textureMetadataBuffer_{};
   size_t textureMetadataBufferCapacity_{0};
   container::gpu::SceneClipState sceneClipState_{};

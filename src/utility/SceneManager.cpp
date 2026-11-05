@@ -658,21 +658,9 @@ container::gpu::GpuTextureTransform makeGpuTextureTransform(
   return gpuTransform;
 }
 
-VkSamplerAddressMode materialSamplerAddressMode(uint32_t wrapMode) {
-  switch (wrapMode) {
-    case container::gpu::kMaterialSamplerWrapClampToEdge:
-      return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    case container::gpu::kMaterialSamplerWrapMirroredRepeat:
-      return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
-    case container::gpu::kMaterialSamplerWrapRepeat:
-    default:
-      return VK_SAMPLER_ADDRESS_MODE_REPEAT;
-  }
-}
-
 uint32_t sanitizeMaterialSamplerIndex(uint32_t samplerIndex) {
-  return std::min(samplerIndex,
-                  container::gpu::kMaterialSamplerDescriptorCapacity - 1u);
+  (void)container::material::DecodeMaterialSamplerKey({samplerIndex});
+  return samplerIndex;
 }
 
 std::string textureCacheKey(std::string_view textureName,
@@ -874,13 +862,33 @@ uint32_t SceneManager::queryTextureDescriptorCapacity() const {
         "Device does not support the renderer material texture descriptor "
         "capacity");
   }
-  if (samplerLimit < container::gpu::kMaterialSamplerDescriptorCapacity) {
-    throw std::runtime_error(
-        "Device does not support the renderer material sampler descriptor "
-        "capacity");
-  }
+
 
   return container::gpu::kMaterialTextureDescriptorCapacity;
+}
+
+uint32_t SceneManager::queryMaterialSamplerDescriptorCapacity() const {
+  VkPhysicalDeviceProperties properties{};
+  vkGetPhysicalDeviceProperties(deviceWrapper_->physicalDevice(), &properties);
+  const auto capacity = container::material::MaterialSamplerDescriptorCapacity(
+      properties.limits.maxPerStageDescriptorSamplers, properties.limits.maxDescriptorSetSamplers);
+  if (!capacity) throw std::runtime_error("Device has no material sampler budget after reserving pipeline resources");
+  return capacity;
+}
+
+void SceneManager::validateGltfSamplerPolicies(const tinygltf::Model& model, bool replacement) const {
+  std::vector<container::material::MaterialSamplerKey> keys;
+  keys.reserve(model.textures.size());
+  for(const auto& texture:model.textures) {
+    if(texture.sampler < -1 || (texture.sampler >= 0 && size_t(texture.sampler)>=model.samplers.size()))
+      throw std::runtime_error("glTF texture sampler index is out of range");
+    if(texture.sampler<0) keys.push_back({0});
+    else {const auto& sampler=model.samplers[size_t(texture.sampler)];
+      keys.push_back(container::material::NormalizeMaterialSamplerKey(
+          sampler.minFilter,sampler.magFilter,sampler.wrapS,sampler.wrapT));}
+  }
+  if(replacement) (void)container::material::PlanMaterialSamplerSlots(keys,materialSamplerDescriptorCapacity_);
+  else (void)container::material::PlanTextureSamplerSlots(textureManager_,materialSamplerDescriptorCapacity_,keys);
 }
 
 uint32_t SceneManager::resolveLoadedMaterialIndex(int32_t materialIndex) const {
@@ -945,6 +953,7 @@ void SceneManager::initialize(const std::string& initialModelPath,
                               float importScale,
                               uint32_t descriptorSetCount) {
   textureDescriptorCapacity_ = queryTextureDescriptorCapacity();
+  materialSamplerDescriptorCapacity_ = queryMaterialSamplerDescriptorCapacity();
   createDescriptorSetLayout();
   createSampler();
   loadMaterialXMaterial();
@@ -956,6 +965,7 @@ void SceneManager::initialize(const std::string& initialModelPath,
   uploadTextureMetadataBuffer();
   createSceneClipStateBuffer();
   allocateDescriptorSets(descriptorSetCount);
+  finishTextureImageOwnershipPublication();
 }
 
 bool SceneManager::isDefaultTestSceneActive() const {
@@ -1124,6 +1134,10 @@ bool SceneManager::reloadModel(
       return false;
     }
   }
+  if(prepared) {
+    try { validateGltfSamplerPolicies(prepared->gltfModel,true); }
+    catch(const std::exception& error) {std::println(stderr,"glTF sampler preflight failed: {}",error.what());return false;}
+  }
   auto resetForLoad = [this]() {
     resetLoadedAssets();
     loadMaterialXMaterial();
@@ -1141,6 +1155,7 @@ bool SceneManager::reloadModel(
     uploadMaterialBuffer();
     uploadTextureMetadataBuffer();
     updateDescriptorSets(cameraBuffers, objectBuffer);
+    finishTextureImageOwnershipPublication();
     return true;
   } catch (...) {
     try {
@@ -1151,6 +1166,7 @@ bool SceneManager::reloadModel(
       uploadMaterialBuffer();
       uploadTextureMetadataBuffer();
       updateDescriptorSets(cameraBuffers, objectBuffer);
+    finishTextureImageOwnershipPublication();
     } catch (const std::exception& e) {
       std::println(stderr, "failed to restore previous model '{}': {}",
                    previousModelPath, e.what());
@@ -1158,6 +1174,7 @@ bool SceneManager::reloadModel(
       uploadMaterialBuffer();
       uploadTextureMetadataBuffer();
       updateDescriptorSets(cameraBuffers, objectBuffer);
+    finishTextureImageOwnershipPublication();
     }
     return false;
   }
@@ -1710,7 +1727,7 @@ void SceneManager::createDescriptorSetLayout() {
                  nullptr};
 
   bindings[2] = {2, VK_DESCRIPTOR_TYPE_SAMPLER,
-                 container::gpu::kMaterialSamplerDescriptorCapacity,
+                 materialSamplerDescriptorCapacity_,
                  VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                  nullptr};
 
@@ -1747,44 +1764,37 @@ void SceneManager::createDescriptorSetLayout() {
 }
 
 void SceneManager::createSampler() {
-  if (!materialSamplers_.empty()) {
+  if (!materialSamplers_.empty()) return;
+  materialSamplers_.resize(container::material::kMaterialSamplerKeyCount, VK_NULL_HANDLE);
+  const auto info = container::material::MakeMaterialSamplerCreateInfo({0});
+  if (createOwnedSampler(deviceWrapper_->device(), &info, nullptr, &materialSamplers_[0]) != VK_SUCCESS)
+    throw std::runtime_error("failed to create default scene texture sampler");
+  baseColorSampler_ = materialSamplers_.front();
+}
+
+void SceneManager::ensureTextureSamplingFallback() {
+  if(textureSamplingFallback_) {
+    if(!allocationManager_->textureImageMatches(textureSamplingFallback_->resource)) throw std::runtime_error("Scene texture fallback allocation is stale or foreign");
     return;
   }
+  // Private single-image batch ownership is independent of authored/runtime
+  // resource tables. Copies of the shared holder keep actual descriptor readers
+  // alive; raw matching handles never grant this ownership.
+  auto fallback=std::make_shared<TextureSamplingFallback>();
+  auto batch=allocationManager_->beginTextureAllocationBatch();
+  constexpr std::array rgba{std::byte{255},std::byte{255},std::byte{255},std::byte{255}};
+  fallback->resource=allocationManager_->createTextureFromRgbaPixels(
+      "__private_scene_texture_fallback",rgba,1,1,VK_FORMAT_R8G8B8A8_UNORM);
+  fallback->resource.samplerIndex=0;
+  fallback->lease=batch.commit();
+  textureSamplingFallback_=std::move(fallback);
+}
 
-  VkPhysicalDeviceProperties properties{};
-  vkGetPhysicalDeviceProperties(deviceWrapper_->physicalDevice(), &properties);
-
-  materialSamplers_.resize(container::gpu::kMaterialSamplerDescriptorCapacity,
-                           VK_NULL_HANDLE);
-  for (uint32_t wrapT = 0;
-       wrapT < container::gpu::kMaterialSamplerWrapModeCount; ++wrapT) {
-    for (uint32_t wrapS = 0;
-         wrapS < container::gpu::kMaterialSamplerWrapModeCount; ++wrapS) {
-      const uint32_t samplerIndex =
-          wrapS + wrapT * container::gpu::kMaterialSamplerWrapModeCount;
-
-      VkSamplerCreateInfo info{};
-      info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-      info.magFilter = VK_FILTER_LINEAR;
-      info.minFilter = VK_FILTER_LINEAR;
-      info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-      info.addressModeU = materialSamplerAddressMode(wrapS);
-      info.addressModeV = materialSamplerAddressMode(wrapT);
-      info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-      info.minLod = 0.0f;
-      info.maxLod = VK_LOD_CLAMP_NONE;
-      info.anisotropyEnable = VK_TRUE;
-      info.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
-      info.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
-
-      if (createOwnedSampler(deviceWrapper_->device(), &info, nullptr,
-                          &materialSamplers_[samplerIndex]) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create scene texture sampler");
-      }
-    }
-  }
-
-  baseColorSampler_ = materialSamplers_.front();
+void SceneManager::finishTextureImageOwnershipPublication() {
+  auto adoption=container::material::PrepareTextureImageOwnershipAdoption(
+      textureImageOwnership_,textureManager_,*allocationManager_);
+  if(!container::material::AdoptTextureImageOwnership(adoption,textureManager_,*allocationManager_))
+    throw std::runtime_error("Scene image ownership changed during publication");
 }
 
 /* ---------- Assets ---------- */
@@ -1861,6 +1871,7 @@ void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared)
       auto result = prepared ? std::move(*prepared)
                              : container::geometry::gltf::LoadModelWithSource(
                                    container::util::pathToUtf8(resolvedPath));
+      validateGltfSamplerPolicies(result.gltfModel,false);
       gltfModel_ = std::move(result.gltfModel);
       model_ = std::move(result.model);
 
@@ -1944,6 +1955,7 @@ void SceneManager::appendSceneAsset(
   auto result = container::geometry::gltf::LoadModelWithSource(
       container::util::pathToUtf8(assetPath));
 
+  validateGltfSamplerPolicies(result.gltfModel,false);
   const auto imageToTexture = materialXBridge_.loadTexturesForGltf(
       result.gltfModel, assetPath.parent_path(), textureManager_,
       [this](const std::string &path, bool isSrgb) {
@@ -2196,22 +2208,21 @@ void SceneManager::uploadMaterialBuffer() {
 }
 
 void SceneManager::uploadTextureMetadataBuffer() {
-  textureMetadata_.clear();
-  const size_t textureCount = textureManager_.textureCount();
-  textureMetadata_.reserve(std::max<size_t>(1, textureCount));
-  for (uint32_t i = 0; i < textureCount; ++i) {
-    container::gpu::GpuTextureMetadata metadata{};
-    metadata.samplerCount = static_cast<uint32_t>(materialSamplers_.size());
-    if (const auto* texture = textureManager_.getTexture(i)) {
-      metadata.samplerIndex = std::min(
-          texture->samplerIndex,
-          container::gpu::kMaterialSamplerDescriptorCapacity - 1u);
-    }
-    textureMetadata_.push_back(metadata);
+  ensureTextureSamplingFallback();
+  const std::array inherited{textureImageOwnership_};
+  auto ownership=container::material::PrepareTextureImageOwnership(textureManager_,*allocationManager_,inherited);
+  auto plan=container::material::MakeTextureSamplingPlan(textureManager_,textureSamplingFallback_->resource,
+      *allocationManager_,textureDescriptorCapacity_,materialSamplerDescriptorCapacity_);
+  for (const auto key : plan.samplerSlots.keys) {
+    auto& sampler = materialSamplers_[key.value];
+    if (sampler != VK_NULL_HANDLE) continue;
+    const auto info = container::material::MakeMaterialSamplerCreateInfo(key);
+    if (createOwnedSampler(deviceWrapper_->device(), &info, nullptr, &sampler) != VK_SUCCESS)
+      throw std::runtime_error("failed to create authored scene texture sampler");
   }
-  if (textureMetadata_.empty()) {
-    textureMetadata_.push_back(container::gpu::GpuTextureMetadata{});
-  }
+  materialSamplerSlots_ = plan.samplerSlots;
+  textureMetadata_ = plan.metadata;
+  textureSamplingPlan_ = std::move(plan);
 
   const size_t requiredCount = textureMetadata_.size();
   const VkDeviceSize requiredSize =
@@ -2261,6 +2272,9 @@ void SceneManager::uploadTextureMetadataBuffer() {
     vmaUnmapMemory(allocationManager_->memoryManager()->allocator(),
                    textureMetadataBuffer_.allocation);
   }
+  // The old complete set remains in this local until after the transfer, so a
+  // final pin release/free cannot occur within the shared-owner exchange.
+    textureImageOwnership_.swap(ownership);
 }
 
 void SceneManager::createSceneClipStateBuffer() {
@@ -2464,7 +2478,7 @@ void SceneManager::allocateDescriptorSets(uint32_t descriptorSetCount) {
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
        textureDescriptorCapacity_ * setCount},
       {VK_DESCRIPTOR_TYPE_SAMPLER,
-       container::gpu::kMaterialSamplerDescriptorCapacity * setCount},
+       materialSamplerDescriptorCapacity_ * setCount},
   };
 
   descriptorPool_ = pipelineManager_->createDescriptorPool(poolSizes, setCount, 0);
@@ -2572,19 +2586,10 @@ void SceneManager::writeDescriptorSetContents(
   sceneClipWrite.pBufferInfo = &sceneClipInfo;
   writes.push_back(sceneClipWrite);
 
-  std::vector<VkDescriptorImageInfo> imageInfos;
-  const size_t texCount = textureManager_.textureCount();
-  if (texCount > textureDescriptorCapacity_) {
-    throw std::runtime_error("Model requires more sampled-image descriptors than "
-                             "the device supports");
-  }
-
-  for (size_t i = 0; i < texCount; ++i) {
-    const auto* tex = textureManager_.getTexture(static_cast<uint32_t>(i));
-    if (!tex) continue;
-    imageInfos.push_back({VK_NULL_HANDLE, tex->imageView,
-                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
-  }
+  if(!textureSamplingFallback_ || !container::material::TextureSamplingPlanMatches(textureSamplingPlan_,textureManager_,
+      textureSamplingFallback_->resource,*allocationManager_))
+    throw std::runtime_error("Scene texture descriptor metadata is stale or inconsistent");
+  const auto& imageInfos=textureSamplingPlan_.images;
 
   if (!imageInfos.empty()) {
     VkWriteDescriptorSet imageWrite{};
@@ -2597,16 +2602,10 @@ void SceneManager::writeDescriptorSetContents(
     writes.push_back(imageWrite);
   }
 
-  std::array<VkDescriptorImageInfo,
-             container::gpu::kMaterialSamplerDescriptorCapacity>
-      samplerInfos{};
-  for (uint32_t i = 0; i < container::gpu::kMaterialSamplerDescriptorCapacity;
-       ++i) {
-    samplerInfos[i].sampler =
-        i < materialSamplers_.size() ? materialSamplers_[i] : baseColorSampler_;
-    samplerInfos[i].imageView = VK_NULL_HANDLE;
-    samplerInfos[i].imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  }
+  std::vector<VkDescriptorImageInfo> samplerInfos(materialSamplerDescriptorCapacity_);
+  for(uint32_t i=0;i<materialSamplerDescriptorCapacity_;++i)
+    samplerInfos[i].sampler=i<materialSamplerSlots_.keys.size()
+        ? materialSamplers_[materialSamplerSlots_.keys[i].value] : baseColorSampler_;
 
   VkWriteDescriptorSet samplerWrite{};
   samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2614,7 +2613,7 @@ void SceneManager::writeDescriptorSetContents(
   samplerWrite.dstBinding = 2;
   samplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
   samplerWrite.descriptorCount =
-      container::gpu::kMaterialSamplerDescriptorCapacity;
+      materialSamplerDescriptorCapacity_;
   samplerWrite.pImageInfo = samplerInfos.data();
   writes.push_back(samplerWrite);
 
@@ -2636,6 +2635,10 @@ void SceneManager::resetLoadedAssets() {
   textureMetadataBufferCapacity_ = 0;
   gpuMaterials_.clear();
   textureMetadata_.clear();
+  textureSamplingPlan_={};
+  textureImageOwnership_.reset();
+  textureSamplingFallback_.reset();
+  materialSamplerSlots_={};
   allocationManager_->resetTextureAllocations();
   materialManager_ = container::material::MaterialManager{};
   textureManager_ = container::material::TextureManager{};

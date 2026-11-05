@@ -1,6 +1,6 @@
 #define DDGI_SET 3
 #include "material_data_common.slang"
-[[vk::binding(2, 0)]] SamplerState materialSamplers[MATERIAL_SAMPLER_DESCRIPTOR_COUNT];
+[[vk::binding(2, 0)]] SamplerState materialSamplers[];
 [[vk::binding(3, 0)]] StructuredBuffer<GpuMaterial> uMaterials;
 [[vk::binding(4, 0)]] StructuredBuffer<GpuTextureMetadata> uTextureMetadata;
 [[vk::binding(5, 0)]] Texture2D materialTextures[MATERIAL_TEXTURE_DESCRIPTOR_COUNT];
@@ -28,8 +28,7 @@ float4 DdgiTexture(uint index, float4 uv, GpuTextureTransform transform)
     if (index == kInvalidGpuMaterialTexture || index >= MATERIAL_TEXTURE_DESCRIPTOR_COUNT)
         return 1.0.xxxx;
     uint textureIndex = NonUniformResourceIndex(index);
-    uint samplerIndex = NonUniformResourceIndex(min(uTextureMetadata[textureIndex].samplerIndex,
-                                                  MATERIAL_SAMPLER_DESCRIPTOR_COUNT - 1u));
+    uint samplerIndex = NonUniformResourceIndex(ResolveMaterialSamplerIndex(uTextureMetadata[textureIndex]));
     // Ray footprints have no raster derivatives. This initial route uses base
     // mip consistently, including alpha masks; all authored UV transforms apply.
     return materialTextures[textureIndex].SampleLevel(materialSamplers[samplerIndex],
