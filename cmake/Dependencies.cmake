@@ -323,4 +323,5 @@ message(STATUS "Vulkan: ${Vulkan_VERSION}")
 message(STATUS "spdlog: ${spdlog_VERSION}")
 message(STATUS "--------------------------------------------------")
 
+include("${CMAKE_CURRENT_LIST_DIR}/GltfCompressionDependencies.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/TextureCodecDependencies.cmake")

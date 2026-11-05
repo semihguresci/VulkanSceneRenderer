@@ -16,5 +16,12 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
     uQueries.GetDimensions(count, stride);
     if (tid.x >= count) return;
     float4 query = uQueries[tid.x];
+    if (query.w < 0)
+    {
+        uint texture = query.w == -1 ? 0u : kInvalidMaterialTexture;
+        uResults[tid.x] = float4(TextureBackedScalarFactor(query.x, texture),
+            TextureBackedColorFactor(query.xyz, texture));
+        return;
+    }
     uResults[tid.x] = SamplePbrTextureLevel(uint(query.w), query.xy, query.z, 0.0.xxxx);
 }

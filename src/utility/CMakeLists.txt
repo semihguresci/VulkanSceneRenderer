@@ -84,6 +84,7 @@ add_library(VulkanSceneRenderer_scene
     SceneGraph.cpp
     MaterialManager.cpp
     MaterialXIntegration.cpp
+    GltfTextureResources.cpp
 )
 target_compile_features(VulkanSceneRenderer_scene PUBLIC cxx_std_23)
 target_include_directories(VulkanSceneRenderer_scene PUBLIC

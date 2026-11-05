@@ -332,4 +332,13 @@ TEST_F(MaterialSamplerGpu, DensePoliciesBeyondTheLegacyWrapPrefixReachTheirOwnSa
   compare(keys,queries);
 }
 
+TEST_F(MaterialSamplerGpu, TexturePresenceKeepsZeroBlackAndHdrFactorsWithoutPromotion) {
+  const std::array keys{material::MaterialSamplerKey{0}};
+  const std::array queries{glm::vec4(0,0,0,-1),glm::vec4(0,0,0,-2),
+      glm::vec4(.25f,.5f,2,-1),glm::vec4(-.5f,.5f,2,-1)};
+  const auto values=run(keys,queries);ASSERT_EQ(values.size(),4u);
+  EXPECT_EQ(values[0],glm::vec4(0));EXPECT_EQ(values[1],glm::vec4(0));
+  EXPECT_EQ(values[2],glm::vec4(.25f,.25f,.5f,2));EXPECT_EQ(values[3],glm::vec4(0,0,.5f,2));
+}
+
 }  // namespace

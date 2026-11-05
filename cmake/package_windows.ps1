@@ -43,6 +43,24 @@ $cachePath = Join-Path $buildTreeDirectory 'CMakeCache.txt'
 if (-not (Test-Path -LiteralPath $cachePath -PathType Leaf)) {
     throw "Missing build cache: $cachePath"
 }
+$gltfCompressionEnabled = @{}
+$gltfCompressionNotices = @{}
+foreach ($backend in @('DRACO', 'MESHOPT')) {
+    $compressionOption = @(Select-String -LiteralPath $cachePath -Pattern "^ENABLE_GLTF_${backend}:BOOL=(.*)$")
+    $enabled = $compressionOption.Count -eq 1 -and
+        $compressionOption[0].Matches[0].Groups[1].Value -notmatch '^(|0|OFF|NO|FALSE|N|IGNORE|NOTFOUND)$' -and
+        $compressionOption[0].Matches[0].Groups[1].Value -notmatch '-NOTFOUND$'
+    $gltfCompressionEnabled[$backend] = $enabled
+    if ($enabled) {
+        $noticeName = $(if ($backend -eq 'DRACO') { 'Draco-Apache-2.0.txt' } else { 'meshoptimizer-MIT.txt' })
+        $noticePath = Join-Path $buildTreeDirectory "third_party_licenses/$noticeName"
+        if (-not (Test-Path -LiteralPath $noticePath -PathType Leaf)) {
+            throw "The enabled glTF $backend decoder is missing its upstream notice: $noticePath"
+        }
+        $gltfCompressionNotices[$noticeName] = $noticePath
+    }
+}
+
 $textureCodecsEnabled = @{}
 $textureCodecNotices = @{}
 foreach ($backend in @('KTX', 'WEBP')) {
@@ -118,6 +136,7 @@ $requiredFiles = @(
     'materials/ltc/LICENSE.txt',
     'hdr/citrus_orchard_road_puresky_4k.exr'
 )
+if ($gltfCompressionEnabled['DRACO']) { $requiredFiles += 'ContainerDracoWorker.exe' }
 foreach ($relativePath in $requiredFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $runtimeDirectory $relativePath) -PathType Leaf)) {
         throw "Missing runtime file: $relativePath"
@@ -141,6 +160,32 @@ Copy-Item -LiteralPath (Join-Path $runtimeDirectory 'models/validation') -Destin
 Get-ChildItem -LiteralPath (Join-Path $runtimeDirectory 'models') -File |
     Where-Object { $_.Name -eq 'basic_cube.gltf' -or $_.Name -eq 'basic_triangle.gltf' -or $_.Name -like 'cube_*.png' } |
     Copy-Item -Destination $modelsDirectory.FullName
+# Follow the actual PE imports of every shipped executable. A fixed DLL list
+# omits optional backends such as OpenVDB and their compression dependencies.
+$runtimeExecutables = @((Join-Path $runtimeDirectory 'VulkanSceneRenderer.exe'))
+if ($gltfCompressionEnabled['DRACO']) {
+    $runtimeExecutables += Join-Path $runtimeDirectory 'ContainerDracoWorker.exe'
+}
+$runtimeStageArguments = @(
+    "-DEXECUTABLES=$($runtimeExecutables -join '|')",
+    "-DDESTINATION=$stagingDirectory"
+)
+$linkerCacheEntry = @(Select-String -LiteralPath $cachePath -Pattern '^CMAKE_LINKER:FILEPATH=(.*)$')
+if ($linkerCacheEntry.Count -eq 1) {
+    $dumpbinPath = Join-Path (Split-Path -Parent $linkerCacheEntry[0].Matches[0].Groups[1].Value) 'dumpbin.exe'
+    if (Test-Path -LiteralPath $dumpbinPath -PathType Leaf) {
+        $runtimeStageArguments += "-DDUMPBIN=$dumpbinPath"
+    }
+}
+$runtimeStageArguments += @('-P', (Join-Path $PSScriptRoot 'StageWindowsPackageRuntime.cmake'))
+& cmake @runtimeStageArguments
+if ($LASTEXITCODE -ne 0) {
+    throw 'Cannot stage the complete package runtime dependency closure.'
+}
+foreach ($directory in @('spv_shaders', 'materials', 'hdr')) {
+    Copy-Item -LiteralPath (Join-Path $runtimeDirectory $directory) -Destination $stagingDirectory -Recurse
+}
+$modelsDirectory = New-Item -ItemType Directory -Path (Join-Path $stagingDirectory 'models')
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'LICENSE') -Destination $stagingDirectory
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/windows-package-quick-start.md') -Destination (Join-Path $stagingDirectory 'README.md')
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/third-party-notices.md') -Destination (Join-Path $stagingDirectory 'THIRD_PARTY_NOTICES.md')
@@ -157,6 +202,9 @@ foreach ($package in @('entt', 'fmt', 'glfw3', 'glm', 'imgui', 'MaterialX', 'mik
         'miniz', 'nlohmann-json', 'shader-slang', 'spdlog', 'stb', 'tinyexr', 'tinygltf',
         'vulkan', 'vulkan-headers', 'vulkan-loader', 'vulkan-memory-allocator')) {
     Copy-Item -LiteralPath (Join-Path $dependencyDirectory "$package/copyright") -Destination (Join-Path $licensesDirectory "$package.txt")
+}
+foreach ($noticeName in $gltfCompressionNotices.Keys) {
+    Copy-Item -LiteralPath $gltfCompressionNotices[$noticeName] -Destination (Join-Path $licensesDirectory $noticeName)
 }
 foreach ($noticeName in $textureCodecNotices.Keys) {
     Copy-Item -LiteralPath $textureCodecNotices[$noticeName] -Destination (Join-Path $licensesDirectory $noticeName) -Recurse
@@ -200,6 +248,7 @@ $runtimeDlls = @(Get-ChildItem -LiteralPath $stagingDirectory -Filter '*.dll' -F
 $ltcAssets = @(Get-ChildItem -LiteralPath (Join-Path $stagingDirectory 'materials/ltc') -File)
 $hashedRuntimeFiles = @(
     Get-Item -LiteralPath (Join-Path $stagingDirectory 'VulkanSceneRenderer.exe')
+    if ($gltfCompressionEnabled['DRACO']) { Get-Item -LiteralPath (Join-Path $stagingDirectory 'ContainerDracoWorker.exe') }
     $runtimeDlls
     Get-ChildItem -LiteralPath (Join-Path $stagingDirectory 'spv_shaders') -Filter '*.spv' -File
     $ltcAssets
@@ -218,6 +267,8 @@ foreach ($file in ($hashedRuntimeFiles | Sort-Object FullName)) {
     configuration = 'Release'
     vulkan_api = '1.4'
     shader_format = 'SPIR-V 1.6'
+    gltf_draco_enabled = $gltfCompressionEnabled['DRACO']
+    gltf_meshopt_enabled = $gltfCompressionEnabled['MESHOPT']
     texture_ktx_enabled = $textureCodecsEnabled['KTX']
     texture_webp_enabled = $textureCodecsEnabled['WEBP']
     compiled_shader_count = $shaders.Count

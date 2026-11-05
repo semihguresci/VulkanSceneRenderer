@@ -32,6 +32,14 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     VulkanSceneRenderer_Core
 )
 container_stage_runtime_dlls(${PROJECT_NAME})
+if(TARGET ContainerDracoWorker)
+    add_dependencies(${PROJECT_NAME} ContainerDracoWorker)
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:ContainerDracoWorker>"
+            "$<TARGET_FILE_DIR:${PROJECT_NAME}>/ContainerDracoWorker$<TARGET_FILE_SUFFIX:ContainerDracoWorker>"
+        VERBATIM)
+endif()
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include

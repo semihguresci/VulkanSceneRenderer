@@ -33,6 +33,7 @@ struct SceneSamplerPublicationTestAccess {
   static auto& table(SceneManager& manager) {return manager.textureManager_;}
   static const auto& fallback(const SceneManager& manager) {return manager.textureSamplingFallback_->resource;}
   static auto& samplerCapacity(SceneManager& manager) {return manager.materialSamplerDescriptorCapacity_;}
+  static auto& imageCapacity(SceneManager& manager) {return manager.textureDescriptorCapacity_;}
   static void install(SceneManager& manager,container::material::TextureManager table,
       std::shared_ptr<const container::gpu::AllocationManager::TextureAllocationLease> lease={}) {
     const std::array inherited{manager.textureImageOwnership_};
@@ -267,6 +268,35 @@ TEST_F(SceneTextureSamplingGpu,OverBudgetReplacementLeavesThePublishedSceneIntac
   const auto capacity=Access::samplerCapacity(*manager);Access::samplerCapacity(*manager)=2;
   EXPECT_FALSE(manager->reloadModel("over-budget.gltf",1,cameras,objects[0],&incoming));
   Access::samplerCapacity(*manager)=capacity;
+  EXPECT_EQ(manager->descriptorSet(0),descriptor);
+  EXPECT_EQ(Access::table(*manager).textureCount(),3u);expectThree(*manager,descriptor,false);
+}
+
+TEST_F(SceneTextureSamplingGpu,MalformedRetainedTextureRejectsBeforeTheLiveSceneRetires) {
+  installThree();const auto descriptor=manager->descriptorSet(0);
+  auto incoming=triangle("Bad retained image");auto& source=incoming.gltfModel;
+  source.images.resize(1);source.images[0].as_is=true;source.images[0].image={0,1,2};
+  source.images[0].uri="corrupt.png";source.images[0].mimeType="image/png";
+  source.textures.resize(1);source.textures[0].source=0;
+  source.materials[0].pbrMetallicRoughness.baseColorTexture.index=0;
+  EXPECT_FALSE(manager->reloadModel("bad-retained-image.gltf",1,cameras,objects[0],&incoming));
+  EXPECT_EQ(manager->descriptorSet(0),descriptor);
+  EXPECT_EQ(Access::table(*manager).textureCount(),3u);expectThree(*manager,descriptor,false);
+}
+
+TEST_F(SceneTextureSamplingGpu,ImageDescriptorBudgetRejectsBeforeTheLiveSceneRetires) {
+  installThree();const auto descriptor=manager->descriptorSet(0);
+  auto incoming=triangle("Image descriptor budget");auto& source=incoming.gltfModel;
+  source.images.resize(3);source.textures.resize(3);source.materials.resize(3,source.materials[0]);
+  for(int i=0;i<3;++i) {
+    auto& image=source.images[i];image.width=image.height=1;image.bits=8;image.component=4;
+    image.pixel_type=TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE;image.image={0,0,0,255};
+    image.image[i]=255;image.uri="resident-"+std::to_string(i)+".png";
+    source.textures[i].source=i;source.materials[i].pbrMetallicRoughness.baseColorTexture.index=i;
+  }
+  const auto capacity=Access::imageCapacity(*manager);Access::imageCapacity(*manager)=2;
+  EXPECT_FALSE(manager->reloadModel("over-image-budget.gltf",1,cameras,objects[0],&incoming));
+  Access::imageCapacity(*manager)=capacity;
   EXPECT_EQ(manager->descriptorSet(0),descriptor);
   EXPECT_EQ(Access::table(*manager).textureCount(),3u);expectThree(*manager,descriptor,false);
 }

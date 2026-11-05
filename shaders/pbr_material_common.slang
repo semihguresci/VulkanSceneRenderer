@@ -47,22 +47,12 @@ float MaxComponent(float3 value)
 
 float TextureBackedScalarFactor(float factor, uint textureIndex)
 {
-    float value = factor;
-    if (textureIndex != kInvalidMaterialTexture && value <= 0.0)
-    {
-        value = 1.0;
-    }
-    return value;
+    return ResolveMaterialScalarFactor(factor);
 }
 
 float3 TextureBackedColorFactor(float3 factor, uint textureIndex)
 {
-    float3 value = max(factor, 0.0.xxx);
-    if (textureIndex != kInvalidMaterialTexture && MaxComponent(value) <= 0.0)
-    {
-        value = 1.0.xxx;
-    }
-    return value;
+    return ResolveMaterialColorFactor(factor);
 }
 
 float EvaluateOpacity(float baseAlpha, uint opacityTextureIndex,

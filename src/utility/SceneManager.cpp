@@ -813,6 +813,18 @@ container::gpu::GpuMaterial makeGpuMaterial(
 
 }  // namespace
 
+namespace {
+container::geometry::gltf::LoadOptions sceneTextureLoadOptions() {
+  container::geometry::gltf::LoadOptions options;
+  options.maxInputBytes=512ull*1024*1024;
+  options.retainEncodedImages=true;
+  options.unavailableRuntimeExtensions={"KHR_materials_anisotropy","KHR_materials_diffuse_transmission",
+      "EXT_mesh_gpu_instancing","KHR_node_visibility","KHR_node_selectability","KHR_node_hoverability",
+      "KHR_materials_variants","KHR_animation_pointer"};
+  return options;
+}
+} // namespace
+
 SceneManager::SceneManager(
     container::gpu::AllocationManager& allocationManager,
     container::gpu::PipelineManager& pipelineManager,
@@ -877,6 +889,16 @@ uint32_t SceneManager::queryMaterialSamplerDescriptorCapacity() const {
 }
 
 void SceneManager::validateGltfSamplerPolicies(const tinygltf::Model& model, bool replacement) const {
+  container::geometry::gltf::AssetRequirements requirements;
+  requirements.version=model.asset.version;
+  if(!model.asset.minVersion.empty()) requirements.minVersion=model.asset.minVersion;
+  requirements.extensionsUsed=model.extensionsUsed;requirements.extensionsRequired=model.extensionsRequired;
+  const auto validation=container::geometry::gltf::validateCapabilities(requirements,"prepared glTF scene",
+      sceneTextureLoadOptions().unavailableRuntimeExtensions);
+  for(const auto& diagnostic:validation.diagnostics)
+    if(diagnostic.severity==container::geometry::gltf::CapabilitySeverity::Error)
+      throw std::runtime_error(container::geometry::gltf::formatCapabilityDiagnostic(diagnostic));
+
   std::vector<container::material::MaterialSamplerKey> keys;
   keys.reserve(model.textures.size());
   for(const auto& texture:model.textures) {
@@ -1111,7 +1133,7 @@ container::geometry::GltfLoadResult SceneManager::prepareGltfModel(
     resolvedPath = resolveSceneAssetPath(path);
   }
   return container::geometry::gltf::LoadModelWithSource(
-      container::util::pathToUtf8(resolvedPath));
+      container::util::pathToUtf8(resolvedPath),sceneTextureLoadOptions());
 }
 
 bool SceneManager::reloadModel(
@@ -1134,8 +1156,13 @@ bool SceneManager::reloadModel(
       return false;
     }
   }
+  std::optional<container::material::PreparedGltfTextures> incomingTextures;
   if(prepared) {
-    try { validateGltfSamplerPolicies(prepared->gltfModel,true); }
+    try { validateGltfSamplerPolicies(prepared->gltfModel,true);
+      incomingTextures=container::material::PrepareGltfTextures(prepared->gltfModel,
+          allocationManager_->textureDecodeOptions(false));
+      if(container::material::CountPreparedGltfTextureResources(*incomingTextures)>textureDescriptorCapacity_)
+        throw std::runtime_error("Incoming glTF textures exceed the scene image descriptor capacity"); }
     catch(const std::exception& error) {std::println(stderr,"glTF sampler preflight failed: {}",error.what());return false;}
   }
   auto resetForLoad = [this]() {
@@ -1151,7 +1178,7 @@ bool SceneManager::reloadModel(
     resetForLoad();
     config_.modelPath = path;
     config_.importScale = sanitizeImportScale(importScale);
-    loadGltfAssets(prepared);
+    loadGltfAssets(prepared,incomingTextures?&*incomingTextures:nullptr);
     uploadMaterialBuffer();
     uploadTextureMetadataBuffer();
     updateDescriptorSets(cameraBuffers, objectBuffer);
@@ -1845,7 +1872,8 @@ void SceneManager::loadMaterialXMaterial() {
   }
 }
 
-void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared) {
+void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
+    const container::material::PreparedGltfTextures* preparedTextures) {
   model_ = container::geometry::Model{};
   gltfModel_ = tinygltf::Model{};
   authoredPointLights_.clear();
@@ -1870,31 +1898,23 @@ void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared)
       }
       auto result = prepared ? std::move(*prepared)
                              : container::geometry::gltf::LoadModelWithSource(
-                                   container::util::pathToUtf8(resolvedPath));
+                                   container::util::pathToUtf8(resolvedPath),sceneTextureLoadOptions());
       validateGltfSamplerPolicies(result.gltfModel,false);
       gltfModel_ = std::move(result.gltfModel);
       model_ = std::move(result.model);
 
-      const auto baseDir = resolvedPath.parent_path();
-
-      auto imageToTexture = materialXBridge_.loadTexturesForGltf(
-          gltfModel_, baseDir, textureManager_,
-          [this](const std::string &path, bool isSrgb) {
-            return allocationManager_->createTextureFromFile(
-                path, isSrgb ? VK_FORMAT_R8G8B8A8_SRGB
-                             : VK_FORMAT_R8G8B8A8_UNORM);
-          },
-          [this](const std::string &name, std::span<const std::byte> rgba,
-                 uint32_t width, uint32_t height, bool isSrgb) {
-            return allocationManager_->createTextureFromRgbaPixels(
-                name, rgba, width, height,
-                isSrgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM);
+      std::optional<container::material::PreparedGltfTextures> localTextures;
+      if(!preparedTextures) {localTextures=container::material::PrepareGltfTextures(gltfModel_,
+          allocationManager_->textureDecodeOptions(false));preparedTextures=&*localTextures;}
+      const auto imageToTexture=container::material::UploadPreparedGltfTextures(*preparedTextures,textureManager_,
+          [this](const std::string& name,const container::material::TextureImageData& image) {
+            return allocationManager_->createTextureFromImageData(name,image);
           });
 
       const uint32_t fallbackMaterialIndex = defaultMaterialIndex_;
       gltfMaterialBaseIndex_ =
           static_cast<uint32_t>(materialManager_.materialCount());
-      materialXBridge_.loadMaterialsForGltf(
+      materialXBridge_.loadMaterialsForGltfWithTextureRoles(
           gltfModel_, imageToTexture, materialManager_, defaultMaterialIndex_);
       defaultMaterialIndex_ = fallbackMaterialIndex;
     } catch (const std::exception& e) {
@@ -1953,26 +1973,20 @@ void SceneManager::appendSceneAsset(
     const glm::mat4& transform,
     std::vector<container::geometry::Mesh>& mergedMeshes) {
   auto result = container::geometry::gltf::LoadModelWithSource(
-      container::util::pathToUtf8(assetPath));
+      container::util::pathToUtf8(assetPath),sceneTextureLoadOptions());
 
   validateGltfSamplerPolicies(result.gltfModel,false);
-  const auto imageToTexture = materialXBridge_.loadTexturesForGltf(
-      result.gltfModel, assetPath.parent_path(), textureManager_,
-      [this](const std::string &path, bool isSrgb) {
-        return allocationManager_->createTextureFromFile(
-            path, isSrgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM);
-      },
-      [this](const std::string &name, std::span<const std::byte> rgba,
-             uint32_t width, uint32_t height, bool isSrgb) {
-        return allocationManager_->createTextureFromRgbaPixels(
-            name, rgba, width, height,
-            isSrgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM);
+  const auto preparedTextures=container::material::PrepareGltfTextures(result.gltfModel,
+      allocationManager_->textureDecodeOptions(false));
+  const auto imageToTexture=container::material::UploadPreparedGltfTextures(preparedTextures,textureManager_,
+      [this](const std::string& name,const container::material::TextureImageData& image) {
+        return allocationManager_->createTextureFromImageData(name,image);
       });
 
   const uint32_t fallbackMaterialIndex = defaultMaterialIndex_;
   const uint32_t materialBaseIndex =
       static_cast<uint32_t>(materialManager_.materialCount());
-  materialXBridge_.loadMaterialsForGltf(result.gltfModel, imageToTexture,
+  materialXBridge_.loadMaterialsForGltfWithTextureRoles(result.gltfModel, imageToTexture,
                                         materialManager_,
                                         defaultMaterialIndex_);
   defaultMaterialIndex_ = fallbackMaterialIndex;

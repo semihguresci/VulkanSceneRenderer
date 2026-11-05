@@ -54,3 +54,10 @@ notice is retained. The restricted Ericsson ETC unpacker is disabled. Optional
 retained. These options default off. Package build-info records each enabled
 backend, and packaging fails if its required upstream notices are missing. See
 [typed texture dependencies](texture-image-data.md) for exact pinned sources.
+
+Optional `ENABLE_GLTF_DRACO` builds include Draco 1.5.9 (Apache-2.0) in the
+adjacent bounded worker. `ENABLE_GLTF_MESHOPT` includes meshoptimizer 1.3 (MIT).
+Their notices are staged as `Draco-Apache-2.0.txt` and `meshoptimizer-MIT.txt`.
+Package manifests record both backends and include the required worker and its
+runtime dependency closure. Missing enabled decoder notices reject packaging.
+See [glTF texture ingestion](gltf-texture-ingestion.md) for the import contract.

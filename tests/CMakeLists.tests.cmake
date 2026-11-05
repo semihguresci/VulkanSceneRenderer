@@ -1318,3 +1318,109 @@ target_compile_definitions(scene_sampler_publication_gpu_tests PRIVATE
 add_dependencies(scene_sampler_publication_gpu_tests scene_sampler_publication_shader shaders_all)
 set_tests_properties(scene_sampler_publication_gpu_tests PROPERTIES
     LABELS "requires-vulkan;materials;samplers" RUN_SERIAL TRUE TIMEOUT 120)
+
+add_custom_test(gltf_compression_loader_tests
+    ${TEST_GEOMETRY_DIR}/gltf_compression_loader_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry Dep_GltfCompression
+)
+set_tests_properties(gltf_compression_loader_tests PROPERTIES LABELS "gltf;compression;cpu" TIMEOUT 60)
+
+add_custom_test(gltf_compression_tests
+    ${TEST_GEOMETRY_DIR}/gltf_compression_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry Dep_GltfCompression
+)
+set_tests_properties(gltf_compression_tests PROPERTIES LABELS "gltf;compression;cpu" TIMEOUT 90)
+if(TARGET ContainerDracoWorker)
+    target_link_libraries(gltf_compression_tests PRIVATE draco::draco)
+    target_compile_definitions(gltf_compression_tests PRIVATE
+        CONTAINER_DRACO_WORKER_EXECUTABLE="$<TARGET_FILE:ContainerDracoWorker>")
+    add_dependencies(gltf_compression_tests ContainerDracoWorker)
+endif()
+
+add_custom_test(gltf_draco_worker_tests
+    ${TEST_GEOMETRY_DIR}/gltf_draco_worker_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry
+)
+set_tests_properties(gltf_draco_worker_tests PROPERTIES LABELS "gltf;compression;cpu" TIMEOUT 90)
+if(WIN32)
+    add_executable(ContainerDracoWorkerProbe
+        ${TEST_GEOMETRY_DIR}/gltf_draco_worker_probe.cpp
+        ${CMAKE_SOURCE_DIR}/src/geometry/GltfDracoProtocol.cpp)
+    target_include_directories(ContainerDracoWorkerProbe PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_definitions(ContainerDracoWorkerProbe PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_features(ContainerDracoWorkerProbe PRIVATE cxx_std_23)
+    set_target_properties(ContainerDracoWorkerProbe PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+    target_compile_definitions(gltf_draco_worker_tests PRIVATE
+        CONTAINER_DRACO_PROBE_EXECUTABLE="$<TARGET_FILE:ContainerDracoWorkerProbe>")
+    add_dependencies(gltf_draco_worker_tests ContainerDracoWorkerProbe)
+endif()
+if(TARGET ContainerDracoWorker)
+    target_link_libraries(gltf_draco_worker_tests PRIVATE draco::draco)
+    target_compile_definitions(gltf_draco_worker_tests PRIVATE CONTAINER_HAS_DRACO=1
+        CONTAINER_DRACO_WORKER_EXECUTABLE="$<TARGET_FILE:ContainerDracoWorker>")
+    add_dependencies(gltf_draco_worker_tests ContainerDracoWorker)
+endif()
+
+if(ENABLE_GLTF_DRACO AND ENABLE_GLTF_MESHOPT)
+    add_executable(GltfCompressionFixtureGenerator
+        ${TESTS_DIR}/fixtures/gltf_compression_fixture_generator.cpp)
+    target_compile_features(GltfCompressionFixtureGenerator PRIVATE cxx_std_23)
+    target_link_libraries(GltfCompressionFixtureGenerator PRIVATE
+        draco::draco meshoptimizer::meshoptimizer nlohmann_json::nlohmann_json)
+    set_target_properties(GltfCompressionFixtureGenerator PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+endif()
+
+add_custom_test(gltf_accessor_tests
+    ${TEST_GEOMETRY_DIR}/gltf_accessor_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry
+)
+
+
+add_custom_test(gltf_image_sources_tests
+    ${TEST_GEOMETRY_DIR}/gltf_image_sources_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry Dep_GltfCompression
+)
+add_custom_test(gltf_texture_resources_tests
+    ${TEST_GEOMETRY_DIR}/gltf_texture_resources_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_scene
+)
+add_custom_test(gltf_instancing_tests
+    ${TEST_GEOMETRY_DIR}/gltf_instancing_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry
+)
+
+add_custom_test(gltf_capabilities_tests
+    ${TEST_GEOMETRY_DIR}/gltf_capabilities_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry
+)
+
+
+add_custom_test(gltf_extended_materials_tests
+    ${TEST_GEOMETRY_DIR}/gltf_extended_materials_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry
+)
+set_tests_properties(gltf_extended_materials_tests PROPERTIES LABELS "gltf;material;cpu" TIMEOUT 60)
+
+
+add_custom_test(gltf_node_flags_tests
+    ${TEST_GEOMETRY_DIR}/gltf_node_flags_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry
+)
+set_tests_properties(gltf_node_flags_tests PROPERTIES LABELS "gltf;scene;cpu" TIMEOUT 60)
+
+
+add_custom_test(gltf_deformation_tests
+    ${TEST_GEOMETRY_DIR}/gltf_deformation_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry
+)
+
+add_custom_test(gltf_deformation_frame_tests
+    ${TEST_GEOMETRY_DIR}/gltf_deformation_frame_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry
+)
+
+add_custom_test(gltf_deformation_loader_tests
+    ${TEST_GEOMETRY_DIR}/gltf_deformation_loader_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry
+)

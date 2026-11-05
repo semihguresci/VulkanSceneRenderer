@@ -5,8 +5,10 @@
 
 #include "Container/common/CommonMath.h"
 #include "Container/utility/MaterialManager.h"
+#include "Container/utility/MaterialSamplerKey.h"
 #include "Container/utility/TextureManager.h"
 #include "Container/utility/TextureResource.h"
+#include "Container/utility/GltfTextureResources.h"
 #include "tiny_gltf.h"
 
 #include <MaterialXCore/Document.h>
@@ -18,6 +20,11 @@
 #include <vector>
 
 namespace container::material {
+
+// The same effective policies used by texture ingestion, collected without
+// allocating resources or including any outgoing scene's texture table.
+[[nodiscard]] std::vector<MaterialSamplerKey> CollectGltfMaterialSamplerKeys(
+    const tinygltf::Model& model);
 
 class SlangMaterialXBridge {
  public:
@@ -63,6 +70,10 @@ class SlangMaterialXBridge {
     void loadMaterialsForGltf(
         const tinygltf::Model& model,
         const std::vector<uint32_t>& textureToResource,
+        container::material::MaterialManager& materialManager,
+        uint32_t& defaultMaterialIndex) const;
+    void loadMaterialsForGltfWithTextureRoles(
+        const tinygltf::Model& model, const GltfTextureResources& textures,
         container::material::MaterialManager& materialManager,
         uint32_t& defaultMaterialIndex) const;
 

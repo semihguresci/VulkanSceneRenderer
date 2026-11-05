@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/utility/GltfTextureResources.h"
+
 #include "Container/utility/TextureSamplingPlan.h"
 #include "Container/utility/TextureImageOwnership.h"
 
@@ -234,7 +236,8 @@ class SceneManager {
   void createDescriptorSetLayout();
   void createSampler();
   void loadMaterialXMaterial();
-  void loadGltfAssets(container::geometry::GltfLoadResult* prepared = nullptr);
+  void loadGltfAssets(container::geometry::GltfLoadResult* prepared = nullptr,
+      const container::material::PreparedGltfTextures* preparedTextures = nullptr);
   void loadDefaultTestSceneAssets();
   void uploadMaterialBuffer();
   void uploadTextureMetadataBuffer();

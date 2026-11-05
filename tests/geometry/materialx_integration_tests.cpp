@@ -1,13 +1,18 @@
 #include "Container/utility/MaterialManager.h"
 #include "Container/utility/MaterialXIntegration.h"
+#include "Container/utility/MaterialSamplerKey.h"
 #include "Container/utility/SceneData.h"
+#include "Container/utility/GltfTextureResources.h"
 
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <array>
 #include <filesystem>
 #include <initializer_list>
 #include <limits>
+#include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -52,6 +57,11 @@ tinygltf::Parameter numberParameter(double value) {
   parameter.number_value = value;
   return parameter;
 }
+tinygltf::Parameter legacyMappingParameter(int index,uint32_t channel=2) {
+  tinygltf::Parameter parameter;parameter.json_double_value={{"index",double(index)},{"texCoord",1},{"channel",double(channel)},
+      {"offsetX",.125},{"offsetY",-.25},{"scaleX",2.},{"scaleY",-.5},{"rotation",.375}};
+  return parameter;
+}
 
 glm::vec2 applyGltfTextureTransform(
     const container::material::TextureTransform& transform,
@@ -69,6 +79,140 @@ glm::vec2 applyGltfTextureTransform(
 }
 
 }  // namespace
+
+TEST(MaterialXIntegration, BindsSeparateColorAndDataResourcesForTheSameSourceTexture) {
+  using namespace container::material;
+  tinygltf::Model model;
+  model.textures.resize(1);
+  model.materials.resize(1);
+  auto& source = model.materials[0];
+  source.pbrMetallicRoughness.baseColorTexture.index = 0;
+  source.pbrMetallicRoughness.baseColorTexture.texCoord = 1;
+  source.pbrMetallicRoughness.metallicRoughnessTexture.index = 0;
+  source.normalTexture.index = source.occlusionTexture.index = source.emissiveTexture.index = 0;
+  for (const auto& [extension, slots] : std::vector<std::pair<std::string, std::vector<std::string>>>{
+      {"KHR_materials_specular", {"specularTexture", "specularColorTexture"}},
+      {"KHR_materials_sheen", {"sheenColorTexture", "sheenRoughnessTexture"}},
+      {"KHR_materials_clearcoat", {"clearcoatTexture", "clearcoatRoughnessTexture", "clearcoatNormalTexture"}},
+      {"KHR_materials_transmission", {"transmissionTexture"}},
+      {"KHR_materials_volume", {"thicknessTexture"}},
+      {"KHR_materials_iridescence", {"iridescenceTexture", "iridescenceThicknessTexture"}}}) {
+    tinygltf::Value::Object values;
+    for (const auto& slot : slots) values.emplace(slot, textureInfo(0));
+    source.extensions.emplace(extension, tinygltf::Value(std::move(values)));
+  }
+  MaterialManager materials;
+  SlangMaterialXBridge bridge;
+  uint32_t defaultMaterial{};
+  bridge.loadMaterialsForGltfWithTextureRoles(model, GltfTextureResources{{17}, {23}}, materials, defaultMaterial);
+  ASSERT_EQ(materials.materialCount(), 1u);
+  const auto& material = *materials.getMaterial(defaultMaterial);
+  for (auto resource : {material.baseColorTextureIndex, material.emissiveTextureIndex,
+                        material.specularColorTextureIndex, material.sheenColorTextureIndex})
+    EXPECT_EQ(resource, 17u);
+  for (auto resource : {material.metallicRoughnessTextureIndex, material.normalTextureIndex,
+                        material.occlusionTextureIndex, material.specularTextureIndex,
+                        material.sheenRoughnessTextureIndex, material.clearcoatTextureIndex,
+                        material.clearcoatRoughnessTextureIndex, material.clearcoatNormalTextureIndex,
+                        material.transmissionTextureIndex, material.thicknessTextureIndex,
+                        material.iridescenceTextureIndex, material.iridescenceThicknessTextureIndex})
+    EXPECT_EQ(resource, 23u);
+  EXPECT_EQ(material.baseColorTextureTransform.texCoord, 1u);
+}
+
+TEST(MaterialXIntegration, SpecularGlossinessKeepsColorRgbAndLinearAlphaRoles) {
+  using namespace container::material;
+  tinygltf::Model model;
+  model.textures.resize(1);
+  model.materials.resize(1);
+  model.materials[0].extensions.emplace("KHR_materials_pbrSpecularGlossiness",
+      tinygltf::Value(tinygltf::Value::Object{{"diffuseTexture", textureInfo(0)},
+                                           {"specularGlossinessTexture", textureInfo(0)}}));
+  MaterialManager materials;
+  SlangMaterialXBridge bridge;
+  uint32_t defaultMaterial{};
+  bridge.loadMaterialsForGltfWithTextureRoles(model, GltfTextureResources{{17}, {23}}, materials, defaultMaterial);
+  const auto& material = *materials.getMaterial(defaultMaterial);
+  EXPECT_EQ(material.baseColorTextureIndex, 17u);
+  EXPECT_EQ(material.specularColorTextureIndex, 17u);
+  EXPECT_EQ(material.roughnessTextureIndex, 17u);
+  // The SG shader selects linear alpha (channel 3) from this shared Color
+  // resource; the automatic channel selector must remain intact.
+  EXPECT_EQ(material.roughnessTextureTransform.channel, 4u);
+  EXPECT_TRUE(material.specularGlossinessWorkflow);
+  const auto count = materials.materialCount();
+  EXPECT_THROW(bridge.loadMaterialsForGltfWithTextureRoles(model, GltfTextureResources{{}, {23}}, materials,
+                                         defaultMaterial), std::invalid_argument);
+  EXPECT_EQ(materials.materialCount(), count);
+}
+
+TEST(MaterialXIntegrationTests, SamplerReplacementPreflightUsesOnlyIncomingPolicies) {
+  using namespace container::material;
+  tinygltf::Model incoming;
+  incoming.images.resize(1);
+  incoming.images[0].uri = "resident.png";
+  incoming.samplers.resize(1);
+  incoming.samplers[0].minFilter = 9728;
+  incoming.samplers[0].magFilter = 9728;
+  incoming.textures.resize(2);
+  incoming.textures[0].source = incoming.textures[1].source = 0;
+  incoming.textures[0].sampler = incoming.textures[1].sampler = 0;
+  const auto keys = CollectGltfMaterialSamplerKeys(incoming);
+  ASSERT_EQ(keys.size(), 2u);
+  const auto nearest = NormalizeMaterialSamplerKey(9728, 9728);
+  EXPECT_EQ(keys[0], nearest);
+  EXPECT_EQ(keys[1], nearest);
+
+  const auto outgoingKey = NormalizeMaterialSamplerKey(9987, 9729, 33071);
+  const auto outgoing = PlanMaterialSamplerSlots(std::array{outgoingKey}, 2);
+  EXPECT_NO_THROW((void)PlanMaterialSamplerSlots(keys, 2));
+  auto additive = keys;
+  additive.push_back(outgoingKey);
+  EXPECT_THROW((void)PlanMaterialSamplerSlots(additive, 2), std::runtime_error);
+
+  // A rejected incoming table has no opportunity to retire or modify the old plan.
+  EXPECT_THROW((void)PlanMaterialSamplerSlots(keys, 1), std::runtime_error);
+  EXPECT_EQ(outgoing.slot(outgoingKey), 1u);
+  EXPECT_EQ(outgoing.keys.size(), 2u);
+
+  incoming.textures[1].sampler = -1;
+  const auto withDefault = CollectGltfMaterialSamplerKeys(incoming);
+  EXPECT_EQ(withDefault[1].value, 0u);
+  EXPECT_EQ(PlanMaterialSamplerSlots(withDefault, 2).keys.size(), 2u);
+  incoming.textures[1].source = 7;
+  EXPECT_THROW((void)CollectGltfMaterialSamplerKeys(incoming), std::runtime_error);
+}
+
+TEST(MaterialXIntegrationTests, AlternateOnlyTexturesEnterSamplerBudgetBeforeLiveRetirement) {
+  using namespace container::material;
+  for (const auto& [extension, mime, available] : std::array{
+      std::tuple{"KHR_texture_basisu", "image/ktx2", HasKtxTextureCodec()},
+      std::tuple{"EXT_texture_webp", "image/webp", HasWebpTextureCodec()}}) {
+    tinygltf::Model model;
+    model.images.resize(1);
+    model.images[0].uri = "resident-image";
+    model.images[0].mimeType = mime;
+    model.extensionsUsed = model.extensionsRequired = {extension};
+    model.samplers.resize(1);
+    model.samplers[0].minFilter = 9728;
+    model.samplers[0].magFilter = 9728;
+    model.textures.resize(2);
+    for (auto& texture : model.textures) {
+      texture.source = -1;
+      texture.sampler = 0;
+      texture.extensions.emplace(extension, tinygltf::Value(tinygltf::Value::Object{{"source", tinygltf::Value(0)}}));
+    }
+    if (!available) {
+      EXPECT_THROW((void)CollectGltfMaterialSamplerKeys(model), std::runtime_error);
+      continue;
+    }
+    const auto keys = CollectGltfMaterialSamplerKeys(model);
+    ASSERT_EQ(keys.size(), 2u);
+    EXPECT_EQ(keys[0], NormalizeMaterialSamplerKey(9728, 9728));
+    EXPECT_THROW((void)PlanMaterialSamplerSlots(keys, 1), std::runtime_error);
+    EXPECT_EQ(PlanMaterialSamplerSlots(keys, 2).keys.size(), 2u);
+  }
+}
 
 TEST(MaterialXIntegration, LoadsSeparateTextureResourcesForDistinctGltfSamplers) {
   tinygltf::Model model;
@@ -112,6 +256,45 @@ TEST(MaterialXIntegration, LoadsSeparateTextureResourcesForDistinctGltfSamplers)
             container::gpu::kMaterialSamplerWrapClampToEdge);
   EXPECT_EQ(mirrorTexture->samplerIndex,
             container::gpu::kMaterialSamplerWrapMirroredRepeat);
+}
+
+TEST(MaterialXIntegration, SharedImageRetainsEveryAuthoredFilterPolicy) {
+  tinygltf::Model model;
+  model.images.resize(1);
+  model.images[0].uri = "shared-filter-pattern.png";
+  for (int min : {9728, 9729, 9984, 9985, 9986, 9987})
+    for (int mag : {9728, 9729}) {
+      tinygltf::Sampler sampler;
+      sampler.minFilter = min; sampler.magFilter = mag;
+      sampler.wrapS = TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE;
+      sampler.wrapT = TINYGLTF_TEXTURE_WRAP_MIRRORED_REPEAT;
+      tinygltf::Texture texture;
+      texture.source = 0; texture.sampler = static_cast<int>(model.samplers.size());
+      model.samplers.push_back(sampler); model.textures.push_back(texture);
+    }
+  auto omitted = model.samplers.back();
+  omitted.minFilter = omitted.magFilter = -1;
+  model.samplers.push_back(omitted);
+  model.textures.push_back(model.textures.back());
+  model.textures.back().sampler = 12;
+  container::material::SlangMaterialXBridge bridge;
+  container::material::TextureManager textures;
+  uint32_t loads = 0;
+  const auto resources = bridge.loadTexturesForGltf(model, {}, textures,
+      [&](const std::string&, bool) { ++loads; return container::material::TextureResource{}; });
+  ASSERT_EQ(resources.size(), 13u);
+  EXPECT_EQ(loads, 12u);
+  EXPECT_EQ(resources.back(), resources[11]);
+  for (size_t i = 0; i < 12; ++i) {
+    const auto* resource = textures.getTexture(resources[i]);
+    ASSERT_NE(resource, nullptr);
+    const auto description = container::material::DecodeMaterialSamplerKey({resource->samplerIndex});
+    EXPECT_EQ(description.minFilter, model.samplers[i].minFilter);
+    EXPECT_EQ(description.magFilter, model.samplers[i].magFilter);
+    EXPECT_EQ(description.wrapS, TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE);
+    EXPECT_EQ(description.wrapT, TINYGLTF_TEXTURE_WRAP_MIRRORED_REPEAT);
+    for (size_t j = 0; j < i; ++j) EXPECT_NE(resources[i], resources[j]);
+  }
 }
 
 TEST(MaterialXIntegration,
@@ -590,10 +773,39 @@ TEST(MaterialXIntegration, ImportsLayeredKhrPbrExtensions) {
   EXPECT_NEAR(material->ior, 1.33f, 1e-4f);
   EXPECT_NEAR(material->dispersion, 15.0f, 1e-4f);
   EXPECT_TRUE(material->unlit);
-  EXPECT_EQ(material->alphaMode, container::material::AlphaMode::Blend);
+  EXPECT_EQ(material->alphaMode, container::material::AlphaMode::Opaque);
 }
 
-TEST(MaterialXIntegration, DefaultsUnspecifiedMetallicToDielectric) {
+TEST(MaterialXIntegration, PhysicalTransmissionPreservesAuthoredAlphaCoverageMode) {
+  using container::material::AlphaMode;
+  for (const char* mode : {"OPAQUE","MASK","BLEND"}) {
+    for (bool textured : {false,true}) {
+      SCOPED_TRACE(mode);
+      SCOPED_TRACE(textured);
+      tinygltf::Model model; model.images.resize(1); model.textures.resize(1);
+      model.textures[0].source = 0;
+      tinygltf::Material input; input.alphaMode = mode;
+      input.pbrMetallicRoughness.baseColorFactor = {1,1,1,.25};
+      tinygltf::Value::Object transmission{{"transmissionFactor",tinygltf::Value(.6)}};
+      if (textured) transmission["transmissionTexture"] = textureInfo(0);
+      input.extensions["KHR_materials_transmission"] = tinygltf::Value(std::move(transmission));
+      model.materials.push_back(std::move(input));
+      container::material::MaterialManager manager;
+      container::material::SlangMaterialXBridge bridge;
+      uint32_t fallback = 0;
+      bridge.loadMaterialsForGltf(model,std::vector<uint32_t>{7},manager,fallback);
+      ASSERT_EQ(manager.materialCount(),1u);
+      const auto* material = manager.getMaterial(0); ASSERT_NE(material,nullptr);
+      const auto expected = std::string_view(mode) == "OPAQUE" ? AlphaMode::Opaque :
+          std::string_view(mode) == "MASK" ? AlphaMode::Mask : AlphaMode::Blend;
+      EXPECT_EQ(material->alphaMode,expected);
+      EXPECT_FLOAT_EQ(material->transmissionFactor,.6f);
+      if (textured) EXPECT_EQ(material->transmissionTextureIndex,7u);
+    }
+  }
+}
+
+TEST(MaterialXIntegration, PreservesGltfDefaultMetallicWithoutInventingDielectricOverride) {
   tinygltf::Model model;
   model.images.resize(1);
   model.textures.resize(1);
@@ -622,7 +834,7 @@ TEST(MaterialXIntegration, DefaultsUnspecifiedMetallicToDielectric) {
             std::numeric_limits<uint32_t>::max());
   EXPECT_EQ(material->metalnessTextureIndex,
             std::numeric_limits<uint32_t>::max());
-  EXPECT_NEAR(material->metallicFactor, 0.0f, 1e-6f);
+  EXPECT_FLOAT_EQ(material->metallicFactor, 1.0f);
   EXPECT_NEAR(material->baseColorTextureTransform.offset.x, 0.0f, 1e-6f);
   EXPECT_NEAR(material->baseColorTextureTransform.offset.y, 0.0f, 1e-6f);
   EXPECT_NEAR(material->baseColorTextureTransform.scale.x, 1.0f, 1e-6f);
@@ -747,4 +959,333 @@ TEST(MaterialXIntegration, ImportsCoreTextureTransformsAndTexCoordIndices) {
               0.5f, 1e-6f);
   EXPECT_NEAR(material->metallicRoughnessTextureTransform.scale.y,
               0.25f, 1e-6f);
+}
+
+TEST(MaterialXIntegration, ExtendedMaterialDefaultsAndTextureBackedZeroRemainExact) {
+  using namespace container::material;
+  tinygltf::Model model;
+  model.extensionsUsed = {"KHR_materials_anisotropy", "KHR_materials_diffuse_transmission"};
+  model.textures.resize(1);
+  model.materials.resize(2);
+  model.materials[1].extensions["KHR_materials_anisotropy"] = tinygltf::Value(tinygltf::Value::Object{
+      {"anisotropyTexture", textureInfo(0)}});
+  model.materials[1].extensions["KHR_materials_diffuse_transmission"] = tinygltf::Value(tinygltf::Value::Object{
+      {"diffuseTransmissionFactor", tinygltf::Value(0.0)},
+      {"diffuseTransmissionColorFactor", numberArray({0, 0, 0})},
+      {"diffuseTransmissionTexture", textureInfo(0)}, {"diffuseTransmissionColorTexture", textureInfo(0)}});
+  MaterialManager materials;
+  materials.createMaterial(Material{});
+  SlangMaterialXBridge bridge;
+  uint32_t defaultMaterial = UINT32_MAX;
+  bridge.loadMaterialsForGltfWithTextureRoles(model, GltfTextureResources{{17}, {23}}, materials, defaultMaterial);
+  ASSERT_EQ(materials.materialCount(), 3u);
+  ASSERT_EQ(defaultMaterial, 1u);
+  const auto& defaults = *materials.getMaterial(1);
+  EXPECT_FLOAT_EQ(defaults.anisotropyStrength, 0);
+  EXPECT_FLOAT_EQ(defaults.anisotropyRotation, 0);
+  EXPECT_FLOAT_EQ(defaults.diffuseTransmissionFactor, 0);
+  EXPECT_EQ(defaults.diffuseTransmissionColorFactor, glm::vec3(1));
+  EXPECT_EQ(defaults.anisotropyTextureIndex, UINT32_MAX);
+  EXPECT_EQ(defaults.diffuseTransmissionTextureTransform.channel, 3u);
+  const auto& textured = *materials.getMaterial(2);
+  EXPECT_FLOAT_EQ(textured.anisotropyStrength, 0);
+  EXPECT_FLOAT_EQ(textured.diffuseTransmissionFactor, 0);
+  EXPECT_EQ(textured.diffuseTransmissionColorFactor, glm::vec3(0));
+  EXPECT_EQ(textured.anisotropyTextureIndex, 23u);
+  EXPECT_EQ(textured.diffuseTransmissionTextureIndex, 23u);
+  EXPECT_EQ(textured.diffuseTransmissionColorTextureIndex, 17u);
+  EXPECT_EQ(textured.alphaMode, AlphaMode::Opaque);
+}
+
+TEST(MaterialXIntegration, ExtendedSlotsKeepAuthoredTextureIdentityAndIndependentUvTransforms) {
+  using namespace container::material;
+  tinygltf::Model model;
+  model.extensionsUsed = {"KHR_materials_anisotropy", "KHR_materials_diffuse_transmission", "KHR_texture_transform"};
+  model.textures.resize(3);
+  model.materials.resize(1);
+  auto direction = textureInfo(2);
+  direction.Get<tinygltf::Value::Object>()["texCoord"] = tinygltf::Value(0);
+  direction.Get<tinygltf::Value::Object>()["extensions"] = tinygltf::Value(tinygltf::Value::Object{
+      {"KHR_texture_transform", textureTransform({.125, -.25}, .3, {-2, .5}, 1)}});
+  auto strength = textureInfo(0);
+  strength.Get<tinygltf::Value::Object>()["texCoord"] = tinygltf::Value(1);
+  auto color = textureInfo(1);
+  color.Get<tinygltf::Value::Object>()["extensions"] = tinygltf::Value(tinygltf::Value::Object{
+      {"KHR_texture_transform", textureTransform({.2, .4}, -.7, {.25, -2}, 0)}});
+  model.materials[0].extensions["KHR_materials_anisotropy"] = tinygltf::Value(tinygltf::Value::Object{
+      {"anisotropyStrength", tinygltf::Value(.7)}, {"anisotropyRotation", tinygltf::Value(-.4)},
+      {"anisotropyTexture", direction}});
+  model.materials[0].extensions["KHR_materials_diffuse_transmission"] = tinygltf::Value(tinygltf::Value::Object{
+      {"diffuseTransmissionFactor", tinygltf::Value(.6)},
+      {"diffuseTransmissionColorFactor", numberArray({.2, .3, .4})},
+      {"diffuseTransmissionTexture", strength}, {"diffuseTransmissionColorTexture", color}});
+  MaterialManager materials;
+  SlangMaterialXBridge bridge;
+  uint32_t first = UINT32_MAX;
+  // Two source entries deliberately alias a data resource. Its reverse lookup
+  // cannot identify which color resource belongs to the authored color slot.
+  bridge.loadMaterialsForGltfWithTextureRoles(model, GltfTextureResources{{17, 19, 51}, {23, 23, 42}}, materials, first);
+  const auto& material = *materials.getMaterial(first);
+  EXPECT_FLOAT_EQ(material.anisotropyStrength, .7f);
+  EXPECT_FLOAT_EQ(material.anisotropyRotation, -.4f);
+  EXPECT_FLOAT_EQ(material.diffuseTransmissionFactor, .6f);
+  EXPECT_EQ(material.diffuseTransmissionColorFactor, glm::vec3(.2f, .3f, .4f));
+  EXPECT_EQ(material.anisotropyTextureIndex, 42u);
+  EXPECT_EQ(material.diffuseTransmissionTextureIndex, 23u);
+  EXPECT_EQ(material.diffuseTransmissionColorTextureIndex, 19u);
+  EXPECT_EQ(material.anisotropyTextureTransform.offset, glm::vec2(.125f, -.25f));
+  EXPECT_EQ(material.anisotropyTextureTransform.scale, glm::vec2(-2, .5f));
+  EXPECT_FLOAT_EQ(material.anisotropyTextureTransform.rotation, .3f);
+  EXPECT_EQ(material.anisotropyTextureTransform.texCoord, 1u);
+  EXPECT_EQ(material.diffuseTransmissionTextureTransform.texCoord, 1u);
+  EXPECT_EQ(material.diffuseTransmissionTextureTransform.channel, 3u);
+  EXPECT_EQ(material.diffuseTransmissionColorTextureTransform.offset, glm::vec2(.2f, .4f));
+  EXPECT_EQ(material.diffuseTransmissionColorTextureTransform.scale, glm::vec2(.25f, -2));
+  EXPECT_FLOAT_EQ(material.diffuseTransmissionColorTextureTransform.rotation, -.7f);
+  EXPECT_EQ(material.diffuseTransmissionColorTextureTransform.texCoord, 0u);
+  EXPECT_EQ(material.alphaMode, AlphaMode::Opaque);
+  EXPECT_EQ(model.materials[0].extensions.at("KHR_materials_anisotropy").Get("anisotropyTexture").Get("index").Get<int>(), 2);
+}
+
+TEST(MaterialXIntegration, ColorSlotsUseAuthoredTextureIdentityWhenDataHandlesAlias) {
+  using namespace container::material;
+  tinygltf::Model model;
+  model.textures.resize(2);model.images.resize(2);model.materials.resize(2);
+  for(int i=0;i<2;++i) {
+    model.textures[size_t(i)].source=i;
+    model.images[size_t(i)].uri="color-identity-"+std::to_string(i)+".png";
+  }
+  auto& core=model.materials[0];
+  core.pbrMetallicRoughness.baseColorTexture.index=core.emissiveTexture.index=1;
+  core.extensions["KHR_materials_specular"]=tinygltf::Value(tinygltf::Value::Object{
+      {"specularColorTexture",textureInfo(1)}});
+  core.extensions["KHR_materials_sheen"]=tinygltf::Value(tinygltf::Value::Object{
+      {"sheenColorTexture",textureInfo(1)}});
+  model.materials[1].extensions["KHR_materials_pbrSpecularGlossiness"]=tinygltf::Value(tinygltf::Value::Object{
+      {"diffuseTexture",textureInfo(1)},{"specularGlossinessTexture",textureInfo(1)}});
+  model.extensionsUsed={"KHR_materials_specular","KHR_materials_sheen","KHR_materials_pbrSpecularGlossiness"};
+  MaterialManager materials;
+  SlangMaterialXBridge bridge;
+  uint32_t first=UINT32_MAX;
+  bridge.loadMaterialsForGltfWithTextureRoles(model, GltfTextureResources{{17,19},{23,23}},materials,first);
+  ASSERT_EQ(materials.materialCount(),2u);
+  const auto& mr=*materials.getMaterial(first);
+  EXPECT_EQ(mr.baseColorTextureIndex,19u);
+  EXPECT_EQ(mr.emissiveTextureIndex,19u);
+  EXPECT_EQ(mr.specularColorTextureIndex,19u);
+  EXPECT_EQ(mr.sheenColorTextureIndex,19u);
+  const auto& sg=*materials.getMaterial(first+1);
+  EXPECT_EQ(sg.baseColorTextureIndex,19u);
+  EXPECT_EQ(sg.specularColorTextureIndex,19u);
+  EXPECT_EQ(sg.roughnessTextureIndex,19u);
+}
+
+TEST(MaterialXIntegration, PackedSpecularGlossinessAliasesOneColorResourceRegardlessOfOtherDataUses) {
+  using namespace container::material;
+  using Value=tinygltf::Value;using Object=Value::Object;
+  for(const bool dataPresent:{false,true}) {
+    SCOPED_TRACE(dataPresent);tinygltf::Model model;model.textures.resize(2);model.images.resize(2);model.materials.resize(dataPresent?2:1);
+    for(int i=0;i<2;++i) {model.textures[size_t(i)].source=i;model.images[size_t(i)].uri="packed-role-"+std::to_string(i)+".png";}
+    auto packed=textureInfo(1);packed.Get<Object>()["texCoord"]=Value(1);
+    packed.Get<Object>()["extensions"]=Value(Object{{"KHR_texture_transform",Value(Object{
+        {"offset",Value(Value::Array{Value(.25),Value(-.5)})}})}});
+    model.materials[0].extensions["KHR_materials_pbrSpecularGlossiness"]=Value(Object{
+        {"diffuseTexture",textureInfo(0)},{"specularGlossinessTexture",packed}});
+    model.extensionsUsed={"KHR_materials_pbrSpecularGlossiness","KHR_texture_transform"};
+    if(dataPresent) model.materials[1].pbrMetallicRoughness.metallicRoughnessTexture.index=1;
+    MaterialManager materials;SlangMaterialXBridge bridge;uint32_t first=UINT32_MAX;
+    bridge.loadMaterialsForGltfWithTextureRoles(model,GltfTextureResources{{17,19},{UINT32_MAX,dataPresent?23u:UINT32_MAX}},materials,first);
+    ASSERT_EQ(materials.materialCount(),dataPresent?2u:1u);const auto& sg=*materials.getMaterial(first);
+    EXPECT_TRUE(sg.specularGlossinessWorkflow);EXPECT_EQ(sg.baseColorTextureIndex,17u);
+    EXPECT_EQ(sg.roughnessTextureIndex,19u);EXPECT_EQ(sg.specularColorTextureIndex,19u);
+    EXPECT_EQ(sg.roughnessTextureTransform.texCoord,1u);EXPECT_EQ(sg.specularColorTextureTransform.texCoord,1u);
+    EXPECT_EQ(sg.roughnessTextureTransform.offset,glm::vec2(.25f,-.5f));
+    EXPECT_EQ(sg.specularColorTextureTransform.offset,glm::vec2(.25f,-.5f));
+    if(dataPresent) EXPECT_EQ(materials.getMaterial(first+1)->metallicRoughnessTextureIndex,23u);
+    EXPECT_EQ(model.materials[0].extensions.at("KHR_materials_pbrSpecularGlossiness").Get("specularGlossinessTexture"),packed);
+  }
+}
+
+TEST(MaterialXIntegration, SpecularGlossinessWithoutPackedTextureKeepsLegacyRoughnessDataResource) {
+  using namespace container::material;tinygltf::Model model;model.images.emplace_back();model.textures.emplace_back();model.materials.emplace_back();
+  model.images[0].uri="independent-sg-legacy-roughness.png";model.textures[0].source=0;
+  model.extensionsUsed={"KHR_materials_pbrSpecularGlossiness"};
+  model.materials[0].extensions["KHR_materials_pbrSpecularGlossiness"]=tinygltf::Value(tinygltf::Value::Object{});
+  model.materials[0].values["roughnessTexture"].json_double_value["index"]=0;
+  MaterialManager materials;SlangMaterialXBridge bridge;uint32_t first=UINT32_MAX;
+  bridge.loadMaterialsForGltfWithTextureRoles(model,GltfTextureResources{{19},{23}},materials,first);
+  ASSERT_EQ(materials.materialCount(),1u);const auto& material=*materials.getMaterial(first);
+  EXPECT_TRUE(material.specularGlossinessWorkflow);EXPECT_EQ(material.roughnessTextureIndex,23u);
+  EXPECT_EQ(material.specularColorTextureIndex,UINT32_MAX);
+}
+
+TEST(MaterialXIntegration, EveryLegacyTextureAliasInBothMapsImportsCanonicalMappingAndExplicitSource) {
+  using namespace container::material;
+  struct Slot {const char* name;uint32_t Material::* texture;TextureTransform Material::* transform;};
+  const std::array slots{
+      Slot{"roughnessTexture",&Material::roughnessTextureIndex,&Material::roughnessTextureTransform},
+      Slot{"metalnessTexture",&Material::metalnessTextureIndex,&Material::metalnessTextureTransform},
+      Slot{"specularTexture",&Material::specularTextureIndex,&Material::specularTextureTransform},
+      Slot{"heightTexture",&Material::heightTextureIndex,&Material::heightTextureTransform},
+      Slot{"displacementTexture",&Material::heightTextureIndex,&Material::heightTextureTransform},
+      Slot{"opacityTexture",&Material::opacityTextureIndex,&Material::opacityTextureTransform},
+      Slot{"refractionTexture",&Material::transmissionTextureIndex,&Material::transmissionTextureTransform},
+      Slot{"transmissionTexture",&Material::transmissionTextureIndex,&Material::transmissionTextureTransform}};
+  for(const bool additional:{false,true}) for(const auto& slot:slots) {
+    SCOPED_TRACE(additional);
+    SCOPED_TRACE(slot.name);
+    tinygltf::Model model;model.images.resize(3);model.textures.resize(3);model.materials.emplace_back();
+    for(size_t i=0;i<3;++i) {model.textures[i].source=int(i);model.images[i].uri="canonical-legacy-"+std::to_string(i)+".png";}
+    auto& source=model.materials[0];source.pbrMetallicRoughness.metallicFactor=.4;source.values["metallicFactor"]=numberParameter(.4);
+    auto& map=additional?source.additionalValues:source.values;const auto original=legacyMappingParameter(1);map[slot.name]=original;
+    const GltfTextureResources roles{{10,11,12},{30,31,32}};
+    MaterialManager materials;SlangMaterialXBridge bridge;uint32_t first=UINT32_MAX;
+    bridge.loadMaterialsForGltfWithTextureRoles(model,roles,materials,first);ASSERT_EQ(materials.materialCount(),1u);
+    const auto& material=*materials.getMaterial(first);const auto& transform=material.*slot.transform;
+    EXPECT_EQ(material.*slot.texture,31u);EXPECT_EQ(transform.texCoord,1u);EXPECT_EQ(transform.channel,2u);
+    EXPECT_EQ(transform.offset,glm::vec2(.125f,-.25f));EXPECT_EQ(transform.scale,glm::vec2(2.f,-.5f));EXPECT_EQ(transform.rotation,.375f);
+    EXPECT_NEAR(material.metallicFactor,.4f,1e-6f);EXPECT_EQ(map.at(slot.name).json_double_value,original.json_double_value);
+    // The explicit source/mapping assertions above are this import oracle.
+    // The separate live-edit converter remains covered by the full editor suite.
+
+  }
+}
+
+TEST(MaterialXIntegration, LegacyAliasPriorityPrecedesMapLocationAndKeepsTheWinningTransform) {
+  using namespace container::material;tinygltf::Model model;model.images.resize(3);model.textures.resize(3);model.materials.resize(3);
+  for(size_t i=0;i<3;++i) {model.textures[i].source=int(i);model.images[i].uri="precedence-"+std::to_string(i)+".png";}
+  for(auto& source:model.materials) {
+    source.values["displacementTexture"]=legacyMappingParameter(2,3);
+    source.additionalValues["displacementTexture"]=legacyMappingParameter(1,2);
+    source.values["transmissionTexture"]=legacyMappingParameter(2,3);
+    source.additionalValues["transmissionTexture"]=legacyMappingParameter(1,2);
+  }
+  model.materials[0].values["heightTexture"]=legacyMappingParameter(0,1);
+  model.materials[0].additionalValues["heightTexture"]=legacyMappingParameter(1,2);
+  model.materials[0].values["refractionTexture"]=legacyMappingParameter(0,1);
+  model.materials[0].additionalValues["refractionTexture"]=legacyMappingParameter(1,2);
+  model.materials[1].additionalValues["heightTexture"]=legacyMappingParameter(1,2);
+  model.materials[1].additionalValues["refractionTexture"]=legacyMappingParameter(1,2);
+  MaterialManager materials;SlangMaterialXBridge bridge;uint32_t first=UINT32_MAX;
+  bridge.loadMaterialsForGltfWithTextureRoles(model,GltfTextureResources{{10,11,12},{30,31,32}},materials,first);
+  ASSERT_EQ(materials.materialCount(),3u);
+  for(uint32_t i=0;i<3;++i) {
+    SCOPED_TRACE(i);const auto& material=*materials.getMaterial(first+i);
+    EXPECT_EQ(material.heightTextureIndex,30+i);EXPECT_EQ(material.transmissionTextureIndex,30+i);
+    EXPECT_EQ(material.heightTextureTransform.channel,1+i);EXPECT_EQ(material.transmissionTextureTransform.channel,1+i);
+    EXPECT_EQ(material.heightTextureTransform.offset,glm::vec2(.125f,-.25f));
+    EXPECT_EQ(material.transmissionTextureTransform.scale,glm::vec2(2.f,-.5f));
+  }
+}
+
+TEST(MaterialXIntegration, PrimaryPhysicalAndPackedSgTextureTransformsOverrideLegacyFallbackMetadata) {
+  using namespace container::material;using Value=tinygltf::Value;using Object=Value::Object;
+  for(const bool sg:{false,true}) {
+    SCOPED_TRACE(sg);tinygltf::Model model;model.images.resize(2);model.textures.resize(2);model.materials.emplace_back();
+    for(size_t i=0;i<2;++i) {model.textures[i].source=int(i);model.images[i].uri="same-primary-and-fallback-uri.png";}
+    auto primary=textureInfo(1);primary.Get<Object>()["extensions"]=Value(Object{{"KHR_texture_transform",textureTransform({.25,.5},.125,{.5,2.},1)}});
+    auto& source=model.materials[0];source.values["roughnessTexture"]=legacyMappingParameter(0);
+    source.values["specularTexture"]=legacyMappingParameter(0);source.additionalValues["refractionTexture"]=legacyMappingParameter(0);
+    model.extensionsUsed={"KHR_texture_transform"};
+    if(sg) {
+      source.extensions["KHR_materials_pbrSpecularGlossiness"]=Value(Object{{"specularGlossinessTexture",primary}});
+      model.extensionsUsed.push_back("KHR_materials_pbrSpecularGlossiness");
+    } else {
+      source.extensions["KHR_materials_specular"]=Value(Object{{"specularTexture",primary},{"specularFactor",Value(0.)}});
+      source.extensions["KHR_materials_transmission"]=Value(Object{{"transmissionTexture",primary},{"transmissionFactor",Value(0.)}});
+      model.extensionsUsed.push_back("KHR_materials_specular");model.extensionsUsed.push_back("KHR_materials_transmission");
+    }
+    MaterialManager materials;SlangMaterialXBridge bridge;uint32_t first=UINT32_MAX;
+    bridge.loadMaterialsForGltfWithTextureRoles(model,GltfTextureResources{{10,11},{30,31}},materials,first);
+    const auto& material=*materials.getMaterial(first);
+    for(const auto* transform:sg?std::array{&material.roughnessTextureTransform,&material.specularColorTextureTransform}:
+        std::array{&material.specularTextureTransform,&material.transmissionTextureTransform}) {
+      EXPECT_EQ(transform->texCoord,1u);EXPECT_EQ(transform->channel,4u);EXPECT_EQ(transform->offset,glm::vec2(.25f,.5f));
+      EXPECT_EQ(transform->scale,glm::vec2(.5f,2.f));EXPECT_EQ(transform->rotation,.125f);
+    }
+    if(sg) {EXPECT_EQ(material.roughnessTextureIndex,11u);EXPECT_EQ(material.specularColorTextureIndex,11u);}
+    else {EXPECT_EQ(material.specularTextureIndex,31u);EXPECT_EQ(material.transmissionTextureIndex,31u);
+      EXPECT_EQ(material.specularFactor,0.f);EXPECT_EQ(material.transmissionFactor,0.f);}
+  }
+}
+
+TEST(MaterialXIntegration, InvalidLegacyMappingIncludingIgnoredFallbackRejectsBeforeAnyMaterialPublication) {
+  using namespace container::material;
+  for(size_t variant=0;variant<6;++variant) {
+    SCOPED_TRACE(variant);tinygltf::Model model;model.images.resize(2);model.textures.resize(2);model.materials.resize(2);
+    for(size_t i=0;i<2;++i) model.textures[i].source=int(i);
+    auto& invalid=model.materials[1].additionalValues["refractionTexture"];invalid=legacyMappingParameter(1);
+    if(variant==0) invalid.json_double_value["texCoord"]=2;
+    if(variant==1) invalid.json_double_value["channel"]=5;
+    if(variant==2) invalid.json_double_value["rotation"]=std::numeric_limits<double>::quiet_NaN();
+    if(variant==3) invalid.json_double_value["scaleX"]=std::numeric_limits<double>::max();
+    if(variant==4) invalid.json_double_value["index"]=.5;
+    if(variant==5) invalid.json_double_value["index"]=2;
+    model.materials[1].extensions["KHR_materials_transmission"]=tinygltf::Value(tinygltf::Value::Object{{"transmissionTexture",textureInfo(0)}});
+    model.extensionsUsed={"KHR_materials_transmission"};
+    MaterialManager materials;materials.createMaterial(Material{});SlangMaterialXBridge bridge;uint32_t first=77;
+    EXPECT_THROW(bridge.loadMaterialsForGltfWithTextureRoles(model,GltfTextureResources{{10,11},{30,31}},materials,first),std::invalid_argument);
+    EXPECT_EQ(materials.materialCount(),1u);EXPECT_EQ(first,77u);
+  }
+}
+
+TEST(MaterialXIntegration, ExtendedMaterialValidationPrecedesCallbacksAndMaterialPublication) {
+  using namespace container::material;
+  tinygltf::Model model;
+  model.extensionsUsed = {"KHR_materials_anisotropy"};
+  model.images.resize(1);
+  model.images[0].uri = "must-not-open-extended-material.png";
+  model.textures.resize(1);
+  model.textures[0].source = 0;
+  model.materials.resize(2);
+  model.materials[1].extensions["KHR_materials_anisotropy"] = tinygltf::Value(tinygltf::Value::Object{
+      {"anisotropyStrength", tinygltf::Value(2.0)}, {"anisotropyTexture", textureInfo(0)}});
+  MaterialManager materials;
+  materials.createMaterial(Material{});
+  uint32_t first = 0;
+  SlangMaterialXBridge bridge;
+  EXPECT_THROW(bridge.loadMaterialsForGltf(model, {3}, materials, first), std::runtime_error);
+  EXPECT_EQ(materials.materialCount(), 1u);
+  EXPECT_EQ(first, 0u);
+  TextureManager textures;
+  size_t callbacks = 0;
+  EXPECT_THROW((void)bridge.loadTexturesForGltf(model, {}, textures,
+      [&](const std::string&, bool) { ++callbacks; return TextureResource{}; }), std::runtime_error);
+  EXPECT_EQ(callbacks, 0u);
+  EXPECT_EQ(textures.textureCount(), 0u);
+}
+
+TEST(MaterialXIntegration, LegacyTextureLoaderClassifiesAllThreeExtendedSlots) {
+  using namespace container::material;
+  tinygltf::Model model;
+  model.extensionsUsed = {"KHR_materials_anisotropy", "KHR_materials_diffuse_transmission"};
+  model.images.resize(3);
+  model.textures.resize(3);
+  for (int i = 0; i < 3; ++i) {
+    auto& image = model.images[size_t(i)];
+    image.width = image.height = 1;
+    image.bits = 8;
+    image.component = 4;
+    image.pixel_type = TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE;
+    image.image = {static_cast<unsigned char>(128 + i), 64, 240, 127};
+    model.textures[size_t(i)].source = i;
+  }
+  model.materials.resize(1);
+  model.materials[0].extensions["KHR_materials_anisotropy"] = tinygltf::Value(tinygltf::Value::Object{
+      {"anisotropyTexture", textureInfo(0)}});
+  model.materials[0].extensions["KHR_materials_diffuse_transmission"] = tinygltf::Value(tinygltf::Value::Object{
+      {"diffuseTransmissionTexture", textureInfo(1)}, {"diffuseTransmissionColorTexture", textureInfo(2)}});
+  SlangMaterialXBridge bridge;
+  TextureManager textures;
+  std::vector<bool> roles;
+  const auto mapping = bridge.loadTexturesForGltf(model, {}, textures,
+      [](const std::string&, bool) { ADD_FAILURE() << "Unexpected file callback"; return TextureResource{}; },
+      [&](const std::string&, std::span<const std::byte>, uint32_t, uint32_t, bool isSrgb) {
+        roles.push_back(isSrgb);
+        return TextureResource{};
+      });
+  ASSERT_EQ(roles.size(), 3u);
+  EXPECT_EQ(roles, (std::vector<bool>{false, false, true}));
+  EXPECT_EQ(mapping.size(), 3u);
+  for (const auto index : mapping) EXPECT_NE(index, UINT32_MAX);
 }
