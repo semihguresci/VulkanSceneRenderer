@@ -457,6 +457,27 @@ TEST(IfcTessellatedLoader, NestedBooleansRetainResultStylesAndReportCycles) {
             std::string::npos);
 }
 
+TEST(IfcTessellatedLoader, ReusedAndDeepStyleReferencesKeepValidFallback) {
+  for (const uint32_t depth : {40u, 70u}) {
+    std::string styles =
+        "#80=IFCSTYLEDITEM(#21,(#100,#81),$);"
+        "#81=IFCCOLOURRGB($,0.25,0.5,0.75);";
+    for (uint32_t id = 100; id < 100 + depth; ++id) {
+      const std::string next = std::to_string(id + 1);
+      styles += "#" + std::to_string(id) +
+                "=IFCPRESENTATIONSTYLEASSIGNMENT((#" + next + ",#" + next + "));";
+    }
+    styles += "#" + std::to_string(100 + depth) +
+              "=IFCCARTESIANPOINT((0.,0.,0.));";
+
+    const auto model = container::geometry::ifc::LoadFromStep(polygonFixture(
+        "((0.,0.,0.),(1.,0.,0.),(0.,1.,0.))", "IFCINDEXEDPOLYGONALFACE((1,2,3))",
+        "$", styles));
+    ASSERT_EQ(model.elements.size(), 1u);
+    EXPECT_EQ(model.elements.front().color, glm::vec4(0.25f, 0.5f, 0.75f, 1.0f));
+  }
+}
+
 TEST(IfcTessellatedLoader, IntermediateBooleanStyleColorsClippingFaces) {
   const auto model = container::geometry::ifc::LoadFromStep(solidFixture(
       "#5=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,4.);"

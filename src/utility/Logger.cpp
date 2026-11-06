@@ -13,11 +13,6 @@ ContainerLogger::ContainerLogger() {
   auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
   console_sink->set_level(spdlog::level::trace);
 
-  // Create file sink (example)  (currently unused in your logger wiring)
-  auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(
-      "logs/container.log", true);
-  file_sink->set_level(spdlog::level::trace);
-
   // Create loggers
   renderer_logger_ = std::make_shared<spdlog::logger>("Renderer", console_sink);
   vulkan_logger_ = std::make_shared<spdlog::logger>("Vulkan", console_sink);

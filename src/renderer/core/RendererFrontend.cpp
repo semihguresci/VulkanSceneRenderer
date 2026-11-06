@@ -1751,9 +1751,14 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   }
 
   phaseStart = TelemetryClock::now();
-  if (frame_.imagesInFlight[imageIndex]) {
-    vkWaitForFences(svc_.ctx.deviceWrapper->device(), 1,
-                    &frame_.imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
+  if (const auto imageFence = frame_.imagesInFlight[imageIndex];
+      imageFence != VK_NULL_HANDLE) {
+    const VkResult waitResult = vkWaitForFences(
+        svc_.ctx.deviceWrapper->device(), 1, &imageFence, VK_TRUE, UINT64_MAX);
+    if (waitResult != VK_SUCCESS) {
+      throw std::runtime_error("Failed to wait for the swap chain image fence: " +
+                               std::to_string(waitResult));
+    }
   }
   if (subs_.ddgiManager)
     subs_.ddgiManager->retireImage(imageIndex);
@@ -4141,7 +4146,8 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
     modelLoad_->stage = action.unload ? "Unloading models" : "Reading and preparing model";
     subs_.guiManager->setStatusMessage(modelLoad_->stage + ": " +
         (action.label.empty() ? action.path : action.label));
-    if (action.unload || action.path.empty() || action.path == "__default_test_scene__") {
+    if (action.unload || action.path.empty() ||
+        action.path == container::app::kDefaultSceneModelToken) {
       modelLoad_->ready = std::make_unique<ModelLoadState::Prepared>();
     } else {
       (void)modelLoad_->worker.start([path = action.path, scale = action.importScale] {
