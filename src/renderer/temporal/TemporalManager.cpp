@@ -1,3 +1,4 @@
+#include "Container/renderer/pipeline/PreparedGraphicsPipelines.h"
 #include "Container/renderer/temporal/TemporalManager.h"
 #include "Container/renderer/temporal/TemporalVelocityVertexInput.h"
 #include "Container/geometry/Vertex.h"
@@ -98,10 +99,6 @@ void TemporalManager::createPipelines(const std::filesystem::path &root,
   if (resolvePipeline_)
     return;
   const VkDevice device = device_->device();
-  auto module = [&](const char *name) {
-    return container::gpu::createShaderModule(
-        device, container::util::readFile(root / "spv_shaders" / name));
-  };
   std::vector<VkDescriptorSetLayoutBinding> bindings;
   for (uint32_t binding = 0; binding < 13; ++binding) {
     const auto type = binding == 0   ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
@@ -153,6 +150,20 @@ void TemporalManager::createPipelines(const std::filesystem::path &root,
       VK_SUCCESS)
     throw std::runtime_error("TAA sampler creation failed");
 
+  velocityDepthFormat_ = depthFormat;
+  auto candidate = prepareVelocityReload(root);
+  publishVelocityReload(candidate);
+}
+
+PreparedGraphicsPipelines TemporalManager::prepareVelocityReload(const std::filesystem::path& root) {
+  PreparedGraphicsPipelines candidate(pipelines_);
+  if (!velocityLayout_)
+    return candidate;
+  const VkDevice device = device_->device();
+  auto module = [&](const char *name) {
+    return container::gpu::createShaderModule(
+        device, container::util::readFile(root / "spv_shaders" / name));
+  };
   VkShaderModule vertex = module("temporal_velocity.vert.spv");
   VkShaderModule fragment{};
   try {
@@ -170,7 +181,8 @@ void TemporalManager::createPipelines(const std::filesystem::path &root,
     const auto attributes = temporalVelocityVertexAttributes();
     VkPipelineVertexInputStateCreateInfo input{
         VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-    input.vertexBindingDescriptionCount = static_cast<uint32_t>(vertexBindings.size());
+    input.vertexBindingDescriptionCount =
+        static_cast<uint32_t>(vertexBindings.size());
     input.pVertexBindingDescriptions = vertexBindings.data();
     input.vertexAttributeDescriptionCount =
         static_cast<uint32_t>(attributes.size());
@@ -213,7 +225,7 @@ void TemporalManager::createPipelines(const std::filesystem::path &root,
         VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     rendering.colorAttachmentCount = 3;
     rendering.pColorAttachmentFormats = formats.data();
-    rendering.depthAttachmentFormat = depthFormat;
+    rendering.depthAttachmentFormat = velocityDepthFormat_;
     VkGraphicsPipelineCreateInfo info{
         VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     info.pNext = &rendering;
@@ -234,7 +246,7 @@ void TemporalManager::createPipelines(const std::filesystem::path &root,
       raster.cullMode = culls[i];
       if (createOwnedGraphicsPipelines(
               device, pipelines_.getOrCreatePipelineCache("taa.velocity"), 1,
-              &info, nullptr, &velocityPipelines_[i]) != VK_SUCCESS)
+              &info, nullptr, &candidate.handles[i]) != VK_SUCCESS)
         throw std::runtime_error("TAA velocity pipeline creation failed");
     }
   } catch (...) {
@@ -245,6 +257,12 @@ void TemporalManager::createPipelines(const std::filesystem::path &root,
   }
   destroyOwnedShaderModule(device, fragment, nullptr);
   destroyOwnedShaderModule(device, vertex, nullptr);
+  return candidate;
+}
+
+void TemporalManager::publishVelocityReload(PreparedGraphicsPipelines& candidate) noexcept {
+  if (candidate.handles[0])
+    velocityPipelines_.swap(candidate.handles);
 }
 
 AttachmentImage TemporalManager::image(VkFormat format,

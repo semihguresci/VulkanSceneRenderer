@@ -1,3 +1,4 @@
+#include "Container/renderer/pipeline/PreparedGraphicsPipelines.h"
 #include <Container/renderer/scene/PbrAuxiliaryPass.h>
 
 #include <Container/geometry/Vertex.h>
@@ -216,7 +217,10 @@ struct PbrAuxiliaryPass::Impl {
     }
   }
 
-  void createPipelines(const std::filesystem::path& shaderDir) {
+  PreparedGraphicsPipelines preparePipelines(const std::filesystem::path& shaderDir) {
+    PreparedGraphicsPipelines candidate(pipelines);
+    if (!layout || !pass)
+      return candidate;
     ShaderModules modules{device->device()};
     modules.modules[0] = gpu::createShaderModule(device->device(), util::readFile(
         shaderDir / "spv_shaders/extended_material_aux.vert.spv"));
@@ -299,8 +303,9 @@ struct PbrAuxiliaryPass::Impl {
         "pbr_auxiliary_no_cull"};
     for (size_t index = 0; index < culls.size(); ++index) {
       raster.cullMode = culls[index];
-      cullPipelines[index] = pipelines.createGraphicsPipeline(info, names[index]);
+      candidate.handles[index] = pipelines.createGraphicsPipeline(info, names[index]);
     }
+    return candidate;
   }
 
   void create(const std::filesystem::path& shaderDir,
@@ -351,7 +356,8 @@ struct PbrAuxiliaryPass::Impl {
         sizeof(gpu::BindlessPushConstants)};
     layout = pipelines.createPipelineLayout({sceneLayout}, {pushConstants});
     pipelineSamples = samples;
-    createPipelines(shaderDir);
+    auto candidate = preparePipelines(shaderDir);
+    cullPipelines.swap(candidate.handles);
     frames.resize(depthViews.size());
     for (size_t index = 0; index < frames.size(); ++index) {
       auto& frame = frames[index];
@@ -424,6 +430,15 @@ void PbrAuxiliaryPass::end(VkCommandBuffer command) {
   }
   endDynamicRendering(command);
   impl_->activeCommand = VK_NULL_HANDLE;
+}
+
+PreparedGraphicsPipelines PbrAuxiliaryPass::prepareShaderReload(const std::filesystem::path& root) {
+  return impl_->preparePipelines(root);
+}
+
+void PbrAuxiliaryPass::publishShaderReload(PreparedGraphicsPipelines& candidate) noexcept {
+  if (candidate.handles[0])
+    impl_->cullPipelines.swap(candidate.handles);
 }
 
 VkPipelineLayout PbrAuxiliaryPass::pipelineLayout() const { return impl_->layout; }

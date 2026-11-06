@@ -1,3 +1,4 @@
+#include "Container/renderer/pipeline/RayEffectPipelines.h"
 #include "Container/renderer/lighting/DdgiManager.h"
 #include "Container/renderer/lighting/DdgiAsyncHistory.h"
 #include "Container/renderer/lighting/DdgiVolumeScroll.h"
@@ -171,6 +172,8 @@ struct DdgiManager::Impl {
   vk::raii::PipelineLayout traceLayout{nullptr}, updateLayout{nullptr};
   vk::raii::Pipeline tracePipeline{nullptr}, updatePipeline{nullptr};
   std::unique_ptr<DdgiDebugRenderer> debugRenderer;
+  VkDescriptorSetLayout debugPostProcess{};
+  VkFormat debugColorFormat{VK_FORMAT_UNDEFINED};
   vk::raii::Sampler sampler{nullptr};
   vk::raii::DescriptorPool pool{nullptr};
   std::vector<vk::raii::DescriptorSet> sets;
@@ -465,6 +468,16 @@ void DdgiManager::resetSceneHistory() {
     throw std::logic_error("DDGI scene reset preparation became stale");
 }
 
+void DdgiManager::replaceEnvironment(VkImageView environment, VkSampler sampler) {
+  auto& p = *impl_;
+  for (auto& slot : p.slots) {
+    slot.environment = environment;
+    slot.envSampler = sampler;
+    p.imageDescriptor(slot.computeSet, 9, environment, false, true);
+    p.samplerDescriptor(slot.computeSet, 10, sampler);
+  }
+}
+
 DdgiManager::PreparedSceneHistoryReset DdgiManager::prepareSceneHistoryReset() const {
   const auto &p = *impl_;
   PreparedSceneHistoryReset reset;
@@ -741,10 +754,9 @@ void DdgiManager::createPipelines(const std::filesystem::path &root,
   sampler.addressModeU = sampler.addressModeV = sampler.addressModeW =
       vk::SamplerAddressMode::eClampToEdge;
   p.sampler = vk::raii::Sampler(vk, sampler);
-  if (p.readSupported && postProcess && colorFormat != VK_FORMAT_UNDEFINED)
-    p.debugRenderer = std::make_unique<DdgiDebugRenderer>(
-        p.device, root, postProcess,
-        static_cast<VkDescriptorSetLayout>(*p.layout), colorFormat);
+  p.debugPostProcess = postProcess;
+  p.debugColorFormat = colorFormat;
+  publishDebugReload(prepareDebugReload(root));
   if (!p.support)
     return;
   bindings.clear();
@@ -774,22 +786,38 @@ void DdgiManager::createPipelines(const std::filesystem::path &root,
       vk::raii::PipelineLayout(vk, vk::PipelineLayoutCreateInfo({}, layouts));
   p.updateLayout = vk::raii::PipelineLayout(
       vk, vk::PipelineLayoutCreateInfo({}, *p.computeSetLayout));
-  auto pipeline = [&](const char *name,
-                      const vk::raii::PipelineLayout &layout) {
-    auto bytes = container::util::readFile(root / "spv_shaders" / name);
-    if (bytes.empty() || bytes.size() % 4)
-      throw std::runtime_error("invalid DDGI SPIR-V");
-    std::vector<uint32_t> words(bytes.size() / 4);
-    std::memcpy(words.data(), bytes.data(), bytes.size());
-    vk::raii::ShaderModule module(
-        vk, vk::ShaderModuleCreateInfo({}, bytes.size(), words.data()));
-    vk::PipelineShaderStageCreateInfo stage(
-        {}, vk::ShaderStageFlagBits::eCompute, *module, "computeMain");
-    return vk::raii::Pipeline(
-        vk, nullptr, vk::ComputePipelineCreateInfo({}, stage, *layout));
-  };
-  p.tracePipeline = pipeline("ddgi_trace.comp.spv", p.traceLayout);
-  p.updatePipeline = pipeline("ddgi_update.comp.spv", p.updateLayout);
+  publishShaderReload(prepareShaderReload(root));
+}
+
+std::unique_ptr<DdgiDebugRenderer> DdgiManager::prepareDebugReload(
+    const std::filesystem::path& root) const {
+  const auto& p = *impl_;
+  if (!p.readSupported || !p.debugPostProcess || p.debugColorFormat == VK_FORMAT_UNDEFINED)
+    return {};
+  return std::make_unique<DdgiDebugRenderer>(
+      p.device, root, p.debugPostProcess, static_cast<VkDescriptorSetLayout>(*p.layout),
+      p.debugColorFormat);
+}
+
+void DdgiManager::publishDebugReload(std::unique_ptr<DdgiDebugRenderer> candidate) noexcept {
+  impl_->debugRenderer.swap(candidate);
+}
+
+RayEffectPipelines DdgiManager::prepareShaderReload(const std::filesystem::path& root) const {
+  const auto& p = *impl_;
+  if (!*p.traceLayout || !*p.updateLayout)
+    return {};
+  const auto& device = p.device->raii();
+  const auto shaders = root / "spv_shaders";
+  return {loadRayEffectComputePipeline(device, shaders / "ddgi_trace.comp.spv", *p.traceLayout),
+          loadRayEffectComputePipeline(device, shaders / "ddgi_update.comp.spv", *p.updateLayout)};
+}
+
+void DdgiManager::publishShaderReload(RayEffectPipelines candidate) noexcept {
+  if (!*candidate.trace)
+    return;
+  impl_->tracePipeline = std::move(candidate.trace);
+  impl_->updatePipeline = std::move(candidate.auxiliary);
 }
 
 void DdgiManager::prepare(uint32_t imageCount, VkImageView environment,

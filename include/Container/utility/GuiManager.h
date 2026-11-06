@@ -575,6 +575,9 @@ public:
     undoEditLabel_ = std::move(undoLabel);
     redoEditLabel_ = std::move(redoLabel);
   }
+  [[nodiscard]] bool consumeShaderReloadRequest() {
+    return std::exchange(shaderReloadRequested_, false);
+  }
   [[nodiscard]] EditHistoryRequest consumeEditHistoryRequest() {
     return std::exchange(editHistoryRequest_, EditHistoryRequest::None);
   }
@@ -1013,6 +1016,7 @@ private:
   std::optional<container::renderer::RenderTechniqueId>
       pendingRenderEngineChange_{};
   std::optional<ModelLoadRequest> pendingModelLoadRequest_{};
+  bool shaderReloadRequested_{};
   GuiRenderTechniqueDebugState renderTechniqueDebugState_{};
   uint32_t cullStatsTotal_{0};
   uint32_t cullStatsFrustum_{0};

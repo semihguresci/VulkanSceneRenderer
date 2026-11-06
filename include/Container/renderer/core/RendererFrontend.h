@@ -4,6 +4,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <future>
+#include <stop_token>
 #include <limits>
 #include <map>
 #include <memory>
@@ -51,6 +53,7 @@ class TemporalManager;
 class RayShadowManager;
 class ReferencePathTracePass;
 class PbrAuxiliaryPass;
+class ShaderReloadCandidate;
 class DdgiManager;
 class BimManager;
 enum class BimDisciplinePreset : uint32_t;
@@ -592,7 +595,15 @@ private:
   // --------------------------------------------------
   void createRenderPasses();
   void createGraphicsPipelines();
+  [[nodiscard]] std::filesystem::path activeShaderDirectory() const;
+  PipelineBuildResult buildGraphicsPipelines(const std::filesystem::path& shaderDirectory);
   void destroyGraphicsPipelines();
+  void processShaderReload(bool request, bool wait = false);
+  std::future<std::shared_ptr<ShaderReloadCandidate>> shaderReloadJob_;
+  std::stop_source shaderReloadStop_;
+  std::shared_ptr<ShaderReloadCandidate> activeShaderReload_;
+  uint64_t shaderReloadGeneration_{};
+  std::string shaderReloadStatus_;
   void recreateMsaaResources(VkSampleCountFlagBits sampleCount);
   void createCamera();
   void resetCameraForActiveScene();

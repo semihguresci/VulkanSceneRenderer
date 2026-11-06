@@ -1,3 +1,8 @@
+#include "Container/common/VulkanObjectCounts.h"
+#include "Container/renderer/debug/DdgiDebugRenderer.h"
+#include "Container/renderer/pipeline/PreparedGraphicsPipelines.h"
+#include "Container/renderer/pipeline/RayEffectPipelines.h"
+#include "Container/renderer/pipeline/RuntimeShaderCompiler.h"
 #include <tinyexr.h>
 #include "Container/renderer/core/RendererFrontend.h"
 #include "Container/renderer/picking/DepthReadback.h"
@@ -1646,6 +1651,7 @@ void RendererFrontend::applyPendingRenderTechniqueChange() {
 }
 
 bool RendererFrontend::drawFrame(bool &framebufferResized) {
+  processShaderReload(subs_.guiManager && subs_.guiManager->consumeShaderReloadRequest());
   // Commit outside the ImGui frame and before acquiring a swapchain image:
   // cooperative loading frames must own their acquire/submit/present cycle.
   processPendingGuiModelLoadRequest();
@@ -1873,7 +1879,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   container::temporal::validateSettings(
       temporal.settings(), static_cast<uint32_t>(msaaSampleCount_));
   if (temporal.settings().enabled && !referencePathActive()) {
-    temporal.createPipelines(container::util::executableDirectory(),
+    temporal.createPipelines(activeShaderDirectory(),
                              subs_.sceneManager->descriptorSetLayout(),
                              resources_.gBufferFormats.depthStencil);
     temporal.prepare(*subs_.frameResourceManager,
@@ -2208,6 +2214,7 @@ void RendererFrontend::applyTemporalCapture(
   FrameConcurrencyPolicy::serializedGpuResources("capture scene mutation")
       .waitBeforeAcquire(*subs_.frameSyncManager, frame_.currentFrame);
   const auto &event = sample.event;
+  if (event.reloadShaders) processShaderReload(true, true);
   if (event.gltfScene) selectGltfScene(*event.gltfScene);
   queueCaptureLightEvent(event);
   if (!event.sceneHistory.empty()) captureHistoryRequest_ = event.sceneHistory == "redo";
@@ -2403,12 +2410,22 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   const auto extent = svc_.swapChainManager.extent();
   VkPhysicalDeviceProperties gpu{};
   vkGetPhysicalDeviceProperties(svc_.ctx.deviceWrapper->physicalDevice(), &gpu);
+  const auto owned = container::gpu::ownedVulkanObjectCounts(svc_.ctx.deviceWrapper->device());
+  VmaTotalStatistics allocationStats{};
+  vmaCalculateStatistics(svc_.allocationManager.memoryManager()->allocator(), &allocationStats);
   nlohmann::json json{
       {"schemaVersion", 1},
       {"gpu", gpu.deviceName},
       {"driverVersion", gpu.driverVersion},
       {"vulkanApiVersion", gpu.apiVersion},
       {"technique", std::string(subs_.activeTechnique->name())},
+      {"shaderReload", {{"generation", shaderReloadGeneration_}, {"status", shaderReloadStatus_},
+          {"ownedObjects", {{"pipelines", owned.pipelines}, {"pipelineLayouts", owned.pipelineLayouts},
+                            {"pipelineCaches", owned.pipelineCaches}, {"descriptorPools", owned.descriptorPools},
+                            {"descriptorSetLayouts", owned.descriptorSetLayouts}, {"imageViews", owned.imageViews},
+                            {"samplers", owned.samplers}, {"shaderModules", owned.shaderModules}}},
+          {"vmaAllocations", allocationStats.total.statistics.allocationCount},
+          {"vmaBytes", allocationStats.total.statistics.allocationBytes}}},
       {"resolution", {extent.width, extent.height}},
       {"msaaSamples", sampleCountToSamples(msaaSampleCount_)},
       {"taa",
@@ -4316,6 +4333,11 @@ void RendererFrontend::drawModelLoadProgressFrame() {
 }
 
 void RendererFrontend::shutdown() {
+  if (shaderReloadJob_.valid()) {
+    shaderReloadStop_.request_stop();
+    shaderReloadJob_.wait();
+    shaderReloadJob_ = {};
+  }
   // Import jobs own only CPU payloads; join before releasing scene services.
   modelLoad_.reset();
   meshProviderAssetCache_.clear();
@@ -4399,7 +4421,17 @@ void RendererFrontend::createRenderPasses() {
   resources_.renderPasses = subs_.renderPassManager->passes();
 }
 
+std::filesystem::path RendererFrontend::activeShaderDirectory() const {
+  return activeShaderReload_ ? activeShaderReload_->directory
+                             : container::util::executableDirectory();
+}
+
 void RendererFrontend::createGraphicsPipelines() {
+  resources_.builtPipelines = buildGraphicsPipelines(activeShaderDirectory());
+}
+
+PipelineBuildResult RendererFrontend::buildGraphicsPipelines(
+    const std::filesystem::path& shaderDirectory) {
   if (!subs_.pipelineBuilder) {
     subs_.pipelineBuilder = std::make_unique<GraphicsPipelineBuilder>(
         svc_.ctx.deviceWrapper, svc_.pipelineManager);
@@ -4431,111 +4463,113 @@ void RendererFrontend::createGraphicsPipelines() {
                                 resources_.renderPasses.transformGizmos,
                                 resources_.renderPasses.postProcess,
                                 resources_.renderPasses.forwardLighting};
-  resources_.builtPipelines = subs_.pipelineBuilder->build(
-      container::util::executableDirectory(), descLayouts, rp,
-      msaaSampleCount_);
-  if (!resources_.builtPipelines.pipelines.layoutRegistry) {
-    resources_.builtPipelines.pipelines.layoutRegistry =
-        resources_.builtPipelines.layouts.layoutRegistry
-            ? resources_.builtPipelines.layouts.layoutRegistry
-            : buildGraphicsPipelineLayoutRegistry(
-                  resources_.builtPipelines.layouts);
+  auto result = subs_.pipelineBuilder->build(shaderDirectory, descLayouts, rp, msaaSampleCount_);
+  if (!result.pipelines.layoutRegistry) {
+    result.pipelines.layoutRegistry = result.layouts.layoutRegistry
+        ? result.layouts.layoutRegistry : buildGraphicsPipelineLayoutRegistry(result.layouts);
   }
-  resources_.builtPipelines.layouts.layoutRegistry =
-      resources_.builtPipelines.pipelines.layoutRegistry;
+  result.layouts.layoutRegistry = result.pipelines.layoutRegistry;
+  return result;
 }
 
 void RendererFrontend::destroyGraphicsPipelines() {
-  auto &pipelines = resources_.builtPipelines.pipelines;
-  auto destroyPipeline = [this](VkPipeline &pipeline) {
-    svc_.pipelineManager.destroyPipeline(pipeline);
-  };
-  destroyPipeline(pipelines.depthPrepass);
-  destroyPipeline(pipelines.depthPrepassFrontCull);
-  destroyPipeline(pipelines.depthPrepassNoCull);
-  destroyPipeline(pipelines.bimDepthPrepass);
-  destroyPipeline(pipelines.bimDepthPrepassFrontCull);
-  destroyPipeline(pipelines.bimDepthPrepassNoCull);
-  destroyPipeline(pipelines.gBuffer);
-  destroyPipeline(pipelines.gBufferFrontCull);
-  destroyPipeline(pipelines.gBufferNoCull);
-  destroyPipeline(pipelines.bimGBuffer);
-  destroyPipeline(pipelines.bimGBufferFrontCull);
-  destroyPipeline(pipelines.bimGBufferNoCull);
-  destroyPipeline(pipelines.shadowDepth);
-  destroyPipeline(pipelines.shadowDepthFrontCull);
-  destroyPipeline(pipelines.shadowDepthNoCull);
-  destroyPipeline(pipelines.localShadowDepth);
-  destroyPipeline(pipelines.localShadowDepthFrontCull);
-  destroyPipeline(pipelines.localShadowDepthNoCull);
-  destroyPipeline(pipelines.directionalLight);
-  destroyPipeline(pipelines.stencilVolume);
-  destroyPipeline(pipelines.pointLight);
-  destroyPipeline(pipelines.pointLightStencilDebug);
-  destroyPipeline(pipelines.tiledPointLight);
-  destroyPipeline(pipelines.transparent);
-  destroyPipeline(pipelines.transparentFrontCull);
-  destroyPipeline(pipelines.transparentNoCull);
-  destroyPipeline(pipelines.transparentPick);
-  destroyPipeline(pipelines.transparentPickFrontCull);
-  destroyPipeline(pipelines.transparentPickNoCull);
-  destroyPipeline(pipelines.postProcess);
-  destroyPipeline(pipelines.geometryDebug);
-  destroyPipeline(pipelines.normalValidation);
-  destroyPipeline(pipelines.normalValidationFrontCull);
-  destroyPipeline(pipelines.normalValidationNoCull);
-  destroyPipeline(pipelines.wireframeDepth);
-  destroyPipeline(pipelines.wireframeDepthFrontCull);
-  destroyPipeline(pipelines.wireframeNoDepth);
-  destroyPipeline(pipelines.wireframeNoDepthFrontCull);
-  destroyPipeline(pipelines.selectionMask);
-  destroyPipeline(pipelines.selectionOutline);
-  destroyPipeline(pipelines.bimFloorPlanDepth);
-  destroyPipeline(pipelines.bimFloorPlanNoDepth);
-  destroyPipeline(pipelines.bimPointCloudDepth);
-  destroyPipeline(pipelines.bimPointCloudNoDepth);
-  destroyPipeline(pipelines.bimCurveDepth);
-  destroyPipeline(pipelines.bimCurveNoDepth);
-  destroyPipeline(pipelines.bimSectionClipCapFill);
-  destroyPipeline(pipelines.bimSectionClipCapHatch);
-  destroyPipeline(pipelines.surfaceNormalLine);
-  destroyPipeline(pipelines.objectNormalDebug);
-  destroyPipeline(pipelines.objectNormalDebugFrontCull);
-  destroyPipeline(pipelines.objectNormalDebugNoCull);
-  destroyPipeline(pipelines.lightGizmo);
-  destroyPipeline(pipelines.lightGizmoCoverage);
-  destroyPipeline(pipelines.lightGizmoPick);
-  destroyPipeline(pipelines.transformGizmo);
-  destroyPipeline(pipelines.transformGizmoSolid);
-  destroyPipeline(pipelines.transformGizmoOverlay);
-  destroyPipeline(pipelines.transformGizmoSolidOverlay);
-  for (RegisteredPipelineHandle &handle : pipelines.extraHandles) {
-    destroyPipeline(handle.pipeline);
-  }
-  pipelines.extraHandles.clear();
+  if (subs_.pipelineBuilder)
+    subs_.pipelineBuilder->destroy(resources_.builtPipelines);
+}
 
-  auto &layouts = resources_.builtPipelines.layouts;
-  auto destroyLayout = [this](VkPipelineLayout &layout) {
-    svc_.pipelineManager.destroyPipelineLayout(layout);
+void RendererFrontend::processShaderReload(bool request, bool wait) {
+  if (!request && !shaderReloadJob_.valid())
+    return;
+  const auto report = [this](std::string status) {
+    shaderReloadStatus_ = std::move(status);
+    if (subs_.guiManager)
+      subs_.guiManager->setStatusMessage(shaderReloadStatus_);
   };
-  destroyLayout(layouts.scene);
-  destroyLayout(layouts.transparent);
-  destroyLayout(layouts.forwardRay);
-  destroyLayout(layouts.lighting);
-  destroyLayout(layouts.lightGizmo);
-  destroyLayout(layouts.tiledLighting);
-  destroyLayout(layouts.shadow);
-  destroyLayout(layouts.postProcess);
-  destroyLayout(layouts.wireframe);
-  destroyLayout(layouts.normalValidation);
-  destroyLayout(layouts.surfaceNormal);
-  destroyLayout(layouts.transformGizmo);
-  for (RegisteredPipelineLayout &layout : layouts.extraLayouts) {
-    destroyLayout(layout.layout);
-  }
-  layouts.extraLayouts.clear();
+  try {
+    if (request && !shaderReloadJob_.valid()) {
+      shaderReloadStop_ = std::stop_source{};
+      shaderReloadJob_ = std::async(std::launch::async,
+          [directory = container::util::executableDirectory(),
+           stop = shaderReloadStop_.get_token()] {
+            return compileShaderCandidate(directory, stop);
+          });
+      report("Compiling shaders");
+    }
+    if (!wait && shaderReloadJob_.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+      return;
 
-  resources_.builtPipelines = {};
+    auto compiled = shaderReloadJob_.get();
+    auto computeCandidate = svc_.pipelineManager.prepareComputeReload(compiled->directory);
+    const bool rebakeBrdf = computeCandidate.changesShader("brdf_lut.comp.spv");
+    const bool rebakeEnvironment = computeCandidate.changesShader("equirect_to_cubemap.comp.spv") ||
+        computeCandidate.changesShader("irradiance_convolution.comp.spv") ||
+        computeCandidate.changesShader("prefilter_specular.comp.spv");
+    auto bakeCandidate = subs_.environmentManager
+        ? subs_.environmentManager->prepareShaderBake(compiled->directory, rebakeBrdf, rebakeEnvironment)
+        : std::unique_ptr<EnvironmentManager::PreparedShaderBake>{};
+    auto velocityCandidate = subs_.temporalManager
+        ? subs_.temporalManager->prepareVelocityReload(compiled->directory)
+        : PreparedGraphicsPipelines(svc_.pipelineManager);
+    auto pbrCandidate = subs_.pbrAuxiliaryPass
+        ? subs_.pbrAuxiliaryPass->prepareShaderReload(compiled->directory)
+        : PreparedGraphicsPipelines(svc_.pipelineManager);
+    auto debugCandidate = subs_.ddgiManager
+        ? subs_.ddgiManager->prepareDebugReload(compiled->directory)
+        : std::unique_ptr<DdgiDebugRenderer>{};
+    auto rayCandidate = subs_.rayShadowManager
+        ? subs_.rayShadowManager->prepareShaderReload(compiled->directory) : RayEffectPipelines{};
+    auto ddgiCandidate = subs_.ddgiManager
+        ? subs_.ddgiManager->prepareShaderReload(compiled->directory) : RayEffectPipelines{};
+    auto ddgiReset = subs_.ddgiManager
+        ? subs_.ddgiManager->prepareSceneHistoryReset() : DdgiManager::PreparedSceneHistoryReset{};
+    if (subs_.ddgiManager)
+      subs_.ddgiManager->synchronizeAsync();
+    auto candidate = buildGraphicsPipelines(compiled->directory);
+    if (vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device()) != VK_SUCCESS) {
+      subs_.pipelineBuilder->destroy(candidate);
+      throw std::runtime_error("Failed to retire in-flight graphics pipelines");
+    }
+    if (bakeCandidate && !subs_.environmentManager->canPublishShaderBake(*bakeCandidate)) {
+      subs_.pipelineBuilder->destroy(candidate);
+      throw std::runtime_error("The active environment changed during shader baking");
+    }
+    if (subs_.ddgiManager && !subs_.ddgiManager->publishSceneHistoryReset(ddgiReset)) {
+      subs_.pipelineBuilder->destroy(candidate);
+      throw std::runtime_error("DDGI history reset became stale during shader reload");
+    }
+    std::swap(resources_.builtPipelines, candidate);
+    subs_.pipelineBuilder->destroy(candidate);
+    svc_.pipelineManager.publishComputeReload(computeCandidate);
+    if (subs_.temporalManager)
+      subs_.temporalManager->publishVelocityReload(velocityCandidate);
+    if (subs_.pbrAuxiliaryPass)
+      subs_.pbrAuxiliaryPass->publishShaderReload(pbrCandidate);
+    if (subs_.ddgiManager)
+      subs_.ddgiManager->publishDebugReload(std::move(debugCandidate));
+    if (subs_.rayShadowManager)
+      subs_.rayShadowManager->publishShaderReload(std::move(rayCandidate));
+    if (subs_.ddgiManager)
+      subs_.ddgiManager->publishShaderReload(std::move(ddgiCandidate));
+    if (bakeCandidate) {
+      subs_.environmentManager->publishShaderBake(*bakeCandidate);
+      if (subs_.ddgiManager)
+        subs_.ddgiManager->replaceEnvironment(subs_.environmentManager->prefilteredView(),
+                                               subs_.environmentManager->envSampler());
+      updateFrameDescriptorSets();
+    }
+    activeShaderReload_ = std::move(compiled);
+    ++shaderReloadGeneration_;
+    if (subs_.temporalManager)
+      subs_.temporalManager->reset("shaders reloaded");
+    invalidateDepthVisibilityFrames();
+    report("Shaders reloaded (" + std::to_string(activeShaderReload_->compiledStages) +
+           " stages compiled, " + std::to_string(computeCandidate.size()) +
+           " managed compute " + (computeCandidate.size() == 1 ? "pipeline" : "pipelines") +
+           " replaced)");
+  } catch (const std::exception& error) {
+    report(std::string("Shader reload failed: ") + error.what());
+    spdlog::warn("{}", shaderReloadStatus_);
+  }
 }
 
 void RendererFrontend::recreateMsaaResources(
@@ -7471,7 +7505,7 @@ void RendererFrontend::ensureExtendedPbrResources() {
   }
   auto pass = std::make_unique<PbrAuxiliaryPass>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
-  pass->createResources(container::util::executableDirectory(),
+  pass->createResources(activeShaderDirectory(),
                         subs_.sceneManager->descriptorSetLayout(),
                         resources_.gBufferFormats.depthStencil,
                         msaaSampleCount_, depthViews,

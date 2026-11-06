@@ -91,6 +91,7 @@ struct CaptureEvent {
   std::optional<glm::uvec2> depthProbe;
   std::string technique{}, reload{}, guiReload{}, guiSampleModel{};
   std::string rayShadows{};
+  bool reloadShaders{};
   std::string areaLighting{};
   std::optional<CaptureLightEdit> lightEdit;
   std::optional<CaptureLightTarget> lightSelection;
@@ -192,7 +193,7 @@ public:
         throw std::invalid_argument("Use one edit or history action per capture frame");
       if (lightActions || sceneActions)
         nodeFields(value, {"frame", "gltfScene", "lightEdit", "lightSelection", "lightAdd", "nodeEdit", "nodeFlags", "addPrimitive", "sceneHistory", "expectLightEditFailure",
-                           "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "rayShadowSamples",
+                           "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "reloadShaders", "rayShadowSamples",
                            "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"},
                    "edit event");
       event.acquireOutOfDate = value.value("acquireOutOfDate", false);
@@ -230,6 +231,7 @@ public:
       }
       if (value.contains("areaLightPosition"))
         event.areaLightPosition = vec3(value.at("areaLightPosition"));
+      event.reloadShaders = value.value("reloadShaders", false);
       event.rayShadows = value.value("rayShadows", std::string{});
       if (!event.rayShadows.empty() && event.rayShadows != "raster" &&
           event.rayShadows != "hard" && event.rayShadows != "soft")

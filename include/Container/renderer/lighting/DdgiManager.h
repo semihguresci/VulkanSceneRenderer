@@ -16,6 +16,8 @@ class VulkanMemoryManager;
 } // namespace container::gpu
 namespace container::renderer {
 class RayShadowManager;
+class DdgiDebugRenderer;
+struct RayEffectPipelines;
 class RenderGraphBuilder;
 
 // Bounded packed world-space volumes. Optional second-queue updates publish
@@ -34,6 +36,10 @@ public:
                        VkDescriptorSetLayout scene, VkDescriptorSetLayout light,
                        VkDescriptorSetLayout postProcess = VK_NULL_HANDLE,
                        VkFormat colorFormat = VK_FORMAT_UNDEFINED);
+  [[nodiscard]] RayEffectPipelines prepareShaderReload(const std::filesystem::path& root) const;
+  void publishShaderReload(RayEffectPipelines candidate) noexcept;
+  [[nodiscard]] std::unique_ptr<DdgiDebugRenderer> prepareDebugReload(const std::filesystem::path& root) const;
+  void publishDebugReload(std::unique_ptr<DdgiDebugRenderer> candidate) noexcept;
   // Call between frames, before assembling their descriptor snapshots. Invalid
   // settings leave the current configuration untouched. Allocation changes
   // retire the device and rebuild; live controls retain history. Camera-follow
@@ -43,6 +49,8 @@ public:
   // writer and disables old irradiance immediately; the next graphics trace
   // clears both atlases/states even while paused, without reallocating them.
   void resetSceneHistory();
+  // All graphics and asynchronous readers must be retired before replacement.
+  void replaceEnvironment(VkImageView environment, VkSampler sampler);
   class PreparedSceneHistoryReset {
   public:
     PreparedSceneHistoryReset() = default;

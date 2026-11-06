@@ -15,6 +15,7 @@ class AllocationManager;
 class PipelineManager;
 } // namespace container::gpu
 namespace container::renderer {
+class PreparedGraphicsPipelines;
 struct FrameRecordParams;
 class RenderGraphBuilder;
 class FrameResourceManager;
@@ -36,6 +37,8 @@ public:
   const container::temporal::State &state() const { return state_; }
   void createPipelines(const std::filesystem::path &root,
                        VkDescriptorSetLayout sceneLayout, VkFormat depthFormat);
+  [[nodiscard]] PreparedGraphicsPipelines prepareVelocityReload(const std::filesystem::path& root);
+  void publishVelocityReload(PreparedGraphicsPipelines& candidate) noexcept;
   void prepare(FrameResourceManager &frames, VkExtent2D extent,
                uint32_t imageCount);
   void updateDescriptors(uint32_t image, const FrameResources &frame,
@@ -80,6 +83,7 @@ private:
   VkPipelineLayout resolveLayout_{}, composeLayout_{}, velocityLayout_{};
   container::gpu::ComputePipeline resolvePipeline_{}, composePipeline_{};
   std::array<VkPipeline, 3> velocityPipelines_{};
+  VkFormat velocityDepthFormat_{VK_FORMAT_UNDEFINED};
   VkDescriptorPool pool_{};
   VkSampler sampler_{};
   bool resolveRecorded_{false};

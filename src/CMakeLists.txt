@@ -57,6 +57,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/platform/WindowInputBridge.cpp
 
     renderer/pipeline/GraphicsPipelineBuilder.cpp
+    renderer/pipeline/RuntimeShaderCompiler.cpp
     renderer/pipeline/PipelineRegistry.cpp
 
     renderer/lighting/EnvironmentManager.cpp

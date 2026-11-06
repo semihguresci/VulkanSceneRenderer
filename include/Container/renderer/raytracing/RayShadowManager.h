@@ -13,6 +13,7 @@
 
 namespace container::renderer {
 class RenderGraphBuilder;
+struct RayEffectPipelines;
 struct FrameRecordParams;
 struct RaySceneBuildStats;
 
@@ -49,6 +50,8 @@ public:
   void createPipelines(const std::filesystem::path &root,
                        VkDescriptorSetLayout scene,
                        VkDescriptorSetLayout light);
+  [[nodiscard]] RayEffectPipelines prepareShaderReload(const std::filesystem::path& root) const;
+  void publishShaderReload(RayEffectPipelines candidate) noexcept;
   void prepare(VkExtent2D extent, uint32_t imageCount);
   // Call before update. Surface consumers share the shadow AS, including when
   // shadow mode is Raster, without enabling shadow tracing/history images.

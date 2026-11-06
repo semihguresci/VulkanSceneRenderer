@@ -46,6 +46,7 @@
       "expectLightEditFailure": {"type": "boolean", "default": false},
       "areaLightPosition": {"$ref": "#/$defs/vec3"},
       "rayShadows": {"enum": ["raster", "hard", "soft"]},
+      "reloadShaders": {"type": "boolean"},
       "rayShadowSamples": {"type": "integer", "minimum": 1, "maximum": 32},
       "rayShadowDenoise": {"type": "boolean"},
       "areaLighting": {"enum": ["ltc", "sampled"]},
@@ -65,7 +66,7 @@
       "if": {"anyOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}, {"required": ["nodeEdit"]}, {"required": ["nodeFlags"]}, {"required": ["addPrimitive"]}, {"required": ["sceneHistory"]}]},
       "then": {"allOf": [
         {"oneOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}, {"required": ["nodeEdit"]}, {"required": ["nodeFlags"]}, {"required": ["addPrimitive"]}, {"required": ["sceneHistory"]}]},
-        {"propertyNames": {"enum": ["frame", "gltfScene", "lightEdit", "lightSelection", "lightAdd", "nodeEdit", "nodeFlags", "addPrimitive", "sceneHistory", "expectLightEditFailure", "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "rayShadowSamples", "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"]}}
+        {"propertyNames": {"enum": ["frame", "gltfScene", "lightEdit", "lightSelection", "lightAdd", "nodeEdit", "nodeFlags", "addPrimitive", "sceneHistory", "expectLightEditFailure", "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "reloadShaders", "rayShadowSamples", "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"]}}
       ]}
     }, {
       "if": {"required": ["expectLightEditFailure"]},

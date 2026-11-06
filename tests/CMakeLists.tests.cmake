@@ -1546,3 +1546,11 @@ target_compile_definitions(extended_pbr_resolve_gpu_tests PRIVATE
 add_dependencies(extended_pbr_resolve_gpu_tests extended_pbr_resolve_contract_shader)
 set_tests_properties(extended_pbr_resolve_gpu_tests PROPERTIES
     LABELS "requires-vulkan;materials;pbr;msaa" RUN_SERIAL TRUE TIMEOUT 120)
+
+add_custom_test(runtime_shader_compiler_tests
+    ${TEST_RENDERER_CORE_DIR}/runtime_shader_compiler_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+target_compile_definitions(runtime_shader_compiler_tests PRIVATE
+    CONTAINER_TEST_CMAKE="${CMAKE_COMMAND}")
+set_tests_properties(runtime_shader_compiler_tests PROPERTIES LABELS "renderer;shader-reload" TIMEOUT 30)

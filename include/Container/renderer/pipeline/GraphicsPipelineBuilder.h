@@ -32,6 +32,7 @@ class GraphicsPipelineBuilder {
       const PipelineDescriptorLayouts&     descriptorLayouts,
       const PipelineRenderPasses&          renderPasses,
       VkSampleCountFlagBits                sceneSampleCount) const;
+  void destroy(PipelineBuildResult& result) const noexcept;
 
  private:
   std::shared_ptr<container::gpu::VulkanDevice> device_;

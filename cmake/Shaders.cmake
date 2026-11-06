@@ -135,20 +135,54 @@ list(LENGTH SLANG_SOURCES SLANG_COUNT)
 message(STATUS "Found ${SLANG_COUNT} render Slang shaders in ${SHADERS_DIR}")
 
 set(SLANG_OUTPUTS)
+set(RELOAD_INTERFACE_DIR "${CMAKE_BINARY_DIR}/shader_reload_interfaces")
+set(RELOAD_SCRIPT "${CMAKE_BINARY_DIR}/runtime_shader_reload.cmake")
+configure_file("${CMAKE_CURRENT_LIST_DIR}/RuntimeShaderReload.cmake.in"
+               "${RELOAD_SCRIPT}" @ONLY)
+file(WRITE "${CMAKE_BINARY_DIR}/runtime_shader_reload_tool.txt" "${CMAKE_COMMAND}")
 
 function(add_slang_output OUTPUTS_VAR SLANG_SOURCE ENTRY_POINT OUTPUT_PATH)
+    get_filename_component(_output_name "${OUTPUT_PATH}" NAME)
+    set(_reflection "${RELOAD_INTERFACE_DIR}/${_output_name}.json")
+    set(_depfile "${RELOAD_INTERFACE_DIR}/${_output_name}.d")
+    set(_interface_flags)
+    set(_interface_products)
+    set(_fingerprint_command)
+    get_filename_component(_source_directory "${SLANG_SOURCE}" DIRECTORY)
+    if(_source_directory STREQUAL SHADERS_DIR AND
+       NOT _output_name STREQUAL "openvdb_transport_reference.comp.spv")
+        set(_interface_flags -reflection-json "${_reflection}")
+        set(_interface_products BYPRODUCTS "${_reflection}" "${_depfile}.sha256")
+        set(_fingerprint_command COMMAND "${CMAKE_COMMAND}"
+            "-DFINGERPRINT_OUTPUT=${_depfile}.sha256" "-DDEPFILE=${_depfile}"
+            "-DSOURCE_ROOT=${CMAKE_SOURCE_DIR}"
+            -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/ShaderDependencies.cmake")
+        set(_reload_args "")
+        foreach(_arg IN LISTS ARGN)
+            string(APPEND _reload_args " [==[${_arg}]==]")
+        endforeach()
+        file(APPEND "${RELOAD_SCRIPT}"
+            "compile_reload_shader([==[${SLANG_SOURCE}]==] [==[${ENTRY_POINT}]==] [==[${_output_name}]==]${_reload_args})\n")
+    endif()
     add_custom_command(
         OUTPUT "${OUTPUT_PATH}"
+        ${_interface_products}
         COMMAND ${CMAKE_COMMAND} -E make_directory "${COMPILED_SHADERS_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${RELOAD_INTERFACE_DIR}"
         COMMAND "${SLANGC_EXECUTABLE}" "${SLANG_SOURCE}"
                 ${SLANG_SPIRV_FLAGS}
                 ${ARGN}
                 -entry "${ENTRY_POINT}"
+                -depfile "${_depfile}"
+                ${_interface_flags}
                 -o "${OUTPUT_PATH}"
+        ${_fingerprint_command}
+        DEPFILE "${_depfile}"
         DEPENDS
             "${SLANG_SOURCE}"
             ${SLANG_INCLUDE_SOURCES}
             "${CMAKE_CURRENT_LIST_FILE}"
+            "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/ShaderDependencies.cmake"
             "${SLANGC_EXECUTABLE}"
         COMMENT "Compiling ${SLANG_SOURCE} (${ENTRY_POINT})"
         VERBATIM

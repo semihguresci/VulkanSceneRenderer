@@ -1,4 +1,5 @@
 #include "Container/common/VulkanObjects.h"
+#include "Container/common/VulkanObjectCounts.h"
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -39,6 +40,14 @@ DeviceObjects &objects(VkDevice device) {
 }
 } // namespace
 namespace container::gpu {
+VulkanObjectCounts ownedVulkanObjectCounts(VkDevice device) {
+  std::lock_guard lock(objectMutex);
+  const auto& owner = objects(device);
+  return {owner.ownedPipeline.size(), owner.ownedPipelineLayout.size(), owner.ownedPipelineCache.size(),
+          owner.ownedDescriptorPool.size(), owner.ownedDescriptorSetLayout.size(),
+          owner.ownedImageView.size(), owner.ownedSampler.size(), owner.ownedShaderModule.size()};
+}
+
 void registerRaiiDevice(const vk::raii::Device &device) {
   std::lock_guard lock(objectMutex);
   devices.emplace(static_cast<VkDevice>(*device),

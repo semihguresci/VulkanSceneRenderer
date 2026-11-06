@@ -1,3 +1,4 @@
+#include "Container/renderer/pipeline/RayEffectPipelines.h"
 #include "Container/renderer/raytracing/RayShadowManager.h"
 
 #include "Container/renderer/core/FrameRecorder.h"
@@ -422,22 +423,27 @@ void RayShadowManager::createPipelines(const std::filesystem::path &root,
   const vk::PushConstantRange push(vk::ShaderStageFlagBits::eCompute, 0, 4);
   p.filterLayout = vk::raii::PipelineLayout(
       vk, vk::PipelineLayoutCreateInfo({}, *p.filterSetLayout, push));
-  auto compute = [&](const char *name, const vk::raii::PipelineLayout &layout) {
-    const auto bytes = container::util::readFile(root / "spv_shaders" / name);
-    // readFile byte storage may be unaligned; copy into the SPIR-V word ABI.
-    if (bytes.size() % 4)
-      throw std::runtime_error("invalid ray shadow SPIR-V");
-    std::vector<uint32_t> words(bytes.size() / 4);
-    std::memcpy(words.data(), bytes.data(), bytes.size());
-    vk::raii::ShaderModule module(
-        vk, vk::ShaderModuleCreateInfo({}, words.size() * 4, words.data()));
-    vk::PipelineShaderStageCreateInfo stage(
-        {}, vk::ShaderStageFlagBits::eCompute, *module, "computeMain");
-    return vk::raii::Pipeline(
-        vk, nullptr, vk::ComputePipelineCreateInfo({}, stage, *layout));
-  };
-  p.tracePipeline = compute("ray_shadow_trace.comp.spv", p.traceLayout);
-  p.filterPipeline = compute("ray_shadow_filter.comp.spv", p.filterLayout);
+  publishShaderReload(prepareShaderReload(root));
+}
+
+RayEffectPipelines RayShadowManager::prepareShaderReload(const std::filesystem::path& root) const {
+  const auto& p = *impl_;
+  if (!*p.traceLayout || !*p.filterLayout)
+    return {};
+  const auto& device = p.device->raii();
+  const auto shaders = root / "spv_shaders";
+  return {loadRayEffectComputePipeline(device, shaders / "ray_shadow_trace.comp.spv", *p.traceLayout),
+          loadRayEffectComputePipeline(device, shaders / "ray_shadow_filter.comp.spv", *p.filterLayout)};
+}
+
+void RayShadowManager::publishShaderReload(RayEffectPipelines candidate) noexcept {
+  if (!*candidate.trace)
+    return;
+  auto& p = *impl_;
+  if (*p.tracePipeline)
+    p.invalidate();
+  p.tracePipeline = std::move(candidate.trace);
+  p.filterPipeline = std::move(candidate.auxiliary);
 }
 
 void RayShadowManager::prepare(VkExtent2D extent, uint32_t imageCount) {

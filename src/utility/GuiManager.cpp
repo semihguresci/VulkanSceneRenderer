@@ -2188,6 +2188,8 @@ void GuiManager::startFrame() {
   ImGui_ImplGlfw_NewFrame();
   ImGui::NewFrame();
   imguiFrameOpen_ = true;
+  if (!ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F5, false))
+    shaderReloadRequested_ = true;
   nodeTransformCancel_ = nodeTransformGestureActive_ &&
       (ImGui::GetIO().AppFocusLost || ImGui::IsKeyPressed(ImGuiKey_Escape, false));
   nodeTransformGestureActive_ = false;
@@ -2942,6 +2944,8 @@ void GuiManager::drawSceneControls(
   ImGui::EndDisabled();
   ImGui::SetItemTooltip("Saves the editable primary scene. BIM, USD and VDB use separate files.");
 
+  if (ImGui::Button("Reload Shaders (F5)"))
+    shaderReloadRequested_ = true;
   if (ImGui::Button("Add Primitive")) {
     ImGui::OpenPopup("Add Primitive Menu");
   }

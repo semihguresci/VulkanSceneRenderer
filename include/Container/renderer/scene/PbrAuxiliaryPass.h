@@ -15,6 +15,7 @@ class VulkanDevice;
 }  // namespace container::gpu
 
 namespace container::renderer {
+class PreparedGraphicsPipelines;
 
 // Replays opaque G-buffer coverage into two scene-linear material attachments.
 // The caller records every opaque Scene draw followed by every opaque BIM draw,
@@ -43,6 +44,8 @@ class PbrAuxiliaryPass {
                        VkSampleCountFlagBits msaa,
                        std::span<const VkImageView> depthViews,
                        VkExtent2D extent);
+  [[nodiscard]] PreparedGraphicsPipelines prepareShaderReload(const std::filesystem::path& root);
+  void publishShaderReload(PreparedGraphicsPipelines& candidate) noexcept;
 
   // Caller waits for the frame-slot fence, begins outside any rendering scope,
   // sets the scene negative-height viewport/scissor, then records opaque draws
