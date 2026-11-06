@@ -17,6 +17,7 @@
 #include "Container/renderer/lighting/EnvironmentPresentation.h"
 #include "Container/renderer/lighting/SkySettings.h"
 #include "Container/renderer/lighting/DdgiVolumeFit.h"
+#include "Container/renderer/pathtracing/ReferencePathLensSettings.h"
 #include "Container/renderer/raytracing/RayShadowSettings.h"
 #include "Container/renderer/temporal/TemporalState.h"
 
@@ -70,6 +71,9 @@ struct AppConfig {
   bool enableGui{true};
   bool gpuHierarchyTransforms{false};
   uint32_t pathSamplesPerFrame{1},pathSampleLimit{65536},pathMaxBounces{8},pathSeed{1};
+  std::vector<uint32_t> pathSampleSeries{};
+  float pathTargetMs{};
+  container::renderer::ReferencePathLensSettings pathLens{};
   bool physicsDemo{false};
   bool windowVisible{true};
   uint32_t msaaSamples{1};

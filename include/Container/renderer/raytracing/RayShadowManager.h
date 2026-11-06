@@ -93,6 +93,8 @@ public:
   [[nodiscard]] VkDescriptorSetLayout traceDescriptorLayout() const;
   [[nodiscard]] VkDescriptorSet traceDescriptorSet(uint32_t image) const;
   [[nodiscard]] RaySurfaceGpuBindings surfaceBindings(uint32_t image) const;
+  // Host metadata for the same fence-retained surface generation.
+  [[nodiscard]] std::span<const RayInstanceData> surfaceInstanceMetadata(uint32_t image) const;
   [[nodiscard]] const std::string &surfaceUnsupportedReason() const;
   [[nodiscard]] uint64_t allocatedBytes() const;
   [[nodiscard]] const RaySceneBuildStats *buildStats() const;

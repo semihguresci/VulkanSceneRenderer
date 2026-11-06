@@ -270,14 +270,22 @@ A zero factor retains a thin surface: rough transmission scatters the continuing
 direction without declaring an enclosed medium. The separate thin-glass opt-in
 keeps its previous smooth, straight-through behavior when this mode is disabled.
 
-The bounded traversal supports one closed homogeneous volume at a time, whose
-entry/exit boundaries belong to the same ray instance. Nested/intersecting media,
-open or malformed volumes, opaque terminal geometry and an exhausted eight-hit
-interface/reflection budget stop conservatively. Rays preserve their original
-probe direction and finite total world-distance budget; refracted visibility
-moments use path distance. Curved-path backfaces do not provide evidence that
-the original probe lies inside an opaque solid. Matching IORs leave direction
-unchanged; zero attenuation channels remain black without producing NaNs.
+The bounded traversal supports up to four nested closed homogeneous media.
+Each shell has its own ray instance and material. A ray must leave shells in
+reverse entry order through their matching back faces. Snell and Fresnel use
+the IORs on either side of the boundary. Only the innermost medium absorbs each
+segment, and leaving it restores the enclosing medium. Total internal
+reflection retains the current medium. An unmatched or repeated boundary, an
+opaque interior, a thin sheet within a medium or an exhausted eight-event
+crossing/reflection budget stops the path conservatively. Intersections that
+produce inconsistent crossing order are blocked. The traversal checks the
+topology observed by each ray.
+
+Rays preserve their original probe direction and finite total world-distance
+budget. Refracted visibility moments use path distance. Curved-path backfaces
+do not provide evidence that the original probe lies inside an opaque solid.
+Matching IORs leave direction unchanged. Zero attenuation channels remain
+black without producing NaNs.
 
 This secondary path adds no transparent receiver GI, primary raster refraction,
 scattering, dispersion, caustics or non-TIR reflected branch. Direct-light queries
@@ -310,12 +318,12 @@ and the status message report the actual mode. Telemetry also separates
 ownership transfer is required because this route uses the graphics family;
 dedicated queues from other families are outside the current implementation.
 
-The extended fixture runner is `run_dielectric.py`; its matched active GI1/GI0
-captures compare clear/rough/absorbing volumes with disabled, opaque-terminal,
-malformed-open and nested-volume controls in both raster routes. GPU transport
-contracts independently check Snell entry/exit, TIR, IOR matching, GGX sample
-directions and finite absorption. These checks complement CPU placement, scroll,
-preset migration and queue lifecycle tests. Run native/GPU workloads serially:
+The extended fixture runner `run_dielectric.py` uses matched active GI1/GI0
+captures in both raster routes. It compares clear, rough, absorbing and nested
+volumes with disabled, opaque-terminal, open, overlapping and same-instance
+controls. GPU transport contracts independently check Snell entry and exit,
+TIR, relative IOR, GGX sample directions, stack order and colored absorption
+at several scales. Run native and GPU workloads serially.
 
 ```powershell
 python -B tests/visual-regression/ddgi/run_extensions.py

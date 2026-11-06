@@ -38,11 +38,12 @@ struct GltfLegacyMaterialSerializationLimits {
     const tinygltf::Model&,const GltfLegacyMaterialSerializationLimits& = {});
 // The file MUST belong to the caller's unpublished staging directory. A bounded
 // SAX rewrite injects only recognized legacy fields and omits the typed zero
-// perspective far sentinel at its exact schema location. GLB's entire remaining
+// perspective far sentinel at its exact schema location. It also restores the
+// retained XMP packet JSON when the caller omits its TinyGLTF shell. GLB's entire remaining
 // chunk stream is copied byte-for-byte. Returns a separate closed staged file;
 // the caller performs its existing atomic staged/destination replacements.
 [[nodiscard]] std::optional<std::filesystem::path> StageLegacyMaterialSerialization(
     const tinygltf::Model&, const std::filesystem::path& stagedFile, bool binary,
-    const GltfLegacyMaterialSerializationLimits& = {});
+    const GltfLegacyMaterialSerializationLimits& = {}, std::string_view xmpPackage = {});
 
 } // namespace container::geometry::gltf

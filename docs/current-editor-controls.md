@@ -16,9 +16,8 @@ Alpha-blend opacity and double-sided alpha masks are supported in path tracing,
 including shadow rays. Thin-walled optical transmission supports tint, roughness,
 textures and multiple panes. Closed homogeneous solid glass supports refraction
 and distance-based absorption, including nested volumes and cameras inside them.
-Dispersion, incompatible overlaps and other documented limits remain unsupported;
-see [reference path tracing](reference-path-tracing.md). Restart an older open
-editor to load the new volume-frame support.
+Dispersive solids bend red, green, and blue paths differently. See
+[reference path tracing](reference-path-tracing.md) for topology and material limits.
 Use **Reload Shaders (F5)** to load rebuilt shader files into an open editor.
 
 The **Scene Controls** window has a fixed menu bar:
@@ -45,6 +44,8 @@ display image captures retain the normal editor presentation.
 Scene export covers all scenes in the primary asset. BIM/USD/VDB sidecars, physics setup and renderer settings use their own formats. Read status/error messages after an operation; a format limitation or failed save is not a successful export.
 
 Use **Go to → glTF scenes** to select a scene from a loaded glTF asset. That chooser is unavailable when no scene list is supplied by the current asset.
+
+The same section has read-only **glTF asset metadata** and **glTF scene metadata** trees. For an imported selection, the Selection and Material sections show separate XMP packets for the node, mesh and current material. Open **Raw packet JSON** for the complete packet, including the namespace context. Missing or invalid references show a message in their own tree. XMP remains separate from the BIM property inspector.
 
 ## Select and edit objects
 

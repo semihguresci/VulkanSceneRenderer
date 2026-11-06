@@ -34,7 +34,7 @@ struct RayTriangleData {
 };
 struct RayInstanceData {
   glm::uvec4 info{
-      0}; // first triangle, GPU material, object flags, provider kind
+      0}; // first triangle, GPU material, object flags, triangle count
 };
 static_assert(sizeof(RayTriangleData) == 64);
 static_assert(sizeof(RayInstanceData) == 16);

@@ -19,6 +19,16 @@ extension rejects the asset. An unsupported optional extension warns and uses
 the asset's ordinary glTF fallback; such a fallback must actually exist and be
 valid. An optional extension cannot make compressed data decodable.
 
+Primary glTF loading and editor merge use the scene-capable gate. The stock
+diagnostic scene loads each component through a static composition that keeps
+geometry and materials. It reports instancing, animation pointers, variants,
+node flags, authored lights and XMP as unavailable before reading resources.
+Startup and reload preflight use the same restrictions. The BIM glTF fallback
+publishes decoded primitives as a single default-material object. It accepts
+supported geometry extensions and reports required scene or material extensions
+as unavailable. Optional extensions in either path produce an asset-scoped
+warning and retain the ordinary geometry or material fallback.
+
 Supported capabilities include:
 
 - `KHR_texture_transform`: per-slot offset, rotation and scale, including

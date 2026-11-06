@@ -301,9 +301,13 @@ void printCommandLineHelp() {
   --width N --height N          Window dimensions
   --render-technique NAME       Render technique
   --path-spp N                 Reference samples per frame [1,64] (1)
+  --path-target-ms F           Adapt samples to a reference GPU pass budget [0.1,1000] ms
   --path-samples N             Reference sample limit [1,16777216] (65536)
+  --path-sample-series N,N,...  Export raw EXR at increasing reference sample counts
   --path-bounces N             Reference bounce limit [1,32] (8)
   --path-seed N                Deterministic reference sampling seed (1)
+  --path-aperture F            Perspective lens aperture radius in scene units (0)
+  --path-focus-distance F      Perspective focal plane distance in scene units (10)
   --display-mode NAME           Display mode (--render-mode is an alias)
   --msaa N                     MSAA sample count
   --taa / --no-taa              Enable/disable temporal antialiasing
@@ -443,6 +447,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
   bool explicitDdgiFitField = false;
   bool explicitDdgiFitBudget = false;
   bool explicitDdgiDetailBudget = false;
+  bool explicitFrameCapture = false;
+  bool explicitPathSampleLimit = false;
   container::geometry::vdb::ImportOptions vdbModelOptions;
   bool vdbModelOptionsRequested=false;
   VdbPreviewFlags previewFlags;
@@ -998,9 +1004,11 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     } else if (arg == "--gfxrecon-session") {
       config.gfxrecon.sessionPath = std::string(requireValue(argc, argv, i, arg));
     } else if (arg == "--warmup-frames") {
+      explicitFrameCapture = true;
       config.screenshotWarmupFrames =
           parseUint(requireValue(argc, argv, i, arg), arg);
     } else if (arg == "--capture-frame") {
+      explicitFrameCapture = true;
       config.screenshotCaptureFrame =
           parseUint(requireValue(argc, argv, i, arg), arg);
     } else if (arg == "--fixed-dt") {
@@ -1156,16 +1164,44 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       config.pathSamplesPerFrame = parseUint(requireValue(argc, argv, i, arg), arg);
       if (!config.pathSamplesPerFrame || config.pathSamplesPerFrame > 64)
         throw std::invalid_argument("--path-spp must be in [1,64]");
+    } else if (arg == "--path-target-ms") {
+      config.pathTargetMs = parseFloat(requireValue(argc, argv, i, arg), arg);
+      if (config.pathTargetMs < 0.1f || config.pathTargetMs > 1000.0f)
+        throw std::invalid_argument("--path-target-ms must be in [0.1,1000]");
     } else if (arg == "--path-samples") {
+      explicitPathSampleLimit = true;
       config.pathSampleLimit = parseUint(requireValue(argc, argv, i, arg), arg);
       if (!config.pathSampleLimit || config.pathSampleLimit > 16777216)
         throw std::invalid_argument("--path-samples must be in [1,16777216]");
+    } else if (arg == "--path-sample-series") {
+      if (!config.pathSampleSeries.empty())
+        throw std::invalid_argument("--path-sample-series may only be specified once");
+      auto samples = requireValue(argc, argv, i, arg);
+      uint32_t previous = 0;
+      for (;;) {
+        const auto comma = samples.find(',');
+        const uint32_t count = parseUint(samples.substr(0, comma), arg);
+        if (count <= previous || count > 16777216 || config.pathSampleSeries.size() >= 64)
+          throw std::invalid_argument(
+              "--path-sample-series requires up to 64 strictly increasing counts in [1,16777216]");
+        config.pathSampleSeries.push_back(count);
+        if (comma == std::string_view::npos)
+          break;
+        previous = count;
+        samples.remove_prefix(comma + 1);
+      }
     } else if (arg == "--path-bounces") {
       config.pathMaxBounces = parseUint(requireValue(argc, argv, i, arg), arg);
       if (!config.pathMaxBounces || config.pathMaxBounces > 32)
         throw std::invalid_argument("--path-bounces must be in [1,32]");
     } else if (arg == "--path-seed") {
       config.pathSeed = parseUint(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == "--path-aperture") {
+      config.pathLens.apertureRadius = parseFloat(requireValue(argc, argv, i, arg), arg);
+      if (!config.pathLens.valid()) throw std::invalid_argument("--path-aperture must be in [0,1e10]");
+    } else if (arg == "--path-focus-distance") {
+      config.pathLens.focusDistance = parseFloat(requireValue(argc, argv, i, arg), arg);
+      if (!config.pathLens.valid()) throw std::invalid_argument("--path-focus-distance must be in [1e-6,1e20]");
     } else if (arg == "--no-bloom") {
       config.bloomEnabled = false;
       config.hasBloomEnabledOverride = true;
@@ -1235,6 +1271,23 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
   }
 
   container::temporal::validateSettings(config.taa, config.msaaSamples);
+  if (!config.pathSampleSeries.empty()) {
+    if (config.pathTargetMs > 0.0f)
+      throw std::invalid_argument("--path-target-ms cannot be combined with --path-sample-series");
+    const auto extension = container::util::pathToUtf8(
+        container::util::pathFromUtf8(config.screenshotCapturePath).extension());
+    if (config.renderTechnique != "path-tracing" || !config.enableRayQueries ||
+        lowerAscii(extension) != ".exr")
+      throw std::invalid_argument(
+          "--path-sample-series requires path-tracing with ray queries and --screenshot FILE.exr");
+    if (explicitPathSampleLimit || explicitFrameCapture || !config.temporalCaptureSequencePath.empty() ||
+        config.gfxrecon.enabled() || !displayGradeOutput.empty() || !skyPresetOutput.empty())
+      throw std::invalid_argument(
+          "--path-sample-series cannot be combined with --path-samples, frame capture, or preset export");
+    if (config.displayModeOverride.empty())
+      config.displayModeOverride = "lit";
+    config.pathSampleLimit = config.pathSampleSeries.back();
+  }
   if (!config.environmentPath.empty() && config.sky.mode != container::renderer::SkyMode::Hdr)
     throw std::invalid_argument("--environment and --sky are mutually exclusive");
   if (config.useGltfSky && (!config.environmentPath.empty() ||

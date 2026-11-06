@@ -18,6 +18,25 @@ For deterministic captures, use `--render-technique path-tracing --path-spp 4
 to 1–64, the sample limit to 1–16,777,216, and bounce levels to 1–32. The defaults
 are 1, 65,536, 8 and seed 1. Capture sequences can switch to `path-tracing`.
 
+`--path-target-ms 8` enables adaptive batching against the previous completed
+reference Lighting pass on the GPU. The budget accepts 0.1–1000 milliseconds.
+`--path-spp` supplies the first batch after an accumulation reset and the
+fallback when a GPU timing is unavailable. Each adjustment stays in 1–64 samples
+and changes by at most a factor of two. The budget covers the reference pass. Presentation, other passes
+and one-sample cost can limit the overall frame rate. Sample addresses and the
+exact accumulation limit stay deterministic. Telemetry records the scheduled
+batch, submitted sample count and timing used for the adjustment. Omit
+`--path-target-ms` when exporting a fixed `--path-sample-series`.
+
+Open **Reference camera lens** to set the perspective aperture radius and focal
+plane distance in scene units. The same controls are `--path-aperture` and
+`--path-focus-distance` for captures. The focal plane is perpendicular to the
+camera axis, and the active perspective clip planes still apply. Zero aperture
+uses the original pinhole ray. Orthographic cameras keep their original ray
+generation. Effective lens changes restart accumulation. Reference capture
+metadata records the aperture radius and reports a null focus distance when the
+lens is inactive.
+
 The technique shares the forward graph's depth, picking, editor overlays and HDR
 presentation. Surface generations are requested independently of DDGI, including
 transparent candidates so unsupported materials are diagnosed rather than omitted.
@@ -161,17 +180,16 @@ section/box clipping, actual surface reconstruction and single/double-sided
 normal orientation. Material evaluation includes base/vertex color, metallic and
 roughness textures, specular strength/color/IOR, normal maps, emissive textures
 and thin-walled transmission factors/textures.
-Secondary rays carry ray-cone footprints (Akenine-Möller et al. 2019), matching the
-vk_gltf_renderer reference: camera rays start from the angular spacing between
-neighbouring samples (or the sample's world footprint for orthographic
-projection), every continued segment inherits the slant-corrected footprint of
-the surface it left, and hit texturing turns that world diameter into
-per-coordinate-set UV gradients — through each texture transform's linear
-rows — for explicit-gradient sampling with authored mip ranges. Coverage
-candidates and shadow-connection blockers keep base-mip reads, exactly like
-the reference renderer's shadow paths. Normal mapping uses the interpolated
-shading frame with geometric hemisphere rejection, without a separate
-shading-normal energy correction.
+Ray cones (Akenine-Möller et al. 2019) start from the angular spacing between
+neighboring perspective samples or the world-space pixel width for orthographic
+projection. Scattered rays inherit the slant-corrected footprint of the surface
+they leave. Straight-through segments keep the cone's cross section. At each hit,
+the world diameter gives a gradient for each UV set, and the texture transform's
+linear part maps the gradient into the sampled texture. Coverage and volume
+boundary tests use the base mip. BSDF paths and direct-light connections carry
+matching cones through transparent sheets so their tint and MIS probabilities
+agree. Normal mapping uses the interpolated shading frame with geometric
+hemisphere rejection, without a separate shading-normal energy correction.
 
 Paths combine diffuse/GGX scattering with next-event sampling and power-heuristic
 MIS. Environment sampling uses a constant scene-linear color or a borrowed
@@ -179,18 +197,33 @@ radiance cube, including orientation and intensity. Directional and point/spot
 lights retain authored units and range/cone rules; point falloff uses the actual
 inverse squared distance. Rectangle/disk emitters have matching area/solid-angle
 PDFs and analytic ray intersections, so both camera and BSDF rays can see them.
-Emissive mesh triangles are reached through the BSDF proposal. The last allowed
-bounce uses full next-event weight because there is no continuing BSDF proposal.
+Emissive and unlit meshes use a separate next-event proposal. It selects an
+emitting instance, a triangle, and a uniform point on that triangle. The
+world-space area, facing, and selection probabilities define the solid-angle
+PDF for both direct connections and BSDF hits. The direct proposal uses the
+same clipping, mip-zero coverage, ray-cone emission filtering, and transparent
+visibility rules as traced hits. Solid volume emitters are reached by BSDF
+paths. The last allowed bounce uses full next-event weight because there is no
+continuing BSDF proposal.
 No raster bounce term, LTC, DDGI feedback, TAA, denoising or radiance clamp enters
 this transport.
 
-The supported surface subset currently diagnoses active dispersion,
-specular/glossiness, unlit, clearcoat, sheen, iridescence, anisotropy,
+The supported surface subset currently diagnoses
+specular/glossiness, clearcoat, sheen, iridescence, anisotropy,
 diffuse transmission and active height displacement. These are implementation
 gaps, not a permanent reduction of #47's scope. Unsupported paths do not enter
 raw moments. Magenta display pixels identify unsupported paths; yellow identifies
 invalid/unrepresentable numerical input. Display diagnostics remain separate
-from accepted raw scene-linear means and moments.
+from accepted raw scene-linear means and moments. Unlit surfaces contribute
+textured base and authored emission, respect opacity coverage, and terminate
+scattering.
+
+KHR_materials_dispersion is transported spectrally: after the first dispersive
+refractive interface, one uniformly sampled RGB channel carries the path with a
+3x weight, and refraction, Fresnel, absorption and every later boundary use
+that channel's IOR from the same channel mapping the raster transmission
+shading uses. Thin sheets have no refraction and keep the authored IOR; the
+emission of the dispersive interface itself stays full RGB.
 
 Closed homogeneous glass volumes support refraction and absorption, including
 properly nested media and cameras inside them. See the solid-volume checkpoint
@@ -200,7 +233,7 @@ The pass owns three explicit RGBA32F storage images: mean/count, second central
 moment/diagnostic flags, and display. Typed image formats avoid requiring storage
 image reads/writes without a format. Resources require the existing Vulkan 1.4
 engine baseline with synchronization2, ray queries and compatible bindless
-material/light layouts. The minimal bindings need nine storage buffers, three
+material/light layouts. The minimal bindings need ten storage buffers, three
 storage images and 4,097 sampled images across the compute pipeline. Image
 dimensions, storage ranges, sampling settings and the default 512 MiB image
 payload budget are checked before use. Empty scenes use a separate background
@@ -535,8 +568,7 @@ This milestone does not close #47 or the full tracker.
 The full #47 scope remains open. Continue in dependency order:
 
 1. Complete material transport beyond the currently diagnosed subset, including
-   overlapping/clipped volume handling, caustic connections, participating media
-   and dispersion.
+   overlapping/clipped volume handling, caustic connections and participating media.
    Validate normal-map/texture
    filtering approximations and broader live shader-reload/reset behavior.
 2. Extend sample/convergence/variance telemetry and raster/reference comparison.
@@ -544,8 +576,8 @@ The full #47 scope remains open. Continue in dependency order:
    lights, blockers, roughness sweeps and interiors, including edits, resize,
    camera cuts, technique switches, memory and GPU timing.
 
-#116 denoising/reconstruction and #117 camera/compositing extensions remain
-dependent work; the numerical core does not satisfy their acceptance criteria.
+#116 denoising and reconstruction remain open. The remaining #117 work includes
+autofocus, optional firefly control, and ground/shadow-catcher output.
 
 ## Mathematical references
 

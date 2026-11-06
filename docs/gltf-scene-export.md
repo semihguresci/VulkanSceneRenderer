@@ -165,6 +165,14 @@ imported pointer channels.
 
 ## Current scope
 
+Primary glTF `KHR_xmp_json_ld` packets and their asset, scene, node, mesh,
+material, image and animation references are preserved for exported records.
+Packet indices stay stable when scene tables are compacted. Import reports
+malformed packets or out-of-range references and keeps the asset renderable.
+Import / Merge rejects assets declaring this extension before scene publication.
+Each source has its own packet index table, so primary-scene export keeps the
+original table and references together.
+
 This API exports one primary runtime scene. The UI integration must reject
 mixed BIM/USD content, or clearly name a primary-scene-only export scope.
 Animation/joint references outside the exported scene, missing material/owner

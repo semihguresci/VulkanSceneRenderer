@@ -2493,6 +2493,12 @@ add_custom_test(renderer_telemetry_tests
     VulkanSceneRenderer_renderer
 )
 
+add_custom_test(gpu_hardware_monitor_tests
+    ${TEST_RENDERER_CORE_DIR}/gpu_hardware_monitor_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_gpu_hardware_monitor
+)
+set_tests_properties(gpu_hardware_monitor_tests PROPERTIES LABELS "renderer;cpu" TIMEOUT 15)
+
 # ── Tests that need Vulkan / windowing runtime ───────────────────────────────
 add_custom_test(gfx_capture_tests
     ${TEST_RENDERER_CORE_DIR}/gfx_capture_tests.cpp "" ${TEST_RESULTS_DIR}

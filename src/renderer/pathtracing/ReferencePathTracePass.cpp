@@ -49,7 +49,8 @@ struct ReferencePathTracePass::Impl {
     ~Image() {view.clear();if(image) vmaDestroyImage(memory.allocator(),image,allocation);}
   };
   struct Frame {
-    gpu::AllocatedBuffer uniform{},diagnostic{};
+    gpu::AllocatedBuffer uniform{}, diagnostic{}, meshEmitters{};
+    VkDeviceSize meshEmitterBytes{};
     VkDescriptorSet set{};
     ReferencePathTraceInput input{};
     ReferencePathTraceData key{},data{};
@@ -68,6 +69,7 @@ struct ReferencePathTracePass::Impl {
   VkExtent2D extent{};VkPhysicalDeviceProperties properties{};
   bool initialized{},historyValid{};
   uint32_t samples{},pendingImage{UINT32_MAX};uint64_t resets{},submissionSerial{};
+  uint32_t lastSubmittedSamples{};
   ReferencePathTraceData submittedKey{};RaySurfaceGpuBindings submittedScene{};
   uint64_t submittedRevision{};
   VkImageView submittedEnvironment{};VkSampler submittedSampler{};VkPipeline submittedPipeline{};
@@ -80,9 +82,13 @@ struct ReferencePathTracePass::Impl {
   ~Impl() {clear();pipelines.destroyPipeline(pipeline);pipelines.destroyPipeline(emptyPipeline);pipelines.destroyPipelineLayout(layout);pipelines.destroyDescriptorSetLayout(localLayout);}
   void clear() {
     pipelines.destroyDescriptorPool(pool);pool={};
-    for(auto& f:frames) {memory.destroyBuffer(f.uniform);memory.destroyBuffer(f.diagnostic);}
+    for (auto& f : frames) {
+      memory.destroyBuffer(f.uniform);
+      memory.destroyBuffer(f.diagnostic);
+      memory.destroyBuffer(f.meshEmitters);
+    }
     frames.clear();mean.reset();moment.reset();display.reset();submittedContent.reset();
-    initialized=false;historyValid=false;samples=0;pendingImage=UINT32_MAX;
+    initialized=false;historyValid=false;samples=0;lastSubmittedSamples=0;pendingImage=UINT32_MAX;
   }
   void write(const gpu::AllocatedBuffer& buffer,const void* data,size_t bytes) {
     std::memcpy(buffer.allocation_info.pMappedData,data,bytes);
@@ -105,7 +111,7 @@ void ReferencePathTracePass::createResources(const std::filesystem::path& root,u
       extent.width>limits.maxImageDimension2D || extent.height>limits.maxImageDimension2D ||
       (extent.width+7)/8>limits.maxComputeWorkGroupCount[0] || (extent.height+7)/8>limits.maxComputeWorkGroupCount[1] ||
       limits.maxComputeWorkGroupInvocations<64 || limits.maxComputeWorkGroupSize[0]<8 || limits.maxComputeWorkGroupSize[1]<8 ||
-      limits.maxPerStageDescriptorStorageBuffers<9 || limits.maxDescriptorSetStorageBuffers<9 ||
+      limits.maxPerStageDescriptorStorageBuffers<10 || limits.maxDescriptorSetStorageBuffers<10 ||
       limits.maxPerStageDescriptorStorageImages<3 || limits.maxDescriptorSetStorageImages<3 ||
       limits.maxPerStageDescriptorSampledImages<gpu::kMaterialTextureDescriptorCapacity+1 ||
       limits.maxDescriptorSetSampledImages<gpu::kMaterialTextureDescriptorCapacity+1 ||
@@ -115,10 +121,10 @@ void ReferencePathTracePass::createResources(const std::filesystem::path& root,u
       (VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT|VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT|VK_FORMAT_FEATURE_TRANSFER_SRC_BIT)) fail("RGBA32F storage images are unavailable");
   if(s.pipeline && (s.materialLayout!=materials || s.lightLayout!=lights)) fail("shared descriptor layouts changed; recreate the pass");
   if(!s.pipeline) {
-    const std::array<VkDescriptorType,12> types{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+    const std::array<VkDescriptorType,13> types{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
       VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-      VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,VK_DESCRIPTOR_TYPE_SAMPLER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+      VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,VK_DESCRIPTOR_TYPE_SAMPLER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
     std::vector<VkDescriptorSetLayoutBinding> bindings;
     for(uint32_t i=0;i<types.size();++i) bindings.push_back({i,types[i],1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr});
     try {
@@ -138,7 +144,7 @@ void ReferencePathTracePass::createResources(const std::filesystem::path& root,u
     s.moment=std::make_unique<Impl::Image>(s.device,s.memory,extent);
     s.display=std::make_unique<Impl::Image>(s.device,s.memory,extent);
     s.pool=s.pipelines.createDescriptorPool({{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,count},{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,count},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,5*count},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,3*count},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,6*count},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,3*count},
         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,count},{VK_DESCRIPTOR_TYPE_SAMPLER,count}},count);
     std::vector<VkDescriptorSetLayout> layouts(count,s.localLayout);std::vector<VkDescriptorSet> sets(count);
     VkDescriptorSetAllocateInfo a{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};a.descriptorPool=s.pool;
@@ -154,13 +160,17 @@ void ReferencePathTracePass::createResources(const std::filesystem::path& root,u
     }
   } catch(...) {s.clear();throw;}
 }
-void ReferencePathTracePass::prepareFrame(uint32_t image,const ReferencePathTraceInput& input) {
+void ReferencePathTracePass::prepareFrame(uint32_t image, const ReferencePathTraceInput& input,
+    std::span<const gpu::GpuMaterial> materialData, std::span<const RayInstanceData> instanceData) {
   auto& s=*impl_;
   if(image>=s.frames.size() || !s.mean) fail("frame resources are not prepared");
   const auto& settings=input.settings;
-  if(!settings.samplesPerFrame || settings.samplesPerFrame>64 || !settings.sampleLimit || settings.sampleLimit>16777216 ||
+  const uint32_t initialBatch = settings.resetSamplesPerFrame.value_or(settings.samplesPerFrame);
+  if(!settings.samplesPerFrame || settings.samplesPerFrame>64 || !initialBatch || initialBatch>64 ||
+       !settings.sampleLimit || settings.sampleLimit>16777216 ||
       !settings.maxBounces || settings.maxBounces>32 || settings.rouletteDepth>32 || !std::isfinite(settings.rayBias) || settings.rayBias<=0 ||
       !std::isfinite(settings.maxDistance) || settings.maxDistance<=settings.rayBias*4) fail("invalid sampling settings");
+  if (!settings.lens.valid()) fail("invalid thin-lens settings");
   if((!input.emptyScene && (!input.scene || !input.scene.instanceCount || !input.scene.triangleCount || !input.data.limits.z)) ||
       (input.emptyScene && (input.scene.instanceCount || input.scene.triangleCount)) || !input.materials || !input.lights ||
       !input.environment || !input.environmentSampler) fail("requires a complete ray scene or an explicitly empty scene, with shared descriptors");
@@ -171,12 +181,34 @@ void ReferencePathTracePass::prepareFrame(uint32_t image,const ReferencePathTrac
   const std::array<uint64_t,4> required{uint64_t(source.triangleCount)*sizeof(RayTriangleData),uint64_t(source.instanceCount)*sizeof(RayInstanceData),
       uint64_t(source.triangleCount)*sizeof(RaySurfaceTriangleData),uint64_t(source.instanceCount)*sizeof(RaySurfaceInstanceData)};
   if(!input.emptyScene) for(size_t i=0;i<ranges.size();++i) if(ranges[i]<required[i] || ranges[i]>s.properties.limits.maxStorageBufferRange) fail("surface binding exceeds its storage range");
+  std::vector<uint32_t> emitters;
+  if (!input.emptyScene && (!materialData.empty() || !instanceData.empty())) {
+    if (materialData.size() != input.data.limits.z || instanceData.size() != source.instanceCount)
+      fail("mesh emitter views do not match the bound ray scene");
+    for (uint32_t index = 0; index < instanceData.size(); ++index) {
+      const auto info = instanceData[index].info;
+      if (!info.w || info.x >= source.triangleCount || info.w > source.triangleCount - info.x ||
+          info.y >= materialData.size())
+        fail("mesh emitter instance range is invalid");
+      const auto& material = materialData[info.y];
+      const bool unlit = ((info.z | material.flags) & gpu::kObjectFlagUnlit) != 0u;
+      if (!unlit && material.thicknessFactor > 0.0f && material.transmissionFactor > 0.0f)
+        continue;
+      const bool emissive = material.emissiveStrength > 0.0f &&
+          glm::any(glm::greaterThan(material.emissiveColor, glm::vec3(0)));
+      if (unlit || emissive)
+        emitters.push_back(index);
+    }
+  }
   auto& f=s.frames[image];f.prepared=false;f.recorded=false;
   f.input=input;f.key=input.data;
   f.key.limits.x=source.instanceCount;f.key.limits.y=source.triangleCount;
   f.key.extentSamples={s.extent.width,s.extent.height,0,0};
-  f.key.sampling={settings.maxBounces,settings.rouletteDepth,settings.seed,0};
-  f.key.trace={settings.rayBias,settings.maxDistance,0,0};
+  f.key.sampling={settings.maxBounces,settings.rouletteDepth,settings.seed,uint32_t(emitters.size())};
+  const bool lensActive = (input.data.limits.w & 2u) == 0 && settings.lens.apertureRadius > 0.0f;
+  f.key.trace={settings.rayBias,settings.maxDistance,
+      lensActive ? settings.lens.apertureRadius : 0.0f,
+      lensActive ? settings.lens.focusDistance : 0.0f};
   f.boundPipeline=input.emptyScene?static_cast<VkPipeline>(s.emptyPipeline):static_cast<VkPipeline>(s.pipeline);
   f.boundContent=input.emptyScene?s.emptyPipeline.contentIdentity():s.pipeline.contentIdentity();
   f.reset=!s.historyValid || settings.sampleLimit<s.samples || std::memcmp(&f.key,&s.submittedKey,sizeof(f.key))!=0 ||
@@ -185,7 +217,8 @@ void ReferencePathTracePass::prepareFrame(uint32_t image,const ReferencePathTrac
       f.boundPipeline!=s.submittedPipeline || f.boundContent!=s.submittedContent;
   f.data=f.key;
   const uint32_t first=f.reset?0:s.samples;
-  f.data.extentSamples.z=first;f.data.extentSamples.w=std::min(settings.samplesPerFrame,settings.sampleLimit-first);
+  const uint32_t batch = f.reset ? initialBatch : settings.samplesPerFrame;
+  f.data.extentSamples.z=first;f.data.extentSamples.w=std::min(batch,settings.sampleLimit-first);
   s.write(f.uniform,&f.data,sizeof(f.data));
   const ReferencePathTraceDiagnostics zero{};s.write(f.diagnostic,&zero,sizeof(zero));
   s.buffer(f.set,0,f.uniform.buffer,sizeof(f.data),VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
@@ -206,6 +239,20 @@ void ReferencePathTracePass::prepareFrame(uint32_t image,const ReferencePathTrac
     imageWrite.pImageInfo=&images[i];vkUpdateDescriptorSets(s.device->device(),1,&imageWrite,0,nullptr);
   }
   s.buffer(f.set,11,f.diagnostic.buffer,sizeof(ReferencePathTraceDiagnostics),VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+  if (emitters.empty())
+    emitters.push_back(0); // Keep the descriptor valid when the proposal is inactive.
+  const VkDeviceSize emitterBytes = emitters.size() * sizeof(emitters[0]);
+  if (emitterBytes > s.properties.limits.maxStorageBufferRange)
+    fail("mesh emitter table exceeds its storage range");
+  if (f.meshEmitterBytes < emitterBytes) {
+    auto buffer = s.memory.createBuffer(emitterBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
+        VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
+    s.memory.destroyBuffer(f.meshEmitters);
+    f.meshEmitters = buffer;
+    f.meshEmitterBytes = emitterBytes;
+  }
+  s.write(f.meshEmitters, emitters.data(), emitterBytes);
+  s.buffer(f.set, 12, f.meshEmitters.buffer, emitterBytes, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
   s.pendingImage=image;f.prepared=true;
 }
 void ReferencePathTracePass::record(VkCommandBuffer cmd,uint32_t image) {
@@ -236,7 +283,8 @@ void ReferencePathTracePass::commitFrame(uint32_t image) noexcept {
   if(image>=s.frames.size() || s.pendingImage!=image || !s.frames[image].recorded) return;
   auto& f=s.frames[image];
   if(f.reset) ++s.resets;
-  s.samples=f.data.extentSamples.z+f.data.extentSamples.w;
+  s.lastSubmittedSamples=f.data.extentSamples.w;
+  s.samples=f.data.extentSamples.z+s.lastSubmittedSamples;
   s.submittedKey=f.key;s.submittedScene=f.input.scene;s.submittedRevision=f.input.contentRevision;
   s.submittedEnvironment=f.input.environment;s.submittedSampler=f.input.environmentSampler;s.submittedPipeline=f.boundPipeline;
   s.submittedContent=f.boundContent;
@@ -247,11 +295,21 @@ void ReferencePathTracePass::invalidateHistory() noexcept {impl_->historyValid=f
 uint64_t ReferencePathTracePass::diagnosticEpoch(uint32_t image) const {return image<impl_->frames.size()?impl_->frames[image].epoch:0;}
 uint64_t ReferencePathTracePass::diagnosticSubmission(uint32_t image) const {return image<impl_->frames.size()?impl_->frames[image].submission:0;}
 uint32_t ReferencePathTracePass::attemptedSamples() const {return impl_->samples;}
+uint32_t ReferencePathTracePass::lastSubmittedSamples() const {return impl_->lastSubmittedSamples;}
+std::optional<ReferencePathLensSettings> ReferencePathTracePass::effectiveLens() const {
+  if (!impl_->historyValid || impl_->submittedKey.trace.z == 0.0f) return {};
+  return ReferencePathLensSettings{impl_->submittedKey.trace.z, impl_->submittedKey.trace.w};
+}
 uint64_t ReferencePathTracePass::historyResets() const {return impl_->resets;}
 uint64_t ReferencePathTracePass::allocatedBytes() const {
   auto& s=*impl_;uint64_t total=0;VmaAllocationInfo info{};
   for(const auto* image:{s.mean.get(),s.moment.get(),s.display.get()}) if(image) {vmaGetAllocationInfo(s.memory.allocator(),image->allocation,&info);total+=info.size;}
-  for(const auto& frame:s.frames) for(const auto& buffer:{frame.uniform,frame.diagnostic}) {vmaGetAllocationInfo(s.memory.allocator(),buffer.allocation,&info);total+=info.size;}
+  for (const auto& frame : s.frames)
+    for (const auto* buffer : {&frame.uniform, &frame.diagnostic, &frame.meshEmitters})
+      if (buffer->allocation) {
+        vmaGetAllocationInfo(s.memory.allocator(), buffer->allocation, &info);
+        total += info.size;
+      }
   return total;
 }
 ReferencePathTraceDiagnostics ReferencePathTracePass::diagnostics(uint32_t image) const {

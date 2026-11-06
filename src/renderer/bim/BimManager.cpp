@@ -1,9 +1,9 @@
 #include "Container/renderer/bim/BimManager.h"
 
 #include "Container/geometry/DotBimLoader.h"
+#include "Container/geometry/GltfModelLoader.h"
 #include "Container/geometry/IfcTessellatedLoader.h"
 #include "Container/geometry/IfcxLoader.h"
-#include "Container/geometry/Model.h"
 #include "Container/geometry/OpenVdbLoader.h"
 #include "Container/geometry/UsdLoader.h"
 #include "Container/renderer/bim/BimDrawCompactionPlanner.h"
@@ -24,6 +24,7 @@
 #include "Container/utility/VulkanDevice.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -3665,8 +3666,20 @@ void BimManager::buildDrawDataFromModel(
 void BimManager::loadGltfFallback(
     const std::filesystem::path &path, float importScale,
     container::scene::SceneManager &sceneManager) {
-  const auto model = container::geometry::Model::LoadFromGltf(
-      container::util::pathToUtf8(path));
+  namespace gltf = container::geometry::gltf;
+  gltf::LoadOptions options;
+  // This fallback publishes decoded primitives as one default-material object.
+  constexpr std::array<std::string_view, 5> geometryExtensions{
+      "KHR_draco_mesh_compression", "EXT_meshopt_compression",
+      "KHR_meshopt_compression", "KHR_mesh_quantization", "KHR_accessor_float64",
+  };
+  for (const auto& capability : gltf::extensionCapabilities()) {
+    if (capability.support != gltf::ExtensionSupport::Unsupported &&
+        std::ranges::find(geometryExtensions, capability.name) == geometryExtensions.end()) {
+      options.unavailableRuntimeExtensions.emplace_back(capability.name);
+    }
+  }
+  const auto model = gltf::LoadModelWithSource(container::util::pathToUtf8(path), options).model;
   if (model.vertices().empty() || model.indices().empty() ||
       model.primitiveRanges().empty()) {
     throw std::runtime_error(modelLoadErrorPrefix("glTF", path));

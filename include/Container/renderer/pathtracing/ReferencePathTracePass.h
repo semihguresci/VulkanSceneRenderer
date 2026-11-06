@@ -1,9 +1,11 @@
 #pragma once
 
+#include <Container/renderer/pathtracing/ReferencePathLensSettings.h>
 #include <Container/renderer/raytracing/RayShadowManager.h>
 #include <Container/utility/PipelineManager.h>
 #include <filesystem>
 #include <memory>
+#include <optional>
 
 namespace container::renderer {
 
@@ -11,6 +13,8 @@ struct ReferencePathTraceSettings {
   uint32_t samplesPerFrame{1}, sampleLimit{65536}, maxBounces{8};
   uint32_t rouletteDepth{3}, seed{1};
   float rayBias{0.0001f}, maxDistance{1e20f};
+  ReferencePathLensSettings lens{};
+  std::optional<uint32_t> resetSamplesPerFrame;
 };
 struct alignas(16) ReferencePathTraceData {
   glm::mat4 inverseProjection{1}, inverseView{1};
@@ -18,9 +22,9 @@ struct alignas(16) ReferencePathTraceData {
   gpu::SceneClipState boxClip{};
   glm::uvec4 limits{}; // instances, triangles, materials, section/ortho/cube/unsupported/volume flags
   glm::uvec4 extentSamples{}; // width, height, first sample, sample count
-  glm::uvec4 sampling{}; // bounces, roulette depth, seed, reserved
+  glm::uvec4 sampling{}; // bounces, roulette depth, seed, emissive instance count
   glm::vec4 environmentRadiance{1};
-  glm::vec4 trace{}; // bias, maximum secondary distance, reserved
+  glm::vec4 trace{}; // bias, maximum secondary distance, aperture radius, focal plane distance
 };
 static_assert(sizeof(ReferencePathTraceData)==336);
 struct ReferencePathTraceInput {
@@ -53,12 +57,18 @@ class ReferencePathTracePass {
   void createResources(const std::filesystem::path&,uint32_t imageCount,VkExtent2D,
                        VkDescriptorSetLayout materials,VkDescriptorSetLayout lights,
                        uint64_t imageBudgetBytes=512ull*1024*1024);
-  void prepareFrame(uint32_t image,const ReferencePathTraceInput&);
+  // Optional host views of the same material and ray generations build the
+  // mesh-light proposal. They need only survive this call.
+  void prepareFrame(uint32_t image, const ReferencePathTraceInput&,
+                    std::span<const gpu::GpuMaterial> materialData = {},
+                    std::span<const RayInstanceData> instanceData = {});
   void record(VkCommandBuffer,uint32_t image);
   // Only successful graphics submission advances sample addresses/layout state.
   void commitFrame(uint32_t image) noexcept;
   void invalidateHistory() noexcept;
   [[nodiscard]] uint32_t attemptedSamples() const;
+  [[nodiscard]] uint32_t lastSubmittedSamples() const;
+  [[nodiscard]] std::optional<ReferencePathLensSettings> effectiveLens() const;
   [[nodiscard]] uint64_t historyResets() const;
   [[nodiscard]] uint64_t allocatedBytes() const;
   // Require this slot's graphics fence to retire before CPU readback.

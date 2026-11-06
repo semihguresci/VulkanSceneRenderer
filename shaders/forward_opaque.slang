@@ -1000,12 +1000,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         float3 transmittedColor = 0.0.xxx;
         if (volumeThickness > 0.0)
         {
-            float safeIor = max(material.ior, 1.0);
-            float halfSpread =
-                (safeIor - 1.0) * 0.025 * max(material.dispersion, 0.0);
-            float3 iors = max(float3(safeIor - halfSpread, safeIor,
-                                     safeIor + halfSpread),
-                              1.0.xxx);
+            float3 iors = GpuMaterialChannelIors(material);
             float etaR = isFrontFace ? (1.0 / iors.r) : iors.r;
             float etaG = isFrontFace ? (1.0 / iors.g) : iors.g;
             float etaB = isFrontFace ? (1.0 / iors.b) : iors.b;

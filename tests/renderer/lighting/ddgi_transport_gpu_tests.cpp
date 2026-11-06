@@ -332,6 +332,71 @@ TEST_F(DdgiTransportGpu, InternalCriticalAngleReflectsInsteadOfLeakingIntoAir) {
   EXPECT_EQ(result[2].transmittanceSupported, glm::vec4(1));
 }
 
+TEST_F(DdgiTransportGpu, NestedGlassLiquidInterfacesUseRelativeSnellAndFresnel) {
+  constexpr float glass = 1.5f, liquid = 1.33f;
+  constexpr float incidentSin = .5f;
+  const float incidentCos = std::sqrt(1.f - incidentSin * incidentSin);
+  const float transmittedSin = glass / liquid * incidentSin;
+  const float transmittedCos = std::sqrt(1.f - transmittedSin * transmittedSin);
+  const float parallel = (liquid * incidentCos - glass * transmittedCos) /
+      (liquid * incidentCos + glass * transmittedCos);
+  const float perpendicular = (glass * incidentCos - liquid * transmittedCos) /
+      (glass * incidentCos + liquid * transmittedCos);
+  const float fresnel = .5f * (parallel * parallel + perpendicular * perpendicular);
+  const float etaSquared = glass * glass / (liquid * liquid);
+
+  std::array<Query, 3> input{dielectricQuery(), dielectricQuery(), dielectricQuery()};
+  for (auto& query : input) {
+    query.material.ior = liquid;
+    query.randomReserved.z = glass;
+  }
+  input[0].directionDistance = {incidentSin, 0, -incidentCos, 0};
+  input[1].directionDistance = {transmittedSin, 0, -transmittedCos, 0};
+  input[1].normalEntering = {0, 0, -1, 0};
+  input[2].directionDistance = {.95f, 0, -std::sqrt(1.f - .95f * .95f), 0};
+  const auto result = run(input);
+  EXPECT_NEAR(result[0].dielectricDirectionTir.x, transmittedSin, 2e-6f);
+  EXPECT_NEAR(result[0].dielectricDirectionTir.z, -transmittedCos, 2e-6f);
+  EXPECT_NEAR(result[0].transmittanceSupported.x, (1.f - fresnel) * etaSquared, 2e-6f);
+  EXPECT_NEAR(result[1].dielectricDirectionTir.x, incidentSin, 2e-6f);
+  EXPECT_NEAR(result[1].dielectricDirectionTir.z, -incidentCos, 2e-6f);
+  EXPECT_NEAR(result[1].transmittanceSupported.x, (1.f - fresnel) / etaSquared, 2e-6f);
+  EXPECT_NEAR(result[2].dielectricDirectionTir.x, input[2].directionDistance.x, 2e-6f);
+  EXPECT_NEAR(result[2].dielectricDirectionTir.z, -input[2].directionDistance.z, 2e-6f);
+  EXPECT_FLOAT_EQ(result[0].dielectricDirectionTir.w, 0);
+  EXPECT_FLOAT_EQ(result[1].dielectricDirectionTir.w, 0);
+  EXPECT_FLOAT_EQ(result[2].dielectricDirectionTir.w, 1);
+  for (const auto& value : result) EXPECT_FLOAT_EQ(value.transmittanceSupported.w, 1);
+}
+
+TEST_F(DdgiTransportGpu, NestedMediaRestoreTheOuterMaterialAndRejectUnmatchedOrOverlappingBoundaries) {
+  std::array<Query, 3> input{dielectricQuery(), dielectricQuery(), dielectricQuery()};
+  const std::array scales{.001f, 1.f, 100.f};
+  const glm::vec3 outerColor(.64f, .36f, 1.f), innerColor(1.f, .25f, .81f);
+  for (size_t i = 0; i < input.size(); ++i) {
+    auto& query = input[i];
+    query.controls.w = 2;
+    query.material.attenuationColor = {outerColor, 1};
+    query.material.attenuationDistance = .25f * scales[i];
+    query.tintIncidence = {innerColor, .5f * scales[i]};
+    query.directionDistance.w = .125f * scales[i];
+    query.normalEntering.w = .25f * scales[i];
+    query.randomReserved.z = 1.33f;
+    query.randomReserved.w = .375f * scales[i];
+  }
+  const auto result = run(input);
+  for (const auto& value : result) {
+    EXPECT_EQ(value.transmittanceSupported, glm::vec4(1));
+    EXPECT_EQ(value.throughputContinued, glm::vec4(1, 1.5f, 1.5f, 1));
+    EXPECT_EQ(value.dielectricDirectionTir, glm::vec4(0, 1, 2, 1));
+    EXPECT_FLOAT_EQ(value.absorptionSupported.w, 1);
+    for (int axis = 0; axis < 3; ++axis) {
+      EXPECT_NEAR(value.absorptionSupported[axis], outerColor[axis] * outerColor[axis] *
+                  std::sqrt(innerColor[axis]), 2e-6f);
+    }
+  }
+}
+
 TEST_F(DdgiTransportGpu, VolumeAbsorptionUsesTracedWorldDistanceAndExactBlackChannels) {
   std::array<Query, 5> input{dielectricQuery(), dielectricQuery(),
                            dielectricQuery(), dielectricQuery(), dielectricQuery()};

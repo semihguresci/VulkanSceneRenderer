@@ -4,6 +4,7 @@
 #include "Container/renderer/effects/OpenVdbVolumeSettings.h"
 #include "Container/renderer/lighting/DdgiSettings.h"
 #include "Container/renderer/raytracing/RayShadowSettings.h"
+#include "Container/renderer/pathtracing/ReferencePathLensSettings.h"
 
 #include <array>
 #include <cstddef>
@@ -40,6 +41,7 @@
 #include "Container/utility/LightEditControls.h"
 
 struct GLFWwindow;
+namespace tinygltf { class Model; }
 namespace container::geometry::vdb { struct ImportOptions; }
 
 namespace container::scene {
@@ -57,6 +59,7 @@ struct BimElementMetadata;
 class BimRelationshipGraph;
 struct BimStoreyRange;
 struct CullStats;
+class GpuHardwareMonitor;
 struct RendererTelemetryView;
 } // namespace container::renderer
 
@@ -761,6 +764,8 @@ public:
   [[nodiscard]] std::optional<container::renderer::RenderTechniqueId>
   consumeRenderEngineChange();
   void setReferencePathStatus(std::string status) { referencePathStatus_ = std::move(status); }
+  void setReferencePathLens(container::renderer::ReferencePathLensSettings lens) { referencePathLens_ = lens; }
+  [[nodiscard]] const container::renderer::ReferencePathLensSettings& referencePathLens() const { return referencePathLens_; }
   [[nodiscard]] container::renderer::RenderTechniqueId activeRenderEngine()
       const;
   void setRenderTechniqueDebugState(GuiRenderTechniqueDebugState state);
@@ -849,7 +854,8 @@ public:
       const std::function<void(uint32_t, const TransformControls &)>
           &applyMeshTransform,
       const std::function<void(uint32_t, bool)> &setSceneNodeSelectable = {},
-      const std::function<void(uint32_t, bool)> &setSceneNodeHoverable = {});
+      const std::function<void(uint32_t, bool)> &setSceneNodeHoverable = {},
+      const tinygltf::Model* gltfSource = nullptr);
 
   // Widget-only entry point; caller owns the current ImGui frame/window.
   // The transform snapshot belongs to selectedNode; picker changes wait for
@@ -1291,6 +1297,7 @@ private:
   std::optional<uint32_t> pendingMsaaSamples_{};
   std::vector<RenderEngineOption> renderEngineOptions_{};
   std::string referencePathStatus_;
+  container::renderer::ReferencePathLensSettings referencePathLens_{};
   container::renderer::RenderTechniqueId activeRenderEngine_{};
   std::optional<container::renderer::RenderTechniqueId>
       pendingRenderEngineChange_{};
@@ -1303,6 +1310,7 @@ private:
   uint32_t cullStatsOcclusion_{0};
   container::gpu::LightCullingStats lightCullingStats_{};
   GuiRendererTelemetryView rendererTelemetry_{};
+  std::unique_ptr<container::renderer::GpuHardwareMonitor> gpuHardwareMonitor_;
   container::gpu::LightingSettings lightingSettings_{};
   bool openVdbVolumeLoaded_{false};
   std::unique_ptr<OpenVdbAuthoringPanel> openVdbAuthoring_;

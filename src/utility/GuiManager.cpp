@@ -3,10 +3,12 @@
 
 #include "Container/geometry/OpenVdbLoader.h"
 #include "Container/geometry/GltfMergePlacement.h"
+#include "Container/geometry/GltfXmpMetadata.h"
 #include "Container/renderer/bim/BimCoordinationOverlay.h"
 #include "Container/renderer/bim/BimManager.h"
 #include "Container/renderer/bim/BimMeasurementSnapping.h"
 #include "Container/renderer/bim/BimSemanticColorMode.h"
+#include "Container/renderer/core/GpuHardwareMonitor.h"
 #include "Container/renderer/core/RenderTechnique.h"
 #include "Container/renderer/core/RendererTelemetry.h"
 #include "Container/renderer/effects/DisplayGradePreset.h"
@@ -20,6 +22,7 @@
 #include <imgui_impl_vulkan.h>
 #include <imgui_internal.h>
 #include <imgui_stdlib.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -60,6 +63,85 @@ using container::renderer::EditableLightType;
 using container::renderer::ScenePrimitiveKind;
 
 namespace {
+
+std::string_view xmpPreview(std::string_view value, size_t maxBytes = 2048) {
+  size_t end = std::min(maxBytes, value.size());
+  while (end < value.size() && (static_cast<unsigned char>(value[end]) & 0xc0) == 0x80)
+    --end;
+  return value.substr(0, end);
+}
+
+void drawXmpValue(std::string_view label, const nlohmann::json& value, size_t depth, size_t& rows) {
+  if (!rows || depth > 8) return;
+  --rows;
+  if (auto literal = value.find("@value"); literal != value.end()) {
+    auto language = value.find("@language");
+    auto name = std::string(xmpPreview(label));
+    if (language != value.end() && language->is_string())
+      name += " [" + std::string(xmpPreview(language->get_ref<const std::string&>())) + "]";
+    drawXmpValue(name, *literal, depth + 1, rows);
+    return;
+  }
+  for (const auto* keyword : {"@list", "@set"})
+    if (auto entries = value.find(keyword); entries != value.end() && entries->is_array()) {
+      drawXmpValue(label, *entries, depth + 1, rows);
+      return;
+    }
+  auto line = std::string(xmpPreview(label));
+  if (!value.is_structured()) {
+    const auto encoded = value.is_string() ? std::string{} : value.dump();
+    const std::string_view scalar = value.is_string() ? value.get_ref<const std::string&>() : encoded;
+    if (!line.empty()) line += "   ";
+    line += xmpPreview(scalar);
+    if (scalar.size() > 2048) line += " ...";
+    ImGui::TextWrapped("%s", line.c_str());
+    return;
+  }
+  ImGui::TextUnformatted(line.c_str());
+  if (depth == 8) {
+    ImGui::TextDisabled("Nested values are available in the raw JSON.");
+    return;
+  }
+  ImGui::Indent();
+  for (auto entry = value.begin(); entry != value.end() && rows; ++entry) {
+    if (value.is_array()) drawXmpValue("-", *entry, depth + 1, rows);
+    else if (!entry.key().starts_with('@')) drawXmpValue(entry.key(), *entry, depth + 1, rows);
+  }
+  ImGui::Unindent();
+}
+
+class GltfXmpInspector {
+ public:
+  explicit GltfXmpInspector(const tinygltf::Model* model) : model_(model) {}
+
+  void draw(const char* label, const tinygltf::ExtensionMap& extensions) {
+    if (!ImGui::TreeNode(label)) return;
+    using namespace container::geometry::gltf;
+    if (!package_) package_.emplace(ReadGltfXmpPackage(*model_).value_or(nlohmann::json{}));
+    const auto resolved = ResolveGltfXmpPacket(*package_, extensions);
+    if (const auto* packet = resolved.packet) {
+      size_t rows = 128;
+      for (auto entry = packet->begin(); entry != packet->end() && rows; ++entry)
+        if (!entry.key().starts_with('@')) drawXmpValue(entry.key(), *entry, 0, rows);
+      if (!rows) ImGui::TextDisabled("Additional values are available in the raw JSON.");
+      if (ImGui::TreeNode("Raw packet JSON")) {
+        const auto raw = packet->dump(2);
+        if (ImGui::Button("Copy JSON")) ImGui::SetClipboardText(raw.c_str());
+        const auto preview = xmpPreview(raw, 16 * 1024);
+        ImGui::TextUnformatted(preview.data(), preview.data() + preview.size());
+        if (preview.size() < raw.size()) ImGui::TextDisabled("Preview shortened. Copy JSON includes the full packet.");
+        ImGui::TreePop();
+      }
+    } else {
+      ImGui::TextWrapped("%.*s", int(resolved.message.size()), resolved.message.data());
+    }
+    ImGui::TreePop();
+  }
+
+ private:
+  const tinygltf::Model* model_;
+  std::optional<nlohmann::json> package_;
+};
 
 constexpr std::string_view kSampleModelsRelativeRoot =
     "models/glTF-Sample-Models/2.0";
@@ -3249,6 +3331,9 @@ void GuiManager::initialize(VkInstance instance, VkDevice device,
   if (initialized_)
     return;
 
+  if (!gpuHardwareMonitor_)
+    gpuHardwareMonitor_ = std::make_unique<container::renderer::GpuHardwareMonitor>(physicalDevice);
+
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGui::StyleColorsDark();
@@ -4234,7 +4319,8 @@ void GuiManager::drawSceneControls(
     const std::function<void(uint32_t, const TransformControls &)>
         &applyMeshTransform,
     const std::function<void(uint32_t, bool)> &setSceneNodeSelectable,
-    const std::function<void(uint32_t, bool)> &setSceneNodeHoverable) {
+    const std::function<void(uint32_t, bool)> &setSceneNodeHoverable,
+    const tinygltf::Model* gltfSource) {
   if (!initialized_)
     return;
 
@@ -4493,6 +4579,9 @@ void GuiManager::drawSceneControls(
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("Optional compute propagation; keeps CPU state for editing, picking and physics.");
   sectionAnchor(ControlsSection::GltfScene);
+  const bool hasGltfSource = gltfSource && (!gltfSource->nodes.empty() || !gltfSource->meshes.empty());
+  GltfXmpInspector xmp(gltfSource);
+  if (hasGltfSource) xmp.draw("glTF asset metadata", gltfSource->asset.extensions);
   if(!gltfSceneControls_.names.empty()) {
     auto& state=gltfSceneControls_;
     const char* preview=state.selected>=0 && size_t(state.selected)<state.names.size()
@@ -4507,6 +4596,8 @@ void GuiManager::drawSceneControls(
       ImGui::EndCombo();
     }
     if(!state.error.empty()) ImGui::TextWrapped("%s",state.error.c_str());
+    if (hasGltfSource && state.selected >= 0 && size_t(state.selected) < gltfSource->scenes.size())
+      xmp.draw("glTF scene metadata", gltfSource->scenes[size_t(state.selected)].extensions);
   }
   if (sectionAnchor(ControlsSection::Animation)) ImGui::SetNextItemOpen(true);
   DrawGltfAnimationControls(gltfAnimationControls_);
@@ -4648,8 +4739,20 @@ void GuiManager::drawSceneControls(
     }
   }
 
-  if (activeRenderEngine_ == container::renderer::RenderTechniqueId::PathTracing && !referencePathStatus_.empty())
-    ImGui::TextWrapped("%s", referencePathStatus_.c_str());
+  if (activeRenderEngine_ == container::renderer::RenderTechniqueId::PathTracing) {
+    if (!referencePathStatus_.empty()) ImGui::TextWrapped("%s", referencePathStatus_.c_str());
+    if (ImGui::TreeNode("Reference camera lens")) {
+      using Lens = container::renderer::ReferencePathLensSettings;
+      auto lens = referencePathLens_;
+      const bool apertureChanged = ImGui::DragFloat("Aperture radius", &lens.apertureRadius,
+          0.005f, 0.0f, Lens::maxApertureRadius, "%.5g", ImGuiSliderFlags_AlwaysClamp);
+      const bool focusChanged = ImGui::DragFloat("Focus distance", &lens.focusDistance,
+          0.05f, Lens::minFocusDistance, Lens::maxFocusDistance, "%.5g", ImGuiSliderFlags_AlwaysClamp);
+      if ((apertureChanged || focusChanged) && lens.valid()) referencePathLens_ = lens;
+      ImGui::TextDisabled("Perspective cameras only. Zero radius uses the pinhole camera.");
+      ImGui::TreePop();
+    }
+  }
 
   std::vector<GBufferViewMode> displayModeValues;
   std::vector<const char *> displayModeLabels;
@@ -8416,8 +8519,30 @@ void GuiManager::drawSceneControls(
   }
   drawSceneNodeControls(sceneGraph, selectedMeshNode, meshTransform,
                         selectMeshNode, applyMeshTransform);
+  if (hasGltfSource && !bimInspection.hasSelection) {
+    if (const auto* selected = sceneGraph.getNode(selectedMeshNode); selected && !selected->retired) {
+      const auto* owner = selected->sourceNodeIndex >= 0 ? selected : sceneGraph.getNode(selected->meshOwnerGraphNode);
+      const tinygltf::Node* sourceNode = nullptr;
+      if (owner && !owner->retired && owner->sourceNodeIndex >= 0 &&
+          size_t(owner->sourceNodeIndex) < gltfSource->nodes.size()) {
+        sourceNode = &gltfSource->nodes[size_t(owner->sourceNodeIndex)];
+        xmp.draw("glTF node metadata", sourceNode->extensions);
+      }
+      const int sourceMesh = selected->sourceMeshIndex >= 0 ? selected->sourceMeshIndex : sourceNode ? sourceNode->mesh : -1;
+      if (sourceMesh >= 0 && size_t(sourceMesh) < gltfSource->meshes.size())
+        xmp.draw("glTF mesh metadata", gltfSource->meshes[size_t(sourceMesh)].extensions);
+    }
+  }
   sectionAnchor(ControlsSection::Material);
   drawMaterialInspector();
+  if (hasGltfSource) {
+    const auto selectedMaterial = materialInspector_.target.sourceMaterial;
+    const auto catalogMaterial = materialInspector_.catalogTarget.sourceMaterial;
+    if (selectedMaterial >= 0 && size_t(selectedMaterial) < gltfSource->materials.size())
+      xmp.draw("glTF surface material metadata", gltfSource->materials[size_t(selectedMaterial)].extensions);
+    if (catalogMaterial >= 0 && catalogMaterial != selectedMaterial && size_t(catalogMaterial) < gltfSource->materials.size())
+      xmp.draw("glTF catalog material metadata", gltfSource->materials[size_t(catalogMaterial)].extensions);
+  }
 
   if (!statusMessage_.empty()) {
     const std::string statusText = WrapLongPathForImGui(statusMessage_);
@@ -8931,6 +9056,38 @@ void GuiManager::drawRendererTelemetryWindow() {
   }
   if (!latest.gpuProfiler.status.empty()) {
     ImGui::TextWrapped("%s", latest.gpuProfiler.status.c_str());
+  }
+  if (gpuHardwareMonitor_ && ImGui::TreeNode("GPU hardware sensors")) {
+    if (const auto sample = gpuHardwareMonitor_->trySnapshot()) {
+      ImGui::TextWrapped("%s", container::renderer::gpuHardwareMonitorStatusText(sample->status).data());
+      if (sample->pci) {
+        const auto& pci = *sample->pci;
+        ImGui::Text("Vulkan GPU PCI: %04x:%02x:%02x.%x", pci.domain, pci.bus, pci.device, pci.function);
+      }
+      if (sample->status == container::renderer::GpuHardwareMonitorStatus::Available) {
+        const auto reading = [](const char* label, std::optional<double> value, const char* unit) {
+          if (value) ImGui::Text("%s: %.1f %s", label, *value, unit);
+          else ImGui::TextDisabled("%s: unavailable", label);
+        };
+        reading("GPU utilization", sample->utilizationPercent, "%");
+        if (sample->usedMemoryBytes && sample->totalMemoryBytes) {
+          constexpr double bytesPerMiB = 1024.0 * 1024.0;
+          ImGui::Text("Driver memory: %.1f / %.1f MiB",
+                      double(*sample->usedMemoryBytes) / bytesPerMiB,
+                      double(*sample->totalMemoryBytes) / bytesPerMiB);
+        } else {
+          ImGui::TextDisabled("Driver memory: unavailable");
+        }
+        reading("Graphics clock", sample->graphicsClockMHz, "MHz");
+        reading("Memory clock", sample->memoryClockMHz, "MHz");
+        reading("Temperature", sample->temperatureCelsius, "C");
+        reading("Power", sample->powerMilliwatts.transform([](auto mw) { return mw / 1000.0; }), "W");
+        ImGui::TextDisabled("Last worker poll: %.3f ms", sample->pollMicroseconds / 1000.0);
+      }
+    } else {
+      ImGui::TextDisabled("Publishing hardware readings");
+    }
+    ImGui::TreePop();
   }
   ImGui::Text("Swapchain: %ux%u, %u images", latest.resources.swapchainWidth,
               latest.resources.swapchainHeight,

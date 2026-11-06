@@ -48,6 +48,12 @@ float PtLength(float3 value)
     if (scale == 0.0) return 0.0;
     return scale * length(value / scale);
 }
+float2 PtCameraNdc(float2 pixel, uint2 extent)
+{
+    // Negative-height Vulkan viewport: the top image row maps to NDC +Y.
+    return float2(2.0 * pixel.x / float(extent.x) - 1.0,
+                  1.0 - 2.0 * pixel.y / float(extent.y));
+}
 PtCameraRay PtGenerateCameraRay(float2 pixel, uint2 extent,
     float4x4 inverseProjection, float4x4 inverseView, bool orthographic)
 {
@@ -58,11 +64,9 @@ PtCameraRay PtGenerateCameraRay(float2 pixel, uint2 extent,
         if (!all(isfinite(inverseProjection[row])) || !all(isfinite(inverseView[row]))) return result;
     if (inverseView[3][0] != 0.0 || inverseView[3][1] != 0.0 ||
         inverseView[3][2] != 0.0 || inverseView[3][3] != 1.0) return result;
-    // Viewport-local pixel positions already contain the subpixel sample.
-    // Negative-height Vulkan viewport: top image row maps to NDC +Y. Reverse-Z
-    // near/far depths are 1/0, with no projection Y flip or extra half-pixel.
-    float2 ndc = float2(2.0 * pixel.x / float(extent.x) - 1.0,
-                       1.0 - 2.0 * pixel.y / float(extent.y));
+    // Pixel positions already contain the subpixel sample. Reverse-Z near/far
+    // depths are 1/0, with no projection Y flip or extra half-pixel.
+    float2 ndc = PtCameraNdc(pixel, extent);
     float4 nearView = mul(inverseProjection, float4(ndc, 1.0, 1.0));
     if (!all(isfinite(nearView)) || nearView.w == 0.0) return result;
     float3 viewOrigin = 0.0.xxx;
@@ -95,6 +99,75 @@ PtCameraRay PtGenerateCameraRay(float2 pixel, uint2 extent,
         result.minimum < 0.0 || result.maximum <= result.minimum) return (PtCameraRay)0;
     result.valid = 1u;
     return result;
+}
+
+float3 PtThinLensDirection(float3 direction, float3 forward, float3 lensOffset, float focusDistance)
+{
+    // The focal plane is perpendicular to the camera axis, at a distance
+    // measured along that axis. Scale by cos(theta) before normalizing to
+    // avoid forming a distant world-space point or subtracting large positions.
+    return PtNormalize(direction * focusDistance - lensOffset * dot(direction, forward));
+}
+
+bool PtApplyThinLens(inout PtCameraRay ray, float4x4 inverseView, float2 random,
+    float apertureRadius, float focusDistance, out float3 lensOffset)
+{
+    const float angle = (2.0 * PT_PI) * random.x;
+    const float radius = apertureRadius * sqrt(random.y);
+    lensOffset = mul(inverseView, float4(radius * cos(angle), radius * sin(angle), 0.0, 0.0)).xyz;
+    const float3 forward = PtNormalize(mul(inverseView, float4(0.0, 0.0, -1.0, 0.0)).xyz);
+    const float3 direction = PtThinLensDirection(ray.direction, forward, lensOffset, focusDistance);
+    const float axial = dot(direction, forward);
+    if (!PtValidDirection(direction) || axial <= 0.0) return false;
+
+    // Keep the original camera near and far planes. Their ray parameters
+    // change with the lens direction, while infinite far remains infinite.
+    const float scale = dot(ray.direction, forward) / axial;
+    const float infiniteFar = 3.402823466e+38;
+    ray.origin += lensOffset;
+    ray.direction = direction;
+    ray.minimum *= scale;
+    if (ray.maximum < infiniteFar) ray.maximum = min(ray.maximum * scale, infiniteFar);
+    return all(isfinite(ray.origin)) && isfinite(ray.minimum) &&
+        ray.minimum >= 0.0 && ray.maximum > ray.minimum;
+}
+
+// Returns world-space width and angular spread for a valid camera ray.
+float2 PtCameraRayFootprint(float2 pixel, uint2 extent,
+    float4x4 inverseProjection, float4x4 inverseView, bool orthographic, float3 direction,
+    float3 lensOffset, float focusDistance)
+{
+    float4 nearView = mul(inverseProjection, float4(PtCameraNdc(pixel, extent), 1.0, 1.0));
+    float2 ndcStep = float2(2.0, -2.0) / float2(extent);
+    float2 footprint = 0.0.xx;
+    float3 forward = focusDistance > 0.0
+        ? PtNormalize(mul(inverseView, float4(0.0, 0.0, -1.0, 0.0)).xyz) : 0.0.xxx;
+    // Extrapolate the projection by a pixel in both axes, including at the
+    // viewport edges and for one-pixel extents.
+    [unroll] for (uint axis = 0u; axis < 2u; ++axis)
+    {
+        float2 step = axis == 0u ? float2(ndcStep.x, 0.0) : float2(0.0, ndcStep.y);
+        float4 nearStep = mul(inverseProjection, float4(step, 0.0, 0.0));
+        float4 adjacent = nearView + nearStep;
+        if (!all(isfinite(adjacent)) || adjacent.w == 0.0) continue;
+        if (orthographic)
+        {
+            // Difference of the two unprojected points before world translation.
+            float3 viewStep = (nearStep.xyz - (nearView.xyz / nearView.w) * nearStep.w) / adjacent.w;
+            float width = PtLength(mul(inverseView, float4(viewStep, 0.0)).xyz);
+            if (isfinite(width)) footprint.x = max(footprint.x, width);
+        }
+        else
+        {
+            float3 viewDirection = PtNormalize(adjacent.xyz * (adjacent.w < 0.0 ? -1.0 : 1.0));
+            float3 worldDirection = PtNormalize(mul(inverseView, float4(viewDirection, 0.0)).xyz);
+            if (focusDistance > 0.0)
+                worldDirection = PtThinLensDirection(worldDirection, forward, lensOffset, focusDistance);
+            if (PtValidDirection(worldDirection))
+                footprint.y = max(footprint.y, PtLength(worldDirection - direction));
+        }
+    }
+    return footprint;
 }
 
 uint PtHash(uint value)

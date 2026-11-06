@@ -97,6 +97,31 @@ bool isProceduralSphereEntry(std::string_view entry) {
   return entry == "__procedural_uv_sphere__";
 }
 
+container::geometry::GltfLoadResult prepareSceneGltfAsset(
+    const std::filesystem::path& path,
+    container::geometry::gltf::LoadOptions options) {
+  options.retainEncodedImages = true;
+  auto result = container::geometry::gltf::LoadModelWithSource(
+      container::util::pathToUtf8(path), options);
+  (void)container::geometry::gltf::ParseMaterialVariants(result.gltfModel);
+  (void)BuildGltfSceneCatalog(result.gltfModel);
+  return result;
+}
+
+container::geometry::GltfLoadResult prepareDefaultSceneGltfAsset(
+    const std::filesystem::path& path) {
+  container::geometry::gltf::LoadOptions options;
+  // The diagnostic composition flattens meshes and materials. It does not
+  // publish the source nodes, light bindings, animations or variant catalog.
+  options.unavailableRuntimeExtensions = {
+      "EXT_mesh_gpu_instancing", "KHR_animation_pointer", "KHR_materials_variants",
+      "KHR_node_visibility", "KHR_node_selectability", "KHR_node_hoverability",
+      "KHR_lights_punctual", "KHR_lights_area", "EXT_lights_area", "WEBGI_lights_area",
+      "KHR_xmp_json_ld",
+  };
+  return prepareSceneGltfAsset(path, std::move(options));
+}
+
 bool hasMaterialTexture(uint32_t textureIndex) {
   return textureIndex != std::numeric_limits<uint32_t>::max();
 }
@@ -1596,11 +1621,7 @@ container::geometry::GltfLoadResult SceneManager::prepareGltfModel(
   }
   container::geometry::gltf::LoadOptions options;
   options.maxInputBytes = maxInputBytes;
-  options.retainEncodedImages = true;
-  auto result=container::geometry::gltf::LoadModelWithSource(container::util::pathToUtf8(resolvedPath), options);
-  (void)container::geometry::gltf::ParseMaterialVariants(result.gltfModel);
-  (void)BuildGltfSceneCatalog(result.gltfModel);
-  return result;
+  return prepareSceneGltfAsset(resolvedPath, std::move(options));
 }
 
 bool SceneManager::reloadModel(
@@ -1620,7 +1641,7 @@ bool SceneManager::reloadModel(
     if (isDefaultSceneRequest(path)) {
       for (const auto entry : container::app::kDefaultSceneModelRelativePaths) {
         if (isProceduralSphereEntry(entry)) continue;
-        const auto incoming = prepareGltfModel(std::string(entry));
+        const auto incoming = prepareDefaultSceneGltfAsset(resolveSceneAssetPath(entry));
         (void)container::material::PrepareGltfTextures(incoming.gltfModel,
             allocationManager_->textureDecodeOptions(false));
         const auto keys = container::material::CollectGltfMaterialSamplerKeys(incoming.gltfModel);
@@ -2934,7 +2955,7 @@ void SceneManager::appendSceneAsset(
     const std::filesystem::path& assetPath,
     const glm::mat4& transform,
     std::vector<container::geometry::Mesh>& mergedMeshes) {
-  auto result = prepareGltfModel(container::util::pathToUtf8(assetPath));
+  auto result = prepareDefaultSceneGltfAsset(assetPath);
 
   validateGltfSamplerPolicies(result.gltfModel);
   const auto preparedTextures = container::material::PrepareGltfTextures(result.gltfModel,

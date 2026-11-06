@@ -7,9 +7,11 @@
 #include <Container/geometry/GltfAccessor.h>
 #include <Container/geometry/GltfMaterialVariants.h>
 #include <Container/geometry/GltfImageSources.h>
+#include <Container/geometry/GltfXmpMetadata.h>
 #include <Container/utility/GltfSceneInstancing.h>
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -390,6 +392,98 @@ TEST(GltfSceneExport, RoundTripsCurrentHierarchyTransformsVisibilityAndAppendedG
   EXPECT_EQ(graph.identity(), identity);
   EXPECT_FALSE(graph.getNode(0)->visible);
   EXPECT_EQ(graph.getNode(1)->worldTransform, parentTransform * childTransform);
+}
+
+TEST(GltfSceneExport, XmpPacketsRetainDistinctContextsAndLosslessValuesAcrossFormats) {
+  using namespace container::geometry::gltf;
+  using Json = nlohmann::json;
+  ExportDirectory directory;
+  const auto input = directory.root / "xmp-source.gltf";
+  const auto cube = Model::MakeCube();
+  const auto graph = cubeGraph();
+  writeSceneExport({graph, cube}, input);
+  auto manifest = Json::parse(readText(input));
+  manifest["extensionsUsed"] = Json::array({kGltfXmpExtension});
+  manifest["extensions"]["VENDOR_unrelated"] = {{"extra", true}};
+  const auto package = Json::parse(R"({"packets":[
+    {"@context":{"dc":"http://purl.org/dc/elements/1.1/"},"dc:title":"Whole asset",
+     "dc:creator":{"@list":["A","B"]},"dc:identifier":18446744073709551614},
+    {"@context":{"dc":"http://purl.org/dc/elements/1.1/","rdf":"http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
+     "dc:title":{"@type":"rdf:Alt","rdf:_1":{"@language":"fr","@value":"Nœud"}}},
+    {"@context":{"dc":"http://purl.org/dc/elements/1.1/"},"dc:title":"Mesh",
+     "dc:contributor":{"@set":[]},"dc:description":null},
+    {"@context":{"dc":"http://purl.org/dc/elements/1.1/"},"dc:title":"Paint"},
+    {"@context":{"dc":"http://purl.org/dc/elements/1.1/"},"dc:title":"Scene"}
+  ]})");
+  manifest["extensions"][kGltfXmpExtension] = package;
+  const auto bind = [](Json& record, int packet) {record["extensions"][kGltfXmpExtension] = {{"packet", packet}};};
+  bind(manifest["asset"], 0);
+  bind(manifest["nodes"][1], 1);
+  bind(manifest["meshes"][0], 2);
+  bind(manifest["materials"][0], 3);
+  bind(manifest["scenes"][0], 4);
+  writeText(input, manifest.dump());
+  const auto check = [&](const tinygltf::Model& model) {
+    const auto retained = ReadGltfXmpPackage(model);
+    ASSERT_TRUE(retained);
+    EXPECT_EQ(*retained, package);
+    ASSERT_EQ(model.nodes.size(), 2u);
+    ASSERT_EQ(model.meshes.size(), 1u);
+    ASSERT_EQ(model.materials.size(), 1u);
+    ASSERT_EQ(model.scenes.size(), 1u);
+    const std::array contexts{&model.asset.extensions, &model.nodes[1].extensions,
+        &model.meshes[0].extensions, &model.materials[0].extensions, &model.scenes[0].extensions};
+    for (size_t i = 0; i < contexts.size(); ++i) {
+      const auto packet = ResolveGltfXmpPacket(*retained, *contexts[i]);
+      ASSERT_NE(packet.packet, nullptr);
+      EXPECT_EQ(*packet.packet, package["packets"][i]);
+    }
+    EXPECT_TRUE(model.extensions.contains("VENDOR_unrelated"));
+    EXPECT_EQ(ResolveGltfXmpPacket(*retained, model.nodes[0].extensions).message,
+              "No XMP packet is attached.");
+  };
+  const auto source = LoadModelWithSource(input.string());
+  check(source.gltfModel);
+  const std::array<int32_t, 2> nodeIdentities{0, 1};
+  for (const auto* format : {".gltf", ".glb"}) {
+    const auto output = directory.root / (std::string("xmp-round-trip") + format);
+    writeSceneExport({graph, source.model, &source.gltfModel, input, nodeIdentities}, output);
+    check(LoadModelWithSource(output.string()).gltfModel);
+  }
+}
+
+TEST(GltfSceneExport, MalformedXmpReportsWarningsAndKeepsPacketIndicesStable) {
+  using namespace container::geometry::gltf;
+  using Json = nlohmann::json;
+  ExportDirectory directory;
+  const auto path = directory.root / "xmp-malformed.gltf";
+  writeSceneExport({cubeGraph(), Model::MakeCube()}, path);
+  auto manifest = Json::parse(readText(path));
+  manifest["extensionsUsed"] = Json::array({kGltfXmpExtension});
+  manifest["extensions"][kGltfXmpExtension] = Json::parse(R"({"packets":[null,{"@context":{},"xmp:Label":"second slot"}]})");
+  manifest["asset"]["extensions"][kGltfXmpExtension] = {{"packet", 0}};
+  manifest["nodes"][1]["extensions"][kGltfXmpExtension] = {{"packet", uint64_t(4294967297)}};
+  manifest["meshes"][0]["extensions"][kGltfXmpExtension] = {{"packet", 1}};
+  manifest["materials"][0]["extensions"][kGltfXmpExtension] = {{"packet", 9}};
+  manifest["scenes"][0]["extensions"][kGltfXmpExtension] = false;
+  writeText(path, manifest.dump());
+  const auto result = LoadModelWithSource(path.string());
+  const auto& model = result.gltfModel;
+  const auto package = ReadGltfXmpPackage(model);
+  ASSERT_TRUE(package);
+  EXPECT_EQ(std::ranges::count(result.capabilityDiagnostics, "xmp_metadata", &CapabilityDiagnostic::code), 5);
+  const auto mesh = ResolveGltfXmpPacket(*package, model.meshes[0].extensions);
+  ASSERT_NE(mesh.packet, nullptr);
+  EXPECT_EQ(mesh.packet->at("xmp:Label"), "second slot");
+  EXPECT_TRUE(ResolveGltfXmpPacket(*package, model.asset.extensions).message.contains("@context"));
+  EXPECT_TRUE(ResolveGltfXmpPacket(*package, model.nodes[1].extensions).message.contains("integer"));
+  EXPECT_TRUE(ResolveGltfXmpPacket(*package, model.materials[0].extensions).message.contains("outside"));
+  EXPECT_TRUE(ResolveGltfXmpPacket(*package, model.scenes[0].extensions).message.contains("integer"));
+  manifest.erase("extensions");
+  writeText(path, manifest.dump());
+  const auto withoutRoot = LoadModelWithSource(path.string());
+  EXPECT_FALSE(ReadGltfXmpPackage(withoutRoot.gltfModel));
+  EXPECT_TRUE(ResolveGltfXmpPacket({}, withoutRoot.gltfModel.meshes[0].extensions).message.contains("root extension"));
 }
 
 TEST(GltfSceneExport, RoundTripsRgbaVertexColorsThroughPortableGltfAndGlb) {

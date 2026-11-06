@@ -334,6 +334,36 @@ TEST(GltfCapabilitiesLoader, ReturnsAssetScopedWarningsWhileImportingFallbackGeo
   EXPECT_EQ(loaded.capabilityDiagnostics[0].severity, CapabilitySeverity::Warning);
 }
 
+TEST(GltfCapabilitiesLoader, ConsumerRejectsRequiredInstancingBeforeResourceIo) {
+  AssetFixture fixture;
+  auto json = fixture.triangle();
+  constexpr auto extension = "EXT_mesh_gpu_instancing";
+  json["nodes"][0]["extensions"][extension]["attributes"]["TRANSLATION"] = 0;
+  json["extensionsUsed"] = {extension};
+  json["extensionsRequired"] = {extension};
+
+  const auto path = fixture.save(json);
+  const auto editable = gltf::LoadModelWithSource(path.string());
+  EXPECT_EQ(editable.instancing.nodes.size(), 1u);
+
+  gltf::LoadOptions staticComposition;
+  staticComposition.unavailableRuntimeExtensions = {extension};
+  auto missingBuffer = json;
+  missingBuffer["buffers"][0]["uri"] = "missing.bin";
+  fixture.save(missingBuffer);
+  expectLoadError([&] { (void)gltf::LoadModelWithSource(path.string(), staticComposition); },
+                  path, "Required extension 'EXT_mesh_gpu_instancing' is unavailable in the active scene consumer");
+
+  json.erase("extensionsRequired");
+  fixture.save(json);
+  const auto optional = gltf::LoadModelWithSource(path.string(), staticComposition);
+  EXPECT_EQ(optional.model.vertices().size(), 3u);
+  ASSERT_EQ(optional.capabilityDiagnostics.size(), 1u);
+  EXPECT_EQ(optional.capabilityDiagnostics[0].assetPath, path.string());
+  EXPECT_EQ(optional.capabilityDiagnostics[0].code, "unsupported_optional_extension");
+  EXPECT_NE(optional.capabilityDiagnostics[0].message.find(extension), std::string::npos);
+}
+
 TEST(GltfCapabilitiesLoader, OptionalAlternateImagesUseDecodedPngFallbacks) {
   for (const auto& alternate : kAlternateImages) {
     if (gltf::extensionCapability(alternate.extension)->support != ExtensionSupport::Unsupported) continue;

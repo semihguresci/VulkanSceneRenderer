@@ -3339,3 +3339,44 @@ Published `ddeb2bb` for #113. The editor reloads Slang through F5 and Scene Cont
 Ray-hit texturing now carries ray-cone footprints matching the vk_gltf_renderer reference: camera rays start from the angular spacing between neighbouring samples (or the sample's world size for orthographic projection), continued segments inherit the slant-corrected footprint of the surface they left, and per-triangle UV-to-world density converts that diameter into per-coordinate-set explicit gradients through each texture transform's linear rows. DDGI probe rays derive an equivalent cone from their equal-solid-angle ray count, and refracted continuations inherit the surface footprint; coverage candidates and shadow connections keep base-mip reads exactly like the reference renderer's shadow paths.
 
 Validation: 48 path-transport GPU cases (four new footprint contracts: slant geometry, per-set texel density, equal-solid-angle spread and authored-mip gradient selection) pass with zero validation errors, plus 24 ray-scene CPU, six ray-scene GPU and twelve DDGI transport GPU cases. A same-lineage baseline rebuild proves the untextured Cornell reference capture stays byte-identical, a grazing checker-plane capture differs only through footprint filtering, and a deferred capture with hard ray shadows and fitted DDGI runs validation-clean. Evidence is in `out/feature-parity/ray-footprint-validation/`.
+
+A second DDGI comparison holds the executable, camera, and geometry fixed and
+changes only the trace shader's footprint width. An emissive 512×512 checker
+lights an off-axis diffuse receiver. A uniform emitter supplies the matching
+mean-radiance control. Each of forward and deferred raster captured eight
+frames per variant with 9,216 probe rays per update under synchronization
+validation. The receiver's temporal RMS was 0.0443 with footprints, 0.1150 at
+mip zero, and 0.0440 for the uniform control in both techniques. The filtered
+mean was within 0.8% of the control. Median trace GPU time on the RTX 2080 SUPER
+was 0.086–0.087 ms with footprints and 0.097 ms at mip zero for this fixture.
+Hardware bandwidth counters remain open. Evidence is in
+`out/feature-parity/ray-footprint-acceptance/results.json`.
+To repeat the comparison, run `tests/validation/ddgi_ray_footprint_runtime_regression.py`
+against two runtime copies with the same executable. In the baseline copy,
+rebuild only the DDGI trace shader with the hit footprint width set to zero.
+
+### 2026-11-06 Local tracker integration
+
+- The default composition and BIM fallback now admit required glTF extensions
+  according to the data those routes publish. Primary glTF inspection resolves
+  XMP packet references, and portable glTF/GLB round trips retain their JSON-LD
+  values. Merge rejects independent XMP packet tables before publication.
+- Reference rendering samples ordinary emissive meshes directly with a
+  matching BSDF MIS PDF. It supports unlit surfaces and RGB-channel dispersion
+  in closed glass. DDGI separately supports up to four nested closed media
+  with LIFO boundary checks under the eight-event transport budget.
+- Reference capture exports exact EXR checkpoints from one accumulation.
+  Perspective path tracing supports a manual focal plane and circular
+  aperture. The optional GPU-time controller chooses a bounded batch from
+  retired reference timings while preserving sample order and exact stops.
+- Optional NVML monitoring matches the Vulkan device by PCI address and
+  publishes sensor readings on a background worker.
+
+The Windows feature-parity build passed 289 CPU and 160 Vulkan tests with no
+skips. It validated 117 SPIR-V modules. Fourteen deferred captures cover nested DDGI transport and
+malformed boundaries. Six thin-lens captures verify pinhole and orthographic
+parity and sharpness at each focal plane. Fixed and adaptive EXRs agree at the
+same sample counts, including after an environment-triggered accumulation
+reset. The capture evidence is under `out/feature-parity/ddgi-nested-stage/native`,
+`out/feature-parity/reference-thin-lens-final`, and
+`out/feature-parity/reference-adaptive-series-acceptance`.

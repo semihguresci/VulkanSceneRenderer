@@ -533,6 +533,7 @@ class SceneManager {
     return materialManager_.materialCount();
   }
   [[nodiscard]] size_t gpuMaterialCount() const noexcept { return gpuMaterials_.size(); }
+  [[nodiscard]] std::span<const container::gpu::GpuMaterial> gpuMaterialData() const noexcept { return gpuMaterials_; }
   [[nodiscard]] bool hasVolumeMaterials() const noexcept;
   // Cached hash of uploaded shader-visible fields (excluding C++ ABI padding).
   // Only affected surfaces lose compatibility after a material upload changes.

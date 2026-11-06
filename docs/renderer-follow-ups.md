@@ -13,6 +13,8 @@ are also implemented; see [scene browser performance](scene-browser-performance.
 Secondary-ray texture footprints (#82) are implemented and validated; see
 [reference path tracing](reference-path-tracing.md) and
 [DDGI](ddgi-probe-foundation.md).
+DDGI now supports nested closed dielectric media under its bounded traversal
+policy (#84). See [DDGI dielectric transport](ddgi-probe-foundation.md#rough-and-solid-dielectric-transport).
 
 | Issue | Remaining improvement |
 | --- | --- |
@@ -24,7 +26,6 @@ Secondary-ray texture footprints (#82) are implemented and validated; see
 | [#80](https://github.com/semihguresci/VulkanSceneRenderer/issues/80) | Validate DDGI and ray-query rendering across AMD, Intel and newer NVIDIA devices |
 | [#81](https://github.com/semihguresci/VulkanSceneRenderer/issues/81) | Expand DDGI leakage coverage for thin and double-sided architectural BIM surfaces |
 | [#83](https://github.com/semihguresci/VulkanSceneRenderer/issues/83) | Plan DDGI detail volumes automatically from BIM rooms |
-| [#84](https://github.com/semihguresci/VulkanSceneRenderer/issues/84) | Extend bounded DDGI dielectric transport to nested media |
 
 Continue with unchanged camera-follow planning (#78), which has a reproducible
 probe-count benchmark.

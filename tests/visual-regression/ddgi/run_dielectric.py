@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded DDGI dielectric transport: closed slabs, roughness and absorption.
+"""Bounded DDGI dielectric transport: closed slabs, nesting and absorption.
 
 Images use matched active GI1/GI0 fields. The shaded receiver is visible through
 the front cutaway, so changes measure secondary transport rather than primary
@@ -9,6 +9,7 @@ these captures cover actual production closest-hit traversal and termination.
 from __future__ import annotations
 
 import argparse
+import copy
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -28,7 +29,8 @@ from run_runtime import VALIDATION_ERROR, repository_path, write_json
 
 
 VARIANTS = ("open-control", "thick-clear", "thick-rough", "thick-absorbing",
-            "opaque-behind", "malformed-open", "nested-volumes")
+            "opaque-behind", "malformed-open", "nested-volumes", "nested-absorbing",
+            "same-geometry-nesting", "intersecting-volumes")
 TECHNIQUES = thin.TECHNIQUES
 
 
@@ -42,14 +44,28 @@ def dielectric_scene(variant, width=400, height=360):
         scene["quads"] += box("glass-volume", [-.1, 0, -2], [.1, 2.8, 1], "partition")
     if variant == "opaque-behind":
         scene["quads"] += box("opaque-terminal", [.15, 0, -2], [.18, 2.8, 1], "white")
-    if variant == "nested-volumes":
-        scene["quads"] += box("nested-volume", [-.05, 0, -2], [.05, 2.8, 1], "partition")
+    if variant in ("nested-volumes", "nested-absorbing", "same-geometry-nesting", "intersecting-volumes"):
+        far_x = .15 if variant == "intersecting-volumes" else .05
+        margin = 0.0 if variant == "same-geometry-nesting" else .02
+        interior = box("inner-volume", [-.05, margin, -2 + margin],
+                       [far_x, 2.8 - margin, 1 - margin], "partition")
+        if variant != "same-geometry-nesting":
+            for quad in interior:
+                quad["rayGeometry"] = "Inner dielectric"
+        scene["quads"] += interior
+    outer_attenuation = {
+        "thick-absorbing": [.001, .15, .8],
+        "nested-absorbing": [.002, .8, 1],
+    }.get(variant)
     scene["dielectricPolicy"] = {
         "thicknessFactor": .2, "roughness": .45 if variant == "thick-rough" else 0,
-        "ior": 1.5, "attenuationColor": [.001, .15, .8] if variant == "thick-absorbing" else [1, 1, 1],
-        "attenuationDistance": .1 if variant == "thick-absorbing" else None,
+        "ior": 1.5, "attenuationColor": outer_attenuation or [1, 1, 1],
+        "attenuationDistance": .1 if outer_attenuation else None,
+        "innerIor": 1.33,
+        "innerAttenuationColor": [1, .15, .8] if variant == "nested-absorbing" else [1, 1, 1],
+        "innerAttenuationDistance": .1 if variant == "nested-absorbing" else None,
         "closed": variant not in ("open-control", "malformed-open"),
-        "unsupportedNesting": variant == "nested-volumes",
+        "unsupportedNesting": variant in ("same-geometry-nesting", "intersecting-volumes"),
         "opaqueTerminal": variant == "opaque-behind",
     }
     return scene
@@ -76,6 +92,21 @@ def write_dielectric_fixtures(output, width=400, height=360):
                 volume["attenuationDistance"] = policy["attenuationDistance"]
             material["extensions"] = {"KHR_materials_transmission": {"transmissionFactor": 1},
                 "KHR_materials_volume": volume, "KHR_materials_ior": {"ior": policy["ior"]}}
+        for mesh in document["meshes"]:
+            if mesh["name"] != "Inner dielectric":
+                continue
+            source = mesh["primitives"][0]["material"]
+            inner = copy.deepcopy(document["materials"][source])
+            inner["name"] = "Inner dielectric"
+            inner["extensions"]["KHR_materials_ior"]["ior"] = policy["innerIor"]
+            volume = inner["extensions"]["KHR_materials_volume"]
+            volume["thicknessFactor"] = .1
+            volume["attenuationColor"] = policy["innerAttenuationColor"]
+            if policy["innerAttenuationDistance"] is not None:
+                volume["attenuationDistance"] = policy["innerAttenuationDistance"]
+            for primitive in mesh["primitives"]:
+                primitive["material"] = len(document["materials"])
+            document["materials"].append(inner)
         document["extensionsUsed"] += ["KHR_materials_transmission", "KHR_materials_volume", "KHR_materials_ior"]
         path = output / f"dielectric-{variant}.gltf"
         write_json(path, document)
@@ -177,7 +208,16 @@ def compare_dielectric(cases, techniques=TECHNIQUES):
                      absorbing[2] > max(.002, 2 * absorbing[0]),
                      "Volume absorption did not selectively attenuate red transport")
         blocked_limit = max(.002, .05 * reference)
-        for variant in ("thick-disabled", "opaque-behind", "malformed-open", "nested-volumes"):
+        nested = measured["nested-volumes"]
+        thin.require(nested["indirectLuminance"] > blocked_limit + .001,
+                     "Nested closed media did not transmit measurable indirect illumination")
+        nested_absorbing = measured["nested-absorbing"]["indirectRadiance"]
+        nested_clear = nested["indirectRadiance"]
+        thin.require(nested_absorbing[0] < max(.002, .65 * nested_clear[0]) and
+                     nested_absorbing[2] > max(.002, 2 * nested_absorbing[0]),
+                     "Nested absorption did not restore the outer medium's red attenuation")
+        for variant in ("thick-disabled", "opaque-behind", "malformed-open",
+                        "same-geometry-nesting", "intersecting-volumes"):
             thin.require(abs(measured[variant]["indirectLuminance"]) <= blocked_limit,
                          f"{variant}: terminal or unsupported volume leaked illumination")
         result[technique] = {"receivers": measured, "blockedIndirectLimit": blocked_limit}
@@ -208,7 +248,7 @@ def main():
               "exeSha256": hashlib.sha256(exe.read_bytes()).hexdigest(),
               "runtimeShaderSha256": runtime_shader_hashes(exe), "cases": [],
               "measurementLimits": ["Quantized ACES/sRGB images estimate radiance, not float readbacks.",
-                "One closed homogeneous volume is supported; no nested media or non-TIR reflected branch.",
+                "Four nested homogeneous media share the eight-event crossing/reflection budget.",
                 "Primary raster transport is unchanged; direct emitter connections remain conservative."]}
     techniques = TECHNIQUES if args.technique == "both" else (args.technique,)
     for technique in techniques:

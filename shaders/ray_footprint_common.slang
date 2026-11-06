@@ -5,13 +5,11 @@
 // diameter at its origin plus a constant angular spread, secondary rays
 // inherit the slant-corrected footprint of the surface they leave, and hit
 // shading converts the world footprint into per-UV-set gradient magnitudes
-// for explicit-gradient texture sampling. Coverage candidates and shadow
-// connections carry no footprint and keep base-mip reads, exactly like the
-// reference renderer's shadow paths.
+// for explicit-gradient texture sampling.
 struct RayCone
 {
     float width;  // World-space diameter at the ray origin.
-    float spread; // Diameter growth per unit travel (full cone angle tangent).
+    float spread; // Diameter growth per unit travel (twice the half-angle tangent).
 };
 
 float RayConeWorldFootprint(RayCone cone, float hitT, float3 normal, float3 view)
@@ -30,11 +28,22 @@ float2 RayConeGradient(RayCone cone, float hitT, float3 normal, float3 view,
     return max(RayConeWorldFootprint(cone, hitT, normal, view), 0.0) * texelDensity;
 }
 
+void RayConeTransformGradients(float gradient, float2 row0, float2 row1,
+                               out float2 dx, out float2 dy)
+{
+    // The two UV derivatives are the transform applied to the scaled UV axes.
+    dx = float2(row0.x, row1.x) * gradient;
+    dy = float2(row0.y, row1.y) * gradient;
+}
+
 float RayConeSolidAngleSpread(float raysOverSphere)
 {
     // N equal-solid-angle rays over the sphere each own 4*pi/N steradians.
-    // The equivalent cone grows its diameter by 2*tan(half angle) per unit
-    // travel. Tiny ray counts stay finite through the sine clamp.
-    float sine = min(2.0 / sqrt(max(raysOverSphere, 1.0)), 1.0);
-    return 2.0 * (sine / sqrt(max(1.0 - sine * sine, 1e-6)));
+    // The cap's half-angle has cosine 1 - 2/N. A hemisphere or larger
+    // cannot fit in a finite-width forward cone, so use the saturated spread.
+    if (raysOverSphere <= 2.0) return 2000.0;
+    float inverseCount = 1.0 / raysOverSphere;
+    float sine = 2.0 * sqrt(inverseCount * (1.0 - inverseCount));
+    float cosine = 1.0 - 2.0 * inverseCount;
+    return 2.0 * sine / cosine;
 }

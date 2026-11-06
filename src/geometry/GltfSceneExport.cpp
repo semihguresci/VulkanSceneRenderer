@@ -5,11 +5,13 @@
 #include <Container/geometry/GltfDeformation.h>
 #include <Container/geometry/GltfAccessor.h>
 #include <Container/geometry/GltfInstancing.h>
+#include <Container/geometry/GltfXmpMetadata.h>
 #include <Container/utility/SourcePrimitiveMapping.h>
 
 #include <stb_image_write.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -1522,7 +1524,15 @@ void writeExportModel(const tinygltf::Model& packedModel,
   if (std::filesystem::exists(absolute) && !std::filesystem::is_regular_file(absolute))
     fail("destination is not a regular file");
   (void)ValidateSceneSerializationCompatibilityInput(packedModel,legacyLimits);
+  const auto xmpPackage = [&]() -> std::string {
+    if (!packedModel.extensions.contains(kGltfXmpExtension)) return {};
+    if (packedModel.extensions_json_string.size() > legacyLimits.maxJsonBytes)
+      fail("XMP package exceeds the serialized JSON byte budget");
+    const auto retained = ReadGltfXmpPackage(packedModel);
+    return retained ? retained->dump() : std::string{};
+  }();
   auto model = packedModel;
+  if (!xmpPackage.empty()) model.extensions.erase(kGltfXmpExtension);
   if (model.buffers.size() > 1) fail("writeExportModel requires a packed export model");
   for (const auto& image : model.images)
     if (!image.uri.empty() || image.bufferView < 0)
@@ -1544,7 +1554,7 @@ void writeExportModel(const tinygltf::Model& packedModel,
   tinygltf::TinyGLTF writer;
   if (!writer.WriteGltfSceneToFile(&model, utf8Path(stagedFile), false, false, true, binary))
     fail("serializer could not write the staged scene");
-  if(const auto compatible=StageLegacyMaterialSerialization(model,stagedFile,binary,legacyLimits))
+  if(const auto compatible=StageLegacyMaterialSerialization(model,stagedFile,binary,legacyLimits,xmpPackage))
     replaceFile(*compatible,stagedFile);
   // Verify the serializer closed a complete output before publishing resources.
   if (!std::filesystem::is_regular_file(stagedFile) ||

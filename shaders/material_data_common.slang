@@ -125,6 +125,25 @@ struct GpuMaterial
     GpuTextureTransform diffuseTransmissionColorTextureTransform;
 };
 
+// KHR_materials_dispersion channel mapping shared by raster transmission
+// shading and reference transport: red bends least, blue most, and green
+// keeps the authored IOR. A nonpositive dispersion value disables the
+// spread; the red channel never drops below one.
+float GpuMaterialChannelIor(float ior, float dispersion, uint channel)
+{
+    float safeIor = max(ior, 1.0);
+    float halfSpread = (safeIor - 1.0) * 0.025 * max(dispersion, 0.0);
+    if (channel == 0u) return max(safeIor - halfSpread, 1.0);
+    if (channel == 2u) return safeIor + halfSpread;
+    return safeIor;
+}
+float3 GpuMaterialChannelIors(GpuMaterial material)
+{
+    return float3(GpuMaterialChannelIor(material.ior, material.dispersion, 0u),
+                  GpuMaterialChannelIor(material.ior, material.dispersion, 1u),
+                  GpuMaterialChannelIor(material.ior, material.dispersion, 2u));
+}
+
 struct DeferredMaterialLayerTerms
 {
     float transmissionFactor;

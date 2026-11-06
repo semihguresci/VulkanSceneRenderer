@@ -2615,6 +2615,30 @@ TEST(RenderingConventionTests, SamplerReplacementBudgetIsCheckedBeforeRetiringAs
   EXPECT_FALSE(contains(preparation, "validateMaterialSamplerPolicies("));
 }
 
+TEST(RenderingConventionTests, DefaultScenePreflightAndUploadUseTheSameGltfCapabilityPolicy) {
+  const auto source = readRepoTextFile("src/utility/SceneManager.cpp");
+  const auto policy = source.find("GltfLoadResult prepareDefaultSceneGltfAsset(");
+  const auto policyEnd = source.find("bool hasMaterialTexture(", policy);
+  ASSERT_NE(policy, std::string::npos);
+  ASSERT_NE(policyEnd, std::string::npos);
+  const auto restrictions = source.substr(policy, policyEnd - policy);
+  EXPECT_TRUE(contains(restrictions, "unavailableRuntimeExtensions"));
+  EXPECT_TRUE(contains(restrictions, "EXT_mesh_gpu_instancing"));
+
+  const auto reload = source.find("bool SceneManager::reloadModel(");
+  const auto retire = source.find("resetLoadedAssets()", reload);
+  const auto append = source.find("void SceneManager::appendSceneAsset(");
+  const auto upload = source.find("UploadPreparedGltfTextures(", append);
+  ASSERT_NE(reload, std::string::npos);
+  ASSERT_NE(retire, std::string::npos);
+  ASSERT_NE(append, std::string::npos);
+  ASSERT_NE(upload, std::string::npos);
+  EXPECT_TRUE(contains(source.substr(reload, retire - reload),
+                       "prepareDefaultSceneGltfAsset(resolveSceneAssetPath(entry))"));
+  EXPECT_TRUE(contains(source.substr(append, upload - append),
+                       "prepareDefaultSceneGltfAsset(assetPath)"));
+}
+
 TEST(RenderingConventionTests,
      MaterialTexturesUseRuntimeMipSelectionToAvoidTemporalShimmer) {
   const std::string pbrCommon =

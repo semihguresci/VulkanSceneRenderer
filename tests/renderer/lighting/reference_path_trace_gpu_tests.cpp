@@ -208,6 +208,8 @@ protected:
     whiteSampler.clear();
     whiteCubeView.clear();
     whiteTextureView.clear();
+    mipTextureView.clear();
+    if (mipImage) vmaDestroyImage(memory->allocator(), mipImage, mipAllocation);
     if(whiteImage) vmaDestroyImage(memory->allocator(),whiteImage,whiteAllocation);
     sceneLayout.clear();
     lightLayout.clear();
@@ -373,6 +375,7 @@ protected:
     view.viewType=vk::ImageViewType::e2D;view.subresourceRange.layerCount=1;whiteTextureView=vk::raii::ImageView(device->raii(),view);
     vk::SamplerCreateInfo sampler;sampler.magFilter=vk::Filter::eNearest;sampler.minFilter=vk::Filter::eNearest;
     sampler.mipmapMode=vk::SamplerMipmapMode::eNearest;
+    sampler.maxLod=1.0f;
     sampler.addressModeU=sampler.addressModeV=sampler.addressModeW=vk::SamplerAddressMode::eClampToEdge;
     whiteSampler=vk::raii::Sampler(device->raii(),sampler);
     std::vector<VkDescriptorImageInfo> images(4096,{VK_NULL_HANDLE,*whiteTextureView,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
@@ -404,6 +407,80 @@ protected:
     input.settings.samplesPerFrame=64;input.settings.sampleLimit=512;input.settings.maxBounces=4;
     build(0);build(1);
   }
+  static constexpr uint32_t kMipTextureIndex = 24;
+
+  void bindTransportMipTexture() {
+    VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    info.imageType = VK_IMAGE_TYPE_2D;
+    info.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    info.extent = {2, 2, 1};
+    info.mipLevels = 2;
+    info.arrayLayers = 1;
+    info.samples = VK_SAMPLE_COUNT_1_BIT;
+    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    VmaAllocationCreateInfo alloc{};
+    alloc.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    ASSERT_EQ(vmaCreateImage(memory->allocator(), &info, &alloc, &mipImage,
+                             &mipAllocation, nullptr), VK_SUCCESS);
+    vk::ImageViewCreateInfo view;
+    view.image = mipImage;
+    view.viewType = vk::ImageViewType::e2D;
+    view.format = vk::Format::eR32G32B32A32Sfloat;
+    view.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 2, 0, 1};
+    mipTextureView = vk::raii::ImageView(device->raii(), view);
+
+    command.reset();
+    command.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+    VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = mipImage;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 2, 0, 1};
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dependency.imageMemoryBarrierCount = 1;
+    dependency.pImageMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2(*command, &dependency);
+    // Blue is packed metalness and red is transmission. The two mips
+    // deliberately disagree on each term so the sampling policy is observable.
+    const std::array colors{VkClearColorValue{{0.f, 0.f, 1.f, 1.f}},
+                            VkClearColorValue{{1.f, 0.f, 0.f, 1.f}}};
+    for (uint32_t level = 0; level < 2; ++level) {
+      const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, level, 1, 0, 1};
+      vkCmdClearColorImage(*command, mipImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           &colors[level], 1, &range);
+    }
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    vkCmdPipelineBarrier2(*command, &dependency);
+    submit();
+
+    const VkDescriptorImageInfo imageInfo{VK_NULL_HANDLE, *mipTextureView,
+                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet = *sets[0];
+    write.dstBinding = 5;
+    write.dstArrayElement = kMipTextureIndex;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    write.pImageInfo = &imageInfo;
+    vkUpdateDescriptorSets(device->device(), 1, &write, 0, nullptr);
+  }
+
+  static GpuTextureTransform minifiedTextureTransform() {
+    // These fixtures span two world units. At 32 pixels across, tiling the
+    // unit UV square 64 times selects the coarse mip even at normal incidence.
+    GpuTextureTransform transform;
+    transform.row0.x = transform.row1.y = 64.f;
+    return transform;
+  }
+
   void syncInputs() {
     materialsUpload->write(materialValues.data(),materialValues.size()*sizeof(GpuMaterial));
     lightUpload->write(&lighting,sizeof(lighting));
@@ -425,7 +502,11 @@ protected:
     }
   };
   Pixels render(uint32_t image=0,bool capture=true) {
-    input.scene=input.emptyScene ? RaySurfaceGpuBindings{} : manager->surfaceBindings(image);tracer->prepareFrame(image,input);
+    input.scene=input.emptyScene ? RaySurfaceGpuBindings{} : manager->surfaceBindings(image);
+    if (meshLightProposal)
+      tracer->prepareFrame(image, input, materialValues, manager->surfaceInstanceMetadata(image));
+    else
+      tracer->prepareFrame(image, input);
     command.reset();command.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
     if(timestampBits) {
       command.resetQueryPool(*timingPool,0,2);
@@ -486,6 +567,7 @@ protected:
     for(auto xy:{glm::vec2(-halfWidth,-halfHeight),glm::vec2(halfWidth,-halfHeight),
                 glm::vec2(halfWidth,halfHeight),glm::vec2(-halfWidth,halfHeight)}) {
       container::geometry::Vertex vertex{};vertex.position=center+glm::vec3(xy,0);
+      vertex.texCoord = (xy / glm::vec2(halfWidth, halfHeight) + 1.f) * .5f;
       vertex.normal={0,0,front?1.f:-1.f};vertex.tangent={1,0,0,1};vertex.color={1,1,1};vertices.push_back(vertex);
     }
     for(uint32_t corner:front?std::array<uint32_t,6>{0,1,2,0,2,3}:std::array<uint32_t,6>{0,2,1,0,3,2}) indices.push_back(firstVertex+corner);
@@ -508,6 +590,7 @@ protected:
       for(auto xy:{glm::vec2(-1,-1),glm::vec2(1,-1),glm::vec2(1,1),glm::vec2(-1,1)}) {
         container::geometry::Vertex vertex{};
         vertex.position=center+normal*half[axis]+tangent*xy.x*half[(axis+1)%3]+bitangent*xy.y*half[(axis+2)%3];
+        vertex.texCoord = (xy + 1.f) * .5f;
         vertex.normal=normal;vertex.tangent=glm::vec4(tangent,1);vertex.color={1,1,1};vertices.push_back(vertex);
       }
       for(uint32_t corner:{0u,1u,2u,0u,2u,3u}) indices.push_back(first+corner);
@@ -518,9 +601,13 @@ protected:
   Buffer *materialsUpload{},*metadataUpload{},*lightUpload{},*pointUpload{},*areaUpload{};
   VkImage whiteImage{};VmaAllocation whiteAllocation{};
   vk::raii::ImageView whiteCubeView{nullptr},whiteTextureView{nullptr};vk::raii::Sampler whiteSampler{nullptr};
+  VkImage mipImage{};
+  VmaAllocation mipAllocation{};
+  vk::raii::ImageView mipTextureView{nullptr};
   std::unique_ptr<PipelineManager> pipelines;
   std::unique_ptr<ReferencePathTracePass> tracer;
   ReferencePathTraceInput input;
+  bool meshLightProposal{false};
   std::vector<GpuMaterial> materialValues;
   std::vector<PointLightData> pointValues;
   std::vector<AreaLightData> areaValues;
@@ -586,6 +673,26 @@ TEST_F(ReferencePathTraceGpu, TextureDescriptorsAndAuthoredFactorsReachActualClo
   const glm::dvec3 expected(.4,.1,.15);
   for(int c=0;c<3;++c) EXPECT_NEAR(mean[c],expected[c],.012);
   EXPECT_EQ(tracer->diagnostics(0).rejectedSamples,0);save(pixels,"textured-lambert");
+}
+TEST_F(ReferencePathTraceGpu, UnlitUsesTexturedBaseAndEmissionWithoutScatteringOrVolume) {
+  auto& material = materialValues[0];
+  material.flags = kObjectFlagUnlit;
+  material.baseColorTextureIndex = 23;
+  material.color = {.8f, .4f, .2f, 1};
+  material.emissiveColor = {.125f, .25f, .5f};
+  material.transmissionFactor = 1.f;
+  material.thicknessFactor = 1.f;
+  material.clearcoatFactor = 1.f;
+  lighting.environmentIntensity = 12.f;
+  syncInputs();
+  input.settings.sampleLimit = 64;
+  input.settings.maxBounces = 4;
+  const auto pixels = converge();
+  const glm::dvec3 expected(.525, .35, .65);
+  for (int channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR(pixels.roi()[channel], expected[channel], 1e-6);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
 }
 TEST_F(ReferencePathTraceGpu, UnsupportedSolidVolumeIsVisibleWithoutContaminatingRawMoments) {
   materialValues[0].transmissionFactor=1;materialValues[0].thicknessFactor=1;syncInputs();input.settings.sampleLimit=64;
@@ -676,6 +783,64 @@ TEST_F(ReferencePathTraceGpu, BsdfPathsReachEmissiveGeometryAndRespectBounceLimi
   input.settings.maxBounces=1;const auto direct=converge();EXPECT_EQ(direct.roi(),glm::dvec3(0));
   EXPECT_EQ(tracer->diagnostics(0).rejectedSamples,0);
   std::printf("REFERENCE_EMISSIVE samples=1024 mean=%.7f expected=%.7f\n",value.x,factor);
+}
+TEST_F(ReferencePathTraceGpu, DirectMeshLightAndBsdfMisMatchIndependentParallelPlaneEnergy) {
+  meshLightProposal = true;
+  lighting.environmentIntensity = 0.f;
+  materialValues.emplace_back();
+  auto& emitter = materialValues[1];
+  emitter.color = {0, 0, 0, 1};
+  emitter.specularFactor = 0.f;
+  emitter.emissiveColor = {1, .25f, .1f};
+  emitter.emissiveStrength = 2.f;
+  addQuad({0, 0, 2}, 1, 1, false, 1);
+  syncInputs(); build(0); build(1);
+  const double ratio = .5, scale = std::sqrt(1 + ratio * ratio);
+  const double factor = 4 / 3.14159265358979323846 * (ratio / scale) * std::atan(ratio / scale);
+  const glm::dvec3 expected = factor * glm::dvec3(1, .25, .1);
+  input.settings.sampleLimit = 1024;
+  input.settings.maxBounces = 1;
+  auto direct = converge().roi();
+  for (int channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR(direct[channel], expected[channel], .004);
+  input.settings.maxBounces = 2;
+  auto combined = converge().roi();
+  for (int channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR(combined[channel], expected[channel], .006);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+
+  emitter.flags = kObjectFlagAlphaBlend;
+  emitter.color.a = .25f;
+  syncInputs();
+  auto blended = converge().roi();
+  for (int channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR(blended[channel], expected[channel] * .25, .003);
+
+  emitter.flags = 0u;
+  emitter.color.a = 1.f;
+  objects[1].model = glm::translate(glm::mat4(1), glm::vec3(2.2f, 0, -1.2f));
+  ++revision;
+  syncInputs(); build(0); build(1);
+  input.settings.maxBounces = 1;
+  // Independent midpoint integration for a distant parallel mesh. Grazing
+  // rays must reach their own sampled triangle through the normal ray offset.
+  constexpr int steps = 96;
+  constexpr double height = .8;
+  double grazingEnergy = 0.;
+  for (int y = 0; y < steps; ++y)
+    for (int x = 0; x < steps; ++x) {
+      const double horizontal = 1.2 + 2. * (x + .5) / steps;
+      const double vertical = -1. + 2. * (y + .5) / steps;
+      const double distanceSquared = horizontal * horizontal + vertical * vertical + height * height;
+      grazingEnergy += height * height / (distanceSquared * distanceSquared);
+    }
+  grazingEnergy *= 4. / (3.14159265358979323846 * steps * steps);
+  EXPECT_NEAR(converge().roi().x, grazingEnergy, .0015);
+
+  emitter.emissiveStrength = 0.f;
+  syncInputs();
+  EXPECT_EQ(converge().roi(), glm::dvec3(0));
 }
 TEST_F(ReferencePathTraceGpu, AlphaMaskRejectsCoverageWhileOpaqueIgnoresVertexAndMaterialAlpha) {
   for(auto& vertex:vertices) vertex.colorAlpha=.1f;
@@ -911,6 +1076,47 @@ TEST_F(ReferencePathTraceGpu, AreaLightMisThroughTwoReflectivePanesMatchesIndepe
   std::printf("REFERENCE_THIN_PANE_MIS mean=%.9f nee=%.9f expected=%.9f\n",mis.roi().x,nee.roi().x,expected);
   save(mis,"thin-two-panes-area-mis");
 }
+TEST_F(ReferencePathTraceGpu, AreaLightMisAndVisibilityUseTheSameMinifiedSheetTransmission) {
+  ASSERT_NO_FATAL_FAILURE(bindTransportMipTexture());
+  input.data.inverseView = glm::translate(glm::mat4(1), glm::vec3(0, 0, .2f));
+  lighting.environmentIntensity = 0;
+  lighting.areaLightCount = 1;
+  auto& light = areaValues.emplace_back();
+  light.positionRange = {0, 0, 2, 0};
+  light.directionType = {0, 0, -1, 0};
+  light.tangentHalfSize = {1, 0, 0, 1};
+  light.bitangentHalfSize = {0, 1, 0, 1};
+  light.colorIntensity = {1, 1, 1, 2};
+  auto& sheet = materialValues.emplace_back();
+  sheet.specularFactor = 0;
+  sheet.transmissionFactor = 1;
+  sheet.ior = 1;
+  sheet.metallicRoughness.y = 0;
+  sheet.flags = 4;
+  addQuad({0, 0, .5f}, 1, 1, true, 1);
+  syncInputs();
+  build(0);
+  build(1);
+
+  input.settings.sampleLimit = 4096;
+  input.settings.maxBounces = 1;
+  const auto untextured = converge().roi();
+  ASSERT_GT(untextured.x, .1);
+
+  // Only mip 1 transmits. A mip-zero connection would block the area light.
+  sheet.transmissionTextureIndex = kMipTextureIndex;
+  sheet.transmissionTextureTransform = minifiedTextureTransform();
+  syncInputs();
+  const auto direct = converge().roi();
+  input.settings.maxBounces = 2;
+  const auto mis = converge().roi();
+  for (int channel = 0; channel < 3; ++channel) {
+    EXPECT_NEAR(direct[channel], untextured[channel], 1e-6);
+    EXPECT_NEAR(mis[channel], untextured[channel], .002);
+  }
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+}
 TEST_F(ReferencePathTraceGpu, ClosedIndexMatchedVolumeUsesTracedWorldThicknessAndBothFaces) {
   materialValues[0].color={0,0,0,1};materialValues[0].emissiveColor={4,2,1};
   materialValues.push_back(GpuMaterial{});auto& glass=materialValues[1];glass.color={1,1,1,1};
@@ -922,6 +1128,34 @@ TEST_F(ReferencePathTraceGpu, ClosedIndexMatchedVolumeUsesTracedWorldThicknessAn
   for(int c=0;c<3;++c) EXPECT_NEAR(pixels.roi()[c],expected[c],2e-6);
   EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples,0);EXPECT_EQ(tracer->diagnostics(0).rejectedSamples,0);
   save(pixels,"volume-world-absorption");
+}
+TEST_F(ReferencePathTraceGpu, MinifiedMetallicVolumeDoesNotCreateABoundaryAtAnOpaqueTexel) {
+  ASSERT_NO_FATAL_FAILURE(bindTransportMipTexture());
+  draws.clear();
+  auto& glass = materialValues.emplace_back();
+  glass.color = {.25f, .5f, .75f, 1};
+  glass.metallicRoughness = {1, 0};
+  glass.metallicRoughnessTextureIndex = kMipTextureIndex;
+  glass.metallicRoughnessTextureTransform = minifiedTextureTransform();
+  glass.transmissionFactor = 1;
+  glass.thicknessFactor = 1;
+  glass.ior = 1;
+  addVolumeBox({0, 0, 1}, {1, 1, .5f}, 1);
+  syncInputs();
+  build(0);
+  build(1);
+
+  // Only mip 0 is fully metallic. Traversal culls the single-sided back face
+  // as opaque, so shading must also reflect instead of entering the medium.
+  input.settings.sampleLimit = 32;
+  input.settings.maxBounces = 2;
+  const auto pixels = converge();
+  const auto reflected = pixels.roi();
+  for (int channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR(reflected[channel], glass.color[channel], 1e-6);
+  EXPECT_EQ(pixels.images[0][16 + 16 * 32].w, 32.f);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
 }
 TEST_F(ReferencePathTraceGpu, CameraInsideVolumeAttenuatesOpaqueHitsBeforeItsExit) {
   materialValues[0].color={0,0,0,1};materialValues[0].emissiveColor={4,2,1};
@@ -974,6 +1208,48 @@ TEST_F(ReferencePathTraceGpu, SolidRefractionReachesIndependentSnellPredictedInt
   EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples,0);EXPECT_EQ(tracer->diagnostics(0).rejectedSamples,0);
   materialValues[1].ior=1;syncInputs();EXPECT_LT(converge().roi().x,1);
   save(pixels,"volume-snell-interior-emitter");
+}
+TEST_F(ReferencePathTraceGpu, DispersiveGlassReachesSeparateSnellPredictedEmitters) {
+  vertices.clear(); indices.clear(); objects.clear(); draws.clear();
+  materialValues[0].color = {0, 0, 0, 1};
+  materialValues[0].emissiveColor = {1, 1, 1};
+  materialValues.emplace_back();
+  auto& glass = materialValues[1];
+  glass.color = {1, 1, 1, 1};
+  glass.transmissionFactor = 1.f;
+  glass.thicknessFactor = 1.f;
+  glass.ior = 1.5f;
+  glass.dispersion = 24.f;
+  glass.specularFactor = 0.f;
+  glass.metallicRoughness.y = 0.f;
+  addVolumeBox({0, 0, 0}, {5, 5, 1}, 1);
+  const std::array indicesOfRefraction{1.2, 1.5, 1.8};
+  for (double ior : indicesOfRefraction) {
+    const double refractedSine = .6 / ior;
+    const auto emitterX = float(-.25 + refractedSine / std::sqrt(1. - refractedSine * refractedSine));
+    addQuad({emitterX, 0, 0}, .029f, 1, true, 0);
+  }
+  input.data.inverseView = glm::translate(glm::mat4(1), glm::vec3(-1, 0, 2)) *
+      glm::rotate(glm::mat4(1), -std::asin(.6f), glm::vec3(0, 1, 0));
+  input.data.inverseProjection = glm::inverse(glm::orthoRH_ZO(-.125f, .125f, -.125f, .125f, 10.f, .1f));
+  lighting.environmentIntensity = 0.f;
+  syncInputs(); build(0); build(1);
+  input.settings.sampleLimit = 256;
+  input.settings.maxBounces = 3;
+  input.settings.rouletteDepth = 32;
+  const auto dispersed = converge().roi();
+  for (int channel = 0; channel < 3; ++channel) {
+    const double ior = indicesOfRefraction[channel];
+    EXPECT_NEAR(dispersed[channel], 1. / (ior * ior), .035);
+  }
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+
+  glass.dispersion = 0.f;
+  syncInputs();
+  const auto neutral = converge().roi();
+  for (int channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR(neutral[channel], 1. / 2.25, 1e-5);
 }
 TEST_F(ReferencePathTraceGpu, InsideTotalInternalReflectionIgnoresDisabledSpecularScale) {
   vertices.clear();indices.clear();objects.clear();draws.clear();++revision;

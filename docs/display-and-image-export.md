@@ -19,11 +19,9 @@ source, display settings, and whether UI is included. Transparent raster
 surfaces are composited before EXR readback. Export errors appear in Scene
 Controls; interactive errors leave the application running.
 
-Both published raster renderers use the same display and capture path. The
-progressive Vulkan path-tracing producer is available separately; integrating
-the complete path-tracing viewport remains a later publication step. When that
-viewport is active in the development editor, EXR metadata identifies its source
-as `path-trace-mean` and includes sample and diagnostic counts.
+Both raster renderers and the progressive path-tracing viewport use the same
+display and capture path. Path-traced EXR metadata identifies its source as
+`path-trace-mean` and includes sample and diagnostic counts.
 
 Command-line examples:
 
@@ -33,7 +31,19 @@ VulkanSceneRenderer.exe --tone-map neutral --save-display-grade grade.json
 VulkanSceneRenderer.exe --display-grade grade.json
 VulkanSceneRenderer.exe --display-mode lit --capture-frame 9 --screenshot scene.exr
 VulkanSceneRenderer.exe --capture-frame 9 --screenshot-viewport --screenshot viewport.png
+VulkanSceneRenderer.exe --render-technique path-tracing --path-spp 8 --path-sample-series 4,16,64 --screenshot reference.exr
 ```
+
+`--path-sample-series` exports raw EXR checkpoints from one accumulation with
+playback held at the starting pose. Give up to 64 strictly increasing counts
+from 1 to 16,777,216. The last count becomes the sample limit. In the example,
+the first image is `reference.samples-00000004.exr`. Each checkpoint has a
+capture sidecar with the exact requested and accepted samples per pixel, the
+seed and bounce limit, plus a telemetry file. The renderer shortens a batch
+as needed to reach the requested count. It stops the series on an accumulation
+reset or on unsupported or rejected samples at a checkpoint. Use a fixed
+camera and scene, and omit `--path-samples`, `--capture-frame`,
+`--warmup-frames`, `--capture-sequence`, and `--path-target-ms` for this mode.
 
 Presets contain all nine version 1 fields. Loading rejects duplicate or unknown
 fields, unsupported versions, nested malformed data, oversized input, and values
@@ -51,12 +61,14 @@ OpenCV with OpenEXR support. Run on a Vulkan device with validation layers:
 ```text
 python tests/validation/display_grade_runtime_regression.py PATH_TO_EXE OUTPUT_DIRECTORY
 python tests/validation/scene_linear_capture_runtime_regression.py PATH_TO_EXE OUTPUT_DIRECTORY
+python tests/validation/reference_sample_series_runtime_regression.py PATH_TO_EXE OUTPUT_DIRECTORY
 ```
 
 They check analytic tone curves and emission, transparent coverage, preset
 validation, raw-radiance independence, resize with TAA, and overlay exclusion on
-both raster renderers. The separate `reference_capture_metadata_runtime_regression.py`
-requires the development editor's integrated path-tracing viewport.
+both raster renderers. The reference series test checks exact checkpoints,
+batch-size independence, GPU-timed adaptive batches, and rejection of diagnosed
+paths.
 
 Adapted tone curves retain their permissive notices in
 `tone-curves-Apache-2.0.txt`; Windows packages include that license.

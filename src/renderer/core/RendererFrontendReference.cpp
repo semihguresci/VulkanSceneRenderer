@@ -20,6 +20,8 @@
 #include "Container/utility/SceneManager.h"
 #include "Container/utility/SwapChainManager.h"
 #include <glm/gtc/matrix_inverse.hpp>
+#include <algorithm>
+#include <cmath>
 #include <span>
 
 namespace container::renderer {
@@ -54,6 +56,8 @@ void RendererFrontend::ensureReferencePathResources() {
     subs_.referencePathTracePass = std::move(pass);
     referenceDiagnosticSeen_.assign(svc_.swapChainManager.imageCount(), 0);
     referenceDiagnosticEpoch_ = referenceUnsupported_ = referenceRejected_ = 0;
+    referenceAdaptiveBatch_.reset();
+    referenceTimedLightingMs_.reset();
   } catch (const std::exception& error) {
     referenceStatus_ = std::string("Raster fallback: ") + error.what();
     container::log::ContainerLogger::instance().renderer()->warn("{}", referenceStatus_);
@@ -68,10 +72,14 @@ bool RendererFrontend::recordReferencePathTrace(VkCommandBuffer command, const F
   const auto image = frame.runtime.imageIndex;
   auto& pass = *subs_.referencePathTracePass;
   ReferencePathTraceInput input;
-  input.settings.samplesPerFrame = svc_.config.pathSamplesPerFrame;
-  input.settings.sampleLimit = svc_.config.pathSampleLimit;
+  input.settings.samplesPerFrame = referenceAdaptiveBatch_.value_or(svc_.config.pathSamplesPerFrame);
+  input.settings.resetSamplesPerFrame = svc_.config.pathSamplesPerFrame;
+  input.settings.sampleLimit = screenshot_.pending
+      ? screenshot_.referenceSampleTarget.value_or(svc_.config.pathSampleLimit)
+      : svc_.config.pathSampleLimit;
   input.settings.maxBounces = svc_.config.pathMaxBounces;
   input.settings.seed = svc_.config.pathSeed;
+  input.settings.lens = subs_.guiManager ? subs_.guiManager->referencePathLens() : svc_.config.pathLens;
   const auto extent = svc_.swapChainManager.extent();
   const auto* camera = subs_.cameraController->camera();
   input.data.inverseProjection = glm::inverse(gltfAnimationCamera_ ? gltfAnimationCamera_->projection :
@@ -127,7 +135,8 @@ bool RendererFrontend::recordReferencePathTrace(VkCommandBuffer command, const F
   for (const auto& light : subs_.lightingManager->pointLightsSsbo()) hash(light);
   for (const auto& light : subs_.lightingManager->areaLightsSsbo()) hash(light);
   input.contentRevision = revision;
-  pass.prepareFrame(image, input);
+  pass.prepareFrame(image, input, subs_.sceneManager->gpuMaterialData(),
+      subs_.rayShadowManager->surfaceInstanceMetadata(image));
   pass.record(command, image);
   displayBarrier(command, pass.displayImage(), true);
   referenceRecorded_ = true;
@@ -154,6 +163,30 @@ void RendererFrontend::collectReferenceDiagnostics(uint32_t image) {
   const auto diagnostics = pass->diagnostics(image);
   referenceUnsupported_ += diagnostics.unsupportedSamples;
   referenceRejected_ += diagnostics.rejectedSamples;
+}
+
+void RendererFrontend::updateReferenceSampleBudget(float lightingMs) {
+  const auto* path = subs_.referencePathTracePass.get();
+  const float targetMs = svc_.config.pathTargetMs;
+  if (!referencePathActive() || !referenceRecorded_ || !path ||
+      referenceTimedSubmission_ == frame_.submittedFrameCount)
+    return;
+  referenceTimedSubmission_ = frame_.submittedFrameCount;
+  const uint32_t submitted = path->lastSubmittedSamples();
+  if (submitted == 0 || path->attemptedSamples() == svc_.config.pathSampleLimit)
+    return;
+
+  referenceAdaptiveBatch_.reset();
+  referenceTimedLightingMs_.reset();
+  if (!std::isfinite(lightingMs) || lightingMs <= 0.0f)
+    return;
+
+  // Fit the next batch to the retired Lighting pass, changing by at most 2x.
+  referenceTimedLightingMs_ = lightingMs;
+  const double estimate = std::floor(double(submitted) * targetMs / lightingMs);
+  const double lower = double((submitted + 1u) / 2u);
+  const double upper = double(std::min(64u, submitted * 2u));
+  referenceAdaptiveBatch_ = static_cast<uint32_t>(std::clamp(estimate, lower, upper));
 }
 
 void RendererFrontend::updateReferenceColorSource(uint32_t image, bool sceneLinear) {

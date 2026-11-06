@@ -160,15 +160,19 @@ void Application::screenshotCaptureLoop() {
       sequence ? sequence->frameCount
                : std::max(config_.screenshotCaptureFrame,
                config_.screenshotWarmupFrames + 1u);
+  const auto& sampleSeries = config_.pathSampleSeries;
+  const bool captureSampleSeries = !sampleSeries.empty();
+  auto checkpoint = sampleSeries.begin();
+  uint32_t seriesSamples = 0;
   const float fixedDt = config_.screenshotFixedTimestepSeconds > 0.0f
                             ? config_.screenshotFixedTimestepSeconds
                             : 1.0f / 60.0f;
 
-  for (uint32_t frameNumber = 1; frameNumber <= captureFrame &&
-                                     !window_->shouldClose();
+  for (uint32_t frameNumber = 1; !window_->shouldClose() &&
+       (captureSampleSeries ? checkpoint != sampleSeries.end() : frameNumber <= captureFrame);
        ++frameNumber) {
     window_->pollEvents();
-    renderer_->processInput(fixedDt);
+    renderer_->processInput(captureSampleSeries ? 0.0f : fixedDt);
     bool skip = false;
     std::optional<glm::uvec2> depthProbe;
     if (sequence) {
@@ -199,19 +203,30 @@ void Application::screenshotCaptureLoop() {
     if (skip)
       continue;
     std::filesystem::path capturePath;
-    if (!config_.screenshotCapturePath.empty() &&
-        (sequence ? sequence->captures(frameNumber)
-                  : frameNumber == captureFrame)) {
+    std::optional<uint32_t> sampleTarget;
+    if (checkpoint != sampleSeries.end()) {
+      seriesSamples += std::min(config_.pathSamplesPerFrame, *checkpoint - seriesSamples);
+      if (seriesSamples == *checkpoint) {
+        sampleTarget = *checkpoint;
+        ++checkpoint;
+      }
+    }
+    const bool captureThisFrame = captureSampleSeries ? sampleTarget.has_value()
+        : sequence ? sequence->captures(frameNumber) : frameNumber == captureFrame;
+    if (captureThisFrame && !config_.screenshotCapturePath.empty()) {
       capturePath = container::util::pathFromUtf8(config_.screenshotCapturePath);
-      if (sequence && frameNumber != captureFrame) {
+      if (sampleTarget || (sequence && frameNumber != captureFrame)) {
         std::ostringstream suffix;
-        suffix << ".frame-" << std::setw(4) << std::setfill('0') << frameNumber;
+        if (sampleTarget)
+          suffix << ".samples-" << std::setw(8) << std::setfill('0') << *sampleTarget;
+        else
+          suffix << ".frame-" << std::setw(4) << std::setfill('0') << frameNumber;
         auto filename = capturePath.stem();
         filename += suffix.str();
         filename += capturePath.extension();
         capturePath.replace_filename(filename);
       }
-      renderer_->requestScreenshot(capturePath, config_.screenshotViewportOnly);
+      renderer_->requestScreenshot(capturePath, config_.screenshotViewportOnly, sampleTarget);
     }
     bool submitted = false;
     for (uint32_t retry = 0; retry < 4 && !submitted; ++retry)
@@ -227,6 +242,8 @@ void Application::screenshotCaptureLoop() {
     if (renderer_->gfxCaptureComplete()) break;
   }
   vkDeviceWaitIdle(vulkanContext_->result().deviceWrapper->device());
+  if (checkpoint != sampleSeries.end())
+    throw std::runtime_error("Reference sample series ended before all checkpoints were exported");
 
   if (!config_.sceneExportPath.empty())
     renderer_->saveSceneModel(std::filesystem::u8path(config_.sceneExportPath));

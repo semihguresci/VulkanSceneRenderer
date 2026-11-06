@@ -1633,6 +1633,7 @@ void RendererFrontend::initialize() {
     subs_.guiManager->setGBufferViewMode(configuredDisplayMode(svc_.config));
     subs_.guiManager->setDisplayGrade(svc_.config.displayGrade);
     subs_.guiManager->setGpuHierarchyTransforms(gpuHierarchyEnabled_);
+    subs_.guiManager->setReferencePathLens(svc_.config.pathLens);
     if (svc_.config.hasManualExposureOverride)
       subs_.guiManager->setExposureSettings(exposureSettingsFromConfig(svc_.config));
     if (authoredSky)
@@ -1818,6 +1819,8 @@ void RendererFrontend::applyPendingRenderTechniqueChange() {
     subs_.temporalManager->reset("render technique changed");
   if (subs_.referencePathTracePass)
     subs_.referencePathTracePass->invalidateHistory();
+  referenceAdaptiveBatch_.reset();
+  referenceTimedLightingMs_.reset();
   referenceStatus_.clear();
   initializeRenderTechnique(requested, renderTechniqueName(requested));
   syncGuiRenderEngineOptions();
@@ -1915,6 +1918,10 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                            elapsedMilliseconds(phaseStart));
     if (subs_.renderPassGpuProfiler) {
       const auto gpuTimings = subs_.renderPassGpuProfiler->collectLatest();
+      if (svc_.config.pathTargetMs > 0.0f) {
+        const auto lighting = std::ranges::find(gpuTimings, RenderPassId::Lighting, &RendererPassGpuTiming::id);
+        updateReferenceSampleBudget(lighting == gpuTimings.end() ? 0.0f : lighting->milliseconds);
+      }
       telemetry->setPassGpuTimings(gpuTimings,
                                    subs_.renderPassGpuProfiler->timingSource());
       telemetry->setGpuProfilerStatus(RendererGpuProfilerTelemetry{
@@ -2008,6 +2015,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     subs_.ddgiManager->retireImage(imageIndex);
   collectReferenceDiagnostics(imageIndex);
   ensureReferencePathResources();
+  if (!svc_.config.pathSampleSeries.empty() && !referencePathActive())
+    throw std::runtime_error("Reference sample series requires an active path tracer. " + referenceStatus_);
   if (subs_.guiManager) {
     std::string status = referenceStatus_;
     if (subs_.referencePathTracePass) {
@@ -2222,7 +2231,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                            elapsedMilliseconds(phaseStart));
   }
 
-  if (!screenshot_.pending && subs_.guiManager) {
+  if (!screenshot_.pending && svc_.config.pathSampleSeries.empty() && subs_.guiManager) {
     const auto request = subs_.guiManager->consumeImageExportRequest();
     if (!request.path.empty()) {
       try {
@@ -2326,8 +2335,15 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     subs_.gpuHierarchyPass->commitFrame(imageIndex);
   commitGltfDeformationFrame();
   subs_.rayShadowManager->commit();
-  if (referenceRecorded_ && subs_.referencePathTracePass)
-    subs_.referencePathTracePass->commitFrame(imageIndex);
+  if (referenceRecorded_ && subs_.referencePathTracePass) {
+    auto& path = *subs_.referencePathTracePass;
+    const uint64_t epoch = path.historyResets();
+    path.commitFrame(imageIndex);
+    if (path.historyResets() != epoch) {
+      referenceAdaptiveBatch_.reset();
+      referenceTimedLightingMs_.reset();
+    }
+  }
   if (subs_.ddgiManager) {
     subs_.ddgiManager->commit();
     subs_.ddgiManager->submitAsync(imageIndex);
@@ -2337,6 +2353,19 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::QueueSubmit,
                            elapsedMilliseconds(phaseStart));
+  }
+
+  if (!svc_.config.pathSampleSeries.empty()) {
+    const uint32_t limit = screenshot_.pending
+        ? screenshot_.referenceSampleTarget.value_or(svc_.config.pathSampleLimit)
+        : svc_.config.pathSampleLimit;
+    if (limit <= referenceSeriesSamples_)
+      throw std::runtime_error("Reference sample series did not advance");
+    const uint32_t batch = std::min(svc_.config.pathSamplesPerFrame, limit - referenceSeriesSamples_);
+    if (!referenceRecorded_ || !subs_.referencePathTracePass ||
+        subs_.referencePathTracePass->attemptedSamples() != referenceSeriesSamples_ + batch)
+      throw std::runtime_error("Reference accumulation changed during the sample series");
+    referenceSeriesSamples_ += batch;
   }
 
   if (screenshotThisFrame) {
@@ -2962,6 +2991,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"allocatedImageBytes", temporal.allocatedBytes()}}}};
   if (referencePathActive()) {
     const auto* path = subs_.referencePathTracePass.get();
+    const auto lens = path ? path->effectiveLens() : std::nullopt;
     json["referencePath"] = {{"active", path != nullptr}, {"status", referenceStatus_},
         {"attemptedSamples", path ? path->attemptedSamples() : 0},
         {"historyResets", path ? path->historyResets() : 0},
@@ -2969,7 +2999,13 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"diagnosticEpoch", referenceDiagnosticEpoch_},
         {"unsupportedSamples", referenceUnsupported_}, {"rejectedSamples", referenceRejected_},
         {"samplesPerFrame", svc_.config.pathSamplesPerFrame}, {"sampleLimit", svc_.config.pathSampleLimit},
-        {"maxBounces", svc_.config.pathMaxBounces}, {"seed", svc_.config.pathSeed}};
+        {"scheduledSamplesPerFrame", referenceAdaptiveBatch_.value_or(svc_.config.pathSamplesPerFrame)},
+        {"lastSubmittedSamples", path ? path->lastSubmittedSamples() : 0},
+        {"adaptiveTargetMs", svc_.config.pathTargetMs},
+        {"lastTimedLightingMs", referenceTimedLightingMs_ ? nlohmann::json(*referenceTimedLightingMs_) : nlohmann::json(nullptr)},
+        {"maxBounces", svc_.config.pathMaxBounces}, {"seed", svc_.config.pathSeed},
+        {"apertureRadius", lens ? lens->apertureRadius : 0.0f},
+        {"focusDistance", lens ? nlohmann::json(lens->focusDistance) : nlohmann::json(nullptr)}};
   }
   if (subs_.gpuHierarchyPass && gpuHierarchyPrepared_) {
     const auto stats = subs_.gpuHierarchyPass->stats(gpuHierarchyImage_);
@@ -4498,7 +4534,8 @@ bool RendererFrontend::referencePathActive() const {
   return subs_.activeTechnique && subs_.activeTechnique->id() == RenderTechniqueId::PathTracing;
 }
 
-void RendererFrontend::requestScreenshot(std::filesystem::path outputPath, bool viewportOnly) {
+void RendererFrontend::requestScreenshot(std::filesystem::path outputPath, bool viewportOnly,
+                                         std::optional<uint32_t> referenceSampleTarget) {
   if (outputPath.empty()) {
     throw std::runtime_error("screenshot output path is empty");
   }
@@ -4509,6 +4546,10 @@ void RendererFrontend::requestScreenshot(std::filesystem::path outputPath, bool 
   const bool sceneLinear = extension == ".exr";
   if (!sceneLinear && extension != ".png")
     throw std::runtime_error("screenshot path must end in .png or .exr");
+  if (referenceSampleTarget &&
+      (!sceneLinear || !referencePathActive() || *referenceSampleTarget == 0 ||
+       *referenceSampleTarget > svc_.config.pathSampleLimit))
+    throw std::runtime_error("Reference sample checkpoints require path tracing, EXR and a valid sample count");
   if (sceneLinear &&
       frontendDisplayMode(subs_.guiManager.get(), configuredDisplayMode(svc_.config)) !=
           container::ui::GBufferViewMode::Lit)
@@ -4522,6 +4563,7 @@ void RendererFrontend::requestScreenshot(std::filesystem::path outputPath, bool 
   }
 
   screenshot_.outputPath = std::move(outputPath);
+  screenshot_.referenceSampleTarget = referenceSampleTarget;
   screenshot_.sceneLinear = sceneLinear;
   screenshot_.viewportOnly = viewportOnly && !sceneLinear;
   screenshot_.interactive = false;
@@ -6047,6 +6089,15 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
   if (!screenshot_.pending) {
     return;
   }
+  const auto* referenceCapture = referencePathActive() ? subs_.referencePathTracePass.get() : nullptr;
+  if (const auto target = screenshot_.referenceSampleTarget) {
+    if (!referenceCapture || referenceCapture->attemptedSamples() != *target)
+      throw std::runtime_error("Reference sample checkpoint did not reach " + std::to_string(*target) + " samples");
+    if (referenceUnsupported_ != 0 || referenceRejected_ != 0)
+      throw std::runtime_error("Reference sample checkpoint contains " +
+          std::to_string(referenceUnsupported_) + " unsupported and " +
+          std::to_string(referenceRejected_) + " rejected samples");
+  }
   if (frameSlot >= screenshot_.readbacks.size()) {
     throw std::runtime_error("screenshot readback buffer is not initialized");
   }
@@ -6112,15 +6163,27 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
                           {"width", readback.extent.width}, {"height", readback.extent.height},
                           {"colorSpace", screenshot_.sceneLinear ? "linear-sRGB" : srgb ? "sRGB" : "linear-sRGB"},
                           {"includesUi", !screenshot_.sceneLinear && !screenshot_.viewportOnly && subs_.guiManager != nullptr}};
-  const bool referenceCapture = referencePathActive() && subs_.referencePathTracePass;
   if (referenceCapture) {
+    const auto lens = referenceCapture->effectiveLens();
     metadata["referencePath"] = {
-        {"attemptedSamplesPerPixel", subs_.referencePathTracePass->attemptedSamples()},
-        {"sampleLimitReached", subs_.referencePathTracePass->attemptedSamples() >= svc_.config.pathSampleLimit},
-        {"historyResets", subs_.referencePathTracePass->historyResets()},
+        {"attemptedSamplesPerPixel", referenceCapture->attemptedSamples()},
+        {"sampleLimit", svc_.config.pathSampleLimit},
+        {"sampleLimitReached", referenceCapture->attemptedSamples() >= svc_.config.pathSampleLimit},
+        {"samplesPerFrame", svc_.config.pathSamplesPerFrame},
+        {"adaptiveTargetMs", svc_.config.pathTargetMs},
+        {"lastSubmittedSamples", referenceCapture->lastSubmittedSamples()},
+        {"maxBounces", svc_.config.pathMaxBounces},
+        {"seed", svc_.config.pathSeed},
+        {"apertureRadius", lens ? lens->apertureRadius : 0.0f},
+        {"focusDistance", lens ? nlohmann::json(lens->focusDistance) : nlohmann::json(nullptr)},
+        {"historyResets", referenceCapture->historyResets()},
         {"unsupportedSamples", referenceUnsupported_}, {"rejectedSamples", referenceRejected_},
         {"hasDiagnostics", referenceUnsupported_ != 0 || referenceRejected_ != 0},
         {"status", referenceStatus_}};
+    if (const auto target = screenshot_.referenceSampleTarget) {
+      metadata["referencePath"]["requestedSamplesPerPixel"] = *target;
+      metadata["referencePath"]["acceptedSamplesPerPixel"] = *target;
+    }
   }
   if (screenshot_.sceneLinear) {
     unsigned char* encoded = nullptr;
@@ -7672,7 +7735,8 @@ void RendererFrontend::presentSceneControls() {
         finishEditGestures();
         ensureSceneEditHistory();
         sceneEdits_->setHoverable(nodeIndex, hoverable);
-      });
+      },
+      subs_.sceneManager ? &subs_.sceneManager->animationSource() : nullptr);
 
   processLightEditRequests();
   processMaterialEditRequests();

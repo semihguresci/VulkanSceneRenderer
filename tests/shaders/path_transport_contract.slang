@@ -254,7 +254,7 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
             ResolveDeferredTextureBackedFactor(query.diffuseRoughness.x, query.controls.y));
         result.auxiliary.x = ResolveDeferredTextureBackedRoughness(query.diffuseRoughness.x, query.controls.y);
     }
-    if (operation >= 24u && operation <= 27u)
+    if (operation >= 24u && operation <= 29u)
     {
         // Ray-cone footprint contracts (#82): the reference renderer's slant
         // geometry, per-coordinate-set texel density on a reconstructed hit,
@@ -298,14 +298,75 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
         }
         else if (operation == 26u)
             result.valuePdf.x = RayConeSolidAngleSpread(float(query.controls.z));
-        else
+        else if (operation == 27u)
         {
             float gradient = max(query.previousMean.x, 0.0);
-            result.valuePdf = contractTexture.SampleGrad(contractSampler, query.light.xy,
-                float2(gradient, 0.0), float2(0.0, gradient));
+            float2 dx, dy;
+            RayConeTransformGradients(gradient, query.footprintA.xy, query.footprintA.zw, dx, dy);
+            result.valuePdf = contractTexture.SampleGrad(contractSampler, query.light.xy, dx, dy);
             result.directionPdf = contractTexture.SampleLevel(contractSampler,
                 query.light.xy, max(query.previousMean.y, 0.0));
         }
+        else if (operation == 28u)
+        {
+            // Shared KHR_materials_dispersion channel mapping.
+            GpuMaterial probe = (GpuMaterial)0;
+            probe.ior = query.previousMoment.w;
+            probe.dispersion = query.sampleValue.w;
+            result.valuePdf = float4(GpuMaterialChannelIors(probe),
+                GpuMaterialChannelIor(probe.ior, probe.dispersion, query.controls.z));
+        }
+        else
+        {
+            // Spectral dispersion estimator: each uniformly sampled channel
+            // transports its own IOR with a 3x weight; the Monte-Carlo mean
+            // converges to the per-channel quadrature of the transmitted
+            // delta through a smooth white dielectric.
+            PtVolumeBsdf volume;
+            volume.reflection = bsdf;
+            volume.transmission = query.sampleValue.rgb;
+            float authoredIor = query.previousMoment.w;
+            float dispersion = query.footprintA.x;
+            float3 channelWeights = 0.0.xxx;
+            for (uint channel = 0u; channel < 3u; ++channel)
+            {
+                volume.eta = GpuMaterialChannelIor(authoredIor, dispersion, channel);
+                PtBsdfSample sampled = PtSampleVolumeBsdf(volume, query.view.xyz,
+                    float3(0.99, 0.5, 0.5));
+                if (sampled.valid == 0u || sampled.delta == 0u || sampled.direction.z >= 0.0)
+                {
+                    result.auxiliary = float4(-1.0, float(channel), 0.0, 0.0);
+                    channelWeights = -1.0.xxx;
+                    break;
+                }
+                channelWeights[channel] = sampled.weight[channel];
+            }
+            if (channelWeights.x >= 0.0)
+            {
+                float3 estimate = 0.0.xxx;
+                const uint samples = 8192u;
+                for (uint i = 0u; i < samples; ++i)
+                {
+                    float random = PtRandom(query.controls.z, i, 0u, 9u, query.controls.y);
+                    uint channel = min(uint(random * 3.0), 2u);
+                    estimate += 3.0 * channelWeights[channel] *
+                        (channel == 0u ? float3(1, 0, 0) :
+                         channel == 1u ? float3(0, 1, 0) : float3(0, 0, 1));
+                }
+                result.valuePdf = float4(channelWeights, 1.0);
+                result.directionPdf = float4(estimate / float(samples), 0.0);
+                result.auxiliary = float4(channelWeights, 1.0);
+            }
+        }
+    }
+    if (operation == 30u)
+    {
+        bool orthographic = query.controls.y != 0u;
+        PtCameraRay ray = PtGenerateCameraRay(query.light.xy, query.controls.zw,
+            query.inverseProjection, query.inverseView, orthographic);
+        if (ray.valid != 0u)
+            result.valuePdf = float4(PtCameraRayFootprint(query.light.xy, query.controls.zw,
+                query.inverseProjection, query.inverseView, orthographic, ray.direction, 0.0.xxx, 0.0), 0.0, 1.0);
     }
     results[tid.x] = result;
 }

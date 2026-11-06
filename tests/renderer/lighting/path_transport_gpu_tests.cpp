@@ -132,9 +132,10 @@ protected:
     createContractTexture();
   }
 
-  // A 256x256 RGBA8 image with nine authored constant-colour mips. Exact byte
-  // values keep unorm decode (byte/255) exact for footprint-gradient checks.
-  static constexpr uint32_t kContractTextureSize = 256u;
+  // A rectangular RGBA8 image with nine authored constant-colour mips.
+  // Distinct dimensions let transformed gradients expose U/V swaps in LOD.
+  static constexpr uint32_t kContractTextureWidth = 256u;
+  static constexpr uint32_t kContractTextureHeight = 16u;
   static constexpr uint32_t kContractTextureMips = 9u;
   static glm::u8vec4 contractMipColour(uint32_t mip) {
     return {glm::u8(mip * 28u), glm::u8(255u - mip * 28u), 77u, 255u};
@@ -143,16 +144,18 @@ protected:
     std::vector<std::byte> pixels;
     std::vector<vk::BufferImageCopy> regions;
     for (uint32_t mip = 0; mip < kContractTextureMips; ++mip) {
-      const uint32_t extent = kContractTextureSize >> mip;
+      const uint32_t width = kContractTextureWidth >> mip;
+      const uint32_t height = std::max(kContractTextureHeight >> mip, 1u);
+      const size_t texelCount = size_t(width) * height;
       const auto colour = contractMipColour(mip);
       vk::BufferImageCopy region{};
       region.bufferOffset = pixels.size();
       region.imageSubresource = {vk::ImageAspectFlagBits::eColor, mip, 0, 1};
-      region.imageExtent = vk::Extent3D(extent, extent, 1);
+      region.imageExtent = vk::Extent3D(width, height, 1);
       regions.push_back(region);
-      pixels.resize(region.bufferOffset + size_t(extent) * extent * 4);
+      pixels.resize(region.bufferOffset + texelCount * 4);
       auto* target = reinterpret_cast<glm::u8vec4*>(pixels.data() + region.bufferOffset);
-      std::fill_n(target, size_t(extent) * extent, colour);
+      std::fill_n(target, texelCount, colour);
     }
     auto staging = memory->createBuffer(pixels.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
@@ -169,7 +172,7 @@ protected:
     VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
     imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
-    imageInfo.extent = {kContractTextureSize, kContractTextureSize, 1};
+    imageInfo.extent = {kContractTextureWidth, kContractTextureHeight, 1};
     imageInfo.mipLevels = kContractTextureMips;
     imageInfo.arrayLayers = 1;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -737,6 +740,48 @@ TEST_F(PathTransportGpu, OrthographicOriginsAndCameraRollUseColumnMajorWorldTran
     EXPECT_EQ(r.auxiliary.x,0);EXPECT_NEAR(r.auxiliary.y,9.9,2e-6);
   }
 }
+TEST_F(PathTransportGpu, OrthographicCameraFootprintSurvivesViewportEdgesAndWorldTranslation) {
+  Query origin; origin.controls = {30, 1, 200, 100};
+  origin.light = {23.25f, 17.75f, 0, 0};
+  origin.inverseProjection = glm::inverse(glm::orthoRH_ZO(-2.f, 2.f, -3.f, 3.f, 10.f, .1f));
+  Query translated = origin;
+  translated.inverseView = glm::translate(glm::mat4(1), glm::vec3(1e8f, -2e8f, 3e8f));
+  Query corner = translated;
+  corner.light = {199.75f, 99.75f, 0, 0};
+  Query single = translated;
+  single.controls.z = single.controls.w = 1;
+  single.light = {.5f, .5f, 0, 0};
+  const std::array input{origin, translated, corner, single};
+  const auto output = run(input);
+  for (size_t i = 0; i < input.size(); ++i) {
+    ASSERT_EQ(output[i].valuePdf.w, 1.f) << "case " << i;
+    const float width = std::max(4.f / input[i].controls.z, 6.f / input[i].controls.w);
+    EXPECT_NEAR(output[i].valuePdf.x, width, 1e-6f) << "case " << i;
+    EXPECT_EQ(output[i].valuePdf.y, 0.f) << "case " << i;
+  }
+}
+TEST_F(PathTransportGpu, PerspectiveCameraFootprintUsesBothAxesAtViewportEdges) {
+  Query edge; edge.controls = {30, 0, 200, 100};
+  edge.light = {199.75f, 50.25f, 0, 0};
+  edge.inverseProjection = glm::inverse(glm::perspectiveRH_ZO(float(pi / 2), 2.f, 100.f, .1f));
+  Query corner = edge;
+  corner.light.y = 99.75f;
+  const std::array input{edge, corner};
+  const auto output = run(input);
+  const auto direction = [](double x, double y) {
+    return glm::normalize(glm::dvec3((2.0 * x / 200.0 - 1.0) * 2.0,
+                                    1.0 - 2.0 * y / 100.0, -1.0));
+  };
+  for (size_t i = 0; i < input.size(); ++i) {
+    ASSERT_EQ(output[i].valuePdf.w, 1.f) << "case " << i;
+    const double x = input[i].light.x, y = input[i].light.y;
+    const auto center = direction(x, y);
+    const double spread = std::max(glm::length(direction(x + 1.0, y) - center),
+                                   glm::length(direction(x, y + 1.0) - center));
+    EXPECT_EQ(output[i].valuePdf.x, 0.f) << "case " << i;
+    EXPECT_NEAR(output[i].valuePdf.y, spread, 1e-6) << "case " << i;
+  }
+}
 TEST_F(PathTransportGpu, InvalidCameraProjectionsAndViewportCoordinatesRejectBeforeDivision) {
   Query base;base.controls={8,0,200,100};base.light={100,50,0,0};
   base.inverseProjection=glm::inverse(glm::perspectiveRH_ZO(float(pi/2),2.f,100.f,.1f));
@@ -1220,28 +1265,33 @@ TEST_F(PathTransportGpu, ReconstructedSurfaceCarriesPerSetTexelDensity) {
 }
 TEST_F(PathTransportGpu, EqualSolidAngleProbeSpreadMatchesEquivalentCone) {
   std::vector<Query> input;
-  for (uint32_t rays : {1u, 27u, 128u, 1024u, 4096u}) {
+  for (uint32_t rays : {1u, 2u, 3u, 4u, 5u, 27u, 128u, 1024u, 4096u}) {
     Query q; q.controls = {26, 0, rays, 0};
     input.push_back(q);
   }
   const auto output = run(input);
   for (size_t i = 0; i < input.size(); ++i) {
-    const double rays = input[i].controls.z;
-    const double sine = std::min(2.0 / std::sqrt(rays), 1.0);
-    const double expected = 2.0 * sine / std::sqrt(std::max(1.0 - sine * sine, 1e-6));
-    EXPECT_NEAR(float(output[i].valuePdf.x), float(expected), 1e-6f) << rays << " rays";
+    const uint32_t rays = input[i].controls.z;
+    const float spread = output[i].valuePdf.x;
+    if (rays <= 2u) {
+      // A hemisphere or larger needs a finite cap on the cone's diameter.
+      EXPECT_NEAR(spread, 2000.f, 1e-3f) << rays << " rays";
+      continue;
+    }
+    // Invert the spherical cap area 2*pi*(1 - cos(halfAngle)) = 4*pi/rays.
+    const double halfAngle = std::acos(1.0 - 2.0 / rays);
+    EXPECT_NEAR(spread, 2.0 * std::tan(halfAngle), 1e-6) << rays << " rays";
+    EXPECT_LT(spread, output[i - 1].valuePdf.x) << rays << " rays";
   }
-  // More rays per probe narrow the equivalent cone monotonically.
-  EXPECT_LT(float(output[4].valuePdf.x), float(output[2].valuePdf.x));
-  EXPECT_LT(float(output[2].valuePdf.x), float(output[1].valuePdf.x));
 }
 TEST_F(PathTransportGpu, ExplicitGradientSamplingSelectsAuthoredMip) {
   std::vector<Query> input;
   for (uint32_t mip = 0; mip < kContractTextureMips; ++mip) {
     Query q; q.controls = {27, 0, 0, 0};
     q.light = {.5f, .5f, 0, 0}; // constant mips: any UV works
+    q.footprintA = {1.f, 0.f, 0.f, 1.f}; // identity transform rows
     // A gradient of 2^mip / texture width addresses exactly mip level mip.
-    q.previousMean = {float(1u << mip) / float(kContractTextureSize), float(mip), 0, 0};
+    q.previousMean = {float(1u << mip) / float(kContractTextureWidth), float(mip), 0, 0};
     input.push_back(q);
   }
   const auto output = run(input);
@@ -1259,10 +1309,72 @@ TEST_F(PathTransportGpu, ExplicitGradientSamplingSelectsAuthoredMip) {
   // A zero gradient keeps the base mip, matching the production fallback.
   Query base; base.controls = {27, 0, 0, 0};
   base.light = {.5f, .5f, 0, 0};
+  base.footprintA = {1.f, 0.f, 0.f, 1.f};
   base.previousMean = {0, 0, 0, 0};
   const auto baseOutput = run(std::array{base});
   const auto baseColour = contractMipColour(0);
   EXPECT_NEAR(float(baseOutput[0].valuePdf.x), baseColour.x / 255.f, 1.f / 255.f);
   EXPECT_NEAR(float(baseOutput[0].valuePdf.y), baseColour.y / 255.f, 1.f / 255.f);
+}
+TEST_F(PathTransportGpu, RotatedTextureTransformSelectsMipOnRectangularImage) {
+  Query q; q.controls = {27, 0, 0, 0};
+  q.light = {.5f, .5f, 0, 0};
+  // Rotate a 4x1 scale by 90 degrees. At a UV gradient of 1/16, the two
+  // transformed gradients cover 4 and 16 texels, selecting mip 4.
+  // Treating the transform rows as gradients would select mip 6.
+  q.footprintA = {0.f, -1.f, 4.f, 0.f};
+  q.previousMean = {1.f / 16.f, 4.f, 0.f, 0.f};
+  const auto output = run(std::array{q});
+  const auto colour = contractMipColour(4);
+  EXPECT_NEAR(output[0].valuePdf.x, colour.x / 255.f, 1.f / 255.f);
+  EXPECT_NEAR(output[0].valuePdf.x, output[0].directionPdf.x, 1.f / 255.f);
+}
+TEST_F(PathTransportGpu, DispersionChannelIorsMatchTheSharedRasterMapping) {
+  std::vector<Query> input;
+  struct Case { float ior, dispersion; uint32_t channel; };
+  for (const auto& item : std::array<Case, 6>{{
+      {1.5f, 30.f, 0u}, {1.5f, 30.f, 1u}, {1.5f, 30.f, 2u},
+      {1.2f, 0.f, 0u}, {2.4f, 65.f, 0u}, {1.5f, 30.f, 2u}}}) {
+    Query q; q.controls = {28, 0, item.channel, 0};
+    q.previousMoment.w = item.ior;
+    q.sampleValue.w = item.dispersion;
+    input.push_back(q);
+  }
+  const auto output = run(input);
+  for (size_t i = 0; i < input.size(); ++i) {
+    const float ior = input[i].previousMoment.w, dispersion = input[i].sampleValue.w;
+    const uint32_t channel = input[i].controls.z;
+    const float safeIor = std::max(ior, 1.f);
+    const float halfSpread = (safeIor - 1.f) * .025f * std::max(dispersion, 0.f);
+    const float expected = channel == 0u ? std::max(safeIor - halfSpread, 1.f)
+        : channel == 2u ? safeIor + halfSpread : safeIor;
+    EXPECT_NEAR(output[i].valuePdf[channel], expected, 1e-6f) << "case " << i;
+    EXPECT_NEAR(float(output[i].valuePdf.w), expected, 1e-6f) << "case " << i;
+  }
+  // Red bends least, blue most, and zero dispersion keeps the authored IOR.
+  EXPECT_FLOAT_EQ(float(output[0].valuePdf.x), 1.5f - .5f * .025f * 30.f);
+  EXPECT_FLOAT_EQ(float(output[1].valuePdf.y), 1.5f);
+  EXPECT_FLOAT_EQ(float(output[2].valuePdf.z), 1.5f + .5f * .025f * 30.f);
+  EXPECT_FLOAT_EQ(float(output[3].valuePdf.x), 1.2f);
+}
+TEST_F(PathTransportGpu, SpectralDispersionEstimatorMatchesPerChannelQuadrature) {
+  Query q; q.controls = {29, 4242, 17, 0};
+  q.view = {0, 0, 1, 0};
+  q.diffuseRoughness = {0, 0, 0, 0};   // no diffuse lobe, zero roughness
+  q.f0Scale = {.04f, .04f, .04f, 1};
+  q.sampleValue = {1, 1, 1, 0};        // white transmission
+  q.previousMoment.w = 1.5f;           // authored IOR
+  q.footprintA.x = 30.f;               // authored dispersion
+  const auto output = run(std::array{q});
+  ASSERT_EQ(output.size(), 1u);
+  // All three channels sampled valid transmitted delta events.
+  EXPECT_FLOAT_EQ(float(output[0].auxiliary.w), 1.f);
+  EXPECT_GT(float(output[0].auxiliary.x), float(output[0].auxiliary.y));
+  EXPECT_GT(float(output[0].auxiliary.y), float(output[0].auxiliary.z));
+  // The 3x-weighted uniform channel estimate converges to each channel's
+  // own transmitted weight within Monte-Carlo noise (8192 samples).
+  for (uint32_t channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR(output[0].directionPdf[channel], output[0].valuePdf[channel], .05f)
+        << "channel " << channel;
 }
 } // namespace

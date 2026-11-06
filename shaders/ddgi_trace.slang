@@ -36,12 +36,10 @@ float4 DdgiTextureGrad(uint index, float4 uv, GpuTextureTransform transform, flo
     float gradient = transform.row0.w >= 0.5 ? texGrad.y : texGrad.x;
     if (gradient > 0.0)
     {
-        // Probe-ray footprints (#82): the ray cone's slant-corrected world
-        // diameter becomes a per-set UV gradient, filtered exactly like the
-        // reference renderer's SampleGrad route. All authored UV transforms
-        // still apply through the gradient's linear rows.
+        float2 dx, dy;
+        RayConeTransformGradients(gradient, transform.row0.xy, transform.row1.xy, dx, dy);
         return materialTextures[textureIndex].SampleGrad(materialSamplers[samplerIndex],
-            coord, transform.row0.xy * gradient, transform.row1.xy * gradient);
+            coord, dx, dy);
     }
     return materialTextures[textureIndex].SampleLevel(materialSamplers[samplerIndex], coord, 0.0);
 }
@@ -170,7 +168,7 @@ DdgiThinGlassResult DdgiSurfaceThinGlass(RaySurfacePoint point, GpuMaterial mate
         (uint(uDdgi.intensityBias.w) & 3u) != 0u);
 }
 DdgiDielectricResult DdgiSurfaceDielectric(RaySurfacePoint point, GpuMaterial material,
-                                         float3 direction, uint seed, float2 texGrad)
+                                         float3 direction, uint seed, float2 texGrad, float ambientIor)
 {
     if (point.valid == 0u || (uint(uDdgi.intensityBias.w) & 2u) == 0u)
         return (DdgiDielectricResult)0;
@@ -178,7 +176,7 @@ DdgiDielectricResult DdgiSurfaceDielectric(RaySurfacePoint point, GpuMaterial ma
     return DdgiSampleDielectric(material, surface.flags, surface.transmission,
         surface.alpha, surface.metallic, surface.roughness, surface.tint, direction,
         point.geometricNormal, point.frontFace != 0u,
-        float2(DdgiRandom(seed), DdgiRandom(seed ^ 0xa511e9b3u)), true);
+        float2(DdgiRandom(seed), DdgiRandom(seed ^ 0xa511e9b3u)), true, ambientIor);
 }
 float DdgiNextRayMinimum(float hitDistance, float minimumBias)
 {
@@ -415,8 +413,7 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
     float3 throughput = 1.0.xxx;
     float traveled = 0.0;
     float segmentBias = 0.0;
-    uint mediumInstance = 0xffffffffu;
-    uint mediumMaterial = 0xffffffffu;
+    DdgiMediumStack media = (DdgiMediumStack)0;
     // Probe-ray footprints (#82): each of rayCount equal-solid-angle sphere
     // samples owns 4*pi/rayCount steradians; the equivalent cone's diameter
     // growth per unit travel drives hit-texture filtering.
@@ -429,7 +426,7 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
         {
             // An unmatched volume entry must never become a clear environment
             // path, including clipped, open or malformed transmitting meshes.
-            if (mediumInstance != 0xffffffffu)
+            if (media.count != 0u)
             {
                 sample.radianceAndDistance.w = clamp(traveled, 0.0, uDdgi.trace.x);
                 sample.directionAndReserved.w = 2.0;
@@ -450,23 +447,24 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
         float worldFoot = RayConeWorldFootprint(cone, hit.distance,
             point.geometricNormal, -ray.Direction);
         float2 texGrad = worldFoot * point.texelDensity;
+        bool entering = point.frontFace != 0u;
+        DdgiMedium boundary = { hit.instanceIndex, instance.info.y, material.ior };
         DdgiDielectricResult dielectric = DdgiSurfaceDielectric(point, material, ray.Direction,
-            DdgiHash(tid.x ^ (uDdgi.frame.x * 12347u) ^ (crossed * 0x68bc21ebu)), texGrad);
-        if (mediumInstance != 0xffffffffu)
+            DdgiHash(tid.x ^ (uDdgi.frame.x * 12347u) ^ (crossed * 0x68bc21ebu)), texGrad,
+            DdgiAmbientIor(media, entering));
+        if (media.count != 0u)
         {
             float3 absorption;
-            if (!DdgiVolumeAbsorption(uMaterials[mediumMaterial], hit.distance + segmentBias, absorption))
+            DdgiMedium current = media.media[media.count - 1u];
+            if (!DdgiVolumeAbsorption(uMaterials[current.materialIndex], hit.distance + segmentBias, absorption))
             {
                 sample.radianceAndDistance.w = clamp(totalDistance, 0.0, uDdgi.trace.x);
                 sample.directionAndReserved.w = 2.0;
                 break;
             }
             throughput *= absorption;
-            // Single homogeneous volumes are supported. A different instance,
-            // a front face before the matching exit, or an opaque interior
-            // remains blocking; nested and intersecting media need a medium stack.
-            if (hit.instanceIndex != mediumInstance || point.frontFace != 0u ||
-                dielectric.supported == 0u || dielectric.volume == 0u)
+            // An interior opaque surface or thin sheet remains blocking.
+            if (dielectric.supported == 0u || dielectric.volume == 0u)
             {
                 sample.radianceAndDistance.w = clamp(totalDistance, 0.0, uDdgi.trace.x);
                 sample.directionAndReserved.w = 2.0;
@@ -476,7 +474,7 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
         if (dielectric.supported != 0u)
         {
             if (crossed >= DDGI_MAX_GLASS_CROSSINGS ||
-                (dielectric.volume != 0u && mediumInstance == 0xffffffffu && point.frontFace == 0u))
+                (dielectric.volume != 0u && !DdgiCanCrossMedium(media, boundary, entering)))
             {
                 sample.radianceAndDistance.w = clamp(totalDistance, 0.0, uDdgi.trace.x);
                 sample.directionAndReserved.w = 2.0;
@@ -491,18 +489,7 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
                 break;
             }
             if (dielectric.volume != 0u && dielectric.totalInternalReflection == 0u)
-            {
-                if (point.frontFace != 0u)
-                {
-                    mediumInstance = hit.instanceIndex;
-                    mediumMaterial = instance.info.y;
-                }
-                else
-                {
-                    mediumInstance = 0xffffffffu;
-                    mediumMaterial = 0xffffffffu;
-                }
-            }
+                DdgiCommitMediumCrossing(media, boundary, entering);
             // A changed direction starts a new segment. Preserve total world
             // distance and the original probe direction in the visibility atlas.
             // This is a conservative path-distance moment, not a refracted

@@ -162,6 +162,7 @@ struct RayShadowManager::Impl {
     std::unique_ptr<Buffer> instances;
     std::shared_ptr<const Buffer> surfaceTriangles;
     std::unique_ptr<Buffer> surfaceInstances;
+    std::vector<RayInstanceData> surfaceMetadata;
     bool hasSurfaceData{false};
   };
   struct Slot {
@@ -386,6 +387,11 @@ RaySurfaceGpuBindings RayShadowManager::surfaceBindings(uint32_t image) const {
           generation->surfaceInstances->size,
           uint32_t(generation->triangles->size / sizeof(RayTriangleData)),
           generation->as->stats().instanceCount};
+}
+std::span<const RayInstanceData> RayShadowManager::surfaceInstanceMetadata(uint32_t image) const {
+  if (!surfaceBindings(image))
+    return {};
+  return impl_->slots[image].generation->surfaceMetadata;
 }
 const std::string &RayShadowManager::surfaceUnsupportedReason() const {
   return impl_->surfaceUnsupported;
@@ -916,6 +922,8 @@ void RayShadowManager::recordBuild(VkCommandBuffer cmd, uint32_t image) {
       (void)borrowed.release();
       throw;
     }
+    if (generation->hasSurfaceData)
+      generation->surfaceMetadata = std::move(p.pending->instances.instanceData);
     p.current = std::move(generation);
     p.pending.reset();
     ++p.generationId;

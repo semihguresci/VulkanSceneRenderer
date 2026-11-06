@@ -176,8 +176,9 @@ public:
   // Process keyboard / camera input for this tick.
   void processInput(float deltaTime);
 
-  // Capture the next submitted swapchain image to an sRGB PNG.
-  void requestScreenshot(std::filesystem::path outputPath, bool viewportOnly = false);
+  // Capture the next submitted frame as an sRGB PNG or scene-linear EXR.
+  void requestScreenshot(std::filesystem::path outputPath, bool viewportOnly = false,
+                         std::optional<uint32_t> referenceSampleTarget = std::nullopt);
   void saveSceneModel(const std::filesystem::path& outputPath);
   bool selectMaterialVariant(std::optional<size_t> variant,bool recordHistory=true);
   void applyTemporalCapture(const container::temporal::CaptureSample &sample);
@@ -380,12 +381,16 @@ private:
   bool recordReferencePathTrace(VkCommandBuffer, const FrameRecordParams&);
   void finishReferencePathTrace(VkCommandBuffer);
   void collectReferenceDiagnostics(uint32_t imageIndex);
+  void updateReferenceSampleBudget(float lightingMs);
   void updateReferenceColorSource(uint32_t imageIndex, bool sceneLinear);
   void publishReferenceColorBinding(uint32_t imageIndex);
   std::vector<bool> referenceColorBound_;
   std::vector<uint64_t> referenceDiagnosticSeen_;
   uint64_t referenceDiagnosticEpoch_{}, referenceUnsupported_{}, referenceRejected_{};
   bool referenceRecorded_{};
+  uint64_t referenceTimedSubmission_{};
+  std::optional<uint32_t> referenceAdaptiveBatch_;
+  std::optional<float> referenceTimedLightingMs_;
   std::string referenceStatus_;
 
   // ---- grouped state
@@ -669,6 +674,7 @@ private:
 
   struct ScreenshotState {
     std::filesystem::path outputPath{};
+    std::optional<uint32_t> referenceSampleTarget{};
     bool sceneLinear{false};
     bool viewportOnly{false};
     bool interactive{false};
@@ -676,6 +682,7 @@ private:
     std::vector<HostReadbackSlot> readbacks{};
   };
   ScreenshotState screenshot_{};
+  uint32_t referenceSeriesSamples_{};
 
   struct DepthVisibilityFrameSlot {
     HostReadbackSlot readback{};

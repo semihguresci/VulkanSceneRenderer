@@ -119,6 +119,18 @@ target_link_libraries(VulkanSceneRenderer_scene PUBLIC
 )
 
 # ── 6. UI (ImGui) ───────────────────────────────────────────────────────────
+add_library(VulkanSceneRenderer_gpu_hardware_monitor
+    ../renderer/core/GpuHardwareMonitor.cpp
+)
+target_compile_features(VulkanSceneRenderer_gpu_hardware_monitor PUBLIC cxx_std_23)
+target_include_directories(VulkanSceneRenderer_gpu_hardware_monitor PUBLIC ${_UTILITY_INCLUDE_DIR})
+target_link_libraries(VulkanSceneRenderer_gpu_hardware_monitor PUBLIC Dep_VulkanCore)
+if(WIN32)
+    target_link_libraries(VulkanSceneRenderer_gpu_hardware_monitor PRIVATE shell32 ole32 uuid)
+elseif(CMAKE_DL_LIBS)
+    target_link_libraries(VulkanSceneRenderer_gpu_hardware_monitor PRIVATE ${CMAKE_DL_LIBS})
+endif()
+
 add_library(VulkanSceneRenderer_ui
     GltfAnimationControls.cpp
     LightEditControls.cpp
@@ -145,7 +157,7 @@ target_link_libraries(VulkanSceneRenderer_ui PUBLIC
     VulkanSceneRenderer_scene
     VulkanSceneRenderer_bim_ui_support
     VulkanSceneRenderer_openvdb_processing
-    PRIVATE nlohmann_json::nlohmann_json
+    PRIVATE nlohmann_json::nlohmann_json VulkanSceneRenderer_gpu_hardware_monitor
 )
 if(TARGET miniz::miniz)
     target_link_libraries(VulkanSceneRenderer_ui PUBLIC miniz::miniz)

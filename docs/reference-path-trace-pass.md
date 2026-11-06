@@ -4,10 +4,8 @@
 reference rendering. It contains the complete currently developed transport
 kernel: diffuse/GGX reflection, thin-sheet transmission, closed homogeneous
 dielectrics, nested media, traced-distance Beer absorption, stochastic alpha
-coverage, emissive geometry and direct environment/point/spot/area/directional
-lighting with MIS. Emissive meshes are reached by path sampling; mesh-light
-next-event sampling remains a gap. The viewport frontend is a separate
-publication milestone.
+coverage, unlit surfaces and direct environment, point, spot, area, directional
+and mesh lighting with MIS.
 
 The shared layouts are updated together in host and Slang code:
 
@@ -32,6 +30,8 @@ Create resources with the shared material and light descriptor layouts. Both
 sets must expose their consumed bindings to compute, with valid ranges and
 resources for the whole submission. Supply a fence-retained surface scene from
 `RayShadowManager::surfaceBindings()`, or explicitly declare an empty scene.
+Pass the matching host material and ray-instance metadata to enable mesh-light
+sampling. Each retired frame slot uploads the eligible emissive instance IDs.
 `limits.z` is the material count; instance/triangle counts come from the borrowed
 scene bindings. `limits.w` uses section=1, orthographic=2, cube environment=4,
 unsupported scene=8 and volume-material presence=16. The volume bit enables
@@ -56,7 +56,7 @@ bound and the medium stack holds eight nested volumes. Unsupported paths are
 shown in diagnostic display and counted separately from rejected numeric samples;
 diagnostic colors never enter raw moments. Incompatible overlaps, open/clipped
 solid media, coverage holes in solid boundaries, bending delta connections to
-point/directional lights, dispersion, participating media and remaining material
+point/directional lights, participating media and remaining material
 layers are still gaps. Filtering, shading-normal energy, convergence/comparison
 and broad scene acceptance remain part of issue #47.
 

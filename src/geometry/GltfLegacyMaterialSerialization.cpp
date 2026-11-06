@@ -1,5 +1,6 @@
 #include <Container/geometry/GltfLegacyMaterialSerialization.h>
 #include <Container/geometry/GltfCameraAuthoring.h>
+#include <Container/geometry/GltfXmpMetadata.h>
 
 #include <nlohmann/json.hpp>
 
@@ -132,18 +133,19 @@ class Output {
 };
 class LegacySax final : public nlohmann::json_sax<nlohmann::json> {
  using Json=nlohmann::json;
- enum class Pending {None,Materials,Pbr,Cameras,Perspective,OmitFar};
+ enum class Pending {None,Materials,Pbr,Cameras,Perspective,OmitFar,Extensions};
  struct Context {bool object{},first{true},root{},materials{},material{},pbr{},hasPbr{},cameras{},camera{},perspective{};
-  Pending pending{};size_t index{},materialIndex{},cameraIndex{};};
- std::array<Context,256> stack_{};size_t depth_{};uint64_t values_{};bool sawMaterials_{},sawCameras_{};
+  Pending pending{};size_t index{},materialIndex{},cameraIndex{};bool rootExtensions{};};
+ std::array<Context,256> stack_{};size_t depth_{};uint64_t values_{};bool sawMaterials_{},sawCameras_{},sawExtensions_{};
  std::span<const tinygltf::Material> materials_;std::span<const tinygltf::Camera> cameras_;
  bool materialRequired_{},cameraRequired_{};Output& output_;const GltfLegacyMaterialSerializationLimits& limits_;
+ std::string_view xmpPackage_;
  void visit() {if(++values_>limits_.maxJsonValues) fail("serialized JSON traversal exceeds its capacity");}
  void prefix(bool object=false,bool array=false) {
   visit();if(!depth_) return;auto& parent=stack_[depth_-1];
   if((parent.materials || parent.cameras) && !object) fail("staged source table contains a non-object record");
   if(parent.object) {
-   if(((parent.pending==Pending::Pbr || parent.pending==Pending::Perspective) && !object) ||
+   if(((parent.pending==Pending::Pbr || parent.pending==Pending::Perspective || parent.pending==Pending::Extensions) && !object) ||
        ((parent.pending==Pending::Materials || parent.pending==Pending::Cameras) && !array) || parent.pending==Pending::OmitFar)
     fail("staged serializer produced a malformed compatibility field");
    parent.pending=Pending::None;
@@ -151,6 +153,9 @@ class LegacySax final : public nlohmann::json_sax<nlohmann::json> {
  }
  void property(Context& context,std::string_view name) {
   if(!context.first) output_.character(',');context.first=false;output_.string(name);output_.character(':');
+ }
+ void xmp(Context& context) {
+  property(context,kGltfXmpExtension);output_.text(xmpPackage_);
  }
  bool hasKnown(const tinygltf::ParameterMap& map) const {
   for(const auto name:textureFields) if(map.contains(std::string(name))) return true;
@@ -175,8 +180,10 @@ class LegacySax final : public nlohmann::json_sax<nlohmann::json> {
   visit();stack_[depth_-1].pending=Pending::None;return true;
  }
  public:
- LegacySax(const tinygltf::Model& model,bool materialRequired,bool cameraRequired,Output& output,const GltfLegacyMaterialSerializationLimits& limits):
-  materials_(model.materials),cameras_(model.cameras),materialRequired_(materialRequired),cameraRequired_(cameraRequired),output_(output),limits_(limits) {}
+ LegacySax(const tinygltf::Model& model,bool materialRequired,bool cameraRequired,Output& output,
+     const GltfLegacyMaterialSerializationLimits& limits,std::string_view xmpPackage):
+  materials_(model.materials),cameras_(model.cameras),materialRequired_(materialRequired),cameraRequired_(cameraRequired),
+  output_(output),limits_(limits),xmpPackage_(xmpPackage) {}
  bool null() override {return scalar("null");}
  bool boolean(bool value) override {return scalar(value?"true":"false");}
  bool number_integer(number_integer_t value) override {if(omitFar(double(value))) return true;prefix();output_.integer(value);return true;}
@@ -191,6 +198,7 @@ class LegacySax final : public nlohmann::json_sax<nlohmann::json> {
    context.material=parent.materials;context.pbr=parent.material && parent.pending==Pending::Pbr;
    context.materialIndex=parent.materials?parent.index:parent.materialIndex;
    context.camera=parent.cameras;context.perspective=parent.camera && parent.pending==Pending::Perspective;
+   context.rootExtensions=parent.root && parent.pending==Pending::Extensions;
    context.cameraIndex=parent.cameras?parent.index:parent.cameraIndex;
    if(context.material && context.materialIndex>=materials_.size()) fail("staged material table grew unexpectedly");
    if(context.camera && context.cameraIndex>=cameras_.size()) fail("staged camera table grew unexpectedly");
@@ -208,6 +216,10 @@ class LegacySax final : public nlohmann::json_sax<nlohmann::json> {
   else if(context.root && value=="cameras") {if(sawCameras_) fail("duplicate serialized camera table");sawCameras_=true;context.pending=Pending::Cameras;}
   else if(context.material && value=="pbrMetallicRoughness") {context.hasPbr=true;context.pending=Pending::Pbr;}
   else if(context.camera && value=="perspective") context.pending=Pending::Perspective;
+  else if(context.root && value=="extensions" && !xmpPackage_.empty()) {
+   if(sawExtensions_) fail("duplicate serialized root extensions");
+   sawExtensions_=true;context.pending=Pending::Extensions;
+  }
   else context.pending=Pending::None;
   return true;
  }
@@ -221,6 +233,11 @@ class LegacySax final : public nlohmann::json_sax<nlohmann::json> {
     property(context,"pbrMetallicRoughness");output_.character('{');Context pbr;pbr.object=true;parameters(pbr,material.values,depth_+1);output_.character('}');
    }
    parameters(context,material.additionalValues,depth_);
+  }
+  if(context.rootExtensions) xmp(context);
+  if(context.root && !sawExtensions_ && !xmpPackage_.empty()) {
+   property(context,"extensions");output_.character('{');
+   Context extensions;xmp(extensions);output_.character('}');
   }
   output_.character('}');--depth_;return true;
  }
@@ -251,9 +268,9 @@ bool ValidateSceneSerializationCompatibilityInput(const tinygltf::Model& model,c
  return cameraPreflight(model.cameras,limits).present || material.present;
 }
 std::optional<std::filesystem::path> StageLegacyMaterialSerialization(const tinygltf::Model& model,const std::filesystem::path& stagedFile,
-    bool binary,const GltfLegacyMaterialSerializationLimits& limits) {
+    bool binary,const GltfLegacyMaterialSerializationLimits& limits,std::string_view xmpPackage) {
  const auto prepared=preflight(model.materials,model.textures.size(),limits);const auto camera=cameraPreflight(model.cameras,limits);const bool cameraRewrite=camera.present;
- if(!prepared.present && !cameraRewrite) return {};
+ if(!prepared.present && !cameraRewrite && xmpPackage.empty()) return {};
  const auto size=std::filesystem::file_size(stagedFile);std::ifstream input(stagedFile,std::ios::binary);if(!input) fail("cannot read staged scene");
  uint64_t jsonBytes=size,jsonStart{},tailStart{};
  if(binary) {
@@ -267,15 +284,17 @@ std::optional<std::filesystem::path> StageLegacyMaterialSerialization(const tiny
    if(count%4 || count>size-position-8 || type==0x4e4f534a) fail("staged GLB trailing chunk is malformed");position=add(position,add(8,count));
   }
  }
- if(!jsonBytes || jsonBytes>limits.maxJsonBytes || add(jsonBytes,prepared.encodedGrowth)>limits.maxJsonBytes ||
-    add(add(add(multiply(jsonBytes,2),prepared.bytes),camera.bytes),128*1024)>limits.maxOwnedBytes) fail("staged material JSON exceeds its finite byte reservation");
+ const auto growth=add(prepared.encodedGrowth,add(xmpPackage.size(),xmpPackage.empty()?0:64));
+ if(!jsonBytes || jsonBytes>limits.maxJsonBytes || add(jsonBytes,growth)>limits.maxJsonBytes ||
+    add(add(add(multiply(jsonBytes,2),prepared.bytes),camera.bytes),add(xmpPackage.size(),128*1024))>limits.maxOwnedBytes)
+   fail("staged scene JSON exceeds its finite byte reservation");
  input.seekg(std::streamoff(jsonStart));std::string json(size_t(jsonBytes),'\0');
  if(!input.read(json.data(),std::streamsize(json.size()))) fail("cannot read complete staged JSON");
  auto replacement=stagedFile;replacement+=".legacy-materials";
  if(std::filesystem::exists(replacement)) fail("legacy material staging output already exists");
  std::ofstream output(replacement,std::ios::binary|std::ios::trunc);if(!output) fail("cannot open legacy material staging output");
  if(binary) for(int i=0;i<5;++i) write32(output,0);
- Output emitted(output,limits.maxJsonBytes);LegacySax sax(model,prepared.present,cameraRewrite,emitted,limits);
+ Output emitted(output,limits.maxJsonBytes);LegacySax sax(model,prepared.present,cameraRewrite,emitted,limits,xmpPackage);
  if(!nlohmann::json::sax_parse(json,&sax)) fail("cannot parse staged JSON");sax.complete();
  if(binary) {
   const auto padding=(4-emitted.size()%4)%4;for(uint64_t i=0;i<padding;++i) output.put(' ');

@@ -1,5 +1,6 @@
 #include <Container/geometry/GltfCapabilities.h>
 #include <Container/geometry/GltfCompression.h>
+#include <Container/geometry/GltfXmpMetadata.h>
 #include <Container/utility/TextureImageData.h>
 
 #include <algorithm>
@@ -88,6 +89,8 @@ const std::array kExtensions{
                         "Implemented numeric node, material, texture-transform, punctual-light and camera targets are evaluated; arbitrary Object Model properties are diagnosed as unsupported"},
     ExtensionCapability{"KHR_materials_variants", Supported,
                         "Validated material mappings, undoable scene selection and portable variant export"},
+    ExtensionCapability{kGltfXmpExtension, Supported,
+                        "Read-only XMP packet inspection and portable metadata export"},
     ExtensionCapability{"OMI_environment_sky", Unsupported,
                         "Draft optional plain and gradient sky preview requires explicit opt-in; required extension is unsupported"},
 };

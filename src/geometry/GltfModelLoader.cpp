@@ -3,6 +3,7 @@
 #include <Container/geometry/GltfImageSources.h>
 #include <Container/geometry/GltfNodeFlags.h>
 #include <Container/geometry/GltfExtendedMaterials.h>
+#include <Container/geometry/GltfXmpMetadata.h>
 
 #include <Container/geometry/Mesh.h>
 
@@ -1141,6 +1142,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
   uintmax_t remainingBytes = options.maxInputBytes;
   uintmax_t imageAllocationBudget = options.maxInputBytes;
   CompressionSourcePlan compressionPlan;
+  std::optional<GltfXmpImport> xmp;
   std::unordered_map<std::string, uint64_t> syntheticBuffers;
   auto syntheticSize = [&](const std::string& filename) -> std::optional<uint64_t> {
     const auto name = std::filesystem::path(
@@ -1235,18 +1237,24 @@ tinygltf::Model loadGltfModel(const std::string& path,
               const auto extendedMaterials = ValidateGltfExtendedMaterialsJson(json);
               imageSources = SelectTextureImageSources(json);
               const auto instancing = ValidateMeshGpuInstancingJson(json, options.instancing);
+              xmp.emplace(json);
+              for (const auto& warning : xmp->warnings()) {
+                CapabilityDiagnostic diagnostic{CapabilitySeverity::Warning, "xmp_metadata", path, warning};
+                std::clog << formatCapabilityDiagnostic(diagnostic) << std::endl;
+                if (diagnostics) diagnostics->push_back(std::move(diagnostic));
+              }
               {
                 static std::atomic<uint64_t> sequence{};
                 const std::string prefix = "__container_gltf_" + std::to_string(
                     std::chrono::steady_clock::now().time_since_epoch().count()) + "_" +
                     std::to_string(sequence.fetch_add(1)) + "_";
-                bool rewritten = false;
+                bool rewritten = xmp->rewroteManifest();
                 parserImageReferences = prepareImageReferences(json, syntheticBuffers, prefix, rewritten);
                 stagedImages.resize(parserImageReferences.size());
                 compressionPlan = InspectCompressedGltfSource(json, isBinaryGltf(path), options.compression);
                 uint64_t retainedBytes = compressionPlan.decodedBytes;
                 for (const uint64_t bytes : {instancing.decodedBytes, nodeFlags.retainedBytes,
-                                            extendedMaterials.retainedBytes}) {
+                                            extendedMaterials.retainedBytes, uint64_t(xmp->retainedBytes())}) {
                   if (bytes > UINT64_MAX - retainedBytes)
                     throw std::invalid_argument("glTF decoded/instance/node/material output byte count overflows");
                   retainedBytes += bytes;
@@ -1325,6 +1333,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
     (void)ParseMeshGpuInstancing(model, options.instancing);
     (void)ParseGltfNodeFlags(model);
     (void)ParseGltfExtendedMaterials(model);
+    if (xmp) std::move(*xmp).retain(model);
     if (!options.decodeImages) return model;
     // Sponza's ordinary source images total about272MiB of decoded RGBA.
     // Keep a finite asset-wide default while retaining per-image codec bounds.

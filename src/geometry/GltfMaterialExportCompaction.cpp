@@ -1,6 +1,7 @@
 #include <Container/geometry/GltfMaterialExportCompaction.h>
 
 #include <Container/geometry/GltfAccessor.h>
+#include <Container/geometry/GltfXmpMetadata.h>
 
 #include <algorithm>
 #include <array>
@@ -52,7 +53,7 @@ bool knownDeclaration(std::string_view name) {
       "KHR_lights_punctual", "KHR_texture_basisu", "EXT_texture_webp", "EXT_texture_avif", "MSFT_texture_dds",
       "KHR_mesh_quantization", "KHR_accessor_float64", "EXT_mesh_gpu_instancing", "KHR_animation_pointer",
       "KHR_materials_variants", "MSFT_lod", "KHR_draco_mesh_compression",
-      "EXT_meshopt_compression", "KHR_meshopt_compression"});
+      "EXT_meshopt_compression", "KHR_meshopt_compression", kGltfXmpExtension});
 }
 
 // Bounds logical metadata before reference-proof allocation. Each
@@ -201,10 +202,10 @@ void audit(const tinygltf::Model& source, Budget& b) {
     b.work(source.extensionsUsed.size());
     if (std::ranges::find(source.extensionsUsed,name) == source.extensionsUsed.end()) fail("required extension is undeclared");
   }
-  b.property(source.asset); b.text(source.asset.version); b.text(source.asset.minVersion);
+  b.property(source.asset,{kGltfXmpExtension}); b.text(source.asset.version); b.text(source.asset.minVersion);
   b.text(source.asset.generator); b.text(source.asset.copyright);
   b.value(source.extras); b.text(source.extras_json_string); b.text(source.extensions_json_string);
-  b.extensions(source.extensions,{"KHR_materials_variants","KHR_lights_punctual",
+  b.extensions(source.extensions,{"KHR_materials_variants","KHR_lights_punctual",kGltfXmpExtension,
       "KHR_lights_area","EXT_lights_area","WEBGI_lights_area","WEBGI_area_light"},false,true);
   for (const auto& buffer : source.buffers) {
     b.property(buffer); b.text(buffer.uri);
@@ -233,7 +234,7 @@ void audit(const tinygltf::Model& source, Budget& b) {
     b.refs(accessor.bufferView >= 0);
   }
   for (const auto& image : source.images) {
-    b.property(image); b.text(image.uri); b.text(image.mimeType);
+    b.property(image,{kGltfXmpExtension}); b.text(image.uri); b.text(image.mimeType);
     index(image.bufferView,source.bufferViews.size(),"image buffer view is invalid",true); b.refs(image.bufferView >= 0);
     if (image.image.empty() && image.bufferView < 0) fail("image is not resident");
     charge(b.payload,image.image.size(),limits.maxResidentBytes,"resident payload budget exceeded");
@@ -250,7 +251,7 @@ void audit(const tinygltf::Model& source, Budget& b) {
     }
   }
   for (const auto& material : source.materials) {
-    b.property(material,{"MSFT_lod"},true,false,true); b.numbers(material.lods); b.refs(material.lods.size());
+    b.property(material,{"MSFT_lod",kGltfXmpExtension},true,false,true); b.numbers(material.lods); b.refs(material.lods.size());
     b.property(material.pbrMetallicRoughness); b.numbers(material.pbrMetallicRoughness.baseColorFactor);
     b.numbers(material.emissiveFactor);
     for (const auto v : {material.pbrMetallicRoughness.metallicFactor,material.pbrMetallicRoughness.roughnessFactor,
@@ -264,7 +265,7 @@ void audit(const tinygltf::Model& source, Budget& b) {
     }
   }
   for (const auto& mesh : source.meshes) {
-    b.property(mesh); b.numbers(mesh.weights);
+    b.property(mesh,{kGltfXmpExtension}); b.numbers(mesh.weights);
     charge(b.primitives,mesh.primitives.size(),limits.maxPrimitives,"primitive count exceeds its bound");
     for (const auto& primitive : mesh.primitives) {
       b.property(primitive,{"KHR_materials_variants","KHR_draco_mesh_compression"});
@@ -282,7 +283,7 @@ void audit(const tinygltf::Model& source, Budget& b) {
     }
   }
   for (const auto& node : source.nodes) {
-    b.property(node,{"KHR_lights_punctual","EXT_mesh_gpu_instancing","KHR_node_visibility","KHR_node_selectability",
+    b.property(node,{"KHR_lights_punctual","EXT_mesh_gpu_instancing","KHR_node_visibility","KHR_node_selectability",kGltfXmpExtension,
         "KHR_node_hoverability","KHR_lights_area","EXT_lights_area","WEBGI_lights_area","WEBGI_area_light","MSFT_lod"});
     if (node.emitter != -1) fail("node audio reference schema is unsupported");
     b.numbers(node.lods); b.refs(node.lods.size());
@@ -313,7 +314,7 @@ void audit(const tinygltf::Model& source, Budget& b) {
     for (const auto v : {light.intensity,light.range,light.spot.innerConeAngle,light.spot.outerConeAngle}) b.finite(v);
   }
   for (const auto& animation : source.animations) {
-    b.property(animation); b.table(animation.samplers); b.table(animation.channels);
+    b.property(animation,{kGltfXmpExtension}); b.table(animation.samplers); b.table(animation.channels);
     charge(b.channels,animation.channels.size(),limits.maxAnimationChannels,"animation channel budget exceeded");
     for (const auto& sampler : animation.samplers) {
       b.property(sampler); b.text(sampler.interpolation); b.refs(2);
@@ -339,7 +340,7 @@ void audit(const tinygltf::Model& source, Budget& b) {
     }
   }
   for (const auto& scene : source.scenes) {
-    b.property(scene); b.numbers(scene.nodes);
+    b.property(scene,{kGltfXmpExtension}); b.numbers(scene.nodes);
     for(const auto root:scene.nodes) index(root,source.nodes.size(),"scene root is invalid");
     if (!scene.audioEmitters.empty()) fail("scene audio reference schema is unsupported");
   }

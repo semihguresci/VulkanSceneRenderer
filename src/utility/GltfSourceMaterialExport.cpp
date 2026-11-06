@@ -1,6 +1,7 @@
 #include <Container/utility/GltfSourceMaterialExport.h>
 
 #include <Container/geometry/GltfLegacyMaterialSerialization.h>
+#include <Container/geometry/GltfXmpMetadata.h>
 #include <Container/utility/GltfRuntimeMaterialAuthoring.h>
 
 #include <algorithm>
@@ -70,6 +71,7 @@ void requireRemappableMetadata(const tinygltf::Material& material) {
  textureExtensions(material.normalTexture.extensions);textureExtensions(material.occlusionTexture.extensions);textureExtensions(material.emissiveTexture.extensions);
  if(!material.pbrMetallicRoughness.extensions.empty()) fail("unknown normative PBR extension needs an explicit source-ID remapper");
  for(const auto& [name,body]:material.extensions) {
+  if(name==geometry::gltf::kGltfXmpExtension) continue; // References the retained packet table, never textures.
   bool known=false;for(size_t e=0;e<size_t(geometry::gltf::GltfMaterialExtension::Count);++e)
    known|=geometry::gltf::GltfMaterialExtensionName(geometry::gltf::GltfMaterialExtension(e))==name;
   if(!known || !body.IsObject()) fail("unknown normative material extension needs an explicit source-ID remapper");

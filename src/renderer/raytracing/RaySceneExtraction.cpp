@@ -98,7 +98,7 @@ void appendInstances(std::vector<RaySceneInstance> &instances,
         .flipFacing = (object.objectInfo.y & container::gpu::kObjectFlagDeformationWindingFlipped) != 0u,
         .gpuObjectIndex = provider.gpuObjects.buffer ? draw.objectIndex+i : UINT32_MAX});
     metadata.push_back({glm::uvec4(firstTriangle, object.objectInfo.x,
-                                   object.objectInfo.y, 0u)});
+                                   object.objectInfo.y, draw.indexCount / 3u)});
     if (surfaces)
       surfaces->push_back(surfaceInstance(object.model));
   }

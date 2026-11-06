@@ -145,9 +145,11 @@ def gltf_scene(scene):
 
     groups = [("Architectural shell", [quad for quad in scene["quads"]
                                         if quad["material"] != "partition"])]
-    partition = [quad for quad in scene["quads"] if quad["material"] == "partition"]
-    if partition:
-        groups.append(("Partition", partition))
+    partitions = {}
+    for quad in scene["quads"]:
+        if quad["material"] == "partition":
+            partitions.setdefault(quad.get("rayGeometry", "Partition"), []).append(quad)
+    groups.extend(partitions.items())
     for name, group in groups:
         primitives = []
         for material_index, material in enumerate(MATERIALS):
@@ -181,8 +183,7 @@ def gltf_scene(scene):
              {"name": "Ceiling rectangle", "translation": scene["light"]["position"],
               "rotation": [-0.7071067811865476, 0, 0, 0.7071067811865476],
               "extensions": {"KHR_lights_punctual": {"light": 0}}}]
-    if partition:
-        nodes.append({"name": "Partition", "mesh": 1})
+    nodes.extend({"name": name, "mesh": index} for index, (name, _) in enumerate(groups[1:], 1))
     return {"asset": {"version": "2.0", "generator": "Container DDGI architecture quality fixture"},
             "extensionsUsed": ["KHR_lights_punctual"],
             "extensions": {"KHR_lights_punctual": {"lights": [
