@@ -3,12 +3,13 @@ import argparse
 import base64
 import json
 import struct
+import subprocess
 from pathlib import Path
 
 from PIL import Image
 import numpy as np
 
-from light_editor_history_runtime import action, edit, exact, fixture, history, point, run, write_json
+from light_editor_history_runtime import POINTER, PUNCTUAL, action, edit, exact, fixture, history, lights, point, run, write_json
 from scene_node_history_runtime import columns, node
 
 
@@ -44,11 +45,75 @@ def prepare_source(directory):
     ])
     source['scenes'] = [
         {'name': 'Editable scene', 'nodes': [0, 1, 2, 4]},
-        {'name': 'Second scene', 'nodes': [3, 1]},
+        {'name': 'Second scene', 'nodes': [3, 1, 5]},
+        {'name': 'Empty scene', 'nodes': []},
     ]
+    source['nodes'].append({'name': 'Inactive spot', 'translation': [0, 0, 2],
+                            'extensions': {PUNCTUAL: {'light': 1}}})
+    source['extensions'][PUNCTUAL]['lights'].append(dict(
+        type='spot', intensity=15, range=3, spot=dict(innerConeAngle=.1, outerConeAngle=.45)))
     source['scene'] = 0
     write_json(path, source)
     return path
+
+
+def animate_inactive_range(source):
+    model = json.loads(source.read_text(encoding='utf-8'))
+    data = struct.pack('<4f', 0, 1, 3, 6)
+    buffer = len(model['buffers'])
+    model['buffers'].append(dict(byteLength=len(data),
+        uri='data:application/octet-stream;base64,' + base64.b64encode(data).decode()))
+    view = len(model['bufferViews'])
+    model['bufferViews'].append(dict(buffer=buffer, byteLength=len(data)))
+    accessor = len(model['accessors'])
+    model['accessors'].extend(dict(bufferView=view, byteOffset=offset, componentType=5126,
+                                   count=2, type='SCALAR') for offset in (0, 8))
+    model['accessors'][accessor].update(min=[0], max=[1])
+    model['extensionsUsed'].append(POINTER)
+    model['animations'] = [dict(samplers=[dict(input=accessor, output=accessor + 1)],
+        channels=[dict(sampler=0, target=dict(path='pointer', extensions={POINTER: {
+            'pointer': f'/extensions/{PUNCTUAL}/lights/1/range'}}))])]
+    write_json(source, model)
+
+
+def verify_other_scenes(renderer, output, source, saved):
+    animate_inactive_range(source)
+    selected = ('--gltf-scene', '1', '--no-ray-query')
+    scale = ('--import-scale', '2')
+    pose = ('--animation-clip', '0', '--animation-time', '1', '--animation-paused')
+    technique = 'deferred-raster'
+    edited = [edit(2, dict(intensity=40))]
+    original = run(renderer, output, 'scaled-original-second', source, technique,
+                   [2], edited, (*selected, *scale, *pose), fix_camera=True)[2]
+    assert original[1]['scene']['gltfScene'] == dict(index=1, count=3, name='Second scene')
+    assert point(original)['intensity'] == 40 and point(original)['range'] == 16
+    assert sorted(light['range'] for light in lights(original) if light['source'] == 1) == [12, 16]
+    for suffix in ('glb', 'gltf'):
+        destination = saved / f'scaled.{suffix}'
+        run(renderer, output, f'scaled-save-{suffix}', source, technique, [2], edited,
+            (*scale, '--no-ray-query', '--save-scene', str(destination)), fix_camera=True)
+        assert document(destination)['scene'] == 0
+        reloaded = run(renderer, output, f'scaled-reload-{suffix}', destination, technique,
+                       [2], (), (*selected, *pose), fix_camera=True)[2]
+        assert point(reloaded)['intensity'] == 40 and point(reloaded)['range'] == 16
+        assert sorted(light['range'] for light in lights(reloaded) if light['source'] == 1) == [12, 16]
+        exact(original, reloaded)
+    empty = saved / 'empty-default.glb'
+    result = run(renderer, output, 'empty-scene', source, technique, [1], (),
+                 ('--gltf-scene', '2', '--no-ray-query', '--save-scene', str(empty)), fix_camera=True)[1]
+    assert result[1]['scene']['primaryObjectCount'] == 0
+    assert result[1]['scene']['gltfScene']['index'] == 2
+    assert not any(light['source'] == 1 for light in lights(result))
+    model = document(empty)
+    assert model['scene'] == 2 and not model['scenes'][2].get('nodes')
+    assert len(model['scenes']) == 3
+    original_bytes = empty.read_bytes()
+    invalid = subprocess.run([str(renderer), '--model', str(source), '--gltf-scene', '3',
+        '--hidden', '--no-ui', '--save-scene', str(empty)], cwd=renderer.parent,
+        capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120)
+    assert invalid.returncode != 0 and 'outside the asset' in invalid.stdout + invalid.stderr
+    assert empty.read_bytes() == original_bytes
+    print('PASS scaled inactive spot animation, shared light edits, and empty scene selection', flush=True)
 
 
 def document(path):
@@ -89,7 +154,7 @@ def main():
         history(original, 5, 0)
         model = document(destination)
         assert model['scene'] == 0
-        assert [scene['name'] for scene in model['scenes']] == ['Editable scene', 'Second scene']
+        assert [scene['name'] for scene in model['scenes']] == ['Editable scene', 'Second scene', 'Empty scene']
         nodes = model['nodes']
         assert any(item.get('name') == 'Cube' and 'mesh' in item for item in nodes)
         assert any(item.get('name') == 'Inactive mesh' for item in nodes)
@@ -104,6 +169,7 @@ def main():
         else:
             assert all('uri' not in buffer for buffer in model['buffers'])
         tests.append((technique, destination, original))
+    verify_other_scenes(renderer, output, source, saved)
     # Remove access to the source resource through its original path.
     texture = source.parent / 'pattern.png'
     texture.rename(texture.with_name('source-only.png'))
@@ -113,7 +179,8 @@ def main():
         assert point(reloaded)['intensity'] == 40
         exact(original, reloaded)
         print(f'PASS {technique} edited {destination.suffix} reload without source textures', flush=True)
-    write_json(output / 'results.json', dict(passed=True, pixelExactRoundTrips=len(tests)))
+    write_json(output / 'results.json', dict(passed=True, pixelExactRoundTrips=len(tests),
+        scaledInactiveRoundTrips=2, emptyScenePreserved=True, invalidSelectionPreservesDestination=True))
 
 
 if __name__ == '__main__':

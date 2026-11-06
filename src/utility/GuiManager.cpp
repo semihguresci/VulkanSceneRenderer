@@ -2776,6 +2776,7 @@ void GuiManager::drawViewportNavigationOverlay(
 
 void GuiManager::drawSceneControls(
     const container::scene::SceneGraph &sceneGraph,
+    bool canExportScene,
     const std::function<void(ScenePrimitiveKind)> &addScenePrimitive,
     const TransformControls &cameraTransform,
     const std::function<void(const TransformControls &)> &applyCameraTransform,
@@ -2911,11 +2912,11 @@ void GuiManager::drawSceneControls(
   }
 
   ImGui::InputText("Save path (.glb / .gltf)", &sceneSavePathInput_);
-  ImGui::BeginDisabled(savedScenePath_.empty() || sceneGraph.nodeCount() == 0);
+  ImGui::BeginDisabled(savedScenePath_.empty() || !canExportScene);
   if (ImGui::Button("Save scene")) sceneSaveRequest_ = savedScenePath_;
   ImGui::EndDisabled();
   ImGui::SameLine();
-  ImGui::BeginDisabled(sceneSavePathInput_.empty() || sceneGraph.nodeCount() == 0);
+  ImGui::BeginDisabled(sceneSavePathInput_.empty() || !canExportScene);
   if (ImGui::Button("Save As")) sceneSaveRequest_ = sceneSavePathInput_;
   ImGui::EndDisabled();
   ImGui::SetItemTooltip("Saves the editable primary scene. BIM, USD and VDB use separate files.");

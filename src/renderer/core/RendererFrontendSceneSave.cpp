@@ -5,16 +5,30 @@
 #include <Container/renderer/scene/SceneLightExport.h>
 #include <Container/utility/SceneManager.h>
 
+#include <map>
 #include <stdexcept>
 
 namespace container::renderer {
+namespace {
+
+const container::scene::AuthoredLightBinding& bindingForLight(
+    const container::scene::AuthoredSceneLights& bindings, const EditableLightEntity& light) {
+  if (light.type == EditableLightType::Directional)
+    return bindings.directionalBindings.at(light.id.index);
+  if (light.type == EditableLightType::Area)
+    return bindings.areaBindings.at(light.id.index);
+  return bindings.pointBindings.at(light.id.index);
+}
+
+} // namespace
 
 void RendererFrontend::saveSceneModel(const std::filesystem::path& destination) {
   if (!subs_.sceneManager) throw std::runtime_error("No editable primary scene to save");
   auto& manager = *subs_.sceneManager;
   std::vector<int32_t> sourceNodes;
+  std::vector<container::scene::AuthoredSceneLights> bindings;
   auto snapshot = manager.buildSceneExport(
-      sceneGraph_, sceneState_.rootNode, sourceNodes,
+      sceneGraph_, sceneState_.rootNode, sourceNodes, bindings,
       gltfAnimation_ ? &gltfAnimation_->library() : nullptr);
   if (subs_.lightingManager) {
     sourceNodes.resize(snapshot.nodes.size(), -1);
@@ -24,13 +38,33 @@ void RendererFrontend::saveSceneModel(const std::filesystem::path& destination) 
     const auto anchor = root ? root->worldTransform : glm::mat4(1);
     ImportedSceneLightEdits imported;
     imported.capture(authored, edits);
-    const auto scene = static_cast<size_t>(snapshot.defaultScene);
+    const auto activeScene = static_cast<size_t>(snapshot.defaultScene);
     std::vector<std::vector<EditableLightEntity>> lights(snapshot.scenes.size());
-    std::vector<container::scene::AuthoredSceneLights> bindings(snapshot.scenes.size());
-    lights.at(scene) = evaluateEditableSceneLightsForExport(authored, authored, edits, imported, anchor);
-    bindings.at(scene) = authored;
+    bindings.at(activeScene) = authored;
+    lights[activeScene] = evaluateEditableSceneLightsForExport(authored, authored, edits, imported, anchor);
+    std::map<container::scene::AuthoredLightBinding, const EditableLightEntity*> activeLights;
+    if (lights.size() > 1) {
+      for (const auto& light : lights[activeScene]) {
+        if (light.source == EditableLightSource::Imported)
+          activeLights.emplace(bindingForLight(authored, light), &light);
+      }
+    }
+    for (size_t scene = 0; scene < lights.size(); ++scene) {
+      if (scene == activeScene) continue;
+      lights[scene] = evaluateEditableSceneLightsForExport(bindings[scene], bindings[scene],
+          {}, imported, glm::mat4(1));
+      for (auto& light : lights[scene]) {
+        const auto match = activeLights.find(bindingForLight(bindings[scene], light));
+        if (match == activeLights.end()) continue;
+        // A shared source node has one pose and edit state. Keep only the
+        // scene-local ordinal from this scene's independently evaluated row.
+        const auto id = light.id;
+        light = *match->second;
+        light.id = id;
+      }
+    }
     exportEditableSceneLightsForScenes(snapshot, lights, &manager.animationSource(),
-        sourceNodes, activePrimaryImportScale_, bindings, bindings);
+        sourceNodes, manager.importScale(), bindings, bindings);
   }
   container::geometry::gltf::writeExportModel(snapshot, destination);
 }

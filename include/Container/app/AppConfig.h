@@ -44,6 +44,7 @@ inline constexpr bool kDefaultAuthoredLocalLightBloomEnabled = false;
 inline constexpr uint32_t kDefaultAuthoredLocalLightShadowLayerBudget = 24;
 
 struct AppConfig {
+  int gltfSceneIndex{-1};
   int gltfAnimationClip{-1};
   int gltfCameraNode{-1};
   double gltfAnimationTime{};

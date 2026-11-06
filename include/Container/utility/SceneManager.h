@@ -205,6 +205,7 @@ class SceneManager {
     return authoredAreaBindings_;
   }
   [[nodiscard]] AuthoredSceneLights publishedAuthoredSceneLights() const;
+  [[nodiscard]] float importScale() const noexcept { return config_.importScale; }
   [[nodiscard]] AuthoredSceneLights evaluateAuthoredSceneLights(
       const SceneGraph* graph, uint32_t editorRoot) const;
   void exchangeAuthoredSceneLights(AuthoredSceneLights&) noexcept;
@@ -212,8 +213,12 @@ class SceneManager {
   [[nodiscard]] const tinygltf::Model& animationSource() const noexcept { return gltfModel_; }
   std::unique_ptr<container::geometry::gltf::AnimationPlayer> takePreparedAnimation() noexcept;
   [[nodiscard]] uint64_t animationSourceRevision() const noexcept { return animationSourceRevision_; }
+  [[nodiscard]] bool canExportScene(const SceneGraph& graph) const noexcept {
+    return graph.nodeCount() != 0 || !gltfModel_.scenes.empty();
+  }
   [[nodiscard]] tinygltf::Model buildSceneExport(
       const SceneGraph& graph, uint32_t editorRoot, std::vector<int32_t>& sourceNodes,
+      std::vector<AuthoredSceneLights>& inactiveSceneLights,
       const container::geometry::gltf::AnimationLibrary* animation = nullptr) const;
   void publishAnimationChanges(const container::geometry::gltf::AnimationDirtySet& dirty,
                                const SceneGraph& graph, uint32_t editorRoot);
@@ -303,7 +308,11 @@ class SceneManager {
   void loadGltfAssets(container::geometry::GltfLoadResult* prepared = nullptr,
       const container::material::PreparedGltfTextures* preparedTextures = nullptr,
                       std::unique_ptr<container::geometry::gltf::AnimationPlayer>* preparedAnimation = nullptr,
-                      std::unique_ptr<container::renderer::GltfDeformationScene>* preparedDeformation = nullptr);
+                      std::unique_ptr<container::renderer::GltfDeformationScene>* preparedDeformation = nullptr,
+                      int requestedScene = -1);
+  [[nodiscard]] AuthoredSceneLights evaluateAuthoredSceneLights(
+      const SceneGraph* graph, uint32_t editorRoot,
+      std::optional<std::span<const uint32_t>> sceneRoots) const;
   void loadDefaultTestSceneAssets();
   void uploadMaterialBuffer();
   void uploadTextureMetadataBuffer();

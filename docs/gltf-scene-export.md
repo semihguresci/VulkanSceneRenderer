@@ -15,11 +15,15 @@ authored cameras, and current authored or manually edited lights. It retains bin
 geometry, skin and morph data, and animation clips. BIM, USD, VDB and renderer
 settings use separate files.
 
-The default scene uses the current edit state. Other source scenes are retained
-with their source geometry and metadata. Light ranges in inactive scenes remain
-in source units when the model was imported at a scale other than 1×. Save
-reports an error if the current shared hierarchy cannot be represented safely in
-all source scenes.
+The active scene becomes the saved default. Other source scenes retain their
+geometry, metadata, and authored lighting. Import scale is included in light
+ranges and animated range keys. An edit to a light on a shared source node
+appears in every scene that contains that node. Save reports an error if the
+current shared hierarchy cannot be represented safely in all source scenes.
+
+Use `--gltf-scene N` to choose a scene by its zero-based index when launching the
+application. Without that option, the file's authored default is used, or scene
+zero if the file leaves the default unspecified.
 
 For a batch export, add `--hidden --save-scene edited.glb` to a renderer command.
 When a capture sequence is present, the scene is saved after its final frame.

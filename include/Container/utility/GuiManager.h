@@ -627,6 +627,7 @@ public:
 
   void drawSceneControls(
       const container::scene::SceneGraph &sceneGraph,
+      bool canExportScene,
       const std::function<void(container::renderer::ScenePrimitiveKind)>
           &addScenePrimitive,
       const TransformControls &cameraTransform,

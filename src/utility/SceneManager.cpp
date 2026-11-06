@@ -1025,7 +1025,7 @@ void SceneManager::initialize(const std::string& initialModelPath,
 
   config_.modelPath = initialModelPath;
   config_.importScale = sanitizeImportScale(importScale);
-  loadGltfAssets();
+  loadGltfAssets(nullptr, nullptr, nullptr, nullptr, config_.gltfSceneIndex);
   uploadMaterialBuffer();
   uploadTextureMetadataBuffer();
   createSceneClipStateBuffer();
@@ -1049,7 +1049,7 @@ void populateSourceGraph(SceneGraph& sceneGraph, const tinygltf::Model& source,
     return;
   }
 
-  if (source.nodes.empty()) {
+  if (source.nodes.empty() && source.scenes.empty()) {
     const uint32_t rootNode = sceneGraph.createNode(
         importScaleTransform(importScale), defaultMaterial,
         false, SceneGraph::kInvalidNode, "Imported Scene");
@@ -1208,9 +1208,10 @@ void SceneManager::exchangeRuntimeMeshChange(PreparedRuntimeMeshChange& next) no
 
 tinygltf::Model SceneManager::buildSceneExport(
     const SceneGraph& graph, uint32_t editorRoot, std::vector<int32_t>& sourceNodes,
+    std::vector<AuthoredSceneLights>& inactiveSceneLights,
     const container::geometry::gltf::AnimationLibrary* animation) const {
   namespace gltf = container::geometry::gltf;
-  if (graph.nodeCount() == 0)
+  if (!canExportScene(graph))
     throw std::runtime_error("No editable primary scene to save");
 
   const bool defaultScene = isDefaultTestSceneActive();
@@ -1224,6 +1225,8 @@ tinygltf::Model SceneManager::buildSceneExport(
 
   SceneGraph detached(graph);
   std::vector<std::vector<uint32_t>> sceneRoots;
+  inactiveSceneLights.clear();
+  inactiveSceneLights.resize(std::max(size_t{1}, source.scenes.size()));
   int defaultSceneIndex = 0;
   if (source.scenes.size() > 1) {
     if (source.defaultScene >= 0 && size_t(source.defaultScene) < source.scenes.size())
@@ -1285,6 +1288,7 @@ tinygltf::Model SceneManager::buildSceneExport(
         if (node.sourceNodeIndex >= 0) authored[size_t(node.sourceNodeIndex)] = index;
       }
     }
+    detached.updateWorldTransforms();
     for (size_t scene = 0; scene < source.scenes.size(); ++scene) {
       if (scene == size_t(defaultSceneIndex)) continue;
       for (const auto root : source.scenes[scene].nodes) {
@@ -1293,6 +1297,10 @@ tinygltf::Model SceneManager::buildSceneExport(
           throw std::runtime_error("Save cannot resolve an inactive scene root");
         sceneRoots[scene].push_back(node);
       }
+      // Exported inactive placements already contain the editor/import prefix.
+      // Evaluate in world space so both shared and detached roots match it.
+      inactiveSceneLights[scene] = evaluateAuthoredSceneLights(
+          &detached, SceneGraph::kInvalidNode, std::span<const uint32_t>(sceneRoots[scene]));
     }
   }
   sourceNodes.clear();
@@ -1364,6 +1372,7 @@ bool SceneManager::reloadModel(
     container::geometry::GltfLoadResult* prepared) {
   const std::string previousModelPath = config_.modelPath;
   const float previousImportScale = config_.importScale;
+  const int previousScene = gltfModel_.defaultScene;
   // Decode before retiring live assets. Bad paths, malformed files and missing
   // buffers must leave runtime edits and auxiliary material registrations intact.
   std::optional<container::geometry::GltfLoadResult> locallyPrepared;
@@ -1419,7 +1428,7 @@ bool SceneManager::reloadModel(
       resetForLoad();
       config_.modelPath = previousModelPath;
       config_.importScale = previousImportScale;
-      loadGltfAssets();
+      loadGltfAssets(nullptr, nullptr, nullptr, nullptr, previousScene);
       uploadMaterialBuffer();
       uploadTextureMetadataBuffer();
       updateDescriptorSets(cameraBuffers, objectBuffer);
@@ -2109,7 +2118,8 @@ std::unique_ptr<container::geometry::gltf::AnimationPlayer> SceneManager::takePr
 void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
     const container::material::PreparedGltfTextures* preparedTextures,
     std::unique_ptr<container::geometry::gltf::AnimationPlayer>* preparedAnimation,
-    std::unique_ptr<container::renderer::GltfDeformationScene>* preparedDeformation) {
+    std::unique_ptr<container::renderer::GltfDeformationScene>* preparedDeformation,
+    int requestedScene) {
   pendingAnimation_.reset();
   pendingDeformation_.reset();
   deformation_.reset();
@@ -2119,7 +2129,10 @@ void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
   authoredDirectionalLights_.clear();
   authoredAreaLights_.clear();
 
-   if (isDefaultSceneRequest(config_.modelPath)) {
+  if (requestedScene > 0 && (config_.modelPath.empty() || isDefaultTestSceneActive()))
+    throw std::invalid_argument("Requested glTF scene index is unavailable");
+
+  if (isDefaultTestSceneActive()) {
     loadDefaultTestSceneAssets();
     vertices_ = model_.vertices();
     indices_ = model_.indices();
@@ -2138,6 +2151,13 @@ void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
       auto result = prepared ? std::move(*prepared)
                              : container::geometry::gltf::LoadModelWithSource(
                                    container::util::pathToUtf8(resolvedPath),sceneTextureLoadOptions());
+      if (requestedScene >= 0) {
+        const auto count = std::max(size_t{1}, result.gltfModel.scenes.size());
+        if (size_t(requestedScene) >= count)
+          throw std::invalid_argument("Requested glTF scene index " + std::to_string(requestedScene) +
+                                      " is outside the asset's " + std::to_string(count) + " scenes");
+        if (!result.gltfModel.scenes.empty()) result.gltfModel.defaultScene = requestedScene;
+      }
       validateGltfSamplerPolicies(result.gltfModel,false);
       if (preparedAnimation) pendingAnimation_ = std::move(*preparedAnimation);
       else pendingAnimation_ = prepareAnimationPlayback(result.gltfModel, config_.modelPath);
@@ -2307,6 +2327,12 @@ void SceneManager::collectAuthoredPunctualLights(const SceneGraph* graph, uint32
 
 AuthoredSceneLights SceneManager::evaluateAuthoredSceneLights(
     const SceneGraph* graph, uint32_t editorRoot) const {
+  return evaluateAuthoredSceneLights(graph, editorRoot, std::nullopt);
+}
+
+AuthoredSceneLights SceneManager::evaluateAuthoredSceneLights(
+    const SceneGraph* graph, uint32_t editorRoot,
+    std::optional<std::span<const uint32_t>> sceneRoots) const {
   AuthoredSceneLights next;
   if (gltfModel_.nodes.empty()) return next;
 
@@ -2415,8 +2441,12 @@ AuthoredSceneLights SceneManager::evaluateAuthoredSceneLights(
       if (std::isfinite(determinant) && determinant != 0)
         detachedRootBasis = glm::mat4(glm::inverse(glm::dmat4(anchor->worldTransform)));
     }
-    for (auto root = graph->rootNodes().rbegin(); root != graph->rootNodes().rend(); ++root)
-      pending.push_back({*root, *root == editorRoot ? glm::mat4(1.0f) : detachedRootBasis});
+    const auto roots = sceneRoots.value_or(graph->rootNodes());
+    for (auto root = roots.rbegin(); root != roots.rend(); ++root) {
+      const auto* parent = sceneRoots ? graph->getNode(graph->getNode(*root)->parent) : nullptr;
+      pending.push_back({*root, parent ? parent->worldTransform :
+          *root == editorRoot ? glm::mat4(1.0f) : detachedRootBasis});
+    }
     while (!pending.empty()) {
       const auto work = pending.back();
       pending.pop_back();
@@ -2428,6 +2458,7 @@ AuthoredSceneLights SceneManager::evaluateAuthoredSceneLights(
       for (auto child = node->children.rbegin(); child != node->children.rend(); ++child)
         pending.push_back({*child, transform});
     }
+    if (sceneRoots) return next;
     // Keep editable-light ordinals stable when reparenting changes traversal.
     const auto keepOrder = [](auto& values, auto& bindings, const auto& previous) {
       if (bindings == previous || bindings.size() != previous.size()) return;
@@ -2701,7 +2732,7 @@ ModelBounds SceneManager::computeModelBounds(
           }
         };
 
-        if (!gltfModel_.nodes.empty() && !gltfModel_.meshes.empty()) {
+        if (!gltfModel_.scenes.empty() || (!gltfModel_.nodes.empty() && !gltfModel_.meshes.empty())) {
           std::vector<uint32_t> meshPrimitiveBase(gltfModel_.meshes.size(), 0);
           uint32_t primitiveOffset = 0;
           for (size_t meshIndex = 0; meshIndex < gltfModel_.meshes.size();

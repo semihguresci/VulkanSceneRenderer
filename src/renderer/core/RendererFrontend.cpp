@@ -2574,6 +2574,14 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   json["scene"]["primaryObjectCount"] = sceneGraph_.renderableNodes().size();
   json["scene"]["primaryNodeCount"] = sceneGraph_.nodeCount();
   json["scene"]["primaryRootNode"] = sceneState_.rootNode;
+  if (subs_.sceneManager) {
+    const auto& source = subs_.sceneManager->animationSource();
+    if (!source.scenes.empty()) {
+      const auto scene = size_t(std::max(0, source.defaultScene));
+      json["scene"]["gltfScene"] = {{"index", scene}, {"count", source.scenes.size()},
+                                   {"name", source.scenes.at(scene).name}};
+    }
+  }
   json["scene"]["selectedMeshNode"] = sceneState_.selectedMeshNode;
   json["scene"]["selectedMeshIncarnation"] =
       sceneGraph_.nodeIncarnation(sceneState_.selectedMeshNode);
@@ -6637,6 +6645,7 @@ void RendererFrontend::presentSceneControls() {
   };
   subs_.guiManager->drawSceneControls(
       sceneGraph_,
+      subs_.sceneManager && subs_.sceneManager->canExportScene(sceneGraph_),
       addScenePrimitive,
       subs_.cameraController ? subs_.cameraController->cameraTransformControls()
                              : container::ui::TransformControls{},
