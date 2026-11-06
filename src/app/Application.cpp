@@ -167,9 +167,11 @@ void Application::screenshotCaptureLoop() {
     window_->pollEvents();
     renderer_->processInput(fixedDt);
     bool skip = false;
+    std::optional<glm::uvec2> depthProbe;
     if (sequence) {
       const auto sample = sequence->sample(frameNumber);
       renderer_->applyTemporalCapture(sample);
+      depthProbe = sample.event.depthProbe;
       if (sample.event.minimized) {
         minimized = *sample.event.minimized;
         if (minimized)
@@ -213,7 +215,7 @@ void Application::screenshotCaptureLoop() {
     if (!capturePath.empty()) {
       auto telemetryPath = capturePath;
       telemetryPath.replace_extension(".telemetry.json");
-      renderer_->writeCaptureTelemetry(telemetryPath);
+      renderer_->writeCaptureTelemetry(telemetryPath, depthProbe);
     }
     if (renderer_->gfxCaptureComplete()) break;
   }

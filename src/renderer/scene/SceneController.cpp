@@ -26,6 +26,22 @@ using container::gpu::ObjectData;
 
 namespace {
 
+// Bound the spectral norm by sqrt(max absolute row sum of A^T*A). Unlike
+// maximum column length, this remains conservative under parent/child shear.
+[[nodiscard]] float conservativeSphereScale(const glm::mat4& transform) {
+  const glm::dmat3 basis(transform);
+  const auto gram=glm::transpose(basis)*basis;
+  double bound=0;
+  for(int row=0;row<3;++row) {
+    double sum=0;
+    for(int column=0;column<3;++column) sum+=std::abs(gram[column][row]);
+    if(!std::isfinite(sum)) return std::numeric_limits<float>::infinity();
+    bound=std::max(bound,sum);
+  }
+  if(bound==0) return 0;
+  return std::nextafter(static_cast<float>(std::sqrt(bound)),std::numeric_limits<float>::infinity());
+}
+
 bool transformFlipsWinding(const glm::mat4& transform) {
   const glm::vec3 x(transform[0]);
   const glm::vec3 y(transform[1]);
@@ -334,15 +350,67 @@ bool SceneController::ensureObjectBufferCapacity(
 // Geometry buffers
 // ---------------------------------------------------------------------------
 
+std::span<const container::geometry::Vertex> SceneController::geometryVertices() const {
+  return deformationScene_ ? deformationScene_->currentVertices()
+      : std::span<const container::geometry::Vertex>(sceneManager_.vertices());
+}
+
+std::span<const uint32_t> SceneController::geometryIndices() const {
+  return deformationScene_ ? deformationScene_->indices()
+      : std::span<const uint32_t>(sceneManager_.indices());
+}
+
+GltfDeformationSceneUpdate SceneController::updateDeformation(bool resetHistory) {
+  const uint64_t sourceRevision = sceneManager_.geometryRevision();
+  const bool sourceChanged = sourceRevision != deformationSourceGeometryRevision_;
+  if (sourceChanged) {
+    if (auto prepared = sceneManager_.takePreparedDeformation())
+      deformationScene_ = std::move(prepared);
+    else if (const auto* data = sceneManager_.deformationData()) {
+      if (!deformationScene_) deformationScene_ = std::make_unique<GltfDeformationScene>();
+      deformationScene_->configure(*data, sceneManager_.model(), {}, sceneManager_.deformationVertexLimit());
+    } else deformationScene_.reset();
+    deformationTopologyPending_ = true;
+    rebuildPrimitiveBoundsCache();
+  }
+  GltfDeformationSceneUpdate result;
+  if (deformationScene_) {
+    sceneGraph_.updateWorldTransforms();
+    std::vector<uint32_t> owners(sceneGraph_.nodeCount(),container::scene::SceneGraph::kInvalidNode);
+    for (uint32_t index = 0; index < sceneGraph_.nodeCount(); ++index)
+      if (const auto* node = sceneGraph_.getNode(index)) owners[index] = node->meshOwnerGraphNode;
+    result = deformationScene_->update(sceneGraph_,owners,&sceneManager_.animationSource(),resetHistory);
+  }
+  deformationTopologyPending_ |= sourceChanged || result.topologyChanged;
+  if (sourceChanged || result.geometryChanged || result.topologyChanged) {
+    ++geometryRevision_;
+    invalidateObjectDataCache();
+  }
+  deformationSourceGeometryRevision_ = sourceRevision;
+  result.geometryChanged |= sourceChanged;
+  result.topologyChanged = deformationTopologyPending_;
+  result.historyReset |= resetHistory || sourceChanged;
+  return result;
+}
+
+void SceneController::commitDeformationFrame() {
+  if (deformationScene_) deformationScene_->commitSubmitted();
+}
+
 void SceneController::createGeometryBuffers() {
-  const auto& sceneVertices = sceneManager_.vertices();
-  const auto& sceneIndices  = sceneManager_.indices();
+  updateDeformation();
+  const auto sceneVertices = deformationScene_ ? deformationScene_->bindVertices() : geometryVertices();
+  const auto sceneIndices = geometryIndices();
   const container::geometry::Mesh cube = makeScenePrimitiveCube();
 
   std::vector<container::geometry::Vertex> mergedVertices;
   mergedVertices.reserve(sceneVertices.size() + cube.vertices().size());
   mergedVertices.insert(mergedVertices.end(), sceneVertices.begin(),
                         sceneVertices.end());
+  constexpr auto maxIndex = std::numeric_limits<uint32_t>::max();
+  if (sceneVertices.size() > maxIndex - cube.vertices().size() ||
+      sceneIndices.size() > maxIndex - cube.indices().size())
+    throw std::length_error("Expanded deformation geometry exceeds 32-bit indexing");
   const uint32_t diagVertexBase =
       static_cast<uint32_t>(mergedVertices.size());
   mergedVertices.insert(mergedVertices.end(), cube.vertices().begin(),
@@ -362,6 +430,12 @@ void SceneController::createGeometryBuffers() {
       std::span<const container::geometry::Vertex>(mergedVertices));
   indexSlice_ = allocationManager_.uploadIndices(
       std::span<const uint32_t>(mergedIndices));
+
+  if (deformationScene_ && !deformationScene_->gpuInstances().empty())
+    gpuBindVertices_ = std::move(mergedVertices);
+  else
+    gpuBindVertices_ = {};
+  deformationTopologyPending_ = false;
 
   diagCubeVertexSlice_ = vertexSlice_;
   diagCubeIndexSlice_  = indexSlice_;
@@ -435,6 +509,7 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
 
         const auto& primitive =
             sceneManager_.primitiveRanges()[mesh.primitiveIndex];
+        const auto* deformation = deformationScene_ ? deformationScene_->drawRange(nodeRef.nodeIndex) : nullptr;
         const auto materialProperties =
             sceneManager_.materialRenderProperties(material.materialIndex);
         const uint32_t materialIndex = materialProperties.gpuMaterialIndex;
@@ -453,22 +528,27 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
         }
         const bool materialDoubleSided = materialProperties.doubleSided;
         const bool materialTransparent = materialProperties.transparent;
-        const bool rasterDoubleSided =
-            materialDoubleSided || primitive.disableBackfaceCulling;
-        const bool windingFlipped =
-            transformFlipsWinding(transform.worldTransform);
+        const bool rasterDoubleSided = materialDoubleSided || primitive.disableBackfaceCulling ||
+            (deformation && deformation->orientation == GltfDeformationOrientation::MixedOrDegenerate);
+        const bool windingFlipped = transformFlipsWinding(transform.worldTransform) !=
+            (deformation && deformation->orientation == GltfDeformationOrientation::Reversed);
         object.objectInfo.y =
             rasterDoubleSided ? container::gpu::kObjectFlagDoubleSided : 0u;
+        if (deformation && deformation->orientation == GltfDeformationOrientation::Reversed)
+          object.objectInfo.y |= container::gpu::kObjectFlagDeformationWindingFlipped;
 
-        if (mesh.primitiveIndex < primitiveBounds_.size()) {
-          const auto& bounds = primitiveBounds_[mesh.primitiveIndex];
+        if (deformation || mesh.primitiveIndex < primitiveBounds_.size()) {
+          const auto bounds = deformation
+              ? PrimitiveBounds{deformation->bounds.center, deformation->bounds.radius, deformation->bounds.valid}
+              : primitiveBounds_[mesh.primitiveIndex];
           if (bounds.valid) {
             const glm::vec3 worldCenter = glm::vec3(
                 transform.worldTransform * glm::vec4(bounds.center, 1.0f));
-            const float scaleMax = std::max({
-                glm::length(glm::vec3(transform.worldTransform[0])),
-                glm::length(glm::vec3(transform.worldTransform[1])),
-                glm::length(glm::vec3(transform.worldTransform[2]))});
+            const float scaleMax = deformation && deformation->deformed()
+                ? conservativeSphereScale(transform.worldTransform)
+                : std::max({glm::length(glm::vec3(transform.worldTransform[0])),
+                            glm::length(glm::vec3(transform.worldTransform[1])),
+                            glm::length(glm::vec3(transform.worldTransform[2]))});
             const float heightInflation =
                 std::abs(materialProperties.heightScale) * scaleMax;
             object.boundingSphere =
@@ -483,8 +563,8 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
 
         DrawCommand drawCommand{};
         drawCommand.objectIndex = objectIndex;
-        drawCommand.firstIndex  = primitive.firstIndex;
-        drawCommand.indexCount  = primitive.indexCount;
+        drawCommand.firstIndex = deformation ? deformation->firstIndex : primitive.firstIndex;
+        drawCommand.indexCount = deformation ? deformation->indexCount : primitive.indexCount;
 
         if (materialTransparent) {
           transparentDrawCommands_.push_back(drawCommand);
@@ -636,8 +716,8 @@ SceneNodePickHit SceneController::pickRenderableNodeHitForDraws(
     return {};
   }
 
-  const auto& vertices = sceneManager_.vertices();
-  const auto& indices = sceneManager_.indices();
+  const auto vertices = geometryVertices();
+  const auto indices = geometryIndices();
   SceneNodePickHit nearest{};
   auto testDrawCommands = [&](const std::vector<DrawCommand>& commands,
                               TriangleCullMode cullMode) {

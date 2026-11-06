@@ -1,4 +1,5 @@
 #include "Container/renderer/temporal/TemporalManager.h"
+#include "Container/renderer/temporal/TemporalVelocityVertexInput.h"
 #include "Container/geometry/Vertex.h"
 #include "Container/renderer/bim/BimSurfacePassRecorder.h"
 #include "Container/renderer/core/FrameRecorder.h"
@@ -165,16 +166,12 @@ void TemporalManager::createPipelines(const std::filesystem::path &root,
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     stages[1].module = fragment;
     stages[1].pName = "fragMain";
-    const auto vertexBinding =
-        container::geometry::Vertex::bindingDescription();
-    const auto allAttributes =
-        container::geometry::Vertex::attributeDescriptions();
-    const std::array<VkVertexInputAttributeDescription, 5> attributes = {
-        allAttributes[0], allAttributes[2], allAttributes[3], allAttributes[5], allAttributes[6]};
+    const auto vertexBindings = temporalVelocityVertexBindings();
+    const auto attributes = temporalVelocityVertexAttributes();
     VkPipelineVertexInputStateCreateInfo input{
         VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-    input.vertexBindingDescriptionCount = 1;
-    input.pVertexBindingDescriptions = &vertexBinding;
+    input.vertexBindingDescriptionCount = static_cast<uint32_t>(vertexBindings.size());
+    input.pVertexBindingDescriptions = vertexBindings.data();
     input.vertexAttributeDescriptionCount =
         static_cast<uint32_t>(attributes.size());
     input.pVertexAttributeDescriptions = attributes.data();
@@ -553,6 +550,7 @@ void TemporalManager::recordVelocity(VkCommandBuffer cmd,
   const DebugOverlayRenderer drawHelper;
   const SceneOpaqueDrawPipelineHandles pipelines{
       velocityPipelines_[0], velocityPipelines_[1], velocityPipelines_[2]};
+  (void)recordTemporalPreviousVertexBinding(cmd, p.scene.vertexSlice, p.scene.previousVertexSlice);
   (void)recordSceneOpaqueDrawCommands(
       cmd,
       {.plan = &plan,
@@ -590,6 +588,7 @@ void TemporalManager::recordVelocity(VkCommandBuffer cmd,
         p.bim.opaqueMeshDrawsUseGpuVisibility;
     const auto bimPlan = buildBimSurfacePassPlan(inputs);
     const std::array<VkDescriptorSet, 1> sets = {bimSet};
+    (void)recordTemporalPreviousVertexBinding(cmd, p.bim.scene.vertexSlice);
     (void)recordBimSurfacePassCommands(
         cmd, {.plan = &bimPlan,
               .geometry = {sets, p.bim.scene.vertexSlice,

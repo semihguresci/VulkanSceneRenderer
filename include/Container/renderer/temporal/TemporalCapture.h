@@ -40,6 +40,7 @@ struct CaptureEvent {
   std::optional<glm::vec3> areaLightPosition;
   std::optional<float> exposure;
   std::optional<glm::uvec2> resize;
+  std::optional<glm::uvec2> depthProbe;
   std::string technique{}, reload{}, guiReload{}, guiSampleModel{};
   std::string rayShadows{};
   std::string areaLighting{};
@@ -192,6 +193,18 @@ public:
         if (!event.resize->x || !event.resize->y || event.resize->x > 16384 ||
             event.resize->y > 16384)
           throw std::invalid_argument("Invalid capture resize dimensions");
+      }
+      if (value.contains("depthProbe")) {
+        const auto &pixel = value.at("depthProbe");
+        if (!pixel.is_array() || pixel.size() != 2)
+          throw std::invalid_argument("Capture depthProbe requires two pixel coordinates");
+        const auto coordinate = [](const nlohmann::json &component) {
+          if (!component.is_number_integer() || component.get<double>() < 0 ||
+              component.get<double>() > 16384)
+            throw std::invalid_argument("Capture depthProbe coordinates must be integers in [0,16384]");
+          return component.get<uint32_t>();
+        };
+        event.depthProbe = glm::uvec2(coordinate(pixel[0]), coordinate(pixel[1]));
       }
       event.technique = value.value("technique", std::string{});
       if (!event.technique.empty() && event.technique != "forward-raster" &&

@@ -26,6 +26,8 @@ struct VSInput
     [[vk::location(3)]] float3 inNormal;
     [[vk::location(5)]] float2 inTexCoord1;
     [[vk::location(8)]] float inColorAlpha;
+    [[vk::location(6)]] float3 inPreviousPosition;
+    [[vk::location(7)]] float3 inPreviousNormal;
 };
 
 struct VSOutput
@@ -59,6 +61,12 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
         input.inPosition, input.inNormal, heightTexCoord,
         material.heightTextureIndex, material.heightTextureTransform,
         material.heightScale, material.heightOffset);
+    // UVs and material parameters share the existing revision contract. Local
+    // position/normal can deform independently of the object's rigid matrices.
+    float3 previousObjectPosition = ApplyHeightDisplacement(
+        input.inPreviousPosition, input.inPreviousNormal, heightTexCoord,
+        material.heightTextureIndex, material.heightTextureTransform,
+        material.heightScale, material.heightOffset);
     float4 worldPos = mul(obj.model, float4(objectPosition, 1.0));
     output.pos = mul(uCamera.viewProj, worldPos);
     output.texCoord = input.inTexCoord;
@@ -72,7 +80,7 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
     output.objectIndex = objectIndex;
     output.worldPos = worldPos.xyz;
     output.currentClip = mul(uCamera.unjitteredViewProj, worldPos);
-    output.previousClip = mul(uCamera.previousViewProj, mul(obj.previousModel, float4(objectPosition, 1.0)));
+    output.previousClip = mul(uCamera.previousViewProj, mul(obj.previousModel, float4(previousObjectPosition, 1.0)));
     return output;
 }
 

@@ -34,10 +34,10 @@ The supported `KHR_animation_pointer` subset covers numeric node TRS,
 shader-backed material and texture-transform properties, punctual lights,
 and perspective or orthographic cameras. Unsupported optional channels
 appear in the panel diagnostics. A required unsupported pointer fails with
-the asset, clip, and channel in the diagnostic. Morph weight tracks are
-decoded by the sampler. The renderer diagnoses them until the Vulkan
-deformation consumer is integrated. Arbitrary Object Model properties
-and animation editing remain separate.
+the asset, clip, and channel in the diagnostic. Morph weight tracks update
+the skinning and morph stage for the selected mesh instance. See
+[glTF deformation](gltf-deformation.md) for rendering and history details.
+Arbitrary Object Model properties and animation editing remain separate.
 
 The CPU suite is `gltf_animation_tests`. The two native regressions in
 `tests/validation/gltf_animation_runtime_regression.py` and

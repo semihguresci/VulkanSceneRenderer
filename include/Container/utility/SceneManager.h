@@ -32,6 +32,8 @@ class VulkanDevice;
 struct AllocatedBuffer;
 }  // namespace container::gpu
 
+namespace container::renderer { class GltfDeformationScene; }
+
 namespace container::geometry::gltf { struct AnimationDirtySet; class AnimationPlayer; }
 
 namespace container::scene {
@@ -125,6 +127,11 @@ class SceneManager {
     return model_.primitiveRanges();
   }
   const container::geometry::Model& model() const { return model_; }
+  [[nodiscard]] const container::geometry::gltf::DeformationData* deformationData() const {
+    return deformation_ ? &*deformation_ : nullptr;
+  }
+  [[nodiscard]] size_t deformationVertexLimit() const noexcept;
+  [[nodiscard]] std::unique_ptr<container::renderer::GltfDeformationScene> takePreparedDeformation() noexcept;
   VkIndexType indexType() const { return indexType_; }
   uint32_t defaultMaterialIndex() const { return defaultMaterialIndex_; }
   [[nodiscard]] size_t materialCount() const {
@@ -246,7 +253,8 @@ class SceneManager {
   void loadMaterialXMaterial();
   void loadGltfAssets(container::geometry::GltfLoadResult* prepared = nullptr,
       const container::material::PreparedGltfTextures* preparedTextures = nullptr,
-                      std::unique_ptr<container::geometry::gltf::AnimationPlayer>* preparedAnimation = nullptr);
+                      std::unique_ptr<container::geometry::gltf::AnimationPlayer>* preparedAnimation = nullptr,
+                      std::unique_ptr<container::renderer::GltfDeformationScene>* preparedDeformation = nullptr);
   void loadDefaultTestSceneAssets();
   void uploadMaterialBuffer();
   void uploadTextureMetadataBuffer();
@@ -282,6 +290,8 @@ class SceneManager {
   std::vector<uint32_t> indices_{};
   uint64_t geometryRevision_{0};
   uint64_t animationSourceRevision_{0};
+  std::optional<container::geometry::gltf::DeformationData> deformation_;
+  std::unique_ptr<container::renderer::GltfDeformationScene> pendingDeformation_;
   std::unique_ptr<container::geometry::gltf::AnimationPlayer> pendingAnimation_;
   uint64_t materialRevision_{0};
   ModelBounds modelBounds_{};

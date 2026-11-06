@@ -21,6 +21,8 @@ struct SceneNode {
   bool visible = true;
   // Identity of an authored node. Generated primitive children have no source node.
   int32_t sourceNodeIndex{-1};
+  // Authored mesh owner survives reparenting of an individual primitive.
+  uint32_t meshOwnerGraphNode{std::numeric_limits<uint32_t>::max()};
   std::string name{};
   std::vector<uint32_t> children{};
 };

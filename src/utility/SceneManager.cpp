@@ -23,6 +23,7 @@
 #include "Container/utility/SceneGraph.h"
 #include "Container/utility/SceneManager.h"
 #include "Container/geometry/GltfAnimationRuntime.h"
+#include "Container/renderer/scene/GltfDeformationScene.h"
 #include "Container/renderer/temporal/TemporalMaterialRevision.h"
 #include "Container/utility/VulkanDevice.h"
 #include "Container/utility/VulkanMemoryManager.h"
@@ -831,15 +832,13 @@ prepareAnimationPlayback(const tinygltf::Model& model, std::string_view path) {
   for (size_t index = 0; index < library.clips.size(); ++index) {
     auto& clip = library.clips[index];
     std::erase_if(clip.tracks, [&](const AnimationTrack& track) {
-      const bool geometry = track.target.kind == AnimationTargetKind::NodeWeights;
       const bool deferredMaterial = track.target.kind == AnimationTargetKind::Material &&
           (track.target.property.starts_with("extensions/KHR_materials_anisotropy/") ||
            track.target.property.starts_with("extensions/KHR_materials_diffuse_transmission/"));
-      if (geometry || deferredMaterial)
-        library.diagnostics.push_back({index, track.sourceChannel, geometry ?
-            "Morph weight playback requires the deformation renderer" :
+      if (deferredMaterial)
+        library.diagnostics.push_back({index, track.sourceChannel,
             "The target material extension is unavailable in this renderer"});
-      return geometry || deferredMaterial;
+      return deferredMaterial;
     });
   }
   for (const auto& diagnostic : library.diagnostics) {
@@ -1033,22 +1032,26 @@ bool SceneManager::isDefaultTestSceneActive() const {
   return isDefaultSceneRequest(config_.modelPath);
 }
 
-void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
+namespace {
+template <class ResolveMaterial>
+void populateSourceGraph(SceneGraph& sceneGraph, const tinygltf::Model& source,
+    std::span<const container::geometry::PrimitiveRange> ranges, float importScale,
+    uint32_t defaultMaterial, ResolveMaterial resolveMaterial) {
   sceneGraph = SceneGraph{};
 
-  if (primitiveRanges().empty() && gltfModel_.nodes.empty()) {
+  if (ranges.empty() && source.nodes.empty()) {
     return;
   }
 
-  if (gltfModel_.nodes.empty()) {
+  if (source.nodes.empty()) {
     const uint32_t rootNode = sceneGraph.createNode(
-        importScaleTransform(config_.importScale), defaultMaterialIndex_,
+        importScaleTransform(importScale), defaultMaterial,
         false, SceneGraph::kInvalidNode, "Imported Scene");
-    for (size_t primitiveIndex = 0; primitiveIndex < primitiveRanges().size();
+    for (size_t primitiveIndex = 0; primitiveIndex < ranges.size();
          ++primitiveIndex) {
-      const auto& primitive = primitiveRanges()[primitiveIndex];
+      const auto& primitive = ranges[primitiveIndex];
       const uint32_t primitiveNode = sceneGraph.createNode(
-          glm::mat4(1.0f), resolveLoadedMaterialIndex(primitive.materialIndex),
+          glm::mat4(1.0f), resolveMaterial(primitive.materialIndex),
           true, static_cast<uint32_t>(primitiveIndex),
           "Primitive " + std::to_string(primitiveIndex));
       sceneGraph.setParent(primitiveNode, rootNode);
@@ -1057,42 +1060,42 @@ void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
     return;
   }
 
-  std::vector<uint32_t> meshPrimitiveBase(gltfModel_.meshes.size(), 0);
+  std::vector<uint32_t> meshPrimitiveBase(source.meshes.size(), 0);
   uint32_t primitiveOffset = 0;
-  for (size_t meshIndex = 0; meshIndex < gltfModel_.meshes.size(); ++meshIndex) {
+  for (size_t meshIndex = 0; meshIndex < source.meshes.size(); ++meshIndex) {
     meshPrimitiveBase[meshIndex] = primitiveOffset;
     primitiveOffset +=
-        static_cast<uint32_t>(gltfModel_.meshes[meshIndex].primitives.size());
+        static_cast<uint32_t>(source.meshes[meshIndex].primitives.size());
   }
 
   std::optional<uint32_t> importRootNode;
-  if (sanitizeImportScale(config_.importScale) != 1.0f) {
+  if (sanitizeImportScale(importScale) != 1.0f) {
     importRootNode = sceneGraph.createNode(
-        importScaleTransform(config_.importScale), defaultMaterialIndex_, false,
+        importScaleTransform(importScale), defaultMaterial, false,
         SceneGraph::kInvalidNode, "Import Scale");
   }
 
   std::function<void(int, std::optional<uint32_t>)> appendNode =
       [&](int gltfNodeIndex, std::optional<uint32_t> parentNode) {
         if (gltfNodeIndex < 0 ||
-            gltfNodeIndex >= static_cast<int>(gltfModel_.nodes.size())) {
+            gltfNodeIndex >= static_cast<int>(source.nodes.size())) {
           return;
         }
 
-        const auto& gltfNode = gltfModel_.nodes[gltfNodeIndex];
+        const auto& gltfNode = source.nodes[gltfNodeIndex];
         const std::string nodeName =
             gltfNode.name.empty()
                 ? "glTF Node " + std::to_string(gltfNodeIndex)
                 : gltfNode.name;
         const uint32_t graphNode = sceneGraph.createNode(
-            nodeLocalTransform(gltfNode), defaultMaterialIndex_, false,
+            nodeLocalTransform(gltfNode), defaultMaterial, false,
             SceneGraph::kInvalidNode, nodeName);
         sceneGraph.getNode(graphNode)->sourceNodeIndex = gltfNodeIndex;
         sceneGraph.setParent(graphNode, parentNode);
 
         if (gltfNode.mesh >= 0 &&
-            gltfNode.mesh < static_cast<int>(gltfModel_.meshes.size())) {
-          const auto& mesh = gltfModel_.meshes[gltfNode.mesh];
+            gltfNode.mesh < static_cast<int>(source.meshes.size())) {
+          const auto& mesh = source.meshes[gltfNode.mesh];
           const uint32_t basePrimitiveIndex = meshPrimitiveBase[gltfNode.mesh];
 
           for (size_t primitiveOffsetInMesh = 0;
@@ -1100,16 +1103,17 @@ void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
                ++primitiveOffsetInMesh) {
             const uint32_t primitiveIndex =
                 basePrimitiveIndex + static_cast<uint32_t>(primitiveOffsetInMesh);
-            if (primitiveIndex >= primitiveRanges().size()) {
+            if (primitiveIndex >= ranges.size()) {
               continue;
             }
 
-            const auto& primitive = primitiveRanges()[primitiveIndex];
+            const auto& primitive = ranges[primitiveIndex];
             const uint32_t primitiveNode = sceneGraph.createNode(
                 glm::mat4(1.0f),
-                resolveLoadedMaterialIndex(primitive.materialIndex), true,
+                resolveMaterial(primitive.materialIndex), true,
                 primitiveIndex,
                 "Primitive " + std::to_string(primitiveIndex));
+            sceneGraph.getNode(primitiveNode)->meshOwnerGraphNode = graphNode;
             sceneGraph.setParent(primitiveNode, graphNode);
           }
         }
@@ -1119,18 +1123,18 @@ void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
         }
       };
 
-  if (!gltfModel_.scenes.empty()) {
-    int sceneIndex = gltfModel_.defaultScene;
-    if (sceneIndex < 0 || sceneIndex >= static_cast<int>(gltfModel_.scenes.size())) {
+  if (!source.scenes.empty()) {
+    int sceneIndex = source.defaultScene;
+    if (sceneIndex < 0 || sceneIndex >= static_cast<int>(source.scenes.size())) {
       sceneIndex = 0;
     }
 
-    for (int rootNodeIndex : gltfModel_.scenes[sceneIndex].nodes) {
+    for (int rootNodeIndex : source.scenes[sceneIndex].nodes) {
       appendNode(rootNodeIndex, importRootNode);
     }
   } else {
-    std::vector<bool> hasParent(gltfModel_.nodes.size(), false);
-    for (const auto& node : gltfModel_.nodes) {
+    std::vector<bool> hasParent(source.nodes.size(), false);
+    for (const auto& node : source.nodes) {
       for (int childIndex : node.children) {
         if (childIndex >= 0 &&
             childIndex < static_cast<int>(hasParent.size())) {
@@ -1139,7 +1143,7 @@ void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
       }
     }
 
-    for (size_t nodeIndex = 0; nodeIndex < gltfModel_.nodes.size(); ++nodeIndex) {
+    for (size_t nodeIndex = 0; nodeIndex < source.nodes.size(); ++nodeIndex) {
       if (!hasParent[nodeIndex]) {
         appendNode(static_cast<int>(nodeIndex), importRootNode);
       }
@@ -1147,6 +1151,42 @@ void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
   }
 
   sceneGraph.updateWorldTransforms();
+}
+
+std::unique_ptr<container::renderer::GltfDeformationScene> prepareDeformation(
+    const container::geometry::GltfLoadResult& result, float scale, size_t vertexLimit) {
+  if (!result.deformation) return {};
+  SceneGraph graph;
+  populateSourceGraph(graph, result.gltfModel, result.model.primitiveRanges(), scale, 0,
+                      [](int32_t) { return 0u; });
+  std::vector<uint32_t> owners;
+  owners.reserve(graph.nodeCount());
+  for (uint32_t id = 0; id < graph.nodeCount(); ++id)
+    owners.push_back(graph.getNode(id)->meshOwnerGraphNode);
+  auto scene = std::make_unique<container::renderer::GltfDeformationScene>();
+  scene->configure(*result.deformation, result.model, {}, vertexLimit);
+  scene->update(graph, owners, &result.gltfModel, true);
+  return scene;
+}
+} // namespace
+
+void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
+  populateSourceGraph(sceneGraph, gltfModel_, primitiveRanges(), config_.importScale, defaultMaterialIndex_,
+                      [this](int32_t material) { return resolveLoadedMaterialIndex(material); });
+}
+
+size_t SceneManager::deformationVertexLimit() const noexcept {
+  VkPhysicalDeviceProperties properties{};
+  vkGetPhysicalDeviceProperties(deviceWrapper_->physicalDevice(), &properties);
+  const size_t bytes = std::min<size_t>(properties.limits.maxStorageBufferRange, 256ull * 1024 * 1024);
+  // Immutable compute storage starts with the bind stream and a four-word map
+  // per vertex. Leave space for the renderer's small diagnostic mesh.
+  constexpr size_t stride = sizeof(container::geometry::Vertex) + 4 * sizeof(uint32_t);
+  return bytes / stride > 64 ? bytes / stride - 64 : 0;
+}
+
+std::unique_ptr<container::renderer::GltfDeformationScene> SceneManager::takePreparedDeformation() noexcept {
+  return std::move(pendingDeformation_);
 }
 
 uint32_t SceneManager::appendRuntimeMesh(container::geometry::Mesh mesh) {
@@ -1198,15 +1238,21 @@ bool SceneManager::reloadModel(
   }
   std::optional<container::material::PreparedGltfTextures> incomingTextures;
   std::unique_ptr<container::geometry::gltf::AnimationPlayer> incomingAnimation;
+  std::unique_ptr<container::renderer::GltfDeformationScene> incomingDeformation;
   if(prepared) {
     try {
       incomingAnimation = prepareAnimationPlayback(prepared->gltfModel, path);
+      incomingDeformation = prepareDeformation(
+          *prepared, sanitizeImportScale(importScale), deformationVertexLimit());
       validateGltfSamplerPolicies(prepared->gltfModel,true);
       incomingTextures=container::material::PrepareGltfTextures(prepared->gltfModel,
           allocationManager_->textureDecodeOptions(false));
       if(container::material::CountPreparedGltfTextureResources(*incomingTextures)>textureDescriptorCapacity_)
         throw std::runtime_error("Incoming glTF textures exceed the scene image descriptor capacity"); }
-    catch(const std::exception& error) {std::println(stderr,"glTF scene preflight failed: {}",error.what());return false;}
+    catch (const std::exception& error) {
+      std::println(stderr, "glTF scene preflight failed for '{}': {}", path, error.what());
+      return false;
+    }
   }
   auto resetForLoad = [this]() {
     resetLoadedAssets();
@@ -1221,7 +1267,8 @@ bool SceneManager::reloadModel(
     resetForLoad();
     config_.modelPath = path;
     config_.importScale = sanitizeImportScale(importScale);
-    loadGltfAssets(prepared,incomingTextures?&*incomingTextures:nullptr, &incomingAnimation);
+    loadGltfAssets(prepared, incomingTextures ? &*incomingTextures : nullptr,
+                   &incomingAnimation, &incomingDeformation);
     uploadMaterialBuffer();
     uploadTextureMetadataBuffer();
     updateDescriptorSets(cameraBuffers, objectBuffer);
@@ -1921,8 +1968,11 @@ std::unique_ptr<container::geometry::gltf::AnimationPlayer> SceneManager::takePr
 
 void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
     const container::material::PreparedGltfTextures* preparedTextures,
-    std::unique_ptr<container::geometry::gltf::AnimationPlayer>* preparedAnimation) {
+    std::unique_ptr<container::geometry::gltf::AnimationPlayer>* preparedAnimation,
+    std::unique_ptr<container::renderer::GltfDeformationScene>* preparedDeformation) {
   pendingAnimation_.reset();
+  pendingDeformation_.reset();
+  deformation_.reset();
   model_ = container::geometry::Model{};
   gltfModel_ = tinygltf::Model{};
   authoredPointLights_.clear();
@@ -1951,8 +2001,11 @@ void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
       validateGltfSamplerPolicies(result.gltfModel,false);
       if (preparedAnimation) pendingAnimation_ = std::move(*preparedAnimation);
       else pendingAnimation_ = prepareAnimationPlayback(result.gltfModel, config_.modelPath);
+      if (preparedDeformation) pendingDeformation_ = std::move(*preparedDeformation);
+      else pendingDeformation_ = prepareDeformation(result, config_.importScale, deformationVertexLimit());
       gltfModel_ = std::move(result.gltfModel);
       model_ = std::move(result.model);
+      deformation_ = std::move(result.deformation);
 
       std::optional<container::material::PreparedGltfTextures> localTextures;
       if(!preparedTextures) {localTextures=container::material::PrepareGltfTextures(gltfModel_,
@@ -2715,6 +2768,7 @@ void SceneManager::writeDescriptorSetContents(
 }
 
 void SceneManager::resetLoadedAssets() {
+  deformation_.reset();
   ++animationSourceRevision_;
   ++geometryRevision_;
   ++materialRevision_;

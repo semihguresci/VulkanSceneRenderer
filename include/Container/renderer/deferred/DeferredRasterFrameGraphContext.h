@@ -105,4 +105,9 @@ private:
   ShadowCascadeFramePassRecorder shadowCascadeFramePassRecorder_{};
 };
 
+// The forward and deferred graphs share the pick targets and draw routes.
+void registerRasterTransparentPickPass(
+    RenderGraphBuilder graph, DeferredRasterFrameGraphContext *context,
+    std::initializer_list<RenderPassId> dependencies = {});
+
 } // namespace container::renderer

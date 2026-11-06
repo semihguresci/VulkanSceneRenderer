@@ -90,6 +90,7 @@ set(SLANG_COMPUTE_SHADER_NAMES
     bloom_upsample.slang
     exposure_histogram.slang
     temporal_compose.slang
+    gltf_deformation.slang
     temporal_resolve.slang
     exposure_adapt.slang
     ray_shadow_trace.slang

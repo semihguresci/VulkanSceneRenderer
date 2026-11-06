@@ -23,6 +23,9 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/RendererMsaa.cpp
     renderer/core/RendererFrontend.cpp
     renderer/core/RendererFrontendAnimation.cpp
+    renderer/core/RendererFrontendDeformation.cpp
+    renderer/core/RendererFrontendDeformationTelemetry.cpp
+    renderer/scene/GltfDeformationPass.cpp
     renderer/core/RendererTelemetry.cpp
     renderer/core/RenderGraph.cpp
     renderer/core/RenderPassGpuProfiler.cpp

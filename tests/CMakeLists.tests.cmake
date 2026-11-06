@@ -1414,6 +1414,23 @@ add_custom_test(gltf_animation_tests
     ${TEST_GEOMETRY_DIR}/gltf_animation_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_geometry VulkanSceneRenderer_scene
 )
+add_custom_test(gltf_deformation_gpu_tests
+    ${TEST_RENDERER_SCENE_DIR}/gltf_deformation_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+target_compile_definitions(gltf_deformation_gpu_tests PRIVATE
+    CONTAINER_GLTF_DEFORMATION_SHADER_DIR="${CMAKE_BINARY_DIR}")
+add_dependencies(gltf_deformation_gpu_tests shaders_all)
+set_tests_properties(gltf_deformation_gpu_tests PROPERTIES
+    LABELS "requires-vulkan;gltf;deformation" RUN_SERIAL TRUE TIMEOUT 120)
+add_custom_test(gltf_deformation_scene_tests
+    ${TEST_RENDERER_SCENE_DIR}/gltf_deformation_scene_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+add_custom_test(temporal_deformed_vertex_tests
+    ${TEST_RENDERER_CORE_DIR}/temporal_deformed_vertex_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
 add_custom_test(gltf_deformation_tests
     ${TEST_GEOMETRY_DIR}/gltf_deformation_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_geometry

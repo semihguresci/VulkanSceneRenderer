@@ -67,6 +67,7 @@ struct FrameRuntimeResources {
 
 struct FrameSceneGeometry {
   container::gpu::BufferSlice vertexSlice{};
+  container::gpu::BufferSlice previousVertexSlice{};
   container::gpu::BufferSlice indexSlice{};
   VkIndexType indexType{VK_INDEX_TYPE_UINT32};
   const std::vector<container::gpu::ObjectData> *objectData{nullptr};

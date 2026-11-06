@@ -82,6 +82,7 @@ target_link_libraries(VulkanSceneRenderer_window PUBLIC
 add_library(VulkanSceneRenderer_scene
     SceneManager.cpp
     SceneGraph.cpp
+    ../renderer/scene/GltfDeformationScene.cpp
     MaterialManager.cpp
     MaterialXIntegration.cpp
     GltfTextureResources.cpp

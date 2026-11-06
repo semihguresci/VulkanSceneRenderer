@@ -71,6 +71,7 @@ class RenderTechniqueRegistry;
 struct RenderSystemContext;
 class RendererTelemetry;
 class SceneController;
+class GltfDeformationPass;
 class SceneProviderSynchronizer;
 class ShadowCullManager;
 class ShadowManager;
@@ -140,7 +141,8 @@ public:
   // Capture the next submitted swapchain image to an sRGB PNG.
   void requestScreenshot(std::filesystem::path outputPath, bool viewportOnly = false);
   void applyTemporalCapture(const container::temporal::CaptureSample &sample);
-  void writeCaptureTelemetry(const std::filesystem::path &path) const;
+  void writeCaptureTelemetry(const std::filesystem::path &path,
+                             std::optional<glm::uvec2> depthProbe = std::nullopt);
   void startGfxCapture();
   void gfxCaptureTick(uint64_t tick, bool skipped);
   [[nodiscard]] bool gfxCaptureComplete() const;
@@ -198,6 +200,7 @@ private:
     std::unique_ptr<container::scene::SceneManager> sceneManager;
     std::unique_ptr<BimManager> bimManager;
     std::unique_ptr<SceneController> sceneController;
+    std::unique_ptr<GltfDeformationPass> gltfDeformationPass;
     std::unique_ptr<CameraController> cameraController;
     std::unique_ptr<LightingManager> lightingManager;
     std::unique_ptr<ShadowCullManager> shadowCullManager;
@@ -274,6 +277,20 @@ private:
   double pendingGltfAnimationDeltaSeconds_{};
   void resetGltfAnimation(bool applyStartupOptions);
   void updateGltfAnimation();
+  void updateGltfDeformation();
+  void prepareGltfDeformationFrame(uint32_t imageIndex);
+  void commitGltfDeformationFrame();
+  void appendGltfDeformationTelemetry(nlohmann::json& json) const;
+  uint64_t gltfDeformationSourceIdentity_{};
+  uint64_t gltfDeformationSourceRevision_{};
+  uint64_t gltfDeformationTopologyRevision_{};
+  size_t gltfDeformationVertexCount_{};
+  uint32_t gltfDeformationImageCount_{};
+  std::optional<uint32_t> gltfDeformationSubmittedEpoch_;
+  float gltfDeformationMaxPositionDelta_{};
+  bool gltfDeformationHistoryReset_{true};
+  bool gltfDeformationCurrentBoundToGpu_{};
+  bool gltfDeformationPreviousBoundToGpu_{};
   void applyGltfAnimationCapture(const container::temporal::CaptureEvent& event);
   void publishGltfAnimation(const container::geometry::gltf::AnimationDirtySet& dirty,
                             bool discontinuity);

@@ -3,6 +3,7 @@
 #include "Container/renderer/picking/DepthReadback.h"
 #include "Container/utility/AtomicFile.h"
 #include "Container/renderer/pathtracing/ReferencePathTracePass.h"
+#include "Container/renderer/scene/GltfDeformationPass.h"
 #include "Container/renderer/raytracing/RaySceneAcceleration.h"
 #include "Container/renderer/raytracing/RayShadowManager.h"
 #include "Container/renderer/lighting/DdgiManager.h"
@@ -1766,8 +1767,6 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
 
   phaseStart = TelemetryClock::now();
   presentSceneControls();
-  processPendingDdgiSceneFit();
-  processPendingDdgiDetailFit();
   processPendingDdgiPreset();
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::Gui,
@@ -1777,6 +1776,9 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   phaseStart = TelemetryClock::now();
   applyBimSemanticColorMode();
   updateGltfAnimation();
+  updateGltfDeformation();
+  processPendingDdgiSceneFit();
+  processPendingDdgiDetailFit();
   auto &temporal = *subs_.temporalManager;
   // Section coverage and shadow routing changes invalidate the history domain;
   // material/topology revisions below remain local to their provider/object.
@@ -1851,6 +1853,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   SceneController::writeToBuffer(
       svc_.allocationManager, buffers_.cameras[imageIndex],
       &buffers_.cameraData, sizeof(buffers_.cameraData));
+  prepareGltfDeformationFrame(imageIndex);
   updateObjectBuffer(imageIndex);
   if (frameTemporalSettings.enabled) {
     auto objects = subs_.sceneController->objectData();
@@ -2035,6 +2038,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     throw std::runtime_error("failed to submit draw command buffer!");
   }
   subs_.temporalManager->commit();
+  commitGltfDeformationFrame();
   subs_.rayShadowManager->commit();
   if (subs_.ddgiManager) {
     subs_.ddgiManager->commit();
@@ -2648,12 +2652,22 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   json["camera"]["viewProjColumns"] = matrix(camera.viewProj);
   json["camera"]["unjitteredViewProjColumns"] = matrix(camera.unjitteredViewProj);
   appendGltfAnimationTelemetry(json);
+  appendGltfDeformationTelemetry(json);
   return json;
 }
 
 void RendererFrontend::writeCaptureTelemetry(
-    const std::filesystem::path &path) const {
-  const auto json = captureTelemetry();
+    const std::filesystem::path &path, std::optional<glm::uvec2> depthProbe) {
+  auto json = captureTelemetry();
+  if (depthProbe) {
+    auto &probe = json["depthProbe"];
+    probe["pixel"] = {depthProbe->x, depthProbe->y};
+    float depth = 0.0f;
+    probe["opaque"] = sampleDepthAtCursor(depthProbe->x, depthProbe->y, depth)
+                          ? nlohmann::json(depth) : nlohmann::json(nullptr);
+    probe["pick"] = samplePickDepthAtCursor(depthProbe->x, depthProbe->y, depth)
+                        ? nlohmann::json(depth) : nlohmann::json(nullptr);
+  }
   if (!path.parent_path().empty())
     std::filesystem::create_directories(path.parent_path());
   std::ofstream stream(path);
@@ -4223,6 +4237,7 @@ void RendererFrontend::shutdown() {
   resources_.renderPasses = {};
 
   subs_.bimManager.reset();
+  subs_.gltfDeformationPass.reset();
   subs_.sceneController.reset();
   subs_.sceneManager.reset();
   subs_.lightingManager.reset();
@@ -5729,7 +5744,8 @@ bool RendererFrontend::sampleDepthAtCursor(double cursorX, double cursorY,
   const VkImage depthImage = deferredRasterRuntimeImage(
       subs_.frameResourceManager.get(), frame->imageIndex,
       pickDepth ? "pick-depth" : "depth-stencil");
-  if (depthImage == VK_NULL_HANDLE || cursorX < 0.0 || cursorY < 0.0 ||
+  if (depthImage == VK_NULL_HANDLE || !std::isfinite(cursorX) ||
+      !std::isfinite(cursorY) || cursorX < 0.0 || cursorY < 0.0 ||
       cursorX >= static_cast<double>(frame->extent.width) ||
       cursorY >= static_cast<double>(frame->extent.height)) {
     return false;
@@ -6050,9 +6066,9 @@ void RendererFrontend::fitDdgiToActiveScene(uint32_t maxProbes) {
     const auto &transparent = subs_.sceneController->transparentDrawCommands();
     meshDraws.insert(meshDraws.end(), transparent.begin(), transparent.end());
     sources.push_back({{"mesh-fit"},
-                       subs_.sceneManager->geometryRevision(),
-                       subs_.sceneManager->vertices(),
-                       subs_.sceneManager->indices(),
+                       subs_.sceneController->geometryRevision(),
+                       subs_.sceneController->geometryVertices(),
+                       subs_.sceneController->geometryIndices(),
                        subs_.sceneController->objectData(),
                        meshDraws});
   }
@@ -6177,8 +6193,8 @@ void RendererFrontend::fitDdgiDetailToSelection(uint32_t maxProbes, std::string_
       subs_.sceneController->collectDrawCommandsForNode(nodes[index], selected);
       draws.insert(draws.end(), selected.begin(), selected.end());
     }
-    sources.push_back({{"mesh-detail"}, subs_.sceneManager->geometryRevision(),
-        subs_.sceneManager->vertices(), subs_.sceneManager->indices(),
+    sources.push_back({{"mesh-detail"}, subs_.sceneController->geometryRevision(),
+        subs_.sceneController->geometryVertices(), subs_.sceneController->geometryIndices(),
         subs_.sceneController->objectData(), draws});
   }
   const auto bounds = computeDdgiSceneBounds(sources);
@@ -7391,6 +7407,15 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   p.registries.pipelineRecipes = subs_.pipelineRegistry.get();
   p.registries.resourceBindings = subs_.frameRuntimeResourceRegistry.get();
   p.scene.vertexSlice = sceneState_.vertexSlice;
+  p.scene.previousVertexSlice = p.scene.vertexSlice;
+  gltfDeformationCurrentBoundToGpu_ = false;
+  gltfDeformationPreviousBoundToGpu_ = false;
+  if (subs_.gltfDeformationPass) {
+    p.scene.vertexSlice = subs_.gltfDeformationPass->currentVertices(imageIndex);
+    p.scene.previousVertexSlice = subs_.gltfDeformationPass->previousVertices(imageIndex);
+    gltfDeformationCurrentBoundToGpu_ = p.scene.vertexSlice.buffer != VK_NULL_HANDLE;
+    gltfDeformationPreviousBoundToGpu_ = p.scene.previousVertexSlice.buffer != VK_NULL_HANDLE;
+  }
   p.scene.indexSlice = sceneState_.indexSlice;
   p.scene.indexType = sceneState_.indexType;
   p.draws.opaqueDrawCommands = &subs_.sceneController->opaqueDrawCommands();
@@ -7890,6 +7915,12 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   if (screenshot_.pending) {
     p.screenshot.enabled = true;
     p.screenshot.viewportOnly = screenshot_.viewportOnly;
+    if (p.screenshot.viewportOnly) {
+      for (auto* draws : {&p.draws, &p.bim.draws, &p.bim.nativePointDraws, &p.bim.nativeCurveDraws}) {
+        draws->hoveredDrawCommands = nullptr;
+        draws->selectedDrawCommands = nullptr;
+      }
+    }
     p.screenshot.sceneLinear = screenshot_.sceneLinear;
     p.screenshot.sourceImage = svc_.swapChainManager.image(imageIndex);
     if (frame_.currentFrame < screenshot_.readbacks.size()) {
@@ -7927,8 +7958,8 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
          subs_.rayShadowManager->settings().mode != RayShadowMode::Raster))
       sources.push_back(
           {meshProvider.front()->snapshot().id,
-           subs_.sceneManager->geometryRevision(),
-           subs_.sceneManager->vertices(), subs_.sceneManager->indices(),
+           subs_.sceneController->geometryRevision(),
+           subs_.sceneController->geometryVertices(), subs_.sceneController->geometryIndices(),
            subs_.sceneController->objectData(),
            giScene ? std::span<const DrawCommand>(meshRayDraws)
                    : std::span<const DrawCommand>(
@@ -8067,6 +8098,14 @@ void RendererFrontend::attachActiveTechniqueLifecycle(
     params.lifecycle = {};
     break;
   }
+  if (subs_.gltfDeformationPass) {
+    auto previous = std::move(params.lifecycle.afterCommandBufferBegin);
+    params.lifecycle.afterCommandBufferBegin =
+        [this, previous = std::move(previous)](VkCommandBuffer command, const FrameRecordParams& frame) {
+          if (previous) previous(command, frame);
+          subs_.gltfDeformationPass->record(command, frame.runtime.imageIndex);
+        };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -8112,7 +8151,8 @@ void RendererFrontend::syncSceneProviders() {
         .instanceCount = meshAsset.instanceCount,
         .triangleBatches = meshAsset.triangleBatches,
         .bounds = meshAsset.bounds,
-        .geometryRevision = sceneManager.geometryRevision(),
+        .geometryRevision = subs_.sceneController ? subs_.sceneController->geometryRevision()
+                                                  : sceneManager.geometryRevision(),
         .materialRevision = sceneManager.materialRevision(),
         .instanceRevision = objectRevision,
         .displayName = sceneProviderDisplayName(activePrimaryModelPath_,

@@ -1124,6 +1124,63 @@ void recordDeferredRasterTransformGizmoOverlay(VkCommandBuffer cmd,
 
 } // namespace
 
+void registerRasterTransparentPickPass(
+    RenderGraphBuilder graph, DeferredRasterFrameGraphContext *deferred,
+    std::initializer_list<RenderPassId> dependencies) {
+  const auto schedule = dependencies.size() == 0
+                            ? renderPassScheduleDependencies(RenderPassId::TransparentPick)
+                            : std::span<const RenderPassId>(dependencies.begin(), dependencies.size());
+  graph.addPass(RenderPassId::TransparentPick, schedule,
+                [deferred](VkCommandBuffer cmd, const FrameRecordParams &p) {
+                  if (deferred != nullptr) {
+                    static_cast<void>(recordTransparentPickFramePassCommands(
+                        cmd, deferredRasterTransparentPickInputs(
+                                 p, deferred->swapchainExtent(), *deferred)));
+                  }
+                });
+  // The pass clears the ID attachment and writes new IDs in both renderers.
+  graph.setPassResourceAccess(RenderPassId::TransparentPick,
+      {RenderResourceId::SceneGeometry, RenderResourceId::BimGeometry,
+       RenderResourceId::CameraBuffer, RenderResourceId::ObjectBuffer,
+       RenderResourceId::BimObjectBuffer, RenderResourceId::SceneDepth}, {},
+      {RenderResourceId::PickId, RenderResourceId::PickDepth});
+  graph.setPassReadiness(
+      RenderPassId::TransparentPick, [deferred](const FrameRecordParams &p) {
+        if (deferred == nullptr) {
+          return renderPassNotNeeded();
+        }
+        if (deferredRasterFramebuffer(
+                p, DeferredRasterFramebufferId::TransparentPick) ==
+                VK_NULL_HANDLE ||
+            !deferredRasterImageReady(p, DeferredRasterImageId::DepthStencil) ||
+            !deferredRasterImageReady(p, DeferredRasterImageId::PickDepth) ||
+            !deferredRasterImageReady(p, DeferredRasterImageId::PickId) ||
+            deferredRasterRenderPass(
+                p, DeferredRasterFramebufferId::TransparentPick) ==
+                VK_NULL_HANDLE) {
+          return renderPassMissingResource(RenderResourceId::PickId);
+        }
+        const bool lightGizmoPickReady =
+            deferredRasterLightGizmoPickReady(p, *deferred);
+        if (!hasOpaqueDrawCommands(p.draws) && !hasBimOpaqueDrawCommands(p.bim) &&
+            !hasTransparentDrawCommands(p) && !lightGizmoPickReady) {
+          return renderPassNotNeeded();
+        }
+        const bool sceneDrawable =
+            deferredRasterSceneDescriptorSet(p) != VK_NULL_HANDLE &&
+            p.scene.vertexSlice.buffer != VK_NULL_HANDLE &&
+            p.scene.indexSlice.buffer != VK_NULL_HANDLE &&
+            (hasOpaqueDrawCommands(p.draws) ||
+             hasTransparentDrawCommands(p.draws));
+        if (!lightGizmoPickReady && !sceneDrawable &&
+            !hasBimOpaqueDrawCommands(p.bim) &&
+            !hasBimTransparentGeometry(p)) {
+          return renderPassMissingResource(RenderResourceId::SceneGeometry);
+        }
+        return renderPassReady();
+      });
+}
+
 std::string_view DeferredRasterTechnique::name() const {
   return renderTechniqueName(id());
 }
@@ -1392,12 +1449,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                                bimDescriptorSets)));
                 });
 
-  graph.addPass(RenderPassId::TransparentPick,
-                [deferred](VkCommandBuffer cmd, const FrameRecordParams &p) {
-                  static_cast<void>(recordTransparentPickFramePassCommands(
-                      cmd, deferredRasterTransparentPickInputs(
-                               p, deferred->swapchainExtent(), *deferred)));
-                });
+  registerRasterTransparentPickPass(graph, deferred);
 
   graph.addPass(
       RenderPassId::OitClear,
@@ -1813,39 +1865,6 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
             p.bim.scene.vertexSlice.buffer == VK_NULL_HANDLE ||
             p.bim.scene.indexSlice.buffer == VK_NULL_HANDLE) {
           return renderPassMissingResource(RenderResourceId::BimGeometry);
-        }
-        return renderPassReady();
-      });
-
-  graph.setPassReadiness(
-      RenderPassId::TransparentPick, [deferred](const FrameRecordParams &p) {
-        if (deferredRasterFramebuffer(
-                p, DeferredRasterFramebufferId::TransparentPick) ==
-                VK_NULL_HANDLE ||
-            !deferredRasterImageReady(p, DeferredRasterImageId::DepthStencil) ||
-            !deferredRasterImageReady(p, DeferredRasterImageId::PickDepth) ||
-            !deferredRasterImageReady(p, DeferredRasterImageId::PickId) ||
-            deferredRasterRenderPass(
-                p, DeferredRasterFramebufferId::TransparentPick) ==
-                VK_NULL_HANDLE) {
-          return renderPassMissingResource(RenderResourceId::PickId);
-        }
-        const bool lightGizmoPickReady =
-            deferredRasterLightGizmoPickReady(p, *deferred);
-        if (!hasOpaqueDrawCommands(p.draws) && !hasBimOpaqueDrawCommands(p.bim) &&
-            !hasTransparentDrawCommands(p) && !lightGizmoPickReady) {
-          return renderPassNotNeeded();
-        }
-        const bool sceneDrawable =
-            deferredRasterSceneDescriptorSet(p) != VK_NULL_HANDLE &&
-            p.scene.vertexSlice.buffer != VK_NULL_HANDLE &&
-            p.scene.indexSlice.buffer != VK_NULL_HANDLE &&
-            (hasOpaqueDrawCommands(p.draws) ||
-             hasTransparentDrawCommands(p.draws));
-        if (!lightGizmoPickReady && !sceneDrawable &&
-            !hasBimOpaqueDrawCommands(p.bim) &&
-            !hasBimTransparentGeometry(p)) {
-          return renderPassMissingResource(RenderResourceId::SceneGeometry);
         }
         return renderPassReady();
       });

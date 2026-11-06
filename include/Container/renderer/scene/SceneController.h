@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/renderer/scene/GltfDeformationScene.h"
+
 #include "Container/common/CommonVulkan.h"
 #include "Container/common/CommonMath.h"
 #include "Container/renderer/debug/DebugOverlayRenderer.h"
@@ -84,6 +86,13 @@ class SceneController {
 
   // Uploads scene + diagnostic-cube vertices/indices into a shared GPU arena.
   void createGeometryBuffers();
+  GltfDeformationSceneUpdate updateDeformation(bool resetHistory = false);
+  void commitDeformationFrame();
+  [[nodiscard]] const GltfDeformationScene* deformationScene() const { return deformationScene_.get(); }
+  [[nodiscard]] uint64_t geometryRevision() const { return geometryRevision_; }
+  [[nodiscard]] std::span<const container::geometry::Vertex> geometryVertices() const;
+  [[nodiscard]] std::span<const uint32_t> geometryIndices() const;
+  [[nodiscard]] std::span<const container::geometry::Vertex> gpuBindVertices() const { return gpuBindVertices_; }
 
   // Creates cameraBuffer + objectBuffer if not already present, uploads data.
   void createSceneBuffers(
@@ -260,6 +269,11 @@ class SceneController {
   bool cachedShowDiagCube_{false};
   bool objectDataCacheValid_{false};
 
+  std::unique_ptr<GltfDeformationScene> deformationScene_;
+  std::vector<container::geometry::Vertex> gpuBindVertices_;
+  uint64_t deformationSourceGeometryRevision_{std::numeric_limits<uint64_t>::max()};
+  uint64_t geometryRevision_{};
+  bool deformationTopologyPending_{true};
   container::gpu::BufferSlice vertexSlice_{};
   container::gpu::BufferSlice indexSlice_{};
   container::gpu::BufferSlice diagCubeVertexSlice_{};

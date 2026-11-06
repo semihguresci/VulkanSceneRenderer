@@ -1243,7 +1243,10 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                            return forwardRasterLocalShadowReadiness(p);
                          });
 
-  graph.addPass(RenderPassId::DepthToReadOnly, {RenderPassId::LocalShadowDepth},
+  registerRasterTransparentPickPass(RenderGraphBuilder(graph), context.deferredRaster,
+                                    {RenderPassId::BimDepthPrepass});
+  graph.addPass(RenderPassId::DepthToReadOnly,
+                {RenderPassId::LocalShadowDepth, RenderPassId::TransparentPick},
                 [](VkCommandBuffer cmd, const FrameRecordParams &p) {
                   recordForwardRasterDepthReadOnlyTransition(cmd, p);
                 });
