@@ -726,6 +726,9 @@ public:
   [[nodiscard]] const BimLayerVisibilityState &bimLayerVisibilityState() const {
     return bimLayerVisibilityState_;
   }
+  void setBimRoomVolumesVisible(bool visible) {
+    bimLayerVisibilityState_.spaceLayerVisible = visible;
+  }
   [[nodiscard]] std::span<
       const container::renderer::BimCoordinationOverlayIssuePin>
   bimIssueOverlayPins() const;

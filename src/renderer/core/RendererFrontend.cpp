@@ -1825,6 +1825,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   hashClip(planeEnabled);
   if (planeEnabled)
     hashClip(plane);
+  hashClip(bimRoomVolumesVisible());
   if (subs_.guiManager) {
     const auto &box = subs_.guiManager->bimBoxClipState();
     hashClip(box.enabled);
@@ -1845,7 +1846,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     hashClip(ray.debugLayer);
   }
   if (temporalClipRevision_ && *temporalClipRevision_ != clipRevision)
-    temporal.reset("section coverage or ray shadow controls changed");
+    temporal.reset("section coverage, room volumes, or ray shadow controls changed");
   temporalClipRevision_ = clipRevision;
   container::temporal::validateSettings(
       temporal.settings(), static_cast<uint32_t>(msaaSampleCount_));
@@ -2285,6 +2286,11 @@ void RendererFrontend::applyTemporalCapture(
     captureSectionPlane_ = *event.sectionPlane;
   if (event.bimHiddenObject)
     captureBimHiddenObject_ = *event.bimHiddenObject;
+  if (event.bimRoomVolumesVisible) {
+    captureBimRoomVolumesVisible_ = *event.bimRoomVolumesVisible;
+    if (subs_.guiManager)
+      subs_.guiManager->setBimRoomVolumesVisible(captureBimRoomVolumesVisible_);
+  }
   if (event.bimLodBias)
     captureBimLodBias_ = *event.bimLodBias;
   if (!event.technique.empty()) {
@@ -3063,7 +3069,7 @@ void RendererFrontend::selectMeshNodeAtCursor(double cursorX, double cursorY) {
       (subs_.bimManager && subs_.bimManager->hasScene())
           ? subs_.bimManager->pickRenderableObject(
                 buffers_.cameraData, svc_.swapChainManager.extent(), cursorX,
-                cursorY, sectionPlaneEnabled, activeSectionPlane)
+                cursorY, sectionPlaneEnabled, activeSectionPlane, bimFilter)
           : BimPickHit{};
 
   float sampledDepth = 0.0f;
@@ -3124,6 +3130,7 @@ void RendererFrontend::hoverMeshNodeAtCursor(double cursorX, double cursorY) {
       hoverPickCache_.selectedBimObjectIndex == selectedBimObjectIndex_ &&
       hoverPickCache_.objectDataRevision == objectRevision &&
       hoverPickCache_.bimObjectDataRevision == bimObjectRevision &&
+      hoverPickCache_.bimHideRoomVolumes == bimFilter.hideRoomVolumes &&
       hoverPickCache_.bimTypeFilterEnabled == bimFilter.typeFilterEnabled &&
       hoverPickCache_.bimFilterType == bimFilter.type &&
       hoverPickCache_.bimStoreyFilterEnabled == bimFilter.storeyFilterEnabled &&
@@ -3180,6 +3187,7 @@ void RendererFrontend::hoverMeshNodeAtCursor(double cursorX, double cursorY) {
       .selectedBimObjectIndex = selectedBimObjectIndex_,
       .objectDataRevision = objectRevision,
       .bimObjectDataRevision = bimObjectRevision,
+      .bimHideRoomVolumes = bimFilter.hideRoomVolumes,
       .bimTypeFilterEnabled = bimFilter.typeFilterEnabled,
       .bimFilterType = bimFilter.type,
       .bimStoreyFilterEnabled = bimFilter.storeyFilterEnabled,
@@ -3240,7 +3248,7 @@ void RendererFrontend::hoverMeshNodeAtCursor(double cursorX, double cursorY) {
         (subs_.bimManager && subs_.bimManager->hasScene())
             ? subs_.bimManager->pickRenderableObject(
                   buffers_.cameraData, svc_.swapChainManager.extent(), cursorX,
-                  cursorY, sectionPlaneEnabled, activeSectionPlane)
+                  cursorY, sectionPlaneEnabled, activeSectionPlane, bimFilter)
             : BimPickHit{};
     if (bimHit.hit && subs_.bimManager &&
         (!subs_.bimManager->objectMatchesFilter(bimHit.objectIndex,
@@ -5303,6 +5311,7 @@ void RendererFrontend::markDepthVisibilityFrameComplete(uint32_t imageIndex,
   frame.sectionPlaneEnabled = currentSectionPlaneEquation(
       subs_.guiManager.get(), frame.sectionPlane);
   const BimDrawFilter bimFilter = currentBimDrawFilter();
+  frame.bimHideRoomVolumes = bimFilter.hideRoomVolumes;
   frame.bimTypeFilterEnabled = bimFilter.typeFilterEnabled;
   frame.bimFilterType = bimFilter.type;
   frame.bimStoreyFilterEnabled = bimFilter.storeyFilterEnabled;
@@ -5432,7 +5441,8 @@ bool RendererFrontend::depthVisibilityFrameMatchesCurrentState() const {
   }
 
   const BimDrawFilter currentBimFilter = currentBimDrawFilter();
-  if (frame->bimTypeFilterEnabled !=
+  if (frame->bimHideRoomVolumes != currentBimFilter.hideRoomVolumes ||
+      frame->bimTypeFilterEnabled !=
           currentBimFilter.typeFilterEnabled ||
       frame->bimFilterType != currentBimFilter.type ||
       frame->bimStoreyFilterEnabled !=
@@ -5498,8 +5508,15 @@ bool RendererFrontend::depthVisibilityFrameMatchesCurrentState() const {
   return frame->bimObjectDataRevision == bimRevision;
 }
 
+bool RendererFrontend::bimRoomVolumesVisible() const {
+  return subs_.guiManager ? subs_.guiManager->bimLayerVisibilityState().spaceLayerVisible
+                          : captureBimRoomVolumesVisible_;
+}
+
 BimDrawFilter RendererFrontend::currentBimDrawFilter() const {
   BimDrawFilter filter{};
+  filter.hideRoomVolumes = !bimRoomVolumesVisible() && subs_.bimManager &&
+                           subs_.bimManager->hasRoomVolumes();
   if (captureBimHiddenObject_) {
     filter.hideSelection = true;
     filter.selectedObjectIndex = *captureBimHiddenObject_;
@@ -5550,7 +5567,8 @@ bool RendererFrontend::bimObjectVisibleByLayer(uint32_t objectIndex) const {
   }
   const BimElementMetadata *metadata =
       subs_.bimManager->metadataForObject(objectIndex);
-  if (metadata == nullptr) {
+  if (metadata == nullptr ||
+      (metadata->type == kBimRoomVolumeType && !bimRoomVolumesVisible())) {
     return false;
   }
   if (!subs_.guiManager) {
@@ -7417,7 +7435,8 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     BimFrameDrawRoutingPlan bimRouting =
         buildBimFrameDrawRoutingPlan(bimRoutingInputs);
     const BimDrawLists *filteredDraws = nullptr;
-    if (bimRouting.cpuFilteredDrawsRequired) {
+    // Local raster shadows record direct draws and cannot consume the GPU mask.
+    if (bimRouting.cpuFilteredDrawsRequired || bimFilter.hideRoomVolumes) {
       filteredDraws = &subs_.bimManager->filteredDrawLists(bimFilter);
       bimRoutingInputs.cpuFilteredDraws = filteredDraws;
       bimRouting = buildBimFrameDrawRoutingPlan(bimRoutingInputs);
@@ -7442,6 +7461,16 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     p.bim.nativeCurveDrawsUseGpuVisibility =
         bimRouting.nativeCurveDrawsUseGpuVisibility;
     assignFrameDrawLists(p.bim.draws, bimRouting.meshDraws);
+    p.bim.localShadowDraws = p.bim.draws;
+    if (bimFilter.hideRoomVolumes && filteredDraws) {
+      p.bim.localShadowDraws.opaqueDrawCommands = &filteredDraws->opaqueDrawCommands;
+      p.bim.localShadowDraws.opaqueSingleSidedDrawCommands =
+          &filteredDraws->opaqueSingleSidedDrawCommands;
+      p.bim.localShadowDraws.opaqueWindingFlippedDrawCommands =
+          &filteredDraws->opaqueWindingFlippedDrawCommands;
+      p.bim.localShadowDraws.opaqueDoubleSidedDrawCommands =
+          &filteredDraws->opaqueDoubleSidedDrawCommands;
+    }
     if (bimLayers.pointCloudVisible) {
       if (bimRouting.pointPlaceholderDraws != nullptr) {
         assignFrameDrawLists(p.bim.pointDraws,
@@ -7700,6 +7729,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         boxClipActive && p.bim.sectionClipCaps.boxClip.invert;
     if (capStyleEnabled && !invertedBoxClipCapsUnsupported) {
       BimSectionCapBuildOptions capOptions{};
+      capOptions.hideRoomVolumes = !bimRoomVolumesVisible();
       if (sectionPlaneActive) {
         appendBimSectionCapClipPlane(capOptions, activeSectionPlane);
       } else {

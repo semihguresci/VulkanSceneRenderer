@@ -78,6 +78,7 @@ struct CaptureEvent {
   std::optional<uint32_t> areaLightSamples;
   std::optional<uint32_t> samples;
   std::optional<uint32_t> bimHiddenObject;
+  std::optional<bool> bimRoomVolumesVisible;
   std::optional<uint32_t> bimSelectedObject;
   std::optional<int> bimLodBias;
   std::optional<glm::vec4> sectionPlane;
@@ -165,6 +166,8 @@ public:
       event.presentSuboptimal = value.value("presentSuboptimal", false);
       if (value.contains("bimHiddenObject"))
         event.bimHiddenObject = value.at("bimHiddenObject").get<uint32_t>();
+      if (value.contains("bimRoomVolumesVisible"))
+        event.bimRoomVolumesVisible = value.at("bimRoomVolumesVisible").get<bool>();
       if (value.contains("bimSelectedObject")) {
         const auto &object = value.at("bimSelectedObject");
         const double index = object.is_number() ? object.get<double>() : -1.0;

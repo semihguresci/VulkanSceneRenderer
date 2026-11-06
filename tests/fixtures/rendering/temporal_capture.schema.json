@@ -30,6 +30,7 @@
       "guiUnload": {"type": "boolean", "description": "Queue Unload model through the Scene Controls request path"},
       "guiWaitForLoad": {"type": "boolean", "default": true, "description": "Set false to render the pending GUI model request without settling it; requires a GUI model action"},
       "bimHiddenObject": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+      "bimRoomVolumesVisible": {"type": "boolean", "description": "Show or hide IFC room geometry"},
       "bimSelectedObject": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Select a BIM object through the browser/viewport selection path"},
       "bimLodBias": {"type": "integer", "minimum": -8, "maximum": 8},
       "lightEdit": {"$ref": "#/$defs/lightEdit"},

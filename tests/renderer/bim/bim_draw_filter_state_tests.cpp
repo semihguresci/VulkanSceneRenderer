@@ -88,6 +88,34 @@ TEST(BimDrawFilterStateTests, SelectionFiltersUseProductIdentity) {
   EXPECT_TRUE(state.objectMatchesFilter(2u, hide, inputs));
 }
 
+TEST(BimDrawFilterStateTests, RoomVisibilitySplitsAndRestoresInstancedDraws) {
+  const std::vector<BimElementMetadata> metadata{
+      {.objectIndex = 0u, .type = "IfcWall"},
+      {.objectIndex = 1u, .type = "IfcSpace"},
+      {.objectIndex = 2u, .type = "IfcSpaceHeater"},
+  };
+  const std::vector<DrawCommand> draws{
+      {.objectIndex = 0u, .firstIndex = 12u, .indexCount = 6u, .instanceCount = 3u},
+  };
+  const auto inputs = makeInputs(1u, metadata, draws);
+  BimDrawFilterState state;
+  BimDrawFilter filter{.hideRoomVolumes = true};
+
+  const auto &hidden = state.filteredDrawLists(filter, inputs).opaqueSingleSidedDrawCommands;
+  ASSERT_EQ(hidden.size(), 2u);
+  EXPECT_EQ(hidden[0].objectIndex, 0u);
+  EXPECT_EQ(hidden[0].instanceCount, 1u);
+  EXPECT_EQ(hidden[1].objectIndex, 2u);
+  EXPECT_EQ(hidden[1].instanceCount, 1u);
+  EXPECT_FALSE(state.objectMatchesFilter(1u, filter, inputs));
+
+  filter.hideRoomVolumes = false;
+  const auto &shown = state.filteredDrawLists(filter, inputs).opaqueSingleSidedDrawCommands;
+  ASSERT_EQ(shown.size(), 1u);
+  EXPECT_EQ(shown[0].instanceCount, 3u);
+  EXPECT_TRUE(state.objectMatchesFilter(1u, filter, inputs));
+}
+
 TEST(BimDrawFilterStateTests, CachedListsRefreshOnlyWhenRevisionChanges) {
   std::vector<BimElementMetadata> metadata(2u);
   metadata[0].objectIndex = 0u;

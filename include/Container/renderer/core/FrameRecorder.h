@@ -232,6 +232,7 @@ struct FrameBimResources {
   // future IFC metadata can evolve without perturbing regular glTF draws.
   FrameSceneGeometry scene{};
   FrameDrawLists draws{};
+  FrameDrawLists localShadowDraws{};
   FrameDrawLists pointDraws{};
   FrameDrawLists curveDraws{};
   FrameDrawLists nativePointDraws{};

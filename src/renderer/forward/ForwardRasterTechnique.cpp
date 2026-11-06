@@ -501,16 +501,6 @@ forwardRasterLocalShadowSceneDraws(const FrameDrawLists &draws) {
           .doubleSided = draws.opaqueDoubleSidedDrawCommands};
 }
 
-[[nodiscard]] ShadowPassDrawLists
-forwardRasterLocalShadowBimDraws(const FrameBimResources &bim) {
-  return {.singleSided =
-              hasDrawCommands(bim.draws.opaqueSingleSidedDrawCommands)
-                  ? bim.draws.opaqueSingleSidedDrawCommands
-                  : bim.draws.opaqueDrawCommands,
-          .windingFlipped = bim.draws.opaqueWindingFlippedDrawCommands,
-          .doubleSided = bim.draws.opaqueDoubleSidedDrawCommands};
-}
-
 [[nodiscard]] bool
 forwardRasterCanRecordLocalShadowPass(const FrameRecordParams &p) {
   return p.shadows.renderPass != VK_NULL_HANDLE &&
@@ -604,7 +594,7 @@ void recordForwardRasterLocalShadowPass(VkCommandBuffer cmd,
                  p.bim.opaqueMeshDrawsUseGpuVisibility &&
                  hasOpaqueDrawCommands(p.bim.draws),
              .sceneDraws = forwardRasterLocalShadowSceneDraws(p.draws),
-             .bimDraws = forwardRasterLocalShadowBimDraws(p.bim)}}));
+             .bimDraws = forwardRasterLocalShadowSceneDraws(p.bim.localShadowDraws)}}));
   }
 }
 

@@ -5016,6 +5016,9 @@ void GuiManager::drawSceneControls(
                             &bimLayerVisibilityState_.pointCloudVisible);
         layerStateChanged |= ImGui::Checkbox(
             "Curve visibility", &bimLayerVisibilityState_.curvesVisible);
+        layerStateChanged |= ImGui::Checkbox(
+            "Room volumes", &bimLayerVisibilityState_.spaceLayerVisible);
+        ImGui::SetItemTooltip("Show IFC room geometry for BIM inspection");
         ImGui::Separator();
         layerStateChanged |=
             ImGui::Checkbox("Clash markers",

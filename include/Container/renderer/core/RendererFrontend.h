@@ -174,6 +174,7 @@ private:
   std::optional<float> captureExposure_{};
   std::optional<glm::vec4> captureSectionPlane_{};
   std::optional<uint32_t> captureBimHiddenObject_{};
+  bool captureBimRoomVolumesVisible_{false};
   std::optional<int> captureBimLodBias_{};
   std::optional<uint32_t> pendingDdgiSceneFit_{};
   std::optional<DdgiProbeVolumeDesc> fittedDdgiVolume_{};
@@ -324,6 +325,7 @@ private:
     uint32_t selectedBimObjectIndex{std::numeric_limits<uint32_t>::max()};
     uint64_t objectDataRevision{0};
     uint64_t bimObjectDataRevision{0};
+    bool bimHideRoomVolumes{false};
     bool bimTypeFilterEnabled{false};
     std::string bimFilterType{};
     bool bimStoreyFilterEnabled{false};
@@ -414,6 +416,7 @@ private:
     uint64_t bimObjectDataRevision{0};
     bool sectionPlaneEnabled{false};
     glm::vec4 sectionPlane{0.0f, 1.0f, 0.0f, 0.0f};
+    bool bimHideRoomVolumes{false};
     bool bimTypeFilterEnabled{false};
     std::string bimFilterType{};
     bool bimStoreyFilterEnabled{false};
@@ -630,6 +633,7 @@ private:
   [[nodiscard]] bool depthVisibilityFrameMatchesCurrentState() const;
   void processPendingGuiModelLoadRequest();
   [[nodiscard]] BimDrawFilter currentBimDrawFilter() const;
+  [[nodiscard]] bool bimRoomVolumesVisible() const;
   [[nodiscard]] bool bimObjectVisibleByLayer(uint32_t objectIndex) const;
   [[nodiscard]] container::ui::ViewpointSnapshotState
   currentViewpointSnapshot() const;

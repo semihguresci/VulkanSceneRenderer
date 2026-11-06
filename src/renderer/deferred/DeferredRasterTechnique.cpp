@@ -828,16 +828,6 @@ deferredRasterLocalShadowSceneDraws(const FrameDrawLists &draws) {
           .doubleSided = draws.opaqueDoubleSidedDrawCommands};
 }
 
-ShadowPassDrawLists
-deferredRasterLocalShadowBimDraws(const FrameBimResources &bim) {
-  return {.singleSided =
-              hasDrawCommands(bim.draws.opaqueSingleSidedDrawCommands)
-                  ? bim.draws.opaqueSingleSidedDrawCommands
-                  : bim.draws.opaqueDrawCommands,
-          .windingFlipped = bim.draws.opaqueWindingFlippedDrawCommands,
-          .doubleSided = bim.draws.opaqueDoubleSidedDrawCommands};
-}
-
 bool deferredRasterCanRecordLocalShadowPass(const FrameRecordParams &p) {
   return p.shadows.renderPass != VK_NULL_HANDLE &&
          p.shadows.localShadowFramebuffers != nullptr &&
@@ -922,7 +912,7 @@ void recordDeferredRasterLocalShadowPass(VkCommandBuffer cmd,
                  p.bim.opaqueMeshDrawsUseGpuVisibility &&
                  hasOpaqueDrawCommands(p.bim.draws),
              .sceneDraws = deferredRasterLocalShadowSceneDraws(p.draws),
-             .bimDraws = deferredRasterLocalShadowBimDraws(p.bim)}}));
+             .bimDraws = deferredRasterLocalShadowSceneDraws(p.bim.localShadowDraws)}}));
   }
 }
 

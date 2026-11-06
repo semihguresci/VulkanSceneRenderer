@@ -61,6 +61,7 @@ constexpr uint32_t kBimVisibilityFilterStatus = 1u << 7u;
 constexpr uint32_t kBimVisibilityFilterDrawBudget = 1u << 8u;
 constexpr uint32_t kBimVisibilityFilterIsolateSelection = 1u << 9u;
 constexpr uint32_t kBimVisibilityFilterHideSelection = 1u << 10u;
+constexpr uint32_t kBimVisibilityFilterHideRoomVolumes = 1u << 11u;
 
 size_t drawCompactionSlotIndex(BimDrawCompactionSlot slot) {
   return std::min(static_cast<size_t>(slot), kBimDrawCompactionSlotCount - 1u);
@@ -94,7 +95,9 @@ std::string normalizedElementType(std::string_view value) {
   if (begin == end) {
     return "Unknown";
   }
-  return std::string(value.substr(begin, end - begin));
+  std::string type(value.substr(begin, end - begin));
+  if (lowerAscii(type) == "ifcspace") return std::string(kBimRoomVolumeType);
+  return type;
 }
 
 glm::mat4 importScaleTransform(float scale) {
@@ -343,6 +346,7 @@ bool sameSectionCapBuildOptions(const BimSectionCapBuildOptions &lhs,
   constexpr float kEpsilon = 1.0e-5f;
   if (glm::length(lhs.sectionPlane - rhs.sectionPlane) > kEpsilon ||
       lhs.clipPlaneCount != rhs.clipPlaneCount ||
+      lhs.hideRoomVolumes != rhs.hideRoomVolumes ||
       glm::length(lhs.fillColor - rhs.fillColor) > kEpsilon ||
       std::abs(lhs.fillOpacity - rhs.fillOpacity) > kEpsilon ||
       glm::length(lhs.hatchColor - rhs.hatchColor) > kEpsilon ||
@@ -442,7 +446,8 @@ bool sameVisibilityFilterSettings(const BimVisibilityFilterPushConstants &lhs,
          lhs.fireRatingId == rhs.fireRatingId &&
          lhs.loadBearingId == rhs.loadBearingId &&
          lhs.statusId == rhs.statusId &&
-         lhs.selectedProductId == rhs.selectedProductId;
+         lhs.selectedProductId == rhs.selectedProductId &&
+         lhs.roomVolumeTypeId == rhs.roomVolumeTypeId;
 }
 
 bool visibilityFilterHasActiveMask(
@@ -2022,6 +2027,7 @@ bool BimManager::rebuildSectionClipCapGeometry(
        ++objectIndex) {
     const BimElementMetadata &metadata = elementMetadata_[objectIndex];
     if (metadata.geometryKind != BimGeometryKind::Mesh ||
+        (options.hideRoomVolumes && metadata.type == kBimRoomVolumeType) ||
         objectIndex >= objectData_.size() ||
         objectIndex >= objectDrawCommandOffsets_.size() ||
         objectIndex >= objectDrawCommandCounts_.size()) {
@@ -2295,6 +2301,11 @@ const std::vector<std::string> &BimManager::elementTypes() const {
   return metadataCatalog_->types();
 }
 
+bool BimManager::hasRoomVolumes() const {
+  return metadataCatalog_->semanticIdForCategory(
+             BimMetadataSemanticCategory::Type, kBimRoomVolumeType) != 0u;
+}
+
 const std::vector<std::string> &BimManager::elementStoreys() const {
   return metadataCatalog_->storeys();
 }
@@ -2507,10 +2518,11 @@ BimPickHit
 BimManager::pickRenderableObject(const container::gpu::CameraData &cameraData,
                                  VkExtent2D viewportExtent, double cursorX,
                                  double cursorY, bool sectionPlaneEnabled,
-                                 glm::vec4 sectionPlane) const {
+                                 glm::vec4 sectionPlane,
+                                 const BimDrawFilter &filter) const {
   return pickRenderableObjectForDraws(cameraData, viewportExtent, cursorX,
                                       cursorY, true, true, sectionPlaneEnabled,
-                                      sectionPlane);
+                                      sectionPlane, filter);
 }
 
 BimPickHit BimManager::pickTransparentRenderableObject(
@@ -2519,13 +2531,14 @@ BimPickHit BimManager::pickTransparentRenderableObject(
     glm::vec4 sectionPlane) const {
   return pickRenderableObjectForDraws(cameraData, viewportExtent, cursorX,
                                       cursorY, false, true, sectionPlaneEnabled,
-                                      sectionPlane);
+                                      sectionPlane, {});
 }
 
 BimPickHit BimManager::pickRenderableObjectForDraws(
     const container::gpu::CameraData &cameraData, VkExtent2D viewportExtent,
     double cursorX, double cursorY, bool includeOpaque, bool includeTransparent,
-    bool sectionPlaneEnabled, glm::vec4 sectionPlane) const {
+    bool sectionPlaneEnabled, glm::vec4 sectionPlane,
+    const BimDrawFilter &filter) const {
   if (objectData_.empty() || vertices_.empty() || indices_.empty()) {
     return {};
   }
@@ -2556,7 +2569,8 @@ BimPickHit BimManager::pickRenderableObjectForDraws(
           break;
         }
         const uint32_t objectIndex = command.objectIndex + instanceOffset;
-        if (objectIndex >= objectData_.size()) {
+        if (objectIndex >= objectData_.size() ||
+            !objectMatchesFilter(objectIndex, filter)) {
           continue;
         }
 
@@ -4171,6 +4185,12 @@ void BimManager::updateVisibilityFilterSettings(const BimDrawFilter &filter) {
   setLabelFilter(filter.statusFilterEnabled, filter.status,
                  BimMetadataSemanticCategory::Status,
                  kBimVisibilityFilterStatus, settings.statusId);
+  if (filter.hideRoomVolumes) {
+    settings.roomVolumeTypeId = metadataCatalog_->semanticIdForCategory(
+        BimMetadataSemanticCategory::Type, kBimRoomVolumeType);
+    if (settings.roomVolumeTypeId != 0u)
+      settings.flags |= kBimVisibilityFilterHideRoomVolumes;
+  }
 
   if (filter.drawBudgetEnabled && filter.drawBudgetMaxObjects > 0u) {
     settings.flags |= kBimVisibilityFilterDrawBudget;

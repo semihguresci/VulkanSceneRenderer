@@ -155,6 +155,8 @@ struct BimElementProperty {
   std::string category{};
 };
 
+inline constexpr std::string_view kBimRoomVolumeType = "IfcSpace";
+
 struct BimElementMetadata {
   uint32_t objectIndex{std::numeric_limits<uint32_t>::max()};
   uint32_t sourceElementIndex{std::numeric_limits<uint32_t>::max()};
@@ -283,6 +285,7 @@ enum class BimDisciplinePreset : uint32_t {
 };
 
 struct BimDrawFilter {
+  bool hideRoomVolumes{false};
   bool typeFilterEnabled{false};
   std::string type{};
   bool storeyFilterEnabled{false};
@@ -313,7 +316,7 @@ struct BimDrawFilter {
   bool phaseTimelineGhostFuture{false};
 
   [[nodiscard]] bool active() const {
-    return (typeFilterEnabled && !type.empty()) ||
+    return hideRoomVolumes || (typeFilterEnabled && !type.empty()) ||
            (storeyFilterEnabled && !storey.empty()) ||
            (materialFilterEnabled && !material.empty()) ||
            (disciplineFilterEnabled && !discipline.empty()) ||
@@ -432,7 +435,7 @@ struct BimVisibilityFilterPushConstants {
   uint32_t loadBearingId{0};
   uint32_t statusId{0};
   uint32_t selectedProductId{0};
-  uint32_t pad0{0};
+  uint32_t roomVolumeTypeId{0};
   uint32_t pad1{0};
   uint32_t pad2{0};
 };
@@ -715,6 +718,7 @@ public:
   [[nodiscard]] BimElementBounds
   elementBoundsForObject(uint32_t objectIndex) const;
   [[nodiscard]] const std::vector<std::string> &elementTypes() const;
+  [[nodiscard]] bool hasRoomVolumes() const;
   [[nodiscard]] const std::vector<std::string> &elementStoreys() const;
   [[nodiscard]] const std::vector<std::string> &elementMaterials() const;
   [[nodiscard]] const std::vector<std::string> &elementDisciplines() const;
@@ -870,7 +874,8 @@ public:
   pickRenderableObject(const container::gpu::CameraData &cameraData,
                        VkExtent2D viewportExtent, double cursorX,
                        double cursorY, bool sectionPlaneEnabled = false,
-                       glm::vec4 sectionPlane = {0.0f, 1.0f, 0.0f, 0.0f}) const;
+                       glm::vec4 sectionPlane = {0.0f, 1.0f, 0.0f, 0.0f},
+                       const BimDrawFilter &filter = {}) const;
   [[nodiscard]] BimPickHit pickTransparentRenderableObject(
       const container::gpu::CameraData &cameraData, VkExtent2D viewportExtent,
       double cursorX, double cursorY, bool sectionPlaneEnabled = false,
@@ -918,7 +923,7 @@ private:
       const container::gpu::CameraData &cameraData, VkExtent2D viewportExtent,
       double cursorX, double cursorY, bool includeOpaque,
       bool includeTransparent, bool sectionPlaneEnabled,
-      glm::vec4 sectionPlane) const;
+      glm::vec4 sectionPlane, const BimDrawFilter &filter) const;
   void uploadGeometry(std::span<const container::geometry::Vertex> vertices,
                       std::span<const uint32_t> indices);
   void uploadObjects();

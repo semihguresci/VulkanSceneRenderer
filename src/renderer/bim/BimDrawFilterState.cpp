@@ -153,6 +153,9 @@ metadataMatchesFilter(uint32_t objectIndex, const BimElementMetadata &metadata,
                       const BimDrawFilter &filter,
                       const BimElementMetadata *selectedMetadata,
                       const BimDrawFilterStateInputs &inputs) {
+  if (filter.hideRoomVolumes && metadata.type == kBimRoomVolumeType) {
+    return false;
+  }
   const bool hasSelectedFilter =
       filter.selectedObjectIndex != std::numeric_limits<uint32_t>::max();
   if (filter.isolateSelection && hasSelectedFilter) {
@@ -255,7 +258,8 @@ void reserveLike(BimGeometryDrawLists &out,
 } // namespace
 
 bool bimDrawFiltersEqual(const BimDrawFilter &lhs, const BimDrawFilter &rhs) {
-  return lhs.typeFilterEnabled == rhs.typeFilterEnabled &&
+  return lhs.hideRoomVolumes == rhs.hideRoomVolumes &&
+         lhs.typeFilterEnabled == rhs.typeFilterEnabled &&
          lhs.type == rhs.type &&
          lhs.storeyFilterEnabled == rhs.storeyFilterEnabled &&
          lhs.storey == rhs.storey &&
