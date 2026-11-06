@@ -37,6 +37,7 @@
       "lightSelection": {"$ref": "#/$defs/lightTarget"},
       "lightAdd": {"$ref": "#/$defs/lightAdd"},
       "nodeEdit": {"$ref": "#/$defs/nodeEdit"},
+      "addPrimitive": {"enum": ["Quad", "Plane (double-sided wall)", "Cube", "Sphere", "Triangular Prism", "Pyramid", "Torus"]},
       "sceneHistory": {"enum": ["undo", "redo"]},
       "expectLightEditFailure": {"type": "boolean", "default": false},
       "areaLightPosition": {"$ref": "#/$defs/vec3"},
@@ -57,10 +58,10 @@
         {"required": ["guiUnload"], "properties": {"guiUnload": {"const": true}}}
       ]}
     }, {
-      "if": {"anyOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}, {"required": ["nodeEdit"]}, {"required": ["sceneHistory"]}]},
+      "if": {"anyOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}, {"required": ["nodeEdit"]}, {"required": ["addPrimitive"]}, {"required": ["sceneHistory"]}]},
       "then": {"allOf": [
-        {"oneOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}, {"required": ["nodeEdit"]}, {"required": ["sceneHistory"]}]},
-        {"propertyNames": {"enum": ["frame", "lightEdit", "lightSelection", "lightAdd", "nodeEdit", "sceneHistory", "expectLightEditFailure", "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "rayShadowSamples", "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"]}}
+        {"oneOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}, {"required": ["nodeEdit"]}, {"required": ["addPrimitive"]}, {"required": ["sceneHistory"]}]},
+        {"propertyNames": {"enum": ["frame", "lightEdit", "lightSelection", "lightAdd", "nodeEdit", "addPrimitive", "sceneHistory", "expectLightEditFailure", "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "rayShadowSamples", "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"]}}
       ]}
     }, {
       "if": {"required": ["expectLightEditFailure"]},
@@ -70,9 +71,11 @@
   "$defs": {
     "nodeSourceIndex": {"type": "integer", "minimum": 0, "maximum": 2147483647},
     "nodeEdit": {
-      "type": "object", "additionalProperties": false, "required": ["sourceNode", "operation"],
+      "type": "object", "additionalProperties": false, "required": ["operation"],
+      "allOf": [{"oneOf": [{"required": ["sourceNode"]}, {"required": ["graphNode"]}]}],
       "properties": {
         "sourceNode": {"$ref": "#/$defs/nodeSourceIndex"},
+        "graphNode": {"$ref": "#/$defs/nodeSourceIndex"},
         "operation": {"enum": ["select", "transform", "visibility", "reparent", "begin", "update", "end", "cancel"]},
         "matrix": {"type": "array", "minItems": 16, "maxItems": 16, "items": {"$ref": "#/$defs/lightFloat"}},
         "visible": {"type": "boolean"},

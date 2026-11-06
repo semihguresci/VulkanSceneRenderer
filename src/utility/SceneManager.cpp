@@ -1191,21 +1191,36 @@ std::unique_ptr<container::renderer::GltfDeformationScene> SceneManager::takePre
   return std::move(pendingDeformation_);
 }
 
-uint32_t SceneManager::appendRuntimeMesh(container::geometry::Mesh mesh) {
-  ++geometryRevision_;
-  if (mesh.empty()) {
-    return std::numeric_limits<uint32_t>::max();
+SceneManager::PreparedRuntimeMeshChange SceneManager::prepareRuntimeMeshChange(
+    uint32_t primitive, const container::geometry::Mesh* append) const {
+  const size_t count = model_.meshes().size();
+  constexpr auto limit = std::numeric_limits<uint32_t>::max();
+  if (append && (primitive != count || count >= limit || append->empty() ||
+      vertices_.size() > limit || indices_.size() > limit ||
+      append->vertices().size() > limit - vertices_.size() ||
+      append->indices().size() > limit - indices_.size())) {
+    throw std::invalid_argument("Cannot append the runtime mesh at this slot");
   }
-
+  if (!append && size_t(primitive) + 1 != count)
+    throw std::invalid_argument("The runtime mesh is no longer the last primitive");
   std::vector<container::geometry::Mesh> meshes = model_.meshes();
-  const uint32_t primitiveIndex = static_cast<uint32_t>(meshes.size());
-  meshes.push_back(std::move(mesh));
-  model_ = container::geometry::Model::FromMeshes(std::move(meshes));
-  vertices_ = model_.vertices();
-  indices_ = model_.indices();
-  updateModelBounds();
+  if (append) meshes.push_back(*append);
+  else meshes.pop_back();
+  PreparedRuntimeMeshChange result{};
+  result.model = container::geometry::Model::FromMeshes(std::move(meshes));
+  result.vertices = result.model.vertices();
+  result.indices = result.model.indices();
+  result.bounds = computeModelBounds(result.model, result.vertices, result.indices);
+  return result;
+}
+
+void SceneManager::exchangeRuntimeMeshChange(PreparedRuntimeMeshChange& next) noexcept {
+  std::swap(model_, next.model);
+  vertices_.swap(next.vertices);
+  indices_.swap(next.indices);
+  std::swap(modelBounds_, next.bounds);
   indexType_ = VK_INDEX_TYPE_UINT32;
-  return primitiveIndex;
+  ++geometryRevision_;
 }
 
 container::geometry::GltfLoadResult SceneManager::prepareGltfModel(
@@ -2525,32 +2540,36 @@ std::filesystem::path SceneManager::resolveSceneAssetPath(
 }
 
 void SceneManager::updateModelBounds() {
-  modelBounds_ = ModelBounds{};
-  if (vertices_.empty()) {
-    return;
-  }
+  modelBounds_ = computeModelBounds(model_, vertices_, indices_);
+}
+
+ModelBounds SceneManager::computeModelBounds(
+    const container::geometry::Model& model,
+    std::span<const container::geometry::Vertex> vertices,
+    std::span<const uint32_t> indices) const {
+  if (vertices.empty()) return {};
 
   auto forEachRenderedPoint =
-      [this](const std::function<void(const glm::vec3&)>& visit) {
+      [this, &model, vertices, indices](const std::function<void(const glm::vec3&)>& visit) {
         const glm::mat4 rootTransform =
             importScaleTransform(config_.importScale);
 
         auto emitPrimitive = [&](uint32_t primitiveIndex,
                                  const glm::mat4& transform) {
-          if (primitiveIndex >= model_.primitiveRanges().size()) {
+          if (primitiveIndex >= model.primitiveRanges().size()) {
             return;
           }
 
-          const auto& primitive = model_.primitiveRanges()[primitiveIndex];
+          const auto& primitive = model.primitiveRanges()[primitiveIndex];
           const uint32_t endIndex = primitive.firstIndex + primitive.indexCount;
           for (uint32_t i = primitive.firstIndex;
-               i < endIndex && i < indices_.size(); ++i) {
-            const uint32_t vertexIndex = indices_[i];
-            if (vertexIndex >= vertices_.size()) {
+               i < endIndex && i < indices.size(); ++i) {
+            const uint32_t vertexIndex = indices[i];
+            if (vertexIndex >= vertices.size()) {
               continue;
             }
             visit(glm::vec3(transform *
-                            glm::vec4(vertices_[vertexIndex].position, 1.0f)));
+                            glm::vec4(vertices[vertexIndex].position, 1.0f)));
           }
         };
 
@@ -2627,7 +2646,7 @@ void SceneManager::updateModelBounds() {
           return;
         }
 
-        for (const auto& vertex : vertices_) {
+        for (const auto& vertex : vertices) {
           visit(glm::vec3(rootTransform * glm::vec4(vertex.position, 1.0f)));
         }
       };
@@ -2642,7 +2661,7 @@ void SceneManager::updateModelBounds() {
   });
 
   if (!hasPoint) {
-    return;
+    return {};
   }
 
   const glm::vec3 center = 0.5f * (minBounds + maxBounds);
@@ -2651,12 +2670,8 @@ void SceneManager::updateModelBounds() {
     radius = std::max(radius, glm::length(point - center));
   });
 
-  modelBounds_.min = minBounds;
-  modelBounds_.max = maxBounds;
-  modelBounds_.center = center;
-  modelBounds_.size = maxBounds - minBounds;
-  modelBounds_.radius = radius;
-  modelBounds_.valid = true;
+  return {.min = minBounds, .max = maxBounds, .center = center,
+          .size = maxBounds - minBounds, .radius = radius, .valid = true};
 }
 
 /* ---------- Descriptor sets ---------- */

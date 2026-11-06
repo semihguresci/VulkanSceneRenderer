@@ -216,15 +216,20 @@ SceneController::SceneController(
     , world_(std::make_unique<container::ecs::World>()) {
 }
 
-SceneController::~SceneController() = default;
+SceneController::~SceneController() { releaseOwnedGeometry(); }
+
+void SceneController::releaseOwnedGeometry() noexcept {
+  if (ownedIndexBuffer_.buffer) allocationManager_.destroyBuffer(ownedIndexBuffer_);
+  if (ownedVertexBuffer_.buffer) allocationManager_.destroyBuffer(ownedVertexBuffer_);
+}
 
 container::ecs::World& SceneController::world() { return *world_; }
 const container::ecs::World& SceneController::world() const { return *world_; }
 
-void SceneController::rebuildPrimitiveBoundsCache() {
-  const auto& primitiveRanges = sceneManager_.primitiveRanges();
-  const auto& verts = sceneManager_.vertices();
-  const auto& indices = sceneManager_.indices();
+void SceneController::rebuildPrimitiveBoundsCache(const container::geometry::Model& model) {
+  const auto& primitiveRanges = model.primitiveRanges();
+  const auto& verts = model.vertices();
+  const auto& indices = model.indices();
 
   primitiveBounds_.assign(primitiveRanges.size(), {});
   for (size_t primitiveIndex = 0; primitiveIndex < primitiveRanges.size();
@@ -371,16 +376,9 @@ GltfDeformationSceneUpdate SceneController::updateDeformation(bool resetHistory)
       deformationScene_->configure(*data, sceneManager_.model(), {}, sceneManager_.deformationVertexLimit());
     } else deformationScene_.reset();
     deformationTopologyPending_ = true;
-    rebuildPrimitiveBoundsCache();
+    rebuildPrimitiveBoundsCache(sceneManager_.model());
   }
-  GltfDeformationSceneUpdate result;
-  if (deformationScene_) {
-    sceneGraph_.updateWorldTransforms();
-    std::vector<uint32_t> owners(sceneGraph_.nodeCount(),container::scene::SceneGraph::kInvalidNode);
-    for (uint32_t index = 0; index < sceneGraph_.nodeCount(); ++index)
-      if (const auto* node = sceneGraph_.getNode(index)) owners[index] = node->meshOwnerGraphNode;
-    result = deformationScene_->update(sceneGraph_,owners,&sceneManager_.animationSource(),resetHistory);
-  }
+  auto result = updateDeformedVertices(resetHistory);
   deformationTopologyPending_ |= sourceChanged || result.topologyChanged;
   if (sourceChanged || result.geometryChanged || result.topologyChanged) {
     ++geometryRevision_;
@@ -393,6 +391,17 @@ GltfDeformationSceneUpdate SceneController::updateDeformation(bool resetHistory)
   return result;
 }
 
+GltfDeformationSceneUpdate SceneController::updateDeformedVertices(bool resetHistory) {
+  if (!deformationScene_) return {};
+  sceneGraph_.updateWorldTransforms();
+  std::vector<uint32_t> owners;
+  owners.reserve(sceneGraph_.nodeCount());
+  for (uint32_t index = 0; index < sceneGraph_.nodeCount(); ++index)
+    owners.push_back(sceneGraph_.getNode(index)->meshOwnerGraphNode);
+  return deformationScene_->update(sceneGraph_, owners,
+                                   &sceneManager_.animationSource(), resetHistory);
+}
+
 void SceneController::commitDeformationFrame() {
   if (deformationScene_) deformationScene_->commitSubmitted();
 }
@@ -400,7 +409,14 @@ void SceneController::commitDeformationFrame() {
 void SceneController::createGeometryBuffers() {
   updateDeformation();
   const auto sceneVertices = deformationScene_ ? deformationScene_->bindVertices() : geometryVertices();
-  const auto sceneIndices = geometryIndices();
+  uploadGeometryBuffers(sceneVertices, geometryIndices(), false);
+  rebuildPrimitiveBoundsCache(sceneManager_.model());
+  invalidateObjectDataCache();
+}
+
+void SceneController::uploadGeometryBuffers(
+    std::span<const container::geometry::Vertex> sceneVertices,
+    std::span<const uint32_t> sceneIndices, bool owned) {
   const container::geometry::Mesh cube = makeScenePrimitiveCube();
 
   std::vector<container::geometry::Vertex> mergedVertices;
@@ -426,10 +442,24 @@ void SceneController::createGeometryBuffers() {
     mergedIndices.push_back(index + diagVertexBase);
   }
 
-  vertexSlice_ = allocationManager_.uploadVertices(
-      std::span<const container::geometry::Vertex>(mergedVertices));
-  indexSlice_ = allocationManager_.uploadIndices(
-      std::span<const uint32_t>(mergedIndices));
+  const auto vertices = std::span<const container::geometry::Vertex>(mergedVertices);
+  const auto indices = std::span<const uint32_t>(mergedIndices);
+  if (owned) {
+    // This path prepares a detached generation. Its controller retires either
+    // a failed upload or the replaced live allocation after publication.
+    ownedVertexBuffer_ = allocationManager_.uploadBuffer(
+        std::as_bytes(vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    ownedIndexBuffer_ = allocationManager_.uploadBuffer(
+        std::as_bytes(indices), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    vertexSlice_ = {ownedVertexBuffer_.buffer, 0, vertices.size_bytes()};
+    indexSlice_ = {ownedIndexBuffer_.buffer, 0, indices.size_bytes()};
+  } else {
+    const auto vertex = allocationManager_.uploadVertices(vertices);
+    const auto index = allocationManager_.uploadIndices(indices);
+    releaseOwnedGeometry();
+    vertexSlice_ = vertex;
+    indexSlice_ = index;
+  }
 
   if (deformationScene_ && !deformationScene_->gpuInstances().empty())
     gpuBindVertices_ = std::move(mergedVertices);
@@ -443,8 +473,6 @@ void SceneController::createGeometryBuffers() {
   diagCubeIndexSlice_.size =
       static_cast<VkDeviceSize>(cube.indices().size()) * sizeof(uint32_t);
   diagCubeIndexCount_ = static_cast<uint32_t>(cube.indices().size());
-  rebuildPrimitiveBoundsCache();
-  invalidateObjectDataCache();
 }
 
 void SceneController::createSceneBuffers(
@@ -472,11 +500,13 @@ void SceneController::createSceneBuffers(
 void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
   sceneGraph_.updateWorldTransforms();
   world_->syncFromSceneGraph(sceneGraph_);
-  rebuildObjectData(showDiagCube, primitiveBounds_, deformationScene_.get());
+  rebuildObjectData(showDiagCube, primitiveBounds_, deformationScene_.get(),
+                    sceneManager_.model(), sceneManager_.modelBounds());
 }
 
 void SceneController::rebuildObjectData(bool showDiagCube,
-    std::span<const PrimitiveBounds> primitiveBounds, const GltfDeformationScene* deformationScene) {
+    std::span<const PrimitiveBounds> primitiveBounds, const GltfDeformationScene* deformationScene,
+    const container::geometry::Model& model, const container::scene::ModelBounds& modelBounds) {
   objectData_.clear();
   objectNodeIndices_.clear();
   opaqueDrawCommands_.clear();
@@ -500,17 +530,17 @@ void SceneController::rebuildObjectData(bool showDiagCube,
   transparentDoubleSidedDrawCommands_.reserve(renderableCount);
 
   world_->forEachRenderableWithNode(
-      [this, primitiveBounds, deformationScene](const container::ecs::TransformComponent& transform,
+      [this, primitiveBounds, deformationScene, &model](const container::ecs::TransformComponent& transform,
              const container::ecs::MeshComponent&      mesh,
              const container::ecs::MaterialComponent&   material,
              const container::ecs::SceneNodeRef&        nodeRef) {
         if (mesh.primitiveIndex == std::numeric_limits<uint32_t>::max() ||
-            mesh.primitiveIndex >= sceneManager_.primitiveRanges().size()) {
+            mesh.primitiveIndex >= model.primitiveRanges().size()) {
           return;
         }
 
         const auto& primitive =
-            sceneManager_.primitiveRanges()[mesh.primitiveIndex];
+            model.primitiveRanges()[mesh.primitiveIndex];
         const auto* deformation = deformationScene ? deformationScene->drawRange(nodeRef.nodeIndex) : nullptr;
         const auto materialProperties =
             sceneManager_.materialRenderProperties(material.materialIndex);
@@ -595,7 +625,7 @@ void SceneController::rebuildObjectData(bool showDiagCube,
     ObjectData cubeObject{};
     glm::vec3  diagCenter{0.0f};
     float      diagScale = 0.5f;
-    const auto& bounds = sceneManager_.modelBounds();
+    const auto& bounds = modelBounds;
     if (bounds.valid) {
       diagCenter = bounds.center +
                    glm::vec3(bounds.radius * 1.75f, 0.0f, 0.0f);
@@ -632,6 +662,15 @@ SceneController::PreparedObjectData& SceneController::PreparedObjectData::operat
     PreparedObjectData&&) noexcept = default;
 SceneController::PreparedObjectData::~PreparedObjectData() = default;
 
+const GltfDeformationScene* SceneController::PreparedObjectData::deformation() const {
+  return state_->deformationScene();
+}
+
+std::span<const container::geometry::Vertex>
+SceneController::PreparedObjectData::gpuBindVertices() const {
+  return state_->gpuBindVertices();
+}
+
 SceneController::PreparedObjectData SceneController::prepareObjectData(
     container::scene::SceneGraph& candidate, bool showDiagCube) const {
   auto next = std::make_unique<SceneController>(device_, allocationManager_,
@@ -639,8 +678,48 @@ SceneController::PreparedObjectData SceneController::prepareObjectData(
   next->world_ = world_->cloneStateWithoutContext();
   next->world_->syncFromSceneGraph(candidate);
   next->diagCubeVertexSlice_ = diagCubeVertexSlice_;
-  next->rebuildObjectData(showDiagCube, primitiveBounds_, deformationScene_.get());
+  next->rebuildObjectData(showDiagCube, primitiveBounds_, deformationScene_.get(),
+                          sceneManager_.model(), sceneManager_.modelBounds());
   return PreparedObjectData(std::move(next));
+}
+
+SceneController::PreparedObjectData SceneController::prepareGeometryEdit(
+    container::scene::SceneGraph& candidate, const container::geometry::Model& model,
+    const container::scene::ModelBounds& bounds, bool showDiagCube) const {
+  auto next = std::make_unique<SceneController>(device_, allocationManager_,
+      pipelineManager_, candidate, sceneManager_, nullptr, config_);
+  if (const auto* data = sceneManager_.deformationData()) {
+    next->deformationScene_ = std::make_unique<GltfDeformationScene>();
+    next->deformationScene_->configure(*data, model, {}, sceneManager_.deformationVertexLimit());
+    next->updateDeformedVertices(true);
+  }
+  const auto* deformation = next->deformationScene_.get();
+  next->uploadGeometryBuffers(
+      deformation ? deformation->bindVertices() : std::span<const container::geometry::Vertex>(model.vertices()),
+      deformation ? deformation->indices() : std::span<const uint32_t>(model.indices()), true);
+  next->rebuildPrimitiveBoundsCache(model);
+  next->world_ = world_->cloneStateWithoutContext();
+  next->world_->syncFromSceneGraph(candidate);
+  next->rebuildObjectData(showDiagCube, next->primitiveBounds_, deformation, model, bounds);
+  return PreparedObjectData(std::move(next));
+}
+
+void SceneController::exchangeGeometryEdit(PreparedObjectData& prepared) noexcept {
+  auto& next = *prepared.state_;
+  std::swap(ownedVertexBuffer_, next.ownedVertexBuffer_);
+  std::swap(ownedIndexBuffer_, next.ownedIndexBuffer_);
+  std::swap(vertexSlice_, next.vertexSlice_);
+  std::swap(indexSlice_, next.indexSlice_);
+  std::swap(diagCubeVertexSlice_, next.diagCubeVertexSlice_);
+  std::swap(diagCubeIndexSlice_, next.diagCubeIndexSlice_);
+  std::swap(diagCubeIndexCount_, next.diagCubeIndexCount_);
+  deformationScene_.swap(next.deformationScene_);
+  gpuBindVertices_.swap(next.gpuBindVertices_);
+  primitiveBounds_.swap(next.primitiveBounds_);
+  deformationSourceGeometryRevision_ = sceneManager_.geometryRevision();
+  deformationTopologyPending_ = false;
+  ++geometryRevision_;
+  exchangeObjectData(prepared);
 }
 
 void SceneController::exchangeObjectData(PreparedObjectData& prepared) noexcept {
@@ -1036,51 +1115,6 @@ void SceneController::addSceneObject(
   if (guiManager_) {
     guiManager_->setStatusMessage("Added object to scene");
   }
-}
-
-uint32_t SceneController::addScenePrimitive(ScenePrimitiveKind kind,
-                                            const glm::mat4& transform,
-                                            uint32_t& rootNode) {
-  if (sceneGraph_.renderableNodes().size() >= config_.maxSceneObjects) {
-    if (guiManager_) {
-      guiManager_->setStatusMessage("Reached maximum scene object capacity");
-    }
-    return container::scene::SceneGraph::kInvalidNode;
-  }
-
-  const int32_t materialIndex =
-      sceneManager_.defaultMaterialIndex() ==
-              std::numeric_limits<uint32_t>::max()
-          ? -1
-          : static_cast<int32_t>(sceneManager_.defaultMaterialIndex());
-  const uint32_t primitiveIndex =
-      sceneManager_.appendRuntimeMesh(makeScenePrimitive(kind, materialIndex));
-  if (primitiveIndex == std::numeric_limits<uint32_t>::max()) {
-    if (guiManager_) {
-      guiManager_->setStatusMessage("Failed to add primitive");
-    }
-    return container::scene::SceneGraph::kInvalidNode;
-  }
-
-  if (rootNode == container::scene::SceneGraph::kInvalidNode) {
-    rootNode = sceneGraph_.createNode(glm::mat4(1.0f),
-                                      sceneManager_.defaultMaterialIndex(),
-                                      false);
-  }
-
-  createGeometryBuffers();
-  const uint32_t node = sceneGraph_.createNode(
-      transform, sceneManager_.defaultMaterialIndex(), true, primitiveIndex,
-      std::string(scenePrimitiveKindLabel(kind)));
-  sceneGraph_.setParent(node, rootNode);
-  sceneGraph_.updateWorldTransforms();
-  invalidateObjectDataCache();
-
-  if (guiManager_) {
-    guiManager_->setStatusMessage("Added " +
-                                  std::string(scenePrimitiveKindLabel(kind)));
-  }
-  return node;
 }
 
 bool SceneController::reloadSceneModel(

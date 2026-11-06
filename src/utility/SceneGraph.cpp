@@ -89,7 +89,6 @@ SceneGraph& SceneGraph::operator=(SceneGraph&& other) {
 uint32_t SceneGraph::createNode(const glm::mat4& localTransform,
                                 uint32_t materialIndex, bool renderable,
                                 uint32_t primitiveIndex, std::string name) {
-  const uint32_t nodeIndex = static_cast<uint32_t>(nodes_.size());
   SceneNode node{};
   node.localTransform = localTransform;
   node.worldTransform = localTransform;
@@ -99,6 +98,15 @@ uint32_t SceneGraph::createNode(const glm::mat4& localTransform,
   node.renderable = renderable;
   node.visible = true;
   node.name = std::move(name);
+  node.incarnation = nextGraphIdentity();
+  return appendNode(std::move(node));
+}
+
+uint32_t SceneGraph::appendNode(SceneNode node) {
+  if (nodes_.size() >= kInvalidNode)
+    throw std::length_error("Scene node indices exhausted");
+  const uint32_t nodeIndex = static_cast<uint32_t>(nodes_.size());
+  const bool renderable = node.renderable;
   nodes_.push_back(std::move(node));
   roots_.push_back(nodeIndex);
   if (renderable) {
@@ -106,6 +114,36 @@ uint32_t SceneGraph::createNode(const glm::mat4& localTransform,
   }
   ++revision_;
   return nodeIndex;
+}
+
+bool SceneGraph::removeLastLeaf(uint32_t index, uint64_t incarnation) {
+  const auto* node = getNode(index);
+  if (!node || size_t(index) + 1 != nodes_.size() ||
+      node->incarnation != incarnation || !node->children.empty())
+    return false;
+  auto& siblings = node->parent == kInvalidNode ? roots_ : nodes_[node->parent].children;
+  std::erase(siblings, index);
+  if (node->renderable) unregisterRenderable(index);
+  nodes_.pop_back();
+  ++revision_;
+  return true;
+}
+
+bool SceneGraph::restoreLastLeaf(uint32_t index, SceneNode node, size_t sibling) {
+  if (index != nodes_.size() || !node.incarnation || !node.children.empty() ||
+      std::ranges::any_of(nodes_, [&](const auto& live) {
+        return live.incarnation == node.incarnation;
+      }))
+    return false;
+  const auto parent = node.parent == kInvalidNode ? std::nullopt : std::optional(node.parent);
+  if (parent && *parent >= nodes_.size()) return false;
+  const auto& siblings = parent ? nodes_[*parent].children : roots_;
+  if (sibling > siblings.size()) return false;
+  node.parent = kInvalidNode;
+  appendNode(std::move(node));
+  if (parent) return setParentAt(index, parent, sibling);
+  std::rotate(roots_.begin() + sibling, roots_.end() - 1, roots_.end());
+  return true;
 }
 
 bool SceneGraph::canSetParent(uint32_t child,

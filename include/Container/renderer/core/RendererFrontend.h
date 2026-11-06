@@ -74,6 +74,7 @@ class RenderTechniqueRegistry;
 struct RenderSystemContext;
 class RendererTelemetry;
 class SceneController;
+enum class ScenePrimitiveKind : uint32_t;
 class GltfDeformationPass;
 class SceneProviderSynchronizer;
 class ShadowCullManager;
@@ -545,6 +546,13 @@ private:
   void processNodeEditRequests();
   void processCaptureNodeEdit();
   void appendNodeEditTelemetry(nlohmann::json&) const;
+  struct PrimitiveCreation;
+  bool recordPrimitiveCreation(ScenePrimitiveKind kind);
+  bool replayPrimitiveCreation(const PrimitiveCreation&, bool append);
+  void publishPrimitiveGeometry(container::scene::SceneGraph& candidate,
+      uint32_t root, uint32_t primitive, const container::geometry::Mesh* append,
+      const NodeEditSelection& selection);
+  std::optional<ScenePrimitiveKind> capturePrimitive_;
 
   struct TransformDragSession {
     bool active{false};

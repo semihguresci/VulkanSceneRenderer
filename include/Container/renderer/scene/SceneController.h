@@ -37,6 +37,7 @@ struct GltfLoadResult;
 namespace container::scene {
 class SceneGraph;
 class SceneManager;
+struct ModelBounds;
 }  // namespace container::scene
 
 namespace container::ui {
@@ -105,12 +106,14 @@ class SceneController {
   // Rebuilds objectData, opaqueDrawCommands, transparentDrawCommands from
   // the scene graph. Appends the diagnostic cube entry when enabled.
   void syncObjectDataFromSceneGraph(bool showDiagCube);
-  // The detached controller owns only prepared CPU objects and ECS state.
+  // The detached controller owns the prepared ECS and draw state.
   class PreparedObjectData {
    public:
     PreparedObjectData(PreparedObjectData&&) noexcept;
     PreparedObjectData& operator=(PreparedObjectData&&) noexcept;
     ~PreparedObjectData();
+    [[nodiscard]] const GltfDeformationScene* deformation() const;
+    [[nodiscard]] std::span<const container::geometry::Vertex> gpuBindVertices() const;
    private:
     friend class SceneController;
     explicit PreparedObjectData(std::unique_ptr<SceneController> state);
@@ -119,6 +122,11 @@ class SceneController {
   [[nodiscard]] PreparedObjectData prepareObjectData(
       container::scene::SceneGraph& candidate, bool showDiagCube) const;
   void exchangeObjectData(PreparedObjectData&) noexcept;
+  [[nodiscard]] PreparedObjectData prepareGeometryEdit(
+      container::scene::SceneGraph& candidate,
+      const container::geometry::Model& model,
+      const container::scene::ModelBounds& bounds, bool showDiagCube) const;
+  void exchangeGeometryEdit(PreparedObjectData&) noexcept;
 
   // Calls sync then uploads objectData to objectBuffer; recreates the buffer
   // if needed. Returns true when the buffer was recreated (caller must
@@ -139,9 +147,6 @@ class SceneController {
                       container::gpu::AllocatedBuffer& objectBuffer,
                       size_t& objectBufferCapacity,
                       const container::gpu::AllocatedBuffer& cameraBuffer);
-  [[nodiscard]] uint32_t addScenePrimitive(ScenePrimitiveKind kind,
-                                           const glm::mat4& transform,
-                                           uint32_t& rootNode);
 
   bool reloadSceneModel(
       const std::string&                      path,
@@ -241,9 +246,15 @@ class SceneController {
     bool valid{false};
   };
 
-  void rebuildPrimitiveBoundsCache();
+  void rebuildPrimitiveBoundsCache(const container::geometry::Model&);
+  GltfDeformationSceneUpdate updateDeformedVertices(bool resetHistory);
+  void uploadGeometryBuffers(std::span<const container::geometry::Vertex> vertices,
+                             std::span<const uint32_t> indices, bool owned);
+  void releaseOwnedGeometry() noexcept;
   void rebuildObjectData(bool showDiagCube, std::span<const PrimitiveBounds> bounds,
-                         const GltfDeformationScene* deformation);
+                         const GltfDeformationScene* deformation,
+                         const container::geometry::Model& model,
+                         const container::scene::ModelBounds& modelBounds);
   void invalidateObjectDataCache();
   void refreshObjectDataCache(bool showDiagCube);
   [[nodiscard]] SceneNodePickHit pickRenderableNodeHitForDraws(
@@ -290,6 +301,8 @@ class SceneController {
   uint64_t deformationSourceGeometryRevision_{std::numeric_limits<uint64_t>::max()};
   uint64_t geometryRevision_{};
   bool deformationTopologyPending_{true};
+  container::gpu::AllocatedBuffer ownedVertexBuffer_{};
+  container::gpu::AllocatedBuffer ownedIndexBuffer_{};
   container::gpu::BufferSlice vertexSlice_{};
   container::gpu::BufferSlice indexSlice_{};
   container::gpu::BufferSlice diagCubeVertexSlice_{};

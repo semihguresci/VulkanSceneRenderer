@@ -494,4 +494,28 @@ TEST(SceneGraph, SceneLifetimeDistinguishesReusedNodeIndices) {
   EXPECT_NE(moved.identity(), identity);
 }
 
+TEST(SceneGraph, DetachedTailRestoresIncarnationAndRejectsReusedSlots) {
+  SceneGraph graph;
+  const auto root = graph.createNode(glm::mat4(1), 0);
+  const auto leaf = graph.createNode(glm::mat4(1), 0, true, 1, "Cube");
+  ASSERT_TRUE(graph.setParent(leaf, root));
+  const auto saved = *graph.getNode(leaf);
+  const auto incarnation = graph.nodeIncarnation(leaf);
+  EXPECT_FALSE(graph.removeLastLeaf(root, graph.nodeIncarnation(root)));
+  EXPECT_FALSE(graph.removeLastLeaf(leaf, 0));
+  ASSERT_TRUE(graph.removeLastLeaf(leaf, incarnation));
+  EXPECT_EQ(graph.nodeIncarnation(leaf), 0u);
+  EXPECT_TRUE(graph.getNode(root)->children.empty());
+  EXPECT_TRUE(graph.renderableNodes().empty());
+  ASSERT_TRUE(graph.restoreLastLeaf(leaf, saved, 0));
+  EXPECT_EQ(graph.nodeIncarnation(leaf), incarnation);
+  EXPECT_EQ(graph.siblingIndex(leaf), 0u);
+  EXPECT_EQ(graph.renderableNodes(), (std::vector{leaf}));
+  EXPECT_FALSE(graph.restoreLastLeaf(leaf + 1, saved, 0));
+  ASSERT_TRUE(graph.removeLastLeaf(leaf, incarnation));
+  EXPECT_EQ(graph.createNode(glm::mat4(1), 0), leaf);
+  EXPECT_NE(graph.nodeIncarnation(leaf), incarnation);
+  EXPECT_FALSE(graph.removeLastLeaf(leaf, incarnation));
+}
+
 }  // namespace

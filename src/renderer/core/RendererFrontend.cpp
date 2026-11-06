@@ -1799,6 +1799,9 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   updateGltfAnimation();
   processCaptureLightEvent();
   processCaptureNodeEdit();
+  if (const auto primitive = std::exchange(capturePrimitive_, {}); primitive &&
+      !recordPrimitiveCreation(*primitive))
+    throw std::runtime_error("Capture primitive could not be added");
   if (const auto history = std::exchange(captureHistoryRequest_, {}); history && !applyEditHistory(*history))
     throw std::runtime_error("No capture history command could be applied");
   updateGltfDeformation();
@@ -2190,6 +2193,14 @@ void RendererFrontend::applyTemporalCapture(
   if (!event.sceneHistory.empty()) captureHistoryRequest_ = event.sceneHistory == "redo";
   if (event.nodeEdit)
     captureNodeEdit_ = std::make_shared<container::temporal::CaptureNodeEdit>(*event.nodeEdit);
+  if (!event.addPrimitive.empty()) {
+    using Kind = ScenePrimitiveKind;
+    constexpr std::array kinds{Kind::Quad, Kind::Plane, Kind::Cube, Kind::Sphere,
+                               Kind::TriangularPrism, Kind::Pyramid, Kind::Torus};
+    const auto match = std::ranges::find(kinds, event.addPrimitive, scenePrimitiveKindLabel);
+    if (match == kinds.end()) throw std::invalid_argument("Unknown capture primitive");
+    capturePrimitive_ = *match;
+  }
   if (event.bimSelectedObject) {
     if (!subs_.bimManager ||
         !subs_.bimManager->metadataForObject(*event.bimSelectedObject))
@@ -2550,6 +2561,10 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   // renderer buffers, so an unloaded scene has an unambiguous zero count.
   json["scene"]["primaryObjectCount"] = sceneGraph_.renderableNodes().size();
   json["scene"]["primaryNodeCount"] = sceneGraph_.nodeCount();
+  json["scene"]["primaryRootNode"] = sceneState_.rootNode;
+  json["scene"]["selectedMeshNode"] = sceneState_.selectedMeshNode;
+  json["scene"]["selectedMeshIncarnation"] =
+      sceneGraph_.nodeIncarnation(sceneState_.selectedMeshNode);
   json["scene"]["primaryVertexCount"] =
       subs_.sceneManager ? subs_.sceneManager->vertices().size() : 0u;
   json["scene"]["primaryIndexCount"] =
@@ -6604,38 +6619,10 @@ void RendererFrontend::presentSceneControls() {
       updateCameraBuffer(imageIndex);
     }
   };
-  const std::function<void(container::renderer::ScenePrimitiveKind)>
-      addScenePrimitive = [this](container::renderer::ScenePrimitiveKind kind) {
-        if (!subs_.sceneController) {
-          return;
-        }
-        if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
-        const uint32_t node = subs_.sceneController->addScenePrimitive(
-            kind, glm::mat4(1.0f), sceneState_.rootNode);
-        if (node == container::scene::SceneGraph::kInvalidNode) {
-          return;
-        }
-        if (subs_.cameraController) {
-          subs_.cameraController->selectMeshNode(node,
-                                                 sceneState_.selectedMeshNode);
-        } else {
-          sceneState_.selectedMeshNode = node;
-        }
-        if (subs_.lightingManager) {
-          subs_.lightingManager->selectEditableLight({});
-        }
-        if (subs_.guiManager) {
-          subs_.guiManager->setSectionPlaneVisualEditable(false);
-        }
-        syncSceneStateFromController();
-        selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
-        selectionNavigationAnchor_ = {};
-        clearHoveredMeshNode();
-        selectedDrawCommands_.clear();
-        selectedBimDrawCommands_.clear();
-        refreshSceneObjectData();
-        syncSceneProviders();
-      };
+  std::optional<ScenePrimitiveKind> pendingPrimitive;
+  const auto addScenePrimitive = [&pendingPrimitive](ScenePrimitiveKind kind) {
+    pendingPrimitive = kind;
+  };
   subs_.guiManager->drawSceneControls(
       sceneGraph_,
       addScenePrimitive,
@@ -6747,6 +6734,15 @@ void RendererFrontend::presentSceneControls() {
 
   processNodeEditRequests();
   processLightEditRequests();
+  if (pendingPrimitive) {
+    try {
+      std::string status = "Added " + std::string(scenePrimitiveKindLabel(*pendingPrimitive));
+      if (recordPrimitiveCreation(*pendingPrimitive))
+        subs_.guiManager->setStatusMessage(std::move(status));
+    } catch (const std::exception& error) {
+      subs_.guiManager->setStatusMessage(error.what());
+    }
+  }
   const auto history = subs_.guiManager->consumeEditHistoryRequest();
   if (history != container::ui::GuiManager::EditHistoryRequest::None) {
     try {

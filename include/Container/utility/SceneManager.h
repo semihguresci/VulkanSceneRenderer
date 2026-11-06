@@ -209,8 +209,15 @@ class SceneManager {
   [[nodiscard]] uint64_t animationSourceRevision() const noexcept { return animationSourceRevision_; }
   void publishAnimationChanges(const container::geometry::gltf::AnimationDirtySet& dirty,
                                const SceneGraph& graph, uint32_t editorRoot);
-  [[nodiscard]] uint32_t appendRuntimeMesh(
-      container::geometry::Mesh mesh);
+  struct PreparedRuntimeMeshChange {
+    container::geometry::Model model;
+    std::vector<container::geometry::Vertex> vertices;
+    std::vector<uint32_t> indices;
+    ModelBounds bounds;
+  };
+  [[nodiscard]] PreparedRuntimeMeshChange prepareRuntimeMeshChange(
+      uint32_t primitive, const container::geometry::Mesh* append) const;
+  void exchangeRuntimeMeshChange(PreparedRuntimeMeshChange&) noexcept;
   [[nodiscard]] MaterialRenderProperties materialRenderProperties(
       uint32_t materialIndex) const;
 
@@ -297,6 +304,10 @@ class SceneManager {
   void collectAuthoredPunctualLights(
       const SceneGraph* graph = nullptr, uint32_t editorRoot = std::numeric_limits<uint32_t>::max());
   void updateModelBounds();
+  [[nodiscard]] ModelBounds computeModelBounds(
+      const container::geometry::Model& model,
+      std::span<const container::geometry::Vertex> vertices,
+      std::span<const uint32_t> indices) const;
   void allocateDescriptorSets(uint32_t descriptorSetCount);
   void writeDescriptorSetContents(
       VkDescriptorSet descriptorSet,

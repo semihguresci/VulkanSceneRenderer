@@ -25,6 +25,7 @@ struct SceneNode {
   uint32_t meshOwnerGraphNode{std::numeric_limits<uint32_t>::max()};
   std::string name{};
   std::vector<uint32_t> children{};
+  uint64_t incarnation{0};
 };
 
 class SceneGraph {
@@ -42,13 +43,14 @@ class SceneGraph {
                       bool renderable = false,
                       uint32_t primitiveIndex = kInvalidNode,
                       std::string name = {});
+  bool removeLastLeaf(uint32_t index, uint64_t incarnation);
+  bool restoreLastLeaf(uint32_t index, SceneNode node, size_t sibling);
   bool setParent(uint32_t child, std::optional<uint32_t> parentIndex);
   bool setParentAt(uint32_t child, std::optional<uint32_t> parentIndex, size_t sibling);
   [[nodiscard]] std::optional<size_t> siblingIndex(uint32_t node) const;
   [[nodiscard]] std::optional<glm::mat4> worldPreservingLocalTransform(
       uint32_t child, std::optional<uint32_t> parentIndex) const;
-  // Exchange an already evaluated copy with the same node membership.
-  // The live graph's identity and node incarnations survive a pose edit.
+  // Publish an evaluated edit while retaining the live graph's identity.
   void exchangeNodeEdit(SceneGraph& candidate) noexcept;
   bool setParentPreserveWorldTransform(
       uint32_t child, std::optional<uint32_t> parentIndex);
@@ -69,13 +71,12 @@ class SceneGraph {
   [[nodiscard]] uint64_t revision() const { return revision_; }
   [[nodiscard]] uint64_t identity() const { return identity_; }
   [[nodiscard]] uint64_t nodeIncarnation(uint32_t node) const noexcept {
-    // Nodes append throughout this graph's lifetime. Graph replacement gets
-    // a different identity even when a new node reuses the same index.
-    return node < nodes_.size() ? uint64_t(node) + 1 : 0;
+    return node < nodes_.size() ? nodes_[node].incarnation : 0;
   }
   [[nodiscard]] bool isNodeEffectivelyVisible(uint32_t nodeIndex) const;
 
  private:
+  uint32_t appendNode(SceneNode node);
   [[nodiscard]] bool canSetParent(uint32_t child,
                                   std::optional<uint32_t> parentIndex) const;
   [[nodiscard]] bool isDescendant(uint32_t ancestor,

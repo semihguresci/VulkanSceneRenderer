@@ -52,6 +52,7 @@ struct CaptureNodeEdit {
   enum class Operation { Select, Transform, Visibility, Reparent, Begin, Update, End, Cancel };
   Operation operation{};
   uint32_t sourceNode{};
+  std::optional<uint32_t> graphNode;
   std::optional<uint32_t> parent;
   glm::mat4 matrix{1};
   bool visible{};
@@ -93,6 +94,7 @@ struct CaptureEvent {
   std::optional<CaptureLightTarget> lightSelection;
   std::optional<CaptureLightAdd> lightAdd;
   std::optional<CaptureNodeEdit> nodeEdit;
+  std::string addPrimitive;
   std::string sceneHistory;
   bool expectLightEditFailure{};
 };
@@ -143,6 +145,12 @@ public:
       if (value.contains("lightSelection")) event.lightSelection = lightTarget(value.at("lightSelection"));
       if (value.contains("lightAdd")) event.lightAdd = lightAddRequest(value.at("lightAdd"));
       if (value.contains("nodeEdit")) event.nodeEdit = nodeEditRequest(value.at("nodeEdit"));
+      if (value.contains("addPrimitive")) {
+        const auto& primitive = value.at("addPrimitive");
+        if (!primitive.is_string() || primitive.get_ref<const std::string&>().empty())
+          throw std::invalid_argument("Capture addPrimitive must name a primitive");
+        event.addPrimitive = primitive.get<std::string>();
+      }
       if (value.contains("sceneHistory")) {
         const auto& history = value.at("sceneHistory");
         if (history != "undo" && history != "redo")
@@ -155,10 +163,12 @@ public:
         event.expectLightEditFailure = expected.get<bool>();
       }
       const unsigned lightActions = unsigned(event.lightEdit.has_value()) + unsigned(event.lightSelection.has_value()) + unsigned(event.lightAdd.has_value());
-      if (lightActions + unsigned(event.nodeEdit.has_value()) + unsigned(!event.sceneHistory.empty()) > 1 || (value.contains("expectLightEditFailure") && !lightActions))
+      const unsigned sceneActions = unsigned(event.nodeEdit.has_value()) +
+          unsigned(!event.sceneHistory.empty()) + unsigned(!event.addPrimitive.empty());
+      if (lightActions + sceneActions > 1 || (value.contains("expectLightEditFailure") && !lightActions))
         throw std::invalid_argument("Use one edit or history action per capture frame");
-      if (lightActions || event.nodeEdit || !event.sceneHistory.empty())
-        nodeFields(value, {"frame", "lightEdit", "lightSelection", "lightAdd", "nodeEdit", "sceneHistory", "expectLightEditFailure",
+      if (lightActions || sceneActions)
+        nodeFields(value, {"frame", "lightEdit", "lightSelection", "lightAdd", "nodeEdit", "addPrimitive", "sceneHistory", "expectLightEditFailure",
                            "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "rayShadowSamples",
                            "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"},
                    "edit event");
@@ -521,9 +531,12 @@ private:
 
   static CaptureNodeEdit nodeEditRequest(const nlohmann::json& value) {
     using Operation = CaptureNodeEdit::Operation;
-    nodeFields(value, {"sourceNode", "operation", "matrix", "visible", "parent", "gizmo", "delta"}, "node edit");
+    nodeFields(value, {"sourceNode", "graphNode", "operation", "matrix", "visible", "parent", "gizmo", "delta"}, "node edit");
     CaptureNodeEdit edit;
-    edit.sourceNode = captureNodeIndex(value.at("sourceNode"));
+    if (value.contains("sourceNode") == value.contains("graphNode"))
+      throw std::invalid_argument("Capture node edit needs exactly one node target");
+    if (value.contains("graphNode")) edit.graphNode = captureNodeIndex(value.at("graphNode"));
+    else edit.sourceNode = captureNodeIndex(value.at("sourceNode"));
     const auto op = value.at("operation").get<std::string>();
     if (op == "select" || op == "end" || op == "cancel") {
       if (value.size() != 2) throw std::invalid_argument("Capture node action has unexpected fields");

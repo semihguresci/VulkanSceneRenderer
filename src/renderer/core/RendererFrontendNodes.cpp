@@ -1,14 +1,20 @@
+#include <Container/app/AppConfig.h>
 #include <Container/geometry/GltfAnimation.h>
 #include <Container/renderer/bim/BimManager.h>
 #include <Container/renderer/core/RendererFrontend.h>
 #include <Container/renderer/lighting/DdgiManager.h>
 #include <Container/renderer/lighting/LightingManager.h>
+#include <Container/renderer/platform/VulkanContext.h>
 #include <Container/renderer/scene/CameraController.h>
+#include <Container/renderer/scene/GltfDeformationPass.h>
 #include <Container/renderer/scene/SceneController.h>
+#include <Container/renderer/scene/ScenePrimitives.h>
 #include <Container/renderer/temporal/TemporalCapture.h>
 #include <Container/renderer/temporal/TemporalManager.h>
 #include <Container/utility/GuiManager.h>
+#include <Container/utility/Platform.h>
 #include <Container/utility/SceneManager.h>
+#include <Container/utility/SwapChainManager.h>
 
 #include <algorithm>
 #include <cmath>
@@ -102,6 +108,146 @@ void RendererFrontend::restoreNodeEditSelection(
   selectedBimDrawCommands_.clear();
   selectedBimNativePointDrawCommands_.clear();
   selectedBimNativeCurveDrawCommands_.clear();
+}
+
+struct RendererFrontend::PrimitiveCreation {
+  uint64_t graphIdentity, parentIncarnation;
+  uint32_t oldRoot, root, node, primitive;
+  size_t rootSibling{}, sibling{};
+  std::optional<container::scene::SceneNode> createdRoot;
+  container::scene::SceneNode leaf;
+  container::geometry::Mesh mesh;
+  NodeEditSelection before, after;
+};
+
+bool RendererFrontend::recordPrimitiveCreation(ScenePrimitiveKind kind) {
+  if (!subs_.sceneController || !subs_.sceneManager) return false;
+  ensureSceneEditHistory();
+  finishLightEditInput();
+  finishNodeGesture();
+  if (sceneGraph_.renderableNodes().size() >= svc_.config.maxSceneObjects)
+    throw std::length_error("Reached maximum scene object capacity");
+
+  auto edit = std::make_shared<PrimitiveCreation>();
+  edit->graphIdentity = sceneGraph_.identity();
+  edit->oldRoot = sceneState_.rootNode;
+  edit->root = edit->oldRoot;
+  edit->before = nodeEditSelection();
+  const auto material = subs_.sceneManager->defaultMaterialIndex();
+  const auto count = subs_.sceneManager->model().meshes().size();
+  if (count >= Graph::kInvalidNode) throw std::length_error("Scene primitive indices exhausted");
+  edit->primitive = static_cast<uint32_t>(count);
+  edit->mesh = makeScenePrimitive(kind, material == UINT32_MAX ? -1 : static_cast<int32_t>(material));
+
+  Graph candidate(sceneGraph_);
+  if (edit->root == Graph::kInvalidNode) {
+    edit->root = candidate.createNode(glm::mat4(1), material);
+    edit->createdRoot = *candidate.getNode(edit->root);
+    edit->rootSibling = *candidate.siblingIndex(edit->root);
+  }
+  edit->parentIncarnation = candidate.nodeIncarnation(edit->root);
+  if (!edit->parentIncarnation) return false;
+  const std::string name(scenePrimitiveKindLabel(kind));
+  edit->node = candidate.createNode(glm::mat4(1), material, true, edit->primitive, name);
+  if (!candidate.setParent(edit->node, edit->root)) return false;
+  edit->leaf = *candidate.getNode(edit->node);
+  edit->sibling = *candidate.siblingIndex(edit->node);
+  edit->after = {edit->node, UINT32_MAX, {}, false};
+  container::util::EditHistory::Command command{
+      "Add " + name,
+      [this, edit] { return replayPrimitiveCreation(*edit, false); },
+      [this, edit] { return replayPrimitiveCreation(*edit, true); },
+      true};
+  publishPrimitiveGeometry(candidate, edit->root, edit->primitive, &edit->mesh, edit->after);
+  editHistory_.record(std::move(command));
+  return true;
+}
+
+bool RendererFrontend::replayPrimitiveCreation(const PrimitiveCreation& edit, bool append) {
+  if (edit.graphIdentity != sceneGraph_.identity() ||
+      sceneState_.rootNode != (append ? edit.oldRoot : edit.root) ||
+      (!edit.createdRoot && sceneGraph_.nodeIncarnation(edit.root) != edit.parentIncarnation))
+    return false;
+  const auto meshCount = subs_.sceneManager->model().meshes().size();
+  if (meshCount != size_t(edit.primitive) + (append ? 0u : 1u)) return false;
+  Graph candidate(sceneGraph_);
+  if (append) {
+    if (candidate.renderableNodes().size() >= svc_.config.maxSceneObjects)
+      return false;
+    if (edit.createdRoot && !candidate.restoreLastLeaf(edit.root, *edit.createdRoot, edit.rootSibling))
+      return false;
+    if (!candidate.restoreLastLeaf(edit.node, edit.leaf, edit.sibling))
+      return false;
+  } else {
+    const auto* leaf = candidate.getNode(edit.node);
+    if (!leaf || leaf->primitiveIndex != edit.primitive || leaf->parent != edit.root ||
+        candidate.siblingIndex(edit.node) != edit.sibling ||
+        !candidate.removeLastLeaf(edit.node, edit.leaf.incarnation))
+      return false;
+    if (edit.createdRoot && !candidate.removeLastLeaf(edit.root, edit.parentIncarnation))
+      return false;
+  }
+  publishPrimitiveGeometry(candidate, append ? edit.root : edit.oldRoot, edit.primitive,
+                           append ? &edit.mesh : nullptr, append ? edit.after : edit.before);
+  return true;
+}
+
+void RendererFrontend::publishPrimitiveGeometry(
+    Graph& candidate, uint32_t root, uint32_t primitive,
+    const container::geometry::Mesh* append, const NodeEditSelection& selection) {
+  candidate.updateWorldTransforms();
+  if (append) {
+    const auto& transform = candidate.getNode(selection.mesh)->worldTransform;
+    if (!finiteAffine(transform) || glm::determinant(glm::dmat3(transform)) == 0)
+      throw std::invalid_argument("The primitive must have a finite, nonsingular world transform");
+  }
+  if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
+  auto source = subs_.sceneManager->prepareRuntimeMeshChange(primitive, append);
+  auto geometry = subs_.sceneController->prepareGeometryEdit(
+      candidate, source.model, source.bounds,
+      subs_.guiManager && subs_.guiManager->showNormalDiagCube());
+
+  std::unique_ptr<GltfDeformationPass> deformationPass;
+  const auto* deformation = geometry.deformation();
+  const auto vertices = geometry.gpuBindVertices();
+  const auto imageCount = static_cast<uint32_t>(svc_.swapChainManager.imageCount());
+  if (deformation && !deformation->gpuInstances().empty()) {
+    deformationPass = std::make_unique<GltfDeformationPass>(
+        svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
+    deformationPass->createResources(container::util::executableDirectory(), imageCount);
+    deformationPass->setScene(vertices, deformation->gpuInstances());
+  }
+  std::optional<DdgiManager::PreparedSceneHistoryReset> ddgi;
+  if (subs_.ddgiManager && subs_.ddgiManager->supported()) {
+    ddgi = subs_.ddgiManager->prepareSceneHistoryReset();
+    if (!subs_.ddgiManager->canPublishSceneHistoryReset(*ddgi))
+      throw std::runtime_error("Cannot retire probe history for the geometry edit");
+  }
+  std::string resetReason = "procedural primitive changed";
+
+  // Frame recording has not begun. Retired resources stay owned by the
+  // prepared generation until the renderer has adopted the complete edit.
+  sceneGraph_.exchangeNodeEdit(candidate);
+  subs_.sceneManager->exchangeRuntimeMeshChange(source);
+  subs_.sceneController->exchangeGeometryEdit(geometry);
+  subs_.gltfDeformationPass.swap(deformationPass);
+  gltfDeformationImageCount_ = imageCount;
+  gltfDeformationSourceIdentity_ = subs_.sceneManager->animationSourceRevision();
+  gltfDeformationSourceRevision_ = subs_.sceneManager->geometryRevision();
+  gltfDeformationTopologyRevision_ = deformation ? deformation->topologyRevision() : 0;
+  gltfDeformationVertexCount_ = vertices.size();
+  gltfDeformationSubmittedEpoch_.reset();
+  if (ddgi && !subs_.ddgiManager->publishSceneHistoryReset(*ddgi))
+    std::terminate();
+  if (subs_.temporalManager) subs_.temporalManager->reset(std::move(resetReason));
+  sceneState_.rootNode = root;
+  sceneState_.diagCubeObjectIndex = subs_.sceneController->diagCubeObjectIndex();
+  syncSceneStateFromController();
+  selectionNavigationAnchor_ = {};
+  clearHoveredMeshNode();
+  selectedDrawCommands_.clear();
+  invalidateDepthVisibilityFrames();
+  restoreNodeEditSelection(selection);
 }
 
 bool RendererFrontend::publishNodePlacement(
@@ -446,7 +592,9 @@ void RendererFrontend::processCaptureNodeEdit() {
     throw std::invalid_argument(
         "Capture node is outside the active glTF scene");
   };
-  const auto node = resolve(edit->sourceNode);
+  const auto node = edit->graphNode ? *edit->graphNode : resolve(edit->sourceNode);
+  if (!sceneGraph_.getNode(node))
+    throw std::invalid_argument("Capture graph node is outside the active scene");
   captureNodeTelemetry_ = node;
   using Operation = container::temporal::CaptureNodeEdit::Operation;
   switch (edit->operation) {

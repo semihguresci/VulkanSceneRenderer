@@ -3227,8 +3227,8 @@ TEST(RenderingConventionTests, SceneControlsExposePrimitiveAddMenu) {
 
   EXPECT_TRUE(contains(primitivesHeader, "enum class ScenePrimitiveKind"));
   EXPECT_TRUE(contains(primitivesHeader, "TriangularPrism"));
-  EXPECT_TRUE(contains(sceneManagerHeader, "appendRuntimeMesh"));
-  EXPECT_TRUE(contains(sceneControllerHeader, "addScenePrimitive"));
+  EXPECT_TRUE(contains(sceneManagerHeader, "prepareRuntimeMeshChange"));
+  EXPECT_TRUE(contains(sceneControllerHeader, "prepareGeometryEdit"));
   EXPECT_TRUE(contains(guiHeader, "addScenePrimitive"));
   EXPECT_TRUE(contains(gui, "Add Primitive"));
   EXPECT_TRUE(contains(gui, "Plane (double-sided wall)"));
@@ -3245,9 +3245,13 @@ TEST(RenderingConventionTests, SceneControlsExposePrimitiveAddMenu) {
   ASSERT_NE(addPrimitiveEnd, std::string::npos);
   const std::string addPrimitiveBlock =
       frontend.substr(addPrimitiveStart, addPrimitiveEnd - addPrimitiveStart);
-  EXPECT_TRUE(contains(addPrimitiveBlock, "syncSceneStateFromController()"));
-  EXPECT_TRUE(contains(addPrimitiveBlock, "refreshSceneObjectData()"));
-  EXPECT_TRUE(contains(addPrimitiveBlock, "syncSceneProviders()"));
+  EXPECT_TRUE(contains(addPrimitiveBlock, "pendingPrimitive = kind"));
+  EXPECT_NE(frontend.find("recordPrimitiveCreation(*pendingPrimitive)", addPrimitiveEnd),
+            std::string::npos);
+  const std::string nodeEdits =
+      readRepoTextFile("src/renderer/core/RendererFrontendNodes.cpp");
+  EXPECT_TRUE(contains(nodeEdits, "exchangeGeometryEdit(geometry)"));
+  EXPECT_TRUE(contains(nodeEdits, "syncSceneStateFromController()"));
 }
 
 TEST(RenderingConventionTests,
