@@ -1796,6 +1796,9 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   phaseStart = TelemetryClock::now();
   applyBimSemanticColorMode();
   updateGltfAnimation();
+  processCaptureLightEvent();
+  if (const auto history = std::exchange(captureLightHistoryRequest_, {}); history && !applyEditHistory(*history))
+    throw std::runtime_error("No capture history command could be applied");
   updateGltfDeformation();
   processPendingDdgiSceneFit();
   processPendingDdgiDetailFit();
@@ -2180,6 +2183,8 @@ void RendererFrontend::applyTemporalCapture(
   FrameConcurrencyPolicy::serializedGpuResources("capture scene mutation")
       .waitBeforeAcquire(*subs_.frameSyncManager, frame_.currentFrame);
   const auto &event = sample.event;
+  queueCaptureLightEvent(event);
+  if (!event.sceneHistory.empty()) captureLightHistoryRequest_ = event.sceneHistory == "redo";
   if (event.bimSelectedObject) {
     if (!subs_.bimManager ||
         !subs_.bimManager->metadataForObject(*event.bimSelectedObject))
@@ -2688,6 +2693,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   json["camera"]["unjitteredViewProjColumns"] = matrix(camera.unjitteredViewProj);
   appendGltfAnimationTelemetry(json);
   appendGltfDeformationTelemetry(json);
+  appendLightEditTelemetry(json);
   return json;
 }
 
@@ -2832,15 +2838,15 @@ void RendererFrontend::processInput(float deltaTime) {
       subs_.guiManager &&
       subs_.guiManager->sectionPlaneState().enabled &&
       subs_.guiManager->sectionPlaneState().visualPlaneEditable;
-  interactionController_.process(RenderSurfaceInteractionController::Context{
+  auto interaction = RenderSurfaceInteractionController::Context{
       .inputManager = svc_.inputManager,
       .cameraController = *subs_.cameraController,
       .debugState = debugState_,
       .deltaTime = deltaTime,
       .guiCapturingMouse =
           subs_.guiManager ? subs_.guiManager->isCapturingMouse() : false,
-      .guiCapturingKeyboard =
-          subs_.guiManager ? subs_.guiManager->isCapturingKeyboard() : false,
+      .guiCapturingKeyboard = subs_.guiManager &&
+          (subs_.guiManager->isCapturingKeyboard() || subs_.guiManager->lightEditGestureActive()),
       .selectedMeshNode = sceneState_.selectedMeshNode,
       .hasSelection =
           sceneState_.selectedMeshNode !=
@@ -2881,7 +2887,21 @@ void RendererFrontend::processInput(float deltaTime) {
               subs_.gpuCullManager->unfreezeCulling();
             }
           },
-  });
+      .transformGestureCallbacks = {
+          [this](auto tool, auto space, auto axis, bool snap) {
+            beginLightGizmoGesture(tool, space, axis, snap);
+          },
+          [this] { endLightGizmoGesture(); },
+          [this](auto reason) { cancelLightGizmoGesture(reason); },
+      },
+  };
+  try {
+    interactionController_.process(std::move(interaction));
+  } catch (const std::exception& error) {
+    reportLightEditError(error.what());
+    if (subs_.guiManager) subs_.guiManager->setStatusMessage(error.what());
+    svc_.inputManager.endFrame();
+  }
   if (interactionController_.state().gesture !=
       container::ui::ViewportGesture::TransformDrag) {
     transformDragSession_.active = false;
@@ -2892,6 +2912,7 @@ void RendererFrontend::selectBimObject(uint32_t objectIndex,
                                       std::optional<glm::vec3> anchorPoint) {
   if (!subs_.bimManager || !subs_.bimManager->metadataForObject(objectIndex))
     return;
+  finishLightEditInput();
   sceneState_.selectedMeshNode = container::scene::SceneGraph::kInvalidNode;
   selectedBimObjectIndex_ = objectIndex;
   if (subs_.lightingManager)
@@ -2923,6 +2944,7 @@ void RendererFrontend::selectMeshNodeAtCursor(double cursorX, double cursorY) {
     return;
   }
 
+  finishLightEditInput();
   auto selectEditableLight = [&](EditableLightId id) {
     if (!subs_.lightingManager) {
       return;
@@ -3263,6 +3285,7 @@ void RendererFrontend::clearHoveredMeshNode() {
 }
 
 void RendererFrontend::clearSelectedMeshNode() {
+  finishLightEditInput();
   selectionNavigationAnchor_ = {};
   const bool hasSelectedEditableLight =
       subs_.lightingManager &&
@@ -3533,67 +3556,8 @@ void RendererFrontend::transformSelectedNodeByDrag(
   }
 
   if (transformingEditableLight && subs_.lightingManager) {
-    bool lightChanged = false;
-    switch (tool) {
-    case container::ui::ViewportTool::Select:
-      break;
-    case container::ui::ViewportTool::Translate: {
-      const glm::vec3 delta =
-          controls.position - transformDragSession_.startControls.position;
-      if (glm::dot(delta, delta) > 1.0e-10f) {
-        lightChanged =
-            subs_.lightingManager->translateSelectedEditableLight(delta);
-      }
-      break;
-    }
-    case container::ui::ViewportTool::Rotate: {
-      const glm::vec3 rotationDelta =
-          controls.rotationDegrees -
-          transformDragSession_.startControls.rotationDegrees;
-      auto rotateAxis = [&](const glm::vec3 &axisVector, float degrees) {
-        if (std::abs(degrees) > 1.0e-4f) {
-          lightChanged |= subs_.lightingManager->rotateSelectedEditableLight(
-              axisVector, degrees);
-        }
-      };
-      switch (axis) {
-      case container::ui::TransformAxis::X:
-        rotateAxis(transformDragSession_.axisX, rotationDelta.x);
-        break;
-      case container::ui::TransformAxis::Y:
-        rotateAxis(transformDragSession_.axisY, rotationDelta.y);
-        break;
-      case container::ui::TransformAxis::Z:
-        rotateAxis(transformDragSession_.axisZ, rotationDelta.z);
-        break;
-      case container::ui::TransformAxis::Free:
-        rotateAxis(transformDragSession_.axisY, rotationDelta.y);
-        rotateAxis(transformDragSession_.axisX, rotationDelta.x);
-        break;
-      }
-      break;
-    }
-    case container::ui::ViewportTool::Scale: {
-      const float startScale =
-          std::max((transformDragSession_.startControls.scale.x +
-                    transformDragSession_.startControls.scale.y +
-                    transformDragSession_.startControls.scale.z) *
-                       0.33333334f,
-                   0.001f);
-      const float newScale =
-          std::max((controls.scale.x + controls.scale.y + controls.scale.z) *
-                       0.33333334f,
-                   0.001f);
-      lightChanged = subs_.lightingManager->scaleSelectedEditableLight(
-          newScale / startScale);
-      break;
-    }
-    }
-    if (lightChanged) {
-      subs_.lightingManager->updateLightingData();
-      updateFrameDescriptorSets();
-      transformDragSession_.active = false;
-    }
+    if (lightEditGestureActive())
+      (void)applyLightGizmoControls(tool, axis, controls);
     return;
   }
 
@@ -3896,6 +3860,7 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
     std::fill(buffers_.shadowObjectDescriptorReady.begin(),
               buffers_.shadowObjectDescriptorReady.end(), false);
     syncSceneStateFromController();
+    ensureSceneEditHistory();
     if (replacedModel) {
       clearSelectedMeshNode();
       clearHoveredMeshNode();
@@ -6384,6 +6349,11 @@ void RendererFrontend::presentSceneControls() {
                                           subs_.frameRecorder->graph());
   }
   syncGuiRenderEngineOptions();
+  ensureSceneEditHistory();
+  refreshLightEditInspector();
+  subs_.guiManager->setEditHistoryState(editHistory_.canUndo() || lightEditGestureActive(),
+      editHistory_.canRedo() && !lightEditGestureActive(), std::string(editHistory_.undoLabel()),
+      std::string(editHistory_.redoLabel()));
 
   subs_.guiManager->startFrame();
   const GuiFrameExceptionGuard guiFrameExceptionGuard(*subs_.guiManager);
@@ -6671,67 +6641,20 @@ void RendererFrontend::presentSceneControls() {
       subs_.lightingManager ? subs_.lightingManager->lightingData()
                             : container::gpu::LightingData{},
       pointLights, editableLights, selectedEditableLight,
-      [this](container::renderer::EditableLightId id) {
-        if (!subs_.lightingManager) {
-          return;
-        }
-        subs_.lightingManager->selectEditableLight(id);
-        sceneState_.selectedMeshNode =
-            container::scene::SceneGraph::kInvalidNode;
-        selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
-        selectionNavigationAnchor_ = {};
-        clearHoveredMeshNode();
-        selectedDrawCommands_.clear();
-        selectedBimDrawCommands_.clear();
-        if (subs_.guiManager) {
-          subs_.guiManager->setSectionPlaneVisualEditable(false);
-          if (container::renderer::isValidEditableLightId(id)) {
-            subs_.guiManager->setStatusMessage("Selected editable light");
-          }
-        }
-      },
-      [this](const container::renderer::EditableLightEntity &light) {
-        if (!subs_.lightingManager ||
-            !subs_.lightingManager->updateEditableLight(light)) {
-          return;
-        }
-        sceneState_.selectedMeshNode =
-            container::scene::SceneGraph::kInvalidNode;
-        selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
-        selectionNavigationAnchor_ = {};
-        if (subs_.guiManager) {
-          subs_.guiManager->setSectionPlaneVisualEditable(false);
-        }
-        subs_.lightingManager->updateLightingData();
-        updateFrameDescriptorSets();
-      },
-      [this](container::renderer::EditableLightType type) {
-        if (!subs_.lightingManager) {
-          return;
-        }
-        const auto id = subs_.lightingManager->addManualEditableLight(type);
-        subs_.lightingManager->updateLightingData();
-        subs_.lightingManager->selectEditableLight(id);
-        sceneState_.selectedMeshNode =
-            container::scene::SceneGraph::kInvalidNode;
-        selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
-        selectionNavigationAnchor_ = {};
-        selectedDrawCommands_.clear();
-        selectedBimDrawCommands_.clear();
-        if (subs_.guiManager) {
-          subs_.guiManager->setSectionPlaneVisualEditable(false);
-        }
-        updateFrameDescriptorSets();
-        if (subs_.guiManager) {
-          subs_.guiManager->setStatusMessage("Selected editable light");
-        }
-      },
+      [this](EditableLightId id) { pendingLightSelection_ = id; },
       sceneState_.selectedMeshNode, bimInspection, currentViewpoint,
       [this](const container::ui::ViewpointSnapshotState &snapshot) {
         return restoreViewpointSnapshot(snapshot);
       },
       sceneState_.rootNode,
       [this](uint32_t nodeIndex) {
+        try {
+          finishLightEditInput();
+        } catch (const std::exception& error) {
+          reportLightEditError(error.what());
+          subs_.guiManager->setStatusMessage(error.what());
+          return;
+        }
         if (nodeIndex == container::scene::SceneGraph::kInvalidNode) {
           clearSelectedMeshNode();
           return;
@@ -6840,6 +6763,17 @@ void RendererFrontend::presentSceneControls() {
           subs_.lightingManager->updateLightingData();
         refreshSceneObjectData();
       });
+
+  processLightEditRequests();
+  const auto history = subs_.guiManager->consumeEditHistoryRequest();
+  if (history != container::ui::GuiManager::EditHistoryRequest::None) {
+    try {
+      (void)applyEditHistory(history == container::ui::GuiManager::EditHistoryRequest::Redo);
+    } catch (const std::exception& error) {
+      reportLightEditError(error.what());
+      subs_.guiManager->setStatusMessage(error.what());
+    }
+  }
 
   if (auto requested = subs_.guiManager->consumeRenderEngineChange()) {
     requestRenderTechnique(*requested);

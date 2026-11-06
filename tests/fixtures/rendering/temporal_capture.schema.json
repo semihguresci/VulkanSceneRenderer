@@ -32,6 +32,11 @@
       "bimHiddenObject": {"type": "integer", "minimum": 0, "maximum": 4294967295},
       "bimSelectedObject": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Select a BIM object through the browser/viewport selection path"},
       "bimLodBias": {"type": "integer", "minimum": -8, "maximum": 8},
+      "lightEdit": {"$ref": "#/$defs/lightEdit"},
+      "lightSelection": {"$ref": "#/$defs/lightTarget"},
+      "lightAdd": {"$ref": "#/$defs/lightAdd"},
+      "sceneHistory": {"enum": ["undo", "redo"]},
+      "expectLightEditFailure": {"type": "boolean", "default": false},
       "areaLightPosition": {"$ref": "#/$defs/vec3"},
       "rayShadows": {"enum": ["raster", "hard", "soft"]},
       "rayShadowSamples": {"type": "integer", "minimum": 1, "maximum": 32},
@@ -49,9 +54,66 @@
         {"required": ["guiSampleModel"], "properties": {"guiSampleModel": {"type": "string", "minLength": 1}}},
         {"required": ["guiUnload"], "properties": {"guiUnload": {"const": true}}}
       ]}
+    }, {
+      "if": {"anyOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}, {"required": ["sceneHistory"]}]},
+      "then": {"allOf": [
+        {"oneOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}, {"required": ["sceneHistory"]}]},
+        {"propertyNames": {"enum": ["frame", "lightEdit", "lightSelection", "lightAdd", "sceneHistory", "expectLightEditFailure", "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "rayShadowSamples", "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"]}}
+      ]}
+    }, {
+      "if": {"required": ["expectLightEditFailure"]},
+      "then": {"$ref": "#/$defs/oneLightAction"}
     }]}}
   },
   "$defs": {
+    "lightType": {"enum": ["point", "spot", "area", "directional"]},
+    "safeLightInteger": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "lightFloat": {"type": "number", "minimum": -3.4028234663852886e38, "maximum": 3.4028234663852886e38},
+    "lightVector": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/lightFloat"}},
+    "oneLightAction": {"oneOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}]},
+    "lightTarget": {
+      "type": "object", "additionalProperties": false, "required": ["type", "source"],
+      "properties": {"type": {"$ref": "#/$defs/lightType"}, "source": {"enum": ["imported", "manual", "generated"]},
+        "sourceNode": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        "nodeName": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "index": {"type": "integer", "minimum": 0, "maximum": 4294967294}},
+      "oneOf": [{"required": ["sourceNode"]}, {"required": ["nodeName"]}, {"required": ["index"]}],
+      "allOf": [{"if": {"properties": {"source": {"const": "imported"}}},
+        "then": {"not": {"required": ["index"]}}, "else": {"required": ["index"]}}]
+    },
+    "lightValues": {
+      "type": "object", "additionalProperties": false, "minProperties": 1,
+      "properties": {"position": {"$ref": "#/$defs/lightVector"}, "direction": {"$ref": "#/$defs/lightVector"},
+        "color": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number", "minimum": 0, "maximum": 3.4028234663852886e38}},
+        "intensity": {"type": "number", "minimum": 0, "maximum": 3.4028234663852886e38},
+        "range": {"type": "number", "minimum": 0, "maximum": 3.4028234663852886e38},
+        "spotCone": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number", "minimum": 0, "maximum": 179}},
+        "areaSize": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number", "exclusiveMinimum": 0, "maximum": 3.4028234663852886e38}},
+        "areaShape": {"enum": ["rectangle", "disk"]},
+        "areaBasis": {"type": "object", "additionalProperties": false, "required": ["tangent", "bitangent"],
+          "properties": {"tangent": {"$ref": "#/$defs/lightVector"}, "bitangent": {"$ref": "#/$defs/lightVector"}}}}
+    },
+    "lightGizmo": {
+      "type": "object", "additionalProperties": false, "required": ["tool", "amount"],
+      "properties": {"tool": {"enum": ["translate", "rotate", "scale"]}, "amount": {"$ref": "#/$defs/lightVector"},
+        "space": {"enum": ["world", "local"], "default": "world"}, "axis": {"enum": ["free", "x", "y", "z"], "default": "free"},
+        "snap": {"type": "boolean", "default": false}}
+    },
+    "lightEdit": {
+      "type": "object", "additionalProperties": false, "required": ["target", "phase"],
+      "properties": {"target": {"$ref": "#/$defs/lightTarget"}, "phase": {"enum": ["commit", "begin", "update", "end", "cancel"]},
+        "gesture": {"$ref": "#/$defs/safeLightInteger"}, "expectedLightRevision": {"$ref": "#/$defs/safeLightInteger"},
+        "values": {"$ref": "#/$defs/lightValues"}, "gizmo": {"$ref": "#/$defs/lightGizmo"}},
+      "allOf": [{"if": {"properties": {"phase": {"const": "commit"}}}, "then": {"not": {"required": ["gesture"]}}, "else": {"required": ["gesture"]}},
+        {"if": {"properties": {"phase": {"enum": ["end", "cancel"]}}}, "then": {"not": {"anyOf": [{"required": ["values"]}, {"required": ["gizmo"]}]}},
+          "else": {"oneOf": [{"required": ["values"]}, {"required": ["gizmo"]}]}},
+        {"if": {"properties": {"target": {"properties": {"type": {"const": "directional"}}}}}, "then": {"properties": {"values": {"not": {"anyOf": [{"required": ["position"]}, {"required": ["range"]}, {"required": ["spotCone"]}, {"required": ["areaSize"]}, {"required": ["areaShape"]}, {"required": ["areaBasis"]}]}}}}},
+        {"if": {"properties": {"target": {"properties": {"type": {"const": "point"}}}}}, "then": {"properties": {"values": {"not": {"anyOf": [{"required": ["direction"]}, {"required": ["spotCone"]}, {"required": ["areaSize"]}, {"required": ["areaShape"]}, {"required": ["areaBasis"]}]}}}}},
+        {"if": {"properties": {"target": {"properties": {"type": {"const": "spot"}}}}}, "then": {"properties": {"values": {"not": {"anyOf": [{"required": ["areaSize"]}, {"required": ["areaShape"]}, {"required": ["areaBasis"]}]}}}}},
+        {"if": {"properties": {"target": {"properties": {"type": {"const": "area"}}}}}, "then": {"properties": {"values": {"not": {"required": ["spotCone"]}}}}}]
+    },
+    "lightAdd": {"type": "object", "additionalProperties": false, "required": ["type"],
+      "properties": {"type": {"$ref": "#/$defs/lightType"}, "expectedLightRevision": {"$ref": "#/$defs/safeLightInteger"}}},
     "frame": {"type": "integer", "minimum": 1, "maximum": 10000},
     "vec3": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
     "translations": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["frame", "translation"], "properties": {"frame": {"$ref": "#/$defs/frame"}, "translation": {"$ref": "#/$defs/vec3"}}}}

@@ -107,6 +107,7 @@ add_library(VulkanSceneRenderer_ui
     DisplayGradePreset.cpp
     GuiManager.cpp
     GltfAnimationControls.cpp
+    LightEditControls.cpp
 )
 target_compile_features(VulkanSceneRenderer_ui PUBLIC cxx_std_23)
 target_include_directories(VulkanSceneRenderer_ui PUBLIC
@@ -119,6 +120,7 @@ target_link_libraries(VulkanSceneRenderer_ui PUBLIC
     Dep_UI
     VulkanSceneRenderer_scene
     VulkanSceneRenderer_bim_ui_support
+    VulkanSceneRenderer_light_edit_support
 )
 if(TARGET miniz::miniz)
     target_link_libraries(VulkanSceneRenderer_ui PUBLIC miniz::miniz)

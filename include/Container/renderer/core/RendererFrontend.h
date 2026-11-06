@@ -20,6 +20,7 @@
 #include "Container/renderer/core/RendererDeviceCapabilities.h"
 #include "Container/renderer/debug/DebugRenderState.h"
 #include "Container/renderer/lighting/EditableLight.h"
+#include "Container/utility/EditHistory.h"
 #include "Container/renderer/lighting/DdgiProbeVolume.h"
 #include "Container/renderer/lighting/DdgiSceneChanges.h"
 #include "Container/renderer/picking/RenderSurfaceInteractionController.h"
@@ -34,6 +35,7 @@ struct GLFWwindow;
 namespace container::temporal {
 struct CaptureSample;
 struct CaptureEvent;
+struct CaptureLightTarget;
 }
 
 // Forward declarations — full headers are only needed in RendererFrontend.cpp.
@@ -452,6 +454,46 @@ private:
     uint32_t latestFrameSlot{0};
   };
   DepthVisibilityState depthVisibility_{};
+
+  container::util::EditHistory editHistory_{};
+  uint64_t lightHistoryScene_{}, lightHistoryAsset_{};
+  std::optional<bool> captureLightHistoryRequest_;
+  void ensureSceneEditHistory();
+  bool applyEditHistory(bool redo);
+  struct LightEditHistory;
+  struct LightEditHistoryBudget;
+  struct PendingLightGesture;
+  struct LightEditPublication;
+  struct PendingCaptureLight;
+  std::shared_ptr<LightEditHistoryBudget> lightEditHistoryBudget_;
+  std::shared_ptr<PendingLightGesture> lightEditGesture_;
+  std::shared_ptr<PendingCaptureLight> pendingCaptureLight_;
+  std::optional<EditableLightId> pendingLightSelection_;
+  std::string lightEditError_;
+  uint64_t lightEditPublications_{},lightEditHistoryCommits_{},lightEditHistoryReplays_{};
+  uint64_t nextLightGizmoGesture_{uint64_t{1}<<62};
+  uint64_t lastFinishedLightGesture_{};
+  [[nodiscard]] bool lightEditGestureActive() const noexcept;
+  void finishLightEditInput();
+  void refreshLightEditInspector();
+  void reportLightEditError(std::string_view);
+  void selectLightForEditing(EditableLightId);
+  void processLightEditRequests();
+  bool authorLightEditRequest(const LightEditRequest&);
+  bool authorManualLightAdd(EditableLightType);
+  void finishLightEditGesture(bool cancel=false);
+  bool replayLightEdit(LightEditHistory&,bool applied);
+  bool publishLightEdit(LightEditPublication&);
+  void beginLightGizmoGesture(container::ui::ViewportTool,
+      container::ui::TransformSpace,container::ui::TransformAxis,bool snapEnabled);
+  void endLightGizmoGesture();
+  void cancelLightGizmoGesture(RenderSurfaceInteractionController::TransformGestureCancelReason);
+  bool applyLightGizmoControls(container::ui::ViewportTool,container::ui::TransformAxis,
+      const container::ui::TransformControls&);
+  void appendLightEditTelemetry(nlohmann::json&) const;
+  void queueCaptureLightEvent(const container::temporal::CaptureEvent&);
+  void processCaptureLightEvent();
+  EditableLightId resolveCaptureLightTarget(const container::temporal::CaptureLightTarget&) const;
 
   struct TransformDragSession {
     bool active{false};

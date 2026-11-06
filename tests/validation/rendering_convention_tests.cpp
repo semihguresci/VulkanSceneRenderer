@@ -3077,30 +3077,34 @@ TEST(RenderingConventionTests, SceneControlsExposeEditableLightInspector) {
       readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
 
   EXPECT_TRUE(contains(header, "EditableLightEntity"));
-  EXPECT_TRUE(contains(header, "addManualEditableLight"));
+  const std::string controls = readRepoTextFile("src/utility/LightEditControls.cpp");
+  const std::string lightFrontend = readRepoTextFile("src/renderer/core/RendererFrontendLights.cpp");
+  EXPECT_TRUE(contains(header, "consumeLightAddRequest"));
+  EXPECT_TRUE(contains(gui, "drawLightEditInspector()"));
+  EXPECT_TRUE(contains(frontend, "processLightEditRequests()"));
+  EXPECT_TRUE(contains(lightFrontend, "prepareLightAdd(type)"));
   EXPECT_TRUE(contains(gui, "Editable lights"));
-  EXPECT_TRUE(contains(gui, "Selected Light Properties"));
-  EXPECT_TRUE(contains(gui, "Light Transform"));
-  EXPECT_TRUE(contains(gui, "Light Radiance"));
-  EXPECT_TRUE(contains(gui, "Spot Beam"));
-  EXPECT_TRUE(contains(gui, "Area Emitter"));
-  EXPECT_TRUE(contains(gui, "Area Width"));
-  EXPECT_TRUE(contains(gui, "Area Height"));
-  EXPECT_TRUE(contains(gui, "Shadow Eligibility"));
+  EXPECT_TRUE(contains(controls, "Selected Light Properties"));
+  EXPECT_TRUE(contains(controls, "Light Transform"));
+  EXPECT_TRUE(contains(controls, "Light Radiance"));
+  EXPECT_TRUE(contains(controls, "Spot Beam"));
+  EXPECT_TRUE(contains(controls, "Area Emitter"));
+  EXPECT_TRUE(contains(controls, "Area Width"));
+  EXPECT_TRUE(contains(controls, "Area Height"));
+  EXPECT_TRUE(contains(controls, "Shadow Eligibility"));
   EXPECT_TRUE(
-      contains(gui, "Local shadow budget assigns the first eligible point/spot "
-                    "lights"));
-  EXPECT_TRUE(contains(gui, "Directional direction"));
+      contains(controls, "first eligible point") && contains(controls, "spot lights."));
+  EXPECT_TRUE(contains(controls, "vector(\"Direction\""));
   EXPECT_TRUE(contains(gui, "Light Runtime Stats"));
   EXPECT_TRUE(contains(gui, "Lighting Settings"));
   EXPECT_EQ(gui.find("Lighting Preset"), std::string::npos);
   EXPECT_EQ(gui.find("LightingPreset("), std::string::npos);
   EXPECT_LT(gui.find("Editable lights"), gui.find("Light Runtime Stats"));
-  EXPECT_TRUE(contains(gui, "Add point"));
-  EXPECT_TRUE(contains(gui, "Add spot"));
-  EXPECT_TRUE(contains(gui, "Add area"));
+  EXPECT_TRUE(contains(controls, "Add point"));
+  EXPECT_TRUE(contains(controls, "Add spot"));
+  EXPECT_TRUE(contains(controls, "Add area"));
   EXPECT_TRUE(contains(frontend, "editableLights()"));
-  EXPECT_TRUE(contains(frontend, "updateEditableLight"));
+  EXPECT_TRUE(containsIgnoringWhitespace(lightFrontend, "prepareLightEdit(request.target"));
 }
 
 TEST(RenderingConventionTests, LocalPointShadowsHaveRuntimeBudget) {
@@ -3252,9 +3256,12 @@ TEST(RenderingConventionTests,
       readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
 
   EXPECT_TRUE(contains(frontend, "selectedEditableLight()"));
-  EXPECT_TRUE(contains(frontend, "translateSelectedEditableLight"));
-  EXPECT_TRUE(contains(frontend, "rotateSelectedEditableLight"));
-  EXPECT_TRUE(contains(frontend, "scaleSelectedEditableLight"));
+  const std::string lightFrontend = readRepoTextFile("src/renderer/core/RendererFrontendLights.cpp");
+  EXPECT_TRUE(contains(frontend, "applyLightGizmoControls(tool, axis, controls)"));
+  EXPECT_TRUE(contains(lightFrontend, "ViewportTool::Translate"));
+  EXPECT_TRUE(contains(lightFrontend, "ViewportTool::Rotate"));
+  EXPECT_TRUE(contains(lightFrontend, "ViewportTool::Scale"));
+  EXPECT_TRUE(contains(lightFrontend, "return authorLightEditRequest(request)"));
   EXPECT_TRUE(contains(frontend, "Selected editable light"));
 }
 

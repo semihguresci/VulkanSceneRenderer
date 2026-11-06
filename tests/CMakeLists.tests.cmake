@@ -1466,6 +1466,12 @@ add_custom_command(OUTPUT "${CONTAINER_LIGHT_EDIT_SPIRV}"
     DEPENDS "${DEFAULT_SHADER_DIR}/light_edit_contract.slang" ${SLANG_INCLUDE_SOURCES}
         "${CMAKE_CURRENT_LIST_FILE}" "${SLANGC_EXECUTABLE}"
     VERBATIM)
+add_custom_test(light_edit_controls_tests
+    ${CMAKE_SOURCE_DIR}/tests/utility/light_edit_controls_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_ui)
+add_custom_test(transform_gesture_lifecycle_tests
+    ${CMAKE_SOURCE_DIR}/tests/platform/transform_gesture_lifecycle_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer)
 add_custom_target(light_edit_contract_shader DEPENDS "${CONTAINER_LIGHT_EDIT_SPIRV}")
 add_custom_test(light_edit_generation_gpu_tests
     ${TEST_RENDERER_LIGHTING_DIR}/light_edit_generation_gpu_tests.cpp "" ${TEST_RESULTS_DIR}

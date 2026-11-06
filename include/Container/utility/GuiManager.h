@@ -25,6 +25,7 @@
 #include "Container/renderer/bim/BimModelCompare.h"
 #include "Container/renderer/bim/BimScheduleExtractor.h"
 #include "Container/renderer/lighting/EditableLight.h"
+#include "Container/utility/LightEditControls.h"
 #include "Container/renderer/temporal/TemporalState.h"
 #include "Container/utility/GuiDebugState.h"
 #include "Container/utility/SceneData.h"
@@ -565,6 +566,28 @@ public:
   [[nodiscard]] ImageExportRequest consumeImageExportRequest() {
     return std::exchange(imageExportRequest_, {});
   }
+  enum class EditHistoryRequest { None, Undo, Redo };
+  void setEditHistoryState(bool canUndo, bool canRedo, std::string undoLabel,
+                          std::string redoLabel) {
+    canUndoEdit_ = canUndo;
+    canRedoEdit_ = canRedo;
+    undoEditLabel_ = std::move(undoLabel);
+    redoEditLabel_ = std::move(redoLabel);
+  }
+  [[nodiscard]] EditHistoryRequest consumeEditHistoryRequest() {
+    return std::exchange(editHistoryRequest_, EditHistoryRequest::None);
+  }
+  void setLightEditSnapshot(container::renderer::LightEditSnapshot snapshot) {lightEditControls_.setSnapshot(std::move(snapshot));}
+  [[nodiscard]] const container::renderer::LightEditSnapshot& lightEditSnapshot() const noexcept {return lightEditControls_.snapshot();}
+  void drawLightEditInspector() {lightEditControls_.draw();}
+  void queueLightEditRequest(container::renderer::LightEditRequest request) {lightEditControls_.queue(request);}
+  [[nodiscard]] std::vector<container::renderer::LightEditRequest> consumeLightEditRequests() {return lightEditControls_.consume();}
+  void finishLightEditGesture(bool cancel=false) {lightEditControls_.finishGesture(cancel);}
+  [[nodiscard]] bool lightEditGestureActive() const noexcept {return lightEditControls_.gestureActive();}
+  [[nodiscard]] bool hasPendingLightEditRequests() const noexcept {return lightEditControls_.hasPending();}
+  void queueLightAddRequest(container::renderer::EditableLightType type) {lightEditControls_.queueAdd(type);}
+  [[nodiscard]] std::optional<container::renderer::EditableLightType> consumeLightAddRequest() noexcept {return lightEditControls_.consumeAdd();}
+
   void startFrame();
   void endFrame();
   void render(VkCommandBuffer commandBuffer);
@@ -604,10 +627,6 @@ public:
       container::renderer::EditableLightId selectedEditableLight,
       const std::function<void(container::renderer::EditableLightId)>
           &selectEditableLight,
-      const std::function<void(const container::renderer::EditableLightEntity
-                                   &)> &updateEditableLight,
-      const std::function<void(container::renderer::EditableLightType)>
-          &addManualEditableLight,
       uint32_t selectedMeshNode, const BimInspectionState &bimInspection,
       const ViewpointSnapshotState &currentViewpoint,
       const std::function<bool(const ViewpointSnapshotState &)>
@@ -930,6 +949,10 @@ private:
   bool wireframeSupported_{false};
   bool wireframeRasterModeSupported_{false};
   bool wireframeWideLineSupported_{false};
+  LightEditControls lightEditControls_{};
+  EditHistoryRequest editHistoryRequest_{EditHistoryRequest::None};
+  bool canUndoEdit_{false}, canRedoEdit_{false};
+  std::string undoEditLabel_, redoEditLabel_;
   GBufferViewMode gBufferViewMode_{GBufferViewMode::Lit};
   SceneViewportMode sceneViewportMode_{SceneViewportMode::Editor};
   WireframeSettings wireframeSettings_{};

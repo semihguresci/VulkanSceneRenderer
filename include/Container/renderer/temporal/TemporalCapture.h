@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Container/renderer/lighting/LightEditTypes.h>
+
 #include <glm/glm.hpp>
 #include <nlohmann/json.hpp>
 
@@ -16,6 +18,35 @@ namespace container::temporal {
 
 struct CaptureCamera {
   glm::vec3 position{}, target{};
+};
+struct CaptureLightTarget {
+  container::renderer::EditableLightType type{};
+  container::renderer::EditableLightSource source{};
+  std::optional<int32_t> sourceNode;
+  std::string nodeName;
+  std::optional<uint32_t> index;
+};
+struct CaptureLightGizmo {
+  enum class Tool { Translate,Rotate,Scale };
+  enum class Space { World,Local };
+  enum class Axis { Free,X,Y,Z };
+  Tool tool{};
+  glm::vec3 amount{};
+  Space space{Space::World};
+  Axis axis{Axis::Free};
+  bool snap{};
+};
+struct CaptureLightEdit {
+  CaptureLightTarget target;
+  container::renderer::LightEditPhase phase{container::renderer::LightEditPhase::Commit};
+  uint64_t gesture{};
+  std::optional<uint64_t> expectedLightRevision;
+  std::optional<container::renderer::LightEditPatch> values;
+  std::optional<CaptureLightGizmo> gizmo;
+};
+struct CaptureLightAdd {
+  container::renderer::EditableLightType type{};
+  std::optional<uint64_t> expectedLightRevision;
 };
 struct CaptureEvent {
   uint32_t frame{0};
@@ -44,6 +75,11 @@ struct CaptureEvent {
   std::string technique{}, reload{}, guiReload{}, guiSampleModel{};
   std::string rayShadows{};
   std::string areaLighting{};
+  std::optional<CaptureLightEdit> lightEdit;
+  std::optional<CaptureLightTarget> lightSelection;
+  std::optional<CaptureLightAdd> lightAdd;
+  std::string sceneHistory;
+  bool expectLightEditFailure{};
 };
 struct CaptureSample {
   std::optional<CaptureCamera> camera;
@@ -88,6 +124,28 @@ public:
       checkFrame(event.frame);
       event.reset = value.value("reset", false);
       event.skip = value.value("skip", false);
+      if (value.contains("lightEdit")) event.lightEdit = lightEditRequest(value.at("lightEdit"));
+      if (value.contains("lightSelection")) event.lightSelection = lightTarget(value.at("lightSelection"));
+      if (value.contains("lightAdd")) event.lightAdd = lightAddRequest(value.at("lightAdd"));
+      if (value.contains("sceneHistory")) {
+        const auto& history = value.at("sceneHistory");
+        if (history != "undo" && history != "redo")
+          throw std::invalid_argument("Capture sceneHistory must be undo or redo");
+        event.sceneHistory = history.get<std::string>();
+      }
+      if (value.contains("expectLightEditFailure")) {
+        const auto& expected = value.at("expectLightEditFailure");
+        if (!expected.is_boolean()) throw std::invalid_argument("Capture light failure expectation must be boolean");
+        event.expectLightEditFailure = expected.get<bool>();
+      }
+      const unsigned lightActions = unsigned(event.lightEdit.has_value()) + unsigned(event.lightSelection.has_value()) + unsigned(event.lightAdd.has_value());
+      if (lightActions + unsigned(!event.sceneHistory.empty()) > 1 || (value.contains("expectLightEditFailure") && !lightActions))
+        throw std::invalid_argument("Use one light or history action per capture frame");
+      if (lightActions || !event.sceneHistory.empty())
+        nodeFields(value, {"frame", "lightEdit", "lightSelection", "lightAdd", "sceneHistory", "expectLightEditFailure",
+                           "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "rayShadowSamples",
+                           "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"},
+                   "light event");
       event.acquireOutOfDate = value.value("acquireOutOfDate", false);
       event.presentSuboptimal = value.value("presentSuboptimal", false);
       if (value.contains("bimHiddenObject"))
@@ -299,6 +357,143 @@ private:
   void checkFrame(uint32_t frame) const {
     if (frame == 0 || frame > frameCount)
       throw std::invalid_argument("Temporal capture frame outside sequence");
+  }
+  static void nodeFields(const nlohmann::json& value,
+                         std::initializer_list<const char*> fields, const char* label) {
+    if (!value.is_object())
+      throw std::invalid_argument(std::string("Capture ") + label + " must be an object");
+    for (const auto& [name, ignored] : value.items()) {
+      (void)ignored;
+      if (std::none_of(fields.begin(), fields.end(), [&](const auto* field) { return name == field; }))
+        throw std::invalid_argument(std::string("Unknown capture ") + label + " field: " + name);
+    }
+  }
+  static float lightNumber(const nlohmann::json& value) {
+    if(!value.is_number()) throw std::invalid_argument("Capture light values require numeric float components");
+    const double number=value.get<double>();
+    if(!std::isfinite(number) || std::abs(number)>std::numeric_limits<float>::max())
+      throw std::invalid_argument("Capture light value exceeds finite float range");
+    return float(number);
+  }
+  template<glm::length_t N> static glm::vec<N,float,glm::defaultp> lightVector(const nlohmann::json& value) {
+    if(!value.is_array() || value.size()!=size_t(N)) throw std::invalid_argument("Capture light vector has the wrong shape");
+    glm::vec<N,float,glm::defaultp> result{};for(glm::length_t i=0;i<N;++i) result[i]=lightNumber(value[size_t(i)]);return result;
+  }
+  static container::renderer::EditableLightType lightType(const nlohmann::json& value) {
+    using T=container::renderer::EditableLightType;
+    if(!value.is_string()) throw std::invalid_argument("Capture light type must be a canonical string");
+    const auto& type=value.get_ref<const std::string&>();
+    if(type=="point") return T::Point;if(type=="spot") return T::Spot;if(type=="area") return T::Area;
+    if(type=="directional") return T::Directional;throw std::invalid_argument("Unknown capture light type");
+  }
+  static CaptureLightTarget lightTarget(const nlohmann::json& value) {
+    using S=container::renderer::EditableLightSource;
+    nodeFields(value,{"type","source","sourceNode","nodeName","index"},"light target");
+    if(!value.contains("type") || !value.contains("source") || !value.at("source").is_string())
+      throw std::invalid_argument("Capture light target requires canonical type and source");
+    CaptureLightTarget result;result.type=lightType(value.at("type"));const auto& source=value.at("source").get_ref<const std::string&>();
+    if(source=="imported") result.source=S::Imported;else if(source=="manual") result.source=S::Manual;
+    else if(source=="generated") result.source=S::Generated;else throw std::invalid_argument("Unknown capture light source");
+    if(unsigned(value.contains("sourceNode"))+unsigned(value.contains("nodeName"))+unsigned(value.contains("index"))!=1)
+      throw std::invalid_argument("Capture light target requires exactly one selector");
+    if(result.source==S::Imported) {
+      if(value.contains("sourceNode")) result.sourceNode=int32_t(lightInteger(value.at("sourceNode"),0,INT32_MAX));
+      else if(value.contains("nodeName")) {
+        const auto& name=value.at("nodeName");if(!name.is_string() || name.get_ref<const std::string&>().size()>4096)
+          throw std::invalid_argument("Capture light nodeName must be a bounded string");
+        result.nodeName=name.get<std::string>();
+        if (result.nodeName.empty() || result.nodeName.find('\0') != std::string::npos)
+          throw std::invalid_argument("Capture light nodeName must name a node");
+      } else throw std::invalid_argument("Imported capture lights require sourceNode or nodeName");
+    } else {
+      if(!value.contains("index")) throw std::invalid_argument("Manual and generated capture lights require index");
+      result.index=uint32_t(lightInteger(value.at("index"),0,UINT32_MAX-1));
+    }
+    return result;
+  }
+  static container::renderer::LightEditPatch lightValues(const nlohmann::json& value,container::renderer::EditableLightType type) {
+    using namespace container::renderer;
+    nodeFields(value,{"position","direction","color","intensity","range","spotCone","areaSize","areaShape","areaBasis"},"light values");
+    if(value.empty()) throw std::invalid_argument("Capture light values must contain an edit");
+    LightEditPatch result;auto& v=result.values;
+    const auto add=[&](LightEditField field){result.fields|=LightEditFieldBit(field);};
+    if(value.contains("position")) {v.position=lightVector<3>(value.at("position"));add(LightEditField::Position);}
+    if(value.contains("direction")) {
+      v.direction=lightVector<3>(value.at("direction"));const double length=glm::dot(glm::dvec3(v.direction),glm::dvec3(v.direction));
+      if(length<=1e-12) throw std::invalid_argument("Capture light direction must be nonzero");add(LightEditField::Direction);
+    }
+    if(value.contains("color")) {v.color=lightVector<3>(value.at("color"));if(glm::any(glm::lessThan(v.color,glm::vec3(0))))
+      throw std::invalid_argument("Capture light color must be nonnegative");add(LightEditField::Color);}
+    if(value.contains("intensity")) {v.intensity=lightNumber(value.at("intensity"));if(v.intensity<0) throw std::invalid_argument("Capture light intensity must be nonnegative");add(LightEditField::Intensity);}
+    if(value.contains("range")) {v.range=lightNumber(value.at("range"));if(v.range<0) throw std::invalid_argument("Capture light range must be nonnegative");add(LightEditField::Range);}
+    if(value.contains("spotCone")) {const auto cone=lightVector<2>(value.at("spotCone"));if(cone.x<0 || cone.y<=0 || cone.x>cone.y || cone.y>179)
+      throw std::invalid_argument("Capture light cone requires 0 <= inner <= outer <= 179 degrees and positive outer");
+      v.innerConeDegrees=cone.x;v.outerConeDegrees=cone.y;add(LightEditField::SpotCone);}
+    if(value.contains("areaSize")) {const auto size=lightVector<2>(value.at("areaSize"));v.areaHalfSize=size*.5f;
+      if(glm::any(glm::lessThanEqual(v.areaHalfSize,glm::vec2(0)))) throw std::invalid_argument("Capture area size must be positive full dimensions");add(LightEditField::AreaSize);}
+    if(value.contains("areaShape")) {const auto& shape=value.at("areaShape");if(!shape.is_string()) throw std::invalid_argument("Capture area shape must be rectangle or disk");
+      const auto& name=shape.get_ref<const std::string&>();if(name=="rectangle") v.areaShape=container::gpu::kAreaLightTypeRectangle;
+      else if(name=="disk") v.areaShape=container::gpu::kAreaLightTypeDisk;else throw std::invalid_argument("Unknown capture area shape");add(LightEditField::AreaShape);}
+    if(value.contains("areaBasis")) {const auto& basis=value.at("areaBasis");nodeFields(basis,{"tangent","bitangent"},"area basis");
+      if(basis.size()!=2) throw std::invalid_argument("Capture area basis requires tangent and bitangent");
+      v.tangent=lightVector<3>(basis.at("tangent"));v.bitangent=lightVector<3>(basis.at("bitangent"));
+      const auto t=glm::dvec3(v.tangent),b=glm::dvec3(v.bitangent);
+      if(glm::dot(t,t)<=1e-12 || glm::dot(b,b)<=1e-12 || glm::dot(glm::cross(t,b),glm::cross(t,b))<=1e-12)
+        throw std::invalid_argument("Capture area basis vectors must be nondegenerate");
+      // A standalone right-handed basis defines its normal. Explicit
+      // direction is retained when present; the backend orthonormalizes it.
+      if(!value.contains("direction")) v.direction=glm::vec3(glm::normalize(glm::cross(t,b)));
+      add(LightEditField::AreaBasis);add(LightEditField::Direction);}
+    uint32_t allowed=LightEditFieldBit(LightEditField::Color)|LightEditFieldBit(LightEditField::Intensity);
+    if(type!=EditableLightType::Directional) allowed|=LightEditFieldBit(LightEditField::Position)|LightEditFieldBit(LightEditField::Range);
+    if(type!=EditableLightType::Point) allowed|=LightEditFieldBit(LightEditField::Direction);
+    if(type==EditableLightType::Spot) allowed|=LightEditFieldBit(LightEditField::SpotCone);
+    if(type==EditableLightType::Area) allowed|=LightEditFieldBit(LightEditField::AreaSize)|LightEditFieldBit(LightEditField::AreaShape)|LightEditFieldBit(LightEditField::AreaBasis);
+    if(result.fields&~allowed) throw std::invalid_argument("Capture property is unsupported by this light type");return result;
+  }
+  static CaptureLightGizmo lightGizmo(const nlohmann::json& value) {
+    nodeFields(value,{"tool","amount","space","axis","snap"},"light gizmo");
+    if(!value.contains("tool") || !value.at("tool").is_string() || !value.contains("amount")) throw std::invalid_argument("Capture light gizmo requires tool and amount");
+    CaptureLightGizmo result;const auto& tool=value.at("tool").get_ref<const std::string&>();
+    if(tool=="translate") result.tool=CaptureLightGizmo::Tool::Translate;else if(tool=="rotate") result.tool=CaptureLightGizmo::Tool::Rotate;
+    else if(tool=="scale") result.tool=CaptureLightGizmo::Tool::Scale;else throw std::invalid_argument("Unknown capture light gizmo tool");
+    result.amount=lightVector<3>(value.at("amount"));
+    if(value.contains("space")) {if(!value.at("space").is_string()) throw std::invalid_argument("Capture light gizmo space must be world or local");
+      const auto& space=value.at("space").get_ref<const std::string&>();if(space=="local") result.space=CaptureLightGizmo::Space::Local;
+      else if(space!="world") throw std::invalid_argument("Unknown capture light gizmo space");}
+    if(value.contains("axis")) {if(!value.at("axis").is_string()) throw std::invalid_argument("Capture light gizmo axis must be free, x, y or z");
+      const auto& axis=value.at("axis").get_ref<const std::string&>();if(axis=="x") result.axis=CaptureLightGizmo::Axis::X;
+      else if(axis=="y") result.axis=CaptureLightGizmo::Axis::Y;else if(axis=="z") result.axis=CaptureLightGizmo::Axis::Z;
+      else if(axis!="free") throw std::invalid_argument("Unknown capture light gizmo axis");}
+    if(value.contains("snap")) {if(!value.at("snap").is_boolean()) throw std::invalid_argument("Capture light gizmo snap must be boolean");result.snap=value.at("snap").get<bool>();}
+    return result;
+  }
+  static CaptureLightEdit lightEditRequest(const nlohmann::json& value) {
+    using Phase=container::renderer::LightEditPhase;
+    nodeFields(value,{"target","phase","gesture","expectedLightRevision","values","gizmo"},"light edit");
+    if(!value.contains("target") || !value.contains("phase") || !value.at("phase").is_string()) throw std::invalid_argument("Capture light edit requires target and phase");
+    CaptureLightEdit result;result.target=lightTarget(value.at("target"));const auto& phase=value.at("phase").get_ref<const std::string&>();
+    if(phase=="commit") result.phase=Phase::Commit;else if(phase=="begin") result.phase=Phase::Begin;else if(phase=="update") result.phase=Phase::Update;
+    else if(phase=="end") result.phase=Phase::End;else if(phase=="cancel") result.phase=Phase::Cancel;else throw std::invalid_argument("Unknown capture light edit phase");
+    if(result.phase==Phase::Commit) {if(value.contains("gesture")) throw std::invalid_argument("Capture light commit does not carry a gesture");}
+    else {if(!value.contains("gesture")) throw std::invalid_argument("Capture light gesture phase requires gesture identity");result.gesture=lightInteger(value.at("gesture"),1,9007199254740991ull);}
+    if(value.contains("expectedLightRevision")) result.expectedLightRevision=lightInteger(value.at("expectedLightRevision"),1,9007199254740991ull);
+    const auto payloads=unsigned(value.contains("values"))+unsigned(value.contains("gizmo"));
+    if((result.phase==Phase::End || result.phase==Phase::Cancel)?payloads!=0:payloads!=1)
+      throw std::invalid_argument("Capture light commit/begin/update require exactly one payload; end/cancel carry none");
+    if(value.contains("values")) result.values=lightValues(value.at("values"),result.target.type);
+    if(value.contains("gizmo")) result.gizmo=lightGizmo(value.at("gizmo"));return result;
+  }
+  static CaptureLightAdd lightAddRequest(const nlohmann::json& value) {
+    nodeFields(value,{"type","expectedLightRevision"},"light add");if(!value.contains("type")) throw std::invalid_argument("Capture light add requires type");
+    CaptureLightAdd result;result.type=lightType(value.at("type"));
+    if(value.contains("expectedLightRevision")) result.expectedLightRevision=lightInteger(value.at("expectedLightRevision"),1,9007199254740991ull);return result;
+  }
+  static uint64_t lightInteger(const nlohmann::json& value,uint64_t minimum,uint64_t maximum) {
+    if(!value.is_number_integer() || (value.is_number_unsigned()?value.get<uint64_t>()>maximum:
+        value.get<int64_t>()<0 || uint64_t(value.get<int64_t>())>maximum) || value.get<uint64_t>()<minimum)
+      throw std::invalid_argument("Capture light identity must be an integer within its declared bounds");
+    return value.get<uint64_t>();
   }
   static glm::vec3 vec3(const nlohmann::json &json) {
     if (!json.is_array() || json.size() != 3)

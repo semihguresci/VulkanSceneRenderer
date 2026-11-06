@@ -1065,102 +1065,6 @@ bool DrawTransformControls(const char *label, TransformControls &transform,
   return changed;
 }
 
-void DrawLightInspectorSection(const char *label) {
-  ImGui::Spacing();
-  ImGui::Separator();
-  ImGui::TextUnformatted(label);
-}
-
-bool DrawEditableLightInspector(EditableLightEntity &light) {
-  bool changed = false;
-  ImGui::TextUnformatted("Selected Light Properties");
-  ImGui::Text("Source: %s",
-              container::renderer::editableLightSourceLabel(light.source));
-  ImGui::Text("Type: %s",
-              container::renderer::editableLightTypeLabel(light.type));
-
-  if (light.source == EditableLightSource::Generated) {
-    ImGui::TextDisabled(
-        "Live generated light; generator changes may overwrite edits");
-  }
-
-  DrawLightInspectorSection("Light Transform");
-  if (light.type != EditableLightType::Directional) {
-    changed |= ImGui::DragFloat3("Position", &light.position.x, 0.05f);
-    changed |=
-        ImGui::DragFloat("Range", &light.range, 0.05f, 0.0f, 100000.0f, "%.3f");
-  }
-
-  if (light.type == EditableLightType::Directional) {
-    changed |=
-        ImGui::DragFloat3("Directional direction", &light.direction.x, 0.01f);
-  } else if (light.type == EditableLightType::Spot ||
-             light.type == EditableLightType::Area) {
-    changed |= ImGui::DragFloat3("Direction", &light.direction.x, 0.01f);
-  }
-
-  DrawLightInspectorSection("Light Radiance");
-  changed |= ImGui::ColorEdit3("Color", &light.color.x);
-  changed |= ImGui::DragFloat("Intensity", &light.intensity, 0.05f, 0.0f,
-                              100000.0f, "%.3f");
-
-  if (light.type == EditableLightType::Spot) {
-    DrawLightInspectorSection("Spot Beam");
-    changed |= ImGui::SliderFloat("Inner cone", &light.innerConeDegrees, 0.0f,
-                                  179.0f, "%.1f deg");
-    changed |= ImGui::SliderFloat("Outer cone", &light.outerConeDegrees, 0.0f,
-                                  179.0f, "%.1f deg");
-    if (light.outerConeDegrees < light.innerConeDegrees) {
-      light.outerConeDegrees = light.innerConeDegrees;
-      changed = true;
-    }
-  }
-
-  if (light.type == EditableLightType::Area) {
-    DrawLightInspectorSection("Area Emitter");
-    static constexpr const char *kAreaShapeLabels[] = {"Rectangle", "Disk"};
-    int shape =
-        light.areaShape >= (container::gpu::kAreaLightTypeDisk - 0.5f) ? 1 : 0;
-    if (ImGui::Combo("Area shape", &shape, kAreaShapeLabels,
-                     IM_ARRAYSIZE(kAreaShapeLabels))) {
-      light.areaShape = shape == 1 ? container::gpu::kAreaLightTypeDisk
-                                   : container::gpu::kAreaLightTypeRectangle;
-      changed = true;
-    }
-    float areaWidth = light.areaHalfSize.x * 2.0f;
-    float areaHeight = light.areaHalfSize.y * 2.0f;
-    if (ImGui::DragFloat("Area Width", &areaWidth, 0.05f, 0.002f, 200000.0f,
-                         "%.3f")) {
-      light.areaHalfSize.x = std::max(areaWidth * 0.5f, 0.001f);
-      changed = true;
-    }
-    if (ImGui::DragFloat("Area Height", &areaHeight, 0.05f, 0.002f,
-                         200000.0f, "%.3f")) {
-      light.areaHalfSize.y = std::max(areaHeight * 0.5f, 0.001f);
-      changed = true;
-    }
-    changed |= ImGui::DragFloat3("Area Tangent", &light.tangent.x, 0.01f);
-    changed |= ImGui::DragFloat3("Area Bitangent", &light.bitangent.x, 0.01f);
-  }
-
-  DrawLightInspectorSection("Shadow Eligibility");
-  if (light.type == EditableLightType::Directional) {
-    ImGui::TextUnformatted("Uses directional cascaded shadows when enabled.");
-  } else if (light.type == EditableLightType::Point ||
-             light.type == EditableLightType::Spot) {
-    const bool eligible = light.intensity > 0.0f && light.range > 0.0f;
-    ImGui::Text("Eligible for local shadow maps: %s",
-                eligible ? "yes" : "no");
-    ImGui::TextWrapped(
-        "Local shadow budget assigns the first eligible point/spot lights.");
-  } else {
-    ImGui::TextUnformatted(
-        "Area light visibility uses the renderer local-shadow assignment.");
-  }
-
-  return changed;
-}
-
 const char *ViewportGestureLabel(ViewportGesture gesture) {
   switch (gesture) {
   case ViewportGesture::None:
@@ -2253,6 +2157,16 @@ void GuiManager::startFrame() {
   ImGui_ImplGlfw_NewFrame();
   ImGui::NewFrame();
   imguiFrameOpen_ = true;
+  lightEditControls_.processInput();
+  // Text fields own their text undo while they are active.
+  if (!ImGui::GetIO().WantTextInput) {
+    if (canRedoEdit_ &&
+        (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Y, ImGuiInputFlags_RouteGlobal) ||
+         ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, ImGuiInputFlags_RouteGlobal)))
+      editHistoryRequest_ = EditHistoryRequest::Redo;
+    else if (canUndoEdit_ && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, ImGuiInputFlags_RouteGlobal))
+      editHistoryRequest_ = EditHistoryRequest::Undo;
+  }
 }
 
 void GuiManager::endFrame() {
@@ -2846,8 +2760,6 @@ void GuiManager::drawSceneControls(
     const std::vector<EditableLightEntity> &editableLights,
     EditableLightId selectedEditableLight,
     const std::function<void(EditableLightId)> &selectEditableLight,
-    const std::function<void(const EditableLightEntity &)> &updateEditableLight,
-    const std::function<void(EditableLightType)> &addManualEditableLight,
     uint32_t selectedMeshNode, const BimInspectionState &bimInspection,
     const ViewpointSnapshotState &currentViewpoint,
     const std::function<bool(const ViewpointSnapshotState &)> &restoreViewpoint,
@@ -2887,10 +2799,25 @@ void GuiManager::drawSceneControls(
   if (controlsVisible && constrained.size != glm::vec2(size.x, size.y))
     ImGui::SetWindowSize(ImVec2(constrained.size.x, constrained.size.y));
   if (!controlsVisible) {
+    lightEditControls_.finishGesture();
     ImGui::End();
     drawRendererTelemetryWindow();
     return;
   }
+  ImGui::BeginDisabled(!canUndoEdit_);
+  if (ImGui::Button("Undo (Ctrl+Z)"))
+    editHistoryRequest_ = EditHistoryRequest::Undo;
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !undoEditLabel_.empty())
+    ImGui::SetTooltip("Undo %s", undoEditLabel_.c_str());
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!canRedoEdit_);
+  if (ImGui::Button("Redo (Ctrl+Y)"))
+    editHistoryRequest_ = EditHistoryRequest::Redo;
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !redoEditLabel_.empty())
+    ImGui::SetTooltip("Redo %s", redoEditLabel_.c_str());
+  ImGui::EndDisabled();
+  ImGui::Separator();
   if (ImGui::Combo("Import scale", &importScaleIndex_,
                    kImportScaleLabels.data(),
                    static_cast<int>(kImportScaleLabels.size()))) {
@@ -6575,21 +6502,7 @@ void GuiManager::drawSceneControls(
 
   if (ImGui::TreeNode("Lights")) {
     ImGui::Text("Editable lights");
-    if (ImGui::SmallButton("Add directional")) {
-      addManualEditableLight(EditableLightType::Directional);
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Add point")) {
-      addManualEditableLight(EditableLightType::Point);
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Add spot")) {
-      addManualEditableLight(EditableLightType::Spot);
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Add area")) {
-      addManualEditableLight(EditableLightType::Area);
-    }
+    lightEditControls_.drawAddButtons();
 
     const auto selectedEditableIt =
         std::ranges::find_if(editableLights, [&](const auto &light) {
@@ -6621,14 +6534,10 @@ void GuiManager::drawSceneControls(
       ImGui::EndCombo();
     }
 
-    if (selectedEditableIt != editableLights.end()) {
-      EditableLightEntity editableLight = *selectedEditableIt;
-      if (DrawEditableLightInspector(editableLight)) {
-        updateEditableLight(editableLight);
-      }
-    } else if (editableLights.empty()) {
+    if (selectedEditableIt != editableLights.end())
+      drawLightEditInspector();
+    else if (editableLights.empty())
       ImGui::TextDisabled("No editable lights");
-    }
 
     if (ImGui::TreeNode("Lighting Settings")) {
       ImGui::SliderFloat("Directional Intensity",
@@ -6722,6 +6631,8 @@ void GuiManager::drawSceneControls(
       ImGui::TreePop();
     }
     ImGui::TreePop();
+  } else {
+    lightEditControls_.finishGesture();
   }
 
   const auto &renderableNodes = sceneGraph.renderableNodes();

@@ -163,6 +163,7 @@ struct DdgiManager::Impl {
   uint32_t history = 0, cursor = 0;
   uint32_t contentEpoch = 0, refreshRemaining = 0;
   uint64_t revision = 0, frame = 0, resets = 0;
+  uint64_t lightSnapshotRevision = 0;
   std::string status{"DDGI disabled"};
   DdgiUpdateBatch batch{};
   vk::raii::DescriptorSetLayout layout{nullptr}, computeSetLayout{nullptr},
@@ -438,17 +439,61 @@ uint32_t DdgiManager::lastScrollPreservedProbes() const {
 const DdgiSettings &DdgiManager::settings() const { return impl_->settings; }
 const std::string &DdgiManager::status() const { return impl_->status; }
 
+DdgiManager::PreparedSceneHistoryReset::PreparedSceneHistoryReset(
+    PreparedSceneHistoryReset&& other) noexcept {
+  *this = std::move(other);
+}
+
+DdgiManager::PreparedSceneHistoryReset&
+DdgiManager::PreparedSceneHistoryReset::operator=(PreparedSceneHistoryReset&& other) noexcept {
+  if (this != &other) {
+    owner_ = std::exchange(other.owner_, nullptr);
+    probeCount_ = other.probeCount_;
+    ready_ = other.ready_;
+    enabled_ = other.enabled_;
+    scheduler_ = std::move(other.scheduler_);
+    fresh_ = std::move(other.fresh_);
+    status_ = std::move(other.status_);
+  }
+  return *this;
+}
+
 void DdgiManager::resetSceneHistory() {
-  auto &p = *impl_;
-  // Prepare replacement CPU scheduling state before disturbing a working field.
-  DdgiPriorityScheduler scheduler;
-  scheduler.reset(uint32_t(p.basePositions.size()));
-  std::vector<bool> fresh(p.basePositions.size(), false);
+  auto reset = prepareSceneHistoryReset();
   synchronizeAsync();
+  if (!publishSceneHistoryReset(reset))
+    throw std::logic_error("DDGI scene reset preparation became stale");
+}
+
+DdgiManager::PreparedSceneHistoryReset DdgiManager::prepareSceneHistoryReset() const {
+  const auto &p = *impl_;
+  PreparedSceneHistoryReset reset;
+  reset.owner_ = impl_.get();
+  reset.probeCount_ = p.basePositions.size();
+  reset.ready_ = p.ready;
+  reset.enabled_ = p.settings.enabled;
+  reset.scheduler_.reset(uint32_t(reset.probeCount_));
+  reset.fresh_.assign(reset.probeCount_, false);
+  reset.status_ = p.settings.enabled ? "DDGI waiting: scene history reset"
+                                    : "DDGI disabled";
+  return reset;
+}
+
+bool DdgiManager::canPublishSceneHistoryReset(
+    const PreparedSceneHistoryReset& reset) const noexcept {
+  const auto &p = *impl_;
+  return reset.owner_ == impl_.get() && reset.probeCount_ == p.basePositions.size() &&
+         reset.ready_ == p.ready && reset.enabled_ == p.settings.enabled &&
+         (!p.asyncEnabled || !p.asyncHistory.pending());
+}
+
+bool DdgiManager::publishSceneHistoryReset(PreparedSceneHistoryReset& reset) noexcept {
+  if (!canPublishSceneHistoryReset(reset)) return false;
+  auto &p = *impl_;
   // Keep live timeline values/parity: resetting them without replacing their
   // semaphore would let a later writer reuse an already-signaled value.
-  p.scheduler = std::move(scheduler);
-  p.epochFresh = std::move(fresh);
+  p.scheduler = std::move(reset.scheduler_);
+  p.epochFresh.swap(reset.fresh_);
   p.historyValid = false;
   p.resetPending = true;
   p.active = false;
@@ -465,8 +510,147 @@ void DdgiManager::resetSceneHistory() {
   p.refreshRemaining = p.ready ? p.volumes.probeCount() : 0;
   p.recorded = p.traced = p.updated = false;
   ++p.resets;
-  p.status = p.settings.enabled ? "DDGI waiting: scene history reset"
-                                : "DDGI disabled";
+  p.status.swap(reset.status_);
+  reset.owner_ = nullptr;
+  return true;
+}
+
+struct DdgiManager::PreparedLightSnapshotCapacity::State {
+  struct Slot {
+    std::unique_ptr<Buffer> points, areas;
+  };
+  const void* owner{};
+  uint64_t revision{}, budget{};
+  size_t slotCount{}, pointCount{}, areaCount{};
+  bool support{}, consumed{};
+  std::vector<Slot> replacements;
+};
+
+uint64_t DdgiManager::lightEditPreparationCpuBytes() const {
+  const auto& p=*impl_;
+  if(p.basePositions.size()>UINT32_MAX || p.slots.empty() || p.slots.size()>64)
+    throw std::length_error("DDGI light edit reset/frame counts exceed their finite domains");
+  uint64_t bytes=sizeof(PreparedSceneHistoryReset)+sizeof(PreparedLightSnapshotCapacity)+
+      sizeof(PreparedLightSnapshotCapacity::State)+4096;
+  const auto add=[&](uint64_t count,uint64_t stride) {
+    if(stride && count>(std::numeric_limits<uint64_t>::max()-bytes)/stride)
+      throw std::length_error("DDGI light edit CPU preparation size overflows");
+    bytes+=count*stride;
+  };
+  // reset() constructs exactly two fresh uint64 arrays before moving them into
+  // the detached scheduler. vector<bool> rounds its separate bit allocation.
+  add(p.basePositions.size(),2*sizeof(uint64_t));
+  add((uint64_t(p.basePositions.size())+63)/64,sizeof(uint64_t));
+  // One replacement slot vector, conservative capacity/control overhead, and
+  // both possible detached Buffer wrappers for each current image. Actual VMA
+  // buffer bytes remain governed by prepareLightSnapshotCapacity's GPU cap.
+  add(p.slots.size(),2*sizeof(PreparedLightSnapshotCapacity::State::Slot)+
+      2*(sizeof(Buffer)+128));
+  return bytes;
+}
+
+DdgiManager::PreparedLightSnapshotCapacity::PreparedLightSnapshotCapacity() noexcept = default;
+DdgiManager::PreparedLightSnapshotCapacity::~PreparedLightSnapshotCapacity() = default;
+DdgiManager::PreparedLightSnapshotCapacity::PreparedLightSnapshotCapacity(PreparedLightSnapshotCapacity&&) noexcept = default;
+DdgiManager::PreparedLightSnapshotCapacity& DdgiManager::PreparedLightSnapshotCapacity::operator=(PreparedLightSnapshotCapacity&&) noexcept = default;
+DdgiManager::PreparedLightSnapshotCapacity::operator bool() const noexcept {
+  return state_ && !state_->consumed;
+}
+
+DdgiManager::PreparedLightSnapshotCapacity DdgiManager::prepareLightSnapshotCapacity(
+    size_t pointCount, size_t areaCount) const {
+  const auto& p = *impl_;
+  const auto reject = [](const char* message) {
+    throw std::invalid_argument(std::string("DDGI light snapshot preparation: ") + message);
+  };
+  if (pointCount > container::gpu::kMaxClusteredLights || areaCount > container::gpu::kMaxAreaLights)
+    reject("light counts exceed fixed renderer capacities");
+  if (p.slots.empty()) reject("frame snapshot resources have not been prepared");
+  const VkDeviceSize pointBytes = pointCount * sizeof(container::gpu::PointLightData);
+  const VkDeviceSize areaBytes = areaCount * sizeof(container::gpu::AreaLightData);
+  if (pointBytes > p.properties.limits.maxStorageBufferRange ||
+      areaBytes > p.properties.limits.maxStorageBufferRange)
+    reject("light arrays exceed the storage-buffer range");
+  PreparedLightSnapshotCapacity prepared;
+  prepared.state_ = std::make_unique<PreparedLightSnapshotCapacity::State>();
+  auto& state = *prepared.state_;
+  state.owner = impl_.get(); state.revision = p.lightSnapshotRevision;
+  state.budget = p.settings.payloadBudgetBytes; state.slotCount = p.slots.size();
+  state.pointCount = pointCount; state.areaCount = areaCount; state.support = p.support;
+  state.replacements.resize(p.slots.size());
+  if (!p.support) return prepared;
+  uint64_t requested = 0;
+  const auto addRequested = [&](VkDeviceSize bytes) {
+    if (bytes > state.budget || requested > state.budget - bytes)
+      reject("replacement snapshot sizes exceed the payload budget");
+    requested += bytes;
+  };
+  for (const auto& slot : p.slots) {
+    if (!slot.pointSnapshot || !slot.areaSnapshot || !slot.lights ||
+        !slot.pointSnapshot->value.allocation_info.pMappedData ||
+        !slot.areaSnapshot->value.allocation_info.pMappedData)
+      reject("frame light snapshot resources are incomplete");
+    if (pointBytes > slot.pointSnapshot->size) addRequested(pointBytes);
+    if (areaBytes > slot.areaSnapshot->size) addRequested(areaBytes);
+  }
+  const auto liveBytes = p.allocated();
+  if (requested && (liveBytes > state.budget || requested > state.budget - liveBytes))
+    reject("coexisting old and replacement snapshots exceed the payload budget");
+  uint64_t allocated = 0;
+  const auto allocate = [&](const Buffer& current, VkDeviceSize bytes) {
+    auto replacement = std::make_unique<Buffer>(p.memory, bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+    const auto actual = replacement->value.allocation_info.size;
+    if (liveBytes > state.budget || allocated > state.budget - liveBytes ||
+        actual > state.budget - liveBytes - allocated)
+      reject("actual coexisting VMA allocations exceed the payload budget");
+    allocated += actual;
+    // Snapshot buffers are CPU-written/GPU-read only. Retain their initialized
+    // prefix while allocation and flushing can still fail off the live path.
+    replacement->write(current.value.allocation_info.pMappedData, size_t(current.size));
+    return replacement;
+  };
+  for (size_t image = 0; image < p.slots.size(); ++image) {
+    const auto& slot = p.slots[image]; auto& replacement = state.replacements[image];
+    if (pointBytes > slot.pointSnapshot->size) replacement.points = allocate(*slot.pointSnapshot, pointBytes);
+    if (areaBytes > slot.areaSnapshot->size) replacement.areas = allocate(*slot.areaSnapshot, areaBytes);
+  }
+  return prepared;
+}
+
+bool DdgiManager::canPublishLightSnapshotCapacity(const PreparedLightSnapshotCapacity& prepared) const noexcept {
+  if (!prepared) return false;
+  const auto& state = *prepared.state_; const auto& p = *impl_;
+  return state.owner == impl_.get() && state.revision == p.lightSnapshotRevision &&
+      state.slotCount == p.slots.size() && state.replacements.size() == p.slots.size() &&
+      state.support == p.support && state.budget == p.settings.payloadBudgetBytes &&
+      state.pointCount <= container::gpu::kMaxClusteredLights && state.areaCount <= container::gpu::kMaxAreaLights &&
+      (!p.asyncEnabled || !p.asyncHistory.pending());
+}
+
+bool DdgiManager::publishLightSnapshotCapacity(PreparedLightSnapshotCapacity& prepared) noexcept {
+  if (!canPublishLightSnapshotCapacity(prepared)) return false;
+  auto& p = *impl_; auto& state = *prepared.state_;
+  for (size_t image = 0; image < p.slots.size(); ++image) {
+    auto& slot = p.slots[image]; auto& replacement = state.replacements[image];
+    std::array<VkDescriptorBufferInfo, 2> buffers{};
+    std::array<VkWriteDescriptorSet, 2> writes{};
+    uint32_t count = 0;
+    const auto replace = [&](std::unique_ptr<Buffer>& live, std::unique_ptr<Buffer>& staged, uint32_t binding) {
+      if (!staged) return;
+      live.swap(staged);
+      buffers[count] = {live->value.buffer, 0, live->size};
+      writes[count] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+      writes[count].dstSet = slot.lights; writes[count].dstBinding = binding;
+      writes[count].descriptorCount = 1; writes[count].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      writes[count].pBufferInfo = &buffers[count]; ++count;
+    };
+    replace(slot.pointSnapshot, replacement.points, 1);
+    replace(slot.areaSnapshot, replacement.areas, 2);
+    if (count) vkUpdateDescriptorSets(p.device->device(), count, writes.data(), 0, nullptr);
+  }
+  ++p.lightSnapshotRevision;
+  state.consumed = true;
+  return true;
 }
 
 void DdgiManager::applySettings(const DdgiSettings &settings) {
@@ -617,6 +801,7 @@ void DdgiManager::prepare(uint32_t imageCount, VkImageView environment,
   p.asyncPool = vk::raii::CommandPool(nullptr);
   p.graphicsTimeline = vk::raii::Semaphore(nullptr);
   p.computeTimeline = vk::raii::Semaphore(nullptr);
+  ++p.lightSnapshotRevision;
   p.asyncHistory.reset(imageCount);
   p.asyncEnabled = p.settings.asyncCompute && p.device->asyncComputeQueue() &&
       p.device->enabledVulkan12Features().timelineSemaphore;
@@ -849,6 +1034,7 @@ void DdgiManager::update(uint32_t image, VkDescriptorSet scene,
             replacement->value.allocation_info.size > p.settings.payloadBudgetBytes)
           throw std::runtime_error("DDGI light snapshot exceeds allocation budget");
         buffer = std::move(replacement);
+        ++p.lightSnapshotRevision;
         p.bufferDescriptor(s.lights, binding, *buffer);
       };
       grow(s.pointSnapshot, points.size_bytes(), 1);

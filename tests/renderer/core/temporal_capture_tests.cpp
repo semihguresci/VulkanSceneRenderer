@@ -97,6 +97,40 @@ TEST(TemporalCapture, MovingTracksKeepStationaryComponentsAndExactKeys) {
                        glm::vec3(0.15f, 0.35f, 2.15f));
 }
 
+TEST(TemporalCapture, ParsesTypedLightGestureAndHistoryActions) {
+  const auto fixture = json::parse(R"({"schemaVersion":1,"frames":3,"events":[
+    {"frame":1,"lightEdit":{"target":{"type":"point","source":"imported","sourceNode":1},
+      "phase":"begin","gesture":17,"values":{"intensity":4}}},
+    {"frame":2,"lightEdit":{"target":{"type":"point","source":"imported","sourceNode":1},
+      "phase":"end","gesture":17}},
+    {"frame":3,"sceneHistory":"undo"}]})");
+  const CaptureSequence sequence(fixture);
+  const auto edit = sequence.sample(1).event.lightEdit;
+  ASSERT_TRUE(edit);
+  ASSERT_TRUE(edit->values);
+  EXPECT_EQ(edit->values->values.intensity, 4.0f);
+  EXPECT_EQ(edit->gesture, 17u);
+  ASSERT_TRUE(sequence.sample(2).event.lightEdit);
+  EXPECT_EQ(sequence.sample(2).event.lightEdit->phase, container::renderer::LightEditPhase::End);
+  EXPECT_EQ(sequence.sample(3).event.sceneHistory, "undo");
+}
+
+TEST(TemporalCapture, RejectsMixedAndSkippedLightActions) {
+  const json add = {{"type", "point"}};
+  const json events[] = {
+      {{"frame", 1}, {"sceneHistory", "undo"}, {"skip", true}},
+      {{"frame", 1}, {"sceneHistory", "redo"}, {"lightAdd", add}},
+      {{"frame", 1}, {"expectLightEditFailure", false}},
+      {{"frame", 1}, {"sceneHistory", ""}},
+      {{"frame", 1}, {"lightAdd", add}, {"expectLightEditFailure", 1}},
+  };
+  for (const auto& event : events) {
+    SCOPED_TRACE(event.dump());
+    const json fixture = {{"schemaVersion", 1}, {"frames", 1}, {"events", json::array({event})}};
+    EXPECT_THROW((void)CaptureSequence(fixture), std::invalid_argument);
+  }
+}
+
 TEST(TemporalCapture, RejectsInvalidTracksAndEventsBeforeGpuExecution) {
   EXPECT_THROW(
       CaptureSequence(json::parse(
