@@ -1,5 +1,6 @@
 #include "path_transport_common.slang"
 #include "path_dielectric_common.slang"
+#include "path_experimental_materials.slang"
 #include "material_data_common.slang"
 #include "area_light_common.slang"
 #include "ray_surface_common.slang"
@@ -7,6 +8,9 @@
 #include "push_constants_common.slang"
 #ifndef REFERENCE_EMPTY_SCENE
 #define REFERENCE_EMPTY_SCENE 0
+#endif
+#ifndef REFERENCE_DENOISE_GUIDES
+#define REFERENCE_DENOISE_GUIDES 0
 #endif
 
 [[vk::binding(2, 0)]] SamplerState materialSamplers[];
@@ -47,6 +51,10 @@ struct FrameData
 [[vk::binding(9, 2)]] TextureCube<float4> environment;
 [[vk::binding(10, 2)]] SamplerState environmentSampler;
 [[vk::binding(11, 2)]] RWStructuredBuffer<uint4> diagnostics;
+#if REFERENCE_DENOISE_GUIDES
+[[vk::binding(0, 3)]] [[vk::image_format("rgba32f")]] RWTexture2D<float4> guideAlbedo;
+[[vk::binding(1, 3)]] [[vk::image_format("rgba32f")]] RWTexture2D<float4> guideNormal;
+#endif
 
 float4 PtTextureGrad(uint index, float4 uv, GpuTextureTransform transform, float2 texGrad)
 {
@@ -237,6 +245,7 @@ struct PtMaterial
 {
     PtBsdf bsdf;
     float anisotropy;
+    float retroreflection;
     float3 transmission;
     float3 diffuseTransmission;
     float transmissionRoughness;
@@ -293,6 +302,16 @@ float3 PtUnlitRadiance(GpuMaterial material, RaySurfacePoint point, float2 texGr
     return material.color.rgb * point.color * PtTextureGrad(material.baseColorTextureIndex,
         point.uv, material.baseColorTextureTransform, texGrad).rgb + PtEmission(material, point, texGrad);
 }
+float PtScatterStrength(GpuMaterial material, RaySurfacePoint point, float2 texGrad)
+{
+    return PtScalarGrad(material.experimentalFactors.y, material.experimentalTextures.y,
+        point.uv, material.scatterStrengthTextureTransform, 3u, texGrad);
+}
+float3 PtScatterColor(GpuMaterial material, RaySurfacePoint point, float2 texGrad)
+{
+    return material.scatterColorFactor.rgb * PtTextureGrad(material.experimentalTextures.z,
+        point.uv, material.scatterColorTextureTransform, texGrad).rgb;
+}
 PtMaterial PtResolveMaterial(PtHit hit, float2 texGrad, bool visibility = false)
 {
     PtMaterial result = (PtMaterial)0;
@@ -326,7 +345,9 @@ PtMaterial PtResolveMaterial(PtHit hit, float2 texGrad, bool visibility = false)
         !isfinite(m.dispersion) || m.dispersion < 0.0 || !isfinite(m.clearcoatFactor) ||
         !all(isfinite(m.sheenColorFactor)) || !isfinite(m.iridescenceFactor) ||
         !all(isfinite(m.anisotropyDiffuseFactors)) || any(m.anisotropyDiffuseFactors.xz < 0.0.xx) ||
-        any(m.anisotropyDiffuseFactors.xz > 1.0.xx) || !isfinite(m.heightScale))
+        any(m.anisotropyDiffuseFactors.xz > 1.0.xx) || !isfinite(m.heightScale) ||
+        !all(isfinite(m.experimentalFactors.xyz)) || any(m.experimentalFactors.xy < 0.0.xx) ||
+        any(m.experimentalFactors.xy > 1.0.xx))
     { result.fault = 2u; return result; }
     // Never silently substitute opaque or unlayered transport for unsupported
     // material models. Such paths are diagnosed and excluded from raw moments.
@@ -390,6 +411,35 @@ PtMaterial PtResolveMaterial(PtHit hit, float2 texGrad, bool visibility = false)
             if (!PtValidDiffuseTransmission(tint)) { result.fault = 2u; return result; }
             result.bsdf.diffuse *= 1.0 - diffuseFactor;
             result.diffuseTransmission = tint * ((1.0 - metallic) * (1.0 - transmission) * diffuseFactor);
+        }
+    }
+    if (m.experimentalFactors.x > 0.0)
+    {
+        result.retroreflection = PtScalarGrad(m.experimentalFactors.x, m.experimentalTextures.x,
+            point.uv, m.retroreflectionTextureTransform, 0u, texGrad);
+        if (!isfinite(result.retroreflection) || result.retroreflection < 0.0 || result.retroreflection > 1.0)
+        { result.fault = 2u; return result; }
+        if (result.retroreflection > 0.0 && result.volume != 0u)
+        { result.fault = 1u; return result; }
+    }
+    if (m.experimentalFactors.y > 0.0 && metallic < 1.0 && transmission > 0.0)
+    {
+        const float strength = PtScatterStrength(m, point, texGrad);
+        if (!isfinite(strength) || strength < 0.0 || strength > 1.0)
+        { result.fault = 2u; return result; }
+        if (strength > 0.0)
+        {
+            const float anisotropy = m.experimentalFactors.z;
+            const float3 color = PtScatterColor(m, point, texGrad);
+            if (!PtValidDiffuseTransmission(color) || !isfinite(anisotropy) || abs(anisotropy) >= 1.0)
+            { result.fault = 2u; return result; }
+            if (result.volume != 0u)
+            {
+                if (any(color > 0.0.xxx)) { result.fault = 1u; return result; }
+            }
+            else
+                PtApplyThinScatter(result.bsdf.diffuse, result.diffuseTransmission, result.transmission,
+                    (1.0 - metallic) * transmission, strength, anisotropy, color);
         }
     }
     // The glTF thin-sheet rough lobe narrows as IOR approaches one. At IOR one
@@ -583,6 +633,21 @@ PtMediumState PtInitialMedium(RayDesc ray, uint seed, inout uint fault)
         }
         else
         {
+            // An unmatched exit means the ray starts inside this medium.
+            // Reject scattering before even an opaque interior hit can consume
+            // the segment through the absorption-only volume implementation.
+            if (material.experimentalFactors.y > 0.0)
+            {
+                const float strength = PtScatterStrength(material, hit.point, 0.0.xx);
+                if (!isfinite(strength) || strength < 0.0 || strength > 1.0)
+                { fault = 2u; return inside; }
+                if (strength > 0.0)
+                {
+                    const float3 color = PtScatterColor(material, hit.point, 0.0.xx);
+                    if (!PtValidDiffuseTransmission(color)) { fault = 2u; return inside; }
+                    if (any(color > 0.0.xxx)) { fault = 1u; return inside; }
+                }
+            }
             if (inside.count == PT_MAX_MEDIA) { fault = 1u; return inside; }
             inside.material[inside.count++] = hit.point.materialIndex;
         }
@@ -594,14 +659,14 @@ PtMediumState PtInitialMedium(RayDesc ray, uint seed, inout uint fault)
 PtBsdfEvaluation PtEvaluateSurface(PtMaterial material, float3 view, float3 light)
 {
     if (material.volume != 0u) return PtEvaluateVolumeMixture(PtVolumeTransport(material), view, light);
-    return PtEvaluateDiffuseTransmissionBsdf(PtTransport(material), material.diffuseTransmission,
-        view, light, material.anisotropy);
+    return PtEvaluateRetroBsdf(PtTransport(material), material.diffuseTransmission,
+        view, light, material.anisotropy, material.retroreflection);
 }
 PtBsdfSample PtSampleSurface(PtMaterial material, float3 view, float3 u)
 {
     if (material.volume != 0u) return PtSampleVolumeMixture(PtVolumeTransport(material), view, u);
-    return PtSampleDiffuseTransmissionBsdf(PtTransport(material), material.diffuseTransmission,
-        view, u, material.anisotropy);
+    return PtSampleRetroBsdf(PtTransport(material), material.diffuseTransmission,
+        view, u, material.anisotropy, material.retroreflection);
 }
 static const uint PT_MAX_NULL_SHEETS = 64u;
 bool PtVisible(float3 position, float3 normal, float3 direction, float distance, uint areaCount,
@@ -673,7 +738,8 @@ bool PtVisible(float3 position, float3 normal, float3 direction, float distance,
             PtThinBsdf bsdf = PtTransport(blocker);
             coefficient = bsdf.transmission * (1.0.xxx - PtFresnel(bsdf.reflection.f0, view.z) * bsdf.reflection.specularScale);
             float diffuseProbability = PtDiffuseTransmissionProbability(bsdf, blocker.diffuseTransmission, view);
-            probability = (1.0 - diffuseProbability) * PtThinProbability(bsdf, view);
+            probability = (1.0 - PtRetroProposalProbability(blocker.retroreflection)) *
+                (1.0 - diffuseProbability) * PtThinProbability(bsdf, view);
         }
         if (all(coefficient == 0.0.xxx)) return false;
         transmittance *= coefficient;
@@ -900,9 +966,16 @@ float3 PtTraceShadowMatte(RayDesc ray, uint pixel, uint sampleIndex, uint4 count
     return value;
 }
 
-float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault)
+float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault
+#if REFERENCE_DENOISE_GUIDES
+                   , out float3 albedo, out float3 normal
+#endif
+)
 {
     fault = 0u;
+#if REFERENCE_DENOISE_GUIDES
+    albedo = normal = 0.0.xxx;
+#endif
     uint address = pixel.x + pixel.y * frame.extentSamples.x;
     float2 jitter = float2(PtRandom(address, sampleIndex, 0u, 0u, frame.sampling.z),
                           PtRandom(address, sampleIndex, 0u, 1u, frame.sampling.z));
@@ -995,6 +1068,14 @@ float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault)
         RayCone scatteringCone = {worldFoot, cone.spread};
         PtMaterial material = PtResolveMaterial(hit, worldFoot * hit.point.texelDensity);
         if (material.fault != 0u) { fault = material.fault; return 0.0.xxx; }
+#if REFERENCE_DENOISE_GUIDES
+        if (bounce == 0u)
+        {
+            albedo = saturate(material.unlit != 0u ? material.emission : material.base);
+            normal = material.unlit != 0u ? hit.point.shadingNormal : material.normal;
+            normal = clamp(normal, -1.0.xxx, 1.0.xxx);
+        }
+#endif
         throughput *= PtMediumAttenuation(medium, PtLength(hit.point.position - segmentStart));
         PtMediumState crossed = medium;
         if (material.volume != 0u)
@@ -1131,17 +1212,31 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
         diagnostics[1].x = asuint(PtAutofocusDistance());
     float3 mean = 0.0.xxx, moment = 0.0.xxx;
     uint count = 0u, flags = 0u;
+#if REFERENCE_DENOISE_GUIDES
+    float3 meanAlbedo = 0.0.xxx, meanNormal = 0.0.xxx;
+#endif
     if (frame.extentSamples.z != 0u)
     {
         float4 old = means[tid.xy], oldMoment = moments[tid.xy];
         mean = old.rgb; count = uint(old.w); moment = oldMoment.rgb; flags = uint(oldMoment.w);
+#if REFERENCE_DENOISE_GUIDES
+        meanAlbedo = guideAlbedo[tid.xy].rgb;
+        meanNormal = guideNormal[tid.xy].rgb;
+#endif
     }
     for (uint i = 0u; i < frame.extentSamples.w; ++i)
     {
         uint fault;
         float3 radiance;
+#if REFERENCE_DENOISE_GUIDES
+        float3 albedo = 0.0.xxx, normal = 0.0.xxx;
+#endif
         if ((frame.limits.w & 8u) != 0u) { fault = 1u; radiance = 0.0.xxx; }
-        else radiance = PtTracePath(tid.xy, frame.extentSamples.z + i, fault);
+        else radiance = PtTracePath(tid.xy, frame.extentSamples.z + i, fault
+#if REFERENCE_DENOISE_GUIDES
+            , albedo, normal
+#endif
+        );
         if ((fault & 2u) != 0u) InterlockedOr(diagnostics[0].w, 2u);
         if (fault == 0u && frame.controls.x > 0.0)
         {
@@ -1156,10 +1251,21 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
             if ((fault & 1u) != 0u) InterlockedAdd(diagnostics[0].x, 1u);
             if ((fault & 2u) != 0u) InterlockedAdd(diagnostics[0].y, 1u);
         }
-        else InterlockedAdd(diagnostics[0].z, 1u);
+        else
+        {
+            InterlockedAdd(diagnostics[0].z, 1u);
+#if REFERENCE_DENOISE_GUIDES
+            meanAlbedo += (albedo - meanAlbedo) / float(count);
+            meanNormal += (normal - meanNormal) / float(count);
+#endif
+        }
     }
     means[tid.xy] = float4(mean, float(count));
     moments[tid.xy] = float4(moment, float(flags));
+#if REFERENCE_DENOISE_GUIDES
+    guideAlbedo[tid.xy] = float4(meanAlbedo, 1.0);
+    guideNormal[tid.xy] = float4(meanNormal, 1.0);
+#endif
     float3 shown = mean;
     if (frame.ground.x == PT_GROUND_MATTE)
         shown = (mean.y > 0.0 ? saturate(mean.x / mean.y) * saturate(mean.z) : 0.0).xxx;

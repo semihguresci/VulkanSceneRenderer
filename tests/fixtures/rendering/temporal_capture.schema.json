@@ -17,6 +17,14 @@
       "frame": {"$ref": "#/$defs/frame"},
       "reset": {"type": "boolean"}, "skip": {"type": "boolean"}, "taa": {"type": "boolean"},
       "gpuTransforms": {"type": "boolean"},
+      "referenceOidn": {"enum": ["off", "fast", "balanced", "high"]},
+      "comfyUi": {"type": "object", "additionalProperties": false, "required": ["action"], "properties": {
+        "action": {"enum": ["generate-environment", "restyle-viewport", "apply-environment", "cancel"]},
+        "prompt": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "seed": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "wait": {"type": "boolean"}
+      }, "if": {"properties": {"action": {"enum": ["generate-environment", "restyle-viewport"]}}},
+        "then": {"required": ["prompt"]}, "else": {"not": {"anyOf": [{"required": ["prompt"]}, {"required": ["seed"]}]}}},
       "objectVisible": {"type": "boolean"}, "minimized": {"type": "boolean"}, "orthographic": {"type": "boolean"},
       "acquireOutOfDate": {"type": "boolean"}, "presentSuboptimal": {"type": "boolean"},
       "samples": {"enum": [1, 2, 4, 8]}, "exposure": {"type": "number", "minimum": 0},

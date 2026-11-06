@@ -2,11 +2,13 @@
 
 #include <Container/renderer/pathtracing/ReferencePathLensSettings.h>
 #include <Container/renderer/pathtracing/ReferenceGroundSettings.h>
+#include <Container/renderer/pathtracing/ReferenceOidnSettings.h>
 #include <Container/renderer/raytracing/RayShadowManager.h>
 #include <Container/utility/PipelineManager.h>
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <string_view>
 
 namespace container::renderer {
 
@@ -55,6 +57,13 @@ struct ReferenceAutofocusResult {
   float distance{}; // Zero means the center ray found no valid target.
 };
 
+struct ReferenceOidnStatus {
+  std::string_view message;
+  uint32_t displayedSamples{};
+  uint64_t allocatedBytes{};
+  std::optional<double> lastGpuMs;
+};
+
 // Ordered graphics-queue producer. Prepare only a fence-retired input slot;
 // record, submit and commit before preparing the next frame. All readers must
 // retire before recreation/destruction. Source AS/descriptors remain borrowed
@@ -67,7 +76,8 @@ class ReferencePathTracePass {
   ReferencePathTracePass& operator=(const ReferencePathTracePass&)=delete;
   void createResources(const std::filesystem::path&,uint32_t imageCount,VkExtent2D,
                        VkDescriptorSetLayout materials,VkDescriptorSetLayout lights,
-                       uint64_t imageBudgetBytes=512ull*1024*1024);
+                       uint64_t imageBudgetBytes=512ull*1024*1024,
+                       ReferenceOidnSettings oidn = {});
   // Optional host views of the same material and ray generations build the
   // mesh-light proposal. They need only survive this call.
   void prepareFrame(uint32_t image, const ReferencePathTraceInput&,
@@ -82,6 +92,10 @@ class ReferencePathTracePass {
   [[nodiscard]] std::optional<ReferencePathLensSettings> effectiveLens() const;
   [[nodiscard]] float effectiveFireflyClamp() const;
   [[nodiscard]] ReferenceGroundSettings effectiveGround() const;
+  [[nodiscard]] ReferenceOidnStatus oidnStatus() const;
+  [[nodiscard]] ReferenceOidnQuality oidnQuality() const;
+  void setOidnSampleInterval(uint32_t interval);
+  void collectOidnTiming(uint32_t image);
   [[nodiscard]] uint64_t historyResets() const;
   [[nodiscard]] uint64_t allocatedBytes() const;
   // Require this slot's graphics fence to retire before CPU readback.

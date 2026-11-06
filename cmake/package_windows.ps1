@@ -60,6 +60,16 @@ if ($physicsEnabled -and -not (Test-Path -LiteralPath $joltLicense -PathType Lea
 
 $gltfCompressionEnabled = @{}
 $gltfCompressionNotices = @{}
+$referenceOidnNotices = @{}
+if (Select-String -LiteralPath $cachePath -Pattern '^CONTAINER_VK_OIDN_AVAILABLE:INTERNAL=ON$' -Quiet) {
+    foreach ($noticeName in @('vk_oidn-LICENSE.txt', 'vk_oidn-NOTICE.txt')) {
+        $noticePath = Join-Path $buildTreeDirectory "third_party_licenses/$noticeName"
+        if (-not (Test-Path -LiteralPath $noticePath -PathType Leaf)) {
+            throw "The enabled Vulkan OIDN backend is missing its SDK notice: $noticePath"
+        }
+        $referenceOidnNotices[$noticeName] = $noticePath
+    }
+}
 foreach ($backend in @('DRACO', 'MESHOPT')) {
     $compressionOption = @(Select-String -LiteralPath $cachePath -Pattern "^ENABLE_GLTF_${backend}:BOOL=(.*)$")
     $enabled = $compressionOption.Count -eq 1 -and
@@ -212,6 +222,10 @@ if ($openVdbEnabled -or $nanoIoEnabled) {
 if ($gltfCompressionEnabled['DRACO']) {
     $requiredFiles += 'ContainerDracoWorker.exe'
 }
+if ($referenceOidnNotices.Count) {
+    $requiredFiles += @('spv_shaders/reference_guided_pathtrace.comp.spv',
+        'spv_shaders/reference_guided_background.comp.spv', 'spv_shaders/reference_denoise_compose.comp.spv')
+}
 foreach ($relativePath in $requiredFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $runtimeDirectory $relativePath) -PathType Leaf)) {
         throw "Missing runtime file: $relativePath"
@@ -264,7 +278,9 @@ Get-ChildItem -LiteralPath (Join-Path $runtimeDirectory 'models') -File |
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'LICENSE') -Destination $stagingDirectory
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/windows-package-quick-start.md') -Destination (Join-Path $stagingDirectory 'README.md')
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/third-party-notices.md') -Destination (Join-Path $stagingDirectory 'THIRD_PARTY_NOTICES.md')
-foreach ($guide in @('gltf-texture-ingestion.md', 'texture-image-data.md', 'material-sampler-publication.md', 'texture-upload-and-ownership.md')) {
+foreach ($guide in @('gltf-texture-ingestion.md', 'texture-image-data.md', 'material-sampler-publication.md',
+        'texture-upload-and-ownership.md', 'reference-path-tracing.md', 'comfyui-bridge.md',
+        'gltf-interactivity.md', 'gltf-opacity-micromaps.md')) {
     Copy-Item -LiteralPath (Join-Path $sourceDirectory "docs/$guide") -Destination $stagingDirectory
 }
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/ltc-area-lighting.md') -Destination (Join-Path $stagingDirectory 'ltc-area-lighting.md')
@@ -278,12 +294,19 @@ Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/physics-pending-edits.m
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/openvdb.md') -Destination (Join-Path $stagingDirectory 'openvdb.md')
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/openvdb-feature-status.md') -Destination (Join-Path $stagingDirectory 'openvdb-feature-status.md')
 $captureToolsDirectory = New-Item -ItemType Directory -Path (Join-Path $stagingDirectory 'tools')
-foreach ($captureTool in @('gfxreconstruct.py', 'gfxreconstruct.ps1')) {
+foreach ($captureTool in @('gfxreconstruct.py', 'gfxreconstruct.ps1', 'comfyui_bridge.py')) {
     Copy-Item -LiteralPath (Join-Path $sourceDirectory "tools/$captureTool") -Destination $captureToolsDirectory.FullName
+}
+$workflowDirectory = New-Item -ItemType Directory -Path (Join-Path $captureToolsDirectory.FullName 'comfyui_workflows')
+foreach ($workflow in @('hdri.json', 'restyle.json')) {
+    Copy-Item -LiteralPath (Join-Path $sourceDirectory "tools/comfyui_workflows/$workflow") -Destination $workflowDirectory.FullName
 }
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/gfxreconstruct.md') -Destination (Join-Path $stagingDirectory 'GFXRECONSTRUCT.md')
 
 $licensesDirectory = (New-Item -ItemType Directory -Path (Join-Path $stagingDirectory 'THIRD_PARTY_LICENSES')).FullName
+foreach ($noticeName in $referenceOidnNotices.Keys) {
+    Copy-Item -LiteralPath $referenceOidnNotices[$noticeName] -Destination (Join-Path $licensesDirectory $noticeName)
+}
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/tone-curves-Apache-2.0.txt') -Destination (Join-Path $licensesDirectory 'ToneCurves-Apache-2.0.txt')
 foreach ($noticeName in $gltfCompressionNotices.Keys) {
     Copy-Item -LiteralPath $gltfCompressionNotices[$noticeName] -Destination (Join-Path $licensesDirectory $noticeName)
@@ -379,6 +402,7 @@ foreach ($file in ($hashedRuntimeFiles | Sort-Object FullName)) {
     gltf_meshopt_enabled = $gltfCompressionEnabled['MESHOPT']
     texture_ktx_enabled = $textureCodecsEnabled['KTX']
     texture_webp_enabled = $textureCodecsEnabled['WEBP']
+    reference_oidn = $(if ($referenceOidnNotices.Count) { '0.2.0' } else { 'disabled' })
     openvdb_enabled = $openVdbEnabled
     nanovdb_enabled = $nanoVdbEnabled
     nanovdb_io_enabled = $nanoIoEnabled

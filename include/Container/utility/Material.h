@@ -2,6 +2,7 @@
 
 #include "Container/common/CommonMath.h"
 
+#include <array>
 #include <cstdint>
 #include <limits>
 
@@ -21,6 +22,23 @@ struct TextureTransform {
   // 0-3 select RGBA. Values above 3 mean the shader should use the
   // material-model channel convention for that texture slot.
   uint32_t channel{4};
+};
+
+struct ExperimentalMaterialLayer {
+  float retroreflection{};
+  float scatterStrength{};
+  float scatterAnisotropy{};
+  glm::vec3 scatterColor{1.0f};
+  uint32_t retroreflectionTexture{std::numeric_limits<uint32_t>::max()};
+  uint32_t scatterStrengthTexture{std::numeric_limits<uint32_t>::max()};
+  uint32_t scatterColorTexture{std::numeric_limits<uint32_t>::max()};
+  TextureTransform retroreflectionTransform;
+  TextureTransform scatterStrengthTransform;
+  TextureTransform scatterColorTransform;
+
+  [[nodiscard]] std::array<uint32_t, 3> textureResources() const {
+    return {retroreflectionTexture, scatterStrengthTexture, scatterColorTexture};
+  }
 };
 
 struct Material {
@@ -110,5 +128,6 @@ struct Material {
   bool doubleSided{false};
   bool specularGlossinessWorkflow{false};
   bool unlit{false};
+  ExperimentalMaterialLayer experimental;
 };
 }  // namespace container::material

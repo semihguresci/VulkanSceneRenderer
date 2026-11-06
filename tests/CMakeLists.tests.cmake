@@ -1244,6 +1244,12 @@ add_custom_test(gltf_extended_materials_tests
 )
 set_tests_properties(gltf_extended_materials_tests PROPERTIES LABELS "gltf;material;cpu" TIMEOUT 60)
 
+add_custom_test(gltf_opacity_micromap_tests
+    ${TEST_GEOMETRY_DIR}/gltf_opacity_micromap_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry
+)
+set_tests_properties(gltf_opacity_micromap_tests PROPERTIES LABELS "gltf;ray-scene;cpu" TIMEOUT 60)
+
 add_custom_test(gltf_material_authoring_tests
     ${TEST_GEOMETRY_DIR}/gltf_material_authoring_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_geometry VulkanSceneRenderer_scene
@@ -1438,6 +1444,10 @@ add_custom_test(gltf_material_export_tests
 add_custom_test(gltf_animation_tests
     ${TEST_GEOMETRY_DIR}/gltf_animation_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_geometry VulkanSceneRenderer_scene
+)
+add_custom_test(gltf_interactivity_tests
+    ${TEST_GEOMETRY_DIR}/gltf_interactivity_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry
 )
 add_custom_test(gltf_deformation_tests
     ${TEST_GEOMETRY_DIR}/gltf_deformation_tests.cpp "" ${TEST_RESULTS_DIR}
@@ -2499,6 +2509,14 @@ add_custom_test(renderer_mcp_measurement_tests
 )
 target_sources(renderer_mcp_measurement_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/renderer/core/RendererMcpMeasurement.cpp
+)
+
+add_custom_test(comfyui_bridge_tests
+    ${TEST_RENDERER_CORE_DIR}/comfyui_bridge_tests.cpp "" ${TEST_RESULTS_DIR}
+    nlohmann_json::nlohmann_json VulkanSceneRenderer_texture_codecs
+)
+target_sources(comfyui_bridge_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/core/ComfyUiBridge.cpp
 )
 
 add_custom_test(gpu_hardware_monitor_tests

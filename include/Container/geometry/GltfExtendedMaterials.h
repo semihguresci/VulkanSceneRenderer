@@ -6,6 +6,11 @@
 #include <tiny_gltf.h>
 
 #include <cstdint>
+#include <array>
+#include <span>
+#include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace container::geometry::gltf {
@@ -71,5 +76,49 @@ struct GltfExtendedMaterialData {
 // Zero strengths and black colors are never promoted when a texture is present.
 [[nodiscard]] GltfExtendedMaterialData ParseGltfExtendedMaterials(
     const tinygltf::Model& source, const GltfExtendedMaterialLimits& limits = {});
+
+inline constexpr std::string_view kGltfRetroreflection = "KHR_materials_retroreflection";
+inline constexpr std::string_view kGltfScatter = "KHR_materials_scatter";
+inline constexpr std::string_view kGltfLegacyScatter = "KHR_materials_volume_scatter";
+inline constexpr std::array kGltfExperimentalMaterialExtensions{
+    kGltfRetroreflection, kGltfScatter, kGltfLegacyScatter};
+inline constexpr std::array kGltfExperimentalMaterialTextures{
+    std::pair{kGltfRetroreflection, std::string_view("retroreflectionTexture")},
+    std::pair{kGltfScatter, std::string_view("scatterStrengthTexture")},
+    std::pair{kGltfScatter, std::string_view("multiscatterColorTexture")},
+    std::pair{kGltfLegacyScatter, std::string_view("scatterStrengthTexture")},
+    std::pair{kGltfLegacyScatter, std::string_view("multiscatterColorTexture")}};
+
+struct GltfExperimentalMaterial {
+  float retroreflection{};
+  float scatterStrength{};
+  float scatterAnisotropy{};
+  glm::vec3 scatterColor{1.0f};
+  GltfExtendedTextureInfo retroreflectionTexture;
+  GltfExtendedTextureInfo scatterStrengthTexture;
+  GltfExtendedTextureInfo scatterColorTexture;
+};
+
+// The caller enables this separately from the standard material profiles.
+// Validation precedes resource I/O. The returned byte count is charged to the
+// loader's existing decoded-asset budget.
+[[nodiscard]] uint64_t ValidateGltfExperimentalMaterialsJson(
+    const nlohmann::json& source, const GltfExtendedMaterialLimits& limits = {});
+[[nodiscard]] std::vector<GltfExperimentalMaterial> ParseGltfExperimentalMaterials(
+    const tinygltf::Model& source, const GltfExtendedMaterialLimits& limits = {});
+[[nodiscard]] GltfExperimentalMaterial ParseGltfExperimentalMaterial(
+    const tinygltf::Material& source, std::span<const std::string> extensionsUsed, size_t textureCount);
+
+template <class Resolve>
+[[nodiscard]] material::ExperimentalMaterialLayer BindGltfExperimentalMaterial(
+    const GltfExperimentalMaterial& source, Resolve resolve) {
+  return {
+      source.retroreflection, source.scatterStrength, source.scatterAnisotropy, source.scatterColor,
+      resolve(source.retroreflectionTexture.sourceTexture, false),
+      resolve(source.scatterStrengthTexture.sourceTexture, false),
+      resolve(source.scatterColorTexture.sourceTexture, true),
+      source.retroreflectionTexture.transform, source.scatterStrengthTexture.transform,
+      source.scatterColorTexture.transform};
+}
 
 } // namespace container::geometry::gltf

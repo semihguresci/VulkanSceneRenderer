@@ -19,6 +19,7 @@
 #include "Container/renderer/lighting/DdgiVolumeFit.h"
 #include "Container/renderer/pathtracing/ReferencePathLensSettings.h"
 #include "Container/renderer/pathtracing/ReferenceGroundSettings.h"
+#include "Container/renderer/pathtracing/ReferenceOidnSettings.h"
 #include "Container/renderer/raytracing/RayShadowSettings.h"
 #include "Container/renderer/temporal/TemporalState.h"
 
@@ -60,6 +61,7 @@ struct AppConfig {
   uint32_t maxSceneObjects{4096};
   bool enableValidationLayers{false};
   bool enableRayQueries{true};
+  bool experimentalOpacityMicromaps{false};
   container::renderer::RayShadowSettings rayShadows{};
   container::renderer::DdgiSettings ddgi{};
   // Explicit preset operations only; no implicit loading changes defaults.
@@ -77,6 +79,7 @@ struct AppConfig {
   float pathFireflyClamp{};
   container::renderer::ReferencePathLensSettings pathLens{};
   container::renderer::ReferenceGroundSettings pathGround{};
+  container::renderer::ReferenceOidnSettings pathOidn{};
   bool physicsDemo{false};
   bool windowVisible{true};
   uint32_t msaaSamples{1};
@@ -113,6 +116,7 @@ struct AppConfig {
   std::shared_ptr<const container::geometry::vdb::ImportOptions> vdbModelOptions;
   std::string screenshotCapturePath{};
   bool screenshotViewportOnly{false};
+  bool gpuHardwareTelemetry{false};
   // Export the initialized scene (or final capture-sequence scene) on exit.
   std::string sceneExportPath{};
   int gltfMaterialVariant{-1};
@@ -120,6 +124,7 @@ struct AppConfig {
   int gltfCameraNode{-1};
   int gltfSceneIndex{-1};
   bool experimentalGltfLinkedAssets{false};
+  bool experimentalGltfMaterials{false};
   double gltfAnimationTime{0};
   double gltfAnimationSpeed{1};
   bool gltfAnimationPlaying{true};

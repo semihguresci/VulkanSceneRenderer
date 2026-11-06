@@ -5,7 +5,11 @@
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
+#include <string>
 #include <tuple>
+#if CONTAINER_HAS_VK_OIDN
+#include <vk_oidn/vk_oidn.h>
+#endif
 
 namespace container::renderer {
 namespace {
@@ -37,12 +41,13 @@ struct ReferencePathTracePass::Impl {
   struct Image {
     gpu::VulkanMemoryManager& memory;
     VkImage image{};VmaAllocation allocation{};vk::raii::ImageView view{nullptr};
-    Image(std::shared_ptr<gpu::VulkanDevice> device,gpu::VulkanMemoryManager& m,VkExtent2D extent):memory(m) {
+    Image(std::shared_ptr<gpu::VulkanDevice> device,gpu::VulkanMemoryManager& m,VkExtent2D extent,
+          VkImageUsageFlags extraUsage = 0):memory(m) {
       VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
       info.imageType=VK_IMAGE_TYPE_2D;info.format=VK_FORMAT_R32G32B32A32_SFLOAT;
       info.extent={extent.width,extent.height,1};info.mipLevels=1;info.arrayLayers=1;
       info.samples=VK_SAMPLE_COUNT_1_BIT;info.tiling=VK_IMAGE_TILING_OPTIMAL;
-      info.usage=VK_IMAGE_USAGE_STORAGE_BIT|VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+      info.usage=VK_IMAGE_USAGE_STORAGE_BIT|VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|extraUsage;
       VmaAllocationCreateInfo a{};a.usage=VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
       if(vmaCreateImage(m.allocator(),&info,&a,&image,&allocation,nullptr)!=VK_SUCCESS)
         throw std::runtime_error("Reference path image allocation failed");
@@ -65,13 +70,129 @@ struct ReferencePathTracePass::Impl {
     VkPipeline boundPipeline{};
     std::shared_ptr<const void> boundContent;
     uint64_t epoch{},submission{};
+#if CONTAINER_HAS_VK_OIDN
+    uint32_t denoisedSamples{};
+    bool denoiseRecorded{}, denoiseTimingPending{};
+#endif
   };
+#if CONTAINER_HAS_VK_OIDN
+  struct Oidn {
+    std::shared_ptr<gpu::VulkanDevice> device;
+    gpu::PipelineManager& pipelines;
+    Image albedo, normal, filtered;
+    VkDescriptorSetLayout setLayout{};
+    VkPipelineLayout pipelineLayout{};
+    VkDescriptorPool pool{};
+    VkDescriptorSet set{};
+    gpu::ComputePipeline guided, emptyGuided, compose;
+    VkQueryPool queries{};
+    uint32_t timestampBits{};
+    std::unique_ptr<vkoidn::Context> context;
+    std::unique_ptr<vkoidn::Denoiser> network;
+    bool weightsSubmitted{}, failed{};
+    uint32_t filteredSamples{};
+    uint64_t lastTimedSubmission{};
+    std::optional<double> lastGpuMs;
+
+    Oidn(const std::shared_ptr<gpu::VulkanDevice>& device, gpu::VulkanMemoryManager& memory,
+         gpu::PipelineManager& pipelines, VkExtent2D extent)
+        : device(device), pipelines(pipelines), albedo(device, memory, extent),
+          normal(device, memory, extent), filtered(device, memory, extent, VK_IMAGE_USAGE_TRANSFER_DST_BIT) {}
+
+    ~Oidn() {
+      pipelines.destroyPipeline(guided);
+      pipelines.destroyPipeline(emptyGuided);
+      pipelines.destroyPipeline(compose);
+      pipelines.destroyDescriptorPool(pool);
+      pipelines.destroyPipelineLayout(pipelineLayout);
+      pipelines.destroyDescriptorSetLayout(setLayout);
+      if (queries) vkDestroyQueryPool(device->device(), queries, nullptr);
+    }
+
+    void initialize(const std::filesystem::path& root, uint32_t count,
+                    VkDescriptorSetLayout materials, VkDescriptorSetLayout lights, VkDescriptorSetLayout local) {
+      const std::array extensions{VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME};
+      const vkoidn::ContextCreateInfo info{device->instance(), device->physicalDevice(), device->device(),
+          vkGetInstanceProcAddr, vkGetDeviceProcAddr, extensions.data(),
+          device->referenceOidnCooperativeMatrix() ? 2u : 1u};
+      const auto result = vkoidn::Context::create(info, context);
+      if (result != vkoidn::Result::eSuccess)
+        throw std::runtime_error(vkoidn::getResultString(result));
+      if (!context->areImageViewsSupported()) throw std::runtime_error("storage image views unavailable");
+
+      std::vector<VkDescriptorSetLayoutBinding> bindings;
+      for (uint32_t binding = 0; binding < 3; ++binding)
+        bindings.push_back({binding, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+      setLayout = pipelines.createDescriptorSetLayout(bindings, {});
+      pipelineLayout = pipelines.createPipelineLayout({materials, lights, local, setLayout}, {});
+      const auto shaders = root / "spv_shaders";
+      guided = pipelines.createComputePipeline(shaders / "reference_guided_pathtrace.comp.spv", pipelineLayout,
+          "reference_guided_pathtrace");
+      emptyGuided = pipelines.createComputePipeline(shaders / "reference_guided_background.comp.spv", pipelineLayout,
+          "reference_guided_background");
+      compose = pipelines.createComputePipeline(shaders / "reference_denoise_compose.comp.spv", pipelineLayout,
+          "reference_denoise_compose");
+      pool = pipelines.createDescriptorPool({{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3}}, 1);
+      const VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+          nullptr, pool, 1, &setLayout};
+      if (vkAllocateDescriptorSets(device->device(), &allocation, &set) != VK_SUCCESS)
+        throw std::runtime_error("guide descriptor allocation failed");
+      const std::array<VkDescriptorImageInfo, 3> images{{
+          {VK_NULL_HANDLE, *albedo.view, VK_IMAGE_LAYOUT_GENERAL},
+          {VK_NULL_HANDLE, *normal.view, VK_IMAGE_LAYOUT_GENERAL},
+          {VK_NULL_HANDLE, *filtered.view, VK_IMAGE_LAYOUT_GENERAL}}};
+      for (uint32_t binding = 0; binding < images.size(); ++binding) {
+        const VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, binding, 0, 1,
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &images[binding], nullptr, nullptr};
+        vkUpdateDescriptorSets(device->device(), 1, &write, 0, nullptr);
+      }
+      uint32_t familyCount = 0;
+      vkGetPhysicalDeviceQueueFamilyProperties(device->physicalDevice(), &familyCount, nullptr);
+      std::vector<VkQueueFamilyProperties> families(familyCount);
+      vkGetPhysicalDeviceQueueFamilyProperties(device->physicalDevice(), &familyCount, families.data());
+      timestampBits = families.at(device->queueFamilyIndices().graphicsFamily.value()).timestampValidBits;
+      if (timestampBits != 0) {
+        const VkQueryPoolCreateInfo queryInfo{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, nullptr, 0,
+            VK_QUERY_TYPE_TIMESTAMP, 2 * count, 0};
+        if (vkCreateQueryPool(device->device(), &queryInfo, nullptr, &queries) != VK_SUCCESS) queries = {};
+      }
+    }
+
+    void initializeImages(VkCommandBuffer command) const {
+      const std::array images{albedo.image, normal.image, filtered.image};
+      const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      std::array<VkImageMemoryBarrier2, 3> barriers{};
+      for (size_t i = 0; i < images.size(); ++i) {
+        auto& b = barriers[i];
+        b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        b.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT;
+        b.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = images[i];
+        b.subresourceRange = range;
+      }
+      VkDependencyInfo info{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+      info.imageMemoryBarrierCount = static_cast<uint32_t>(barriers.size());
+      info.pImageMemoryBarriers = barriers.data();
+      vkCmdPipelineBarrier2(command, &info);
+      const VkClearColorValue initial{{0.0f, 0.0f, 0.0f, 1.0f}};
+      vkCmdClearColorImage(command, filtered.image, VK_IMAGE_LAYOUT_GENERAL, &initial, 1, &range);
+    }
+  };
+#endif
   std::shared_ptr<gpu::VulkanDevice> device;
   gpu::VulkanMemoryManager& memory;gpu::PipelineManager& pipelines;
   gpu::ComputePipeline pipeline{},emptyPipeline{};
   VkDescriptorSetLayout localLayout{},materialLayout{},lightLayout{};
   VkPipelineLayout layout{};VkDescriptorPool pool{};
   std::unique_ptr<Image> mean,moment,display;
+  ReferenceOidnSettings oidnSettings{};
+  std::string oidnMessage{"off"};
+#if CONTAINER_HAS_VK_OIDN
+  std::unique_ptr<Oidn> oidn;
+#endif
   std::vector<Frame> frames;
   VkExtent2D extent{};VkPhysicalDeviceProperties properties{};
   bool initialized{},historyValid{};
@@ -89,6 +210,9 @@ struct ReferencePathTracePass::Impl {
   }
   ~Impl() {clear();pipelines.destroyPipeline(pipeline);pipelines.destroyPipeline(emptyPipeline);pipelines.destroyPipelineLayout(layout);pipelines.destroyDescriptorSetLayout(localLayout);}
   void clear() {
+#if CONTAINER_HAS_VK_OIDN
+    oidn.reset();
+#endif
     pipelines.destroyDescriptorPool(pool);pool={};
     for (auto& f : frames) {
       memory.destroyBuffer(f.uniform);
@@ -114,7 +238,7 @@ ReferencePathTracePass::ReferencePathTracePass(std::shared_ptr<gpu::VulkanDevice
     :impl_(std::make_unique<Impl>(std::move(device),memory,pipelines)) {}
 ReferencePathTracePass::~ReferencePathTracePass()=default;
 void ReferencePathTracePass::createResources(const std::filesystem::path& root,uint32_t count,VkExtent2D extent,
-    VkDescriptorSetLayout materials,VkDescriptorSetLayout lights,uint64_t budget) {
+    VkDescriptorSetLayout materials,VkDescriptorSetLayout lights,uint64_t budget, ReferenceOidnSettings oidn) {
   auto& s=*impl_;const auto& limits=s.properties.limits;
   if(!materials || !lights || !count || count>64 || !extent.width || !extent.height ||
       extent.width>limits.maxImageDimension2D || extent.height>limits.maxImageDimension2D ||
@@ -168,6 +292,30 @@ void ReferencePathTracePass::createResources(const std::filesystem::path& root,u
           VMA_ALLOCATION_CREATE_MAPPED_BIT|VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
     }
   } catch(...) {s.clear();throw;}
+  s.oidnSettings = oidn;
+  s.oidnMessage = "off";
+  if (oidn.quality == ReferenceOidnQuality::Off) return;
+#if CONTAINER_HAS_VK_OIDN
+  if (!s.device->referenceOidnEnabled()) {
+    s.oidnMessage = "vk_oidn storage-image features unavailable on this device";
+  } else if (limits.maxBoundDescriptorSets < 4 || limits.maxPerStageDescriptorStorageImages < 6 ||
+             limits.maxDescriptorSetStorageImages < 6 ||
+             uint64_t(extent.width) * extent.height > budget / 96u ||
+             (format.optimalTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_DST_BIT) == 0) {
+    s.oidnMessage = "vk_oidn guide images exceed device limits or the reference image budget";
+  } else {
+    try {
+      auto backend = std::make_unique<Impl::Oidn>(s.device, s.memory, s.pipelines, extent);
+      backend->initialize(root, count, materials, lights, s.localLayout);
+      s.oidn = std::move(backend);
+      s.oidnMessage = "ready";
+    } catch (const std::exception& error) {
+      s.oidnMessage = std::string("vk_oidn setup failed: ") + error.what();
+    }
+  }
+#else
+  s.oidnMessage = "vk_oidn 0.2.0 SDK was not enabled at build time";
+#endif
 }
 void ReferencePathTracePass::prepareFrame(uint32_t image, const ReferencePathTraceInput& input,
     std::span<const gpu::GpuMaterial> materialData, std::span<const RayInstanceData> instanceData) {
@@ -237,6 +385,13 @@ void ReferencePathTracePass::prepareFrame(uint32_t image, const ReferencePathTra
   }
   f.boundPipeline=input.emptyScene?static_cast<VkPipeline>(s.emptyPipeline):static_cast<VkPipeline>(s.pipeline);
   f.boundContent=input.emptyScene?s.emptyPipeline.contentIdentity():s.pipeline.contentIdentity();
+#if CONTAINER_HAS_VK_OIDN
+  if (s.oidn) {
+    const auto& guided = input.emptyScene ? s.oidn->emptyGuided : s.oidn->guided;
+    f.boundPipeline = static_cast<VkPipeline>(guided);
+    f.boundContent = guided.contentIdentity();
+  }
+#endif
   f.reset=!s.historyValid || settings.sampleLimit<s.samples || std::memcmp(&f.key,&s.submittedKey,sizeof(f.key))!=0 ||
       sceneKey(source)!=sceneKey(s.submittedScene) || input.contentRevision!=s.submittedRevision ||
       input.environment!=s.submittedEnvironment || input.environmentSampler!=s.submittedSampler ||
@@ -295,12 +450,76 @@ void ReferencePathTracePass::record(VkCommandBuffer cmd,uint32_t image) {
       b.srcQueueFamilyIndex=b.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;b.image=images[i];b.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
     }
     VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};d.imageMemoryBarrierCount=3;d.pImageMemoryBarriers=barriers.data();vkCmdPipelineBarrier2(cmd,&d);
+#if CONTAINER_HAS_VK_OIDN
+    if (s.oidn) s.oidn->initializeImages(cmd);
+#endif
   }
   barrier(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_READ_BIT|VK_ACCESS_2_SHADER_WRITE_BIT|VK_ACCESS_2_UNIFORM_READ_BIT);
-  const std::array sets{f.input.materials,f.input.lights,f.set};
+  VkPipelineLayout layout = s.layout;
+  uint32_t setCount = 3;
+  std::array sets{f.input.materials, f.input.lights, f.set, VkDescriptorSet{}};
+#if CONTAINER_HAS_VK_OIDN
+  if (s.oidn) {
+    layout = s.oidn->pipelineLayout;
+    sets[setCount++] = s.oidn->set;
+  }
+#endif
   vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,f.boundPipeline);
-  vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,s.layout,0,3,sets.data(),0,nullptr);
+  vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,setCount,sets.data(),0,nullptr);
   vkCmdDispatch(cmd,(s.extent.width+7)/8,(s.extent.height+7)/8,1);
+#if CONTAINER_HAS_VK_OIDN
+  if (auto* oidn = s.oidn.get()) {
+    f.denoiseRecorded = false;
+    const uint32_t samples = f.data.extentSamples.z + f.data.extentSamples.w;
+    const bool eligible = f.input.settings.ground.mode != ReferenceGroundMode::ShadowMatte &&
+        (f.input.data.limits.w & 8u) == 0 && !oidn->failed;
+    f.denoisedSamples = f.reset || !eligible ? 0u : oidn->filteredSamples;
+    const auto interval = std::clamp(s.oidnSettings.sampleInterval, 1u, ReferenceOidnSettings::maxSampleInterval);
+    const bool due = eligible && samples > f.denoisedSamples &&
+        (samples - f.denoisedSamples >= interval || samples == f.input.settings.sampleLimit);
+    if (due) {
+      // A previously recorded but unsubmitted command never uploaded its weights.
+      if (!oidn->weightsSubmitted) oidn->network.reset();
+      if (!oidn->network) {
+        const auto quality = s.oidnSettings.quality == ReferenceOidnQuality::Fast ? vkoidn::Quality::eFast :
+            s.oidnSettings.quality == ReferenceOidnQuality::Balanced ? vkoidn::Quality::eBalanced : vkoidn::Quality::eHigh;
+        const vkoidn::DenoiserCreateInfo info{.width = s.extent.width, .height = s.extent.height,
+            .albedo = true, .normal = true, .quality = quality, .maxMemoryMB = 256};
+        const auto result = vkoidn::Denoiser::create(*oidn->context, cmd, info, oidn->network);
+        if (result != vkoidn::Result::eSuccess) {
+          s.oidnMessage = std::string("vk_oidn network creation failed: ") + vkoidn::getResultString(result);
+          oidn->failed = true;
+        }
+      }
+      if (!oidn->failed) {
+        barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+        if (oidn->queries) {
+          vkCmdResetQueryPool(cmd, oidn->queries, image * 2, 2);
+          vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, oidn->queries, image * 2);
+        }
+        const vkoidn::DenoiseInputs inputs{.colorView = {*s.mean->view}, .albedoView = {*oidn->albedo.view},
+            .normalView = {*oidn->normal.view}, .outputView = {*oidn->filtered.view, VK_FORMAT_R32G32B32A32_SFLOAT}};
+        const auto result = oidn->network->cmdDenoise(cmd, inputs);
+        if (result == vkoidn::Result::eSuccess) {
+          if (oidn->queries)
+            vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, oidn->queries, image * 2 + 1);
+          f.denoisedSamples = samples;
+          f.denoiseRecorded = true;
+        } else {
+          s.oidnMessage = std::string("vk_oidn dispatch failed: ") + vkoidn::getResultString(result);
+          oidn->failed = true;
+          f.denoisedSamples = 0;
+        }
+      }
+    }
+    if (f.denoisedSamples) {
+      barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, oidn->compose);
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, setCount, sets.data(), 0, nullptr);
+      vkCmdDispatch(cmd, (s.extent.width + 7) / 8, (s.extent.height + 7) / 8, 1);
+    }
+  }
+#endif
   barrier(cmd,VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT|VK_PIPELINE_STAGE_2_HOST_BIT,
       VK_ACCESS_2_MEMORY_READ_BIT|VK_ACCESS_2_MEMORY_WRITE_BIT|VK_ACCESS_2_HOST_READ_BIT);
   f.recorded=true;
@@ -318,6 +537,13 @@ void ReferencePathTracePass::commitFrame(uint32_t image) noexcept {
   s.historyValid=true;s.initialized=true;f.recorded=false;f.submitted=true;s.pendingImage=UINT32_MAX;
   f.epoch=s.resets;f.submission=++s.submissionSerial;
   if (f.input.autofocusKey) s.autofocusImage = image;
+#if CONTAINER_HAS_VK_OIDN
+  if (auto* oidn = s.oidn.get()) {
+    oidn->weightsSubmitted = oidn->network != nullptr;
+    oidn->filteredSamples = f.denoisedSamples;
+    f.denoiseTimingPending = f.denoiseRecorded && oidn->queries;
+  }
+#endif
 }
 void ReferencePathTracePass::invalidateHistory() noexcept {
   impl_->historyValid=false;impl_->pendingImage=UINT32_MAX;
@@ -345,6 +571,55 @@ ReferenceGroundSettings ReferencePathTracePass::effectiveGround() const {
     ground.color = glm::vec3(key.groundColor);
   }
   return ground;
+}
+ReferenceOidnStatus ReferencePathTracePass::oidnStatus() const {
+  const auto& s = *impl_;
+  ReferenceOidnStatus status{.message = s.oidnMessage};
+#if CONTAINER_HAS_VK_OIDN
+  if (const auto* oidn = s.oidn.get()) {
+    status.displayedSamples = s.historyValid ? oidn->filteredSamples : 0;
+    status.lastGpuMs = oidn->lastGpuMs;
+    status.allocatedBytes = oidn->network ? oidn->network->getMemoryUsage() : 0;
+    for (const auto* image : {&oidn->albedo, &oidn->normal, &oidn->filtered}) {
+      VmaAllocationInfo info{};
+      vmaGetAllocationInfo(s.memory.allocator(), image->allocation, &info);
+      status.allocatedBytes += info.size;
+    }
+  }
+#endif
+  return status;
+}
+
+ReferenceOidnQuality ReferencePathTracePass::oidnQuality() const {
+  return impl_->oidnSettings.quality;
+}
+
+void ReferencePathTracePass::setOidnSampleInterval(uint32_t interval) {
+  impl_->oidnSettings.sampleInterval = interval;
+}
+
+void ReferencePathTracePass::collectOidnTiming(uint32_t image) {
+#if CONTAINER_HAS_VK_OIDN
+  auto& s = *impl_;
+  auto* oidn = s.oidn.get();
+  if (!oidn || image >= s.frames.size() || !s.frames[image].denoiseTimingPending) return;
+  auto& f = s.frames[image];
+  if (f.submission <= oidn->lastTimedSubmission) {
+    f.denoiseTimingPending = false;
+    return;
+  }
+  std::array<uint64_t, 2> stamps{};
+  const auto result = vkGetQueryPoolResults(s.device->device(), oidn->queries, image * 2, 2, sizeof(stamps),
+      stamps.data(), sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+  if (result != VK_SUCCESS) return;
+  const uint64_t mask = oidn->timestampBits == 64 ? UINT64_MAX : (uint64_t{1} << oidn->timestampBits) - 1;
+  const uint64_t ticks = (stamps[1] - stamps[0]) & mask;
+  oidn->lastGpuMs = static_cast<double>(ticks) * s.properties.limits.timestampPeriod / 1e6;
+  oidn->lastTimedSubmission = f.submission;
+  f.denoiseTimingPending = false;
+#else
+  (void)image;
+#endif
 }
 std::optional<ReferenceAutofocusResult> ReferencePathTracePass::takeAutofocusResult() {
   auto& s = *impl_;

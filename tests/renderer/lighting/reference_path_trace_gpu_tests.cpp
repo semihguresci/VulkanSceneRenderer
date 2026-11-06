@@ -1229,6 +1229,38 @@ TEST_F(ReferencePathTraceGpu, ClosedIndexMatchedVolumeUsesTracedWorldThicknessAn
   EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples,0);EXPECT_EQ(tracer->diagnostics(0).rejectedSamples,0);
   save(pixels,"volume-world-absorption");
 }
+TEST_F(ReferencePathTraceGpu, ExperimentalMaterialProfilesDiagnoseRefractiveVolumes) {
+  draws.clear();
+  auto& glass = materialValues[0];
+  glass.color = {1, 1, 1, 1};
+  glass.metallicRoughness = {0, 0};
+  glass.transmissionFactor = 1;
+  glass.thicknessFactor = 1;
+  glass.ior = 1;
+  glass.specularFactor = 0;
+  addVolumeBox({0, 0, 1}, {1, 1, .5f}, 0);
+  input.settings.sampleLimit = 64;
+  syncInputs();
+  build(0);
+  build(1);
+  EXPECT_GT(converge().roi().x, 0.0);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+
+  glass.experimentalFactors.y = .75f;
+  syncInputs();
+  auto pixels = render();
+  EXPECT_EQ(pixels.roi(), glm::dvec3(0));
+  EXPECT_EQ(pixels.roi(2), glm::dvec3(1, 0, 1));
+  EXPECT_GT(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+
+  glass.experimentalFactors = {.75f, 0, 0, 0};
+  syncInputs();
+  pixels = render();
+  EXPECT_EQ(pixels.roi(2), glm::dvec3(1, 0, 1));
+  EXPECT_GT(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+}
 TEST_F(ReferencePathTraceGpu, MinifiedMetallicVolumeDoesNotCreateABoundaryAtAnOpaqueTexel) {
   ASSERT_NO_FATAL_FAILURE(bindTransportMipTexture());
   draws.clear();
@@ -1268,6 +1300,11 @@ TEST_F(ReferencePathTraceGpu, CameraInsideVolumeAttenuatesOpaqueHitsBeforeItsExi
   for(int c=0;c<3;++c) EXPECT_NEAR(pixels.roi()[c],expected[c],2e-6);
   EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples,0);EXPECT_EQ(tracer->diagnostics(0).rejectedSamples,0);
   save(pixels,"volume-camera-inside");
+  glass.experimentalFactors.y=.5f;
+  syncInputs();
+  EXPECT_EQ(render().roi(2),glm::dvec3(1,0,1));
+  EXPECT_GT(tracer->diagnostics(0).unsupportedSamples,0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples,0);
 }
 TEST_F(ReferencePathTraceGpu, NestedVolumesRestoreOuterAbsorptionAcrossDifferentMaterials) {
   for(auto& vertex:vertices) vertex.position.z=-1;++revision;
@@ -1768,6 +1805,21 @@ TEST_F(ReferencePathTraceGpu, ExplicitEmptySceneUsesNoAccelerationDescriptorsAnd
   EXPECT_GT(tracer->diagnosticSubmission(0),0);
   EXPECT_EQ(tracer->diagnosticEpoch(0),tracer->historyResets());
   input.emptyScene=false;render();EXPECT_EQ(tracer->historyResets(),2);
+}
+TEST_F(ReferencePathTraceGpu, UnavailableOidnPreservesTheRawMeanAndDisplay) {
+  ASSERT_FALSE(device->referenceOidnEnabled());
+  input.emptyScene = true;
+  input.settings.sampleLimit = 4;
+  const auto raw = render();
+  command.reset();
+  tracer->createResources(CONTAINER_REFERENCE_PATH_SHADER_ROOT, 2, {32, 32}, *sceneLayout, *lightLayout,
+      512ull * 1024 * 1024, {.quality = ReferenceOidnQuality::High, .sampleInterval = 1});
+  const auto fallback = render();
+  const auto status = tracer->oidnStatus();
+  EXPECT_EQ(status.displayedSamples, 0);
+  EXPECT_EQ(status.allocatedBytes, 0);
+  EXPECT_NE(status.message.find("vk_oidn"), std::string_view::npos);
+  EXPECT_EQ(fallback.images, raw.images);
 }
 TEST_F(ReferencePathTraceGpu, PerspectivePointLightKeepsAllNearlyConstantRadianceSamples) {
   vertices.resize(4);

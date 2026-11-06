@@ -11,7 +11,14 @@
 #include <span>
 #include <vector>
 
+namespace container::geometry::gltf { struct GltfOpacityMicromapAttachment; }
+
 namespace container::renderer {
+
+struct RayOpacityMicromapRange {
+  uint32_t firstIndex{}, indexCount{};
+  std::shared_ptr<const container::geometry::gltf::GltfOpacityMicromapAttachment> attachment;
+};
 
 // CPU geometry and semantic visibility, before camera/Hi-Z/draw-budget culling.
 // The caller advances geometryRevision only when vertex/index data changes.
@@ -25,6 +32,8 @@ struct RaySceneProviderSource {
   // Optional GPU model stream, reconciled to these CPU objects before AS build.
   container::gpu::BufferSlice gpuObjects{};
   uint64_t gpuTransformRevision{};
+  // Sorted, unique draw ranges whose current material matches baked coverage.
+  std::span<const RayOpacityMicromapRange> opacityMicromaps{};
 };
 
 // UV0/UV1 and COLOR_0 alpha at each corner. Matches ray_scene_data.slang.
@@ -99,6 +108,7 @@ struct ExtractedRayScene {
     std::vector<uint32_t> indices;
     uint32_t firstTriangle{0};
     RaySceneStorageIdentity storageIdentity{};
+    std::shared_ptr<const container::geometry::gltf::GltfOpacityMicromapAttachment> opacityMicromap;
   };
   std::vector<Geometry> geometry;
   std::vector<RaySceneInstance> instances;

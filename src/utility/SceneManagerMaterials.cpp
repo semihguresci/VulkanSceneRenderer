@@ -7,6 +7,7 @@
 #include <Container/utility/VulkanMemoryManager.h>
 #include <Container/utility/TextureResourceLifecycle.h>
 #include <Container/geometry/GltfTextureResourceReferences.h>
+#include <Container/geometry/GltfExtendedMaterials.h>
 #include <Container/renderer/temporal/TemporalMaterialRevision.h>
 
 #include <algorithm>
@@ -23,6 +24,18 @@ namespace container::scene {
 namespace {
 using namespace container::geometry::gltf;
 [[noreturn]] void invalid(const char* message) { throw std::invalid_argument(message); }
+constexpr size_t experimentalTextureSlots = 3;
+
+template<class Visit>
+void visitExperimentalMaterialTextures(const tinygltf::Material& record,
+    std::span<const std::string> declarations, size_t textureCount, Visit visit) {
+  const auto layer=ParseGltfExperimentalMaterial(record,declarations,textureCount);
+  for(const auto& [texture,color]:std::array{
+      std::pair{layer.retroreflectionTexture.sourceTexture,false},
+      std::pair{layer.scatterStrengthTexture.sourceTexture,false},
+      std::pair{layer.scatterColorTexture.sourceTexture,true}})
+    if(texture>=0) visit(uint32_t(texture),color);
+}
 struct Budget {
   uint64_t available;
   void add(uint64_t count,uint64_t width=1) {
@@ -289,6 +302,7 @@ SceneManager::MaterialResourceDependencyStatePtr SceneManager::stageMaterialReso
   if(input.exportBindings) next->exportBindings=*input.exportBindings;
   if(input.provenance) next->provenance=*input.provenance;
   MaterialResourceSelections selected{budget};selected.runtime(next->runtimeBindings);
+  selected.runtime(input.value->experimental.textureResources());
   if(input.exportBindings) selected.runtime(input.exportBindings->runtimeIndices);
   const std::array<const tinygltf::Material*,4> records{input.authored,input.evaluated,input.exported,input.rest};
   for(size_t i=0;i<records.size();++i) if(records[i]) {
@@ -780,7 +794,7 @@ container::material::TextureImageOwnershipPtr SceneManager::retainMaterialImages
   const auto generation=resourceLifecycleGeneration();
   if(!generation) invalid("Selected material images require logical source phase authority");
   constexpr size_t slotCount=size_t(GltfMaterialTextureSlot::Count);
-  const auto maxSlots=runtimes.size()*slotCount*4;
+  const auto maxSlots=runtimes.size()*(slotCount*4+(config_.experimentalGltfMaterials?experimentalTextureSlots:0));
   Budget budget{maxCpuBytes};budget.add(maxSlots,sizeof(uint32_t));
   const auto selectedBytes=TextureImageOwnershipStorageBytes(maxSlots);budget.add(selectedBytes);
   std::vector<uint32_t> slots;slots.reserve(maxSlots);
@@ -805,6 +819,10 @@ container::material::TextureImageOwnershipPtr SceneManager::retainMaterialImages
     if(!value || !materialIsActive(runtime)) invalid("Selected material image retention requires active material identities");
     const auto live=container::geometry::gltf::snapshotMaterialTextureBindings(*value).runtimeIndices;
     slots.insert(slots.end(),live.begin(),live.end());
+    if(config_.experimentalGltfMaterials) {
+      const auto experimental=value->experimental.textureResources();
+      slots.insert(slots.end(),experimental.begin(),experimental.end());
+    }
     if(runtime<exportMaterialTextureBindings_.size() && exportMaterialTextureBindings_[runtime]) {
       const auto& exported=exportMaterialTextureBindings_[runtime]->runtimeIndices;
       slots.insert(slots.end(),exported.begin(),exported.end());
@@ -833,36 +851,45 @@ container::material::TextureImageOwnershipPtr SceneManager::retainMaterialPlanIm
   const auto beforeGeneration=resourceLifecycleGeneration();
   const auto afterGeneration=resources?resources->resourceLifecycleGeneration():beforeGeneration;
   if(!beforeGeneration || !afterGeneration) invalid("Material history images require logical source phase authority");
-  constexpr size_t count=size_t(GltfMaterialTextureSlot::Count);
+  constexpr size_t count=size_t(GltfMaterialTextureSlot::Count)+experimentalTextureSlots;
   constexpr size_t beforeCapacity=count*4,afterCapacity=count*2;
   std::array<uint32_t,beforeCapacity> beforeSlots{};std::array<uint32_t,afterCapacity> afterSlots{};
   size_t beforeCount{},afterCount{};
-  const auto beforeBytes=TextureImageOwnershipStorageBytes(beforeCapacity),afterBytes=TextureImageOwnershipStorageBytes(afterCapacity);
-  const auto unionBytes=TextureImageOwnershipStorageBytes(beforeCapacity+afterCapacity);
+  const auto selectedSlots=size_t(GltfMaterialTextureSlot::Count)+(config_.experimentalGltfMaterials?experimentalTextureSlots:0);
+  const auto beforeBytes=TextureImageOwnershipStorageBytes(selectedSlots*4),afterBytes=TextureImageOwnershipStorageBytes(selectedSlots*2);
+  const auto unionBytes=TextureImageOwnershipStorageBytes(selectedSlots*6);
   Budget budget{maxCpuBytes};budget.add(beforeBytes);budget.add(afterBytes);budget.add(unionBytes);
   const auto appendRecord=[&](const tinygltf::Material& record,bool authored,bool after,auto& slots,size_t& size) {
     GltfMaterialAuthoringLimits limits;limits.maxOutputBytes=std::min(limits.maxOutputBytes,budget.available);
     if(!limits.maxOutputBytes) invalid("Material history source traversal exceeds its image retention budget");
     (void)GltfMaterialRecordStorageBytes(record,limits);
-    for(const auto& info:GltfMaterialTextureSlotRegistry()) {
-      const auto binding=ReadGltfMaterialTextureBinding(record,info.slot);if(binding.index<0) continue;
+    const auto append=[&](uint32_t texture,bool color) {
       const auto& generation=after?afterGeneration:beforeGeneration;
       if(!generation->active({authored?container::util::ResourceDomainKind::Archive:container::util::ResourceDomainKind::Evaluated,
-          container::util::ResourceKind::Texture,uint32_t(binding.index)}))
+          container::util::ResourceKind::Texture,texture}))
         invalid("Material history images reference a retired source texture");
-      const bool color=info.srgb || binding.coupledSlot.has_value();uint32_t runtime=UINT32_MAX;
-      if(after && resources && authored) runtime=resources->reference(uint32_t(binding.index),color).runtimeResource();
+      uint32_t runtime=UINT32_MAX;
+      if(after && resources && authored) runtime=resources->reference(texture,color).runtimeResource();
       else {
         const auto context=after && resources?resources->conversionContext():GltfMaterialConversionContext{
             authored?exportSource_.textures.size():gltfModel_.textures.size(),{},
             authored?std::span<const uint32_t>(archiveTextureResources_.color):std::span<const uint32_t>(gltfTextureResources_.color),
             authored?std::span<const uint32_t>(archiveTextureResources_.data):std::span<const uint32_t>(gltfTextureResources_.data),textureManager_.textureCount()};
         const auto indices=color?context.colorResources:context.dataResources;
-        if(size_t(binding.index)>=indices.size()) invalid("Material history source texture identity is unavailable");
-        runtime=indices[size_t(binding.index)];
+        if(texture>=indices.size()) invalid("Material history source texture identity is unavailable");
+        runtime=indices[texture];
       }
       if(runtime==UINT32_MAX || size>=slots.size()) invalid("Material history image roles are unavailable or exceed their selected capacity");
       slots[size++]=runtime;
+    };
+    for(const auto& info:GltfMaterialTextureSlotRegistry()) {
+      const auto binding=ReadGltfMaterialTextureBinding(record,info.slot);
+      if(binding.index>=0) append(uint32_t(binding.index),info.srgb || binding.coupledSlot.has_value());
+    }
+    if(config_.experimentalGltfMaterials) {
+      const auto view=after && resources?(authored?resources->authoredSourceView():resources->evaluatedSourceView()):
+          GltfMaterialSourceView(authored?exportSource_:gltfModel_);
+      visitExperimentalMaterialTextures(record,view.extensionsUsed,view.textureCount,append);
     }
   };
   if(plan.sourceMaterial) {
@@ -872,6 +899,10 @@ container::material::TextureImageOwnershipPtr SceneManager::retainMaterialPlanIm
     if(!value) invalid("Material history runtime source is unavailable");
     const auto actual=container::geometry::gltf::snapshotMaterialTextureBindings(*value).runtimeIndices;
     std::copy(actual.begin(),actual.end(),beforeSlots.begin()+beforeCount);beforeCount+=actual.size();
+    if(config_.experimentalGltfMaterials) {
+      const auto experimental=value->experimental.textureResources();
+      std::copy(experimental.begin(),experimental.end(),beforeSlots.begin()+beforeCount);beforeCount+=experimental.size();
+    }
     if(runtime<exportMaterialTextureBindings_.size() && exportMaterialTextureBindings_[runtime]) {
       const auto& exported=exportMaterialTextureBindings_[runtime]->runtimeIndices;
       std::copy(exported.begin(),exported.end(),beforeSlots.begin()+beforeCount);beforeCount+=exported.size();
@@ -923,6 +954,7 @@ TextureResourceReferenceOwnerPtr SceneManager::retainMaterialResourceReferences(
     if(!value || !materialIsActive(runtime)) invalid("Selected material references require active material incarnations");
     materials.push_back(materialLifecycleHandles_[runtime]);
     selected.runtime(snapshotMaterialTextureBindings(*value).runtimeIndices);
+    selected.runtime(value->experimental.textureResources());
     if(runtime<exportMaterialTextureBindings_.size() && exportMaterialTextureBindings_[runtime])
       selected.runtime(exportMaterialTextureBindings_[runtime]->runtimeIndices);
     const auto source=sourceMaterialForRuntime(runtime);
@@ -956,21 +988,29 @@ TextureResourceReferenceOwnerPtr SceneManager::retainMaterialPlanResourceReferen
   MaterialResourceSelections oldRows{budget},newRows{budget};
   const auto record=[&](const tinygltf::Material& value,bool archive,bool prospective,MaterialResourceSelections& selected) {
     selected.record(value,archive?ResourceDomainKind::Archive:ResourceDomainKind::Evaluated,prospective?after:before);
-    for(const auto& info:GltfMaterialTextureSlotRegistry()) {
-      const auto binding=ReadGltfMaterialTextureBinding(value,info.slot);if(binding.index<0) continue;
-      const bool color=info.srgb || binding.coupledSlot.has_value();uint32_t runtime=UINT32_MAX;
-      if(prospective && resources && archive) runtime=resources->reference(uint32_t(binding.index),color).runtimeResource();
+    const auto select=[&](uint32_t texture,bool color) {
+      uint32_t runtime=UINT32_MAX;
+      if(prospective && resources && archive) runtime=resources->reference(texture,color).runtimeResource();
       else {
         const auto context=prospective && resources?resources->conversionContext():container::material::GltfMaterialConversionContext{
             archive?exportSource_.textures.size():gltfModel_.textures.size(),{},
             archive?std::span<const uint32_t>(archiveTextureResources_.color):std::span<const uint32_t>(gltfTextureResources_.color),
             archive?std::span<const uint32_t>(archiveTextureResources_.data):std::span<const uint32_t>(gltfTextureResources_.data),textureManager_.textureCount()};
         const auto indices=color?context.colorResources:context.dataResources;
-        if(size_t(binding.index)>=indices.size()) invalid("Selected material history has an unavailable source role");
-        runtime=indices[size_t(binding.index)];
+        if(texture>=indices.size()) invalid("Selected material history has an unavailable source role");
+        runtime=indices[texture];
       }
       if(runtime==UINT32_MAX) invalid("Selected material history has an unuploaded runtime resource role");
       selected.add(ResourceDomainKind::Runtime,ResourceKind::RuntimeTexture,runtime);
+    };
+    for(const auto& info:GltfMaterialTextureSlotRegistry()) {
+      const auto binding=ReadGltfMaterialTextureBinding(value,info.slot);
+      if(binding.index>=0) select(uint32_t(binding.index),info.srgb || binding.coupledSlot.has_value());
+    }
+    if(config_.experimentalGltfMaterials) {
+      const auto view=prospective && resources?(archive?resources->authoredSourceView():resources->evaluatedSourceView()):
+          GltfMaterialSourceView(archive?exportSource_:gltfModel_);
+      visitExperimentalMaterialTextures(value,view.extensionsUsed,view.textureCount,select);
     }
   };
   std::optional<ResourceHandle> material;
@@ -980,6 +1020,7 @@ TextureResourceReferenceOwnerPtr SceneManager::retainMaterialPlanResourceReferen
     const auto runtime=resolveLoadedMaterialIndex(source);const auto* value=materialManager_.getMaterial(runtime);
     if(!value || !materialLifecycle_ || runtime>=materialLifecycleHandles_.size()) invalid("Selected material history has no logical material owner");
     material=materialLifecycleHandles_[runtime];oldRows.runtime(snapshotMaterialTextureBindings(*value).runtimeIndices);
+    oldRows.runtime(value->experimental.textureResources());
     if(runtime<exportMaterialTextureBindings_.size() && exportMaterialTextureBindings_[runtime])
       oldRows.runtime(exportMaterialTextureBindings_[runtime]->runtimeIndices);
     if(runtime<exportMaterialSources_.size() && exportMaterialSources_[runtime]) record(*exportMaterialSources_[runtime],true,false,oldRows);
@@ -1690,7 +1731,8 @@ SceneManager::PreparedMaterialGeneration SceneManager::prepareMaterialGeneration
   container::material::GltfMaterialConversionLimits conversion;conversion.validation=limits.authoring;
   conversion.validation.maxOutputBytes=std::min(conversion.validation.maxOutputBytes,budget.available);
   s.converted=container::material::ConvertGltfMaterial(s.evaluated,
-      {textureContext.textureCount,s.evaluatedDeclarations,textureContext.colorResources,textureContext.dataResources,textureContext.runtimeResourceCount},
+      {textureContext.textureCount,s.evaluatedDeclarations,textureContext.colorResources,textureContext.dataResources,
+       textureContext.runtimeResourceCount,config_.experimentalGltfMaterials},
       container::material::GltfMaterialConversionPolicy::StrictGltf,conversion);
   s.exportRecord=plan.authoredAfter;s.exportBindings=s.converted.runtimeBindings;
   s.provenance[runtime]=resources?RuntimeMaterialProvenance{true,resources->makeProvenance(s.converted.value,plan.authoredAfter,s.evaluated)}:
@@ -1704,7 +1746,7 @@ SceneManager::PreparedMaterialGeneration SceneManager::prepareMaterialGeneration
     command.cookie=std::make_shared<const uint8_t>(0);command.source=plan.destinationMaterial;command.runtime=runtime;
     command.authored=plan.authoredAfter;command.evaluated=s.evaluated;
     command.prefixMapping=sourceMaterialToRuntime_;command.samplingFallback=textureSamplingFallback_;
-    std::array<uint32_t,size_t(GltfMaterialTextureSlot::Count)*2> selected{};size_t selectedCount{};
+    std::array<uint32_t,(size_t(GltfMaterialTextureSlot::Count)+experimentalTextureSlots)*2> selected{};size_t selectedCount{};
     for(const auto runtimeImage:s.converted.runtimeBindings.runtimeIndices) selected[selectedCount++]=runtimeImage;
     for(const auto& info:GltfMaterialTextureSlotRegistry()) {
       const auto binding=ReadGltfMaterialTextureBinding(command.authored,info.slot);if(binding.index<0) continue;
@@ -1713,8 +1755,18 @@ SceneManager::PreparedMaterialGeneration SceneManager::prepareMaterialGeneration
         invalid("Appended material history has an unavailable authored image role");
       selected[selectedCount++]=roles[size_t(binding.index)];
     }
+    if(config_.experimentalGltfMaterials) {
+      for(const auto slot:s.converted.value.experimental.textureResources()) selected[selectedCount++]=slot;
+      visitExperimentalMaterialTextures(command.authored,s.authoredDeclarations,archiveTextureResources_.color.size(),
+          [&](uint32_t texture,bool color) {
+            const auto& roles=color?archiveTextureResources_.color:archiveTextureResources_.data;
+            if(texture>=roles.size() || roles[texture]==UINT32_MAX)
+              invalid("Appended material history has an unavailable experimental image role");
+            selected[selectedCount++]=roles[texture];
+          });
+    }
     command.images=container::material::SelectTextureImageOwnership(textureImageOwnership_,std::span(selected.data(),selectedCount),
-        *allocationManager_,container::material::TextureImageOwnershipStorageBytes(selected.size()));
+        *allocationManager_,container::material::TextureImageOwnershipStorageBytes(selectedCount));
     MaterialResourceSelections logical{budget};
     logical.record(command.authored,container::util::ResourceDomainKind::Archive,beforeResourceGeneration);
     logical.record(command.evaluated,container::util::ResourceDomainKind::Evaluated,beforeResourceGeneration);

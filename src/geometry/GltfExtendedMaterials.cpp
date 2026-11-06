@@ -158,6 +158,76 @@ void accumulate(GltfExtendedMaterialSummary& summary, const GltfExtendedMaterial
       (material.diffuseTransmissionTexture.sourceTexture >= 0) + (material.diffuseTransmissionColorTexture.sourceTexture >= 0);
 }
 
+template <typename FindExtension, typename IsDeclared>
+GltfExperimentalMaterial parseExperimentalMaterial(FindExtension find, IsDeclared listed,
+    size_t materialIndex, size_t textureCount) {
+  GltfExperimentalMaterial result;
+  const auto base = "material[" + std::to_string(materialIndex) + "].extensions.";
+  const auto extension = [&](std::string_view name) {
+    const auto value = find(name.data());
+    if (value) {
+      const auto label = base + std::string(name);
+      if (!listed(name)) fail(label, "extension must be declared in extensionsUsed");
+      if (!value->object()) fail(label, "must be an object");
+      if (find("KHR_materials_unlit") || find("KHR_materials_pbrSpecularGlossiness"))
+        fail(label, "excludes KHR_materials_unlit and KHR_materials_pbrSpecularGlossiness");
+    }
+    return value;
+  };
+  const Declarations declared{.transform = listed(kTransform)};
+  if (const auto retro = extension(kGltfRetroreflection)) {
+    const auto label = base + std::string(kGltfRetroreflection);
+    if (const auto factor = retro->member("retroreflectionFactor"))
+      result.retroreflection = scalar(*factor, label + ".retroreflectionFactor", true);
+    if (const auto info = retro->member("retroreflectionTexture"))
+      textureInfo(*info, result.retroreflectionTexture, textureCount, declared, label + ".retroreflectionTexture");
+  }
+  auto scatter = extension(kGltfScatter);
+  const bool legacy = !scatter.has_value();
+  if (legacy) scatter = extension(kGltfLegacyScatter);
+  if (!scatter) return result;
+  const auto label = base + std::string(legacy ? kGltfLegacyScatter : kGltfScatter);
+  result.scatterStrength = legacy ? 1.0f : 0.0f;
+  result.scatterColor = glm::vec3(legacy ? 0.0f : 1.0f);
+  if (const auto strength = scatter->member("scatterStrengthFactor"))
+    result.scatterStrength = scalar(*strength, label + ".scatterStrengthFactor", true);
+  if (const auto anisotropy = scatter->member("scatterAnisotropy")) {
+    result.scatterAnisotropy = scalar(*anisotropy, label + ".scatterAnisotropy");
+    if (std::abs(result.scatterAnisotropy) >= 1.0f)
+      fail(label + ".scatterAnisotropy", "must lie strictly between -1 and 1");
+  }
+  if (const auto color = scatter->member("multiscatterColorFactor"))
+    vector(*color, result.scatterColor, label + ".multiscatterColorFactor", true);
+  if (const auto color = scatter->member("multiscatterColor"))
+    vector(*color, result.scatterColor, label + ".multiscatterColor", true);
+  if (const auto info = scatter->member("scatterStrengthTexture"))
+    textureInfo(*info, result.scatterStrengthTexture, textureCount, declared, label + ".scatterStrengthTexture");
+  if (const auto info = scatter->member("multiscatterColorTexture"))
+    textureInfo(*info, result.scatterColorTexture, textureCount, declared, label + ".multiscatterColorTexture");
+  return result;
+}
+
+uint64_t checkedExperimentalBytes(size_t count, const GltfExtendedMaterialLimits& limits) {
+  const auto standard = checkedSummary(count, limits).retainedBytes;
+  constexpr auto stride = sizeof(GltfExperimentalMaterial);
+  if (count > (std::min<uint64_t>(limits.maxRetainedBytes, SIZE_MAX) - standard) / stride)
+    fail("materials", "experimental material storage exceeds the retained-byte budget");
+  return uint64_t(count) * stride;
+}
+
+GltfExperimentalMaterial parseExperimentalSourceMaterial(const tinygltf::Material& source,
+    std::span<const std::string> extensionsUsed, size_t textureCount, size_t index) {
+  const auto listed = [&](std::string_view name) {
+    return std::ranges::find(extensionsUsed, name) != extensionsUsed.end();
+  };
+  const auto find = [&](const char* name) -> std::optional<View> {
+    const auto field = source.extensions.find(name);
+    if (field == source.extensions.end()) return std::nullopt;
+    return View(field->second);
+  };
+  return parseExperimentalMaterial(find, listed, index, textureCount);
+}
+
 } // namespace
 
 GltfExtendedMaterialSummary ValidateGltfExtendedMaterialsJson(
@@ -214,6 +284,52 @@ GltfExtendedMaterialData ParseGltfExtendedMaterials(
     accumulate(result.summary, result.materials.back());
   }
   return result;
+}
+
+uint64_t ValidateGltfExperimentalMaterialsJson(const Json& source, const GltfExtendedMaterialLimits& limits) {
+  if (!source.is_object()) fail("asset", "source must be an object");
+  const auto materials = source.find("materials");
+  if (materials == source.end()) return 0;
+  const auto used = source.find("extensionsUsed"), textures = source.find("textures");
+  if (!materials->is_array()) fail("materials", "must be an array");
+  if (textures != source.end() && !textures->is_array()) fail("textures", "must be an array");
+  if (used != source.end() && !used->is_array()) fail("extensionsUsed", "must be an array");
+  const auto listed = [&](std::string_view name) {
+    return used != source.end() && std::ranges::any_of(*used, [&](const Json& entry) {
+      return entry.is_string() && entry.get_ref<const std::string&>() == name;
+    });
+  };
+  const auto bytes = checkedExperimentalBytes(materials->size(), limits);
+  for (size_t index = 0; index < materials->size(); ++index) {
+    const auto& material = materials->at(index);
+    if (!material.is_object()) fail("materials", "material entry must be an object");
+    const auto extensions = material.find("extensions");
+    if (extensions == material.end()) continue;
+    if (!extensions->is_object()) fail("materials", "material extensions must be an object");
+    const auto find = [&](const char* name) -> std::optional<View> {
+      const auto field = extensions->find(name);
+      if (field == extensions->end()) return std::nullopt;
+      return View(*field);
+    };
+    (void)parseExperimentalMaterial(find, listed, index, textures == source.end() ? 0 : textures->size());
+  }
+  return bytes;
+}
+
+std::vector<GltfExperimentalMaterial> ParseGltfExperimentalMaterials(
+    const tinygltf::Model& source, const GltfExtendedMaterialLimits& limits) {
+  (void)checkedExperimentalBytes(source.materials.size(), limits);
+  std::vector<GltfExperimentalMaterial> result;
+  result.reserve(source.materials.size());
+  for (size_t index = 0; index < source.materials.size(); ++index)
+    result.push_back(parseExperimentalSourceMaterial(
+        source.materials[index], source.extensionsUsed, source.textures.size(), index));
+  return result;
+}
+
+GltfExperimentalMaterial ParseGltfExperimentalMaterial(const tinygltf::Material& source,
+    std::span<const std::string> extensionsUsed, size_t textureCount) {
+  return parseExperimentalSourceMaterial(source, extensionsUsed, textureCount, 0);
 }
 
 } // namespace container::geometry::gltf

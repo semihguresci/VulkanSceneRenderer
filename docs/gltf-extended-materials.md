@@ -57,8 +57,9 @@ opposite environment irradiance and separate DDGI coverage without front AO/GTAO
 
 ## GPU storage and deferred MSAA
 
-`GpuMaterial` is **1040 bytes**; existing offsets remain unchanged. Its appended
-tail contains factors at byte 896, transmission color at 912, texture indices at
+`GpuMaterial` is **1184 bytes** with the experimental surface tail. The
+anisotropy and diffuse-transmission portion contains factors at byte 896,
+transmission color at 912, texture indices at
 928/932/936 and three 32-byte transforms at 944/976/1008.
 `anisotropyDiffuseFactors.w` is **scene-wide auxiliary availability**, identical
 in every material, rather than authored glTF data. A resolved ordinary material
@@ -108,6 +109,40 @@ Both use the filtered texture inputs and the same BSDF probabilities for
 continuation and direct-light MIS. Active diffuse transmission in an authored
 volume and anisotropic reflection on refractive volume interfaces are
 diagnosed. See [reference path tracing](reference-path-tracing.md).
+
+## Experimental retroreflection and scattering
+
+Launch with `--experimental-gltf-materials` and select **Path tracing**. The
+option selects the material field definitions used by `vk_gltf_renderer` at
+`174625d5c621`. These are draft profiles. Optional declarations use the base
+material when the option is off. Required declarations need explicit opt-in.
+The loader checks field types, ranges, effective UVs and texture references
+before resource reads. Source fields and texture identities survive Import / Merge
+and portable save. [Pinned renderer](https://github.com/nvpro-samples/vk_gltf_renderer/tree/174625d5c621c088bf3610377999f9dbdcf5c3b5),
+[retroreflection draft](https://github.com/KhronosGroup/glTF/pull/2610),
+[scattering draft](https://github.com/KhronosGroup/glTF/pull/2579).
+
+| Extension | Evaluated fields |
+| --- | --- |
+| `KHR_materials_retroreflection` | `retroreflectionFactor` defaults to zero and is multiplied by the linear R texture channel. |
+| `KHR_materials_scatter` | `scatterStrengthFactor` defaults to zero and is multiplied by the linear A texture channel. `multiscatterColorFactor` defaults to white and multiplies the sRGB-decoded RGB texture. `scatterAnisotropy` defaults to zero and lies strictly between −1 and 1. |
+| `KHR_materials_volume_scatter` | Legacy alias. Strength defaults to one and color to black. `multiscatterColor` is accepted. The current extension takes precedence when both names are authored. |
+
+The three texture slots support individual samplers, UV0/UV1 and texture
+transforms. The path tracer mixes the ordinary front-side BRDF with its
+mirrored-view evaluation for retroreflection. Sampling follows both proposals,
+including smooth delta reflection. The original transmission evaluation stays
+separate and direct-light MIS uses the complete mixture PDF.
+
+On a thin dielectric, scattering redistributes part of coherent transmission
+to two Lambertian lobes. The forward share is `(1 + g) / 2`. The reflected
+share receives the rest. The original specular-transmission tint and other
+diffuse contributions stay independent. Zero effective strength preserves the
+underlying material. Positive scattering albedo on closed media and active
+retroreflection on refractive volume boundaries produce reference transport
+diagnostics. Participating-media scattering remains part of #47. Raster and
+DDGI use the existing base-material response. The tracer's existing unsupported
+layer combinations still apply.
 
 ## Export, animation and validation
 

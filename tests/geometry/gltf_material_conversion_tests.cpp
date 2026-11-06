@@ -100,6 +100,29 @@ TEST(GltfMaterialConversion, StrictDefaultsAndExplicitLegacyPolicyAreIndependent
   EXPECT_EQ(ConvertGltfMaterial(source, {}).value.metallicFactor, 0.f);
 }
 
+TEST(GltfMaterialConversion, ExperimentalSourceLayerSurvivesAnOrdinaryMaterialEdit) {
+  Fixture fixture(3);
+  fixture.extension("KHR_materials_retroreflection", {
+      {"retroreflectionFactor",Value(.65)}, {"retroreflectionTexture",info(0)}});
+  fixture.extension("KHR_materials_scatter", {
+      {"scatterStrengthFactor",Value(.5)}, {"scatterStrengthTexture",info(1)},
+      {"multiscatterColorTexture",info(2)}, {"multiscatterColorFactor",array({.2,.5,.75})}});
+  auto enabled=fixture.context();
+  enabled.enableExperimentalMaterials=true;
+  const auto original=ConvertGltfMaterial(fixture.material,enabled).value;
+  EXPECT_EQ(original.experimental.textureResources(),(std::array<uint32_t,3>{2000,2001,1002}));
+  EXPECT_FLOAT_EQ(original.experimental.retroreflection,.65f);
+  EXPECT_EQ(original.experimental.scatterColor,glm::vec3(.2f,.5f,.75f));
+  fixture.material.pbrMetallicRoughness.roughnessFactor=.25;
+  const auto updated=ConvertGltfMaterial(fixture.material,enabled).value;
+  EXPECT_FLOAT_EQ(updated.roughnessFactor,.25f);
+  EXPECT_FLOAT_EQ(updated.experimental.scatterStrength,original.experimental.scatterStrength);
+  EXPECT_EQ(updated.experimental.textureResources(),original.experimental.textureResources());
+  const auto disabled=ConvertGltfMaterial(fixture.material,fixture.context()).value;
+  EXPECT_FLOAT_EQ(disabled.experimental.retroreflection,0.0f);
+  EXPECT_EQ(disabled.experimental.textureResources(),(std::array<uint32_t,3>{invalid,invalid,invalid}));
+}
+
 TEST(GltfMaterialConversion, All23BindingsRetainLiteralSourceIdsAndCorrectColorDataRoles) {
   Fixture fixture;
   fixture.allSlots();

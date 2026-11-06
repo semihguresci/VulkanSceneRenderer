@@ -50,7 +50,10 @@ float TraceRayVisibility(float3 world, float3 normal, float3 direction, float di
     ray.TMax = max(distance - bias * 2.0, bias);
     // Visibility rays travel receiver -> light, opposite the raster shadow
     // camera. Cull query-front faces to match raster's light-facing back cull.
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_CULL_FRONT_FACING_TRIANGLES> query;
+    // Known transparent micromap cells can disappear. All remaining hits,
+    // including known opaque cells, must still pass the clipping policy.
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_CULL_FRONT_FACING_TRIANGLES |
+             RAY_FLAG_FORCE_NON_OPAQUE> query;
     query.TraceRayInline(gRayScene, RAY_FLAG_NONE, 0xffu, ray);
     while (query.Proceed())
     {

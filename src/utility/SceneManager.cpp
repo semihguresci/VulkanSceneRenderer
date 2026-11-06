@@ -109,13 +109,15 @@ container::geometry::GltfLoadResult prepareSceneGltfAsset(
 }
 
 container::geometry::GltfLoadResult prepareDefaultSceneGltfAsset(
-    const std::filesystem::path& path) {
+    const std::filesystem::path& path, bool enableExperimentalMaterials) {
   container::geometry::gltf::LoadOptions options;
+  options.enableExperimentalMaterials = enableExperimentalMaterials;
   // The diagnostic composition flattens meshes and materials. It does not
   // publish the source nodes, light bindings, animations or variant catalog.
   options.unavailableRuntimeExtensions = {
       "EXT_mesh_gpu_instancing", "KHR_animation_pointer", "KHR_materials_variants",
       "KHR_node_visibility", "KHR_node_selectability", "KHR_node_hoverability",
+      "KHR_interactivity",
       "KHR_lights_punctual", "KHR_lights_area", "EXT_lights_area", "WEBGI_lights_area",
       "KHR_xmp_json_ld",
   };
@@ -840,6 +842,16 @@ container::gpu::GpuMaterial makeGpuMaterial(
   gpuMaterial.anisotropyTextureTransform = makeGpuTextureTransform(material.anisotropyTextureTransform);
   gpuMaterial.diffuseTransmissionTextureTransform = makeGpuTextureTransform(material.diffuseTransmissionTextureTransform);
   gpuMaterial.diffuseTransmissionColorTextureTransform = makeGpuTextureTransform(material.diffuseTransmissionColorTextureTransform);
+  const auto& experimental = material.experimental;
+  gpuMaterial.experimentalFactors = {experimental.retroreflection, experimental.scatterStrength,
+      experimental.scatterAnisotropy, 0.0f};
+  gpuMaterial.scatterColorFactor = glm::vec4(experimental.scatterColor, 0.0f);
+  gpuMaterial.experimentalTextures.x = experimental.retroreflectionTexture;
+  gpuMaterial.experimentalTextures.y = experimental.scatterStrengthTexture;
+  gpuMaterial.experimentalTextures.z = experimental.scatterColorTexture;
+  gpuMaterial.retroreflectionTextureTransform = makeGpuTextureTransform(experimental.retroreflectionTransform);
+  gpuMaterial.scatterStrengthTextureTransform = makeGpuTextureTransform(experimental.scatterStrengthTransform);
+  gpuMaterial.scatterColorTextureTransform = makeGpuTextureTransform(experimental.scatterColorTransform);
 
   if (material.alphaMode == container::material::AlphaMode::Mask) {
     gpuMaterial.flags |= container::gpu::kObjectFlagAlphaMask;
@@ -1615,7 +1627,7 @@ std::optional<uint32_t> SceneManager::retainedPrimitiveNormalTexCoord(uint32_t r
 
 container::geometry::GltfLoadResult SceneManager::prepareGltfModel(
     const std::string& path, uintmax_t maxInputBytes, bool enableLinkedAssets,
-    bool requireSelfContained) {
+    bool requireSelfContained, bool enableExperimentalMaterials, bool enableOpacityMicromaps) {
   auto resolvedPath = container::util::pathFromUtf8(path);
   if (resolvedPath.is_relative() && !std::filesystem::exists(resolvedPath)) {
     resolvedPath = resolveSceneAssetPath(path);
@@ -1624,6 +1636,8 @@ container::geometry::GltfLoadResult SceneManager::prepareGltfModel(
   options.maxInputBytes = maxInputBytes;
   options.enableLinkedAssets = enableLinkedAssets;
   options.requireSelfContained = requireSelfContained;
+  options.enableExperimentalMaterials = enableExperimentalMaterials;
+  options.enableOpacityMicromaps = enableOpacityMicromaps;
   return prepareSceneGltfAsset(resolvedPath, std::move(options));
 }
 
@@ -1639,21 +1653,22 @@ bool SceneManager::reloadModel(
   // Rejected loads must leave runtime edits and auxiliary registrations intact.
   std::optional<container::geometry::GltfLoadResult> locallyPrepared;
   std::optional<container::material::PreparedGltfTextures> incomingTextures;
+  const bool experimental = config_.experimentalGltfMaterials;
   try {
     std::vector<container::material::MaterialSamplerKey> incomingSamplerKeys;
     if (isDefaultSceneRequest(path)) {
       for (const auto entry : container::app::kDefaultSceneModelRelativePaths) {
         if (isProceduralSphereEntry(entry)) continue;
-        const auto incoming = prepareDefaultSceneGltfAsset(resolveSceneAssetPath(entry));
+        const auto incoming = prepareDefaultSceneGltfAsset(resolveSceneAssetPath(entry), experimental);
         (void)container::material::PrepareGltfTextures(incoming.gltfModel,
-            allocationManager_->textureDecodeOptions(false));
+            allocationManager_->textureDecodeOptions(false), 512ull * 1024 * 1024, experimental);
         const auto keys = container::material::CollectGltfMaterialSamplerKeys(incoming.gltfModel);
         incomingSamplerKeys.insert(incomingSamplerKeys.end(), keys.begin(), keys.end());
       }
     } else if (!path.empty()) {
       if (prepared == nullptr) {
         locallyPrepared = prepareGltfModel(path, std::numeric_limits<uintmax_t>::max(),
-            config_.experimentalGltfLinkedAssets);
+            config_.experimentalGltfLinkedAssets, false, experimental, config_.experimentalOpacityMicromaps);
         prepared = &*locallyPrepared;
       }
       incomingSamplerKeys = container::material::CollectGltfMaterialSamplerKeys(prepared->gltfModel);
@@ -1662,7 +1677,7 @@ bool SceneManager::reloadModel(
       (void)prepareCompleteHierarchy(prepared->gltfModel,prepared->instancing,preflightMaterials,
           importScaleTransform(importScale),1,prepared->model.meshes().size(),config_.maxSceneObjects,config_.gltfSceneIndex);
       incomingTextures = container::material::PrepareGltfTextures(prepared->gltfModel,
-          allocationManager_->textureDecodeOptions(false));
+          allocationManager_->textureDecodeOptions(false), 512ull * 1024 * 1024, experimental);
       if(container::material::CountPreparedGltfTextureResources(*incomingTextures)>textureDescriptorCapacity_)
         throw std::runtime_error("Incoming glTF textures exceed the scene image descriptor capacity");
     }
@@ -2775,6 +2790,7 @@ void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
   materialResourceDependencies_.clear();textureResourceLifecycle_.reset();archiveResourcePhases_={};gltfResourcePhases_={};
   invalidateEditorSceneRootMembership();
   model_ = container::geometry::Model{};
+  opacityMicromapState_.reset();
   sourcePrimitiveToRuntime_.clear(); runtimePrimitiveToSource_.clear();
   gltfModel_ = tinygltf::Model{};
   sourceMaterialToRuntime_.clear();
@@ -2827,7 +2843,8 @@ void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
       }
       auto result = prepared ? std::move(*prepared)
                              : prepareGltfModel(container::util::pathToUtf8(resolvedPath),
-                                 std::numeric_limits<uintmax_t>::max(), config_.experimentalGltfLinkedAssets);
+                                 std::numeric_limits<uintmax_t>::max(), config_.experimentalGltfLinkedAssets,
+                                 false, config_.experimentalGltfMaterials, config_.experimentalOpacityMicromaps);
       auto variants=container::geometry::gltf::ParseMaterialVariants(result.gltfModel);
       const std::vector<uint32_t> preflightMaterials(result.model.primitiveRanges().size(),0);
       auto catalog=BuildGltfSceneCatalog(result.gltfModel);
@@ -2853,7 +2870,8 @@ void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
       std::optional<container::material::PreparedGltfTextures> localTextures;
       if (!preparedTextures) {
         localTextures = container::material::PrepareGltfTextures(gltfModel_,
-            allocationManager_->textureDecodeOptions(false));
+            allocationManager_->textureDecodeOptions(false), 512ull * 1024 * 1024,
+            config_.experimentalGltfMaterials);
         preparedTextures = &*localTextures;
       }
       if(preparedTextures->textureCount!=gltfModel_.textures.size())
@@ -2867,7 +2885,7 @@ void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
       const uint32_t fallbackMaterialIndex = defaultMaterialIndex_;
       const size_t firstRuntimeMaterial = materialManager_.materialCount();
       materialXBridge_.loadMaterialsForGltfWithTextureRoles(
-          gltfModel_, imageToTexture, materialManager_, defaultMaterialIndex_);
+          gltfModel_, imageToTexture, materialManager_, defaultMaterialIndex_, config_.experimentalGltfMaterials);
       sourceMaterialToRuntime_ = MakeContiguousSourceMaterialMapping(firstRuntimeMaterial,
           gltfModel_.materials.size(), materialManager_.materialCount());
       rememberExportMaterials(gltfModel_, resolvedPath, imageToTexture,
@@ -2900,6 +2918,7 @@ void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
       sourcePrimitiveToRuntime_ = std::move(primitiveMapping.sourceToRuntime);
       runtimePrimitiveToSource_ = std::move(primitiveMapping.runtimeToSource);
       if(needsImplicit) sourcePrimitiveImplicitMaterials_.assign(sourcePrimitiveToRuntime_.size(),implicitMaterial);
+      retainOpacityMicromaps(result.opacityMicromaps);
     } catch (const std::exception& e) {
       std::println(stderr, "glTF load failed: {}", e.what());
       throw;
@@ -2960,11 +2979,12 @@ void SceneManager::appendSceneAsset(
     const std::filesystem::path& assetPath,
     const glm::mat4& transform,
     std::vector<container::geometry::Mesh>& mergedMeshes) {
-  auto result = prepareDefaultSceneGltfAsset(assetPath);
+  const bool experimental = config_.experimentalGltfMaterials;
+  auto result = prepareDefaultSceneGltfAsset(assetPath, experimental);
 
   validateGltfSamplerPolicies(result.gltfModel);
   const auto preparedTextures = container::material::PrepareGltfTextures(result.gltfModel,
-      allocationManager_->textureDecodeOptions(false));
+      allocationManager_->textureDecodeOptions(false), 512ull * 1024 * 1024, experimental);
   const auto imageToTexture = container::material::UploadPreparedGltfTextures(
       preparedTextures, textureManager_, [this](const auto& name, const auto& image) {
         return allocationManager_->createTextureFromImageData(name, image);
@@ -2974,7 +2994,7 @@ void SceneManager::appendSceneAsset(
   const size_t firstRuntimeMaterial = materialManager_.materialCount();
   materialXBridge_.loadMaterialsForGltfWithTextureRoles(result.gltfModel, imageToTexture,
                                         materialManager_,
-                                        defaultMaterialIndex_);
+                                        defaultMaterialIndex_, experimental);
   const auto sourceMaterialToRuntime = MakeContiguousSourceMaterialMapping(firstRuntimeMaterial,
       result.gltfModel.materials.size(), materialManager_.materialCount());
   rememberExportMaterials(result.gltfModel, assetPath, imageToTexture,
@@ -3801,6 +3821,7 @@ void SceneManager::writeMaterialDescriptorSetContents(
 }
 
 void SceneManager::resetLoadedAssets() {
+  opacityMicromapState_.reset();
   if(cameraProjectionRevision_==UINT64_MAX) throw std::overflow_error("Camera publication revision exhausted");
   cameraProjectionNamespace_.reset();++cameraProjectionRevision_;
   if(materialResourceRevision_==UINT64_MAX) throw std::overflow_error("Material resource revision exhausted");

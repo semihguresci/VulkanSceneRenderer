@@ -448,6 +448,8 @@ container::material::TextureMipLevel decodeEnvironmentImage(
     encoded = std::move(bytes);
   }
   const auto& bytes = *encoded;
+  if (bytes.empty() || bytes.size() > maxBytes)
+    throw std::runtime_error("encoded HDR data must contain 1 to 256 MiB of data");
 
   if (extension == u8".hdr") {
     const auto* data = reinterpret_cast<const char*>(bytes.data());
@@ -635,15 +637,19 @@ bool EnvironmentManager::loadHdrEnvironment(const std::filesystem::path& path) {
   }
 }
 
-bool EnvironmentManager::requestHdrEnvironment(const std::filesystem::path& path) {
+bool EnvironmentManager::requestHdrEnvironment(const std::filesystem::path& path,
+    std::shared_ptr<const std::vector<std::byte>> encoded) {
   if (environmentLoading())
     return false;
   try {
     pendingHdrPath_ = path;
     environmentStatus_ = EnvironmentStatusWithPath("Preparing HDR environment", path);
-    hdrDecode_ = std::async(std::launch::async, [path] {
+    hdrDecode_ = std::async(std::launch::async, [path, encoded = std::move(encoded)] {
       HdrSource source;
+      source.encoded = encoded;
       source.image = decodeValidatedEnvironmentImage(path, source.encoded);
+      if (encoded && source.image.width != 2 * source.image.height)
+        throw std::runtime_error("Generated HDR environments must be 2:1 equirectangular images");
       return source;
     });
     return true;

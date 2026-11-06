@@ -2,6 +2,7 @@
 #include <Container/geometry/GltfSceneExport.h>
 #include <Container/geometry/GltfNodeExportCompaction.h>
 #include <Container/geometry/GltfAnimation.h>
+#include <Container/geometry/GltfInteractivity.h>
 #include <Container/geometry/GltfDeformation.h>
 #include <Container/geometry/GltfDeformationFrames.h>
 #include <Container/geometry/GltfAccessor.h>
@@ -85,6 +86,121 @@ SceneGraph cubeGraph() {
   const auto cube = graph.createNode(glm::mat4(1), 0, true, 0, "Source cube");
   graph.setParent(cube, root);
   return graph;
+}
+
+TEST(GltfSceneExport, BehaviorGraphTargetsRetainedNodeAndRuntimeMaterialAfterReload) {
+  using namespace container::geometry::gltf;
+  using Value = tinygltf::Value;
+  using Object = Value::Object;
+  using Array = Value::Array;
+  const auto cube = Model::MakeCube();
+  auto source = buildExportModel({cubeGraph(), cube});
+  source.nodes[0].matrix.clear();
+  source.nodes[1].matrix.clear();
+  source.nodes[1].translation = {0, 0, 0};
+  const auto accessor = [&](const std::vector<float>& values, int type, size_t count) {
+    auto& data = source.buffers.front().data;
+    const size_t offset = (data.size() + 3) & ~size_t{3};
+    const size_t bytes = values.size() * sizeof(float);
+    data.resize(offset + bytes);
+    std::memcpy(data.data() + offset, values.data(), bytes);
+    tinygltf::BufferView view;
+    view.buffer = 0;
+    view.byteOffset = offset;
+    view.byteLength = bytes;
+    tinygltf::Accessor result;
+    result.bufferView = int(source.bufferViews.size());
+    result.type = type;
+    result.count = count;
+    result.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
+    source.bufferViews.push_back(view);
+    source.accessors.push_back(result);
+    return int(source.accessors.size() - 1);
+  };
+  const int times = accessor({0, 1}, TINYGLTF_TYPE_SCALAR, 2);
+  source.accessors[times].minValues = {0};
+  source.accessors[times].maxValues = {1};
+  tinygltf::Animation motion, color;
+  tinygltf::AnimationSampler motionSamples, colorSamples;
+  motionSamples.input = colorSamples.input = times;
+  motionSamples.output = accessor({0, 0, 0, 1, 0, 0}, TINYGLTF_TYPE_VEC3, 2);
+  colorSamples.output = accessor({1, 1, 1, 1, 0, 0, 1, 1}, TINYGLTF_TYPE_VEC4, 2);
+  motion.samplers.push_back(motionSamples);
+  color.samplers.push_back(colorSamples);
+  tinygltf::AnimationChannel motionChannel, colorChannel;
+  motionChannel.sampler = colorChannel.sampler = 0;
+  motionChannel.target_node = 1;
+  motionChannel.target_path = "translation";
+  colorChannel.target_path = "pointer";
+  colorChannel.target_extensions["KHR_animation_pointer"] = Value(Object{
+      {"pointer", Value(std::string("/materials/0/pbrMetallicRoughness/baseColorFactor"))}});
+  motion.channels.push_back(motionChannel);
+  color.channels.push_back(colorChannel);
+  source.animations = {motion, color};
+  source.extensionsUsed.push_back("KHR_animation_pointer");
+  const auto graphPointer = [](const char* path, int type, Array value) {
+    return Value(Object{
+      {"declaration", Value(1)},
+      {"configuration", Value(Object{
+        {"pointer", Value(Object{{"value", Value(Array{Value(std::string(path))})}})},
+        {"type", Value(Object{{"value", Value(Array{Value(type)})}})}})},
+      {"values", Value(Object{{"value", Value(Object{{"type", Value(type)}, {"value", Value(std::move(value))}})}})},
+    });
+  };
+  auto first = graphPointer("/nodes/0/translation", 0, {Value(2.), Value(0.), Value(0.)});
+  first.Get<Object>()["flows"] = Value(Object{{"out", Value(Object{{"node", Value(2)}})}});
+  auto recolor = graphPointer("/materials/0/pbrMetallicRoughness/baseColorFactor", 1,
+      {Value(0.), Value(1.), Value(0.), Value(1.)});
+  recolor.Get<Object>()["flows"] = Value(Object{{"out", Value(Object{{"node", Value(3)}})}});
+  const Value startClip(Object{{"declaration", Value(2)}, {"values", Value(Object{{"animation",
+    Value(Object{{"type", Value(2)}, {"value", Value(Array{Value(std::string("/animations/0"))})}})}})}});
+  const Value start(Object{{"declaration", Value(0)},
+    {"flows", Value(Object{{"out", Value(Object{{"node", Value(1)}})}})}});
+  const Value behaviorGraph(Object{
+    {"declarations", Value(Array{
+      Value(Object{{"op", Value(std::string("event/onStart"))}}),
+      Value(Object{{"op", Value(std::string("pointer/set"))}}),
+      Value(Object{{"op", Value(std::string("animation/start"))}})})},
+    {"types", Value(Array{
+      Value(Object{{"signature", Value(std::string("float3"))}}),
+      Value(Object{{"signature", Value(std::string("float4"))}}),
+      Value(Object{{"signature", Value(std::string("ref"))}})})},
+    {"nodes", Value(Array{start, first, recolor, startClip})},
+  });
+  source.extensions[kGltfInteractivityExtension] = Value(Object{{"graphs", Value(Array{behaviorGraph})}});
+  source.extensionsUsed.push_back(kGltfInteractivityExtension);
+  source.extensionsRequired.push_back(kGltfInteractivityExtension);
+
+  SceneGraph runtime;
+  const auto editor = runtime.createNode(glm::mat4(1), 0, false);
+  const auto group = runtime.createNode(glm::mat4(1), 0, false);
+  const auto drawable = runtime.createNode(glm::mat4(1), 1, true, 0);
+  ASSERT_TRUE(runtime.setParent(group, editor));
+  ASSERT_TRUE(runtime.setParent(drawable, group));
+  const std::array<int32_t, 3> nodeMap{-1, 0, 1};
+  const std::array<int32_t, 1> materialMap{1};
+  std::vector<tinygltf::Material> materials(2);
+  const SceneExportSnapshot snapshot{runtime, cube, &source, {}, nodeMap, materials, materialMap, &source};
+  ExportDirectory temp;
+  const auto path = temp.root / "behavior.glb";
+  ASSERT_NO_THROW(writeSceneExport(snapshot, path));
+  auto reloaded = LoadModelWithSource(path.string()).gltfModel;
+  ASSERT_TRUE(reloaded.nodes[group].matrix.empty());
+  const auto animations = ParseAnimations(reloaded);
+  ASSERT_EQ(animations.clips.size(), 2u);
+  EXPECT_EQ(animations.clips[0].tracks.size(), 1u);
+  EXPECT_EQ(animations.clips[1].tracks.size(), 2u);
+  GltfInteractivity behavior(reloaded);
+  const auto dirty = behavior.advance(reloaded, animations, 0);
+  EXPECT_EQ(dirty.nodes, std::vector<size_t>{group});
+  EXPECT_EQ(dirty.materials, std::vector<size_t>{1});
+  EXPECT_EQ(reloaded.nodes[group].translation, (std::vector<double>{2, 0, 0}));
+  EXPECT_EQ(reloaded.materials[1].pbrMetallicRoughness.baseColorFactor, (std::vector<double>{0, 1, 0, 1}));
+
+  auto compacted = snapshot;
+  const std::array<uint8_t, 2> activeMaterials{0, 1};
+  compacted.sourceResourceMasks.materials = activeMaterials;
+  EXPECT_THROW((void)buildExportModel(compacted), std::runtime_error);
 }
 
 std::filesystem::path texturedSource(const std::filesystem::path& directory,
@@ -609,6 +725,13 @@ TEST(GltfSceneExport, LinkedDraftRejectsUnsafeAndUnresolvableReferencesWithConte
   rejected(document("../outside.gltf"), "escapes the primary asset directory");
   writeText(root / "inner.gltf", document("./root.gltf").dump());
   rejected(document("inner.gltf"), "reference cycle");
+  writeText(root / "behavior.gltf", R"json({
+    "asset":{"version":"2.0"},"nodes":[{}],"scenes":[{"nodes":[0]}],"scene":0,
+    "extensionsUsed":["KHR_interactivity"],
+    "extensions":{"KHR_interactivity":{"graphs":[{"declarations":[{"op":"event/onStart"}],
+      "nodes":[{"declaration":0}]}]}}
+  })json");
+  rejected(document("behavior.gltf"), "linked behavior graphs require independent runtime instances");
   auto wrongVersion = document("missing.gltf");
   wrongVersion["asset"]["version"] = "2.2";
   rejected(wrongVersion, "pinned glTF 2.1");

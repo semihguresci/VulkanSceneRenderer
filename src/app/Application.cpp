@@ -20,7 +20,9 @@
 #include "Container/renderer/resources/CommandBufferManager.h"
 
 #include <algorithm>
+#include <chrono>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 namespace container::app {
@@ -174,10 +176,12 @@ void Application::screenshotCaptureLoop() {
     window_->pollEvents();
     renderer_->processInput(captureSampleSeries ? 0.0f : fixedDt);
     bool skip = false;
+    bool waitForComfyUi = false;
     std::optional<glm::uvec2> depthProbe;
     if (sequence) {
       const auto sample = sequence->sample(frameNumber);
       renderer_->applyTemporalCapture(sample);
+      waitForComfyUi = sample.event.comfyUi && sample.event.comfyUi->wait;
       depthProbe = sample.event.depthProbe;
       if (sample.event.minimized) {
         minimized = *sample.event.minimized;
@@ -194,6 +198,18 @@ void Application::screenshotCaptureLoop() {
         framebufferResized_ = false;
       }
       skip = sample.event.skip || minimized;
+    }
+    if (waitForComfyUi) {
+      using namespace std::chrono_literals;
+      if (skip) throw std::runtime_error("Cannot wait for ComfyUI on a skipped capture frame");
+      const auto deadline = std::chrono::steady_clock::now() + 30s;
+      while (renderer_->comfyUiCapturePending()) {
+        window_->pollEvents();
+        if (window_->shouldClose() || std::chrono::steady_clock::now() >= deadline)
+          throw std::runtime_error("Capture timed out waiting for ComfyUI");
+        renderer_->drawFrame(framebufferResized_);
+        std::this_thread::sleep_for(10ms);
+      }
     }
     // Fixed timesteps can render much faster than wall time. Settle the
     // requested volume frame before advancing a deterministic capture tick.

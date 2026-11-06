@@ -926,6 +926,84 @@ TEST_F(PathTransportGpu, DiffuseTransmissionCombinesCosineDensityAndStraightThro
   const auto mis = meanWeights(run(sampling(q, 65536, 12)));
   for (int c = 0; c < 3; ++c) EXPECT_NEAR(mis[c], front[c] + back[c] + straight[c], .006);
 }
+TEST_F(PathTransportGpu, RetroreflectionUsesMirroredViewWithUnchangedTransmission) {
+  std::vector<Query> queries;
+  for (float factor : {0.f, .35f, 1.f}) {
+    for (float side : {1.f, -1.f}) {
+      for (float x : {-.6f, .6f}) {
+        Query q;
+        q.controls.x = 31;
+        q.diffuseRoughness = {.18f, .24f, .35f, .45f};
+        q.f0Scale = {.04f, .15f, .28f, .9f};
+        q.view = {.6f, 0, .8f, 0};
+        q.light = {x, 0, side * .8f, 0};
+        q.sampleValue = {.2f, .12f, .32f, .45f};
+        q.footprintB.x = factor;
+        queries.push_back(q);
+      }
+    }
+  }
+  const auto output = run(queries);
+  for (size_t index = 0; index < queries.size(); ++index) {
+    const auto& q = queries[index];
+    const auto v = glm::dvec3(q.view), l = glm::dvec3(q.light);
+    const glm::dvec3 mirrored(-v.x, -v.y, v.z);
+    const double factor = q.footprintB.x, proposal = factor * .5;
+    auto value = thinReference(q, v, l);
+    double pdf = (1.0 - proposal) * thinReferencePdf(q, v, l);
+    if (l.z > 0) {
+      value = glm::mix(value, reference(q, mirrored, l), factor);
+      pdf += proposal * referencePdf(q, mirrored, l);
+    }
+    EXPECT_EQ(output[index].auxiliary.z, 1.0f);
+    for (int channel = 0; channel < 3; ++channel)
+      EXPECT_NEAR(output[index].valuePdf[channel], value[channel], 1e-5 + std::abs(value[channel]) * 3e-4);
+    EXPECT_NEAR(output[index].valuePdf.w, pdf, 1e-5 + pdf * 3e-4);
+  }
+  EXPECT_GT(output[9].valuePdf.x, output[8].valuePdf.x * 2);
+}
+TEST_F(PathTransportGpu, SmoothRetroreflectionSamplesDistinctDeltaDirectionsAndMass) {
+  Query q;
+  q.controls.x = 32;
+  q.diffuseRoughness = {0, 0, 0, 0};
+  q.f0Scale = {.2f, .45f, .8f, 1};
+  q.view = {.6f, 0, .8f, 0};
+  q.footprintB.x = .6f;
+  q.previousMean = {.15f, .2f, .3f, 0};
+  Query regular = q;
+  regular.previousMean.x = .8f;
+  const auto output = run(std::array{q, regular});
+  EXPECT_EQ(glm::vec3(output[0].directionPdf), glm::vec3(.6f, 0, .8f));
+  EXPECT_EQ(glm::vec3(output[1].directionPdf), glm::vec3(-.6f, 0, .8f));
+  for (size_t index = 0; index < 2; ++index) {
+    const double probability = index == 0 ? .3 : .7;
+    const double share = index == 0 ? .6 : .4;
+    EXPECT_EQ(output[index].auxiliary.x, 1.0f);
+    EXPECT_EQ(output[index].weightValid.w, 1.0f);
+    EXPECT_NEAR(output[index].directionPdf.w, probability, 1e-6);
+    for (int channel = 0; channel < 3; ++channel) {
+      const double f0 = q.f0Scale[channel];
+      const double fresnel = f0 + (1 - f0) * std::pow(.2, 5);
+      EXPECT_NEAR(output[index].weightValid[channel], fresnel * share / probability, 2e-6);
+    }
+  }
+}
+TEST_F(PathTransportGpu, ThinScatterPreservesOtherDiffuseSharesAndResidualSpecularTint) {
+  Query q;
+  q.controls.x = 33;
+  q.diffuseRoughness = {.08f, .06f, .04f, 0};
+  q.footprintC = {.05f, .07f, .09f, 0};
+  q.sampleValue = {.15f, .2f, .3f, 0};
+  q.footprintB = {.5f, .75f, .6f, 0};
+  q.light = {1, 0, .2f, 0};
+  const auto output = run(std::array{q});
+  for (int channel = 0; channel < 3; ++channel) {
+    const double redistributed = .5 * .75 * q.light[channel];
+    EXPECT_NEAR(output[0].valuePdf[channel], q.diffuseRoughness[channel] + .2 * redistributed, 1e-6);
+    EXPECT_NEAR(output[0].directionPdf[channel], q.footprintC[channel] + .8 * redistributed, 1e-6);
+    EXPECT_NEAR(output[0].weightValid[channel], q.sampleValue[channel] * .25, 1e-6);
+  }
+}
 TEST_F(PathTransportGpu, ThinReflectionAndTransmissionMatchIndependentDoublePrecisionAndReciprocity) {
   std::vector<Query> input;
   for(float roughness:{0.f,.25f,.7f,1.f}) for(float transmissionRoughness:{0.f,.12f,.6f,1.f})

@@ -62,6 +62,15 @@ struct GltfAnimationControls {
   std::optional<double> requestedSpeed;
   std::optional<bool> requestedPlaying;
   std::optional<bool> requestedLoop;
+  bool interactivityAvailable{};
+  bool interactivityPlaying{};
+  bool requestedInteractivityReset{};
+  std::optional<bool> requestedInteractivityPlaying;
+  std::optional<std::string> requestedInteractivityEvent;
+  std::vector<std::string> interactivityEvents;
+  std::string interactivityDiagnostic;
+  size_t selectedInteractivityEvent{};
+  double interactivityTime{};
   // Selected-record UI snapshots and weak intent only: no model, scene manager,
   // GPU resource or historical camera record is retained by these controls.
   std::optional<CameraProjectionSnapshot> cameraProjection;

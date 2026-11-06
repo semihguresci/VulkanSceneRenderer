@@ -57,6 +57,7 @@ void RendererFrontend::selectGltfScene(size_t index) {
         subs_.sceneManager->evaluateAuthoredSceneLights(sceneGraph_,index),edits));
   }
   if(gltfAnimation_) gltfAnimation_->pause();
+  pauseGltfInteractivity();
   gltfAnimationCameraNode_.reset(); gltfAnimationCamera_.reset();
   pendingGltfAnimationDeltaSeconds_=0;
   if(sceneEdits_) sceneEdits_->clear();

@@ -2624,6 +2624,7 @@ TEST(RenderingConventionTests, DefaultScenePreflightAndUploadUseTheSameGltfCapab
   const auto restrictions = source.substr(policy, policyEnd - policy);
   EXPECT_TRUE(contains(restrictions, "unavailableRuntimeExtensions"));
   EXPECT_TRUE(contains(restrictions, "EXT_mesh_gpu_instancing"));
+  EXPECT_TRUE(contains(restrictions, "options.enableExperimentalMaterials = enableExperimentalMaterials"));
 
   const auto reload = source.find("bool SceneManager::reloadModel(");
   const auto retire = source.find("resetLoadedAssets()", reload);
@@ -2633,10 +2634,12 @@ TEST(RenderingConventionTests, DefaultScenePreflightAndUploadUseTheSameGltfCapab
   ASSERT_NE(retire, std::string::npos);
   ASSERT_NE(append, std::string::npos);
   ASSERT_NE(upload, std::string::npos);
-  EXPECT_TRUE(contains(source.substr(reload, retire - reload),
-                       "prepareDefaultSceneGltfAsset(resolveSceneAssetPath(entry))"));
-  EXPECT_TRUE(contains(source.substr(append, upload - append),
-                       "prepareDefaultSceneGltfAsset(assetPath)"));
+  const auto preflight = source.substr(reload, retire - reload);
+  const auto publication = source.substr(append, upload - append);
+  for (const auto& step : {preflight, publication})
+    EXPECT_TRUE(contains(step, "const bool experimental = config_.experimentalGltfMaterials"));
+  EXPECT_TRUE(contains(preflight, "prepareDefaultSceneGltfAsset(resolveSceneAssetPath(entry), experimental)"));
+  EXPECT_TRUE(contains(publication, "prepareDefaultSceneGltfAsset(assetPath, experimental)"));
 }
 
 TEST(RenderingConventionTests,

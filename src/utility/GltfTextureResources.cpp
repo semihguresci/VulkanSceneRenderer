@@ -21,8 +21,11 @@ int extensionTexture(const tinygltf::Material& material, const char* extension, 
   if (!index.IsInt()) throw std::runtime_error(std::string("invalid texture index in ") + extension + "." + field);
   return index.Get<int>();
 }
-std::vector<unsigned> roles(const tinygltf::Model& model) {
+std::vector<unsigned> roles(const tinygltf::Model& model, bool enableExperimentalMaterials) {
   const auto extended = geometry::gltf::ParseGltfExtendedMaterials(model);
+  const auto experimental = enableExperimentalMaterials
+      ? geometry::gltf::ParseGltfExperimentalMaterials(model)
+      : std::vector<geometry::gltf::GltfExperimentalMaterial>{};
   std::vector<unsigned> result(model.textures.size());
   const auto mark = [&](int index, unsigned role) {
     if (index == -1) return;
@@ -40,6 +43,12 @@ std::vector<unsigned> roles(const tinygltf::Model& model) {
     mark(extensions.anisotropyTexture.sourceTexture, kData);
     mark(extensions.diffuseTransmissionTexture.sourceTexture, kData);
     mark(extensions.diffuseTransmissionColorTexture.sourceTexture, kColor);
+    if (enableExperimentalMaterials) {
+      const auto& layer = experimental[materialIndex];
+      mark(layer.retroreflectionTexture.sourceTexture, kData);
+      mark(layer.scatterStrengthTexture.sourceTexture, kData);
+      mark(layer.scatterColorTexture.sourceTexture, kColor);
+    }
     for (const auto& slot : std::array<std::array<const char*, 2>, 4>{{
         {"KHR_materials_pbrSpecularGlossiness", "diffuseTexture"},
         {"KHR_materials_pbrSpecularGlossiness", "specularGlossinessTexture"},
@@ -105,10 +114,11 @@ bool sameImage(const TextureImageData& first, const TextureImageData& second) {
 } // namespace
 
 PreparedGltfTextures PrepareGltfTextures(const tinygltf::Model& model,
-    const TextureDecodeOptions& deviceProfile, uint64_t maxPreparedBytes) {
+    const TextureDecodeOptions& deviceProfile, uint64_t maxPreparedBytes,
+    bool enableExperimentalMaterials) {
   if (!maxPreparedBytes) throw std::invalid_argument("glTF texture preparation budget must be positive");
   const auto plan = container::geometry::gltf::SelectTextureImageSources(model);
-  const auto requiredRoles = roles(model);
+  const auto requiredRoles = roles(model, enableExperimentalMaterials);
   PreparedGltfTextures prepared;
   prepared.textureCount = model.textures.size();
   struct CachedSource { int source{}; bool color{}, strict{}; size_t decoded{}; };

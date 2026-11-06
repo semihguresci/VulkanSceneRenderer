@@ -48,7 +48,10 @@ class EnvironmentManager {
   // Replaces the placeholder cubemaps created by createResources().
   // Returns true on success. On failure the current cubemaps remain active.
   bool loadHdrEnvironment(const std::filesystem::path& hdrPath);
-  bool requestHdrEnvironment(const std::filesystem::path& path);
+  // Supply already read bytes for generated environments, so the same decoder
+  // and publication path can use an immutable result instead of reopening it.
+  bool requestHdrEnvironment(const std::filesystem::path& path,
+      std::shared_ptr<const std::vector<std::byte>> encoded = {});
   bool loadSkyEnvironment(const SkySettings& settings);
   bool requestSkyEnvironment(const SkySettings& settings);
   [[nodiscard]] SkyMode activeSkyMode() const { return activeSkyMode_; }

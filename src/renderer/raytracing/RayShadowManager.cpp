@@ -722,6 +722,12 @@ void RayShadowManager::update(
                           reinterpret_cast<uintptr_t>(source.vertices.data()));
     sceneHash = hashValue(sceneHash,
                           reinterpret_cast<uintptr_t>(source.indices.data()));
+    sceneHash = hashValue(sceneHash, source.opacityMicromaps.size());
+    for (const auto& candidate : source.opacityMicromaps) {
+      sceneHash = hashValue(sceneHash, candidate.firstIndex);
+      sceneHash = hashValue(sceneHash, candidate.indexCount);
+      sceneHash = hashValue(sceneHash, reinterpret_cast<uintptr_t>(candidate.attachment.get()));
+    }
     sceneHash = hashValue(sceneHash, source.draws.size());
     for (const auto &draw : source.draws) {
       sceneHash = hashValue(sceneHash, draw.objectIndex);

@@ -89,6 +89,11 @@ struct AnimationDirtySet {
 // imply a corresponding renderer feature. Overlapping targets are rejected.
 AnimationLibrary ParseAnimations(const tinygltf::Model& model);
 AnimationPose SampleAnimation(const AnimationClip& clip, double timeSeconds);
+// Shared numeric Object Model access for behavior graphs. Targets outside
+// the animation pointer table return nullopt, with malformed paths diagnosed.
+std::optional<AnimationTarget> ResolveAnimationPointer(const tinygltf::Model&,
+    const std::string& pointer);
+std::vector<double> ReadAnimationTarget(const tinygltf::Model&, const AnimationTarget&);
 // Publication is atomic: every sampled numeric value is validated before any
 // write, and target objects are restored if a later property operation fails.
 // Only touched source objects are staged; asset buffers/accessors are not copied.

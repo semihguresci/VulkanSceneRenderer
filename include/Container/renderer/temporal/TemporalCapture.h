@@ -9,6 +9,7 @@
 #include "Container/geometry/GltfCameraAuthoring.h"
 #include "Container/renderer/lighting/LightEditTypes.h"
 #include "Container/renderer/lighting/SkySettings.h"
+#include "Container/renderer/pathtracing/ReferenceOidnSettings.h"
 
 #include <glm/glm.hpp>
 #include <nlohmann/json.hpp>
@@ -129,6 +130,13 @@ struct CaptureLightAdd {
   container::renderer::EditableLightType type{};
   std::optional<uint64_t> expectedLightRevision;
 };
+struct CaptureComfyUi {
+  enum class Action { GenerateEnvironment, RestyleViewport, ApplyEnvironment, Cancel };
+  Action action{};
+  std::string prompt;
+  uint64_t seed{1};
+  bool wait{};
+};
 struct CaptureEvent {
   uint32_t frame{0};
   bool reset{false}, skip{false};
@@ -159,6 +167,8 @@ struct CaptureEvent {
   bool environmentAsync{};
   bool reloadShaders{};
   bool referenceAutofocus{};
+  std::optional<container::renderer::ReferenceOidnQuality> referenceOidn;
+  std::optional<CaptureComfyUi> comfyUi;
   std::optional<bool> gpuTransforms;
   std::optional<container::renderer::SkyMode> proceduralSky;
   std::optional<float> environmentYaw;
@@ -199,6 +209,9 @@ struct CaptureEvent {
   std::optional<bool> animationPlaying;
   std::optional<int> animationClip;
   std::optional<double> animationTime;
+  std::optional<bool> interactivityPlaying;
+  bool interactivityReset{};
+  std::optional<std::string> interactivityEvent;
   std::string sceneHistory;
 };
 struct CaptureSample {
@@ -332,6 +345,23 @@ public:
         if (!time.is_number() || !std::isfinite(time.get<double>()) || time.get<double>() < 0)
           throw std::invalid_argument("Capture animationTime must be a finite nonnegative number");
         event.animationTime = time.get<double>();
+      }
+      if (value.contains("interactivityPlaying")) {
+        if (!value.at("interactivityPlaying").is_boolean())
+          throw std::invalid_argument("Capture interactivityPlaying must be a boolean");
+        event.interactivityPlaying = value.at("interactivityPlaying").get<bool>();
+      }
+      if (value.contains("interactivityReset")) {
+        if (!value.at("interactivityReset").is_boolean())
+          throw std::invalid_argument("Capture interactivityReset must be a boolean");
+        event.interactivityReset = value.at("interactivityReset").get<bool>();
+      }
+      if (value.contains("interactivityEvent")) {
+        const auto& authored = value.at("interactivityEvent");
+        if (!authored.is_string() || authored.get_ref<const std::string&>().empty() ||
+            authored.get_ref<const std::string&>().size() > 512)
+          throw std::invalid_argument("Capture interactivityEvent must be a nonempty bounded string");
+        event.interactivityEvent = authored.get<std::string>();
       }
       if(value.contains("gltfScene")) {
         const auto& scene=value.at("gltfScene");
@@ -536,6 +566,37 @@ public:
         event.reloadShaders = value.at("reloadShaders").get<bool>();
       if (value.contains("referenceAutofocus"))
         event.referenceAutofocus = value.at("referenceAutofocus").get<bool>();
+      if (value.contains("referenceOidn")) {
+        event.referenceOidn = container::renderer::parseReferenceOidnQuality(value.at("referenceOidn").get<std::string>());
+        if (!event.referenceOidn) throw std::invalid_argument("Invalid capture referenceOidn quality");
+      }
+      if (value.contains("comfyUi")) {
+        const auto& job = value.at("comfyUi");
+        nodeFields(job, {"action", "prompt", "seed", "wait"}, "ComfyUI capture action");
+        const auto action = job.at("action").get<std::string>();
+        CaptureComfyUi request;
+        if (action == "generate-environment") request.action = CaptureComfyUi::Action::GenerateEnvironment;
+        else if (action == "restyle-viewport") request.action = CaptureComfyUi::Action::RestyleViewport;
+        else if (action == "apply-environment") request.action = CaptureComfyUi::Action::ApplyEnvironment;
+        else if (action == "cancel") request.action = CaptureComfyUi::Action::Cancel;
+        else throw std::invalid_argument("Unknown ComfyUI capture action");
+        if (request.action == CaptureComfyUi::Action::GenerateEnvironment ||
+            request.action == CaptureComfyUi::Action::RestyleViewport) {
+          request.prompt = job.at("prompt").get<std::string>();
+          if (request.prompt.size() > 2048 || request.prompt.find_first_not_of(" \t\r\n") == std::string::npos)
+            throw std::invalid_argument("ComfyUI capture requires a bounded nonempty prompt");
+          if (job.contains("seed")) {
+            const auto& seed = job.at("seed");
+            if (!seed.is_number_integer() || (!seed.is_number_unsigned() && seed.get<int64_t>() < 0))
+              throw std::invalid_argument("ComfyUI capture seed must be a nonnegative integer");
+            request.seed = seed.get<uint64_t>();
+          }
+        } else if (job.contains("prompt") || job.contains("seed")) {
+          throw std::invalid_argument("Only a ComfyUI generation action accepts a prompt or seed");
+        }
+        request.wait = job.value("wait", false);
+        event.comfyUi = std::move(request);
+      }
       if (value.contains("gpuTransforms"))
         event.gpuTransforms = value.at("gpuTransforms").get<bool>();
       if (value.contains("depthProbe")) {
@@ -601,7 +662,8 @@ public:
           !event.physicsAttach.empty() || !event.physicsAction.empty() || event.physicsJointCreate ||
           !event.physicsJointAction.empty() || event.physicsJointMotorVelocity))
         throw std::invalid_argument("Capture node authoring and other model/scene/history/physics mutations need separate events");
-      const bool animationControl = event.animationPlaying || event.animationClip || event.animationTime;
+      const bool animationControl = event.animationPlaying || event.animationClip || event.animationTime ||
+          event.interactivityPlaying || event.interactivityReset || event.interactivityEvent;
       if((event.cameraProjection || event.cameraSelection || event.cameraPose) &&
           (unsigned(event.cameraProjection.has_value())+unsigned(event.cameraSelection.has_value())+unsigned(event.cameraPose.has_value())>1 ||
           event.resourceRetirement || event.materialRetirement || event.materialEdit || event.materialBinding || event.materialTextureEdit ||

@@ -82,6 +82,13 @@ const char* difference(const Material& a,const Material& b) noexcept {
   if(a.specularGlossinessWorkflow!=b.specularGlossinessWorkflow) return "specularGlossinessWorkflow";
   if(a.unlit!=b.unlit) return "unlit";
   for(size_t i=0;i<count;++i) if(a.*resources[i]!=b.*resources[i] || !transformEqual(a.*transforms[i],b.*transforms[i])) return names[i];
+  const auto& ax=a.experimental;const auto& bx=b.experimental;
+  if(!bits(ax.retroreflection,bx.retroreflection) || !bits(ax.scatterStrength,bx.scatterStrength) ||
+      !bits(ax.scatterAnisotropy,bx.scatterAnisotropy) || ax.textureResources()!=bx.textureResources() ||
+      !transformEqual(ax.retroreflectionTransform,bx.retroreflectionTransform) ||
+      !transformEqual(ax.scatterStrengthTransform,bx.scatterStrengthTransform) ||
+      !transformEqual(ax.scatterColorTransform,bx.scatterColorTransform)) return "experimental material layers";
+  for(int i=0;i<3;++i) if(!bits(ax.scatterColor[i],bx.scatterColor[i])) return "experimental scatter color";
   return nullptr;
 }
 int checked(int source,size_t textures) {

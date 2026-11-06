@@ -4,6 +4,7 @@
 #include <Container/geometry/GltfNodeFlags.h>
 #include <Container/geometry/GltfExtendedMaterials.h>
 #include <Container/geometry/GltfLinkedAssets.h>
+#include <Container/geometry/GltfInteractivity.h>
 #include <Container/geometry/GltfXmpMetadata.h>
 
 #include <Container/geometry/Mesh.h>
@@ -781,10 +782,12 @@ uint32_t normalTextureTexCoord(const tinygltf::Model& model,
   return static_cast<uint32_t>(selected);
 }
 
-std::vector<Mesh> parseMeshes(const tinygltf::Model& model) {
+std::vector<Mesh> parseMeshes(const tinygltf::Model& model, GltfOpacityMicromapAssets& micromaps) {
   std::vector<Mesh> meshes;
-  for (const auto& mesh : model.meshes) {
-    for (const auto& primitive : mesh.primitives) {
+  for (size_t meshIndex = 0; meshIndex < model.meshes.size(); ++meshIndex) {
+    const auto& mesh = model.meshes[meshIndex];
+    for (size_t primitiveIndex = 0; primitiveIndex < mesh.primitives.size(); ++primitiveIndex) {
+      const auto& primitive = mesh.primitives[primitiveIndex];
       auto primitiveData = mergeAttributes(model, primitive);
       auto indices = readIndices(model, primitive, primitiveData.vertices.size());
       WindingRepairResult windingRepair{};
@@ -798,6 +801,16 @@ std::vector<Mesh> parseMeshes(const tinygltf::Model& model) {
       const bool disableBackfaceCulling =
           windingRepair.disableBackfaceCulling ||
           isDenseOpenReliefTopology(indices);
+      // Micromap cells are addressed in the source triangle's ordered
+      // barycentric frame. A winding repair swaps two corners of that frame.
+      if (windingRepair.repairedTriangleCount && micromaps.find(meshIndex, primitiveIndex)) {
+        micromaps.primitives[meshIndex][primitiveIndex].reset();
+        if (micromaps.diagnostics.size() < GltfOpacityMicromapLimits{}.maxDiagnostics)
+          micromaps.diagnostics.push_back({"mesh " + std::to_string(meshIndex) + "/" + std::to_string(primitiveIndex),
+              "triangle winding was repaired; using sampled alpha"});
+        else
+          ++micromaps.diagnosticsOmitted;
+      }
       const auto tangentTexCoord = normalTextureTexCoord(model, primitive);
       if (!primitiveData.hasNormals || !primitiveData.hasTangents ||
           windingRepair.repairedTriangleCount > 0) {
@@ -1129,6 +1142,26 @@ uintmax_t preflightBoundedGltf(const nlohmann::json& json, uintmax_t sourceBytes
   return total;
 }
 
+void discardOpacityMicromapMetadata(tinygltf::Model& model);
+
+void discardOpacityMicromapMetadata(nlohmann::json& document) {
+  const auto discard = [](nlohmann::json& record) {
+    if (!record.is_object()) return;
+    const auto extensions = record.find("extensions");
+    if (extensions != record.end() && extensions->is_object())
+      extensions->erase(std::string(kGltfOpacityMicromapExtension));
+  };
+  discard(document);
+  const auto meshes = document.find("meshes");
+  if (meshes == document.end() || !meshes->is_array()) return;
+  for (auto& mesh : *meshes) {
+    if (!mesh.is_object()) continue;
+    const auto primitives = mesh.find("primitives");
+    if (primitives != mesh.end() && primitives->is_array())
+      for (auto& primitive : *primitives) discard(primitive);
+  }
+}
+
 tinygltf::Model loadGltfModel(const std::string& path,
                              const LoadOptions& options = {},
                              std::vector<CapabilityDiagnostic>* diagnostics = nullptr,
@@ -1264,8 +1297,11 @@ tinygltf::Model loadGltfModel(const std::string& path,
                   throw std::invalid_argument("linked glTF requires retained image and scene loading");
                 *linkedManifest = std::move(linked);
               }
+              const auto experimental = options.enableExperimentalMaterials
+                  ? std::span<const std::string_view>(kGltfExperimentalMaterialExtensions)
+                  : std::span<const std::string_view>{};
               auto validation = validateCapabilities(sourceRequirements(json), path,
-                  options.unavailableRuntimeExtensions);
+                  options.unavailableRuntimeExtensions, experimental);
               if (normalizedLinkedManifest)
                 validation.diagnostics.push_back({CapabilitySeverity::Warning, "experimental_linked_assets", path,
                     "Using the experimental URI-only glTF 2.1 linked asset profile"});
@@ -1280,9 +1316,22 @@ tinygltf::Model loadGltfModel(const std::string& path,
               }
               if (diagnostics) *diagnostics = std::move(validation.diagnostics);
               if (!errors.empty()) throw std::runtime_error(errors);
+              bool discardedMicromaps = false;
+              if (options.enableOpacityMicromaps) {
+                if (const auto invalid = ValidateGltfOpacityMicromapSourceJson(json)) {
+                  CapabilityDiagnostic diagnostic{CapabilitySeverity::Warning, "opacity_micromap_fallback", path,
+                      invalid->context + ": " + invalid->message + "; using sampled alpha"};
+                  std::clog << formatCapabilityDiagnostic(diagnostic) << std::endl;
+                  if (diagnostics) diagnostics->push_back(std::move(diagnostic));
+                  discardOpacityMicromapMetadata(json);
+                  discardedMicromaps = true;
+                }
+              }
               validateSceneHierarchyJson(json);
               const auto nodeFlags = ValidateGltfNodeFlagsJson(json);
               const auto extendedMaterials = ValidateGltfExtendedMaterialsJson(json);
+              const auto experimentalMaterialBytes = options.enableExperimentalMaterials
+                  ? ValidateGltfExperimentalMaterialsJson(json) : uint64_t{};
               imageSources = SelectTextureImageSources(json);
               const auto instancing = ValidateMeshGpuInstancingJson(json, options.instancing);
               xmp.emplace(json);
@@ -1296,7 +1345,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
                 const std::string prefix = "__container_gltf_" + std::to_string(
                     std::chrono::steady_clock::now().time_since_epoch().count()) + "_" +
                     std::to_string(sequence.fetch_add(1)) + "_";
-                bool rewritten = xmp->rewroteManifest() || normalizedLinkedManifest;
+                bool rewritten = xmp->rewroteManifest() || normalizedLinkedManifest || discardedMicromaps;
                 if (linkedContext) {
                   for (const auto* table : {"buffers", "images"}) {
                     auto records = json.find(table);
@@ -1318,7 +1367,8 @@ tinygltf::Model loadGltfModel(const std::string& path,
                 compressionPlan = InspectCompressedGltfSource(json, isBinaryGltf(path), options.compression);
                 uint64_t retainedBytes = compressionPlan.decodedBytes;
                 for (const uint64_t bytes : {instancing.decodedBytes, nodeFlags.retainedBytes,
-                                            extendedMaterials.retainedBytes, uint64_t(xmp->retainedBytes())}) {
+                                            extendedMaterials.retainedBytes, experimentalMaterialBytes,
+                                            uint64_t(xmp->retainedBytes())}) {
                   if (bytes > UINT64_MAX - retainedBytes)
                     throw std::invalid_argument("glTF decoded/instance/node/material output byte count overflows");
                   retainedBytes += bytes;
@@ -1411,8 +1461,12 @@ tinygltf::Model loadGltfModel(const std::string& path,
       model.images[image].mimeType = reference.mimeType;
       model.images[image].uri.clear();
     }
-    model = DecodeCompressedGltf(std::move(model), options.compression, nullptr,
+    CompressionStatistics compressionStatistics;
+    model = DecodeCompressedGltf(std::move(model), options.compression, &compressionStatistics,
                                 compressionPlan.placeholders);
+    if (compressionStatistics.dracoPrimitives || compressionStatistics.meshoptViews ||
+        compressionStatistics.fallbackPrimitives || compressionStatistics.fallbackViews)
+      discardOpacityMicromapMetadata(model);
     if (linkedBudget) *linkedBudget = remainingBytes;
     for (auto& buffer : model.buffers)
       if (const auto* resource = linkedResource(buffer.uri)) buffer.uri = resource->originalUri;
@@ -1420,6 +1474,14 @@ tinygltf::Model loadGltfModel(const std::string& path,
       if (const auto* resource = linkedResource(image.uri)) image.uri = resource->originalUri;
     (void)ParseMeshGpuInstancing(model, options.instancing);
     (void)ParseGltfNodeFlags(model);
+    try {
+      ValidateGltfInteractivity(model);
+    } catch (const std::invalid_argument& error) {
+      if (std::ranges::find(model.extensionsRequired, kGltfInteractivityExtension) != model.extensionsRequired.end())
+        throw;
+      if (diagnostics)
+        diagnostics->push_back({CapabilitySeverity::Warning, "unsupported_interactivity", path, error.what()});
+    }
     (void)ParseGltfExtendedMaterials(model);
     if (xmp) std::move(*xmp).retain(model);
     if (!options.decodeImages) return model;
@@ -1484,6 +1546,16 @@ tinygltf::Model loadGltfModel(const std::string& path,
   }
 }
 
+void discardOpacityMicromapMetadata(tinygltf::Model& model) {
+  const std::string extension(kGltfOpacityMicromapExtension);
+  if (model.extensions.erase(extension)) model.extensions_json_string.clear();
+  std::erase(model.extensionsUsed, extension);
+  std::erase(model.extensionsRequired, extension);
+  for (auto& mesh : model.meshes)
+    for (auto& primitive : mesh.primitives)
+      if (primitive.extensions.erase(extension)) primitive.extensions_json_string.clear();
+}
+
 tinygltf::Model loadGltfComposition(const std::string& path, const LoadOptions& options,
                                   std::vector<CapabilityDiagnostic>* diagnostics = nullptr) {
   if (options.requireSelfContained && options.enableLinkedAssets)
@@ -1499,6 +1571,8 @@ tinygltf::Model loadGltfComposition(const std::string& path, const LoadOptions& 
     const auto source = context.source.generic_u8string();
     result.model = loadGltfModel(std::string(source.begin(), source.end()), bounded,
         diagnostics ? &documentDiagnostics : nullptr, &context, &result.manifest, &remaining);
+    // The linked-assets flattener changes buffer-view and accessor indices.
+    discardOpacityMicromapMetadata(result.model);
     if (diagnostics)
       diagnostics->insert(diagnostics->end(), std::make_move_iterator(documentDiagnostics.begin()),
                           std::make_move_iterator(documentDiagnostics.end()));
@@ -1527,12 +1601,19 @@ GltfLoadResult LoadModelWithSource(const std::string& path,
   std::vector<CapabilityDiagnostic> diagnostics;
   auto gltfModel = loadGltfComposition(path, options, &diagnostics);
   try {
-    auto meshes = parseMeshes(gltfModel);
+    GltfOpacityMicromapAssets micromaps;
+    if (options.enableOpacityMicromaps && !options.enableLinkedAssets)
+      micromaps = ParseGltfOpacityMicromaps(gltfModel);
+    auto meshes = parseMeshes(gltfModel, micromaps);
     if (meshes.empty()) {
       throw std::runtime_error("No renderable primitives found in glTF file");
     }
+    // Runtime export rebuilds topology and resources from the core material.
+    // Keep the optional acceleration payload only in the runtime side table.
+    discardOpacityMicromapMetadata(gltfModel);
     GltfLoadResult result{Model::FromMeshes(std::move(meshes)),
                           std::move(gltfModel), std::move(diagnostics)};
+    result.opacityMicromaps = std::move(micromaps);
     const bool hasMorphs = std::ranges::any_of(result.gltfModel.meshes, [](const auto& mesh) {
       return std::ranges::any_of(mesh.primitives, [](const auto& primitive) {
         return !primitive.targets.empty();

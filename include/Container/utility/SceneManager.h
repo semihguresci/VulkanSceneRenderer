@@ -58,6 +58,11 @@ namespace container::scene {
 class SceneGraph;
 }  // namespace container::scene
 
+namespace container::renderer {
+struct DrawCommand;
+struct RayOpacityMicromapRange;
+}
+
 namespace container::scene {
 
 struct ModelBounds {
@@ -469,7 +474,8 @@ class SceneManager {
   [[nodiscard]] static container::geometry::GltfLoadResult prepareGltfModel(
       const std::string& path,
       uintmax_t maxInputBytes = std::numeric_limits<uintmax_t>::max(),
-      bool enableLinkedAssets = false, bool requireSelfContained = false);
+      bool enableLinkedAssets = false, bool requireSelfContained = false,
+      bool enableExperimentalMaterials = false, bool enableOpacityMicromaps = false);
 
   bool reloadModel(const std::string& path,
                    float importScale,
@@ -539,6 +545,9 @@ class SceneManager {
   // Cached hash of uploaded shader-visible fields (excluding C++ ABI padding).
   // Only affected surfaces lose compatibility after a material upload changes.
   [[nodiscard]] uint64_t temporalMaterialRevision(uint32_t gpuIndex) const;
+  [[nodiscard]] std::vector<container::renderer::RayOpacityMicromapRange> rayOpacityMicromaps(
+      std::span<const container::renderer::DrawCommand> draws,
+      std::span<const container::gpu::ObjectData> objects) const;
   [[nodiscard]] bool rayGeometryCompatible(uint32_t gpuIndex) const;
   uint32_t diagnosticMaterialIndex() const;
   uint32_t resolveGpuMaterialIndex(uint32_t materialIndex) const;
@@ -904,6 +913,8 @@ class SceneManager {
   void loadMaterialXMaterial();
   void loadGltfAssets(container::geometry::GltfLoadResult* prepared = nullptr,
       const container::material::PreparedGltfTextures* preparedTextures = nullptr);
+  void retainOpacityMicromaps(const container::geometry::gltf::GltfOpacityMicromapAssets& assets);
+  [[nodiscard]] uint64_t retainedOpacityMicromapBytes() const noexcept;
   void loadDefaultTestSceneAssets();
   void uploadMaterialBuffer();
   void uploadTextureMetadataBuffer(uint64_t maxLogicalCpuBytes=512ull*1024*1024);
@@ -973,6 +984,8 @@ class SceneManager {
   container::material::MaterialManager materialManager_{};
 
   container::geometry::Model model_{};
+  struct OpacityMicromapState;
+  std::shared_ptr<const OpacityMicromapState> opacityMicromapState_;
   std::vector<uint32_t> sourcePrimitiveToRuntime_{};
   std::vector<int32_t> runtimePrimitiveToSource_{};
   tinygltf::Model gltfModel_{};

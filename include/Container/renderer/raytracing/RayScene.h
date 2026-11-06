@@ -5,9 +5,12 @@
 
 #include <cstdint>
 #include <glm/mat4x4.hpp>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
+
+namespace container::geometry::gltf { struct GltfOpacityMicromapAttachment; }
 
 namespace container::renderer {
 
@@ -30,6 +33,8 @@ struct RaySceneGeometry {
   std::span<const uint32_t> indices{};
   bool opaque{true}; // Alpha-tested geometry must remain non-opaque.
   RaySceneStorageIdentity storageIdentity{};
+  // Immutable, active only when this geometry's alpha coverage still matches.
+  std::shared_ptr<const container::geometry::gltf::GltfOpacityMicromapAttachment> opacityMicromap;
 };
 
 struct RaySceneInstance {

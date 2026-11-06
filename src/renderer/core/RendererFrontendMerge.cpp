@@ -150,7 +150,7 @@ bool RendererFrontend::mergeSceneModel(const std::string& path,
   std::optional<container::geometry::GltfLoadResult> local;
   if (!prepared) {
     local=container::scene::SceneManager::prepareGltfModel(path,512ull*1024*1024,
-        svc_.config.experimentalGltfLinkedAssets);
+        svc_.config.experimentalGltfLinkedAssets, false, svc_.config.experimentalGltfMaterials);
     prepared=&*local;
   }
   if(!mergeBudget_) mergeBudget_=std::make_shared<SceneMergeBudget>();
@@ -331,6 +331,17 @@ bool RendererFrontend::publishSceneMerge(SceneMergeHistory& state,
     container::scene::SceneGraph::PreparedAppend* append,
     container::scene::SceneGraph::PreparedTailChange* tail,bool redo) {
   auto& manager=state.assets.manager();
+  const auto behavior = [](const tinygltf::Model& source) -> const tinygltf::Value* {
+    const auto found = source.extensions.find(container::geometry::gltf::kGltfInteractivityExtension);
+    return found == source.extensions.end() ? nullptr : &found->second;
+  };
+  const auto* previousGraph = behavior(subs_.sceneManager->animationSource());
+  const auto* nextGraph = behavior(manager.animationSource());
+  const bool replaceBehavior = (previousGraph == nullptr) != (nextGraph == nullptr) ||
+      (previousGraph && nextGraph && *previousGraph != *nextGraph);
+  std::unique_ptr<container::geometry::gltf::GltfInteractivity> nextBehavior;
+  if (replaceBehavior && nextGraph)
+    nextBehavior = std::make_unique<container::geometry::gltf::GltfInteractivity>(manager.animationSource());
   std::vector<container::scene::SceneNodeLocalPose> oldPose;
   oldPose.reserve(sceneGraph_.nodeCount());
   for(uint32_t node=0;node<sceneGraph_.nodeCount();++node)
@@ -591,6 +602,12 @@ bool RendererFrontend::publishSceneMerge(SceneMergeHistory& state,
   static_assert(std::is_nothrow_swappable_v<container::scene::MeshSceneProviderAssetCache>);
   std::swap(meshProviderAssetCache_,assetCache);
   gltfAnimation_.swap(state.animation);
+  if (replaceBehavior) {
+    gltfInteractivity_.swap(nextBehavior);
+    gltfInteractivityError_.clear();
+    gltfInteractivityRequest_ = {};
+  }
+  gltfInteractivityHoverChain_.clear();
   state.graphPose.swap(oldPose);
   std::swap(gltfAnimationCameraNode_,state.cameraNode);
   gltfAnimationCamera_.reset();

@@ -75,7 +75,7 @@ class SlangMaterialXBridge {
     void loadMaterialsForGltfWithTextureRoles(
         const tinygltf::Model& model, const GltfTextureResources& textures,
         container::material::MaterialManager& materialManager,
-        uint32_t& defaultMaterialIndex) const;
+        uint32_t& defaultMaterialIndex, bool enableExperimentalMaterials = false) const;
 
 private:
     static bool isBinaryGltf(const std::string& path);

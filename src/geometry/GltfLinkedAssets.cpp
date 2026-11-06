@@ -1,6 +1,7 @@
 #include <Container/geometry/GltfLinkedAssets.h>
 
 #include <Container/geometry/GltfMerge.h>
+#include <Container/geometry/GltfInteractivity.h>
 #include <Container/geometry/GltfSceneCatalog.h>
 
 #include <nlohmann/json.hpp>
@@ -161,6 +162,8 @@ class Composition {
       fail(utf8(context.source), "parsed node table does not match the linked manifest");
     if (!child.model.animations.empty() || !child.model.skins.empty())
       fail(utf8(context.source), "linked skinning and animation are unsupported in this draft profile");
+    if (child.model.extensions.contains(kGltfInteractivityExtension))
+      fail(utf8(context.source), "linked behavior graphs require independent runtime instances");
     if (child.model.nodes.size() > kMaxNodes - retainedNodes_)
       fail(utf8(context.source), "linked source node budget exceeded");
     retainedNodes_ += child.model.nodes.size();

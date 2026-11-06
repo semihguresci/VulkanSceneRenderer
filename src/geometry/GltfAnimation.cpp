@@ -595,6 +595,98 @@ AnimationLibrary parseAnimations(const tinygltf::Model& model, bool captureRests
 AnimationLibrary ParseAnimations(const tinygltf::Model& model) {
   return parseAnimations(model, true, 128*1024*1024);
 }
+std::optional<AnimationTarget> ResolveAnimationPointer(const tinygltf::Model& model,
+    const std::string& pointer) {
+  return pointerTarget(model, pointer);
+}
+
+std::vector<double> ReadAnimationTarget(const tinygltf::Model& model, const AnimationTarget& target) {
+  const auto& property = target.property;
+  const auto readVector = [&](const std::vector<double>& authored, std::vector<double> defaults) {
+    return authored.empty() ? std::move(defaults) : authored;
+  };
+  std::vector<double> result;
+  switch (target.kind) {
+    case AnimationTargetKind::NodeTranslation:
+      result = readVector(model.nodes.at(target.index).translation, {0, 0, 0});
+      break;
+    case AnimationTargetKind::NodeRotation:
+      result = readVector(model.nodes.at(target.index).rotation, {0, 0, 0, 1});
+      break;
+    case AnimationTargetKind::NodeScale:
+      result = readVector(model.nodes.at(target.index).scale, {1, 1, 1});
+      break;
+    case AnimationTargetKind::NodeWeights: {
+      const auto& node = model.nodes.at(target.index);
+      const auto& mesh = checked(model.meshes, node.mesh, "morph mesh");
+      result = readVector(node.weights, readVector(mesh.weights, std::vector<double>(weightCount(model, target.index))));
+      break;
+    }
+    case AnimationTargetKind::Material: {
+      const auto& material = model.materials.at(target.index);
+      const auto& pbr = material.pbrMetallicRoughness;
+      if (property == "pbrMetallicRoughness/baseColorFactor") result = readVector(pbr.baseColorFactor, {1, 1, 1, 1});
+      else if (property == "pbrMetallicRoughness/metallicFactor") result = {pbr.metallicFactor};
+      else if (property == "pbrMetallicRoughness/roughnessFactor") result = {pbr.roughnessFactor};
+      else if (property == "emissiveFactor") result = readVector(material.emissiveFactor, {0, 0, 0});
+      else if (property == "alphaCutoff") result = {material.alphaCutoff};
+      else if (property == "normalTexture/scale") result = {material.normalTexture.scale};
+      else if (property == "occlusionTexture/strength") result = {material.occlusionTexture.strength};
+      else {
+        const auto tokens = splitPointer('/' + property);
+        const auto& parent = *materialPropertyParent(material, tokens);
+        const auto& leaf = tokens.back();
+        if (!parent.Has(leaf)) {
+          static const std::map<std::string, double> defaults = {
+            {"emissiveStrength",1}, {"ior",1.5}, {"dispersion",0}, {"transmissionFactor",0},
+            {"thicknessFactor",0}, {"attenuationColor",1}, {"clearcoatFactor",0},
+            {"clearcoatRoughnessFactor",0}, {"sheenColorFactor",0}, {"sheenRoughnessFactor",0},
+            {"specularFactor",1}, {"specularColorFactor",1}, {"iridescenceFactor",0},
+            {"iridescenceIor",1.3}, {"iridescenceThicknessMinimum",100},
+            {"iridescenceThicknessMaximum",400}, {"anisotropyStrength",0}, {"anisotropyRotation",0},
+            {"diffuseTransmissionFactor",0}, {"diffuseTransmissionColorFactor",1},
+            {"diffuseFactor",1}, {"glossinessFactor",1}, {"offset",0}, {"scale",1}, {"rotation",0},
+          };
+          const auto found = defaults.find(leaf);
+          if (found == defaults.end()) invalid("animation pointer has no finite numeric default");
+          result.assign(target.components, found->second);
+        } else {
+          const auto& value = parent.Get(leaf);
+          validateMaterialLeaf(parent, leaf, target.components, extendedUnitIntervalProperty(property));
+          if (target.components == 1) result = {value.GetNumberAsDouble()};
+          else for (size_t i = 0; i < value.ArrayLen(); ++i) result.push_back(value.Get(i).GetNumberAsDouble());
+        }
+      }
+      break;
+    }
+    case AnimationTargetKind::Light: {
+      const auto& light = model.lights.at(target.index);
+      if (property == "color") result = readVector(light.color, {1, 1, 1});
+      else if (property == "intensity") result = {light.intensity};
+      else if (property == "range") result = {light.range};
+      else if (property == "spot/innerConeAngle") result = {light.spot.innerConeAngle};
+      else if (property == "spot/outerConeAngle") result = {light.spot.outerConeAngle};
+      break;
+    }
+    case AnimationTargetKind::Camera: {
+      const auto& camera = model.cameras.at(target.index);
+      if (property == "perspective/yfov") result = {camera.perspective.yfov};
+      else if (property == "perspective/znear") result = {camera.perspective.znear};
+      else if (property == "perspective/zfar") result = {camera.perspective.zfar};
+      else if (property == "perspective/aspectRatio") result = {camera.perspective.aspectRatio};
+      else if (property == "orthographic/xmag") result = {camera.orthographic.xmag};
+      else if (property == "orthographic/ymag") result = {camera.orthographic.ymag};
+      else if (property == "orthographic/znear") result = {camera.orthographic.znear};
+      else if (property == "orthographic/zfar") result = {camera.orthographic.zfar};
+      break;
+    }
+  }
+  if (result.size() != target.components || !std::ranges::all_of(result, [](double value) { return std::isfinite(value); }))
+    invalid("animation target has invalid numeric storage");
+  if (target.element) return {result.at(*target.element)};
+  return result;
+}
+
 AnimationPose SampleAnimation(const AnimationClip& clip, double timeSeconds) {
   if (!std::isfinite(timeSeconds)) invalid("animation sample time must be finite");
   AnimationPose pose;

@@ -26,9 +26,10 @@ the nearest geometric hit, find the highest ancestor that disables the relevant
 flag, then route to its parent. A blocked source root returns no target rather
 than selecting a synthetic import/editor root. CPU and GPU ID picking use the
 same routing helpers. This does not trace through excluded geometry to find a
-farther eligible hit. The capability registry therefore reports selection and
-hover as partial. Behavior-graph events and boolean animation-pointer channels
-are not implemented by this change.
+farther eligible hit. The capability registry reports selection and hover as
+partial. The [behavior graph runtime](gltf-interactivity.md) uses the same
+eligible ancestor route for viewport events. Boolean animation-pointer
+channels remain open.
 
 The hierarchy's Visible, Selectable and Hoverable controls edit local flags.
 Undo/redo retains all three independently; grouped capture edits are one history
@@ -89,5 +90,5 @@ zero VUID/SYNC errors and all 94 manifest entries unchanged. Evidence:
 `node-flags-scene-switch-runtime/results.json`,
 `inactive-scene-capacity-runtime/results.json` and
 `node-flags-scenes-state-runtime/results.json`. All changes remain local /
-uncommitted; issue #100 stays open pending integration. Behavior-graph event
-integration remains dependent on #103.
+uncommitted at that checkpoint. The [behavior graph runtime](gltf-interactivity.md)
+adds selection and hover events under #103.

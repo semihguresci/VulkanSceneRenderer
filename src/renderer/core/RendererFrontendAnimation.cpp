@@ -26,6 +26,7 @@ void RendererFrontend::resetGltfAnimation() {
   gltfAnimationCameraNode_.reset(); gltfAnimationCamera_.reset();
   gltfAnimationGraphIdentity_ = sceneGraph_.identity();
   pendingGltfAnimationDeltaSeconds_ = 0;
+  resetGltfInteractivity();
   if (!subs_.sceneManager) return;
   container::ui::GltfAnimationControls controls;
   try {
@@ -123,6 +124,7 @@ void RendererFrontend::updateGltfAnimation() {
         } catch(const std::exception& error) {controls->cameraProjectionError=error.what();}
       }
     }
+    dirty.merge(updateGltfInteractivity(delta, discontinuity));
     const double previous = gltfAnimation_->time();
     if (gltfAnimation_->playing() && delta > 0 && !discontinuity) {
       if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();

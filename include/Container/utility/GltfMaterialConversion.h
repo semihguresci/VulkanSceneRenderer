@@ -36,6 +36,7 @@ struct GltfMaterialConversionContext {
   std::span<const std::string> extensionsUsed;
   std::span<const uint32_t> colorResources, dataResources;
   size_t runtimeResourceCount{};
+  bool enableExperimentalMaterials{};
 };
 struct GltfMaterialConversionLimits {
   uint64_t maxSourceTextures{1'000'000};

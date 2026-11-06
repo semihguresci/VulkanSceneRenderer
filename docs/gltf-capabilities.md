@@ -42,6 +42,10 @@ and source URI/node provenance. Linked child animations and skins require a
 later profile. Unsupported merge metadata, including XMP packet tables, still
 rejects composition. See [scene export](gltf-scene-export.md) for save behavior.
 
+`--experimental-opacity-micromaps` lets compatible Vulkan devices use authored
+`EXT_mesh_opacity_micromap` records on static alpha-mask ray geometry. The core
+glTF material provides sampled-alpha fallback. [Supported profile](gltf-opacity-micromaps.md)
+
 `GltfCapabilities.cpp` is the explicit runtime registry. Parsing an extension's
 JSON does not establish runtime support. An unknown or unsupported required
 extension rejects the asset. An unsupported optional extension warns and uses
@@ -151,6 +155,11 @@ GPU streams; authored base frames retain GPU evaluation. See the deformation
 document for supported UV sets and frame policy. Future decoder integration
 must update the registry and tests together; a dependency being installed is
 insufficient.
+
+The primary glTF loader supports a bounded default `KHR_interactivity`
+graph with events, flow, typed variables, numeric Object Model pointers,
+interpolation, and clip control. See [behavior graphs](gltf-interactivity.md)
+for the operation list, authoring limits, and diagnostics.
 
 Errors and warnings identify the asset path, a stable diagnostic code and the
 extension or version involved. Load-time warnings go to the import log;

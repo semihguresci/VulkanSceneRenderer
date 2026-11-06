@@ -1,4 +1,5 @@
 #include "Container/common/CommonGLFW.h"
+#include "Container/geometry/GltfOpacityMicromaps.h"
 #include "Container/renderer/raytracing/RaySceneAcceleration.h"
 #include "Container/renderer/raytracing/RaySceneExtraction.h"
 #include "Container/renderer/raytracing/RayInstanceTransformPass.h"
@@ -41,6 +42,7 @@ static_assert(sizeof(Probe) == 48);
 class RaySceneGpu : public ::testing::Test {
 protected:
   virtual bool enableQueries() const { return true; }
+  virtual bool enableMicromaps() const { return false; }
   static VKAPI_ATTR VkBool32 VKAPI_CALL validationCallback(
       VkDebugUtilsMessageSeverityFlagBitsEXT severity,
       VkDebugUtilsMessageTypeFlagsEXT,
@@ -96,6 +98,7 @@ protected:
     DeviceCreateInfo deviceInfo;
     deviceInfo.requiredExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     deviceInfo.enableRayQueries = enableQueries();
+    deviceInfo.enableOpacityMicromaps = enableMicromaps();
     VkPhysicalDeviceVulkan12Features v12{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     v12.bufferDeviceAddress = VK_TRUE;
@@ -152,7 +155,8 @@ protected:
   }
   std::vector<glm::uvec4> trace(const RaySceneGeneration &generation,
                                 std::span<const Probe> probes,
-                                std::span<const RayTriangleData> triangles = {}) {
+                                std::span<const RayTriangleData> triangles = {},
+                                double* elapsedNanoseconds = nullptr) {
     TestBuffer inputs(*memory, probes.size_bytes());
     TestBuffer output(*memory, probes.size() * sizeof(glm::uvec4));
     TestBuffer attributes(*memory, std::max(triangles.size_bytes(), sizeof(RayTriangleData)));
@@ -228,11 +232,29 @@ protected:
     vk::raii::Pipeline pipeline(
         device->raii(), nullptr,
         vk::ComputePipelineCreateInfo({}, stage, *pipelineLayout));
+    vk::raii::QueryPool timing{nullptr};
+    uint32_t timestampBits = 0;
+    if (elapsedNanoseconds) {
+      uint32_t count = 0;
+      vkGetPhysicalDeviceQueueFamilyProperties(device->physicalDevice(), &count, nullptr);
+      std::vector<VkQueueFamilyProperties> families(count);
+      vkGetPhysicalDeviceQueueFamilyProperties(device->physicalDevice(), &count, families.data());
+      timestampBits = families.at(device->queueFamilyIndices().graphicsFamily.value()).timestampValidBits;
+      if (timestampBits)
+        timing = vk::raii::QueryPool(device->raii(), vk::QueryPoolCreateInfo({}, vk::QueryType::eTimestamp, 2));
+      *elapsedNanoseconds = 0;
+    }
     begin();
     command.bindPipeline(vk::PipelineBindPoint::eCompute, *pipeline);
     command.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *pipelineLayout,
                                0, *sets.front(), {});
+    if (timestampBits) {
+      command.resetQueryPool(*timing, 0, 2);
+      command.writeTimestamp2(vk::PipelineStageFlagBits2::eTopOfPipe, *timing, 0);
+    }
     command.dispatch(static_cast<uint32_t>(probes.size()), 1, 1);
+    if (timestampBits)
+      command.writeTimestamp2(vk::PipelineStageFlagBits2::eBottomOfPipe, *timing, 1);
     vk::MemoryBarrier2 barrier(vk::PipelineStageFlagBits2::eComputeShader,
                                vk::AccessFlagBits2::eShaderWrite,
                                vk::PipelineStageFlagBits2::eHost,
@@ -242,6 +264,16 @@ protected:
     dependency.pMemoryBarriers = &barrier;
     command.pipelineBarrier2(dependency);
     submit();
+    if (timestampBits) {
+      std::array<uint64_t, 2> timestamps{};
+      if (vkGetQueryPoolResults(device->device(), *timing, 0, 2, sizeof(timestamps), timestamps.data(),
+                                sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
+        throw std::runtime_error("ray query timestamp readback failed");
+      VkPhysicalDeviceProperties properties{};
+      vkGetPhysicalDeviceProperties(device->physicalDevice(), &properties);
+      const uint64_t mask = UINT64_MAX >> (64 - timestampBits);
+      *elapsedNanoseconds = double((timestamps[1] - timestamps[0]) & mask) * properties.limits.timestampPeriod;
+    }
     if (vmaInvalidateAllocation(memory->allocator(), output.buffer.allocation,
                                 0, VK_WHOLE_SIZE) != VK_SUCCESS)
       throw std::runtime_error("probe readback failed");
@@ -270,6 +302,156 @@ TEST_F(RaySceneRasterFallbackGpu, DisabledBackendDoesNotCreateRayResources) {
   RaySceneAcceleration backend(*device, *memory);
   EXPECT_FALSE(backend.supported());
   EXPECT_THROW((void)backend.recordBuild(command, {}), std::runtime_error);
+}
+
+class RaySceneMicromapGpu : public RaySceneGpu {
+  bool enableMicromaps() const override { return true; }
+};
+
+struct MicromapFixture {
+  using Attachment = container::geometry::gltf::GltfOpacityMicromapAttachment;
+  using Map = container::geometry::gltf::GltfOpacityMicromap;
+  std::array<container::geometry::Vertex, 12> vertices{};
+  std::array<uint32_t, 12> indices{};
+  std::array<RayTriangleData, 4> alpha{};
+  std::shared_ptr<const Attachment> attachment;
+  std::shared_ptr<const Attachment> specials;
+  std::array<RaySceneGeometry, 2> geometry;
+  std::array<RaySceneInstance, 2> instances;
+
+  MicromapFixture() {
+    for (uint32_t triangle = 0; triangle < 4; ++triangle) {
+      const float x = float(triangle * 3);
+      vertices[3 * triangle].position = {x - 1, -1, 0};
+      vertices[3 * triangle + 1].position = {x + 1, -1, 0};
+      vertices[3 * triangle + 2].position = {x, 1, 0};
+      for (uint32_t corner = 0; corner < 3; ++corner)
+        indices[3 * triangle + corner] = 3 * triangle + corner;
+      alpha[triangle].vertexAlpha = glm::vec4(triangle == 1 || triangle == 2 ? 1.f : 0.f);
+    }
+    auto source = std::make_shared<Map>();
+    source->data = {std::byte{0}, std::byte{1}, std::byte{2}};
+    source->triangles = {{0, 0, VK_OPACITY_MICROMAP_FORMAT_2_STATE_EXT},
+                         {1, 0, VK_OPACITY_MICROMAP_FORMAT_2_STATE_EXT},
+                         {2, 0, VK_OPACITY_MICROMAP_FORMAT_4_STATE_EXT}};
+    source->usage = {{2, 0, VK_OPACITY_MICROMAP_FORMAT_2_STATE_EXT},
+                     {1, 0, VK_OPACITY_MICROMAP_FORMAT_4_STATE_EXT}};
+    attachment = std::make_shared<Attachment>(Attachment{source, {0, 1, 2, UINT32_MAX - 3}, source->usage});
+    specials = std::make_shared<Attachment>(Attachment{source,
+        {UINT32_MAX, UINT32_MAX - 1, UINT32_MAX - 2, UINT32_MAX - 3}, {}});
+    geometry = {RaySceneGeometry{{"micromap"}, 1, 1, vertices, indices, false},
+                RaySceneGeometry{{"micromap"}, 2, 1, vertices, indices, false}};
+    instances = {RaySceneInstance{0, 10},
+                 RaySceneInstance{1, 11, glm::translate(glm::mat4(1), glm::vec3(0, 4, 0))}};
+  }
+
+  static std::vector<Probe> probes(uint32_t repeats = 1, bool forcedNonOpaque = false) {
+    std::vector<Probe> result;
+    result.reserve(repeats * 8);
+    for (uint32_t repeat = 0; repeat < repeats; ++repeat)
+      for (uint32_t copy = 0; copy < 2; ++copy)
+        for (uint32_t triangle = 0; triangle < 4; ++triangle)
+          result.push_back({{float(triangle * 3), float(copy * 4), 2, .001f}, {0, 0, -1, 4},
+              {forcedNonOpaque ? 0x1ffu : 0xffu, std::bit_cast<uint32_t>(1.f), std::bit_cast<uint32_t>(.5f), 2}});
+    return result;
+  }
+};
+
+TEST_F(RaySceneGpu, DisabledMicromapsPreserveSampledAlphaAndOrdinaryReuse) {
+  if (!device->rayQueriesEnabled()) GTEST_SKIP() << device->rayQuerySupport().unavailableReason();
+  ASSERT_FALSE(device->opacityMicromapsEnabled());
+  MicromapFixture fixture;
+  fixture.geometry[0].opacityMicromap = fixture.attachment;
+  fixture.geometry[1].opacityMicromap = fixture.specials;
+  RaySceneAcceleration backend(*device, *memory);
+  begin();
+  const auto fallback = backend.recordBuild(command, {fixture.geometry, fixture.instances});
+  submit();
+  ASSERT_EQ(fallback->stats().opacityMicromapCount, 0u);
+  EXPECT_EQ(fallback->stats().opacityMicromapFallbackBlas, 2u);
+  const auto hits = trace(*fallback, MicromapFixture::probes(), fixture.alpha);
+  for (size_t probe = 0; probe < hits.size(); ++probe) {
+    EXPECT_EQ(hits[probe].x, probe % 4 == 1 || probe % 4 == 2 ? 1u : 0u);
+    EXPECT_EQ(hits[probe].z, 1u);
+  }
+  fixture.geometry[0].opacityMicromap.reset();
+  begin();
+  const auto reused = backend.recordBuild(command, {fixture.geometry, fixture.instances}, fallback);
+  submit();
+  EXPECT_EQ(reused->stats().blasReused, 2u);
+}
+
+TEST_F(RaySceneMicromapGpu, BuildsSharedMapWithCutoutParityAndRetainedGenerations) {
+  if (!device->opacityMicromapsEnabled()) GTEST_SKIP() << "VK_EXT_opacity_micromap unavailable";
+  MicromapFixture fixture;
+  RaySceneAcceleration backend(*device, *memory);
+  const auto build = [&](const std::shared_ptr<const RaySceneGeneration>& previous = {}) {
+    begin();
+    auto generation = backend.recordBuild(command, {fixture.geometry, fixture.instances}, previous);
+    submit();
+    return generation;
+  };
+  const auto baseline = build();
+  fixture.geometry[0].opacityMicromap = fixture.attachment;
+  fixture.geometry[1].opacityMicromap = fixture.specials;
+  const auto mapped = build(baseline);
+  ASSERT_EQ(mapped->stats().blasBuilt, 2u);
+  ASSERT_EQ(mapped->stats().opacityMicromapAttachedBlas, 2u);
+  EXPECT_EQ(mapped->stats().opacityMicromapCount, 1u);
+  EXPECT_EQ(mapped->stats().opacityMicromapBuilt, 1u);
+  EXPECT_GT(mapped->stats().opacityMicromapBytes, 0u);
+  EXPECT_EQ(mapped->stats().opacityMicromapFallbackBlas, 0u);
+
+  const auto probes = MicromapFixture::probes(512);
+  double baselineNs = 0, mappedNs = 0;
+  const auto ordinaryHits = trace(*baseline, probes, fixture.alpha, &baselineNs);
+  const auto mappedHits = trace(*mapped, probes, fixture.alpha, &mappedNs);
+  ASSERT_EQ(ordinaryHits.size(), mappedHits.size());
+  for (size_t probe = 0; probe < mappedHits.size(); ++probe) {
+    EXPECT_EQ(mappedHits[probe].x, ordinaryHits[probe].x) << "visibility probe " << probe;
+    EXPECT_EQ(mappedHits[probe].y, ordinaryHits[probe].y) << "identity probe " << probe;
+    EXPECT_EQ(mappedHits[probe].w, ordinaryHits[probe].w) << "distance probe " << probe;
+    EXPECT_EQ(mappedHits[probe].z, probe % 4 >= 2 ? 1u : 0u) << "candidate probe " << probe;
+  }
+  const auto forced = trace(*mapped, MicromapFixture::probes(1, true), fixture.alpha);
+  EXPECT_EQ(forced[0].z, 0u); // FORCE_NON_OPAQUE cannot restore known-transparent microtriangles.
+  EXPECT_EQ(forced[1].z, 1u); // Known-opaque triangles still reach existing sampled-alpha shaders.
+  EXPECT_EQ(forced[4].z, 0u);
+  EXPECT_EQ(forced[5].z, 1u);
+
+  const auto reused = build(mapped);
+  EXPECT_EQ(reused->stats().blasReused, 2u);
+  EXPECT_EQ(reused->stats().opacityMicromapBuilt, 0u);
+  const auto total = [](const RaySceneBuildStats& stats) {
+    return stats.accelerationAllocatedBytes + stats.inputAllocatedBytes + stats.scratchAllocatedBytes;
+  };
+  const std::array mappedOnly{mapped};
+  EXPECT_EQ(RaySceneGeneration::retainedAllocatedBytes(mappedOnly), total(mapped->stats()));
+  const std::array retained{mapped, reused};
+  EXPECT_LT(RaySceneGeneration::retainedAllocatedBytes(retained), total(mapped->stats()) + total(reused->stats()));
+
+  auto incompatible = std::make_shared<MicromapFixture::Attachment>(*fixture.attachment);
+  incompatible->indices[0] = 8;
+  fixture.geometry[0].opacityMicromap = std::move(incompatible);
+  const auto rejected = build(reused);
+  EXPECT_EQ(rejected->stats().opacityMicromapFallbackBlas, 1u);
+  EXPECT_EQ(rejected->stats().blasBuilt, 1u);
+  EXPECT_EQ(rejected->stats().blasReused, 1u);
+  EXPECT_EQ(trace(*rejected, MicromapFixture::probes(), fixture.alpha)[0].z, 1u);
+  EXPECT_EQ(trace(*mapped, MicromapFixture::probes(), fixture.alpha)[0].z, 0u);
+
+  auto changed = std::make_shared<MicromapFixture::Attachment>(*fixture.attachment);
+  changed->indices[0] = UINT32_MAX - 1;
+  --changed->usage[0].count;
+  fixture.geometry[0].opacityMicromap = std::move(changed);
+  const auto reattached = build(mapped);
+  EXPECT_EQ(reattached->stats().blasBuilt, 1u);
+  EXPECT_EQ(reattached->stats().opacityMicromapBuilt, 0u);
+  EXPECT_EQ(trace(*reattached, MicromapFixture::probes(), fixture.alpha)[0].x, 1u);
+  std::printf("Opacity micromap fixture: %zu rays, sampled %.3f us, mapped %.3f us, map storage %llu bytes, allocation totals %llu -> %llu bytes\n",
+      probes.size(), baselineNs / 1000., mappedNs / 1000.,
+      static_cast<unsigned long long>(mapped->stats().opacityMicromapBytes),
+      static_cast<unsigned long long>(total(baseline->stats())), static_cast<unsigned long long>(total(mapped->stats())));
 }
 
 TEST_F(RaySceneGpu,

@@ -14,6 +14,7 @@
 #include "Container/renderer/pipeline/RuntimeShaderCompiler.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/Camera.h"
+#include "Container/utility/FrameSyncManager.h"
 #include "Container/utility/GuiManager.h"
 #include "Container/utility/Logger.h"
 #include "Container/utility/Platform.h"
@@ -47,13 +48,27 @@ void displayBarrier(VkCommandBuffer command, VkImage image, bool forReading) {
 
 void RendererFrontend::ensureReferencePathResources() {
   referenceRecorded_ = false;
-  if (!referencePathActive() || subs_.referencePathTracePass || !referenceStatus_.empty()) return;
+  if (!referencePathActive()) return;
+  auto oidn = subs_.guiManager ? subs_.guiManager->referenceOidn() : svc_.config.pathOidn;
+  if (!subs_.guiManager && referenceOidnQualityOverride_)
+    oidn.quality = *referenceOidnQualityOverride_;
+  if (auto& current = subs_.referencePathTracePass) {
+    if (current->oidnQuality() == oidn.quality) {
+      current->setOidnSampleInterval(oidn.sampleInterval);
+      return;
+    }
+    subs_.frameSyncManager->waitForAllFrames();
+    current.reset();
+    referenceStatus_.clear();
+  }
+  if (!referenceStatus_.empty()) return;
   try {
     auto pass = std::make_unique<ReferencePathTracePass>(svc_.ctx.deviceWrapper,
         *svc_.allocationManager.memoryManager(), svc_.pipelineManager);
     pass->createResources(activeShaderReload_ ? activeShaderReload_->directory : container::util::executableDirectory(),
         uint32_t(svc_.swapChainManager.imageCount()), svc_.swapChainManager.extent(),
-        subs_.sceneManager->descriptorSetLayout(), subs_.lightingManager->lightDescriptorSetLayout());
+        subs_.sceneManager->descriptorSetLayout(), subs_.lightingManager->lightDescriptorSetLayout(),
+        512ull * 1024 * 1024, oidn);
     subs_.referencePathTracePass = std::move(pass);
     referenceDiagnosticSeen_.assign(svc_.swapChainManager.imageCount(), 0);
     referenceDiagnosticEpoch_ = referenceUnsupported_ = referenceRejected_ = 0;
@@ -207,6 +222,7 @@ void RendererFrontend::collectReferenceDiagnostics(uint32_t image) {
   if (!pass || image >= referenceDiagnosticSeen_.size()) return;
   const auto serial = pass->diagnosticSubmission(image);
   if (!serial || referenceDiagnosticSeen_[image] == serial) return;
+  pass->collectOidnTiming(image);
   referenceDiagnosticSeen_[image] = serial;
   const auto epoch = pass->diagnosticEpoch(image);
   if (epoch != pass->historyResets()) return;

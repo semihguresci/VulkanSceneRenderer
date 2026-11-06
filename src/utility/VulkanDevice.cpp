@@ -62,6 +62,61 @@ bool supportsPerformanceQueryFeature(VkPhysicalDevice device) {
   return performanceFeatures.performanceCounterQueryPools == VK_TRUE;
 }
 
+// vk_oidn 0.2.0's image-view backend is optional. Clone the application's
+// core feature chain only if the selected device can supply its full contract.
+struct ReferenceOidnFeatures {
+  VkPhysicalDeviceVulkan14Features v14{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES};
+  VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+  VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+  VkPhysicalDeviceVulkan11Features v11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+  VkPhysicalDeviceCooperativeMatrixFeaturesKHR cooperative{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
+
+  bool enable(VkPhysicalDevice device, std::span<const VkExtensionProperties> extensions,
+              const void* requested, VkPhysicalDeviceFeatures& base) {
+    const auto* head = static_cast<const VkBaseInStructure*>(requested);
+    if (!head || head->sType != v14.sType || !head->pNext || head->pNext->sType != v13.sType ||
+        !head->pNext->pNext || head->pNext->pNext->sType != v12.sType ||
+        !head->pNext->pNext->pNext || head->pNext->pNext->pNext->sType != v11.sType ||
+        !hasExtension(extensions, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME)) return false;
+
+    VkPhysicalDeviceFeatures2 supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    supported.pNext = &v14;
+    v14.pNext = &v13;
+    v13.pNext = &v12;
+    v12.pNext = &v11;
+    if (hasExtension(extensions, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME))
+      v11.pNext = &cooperative;
+    vkGetPhysicalDeviceFeatures2(device, &supported);
+    if (!supported.features.shaderInt64 || !supported.features.shaderInt16 ||
+        !supported.features.shaderStorageImageReadWithoutFormat ||
+        !supported.features.shaderStorageImageWriteWithoutFormat || !v11.storageBuffer16BitAccess ||
+        !v12.bufferDeviceAddress || !v12.shaderFloat16 || !v12.vulkanMemoryModel ||
+        !v12.vulkanMemoryModelDeviceScope || !v13.maintenance4 ||
+        !v13.subgroupSizeControl || !v13.computeFullSubgroups || !v14.pushDescriptor) return false;
+
+    v14 = *reinterpret_cast<const VkPhysicalDeviceVulkan14Features*>(head);
+    v13 = *reinterpret_cast<const VkPhysicalDeviceVulkan13Features*>(head->pNext);
+    v12 = *reinterpret_cast<const VkPhysicalDeviceVulkan12Features*>(head->pNext->pNext);
+    v11 = *reinterpret_cast<const VkPhysicalDeviceVulkan11Features*>(head->pNext->pNext->pNext);
+    v14.pNext = &v13;
+    v13.pNext = &v12;
+    v12.pNext = &v11;
+    if (cooperative.cooperativeMatrix) {
+      cooperative.cooperativeMatrixRobustBufferAccess = VK_FALSE;
+      cooperative.pNext = v11.pNext;
+      v11.pNext = &cooperative;
+    }
+    base.shaderInt64 = base.shaderInt16 = VK_TRUE;
+    base.shaderStorageImageReadWithoutFormat = base.shaderStorageImageWriteWithoutFormat = VK_TRUE;
+    v11.storageBuffer16BitAccess = VK_TRUE;
+    v12.shaderFloat16 = v12.vulkanMemoryModel = v12.vulkanMemoryModelDeviceScope = VK_TRUE;
+    v13.subgroupSizeControl = v13.computeFullSubgroups = VK_TRUE;
+    v14.pushDescriptor = VK_TRUE;
+    return true;
+  }
+};
+
 const VkPhysicalDeviceVulkan12Features* requestedVulkan12Features(
     const void* next) {
   const auto* feature = static_cast<const VkBaseInStructure*>(next);
@@ -236,6 +291,8 @@ void VulkanDevice::createLogicalDevice() {
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
   VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+  VkPhysicalDeviceOpacityMicromapFeaturesEXT opacityMicromapFeatures{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT};
   // Only query extension structs advertised by the selected device.
   VkPhysicalDeviceFeatures2 rayFeatures{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
@@ -247,12 +304,18 @@ void VulkanDevice::createLogicalDevice() {
     rayQueryFeatures.pNext = rayFeatures.pNext;
     rayFeatures.pNext = &rayQueryFeatures;
   }
+  if (createInfo_.enableOpacityMicromaps &&
+      hasExtension(availableExtensions, VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME)) {
+    opacityMicromapFeatures.pNext = rayFeatures.pNext;
+    rayFeatures.pNext = &opacityMicromapFeatures;
+  }
   vkGetPhysicalDeviceFeatures2(physicalDevice_, &rayFeatures);
   rayQuerySupport_.accelerationStructureFeature =
       accelerationFeatures.accelerationStructure == VK_TRUE;
   rayQuerySupport_.rayQueryFeature = rayQueryFeatures.rayQuery == VK_TRUE;
   rayQueriesEnabled_ =
       createInfo_.enableRayQueries && rayQuerySupport_.supported();
+  opacityMicromapsEnabled_ = rayQueriesEnabled_ && opacityMicromapFeatures.micromap == VK_TRUE;
   std::vector<const char*> enabledExtensions;
   enabledExtensions.reserve(createInfo_.requiredExtensions.size() +
                             createInfo_.optionalExtensions.size());
@@ -271,6 +334,8 @@ void VulkanDevice::createLogicalDevice() {
     addEnabledExtension(VK_KHR_RAY_QUERY_EXTENSION_NAME);
     addEnabledExtension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
   }
+  if (opacityMicromapsEnabled_)
+    addEnabledExtension(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME);
 
   bool enablePerformanceQuery = false;
   for (const char* optionalExtension : createInfo_.optionalExtensions) {
@@ -290,12 +355,26 @@ void VulkanDevice::createLogicalDevice() {
     addEnabledExtension(optionalExtension);
   }
 
+  ReferenceOidnFeatures oidn;
+  const void* coreFeatureChain = createInfo_.next;
+  if (createInfo_.enableReferenceOidn && rayQueriesEnabled_ &&
+      oidn.enable(physicalDevice_, availableExtensions, coreFeatureChain, enabledFeatures_)) {
+    referenceOidnEnabled_ = true;
+    referenceOidnCooperativeMatrix_ = oidn.cooperative.cooperativeMatrix == VK_TRUE;
+    addEnabledExtension(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
+    if (referenceOidnCooperativeMatrix_)
+      addEnabledExtension(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
+    coreFeatureChain = &oidn.v14;
+    enabledVulkan12Features_ = oidn.v12;
+    enabledVulkan12Features_.pNext = nullptr;
+  }
+
   VkPhysicalDevicePerformanceQueryFeaturesKHR performanceQueryFeatures{};
   performanceQueryFeatures.sType =
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PERFORMANCE_QUERY_FEATURES_KHR;
   performanceQueryFeatures.performanceCounterQueryPools =
       enablePerformanceQuery ? VK_TRUE : VK_FALSE;
-  performanceQueryFeatures.pNext = const_cast<void*>(createInfo_.next);
+  performanceQueryFeatures.pNext = const_cast<void*>(coreFeatureChain);
 
   // Enable only the base features used by the shared backend. Do not copy the
   // queried structs: that would opt into capture/replay or host-build features.
@@ -303,14 +382,21 @@ void VulkanDevice::createLogicalDevice() {
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
   VkPhysicalDeviceRayQueryFeaturesKHR enabledRayQuery{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+  VkPhysicalDeviceOpacityMicromapFeaturesEXT enabledOpacityMicromap{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT};
   const void *featureChain =
-      enablePerformanceQuery ? &performanceQueryFeatures : createInfo_.next;
+      enablePerformanceQuery ? &performanceQueryFeatures : coreFeatureChain;
   if (rayQueriesEnabled_) {
     enabledAcceleration.accelerationStructure = VK_TRUE;
     enabledAcceleration.pNext = const_cast<void *>(featureChain);
     enabledRayQuery.rayQuery = VK_TRUE;
     enabledRayQuery.pNext = &enabledAcceleration;
     featureChain = &enabledRayQuery;
+  }
+  if (opacityMicromapsEnabled_) {
+    enabledOpacityMicromap.micromap = VK_TRUE;
+    enabledOpacityMicromap.pNext = const_cast<void*>(featureChain);
+    featureChain = &enabledOpacityMicromap;
   }
 
   VkDeviceCreateInfo deviceCreateInfo{};

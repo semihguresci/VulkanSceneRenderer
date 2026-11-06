@@ -52,7 +52,7 @@ struct alignas(16) ContractResult {
   glm::vec4 iblInput{}, iblNormal{}, diffuseWeights{};
 };
 
-static_assert(sizeof(GpuMaterial) == 1040);
+static_assert(sizeof(GpuMaterial) == 1184);
 static_assert(sizeof(ContractQuery) == 112);
 static_assert(sizeof(ContractResult) == 320);
 static_assert(offsetof(ContractResult, abiIndices) == 160);

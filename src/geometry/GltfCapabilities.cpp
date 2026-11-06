@@ -1,5 +1,7 @@
 #include <Container/geometry/GltfCapabilities.h>
 #include <Container/geometry/GltfCompression.h>
+#include <Container/geometry/GltfExtendedMaterials.h>
+#include <Container/geometry/GltfOpacityMicromaps.h>
 #include <Container/geometry/GltfXmpMetadata.h>
 #include <Container/utility/TextureImageData.h>
 
@@ -14,15 +16,16 @@ namespace container::geometry::gltf {
 namespace {
 
 using enum ExtensionSupport;
+constexpr std::string_view kExperimentalMaterialFlag = "--experimental-gltf-materials";
 const std::array kExtensions{
     ExtensionCapability{"KHR_texture_transform", Supported,
                         "Per-texture offset, rotation, scale and UV0/UV1 selection"},
     ExtensionCapability{"KHR_node_visibility", Supported,
                         "Authored local visual visibility, inherited through the scene hierarchy without disabling cameras"},
     ExtensionCapability{"KHR_node_selectability", Partial,
-                        "Authored inherited eligibility and nearest-hit ancestor routing; no trace-through of excluded geometry or behavior-graph events"},
+                        "Authored inherited eligibility, nearest-hit ancestor routing and graph selection events; no trace-through of excluded geometry"},
     ExtensionCapability{"KHR_node_hoverability", Partial,
-                        "Authored inherited eligibility with the same nearest-hit ancestor routing as selection; no trace-through or behavior-graph events"},
+                        "Authored inherited eligibility, nearest-hit ancestor routing and graph hover events; no trace-through of excluded geometry"},
     ExtensionCapability{"KHR_materials_unlit", Supported, "Unlit material shading"},
     ExtensionCapability{"KHR_materials_specular", Supported,
                         "Specular factor/color and textures"},
@@ -43,6 +46,12 @@ const std::array kExtensions{
                         "Tangent-frame reflection with legacy GGX masking/cap and bent-normal IBL; deferred MSAA resolves material response; mixed probe dielectrics remain unsupported"},
     ExtensionCapability{"KHR_materials_diffuse_transmission", Partial,
                         "Release-candidate thin-surface diffuse response with independent color, alpha-channel factor texture and opposite-side irradiance; raster/probe approximation without volumetric or MIS transport"},
+    ExtensionCapability{kGltfRetroreflection, Partial,
+                        "Experimental mirrored-view base reflection in reference path tracing", kExperimentalMaterialFlag},
+    ExtensionCapability{kGltfScatter, Partial,
+                        "Experimental thin-surface forward and backward scattering in reference path tracing; participating media are unsupported", kExperimentalMaterialFlag},
+    ExtensionCapability{kGltfLegacyScatter, Partial,
+                        "Earlier scatter draft alias with its original field defaults; only thin surfaces render", kExperimentalMaterialFlag},
     ExtensionCapability{"KHR_materials_iridescence", Partial,
                         "Iridescence factors and thickness textures use a cosine-tint approximation rather than thin-film interference"},
     ExtensionCapability{"KHR_materials_pbrSpecularGlossiness", Partial,
@@ -87,6 +96,10 @@ const std::array kExtensions{
                         "Shared geometry with per-instance scene transforms, picking and ray placement; singular transforms require geometry baking"},
     ExtensionCapability{"KHR_animation_pointer", Partial,
                         "Implemented numeric node, material, texture-transform, punctual-light and camera targets are evaluated; arbitrary Object Model properties are diagnosed as unsupported"},
+    ExtensionCapability{"KHR_interactivity", Partial,
+                        "Bounded behavior graph execution with a documented operation set and numeric Object Model targets"},
+    ExtensionCapability{kGltfOpacityMicromapExtension, Partial,
+                        "Experimental optional ray acceleration for static alpha-mask primitives; sampled alpha remains available"},
     ExtensionCapability{"KHR_materials_variants", Supported,
                         "Validated material mappings, undoable scene selection and portable variant export"},
     ExtensionCapability{kGltfXmpExtension, Supported,
@@ -136,7 +149,8 @@ bool CapabilityValidation::supported() const {
 
 CapabilityValidation validateCapabilities(const AssetRequirements& requirements,
                                            std::string_view assetPath,
-                                           std::span<const std::string> unavailableRuntimeExtensions) {
+                                           std::span<const std::string> unavailableRuntimeExtensions,
+                                           std::span<const std::string_view> enabledExperimentalExtensions) {
   CapabilityValidation result;
   auto add = [&](CapabilitySeverity severity, std::string code, std::string message) {
     result.diagnostics.push_back(
@@ -189,7 +203,14 @@ CapabilityValidation validateCapabilities(const AssetRequirements& requirements,
       return;
     }
     const auto* capability = extensionCapability(name);
-    if (!capability || capability->support == Unsupported) {
+    if (capability && !capability->experimentalEnableHint.empty() &&
+        std::ranges::find(enabledExperimentalExtensions, name) == enabledExperimentalExtensions.end()) {
+      add(isRequired ? CapabilitySeverity::Error : CapabilitySeverity::Warning,
+          isRequired ? "unsupported_required_extension" : "unsupported_optional_extension",
+          std::string(isRequired ? "Required" : "Optional") + " extension '" + name +
+              "' needs explicit opt-in with " + std::string(capability->experimentalEnableHint) +
+              (isRequired ? "" : "; importing the asset's fallback"));
+    } else if (!capability || capability->support == Unsupported) {
       std::string message = (isRequired ? "Required extension '" : "Optional extension '") +
           name + "' is unsupported";
       if (capability) message += ": " + std::string(capability->description);

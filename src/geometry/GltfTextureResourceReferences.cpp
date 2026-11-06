@@ -1,6 +1,7 @@
 #include <Container/geometry/GltfTextureResourceReferences.h>
 #include <Container/geometry/GltfLegacyMaterialSerialization.h>
 #include <Container/geometry/GltfMaterialTextureAuthoring.h>
+#include <Container/geometry/GltfExtendedMaterials.h>
 
 #include <algorithm>
 #include <array>
@@ -49,7 +50,8 @@ bool allowed(std::string_view name,Domain domain) {
   if(name=="KHR_xmp_json_ld") return true;
   switch(domain) {
     case Domain::Root:return name=="KHR_materials_variants" || name=="KHR_lights_punctual" || area(name);
-    case Domain::Material:return std::ranges::find(materialExtensions,name)!=materialExtensions.end() || name=="MSFT_lod";
+    case Domain::Material:return std::ranges::find(materialExtensions,name)!=materialExtensions.end() ||
+        std::ranges::find(kGltfExperimentalMaterialExtensions,name)!=kGltfExperimentalMaterialExtensions.end() || name=="MSFT_lod";
     case Domain::Primitive:return name=="KHR_materials_variants" || name=="KHR_draco_mesh_compression";
     case Domain::Node:return name=="KHR_lights_punctual" || area(name) || name=="EXT_mesh_gpu_instancing" || name=="MSFT_lod" ||
         name=="KHR_node_visibility" || name=="KHR_node_selectability" || name=="KHR_node_hoverability";
@@ -341,6 +343,9 @@ struct Scan {
       const auto field=slot.path.substr(slot.path.rfind('/')+1);
       if(const auto* binding=member(*body,field);binding && !info(*binding)) return false;
     }
+    for(const auto& [name,field]:kGltfExperimentalMaterialTextures)
+      if(const auto* body=extension(value.extensions,name))
+        if(const auto* binding=member(*body,field);binding && !info(*binding)) return false;
     if(const auto* sg=extension(value.extensions,"KHR_materials_pbrSpecularGlossiness"))
       for(const auto field:{"diffuseTexture","specularGlossinessTexture"}) if(const auto* binding=member(*sg,field);binding && !info(*binding)) return false;
     return !error && legacy(value.values) && legacy(value.additionalValues);

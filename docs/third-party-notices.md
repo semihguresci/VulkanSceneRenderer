@@ -78,3 +78,9 @@ notice is retained. The restricted Ericsson ETC unpacker is disabled. Optional
 retained. These options default off. Package build-info records each enabled
 backend, and packaging fails if its required upstream notices are missing. See
 [typed texture dependencies](texture-image-data.md) for exact pinned sources.
+
+Optional reference denoising builds statically link NVIDIA's
+[vk_oidn 0.2.0](https://github.com/nvpro-samples/vk_oidn/releases/tag/v0.2.0),
+Copyright 2026 NVIDIA Corporation, under Apache 2.0. The SDK includes the
+Open Image Denoise network weights. Its complete LICENSE and NOTICE are staged
+as `vk_oidn-LICENSE.txt` and `vk_oidn-NOTICE.txt` in `THIRD_PARTY_LICENSES`.

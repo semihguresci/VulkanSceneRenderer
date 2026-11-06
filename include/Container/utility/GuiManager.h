@@ -6,6 +6,7 @@
 #include "Container/renderer/raytracing/RayShadowSettings.h"
 #include "Container/renderer/pathtracing/ReferencePathLensSettings.h"
 #include "Container/renderer/pathtracing/ReferenceGroundSettings.h"
+#include "Container/renderer/pathtracing/ReferenceOidnSettings.h"
 
 #include <array>
 #include <cstddef>
@@ -772,6 +773,8 @@ public:
   [[nodiscard]] bool consumeReferenceAutofocusRequest();
   void setReferenceGround(container::renderer::ReferenceGroundSettings ground) { referenceGround_ = ground; }
   [[nodiscard]] const container::renderer::ReferenceGroundSettings& referenceGround() const { return referenceGround_; }
+  void setReferenceOidn(container::renderer::ReferenceOidnSettings settings) { referenceOidn_ = settings; }
+  [[nodiscard]] container::renderer::ReferenceOidnSettings referenceOidn() const { return referenceOidn_; }
   [[nodiscard]] container::renderer::RenderTechniqueId activeRenderEngine()
       const;
   void setRenderTechniqueDebugState(GuiRenderTechniqueDebugState state);
@@ -1055,6 +1058,9 @@ public:
   void setLightCullingStats(const container::gpu::LightCullingStats &stats);
   void setRendererTelemetry(
       const container::renderer::RendererTelemetryView &telemetry);
+  void setGpuHardwareMonitor(const container::renderer::GpuHardwareMonitor* monitor) {
+    gpuHardwareMonitor_ = monitor;
+  }
   void setLightingSettings(const container::gpu::LightingSettings &settings);
   void setOpenVdbVolumeState(
       bool loaded, const container::renderer::OpenVdbVolumeSettings &settings,
@@ -1307,6 +1313,7 @@ private:
   float referenceFireflyClamp_{};
   bool referenceAutofocusRequested_{};
   container::renderer::ReferenceGroundSettings referenceGround_{};
+  container::renderer::ReferenceOidnSettings referenceOidn_{};
   container::renderer::RenderTechniqueId activeRenderEngine_{};
   std::optional<container::renderer::RenderTechniqueId>
       pendingRenderEngineChange_{};
@@ -1319,7 +1326,7 @@ private:
   uint32_t cullStatsOcclusion_{0};
   container::gpu::LightCullingStats lightCullingStats_{};
   GuiRendererTelemetryView rendererTelemetry_{};
-  std::unique_ptr<container::renderer::GpuHardwareMonitor> gpuHardwareMonitor_;
+  const container::renderer::GpuHardwareMonitor* gpuHardwareMonitor_{};
   container::gpu::LightingSettings lightingSettings_{};
   bool openVdbVolumeLoaded_{false};
   std::unique_ptr<OpenVdbAuthoringPanel> openVdbAuthoring_;

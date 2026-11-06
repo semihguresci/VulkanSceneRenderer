@@ -156,6 +156,13 @@ struct GpuMaterial {
   alignas(16) GpuTextureTransform anisotropyTextureTransform{};
   alignas(16) GpuTextureTransform diffuseTransmissionTextureTransform{};
   alignas(16) GpuTextureTransform diffuseTransmissionColorTextureTransform{};
+  // Experimental draft factors in x/y/z order: retro, scatter strength, scatter anisotropy.
+  alignas(16) glm::vec4 experimentalFactors{0.0f};
+  alignas(16) glm::vec4 scatterColorFactor{1.0f, 1.0f, 1.0f, 0.0f};
+  alignas(16) glm::uvec4 experimentalTextures{std::numeric_limits<uint32_t>::max()};
+  alignas(16) GpuTextureTransform retroreflectionTextureTransform{};
+  alignas(16) GpuTextureTransform scatterStrengthTextureTransform{};
+  alignas(16) GpuTextureTransform scatterColorTextureTransform{};
 };
 
 struct NormalValidationSettings {
@@ -1309,7 +1316,7 @@ static_assert(offsetof(GpuTextureTransform, row0) == 0,
 static_assert(offsetof(GpuTextureTransform, row1) == 16,
               "GpuTextureTransform.row1 offset");
 
-static_assert(sizeof(GpuMaterial) == 1040,
+static_assert(sizeof(GpuMaterial) == 1184,
               "GpuMaterial size mismatch with "
               "shaders/material_data_common.slang. Update shader GpuMaterial "
               "in lockstep.");
@@ -1458,6 +1465,12 @@ static_assert(offsetof(GpuMaterial, extendedPadding) == 940);
 static_assert(offsetof(GpuMaterial, anisotropyTextureTransform) == 944);
 static_assert(offsetof(GpuMaterial, diffuseTransmissionTextureTransform) == 976);
 static_assert(offsetof(GpuMaterial, diffuseTransmissionColorTextureTransform) == 1008);
+static_assert(offsetof(GpuMaterial, experimentalFactors) == 1040);
+static_assert(offsetof(GpuMaterial, scatterColorFactor) == 1056);
+static_assert(offsetof(GpuMaterial, experimentalTextures) == 1072);
+static_assert(offsetof(GpuMaterial, retroreflectionTextureTransform) == 1088);
+static_assert(offsetof(GpuMaterial, scatterStrengthTextureTransform) == 1120);
+static_assert(offsetof(GpuMaterial, scatterColorTextureTransform) == 1152);
 static_assert(kMaterialTextureDescriptorCapacity - 1u <=
                   kMaxExactGBufferMaterialMetadataIndex,
               "G-buffer float material metadata must round-trip all material "

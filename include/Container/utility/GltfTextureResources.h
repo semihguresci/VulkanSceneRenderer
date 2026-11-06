@@ -33,7 +33,8 @@ struct PreparedGltfTextures {
 // Output bytes are bounded across the complete preparation, not per image.
 [[nodiscard]] PreparedGltfTextures PrepareGltfTextures(
     const tinygltf::Model& model, const TextureDecodeOptions& deviceProfile,
-    uint64_t maxPreparedBytes = 512ull * 1024 * 1024);
+    uint64_t maxPreparedBytes = 512ull * 1024 * 1024,
+    bool enableExperimentalMaterials = false);
 
 // Exact number of distinct image/role/sampler resources the prepared producer
 // will publish into a fresh table. Validates every binding before any upload.

@@ -72,6 +72,38 @@ The sidecar identifies the output as
 `path-trace-shadow-matte` with color space `linear-mask`. Ground mode and
 effective placement or material changes reset accumulation.
 
+### Optional Vulkan OIDN display denoising
+
+Enable **Reference display denoising** in Scene Controls, or pass
+`--path-oidn fast`, `balanced`, or `high`. The default is off. Set the refresh
+interval with `--path-oidn-interval N` from 1 to 1,024 attempted samples per
+pixel. The backend refreshes at the interval and at the exact sample stop.
+It can reuse the last filtered image from the same accumulation between updates.
+Camera, scene, and viewport changes discard that image. Changing quality
+recreates the reference resources and starts a fresh accumulation.
+
+The SDK reads the scene-linear mean with first-hit albedo and world-normal
+guides. The shader averages guides with the same accepted samples and camera
+rays as radiance. Misses use zero guides. These are first-surface guides,
+including for glass. Filtering runs in the graphics command buffer before
+display grading. It preserves diagnostic pixels and bypasses shadow mattes.
+PNG shows the filtered display when ready. EXR still exports the raw float32
+mean. Capture telemetry records filtered sample count, image and network
+memory, and the last retired denoising GPU duration. Capture sequences can
+set `"referenceOidn": "off"`, `"fast"`, `"balanced"`, or `"high"`.
+
+The backend requires the pinned [vk_oidn 0.2.0 SDK](https://github.com/nvpro-samples/vk_oidn/releases/tag/v0.2.0).
+Extract the official archive and configure with `-DENABLE_REFERENCE_OIDN=ON`
+and `-Dvk_oidn_DIR=<sdk>/lib/cmake/vk_oidn`. The Windows x64 archive SHA-256 is
+`5077a0fce672f0e4933b5bf2241a4e31192401c996a9a803f3b012a75836f0c7`.
+The library links statically with its shaders and weights. Packaging includes
+its LICENSE and NOTICE. Vulkan storage-image push descriptors and the SDK's
+16-bit compute features must be available. Cooperative matrices are optional.
+If setup is unavailable, the raw display continues and reports the reason.
+
+The validation entry point is `tests/validation/reference_oidn_runtime_regression.py`.
+Run it with `--expect-unavailable` to verify the unfiltered fallback build.
+
 The technique shares the forward graph's depth, picking, editor overlays and HDR
 presentation. Surface generations are requested independently of DDGI, including
 transparent candidates so unsupported materials are diagnosed rather than omitted.
@@ -120,6 +152,9 @@ the cutoff. The graph's readiness policy also prevents shared UI enable flags fr
 reactivating raster transport, DDGI or temporal filtering in reference mode.
 
 ## Transport building blocks
+
+The optional glTF retroreflection and thin scattering profiles use matched
+reference BSDF proposals. See [experimental material controls](gltf-extended-materials.md#experimental-retroreflection-and-scattering).
 
 `shaders/path_transport_common.slang` is an engine-owned Slang include, kept
 separate from raster BRDF approximations, LTC, DDGI feedback and display curves.

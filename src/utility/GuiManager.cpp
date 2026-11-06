@@ -3333,9 +3333,6 @@ void GuiManager::initialize(VkInstance instance, VkDevice device,
   if (initialized_)
     return;
 
-  if (!gpuHardwareMonitor_)
-    gpuHardwareMonitor_ = std::make_unique<container::renderer::GpuHardwareMonitor>(physicalDevice);
-
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGui::StyleColorsDark();
@@ -4763,6 +4760,18 @@ void GuiManager::drawSceneControls(
             ImGuiInputTextFlags_EnterReturnsTrue) && container::renderer::validReferenceFireflyClamp(fireflyClamp))
       referenceFireflyClamp_ = fireflyClamp;
     ShowItemTooltip("Limits the peak RGB value of each sample. Zero keeps the unclamped estimator.");
+    if (ImGui::TreeNode("Reference display denoising")) {
+      using Quality = container::renderer::ReferenceOidnQuality;
+      int quality = static_cast<int>(referenceOidn_.quality);
+      if (ImGui::Combo("Vulkan OIDN", &quality, "Off\0Fast\0Balanced\0High\0"))
+        referenceOidn_.quality = static_cast<Quality>(quality);
+      int interval = static_cast<int>(referenceOidn_.sampleInterval);
+      if (quality != 0 && ImGui::SliderInt("Sample interval", &interval, 1,
+              container::renderer::ReferenceOidnSettings::maxSampleInterval))
+        referenceOidn_.sampleInterval = static_cast<uint32_t>(interval);
+      ImGui::TextDisabled("EXR captures keep the raw accumulation.");
+      ImGui::TreePop();
+    }
     if (ImGui::TreeNode("Reference ground")) {
       using Ground = container::renderer::ReferenceGroundMode;
       auto ground = referenceGround_;

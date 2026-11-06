@@ -93,6 +93,10 @@ VulkanContextResult VulkanContextInitializer::initialize(
     ci.enableValidationLayers  = config_.enableValidationLayers;
     ci.enabledFeatures.samplerAnisotropy       = VK_TRUE;
     ci.enableRayQueries = config_.enableRayQueries;
+    ci.enableOpacityMicromaps = config_.experimentalOpacityMicromaps;
+#if CONTAINER_HAS_VK_OIDN
+    ci.enableReferenceOidn = config_.enableRayQueries;
+#endif
     ci.enabledFeatures.fragmentStoresAndAtomics = VK_TRUE;
     ci.enabledFeatures.geometryShader          = VK_TRUE;
     ci.enabledFeatures.drawIndirectFirstInstance = VK_TRUE;

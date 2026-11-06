@@ -2,6 +2,7 @@
 #include <Container/geometry/GltfMaterialVariants.h>
 #include <Container/geometry/GltfMaterialExport.h>
 #include <Container/geometry/GltfAnimation.h>
+#include <Container/geometry/GltfInteractivity.h>
 #include <Container/geometry/GltfDeformation.h>
 #include <Container/geometry/GltfAccessor.h>
 #include <Container/geometry/GltfInstancing.h>
@@ -869,7 +870,8 @@ std::vector<double> animationRestValue(const tinygltf::Model& rest,
   fail("authored animation rest property is unsupported");
 }
 
-void appendAnimationRestores(tinygltf::Model& model, const tinygltf::Model& rest) {
+void appendAnimationRestores(tinygltf::Model& model, const tinygltf::Model& rest,
+    std::span<const size_t> graphClips) {
   // File defaults describe the saved pose. Each clip must nevertheless restore
   // authored defaults for properties animated by a different clip. Keep all
   // original samplers/accessors intact and append one-key STEP channels only.
@@ -894,6 +896,8 @@ void appendAnimationRestores(tinygltf::Model& model, const tinygltf::Model& rest
   int timeAccessor = -1;
   bool addedPointers = false;
   for (size_t i = 0; i < library.clips.size(); ++i) {
+    // Graph-controlled clips leave unrelated properties to the behavior.
+    if (std::ranges::binary_search(graphClips, i)) continue;
     auto& animation = model.animations[i];
     std::map<Key, std::vector<bool>> coverage;
     for (const auto& track : library.clips[i].tracks) {
@@ -1131,6 +1135,7 @@ void installResource(const std::filesystem::path& staged,
 }  // namespace
 
 tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
+  const bool hasBehavior = snapshot.source && snapshot.source->extensions.contains(kGltfInteractivityExtension);
   validateGraph(snapshot.graph);
   if (!snapshot.sourceNodeIndices.empty() &&
       snapshot.sourceNodeIndices.size() != snapshot.graph.nodeCount())
@@ -1141,6 +1146,15 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
   output.asset.version = "2.0";
   if (output.asset.generator.empty()) output.asset.generator = "Container scene editor";
   const bool compactResources=resourceHoles(snapshot,output);
+  if (hasBehavior) {
+    bool compactNodes = false;
+    for (uint32_t i = 0; i < snapshot.graph.nodeCount() && !compactNodes; ++i)
+      compactNodes = snapshot.graph.isNodeRetired(i);
+    if (compactResources || compactNodes ||
+        std::ranges::find(snapshot.sourceResourceMasks.nodes, uint8_t{0}) != snapshot.sourceResourceMasks.nodes.end() ||
+        std::ranges::find(snapshot.sourceResourceMasks.materials, uint8_t{0}) != snapshot.sourceResourceMasks.materials.end())
+      fail("KHR_interactivity export requires unretired node and resource indices");
+  }
   if(compactResources) {omitInactiveSourceChannels(output,snapshot);packBuffers(output,snapshot.sourcePath);}
   else packResources(output, snapshot.sourcePath);
   // Validate source tracks while their original material/node index spaces
@@ -1148,7 +1162,9 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
   if (!output.animations.empty()) validateAnimations(output);
   if (snapshot.animationRestSource && !output.animations.empty()) {
     try {
-      appendAnimationRestores(output, *snapshot.animationRestSource);
+      const auto graphClips = hasBehavior ? GltfInteractivityAnimationClips(*snapshot.source) :
+          std::optional<std::vector<size_t>>{std::in_place};
+      if (graphClips) appendAnimationRestores(output, *snapshot.animationRestSource, *graphClips);
     } catch (const std::invalid_argument& error) {
       fail("invalid authored animation rest state: " + std::string(error.what()));
     }
@@ -1213,6 +1229,14 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
       fail("source node mapping must not contain duplicate source nodes");
   }
   std::set<int> animatedTransforms;
+  if (hasBehavior) {
+    try {
+      for (const auto node : GltfInteractivityTransformNodes(*snapshot.source))
+        animatedTransforms.insert(static_cast<int>(node));
+    } catch (const std::invalid_argument& error) {
+      fail("invalid KHR_interactivity export graph: " + std::string(error.what()));
+    }
+  }
   for (const auto& animation : output.animations)
     for (const auto& channel : animation.channels) {
       const auto target = channelTarget(channel);
@@ -1489,6 +1513,32 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
     if (std::ranges::any_of(output.nodes, [&](const auto& node) { return node.extensions.contains(extension); }) &&
         std::ranges::find(output.extensionsUsed, extension) == output.extensionsUsed.end())
       output.extensionsUsed.emplace_back(extension);
+  if (hasBehavior) {
+    std::vector<int32_t> nodeMap(snapshot.source->nodes.size(), -1);
+    std::vector<int32_t> weightsMap(nodeMap.size(), -1);
+    for (const auto& [source, destination] : sourceToRuntime) nodeMap.at(size_t(source)) = destination;
+    for (const auto& [source, destinations] : morphNodes)
+      if (destinations.size() == 1) weightsMap.at(size_t(source)) = destinations.front();
+    const GltfInteractivityMappings mappings{{
+        {nodeMap, output.nodes.size()},
+        {weightsMap, output.nodes.size()},
+        {snapshot.sourceMaterialToRuntimeIndices, output.materials.size()},
+        // Renderer light export can independently clone a shared source
+        // definition for each edited binding after this projection.
+        {{}, 0},
+        {{}, output.cameras.size()},
+        {{}, output.animations.size()},
+    }};
+    try {
+      output.extensions[kGltfInteractivityExtension] = RemapGltfInteractivity(*snapshot.source, mappings, &output);
+      if (std::ranges::find(output.extensionsUsed, kGltfInteractivityExtension) == output.extensionsUsed.end())
+        output.extensionsUsed.emplace_back(kGltfInteractivityExtension);
+      output.extensions_json_string.clear();
+      ValidateGltfInteractivity(output);
+    } catch (const std::invalid_argument& error) {
+      fail(error.what());
+    }
+  }
   if (!output.animations.empty()) validateAnimations(output);
   appendMaterialExtensionDeclarations(output);
   if(compactResources) {

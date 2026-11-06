@@ -1,4 +1,5 @@
 #include <Container/geometry/GltfCapabilities.h>
+#include <Container/geometry/GltfExtendedMaterials.h>
 #include <Container/geometry/GltfModelLoader.h>
 #include <Container/geometry/GltfImageSources.h>
 #include <Container/utility/TextureImageData.h>
@@ -569,7 +570,9 @@ TEST(GltfCapabilities, NodeFlagRegistryDistinguishesVisibilityFromInteractionApp
     EXPECT_EQ(validation.diagnostics[0].code, "partial_extension_support");
     EXPECT_NE(validation.diagnostics[0].message.find("ancestor routing"), std::string::npos);
     EXPECT_NE(validation.diagnostics[0].message.find("trace-through"), std::string::npos);
-    EXPECT_NE(validation.diagnostics[0].message.find("behavior-graph"), std::string::npos);
+    const auto event = std::string_view(extension) == "KHR_node_selectability"
+        ? "graph selection events" : "graph hover events";
+    EXPECT_NE(validation.diagnostics[0].message.find(event), std::string::npos);
   }
 }
 
@@ -621,6 +624,79 @@ TEST(GltfCapabilitiesLoader, RequiredExtendedPbrUsesTheSameJsonAndBinaryMetadata
     expectLoadError([&] { (void)gltf::LoadSourceModel(path.string()); }, path,
                     "diffuseTransmissionFactor");
   }
+}
+
+TEST(GltfCapabilitiesLoader, ExperimentalDraftsGateAndValidateBeforeResourceIo) {
+  for (const bool binary : {false, true}) {
+    AssetFixture fixture;
+    auto json = fixture.triangle();
+    json["extensionsUsed"] = json["extensionsRequired"] = {gltf::kGltfRetroreflection, gltf::kGltfScatter};
+    json["materials"] = nlohmann::json::array({{{"extensions", {
+        {gltf::kGltfRetroreflection, {{"retroreflectionFactor", .25}}},
+        {gltf::kGltfScatter, {{"scatterStrengthFactor", .75}, {"scatterAnisotropy", -.4},
+                             {"multiscatterColorFactor", {0, .2, .8}}}}
+    }}}});
+    json["meshes"][0]["primitives"][0]["material"] = 0;
+    auto path = fixture.save(json, binary);
+    expectLoadError([&] { (void)gltf::LoadSourceModel(path.string()); }, path, "--experimental-gltf-materials");
+    gltf::LoadOptions options;
+    options.enableExperimentalMaterials = true;
+    const auto enabled = gltf::LoadModelWithSource(path.string(), options);
+    ASSERT_EQ(enabled.capabilityDiagnostics.size(), 2u);
+    for (const auto& diagnostic : enabled.capabilityDiagnostics)
+      EXPECT_EQ(diagnostic.code, "partial_extension_support");
+    const auto materials = gltf::ParseGltfExperimentalMaterials(enabled.gltfModel);
+    ASSERT_EQ(materials.size(), 1u);
+    EXPECT_FLOAT_EQ(materials[0].retroreflection, .25f);
+    EXPECT_FLOAT_EQ(materials[0].scatterStrength, .75f);
+    EXPECT_FLOAT_EQ(materials[0].scatterAnisotropy, -.4f);
+    EXPECT_EQ(materials[0].scatterColor, glm::vec3(0, .2f, .8f));
+    json["extensionsRequired"].clear();
+    json["materials"][0]["extensions"][gltf::kGltfScatter]["scatterAnisotropy"] = 2;
+    path = fixture.save(json, binary);
+    const auto fallback = gltf::LoadModelWithSource(path.string());
+    ASSERT_EQ(fallback.capabilityDiagnostics.size(), 2u);
+    EXPECT_EQ(fallback.model.vertices().size(), 3u);
+    for (const auto& diagnostic : fallback.capabilityDiagnostics)
+      EXPECT_EQ(diagnostic.code, "unsupported_optional_extension");
+    json["buffers"][0]["uri"] = "must-not-be-read.bin";
+    path = fixture.save(json, binary);
+    expectLoadError([&] { (void)gltf::LoadSourceModel(path.string(), options); }, path, "scatterAnisotropy");
+  }
+}
+
+TEST(GltfCapabilitiesLoader, ExperimentalScatterReadsLegacyDefaultsAndTextureTransform) {
+  AssetFixture fixture;
+  auto json = fixture.triangle();
+  json["extensionsUsed"] = {gltf::kGltfLegacyScatter, gltf::kGltfScatter, "KHR_texture_transform"};
+  json["images"] = {{{"uri", kEmbeddedRedPng}}};
+  json["textures"] = {{{"source", 0}}};
+  const auto object = nlohmann::json::object();
+  json["materials"] = nlohmann::json::array({object, object, object});
+  json["materials"][0]["extensions"][gltf::kGltfLegacyScatter] = object;
+  auto& legacy = json["materials"][1]["extensions"][gltf::kGltfLegacyScatter];
+  legacy["multiscatterColor"] = {.1, .4, 0};
+  legacy["scatterStrengthTexture"] = {{"index", 0}, {"texCoord", 0}};
+  legacy["scatterStrengthTexture"]["extensions"]["KHR_texture_transform"] =
+      {{"texCoord", 1}, {"offset", {.25, .75}}};
+  json["materials"][2]["extensions"][gltf::kGltfLegacyScatter] = {{"scatterStrengthFactor", .5}};
+  json["materials"][2]["extensions"][gltf::kGltfScatter] = object;
+  gltf::LoadOptions options;
+  options.enableExperimentalMaterials = true;
+  const auto source = gltf::LoadSourceModel(fixture.save(json).string(), options);
+  const auto materials = gltf::ParseGltfExperimentalMaterials(source);
+  ASSERT_EQ(materials.size(), 3u);
+  EXPECT_FLOAT_EQ(materials[0].scatterStrength, 1.0f);
+  EXPECT_EQ(materials[0].scatterColor, glm::vec3(0));
+  EXPECT_FLOAT_EQ(materials[1].scatterStrength, 1.0f);
+  EXPECT_EQ(materials[1].scatterColor, glm::vec3(.1f, .4f, 0));
+  const auto& texture = materials[1].scatterStrengthTexture;
+  EXPECT_EQ(texture.sourceTexture, 0);
+  EXPECT_EQ(texture.sourceTexCoord, 0u);
+  EXPECT_EQ(texture.transform.texCoord, 1u);
+  EXPECT_EQ(texture.transform.offset, glm::vec2(.25f, .75f));
+  EXPECT_FLOAT_EQ(materials[2].scatterStrength, 0.0f);
+  EXPECT_EQ(materials[2].scatterColor, glm::vec3(1));
 }
 
 TEST(GltfCapabilitiesLoader, RequiredNodeFlagsUseTheSameJsonAndBinaryMetadataGate) {

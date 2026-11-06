@@ -14,6 +14,7 @@ struct ExtensionCapability {
   std::string_view name;
   ExtensionSupport support;
   std::string_view description;
+  std::string_view experimentalEnableHint{};
 };
 
 // Describes runtime import/rendering support, not just TinyGLTF JSON parsing.
@@ -46,7 +47,8 @@ struct CapabilityValidation {
 // minVersion is absent or supported. A newer required minimum is an error.
 [[nodiscard]] CapabilityValidation validateCapabilities(
     const AssetRequirements& requirements, std::string_view assetPath,
-    std::span<const std::string> unavailableRuntimeExtensions = {});
+    std::span<const std::string> unavailableRuntimeExtensions = {},
+    std::span<const std::string_view> enabledExperimentalExtensions = {});
 [[nodiscard]] std::string formatCapabilityDiagnostic(
     const CapabilityDiagnostic& diagnostic);
 

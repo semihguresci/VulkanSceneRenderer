@@ -154,4 +154,8 @@ When a volume is loaded, **OpenVDB volume** exposes visibility, geometry shadows
 
 **GPU hierarchy transforms** near the top of Scene Controls enables the optional compute path. CPU state remains current for editing, picking and physics. The CPU path is the default; see [behavior and current limits](gpu-hierarchy-transforms.md).
 
+**glTF Animation → Behavior graph** appears when the primary asset supplies an
+interactivity graph. It pauses, resumes, and resets the graph and sends authored
+custom events. [Behavior graph controls and limits](gltf-interactivity.md)
+
 If a control is disabled, hover it and read the adjacent status. The navigation menu exposes existing controls; it does not bypass their asset, device, provenance or build requirements.

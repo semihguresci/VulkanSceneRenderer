@@ -313,6 +313,8 @@ void printCommandLineHelp() {
   --path-ground-color R G B    Linear ground base color [0,1] (0.65)
   --path-ground-metallic F     Ground metallic factor [0,1] (0)
   --path-ground-roughness F    Ground roughness [0,1] (1)
+  --path-oidn QUALITY          Vulkan OIDN display filter off|fast|balanced|high (off)
+  --path-oidn-interval N       Filter every N samples and at the stop [1,1024] (8)
   --path-aperture F            Perspective lens aperture radius in scene units (0)
   --path-focus-distance F      Perspective focal plane distance in scene units (10)
   --display-mode NAME           Display mode (--render-mode is an alias)
@@ -330,6 +332,7 @@ void printCommandLineHelp() {
   --ray-shadow-debug-layer N     Debug view [0,10]
   --no-ray-shadow-denoise        Disable ray shadow denoising
   --no-ray-query                Disable optional ray queries
+  --experimental-opacity-micromaps Enable authored glTF micromaps on compatible ray-query devices
   --area-lighting sampled|ltc    Area light integration mode
   --area-light-samples 9|25|64    Sampled area light count
   --area-shadow-quality N        Raster area shadow quality [0,3]
@@ -414,10 +417,12 @@ void printCommandLineHelp() {
   --bloom / --no-bloom            Enable/disable bloom
   --screenshot PATH             Capture window PNG or scene-linear EXR
   --screenshot-viewport         Omit editor overlays from PNG capture
+  --gpu-hardware-telemetry      Add optional NVML readings to capture telemetry
   --save-scene PATH              Save primary editable scene as .glb or .gltf
   --gltf-variant N               Select material variant N (zero based; -1 Default)
   --gltf-scene N                 Select glTF scene N (zero based; authored default otherwise)
   --experimental-gltf-linked-assets Enable the pinned glTF 2.1 URI-only linked asset profile
+  --experimental-gltf-materials Enable the pinned glTF retroreflection and thin scattering drafts
   --animation-clip N             Select and play glTF animation N (zero based)
   --animation-time F             Seek selected glTF animation in seconds
   --animation-speed F            glTF playback multiplier (negative reverses)
@@ -758,6 +763,15 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       config.pathFireflyClamp = parseFloat(requireValue(argc, argv, i, arg), arg);
       if (!container::renderer::validReferenceFireflyClamp(config.pathFireflyClamp))
         throw std::invalid_argument("--path-firefly-clamp must be 0 or in [1e-6,1e20]");
+    } else if (arg == "--path-oidn") {
+      const auto quality = container::renderer::parseReferenceOidnQuality(requireValue(argc, argv, i, arg));
+      if (!quality) throw std::invalid_argument("--path-oidn requires off, fast, balanced or high");
+      config.pathOidn.quality = *quality;
+    } else if (arg == "--path-oidn-interval") {
+      const auto interval = parseUint(requireValue(argc, argv, i, arg), arg);
+      if (interval == 0 || interval > container::renderer::ReferenceOidnSettings::maxSampleInterval)
+        throw std::invalid_argument("--path-oidn-interval must be in [1,1024]");
+      config.pathOidn.sampleInterval = interval;
     } else if (arg == "--path-ground") {
       using Ground = container::renderer::ReferenceGroundMode;
       const auto mode = requireValue(argc, argv, i, arg);
@@ -1045,6 +1059,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       explicitBimImportScale = true;
     } else if (arg == "--screenshot-viewport") {
       config.screenshotViewportOnly = true;
+    } else if (arg == "--gpu-hardware-telemetry") {
+      config.gpuHardwareTelemetry = true;
     } else if (arg == "--visual-regression-capture" || arg == "--screenshot") {
       config.screenshotCapturePath =
           std::string(requireValue(argc, argv, i, arg));
@@ -1057,6 +1073,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       config.gltfAnimationClip = static_cast<int>(clip);
     } else if (arg == "--experimental-gltf-linked-assets") {
       config.experimentalGltfLinkedAssets = true;
+    } else if (arg == "--experimental-gltf-materials") {
+      config.experimentalGltfMaterials = true;
     } else if (arg == "--gltf-scene") {
       const auto scene=parseUint(requireValue(argc,argv,i,arg),arg);
       if(scene>uint32_t(std::numeric_limits<int>::max())) throw std::runtime_error("Scene index is too large");
@@ -1250,6 +1268,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       config.hasBloomEnabledOverride = true;
     } else if (arg == "--no-ray-query") {
       config.enableRayQueries = false;
+    } else if (arg == "--experimental-opacity-micromaps") {
+      config.experimentalOpacityMicromaps = true;
     } else if (arg == "--validation") {
       config.enableValidationLayers = true;
     } else if (arg == "--no-validation") {

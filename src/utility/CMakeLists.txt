@@ -85,6 +85,7 @@ add_library(VulkanSceneRenderer_scene
     SceneManagerCameraPoses.cpp
     SceneManagerMerge.cpp
     SceneManagerMaterials.cpp
+    SceneManagerOpacityMicromaps.cpp
     SceneManagerMaterialResources.cpp
     SceneManagerSourceResources.cpp
     ../renderer/bim/BimMetadata.cpp
@@ -124,7 +125,7 @@ add_library(VulkanSceneRenderer_gpu_hardware_monitor
 )
 target_compile_features(VulkanSceneRenderer_gpu_hardware_monitor PUBLIC cxx_std_23)
 target_include_directories(VulkanSceneRenderer_gpu_hardware_monitor PUBLIC ${_UTILITY_INCLUDE_DIR})
-target_link_libraries(VulkanSceneRenderer_gpu_hardware_monitor PUBLIC Dep_VulkanCore)
+target_link_libraries(VulkanSceneRenderer_gpu_hardware_monitor PUBLIC Dep_VulkanCore nlohmann_json::nlohmann_json)
 if(WIN32)
     target_link_libraries(VulkanSceneRenderer_gpu_hardware_monitor PRIVATE shell32 ole32 uuid)
 elseif(CMAKE_DL_LIBS)

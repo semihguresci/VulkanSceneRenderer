@@ -52,6 +52,7 @@ add_library(VulkanSceneRenderer_geometry
     GltfProjectedSubtreeClone.cpp
     ../utility/SceneNodeName.cpp
     GltfExtendedMaterials.cpp
+    GltfOpacityMicromaps.cpp
     GltfMaterialVariants.cpp
     GltfModelLoader.cpp
     GltfSceneExport.cpp
@@ -63,6 +64,7 @@ add_library(VulkanSceneRenderer_geometry
     GltfMaterialTextureAuthoring.cpp
     GltfPrimitiveFrameVariants.cpp
     GltfAnimation.cpp
+    GltfInteractivity.cpp
     GltfAnimationRuntime.cpp
     GltfCameraEvaluation.cpp
     GltfAnimatedMaterial.cpp

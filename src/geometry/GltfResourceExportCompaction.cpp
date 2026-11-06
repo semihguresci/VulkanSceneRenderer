@@ -1,5 +1,6 @@
 #include <Container/geometry/GltfResourceExportCompaction.h>
 #include <Container/geometry/GltfMaterialTextureAuthoring.h>
+#include <Container/geometry/GltfExtendedMaterials.h>
 #include <Container/geometry/GltfLegacyMaterialSerialization.h>
 
 #include <algorithm>
@@ -203,6 +204,7 @@ void remapMaterial(tinygltf::Material& material,const std::vector<int32_t>& text
     auto& index=f->second.Get<Value::Object>().at("index").Get<int>();const auto next=remap(index,textures,false);extensionChanged|=next!=index;index=next;
   };
   for(const auto& slot:GltfMaterialTextureSlotRegistry()) if(!slot.extension.empty()) rewrite(slot.extension,slot.path.substr(slot.path.rfind('/')+1));
+  for(const auto& [name,field]:kGltfExperimentalMaterialTextures) rewrite(name,field);
   rewrite("KHR_materials_pbrSpecularGlossiness","diffuseTexture");rewrite("KHR_materials_pbrSpecularGlossiness","specularGlossinessTexture");
   for(auto* values:{&material.values,&material.additionalValues}) for(auto& [name,parameter]:*values) if(knownLegacyTexture(name)) {
     auto& index=parameter.json_double_value.at("index");index=remap(int(index),textures,false);

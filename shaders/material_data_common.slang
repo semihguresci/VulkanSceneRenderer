@@ -123,6 +123,12 @@ struct GpuMaterial
     GpuTextureTransform anisotropyTextureTransform;
     GpuTextureTransform diffuseTransmissionTextureTransform;
     GpuTextureTransform diffuseTransmissionColorTextureTransform;
+    float4 experimentalFactors;
+    float4 scatterColorFactor;
+    uint4 experimentalTextures;
+    GpuTextureTransform retroreflectionTextureTransform;
+    GpuTextureTransform scatterStrengthTextureTransform;
+    GpuTextureTransform scatterColorTextureTransform;
 };
 
 // KHR_materials_dispersion channel mapping shared by raster transmission

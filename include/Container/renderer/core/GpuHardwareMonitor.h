@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vulkan/vulkan.h>
+#include <nlohmann/json_fwd.hpp>
 
 #include <chrono>
 #include <cstdint>
@@ -38,6 +39,7 @@ struct GpuHardwareSnapshot {
   std::optional<uint32_t> temperatureCelsius, powerMilliwatts;
   int64_t timestampUnixMilliseconds{};
   int64_t pollMicroseconds{};
+  std::optional<std::chrono::steady_clock::time_point> sampledAt;
 };
 
 // All NVML operations run on one worker. Frame readers never wait for it.
@@ -46,7 +48,7 @@ class GpuHardwareMonitor {
   using PollFunction = std::move_only_function<GpuHardwareSnapshot()>;
   static constexpr std::chrono::seconds pollInterval{1};
 
-  explicit GpuHardwareMonitor(VkPhysicalDevice device);
+  GpuHardwareMonitor(VkPhysicalDevice device, bool enabled);
   explicit GpuHardwareMonitor(PollFunction poll);
 
   [[nodiscard]] std::optional<GpuHardwareSnapshot> trySnapshot() const;
@@ -60,5 +62,7 @@ class GpuHardwareMonitor {
 };
 
 [[nodiscard]] std::string_view gpuHardwareMonitorStatusText(GpuHardwareMonitorStatus status);
+[[nodiscard]] nlohmann::json gpuHardwareTelemetry(const std::optional<GpuHardwareSnapshot>& snapshot,
+    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
 
 } // namespace container::renderer

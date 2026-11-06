@@ -1,4 +1,5 @@
 #include <Container/utility/GltfMaterialConversion.h>
+#include <Container/geometry/GltfExtendedMaterials.h>
 
 #include <Container/geometry/GltfAnimationRuntime.h>
 
@@ -164,6 +165,16 @@ ConvertedGltfMaterial ConvertGltfMaterial(const tinygltf::Material& source,
   Builder builder{context};
   auto& value = builder.result.value;
   geometry::gltf::UpdateAnimatedMaterialProperties(source, value);
+  if (context.enableExperimentalMaterials) {
+    const auto layer = geometry::gltf::ParseGltfExperimentalMaterial(source, context.extensionsUsed, context.textureCount);
+    value.experimental = geometry::gltf::BindGltfExperimentalMaterial(layer, [&](int texture, bool color) {
+      if (texture < 0) return invalid;
+      const auto resource = (color ? context.colorResources : context.dataResources)[size_t(texture)];
+      if (resource == invalid || resource >= context.runtimeResourceCount)
+        fail("experimental material texture role is not available");
+      return resource;
+    });
+  }
   // The numeric updater preserves runtime UV/channel choices by contract.
   // Rebuild all such choices from source here, including absent-slot defaults.
   for (size_t i = 0; i < slotCount; ++i) value.*transforms[i] = TextureTransform{};

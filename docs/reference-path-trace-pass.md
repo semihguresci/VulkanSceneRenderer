@@ -11,7 +11,7 @@ The shared layouts are updated together in host and Slang code:
 
 | Payload | Bytes | Contract |
 | --- | ---: | --- |
-| `GpuMaterial` | 1040 | Existing 896-byte prefix retained; extended material inputs appended |
+| `GpuMaterial` | 1184 | Existing material offsets retained with appended extended and experimental inputs |
 | `LightingData` | 2224 | Existing 80-byte prefix retained; environment and LUT storage appended |
 | `GpuTextureMetadata` | 16 | Sampler index at byte 0, actual bound sampler count at byte 4 |
 | `RayTriangleData` | 64 | UV0/UV1 and corner opacity |

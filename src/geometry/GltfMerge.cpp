@@ -2,6 +2,7 @@
 #include <Container/geometry/GltfMergePlacement.h>
 #include <Container/geometry/GltfAccessor.h>
 #include <Container/geometry/GltfAnimation.h>
+#include <Container/geometry/GltfInteractivity.h>
 #include <Container/geometry/GltfMaterialVariants.h>
 #include <Container/geometry/GltfSceneCatalog.h>
 
@@ -143,6 +144,11 @@ constexpr std::array kMaterialTextureFields{
   std::pair{"KHR_materials_anisotropy","anisotropyTexture"},
   std::pair{"KHR_materials_diffuse_transmission","diffuseTransmissionTexture"},
   std::pair{"KHR_materials_diffuse_transmission","diffuseTransmissionColorTexture"},
+  std::pair{"KHR_materials_retroreflection","retroreflectionTexture"},
+  std::pair{"KHR_materials_scatter","scatterStrengthTexture"},
+  std::pair{"KHR_materials_scatter","multiscatterColorTexture"},
+  std::pair{"KHR_materials_volume_scatter","scatterStrengthTexture"},
+  std::pair{"KHR_materials_volume_scatter","multiscatterColorTexture"},
   std::pair{"KHR_materials_pbrSpecularGlossiness","diffuseTexture"},
   std::pair{"KHR_materials_pbrSpecularGlossiness","specularGlossinessTexture"}};
 
@@ -191,12 +197,13 @@ void tableCount(size_t count,const GltfMergeLimits& limits,std::string_view labe
 }
 bool supportedDeclaration(std::string_view name) {
   return areaName(name) || named(name,{kVariants,kPunctual,kPointer,kInstancing,
-    "KHR_texture_transform","KHR_node_visibility","KHR_node_selectability","KHR_node_hoverability",
+    "KHR_texture_transform","KHR_node_visibility","KHR_node_selectability","KHR_node_hoverability",kGltfInteractivityExtension,
     "KHR_texture_basisu","EXT_texture_webp","MSFT_texture_dds","KHR_mesh_quantization","KHR_accessor_float64",
     "KHR_materials_unlit","KHR_materials_specular","KHR_materials_ior","KHR_materials_dispersion",
     "KHR_materials_emissive_strength","KHR_materials_transmission","KHR_materials_volume",
     "KHR_materials_clearcoat","KHR_materials_sheen","KHR_materials_iridescence",
-    "KHR_materials_anisotropy","KHR_materials_diffuse_transmission","KHR_materials_pbrSpecularGlossiness"});
+    "KHR_materials_anisotropy","KHR_materials_diffuse_transmission","KHR_materials_pbrSpecularGlossiness",
+    "KHR_materials_retroreflection","KHR_materials_scatter","KHR_materials_volume_scatter"});
 }
 
 Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label) {
@@ -221,7 +228,9 @@ Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label) {
   property(model.asset,model,b,"asset");
   b.text(model.asset.version);b.text(model.asset.minVersion);b.text(model.asset.generator);b.text(model.asset.copyright);
   b.value(model.extras);b.text(model.extras_json_string);b.text(model.extensions_json_string);
-  extensions(model.extensions,model,b,"root",{kVariants,kPunctual,"KHR_lights_area","EXT_lights_area","WEBGI_lights_area","WEBGI_area_light"});
+  extensions(model.extensions,model,b,"root",{kVariants,kPunctual,kGltfInteractivityExtension,
+      "KHR_lights_area","EXT_lights_area","WEBGI_lights_area","WEBGI_area_light"});
+  ValidateGltfInteractivity(model);
   Audit out;
   uint64_t edges=0;
   for(const auto& node:model.nodes) charge(edges,node.children.size(),lim.maxReferences,"hierarchy edges");
@@ -285,7 +294,8 @@ Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label) {
   for(const auto& material:model.materials) {
     property(material,model,b,"material",{"KHR_materials_unlit","KHR_materials_specular","KHR_materials_ior","KHR_materials_dispersion",
       "KHR_materials_emissive_strength","KHR_materials_transmission","KHR_materials_volume","KHR_materials_clearcoat","KHR_materials_sheen",
-      "KHR_materials_iridescence","KHR_materials_anisotropy","KHR_materials_diffuse_transmission","KHR_materials_pbrSpecularGlossiness"},true);
+      "KHR_materials_iridescence","KHR_materials_anisotropy","KHR_materials_diffuse_transmission","KHR_materials_pbrSpecularGlossiness",
+      "KHR_materials_retroreflection","KHR_materials_scatter","KHR_materials_volume_scatter"},true);
     if(!material.lods.empty()) fail("material","LOD references need a merge handler");
     property(material.pbrMetallicRoughness,model,b,"metallic roughness");
     textureInfo(material.pbrMetallicRoughness.baseColorTexture,model,b);textureInfo(material.pbrMetallicRoughness.metallicRoughnessTexture,model,b);
@@ -522,6 +532,35 @@ void mergeRoot(tinygltf::Model& output,const tinygltf::Model& base,const tinyglt
   output.extensions_json_string.clear();output.extras_json_string.clear();output.asset.extras_json_string.clear();
 }
 
+std::optional<Value> mergeBehavior(const tinygltf::Model& base, const tinygltf::Model& incoming,
+    const GltfMergePlan& plan, size_t totalNodes) {
+  const bool destinationGraph = base.extensions.contains(kGltfInteractivityExtension);
+  const bool importedGraph = incoming.extensions.contains(kGltfInteractivityExtension);
+  if (!destinationGraph && !importedGraph) return {};
+  if (destinationGraph && importedGraph)
+    fail("KHR_interactivity", "independent behavior graphs cannot share one default runtime");
+  const auto& map = plan.imported;
+  std::vector<int32_t> weightNodes;
+  if (importedGraph) {
+    weightNodes = plan.placement.nodes;
+    for (size_t i = 0; i < weightNodes.size(); ++i)
+      if (plan.placement.contextOnly[i]) weightNodes[i] = -1;
+  }
+  using Map = InteractivityIndexMapping;
+  const auto mapped = [importedGraph](const std::vector<int32_t>& ids, size_t count) {
+    return Map{importedGraph ? std::span<const int32_t>(ids) : std::span<const int32_t>{}, count};
+  };
+  const GltfInteractivityMappings mappings{
+      mapped(plan.placement.nodes, totalNodes),
+      mapped(weightNodes, totalNodes),
+      mapped(map.materials, base.materials.size() + incoming.materials.size()),
+      mapped(map.lights, base.lights.size() + incoming.lights.size()),
+      mapped(map.cameras, base.cameras.size() + incoming.cameras.size()),
+      mapped(map.animations, base.animations.size() + incoming.animations.size()),
+  };
+  return RemapGltfInteractivity(importedGraph ? incoming : base, mappings);
+}
+
 void remapNode(tinygltf::Node& node,const GltfMergeIndexMaps& m) {
   node.mesh=translated(node.mesh,m.meshes,"node mesh",true);node.skin=translated(node.skin,m.skins,"node skin",true);
   node.camera=translated(node.camera,m.cameras,"node camera",true);node.light=translated(node.light,m.lights,"node light",true);
@@ -627,11 +666,15 @@ GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& i
   charge(budget.sum.rootReferences,1,limits.maxRootReferences,"placement scene root");budget.refs(1);
   // Validate all merge-policy conflicts before copying resident payloads.
   tinygltf::Model headers;mergeRoot(headers,base,incoming);
+  auto behavior = mergeBehavior(base, incoming, plan, size_t(totalNodes));
+  if (behavior) headers.extensions.emplace(kGltfInteractivityExtension, std::move(*behavior));
   // Root representations can coexist with TinyGLTF's typed light table. Charge
   // the generated representation and retained asset provenance before copying.
   for(const auto& [name,value]:headers.extensions) {budget.text(name);budget.value(value);}
   property(incoming.asset,incoming,budget,"incoming asset provenance");
   plan.model=base;auto& out=plan.model;mergeRoot(out,base,incoming);plan.incomingAsset=incoming.asset;
+  if (auto graph = headers.extensions.extract(kGltfInteractivityExtension); !graph.empty())
+    out.extensions.insert_or_assign(kGltfInteractivityExtension, std::move(graph.mapped()));
   if(out.scenes.empty()) {tinygltf::Scene scene;scene.name="Scene";scene.nodes.assign(a.catalog.entries[0].sourceRoots.begin(),a.catalog.entries[0].sourceRoots.end());out.scenes.push_back(std::move(scene));}
   for(auto value:incoming.buffers) out.buffers.push_back(std::move(value));
   for(auto value:incoming.bufferViews) {value.buffer=translated(value.buffer,m.buffers,"buffer view");out.bufferViews.push_back(std::move(value));}
@@ -687,6 +730,7 @@ GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& i
   // No publication has occurred; verify the final forest and typed clips too.
   (void)container::scene::BuildGltfSceneCatalog(out,{limits.maxScenes,limits.maxRootReferences});
   if(!ParseAnimations(out).diagnostics.empty()) fail("output","unsupported animation target");
+  ValidateGltfInteractivity(out);
   plan.summary=budget.sum;return plan;
 } catch(const std::invalid_argument& error) {
   fail("validation",error.what());

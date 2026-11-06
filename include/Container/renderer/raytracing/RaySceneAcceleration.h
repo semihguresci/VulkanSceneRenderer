@@ -13,6 +13,11 @@ struct RaySceneBuildStats {
   uint32_t blasReused{0};
   uint32_t instanceCount{0};
   uint32_t gpuInstanceCount{0};
+  uint32_t opacityMicromapCount{0};
+  uint32_t opacityMicromapBuilt{0};
+  uint32_t opacityMicromapAttachedBlas{0};
+  uint32_t opacityMicromapFallbackBlas{0};
+  VkDeviceSize opacityMicromapBytes{0};
   VkDeviceSize gpuTransformUploadBytes{0};
   VkDeviceSize accelerationBytes{0};
   VkDeviceSize inputBytes{0};
@@ -54,6 +59,7 @@ public:
   // releasing them if recording/submission fails. No device-wide idle is added.
   // Reuse is decided independently for each provider-local geometry using its
   // source storage identity, revision, topology and opacity classification.
+  // The active immutable opacity-micromap attachment is part of that identity.
   [[nodiscard]] std::shared_ptr<const RaySceneGeneration> recordBuild(
       const vk::raii::CommandBuffer &command, const RaySceneInput &input,
       const std::shared_ptr<const RaySceneGeneration> &previous = {}) const;
@@ -62,6 +68,8 @@ private:
   const container::gpu::VulkanDevice &device_;
   container::gpu::VulkanMemoryManager &memory_;
   VkPhysicalDeviceAccelerationStructurePropertiesKHR properties_{};
+  VkPhysicalDeviceOpacityMicromapPropertiesEXT opacityProperties_{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_PROPERTIES_EXT};
 };
 
 } // namespace container::renderer

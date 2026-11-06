@@ -570,6 +570,7 @@ uint64_t SceneManager::mergeHistoryResidentBytes() const {
   retainedVector(bytes,materialLifecycleHandles_);
   if(materialLifecycle_) bytes.add(materialLifecycle_->ownedBytes());
   bytes.add(cameraProjectionNamespaceBytes());
+  bytes.add(retainedOpacityMicromapBytes());
   bytes.add(materialResourceDependencyBytes());
   if(textureManager_.textureCount()>UINT32_MAX)
     mergeFailure("retained texture table exceeds its integer range");
@@ -765,7 +766,7 @@ SceneManager::PreparedMergeGeneration SceneManager::prepareMergeGeneration(
       2*sizeof(container::material::PreparedGltfTextureImage)+128));
   auto preparedTextures=container::material::PrepareGltfTextures(incoming.gltfModel,
       allocationManager_->textureDecodeOptions(false),
-      std::min(limits.maxPreparedTextureBytes,cpu.limit-cpu.bytes));
+      std::min(limits.maxPreparedTextureBytes,cpu.limit-cpu.bytes), config_.experimentalGltfMaterials);
   for(const auto& image:preparedTextures.images)
     for(const auto& mip:image.image.mips) cpu.add(mip.bytes.size());
 
@@ -987,7 +988,7 @@ SceneManager::PreparedMergeGeneration SceneManager::prepareMergeGeneration(
   validateGltfTextureResourceTable(candidate.gltfTextureResources_,candidate.gltfModel_.textures.size(),candidate.textureManager_.textureCount());
   auto ignoredDefault=candidate.defaultMaterialIndex_;
   candidate.materialXBridge_.loadMaterialsForGltfWithTextureRoles(incoming.gltfModel,
-      textureResources,candidate.materialManager_,ignoredDefault);
+      textureResources,candidate.materialManager_,ignoredDefault,config_.experimentalGltfMaterials);
   if(candidate.materialManager_.materialCount()!=materialCount)
     mergeFailure("incoming material import did not append one record per source definition");
   candidate.exportMaterialSources_.resize(materialCount);
@@ -1310,6 +1311,7 @@ void SceneManager::exchangeMergeGeneration(PreparedMergeGeneration& prepared,con
   EXCHANGE_ASSET(materialEntryOwners_); EXCHANGE_ASSET(materialTailVacancy_);
   EXCHANGE_ASSET(cameraProjectionNamespace_);
   EXCHANGE_ASSET(model_); EXCHANGE_ASSET(sourcePrimitiveToRuntime_); EXCHANGE_ASSET(runtimePrimitiveToSource_);
+  EXCHANGE_ASSET(opacityMicromapState_);
   swapSourceModel(gltfModel_,other.gltfModel_); EXCHANGE_ASSET(gltfInstancing_);
   EXCHANGE_ASSET(gltfTextureResources_);
   EXCHANGE_ASSET(archiveResourcePhases_);EXCHANGE_ASSET(gltfResourcePhases_);

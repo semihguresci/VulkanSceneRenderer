@@ -47,6 +47,7 @@ set(SLANG_INCLUDE_SHADER_NAMES
     ddgi_material_common.slang
     path_transport_common.slang
     path_dielectric_common.slang
+    path_experimental_materials.slang
     object_data_common.slang
     material_data_common.slang
     alpha_mask_common.slang
@@ -140,6 +141,7 @@ endforeach()
 set(SLANG_RENDER_SHADER_EXCLUDE_NAMES
     ${SLANG_INCLUDE_SHADER_NAMES}
     ${SLANG_COMPUTE_SHADER_NAMES}
+    reference_denoise_compose.slang
 )
 foreach(SLANG_RENDER_SHADER_EXCLUDE_NAME IN LISTS SLANG_RENDER_SHADER_EXCLUDE_NAMES)
     string(REPLACE "." "\\." SLANG_RENDER_SHADER_EXCLUDE_REGEX
@@ -263,6 +265,15 @@ foreach(SLANG_COMPUTE_SHADER_NAME IN LISTS SLANG_COMPUTE_SHADER_NAMES)
             SLANG_OUTPUTS "${SLANG_SOURCE}" "computeMain" "${COMP_OUTPUT}" ${SLANG_OPTIONAL_CAPABILITIES})
     endif()
 endforeach()
+
+if(CONTAINER_VK_OIDN_AVAILABLE)
+    add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/reference_pathtrace.slang" "computeMain"
+        "${COMPILED_SHADERS_DIR}/reference_guided_pathtrace.comp.spv" -DREFERENCE_DENOISE_GUIDES=1)
+    add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/reference_background.slang" "computeMain"
+        "${COMPILED_SHADERS_DIR}/reference_guided_background.comp.spv" -DREFERENCE_DENOISE_GUIDES=1)
+    add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/reference_denoise_compose.slang" "computeMain"
+        "${COMPILED_SHADERS_DIR}/reference_denoise_compose.comp.spv")
+endif()
 
 set(CONTAINER_SCENE_TEXTURE_SAMPLING_SPIRV "${COMPILED_SHADERS_DIR}/scene_texture_sampling_contract.comp.spv")
 add_slang_output(SLANG_OUTPUTS

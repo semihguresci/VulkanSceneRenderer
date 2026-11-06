@@ -25,6 +25,7 @@
 #include "Container/renderer/lighting/LightEditTypes.h"
 #include "Container/renderer/lighting/DdgiProbeVolume.h"
 #include "Container/renderer/lighting/DdgiSceneChanges.h"
+#include "Container/renderer/pathtracing/ReferenceOidnSettings.h"
 #include "Container/renderer/picking/RenderSurfaceInteractionController.h"
 #include "Container/renderer/resources/RenderResources.h"
 #include "Container/renderer/scene/DrawCommand.h"
@@ -34,6 +35,7 @@
 #include "Container/utility/VulkanMemoryManager.h"
 #include "Container/utility/SceneEditHistory.h"
 #include "Container/geometry/GltfAnimationRuntime.h"
+#include "Container/geometry/GltfInteractivity.h"
 #include "Container/geometry/GltfCameraAuthoring.h"
 #include "Container/utility/GltfMaterialEditRequest.h"
 #include "Container/utility/GltfMaterialBindingRequest.h"
@@ -45,6 +47,7 @@ struct GLFWwindow;
 
 namespace container::temporal {
 struct CaptureSample;
+struct CaptureComfyUi;
 struct CapturePhysicsJointCreate;
 struct CaptureEvent;
 struct CaptureLightTarget;
@@ -99,11 +102,13 @@ class OitManager;
 class PipelineRegistry;
 class RenderPassGpuProfiler;
 class RendererMcpServer;
+struct ComfyUiFrontendState;
 class RenderTechnique;
 enum class RenderTechniqueId;
 class RenderTechniqueRegistry;
 struct RenderSystemContext;
 class RendererTelemetry;
+class GpuHardwareMonitor;
 class SceneController;
 class SceneProviderSynchronizer;
 struct SceneProviderSyncInput;
@@ -183,6 +188,7 @@ public:
   void saveSceneModel(const std::filesystem::path& outputPath);
   bool selectMaterialVariant(std::optional<size_t> variant,bool recordHistory=true);
   void applyTemporalCapture(const container::temporal::CaptureSample &sample);
+  [[nodiscard]] bool comfyUiCapturePending() const;
   void writeCaptureTelemetry(const std::filesystem::path &path,
                              std::optional<glm::uvec2> depthProbe = std::nullopt);
   void startGfxCapture();
@@ -357,6 +363,7 @@ private:
     std::unique_ptr<RenderPassGpuProfiler> renderPassGpuProfiler;
     std::unique_ptr<RendererMcpServer> mcpServer;
     std::unique_ptr<RendererTelemetry> rendererTelemetry;
+    std::unique_ptr<GpuHardwareMonitor> gpuHardwareMonitor;
     std::unique_ptr<container::ui::GuiManager> guiManager;
     std::unique_ptr<container::gpu::FrameSyncManager> frameSyncManager;
   };
@@ -394,6 +401,7 @@ private:
   std::optional<uint32_t> referenceAdaptiveBatch_;
   std::optional<float> referenceTimedLightingMs_;
   std::optional<float> referenceFocusDistanceOverride_;
+  std::optional<ReferenceOidnQuality> referenceOidnQualityOverride_;
   bool referenceAutofocusRequested_{};
   std::string referenceAutofocusStatus_;
   std::string referenceStatus_;
@@ -420,6 +428,14 @@ private:
   container::scene::SceneGraph sceneGraph_{};
   std::unique_ptr<container::util::SceneEditHistory> sceneEdits_{};
   std::unique_ptr<container::geometry::gltf::AnimationPlayer> gltfAnimation_{};
+  std::unique_ptr<container::geometry::gltf::GltfInteractivity> gltfInteractivity_;
+  std::string gltfInteractivityError_;
+  std::vector<size_t> gltfInteractivityHoverChain_;
+  struct GltfInteractivityRequest {
+    std::optional<bool> playing;
+    bool reset{};
+    std::optional<std::string> event;
+  } gltfInteractivityRequest_;
   double pendingGltfAnimationDeltaSeconds_{};
   uint64_t gltfAnimationGraphIdentity_{};
   std::optional<size_t> gltfAnimationCameraNode_{};
@@ -452,6 +468,13 @@ private:
   std::shared_ptr<SceneRetirementHistory> pendingSceneRetirement_;
   void resetGltfAnimation();
   void updateGltfAnimation();
+  void resetGltfInteractivity();
+  void pauseGltfInteractivity();
+  container::geometry::gltf::AnimationDirtySet updateGltfInteractivity(double delta, bool& discontinuity);
+  std::vector<size_t> gltfInteractivityAncestors(uint32_t node) const;
+  void queueGltfInteractivitySelection(uint32_t node, std::optional<glm::vec3> point);
+  void updateGltfInteractivityHover(uint32_t node);
+  void appendGltfInteractivityTelemetry(nlohmann::json&) const;
   struct CameraProjectionHistory;
   struct CameraProjectionHistoryBudget;
   struct CameraProjectionInspectorCache;
@@ -688,6 +711,7 @@ private:
     std::vector<HostReadbackSlot> readbacks{};
   };
   ScreenshotState screenshot_{};
+  std::unique_ptr<ComfyUiFrontendState> comfyUi_;
   std::string mcpCaptureStatus_;
   std::string mcpModelStatus_;
   uint32_t referenceSeriesSamples_{};
@@ -813,6 +837,15 @@ private:
   void applyBimSemanticColorMode();
   void processEnvironmentLoad(bool wait = false);
   void processMcpRequests();
+  void initializeComfyUi(bool scripted = false);
+  void processComfyUi();
+  void drawComfyUi();
+  void retireComfyUiPreview();
+  void shutdownComfyUi();
+  bool finishComfyUiCapture(std::string error = {});
+  bool applyComfyUiEnvironment();
+  void applyComfyUiCaptureAction(const container::temporal::CaptureComfyUi& action);
+  [[nodiscard]] nlohmann::json comfyUiCaptureTelemetry() const;
   void
   updateFrameDescriptorSets(uint32_t imageIndex = UINT32_MAX,
                             const FrameRecordParams *preparedParams = nullptr);

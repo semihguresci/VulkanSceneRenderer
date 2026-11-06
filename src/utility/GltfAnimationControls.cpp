@@ -307,6 +307,35 @@ void DrawGltfAnimationControls(GltfAnimationControls& controls) {
     }
   }
   ImGui::EndDisabled();
+  if ((controls.interactivityAvailable || !controls.interactivityDiagnostic.empty()) &&
+      ImGui::TreeNode("Behavior graph")) {
+    if (!controls.interactivityDiagnostic.empty()) ImGui::TextWrapped("%s", controls.interactivityDiagnostic.c_str());
+    if (controls.interactivityAvailable) {
+      ImGui::PushID("Interactivity");
+      ImGui::Text("Elapsed %.3f s", controls.interactivityTime);
+      if (ImGui::Button(controls.interactivityPlaying ? "Pause" : "Play"))
+        controls.requestedInteractivityPlaying = !controls.interactivityPlaying;
+      ImGui::SameLine();
+      if (ImGui::Button("Reset")) controls.requestedInteractivityReset = true;
+      if (!controls.interactivityEvents.empty()) {
+        auto& selected = controls.selectedInteractivityEvent;
+        selected = std::min(selected, controls.interactivityEvents.size() - 1);
+        if (ImGui::BeginCombo("Custom event", controls.interactivityEvents[selected].c_str())) {
+          for (size_t i = 0; i < controls.interactivityEvents.size(); ++i) {
+            ImGui::PushID(static_cast<int>(i));
+            if (ImGui::Selectable(controls.interactivityEvents[i].c_str(), selected == i)) selected = i;
+            ImGui::PopID();
+          }
+          ImGui::EndCombo();
+        }
+        ImGui::BeginDisabled(!controls.interactivityPlaying);
+        if (ImGui::Button("Send event")) controls.requestedInteractivityEvent = controls.interactivityEvents[selected];
+        ImGui::EndDisabled();
+      }
+      ImGui::PopID();
+    }
+    ImGui::TreePop();
+  }
   DrawCameraProjectionControls(controls);
   DrawCameraViewPoseControls(controls);
   if (!controls.diagnostics.empty() && ImGui::TreeNode("Animation diagnostics")) {

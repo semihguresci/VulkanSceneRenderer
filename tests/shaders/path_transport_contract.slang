@@ -1,5 +1,6 @@
 #include "path_transport_common.slang"
 #include "path_dielectric_common.slang"
+#include "path_experimental_materials.slang"
 #include "material_data_common.slang"
 #include "ray_scene_data.slang"
 #include "ray_surface_common.slang"
@@ -373,6 +374,36 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
         if (ray.valid != 0u)
             result.valuePdf = float4(PtCameraRayFootprint(query.light.xy, query.controls.zw,
                 query.inverseProjection, query.inverseView, orthographic, ray.direction, 0.0.xxx, 0.0), 0.0, 1.0);
+    }
+    if (operation == 31u || operation == 32u)
+    {
+        PtThinBsdf thin = {bsdf, query.sampleValue.rgb, query.sampleValue.w};
+        float retro = query.footprintB.x;
+        if (operation == 31u)
+        {
+            PtBsdfEvaluation evaluated = PtEvaluateRetroBsdf(thin, query.footprintC.rgb,
+                query.view.xyz, query.light.xyz, 0.0, retro);
+            result.valuePdf = float4(evaluated.value, evaluated.pdf);
+            result.auxiliary.z = float(evaluated.valid);
+        }
+        else
+        {
+            PtBsdfSample sampled = PtSampleRetroBsdf(thin, query.footprintC.rgb,
+                query.view.xyz, query.previousMean.xyz, 0.0, retro);
+            result.directionPdf = float4(sampled.direction, sampled.pdf);
+            result.weightValid = float4(sampled.weight, float(sampled.valid));
+            result.auxiliary.xy = float2(sampled.delta, sampled.rejected);
+        }
+    }
+    if (operation == 33u)
+    {
+        float3 reflected = bsdf.diffuse, diffuseThrough = query.footprintC.rgb;
+        float3 specularThrough = query.sampleValue.rgb;
+        PtApplyThinScatter(reflected, diffuseThrough, specularThrough, query.footprintB.x,
+            query.footprintB.y, query.footprintB.z, query.light.rgb);
+        result.valuePdf.rgb = reflected;
+        result.directionPdf.rgb = diffuseThrough;
+        result.weightValid.rgb = specularThrough;
     }
     results[tid.x] = result;
 }

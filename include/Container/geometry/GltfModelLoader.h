@@ -5,6 +5,7 @@
 #include <Container/geometry/GltfDeformation.h>
 #include <Container/geometry/GltfCompression.h>
 #include <Container/geometry/GltfInstancing.h>
+#include <Container/geometry/GltfOpacityMicromaps.h>
 
 #include <tiny_gltf.h>
 
@@ -22,6 +23,7 @@ struct GltfLoadResult {
   std::vector<gltf::CapabilityDiagnostic> capabilityDiagnostics;
   std::optional<gltf::DeformationData> deformation;
   gltf::GltfInstancingData instancing;
+  gltf::GltfOpacityMicromapAssets opacityMicromaps;
 };
 
 namespace gltf {
@@ -40,6 +42,9 @@ struct LoadOptions {
   bool retainEncodedImages{false};
   // Explicitly enable the URI-only linked asset subset of the pinned 2.1 draft.
   bool enableLinkedAssets{false};
+  // Use the pinned retroreflection and scatter material draft definitions.
+  bool enableExperimentalMaterials{false};
+  bool enableOpacityMicromaps{false};
   InstancingLimits instancing;
   // A source parser can support more extensions than a particular scene
   // consumer. Restrict that consumer without weakening decoder requirements.

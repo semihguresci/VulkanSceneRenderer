@@ -1,9 +1,11 @@
 #include "Container/renderer/core/GpuHardwareMonitor.h"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
+#include <array>
 #include <condition_variable>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -189,9 +191,8 @@ class NvmlReader {
 
 } // namespace
 
-GpuHardwareMonitor::GpuHardwareMonitor(VkPhysicalDevice device) {
-  const char* enabled = std::getenv("CONTAINER_MONITOR_GPU");
-  if (!enabled || std::string_view(enabled) != "1") return;
+GpuHardwareMonitor::GpuHardwareMonitor(VkPhysicalDevice device, bool enabled) {
+  if (!enabled) return;
   snapshot_.status = Status::UnsupportedDevice;
 #if defined(_WIN32) || defined(__linux__)
   if (!device) return;
@@ -228,8 +229,9 @@ void GpuHardwareMonitor::start(PollFunction poll) {
         } catch (...) {
           sample.status = Status::WorkerUnavailable;
         }
+        sample.sampledAt = std::chrono::steady_clock::now();
         sample.pollMicroseconds = std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now() - begin).count();
+            *sample.sampledAt - begin).count();
         sample.timestampUnixMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
         {
@@ -254,7 +256,7 @@ std::optional<GpuHardwareSnapshot> GpuHardwareMonitor::trySnapshot() const {
 
 std::string_view gpuHardwareMonitorStatusText(GpuHardwareMonitorStatus status) {
   switch (status) {
-    case Status::Disabled: return "Disabled. Set CONTAINER_MONITOR_GPU=1 to enable.";
+    case Status::Disabled: return "Disabled. Set CONTAINER_MONITOR_GPU=1 or use --gpu-hardware-telemetry.";
     case Status::Initializing: return "Initializing NVML on the worker.";
     case Status::UnsupportedDevice: return "NVML monitoring is unavailable on this platform or GPU.";
     case Status::PciIdentityUnavailable: return "Vulkan did not expose the GPU's PCI address.";
@@ -266,6 +268,33 @@ std::string_view gpuHardwareMonitorStatusText(GpuHardwareMonitorStatus status) {
     case Status::WorkerUnavailable: return "The hardware monitor worker is unavailable.";
   }
   return "Hardware monitor status unavailable.";
+}
+
+nlohmann::json gpuHardwareTelemetry(const std::optional<GpuHardwareSnapshot>& snapshot,
+                                    std::chrono::steady_clock::time_point now) {
+  using Json = nlohmann::json;
+  constexpr std::array statusNames{"disabled", "initializing", "unsupported-device", "pci-unavailable",
+      "library-unavailable", "initialization-failed", "device-unavailable", "sensors-unavailable",
+      "available", "worker-unavailable"};
+  const auto value = [](const auto& optional) { return optional ? Json(*optional) : Json(nullptr); };
+  const auto sample = snapshot.value_or(GpuHardwareSnapshot{});
+  const auto age = sample.sampledAt ? std::max(int64_t{0}, std::chrono::duration_cast<std::chrono::milliseconds>(
+      now - *sample.sampledAt).count()) : 0;
+  Json pci = nullptr;
+  if (sample.pci) {
+    const auto& address = *sample.pci;
+    pci = {{"domain", address.domain}, {"bus", address.bus}, {"device", address.device}, {"function", address.function}};
+  }
+  return {{"backend", "nvml"}, {"scope", "device"},
+      {"status", snapshot ? statusNames.at(static_cast<size_t>(sample.status)) : "publishing"},
+      {"pci", std::move(pci)},
+      {"sampleUnixMilliseconds", sample.sampledAt ? Json(sample.timestampUnixMilliseconds) : Json(nullptr)},
+      {"sampleAgeMilliseconds", sample.sampledAt ? Json(age) : Json(nullptr)},
+      {"pollMicroseconds", sample.sampledAt ? Json(sample.pollMicroseconds) : Json(nullptr)},
+      {"utilizationPercent", value(sample.utilizationPercent)},
+      {"driverUsedMemoryBytes", value(sample.usedMemoryBytes)}, {"driverTotalMemoryBytes", value(sample.totalMemoryBytes)},
+      {"graphicsClockMHz", value(sample.graphicsClockMHz)}, {"memoryClockMHz", value(sample.memoryClockMHz)},
+      {"temperatureCelsius", value(sample.temperatureCelsius)}, {"powerMilliwatts", value(sample.powerMilliwatts)}};
 }
 
 } // namespace container::renderer

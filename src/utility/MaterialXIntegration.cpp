@@ -1469,10 +1469,13 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
 void SlangMaterialXBridge::loadMaterialsForGltfWithTextureRoles(
     const tinygltf::Model& model, const GltfTextureResources& textures,
     container::material::MaterialManager& materialManager,
-    uint32_t& defaultMaterialIndex) const {
+    uint32_t& defaultMaterialIndex, bool enableExperimentalMaterials) const {
   if (textures.color.size() != model.textures.size() || textures.data.size() != model.textures.size())
     throw std::invalid_argument("glTF color/data resource tables do not match the source textures");
   constexpr auto invalid = std::numeric_limits<uint32_t>::max();
+  const auto experimental = enableExperimentalMaterials
+      ? geometry::gltf::ParseGltfExperimentalMaterials(model)
+      : std::vector<geometry::gltf::GltfExperimentalMaterial>{};
   std::vector<uint32_t> defaultResources(model.textures.size(), invalid);
   for (size_t texture = 0; texture < defaultResources.size(); ++texture) {
     defaultResources[texture] = textures.data[texture] != invalid ? textures.data[texture] : textures.color[texture];
@@ -1506,6 +1509,12 @@ void SlangMaterialXBridge::loadMaterialsForGltfWithTextureRoles(
         readExtensionTextureIndex(source, "KHR_materials_diffuse_transmission", "diffuseTransmissionTexture"));
     material.diffuseTransmissionColorTextureIndex = resolveTextureIndex(model, textures.color,
         readExtensionTextureIndex(source, "KHR_materials_diffuse_transmission", "diffuseTransmissionColorTexture"));
+    if (enableExperimentalMaterials) {
+      const auto& layer = experimental[materialIndex - firstMaterial];
+      material.experimental = geometry::gltf::BindGltfExperimentalMaterial(layer, [&](int texture, bool color) {
+        return resolveTextureIndex(model, color ? textures.color : textures.data, texture);
+      });
+    }
     materialManager.updateMaterial(static_cast<uint32_t>(materialIndex), material);
   }
 }

@@ -5,7 +5,8 @@
 struct Probe {
     float4 originAndMin;
     float4 directionAndMax;
-    // Legacy: mask, accept candidate, unused, zero. Alpha: mask, float factor
+    // The mask's bit 8 tests forced non-opaque traversal. Legacy: mask,
+    // accept candidate, unused, zero. Alpha: mask, float factor
     // bits, float cutoff bits, material flags + 1.
     uint4 options;
 };
@@ -24,7 +25,8 @@ void computeMain(uint3 id : SV_DispatchThreadID)
     ray.Direction = probe.directionAndMax.xyz;
     ray.TMax = probe.directionAndMax.w;
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_CULL_BACK_FACING_TRIANGLES> query;
-    query.TraceRayInline(scene, RAY_FLAG_NONE, probe.options.x, ray);
+    uint flags = (probe.options.x & 0x100u) != 0u ? RAY_FLAG_FORCE_NON_OPAQUE : RAY_FLAG_NONE;
+    query.TraceRayInline(scene, flags, probe.options.x & 0xffu, ray);
     uint candidates = 0;
     while (query.Proceed()) {
         if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE) {

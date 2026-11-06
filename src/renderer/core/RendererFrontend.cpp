@@ -1,4 +1,5 @@
 #include "Container/renderer/core/RendererFrontend.h"
+#include "Container/renderer/core/ComfyUiFrontendState.h"
 #if CONTAINER_HAS_JOLT
 #include "Container/physics/PhysicsScene.h"
 #include "Container/physics/PhysicsElementBindings.h"
@@ -26,6 +27,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <filesystem>
@@ -56,6 +58,7 @@
 #include "Container/renderer/core/RenderTechnique.h"
 #include "Container/renderer/core/RendererMsaa.h"
 #include "Container/renderer/core/RendererTelemetry.h"
+#include "Container/renderer/core/GpuHardwareMonitor.h"
 #include "Container/renderer/culling/GpuCullManager.h"
 #include "Container/renderer/debug/DebugUiPresenter.h"
 #include "Container/renderer/deferred/DeferredLightGizmoPlanner.h"
@@ -1415,6 +1418,13 @@ void RendererFrontend::initialize() {
   // Start capture object tracks active. kInvalidNode later suspends them after
   // an explicit unload until a capture model-load event reactivates them.
   captureObjectNode_ = 0;
+  if (svc_.config.enableGui || svc_.config.gpuHardwareTelemetry) {
+    const bool interactive = svc_.config.enableGui && svc_.config.screenshotCapturePath.empty() &&
+        svc_.config.temporalCaptureSequencePath.empty() && svc_.config.pathSampleSeries.empty();
+    const auto* requested = interactive ? std::getenv("CONTAINER_MONITOR_GPU") : nullptr;
+    const bool enabled = svc_.config.gpuHardwareTelemetry || (requested && std::string_view(requested) == "1");
+    subs_.gpuHardwareMonitor = std::make_unique<GpuHardwareMonitor>(svc_.ctx.deviceWrapper->physicalDevice(), enabled);
+  }
   // Initialization order mirrors runtime dependencies: render passes define
   // attachment compatibility, scene/lighting managers create descriptor
   // layouts, and only then can graphics pipelines be built.
@@ -1623,6 +1633,7 @@ void RendererFrontend::initialize() {
 
   if (svc_.config.enableGui) {
     subs_.guiManager = std::make_unique<container::ui::GuiManager>();
+    subs_.guiManager->setGpuHardwareMonitor(subs_.gpuHardwareMonitor.get());
     subs_.guiManager->initialize(
         svc_.ctx.instance, svc_.ctx.deviceWrapper->device(),
         svc_.ctx.deviceWrapper->physicalDevice(),
@@ -1651,6 +1662,7 @@ void RendererFrontend::initialize() {
     subs_.guiManager->setReferencePathLens(svc_.config.pathLens);
     subs_.guiManager->setReferenceFireflyClamp(svc_.config.pathFireflyClamp);
     subs_.guiManager->setReferenceGround(svc_.config.pathGround);
+    subs_.guiManager->setReferenceOidn(svc_.config.pathOidn);
     if (svc_.config.hasManualExposureOverride)
       subs_.guiManager->setExposureSettings(exposureSettingsFromConfig(svc_.config));
     if (authoredSky)
@@ -1726,6 +1738,7 @@ void RendererFrontend::initialize() {
   subs_.rendererTelemetry = std::make_unique<RendererTelemetry>();
 
   initializeScene();
+  initializeComfyUi();
   if (svc_.config.screenshotCapturePath.empty() &&
       svc_.config.temporalCaptureSequencePath.empty() && svc_.config.pathSampleSeries.empty()) {
     try {
@@ -2048,6 +2061,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   }
 
   processMcpRequests();
+  processComfyUi();
   applyPendingRenderTechniqueChange();
   updateOpenVdbSequence();
 
@@ -2138,6 +2152,11 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
       status += std::to_string(subs_.referencePathTracePass->attemptedSamples()) + " samples";
       if (referenceUnsupported_) status += "; unsupported paths (magenta)";
       if (referenceRejected_) status += "; rejected paths (yellow)";
+      if (subs_.referencePathTracePass->oidnQuality() != ReferenceOidnQuality::Off) {
+        const auto oidn = subs_.referencePathTracePass->oidnStatus();
+        status += oidn.displayedSamples ? "; OIDN at " + std::to_string(oidn.displayedSamples) + " samples"
+                                        : "; OIDN " + std::string(oidn.message);
+      }
     }
     subs_.guiManager->setReferencePathStatus(std::move(status));
   }
@@ -2364,7 +2383,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
           screenshot_.sceneLinear ? VK_FORMAT_R32G32B32A32_SFLOAT
                                   : svc_.swapChainManager.imageFormat());
     } catch (const std::exception& error) {
-      if (!screenshot_.interactive && !screenshot_.remote)
+      const bool comfyCapture = finishComfyUiCapture(error.what());
+      if (!screenshot_.interactive && !screenshot_.remote && !comfyCapture)
         throw;
       screenshot_.pending = screenshotThisFrame = false;
       if (screenshot_.remote) mcpCaptureStatus_ = std::string("Capture failed: ") + error.what();
@@ -2497,13 +2517,15 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
       collectReferenceDiagnostics(i);
     try {
       writePendingScreenshot(frame_.currentFrame, frameRecordParams);
+      finishComfyUiCapture();
       if (screenshot_.remote && !screenshot_.pending) mcpCaptureStatus_ = "Saved";
       if (screenshot_.interactive)
         subs_.guiManager->setStatusMessage("Saved image: " +
             container::util::pathToUtf8(screenshot_.outputPath));
     } catch (const std::exception& error) {
       screenshot_.pending = false;
-      if (!screenshot_.interactive && !screenshot_.remote)
+      const bool comfyCapture = finishComfyUiCapture(error.what());
+      if (!screenshot_.interactive && !screenshot_.remote && !comfyCapture)
         throw;
       if (screenshot_.remote) mcpCaptureStatus_ = std::string("Capture failed: ") + error.what();
       if (screenshot_.interactive) subs_.guiManager->setStatusMessage(error.what());
@@ -2601,6 +2623,17 @@ void RendererFrontend::applyTemporalCapture(
     processShaderReload(true, true);
   if (event.referenceAutofocus)
     referenceAutofocusRequested_ = true;
+  if (event.referenceOidn) {
+    if (subs_.guiManager) {
+      auto settings = subs_.guiManager->referenceOidn();
+      settings.quality = *event.referenceOidn;
+      subs_.guiManager->setReferenceOidn(settings);
+    } else {
+      referenceOidnQualityOverride_ = *event.referenceOidn;
+    }
+  }
+  if (event.comfyUi)
+    applyComfyUiCaptureAction(*event.comfyUi);
   if (event.proceduralSky && subs_.environmentManager) {
     if (subs_.environmentManager->requestSkyEnvironment({.mode = *event.proceduralSky}))
       processEnvironmentLoad(true);
@@ -2919,6 +2952,8 @@ void RendererFrontend::applyTemporalCapture(
     if(addScenePrimitive(found->second,edit.name,parent)==container::scene::SceneGraph::kInvalidNode)
       throw std::invalid_argument("Capture primitive creation failed");
   }
+  if (event.interactivityPlaying || event.interactivityReset || event.interactivityEvent)
+    gltfInteractivityRequest_ = {event.interactivityPlaying, event.interactivityReset, event.interactivityEvent};
   if (event.animationPlaying || event.animationClip || event.animationTime) {
     if (!gltfAnimation_) resetGltfAnimation();
     if(!gltfAnimation_ || !subs_.sceneManager)
@@ -3111,6 +3146,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   if (referencePathActive()) {
     const auto* path = subs_.referencePathTracePass.get();
     const auto lens = path ? path->effectiveLens() : std::nullopt;
+    const auto oidn = path ? path->oidnStatus() : ReferenceOidnStatus{};
     json["referencePath"] = {{"active", path != nullptr}, {"status", referenceStatus_},
         {"attemptedSamples", path ? path->attemptedSamples() : 0},
         {"historyResets", path ? path->historyResets() : 0},
@@ -3123,6 +3159,10 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"adaptiveTargetMs", svc_.config.pathTargetMs},
         {"lastTimedLightingMs", referenceTimedLightingMs_ ? nlohmann::json(*referenceTimedLightingMs_) : nlohmann::json(nullptr)},
         {"fireflyClamp", path ? path->effectiveFireflyClamp() : 0.0f},
+        {"oidn", {{"quality", referenceOidnQualityName(path ? path->oidnQuality() : svc_.config.pathOidn.quality)},
+                  {"status", oidn.message}, {"displayedSamples", oidn.displayedSamples},
+                  {"allocatedBytes", oidn.allocatedBytes},
+                  {"lastGpuMs", oidn.lastGpuMs ? nlohmann::json(*oidn.lastGpuMs) : nlohmann::json(nullptr)}}},
         {"ground", referenceGroundMetadata(path ? path->effectiveGround() : ReferenceGroundSettings{})},
         {"autofocusStatus", referenceAutofocusStatus_},
         {"maxBounces", svc_.config.pathMaxBounces}, {"seed", svc_.config.pathSeed},
@@ -3330,6 +3370,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   json["scene"]["primaryNodeCount"] = sceneGraph_.nodeCount();
   appendPhysicsTelemetry(json);
   appendGltfAnimationTelemetry(json);
+  appendGltfInteractivityTelemetry(json);
   if (subs_.sceneManager) {
     auto& variants=json["gltfMaterialVariants"];
     const auto selected=subs_.sceneManager->selectedMaterialVariant();
@@ -3367,6 +3408,9 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
                           {"totalAllocatedBytes", ray.allocatedBytes()},
                           {"generation", ray.sceneGeneration()},
                           {"historyResets", ray.historyResets()}};
+    json["rayShadows"]["opacityMicromaps"] = {
+        {"requested", svc_.config.experimentalOpacityMicromaps},
+        {"deviceEnabled", svc_.ctx.deviceWrapper->opacityMicromapsEnabled()}};
     if (const auto *stats = ray.buildStats())
       json["rayShadows"]["build"] = {
           {"blasBuilt", stats->blasBuilt},
@@ -3374,6 +3418,11 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
           {"gpuInstances", stats->gpuInstanceCount},
           {"gpuTransformUploadBytes", stats->gpuTransformUploadBytes},
           {"instances", stats->instanceCount},
+          {"opacityMicromaps", stats->opacityMicromapCount},
+          {"opacityMicromapsBuilt", stats->opacityMicromapBuilt},
+          {"opacityMicromapBlas", stats->opacityMicromapAttachedBlas},
+          {"opacityMicromapFallbackBlas", stats->opacityMicromapFallbackBlas},
+          {"opacityMicromapBytes", stats->opacityMicromapBytes},
           {"asAllocatedBytes", stats->accelerationAllocatedBytes},
           {"inputAllocatedBytes", stats->inputAllocatedBytes},
           {"scratchAllocatedBytes", stats->scratchAllocatedBytes}};
@@ -3490,12 +3539,15 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   };
   json["camera"]["viewProjColumns"] = matrix(camera.viewProj);
   json["camera"]["unjitteredViewProjColumns"] = matrix(camera.unjitteredViewProj);
+  if (svc_.config.gpuHardwareTelemetry)
+    json["gpuHardware"] = gpuHardwareTelemetry(subs_.gpuHardwareMonitor->trySnapshot());
   return json;
 }
 
 void RendererFrontend::writeCaptureTelemetry(
     const std::filesystem::path &path, std::optional<glm::uvec2> depthProbe) {
   auto json = captureTelemetry();
+  if (comfyUi_) json["comfyUi"] = comfyUiCaptureTelemetry();
   if (depthProbe) {
     auto &probe = json["depthProbe"];
     probe["pixel"] = {depthProbe->x, depthProbe->y};
@@ -3722,7 +3774,10 @@ void RendererFrontend::processInput(float deltaTime) {
           [this](double cursorX, double cursorY) {
             hoverMeshNodeAtCursor(cursorX, cursorY);
           },
-      .clearHover = [this]() { clearHoveredMeshNode(); },
+      .clearHover = [this]() {
+        updateGltfInteractivityHover(container::scene::SceneGraph::kInvalidNode);
+        clearHoveredMeshNode();
+      },
       .clearSelection = [this]() { clearSelectedMeshNode(); },
       .pickTransformGizmoAxisAtCursor =
           [this](double cursorX, double cursorY) {
@@ -3816,6 +3871,7 @@ void RendererFrontend::selectMeshNodeAtCursor(double cursorX, double cursorY) {
       return;
     }
     sceneState_.selectedMeshNode = nodeIndex;
+    queueGltfInteractivitySelection(nodeIndex, anchorPoint);
     selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
     if (subs_.lightingManager) {
       subs_.lightingManager->selectEditableLight({});
@@ -3935,6 +3991,7 @@ void RendererFrontend::selectMeshNodeAtCursor(double cursorX, double cursorY) {
 
 void RendererFrontend::hoverMeshNodeAtCursor(double cursorX, double cursorY) {
   if (!subs_.sceneController) {
+    updateGltfInteractivityHover(container::scene::SceneGraph::kInvalidNode);
     clearHoveredMeshNode();
     return;
   }
@@ -4092,6 +4149,7 @@ void RendererFrontend::hoverMeshNodeAtCursor(double cursorX, double cursorY) {
   }
 
   hoveredNode = sceneGraph_.nearestHoverableAncestor(hoveredNode);
+  updateGltfInteractivityHover(hoveredNode);
   if (hoveredNode == sceneState_.selectedMeshNode) {
     hoveredNode = container::scene::SceneGraph::kInvalidNode;
   }
@@ -4937,14 +4995,16 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
       (void)modelLoad_->worker.start([path = action.path, scale = action.importScale,
                                     openVdbOptions = action.openVdbOptions,
                                     merge = action.merge.has_value(),
-                                    linked = svc_.config.experimentalGltfLinkedAssets && !remote, remote] {
+                                    linked = svc_.config.experimentalGltfLinkedAssets && !remote,
+                                    micromaps = svc_.config.experimentalOpacityMicromaps && !remote,
+                                    experimental = svc_.config.experimentalGltfMaterials, remote] {
         auto prepared = std::make_unique<ModelLoadState::Prepared>();
         if (isAuxiliaryRenderModelPath(path))
           prepared->bim = BimManager::prepareScene(path, scale, openVdbOptions);
         else
           prepared->gltf = container::scene::SceneManager::prepareGltfModel(path,
               merge || remote ? 512ull * 1024 * 1024 : std::numeric_limits<uintmax_t>::max(),
-              linked, remote);
+              linked, remote, experimental, micromaps && !merge);
         return prepared;
       });
       // Keep at least the request frame interactive, even for tiny models.
@@ -5201,11 +5261,13 @@ void RendererFrontend::shutdown() {
   destroyGBufferResources();
   subs_.frameResourceManager.reset();
 
+  shutdownComfyUi();
   if (subs_.guiManager) {
     subs_.guiManager->shutdown(svc_.ctx.deviceWrapper->device());
     subs_.guiManager.reset();
   }
   subs_.rendererTelemetry.reset();
+  subs_.gpuHardwareMonitor.reset();
 
   subs_.renderPassManager.reset();
   resources_.renderPasses = {};
@@ -5426,6 +5488,7 @@ void RendererFrontend::recreateMsaaResources(
 
   const bool guiWasInitialized = subs_.guiManager != nullptr;
   if (guiWasInitialized) {
+    retireComfyUiPreview();
     subs_.guiManager->shutdown(svc_.ctx.deviceWrapper->device());
   }
 
@@ -6310,6 +6373,7 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
                           {"includesUi", !screenshot_.sceneLinear && !screenshot_.viewportOnly && subs_.guiManager != nullptr}};
   if (referenceCapture) {
     const auto lens = referenceCapture->effectiveLens();
+    const auto oidn = referenceCapture->oidnStatus();
     metadata["referencePath"] = {
         {"attemptedSamplesPerPixel", referenceCapture->attemptedSamples()},
         {"sampleLimit", svc_.config.pathSampleLimit},
@@ -6318,6 +6382,7 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
         {"adaptiveTargetMs", svc_.config.pathTargetMs},
         {"lastSubmittedSamples", referenceCapture->lastSubmittedSamples()},
         {"fireflyClamp", referenceCapture->effectiveFireflyClamp()},
+        {"oidnDisplaySamples", screenshot_.sceneLinear ? 0u : oidn.displayedSamples},
         {"ground", referenceGroundMetadata(ground)},
         {"maxBounces", svc_.config.pathMaxBounces},
         {"seed", svc_.config.pathSeed},
@@ -6332,7 +6397,8 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
       metadata["referencePath"]["acceptedSamplesPerPixel"] = *target;
     }
   }
-  const auto publication = screenshot_.remote ? container::util::AtomicFilePublication::CreateNew :
+  const auto publication = (screenshot_.remote || (comfyUi_ && !comfyUi_->captureId.empty()))
+      ? container::util::AtomicFilePublication::CreateNew :
       container::util::AtomicFilePublication::ReplaceExisting;
   if (screenshot_.sceneLinear) {
     unsigned char* encoded = nullptr;
@@ -8000,6 +8066,7 @@ void RendererFrontend::presentSceneControls() {
     }
   }
 
+  drawComfyUi();
   subs_.guiManager->drawViewportInteractionControls(
       interactionController_.state(),
       [this](container::ui::ViewportTool tool) {
@@ -9116,6 +9183,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     const auto meshProvider = subs_.sceneProviderRegistry->providersForKind(
         container::scene::SceneProviderKind::Mesh);
     std::vector<DrawCommand> meshRayDraws;
+    std::vector<RayOpacityMicromapRange> opacityMicromaps;
     if (surfaceScene) {
       meshRayDraws = subs_.sceneController->opaqueDrawCommands();
       const auto &transparent =
@@ -9125,7 +9193,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     }
     if (!meshProvider.empty() && subs_.rayShadowManager->supported() &&
         (surfaceScene ||
-         subs_.rayShadowManager->settings().mode != RayShadowMode::Raster))
+         subs_.rayShadowManager->settings().mode != RayShadowMode::Raster)) {
       sources.push_back(
           {meshProvider.front()->snapshot().id,
            subs_.sceneController->geometryRevision(),
@@ -9134,6 +9202,18 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
            surfaceScene ? std::span<const DrawCommand>(meshRayDraws)
                    : std::span<const DrawCommand>(
                          subs_.sceneController->opaqueDrawCommands())});
+      auto& primary = sources.back();
+      // Forward MSAA uses the TLAS to prove raster receiver identity. The
+      // proof must see every masked triangle, even those removed by a map.
+      const bool forwardMsaa = p.runtime.activeTechnique == RenderTechniqueId::ForwardRaster &&
+          msaaSampleCount_ != VK_SAMPLE_COUNT_1_BIT;
+      const auto& indices = subs_.sceneManager->indices();
+      if (svc_.ctx.deviceWrapper->opacityMicromapsEnabled() && !forwardMsaa &&
+          primary.indices.data() == indices.data() && primary.indices.size() == indices.size()) {
+        opacityMicromaps = subs_.sceneManager->rayOpacityMicromaps(primary.draws, primary.objects);
+        primary.opacityMicromaps = opacityMicromaps;
+      }
+    }
     if(gpuHierarchyPrepared_ && subs_.gpuRayInstancePass && !sources.empty() && !sources.back().draws.empty()) {
       sources.back().gpuObjects={buffers_.objects.at(imageIndex).buffer,0,
           uint64_t(subs_.sceneController->objectData().size())*sizeof(container::gpu::ObjectData)};

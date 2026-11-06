@@ -15,6 +15,8 @@ struct DeviceCreateInfo {
   std::vector<const char*> validationLayers{};
   bool enableValidationLayers{false};
   bool enableRayQueries{false}; // Optional: never disqualifies a raster device.
+  bool enableOpacityMicromaps{false};
+  bool enableReferenceOidn{false};
   VkPhysicalDeviceFeatures enabledFeatures{};  // Required features.
   VkPhysicalDeviceFeatures optionalFeatures{}; // Enabled when supported.
   const void* next{nullptr};
@@ -35,6 +37,7 @@ class VulkanDevice {
     return physicalDevice_;
   }
   [[nodiscard]] VkDevice device() const noexcept { return device_; }
+  [[nodiscard]] VkInstance instance() const noexcept { return instance_; }
   [[nodiscard]] const vk::raii::Device& raii() const noexcept { return ownedDevice_; }
   [[nodiscard]] VkQueue graphicsQueue() const noexcept { return graphicsQueue_; }
   [[nodiscard]] VkQueue asyncComputeQueue() const noexcept { return asyncComputeQueue_; }
@@ -55,6 +58,9 @@ class VulkanDevice {
   [[nodiscard]] bool rayQueriesEnabled() const noexcept {
     return rayQueriesEnabled_;
   }
+  [[nodiscard]] bool opacityMicromapsEnabled() const noexcept { return opacityMicromapsEnabled_; }
+  [[nodiscard]] bool referenceOidnEnabled() const noexcept { return referenceOidnEnabled_; }
+  [[nodiscard]] bool referenceOidnCooperativeMatrix() const noexcept { return referenceOidnCooperativeMatrix_; }
 
  private:
   bool isDeviceSuitable(VkPhysicalDevice device) const;
@@ -80,6 +86,9 @@ class VulkanDevice {
   VkPhysicalDeviceVulkan12Features enabledVulkan12Features_{};
   RayQuerySupport rayQuerySupport_{};
   bool rayQueriesEnabled_{false};
+  bool opacityMicromapsEnabled_{false};
+  bool referenceOidnEnabled_{false};
+  bool referenceOidnCooperativeMatrix_{false};
 };
 
 }  // namespace container::gpu

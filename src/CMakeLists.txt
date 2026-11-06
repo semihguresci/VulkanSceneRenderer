@@ -44,6 +44,8 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/FrameRecorder.cpp
     renderer/core/RendererMsaa.cpp
     renderer/core/RendererFrontend.cpp
+    renderer/core/RendererFrontendComfyUi.cpp
+    renderer/core/ComfyUiBridge.cpp
     renderer/core/RendererFrontendReference.cpp
     renderer/core/RendererFrontendPhysics.cpp
     renderer/core/RendererFrontendEdits.cpp
@@ -52,6 +54,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/RendererFrontendLights.cpp
     renderer/core/RendererFrontendMaterials.cpp
     renderer/core/RendererFrontendAnimation.cpp
+    renderer/core/RendererFrontendInteractivity.cpp
     renderer/core/RendererFrontendCameras.cpp
     renderer/core/RendererFrontendCameraPoses.cpp
     renderer/core/RendererFrontendDeformation.cpp
@@ -282,6 +285,10 @@ else()
     target_link_libraries(VulkanSceneRenderer_exr PRIVATE "${CONTAINER_TINYEXR_MINIZ_LIBRARY}")
 endif()
 target_link_libraries(VulkanSceneRenderer_renderer PRIVATE VulkanSceneRenderer_exr)
+if(CONTAINER_VK_OIDN_AVAILABLE)
+    target_link_libraries(VulkanSceneRenderer_renderer PRIVATE vk_oidn::vk_oidn)
+    target_compile_definitions(VulkanSceneRenderer_renderer PRIVATE CONTAINER_HAS_VK_OIDN=1)
+endif()
 if(WIN32)
     target_link_libraries(VulkanSceneRenderer_renderer PRIVATE ws2_32)
 endif()

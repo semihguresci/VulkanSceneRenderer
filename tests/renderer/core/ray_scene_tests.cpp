@@ -1,3 +1,4 @@
+#include "Container/geometry/GltfOpacityMicromaps.h"
 #include "Container/renderer/raytracing/RayScene.h"
 #include "Container/renderer/raytracing/RaySceneExtraction.h"
 #include "Container/renderer/raytracing/RayShadowSettings.h"
@@ -572,6 +573,33 @@ TEST(RayExtraction, CacheRetainsGeometryAcrossTransformsAndMaterialUpdates) {
   EXPECT_FALSE(initial.instances.instances[0].doubleSided);
   EXPECT_EQ(materialChanged.geometry->triangles[0].uv[1],
             glm::vec4(0.7f, 0.9f, 0.2f, 0.3f));
+}
+
+TEST(RayExtraction, CacheInvalidatesOpacityMicromapEligibilityAndIdentity) {
+  using container::geometry::gltf::GltfOpacityMicromapAttachment;
+  const auto vertices = surfaceTestVertices();
+  const std::array<uint32_t, 3> indices{0, 1, 2};
+  const std::array<container::gpu::ObjectData, 1> objects{};
+  const std::array draws{DrawCommand{0, 0, 3}};
+  std::array providers{RaySceneProviderSource{{"mesh"}, 7, vertices, indices, objects, draws}};
+  RaySceneExtractionCache cache;
+  const auto raw = cache.update(providers);
+  ASSERT_FALSE(raw.geometry->geometryViews().at(0).opacityMicromap);
+
+  const auto attachment = std::make_shared<const GltfOpacityMicromapAttachment>();
+  const std::array ranges{RayOpacityMicromapRange{0, 3, attachment}};
+  providers[0].opacityMicromaps = ranges;
+  EXPECT_THROW(extractRaySceneInstances(*raw.geometry, providers), std::invalid_argument);
+  const auto attached = cache.update(providers);
+  EXPECT_NE(attached.geometry, raw.geometry);
+  EXPECT_EQ(attached.geometry->geometryViews().at(0).opacityMicromap, attachment);
+  EXPECT_EQ(cache.update(providers).geometry, attached.geometry);
+
+  providers[0].opacityMicromaps = {};
+  const auto reverted = cache.update(providers);
+  EXPECT_NE(reverted.geometry, attached.geometry);
+  EXPECT_FALSE(reverted.geometry->geometryViews().at(0).opacityMicromap);
+  EXPECT_EQ(attached.geometry->geometryViews().at(0).opacityMicromap, attachment);
 }
 
 TEST(RayExtraction,

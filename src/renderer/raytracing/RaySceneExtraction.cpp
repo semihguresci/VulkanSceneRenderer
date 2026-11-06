@@ -1,5 +1,6 @@
 #include "Container/renderer/raytracing/RaySceneExtraction.h"
 
+#include <algorithm>
 #include <cmath>
 #include <glm/geometric.hpp>
 #include <glm/matrix.hpp>
@@ -78,6 +79,16 @@ uint64_t geometryId(const DrawCommand &draw) {
   return (uint64_t(draw.firstIndex) << 32) | draw.indexCount;
 }
 
+auto opacityMicromap(const RaySceneProviderSource& provider, uint64_t range) {
+  const auto key = [](const RayOpacityMicromapRange& candidate) {
+    return (uint64_t(candidate.firstIndex) << 32) | candidate.indexCount;
+  };
+  const auto found = std::ranges::lower_bound(provider.opacityMicromaps, range, {}, key);
+  using Attachment = container::geometry::gltf::GltfOpacityMicromapAttachment;
+  return found != provider.opacityMicromaps.end() && key(*found) == range
+      ? found->attachment : std::shared_ptr<const Attachment>{};
+}
+
 void appendInstances(std::vector<RaySceneInstance> &instances,
                      std::vector<RayInstanceData> &metadata,
                      const RaySceneProviderSource &provider,
@@ -125,6 +136,12 @@ uint64_t geometrySignature(std::span<const RaySceneProviderSource> providers,
     // storage identity must not accidentally reuse the previous compact copy.
     value(reinterpret_cast<uintptr_t>(provider.vertices.data()));
     value(reinterpret_cast<uintptr_t>(provider.indices.data()));
+    value(provider.opacityMicromaps.size());
+    for (const auto& candidate : provider.opacityMicromaps) {
+      value(candidate.firstIndex);
+      value(candidate.indexCount);
+      value(reinterpret_cast<uintptr_t>(candidate.attachment.get()));
+    }
     value(provider.draws.size());
     for (const auto &draw : provider.draws) {
       value(draw.objectIndex);
@@ -232,7 +249,7 @@ std::vector<RaySceneGeometry> ExtractedRayScene::geometryViews() const {
   for (const auto &source : geometry)
     views.push_back({source.provider, source.id, source.revision,
                      source.vertices, source.indices, false,
-                     source.storageIdentity});
+                     source.storageIdentity, source.opacityMicromap});
   // Candidates remain non-opaque even for solid materials: section planes and
   // box clipping must be evaluated at the ray hit rather than at the instance.
   return views;
@@ -267,6 +284,7 @@ extractRayScene(std::span<const RaySceneProviderSource> providers,
         geometry.provider = provider.provider;
         geometry.id = id;
         geometry.revision = provider.geometryRevision;
+        geometry.opacityMicromap = opacityMicromap(provider, id);
         geometry.storageIdentity = {
             reinterpret_cast<uintptr_t>(provider.vertices.data()),
             reinterpret_cast<uintptr_t>(provider.indices.data())};
@@ -337,7 +355,8 @@ extractRaySceneInstances(const ExtractedRayScene &geometry,
       if (found == ranges.end() ||
           geometry.geometry[found->second].revision !=
               provider.geometryRevision ||
-          geometry.geometry[found->second].storageIdentity != storage)
+          geometry.geometry[found->second].storageIdentity != storage ||
+          geometry.geometry[found->second].opacityMicromap != opacityMicromap(provider, geometryId(draw)))
         throw std::invalid_argument("ray geometry snapshot is stale");
       appendInstances(
           snapshot.instances, snapshot.instanceData, provider, draw,

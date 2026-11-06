@@ -3429,3 +3429,86 @@ reloaded Slang, read a redacted log event, created a PNG and sidecar, and measur
 six distinct retired Lighting recordings. It also verified cancellation and
 rejection of external model resources and capture overwrites. Evidence is in
 `out/feature-parity/mcp-native-final/results.json`.
+
+### 2026-11-06 Optional denoising, behavior graphs, and generated assets
+
+- [#116](https://github.com/semihguresci/VulkanSceneRenderer/issues/116) adds
+  a Vulkan OIDN display backend with sample-aligned albedo and normal guides,
+  three quality levels, and independent raw EXR export. OptiX and DLSS
+  reconstruction remain open.
+- [#103](https://github.com/semihguresci/VulkanSceneRenderer/issues/103) adds
+  bounded `KHR_interactivity` execution with numeric Object Model writes,
+  custom and viewport events, interpolation, and animation control.
+- [#101](https://github.com/semihguresci/VulkanSceneRenderer/issues/101) adds
+  opt-in draft retroreflection and thin scattering to reference transport.
+  Participating media scattering remains open.
+- [#118](https://github.com/semihguresci/VulkanSceneRenderer/issues/118) adds
+  a local ComfyUI adapter and a separate generated-image preview. The standard
+  HDR importer validates generated environments before publication.
+
+See [reference path tracing](reference-path-tracing.md),
+[glTF interactivity](gltf-interactivity.md), and [ComfyUI setup](comfyui-bridge.md)
+for the supported profiles and controls.
+
+At 256×192 on the RTX 2080 SUPER, high-quality OIDN reduced the four-sample
+Cornell display RMSE from 0.1117 to 0.0222 against the 256-sample control. The
+filter took 1.12 ms on the GPU and reported 15,830,272 bytes for its images and
+network. Raw float32 EXRs were byte-identical with the filter on and off.
+Camera and object motion, viewport resize, and quality switches discarded the
+old filtered image. A one-sample glass capture also passed. Evidence is in
+`out/feature-parity/reference-oidn-accepted/results.json`.
+
+Twelve native interactivity captures verify motion, recoloring, clip control,
+and pixel-exact reset in forward and deferred rendering. Eight native material
+captures verify retroreflection texture response, thin scattering, disabled
+fallback, and portable GLB reload. Seven native ComfyUI captures with a mock
+worker verify viewport-only input, HDR/IBL publication, failure retention, and
+separate generated previews. Five loopback protocol tests also passed. The
+receipts are in `out/feature-parity/gltf-interactivity/native`,
+`out/feature-parity/experimental-materials/native-final`, and
+`out/feature-parity/comfyui-native`.
+
+The focused suites passed 493 CPU and 130 Vulkan cases with zero skips. This
+includes raw display parity when the device does not enable OIDN. All 120
+SPIR-V modules passed validation. The Windows validation archive included the
+OIDN notices and composition shader, the ComfyUI adapter, and both workflows.
+
+### 2026-11-06 Opacity micromaps, portable behavior graphs, and capture telemetry
+
+[#104](https://github.com/semihguresci/VulkanSceneRenderer/issues/104) adds the
+opt-in pinned glTF micromap profile and Vulkan EXT build path. The renderer
+uses the sampled-alpha route for unsupported devices, invalid payloads, and
+changed coverage. Eighteen native captures matched the sampled-alpha
+reference pixel for pixel. The alpha-cutoff edit detached the map and undo
+restored it. Clipping, malformed input, forward MSAA, and portable GLB reload
+also passed. [Format and limits](gltf-opacity-micromaps.md)
+
+The Vulkan contract matched sampled alpha for all 4,096 test rays on the RTX
+2080 SUPER. In this fixture, micromap traversal took 32.512 µs versus 34.784 µs
+for sampled alpha. Total allocations were 18,176 and 14,080 bytes,
+respectively. The results are in `out/feature-parity/opacity-micromap-gpu.log`
+and `out/feature-parity/gltf-opacity-micromap-native/results.json`.
+
+[#103](https://github.com/semihguresci/VulkanSceneRenderer/issues/103) now
+preserves supported behavior graphs through GLB export and Import / Merge.
+Graph-driven clips keep their authored channels. The exporter and importer
+reject ambiguous reference mappings, including direct punctual-light pointers
+on save and compositions of independent graphs. [Graph portability](gltf-interactivity.md)
+
+In forward and deferred raster, saved GLB replay matched the authored graph
+frames pixel for pixel. Native merge verified animation and material remapping,
+graph removal on undo, and a fresh graph on redo. Evidence is in
+`out/feature-parity/gltf-interactivity/native-portability-final/results.json`.
+
+[#120](https://github.com/semihguresci/VulkanSceneRenderer/issues/120) adds
+explicit opt-in NVML telemetry to capture and benchmark sidecars. Capture and
+the interactive panel share one asynchronous worker. The sidecar separates
+whole-device sensor values from renderer allocation counters and Vulkan pass
+timings. [GPU hardware monitoring](gpu-hardware-monitoring.md)
+
+The RTX 2080 SUPER headless captures matched pixel for pixel across the
+480-frame telemetry cohorts. Real NVML snapshots advanced by 1,005 ms, with
+5.393–6.689 ms worker polls and identical median frame wait. Evidence is in
+`out/feature-parity/gpu-hardware-native/results.json`.
+
+The final Release build passed all 374 focused CPU cases with zero skips.
