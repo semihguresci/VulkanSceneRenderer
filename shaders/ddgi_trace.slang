@@ -9,6 +9,7 @@
 [[vk::binding(2, 1)]] StructuredBuffer<AreaLightData> uAreaLights;
 #include "area_light_common.slang"
 #include "ray_surface_common.slang"
+#include "ray_footprint_common.slang"
 #include "ddgi_material_common.slang"
 #include "ddgi_transport_common.slang"
 #include "ddgi_lookup_common.slang"
@@ -24,23 +25,41 @@
 [[vk::binding(9, DDGI_SET)]] TextureCube<float4> gDdgiEnvironment;
 [[vk::binding(10, DDGI_SET)]] SamplerState gDdgiEnvironmentSampler;
 
-float4 DdgiTexture(uint index, float4 uv, GpuTextureTransform transform)
+float4 DdgiTextureGrad(uint index, float4 uv, GpuTextureTransform transform, float2 texGrad)
 {
     if (index == kInvalidGpuMaterialTexture || index >= MATERIAL_TEXTURE_DESCRIPTOR_COUNT)
         return 1.0.xxxx;
     uint textureIndex = NonUniformResourceIndex(index);
     uint samplerIndex = NonUniformResourceIndex(
         ResolveMaterialSamplerIndex(uTextureMetadata[textureIndex]));
-    // Ray footprints have no raster derivatives. This initial route uses base
-    // mip consistently, including alpha masks; all authored UV transforms apply.
-    return materialTextures[textureIndex].SampleLevel(materialSamplers[samplerIndex],
-        ApplyGpuTextureTransform(uv.xy, uv.zw, transform), 0.0);
+    float2 coord = ApplyGpuTextureTransform(uv.xy, uv.zw, transform);
+    float gradient = transform.row0.w >= 0.5 ? texGrad.y : texGrad.x;
+    if (gradient > 0.0)
+    {
+        // Probe-ray footprints (#82): the ray cone's slant-corrected world
+        // diameter becomes a per-set UV gradient, filtered exactly like the
+        // reference renderer's SampleGrad route. All authored UV transforms
+        // still apply through the gradient's linear rows.
+        return materialTextures[textureIndex].SampleGrad(materialSamplers[samplerIndex],
+            coord, transform.row0.xy * gradient, transform.row1.xy * gradient);
+    }
+    return materialTextures[textureIndex].SampleLevel(materialSamplers[samplerIndex], coord, 0.0);
+}
+float4 DdgiTexture(uint index, float4 uv, GpuTextureTransform transform)
+{
+    // Coverage candidates and visibility shadow connections carry no footprint.
+    return DdgiTextureGrad(index, uv, transform, 0.0.xx);
+}
+float DdgiScalarGrad(float factor, uint index, float4 uv, GpuTextureTransform transform,
+                     uint channel, float2 texGrad)
+{
+    return ResolveDdgiScalarFactor(factor, DdgiTextureGrad(index, uv, transform, texGrad),
+        transform, channel);
 }
 float DdgiScalar(float factor, uint index, float4 uv, GpuTextureTransform transform,
                  uint channel)
 {
-    return ResolveDdgiScalarFactor(factor, DdgiTexture(index, uv, transform),
-        transform, channel);
+    return DdgiScalarGrad(factor, index, uv, transform, channel, 0.0.xx);
 }
 bool DdgiCandidateAccepted(uint instanceIndex, uint primitive, float2 bary, float3 world)
 {
@@ -103,30 +122,33 @@ struct DdgiSurfaceTransmission
     float3 tint;
     uint flags;
 };
-DdgiSurfaceTransmission DdgiResolveSurfaceTransmission(RaySurfacePoint point, GpuMaterial material)
+DdgiSurfaceTransmission DdgiResolveSurfaceTransmission(RaySurfacePoint point, GpuMaterial material,
+                                                        float2 texGrad)
 {
     DdgiSurfaceTransmission result = (DdgiSurfaceTransmission)0;
-    float4 baseColor = DdgiTexture(material.baseColorTextureIndex, point.uv, material.baseColorTextureTransform);
+    float4 baseColor = DdgiTextureGrad(material.baseColorTextureIndex, point.uv,
+        material.baseColorTextureTransform, texGrad);
     float alpha = material.color.a * point.colorAlpha * material.opacityFactor * baseColor.a *
-        SelectGpuTextureChannel(DdgiTexture(material.opacityTextureIndex, point.uv,
-            material.opacityTextureTransform), material.opacityTextureTransform, 0u);
-    float transmission = DdgiScalar(material.transmissionFactor, material.transmissionTextureIndex,
-        point.uv, material.transmissionTextureTransform, 0u);
+        SelectGpuTextureChannel(DdgiTextureGrad(material.opacityTextureIndex, point.uv,
+            material.opacityTextureTransform, texGrad), material.opacityTextureTransform, 0u);
+    float transmission = DdgiScalarGrad(material.transmissionFactor, material.transmissionTextureIndex,
+        point.uv, material.transmissionTextureTransform, 0u, texGrad);
     float metallic = material.metallicRoughness.x *
-        DdgiTexture(material.metallicRoughnessTextureIndex, point.uv, material.metallicRoughnessTextureTransform).b *
-        SelectGpuTextureChannel(DdgiTexture(material.metalnessTextureIndex, point.uv,
-            material.metalnessTextureTransform), material.metalnessTextureTransform, 0u);
+        DdgiTextureGrad(material.metallicRoughnessTextureIndex, point.uv,
+            material.metallicRoughnessTextureTransform, texGrad).b *
+        SelectGpuTextureChannel(DdgiTextureGrad(material.metalnessTextureIndex, point.uv,
+            material.metalnessTextureTransform, texGrad), material.metalnessTextureTransform, 0u);
     uint flags = point.objectFlags | material.flags;
     alpha = ResolveGpuMaterialAlpha(alpha, material.flags);
     float roughness = material.metallicRoughness.y;
     if ((flags & 0x8u) != 0u)
         roughness = 1.0 - saturate(roughness * SelectGpuTextureChannel(
-            DdgiTexture(material.roughnessTextureIndex, point.uv, material.roughnessTextureTransform),
+            DdgiTextureGrad(material.roughnessTextureIndex, point.uv, material.roughnessTextureTransform, texGrad),
             material.roughnessTextureTransform, 3u));
     else
-        roughness *= DdgiTexture(material.metallicRoughnessTextureIndex, point.uv,
-            material.metallicRoughnessTextureTransform).g * SelectGpuTextureChannel(
-                DdgiTexture(material.roughnessTextureIndex, point.uv, material.roughnessTextureTransform),
+        roughness *= DdgiTextureGrad(material.metallicRoughnessTextureIndex, point.uv,
+            material.metallicRoughnessTextureTransform, texGrad).g * SelectGpuTextureChannel(
+                DdgiTextureGrad(material.roughnessTextureIndex, point.uv, material.roughnessTextureTransform, texGrad),
                 material.roughnessTextureTransform, 0u);
     result.transmission = transmission;
     result.alpha = alpha;
@@ -136,22 +158,23 @@ DdgiSurfaceTransmission DdgiResolveSurfaceTransmission(RaySurfacePoint point, Gp
     result.flags = flags;
     return result;
 }
-DdgiThinGlassResult DdgiSurfaceThinGlass(RaySurfacePoint point, GpuMaterial material, float3 direction)
+DdgiThinGlassResult DdgiSurfaceThinGlass(RaySurfacePoint point, GpuMaterial material,
+    float3 direction, float2 texGrad)
 {
     if (point.valid == 0u || (uint(uDdgi.intensityBias.w) & 3u) == 0u)
         return (DdgiThinGlassResult)0;
-    DdgiSurfaceTransmission surface = DdgiResolveSurfaceTransmission(point, material);
+    DdgiSurfaceTransmission surface = DdgiResolveSurfaceTransmission(point, material, texGrad);
     return DdgiThinGlassTransmission(material, surface.flags, surface.transmission,
         surface.alpha, surface.metallic, surface.roughness, surface.tint,
         dot(point.geometricNormal, direction),
         (uint(uDdgi.intensityBias.w) & 3u) != 0u);
 }
 DdgiDielectricResult DdgiSurfaceDielectric(RaySurfacePoint point, GpuMaterial material,
-                                         float3 direction, uint seed)
+                                         float3 direction, uint seed, float2 texGrad)
 {
     if (point.valid == 0u || (uint(uDdgi.intensityBias.w) & 2u) == 0u)
         return (DdgiDielectricResult)0;
-    DdgiSurfaceTransmission surface = DdgiResolveSurfaceTransmission(point, material);
+    DdgiSurfaceTransmission surface = DdgiResolveSurfaceTransmission(point, material, texGrad);
     return DdgiSampleDielectric(material, surface.flags, surface.transmission,
         surface.alpha, surface.metallic, surface.roughness, surface.tint, direction,
         point.geometricNormal, point.frontFace != 0u,
@@ -196,7 +219,7 @@ float3 DdgiLightVisibility(float3 world, float3 geometricNormal, float3 directio
         DdgiClosestHit hit = DdgiTraceClosest(ray);
         if (hit.hit == 0u) return throughput;
         GpuMaterial material = uMaterials[uDdgiInstances[hit.instanceIndex].info.y];
-        DdgiThinGlassResult glass = DdgiSurfaceThinGlass(hit.point, material, direction);
+        DdgiThinGlassResult glass = DdgiSurfaceThinGlass(hit.point, material, direction, 0.0.xx);
         if (!DdgiAdvanceThinGlass(throughput, glass, crossed)) return 0.0.xxx;
         ray.TMin = DdgiNextRayMinimum(hit.distance, bias);
         if (!isfinite(ray.TMin)) return 0.0.xxx;
@@ -205,48 +228,54 @@ float3 DdgiLightVisibility(float3 world, float3 geometricNormal, float3 directio
     return 0.0.xxx;
 }
 
-DdgiShadingMaterial DdgiEvaluateMaterial(RaySurfacePoint point, GpuMaterial material, float3 V)
+DdgiShadingMaterial DdgiEvaluateMaterial(RaySurfacePoint point, GpuMaterial material,
+    float3 V, float2 texGrad)
 {
     DdgiShadingMaterial result = (DdgiShadingMaterial)0;
     result.albedo = max(Finite3Or(material.color.rgb * point.color *
-        DdgiTexture(material.baseColorTextureIndex, point.uv, material.baseColorTextureTransform).rgb, 0.0.xxx), 0.0.xxx);
+        DdgiTextureGrad(material.baseColorTextureIndex, point.uv,
+            material.baseColorTextureTransform, texGrad).rgb, 0.0.xxx), 0.0.xxx);
     result.metallic = saturate(FiniteScalarOr(material.metallicRoughness.x, 0.0) *
-        DdgiTexture(material.metallicRoughnessTextureIndex, point.uv, material.metallicRoughnessTextureTransform).b);
-    result.metallic *= SelectGpuTextureChannel(DdgiTexture(material.metalnessTextureIndex,
-        point.uv, material.metalnessTextureTransform), material.metalnessTextureTransform, 0u);
+        DdgiTextureGrad(material.metallicRoughnessTextureIndex, point.uv,
+            material.metallicRoughnessTextureTransform, texGrad).b);
+    result.metallic *= SelectGpuTextureChannel(DdgiTextureGrad(material.metalnessTextureIndex,
+        point.uv, material.metalnessTextureTransform, texGrad), material.metalnessTextureTransform, 0u);
     result.metallic = saturate(FiniteScalarOr(result.metallic, 0.0));
     uint flags = point.objectFlags | material.flags;
     float roughness = FiniteScalarOr(material.metallicRoughness.y, 1.0);
     if ((flags & 0x8u) != 0u)
     {
-        roughness *= SelectGpuTextureChannel(DdgiTexture(material.roughnessTextureIndex,
-            point.uv, material.roughnessTextureTransform), material.roughnessTextureTransform, 3u);
+        roughness *= SelectGpuTextureChannel(DdgiTextureGrad(material.roughnessTextureIndex,
+            point.uv, material.roughnessTextureTransform, texGrad), material.roughnessTextureTransform, 3u);
         roughness = 1.0 - saturate(roughness);
     }
     else
     {
-        roughness *= DdgiTexture(material.metallicRoughnessTextureIndex, point.uv,
-            material.metallicRoughnessTextureTransform).g;
-        roughness *= SelectGpuTextureChannel(DdgiTexture(material.roughnessTextureIndex,
-            point.uv, material.roughnessTextureTransform), material.roughnessTextureTransform, 0u);
+        roughness *= DdgiTextureGrad(material.metallicRoughnessTextureIndex, point.uv,
+            material.metallicRoughnessTextureTransform, texGrad).g;
+        roughness *= SelectGpuTextureChannel(DdgiTextureGrad(material.roughnessTextureIndex,
+            point.uv, material.roughnessTextureTransform, texGrad), material.roughnessTextureTransform, 0u);
     }
     result.roughness = clamp(FiniteScalarOr(roughness, 1.0), 0.045, 1.0);
-    float specular = DdgiScalar(material.specularFactor, material.specularTextureIndex,
-        point.uv, material.specularTextureTransform, 3u);
+    float specular = DdgiScalarGrad(material.specularFactor, material.specularTextureIndex,
+        point.uv, material.specularTextureTransform, 3u, texGrad);
     float3 sampledSpecularColor = material.specularColorTextureIndex != kInvalidGpuMaterialTexture ?
-        DdgiTexture(material.specularColorTextureIndex, point.uv, material.specularColorTextureTransform).rgb :
-        DdgiTexture(material.specularTextureIndex, point.uv, material.specularTextureTransform).rgb;
+        DdgiTextureGrad(material.specularColorTextureIndex, point.uv,
+            material.specularColorTextureTransform, texGrad).rgb :
+        DdgiTextureGrad(material.specularTextureIndex, point.uv,
+            material.specularTextureTransform, texGrad).rgb;
     float3 specularColor = saturate(Finite3Or(material.specularColorFactor.rgb * sampledSpecularColor, 1.0.xxx));
-    float iridescence = DdgiScalar(material.iridescenceFactor, material.iridescenceTextureIndex,
-        point.uv, material.iridescenceTextureTransform, 0u);
+    float iridescence = DdgiScalarGrad(material.iridescenceFactor, material.iridescenceTextureIndex,
+        point.uv, material.iridescenceTextureTransform, 0u, texGrad);
     float filmThickness = lerp(material.iridescenceThicknessMinimum, material.iridescenceThicknessMaximum,
-        saturate(SelectGpuTextureChannel(DdgiTexture(material.iridescenceThicknessTextureIndex,
-            point.uv, material.iridescenceThicknessTextureTransform), material.iridescenceThicknessTextureTransform, 1u)));
+        saturate(SelectGpuTextureChannel(DdgiTextureGrad(material.iridescenceThicknessTextureIndex,
+            point.uv, material.iridescenceThicknessTextureTransform, texGrad),
+            material.iridescenceThicknessTextureTransform, 1u)));
     result.normal = point.shadingNormal;
     if (material.normalTextureIndex != kInvalidGpuMaterialTexture)
     {
-        float3 tangentNormal = DdgiTexture(material.normalTextureIndex, point.uv,
-            material.normalTextureTransform).xyz * 2.0 - 1.0;
+        float3 tangentNormal = DdgiTextureGrad(material.normalTextureIndex, point.uv,
+            material.normalTextureTransform, texGrad).xyz * 2.0 - 1.0;
         tangentNormal.xy *= FiniteScalarOr(material.normalTextureScale, 1.0);
         tangentNormal = SafeNormalize(tangentNormal, float3(0, 0, 1));
         result.normal = SafeNormalize(point.tangent.xyz * tangentNormal.x +
@@ -256,32 +285,32 @@ DdgiShadingMaterial DdgiEvaluateMaterial(RaySurfacePoint point, GpuMaterial mate
     result.f0 = EvaluatePbrF0WithDielectricTint(result.albedo, result.metallic,
         specular, specularColor, material.ior, ApproximateDeferredIridescenceTint(iridescence,
             material.iridescenceIor, filmThickness, saturate(dot(result.normal, V))));
-    float clearcoat = DdgiScalar(material.clearcoatFactor, material.clearcoatTextureIndex,
-        point.uv, material.clearcoatTextureTransform, 0u);
+    float clearcoat = DdgiScalarGrad(material.clearcoatFactor, material.clearcoatTextureIndex,
+        point.uv, material.clearcoatTextureTransform, 0u, texGrad);
     float3 sheen = ResolveDeferredTextureBackedColor(material.sheenColorFactor.rgb,
-        material.sheenColorTextureIndex) * DdgiTexture(material.sheenColorTextureIndex,
-            point.uv, material.sheenColorTextureTransform).rgb;
+        material.sheenColorTextureIndex) * DdgiTextureGrad(material.sheenColorTextureIndex,
+            point.uv, material.sheenColorTextureTransform, texGrad).rgb;
     result.layerScale = DeferredClearcoatBaseEnergyScale(clearcoat) * DeferredSheenBaseEnergyScale(sheen);
     result.clearcoat = clearcoat;
-    result.clearcoatRoughness = DdgiScalar(material.clearcoatRoughnessFactor,
-        material.clearcoatRoughnessTextureIndex, point.uv, material.clearcoatRoughnessTextureTransform, 1u);
+    result.clearcoatRoughness = DdgiScalarGrad(material.clearcoatRoughnessFactor,
+        material.clearcoatRoughnessTextureIndex, point.uv, material.clearcoatRoughnessTextureTransform, 1u, texGrad);
     result.sheenColor = sheen;
-    result.sheenRoughness = DdgiScalar(material.sheenRoughnessFactor,
-        material.sheenRoughnessTextureIndex, point.uv, material.sheenRoughnessTextureTransform, 3u);
+    result.sheenRoughness = DdgiScalarGrad(material.sheenRoughnessFactor,
+        material.sheenRoughnessTextureIndex, point.uv, material.sheenRoughnessTextureTransform, 3u, texGrad);
     result.emissive = max(Finite3Or(material.emissiveColor * material.emissiveStrength *
-        DdgiTexture(material.emissiveTextureIndex, point.uv, material.emissiveTextureTransform).rgb, 0.0.xxx), 0.0.xxx);
-    result.occlusion = lerp(1.0, saturate(DdgiTexture(material.occlusionTextureIndex, point.uv,
-        material.occlusionTextureTransform).r), saturate(FiniteScalarOr(material.occlusionStrength, 1.0)));
+        DdgiTextureGrad(material.emissiveTextureIndex, point.uv, material.emissiveTextureTransform, texGrad).rgb, 0.0.xxx), 0.0.xxx);
+    result.occlusion = lerp(1.0, saturate(DdgiTextureGrad(material.occlusionTextureIndex, point.uv,
+        material.occlusionTextureTransform, texGrad).r), saturate(FiniteScalarOr(material.occlusionStrength, 1.0)));
     result.unlit = (flags & 0x10u) != 0u ? 1u : 0u;
     // The AS has undisplaced triangles and this transport route is diffuse.
     // Keep unsupported closest geometry in visibility, with black radiance,
     // rather than accidentally turning it into an environment leak.
-    float transmission = DdgiScalar(material.transmissionFactor, material.transmissionTextureIndex,
-        point.uv, material.transmissionTextureTransform, 0u);
+    float transmission = DdgiScalarGrad(material.transmissionFactor, material.transmissionTextureIndex,
+        point.uv, material.transmissionTextureTransform, 0u, texGrad);
     result.extended = ResolveDdgiExtendedPbrTerms(material, point, result.normal, transmission,
-        DdgiTexture(material.anisotropyTextureIndex, point.uv, material.anisotropyTextureTransform),
-        DdgiTexture(material.diffuseTransmissionTextureIndex, point.uv, material.diffuseTransmissionTextureTransform),
-        DdgiTexture(material.diffuseTransmissionColorTextureIndex, point.uv, material.diffuseTransmissionColorTextureTransform));
+        DdgiTextureGrad(material.anisotropyTextureIndex, point.uv, material.anisotropyTextureTransform, texGrad),
+        DdgiTextureGrad(material.diffuseTransmissionTextureIndex, point.uv, material.diffuseTransmissionTextureTransform, texGrad),
+        DdgiTextureGrad(material.diffuseTransmissionColorTextureIndex, point.uv, material.diffuseTransmissionColorTextureTransform, texGrad));
     result.unsupported = ((flags & kGpuMaterialFlagAlphaBlend) != 0u || IsThinSurfaceGpuMaterial(flags) ||
         !isfinite(material.transmissionFactor) || transmission > 0.0 || !isfinite(material.heightScale) ||
         (material.heightTextureIndex != kInvalidGpuMaterialTexture && abs(material.heightScale) > 1e-7)) ? 1u : 0u;
@@ -388,6 +417,11 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
     float segmentBias = 0.0;
     uint mediumInstance = 0xffffffffu;
     uint mediumMaterial = 0xffffffffu;
+    // Probe-ray footprints (#82): each of rayCount equal-solid-angle sphere
+    // samples owns 4*pi/rayCount steradians; the equivalent cone's diameter
+    // growth per unit travel drives hit-texture filtering.
+    RayCone cone = (RayCone)0;
+    cone.spread = RayConeSolidAngleSpread(update.rayCount);
     for (uint crossed = 0u; crossed <= DDGI_MAX_GLASS_CROSSINGS; ++crossed)
     {
         DdgiClosestHit hit = DdgiTraceClosest(ray);
@@ -411,8 +445,13 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
         RaySurfacePoint point = hit.point;
         GpuMaterial material = uMaterials[instance.info.y];
         float totalDistance = traveled + hit.distance;
+        // Slant-corrected world footprint of this probe-ray cone at the hit;
+        // refracted continuations inherit it as their starting width.
+        float worldFoot = RayConeWorldFootprint(cone, hit.distance,
+            point.geometricNormal, -ray.Direction);
+        float2 texGrad = worldFoot * point.texelDensity;
         DdgiDielectricResult dielectric = DdgiSurfaceDielectric(point, material, ray.Direction,
-            DdgiHash(tid.x ^ (uDdgi.frame.x * 12347u) ^ (crossed * 0x68bc21ebu)));
+            DdgiHash(tid.x ^ (uDdgi.frame.x * 12347u) ^ (crossed * 0x68bc21ebu)), texGrad);
         if (mediumInstance != 0xffffffffu)
         {
             float3 absorption;
@@ -481,9 +520,12 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
                 sample.directionAndReserved.w = 2.0;
                 break;
             }
+            // The refracted segment restarts at this surface, so its cone
+            // inherits the slant-corrected footprint measured here.
+            cone.width = worldFoot;
             continue;
         }
-        DdgiThinGlassResult glass = DdgiSurfaceThinGlass(point, material, ray.Direction);
+        DdgiThinGlassResult glass = DdgiSurfaceThinGlass(point, material, ray.Direction, texGrad);
         if (glass.supported != 0u)
         {
             // Traversed glass is not an enclosing back face and does not turn
@@ -494,6 +536,9 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
                 sample.directionAndReserved.w = 2.0;
                 break;
             }
+            // The straight continuation keeps the original ray origin, so the
+            // cone's accumulated width + spread * total distance already
+            // covers the travelled segment; no footprint update is needed.
             ray.TMin = DdgiNextRayMinimum(hit.distance, minimumBias);
             if (!isfinite(ray.TMin))
             {
@@ -514,7 +559,7 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
         if (point.valid != 0u && (front || doubleSided))
         {
             point = OrientRaySurfaceForShading(point, material.flags);
-            DdgiShadingMaterial evaluated = DdgiEvaluateMaterial(point, material, -ray.Direction);
+            DdgiShadingMaterial evaluated = DdgiEvaluateMaterial(point, material, -ray.Direction, texGrad);
             sample.directionAndReserved.w = evaluated.unsupported != 0u ? 2.0 : 1.0;
             sample.radianceAndDistance.rgb = throughput * DdgiShadeSurface(point, evaluated, -ray.Direction,
                 DdgiHash(tid.x + uDdgi.frame.x * 12347u));

@@ -29,8 +29,9 @@ struct alignas(16) Query {
   glm::uvec4 controls{0,1234,0,0};
   glm::vec4 previousMean{},previousMoment{},sampleValue{};
   glm::mat4 inverseProjection{1},inverseView{1};
+  glm::vec4 footprintA{},footprintB{},footprintC{};
 };
-static_assert(sizeof(Query)==256);
+static_assert(sizeof(Query)==304);
 struct alignas(16) Result {
   glm::vec4 valuePdf{},directionPdf{},weightValid{},auxiliary{};
 };
@@ -114,6 +115,10 @@ protected:
         vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eStorageBuffer, 1,
                                        vk::ShaderStageFlagBits::eCompute),
         vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eStorageBuffer, 1,
+                                       vk::ShaderStageFlagBits::eCompute),
+        vk::DescriptorSetLayoutBinding(2, vk::DescriptorType::eSampledImage, 1,
+                                       vk::ShaderStageFlagBits::eCompute),
+        vk::DescriptorSetLayoutBinding(3, vk::DescriptorType::eSampler, 1,
                                        vk::ShaderStageFlagBits::eCompute)};
     layout = vk::raii::DescriptorSetLayout(device->raii(),
         vk::DescriptorSetLayoutCreateInfo({}, bindings));
@@ -124,9 +129,126 @@ protected:
         vk::ComputePipelineCreateInfo({},
             vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eCompute,
                                                *module, "computeMain"), *pipelineLayout));
+    createContractTexture();
+  }
+
+  // A 256x256 RGBA8 image with nine authored constant-colour mips. Exact byte
+  // values keep unorm decode (byte/255) exact for footprint-gradient checks.
+  static constexpr uint32_t kContractTextureSize = 256u;
+  static constexpr uint32_t kContractTextureMips = 9u;
+  static glm::u8vec4 contractMipColour(uint32_t mip) {
+    return {glm::u8(mip * 28u), glm::u8(255u - mip * 28u), 77u, 255u};
+  }
+  void createContractTexture() {
+    std::vector<std::byte> pixels;
+    std::vector<vk::BufferImageCopy> regions;
+    for (uint32_t mip = 0; mip < kContractTextureMips; ++mip) {
+      const uint32_t extent = kContractTextureSize >> mip;
+      const auto colour = contractMipColour(mip);
+      vk::BufferImageCopy region{};
+      region.bufferOffset = pixels.size();
+      region.imageSubresource = {vk::ImageAspectFlagBits::eColor, mip, 0, 1};
+      region.imageExtent = vk::Extent3D(extent, extent, 1);
+      regions.push_back(region);
+      pixels.resize(region.bufferOffset + size_t(extent) * extent * 4);
+      auto* target = reinterpret_cast<glm::u8vec4*>(pixels.data() + region.bufferOffset);
+      std::fill_n(target, size_t(extent) * extent, colour);
+    }
+    auto staging = memory->createBuffer(pixels.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+        VMA_ALLOCATION_CREATE_MAPPED_BIT);
+    struct StagingGuard {
+      VulkanMemoryManager& manager;
+      AllocatedBuffer buffer;
+      ~StagingGuard() { manager.destroyBuffer(buffer); }
+    } stagingGuard{*memory, staging};
+    std::memcpy(staging.allocation_info.pMappedData, pixels.data(), pixels.size());
+    if (vmaFlushAllocation(memory->allocator(), staging.allocation, 0, VK_WHOLE_SIZE) != VK_SUCCESS)
+      throw std::runtime_error("Reference path transport texture flush failed");
+    VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    imageInfo.extent = {kContractTextureSize, kContractTextureSize, 1};
+    imageInfo.mipLevels = kContractTextureMips;
+    imageInfo.arrayLayers = 1;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    VmaAllocationCreateInfo allocationInfo{};
+    allocationInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    if (vmaCreateImage(memory->allocator(), &imageInfo, &allocationInfo,
+                       &contractImage, &contractImageMemory, nullptr) != VK_SUCCESS)
+      throw std::runtime_error("Reference path transport texture creation failed");
+    VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    viewInfo.image = contractImage;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kContractTextureMips, 0, 1};
+    if (vkCreateImageView(device->device(), &viewInfo, nullptr, &contractImageView) != VK_SUCCESS)
+      throw std::runtime_error("Reference path transport texture view failed");
+    VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.maxLod = float(kContractTextureMips - 1u);
+    if (vkCreateSampler(device->device(), &samplerInfo, nullptr, &contractSampler) != VK_SUCCESS)
+      throw std::runtime_error("Reference path transport sampler failed");
+    command.reset();
+    command.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+    vk::ImageMemoryBarrier2 toDestination;
+    toDestination.srcStageMask = vk::PipelineStageFlagBits2::eNone;
+    toDestination.srcAccessMask = {};
+    toDestination.dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
+    toDestination.dstAccessMask = vk::AccessFlagBits2::eTransferWrite;
+    toDestination.oldLayout = vk::ImageLayout::eUndefined;
+    toDestination.newLayout = vk::ImageLayout::eTransferDstOptimal;
+    toDestination.image = contractImage;
+    toDestination.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, kContractTextureMips, 0, 1};
+    vk::DependencyInfo toDestinationDependency;
+    toDestinationDependency.imageMemoryBarrierCount = 1;
+    toDestinationDependency.pImageMemoryBarriers = &toDestination;
+    command.pipelineBarrier2(toDestinationDependency);
+    command.copyBufferToImage(staging.buffer, contractImage,
+                              vk::ImageLayout::eTransferDstOptimal, regions);
+    vk::ImageMemoryBarrier2 toSampled;
+    toSampled.srcStageMask = vk::PipelineStageFlagBits2::eTransfer;
+    toSampled.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
+    toSampled.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+    toSampled.dstAccessMask = vk::AccessFlagBits2::eShaderRead;
+    toSampled.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+    toSampled.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    toSampled.image = contractImage;
+    toSampled.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, kContractTextureMips, 0, 1};
+    vk::DependencyInfo toSampledDependency;
+    toSampledDependency.imageMemoryBarrierCount = 1;
+    toSampledDependency.pImageMemoryBarriers = &toSampled;
+    command.pipelineBarrier2(toSampledDependency);
+    command.end();
+    const vk::CommandBuffer handle = *command;
+    vk::SubmitInfo submit;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &handle;
+    vk::raii::Fence fence(device->raii(), vk::FenceCreateInfo());
+    vk::raii::Queue queue(device->raii(), device->queueFamilyIndices().graphicsFamily.value(), 0);
+    queue.submit(submit, *fence);
+    if (device->raii().waitForFences(*fence, true, UINT64_MAX) != vk::Result::eSuccess)
+      throw std::runtime_error("Reference path transport texture fence failed");
+    command.reset();
   }
   void TearDown() override {
     if (device) device->raii().waitIdle();
+    if (device) {
+      if (contractSampler) vkDestroySampler(device->device(), contractSampler, nullptr);
+      if (contractImageView) vkDestroyImageView(device->device(), contractImageView, nullptr);
+      if (contractImage) vmaDestroyImage(memory->allocator(), contractImage, contractImageMemory);
+      contractSampler = VK_NULL_HANDLE;
+      contractImageView = VK_NULL_HANDLE;
+      contractImage = VK_NULL_HANDLE;
+      contractImageMemory = nullptr;
+    }
     command.clear();
     pipeline.clear(); pipelineLayout.clear(); layout.clear(); commandPool.clear();
     memory.reset(); device.reset(); surface.clear(); messenger.clear(); instance.reset();
@@ -149,9 +271,12 @@ protected:
     std::memcpy(queries.buffer.allocation_info.pMappedData, input.data(), input.size_bytes());
     if (vmaFlushAllocation(memory->allocator(), queries.buffer.allocation, 0, VK_WHOLE_SIZE) != VK_SUCCESS)
       throw std::runtime_error("Reference path transport flush failed");
-    const vk::DescriptorPoolSize size(vk::DescriptorType::eStorageBuffer, 2);
+    const std::array poolSizes{
+        vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, 2),
+        vk::DescriptorPoolSize(vk::DescriptorType::eSampledImage, 1),
+        vk::DescriptorPoolSize(vk::DescriptorType::eSampler, 1)};
     vk::raii::DescriptorPool descriptors(device->raii(), vk::DescriptorPoolCreateInfo(
-        vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 1, size));
+        vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 1, poolSizes));
     auto sets = device->raii().allocateDescriptorSets(
         vk::DescriptorSetAllocateInfo(*descriptors, *layout));
     const std::array buffers{
@@ -160,6 +285,13 @@ protected:
     for (uint32_t i = 0; i < 2; ++i)
       device->raii().updateDescriptorSets(vk::WriteDescriptorSet(*sets.front(), i, 0, 1,
           vk::DescriptorType::eStorageBuffer, nullptr, &buffers[i]), {});
+    const vk::DescriptorImageInfo sampledImage({}, contractImageView,
+                                               vk::ImageLayout::eShaderReadOnlyOptimal);
+    device->raii().updateDescriptorSets(vk::WriteDescriptorSet(*sets.front(), 2, 0, 1,
+        vk::DescriptorType::eSampledImage, &sampledImage, {}), {});
+    const vk::DescriptorImageInfo samplerImage(contractSampler, {}, vk::ImageLayout::eUndefined);
+    device->raii().updateDescriptorSets(vk::WriteDescriptorSet(*sets.front(), 3, 0, 1,
+        vk::DescriptorType::eSampler, &samplerImage, {}), {});
     command.reset();
     command.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
     vk::MemoryBarrier2 before(vk::PipelineStageFlagBits2::eHost, vk::AccessFlagBits2::eHostWrite,
@@ -208,6 +340,10 @@ protected:
   vk::raii::DescriptorSetLayout layout{nullptr};
   vk::raii::PipelineLayout pipelineLayout{nullptr};
   vk::raii::Pipeline pipeline{nullptr};
+  VkImage contractImage{VK_NULL_HANDLE};
+  VmaAllocation contractImageMemory{nullptr};
+  VkImageView contractImageView{VK_NULL_HANDLE};
+  VkSampler contractSampler{VK_NULL_HANDLE};
 };
 
 
@@ -1032,5 +1168,101 @@ TEST_F(PathTransportGpu, MaterialTextureFactorsSanitizeNonfiniteInputsPerChannel
   ASSERT_EQ(output.size(), 1u);
   EXPECT_EQ(output[0].valuePdf, glm::vec4(0, .75f, 0, 0));
   EXPECT_FLOAT_EQ(output[0].auxiliary.x, .045f);
+}
+TEST_F(PathTransportGpu, RayConeFootprintMatchesReferenceSlantGeometry) {
+  Query q; q.controls = {24, 0, 0, 0};
+  q.light = {0, 0, 1, 0}; // surface normal
+  // Normal incidence accumulates width and spread exactly.
+  q.view = {0, 0, 1, 0};
+  q.footprintA = {.5f, .01f, 10.f, 0};
+  const auto normal = run(std::array{q});
+  EXPECT_FLOAT_EQ(float(normal[0].valuePdf.x), .6f);
+  // A 45 degree slant stretches the footprint by 1/cos.
+  q.view = glm::vec4(glm::normalize(glm::vec3(1, 0, 1)), 0);
+  const auto slant = run(std::array{q});
+  EXPECT_NEAR(float(slant[0].valuePdf.x), .6f * std::sqrt(2.f), 1e-6f);
+  // Grazing view directions clamp at the reference 1e-3 slant floor.
+  q.view = {1, 0, 0, 0};
+  const auto grazing = run(std::array{q});
+  EXPECT_NEAR(float(grazing[0].valuePdf.x), 600.f, 1e-3f);
+  // Orthographic-style cones start with a width at the origin and no spread.
+  q.view = {0, 0, 1, 0};
+  q.footprintA = {.25f, 0.f, 4.f, 0};
+  const auto carried = run(std::array{q});
+  EXPECT_FLOAT_EQ(float(carried[0].valuePdf.x), .25f);
+}
+TEST_F(PathTransportGpu, ReconstructedSurfaceCarriesPerSetTexelDensity) {
+  // A unit world triangle: UV0 is stretched 2x per world unit, UV1 is
+  // degenerate (constant), and barycentric interpolation stays exact.
+  Query q; q.controls = {25, 1, 0, 0};
+  q.view = {0, 0, 0, 1};        // corner position 0
+  q.light = {1, 0, 0, 1};       // corner position 1
+  q.previousMean = {0, 1, 0, 1}; // corner position 2
+  q.footprintA = {0, 0, .5f, .5f};
+  q.footprintB = {2, 0, .5f, .5f};
+  q.footprintC = {0, 2, .5f, .5f};
+  q.previousMoment = {.25f, .25f, 0, 0}; // barycentrics
+  const auto identity = run(std::array{q});
+  EXPECT_FLOAT_EQ(float(identity[0].valuePdf.w), 1.f);
+  EXPECT_NEAR(float(identity[0].valuePdf.x), 2.f, 1e-6f);
+  EXPECT_NEAR(float(identity[0].valuePdf.y), 0.f, 1e-7f);
+  EXPECT_NEAR(float(identity[0].directionPdf.x), .5f, 1e-6f);
+  EXPECT_NEAR(float(identity[0].directionPdf.y), .5f, 1e-6f);
+  EXPECT_NEAR(float(identity[0].auxiliary.x), .25f, 1e-6f);
+  EXPECT_NEAR(float(identity[0].auxiliary.y), .25f, 1e-6f);
+  // A 2x instance scale quadruples world area and halves the density,
+  // exercising the model-transformed world edges.
+  q.inverseView = glm::scale(glm::mat4(1), glm::vec3(2));
+  const auto scaled = run(std::array{q});
+  EXPECT_FLOAT_EQ(float(scaled[0].valuePdf.w), 1.f);
+  EXPECT_NEAR(float(scaled[0].valuePdf.x), 1.f, 1e-6f);
+  EXPECT_NEAR(float(scaled[0].directionPdf.x), .5f, 1e-6f);
+}
+TEST_F(PathTransportGpu, EqualSolidAngleProbeSpreadMatchesEquivalentCone) {
+  std::vector<Query> input;
+  for (uint32_t rays : {1u, 27u, 128u, 1024u, 4096u}) {
+    Query q; q.controls = {26, 0, rays, 0};
+    input.push_back(q);
+  }
+  const auto output = run(input);
+  for (size_t i = 0; i < input.size(); ++i) {
+    const double rays = input[i].controls.z;
+    const double sine = std::min(2.0 / std::sqrt(rays), 1.0);
+    const double expected = 2.0 * sine / std::sqrt(std::max(1.0 - sine * sine, 1e-6));
+    EXPECT_NEAR(float(output[i].valuePdf.x), float(expected), 1e-6f) << rays << " rays";
+  }
+  // More rays per probe narrow the equivalent cone monotonically.
+  EXPECT_LT(float(output[4].valuePdf.x), float(output[2].valuePdf.x));
+  EXPECT_LT(float(output[2].valuePdf.x), float(output[1].valuePdf.x));
+}
+TEST_F(PathTransportGpu, ExplicitGradientSamplingSelectsAuthoredMip) {
+  std::vector<Query> input;
+  for (uint32_t mip = 0; mip < kContractTextureMips; ++mip) {
+    Query q; q.controls = {27, 0, 0, 0};
+    q.light = {.5f, .5f, 0, 0}; // constant mips: any UV works
+    // A gradient of 2^mip / texture width addresses exactly mip level mip.
+    q.previousMean = {float(1u << mip) / float(kContractTextureSize), float(mip), 0, 0};
+    input.push_back(q);
+  }
+  const auto output = run(input);
+  for (uint32_t mip = 0; mip < kContractTextureMips; ++mip) {
+    const auto colour = contractMipColour(mip);
+    const glm::vec4 expected(colour.x / 255.f, colour.y / 255.f, colour.z / 255.f, 1.f);
+    for (uint32_t channel = 0; channel < 4; ++channel)
+      EXPECT_NEAR(output[mip].valuePdf[channel], expected[channel], 1.f / 255.f)
+          << "mip " << mip << " channel " << channel;
+    // The explicit gradient and an equivalent explicit LOD agree exactly.
+    for (uint32_t channel = 0; channel < 4; ++channel)
+      EXPECT_NEAR(output[mip].valuePdf[channel], output[mip].directionPdf[channel], 1e-5f)
+          << "mip " << mip << " channel " << channel;
+  }
+  // A zero gradient keeps the base mip, matching the production fallback.
+  Query base; base.controls = {27, 0, 0, 0};
+  base.light = {.5f, .5f, 0, 0};
+  base.previousMean = {0, 0, 0, 0};
+  const auto baseOutput = run(std::array{base});
+  const auto baseColour = contractMipColour(0);
+  EXPECT_NEAR(float(baseOutput[0].valuePdf.x), baseColour.x / 255.f, 1.f / 255.f);
+  EXPECT_NEAR(float(baseOutput[0].valuePdf.y), baseColour.y / 255.f, 1.f / 255.f);
 }
 } // namespace

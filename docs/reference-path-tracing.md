@@ -161,9 +161,17 @@ section/box clipping, actual surface reconstruction and single/double-sided
 normal orientation. Material evaluation includes base/vertex color, metallic and
 roughness textures, specular strength/color/IOR, normal maps, emissive textures
 and thin-walled transmission factors/textures.
-All texture reads currently use explicit mip zero; secondary footprints remain
-under #82. Normal mapping uses the interpolated shading frame with geometric
-hemisphere rejection, without a separate shading-normal energy correction.
+Secondary rays carry ray-cone footprints (Akenine-Möller et al. 2019), matching the
+vk_gltf_renderer reference: camera rays start from the angular spacing between
+neighbouring samples (or the sample's world footprint for orthographic
+projection), every continued segment inherits the slant-corrected footprint of
+the surface it left, and hit texturing turns that world diameter into
+per-coordinate-set UV gradients — through each texture transform's linear
+rows — for explicit-gradient sampling with authored mip ranges. Coverage
+candidates and shadow-connection blockers keep base-mip reads, exactly like
+the reference renderer's shadow paths. Normal mapping uses the interpolated
+shading frame with geometric hemisphere rejection, without a separate
+shading-normal energy correction.
 
 Paths combine diffuse/GGX scattering with next-event sampling and power-heuristic
 MIS. Environment sampling uses a constant scene-linear color or a borrowed

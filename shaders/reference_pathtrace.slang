@@ -3,6 +3,7 @@
 #include "material_data_common.slang"
 #include "area_light_common.slang"
 #include "ray_surface_common.slang"
+#include "ray_footprint_common.slang"
 #include "push_constants_common.slang"
 #ifndef REFERENCE_EMPTY_SCENE
 #define REFERENCE_EMPTY_SCENE 0
@@ -43,19 +44,39 @@ struct FrameData
 [[vk::binding(10, 2)]] SamplerState environmentSampler;
 [[vk::binding(11, 2)]] RWStructuredBuffer<uint4> diagnostics;
 
-float4 PtTexture(uint index, float4 uv, GpuTextureTransform transform)
+float4 PtTextureGrad(uint index, float4 uv, GpuTextureTransform transform, float2 texGrad)
 {
     if (index == kInvalidGpuMaterialTexture) return 1.0.xxxx;
     if (index >= MATERIAL_TEXTURE_DESCRIPTOR_COUNT) return asfloat(0x7fc00000u).xxxx;
     uint texture = NonUniformResourceIndex(index);
     uint sampler = NonUniformResourceIndex(ResolveMaterialSamplerIndex(textureMetadata[texture]));
-    // Explicit base mip until secondary footprints (#82) are integrated.
-    return materialTextures[texture].SampleLevel(materialSamplers[sampler],
-        ApplyGpuTextureTransform(uv.xy, uv.zw, transform), 0.0);
+    float2 coord = ApplyGpuTextureTransform(uv.xy, uv.zw, transform);
+    float gradient = transform.row0.w >= 0.5 ? texGrad.y : texGrad.x;
+    if (gradient > 0.0)
+    {
+        // Secondary footprints (#82): an isotropic UV gradient in the
+        // authored coordinate set, mapped through KHR_texture_transform's
+        // linear rows, selects the filtered mip like the reference
+        // renderer's SampleGrad route.
+        return materialTextures[texture].SampleGrad(materialSamplers[sampler],
+            coord, transform.row0.xy * gradient, transform.row1.xy * gradient);
+    }
+    return materialTextures[texture].SampleLevel(materialSamplers[sampler], coord, 0.0);
+}
+float4 PtTexture(uint index, float4 uv, GpuTextureTransform transform)
+{
+    // Coverage candidates and shadow-connection blockers carry no footprint.
+    return PtTextureGrad(index, uv, transform, 0.0.xx);
+}
+float PtScalarGrad(float factor, uint index, float4 uv, GpuTextureTransform transform,
+                   uint channel, float2 texGrad)
+{
+    return factor * SelectGpuTextureChannel(
+        PtTextureGrad(index, uv, transform, texGrad), transform, channel);
 }
 float PtScalar(float factor, uint index, float4 uv, GpuTextureTransform transform, uint channel)
 {
-    return factor * SelectGpuTextureChannel(PtTexture(index, uv, transform), transform, channel);
+    return PtScalarGrad(factor, index, uv, transform, channel, 0.0.xx);
 }
 struct PtHit { RaySurfacePoint point; float distance; uint hit; uint fault; };
 uint PtCoverageSeed(uint pixel, uint sampleIndex, uint bounce, uint rayKind)
@@ -179,7 +200,7 @@ void PtSetVolumeEta(inout PtMaterial material, float eta)
 {
     material.eta = eta;
 }
-PtMaterial PtResolveMaterial(RaySurfacePoint input)
+PtMaterial PtResolveMaterial(RaySurfacePoint input, float2 texGrad)
 {
     PtMaterial result = (PtMaterial)0;
     GpuMaterial m = materials[input.materialIndex];
@@ -199,16 +220,20 @@ PtMaterial PtResolveMaterial(RaySurfacePoint input)
     { result.fault = 1u; return result; }
     RaySurfacePoint point = OrientRaySurfaceForShading(input, m.flags |
         (m.thicknessFactor > 0.0 && m.transmissionFactor > 0.0 ? kGpuMaterialFlagDoubleSided : 0u));
-    float3 base = m.color.rgb * point.color * PtTexture(m.baseColorTextureIndex, point.uv, m.baseColorTextureTransform).rgb;
-    float4 packed = PtTexture(m.metallicRoughnessTextureIndex, point.uv, m.metallicRoughnessTextureTransform);
+    float3 base = m.color.rgb * point.color * PtTextureGrad(m.baseColorTextureIndex,
+        point.uv, m.baseColorTextureTransform, texGrad).rgb;
+    float4 packed = PtTextureGrad(m.metallicRoughnessTextureIndex, point.uv,
+        m.metallicRoughnessTextureTransform, texGrad);
     float metallic = m.metallicRoughness.x * packed.b *
-        PtScalar(1.0, m.metalnessTextureIndex, point.uv, m.metalnessTextureTransform, 0u);
+        PtScalarGrad(1.0, m.metalnessTextureIndex, point.uv, m.metalnessTextureTransform, 0u, texGrad);
     float roughness = m.metallicRoughness.y * packed.g *
-        PtScalar(1.0, m.roughnessTextureIndex, point.uv, m.roughnessTextureTransform, 0u);
-    float specular = PtScalar(m.specularFactor, m.specularTextureIndex, point.uv, m.specularTextureTransform, 3u);
-    float3 specularColor = m.specularColorFactor.rgb * PtTexture(m.specularColorTextureIndex, point.uv, m.specularColorTextureTransform).rgb;
-    float transmission = PtScalar(m.transmissionFactor, m.transmissionTextureIndex,
-        point.uv, m.transmissionTextureTransform, 0u);
+        PtScalarGrad(1.0, m.roughnessTextureIndex, point.uv, m.roughnessTextureTransform, 0u, texGrad);
+    float specular = PtScalarGrad(m.specularFactor, m.specularTextureIndex, point.uv,
+        m.specularTextureTransform, 3u, texGrad);
+    float3 specularColor = m.specularColorFactor.rgb * PtTextureGrad(m.specularColorTextureIndex,
+        point.uv, m.specularColorTextureTransform, texGrad).rgb;
+    float transmission = PtScalarGrad(m.transmissionFactor, m.transmissionTextureIndex,
+        point.uv, m.transmissionTextureTransform, 0u, texGrad);
     if (!isfinite(m.ior) || m.ior < 1.0 || !isfinite(metallic) || metallic < 0.0 || metallic > 1.0 ||
         !isfinite(specular) || specular < 0.0 || specular > 1.0 ||
         !isfinite(transmission) || transmission < 0.0 || transmission > 1.0) { result.fault = 2u; return result; }
@@ -241,7 +266,8 @@ PtMaterial PtResolveMaterial(RaySurfacePoint input)
     result.normal = point.shadingNormal;
     if (m.normalTextureIndex != kInvalidGpuMaterialTexture)
     {
-        float3 normal = PtTexture(m.normalTextureIndex, point.uv, m.normalTextureTransform).xyz * 2.0 - 1.0;
+        float3 normal = PtTextureGrad(m.normalTextureIndex, point.uv,
+            m.normalTextureTransform, texGrad).xyz * 2.0 - 1.0;
         normal.xy *= m.normalTextureScale;
         result.normal = PtNormalize(point.tangent.xyz * normal.x + point.bitangent * normal.y + point.shadingNormal * normal.z);
         if (dot(result.normal, point.shadingNormal) < 0.0) result.normal = -result.normal;
@@ -249,7 +275,8 @@ PtMaterial PtResolveMaterial(RaySurfacePoint input)
     result.tangent = PtNormalize(point.tangent.xyz - result.normal * dot(point.tangent.xyz, result.normal));
     if (all(result.tangent == 0.0.xxx)) result.tangent = RaySurfaceFallbackTangent(result.normal);
     result.bitangent = cross(result.normal, result.tangent);
-    result.emission = m.emissiveColor * m.emissiveStrength * PtTexture(m.emissiveTextureIndex, point.uv, m.emissiveTextureTransform).rgb;
+    result.emission = m.emissiveColor * m.emissiveStrength * PtTextureGrad(m.emissiveTextureIndex,
+        point.uv, m.emissiveTextureTransform, texGrad).rgb;
     if (!PtValidThinBsdf(PtTransport(result)) || !PtValidDirection(result.normal) ||
         !all(isfinite(result.emission)) || any(result.emission < 0.0.xxx))
     { result.fault = 2u; InterlockedOr(diagnostics[0].w, 4u); }
@@ -433,7 +460,7 @@ bool PtVisible(float3 position, float3 normal, float3 direction, float distance,
             return true;
         }
         transmittance *= PtMediumAttenuation(medium, PtLength(hit.point.position - segmentStart));
-        PtMaterial blocker = PtResolveMaterial(hit.point);
+        PtMaterial blocker = PtResolveMaterial(hit.point, 0.0.xx);
         if (blocker.fault != 0u) { fault |= blocker.fault; return false; }
         if (blocker.volume != 0u)
         {
@@ -564,6 +591,27 @@ float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault)
     PtCameraRay primary = PtGenerateCameraRay(samplePosition, frame.extentSamples.xy,
         frame.inverseProjection, frame.inverseView, (frame.limits.w & 2u) != 0u);
     if (primary.valid == 0u) { fault = 2u; InterlockedOr(diagnostics[0].w, 16u); return 0.0.xxx; }
+    // Secondary footprints (#82): the camera cone starts from the angular
+    // spacing between neighbouring sample rays (perspective) or from the
+    // sample's world footprint itself (orthographic, where neighbouring
+    // directions are parallel). Chords between unit directions approximate
+    // the full cone angle.
+    RayCone cone = (RayCone)0;
+    {
+        PtCameraRay adjacent = PtGenerateCameraRay(samplePosition + float2(1.0, 0.0),
+            frame.extentSamples.xy, frame.inverseProjection, frame.inverseView,
+            (frame.limits.w & 2u) != 0u);
+        if (adjacent.valid == 0u)
+            adjacent = PtGenerateCameraRay(samplePosition + float2(0.0, 1.0),
+                frame.extentSamples.xy, frame.inverseProjection, frame.inverseView,
+                (frame.limits.w & 2u) != 0u);
+        if (adjacent.valid != 0u)
+        {
+            cone.spread = PtLength(adjacent.direction - primary.direction);
+            cone.width = PtLength(adjacent.origin - primary.origin);
+        }
+        else cone.spread = 2.0 / float(max(frame.extentSamples.y, 1u));
+    }
     uint pointCount, stride, areaCount, materialCount;
     materials.GetDimensions(materialCount, stride);
     if (frame.limits.z > materialCount) { fault = 2u; return 0.0.xxx; }
@@ -619,7 +667,15 @@ float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault)
             result += throughput * PtEnvironment(ray.Direction) * weight;
             break;
         }
-        PtMaterial material = PtResolveMaterial(hit.point);
+        // Secondary footprints (#82): the committed hit shades with the
+        // ray cone's slant-corrected world diameter, and every continued
+        // segment inherits it as its starting width, exactly like the
+        // reference renderer's surface-bounce cone propagation.
+        float worldFoot = RayConeWorldFootprint(cone, hit.distance,
+            hit.point.geometricNormal, -ray.Direction);
+        float2 texGrad = worldFoot * hit.point.texelDensity;
+        cone.width = worldFoot;
+        PtMaterial material = PtResolveMaterial(hit.point, texGrad);
         if (material.fault != 0u) { fault = material.fault; return 0.0.xxx; }
         throughput *= PtMediumAttenuation(medium, PtLength(hit.point.position - segmentStart));
         PtMediumState crossed = medium;

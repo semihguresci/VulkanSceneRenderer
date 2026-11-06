@@ -40,9 +40,14 @@ unsupported secondary transport conservatively supplies black radiance and a
 finite occluder distance. An actually black transmission texel can act as an
 opaque secondary reflector. Active height displacement disables the shared
 ray scene; BIM semantic-color diagnostic modes use raster lighting. Native
-points/polylines have no triangle AS representation. General glossy reflection,
-caustics and mip footprints are outside this diffuse route; ray material textures
-use base-mip sampling. The optional glass policies below add straight-through
+points/polylines have no triangle AS representation. General glossy reflection
+and caustics are outside this diffuse route. Probe rays carry ray-cone
+footprints: each of `rayCount` equal-solid-angle sphere samples owns
+`4*pi/rayCount` steradians, the equivalent cone's diameter drives hit-texture
+filtering through per-coordinate-set UV gradients, and refracted continuations
+inherit the slant-corrected footprint of the surface they left. Coverage
+candidates and visibility shadow connections keep base-mip reads. The optional
+glass policies below add straight-through
 thin-sheet or bounded refractive secondary paths; transmissive primary receivers
 keep fallback.
 

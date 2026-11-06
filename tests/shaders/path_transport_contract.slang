@@ -1,6 +1,9 @@
 #include "path_transport_common.slang"
 #include "path_dielectric_common.slang"
 #include "material_data_common.slang"
+#include "ray_scene_data.slang"
+#include "ray_surface_common.slang"
+#include "ray_footprint_common.slang"
 
 struct Query
 {
@@ -14,6 +17,9 @@ struct Query
     float4 sampleValue;
     column_major float4x4 inverseProjection;
     column_major float4x4 inverseView;
+    float4 footprintA;
+    float4 footprintB;
+    float4 footprintC;
 };
 struct Result
 {
@@ -24,6 +30,8 @@ struct Result
 };
 [[vk::binding(0, 0)]] StructuredBuffer<Query> queries;
 [[vk::binding(1, 0)]] RWStructuredBuffer<Result> results;
+[[vk::binding(2, 0)]] Texture2D<float4> contractTexture;
+[[vk::binding(3, 0)]] SamplerState contractSampler;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -245,6 +253,59 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
         result.valuePdf = float4(ResolveDeferredTextureBackedColor(query.diffuseRoughness.rgb, query.controls.y),
             ResolveDeferredTextureBackedFactor(query.diffuseRoughness.x, query.controls.y));
         result.auxiliary.x = ResolveDeferredTextureBackedRoughness(query.diffuseRoughness.x, query.controls.y);
+    }
+    if (operation >= 24u && operation <= 27u)
+    {
+        // Ray-cone footprint contracts (#82): the reference renderer's slant
+        // geometry, per-coordinate-set texel density on a reconstructed hit,
+        // equal-solid-angle probe spread, and the mip an explicit gradient
+        // selects on authored-mip hardware texture state.
+        if (operation == 24u)
+        {
+            RayCone cone = {query.footprintA.x, query.footprintA.y};
+            result.valuePdf.x = RayConeWorldFootprint(cone, query.footprintA.z,
+                query.light.xyz, query.view.xyz);
+        }
+        else if (operation == 25u)
+        {
+            // footprintA/B/C carry per-corner UV pairs (xy = UV0, zw = UV1),
+            // view/light/previousMean carry the three local positions, and
+            // inverseView doubles as the instance model transform.
+            RayTriangleData uv;
+            uv.uv[0] = query.footprintA;
+            uv.uv[1] = query.footprintB;
+            uv.uv[2] = query.footprintC;
+            uv.vertexAlpha = float4(1.0, 1.0, 1.0, 0.0);
+            RaySurfaceTriangleData triangle;
+            triangle.positions[0] = float4(query.view.xyz, 1.0);
+            triangle.positions[1] = float4(query.light.xyz, 1.0);
+            triangle.positions[2] = float4(query.previousMean.xyz, 1.0);
+            triangle.normals[0] = triangle.normals[1] = triangle.normals[2] = float4(0.0, 0.0, 1.0, 0.0);
+            triangle.tangents[0] = triangle.tangents[1] = triangle.tangents[2] = float4(1.0, 0.0, 0.0, 1.0);
+            triangle.colors[0] = triangle.colors[1] = triangle.colors[2] = float4(1.0, 1.0, 1.0, 1.0);
+            RaySurfaceInstanceData instance;
+            instance.model = query.inverseView;
+            instance.normalColumns[0] = float4(1.0, 0.0, 0.0, 1.0);
+            instance.normalColumns[1] = float4(0.0, 1.0, 0.0, 0.0);
+            instance.normalColumns[2] = float4(0.0, 0.0, 1.0, 0.0);
+            RayInstanceData metadata;
+            metadata.info = uint4(0u, 0u, 0u, 0u);
+            RaySurfacePoint point = ReconstructRaySurface(uv, triangle, metadata, instance,
+                query.previousMoment.xy, query.controls.y != 0u);
+            result.valuePdf = float4(point.texelDensity, 0.0, float(point.valid));
+            result.directionPdf = point.uv;
+            result.auxiliary = float4(point.position, 1.0);
+        }
+        else if (operation == 26u)
+            result.valuePdf.x = RayConeSolidAngleSpread(float(query.controls.z));
+        else
+        {
+            float gradient = max(query.previousMean.x, 0.0);
+            result.valuePdf = contractTexture.SampleGrad(contractSampler, query.light.xy,
+                float2(gradient, 0.0), float2(0.0, gradient));
+            result.directionPdf = contractTexture.SampleLevel(contractSampler,
+                query.light.xy, max(query.previousMean.y, 0.0));
+        }
     }
     results[tid.x] = result;
 }

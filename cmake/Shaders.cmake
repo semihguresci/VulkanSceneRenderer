@@ -79,6 +79,7 @@ set(SLANG_INCLUDE_SHADER_NAMES
     ray_visibility_common.slang
     ray_scene_data.slang
     ray_surface_common.slang
+    ray_footprint_common.slang
     ddgi_data.slang
     ddgi_lookup_common.slang
     ddgi_lighting_common.slang

@@ -31,6 +31,11 @@ struct RaySurfacePoint
     float3 color;
     float colorAlpha;
     float4 uv;
+    // sqrt(UV area / world area) per coordinate set (x = UV0, y = UV1).
+    // Multiplied by a world-space ray footprint it gives the UV gradient
+    // magnitude for explicit-gradient texture filtering; 0 marks a
+    // degenerate or absent set.
+    float2 texelDensity;
     uint materialIndex;
     uint objectFlags;
     uint frontFace;
@@ -134,6 +139,25 @@ RaySurfacePoint ReconstructRaySurface(RayTriangleData uv,
                          max(triangle.colors[0], max(triangle.colors[1], triangle.colors[2])));
     result.color = color.xyz;
     result.colorAlpha = color.w;
+    // Per-set UV-to-world area ratio for ray-footprint texture filtering.
+    // World edges use the instance's linear transform, matching the
+    // interpolated position above; degenerate sets report 0 so those
+    // fetches keep the base mip.
+    float3 worldEdge0 = mul((float3x3)instance.model,
+        triangle.positions[1].xyz - triangle.positions[0].xyz);
+    float3 worldEdge1 = mul((float3x3)instance.model,
+        triangle.positions[2].xyz - triangle.positions[0].xyz);
+    float worldArea = length(cross(worldEdge0, worldEdge1));
+    [unroll] for (uint set = 0u; set < 2u; ++set)
+    {
+        float2 first = set == 0u ? uv.uv[0].xy : uv.uv[0].zw;
+        float2 second = set == 0u ? uv.uv[1].xy : uv.uv[1].zw;
+        float2 third = set == 0u ? uv.uv[2].xy : uv.uv[2].zw;
+        float2 edgeU = second - first, edgeV = third - first;
+        float uvArea = abs(edgeU.x * edgeV.y - edgeU.y * edgeV.x);
+        result.texelDensity[set] = uvArea > 0.0 && worldArea > 0.0
+            ? sqrt(uvArea / worldArea) : 0.0;
+    }
     result.position = mul(instance.model, float4(objectPosition, 1.0)).xyz;
     result.shadingNormal = RaySurfaceNormalize(worldNormal, result.geometricNormal);
     worldTangent -= result.shadingNormal * dot(result.shadingNormal, worldTangent);
@@ -146,6 +170,7 @@ RaySurfacePoint ReconstructRaySurface(RayTriangleData uv,
     result.valid = all(isfinite(result.position)) && all(isfinite(result.color)) &&
         isfinite(result.colorAlpha) &&
         all(isfinite(result.uv)) && all(isfinite(result.shadingNormal)) &&
+        all(isfinite(result.texelDensity)) &&
         all(isfinite(result.tangent)) && all(isfinite(result.bitangent)) ? 1u : 0u;
     return result;
 }

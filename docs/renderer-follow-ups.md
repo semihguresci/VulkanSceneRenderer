@@ -10,6 +10,9 @@ Static BIM statistics and immutable provider metadata caching (#74) is now
 implemented and validated; see [BIM frame caching](bim-frame-cache.md).
 Hierarchy virtualization, cached BIM searches and paged wrapped tables (#75)
 are also implemented; see [scene browser performance](scene-browser-performance.md).
+Secondary-ray texture footprints (#82) are implemented and validated; see
+[reference path tracing](reference-path-tracing.md) and
+[DDGI](ddgi-probe-foundation.md).
 
 | Issue | Remaining improvement |
 | --- | --- |
@@ -20,7 +23,6 @@ are also implemented; see [scene browser performance](scene-browser-performance.
 | [#79](https://github.com/semihguresci/VulkanSceneRenderer/issues/79) | Support DDGI updates on dedicated compute queue families |
 | [#80](https://github.com/semihguresci/VulkanSceneRenderer/issues/80) | Validate DDGI and ray-query rendering across AMD, Intel and newer NVIDIA devices |
 | [#81](https://github.com/semihguresci/VulkanSceneRenderer/issues/81) | Expand DDGI leakage coverage for thin and double-sided architectural BIM surfaces |
-| [#82](https://github.com/semihguresci/VulkanSceneRenderer/issues/82) | Add texture footprint and mip selection to secondary ray transport |
 | [#83](https://github.com/semihguresci/VulkanSceneRenderer/issues/83) | Plan DDGI detail volumes automatically from BIM rooms |
 | [#84](https://github.com/semihguresci/VulkanSceneRenderer/issues/84) | Extend bounded DDGI dielectric transport to nested media |
 
