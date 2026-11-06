@@ -158,6 +158,7 @@ struct CaptureEvent {
   std::string environment{};
   bool environmentAsync{};
   bool reloadShaders{};
+  bool referenceAutofocus{};
   std::optional<bool> gpuTransforms;
   std::optional<container::renderer::SkyMode> proceduralSky;
   std::optional<float> environmentYaw;
@@ -533,6 +534,8 @@ public:
       }
       if (value.contains("reloadShaders"))
         event.reloadShaders = value.at("reloadShaders").get<bool>();
+      if (value.contains("referenceAutofocus"))
+        event.referenceAutofocus = value.at("referenceAutofocus").get<bool>();
       if (value.contains("gpuTransforms"))
         event.gpuTransforms = value.at("gpuTransforms").get<bool>();
       if (value.contains("depthProbe")) {

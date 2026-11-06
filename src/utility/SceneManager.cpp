@@ -1614,13 +1614,16 @@ std::optional<uint32_t> SceneManager::retainedPrimitiveNormalTexCoord(uint32_t r
 }
 
 container::geometry::GltfLoadResult SceneManager::prepareGltfModel(
-    const std::string& path, uintmax_t maxInputBytes) {
+    const std::string& path, uintmax_t maxInputBytes, bool enableLinkedAssets,
+    bool requireSelfContained) {
   auto resolvedPath = container::util::pathFromUtf8(path);
   if (resolvedPath.is_relative() && !std::filesystem::exists(resolvedPath)) {
     resolvedPath = resolveSceneAssetPath(path);
   }
   container::geometry::gltf::LoadOptions options;
   options.maxInputBytes = maxInputBytes;
+  options.enableLinkedAssets = enableLinkedAssets;
+  options.requireSelfContained = requireSelfContained;
   return prepareSceneGltfAsset(resolvedPath, std::move(options));
 }
 
@@ -1649,7 +1652,8 @@ bool SceneManager::reloadModel(
       }
     } else if (!path.empty()) {
       if (prepared == nullptr) {
-        locallyPrepared = prepareGltfModel(path);
+        locallyPrepared = prepareGltfModel(path, std::numeric_limits<uintmax_t>::max(),
+            config_.experimentalGltfLinkedAssets);
         prepared = &*locallyPrepared;
       }
       incomingSamplerKeys = container::material::CollectGltfMaterialSamplerKeys(prepared->gltfModel);
@@ -2822,7 +2826,8 @@ void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
         resolvedPath = resolveSceneAssetPath(config_.modelPath);
       }
       auto result = prepared ? std::move(*prepared)
-                             : prepareGltfModel(container::util::pathToUtf8(resolvedPath));
+                             : prepareGltfModel(container::util::pathToUtf8(resolvedPath),
+                                 std::numeric_limits<uintmax_t>::max(), config_.experimentalGltfLinkedAssets);
       auto variants=container::geometry::gltf::ParseMaterialVariants(result.gltfModel);
       const std::vector<uint32_t> preflightMaterials(result.model.primitiveRanges().size(),0);
       auto catalog=BuildGltfSceneCatalog(result.gltfModel);

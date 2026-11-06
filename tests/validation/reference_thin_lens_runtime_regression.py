@@ -1,4 +1,4 @@
-"""Check manual thin-lens focus against two independently projected stripe targets."""
+"""Check manual focus, center autofocus and the optional per-sample clamp."""
 
 import argparse
 import json
@@ -20,7 +20,7 @@ WIDTH, HEIGHT = 240, 160
 TARGETS = ((2.5, 24, 104), (6.5, 136, 216))
 
 
-def fixture(path, orthographic=False):
+def fixture(path, orthographic=False, center_depth=None):
     asset = Asset()
     positions, indices = [], []
     for depth, left, right in TARGETS:
@@ -30,6 +30,11 @@ def fixture(path, orthographic=False):
             positions.extend([[(px - WIDTH / 2) * pixel, (HEIGHT / 2 - py) * pixel, -depth]
                               for px, py in ((x, 125), (x + 8, 125), (x + 8, 35), (x, 35))])
             indices.extend(first + i for i in (0, 1, 2, 0, 2, 3))
+    if center_depth is not None:
+        first = len(positions)
+        positions.extend([[x, y, -center_depth] for x, y in
+                          ((-.08, -.25), (.08, -.25), (.08, .25), (-.08, .25))])
+        indices.extend(first + i for i in (0, 1, 2, 0, 2, 3))
     asset.model["meshes"] = [{"primitives": [{
         "attributes": {"POSITION": asset.accessor("VEC3", positions),
                        "NORMAL": asset.accessor("VEC3", [[0, 0, 1]] * len(positions))},
@@ -62,19 +67,31 @@ def main():
     fixture(model)
     orthographic = output / "ortho-focus-targets.gltf"
     fixture(orthographic, orthographic=True)
+    center = output / "center-focus-targets.gltf"
+    fixture(center, center_depth=TARGETS[0][0])
 
-    def capture(name, aperture=None, focus=None, use_ortho=False):
+    def capture(name, aperture=None, focus=None, use_ortho=False, selected_model=None,
+                autofocus_status=None, expected_focus=None, clamp=0):
         image = output / f"{name}.exr"
-        command = [str(renderer), "--model", str(orthographic if use_ortho else model),
+        command = [str(renderer), "--model", str(selected_model or (orthographic if use_ortho else model)),
                    "--gltf-camera-node", "1", "--import-scale", "1",
                    "--hidden", "--no-ui", "--validation", "--no-taa", "--no-bloom", "--msaa", "1",
                    "--width", str(WIDTH), "--height", str(HEIGHT), "--directional-intensity", "0",
                    "--sky", "plain", "--sky-horizon", "0", "0", "0", "--environment-intensity", "0",
                    "--display-mode", "lit", "--render-technique", "path-tracing", "--path-spp", "8",
                    "--path-samples", "64", "--path-bounces", "1", "--path-seed", "19",
-                   "--warmup-frames", "0", "--capture-frame", "8", "--screenshot", str(image)]
+                   "--screenshot", str(image)]
+        if autofocus_status is None:
+            command += ["--warmup-frames", "0", "--capture-frame", "8"]
+        else:
+            sequence = output / f"{name}.sequence.json"
+            sequence.write_text(json.dumps(dict(schemaVersion=1, frames=9,
+                events=[dict(frame=1, referenceAutofocus=True)])), encoding="utf-8")
+            command += ["--capture-sequence", str(sequence)]
         if aperture is not None:
             command += ["--path-aperture", str(aperture), "--path-focus-distance", str(focus)]
+        if clamp:
+            command += ["--path-firefly-clamp", str(clamp)]
         process = subprocess.run(command, cwd=renderer.parent, capture_output=True, text=True, errors="replace",
                                  timeout=180, env=dict(os.environ, VK_LAYER_SETTINGS_PATH=str(output)))
         log = process.stdout + process.stderr
@@ -84,7 +101,15 @@ def main():
         assert meta["attemptedSamplesPerPixel"] == 64 and not meta["hasDiagnostics"], meta
         effective_aperture = 0 if use_ortho else aperture or 0
         assert math.isclose(meta["apertureRadius"], effective_aperture, abs_tol=1e-6), meta
-        assert meta["focusDistance"] == (focus if effective_aperture else None), meta
+        assert meta["fireflyClamp"] == clamp, meta
+        if effective_aperture:
+            assert math.isclose(meta["focusDistance"], expected_focus or focus, abs_tol=1e-5), meta
+        else:
+            assert meta["focusDistance"] is None, meta
+        if autofocus_status is not None:
+            telemetry = json.loads(image.with_suffix(".telemetry.json").read_text(encoding="utf-8"))
+            assert telemetry["referencePath"]["autofocusStatus"] == autofocus_status, telemetry
+            assert meta["historyResets"] == (2 if expected_focus else 1), meta
         pixels = cv2.imdecode(np.frombuffer(image.read_bytes(), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
         assert pixels is not None and pixels.shape == (HEIGHT, WIDTH, 3), image
         assert pixels.dtype == np.float32 and np.isfinite(pixels).all(), image
@@ -105,8 +130,16 @@ def main():
         blur_error = float(np.abs(blurred[roi] - sharp).mean())
         assert focus_error < 0.015 and blur_error > 0.20, (index, focus_error, blur_error)
         checks.append({"target": index, "focusError": focus_error, "defocusError": blur_error})
+    manual_center = capture("manual-center", .3, 2.5, selected_model=center)
+    auto_center = capture("autofocus-center", .3, 6.5, selected_model=center,
+                          autofocus_status="Focused at viewport center", expected_focus=2.5)
+    np.testing.assert_allclose(auto_center, manual_center, atol=1 / 64, rtol=0)
+    auto_miss = capture("autofocus-miss", .3, 6.5,
+                        autofocus_status="No autofocus target at viewport center")
+    np.testing.assert_array_equal(auto_miss, far)
+    np.testing.assert_array_equal(capture("clamped", clamp=.25), pinhole * .25)
     (output / "results.json").write_text(json.dumps({"passed": True, "targets": checks}, indent=2), encoding="utf-8")
-    print("PASS exact zero-aperture parity and independent near/far focus targets", flush=True)
+    print("PASS manual focus, center autofocus, miss preservation, and firefly clamp", flush=True)
 
 
 if __name__ == "__main__":

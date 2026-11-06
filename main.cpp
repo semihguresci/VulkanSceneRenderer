@@ -5,6 +5,7 @@
 #include "Container/renderer/lighting/DdgiPreset.h"
 #include "Container/renderer/effects/DisplayGradePreset.h"
 #include "Container/renderer/lighting/SkyPreset.h"
+#include "Container/renderer/pathtracing/ReferenceFireflyClamp.h"
 #include "Container/utility/Platform.h"
 
 #include <algorithm>
@@ -306,6 +307,12 @@ void printCommandLineHelp() {
   --path-sample-series N,N,...  Export raw EXR at increasing reference sample counts
   --path-bounces N             Reference bounce limit [1,32] (8)
   --path-seed N                Deterministic reference sampling seed (1)
+  --path-firefly-clamp F       Peak RGB limit per reference sample (0 disables)
+  --path-ground MODE           Analytic ground off|surface|shadow-matte (off)
+  --path-ground-height F       Ground Y position in world units (0)
+  --path-ground-color R G B    Linear ground base color [0,1] (0.65)
+  --path-ground-metallic F     Ground metallic factor [0,1] (0)
+  --path-ground-roughness F    Ground roughness [0,1] (1)
   --path-aperture F            Perspective lens aperture radius in scene units (0)
   --path-focus-distance F      Perspective focal plane distance in scene units (10)
   --display-mode NAME           Display mode (--render-mode is an alias)
@@ -410,6 +417,7 @@ void printCommandLineHelp() {
   --save-scene PATH              Save primary editable scene as .glb or .gltf
   --gltf-variant N               Select material variant N (zero based; -1 Default)
   --gltf-scene N                 Select glTF scene N (zero based; authored default otherwise)
+  --experimental-gltf-linked-assets Enable the pinned glTF 2.1 URI-only linked asset profile
   --animation-clip N             Select and play glTF animation N (zero based)
   --animation-time F             Seek selected glTF animation in seconds
   --animation-speed F            glTF playback multiplier (negative reverses)
@@ -709,10 +717,82 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     }
     return true;
   };
+  const auto parseReferencePathOption = [&](std::string_view arg, int& i) {
+    if (arg == "--path-spp") {
+      config.pathSamplesPerFrame = parseUint(requireValue(argc, argv, i, arg), arg);
+      if (!config.pathSamplesPerFrame || config.pathSamplesPerFrame > 64)
+        throw std::invalid_argument("--path-spp must be in [1,64]");
+    } else if (arg == "--path-target-ms") {
+      config.pathTargetMs = parseFloat(requireValue(argc, argv, i, arg), arg);
+      if (config.pathTargetMs < 0.1f || config.pathTargetMs > 1000.0f)
+        throw std::invalid_argument("--path-target-ms must be in [0.1,1000]");
+    } else if (arg == "--path-samples") {
+      explicitPathSampleLimit = true;
+      config.pathSampleLimit = parseUint(requireValue(argc, argv, i, arg), arg);
+      if (!config.pathSampleLimit || config.pathSampleLimit > 16777216)
+        throw std::invalid_argument("--path-samples must be in [1,16777216]");
+    } else if (arg == "--path-sample-series") {
+      if (!config.pathSampleSeries.empty())
+        throw std::invalid_argument("--path-sample-series may only be specified once");
+      auto samples = requireValue(argc, argv, i, arg);
+      uint32_t previous = 0;
+      for (;;) {
+        const auto comma = samples.find(',');
+        const uint32_t count = parseUint(samples.substr(0, comma), arg);
+        if (count <= previous || count > 16777216 || config.pathSampleSeries.size() >= 64)
+          throw std::invalid_argument(
+              "--path-sample-series requires up to 64 strictly increasing counts in [1,16777216]");
+        config.pathSampleSeries.push_back(count);
+        if (comma == std::string_view::npos)
+          break;
+        previous = count;
+        samples.remove_prefix(comma + 1);
+      }
+    } else if (arg == "--path-bounces") {
+      config.pathMaxBounces = parseUint(requireValue(argc, argv, i, arg), arg);
+      if (!config.pathMaxBounces || config.pathMaxBounces > 32)
+        throw std::invalid_argument("--path-bounces must be in [1,32]");
+    } else if (arg == "--path-seed") {
+      config.pathSeed = parseUint(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == "--path-firefly-clamp") {
+      config.pathFireflyClamp = parseFloat(requireValue(argc, argv, i, arg), arg);
+      if (!container::renderer::validReferenceFireflyClamp(config.pathFireflyClamp))
+        throw std::invalid_argument("--path-firefly-clamp must be 0 or in [1e-6,1e20]");
+    } else if (arg == "--path-ground") {
+      using Ground = container::renderer::ReferenceGroundMode;
+      const auto mode = requireValue(argc, argv, i, arg);
+      if (mode == "off") config.pathGround.mode = Ground::Off;
+      else if (mode == "surface") config.pathGround.mode = Ground::Surface;
+      else if (mode == "shadow-matte") config.pathGround.mode = Ground::ShadowMatte;
+      else throw std::invalid_argument("--path-ground requires off, surface or shadow-matte");
+    } else if (arg == "--path-ground-color") {
+      const auto color = parseVec3(argc, argv, i, arg);
+      config.pathGround.color = {color[0], color[1], color[2]};
+      if (!config.pathGround.valid())
+        throw std::invalid_argument("--path-ground-color components must be in [0,1]");
+    } else if (arg == "--path-ground-height" || arg == "--path-ground-metallic" ||
+               arg == "--path-ground-roughness") {
+      const float value = parseFloat(requireValue(argc, argv, i, arg), arg);
+      if (arg == "--path-ground-height") config.pathGround.height = value;
+      else if (arg == "--path-ground-metallic") config.pathGround.metallic = value;
+      else config.pathGround.roughness = value;
+      if (!config.pathGround.valid()) throw std::invalid_argument("Invalid " + std::string(arg));
+    } else if (arg == "--path-aperture") {
+      config.pathLens.apertureRadius = parseFloat(requireValue(argc, argv, i, arg), arg);
+      if (!config.pathLens.valid()) throw std::invalid_argument("--path-aperture must be in [0,1e10]");
+    } else if (arg == "--path-focus-distance") {
+      config.pathLens.focusDistance = parseFloat(requireValue(argc, argv, i, arg), arg);
+      if (!config.pathLens.valid()) throw std::invalid_argument("--path-focus-distance must be in [1e-6,1e20]");
+    } else {
+      return false;
+    }
+    return true;
+  };
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i] ? std::string_view(argv[i]) : "";
     if (parseExtendedPreviewOption(arg,i))continue;
     if (parseVolumeOption(arg, i)) continue;
+    if (parseReferencePathOption(arg, i)) continue;
     if (arg == "--model") {
       config.modelPath = std::string(requireValue(argc, argv, i, arg));
       positionalModelConsumed = true;
@@ -975,6 +1055,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       if (clip > uint32_t(std::numeric_limits<int>::max()))
         throw std::runtime_error("Animation clip index is too large");
       config.gltfAnimationClip = static_cast<int>(clip);
+    } else if (arg == "--experimental-gltf-linked-assets") {
+      config.experimentalGltfLinkedAssets = true;
     } else if (arg == "--gltf-scene") {
       const auto scene=parseUint(requireValue(argc,argv,i,arg),arg);
       if(scene>uint32_t(std::numeric_limits<int>::max())) throw std::runtime_error("Scene index is too large");
@@ -1160,48 +1242,6 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
           std::string(requireValue(argc, argv, i, arg));
     } else if (arg == "--render-technique") {
       config.renderTechnique = std::string(requireValue(argc, argv, i, arg));
-    } else if (arg == "--path-spp") {
-      config.pathSamplesPerFrame = parseUint(requireValue(argc, argv, i, arg), arg);
-      if (!config.pathSamplesPerFrame || config.pathSamplesPerFrame > 64)
-        throw std::invalid_argument("--path-spp must be in [1,64]");
-    } else if (arg == "--path-target-ms") {
-      config.pathTargetMs = parseFloat(requireValue(argc, argv, i, arg), arg);
-      if (config.pathTargetMs < 0.1f || config.pathTargetMs > 1000.0f)
-        throw std::invalid_argument("--path-target-ms must be in [0.1,1000]");
-    } else if (arg == "--path-samples") {
-      explicitPathSampleLimit = true;
-      config.pathSampleLimit = parseUint(requireValue(argc, argv, i, arg), arg);
-      if (!config.pathSampleLimit || config.pathSampleLimit > 16777216)
-        throw std::invalid_argument("--path-samples must be in [1,16777216]");
-    } else if (arg == "--path-sample-series") {
-      if (!config.pathSampleSeries.empty())
-        throw std::invalid_argument("--path-sample-series may only be specified once");
-      auto samples = requireValue(argc, argv, i, arg);
-      uint32_t previous = 0;
-      for (;;) {
-        const auto comma = samples.find(',');
-        const uint32_t count = parseUint(samples.substr(0, comma), arg);
-        if (count <= previous || count > 16777216 || config.pathSampleSeries.size() >= 64)
-          throw std::invalid_argument(
-              "--path-sample-series requires up to 64 strictly increasing counts in [1,16777216]");
-        config.pathSampleSeries.push_back(count);
-        if (comma == std::string_view::npos)
-          break;
-        previous = count;
-        samples.remove_prefix(comma + 1);
-      }
-    } else if (arg == "--path-bounces") {
-      config.pathMaxBounces = parseUint(requireValue(argc, argv, i, arg), arg);
-      if (!config.pathMaxBounces || config.pathMaxBounces > 32)
-        throw std::invalid_argument("--path-bounces must be in [1,32]");
-    } else if (arg == "--path-seed") {
-      config.pathSeed = parseUint(requireValue(argc, argv, i, arg), arg);
-    } else if (arg == "--path-aperture") {
-      config.pathLens.apertureRadius = parseFloat(requireValue(argc, argv, i, arg), arg);
-      if (!config.pathLens.valid()) throw std::invalid_argument("--path-aperture must be in [0,1e10]");
-    } else if (arg == "--path-focus-distance") {
-      config.pathLens.focusDistance = parseFloat(requireValue(argc, argv, i, arg), arg);
-      if (!config.pathLens.valid()) throw std::invalid_argument("--path-focus-distance must be in [1e-6,1e20]");
     } else if (arg == "--no-bloom") {
       config.bloomEnabled = false;
       config.hasBloomEnabledOverride = true;

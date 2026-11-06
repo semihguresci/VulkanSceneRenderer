@@ -173,6 +173,13 @@ Import / Merge rejects assets declaring this extension before scene publication.
 Each source has its own packet index table, so primary-scene export keeps the
 original table and references together.
 
+The experimental glTF 2.1 URI profile imports links as editable placed content.
+Both save formats flatten that content into glTF 2.0 with portable resources.
+The `extras.containerLinkedSource` provenance records the original relative URI
+and node index and carries no file dependency. Linked child document-level
+annotations stay in their original file. Read-only linked editing and saving a
+scene back out as external references remain open under #102.
+
 This API exports one primary runtime scene. The UI integration must reject
 mixed BIM/USD content, or clearly name a primary-scene-only export scope.
 Animation/joint references outside the exported scene, missing material/owner

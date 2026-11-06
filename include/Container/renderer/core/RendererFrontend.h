@@ -98,6 +98,7 @@ struct ImportedSceneLightEdits;
 class OitManager;
 class PipelineRegistry;
 class RenderPassGpuProfiler;
+class RendererMcpServer;
 class RenderTechnique;
 enum class RenderTechniqueId;
 class RenderTechniqueRegistry;
@@ -354,6 +355,7 @@ private:
     std::unique_ptr<RenderTechniqueRegistry> techniqueRegistry;
     RenderTechnique *activeTechnique{nullptr};
     std::unique_ptr<RenderPassGpuProfiler> renderPassGpuProfiler;
+    std::unique_ptr<RendererMcpServer> mcpServer;
     std::unique_ptr<RendererTelemetry> rendererTelemetry;
     std::unique_ptr<container::ui::GuiManager> guiManager;
     std::unique_ptr<container::gpu::FrameSyncManager> frameSyncManager;
@@ -391,6 +393,9 @@ private:
   uint64_t referenceTimedSubmission_{};
   std::optional<uint32_t> referenceAdaptiveBatch_;
   std::optional<float> referenceTimedLightingMs_;
+  std::optional<float> referenceFocusDistanceOverride_;
+  bool referenceAutofocusRequested_{};
+  std::string referenceAutofocusStatus_;
   std::string referenceStatus_;
 
   // ---- grouped state
@@ -678,10 +683,13 @@ private:
     bool sceneLinear{false};
     bool viewportOnly{false};
     bool interactive{false};
+    bool remote{false};
     bool pending{false};
     std::vector<HostReadbackSlot> readbacks{};
   };
   ScreenshotState screenshot_{};
+  std::string mcpCaptureStatus_;
+  std::string mcpModelStatus_;
   uint32_t referenceSeriesSamples_{};
 
   struct DepthVisibilityFrameSlot {
@@ -804,6 +812,7 @@ private:
   [[nodiscard]] size_t maxSceneObjectCapacity() const;
   void applyBimSemanticColorMode();
   void processEnvironmentLoad(bool wait = false);
+  void processMcpRequests();
   void
   updateFrameDescriptorSets(uint32_t imageIndex = UINT32_MAX,
                             const FrameRecordParams *preparedParams = nullptr);

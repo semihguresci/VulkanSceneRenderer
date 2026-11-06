@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Container/renderer/pathtracing/ReferencePathLensSettings.h>
+#include <Container/renderer/pathtracing/ReferenceGroundSettings.h>
 #include <Container/renderer/raytracing/RayShadowManager.h>
 #include <Container/utility/PipelineManager.h>
 #include <filesystem>
@@ -13,7 +14,9 @@ struct ReferencePathTraceSettings {
   uint32_t samplesPerFrame{1}, sampleLimit{65536}, maxBounces{8};
   uint32_t rouletteDepth{3}, seed{1};
   float rayBias{0.0001f}, maxDistance{1e20f};
+  float fireflyClamp{};
   ReferencePathLensSettings lens{};
+  ReferenceGroundSettings ground{};
   std::optional<uint32_t> resetSamplesPerFrame;
 };
 struct alignas(16) ReferencePathTraceData {
@@ -25,8 +28,11 @@ struct alignas(16) ReferencePathTraceData {
   glm::uvec4 sampling{}; // bounces, roulette depth, seed, emissive instance count
   glm::vec4 environmentRadiance{1};
   glm::vec4 trace{}; // bias, maximum secondary distance, aperture radius, focal plane distance
+  glm::vec4 controls{}; // firefly peak RGB limit, one-shot autofocus probe, reserved
+  glm::vec4 ground{}; // mode, Y height, metallic, roughness
+  glm::vec4 groundColor{};
 };
-static_assert(sizeof(ReferencePathTraceData)==336);
+static_assert(sizeof(ReferencePathTraceData)==384);
 struct ReferencePathTraceInput {
   ReferencePathTraceData data{};
   ReferencePathTraceSettings settings{};
@@ -37,11 +43,16 @@ struct ReferencePathTraceInput {
   // Includes material/texture contents, lights and environment revisions.
   // Camera, clipping, scene bindings and settings are also compared internally.
   uint64_t contentRevision{};
+  std::optional<uint64_t> autofocusKey;
   bool emptyScene{false};
 };
 struct ReferencePathTraceDiagnostics {
   // Failure-stage bits: accumulation=1, path=2, material=4, hit=8, primary camera ray=16.
   uint32_t unsupportedSamples{}, rejectedSamples{}, acceptedSamples{}, failureStages{};
+};
+struct ReferenceAutofocusResult {
+  uint64_t key{};
+  float distance{}; // Zero means the center ray found no valid target.
 };
 
 // Ordered graphics-queue producer. Prepare only a fence-retired input slot;
@@ -69,12 +80,16 @@ class ReferencePathTracePass {
   [[nodiscard]] uint32_t attemptedSamples() const;
   [[nodiscard]] uint32_t lastSubmittedSamples() const;
   [[nodiscard]] std::optional<ReferencePathLensSettings> effectiveLens() const;
+  [[nodiscard]] float effectiveFireflyClamp() const;
+  [[nodiscard]] ReferenceGroundSettings effectiveGround() const;
   [[nodiscard]] uint64_t historyResets() const;
   [[nodiscard]] uint64_t allocatedBytes() const;
   // Require this slot's graphics fence to retire before CPU readback.
   [[nodiscard]] ReferencePathTraceDiagnostics diagnostics(uint32_t image) const;
   [[nodiscard]] uint64_t diagnosticEpoch(uint32_t image) const;
   [[nodiscard]] uint64_t diagnosticSubmission(uint32_t image) const;
+  // Consume after the probe's submitted graphics work has retired.
+  [[nodiscard]] std::optional<ReferenceAutofocusResult> takeAutofocusResult();
   // Images remain GENERAL. A reader changing layout must restore GENERAL.
   [[nodiscard]] VkImage displayImage() const;
   [[nodiscard]] VkImage meanImage() const;

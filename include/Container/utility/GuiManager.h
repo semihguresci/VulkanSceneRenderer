@@ -5,6 +5,7 @@
 #include "Container/renderer/lighting/DdgiSettings.h"
 #include "Container/renderer/raytracing/RayShadowSettings.h"
 #include "Container/renderer/pathtracing/ReferencePathLensSettings.h"
+#include "Container/renderer/pathtracing/ReferenceGroundSettings.h"
 
 #include <array>
 #include <cstddef>
@@ -766,6 +767,11 @@ public:
   void setReferencePathStatus(std::string status) { referencePathStatus_ = std::move(status); }
   void setReferencePathLens(container::renderer::ReferencePathLensSettings lens) { referencePathLens_ = lens; }
   [[nodiscard]] const container::renderer::ReferencePathLensSettings& referencePathLens() const { return referencePathLens_; }
+  void setReferenceFireflyClamp(float clamp) { referenceFireflyClamp_ = clamp; }
+  [[nodiscard]] float referenceFireflyClamp() const { return referenceFireflyClamp_; }
+  [[nodiscard]] bool consumeReferenceAutofocusRequest();
+  void setReferenceGround(container::renderer::ReferenceGroundSettings ground) { referenceGround_ = ground; }
+  [[nodiscard]] const container::renderer::ReferenceGroundSettings& referenceGround() const { return referenceGround_; }
   [[nodiscard]] container::renderer::RenderTechniqueId activeRenderEngine()
       const;
   void setRenderTechniqueDebugState(GuiRenderTechniqueDebugState state);
@@ -1298,6 +1304,9 @@ private:
   std::vector<RenderEngineOption> renderEngineOptions_{};
   std::string referencePathStatus_;
   container::renderer::ReferencePathLensSettings referencePathLens_{};
+  float referenceFireflyClamp_{};
+  bool referenceAutofocusRequested_{};
+  container::renderer::ReferenceGroundSettings referenceGround_{};
   container::renderer::RenderTechniqueId activeRenderEngine_{};
   std::optional<container::renderer::RenderTechniqueId>
       pendingRenderEngineChange_{};

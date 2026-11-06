@@ -28,6 +28,9 @@ struct FrameData
     uint4 sampling;
     float4 environmentRadiance;
     float4 trace;
+    float4 controls;
+    float4 ground;
+    float4 groundColor;
 };
 [[vk::binding(0, 2)]] ConstantBuffer<FrameData> frame;
 #if !REFERENCE_EMPTY_SCENE
@@ -84,6 +87,7 @@ struct PtHit
     float boundaryMetallic;
     uint instanceIndex;
     uint triangleIndex;
+    uint ground;
     uint hit;
     uint fault;
 };
@@ -134,7 +138,8 @@ float PtCoverage(GpuMaterial material, uint flags, RayTriangleData triangle,
     return saturate(alpha);
 }
 PtHit PtClosest(RayDesc ray, uint coverageSeed, bool volumeOnly = false,
-                uint targetInstance = 0xffffffffu, uint targetTriangle = 0xffffffffu)
+                uint targetInstance = 0xffffffffu, uint targetTriangle = 0xffffffffu,
+                bool autofocus = false)
 {
     PtHit result = (PtHit)0;
 #if !REFERENCE_EMPTY_SCENE
@@ -171,7 +176,8 @@ PtHit PtClosest(RayDesc ray, uint coverageSeed, bool volumeOnly = false,
             RayTriangleData triangle = triangles[instance.info.x + primitive];
             float2 bary = query.CandidateTriangleBarycentrics();
             float alpha = PtCoverage(material, flags, triangle, bary, result.fault);
-            if (PtCoverageRandom(coverageSeed, instanceIndex, primitive) >= alpha) continue;
+            if (autofocus ? alpha < 0.5 : PtCoverageRandom(coverageSeed, instanceIndex, primitive) >= alpha)
+                continue;
         }
         query.CommitNonOpaqueTriangleHit();
     }
@@ -194,10 +200,45 @@ PtHit PtClosest(RayDesc ray, uint coverageSeed, bool volumeOnly = false,
 #endif
     return result;
 }
+static const float PT_GROUND_SURFACE = 1.0;
+static const float PT_GROUND_MATTE = 2.0;
+
+PtHit PtGroundHit(RayDesc ray)
+{
+    PtHit hit = (PtHit)0;
+    if (frame.ground.x == 0.0 || ray.Direction.y >= 0.0) return hit;
+    float distance = (frame.ground.y - ray.Origin.y) / ray.Direction.y;
+    if (!isfinite(distance) || distance <= ray.TMin || distance >= ray.TMax) return hit;
+    float3 position = ray.Origin + distance * ray.Direction;
+    position.y = frame.ground.y;
+    if (!all(isfinite(position)) ||
+        SectionPlaneClips(position, frame.limits.w & 1u, frame.sectionPlane) ||
+        BoxClipPlanesClip(position, frame.boxClip)) return hit;
+    hit.point.position = position;
+    hit.point.geometricNormal = hit.point.shadingNormal = float3(0, 1, 0);
+    hit.point.frontFace = 1u;
+    hit.point.valid = 1u;
+    hit.distance = distance;
+    hit.ground = hit.hit = 1u;
+    return hit;
+}
+
+PtHit PtClosestSurface(RayDesc ray, uint coverageSeed, bool autofocus = false)
+{
+    PtHit ground = (PtHit)0;
+    if (frame.ground.x == PT_GROUND_SURFACE)
+        ground = PtGroundHit(ray);
+    if (ground.hit != 0u) ray.TMax = ground.distance;
+    PtHit mesh = PtClosest(ray, coverageSeed, false, 0xffffffffu, 0xffffffffu, autofocus);
+    return mesh.hit != 0u || mesh.fault != 0u ? mesh : ground;
+}
+
 struct PtMaterial
 {
     PtBsdf bsdf;
+    float anisotropy;
     float3 transmission;
+    float3 diffuseTransmission;
     float transmissionRoughness;
     float eta;
     // Authored KHR_materials_dispersion value; active only on refractive
@@ -255,6 +296,20 @@ float3 PtUnlitRadiance(GpuMaterial material, RaySurfacePoint point, float2 texGr
 PtMaterial PtResolveMaterial(PtHit hit, float2 texGrad, bool visibility = false)
 {
     PtMaterial result = (PtMaterial)0;
+    if (hit.ground != 0u)
+    {
+        result.normal = hit.point.shadingNormal;
+        result.tangent = float3(1, 0, 0);
+        result.bitangent = float3(0, 0, -1);
+        result.base = frame.groundColor.rgb;
+        result.metallic = frame.ground.z;
+        result.eta = 1.5;
+        result.bsdf.diffuse = result.base * (1.0 - result.metallic);
+        result.bsdf.f0 = lerp(0.04.xxx, result.base, result.metallic);
+        result.bsdf.roughness = frame.ground.w;
+        result.bsdf.specularScale = 1.0;
+        return result;
+    }
     RaySurfacePoint input = hit.point;
     GpuMaterial m = materials[input.materialIndex];
     uint flags = input.objectFlags | m.flags;
@@ -270,14 +325,14 @@ PtMaterial PtResolveMaterial(PtHit hit, float2 texGrad, bool visibility = false)
     if (!isfinite(m.transmissionFactor) || !isfinite(m.thicknessFactor) || m.thicknessFactor < 0.0 ||
         !isfinite(m.dispersion) || m.dispersion < 0.0 || !isfinite(m.clearcoatFactor) ||
         !all(isfinite(m.sheenColorFactor)) || !isfinite(m.iridescenceFactor) ||
-        !all(isfinite(m.anisotropyDiffuseFactors)) || !isfinite(m.heightScale))
+        !all(isfinite(m.anisotropyDiffuseFactors)) || any(m.anisotropyDiffuseFactors.xz < 0.0.xx) ||
+        any(m.anisotropyDiffuseFactors.xz > 1.0.xx) || !isfinite(m.heightScale))
     { result.fault = 2u; return result; }
     // Never silently substitute opaque or unlayered transport for unsupported
     // material models. Such paths are diagnosed and excluded from raw moments.
     if ((flags & 0x8u) != 0u ||
         m.clearcoatFactor != 0.0 ||
         any(m.sheenColorFactor.rgb != 0.0.xxx) || m.iridescenceFactor != 0.0 ||
-        m.anisotropyDiffuseFactors.x != 0.0 || m.anisotropyDiffuseFactors.z != 0.0 ||
         (m.heightTextureIndex != kInvalidGpuMaterialTexture && m.heightScale != 0.0))
     { result.fault = 1u; return result; }
     bool potentialVolume = PtPotentialVolume(m, flags);
@@ -319,6 +374,24 @@ PtMaterial PtResolveMaterial(PtHit hit, float2 texGrad, bool visibility = false)
     float scale = metallic + (1.0 - metallic) * specular;
     result.bsdf.diffuse = base * (1.0 - metallic) * (1.0 - transmission);
     result.transmission = base * (1.0 - metallic) * transmission;
+    if (m.anisotropyDiffuseFactors.z > 0.0 && metallic < 1.0 && transmission < 1.0)
+    {
+        float diffuseFactor = PtScalarGrad(m.anisotropyDiffuseFactors.z, m.diffuseTransmissionTextureIndex,
+            point.uv, m.diffuseTransmissionTextureTransform, 3u, texGrad);
+        if (!isfinite(diffuseFactor) || diffuseFactor < 0.0 || diffuseFactor > 1.0)
+        { result.fault = 2u; return result; }
+        if (diffuseFactor > 0.0)
+        {
+            // A volume interface needs a separate diffuse boundary proposal.
+            if (m.thicknessFactor > 0.0) { result.fault = 1u; return result; }
+            float3 tint = m.diffuseTransmissionColorFactor.rgb * PtTextureGrad(
+                m.diffuseTransmissionColorTextureIndex, point.uv,
+                m.diffuseTransmissionColorTextureTransform, texGrad).rgb;
+            if (!PtValidDiffuseTransmission(tint)) { result.fault = 2u; return result; }
+            result.bsdf.diffuse *= 1.0 - diffuseFactor;
+            result.diffuseTransmission = tint * ((1.0 - metallic) * (1.0 - transmission) * diffuseFactor);
+        }
+    }
     // The glTF thin-sheet rough lobe narrows as IOR approaches one. At IOR one
     // it is straight-through even with a rough reflection lobe.
     result.transmissionRoughness = roughness * clamp(2.0 * m.ior - 2.0, 0.0, 1.0);
@@ -346,6 +419,26 @@ PtMaterial PtResolveMaterial(PtHit hit, float2 texGrad, bool visibility = false)
     }
     result.tangent = PtNormalize(point.tangent.xyz - result.normal * dot(point.tangent.xyz, result.normal));
     if (all(result.tangent == 0.0.xxx)) result.tangent = RaySurfaceFallbackTangent(result.normal);
+    if (m.anisotropyDiffuseFactors.x > 0.0 && scale > 0.0)
+    {
+        float3 anisotropyTexel = float3(1.0, 0.5, 1.0);
+        if (m.anisotropyTextureIndex != kInvalidGpuMaterialTexture)
+            anisotropyTexel = PtTextureGrad(m.anisotropyTextureIndex, point.uv,
+                m.anisotropyTextureTransform, texGrad).rgb;
+        if (!all(isfinite(anisotropyTexel)) || any(anisotropyTexel < 0.0.xxx) ||
+            any(anisotropyTexel > 1.0.xxx))
+        { result.fault = 2u; return result; }
+        result.anisotropy = m.anisotropyDiffuseFactors.x * anisotropyTexel.b;
+        if (result.anisotropy > 0.0)
+        {
+            // The zero-perpendicular-width limit is singular. Volume refraction
+            // also requires its own anisotropic interface proposal and Jacobian.
+            if (roughness == 0.0 || result.volume != 0u)
+            { result.fault = 1u; return result; }
+            result.tangent = ResolveRayAnisotropyTangent(point, result.normal,
+                anisotropyTexel.rg, m.anisotropyDiffuseFactors.y);
+        }
+    }
     result.bitangent = cross(result.normal, result.tangent);
     result.emission = PtEmission(m, point, texGrad);
     if (!PtValidThinBsdf(PtTransport(result)) || !PtValidDirection(result.normal) ||
@@ -501,12 +594,14 @@ PtMediumState PtInitialMedium(RayDesc ray, uint seed, inout uint fault)
 PtBsdfEvaluation PtEvaluateSurface(PtMaterial material, float3 view, float3 light)
 {
     if (material.volume != 0u) return PtEvaluateVolumeMixture(PtVolumeTransport(material), view, light);
-    return PtEvaluateThinBsdf(PtTransport(material), view, light);
+    return PtEvaluateDiffuseTransmissionBsdf(PtTransport(material), material.diffuseTransmission,
+        view, light, material.anisotropy);
 }
 PtBsdfSample PtSampleSurface(PtMaterial material, float3 view, float3 u)
 {
     if (material.volume != 0u) return PtSampleVolumeMixture(PtVolumeTransport(material), view, u);
-    return PtSampleThinBsdf(PtTransport(material), view, u);
+    return PtSampleDiffuseTransmissionBsdf(PtTransport(material), material.diffuseTransmission,
+        view, u, material.anisotropy);
 }
 static const uint PT_MAX_NULL_SHEETS = 64u;
 bool PtVisible(float3 position, float3 normal, float3 direction, float distance, uint areaCount,
@@ -523,6 +618,7 @@ bool PtVisible(float3 position, float3 normal, float3 direction, float distance,
     ray.TMin = 0.0;
     ray.TMax = distance - 2.0 * bias;
     if (ray.TMax <= 0.0) return false;
+    if (frame.ground.x == PT_GROUND_SURFACE && PtGroundHit(ray).hit != 0u) return false;
     float3 segmentStart = position;
     // A spectral path evaluates every medium boundary at its active channel's
     // IOR, so dispersive blockers bend and reject straight NEE connections.
@@ -576,7 +672,8 @@ bool PtVisible(float3 position, float3 normal, float3 direction, float distance,
         {
             PtThinBsdf bsdf = PtTransport(blocker);
             coefficient = bsdf.transmission * (1.0.xxx - PtFresnel(bsdf.reflection.f0, view.z) * bsdf.reflection.specularScale);
-            probability = PtThinProbability(bsdf, view);
+            float diffuseProbability = PtDiffuseTransmissionProbability(bsdf, blocker.diffuseTransmission, view);
+            probability = (1.0 - diffuseProbability) * PtThinProbability(bsdf, view);
         }
         if (all(coefficient == 0.0.xxx)) return false;
         transmittance *= coefficient;
@@ -739,6 +836,22 @@ float3 PtDirect(PtHit hit, PtMaterial material, float3 view, float3 geometricNor
         delta = false;
     }
     if (!PtValidDirection(direction)) { fault = 2u; return 0.0.xxx; }
+    if (frame.ground.x == PT_GROUND_MATTE)
+    {
+        if (!isfinite(pdf) || !all(isfinite(radiance)) || any(radiance < 0.0.xxx))
+        { fault = 2u; return 0.0.xxx; }
+        float cosine = dot(geometricNormal, direction);
+        if (pdf <= 0.0 || cosine <= 0.0 || all(radiance == 0.0.xxx)) return 0.0.xxx;
+        float3 incident = radiance * (cosine / pdf);
+        float3 transmittance;
+        float nullPdf;
+        bool visible = PtVisible(hit.point.position, geometricNormal, direction, distance, counts.w,
+            ignoredEmitter, PtCoverageSeed(pixel, sampleIndex, bounce, 1u), medium, delta, spectral,
+            cone, targetInstance, targetTriangle, transmittance, nullPdf, fault);
+        float3 blocked = visible ? incident * (1.0.xxx - saturate(transmittance)) : incident;
+        float3 luma = float3(0.2126, 0.7152, 0.0722);
+        return float3(dot(blocked, luma), dot(incident, luma), 0.0);
+    }
     float3 localDirection = PtLocal(material, direction);
     if (pdf <= 0.0 || localDirection.z * dot(direction, geometricNormal) <= 0.0) return 0.0.xxx;
     PtBsdfEvaluation evaluated = PtEvaluateSurface(material, PtLocal(material, view), localDirection);
@@ -760,6 +873,33 @@ float3 PtDirect(PtHit hit, PtMaterial material, float3 view, float3 geometricNor
     float weight = !delta && useMis ? PtPowerHeuristic(pdf, evaluated.pdf * nullPdf) : 1.0;
     return radiance * transmittance * evaluated.value * (abs(dot(material.normal, direction)) * weight / pdf);
 }
+float3 PtTraceShadowMatte(RayDesc ray, uint pixel, uint sampleIndex, uint4 counts,
+                          RayCone cone, inout uint fault)
+{
+    PtHit ground = PtGroundHit(ray);
+    if (ground.hit == 0u) return 0.0.xxx;
+    RayDesc foreground = ray;
+    foreground.TMax = ground.distance;
+    PtHit mesh = PtClosest(foreground, PtCoverageSeed(pixel, sampleIndex, 0u, 0u));
+    fault = mesh.fault;
+    if (mesh.hit != 0u || fault != 0u || PtAreaHit(foreground, counts.w, 0xffffffffu).hit != 0u)
+        return 0.0.xxx;
+    PtMediumState medium = PtInitialMedium(ray, PtCoverageSeed(pixel, sampleIndex, 0u, 2u), fault);
+    if (fault != 0u) return 0.0.xxx;
+
+    cone.width = RayConeWorldFootprint(cone, ground.distance, ground.point.geometricNormal, -ray.Direction);
+    float3 value = float3(0, 0, 1);
+    uint proposals = frame.sampling.w != 0u ? 2u : 1u;
+    for (uint proposal = 0u; proposal < proposals; ++proposal)
+    {
+        value += PtDirect(ground, (PtMaterial)0, -ray.Direction, ground.point.geometricNormal,
+            pixel, sampleIndex, 0u, counts, false, medium, 0xffffffffu, cone, proposal != 0u, fault);
+        if (fault != 0u) return 0.0.xxx;
+    }
+    if (!all(isfinite(value))) { fault = 2u; return 0.0.xxx; }
+    return value;
+}
+
 float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault)
 {
     fault = 0u;
@@ -800,6 +940,7 @@ float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault)
     ray.TMax = min(primary.maximum, frame.trace.y);
     if (ray.TMax <= ray.TMin)
     {
+        if (frame.ground.x == PT_GROUND_MATTE) return 0.0.xxx;
         float3 value = PtEnvironment(primary.direction);
         if (!all(isfinite(value)) || any(value < 0.0.xxx)) { fault = 2u; return 0.0.xxx; }
         return value;
@@ -807,6 +948,8 @@ float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault)
     float2 footprint = PtCameraRayFootprint(samplePosition, frame.extentSamples.xy,
         frame.inverseProjection, frame.inverseView, orthographic, primary.direction, lensOffset, frame.trace.w);
     RayCone cone = {footprint.x, footprint.y};
+    if (frame.ground.x == PT_GROUND_MATTE)
+        return PtTraceShadowMatte(ray, address, sampleIndex, counts, cone, fault);
     float3 result = 0.0.xxx, throughput = 1.0.xxx, previousPosition = primary.origin;
     float previousPdf = 0.0;
     float etaScale = 1.0;
@@ -820,7 +963,7 @@ float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault)
     uint spectral = 0xffffffffu;
     for (uint bounce = 0u; bounce < frame.sampling.x + PT_MAX_NULL_SHEETS; ++bounce)
     {
-        PtHit hit = PtClosest(ray, PtCoverageSeed(address, sampleIndex, bounce, 0u));
+        PtHit hit = PtClosestSurface(ray, PtCoverageSeed(address, sampleIndex, bounce, 0u));
         if (hit.fault != 0u) { fault = hit.fault; return 0.0.xxx; }
         PtEmitterHit emitter = PtAreaHit(ray, counts.w, 0xffffffffu);
         if (emitter.hit != 0u && (hit.hit == 0u || emitter.distance < hit.distance))
@@ -962,11 +1105,30 @@ float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault)
     return result;
 }
 
+float PtAutofocusDistance()
+{
+    if ((frame.limits.w & (2u | 8u)) != 0u) return 0.0;
+    PtCameraRay center = PtGenerateCameraRay(0.5 * float2(frame.extentSamples.xy),
+        frame.extentSamples.xy, frame.inverseProjection, frame.inverseView, false);
+    if (center.valid == 0u) return 0.0;
+    RayDesc ray;
+    ray.Origin = center.origin;
+    ray.Direction = center.direction;
+    ray.TMin = center.minimum;
+    ray.TMax = min(center.maximum, frame.trace.y);
+    PtHit target = PtClosestSurface(ray, 0u, true);
+    if (target.hit == 0u || target.fault != 0u) return 0.0;
+    float3 forward = PtNormalize(mul(frame.inverseView, float4(0, 0, -1, 0)).xyz);
+    return target.distance * dot(center.direction, forward);
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void computeMain(uint3 tid : SV_DispatchThreadID)
 {
     if (any(tid.xy >= frame.extentSamples.xy)) return;
+    if (frame.controls.y != 0.0 && all(tid.xy == uint2(0u, 0u)))
+        diagnostics[1].x = asuint(PtAutofocusDistance());
     float3 mean = 0.0.xxx, moment = 0.0.xxx;
     uint count = 0u, flags = 0u;
     if (frame.extentSamples.z != 0u)
@@ -981,6 +1143,11 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
         if ((frame.limits.w & 8u) != 0u) { fault = 1u; radiance = 0.0.xxx; }
         else radiance = PtTracePath(tid.xy, frame.extentSamples.z + i, fault);
         if ((fault & 2u) != 0u) InterlockedOr(diagnostics[0].w, 2u);
+        if (fault == 0u && frame.controls.x > 0.0)
+        {
+            float peak = max(radiance.x, max(radiance.y, radiance.z));
+            if (peak > frame.controls.x) radiance = (radiance / peak) * frame.controls.x;
+        }
         if (fault == 0u && !PtAccumulate(mean, moment, count, radiance))
         { fault = 2u; InterlockedOr(diagnostics[0].w, 1u); }
         if (fault != 0u)
@@ -993,5 +1160,8 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
     }
     means[tid.xy] = float4(mean, float(count));
     moments[tid.xy] = float4(moment, float(flags));
-    display[tid.xy] = flags != 0u ? float4(1.0, (flags & 2u) != 0u ? 1.0 : 0.0, (flags & 1u) != 0u ? 1.0 : 0.0, 1.0) : float4(mean, 1.0);
+    float3 shown = mean;
+    if (frame.ground.x == PT_GROUND_MATTE)
+        shown = (mean.y > 0.0 ? saturate(mean.x / mean.y) * saturate(mean.z) : 0.0).xxx;
+    display[tid.xy] = flags != 0u ? float4(1.0, (flags & 2u) != 0u ? 1.0 : 0.0, (flags & 1u) != 0u ? 1.0 : 0.0, 1.0) : float4(shown, 1.0);
 }

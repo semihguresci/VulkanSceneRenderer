@@ -234,7 +234,26 @@ float PtGgxDistribution(float3 halfVector, float alpha)
     float q = dot(halfVector.xy, halfVector.xy) / alpha + alpha * halfVector.z * halfVector.z;
     return 1.0 / (PT_PI * q * q);
 }
-float3 PtSampleGgxVisibleNormal(float3 view, float alpha, float2 u)
+float2 PtGgxAlpha(float roughness, float anisotropy)
+{
+    float alpha = roughness * roughness;
+    return float2(lerp(alpha, 1.0, anisotropy * anisotropy), alpha);
+}
+float PtGgxDistribution(float3 halfVector, float2 alpha)
+{
+    // q = sqrt(alpha.x * alpha.y) times the squared elliptical half vector.
+    // Factor the squared widths to preserve the narrow perpendicular axis.
+    float2 root = sqrt(alpha);
+    float2 qxy = (halfVector.xy * halfVector.xy / alpha) * (root.yx / root);
+    float q = qxy.x + qxy.y + root.x * root.y * halfVector.z * halfVector.z;
+    return 1.0 / (PT_PI * q * q);
+}
+bool PtValidAnisotropy(PtBsdf bsdf, float anisotropy)
+{
+    return isfinite(anisotropy) && anisotropy >= 0.0 && anisotropy <= 1.0 &&
+        (anisotropy == 0.0 || bsdf.specularScale == 0.0 || bsdf.roughness > 0.0);
+}
+float3 PtSampleGgxVisibleNormal(float3 view, float2 alpha, float2 u)
 {
     float3 stretched = normalize(float3(alpha * view.xy, view.z));
     float lengthSquared = dot(stretched.xy, stretched.xy);
@@ -252,10 +271,15 @@ float3 PtSampleGgxVisibleNormal(float3 view, float alpha, float2 u)
         sqrt(max(0.0, 1.0 - x * x - y * y)) * stretched;
     return normalize(float3(alpha * normal.xy, max(0.0, normal.z)));
 }
-PtBsdfEvaluation PtEvaluateBsdf(PtBsdf bsdf, float3 view, float3 light)
+float3 PtSampleGgxVisibleNormal(float3 view, float alpha, float2 u)
+{
+    return PtSampleGgxVisibleNormal(view, alpha.xx, u);
+}
+PtBsdfEvaluation PtEvaluateBsdf(PtBsdf bsdf, float3 view, float3 light, float anisotropy = 0.0)
 {
     PtBsdfEvaluation result = (PtBsdfEvaluation)0;
-    if (!PtValidBsdf(bsdf) || !PtValidDirection(view) || !PtValidDirection(light)) return result;
+    if (!PtValidBsdf(bsdf) || !PtValidAnisotropy(bsdf, anisotropy) ||
+        !PtValidDirection(view) || !PtValidDirection(light)) return result;
     result.valid = 1u;
     if (view.z <= 0.0 || light.z <= 0.0) return result;
     float3 halfVector = normalize(view + light);
@@ -266,10 +290,11 @@ PtBsdfEvaluation PtEvaluateBsdf(PtBsdf bsdf, float3 view, float3 light)
     // Exact zero roughness is a delta lobe, not a roughness-clamped highlight.
     [branch] if (bsdf.roughness > 0.0 && bsdf.specularScale > 0.0)
     {
-        float alpha = bsdf.roughness * bsdf.roughness;
+        float2 alpha = PtGgxAlpha(bsdf.roughness, anisotropy);
         float lengthView = length(float3(alpha * view.xy, view.z));
         float lengthLight = length(float3(alpha * light.xy, light.z));
-        float distribution = PtGgxDistribution(halfVector, alpha);
+        float distribution = anisotropy > 0.0 ? PtGgxDistribution(halfVector, alpha)
+                                             : PtGgxDistribution(halfVector, alpha.y);
         // Height-correlated Smith masking; includes 1/(4 NoV NoL).
         float visibility = 0.5 / (light.z * lengthView + view.z * lengthLight);
         result.value += fresnel * distribution * visibility;
@@ -285,10 +310,10 @@ PtBsdfSample PtRejectedBsdfSample()
     result.rejected = 1u;
     return result;
 }
-PtBsdfSample PtSampleBsdf(PtBsdf bsdf, float3 view, float3 u)
+PtBsdfSample PtSampleBsdf(PtBsdf bsdf, float3 view, float3 u, float anisotropy = 0.0)
 {
     PtBsdfSample result = (PtBsdfSample)0;
-    if (!PtValidBsdf(bsdf) || !PtValidDirection(view) || view.z <= 0.0 ||
+    if (!PtValidBsdf(bsdf) || !PtValidAnisotropy(bsdf, anisotropy) || !PtValidDirection(view) || view.z <= 0.0 ||
         !all(isfinite(u)) || any(u < 0.0.xxx) || any(u >= 1.0.xxx)) return PtRejectedBsdfSample();
     float probability = PtSpecularProbability(bsdf, view);
     [branch] if (u.x < probability)
@@ -302,7 +327,7 @@ PtBsdfSample PtSampleBsdf(PtBsdf bsdf, float3 view, float3 u)
             result.delta = 1u;
             return result;
         }
-        float3 halfVector = PtSampleGgxVisibleNormal(view, bsdf.roughness * bsdf.roughness, u.yz);
+        float3 halfVector = PtSampleGgxVisibleNormal(view, PtGgxAlpha(bsdf.roughness, anisotropy), u.yz);
         result.direction = reflect(-view, halfVector);
         // Below-surface VNDF outcomes are null events. Resampling them would
         // change the PDF and bias the estimator, particularly on rough metals.
@@ -310,7 +335,7 @@ PtBsdfSample PtSampleBsdf(PtBsdf bsdf, float3 view, float3 u)
     }
     else
         result.direction = PtCosineHemisphere(u.yz);
-    PtBsdfEvaluation evaluated = PtEvaluateBsdf(bsdf, view, result.direction);
+    PtBsdfEvaluation evaluated = PtEvaluateBsdf(bsdf, view, result.direction, anisotropy);
     if (evaluated.valid == 0u || evaluated.pdf <= 0.0) return PtRejectedBsdfSample();
     result.pdf = evaluated.pdf;
     result.weight = evaluated.value * (result.direction.z / result.pdf);
@@ -345,17 +370,18 @@ float PtThinProbability(PtThinBsdf bsdf, float3 view)
     // normal-incidence estimate is zero but whose microfacet angles are not.
     return clamp(transmitted / max(reflected + transmitted, 1e-30), 0.05, 0.95);
 }
-PtBsdfEvaluation PtEvaluateThinBsdf(PtThinBsdf bsdf, float3 view, float3 light)
+PtBsdfEvaluation PtEvaluateThinBsdf(PtThinBsdf bsdf, float3 view, float3 light, float anisotropy = 0.0)
 {
     PtBsdfEvaluation result = (PtBsdfEvaluation)0;
-    if (!PtValidThinBsdf(bsdf) || !PtValidDirection(view) || !PtValidDirection(light)) return result;
-    if (all(bsdf.transmission == 0.0.xxx)) return PtEvaluateBsdf(bsdf.reflection, view, light);
+    if (!PtValidThinBsdf(bsdf) || !PtValidAnisotropy(bsdf.reflection, anisotropy) ||
+        !PtValidDirection(view) || !PtValidDirection(light)) return result;
+    if (all(bsdf.transmission == 0.0.xxx)) return PtEvaluateBsdf(bsdf.reflection, view, light, anisotropy);
     result.valid = 1u;
     if (view.z <= 0.0 || light.z == 0.0) return result;
     float probability = PtThinProbability(bsdf, view);
     if (light.z > 0.0)
     {
-        result = PtEvaluateBsdf(bsdf.reflection, view, light);
+        result = PtEvaluateBsdf(bsdf.reflection, view, light, anisotropy);
         result.pdf *= 1.0 - probability;
         return result;
     }
@@ -376,11 +402,12 @@ PtBsdfEvaluation PtEvaluateThinBsdf(PtThinBsdf bsdf, float3 view, float3 light)
         return (PtBsdfEvaluation)0;
     return result;
 }
-PtBsdfSample PtSampleThinBsdf(PtThinBsdf bsdf, float3 view, float3 u)
+PtBsdfSample PtSampleThinBsdf(PtThinBsdf bsdf, float3 view, float3 u, float anisotropy = 0.0)
 {
-    if (!PtValidThinBsdf(bsdf) || !PtValidDirection(view) || view.z <= 0.0 ||
+    if (!PtValidThinBsdf(bsdf) || !PtValidAnisotropy(bsdf.reflection, anisotropy) ||
+        !PtValidDirection(view) || view.z <= 0.0 ||
         !all(isfinite(u)) || any(u < 0.0.xxx) || any(u >= 1.0.xxx)) return PtRejectedBsdfSample();
-    if (all(bsdf.transmission == 0.0.xxx)) return PtSampleBsdf(bsdf.reflection, view, u);
+    if (all(bsdf.transmission == 0.0.xxx)) return PtSampleBsdf(bsdf.reflection, view, u, anisotropy);
     float probability = PtThinProbability(bsdf, view);
     PtBsdfSample result = (PtBsdfSample)0;
     if (u.x < probability)
@@ -405,7 +432,7 @@ PtBsdfSample PtSampleThinBsdf(PtThinBsdf bsdf, float3 view, float3 u)
         // Remap into the conditional reflection/diffuse mixture. Bound the
         // rounded division below one without changing the random sequence.
         float choice = min((u.x - probability) / (1.0 - probability), asfloat(0x3f7fffffu));
-        result = PtSampleBsdf(bsdf.reflection, view, float3(choice, u.yz));
+        result = PtSampleBsdf(bsdf.reflection, view, float3(choice, u.yz), anisotropy);
         if (result.valid == 0u) return result;
         if (result.delta != 0u)
         {
@@ -414,10 +441,81 @@ PtBsdfSample PtSampleThinBsdf(PtThinBsdf bsdf, float3 view, float3 u)
             return result;
         }
     }
-    PtBsdfEvaluation evaluated = PtEvaluateThinBsdf(bsdf, view, result.direction);
+    PtBsdfEvaluation evaluated = PtEvaluateThinBsdf(bsdf, view, result.direction, anisotropy);
     if (evaluated.valid == 0u || evaluated.pdf <= 0.0) return PtRejectedBsdfSample();
     result.pdf = evaluated.pdf;
     result.weight = evaluated.value * (abs(result.direction.z) / evaluated.pdf);
+    if (!all(isfinite(result.weight))) return PtRejectedBsdfSample();
+    result.valid = 1u;
+    return result;
+}
+bool PtValidDiffuseTransmission(float3 tint)
+{
+    return all(isfinite(tint)) && all(tint >= 0.0.xxx) && all(tint <= 1.0.xxx);
+}
+float PtDiffuseTransmissionProbability(PtThinBsdf bsdf, float3 tint, float3 view)
+{
+    if (all(tint == 0.0.xxx)) return 0.0;
+    if (bsdf.reflection.specularScale == 0.0 &&
+        all(bsdf.reflection.diffuse == 0.0.xxx) && all(bsdf.transmission == 0.0.xxx)) return 1.0;
+    float fresnel = PtLuminance(PtFresnel(bsdf.reflection.f0, view.z)) * bsdf.reflection.specularScale;
+    float base = fresnel + (1.0 - fresnel) *
+        PtLuminance(bsdf.reflection.diffuse + bsdf.transmission);
+    float diffuse = (1.0 - fresnel) * PtLuminance(tint);
+    return clamp(diffuse / max(base + diffuse, 1e-30), 0.05, 0.95);
+}
+PtBsdfEvaluation PtEvaluateDiffuseTransmissionBsdf(PtThinBsdf bsdf, float3 tint,
+    float3 view, float3 light, float anisotropy)
+{
+    if (!PtValidDiffuseTransmission(tint)) return (PtBsdfEvaluation)0;
+    PtBsdfEvaluation result = PtEvaluateThinBsdf(bsdf, view, light, anisotropy);
+    if (result.valid == 0u || all(tint == 0.0.xxx) || view.z <= 0.0 || light.z == 0.0)
+        return result;
+    float probability = PtDiffuseTransmissionProbability(bsdf, tint, view);
+    result.pdf *= 1.0 - probability;
+    if (light.z < 0.0)
+    {
+        // The diffuse lobe uses the same mirrored-interface Fresnel weighting
+        // as glTF's punctual thin-surface model. Its density is cosine-weighted.
+        float3 halfVector = PtNormalize(view + float3(light.xy, -light.z));
+        float3 fresnel = PtFresnel(bsdf.reflection.f0, dot(view, halfVector)) *
+            bsdf.reflection.specularScale;
+        result.value += (1.0.xxx - fresnel) * tint / PT_PI;
+        result.pdf += probability * (-light.z / PT_PI);
+    }
+    return result;
+}
+PtBsdfSample PtSampleDiffuseTransmissionBsdf(PtThinBsdf bsdf, float3 tint,
+    float3 view, float3 u, float anisotropy)
+{
+    if (!PtValidDiffuseTransmission(tint)) return PtRejectedBsdfSample();
+    if (all(tint == 0.0.xxx)) return PtSampleThinBsdf(bsdf, view, u, anisotropy);
+    if (!PtValidDirection(view) || view.z <= 0.0 ||
+        !all(isfinite(u)) || any(u < 0.0.xxx) || any(u >= 1.0.xxx)) return PtRejectedBsdfSample();
+
+    float probability = PtDiffuseTransmissionProbability(bsdf, tint, view);
+    PtBsdfSample result = (PtBsdfSample)0;
+    if (u.x < probability)
+    {
+        result.direction = PtCosineHemisphere(u.yz);
+        result.direction.z = -result.direction.z;
+    }
+    else
+    {
+        float baseChoice = min((u.x - probability) / (1.0 - probability), asfloat(0x3f7fffffu));
+        result = PtSampleThinBsdf(bsdf, view, float3(baseChoice, u.yz), anisotropy);
+        if (result.valid == 0u) return result;
+        if (result.delta != 0u)
+        {
+            result.pdf *= 1.0 - probability;
+            result.weight /= 1.0 - probability;
+            return result;
+        }
+    }
+    PtBsdfEvaluation evaluated = PtEvaluateDiffuseTransmissionBsdf(bsdf, tint, view, result.direction, anisotropy);
+    if (evaluated.valid == 0u || evaluated.pdf <= 0.0) return PtRejectedBsdfSample();
+    result.pdf = evaluated.pdf;
+    result.weight = evaluated.value * (abs(result.direction.z) / result.pdf);
     if (!all(isfinite(result.weight))) return PtRejectedBsdfSample();
     result.valid = 1u;
     return result;

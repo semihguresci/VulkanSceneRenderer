@@ -18,6 +18,7 @@
 #include "Container/renderer/lighting/SkySettings.h"
 #include "Container/renderer/lighting/DdgiVolumeFit.h"
 #include "Container/renderer/pathtracing/ReferencePathLensSettings.h"
+#include "Container/renderer/pathtracing/ReferenceGroundSettings.h"
 #include "Container/renderer/raytracing/RayShadowSettings.h"
 #include "Container/renderer/temporal/TemporalState.h"
 
@@ -73,7 +74,9 @@ struct AppConfig {
   uint32_t pathSamplesPerFrame{1},pathSampleLimit{65536},pathMaxBounces{8},pathSeed{1};
   std::vector<uint32_t> pathSampleSeries{};
   float pathTargetMs{};
+  float pathFireflyClamp{};
   container::renderer::ReferencePathLensSettings pathLens{};
+  container::renderer::ReferenceGroundSettings pathGround{};
   bool physicsDemo{false};
   bool windowVisible{true};
   uint32_t msaaSamples{1};
@@ -116,6 +119,7 @@ struct AppConfig {
   int gltfAnimationClip{-1};
   int gltfCameraNode{-1};
   int gltfSceneIndex{-1};
+  bool experimentalGltfLinkedAssets{false};
   double gltfAnimationTime{0};
   double gltfAnimationSpeed{1};
   bool gltfAnimationPlaying{true};

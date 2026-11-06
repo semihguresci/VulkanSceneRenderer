@@ -2493,6 +2493,14 @@ add_custom_test(renderer_telemetry_tests
     VulkanSceneRenderer_renderer
 )
 
+add_custom_test(renderer_mcp_measurement_tests
+    ${TEST_RENDERER_CORE_DIR}/renderer_mcp_measurement_tests.cpp "" ${TEST_RESULTS_DIR}
+    nlohmann_json::nlohmann_json
+)
+target_sources(renderer_mcp_measurement_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/core/RendererMcpMeasurement.cpp
+)
+
 add_custom_test(gpu_hardware_monitor_tests
     ${TEST_RENDERER_CORE_DIR}/gpu_hardware_monitor_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_gpu_hardware_monitor

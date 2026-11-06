@@ -38,10 +38,14 @@ struct LoadOptions {
   // decodeImages=false always keeps the legacy empty-image contract, even
   // when this flag is true. Ordinary default PNG/JPEG loads stay decoded RGBA.
   bool retainEncodedImages{false};
+  // Explicitly enable the URI-only linked asset subset of the pinned 2.1 draft.
+  bool enableLinkedAssets{false};
   InstancingLimits instancing;
   // A source parser can support more extensions than a particular scene
   // consumer. Restrict that consumer without weakening decoder requirements.
   std::vector<std::string> unavailableRuntimeExtensions;
+  // Remote import keeps embedded buffers and data URIs, and rejects file URIs.
+  bool requireSelfContained{false};
 };
 
 // Source-only consumers (for example material import) share the same version

@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cmath>
 #include <span>
+#include <utility>
 
 namespace container::renderer {
 namespace {
@@ -58,6 +59,7 @@ void RendererFrontend::ensureReferencePathResources() {
     referenceDiagnosticEpoch_ = referenceUnsupported_ = referenceRejected_ = 0;
     referenceAdaptiveBatch_.reset();
     referenceTimedLightingMs_.reset();
+    referenceAutofocusStatus_.clear();
   } catch (const std::exception& error) {
     referenceStatus_ = std::string("Raster fallback: ") + error.what();
     container::log::ContainerLogger::instance().renderer()->warn("{}", referenceStatus_);
@@ -80,6 +82,11 @@ bool RendererFrontend::recordReferencePathTrace(VkCommandBuffer command, const F
   input.settings.maxBounces = svc_.config.pathMaxBounces;
   input.settings.seed = svc_.config.pathSeed;
   input.settings.lens = subs_.guiManager ? subs_.guiManager->referencePathLens() : svc_.config.pathLens;
+  if (!subs_.guiManager && referenceFocusDistanceOverride_)
+    input.settings.lens.focusDistance = *referenceFocusDistanceOverride_;
+  input.settings.fireflyClamp =
+      subs_.guiManager ? subs_.guiManager->referenceFireflyClamp() : svc_.config.pathFireflyClamp;
+  input.settings.ground = subs_.guiManager ? subs_.guiManager->referenceGround() : svc_.config.pathGround;
   const auto extent = svc_.swapChainManager.extent();
   const auto* camera = subs_.cameraController->camera();
   input.data.inverseProjection = glm::inverse(gltfAnimationCamera_ ? gltfAnimationCamera_->projection :
@@ -115,15 +122,62 @@ bool RendererFrontend::recordReferencePathTrace(VkCommandBuffer command, const F
   // Hash only radiometric inputs. Camera jitter, raster shadow controls, exposure
   // and the display grade must not discard the accumulated linear samples.
   uint64_t revision = 14695981039346656037ull;
-  const auto hash = [&revision](const auto& value) {
+  const auto hashValue = [](uint64_t& state, const auto& value) {
     for (auto byte : std::as_bytes(std::span(&value, 1))) {
-      revision ^= std::to_integer<uint8_t>(byte);
-      revision *= 1099511628211ull;
+      state ^= std::to_integer<uint8_t>(byte);
+      state *= 1099511628211ull;
     }
   };
+  const auto hash = [&](const auto& value) { hashValue(revision, value); };
   hash(subs_.rayShadowManager->sceneRevision());
-  hash(subs_.environmentManager->environmentRevision());
   hash(shaderReloadGeneration_);
+  const auto autofocusKey = [&] {
+    uint64_t key = revision;
+    hashValue(key, extent);
+    hashValue(key, input.data.inverseProjection);
+    hashValue(key, input.data.inverseView);
+    hashValue(key, input.data.boxClip);
+    hashValue(key, input.data.sectionPlane);
+    hashValue(key, input.data.limits.w);
+    hashValue(key, input.settings.lens.focusDistance);
+    const bool focusOnGround = input.settings.ground.mode == ReferenceGroundMode::Surface;
+    hashValue(key, focusOnGround);
+    if (focusOnGround) hashValue(key, input.settings.ground.height);
+    return key;
+  };
+  const auto autofocusStatus = [&](std::string status) {
+    referenceAutofocusStatus_ = std::move(status);
+    if (subs_.guiManager)
+      subs_.guiManager->setStatusMessage(referenceAutofocusStatus_);
+  };
+  // The serialized graphics policy retires the previous probe before recording
+  // this frame. Discard it if the visible geometry or manual focus changed.
+  if (const auto probe = pass.takeAutofocusResult()) {
+    auto lens = input.settings.lens;
+    lens.focusDistance = probe->distance;
+    if (probe->key != autofocusKey()) {
+      autofocusStatus("Autofocus discarded after camera, scene, or focus changed");
+    } else if (!lens.valid()) {
+      autofocusStatus("No autofocus target at viewport center");
+    } else {
+      input.settings.lens = lens;
+      if (subs_.guiManager) subs_.guiManager->setReferencePathLens(lens);
+      else referenceFocusDistanceOverride_ = lens.focusDistance;
+      autofocusStatus("Focused at viewport center");
+    }
+  }
+  const bool guiAutofocus = subs_.guiManager && subs_.guiManager->consumeReferenceAutofocusRequest();
+  if (std::exchange(referenceAutofocusRequested_, false) || guiAutofocus) {
+    if (frame.camera.orthographic) autofocusStatus("Autofocus requires a perspective camera");
+    else if ((input.emptyScene && input.settings.ground.mode != ReferenceGroundMode::Surface) ||
+             (input.data.limits.w & 8u) != 0u)
+      autofocusStatus("No autofocus target at viewport center");
+    else {
+      input.autofocusKey = autofocusKey();
+      autofocusStatus("Measuring focus at viewport center");
+    }
+  }
+  hash(subs_.environmentManager->environmentRevision());
   const auto& lighting = subs_.lightingManager->lightingData();
   hash(lighting.directionalDirection);
   hash(lighting.directionalColorIntensity);

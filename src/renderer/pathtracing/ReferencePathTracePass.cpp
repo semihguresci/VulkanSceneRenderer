@@ -1,4 +1,5 @@
 #include <Container/renderer/pathtracing/ReferencePathTracePass.h>
+#include <Container/renderer/pathtracing/ReferenceFireflyClamp.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -8,6 +9,12 @@
 
 namespace container::renderer {
 namespace {
+struct alignas(16) ReferencePathReadback {
+  ReferencePathTraceDiagnostics diagnostics{};
+  glm::vec4 autofocus{};
+};
+static_assert(sizeof(ReferencePathReadback) == 32);
+
 [[noreturn]] void fail(const char* text) { throw std::invalid_argument(std::string("Reference path tracing: ")+text); }
 void barrier(VkCommandBuffer cmd,VkPipelineStageFlags2 stage,VkAccessFlags2 access) {
   VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
@@ -70,6 +77,7 @@ struct ReferencePathTracePass::Impl {
   bool initialized{},historyValid{};
   uint32_t samples{},pendingImage{UINT32_MAX};uint64_t resets{},submissionSerial{};
   uint32_t lastSubmittedSamples{};
+  std::optional<uint32_t> autofocusImage;
   ReferencePathTraceData submittedKey{};RaySurfaceGpuBindings submittedScene{};
   uint64_t submittedRevision{};
   VkImageView submittedEnvironment{};VkSampler submittedSampler{};VkPipeline submittedPipeline{};
@@ -89,6 +97,7 @@ struct ReferencePathTracePass::Impl {
     }
     frames.clear();mean.reset();moment.reset();display.reset();submittedContent.reset();
     initialized=false;historyValid=false;samples=0;lastSubmittedSamples=0;pendingImage=UINT32_MAX;
+    autofocusImage.reset();
   }
   void write(const gpu::AllocatedBuffer& buffer,const void* data,size_t bytes) {
     std::memcpy(buffer.allocation_info.pMappedData,data,bytes);
@@ -155,7 +164,7 @@ void ReferencePathTracePass::createResources(const std::filesystem::path& root,u
       auto& f=s.frames[i];f.set=sets[i];
       f.uniform=s.memory.createBuffer(sizeof(ReferencePathTraceData),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,VMA_MEMORY_USAGE_AUTO,
           VMA_ALLOCATION_CREATE_MAPPED_BIT|VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
-      f.diagnostic=s.memory.createBuffer(sizeof(ReferencePathTraceDiagnostics),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VMA_MEMORY_USAGE_AUTO,
+      f.diagnostic=s.memory.createBuffer(sizeof(ReferencePathReadback),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VMA_MEMORY_USAGE_AUTO,
           VMA_ALLOCATION_CREATE_MAPPED_BIT|VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
     }
   } catch(...) {s.clear();throw;}
@@ -171,6 +180,9 @@ void ReferencePathTracePass::prepareFrame(uint32_t image, const ReferencePathTra
       !settings.maxBounces || settings.maxBounces>32 || settings.rouletteDepth>32 || !std::isfinite(settings.rayBias) || settings.rayBias<=0 ||
       !std::isfinite(settings.maxDistance) || settings.maxDistance<=settings.rayBias*4) fail("invalid sampling settings");
   if (!settings.lens.valid()) fail("invalid thin-lens settings");
+  if (!settings.ground.valid()) fail("invalid analytic ground settings");
+  if (!validReferenceFireflyClamp(settings.fireflyClamp))
+    fail("invalid firefly clamp");
   if((!input.emptyScene && (!input.scene || !input.scene.instanceCount || !input.scene.triangleCount || !input.data.limits.z)) ||
       (input.emptyScene && (input.scene.instanceCount || input.scene.triangleCount)) || !input.materials || !input.lights ||
       !input.environment || !input.environmentSampler) fail("requires a complete ray scene or an explicitly empty scene, with shared descriptors");
@@ -201,6 +213,7 @@ void ReferencePathTracePass::prepareFrame(uint32_t image, const ReferencePathTra
     }
   }
   auto& f=s.frames[image];f.prepared=false;f.recorded=false;
+  if (s.autofocusImage == image) s.autofocusImage.reset();
   f.input=input;f.key=input.data;
   f.key.limits.x=source.instanceCount;f.key.limits.y=source.triangleCount;
   f.key.extentSamples={s.extent.width,s.extent.height,0,0};
@@ -209,6 +222,19 @@ void ReferencePathTracePass::prepareFrame(uint32_t image, const ReferencePathTra
   f.key.trace={settings.rayBias,settings.maxDistance,
       lensActive ? settings.lens.apertureRadius : 0.0f,
       lensActive ? settings.lens.focusDistance : 0.0f};
+  const auto& ground = settings.ground;
+  const bool matte = ground.mode == ReferenceGroundMode::ShadowMatte;
+  f.key.controls = {matte ? 0.0f : settings.fireflyClamp, 0.0f, 0.0f, 0.0f};
+  f.key.ground = {};
+  f.key.groundColor = {};
+  if (ground.mode != ReferenceGroundMode::Off) {
+    f.key.ground = {static_cast<float>(ground.mode), ground.height, 0.0f, 0.0f};
+    if (!matte) {
+      f.key.ground.z = ground.metallic;
+      f.key.ground.w = ground.roughness;
+      f.key.groundColor = glm::vec4(ground.color, 0.0f);
+    }
+  }
   f.boundPipeline=input.emptyScene?static_cast<VkPipeline>(s.emptyPipeline):static_cast<VkPipeline>(s.pipeline);
   f.boundContent=input.emptyScene?s.emptyPipeline.contentIdentity():s.pipeline.contentIdentity();
   f.reset=!s.historyValid || settings.sampleLimit<s.samples || std::memcmp(&f.key,&s.submittedKey,sizeof(f.key))!=0 ||
@@ -216,11 +242,12 @@ void ReferencePathTracePass::prepareFrame(uint32_t image, const ReferencePathTra
       input.environment!=s.submittedEnvironment || input.environmentSampler!=s.submittedSampler ||
       f.boundPipeline!=s.submittedPipeline || f.boundContent!=s.submittedContent;
   f.data=f.key;
+  f.data.controls.y = input.autofocusKey ? 1.0f : 0.0f;
   const uint32_t first=f.reset?0:s.samples;
   const uint32_t batch = f.reset ? initialBatch : settings.samplesPerFrame;
   f.data.extentSamples.z=first;f.data.extentSamples.w=std::min(batch,settings.sampleLimit-first);
   s.write(f.uniform,&f.data,sizeof(f.data));
-  const ReferencePathTraceDiagnostics zero{};s.write(f.diagnostic,&zero,sizeof(zero));
+  const ReferencePathReadback zero{};s.write(f.diagnostic,&zero,sizeof(zero));
   s.buffer(f.set,0,f.uniform.buffer,sizeof(f.data),VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
   if(!input.emptyScene) {
   VkWriteDescriptorSetAccelerationStructureKHR acceleration{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
@@ -238,7 +265,7 @@ void ReferencePathTracePass::prepareFrame(uint32_t image, const ReferencePathTra
     imageWrite.descriptorCount=1;imageWrite.descriptorType=i<3?VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:i==3?VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:VK_DESCRIPTOR_TYPE_SAMPLER;
     imageWrite.pImageInfo=&images[i];vkUpdateDescriptorSets(s.device->device(),1,&imageWrite,0,nullptr);
   }
-  s.buffer(f.set,11,f.diagnostic.buffer,sizeof(ReferencePathTraceDiagnostics),VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+  s.buffer(f.set,11,f.diagnostic.buffer,sizeof(ReferencePathReadback),VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
   if (emitters.empty())
     emitters.push_back(0); // Keep the descriptor valid when the proposal is inactive.
   const VkDeviceSize emitterBytes = emitters.size() * sizeof(emitters[0]);
@@ -290,8 +317,11 @@ void ReferencePathTracePass::commitFrame(uint32_t image) noexcept {
   s.submittedContent=f.boundContent;
   s.historyValid=true;s.initialized=true;f.recorded=false;f.submitted=true;s.pendingImage=UINT32_MAX;
   f.epoch=s.resets;f.submission=++s.submissionSerial;
+  if (f.input.autofocusKey) s.autofocusImage = image;
 }
-void ReferencePathTracePass::invalidateHistory() noexcept {impl_->historyValid=false;impl_->pendingImage=UINT32_MAX;}
+void ReferencePathTracePass::invalidateHistory() noexcept {
+  impl_->historyValid=false;impl_->pendingImage=UINT32_MAX;
+}
 uint64_t ReferencePathTracePass::diagnosticEpoch(uint32_t image) const {return image<impl_->frames.size()?impl_->frames[image].epoch:0;}
 uint64_t ReferencePathTracePass::diagnosticSubmission(uint32_t image) const {return image<impl_->frames.size()?impl_->frames[image].submission:0;}
 uint32_t ReferencePathTracePass::attemptedSamples() const {return impl_->samples;}
@@ -299,6 +329,34 @@ uint32_t ReferencePathTracePass::lastSubmittedSamples() const {return impl_->las
 std::optional<ReferencePathLensSettings> ReferencePathTracePass::effectiveLens() const {
   if (!impl_->historyValid || impl_->submittedKey.trace.z == 0.0f) return {};
   return ReferencePathLensSettings{impl_->submittedKey.trace.z, impl_->submittedKey.trace.w};
+}
+float ReferencePathTracePass::effectiveFireflyClamp() const {
+  return impl_->historyValid ? impl_->submittedKey.controls.x : 0.0f;
+}
+ReferenceGroundSettings ReferencePathTracePass::effectiveGround() const {
+  ReferenceGroundSettings ground;
+  if (!impl_->historyValid) return ground;
+  const auto& key = impl_->submittedKey;
+  ground.mode = static_cast<ReferenceGroundMode>(static_cast<uint32_t>(key.ground.x));
+  ground.height = key.ground.y;
+  if (ground.mode == ReferenceGroundMode::Surface) {
+    ground.metallic = key.ground.z;
+    ground.roughness = key.ground.w;
+    ground.color = glm::vec3(key.groundColor);
+  }
+  return ground;
+}
+std::optional<ReferenceAutofocusResult> ReferencePathTracePass::takeAutofocusResult() {
+  auto& s = *impl_;
+  if (!s.autofocusImage) return {};
+  const auto& f = s.frames[*s.autofocusImage];
+  if (vmaInvalidateAllocation(s.memory.allocator(), f.diagnostic.allocation,
+          0, sizeof(ReferencePathReadback)) != VK_SUCCESS)
+    throw std::runtime_error("Reference autofocus readback invalidate failed");
+  ReferencePathReadback result{};
+  std::memcpy(&result, f.diagnostic.allocation_info.pMappedData, sizeof(result));
+  s.autofocusImage.reset();
+  return ReferenceAutofocusResult{*f.input.autofocusKey, result.autofocus.x};
 }
 uint64_t ReferencePathTracePass::historyResets() const {return impl_->resets;}
 uint64_t ReferencePathTracePass::allocatedBytes() const {

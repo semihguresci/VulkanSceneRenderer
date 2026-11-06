@@ -13,6 +13,35 @@ are rejected. A newer 2.x version is accepted with a warning when its minimum
 is absent or 2.0; a newer minimum is rejected. An explicit empty minimum is
 invalid. This is an engine policy, independent of TinyGLTF's parser behavior.
 
+**Experimental linked assets.** Start the editor with
+`--experimental-gltf-linked-assets` to opt into the URI subset of the glTF
+2.1 draft pinned by `vk_gltf_renderer` at `174625d5c621`. It reads
+`files`, `externalAssets`, `node.externalAsset` and URI-backed `files[].aliases`
+using the draft layout. A linked manifest must declare version 2.1 and may
+require 2.0 or 2.1. Primary load and Import / Merge use the same profile.
+Without the option, linked manifests fail with an opt-in diagnostic. This
+profile leaves the normal glTF 2.0 extension and codec gates in place.
+[Pinned reference](https://github.com/nvpro-samples/vk_gltf_renderer/tree/174625d5c621c088bf3610377999f9dbdcf5c3b5),
+[external-assets draft](https://github.com/KhronosGroup/glTF/issues/2586),
+[unified file references draft](https://github.com/KhronosGroup/glTF/issues/2590),
+[packaging draft](https://github.com/KhronosGroup/glTF/issues/2589).
+
+Referenced `.gltf` and version-2 `.glb` files resolve relative to the owning manifest.
+Aliases redirect a child buffer or image URI to a file in the owner table.
+The primary asset's canonical directory bounds every linked file and external
+resource read, including aliases and symbolic links. The profile rejects
+absolute paths, network URIs, malformed percent escapes, embedded linked files,
+missing references and cycles before scene publication. A detached import has
+limits of 16 link levels, 64 source/alias contexts, 4,096 placements, 262,144
+nodes and 512 MiB of encoded input. The existing merge resource limits also apply.
+
+Repeated placements share mesh, buffer, texture and material definitions from
+the same canonical source and alias context. The selected child scene is copied
+as distinct node identities under each placement, with its original transforms
+and source URI/node provenance. Linked child animations and skins require a
+later profile. Unsupported merge metadata, including XMP packet tables, still
+rejects composition. See [scene export](gltf-scene-export.md) for save behavior.
+
 `GltfCapabilities.cpp` is the explicit runtime registry. Parsing an extension's
 JSON does not establish runtime support. An unknown or unsupported required
 extension rejects the asset. An unsupported optional extension warns and uses

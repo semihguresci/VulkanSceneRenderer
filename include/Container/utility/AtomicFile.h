@@ -68,7 +68,10 @@ replacementMutex(const std::filesystem::path &path) {
   return writer;
 }
 
-inline void writeFileAtomically(const std::filesystem::path &path, std::string_view contents) {
+enum class AtomicFilePublication { ReplaceExisting, CreateNew };
+
+inline void writeFileAtomically(const std::filesystem::path &path, std::string_view contents,
+    AtomicFilePublication publication = AtomicFilePublication::ReplaceExisting) {
   // Simultaneous writers in this process share a destination lock. Other
   // destinations remain independent, and the OS rename is still atomic for
   // readers and writers in other processes.
@@ -126,19 +129,20 @@ inline void writeFileAtomically(const std::filesystem::path &path, std::string_v
       atomicFileError("closing temporary file", GetLastError());
     }
     file = INVALID_HANDLE_VALUE;
+    const bool exclusive = publication == AtomicFilePublication::CreateNew;
+    const DWORD flags = MOVEFILE_WRITE_THROUGH | (exclusive ? 0 : MOVEFILE_REPLACE_EXISTING);
     for (unsigned attempt = 0;; ++attempt) {
-      if (MoveFileExW(temporary.c_str(), path.c_str(),
-                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+      if (MoveFileExW(temporary.c_str(), path.c_str(), flags))
         break;
       const DWORD renameError = GetLastError();
       const DWORD attributes = GetFileAttributesW(path.c_str());
       const bool permanentDestination =
           attributes != INVALID_FILE_ATTRIBUTES &&
           (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY));
-      if (attempt >= 20 || permanentDestination ||
+      if (exclusive || attempt >= 20 || permanentDestination ||
           (renameError != ERROR_SHARING_VIOLATION &&
            renameError != ERROR_ACCESS_DENIED))
-        atomicFileError("replacing destination", renameError);
+        atomicFileError(exclusive ? "publishing a new destination" : "replacing destination", renameError);
       // Windows may temporarily hold a replaced file open during another
       // process's atomic rename or antivirus inspection. Retry at most 200 ms.
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -160,7 +164,12 @@ inline void writeFileAtomically(const std::filesystem::path &path, std::string_v
     file = -1;
     if (closeResult != 0)
       atomicFileError("closing temporary file", errno);
-    if (::rename(temporary.c_str(), path.c_str()) != 0)
+    if (publication == AtomicFilePublication::CreateNew) {
+      if (::link(temporary.c_str(), path.c_str()) != 0)
+        atomicFileError("publishing a new destination", errno);
+      if (::unlink(temporary.c_str()) != 0)
+        atomicFileError("removing the temporary hard link", errno);
+    } else if (::rename(temporary.c_str(), path.c_str()) != 0)
       atomicFileError("replacing destination", errno);
 #endif
   } catch (...) {

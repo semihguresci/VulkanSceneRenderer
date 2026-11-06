@@ -334,6 +334,28 @@ TEST(GltfCapabilitiesLoader, ReturnsAssetScopedWarningsWhileImportingFallbackGeo
   EXPECT_EQ(loaded.capabilityDiagnostics[0].severity, CapabilitySeverity::Warning);
 }
 
+TEST(GltfCapabilitiesLoader, SelfContainedModeRejectsFileUrisAndPreservesEmbeddedData) {
+  AssetFixture fixture;
+  auto json = fixture.triangle();
+  gltf::LoadOptions options;
+  options.requireSelfContained = true;
+  const auto path = fixture.save(json);
+  expectLoadError([&] { (void)gltf::LoadModelWithSource(path.string(), options); },
+                  path, "self-contained glTF cannot reference external buffers");
+
+  json["buffers"][0]["uri"] = "data:application/octet-stream;base64,"
+      "AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA";
+  fixture.save(json);
+  EXPECT_EQ(gltf::LoadModelWithSource(path.string(), options).model.vertices().size(), 3u);
+  json["images"] = {{{"uri", "../outside.png"}}};
+  fixture.save(json);
+  expectLoadError([&] { (void)gltf::LoadModelWithSource(path.string(), options); },
+                  path, "self-contained glTF cannot reference external images");
+  options.enableLinkedAssets = true;
+  expectLoadError([&] { (void)gltf::LoadModelWithSource(path.string(), options); },
+                  path, "self-contained loading cannot enable linked assets");
+}
+
 TEST(GltfCapabilitiesLoader, ConsumerRejectsRequiredInstancingBeforeResourceIo) {
   AssetFixture fixture;
   auto json = fixture.triangle();

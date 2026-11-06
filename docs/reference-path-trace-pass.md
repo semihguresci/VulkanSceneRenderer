@@ -17,7 +17,7 @@ The shared layouts are updated together in host and Slang code:
 | `RayTriangleData` | 64 | UV0/UV1 and corner opacity |
 | `RaySurfaceTriangleData` | 192 | Optional closest-hit attributes |
 | `RaySurfaceInstanceData` | 112 | Model and normal transforms |
-| `ReferencePathTraceData` | 336 | Camera, clipping, bounds and sampling inputs |
+| `ReferencePathTraceData` | 384 | Camera, clipping, bounds, sampling, and ground inputs |
 
 `AtmosphereLutData.h` owns only the shared storage type. Sky authoring and solar
 calculation are not dependencies of the GPU data header. The current published

@@ -486,6 +486,141 @@ TEST(GltfSceneExport, MalformedXmpReportsWarningsAndKeepsPacketIndicesStable) {
   EXPECT_TRUE(ResolveGltfXmpPacket({}, withoutRoot.gltfModel.meshes[0].extensions).message.contains("root extension"));
 }
 
+TEST(GltfSceneExport, LinkedDraftSharesNestedSourceAndAliasResourcesAndFlattensPortably) {
+  using namespace container::geometry::gltf;
+  using Json = nlohmann::json;
+  ExportDirectory directory;
+  const auto input = directory.root / "linked";
+  std::filesystem::create_directories(input / "leaf");
+  std::filesystem::create_directories(input / "group");
+  const auto leaf = input / "leaf" / "Mesh part.gltf";
+  writeSceneExport({cubeGraph(), Model::MakeCube()}, leaf);
+  auto leafJson = Json::parse(readText(leaf));
+  leafJson["asset"]["version"] = "2.1";
+  leafJson["asset"]["minVersion"] = "2.1";
+  std::filesystem::copy_file(leaf.parent_path() / leafJson["buffers"][0]["uri"].get<std::string>(),
+      input / "Shared mesh.bin");
+  leafJson["buffers"][0]["uri"] = "missing%20geometry.bin";
+  writeText(leaf, leafJson.dump());
+
+  const auto gltfFile = [](std::string uri) { return Json{{"uri", std::move(uri)}, {"mimeType", "model/gltf+json"}}; };
+  auto nestedFile = gltfFile("../leaf/Mesh%20part.gltf");
+  nestedFile["aliases"] = Json::array({{{"alias", "missing%20geometry.bin"}, {"file", 1}}});
+  const Json nested = {{"asset", {{"version", "2.1"}, {"minVersion", "2.1"}}},
+      {"files", Json::array({nestedFile, {{"uri", "../Shared%20mesh.bin"}, {"mimeType", "application/octet-stream"}}})},
+      {"externalAssets", Json::array({{{"file", 0}}})},
+      {"nodes", Json::array({{{"externalAsset", 0}, {"translation", {0, 0, -2}}}})},
+      {"scenes", Json::array({{{"nodes", {0}}}})}, {"scene", 0}};
+  writeText(input / "group" / "nested.gltf", nested.dump());
+
+  auto direct = gltfFile("leaf/Mesh%20part.gltf");
+  direct["aliases"] = Json::array({{{"alias", "./missing%20geometry.bin"}, {"file", 2}}});
+  const Json primary = {{"asset", {{"version", "2.1"}}},
+      {"files", Json::array({gltfFile("group/nested.gltf"), direct,
+          {{"uri", "Shared%20mesh.bin"}, {"mimeType", "application/octet-stream"}}})},
+      {"externalAssets", Json::array({{{"file", 0}}, {{"file", 1}}})},
+      {"nodes", Json::array({{{"externalAsset", 0}, {"translation", {-3, 0, 0}}},
+          {{"externalAsset", 0}, {"translation", {3, 0, 0}}},
+          {{"externalAsset", 1}, {"translation", {0, 5, 0}}}})},
+      {"scenes", Json::array({{{"nodes", {0, 1, 2}}}})}, {"scene", 0}};
+  const auto path = input / "primary.gltf";
+  writeText(path, primary.dump());
+  EXPECT_THROW((void)LoadModelWithSource(path.string()), std::runtime_error);
+  LoadOptions options;
+  options.enableLinkedAssets = true;
+  const auto result = LoadModelWithSource(path.string(), options);
+  const auto& source = result.gltfModel;
+  ASSERT_EQ(source.nodes.size(), 11u);
+  ASSERT_EQ(source.meshes.size(), 1u);
+  ASSERT_EQ(source.buffers.size(), 1u);
+  ASSERT_EQ(result.model.meshes().size(), 1u);
+  ASSERT_EQ(source.scenes.size(), 1u);
+  EXPECT_EQ(source.asset.version, "2.0");
+  const std::vector<glm::vec3> expected{{-3, 0, -2}, {3, 0, -2}, {0, 5, 0}};
+  const auto check = [&](const tinygltf::Model& model) {
+    const auto matrices = worldMatrices(model);
+    size_t draw = 0;
+    for (size_t i = 0; i < model.nodes.size(); ++i) if (model.nodes[i].mesh >= 0) {
+      ASSERT_LT(draw, expected.size());
+      EXPECT_EQ(model.nodes[i].mesh, 0);
+      EXPECT_EQ(glm::vec3(matrices[i][3]), expected[draw++]);
+      ASSERT_TRUE(model.nodes[i].extras.Has("containerLinkedSource"));
+      const auto& origin = model.nodes[i].extras.Get("containerLinkedSource");
+      EXPECT_EQ(origin.Get("uri").Get<std::string>(), "leaf/Mesh part.gltf");
+      EXPECT_EQ(origin.Get("node").Get<int>(), 1);
+    }
+    EXPECT_EQ(draw, expected.size());
+  };
+  check(source);
+  SceneGraph graph;
+  std::vector<int32_t> identities;
+  for (size_t i = 0; i < source.nodes.size(); ++i) {
+    const auto& node = source.nodes[i];
+    graph.createNode(nodeMatrix(node), 0, node.mesh >= 0,
+        node.mesh >= 0 ? 0 : SceneGraph::kInvalidNode, node.name);
+    identities.push_back(int32_t(i));
+  }
+  for (size_t i = 0; i < source.nodes.size(); ++i)
+    for (const auto child : source.nodes[i].children) graph.setParent(uint32_t(child), uint32_t(i));
+  graph.updateWorldTransforms();
+  const auto flattened = directory.root / "flattened";
+  std::filesystem::create_directories(flattened);
+  for (const auto* format : {".gltf", ".glb"})
+    writeSceneExport({graph, result.model, &source, path, identities},
+        flattened / (std::string("scene") + format));
+  std::filesystem::rename(input, directory.root / "moved-inputs");
+  for (const auto* format : {".gltf", ".glb"}) {
+    const auto reloaded = LoadModelWithSource((flattened / (std::string("scene") + format)).string());
+    check(reloaded.gltfModel);
+    EXPECT_EQ(reloaded.gltfModel.asset.version, "2.0");
+  }
+}
+
+TEST(GltfSceneExport, LinkedDraftRejectsUnsafeAndUnresolvableReferencesWithContext) {
+  using namespace container::geometry::gltf;
+  using Json = nlohmann::json;
+  ExportDirectory directory;
+  const auto root = directory.root / "sandbox";
+  std::filesystem::create_directories(root);
+  const auto input = root / "root.gltf";
+  const auto document = [](std::string uri) -> Json {
+    return {{"asset", {{"version", "2.1"}}},
+        {"files", Json::array({{{"uri", std::move(uri)}, {"mimeType", "model/gltf+json"}}})},
+        {"externalAssets", Json::array({{{"file", 0}}})},
+        {"nodes", Json::array({{{"externalAsset", 0}}})},
+        {"scenes", Json::array({{{"nodes", {0}}}})}, {"scene", 0}};
+  };
+  LoadOptions options;
+  options.enableLinkedAssets = true;
+  const auto rejected = [&](const Json& source, std::string_view diagnostic) {
+    writeText(input, source.dump());
+    try {
+      (void)LoadModelWithSource(input.string(), options);
+      FAIL() << "Expected linked import to fail";
+    } catch (const std::runtime_error& error) {
+      EXPECT_TRUE(std::string_view(error.what()).contains(diagnostic)) << error.what();
+    }
+  };
+  rejected(document("missing.gltf"), "missing linked file 'missing.gltf'");
+  rejected(document("data:model/gltf+json;base64,e30="), "embedded/data-URI");
+  rejected(document("http://localhost/model.gltf"), "relative file URI");
+  rejected(document("root%zz.gltf"), "malformed percent escape");
+  writeText(directory.root / "outside.gltf", document("none.gltf").dump());
+  rejected(document("../outside.gltf"), "escapes the primary asset directory");
+  writeText(root / "inner.gltf", document("./root.gltf").dump());
+  rejected(document("inner.gltf"), "reference cycle");
+  auto wrongVersion = document("missing.gltf");
+  wrongVersion["asset"]["version"] = "2.2";
+  rejected(wrongVersion, "pinned glTF 2.1");
+  auto duplicateAlias = document("inner.gltf");
+  duplicateAlias["files"][0]["aliases"] = Json::array({
+      {{"alias", "buffer.bin"}, {"file", 0}}, {{"alias", "./buffer.bin"}, {"file", 0}}});
+  rejected(duplicateAlias, "duplicate normalized alias");
+  for (int i = 1; i <= 17; ++i)
+    writeText(root / (std::to_string(i) + ".gltf"), document(std::to_string(i + 1) + ".gltf").dump());
+  rejected(document("1.gltf"), "nesting exceeds 16 levels");
+}
+
 TEST(GltfSceneExport, RoundTripsRgbaVertexColorsThroughPortableGltfAndGlb) {
   ExportDirectory directory;
   std::vector<container::geometry::Vertex> vertices(3);

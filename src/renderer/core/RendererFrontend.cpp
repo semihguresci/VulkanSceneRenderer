@@ -52,6 +52,7 @@
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/core/RenderExtraction.h"
 #include "Container/renderer/core/RenderPassGpuProfiler.h"
+#include "Container/renderer/core/RendererMcpServer.h"
 #include "Container/renderer/core/RenderTechnique.h"
 #include "Container/renderer/core/RendererMsaa.h"
 #include "Container/renderer/core/RendererTelemetry.h"
@@ -126,6 +127,8 @@ struct RendererFrontend::ModelLoadState {
   container::util::AsyncModelPreparation<std::unique_ptr<Prepared>> worker;
   std::optional<container::ui::ModelLoadRequest> request;
   std::optional<container::ui::ModelLoadRequest> queued;
+  bool queuedRemote{false};
+  bool remote{false};
   std::unique_ptr<Prepared> ready;
   bool committing{false};
   std::exception_ptr presentationFailure;
@@ -135,6 +138,18 @@ struct RendererFrontend::ModelLoadState {
 };
 
 namespace {
+
+nlohmann::json referenceGroundMetadata(const ReferenceGroundSettings& ground) {
+  nlohmann::json metadata{{"mode", referenceGroundModeName(ground.mode)}};
+  if (ground.mode != ReferenceGroundMode::Off)
+    metadata["height"] = ground.height;
+  if (ground.mode == ReferenceGroundMode::Surface) {
+    metadata["color"] = {ground.color.r, ground.color.g, ground.color.b};
+    metadata["metallic"] = ground.metallic;
+    metadata["roughness"] = ground.roughness;
+  }
+  return metadata;
+}
 
 using TelemetryClock = std::chrono::steady_clock;
 
@@ -1634,6 +1649,8 @@ void RendererFrontend::initialize() {
     subs_.guiManager->setDisplayGrade(svc_.config.displayGrade);
     subs_.guiManager->setGpuHierarchyTransforms(gpuHierarchyEnabled_);
     subs_.guiManager->setReferencePathLens(svc_.config.pathLens);
+    subs_.guiManager->setReferenceFireflyClamp(svc_.config.pathFireflyClamp);
+    subs_.guiManager->setReferenceGround(svc_.config.pathGround);
     if (svc_.config.hasManualExposureOverride)
       subs_.guiManager->setExposureSettings(exposureSettingsFromConfig(svc_.config));
     if (authoredSky)
@@ -1709,6 +1726,16 @@ void RendererFrontend::initialize() {
   subs_.rendererTelemetry = std::make_unique<RendererTelemetry>();
 
   initializeScene();
+  if (svc_.config.screenshotCapturePath.empty() &&
+      svc_.config.temporalCaptureSequencePath.empty() && svc_.config.pathSampleSeries.empty()) {
+    try {
+      subs_.mcpServer = RendererMcpServer::startFromEnvironment();
+      if (subs_.mcpServer)
+        spdlog::info("Renderer MCP endpoint listening on http://127.0.0.1:{}/mcp", subs_.mcpServer->port());
+    } catch (const std::exception& error) {
+      spdlog::warn("Renderer MCP endpoint disabled: {}", error.what());
+    }
+  }
   if (svc_.config.ddgiFitScene)
     fitDdgiToActiveScene(svc_.config.ddgiFit.maxProbes);
   if (!svc_.config.ddgiDetailNode.empty())
@@ -1863,6 +1890,89 @@ void RendererFrontend::processEnvironmentLoad(bool wait) {
   }
 }
 
+void RendererFrontend::processMcpRequests() {
+  if (!subs_.mcpServer) return;
+  subs_.mcpServer->pump([this](std::string_view tool, const nlohmann::json& args) -> nlohmann::json {
+    using Json = nlohmann::json;
+    const auto lighting = [this] {
+      const auto& current = subs_.lightingManager->lightingSettings();
+      return Json{{"environmentIntensity", current.environmentIntensity},
+                  {"directionalIntensity", current.directionalIntensity},
+                  {"bounceIntensity", current.bounceIntensity},
+                  {"environmentYaw", current.environment.yawDegrees}};
+    };
+    if (tool == "renderer_get_settings") {
+      return {{"lighting", lighting()},
+              {"technique", subs_.activeTechnique ? renderTechniqueName(subs_.activeTechnique->id()) : ""}};
+    }
+    if (tool == "renderer_get_status") {
+      return {{"activeModel", activePrimaryModelPath_.empty() ? activeAuxiliaryModelPath_ : activePrimaryModelPath_},
+              {"modelLoading", modelLoad_ && (modelLoad_->request || modelLoad_->queued)},
+              {"modelStage", modelLoad_ ? modelLoad_->stage : ""},
+              {"modelStatus", mcpModelStatus_},
+              {"environmentLoading", subs_.environmentManager->environmentLoading()},
+              {"environmentStatus", subs_.environmentManager->environmentStatus()},
+              {"shaderReloadBusy", shaderReloadJob_.valid()}, {"shaderReloadStatus", shaderReloadStatus_},
+              {"shaderReloadGeneration", shaderReloadGeneration_},
+              {"capturePending", screenshot_.pending}, {"captureStatus", mcpCaptureStatus_}};
+    }
+    if (tool == "renderer_set_lighting") {
+      if (args.empty()) throw std::invalid_argument("Supply at least one lighting control");
+      const auto& current = subs_.lightingManager->lightingSettings();
+      auto settings = current;
+      settings.environmentIntensity = args.value("environmentIntensity", current.environmentIntensity);
+      settings.directionalIntensity = args.value("directionalIntensity", current.directionalIntensity);
+      settings.bounceIntensity = args.value("bounceIntensity", current.bounceIntensity);
+      settings.environment.yawDegrees = args.value("environmentYaw", current.environment.yawDegrees);
+      const bool yawChanged = settings.environment.yawDegrees != current.environment.yawDegrees;
+      if (yawChanged || settings.environmentIntensity != current.environmentIntensity ||
+          settings.directionalIntensity != current.directionalIntensity ||
+          settings.bounceIntensity != current.bounceIntensity) {
+        if (yawChanged && subs_.ddgiManager) subs_.ddgiManager->resetSceneHistory();
+        if (subs_.temporalManager) subs_.temporalManager->reset("lighting settings changed");
+        subs_.lightingManager->setLightingSettings(settings);
+        if (subs_.guiManager) subs_.guiManager->setLightingSettings(settings);
+        subs_.lightingManager->updateLightingData();
+        updateFrameDescriptorSets();
+      }
+      return {{"lighting", lighting()}};
+    }
+    if (tool == "renderer_load_model") {
+      if (!modelLoad_) modelLoad_ = std::make_unique<ModelLoadState>();
+      if (modelLoad_->request || modelLoad_->queued)
+        throw std::runtime_error("A model import is already in progress");
+      modelLoad_->queued = container::ui::ModelLoadRequest{
+          .path = args.at("path").get<std::string>(), .importScale = args.value("importScale", 1.0f)};
+      modelLoad_->queuedRemote = true;
+      mcpModelStatus_ = "Queued";
+      return {{"queued", true}};
+    }
+    if (tool == "renderer_load_environment") {
+      if (subs_.environmentManager->environmentLoading())
+        throw std::runtime_error("An environment import is already in progress");
+      if (!subs_.environmentManager->requestHdrEnvironment(
+              container::util::pathFromUtf8(args.at("path").get_ref<const std::string&>())))
+        throw std::runtime_error(subs_.environmentManager->environmentStatus());
+      return {{"queued", true}};
+    }
+    if (tool == "renderer_reload_shaders") {
+      if (shaderReloadJob_.valid()) throw std::runtime_error("Shader reload is already in progress");
+      processShaderReload(true);
+      if (shaderReloadStatus_.starts_with("Shader reload failed")) throw std::runtime_error(shaderReloadStatus_);
+      return {{"queued", true}};
+    }
+    if (tool == "renderer_capture") {
+      if (screenshot_.pending) throw std::runtime_error("An image capture is already pending");
+      requestScreenshot(container::util::pathFromUtf8(args.at("path").get_ref<const std::string&>()),
+                        args.value("viewportOnly", false));
+      screenshot_.remote = true;
+      mcpCaptureStatus_ = "Queued";
+      return {{"queued", true}};
+    }
+    throw std::invalid_argument("Unknown renderer MCP tool");
+  });
+}
+
 bool RendererFrontend::drawFrame(bool &framebufferResized) {
   // Commit outside the ImGui frame and before acquiring a swapchain image:
   // cooperative loading frames must own their acquire/submit/present cycle.
@@ -1918,6 +2028,9 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                            elapsedMilliseconds(phaseStart));
     if (subs_.renderPassGpuProfiler) {
       const auto gpuTimings = subs_.renderPassGpuProfiler->collectLatest();
+      if (subs_.mcpServer)
+        subs_.mcpServer->observeGpuTimings(subs_.renderPassGpuProfiler->latestRecordingSerial(),
+            rendererGpuTimingSourceName(subs_.renderPassGpuProfiler->timingSource()), gpuTimings);
       if (svc_.config.pathTargetMs > 0.0f) {
         const auto lighting = std::ranges::find(gpuTimings, RenderPassId::Lighting, &RendererPassGpuTiming::id);
         updateReferenceSampleBudget(lighting == gpuTimings.end() ? 0.0f : lighting->milliseconds);
@@ -1934,6 +2047,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     }
   }
 
+  processMcpRequests();
   applyPendingRenderTechniqueChange();
   updateOpenVdbSequence();
 
@@ -2250,10 +2364,11 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
           screenshot_.sceneLinear ? VK_FORMAT_R32G32B32A32_SFLOAT
                                   : svc_.swapChainManager.imageFormat());
     } catch (const std::exception& error) {
-      if (!screenshot_.interactive)
+      if (!screenshot_.interactive && !screenshot_.remote)
         throw;
       screenshot_.pending = screenshotThisFrame = false;
-      subs_.guiManager->setStatusMessage(error.what());
+      if (screenshot_.remote) mcpCaptureStatus_ = std::string("Capture failed: ") + error.what();
+      if (screenshot_.interactive) subs_.guiManager->setStatusMessage(error.what());
     }
     if (telemetry) {
       telemetry->addCpuPhase(RendererTelemetryPhase::ResourceGrowth,
@@ -2382,14 +2497,16 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
       collectReferenceDiagnostics(i);
     try {
       writePendingScreenshot(frame_.currentFrame, frameRecordParams);
+      if (screenshot_.remote && !screenshot_.pending) mcpCaptureStatus_ = "Saved";
       if (screenshot_.interactive)
         subs_.guiManager->setStatusMessage("Saved image: " +
             container::util::pathToUtf8(screenshot_.outputPath));
     } catch (const std::exception& error) {
       screenshot_.pending = false;
-      if (!screenshot_.interactive)
+      if (!screenshot_.interactive && !screenshot_.remote)
         throw;
-      subs_.guiManager->setStatusMessage(error.what());
+      if (screenshot_.remote) mcpCaptureStatus_ = std::string("Capture failed: ") + error.what();
+      if (screenshot_.interactive) subs_.guiManager->setStatusMessage(error.what());
     }
     if (telemetry) {
       telemetry->setCpuPhase(RendererTelemetryPhase::Screenshot,
@@ -2482,6 +2599,8 @@ void RendererFrontend::applyTemporalCapture(
   }
   if (event.reloadShaders)
     processShaderReload(true, true);
+  if (event.referenceAutofocus)
+    referenceAutofocusRequested_ = true;
   if (event.proceduralSky && subs_.environmentManager) {
     if (subs_.environmentManager->requestSkyEnvironment({.mode = *event.proceduralSky}))
       processEnvironmentLoad(true);
@@ -3003,6 +3122,9 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"lastSubmittedSamples", path ? path->lastSubmittedSamples() : 0},
         {"adaptiveTargetMs", svc_.config.pathTargetMs},
         {"lastTimedLightingMs", referenceTimedLightingMs_ ? nlohmann::json(*referenceTimedLightingMs_) : nlohmann::json(nullptr)},
+        {"fireflyClamp", path ? path->effectiveFireflyClamp() : 0.0f},
+        {"ground", referenceGroundMetadata(path ? path->effectiveGround() : ReferenceGroundSettings{})},
+        {"autofocusStatus", referenceAutofocusStatus_},
         {"maxBounces", svc_.config.pathMaxBounces}, {"seed", svc_.config.pathSeed},
         {"apertureRadius", lens ? lens->apertureRadius : 0.0f},
         {"focusDistance", lens ? nlohmann::json(lens->focusDistance) : nlohmann::json(nullptr)}};
@@ -4567,6 +4689,7 @@ void RendererFrontend::requestScreenshot(std::filesystem::path outputPath, bool 
   screenshot_.sceneLinear = sceneLinear;
   screenshot_.viewportOnly = viewportOnly && !sceneLinear;
   screenshot_.interactive = false;
+  screenshot_.remote = false;
   screenshot_.pending = true;
 }
 
@@ -4771,7 +4894,11 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
 void RendererFrontend::processPendingGuiModelLoadRequest() {
   auto queuedRequest=subs_.guiManager?subs_.guiManager->consumeModelLoadRequest()
       : std::optional<container::ui::ModelLoadRequest>{};
-  if(!queuedRequest && modelLoad_) queuedRequest=std::exchange(modelLoad_->queued,{});
+  bool remote = false;
+  if (!queuedRequest && modelLoad_ && modelLoad_->queued) {
+    queuedRequest = std::exchange(modelLoad_->queued, {});
+    remote = std::exchange(modelLoad_->queuedRemote, false);
+  }
   if (queuedRequest) {
     finishEditGestures();
     queuedRequest->openVdbOptions=vdbOptionsForReload(queuedRequest->path,queuedRequest->openVdbOptions,
@@ -4779,6 +4906,7 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
         svc_.config.vdbModelOptions);
     if (!modelLoad_) modelLoad_ = std::make_unique<ModelLoadState>();
     if (modelLoad_->request) {
+      if (modelLoad_->remote) mcpModelStatus_ = "Superseded by a newer model request";
       if(modelLoad_->request->merge) {
         mergeRequest_.outcome=MergeRequestOutcome::Failed;
         mergeRequest_.error="Cancelled by a newer model request";
@@ -4789,6 +4917,7 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
     modelLoad_->worker.cancel();
     if (modelLoad_->ready) modelLoad_->worker.discard(std::move(modelLoad_->ready));
     modelLoad_->request = std::move(queuedRequest);
+    modelLoad_->remote = remote;
     ++modelLoad_->requests;
     const auto &action = *modelLoad_->request;
     if(action.merge) {
@@ -4807,13 +4936,15 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
     } else {
       (void)modelLoad_->worker.start([path = action.path, scale = action.importScale,
                                     openVdbOptions = action.openVdbOptions,
-                                    merge = action.merge.has_value()] {
+                                    merge = action.merge.has_value(),
+                                    linked = svc_.config.experimentalGltfLinkedAssets && !remote, remote] {
         auto prepared = std::make_unique<ModelLoadState::Prepared>();
         if (isAuxiliaryRenderModelPath(path))
           prepared->bim = BimManager::prepareScene(path, scale, openVdbOptions);
         else
           prepared->gltf = container::scene::SceneManager::prepareGltfModel(path,
-              merge?512ull*1024*1024:std::numeric_limits<uintmax_t>::max());
+              merge || remote ? 512ull * 1024 * 1024 : std::numeric_limits<uintmax_t>::max(),
+              linked, remote);
         return prepared;
       });
       // Keep at least the request frame interactive, even for tiny models.
@@ -4860,16 +4991,19 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
       if (success && subs_.guiManager) subs_.guiManager->setStatusMessage("Merged model: "+statusLabel);
     } else success=reloadSceneModel(request.unload ? "" : request.path,
         request.unload ? 1.0f : request.importScale);
+    if (state.remote) mcpModelStatus_ = success ? "Loaded" : "Model import failed";
     if (success && request.unload && subs_.guiManager)
       subs_.guiManager->setStatusMessage("Unloaded models.");
     if (!success && subs_.guiManager && subs_.guiManager->statusMessage().empty())
       subs_.guiManager->setStatusMessage("Failed to load model: " + statusLabel);
   } catch (const std::exception &e) {
+    if (state.remote) mcpModelStatus_ = std::string("Model import failed: ") + e.what();
     if(request.merge) { mergeRequest_.outcome=MergeRequestOutcome::Failed; mergeRequest_.error=e.what(); }
     container::log::ContainerLogger::instance().renderer()->error(
         "Failed to load model '{}': {}", request.path, e.what());
     if(subs_.guiManager) subs_.guiManager->setStatusMessage("Failed to load model: " + statusLabel + "\n" + e.what());
   } catch (...) {
+    if (state.remote) mcpModelStatus_ = "Model import failed: unknown error";
     if(request.merge) { mergeRequest_.outcome=MergeRequestOutcome::Failed; mergeRequest_.error="Unknown scene merge error"; }
     if(subs_.guiManager) subs_.guiManager->setStatusMessage("Failed to load model: " + statusLabel + " (unknown error)");
   }
@@ -4878,6 +5012,7 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
   state.committing = false;
   if (state.ready) state.worker.discard(std::move(state.ready));
   state.request.reset();
+  state.remote = false;
   ++state.completed;
   // Acquired images/semaphores and reset submission fences cannot be recovered
   // as a bad model request. Propagate presentation errors after callback cleanup.
@@ -5014,6 +5149,7 @@ void RendererFrontend::drawModelLoadProgressFrame() {
 }
 
 void RendererFrontend::shutdown() {
+  subs_.mcpServer.reset();
   if (shaderReloadJob_.valid()) {
     shaderReloadStop_.request_stop();
     shaderReloadJob_.wait();
@@ -6090,6 +6226,8 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
     return;
   }
   const auto* referenceCapture = referencePathActive() ? subs_.referencePathTracePass.get() : nullptr;
+  const auto ground = referenceCapture ? referenceCapture->effectiveGround() : ReferenceGroundSettings{};
+  const bool shadowMatte = ground.mode == ReferenceGroundMode::ShadowMatte;
   if (const auto target = screenshot_.referenceSampleTarget) {
     if (!referenceCapture || referenceCapture->attemptedSamples() != *target)
       throw std::runtime_error("Reference sample checkpoint did not reach " + std::to_string(*target) + " samples");
@@ -6137,9 +6275,16 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
   std::vector<float> radiance;
   if (screenshot_.sceneLinear) {
     radiance.resize(pixelCount * 3u);
-    for (size_t pixel = 0; pixel < pixelCount; ++pixel)
-      std::memcpy(radiance.data() + pixel * 3u, src + pixel * 4u * sizeof(float),
-                  3u * sizeof(float));
+    for (size_t pixel = 0; pixel < pixelCount; ++pixel) {
+      auto* rgb = radiance.data() + pixel * 3u;
+      std::memcpy(rgb, src + pixel * 4u * sizeof(float), 3u * sizeof(float));
+      if (shadowMatte) {
+        const float opacity = rgb[1] > 0.0f
+            ? std::clamp(rgb[0] / rgb[1], 0.0f, 1.0f) * std::clamp(rgb[2], 0.0f, 1.0f)
+            : 0.0f;
+        std::fill_n(rgb, 3, opacity);
+      }
+    }
   } else {
     rgba = convertSwapchainBytesToRgba(src, pixelCount, readback.format);
   }
@@ -6172,6 +6317,8 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
         {"samplesPerFrame", svc_.config.pathSamplesPerFrame},
         {"adaptiveTargetMs", svc_.config.pathTargetMs},
         {"lastSubmittedSamples", referenceCapture->lastSubmittedSamples()},
+        {"fireflyClamp", referenceCapture->effectiveFireflyClamp()},
+        {"ground", referenceGroundMetadata(ground)},
         {"maxBounces", svc_.config.pathMaxBounces},
         {"seed", svc_.config.pathSeed},
         {"apertureRadius", lens ? lens->apertureRadius : 0.0f},
@@ -6185,6 +6332,8 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
       metadata["referencePath"]["acceptedSamplesPerPixel"] = *target;
     }
   }
+  const auto publication = screenshot_.remote ? container::util::AtomicFilePublication::CreateNew :
+      container::util::AtomicFilePublication::ReplaceExisting;
   if (screenshot_.sceneLinear) {
     unsigned char* encoded = nullptr;
     const char* error = nullptr;
@@ -6198,8 +6347,10 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
       throw std::runtime_error("failed to encode scene-linear EXR: " + reason);
     }
     container::util::writeFileAtomically(screenshot_.outputPath,
-        {reinterpret_cast<const char*>(bytes.get()), static_cast<size_t>(size)});
-    metadata["source"] = referenceCapture ? "path-trace-mean" : "raster-scene-composite";
+        {reinterpret_cast<const char*>(bytes.get()), static_cast<size_t>(size)}, publication);
+    metadata["source"] = shadowMatte ? "path-trace-shadow-matte" :
+        (referenceCapture ? "path-trace-mean" : "raster-scene-composite");
+    if (shadowMatte) metadata["colorSpace"] = "linear-mask";
     metadata["exposureApplied"] = false;
     metadata["toneMappingApplied"] = false;
   } else {
@@ -6212,7 +6363,7 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
                                 static_cast<int>(readback.extent.width * 4))) {
       throw std::runtime_error("failed to encode screenshot PNG: " + outputPath);
     }
-    container::util::writeFileAtomically(screenshot_.outputPath, png);
+    container::util::writeFileAtomically(screenshot_.outputPath, png, publication);
     const auto exposure = sanitizeExposureSettings(params.postProcess.exposureSettings);
     const bool automatic = exposure.mode == container::gpu::kExposureModeAuto;
     metadata["source"] = screenshot_.viewportOnly ? "viewport" : "window";
@@ -6221,7 +6372,7 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
     metadata["manualExposure"] = automatic ? nlohmann::json(nullptr) : nlohmann::json(exposure.manualExposure);
     metadata["toneMapper"] = static_cast<uint32_t>(params.postProcess.displayGrade.toneMapper);
   }
-  container::util::writeFileAtomically(metadataPath, metadata.dump(2) + '\n');
+  container::util::writeFileAtomically(metadataPath, metadata.dump(2) + '\n', publication);
 }
 
 void RendererFrontend::ensureDepthVisibilityReadbackBuffer(uint32_t frameSlot) {

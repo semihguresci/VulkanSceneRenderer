@@ -148,7 +148,11 @@ bool RendererFrontend::mergeSceneModel(const std::string& path,
   auto options=requested;
   options.destinationScene=subs_.sceneManager->selectedScene();
   std::optional<container::geometry::GltfLoadResult> local;
-  if(!prepared) { local=container::scene::SceneManager::prepareGltfModel(path,512ull*1024*1024); prepared=&*local; }
+  if (!prepared) {
+    local=container::scene::SceneManager::prepareGltfModel(path,512ull*1024*1024,
+        svc_.config.experimentalGltfLinkedAssets);
+    prepared=&*local;
+  }
   if(!mergeBudget_) mergeBudget_=std::make_shared<SceneMergeBudget>();
   const auto beforeBytes=subs_.sceneManager->mergeHistoryResidentBytes();
   const auto activeBytes=addMergeBytes(addMergeBytes(beforeBytes,beforeBytes),

@@ -37,6 +37,41 @@ generation. Effective lens changes restart accumulation. Reference capture
 metadata records the aperture radius and reports a null focus distance when the
 lens is inactive.
 
+**Autofocus at viewport center** measures the nearest visible mesh or analytic
+ground surface along one pinhole ray. The probe honors camera and scene clipping, alpha masks,
+and a fixed 50% threshold for blended opacity. The next retired-frame
+result updates the perspective focal plane if the camera, geometry, and
+manual focus are still current. A miss leaves focus in place. A capture
+sequence can request the same action with `"referenceAutofocus": true`.
+
+`--path-firefly-clamp 4` or **Firefly clamp** limits each completed sample
+to a peak RGB value of four. It scales all channels equally before updating
+the mean and moments. The default of zero retains unclamped transport.
+Changing the clamp resets accumulation. EXR metadata records the effective
+limit, since a positive limit biases the accumulated result.
+
+### Analytic ground and shadow matte
+
+**Reference ground** enables a one-sided, infinite Y-up plane at an editable
+world height. Surface mode shades it with an editable linear base color,
+metallic factor, and roughness. It participates in primary, bounced, and
+visibility rays and honors scene and camera clipping. No mesh is added to
+the scene. The equivalent flags are `--path-ground surface`,
+`--path-ground-height`, `--path-ground-color`, `--path-ground-metallic`, and
+`--path-ground-roughness`.
+
+`--path-ground shadow-matte` exports a grayscale direct-light shadow mask.
+The tracer accumulates blocked and unoccluded direct irradiance separately,
+then resolves their ratio weighted by visible plane coverage. Visible
+foreground geometry and rays missing the plane contribute zero coverage.
+The matte includes the environment, punctual, analytic area, and emissive
+mesh proposals and follows the tracer's existing transparency and visibility
+limits. It is a compositing mask for direct shadows. Use an EXR export for
+the linear 0–1 values. The firefly clamp applies to radiance captures only.
+The sidecar identifies the output as
+`path-trace-shadow-matte` with color space `linear-mask`. Ground mode and
+effective placement or material changes reset accumulation.
+
 The technique shares the forward graph's depth, picking, editor overlays and HDR
 presentation. Surface generations are requested independently of DDGI, including
 transparent candidates so unsupported materials are diagnosed rather than omitted.
@@ -205,18 +240,34 @@ same clipping, mip-zero coverage, ray-cone emission filtering, and transparent
 visibility rules as traced hits. Solid volume emitters are reached by BSDF
 paths. The last allowed bounce uses full next-event weight because there is no
 continuing BSDF proposal.
-No raster bounce term, LTC, DDGI feedback, TAA, denoising or radiance clamp enters
-this transport.
+The transport uses no raster bounce term, LTC, DDGI feedback, TAA, or denoising.
+The optional firefly clamp applies only after the complete path is evaluated.
 
-The supported surface subset currently diagnoses
-specular/glossiness, clearcoat, sheen, iridescence, anisotropy,
-diffuse transmission and active height displacement. These are implementation
-gaps, not a permanent reduction of #47's scope. Unsupported paths do not enter
-raw moments. Magenta display pixels identify unsupported paths; yellow identifies
+The supported surface subset currently diagnoses specular/glossiness, clearcoat,
+sheen, iridescence and active height displacement. Unsupported paths do not enter
+raw moments. Magenta display pixels identify unsupported paths and yellow identifies
 invalid/unrepresentable numerical input. Display diagnostics remain separate
 from accepted raw scene-linear means and moments. Unlit surfaces contribute
 textured base and authored emission, respect opacity coverage, and terminate
 scattering.
+
+Anisotropic reflection uses the mip-filtered strength and the rotated mesh
+tangent projected onto the final shading normal. Its elliptical GGX
+distribution, Smith visibility and visible-normal sampling share the same two
+roughness axes. Thin specular transmission retains its isotropic lobe. A
+perfectly smooth surface with active anisotropic reflection has a singular
+perpendicular axis and produces an unsupported-path diagnostic. [Khronos
+anisotropy](https://raw.githubusercontent.com/KhronosGroup/glTF/main/extensions/2.0/Khronos/KHR_materials_anisotropy/README.md)
+
+Diffuse transmission splits the remaining diffuse energy after specular
+transmission. The authored alpha factor and independently sampled tint feed a
+cosine-weighted lobe on the opposite hemisphere. Its PDF enters both direct
+lighting MIS and continuation weights. On a sheet with both diffuse and specular
+transmission, the straight-through visibility probability multiplies the specular
+null probability by the probability of selecting the non-diffuse branch.
+Active anisotropic refraction and
+diffusely transmitting volume boundaries remain diagnosed. [Khronos diffuse
+transmission](https://raw.githubusercontent.com/KhronosGroup/glTF/main/extensions/2.0/Khronos/KHR_materials_diffuse_transmission/README.md)
 
 KHR_materials_dispersion is transported spectrally: after the first dispersive
 refractive interface, one uniformly sampled RGB channel carries the path with a
@@ -576,8 +627,7 @@ The full #47 scope remains open. Continue in dependency order:
    lights, blockers, roughness sweeps and interiors, including edits, resize,
    camera cuts, technique switches, memory and GPU timing.
 
-#116 denoising and reconstruction remain open. The remaining #117 work includes
-autofocus, optional firefly control, and ground/shadow-catcher output.
+#116 denoising and reconstruction remain open.
 
 ## Mathematical references
 

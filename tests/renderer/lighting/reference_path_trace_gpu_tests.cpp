@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <limits>
 #include <tuple>
@@ -443,10 +444,10 @@ protected:
     dependency.imageMemoryBarrierCount = 1;
     dependency.pImageMemoryBarriers = &barrier;
     vkCmdPipelineBarrier2(*command, &dependency);
-    // Blue is packed metalness and red is transmission. The two mips
-    // deliberately disagree on each term so the sampling policy is observable.
-    const std::array colors{VkClearColorValue{{0.f, 0.f, 1.f, 1.f}},
-                            VkClearColorValue{{1.f, 0.f, 0.f, 1.f}}};
+    // Packed metalness uses blue, specular transmission uses red, and diffuse
+    // transmission uses alpha. The two mips deliberately disagree.
+    const std::array colors{VkClearColorValue{{0.f, 0.f, 1.f, .25f}},
+                            VkClearColorValue{{1.f, 0.f, 0.f, .75f}}};
     for (uint32_t level = 0; level < 2; ++level) {
       const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, level, 1, 0, 1};
       vkCmdClearColorImage(*command, mipImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -740,6 +741,105 @@ TEST_F(ReferencePathTraceGpu, DirectionalAndPointLightUnitsMatchIndependentDiffu
   EXPECT_NEAR(far.x,expected(4),.0001);EXPECT_NEAR(mean.x/far.x,expected(2)/expected(4),.004);
   EXPECT_EQ(tracer->historyResets(),3);
   std::printf("REFERENCE_POINT near=%.7f expected=%.7f far=%.7f expected=%.7f\n",mean.x,expected(2),far.x,expected(4));
+}
+TEST_F(ReferencePathTraceGpu, AnisotropyUsesAuthoredTangentRotationAndFilteredStrength) {
+  ASSERT_NO_FATAL_FAILURE(bindTransportMipTexture());
+  vertices[0].texCoord = {0, 0};
+  vertices[1].texCoord = {1, 0};
+  vertices[2].texCoord = {.5f, 1};
+  ++revision;
+  build(0);
+  build(1);
+  auto& material = materialValues[0];
+  material.color = {.8f, .6f, .3f, 1.f};
+  material.metallicRoughness = {1.f, .45f};
+  constexpr double strength = .85, pi = 3.14159265358979323846;
+  material.anisotropyDiffuseFactors.x = float(strength);
+  lighting.environmentIntensity = 0;
+  lighting.directionalDirection = {-.6f, 0, -.8f, 0};
+  lighting.directionalColorIntensity = {1, 1, 1, 1};
+  input.settings.sampleLimit = 64;
+  input.settings.maxBounces = 1;
+  syncInputs();
+  const auto tangent = converge().roi();
+  material.anisotropyDiffuseFactors.y = float(pi / 2);
+  syncInputs();
+  const auto bitangent = converge().roi();
+
+  constexpr double alpha = .45 * .45;
+  const double ax = alpha + (1 - alpha) * strength * strength;
+  const auto expected = [&](double x, double y, int channel) {
+    // Normal view with a light at (.6, 0, .8) in the unrotated frame.
+    const double halfZ = std::sqrt(.9);
+    const double cosine = .8;
+    const double q = x * x / (3.6 * ax * ax) + y * y / (3.6 * alpha * alpha) + .9;
+    const double D = 1 / (pi * ax * alpha * q * q);
+    const double lambdaLight =
+        .5 * (std::sqrt(1 + (ax * ax * x * x + alpha * alpha * y * y) / (cosine * cosine)) - 1);
+    const double f0 = material.color[channel];
+    const double fresnel = f0 + (1 - f0) * std::pow(1 - halfZ, 5);
+    return fresnel * D / (4 * (1 + lambdaLight));
+  };
+  EXPECT_GT(tangent.x, 5 * bitangent.x);
+  for (int c = 0; c < 3; ++c) {
+    EXPECT_NEAR(tangent[c], expected(.6, 0, c), 4e-6);
+    EXPECT_NEAR(bitangent[c], expected(0, .6, c), 4e-6);
+  }
+  material.anisotropyTextureIndex = kMipTextureIndex;
+  material.anisotropyTextureTransform = minifiedTextureTransform();
+  syncInputs();
+  const auto masked = converge();
+  material.anisotropyDiffuseFactors.x = 0;
+  syncInputs();
+  EXPECT_EQ(converge().images[0], masked.images[0]);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+}
+TEST_F(ReferencePathTraceGpu, DiffuseTransmissionUsesAlphaAndIndependentTintInDirectAndMisPaths) {
+  ASSERT_NO_FATAL_FAILURE(bindTransportMipTexture());
+  auto& material = materialValues[0];
+  material.color = {.65f, .4f, .1f, 1.f};
+  material.specularFactor = 0;
+  material.anisotropyDiffuseFactors.z = .8f;
+  material.diffuseTransmissionColorFactor = {.25f, .8f, .4f, 1.f};
+  material.diffuseTransmissionColorTextureIndex = 23;
+  material.diffuseTransmissionTextureIndex = kMipTextureIndex;
+  lighting.environmentIntensity = 0;
+  lighting.directionalDirection = {0, 0, 1, 0};
+  lighting.directionalColorIntensity = {1, 1, 1, 1};
+  input.settings.sampleLimit = 64;
+  input.settings.maxBounces = 1;
+  syncInputs();
+  const auto back = converge().roi();
+  lighting.directionalDirection.z = -1;
+  syncInputs();
+  const auto front = converge().roi();
+
+  constexpr double pi = 3.14159265358979323846;
+  constexpr double factor = .8 * .25;
+  const glm::dvec3 environment(.5, .25, .75);
+  const auto expectedBack = glm::dvec3(material.diffuseTransmissionColorFactor) * environment * factor;
+  const auto expectedFront = glm::dvec3(material.color) * (1 - factor);
+  for (int c = 0; c < 3; ++c) {
+    EXPECT_NEAR(back[c], expectedBack[c] / pi, 1e-6);
+    EXPECT_NEAR(front[c], expectedFront[c] / pi, 1e-6);
+  }
+  lighting.directionalColorIntensity = {};
+  lighting.environmentIntensity = 1;
+  input.data.limits.w |= 4u;
+  input.settings.sampleLimit = 1024;
+  input.settings.maxBounces = 2;
+  syncInputs();
+  const auto mis = converge().roi();
+  for (int c = 0; c < 3; ++c)
+    EXPECT_NEAR(mis[c], environment[c] * (expectedBack[c] + expectedFront[c]), .006);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+
+  material.thicknessFactor = 1.f;
+  syncInputs();
+  EXPECT_EQ(render().roi(2), glm::dvec3(1, 0, 1));
+  EXPECT_GT(tracer->diagnostics(0).unsupportedSamples, 0);
 }
 TEST_F(ReferencePathTraceGpu, RealOffAxisBlockerCastsAndRestoresRayTracedShadow) {
   lighting.environmentIntensity=0;lighting.pointLightCount=1;pointValues.resize(1);
@@ -1394,6 +1494,100 @@ TEST_F(ReferencePathTraceGpu, IndexMatchedMetallicVolumeDoesNotAttenuateTransmis
   for(int c=0;c<3;++c) EXPECT_NEAR(pixels.roi()[c],clear.roi()[c]*.375*.375,.000001);
   EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples,0);EXPECT_EQ(tracer->diagnostics(0).rejectedSamples,0);
   save(pixels,"volume-metallic-shadow");
+}
+TEST_F(ReferencePathTraceGpu, AutofocusUsesStableCenterCoverageAtTheExactSampleStop) {
+  materialValues.emplace_back();
+  auto& foreground = materialValues[1];
+  foreground.flags = kObjectFlagAlphaBlend;
+  foreground.color.a = .25f;
+  addQuad({0, 0, 1}, .5f, .5f, true, 1);
+  syncInputs(); build(0); build(1);
+  input.data.inverseProjection = glm::inverse(glm::perspectiveRH_ZO(.7f, 1.f, 10.f, .1f));
+  input.data.limits.w &= ~2u;
+  input.settings.sampleLimit = 1;
+  render(0);
+  EXPECT_FALSE(tracer->takeAutofocusResult());
+
+  input.autofocusKey = 11;
+  render(1);
+  const auto background = tracer->takeAutofocusResult();
+  ASSERT_TRUE(background);
+  EXPECT_EQ(background->key, 11u);
+  EXPECT_NEAR(background->distance, 2.f, 1e-5f);
+  EXPECT_EQ(tracer->attemptedSamples(), 1u);
+  EXPECT_EQ(tracer->lastSubmittedSamples(), 0u);
+  EXPECT_EQ(tracer->historyResets(), 1u);
+  EXPECT_FALSE(tracer->takeAutofocusResult());
+
+  foreground.color.a = .5f;
+  syncInputs();
+  input.autofocusKey = 12;
+  render(0);
+  const auto front = tracer->takeAutofocusResult();
+  ASSERT_TRUE(front);
+  EXPECT_EQ(front->key, 12u);
+  EXPECT_NEAR(front->distance, 1.f, 1e-5f);
+}
+TEST_F(ReferencePathTraceGpu, FireflyClampScalesTheEntireSampleAndResetsHistory) {
+  auto& material = materialValues[0];
+  material.color = {0, 0, 0, 1};
+  material.emissiveColor = {6, 3, .75f};
+  lighting.environmentIntensity = 0.f;
+  syncInputs();
+  input.settings.sampleLimit = 4;
+  EXPECT_EQ(converge().roi(), glm::dvec3(6, 3, .75));
+  EXPECT_EQ(tracer->effectiveFireflyClamp(), 0.f);
+
+  input.settings.fireflyClamp = 1.5f;
+  EXPECT_EQ(converge().roi(), glm::dvec3(1.5, .75, .1875));
+  EXPECT_EQ(tracer->effectiveFireflyClamp(), 1.5f);
+  EXPECT_EQ(tracer->historyResets(), 2u);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0u);
+
+  input.settings.fireflyClamp = 0.f;
+  EXPECT_EQ(converge().roi(), glm::dvec3(6, 3, .75));
+  EXPECT_EQ(tracer->historyResets(), 3u);
+}
+TEST_F(ReferencePathTraceGpu, AnalyticGroundUsesTheEmptyScenePipelineAndEffectiveHistoryKeys) {
+  input.emptyScene = true;
+  input.data.inverseView = glm::translate(glm::mat4(1), glm::vec3(0, 4, 0)) *
+      glm::rotate(glm::mat4(1), -glm::half_pi<float>(), glm::vec3(1, 0, 0));
+  lighting.environmentIntensity = 0.f;
+  lighting.directionalDirection = {0, -1, 0, 0};
+  lighting.directionalColorIntensity = {1, 1, 1, 1};
+  syncInputs();
+  input.settings.sampleLimit = 4;
+  EXPECT_EQ(converge().roi(), glm::dvec3(0));
+  EXPECT_EQ(tracer->historyResets(), 1u);
+
+  auto& ground = input.settings.ground;
+  ground.height = .25f;
+  ground.color = {.8f, .2f, .1f};
+  EXPECT_EQ(converge().roi(), glm::dvec3(0));
+  EXPECT_EQ(tracer->historyResets(), 1u);
+  ground.mode = ReferenceGroundMode::Surface;
+  const auto colored = converge().roi();
+  EXPECT_GT(colored.r, colored.g * 2);
+  EXPECT_GT(colored.g, colored.b);
+  EXPECT_EQ(tracer->effectiveGround().height, .25f);
+  EXPECT_EQ(tracer->historyResets(), 2u);
+
+  ground.mode = ReferenceGroundMode::ShadowMatte;
+  const auto unblocked = converge();
+  EXPECT_EQ(unblocked.roi().r, 0.0);
+  EXPECT_GT(unblocked.roi().g, 0.0);
+  EXPECT_EQ(unblocked.roi().b, 1.0);
+  EXPECT_EQ(unblocked.roi(2), glm::dvec3(0));
+  EXPECT_EQ(tracer->historyResets(), 3u);
+  ground.color = {0, 1, 0};
+  converge();
+  EXPECT_EQ(tracer->historyResets(), 3u);
+
+  ground.height = 5.f;
+  EXPECT_EQ(converge().roi(), glm::dvec3(0));
+  EXPECT_EQ(tracer->historyResets(), 4u);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0u);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0u);
 }
 TEST_F(ReferencePathTraceGpu, CameraClippingAndContentChangesResetOnlySubmittedHistory) {
   input.settings.sampleLimit=64;render();

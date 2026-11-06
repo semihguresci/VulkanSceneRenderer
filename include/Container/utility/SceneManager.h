@@ -468,7 +468,8 @@ class SceneManager {
   // worker; the returned payload is consumed by reloadModel on the render thread.
   [[nodiscard]] static container::geometry::GltfLoadResult prepareGltfModel(
       const std::string& path,
-      uintmax_t maxInputBytes = std::numeric_limits<uintmax_t>::max());
+      uintmax_t maxInputBytes = std::numeric_limits<uintmax_t>::max(),
+      bool enableLinkedAssets = false, bool requireSelfContained = false);
 
   bool reloadModel(const std::string& path,
                    float importScale,

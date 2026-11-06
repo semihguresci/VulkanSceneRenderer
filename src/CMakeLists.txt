@@ -65,6 +65,8 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/RendererTelemetry.cpp
     renderer/core/RenderGraph.cpp
     renderer/core/RenderPassGpuProfiler.cpp
+    renderer/core/RendererMcpServer.cpp
+    renderer/core/RendererMcpMeasurement.cpp
     renderer/core/RenderPassScopeRecorder.cpp
     renderer/core/RenderTechnique.cpp
     renderer/core/ScreenshotCaptureRecorder.cpp
@@ -280,6 +282,9 @@ else()
     target_link_libraries(VulkanSceneRenderer_exr PRIVATE "${CONTAINER_TINYEXR_MINIZ_LIBRARY}")
 endif()
 target_link_libraries(VulkanSceneRenderer_renderer PRIVATE VulkanSceneRenderer_exr)
+if(WIN32)
+    target_link_libraries(VulkanSceneRenderer_renderer PRIVATE ws2_32)
+endif()
 
 # Standalone compute reference; the frame renderer retains its interactive path.
 add_library(VulkanSceneRenderer_openvdb_transport_reference

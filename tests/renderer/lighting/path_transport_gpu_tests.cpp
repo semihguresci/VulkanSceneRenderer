@@ -361,8 +361,22 @@ glm::dvec3 meanWeights(std::span<const Result> values) {
   for(const auto& value:values) sum+=glm::dvec3(value.weightValid);
   return sum/double(values.size());
 }
-// Independent double-precision BRDF reference. Use the original NDF and
-// Smith-lambda equations, rather than the shader's rearranged visibility form.
+glm::dvec2 referenceGgxAlpha(const Query& q) {
+  const double alpha=double(q.diffuseRoughness.w)*q.diffuseRoughness.w;
+  const double strength=q.footprintC.w;
+  return {alpha+(1-alpha)*strength*strength,alpha};
+}
+double referenceGgxNdf(glm::dvec3 h,glm::dvec2 alpha) {
+  const auto slope=glm::dvec2(h)/alpha;
+  const double denominator=glm::dot(slope,slope)+h.z*h.z;
+  return 1/(pi*alpha.x*alpha.y*denominator*denominator);
+}
+double referenceGgxLambda(glm::dvec3 w,glm::dvec2 alpha) {
+  const auto scaled=glm::dvec2(w)*alpha/w.z;
+  return .5*(std::sqrt(1+glm::dot(scaled,scaled))-1);
+}
+// Independent double-precision BRDF reference uses the original elliptical
+// NDF and Smith-lambda equations.
 glm::dvec3 reference(const Query& q,glm::dvec3 v,glm::dvec3 l) {
   if(v.z<=0 || l.z<=0) return {};
   const auto h=glm::normalize(v+l);
@@ -370,11 +384,9 @@ glm::dvec3 reference(const Query& q,glm::dvec3 v,glm::dvec3 l) {
   const auto F=(f0+(glm::dvec3(1)-f0)*std::pow(1-glm::dot(v,h),5))*double(q.f0Scale.w);
   auto result=(glm::dvec3(1)-F)*glm::dvec3(q.diffuseRoughness)/pi;
   if(q.diffuseRoughness.w>0 && q.f0Scale.w>0) {
-    const double alpha=double(q.diffuseRoughness.w)*q.diffuseRoughness.w;
-    const double denominator=(h.x*h.x+h.y*h.y)+alpha*alpha*h.z*h.z;
-    const double D=alpha*alpha/(pi*denominator*denominator);
-    const auto lambda=[&](glm::dvec3 w){return .5*(std::sqrt(1+alpha*alpha*(w.x*w.x+w.y*w.y)/(w.z*w.z))-1);};
-    result+=F*(D/(4*v.z*l.z*(1+lambda(v)+lambda(l))));
+    const auto alpha=referenceGgxAlpha(q);
+    const double masking=1+referenceGgxLambda(v,alpha)+referenceGgxLambda(l,alpha);
+    result+=F*(referenceGgxNdf(h,alpha)/(4*v.z*l.z*masking));
   }
   return result;
 }
@@ -392,11 +404,8 @@ double referencePdf(const Query& q,glm::dvec3 v,glm::dvec3 l) {
   double result=(1-p)*l.z/pi;
   if(q.diffuseRoughness.w>0 && q.f0Scale.w>0) {
     const auto h=glm::normalize(v+l);
-    const double alpha=double(q.diffuseRoughness.w)*q.diffuseRoughness.w;
-    const double denominator=(h.x*h.x+h.y*h.y)+alpha*alpha*h.z*h.z;
-    const double D=alpha*alpha/(pi*denominator*denominator);
-    const double lambda=.5*(std::sqrt(1+alpha*alpha*(v.x*v.x+v.y*v.y)/(v.z*v.z))-1);
-    result+=p*(D/(4*v.z*(1+lambda)));
+    const auto alpha=referenceGgxAlpha(q);
+    result+=p*(referenceGgxNdf(h,alpha)/(4*v.z*(1+referenceGgxLambda(v,alpha))));
   }
   return result;
 }
@@ -475,6 +484,33 @@ TEST_F(PathTransportGpu, GgxMixtureSamplesUseCompleteIndependentMixturePdfAndWei
     for(int c=0;c<3;++c) EXPECT_NEAR(r.weightValid[c],weight[c],2e-5+std::abs(weight[c])*5e-4) << i;
   }
   EXPECT_GT(nulls,10u);EXPECT_LT(nulls,input.size()/3);
+}
+TEST_F(PathTransportGpu, AnisotropicGgxMatchesIndependentPdfAndMisIntegral) {
+  Query q;
+  q.diffuseRoughness = {.2f, .5f, .35f, .55f};
+  q.f0Scale = {.09f, .18f, .25f, .9f};
+  q.view = glm::vec4(glm::normalize(glm::vec3(.7f, .2f, .5f)), 0);
+  q.footprintC.w = .85f;
+  const auto output = run(sampling(q, 65536, 2));
+  const auto view = glm::normalize(glm::dvec3(q.view));
+  size_t nulls = 0;
+  for (const auto& result : output) {
+    EXPECT_EQ(result.auxiliary.y, 0);
+    if (result.weightValid.w == 0) {
+      ++nulls;
+      continue;
+    }
+    const auto light = glm::normalize(glm::dvec3(result.directionPdf));
+    const auto expected = reference(q, view, light);
+    const auto expectedPdf = referencePdf(q, view, light);
+    for (int c = 0; c < 3; ++c)
+      EXPECT_NEAR(result.valuePdf[c], expected[c], 2e-6 + expected[c] * 5e-4);
+    EXPECT_NEAR(result.directionPdf.w, expectedPdf, 2e-6 + expectedPdf * 5e-4);
+  }
+  EXPECT_GT(nulls, 100u);
+  const auto mean = meanWeights(output);
+  const auto expected = integrate(q);
+  for (int c = 0; c < 3; ++c) EXPECT_NEAR(mean[c], expected[c], .008);
 }
 TEST_F(PathTransportGpu, RoughWhiteMetalFurnaceMatchesOneMinusLogTwoIncludingNullEvents) {
   Query q;q.diffuseRoughness={0,0,0,1};q.f0Scale={1,1,1,1};
@@ -852,6 +888,43 @@ double thinReferencePdf(const Query& q,glm::dvec3 v,glm::dvec3 l) {
   const double D=alpha*alpha/(pi*denominator*denominator);
   const double lambda=.5*(std::sqrt(1+alpha*alpha*(v.x*v.x+v.y*v.y)/(v.z*v.z))-1);
   return p*D/(4*v.z*(1+lambda));
+}
+TEST_F(PathTransportGpu, DiffuseTransmissionCombinesCosineDensityAndStraightThroughMass) {
+  Query q;
+  q.diffuseRoughness = {.1f, .15f, .25f, 0};
+  q.f0Scale = {0, 0, 0, 0};
+  q.sampleValue = {.3f, .2f, .15f, 0};
+  q.footprintC = {.12f, .28f, .32f, 0};
+  const glm::dvec3 front(q.diffuseRoughness), back(q.footprintC), straight(q.sampleValue);
+  const glm::dvec3 luma(.2126, .7152, .0722);
+  const double total = glm::dot(luma, front + back + straight);
+  const double frontProbability = glm::dot(luma, front) / total;
+  const double backProbability = glm::dot(luma, back) / total;
+  const double straightProbability = glm::dot(luma, straight) / total;
+  size_t frontCount = 0, backCount = 0, straightCount = 0;
+  const auto samples = run(sampling(q, 32768, 10));
+  for (const auto& sample : samples) {
+    ASSERT_EQ(sample.weightValid.w, 1);
+    ASSERT_EQ(sample.auxiliary.y, 0);
+    if (sample.auxiliary.x != 0) {
+      ++straightCount;
+      EXPECT_EQ(glm::vec3(sample.directionPdf), glm::vec3(0, 0, -1));
+      EXPECT_NEAR(sample.directionPdf.w, straightProbability, 3e-7);
+      for (int c = 0; c < 3; ++c) EXPECT_NEAR(sample.weightValid[c], straight[c] / straightProbability, 3e-6);
+    } else {
+      const bool reflected = sample.directionPdf.z > 0;
+      reflected ? ++frontCount : ++backCount;
+      const double probability = reflected ? frontProbability : backProbability;
+      const auto tint = reflected ? front : back;
+      EXPECT_NEAR(sample.directionPdf.w, probability * std::abs(sample.directionPdf.z) / pi, 3e-7);
+      for (int c = 0; c < 3; ++c) EXPECT_NEAR(sample.weightValid[c], tint[c] / probability, 3e-6);
+    }
+  }
+  EXPECT_NEAR(double(frontCount) / samples.size(), frontProbability, .009);
+  EXPECT_NEAR(double(backCount) / samples.size(), backProbability, .009);
+  EXPECT_NEAR(double(straightCount) / samples.size(), straightProbability, .009);
+  const auto mis = meanWeights(run(sampling(q, 65536, 12)));
+  for (int c = 0; c < 3; ++c) EXPECT_NEAR(mis[c], front[c] + back[c] + straight[c], .006);
 }
 TEST_F(PathTransportGpu, ThinReflectionAndTransmissionMatchIndependentDoublePrecisionAndReciprocity) {
   std::vector<Query> input;

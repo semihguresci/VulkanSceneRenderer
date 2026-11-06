@@ -93,13 +93,21 @@ back query uses `(-Ng,-Ns,-V)`; reflected feedback uses base color and
 Material AO attenuates front feedback only. Shaded hits add no extra environment
 sample; misses keep the existing environment path.
 
-Thin-sheet and rough/volume stochastic dielectric continuation rejects active
+DDGI's thin-sheet and rough/volume stochastic dielectric continuation rejects active
 new factors or nonfinite factor/rotation data. This conservative authored-factor
 guard can reject a positive factor even when its texture samples black.
-Unsupported mixtures remain blockers through existing fallback behavior. This
-slice adds no anisotropic dielectric sampling, diffuse continuation PDFs, MIS,
-caustics or full path tracer. Diffuse transmission changes no alpha/coverage,
-picking, ray-candidate acceptance or binary shadow-skip policy.
+Unsupported mixtures remain blockers through existing fallback behavior. Diffuse
+transmission preserves alpha coverage, picking, ray-candidate acceptance and
+binary shadow policy.
+
+## Reference path tracing
+
+The reference tracer samples anisotropic reflection with the visible-normal GGX
+distribution and evaluates diffuse transmission with a cosine-weighted BTDF.
+Both use the filtered texture inputs and the same BSDF probabilities for
+continuation and direct-light MIS. Active diffuse transmission in an authored
+volume and anisotropic reflection on refractive volume interfaces are
+diagnosed. See [reference path tracing](reference-path-tracing.md).
 
 ## Export, animation and validation
 

@@ -50,7 +50,7 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
     uint operation = query.controls.x;
     if (operation == 0u)
     {
-        PtBsdfEvaluation evaluated = PtEvaluateBsdf(bsdf, query.view.xyz, query.light.xyz);
+        PtBsdfEvaluation evaluated = PtEvaluateBsdf(bsdf, query.view.xyz, query.light.xyz, query.footprintC.w);
         result.valuePdf = float4(evaluated.value, evaluated.pdf);
         result.auxiliary.x = PtSpecularProbability(bsdf, query.view.xyz);
         result.auxiliary.z = float(evaluated.valid);
@@ -62,10 +62,10 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
             PtRandom(query.controls.z, query.controls.w, 0u, 1u, query.controls.y),
             PtRandom(query.controls.z, query.controls.w, 0u, 2u, query.controls.y));
         if (operation == 4u) random = query.previousMean.xyz;
-        PtBsdfSample sampled = PtSampleBsdf(bsdf, query.view.xyz, random);
+        PtBsdfSample sampled = PtSampleBsdf(bsdf, query.view.xyz, random, query.footprintC.w);
         result.directionPdf = float4(sampled.direction, sampled.pdf);
         result.weightValid = float4(sampled.weight, float(sampled.valid));
-        PtBsdfEvaluation evaluated = PtEvaluateBsdf(bsdf, query.view.xyz, sampled.direction);
+        PtBsdfEvaluation evaluated = PtEvaluateBsdf(bsdf, query.view.xyz, sampled.direction, query.footprintC.w);
         result.valuePdf = float4(evaluated.value, evaluated.pdf);
         result.auxiliary.x = float(sampled.delta);
         result.auxiliary.y = float(sampled.rejected);
@@ -78,7 +78,7 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
                 PtRandom(query.controls.z, query.controls.w, 0u, 3u, query.controls.y),
                 PtRandom(query.controls.z, query.controls.w, 0u, 4u, query.controls.y));
             float3 lightDirection = PtUniformSphere(lightRandom);
-            PtBsdfEvaluation direct = PtEvaluateBsdf(bsdf, query.view.xyz, lightDirection);
+            PtBsdfEvaluation direct = PtEvaluateBsdf(bsdf, query.view.xyz, lightDirection, query.footprintC.w);
             float lightPdf = 1.0 / (4.0 * PT_PI);
             float3 estimate = direct.value * max(0.0, lightDirection.z) *
                 (PtPowerHeuristic(lightPdf, direct.pdf) / lightPdf);
@@ -127,11 +127,15 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
         thin.reflection = bsdf;
         thin.transmission = query.sampleValue.rgb;
         thin.roughness = query.sampleValue.w;
+        float3 diffuseTransmission = query.footprintC.rgb;
+        float anisotropy = query.footprintC.w;
         if (operation == 9u)
         {
-            PtBsdfEvaluation evaluated = PtEvaluateThinBsdf(thin, query.view.xyz, query.light.xyz);
+            PtBsdfEvaluation evaluated = PtEvaluateDiffuseTransmissionBsdf(thin, diffuseTransmission,
+                query.view.xyz, query.light.xyz, anisotropy);
             result.valuePdf = float4(evaluated.value, evaluated.pdf);
-            result.auxiliary.x = PtThinProbability(thin, query.view.xyz);
+            result.auxiliary.x = (1.0 - PtDiffuseTransmissionProbability(thin, diffuseTransmission, query.view.xyz)) *
+                PtThinProbability(thin, query.view.xyz);
             result.auxiliary.z = float(evaluated.valid);
         }
         else
@@ -140,8 +144,9 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
                              PtRandom(query.controls.z, query.controls.w, 0u, 1u, query.controls.y),
                              PtRandom(query.controls.z, query.controls.w, 0u, 2u, query.controls.y));
             if (operation == 11u) u = query.previousMean.xyz;
-            PtBsdfSample sampled = PtSampleThinBsdf(thin, query.view.xyz, u);
-            PtBsdfEvaluation evaluated = PtEvaluateThinBsdf(thin, query.view.xyz, sampled.direction);
+            PtBsdfSample sampled = PtSampleDiffuseTransmissionBsdf(thin, diffuseTransmission, query.view.xyz, u, anisotropy);
+            PtBsdfEvaluation evaluated = PtEvaluateDiffuseTransmissionBsdf(thin, diffuseTransmission,
+                query.view.xyz, sampled.direction, anisotropy);
             result.valuePdf = float4(evaluated.value, evaluated.pdf);
             result.directionPdf = float4(sampled.direction, sampled.pdf);
             result.weightValid = float4(sampled.weight, float(sampled.valid));
@@ -151,7 +156,8 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
                 float3 light = PtUniformSphere(float2(
                     PtRandom(query.controls.z, query.controls.w, 0u, 3u, query.controls.y),
                     PtRandom(query.controls.z, query.controls.w, 0u, 4u, query.controls.y)));
-                PtBsdfEvaluation direct = PtEvaluateThinBsdf(thin, query.view.xyz, light);
+                PtBsdfEvaluation direct = PtEvaluateDiffuseTransmissionBsdf(thin, diffuseTransmission,
+                    query.view.xyz, light, anisotropy);
                 float lightPdf = 1.0 / (4.0 * PT_PI);
                 float3 estimate = direct.value * abs(light.z) * PtPowerHeuristic(lightPdf, direct.pdf) / lightPdf;
                 if (sampled.valid != 0u)

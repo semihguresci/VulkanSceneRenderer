@@ -22,6 +22,9 @@ Controls; interactive errors leave the application running.
 Both raster renderers and the progressive path-tracing viewport use the same
 display and capture path. Path-traced EXR metadata identifies its source as
 `path-trace-mean` and includes sample and diagnostic counts.
+An analytic shadow matte exports as `path-trace-shadow-matte` with
+`linear-mask` values for compositing. The sidecar records ground mode and
+the effective firefly clamp.
 
 Command-line examples:
 

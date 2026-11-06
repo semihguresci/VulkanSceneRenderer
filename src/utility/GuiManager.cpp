@@ -13,9 +13,11 @@
 #include "Container/renderer/core/RendererTelemetry.h"
 #include "Container/renderer/effects/DisplayGradePreset.h"
 #include "Container/renderer/lighting/SkyPreset.h"
+#include "Container/renderer/pathtracing/ReferenceFireflyClamp.h"
 #include "Container/renderer/scene/ScenePrimitives.h"
 #include "Container/utility/BcfViewpoint.h"
 #include "Container/utility/TransformScale.h"
+#include <glm/gtc/type_ptr.hpp>
 
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -3646,6 +3648,9 @@ GuiManager::consumeRenderEngineChange() {
   pendingRenderEngineChange_.reset();
   return requested;
 }
+bool GuiManager::consumeReferenceAutofocusRequest() {
+  return std::exchange(referenceAutofocusRequested_, false);
+}
 
 container::renderer::RenderTechniqueId GuiManager::activeRenderEngine() const {
   return activeRenderEngine_;
@@ -4749,7 +4754,31 @@ void GuiManager::drawSceneControls(
       const bool focusChanged = ImGui::DragFloat("Focus distance", &lens.focusDistance,
           0.05f, Lens::minFocusDistance, Lens::maxFocusDistance, "%.5g", ImGuiSliderFlags_AlwaysClamp);
       if ((apertureChanged || focusChanged) && lens.valid()) referencePathLens_ = lens;
+      if (ImGui::Button("Autofocus at viewport center")) referenceAutofocusRequested_ = true;
       ImGui::TextDisabled("Perspective cameras only. Zero radius uses the pinhole camera.");
+      ImGui::TreePop();
+    }
+    auto fireflyClamp = referenceFireflyClamp_;
+    if (ImGui::InputFloat("Firefly clamp", &fireflyClamp, 0.0f, 0.0f, "%.5g",
+            ImGuiInputTextFlags_EnterReturnsTrue) && container::renderer::validReferenceFireflyClamp(fireflyClamp))
+      referenceFireflyClamp_ = fireflyClamp;
+    ShowItemTooltip("Limits the peak RGB value of each sample. Zero keeps the unclamped estimator.");
+    if (ImGui::TreeNode("Reference ground")) {
+      using Ground = container::renderer::ReferenceGroundMode;
+      auto ground = referenceGround_;
+      int mode = static_cast<int>(ground.mode);
+      bool changed = ImGui::Combo("Ground mode", &mode, "Off\0Surface\0Shadow matte\0");
+      ground.mode = static_cast<Ground>(mode);
+      if (ground.mode != Ground::Off)
+        changed |= ImGui::DragFloat("Ground height (Y)", &ground.height, 0.05f);
+      if (ground.mode == Ground::Surface) {
+        changed |= ImGui::ColorEdit3("Ground base color (linear)", glm::value_ptr(ground.color));
+        changed |= ImGui::SliderFloat("Ground metallic", &ground.metallic, 0.0f, 1.0f);
+        changed |= ImGui::SliderFloat("Ground roughness", &ground.roughness, 0.0f, 1.0f);
+      }
+      if (ground.mode == Ground::ShadowMatte)
+        ImGui::TextDisabled("Use EXR export for the linear shadow matte.");
+      if (changed && ground.valid()) referenceGround_ = ground;
       ImGui::TreePop();
     }
   }

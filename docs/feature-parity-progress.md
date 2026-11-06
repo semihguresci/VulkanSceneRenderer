@@ -3380,3 +3380,52 @@ same sample counts, including after an environment-triggered accumulation
 reset. The capture evidence is under `out/feature-parity/ddgi-nested-stage/native`,
 `out/feature-parity/reference-thin-lens-final`, and
 `out/feature-parity/reference-adaptive-series-acceptance`.
+
+### 2026-11-06 Reference controls, linked assets, and renderer MCP
+
+- [#117](https://github.com/semihguresci/VulkanSceneRenderer/issues/117) adds
+  one-shot perspective autofocus, a configurable sample firefly clamp, and
+  analytic ground. Shadow-matte mode exports a linear direct-light mask.
+- [#47](https://github.com/semihguresci/VulkanSceneRenderer/issues/47) and
+  [#92](https://github.com/semihguresci/VulkanSceneRenderer/issues/92) add
+  anisotropic GGX and Lambertian diffuse transmission to reference transport.
+  Other unsupported lobes and volume combinations remain diagnosed.
+- [#102](https://github.com/semihguresci/VulkanSceneRenderer/issues/102) adds
+  opt-in URI-based linked assets and file aliases for static sources. Placements
+  share geometry and retain independent picking identities. Scene export
+  flattens links into portable assets. Re-externalization and linked-source
+  editing semantics remain open.
+- [#114](https://github.com/semihguresci/VulkanSceneRenderer/issues/114) adds
+  an authenticated loopback endpoint with validated lighting settings, bounded
+  GPU measurements, redacted recent events, shader reload, model/HDR loading,
+  and capture.
+
+See [reference path tracing](reference-path-tracing.md),
+[glTF capabilities](gltf-capabilities.md), and [renderer MCP](renderer-mcp.md)
+for controls and supported profiles.
+
+The focused build passed 469 CPU and 122 Vulkan cases with zero skips, and
+validated 117 SPIR-V modules. Three authored glTF EXRs verify anisotropic
+highlight rotation and independent alpha-strength and sRGB-color sampling
+for diffuse transmission. Evidence is in
+`out/feature-parity/reference-extended-lobes/native/results.json` and
+`out/build/feature-parity/test_results`.
+
+The native lens and clamp regression verified center focus, miss preservation,
+and the exact clamped EXR values. The linked-assets regression verified two
+independent picks over one shared primitive. The forward and deferred portable
+GLB captures matched the ordinary glTF controls pixel for pixel after the linked
+inputs were moved. Evidence is in
+`out/feature-parity/reference-autofocus-clamp-acceptance` and
+`out/feature-parity/gltf-linked-assets-native-final/results.json`.
+
+Six native ground captures validate the surface color and shadow, matte
+response to plane height and light direction, an unlit zero mask, and linear
+EXR metadata with radiance clamping disabled. Evidence is in
+`out/feature-parity/reference-ground-final`.
+
+An external MCP client loaded a self-contained fixture and HDR, changed lighting,
+reloaded Slang, read a redacted log event, created a PNG and sidecar, and measured
+six distinct retired Lighting recordings. It also verified cancellation and
+rejection of external model resources and capture overwrites. Evidence is in
+`out/feature-parity/mcp-native-final/results.json`.

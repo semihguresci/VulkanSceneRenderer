@@ -29,6 +29,7 @@ target_link_libraries(VulkanSceneRenderer_openvdb PUBLIC
 add_library(VulkanSceneRenderer_geometry
     DotBimLoader.cpp
     GltfCapabilities.cpp
+    GltfLinkedAssets.cpp
     GltfXmpMetadata.cpp
     GltfSky.cpp
     GltfAccessor.cpp
