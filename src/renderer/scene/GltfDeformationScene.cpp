@@ -349,7 +349,7 @@ GltfDeformationSceneUpdate GltfDeformationScene::update(const scene::SceneGraph&
   for (size_t i = 0; i < graph.nodeCount(); ++i) {
     const uint32_t nodeIndex = narrow(i);
     const auto& node = *graph.getNode(nodeIndex);
-    if (!node.renderable || node.primitiveIndex == invalid) continue;
+    if (!node.renderable || node.primitiveIndex == invalid || !graph.isNodeActive(nodeIndex)) continue;
     if (node.primitiveIndex >= state.sourceRanges.size()) fail("runtime primitive index is outside the source");
     const uint32_t primitiveIndex = node.primitiveIndex;
     const auto& sourceRange = state.sourceRanges[primitiveIndex];

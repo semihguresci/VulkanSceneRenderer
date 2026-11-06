@@ -1788,6 +1788,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
 
   phaseStart = TelemetryClock::now();
   presentSceneControls();
+  processGltfSceneRequest();
   processPendingDdgiPreset();
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::Gui,
@@ -2201,6 +2202,7 @@ void RendererFrontend::applyTemporalCapture(
   FrameConcurrencyPolicy::serializedGpuResources("capture scene mutation")
       .waitBeforeAcquire(*subs_.frameSyncManager, frame_.currentFrame);
   const auto &event = sample.event;
+  if (event.gltfScene) selectGltfScene(*event.gltfScene);
   queueCaptureLightEvent(event);
   if (!event.sceneHistory.empty()) captureHistoryRequest_ = event.sceneHistory == "redo";
   if (event.nodeEdit)
@@ -2338,7 +2340,7 @@ void RendererFrontend::applyTemporalCapture(
   if (!sample.objectName.empty()) {
     bool found = false;
     for (uint32_t node = 0; node < sceneGraph_.nodeCount(); ++node)
-      if (sceneGraph_.getNode(node)->name == sample.objectName) {
+      if (sceneGraph_.isNodeActive(node) && sceneGraph_.getNode(node)->name == sample.objectName) {
         objectNode = node;
         found = true;
         break;
@@ -2349,7 +2351,7 @@ void RendererFrontend::applyTemporalCapture(
   if (sample.objectTranslation) {
     const uint32_t nodeIndex = objectNode;
     const auto *node = sceneGraph_.getNode(nodeIndex);
-    if (!node)
+    if (!sceneGraph_.isNodeActive(nodeIndex))
       throw std::invalid_argument("Capture objectNode does not exist");
     if (!captureObjectBase_ || captureObjectNode_ != nodeIndex) {
       captureObjectBase_ = node->localTransform;
@@ -2580,6 +2582,17 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
       const auto scene = size_t(std::max(0, source.defaultScene));
       json["scene"]["gltfScene"] = {{"index", scene}, {"count", source.scenes.size()},
                                    {"name", source.scenes.at(scene).name}};
+      if (sceneGraph_.activeScene()) {
+        auto& view = json["scene"]["gltfScene"];
+        view["graphIdentity"] = sceneGraph_.identity();
+        view["sourceRevision"] = subs_.sceneManager->animationSourceRevision();
+        auto& active = view["activeSourceNodes"] = nlohmann::json::array();
+        for (uint32_t id = 0; id < sceneGraph_.nodeCount(); ++id) {
+          const auto& node = *sceneGraph_.getNode(id);
+          if (node.sourceNodeIndex >= 0 && sceneGraph_.isNodeActive(id))
+            active.push_back(node.sourceNodeIndex);
+        }
+      }
     }
   }
   json["scene"]["selectedMeshNode"] = sceneState_.selectedMeshNode;
@@ -6213,7 +6226,7 @@ void RendererFrontend::fitDdgiDetailToSelection(uint32_t maxProbes, std::string_
   if (!nodeName.empty()) {
     meshNode = bimObject = invalid;
     for (uint32_t node = 0; node < sceneGraph_.nodeCount(); ++node)
-      if (sceneGraph_.getNode(node)->name == nodeName) {
+      if (sceneGraph_.isNodeActive(node) && sceneGraph_.getNode(node)->name == nodeName) {
         if (meshNode != invalid) throw std::invalid_argument("DDGI detail node name is ambiguous");
         meshNode = node;
       }

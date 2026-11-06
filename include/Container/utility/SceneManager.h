@@ -208,6 +208,11 @@ class SceneManager {
   [[nodiscard]] float importScale() const noexcept { return config_.importScale; }
   [[nodiscard]] AuthoredSceneLights evaluateAuthoredSceneLights(
       const SceneGraph* graph, uint32_t editorRoot) const;
+  [[nodiscard]] AuthoredSceneLights evaluateGltfSceneLights(
+      const SceneGraph& graph, uint32_t editorRoot, uint32_t scene) const;
+  [[nodiscard]] ModelBounds evaluateSceneBounds(const SceneGraph& graph) const;
+  void publishSceneSelection(uint32_t scene, const ModelBounds& bounds,
+                             AuthoredSceneLights& lights) noexcept;
   void exchangeAuthoredSceneLights(AuthoredSceneLights&) noexcept;
   [[nodiscard]] tinygltf::Model& animationSource() noexcept { return gltfModel_; }
   [[nodiscard]] const tinygltf::Model& animationSource() const noexcept { return gltfModel_; }
@@ -217,7 +222,7 @@ class SceneManager {
     return graph.nodeCount() != 0 || !gltfModel_.scenes.empty();
   }
   [[nodiscard]] tinygltf::Model buildSceneExport(
-      const SceneGraph& graph, uint32_t editorRoot, std::vector<int32_t>& sourceNodes,
+      const SceneGraph& graph, std::vector<int32_t>& sourceNodes,
       std::vector<AuthoredSceneLights>& inactiveSceneLights,
       const container::geometry::gltf::AnimationLibrary* animation = nullptr) const;
   void publishAnimationChanges(const container::geometry::gltf::AnimationDirtySet& dirty,
@@ -324,7 +329,7 @@ class SceneManager {
   [[nodiscard]] ModelBounds computeModelBounds(
       const container::geometry::Model& model,
       std::span<const container::geometry::Vertex> vertices,
-      std::span<const uint32_t> indices) const;
+      std::span<const uint32_t> indices, const SceneGraph* graph = nullptr) const;
   void allocateDescriptorSets(uint32_t descriptorSetCount);
   void writeDescriptorSetContents(
       VkDescriptorSet descriptorSet,

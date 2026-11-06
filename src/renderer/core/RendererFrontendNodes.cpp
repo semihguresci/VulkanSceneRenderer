@@ -149,6 +149,8 @@ bool RendererFrontend::recordPrimitiveCreation(ScenePrimitiveKind kind) {
   if (!edit->parentIncarnation) return false;
   const std::string name(scenePrimitiveKindLabel(kind));
   edit->node = candidate.createNode(glm::mat4(1), material, true, edit->primitive, name);
+  if (const auto scene = candidate.activeScene())
+    candidate.setSceneMembership(edit->node, std::make_shared<const std::vector<uint32_t>>(1, *scene));
   if (!candidate.setParent(edit->node, edit->root)) return false;
   edit->leaf = *candidate.getNode(edit->node);
   edit->sibling = *candidate.siblingIndex(edit->node);
@@ -288,6 +290,8 @@ bool RendererFrontend::publishNodePlacement(
     const auto parent = desired.parent == Graph::kInvalidNode
                             ? std::nullopt
                             : std::optional(desired.parent);
+    if (parent && !candidate.compatibleSceneParent(node, *parent))
+      throw std::invalid_argument("These nodes belong to different glTF scenes");
     if (!candidate.setParentAt(node, parent, desired.sibling)) return false;
   }
   if (kind == NodeEditKind::Visibility)
@@ -585,7 +589,7 @@ void RendererFrontend::processCaptureNodeEdit() {
   const auto resolve = [this](uint32_t source) {
     for (uint32_t node = 0; node < sceneGraph_.nodeCount(); ++node) {
       const auto& entry = *sceneGraph_.getNode(node);
-      if (entry.sourceNodeIndex >= 0 &&
+      if (sceneGraph_.isNodeActive(node) && entry.sourceNodeIndex >= 0 &&
           uint32_t(entry.sourceNodeIndex) == source)
         return node;
     }
@@ -593,7 +597,7 @@ void RendererFrontend::processCaptureNodeEdit() {
         "Capture node is outside the active glTF scene");
   };
   const auto node = edit->graphNode ? *edit->graphNode : resolve(edit->sourceNode);
-  if (!sceneGraph_.getNode(node))
+  if (!sceneGraph_.isNodeActive(node))
     throw std::invalid_argument("Capture graph node is outside the active scene");
   captureNodeTelemetry_ = node;
   using Operation = container::temporal::CaptureNodeEdit::Operation;

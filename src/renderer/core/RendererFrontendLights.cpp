@@ -88,7 +88,19 @@ void RendererFrontend::ensureSceneEditHistory() {
       lightHistoryAsset_ == asset)
     return;
   editHistory_.clear();
-  if (subs_.guiManager) subs_.guiManager->clearSceneSaveDestination();
+  gltfSceneLightEdits_.clear();
+  gltfImportedLightEdits_.reset();
+  if (subs_.guiManager) {
+    subs_.guiManager->clearSceneSaveDestination();
+    std::vector<std::string> names;
+    if (subs_.sceneManager) {
+      const auto& scenes = subs_.sceneManager->animationSource().scenes;
+      names.reserve(scenes.size());
+      for (size_t i = 0; i < scenes.size(); ++i)
+        names.push_back(std::to_string(i) + "  " + (scenes[i].name.empty() ? "Scene" : scenes[i].name));
+    }
+    subs_.guiManager->setGltfSceneChoices(std::move(names), sceneGraph_.activeScene().value_or(0));
+  }
   nodeGesture_.reset();
   pendingNodeEdits_.clear();
   captureNodeTelemetry_.reset();

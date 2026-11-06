@@ -1038,14 +1038,44 @@ bool SceneManager::isDefaultTestSceneActive() const {
 }
 
 namespace {
+void validateMultiSceneBudget(const tinygltf::Model& source, size_t maxActiveObjects) {
+  if (source.scenes.size() <= 1) return;
+  constexpr size_t maxAuthoringNodes = 524288;
+  constexpr size_t maxAuthoringObjects = 262144;
+  if (source.nodes.size() > maxAuthoringNodes)
+    throw std::length_error("The glTF authoring graph exceeds the node limit");
+  const auto primitives = [&source](const tinygltf::Node& node) {
+    return node.mesh < 0 ? size_t{0} : source.meshes.at(size_t(node.mesh)).primitives.size();
+  };
+  size_t objects = 0;
+  const auto maxObjects = std::min(maxAuthoringObjects, maxAuthoringNodes - source.nodes.size());
+  for (const auto& node : source.nodes) {
+    const auto count = primitives(node);
+    if (count > maxObjects - objects)
+      throw std::length_error("The glTF authoring graph exceeds the object limit");
+    objects += count;
+  }
+  auto pending = activeSceneRootNodes(source);
+  size_t active = 0;
+  while (!pending.empty()) {
+    const auto id = pending.back();
+    pending.pop_back();
+    const auto& node = source.nodes.at(size_t(id));
+    const auto count = primitives(node);
+    if (count > maxActiveObjects - active)
+      throw std::length_error("The selected glTF scene exceeds the object limit");
+    active += count;
+    pending.insert(pending.end(), node.children.begin(), node.children.end());
+  }
+}
+
 template <class ResolveMaterial>
 void populateSourceGraph(SceneGraph& sceneGraph, const tinygltf::Model& source,
     std::span<const container::geometry::PrimitiveRange> ranges, float importScale,
-    uint32_t defaultMaterial, ResolveMaterial resolveMaterial,
-    std::optional<std::span<const int>> rootsOverride = std::nullopt) {
+    uint32_t defaultMaterial, ResolveMaterial resolveMaterial) {
   sceneGraph = SceneGraph{};
 
-  if (ranges.empty() && source.nodes.empty()) {
+  if (ranges.empty() && source.nodes.empty() && source.scenes.size() <= 1) {
     return;
   }
 
@@ -1081,61 +1111,101 @@ void populateSourceGraph(SceneGraph& sceneGraph, const tinygltf::Model& source,
         SceneGraph::kInvalidNode, "Import Scale");
   }
 
+  const bool multiScene = source.scenes.size() > 1;
+  using Membership = std::vector<uint32_t>;
+  std::vector<int> roots;
+  std::vector<std::shared_ptr<Membership>> rootMembership;
+  if (multiScene) {
+    rootMembership.resize(source.nodes.size());
+    std::vector<bool> hasParent(source.nodes.size());
+    for (const auto& node : source.nodes)
+      for (const int child : node.children) hasParent.at(size_t(child)) = true;
+    for (size_t node = 0; node < source.nodes.size(); ++node)
+      if (!hasParent[node]) roots.push_back(static_cast<int>(node));
+    for (uint32_t scene = 0; scene < source.scenes.size(); ++scene) {
+      for (const auto root : source.scenes[scene].nodes) {
+        auto& membership = rootMembership.at(size_t(root));
+        if (!membership) membership = std::make_shared<Membership>();
+        membership->push_back(scene);
+      }
+    }
+  } else {
+    roots = activeSceneRootNodes(source);
+  }
+
   const auto authoredFlags = container::geometry::gltf::ParseGltfNodeFlags(source);
-  std::function<void(int, std::optional<uint32_t>)> appendNode =
-      [&](int gltfNodeIndex, std::optional<uint32_t> parentNode) {
-        if (gltfNodeIndex < 0 ||
-            gltfNodeIndex >= static_cast<int>(source.nodes.size())) {
-          return;
-        }
-
-        const auto& gltfNode = source.nodes[gltfNodeIndex];
-        const std::string nodeName =
-            gltfNode.name.empty()
-                ? "glTF Node " + std::to_string(gltfNodeIndex)
-                : gltfNode.name;
-        const uint32_t graphNode = sceneGraph.createNode(
-            nodeLocalTransform(gltfNode), defaultMaterial, false,
-            SceneGraph::kInvalidNode, nodeName);
-        sceneGraph.getNode(graphNode)->sourceNodeIndex = gltfNodeIndex;
-        sceneGraph.setVisible(graphNode, authoredFlags.nodes[size_t(gltfNodeIndex)].visible);
-        sceneGraph.setParent(graphNode, parentNode);
-
-        if (gltfNode.mesh >= 0 &&
-            gltfNode.mesh < static_cast<int>(source.meshes.size())) {
-          const auto& mesh = source.meshes[gltfNode.mesh];
-          const uint32_t basePrimitiveIndex = meshPrimitiveBase[gltfNode.mesh];
-
-          for (size_t primitiveOffsetInMesh = 0;
-               primitiveOffsetInMesh < mesh.primitives.size();
-               ++primitiveOffsetInMesh) {
-            const uint32_t primitiveIndex =
-                basePrimitiveIndex + static_cast<uint32_t>(primitiveOffsetInMesh);
-            if (primitiveIndex >= ranges.size()) {
-              continue;
-            }
-
-            const auto& primitive = ranges[primitiveIndex];
-            const uint32_t primitiveNode = sceneGraph.createNode(
-                glm::mat4(1.0f),
-                resolveMaterial(primitive.materialIndex), true,
-                primitiveIndex,
-                "Primitive " + std::to_string(primitiveIndex));
-            sceneGraph.getNode(primitiveNode)->meshOwnerGraphNode = graphNode;
-            sceneGraph.setParent(primitiveNode, graphNode);
-          }
-        }
-
-        for (int childIndex : gltfNode.children) {
-          appendNode(childIndex, graphNode);
-        }
-      };
-
-  const auto selected = rootsOverride ? std::vector<int>{} : activeSceneRootNodes(source);
-  for (const int root : rootsOverride.value_or(std::span<const int>(selected)))
-    appendNode(root, importRootNode);
-
+  const auto unassigned = std::make_shared<const Membership>();
+  struct Work {
+    int sourceNode;
+    std::optional<uint32_t> parent;
+    std::shared_ptr<const Membership> membership;
+  };
+  std::vector<Work> pending;
+  for (auto root = roots.rbegin(); root != roots.rend(); ++root) {
+    std::shared_ptr<const Membership> membership;
+    if (multiScene)
+      membership = rootMembership[size_t(*root)] ? rootMembership[size_t(*root)] : unassigned;
+    pending.push_back({*root, importRootNode, std::move(membership)});
+  }
+  while (!pending.empty()) {
+    const auto work = std::move(pending.back());
+    pending.pop_back();
+    const auto& node = source.nodes.at(size_t(work.sourceNode));
+    const auto graphNode = sceneGraph.createNode(nodeLocalTransform(node), defaultMaterial,
+        false, SceneGraph::kInvalidNode,
+        node.name.empty() ? "glTF Node " + std::to_string(work.sourceNode) : node.name);
+    sceneGraph.getNode(graphNode)->sourceNodeIndex = work.sourceNode;
+    sceneGraph.setVisible(graphNode, authoredFlags.nodes[size_t(work.sourceNode)].visible);
+    if (work.membership) sceneGraph.setSceneMembership(graphNode, work.membership);
+    if (work.parent) sceneGraph.setParent(graphNode, work.parent);
+    if (node.mesh >= 0 && size_t(node.mesh) < source.meshes.size()) {
+      const auto& mesh = source.meshes[size_t(node.mesh)];
+      const auto base = meshPrimitiveBase[size_t(node.mesh)];
+      for (uint32_t offset = 0; offset < mesh.primitives.size(); ++offset) {
+        const auto primitive = base + offset;
+        if (primitive >= ranges.size()) continue;
+        const auto meshNode = sceneGraph.createNode(glm::mat4(1.0f),
+            resolveMaterial(ranges[primitive].materialIndex), true, primitive,
+            "Primitive " + std::to_string(primitive));
+        sceneGraph.getNode(meshNode)->meshOwnerGraphNode = graphNode;
+        if (work.membership) sceneGraph.setSceneMembership(meshNode, work.membership);
+        sceneGraph.setParent(meshNode, graphNode);
+      }
+    }
+    for (auto child = node.children.rbegin(); child != node.children.rend(); ++child)
+      pending.push_back({*child, graphNode, work.membership});
+  }
+  if (multiScene) sceneGraph.setActiveScene(uint32_t(std::max(0, source.defaultScene)));
   sceneGraph.updateWorldTransforms();
+}
+
+std::vector<std::vector<uint32_t>> sceneRootsForGraph(
+    const SceneGraph& graph, const tinygltf::Model& source) {
+  std::vector<std::vector<uint32_t>> result(source.scenes.size());
+  std::vector<uint32_t> authored(source.nodes.size(), SceneGraph::kInvalidNode);
+  std::vector<uint32_t> detached;
+  for (uint32_t id = 0; id < graph.nodeCount(); ++id) {
+    const auto& node = *graph.getNode(id);
+    if (!node.sceneMembership || node.sceneMembership->empty()) continue;
+    const auto* parent = graph.getNode(node.parent);
+    if (parent && parent->sceneMembership) continue;
+    detached.push_back(id);
+    if (node.sourceNodeIndex >= 0) authored.at(size_t(node.sourceNodeIndex)) = id;
+  }
+  std::vector<bool> authoredRoot(graph.nodeCount());
+  for (size_t scene = 0; scene < source.scenes.size(); ++scene) {
+    for (const auto sourceRoot : source.scenes[scene].nodes) {
+      const auto node = authored.at(size_t(sourceRoot));
+      if (node == SceneGraph::kInvalidNode) continue;
+      result[scene].push_back(node);
+      authoredRoot[node] = true;
+    }
+  }
+  for (const auto id : detached) {
+    if (authoredRoot[id]) continue;
+    for (const auto scene : *graph.getNode(id)->sceneMembership) result.at(scene).push_back(id);
+  }
+  return result;
 }
 
 std::unique_ptr<container::renderer::GltfDeformationScene> prepareDeformation(
@@ -1207,7 +1277,7 @@ void SceneManager::exchangeRuntimeMeshChange(PreparedRuntimeMeshChange& next) no
 }
 
 tinygltf::Model SceneManager::buildSceneExport(
-    const SceneGraph& graph, uint32_t editorRoot, std::vector<int32_t>& sourceNodes,
+    const SceneGraph& graph, std::vector<int32_t>& sourceNodes,
     std::vector<AuthoredSceneLights>& inactiveSceneLights,
     const container::geometry::gltf::AnimationLibrary* animation) const {
   namespace gltf = container::geometry::gltf;
@@ -1228,77 +1298,11 @@ tinygltf::Model SceneManager::buildSceneExport(
   inactiveSceneLights.clear();
   inactiveSceneLights.resize(std::max(size_t{1}, source.scenes.size()));
   int defaultSceneIndex = 0;
-  if (source.scenes.size() > 1) {
-    if (source.defaultScene >= 0 && size_t(source.defaultScene) < source.scenes.size())
-      defaultSceneIndex = source.defaultScene;
-    sceneRoots.resize(source.scenes.size());
-    auto& activeRoots = sceneRoots[size_t(defaultSceneIndex)];
-    const auto appendActiveRoot = [&](auto&& self, uint32_t index) -> void {
-      const auto& node = *graph.getNode(index);
-      if (index == editorRoot || (node.sourceNodeIndex < 0 && !node.renderable &&
-                                 node.name == "Import Scale")) {
-        for (auto child : node.children) self(self, child);
-      } else {
-        activeRoots.push_back(index);
-      }
-    };
-    for (auto root : graph.rootNodes()) appendActiveRoot(appendActiveRoot, root);
-
-    std::vector<uint32_t> authored(source.nodes.size(), SceneGraph::kInvalidNode);
-    for (uint32_t node = 0; node < graph.nodeCount(); ++node) {
-      const auto sourceNode = graph.getNode(node)->sourceNodeIndex;
-      if (sourceNode >= 0) authored[size_t(sourceNode)] = node;
-    }
-    const auto active = authored;
-    if (std::ranges::find(authored, SceneGraph::kInvalidNode) != authored.end()) {
-      std::vector<bool> hasParent(source.nodes.size());
-      for (const auto& node : source.nodes)
-        for (int child : node.children) hasParent.at(size_t(child)) = true;
-      std::vector<int> roots;
-      for (size_t node = 0; node < hasParent.size(); ++node)
-        if (!hasParent[node]) roots.push_back(static_cast<int>(node));
-
-      SceneGraph original;
-      populateSourceGraph(original, source, primitiveRanges(), config_.importScale,
-          defaultMaterialIndex_, [this](int32_t material) { return resolveLoadedMaterialIndex(material); },
-          std::span<const int>(roots));
-      std::vector<uint32_t> mapping(original.nodeCount(), SceneGraph::kInvalidNode);
-      for (uint32_t id = 0; id < original.nodeCount(); ++id) {
-        const auto& node = *original.getNode(id);
-        const auto* parent = original.getNode(node.parent);
-        if (node.sourceNodeIndex >= 0 && active[size_t(node.sourceNodeIndex)] != SceneGraph::kInvalidNode) {
-          if (parent && parent->sourceNodeIndex >= 0 &&
-              active[size_t(parent->sourceNodeIndex)] == SceneGraph::kInvalidNode)
-            throw std::runtime_error("Save cannot reconcile a shared scene root with an inactive source parent");
-          mapping[id] = active[size_t(node.sourceNodeIndex)];
-          continue;
-        }
-        if (node.renderable && parent && parent->sourceNodeIndex >= 0 &&
-            active[size_t(parent->sourceNodeIndex)] != SceneGraph::kInvalidNode)
-          continue; // Its editable mesh child is already in the live graph.
-        const auto index = detached.createNode(node.localTransform, node.materialIndex,
-                                                node.renderable, node.primitiveIndex, node.name);
-        mapping[id] = index;
-        auto& created = *detached.getNode(index);
-        created.sourceNodeIndex = node.sourceNodeIndex;
-        if (node.meshOwnerGraphNode != SceneGraph::kInvalidNode)
-          created.meshOwnerGraphNode = mapping[node.meshOwnerGraphNode];
-        detached.setVisible(index, node.visible);
-        if (parent) detached.setParent(index, mapping[node.parent]);
-        if (node.sourceNodeIndex >= 0) authored[size_t(node.sourceNodeIndex)] = index;
-      }
-    }
-    detached.updateWorldTransforms();
-    for (size_t scene = 0; scene < source.scenes.size(); ++scene) {
+  if (graph.activeScene()) {
+    defaultSceneIndex = int(*graph.activeScene());
+    sceneRoots = sceneRootsForGraph(graph, source);
+    for (size_t scene = 0; scene < sceneRoots.size(); ++scene) {
       if (scene == size_t(defaultSceneIndex)) continue;
-      for (const auto root : source.scenes[scene].nodes) {
-        const auto node = authored.at(size_t(root));
-        if (node == SceneGraph::kInvalidNode)
-          throw std::runtime_error("Save cannot resolve an inactive scene root");
-        sceneRoots[scene].push_back(node);
-      }
-      // Exported inactive placements already contain the editor/import prefix.
-      // Evaluate in world space so both shared and detached roots match it.
       inactiveSceneLights[scene] = evaluateAuthoredSceneLights(
           &detached, SceneGraph::kInvalidNode, std::span<const uint32_t>(sceneRoots[scene]));
     }
@@ -1390,6 +1394,7 @@ bool SceneManager::reloadModel(
   std::unique_ptr<container::renderer::GltfDeformationScene> incomingDeformation;
   if(prepared) {
     try {
+      validateMultiSceneBudget(prepared->gltfModel, config_.maxSceneObjects);
       incomingAnimation = prepareAnimationPlayback(prepared->gltfModel, path);
       incomingDeformation = prepareDeformation(
           *prepared, sanitizeImportScale(importScale), deformationVertexLimit());
@@ -2158,6 +2163,7 @@ void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
                                       " is outside the asset's " + std::to_string(count) + " scenes");
         if (!result.gltfModel.scenes.empty()) result.gltfModel.defaultScene = requestedScene;
       }
+      validateMultiSceneBudget(result.gltfModel, config_.maxSceneObjects);
       validateGltfSamplerPolicies(result.gltfModel,false);
       if (preparedAnimation) pendingAnimation_ = std::move(*preparedAnimation);
       else pendingAnimation_ = prepareAnimationPlayback(result.gltfModel, config_.modelPath);
@@ -2330,6 +2336,23 @@ AuthoredSceneLights SceneManager::evaluateAuthoredSceneLights(
   return evaluateAuthoredSceneLights(graph, editorRoot, std::nullopt);
 }
 
+AuthoredSceneLights SceneManager::evaluateGltfSceneLights(
+    const SceneGraph& graph, uint32_t editorRoot, uint32_t scene) const {
+  const auto roots = sceneRootsForGraph(graph, gltfModel_);
+  return evaluateAuthoredSceneLights(&graph, editorRoot, std::span<const uint32_t>(roots.at(scene)));
+}
+
+ModelBounds SceneManager::evaluateSceneBounds(const SceneGraph& graph) const {
+  return computeModelBounds(model_, vertices_, indices_, &graph);
+}
+
+void SceneManager::publishSceneSelection(uint32_t scene, const ModelBounds& bounds,
+                                         AuthoredSceneLights& lights) noexcept {
+  gltfModel_.defaultScene = static_cast<int>(scene);
+  modelBounds_ = bounds;
+  exchangeAuthoredSceneLights(lights);
+}
+
 AuthoredSceneLights SceneManager::evaluateAuthoredSceneLights(
     const SceneGraph* graph, uint32_t editorRoot,
     std::optional<std::span<const uint32_t>> sceneRoots) const {
@@ -2443,15 +2466,25 @@ AuthoredSceneLights SceneManager::evaluateAuthoredSceneLights(
     }
     const auto roots = sceneRoots.value_or(graph->rootNodes());
     for (auto root = roots.rbegin(); root != roots.rend(); ++root) {
-      const auto* parent = sceneRoots ? graph->getNode(graph->getNode(*root)->parent) : nullptr;
-      pending.push_back({*root, parent ? parent->worldTransform :
-          *root == editorRoot ? glm::mat4(1.0f) : detachedRootBasis});
+      auto basis = *root == editorRoot ? glm::mat4(1.0f) : detachedRootBasis;
+      if (sceneRoots) {
+        std::vector<const SceneNode*> ancestors;
+        auto id = graph->getNode(*root)->parent;
+        while (const auto* parent = graph->getNode(id)) {
+          if (id == editorRoot) { basis = glm::mat4(1.0f); break; }
+          ancestors.push_back(parent);
+          id = parent->parent;
+        }
+        for (auto parent = ancestors.rbegin(); parent != ancestors.rend(); ++parent)
+          basis *= (*parent)->localTransform;
+      }
+      pending.push_back({*root, basis});
     }
     while (!pending.empty()) {
       const auto work = pending.back();
       pending.pop_back();
       const auto* node = graph->getNode(work.node);
-      if (!node) continue;
+      if (!node || (!sceneRoots && !graph->isNodeActive(work.node))) continue;
       const auto transform = work.node == editorRoot ? work.parent : work.parent * node->localTransform;
       if (node->sourceNodeIndex >= 0 && size_t(node->sourceNodeIndex) < gltfModel_.nodes.size())
         appendLight(node->sourceNodeIndex, transform);
@@ -2705,11 +2738,11 @@ void SceneManager::updateModelBounds() {
 ModelBounds SceneManager::computeModelBounds(
     const container::geometry::Model& model,
     std::span<const container::geometry::Vertex> vertices,
-    std::span<const uint32_t> indices) const {
+    std::span<const uint32_t> indices, const SceneGraph* graph) const {
   if (vertices.empty()) return {};
 
   auto forEachRenderedPoint =
-      [this, &model, vertices, indices](const std::function<void(const glm::vec3&)>& visit) {
+      [this, &model, vertices, indices, graph](const std::function<void(const glm::vec3&)>& visit) {
         const glm::mat4 rootTransform =
             importScaleTransform(config_.importScale);
 
@@ -2731,6 +2764,15 @@ ModelBounds SceneManager::computeModelBounds(
                             glm::vec4(vertices[vertexIndex].position, 1.0f)));
           }
         };
+
+        if (graph) {
+          for (const auto id : graph->renderableNodes()) {
+            if (!graph->isNodeEffectivelyVisible(id)) continue;
+            const auto& node = *graph->getNode(id);
+            emitPrimitive(node.primitiveIndex, node.worldTransform);
+          }
+          return;
+        }
 
         if (!gltfModel_.scenes.empty() || (!gltfModel_.nodes.empty() && !gltfModel_.meshes.empty())) {
           std::vector<uint32_t> meshPrimitiveBase(gltfModel_.meshes.size(), 0);

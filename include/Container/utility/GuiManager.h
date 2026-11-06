@@ -580,6 +580,15 @@ public:
   [[nodiscard]] std::optional<std::string> consumeSceneSaveRequest() {
     return std::exchange(sceneSaveRequest_, std::nullopt);
   }
+  void setGltfSceneChoices(std::vector<std::string> names, uint32_t selected) {
+    gltfSceneNames_ = std::move(names);
+    gltfSceneIndex_ = selected;
+    gltfSceneRequest_.reset();
+  }
+  void setGltfSceneIndex(uint32_t selected) { gltfSceneIndex_ = selected; }
+  [[nodiscard]] std::optional<uint32_t> consumeGltfSceneRequest() {
+    return std::exchange(gltfSceneRequest_, std::nullopt);
+  }
   void acceptSceneSave(std::string path) {
     savedScenePath_ = std::move(path);
     sceneSavePathInput_ = savedScenePath_;
@@ -974,6 +983,9 @@ private:
   LightEditControls lightEditControls_{};
   EditHistoryRequest editHistoryRequest_{EditHistoryRequest::None};
   std::optional<std::string> sceneSaveRequest_;
+  std::vector<std::string> gltfSceneNames_;
+  std::optional<uint32_t> gltfSceneRequest_;
+  uint32_t gltfSceneIndex_{};
   std::string savedScenePath_;
   std::string sceneSavePathInput_{"scene.glb"};
   bool canUndoEdit_{false}, canRedoEdit_{false};

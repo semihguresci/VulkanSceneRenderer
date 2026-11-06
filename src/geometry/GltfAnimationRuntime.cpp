@@ -71,7 +71,8 @@ std::optional<AnimatedCameraState> EvaluateAnimatedCamera(
   const container::scene::SceneNode* binding = nullptr;
   for (uint32_t i = 0; i < graph.nodeCount(); ++i) {
     const auto* node = graph.getNode(i);
-    if (node && node->sourceNodeIndex >= 0 && static_cast<size_t>(node->sourceNodeIndex) == sourceNode) {
+    if (graph.isNodeActive(i) && node->sourceNodeIndex >= 0 &&
+        static_cast<size_t>(node->sourceNodeIndex) == sourceNode) {
       binding = node;
       break;
     }

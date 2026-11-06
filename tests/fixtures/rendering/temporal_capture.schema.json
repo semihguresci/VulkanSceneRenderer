@@ -20,6 +20,7 @@
       "acquireOutOfDate": {"type": "boolean"}, "presentSuboptimal": {"type": "boolean"},
       "samples": {"enum": [1, 2, 4, 8]}, "exposure": {"type": "number", "minimum": 0},
       "animationClip": {"type": "integer", "minimum": -1},
+      "gltfScene": {"type": "integer", "minimum": 0, "maximum": 2147483647},
       "animationTime": {"type": "number", "minimum": 0},
       "animationPlaying": {"type": "boolean"},
       "depthProbe": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 0, "maximum": 16384}},
@@ -61,7 +62,7 @@
       "if": {"anyOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}, {"required": ["nodeEdit"]}, {"required": ["addPrimitive"]}, {"required": ["sceneHistory"]}]},
       "then": {"allOf": [
         {"oneOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}, {"required": ["nodeEdit"]}, {"required": ["addPrimitive"]}, {"required": ["sceneHistory"]}]},
-        {"propertyNames": {"enum": ["frame", "lightEdit", "lightSelection", "lightAdd", "nodeEdit", "addPrimitive", "sceneHistory", "expectLightEditFailure", "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "rayShadowSamples", "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"]}}
+        {"propertyNames": {"enum": ["frame", "gltfScene", "lightEdit", "lightSelection", "lightAdd", "nodeEdit", "addPrimitive", "sceneHistory", "expectLightEditFailure", "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "rayShadowSamples", "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"]}}
       ]}
     }, {
       "if": {"required": ["expectLightEditFailure"]},

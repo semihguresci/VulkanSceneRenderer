@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -65,6 +66,8 @@ class FrameResourceManager;
 class GraphicsPipelineBuilder;
 class GpuCullManager;
 class LightingManager;
+struct ImportedSceneLightEdits;
+struct SceneLightEdits;
 class OitManager;
 class PipelineRegistry;
 class RenderPassGpuProfiler;
@@ -283,6 +286,8 @@ private:
   double pendingGltfAnimationDeltaSeconds_{};
   void resetGltfAnimation(bool applyStartupOptions);
   void updateGltfAnimation();
+  void selectGltfScene(uint32_t index);
+  void processGltfSceneRequest();
   void updateGltfDeformation();
   void prepareGltfDeformationFrame(uint32_t imageIndex);
   void commitGltfDeformationFrame();
@@ -463,6 +468,8 @@ private:
 
   container::util::EditHistory editHistory_{};
   uint64_t lightHistoryScene_{}, lightHistoryAsset_{};
+  std::map<uint32_t, std::shared_ptr<const SceneLightEdits>> gltfSceneLightEdits_;
+  std::shared_ptr<ImportedSceneLightEdits> gltfImportedLightEdits_;
   std::optional<bool> captureHistoryRequest_;
   void ensureSceneEditHistory();
   bool applyEditHistory(bool redo);

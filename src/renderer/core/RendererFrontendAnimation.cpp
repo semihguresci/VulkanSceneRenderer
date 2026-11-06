@@ -72,7 +72,7 @@ void RendererFrontend::refreshGltfCameraChoices() {
   const auto& source=subs_.sceneManager->animationSource();
   for(uint32_t graphIndex=0;graphIndex<sceneGraph_.nodeCount();++graphIndex) {
     const auto& runtime=*sceneGraph_.getNode(graphIndex);
-    if (runtime.sourceNodeIndex < 0) continue;
+    if (!sceneGraph_.isNodeActive(graphIndex) || runtime.sourceNodeIndex < 0) continue;
     const auto index=size_t(runtime.sourceNodeIndex);
     if(index>=source.nodes.size()) continue;
     const auto& node=source.nodes[index];

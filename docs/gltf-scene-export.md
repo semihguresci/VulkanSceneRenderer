@@ -25,6 +25,17 @@ Use `--gltf-scene N` to choose a scene by its zero-based index when launching th
 application. Without that option, the file's authored default is used, or scene
 zero if the file leaves the default unspecified.
 
+For a file with several scenes, the **glTF scene** menu in **Scene Controls**
+switches the live view. A switch preserves authored edits, keeps shared nodes
+and their imported light edits shared, and restores the selected scene's manual
+lights and added primitives. It clears selection and undo history, pauses
+animation at the current pose, and resets the viewport camera and accumulated
+rendering history. Reparenting requires matching scene membership unless the
+destination is the editor root or there is no parent.
+
+In a temporal capture, `{"frame": 3, "gltfScene": 1}` switches to scene 1 before
+applying the frame's camera and edits.
+
 For a batch export, add `--hidden --save-scene edited.glb` to a renderer command.
 When a capture sequence is present, the scene is saved after its final frame.
 The save uses the animation pose at the time of export as its starting state.

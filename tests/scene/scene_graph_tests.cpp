@@ -19,6 +19,38 @@ namespace {
 using container::scene::SceneGraph;
 using container::scene::SceneNode;
 
+TEST(SceneGraph, SceneMembershipKeepsSharedIdentityAndLocalVisibility) {
+  SceneGraph graph;
+  const auto context = graph.createNode(glm::mat4(1), 0);
+  const auto shared = graph.createNode(glm::mat4(1), 0, true, 0);
+  const auto first = graph.createNode(glm::mat4(1), 0, true, 1);
+  const auto second = graph.createNode(glm::mat4(1), 0, true, 2);
+  graph.setSceneMembership(shared, std::make_shared<const std::vector<uint32_t>>(
+      std::initializer_list<uint32_t>{0, 1}));
+  graph.setSceneMembership(first, std::make_shared<const std::vector<uint32_t>>(1, 0));
+  graph.setSceneMembership(second, std::make_shared<const std::vector<uint32_t>>(1, 1));
+  ASSERT_TRUE(graph.setParent(shared, context));
+  ASSERT_TRUE(graph.setParent(first, context));
+  ASSERT_TRUE(graph.setParent(second, context));
+  graph.setActiveScene(0);
+  graph.setVisible(shared, false);
+  const auto birth = graph.nodeIncarnation(shared);
+  EXPECT_EQ(graph.renderableNodes(), (std::vector<uint32_t>{shared, first}));
+  EXPECT_FALSE(graph.setParent(shared, first));
+
+  SceneGraph switched(graph);
+  switched.setActiveScene(1);
+  graph.exchangeNodeEdit(switched);
+  EXPECT_EQ(graph.renderableNodes(), (std::vector<uint32_t>{shared, second}));
+  EXPECT_EQ(graph.nodeIncarnation(shared), birth);
+  EXPECT_FALSE(graph.isNodeEffectivelyVisible(shared));
+  EXPECT_FALSE(graph.isNodeActive(first));
+  EXPECT_TRUE(graph.setParent(second, std::nullopt));
+  EXPECT_TRUE(graph.isNodeActive(second));
+  graph.setActiveScene(0);
+  EXPECT_FALSE(graph.isNodeActive(second));
+}
+
 // ============================================================================
 // SceneNode defaults
 // ============================================================================

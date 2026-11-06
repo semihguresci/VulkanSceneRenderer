@@ -347,7 +347,9 @@ void RefreshSceneHierarchyParentCandidateCache(
        ++candidateIndex) {
     const uint32_t candidate = static_cast<uint32_t>(candidateIndex);
     if (candidate == nodeIndex ||
-        SceneHierarchyContainsNode(descendants, candidate)) {
+        SceneHierarchyContainsNode(descendants, candidate) ||
+        !sceneGraph.isNodeActive(candidate) ||
+        !sceneGraph.compatibleSceneParent(nodeIndex, candidate)) {
       continue;
     }
     if (sceneGraph.getNode(candidate) == nullptr) {
@@ -441,7 +443,7 @@ void DrawSceneHierarchyNode(const container::scene::SceneGraph &sceneGraph,
                             SceneHierarchyParentCandidateCacheState
                                 &candidateCache) {
   const auto *node = sceneGraph.getNode(nodeIndex);
-  if (node == nullptr) {
+  if (!node || !sceneGraph.isNodeActive(nodeIndex)) {
     return;
   }
 
@@ -2911,6 +2913,17 @@ void GuiManager::drawSceneControls(
     statusMessage_ = "Model unload requested";
   }
 
+  if (gltfSceneNames_.size() > 1 &&
+      ImGui::BeginCombo("glTF scene", gltfSceneNames_.at(gltfSceneIndex_).c_str())) {
+    for (uint32_t scene = 0; scene < gltfSceneNames_.size(); ++scene) {
+      ImGui::PushID(static_cast<int>(scene));
+      if (ImGui::Selectable(gltfSceneNames_[scene].c_str(), scene == gltfSceneIndex_))
+        gltfSceneRequest_ = scene;
+      if (scene == gltfSceneIndex_) ImGui::SetItemDefaultFocus();
+      ImGui::PopID();
+    }
+    ImGui::EndCombo();
+  }
   ImGui::InputText("Save path (.glb / .gltf)", &sceneSavePathInput_);
   ImGui::BeginDisabled(savedScenePath_.empty() || !canExportScene);
   if (ImGui::Button("Save scene")) sceneSaveRequest_ = savedScenePath_;

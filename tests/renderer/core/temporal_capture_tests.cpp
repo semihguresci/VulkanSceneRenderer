@@ -444,4 +444,20 @@ TEST(TemporalCapture, BimSelectionIsAnExactEventWithAValidUint32Index) {
     EXPECT_THROW(CaptureSequence{invalid}, std::invalid_argument);
   }
 }
+
+TEST(TemporalCapture, ParsesGltfSceneSwitchAndSameFrameEditOnlyOnce) {
+  auto request = json::parse(R"({"schemaVersion":1,"frames":4,
+    "events":[{"frame":2,"gltfScene":1,"nodeEdit":{"operation":"select","sourceNode":3}}]})");
+  CaptureSequence sequence(request);
+  EXPECT_FALSE(sequence.sample(1).event.gltfScene);
+  EXPECT_EQ(sequence.sample(2).event.gltfScene, 1u);
+  ASSERT_TRUE(sequence.sample(2).event.nodeEdit);
+  EXPECT_EQ(sequence.sample(2).event.nodeEdit->sourceNode, 3u);
+  EXPECT_FALSE(sequence.sample(3).event.gltfScene);
+  for (const auto& encoded : {"-1", "1.5", "2147483648", "true", "\"0\"", "null"}) {
+    SCOPED_TRACE(encoded);
+    request["events"][0]["gltfScene"] = json::parse(encoded);
+    EXPECT_THROW(CaptureSequence{request}, std::invalid_argument);
+  }
+}
 } // namespace

@@ -28,7 +28,7 @@ void RendererFrontend::saveSceneModel(const std::filesystem::path& destination) 
   std::vector<int32_t> sourceNodes;
   std::vector<container::scene::AuthoredSceneLights> bindings;
   auto snapshot = manager.buildSceneExport(
-      sceneGraph_, sceneState_.rootNode, sourceNodes, bindings,
+      sceneGraph_, sourceNodes, bindings,
       gltfAnimation_ ? &gltfAnimation_->library() : nullptr);
   if (subs_.lightingManager) {
     sourceNodes.resize(snapshot.nodes.size(), -1);
@@ -36,7 +36,7 @@ void RendererFrontend::saveSceneModel(const std::filesystem::path& destination) 
     const auto edits = subs_.lightingManager->snapshotSceneLightEdits();
     const auto* root = sceneGraph_.getNode(sceneState_.rootNode);
     const auto anchor = root ? root->worldTransform : glm::mat4(1);
-    ImportedSceneLightEdits imported;
+    ImportedSceneLightEdits imported = gltfImportedLightEdits_ ? *gltfImportedLightEdits_ : ImportedSceneLightEdits{};
     imported.capture(authored, edits);
     const auto activeScene = static_cast<size_t>(snapshot.defaultScene);
     std::vector<std::vector<EditableLightEntity>> lights(snapshot.scenes.size());
@@ -51,9 +51,13 @@ void RendererFrontend::saveSceneModel(const std::filesystem::path& destination) 
     }
     for (size_t scene = 0; scene < lights.size(); ++scene) {
       if (scene == activeScene) continue;
+      const auto cached = gltfSceneLightEdits_.find(static_cast<uint32_t>(scene));
+      const SceneLightEdits empty;
+      const auto& local = cached == gltfSceneLightEdits_.end() ? empty : *cached->second;
       lights[scene] = evaluateEditableSceneLightsForExport(bindings[scene], bindings[scene],
-          {}, imported, glm::mat4(1));
+          local, imported, glm::mat4(1));
       for (auto& light : lights[scene]) {
+        if (light.source != EditableLightSource::Imported) continue;
         const auto match = activeLights.find(bindingForLight(bindings[scene], light));
         if (match == activeLights.end()) continue;
         // A shared source node has one pose and edit state. Keep only the

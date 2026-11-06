@@ -35,6 +35,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/RendererFrontendLights.cpp
     renderer/core/RendererFrontendNodes.cpp
     renderer/core/RendererFrontendSceneSave.cpp
+    renderer/core/RendererFrontendGltfScenes.cpp
     renderer/core/RendererFrontendDeformation.cpp
     renderer/core/RendererFrontendDeformationTelemetry.cpp
     renderer/core/RendererFrontendReference.cpp

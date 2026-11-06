@@ -1071,7 +1071,7 @@ void SceneController::buildSceneGraph(uint32_t& outRootNode,
 
   const uint32_t existingNodeCount =
       static_cast<uint32_t>(sceneGraph_.nodeCount());
-  if (existingNodeCount > 0) {
+  if (existingNodeCount > 0 || sceneGraph_.activeScene()) {
     outRootNode = sceneGraph_.createNode(
         glm::mat4(1.0f), sceneManager_.defaultMaterialIndex(), false,
         container::scene::SceneGraph::kInvalidNode, "Scene Root");

@@ -2,6 +2,7 @@
 import argparse
 import base64
 import json
+import math
 import struct
 import subprocess
 from pathlib import Path
@@ -44,12 +45,15 @@ def prepare_source(directory):
         {'name': 'New parent', 'translation': [0, -.1, 0]},
     ])
     source['scenes'] = [
-        {'name': 'Editable scene', 'nodes': [0, 1, 2, 4]},
-        {'name': 'Second scene', 'nodes': [3, 1, 5]},
+        {'name': 'Editable scene', 'nodes': [0, 1, 2, 4, 6]},
+        {'name': 'Second scene', 'nodes': [3, 1, 5, 7]},
         {'name': 'Empty scene', 'nodes': []},
     ]
     source['nodes'].append({'name': 'Inactive spot', 'translation': [0, 0, 2],
                             'extensions': {PUNCTUAL: {'light': 1}}})
+    source['cameras'] = [dict(type='perspective', perspective=dict(yfov=math.pi / 4, znear=.1))]
+    source['nodes'].extend(dict(name=name, camera=0, translation=[0, 0, 6])
+                           for name in ('First scene camera', 'Second scene camera'))
     source['extensions'][PUNCTUAL]['lights'].append(dict(
         type='spot', intensity=15, range=3, spot=dict(innerConeAngle=.1, outerConeAngle=.45)))
     source['scene'] = 0
@@ -85,7 +89,8 @@ def verify_other_scenes(renderer, output, source, saved):
     edited = [edit(2, dict(intensity=40))]
     original = run(renderer, output, 'scaled-original-second', source, technique,
                    [2], edited, (*selected, *scale, *pose), fix_camera=True)[2]
-    assert original[1]['scene']['gltfScene'] == dict(index=1, count=3, name='Second scene')
+    view = original[1]['scene']['gltfScene']
+    assert (view['index'], view['count'], view['name']) == (1, 3, 'Second scene')
     assert point(original)['intensity'] == 40 and point(original)['range'] == 16
     assert sorted(light['range'] for light in lights(original) if light['source'] == 1) == [12, 16]
     for suffix in ('glb', 'gltf'):
@@ -116,6 +121,77 @@ def verify_other_scenes(renderer, output, source, saved):
     print('PASS scaled inactive spot animation, shared light edits, and empty scene selection', flush=True)
 
 
+def verify_live_switching(renderer, output, source, saved):
+    events = [
+        edit(2, dict(intensity=40)),
+        node(3, 'visibility', 2, visible=False),
+        dict(frame=4, gltfScene=1),
+        dict(frame=5, lightAdd=dict(type='point')),
+        dict(frame=6, addPrimitive='Cube'),
+        node(7, 'transform', 3, matrix=columns(np.eye(4))),
+        dict(frame=8, gltfScene=2),
+        dict(frame=9, gltfScene=0),
+        dict(frame=10, gltfScene=1),
+        dict(frame=11, gltfScene=0),
+    ]
+    for technique in ('deferred-raster', 'forward-raster'):
+        destination = saved / ('switch-' + technique + '.glb')
+        states = run(renderer, output, 'switch-' + technique, source, technique,
+                     [1, 3, 4, 5, 6, 7, 8, 9, 10, 11], events,
+                     ('--no-ray-query', '--animation-clip', '0', '--save-scene', str(destination)),
+                     fix_camera=True)
+        views = [state['scene']['gltfScene'] for _, state in states.values()]
+        assert len({view['graphIdentity'] for view in views}) == 1
+        assert len({view['sourceRevision'] for view in views}) == 1
+        assert [view['index'] for view in views] == [0, 0, 1, 1, 1, 1, 2, 0, 1, 0]
+        assert sorted(states[4][1]['scene']['gltfScene']['activeSourceNodes']) == [1, 3, 5, 7]
+        assert not states[8][1]['scene']['gltfScene']['activeSourceNodes']
+        assert states[1][1]['gltfAnimation']['playing']
+        assert not states[4][1]['gltfAnimation']['playing']
+        assert states[4][1]['gltfAnimation']['time'] == states[10][1]['gltfAnimation']['time']
+        history(states[4], 0, 0)
+        history(states[10], 0, 0)
+        assert point(states[4])['intensity'] == point(states[9])['intensity'] == point(states[10])['intensity'] == 40
+        assert states[8][1]['scene']['primaryObjectCount'] == 0
+        assert not any(light['source'] in (1, 2) for light in lights(states[8]))
+        assert states[4][1]['scene']['primaryObjectCount'] == 1
+        assert states[10][1]['scene']['primaryObjectCount'] == 2
+        assert any(light['source'] == 2 for light in lights(states[10]))
+        assert not any(light['source'] == 2 for light in lights(states[11]))
+        exact(states[3], states[9])
+        exact(states[7], states[10])
+        model = document(destination)
+        assert model['scene'] == 0
+        assert len(model['scenes']) == 3
+        reload = run(renderer, output, 'switch-reload-' + technique, destination, technique,
+                     [2], (), ('--no-ray-query', '--gltf-scene', '1'), fix_camera=True)[2]
+        assert reload[1]['scene']['primaryObjectCount'] == 2
+        exact(states[10], reload)
+        print(f'PASS {technique} live switching, scene-local edits, and inactive edit reload', flush=True)
+    states = run(renderer, output, 'authored-camera-switch', source, 'deferred-raster',
+                 [1, 2], [dict(frame=2, gltfScene=1)],
+                 ('--no-ray-query', '--gltf-camera-node', '6'), fix_camera=True)
+    assert states[1][1]['gltfAnimation']['selectedCameraNode'] == 6
+    assert states[2][1]['gltfAnimation']['selectedCameraNode'] == -1
+    assert 6 not in states[2][1]['scene']['gltfScene']['activeSourceNodes']
+    print('PASS authored camera selection clears on switch', flush=True)
+
+
+def verify_reference_switching(renderer, output, source):
+    states = run(renderer, output, 'switch-reference', source, 'path-tracing',
+                 [2, 4, 6, 8], [dict(frame=3, gltfScene=1), dict(frame=5, gltfScene=2),
+                                dict(frame=7, gltfScene=0)],
+                 ('--path-spp', '16', '--path-samples', '32', '--path-bounces', '3', '--path-seed', '7'),
+                 fix_camera=True)
+    for frame, selected in ((2, 0), (4, 1), (6, 2), (8, 0)):
+        state = states[frame][1]
+        assert state['scene']['gltfScene']['index'] == selected
+        path = state['referencePath']
+        assert path['attemptedSamples'] == 32 and path['unsupportedSamples'] == path['rejectedSamples'] == 0
+    exact(states[2], states[8])
+    print('PASS path-tracing switches and deterministic accumulation reset', flush=True)
+
+
 def document(path):
     if path.suffix == '.gltf':
         return json.loads(path.read_text(encoding='utf-8'))
@@ -129,6 +205,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--renderer', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--reference-path', action='store_true')
     args = parser.parse_args()
     renderer, output = args.renderer.resolve(strict=True), args.output.resolve()
     output.mkdir(parents=True)
@@ -170,6 +247,9 @@ def main():
             assert all('uri' not in buffer for buffer in model['buffers'])
         tests.append((technique, destination, original))
     verify_other_scenes(renderer, output, source, saved)
+    verify_live_switching(renderer, output, source, saved)
+    if args.reference_path:
+        verify_reference_switching(renderer, output, source)
     # Remove access to the source resource through its original path.
     texture = source.parent / 'pattern.png'
     texture.rename(texture.with_name('source-only.png'))
@@ -180,7 +260,8 @@ def main():
         exact(original, reloaded)
         print(f'PASS {technique} edited {destination.suffix} reload without source textures', flush=True)
     write_json(output / 'results.json', dict(passed=True, pixelExactRoundTrips=len(tests),
-        scaledInactiveRoundTrips=2, emptyScenePreserved=True, invalidSelectionPreservesDestination=True))
+        scaledInactiveRoundTrips=2, liveTechniques=2 + int(args.reference_path),
+        emptyScenePreserved=True, invalidSelectionPreservesDestination=True))
 
 
 if __name__ == '__main__':

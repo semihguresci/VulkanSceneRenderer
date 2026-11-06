@@ -70,6 +70,7 @@ struct CaptureEvent {
   bool guiWaitForLoad{true};
   std::optional<bool> taa, orthographic, objectVisible, minimized;
   std::optional<int> animationClip;
+  std::optional<uint32_t> gltfScene;
   std::optional<double> animationTime;
   std::optional<bool> animationPlaying;
   std::optional<bool> rayShadowDenoise;
@@ -168,7 +169,7 @@ public:
       if (lightActions + sceneActions > 1 || (value.contains("expectLightEditFailure") && !lightActions))
         throw std::invalid_argument("Use one edit or history action per capture frame");
       if (lightActions || sceneActions)
-        nodeFields(value, {"frame", "lightEdit", "lightSelection", "lightAdd", "nodeEdit", "addPrimitive", "sceneHistory", "expectLightEditFailure",
+        nodeFields(value, {"frame", "gltfScene", "lightEdit", "lightSelection", "lightAdd", "nodeEdit", "addPrimitive", "sceneHistory", "expectLightEditFailure",
                            "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "rayShadowSamples",
                            "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"},
                    "edit event");
@@ -296,6 +297,12 @@ public:
       if (!event.technique.empty() && event.technique != "forward-raster" &&
           event.technique != "deferred-raster" && event.technique != "path-tracing")
         throw std::invalid_argument("Invalid capture render technique");
+      if (value.contains("gltfScene")) {
+        const auto& scene = value.at("gltfScene");
+        if (!scene.is_number_integer() || scene < 0 || scene > std::numeric_limits<int>::max())
+          throw std::invalid_argument("Capture gltfScene must be a nonnegative scene index");
+        event.gltfScene = scene.get<uint32_t>();
+      }
       if (value.contains("animationClip")) {
         const auto& index = value.at("animationClip");
         if (!index.is_number_integer() || index.get<double>() < -1 ||

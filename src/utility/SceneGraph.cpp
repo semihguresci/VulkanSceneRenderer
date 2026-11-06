@@ -66,7 +66,7 @@ SceneGraph::SceneGraph() : identity_(nextGraphIdentity()) {}
 
 SceneGraph::SceneGraph(const SceneGraph& other)
     : nodes_(other.nodes_), roots_(other.roots_), renderableNodes_(other.renderableNodes_),
-      revision_(other.revision_), identity_(nextGraphIdentity()) {}
+      activeScene_(other.activeScene_), revision_(other.revision_), identity_(nextGraphIdentity()) {}
 
 SceneGraph& SceneGraph::operator=(const SceneGraph& other) {
   if (this != &other) *this = SceneGraph(other);
@@ -81,6 +81,9 @@ SceneGraph& SceneGraph::operator=(SceneGraph&& other) {
   nodes_ = std::move(other.nodes_);
   roots_ = std::move(other.roots_);
   renderableNodes_ = std::move(other.renderableNodes_);
+  activeScene_ = std::exchange(other.activeScene_, std::nullopt);
+  activeRenderables_.clear();
+  activeRenderablesRevision_ = ~uint64_t{0};
   revision_ = std::exchange(other.revision_, 0);
   identity_ = std::exchange(other.identity_, replacementIdentity);
   return *this;
@@ -137,6 +140,8 @@ bool SceneGraph::restoreLastLeaf(uint32_t index, SceneNode node, size_t sibling)
     return false;
   const auto parent = node.parent == kInvalidNode ? std::nullopt : std::optional(node.parent);
   if (parent && *parent >= nodes_.size()) return false;
+  if (parent && nodes_[*parent].sceneMembership &&
+      (!node.sceneMembership || *nodes_[*parent].sceneMembership != *node.sceneMembership)) return false;
   const auto& siblings = parent ? nodes_[*parent].children : roots_;
   if (sibling > siblings.size()) return false;
   node.parent = kInvalidNode;
@@ -156,7 +161,7 @@ bool SceneGraph::canSetParent(uint32_t child,
   }
   const uint32_t newParent = parentIndex.value();
   return newParent < nodes_.size() && newParent != child &&
-         !isDescendant(child, newParent);
+         compatibleSceneParent(child, newParent) && !isDescendant(child, newParent);
 }
 
 bool SceneGraph::setParent(uint32_t child, std::optional<uint32_t> parentIndex) {
@@ -222,6 +227,9 @@ void SceneGraph::exchangeNodeEdit(SceneGraph& candidate) noexcept {
   nodes_.swap(candidate.nodes_);
   roots_.swap(candidate.roots_);
   renderableNodes_.swap(candidate.renderableNodes_);
+  activeScene_.swap(candidate.activeScene_);
+  activeRenderables_.swap(candidate.activeRenderables_);
+  std::swap(activeRenderablesRevision_, candidate.activeRenderablesRevision_);
   std::swap(revision_, candidate.revision_);
 }
 
@@ -264,7 +272,7 @@ void SceneGraph::setVisible(uint32_t nodeIndex, bool visible) {
 }
 
 bool SceneGraph::isNodeEffectivelyVisible(uint32_t nodeIndex) const {
-  if (nodeIndex >= nodes_.size()) return false;
+  if (!isNodeActive(nodeIndex)) return false;
 
   uint32_t current = nodeIndex;
   while (current != kInvalidNode && current < nodes_.size()) {
@@ -275,9 +283,55 @@ bool SceneGraph::isNodeEffectivelyVisible(uint32_t nodeIndex) const {
   return true;
 }
 
+void SceneGraph::setSceneMembership(uint32_t node, std::shared_ptr<const std::vector<uint32_t>> scenes) {
+  nodes_.at(node).sceneMembership = std::move(scenes);
+  ++revision_;
+}
+
+void SceneGraph::setActiveScene(uint32_t scene) {
+  if (activeScene_ == scene) return;
+  activeScene_ = scene;
+  ++revision_;
+}
+
+bool SceneGraph::isNodeInScene(uint32_t node, uint32_t scene) const {
+  const auto* item = getNode(node);
+  return item && item->sceneMembership && std::ranges::binary_search(*item->sceneMembership, scene);
+}
+
+bool SceneGraph::isNodeActive(uint32_t node) const {
+  const auto* item = getNode(node);
+  return item && (!activeScene_ || !item->sceneMembership || isNodeInScene(node, *activeScene_));
+}
+
+bool SceneGraph::compatibleSceneParent(uint32_t child, uint32_t parent) const {
+  const auto* node = getNode(child);
+  const auto* target = getNode(parent);
+  if (!node || !target) return false;
+  return !target->sceneMembership || node->sceneMembership == target->sceneMembership ||
+      (node->sceneMembership && *node->sceneMembership == *target->sceneMembership);
+}
+
+const std::vector<uint32_t>& SceneGraph::renderableNodes() const {
+  if (!activeScene_) return renderableNodes_;
+  if (activeRenderablesRevision_ != revision_) {
+    activeRenderables_.clear();
+    for (const auto node : renderableNodes_)
+      if (isNodeActive(node)) activeRenderables_.push_back(node);
+    activeRenderablesRevision_ = revision_;
+  }
+  return activeRenderables_;
+}
+
 void SceneGraph::updateWorldTransforms() {
-  for (uint32_t root : roots_) {
-    updateWorldRecursive(root, glm::mat4(1.0f));
+  auto pending = roots_;
+  while (!pending.empty()) {
+    const auto index = pending.back();
+    pending.pop_back();
+    auto& node = nodes_[index];
+    node.worldTransform = node.parent == kInvalidNode ? node.localTransform :
+        nodes_[node.parent].worldTransform * node.localTransform;
+    pending.insert(pending.end(), node.children.begin(), node.children.end());
   }
 }
 
@@ -289,15 +343,6 @@ const SceneNode* SceneGraph::getNode(uint32_t nodeIndex) const {
 SceneNode* SceneGraph::getNode(uint32_t nodeIndex) {
   if (nodeIndex >= nodes_.size()) return nullptr;
   return &nodes_[nodeIndex];
-}
-
-void SceneGraph::updateWorldRecursive(uint32_t nodeIndex,
-                                      const glm::mat4& parentTransform) {
-  SceneNode& node = nodes_[nodeIndex];
-  node.worldTransform = parentTransform * node.localTransform;
-  for (uint32_t child : node.children) {
-    updateWorldRecursive(child, node.worldTransform);
-  }
 }
 
 void SceneGraph::registerRenderable(uint32_t nodeIndex) {
