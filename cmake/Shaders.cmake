@@ -37,6 +37,10 @@ set(SLANG_INCLUDE_SHADER_NAMES
     depth_normal_common.slang
     surface_normal_common.slang
     pbr_material_common.slang
+    pbr_extended_common.slang
+    pbr_extended_deferred_common.slang
+    pbr_extended_sampling_common.slang
+    ddgi_material_common.slang
     path_transport_common.slang
     path_dielectric_common.slang
     object_data_common.slang

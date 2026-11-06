@@ -8,6 +8,16 @@
 static const uint DDGI_MAX_GLASS_CROSSINGS = 8u;
 static const float DDGI_MIN_TRANSPORT_THROUGHPUT = 1e-4;
 
+// This stochastic continuation samples an isotropic specular dielectric only.
+// Active anisotropic reflection/diffuse BTDF mixtures need their own sampling
+// probabilities and PDFs. Neutral factors stay neutral with texture bindings.
+bool DdgiHasUnsupportedExtendedDielectric(GpuMaterial material)
+{
+    return !all(isfinite(material.anisotropyDiffuseFactors.xyz)) ||
+        material.anisotropyDiffuseFactors.x != 0.0 ||
+        material.anisotropyDiffuseFactors.z != 0.0;
+}
+
 struct DdgiThinGlassResult
 {
     float3 transmittance;
@@ -19,7 +29,8 @@ DdgiThinGlassResult DdgiThinGlassTransmission(GpuMaterial material, uint flags,
     float3 tint, float incidenceCosine, bool enabled)
 {
     DdgiThinGlassResult result = (DdgiThinGlassResult)0;
-    if (!enabled || !isfinite(transmission) || transmission <= 0.0 ||
+    if (!enabled || DdgiHasUnsupportedExtendedDielectric(material) ||
+        !isfinite(transmission) || transmission <= 0.0 ||
         !isfinite(material.transmissionFactor) ||
         !isfinite(alpha) || abs(alpha - 1.0) > 1e-5 ||
         !isfinite(metallic) || metallic > 1e-5 || metallic < 0.0 ||
@@ -183,7 +194,8 @@ DdgiDielectricResult DdgiSampleDielectric(GpuMaterial material, uint flags,
     float3 direction, float3 geometricNormal, bool entering, float2 random, bool enabled)
 {
     DdgiDielectricResult result = (DdgiDielectricResult)0;
-    if (!enabled || !isfinite(material.transmissionFactor) ||
+    if (!enabled || DdgiHasUnsupportedExtendedDielectric(material) ||
+        !isfinite(material.transmissionFactor) ||
         !isfinite(transmission) || transmission < 0.0 || transmission > 1.0 ||
         !isfinite(alpha) || abs(alpha - 1.0) > 1e-5 ||
         !isfinite(metallic) || metallic > 1e-5 || metallic < 0.0 ||

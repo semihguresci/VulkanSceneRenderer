@@ -60,6 +60,7 @@ constexpr std::array<std::string_view, kRenderPassIdCount> kRenderPassNames = {
     "RayShadowFilter",
     "DdgiTrace",
     "DdgiUpdate",
+    "PbrAuxiliary",
 };
 
 static_assert(kRenderPassNames.size() == kRenderPassIdCount);
@@ -109,6 +110,8 @@ constexpr std::array<std::string_view, kRenderResourceIdCount>
         "RayShadowVisibility",
         "DdgiRays",
         "DdgiIrradiance",
+        "GBufferAnisotropy",
+        "GBufferDiffuseTransmission",
 };
 
 static_assert(kRenderResourceNames.size() == kRenderResourceIdCount);
@@ -165,6 +168,8 @@ constexpr std::array kBimGBufferScheduleDependencies{
     RenderPassId::BimDepthPrepass,
     RenderPassId::GBuffer,
 };
+constexpr std::array kPbrAuxiliaryScheduleDependencies{RenderPassId::GBuffer};
+constexpr std::array kPbrAuxiliaryOptionalScheduleDependencies{RenderPassId::BimGBuffer};
 constexpr std::array kTransparentPickScheduleDependencies{
     RenderPassId::GBuffer,
 };
@@ -175,10 +180,12 @@ constexpr std::array kGBufferOptionalScheduleDependencies{
     RenderPassId::BimDepthPrepass,
 };
 constexpr std::array kDepthToReadOnlyOptionalScheduleDependencies{
+    RenderPassId::PbrAuxiliary,
     RenderPassId::BimGBuffer,
     RenderPassId::LocalShadowDepth,
 };
 constexpr std::array kTransparentPickOptionalScheduleDependencies{
+    RenderPassId::PbrAuxiliary,
     RenderPassId::BimGBuffer,
 };
 constexpr std::array kOitClearScheduleDependencies{RenderPassId::GBuffer};
@@ -327,6 +334,23 @@ constexpr std::array kBimGBufferWrites{
     RenderResourceId::GBufferMaterialSheen,
     RenderResourceId::PickId,
 };
+constexpr std::array kPbrAuxiliaryReads{
+    RenderResourceId::SceneDepth,
+    RenderResourceId::GBufferMaterial,
+};
+constexpr std::array kPbrAuxiliaryOptionalReads{
+    RenderResourceId::SceneGeometry,
+    RenderResourceId::BimGeometry,
+    RenderResourceId::CameraBuffer,
+    RenderResourceId::ObjectBuffer,
+    RenderResourceId::BimObjectBuffer,
+    RenderResourceId::FrustumCullDraws,
+    RenderResourceId::OcclusionCullDraws,
+};
+constexpr std::array kPbrAuxiliaryWrites{
+    RenderResourceId::GBufferAnisotropy,
+    RenderResourceId::GBufferDiffuseTransmission,
+};
 constexpr std::array kTransparentPickReads{
     RenderResourceId::SceneGeometry,
     RenderResourceId::BimGeometry,
@@ -430,6 +454,8 @@ constexpr std::array kLightingReads{
     RenderResourceId::EnvironmentMaps,
 };
 constexpr std::array kLightingOptionalReads{
+    RenderResourceId::GBufferAnisotropy,
+    RenderResourceId::GBufferDiffuseTransmission,
     RenderResourceId::DdgiIrradiance,
     RenderResourceId::RayShadowVisibility, RenderResourceId::ShadowAtlas,
     RenderResourceId::LocalShadowAtlas,    RenderResourceId::TileLightGrid,
@@ -625,6 +651,7 @@ bool isProtectedRenderPass(RenderPassId id) {
   case RenderPassId::DdgiUpdate:
   case RenderPassId::DepthPrepass:
   case RenderPassId::GBuffer:
+  case RenderPassId::PbrAuxiliary:
   case RenderPassId::OitClear:
   case RenderPassId::TransparentPick:
   case RenderPassId::DepthToReadOnly:
@@ -682,6 +709,8 @@ std::span<const RenderPassId> renderPassScheduleDependencies(RenderPassId id) {
       return kGBufferScheduleDependencies;
     case RenderPassId::BimGBuffer:
       return kBimGBufferScheduleDependencies;
+    case RenderPassId::PbrAuxiliary:
+      return kPbrAuxiliaryScheduleDependencies;
     case RenderPassId::TransparentPick:
       return kTransparentPickScheduleDependencies;
     case RenderPassId::OitClear:
@@ -766,6 +795,8 @@ std::span<const RenderResourceId> renderPassResourceReads(RenderPassId id) {
       return kGBufferReads;
     case RenderPassId::BimGBuffer:
       return kBimGBufferReads;
+    case RenderPassId::PbrAuxiliary:
+      return kPbrAuxiliaryReads;
     case RenderPassId::TransparentPick:
       return kTransparentPickReads;
     case RenderPassId::ShadowCullCascade0:
@@ -813,6 +844,8 @@ std::span<const RenderResourceId> renderPassOptionalResourceReads(
       return kDepthPrepassOptionalReads;
     case RenderPassId::GBuffer:
       return kGBufferOptionalReads;
+    case RenderPassId::PbrAuxiliary:
+      return kPbrAuxiliaryOptionalReads;
     case RenderPassId::ShadowCascade0:
       return kShadowCascade0OptionalReads;
     case RenderPassId::ShadowCascade1:
@@ -849,6 +882,8 @@ std::span<const RenderResourceId> renderPassResourceWrites(RenderPassId id) {
       return kGBufferWrites;
     case RenderPassId::BimGBuffer:
       return kBimGBufferWrites;
+    case RenderPassId::PbrAuxiliary:
+      return kPbrAuxiliaryWrites;
     case RenderPassId::TransparentPick:
       return kTransparentPickWrites;
     case RenderPassId::OitClear:
@@ -898,6 +933,8 @@ std::span<const RenderPassId> renderPassOptionalScheduleDependencies(
       return kGBufferOptionalScheduleDependencies;
     case RenderPassId::TransparentPick:
       return kTransparentPickOptionalScheduleDependencies;
+    case RenderPassId::PbrAuxiliary:
+      return kPbrAuxiliaryOptionalScheduleDependencies;
     case RenderPassId::DepthToReadOnly:
       return kDepthToReadOnlyOptionalScheduleDependencies;
     default:
@@ -1535,6 +1572,9 @@ uint64_t RenderGraph::computePreparedFrameSignature(
   mix(params.debug.debugVisualizePointLightStencil ? 1u : 0u);
   mix(params.debug.debugFreezeCulling ? 1u : 0u);
   mixPointer(params.services.temporalManager);
+  // The auxiliary pass is fully created before publication and replaced when
+  // its depth/extent changes. Its identity invalidates a cached NotNeeded plan.
+  mixPointer(params.services.pbrAuxiliaryPass);
   mix(params.services.temporalManager && params.services.temporalManager->active() ? 1u : 0u);
   mixFloat(params.camera.nearPlane);
   mixFloat(params.camera.farPlane);

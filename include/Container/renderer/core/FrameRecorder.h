@@ -26,6 +26,7 @@ class BloomManager;
 class TemporalManager;
 class RayShadowManager;
 class DdgiManager;
+class PbrAuxiliaryPass;
 class BimManager;
 class GpuCullManager;
 class FrameResourceRegistry;
@@ -332,6 +333,7 @@ struct FrameScreenshotCapture {
 
 struct FramePassServices {
   RayShadowManager *rayShadowManager{nullptr};
+  PbrAuxiliaryPass *pbrAuxiliaryPass{nullptr};
   DdgiManager *ddgiManager{nullptr};
   VkDescriptorSet ddgiReadDescriptorSet{VK_NULL_HANDLE};
   std::function<bool(VkCommandBuffer, const FrameRecordParams&)> referencePathTrace;

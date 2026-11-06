@@ -139,7 +139,9 @@ class FrameResourceManager {
                             VkBuffer    tileGridBuffer    = VK_NULL_HANDLE,
                             VkDeviceSize tileGridBufferSize = 0,
                             std::span<const container::gpu::AllocatedBuffer> exposureStateBuffers = {},
-                            VkDeviceSize exposureStateBufferSize = 0);
+                            VkDeviceSize exposureStateBufferSize = 0,
+                            std::span<const VkImageView> anisotropyViews = {},
+                            std::span<const VkImageView> diffuseTransmissionViews = {});
 
   void validateOitFormatSupport() const;
   void validatePickIdFormatSupport() const;
@@ -160,7 +162,6 @@ class FrameResourceManager {
   }
   [[nodiscard]] const FrameResources* frame(uint32_t imageIndex) const;
   [[nodiscard]] FrameResources*       frame(uint32_t imageIndex);
-
   void setLinearCaptureTarget(uint32_t imageIndex, VkBuffer buffer = VK_NULL_HANDLE);
   void setPostProcessColorSource(uint32_t imageIndex,VkImageView,VkImageLayout);
 
@@ -208,6 +209,8 @@ class FrameResourceManager {
     VkDeviceSize tileGridBufferSize{0};
     std::vector<VkBuffer> exposureStateBuffers{};
     VkDeviceSize exposureStateBufferSize{0};
+    std::vector<VkImageView> anisotropyViews{};
+    std::vector<VkImageView> diffuseTransmissionViews{};
 
     bool operator==(const DescriptorUpdateKey&) const = default;
   };

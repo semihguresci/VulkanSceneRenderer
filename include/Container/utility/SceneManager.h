@@ -157,6 +157,7 @@ class SceneManager {
   }
   [[nodiscard]] size_t gpuMaterialCount() const noexcept { return gpuMaterials_.size(); }
   [[nodiscard]] bool hasVolumeMaterials() const noexcept;
+  [[nodiscard]] bool hasExtendedPbrMaterials() const noexcept { return hasExtendedPbrMaterials_; }
   [[nodiscard]] std::unique_ptr<container::renderer::GltfDeformationScene> takePreparedDeformation() noexcept;
   VkIndexType indexType() const { return indexType_; }
   uint32_t defaultMaterialIndex() const { return defaultMaterialIndex_; }
@@ -378,6 +379,7 @@ class SceneManager {
   uint32_t gltfMaterialBaseIndex_{0};
 
   std::vector<container::gpu::GpuMaterial> gpuMaterials_{};
+  bool hasExtendedPbrMaterials_{};
   std::vector<uint64_t> gpuMaterialTemporalRevisions_{};
   container::gpu::AllocatedBuffer materialBuffer_{};
   size_t materialBufferCapacity_{0};

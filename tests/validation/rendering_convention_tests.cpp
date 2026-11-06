@@ -1232,7 +1232,7 @@ TEST(RenderingConventionTests, DeferredMaterialParityUsesSharedLayeredHelpers) {
   EXPECT_TRUE(contains(directional, "gMaterialLayersTexture.Load"));
   EXPECT_TRUE(contains(directional, "gMaterialSheenTexture.Load"));
   EXPECT_TRUE(contains(directional, "layerTerms.iridescenceThickness"));
-  EXPECT_TRUE(contains(directional, "EvaluateDeferredLayeredDirectLight("));
+  EXPECT_TRUE(contains(directional, "EvaluateExtendedPbrLayeredDirectLight("));
 
   EXPECT_TRUE(contains(pointLight, "gSpecularTexture"));
   EXPECT_TRUE(
@@ -1242,7 +1242,7 @@ TEST(RenderingConventionTests, DeferredMaterialParityUsesSharedLayeredHelpers) {
   EXPECT_TRUE(contains(pointLight, "gMaterialLayersTexture.Load"));
   EXPECT_TRUE(contains(pointLight, "gMaterialSheenTexture.Load"));
   EXPECT_TRUE(contains(pointLight, "layerTerms.iridescenceThickness"));
-  EXPECT_TRUE(contains(pointLight, "EvaluateDeferredLayeredDirectLight("));
+  EXPECT_TRUE(contains(pointLight, "EvaluateExtendedPbrLayeredDirectLight("));
   EXPECT_TRUE(contains(
       pointLight,
       "[[vk::binding(3, 2)]] StructuredBuffer<GpuMaterial> uMaterials"));
@@ -1257,7 +1257,7 @@ TEST(RenderingConventionTests, DeferredMaterialParityUsesSharedLayeredHelpers) {
   EXPECT_TRUE(contains(tiledLighting, "gMaterialLayersTexture.Load"));
   EXPECT_TRUE(contains(tiledLighting, "gMaterialSheenTexture.Load"));
   EXPECT_TRUE(contains(tiledLighting, "layerTerms.iridescenceThickness"));
-  EXPECT_TRUE(contains(tiledLighting, "EvaluateDeferredLayeredDirectLight("));
+  EXPECT_TRUE(contains(tiledLighting, "EvaluateExtendedPbrLayeredDirectLight("));
   EXPECT_TRUE(contains(
       tiledLighting,
       "[[vk::binding(3, 2)]] StructuredBuffer<GpuMaterial> uMaterials"));
@@ -1273,7 +1273,7 @@ TEST(RenderingConventionTests, DeferredMaterialParityUsesSharedLayeredHelpers) {
 }
 
 TEST(RenderingConventionTests,
-     ForwardRasterUsesDeferredLayeredDirectLightForEveryDirectLight) {
+     ForwardRasterUsesSharedLayeredDirectLightForEveryDirectLight) {
   const std::array<std::string_view, 2> shaderPaths = {{
       "shaders/forward_opaque.slang",
       "shaders/forward_transparent.slang",
@@ -1283,7 +1283,7 @@ TEST(RenderingConventionTests,
     const std::string shader =
         readRepoTextFile(std::filesystem::path(shaderPath));
 
-    EXPECT_GE(countOccurrences(shader, "EvaluateDeferredLayeredDirectLight("),
+    EXPECT_GE(countOccurrences(shader, "EvaluateExtendedPbrLayeredDirectLight("),
               3u)
         << shaderPath;
     EXPECT_TRUE(contains(shader, "clearcoat, clearcoatRoughness"))
@@ -1598,11 +1598,11 @@ TEST(
   EXPECT_TRUE(contains(screenSpaceShadow, "coplanarReceiverSurface"));
   EXPECT_TRUE(contains(screenSpaceShadow, "continue"));
 
-  EXPECT_TRUE(contains(pointLight, "geometricNormal, pc.positionRadius.xyz"));
+  EXPECT_TRUE(contains(pointLight, "shadowNormal, pc.positionRadius.xyz"));
   EXPECT_TRUE(contains(pointLight, "gDepthTexture"));
   EXPECT_TRUE(contains(pointLight, "gNormalTexture"));
   EXPECT_TRUE(
-      contains(tiledLighting, "geometricNormal, light.positionRadius.xyz"));
+      contains(tiledLighting, "shadowNormal, light.positionRadius.xyz"));
   EXPECT_TRUE(contains(tiledLighting, "gDepthTexture"));
   EXPECT_TRUE(contains(tiledLighting, "gNormalTexture"));
 }
@@ -1706,28 +1706,35 @@ TEST(RenderingConventionTests,
   const std::string transparent =
       readRepoTextFile("shaders/forward_transparent.slang");
 
-  EXPECT_TRUE(contains(deferredDirectional, "float3 geometricNormal"));
+  for (const auto* shader : {&deferredDirectional, &pointLight, &tiledLighting}) {
+    EXPECT_TRUE(containsIgnoringWhitespace(*shader,
+        "shadowNormal = ExtendedPbrDeferredShadowNormal(geometricNormal, normal, L, extended)"));
+  }
+  EXPECT_TRUE(containsIgnoringWhitespace(transparent,
+      "directionalShadowNormal = ExtendedPbrShadowBiasNormal(surfaceNormal.geometricNormal, directionalL, extendedTerms)"));
   EXPECT_TRUE(contains(deferredDirectional,
-                       "worldPosition, geometricNormal, "
+                       "worldPosition, shadowNormal, "
                        "uLighting.directionalDirection.xyz"));
   EXPECT_TRUE(contains(deferredDirectional, "geometricNormal, normal, V"));
 
   EXPECT_TRUE(contains(pointLight, "float3 geometricNormal"));
   EXPECT_TRUE(
-      contains(pointLight, "lightData, worldPosition, geometricNormal"));
-  EXPECT_TRUE(contains(pointLight, "worldPosition, geometricNormal, "
+      contains(pointLight, "lightData, worldPosition, shadowNormal"));
+  EXPECT_TRUE(contains(pointLight, "worldPosition, shadowNormal, "
                                    "pc.positionRadius.xyz"));
 
   EXPECT_TRUE(contains(tiledLighting, "float3 geometricNormal"));
-  EXPECT_TRUE(contains(tiledLighting, "light, worldPosition, geometricNormal"));
-  EXPECT_TRUE(contains(tiledLighting, "worldPosition, geometricNormal, "
+  EXPECT_TRUE(contains(tiledLighting, "light, worldPosition, shadowNormal"));
+  EXPECT_TRUE(contains(tiledLighting, "worldPosition, shadowNormal, "
                                       "light.positionRadius.xyz"));
 
   EXPECT_TRUE(contains(transparent, "surfaceNormal.geometricNormal"));
   EXPECT_TRUE(
-      contains(transparent, "vertIn.worldPos, surfaceNormal.geometricNormal"));
-  EXPECT_TRUE(contains(
-      transparent, "i, light, vertIn.worldPos, surfaceNormal.geometricNormal"));
+      contains(transparent, "vertIn.worldPos, directionalShadowNormal"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      transparent, "i, light, vertIn.worldPos, "
+                   "ExtendedPbrShadowBiasNormal(surfaceNormal.geometricNormal, "
+                   "visibilitySurfaceToLight, extendedTerms)"));
 }
 
 TEST(RenderingConventionTests,
@@ -1771,7 +1778,8 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(containsIgnoringWhitespace(
       deferredDirectional,
       "ComputeDiffuseAmbientFloor("
-      "albedo.rgb, occlusion, ssao, environmentIntensity, bounceIntensity);"));
+      "albedo.rgb, occlusion, ssao, environmentIntensity, bounceIntensity) *"
+      "((1.0 - ddgiCoverage) * diffuseReflectionWeight);"));
 
   EXPECT_TRUE(contains(forwardOpaque, "float bounceIntensity"));
   EXPECT_TRUE(contains(forwardOpaque, "float environmentFloorScale"));
@@ -1782,7 +1790,8 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(containsIgnoringWhitespace(
       forwardOpaque,
       "ComputeForwardAmbientFloor("
-      "baseColor, occlusion, environmentIntensity, uLighting.bounceIntensity);"));
+      "diffuseBaseColor, occlusion, environmentIntensity, bounceIntensity) *"
+      "(1.0 - ddgiCoverage);"));
 
   EXPECT_TRUE(contains(forwardTransparent, "float bounceIntensity"));
   EXPECT_TRUE(contains(forwardTransparent, "float environmentFloorScale"));
@@ -1793,7 +1802,7 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(containsIgnoringWhitespace(
       forwardTransparent,
       "ComputeTransparentAmbientFloor("
-      "baseColor, occlusion, environmentIntensity, uLighting.bounceIntensity);"));
+      "diffuseBaseColor, occlusion, environmentIntensity, uLighting.bounceIntensity);"));
 }
 
 TEST(RenderingConventionTests,
@@ -1886,35 +1895,35 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(containsIgnoringWhitespace(
       deferredDirectional,
       "EvaluateDiffuseBounceLight("
-      "albedo.rgb, metallic, normal, geometricNormal, V, L, lightColor,"
+      "albedo.rgb * diffuseReflectionWeight, metallic, normal, geometricNormal, V, L, lightColor,"
       "shadowFactor, occlusion, bounceIntensity);"));
 
   EXPECT_TRUE(contains(pointLight, "float3 unshadowedRadiance = radiance;"));
   EXPECT_TRUE(containsIgnoringWhitespace(
       pointLight,
       "EvaluateDiffuseBounceLight("
-      "albedo.rgb, metallic, normal, geometricNormal, V, L,"
+      "albedo.rgb * ExtendedPbrDiffuseReflectionWeight(extended), metallic, normal, geometricNormal, V, L,"
       "unshadowedRadiance, lightVisibility, saturate(material.z),"
-      "pc.bounceIntensity);"));
+      "bounceIntensity);"));
   EXPECT_TRUE(contains(tiledLighting, "float3 unshadowedRadiance = radiance;"));
   EXPECT_TRUE(containsIgnoringWhitespace(
       tiledLighting,
       "EvaluateDiffuseBounceLight("
-      "albedo.rgb, metallic, normal, geometricNormal, V, L,"
+      "albedo.rgb * ExtendedPbrDiffuseReflectionWeight(extended), metallic, normal, geometricNormal, V, L,"
       "unshadowedRadiance, lightVisibility, saturate(material.z),"
-      "pc.bounceIntensity);"));
+      "bounceIntensity);"));
 
   EXPECT_TRUE(containsIgnoringWhitespace(
       forwardOpaque,
       "EvaluateDiffuseBounceLight("
-      "baseColor, metallic, surfaceNormal.shadingNormal,"
+      "diffuseBaseColor, metallic, surfaceNormal.shadingNormal,"
       "surfaceNormal.geometricNormal, V, directionalL,"
       "directionalRadiance, shadowFactor, occlusion,"
-      "uLighting.bounceIntensity);"));
+      "bounceIntensity);"));
   EXPECT_TRUE(containsIgnoringWhitespace(
       forwardTransparent,
       "EvaluateDiffuseBounceLight("
-      "baseColor, metallic, surfaceNormal.shadingNormal,"
+      "diffuseBaseColor, metallic, surfaceNormal.shadingNormal,"
       "surfaceNormal.geometricNormal, V, directionalL,"
       "directionalRadiance, shadowFactor, occlusion,"
       "uLighting.bounceIntensity);"));

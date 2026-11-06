@@ -50,6 +50,7 @@ class BloomManager;
 class TemporalManager;
 class RayShadowManager;
 class ReferencePathTracePass;
+class PbrAuxiliaryPass;
 class DdgiManager;
 class BimManager;
 enum class BimDisciplinePreset : uint32_t;
@@ -220,6 +221,7 @@ private:
     std::unique_ptr<TemporalManager> temporalManager;
     std::unique_ptr<RayShadowManager> rayShadowManager;
     std::unique_ptr<ReferencePathTracePass> referencePathTracePass;
+    std::unique_ptr<PbrAuxiliaryPass> pbrAuxiliaryPass;
     std::unique_ptr<DdgiManager> ddgiManager;
     std::unique_ptr<ExposureManager> exposureManager;
     std::unique_ptr<GraphicsPipelineBuilder> pipelineBuilder;
@@ -635,6 +637,7 @@ private:
   void writePendingScreenshot(uint32_t frameSlot, const FrameRecordParams& params);
   bool referencePathActive() const;
   void ensureReferencePathResources();
+  void ensureExtendedPbrResources();
   bool recordReferencePathTrace(VkCommandBuffer, const FrameRecordParams&);
   void finishReferencePathTrace(VkCommandBuffer);
   void collectReferenceDiagnostics(uint32_t imageIndex);

@@ -27,6 +27,19 @@ DdgiLookupResult LookupDdgiDiffuseReceiver(GpuMaterial material, uint objectFlag
     return LookupDdgiIrradiance(world, geometricNormal, shadingNormal, viewDirection);
 }
 
+// Independent opposite-hemisphere query. Negating the view bias as well as both
+// normals places the receiver on the transmitted side of the geometric face.
+// This supplies incident irradiance, not an extra alpha/straight-through ray.
+DdgiLookupResult LookupDdgiDiffuseBackReceiver(GpuMaterial material, uint objectFlags,
+    float transmissionFactor, float diffuseTransmissionFactor, float3 world,
+    float3 geometricNormal, float3 shadingNormal, float3 viewDirection)
+{
+    if (!isfinite(diffuseTransmissionFactor) || diffuseTransmissionFactor <= 0.0)
+        return (DdgiLookupResult)0;
+    return LookupDdgiDiffuseReceiver(material, objectFlags, transmissionFactor,
+        world, -geometricNormal, -shadingNormal, -viewDirection);
+}
+
 // DDGI stores physical incident irradiance E. Apply the Lambertian 1/PI once
 // before the caller applies receiver albedo and diffuse Fresnel/metalness.
 // The existing environment fallback keeps its historical brightness convention;

@@ -21,6 +21,17 @@ bool hasStencil(VkFormat format) {
          format == VK_FORMAT_D16_UNORM_S8_UINT || format == VK_FORMAT_S8_UINT;
 }
 
+bool hasDepth(VkFormat format) {
+  return format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_X8_D24_UNORM_PACK32 ||
+         format == VK_FORMAT_D32_SFLOAT || format == VK_FORMAT_D16_UNORM_S8_UINT ||
+         format == VK_FORMAT_D24_UNORM_S8_UINT || format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+}
+
+bool storeOpWrites(VkAttachmentStoreOp operation) {
+  return operation == VK_ATTACHMENT_STORE_OP_STORE ||
+         operation == VK_ATTACHMENT_STORE_OP_DONT_CARE;
+}
+
 struct LayoutAccess {
   VkPipelineStageFlags2 stages;
   VkAccessFlags2 access;
@@ -114,6 +125,15 @@ void transitionAttachments(VkCommandBuffer cmd, const ActiveRendering &active,
     barrier.srcAccessMask = source.access;
     barrier.dstStageMask = destination.stages;
     barrier.dstAccessMask = destination.access;
+    if (!begin && index == active.pass->depth.attachment &&
+        ((hasDepth(attachment.format) && storeOpWrites(attachment.storeOp)) ||
+         (hasStencil(attachment.format) && storeOpWrites(attachment.stencilStoreOp)))) {
+      // Read-only depth/stencil tests do not make the attachment's STORE or
+      // DONT_CARE operation read-only. Both operations write at scope end,
+      // including scopes with no draws, before the final layout transition.
+      barrier.srcStageMask |= VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+      barrier.srcAccessMask |= VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    }
     if (index == active.pass->depthResolve.attachment) {
       // Dynamic-rendering depth/stencil resolves execute at color output,
       // including when the destination image has a depth/stencil format.

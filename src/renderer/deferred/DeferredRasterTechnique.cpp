@@ -18,6 +18,8 @@
 #include "Container/renderer/deferred/DeferredRasterPostProcess.h"
 #include "Container/renderer/deferred/DeferredRasterResourceBridge.h"
 #include "Container/renderer/deferred/DeferredRasterSceneColorReadBarrierRecorder.h"
+#include "Container/renderer/deferred/DeferredRasterSceneGpuCullRoutePlanner.h"
+#include "Container/renderer/scene/PbrAuxiliaryPass.h"
 #include "Container/renderer/deferred/DeferredRasterScenePassRecorder.h"
 #include "Container/renderer/deferred/DeferredRasterTileCullPlanner.h"
 #include "Container/renderer/deferred/DeferredRasterTileCullRecorder.h"
@@ -1439,6 +1441,75 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                                bimDescriptorSets)));
                 });
 
+  graph.addPass(RenderPassId::PbrAuxiliary,
+                [deferred](VkCommandBuffer cmd, const FrameRecordParams &p) {
+    auto* pass = p.services.pbrAuxiliaryPass;
+    if (!pass || !pass->ready() || !p.pushConstants.bindless) return;
+    const auto scene = deferredRasterScenePassInputs(
+        p, SceneRasterPassKind::GBuffer, *deferred);
+    const auto* cull = scene.gpuCullManager;
+    const bool cullReady = cull && cull->isReady();
+    const auto route = buildDeferredRasterSceneGpuCullRoutePlan(
+        {.kind = SceneRasterPassKind::GBuffer,
+         .gpuCullManagerReady = cullReady,
+         .frustumCullActive = scene.frustumCullActive,
+         .frustumDrawsValid = cullReady && cull->frustumDrawsValid(p.runtime.imageIndex),
+         .occlusionCullActive = scene.occlusionCullActive,
+         .occlusionDrawsValid = cullReady && cull->occlusionDrawsValid(p.runtime.imageIndex)});
+    const auto plan = buildSceneRasterPassPlan(
+        {.kind = SceneRasterPassKind::GBuffer,
+         .gpuIndirectAvailable = route.gpuIndirectAvailable,
+         .occludedGpuIndirectAvailable = route.occludedGpuIndirectAvailable,
+         .preferOccludedGpuIndirect = route.preferOccludedGpuIndirect,
+         .draws = scene.draws,
+         .pipelines = {.primary = pass->backCullPipeline(),
+                       .frontCull = pass->frontCullPipeline(),
+                       .noCull = pass->noCullPipeline()}});
+    pass->begin(cmd, p.runtime.imageIndex);
+    recordSceneViewportAndScissor(cmd, pass->extent());
+    static_cast<void>(recordSceneOpaqueDrawCommands(
+        cmd, {.plan = &plan.drawPlan,
+              .geometry = scene.geometry,
+              .pipelines = plan.pipelines,
+              .pipelineLayout = pass->pipelineLayout(),
+              .pushConstants = *p.pushConstants.bindless,
+              .imageIndex = p.runtime.imageIndex,
+              .debugOverlay = scene.debugOverlay,
+              .gpuCullManager = cull}));
+    auto diagnostic = scene.diagnosticCube;
+    diagnostic.pipeline = pass->backCullPipeline();
+    diagnostic.pipelineLayout = pass->pipelineLayout();
+    static_cast<void>(recordSceneDiagnosticCubeCommands(cmd, diagnostic));
+
+    // Replay the same mesh/placeholder, cull, compaction, and semantic routes
+    // after Scene geometry. Equal-depth ownership follows G-buffer ordering.
+    const std::array<VkDescriptorSet, 1> sets = {deferredRasterBimSceneDescriptorSet(p)};
+    const auto bim = deferredRasterBimSurfacePassInputs(
+        p, BimSurfacePassKind::GBuffer, *deferred, sets);
+    const auto bimPlan = buildBimSurfaceFramePassPlan(
+        {.kind = BimSurfacePassKind::GBuffer,
+         .passReady = bim.passReady,
+         .draws = bim.binding.draws,
+         .geometry = bim.binding.geometry,
+         .pipelines = {.singleSided = pass->backCullPipeline(),
+                       .windingFlipped = pass->frontCullPipeline(),
+                       .doubleSided = pass->noCullPipeline()},
+         .pushConstants = p.pushConstants.bindless,
+         .semanticColorMode = bim.binding.semanticColorMode});
+    static_cast<void>(recordBimSurfacePassCommands(
+        cmd, {.plan = &bimPlan,
+              .geometry = bim.binding.geometry,
+              .singleSidedPipeline = pass->backCullPipeline(),
+              .windingFlippedPipeline = pass->frontCullPipeline(),
+              .doubleSidedPipeline = pass->noCullPipeline(),
+              .pipelineLayout = pass->pipelineLayout(),
+              .pushConstants = bimSurfaceRasterPassPushConstants(
+                  *p.pushConstants.bindless, bimPlan),
+              .debugOverlay = bim.debugOverlay,
+              .bimManager = bim.bimManager}));
+    pass->end(cmd);
+  });
+
   registerRasterTransparentPickPass(graph, deferred);
 
   graph.addPass(
@@ -1857,6 +1928,12 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
           return renderPassMissingResource(RenderResourceId::BimGeometry);
         }
         return renderPassReady();
+      });
+
+  graph.setPassReadiness(RenderPassId::PbrAuxiliary,
+      [](const FrameRecordParams &p) {
+        return p.services.pbrAuxiliaryPass && p.services.pbrAuxiliaryPass->ready()
+                   ? renderPassReady() : renderPassNotNeeded();
       });
 
   graph.setPassReadiness(RenderPassId::OitClear,

@@ -40,6 +40,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/RendererFrontendDeformationTelemetry.cpp
     renderer/core/RendererFrontendReference.cpp
     renderer/scene/GltfDeformationPass.cpp
+    renderer/scene/PbrAuxiliaryPass.cpp
     renderer/core/RendererTelemetry.cpp
     renderer/core/RenderGraph.cpp
     renderer/core/RenderPassGpuProfiler.cpp

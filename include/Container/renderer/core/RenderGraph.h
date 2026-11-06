@@ -60,6 +60,7 @@ enum class RenderPassId : uint8_t {
   RayShadowFilter,
   DdgiTrace,
   DdgiUpdate,
+  PbrAuxiliary,
   Count,
   Invalid = Count,
 };
@@ -111,6 +112,8 @@ enum class RenderResourceId : uint8_t {
   RayShadowVisibility,
   DdgiRays,
   DdgiIrradiance,
+  GBufferAnisotropy,
+  GBufferDiffuseTransmission,
   Count,
   Invalid = Count,
 };

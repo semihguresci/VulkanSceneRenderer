@@ -1491,3 +1491,58 @@ target_compile_definitions(light_edit_generation_gpu_tests PRIVATE
 add_dependencies(light_edit_generation_gpu_tests shaders_all light_edit_contract_shader)
 set_tests_properties(light_edit_generation_gpu_tests PROPERTIES
     LABELS "requires-vulkan;requires-display;lighting;history" RUN_SERIAL TRUE TIMEOUT 180)
+
+set(EXTENDED_PBR_CONTRACT_SPIRV "${CMAKE_BINARY_DIR}/test_shaders/extended_pbr_contract.comp.spv")
+add_custom_command(
+    OUTPUT "${EXTENDED_PBR_CONTRACT_SPIRV}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/test_shaders"
+    COMMAND "${SLANGC_EXECUTABLE}" "${DEFAULT_SHADER_DIR}/extended_pbr_contract.slang"
+            ${SLANG_SPIRV_FLAGS} -entry computeMain -o "${EXTENDED_PBR_CONTRACT_SPIRV}"
+    DEPENDS "${DEFAULT_SHADER_DIR}/extended_pbr_contract.slang"
+            ${SLANG_INCLUDE_SOURCES} "${CMAKE_CURRENT_LIST_FILE}"
+            "${CMAKE_SOURCE_DIR}/cmake/Shaders.cmake" "${SLANGC_EXECUTABLE}"
+    VERBATIM
+)
+add_custom_target(extended_pbr_contract_shader DEPENDS "${EXTENDED_PBR_CONTRACT_SPIRV}")
+add_custom_test(extended_pbr_gpu_tests
+    ${TEST_RENDERER_CORE_DIR}/extended_pbr_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_gpu_resource VulkanSceneRenderer_geometry nlohmann_json::nlohmann_json
+)
+target_compile_definitions(extended_pbr_gpu_tests PRIVATE
+    CONTAINER_EXTENDED_PBR_SHADER_DIR="${CMAKE_BINARY_DIR}/test_shaders"
+    CONTAINER_EXTENDED_PBR_REFERENCE_FILE="${CMAKE_SOURCE_DIR}/tests/fixtures/rendering/extended_pbr_reference.json")
+add_dependencies(extended_pbr_gpu_tests extended_pbr_contract_shader)
+set_tests_properties(extended_pbr_gpu_tests PROPERTIES
+    LABELS "requires-vulkan;materials;pbr" RUN_SERIAL TRUE TIMEOUT 120)
+
+set(EXTENDED_PBR_RESOLVE_OUTPUTS)
+foreach(EXTENDED_PBR_RESOLVE_STAGE vert frag comp)
+    if(EXTENDED_PBR_RESOLVE_STAGE STREQUAL "vert")
+        set(EXTENDED_PBR_RESOLVE_ENTRY vertMain)
+    elseif(EXTENDED_PBR_RESOLVE_STAGE STREQUAL "frag")
+        set(EXTENDED_PBR_RESOLVE_ENTRY fragMain)
+    else()
+        set(EXTENDED_PBR_RESOLVE_ENTRY computeMain)
+    endif()
+    set(EXTENDED_PBR_RESOLVE_OUTPUT "${CMAKE_BINARY_DIR}/test_shaders/extended_pbr_resolve_contract.${EXTENDED_PBR_RESOLVE_STAGE}.spv")
+    add_custom_command(
+        OUTPUT "${EXTENDED_PBR_RESOLVE_OUTPUT}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/test_shaders"
+        COMMAND "${SLANGC_EXECUTABLE}" "${DEFAULT_SHADER_DIR}/extended_pbr_resolve_contract.slang"
+                ${SLANG_SPIRV_FLAGS} -entry "${EXTENDED_PBR_RESOLVE_ENTRY}" -o "${EXTENDED_PBR_RESOLVE_OUTPUT}"
+        DEPENDS "${DEFAULT_SHADER_DIR}/extended_pbr_resolve_contract.slang"
+                ${SLANG_INCLUDE_SOURCES} "${CMAKE_CURRENT_LIST_FILE}"
+                "${CMAKE_SOURCE_DIR}/cmake/Shaders.cmake" "${SLANGC_EXECUTABLE}"
+        VERBATIM
+    )
+    list(APPEND EXTENDED_PBR_RESOLVE_OUTPUTS "${EXTENDED_PBR_RESOLVE_OUTPUT}")
+endforeach()
+add_custom_target(extended_pbr_resolve_contract_shader DEPENDS ${EXTENDED_PBR_RESOLVE_OUTPUTS})
+add_custom_test(extended_pbr_resolve_gpu_tests
+    ${TEST_RENDERER_CORE_DIR}/extended_pbr_resolve_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_gpu_resource VulkanSceneRenderer_geometry)
+target_compile_definitions(extended_pbr_resolve_gpu_tests PRIVATE
+    CONTAINER_EXTENDED_PBR_SHADER_DIR="${CMAKE_BINARY_DIR}/test_shaders")
+add_dependencies(extended_pbr_resolve_gpu_tests extended_pbr_resolve_contract_shader)
+set_tests_properties(extended_pbr_resolve_gpu_tests PROPERTIES
+    LABELS "requires-vulkan;materials;pbr;msaa" RUN_SERIAL TRUE TIMEOUT 120)

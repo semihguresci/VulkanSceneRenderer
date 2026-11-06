@@ -82,7 +82,6 @@ FrameFramebufferBinding frameFramebufferBinding(RenderingTargetHandle framebuffe
 
 }  // namespace
 
-// -----------------------------------------------------------------------
 FrameResourceManager::FrameResourceManager(
     std::shared_ptr<container::gpu::VulkanDevice> device,
     container::gpu::AllocationManager&            allocationManager,
@@ -122,7 +121,7 @@ FrameResourceManager::~FrameResourceManager() {
 // -----------------------------------------------------------------------
 void FrameResourceManager::createDescriptorSetLayouts() {
   if (lightingLayout_ == VK_NULL_HANDLE) {
-    const std::array<VkDescriptorSetLayoutBinding, 23> b = {{
+    const std::array<VkDescriptorSetLayoutBinding, 25> b = {{
         {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,  1,
          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_SAMPLER,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -150,6 +149,8 @@ void FrameResourceManager::createDescriptorSetLayouts() {
         {20, VK_DESCRIPTOR_TYPE_SAMPLER,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {21, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // material layers
         {22, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // material sheen
+        {23, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // anisotropy tangent/strength
+        {24, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // diffuse transmission color/factor
     }};
     const std::vector<VkDescriptorBindingFlags> flags(b.size(), 0);
     lightingLayout_ = pipelineMgr_->createDescriptorSetLayout(
@@ -345,7 +346,7 @@ void FrameResourceManager::create(
     std::array<VkDescriptorPoolSize, 3> sizes = {{
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, n * 3},
         {VK_DESCRIPTOR_TYPE_SAMPLER, n * 6},    // gbuf + shadow + local shadow + env + BRDF LUT + AO
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 14}, // 8(gbuf/depth) + 2(shadows) + 3(IBL) + 1(AO)
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 16}, // G-buffer, extended PBR, shadows, IBL, AO
     }};
     VkDescriptorPoolCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     ci.maxSets       = n;
@@ -925,7 +926,9 @@ void FrameResourceManager::updateDescriptorSets(
     VkBuffer    tileGridBuffer,
     VkDeviceSize tileGridBufferSize,
     std::span<const container::gpu::AllocatedBuffer> exposureStateBuffers,
-    VkDeviceSize exposureStateBufferSize) {
+    VkDeviceSize exposureStateBufferSize,
+    std::span<const VkImageView> anisotropyViews,
+    std::span<const VkImageView> diffuseTransmissionViews) {
   (void)objectBuffer;  // reserved for future per-frame object buffer binding
   if (cameraBuffers.empty()) return;
 
@@ -962,6 +965,9 @@ void FrameResourceManager::updateDescriptorSets(
     nextKey.exposureStateBuffers.push_back(exposureStateBuffer.buffer);
   }
   nextKey.exposureStateBufferSize = exposureStateBufferSize;
+  nextKey.anisotropyViews.assign(anisotropyViews.begin(), anisotropyViews.end());
+  nextKey.diffuseTransmissionViews.assign(diffuseTransmissionViews.begin(),
+                                          diffuseTransmissionViews.end());
 
   if (descriptorUpdateKeyValid_ && nextKey == descriptorUpdateKey_) {
     return;
@@ -991,6 +997,15 @@ void FrameResourceManager::updateDescriptorSets(
     auto specular = imgInfo(f.specular.view,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     auto materialLayers = imgInfo(f.materialLayers.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     auto materialSheen = imgInfo(f.materialSheen.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    // Inactive materials never read these fallbacks. Keep all bindings valid
+    // without allocating full-resolution outputs for ordinary scenes.
+    auto anisotropy = imgInfo(frameIndex < anisotropyViews.size()
+                                 ? anisotropyViews[frameIndex] : f.normal.view,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    auto diffuseTransmission = imgInfo(
+        frameIndex < diffuseTransmissionViews.size()
+            ? diffuseTransmissionViews[frameIndex] : f.normal.view,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     auto depthImg = imgInfo(f.depthSamplingView,
                             VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL);
     auto scColor  = imgInfo(f.sceneColor.view,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -999,7 +1014,7 @@ void FrameResourceManager::updateDescriptorSets(
 
     // Lighting set
     {
-      std::array<VkWriteDescriptorSet, 23> w{};
+      std::array<VkWriteDescriptorSet, 25> w{};
       auto set = f.lightingDescriptorSet;
       auto buf = [&](int b, VkDescriptorType t, const VkDescriptorBufferInfo* i) {
         w[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1140,6 +1155,8 @@ void FrameResourceManager::updateDescriptorSets(
       img(17, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &specular);
       img(21, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &materialLayers);
       img(22, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &materialSheen);
+      img(23, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &anisotropy);
+      img(24, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &diffuseTransmission);
 
       vkUpdateDescriptorSets(dev, static_cast<uint32_t>(w.size()), w.data(), 0, nullptr);
     }

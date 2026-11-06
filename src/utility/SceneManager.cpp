@@ -834,18 +834,6 @@ prepareAnimationPlayback(const tinygltf::Model& model, std::string_view path) {
   }
   const bool required = std::ranges::find(model.extensionsRequired, "KHR_animation_pointer")
                         != model.extensionsRequired.end();
-  for (size_t index = 0; index < library.clips.size(); ++index) {
-    auto& clip = library.clips[index];
-    std::erase_if(clip.tracks, [&](const AnimationTrack& track) {
-      const bool deferredMaterial = track.target.kind == AnimationTargetKind::Material &&
-          (track.target.property.starts_with("extensions/KHR_materials_anisotropy/") ||
-           track.target.property.starts_with("extensions/KHR_materials_diffuse_transmission/"));
-      if (deferredMaterial)
-        library.diagnostics.push_back({index, track.sourceChannel,
-            "The target material extension is unavailable in this renderer"});
-      return deferredMaterial;
-    });
-  }
   for (const auto& diagnostic : library.diagnostics) {
     const auto& channel = model.animations.at(diagnostic.clip).channels.at(diagnostic.channel);
     const auto message = std::format("glTF asset '{}', animation {} channel {}: {}", path,
@@ -861,8 +849,7 @@ container::geometry::gltf::LoadOptions sceneTextureLoadOptions() {
   container::geometry::gltf::LoadOptions options;
   options.maxInputBytes=512ull*1024*1024;
   options.retainEncodedImages=true;
-  options.unavailableRuntimeExtensions={"KHR_materials_anisotropy","KHR_materials_diffuse_transmission",
-      "EXT_mesh_gpu_instancing","KHR_materials_variants"};
+  options.unavailableRuntimeExtensions={"EXT_mesh_gpu_instancing","KHR_materials_variants"};
   return options;
 }
 } // namespace
@@ -2591,6 +2578,13 @@ void SceneManager::uploadMaterialBuffer() {
   if (gpuMaterials_.empty()) {
     gpuMaterials_.push_back(container::gpu::GpuMaterial{});
   }
+  hasExtendedPbrMaterials_ = std::ranges::any_of(gpuMaterials_, [](const auto& material) {
+    return material.anisotropyDiffuseFactors.x > 0.0f || material.anisotropyDiffuseFactors.z > 0.0f;
+  });
+  // Resolved MSAA material IDs can represent several owners, so every GPU
+  // material receives the same scene-wide auxiliary attachment flag.
+  for (auto& material : gpuMaterials_)
+    material.anisotropyDiffuseFactors.w = hasExtendedPbrMaterials_ ? 1.0f : 0.0f;
   gpuMaterialTemporalRevisions_.clear();
   gpuMaterialTemporalRevisions_.reserve(gpuMaterials_.size());
   for (const auto& material : gpuMaterials_) gpuMaterialTemporalRevisions_.push_back(container::temporal::materialRevision(material));

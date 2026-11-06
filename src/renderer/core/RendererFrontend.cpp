@@ -68,6 +68,7 @@
 #include "Container/renderer/resources/FrameResourceRegistry.h"
 #include "Container/renderer/scene/CameraController.h"
 #include "Container/renderer/scene/SceneController.h"
+#include "Container/renderer/scene/PbrAuxiliaryPass.h"
 #include "Container/renderer/scene/ScenePrimitives.h"
 #include "Container/renderer/scene/SceneProviderSynchronizer.h"
 #include "Container/renderer/shadow/ShadowCullManager.h"
@@ -4818,6 +4819,7 @@ void RendererFrontend::createGeometryBuffers() {
 }
 
 void RendererFrontend::createFrameResources() {
+  subs_.pbrAuxiliaryPass.reset();
   if (subs_.temporalManager)
     subs_.temporalManager->destroyImages();
   ensureObjectBuffers();
@@ -5073,13 +5075,20 @@ void RendererFrontend::updateFrameDescriptorSets(
           subs_.exposureManager->exposureStateBufferSize();
     }
     const auto objectBuffer = sceneObjectBuffer(0);
+    std::vector<VkImageView> anisotropyViews, diffuseTransmissionViews;
+    if (subs_.pbrAuxiliaryPass && subs_.pbrAuxiliaryPass->ready()) {
+      for (uint32_t i = 0; i < subs_.pbrAuxiliaryPass->frameCount(); ++i) {
+        anisotropyViews.push_back(subs_.pbrAuxiliaryPass->anisotropyView(i));
+        diffuseTransmissionViews.push_back(subs_.pbrAuxiliaryPass->diffuseTransmissionView(i));
+      }
+    }
     subs_.frameResourceManager->updateDescriptorSets(
         buffers_.cameras, objectBuffer, shadowView, shadowSampler,
         shadowUbos, localShadowView, localShadowSampler, localShadowUbos,
         irradianceView, prefilteredView, brdfLutView, envSampler,
         brdfLutSampler, aoTextureView, aoSampler, bloomTextureView,
         bloomSampler, tileGridBuffer, tileGridBufferSize, exposureStateBuffers,
-        exposureStateBufferSize);
+        exposureStateBufferSize, anisotropyViews, diffuseTransmissionViews);
   }
   if (preparedParams)
     updateReferenceColorSource(imageIndex, preparedParams->screenshot.sceneLinear);
@@ -5095,6 +5104,7 @@ void RendererFrontend::updateFrameDescriptorSets(
 }
 
 void RendererFrontend::destroyGBufferResources() {
+  subs_.pbrAuxiliaryPass.reset();
   subs_.referencePathTracePass.reset();
   referenceColorBound_.clear();
   referenceDiagnosticSeen_.clear();
@@ -7430,12 +7440,47 @@ void RendererFrontend::publishFrameRuntimeResourceBindings(
   }
 }
 
+void RendererFrontend::ensureExtendedPbrResources() {
+  if (!subs_.sceneManager || !subs_.frameResourceManager ||
+      !subs_.sceneManager->hasExtendedPbrMaterials() ||
+      (subs_.activeTechnique &&
+       subs_.activeTechnique->id() != RenderTechniqueId::DeferredRaster) ||
+      (subs_.pbrAuxiliaryPass && subs_.pbrAuxiliaryPass->ready())) {
+    return;
+  }
+  const auto count = subs_.frameResourceManager->frameCount();
+  if (count == 0) return;
+  // First activation can follow an animation or material edit. Descriptor sets
+  // are shared across frame slots, so retire every reader before publication.
+  if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
+  if (vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device()) != VK_SUCCESS)
+    throw std::runtime_error("Cannot retire extended material resources");
+  std::vector<VkImageView> depthViews;
+  depthViews.reserve(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    const auto* frame = subs_.frameResourceManager->frame(i);
+    depthViews.push_back(msaaSampleCount_ == VK_SAMPLE_COUNT_1_BIT
+                            ? frame->depthStencil.view
+                            : frame->depthStencilMsaa.view);
+  }
+  auto pass = std::make_unique<PbrAuxiliaryPass>(
+      svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
+  pass->createResources(container::util::executableDirectory(),
+                        subs_.sceneManager->descriptorSetLayout(),
+                        resources_.gBufferFormats.depthStencil,
+                        msaaSampleCount_, depthViews,
+                        svc_.swapChainManager.extent());
+  subs_.pbrAuxiliaryPass = std::move(pass);
+}
+
 FrameRecordParams
 RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
+  ensureExtendedPbrResources();
   publishFrameRuntimeResourceBindings(imageIndex);
   syncSceneProviders();
 
   FrameRecordParams p{};
+  p.services.pbrAuxiliaryPass = subs_.pbrAuxiliaryPass.get();
   p.runtime.frameSlot = frame_.currentFrame;
   p.runtime.imageIndex = imageIndex;
   p.runtime.activeTechnique =
