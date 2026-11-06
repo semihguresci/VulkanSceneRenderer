@@ -32,6 +32,12 @@ class SceneGraph {
   static constexpr uint32_t kInvalidNode =
       std::numeric_limits<uint32_t>::max();
 
+  SceneGraph();
+  SceneGraph(const SceneGraph&);
+  SceneGraph& operator=(const SceneGraph&);
+  SceneGraph(SceneGraph&&);
+  SceneGraph& operator=(SceneGraph&&);
+
   uint32_t createNode(const glm::mat4& localTransform, uint32_t materialIndex,
                       bool renderable = false,
                       uint32_t primitiveIndex = kInvalidNode,
@@ -54,6 +60,12 @@ class SceneGraph {
   [[nodiscard]] SceneNode* getNode(uint32_t nodeIndex);
   [[nodiscard]] size_t nodeCount() const { return nodes_.size(); }
   [[nodiscard]] uint64_t revision() const { return revision_; }
+  [[nodiscard]] uint64_t identity() const { return identity_; }
+  [[nodiscard]] uint64_t nodeIncarnation(uint32_t node) const noexcept {
+    // Nodes append throughout this graph's lifetime. Graph replacement gets
+    // a different identity even when a new node reuses the same index.
+    return node < nodes_.size() ? uint64_t(node) + 1 : 0;
+  }
   [[nodiscard]] bool isNodeEffectivelyVisible(uint32_t nodeIndex) const;
 
  private:
@@ -70,6 +82,7 @@ class SceneGraph {
   std::vector<uint32_t> roots_{};
   std::vector<uint32_t> renderableNodes_{};
   uint64_t revision_{0};
+  uint64_t identity_;
 };
 
 }  // namespace container::scene

@@ -16,6 +16,15 @@ target_link_libraries(VulkanSceneRenderer_bim_ui_support PUBLIC
 )
 
 # Renderer subsystem
+# CPU light intents and selected receipts are shared by UI and renderer.
+add_library(VulkanSceneRenderer_light_edit_support
+    renderer/lighting/EditableLight.cpp
+    renderer/lighting/LightEditReceipt.cpp
+)
+target_compile_features(VulkanSceneRenderer_light_edit_support PUBLIC cxx_std_23)
+target_include_directories(VulkanSceneRenderer_light_edit_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_link_libraries(VulkanSceneRenderer_light_edit_support PUBLIC Dep_Math Dep_VulkanCore)
+
 add_library(VulkanSceneRenderer_renderer
     renderer/core/RenderPassManager.cpp
     renderer/core/CommandBufferScopeRecorder.cpp
@@ -47,7 +56,6 @@ add_library(VulkanSceneRenderer_renderer
 
     renderer/lighting/EnvironmentManager.cpp
     renderer/lighting/AtmosphereLut.cpp
-    renderer/lighting/EditableLight.cpp
     renderer/lighting/LightGizmoIconAtlas.cpp
     renderer/lighting/DdgiProbeVolume.cpp
     renderer/lighting/DdgiSettings.cpp
@@ -201,6 +209,7 @@ target_include_directories(VulkanSceneRenderer_renderer PUBLIC
 )
 
 target_link_libraries(VulkanSceneRenderer_renderer PUBLIC
+    VulkanSceneRenderer_light_edit_support
     Dep_VulkanCore
     Dep_Math
     Dep_SceneIO

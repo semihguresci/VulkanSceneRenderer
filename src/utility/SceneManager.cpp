@@ -535,7 +535,7 @@ tinygltf::Light areaLightDefinitionFromValue(const tinygltf::Value& value) {
 
 std::optional<int> readAreaLightIndex(const tinygltf::Value& nodeExtension) {
   const std::optional<float> index = readAreaNumber(&nodeExtension, {"light"});
-  if (!index || *index < 0.0f) {
+  if (!index || *index < 0.0f || double(*index) > std::numeric_limits<int>::max()) {
     return std::nullopt;
   }
   return static_cast<int>(*index);
@@ -2141,13 +2141,28 @@ void SceneManager::appendSceneAsset(
   }
 }
 
-void SceneManager::collectAuthoredPunctualLights(const SceneGraph* graph, uint32_t editorRoot) {
-  authoredPointLights_.clear();
-  authoredDirectionalLights_.clear();
-  authoredAreaLights_.clear();
-  if (gltfModel_.nodes.empty()) return;
+AuthoredSceneLights SceneManager::publishedAuthoredSceneLights() const {
+  return {authoredPointLights_, authoredDirectionalLights_, authoredAreaLights_,
+          authoredPointBindings_, authoredDirectionalBindings_, authoredAreaBindings_};
+}
 
-  const auto appendLight = [&](const tinygltf::Node& node, const glm::mat4& sceneLocalTransform) {
+void SceneManager::collectAuthoredPunctualLights(const SceneGraph* graph, uint32_t editorRoot) {
+  AuthoredSceneLights next;
+  const auto publish = [&] {
+    authoredPointLights_.swap(next.points);
+    authoredDirectionalLights_.swap(next.directionals);
+    authoredAreaLights_.swap(next.areas);
+    authoredPointBindings_.swap(next.pointBindings);
+    authoredDirectionalBindings_.swap(next.directionalBindings);
+    authoredAreaBindings_.swap(next.areaBindings);
+  };
+  if (gltfModel_.nodes.empty()) {
+    publish();
+    return;
+  }
+
+  const auto appendLight = [&](int32_t sourceNode, const glm::mat4& sceneLocalTransform) {
+    const auto& node = gltfModel_.nodes[size_t(sourceNode)];
     if (node.light >= 0 &&
         node.light < static_cast<int>(gltfModel_.lights.size())) {
       const tinygltf::Light& lightDefinition =
@@ -2155,7 +2170,8 @@ void SceneManager::collectAuthoredPunctualLights(const SceneGraph* graph, uint32
       if (const std::optional<container::gpu::AreaLightData> areaLight =
               makeGltfAreaLightData(lightDefinition, sceneLocalTransform,
                                     config_.importScale)) {
-        authoredAreaLights_.push_back(*areaLight);
+        next.areaBindings.push_back({sourceNode, {}, node.light});
+        next.areas.push_back(*areaLight);
       } else if (lightDefinition.type == "point") {
         const glm::vec3 sceneLocalPosition =
             glm::vec3(sceneLocalTransform * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
@@ -2168,7 +2184,8 @@ void SceneManager::collectAuthoredPunctualLights(const SceneGraph* graph, uint32
         pointLight.colorIntensity =
             glm::vec4(pointLightColorOrDefault(lightDefinition),
                       pointLightIntensityOrDefault(lightDefinition));
-        authoredPointLights_.push_back(pointLight);
+        next.pointBindings.push_back({sourceNode, {}, node.light});
+        next.points.push_back(pointLight);
       } else if (lightDefinition.type == "directional") {
         AuthoredDirectionalLight directionalLight{};
         directionalLight.direction =
@@ -2177,7 +2194,8 @@ void SceneManager::collectAuthoredPunctualLights(const SceneGraph* graph, uint32
         directionalLight.colorIntensity =
             glm::vec4(pointLightColorOrDefault(lightDefinition),
                       pointLightIntensityOrDefault(lightDefinition));
-        authoredDirectionalLights_.push_back(directionalLight);
+        next.directionalBindings.push_back({sourceNode, {}, node.light});
+        next.directionals.push_back(directionalLight);
       } else if (lightDefinition.type == "spot") {
         const glm::vec3 sceneLocalPosition =
             glm::vec3(sceneLocalTransform *
@@ -2199,7 +2217,8 @@ void SceneManager::collectAuthoredPunctualLights(const SceneGraph* graph, uint32
             glm::vec4(sceneLocalDirection, innerCos);
         spotLight.coneOuterCosType =
             glm::vec4(outerCos, container::gpu::kLightTypeSpot, 0.0f, 0.0f);
-        authoredPointLights_.push_back(spotLight);
+        next.pointBindings.push_back({sourceNode, {}, node.light});
+        next.points.push_back(spotLight);
       }
     }
 
@@ -2227,7 +2246,8 @@ void SceneManager::collectAuthoredPunctualLights(const SceneGraph* graph, uint32
       if (const std::optional<container::gpu::AreaLightData> areaLight =
               makeGltfAreaLightData(areaDefinition, sceneLocalTransform,
                                     config_.importScale)) {
-        authoredAreaLights_.push_back(*areaLight);
+        next.areaBindings.push_back({sourceNode, extensionName, *areaLightIndex});
+        next.areas.push_back(*areaLight);
       }
     }
 
@@ -2247,10 +2267,11 @@ void SceneManager::collectAuthoredPunctualLights(const SceneGraph* graph, uint32
       if (!node) continue;
       const auto transform = work.node == editorRoot ? work.parent : work.parent * node->localTransform;
       if (node->sourceNodeIndex >= 0 && size_t(node->sourceNodeIndex) < gltfModel_.nodes.size())
-        appendLight(gltfModel_.nodes[size_t(node->sourceNodeIndex)], transform);
+        appendLight(node->sourceNodeIndex, transform);
       for (auto child = node->children.rbegin(); child != node->children.rend(); ++child)
         pending.push_back({*child, transform});
     }
+    publish();
     return;
   }
 
@@ -2261,11 +2282,12 @@ void SceneManager::collectAuthoredPunctualLights(const SceneGraph* graph, uint32
         visited[size_t(index)] = true;
         const auto& node = gltfModel_.nodes[size_t(index)];
         const auto transform = parent * nodeLocalTransform(node);
-        appendLight(node, transform);
+        appendLight(index, transform);
         for (const int child : node.children) traverseNode(child, transform);
       };
   const auto importRoot = importScaleTransform(config_.importScale);
   for (const int root : activeSceneRootNodes(gltfModel_)) traverseNode(root, importRoot);
+  publish();
 }
 
 void SceneManager::publishAnimationChanges(
@@ -2797,6 +2819,9 @@ void SceneManager::resetLoadedAssets() {
   authoredPointLights_.clear();
   authoredDirectionalLights_.clear();
   authoredAreaLights_.clear();
+  authoredPointBindings_.clear();
+  authoredDirectionalBindings_.clear();
+  authoredAreaBindings_.clear();
 }
 
 bool SceneManager::hasVolumeMaterials() const noexcept {

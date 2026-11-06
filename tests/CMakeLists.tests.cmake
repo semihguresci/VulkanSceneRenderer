@@ -1410,6 +1410,18 @@ add_custom_test(gltf_node_flags_tests
 set_tests_properties(gltf_node_flags_tests PROPERTIES LABELS "gltf;scene;cpu" TIMEOUT 60)
 
 
+add_custom_test(edit_history_tests
+    ${TESTS_DIR}/utility/edit_history_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_Math
+)
+add_custom_test(light_edit_receipt_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/light_edit_receipt_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_light_edit_support VulkanSceneRenderer_scene
+)
+add_custom_test(world_light_values_tests
+    ${TESTS_DIR}/ecs/world_light_values_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_ecs VulkanSceneRenderer_scene
+)
 add_custom_test(gltf_animation_tests
     ${TEST_GEOMETRY_DIR}/gltf_animation_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_geometry VulkanSceneRenderer_scene
@@ -1445,3 +1457,22 @@ add_custom_test(gltf_deformation_loader_tests
     ${TEST_GEOMETRY_DIR}/gltf_deformation_loader_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_geometry
 )
+
+set(CONTAINER_LIGHT_EDIT_SPIRV "${CMAKE_BINARY_DIR}/test_shaders/light_edit_contract.comp.spv")
+add_custom_command(OUTPUT "${CONTAINER_LIGHT_EDIT_SPIRV}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_BINARY_DIR}/test_shaders"
+    COMMAND "${SLANGC_EXECUTABLE}" "${DEFAULT_SHADER_DIR}/light_edit_contract.slang"
+        ${SLANG_SPIRV_FLAGS} -entry computeMain -o "${CONTAINER_LIGHT_EDIT_SPIRV}"
+    DEPENDS "${DEFAULT_SHADER_DIR}/light_edit_contract.slang" ${SLANG_INCLUDE_SOURCES}
+        "${CMAKE_CURRENT_LIST_FILE}" "${SLANGC_EXECUTABLE}"
+    VERBATIM)
+add_custom_target(light_edit_contract_shader DEPENDS "${CONTAINER_LIGHT_EDIT_SPIRV}")
+add_custom_test(light_edit_generation_gpu_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/light_edit_generation_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer)
+target_compile_definitions(light_edit_generation_gpu_tests PRIVATE
+    CONTAINER_LIGHT_EDIT_SHADER_PATH="${CONTAINER_LIGHT_EDIT_SPIRV}"
+    CONTAINER_LIGHTING_SHADER_ROOT="${CMAKE_BINARY_DIR}")
+add_dependencies(light_edit_generation_gpu_tests shaders_all light_edit_contract_shader)
+set_tests_properties(light_edit_generation_gpu_tests PROPERTIES
+    LABELS "requires-vulkan;requires-display;lighting;history" RUN_SERIAL TRUE TIMEOUT 180)

@@ -2075,8 +2075,8 @@ TEST(RenderingConventionTests, SpotLightsSharePointLightDataWithConeFields) {
   EXPECT_TRUE(contains(lightingStructs, "LIGHT_TYPE_SPOT = 1.0"));
   EXPECT_TRUE(contains(sceneManager, "gltfSpotConeCosines"));
   EXPECT_TRUE(contains(sceneManager, "lightDefinition.type == \"spot\""));
-  EXPECT_TRUE(
-      contains(sceneManager, "authoredPointLights_.push_back(spotLight)"));
+  EXPECT_TRUE(contains(sceneManager, "next.points.push_back(spotLight)"));
+  EXPECT_TRUE(contains(sceneManager, "authoredPointLights_.swap(next.points)"));
   EXPECT_TRUE(
       contains(lightingManager, "authoredLight.coneOuterCosType.y >= 0.5f"));
   EXPECT_TRUE(contains(pointLight, "SpotLightConeAttenuation"));
@@ -2189,8 +2189,8 @@ TEST(RenderingConventionTests, RectangularAndDiskAreaLightsImportToCpuBuffers) {
   EXPECT_TRUE(contains(sceneManager, "areaLightTypeFromString"));
   EXPECT_TRUE(contains(sceneManager, "type == \"rect\""));
   EXPECT_TRUE(contains(sceneManager, "type == \"disk\""));
-  EXPECT_TRUE(
-      contains(sceneManager, "authoredAreaLights_.push_back(*areaLight)"));
+  EXPECT_TRUE(contains(sceneManager, "next.areas.push_back(*areaLight)"));
+  EXPECT_TRUE(contains(sceneManager, "authoredAreaLights_.swap(next.areas)"));
   EXPECT_TRUE(contains(sceneManager, "gltfAreaLightTangent"));
   EXPECT_TRUE(contains(sceneManager, "gltfAreaLightBitangent"));
 
@@ -3031,7 +3031,7 @@ TEST(RenderingConventionTests, GltfPunctualPointLightsImportAsAuthoredLights) {
       contains(lightingManager, "sceneManager_->authoredPointLights()"));
   EXPECT_TRUE(
       contains(lightingManager, "sceneManager_->authoredDirectionalLights()"));
-  EXPECT_TRUE(contains(lightingManager, "authoredDirectionalLights().front()"));
+  EXPECT_TRUE(contains(lightingManager, "lights.front()"));
   EXPECT_TRUE(contains(lightingManager,
                        "glm::vec4(glm::vec3(authoredLight.direction), 0.0f)"));
   EXPECT_TRUE(contains(

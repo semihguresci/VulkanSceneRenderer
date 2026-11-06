@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <utility>
 
 namespace {
 
@@ -440,6 +441,26 @@ TEST(SceneGraph, GetNodeConstAndMutableAgree) {
   const auto& constGraph = graph;
   EXPECT_EQ(constGraph.getNode(idx)->materialIndex, 5u);
   EXPECT_EQ(graph.getNode(idx)->materialIndex, 5u);
+}
+
+TEST(SceneGraph, SceneLifetimeDistinguishesReusedNodeIndices) {
+  SceneGraph graph;
+  const auto node = graph.createNode(glm::mat4(1), 0);
+  const auto identity = graph.identity();
+  const auto incarnation = graph.nodeIncarnation(node);
+  graph.createNode(glm::mat4(1), 0);
+  EXPECT_EQ(graph.identity(), identity);
+  EXPECT_EQ(graph.nodeIncarnation(node), incarnation);
+
+  SceneGraph snapshot = graph;
+  EXPECT_NE(snapshot.identity(), identity);
+  SceneGraph moved = std::move(graph);
+  EXPECT_EQ(moved.identity(), identity);
+  EXPECT_EQ(moved.nodeIncarnation(node), incarnation);
+  EXPECT_NE(graph.identity(), moved.identity());
+  moved = SceneGraph{};
+  EXPECT_EQ(moved.createNode(glm::mat4(1), 0), node);
+  EXPECT_NE(moved.identity(), identity);
 }
 
 }  // namespace

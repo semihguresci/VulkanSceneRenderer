@@ -1,8 +1,10 @@
 #include <Container/utility/SceneGraph.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 #include <utility>
 
 #include <glm/geometric.hpp>
@@ -12,6 +14,16 @@
 namespace container::scene {
 
 namespace {
+
+uint64_t nextGraphIdentity() {
+  static std::atomic<uint64_t> next{1};
+  auto identity = next.load(std::memory_order_relaxed);
+  do {
+    if (identity == std::numeric_limits<uint64_t>::max())
+      throw std::overflow_error("Scene graph identities exhausted");
+  } while (!next.compare_exchange_weak(identity, identity + 1, std::memory_order_relaxed));
+  return identity;
+}
 
 bool matrixFinite(const glm::mat4& matrix) {
   for (int column = 0; column < 4; ++column) {
@@ -49,6 +61,30 @@ bool transformBasisInvertible(const glm::mat4& matrix) {
 }
 
 }  // namespace
+
+SceneGraph::SceneGraph() : identity_(nextGraphIdentity()) {}
+
+SceneGraph::SceneGraph(const SceneGraph& other)
+    : nodes_(other.nodes_), roots_(other.roots_), renderableNodes_(other.renderableNodes_),
+      revision_(other.revision_), identity_(nextGraphIdentity()) {}
+
+SceneGraph& SceneGraph::operator=(const SceneGraph& other) {
+  if (this != &other) *this = SceneGraph(other);
+  return *this;
+}
+
+SceneGraph::SceneGraph(SceneGraph&& other) : SceneGraph() { *this = std::move(other); }
+
+SceneGraph& SceneGraph::operator=(SceneGraph&& other) {
+  if (this == &other) return *this;
+  const auto replacementIdentity = nextGraphIdentity();
+  nodes_ = std::move(other.nodes_);
+  roots_ = std::move(other.roots_);
+  renderableNodes_ = std::move(other.renderableNodes_);
+  revision_ = std::exchange(other.revision_, 0);
+  identity_ = std::exchange(other.identity_, replacementIdentity);
+  return *this;
+}
 
 uint32_t SceneGraph::createNode(const glm::mat4& localTransform,
                                 uint32_t materialIndex, bool renderable,

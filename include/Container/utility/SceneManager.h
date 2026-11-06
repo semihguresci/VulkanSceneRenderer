@@ -56,6 +56,22 @@ struct AuthoredDirectionalLight {
   glm::vec4 colorIntensity{1.0f, 1.0f, 1.0f, 1.0f};
 };
 
+// The source node is part of the light identity even if two nodes share a
+// definition. Area extensions retain the exact extension key and index.
+struct AuthoredLightBinding {
+  int32_t sourceNode{-1};
+  std::string extension;
+  int32_t definition{-1};
+  bool operator==(const AuthoredLightBinding&) const = default;
+};
+
+struct AuthoredSceneLights {
+  std::vector<container::gpu::PointLightData> points;
+  std::vector<AuthoredDirectionalLight> directionals;
+  std::vector<container::gpu::AreaLightData> areas;
+  std::vector<AuthoredLightBinding> pointBindings, directionalBindings, areaBindings;
+};
+
 struct MaterialRenderProperties {
   uint32_t gpuMaterialIndex{0};
   bool transparent{false};
@@ -174,6 +190,16 @@ class SceneManager {
   }
   bool isDefaultTestSceneActive() const;
   void populateSceneGraph(SceneGraph& sceneGraph) const;
+  [[nodiscard]] std::span<const AuthoredLightBinding> authoredPointLightBindings() const noexcept {
+    return authoredPointBindings_;
+  }
+  [[nodiscard]] std::span<const AuthoredLightBinding> authoredDirectionalLightBindings() const noexcept {
+    return authoredDirectionalBindings_;
+  }
+  [[nodiscard]] std::span<const AuthoredLightBinding> authoredAreaLightBindings() const noexcept {
+    return authoredAreaBindings_;
+  }
+  [[nodiscard]] AuthoredSceneLights publishedAuthoredSceneLights() const;
   [[nodiscard]] tinygltf::Model& animationSource() noexcept { return gltfModel_; }
   [[nodiscard]] const tinygltf::Model& animationSource() const noexcept { return gltfModel_; }
   std::unique_ptr<container::geometry::gltf::AnimationPlayer> takePreparedAnimation() noexcept;
@@ -294,7 +320,7 @@ class SceneManager {
   std::vector<container::geometry::Vertex> vertices_{};
   std::vector<uint32_t> indices_{};
   uint64_t geometryRevision_{0};
-  uint64_t animationSourceRevision_{0};
+  uint64_t animationSourceRevision_{1};
   std::optional<container::geometry::gltf::DeformationData> deformation_;
   std::unique_ptr<container::renderer::GltfDeformationScene> pendingDeformation_;
   std::unique_ptr<container::geometry::gltf::AnimationPlayer> pendingAnimation_;
@@ -303,6 +329,7 @@ class SceneManager {
   std::vector<container::gpu::PointLightData> authoredPointLights_{};
   std::vector<AuthoredDirectionalLight> authoredDirectionalLights_{};
   std::vector<container::gpu::AreaLightData> authoredAreaLights_{};
+  std::vector<AuthoredLightBinding> authoredPointBindings_, authoredDirectionalBindings_, authoredAreaBindings_;
 
   VkIndexType indexType_{VK_INDEX_TYPE_UINT32};
 
