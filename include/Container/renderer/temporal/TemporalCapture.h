@@ -208,7 +208,7 @@ public:
       }
       event.technique = value.value("technique", std::string{});
       if (!event.technique.empty() && event.technique != "forward-raster" &&
-          event.technique != "deferred-raster")
+          event.technique != "deferred-raster" && event.technique != "path-tracing")
         throw std::invalid_argument("Invalid capture render technique");
       if (value.contains("animationClip")) {
         const auto& index = value.at("animationClip");

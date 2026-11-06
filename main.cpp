@@ -104,6 +104,10 @@ void printCommandLineHelp() {
   --bim-import-scale F          Auxiliary model import scale
   --width N --height N          Window dimensions
   --render-technique NAME       Render technique
+  --path-spp N                 Reference samples per frame [1,64] (1)
+  --path-samples N             Reference sample limit [1,16777216] (65536)
+  --path-bounces N             Reference bounce limit [1,32] (8)
+  --path-seed N                Deterministic reference sampling seed (1)
   --display-mode NAME           Display mode (--render-mode is an alias)
   --msaa N                     MSAA sample count
   --taa / --no-taa              Enable/disable temporal antialiasing
@@ -521,6 +525,20 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
           std::string(requireValue(argc, argv, i, arg));
     } else if (arg == "--render-technique") {
       config.renderTechnique = std::string(requireValue(argc, argv, i, arg));
+    } else if (arg == "--path-spp") {
+      config.pathSamplesPerFrame = parseUint(requireValue(argc, argv, i, arg), arg);
+      if (!config.pathSamplesPerFrame || config.pathSamplesPerFrame > 64)
+        throw std::invalid_argument("--path-spp must be in [1,64]");
+    } else if (arg == "--path-samples") {
+      config.pathSampleLimit = parseUint(requireValue(argc, argv, i, arg), arg);
+      if (!config.pathSampleLimit || config.pathSampleLimit > 16777216)
+        throw std::invalid_argument("--path-samples must be in [1,16777216]");
+    } else if (arg == "--path-bounces") {
+      config.pathMaxBounces = parseUint(requireValue(argc, argv, i, arg), arg);
+      if (!config.pathMaxBounces || config.pathMaxBounces > 32)
+        throw std::invalid_argument("--path-bounces must be in [1,32]");
+    } else if (arg == "--path-seed") {
+      config.pathSeed = parseUint(requireValue(argc, argv, i, arg), arg);
     } else if (arg == "--no-bloom") {
       config.bloomEnabled = false;
       config.hasBloomEnabledOverride = true;

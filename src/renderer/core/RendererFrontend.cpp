@@ -1487,6 +1487,10 @@ void RendererFrontend::initialize() {
       std::make_unique<container::scene::SceneProviderRegistry>();
   syncSceneProviders();
   auto techniqueRegistry = createDefaultRenderTechniqueRegistry();
+  const bool queries = svc_.ctx.deviceWrapper->rayQueriesEnabled();
+  subs_.deviceCapabilities.bufferDeviceAddress = queries;
+  subs_.deviceCapabilities.accelerationStructure = queries;
+  subs_.deviceCapabilities.rayQuery = queries;
   subs_.techniqueRegistry =
       std::make_unique<RenderTechniqueRegistry>(std::move(techniqueRegistry));
   const RenderTechniqueId requestedTechnique =
@@ -1622,6 +1626,9 @@ void RendererFrontend::applyPendingRenderTechniqueChange() {
   pendingRenderTechniqueChange_.reset();
   if (subs_.temporalManager)
     subs_.temporalManager->reset("render technique changed");
+  if (subs_.referencePathTracePass)
+    subs_.referencePathTracePass->invalidateHistory();
+  referenceStatus_.clear();
   initializeRenderTechnique(requested, renderTechniqueName(requested));
   syncGuiRenderEngineOptions();
 
@@ -1747,6 +1754,18 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   }
   if (subs_.ddgiManager)
     subs_.ddgiManager->retireImage(imageIndex);
+  collectReferenceDiagnostics(imageIndex);
+  ensureReferencePathResources();
+  if (subs_.guiManager) {
+    std::string status = referenceStatus_;
+    if (subs_.referencePathTracePass) {
+      if (!status.empty()) status += "; ";
+      status += std::to_string(subs_.referencePathTracePass->attemptedSamples()) + " samples";
+      if (referenceUnsupported_) status += "; unsupported paths (magenta)";
+      if (referenceRejected_) status += "; rejected paths (yellow)";
+    }
+    subs_.guiManager->setReferencePathStatus(std::move(status));
+  }
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::ImageFenceWait,
                            elapsedMilliseconds(phaseStart));
@@ -1824,7 +1843,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   temporalClipRevision_ = clipRevision;
   container::temporal::validateSettings(
       temporal.settings(), static_cast<uint32_t>(msaaSampleCount_));
-  if (temporal.settings().enabled) {
+  if (temporal.settings().enabled && !referencePathActive()) {
     temporal.createPipelines(container::util::executableDirectory(),
                              subs_.sceneManager->descriptorSetLayout(),
                              resources_.gBufferFormats.depthStencil);
@@ -1842,7 +1861,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   const auto mode = static_cast<uint32_t>(frontendDisplayMode(
       subs_.guiManager.get(), configuredDisplayMode(svc_.config)));
   frameTemporalSettings.enabled =
-      frameTemporalSettings.enabled &&
+      frameTemporalSettings.enabled && !referencePathActive() &&
       (mode == 0u || mode == 8u || (mode >= 100u && mode <= 104u));
   temporal.state().prepareCamera(
       buffers_.cameraData, {temporalExtent.width, temporalExtent.height},
@@ -2039,6 +2058,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   }
   subs_.temporalManager->commit();
   commitGltfDeformationFrame();
+  if (referenceRecorded_ && subs_.referencePathTracePass)
+    subs_.referencePathTracePass->commitFrame(imageIndex);
   subs_.rayShadowManager->commit();
   if (subs_.ddgiManager) {
     subs_.ddgiManager->commit();
@@ -2060,6 +2081,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     }
     if (frameRecordParams.screenshot.sceneLinear)
       subs_.frameResourceManager->setLinearCaptureTarget(imageIndex);
+    for (uint32_t i = 0; i < referenceDiagnosticSeen_.size(); ++i)
+      collectReferenceDiagnostics(i);
     try {
       writePendingScreenshot(frame_.currentFrame, frameRecordParams);
       if (screenshot_.interactive)
@@ -2611,6 +2634,17 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
           {"origin", {volume.origin.x, volume.origin.y, volume.origin.z}},
           {"spacing", {volume.spacing.x, volume.spacing.y, volume.spacing.z}},
           {"counts", {volume.counts.x, volume.counts.y, volume.counts.z}}});
+  }
+  if (referencePathActive()) {
+    const auto* path = subs_.referencePathTracePass.get();
+    json["referencePath"] = {{"active", path != nullptr}, {"status", referenceStatus_},
+        {"attemptedSamples", path ? path->attemptedSamples() : 0},
+        {"historyResets", path ? path->historyResets() : 0},
+        {"allocatedBytes", path ? path->allocatedBytes() : 0},
+        {"diagnosticEpoch", referenceDiagnosticEpoch_},
+        {"unsupportedSamples", referenceUnsupported_}, {"rejectedSamples", referenceRejected_},
+        {"samplesPerFrame", svc_.config.pathSamplesPerFrame}, {"sampleLimit", svc_.config.pathSampleLimit},
+        {"maxBounces", svc_.config.pathMaxBounces}, {"seed", svc_.config.pathSeed}};
   }
   if (subs_.guiManager)
     json["gui"] = {{"status", subs_.guiManager->statusMessage()},
@@ -4975,7 +5009,9 @@ void RendererFrontend::updateFrameDescriptorSets(
         bloomSampler, tileGridBuffer, tileGridBufferSize, exposureStateBuffers,
         exposureStateBufferSize);
   }
-  if (subs_.temporalManager && preparedParams &&
+  if (preparedParams)
+    updateReferenceColorSource(imageIndex, preparedParams->screenshot.sceneLinear);
+  if (subs_.temporalManager && preparedParams && !referencePathActive() &&
       imageIndex < buffers_.cameras.size()) {
     if (const auto *frame = subs_.frameResourceManager->frame(imageIndex))
       subs_.temporalManager->updateDescriptors(
@@ -4987,6 +5023,11 @@ void RendererFrontend::updateFrameDescriptorSets(
 }
 
 void RendererFrontend::destroyGBufferResources() {
+  subs_.referencePathTracePass.reset();
+  referenceColorBound_.clear();
+  referenceDiagnosticSeen_.clear();
+  referenceStatus_.clear();
+  referenceRecorded_ = false;
   if (subs_.temporalManager)
     subs_.temporalManager->destroyImages();
   if (subs_.frameResourceManager)
@@ -7406,6 +7447,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   p.registries.resourceContracts = subs_.frameResourceRegistry.get();
   p.registries.pipelineRecipes = subs_.pipelineRegistry.get();
   p.registries.resourceBindings = subs_.frameRuntimeResourceRegistry.get();
+  publishReferenceColorBinding(imageIndex);
   p.scene.vertexSlice = sceneState_.vertexSlice;
   p.scene.previousVertexSlice = p.scene.vertexSlice;
   gltfDeformationCurrentBoundToGpu_ = false;
@@ -7859,7 +7901,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   p.debug.temporalForceReactive =
       subs_.guiManager && (subs_.guiManager->showGeometryOverlay() ||
                            subs_.guiManager->showNormalValidation());
-  p.debug.displayMode = static_cast<uint32_t>(displayMode);
+  p.debug.displayMode = referencePathActive() ? 0u : static_cast<uint32_t>(displayMode);
   const bool shadowAtlasVisible =
       p.runtime.activeTechnique == RenderTechniqueId::ForwardRaster ||
       container::renderer::displayModeRecordsShadowAtlas(displayMode);
@@ -7892,6 +7934,11 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   p.services.telemetry = subs_.rendererTelemetry.get();
   p.services.gpuProfiler = subs_.renderPassGpuProfiler.get();
   p.services.rayShadowManager = subs_.rayShadowManager.get();
+  if (referencePathActive() && subs_.referencePathTracePass)
+    p.services.referencePathTrace = [this](VkCommandBuffer command, const FrameRecordParams& frame) {
+      return recordReferencePathTrace(command, frame);
+    };
+
   p.services.ddgiManager = subs_.ddgiManager.get();
   p.services.ddgiReadDescriptorSet = subs_.ddgiManager
       ? subs_.ddgiManager->readDescriptors(imageIndex) : VK_NULL_HANDLE;
@@ -7936,8 +7983,9 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     const bool giCompatible = p.bim.semanticColorMode == 0u;
     const bool giScene = subs_.ddgiManager && subs_.ddgiManager->wantsScene() &&
                          giCompatible && hasSceneContent;
+    const bool surfaceScene = giScene || referencePathActive();
     subs_.rayShadowManager->requestSurfaceScene(
-        giScene, subs_.ddgiManager
+        surfaceScene, subs_.ddgiManager
                      ? subs_.ddgiManager->settings().surfaceBudgetBytes
                      : svc_.config.ddgi.surfaceBudgetBytes);
     if (subs_.guiManager)
@@ -7946,7 +7994,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     const auto meshProvider = subs_.sceneProviderRegistry->providersForKind(
         container::scene::SceneProviderKind::Mesh);
     std::vector<DrawCommand> meshRayDraws;
-    if (giScene) {
+    if (surfaceScene) {
       meshRayDraws = subs_.sceneController->opaqueDrawCommands();
       const auto &transparent =
           subs_.sceneController->transparentDrawCommands();
@@ -7954,20 +8002,20 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
                           transparent.end());
     }
     if (!meshProvider.empty() && subs_.rayShadowManager->supported() &&
-        (giScene ||
+        (surfaceScene ||
          subs_.rayShadowManager->settings().mode != RayShadowMode::Raster))
       sources.push_back(
           {meshProvider.front()->snapshot().id,
            subs_.sceneController->geometryRevision(),
            subs_.sceneController->geometryVertices(), subs_.sceneController->geometryIndices(),
            subs_.sceneController->objectData(),
-           giScene ? std::span<const DrawCommand>(meshRayDraws)
+           surfaceScene ? std::span<const DrawCommand>(meshRayDraws)
                    : std::span<const DrawCommand>(
                          subs_.sceneController->opaqueDrawCommands())});
     std::vector<DrawCommand> bimDraws;
     if (subs_.bimManager && subs_.bimManager->hasScene() &&
         subs_.rayShadowManager->supported() &&
-        (giScene || subs_.rayShadowManager->settings().mode != RayShadowMode::Raster)) {
+        (surfaceScene || subs_.rayShadowManager->settings().mode != RayShadowMode::Raster)) {
       auto filter = currentBimDrawFilter();
       // Draw budget/LOD and screen visibility limit raster work, not blockers.
       filter.drawBudgetEnabled = false;
@@ -7976,7 +8024,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         if (subs_.bimManager->objectMatchesFilter(draw.objectIndex, filter) &&
             bimObjectVisibleByLayer(draw.objectIndex))
           bimDraws.push_back(draw);
-      if (giScene)
+      if (surfaceScene)
         for (const auto &draw : subs_.bimManager->transparentDrawCommands())
           if (subs_.bimManager->objectMatchesFilter(draw.objectIndex, filter) &&
               bimObjectVisibleByLayer(draw.objectIndex))
@@ -8091,6 +8139,7 @@ void RendererFrontend::attachActiveTechniqueLifecycle(
   switch (params.runtime.activeTechnique) {
   case RenderTechniqueId::DeferredRaster:
   case RenderTechniqueId::ForwardRaster:
+  case RenderTechniqueId::PathTracing:
     params.lifecycle =
         subs_.deferredRasterFrameGraphContext->lifecycleHooks();
     break;
@@ -8104,6 +8153,14 @@ void RendererFrontend::attachActiveTechniqueLifecycle(
         [this, previous = std::move(previous)](VkCommandBuffer command, const FrameRecordParams& frame) {
           if (previous) previous(command, frame);
           subs_.gltfDeformationPass->record(command, frame.runtime.imageIndex);
+        };
+  }
+  if (referencePathActive() && subs_.referencePathTracePass) {
+    auto previous = std::move(params.lifecycle.afterGraphExecution);
+    params.lifecycle.afterGraphExecution =
+        [this, previous = std::move(previous)](VkCommandBuffer command, const FrameRecordParams& frame) {
+          if (previous) previous(command, frame);
+          finishReferencePathTrace(command);
         };
   }
 }

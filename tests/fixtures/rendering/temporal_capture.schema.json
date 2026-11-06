@@ -24,7 +24,7 @@
       "animationPlaying": {"type": "boolean"},
       "depthProbe": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 0, "maximum": 16384}},
       "resize": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 1, "maximum": 16384}},
-      "technique": {"enum": ["forward-raster", "deferred-raster"]}, "reload": {"type": "string"},
+      "technique": {"enum": ["forward-raster", "deferred-raster", "path-tracing"]}, "reload": {"type": "string"},
       "guiReload": {"type": "string", "description": "Queue a model load through the Scene Controls request path"},
       "guiSampleModel": {"type": "string", "description": "Select a discovered Sample model by its UI label"},
       "guiUnload": {"type": "boolean", "description": "Queue Unload model through the Scene Controls request path"},

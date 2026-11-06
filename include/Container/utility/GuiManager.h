@@ -538,6 +538,7 @@ public:
   void setMsaaSampleState(std::span<const uint32_t> options,
                           uint32_t activeSamples);
   [[nodiscard]] std::optional<uint32_t> consumeMsaaSampleChange();
+  void setReferencePathStatus(std::string status) { referencePathStatus_ = std::move(status); }
   void setRenderEngineOptions(
       std::vector<RenderEngineOption> options,
       container::renderer::RenderTechniqueId active);
@@ -947,6 +948,7 @@ private:
   std::optional<uint32_t> pendingMsaaSamples_{};
   std::vector<RenderEngineOption> renderEngineOptions_{};
   container::renderer::RenderTechniqueId activeRenderEngine_{};
+  std::string referencePathStatus_;
   std::optional<container::renderer::RenderTechniqueId>
       pendingRenderEngineChange_{};
   std::optional<ModelLoadRequest> pendingModelLoadRequest_{};

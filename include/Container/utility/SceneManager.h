@@ -131,6 +131,11 @@ class SceneManager {
     return deformation_ ? &*deformation_ : nullptr;
   }
   [[nodiscard]] size_t deformationVertexLimit() const noexcept;
+  [[nodiscard]] const container::gpu::SceneClipState& sceneClipState() const noexcept {
+    return sceneClipState_;
+  }
+  [[nodiscard]] size_t gpuMaterialCount() const noexcept { return gpuMaterials_.size(); }
+  [[nodiscard]] bool hasVolumeMaterials() const noexcept;
   [[nodiscard]] std::unique_ptr<container::renderer::GltfDeformationScene> takePreparedDeformation() noexcept;
   VkIndexType indexType() const { return indexType_; }
   uint32_t defaultMaterialIndex() const { return defaultMaterialIndex_; }

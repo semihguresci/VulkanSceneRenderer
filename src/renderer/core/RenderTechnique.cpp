@@ -2,6 +2,7 @@
 
 #include "Container/renderer/deferred/DeferredRasterTechnique.h"
 #include "Container/renderer/forward/ForwardRasterTechnique.h"
+#include "Container/renderer/pathtracing/ReferencePathTracingTechnique.h"
 
 #include <algorithm>
 #include <array>
@@ -48,7 +49,7 @@ constexpr std::array<RenderTechniqueDescriptor, kTechniqueNames.size()>
         {.id = RenderTechniqueId::PathTracing,
          .name = "path-tracing",
          .displayName = "Path tracing",
-         .requiresRayTracing = true,
+         .implemented = true,
          .requiresPathTracing = true},
         {.id = RenderTechniqueId::GaussianSplatting,
          .name = "gaussian-splatting",
@@ -174,6 +175,7 @@ RenderTechniqueRegistry createDefaultRenderTechniqueRegistry() {
   RenderTechniqueRegistry registry;
   registry.registerTechnique(std::make_unique<DeferredRasterTechnique>());
   registry.registerTechnique(std::make_unique<ForwardRasterTechnique>());
+  registry.registerTechnique(std::make_unique<ReferencePathTracingTechnique>());
   return registry;
 }
 

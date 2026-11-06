@@ -333,6 +333,7 @@ struct FramePassServices {
   RayShadowManager *rayShadowManager{nullptr};
   DdgiManager *ddgiManager{nullptr};
   VkDescriptorSet ddgiReadDescriptorSet{VK_NULL_HANDLE};
+  std::function<bool(VkCommandBuffer, const FrameRecordParams&)> referencePathTrace;
   GpuCullManager *gpuCullManager{nullptr};
   BimManager *bimManager{nullptr};
   BloomManager *bloomManager{nullptr};

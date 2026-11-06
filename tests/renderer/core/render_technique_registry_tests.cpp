@@ -158,14 +158,15 @@ TEST(RenderTechniqueRegistry,
 
   const auto pathTracing = findDescriptor(RenderTechniqueId::PathTracing);
   ASSERT_NE(pathTracing, descriptors.end());
-  EXPECT_FALSE(pathTracing->implemented);
+  EXPECT_TRUE(pathTracing->implemented);
   EXPECT_TRUE(pathTracing->requiresPathTracing);
+  EXPECT_FALSE(pathTracing->requiresRayTracing);
 
   container::renderer::RenderTechniqueRegistry registry =
       container::renderer::createDefaultRenderTechniqueRegistry();
-  EXPECT_EQ(registry.techniques().size(), 2u);
+  EXPECT_EQ(registry.techniques().size(), 3u);
   EXPECT_EQ(registry.find(RenderTechniqueId::RayTracing), nullptr);
-  EXPECT_EQ(registry.find(RenderTechniqueId::PathTracing), nullptr);
+  EXPECT_NE(registry.find(RenderTechniqueId::PathTracing), nullptr);
 }
 
 TEST(RenderTechniqueRegistry, RejectsNullAndDuplicateRegistrations) {
@@ -256,20 +257,21 @@ TEST(RendererDeviceCapabilities, ReportsMissingRayAndPathRequirements) {
 
   const std::vector<std::string> missingPathTracing =
       rasterOnly.missingPathTracingRequirements();
-  EXPECT_NE(std::ranges::find(missingPathTracing, "storage image atomics"),
+  EXPECT_NE(std::ranges::find(missingPathTracing, "ray queries"),
             missingPathTracing.end());
 
   container::renderer::RendererDeviceCapabilities full{};
   full.descriptorIndexing = true;
   full.bufferDeviceAddress = true;
   full.accelerationStructure = true;
-  full.rayTracingPipeline = true;
-  full.storageImageAtomics = true;
+  EXPECT_FALSE(full.supportsPathTracing());
+  full.rayQuery = true;
+  EXPECT_FALSE(full.supportsRayTracing());
   EXPECT_TRUE(full.supportsPathTracing());
   EXPECT_TRUE(full.missingPathTracingRequirements().empty());
 }
 
-TEST(RenderTechniqueRegistry, DefaultRegistryRegistersDeferredAndForwardRaster) {
+TEST(RenderTechniqueRegistry, DefaultRegistryRegistersViewportTechniques) {
   container::renderer::RenderTechniqueRegistry registry =
       container::renderer::createDefaultRenderTechniqueRegistry();
 
@@ -278,7 +280,9 @@ TEST(RenderTechniqueRegistry, DefaultRegistryRegistersDeferredAndForwardRaster) 
       nullptr);
   ASSERT_NE(registry.find(container::renderer::RenderTechniqueId::ForwardRaster),
             nullptr);
-  EXPECT_EQ(registry.techniques().size(), 2u);
+  ASSERT_NE(registry.find(container::renderer::RenderTechniqueId::PathTracing),
+            nullptr);
+  EXPECT_EQ(registry.techniques().size(), 3u);
 }
 
 TEST(RenderTechniqueGuardrails, FrameRecorderDoesNotOwnGraphRegistration) {

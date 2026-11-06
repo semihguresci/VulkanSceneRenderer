@@ -2799,4 +2799,10 @@ void SceneManager::resetLoadedAssets() {
   authoredAreaLights_.clear();
 }
 
+bool SceneManager::hasVolumeMaterials() const noexcept {
+  return std::any_of(gpuMaterials_.begin(), gpuMaterials_.end(), [](const auto& material) {
+    return material.thicknessFactor > 0.0f && material.transmissionFactor > 0.0f;
+  });
+}
+
 }  // namespace container::scene

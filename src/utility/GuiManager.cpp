@@ -3008,6 +3008,9 @@ void GuiManager::drawSceneControls(
     }
   }
 
+  if (activeRenderEngine_ == container::renderer::RenderTechniqueId::PathTracing && !referencePathStatus_.empty())
+    ImGui::TextWrapped("%s", referencePathStatus_.c_str());
+
   std::vector<GBufferViewMode> displayModeValues;
   std::vector<const char *> displayModeLabels;
   if (!renderTechniqueDebugState_.displayModes.empty()) {

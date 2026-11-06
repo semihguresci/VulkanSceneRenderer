@@ -394,7 +394,10 @@ private:
     std::vector<HostReadbackSlot> readbacks{};
   };
   ScreenshotState screenshot_{};
-  uint64_t referenceUnsupported_{}, referenceRejected_{};
+  std::vector<bool> referenceColorBound_;
+  std::vector<uint64_t> referenceDiagnosticSeen_;
+  uint64_t referenceDiagnosticEpoch_{}, referenceUnsupported_{}, referenceRejected_{};
+  bool referenceRecorded_{};
   std::string referenceStatus_;
 
   struct DepthVisibilityFrameSlot {
@@ -517,6 +520,12 @@ private:
                                       VkFormat format);
   void writePendingScreenshot(uint32_t frameSlot, const FrameRecordParams& params);
   bool referencePathActive() const;
+  void ensureReferencePathResources();
+  bool recordReferencePathTrace(VkCommandBuffer, const FrameRecordParams&);
+  void finishReferencePathTrace(VkCommandBuffer);
+  void collectReferenceDiagnostics(uint32_t imageIndex);
+  void updateReferenceColorSource(uint32_t imageIndex, bool sceneLinear);
+  void publishReferenceColorBinding(uint32_t imageIndex);
   void ensureDepthVisibilityReadbackBuffer(uint32_t frameSlot);
   void markDepthVisibilityFrameComplete(uint32_t imageIndex,
                                         uint32_t frameSlot);

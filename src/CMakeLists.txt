@@ -25,6 +25,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/RendererFrontendAnimation.cpp
     renderer/core/RendererFrontendDeformation.cpp
     renderer/core/RendererFrontendDeformationTelemetry.cpp
+    renderer/core/RendererFrontendReference.cpp
     renderer/scene/GltfDeformationPass.cpp
     renderer/core/RendererTelemetry.cpp
     renderer/core/RenderGraph.cpp
@@ -75,6 +76,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/raytracing/RaySceneAcceleration.cpp
     renderer/raytracing/RayShadowManager.cpp
     renderer/pathtracing/ReferencePathTracePass.cpp
+    renderer/pathtracing/ReferencePathTracingTechnique.cpp
 
     renderer/culling/GpuCullManager.cpp
 
