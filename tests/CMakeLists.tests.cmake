@@ -543,6 +543,15 @@ add_custom_test(gltf_loader_tests
     VulkanSceneRenderer_geometry
 )
 
+add_custom_test(gltf_scene_export_tests
+    ${TEST_GEOMETRY_DIR}/gltf_scene_export_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry VulkanSceneRenderer_scene
+)
+target_sources(gltf_scene_export_tests PRIVATE
+    ${TEST_GEOMETRY_DIR}/gltf_camera_serialization_tests.cpp)
+set_tests_properties(gltf_scene_export_tests PROPERTIES
+    ENVIRONMENT "TEMP=${TEST_RESULTS_DIR};TMP=${TEST_RESULTS_DIR};TMPDIR=${TEST_RESULTS_DIR}")
+
 add_custom_test(dotbim_loader_tests
     ${TEST_GEOMETRY_DIR}/dotbim_loader_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_geometry

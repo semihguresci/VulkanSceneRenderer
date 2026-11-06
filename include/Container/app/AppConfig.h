@@ -86,6 +86,7 @@ struct AppConfig {
   std::string bimModelPath{};
   float bimImportScale{1.0f};
   std::string screenshotCapturePath{};
+  std::string sceneExportPath{};
   bool screenshotViewportOnly{false};
   std::string temporalCaptureSequencePath{};
   uint32_t screenshotWarmupFrames{8};

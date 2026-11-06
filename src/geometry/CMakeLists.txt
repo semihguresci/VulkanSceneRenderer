@@ -18,6 +18,13 @@ add_library(VulkanSceneRenderer_geometry
     GltfDeformation.cpp
     GltfDeformationFrames.cpp
     GltfModelLoader.cpp
+    GltfCameraAuthoring.cpp
+    GltfLegacyMaterialSerialization.cpp
+    GltfMaterialExport.cpp
+    GltfMaterialVariants.cpp
+    GltfResourceExportCompaction.cpp
+    GltfSceneExport.cpp
+    GltfTextureResourceReferences.cpp
     IfcxLoader.cpp
     IfcTessellatedLoader.cpp
     IfcCurveReader.cpp

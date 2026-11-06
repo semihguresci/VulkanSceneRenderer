@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <memory>
 #include <span>
 #include <string>
@@ -34,7 +35,11 @@ struct AllocatedBuffer;
 
 namespace container::renderer { class GltfDeformationScene; }
 
-namespace container::geometry::gltf { struct AnimationDirtySet; class AnimationPlayer; }
+namespace container::geometry::gltf {
+struct AnimationDirtySet;
+struct AnimationLibrary;
+class AnimationPlayer;
+}
 
 namespace container::scene {
 class SceneGraph;
@@ -62,7 +67,7 @@ struct AuthoredLightBinding {
   int32_t sourceNode{-1};
   std::string extension;
   int32_t definition{-1};
-  bool operator==(const AuthoredLightBinding&) const = default;
+  auto operator<=>(const AuthoredLightBinding&) const = default;
 };
 
 struct AuthoredSceneLights {
@@ -207,6 +212,9 @@ class SceneManager {
   [[nodiscard]] const tinygltf::Model& animationSource() const noexcept { return gltfModel_; }
   std::unique_ptr<container::geometry::gltf::AnimationPlayer> takePreparedAnimation() noexcept;
   [[nodiscard]] uint64_t animationSourceRevision() const noexcept { return animationSourceRevision_; }
+  [[nodiscard]] tinygltf::Model buildSceneExport(
+      const SceneGraph& graph, uint32_t editorRoot, std::vector<int32_t>& sourceNodes,
+      const container::geometry::gltf::AnimationLibrary* animation = nullptr) const;
   void publishAnimationChanges(const container::geometry::gltf::AnimationDirtySet& dirty,
                                const SceneGraph& graph, uint32_t editorRoot);
   struct PreparedRuntimeMeshChange {
@@ -331,6 +339,8 @@ class SceneManager {
 
   container::geometry::Model model_{};
   tinygltf::Model gltfModel_{};
+  tinygltf::Model bakedExportResources_{};
+  std::map<uint32_t, tinygltf::Material> bakedExportMaterials_;
   std::vector<container::geometry::Vertex> vertices_{};
   std::vector<uint32_t> indices_{};
   uint64_t geometryRevision_{0};

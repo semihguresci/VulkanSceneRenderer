@@ -172,6 +172,7 @@ void printCommandLineHelp() {
   --display-grade PATH           Load a display grading preset
   --save-display-grade PATH      Save a validated preset and exit
   --screenshot-viewport          Exclude editor overlays from PNG capture
+  --save-scene PATH              Save editable primary scene as .glb or .gltf
   --exposure F                   Manual exposure
   --environment-intensity F      Environment intensity
   --directional-intensity F      Directional light intensity
@@ -427,6 +428,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       config.bimImportScale =
           parseFloat(requireValue(argc, argv, i, arg), arg);
       explicitBimImportScale = true;
+    } else if (arg == "--save-scene") {
+      config.sceneExportPath = std::string(requireValue(argc, argv, i, arg));
     } else if (arg == "--screenshot-viewport") {
       config.screenshotViewportOnly = true;
     } else if (arg == "--visual-regression-capture" || arg == "--screenshot") {

@@ -88,6 +88,7 @@ void RendererFrontend::ensureSceneEditHistory() {
       lightHistoryAsset_ == asset)
     return;
   editHistory_.clear();
+  if (subs_.guiManager) subs_.guiManager->clearSceneSaveDestination();
   nodeGesture_.reset();
   pendingNodeEdits_.clear();
   captureNodeTelemetry_.reset();

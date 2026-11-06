@@ -119,7 +119,8 @@ void Application::initVulkan() {
 
 void Application::mainLoop() {
   if (!config_.screenshotCapturePath.empty() ||
-      !config_.temporalCaptureSequencePath.empty()) {
+      !config_.temporalCaptureSequencePath.empty() ||
+      (!config_.sceneExportPath.empty() && !config_.windowVisible)) {
     screenshotCaptureLoop();
     return;
   }
@@ -141,6 +142,8 @@ void Application::mainLoop() {
   }
   vkDeviceWaitIdle(vulkanContext_->result().deviceWrapper->device());
 
+  if (!config_.sceneExportPath.empty())
+    renderer_->saveSceneModel(container::util::pathFromUtf8(config_.sceneExportPath));
   onMainLoop();
 }
 
@@ -221,6 +224,8 @@ void Application::screenshotCaptureLoop() {
   }
   vkDeviceWaitIdle(vulkanContext_->result().deviceWrapper->device());
 
+  if (!config_.sceneExportPath.empty())
+    renderer_->saveSceneModel(container::util::pathFromUtf8(config_.sceneExportPath));
   onMainLoop();
 }
 

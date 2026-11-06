@@ -1804,6 +1804,18 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     throw std::runtime_error("Capture primitive could not be added");
   if (const auto history = std::exchange(captureHistoryRequest_, {}); history && !applyEditHistory(*history))
     throw std::runtime_error("No capture history command could be applied");
+  if (subs_.guiManager) {
+    if (const auto save = subs_.guiManager->consumeSceneSaveRequest()) {
+      try {
+        auto path = std::filesystem::absolute(container::util::pathFromUtf8(*save));
+        auto statusPath = container::util::pathToUtf8(path);
+        saveSceneModel(path);
+        subs_.guiManager->acceptSceneSave(std::move(statusPath));
+      } catch (const std::exception& error) {
+        subs_.guiManager->setStatusMessage("Cannot save scene: " + std::string(error.what()));
+      }
+    }
+  }
   updateGltfDeformation();
   processPendingDdgiSceneFit();
   processPendingDdgiDetailFit();

@@ -577,6 +577,18 @@ public:
   [[nodiscard]] EditHistoryRequest consumeEditHistoryRequest() {
     return std::exchange(editHistoryRequest_, EditHistoryRequest::None);
   }
+  [[nodiscard]] std::optional<std::string> consumeSceneSaveRequest() {
+    return std::exchange(sceneSaveRequest_, std::nullopt);
+  }
+  void acceptSceneSave(std::string path) {
+    savedScenePath_ = std::move(path);
+    sceneSavePathInput_ = savedScenePath_;
+    statusMessage_ = "Saved primary scene: " + savedScenePath_;
+  }
+  void clearSceneSaveDestination() {
+    sceneSaveRequest_.reset();
+    savedScenePath_.clear();
+  }
   void setLightEditSnapshot(container::renderer::LightEditSnapshot snapshot) {lightEditControls_.setSnapshot(std::move(snapshot));}
   [[nodiscard]] const container::renderer::LightEditSnapshot& lightEditSnapshot() const noexcept {return lightEditControls_.snapshot();}
   void drawLightEditInspector() {lightEditControls_.draw();}
@@ -960,6 +972,9 @@ private:
   bool nodeTransformGestureActive_{}, nodeTransformCancel_{};
   LightEditControls lightEditControls_{};
   EditHistoryRequest editHistoryRequest_{EditHistoryRequest::None};
+  std::optional<std::string> sceneSaveRequest_;
+  std::string savedScenePath_;
+  std::string sceneSavePathInput_{"scene.glb"};
   bool canUndoEdit_{false}, canRedoEdit_{false};
   std::string undoEditLabel_, redoEditLabel_;
   GBufferViewMode gBufferViewMode_{GBufferViewMode::Lit};

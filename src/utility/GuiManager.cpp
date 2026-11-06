@@ -2184,6 +2184,9 @@ void GuiManager::startFrame() {
   lightEditControls_.processInput();
   // Text fields own their text undo while they are active.
   if (!ImGui::GetIO().WantTextInput) {
+    if (!savedScenePath_.empty() &&
+        ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal))
+      sceneSaveRequest_ = savedScenePath_;
     if (canRedoEdit_ &&
         (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Y, ImGuiInputFlags_RouteGlobal) ||
          ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, ImGuiInputFlags_RouteGlobal)))
@@ -2906,6 +2909,16 @@ void GuiManager::drawSceneControls(
     queueModelUnloadRequest();
     statusMessage_ = "Model unload requested";
   }
+
+  ImGui::InputText("Save path (.glb / .gltf)", &sceneSavePathInput_);
+  ImGui::BeginDisabled(savedScenePath_.empty() || sceneGraph.nodeCount() == 0);
+  if (ImGui::Button("Save scene")) sceneSaveRequest_ = savedScenePath_;
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::BeginDisabled(sceneSavePathInput_.empty() || sceneGraph.nodeCount() == 0);
+  if (ImGui::Button("Save As")) sceneSaveRequest_ = sceneSavePathInput_;
+  ImGui::EndDisabled();
+  ImGui::SetItemTooltip("Saves the editable primary scene. BIM, USD and VDB use separate files.");
 
   if (ImGui::Button("Add Primitive")) {
     ImGui::OpenPopup("Add Primitive Menu");

@@ -34,6 +34,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/RendererFrontendAnimation.cpp
     renderer/core/RendererFrontendLights.cpp
     renderer/core/RendererFrontendNodes.cpp
+    renderer/core/RendererFrontendSceneSave.cpp
     renderer/core/RendererFrontendDeformation.cpp
     renderer/core/RendererFrontendDeformationTelemetry.cpp
     renderer/core/RendererFrontendReference.cpp
@@ -96,6 +97,7 @@ add_library(VulkanSceneRenderer_renderer
 
     renderer/scene/CameraController.cpp
     renderer/scene/SceneController.cpp
+    renderer/scene/SceneLightExport.cpp
     renderer/scene/SceneDiagnosticCubeRecorder.cpp
     renderer/scene/ScenePrimitives.cpp
     renderer/scene/SceneViewport.cpp

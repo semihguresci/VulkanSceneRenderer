@@ -17,6 +17,9 @@
 #include <utility>
 
 #include "Container/geometry/GltfModelLoader.h"
+#include "Container/geometry/GltfMaterialExport.h"
+#include "Container/geometry/GltfNodeFlags.h"
+#include "Container/geometry/GltfSceneExport.h"
 #include "Container/geometry/Mesh.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/PipelineManager.h"
@@ -1038,7 +1041,8 @@ namespace {
 template <class ResolveMaterial>
 void populateSourceGraph(SceneGraph& sceneGraph, const tinygltf::Model& source,
     std::span<const container::geometry::PrimitiveRange> ranges, float importScale,
-    uint32_t defaultMaterial, ResolveMaterial resolveMaterial) {
+    uint32_t defaultMaterial, ResolveMaterial resolveMaterial,
+    std::optional<std::span<const int>> rootsOverride = std::nullopt) {
   sceneGraph = SceneGraph{};
 
   if (ranges.empty() && source.nodes.empty()) {
@@ -1077,6 +1081,7 @@ void populateSourceGraph(SceneGraph& sceneGraph, const tinygltf::Model& source,
         SceneGraph::kInvalidNode, "Import Scale");
   }
 
+  const auto authoredFlags = container::geometry::gltf::ParseGltfNodeFlags(source);
   std::function<void(int, std::optional<uint32_t>)> appendNode =
       [&](int gltfNodeIndex, std::optional<uint32_t> parentNode) {
         if (gltfNodeIndex < 0 ||
@@ -1093,6 +1098,7 @@ void populateSourceGraph(SceneGraph& sceneGraph, const tinygltf::Model& source,
             nodeLocalTransform(gltfNode), defaultMaterial, false,
             SceneGraph::kInvalidNode, nodeName);
         sceneGraph.getNode(graphNode)->sourceNodeIndex = gltfNodeIndex;
+        sceneGraph.setVisible(graphNode, authoredFlags.nodes[size_t(gltfNodeIndex)].visible);
         sceneGraph.setParent(graphNode, parentNode);
 
         if (gltfNode.mesh >= 0 &&
@@ -1125,32 +1131,9 @@ void populateSourceGraph(SceneGraph& sceneGraph, const tinygltf::Model& source,
         }
       };
 
-  if (!source.scenes.empty()) {
-    int sceneIndex = source.defaultScene;
-    if (sceneIndex < 0 || sceneIndex >= static_cast<int>(source.scenes.size())) {
-      sceneIndex = 0;
-    }
-
-    for (int rootNodeIndex : source.scenes[sceneIndex].nodes) {
-      appendNode(rootNodeIndex, importRootNode);
-    }
-  } else {
-    std::vector<bool> hasParent(source.nodes.size(), false);
-    for (const auto& node : source.nodes) {
-      for (int childIndex : node.children) {
-        if (childIndex >= 0 &&
-            childIndex < static_cast<int>(hasParent.size())) {
-          hasParent[childIndex] = true;
-        }
-      }
-    }
-
-    for (size_t nodeIndex = 0; nodeIndex < source.nodes.size(); ++nodeIndex) {
-      if (!hasParent[nodeIndex]) {
-        appendNode(static_cast<int>(nodeIndex), importRootNode);
-      }
-    }
-  }
+  const auto selected = rootsOverride ? std::vector<int>{} : activeSceneRootNodes(source);
+  for (const int root : rootsOverride.value_or(std::span<const int>(selected)))
+    appendNode(root, importRootNode);
 
   sceneGraph.updateWorldTransforms();
 }
@@ -1221,6 +1204,146 @@ void SceneManager::exchangeRuntimeMeshChange(PreparedRuntimeMeshChange& next) no
   std::swap(modelBounds_, next.bounds);
   indexType_ = VK_INDEX_TYPE_UINT32;
   ++geometryRevision_;
+}
+
+tinygltf::Model SceneManager::buildSceneExport(
+    const SceneGraph& graph, uint32_t editorRoot, std::vector<int32_t>& sourceNodes,
+    const container::geometry::gltf::AnimationLibrary* animation) const {
+  namespace gltf = container::geometry::gltf;
+  if (graph.nodeCount() == 0)
+    throw std::runtime_error("No editable primary scene to save");
+
+  const bool defaultScene = isDefaultTestSceneActive();
+  const auto& source = defaultScene ? bakedExportResources_ : gltfModel_;
+  std::filesystem::path path;
+  if (!defaultScene && !config_.modelPath.empty()) {
+    path = container::util::pathFromUtf8(config_.modelPath);
+    if (path.is_relative() && !std::filesystem::exists(path))
+      path = resolveSceneAssetPath(config_.modelPath);
+  }
+
+  SceneGraph detached(graph);
+  std::vector<std::vector<uint32_t>> sceneRoots;
+  int defaultSceneIndex = 0;
+  if (source.scenes.size() > 1) {
+    if (source.defaultScene >= 0 && size_t(source.defaultScene) < source.scenes.size())
+      defaultSceneIndex = source.defaultScene;
+    sceneRoots.resize(source.scenes.size());
+    auto& activeRoots = sceneRoots[size_t(defaultSceneIndex)];
+    const auto appendActiveRoot = [&](auto&& self, uint32_t index) -> void {
+      const auto& node = *graph.getNode(index);
+      if (index == editorRoot || (node.sourceNodeIndex < 0 && !node.renderable &&
+                                 node.name == "Import Scale")) {
+        for (auto child : node.children) self(self, child);
+      } else {
+        activeRoots.push_back(index);
+      }
+    };
+    for (auto root : graph.rootNodes()) appendActiveRoot(appendActiveRoot, root);
+
+    std::vector<uint32_t> authored(source.nodes.size(), SceneGraph::kInvalidNode);
+    for (uint32_t node = 0; node < graph.nodeCount(); ++node) {
+      const auto sourceNode = graph.getNode(node)->sourceNodeIndex;
+      if (sourceNode >= 0) authored[size_t(sourceNode)] = node;
+    }
+    const auto active = authored;
+    if (std::ranges::find(authored, SceneGraph::kInvalidNode) != authored.end()) {
+      std::vector<bool> hasParent(source.nodes.size());
+      for (const auto& node : source.nodes)
+        for (int child : node.children) hasParent.at(size_t(child)) = true;
+      std::vector<int> roots;
+      for (size_t node = 0; node < hasParent.size(); ++node)
+        if (!hasParent[node]) roots.push_back(static_cast<int>(node));
+
+      SceneGraph original;
+      populateSourceGraph(original, source, primitiveRanges(), config_.importScale,
+          defaultMaterialIndex_, [this](int32_t material) { return resolveLoadedMaterialIndex(material); },
+          std::span<const int>(roots));
+      std::vector<uint32_t> mapping(original.nodeCount(), SceneGraph::kInvalidNode);
+      for (uint32_t id = 0; id < original.nodeCount(); ++id) {
+        const auto& node = *original.getNode(id);
+        const auto* parent = original.getNode(node.parent);
+        if (node.sourceNodeIndex >= 0 && active[size_t(node.sourceNodeIndex)] != SceneGraph::kInvalidNode) {
+          if (parent && parent->sourceNodeIndex >= 0 &&
+              active[size_t(parent->sourceNodeIndex)] == SceneGraph::kInvalidNode)
+            throw std::runtime_error("Save cannot reconcile a shared scene root with an inactive source parent");
+          mapping[id] = active[size_t(node.sourceNodeIndex)];
+          continue;
+        }
+        if (node.renderable && parent && parent->sourceNodeIndex >= 0 &&
+            active[size_t(parent->sourceNodeIndex)] != SceneGraph::kInvalidNode)
+          continue; // Its editable mesh child is already in the live graph.
+        const auto index = detached.createNode(node.localTransform, node.materialIndex,
+                                                node.renderable, node.primitiveIndex, node.name);
+        mapping[id] = index;
+        auto& created = *detached.getNode(index);
+        created.sourceNodeIndex = node.sourceNodeIndex;
+        if (node.meshOwnerGraphNode != SceneGraph::kInvalidNode)
+          created.meshOwnerGraphNode = mapping[node.meshOwnerGraphNode];
+        detached.setVisible(index, node.visible);
+        if (parent) detached.setParent(index, mapping[node.parent]);
+        if (node.sourceNodeIndex >= 0) authored[size_t(node.sourceNodeIndex)] = index;
+      }
+    }
+    for (size_t scene = 0; scene < source.scenes.size(); ++scene) {
+      if (scene == size_t(defaultSceneIndex)) continue;
+      for (const auto root : source.scenes[scene].nodes) {
+        const auto node = authored.at(size_t(root));
+        if (node == SceneGraph::kInvalidNode)
+          throw std::runtime_error("Save cannot resolve an inactive scene root");
+        sceneRoots[scene].push_back(node);
+      }
+    }
+  }
+  sourceNodes.clear();
+  sourceNodes.reserve(detached.nodeCount());
+  // The evaluated source carries imported material metadata and animation
+  // values in their original texture and material index spaces.
+  std::vector<tinygltf::Material> materials = source.materials;
+  std::map<uint32_t, int> materialMap;
+  for (size_t i = 0; i < source.materials.size(); ++i)
+    materialMap.emplace(resolveLoadedMaterialIndex(static_cast<int32_t>(i)),
+                        static_cast<int>(i));
+  for (uint32_t i = 0; i < detached.nodeCount(); ++i) {
+    auto& node = *detached.getNode(i);
+    sourceNodes.push_back(node.sourceNodeIndex);
+    if (!node.renderable) continue;
+    const uint32_t runtime = resolveGpuMaterialIndex(node.materialIndex);
+    auto found = materialMap.find(runtime);
+    if (found == materialMap.end()) {
+      if (materials.size() >= size_t(std::numeric_limits<int>::max()))
+        throw std::length_error("Scene export material table is too large");
+      const auto* material = materialManager_.getMaterial(runtime);
+      if (!material) throw std::runtime_error("Scene export cannot resolve an active material");
+      const auto baked = bakedExportMaterials_.find(runtime);
+      const auto index = static_cast<int>(materials.size());
+      materials.push_back(baked == bakedExportMaterials_.end()
+          ? gltf::exportMaterial(*material, {}) : baked->second);
+      found = materialMap.emplace(runtime, index).first;
+    }
+    node.materialIndex = static_cast<uint32_t>(found->second);
+  }
+
+  std::optional<tinygltf::Model> rest;
+  if (animation && !source.animations.empty()) {
+    rest.emplace();
+    rest->nodes = animation->restNodes;
+    rest->materials = animation->restMaterials;
+    rest->lights = animation->restLights;
+    rest->cameras = animation->restCameras;
+    rest->meshes = source.meshes;
+  }
+  return gltf::buildExportModel({
+      .graph = detached,
+      .geometry = model_,
+      .source = &source,
+      .sourcePath = std::move(path),
+      .sourceNodeIndices = sourceNodes,
+      .materials = materials,
+      .animationRestSource = rest ? &*rest : nullptr,
+      .runtimeSceneRoots = sceneRoots,
+      .defaultSceneIndex = defaultSceneIndex,
+  });
 }
 
 container::geometry::GltfLoadResult SceneManager::prepareGltfModel(
@@ -2111,6 +2234,11 @@ void SceneManager::appendSceneAsset(
                                         materialManager_,
                                         defaultMaterialIndex_);
   defaultMaterialIndex_ = fallbackMaterialIndex;
+  auto exportMaterials = container::geometry::gltf::appendExportResources(
+      bakedExportResources_, result.gltfModel, assetPath);
+  for (size_t i = 0; i < exportMaterials.size(); ++i)
+    bakedExportMaterials_.emplace(materialBaseIndex + static_cast<uint32_t>(i),
+                                  std::move(exportMaterials[i]));
 
   std::vector<uint32_t> primitiveBaseByMesh(result.gltfModel.meshes.size(), 0);
   uint32_t primitiveBase = 0;
@@ -2845,6 +2973,8 @@ void SceneManager::writeDescriptorSetContents(
 
 void SceneManager::resetLoadedAssets() {
   deformation_.reset();
+  bakedExportResources_ = {};
+  bakedExportMaterials_.clear();
   ++animationSourceRevision_;
   ++geometryRevision_;
   ++materialRevision_;

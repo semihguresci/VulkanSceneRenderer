@@ -148,6 +148,7 @@ public:
   void writeCaptureTelemetry(const std::filesystem::path &path,
                              std::optional<glm::uvec2> depthProbe = std::nullopt);
   void startGfxCapture();
+  void saveSceneModel(const std::filesystem::path& destination);
   void gfxCaptureTick(uint64_t tick, bool skipped);
   [[nodiscard]] bool gfxCaptureComplete() const;
 
