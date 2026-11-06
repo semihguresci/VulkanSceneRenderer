@@ -109,7 +109,7 @@ DeferredLightingFrameInputs deferredLightingFrameInputs(
     }
   }
   inputs.bimTechnicalElevation = {
-      .enabled = p.bim.technicalElevation.enabled,
+      .enabled = p.bim.technicalElevation.enabled && !p.screenshot.sceneLinear,
       .hiddenLineOverlay = p.bim.technicalElevation.hiddenLineOverlay,
       .depthTestLines = p.bim.technicalElevation.depthTestLines,
       .lineColor = p.bim.technicalElevation.lineColor,
@@ -119,6 +119,13 @@ DeferredLightingFrameInputs deferredLightingFrameInputs(
   inputs.debugVisualizePointLightStencil =
       p.debug.debugVisualizePointLightStencil;
   if (guiManager != nullptr && !guiManager->editorOverlaysEnabled()) {
+    inputs.debugVisualizePointLightStencil = false;
+  }
+  if (p.screenshot.sceneLinear) {
+    inputs.wireframeSupported = false;
+    inputs.wireframeSettings.enabled = false;
+    inputs.normalValidationSettings.enabled = false;
+    inputs.geometryOverlayRequested = false;
     inputs.debugVisualizePointLightStencil = false;
   }
   inputs.tileCullPassActive = tileCullPassActive;
@@ -524,6 +531,9 @@ bimLightingOverlaySectionPlaneVisualFrameStyle(const FrameRecordParams &p) {
 
 BimLightingOverlayFrameDrawSources
 bimLightingOverlayFrameDrawSources(const FrameRecordParams &p) {
+  // Radiance capture excludes selection/hover strokes and editor annotations.
+  // Native point/curve scene geometry is recorded separately.
+  if (p.screenshot.sceneLinear) return {};
   return {
       .points = bimLightingOverlayDrawLists(p.bim.pointDraws),
       .curves = bimLightingOverlayDrawLists(p.bim.curveDraws),
@@ -822,7 +832,7 @@ void DeferredRasterLightingPassRecorder::record(
         cmd, debugOverlayRecordInputs);
   }
 
-  (void)recordBimSectionClipCapFramePassCommands(
+  if (!p.screenshot.sceneLinear) (void)recordBimSectionClipCapFramePassCommands(
       cmd, {.style = bimSectionClipCapFramePassStyle(p),
             .geometry = bimSectionClipCapGeometryBinding(p),
             .fillPipeline = deferredRasterPipelineHandle(

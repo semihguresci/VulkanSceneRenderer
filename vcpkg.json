@@ -23,5 +23,11 @@
     "spdlog",
     "entt",
     "materialx"
-  ]
+  ],
+  "features": {
+    "openvdb": {
+      "description": "OpenVDB volume import, rendering and voxel/SDF processing",
+      "dependencies": ["openvdb"]
+    }
+  }
 }

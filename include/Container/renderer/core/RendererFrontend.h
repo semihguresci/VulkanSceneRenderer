@@ -1,19 +1,18 @@
 #pragma once
 
-#include <Container/geometry/GltfAnimationRuntime.h>
-
 #include <cstdint>
 #include <filesystem>
 #include <future>
 #include <stop_token>
 #include <limits>
-#include <map>
 #include <memory>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
 #include "Container/app/SceneLightingDefaults.h"
@@ -23,23 +22,46 @@
 #include "Container/renderer/core/RendererDeviceCapabilities.h"
 #include "Container/renderer/debug/DebugRenderState.h"
 #include "Container/renderer/lighting/EditableLight.h"
-#include "Container/utility/EditHistory.h"
+#include "Container/renderer/lighting/LightEditTypes.h"
 #include "Container/renderer/lighting/DdgiProbeVolume.h"
 #include "Container/renderer/lighting/DdgiSceneChanges.h"
 #include "Container/renderer/picking/RenderSurfaceInteractionController.h"
 #include "Container/renderer/resources/RenderResources.h"
 #include "Container/renderer/scene/DrawCommand.h"
+#include "Container/renderer/scene/PhysicsDemoNodes.h"
 #include "Container/renderer/scene/SceneState.h"
 #include "Container/scene/MeshSceneProviderAssetAdapter.h"
 #include "Container/utility/VulkanMemoryManager.h"
+#include "Container/utility/SceneEditHistory.h"
+#include "Container/geometry/GltfAnimationRuntime.h"
+#include "Container/geometry/GltfCameraAuthoring.h"
+#include "Container/utility/GltfMaterialEditRequest.h"
+#include "Container/utility/GltfMaterialBindingRequest.h"
+#include "Container/utility/ResourceCatalogControls.h"
+#include "Container/utility/CameraProjectionTarget.h"
+#include "Container/utility/CameraViewPoseTarget.h"
 
 struct GLFWwindow;
 
 namespace container::temporal {
 struct CaptureSample;
+struct CapturePhysicsJointCreate;
 struct CaptureEvent;
 struct CaptureLightTarget;
-struct CaptureNodeEdit;
+}
+namespace container::ui { struct SceneNodeAuthoringRequest; }
+namespace container::asl { class PoseReplayScene; }
+namespace container::geometry {
+struct GltfLoadResult;
+namespace gltf { struct GltfMergeOptions; }
+class OpenVdbVolumeSequence;
+class OpenVdbAsyncVolumeSequence;
+class OpenVdbSequencePlayback;
+}
+namespace container::physics {
+class PhysicsScene;
+class PhysicsElementBindings;
+struct PhysicsBodySettings;
 }
 
 // Forward declarations — full headers are only needed in RendererFrontend.cpp.
@@ -49,16 +71,16 @@ struct AppConfig;
 
 namespace container::renderer {
 class BloomManager;
+class OpenVdbVolumeRenderer;
 class TemporalManager;
 class RayShadowManager;
 class ReferencePathTracePass;
-class PbrAuxiliaryPass;
-class ShaderReloadCandidate;
 class DdgiManager;
 class BimManager;
 enum class BimDisciplinePreset : uint32_t;
 struct BimDrawFilter;
 class CameraController;
+enum class ScenePrimitiveKind : uint32_t;
 class CommandBufferManager;
 class EnvironmentManager;
 class ExposureManager;
@@ -68,10 +90,11 @@ class FrameRecorder;
 struct FrameRecordParams;
 class FrameResourceManager;
 class GraphicsPipelineBuilder;
+class ShaderReloadCandidate;
 class GpuCullManager;
 class LightingManager;
-struct ImportedSceneLightEdits;
 struct SceneLightEdits;
+struct ImportedSceneLightEdits;
 class OitManager;
 class PipelineRegistry;
 class RenderPassGpuProfiler;
@@ -81,11 +104,15 @@ class RenderTechniqueRegistry;
 struct RenderSystemContext;
 class RendererTelemetry;
 class SceneController;
-enum class ScenePrimitiveKind : uint32_t;
-class GltfDeformationPass;
 class SceneProviderSynchronizer;
+struct SceneProviderSyncInput;
+struct MeshSceneProviderSyncInput;
 class ShadowCullManager;
 class ShadowManager;
+class GltfDeformationPass;
+class GpuHierarchyPass;
+class RayInstanceTransformPass;
+class PbrAuxiliaryPass;
 struct VulkanContextResult;
 } // namespace container::renderer
 
@@ -151,11 +178,12 @@ public:
 
   // Capture the next submitted swapchain image to an sRGB PNG.
   void requestScreenshot(std::filesystem::path outputPath, bool viewportOnly = false);
+  void saveSceneModel(const std::filesystem::path& outputPath);
+  bool selectMaterialVariant(std::optional<size_t> variant,bool recordHistory=true);
   void applyTemporalCapture(const container::temporal::CaptureSample &sample);
   void writeCaptureTelemetry(const std::filesystem::path &path,
                              std::optional<glm::uvec2> depthProbe = std::nullopt);
   void startGfxCapture();
-  void saveSceneModel(const std::filesystem::path& destination);
   void gfxCaptureTick(uint64_t tick, bool skipped);
   [[nodiscard]] bool gfxCaptureComplete() const;
 
@@ -174,8 +202,89 @@ public:
   const SceneState &sceneState() const { return sceneState_; }
 
 private:
+  std::unique_ptr<container::asl::PoseReplayScene> aslPoseReplay_;
+  std::unique_ptr<container::geometry::OpenVdbVolumeSequence> vdbSequence_;
+  std::unique_ptr<container::geometry::OpenVdbAsyncVolumeSequence> vdbAsyncSequence_;
+  std::unique_ptr<container::geometry::OpenVdbSequencePlayback> vdbPlayback_;
+  std::optional<size_t> vdbLoadedFrame_{};
+  std::optional<size_t> vdbUploadingFrame_{};
+  uint64_t vdbUploadSubmitted_{0}, vdbUploadPublished_{0}, vdbUploadDiscarded_{0};
+  void updateOpenVdbSequence();
   struct ModelLoadState;
   std::unique_ptr<ModelLoadState> modelLoad_;
+  struct SceneMergeHistory;
+  struct SceneMergeBudget;
+  std::shared_ptr<SceneMergeBudget> mergeBudget_;
+  enum class MergeRequestOutcome { Idle, Pending, Committed, Failed };
+  struct MergeRequestState {
+    uint64_t requestId{}, sourceReadCount{}, publications{};
+    MergeRequestOutcome outcome{MergeRequestOutcome::Idle};
+    std::string error, parentName;
+  } mergeRequest_;
+  std::vector<std::weak_ptr<SceneMergeHistory>> mergeReceipts_;
+  std::weak_ptr<SceneMergeHistory> lastCommittedMerge_;
+  void appendGltfMergeTelemetry(nlohmann::json& json) const;
+  bool mergeSceneModel(const std::string& path,
+      const container::geometry::gltf::GltfMergeOptions& options,
+      const container::geometry::GltfLoadResult* prepared = nullptr);
+  bool duplicateSceneNode(uint32_t node, std::optional<std::string> name = std::nullopt);
+  uint32_t addScenePrimitive(ScenePrimitiveKind kind, std::string name = {},
+      std::optional<uint32_t> parent = std::nullopt);
+  bool reparentSceneNode(uint32_t node, std::optional<uint32_t> parent);
+  container::util::SceneEditHistory::ReparentActions prepareSceneReparent(
+      uint32_t node, const container::util::SceneEditHistory::Placement& before,
+      const container::util::SceneEditHistory::Placement& after);
+  bool commitSceneAddition(std::shared_ptr<SceneMergeHistory> state,
+      std::string label, uint64_t beforeBytes, uint64_t usedBytes,
+      std::optional<uint32_t> selection, bool imported);
+  bool replaySceneMerge(SceneMergeHistory& state, bool redo);
+  bool publishSceneMerge(SceneMergeHistory& state,
+      container::scene::SceneGraph& candidate,
+      container::scene::SceneGraph::PreparedAppend* append,
+      container::scene::SceneGraph::PreparedTailChange* tail, bool redo);
+  [[nodiscard]] SceneProviderSyncInput buildSceneProviderSyncInput(const MeshSceneProviderSyncInput* preparedMesh = nullptr);
+  struct MaterialEditHistory;
+  struct PendingMaterialGesture;
+  struct MaterialPublication;
+  struct MaterialBindingHistory;
+  struct MaterialBindingBudget;
+  struct MaterialTextureHistory;
+  struct MaterialRetirementHistory;
+  struct ResourceRetirementHistory;
+  struct ResourceCatalogPreview;
+  std::shared_ptr<ResourceCatalogPreview> resourceCatalogPreview_;
+  std::shared_ptr<PendingMaterialGesture> materialGesture_;
+  std::shared_ptr<MaterialBindingBudget> materialBindingBudget_;
+  uint64_t materialPublications_{};
+  int32_t lastEditedSourceMaterial_{-1};
+  uint32_t materialInspectorBinding_{UINT32_MAX};
+  uint32_t materialCatalogRuntime_{UINT32_MAX};
+  uint64_t materialCatalogAsset_{};
+  std::string materialCatalogError_;
+  std::optional<container::ui::ResourceCatalogTarget> resourceCatalogSelection_;
+  std::string resourceCatalogError_;
+  std::string materialTextureError_;
+  int32_t materialTextureErrorSource_{-1};
+  uint64_t materialTextureErrorAsset_{};
+  bool authorMaterial(const container::material::GltfMaterialEditRequest& request);
+  bool authorMaterialTexture(const container::material::GltfMaterialTextureEditRequest& request);
+  bool replayMaterialTexture(const MaterialTextureHistory&,bool forward);
+  bool authorMaterialRetirement(uint32_t runtimeMaterial,int32_t sourceMaterial,
+      std::optional<uint64_t> expectedAuthoredRevision=std::nullopt);
+  bool replayMaterialRetirement(const MaterialRetirementHistory&,bool retired);
+  bool authorResourceRetirement(const container::ui::ResourceRetirementRequest&);
+  bool replayResourceRetirement(const ResourceRetirementHistory&,bool retired);
+  void refreshResourceCatalog();
+  bool publishMaterialEdit(const container::geometry::gltf::GltfMaterialAuthoringPlan&);
+  bool publishMaterialTransaction(MaterialPublication&);
+  bool authorMaterialBinding(const container::material::GltfMaterialBindingRequest&);
+  bool replayMaterialBinding(const MaterialBindingHistory&, bool redo);
+  bool replayMaterialEdit(const MaterialEditHistory&,container::geometry::gltf::GltfMaterialEditSide);
+  void finishMaterialGesture();
+  void refreshMaterialInspector();
+  void processMaterialEditRequests();
+  void appendMaterialAuthoringTelemetry(nlohmann::json&) const;
+  void appendMaterialTextureTelemetry(nlohmann::json&) const;
   void pumpModelLoadProgress(std::string_view stage, bool render = true);
   void drawModelLoadProgressFrame();
   container::capture::Journal gfxJournal_;
@@ -183,7 +292,6 @@ private:
   std::optional<float> captureExposure_{};
   std::optional<glm::vec4> captureSectionPlane_{};
   std::optional<uint32_t> captureBimHiddenObject_{};
-  bool captureBimRoomVolumesVisible_{false};
   std::optional<int> captureBimLodBias_{};
   std::optional<uint32_t> pendingDdgiSceneFit_{};
   std::optional<DdgiProbeVolumeDesc> fittedDdgiVolume_{};
@@ -214,6 +322,9 @@ private:
     std::unique_ptr<BimManager> bimManager;
     std::unique_ptr<SceneController> sceneController;
     std::unique_ptr<GltfDeformationPass> gltfDeformationPass;
+    std::unique_ptr<GpuHierarchyPass> gpuHierarchyPass;
+    std::unique_ptr<RayInstanceTransformPass> gpuRayInstancePass;
+    std::unique_ptr<PbrAuxiliaryPass> pbrAuxiliaryPass;
     std::unique_ptr<CameraController> cameraController;
     std::unique_ptr<LightingManager> lightingManager;
     std::unique_ptr<ShadowCullManager> shadowCullManager;
@@ -221,10 +332,10 @@ private:
     std::unique_ptr<EnvironmentManager> environmentManager;
     std::unique_ptr<GpuCullManager> gpuCullManager;
     std::unique_ptr<BloomManager> bloomManager;
+    std::unique_ptr<OpenVdbVolumeRenderer> openVdbVolumeRenderer;
     std::unique_ptr<TemporalManager> temporalManager;
     std::unique_ptr<RayShadowManager> rayShadowManager;
     std::unique_ptr<ReferencePathTracePass> referencePathTracePass;
-    std::unique_ptr<PbrAuxiliaryPass> pbrAuxiliaryPass;
     std::unique_ptr<DdgiManager> ddgiManager;
     std::unique_ptr<ExposureManager> exposureManager;
     std::unique_ptr<GraphicsPipelineBuilder> pipelineBuilder;
@@ -264,6 +375,19 @@ private:
   OwnedSubsystems subs_;
   BorrowedServices svc_;
 
+  bool referencePathActive() const;
+  void ensureReferencePathResources();
+  bool recordReferencePathTrace(VkCommandBuffer, const FrameRecordParams&);
+  void finishReferencePathTrace(VkCommandBuffer);
+  void collectReferenceDiagnostics(uint32_t imageIndex);
+  void updateReferenceColorSource(uint32_t imageIndex, bool sceneLinear);
+  void publishReferenceColorBinding(uint32_t imageIndex);
+  std::vector<bool> referenceColorBound_;
+  std::vector<uint64_t> referenceDiagnosticSeen_;
+  uint64_t referenceDiagnosticEpoch_{}, referenceUnsupported_{}, referenceRejected_{};
+  bool referenceRecorded_{};
+  std::string referenceStatus_;
+
   // ---- grouped state
   // ----------------------------------------------------------
   RenderResources resources_{};
@@ -284,35 +408,176 @@ private:
   SceneBufferState buffers_{};
 
   container::scene::SceneGraph sceneGraph_{};
-  std::unique_ptr<container::geometry::gltf::AnimationPlayer> gltfAnimation_;
-  std::optional<uint64_t> gltfAnimationSourceRevision_;
-  std::optional<size_t> gltfAnimationCameraNode_;
-  std::optional<container::geometry::gltf::AnimatedCameraState> gltfAnimationCamera_;
+  std::unique_ptr<container::util::SceneEditHistory> sceneEdits_{};
+  std::unique_ptr<container::geometry::gltf::AnimationPlayer> gltfAnimation_{};
   double pendingGltfAnimationDeltaSeconds_{};
-  void resetGltfAnimation(bool applyStartupOptions);
-  void updateGltfAnimation();
-  void selectGltfScene(uint32_t index);
+  uint64_t gltfAnimationGraphIdentity_{};
+  std::optional<size_t> gltfAnimationCameraNode_{};
+  std::optional<container::geometry::gltf::AnimatedCameraState> gltfAnimationCamera_{};
+  bool sceneEditPublicationPending_{false};
+  uint64_t materialVariantGraphIdentity_{};
+  std::optional<int> captureMaterialVariant_{};
+  std::string captureSceneHistory_{};
+  uint64_t gltfSceneGraphIdentity_{};
+  std::optional<int> captureGltfScene_{};
+  std::map<size_t,std::shared_ptr<SceneLightEdits>> gltfSceneLightEdits_{};
+  std::shared_ptr<ImportedSceneLightEdits> gltfImportedLightEdits_{};
+  void updateGltfSceneState();
   void processGltfSceneRequest();
+  void selectGltfScene(size_t index);
+  void captureImportedLightEdits();
+  void refreshGltfCameraChoices();
+  void updateMaterialVariantState();
+  void processMaterialVariantRequest();
+  uint64_t nextViewportEditGesture_{uint64_t{1} << 63};
+  void ensureSceneEditHistory();
+  void processSceneNodeAuthoringRequest();
+  bool authorSceneNode(const container::ui::SceneNodeAuthoringRequest& request);
+  bool retireSceneNode(uint32_t selected);
+  struct SceneRetirementHistory;
+  struct SceneRetirementBudget;
+  std::shared_ptr<SceneRetirementBudget> sceneRetirementBudget_;
+  bool replaySceneRetirement(SceneRetirementHistory& state, bool retired);
+  void publishSceneRetirementRefresh();
+  std::shared_ptr<SceneRetirementHistory> pendingSceneRetirement_;
+  void resetGltfAnimation();
+  void updateGltfAnimation();
+  struct CameraProjectionHistory;
+  struct CameraProjectionHistoryBudget;
+  struct CameraProjectionInspectorCache;
+  std::shared_ptr<CameraProjectionHistoryBudget> cameraProjectionHistoryBudget_;
+  std::shared_ptr<CameraProjectionInspectorCache> cameraProjectionInspectorCache_;
+  uint64_t cameraProjectionPublications_{};
+  [[nodiscard]] uint32_t cameraGraphNode(size_t sourceNode) const;
+  [[nodiscard]] size_t cameraNodeByName(std::string_view) const;
+  bool setGltfCameraNode(std::optional<size_t>);
+  bool authorCameraProjection(const container::scene::CameraProjectionTarget&,
+      const container::geometry::gltf::GltfCameraProjectionPatch&);
+  bool authorCameraProjectionSource(int32_t,const container::geometry::gltf::GltfCameraProjectionPatch&,
+      std::optional<uint64_t> expectedRevision);
+  bool replayCameraProjection(const CameraProjectionHistory&,container::geometry::gltf::GltfCameraEditSide);
+  void refreshCameraProjectionInspector();
+  void processCameraProjectionRequests();
+  void appendCameraProjectionTelemetry(nlohmann::json&) const;
+  struct CameraViewPoseHistory;
+  struct CameraViewPoseHistoryBudget;
+  struct CameraViewPoseViewState;
+  struct CameraViewPosePublication;
+  std::shared_ptr<CameraViewPoseHistoryBudget> cameraViewPoseHistoryBudget_;
+  std::shared_ptr<CameraViewPoseViewState> cameraViewPoseViewState_;
+  std::optional<container::scene::CameraViewPoseTarget> cameraViewPoseDestination_;
+  uint64_t cameraViewPosePublications_{},cameraViewPoseViewRevision_{};
+  [[nodiscard]] glm::mat4 cameraViewportUnjitteredView() const;
+  [[nodiscard]] uint64_t refreshCameraViewPoseViewRevision();
+  void updateCameraViewPoseDestination();
+  void refreshCameraViewPoseInspector();
+  void processCameraViewPoseRequests();
+  bool authorCameraViewPose(const container::scene::CameraViewPoseTarget&,uint64_t expectedViewRevision);
+  bool authorCameraViewPoseSource(int32_t,std::optional<uint64_t> expectedCameraRevision);
+  bool replayCameraViewPose(const CameraViewPoseHistory&,container::geometry::gltf::GltfCameraEditSide);
+  bool publishCameraViewPose(CameraViewPosePublication&,const glm::mat4* currentView);
+  void appendCameraViewPoseTelemetry(nlohmann::json&) const;
+  struct LightEditHistory;
+  struct LightEditHistoryBudget;
+  struct PendingLightGesture;
+  struct LightEditPublication;
+  struct PendingCaptureLight;
+  std::shared_ptr<LightEditHistoryBudget> lightEditHistoryBudget_;
+  std::shared_ptr<PendingLightGesture> lightEditGesture_;
+  std::shared_ptr<PendingCaptureLight> pendingCaptureLight_;
+  std::optional<EditableLightId> pendingLightSelection_;
+  std::string lightEditError_;
+  uint64_t lightEditPublications_{},lightEditHistoryCommits_{},lightEditHistoryReplays_{};
+  uint64_t nextLightGizmoGesture_{uint64_t{1}<<62};
+  uint64_t lastFinishedLightGesture_{};
+  [[nodiscard]] bool lightEditGestureActive() const noexcept;
+  void finishLightEditInput();
+  void finishEditGestures();
+  void refreshLightEditInspector();
+  void reportLightEditError(std::string_view);
+  void selectLightForEditing(EditableLightId);
+  void processLightEditRequests();
+  bool authorLightEditRequest(const LightEditRequest&);
+  bool authorManualLightAdd(EditableLightType);
+  void finishLightEditGesture(bool cancel=false);
+  bool replayLightEdit(LightEditHistory&,bool applied);
+  bool publishLightEdit(LightEditPublication&);
+  void beginLightGizmoGesture(container::ui::ViewportTool,
+      container::ui::TransformSpace,container::ui::TransformAxis,bool snapEnabled);
+  void endLightGizmoGesture();
+  void cancelLightGizmoGesture(RenderSurfaceInteractionController::TransformGestureCancelReason);
+  bool applyLightGizmoControls(container::ui::ViewportTool,container::ui::TransformAxis,
+      const container::ui::TransformControls&);
+  void appendLightEditTelemetry(nlohmann::json&) const;
+  void queueCaptureLightEvent(const container::temporal::CaptureEvent&);
+  void processCaptureLightEvent();
+  [[nodiscard]] EditableLightId resolveCaptureLightTarget(const container::temporal::CaptureLightTarget&) const;
+  bool applyGltfAnimationCamera(uint32_t imageIndex);
   void updateGltfDeformation();
   void prepareGltfDeformationFrame(uint32_t imageIndex);
   void commitGltfDeformationFrame();
-  void appendGltfDeformationTelemetry(nlohmann::json& json) const;
-  uint64_t gltfDeformationSourceIdentity_{};
+  uint64_t gltfDeformationGraphIdentity_{};
   uint64_t gltfDeformationSourceRevision_{};
   uint64_t gltfDeformationTopologyRevision_{};
   size_t gltfDeformationVertexCount_{};
   uint32_t gltfDeformationImageCount_{};
-  std::optional<uint32_t> gltfDeformationSubmittedEpoch_;
+  std::optional<uint32_t> gltfDeformationSubmittedEpoch_{};
+  void publishSceneEdit();
+  void applyEditHistoryRequest();
+  void validateSceneNodeTransform(uint32_t node, const glm::mat4 &proposed);
+  void validateSceneNodeReparent(uint32_t node, std::optional<uint32_t> parent,
+                                 const glm::mat4 &local);
+  struct SceneEditSelection {
+    uint32_t root, mesh, bim;
+    EditableLightId light;
+    bool sectionEditable;
+  };
+  [[nodiscard]] SceneEditSelection sceneEditSelection() const;
+  void restoreSceneEditSelection(const SceneEditSelection &selection);
+#if CONTAINER_HAS_JOLT
+  std::unique_ptr<container::physics::PhysicsScene> physicsScene_;
+  std::unique_ptr<container::physics::PhysicsElementBindings> physicsElements_;
+#endif
+  struct PhysicsCaptureAction {
+    std::optional<uint32_t> primaryNode;
+    uint32_t bimObject{std::numeric_limits<uint32_t>::max()};
+    std::string attach, action;
+    std::shared_ptr<const container::temporal::CapturePhysicsJointCreate> jointCreate;
+    std::string jointAction;
+    std::optional<float> jointMotorVelocity;
+    std::shared_ptr<const container::physics::PhysicsBodySettings> bodySettings;
+  };
+  std::vector<PhysicsCaptureAction> pendingPhysicsActions_;
+  uint64_t physicsBimPublication_{0};
+  glm::vec3 physicsBimRootTranslation_{0.0f};
+  double pendingPhysicsDeltaSeconds_{0.0};
+  PhysicsDemoNodes physicsDemoNodes_{};
+  std::string physicsError_;
+  std::optional<uint32_t> physicsJointFirstNode_;
+  uint64_t physicsJointFirstBody_{0};
+  uint64_t physicsJointFirstGraph_{0};
+  bool physicsJointFirstIsWorld_{false};
+  uint64_t physicsSelectedJoint_{0};
+  void presentPhysicsControls();
+  void advancePhysics();
+  void pausePhysicsForTransformEdit(uint32_t node);
+  [[nodiscard]] bool applySceneNodeTransform(
+      uint32_t node, const container::ui::TransformControls &controls);
+  void clearPhysicsBindings();
+  void createPhysicsDemo();
+  void attachPhysicsBody(uint32_t node, const container::physics::PhysicsBodySettings &settings);
+  void attachBimPhysicsBody(uint32_t object, const container::physics::PhysicsBodySettings &settings);
+  void synchronizeBimPhysicsBindings();
+  void publishBimPhysicsTransforms();
+  void performPhysicsAction(std::string_view action, std::optional<uint32_t> primaryNode,
+                            uint32_t bimObject);
+  void appendPhysicsTelemetry(nlohmann::json &json) const;
+  void appendGltfAnimationTelemetry(nlohmann::json &json) const;
+  void appendGltfDeformationTelemetry(nlohmann::json &json) const;
   float gltfDeformationMaxPositionDelta_{};
   bool gltfDeformationHistoryReset_{true};
   bool gltfDeformationCurrentBoundToGpu_{};
   bool gltfDeformationPreviousBoundToGpu_{};
-  void applyGltfAnimationCapture(const container::temporal::CaptureEvent& event);
-  void publishGltfAnimation(const container::geometry::gltf::AnimationDirtySet& dirty,
-                            bool discontinuity);
-  void refreshGltfCameraChoices();
-  void selectGltfCamera(std::optional<size_t> node);
-  void appendGltfAnimationTelemetry(nlohmann::json& json) const;
   SceneState sceneState_{};
   DebugRenderState debugState_{};
   RenderSurfaceInteractionController interactionController_{};
@@ -336,8 +601,8 @@ private:
     uint32_t selectedMeshNode{container::scene::SceneGraph::kInvalidNode};
     uint32_t selectedBimObjectIndex{std::numeric_limits<uint32_t>::max()};
     uint64_t objectDataRevision{0};
+    uint64_t sceneGraphRevision{0};
     uint64_t bimObjectDataRevision{0};
-    bool bimHideRoomVolumes{false};
     bool bimTypeFilterEnabled{false};
     std::string bimFilterType{};
     bool bimStoreyFilterEnabled{false};
@@ -411,11 +676,6 @@ private:
     std::vector<HostReadbackSlot> readbacks{};
   };
   ScreenshotState screenshot_{};
-  std::vector<bool> referenceColorBound_;
-  std::vector<uint64_t> referenceDiagnosticSeen_;
-  uint64_t referenceDiagnosticEpoch_{}, referenceUnsupported_{}, referenceRejected_{};
-  bool referenceRecorded_{};
-  std::string referenceStatus_;
 
   struct DepthVisibilityFrameSlot {
     HostReadbackSlot readback{};
@@ -428,7 +688,6 @@ private:
     uint64_t bimObjectDataRevision{0};
     bool sectionPlaneEnabled{false};
     glm::vec4 sectionPlane{0.0f, 1.0f, 0.0f, 0.0f};
-    bool bimHideRoomVolumes{false};
     bool bimTypeFilterEnabled{false};
     std::string bimFilterType{};
     bool bimStoreyFilterEnabled{false};
@@ -471,109 +730,9 @@ private:
   };
   DepthVisibilityState depthVisibility_{};
 
-  container::util::EditHistory editHistory_{};
-  uint64_t lightHistoryScene_{}, lightHistoryAsset_{};
-  std::map<uint32_t, std::shared_ptr<const SceneLightEdits>> gltfSceneLightEdits_;
-  std::shared_ptr<ImportedSceneLightEdits> gltfImportedLightEdits_;
-  std::optional<bool> captureHistoryRequest_;
-  void ensureSceneEditHistory();
-  bool applyEditHistory(bool redo);
-  struct LightEditHistory;
-  struct LightEditHistoryBudget;
-  struct PendingLightGesture;
-  struct LightEditPublication;
-  struct PendingCaptureLight;
-  std::shared_ptr<LightEditHistoryBudget> lightEditHistoryBudget_;
-  std::shared_ptr<PendingLightGesture> lightEditGesture_;
-  std::shared_ptr<PendingCaptureLight> pendingCaptureLight_;
-  std::optional<EditableLightId> pendingLightSelection_;
-  std::string lightEditError_;
-  uint64_t lightEditPublications_{},lightEditHistoryCommits_{},lightEditHistoryReplays_{};
-  uint64_t nextLightGizmoGesture_{uint64_t{1}<<62};
-  uint64_t lastFinishedLightGesture_{};
-  [[nodiscard]] bool lightEditGestureActive() const noexcept;
-  void finishLightEditInput();
-  void refreshLightEditInspector();
-  void reportLightEditError(std::string_view);
-  void selectLightForEditing(EditableLightId);
-  void processLightEditRequests();
-  bool authorLightEditRequest(const LightEditRequest&);
-  bool authorManualLightAdd(EditableLightType);
-  void finishLightEditGesture(bool cancel=false);
-  bool replayLightEdit(LightEditHistory&,bool applied);
-  bool publishLightEdit(LightEditPublication&);
-  void beginLightGizmoGesture(container::ui::ViewportTool,
-      container::ui::TransformSpace,container::ui::TransformAxis,bool snapEnabled);
-  void endLightGizmoGesture();
-  void cancelLightGizmoGesture(RenderSurfaceInteractionController::TransformGestureCancelReason);
-  bool applyLightGizmoControls(container::ui::ViewportTool,container::ui::TransformAxis,
-      const container::ui::TransformControls&);
-  void appendLightEditTelemetry(nlohmann::json&) const;
-  void queueCaptureLightEvent(const container::temporal::CaptureEvent&);
-  void processCaptureLightEvent();
-  EditableLightId resolveCaptureLightTarget(const container::temporal::CaptureLightTarget&) const;
-
-  enum class NodeEditKind { Transform, Flags, Reparent };
-  struct NodeFlagPatch {
-    std::optional<bool> visible, selectable, hoverable;
-  };
-  struct NodePlacement {
-    glm::mat4 local{1};
-    uint32_t parent{};
-    size_t sibling{};
-    bool visible{};
-    bool selectable{}, hoverable{};
-    bool operator==(const NodePlacement&) const = default;
-  };
-  struct NodeEditRequest {
-    NodeEditKind kind;
-    uint32_t node;
-    container::ui::TransformControls controls{};
-    std::optional<uint64_t> widget{};
-    std::optional<uint32_t> parent{};
-    NodeFlagPatch flags{};
-  };
-  struct NodeEditSelection {
-    uint32_t mesh, bim;
-    EditableLightId light;
-    bool sectionEditable;
-  };
-  struct NodeGesture;
-  std::shared_ptr<NodeGesture> nodeGesture_;
-  std::vector<NodeEditRequest> pendingNodeEdits_;
-  std::shared_ptr<container::temporal::CaptureNodeEdit> captureNodeEdit_;
-  std::optional<uint32_t> captureNodeTelemetry_;
-  std::optional<NodePlacement> nodePlacement(uint32_t node) const;
-  bool nodeHasActivePoseTrack(uint32_t node) const;
-  NodeEditSelection nodeEditSelection() const;
-  void restoreNodeEditSelection(const NodeEditSelection&);
-  bool publishNodePlacement(uint32_t node, uint64_t graph, uint64_t incarnation,
-                            NodeEditKind kind, const NodePlacement& expected, const NodePlacement& desired,
-                            const NodeEditSelection* selection = nullptr);
-  bool recordNodeEdit(uint32_t node, NodeEditKind kind, const NodePlacement& before,
-                      const NodePlacement& after, std::string label);
-  bool editNodeFlags(uint32_t node, const NodeFlagPatch& flags);
-  bool editNodeVisibility(uint32_t node, bool visible);
-  bool reparentNode(uint32_t node, std::optional<uint32_t> parent);
-  void beginNodeGesture(uint32_t node, uint64_t widget, bool gizmo);
-  bool previewNodePose(const glm::mat4& local);
-  void finishNodeGesture(bool cancel = false);
-  bool nodeGizmoActive() const noexcept;
-  void applyNodeGizmoControls(container::ui::ViewportTool, container::ui::TransformAxis,
-                              const container::ui::TransformControls&);
-  void processNodeEditRequests();
-  void processCaptureNodeEdit();
-  void appendNodeEditTelemetry(nlohmann::json&) const;
-  struct PrimitiveCreation;
-  bool recordPrimitiveCreation(ScenePrimitiveKind kind);
-  bool replayPrimitiveCreation(const PrimitiveCreation&, bool append);
-  void publishPrimitiveGeometry(container::scene::SceneGraph& candidate,
-      uint32_t root, uint32_t primitive, const container::geometry::Mesh* append,
-      const NodeEditSelection& selection);
-  std::optional<ScenePrimitiveKind> capturePrimitive_;
-
   struct TransformDragSession {
     bool active{false};
+    uint64_t historyGesture{0};
     uint32_t nodeIndex{std::numeric_limits<uint32_t>::max()};
     container::ui::ViewportTool tool{container::ui::ViewportTool::Select};
     container::ui::TransformSpace space{container::ui::TransformSpace::World};
@@ -595,7 +754,6 @@ private:
   // --------------------------------------------------
   void createRenderPasses();
   void createGraphicsPipelines();
-  [[nodiscard]] std::filesystem::path activeShaderDirectory() const;
   PipelineBuildResult buildGraphicsPipelines(const std::filesystem::path& shaderDirectory);
   void destroyGraphicsPipelines();
   void processShaderReload(bool request, bool wait = false);
@@ -603,6 +761,13 @@ private:
   std::stop_source shaderReloadStop_;
   std::shared_ptr<ShaderReloadCandidate> activeShaderReload_;
   uint64_t shaderReloadGeneration_{};
+  bool gpuHierarchyEnabled_{false};
+  bool gpuHierarchyPrepared_{false};
+  uint32_t gpuHierarchyImage_{};
+  std::string gpuHierarchyStatus_{"CPU"};
+  std::vector<VkBuffer> gpuHierarchyObjectBuffers_;
+  bool gpuObjectUploadDeferred_{false};
+  uint64_t cpuObjectUploadBytes_{};
   std::string shaderReloadStatus_;
   void recreateMsaaResources(VkSampleCountFlagBits sampleCount);
   void createCamera();
@@ -622,13 +787,16 @@ private:
   // ------------------------------------------------------
   void updateCameraBuffer(uint32_t imageIndex);
   void refreshSceneObjectData();
-  void updateObjectBuffer(uint32_t imageIndex);
+  void updateObjectBuffer(uint32_t imageIndex, bool deferUploadToGpu = false);
+  void prepareGpuHierarchyFrame(uint32_t imageIndex);
+  void uploadPreparedObjectData(uint32_t imageIndex,std::span<const container::gpu::ObjectData>);
   void updateAllObjectBuffers();
   [[nodiscard]] container::gpu::AllocatedBuffer sceneObjectBuffer(
       uint32_t imageIndex) const;
   [[nodiscard]] size_t sceneObjectCapacity(uint32_t imageIndex) const;
   [[nodiscard]] size_t maxSceneObjectCapacity() const;
   void applyBimSemanticColorMode();
+  void processEnvironmentLoad(bool wait = false);
   void
   updateFrameDescriptorSets(uint32_t imageIndex = UINT32_MAX,
                             const FrameRecordParams *preparedParams = nullptr);
@@ -646,14 +814,6 @@ private:
   void ensureScreenshotReadbackBuffer(uint32_t frameSlot, VkExtent2D extent,
                                       VkFormat format);
   void writePendingScreenshot(uint32_t frameSlot, const FrameRecordParams& params);
-  bool referencePathActive() const;
-  void ensureReferencePathResources();
-  void ensureExtendedPbrResources();
-  bool recordReferencePathTrace(VkCommandBuffer, const FrameRecordParams&);
-  void finishReferencePathTrace(VkCommandBuffer);
-  void collectReferenceDiagnostics(uint32_t imageIndex);
-  void updateReferenceColorSource(uint32_t imageIndex, bool sceneLinear);
-  void publishReferenceColorBinding(uint32_t imageIndex);
   void ensureDepthVisibilityReadbackBuffer(uint32_t frameSlot);
   void markDepthVisibilityFrameComplete(uint32_t imageIndex,
                                         uint32_t frameSlot);
@@ -668,7 +828,6 @@ private:
   [[nodiscard]] bool depthVisibilityFrameMatchesCurrentState() const;
   void processPendingGuiModelLoadRequest();
   [[nodiscard]] BimDrawFilter currentBimDrawFilter() const;
-  [[nodiscard]] bool bimRoomVolumesVisible() const;
   [[nodiscard]] bool bimObjectVisibleByLayer(uint32_t objectIndex) const;
   [[nodiscard]] container::ui::ViewpointSnapshotState
   currentViewpointSnapshot() const;
@@ -691,6 +850,7 @@ private:
   void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex,
                            const FrameRecordParams *preparedParams = nullptr);
   [[nodiscard]] FrameRecordParams buildFrameRecordParams(uint32_t imageIndex);
+  void ensureExtendedPbrResources();
   void attachActiveTechniqueLifecycle(FrameRecordParams &params);
   void publishFrameRuntimeResourceBindings(uint32_t imageIndex);
   [[nodiscard]] FrameTransformGizmoState buildTransformGizmoState() const;

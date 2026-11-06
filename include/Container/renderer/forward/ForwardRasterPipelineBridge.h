@@ -27,6 +27,8 @@ enum class ForwardRasterPipelineId {
   BimPointCloudNoDepth,
   BimCurveDepth,
   BimCurveNoDepth,
+  SelectionMask,
+  SelectionOutline,
   PostProcess,
   LightGizmo,
   LightGizmoCoverage,
@@ -79,6 +81,10 @@ forwardRasterPipelineName(ForwardRasterPipelineId id) {
     return "bim-curve-depth";
   case ForwardRasterPipelineId::BimCurveNoDepth:
     return "bim-curve-no-depth";
+  case ForwardRasterPipelineId::SelectionMask:
+    return "selection-mask";
+  case ForwardRasterPipelineId::SelectionOutline:
+    return "selection-outline";
   case ForwardRasterPipelineId::PostProcess:
     return "post-process";
   case ForwardRasterPipelineId::LightGizmo:

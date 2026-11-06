@@ -49,14 +49,6 @@ SurfaceNormalState EvaluateSurfaceNormal(float3 worldNormal, float4 worldTangent
     state.geometricNormal =
         SafeNormalize(worldNormal, float3(0.0, 1.0, 0.0)) * orientedFaceSign;
     state.shadingNormal = state.geometricNormal;
-    state.tangent = 0.0.xxx;
-    state.bitangent = 0.0.xxx;
-
-    if (normalTextureIndex == 0xffffffff)
-    {
-        return state;
-    }
-
     float3 tangent = worldTangent.xyz;
     tangent -= state.geometricNormal * dot(state.geometricNormal, tangent);
     tangent = SafeNormalize(tangent, FallbackTangent(state.geometricNormal));
@@ -70,6 +62,13 @@ SurfaceNormalState EvaluateSurfaceNormal(float3 worldNormal, float4 worldTangent
 
     state.tangent = tangent;
     state.bitangent = bitangent;
+
+    // An authored tangent frame is also needed by anisotropy without a normal
+    // texture. Keep normal evaluation unchanged while publishing that frame.
+    if (normalTextureIndex == 0xffffffff)
+    {
+        return state;
+    }
 
     float3 normalSample =
         SamplePbrTexture(normalTextureIndex, texCoord, 1.0.xxxx).xyz * 2.0 - 1.0;

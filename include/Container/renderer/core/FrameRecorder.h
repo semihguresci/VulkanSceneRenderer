@@ -23,10 +23,11 @@
 // Forward declarations — full headers only needed in FrameRecorder.cpp.
 namespace container::renderer {
 class BloomManager;
+class OpenVdbVolumeRenderer;
 class TemporalManager;
+class PbrAuxiliaryPass;
 class RayShadowManager;
 class DdgiManager;
-class PbrAuxiliaryPass;
 class BimManager;
 class GpuCullManager;
 class FrameResourceRegistry;
@@ -68,7 +69,6 @@ struct FrameRuntimeResources {
 
 struct FrameSceneGeometry {
   container::gpu::BufferSlice vertexSlice{};
-  container::gpu::BufferSlice previousVertexSlice{};
   container::gpu::BufferSlice indexSlice{};
   VkIndexType indexType{VK_INDEX_TYPE_UINT32};
   const std::vector<container::gpu::ObjectData> *objectData{nullptr};
@@ -76,6 +76,9 @@ struct FrameSceneGeometry {
   VkBuffer objectBuffer{VK_NULL_HANDLE};
   VkDeviceSize objectBufferSize{0};
   uint32_t diagCubeObjectIndex{std::numeric_limits<uint32_t>::max()};
+  // Same vertex/index correspondence as vertexSlice, from the last submitted
+  // frame. A null buffer reuses vertexSlice for ordinary rigid geometry.
+  container::gpu::BufferSlice previousVertexSlice{};
 };
 
 struct FrameDrawLists {
@@ -233,7 +236,6 @@ struct FrameBimResources {
   // future IFC metadata can evolve without perturbing regular glTF draws.
   FrameSceneGeometry scene{};
   FrameDrawLists draws{};
-  FrameDrawLists localShadowDraws{};
   FrameDrawLists pointDraws{};
   FrameDrawLists curveDraws{};
   FrameDrawLists nativePointDraws{};
@@ -332,14 +334,15 @@ struct FrameScreenshotCapture {
 };
 
 struct FramePassServices {
-  RayShadowManager *rayShadowManager{nullptr};
+  std::function<bool(VkCommandBuffer,const FrameRecordParams&)> referencePathTrace{};
   PbrAuxiliaryPass *pbrAuxiliaryPass{nullptr};
+  RayShadowManager *rayShadowManager{nullptr};
   DdgiManager *ddgiManager{nullptr};
   VkDescriptorSet ddgiReadDescriptorSet{VK_NULL_HANDLE};
-  std::function<bool(VkCommandBuffer, const FrameRecordParams&)> referencePathTrace;
   GpuCullManager *gpuCullManager{nullptr};
   BimManager *bimManager{nullptr};
   BloomManager *bloomManager{nullptr};
+  OpenVdbVolumeRenderer *openVdbVolumeRenderer{nullptr};
   TemporalManager *temporalManager{nullptr};
   RendererTelemetry *telemetry{nullptr};
   RenderPassGpuProfiler *gpuProfiler{nullptr};

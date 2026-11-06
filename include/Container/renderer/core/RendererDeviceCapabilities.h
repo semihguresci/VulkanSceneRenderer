@@ -55,18 +55,10 @@ struct RendererDeviceCapabilities {
   [[nodiscard]] std::vector<std::string> missingPathTracingRequirements()
       const {
     std::vector<std::string> missing;
-    if (!descriptorIndexing) {
-      missing.push_back("descriptor indexing");
-    }
-    if (!bufferDeviceAddress) {
-      missing.push_back("buffer device address");
-    }
-    if (!accelerationStructure) {
-      missing.push_back("acceleration structure");
-    }
-    if (!rayQuery) {
-      missing.push_back("ray queries");
-    }
+    if(!descriptorIndexing) missing.push_back("descriptor indexing");
+    if(!bufferDeviceAddress) missing.push_back("buffer device address");
+    if(!accelerationStructure) missing.push_back("acceleration structure");
+    if(!rayQuery) missing.push_back("ray queries");
     return missing;
   }
 };

@@ -21,6 +21,7 @@ struct MeshSceneProviderSyncInput {
   uint64_t materialRevision{0};
   uint64_t instanceRevision{0};
   std::string displayName{};
+  bool triangleBatchesAuthoritative{false};
 };
 
 struct BimSceneProviderSyncInput {
@@ -79,6 +80,19 @@ class SceneProviderSynchronizer {
     syncRadianceFieldProvider(registry, input.radianceField);
   }
 
+  // Prepare by syncing another synchronizer into another registry. Publication
+  // exchanges both owners and their borrowed registry pointers without copying
+  // snapshots or allocating. Both pairs remain usable for undo/redo.
+  void exchangeState(SceneProviderSynchronizer& other,
+                     container::scene::SceneProviderRegistry& registry,
+                     container::scene::SceneProviderRegistry& otherRegistry) noexcept {
+    meshProvider_.swap(other.meshProvider_);
+    bimProvider_.swap(other.bimProvider_);
+    gaussianSplatProvider_.swap(other.gaussianSplatProvider_);
+    radianceFieldProvider_.swap(other.radianceFieldProvider_);
+    registry.swapState(otherRegistry);
+  }
+
  private:
   void syncMeshProvider(container::scene::SceneProviderRegistry& registry,
                         const MeshSceneProviderSyncInput& input) {
@@ -103,6 +117,7 @@ class SceneProviderSynchronizer {
             .instanceCount = input.instanceCount,
             .triangleBatches = input.triangleBatches,
             .bounds = input.bounds,
+            .triangleBatchesAuthoritative = input.triangleBatchesAuthoritative,
         },
         container::scene::SceneProviderRevision{
             .geometry = geometryRevision,

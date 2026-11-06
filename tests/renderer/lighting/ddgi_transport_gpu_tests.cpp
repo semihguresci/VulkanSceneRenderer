@@ -407,4 +407,36 @@ TEST_F(DdgiTransportGpu, InvalidDielectricAndAbsorptionInputsRemainBlocking) {
   input[9].material.dispersion = .1f;
   for (const auto &value : run(input)) EXPECT_FLOAT_EQ(value.transmittanceSupported.w, 0);
 }
+
+TEST_F(DdgiTransportGpu, ActiveExtendedEffectsNeverEnterAnIsotropicDielectricContinuation) {
+  std::array<Query, 12> input;
+  for (size_t i = 0; i < input.size(); ++i) {
+    input[i] = i < 6 ? Query{} : dielectricQuery();
+    switch (i % 6) {
+      case 0: input[i].material.anisotropyDiffuseFactors.x = .5f; break;
+      case 1: input[i].material.anisotropyDiffuseFactors.z = .5f; break;
+      case 2: input[i].material.anisotropyDiffuseFactors.x = std::numeric_limits<float>::quiet_NaN(); break;
+      case 3: input[i].material.anisotropyDiffuseFactors.z = std::numeric_limits<float>::infinity(); break;
+      case 4: input[i].material.anisotropyDiffuseFactors.y = std::numeric_limits<float>::quiet_NaN(); break;
+      case 5: input[i].material.anisotropyDiffuseFactors.z = -.5f; break;
+    }
+  }
+  for (const auto& result : run(input)) EXPECT_EQ(result.transmittanceSupported,glm::vec4(0));
+}
+
+TEST_F(DdgiTransportGpu, ZeroExtendedFactorsStayNeutralWithTexturesAndBlackColor) {
+  std::array<Query, 4> input{Query{},Query{},dielectricQuery(),dielectricQuery()};
+  for (size_t i : {1u,3u}) {
+    input[i].material.anisotropyTextureIndex = 0;
+    input[i].material.diffuseTransmissionTextureIndex = 1;
+    input[i].material.diffuseTransmissionColorTextureIndex = 2;
+    input[i].material.diffuseTransmissionColorFactor = glm::vec4(0);
+    input[i].material.anisotropyDiffuseFactors.y = 2.0f;
+  }
+  const auto result = run(input);
+  EXPECT_EQ(result[0].transmittanceSupported,result[1].transmittanceSupported);
+  EXPECT_EQ(result[2].transmittanceSupported,result[3].transmittanceSupported);
+  EXPECT_FLOAT_EQ(result[1].transmittanceSupported.w,1);
+  EXPECT_FLOAT_EQ(result[3].transmittanceSupported.w,1);
+}
 } // namespace

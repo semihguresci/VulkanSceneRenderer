@@ -85,10 +85,8 @@ void computeMain(uint3 dispatch : SV_DispatchThreadID)
         material.clearcoatRoughnessFactor, N, query.view.xyz, query.light.xyz,
         query.radiance.rgb), 0.0);
     result.anisotropyTangent = float4(tangent, 0.0);
-    result.sourceTangent = float4(BuildAnisotropyTangent(
-        surface, worldTangent, float2(1.0, 0.5), 0.0), worldTangent.w);
-    result.sourceBitangent = float4(BuildAnisotropyTangent(
-        surface, worldTangent, float2(0.5, 1.0), 0.0), 0.0);
+    result.sourceTangent = float4(surface.tangent, worldTangent.w);
+    result.sourceBitangent = float4(surface.bitangent, 0.0);
     result.abiFactors = material.anisotropyDiffuseFactors;
     result.abiColor = material.diffuseTransmissionColorFactor;
     result.abiIndices = uint4(material.anisotropyTextureIndex,

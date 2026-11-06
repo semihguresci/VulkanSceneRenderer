@@ -188,7 +188,7 @@ class ExtendedPbrGpu : public ::testing::Test {
     ASSERT_GE(materials_.size(), 3u);
     const char* override = std::getenv("CONTAINER_EXTENDED_PBR_SHADER_DIR");
     shaderPath_ = std::filesystem::path(override ? override : CONTAINER_EXTENDED_PBR_SHADER_DIR) /
-                  "extended_pbr_contract.comp.spv";
+                  "spv_shaders" / "extended_pbr_contract.comp.spv";
     ASSERT_TRUE(std::filesystem::is_regular_file(shaderPath_));
     ASSERT_EQ(glfwInit(), GLFW_TRUE);
     glfwStarted_ = true;

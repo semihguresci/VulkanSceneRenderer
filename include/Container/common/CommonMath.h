@@ -2,6 +2,8 @@
 
 #include <cmath>
 #include <cstdint>
+#include <algorithm>
+#include <limits>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -16,6 +18,22 @@
 //   - no Y flip in the matrix; scene passes flip Y with a negative viewport
 
 namespace container::math {
+
+// Bound the spectral norm by sqrt(max absolute row sum of A^T*A). Unlike
+// maximum column length, this remains conservative under parent/child shear.
+[[nodiscard]] inline float conservativeSphereScale(const glm::mat4& transform) {
+  const glm::dmat3 basis(transform);
+  const auto gram=glm::transpose(basis)*basis;
+  double bound=0;
+  for(int row=0;row<3;++row) {
+    double sum=0;
+    for(int column=0;column<3;++column) sum+=std::abs(gram[column][row]);
+    if(!std::isfinite(sum)) return std::numeric_limits<float>::infinity();
+    bound=std::max(bound,sum);
+  }
+  if(bound==0) return 0;
+  return std::nextafter(static_cast<float>(std::sqrt(bound)),std::numeric_limits<float>::infinity());
+}
 
 // Standard RH view matrix (camera looks down -Z).
 [[nodiscard]] inline glm::mat4 lookAt(const glm::vec3& eye,

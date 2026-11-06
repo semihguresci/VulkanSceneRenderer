@@ -37,11 +37,10 @@ float4 DdgiTexture(uint index, float4 uv, GpuTextureTransform transform)
         ApplyGpuTextureTransform(uv.xy, uv.zw, transform), 0.0);
 }
 float DdgiScalar(float factor, uint index, float4 uv, GpuTextureTransform transform,
-                 uint channel, bool textureBacked)
+                 uint channel)
 {
-    factor = FiniteScalarOr(factor, 0.0);
-    if (textureBacked && index != kInvalidGpuMaterialTexture && factor <= 0.0) factor = 1.0;
-    return saturate(factor * SelectGpuTextureChannel(DdgiTexture(index, uv, transform), transform, channel));
+    return ResolveDdgiScalarFactor(factor, DdgiTexture(index, uv, transform),
+        transform, channel);
 }
 bool DdgiCandidateAccepted(uint instanceIndex, uint primitive, float2 bary, float3 world)
 {
@@ -112,12 +111,13 @@ DdgiSurfaceTransmission DdgiResolveSurfaceTransmission(RaySurfacePoint point, Gp
         SelectGpuTextureChannel(DdgiTexture(material.opacityTextureIndex, point.uv,
             material.opacityTextureTransform), material.opacityTextureTransform, 0u);
     float transmission = DdgiScalar(material.transmissionFactor, material.transmissionTextureIndex,
-        point.uv, material.transmissionTextureTransform, 0u, true);
+        point.uv, material.transmissionTextureTransform, 0u);
     float metallic = material.metallicRoughness.x *
         DdgiTexture(material.metallicRoughnessTextureIndex, point.uv, material.metallicRoughnessTextureTransform).b *
         SelectGpuTextureChannel(DdgiTexture(material.metalnessTextureIndex, point.uv,
             material.metalnessTextureTransform), material.metalnessTextureTransform, 0u);
     uint flags = point.objectFlags | material.flags;
+    alpha = ResolveGpuMaterialAlpha(alpha, material.flags);
     float roughness = material.metallicRoughness.y;
     if ((flags & 0x8u) != 0u)
         roughness = 1.0 - saturate(roughness * SelectGpuTextureChannel(
@@ -232,13 +232,13 @@ DdgiShadingMaterial DdgiEvaluateMaterial(RaySurfacePoint point, GpuMaterial mate
     }
     result.roughness = clamp(FiniteScalarOr(roughness, 1.0), 0.045, 1.0);
     float specular = DdgiScalar(material.specularFactor, material.specularTextureIndex,
-        point.uv, material.specularTextureTransform, 3u, false);
+        point.uv, material.specularTextureTransform, 3u);
     float3 sampledSpecularColor = material.specularColorTextureIndex != kInvalidGpuMaterialTexture ?
         DdgiTexture(material.specularColorTextureIndex, point.uv, material.specularColorTextureTransform).rgb :
         DdgiTexture(material.specularTextureIndex, point.uv, material.specularTextureTransform).rgb;
     float3 specularColor = saturate(Finite3Or(material.specularColorFactor.rgb * sampledSpecularColor, 1.0.xxx));
     float iridescence = DdgiScalar(material.iridescenceFactor, material.iridescenceTextureIndex,
-        point.uv, material.iridescenceTextureTransform, 0u, true);
+        point.uv, material.iridescenceTextureTransform, 0u);
     float filmThickness = lerp(material.iridescenceThicknessMinimum, material.iridescenceThicknessMaximum,
         saturate(SelectGpuTextureChannel(DdgiTexture(material.iridescenceThicknessTextureIndex,
             point.uv, material.iridescenceThicknessTextureTransform), material.iridescenceThicknessTextureTransform, 1u)));
@@ -257,17 +257,17 @@ DdgiShadingMaterial DdgiEvaluateMaterial(RaySurfacePoint point, GpuMaterial mate
         specular, specularColor, material.ior, ApproximateDeferredIridescenceTint(iridescence,
             material.iridescenceIor, filmThickness, saturate(dot(result.normal, V))));
     float clearcoat = DdgiScalar(material.clearcoatFactor, material.clearcoatTextureIndex,
-        point.uv, material.clearcoatTextureTransform, 0u, true);
+        point.uv, material.clearcoatTextureTransform, 0u);
     float3 sheen = ResolveDeferredTextureBackedColor(material.sheenColorFactor.rgb,
         material.sheenColorTextureIndex) * DdgiTexture(material.sheenColorTextureIndex,
             point.uv, material.sheenColorTextureTransform).rgb;
     result.layerScale = DeferredClearcoatBaseEnergyScale(clearcoat) * DeferredSheenBaseEnergyScale(sheen);
     result.clearcoat = clearcoat;
     result.clearcoatRoughness = DdgiScalar(material.clearcoatRoughnessFactor,
-        material.clearcoatRoughnessTextureIndex, point.uv, material.clearcoatRoughnessTextureTransform, 1u, false);
+        material.clearcoatRoughnessTextureIndex, point.uv, material.clearcoatRoughnessTextureTransform, 1u);
     result.sheenColor = sheen;
     result.sheenRoughness = DdgiScalar(material.sheenRoughnessFactor,
-        material.sheenRoughnessTextureIndex, point.uv, material.sheenRoughnessTextureTransform, 3u, false);
+        material.sheenRoughnessTextureIndex, point.uv, material.sheenRoughnessTextureTransform, 3u);
     result.emissive = max(Finite3Or(material.emissiveColor * material.emissiveStrength *
         DdgiTexture(material.emissiveTextureIndex, point.uv, material.emissiveTextureTransform).rgb, 0.0.xxx), 0.0.xxx);
     result.occlusion = lerp(1.0, saturate(DdgiTexture(material.occlusionTextureIndex, point.uv,
@@ -277,7 +277,7 @@ DdgiShadingMaterial DdgiEvaluateMaterial(RaySurfacePoint point, GpuMaterial mate
     // Keep unsupported closest geometry in visibility, with black radiance,
     // rather than accidentally turning it into an environment leak.
     float transmission = DdgiScalar(material.transmissionFactor, material.transmissionTextureIndex,
-        point.uv, material.transmissionTextureTransform, 0u, true);
+        point.uv, material.transmissionTextureTransform, 0u);
     result.extended = ResolveDdgiExtendedPbrTerms(material, point, result.normal, transmission,
         DdgiTexture(material.anisotropyTextureIndex, point.uv, material.anisotropyTextureTransform),
         DdgiTexture(material.diffuseTransmissionTextureIndex, point.uv, material.diffuseTransmissionTextureTransform),
@@ -401,7 +401,8 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
                 sample.directionAndReserved.w = 2.0;
                 break;
             }
-            float3 environment = gDdgiEnvironment.SampleLevel(gDdgiEnvironmentSampler, ray.Direction, 0.0).rgb *
+            float3 environment = gDdgiEnvironment.SampleLevel(gDdgiEnvironmentSampler,
+                RotateEnvironmentDirection(ray.Direction, uLighting.environmentOrientation.xy), 0.0).rgb *
                 max(FiniteScalarOr(uLighting.environmentIntensity, 0.0), 0.0);
             sample.radianceAndDistance.rgb = throughput * max(Finite3Or(environment, 0.0.xxx), 0.0.xxx);
             break;

@@ -414,31 +414,6 @@ TEST(GltfDeformationScene, TopologyCompactionPreservesSurvivingSubmittedPose) {
   expectPosition(fixture.scene.previousVertices()[3].position, glm::vec3(0.5f, 0, 0));
 }
 
-TEST(GltfDeformationScene, RejectedExpansionKeepsSubmittedPoseAndRanges) {
-  Fixture fixture;
-  fixture.data.nodes.push_back({0, -1, {0.25f}});
-  fixture.source.nodes.push_back(fixture.source.nodes.front());
-  fixture.scene.configure(fixture.data, fixture.model, {}, 6);
-  fixture.update();
-  fixture.scene.commitSubmitted();
-  const auto revision = fixture.scene.geometryRevision();
-  const auto offset = fixture.offset();
-  const auto before = fixture.scene.currentVertices()[offset].position;
-
-  const auto owner = fixture.graph.createNode(glm::mat4(1), 0);
-  fixture.graph.getNode(owner)->sourceNodeIndex = 1;
-  const auto draw = fixture.graph.createNode(glm::mat4(1), 0, true, 0);
-  fixture.graph.setParent(draw, owner);
-  fixture.owners.resize(fixture.graph.nodeCount(), invalid);
-  fixture.owners[draw] = owner;
-  EXPECT_THROW(fixture.update(), std::runtime_error);
-  EXPECT_EQ(fixture.scene.geometryRevision(), revision);
-  EXPECT_EQ(fixture.scene.gpuInstances().size(), 1u);
-  EXPECT_EQ(fixture.scene.drawRange(draw), nullptr);
-  EXPECT_EQ(fixture.scene.currentVertices()[offset].position, before);
-  EXPECT_EQ(fixture.scene.previousVertices()[offset].position, before);
-}
-
 TEST(GltfDeformationScene, MissingAndAmbiguousJointNodesAreExplicitErrors) {
   Fixture fixture(false, true);
   fixture.configure();
@@ -572,6 +547,29 @@ TEST(GltfDeformationScene, InstanceChildrenShareOwnerPoseAndKeepHistoryWhenFirst
     expectPosition(f.scene.previousVertices()[offset].position,{.5f,0,0});
     EXPECT_EQ(f.scene.drawRange(nodes[1])->vertexOffset,offset);
   }
+}
+
+TEST(GltfDeformationScene, ActiveSceneViewsEvaluateOnlySelectedOwnersAndResetNewPoseHistory) {
+  Fixture f(true,false);
+  const auto otherOwner=f.graph.createNode(glm::mat4(1),0);
+  f.graph.getNode(otherOwner)->sourceNodeIndex=1;
+  const auto other=f.graph.createNode(glm::mat4(1),0,true,0);f.graph.setParent(other,otherOwner);
+  f.data.nodes.push_back({0,-1,{.75f}});
+  tinygltf::Node sourceNode;sourceNode.mesh=0;sourceNode.weights={.75};f.source.nodes.push_back(sourceNode);
+  f.owners.resize(f.graph.nodeCount(),invalid);f.owners[other]=otherOwner;
+  f.configure();
+  f.graph.setActiveRoots(std::array<uint32_t,1>{f.owner});f.update();
+  ASSERT_EQ(f.scene.gpuInstances().size(),1u);
+  EXPECT_NE(f.scene.drawRange(f.primitive),nullptr);EXPECT_EQ(f.scene.drawRange(other),nullptr);
+  EXPECT_EQ(f.scene.currentVertices().size(),6u);f.scene.commitSubmitted();
+  f.graph.setActiveRoots(std::array<uint32_t,1>{otherOwner});
+  const auto changed=f.update();
+  EXPECT_TRUE(changed.topologyChanged);EXPECT_TRUE(changed.historyReset);
+  EXPECT_EQ(f.scene.drawRange(f.primitive),nullptr);ASSERT_NE(f.scene.drawRange(other),nullptr);
+  EXPECT_EQ(f.scene.currentVertices().size(),6u);
+  const auto offset=f.scene.drawRange(other)->vertexOffset;
+  expectPosition(f.scene.currentVertices()[offset].position,{1.5f,0,0});
+  expectPosition(f.scene.previousVertices()[offset].position,{1.5f,0,0});
 }
 
 TEST(GltfDeformationScene, ExplicitDefinitionsSkipProceduralGeometryAndRetainSkinMorphIndexStreams) {

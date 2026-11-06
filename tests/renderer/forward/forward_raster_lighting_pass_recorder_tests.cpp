@@ -406,6 +406,67 @@ TEST(ForwardRasterLightingPassRecorderTests,
   EXPECT_EQ(readiness.blockingResource, RenderResourceId::SceneColor);
 }
 
+TEST(ForwardRasterLightingPassRecorderTests,
+     MeshSelectionRequiresCompleteStencilOverlayBindings) {
+  for (bool bim : {false, true}) {
+    SCOPED_TRACE(bim ? "BIM mesh" : "scene mesh");
+    std::vector<DrawCommand> draws(1u);
+    FrameResourceRegistry resources;
+    PipelineRegistry pipelines;
+    container::gpu::BindlessPushConstants bindless{};
+    container::renderer::WireframePushConstants wireframe{};
+    FrameRecordParams params{};
+    params.pushConstants.bindless = &bindless;
+    makeForwardBindingsReady(params, resources, pipelines);
+    if (bim) {
+      params.bim.draws.opaqueDrawCommands = &draws;
+      params.bim.draws.selectedDrawCommands = &draws;
+      makeBimGeometryReady(params);
+    } else {
+      params.draws.opaqueDrawCommands = &draws;
+      params.draws.selectedDrawCommands = &draws;
+      makeSceneGeometryReady(params);
+    }
+    // Ordinary shading is ready, but missing overlay resources must not
+    // silently present a selected mesh without its yellow silhouette.
+    auto readiness = checkForwardRasterLightingPassReadiness(params);
+    EXPECT_FALSE(readiness.ready);
+    EXPECT_EQ(readiness.blockingResource, RenderResourceId::SceneColor);
+    params.screenshot.sceneLinear = true;
+    EXPECT_TRUE(checkForwardRasterLightingPassReadiness(params).ready);
+    // A raw capture does not mutate the editor's selection or require its
+    // overlay pipelines. Ordinary viewport frames still require them below.
+    EXPECT_EQ(bim ? params.bim.draws.selectedDrawCommands : params.draws.selectedDrawCommands, &draws);
+    params.screenshot.sceneLinear = false;
+    params.pushConstants.wireframe = &wireframe;
+    pipelines.registerLayout(RegisteredPipelineLayout{
+        .key = {RenderTechniqueId::ForwardRaster, "wireframe"},
+        .layout = fakeHandle<VkPipelineLayout>(0x3010)});
+    registerForwardPipeline(pipelines, "selection-mask", 0x2010);
+    EXPECT_FALSE(checkForwardRasterLightingPassReadiness(params).ready);
+    registerForwardPipeline(pipelines, "selection-outline", 0x2011);
+    EXPECT_TRUE(checkForwardRasterLightingPassReadiness(params).ready);
+    params.pushConstants.wireframe = nullptr;
+    EXPECT_FALSE(checkForwardRasterLightingPassReadiness(params).ready);
+  }
+}
+
+TEST(ForwardRasterLightingPassRecorderTests,
+     UnselectedSceneDoesNotRequireSelectionPipelines) {
+  std::vector<DrawCommand> draws(1u);
+  std::vector<DrawCommand> noSelection;
+  FrameResourceRegistry resources;
+  PipelineRegistry pipelines;
+  container::gpu::BindlessPushConstants bindless{};
+  FrameRecordParams params{};
+  params.draws.opaqueDrawCommands = &draws;
+  params.draws.selectedDrawCommands = &noSelection;
+  params.pushConstants.bindless = &bindless;
+  makeSceneGeometryReady(params);
+  makeForwardBindingsReady(params, resources, pipelines);
+  EXPECT_TRUE(checkForwardRasterLightingPassReadiness(params).ready);
+}
+
 TEST(ForwardRasterLightingPassRecorderTests, SourceUsesForwardBridgesAndHelpers) {
   const std::string source = readRepoTextFile(
       "src/renderer/forward/ForwardRasterLightingPassRecorder.cpp");

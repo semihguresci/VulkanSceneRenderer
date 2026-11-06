@@ -205,9 +205,11 @@ bool drawSelectionOutline(VkCommandBuffer cmd,
 
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     inputs.pipelines.selectionOutline);
-  inputs.debugOverlay->drawWireframe(cmd, inputs.wireframeLayout,
-                                     *plan.commands, plan.color, 1.0f,
-                                     plan.outlineLineWidth, pushConstants);
+  // Fill the complete pixel disk, including offsets inside its boundary, so
+  // thin features and corners join into one continuous opaque stroke.
+  inputs.debugOverlay->drawSelectionStroke(cmd, inputs.wireframeLayout,
+                                           *plan.commands, plan.color,
+                                           pushConstants);
   return true;
 }
 

@@ -6,7 +6,6 @@
 #include <Container/renderer/lighting/LightingManager.h>
 #include <Container/renderer/scene/SceneController.h>
 #include <Container/renderer/temporal/TemporalManager.h>
-#include <Container/renderer/temporal/TemporalCapture.h>
 #include <Container/utility/GuiManager.h>
 #include <Container/utility/SceneManager.h>
 #include <Container/utility/SwapChainManager.h>
@@ -20,59 +19,65 @@
 #include <utility>
 
 namespace container::renderer {
-void RendererFrontend::selectGltfCamera(std::optional<size_t> node) {
-  if (node == gltfAnimationCameraNode_) return;
-  if (node) {
-    const auto extent = svc_.swapChainManager.extent();
-    if (!container::geometry::gltf::EvaluateAnimatedCamera(
-        subs_.sceneManager->animationSource(), sceneGraph_, *node,
-        extent.height ? float(extent.width) / float(extent.height) : 1.0f))
-      throw std::invalid_argument("The selected glTF node has no camera in this scene");
-  }
-  gltfAnimationCameraNode_ = node;
-  if (subs_.temporalManager) subs_.temporalManager->reset("authored glTF camera selection");
-}
-
-void RendererFrontend::resetGltfAnimation(bool applyStartupOptions) {
-  gltfAnimation_ = subs_.sceneManager->takePreparedAnimation();
-  gltfAnimationCameraNode_.reset();
-  gltfAnimationCamera_.reset();
-  gltfAnimationSourceRevision_ = subs_.sceneManager->animationSourceRevision();
+void RendererFrontend::resetGltfAnimation() {
+  finishEditGestures();
+  gltfAnimation_.reset();
+  cameraProjectionInspectorCache_.reset();
+  gltfAnimationCameraNode_.reset(); gltfAnimationCamera_.reset();
+  gltfAnimationGraphIdentity_ = sceneGraph_.identity();
   pendingGltfAnimationDeltaSeconds_ = 0;
+  if (!subs_.sceneManager) return;
   container::ui::GltfAnimationControls controls;
-  if (applyStartupOptions && svc_.config.gltfCameraNode >= 0)
-    selectGltfCamera(static_cast<size_t>(svc_.config.gltfCameraNode));
-  if (applyStartupOptions && svc_.config.gltfAnimationClip >= 0) {
-    if (!gltfAnimation_) throw std::invalid_argument("The model has no glTF animation clips");
+  try {
+    const auto& source = subs_.sceneManager->animationSource();
+    gltfAnimation_ = std::make_unique<container::geometry::gltf::AnimationPlayer>(source);
     gltfAnimation_->setLoop(svc_.config.gltfAnimationLoop);
     gltfAnimation_->setSpeed(svc_.config.gltfAnimationSpeed);
-    if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
-    auto& source = subs_.sceneManager->animationSource();
-    const auto dirty = gltfAnimation_->selectClip(source, static_cast<size_t>(svc_.config.gltfAnimationClip),
-                                                 svc_.config.gltfAnimationTime);
-    if (svc_.config.gltfAnimationPlaying) gltfAnimation_->play();
-    publishGltfAnimation(dirty, true);
-  }
-  if (gltfAnimation_) {
+    if (svc_.config.gltfCameraNode >= 0) {
+      gltfAnimationCameraNode_ = static_cast<size_t>(svc_.config.gltfCameraNode);
+      const auto extent = svc_.swapChainManager.extent();
+      if (!container::geometry::gltf::EvaluateAnimatedCamera(source,sceneGraph_,*gltfAnimationCameraNode_,
+          extent.height ? float(extent.width)/float(extent.height) : 1.0f))
+        throw std::invalid_argument("configured glTF camera node has no active source camera binding");
+    }
+    if (svc_.config.gltfAnimationClip >= 0) {
+      if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
+      auto& mutableSource = subs_.sceneManager->animationSource();
+      auto dirty = gltfAnimation_->selectClip(mutableSource,static_cast<size_t>(svc_.config.gltfAnimationClip));
+      dirty.merge(gltfAnimation_->seek(mutableSource,svc_.config.gltfAnimationTime));
+      container::geometry::gltf::ApplyAnimatedNodeTransforms(mutableSource,dirty,sceneGraph_);
+      subs_.sceneManager->publishAnimationChanges(dirty,sceneGraph_);
+      if (subs_.lightingManager) subs_.lightingManager->updateLightingData();
+      refreshSceneObjectData(); syncSceneProviders();
+      if (svc_.config.gltfAnimationPlaying) gltfAnimation_->play();
+      if (subs_.temporalManager) subs_.temporalManager->reset("configured glTF animation clip");
+    }
     for (size_t i = 0; i < gltfAnimation_->library().clips.size(); ++i) {
       const auto& clip = gltfAnimation_->library().clips[i];
-      controls.clips.push_back({clip.name.empty() ? "Clip " + std::to_string(i + 1) : clip.name, clip.duration});
+      controls.clips.push_back({clip.name.empty() ? "Clip " + std::to_string(i+1) : clip.name,clip.duration});
     }
     for (const auto& diagnostic : gltfAnimation_->library().diagnostics)
-      controls.diagnostics.push_back("Clip " + std::to_string(diagnostic.clip + 1) + ", channel " +
-          std::to_string(diagnostic.channel + 1) + ": " + diagnostic.message);
+      controls.diagnostics.push_back("Clip " + std::to_string(diagnostic.clip+1) + ", channel " +
+        std::to_string(diagnostic.channel+1) + ": " + diagnostic.message);
+    controls.selectedClip = gltfAnimation_->selectedClip() ? static_cast<int>(*gltfAnimation_->selectedClip()) : -1;
+    controls.time = gltfAnimation_->time(); controls.speed = gltfAnimation_->speed();
+    controls.playing = gltfAnimation_->playing(); controls.loop = gltfAnimation_->loop();
+    controls.cameraNode = gltfAnimationCameraNode_ ? static_cast<int>(*gltfAnimationCameraNode_) : -1;
+  } catch (const std::exception& error) {
+    controls.error = error.what();
+    if (svc_.config.gltfAnimationClip >= 0 || svc_.config.gltfCameraNode >= 0) throw;
   }
   if (subs_.guiManager) subs_.guiManager->gltfAnimationControls() = std::move(controls);
   refreshGltfCameraChoices();
+  updateCameraViewPoseDestination();
 }
-
 void RendererFrontend::refreshGltfCameraChoices() {
   if(!subs_.sceneManager || !subs_.guiManager) return;
   auto& choices=subs_.guiManager->gltfAnimationControls().cameras; choices.clear();
   const auto& source=subs_.sceneManager->animationSource();
   for(uint32_t graphIndex=0;graphIndex<sceneGraph_.nodeCount();++graphIndex) {
     const auto& runtime=*sceneGraph_.getNode(graphIndex);
-    if (!sceneGraph_.isNodeActive(graphIndex) || runtime.sourceNodeIndex < 0) continue;
+    if(!sceneGraph_.isNodeActive(graphIndex) || runtime.sourceNodeIndex<0) continue;
     const auto index=size_t(runtime.sourceNodeIndex);
     if(index>=source.nodes.size()) continue;
     const auto& node=source.nodes[index];
@@ -85,27 +90,17 @@ void RendererFrontend::refreshGltfCameraChoices() {
 }
 void RendererFrontend::updateGltfAnimation() {
   using namespace container::geometry::gltf;
-  if (!subs_.sceneManager) return;
-  if (gltfAnimationSourceRevision_ != subs_.sceneManager->animationSourceRevision())
-    resetGltfAnimation(!gltfAnimationSourceRevision_);
-  const double delta = std::exchange(pendingGltfAnimationDeltaSeconds_, 0.0);
+  if (gltfAnimationGraphIdentity_ != sceneGraph_.identity()) resetGltfAnimation();
+  const double delta = std::exchange(pendingGltfAnimationDeltaSeconds_,0.0);
+  if (!gltfAnimation_ || !subs_.sceneManager) return;
   auto& source = subs_.sceneManager->animationSource();
   auto* controls = subs_.guiManager ? &subs_.guiManager->gltfAnimationControls() : nullptr;
-  if (controls) {
-    if (auto camera = std::exchange(controls->requestedCameraNode, {})) {
-      try {
-        if (*camera < -1) throw std::invalid_argument("Invalid authored camera selector");
-        selectGltfCamera(*camera < 0 ? std::nullopt : std::optional<size_t>(size_t(*camera)));
-        controls->error.clear();
-      } catch (const std::exception& error) { controls->error = error.what(); }
-    }
-    controls->cameraNode = gltfAnimationCameraNode_ ? static_cast<int>(*gltfAnimationCameraNode_) : -1;
-  }
-  if (!gltfAnimation_) return;
   AnimationDirtySet dirty;
   bool discontinuity = false;
   try {
     if (controls) {
+      if(controls->requestedClip || controls->requestedSpeed || controls->requestedLoop || controls->requestedPlaying ||
+          controls->requestedTime) finishEditGestures();
       if (auto clip = std::exchange(controls->requestedClip,{})) {
         if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
         dirty.merge(*clip < 0 ? gltfAnimation_->clearClip(source) : gltfAnimation_->selectClip(source,static_cast<size_t>(*clip)));
@@ -118,6 +113,15 @@ void RendererFrontend::updateGltfAnimation() {
         if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
         dirty.merge(gltfAnimation_->seek(source,*time)); discontinuity = true;
       }
+      if (auto camera = std::exchange(controls->requestedCameraNode,{})) {
+        // Resolve/evaluate before publishing the selection. The common helper
+        // resets temporal history once only after an accepted change.
+        try {
+          if(*camera< -1) throw std::invalid_argument("Invalid authored camera selector");
+          (void)setGltfCameraNode(*camera<0?std::nullopt:std::optional<size_t>(size_t(*camera)));
+          controls->cameraProjectionError.clear();
+        } catch(const std::exception& error) {controls->cameraProjectionError=error.what();}
+      }
     }
     const double previous = gltfAnimation_->time();
     if (gltfAnimation_->playing() && delta > 0 && !discontinuity) {
@@ -129,7 +133,18 @@ void RendererFrontend::updateGltfAnimation() {
            (gltfAnimation_->speed() > 0 && gltfAnimation_->time() < previous) ||
            (gltfAnimation_->speed() < 0 && gltfAnimation_->time() > previous))) discontinuity = true;
     }
-    publishGltfAnimation(dirty, discontinuity);
+    if (!dirty.empty()) {
+      ApplyAnimatedNodeTransforms(source,dirty,sceneGraph_);
+      subs_.sceneManager->publishAnimationChanges(dirty,sceneGraph_);
+      if (subs_.lightingManager && (!dirty.nodes.empty() || !dirty.lights.empty()))
+        subs_.lightingManager->updateLightingData();
+      refreshSceneObjectData(); syncSceneProviders();
+      // Rigid and deformed motion retain submitted transform/vertex history.
+      // Timeline jumps and mutable shading invalidate incompatible color.
+      if (subs_.temporalManager && (discontinuity ||
+          !dirty.materials.empty() || !dirty.lights.empty() || !dirty.cameras.empty()))
+        subs_.temporalManager->reset("glTF animation seek, deformation or shading change");
+    } else if (discontinuity && subs_.temporalManager) subs_.temporalManager->reset("glTF animation timeline or camera selection");
     if (controls) controls->error.clear();
   } catch (const std::exception& error) {
     gltfAnimation_->pause();
@@ -143,70 +158,33 @@ void RendererFrontend::updateGltfAnimation() {
     controls->cameraNode = gltfAnimationCameraNode_ ? static_cast<int>(*gltfAnimationCameraNode_) : -1;
   }
 }
-void RendererFrontend::publishGltfAnimation(
-    const container::geometry::gltf::AnimationDirtySet& dirty, bool discontinuity) {
-  if (!dirty.empty()) {
-    container::geometry::gltf::ApplyAnimatedNodeTransforms(
-        subs_.sceneManager->animationSource(), dirty, sceneGraph_);
-    subs_.sceneManager->publishAnimationChanges(dirty, sceneGraph_, sceneState_.rootNode);
-    if (subs_.lightingManager && (!dirty.nodes.empty() || !dirty.lights.empty()))
-      subs_.lightingManager->updateLightingData();
-    refreshSceneObjectData();
-    syncSceneProviders();
+bool RendererFrontend::applyGltfAnimationCamera(uint32_t imageIndex) {
+  gltfAnimationCamera_.reset();
+  if (!gltfAnimationCameraNode_ || !subs_.sceneManager || imageIndex >= buffers_.cameras.size()) return false;
+  const auto extent = svc_.swapChainManager.extent();
+  if (!extent.width || !extent.height) return false;
+  try {
+    gltfAnimationCamera_ = container::geometry::gltf::EvaluateAnimatedCamera(
+      subs_.sceneManager->animationSource(),sceneGraph_,*gltfAnimationCameraNode_,float(extent.width)/float(extent.height));
+    if (!gltfAnimationCamera_) return false;
+    buffers_.cameraData = gltfAnimationCamera_->data;
+    if (subs_.sceneController)
+      (void)subs_.sceneController->world().setActiveCamera(buffers_.cameraData,gltfAnimationCamera_->nearPlane,gltfAnimationCamera_->farPlane);
+    SceneController::writeToBuffer(svc_.allocationManager,buffers_.cameras[imageIndex],&buffers_.cameraData,sizeof(buffers_.cameraData));
+    return true;
+  } catch (const std::exception& error) {
+    if (subs_.guiManager) subs_.guiManager->gltfAnimationControls().error = error.what();
+    return false;
   }
-  // Ordinary rigid motion retains the last submitted transform history.
-  if (subs_.temporalManager && (discontinuity ||
-      !dirty.materials.empty() || !dirty.lights.empty() || !dirty.cameras.empty()))
-    subs_.temporalManager->reset("glTF animation timeline or shading changed");
 }
-
-void RendererFrontend::applyGltfAnimationCapture(const container::temporal::CaptureEvent& event) {
-  if (!event.animationClip && !event.animationTime && !event.animationPlaying) return;
-  if (!subs_.sceneManager) throw std::runtime_error("Capture has no glTF scene");
-  if (gltfAnimationSourceRevision_ != subs_.sceneManager->animationSourceRevision())
-    resetGltfAnimation(!gltfAnimationSourceRevision_);
-  if (!gltfAnimation_) throw std::runtime_error("Capture scene has no animation clips");
-  const auto selected = event.animationClip
-      ? (*event.animationClip < 0 ? std::nullopt : std::optional<size_t>(size_t(*event.animationClip)))
-      : gltfAnimation_->selectedClip();
-  if (!selected && (event.animationTime || event.animationPlaying.value_or(false)))
-    throw std::invalid_argument("Capture must select a clip before seeking or playing");
-
-  container::geometry::gltf::AnimationDirtySet dirty;
-  const bool discontinuity = event.animationClip.has_value() || event.animationTime.has_value();
-  if (discontinuity) {
-    if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
-    auto& source = subs_.sceneManager->animationSource();
-    if (event.animationClip) {
-      dirty = selected ? gltfAnimation_->selectClip(source, *selected, event.animationTime.value_or(0.0))
-                       : gltfAnimation_->clearClip(source);
-    } else dirty = gltfAnimation_->seek(source, *event.animationTime);
-  }
-  pendingGltfAnimationDeltaSeconds_ = 0;
-  if (event.animationPlaying) {
-    if (*event.animationPlaying) gltfAnimation_->play();
-    else gltfAnimation_->pause();
-  }
-  publishGltfAnimation(dirty, discontinuity);
-}
-
 void RendererFrontend::appendGltfAnimationTelemetry(nlohmann::json& json) const {
+  appendCameraProjectionTelemetry(json);
+  appendCameraViewPoseTelemetry(json);
+  appendLightEditTelemetry(json);
   using namespace container::geometry::gltf;
   auto& animation = json["gltfAnimation"];
   animation = {{"available",gltfAnimation_ != nullptr},
-    {"clipCount",0},{"selectedClip",-1},{"time",0.0},{"playing",false},
     {"selectedCameraNode",gltfAnimationCameraNode_ ? static_cast<int>(*gltfAnimationCameraNode_) : -1}};
-  auto matrix = [](const glm::mat4& value) {
-    auto array = nlohmann::json::array();
-    for (int column = 0; column < 4; ++column) for (int row = 0; row < 4; ++row) array.push_back(value[column][row]);
-    return array;
-  };
-  if (gltfAnimationCamera_) {
-    animation["cameraProjection"] = matrix(gltfAnimationCamera_->projection);
-    animation["cameraNear"] = gltfAnimationCamera_->nearPlane;
-    animation["cameraFar"] = gltfAnimationCamera_->farPlane;
-    animation["orthographic"] = gltfAnimationCamera_->orthographic;
-  }
   if (!gltfAnimation_ || !subs_.sceneManager) return;
   animation["clipCount"] = gltfAnimation_->library().clips.size();
   animation["selectedClip"] = gltfAnimation_->selectedClip() ? static_cast<int>(*gltfAnimation_->selectedClip()) : -1;
@@ -228,6 +206,11 @@ void RendererFrontend::appendGltfAnimationTelemetry(nlohmann::json& json) const 
       if (value.target.kind == AnimationTargetKind::Material) materialIndices.insert(value.target.index);
     }
   }
+  auto matrix = [](const glm::mat4& value) {
+    auto array = nlohmann::json::array();
+    for (int column = 0; column < 4; ++column) for (int row = 0; row < 4; ++row) array.push_back(value[column][row]);
+    return array;
+  };
   const auto& source = subs_.sceneManager->animationSource();
   animation["nodes"] = nlohmann::json::array();
   for (uint32_t i = 0; i < sceneGraph_.nodeCount(); ++i) {
@@ -256,6 +239,12 @@ void RendererFrontend::appendGltfAnimationTelemetry(nlohmann::json& json) const 
         {"baseColor",{color.r,color.g,color.b,color.a}},{"metallic",factors.x},{"roughness",factors.y}});
       break;
     }
+  }
+  if (gltfAnimationCamera_) {
+    animation["cameraProjection"] = matrix(gltfAnimationCamera_->projection);
+    animation["cameraNear"] = gltfAnimationCamera_->nearPlane;
+    animation["cameraFar"] = gltfAnimationCamera_->farPlane;
+    animation["orthographic"] = gltfAnimationCamera_->orthographic;
   }
 }
 } // namespace container::renderer

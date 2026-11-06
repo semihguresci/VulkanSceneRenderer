@@ -1,4 +1,5 @@
 #include "brdf_common.slang"
+#include "aerial_perspective.slang"
 #include "area_light_common.slang"
 #include "area_light_ltc.slang"
 #include "local_shadow_common.slang"
@@ -387,7 +388,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         max(TransparentFiniteOr(uLighting.environmentIntensity, 0.0), 0.0);
     float3 irradiance =
         TransparentFinite3Or(
-            gIrradianceCubemap.Sample(envSampler, surfaceNormal.shadingNormal).rgb,
+            gIrradianceCubemap.Sample(envSampler, RotateEnvironmentDirection(surfaceNormal.shadingNormal, uLighting.environmentOrientation.xy)).rgb,
             0.0.xxx) *
         environmentIntensity;
     float3 diffuseIBL = irradiance * diffuseBaseColor;
@@ -396,7 +397,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     float maxMipLevel = max(float(uLighting.prefilteredMipCount) - 1.0, 0.0);
     float3 prefilteredColor =
         TransparentFinite3Or(
-            gPrefilteredCubemap.SampleLevel(envSampler, R,
+            gPrefilteredCubemap.SampleLevel(envSampler, RotateEnvironmentDirection(R, uLighting.environmentOrientation.xy),
                                             roughness * maxMipLevel).rgb,
             0.0.xxx) *
         environmentIntensity;
@@ -418,7 +419,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     {
         float3 backsideIrradiance = TransparentFinite3Or(
             gIrradianceCubemap.Sample(
-                envSampler, -surfaceNormal.shadingNormal).rgb, 0.0.xxx) *
+                envSampler, RotateEnvironmentDirection(-surfaceNormal.shadingNormal, uLighting.environmentOrientation.xy)).rgb, 0.0.xxx) *
             environmentIntensity;
         // Visible-side AO does not describe occlusion behind this thin surface.
         lighting += kD_ibl * backsideIrradiance *
@@ -691,7 +692,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             float3 clearcoatR = reflect(-V, clearcoatNormal);
             float3 clearcoatPrefiltered = TransparentFinite3Or(
                 gPrefilteredCubemap.SampleLevel(
-                    envSampler, clearcoatR,
+                    envSampler, RotateEnvironmentDirection(clearcoatR, uLighting.environmentOrientation.xy),
                     clearcoatRoughness * maxMipLevel).rgb,
                 0.0.xxx) *
                 environmentIntensity;
@@ -747,21 +748,21 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             {
                 transmittedColor.r = TransparentFiniteOr(
                     gPrefilteredCubemap.SampleLevel(
-                        envSampler, refrR, roughness * maxMipLevel).r,
+                        envSampler, RotateEnvironmentDirection(refrR, uLighting.environmentOrientation.xy), roughness * maxMipLevel).r,
                     0.0);
             }
             if (refrGValid)
             {
                 transmittedColor.g = TransparentFiniteOr(
                     gPrefilteredCubemap.SampleLevel(
-                        envSampler, refrG, roughness * maxMipLevel).g,
+                        envSampler, RotateEnvironmentDirection(refrG, uLighting.environmentOrientation.xy), roughness * maxMipLevel).g,
                     0.0);
             }
             if (refrBValid)
             {
                 transmittedColor.b = TransparentFiniteOr(
                     gPrefilteredCubemap.SampleLevel(
-                        envSampler, refrB, roughness * maxMipLevel).b,
+                        envSampler, RotateEnvironmentDirection(refrB, uLighting.environmentOrientation.xy), roughness * maxMipLevel).b,
                     0.0);
             }
         }
@@ -769,7 +770,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         {
             transmittedColor = TransparentFinite3Or(
                 gPrefilteredCubemap.SampleLevel(
-                    envSampler, -V, roughness * maxMipLevel).rgb,
+                    envSampler, RotateEnvironmentDirection(-V, uLighting.environmentOrientation.xy), roughness * maxMipLevel).rgb,
                 0.0.xxx);
         }
         transmittedColor *= environmentIntensity;
@@ -808,7 +809,8 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     }
 
     TransparentNode node;
-    node.color = float4(lighting, saturate(baseAlpha));
+    node.color = float4(ApplyAerialPerspective(lighting, vertIn.worldPos, uCamera, uLighting),
+                        saturate(baseAlpha));
     node.depth = saturate(vertIn.pos.z);
     node.next = INVALID_NODE_INDEX;
     node.padding0 = 0.0;

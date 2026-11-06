@@ -183,7 +183,6 @@ struct GltfDeformationScene::Impl {
   std::vector<GltfDeformationInstance> gpuInstances;
   std::vector<GltfDeformationPose> gpuPoses;
   uint64_t geometryRevision{0}, topologyRevision{0};
-  size_t maxExpandedVertices{};
   bool configured{false};
   bool sourceGeometryChanged{false}, sourceTopologyChanged{false};
   bool resetPending{false};
@@ -240,7 +239,7 @@ GltfDeformationScene::~GltfDeformationScene() = default;
 
 void GltfDeformationScene::configure(gltf::DeformationData data,
                                       const geometry::Model& sourceGeometry,
-                                      std::span<const uint32_t> sourceDeformationToRuntime, size_t maxExpandedVertices) {
+                                      std::span<const uint32_t> sourceDeformationToRuntime) {
   auto& state = *impl_;
   const auto& vertices = sourceGeometry.vertices();
   const auto& indices = sourceGeometry.indices();
@@ -302,7 +301,6 @@ void GltfDeformationScene::configure(gltf::DeformationData data,
   state.sourceGeometryChanged |= sourceVerticesChanged || indicesChanged || !state.instances.empty();
   state.sourceTopologyChanged |= rangesChanged || indicesChanged || sourceVerticesChanged || mappingChanged || !state.instances.empty();
   state.data = std::move(data);
-  state.maxExpandedVertices = maxExpandedVertices;
   state.preparedFrames = std::move(preparedFrames);
   state.sourceVertices = vertices;
   state.sourceIndices = indices;
@@ -335,7 +333,7 @@ GltfDeformationSceneUpdate GltfDeformationScene::update(const scene::SceneGraph&
   std::vector<std::vector<uint32_t>> sourceGraphNodes(state.data.nodes.size());
   for (size_t i = 0; i < graph.nodeCount(); ++i) {
     const auto* node = graph.getNode(narrow(i));
-    if (node->sourceNodeIndex < 0) continue;
+    if (node->retired || node->sourceNodeIndex < 0) continue;
     if (static_cast<size_t>(node->sourceNodeIndex) >= sourceGraphNodes.size()) {
       fail("runtime source node identity is outside the configured source");
     }
@@ -410,8 +408,6 @@ GltfDeformationSceneUpdate GltfDeformationScene::update(const scene::SceneGraph&
     }
     candidateRanges.push_back(range);
   }
-  if (!candidates.empty() && vertexOffset > state.maxExpandedVertices)
-    fail("expanded deformation vertices exceed the device storage budget");
   bool topologyChanged = state.sourceTopologyChanged || candidateRanges.size() != state.ranges.size();
   if (!topologyChanged) {
     topologyChanged = !std::equal(candidateRanges.begin(), candidateRanges.end(), state.ranges.begin(), sameRange);

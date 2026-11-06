@@ -1,4 +1,5 @@
 #include "brdf_common.slang"
+#include "aerial_perspective.slang"
 #include "area_light_common.slang"
 #include "area_light_ltc.slang"
 #include "local_shadow_common.slang"
@@ -618,7 +619,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         max(ForwardFiniteOr(uLighting.environmentIntensity, 0.0), 0.0);
     float3 irradiance =
         ForwardFinite3Or(
-            gIrradianceCubemap.Sample(envSampler, surfaceNormal.shadingNormal).rgb,
+            gIrradianceCubemap.Sample(envSampler, RotateEnvironmentDirection(surfaceNormal.shadingNormal, uLighting.environmentOrientation.xy)).rgb,
             0.0.xxx) *
         environmentIntensity;
     irradiance = lerp(irradiance, DdgiDiffuseIrradiance(ddgi), ddgiCoverage);
@@ -628,7 +629,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     float maxMipLevel = max(float(uLighting.prefilteredMipCount) - 1.0, 0.0);
     float3 prefilteredColor =
         ForwardFinite3Or(
-            gPrefilteredCubemap.SampleLevel(envSampler, R,
+            gPrefilteredCubemap.SampleLevel(envSampler, RotateEnvironmentDirection(R, uLighting.environmentOrientation.xy),
                                             roughness * maxMipLevel).rgb,
             0.0.xxx) *
         environmentIntensity;
@@ -651,7 +652,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     {
         float3 backsideIrradiance = ForwardFinite3Or(
             gIrradianceCubemap.Sample(
-                envSampler, -surfaceNormal.shadingNormal).rgb, 0.0.xxx) *
+                envSampler, RotateEnvironmentDirection(-surfaceNormal.shadingNormal, uLighting.environmentOrientation.xy)).rgb, 0.0.xxx) *
             environmentIntensity;
         DdgiLookupResult backsideDdgi = LookupDdgiDiffuseBackReceiver(
             material, vertIn.flags, transmissionFactor,
@@ -962,7 +963,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             float3 clearcoatR = reflect(-V, clearcoatNormal);
             float3 clearcoatPrefiltered = ForwardFinite3Or(
                 gPrefilteredCubemap.SampleLevel(
-                    envSampler, clearcoatR,
+                    envSampler, RotateEnvironmentDirection(clearcoatR, uLighting.environmentOrientation.xy),
                     clearcoatRoughness * maxMipLevel).rgb,
                 0.0.xxx) *
                 environmentIntensity;
@@ -1018,21 +1019,21 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             {
                 transmittedColor.r = ForwardFiniteOr(
                     gPrefilteredCubemap.SampleLevel(
-                        envSampler, refrR, roughness * maxMipLevel).r,
+                        envSampler, RotateEnvironmentDirection(refrR, uLighting.environmentOrientation.xy), roughness * maxMipLevel).r,
                     0.0);
             }
             if (refrGValid)
             {
                 transmittedColor.g = ForwardFiniteOr(
                     gPrefilteredCubemap.SampleLevel(
-                        envSampler, refrG, roughness * maxMipLevel).g,
+                        envSampler, RotateEnvironmentDirection(refrG, uLighting.environmentOrientation.xy), roughness * maxMipLevel).g,
                     0.0);
             }
             if (refrBValid)
             {
                 transmittedColor.b = ForwardFiniteOr(
                     gPrefilteredCubemap.SampleLevel(
-                        envSampler, refrB, roughness * maxMipLevel).b,
+                        envSampler, RotateEnvironmentDirection(refrB, uLighting.environmentOrientation.xy), roughness * maxMipLevel).b,
                     0.0);
             }
         }
@@ -1040,7 +1041,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         {
             transmittedColor = ForwardFinite3Or(
                 gPrefilteredCubemap.SampleLevel(
-                    envSampler, -V, roughness * maxMipLevel).rgb,
+                    envSampler, RotateEnvironmentDirection(-V, uLighting.environmentOrientation.xy), roughness * maxMipLevel).rgb,
                 0.0.xxx);
         }
         transmittedColor *= environmentIntensity;
@@ -1068,5 +1069,5 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
 
     if (RayDirectionalSelected() && uRayShadowRead.options.y != 0u)
         return float4(RayShadowDebug(vertIn.pos), 1.0);
-    return float4(lighting, 1.0);
+    return float4(ApplyAerialPerspective(lighting, vertIn.worldPos, uCamera, uLighting), 1.0);
 }

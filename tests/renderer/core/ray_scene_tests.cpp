@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <bit>
 #include <glm/gtc/matrix_transform.hpp>
 #include <limits>
 
@@ -388,6 +389,31 @@ TEST(RayScene, ValidatesGeometryAndProviderLocalIdentities) {
   EXPECT_THROW(validateRayScene({geometries, instances}),
                std::invalid_argument);
   EXPECT_NO_THROW(validateRayScene({}));
+}
+
+TEST(RayExtraction, GpuObjectBindingsFollowDrawOrderAndKeepCpuProviderFallback) {
+  const auto vertices=surfaceTestVertices();const std::vector<uint32_t> indices{0,1,2};
+  std::vector<container::gpu::ObjectData> meshObjects(4),bimObjects(1);
+  const std::vector<DrawCommand> meshDraws{{3,0,3},{1,0,3,2}},bimDraws{{0,0,3}};
+  std::array providers{RaySceneProviderSource{{"mesh"},1,vertices,indices,meshObjects,meshDraws},
+                       RaySceneProviderSource{{"bim"},1,vertices,indices,bimObjects,bimDraws}};
+  RaySceneExtractionCache cache;
+  const auto cpu=cache.update(providers,{true});
+  for(const auto& instance:cpu.instances.instances) EXPECT_EQ(instance.gpuObjectIndex,UINT32_MAX);
+  // Pure extraction treats this as an opaque identity; no Vulkan call uses it.
+  providers[0].gpuObjects={std::bit_cast<VkBuffer>(uintptr_t(1)),0,sizeof(container::gpu::ObjectData)*4};
+  const auto gpu=cache.update(providers,{true});
+  EXPECT_EQ(gpu.geometry,cpu.geometry);
+  ASSERT_EQ(gpu.instances.instances.size(),4);
+  const std::array<uint32_t,4> expected{3,1,2,UINT32_MAX};
+  for(size_t i=0;i<4;++i) EXPECT_EQ(gpu.instances.instances[i].gpuObjectIndex,expected[i]);
+  providers[0].gpuObjects.buffer=std::bit_cast<VkBuffer>(uintptr_t(2));
+  EXPECT_EQ(cache.update(providers,{true}).geometry,cpu.geometry);
+  providers[0].gpuObjects={};
+  const auto restored=cache.update(providers,{true});
+  EXPECT_EQ(restored.geometry,cpu.geometry);
+  for(const auto& instance:restored.instances.instances) EXPECT_EQ(instance.gpuObjectIndex,UINT32_MAX);
+  EXPECT_EQ(gpu.instances.instances[0].gpuObjectIndex,3);
 }
 
 TEST(RayExtraction, CompactsReferencedVerticesAndSharesInstancedGeometry) {

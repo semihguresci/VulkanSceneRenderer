@@ -36,6 +36,7 @@ buildMeshSceneAsset(const MeshSceneAssetBuildInput &input) {
                                                 : input.materials.size(),
       .instanceCount = input.instanceCount,
       .bounds = input.bounds,
+      .triangleBatchesAuthoritative = true,
   };
   std::vector<SceneProviderTriangleBatch> batches;
   batches.reserve(input.primitives.size());

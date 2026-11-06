@@ -12,6 +12,7 @@
 
 #include "scene_clip_common.slang"
 #include "object_index_common.slang"
+#include "../include/Container/renderer/debug/SelectionStrokeKernel.h"
 #include "pbr_material_common.slang"
 
 [[vk::push_constant]]
@@ -30,25 +31,15 @@ struct VSOutput
     [[vk::location(0)]] float3 worldPos;
 };
 
-float3 safeNormalize(float3 value, float3 fallback)
-{
-    const float lenSq = dot(value, value);
-    return lenSq > 1.0e-8 ? value * rsqrt(lenSq) : fallback;
-}
-
-float2 safeNormalize2(float2 value, float2 fallback)
-{
-    const float lenSq = dot(value, value);
-    return lenSq > 1.0e-8 ? value * rsqrt(lenSq) : fallback;
-}
-
 [shader("vertex")]
-VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
-                  uint startInstance : SV_StartInstanceLocation)
+VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
 {
     VSOutput output;
+    // This dedicated draw starts at instance zero and pushes the original
+    // object-group base. All 80 disk offsets refer to the SAME object; the
+    // next 80 refer to the next object in that draw's group.
     const uint objectIndex =
-        ResolveObjectIndex(pc.objectIndex, instanceID, startInstance);
+        pc.objectIndex + instanceID / kSelectionStrokeSampleCount;
     const ObjectBuffer obj = uObjects[objectIndex];
     const GpuMaterial material = uMaterials[obj.objectInfo.x];
     const float3 objectPosition = ApplyHeightDisplacement(
@@ -58,34 +49,15 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
         material.heightOffset);
 
     const float4 worldPos = mul(obj.model, float4(objectPosition, 1.0));
-    const float3 worldNormal = safeNormalize(
-        float3(dot(obj.normalMatrix0.xyz, input.inNormal),
-               dot(obj.normalMatrix1.xyz, input.inNormal),
-               dot(obj.normalMatrix2.xyz, input.inNormal)),
-        float3(0.0, 1.0, 0.0));
     const float4 clipPos = mul(uCamera.viewProj, worldPos);
-    const float4 normalClip =
-        mul(uCamera.viewProj, float4(worldPos.xyz + worldNormal, 1.0));
 
     const float2 viewport =
         max(float2(pc.padding7, pc.padding8), float2(1.0, 1.0));
-    const float2 clipNdc = clipPos.xy / max(abs(clipPos.w), 1.0e-6);
-    const float4 centerClip =
-        mul(uCamera.viewProj, float4(obj.boundingSphere.xyz, 1.0));
-    const float2 centerNdc =
-        centerClip.xy / max(abs(centerClip.w), 1.0e-6);
-    const float2 normalNdc =
-        normalClip.xy / max(abs(normalClip.w), 1.0e-6);
-    const float2 normalDir =
-        safeNormalize2(normalNdc - clipNdc, float2(0.0, 1.0));
-    const float2 fallbackDir = safeNormalize2(clipNdc - centerNdc, normalDir);
-    const float2 outlineDir =
-        safeNormalize2(clipNdc - centerNdc, fallbackDir);
-    const float outlinePixels = max(pc.lineWidth, 1.0);
+    const int2 pixelOffset =
+        kSelectionStrokeOffsets[instanceID % kSelectionStrokeSampleCount];
 
     output.pos = clipPos;
-    output.pos.xy += outlineDir * (outlinePixels * 2.0 / viewport) *
-                     max(abs(clipPos.w), 1.0e-6);
+    output.pos.xy += float2(pixelOffset) * (2.0 / viewport) * clipPos.w;
     output.worldPos = worldPos.xyz;
     return output;
 }

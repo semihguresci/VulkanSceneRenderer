@@ -607,6 +607,33 @@ TEST_F(DdgiLookupGpu, FacingRejectionIsInvariantUnderWorldUnitScaling) {
   }
 }
 
+TEST_F(DdgiLookupGpu, DiffuseBackReceiverQueriesOppositeColoredFieldAndBiasesBothDirections) {
+  Harness h(*this,2);
+  const std::array colors{glm::vec3(9,0,0),glm::vec3(0,0,6)};
+  const std::array moments{glm::vec2(2,4),glm::vec2(2,4)};
+  std::array<Query,5> queries;
+  for (auto& query : queries) {
+    query.world={.25f,0,0,0};
+    query.geometricNormal=query.shadingNormal={1,0,0,.5f};
+    query.viewDirection={1,0,0,0};
+  }
+  queries[1].world.w=1; // Actual new receiver API, d=.5.
+  queries[2].geometricNormal=queries[2].shadingNormal={-1,0,0,0};
+  queries[2].viewDirection={-1,0,0,0}; // Independently specified opposite oracle.
+  queries[3].world.w=1;queries[3].shadingNormal.w=0;
+  queries[4].world.w=1;queries[4].viewDirection.w=1; // Existing blend eligibility remains intact.
+  auto data=h.data();
+  // The correct +/- normal AND view biases land .25 units from the facing
+  // probe. Forgetting to negate view places the back lookup .65 units away,
+  // beyond the .3 trace cap, producing no valid red result.
+  data.originNormalBias.w=.05f;data.spacingViewBias.w=.45f;data.trace.x=.3f;
+  const auto result=h.run(data,queries,colors,moments);
+  EXPECT_EQ(result[0],glm::vec4(0,0,6,1));
+  EXPECT_EQ(result[1],glm::vec4(9,0,0,1));
+  EXPECT_EQ(result[1],result[2]);
+  EXPECT_EQ(result[3],glm::vec4(0));EXPECT_EQ(result[4],glm::vec4(0));
+}
+
 TEST_F(DdgiLookupGpu, MomentVisibilityRatioIsInvariantUnderWorldUnitScaling) {
   Harness h(*this, 2);
   const std::array colors{glm::vec3(9, 18, 0), glm::vec3(0)};
@@ -625,6 +652,30 @@ TEST_F(DdgiLookupGpu, MomentVisibilityRatioIsInvariantUnderWorldUnitScaling) {
     EXPECT_FLOAT_EQ(result.front().z, 0);
     EXPECT_FLOAT_EQ(result.front().w, 1);
   }
+}
+
+TEST_F(DdgiLookupGpu, TransmissionTextureWithZeroFactorKeepsOpaqueReceiverEligible) {
+  Harness h(*this,2);
+  const std::array colors{glm::vec3(9,18,27),glm::vec3(9,18,27)};
+  const std::array moments{glm::vec2(2,4),glm::vec2(2,4)};
+  std::array<Query,5> queries;
+  for (auto& q:queries) {
+    q.world={.5f,0,0,0};
+    q.geometricNormal=q.shadingNormal={0,1,0,0};
+    q.viewDirection={0,1,0,0};
+  }
+  queries[1].world.w=2; // Transmission texture with exactly zero factor.
+  queries[2].world.w=3; // Positive .0005 must reject even below the old .001 cutoff.
+  queries[3].world.w=2;queries[3].viewDirection.w=1; // Alpha BLEND still rejects.
+  queries[4].world.w=2;queries[4].shadingNormal.w=.5f; // Evaluated transmission rejects.
+  const auto result=h.run(h.data(),queries,colors,moments);
+  // Normal-weighted interpolation can round the constant field by one ULP.
+  EXPECT_FLOAT_EQ(result[0].x,9.f);
+  EXPECT_FLOAT_EQ(result[0].y,18.f);
+  EXPECT_FLOAT_EQ(result[0].z,27.f);
+  EXPECT_EQ(result[0].w,1.f);
+  EXPECT_EQ(result[1],result[0]);
+  for (size_t i:{2u,3u,4u}) EXPECT_EQ(result[i],glm::vec4(0));
 }
 
 TEST_F(DdgiLookupGpu, CompleteOcclusionIsValidBlackAndDoesNotRestoreFallback) {

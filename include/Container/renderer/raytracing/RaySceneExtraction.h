@@ -3,6 +3,7 @@
 #include "Container/renderer/raytracing/RayScene.h"
 #include "Container/renderer/scene/DrawCommand.h"
 #include "Container/utility/SceneData.h"
+#include "Container/utility/VulkanMemoryManager.h"
 
 #include <array>
 #include <memory>
@@ -21,6 +22,9 @@ struct RaySceneProviderSource {
   std::span<const uint32_t> indices;
   std::span<const container::gpu::ObjectData> objects;
   std::span<const DrawCommand> draws;
+  // Optional GPU model stream, reconciled to these CPU objects before AS build.
+  container::gpu::BufferSlice gpuObjects{};
+  uint64_t gpuTransformRevision{};
 };
 
 // UV0/UV1 and COLOR_0 alpha at each corner. Matches ray_scene_data.slang.

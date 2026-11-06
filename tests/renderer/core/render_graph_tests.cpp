@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -544,6 +545,47 @@ TEST(RenderGraphTests, PrepareFrameIsIdempotentForSameFrameSignature) {
   graph.prepareFrame(params);
 
   EXPECT_EQ(readinessCalls, 2);
+}
+
+TEST(RenderGraphTests, PrepareFrameRebuildsWhenAuxiliaryPbrServiceIsPublishedOrReplaced) {
+  RenderGraph graph;
+  int readinessCalls = 0;
+  const container::renderer::PbrAuxiliaryPass* observed = nullptr;
+  // These addresses are opaque identity tokens only. No Vulkan object is
+  // constructed, accessed, or dereferenced by either callback or signature.
+  alignas(void*) std::array<std::byte, sizeof(void*)> publishedToken{};
+  alignas(void*) std::array<std::byte, sizeof(void*)> replacementToken{};
+  auto* published = reinterpret_cast<container::renderer::PbrAuxiliaryPass*>(publishedToken.data());
+  auto* replacement = reinterpret_cast<container::renderer::PbrAuxiliaryPass*>(replacementToken.data());
+  ASSERT_NE(published, replacement);
+  graph.addPass(RenderPassId::PbrAuxiliary, {}, noopRecord());
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::PbrAuxiliary, {}, {}, {}));
+  ASSERT_TRUE(graph.setPassReadiness(
+      RenderPassId::PbrAuxiliary, [&](const FrameRecordParams& params) {
+        ++readinessCalls;
+        observed = params.services.pbrAuxiliaryPass;
+        return observed ? RenderPassReadiness{} : notNeeded();
+      }));
+  FrameRecordParams params{};
+  params.runtime.frameSlot = 7u;
+  params.runtime.imageIndex = 2u;
+  auto expectState = [&](bool active, int calls) {
+    graph.prepareFrame(params);
+    graph.prepareFrame(params);
+    EXPECT_EQ(readinessCalls, calls);
+    EXPECT_EQ(observed, params.services.pbrAuxiliaryPass);
+    const auto* status = statusFor(graph.lastFrameExecutionStatuses(), RenderPassId::PbrAuxiliary);
+    ASSERT_NE(status, nullptr);
+    EXPECT_EQ(status->active, active);
+    EXPECT_EQ(status->skipReason, active ? RenderPassSkipReason::None : RenderPassSkipReason::NotNeeded);
+  };
+  expectState(false, 1);
+  params.services.pbrAuxiliaryPass = published;
+  expectState(true, 2);
+  params.services.pbrAuxiliaryPass = replacement;
+  expectState(true, 3);
+  params.services.pbrAuxiliaryPass = nullptr;
+  expectState(false, 4);
 }
 
 TEST(RenderGraphTests, PrepareFrameRebuildsWhenExposureModeChanges) {

@@ -58,9 +58,14 @@ Semantic object/layer visibility and section/box clipping remain effective.
 Native point and polyline primitives have no triangle shadow representation.
 
 The [DDGI foundation](ddgi-probe-foundation.md) adds opt-in surface attributes
-for future closest-hit shading. Shadow extraction keeps its existing 48-byte
-UV triangles and 16-byte instance metadata; the additional positions, normals,
+for future closest-hit shading. Shadow extraction uses 64-byte triangles with
+both UV sets and three vertex alpha values, plus 16-byte instance metadata;
+the additional positions, normals,
 tangents, vertex colors and transforms are requested separately by consumers.
+Alpha masks multiply barycentric vertex alpha with material, base-color texture
+and opacity alpha. Opaque materials ignore alpha, and blended/transmissive
+surfaces retain the existing binary-shadow exclusion policy. Optional surface
+color records retain RGBA for closest-hit shading and DDGI transport.
 
 Providers advance geometry revisions on changed positions/indices or reloads.
 Geometry changes rebuild affected BLAS; transforms, visibility and sidedness
@@ -156,6 +161,16 @@ for both normal derivatives. Derivatives that span incompatible depth surfaces
 are rejected; an unreliable normal requests a conservative query bias instead
 of a camera-facing normal offset that could move the ray into the receiver.
 
+Depth-reconstructed compute receivers also account for framebuffer vertex XY
+quantization before depth interpolation. The host supplies the GPU's
+`subPixelPrecisionBits`; the shader projects fixed-depth pixel footprints onto
+the receiver normal and scales them by the device's subpixel spacing. The
+existing arithmetic margin remains, while fragment and hit queries retain their
+direct-position bias. With eight-bit subpixel precision, the physics demo's
+plane-error bound is roughly 150 micrometres, exceeding the former 20-micrometre
+minimum bias. Its ray/TAA image regression detected almost 50% remote floor
+darkening before this correction and zero affected pixels afterward.
+
 Geometry/transforms, semantic visibility, materials, lights, clipping and quality
 changes invalidate the entire visibility history. This conservative policy avoids
 reusing illumination from moving blockers or lights. Camera motion reprojects
@@ -212,6 +227,12 @@ python -B tests/validation/ray_shadow_regression.py --exe out/build/visual-studi
 python -B tests/validation/ray_shadow_regression.py --exe out/build/visual-studio/Release/VulkanSceneRenderer.exe --output out/review-ray-msaa --case msaa
 python -B tests/validation/ray_shadow_regression.py --exe out/build/visual-studio/Release/VulkanSceneRenderer.exe --output out/review-ray-msaa-hard --case msaa-hard
 ```
+
+The 2026-10-17 receiver-precision `artifacts` rerun passed 41 metric records from
+85 captures with clean validation and synchronization checks. This included
+zero incorrect pixels in all 24 hard-shadow light/slope/MSAA combinations,
+close parallel and mixed receivers under hard/soft shadows, disabled emitters,
+and zero lighting error across 156 grazing pixels in each rendering technique.
 
 These cases measure the red foreground and green background contributions of a
 mixed 4x MSAA pixel against an unblocked capture, including selected point and

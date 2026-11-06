@@ -1,4 +1,5 @@
 #include <Container/geometry/GltfAccessor.h>
+#include <Container/geometry/GltfAnimation.h>
 #include <Container/geometry/GltfModelLoader.h>
 
 #include <gtest/gtest.h>
@@ -327,11 +328,9 @@ TEST(GltfAccessorLoader, SparseAnimationExpansionCountsIndependentDecodedTrackSt
     {"channels",Json::array({{{"sampler",0},{"target",{{"path","pointer"},
       {"extensions",{{"KHR_animation_pointer",{{"pointer","/materials/0/alphaCutoff"}}}}}}}}})}}});
   const auto loaded = LoadModelWithSource(fixture.save());
-  // Verify the retained animation source through the independent accessor
-  // contract; live animation evaluation belongs to its own integration suite.
-  CheckedAccessor values(loaded.gltfModel,2,"sparse animation output");
-  std::array<double,1> value{};values.readDoubles(keys-1,value);EXPECT_EQ(value[0],1);
-  values.readDoubles(0,value);EXPECT_EQ(value[0],0);
+  const auto library = ParseAnimations(loaded.gltfModel);
+  ASSERT_EQ(library.clips[0].tracks.size(),1u);
+  EXPECT_EQ(SampleAnimation(library.clips[0],keys-1).values[0].value[0],1);
   LoadOptions options; options.maxInputBytes = 64*1024;
   try { (void)LoadModelWithSource(fixture.save(),options); FAIL() << "Sparse track expansion bypassed budget"; }
   catch (const std::runtime_error& error) { EXPECT_NE(std::string(error.what()).find("budget"),std::string::npos); }
@@ -366,12 +365,11 @@ TEST(GltfAccessorLoader, BufferlessNonsparseAttributesMorphsAndAnimationUseZeroD
     EXPECT_EQ(evaluated[i].color,glm::vec3(0));
     EXPECT_FLOAT_EQ(evaluated[i].colorAlpha,0);
   }
-  CheckedAccessor values(loaded.gltfModel,output,"bufferless animation output");
-  for(size_t i=0;i<values.count();++i) {
-    std::array<double,3> value{1,2,3};values.readDoubles(i,value);
-    EXPECT_EQ(value,(std::array<double,3>{0,0,0}));
-  }
-  EXPECT_TRUE(loaded.gltfModel.nodes[0].translation.empty());
+  const auto library = ParseAnimations(loaded.gltfModel);
+  ASSERT_EQ(library.clips.size(),1u);
+  EXPECT_EQ(library.clips[0].tracks[0].values,(std::vector<double>(6,0)));
+  EXPECT_NO_THROW(ApplyAnimationPose(loaded.gltfModel,SampleAnimation(library.clips[0],.5)));
+  EXPECT_EQ(loaded.gltfModel.nodes[0].translation,(std::vector<double>{0,0,0}));
   EXPECT_EQ(loaded.gltfModel.accessors[size_t(output)].bufferView,-1);
   EXPECT_FALSE(loaded.gltfModel.accessors[size_t(output)].sparse.isSparse);
 }

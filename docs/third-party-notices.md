@@ -27,6 +27,27 @@ original Smith-GGX fit. See [LTC area lighting](ltc-area-lighting.md).
 TinyUSDZ is Apache 2.0 licensed and contains additional third-party code;
 its license files and bundled dependency notices are included separately.
 
+Builds with `ENABLE_PHYSICS=ON` also include statically linked Jolt Physics
+5.6.0, Copyright 2021 Jorrit Rouwe, under the MIT license. Its complete upstream
+notice is included as `THIRD_PARTY_LICENSES/Jolt-MIT.txt`. No Jolt code is linked
+when physics is disabled. See [the physics integration](physics-integration.md)
+for the pinned source and available simulation features.
+
+Builds with `ENABLE_OPENVDB=ON` also include OpenVDB under Apache-2.0, plus
+its oneTBB, Boost, Imath, OpenEXR, Blosc and compression dependencies. The
+package includes their installed notices as
+`THIRD_PARTY_LICENSES/openvdb-dependency-*.txt`. Disabled builds do not link
+OpenVDB. See [OpenVDB integration](openvdb.md) for the supported import,
+volume rendering and voxel/SDF workflows.
+
+Native sparse and `ENABLE_NANOVDB_IO` builds also use portable NanoVDB headers from OpenVDB 12.0.1
+(Copyright Contributors to the OpenVDB Project, Apache-2.0). Their upstream
+license is included as `THIRD_PARTY_LICENSES/NanoVDB-Apache-2.0.txt`. This path
+uses Vulkan shader traversal or portable CPU file tools and does not ship or
+require CUDA. Optional native ZIP/BLOSC codecs include their installed provider
+and compression dependency notices in `openvdb-dependency-*.txt`, including
+native-only packages when those providers are enabled.
+
 Manifold 3.5.4 (Copyright 2021 The Manifold Authors) is Apache-2.0 licensed.
 Its vcpkg build uses Clipper2 2.0.1 (Copyright Angus Johnson 2010-2025),
 licensed under Boost Software License 1.0. Their license texts are included as
@@ -45,6 +66,9 @@ The Microsoft Visual C++ runtime is a separate prerequisite, available from
 [Microsoft](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
 No Microsoft redistributable installer is bundled.
 
+Optional `ENABLE_GLTF_DRACO` builds include Draco 1.5.9 (Apache-2.0) only in the
+adjacent bounded worker. `ENABLE_GLTF_MESHOPT` includes meshoptimizer 1.3 (MIT).
+Their notices are staged as `Draco-Apache-2.0.txt` and `meshoptimizer-MIT.txt`.
 
 Optional `ENABLE_TEXTURE_KTX` builds include KTX-Software 4.4.2 and its Basis
 Universal, ASTC, Zstd, DFD and uthash components. Upstream license/notice files
@@ -54,10 +78,3 @@ notice is retained. The restricted Ericsson ETC unpacker is disabled. Optional
 retained. These options default off. Package build-info records each enabled
 backend, and packaging fails if its required upstream notices are missing. See
 [typed texture dependencies](texture-image-data.md) for exact pinned sources.
-
-Optional `ENABLE_GLTF_DRACO` builds include Draco 1.5.9 (Apache-2.0) in the
-adjacent bounded worker. `ENABLE_GLTF_MESHOPT` includes meshoptimizer 1.3 (MIT).
-Their notices are staged as `Draco-Apache-2.0.txt` and `meshoptimizer-MIT.txt`.
-Package manifests record both backends and include the required worker and its
-runtime dependency closure. Missing enabled decoder notices reject packaging.
-See [glTF texture ingestion](gltf-texture-ingestion.md) for the import contract.

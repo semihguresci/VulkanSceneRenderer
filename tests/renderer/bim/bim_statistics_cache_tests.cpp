@@ -26,7 +26,7 @@ std::array<BimElementMetadata, 3> elements() {
   return result;
 }
 
-BimDrawFilterStateInputs inputs(std::span<const BimElementMetadata> metadata,
+BimDrawFilterStateInputs inputs(BimMetadataTableView metadata,
                                 uint64_t revision = 1) {
   return {.revision = revision,
           .objectCount = metadata.size(),
@@ -91,6 +91,41 @@ TEST(BimStatisticsCacheTests, BuildsCountsAndOnlyMeshTriangleBatchesOnce) {
   EXPECT_EQ(cache.sceneStats({}, {}).meshObjectCount, 1);
   EXPECT_EQ(cache.triangleBatches().data(), batches.data());
   EXPECT_EQ(cache.triangleBatches()[0].materialIndex, 7);
+}
+
+TEST(BimStatisticsCacheTests, ResolvesCompactRowsAndKeepsPublishedValues) {
+  auto dto = elements();
+  dto[0].geometryKind = BimGeometryKind::Curves;
+  dto[1].geometryKind = BimGeometryKind::Points;
+  dto[2].materialIndex = 11u;
+  dto[2].doubleSided = true;
+  dto[2].bounds.valid = true;
+  dto[2].bounds.min = {-1.0f, 2.0f, 3.0f};
+  dto[2].bounds.max = {4.0f, 5.0f, 6.0f};
+  BimMetadataStorage storage;
+  storage.replace(dto);
+  const std::array commands{
+      DrawCommand{.objectIndex = 0u, .firstIndex = 0u, .indexCount = 3u},
+      DrawCommand{.objectIndex = 1u, .firstIndex = 3u, .indexCount = 3u},
+      DrawCommand{.objectIndex = 2u, .firstIndex = 6u, .indexCount = 3u}};
+  BimStatisticsCache cache;
+  cache.rebuild({}, storage, {}, commands, {});
+  BimDrawFilter filter{};
+  filter.typeFilterEnabled = true;
+  filter.type = "Pipe";
+  EXPECT_EQ(cache.drawBudgetLodStats(filter, inputs(storage), {}, 1u, 1u)
+                .visibleMeshObjectCount, 1u);
+  storage.clear();
+
+  const auto stats = cache.sceneStats({}, {});
+  EXPECT_EQ(stats.meshObjectCount, 1u);
+  EXPECT_EQ(stats.pointObjectCount, 1u);
+  EXPECT_EQ(stats.curveObjectCount, 1u);
+  ASSERT_EQ(cache.triangleBatches().size(), 1u);
+  EXPECT_EQ(cache.triangleBatches()[0].materialIndex, 11);
+  EXPECT_TRUE(cache.triangleBatches()[0].doubleSided);
+  EXPECT_EQ(cache.sceneProviderBounds().min, glm::vec3(-1.0f, 2.0f, 3.0f));
+  EXPECT_EQ(cache.sceneProviderBounds().max, glm::vec3(4.0f, 5.0f, 6.0f));
 }
 
 TEST(BimStatisticsCacheTests, ResidencyAndAllCompactionFieldsStayLive) {

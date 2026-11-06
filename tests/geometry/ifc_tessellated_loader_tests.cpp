@@ -478,6 +478,58 @@ TEST(IfcTessellatedLoader, ReusedAndDeepStyleReferencesKeepValidFallback) {
   }
 }
 
+TEST(IfcTessellatedLoader, RejectsExcessivelyNestedStepArguments) {
+  const std::string nested = "ISO-10303-21; DATA; #1=IFCUNKNOWN(" +
+                             std::string(18000, '(') + "$" +
+                             std::string(18000, ')') + "); ENDSEC; END-ISO-10303-21;";
+  EXPECT_THROW((void)container::geometry::ifc::LoadFromStep(nested), std::runtime_error);
+}
+
+TEST(IfcTessellatedLoader, DeepPlacementChainPreservesAncestorTransform) {
+  std::string extra =
+      "#80=IFCCARTESIANPOINT((2.,0.,0.));"
+      "#81=IFCAXIS2PLACEMENT3D(#80,$,$);"
+      "#96=IFCBUILDINGELEMENTPROXY('placed-guid',$,$,$,$,#100,#31,$,$);";
+  for (uint32_t id = 100; id < 20100; ++id)
+    extra += "#" + std::to_string(id) + "=IFCLOCALPLACEMENT(#" +
+             std::to_string(id + 1) + ",$);";
+  extra += "#20100=IFCLOCALPLACEMENT($,#81);";
+
+  const auto model = container::geometry::ifc::LoadFromStep(polygonFixture(
+      "((0.,0.,0.),(1.,0.,0.),(0.,1.,0.))", "IFCINDEXEDPOLYGONALFACE((1,2,3))",
+      "$", extra));
+  ASSERT_EQ(model.elements.size(), 2u);
+  EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Complete);
+  EXPECT_NE(model.elements[0].transform, model.elements[1].transform);
+}
+
+TEST(IfcTessellatedLoader, OversizedRepresentationDoesNotPublishPartialInstances) {
+  for (const bool branch : {true, false}) {
+    SCOPED_TRACE(branch ? "visit budget" : "depth budget");
+    std::string extra =
+        "#96=IFCPRODUCTDEFINITIONSHAPE($,$,(#100));"
+        "#97=IFCBUILDINGELEMENTPROXY('large-guid',$,$,$,$,$,#96,$,$);";
+    const uint32_t depth = branch ? 17u : 70u;
+    for (uint32_t id = 100; id < 100 + depth; ++id) {
+      const std::string next = "#" + std::to_string(id + 1);
+      extra += "#" + std::to_string(id) + "=IFCSHAPEREPRESENTATION($,$,$,(" +
+               next + (branch ? "," + next : "") + "));";
+    }
+    extra += "#" + std::to_string(100 + depth) +
+             "=IFCSHAPEREPRESENTATION($,$,$,(#21));";
+
+    const auto model = container::geometry::ifc::LoadFromStep(polygonFixture(
+        "((0.,0.,0.),(1.,0.,0.),(0.,1.,0.))", "IFCINDEXEDPOLYGONALFACE((1,2,3))",
+        "$", extra));
+    EXPECT_EQ(model.elements.size(), 1u);
+    EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Partial);
+    ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+    EXPECT_EQ(model.importReport.diagnostics.front().productId, 97u);
+    EXPECT_NE(model.importReport.diagnostics.front().reason.find("budget"),
+              std::string::npos);
+  }
+}
+
 TEST(IfcTessellatedLoader, IntermediateBooleanStyleColorsClippingFaces) {
   const auto model = container::geometry::ifc::LoadFromStep(solidFixture(
       "#5=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,4.);"

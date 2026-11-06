@@ -9,6 +9,7 @@
 #include "screen_space_light_shadow_common.slang"
 #include "shadow_common.slang"
 #include "environment_sky_common.slang"
+#include "aerial_perspective.slang"
 #include "ray_shadow_read.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
@@ -109,7 +110,10 @@ VSOutput vertMain(uint vertexIndex : SV_VertexID)
 float3 SampleBackgroundSky(float2 uv, float environmentIntensity)
 {
     return SampleEnvironmentBackground(uv, uCamera.inverseViewProj,
-        environmentIntensity, gPrefilteredCubemap, envSampler);
+        environmentIntensity, uLighting.environmentOrientation,
+        uLighting.environmentBackground, uLighting.prefilteredMipCount,
+        uLighting.environmentSunDirection, uLighting.environmentSunRadiance.rgb,
+        gPrefilteredCubemap, envSampler);
 }
 
 float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
@@ -435,7 +439,7 @@ float4 fragMain(VSOutput input) : SV_Target0
     float3 kD_ibl = (1.0 - kS_ibl) * (1.0 - metallic);
 
     float3 irradiance =
-        DeferredFinite3Or(gIrradianceCubemap.Sample(envSampler, normal).rgb,
+        DeferredFinite3Or(gIrradianceCubemap.Sample(envSampler, RotateEnvironmentDirection(normal, uLighting.environmentOrientation.xy)).rgb,
                           0.0.xxx) *
         environmentIntensity;
     irradiance = lerp(irradiance, DdgiDiffuseIrradiance(ddgi), ddgiCoverage);
@@ -447,7 +451,7 @@ float4 fragMain(VSOutput input) : SV_Target0
     float maxMipLevel = max(float(uLighting.prefilteredMipCount) - 1.0, 0.0);
     float3 prefilteredColor =
         DeferredFinite3Or(
-            gPrefilteredCubemap.SampleLevel(envSampler, baseSpecularR,
+            gPrefilteredCubemap.SampleLevel(envSampler, RotateEnvironmentDirection(baseSpecularR, uLighting.environmentOrientation.xy),
                                             roughness * maxMipLevel).rgb,
             0.0.xxx) *
         environmentIntensity;
@@ -479,7 +483,7 @@ float4 fragMain(VSOutput input) : SV_Target0
             extended.diffuseTransmissionFactor, worldPosition,
             geometricNormal, normal, V);
         float3 backIrradiance = DeferredFinite3Or(
-            gIrradianceCubemap.Sample(envSampler, -normal).rgb, 0.0.xxx) *
+            gIrradianceCubemap.Sample(envSampler, RotateEnvironmentDirection(-normal, uLighting.environmentOrientation.xy)).rgb, 0.0.xxx) *
             environmentIntensity;
         backIrradiance = lerp(backIrradiance,
             DdgiDiffuseIrradiance(backDdgi), saturate(backDdgi.coverage));
@@ -496,7 +500,7 @@ float4 fragMain(VSOutput input) : SV_Target0
     {
         float clearcoatRoughness = layerTerms.clearcoatRoughness;
         float3 clearcoatPrefiltered = DeferredFinite3Or(
-            gPrefilteredCubemap.SampleLevel(envSampler, R,
+            gPrefilteredCubemap.SampleLevel(envSampler, RotateEnvironmentDirection(R, uLighting.environmentOrientation.xy),
                 clearcoatRoughness * maxMipLevel).rgb, 0.0.xxx) * environmentIntensity;
         float2 clearcoatBrdf = max(DeferredFinite2Or(
             gBrdfLUT.Sample(brdfSampler, float2(NdotV, clearcoatRoughness)),
@@ -518,5 +522,5 @@ float4 fragMain(VSOutput input) : SV_Target0
     float3 finalColor =
         DeferredFinite3Or(ambientLighting + directLighting + emissive, 0.0.xxx);
 
-    return float4(finalColor, 1.0);
+    return float4(ApplyAerialPerspective(finalColor, worldPosition, uCamera, uLighting), 1.0);
 }

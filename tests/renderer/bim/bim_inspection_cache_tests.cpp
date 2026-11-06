@@ -158,4 +158,25 @@ TEST(BimInspectionCacheTests, GuardsAgainstMetadataStorageOrSizeReplacement) {
   EXPECT_TRUE(cache.compareElements().empty());
 }
 
+TEST(BimInspectionCacheTests, DerivedTablesOwnCompactStorageText) {
+  int manager{};
+  container::renderer::BimMetadataStorage storage;
+  storage.push_back(wall());
+  storage.push_back(wall("wall-2"));
+  storage.seal();
+  BimInspectionCache cache;
+  ASSERT_TRUE(cache.refresh(&manager, 1u, storage));
+  EXPECT_FALSE(cache.refresh(&manager, 1u, storage));
+  storage.clear();
+
+  ASSERT_EQ(cache.compareElements().size(), 2u);
+  EXPECT_EQ(cache.compareElements()[1].guid, "wall-2");
+  EXPECT_EQ(cache.compareElements()[1].type, "Basic Wall");
+  const auto *material = findRow(cache.byMaterial(), "Concrete");
+  ASSERT_NE(material, nullptr);
+  EXPECT_EQ(material->count, 2u);
+  EXPECT_TRUE(cache.refresh(&manager, 2u, storage));
+  EXPECT_TRUE(cache.compareElements().empty());
+}
+
 } // namespace

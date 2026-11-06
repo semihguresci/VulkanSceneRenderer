@@ -11,6 +11,7 @@
 #include "Container/renderer/lighting/LightingManager.h"
 #include "Container/renderer/scene/CameraController.h"
 #include "Container/renderer/scene/SceneController.h"
+#include "Container/renderer/pipeline/RuntimeShaderCompiler.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/Camera.h"
 #include "Container/utility/GuiManager.h"
@@ -47,7 +48,7 @@ void RendererFrontend::ensureReferencePathResources() {
   try {
     auto pass = std::make_unique<ReferencePathTracePass>(svc_.ctx.deviceWrapper,
         *svc_.allocationManager.memoryManager(), svc_.pipelineManager);
-    pass->createResources(container::util::executableDirectory(),
+    pass->createResources(activeShaderReload_ ? activeShaderReload_->directory : container::util::executableDirectory(),
         uint32_t(svc_.swapChainManager.imageCount()), svc_.swapChainManager.extent(),
         subs_.sceneManager->descriptorSetLayout(), subs_.lightingManager->lightDescriptorSetLayout());
     subs_.referencePathTracePass = std::move(pass);
@@ -95,9 +96,9 @@ bool RendererFrontend::recordReferencePathTrace(VkCommandBuffer command, const F
     referenceStatus_ = "Unsupported scene: " + subs_.rayShadowManager->surfaceUnsupportedReason();
   }
   // These paths cannot yet provide the same radiometric scene as raster.
-  if (frame.bim.semanticColorMode) {
+  if (frame.bim.semanticColorMode || vdbLoadedFrame_) {
     input.data.limits.w |= 8u;
-    referenceStatus_ = "Unsupported reference scene: semantic BIM colors";
+    referenceStatus_ = "Unsupported reference scene: semantic colors or volume transport";
   }
   if (subs_.environmentManager->activeSkyMode() == SkyMode::Atmosphere) {
     input.data.limits.w |= 8u;
@@ -114,6 +115,7 @@ bool RendererFrontend::recordReferencePathTrace(VkCommandBuffer command, const F
   };
   hash(subs_.rayShadowManager->sceneRevision());
   hash(subs_.environmentManager->environmentRevision());
+  hash(shaderReloadGeneration_);
   const auto& lighting = subs_.lightingManager->lightingData();
   hash(lighting.directionalDirection);
   hash(lighting.directionalColorIntensity);

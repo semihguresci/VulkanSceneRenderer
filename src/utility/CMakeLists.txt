@@ -81,11 +81,29 @@ target_link_libraries(VulkanSceneRenderer_window PUBLIC
 # ── 5. Scene (graph, materials, scene manager) ──────────────────────────────
 add_library(VulkanSceneRenderer_scene
     SceneManager.cpp
+    SceneManagerCameras.cpp
+    SceneManagerCameraPoses.cpp
+    SceneManagerMerge.cpp
+    SceneManagerMaterials.cpp
+    SceneManagerMaterialResources.cpp
+    SceneManagerSourceResources.cpp
+    ../renderer/bim/BimMetadata.cpp
     SceneGraph.cpp
-    ../renderer/scene/GltfDeformationScene.cpp
+    MaterialBindingAuthoring.cpp
+    MaterialTailReferences.cpp
+    ResourceLifecycle.cpp
+      TextureResourceLifecycle.cpp
+    SceneNodeAuthoringPolicy.cpp
+    GraphCloneProjection.cpp
     MaterialManager.cpp
     MaterialXIntegration.cpp
+    GltfMaterialConversion.cpp
+    GltfRuntimeMaterialAuthoring.cpp
+    GltfSourceMaterialExport.cpp
     GltfTextureResources.cpp
+    GltfSceneInstancing.cpp
+    GltfSceneSelection.cpp
+    GltfMergeGraph.cpp
 )
 target_compile_features(VulkanSceneRenderer_scene PUBLIC cxx_std_23)
 target_include_directories(VulkanSceneRenderer_scene PUBLIC
@@ -102,25 +120,32 @@ target_link_libraries(VulkanSceneRenderer_scene PUBLIC
 
 # ── 6. UI (ImGui) ───────────────────────────────────────────────────────────
 add_library(VulkanSceneRenderer_ui
-    BcfViewpoint.cpp
-    SolarPosition.cpp
-    DisplayGradePreset.cpp
-    GuiManager.cpp
     GltfAnimationControls.cpp
     LightEditControls.cpp
+    BcfViewpoint.cpp
+    BimElementSearchCache.cpp
+    DisplayGradePreset.cpp
+    GuiManager.cpp
+    OpenVdbAuthoring.cpp
+    PhysicsControls.cpp
+    SolarPosition.cpp
+    SkyPreset.cpp
+    SceneHierarchyCache.cpp
 )
 target_compile_features(VulkanSceneRenderer_ui PUBLIC cxx_std_23)
 target_include_directories(VulkanSceneRenderer_ui PUBLIC
     ${_UTILITY_INCLUDE_DIR}
 )
 target_link_libraries(VulkanSceneRenderer_ui PUBLIC
+    VulkanSceneRenderer_light_edit_support
     Dep_VulkanCore
     Dep_Math
     Dep_Windowing
     Dep_UI
     VulkanSceneRenderer_scene
     VulkanSceneRenderer_bim_ui_support
-    VulkanSceneRenderer_light_edit_support
+    VulkanSceneRenderer_openvdb_processing
+    PRIVATE nlohmann_json::nlohmann_json
 )
 if(TARGET miniz::miniz)
     target_link_libraries(VulkanSceneRenderer_ui PUBLIC miniz::miniz)

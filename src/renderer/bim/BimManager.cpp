@@ -4,6 +4,7 @@
 #include "Container/geometry/IfcTessellatedLoader.h"
 #include "Container/geometry/IfcxLoader.h"
 #include "Container/geometry/Model.h"
+#include "Container/geometry/OpenVdbLoader.h"
 #include "Container/geometry/UsdLoader.h"
 #include "Container/renderer/bim/BimDrawCompactionPlanner.h"
 #include "Container/renderer/bim/BimDrawFilterState.h"
@@ -13,6 +14,7 @@
 #include "Container/renderer/scene/SceneController.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/FileLoader.h"
+#include "Container/utility/GltfMaterialConversion.h"
 #include "Container/utility/Logger.h"
 #include "Container/utility/Material.h"
 #include "Container/utility/PipelineManager.h"
@@ -26,6 +28,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -61,7 +64,6 @@ constexpr uint32_t kBimVisibilityFilterStatus = 1u << 7u;
 constexpr uint32_t kBimVisibilityFilterDrawBudget = 1u << 8u;
 constexpr uint32_t kBimVisibilityFilterIsolateSelection = 1u << 9u;
 constexpr uint32_t kBimVisibilityFilterHideSelection = 1u << 10u;
-constexpr uint32_t kBimVisibilityFilterHideRoomVolumes = 1u << 11u;
 
 size_t drawCompactionSlotIndex(BimDrawCompactionSlot slot) {
   return std::min(static_cast<size_t>(slot), kBimDrawCompactionSlotCount - 1u);
@@ -95,9 +97,7 @@ std::string normalizedElementType(std::string_view value) {
   if (begin == end) {
     return "Unknown";
   }
-  std::string type(value.substr(begin, end - begin));
-  if (lowerAscii(type) == "ifcspace") return std::string(kBimRoomVolumeType);
-  return type;
+  return std::string(value.substr(begin, end - begin));
 }
 
 glm::mat4 importScaleTransform(float scale) {
@@ -346,7 +346,6 @@ bool sameSectionCapBuildOptions(const BimSectionCapBuildOptions &lhs,
   constexpr float kEpsilon = 1.0e-5f;
   if (glm::length(lhs.sectionPlane - rhs.sectionPlane) > kEpsilon ||
       lhs.clipPlaneCount != rhs.clipPlaneCount ||
-      lhs.hideRoomVolumes != rhs.hideRoomVolumes ||
       glm::length(lhs.fillColor - rhs.fillColor) > kEpsilon ||
       std::abs(lhs.fillOpacity - rhs.fillOpacity) > kEpsilon ||
       glm::length(lhs.hatchColor - rhs.hatchColor) > kEpsilon ||
@@ -446,8 +445,7 @@ bool sameVisibilityFilterSettings(const BimVisibilityFilterPushConstants &lhs,
          lhs.fireRatingId == rhs.fireRatingId &&
          lhs.loadBearingId == rhs.loadBearingId &&
          lhs.statusId == rhs.statusId &&
-         lhs.selectedProductId == rhs.selectedProductId &&
-         lhs.roomVolumeTypeId == rhs.roomVolumeTypeId;
+         lhs.selectedProductId == rhs.selectedProductId;
 }
 
 bool visibilityFilterHasActiveMask(
@@ -592,7 +590,7 @@ bool geometryDrawListsCoverObject(const BimGeometryDrawLists &lists,
                                      objectIndex);
 }
 
-std::optional<uint32_t> tryLoadSceneTexture(
+std::optional<container::scene::SceneManager::MaterialTextureReference> tryLoadSceneTexture(
     container::scene::SceneManager &sceneManager,
     const container::geometry::dotbim::MaterialTextureAsset &texture,
     bool isSrgb) {
@@ -607,7 +605,7 @@ std::optional<uint32_t> tryLoadSceneTexture(
         textureName =
             container::util::pathToUtf8(texture.path.lexically_normal());
       }
-      return sceneManager.loadMaterialTextureFromBytes(
+      return sceneManager.loadMaterialTextureSourceFromBytes(
           textureName, texture.encodedBytes, isSrgb, texture.samplerIndex);
     } catch (...) {
       if (texture.path.empty()) {
@@ -622,7 +620,7 @@ std::optional<uint32_t> tryLoadSceneTexture(
     return std::nullopt;
   }
   try {
-    return sceneManager.loadMaterialTexture(normalized, isSrgb,
+    return sceneManager.loadMaterialTextureSource(normalized, isSrgb,
                                             texture.samplerIndex);
   } catch (...) {
     return std::nullopt;
@@ -632,16 +630,28 @@ std::optional<uint32_t> tryLoadSceneTexture(
 void assignTextureIndex(
     container::scene::SceneManager &sceneManager,
     const container::geometry::dotbim::MaterialTextureAsset &texture,
-    bool isSrgb, uint32_t &textureIndex) {
+    bool isSrgb, uint32_t &textureIndex,
+    container::material::GltfMaterialTextureSlot slot,
+    container::scene::SceneManager::MaterialTextureProvenance &provenance) {
   if (const auto loaded = tryLoadSceneTexture(sceneManager, texture, isSrgb)) {
-    textureIndex = *loaded;
+    // Keep the source identity while this producer still knows its exact slot
+    // and color/data role. A shared GPU resource is not a source texture ID.
+    provenance[size_t(slot)] = *loaded;
+    textureIndex = loaded->runtimeResource();
   }
 }
 
-container::material::Material
+struct PreparedBimSceneMaterial {
+  container::material::Material value;
+  container::scene::SceneManager::MaterialTextureProvenance textures;
+};
+
+PreparedBimSceneMaterial
 makeSceneMaterial(const container::geometry::dotbim::Material &source,
                   container::scene::SceneManager &sceneManager) {
-  container::material::Material material = source.pbr;
+  using Slot = container::material::GltfMaterialTextureSlot;
+  PreparedBimSceneMaterial result{source.pbr, {}};
+  auto &material = result.value;
   material.baseColor =
       glm::clamp(material.baseColor, glm::vec4(0.0f), glm::vec4(1.0f));
   material.opacityFactor = std::clamp(material.opacityFactor, 0.0f, 1.0f);
@@ -655,42 +665,42 @@ makeSceneMaterial(const container::geometry::dotbim::Material &source,
       std::clamp(material.occlusionStrength, 0.0f, 1.0f);
 
   assignTextureIndex(sceneManager, source.texturePaths.baseColor, true,
-                     material.baseColorTextureIndex);
+                     material.baseColorTextureIndex, Slot::BaseColor, result.textures);
   assignTextureIndex(sceneManager, source.texturePaths.emissive, true,
-                     material.emissiveTextureIndex);
+                     material.emissiveTextureIndex, Slot::Emissive, result.textures);
   assignTextureIndex(sceneManager, source.texturePaths.normal, false,
-                     material.normalTextureIndex);
+                     material.normalTextureIndex, Slot::Normal, result.textures);
   assignTextureIndex(sceneManager, source.texturePaths.occlusion, false,
-                     material.occlusionTextureIndex);
+                     material.occlusionTextureIndex, Slot::Occlusion, result.textures);
   assignTextureIndex(sceneManager, source.texturePaths.metallicRoughness, false,
-                     material.metallicRoughnessTextureIndex);
+                     material.metallicRoughnessTextureIndex, Slot::MetallicRoughness, result.textures);
   assignTextureIndex(sceneManager, source.texturePaths.roughness, false,
-                     material.roughnessTextureIndex);
+                     material.roughnessTextureIndex, Slot::Roughness, result.textures);
   assignTextureIndex(sceneManager, source.texturePaths.metalness, false,
-                     material.metalnessTextureIndex);
+                     material.metalnessTextureIndex, Slot::Metalness, result.textures);
   assignTextureIndex(sceneManager, source.texturePaths.specular, false,
-                     material.specularTextureIndex);
+                     material.specularTextureIndex, Slot::Specular, result.textures);
   assignTextureIndex(sceneManager, source.texturePaths.specularColor, true,
-                     material.specularColorTextureIndex);
+                     material.specularColorTextureIndex, Slot::SpecularColor, result.textures);
   assignTextureIndex(sceneManager, source.texturePaths.opacity, false,
-                     material.opacityTextureIndex);
+                     material.opacityTextureIndex, Slot::Opacity, result.textures);
   assignTextureIndex(sceneManager, source.texturePaths.transmission, false,
-                     material.transmissionTextureIndex);
+                     material.transmissionTextureIndex, Slot::Transmission, result.textures);
   assignTextureIndex(sceneManager, source.texturePaths.clearcoat, false,
-                     material.clearcoatTextureIndex);
+                     material.clearcoatTextureIndex, Slot::Clearcoat, result.textures);
   assignTextureIndex(sceneManager, source.texturePaths.clearcoatRoughness,
-                     false, material.clearcoatRoughnessTextureIndex);
+                     false, material.clearcoatRoughnessTextureIndex, Slot::ClearcoatRoughness, result.textures);
   assignTextureIndex(sceneManager, source.texturePaths.clearcoatNormal, false,
-                     material.clearcoatNormalTextureIndex);
+                     material.clearcoatNormalTextureIndex, Slot::ClearcoatNormal, result.textures);
   assignTextureIndex(sceneManager, source.texturePaths.sheenColor, true,
-                     material.sheenColorTextureIndex);
+                     material.sheenColorTextureIndex, Slot::SheenColor, result.textures);
   assignTextureIndex(sceneManager, source.texturePaths.sheenRoughness, false,
-                     material.sheenRoughnessTextureIndex);
+                     material.sheenRoughnessTextureIndex, Slot::SheenRoughness, result.textures);
   assignTextureIndex(sceneManager, source.texturePaths.iridescence, false,
-                     material.iridescenceTextureIndex);
+                     material.iridescenceTextureIndex, Slot::Iridescence, result.textures);
   assignTextureIndex(sceneManager, source.texturePaths.iridescenceThickness,
-                     false, material.iridescenceThicknessTextureIndex);
-  return material;
+                     false, material.iridescenceThicknessTextureIndex, Slot::IridescenceThickness, result.textures);
+  return result;
 }
 
 bool hasRenderableSourceGeometry(
@@ -1528,6 +1538,7 @@ void BimManager::clear() {
   vertices_.clear();
   indices_.clear();
   objectData_.clear();
+  runtimeObjectTransforms_.clear();
   temporalRootTranslation_ = glm::vec3(0);
   if (loadProgressCallback_) {
     // Releasing thousands of property strings can itself be expensive.
@@ -1573,6 +1584,7 @@ void BimManager::clear() {
   semanticColorMode_ = BimSemanticColorMode::Off;
   semanticColorIdsDirty_ = true;
   modelPath_.clear();
+  openVdbOptions_.reset();
   importReport_ = {};
   ++objectDataRevision_;
   notifyLoadProgress("BIM resources released");
@@ -2025,9 +2037,8 @@ bool BimManager::rebuildSectionClipCapGeometry(
   std::vector<BimSectionCapTriangle> triangles;
   for (uint32_t objectIndex = 0u; objectIndex < elementMetadata_.size();
        ++objectIndex) {
-    const BimElementMetadata &metadata = elementMetadata_[objectIndex];
+    const BimElementMetadataView &metadata = elementMetadata_[objectIndex];
     if (metadata.geometryKind != BimGeometryKind::Mesh ||
-        (options.hideRoomVolumes && metadata.type == kBimRoomVolumeType) ||
         objectIndex >= objectData_.size() ||
         objectIndex >= objectDrawCommandOffsets_.size() ||
         objectIndex >= objectDrawCommandCounts_.size()) {
@@ -2112,12 +2123,15 @@ bool BimManager::rebuildSectionClipCapGeometry(
   return sectionClipCapBuildOptionsValid_;
 }
 
-const BimElementMetadata *
+std::optional<BimElementMetadataView>
 BimManager::metadataForObject(uint32_t objectIndex) const {
   if (objectIndex >= elementMetadata_.size()) {
-    return nullptr;
+    return std::nullopt;
   }
-  return &elementMetadata_[objectIndex];
+  auto metadata = elementMetadata_[objectIndex];
+  metadata.bounds = runtimeObjectTransforms_.boundsForObject(
+      objectIndex, metadata.bounds, temporalRootTranslation_);
+  return metadata;
 }
 
 BimCoordinationOverlayResult BimManager::buildCoordinationOverlay(
@@ -2126,7 +2140,8 @@ BimCoordinationOverlayResult BimManager::buildCoordinationOverlay(
     std::span<const BimCoordinationOverlayIssuePin> issuePins) const {
   std::vector<BimCoordinationOverlayElement> elements;
   elements.reserve(elementMetadata_.size());
-  for (const BimElementMetadata &metadata : elementMetadata_) {
+  for (uint32_t index = 0; index < elementMetadata_.size(); ++index) {
+    const auto metadata = *metadataForObject(index);
     BimCoordinationOverlayBounds bounds{};
     if (metadata.bounds.valid) {
       bounds = {.min = metadata.bounds.min,
@@ -2134,10 +2149,10 @@ BimCoordinationOverlayResult BimManager::buildCoordinationOverlay(
                 .valid = true};
     }
     elements.push_back({.objectIndex = metadata.objectIndex,
-                        .ifcClass = metadata.type,
-                        .type = metadata.objectType,
-                        .name = metadata.displayName,
-                        .guid = metadata.guid,
+                        .ifcClass = std::string(metadata.type),
+                        .type = std::string(metadata.objectType),
+                        .name = std::string(metadata.displayName),
+                        .guid = std::string(metadata.guid),
                         .bounds = bounds});
   }
 
@@ -2198,15 +2213,15 @@ BimManager::objectIndicesForSourceId(std::string_view sourceId) const {
 
 BimElementBounds
 BimManager::elementBoundsForObject(uint32_t objectIndex) const {
-  if (const BimElementMetadata *metadata = metadataForObject(objectIndex);
-      metadata != nullptr) {
+  if (const auto metadata = metadataForObject(objectIndex);
+      metadata) {
     glm::vec3 boundsMin{0.0f};
     glm::vec3 boundsMax{0.0f};
     bool hasBounds = false;
 
     auto includeIndexedBounds = [&](std::span<const uint32_t> objectIndices) {
       for (uint32_t candidateObjectIndex : objectIndices) {
-        if (const BimElementMetadata *candidate =
+        if (const auto candidate =
                 metadataForObject(candidateObjectIndex)) {
           includeBoundsBox(candidate->bounds, boundsMin, boundsMax, hasBounds);
         }
@@ -2301,11 +2316,6 @@ const std::vector<std::string> &BimManager::elementTypes() const {
   return metadataCatalog_->types();
 }
 
-bool BimManager::hasRoomVolumes() const {
-  return metadataCatalog_->semanticIdForCategory(
-             BimMetadataSemanticCategory::Type, kBimRoomVolumeType) != 0u;
-}
-
 const std::vector<std::string> &BimManager::elementStoreys() const {
   return metadataCatalog_->storeys();
 }
@@ -2389,7 +2399,7 @@ bool BimManager::setSemanticColorMode(BimSemanticColorMode mode) {
   }
   semanticColorMode_ = mode;
   bool objectDataChanged = false;
-  for (const BimElementMetadata &metadata : elementMetadata_) {
+  for (const BimElementMetadataView &metadata : elementMetadata_) {
     if (metadata.objectIndex >= objectData_.size()) {
       continue;
     }
@@ -2470,7 +2480,9 @@ BimManager::sceneProviderTriangleBatches() const {
 }
 
 container::scene::SceneProviderBounds BimManager::sceneProviderBounds() const {
-  return statisticsCache_->sceneProviderBounds(temporalRootTranslation_);
+  auto bounds = statisticsCache_->sceneProviderBounds(temporalRootTranslation_);
+  runtimeObjectTransforms_.extendSceneBounds(bounds);
+  return bounds;
 }
 
 BimDrawBudgetLodStats
@@ -2484,7 +2496,7 @@ BimDrawFilterStateInputs BimManager::drawFilterStateInputs() const {
   return BimDrawFilterStateInputs{
       .revision = objectDataRevision_,
       .objectCount = objectData_.size(),
-      .metadata = {elementMetadata_.data(), elementMetadata_.size()},
+      .metadata = elementMetadata_.view(),
       .phaseOrder = metadataCatalog_->phases(),
       .opaqueDrawCommands = &opaqueDrawCommands_,
       .opaqueSingleSidedDrawCommands = &opaqueSingleSidedDrawCommands_,
@@ -2518,11 +2530,10 @@ BimPickHit
 BimManager::pickRenderableObject(const container::gpu::CameraData &cameraData,
                                  VkExtent2D viewportExtent, double cursorX,
                                  double cursorY, bool sectionPlaneEnabled,
-                                 glm::vec4 sectionPlane,
-                                 const BimDrawFilter &filter) const {
+                                 glm::vec4 sectionPlane) const {
   return pickRenderableObjectForDraws(cameraData, viewportExtent, cursorX,
                                       cursorY, true, true, sectionPlaneEnabled,
-                                      sectionPlane, filter);
+                                      sectionPlane);
 }
 
 BimPickHit BimManager::pickTransparentRenderableObject(
@@ -2531,14 +2542,13 @@ BimPickHit BimManager::pickTransparentRenderableObject(
     glm::vec4 sectionPlane) const {
   return pickRenderableObjectForDraws(cameraData, viewportExtent, cursorX,
                                       cursorY, false, true, sectionPlaneEnabled,
-                                      sectionPlane, {});
+                                      sectionPlane);
 }
 
 BimPickHit BimManager::pickRenderableObjectForDraws(
     const container::gpu::CameraData &cameraData, VkExtent2D viewportExtent,
     double cursorX, double cursorY, bool includeOpaque, bool includeTransparent,
-    bool sectionPlaneEnabled, glm::vec4 sectionPlane,
-    const BimDrawFilter &filter) const {
+    bool sectionPlaneEnabled, glm::vec4 sectionPlane) const {
   if (objectData_.empty() || vertices_.empty() || indices_.empty()) {
     return {};
   }
@@ -2569,8 +2579,7 @@ BimPickHit BimManager::pickRenderableObjectForDraws(
           break;
         }
         const uint32_t objectIndex = command.objectIndex + instanceOffset;
-        if (objectIndex >= objectData_.size() ||
-            !objectMatchesFilter(objectIndex, filter)) {
+        if (objectIndex >= objectData_.size()) {
           continue;
         }
 
@@ -2584,12 +2593,12 @@ BimPickHit BimManager::pickRenderableObjectForDraws(
         }
 
         const glm::mat4 &model = objectData_[objectIndex].model;
-        const BimElementMetadata *metadata = metadataForObject(objectIndex);
+        const auto metadata = metadataForObject(objectIndex);
         float sectionCapHitDistance = 0.0f;
         glm::vec3 sectionCapHitPosition{0.0f};
         bool sectionCapCandidate = false;
         bool sectionCapCrossesObject = false;
-        if (sectionPlaneEnabled && metadata != nullptr &&
+        if (sectionPlaneEnabled && metadata &&
             intersectRaySectionPlane(ray, sectionPlane,
                                      sectionCapHitDistance) &&
             sectionCapHitDistance < nearest.distance) {
@@ -2712,7 +2721,7 @@ BimPickHit BimManager::pickRenderableObjectForDraws(
 
   std::vector<DrawCommand> pointCurvePickingCommands;
   pointCurvePickingCommands.reserve(elementMetadata_.size());
-  for (const BimElementMetadata &metadata : elementMetadata_) {
+  for (const BimElementMetadataView &metadata : elementMetadata_) {
     if (metadata.geometryKind != BimGeometryKind::Points &&
         metadata.geometryKind != BimGeometryKind::Curves) {
       continue;
@@ -2746,13 +2755,13 @@ void BimManager::collectDrawCommandsForObject(
   if (objectIndex == std::numeric_limits<uint32_t>::max()) {
     return;
   }
-  const BimElementMetadata *selectedMetadata = metadataForObject(objectIndex);
-  if (selectedMetadata == nullptr) {
+  const auto selectedMetadata = metadataForObject(objectIndex);
+  if (!selectedMetadata) {
     return;
   }
 
   auto nativePointCurveObjectHasNativeDraw =
-      [&](const BimElementMetadata &metadata) {
+      [&](const BimElementMetadataView &metadata) {
         switch (metadata.geometryKind) {
         case BimGeometryKind::Points:
           return geometryDrawListsCoverObject(nativePointDrawLists_,
@@ -2767,9 +2776,9 @@ void BimManager::collectDrawCommandsForObject(
       };
 
   auto appendCommandsForObject = [&](uint32_t candidateObjectIndex) {
-    const BimElementMetadata *candidateMetadata =
+    const auto candidateMetadata =
         metadataForObject(candidateObjectIndex);
-    if (candidateMetadata != nullptr &&
+    if (candidateMetadata &&
         nativePointCurveObjectHasNativeDraw(*candidateMetadata)) {
       return;
     }
@@ -2790,7 +2799,7 @@ void BimManager::collectDrawCommandsForObject(
 
   auto appendIndexedCommands = [&](std::span<const uint32_t> objectIndices) {
     for (uint32_t candidateObjectIndex : objectIndices) {
-      if (metadataForObject(candidateObjectIndex) != nullptr) {
+      if (metadataForObject(candidateObjectIndex).has_value()) {
         appendCommandsForObject(candidateObjectIndex);
       }
     }
@@ -2825,16 +2834,16 @@ void BimManager::collectNativeDrawCommandsForObject(
   if (objectIndex == std::numeric_limits<uint32_t>::max()) {
     return;
   }
-  const BimElementMetadata *selectedMetadata = metadataForObject(objectIndex);
-  if (selectedMetadata == nullptr ||
+  const auto selectedMetadata = metadataForObject(objectIndex);
+  if (!selectedMetadata ||
       selectedMetadata->geometryKind != geometryKind) {
     return;
   }
 
   auto appendCommandsForObject = [&](uint32_t candidateObjectIndex) {
-    const BimElementMetadata *candidateMetadata =
+    const auto candidateMetadata =
         metadataForObject(candidateObjectIndex);
-    if (candidateMetadata == nullptr ||
+    if (!candidateMetadata ||
         candidateMetadata->geometryKind != geometryKind) {
       return;
     }
@@ -2886,9 +2895,10 @@ BimManager::resolveModelPath(const std::string &path) {
 }
 
 BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
-                                                   float importScale) {
+                                                   float importScale,
+    std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions) {
   PreparedScene prepared{.assetPath = resolveModelPath(path),
-                         .requestedPath = path};
+                         .requestedPath = path, .openVdbOptions = std::move(openVdbOptions)};
   const auto extension = lowerAscii(prepared.assetPath.extension().string());
   auto requireGeometry = [&]() {
     if (!hasRenderableSourceGeometry(prepared.model)) {
@@ -2932,6 +2942,10 @@ BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
              extension == ".usdc" || extension == ".usdz") {
     prepared.format = "USD";
     prepared.model = container::geometry::usd::LoadFromFile(prepared.assetPath, importScale);
+  } else if (extension == ".vdb") {
+    prepared.format = "OpenVDB";
+    prepared.model = container::geometry::vdb::LoadFromFile(prepared.assetPath, importScale,
+        prepared.openVdbOptions ? *prepared.openVdbOptions : container::geometry::vdb::ImportOptions{});
   } else {
     throw std::runtime_error("unsupported auxiliary model format '" + extension + "'");
   }
@@ -2962,10 +2976,12 @@ void BimManager::loadPreparedScene(const PreparedScene &prepared,
   loadPreparedModel(prepared.model, prepared.assetPath, prepared.format,
                     sceneManager, &prepared);
   modelPath_ = prepared.requestedPath;
+  openVdbOptions_ = prepared.openVdbOptions;
 }
 
 void BimManager::loadModel(const std::string &path, float importScale,
-                           container::scene::SceneManager &sceneManager) {
+                           container::scene::SceneManager &sceneManager,
+    std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions) {
   clear();
   if (path.empty()) {
     return;
@@ -2989,15 +3005,21 @@ void BimManager::loadModel(const std::string &path, float importScale,
     loadPreparedModel(
         container::geometry::usd::LoadFromFile(resolvedPath, importScale),
         resolvedPath, "USD", sceneManager);
+  } else if (extension == ".vdb") {
+    loadPreparedModel(
+        container::geometry::vdb::LoadFromFile(resolvedPath, importScale,
+            openVdbOptions ? *openVdbOptions : container::geometry::vdb::ImportOptions{}),
+        resolvedPath, "OpenVDB", sceneManager);
   } else if (extension == ".gltf" || extension == ".glb") {
     loadGltfFallback(resolvedPath, importScale, sceneManager);
   } else {
     throw std::runtime_error(
         "unsupported BIM model format '" + extension +
         "'; supported BIM sources are .bim, .ifc, .ifcx, .usd, .usda, "
-        ".usdc, .usdz, .gltf, and .glb");
+        ".usdc, .usdz, .vdb, .gltf, and .glb");
   }
   modelPath_ = path;
+  openVdbOptions_ = std::move(openVdbOptions);
   if (importReport_.completeness !=
       container::geometry::ImportCompleteness::Unreported) {
     const auto logger = container::log::ContainerLogger::instance().renderer();
@@ -3135,6 +3157,7 @@ void BimManager::loadPreparedModel(
   logStage("geometry upload");
   notifyLoadProgress("Building BIM draw metadata");
   buildDrawDataFromModel(model, sceneManager);
+  elementMetadata_.seal();
   logStage("draw metadata");
   notifyLoadProgress("Building BIM relationships");
   relationshipGraph_.build(elementMetadata_, model.relationships,
@@ -3262,8 +3285,9 @@ void BimManager::buildDrawDataFromModel(
       materialIndex = sourceMaterialCache[element.materialIndex];
       if (materialIndex == kInvalidMaterialIndex) {
         const auto &sourceMaterial = model.materials[element.materialIndex];
+        const auto preparedMaterial = makeSceneMaterial(sourceMaterial, sceneManager);
         materialIndex = sceneManager.createMaterial(
-            makeSceneMaterial(sourceMaterial, sceneManager));
+            preparedMaterial.value, preparedMaterial.textures);
         sourceMaterialCache[element.materialIndex] = materialIndex;
       }
       const auto properties =
@@ -3495,15 +3519,16 @@ void BimManager::buildDrawDataFromModel(
     (void)insertedProduct;
     metadata.productIdentityId = productIt->second;
     elementMetadata_.push_back(std::move(metadata));
-    metadataIndex_->index(elementMetadata_.back());
+    const auto installedMetadata = elementMetadata_.back();
+    metadataIndex_->index(installedMetadata);
     BimObjectLodStreamingMetadata lodMetadata{};
     lodMetadata.objectIndex = objectIndex;
-    lodMetadata.sourceElementIndex = elementMetadata_.back().sourceElementIndex;
-    lodMetadata.meshId = elementMetadata_.back().meshId;
-    lodMetadata.geometryKind = elementMetadata_.back().geometryKind;
-    if (elementMetadata_.back().geometryKind == BimGeometryKind::Mesh) {
+    lodMetadata.sourceElementIndex = installedMetadata.sourceElementIndex;
+    lodMetadata.meshId = installedMetadata.meshId;
+    lodMetadata.geometryKind = installedMetadata.geometryKind;
+    if (installedMetadata.geometryKind == BimGeometryKind::Mesh) {
       if (const auto spanIt =
-              clusterSpansByMeshId.find(elementMetadata_.back().meshId);
+              clusterSpansByMeshId.find(installedMetadata.meshId);
           spanIt != clusterSpansByMeshId.end()) {
         lodMetadata.firstCluster = spanIt->second.firstCluster;
         lodMetadata.clusterCount = spanIt->second.clusterCount;
@@ -3700,6 +3725,7 @@ void BimManager::loadGltfFallback(
   }
   objectDrawCommandCounts_.push_back(objectDrawCommandCount);
 
+  elementMetadata_.seal();
   relationshipGraph_.build(elementMetadata_);
   uploadObjects();
   uploadVisibilityFilterBuffers();
@@ -4185,12 +4211,6 @@ void BimManager::updateVisibilityFilterSettings(const BimDrawFilter &filter) {
   setLabelFilter(filter.statusFilterEnabled, filter.status,
                  BimMetadataSemanticCategory::Status,
                  kBimVisibilityFilterStatus, settings.statusId);
-  if (filter.hideRoomVolumes) {
-    settings.roomVolumeTypeId = metadataCatalog_->semanticIdForCategory(
-        BimMetadataSemanticCategory::Type, kBimRoomVolumeType);
-    if (settings.roomVolumeTypeId != 0u)
-      settings.flags |= kBimVisibilityFilterHideRoomVolumes;
-  }
 
   if (filter.drawBudgetEnabled && filter.drawBudgetMaxObjects > 0u) {
     settings.flags |= kBimVisibilityFilterDrawBudget;
@@ -4203,7 +4223,7 @@ void BimManager::updateVisibilityFilterSettings(const BimDrawFilter &filter) {
       filter.selectedObjectIndex != std::numeric_limits<uint32_t>::max()) {
     settings.flags |= kBimVisibilityFilterHideSelection;
   }
-  if (const BimElementMetadata *selected =
+  if (const auto selected =
           metadataForObject(filter.selectedObjectIndex)) {
     settings.selectedProductId = selected->productIdentityId;
   }
@@ -4789,7 +4809,7 @@ void BimManager::uploadVisibilityFilterBuffers() {
   visibilityFilterMetadata_.reserve(elementMetadata_.size());
   std::vector<uint32_t> visibilityMask;
   visibilityMask.reserve(elementMetadata_.size());
-  for (const BimElementMetadata &metadata : elementMetadata_) {
+  for (const BimElementMetadataView &metadata : elementMetadata_) {
     visibilityFilterMetadata_.push_back(
         metadataCatalog_->visibilityGpuMetadata(metadata));
     visibilityMask.push_back(1u);
@@ -4935,15 +4955,102 @@ void BimManager::uploadMeshletResidencyBuffers() {
   writeMeshletResidencyDescriptorSet();
 }
 
+std::vector<uint32_t> BimManager::changedTransformObjects(
+    std::span<const container::gpu::ObjectTransformUpdate> updates) const {
+  std::vector<uint32_t> changed;
+  changed.reserve(updates.size());
+  for (const auto &update : updates)
+    if (update.objectIndex < objectData_.size() &&
+        update.model != objectData_[update.objectIndex].model)
+      changed.push_back(update.objectIndex);
+  std::ranges::sort(changed);
+  if (!changed.empty() && (objectBuffer_.buffer == VK_NULL_HANDLE ||
+                           changed.back() >= objectBufferCapacity_))
+    throw std::runtime_error("BIM object buffer is not ready for transform publication");
+  return changed;
+}
+
+void BimManager::validateObjectTransforms(
+    std::span<const container::gpu::ObjectTransformUpdate> updates) const {
+  (void)changedTransformObjects(updates);
+  runtimeObjectTransforms_.validate(objectData_, elementMetadata_, updates,
+                                    temporalRootTranslation_);
+}
+
+bool BimManager::setObjectTransforms(
+    std::span<const container::gpu::ObjectTransformUpdate> updates) {
+  const auto changed = changedTransformObjects(updates);
+  if (changed.empty())
+    return runtimeObjectTransforms_.apply(objectData_, elementMetadata_, updates,
+                                           temporalRootTranslation_);
+  // Acquire writable memory before publishing CPU models/bounds. Otherwise a
+  // mapping failure would leave the GPU stale while the CPU equality check
+  // suppresses the next attempt to upload the same physics transforms.
+  void *mapped = objectBuffer_.allocation_info.pMappedData;
+  const bool mappedHere = mapped == nullptr;
+  if (mappedHere && vmaMapMemory(allocationManager_.memoryManager()->allocator(),
+                                  objectBuffer_.allocation, &mapped) != VK_SUCCESS)
+    throw std::runtime_error("Failed to map BIM object transforms");
+  // A physics tick changes only attached product fragments. Coalesce adjacent
+  // slots without copying or flushing the rest of a potentially large model.
+  bool applied = false;
+  try {
+    applied = runtimeObjectTransforms_.apply(objectData_, elementMetadata_, updates,
+                                               temporalRootTranslation_);
+    if (applied) {
+      // Existing safe rebuild paths retire/recreate cap buffers when needed.
+      // Do not free a cached cap buffer while a prior frame can reference it.
+      sectionClipCapBuildOptionsValid_ = false;
+      for (size_t begin = 0; begin < changed.size();) {
+        size_t end = begin + 1u;
+        while (end < changed.size() && changed[end] == changed[end - 1u] + 1u) ++end;
+        const VkDeviceSize offset = VkDeviceSize(changed[begin]) * sizeof(container::gpu::ObjectData);
+        const VkDeviceSize bytes = VkDeviceSize(end - begin) * sizeof(container::gpu::ObjectData);
+        std::memcpy(static_cast<std::byte *>(mapped) + offset,
+                      objectData_.data() + changed[begin], static_cast<size_t>(bytes));
+        if (vmaFlushAllocation(allocationManager_.memoryManager()->allocator(),
+                                objectBuffer_.allocation, offset, bytes) != VK_SUCCESS)
+          throw std::runtime_error("Failed to flush BIM object transforms");
+        begin = end;
+      }
+    }
+  } catch (...) {
+    if (mappedHere)
+      vmaUnmapMemory(allocationManager_.memoryManager()->allocator(), objectBuffer_.allocation);
+    throw;
+  }
+  if (mappedHere)
+    vmaUnmapMemory(allocationManager_.memoryManager()->allocator(), objectBuffer_.allocation);
+  if (applied)
+    ++objectDataRevision_;
+  return applied;
+}
+
 void BimManager::setRootTranslation(glm::vec3 translation) {
+  if (!isFiniteVec3(translation))
+    throw std::invalid_argument("BIM root translation must be finite");
   const glm::vec3 delta = translation - temporalRootTranslation_;
   if (delta == glm::vec3(0))
     return;
+  if (!isFiniteVec3(delta))
+    throw std::invalid_argument("BIM root translation delta must be finite");
+  const auto translatedSceneBounds = statisticsCache_->sceneProviderBounds(translation);
+  if (translatedSceneBounds.valid &&
+      (!isFiniteVec3(translatedSceneBounds.min) || !isFiniteVec3(translatedSceneBounds.max)))
+    throw std::invalid_argument("BIM root translation bounds exceed the supported range");
+  // Check every object before changing overlays or the live publication.
+  for (const auto &object : objectData_) {
+    if (!isFiniteVec3(glm::vec3(object.model[3]) + delta) ||
+        !isFiniteVec3(glm::vec3(object.boundingSphere) + delta))
+      throw std::invalid_argument("BIM root translation exceeds the supported range");
+  }
+  runtimeObjectTransforms_.translate(delta);
   for (auto &object : objectData_) {
     object.model[3] += glm::vec4(delta, 0);
     object.boundingSphere += glm::vec4(delta, 0);
   }
   temporalRootTranslation_ = translation;
+  sectionClipCapBuildOptionsValid_ = false;
   ++objectDataRevision_;
   uploadObjects();
 }

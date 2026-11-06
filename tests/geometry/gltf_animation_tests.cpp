@@ -1,5 +1,6 @@
 #include <Container/geometry/GltfAnimation.h>
 #include <Container/geometry/GltfAnimationRuntime.h>
+#include <Container/geometry/GltfSubtreeClone.h>
 #include <Container/utility/Material.h>
 #include <Container/utility/SceneGraph.h>
 
@@ -837,7 +838,8 @@ TEST(GltfAnimationRuntime, SourceAssociationsUpdateGroupsAndRetainEditorChildren
   EXPECT_FLOAT_EQ(graph.getNode(primitive)->localTransform[3].x,7);
   EXPECT_FLOAT_EQ(graph.getNode(primitive)->worldTransform[3].x,8);
   EXPECT_FALSE(ApplyAnimatedNodeTransforms(source,dirty,graph));
-  graph = container::scene::SceneGraph{};
+  const auto identity = graph.identity(); graph = container::scene::SceneGraph{};
+  EXPECT_NE(graph.identity(),identity);
   const auto replacement = graph.createNode(glm::mat4(1),0);
   graph.getNode(replacement)->sourceNodeIndex = 0;
   EXPECT_TRUE(ApplyAnimatedNodeTransforms(source,dirty,graph));
@@ -946,6 +948,403 @@ TEST(GltfAnimationRuntime, OrthographicCameraUsesAuthoredMagnitudesAndReverseZ) 
   EXPECT_FLOAT_EQ(state->projection[0][0],0.5f); EXPECT_FLOAT_EQ(state->projection[1][1],0.25f);
   camera.orthographic.ymag = 0; EXPECT_THROW(EvaluateAnimatedCamera(source,graph,0,1),std::invalid_argument);
   graph = container::scene::SceneGraph{}; EXPECT_FALSE(EvaluateAnimatedCamera(source,graph,0,1));
+}
+TEST(GltfAnimationRuntime, AuthoredCamerasFollowActiveSceneWithoutLosingTheirTransforms) {
+  auto source = cameraSource();
+  source.nodes.resize(2); source.nodes[1].camera = 0;
+  container::scene::SceneGraph graph;
+  const auto first = graph.createNode(glm::translate(glm::mat4(1),glm::vec3(2,3,4)),0);
+  const auto second = graph.createNode(glm::translate(glm::mat4(1),glm::vec3(20,30,40)),0);
+  graph.getNode(first)->sourceNodeIndex = 0; graph.getNode(second)->sourceNodeIndex = 1;
+  graph.updateWorldTransforms();
+  const auto identity = graph.identity();
+  graph.setActiveRoots(std::vector<uint32_t>{first});
+  ASSERT_TRUE(EvaluateAnimatedCamera(source,graph,0,1));
+  EXPECT_FALSE(EvaluateAnimatedCamera(source,graph,1,1));
+  graph.setLocalTransform(second,glm::translate(glm::mat4(1),glm::vec3(50,60,70)));
+  graph.updateWorldTransforms();
+  graph.setActiveRoots(std::vector<uint32_t>{second});
+  EXPECT_FALSE(EvaluateAnimatedCamera(source,graph,0,1));
+  const auto camera = EvaluateAnimatedCamera(source,graph,1,1);
+  ASSERT_TRUE(camera); EXPECT_EQ(camera->data.cameraWorldPosition,glm::vec4(50,60,70,1));
+  EXPECT_EQ(graph.identity(),identity);
+  graph.setActiveRoots(std::vector<uint32_t>{});
+  EXPECT_FALSE(EvaluateAnimatedCamera(source,graph,0,1));
+  EXPECT_FALSE(EvaluateAnimatedCamera(source,graph,1,1));
+  graph.clearActiveRoots();
+  EXPECT_TRUE(EvaluateAnimatedCamera(source,graph,0,1));
+  EXPECT_TRUE(EvaluateAnimatedCamera(source,graph,1,1));
+}
+TEST(GltfAnimationRuntime, ContextAncestorCameraDoesNotBecomeTheSelectedScenesCamera) {
+  auto source = cameraSource();
+  source.nodes.resize(2); source.nodes[1].camera = 0;
+  container::scene::SceneGraph graph;
+  const auto context = graph.createNode(glm::translate(glm::mat4(1),glm::vec3(2,3,4)),0);
+  const auto selected = graph.createNode(glm::translate(glm::mat4(1),glm::vec3(0,0,2)),0);
+  graph.getNode(context)->sourceNodeIndex = 0; graph.getNode(selected)->sourceNodeIndex = 1;
+  graph.setParent(selected,context); graph.updateWorldTransforms();
+  graph.setActiveRoots(std::vector<uint32_t>{selected});
+  EXPECT_TRUE(graph.isNodeInActiveHierarchy(context)); EXPECT_FALSE(graph.isNodeActive(context));
+  EXPECT_FALSE(EvaluateAnimatedCamera(source,graph,0,1));
+  const auto camera = EvaluateAnimatedCamera(source,graph,1,1);
+  ASSERT_TRUE(camera); EXPECT_EQ(camera->data.cameraWorldPosition,glm::vec4(2,3,6,1));
+}
+TEST(GltfAnimationPlayer, SourceExtensionPreservesPlaybackAndBothAuthoredRestPoses) {
+  auto live = translationModel();
+  AnimationPlayer original(live);
+  original.selectClip(live,0);
+  original.seek(live,2);
+  original.setSpeed(-.5);
+  original.setLoop(false);
+  original.play();
+  auto merged = live;
+  merged.nodes.emplace_back();
+  merged.nodes[1].translation = {30,40,50};
+  merged.nodes[0].children = {1};
+  auto incoming = merged.animations[0];
+  incoming.name = "incoming";
+  incoming.channels[0].target_node = 1;
+  merged.animations.push_back(incoming);
+  auto extended = original.withExtendedSource(merged);
+  EXPECT_EQ(extended.selectedClip(),original.selectedClip());
+  EXPECT_DOUBLE_EQ(extended.time(),2);
+  EXPECT_DOUBLE_EQ(extended.speed(),-.5);
+  EXPECT_TRUE(extended.playing()); EXPECT_FALSE(extended.loop());
+  EXPECT_EQ(live.nodes[0].translation,(std::vector<double>{4,6,8}));
+  EXPECT_EQ(merged.nodes[0].translation,live.nodes[0].translation);
+  EXPECT_EQ(merged.nodes[1].translation,(std::vector<double>{30,40,50}));
+  EXPECT_TRUE(extended.library().restNodes[0].translation.empty());
+  EXPECT_EQ(extended.library().restNodes[1].translation,(std::vector<double>{30,40,50}));
+  extended.advance(merged,.5);
+  EXPECT_DOUBLE_EQ(extended.time(),1.75);
+  EXPECT_EQ(merged.nodes[0].translation,(std::vector<double>{3.5,5.5,7.5}));
+  EXPECT_DOUBLE_EQ(original.time(),2);
+  extended.selectClip(merged,1);
+  EXPECT_TRUE(merged.nodes[0].translation.empty());
+  EXPECT_EQ(merged.nodes[0].children,(std::vector<int>{1}));
+  extended.seek(merged,2);
+  EXPECT_EQ(merged.nodes[1].translation,(std::vector<double>{4,6,8}));
+  extended.clearClip(merged);
+  EXPECT_EQ(merged.nodes[1].translation,(std::vector<double>{30,40,50}));
+}
+
+TEST(GltfAnimationPlayer, SourceExtensionDoesNotSelectOrStartAnIncomingClip) {
+  tinygltf::Model empty;
+  AnimationPlayer original(empty);
+  original.setSpeed(2); original.setLoop(false);
+  auto source = translationModel();
+  auto extended = original.withExtendedSource(source);
+  EXPECT_FALSE(extended.selectedClip()); EXPECT_FALSE(extended.playing());
+  EXPECT_DOUBLE_EQ(extended.time(),0); EXPECT_DOUBLE_EQ(extended.speed(),2);
+  EXPECT_FALSE(extended.loop());
+  EXPECT_TRUE(extended.advance(source,1).empty());
+  EXPECT_TRUE(source.nodes[0].translation.empty());
+}
+
+TEST(GltfAnimationPlayer, SourceExtensionRestoresAuthoredResourceValuesInsteadOfEvaluatedPose) {
+  tinygltf::Model live;
+  live.materials.emplace_back(); live.materials[0].pbrMetallicRoughness.roughnessFactor = .8;
+  live.lights.emplace_back(); live.lights[0].intensity = 3;
+  live.cameras.emplace_back(); live.cameras[0].type = "perspective";
+  live.cameras[0].perspective.yfov = .5;
+  live.cameras[0].perspective.znear = .1;
+  addPointer(live,"/materials/0/pbrMetallicRoughness/roughnessFactor",TINYGLTF_TYPE_SCALAR,{.2f,.4f});
+  addPointer(live,"/extensions/KHR_lights_punctual/lights/0/intensity",TINYGLTF_TYPE_SCALAR,{4,6});
+  addPointer(live,"/cameras/0/perspective/yfov",TINYGLTF_TYPE_SCALAR,{.7f,.9f});
+  AnimationPlayer original(live);
+  original.selectClip(live,0); original.seek(live,1);
+  auto extended = original.withExtendedSource(live);
+  EXPECT_NE(live.materials[0].pbrMetallicRoughness.roughnessFactor,.8);
+  EXPECT_DOUBLE_EQ(live.lights[0].intensity,5);
+  extended.clearClip(live);
+  EXPECT_DOUBLE_EQ(live.materials[0].pbrMetallicRoughness.roughnessFactor,.8);
+  EXPECT_DOUBLE_EQ(live.lights[0].intensity,3);
+  EXPECT_DOUBLE_EQ(live.cameras[0].perspective.yfov,.5);
+  EXPECT_EQ(original.selectedClip(),std::optional<size_t>{0});
+  EXPECT_DOUBLE_EQ(original.time(),1);
+}
+
+TEST(GltfAnimationPlayer, SourceExtensionRejectsChangedClipWithoutMutatingOriginal) {
+  auto live = translationModel();
+  AnimationPlayer original(live);
+  original.selectClip(live,0); original.seek(live,2); original.play();
+  for (int change = 0; change < 6; ++change) {
+    auto invalid = live;
+    switch (change) {
+    case 0: invalid.nodes.clear(); break;
+    case 1: invalid.animations.clear(); break;
+    case 2: invalid.animations[0].name = "replacement"; break;
+    case 3: invalid.animations[0].samplers[0].interpolation = "STEP"; break;
+    case 4: invalid.animations[0].channels[0].target_path = "scale"; break;
+    case 5:
+      invalid.animations[0].samplers[0].output =
+          floatAccessor(invalid,TINYGLTF_TYPE_VEC3,{20,40,60,60,80,100});
+      break;
+    }
+    EXPECT_THROW((void)original.withExtendedSource(invalid),std::invalid_argument) << change;
+    EXPECT_EQ(original.selectedClip(),std::optional<size_t>{0});
+    EXPECT_DOUBLE_EQ(original.time(),2); EXPECT_TRUE(original.playing());
+    EXPECT_EQ(live.nodes[0].translation,(std::vector<double>{4,6,8}));
+  }
+}
+
+tinygltf::Model clonePlayerSource() {
+  auto model = translationModel();
+  model.extensionsUsed.push_back("KHR_animation_pointer");
+  tinygltf::Primitive primitive; primitive.mode = TINYGLTF_MODE_TRIANGLES; primitive.material = 0;
+  primitive.attributes["POSITION"] = floatAccessor(model, TINYGLTF_TYPE_VEC3, {0,0,0, 1,0,0, 0,1,0});
+  const auto delta = floatAccessor(model, TINYGLTF_TYPE_VEC3, {0,0,1, 0,0,1, 0,0,1});
+  primitive.targets = {{{"POSITION", delta}}, {{"POSITION", delta}}};
+  tinygltf::Mesh mesh; mesh.primitives.push_back(primitive); mesh.weights = {.25,.75}; model.meshes.push_back(mesh);
+  model.nodes[0].mesh = 0; model.nodes[0].weights = {.3,.2}; model.nodes[0].name = "Original";
+  model.materials.emplace_back(); model.materials[0].pbrMetallicRoughness.roughnessFactor = .8;
+  model.lights.emplace_back(); model.lights[0].type = "point"; model.lights[0].intensity = 3;
+  model.cameras.emplace_back(); model.cameras[0].type = "perspective";
+  model.cameras[0].perspective.yfov = .5; model.cameras[0].perspective.znear = .1;
+  model.nodes[0].camera = 0;
+  addPointer(model, "/nodes/0/scale/1", TINYGLTF_TYPE_SCALAR, {2,4});
+  addPointer(model, "/nodes/0/weights/1", TINYGLTF_TYPE_SCALAR, {.4f,.8f});
+  addPointer(model, "/materials/0/pbrMetallicRoughness/roughnessFactor", TINYGLTF_TYPE_SCALAR, {.2f,.4f});
+  addPointer(model, "/extensions/KHR_lights_punctual/lights/0/intensity", TINYGLTF_TYPE_SCALAR, {4,6});
+  addPointer(model, "/cameras/0/perspective/yfov", TINYGLTF_TYPE_SCALAR, {.7f,.9f});
+  auto& animation = model.animations[0];
+  animation.extras = tinygltf::Value(tinygltf::Value::Object{{"index", tinygltf::Value(17)}});
+  animation.extras_json_string = "{\"index\":17}";
+  animation.channels[0].target_extras = tinygltf::Value(std::string("raw target"));
+  animation.channels[0].target_extras_json_string = "\"raw target\"";
+  animation.channels[1].target_extensions_json_string = "original pointer metadata";
+  tinygltf::Animation other; other.name = "Unrelated clip"; model.animations.push_back(other);
+  return model;
+}
+
+TEST(GltfAnimationPlayer, CloneExtensionKeepsCurrentPoseAndExactOldRestAndPlaybackWithoutSampling) {
+  const auto authored = clonePlayerSource(); auto live = authored;
+  AnimationPlayer original(live);
+  original.selectClip(live, 0); original.seek(live, 2);
+  original.setSpeed(-.5); original.setLoop(false); original.play();
+  const auto plan = PlanGltfSubtreeClone(live, authored, 0, {.rootName = "Copy"});
+  const auto sourceBefore = plan.evaluatedSource.nodes[1].translation;
+  const auto cameraBefore = live.cameras[0].perspective.yfov;
+  const auto rest = original.library();
+  auto extended = original.withClonedSource(live, plan.evaluatedSource, plan);
+  EXPECT_EQ(extended.selectedClip(), original.selectedClip());
+  EXPECT_DOUBLE_EQ(extended.time(), 2); EXPECT_DOUBLE_EQ(extended.speed(), -.5);
+  EXPECT_TRUE(extended.playing()); EXPECT_FALSE(extended.loop());
+  EXPECT_EQ(live.nodes[0].translation, (std::vector<double>{4,6,8}));
+  EXPECT_EQ(plan.evaluatedSource.nodes[1].translation, sourceBefore);
+  EXPECT_EQ(plan.evaluatedSource.nodes[0].translation, live.nodes[0].translation);
+  EXPECT_DOUBLE_EQ(live.cameras[0].perspective.yfov, cameraBefore);
+  EXPECT_TRUE(extended.library().restNodes[0].translation.empty());
+  EXPECT_TRUE(extended.library().restNodes[1].translation.empty());
+  EXPECT_EQ(extended.library().restNodes[1].weights, (std::vector<double>{.3,.2}));
+  EXPECT_EQ(extended.library().restNodes[1].name, "Copy");
+  EXPECT_EQ(extended.library().restNodes[0].weights, rest.restNodes[0].weights);
+  EXPECT_DOUBLE_EQ(extended.library().restMaterials[0].pbrMetallicRoughness.roughnessFactor, .8);
+  EXPECT_DOUBLE_EQ(extended.library().restLights[0].intensity, 3);
+  EXPECT_DOUBLE_EQ(extended.library().restCameras[0].perspective.yfov, .5);
+  EXPECT_EQ(original.library().clips, rest.clips);
+  EXPECT_EQ(original.library().restNodes[0].translation, rest.restNodes[0].translation);
+}
+
+TEST(GltfAnimationPlayer, CloneFuturePlaybackAndClipSwitchRestoreBothBindingsAndSharedCameraResources) {
+  const auto authored = clonePlayerSource(); auto live = authored;
+  AnimationPlayer original(live); original.selectClip(live, 0); original.seek(live, 2); original.play();
+  const auto plan = PlanGltfSubtreeClone(live, authored, 0);
+  auto merged = plan.evaluatedSource;
+  auto extended = original.withClonedSource(live, merged, plan);
+  extended.seek(merged, 1.5);
+  EXPECT_EQ(merged.nodes[0].translation, merged.nodes[1].translation);
+  EXPECT_EQ(merged.nodes[0].scale, merged.nodes[1].scale);
+  EXPECT_EQ(merged.nodes[0].weights, merged.nodes[1].weights);
+  EXPECT_EQ(merged.nodes[0].camera, 0); EXPECT_EQ(merged.nodes[1].camera, 0);
+  extended.selectClip(merged, 1);
+  EXPECT_TRUE(merged.nodes[0].translation.empty()); EXPECT_TRUE(merged.nodes[1].translation.empty());
+  EXPECT_TRUE(merged.nodes[0].scale.empty()); EXPECT_TRUE(merged.nodes[1].scale.empty());
+  EXPECT_EQ(merged.nodes[0].weights, authored.nodes[0].weights);
+  EXPECT_EQ(merged.nodes[1].weights, authored.nodes[0].weights);
+  EXPECT_DOUBLE_EQ(merged.materials[0].pbrMetallicRoughness.roughnessFactor, .8);
+  EXPECT_DOUBLE_EQ(merged.lights[0].intensity, 3);
+  EXPECT_DOUBLE_EQ(merged.cameras[0].perspective.yfov, .5);
+  EXPECT_EQ(original.selectedClip(), std::optional<size_t>{0}); EXPECT_DOUBLE_EQ(original.time(), 2);
+}
+
+TEST(GltfAnimationPlayer, CloneExtensionSupportsPartialMapsAndRepeatedDuplicationOfAnAnimatedClone) {
+  auto authored = clonePlayerSource();
+  tinygltf::Node untouched; untouched.name = "Unmapped"; untouched.translation = {40,50,60}; authored.nodes.push_back(untouched);
+  auto live = authored; AnimationPlayer original(live);
+  original.selectClip(live, 0); original.seek(live, 2); original.setSpeed(0); original.play();
+  const auto first = PlanGltfSubtreeClone(live, authored, 0);
+  ASSERT_EQ(first.nodes, (std::vector<int32_t>{2,-1}));
+  auto firstPlayer = original.withClonedSource(live, first.evaluatedSource, first);
+  const auto second = PlanGltfSubtreeClone(first.evaluatedSource, first.authoredSource, first.root);
+  auto secondPlayer = firstPlayer.withClonedSource(first.evaluatedSource, second.evaluatedSource, second);
+  EXPECT_DOUBLE_EQ(secondPlayer.time(), 2); EXPECT_DOUBLE_EQ(secondPlayer.speed(), 0);
+  EXPECT_TRUE(secondPlayer.playing()); EXPECT_TRUE(secondPlayer.loop());
+  EXPECT_TRUE(secondPlayer.library().restNodes[3].translation.empty());
+  EXPECT_EQ(secondPlayer.library().restNodes[3].weights, authored.nodes[0].weights);
+  auto merged = second.evaluatedSource;
+  secondPlayer.seek(merged, 1.25);
+  EXPECT_EQ(merged.nodes[0].translation, merged.nodes[2].translation);
+  EXPECT_EQ(merged.nodes[0].translation, merged.nodes[3].translation);
+  EXPECT_EQ(merged.nodes[0].weights, merged.nodes[3].weights);
+  EXPECT_EQ(merged.nodes[1].translation, untouched.translation);
+  secondPlayer.clearClip(merged);
+  EXPECT_EQ(merged.nodes[2].weights, authored.nodes[0].weights);
+  EXPECT_EQ(merged.nodes[3].weights, authored.nodes[0].weights);
+}
+
+TEST(GltfAnimationPlayer, CloneExtensionDoesNotSelectOrStartPlaybackAndKeepsPausedControls) {
+  const auto source = translationModel(); AnimationPlayer original(source);
+  original.setSpeed(2); original.setLoop(false);
+  const auto plan = PlanGltfSubtreeClone(source, source, 0);
+  auto extended = original.withClonedSource(source, plan.evaluatedSource, plan);
+  EXPECT_FALSE(extended.selectedClip()); EXPECT_FALSE(extended.playing());
+  EXPECT_DOUBLE_EQ(extended.time(), 0); EXPECT_DOUBLE_EQ(extended.speed(), 2); EXPECT_FALSE(extended.loop());
+  auto merged = plan.evaluatedSource;
+  EXPECT_TRUE(extended.advance(merged, 1).empty());
+  EXPECT_TRUE(merged.nodes[0].translation.empty()); EXPECT_TRUE(merged.nodes[1].translation.empty());
+}
+
+TEST(GltfAnimationPlayer, CloneExtensionRemapsExternalContextTransformsWithoutInventingMorphTracks) {
+  auto authored = clonePlayerSource();
+  tinygltf::Node owner; owner.mesh = 0; owner.skin = 0; owner.name = "Skinned owner";
+  authored.nodes.push_back(owner);
+  tinygltf::Skin skin; skin.joints = {0}; skin.skeleton = 0; authored.skins.push_back(skin);
+  auto& data = authored.buffers[0].data;
+  while (data.size() % 4) data.push_back(0);
+  tinygltf::BufferView view; view.buffer = 0; view.byteOffset = data.size(); view.byteLength = 12;
+  data.resize(data.size() + 12);
+  tinygltf::Accessor joints; joints.sparse = {}; joints.bufferView = int(authored.bufferViews.size());
+  joints.componentType = TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE; joints.type = TINYGLTF_TYPE_VEC4; joints.count = 3;
+  authored.bufferViews.push_back(view);
+  authored.meshes[0].primitives[0].attributes["JOINTS_0"] = int(authored.accessors.size());
+  authored.accessors.push_back(joints);
+  authored.meshes[0].primitives[0].attributes["WEIGHTS_0"] =
+      floatAccessor(authored, TINYGLTF_TYPE_VEC4, {1,0,0,0, 1,0,0,0, 1,0,0,0});
+  auto live = authored; AnimationPlayer original(live);
+  original.selectClip(live, 0); original.seek(live, 2); original.pause();
+  const auto plan = PlanGltfSubtreeClone(live, authored, 1);
+  ASSERT_EQ(plan.nodes, (std::vector<int32_t>{2,3}));
+  ASSERT_TRUE(plan.contextOnly[0]); EXPECT_FALSE(plan.contextOnly[1]);
+  EXPECT_EQ(plan.clonedChannels, 2u); // Context translation and scale; its weights belong to no clone mesh.
+  auto extended = original.withClonedSource(live, plan.evaluatedSource, plan);
+  EXPECT_FALSE(extended.playing()); EXPECT_DOUBLE_EQ(extended.time(), 2);
+  EXPECT_TRUE(extended.library().restNodes[2].weights.empty());
+  EXPECT_EQ(extended.library().restNodes[2].camera, -1);
+  EXPECT_EQ(extended.library().restNodes[3].skin, 1);
+  auto merged = plan.evaluatedSource;
+  extended.seek(merged, 1.5);
+  EXPECT_EQ(merged.nodes[0].translation, merged.nodes[2].translation);
+  EXPECT_EQ(merged.nodes[0].scale, merged.nodes[2].scale);
+  EXPECT_TRUE(merged.nodes[2].weights.empty());
+  extended.clearClip(merged);
+  EXPECT_TRUE(merged.nodes[2].translation.empty()); EXPECT_TRUE(merged.nodes[2].weights.empty());
+  EXPECT_EQ(merged.nodes[0].weights, authored.nodes[0].weights);
+}
+
+TEST(GltfAnimationPlayer, CloneExtensionRejectsChangedOriginalRawOrDecodedChannels) {
+  const auto authored = clonePlayerSource(); auto live = authored;
+  AnimationPlayer original(live); original.selectClip(live, 0); original.seek(live, 2); original.play();
+  const auto plan = PlanGltfSubtreeClone(live, authored, 0);
+  const auto controls = original.library().clips;
+  for (int change = 0; change < 8; ++change) {
+    SCOPED_TRACE(change); auto invalid = plan.evaluatedSource;
+    if (change == 0) invalid.animations[0].name = "Changed";
+    if (change == 1) invalid.animations[0].channels[0].target_path = "scale";
+    if (change == 2) invalid.animations[0].channels[0].target_extras = tinygltf::Value(9);
+    if (change == 3) invalid.animations[0].channels[1].target_extensions_json_string += " ";
+    if (change == 4) invalid.animations[0].samplers[0].interpolation = "STEP";
+    if (change == 5) invalid.animations[0].samplers[0].extras_json_string = "null";
+    if (change == 6) invalid.animations[0].extras_json_string += " ";
+    if (change == 7) {
+      // The raw channel/sampler prefix still matches. Changed accessor bytes
+      // must also fail against the player's exact retained decoded curves.
+      const auto output = size_t(invalid.animations[0].samplers[0].output);
+      const auto& view = invalid.bufferViews[size_t(invalid.accessors[output].bufferView)];
+      invalid.buffers[size_t(view.buffer)].data[view.byteOffset + 3] ^= 1;
+    }
+    EXPECT_THROW((void)original.withClonedSource(live, invalid, plan), std::invalid_argument);
+    EXPECT_EQ(original.library().clips, controls);
+    EXPECT_DOUBLE_EQ(original.time(), 2); EXPECT_TRUE(original.playing());
+    EXPECT_EQ(live.nodes[0].translation, (std::vector<double>{4,6,8}));
+  }
+}
+
+TEST(GltfAnimationPlayer, CloneExtensionRejectsForgedSuffixTracksAndRawPointerMetadata) {
+  const auto authored = clonePlayerSource(); AnimationPlayer original(authored);
+  const auto plan = PlanGltfSubtreeClone(authored, authored, 0);
+  const auto firstSuffix = plan.originalChannelCounts[0];
+  for (int change = 0; change < 8; ++change) {
+    SCOPED_TRACE(change); auto invalid = plan.evaluatedSource;
+    auto& animation = invalid.animations[0];
+    if (change == 0) animation.channels[firstSuffix].target_path = "scale";
+    if (change == 1) animation.channels[firstSuffix].target_node = 0;
+    if (change == 2) animation.channels[firstSuffix].target_extras_json_string += " ";
+    if (change == 3) setPointer(animation.channels[firstSuffix + 1], "/nodes/1/scale/0");
+    if (change == 4) animation.channels.erase(animation.channels.begin() + firstSuffix);
+    if (change == 5) {
+      auto resource = animation.channels[3];
+      setPointer(resource, "/materials/0/pbrMetallicRoughness/metallicFactor");
+      animation.channels.push_back(resource); // Valid distinct shared resource track, still undeclared.
+    }
+    if (change == 6) std::swap(animation.channels[firstSuffix + 1], animation.channels[firstSuffix + 2]);
+    if (change == 7) animation.channels[firstSuffix + 1].target_extensions_json_string = "forged metadata";
+    EXPECT_THROW((void)original.withClonedSource(authored, invalid, plan), std::invalid_argument);
+    EXPECT_FALSE(original.selectedClip()); EXPECT_FALSE(original.playing());
+    EXPECT_EQ(original.library().clips[0].tracks.size(), 6u);
+  }
+}
+
+TEST(GltfAnimationPlayer, CloneExtensionRejectsUnclaimedOrAliasedTailAndChangedResourceCounts) {
+  const auto authored = clonePlayerSource(); AnimationPlayer original(authored);
+  const auto plan = PlanGltfSubtreeClone(authored, authored, 0);
+  for (int change = 0; change < 10; ++change) {
+    SCOPED_TRACE(change); auto forged = plan; auto invalid = plan.evaluatedSource;
+    if (change == 0) forged.nodes[0] = -1;
+    if (change == 1) forged.nodes[0] = 0;
+    if (change == 2) forged.nodes[0] = 99999;
+    if (change == 3) invalid.nodes.emplace_back();
+    if (change == 4) forged.originalChannelCounts[0] -= 1;
+    if (change == 5) forged.contextOnly.clear();
+    if (change == 6) forged.contextOnly[0] = true; // Visual/morph clone cannot suppress its weights.
+    if (change == 7) invalid.materials.emplace_back();
+    if (change == 8) invalid.cameras.emplace_back();
+    if (change == 9) invalid.animations.emplace_back();
+    EXPECT_THROW((void)original.withClonedSource(authored, invalid, forged), std::invalid_argument);
+    EXPECT_FALSE(original.selectedClip()); EXPECT_TRUE(original.library().restNodes[0].translation.empty());
+  }
+  auto two = authored; two.nodes.emplace_back();
+  const auto entire = PlanGltfSubtreeClone(two, two, 0);
+  auto forged = entire;
+  forged.nodes[1] = forged.nodes[0];
+  AnimationPlayer twoPlayer(two);
+  EXPECT_THROW((void)twoPlayer.withClonedSource(two, entire.evaluatedSource, forged), std::invalid_argument);
+}
+
+TEST(GltfAnimationRuntime, ResumedSourceSamplingLeavesRetiredBindingsUntouched) {
+  tinygltf::Model source; source.nodes.resize(2);
+  source.nodes[0].translation = {7,8,9}; source.nodes[1].translation = {10,11,12};
+  container::scene::SceneGraph graph;
+  const auto deleted = graph.createNode(glm::mat4(1), 0);
+  const auto surviving = graph.createNode(glm::mat4(1), 0);
+  graph.getNode(deleted)->sourceNodeIndex = 0; graph.getNode(surviving)->sourceNodeIndex = 1;
+  graph.updateWorldTransforms();
+  auto retirement = graph.prepareRetireSubtree(deleted);
+  ASSERT_TRUE(graph.publishRetirement(retirement));
+  ASSERT_TRUE(graph.isNodeRetired(deleted));
+  const auto local = graph.getNode(deleted)->localTransform;
+  const auto world = graph.getNode(deleted)->worldTransform;
+  const auto revision = graph.revision();
+  AnimationDirtySet dirty; dirty.nodes = {0};
+  EXPECT_FALSE(ApplyAnimatedNodeTransforms(source, dirty, graph));
+  EXPECT_EQ(graph.revision(), revision);
+  EXPECT_EQ(graph.getNode(deleted)->localTransform, local);
+  dirty.nodes.push_back(1);
+  EXPECT_TRUE(ApplyAnimatedNodeTransforms(source, dirty, graph));
+  EXPECT_EQ(graph.getNode(deleted)->localTransform, local);
+  EXPECT_EQ(graph.getNode(deleted)->worldTransform, world);
+  EXPECT_EQ(graph.getNode(surviving)->localTransform[3], glm::vec4(10,11,12,1));
+  EXPECT_EQ(source.nodes[0].translation, (std::vector<double>{7,8,9}));
 }
 
 } // namespace

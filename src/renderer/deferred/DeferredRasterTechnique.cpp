@@ -18,14 +18,14 @@
 #include "Container/renderer/deferred/DeferredRasterPostProcess.h"
 #include "Container/renderer/deferred/DeferredRasterResourceBridge.h"
 #include "Container/renderer/deferred/DeferredRasterSceneColorReadBarrierRecorder.h"
-#include "Container/renderer/deferred/DeferredRasterSceneGpuCullRoutePlanner.h"
-#include "Container/renderer/scene/PbrAuxiliaryPass.h"
 #include "Container/renderer/deferred/DeferredRasterScenePassRecorder.h"
+#include "Container/renderer/deferred/DeferredRasterSceneGpuCullRoutePlanner.h"
 #include "Container/renderer/deferred/DeferredRasterTileCullPlanner.h"
 #include "Container/renderer/deferred/DeferredRasterTileCullRecorder.h"
 #include "Container/renderer/deferred/DeferredRasterTransformGizmo.h"
 #include "Container/renderer/deferred/DeferredTransparentOitFramePassRecorder.h"
 #include "Container/renderer/effects/BloomManager.h"
+#include "Container/renderer/effects/OpenVdbVolumeRenderer.h"
 #include "Container/renderer/effects/ExposureManager.h"
 #include "Container/renderer/lighting/EnvironmentManager.h"
 #include "Container/renderer/lighting/LightingManager.h"
@@ -34,6 +34,7 @@
 #include "Container/renderer/resources/FrameResourceManager.h"
 #include "Container/renderer/resources/FrameResourceRegistry.h"
 #include "Container/renderer/scene/SceneController.h"
+#include "Container/renderer/scene/PbrAuxiliaryPass.h"
 #include "Container/renderer/scene/SceneViewport.h"
 #include "Container/renderer/shadow/ShadowCullManager.h"
 #include "Container/renderer/shadow/ShadowCullPassPlanner.h"
@@ -830,6 +831,16 @@ deferredRasterLocalShadowSceneDraws(const FrameDrawLists &draws) {
           .doubleSided = draws.opaqueDoubleSidedDrawCommands};
 }
 
+ShadowPassDrawLists
+deferredRasterLocalShadowBimDraws(const FrameBimResources &bim) {
+  return {.singleSided =
+              hasDrawCommands(bim.draws.opaqueSingleSidedDrawCommands)
+                  ? bim.draws.opaqueSingleSidedDrawCommands
+                  : bim.draws.opaqueDrawCommands,
+          .windingFlipped = bim.draws.opaqueWindingFlippedDrawCommands,
+          .doubleSided = bim.draws.opaqueDoubleSidedDrawCommands};
+}
+
 bool deferredRasterCanRecordLocalShadowPass(const FrameRecordParams &p) {
   return p.shadows.renderPass != VK_NULL_HANDLE &&
          p.shadows.localShadowFramebuffers != nullptr &&
@@ -914,7 +925,7 @@ void recordDeferredRasterLocalShadowPass(VkCommandBuffer cmd,
                  p.bim.opaqueMeshDrawsUseGpuVisibility &&
                  hasOpaqueDrawCommands(p.bim.draws),
              .sceneDraws = deferredRasterLocalShadowSceneDraws(p.draws),
-             .bimDraws = deferredRasterLocalShadowSceneDraws(p.bim.localShadowDraws)}}));
+             .bimDraws = deferredRasterLocalShadowBimDraws(p.bim)}}));
   }
 }
 
@@ -1654,6 +1665,10 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
     deferred->lightingPassRecorder().record(cmd, p,
                                             deferredRasterSceneDescriptorSet(p),
                                             lightingSets, transparentSets);
+    if (p.services.openVdbVolumeRenderer)
+      p.services.openVdbVolumeRenderer->record(cmd, p,
+          deferred->isPassActive(RenderPassId::OitClear) &&
+          deferred->isPassActive(RenderPassId::OitResolve));
   });
 
   registerTemporalPasses(graph);

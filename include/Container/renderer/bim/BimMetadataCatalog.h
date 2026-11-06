@@ -26,6 +26,8 @@ class BimMetadataCatalog {
 public:
   void clear();
   void clearLabels();
+  // Object counts are only a bounded startup hint: label storage grows with
+  // unique labels rather than reserving one dictionary slot per draw object.
   void reserve(size_t objectCount);
 
   void setModelUnitMetadata(BimModelUnitMetadata metadata);
@@ -45,30 +47,33 @@ public:
   [[nodiscard]] const std::vector<std::string> &statuses() const;
   [[nodiscard]] const std::vector<BimStoreyRange> &storeyRanges() const;
 
-  [[nodiscard]] uint32_t registerType(std::string label);
-  void registerStorey(const BimElementMetadata &metadata,
+  [[nodiscard]] uint32_t registerType(std::string_view label);
+  void registerStorey(const BimElementMetadataView &metadata,
                       const BimElementBounds &bounds);
-  void registerMaterial(const BimElementMetadata &metadata);
-  void registerDiscipline(std::string label);
-  void registerPhase(std::string label);
-  void registerFireRating(std::string label);
-  void registerLoadBearing(std::string label);
-  void registerStatus(std::string label);
+  void registerMaterial(const BimElementMetadataView &metadata);
+  void registerDiscipline(std::string_view label);
+  void registerPhase(std::string_view label);
+  void registerFireRating(std::string_view label);
+  void registerLoadBearing(std::string_view label);
+  void registerStatus(std::string_view label);
   void sortStoreyRanges();
 
   [[nodiscard]] uint32_t
   semanticIdForCategory(BimMetadataSemanticCategory category,
                         std::string_view label) const;
   [[nodiscard]] uint32_t
-  semanticIdForMetadata(const BimElementMetadata &metadata,
+  semanticIdForMetadata(const BimElementMetadataView &metadata,
                         BimSemanticColorMode mode) const;
   [[nodiscard]] BimVisibilityGpuObjectMetadata
-  visibilityGpuMetadata(const BimElementMetadata &metadata) const;
+  visibilityGpuMetadata(const BimElementMetadataView &metadata) const;
 
 private:
-  uint32_t registerUniqueLabel(std::unordered_map<std::string, uint32_t> &ids,
+  using LabelIds = std::unordered_map<std::string, uint32_t,
+                                      BimIdentityStringHash,
+                                      BimIdentityStringEqual>;
+  uint32_t registerUniqueLabel(LabelIds &ids,
                                std::vector<std::string> &values,
-                               std::string label);
+                               std::string_view label);
 
   std::vector<std::string> types_{};
   std::vector<std::string> storeys_{};
@@ -80,23 +85,24 @@ private:
   std::vector<std::string> statuses_{};
   std::vector<BimStoreyRange> storeyRanges_{};
 
-  std::unordered_map<std::string, uint32_t> typeIds_{};
-  std::unordered_map<std::string, uint32_t> storeyIds_{};
-  std::unordered_map<std::string, uint32_t> materialIds_{};
-  std::unordered_map<std::string, uint32_t> disciplineIds_{};
-  std::unordered_map<std::string, uint32_t> phaseIds_{};
-  std::unordered_map<std::string, uint32_t> fireRatingIds_{};
-  std::unordered_map<std::string, uint32_t> loadBearingIds_{};
-  std::unordered_map<std::string, uint32_t> statusIds_{};
-  std::unordered_map<std::string, size_t> storeyRangeIndices_{};
+  LabelIds typeIds_{};
+  LabelIds storeyIds_{};
+  LabelIds materialIds_{};
+  LabelIds disciplineIds_{};
+  LabelIds phaseIds_{};
+  LabelIds fireRatingIds_{};
+  LabelIds loadBearingIds_{};
+  LabelIds statusIds_{};
+  std::unordered_map<std::string, size_t, BimIdentityStringHash,
+                     BimIdentityStringEqual> storeyRangeIndices_{};
 
   BimModelUnitMetadata modelUnitMetadata_{};
   BimModelGeoreferenceMetadata modelGeoreferenceMetadata_{};
 };
 
-[[nodiscard]] std::string
-bimMetadataStoreyLabel(const BimElementMetadata &metadata);
-[[nodiscard]] std::string
-bimMetadataMaterialLabel(const BimElementMetadata &metadata);
+[[nodiscard]] std::string_view
+bimMetadataStoreyLabel(const BimElementMetadataView &metadata);
+[[nodiscard]] std::string_view
+bimMetadataMaterialLabel(const BimElementMetadataView &metadata);
 
 } // namespace container::renderer

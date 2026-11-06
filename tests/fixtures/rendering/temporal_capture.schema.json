@@ -16,37 +16,23 @@
     "events": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["frame"], "properties": {
       "frame": {"$ref": "#/$defs/frame"},
       "reset": {"type": "boolean"}, "skip": {"type": "boolean"}, "taa": {"type": "boolean"},
+      "gpuTransforms": {"type": "boolean"},
       "objectVisible": {"type": "boolean"}, "minimized": {"type": "boolean"}, "orthographic": {"type": "boolean"},
       "acquireOutOfDate": {"type": "boolean"}, "presentSuboptimal": {"type": "boolean"},
       "samples": {"enum": [1, 2, 4, 8]}, "exposure": {"type": "number", "minimum": 0},
-      "animationClip": {"type": "integer", "minimum": -1},
-      "gltfScene": {"type": "integer", "minimum": 0, "maximum": 2147483647},
-      "animationTime": {"type": "number", "minimum": 0},
-      "animationPlaying": {"type": "boolean"},
       "depthProbe": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 0, "maximum": 16384}},
       "resize": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 1, "maximum": 16384}},
       "technique": {"enum": ["forward-raster", "deferred-raster", "path-tracing"]}, "reload": {"type": "string"},
       "guiReload": {"type": "string", "description": "Queue a model load through the Scene Controls request path"},
       "guiSampleModel": {"type": "string", "description": "Select a discovered Sample model by its UI label"},
       "guiUnload": {"type": "boolean", "description": "Queue Unload model through the Scene Controls request path"},
+      "merge": {"$ref": "#/$defs/mergeRequest"},
       "guiWaitForLoad": {"type": "boolean", "default": true, "description": "Set false to render the pending GUI model request without settling it; requires a GUI model action"},
       "bimHiddenObject": {"type": "integer", "minimum": 0, "maximum": 4294967295},
-      "bimRoomVolumesVisible": {"type": "boolean", "description": "Show or hide IFC room geometry"},
       "bimSelectedObject": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Select a BIM object through the browser/viewport selection path"},
       "bimLodBias": {"type": "integer", "minimum": -8, "maximum": 8},
-      "lightEdit": {"$ref": "#/$defs/lightEdit"},
-      "lightSelection": {"$ref": "#/$defs/lightTarget"},
-      "lightAdd": {"$ref": "#/$defs/lightAdd"},
-      "nodeEdit": {"$ref": "#/$defs/nodeEdit"},
-      "nodeFlags": {"type": "object", "required": ["sourceNode"], "minProperties": 2,
-        "additionalProperties": false, "properties": {"sourceNode": {"$ref": "#/$defs/nodeSourceIndex"},
-        "visible": {"type": "boolean"}, "selectable": {"type": "boolean"}, "hoverable": {"type": "boolean"}}},
-      "addPrimitive": {"enum": ["Quad", "Plane (double-sided wall)", "Cube", "Sphere", "Triangular Prism", "Pyramid", "Torus"]},
-      "sceneHistory": {"enum": ["undo", "redo"]},
-      "expectLightEditFailure": {"type": "boolean", "default": false},
       "areaLightPosition": {"$ref": "#/$defs/vec3"},
       "rayShadows": {"enum": ["raster", "hard", "soft"]},
-      "reloadShaders": {"type": "boolean"},
       "rayShadowSamples": {"type": "integer", "minimum": 1, "maximum": 32},
       "rayShadowDenoise": {"type": "boolean"},
       "areaLighting": {"enum": ["ltc", "sampled"]},
@@ -54,50 +40,150 @@
       "ddgiEnabled": {"type": "boolean"},
       "ddgiPaused": {"type": "boolean"},
       "ddgiFitProbes": {"type": "integer", "minimum": 27, "maximum": 4294967295, "description": "Queue a one-shot scene fit through the DDGI control path; does not enable GI"},
-      "sectionPlane": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}}
+      "sectionPlane": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}},
+      "physicsAttach": {"enum": ["", "static", "kinematic", "dynamic"], "description": "Attach or replace a box on physicsNode or selected BIM/USD product; empty is inert"},
+      "physicsAction": {"enum": ["", "play", "pause", "step", "reset", "clear", "detach"], "description": "One-shot physics action after attachment and settled model changes; empty is inert"},
+      "physicsNode": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Explicit primary scene-node attachment/detach target, otherwise use current auxiliary selection"},
+      "physicsSettings": {"$ref": "#/$defs/bodySettings"},
+      "physicsJointCreate": {"$ref": "#/$defs/jointCreate"},
+      "physicsJointAction": {"enum": ["", "remove", "clear"]},
+      "physicsJointMotorVelocity": {"type": "number", "description": "Update the selected joint velocity motor without reanchoring"},
+      "gltfScene": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+      "nodeFlags": {"type": "object", "additionalProperties": false, "required": ["sourceNode"], "minProperties": 2, "properties": {"sourceNode": {"type": "integer", "minimum": 0, "maximum": 2147483647}, "visible": {"type": "boolean"}, "selectable": {"type": "boolean"}, "hoverable": {"type": "boolean"}}},
+      "materialVariant": {"type": "integer", "minimum": -1, "maximum": 2147483647},
+      "materialEdit": {"$ref": "#/$defs/materialEdit"},
+      "materialBinding": {"$ref": "#/$defs/materialBinding"},
+      "materialTextureEdit": {"$ref": "#/$defs/materialTextureEdit"},
+      "materialRetirement": {"$ref": "#/$defs/materialRetirement"},
+      "resourceRetirement": {"$ref": "#/$defs/resourceRetirement"},
+      "cameraProjection": {"$ref": "#/$defs/cameraProjection"},
+      "cameraSelection": {"$ref": "#/$defs/cameraSelection"},
+      "cameraPose": {"$ref": "#/$defs/cameraPose"},
+      "lightEdit": {"$ref": "#/$defs/lightEdit"},
+      "lightSelection": {"$ref": "#/$defs/lightTarget"},
+      "lightAdd": {"$ref": "#/$defs/lightAdd"},
+      "expectLightEditFailure": {"type": "boolean", "default": false},
+      "expectCameraProjectionFailure": {"type": "boolean", "default": false},
+      "expectCameraSelectionFailure": {"type": "boolean", "default": false},
+      "expectCameraPoseFailure": {"type": "boolean", "default": false},
+      "expectMaterialTextureFailure": {"type": "boolean", "default": false, "description": "Capture automation only. Requires materialTextureEdit; true requires the same backend action to throw, records its error and continues for after-failure captures. Unexpected success remains fatal."},
+      "expectMaterialRetirementFailure": {"type": "boolean", "default": false, "description": "Capture automation only. Requires materialRetirement; true requires the ordinary backend action to reject, logs the bounded reason and continues for actual after-failure captures. Unexpected success remains fatal."},
+      "expectResourceRetirementFailure": {"type": "boolean", "default": false, "description": "Requires resourceRetirement. True requires the ordinary backend action to reject; unexpected success is fatal."},
+      "animationPlaying": {"type": "boolean", "description": "Resume or pause the selected glTF clip; use a separate event from scene/history/physics mutations."},
+      "animationClip": {"type": "integer", "minimum": -1, "maximum": 2147483647, "description": "Select a glTF clip, or -1 to restore authored rest. May share an event with animationTime/animationPlaying only."},
+      "animationTime": {"type": "number", "minimum": 0, "maximum": 1.7976931348623157e+308, "description": "Seek in seconds using binary64 precision. May share an event with animationClip/animationPlaying only."},
+      "sceneHistory": {"enum": ["undo", "redo"]},
+      "nodeAuthoring": {"$ref": "#/$defs/nodeAuthoring"},
+      "nodeReparent": {"$ref": "#/$defs/nodeReparent"},
+      "nodeTransform": {"$ref": "#/$defs/nodeTransform"},
+      "addPrimitive": {"$ref": "#/$defs/addPrimitive"}
     }, "allOf": [{
       "if": {"required": ["guiWaitForLoad"], "properties": {"guiWaitForLoad": {"const": false}}},
       "then": {"anyOf": [
         {"required": ["guiReload"], "properties": {"guiReload": {"type": "string", "minLength": 1}}},
         {"required": ["guiSampleModel"], "properties": {"guiSampleModel": {"type": "string", "minLength": 1}}},
-        {"required": ["guiUnload"], "properties": {"guiUnload": {"const": true}}}
+        {"required": ["guiUnload"], "properties": {"guiUnload": {"const": true}}},
+        {"required": ["merge"]}
       ]}
-    }, {
-      "if": {"anyOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}, {"required": ["nodeEdit"]}, {"required": ["nodeFlags"]}, {"required": ["addPrimitive"]}, {"required": ["sceneHistory"]}]},
-      "then": {"allOf": [
-        {"oneOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}, {"required": ["nodeEdit"]}, {"required": ["nodeFlags"]}, {"required": ["addPrimitive"]}, {"required": ["sceneHistory"]}]},
-        {"propertyNames": {"enum": ["frame", "gltfScene", "lightEdit", "lightSelection", "lightAdd", "nodeEdit", "nodeFlags", "addPrimitive", "sceneHistory", "expectLightEditFailure", "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "reloadShaders", "rayShadowSamples", "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"]}}
-      ]}
-    }, {
-      "if": {"required": ["expectLightEditFailure"]},
-      "then": {"$ref": "#/$defs/oneLightAction"}
-    }]}}
+    },
+      {"if": {"required": ["expectMaterialTextureFailure"]}, "then": {"required": ["materialTextureEdit"]}},
+      {"if": {"required": ["expectMaterialRetirementFailure"]}, "then": {"required": ["materialRetirement"]}},
+      {"if": {"required": ["expectResourceRetirementFailure"]}, "then": {"required": ["resourceRetirement"]}},
+      {"if": {"required": ["expectCameraProjectionFailure"]}, "then": {"required": ["cameraProjection"]}},
+      {"if": {"required": ["expectCameraSelectionFailure"]}, "then": {"required": ["cameraSelection"]}},
+      {"if": {"required": ["expectCameraPoseFailure"]}, "then": {"required": ["cameraPose"]}},
+      {"if": {"required": ["expectLightEditFailure"]}, "then": {"$ref": "#/$defs/oneLightAction"}},
+      {"if": {"anyOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}]},
+       "then": {"allOf": [{"$ref": "#/$defs/oneLightAction"}, {"propertyNames": {"enum": ["frame", "lightEdit", "lightSelection", "lightAdd", "expectLightEditFailure", "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "rayShadowSamples", "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"]}}]}},
+      {"if": {"required": ["cameraProjection"]}, "then": {"allOf": [{"$ref": "#/$defs/isolatedCameraAction"}, {"not": {"anyOf": [{"required": ["cameraSelection"]}, {"required": ["cameraPose"]}]}}]}},
+      {"if": {"required": ["cameraSelection"]}, "then": {"allOf": [{"$ref": "#/$defs/isolatedCameraAction"}, {"not": {"anyOf": [{"required": ["cameraProjection"]}, {"required": ["cameraPose"]}]}}]}},
+      {"if": {"required": ["cameraPose"]}, "then": {"allOf": [{"$ref": "#/$defs/isolatedCameraAction"}, {"not": {"anyOf": [{"required": ["cameraProjection"]}, {"required": ["cameraSelection"]}]}}]}},
+      {"if": {"required": ["resourceRetirement"]}, "then": {
+        "properties": {"reload": {"const": ""}, "guiReload": {"const": ""}, "guiSampleModel": {"const": ""}, "guiUnload": {"const": false},
+          "physicsAttach": {"const": ""}, "physicsAction": {"const": ""}, "physicsJointAction": {"const": ""}},
+        "not": {"anyOf": [{"required": ["materialRetirement"]}, {"required": ["materialEdit"]}, {"required": ["materialBinding"]}, {"required": ["materialTextureEdit"]},
+          {"required": ["gltfScene"]}, {"required": ["materialVariant"]}, {"required": ["nodeFlags"]}, {"required": ["sceneHistory"]},
+          {"required": ["merge"]}, {"required": ["nodeAuthoring"]}, {"required": ["nodeReparent"]}, {"required": ["nodeTransform"]},
+          {"required": ["addPrimitive"]}, {"required": ["objectVisible"]}, {"required": ["bimHiddenObject"]},
+          {"required": ["animationPlaying"]}, {"required": ["animationClip"]}, {"required": ["animationTime"]},
+          {"required": ["physicsJointCreate"]}, {"required": ["physicsJointMotorVelocity"]}, {"required": ["physicsSettings"]}, {"required": ["physicsNode"]}]}
+      }},
+      {"if": {"required": ["materialRetirement"]}, "then": {
+        "properties": {"reload": {"const": ""}, "guiReload": {"const": ""}, "guiSampleModel": {"const": ""}, "guiUnload": {"const": false},
+          "physicsAttach": {"const": ""}, "physicsAction": {"const": ""}, "physicsJointAction": {"const": ""}},
+        "not": {"anyOf": [{"required": ["materialEdit"]}, {"required": ["materialBinding"]}, {"required": ["materialTextureEdit"]},
+          {"required": ["gltfScene"]}, {"required": ["materialVariant"]}, {"required": ["nodeFlags"]}, {"required": ["sceneHistory"]},
+          {"required": ["merge"]}, {"required": ["nodeAuthoring"]}, {"required": ["nodeReparent"]}, {"required": ["nodeTransform"]},
+          {"required": ["addPrimitive"]}, {"required": ["objectVisible"]}, {"required": ["bimHiddenObject"]},
+          {"required": ["animationPlaying"]}, {"required": ["animationClip"]}, {"required": ["animationTime"]},
+          {"required": ["physicsJointCreate"]}, {"required": ["physicsJointMotorVelocity"]}, {"required": ["physicsSettings"]}, {"required": ["physicsNode"]}]}
+      }},
+      {"if": {"required": ["materialEdit"]}, "then": {
+        "properties": {"reload": {"const": ""}, "guiReload": {"const": ""}, "guiSampleModel": {"const": ""}, "guiUnload": {"const": false},
+          "physicsAttach": {"const": ""}, "physicsAction": {"const": ""}, "physicsJointAction": {"const": ""}},
+        "not": {"anyOf": [{"required": ["gltfScene"]}, {"required": ["materialVariant"]}, {"required": ["nodeFlags"]},
+          {"required": ["sceneHistory"]}, {"required": ["merge"]}, {"required": ["nodeAuthoring"]}, {"required": ["nodeReparent"]}, {"required": ["materialBinding"]},
+          {"required": ["nodeTransform"]}, {"required": ["addPrimitive"]}, {"required": ["objectVisible"]}, {"required": ["bimHiddenObject"]},
+          {"required": ["animationPlaying"]}, {"required": ["animationClip"]}, {"required": ["animationTime"]},
+          {"required": ["physicsJointCreate"]}, {"required": ["physicsJointMotorVelocity"]}, {"required": ["physicsSettings"]}, {"required": ["physicsNode"]}]}
+      }},
+      {"if": {"required": ["materialBinding"]}, "then": {
+        "properties": {"reload": {"const": ""}, "guiReload": {"const": ""}, "guiSampleModel": {"const": ""}, "guiUnload": {"const": false},
+          "physicsAttach": {"const": ""}, "physicsAction": {"const": ""}, "physicsJointAction": {"const": ""}},
+        "not": {"anyOf": [{"required": ["materialEdit"]}, {"required": ["gltfScene"]}, {"required": ["materialVariant"]}, {"required": ["nodeFlags"]},
+          {"required": ["sceneHistory"]}, {"required": ["merge"]}, {"required": ["nodeAuthoring"]}, {"required": ["nodeReparent"]},
+          {"required": ["nodeTransform"]}, {"required": ["addPrimitive"]}, {"required": ["objectVisible"]}, {"required": ["bimHiddenObject"]},
+          {"required": ["animationPlaying"]}, {"required": ["animationClip"]}, {"required": ["animationTime"]},
+          {"required": ["physicsJointCreate"]}, {"required": ["physicsJointMotorVelocity"]}, {"required": ["physicsSettings"]}, {"required": ["physicsNode"]}]}
+      }},
+      {"if": {"required": ["materialTextureEdit"]}, "then": {
+        "properties": {"reload": {"const": ""}, "guiReload": {"const": ""}, "guiSampleModel": {"const": ""}, "guiUnload": {"const": false},
+          "physicsAttach": {"const": ""}, "physicsAction": {"const": ""}, "physicsJointAction": {"const": ""}},
+        "not": {"anyOf": [{"required": ["materialEdit"]}, {"required": ["materialBinding"]}, {"required": ["gltfScene"]}, {"required": ["materialVariant"]},
+          {"required": ["nodeFlags"]}, {"required": ["sceneHistory"]}, {"required": ["merge"]}, {"required": ["nodeAuthoring"]},
+          {"required": ["nodeReparent"]}, {"required": ["nodeTransform"]}, {"required": ["addPrimitive"]}, {"required": ["objectVisible"]},
+          {"required": ["bimHiddenObject"]}, {"required": ["animationPlaying"]}, {"required": ["animationClip"]}, {"required": ["animationTime"]},
+          {"required": ["physicsJointCreate"]}, {"required": ["physicsJointMotorVelocity"]}, {"required": ["physicsSettings"]}, {"required": ["physicsNode"]}]}
+      }},
+      {"if": {"required": ["merge"]}, "then": {
+        "properties": {"reload": {"const": ""}, "guiReload": {"const": ""}, "guiSampleModel": {"const": ""}, "guiUnload": {"const": false},
+          "physicsAttach": {"const": ""}, "physicsAction": {"const": ""}, "physicsJointAction": {"const": ""}},
+        "not": {"anyOf": [{"required": ["gltfScene"]}, {"required": ["materialVariant"]}, {"required": ["nodeFlags"]},
+          {"required": ["sceneHistory"]}, {"required": ["objectVisible"]}, {"required": ["bimHiddenObject"]}, {"required": ["nodeAuthoring"]},
+          {"required": ["physicsJointCreate"]}, {"required": ["physicsJointMotorVelocity"]}]}
+      }},
+      {"if": {"required": ["nodeAuthoring"]}, "then": {
+        "properties": {"reload": {"const": ""}, "guiReload": {"const": ""}, "guiSampleModel": {"const": ""}, "guiUnload": {"const": false},
+          "physicsAttach": {"const": ""}, "physicsAction": {"const": ""}, "physicsJointAction": {"const": ""}},
+        "not": {"anyOf": [{"required": ["gltfScene"]}, {"required": ["materialVariant"]}, {"required": ["nodeFlags"]},
+          {"required": ["sceneHistory"]}, {"required": ["merge"]}, {"required": ["objectVisible"]}, {"required": ["bimHiddenObject"]},
+          {"required": ["physicsJointCreate"]}, {"required": ["physicsJointMotorVelocity"]}, {"required": ["physicsSettings"]}, {"required": ["physicsNode"]}]}
+      }},
+      {"if": {"anyOf": [{"required": ["animationPlaying"]}, {"required": ["animationClip"]}, {"required": ["animationTime"]}]}, "then": {
+        "properties": {"reload": {"const": ""}, "guiReload": {"const": ""}, "guiSampleModel": {"const": ""}, "guiUnload": {"const": false},
+          "physicsAttach": {"const": ""}, "physicsAction": {"const": ""}, "physicsJointAction": {"const": ""}},
+        "not": {"anyOf": [{"required": ["gltfScene"]}, {"required": ["materialVariant"]}, {"required": ["nodeFlags"]},
+          {"required": ["sceneHistory"]}, {"required": ["merge"]}, {"required": ["nodeAuthoring"]}, {"required": ["objectVisible"]}, {"required": ["bimHiddenObject"]},
+          {"required": ["nodeReparent"]}, {"required": ["nodeTransform"]}, {"required": ["addPrimitive"]},
+          {"required": ["physicsJointCreate"]}, {"required": ["physicsJointMotorVelocity"]}, {"required": ["physicsSettings"]}, {"required": ["physicsNode"]}]}
+      }},
+      {"if": {"anyOf": [{"required": ["nodeReparent"]}, {"required": ["nodeTransform"]}, {"required": ["addPrimitive"]}]}, "then": {
+        "allOf": [{"$ref": "#/$defs/isolatedNodeEdit"},
+          {"oneOf": [{"required": ["nodeReparent"]}, {"required": ["nodeTransform"]}, {"required": ["addPrimitive"]}]}]
+      }},
+      {"if": {"required": ["physicsAttach"], "properties": {"physicsAttach": {"enum": ["static", "kinematic", "dynamic"]}}}, "then": {"properties": {"physicsAction": {"enum": ["", "play", "pause", "step"]}}}},
+      {"if": {"required": ["physicsSettings"]}, "then": {"required": ["physicsAttach"], "properties": {"physicsAttach": {"enum": ["static", "kinematic", "dynamic"]}}}},
+      {"if": {"required": ["physicsNode"]}, "then": {"anyOf": [{"required": ["physicsAttach"], "properties": {"physicsAttach": {"enum": ["static", "kinematic", "dynamic"]}}}, {"required": ["physicsAction"], "properties": {"physicsAction": {"const": "detach"}}}]}},
+      {"if": {"required": ["physicsJointCreate"]}, "then": {"properties": {"physicsAction": {"enum": ["", "play", "pause", "step"]}, "physicsJointAction": {"const": ""}}, "not": {"required": ["physicsJointMotorVelocity"]}}},
+      {"if": {"required": ["physicsJointAction"], "properties": {"physicsJointAction": {"enum": ["remove", "clear"]}}}, "then": {"not": {"required": ["physicsJointMotorVelocity"]}}}]}},
+    "objectScale": {"type": "array", "description": "Interpolated per-axis multipliers of the captured authored basis. Each axis must keep its sign across adjacent keys; runtime validation enforces this relationship.", "items": {"type": "object", "additionalProperties": false, "required": ["frame", "scale"], "properties": {"frame": {"$ref": "#/$defs/frame"}, "scale": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number", "minimum": -3.4028234663852886e+38, "maximum": 3.4028234663852886e+38, "not": {"const": 0}}}}}}
   },
   "$defs": {
-    "nodeSourceIndex": {"type": "integer", "minimum": 0, "maximum": 2147483647},
-    "nodeEdit": {
-      "type": "object", "additionalProperties": false, "required": ["operation"],
-      "allOf": [{"oneOf": [{"required": ["sourceNode"]}, {"required": ["graphNode"]}]}],
-      "properties": {
-        "sourceNode": {"$ref": "#/$defs/nodeSourceIndex"},
-        "graphNode": {"$ref": "#/$defs/nodeSourceIndex"},
-        "operation": {"enum": ["select", "transform", "visibility", "reparent", "begin", "update", "end", "cancel"]},
-        "matrix": {"type": "array", "minItems": 16, "maxItems": 16, "items": {"$ref": "#/$defs/lightFloat"}},
-        "visible": {"type": "boolean"},
-        "parent": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/nodeSourceIndex"}]},
-        "delta": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number", "minimum": -16384, "maximum": 16384}},
-        "gizmo": {"type": "object", "additionalProperties": false, "required": ["tool"], "properties": {
-          "tool": {"enum": ["translate", "rotate", "scale"]}, "space": {"enum": ["world", "local"]},
-          "axis": {"enum": ["free", "x", "y", "z"]}, "snap": {"type": "boolean"}}}
-      },
-      "oneOf": [
-        {"properties": {"operation": {"enum": ["select", "end", "cancel"]}}, "maxProperties": 2},
-        {"properties": {"operation": {"const": "transform"}}, "required": ["matrix"], "maxProperties": 3},
-        {"properties": {"operation": {"const": "visibility"}}, "required": ["visible"], "maxProperties": 3},
-        {"properties": {"operation": {"const": "reparent"}}, "required": ["parent"], "maxProperties": 3},
-        {"properties": {"operation": {"const": "begin"}}, "required": ["gizmo", "delta"], "maxProperties": 4},
-        {"properties": {"operation": {"const": "update"}}, "required": ["delta"], "maxProperties": 3}
-      ]
+    "cameraSelection": {
+      "type": "object", "additionalProperties": false, "minProperties": 1, "maxProperties": 1,
+      "description": "Select an active authored camera by exact source node index or unique node name, or return to the viewport camera. Selection does not edit a camera definition or add history.",
+      "properties": {"sourceNode": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        "nodeName": {"type": "string", "minLength": 1, "maxLength": 4096}, "viewport": {"const": true}}
     },
     "lightType": {"enum": ["point", "spot", "area", "directional"]},
     "safeLightInteger": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
@@ -147,8 +233,288 @@
     },
     "lightAdd": {"type": "object", "additionalProperties": false, "required": ["type"],
       "properties": {"type": {"$ref": "#/$defs/lightType"}, "expectedLightRevision": {"$ref": "#/$defs/safeLightInteger"}}},
+    "cameraPose": {
+      "type": "object", "additionalProperties": false, "required": ["sourceNode", "fromViewport"],
+      "description": "Write this frame's free viewport pose to one active authored camera-bearing node. Keep its lens and sibling poses, use parent-relative local conversion and ordinary Undo/Redo/save. Dispatch after the current camera track; selected-node pose animation rejects.",
+      "properties": {
+        "sourceNode": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        "fromViewport": {"const": true},
+        "expectedCameraRevision": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      }
+    },
+    "cameraProjection": {
+      "type": "object", "additionalProperties": false, "required": ["sourceNode"],
+      "description": "Commit one undoable authored camera lens edit using the ordinary editor backend. FOV is radians; null omits only perspective aspectRatio/zfar. Shared camera definitions affect every source node using them. Changed animated fields reject.",
+      "anyOf": [{"required": ["type"]}, {"required": ["values"], "properties": {"values": {"minItems": 1}}}],
+      "properties": {
+        "sourceNode": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        "expectedCameraRevision": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "type": {"enum": ["perspective", "orthographic"]},
+        "values": {"type": "array", "maxItems": 8, "items": {
+          "type": "object", "additionalProperties": false, "required": ["property", "value"],
+          "properties": {"property": {"enum": ["perspective/yfov", "perspective/aspectRatio", "perspective/znear", "perspective/zfar",
+            "orthographic/xmag", "orthographic/ymag", "orthographic/znear", "orthographic/zfar"]},
+            "value": {"type": ["number", "null"], "minimum": 0, "maximum": 3.4028234663852886e+38}},
+          "allOf": [{"if": {"properties": {"property": {"enum": ["perspective/aspectRatio", "perspective/zfar"]}}},
+            "then": {"properties": {"value": {"anyOf": [{"type": "null"}, {"type": "number", "exclusiveMinimum": 0}]}}},
+            "else": {"properties": {"value": {"type": "number"}}}},
+            {"if": {"properties": {"property": {"const": "perspective/yfov"}}},
+              "then": {"properties": {"value": {"exclusiveMinimum": 0, "exclusiveMaximum": 3.141592653589793}}}},
+            {"if": {"properties": {"property": {"enum": ["perspective/znear", "orthographic/xmag", "orthographic/ymag", "orthographic/zfar"]}}},
+              "then": {"properties": {"value": {"exclusiveMinimum": 0}}}}]
+        }}
+      }
+    },
+    "isolatedCameraAction": {
+      "properties": {"reload": {"const": ""}, "guiReload": {"const": ""}, "guiSampleModel": {"const": ""}, "guiUnload": {"const": false},
+        "physicsAttach": {"const": ""}, "physicsAction": {"const": ""}, "physicsJointAction": {"const": ""}},
+      "not": {"anyOf": [{"required": ["materialEdit"]}, {"required": ["materialBinding"]}, {"required": ["materialTextureEdit"]},
+        {"required": ["materialRetirement"]}, {"required": ["resourceRetirement"]}, {"required": ["merge"]}, {"required": ["gltfScene"]},
+        {"required": ["materialVariant"]}, {"required": ["nodeFlags"]}, {"required": ["nodeAuthoring"]}, {"required": ["nodeReparent"]},
+        {"required": ["nodeTransform"]}, {"required": ["addPrimitive"]}, {"required": ["sceneHistory"]}, {"required": ["animationPlaying"]},
+        {"required": ["animationClip"]}, {"required": ["animationTime"]}, {"required": ["objectVisible"]}, {"required": ["bimHiddenObject"]},
+        {"required": ["physicsJointCreate"]}, {"required": ["physicsJointMotorVelocity"]}, {"required": ["physicsNode"]}, {"required": ["physicsSettings"]}]}
+    },
+    "resourceRetirement": {
+      "type": "object", "additionalProperties": false, "maxProperties": 5,
+      "required": ["domain", "kind", "row"],
+      "description": "Delete a currently unused catalog row and its proved orphan resources. Undo and redo use sceneHistory. Expected identities are guards, never ownership capabilities.",
+      "properties": {
+        "domain": {"enum": ["archive", "evaluated", "runtime"]},
+        "kind": {"enum": ["image", "texture", "sampler", "runtimeTexture"]},
+        "row": {"type": "integer", "minimum": 0, "maximum": 999999},
+        "expectedResourceRevision": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "expectedIncarnation": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      },
+      "allOf": [{"if": {"properties": {"domain": {"const": "runtime"}}},
+        "then": {"properties": {"kind": {"const": "runtimeTexture"}}},
+        "else": {"properties": {"kind": {"enum": ["image", "texture", "sampler"]}}}}]
+    },
+    "materialRetirement": {
+      "type": "object", "additionalProperties": false, "maxProperties": 3,
+      "required": ["runtimeMaterial", "sourceMaterial"],
+      "description": "Delete an unused arbitrary runtime material using its explicit source pair (-1 means runtime-only). Undo and redo use sceneHistory. Runtime audits every retained reference and publication owner.",
+      "properties": {
+        "runtimeMaterial": {"type": "integer", "minimum": 0, "maximum": 4294967294},
+        "sourceMaterial": {"type": "integer", "minimum": -1, "maximum": 2147483647},
+        "expectedAuthoredRevision": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      }
+    },
+    "materialBinding": {
+      "type": "object", "additionalProperties": false, "maxProperties": 6,
+      "required": ["operation", "graphNode", "expectedRuntimeMaterial", "sourceMaterial", "runtimeMaterial"],
+      "description": "One-shot primitive material assignment or duplication. Assign supplies the explicit destination pair; makeUnique supplies the current selected pair and may name the duplicate. The backend proves current binding/catalog identities and source/resource provenance before publication. Runtime requires JSON integer tokens, rejecting floats including 1.0.",
+      "properties": {
+        "operation": {"enum": ["assign", "makeUnique"]},
+        "graphNode": {"type": "integer", "minimum": 0, "maximum": 4294967294},
+        "expectedRuntimeMaterial": {"type": "integer", "minimum": 0, "maximum": 4294967294},
+        "sourceMaterial": {"type": "integer", "minimum": -1, "maximum": 2147483647},
+        "runtimeMaterial": {"type": "integer", "minimum": 0, "maximum": 4294967294},
+        "name": {"$ref": "#/$defs/nodeName"}
+      },
+      "allOf": [{"if": {"properties": {"operation": {"const": "assign"}}}, "then": {"not": {"required": ["name"]}}}]
+    },
+    "materialTextureSampler": {
+      "type": "object", "additionalProperties": false, "maxProperties": 4,
+      "description": "Exact glTF sampler policy. Omitted filters use glTF defaults; unsupported enums are rejected rather than silently normalized.",
+      "properties": {
+        "minFilter": {"enum": [-1, 9728, 9729, 9984, 9985, 9986, 9987], "default": -1},
+        "magFilter": {"enum": [-1, 9728, 9729], "default": -1},
+        "wrapS": {"enum": [10497, 33071, 33648], "default": 10497},
+        "wrapT": {"enum": [10497, 33071, 33648], "default": 10497}
+      }
+    },
+    "materialTextureVector": {
+      "type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/finiteBinary32"}
+    },
+    "materialTextureMapping": {
+      "type": "object", "additionalProperties": false, "minProperties": 1, "maxProperties": 5,
+      "description": "Omitted leaves are untouched. Null resets the known source leaf. Channel edits additionally require a compatible live legacy slot; standard channels are fixed.",
+      "properties": {
+        "texCoord": {"anyOf": [{"type": "null"}, {"type": "integer", "minimum": 0, "maximum": 1}]},
+        "channel": {"anyOf": [{"type": "null"}, {"type": "integer", "minimum": 0, "maximum": 4}]},
+        "offset": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/materialTextureVector"}]},
+        "scale": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/materialTextureVector"}]},
+        "rotation": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/finiteBinary32"}]}
+      }
+    },
+    "materialTextureEdit": {
+      "type": "object", "additionalProperties": false, "maxProperties": 8,
+      "required": ["sourceMaterial", "slot", "operation"],
+      "description": "One atomic source texture/resource transaction. Resource IDs are authored catalog identities, not GPU handles. Live owner, role, mapping, capacity and material witnesses are revalidated before publication.",
+      "properties": {
+        "sourceMaterial": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        "slot": {"enum": ["baseColor", "normal", "occlusion", "emissive", "metallicRoughness", "roughness", "metalness", "specular", "height", "opacity", "transmission", "specularColor", "clearcoat", "clearcoatRoughness", "clearcoatNormal", "thickness", "sheenColor", "sheenRoughness", "iridescence", "iridescenceThickness", "anisotropy", "diffuseTransmission", "diffuseTransmissionColor"]},
+        "operation": {"enum": ["importFile", "bindExisting", "clear", "editMapping", "editSampler"]},
+        "path": {"type": "string", "minLength": 1, "maxLength": 65536, "pattern": "^[^\u0000]+$", "description": "Runtime additionally enforces a 65536-byte UTF-8 cap before making an owned path copy."},
+        "sourceTexture": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        "sampler": {"$ref": "#/$defs/materialTextureSampler"},
+        "mapping": {"$ref": "#/$defs/materialTextureMapping"},
+        "expectedResourceRevision": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615}
+      },
+      "oneOf": [
+        {"properties": {"operation": {"const": "importFile"}}, "required": ["path"], "not": {"required": ["sourceTexture"]}},
+        {"properties": {"operation": {"const": "bindExisting"}}, "required": ["sourceTexture"], "not": {"required": ["path"]}},
+        {"properties": {"operation": {"const": "clear"}}, "not": {"anyOf": [{"required": ["path"]}, {"required": ["sourceTexture"]}, {"required": ["sampler"]}, {"required": ["mapping"]}]}},
+        {"properties": {"operation": {"const": "editMapping"}}, "required": ["mapping"], "not": {"anyOf": [{"required": ["path"]}, {"required": ["sourceTexture"]}, {"required": ["sampler"]}]}},
+        {"properties": {"operation": {"const": "editSampler"}}, "required": ["sampler"], "not": {"anyOf": [{"required": ["path"]}, {"required": ["sourceTexture"]}, {"required": ["mapping"]}]}}
+      ]
+    },
+    "materialPatchPresent": {
+      "anyOf": [
+        {"required": ["values"], "properties": {"values": {"minItems": 1}}},
+        {"required": ["extensions"], "properties": {"extensions": {"minItems": 1}}},
+        {"required": ["alphaMode"]}, {"required": ["doubleSided"]}, {"required": ["name"]}
+      ]
+    },
+    "materialEdit": {
+      "type": "object", "additionalProperties": false, "maxProperties": 8, "required": ["sourceMaterial"],
+      "description": "Existing source material edit. Omitted gesture phase is a standalone commit. Live source-dependent validation and duplicate property/extension identity checks are mandatory. Material texture transforms and resource bindings are not numeric authoring properties.",
+      "properties": {
+        "sourceMaterial": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        "values": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"$ref": "#/$defs/materialNumericEdit"}},
+        "extensions": {"type": "array", "maxItems": 13, "uniqueItems": true, "items": {"$ref": "#/$defs/materialExtensionEdit"}},
+        "alphaMode": {"enum": ["OPAQUE", "MASK", "BLEND"]},
+        "doubleSided": {"type": "boolean"}, "name": {"$ref": "#/$defs/nodeName"},
+        "gestureId": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "gesturePhase": {"enum": ["commit", "begin", "update", "end", "cancel"]}
+      },
+      "oneOf": [
+        {"properties": {"gesturePhase": {"const": "commit"}}, "not": {"required": ["gestureId"]}, "allOf": [{"$ref": "#/$defs/materialPatchPresent"}]},
+        {"required": ["gestureId", "gesturePhase"], "properties": {"gesturePhase": {"enum": ["begin", "update"]}}, "allOf": [{"$ref": "#/$defs/materialPatchPresent"}]},
+        {"required": ["gestureId", "gesturePhase"], "properties": {"gesturePhase": {"const": "end"}}},
+        {"required": ["gestureId", "gesturePhase"], "properties": {"gesturePhase": {"const": "cancel"}},
+          "not": {"anyOf": [{"required": ["values"]}, {"required": ["extensions"]}, {"required": ["alphaMode"]}, {"required": ["doubleSided"]}, {"required": ["name"]}]}}
+      ]
+    },
+    "materialExtensionEdit": {
+      "type": "object", "additionalProperties": false, "required": ["extension", "enabled"],
+      "properties": {
+        "extension": {"enum": ["KHR_materials_unlit", "KHR_materials_emissive_strength", "KHR_materials_ior", "KHR_materials_dispersion",
+          "KHR_materials_transmission", "KHR_materials_volume", "KHR_materials_clearcoat", "KHR_materials_sheen", "KHR_materials_specular",
+          "KHR_materials_iridescence", "KHR_materials_anisotropy", "KHR_materials_diffuse_transmission", "KHR_materials_pbrSpecularGlossiness"]},
+        "enabled": {"type": "boolean"}
+      }
+    },
+    "nullableMaterialUnitScalar": {"anyOf": [{"type": "null"}, {"type": "number", "minimum": 0, "maximum": 1}]},
+    "nullableMaterialUnitVec3": {"anyOf": [{"type": "null"}, {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number", "minimum": 0, "maximum": 1}}]},
+    "nullableMaterialUnitVec4": {"anyOf": [{"type": "null"}, {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number", "minimum": 0, "maximum": 1}}]},
+    "nullableMaterialNonnegative": {"anyOf": [{"type": "null"}, {"type": "number", "minimum": 0, "maximum": 3.4028234663852886e+38}]},
+    "nullableMaterialSigned": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/finiteBinary32"}]},
+    "materialNumericEdit": {
+      "type": "object", "additionalProperties": false, "required": ["property", "value"],
+      "properties": {"property": {"type": "string", "maxLength": 256}, "value": {}},
+      "description": "Null resets the schema default, including omitted/infinite attenuation distance. All numeric inputs must remain finite in binary32. Duplicate property identities and disabling an edited extension are rejected at runtime.",
+      "oneOf": [
+        {"properties": {"property": {"enum": ["pbrMetallicRoughness/metallicFactor", "pbrMetallicRoughness/roughnessFactor", "occlusionTexture/strength",
+          "extensions/KHR_materials_transmission/transmissionFactor", "extensions/KHR_materials_clearcoat/clearcoatFactor", "extensions/KHR_materials_clearcoat/clearcoatRoughnessFactor",
+          "extensions/KHR_materials_sheen/sheenRoughnessFactor", "extensions/KHR_materials_specular/specularFactor", "extensions/KHR_materials_iridescence/iridescenceFactor",
+          "extensions/KHR_materials_anisotropy/anisotropyStrength", "extensions/KHR_materials_diffuse_transmission/diffuseTransmissionFactor",
+          "extensions/KHR_materials_pbrSpecularGlossiness/glossinessFactor"]}, "value": {"$ref": "#/$defs/nullableMaterialUnitScalar"}}},
+        {"properties": {"property": {"enum": ["emissiveFactor", "extensions/KHR_materials_volume/attenuationColor", "extensions/KHR_materials_sheen/sheenColorFactor",
+          "extensions/KHR_materials_specular/specularColorFactor", "extensions/KHR_materials_diffuse_transmission/diffuseTransmissionColorFactor",
+          "extensions/KHR_materials_pbrSpecularGlossiness/specularFactor"]}, "value": {"$ref": "#/$defs/nullableMaterialUnitVec3"}}},
+        {"properties": {"property": {"enum": ["pbrMetallicRoughness/baseColorFactor", "extensions/KHR_materials_pbrSpecularGlossiness/diffuseFactor"]},
+          "value": {"$ref": "#/$defs/nullableMaterialUnitVec4"}}},
+        {"properties": {"property": {"enum": ["alphaCutoff", "extensions/KHR_materials_emissive_strength/emissiveStrength", "extensions/KHR_materials_dispersion/dispersion",
+          "extensions/KHR_materials_volume/thicknessFactor", "extensions/KHR_materials_iridescence/iridescenceThicknessMinimum", "extensions/KHR_materials_iridescence/iridescenceThicknessMaximum"]},
+          "value": {"$ref": "#/$defs/nullableMaterialNonnegative"}}},
+        {"properties": {"property": {"enum": ["normalTexture/scale", "extensions/KHR_materials_clearcoat/clearcoatNormalTexture/scale", "extensions/KHR_materials_anisotropy/anisotropyRotation"]},
+          "value": {"$ref": "#/$defs/nullableMaterialSigned"}}},
+        {"properties": {"property": {"const": "extensions/KHR_materials_ior/ior"},
+          "value": {"anyOf": [{"type": "null"}, {"const": 0}, {"type": "number", "minimum": 1, "maximum": 3.4028234663852886e+38}]}}},
+        {"properties": {"property": {"const": "extensions/KHR_materials_iridescence/iridescenceIor"},
+          "value": {"anyOf": [{"type": "null"}, {"type": "number", "minimum": 1, "maximum": 3.4028234663852886e+38}]}}},
+        {"properties": {"property": {"const": "extensions/KHR_materials_volume/attenuationDistance"},
+          "value": {"anyOf": [{"type": "null"}, {"type": "number", "exclusiveMinimum": 0, "maximum": 3.4028234663852886e+38}]}}}
+      ]
+    },
+    "nodeReference": {
+      "type": "object", "additionalProperties": false,
+      "properties": {"graphNode": {"type": "integer", "minimum": 0, "maximum": 4294967294},
+        "sourceNode": {"type": "integer", "minimum": 0, "maximum": 2147483647}},
+      "oneOf": [{"required": ["graphNode"]}, {"required": ["sourceNode"]}]
+    },
+    "nodeName": {
+      "type": "string", "minLength": 1, "maxLength": 4096,
+      "description": "Runtime additionally validates UTF-8 scalar encoding and a 4096-byte limit; maxLength counts Unicode characters.",
+      "pattern": "[^ \u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]",
+      "not": {"pattern": "[\u0000-\u001f\u007f-\u009f\u2028\u2029]"}
+    },
+    "nodeReparent": {
+      "type": "object", "additionalProperties": false, "required": ["node", "parent"],
+      "description": "One-shot undoable reparent using the existing keep-world policy. Runtime resolves both references and validates parent/physics constraints.",
+      "properties": {"node": {"$ref": "#/$defs/nodeReference"}, "parent": {"$ref": "#/$defs/nodeReference"}}
+    },
+    "nodeTransform": {
+      "type": "object", "additionalProperties": false, "required": ["node", "matrix"],
+      "description": "One-shot undoable exact local matrix edit; matrix-level Y-flip and TRS decomposition are not introduced.",
+      "properties": {"node": {"$ref": "#/$defs/nodeReference"}, "matrix": {"$ref": "#/$defs/affineNodeMatrix"}}
+    },
+    "addPrimitive": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "name"],
+      "properties": {"kind": {"enum": ["quad", "plane", "cube", "sphere", "triangular-prism", "pyramid", "torus"]},
+        "name": {"$ref": "#/$defs/nodeName"}, "parent": {"$ref": "#/$defs/nodeReference"}}
+    },
+    "isolatedNodeEdit": {
+      "properties": {"reload": {"const": ""}, "guiReload": {"const": ""}, "guiSampleModel": {"const": ""}, "guiUnload": {"const": false},
+        "physicsAttach": {"const": ""}, "physicsAction": {"const": ""}, "physicsJointAction": {"const": ""}},
+      "not": {"anyOf": [{"required": ["gltfScene"]}, {"required": ["materialVariant"]}, {"required": ["nodeFlags"]},
+        {"required": ["sceneHistory"]}, {"required": ["merge"]}, {"required": ["nodeAuthoring"]}, {"required": ["objectVisible"]},
+        {"required": ["bimHiddenObject"]}, {"required": ["animationPlaying"]}, {"required": ["animationClip"]}, {"required": ["animationTime"]},
+        {"required": ["physicsJointCreate"]}, {"required": ["physicsJointMotorVelocity"]}, {"required": ["physicsSettings"]}, {"required": ["physicsNode"]}]}
+    },
+    "nodeAuthoring": {
+      "type": "object", "additionalProperties": false, "required": ["action"],
+      "description": "Undoable node rename, empty creation, subtree deletion or duplication. A duplicate may omit name to use the old label plus ' copy'; delete requires omission. Runtime resolves imported primitive owners. Use separate events for other scene mutations.",
+      "properties": {
+        "action": {"enum": ["rename", "create-empty", "delete-subtree", "duplicate-subtree"]},
+        "graphNode": {"type": "integer", "minimum": 0, "maximum": 4294967294},
+        "sourceNode": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        "name": {"$ref": "#/$defs/nodeName"}
+      },
+      "oneOf": [{"required": ["graphNode"]}, {"required": ["sourceNode"]}],
+      "allOf": [{"if": {"properties": {"action": {"const": "delete-subtree"}}},
+        "then": {"not": {"required": ["name"]}}},
+        {"if": {"properties": {"action": {"enum": ["rename", "create-empty"]}}}, "then": {"required": ["name"]}}]
+    },
+    "mergeRequest": {
+      "type": "object", "additionalProperties": false, "required": ["path"],
+      "description": "Prepare an additional glTF/GLB import through the shared worker and publish it into the current selected scene using the session import scale. Placement is separate; failures retain the previous scene and history.",
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "parentName": {"type": "string", "minLength": 1, "default": "Imported scene"},
+        "incomingScene": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        "placementMatrix": {"$ref": "#/$defs/mergePlacement"}
+      }
+    },
+    "finiteBinary32": {"type": "number", "minimum": -3.4028234663852886e+38, "maximum": 3.4028234663852886e+38},
+    "affineNodeMatrix": {
+      "type": "array", "minItems": 16, "maxItems": 16,
+      "description": "Finite binary32-representable column-major affine local matrix. Singular affine bases are allowed here; runtime consumer constraints remain authoritative.",
+      "prefixItems": [
+        {"$ref": "#/$defs/finiteBinary32"}, {"$ref": "#/$defs/finiteBinary32"}, {"$ref": "#/$defs/finiteBinary32"}, {"const": 0},
+        {"$ref": "#/$defs/finiteBinary32"}, {"$ref": "#/$defs/finiteBinary32"}, {"$ref": "#/$defs/finiteBinary32"}, {"const": 0},
+        {"$ref": "#/$defs/finiteBinary32"}, {"$ref": "#/$defs/finiteBinary32"}, {"$ref": "#/$defs/finiteBinary32"}, {"const": 0},
+        {"$ref": "#/$defs/finiteBinary32"}, {"$ref": "#/$defs/finiteBinary32"}, {"$ref": "#/$defs/finiteBinary32"}, {"const": 1}
+      ], "items": false
+    },
+    "mergePlacement": {
+      "type": "array", "minItems": 16, "maxItems": 16,
+      "description": "glTF-native column-major affine matrix. Runtime additionally requires a finite determinant with absolute value greater than 1e-12 both before and after binary32 conversion; JSON Schema cannot express determinant arithmetic.",
+      "prefixItems": [
+        {"$ref": "#/$defs/finiteBinary32"}, {"$ref": "#/$defs/finiteBinary32"}, {"$ref": "#/$defs/finiteBinary32"}, {"const": 0},
+        {"$ref": "#/$defs/finiteBinary32"}, {"$ref": "#/$defs/finiteBinary32"}, {"$ref": "#/$defs/finiteBinary32"}, {"const": 0},
+        {"$ref": "#/$defs/finiteBinary32"}, {"$ref": "#/$defs/finiteBinary32"}, {"$ref": "#/$defs/finiteBinary32"}, {"const": 0},
+        {"$ref": "#/$defs/finiteBinary32"}, {"$ref": "#/$defs/finiteBinary32"}, {"$ref": "#/$defs/finiteBinary32"}, {"const": 1}
+      ],
+      "items": false
+    },
     "frame": {"type": "integer", "minimum": 1, "maximum": 10000},
     "vec3": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
-    "translations": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["frame", "translation"], "properties": {"frame": {"$ref": "#/$defs/frame"}, "translation": {"$ref": "#/$defs/vec3"}}}}
+    "translations": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["frame", "translation"], "properties": {"frame": {"$ref": "#/$defs/frame"}, "translation": {"$ref": "#/$defs/vec3"}}}},
+    "bodySettings": {"type": "object", "additionalProperties": false, "properties": {"mass": {"type": "number", "exclusiveMinimum": 0}, "friction": {"type": "number", "minimum": 0}, "restitution": {"type": "number", "minimum": 0, "maximum": 1}, "gravityFactor": {"type": "number"}, "useCCD": {"type": "boolean"}, "linearVelocity": {"$ref": "#/$defs/vec3"}, "angularVelocity": {"$ref": "#/$defs/vec3"}}},
+    "jointBody": {"type": "object", "additionalProperties": false, "minProperties": 1, "maxProperties": 1, "properties": {"node": {"type": "integer", "minimum": 0, "maximum": 4294967295}, "bimObject": {"type": "integer", "minimum": 0, "maximum": 4294967295}, "world": {"const": true}}},
+    "jointCreate": {"type": "object", "additionalProperties": false, "required": ["type", "bodyA", "bodyB", "anchor"], "properties": {"type": {"enum": ["fixed", "hinge", "slider"]}, "bodyA": {"$ref": "#/$defs/jointBody"}, "bodyB": {"allOf": [{"$ref": "#/$defs/jointBody"}, {"not": {"required": ["world"]}}]}, "anchor": {"$ref": "#/$defs/vec3"}, "axis": {"allOf": [{"$ref": "#/$defs/vec3"}, {"not": {"const": [0, 0, 0]}}]}, "limits": {"type": "array", "minItems": 2, "maxItems": 2, "not": {"const": [0, 0]}, "prefixItems": [{"type": "number", "maximum": 0}, {"type": "number", "minimum": 0}]}, "motor": {"type": "object", "additionalProperties": false, "required": ["mode"], "properties": {"mode": {"enum": ["off", "velocity", "position"]}, "targetVelocity": {"type": "number"}, "targetPosition": {"type": "number"}, "maxForceOrTorque": {"type": "number", "minimum": 0}, "frequencyHz": {"type": "number", "exclusiveMinimum": 0}, "dampingRatio": {"type": "number", "minimum": 0}}}, "collideConnected": {"type": "boolean"}}, "allOf": [{"if": {"properties": {"type": {"const": "fixed"}}}, "then": {"not": {"required": ["limits"]}, "properties": {"motor": {"properties": {"mode": {"const": "off"}}}}}}, {"if": {"properties": {"type": {"const": "hinge"}}}, "then": {"properties": {"limits": {"prefixItems": [{"minimum": -3.1415927410125732}, {"maximum": 3.1415927410125732}]}}}}]}
   }
 }

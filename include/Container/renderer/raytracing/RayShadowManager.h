@@ -19,7 +19,7 @@ struct RaySceneBuildStats;
 
 // Borrowed handles from a fence-retained scene generation. Valid after
 // recordBuild for this image and until that image's next fence retirement.
-// Compact visibility metadata retains its default 64/16-byte layouts; closest
+// Compact visibility metadata retains its default 48/16-byte layouts; closest
 // hit surface attributes are allocated only for an opted-in consumer.
 struct RaySurfaceGpuBindings {
   VkAccelerationStructureKHR tlas{};
@@ -53,6 +53,16 @@ public:
   [[nodiscard]] RayEffectPipelines prepareShaderReload(const std::filesystem::path& root) const;
   void publishShaderReload(RayEffectPipelines candidate) noexcept;
   void prepare(VkExtent2D extent, uint32_t imageCount);
+  void setGpuTransformProducer(class RayInstanceTransformPass* producer);
+  // Independent pipelines, descriptors and upload slots, sharing only immutable
+  // old AS/geometry generations for optional build reuse. Update and recordBuild
+  // every image on the candidate, then submit/retire that build before exchange.
+  // Destruction before exchange leaves the active scene unchanged.
+  [[nodiscard]] std::unique_ptr<RayShadowManager> createDetachedGeneration() const;
+  [[nodiscard]] bool canExchangeGeneration(const RayShadowManager& other) const noexcept;
+  // Retire graphics readers and asynchronous surface consumers first. The
+  // manager object address stays stable for consumers retaining its reference.
+  [[nodiscard]] bool exchangeGeneration(RayShadowManager& other) noexcept;
   // Call before update. Surface consumers share the shadow AS, including when
   // shadow mode is Raster, without enabling shadow tracing/history images.
   void requestSurfaceScene(bool requested,

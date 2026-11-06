@@ -6,6 +6,7 @@
 #include "Container/renderer/deferred/DeferredTransparentOitFramePassRecorder.h"
 #include "Container/renderer/shadow/ShadowCascadeFramePassRecorder.h"
 
+#include <initializer_list>
 #include <optional>
 
 namespace container::gpu {

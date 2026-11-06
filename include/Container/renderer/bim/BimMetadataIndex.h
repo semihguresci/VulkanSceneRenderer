@@ -13,7 +13,7 @@ class BimMetadataIndex {
 public:
   void clear();
   void reserve(size_t objectCount);
-  void index(const BimElementMetadata &metadata);
+  void index(const BimElementMetadataView &metadata);
 
   [[nodiscard]] std::span<const uint32_t>
   objectIndicesForGuid(std::string_view guid) const;

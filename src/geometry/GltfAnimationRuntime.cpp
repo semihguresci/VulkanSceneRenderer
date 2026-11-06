@@ -52,7 +52,7 @@ bool ApplyAnimatedNodeTransforms(const tinygltf::Model& source,
   bool changed = false;
   for (uint32_t index = 0; index < graph.nodeCount(); ++index) {
     const auto* node = graph.getNode(index);
-    if (!node || node->sourceNodeIndex < 0 || static_cast<size_t>(node->sourceNodeIndex) >= affected.size() ||
+    if (!node || node->retired || node->sourceNodeIndex < 0 || static_cast<size_t>(node->sourceNodeIndex) >= affected.size() ||
         !affected[static_cast<size_t>(node->sourceNodeIndex)]) continue;
     const auto transform = localTransform(source.nodes[static_cast<size_t>(node->sourceNodeIndex)]);
     for (int column = 0; column < 4; ++column) for (int row = 0; row < 4; ++row)
@@ -71,8 +71,10 @@ std::optional<AnimatedCameraState> EvaluateAnimatedCamera(
   const container::scene::SceneNode* binding = nullptr;
   for (uint32_t i = 0; i < graph.nodeCount(); ++i) {
     const auto* node = graph.getNode(i);
-    if (graph.isNodeActive(i) && node->sourceNodeIndex >= 0 &&
-        static_cast<size_t>(node->sourceNodeIndex) == sourceNode) {
+    if (node && node->sourceNodeIndex >= 0 && static_cast<size_t>(node->sourceNodeIndex) == sourceNode) {
+      // Context ancestors remain in the editor hierarchy, but only nodes in
+      // the selected scene may supply its authored camera.
+      if (!graph.isNodeActive(i)) return {};
       binding = node;
       break;
     }

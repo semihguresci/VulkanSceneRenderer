@@ -12,6 +12,9 @@
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
+#include <limits>
+#include <type_traits>
+#include <utility>
 
 namespace container::renderer {
 
@@ -45,7 +48,40 @@ bool bufferReadyAt(
          buffers[imageIndex].buffer != VK_NULL_HANDLE;
 }
 
+VkDescriptorPool generationPool(VkDevice device,container::gpu::PipelineManager& pipelines,
+    bool owned,std::span<const VkDescriptorPoolSize> sizes,uint32_t count) {
+  if (!owned) return pipelines.createDescriptorPool({sizes.begin(),sizes.end()},count,0);
+  VkDescriptorPoolCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+  info.maxSets=count;info.poolSizeCount=uint32_t(sizes.size());info.pPoolSizes=sizes.data();
+  VkDescriptorPool pool{};
+  if(createOwnedDescriptorPool(device,&info,nullptr,&pool)!=VK_SUCCESS)
+    throw std::runtime_error("failed to create detached cull descriptor pool");
+  return pool;
+}
+
 } // namespace
+
+struct GpuCullManager::PreparedGeneration::State {
+  const GpuCullManager* owner{};
+  std::unique_ptr<GpuCullManager> candidate;
+  VkDescriptorPool frustumPool{},occlusionPool{},hizPool{};
+  uint32_t capacity{},width{},height{},mips{};
+  bool frozen{};
+  bool published{};
+  std::vector<VkBuffer> objects,frozenBuffers;
+  std::vector<VkDeviceSize> objectSizes;
+};
+GpuCullManager::PreparedGeneration::PreparedGeneration() noexcept=default;
+GpuCullManager::PreparedGeneration::~PreparedGeneration()=default;
+GpuCullManager::PreparedGeneration::PreparedGeneration(PreparedGeneration&&) noexcept=default;
+GpuCullManager::PreparedGeneration& GpuCullManager::PreparedGeneration::operator=(PreparedGeneration&&) noexcept=default;
+bool GpuCullManager::PreparedGeneration::ready() const noexcept {return state_ && state_->candidate;}
+uint32_t GpuCullManager::PreparedGeneration::maxDrawCount() const noexcept {return ready()?state_->candidate->maxDrawCount():0;}
+VkBuffer GpuCullManager::PreparedGeneration::indirectDrawBuffer(uint32_t image) const noexcept {return ready()?state_->candidate->indirectDrawBuffer(image):VK_NULL_HANDLE;}
+VkBuffer GpuCullManager::PreparedGeneration::drawCountBuffer(uint32_t image) const noexcept {return ready()?state_->candidate->drawCountBuffer(image):VK_NULL_HANDLE;}
+GpuCullManager& GpuCullManager::PreparedGeneration::manager() {
+  if(!ready()) throw std::logic_error("empty cull generation");return *state_->candidate;
+}
 
 GpuCullManager::GpuCullManager(
     std::shared_ptr<container::gpu::VulkanDevice> device,
@@ -60,9 +96,12 @@ GpuCullManager::~GpuCullManager() {
   destroyCullBuffers();
   destroyFrozenCameraBuffers();
 
+  destroyGenerationPool(frustumCullPool_);
+  destroyGenerationPool(occlusionCullPool_);
+  if (!ownsSharedResources_) return;
+
   pipelineManager_.destroyPipeline(frustumCullPipeline_);
   pipelineManager_.destroyPipelineLayout(frustumCullPipelineLayout_);
-  pipelineManager_.destroyDescriptorPool(frustumCullPool_);
   pipelineManager_.destroyDescriptorSetLayout(frustumCullSetLayout_);
 
   destroyHiZImage();
@@ -75,8 +114,121 @@ GpuCullManager::~GpuCullManager() {
 
   pipelineManager_.destroyPipeline(occlusionCullPipeline_);
   pipelineManager_.destroyPipelineLayout(occlusionCullPipelineLayout_);
-  pipelineManager_.destroyDescriptorPool(occlusionCullPool_);
   pipelineManager_.destroyDescriptorSetLayout(occlusionCullSetLayout_);
+}
+
+void GpuCullManager::destroyGenerationPool(VkDescriptorPool& pool) {
+  if(ownsGenerationPools_) {
+    if(pool) destroyOwnedDescriptorPool(device_->device(),pool,nullptr);
+    pool=VK_NULL_HANDLE;
+  } else pipelineManager_.destroyDescriptorPool(pool);
+}
+
+GpuCullManager::PreparedGeneration GpuCullManager::prepareGeneration(
+    std::span<const container::gpu::AllocatedBuffer> objects,std::span<const size_t> capacities,
+    std::span<const container::gpu::AllocatedBuffer> cameras,VkDeviceSize cameraBytes,
+    std::span<const DrawCommand> commands,uint64_t sourceRevision) const {
+  const auto images=objects.size();
+  if(!images || images>UINT32_MAX/5u || images!=capacities.size() || images!=cameras.size() ||
+      images!=objectSsboBuffers_.size() || cameraBytes<sizeof(container::gpu::CameraData) || commands.size()>UINT32_MAX)
+    throw std::invalid_argument("invalid detached primary cull input tables");
+  VkPhysicalDeviceProperties properties{};vkGetPhysicalDeviceProperties(device_->physicalDevice(),&properties);
+  const auto count=std::max<size_t>(commands.size(),64);
+  if(cameraBytes>properties.limits.maxUniformBufferRange ||
+      count>properties.limits.maxStorageBufferRange/sizeof(GpuDrawIndexedIndirectCommand) ||
+      count>properties.limits.maxDrawIndirectCount)
+    throw std::length_error("detached primary cull buffers exceed device limits");
+  size_t minimumCapacity=SIZE_MAX;
+  for(size_t image=0;image<images;++image) {
+    if(!objects[image].buffer || !cameras[image].buffer || !capacities[image] ||
+        capacities[image]>properties.limits.maxStorageBufferRange/sizeof(container::gpu::ObjectData))
+      throw std::invalid_argument("invalid detached primary cull object/camera binding");
+    minimumCapacity=std::min(minimumCapacity,capacities[image]);
+  }
+  for(const auto& command:commands)
+    if(command.objectIndex>=minimumCapacity || std::max(command.instanceCount,1u)>minimumCapacity-command.objectIndex)
+      throw std::invalid_argument("detached primary cull command exceeds object table");
+  PreparedGeneration result;result.state_=std::make_unique<PreparedGeneration::State>();
+  auto& state=*result.state_;state.owner=this;
+  state.frustumPool=frustumCullPool_;state.occlusionPool=occlusionCullPool_;state.hizPool=hizPool_;
+  state.capacity=maxObjectCount_;state.width=hizWidth_;state.height=hizHeight_;state.mips=hizMipLevels_;
+  state.frozen=cullingFrozen_;state.objects=objectSsboBuffers_;state.objectSizes=objectSsboSizes_;
+  for(const auto& buffer:frozenCameraBuffers_) state.frozenBuffers.push_back(buffer.buffer);
+  state.candidate=std::make_unique<GpuCullManager>(device_,allocationManager_,pipelineManager_);
+  auto& next=*state.candidate;next.ownsSharedResources_=false;next.ownsGenerationPools_=true;
+  next.frustumCullPipeline_=frustumCullPipeline_.share();next.frustumCullPipelineLayout_=frustumCullPipelineLayout_;
+  next.frustumCullSetLayout_=frustumCullSetLayout_;next.occlusionCullPipeline_=occlusionCullPipeline_.share();
+  next.occlusionCullPipelineLayout_=occlusionCullPipelineLayout_;next.occlusionCullSetLayout_=occlusionCullSetLayout_;
+  next.resizePerImageState(uint32_t(images));
+  // Missing/unsupported pipelines retain the existing CPU fallback policy.
+  if(!isReady()) return result;
+  next.allocateFrustumCullDescriptorSets(uint32_t(images));
+  if(next.occlusionCullSetLayout_) next.allocateOcclusionCullDescriptorSets(uint32_t(images));
+  next.ensureBufferCapacity(uint32_t(commands.size()));next.uploadScratch_.reserve(count);
+  for(uint32_t image=0;image<images;++image) {
+    next.updateObjectSsboDescriptor(image,objects[image].buffer,capacities[image]*sizeof(container::gpu::ObjectData));
+    next.uploadDrawCommands(image,commands,sourceRevision);
+    const auto frozen=frozenCameraBuffer(image);
+    VkDescriptorBufferInfo camera{frozen?frozen:cameras[image].buffer,0,cameraBytes};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstBinding=0;write.descriptorCount=1;write.descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;write.pBufferInfo=&camera;
+    write.dstSet=next.frustumCullSets_[image];vkUpdateDescriptorSets(device_->device(),1,&write,0,nullptr);
+    if(image<next.occlusionCullSets_.size()) {
+      const std::array<VkDescriptorBufferInfo,5> buffers{{camera,
+          {next.indirectDrawBuffers_[image].buffer,0,count*sizeof(GpuDrawIndexedIndirectCommand)},
+          {next.occlusionIndirectBuffers_[image].buffer,0,count*sizeof(GpuDrawIndexedIndirectCommand)},
+          {next.occlusionCountBuffers_[image].buffer,0,sizeof(uint32_t)},
+          {next.drawCountBuffers_[image].buffer,0,sizeof(uint32_t)}}};
+      constexpr std::array<uint32_t,5> bindings{0,2,3,4,6};
+      std::array<VkWriteDescriptorSet,7> writes{};uint32_t used=0;
+      for(size_t i=0;i<buffers.size();++i) {
+        auto& w=writes[used++];w={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};w.dstSet=next.occlusionCullSets_[image];
+        w.dstBinding=bindings[i];w.descriptorCount=1;w.descriptorType=i?VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;w.pBufferInfo=&buffers[i];
+      }
+      VkDescriptorImageInfo hiz{},sampler{};
+      if(image<hizFrames_.size() && hizFrames_[image].fullView && hizSampler_) {
+        hiz.imageView=hizFrames_[image].fullView;hiz.imageLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;sampler.sampler=hizSampler_;
+        for(uint32_t i=0;i<2;++i) {
+          auto& w=writes[used++];w={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};w.dstSet=next.occlusionCullSets_[image];
+          w.dstBinding=i?7:5;w.descriptorCount=1;w.descriptorType=i?VK_DESCRIPTOR_TYPE_SAMPLER:VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;w.pImageInfo=i?&sampler:&hiz;
+        }
+      }
+      vkUpdateDescriptorSets(device_->device(),used,writes.data(),0,nullptr);
+    }
+  }
+  return result;
+}
+
+bool GpuCullManager::canExchangeGeneration(const PreparedGeneration& prepared) const noexcept {
+  if(!prepared.ready() || prepared.state_->owner!=this) return false;
+  const auto& s=*prepared.state_;const auto& q=*s.candidate;
+  if(q.device_.get()!=device_.get() || q.frustumCullPipeline_!=frustumCullPipeline_ ||
+      q.occlusionCullPipeline_!=occlusionCullPipeline_ || q.objectSsboBuffers_.size()!=objectSsboBuffers_.size()) return false;
+  if(s.published) return true; // History validates its matching scene receipt.
+  if(s.frustumPool!=frustumCullPool_ || s.occlusionPool!=occlusionCullPool_ || s.hizPool!=hizPool_ ||
+      s.capacity!=maxObjectCount_ || s.width!=hizWidth_ || s.height!=hizHeight_ || s.mips!=hizMipLevels_ ||
+      s.frozen!=cullingFrozen_ || s.objects!=objectSsboBuffers_ || s.objectSizes!=objectSsboSizes_ ||
+      s.frozenBuffers.size()!=frozenCameraBuffers_.size()) return false;
+  for(size_t i=0;i<s.frozenBuffers.size();++i) if(s.frozenBuffers[i]!=frozenCameraBuffers_[i].buffer) return false;
+  return true;
+}
+
+bool GpuCullManager::exchangeGeneration(PreparedGeneration& prepared) noexcept {
+  if(!canExchangeGeneration(prepared)) return false;
+  auto& other=*prepared.state_->candidate;using std::swap;
+#define CULL_EXCHANGE(field) static_assert(std::is_nothrow_swappable_v<decltype(field)>);swap(field,other.field)
+  CULL_EXCHANGE(maxObjectCount_);CULL_EXCHANGE(uploadScratch_);CULL_EXCHANGE(lastUploadSourceData_);
+  CULL_EXCHANGE(lastUploadSourceSize_);CULL_EXCHANGE(lastUploadSourceRevision_);CULL_EXCHANGE(inputDrawBuffers_);
+  CULL_EXCHANGE(objectSsboBuffers_);CULL_EXCHANGE(objectSsboSizes_);CULL_EXCHANGE(indirectDrawBuffers_);
+  CULL_EXCHANGE(drawCountBuffers_);CULL_EXCHANGE(occlusionIndirectBuffers_);CULL_EXCHANGE(occlusionCountBuffers_);
+  CULL_EXCHANGE(frustumCullPool_);CULL_EXCHANGE(frustumCullSets_);CULL_EXCHANGE(occlusionCullPool_);CULL_EXCHANGE(occlusionCullSets_);
+  CULL_EXCHANGE(statsReadbackBuffers_);CULL_EXCHANGE(statsReadbackSubmitted_);CULL_EXCHANGE(lastStats_);
+  CULL_EXCHANGE(frustumDrawsValid_);CULL_EXCHANGE(occlusionDrawsValid_);CULL_EXCHANGE(ownsGenerationPools_);
+#undef CULL_EXCHANGE
+  std::fill(frustumDrawsValid_.begin(),frustumDrawsValid_.end(),false);
+  std::fill(occlusionDrawsValid_.begin(),occlusionDrawsValid_.end(),false);
+  for(auto& frame:hizFrames_) frame.generatedThisFrame=false;
+  prepared.state_->published=true;return true;
 }
 
 bool GpuCullManager::isReady() const {
@@ -223,7 +375,7 @@ bool GpuCullManager::ensureBufferCapacity(uint32_t maxObjectCount) {
     indirectDrawBuffers_[imageIndex] = allocationManager_.createBuffer(
         sizeof(GpuDrawIndexedIndirectCommand) * capacity,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
 
     // Draw count buffer (single uint32, GPU-only + indirect).
@@ -239,7 +391,7 @@ bool GpuCullManager::ensureBufferCapacity(uint32_t maxObjectCount) {
     occlusionIndirectBuffers_[imageIndex] = allocationManager_.createBuffer(
         sizeof(GpuDrawIndexedIndirectCommand) * capacity,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
 
     occlusionCountBuffers_[imageIndex] = allocationManager_.createBuffer(
@@ -274,6 +426,11 @@ void GpuCullManager::uploadDrawCommands(
     uint32_t imageIndex,
     const std::vector<DrawCommand>& commands,
     uint64_t sourceRevision) {
+  uploadDrawCommands(imageIndex,std::span<const DrawCommand>(commands),sourceRevision);
+}
+
+void GpuCullManager::uploadDrawCommands(uint32_t imageIndex,
+    std::span<const DrawCommand> commands,uint64_t sourceRevision) {
   const GpuCullDrawUploadCacheView uploadCache{
       .sourceData = std::span<const DrawCommand *const>(
           lastUploadSourceData_.data(), lastUploadSourceData_.size()),
@@ -967,13 +1124,12 @@ void GpuCullManager::createOcclusionCullPipeline(
 void GpuCullManager::allocateFrustumCullDescriptorSets(
     uint32_t descriptorSetCount) {
   const uint32_t setCount = std::max<uint32_t>(1u, descriptorSetCount);
-  pipelineManager_.destroyDescriptorPool(frustumCullPool_);
+  destroyGenerationPool(frustumCullPool_);
   frustumCullSets_.clear();
 
-  frustumCullPool_ = pipelineManager_.createDescriptorPool(
-      {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, setCount},
-       {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, setCount * 4}},
-      setCount, 0);
+  const std::array<VkDescriptorPoolSize,2> sizes{{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,setCount},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,setCount*4}}};
+  frustumCullPool_=generationPool(device_->device(),pipelineManager_,ownsGenerationPools_,sizes,setCount);
 
   std::vector<VkDescriptorSetLayout> layouts(setCount, frustumCullSetLayout_);
   frustumCullSets_.assign(setCount, VK_NULL_HANDLE);
@@ -991,15 +1147,13 @@ void GpuCullManager::allocateFrustumCullDescriptorSets(
 void GpuCullManager::allocateOcclusionCullDescriptorSets(
     uint32_t descriptorSetCount) {
   const uint32_t setCount = std::max<uint32_t>(1u, descriptorSetCount);
-  pipelineManager_.destroyDescriptorPool(occlusionCullPool_);
+  destroyGenerationPool(occlusionCullPool_);
   occlusionCullSets_.clear();
 
-  occlusionCullPool_ = pipelineManager_.createDescriptorPool(
-      {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, setCount},
-       {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, setCount * 5},
-       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, setCount},
-       {VK_DESCRIPTOR_TYPE_SAMPLER, setCount}},
-      setCount, 0);
+  const std::array<VkDescriptorPoolSize,4> sizes{{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,setCount},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,setCount*5},{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,setCount},
+      {VK_DESCRIPTOR_TYPE_SAMPLER,setCount}}};
+  occlusionCullPool_=generationPool(device_->device(),pipelineManager_,ownsGenerationPools_,sizes,setCount);
 
   std::vector<VkDescriptorSetLayout> layouts(setCount, occlusionCullSetLayout_);
   occlusionCullSets_.assign(setCount, VK_NULL_HANDLE);

@@ -41,11 +41,14 @@ struct RaySceneInstance {
   // Local vertex deformation can reverse authored winding independently of
   // the instance model transform, whose determinant never sets this flag.
   bool flipFacing{false};
+  uint32_t gpuObjectIndex{UINT32_MAX};
 };
 
+struct RaySceneGpuTransforms;
 struct RaySceneInput {
   std::span<const RaySceneGeometry> geometries{};
   std::span<const RaySceneInstance> instances{};
+  const RaySceneGpuTransforms* gpuTransforms{};
 };
 
 // Validate before allocating resources or touching command buffers.

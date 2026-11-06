@@ -30,7 +30,11 @@ set(SLANG_SPIRV_FLAGS
     -fvk-use-entrypoint-name
     -I "${SHADERS_DIR}"
     ${SLANG_MATRIX_LAYOUT_FLAG}
+    -DCONTAINER_HAS_NANOVDB=${CONTAINER_HAS_NANOVDB}
 )
+if(CONTAINER_HAS_NANOVDB)
+    list(APPEND SLANG_SPIRV_FLAGS -I "${NANOVDB_INCLUDE_DIR}")
+endif()
 
 file(GLOB SLANG_SOURCES CONFIGURE_DEPENDS "${SHADERS_DIR}/*.slang")
 set(SLANG_INCLUDE_SHADER_NAMES
@@ -58,11 +62,17 @@ set(SLANG_INCLUDE_SHADER_NAMES
     push_constants_common.slang
     display_tone_curves.slang
     scene_clip_common.slang
+    openvdb_geometry_shadow.slang
+    openvdb_area_light.slang
+    openvdb_multiple_scattering.slang
+    openvdb_transparency.slang
+    openvdb_sparse.slang
     draw_indirect_common.slang
     oit_resolve_common.slang
     temporal_common.slang
     environment_sky_common.slang
     atmosphere_scattering.slang
+    aerial_perspective.slang
     ray_shadow_data.slang
     ray_shadow_receiver_common.slang
     ray_shadow_read.slang
@@ -76,6 +86,10 @@ set(SLANG_INCLUDE_SHADER_NAMES
 )
 
 set(SLANG_COMPUTE_SHADER_NAMES
+    material_sampler_contract.slang
+    gltf_deformation.slang
+    hierarchy_transform.slang
+    ray_instance_transform.slang
     tile_light_cull.slang
     brdf_lut.slang
     equirect_to_cubemap.slang
@@ -94,13 +108,13 @@ set(SLANG_COMPUTE_SHADER_NAMES
     bloom_upsample.slang
     exposure_histogram.slang
     temporal_compose.slang
-    gltf_deformation.slang
+    openvdb_volume.slang
+    openvdb_transport_reference.slang
     temporal_resolve.slang
     exposure_adapt.slang
     ray_shadow_trace.slang
     ray_shadow_filter.slang
     ddgi_trace.slang
-    material_sampler_contract.slang
     reference_pathtrace.slang
     reference_background.slang
     ddgi_update.slang
@@ -113,6 +127,8 @@ set(SLANG_GEOMETRY_SHADER_NAMES
 )
 
 set(SLANG_INCLUDE_SOURCES)
+list(APPEND SLANG_INCLUDE_SOURCES
+    "${CMAKE_SOURCE_DIR}/include/Container/renderer/debug/SelectionStrokeKernel.h")
 foreach(SLANG_INCLUDE_SHADER_NAME IN LISTS SLANG_INCLUDE_SHADER_NAMES)
     set(SLANG_INCLUDE_SOURCE "${SHADERS_DIR}/${SLANG_INCLUDE_SHADER_NAME}")
     if(EXISTS "${SLANG_INCLUDE_SOURCE}")
@@ -239,14 +255,32 @@ foreach(SLANG_COMPUTE_SHADER_NAME IN LISTS SLANG_COMPUTE_SHADER_NAMES)
         get_filename_component(SHADER_BASE "${SLANG_SOURCE}" NAME_WE)
         set(COMP_OUTPUT "${COMPILED_SHADERS_DIR}/${SHADER_BASE}.comp.spv")
         set(SLANG_OPTIONAL_CAPABILITIES)
-        if(SHADER_BASE STREQUAL "ray_shadow_trace" OR SHADER_BASE STREQUAL "ddgi_trace" OR
-           SHADER_BASE STREQUAL "reference_pathtrace")
+        if(SHADER_BASE STREQUAL "ray_shadow_trace" OR SHADER_BASE STREQUAL "ddgi_trace")
             set(SLANG_OPTIONAL_CAPABILITIES -capability spvRayQueryKHR)
         endif()
         add_slang_output(
             SLANG_OUTPUTS "${SLANG_SOURCE}" "computeMain" "${COMP_OUTPUT}" ${SLANG_OPTIONAL_CAPABILITIES})
     endif()
 endforeach()
+
+set(CONTAINER_SCENE_TEXTURE_SAMPLING_SPIRV "${COMPILED_SHADERS_DIR}/scene_texture_sampling_contract.comp.spv")
+add_slang_output(SLANG_OUTPUTS
+    "${CMAKE_SOURCE_DIR}/tests/shaders/scene_texture_sampling_contract.slang"
+    "computeMain" "${CONTAINER_SCENE_TEXTURE_SAMPLING_SPIRV}")
+
+set(CONTAINER_CAMERA_PROJECTION_SPIRV "${COMPILED_SHADERS_DIR}/camera_projection_contract.comp.spv")
+add_slang_output(SLANG_OUTPUTS
+    "${CMAKE_SOURCE_DIR}/tests/shaders/camera_projection_contract.slang"
+    "computeMain" "${CONTAINER_CAMERA_PROJECTION_SPIRV}")
+
+set(CONTAINER_LIGHT_EDIT_SPIRV "${COMPILED_SHADERS_DIR}/light_edit_contract.comp.spv")
+add_slang_output(SLANG_OUTPUTS
+    "${CMAKE_SOURCE_DIR}/tests/shaders/light_edit_contract.slang"
+    "computeMain" "${CONTAINER_LIGHT_EDIT_SPIRV}")
+set(CONTAINER_LIGHTING_SCRATCH_SPIRV "${COMPILED_SHADERS_DIR}/lighting_scratch_contract.comp.spv")
+add_slang_output(SLANG_OUTPUTS
+    "${CMAKE_SOURCE_DIR}/tests/shaders/lighting_scratch_contract.slang"
+    "computeMain" "${CONTAINER_LIGHTING_SCRATCH_SPIRV}")
 
 if(NOT SLANG_OUTPUTS)
     message(WARNING "No Slang shader outputs found in ${SHADERS_DIR}")
@@ -260,3 +294,16 @@ add_custom_target(shaders_all
 )
 
 add_custom_target(shaders DEPENDS shaders_all)
+
+# The offline image tool and GPU reference share the production compute kernel.
+set(CONTAINER_OPENVDB_TRANSPORT_SPIRV "${COMPILED_SHADERS_DIR}/openvdb_transport_reference.comp.spv")
+add_custom_target(openvdb_transport_reference_shader DEPENDS "${CONTAINER_OPENVDB_TRANSPORT_SPIRV}")
+if(TARGET OpenVdbTransportRender)
+    add_custom_target(stage_openvdb_transport_shader
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:OpenVdbTransportRender>/spv_shaders"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CONTAINER_OPENVDB_TRANSPORT_SPIRV}"
+            "$<TARGET_FILE_DIR:OpenVdbTransportRender>/spv_shaders/openvdb_transport_reference.comp.spv"
+        VERBATIM)
+    add_dependencies(stage_openvdb_transport_shader openvdb_transport_reference_shader)
+    add_dependencies(OpenVdbTransportRender stage_openvdb_transport_shader)
+endif()

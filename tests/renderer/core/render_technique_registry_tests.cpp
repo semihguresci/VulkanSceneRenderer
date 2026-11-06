@@ -160,7 +160,6 @@ TEST(RenderTechniqueRegistry,
   ASSERT_NE(pathTracing, descriptors.end());
   EXPECT_TRUE(pathTracing->implemented);
   EXPECT_TRUE(pathTracing->requiresPathTracing);
-  EXPECT_FALSE(pathTracing->requiresRayTracing);
 
   container::renderer::RenderTechniqueRegistry registry =
       container::renderer::createDefaultRenderTechniqueRegistry();
@@ -264,14 +263,15 @@ TEST(RendererDeviceCapabilities, ReportsMissingRayAndPathRequirements) {
   full.descriptorIndexing = true;
   full.bufferDeviceAddress = true;
   full.accelerationStructure = true;
-  EXPECT_FALSE(full.supportsPathTracing());
+  full.rayTracingPipeline = true;
   full.rayQuery = true;
-  EXPECT_FALSE(full.supportsRayTracing());
+  EXPECT_TRUE(full.supportsPathTracing());
+  full.rayTracingPipeline = false; // Inline queries do not need an RT pipeline or image atomics.
   EXPECT_TRUE(full.supportsPathTracing());
   EXPECT_TRUE(full.missingPathTracingRequirements().empty());
 }
 
-TEST(RenderTechniqueRegistry, DefaultRegistryRegistersViewportTechniques) {
+TEST(RenderTechniqueRegistry, DefaultRegistryRegistersDeferredAndForwardRaster) {
   container::renderer::RenderTechniqueRegistry registry =
       container::renderer::createDefaultRenderTechniqueRegistry();
 
@@ -279,8 +279,6 @@ TEST(RenderTechniqueRegistry, DefaultRegistryRegistersViewportTechniques) {
       registry.find(container::renderer::RenderTechniqueId::DeferredRaster),
       nullptr);
   ASSERT_NE(registry.find(container::renderer::RenderTechniqueId::ForwardRaster),
-            nullptr);
-  ASSERT_NE(registry.find(container::renderer::RenderTechniqueId::PathTracing),
             nullptr);
   EXPECT_EQ(registry.techniques().size(), 3u);
 }

@@ -30,6 +30,11 @@ See
 - Vulkan 1.4 SDK, including `glslangValidator`, `slangc`, and validation layers.
 - vcpkg with manifest dependencies from `vcpkg.json`.
 
+Optional [OpenVDB import, volume rendering and voxel/SDF tools](openvdb.md)
+are enabled with `-DENABLE_OPENVDB=ON`. CMake automatically selects the vcpkg
+`openvdb` feature. Run the `openvdb_*` CPU and configuration tests after building
+their targets.
+
 Set `VCPKG_ROOT` before configuring. Keep machine-local overrides in an
 untracked `CMakeUserPresets.json`.
 

@@ -79,6 +79,20 @@ struct GBufferFormats {
 
 class FrameResourceManager {
  public:
+  class PreparedAuxiliaryBindings {
+   public:
+    PreparedAuxiliaryBindings() noexcept;
+    ~PreparedAuxiliaryBindings();
+    PreparedAuxiliaryBindings(PreparedAuxiliaryBindings&&) noexcept;
+    PreparedAuxiliaryBindings& operator=(PreparedAuxiliaryBindings&&) noexcept;
+    PreparedAuxiliaryBindings(const PreparedAuxiliaryBindings&) = delete;
+    PreparedAuxiliaryBindings& operator=(const PreparedAuxiliaryBindings&) = delete;
+    explicit operator bool() const noexcept;
+   private:
+    friend class FrameResourceManager;
+    struct State;
+    std::unique_ptr<State> state_;
+  };
   FrameResourceManager(
       std::shared_ptr<container::gpu::VulkanDevice> device,
       container::gpu::AllocationManager&            allocationManager,
@@ -142,6 +156,19 @@ class FrameResourceManager {
                             VkDeviceSize exposureStateBufferSize = 0,
                             std::span<const VkImageView> anisotropyViews = {},
                             std::span<const VkImageView> diffuseTransmissionViews = {});
+
+  // Detached CPU preparation for deferred lighting bindings 23/24. Each span
+  // is empty (the current normal-view fallback) or covers every frame. Views
+  // and their owning pass must remain alive through all descriptor readers.
+  // Preparation neither writes live sets nor changes the normal update cache.
+  [[nodiscard]] PreparedAuxiliaryBindings prepareAuxiliaryBindings(
+      std::span<const VkImageView> anisotropyViews,
+      std::span<const VkImageView> diffuseTransmissionViews) const;
+  [[nodiscard]] bool canPublishAuxiliaryBindings(const PreparedAuxiliaryBindings&) const noexcept;
+  // Retire graphics/DDGI readers first. Refuses stale/foreign/consumed tokens
+  // before any write; success uses fixed stack writes, invalidates the regular
+  // descriptor cache and consumes the token, without allocation or GPU waits.
+  bool publishAuxiliaryBindings(PreparedAuxiliaryBindings&) noexcept;
 
   void validateOitFormatSupport() const;
   void validatePickIdFormatSupport() const;
@@ -254,6 +281,9 @@ class FrameResourceManager {
   FrameResourceRegistry resourceRegistry_{};
   DescriptorUpdateKey descriptorUpdateKey_{};
   bool descriptorUpdateKeyValid_{false};
+  // A retained token keeps this identity alive, preventing owner-address ABA.
+  std::shared_ptr<const uint8_t> descriptorBindingOwner_{std::make_shared<const uint8_t>(0)};
+  uint64_t descriptorBindingEpoch_{1};
   uint32_t oitNodeCapacityFloor_{0};
 
   static constexpr uint32_t kOitAvgNodesPerPixel = 2u;

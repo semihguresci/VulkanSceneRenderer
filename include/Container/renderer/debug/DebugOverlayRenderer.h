@@ -30,6 +30,15 @@ class DebugOverlayRenderer {
                      float lineWidth,
                      WireframePushConstants& pc) const;
 
+  // Filled pixel-disk dilation of the selected stencil silhouette. Each draw
+  // batches all stroke offsets as instances; its object group remains intact.
+  // The caller binds the selection-outline pipeline and original stencil mask.
+  void drawSelectionStroke(VkCommandBuffer cmd,
+                           VkPipelineLayout layout,
+                           const std::vector<DrawCommand>& commands,
+                           const glm::vec3& color,
+                           WireframePushConstants& pc) const;
+
   // --- Debug overlay passes (pipeline already bound by caller) ---
   void recordNormalValidation(
       VkCommandBuffer cmd,

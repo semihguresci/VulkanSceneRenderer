@@ -1,12 +1,15 @@
 #include "Container/renderer/core/RenderExtraction.h"
 #include "Container/renderer/debug/RendererDebugModels.h"
 #include "Container/renderer/scene/SceneProviderSynchronizer.h"
+#include "Container/renderer/scene/MeshSceneProviderBindings.h"
 #include "Container/scene/MeshSceneProviderAssetAdapter.h"
 #include "Container/scene/MeshSceneProviderBuilder.h"
 #include "Container/scene/SceneProvider.h"
 
 #include <gtest/gtest.h>
+#include "../scene/material_publication_allocations.h"
 
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -69,6 +72,83 @@ class TestProvider final : public IRenderSceneProvider {
  private:
   SceneProviderSnapshot snapshot_{};
 };
+
+TEST(SceneProviderMaterialReferences,BorrowedViewsWithLongIdsAndNamesMatchWithoutAllocation) {
+  const std::string id(2048,'i'),name(4096,'n');
+  MeshSceneProvider mesh({id},name);MeshSceneAsset meshAsset;
+  meshAsset.primitiveCount=1;meshAsset.materialCount=8;meshAsset.instanceCount=3;
+  meshAsset.triangleBatches={{0,3,7,false,false,3}};mesh.update(meshAsset,{11,12,13});
+  BimSceneProvider bim({id},name);BimSceneAsset bimAsset;bimAsset.elementCount=3;
+  bimAsset.meshPrimitiveCount=1;bimAsset.nativePointRangeCount=2;bimAsset.nativeCurveRangeCount=4;
+  bimAsset.triangleBatches={{0,3,6,false,true,1}};bim.update(bimAsset,{21,22,23});
+  GaussianSplatSceneProvider splats({id},name);GaussianSplatSceneAsset splatAsset;splatAsset.splatCount=100;
+  splats.update(splatAsset,{31,32,33});
+  RadianceFieldSceneProvider field({id},name);RadianceFieldSceneAsset fieldAsset;fieldAsset.fieldCount=2;
+  field.update(fieldAsset,{41,42,43});
+  for(const IRenderSceneProvider* provider:std::array<const IRenderSceneProvider*,4>{&mesh,&bim,&splats,&field}) {
+    const auto before=provider->snapshot();bool matches=false;size_t attempts{};
+    {
+      material_publication_test::AllocationGuard deny(true);
+      const auto view=provider->materialReferenceView();
+      matches=view && container::scene::SceneProviderMaterialReferenceViewMatches(*view,before);
+      attempts=deny.allocations();
+    }
+    EXPECT_TRUE(matches);EXPECT_EQ(attempts,0u);
+    EXPECT_EQ(before.id.value,id);EXPECT_EQ(before.displayName,name);
+  }
+  // The old snapshot path has a real heap cost, beyond small-string storage.
+  size_t copied{};
+  {material_publication_test::AllocationGuard count(false);auto snapshot=mesh.snapshot();copied=count.allocations();}
+  EXPECT_GE(copied,2u);
+}
+
+TEST(SceneProviderMaterialReferences,RevisionBatchStorageAndIdentityChangesRejectWithoutAllocation) {
+  MeshSceneProvider provider({std::string(2048,'i')},std::string(4096,'n'));
+  MeshSceneAsset asset;asset.primitiveCount=1;asset.materialCount=5;asset.instanceCount=1;
+  asset.triangleBatches={{0,3,4,false,false,1}};provider.update(asset,{1,2,3});
+  const auto before=provider.snapshot();
+  const auto matches=[&] {
+    bool matched{};size_t attempted{};
+    {material_publication_test::AllocationGuard deny(true);const auto view=provider.materialReferenceView();
+      matched=view && container::scene::SceneProviderMaterialReferenceViewMatches(*view,before);attempted=deny.allocations();}
+    EXPECT_EQ(attempted,0u);return matched;
+  };
+  EXPECT_TRUE(matches());
+  for(const SceneProviderRevision revision:std::array<SceneProviderRevision,3>{{{2,2,3},{1,3,3},{1,2,4}}}) {
+    provider.update(asset,revision);EXPECT_FALSE(matches());
+  }
+  provider.update(asset,{1,2,3});EXPECT_TRUE(matches());
+  auto replacement=asset;replacement.triangleBatches={{0,3,4,false,false,1}};
+  provider.update(replacement,{1,2,3});EXPECT_FALSE(matches()); // Equal IDs, different immutable publication.
+  provider.update(asset,{1,2,3},std::string(4096,'x'));EXPECT_FALSE(matches());
+  MeshSceneProvider different({std::string(2048,'x')},before.displayName);different.update(asset,{1,2,3});
+  bool accepted{};size_t attempted{};
+  {material_publication_test::AllocationGuard deny(true);const auto view=different.materialReferenceView();
+    accepted=view && container::scene::SceneProviderMaterialReferenceViewMatches(*view,before);attempted=deny.allocations();}
+  EXPECT_FALSE(accepted);EXPECT_EQ(attempted,0u);
+}
+
+TEST(SceneProviderMaterialReferences,NativeBimCountersArePartOfTheBorrowedWitness) {
+  BimSceneProvider provider({"auxiliary-bim-scene"});BimSceneAsset asset;
+  asset.elementCount=3;asset.nativePointRangeCount=2;asset.nativeCurveRangeCount=1;provider.update(asset,{1,2,3});
+  const auto before=provider.snapshot();++asset.nativeCurveRangeCount;provider.update(asset,{1,2,3});
+  bool accepted{};size_t attempted{};
+  {material_publication_test::AllocationGuard deny(true);const auto view=provider.materialReferenceView();
+    accepted=view && container::scene::SceneProviderMaterialReferenceViewMatches(*view,before);attempted=deny.allocations();}
+  EXPECT_FALSE(accepted);EXPECT_EQ(attempted,0u);
+}
+
+TEST(SceneProviderMaterialReferences,UnknownAndLegacyCountOnlyProvidersFailClosedWithoutAllocation) {
+  TestProvider unknown(SceneProviderKind::Mesh,std::string(2048,'u'),1);
+  MeshSceneProvider legacy({std::string(2048,'l')});MeshSceneAsset asset;asset.primitiveCount=1;legacy.update(asset,{1,2,3});
+  const auto before=legacy.snapshot();bool unknownAccepted=true,legacyAccepted=true;size_t attempted{};
+  {material_publication_test::AllocationGuard deny(true);
+    unknownAccepted=unknown.materialReferenceView().has_value();const auto view=legacy.materialReferenceView();
+    legacyAccepted=view && container::scene::SceneProviderMaterialReferenceViewMatches(*view,before);attempted=deny.allocations();}
+  EXPECT_FALSE(unknownAccepted);EXPECT_FALSE(legacyAccepted);EXPECT_EQ(attempted,0u);
+  asset.primitiveCount=0;legacy.update(asset,{1,2,3});
+  ASSERT_TRUE(legacy.materialReferenceView());EXPECT_TRUE(legacy.materialReferenceView()->complete);
+}
 
 class TestRayTracingExtractor final : public RayTracingSceneExtractor {
  public:
@@ -498,8 +578,8 @@ TEST(RenderExtractionTests,
   const RasterDrawBatchDesc meshRaster =
       meshRasterExtractor.extract(mesh.snapshot());
   EXPECT_EQ(meshRaster.providerId.value, "primary-mesh-scene");
-  EXPECT_EQ(meshRaster.opaqueBatchCount, 7u);
-  EXPECT_EQ(meshRaster.transparentBatchCount, 0u);
+  EXPECT_EQ(meshRaster.opaqueBatchCount, 1u);
+  EXPECT_EQ(meshRaster.transparentBatchCount, 1u);
 
   const ProviderBackedBimRasterExtractor bimRasterExtractor;
   const RasterDrawBatchDesc bimRaster =
@@ -685,6 +765,59 @@ TEST(SceneProviderSynchronizerTests,
   EXPECT_EQ(meshOnly.front().id.value, "primary-mesh-scene");
   EXPECT_EQ(meshOnly.front().primitiveCount, 1u);
   EXPECT_EQ(meshOnly.front().displayName, "Only mesh");
+}
+
+TEST(SceneProviderSynchronizerTests, ExchangesDetachedOwnersAndRegistriesForUndo) {
+  SceneProviderSynchronizer live, staged;
+  SceneProviderRegistry registry, stagedRegistry;
+  SceneProviderSyncInput input;
+  input.mesh = {.available=true, .primitiveCount=1, .materialCount=2,
+                .geometryRevision=7, .displayName="Retained mesh"};
+  input.bim = {.available=true, .elementCount=23, .geometryRevision=5,
+               .displayName="Retained BIM"};
+  input.gaussianSplats = {.available=true, .splatCount=16, .geometryRevision=3};
+  live.sync(registry, input);
+  const auto* oldMesh = registry.find({"primary-mesh-scene"});
+  const auto* oldBim = registry.find({"auxiliary-bim-scene"});
+  input.mesh.primitiveCount = 4;
+  input.mesh.geometryRevision = 8;
+  input.mesh.displayName = "Merged mesh";
+  staged.sync(stagedRegistry, input);
+  const auto* newMesh = stagedRegistry.find({"primary-mesh-scene"});
+  ASSERT_NE(oldMesh, newMesh);
+  EXPECT_EQ(registry.find({"primary-mesh-scene"})->snapshot().primitiveCount, 1u);
+  live.exchangeState(staged, registry, stagedRegistry);
+  EXPECT_EQ(registry.find({"primary-mesh-scene"}), newMesh);
+  EXPECT_EQ(stagedRegistry.find({"primary-mesh-scene"}), oldMesh);
+  EXPECT_EQ(stagedRegistry.find({"auxiliary-bim-scene"}), oldBim);
+  EXPECT_EQ(registry.find({"auxiliary-bim-scene"})->snapshot().elementCount, 23u);
+  EXPECT_EQ(registry.snapshots().size(), 3u);
+  live.exchangeState(staged, registry, stagedRegistry);
+  EXPECT_EQ(registry.find({"primary-mesh-scene"}), oldMesh);
+  EXPECT_EQ(registry.find({"auxiliary-bim-scene"}), oldBim);
+  EXPECT_EQ(registry.find({"primary-mesh-scene"})->snapshot().revision.geometry, 7u);
+  // Both registry pointer tables must continue to match their owning provider set.
+  staged.sync(stagedRegistry, {});
+  EXPECT_TRUE(stagedRegistry.providers().empty());
+  EXPECT_EQ(registry.find({"primary-mesh-scene"}), oldMesh);
+}
+
+TEST(SceneProviderSynchronizerTests, DiscardingDetachedProvidersLeavesActiveOwnersAlive) {
+  SceneProviderSynchronizer live;
+  SceneProviderRegistry registry;
+  SceneProviderSyncInput input;
+  input.mesh = {.available=true, .primitiveCount=2, .geometryRevision=4};
+  live.sync(registry, input);
+  const auto* mesh = registry.find({"primary-mesh-scene"});
+  {
+    SceneProviderSynchronizer candidate;
+    SceneProviderRegistry candidateRegistry;
+    input.mesh.primitiveCount = 99;
+    candidate.sync(candidateRegistry, input);
+    EXPECT_EQ(mesh->snapshot().primitiveCount, 2u);
+  }
+  EXPECT_EQ(registry.find({"primary-mesh-scene"}), mesh);
+  EXPECT_EQ(mesh->snapshot().primitiveCount, 2u);
 }
 
 TEST(RenderExtractionTests,
@@ -878,6 +1011,230 @@ TEST(MeshSceneProviderCacheTests, InvalidatesSourceReplacementAndExplicitUnload)
   EXPECT_NE(reloaded.triangleBatches.data(), replacement.triangleBatches.data());
   EXPECT_EQ(reloaded.triangleBatches.front().firstIndex, 15u);
   EXPECT_EQ(first.triangleBatches.front().firstIndex, 3u);
+}
+
+class MeshBindingProviderTests : public ::testing::Test {
+ protected:
+  std::vector<container::geometry::PrimitiveRange> ranges{
+      {.firstIndex=0,.indexCount=6,.materialIndex=0},
+      {.firstIndex=6,.indexCount=3,.materialIndex=0}};
+  std::vector<container::gpu::ObjectData> objects = [] {
+    std::vector<container::gpu::ObjectData> rows(3);
+    rows[0].temporalInfo.w=0; rows[0].objectInfo.x=0;
+    rows[1].temporalInfo.w=0; rows[1].objectInfo.x=1;
+    rows[1].objectInfo.y=container::gpu::kObjectFlagDoubleSided;
+    rows[2].temporalInfo.w=1; rows[2].objectInfo.x=0;
+    return rows;
+  }();
+  std::vector<container::renderer::DrawCommand> opaque{
+      {.objectIndex=0,.firstIndex=0,.indexCount=6},
+      {.objectIndex=2,.firstIndex=6,.indexCount=3}};
+  std::vector<container::renderer::DrawCommand> transparent{
+      {.objectIndex=1,.firstIndex=0,.indexCount=6}};
+  container::scene::MeshSceneProviderBindingLimits limits;
+  container::scene::MeshSceneProviderAssetAdapterInput input() {
+    return {.primitiveRanges=ranges,.materialCount=3,.instanceCount=999,
+        .materialFactsAt=[](uint32_t material) {
+          return MeshSceneProviderMaterialFacts{material==1,material==1};
+        },.bindings=container::renderer::MakeMeshSceneProviderBindingView(objects,opaque,transparent,9,limits)};
+  }
+  MeshSceneAsset build() { return container::scene::buildMeshSceneProviderAsset(input()); }
+};
+
+TEST_F(MeshBindingProviderTests, PreservesGeometryCountAndReportsActualPerInstanceMaterials) {
+  const auto asset=build();
+  EXPECT_EQ(asset.primitiveCount,2u);
+  EXPECT_EQ(asset.instanceCount,3u);
+  EXPECT_EQ(asset.materialCount,3u);
+  ASSERT_EQ(asset.triangleBatches.size(),3u);
+  EXPECT_EQ(asset.triangleBatches[0].materialIndex,0);
+  EXPECT_EQ(asset.triangleBatches[1].materialIndex,1);
+  EXPECT_TRUE(asset.triangleBatches[1].doubleSided);
+  EXPECT_TRUE(asset.triangleBatches[1].transparent);
+  EXPECT_TRUE(asset.triangleBatchesAuthoritative);
+  MeshSceneProvider provider{{"bindings"}};
+  provider.update(asset,{});
+  const auto snapshot=provider.snapshot();
+  EXPECT_EQ(snapshot.primitiveCount,2u);
+  EXPECT_EQ(snapshot.opaqueBatchCount,2u);
+  EXPECT_EQ(snapshot.transparentBatchCount,1u);
+  const auto raster=ProviderBackedMeshRasterExtractor{}.extract(snapshot);
+  EXPECT_EQ(raster.opaqueBatchCount,2u);
+  EXPECT_EQ(raster.transparentBatchCount,1u);
+}
+
+TEST_F(MeshBindingProviderTests, GroupsIdenticalInstancesWithoutMultiplyingGeometry) {
+  for(auto& object:objects) {object.temporalInfo.w=0;object.objectInfo={0,0,0,0};}
+  opaque={{.objectIndex=0,.firstIndex=0,.indexCount=6,.instanceCount=3}};
+  transparent.clear();
+  const auto asset=build();
+  EXPECT_EQ(asset.primitiveCount,2u);
+  EXPECT_EQ(asset.instanceCount,3u);
+  ASSERT_EQ(asset.triangleBatches.size(),1u);
+  EXPECT_EQ(asset.triangleBatches.front().indexCount,6u);
+  EXPECT_EQ(asset.triangleBatches.front().instanceCount,3u);
+}
+
+TEST_F(MeshBindingProviderTests, SplitsOneInstancedDrawByActualMaterial) {
+  objects[1].objectInfo={2,0,0,0};
+  objects[2].temporalInfo.w=0;
+  opaque={{.objectIndex=0,.firstIndex=0,.indexCount=6,.instanceCount=3}};
+  transparent.clear();
+  const auto asset=build();
+  ASSERT_EQ(asset.triangleBatches.size(),2u);
+  EXPECT_EQ(asset.triangleBatches[0].materialIndex,0);
+  EXPECT_EQ(asset.triangleBatches[0].instanceCount,2u);
+  EXPECT_EQ(asset.triangleBatches[1].materialIndex,2);
+  EXPECT_EQ(asset.triangleBatches[1].instanceCount,1u);
+}
+
+TEST_F(MeshBindingProviderTests, CacheSeesEqualCountBindingChangesWithoutMaterialRevisionChange) {
+  container::scene::MeshSceneProviderAssetCache cache;
+  const auto before=cache.get(input(),{.geometry=4,.materials=8,.instances=10},this);
+  objects[0].objectInfo.x=2;
+  const auto after=cache.get(input(),{.geometry=4,.materials=8,.instances=11},this);
+  EXPECT_NE(before.triangleBatches.data(),after.triangleBatches.data());
+  EXPECT_EQ(before.triangleBatches.front().materialIndex,0);
+  EXPECT_EQ(after.triangleBatches.view().back().materialIndex,0);
+  bool foundReplacement=false;
+  for(const auto& batch:after.triangleBatches) foundReplacement|=batch.materialIndex==2;
+  EXPECT_TRUE(foundReplacement);
+}
+
+TEST_F(MeshBindingProviderTests, PureTransformsReuseTopologyAndKeepRealInstanceCount) {
+  container::scene::MeshSceneProviderAssetCache cache;
+  const auto before=cache.get(input(),{.geometry=4,.materials=8,.instances=10},this);
+  objects[0].model[3].x=9;
+  objects[1].boundingSphere={1,2,3,4};
+  const auto after=cache.get(input(),{.geometry=4,.materials=8,.instances=11},this);
+  EXPECT_EQ(before.triangleBatches.data(),after.triangleBatches.data());
+  EXPECT_EQ(after.instanceCount,3u);
+}
+
+TEST_F(MeshBindingProviderTests, ClassificationUpdatesAndRetainedSnapshotsStayIndependent) {
+  container::scene::MeshSceneProviderAssetCache cache;
+  const auto before=cache.get(input(),{.geometry=4,.materials=8},this);
+  objects[1].objectInfo={0,0,0,0};
+  opaque.push_back(transparent.front()); transparent.clear();
+  const auto after=cache.get(input(),{.geometry=4,.materials=8},this);
+  ASSERT_EQ(after.triangleBatches.size(),2u);
+  EXPECT_EQ(after.triangleBatches.front().instanceCount,2u);
+  for(const auto& batch:after.triangleBatches) EXPECT_FALSE(batch.transparent);
+  EXPECT_TRUE(before.triangleBatches[1].transparent);
+}
+
+TEST_F(MeshBindingProviderTests, ExcludesOnlyWellFormedDiagnosticTail) {
+  container::gpu::ObjectData diagnostic;
+  diagnostic.temporalInfo.z=diagnostic.temporalInfo.w=UINT32_MAX;
+  diagnostic.objectInfo.x=2;
+  objects.push_back(diagnostic);
+  const auto asset=build();
+  EXPECT_EQ(asset.instanceCount,3u);
+  EXPECT_EQ(asset.triangleBatches.size(),3u);
+  objects.back().temporalInfo.z=1;
+  EXPECT_THROW(build(),std::invalid_argument);
+}
+
+TEST_F(MeshBindingProviderTests, RejectsDiagnosticDrawsAndNonTailInvalidPrimitives) {
+  auto diagnostic=objects.back();diagnostic.temporalInfo.z=diagnostic.temporalInfo.w=UINT32_MAX;
+  objects.push_back(diagnostic);
+  opaque.push_back({.objectIndex=3,.firstIndex=0,.indexCount=6});
+  EXPECT_THROW(build(),std::invalid_argument);
+  opaque.pop_back();objects[0]=diagnostic;
+  EXPECT_THROW(build(),std::invalid_argument);
+}
+
+TEST_F(MeshBindingProviderTests, RejectsMissingAndDuplicateObjectCoverage) {
+  const auto original=opaque;
+  opaque.pop_back();
+  EXPECT_THROW(build(),std::invalid_argument);
+  opaque=original;opaque[1]=opaque[0];
+  EXPECT_THROW(build(),std::invalid_argument);
+}
+
+TEST_F(MeshBindingProviderTests, RejectsInvalidPrimitiveAndMaterialIdentities) {
+  objects[0].temporalInfo.w=uint32_t(ranges.size());
+  EXPECT_THROW(build(),std::invalid_argument);
+  objects[0].temporalInfo.w=0;objects[0].objectInfo.x=3;
+  EXPECT_THROW(build(),std::invalid_argument);
+}
+
+TEST_F(MeshBindingProviderTests, RejectsInvalidTriangleAndInstanceRanges) {
+  const auto original=opaque[0];
+  opaque[0].firstIndex=7;EXPECT_THROW(build(),std::invalid_argument);
+  opaque[0]=original;opaque[0].indexCount=3;EXPECT_THROW(build(),std::invalid_argument);
+  opaque[0]=original;opaque[0].instanceCount=0;EXPECT_THROW(build(),std::invalid_argument);
+  opaque[0]=original;opaque[0].objectIndex=UINT32_MAX;EXPECT_THROW(build(),std::invalid_argument);
+  opaque[0]=original;opaque[0].instanceCount=UINT32_MAX;EXPECT_THROW(build(),std::invalid_argument);
+}
+
+TEST_F(MeshBindingProviderTests, RejectsAlphaAndSidednessDisagreement) {
+  objects[1].objectInfo.y=0;
+  EXPECT_THROW(build(),std::invalid_argument);
+  objects[1].objectInfo.y=container::gpu::kObjectFlagDoubleSided;
+  opaque.push_back(transparent.front());transparent.clear();
+  EXPECT_THROW(build(),std::invalid_argument);
+}
+
+TEST_F(MeshBindingProviderTests, FailurePreservesTheCurrentCacheAndHeldSnapshot) {
+  container::scene::MeshSceneProviderAssetCache cache;
+  const auto before=cache.get(input(),{.geometry=4,.materials=8},this);
+  const auto original=opaque[1];opaque[1]=opaque[0];
+  EXPECT_THROW(cache.get(input(),{.geometry=4,.materials=8},this),std::invalid_argument);
+  opaque[1]=original;
+  const auto after=cache.get(input(),{.geometry=4,.materials=8},this);
+  EXPECT_EQ(before.triangleBatches.data(),after.triangleBatches.data());
+  EXPECT_EQ(before.instanceCount,3u);
+}
+
+TEST_F(MeshBindingProviderTests, RequiresFiniteStorageAndTraversalLimitsBeforePublication) {
+  const auto original=limits;
+  limits.maxObjects=2;EXPECT_THROW(build(),std::invalid_argument);
+  limits=original;limits.maxDraws=2;EXPECT_THROW(build(),std::invalid_argument);
+  limits=original;limits.maxInstances=2;EXPECT_THROW(build(),std::invalid_argument);
+  limits=original;limits.maxOwnedBytes=1;EXPECT_THROW(build(),std::invalid_argument);
+  limits=original;limits.maxWork=2;EXPECT_THROW(build(),std::invalid_argument);
+  limits=original;limits.maxWork=UINT64_MAX;EXPECT_THROW(build(),std::invalid_argument);
+}
+
+TEST_F(MeshBindingProviderTests, CompleteEmptyBindingsDoNotInventRetainedGeometryInstances) {
+  objects.clear();opaque.clear();transparent.clear();
+  const auto asset=build();
+  EXPECT_EQ(asset.primitiveCount,2u);
+  EXPECT_EQ(asset.instanceCount,0u);
+  EXPECT_TRUE(asset.triangleBatches.empty());
+  SceneProviderSyncInput sync;
+  sync.mesh={.available=true,.primitiveCount=asset.primitiveCount,.materialCount=asset.materialCount,
+      .instanceCount=asset.instanceCount,.triangleBatches=asset.triangleBatches,
+      .triangleBatchesAuthoritative=asset.triangleBatchesAuthoritative};
+  SceneProviderSynchronizer synchronizer;SceneProviderRegistry registry;synchronizer.sync(registry,sync);
+  const auto snapshots=registry.snapshots();ASSERT_EQ(snapshots.size(),1u);
+  EXPECT_EQ(snapshots.front().opaqueBatchCount,0u);
+  EXPECT_EQ(snapshots.front().transparentBatchCount,0u);
+  const auto raster=ProviderBackedMeshRasterExtractor{}.extract(snapshots.front());
+  EXPECT_EQ(raster.opaqueBatchCount,0u);
+  const auto ray=ProviderBackedRayTracingSceneExtractor{}.extract(snapshots);
+  ASSERT_EQ(ray.size(),1u);EXPECT_EQ(ray.front().triangleGeometryCount,0u);
+  EXPECT_EQ(ray.front().instanceCount,0u);EXPECT_FALSE(ray.front().hasOpaqueGeometry);
+}
+
+TEST_F(MeshBindingProviderTests, TransparentOnlyBindingsDoNotClaimOpaqueGeometry) {
+  objects={objects[1]};
+  opaque.clear();transparent={{.objectIndex=0,.firstIndex=0,.indexCount=6}};
+  MeshSceneProvider provider{{"transparent"}};provider.update(build(),{});
+  const auto snapshot=provider.snapshot();
+  EXPECT_EQ(snapshot.opaqueBatchCount,0u);EXPECT_EQ(snapshot.transparentBatchCount,1u);
+  const auto ray=ProviderBackedRayTracingSceneExtractor{}.extract({snapshot});
+  ASSERT_EQ(ray.size(),1u);EXPECT_EQ(ray.front().triangleGeometryCount,1u);
+  EXPECT_FALSE(ray.front().hasOpaqueGeometry);
+}
+
+TEST_F(MeshBindingProviderTests, RetainsEmptyPrimitiveBindingsWithoutInventingTriangleBatches) {
+  objects={objects[0]};ranges[0].indexCount=0;
+  opaque={{.objectIndex=0,.firstIndex=0,.indexCount=0}};transparent.clear();
+  const auto asset=build();
+  EXPECT_EQ(asset.primitiveCount,2u);EXPECT_EQ(asset.instanceCount,1u);
+  EXPECT_TRUE(asset.triangleBatches.empty());EXPECT_TRUE(asset.triangleBatchesAuthoritative);
 }
 
 TEST(SceneProviderSynchronizerTests, SharesTopologyThroughRepeatedExtraction) {

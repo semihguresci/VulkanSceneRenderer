@@ -340,6 +340,12 @@ buildGraphicsPipelineHandleRegistry(const GraphicsPipelines &pipelines) {
                     "bim-curve-depth", pipelines.bimCurveDepth);
   registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
                     "bim-curve-no-depth", pipelines.bimCurveNoDepth);
+  // Forward's resolved transparency scope has the same single-sample color
+  // and depth/stencil formats as deferred lighting, including writable stencil.
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "selection-mask", pipelines.selectionMask);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "selection-outline", pipelines.selectionOutline);
   registerIfPresent(*registry, RenderTechniqueId::ForwardRaster, "post-process",
                     pipelines.postProcess);
   registerIfPresent(*registry, RenderTechniqueId::ForwardRaster, "light-gizmo",

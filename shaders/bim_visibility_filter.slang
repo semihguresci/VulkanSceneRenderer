@@ -20,7 +20,7 @@ struct BimVisibilityFilterPushConstants
     uint loadBearingId;
     uint statusId;
     uint selectedProductId;
-    uint roomVolumeTypeId;
+    uint pad0;
     uint pad1;
     uint pad2;
 };
@@ -36,7 +36,6 @@ static const uint BIM_VIS_FILTER_STATUS = 1u << 7u;
 static const uint BIM_VIS_FILTER_DRAW_BUDGET = 1u << 8u;
 static const uint BIM_VIS_FILTER_ISOLATE_SELECTION = 1u << 9u;
 static const uint BIM_VIS_FILTER_HIDE_SELECTION = 1u << 10u;
-static const uint BIM_VIS_FILTER_HIDE_ROOM_VOLUMES = 1u << 11u;
 
 [[vk::push_constant]]
 ConstantBuffer<BimVisibilityFilterPushConstants> pc;
@@ -69,8 +68,7 @@ void computeMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     }
 
     const BimVisibilityObjectMetadata metadata = uMetadata[objectIndex];
-    bool visible = !filterEnabled(BIM_VIS_FILTER_HIDE_ROOM_VOLUMES) ||
-                   metadata.semanticIds.x != pc.roomVolumeTypeId;
+    bool visible = true;
 
     if (filterEnabled(BIM_VIS_FILTER_TYPE))
     {

@@ -47,6 +47,9 @@ validation. Detailed local evidence is in `out/tekla-cpu-profile`.
 Remaining CPU, UI, import and rendering improvements are tracked in
 [renderer follow-ups](renderer-follow-ups.md).
 
-The next stage caches model statistics, provider topology/bounds and unchanged
+The subsequent stage caches model statistics, provider topology/bounds and unchanged
 filtered LOD totals. See [BIM frame caching](bim-frame-cache.md) for its lifetime
 contract, regressions and allocation benchmark.
+Expanded hierarchy rendering and BIM element searches are optimized separately;
+see [scene browser performance](scene-browser-performance.md) for measurements
+with over 10,000 entries.

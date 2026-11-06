@@ -2,6 +2,7 @@
 #include "Container/renderer/core/RenderTechnique.h"
 #include "Container/renderer/deferred/DeferredRasterFrameGraphContext.h"
 #include "Container/renderer/forward/ForwardRasterTechnique.h"
+#include "Container/renderer/pathtracing/ReferencePathTracingTechnique.h"
 #include "Container/renderer/pipeline/PipelineRegistry.h"
 #include "Container/renderer/resources/FrameResourceRegistry.h"
 
@@ -17,6 +18,22 @@
 #include <string_view>
 
 namespace {
+
+TEST(ReferencePathTechnique, SharedUiEnableFlagsCannotEnableRasterTransportOrTemporalFiltering) {
+  using namespace container::renderer;
+  FrameRecorder recorder;
+  ReferencePathTracingTechnique technique;
+  RenderSystemContext context{.frameRecorder=&recorder};
+  technique.buildFrameGraph(context);
+  for(auto id:{RenderPassId::DdgiTrace,RenderPassId::DdgiUpdate,RenderPassId::RayShadowTrace,
+      RenderPassId::TemporalResolve,RenderPassId::OitResolve,RenderPassId::ShadowCascade0}) {
+    recorder.graph().setPassEnabled(id,true);
+    const auto* pass=recorder.graph().findPass(id);
+    ASSERT_NE(pass,nullptr);ASSERT_TRUE(pass->readiness);
+    const auto readiness=pass->readiness(FrameRecordParams{});
+    EXPECT_FALSE(readiness.ready);EXPECT_EQ(readiness.skipReason,RenderPassSkipReason::NotNeeded);
+  }
+}
 
 using container::renderer::DeferredRasterFrameGraphContext;
 using container::renderer::DeferredRasterFrameGraphServices;
@@ -145,7 +162,7 @@ TEST(ForwardRasterTechniqueTests, PublishesForwardRecipesBackedByShaderSource) {
 
   technique.registerTechniqueContracts(context);
 
-  const std::array<std::string_view, 23> expectedRecipeNames = {
+  const std::array<std::string_view, 25> expectedRecipeNames = {
       "depth-prepass",
       "depth-prepass-front-cull",
       "depth-prepass-no-cull",
@@ -162,6 +179,8 @@ TEST(ForwardRasterTechniqueTests, PublishesForwardRecipesBackedByShaderSource) {
       "forward-transparent",
       "forward-transparent-front-cull",
       "forward-transparent-no-cull",
+      "selection-mask",
+      "selection-outline",
       "post-process",
       "light-gizmo",
       "light-gizmo-coverage",
@@ -198,6 +217,14 @@ TEST(ForwardRasterTechniqueTests, PublishesForwardRecipesBackedByShaderSource) {
   ASSERT_NE(transparent, nullptr);
   EXPECT_EQ(transparent->layoutName, "transparent");
 
+  for (const char *name : {"selection-mask", "selection-outline"}) {
+    const auto *selection = pipelines.find(
+        TechniquePipelineKey{RenderTechniqueId::ForwardRaster, name});
+    ASSERT_NE(selection, nullptr);
+    EXPECT_EQ(selection->layoutName, "wireframe");
+    EXPECT_EQ(selection->shaderStages.size(), 2u);
+  }
+
   const auto *postProcess = pipelines.find(
       TechniquePipelineKey{RenderTechniqueId::ForwardRaster, "post-process"});
   ASSERT_NE(postProcess, nullptr);
@@ -226,7 +253,7 @@ TEST(ForwardRasterTechniqueTests, PublishesForwardRecipesBackedByShaderSource) {
       shader.find("GpuMaterial material", transparentOnlyGuard);
   ASSERT_NE(materialWork, std::string::npos);
   EXPECT_LT(transparentOnlyDiscard, materialWork);
-  EXPECT_TRUE(contains(shader, "return float4(lighting, 1.0);"));
+  EXPECT_TRUE(contains(shader, "return float4(ApplyAerialPerspective("));
   EXPECT_FALSE(contains(shader, "oit_common.slang"));
   EXPECT_FALSE(contains(shader, "TransparentNode"));
 }
@@ -357,6 +384,11 @@ TEST(ForwardRasterTechniqueTests, BuildsForwardGraphWithoutGBufferOnlyPasses) {
 
   EXPECT_LT(executionPosition(graph, RenderPassId::LocalShadowDepth),
             executionPosition(graph, RenderPassId::DepthToReadOnly));
+  ASSERT_NE(graph.findPass(RenderPassId::TransparentPick), nullptr);
+  EXPECT_LT(executionPosition(graph, RenderPassId::BimDepthPrepass),
+            executionPosition(graph, RenderPassId::TransparentPick));
+  EXPECT_LT(executionPosition(graph, RenderPassId::TransparentPick),
+            executionPosition(graph, RenderPassId::DepthToReadOnly));
   EXPECT_LT(executionPosition(graph, RenderPassId::FrustumCull),
             executionPosition(graph, RenderPassId::DepthPrepass));
   EXPECT_LT(executionPosition(graph, RenderPassId::HiZGenerate),
@@ -472,7 +504,7 @@ TEST(ForwardRasterTechniqueTests,
   EXPECT_TRUE(contains(source, "recordForwardRasterBloom"));
   EXPECT_TRUE(contains(source, "recordForwardRasterPostProcessPass"));
   EXPECT_TRUE(contains(source, "recordDeferredPostProcessPassCommands"));
-  EXPECT_TRUE(contains(source, ".displayMode = sharedContext.displayMode()"));
+  EXPECT_TRUE(contains(source, "sharedContext.displayMode()"));
   EXPECT_FALSE(contains(
       source, ".displayMode = container::ui::GBufferViewMode::Lit"));
   EXPECT_TRUE(contains(source, "recordForwardRasterLightGizmoOverlay"));

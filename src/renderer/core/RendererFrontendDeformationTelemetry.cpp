@@ -41,6 +41,52 @@ const char* orientationName(GltfDeformationOrientation orientation) {
 }  // namespace
 
 void RendererFrontend::appendGltfDeformationTelemetry(nlohmann::json& json) const {
+  auto& sceneView=json["gltfScenes"];
+  sceneView={{"graphIdentity",sceneGraph_.identity()},
+      {"authoringNodeCount",sceneGraph_.nodeCount()},
+      {"activeRenderableCount",sceneGraph_.renderableNodes().size()},
+      {"selected",subs_.sceneManager?int64_t(subs_.sceneManager->selectedScene()):-1},
+      {"editHistoryDepth",sceneEdits_?sceneEdits_->size():0},
+      {"names",nlohmann::json::array()}, {"activeSourceNodes",nlohmann::json::array()}};
+  if(subs_.sceneManager) {
+    sceneView["pointLightCount"]=subs_.sceneManager->authoredPointLights().size();
+    sceneView["directionalLightCount"]=subs_.sceneManager->authoredDirectionalLights().size();
+    sceneView["areaLightCount"]=subs_.sceneManager->authoredAreaLights().size();
+  }
+  if(subs_.sceneManager) for(const auto& entry:subs_.sceneManager->sceneCatalog().entries)
+    sceneView["names"].push_back(entry.name);
+  for(uint32_t i=0;i<sceneGraph_.nodeCount();++i) {
+    const auto& node=*sceneGraph_.getNode(i);
+    if(sceneGraph_.isNodeActive(i) && node.sourceNodeIndex>=0)
+      sceneView["activeSourceNodes"].push_back(node.sourceNodeIndex);
+  }
+  const auto graphId = [](uint32_t id) -> int64_t {
+    return id == container::scene::SceneGraph::kInvalidNode ? -1 : int64_t(id);
+  };
+  auto& flags = json["gltfNodeFlags"];
+  flags = {{"nodes", nlohmann::json::array()}, {"probes", nlohmann::json::array()},
+           {"cameraSourceNodes", nlohmann::json::array()}, {"nodeCount", sceneGraph_.nodeCount()}};
+  constexpr uint32_t maxFlagTelemetryNodes = 4096;
+  flags["truncated"] = sceneGraph_.nodeCount() > maxFlagTelemetryNodes;
+  for (uint32_t id = 0; id < std::min<size_t>(sceneGraph_.nodeCount(), maxFlagTelemetryNodes); ++id) {
+    const auto& node = *sceneGraph_.getNode(id);
+    flags["nodes"].push_back({{"sourceIndex", node.sourceNodeIndex}, {"graphNode", id},
+        {"name", node.name}, {"parentGraphNode", graphId(node.parent)},
+        {"active", sceneGraph_.isNodeActive(id)},
+        {"localVisible", node.visible}, {"localSelectable", node.selectable}, {"localHoverable", node.hoverable},
+        {"retired", node.retired},
+        {"effectiveVisible", sceneGraph_.isNodeEffectivelyVisible(id)},
+        {"effectiveSelectable", sceneGraph_.isNodeEffectivelySelectable(id)},
+        {"effectiveHoverable", sceneGraph_.isNodeEffectivelyHoverable(id)}});
+    if (subs_.sceneManager && node.sourceNodeIndex >= 0 && sceneGraph_.isNodeActive(id)) {
+      const auto& source = subs_.sceneManager->animationSource();
+      if (size_t(node.sourceNodeIndex) < source.nodes.size()) {
+        const int camera = source.nodes[size_t(node.sourceNodeIndex)].camera;
+        if (camera >= 0 && size_t(camera) < source.cameras.size())
+          flags["cameraSourceNodes"].push_back(node.sourceNodeIndex);
+      }
+    }
+  }
   auto& deformation = json["gltfDeformation"];
   const auto* controller = subs_.sceneController.get();
   const auto* scene = controller ? controller->deformationScene() : nullptr;
@@ -61,6 +107,68 @@ void RendererFrontend::appendGltfDeformationTelemetry(nlohmann::json& json) cons
       {"maxPositionDelta", gltfDeformationMaxPositionDelta_},
       {"historyReset", gltfDeformationHistoryReset_},
       {"instances", nlohmann::json::array()}};
+  auto& instancing=json["gltfInstancing"];
+  instancing={{"drawCount",controller?controller->objectData().size():0},
+      {"sourceVertexCount",subs_.sceneManager?subs_.sceneManager->model().vertices().size():0},
+      {"sourceIndexCount",subs_.sceneManager?subs_.sceneManager->model().indices().size():0},
+      {"gpuBindVertexCount",controller?controller->gpuBindVertices().size():0},
+      {"instances",nlohmann::json::array()}};
+  if(controller && subs_.sceneManager) {
+    const auto& bounds=subs_.sceneManager->modelBounds();
+    instancing["modelBounds"]={{"valid",bounds.valid},{"min",vector(bounds.min)},
+        {"max",vector(bounds.max)},{"center",vector(bounds.center)},{"radius",bounds.radius}};
+    const auto points=controller->geometryVertices();
+    const auto triangles=controller->geometryIndices();
+    auto camera=buffers_.cameraData;
+    camera.viewProj=camera.unjitteredViewProj; camera.inverseViewProj=glm::inverse(camera.viewProj);
+    const auto extent=svc_.swapChainManager.extent();
+    const auto& ranges=subs_.sceneManager->model().primitiveRanges();
+    for(const auto id:sceneGraph_.renderableNodes()) {
+      const auto* node=sceneGraph_.getNode(id);
+      if(node->primitiveIndex>=ranges.size()) continue;
+      const auto* owner=sceneGraph_.getNode(node->meshOwnerGraphNode);
+      nlohmann::json item={{"graphNode",id},{"name",node->name},
+          {"sourceNode",owner?owner->sourceNodeIndex:-1},{"sourceMesh",node->sourceMeshIndex},
+          {"sourcePrimitive",node->sourcePrimitiveIndex},{"sourceInstance",node->sourceInstanceIndex},
+          {"primitiveIndex",node->primitiveIndex},{"visible",sceneGraph_.isNodeEffectivelyVisible(id)},
+          {"modelColumns",columns(node->worldTransform)}};
+      auto& probe=item["pick"]; probe={{"projected",false},{"expectedNode",id},{"hit",false}};
+      const auto* posed=scene?scene->drawRange(id):nullptr;
+      const auto first=posed?posed->firstIndex:ranges[node->primitiveIndex].firstIndex;
+      const auto count=posed?posed->indexCount:ranges[node->primitiveIndex].indexCount;
+      const auto normalMatrix=glm::transpose(glm::inverse(glm::mat3(node->worldTransform)));
+      for(size_t i=first;i+2<triangles.size() && i+2<size_t(first)+count;i+=3) {
+        const auto a=triangles[i],b=triangles[i+1],c=triangles[i+2];
+        if(a>=points.size()||b>=points.size()||c>=points.size()) continue;
+        const auto centroid=glm::vec3(node->worldTransform*glm::vec4((points[a].position+points[b].position+points[c].position)/3.f,1));
+        const auto normal=normalMatrix*(points[a].normal+points[b].normal+points[c].normal);
+        if(glm::dot(normal,glm::vec3(camera.cameraWorldPosition)-centroid)<=0) continue;
+        const auto clip=camera.viewProj*glm::vec4(centroid,1);
+        if(!(clip.w>0)) continue;
+        const auto ndc=glm::vec3(clip)/clip.w;
+        const glm::vec2 uv(ndc.x*.5f+.5f,.5f-ndc.y*.5f);
+        if(uv.x<.01f||uv.x>=.99f||uv.y<.01f||uv.y>=.99f||ndc.z<0||ndc.z>1) continue;
+        const double x=double(uv.x)*extent.width,y=double(uv.y)*extent.height;
+        const auto hit=controller->pickRenderableNodeHit(camera,extent,x,y);
+        probe={{"projected",true},{"expectedNode",id},{"pixel",{x,y}},{"hit",hit.hit},{"hitNode",hit.nodeIndex}};
+        break;
+      }
+      if (flags["probes"].size() < maxFlagTelemetryNodes) {
+        const uint32_t hit = probe.value("hit", false)
+            ? probe.value("hitNode", container::scene::SceneGraph::kInvalidNode)
+            : container::scene::SceneGraph::kInvalidNode;
+        const auto* hitOwner = sceneGraph_.getNode(node->meshOwnerGraphNode);
+        flags["probes"].push_back({{"graphNode", id},
+            {"sourceNodeIndex", hitOwner ? hitOwner->sourceNodeIndex : node->sourceNodeIndex},
+            {"sourceName", hitOwner ? hitOwner->name : node->name},
+            {"projected", probe.value("projected", false)}, {"hit", hit != container::scene::SceneGraph::kInvalidNode},
+            {"nearestHitGraphNode", graphId(hit)},
+            {"resolvedSelection", graphId(sceneGraph_.nearestSelectableAncestor(hit))},
+            {"resolvedHover", graphId(sceneGraph_.nearestHoverableAncestor(hit))}});
+      }
+      if (node->sourceInstanceIndex >= 0) instancing["instances"].push_back(std::move(item));
+    }
+  }
   if (!scene || !controller) return;
   const auto vertices = scene->currentVertices();
   const auto indices = scene->indices();

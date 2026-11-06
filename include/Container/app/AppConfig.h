@@ -1,7 +1,5 @@
 #pragma once
 
-#include "Container/renderer/effects/DisplayGrade.h"
-
 #include <array>
 #include <cctype>
 #include <cstddef>
@@ -9,13 +7,20 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <memory>
 
 #include "Container/app/GfxCapture.h"
 #include "Container/common/CommonVulkan.h"
+#include "Container/renderer/effects/DisplayGrade.h"
+#include "Container/renderer/effects/OpenVdbVolumeSettings.h"
 #include "Container/renderer/lighting/DdgiSettings.h"
+#include "Container/renderer/lighting/EnvironmentPresentation.h"
+#include "Container/renderer/lighting/SkySettings.h"
 #include "Container/renderer/lighting/DdgiVolumeFit.h"
 #include "Container/renderer/raytracing/RayShadowSettings.h"
 #include "Container/renderer/temporal/TemporalState.h"
+
+namespace container::geometry::vdb { struct ImportOptions; }
 
 namespace container::app {
 
@@ -44,14 +49,6 @@ inline constexpr bool kDefaultAuthoredLocalLightBloomEnabled = false;
 inline constexpr uint32_t kDefaultAuthoredLocalLightShadowLayerBudget = 24;
 
 struct AppConfig {
-  int gltfSceneIndex{-1};
-  int gltfAnimationClip{-1};
-  int gltfCameraNode{-1};
-  double gltfAnimationTime{};
-  double gltfAnimationSpeed{1.0};
-  bool gltfAnimationPlaying{true};
-  bool gltfAnimationLoop{true};
-
   container::capture::Config gfxrecon{};
   uint32_t windowWidth{800};
   uint32_t windowHeight{600};
@@ -71,6 +68,9 @@ struct AppConfig {
   bool ddgiFitScene{false};
   container::renderer::DdgiVolumeFitOptions ddgiFit{};
   bool enableGui{true};
+  bool gpuHierarchyTransforms{false};
+  uint32_t pathSamplesPerFrame{1},pathSampleLimit{65536},pathMaxBounces{8},pathSeed{1};
+  bool physicsDemo{false};
   bool windowVisible{true};
   uint32_t msaaSamples{1};
   uint32_t areaShadowQuality{2};
@@ -79,17 +79,53 @@ struct AppConfig {
   bool areaEmitterDebug{false};
   container::temporal::Settings taa{};
   uint32_t taaResetFrame{0};
-  uint32_t pathSamplesPerFrame{1},pathSampleLimit{65536},pathMaxBounces{8},pathSeed{1};
   std::string renderTechnique{"deferred-raster"};
   std::string displayModeOverride{};
   std::string modelPath{std::string(kDefaultModelRelativePath)};
   float importScale{1.0f};
   std::string bimModelPath{};
   float bimImportScale{1.0f};
+  std::string vdbVolumePath{};
+  std::vector<std::string> vdbAdditionalVolumePaths{};
+  std::string vdbSequenceDirectory{};
+  float vdbSequenceFps{24.0f};
+  float vdbSequenceSpeed{1.0f};
+  uint32_t vdbSequenceStartFrame{0};
+  uint32_t vdbSequenceCacheMiB{512};
+  bool vdbSequenceLoop{true};
+  bool vdbSequencePaused{false};
+  bool vdbSequenceAsync{false};
+  bool vdbSparse{false};
+  std::string vdbGridName{};
+  std::string vdbTemperatureGridName{};
+  uint32_t vdbVolumeResolution{128};
+  container::renderer::OpenVdbVolumeSettings vdbVolumeSettings{};
+  float vdbVolumeImportScale{1.0f};
+  // Immutable per-load scalar/standard-point or explicit vector/slice/native-
+  // point preview settings, shared safely with asynchronous model requests.
+  std::shared_ptr<const container::geometry::vdb::ImportOptions> vdbModelOptions;
   std::string screenshotCapturePath{};
-  std::string sceneExportPath{};
   bool screenshotViewportOnly{false};
+  // Export the initialized scene (or final capture-sequence scene) on exit.
+  std::string sceneExportPath{};
+  int gltfMaterialVariant{-1};
+  int gltfAnimationClip{-1};
+  int gltfCameraNode{-1};
+  int gltfSceneIndex{-1};
+  double gltfAnimationTime{0};
+  double gltfAnimationSpeed{1};
+  bool gltfAnimationPlaying{true};
+  bool gltfAnimationLoop{true};
   std::string temporalCaptureSequencePath{};
+  // Versioned ASL observation replay, rendered in image XY (nonmetric Z).
+  std::string aslPosePath{};
+  float aslPoseSpeed{1.0f};
+  uint32_t aslPoseStartMs{0};
+  bool aslPoseLoop{true};
+  bool aslHandKinematics{false};
+  float aslHandAspectRatio{1.0f};
+  float aslHandAngularVelocity{12.0f};
+  std::string aslHandReportPath{};
   uint32_t screenshotWarmupFrames{8};
   uint32_t screenshotCaptureFrame{9};
   float screenshotFixedTimestepSeconds{1.0f / 60.0f};
@@ -102,6 +138,10 @@ struct AppConfig {
   container::renderer::DisplayGrade displayGrade{};
   bool hasEnvironmentIntensityOverride{false};
   float environmentIntensity{1.0f};
+  std::string environmentPath;
+  container::renderer::EnvironmentPresentation environmentPresentation{};
+  container::renderer::SkySettings sky{};
+  bool useGltfSky{false};
   bool hasDirectionalIntensityOverride{false};
   float directionalIntensity{2.0f};
   bool hasDirectionalDirectionOverride{false};

@@ -5,6 +5,13 @@
 
 // Fully sampled terms shared by real probe-hit shading and GPU contracts.
 // Alpha/candidate acceptance and stochastic dielectric transport are separate.
+float ResolveDdgiScalarFactor(float factor, float4 texel,
+    GpuTextureTransform transform, uint channel)
+{
+    return saturate(ResolveMaterialScalarFactor(factor) *
+        SelectGpuTextureChannel(texel, transform, channel));
+}
+
 struct DdgiShadingMaterial
 {
     float3 albedo;
@@ -63,18 +70,13 @@ float3 EvaluateDdgiHitDirect(DdgiShadingMaterial material,
 {
     if (!any(DdgiDirectVisibilityNormal(material, geometricNormal, L) != 0.0.xxx))
         return 0.0.xxx;
-    // Preserve the existing diffuse-only probe response for ordinary hits.
+    // Deliberate baseline change: the old DDGI hit shader omitted specular.
+    // Evaluate full isotropic direct PBR at zero too, keeping the transition
+    // into the anisotropic lobe continuous rather than enabling specular at >0.
+    float3 albedo = material.albedo;
     if (!HasExtendedPbrEffect(material.extended))
-    {
-        float cosine = saturate(dot(material.normal, L));
-        if (cosine <= 0.0 || dot(material.normal, V) <= 0.0) return 0.0.xxx;
-        float3 H = SafeNormalize(V + L, material.normal);
-        float3 energy = (1.0.xxx - FresnelSchlick(saturate(dot(H, V)), material.f0)) *
-            (1.0 - material.metallic) * material.layerScale;
-        return max(Finite3Or(radiance, 0.0.xxx), 0.0.xxx) *
-            saturate(material.albedo) * energy * (cosine / PI);
-    }
-    return EvaluateExtendedPbrLayeredDirectLight(material.albedo, material.f0,
+        albedo *= 1.0 - material.extended.specularTransmissionFactor;
+    return EvaluateExtendedPbrLayeredDirectLight(albedo, material.f0,
         material.metallic, material.roughness, material.normal, V, L, radiance,
         material.clearcoat, material.clearcoatRoughness, material.sheenColor,
         material.sheenRoughness, material.extended);
@@ -85,8 +87,6 @@ float3 EvaluateDdgiDiffuseFeedback(DdgiShadingMaterial material, float3 V,
 {
     float3 energy = (1.0.xxx - FresnelSchlickRoughness(saturate(dot(material.normal, V)),
         material.f0, material.roughness)) * (1.0 - material.metallic) * material.layerScale;
-    if (!HasExtendedPbrEffect(material.extended))
-        return frontIrradiance * saturate(material.albedo) * energy * material.occlusion / PI;
     float residual = 1.0 - material.extended.specularTransmissionFactor;
     float frontWeight = residual * (1.0 - material.extended.diffuseTransmissionFactor);
     float backWeight = residual * material.extended.diffuseTransmissionFactor;

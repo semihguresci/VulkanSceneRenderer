@@ -6,7 +6,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <limits>
 #include <span>
 
 namespace container::renderer {
@@ -67,8 +66,7 @@ class GltfDeformationScene {
   // injective, and may leave procedural holes. Empty retains the source prefix.
   void configure(geometry::gltf::DeformationData data,
                    const geometry::Model& sourceGeometry,
-                   std::span<const uint32_t> sourceDeformationToRuntime = {},
-                   size_t maxExpandedVertices = std::numeric_limits<uint32_t>::max());
+                   std::span<const uint32_t> sourceDeformationToRuntime = {});
 
   // Graph world matrices must already be current. meshOwnerGraphNodes is
   // indexed by runtime graph-node index and contains the owning runtime mesh

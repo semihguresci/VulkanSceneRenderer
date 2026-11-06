@@ -1,5 +1,5 @@
-#include "Container/renderer/pipeline/RayEffectPipelines.h"
 #include "Container/renderer/lighting/DdgiManager.h"
+#include "Container/renderer/pipeline/RayEffectPipelines.h"
 #include "Container/renderer/lighting/DdgiAsyncHistory.h"
 #include "Container/renderer/lighting/DdgiVolumeScroll.h"
 #include "Container/renderer/lighting/DdgiVolumeSet.h"
@@ -9,13 +9,16 @@
 #include "Container/renderer/raytracing/RayShadowManager.h"
 #include "Container/utility/FileLoader.h"
 #include "Container/utility/VulkanDevice.h"
+#include "Container/utility/MaterialSamplerKey.h"
 #include "Container/utility/VulkanMemoryManager.h"
 #include <array>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 
 namespace container::renderer {
 namespace {
@@ -164,7 +167,6 @@ struct DdgiManager::Impl {
   uint32_t history = 0, cursor = 0;
   uint32_t contentEpoch = 0, refreshRemaining = 0;
   uint64_t revision = 0, frame = 0, resets = 0;
-  uint64_t lightSnapshotRevision = 0;
   std::string status{"DDGI disabled"};
   DdgiUpdateBatch batch{};
   vk::raii::DescriptorSetLayout layout{nullptr}, computeSetLayout{nullptr},
@@ -189,6 +191,7 @@ struct DdgiManager::Impl {
     TraceSceneData sceneData{};
   };
   std::vector<Slot> slots;
+  uint64_t lightSnapshotRevision = 0;
   std::array<std::unique_ptr<Image>, 2> irradiance, visibility;
   std::unique_ptr<Buffer> states, alternateStates, rays;
   std::vector<uint32_t> scrollMapping;
@@ -240,12 +243,16 @@ struct DdgiManager::Impl {
     // Trace uses scene/light/surface/compute: sampled images + UBOs + SSBOs +
     // storage images. The update-only layout needs fewer resources.
     constexpr uint32_t traceStageResources = 4099 + 5 + 13 + 2;
+    const auto materialSamplerCapacity = container::material::MaterialSamplerDescriptorCapacity(
+        limits.maxPerStageDescriptorSamplers, limits.maxDescriptorSetSamplers);
+    const auto readSamplers = materialSamplerCapacity + container::material::kReservedMaterialPipelineSamplers;
     readSupported = limits.maxBoundDescriptorSets >= 5 &&
                     limits.maxPerStageResources >= readStageResources &&
                     limits.maxPerStageDescriptorStorageBuffers >= 10 &&
                     limits.maxDescriptorSetStorageBuffers >= 10 &&
-                    limits.maxPerStageDescriptorSamplers >= 17 &&
-                    limits.maxDescriptorSetSamplers >= 17 &&
+                    materialSamplerCapacity > 0 &&
+                    limits.maxPerStageDescriptorSamplers >= readSamplers &&
+                    limits.maxDescriptorSetSamplers >= readSamplers &&
                     limits.maxPerStageDescriptorSampledImages >= 4115 &&
                     limits.maxDescriptorSetSampledImages >= 4115;
     support = device->rayQueriesEnabled() && rayScene.supported() &&
@@ -809,8 +816,8 @@ RayEffectPipelines DdgiManager::prepareShaderReload(const std::filesystem::path&
     return {};
   const auto& device = p.device->raii();
   const auto shaders = root / "spv_shaders";
-  return {loadRayEffectComputePipeline(device, shaders / "ddgi_trace.comp.spv", *p.traceLayout),
-          loadRayEffectComputePipeline(device, shaders / "ddgi_update.comp.spv", *p.updateLayout)};
+  return {root, loadRayEffectComputePipeline(device, shaders / "ddgi_trace.comp.spv", *p.traceLayout),
+                loadRayEffectComputePipeline(device, shaders / "ddgi_update.comp.spv", *p.updateLayout)};
 }
 
 void DdgiManager::publishShaderReload(RayEffectPipelines candidate) noexcept {
@@ -825,11 +832,11 @@ void DdgiManager::prepare(uint32_t imageCount, VkImageView environment,
   auto &p = *impl_;
   synchronizeAsync();
   const auto &vk = p.device->raii();
+  ++p.lightSnapshotRevision;
   p.asyncCommands.clear();
   p.asyncPool = vk::raii::CommandPool(nullptr);
   p.graphicsTimeline = vk::raii::Semaphore(nullptr);
   p.computeTimeline = vk::raii::Semaphore(nullptr);
-  ++p.lightSnapshotRevision;
   p.asyncHistory.reset(imageCount);
   p.asyncEnabled = p.settings.asyncCompute && p.device->asyncComputeQueue() &&
       p.device->enabledVulkan12Features().timelineSemaphore;
@@ -1134,6 +1141,13 @@ void DdgiManager::update(uint32_t image, VkDescriptorSet scene,
   auto globalLighting = lighting;
   globalLighting.pointLightCount = 0;
   globalLighting.areaLightCount = 0;
+  globalLighting.environmentOrientation.z = 0.0f;
+  globalLighting.environmentBackground = glm::vec4(0.0f);
+  globalLighting.environmentSunDirection = glm::vec4(0.0f);
+  globalLighting.environmentSunRadiance = glm::vec4(0.0f);
+  globalLighting.aerialGeometry = glm::vec4(0.0f);
+  globalLighting.aerialDensity = glm::vec4(0.0f);
+  globalLighting.atmosphereLut = {};
   uint64_t globalHash = hashValue(14695981039346656037ull, globalLighting);
   globalHash = hashValue(globalHash, environment);
   globalHash = hashValue(globalHash, envSampler);

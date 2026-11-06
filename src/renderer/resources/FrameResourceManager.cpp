@@ -82,6 +82,96 @@ FrameFramebufferBinding frameFramebufferBinding(RenderingTargetHandle framebuffe
 
 }  // namespace
 
+struct FrameResourceManager::PreparedAuxiliaryBindings::State {
+  struct Frame {
+    VkDescriptorSet set{VK_NULL_HANDLE};
+    std::array<VkDescriptorImageInfo,2> images{};
+  };
+  const FrameResourceManager* owner{};
+  std::shared_ptr<const uint8_t> identity;
+  uint64_t epoch{};
+  VkDescriptorPool pool{VK_NULL_HANDLE};
+  VkDescriptorSetLayout layout{VK_NULL_HANDLE};
+  bool anisotropyFallback{},diffuseFallback{};
+  std::vector<Frame> frames;
+};
+
+FrameResourceManager::PreparedAuxiliaryBindings::PreparedAuxiliaryBindings() noexcept=default;
+FrameResourceManager::PreparedAuxiliaryBindings::~PreparedAuxiliaryBindings()=default;
+FrameResourceManager::PreparedAuxiliaryBindings::PreparedAuxiliaryBindings(
+    PreparedAuxiliaryBindings&&) noexcept=default;
+FrameResourceManager::PreparedAuxiliaryBindings& FrameResourceManager::PreparedAuxiliaryBindings::operator=(
+    PreparedAuxiliaryBindings&&) noexcept=default;
+FrameResourceManager::PreparedAuxiliaryBindings::operator bool() const noexcept {
+  return state_ && state_->owner;
+}
+
+FrameResourceManager::PreparedAuxiliaryBindings FrameResourceManager::prepareAuxiliaryBindings(
+    std::span<const VkImageView> anisotropyViews,
+    std::span<const VkImageView> diffuseTransmissionViews) const {
+  if(!device_ || device_->device()==VK_NULL_HANDLE || !lightingPool_ || !lightingLayout_ ||
+      frames_.empty() || frames_.size()>64 || descriptorBindingEpoch_==UINT64_MAX)
+    throw std::invalid_argument("Auxiliary scene bindings require an initialized bounded frame table");
+  if((!anisotropyViews.empty() && anisotropyViews.size()!=frames_.size()) ||
+      (!diffuseTransmissionViews.empty() && diffuseTransmissionViews.size()!=frames_.size()))
+    throw std::invalid_argument("Auxiliary image views must be empty or cover every frame");
+  // Validate the complete table before copying any prepared rows.
+  for(size_t i=0;i<frames_.size();++i) {
+    if(!frames_[i].lightingDescriptorSet ||
+        !(anisotropyViews.empty()?frames_[i].normal.view:anisotropyViews[i]) ||
+        !(diffuseTransmissionViews.empty()?frames_[i].normal.view:diffuseTransmissionViews[i]))
+      throw std::invalid_argument("Auxiliary binding contains a null descriptor set or image view");
+  }
+  PreparedAuxiliaryBindings result;
+  result.state_=std::make_unique<PreparedAuxiliaryBindings::State>();
+  auto& state=*result.state_;
+  state.owner=this;state.identity=descriptorBindingOwner_;state.epoch=descriptorBindingEpoch_;
+  state.pool=lightingPool_;state.layout=lightingLayout_;
+  state.anisotropyFallback=anisotropyViews.empty();state.diffuseFallback=diffuseTransmissionViews.empty();
+  state.frames.reserve(frames_.size());
+  for(size_t i=0;i<frames_.size();++i) {
+    PreparedAuxiliaryBindings::State::Frame row;
+    row.set=frames_[i].lightingDescriptorSet;
+    row.images[0]={VK_NULL_HANDLE,anisotropyViews.empty()?frames_[i].normal.view:anisotropyViews[i],
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    row.images[1]={VK_NULL_HANDLE,diffuseTransmissionViews.empty()?frames_[i].normal.view:diffuseTransmissionViews[i],
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    state.frames.push_back(row);
+  }
+  return result;
+}
+
+bool FrameResourceManager::canPublishAuxiliaryBindings(const PreparedAuxiliaryBindings& value) const noexcept {
+  if(!value) return false;
+  const auto& state=*value.state_;
+  if(state.owner!=this || state.identity!=descriptorBindingOwner_ || state.epoch!=descriptorBindingEpoch_ ||
+      descriptorBindingEpoch_==UINT64_MAX || state.pool!=lightingPool_ || state.layout!=lightingLayout_ ||
+      state.frames.size()!=frames_.size()) return false;
+  for(size_t i=0;i<frames_.size();++i)
+    if(state.frames[i].set!=frames_[i].lightingDescriptorSet ||
+        (state.anisotropyFallback && state.frames[i].images[0].imageView!=frames_[i].normal.view) ||
+        (state.diffuseFallback && state.frames[i].images[1].imageView!=frames_[i].normal.view)) return false;
+  return true;
+}
+
+bool FrameResourceManager::publishAuxiliaryBindings(PreparedAuxiliaryBindings& value) noexcept {
+  if(!canPublishAuxiliaryBindings(value)) return false;
+  for(const auto& row:value.state_->frames) {
+    std::array<VkWriteDescriptorSet,2> writes{};
+    for(uint32_t i=0;i<writes.size();++i) {
+      auto& write=writes[i];write.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      write.dstSet=row.set;write.dstBinding=23+i;write.descriptorCount=1;
+      write.descriptorType=VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;write.pImageInfo=&row.images[i];
+    }
+    vkUpdateDescriptorSets(device_->device(),static_cast<uint32_t>(writes.size()),writes.data(),0,nullptr);
+  }
+  descriptorUpdateKeyValid_=false;
+  ++descriptorBindingEpoch_;
+  value.state_->owner=nullptr; // Keep prepared storage for destruction outside publication.
+  return true;
+}
+
+// -----------------------------------------------------------------------
 FrameResourceManager::FrameResourceManager(
     std::shared_ptr<container::gpu::VulkanDevice> device,
     container::gpu::AllocationManager&            allocationManager,
@@ -745,6 +835,7 @@ void FrameResourceManager::create(
 
 // -----------------------------------------------------------------------
 void FrameResourceManager::destroy() {
+  if(descriptorBindingEpoch_!=UINT64_MAX) ++descriptorBindingEpoch_;
   VkDevice dev = device_->device();
 
   for (auto& f : frames_) {
@@ -972,6 +1063,7 @@ void FrameResourceManager::updateDescriptorSets(
   if (descriptorUpdateKeyValid_ && nextKey == descriptorUpdateKey_) {
     return;
   }
+  if(descriptorBindingEpoch_!=UINT64_MAX) ++descriptorBindingEpoch_;
   descriptorUpdateKey_      = std::move(nextKey);
   descriptorUpdateKeyValid_ = true;
 

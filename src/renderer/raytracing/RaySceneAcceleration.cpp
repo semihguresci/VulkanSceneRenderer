@@ -1,4 +1,5 @@
 #include "Container/renderer/raytracing/RaySceneAcceleration.h"
+#include "Container/renderer/raytracing/RayInstanceTransformPass.h"
 
 #include <algorithm>
 #include <array>
@@ -136,6 +137,7 @@ struct RaySceneGeneration::Impl {
   std::unique_ptr<OwnedBuffer> instances;
   Structure top;
   RaySceneBuildStats stats;
+  RayInstanceTransformPass::Publication gpuTransforms;
 };
 RaySceneGeneration::RaySceneGeneration() : impl_(std::make_unique<Impl>()) {}
 RaySceneGeneration::~RaySceneGeneration() = default;
@@ -159,6 +161,8 @@ VkDeviceSize RaySceneGeneration::retainedAllocatedBytes(
       continue;
     const auto &state = *generation->impl_;
     add(state.instances);
+    const auto input=state.gpuTransforms.inputBuffer();
+    if(input.allocation && seen.insert(input.allocation).second) bytes+=input.allocation_info.size;
     add(state.top.storage);
     add(state.top.scratch);
     for (const auto &bottom : state.bottom) {
@@ -192,6 +196,12 @@ std::shared_ptr<const RaySceneGeneration> RaySceneAcceleration::recordBuild(
     throw std::runtime_error(
         "ray-query backend is disabled; use raster fallback");
   validateRayScene(input);
+  if(input.gpuTransforms) {
+    if(!input.gpuTransforms->producer) throw std::invalid_argument("GPU ray instance producer is missing");
+    if(input.gpuTransforms->producer->device()!=device_.device())
+      throw std::invalid_argument("GPU ray instance producer belongs to another device");
+    input.gpuTransforms->producer->validate(*input.gpuTransforms,input.instances);
+  }
   if (input.instances.size() > properties_.maxInstanceCount)
     throw std::invalid_argument("ray scene exceeds device instance limit");
   for (const auto &geometry : input.geometries)
@@ -280,7 +290,10 @@ std::shared_ptr<const RaySceneGeneration> RaySceneAcceleration::recordBuild(
   instances.reserve(input.instances.size());
   for (const auto &source : input.instances) {
     VkAccelerationStructureInstanceKHR instance{};
-    instance.transform = rayInstanceTransform(source.transform);
+    if(!input.gpuTransforms || source.gpuObjectIndex==UINT32_MAX)
+      instance.transform = rayInstanceTransform(source.transform);
+    else
+      ++state.stats.gpuInstanceCount;
     instance.instanceCustomIndex = source.customIndex;
     instance.mask = source.mask;
     instance.flags = rayInstanceFlags(source.doubleSided, source.flipFacing);
@@ -290,9 +303,14 @@ std::shared_ptr<const RaySceneGeneration> RaySceneAcceleration::recordBuild(
   }
   state.instances = std::make_unique<OwnedBuffer>(
       memory_, std::max<size_t>(instances.size(), 1) * sizeof(instances[0]),
-      inputUsage, true);
-  state.instances->write(instances.data(),
-                         instances.size() * sizeof(instances[0]));
+      inputUsage|(input.gpuTransforms?VK_BUFFER_USAGE_STORAGE_BUFFER_BIT:0), !input.gpuTransforms || instances.empty());
+  if(input.gpuTransforms && !instances.empty()) {
+    state.gpuTransforms=input.gpuTransforms->producer->record(*command,*input.gpuTransforms,input.instances,instances,
+        {state.instances->buffer.buffer,0,state.instances->size});
+    state.stats.gpuTransformUploadBytes=state.gpuTransforms.uploadedBytes();
+  } else {
+    state.instances->write(instances.data(),instances.size()*sizeof(instances[0]));
+  }
   vk::AccelerationStructureGeometryKHR geometry{};
   geometry.geometryType = vk::GeometryTypeKHR::eInstances;
   geometry.geometry.instances.sType =
@@ -308,11 +326,13 @@ std::shared_ptr<const RaySceneGeneration> RaySceneAcceleration::recordBuild(
   state.stats.instanceCount = static_cast<uint32_t>(instances.size());
   state.stats.accelerationBytes += state.top.storage->size;
   state.stats.inputBytes += state.instances->size;
+  state.stats.inputBytes += state.gpuTransforms.uploadedBytes();
   state.stats.scratchBytes += state.top.scratch->size;
   state.stats.accelerationAllocatedBytes =
       state.top.storage->buffer.allocation_info.size;
   state.stats.inputAllocatedBytes =
       state.instances->buffer.allocation_info.size;
+  state.stats.inputAllocatedBytes += state.gpuTransforms.inputBuffer().allocation_info.size;
   state.stats.scratchAllocatedBytes =
       state.top.scratch->buffer.allocation_info.size;
   for (const auto &bottom : state.bottom) {

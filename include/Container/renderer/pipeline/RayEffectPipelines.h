@@ -9,6 +9,7 @@ namespace container::renderer {
 // Detached pipelines use the owner's existing layout. Install only after the
 // graphics and asynchronous compute queues have retired their current work.
 struct RayEffectPipelines {
+  std::filesystem::path root;
   vk::raii::Pipeline trace{nullptr};
   vk::raii::Pipeline auxiliary{nullptr};
 };

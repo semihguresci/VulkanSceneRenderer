@@ -74,7 +74,6 @@ struct BimSectionCapBuildOptions {
   bool sectionMarkersEnabled{true};
   glm::vec3 sectionMarkerColor{0.95f, 0.62f, 0.12f};
   float sectionMarkerLineWidth{2.0f};
-  bool hideRoomVolumes{false};
 };
 
 bool appendBimSectionCapClipPlane(BimSectionCapBuildOptions& options,

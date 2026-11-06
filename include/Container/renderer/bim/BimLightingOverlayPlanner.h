@@ -1,4 +1,5 @@
 #pragma once
+#include "Container/renderer/debug/SelectionStrokeKernel.h"
 
 #include <array>
 #include <cstdint>
@@ -140,7 +141,7 @@ struct BimLightingSelectionOutlinePlan {
   const std::vector<DrawCommand> *commands{nullptr};
   glm::vec3 color{1.0f, 0.46f, 0.0f};
   float maskLineWidth{1.0f};
-  float outlineLineWidth{5.0f};
+  float outlineLineWidth{float(kSelectionStrokeRadius)};
   uint32_t framebufferWidth{1};
   uint32_t framebufferHeight{1};
 };

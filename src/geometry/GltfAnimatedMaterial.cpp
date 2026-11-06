@@ -164,3 +164,4 @@ void UpdateAnimatedMaterialProperties(const tinygltf::Material& source,
   }
 }
 } // namespace container::geometry::gltf
+

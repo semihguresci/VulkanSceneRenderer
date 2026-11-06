@@ -26,16 +26,18 @@ float4 RayTexture(uint index, float2 uv)
 {
     if (index == 0xffffffffu) return 1.0.xxxx;
     uint textureIndex = NonUniformResourceIndex(index);
-    uint samplerIndex = NonUniformResourceIndex(ResolveMaterialSamplerIndex(uTextureMetadata[textureIndex]));
+    uint samplerIndex = NonUniformResourceIndex(
+        ResolveMaterialSamplerIndex(uTextureMetadata[textureIndex]));
     // Inline traversal has no raster derivatives. Base mip preserves thin
     // cutouts; texture transforms, UV sets, opacity factors/channels are shared.
     return materialTextures[textureIndex].SampleLevel(materialSamplers[samplerIndex], uv, 0.0);
 }
 
-float TraceRayVisibility(float3 world, float3 normal, float3 direction, float distance)
+float TraceRayVisibility(float3 world, float3 normal, float3 direction, float distance,
+                         float receiverError)
 {
     float scale = max(max(abs(world.x), abs(world.y)), abs(world.z));
-    float bias = max(2e-5, scale * 2e-7);
+    float bias = max(2e-5, scale * 2e-7) + max(receiverError, 0.0);
     // Missing or discontinuous depth neighbours cannot provide a receiver
     // normal. Move along the visibility ray in that case; an invented normal
     // can move the origin behind a thin receiver and make it occlude itself.
@@ -82,8 +84,14 @@ float TraceRayVisibility(float3 world, float3 normal, float3 direction, float di
     return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 0.0 : 1.0;
 }
 
+float TraceRayVisibility(float3 world, float3 normal, float3 direction, float distance)
+{
+    // Interpolated fragment/hit positions retain the usual arithmetic bias.
+    return TraceRayVisibility(world, normal, direction, distance, 0.0);
+}
+
 float TraceAreaRayVisibility(AreaLightData light, float3 world, float3 normal,
-                            uint2 pixel, uint layer)
+                            uint2 pixel, uint layer, float receiverError)
 {
     if (!all(isfinite(light.colorIntensity)) || light.colorIntensity.a <= 0.0 ||
         !any(light.colorIntensity.rgb > 0.0.xxx))
@@ -108,9 +116,15 @@ float TraceAreaRayVisibility(AreaLightData light, float3 world, float3 normal,
         float weight = AreaLightPositionContributionWeight(light, frame, world, origin, 1.0, direction);
         if (weight > 0.0)
         {
-            sum += weight * TraceRayVisibility(world, normal, direction, length(origin - world));
+            sum += weight * TraceRayVisibility(world, normal, direction, length(origin - world), receiverError);
             weights += weight;
         }
     }
     return weights > 1e-8 ? sum / weights : 1.0;
+}
+
+float TraceAreaRayVisibility(AreaLightData light, float3 world, float3 normal,
+                            uint2 pixel, uint layer)
+{
+    return TraceAreaRayVisibility(light, world, normal, pixel, layer, 0.0);
 }

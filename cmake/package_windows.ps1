@@ -7,6 +7,7 @@ param(
     [Parameter(Mandatory = $true)][string]$RuntimeDirectory,
     [Parameter(Mandatory = $true)][string]$VcpkgInstalledDirectory,
     [Parameter(Mandatory = $true)][string]$TinyUsdzSourceDirectory,
+    [string]$OpenVdbInstalledDirectory = '',
     [string]$BuildDirectory = '',
     [string]$OutputDirectory = (Join-Path $PSScriptRoot '../out/packages')
 )
@@ -43,6 +44,20 @@ $cachePath = Join-Path $buildTreeDirectory 'CMakeCache.txt'
 if (-not (Test-Path -LiteralPath $cachePath -PathType Leaf)) {
     throw "Missing build cache: $cachePath"
 }
+$physicsOption = @(Select-String -LiteralPath $cachePath -Pattern '^ENABLE_PHYSICS:BOOL=(.*)$')
+if ($physicsOption.Count -ne 1) {
+    throw 'The build does not record ENABLE_PHYSICS. Reconfigure and rebuild before packaging.'
+}
+$physicsValue = $physicsOption[0].Matches[0].Groups[1].Value
+# CMake treats every value except its documented false constants as enabled;
+# values such as Y or 2 must not omit the notice from an enabled binary.
+$physicsEnabled = $physicsValue -notmatch '^(|0|OFF|NO|FALSE|N|IGNORE|NOTFOUND)$' -and
+    $physicsValue -notmatch '-NOTFOUND$'
+$joltLicense = Join-Path $buildTreeDirectory 'third_party_licenses/Jolt-MIT.txt'
+if ($physicsEnabled -and -not (Test-Path -LiteralPath $joltLicense -PathType Leaf)) {
+    throw "The physics-enabled build is missing its Jolt MIT notice: $joltLicense"
+}
+
 $gltfCompressionEnabled = @{}
 $gltfCompressionNotices = @{}
 foreach ($backend in @('DRACO', 'MESHOPT')) {
@@ -94,6 +109,59 @@ foreach ($backend in @('KTX', 'WEBP')) {
     }
 }
 
+$openVdbOption = @(Select-String -LiteralPath $cachePath -Pattern '^ENABLE_OPENVDB:BOOL=(.*)$')
+$openVdbEnabled = $false
+if ($openVdbOption.Count -eq 1) {
+    $openVdbValue = $openVdbOption[0].Matches[0].Groups[1].Value
+    $openVdbEnabled = $openVdbValue -notmatch '^(|0|OFF|NO|FALSE|N|IGNORE|NOTFOUND)$' -and
+        $openVdbValue -notmatch '-NOTFOUND$'
+}
+$openVdbDependencyDirectory = $dependencyDirectory
+$nanoVdbOption = @(Select-String -LiteralPath $cachePath -Pattern '^ENABLE_NANOVDB:BOOL=(.*)$')
+$nanoVdbEnabled = $openVdbEnabled -and $nanoVdbOption.Count -eq 1 -and
+    $nanoVdbOption[0].Matches[0].Groups[1].Value -notmatch '^(|0|OFF|NO|FALSE|N|IGNORE|NOTFOUND)$' -and
+    $nanoVdbOption[0].Matches[0].Groups[1].Value -notmatch '-NOTFOUND$'
+$nanoIoOption = @(Select-String -LiteralPath $cachePath -Pattern '^ENABLE_NANOVDB_IO:BOOL=(.*)$')
+$nanoIoEnabled = $nanoIoOption.Count -eq 1 -and
+    $nanoIoOption[0].Matches[0].Groups[1].Value -notmatch '^(|0|OFF|NO|FALSE|N|IGNORE|NOTFOUND)$' -and
+    $nanoIoOption[0].Matches[0].Groups[1].Value -notmatch '-NOTFOUND$'
+$nanoVdbEnabled = $nanoVdbEnabled -or $nanoIoEnabled
+$nanoCodecNotices = @()
+if ($nanoIoEnabled) {
+    if (Select-String -LiteralPath $cachePath -Pattern '^CONTAINER_NANOVDB_ZIP_ENABLED:INTERNAL=1$' -Quiet) {
+        $nanoCodecNotices += 'zlib'
+    }
+    if (Select-String -LiteralPath $cachePath -Pattern '^CONTAINER_NANOVDB_BLOSC_ENABLED:INTERNAL=1$' -Quiet) {
+        $nanoCodecNotices += 'blosc'
+    }
+}
+$nanoVdbLicense = $null
+if ($nanoVdbEnabled) {
+    $licenseEntry = @(Select-String -LiteralPath $cachePath -Pattern '^NANOVDB_LICENSE_FILE:FILEPATH=(.*)$')
+    if ($licenseEntry.Count -eq 1) { $nanoVdbLicense = $licenseEntry[0].Matches[0].Groups[1].Value }
+    if (-not $nanoVdbLicense -or -not (Test-Path -LiteralPath $nanoVdbLicense -PathType Leaf)) {
+        throw 'The NanoVDB-enabled build needs its upstream license. Configure NANOVDB_LICENSE_FILE before packaging.'
+    }
+}
+if ($OpenVdbInstalledDirectory) {
+    $openVdbDependencyDirectory = (Resolve-Path -LiteralPath (
+        Join-Path $OpenVdbInstalledDirectory 'x64-windows/share')).Path
+}
+if ($openVdbEnabled) {
+    foreach ($dependency in @('openvdb', 'tbb', 'blosc', 'imath', 'openexr')) {
+        $notice = Join-Path $openVdbDependencyDirectory "$dependency/copyright"
+        if (-not (Test-Path -LiteralPath $notice -PathType Leaf)) {
+            throw "The OpenVDB-enabled build is missing a dependency notice: $notice. Pass -OpenVdbInstalledDirectory when installed separately."
+        }
+    }
+}
+foreach ($dependency in $nanoCodecNotices) {
+    $notice = Join-Path $openVdbDependencyDirectory "$dependency/copyright"
+    if (-not (Test-Path -LiteralPath $notice -PathType Leaf)) {
+        throw "The native NanoVDB build is missing its codec notice: $notice. Pass -OpenVdbInstalledDirectory when providers are installed separately."
+    }
+}
+
 Push-Location $sourceDirectory
 try {
     $sourceCommit = (& git rev-parse HEAD).Trim()
@@ -107,7 +175,7 @@ try {
 }
 
 $requiredFiles = @(
-    'VulkanSceneRenderer.exe', 'fmt.dll', 'glfw3.dll',
+    'VulkanSceneRenderer.exe', 'OpenVdbTransportRender.exe', 'fmt.dll', 'glfw3.dll',
     'MaterialXCore.dll', 'MaterialXFormat.dll', 'miniz.dll',
     'spdlog.dll', 'vulkan-1.dll', 'manifold.dll', 'models/basic_cube.gltf',
     'models/basic_triangle.gltf',
@@ -121,6 +189,7 @@ $requiredFiles = @(
     'spv_shaders/temporal_velocity.frag.spv',
     'spv_shaders/temporal_compose.comp.spv',
     'spv_shaders/temporal_resolve.comp.spv',
+    'spv_shaders/openvdb_transport_reference.comp.spv',
     'spv_shaders/ray_shadow_trace.comp.spv',
     'spv_shaders/ray_shadow_filter.comp.spv',
     'spv_shaders/ddgi_trace.comp.spv',
@@ -136,7 +205,13 @@ $requiredFiles = @(
     'materials/ltc/LICENSE.txt',
     'hdr/citrus_orchard_road_puresky_4k.exr'
 )
-if ($gltfCompressionEnabled['DRACO']) { $requiredFiles += 'ContainerDracoWorker.exe' }
+if ($openVdbEnabled -or $nanoIoEnabled) {
+    $requiredFiles += 'OpenVdbTool.exe'
+    $requiredFiles += 'spv_shaders/openvdb_volume.comp.spv'
+}
+if ($gltfCompressionEnabled['DRACO']) {
+    $requiredFiles += 'ContainerDracoWorker.exe'
+}
 foreach ($relativePath in $requiredFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $runtimeDirectory $relativePath) -PathType Leaf)) {
         throw "Missing runtime file: $relativePath"
@@ -152,17 +227,13 @@ New-Item -ItemType Directory -Path $stagingDirectory | Out-Null
 foreach ($relativePath in ($requiredFiles | Where-Object { $_ -notmatch '/' })) {
     Copy-Item -LiteralPath (Join-Path $runtimeDirectory $relativePath) -Destination $stagingDirectory
 }
-foreach ($directory in @('spv_shaders', 'materials', 'hdr')) {
-    Copy-Item -LiteralPath (Join-Path $runtimeDirectory $directory) -Destination $stagingDirectory -Recurse
-}
-$modelsDirectory = New-Item -ItemType Directory -Path (Join-Path $stagingDirectory 'models')
-Copy-Item -LiteralPath (Join-Path $runtimeDirectory 'models/validation') -Destination $modelsDirectory.FullName -Recurse
-Get-ChildItem -LiteralPath (Join-Path $runtimeDirectory 'models') -File |
-    Where-Object { $_.Name -eq 'basic_cube.gltf' -or $_.Name -eq 'basic_triangle.gltf' -or $_.Name -like 'cube_*.png' } |
-    Copy-Item -Destination $modelsDirectory.FullName
 # Follow the actual PE imports of every shipped executable. A fixed DLL list
 # omits optional backends such as OpenVDB and their compression dependencies.
-$runtimeExecutables = @((Join-Path $runtimeDirectory 'VulkanSceneRenderer.exe'))
+$runtimeExecutables = @((Join-Path $runtimeDirectory 'VulkanSceneRenderer.exe'),
+    (Join-Path $runtimeDirectory 'OpenVdbTransportRender.exe'))
+if ($openVdbEnabled -or $nanoIoEnabled) {
+    $runtimeExecutables += Join-Path $runtimeDirectory 'OpenVdbTool.exe'
+}
 if ($gltfCompressionEnabled['DRACO']) {
     $runtimeExecutables += Join-Path $runtimeDirectory 'ContainerDracoWorker.exe'
 }
@@ -182,6 +253,14 @@ $runtimeStageArguments += @('-P', (Join-Path $PSScriptRoot 'StageWindowsPackageR
 if ($LASTEXITCODE -ne 0) {
     throw 'Cannot stage the complete package runtime dependency closure.'
 }
+foreach ($directory in @('spv_shaders', 'materials', 'hdr')) {
+    Copy-Item -LiteralPath (Join-Path $runtimeDirectory $directory) -Destination $stagingDirectory -Recurse
+}
+$modelsDirectory = New-Item -ItemType Directory -Path (Join-Path $stagingDirectory 'models')
+Copy-Item -LiteralPath (Join-Path $runtimeDirectory 'models/validation') -Destination $modelsDirectory.FullName -Recurse
+Get-ChildItem -LiteralPath (Join-Path $runtimeDirectory 'models') -File |
+    Where-Object { $_.Name -eq 'basic_cube.gltf' -or $_.Name -eq 'basic_triangle.gltf' -or $_.Name -like 'cube_*.png' } |
+    Copy-Item -Destination $modelsDirectory.FullName
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'LICENSE') -Destination $stagingDirectory
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/windows-package-quick-start.md') -Destination (Join-Path $stagingDirectory 'README.md')
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/third-party-notices.md') -Destination (Join-Path $stagingDirectory 'THIRD_PARTY_NOTICES.md')
@@ -190,6 +269,14 @@ foreach ($guide in @('gltf-texture-ingestion.md', 'texture-image-data.md', 'mate
 }
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/ltc-area-lighting.md') -Destination (Join-Path $stagingDirectory 'ltc-area-lighting.md')
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/ddgi-probe-foundation.md') -Destination (Join-Path $stagingDirectory 'ddgi-probe-foundation.md')
+Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/physics-integration.md') -Destination (Join-Path $stagingDirectory 'physics-integration.md')
+Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/physics-joints.md') -Destination (Join-Path $stagingDirectory 'physics-joints.md')
+Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/physics-scene-diversity.md') -Destination (Join-Path $stagingDirectory 'physics-scene-diversity.md')
+Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/physics-moving-supports.md') -Destination (Join-Path $stagingDirectory 'physics-moving-supports.md')
+Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/physics-scale-validation.md') -Destination (Join-Path $stagingDirectory 'physics-scale-validation.md')
+Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/physics-pending-edits.md') -Destination (Join-Path $stagingDirectory 'physics-pending-edits.md')
+Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/openvdb.md') -Destination (Join-Path $stagingDirectory 'openvdb.md')
+Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/openvdb-feature-status.md') -Destination (Join-Path $stagingDirectory 'openvdb-feature-status.md')
 $captureToolsDirectory = New-Item -ItemType Directory -Path (Join-Path $stagingDirectory 'tools')
 foreach ($captureTool in @('gfxreconstruct.py', 'gfxreconstruct.ps1')) {
     Copy-Item -LiteralPath (Join-Path $sourceDirectory "tools/$captureTool") -Destination $captureToolsDirectory.FullName
@@ -197,18 +284,36 @@ foreach ($captureTool in @('gfxreconstruct.py', 'gfxreconstruct.ps1')) {
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/gfxreconstruct.md') -Destination (Join-Path $stagingDirectory 'GFXRECONSTRUCT.md')
 
 $licensesDirectory = (New-Item -ItemType Directory -Path (Join-Path $stagingDirectory 'THIRD_PARTY_LICENSES')).FullName
-foreach ($package in @('entt', 'fmt', 'glfw3', 'glm', 'imgui', 'MaterialX', 'mikktspace',
-        'miniz', 'nlohmann-json', 'shader-slang', 'spdlog', 'stb', 'tinyexr', 'tinygltf',
-        'vulkan', 'vulkan-headers', 'vulkan-loader', 'vulkan-memory-allocator')) {
-    Copy-Item -LiteralPath (Join-Path $dependencyDirectory "$package/copyright") -Destination (Join-Path $licensesDirectory "$package.txt")
-}
+Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/tone-curves-Apache-2.0.txt') -Destination (Join-Path $licensesDirectory 'ToneCurves-Apache-2.0.txt')
 foreach ($noticeName in $gltfCompressionNotices.Keys) {
     Copy-Item -LiteralPath $gltfCompressionNotices[$noticeName] -Destination (Join-Path $licensesDirectory $noticeName)
 }
 foreach ($noticeName in $textureCodecNotices.Keys) {
     Copy-Item -LiteralPath $textureCodecNotices[$noticeName] -Destination (Join-Path $licensesDirectory $noticeName) -Recurse
 }
-Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/tone-curves-Apache-2.0.txt') -Destination (Join-Path $licensesDirectory 'ToneCurves-Apache-2.0.txt')
+if ($nanoVdbEnabled) {
+    Copy-Item -LiteralPath $nanoVdbLicense -Destination (Join-Path $licensesDirectory 'NanoVDB-Apache-2.0.txt')
+}
+if ($physicsEnabled) {
+    Copy-Item -LiteralPath $joltLicense -Destination (Join-Path $licensesDirectory 'Jolt-MIT.txt')
+}
+if ($openVdbEnabled -or $nanoCodecNotices.Count -gt 0) {
+    # Preserve the notices of all transitive vcpkg dependencies, including the
+    # Boost and compression components selected by the installed OpenVDB port.
+    Get-ChildItem -LiteralPath $openVdbDependencyDirectory -Directory |
+        ForEach-Object {
+            $notice = Join-Path $_.FullName 'copyright'
+            if (Test-Path -LiteralPath $notice -PathType Leaf) {
+                Copy-Item -LiteralPath $notice -Destination (
+                    Join-Path $licensesDirectory "openvdb-dependency-$($_.Name).txt")
+            }
+        }
+}
+foreach ($package in @('entt', 'fmt', 'glfw3', 'glm', 'imgui', 'MaterialX', 'mikktspace',
+        'miniz', 'nlohmann-json', 'shader-slang', 'spdlog', 'stb', 'tinyexr', 'tinygltf',
+        'vulkan', 'vulkan-headers', 'vulkan-loader', 'vulkan-memory-allocator')) {
+    Copy-Item -LiteralPath (Join-Path $dependencyDirectory "$package/copyright") -Destination (Join-Path $licensesDirectory "$package.txt")
+}
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'cmake/licenses/Apache-2.0.txt') -Destination $licensesDirectory
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'cmake/licenses/Boost-1.0.txt') -Destination $licensesDirectory
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'cmake/licenses/Earcut-ISC.txt') -Destination $licensesDirectory
@@ -247,6 +352,8 @@ $runtimeDlls = @(Get-ChildItem -LiteralPath $stagingDirectory -Filter '*.dll' -F
 $ltcAssets = @(Get-ChildItem -LiteralPath (Join-Path $stagingDirectory 'materials/ltc') -File)
 $hashedRuntimeFiles = @(
     Get-Item -LiteralPath (Join-Path $stagingDirectory 'VulkanSceneRenderer.exe')
+    Get-Item -LiteralPath (Join-Path $stagingDirectory 'OpenVdbTransportRender.exe')
+    if ($openVdbEnabled -or $nanoIoEnabled) { Get-Item -LiteralPath (Join-Path $stagingDirectory 'OpenVdbTool.exe') }
     if ($gltfCompressionEnabled['DRACO']) { Get-Item -LiteralPath (Join-Path $stagingDirectory 'ContainerDracoWorker.exe') }
     $runtimeDlls
     Get-ChildItem -LiteralPath (Join-Path $stagingDirectory 'spv_shaders') -Filter '*.spv' -File
@@ -266,10 +373,15 @@ foreach ($file in ($hashedRuntimeFiles | Sort-Object FullName)) {
     configuration = 'Release'
     vulkan_api = '1.4'
     shader_format = 'SPIR-V 1.6'
+    physics_enabled = $physicsEnabled
+    physics_engine = $(if ($physicsEnabled) { 'Jolt 5.6.0' } else { 'disabled' })
     gltf_draco_enabled = $gltfCompressionEnabled['DRACO']
     gltf_meshopt_enabled = $gltfCompressionEnabled['MESHOPT']
     texture_ktx_enabled = $textureCodecsEnabled['KTX']
     texture_webp_enabled = $textureCodecsEnabled['WEBP']
+    openvdb_enabled = $openVdbEnabled
+    nanovdb_enabled = $nanoVdbEnabled
+    nanovdb_io_enabled = $nanoIoEnabled
     compiled_shader_count = $shaders.Count
     runtime_dll_count = $runtimeDlls.Count
     ltc_asset_file_count = $ltcAssets.Count

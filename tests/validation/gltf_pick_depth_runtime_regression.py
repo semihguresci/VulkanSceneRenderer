@@ -9,14 +9,7 @@ import subprocess
 import numpy as np
 
 from gltf_accessor_runtime_regression import Asset, require
-import re
-
-def validation_log_error(text):
-    # Newer validation-layer builds also print synchronization errors without
-    # the legacy SYNC-HAZARD prefix or the words "Validation Error".
-    return bool(re.search(r'VUID-|SYNC-HAZARD|Validation Error|\bhazard detected\b|'
-        r'\b(?:READ|WRITE)_AFTER_(?:READ|WRITE)\b[^\r\n]*\bhazard\b', text, re.I))
-
+from gltf_extended_materials_runtime_regression import validation_log_error
 
 
 def write_scene(path):

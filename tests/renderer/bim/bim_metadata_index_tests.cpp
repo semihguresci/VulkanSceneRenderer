@@ -54,4 +54,30 @@ TEST(BimMetadataIndexTests, IgnoresInvalidAndEmptyIdentities) {
   EXPECT_TRUE(index.objectIndicesForSourceId("").empty());
 }
 
+TEST(BimMetadataIndexTests, ResolvesCompactStorageAndOwnsIdentityKeys) {
+  container::renderer::BimMetadataStorage storage;
+  BimElementMetadata first{};
+  first.objectIndex = 3u;
+  first.guid = std::string("guid\0a", 6u);
+  first.sourceId = "shared-source";
+  storage.push_back(first);
+  first.objectIndex = 7u;
+  storage.push_back(first);
+  storage.seal();
+
+  BimMetadataIndex index;
+  for (const auto element : storage.view()) {
+    index.index(element);
+  }
+  storage.clear();
+
+  const auto guidMatches = index.objectIndicesForGuid(
+      std::string_view("guid\0a", 6u));
+  ASSERT_EQ(guidMatches.size(), 2u);
+  EXPECT_EQ(guidMatches[0], 3u);
+  EXPECT_EQ(guidMatches[1], 7u);
+  EXPECT_TRUE(index.objectIndicesForGuid("guid").empty());
+  EXPECT_EQ(index.objectIndicesForSourceId("shared-source").size(), 2u);
+}
+
 } // namespace

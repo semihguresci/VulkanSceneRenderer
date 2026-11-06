@@ -1,19 +1,24 @@
 #include "Container/utility/GuiManager.h"
-#include "Container/utility/TransformScale.h"
-#include "Container/renderer/effects/DisplayGradePreset.h"
+#include "Container/utility/OpenVdbAuthoring.h"
 
+#include "Container/geometry/OpenVdbLoader.h"
+#include "Container/geometry/GltfMergePlacement.h"
 #include "Container/renderer/bim/BimCoordinationOverlay.h"
 #include "Container/renderer/bim/BimManager.h"
 #include "Container/renderer/bim/BimMeasurementSnapping.h"
 #include "Container/renderer/bim/BimSemanticColorMode.h"
 #include "Container/renderer/core/RenderTechnique.h"
 #include "Container/renderer/core/RendererTelemetry.h"
+#include "Container/renderer/effects/DisplayGradePreset.h"
+#include "Container/renderer/lighting/SkyPreset.h"
 #include "Container/renderer/scene/ScenePrimitives.h"
 #include "Container/utility/BcfViewpoint.h"
+#include "Container/utility/TransformScale.h"
 
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
+#include <imgui_internal.h>
 #include <imgui_stdlib.h>
 
 #include <algorithm>
@@ -32,6 +37,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -40,6 +46,7 @@
 #include "Container/common/CommonMath.h"
 #include "Container/utility/Platform.h"
 #include "Container/utility/SceneGraph.h"
+#include "Container/utility/SceneNodeAuthoringPolicy.h"
 
 namespace container::ui {
 
@@ -119,10 +126,11 @@ constexpr std::array<KnownSampleAsset, 4> kKnownAuxiliarySampleAssets = {{
      "ReferenceView_V1.2/tessellated-item.ifc"},
 }};
 
-constexpr std::array<KnownSampleDirectory, 2> kKnownAuxiliarySampleDirectories =
+constexpr std::array<KnownSampleDirectory, 3> kKnownAuxiliarySampleDirectories =
     {{
         {"IFC5", "models/buildingSMART-IFC5-development/examples"},
         {"IFC", "models/buildingSMART-Sample-Test-Files"},
+        {"OpenVDB", "models/OpenVDB"},
     }};
 
 std::string ToLowerAscii(std::string value) {
@@ -239,6 +247,25 @@ void ShowItemTooltip(std::string_view text, ImGuiHoveredFlags flags = 0) {
   }
 }
 
+std::string SingleLineDisplayText(std::string_view text) {
+  std::string result(text);
+  for (char &character : result)
+    if (character == '\r' || character == '\n' || character == '\t')
+      character = ' ';
+  return result;
+}
+
+void DrawSingleLineBimText(std::string_view text) {
+  if (text.find_first_of("\r\n\t") == std::string_view::npos) {
+    const char *begin = text.empty() ? "" : text.data();
+    ImGui::TextUnformatted(begin, begin + text.size());
+  } else {
+    const auto display = SingleLineDisplayText(text);
+    ImGui::TextUnformatted(display.c_str());
+  }
+  ShowItemTooltip(text);
+}
+
 void TextWrappedPathValue(std::string_view label, std::string_view value) {
   const std::string wrappedValue = WrapLongPathForImGui(value);
   if (label.empty()) {
@@ -262,6 +289,9 @@ std::string SceneHierarchyNodeName(
   if (node->primitiveIndex != container::scene::SceneGraph::kInvalidNode) {
     label += " / Primitive " + std::to_string(node->primitiveIndex);
   }
+  for (char &character : label)
+    if (character == '\r' || character == '\n' || character == '\t')
+      character = ' ';
   return label;
 }
 
@@ -317,7 +347,9 @@ void RefreshSceneHierarchyParentCandidateCache(
     const container::scene::SceneGraph &sceneGraph, uint32_t nodeIndex,
     uint32_t currentParent,
     SceneHierarchyParentCandidateCacheState &candidateCache) {
-  if (candidateCache.revision == sceneGraph.revision() &&
+  if (candidateCache.source == &sceneGraph &&
+      candidateCache.identity == sceneGraph.identity() &&
+      candidateCache.revision == sceneGraph.hierarchyRevision() &&
       candidateCache.nodeCount == sceneGraph.nodeCount() &&
       candidateCache.rootCount == sceneGraph.rootNodes().size() &&
       candidateCache.nodeIndex == nodeIndex &&
@@ -325,17 +357,22 @@ void RefreshSceneHierarchyParentCandidateCache(
     return;
   }
 
-  candidateCache.revision = sceneGraph.revision();
+  candidateCache.source = &sceneGraph;
+  candidateCache.identity = sceneGraph.identity();
+  candidateCache.revision = sceneGraph.hierarchyRevision();
   candidateCache.nodeCount = sceneGraph.nodeCount();
   candidateCache.rootCount = sceneGraph.rootNodes().size();
   candidateCache.nodeIndex = nodeIndex;
   candidateCache.currentParent = currentParent;
   candidateCache.rows.clear();
+  candidateCache.selectedRow =
+      currentParent == container::scene::SceneGraph::kInvalidNode
+          ? std::optional<size_t>{0u}
+          : std::nullopt;
   candidateCache.rows.push_back(SceneHierarchyParentCandidateRow{
       .parent = std::nullopt,
       .label = "None",
-      .selected =
-          currentParent == container::scene::SceneGraph::kInvalidNode});
+      .selected = currentParent == container::scene::SceneGraph::kInvalidNode});
 
   const std::vector<uint32_t> descendants =
       SceneHierarchyDescendants(sceneGraph, nodeIndex);
@@ -346,15 +383,15 @@ void RefreshSceneHierarchyParentCandidateCache(
   for (size_t candidateIndex = 0u; candidateIndex < candidateLimit;
        ++candidateIndex) {
     const uint32_t candidate = static_cast<uint32_t>(candidateIndex);
-    if (candidate == nodeIndex ||
-        SceneHierarchyContainsNode(descendants, candidate) ||
-        !sceneGraph.isNodeActive(candidate) ||
-        !sceneGraph.compatibleSceneParent(nodeIndex, candidate)) {
+    if (sceneGraph.isNodeRetired(candidate) || candidate == nodeIndex ||
+        SceneHierarchyContainsNode(descendants, candidate)) {
       continue;
     }
     if (sceneGraph.getNode(candidate) == nullptr) {
       continue;
     }
+    if (currentParent == candidate)
+      candidateCache.selectedRow = candidateCache.rows.size();
     candidateCache.rows.push_back(SceneHierarchyParentCandidateRow{
         .parent = candidate,
         .label = SceneHierarchyNodeName(sceneGraph, candidate),
@@ -367,23 +404,31 @@ struct SceneHierarchyPanelActions {
   uint32_t selectedMeshNode{container::scene::SceneGraph::kInvalidNode};
   const std::function<void(uint32_t)> *selectSceneNode{nullptr};
   const std::function<void(uint32_t)> *focusSceneNode{nullptr};
-  const std::function<void(uint32_t, container::scene::NodeFlag, bool)> *setSceneNodeFlag{nullptr};
+  const std::function<void(uint32_t, bool)> *setSceneNodeVisible{nullptr};
   const std::function<void(uint32_t, std::optional<uint32_t>)>
       *reparentSceneNode{nullptr};
+  const std::function<void(uint32_t, bool)> *setSceneNodeSelectable{nullptr};
+  const std::function<void(uint32_t, bool)> *setSceneNodeHoverable{nullptr};
+  const std::function<void(uint32_t, SceneNodeAuthoringAction)>
+      *authorSceneNode{nullptr};
+  SceneNodeInlineRenameUiState* inlineRename{nullptr};
+  const std::function<void(uint32_t)>* beginInlineRename{nullptr};
+  const std::function<void()>* commitInlineRename{nullptr};
+  const std::function<void()>* cancelInlineRename{nullptr};
 };
+
+void CancelInlineSceneRename(SceneNodeInlineRenameUiState& edit) {
+  if (auto* context = ImGui::GetCurrentContext();
+      context && edit.inputId && context->ActiveId == edit.inputId)
+    ImGui::ClearActiveID();
+  edit = {};
+}
 
 struct SceneHierarchyParentChange {
   bool requested{false};
   uint32_t nodeIndex{container::scene::SceneGraph::kInvalidNode};
   std::optional<uint32_t> parent{};
 };
-
-void DrawSceneHierarchyNode(const container::scene::SceneGraph &sceneGraph,
-                            uint32_t nodeIndex,
-                            const SceneHierarchyPanelActions &actions,
-                            SceneHierarchyParentChange &parentChange,
-                            SceneHierarchyParentCandidateCacheState
-                                &candidateCache);
 
 SceneHierarchyParentChange DrawSceneHierarchyParentCombo(
     const container::scene::SceneGraph &sceneGraph, uint32_t nodeIndex,
@@ -401,15 +446,18 @@ SceneHierarchyParentChange DrawSceneHierarchyParentCombo(
       currentParent == container::scene::SceneGraph::kInvalidNode
           ? "None"
           : SceneHierarchyNodeName(sceneGraph, currentParent);
-  const std::string parentComboId =
-      "##SceneHierarchyParent" + std::to_string(nodeIndex);
-  if (ImGui::BeginCombo(parentComboId.c_str(), parentPreview.c_str())) {
+  if (ImGui::BeginCombo("##SceneHierarchyParent", parentPreview.c_str())) {
+    candidateCache.popupOpen = true;
     RefreshSceneHierarchyParentCandidateCache(sceneGraph, nodeIndex,
                                               currentParent, candidateCache);
     ImGuiListClipper clipper;
     clipper.Begin(static_cast<int>(std::min<size_t>(
-        candidateCache.rows.size(), static_cast<size_t>(
-                                       std::numeric_limits<int>::max()))));
+        candidateCache.rows.size(),
+        static_cast<size_t>(std::numeric_limits<int>::max()))));
+    if (ImGui::IsWindowAppearing() && candidateCache.selectedRow &&
+        *candidateCache.selectedRow <
+            static_cast<size_t>(std::numeric_limits<int>::max()))
+      clipper.IncludeItemByIndex(static_cast<int>(*candidateCache.selectedRow));
     while (clipper.Step() && !change.requested) {
       for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
         const auto &candidate = candidateCache.rows[static_cast<size_t>(row)];
@@ -425,6 +473,10 @@ SceneHierarchyParentChange DrawSceneHierarchyParentCombo(
         if (candidate.selected) {
           ImGui::SetItemDefaultFocus();
         }
+        if (candidate.parent) {
+          if (const auto *parent = sceneGraph.getNode(*candidate.parent))
+            ShowItemTooltip(parent->name);
+        }
       }
     }
     ImGui::EndCombo();
@@ -436,97 +488,167 @@ SceneHierarchyParentChange DrawSceneHierarchyParentCombo(
   return change;
 }
 
-void DrawSceneHierarchyNode(const container::scene::SceneGraph &sceneGraph,
-                            uint32_t nodeIndex,
-                            const SceneHierarchyPanelActions &actions,
-                            SceneHierarchyParentChange &parentChange,
-                            SceneHierarchyParentCandidateCacheState
-                                &candidateCache) {
+void DrawSceneHierarchyRow(
+    const container::scene::SceneGraph &sceneGraph,
+    const SceneHierarchyRow &row, float rowHeight,
+    const SceneHierarchyPanelActions &actions,
+    SceneHierarchyParentChange &parentChange,
+    SceneHierarchyParentCandidateCacheState &candidateCache,
+    SceneHierarchyCache &hierarchyCache) {
+  const uint32_t nodeIndex = row.nodeIndex;
   const auto *node = sceneGraph.getNode(nodeIndex);
-  if (!node || !sceneGraph.isNodeActive(nodeIndex)) {
+  if (node == nullptr || node->retired) {
     return;
   }
 
-  ImGui::TableNextRow();
+  ImGui::PushID(static_cast<int>(nodeIndex));
+  ImGui::TableNextRow(ImGuiTableRowFlags_None, rowHeight);
   ImGui::TableNextColumn();
+  const bool editing = actions.inlineRename && actions.inlineRename->active &&
+                       actions.inlineRename->node == nodeIndex;
   ImGuiTreeNodeFlags flags =
-      ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanFullWidth;
-  if (node->children.empty()) {
-    flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-  }
+      ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanFullWidth |
+      ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_FramePadding;
+  if (editing) flags &= ~ImGuiTreeNodeFlags_SpanFullWidth;
+  if (!row.hasChildren)
+    flags |= ImGuiTreeNodeFlags_Leaf;
   if (nodeIndex == actions.selectedMeshNode) {
     flags |= ImGuiTreeNodeFlags_Selected;
   }
 
-  const std::string label = SceneHierarchyNodeName(sceneGraph, nodeIndex) +
-                            "##SceneHierarchyNode" +
-                            std::to_string(nodeIndex);
-  const bool open = ImGui::TreeNodeEx(label.c_str(), flags);
+  const float indent =
+      static_cast<float>(row.depth) * ImGui::GetStyle().IndentSpacing;
+  if (indent > 0.0f)
+    ImGui::Indent(indent);
+  ImGui::SetNextItemOpen(row.expanded, ImGuiCond_Always);
+  const bool open =
+      ImGui::TreeNodeEx("##SceneHierarchyNode", flags, "%s", editing ? "" : row.label.c_str());
+  if (row.hasChildren && open != row.expanded)
+    hierarchyCache.setExpanded(nodeIndex, open);
   if (ImGui::IsItemClicked(ImGuiMouseButton_Left) &&
       !ImGui::IsItemToggledOpen() && actions.selectSceneNode != nullptr) {
     (*actions.selectSceneNode)(nodeIndex);
   }
+  if (actions.authorSceneNode && ImGui::BeginPopupContextItem("Node actions")) {
+    if (actions.beginInlineRename && ImGui::MenuItem("Rename inline", "F2"))
+      (*actions.beginInlineRename)(nodeIndex);
+    if (ImGui::MenuItem("Rename..."))
+      (*actions.authorSceneNode)(nodeIndex, SceneNodeAuthoringAction::Rename);
+    if (ImGui::MenuItem("Add empty child..."))
+      (*actions.authorSceneNode)(nodeIndex, SceneNodeAuthoringAction::CreateEmpty);
+    if (ImGui::MenuItem("Duplicate subtree..."))
+      (*actions.authorSceneNode)(nodeIndex, SceneNodeAuthoringAction::DuplicateSubtree);
+    if (ImGui::MenuItem("Delete subtree..."))
+      (*actions.authorSceneNode)(nodeIndex, SceneNodeAuthoringAction::DeleteSubtree);
+    ImGui::EndPopup();
+  }
   if (ImGui::IsItemHovered()) {
-    const std::string tooltip = "Select node " + std::to_string(nodeIndex);
-    ShowItemTooltip(tooltip);
+    ShowItemTooltip(node->name.empty() ? row.label : node->name);
+  }
+  if (editing && actions.inlineRename->active && actions.inlineRename->node == nodeIndex) {
+    auto& edit = *actions.inlineRename;
+    ImGui::SameLine(0.0f, 0.0f);
+    ImGui::PushID(static_cast<int>(edit.graphIdentity >> 32));
+    ImGui::PushID(static_cast<int>(edit.graphIdentity));
+    ImGui::PushID(static_cast<int>(edit.session >> 32));
+    ImGui::PushID(static_cast<int>(edit.session));
+    edit.inputId = ImGui::GetID("##SceneHierarchyRename");
+    const bool focusing = std::exchange(edit.focusRequested, false);
+    if (focusing) ImGui::SetKeyboardFocusHere();
+    ImGui::SetNextItemWidth(std::max(40.0f, ImGui::GetContentRegionAvail().x));
+    const bool enter = ImGui::InputText("##SceneHierarchyRename", edit.name.data(), edit.name.size(),
+        ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+    const bool active = ImGui::IsItemActive();
+    if (active) edit.hadFocus = true;
+    if (std::exchange(edit.revealRequested, false)) {
+      ImGui::SetScrollHereY(0.5f); ImGui::SetScrollHereX(0.25f);
+    }
+    if (!edit.error.empty() && (active || ImGui::IsItemHovered()))
+      ImGui::SetTooltip("%s", edit.error.c_str());
+    const bool escape = active && ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+    const bool abandoned = !active && edit.hadFocus && !enter && !focusing;
+    ImGui::PopID(); ImGui::PopID(); ImGui::PopID(); ImGui::PopID();
+    if ((escape || abandoned) && actions.cancelInlineRename) (*actions.cancelInlineRename)();
+    else if (enter && actions.commitInlineRename) (*actions.commitInlineRename)();
+  }
+  if (indent > 0.0f)
+    ImGui::Unindent(indent);
+
+  ImGui::TableNextColumn();
+  bool visible = node->visible;
+  if (ImGui::Checkbox("##SceneHierarchyVisible", &visible) &&
+      actions.setSceneNodeVisible != nullptr) {
+    (*actions.setSceneNodeVisible)(nodeIndex, visible);
+  }
+  if (!sceneGraph.isNodeEffectivelyVisible(nodeIndex) && node->visible) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("parent");
   }
 
   ImGui::TableNextColumn();
-  using container::scene::NodeFlag;
-  ImGui::PushID(static_cast<int>(nodeIndex));
-  const auto flag = [&](NodeFlag kind, const char* label, const char* title, bool value, bool effective) {
-    if (ImGui::Checkbox(label, &value) && actions.setSceneNodeFlag)
-      (*actions.setSceneNodeFlag)(nodeIndex, kind, value);
-    if (ImGui::BeginItemTooltip()) {
-      ImGui::TextUnformatted(title);
-      if (value && !effective) ImGui::TextDisabled("Disabled by a parent");
-      ImGui::EndTooltip();
-    }
-  };
-  flag(NodeFlag::Visible, "V", "Visible", node->visible, sceneGraph.isNodeEffectivelyVisible(nodeIndex));
-  ImGui::SameLine();
-  flag(NodeFlag::Selectable, "S", "Selectable in the viewport", node->selectable,
-       sceneGraph.nearestSelectableAncestor(nodeIndex) == nodeIndex);
-  ImGui::SameLine();
-  flag(NodeFlag::Hoverable, "H", "Hoverable in the viewport", node->hoverable,
-       sceneGraph.nearestHoverableAncestor(nodeIndex) == nodeIndex);
-  ImGui::PopID();
-
-  ImGui::TableNextColumn();
-  const std::string focusId =
-      "Focus##SceneHierarchyFocus" + std::to_string(nodeIndex);
-  if (ImGui::SmallButton(focusId.c_str()) &&
+  if (ImGui::SmallButton("Focus##SceneHierarchyFocus") &&
       actions.focusSceneNode != nullptr) {
     (*actions.focusSceneNode)(nodeIndex);
   }
 
   ImGui::TableNextColumn();
-  const std::vector<uint32_t> children = node->children;
-  SceneHierarchyParentChange nodeParentChange =
-      DrawSceneHierarchyParentCombo(sceneGraph, nodeIndex, *node, actions,
-                                    candidateCache);
+  SceneHierarchyParentChange nodeParentChange = DrawSceneHierarchyParentCombo(
+      sceneGraph, nodeIndex, *node, actions, candidateCache);
   if (!parentChange.requested && nodeParentChange.requested) {
     parentChange = nodeParentChange;
   }
 
-  if (open && !children.empty()) {
-    for (const uint32_t child : children) {
-      DrawSceneHierarchyNode(sceneGraph, child, actions, parentChange,
-                             candidateCache);
-    }
-    ImGui::TreePop();
-  }
+  ImGui::TableNextColumn();
+  bool selectable = node->selectable;
+  if (ImGui::Checkbox("##SceneHierarchySelectable", &selectable) &&
+      actions.setSceneNodeSelectable && *actions.setSceneNodeSelectable)
+    (*actions.setSceneNodeSelectable)(nodeIndex, selectable);
+  if (node->selectable && !sceneGraph.isNodeEffectivelySelectable(nodeIndex))
+    ShowItemTooltip("Selection is disabled by a parent");
+
+  ImGui::TableNextColumn();
+  bool hoverable = node->hoverable;
+  if (ImGui::Checkbox("##SceneHierarchyHoverable", &hoverable) &&
+      actions.setSceneNodeHoverable && *actions.setSceneNodeHoverable)
+    (*actions.setSceneNodeHoverable)(nodeIndex, hoverable);
+  if (node->hoverable && !sceneGraph.isNodeEffectivelyHoverable(nodeIndex))
+    ShowItemTooltip("Hover is disabled by a parent");
+
+  ImGui::PopID();
 }
 
-void DrawSceneHierarchyPanel(const container::scene::SceneGraph &sceneGraph,
-                             const SceneHierarchyPanelActions &actions,
-                             SceneHierarchyParentCandidateCacheState
-                                 &candidateCache) {
-  if (sceneGraph.nodeCount() == 0 || !ImGui::TreeNode("Scene Hierarchy")) {
+void DrawSceneHierarchyPanel(
+    const container::scene::SceneGraph &sceneGraph,
+    const SceneHierarchyPanelActions &actions,
+    SceneHierarchyParentCandidateCacheState &candidateCache,
+    SceneHierarchyCache &hierarchyCache, size_t &submittedRows) {
+  submittedRows = 0u;
+  if (sceneGraph.nodeCount() == 0) {
+    hierarchyCache.refresh(sceneGraph);
+    candidateCache.popupOpen = false;
     return;
   }
+  if (!ImGui::TreeNode("Scene Hierarchy")) {
+    candidateCache.popupOpen = false;
+    if (actions.cancelInlineRename) (*actions.cancelInlineRename)();
+    return;
+  }
+  hierarchyCache.refresh(sceneGraph);
+  if (actions.beginInlineRename && !ImGui::IsAnyItemActive() &&
+      !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) &&
+      ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+      ImGui::IsKeyPressed(ImGuiKey_F2, false)) {
+    (*actions.beginInlineRename)(actions.selectedMeshNode);
+    hierarchyCache.refresh(sceneGraph);
+  }
 
-  if (ImGui::BeginTable("SceneHierarchyTable", 4,
+  if (actions.authorSceneNode && ImGui::Button("Add empty node")) {
+    const auto parent = sceneGraph.getNode(actions.selectedMeshNode)
+        ? actions.selectedMeshNode : actions.rootSceneNode;
+    (*actions.authorSceneNode)(parent, SceneNodeAuthoringAction::CreateEmpty);
+  }
+
+  if (ImGui::BeginTable("SceneHierarchyTable", 6,
                         ImGuiTableFlags_BordersInnerV |
                             ImGuiTableFlags_RowBg |
                             ImGuiTableFlags_Resizable |
@@ -536,16 +658,42 @@ void DrawSceneHierarchyPanel(const container::scene::SceneGraph &sceneGraph,
                         ImVec2(0.0f, 300.0f), 720.0f)) {
     SceneHierarchyParentChange parentChange{};
     ImGui::TableSetupColumn("Node", ImGuiTableColumnFlags_WidthStretch, 0.48f);
-    ImGui::TableSetupColumn("Flags", ImGuiTableColumnFlags_WidthFixed,
-                            118.0f);
+    ImGui::TableSetupColumn("Visible", ImGuiTableColumnFlags_WidthFixed,
+                            82.0f);
     ImGui::TableSetupColumn("Focus", ImGuiTableColumnFlags_WidthFixed, 72.0f);
     ImGui::TableSetupColumn("Parent", ImGuiTableColumnFlags_WidthStretch,
                             0.32f);
+    ImGui::TableSetupColumn("Selectable", ImGuiTableColumnFlags_WidthFixed, 86.0f);
+    ImGui::TableSetupColumn("Hoverable", ImGuiTableColumnFlags_WidthFixed, 86.0f);
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableHeadersRow();
-    for (const uint32_t root : sceneGraph.rootNodes()) {
-      DrawSceneHierarchyNode(sceneGraph, root, actions, parentChange,
-                             candidateCache);
+    const float rowHeight =
+        ImGui::GetFrameHeight() + ImGui::GetStyle().CellPadding.y * 2.0f;
+    const auto rows = hierarchyCache.rows();
+    ImGuiListClipper clipper;
+    clipper.Begin(
+        static_cast<int>(std::min<size_t>(
+            rows.size(), static_cast<size_t>(std::numeric_limits<int>::max()))),
+        rowHeight);
+    if (actions.inlineRename && actions.inlineRename->active) {
+      if (const auto row = hierarchyCache.rowForNode(actions.inlineRename->node);
+          row && *row < static_cast<size_t>(std::numeric_limits<int>::max()))
+        clipper.IncludeItemByIndex(static_cast<int>(*row));
+    }
+    if (candidateCache.popupOpen) {
+      if (const auto row = hierarchyCache.rowForNode(candidateCache.nodeIndex);
+          row && *row < static_cast<size_t>(std::numeric_limits<int>::max()))
+        clipper.IncludeItemByIndex(static_cast<int>(*row));
+    }
+    candidateCache.popupOpen = false;
+    while (clipper.Step()) {
+      for (int index = clipper.DisplayStart; index < clipper.DisplayEnd;
+           ++index) {
+        DrawSceneHierarchyRow(sceneGraph, rows[static_cast<size_t>(index)],
+                              rowHeight, actions, parentChange, candidateCache,
+                              hierarchyCache);
+        ++submittedRows;
+      }
     }
     ImGui::EndTable();
     if (parentChange.requested && actions.reparentSceneNode != nullptr) {
@@ -567,7 +715,8 @@ bool IsAuxiliaryModelFile(const std::filesystem::path &path) {
       ToLowerAscii(container::util::pathToUtf8(path.extension()));
   return extension == ".usd" || extension == ".usda" || extension == ".usdc" ||
          extension == ".usdz" || extension == ".ifc" || extension == ".ifcx" ||
-         extension == ".bim";
+         extension == ".bim" ||
+         (extension == ".vdb" && container::geometry::vdb::IsAvailable());
 }
 
 std::optional<std::filesystem::path>
@@ -1631,6 +1780,51 @@ std::string RelationshipNodeLabel(
   return "(unnamed)";
 }
 
+bool DrawBimBrowserPageControls(const char *id, BimBrowserPage &page,
+                                size_t rowCount) {
+  page.clamp(rowCount);
+  ImGui::PushID(id);
+  if (rowCount == 0u) {
+    ImGui::TextDisabled("0 entries");
+  } else {
+    ImGui::TextDisabled("Entries %zu..%zu of %zu", page.begin(rowCount) + 1u,
+                        page.end(rowCount), rowCount);
+  }
+  const size_t pageCount = BimBrowserPage::count(rowCount);
+  if (pageCount > 1u) {
+    ImGui::BeginDisabled(page.index() == 0u);
+    if (ImGui::SmallButton("First")) {
+      page.set(0u, rowCount);
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Previous")) {
+      page.set(page.index() - 1u, rowCount);
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(page.index() + 1u == pageCount);
+    if (ImGui::SmallButton("Next")) {
+      page.set(page.index() + 1u, rowCount);
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Last")) {
+      page.set(pageCount - 1u, rowCount);
+    }
+    ImGui::EndDisabled();
+    ImGui::SetNextItemWidth(100.0f);
+    const bool submitted = ImGui::InputScalar(
+        "Page", ImGuiDataType_U64, &page.requestedPage(), nullptr, nullptr,
+        "%llu", ImGuiInputTextFlags_EnterReturnsTrue);
+    if (submitted || ImGui::IsItemDeactivatedAfterEdit()) {
+      page.applyRequestedPage(rowCount);
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("of %zu (100 entries per page)", pageCount);
+  }
+  ImGui::PopID();
+  return page.takeScrollReset();
+}
+
 void DrawSemanticLegendEntry(container::renderer::BimSemanticColorMode mode,
                              size_t valueIndex, const std::string &label) {
   ImGui::PushID(static_cast<int>(valueIndex));
@@ -1645,6 +1839,907 @@ void DrawSemanticLegendEntry(container::renderer::BimSemanticColorMode mode,
 }
 
 } // namespace
+
+namespace {
+using MaterialProperty = container::geometry::gltf::GltfMaterialProperty;
+using MaterialExtension = container::geometry::gltf::GltfMaterialExtension;
+using MaterialPhase = container::material::MaterialEditGesturePhase;
+using MaterialPatch = container::geometry::gltf::GltfMaterialPatch;
+constexpr std::array<const char*,size_t(MaterialProperty::Count)> kMaterialPropertyLabels{
+    "Base color", "Metallic", "Roughness", "Emissive color", "Alpha cutoff", "Normal scale", "Occlusion strength",
+    "Emissive strength", "Index of refraction", "Dispersion", "Transmission", "Thickness", "Attenuation distance", "Attenuation color",
+    "Clearcoat", "Clearcoat roughness", "Clearcoat normal scale", "Sheen color", "Sheen roughness",
+    "Specular", "Specular color", "Iridescence", "Iridescence index of refraction", "Iridescence minimum thickness",
+    "Iridescence maximum thickness", "Anisotropy", "Anisotropy rotation (radians)", "Diffuse transmission",
+    "Diffuse transmission color", "Diffuse color (specular/glossiness)", "Specular color (specular/glossiness)", "Glossiness"};
+constexpr std::array<const char*,size_t(MaterialExtension::Count)> kMaterialExtensionLabels{
+    "Unlit", "Emissive strength", "Index of refraction", "Dispersion", "Transmission", "Volume", "Clearcoat", "Sheen",
+    "Specular", "Iridescence", "Anisotropy", "Diffuse transmission", "Specular/glossiness"};
+bool sameMaterialBinding(const MaterialInspectorTarget& a,const MaterialInspectorTarget& b) {
+  auto x=a,y=b;x.authoredRevision=y.authoredRevision=0;return x==y;
+}
+void validateMaterialTarget(const MaterialInspectorTarget& target) {
+  if(!target.graphIdentity || !target.assetIdentity || target.selectedGraphNode==UINT32_MAX ||
+      target.bindingGraphNode==UINT32_MAX || target.runtimeMaterial==UINT32_MAX || target.sourceMaterial<0)
+    throw std::invalid_argument("Choose an editable material binding first");
+}
+void validateMaterialBindingTarget(const MaterialInspectorTarget& target) {
+  if(!target.graphIdentity || !target.assetIdentity || target.selectedGraphNode==UINT32_MAX ||
+      target.bindingGraphNode==UINT32_MAX || target.runtimeMaterial==UINT32_MAX || target.sourceMaterial< -1)
+    throw std::invalid_argument("Choose an active material surface first");
+}
+void validateMaterialCatalogTarget(const MaterialCatalogTarget& target) {
+  if(!target.graphIdentity || !target.assetIdentity || target.runtimeMaterial==UINT32_MAX || target.sourceMaterial< -1)
+    throw std::invalid_argument("Choose an active material from the catalog first");
+}
+bool unitMaterialProperty(MaterialProperty property) {
+  switch(property) {
+  case MaterialProperty::BaseColor:case MaterialProperty::Metallic:case MaterialProperty::Roughness:
+  case MaterialProperty::Emissive:case MaterialProperty::OcclusionStrength:case MaterialProperty::Transmission:
+  case MaterialProperty::AttenuationColor:case MaterialProperty::Clearcoat:case MaterialProperty::ClearcoatRoughness:
+  case MaterialProperty::SheenColor:case MaterialProperty::SheenRoughness:case MaterialProperty::Specular:
+  case MaterialProperty::SpecularColor:case MaterialProperty::Iridescence:case MaterialProperty::Anisotropy:
+  case MaterialProperty::DiffuseTransmission:case MaterialProperty::DiffuseTransmissionColor:
+  case MaterialProperty::SpecularGlossinessDiffuse:case MaterialProperty::SpecularGlossinessSpecular:
+  case MaterialProperty::Glossiness:return true;
+  default:return false;
+  }
+}
+void validateMaterialNumber(MaterialProperty property,double value,bool schemaDefault=false) {
+  if(schemaDefault && property==MaterialProperty::AttenuationDistance && value==std::numeric_limits<double>::infinity()) return;
+  if(!std::isfinite(value) || std::abs(value)>std::numeric_limits<float>::max())
+    throw std::invalid_argument("Material values must be finite and representable by the renderer");
+  if(unitMaterialProperty(property) && (value<0 || value>1)) throw std::invalid_argument("This material value must be between zero and one");
+  if(property==MaterialProperty::Ior && value!=0 && value<1) throw std::invalid_argument("Index of refraction must be zero or at least one");
+  if(property==MaterialProperty::IridescenceIor && value<1) throw std::invalid_argument("Iridescence index of refraction must be at least one");
+  if(property==MaterialProperty::AttenuationDistance && (value<=0 || float(value)<=0)) throw std::invalid_argument("Attenuation distance must be positive");
+  if((property==MaterialProperty::AlphaCutoff || property==MaterialProperty::EmissiveStrength || property==MaterialProperty::Dispersion ||
+      property==MaterialProperty::Thickness || property==MaterialProperty::IridescenceThicknessMinimum ||
+      property==MaterialProperty::IridescenceThicknessMaximum) && value<0) throw std::invalid_argument("This material value cannot be negative");
+}
+std::array<double,4> materialDefaults(MaterialProperty property,uint8_t components) {
+  std::array<double,4> result{};
+  if(components>1) {
+    if(property!=MaterialProperty::Emissive && property!=MaterialProperty::SheenColor)
+      std::fill_n(result.begin(),components,1.);
+  } else switch(property) {
+    case MaterialProperty::Metallic:case MaterialProperty::Roughness:case MaterialProperty::NormalScale:
+    case MaterialProperty::OcclusionStrength:case MaterialProperty::EmissiveStrength:case MaterialProperty::ClearcoatNormalScale:
+    case MaterialProperty::Specular:case MaterialProperty::Glossiness:result[0]=1;break;
+    case MaterialProperty::AlphaCutoff:result[0]=.5;break;
+    case MaterialProperty::Ior:result[0]=1.5;break;
+    case MaterialProperty::IridescenceIor:result[0]=1.3;break;
+    case MaterialProperty::IridescenceThicknessMinimum:result[0]=100;break;
+    case MaterialProperty::IridescenceThicknessMaximum:result[0]=400;break;
+    case MaterialProperty::AttenuationDistance:result[0]=std::numeric_limits<double>::infinity();break;
+    default:break;
+  }
+  return result;
+}
+std::array<double,4> readMaterialInspectorValue(const tinygltf::Material& source,
+    const container::geometry::gltf::GltfMaterialPropertyInfo& info,bool& present) {
+  auto result=materialDefaults(info.property,info.components);present=true;
+  const auto vector=[&](const std::vector<double>& value) {
+    if(value.size()!=info.components) throw std::invalid_argument("Material color has an invalid component count");
+    std::copy(value.begin(),value.end(),result.begin());
+  };
+  switch(info.property) {
+    case MaterialProperty::BaseColor:vector(source.pbrMetallicRoughness.baseColorFactor);break;
+    case MaterialProperty::Metallic:result[0]=source.pbrMetallicRoughness.metallicFactor;break;
+    case MaterialProperty::Roughness:result[0]=source.pbrMetallicRoughness.roughnessFactor;break;
+    case MaterialProperty::Emissive:vector(source.emissiveFactor);break;
+    case MaterialProperty::AlphaCutoff:result[0]=source.alphaCutoff;break;
+    case MaterialProperty::NormalScale:result[0]=source.normalTexture.scale;present=source.normalTexture.index>=0;break;
+    case MaterialProperty::OcclusionStrength:result[0]=source.occlusionTexture.strength;present=source.occlusionTexture.index>=0;break;
+    default: {
+      const auto extension=source.extensions.find(std::string(container::geometry::gltf::GltfMaterialExtensionName(*info.extension)));
+      const tinygltf::Value* parent=extension==source.extensions.end()?nullptr:&extension->second;
+      if(parent && !parent->IsObject()) throw std::invalid_argument("Material extension is not an object");
+      if(parent && info.property==MaterialProperty::ClearcoatNormalScale) {
+        parent=parent->Has("clearcoatNormalTexture")?&parent->Get("clearcoatNormalTexture"):nullptr;
+        if(parent && !parent->IsObject()) throw std::invalid_argument("Clearcoat normal texture is not an object");
+      }
+      const std::string leaf(info.path.substr(info.path.rfind('/')+1));
+      present=parent && parent->Has(leaf);
+      if(present) {
+        const auto& value=parent->Get(leaf);
+        if(info.components==1) {
+          if(!value.IsNumber()) throw std::invalid_argument("Material factor is not numeric");result[0]=value.GetNumberAsDouble();
+        } else {
+          if(!value.IsArray() || value.ArrayLen()!=info.components) throw std::invalid_argument("Material color has an invalid component count");
+          for(size_t i=0;i<info.components;++i) {
+            if(!value.Get(int(i)).IsNumber()) throw std::invalid_argument("Material color is not numeric");
+            result[i]=value.Get(int(i)).GetNumberAsDouble();
+          }
+        }
+      }
+    }
+  }
+  for(size_t i=0;i<info.components;++i) validateMaterialNumber(info.property,result[i],!present);
+  return result;
+}
+container::geometry::gltf::GltfMaterialNumericValue materialNumericValue(
+    const std::array<double,4>& value,uint8_t count) {
+  if(count==1) return value[0];
+  if(count==3) return std::array<double,3>{value[0],value[1],value[2]};
+  return value;
+}
+void validateMaterialPatch(const MaterialPatch& patch,MaterialPhase phase) {
+  using namespace container::geometry::gltf;
+  if(!patch.textures.empty()) throw std::invalid_argument("Use a texture transaction to edit texture slots");
+  const auto registry=GltfMaterialPropertyRegistry();
+  if(patch.values.size()>registry.size() || patch.extensions.size()>size_t(MaterialExtension::Count))
+    throw std::invalid_argument("Material patch has too many operations");
+  const size_t operations=patch.values.size()+patch.extensions.size()+size_t(patch.alphaMode.has_value())+
+      size_t(patch.doubleSided.has_value())+size_t(patch.name.has_value());
+  if((phase==MaterialPhase::Cancel && operations) ||
+      (phase!=MaterialPhase::Cancel && phase!=MaterialPhase::End && !operations))
+    throw std::invalid_argument("Material gesture has an invalid patch");
+  std::array<bool,size_t(MaterialProperty::Count)> seen{};
+  std::array<bool,size_t(MaterialExtension::Count)> extensions{},disabled{};
+  for(const auto& edit:patch.values) {
+    const auto index=size_t(edit.property);
+    if(index>=seen.size() || seen[index]) throw std::invalid_argument("Material property is invalid or repeated");seen[index]=true;
+    std::visit([&](const auto& value) {
+      using T=std::decay_t<decltype(value)>;
+      if constexpr(!std::is_same_v<T,std::monostate>) {
+        if constexpr(std::is_same_v<T,double>) {
+          if(registry[index].components!=1) throw std::invalid_argument("Material color requires all components");
+          validateMaterialNumber(edit.property,value);
+        } else {
+          if(value.size()!=registry[index].components) throw std::invalid_argument("Material value has the wrong component count");
+          for(const auto component:value) validateMaterialNumber(edit.property,component);
+        }
+      }
+    },edit.value);
+  }
+  for(const auto& edit:patch.extensions) {
+    const auto index=size_t(edit.extension);
+    if(index>=extensions.size() || extensions[index]) throw std::invalid_argument("Material feature is invalid or repeated");
+    extensions[index]=true;disabled[index]=!edit.enabled;
+  }
+  for(const auto& edit:patch.values)
+    if(const auto feature=registry[size_t(edit.property)].extension;feature && disabled[size_t(*feature)])
+      throw std::invalid_argument("A disabled feature cannot receive a numeric edit");
+  if(patch.alphaMode && *patch.alphaMode!=GltfMaterialAlphaMode::Opaque && *patch.alphaMode!=GltfMaterialAlphaMode::Mask &&
+      *patch.alphaMode!=GltfMaterialAlphaMode::Blend) throw std::invalid_argument("Material alpha mode is invalid");
+  if(patch.name) container::scene::ValidateSceneNodeName(*patch.name);
+}
+void validateMaterialSnapshot(const MaterialInspectorSnapshot& snapshot) {
+  if(snapshot.name.size()>4096 || snapshot.error.size()>4096 || snapshot.choices.size()>65536 ||
+      snapshot.bindingOperationsError.size()>4096 || snapshot.assignmentChoices.size()>65536 ||
+      snapshot.textureEditingError.size()>4096 || snapshot.textureChoices.size()>65536 ||
+      snapshot.catalogChoices.size()>65536 || snapshot.materialRetirementReason.size()>4096 || snapshot.materialCatalogError.size()>4096)
+    throw std::invalid_argument("Material inspector metadata exceeds its limits");
+  size_t bytes=0;
+  for(const auto& choice:snapshot.choices) {
+    if(choice.graphNode==UINT32_MAX || choice.runtimeMaterial==UINT32_MAX || choice.sourceMaterial< -1 || choice.label.size()>256)
+      throw std::invalid_argument("Material binding choice is invalid");
+    bytes+=sizeof(choice)+choice.label.size();
+    if(bytes>16*1024*1024) throw std::invalid_argument("Material binding choices exceed their storage limit");
+  }
+  std::vector<std::pair<int32_t,uint32_t>> assignmentIds;
+  assignmentIds.reserve(snapshot.assignmentChoices.size());
+  for(const auto& choice:snapshot.assignmentChoices) {
+    if(choice.runtimeMaterial==UINT32_MAX || choice.sourceMaterial< -1 || choice.label.size()>256)
+      throw std::invalid_argument("Material assignment choice is invalid");
+    bytes+=sizeof(choice)+choice.label.size();
+    if(bytes>16*1024*1024) throw std::invalid_argument("Material binding choices exceed their storage limit");
+    assignmentIds.emplace_back(choice.sourceMaterial,choice.runtimeMaterial);
+  }
+  std::ranges::sort(assignmentIds,{},&std::pair<int32_t,uint32_t>::second);
+  for(size_t i=1;i<assignmentIds.size();++i)
+    if(assignmentIds[i-1].second==assignmentIds[i].second)
+      throw std::invalid_argument("Material assignment runtime identities are ambiguous");
+  std::ranges::sort(assignmentIds);
+  for(size_t i=1;i<assignmentIds.size();++i)
+    if(assignmentIds[i].first>=0 && assignmentIds[i-1].first==assignmentIds[i].first)
+      throw std::invalid_argument("Material assignment source identities are ambiguous");
+  assignmentIds.clear();assignmentIds.reserve(snapshot.catalogChoices.size());
+  bool selectedCatalog=false;
+  for(const auto& choice:snapshot.catalogChoices) {
+    if(choice.runtimeMaterial==UINT32_MAX || choice.sourceMaterial< -1 || choice.label.size()>256)
+      throw std::invalid_argument("Material catalog choice is invalid");
+    bytes+=sizeof(choice)+choice.label.size();
+    if(bytes>16*1024*1024) throw std::invalid_argument("Material catalog exceeds its storage limit");
+    assignmentIds.emplace_back(choice.sourceMaterial,choice.runtimeMaterial);
+    selectedCatalog=selectedCatalog || (choice.runtimeMaterial==snapshot.catalogTarget.runtimeMaterial && choice.sourceMaterial==snapshot.catalogTarget.sourceMaterial);
+  }
+  std::ranges::sort(assignmentIds,{},&std::pair<int32_t,uint32_t>::second);
+  for(size_t i=1;i<assignmentIds.size();++i) if(assignmentIds[i-1].second==assignmentIds[i].second)
+    throw std::invalid_argument("Material catalog runtime identities are ambiguous");
+  std::ranges::sort(assignmentIds);
+  for(size_t i=1;i<assignmentIds.size();++i) if(assignmentIds[i].first>=0 && assignmentIds[i-1].first==assignmentIds[i].first)
+    throw std::invalid_argument("Material catalog source identities are ambiguous");
+  if(!snapshot.catalogChoices.empty()) {
+    validateMaterialCatalogTarget(snapshot.catalogTarget);
+    if(!selectedCatalog) throw std::invalid_argument("The selected catalog material is unavailable");
+  }
+  if(snapshot.materialRetirementAvailable && (snapshot.catalogChoices.empty() || !snapshot.materialRetirementReason.empty()))
+    throw std::invalid_argument("Material retirement needs a proved catalog choice");
+  std::vector<uint32_t> textureIds;textureIds.reserve(snapshot.textureChoices.size());
+  for(const auto& choice:snapshot.textureChoices) {
+    if(choice.sourceTexture>uint32_t(INT32_MAX) || choice.evaluatedTexture< -1 ||
+        choice.label.size()>256 || choice.file.size()>65536)
+      throw std::invalid_argument("Material texture choice is invalid");
+    bytes+=sizeof(choice)+choice.label.size()+choice.file.size();
+    if(bytes>16*1024*1024) throw std::invalid_argument("Material texture choices exceed their storage limit");
+    textureIds.push_back(choice.sourceTexture);
+  }
+  std::ranges::sort(textureIds);
+  if(std::adjacent_find(textureIds.begin(),textureIds.end())!=textureIds.end())
+    throw std::invalid_argument("Material texture source identities are ambiguous");
+  for(size_t index=0;index<snapshot.textureSlots.size();++index) {
+    const auto& slot=snapshot.textureSlots[index];
+    if(slot.label.size()>256 || slot.file.size()>65536 || slot.error.size()>4096 || slot.sourceField.size()>256 ||
+        slot.authoredTexture< -1 || slot.evaluatedTexture< -1 || slot.texCoord>1 || slot.channel>4 ||
+        (slot.bound && (slot.authoredTexture<0 || slot.evaluatedTexture<0)) ||
+        (slot.coupledSlot && size_t(*slot.coupledSlot)>=snapshot.textureSlots.size()))
+      throw std::invalid_argument("Material texture slot snapshot is invalid");
+    bytes+=sizeof(slot)+slot.label.size()+slot.file.size()+slot.error.size()+slot.sourceField.size();
+    if(bytes>16*1024*1024) throw std::invalid_argument("Material texture snapshot exceeds its storage limit");
+    container::material::ValidateMaterialTextureSampler(slot.sampler);
+    const auto finite=[](double value) {return std::isfinite(value) && std::abs(value)<=std::numeric_limits<float>::max();};
+    if(!finite(slot.rotation) || !std::ranges::all_of(slot.offset,finite) || !std::ranges::all_of(slot.scale,finite))
+      throw std::invalid_argument("Material texture mapping snapshot is invalid");
+    if(slot.coupledSlot) {
+      using Slot=container::geometry::gltf::GltfMaterialTextureSlot;
+      const auto current=Slot(index),coupled=*slot.coupledSlot;
+      if(!((current==Slot::Roughness && coupled==Slot::SpecularColor) ||
+          (current==Slot::SpecularColor && coupled==Slot::Roughness)) || !slot.srgb)
+        throw std::invalid_argument("Shared specular/glossiness texture requires its color role");
+      if(slot.bound) {
+        const auto& other=snapshot.textureSlots[size_t(coupled)];
+        if(!other.bound || other.coupledSlot!=current || !other.srgb ||
+            slot.authoredTexture!=other.authoredTexture || slot.evaluatedTexture!=other.evaluatedTexture ||
+            slot.texCoord!=other.texCoord || slot.channel!=other.channel || slot.offset!=other.offset ||
+            slot.scale!=other.scale || slot.rotation!=other.rotation || slot.sampler!=other.sampler || slot.sourceField!=other.sourceField)
+          throw std::invalid_argument("Shared specular/glossiness texture snapshots disagree");
+      }
+    }
+  }
+  if(snapshot.textureEditingAvailable && (!snapshot.available || !snapshot.resourceRevision))
+    throw std::invalid_argument("Texture editing requires an editable material and resource catalog revision");
+  if(snapshot.bindingOperationsAvailable) validateMaterialBindingTarget(snapshot.target);
+  if(snapshot.makeUniqueAvailable && (!snapshot.bindingOperationsAvailable || (snapshot.target.sourceMaterial>=0 && !snapshot.available)))
+    throw std::invalid_argument("Material duplication requires an available binding operation");
+  if(!snapshot.available) return;
+  validateMaterialTarget(snapshot.target);
+  if(snapshot.alphaMode!=container::geometry::gltf::GltfMaterialAlphaMode::Opaque &&
+      snapshot.alphaMode!=container::geometry::gltf::GltfMaterialAlphaMode::Mask &&
+      snapshot.alphaMode!=container::geometry::gltf::GltfMaterialAlphaMode::Blend)
+    throw std::invalid_argument("Material inspector alpha mode is invalid");
+  for(const auto& info:container::geometry::gltf::GltfMaterialPropertyRegistry()) {
+    const auto& value=snapshot.numeric[size_t(info.property)];
+    if(value.components!=info.components) throw std::invalid_argument("Material inspector component count is invalid");
+    for(size_t i=0;i<info.components;++i) {
+      validateMaterialNumber(info.property,value.authored[i],true);validateMaterialNumber(info.property,value.evaluated[i],true);
+    }
+  }
+}
+} // namespace
+
+MaterialInspectorSnapshot BuildMaterialInspectorSnapshot(MaterialInspectorTarget target,
+    const tinygltf::Material& authored,const tinygltf::Material& evaluated,uint32_t sharedUsers,
+    std::span<const MaterialBindingChoice> choices,std::span<const bool> animatedProperties,
+    std::span<const bool> animatedExtensions) {
+  validateMaterialTarget(target);
+  if((!animatedProperties.empty() && animatedProperties.size()!=size_t(MaterialProperty::Count)) ||
+      (!animatedExtensions.empty() && animatedExtensions.size()!=size_t(MaterialExtension::Count)) ||
+      authored.name.size()>4096 || choices.size()>65536) throw std::invalid_argument("Material inspector input exceeds its limits");
+  MaterialInspectorSnapshot result;result.target=target;result.available=true;result.sharedUsers=sharedUsers;
+  result.name=authored.name;result.doubleSided=authored.doubleSided;
+  if(authored.alphaMode!="OPAQUE" && authored.alphaMode!="MASK" && authored.alphaMode!="BLEND")
+    throw std::invalid_argument("Material alpha mode is invalid");
+  result.alphaMode=authored.alphaMode=="MASK"?container::geometry::gltf::GltfMaterialAlphaMode::Mask:
+      authored.alphaMode=="BLEND"?container::geometry::gltf::GltfMaterialAlphaMode::Blend:container::geometry::gltf::GltfMaterialAlphaMode::Opaque;
+  for(const auto& info:container::geometry::gltf::GltfMaterialPropertyRegistry()) {
+    auto& number=result.numeric[size_t(info.property)];number.components=info.components;
+    number.defaults=materialDefaults(info.property,info.components);
+    number.authored=readMaterialInspectorValue(authored,info,number.present);
+    bool ignored{};number.evaluated=readMaterialInspectorValue(evaluated,info,ignored);
+    number.animated=!animatedProperties.empty() && animatedProperties[size_t(info.property)];
+  }
+  for(size_t i=0;i<result.extensions.size();++i) {
+    result.extensions[i]=authored.extensions.contains(std::string(container::geometry::gltf::GltfMaterialExtensionName(MaterialExtension(i))));
+    result.animatedExtensions[i]=!animatedExtensions.empty() && animatedExtensions[i];
+  }
+  for(const auto& info:container::geometry::gltf::GltfMaterialTextureSlotRegistry()) {
+    const auto a=container::geometry::gltf::ReadGltfMaterialTextureBinding(authored,info.slot);
+    const auto e=container::geometry::gltf::ReadGltfMaterialTextureBinding(evaluated,info.slot);
+    auto& slot=result.textureSlots[size_t(info.slot)];
+    slot.label=info.label;slot.srgb=info.srgb || a.coupledSlot.has_value();slot.authoredTexture=a.index;slot.evaluatedTexture=e.index;
+    slot.bound=a.index>=0 && e.index>=0;slot.texCoord=a.texCoord;slot.channel=a.channel;
+    slot.offset=a.offset;slot.scale=a.scale;slot.rotation=a.rotation;slot.channelEditable=a.channelEditable;
+    slot.coupledSlot=a.coupledSlot;slot.sourceField=a.path;
+  }
+  size_t bytes=0;
+  for(const auto& choice:choices) {
+    if(choice.label.size()>256) throw std::invalid_argument("Material binding label is too long");
+    bytes+=sizeof(choice)+choice.label.size();
+    if(bytes>16*1024*1024) throw std::invalid_argument("Material binding choices exceed their storage limit");
+  }
+  result.choices.assign(choices.begin(),choices.end());validateMaterialSnapshot(result);return result;
+}
+
+void GuiManager::queueMaterialEditRequest(QueuedMaterialEdit queued) {
+  validateMaterialTarget(queued.target);
+  if(!materialInspector_.available || queued.target!=materialInspector_.target ||
+      queued.request.sourceMaterial!=queued.target.sourceMaterial)
+    throw std::invalid_argument("This material selection has changed; refresh it before editing");
+  const auto& patch=queued.request.patch;
+  const bool emptyPatch=patch.values.empty() && patch.extensions.empty() && !patch.alphaMode && !patch.doubleSided && !patch.name && patch.textures.empty();
+  if(resourceCatalogActionPending() && (queued.request.phase!=MaterialPhase::End || !emptyPatch))
+    throw std::invalid_argument("Wait for the queued resource action before editing factors");
+  if((materialTextureEditRequest_ || materialRetirementRequest_) && queued.request.phase!=MaterialPhase::End && queued.request.phase!=MaterialPhase::Cancel)
+    throw std::invalid_argument("Wait for the queued texture transaction before editing factors");
+  const auto& request=queued.request;
+  if(request.phase!=MaterialPhase::Commit && request.phase!=MaterialPhase::Begin && request.phase!=MaterialPhase::Update &&
+      request.phase!=MaterialPhase::End && request.phase!=MaterialPhase::Cancel) throw std::invalid_argument("Material gesture phase is invalid");
+  if((request.phase==MaterialPhase::Commit)==request.gestureId.has_value() ||
+      (request.gestureId && (*request.gestureId==0 || *request.gestureId>((uint64_t(1)<<53)-1))))
+    throw std::invalid_argument("Material gesture identity is invalid");
+  validateMaterialPatch(request.patch,request.phase);
+  if(materialEditRequests_.size()>=64) throw std::invalid_argument("Consume the queued material edits before adding more");
+  materialEditRequests_.push_back(std::move(queued));
+}
+
+std::vector<QueuedMaterialEdit> GuiManager::consumeMaterialEditRequests() {
+  return std::exchange(materialEditRequests_,{});
+}
+
+void GuiManager::finishMaterialInspectorGesture(bool cancel) {
+  if(!materialDraftProperty_) return;
+  container::material::GltfMaterialEditRequest request;
+  request.sourceMaterial=materialInspector_.target.sourceMaterial;request.gestureId=materialGesture_;
+  request.phase=cancel?MaterialPhase::Cancel:MaterialPhase::End;
+  if(!cancel) request.patch.values.push_back({*materialDraftProperty_,materialNumericValue(materialNumericDraft_,
+      materialInspector_.numeric[size_t(*materialDraftProperty_)].components)});
+  queueMaterialEditRequest({materialInspector_.target,std::move(request)});
+  materialDraftProperty_.reset();materialGesture_=0;
+}
+
+void GuiManager::setMaterialInspectorSnapshot(MaterialInspectorSnapshot snapshot) {
+  validateMaterialSnapshot(snapshot);
+  const bool changedBinding=!sameMaterialBinding(materialInspector_.target,snapshot.target);
+  if(!snapshot.available || changedBinding) {
+    finishMaterialInspectorGesture(true);
+    materialNameActive_=false;materialNameEdited_=false;materialInspectorError_.clear();
+  }
+  if(changedBinding || (materialAssignmentDraft_ && !std::ranges::any_of(snapshot.assignmentChoices,[&](const auto& choice) {
+      return *materialAssignmentDraft_==std::pair{choice.sourceMaterial,choice.runtimeMaterial};
+    }))) materialAssignmentDraft_.reset();
+  if(changedBinding) materialTextureDrafts_={};
+  if(!materialNameActive_) {
+    materialNameDraft_.fill('\0');std::copy(snapshot.name.begin(),snapshot.name.end(),materialNameDraft_.begin());
+  }
+  materialInspector_=std::move(snapshot);
+}
+
+void GuiManager::queueMaterialBindingSelectionRequest(uint32_t graphNode) {
+  if(materialBindingOperationRequest_ || materialTextureEditRequest_ || materialCatalogSelectionRequest_ || materialRetirementRequest_ || resourceCatalogActionPending())
+    throw std::invalid_argument("Wait for the queued material binding action before changing the inspected surface");
+  if(!materialInspector_.target.graphIdentity || !materialInspector_.target.assetIdentity ||
+      std::ranges::find(materialInspector_.choices,graphNode,&MaterialBindingChoice::graphNode)==materialInspector_.choices.end())
+    throw std::invalid_argument("The selected material binding is no longer available");
+  finishMaterialInspectorGesture(true);
+  materialBindingSelectionRequest_=MaterialBindingSelectionRequest{materialInspector_.target,graphNode};
+}
+
+std::optional<MaterialBindingSelectionRequest> GuiManager::consumeMaterialBindingSelectionRequest() {
+  return std::exchange(materialBindingSelectionRequest_,std::nullopt);
+}
+
+void GuiManager::queueMaterialBindingOperationRequest(MaterialBindingOperationRequest request) {
+  validateMaterialBindingTarget(request.target);
+  if(!materialInspector_.bindingOperationsAvailable || request.target!=materialInspector_.target)
+    throw std::invalid_argument("This material surface has changed; refresh it before assigning a material");
+  if(materialBindingOperationRequest_ || materialBindingSelectionRequest_ || materialTextureEditRequest_ || materialCatalogSelectionRequest_ || materialRetirementRequest_ || resourceCatalogActionPending())
+    throw std::invalid_argument("Consume the queued material binding action before adding another");
+  switch(request.operation) {
+  case MaterialBindingOperation::Assign:
+    if(request.name || !std::ranges::any_of(materialInspector_.assignmentChoices,[&](const auto& choice) {
+        return choice.sourceMaterial==request.sourceMaterial && choice.runtimeMaterial==request.runtimeMaterial;
+      })) throw std::invalid_argument("Choose an existing material from the current assignment catalog");
+    if(request.runtimeMaterial==request.target.runtimeMaterial)
+      throw std::invalid_argument("This surface already uses the selected material");
+    break;
+  case MaterialBindingOperation::MakeUnique:
+    if(!materialInspector_.makeUniqueAvailable || (request.target.sourceMaterial>=0 && !materialInspector_.available) ||
+        request.sourceMaterial!=request.target.sourceMaterial || request.runtimeMaterial!=request.target.runtimeMaterial)
+      throw std::invalid_argument("This material cannot be duplicated until its source provenance is available");
+    if(request.name) container::scene::ValidateSceneNodeName(*request.name);
+    break;
+  default:throw std::invalid_argument("Material binding operation is invalid");
+  }
+  // Do not finish/cancel a live factor gesture here. The renderer must prepare
+  // every successor first so a failed allocation keeps the old preview/history.
+  materialBindingOperationRequest_=std::move(request);
+}
+
+std::optional<MaterialBindingOperationRequest> GuiManager::consumeMaterialBindingOperationRequest() {
+  return std::exchange(materialBindingOperationRequest_,std::nullopt);
+}
+
+void GuiManager::queueMaterialTextureEditRequest(QueuedMaterialTextureEdit queued) {
+  using Operation=container::material::MaterialTextureEditOperation;
+  validateMaterialTarget(queued.target);
+  container::material::ValidateMaterialTextureEditRequest(queued.request);
+  if(!materialInspector_.textureEditingAvailable || queued.target!=materialInspector_.target ||
+      queued.request.sourceMaterial!=queued.target.sourceMaterial ||
+      queued.request.expectedResourceRevision!=materialInspector_.resourceRevision)
+    throw std::invalid_argument("This texture catalog or material selection has changed; refresh it before editing");
+  if(materialTextureEditRequest_ || materialBindingOperationRequest_ || materialBindingSelectionRequest_ || materialCatalogSelectionRequest_ || materialRetirementRequest_ || resourceCatalogActionPending())
+    throw std::invalid_argument("Consume the queued material action before editing a texture");
+  const auto& slot=materialInspector_.textureSlots[size_t(queued.request.slot)];
+  if(!slot.available) throw std::invalid_argument(slot.error.empty()?"This texture slot is not editable":slot.error);
+  if((queued.request.operation==Operation::Clear || queued.request.operation==Operation::EditMapping ||
+      queued.request.operation==Operation::EditSampler) && !slot.bound)
+    throw std::invalid_argument("Choose a bound texture before editing its settings");
+  if(!container::material::MaterialTextureMappingEmpty(queued.request.mapping) && !slot.mappingEditable)
+    throw std::invalid_argument("Texture mapping is not editable for this surface");
+  if(queued.request.sampler && !slot.samplerEditable)
+    throw std::invalid_argument("Texture sampler editing is not available for this slot");
+  if(queued.request.mapping.channel && !slot.channelEditable)
+    throw std::invalid_argument("This texture uses schema-defined channels");
+  if(queued.request.operation==Operation::BindExisting) {
+    const auto choice=std::ranges::find(materialInspector_.textureChoices,*queued.request.sourceTexture,&MaterialTextureChoice::sourceTexture);
+    if(choice==materialInspector_.textureChoices.end() || !(slot.srgb?choice->colorAvailable:choice->dataAvailable))
+      throw std::invalid_argument("Choose a texture with the required color/data role from the current catalog");
+  }
+  // The renderer stages the complete successor before ending an existing
+  // factor gesture; a rejected import must leave its preview/history intact.
+  materialTextureEditRequest_=std::move(queued);
+}
+
+std::optional<QueuedMaterialTextureEdit> GuiManager::consumeMaterialTextureEditRequest() {
+  return std::exchange(materialTextureEditRequest_,std::nullopt);
+}
+
+void GuiManager::queueMaterialCatalogSelectionRequest(MaterialCatalogSelectionRequest request) {
+  validateMaterialCatalogTarget(request.target);
+  if(request.target!=materialInspector_.catalogTarget || !std::ranges::any_of(materialInspector_.catalogChoices,[&](const auto& choice) {
+      return choice.sourceMaterial==request.sourceMaterial && choice.runtimeMaterial==request.runtimeMaterial;
+    })) throw std::invalid_argument("The material catalog changed; refresh it before choosing a material");
+  if(materialTextureEditRequest_ || materialBindingOperationRequest_ || materialBindingSelectionRequest_ || materialCatalogSelectionRequest_ || materialRetirementRequest_ || resourceCatalogActionPending())
+    throw std::invalid_argument("Consume the queued material action before changing the catalog selection");
+  materialCatalogSelectionRequest_=std::move(request);
+}
+std::optional<MaterialCatalogSelectionRequest> GuiManager::consumeMaterialCatalogSelectionRequest() {
+  return std::exchange(materialCatalogSelectionRequest_,std::nullopt);
+}
+void GuiManager::queueMaterialRetirementRequest(MaterialRetirementRequest request) {
+  validateMaterialCatalogTarget(request.target);
+  if(request.target!=materialInspector_.catalogTarget || !materialInspector_.materialRetirementAvailable ||
+      !std::ranges::any_of(materialInspector_.catalogChoices,[&](const auto& choice) {
+        return choice.sourceMaterial==request.target.sourceMaterial && choice.runtimeMaterial==request.target.runtimeMaterial;
+      })) throw std::invalid_argument("This material cannot be deleted until its catalog selection is refreshed");
+  if(materialTextureEditRequest_ || materialBindingOperationRequest_ || materialBindingSelectionRequest_ || materialCatalogSelectionRequest_ || materialRetirementRequest_ || resourceCatalogActionPending())
+    throw std::invalid_argument("Consume the queued material action before deleting a material");
+  materialRetirementRequest_=std::move(request);
+}
+std::optional<MaterialRetirementRequest> GuiManager::consumeMaterialRetirementRequest() {
+  return std::exchange(materialRetirementRequest_,std::nullopt);
+}
+
+namespace {
+void validateResourceCatalogTarget(const ResourceCatalogTarget& target) {
+  using D=ResourceCatalogDomain;using K=ResourceCatalogKind;
+  if(!target.assetIdentity || !target.resourceRevision || !target.domainIdentity || !target.incarnation || target.row>=1'000'000 ||
+      (target.domain!=D::Archive && target.domain!=D::Evaluated && target.domain!=D::Runtime) ||
+      (target.kind!=K::Image && target.kind!=K::Texture && target.kind!=K::Sampler && target.kind!=K::RuntimeTexture) ||
+      ((target.domain==D::Runtime)!=(target.kind==K::RuntimeTexture)))
+    throw std::invalid_argument("The resource catalog target is invalid");
+}
+}
+
+void GuiManager::setResourceCatalogSnapshot(ResourceCatalogSnapshot snapshot) {
+  if(snapshot.choices.size()>65536 || snapshot.retirementReason.size()>4096 || snapshot.error.size()>4096 ||
+      (snapshot.available && (!snapshot.assetIdentity || !snapshot.resourceRevision)) ||
+      (!snapshot.available && (!snapshot.choices.empty() || snapshot.selected || snapshot.retirementAvailable)))
+    throw std::invalid_argument("The resource catalog snapshot is invalid or exceeds its limits");
+  size_t bytes=0;
+  std::vector<std::array<uint64_t,3>> keys;keys.reserve(snapshot.choices.size());
+  for(const auto& choice:snapshot.choices) {
+    validateResourceCatalogTarget(choice.target);
+    if(choice.target.assetIdentity!=snapshot.assetIdentity || choice.target.resourceRevision!=snapshot.resourceRevision ||
+        choice.label.size()>256)
+      throw std::invalid_argument("The resource choice does not belong to this catalog");
+    bytes+=sizeof(choice)+choice.label.size();
+    if(bytes>16*1024*1024) throw std::invalid_argument("The resource catalog exceeds its storage limit");
+    keys.push_back({uint64_t(choice.target.domain),uint64_t(choice.target.kind),choice.target.row});
+  }
+  std::ranges::sort(keys);
+  if(std::adjacent_find(keys.begin(),keys.end())!=keys.end())
+    throw std::invalid_argument("The resource catalog contains duplicate rows");
+  if(snapshot.selected && !std::ranges::any_of(snapshot.choices,[&](const auto& choice) {return choice.target==*snapshot.selected;}))
+    throw std::invalid_argument("The selected resource is absent from the catalog");
+  if(snapshot.retirementAvailable && (!snapshot.selected || !snapshot.retirementReason.empty()))
+    throw std::invalid_argument("Resource deletion requires a selected resource without blockers");
+  if(resourceCatalog_.selected!=snapshot.selected || resourceCatalog_.resourceRevision!=snapshot.resourceRevision ||
+      resourceCatalog_.assetIdentity!=snapshot.assetIdentity) resourceCatalogUiError_.clear();
+  resourceCatalog_=std::move(snapshot);
+}
+
+void GuiManager::queueResourceCatalogSelectionRequest(ResourceCatalogSelectionRequest request) {
+  validateResourceCatalogTarget(request.target);
+  if(!resourceCatalog_.available || !std::ranges::any_of(resourceCatalog_.choices,[&](const auto& choice) {return choice.target==request.target;}))
+    throw std::invalid_argument("The resource catalog changed; refresh it before choosing a resource");
+  if(resourceCatalogActionPending() || materialTextureEditRequest_ || materialBindingOperationRequest_ ||
+      materialBindingSelectionRequest_ || materialCatalogSelectionRequest_ || materialRetirementRequest_ || !materialEditRequests_.empty() || materialDraftProperty_)
+    throw std::invalid_argument("Wait for the queued editor action before choosing a resource");
+  resourceCatalogSelectionRequest_=std::move(request);
+}
+std::optional<ResourceCatalogSelectionRequest> GuiManager::consumeResourceCatalogSelectionRequest() {
+  return std::exchange(resourceCatalogSelectionRequest_,std::nullopt);
+}
+void GuiManager::queueResourceRetirementRequest(ResourceRetirementRequest request) {
+  validateResourceCatalogTarget(request.target);
+  if(!resourceCatalog_.available || !resourceCatalog_.retirementAvailable || resourceCatalog_.selected!=request.target)
+    throw std::invalid_argument("This resource cannot be deleted until its catalog selection is refreshed");
+  if(resourceCatalogActionPending() || materialTextureEditRequest_ || materialBindingOperationRequest_ ||
+      materialBindingSelectionRequest_ || materialCatalogSelectionRequest_ || materialRetirementRequest_ || !materialEditRequests_.empty() || materialDraftProperty_)
+    throw std::invalid_argument("Wait for the queued editor action before deleting a resource");
+  resourceRetirementRequest_=std::move(request);
+}
+std::optional<ResourceRetirementRequest> GuiManager::consumeResourceRetirementRequest() {
+  return std::exchange(resourceRetirementRequest_,std::nullopt);
+}
+
+void GuiManager::drawResourceCatalog() {
+  const auto& snapshot=resourceCatalog_;
+  if(!snapshot.available && snapshot.error.empty()) return;
+  ImGui::PushID("ResourceCatalog");ImGui::SeparatorText("Resources");
+  const auto selected=std::ranges::find_if(snapshot.choices,[&](const auto& choice) {return snapshot.selected==choice.target;});
+  const bool pending=resourceCatalogActionPending() || materialTextureEditRequest_ || materialBindingOperationRequest_ ||
+      materialBindingSelectionRequest_ || materialCatalogSelectionRequest_ || materialRetirementRequest_ || !materialEditRequests_.empty() || materialDraftProperty_;
+  const auto report=[&](auto&& action) {
+    try {action();resourceCatalogUiError_.clear();} catch(const std::exception& error) {resourceCatalogUiError_=error.what();}
+  };
+  ImGui::BeginDisabled(!snapshot.available || pending);
+  if(ImGui::BeginCombo("Resource catalog",selected==snapshot.choices.end()?"Choose a resource":selected->label.c_str())) {
+    ImGuiListClipper clipper;clipper.Begin(int(snapshot.choices.size()));
+    while(clipper.Step()) for(int row=clipper.DisplayStart;row<clipper.DisplayEnd;++row) {
+      const auto& choice=snapshot.choices[size_t(row)];ImGui::PushID(row);
+      if(ImGui::Selectable(choice.label.c_str(),snapshot.selected==choice.target))
+        report([&] {queueResourceCatalogSelectionRequest({choice.target});});
+      ImGui::PopID();
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::BeginDisabled(!snapshot.retirementAvailable);
+  if(ImGui::Button("Delete unused resource")) report([&] {queueResourceRetirementRequest({*snapshot.selected});});
+  ImGui::EndDisabled();ImGui::EndDisabled();
+  if(!snapshot.retirementReason.empty()) ImGui::TextWrapped("%s",snapshot.retirementReason.c_str());
+  if(!snapshot.error.empty()) ImGui::TextWrapped("%s",snapshot.error.c_str());
+  if(!resourceCatalogUiError_.empty()) ImGui::TextWrapped("%s",resourceCatalogUiError_.c_str());
+  ImGui::TextDisabled("Deletion is undoable. Shared resources stay available while in use.");
+  ImGui::PopID();
+}
+
+void GuiManager::drawMaterialInspector() {
+  drawResourceCatalog();
+  const auto& snapshot=materialInspector_;
+  ImGui::PushID("MaterialInspector");
+  const std::array<uint64_t,6> ids{snapshot.target.graphIdentity,snapshot.target.assetIdentity,
+      snapshot.target.selectedGraphNode,snapshot.target.bindingGraphNode,snapshot.target.runtimeMaterial,uint64_t(snapshot.target.sourceMaterial)};
+  ImGui::PushID(int(ImHashData(ids.data(),sizeof(ids))));
+  const auto report=[&](auto&& action) {
+    try {action();materialInspectorError_.clear();} catch(const std::exception& error) {materialInspectorError_=error.what();}
+  };
+  const auto commit=[&](MaterialPatch patch) {
+    finishMaterialInspectorGesture(false);
+    container::material::GltfMaterialEditRequest request;request.sourceMaterial=snapshot.target.sourceMaterial;request.patch=std::move(patch);
+    queueMaterialEditRequest({snapshot.target,std::move(request)});
+  };
+  if(materialDraftProperty_ && ImGui::IsKeyPressed(ImGuiKey_Escape,false)) {
+    report([&] {finishMaterialInspectorGesture(true);});ImGui::ClearActiveID();
+  }
+  if(materialDraftProperty_ && ImGui::GetActiveID()==0 && ImGui::GetCurrentContext()->ActiveIdPreviousFrame==0)
+    report([&] {finishMaterialInspectorGesture(false);});
+  ImGui::SeparatorText("Material");
+  if(!snapshot.catalogChoices.empty()) {
+    ImGui::BeginDisabled(materialTextureEditRequest_.has_value() || materialBindingOperationRequest_.has_value() ||
+        materialBindingSelectionRequest_.has_value() || materialCatalogSelectionRequest_.has_value() || materialRetirementRequest_.has_value() || resourceCatalogActionPending());
+    const auto selected=std::ranges::find(snapshot.catalogChoices,snapshot.catalogTarget.runtimeMaterial,&MaterialAssignmentChoice::runtimeMaterial);
+    if(ImGui::BeginCombo("Material catalog",selected==snapshot.catalogChoices.end()?"Choose a material":selected->label.c_str())) {
+      ImGuiListClipper clipper;clipper.Begin(int(snapshot.catalogChoices.size()));
+      while(clipper.Step()) for(int row=clipper.DisplayStart;row<clipper.DisplayEnd;++row) {
+        const auto& choice=snapshot.catalogChoices[size_t(row)];ImGui::PushID(int(choice.runtimeMaterial));
+        if(ImGui::Selectable(choice.label.c_str(),choice.runtimeMaterial==snapshot.catalogTarget.runtimeMaterial))
+          report([&] {queueMaterialCatalogSelectionRequest({snapshot.catalogTarget,choice.sourceMaterial,choice.runtimeMaterial});});
+        ImGui::PopID();
+      }
+      ImGui::EndCombo();
+    }
+    ImGui::BeginDisabled(!snapshot.materialRetirementAvailable || materialCatalogSelectionRequest_.has_value());
+    if(ImGui::Button("Delete unused material")) report([&] {queueMaterialRetirementRequest({snapshot.catalogTarget});});
+    ImGui::EndDisabled();ImGui::EndDisabled();
+    if(!snapshot.materialRetirementReason.empty()) ImGui::TextWrapped("%s",snapshot.materialRetirementReason.c_str());
+    if(!snapshot.materialCatalogError.empty()) ImGui::TextWrapped("%s",snapshot.materialCatalogError.c_str());
+    ImGui::TextDisabled("Deletion is undoable. Material selection here does not assign it to a surface.");
+  } else if(!snapshot.materialCatalogError.empty()) ImGui::TextWrapped("%s",snapshot.materialCatalogError.c_str());
+  if(!snapshot.choices.empty()) {
+    const auto selected=std::ranges::find(snapshot.choices,snapshot.target.bindingGraphNode,&MaterialBindingChoice::graphNode);
+    const auto* label=selected==snapshot.choices.end()?"Choose a surface":selected->label.c_str();
+    ImGui::BeginDisabled(materialBindingOperationRequest_.has_value() || materialTextureEditRequest_.has_value() || materialRetirementRequest_.has_value() || materialCatalogSelectionRequest_.has_value() || resourceCatalogActionPending());
+    if(ImGui::BeginCombo("Surface",label)) {
+      ImGuiListClipper clipper;clipper.Begin(int(snapshot.choices.size()));
+      while(clipper.Step()) for(int row=clipper.DisplayStart;row<clipper.DisplayEnd;++row) {
+        const auto& choice=snapshot.choices[size_t(row)];ImGui::PushID(int(choice.graphNode));
+        if(ImGui::Selectable(choice.label.c_str(),choice.graphNode==snapshot.target.bindingGraphNode))
+          report([&] {queueMaterialBindingSelectionRequest(choice.graphNode);});
+        ImGui::PopID();
+      }
+      ImGui::EndCombo();
+    }
+    ImGui::EndDisabled();
+  }
+  const bool bindingDisabled=!snapshot.bindingOperationsAvailable || materialBindingOperationRequest_.has_value() ||
+      materialBindingSelectionRequest_.has_value() || materialTextureEditRequest_.has_value() || materialRetirementRequest_.has_value() || materialCatalogSelectionRequest_.has_value() || resourceCatalogActionPending();
+  ImGui::BeginDisabled(bindingDisabled);
+  const auto destination=std::ranges::find_if(snapshot.assignmentChoices,[&](const auto& choice) {
+    return materialAssignmentDraft_ && *materialAssignmentDraft_==std::pair{choice.sourceMaterial,choice.runtimeMaterial};
+  });
+  if(ImGui::BeginCombo("Assign material",destination==snapshot.assignmentChoices.end()?"Choose a material":destination->label.c_str())) {
+    ImGuiListClipper clipper;clipper.Begin(int(snapshot.assignmentChoices.size()));
+    while(clipper.Step()) for(int row=clipper.DisplayStart;row<clipper.DisplayEnd;++row) {
+      const auto& choice=snapshot.assignmentChoices[size_t(row)];ImGui::PushID(int(choice.runtimeMaterial));
+      if(ImGui::Selectable(choice.label.c_str(),destination!=snapshot.assignmentChoices.end() &&
+          destination->runtimeMaterial==choice.runtimeMaterial))
+        materialAssignmentDraft_=std::pair{choice.sourceMaterial,choice.runtimeMaterial};
+      ImGui::PopID();
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::BeginDisabled(!materialAssignmentDraft_ || materialAssignmentDraft_->second==snapshot.target.runtimeMaterial);
+  if(ImGui::Button("Assign")) report([&] {
+    queueMaterialBindingOperationRequest({snapshot.target,MaterialBindingOperation::Assign,
+        materialAssignmentDraft_->first,materialAssignmentDraft_->second,{}});
+  });
+  ImGui::EndDisabled();ImGui::SameLine();
+  ImGui::BeginDisabled(!snapshot.makeUniqueAvailable);
+  if(ImGui::Button("Make unique")) report([&] {
+    queueMaterialBindingOperationRequest({snapshot.target,MaterialBindingOperation::MakeUnique,
+        snapshot.target.sourceMaterial,snapshot.target.runtimeMaterial,{}});
+  });
+  ImGui::EndDisabled();
+  ImGui::EndDisabled();
+  if(!snapshot.bindingOperationsError.empty()) ImGui::TextWrapped("%s",snapshot.bindingOperationsError.c_str());
+  if(!snapshot.available) {
+    ImGui::TextDisabled("Select a surface with an editable material.");
+    if(!snapshot.error.empty()) ImGui::TextWrapped("%s",snapshot.error.c_str());
+    if(!materialInspectorError_.empty()) ImGui::TextWrapped("%s",materialInspectorError_.c_str());
+    ImGui::PopID();ImGui::PopID();return;
+  }
+  ImGui::Text("Shared by %u surface%s",snapshot.sharedUsers,snapshot.sharedUsers==1?"":"s");
+  ImGui::TextDisabled("Changes affect every surface using this material.");
+  const bool nameEscape=materialNameActive_ && ImGui::IsKeyPressed(ImGuiKey_Escape,false);
+  const bool nameEnter=ImGui::InputText("Name",materialNameDraft_.data(),materialNameDraft_.size(),ImGuiInputTextFlags_EnterReturnsTrue);
+  if(ImGui::IsItemActivated()) {materialNameActive_=true;materialNameEdited_=false;}
+  materialNameEdited_=materialNameEdited_ || ImGui::IsItemEdited();
+  if(nameEscape) {
+    materialNameDraft_.fill('\0');std::copy(snapshot.name.begin(),snapshot.name.end(),materialNameDraft_.begin());
+    materialNameActive_=false;materialNameEdited_=false;ImGui::ClearActiveID();
+  }
+  else if(nameEnter || (materialNameActive_ && ImGui::IsItemDeactivated())) {
+    if(materialNameEdited_ && std::string_view(materialNameDraft_.data())!=snapshot.name)
+      report([&] {MaterialPatch patch;patch.name=materialNameDraft_.data();commit(std::move(patch));});
+    materialNameActive_=false;materialNameEdited_=false;
+  }
+  int alpha=int(snapshot.alphaMode);
+  if(ImGui::Combo("Alpha mode",&alpha,"Opaque\0Mask\0Blend\0"))
+    report([&] {MaterialPatch patch;patch.alphaMode=container::geometry::gltf::GltfMaterialAlphaMode(alpha);commit(std::move(patch));});
+  bool sided=snapshot.doubleSided;
+  if(ImGui::Checkbox("Double-sided",&sided)) report([&] {MaterialPatch patch;patch.doubleSided=sided;commit(std::move(patch));});
+  if(ImGui::TreeNode("Texture slots")) {
+    using TextureSlot=container::geometry::gltf::GltfMaterialTextureSlot;
+    using TextureOperation=container::material::MaterialTextureEditOperation;
+    using TextureRequest=container::material::GltfMaterialTextureEditRequest;
+    const bool transactionPending=materialTextureEditRequest_ || materialBindingOperationRequest_ || materialBindingSelectionRequest_ || materialRetirementRequest_ || materialCatalogSelectionRequest_ || resourceCatalogActionPending();
+    if(!snapshot.textureEditingError.empty()) ImGui::TextWrapped("%s",snapshot.textureEditingError.c_str());
+    if(!snapshot.textureEditingAvailable) ImGui::TextDisabled("Texture editing is unavailable for this material.");
+    for(const auto& info:container::geometry::gltf::GltfMaterialTextureSlotRegistry()) {
+      const auto index=size_t(info.slot);const auto& slot=snapshot.textureSlots[index];
+      // A packed SG source shares one Color resource. Collapse its reciprocal
+      // pair, while keeping an empty packed-source row beside legacy roughness.
+      if(slot.coupledSlot && size_t(*slot.coupledSlot)<index &&
+          snapshot.textureSlots[size_t(*slot.coupledSlot)].coupledSlot==info.slot) continue;
+      ImGui::PushID(int(index));
+      const auto* label=slot.label.empty()?info.label.data():slot.label.c_str();
+      if(ImGui::TreeNode(label)) {
+        if(slot.coupledSlot) ImGui::TextWrapped("Shared source with %s",
+            container::geometry::gltf::GltfMaterialTextureSlotDescription(*slot.coupledSlot).label.data());
+        ImGui::TextDisabled("%s",slot.coupledSlot?"sRGB color / linear alpha":slot.srgb?"sRGB color":"Linear data");
+        if(slot.bound) ImGui::TextWrapped("File: %s",slot.file.empty()?"Retained image":slot.file.c_str());
+        else ImGui::TextDisabled("Empty texture slot");
+        if(!slot.error.empty()) ImGui::TextWrapped("%s",slot.error.c_str());
+        auto& draft=materialTextureDrafts_[index];
+        if(!draft.initialized || draft.authoredTexture!=slot.authoredTexture || draft.evaluatedTexture!=slot.evaluatedTexture) {
+          auto path=std::move(draft.path);
+          draft={};draft.initialized=true;draft.authoredTexture=slot.authoredTexture;draft.evaluatedTexture=slot.evaluatedTexture;
+          // File identity can be an embedded label or an asset-relative URI.
+          // Keep only a path the user entered, including after a successful
+          // replacement, so repeating it never treats that label as a file.
+          draft.path=std::move(path);
+        }
+        draft.resourceRevision=snapshot.resourceRevision;
+        if(!draft.mappingDirty) {
+          draft.texCoord=slot.texCoord;draft.channel=slot.channel;draft.offset=slot.offset;draft.scale=slot.scale;draft.rotation=slot.rotation;
+        }
+        if(!draft.samplerDirty) draft.sampler=slot.sampler;
+        if(draft.sourceTexture && std::ranges::find(snapshot.textureChoices,*draft.sourceTexture,&MaterialTextureChoice::sourceTexture)==snapshot.textureChoices.end())
+          draft.sourceTexture.reset();
+        const auto mappingPatch=[&] {
+          container::geometry::gltf::GltfMaterialTextureMappingPatch patch;
+          if(draft.texCoord!=slot.texCoord) patch.texCoord=draft.texCoord;
+          if(slot.channelEditable && draft.channel!=slot.channel) patch.channel=draft.channel;
+          if(draft.offset!=slot.offset) patch.offset=draft.offset;
+          if(draft.scale!=slot.scale) patch.scale=draft.scale;
+          if(draft.rotation!=slot.rotation) patch.rotation=draft.rotation;
+          return patch;
+        };
+        const auto request=[&](TextureOperation operation) {
+          TextureRequest value;value.sourceMaterial=snapshot.target.sourceMaterial;value.slot=info.slot;
+          value.operation=operation;value.expectedResourceRevision=snapshot.resourceRevision;return value;
+        };
+        const auto queue=[&](TextureRequest value) {queueMaterialTextureEditRequest({snapshot.target,std::move(value)});};
+        ImGui::BeginDisabled(!snapshot.textureEditingAvailable || !slot.available || transactionPending);
+        ImGui::InputTextWithHint("Image path","PNG, JPEG, DDS, KTX2 or other supported image",&draft.path);
+        ImGui::BeginDisabled(draft.path.empty());
+        if(ImGui::Button(slot.bound?"Replace from file":"Import image")) report([&] {
+          auto value=request(TextureOperation::ImportFile);value.path=draft.path;
+          if(slot.samplerEditable) value.sampler=draft.sampler;
+          if(slot.mappingEditable && draft.mappingDirty) value.mapping=mappingPatch();
+          queue(std::move(value));
+        });
+        ImGui::EndDisabled();ImGui::SameLine();ImGui::BeginDisabled(!slot.bound);
+        if(ImGui::Button("Clear slot")) report([&] {queue(request(TextureOperation::Clear));});
+        ImGui::EndDisabled();
+        const auto selected=std::ranges::find_if(snapshot.textureChoices,[&](const auto& choice) {
+          return draft.sourceTexture && choice.sourceTexture==*draft.sourceTexture;
+        });
+        if(ImGui::BeginCombo("Existing image",selected==snapshot.textureChoices.end()?"Choose a texture":selected->label.c_str())) {
+          ImGuiListClipper clipper;clipper.Begin(int(snapshot.textureChoices.size()));
+          while(clipper.Step()) for(int row=clipper.DisplayStart;row<clipper.DisplayEnd;++row) {
+            const auto& choice=snapshot.textureChoices[size_t(row)];ImGui::PushID(int(choice.sourceTexture));
+            ImGui::BeginDisabled(!(slot.srgb?choice.colorAvailable:choice.dataAvailable));
+            if(ImGui::Selectable(choice.label.c_str(),draft.sourceTexture==choice.sourceTexture)) draft.sourceTexture=choice.sourceTexture;
+            ImGui::EndDisabled();
+            if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !choice.file.empty()) ImGui::SetTooltip("%s",choice.file.c_str());
+            ImGui::PopID();
+          }
+          ImGui::EndCombo();
+        }
+        ImGui::BeginDisabled(!draft.sourceTexture);
+        if(ImGui::Button("Use selected texture")) report([&] {
+          auto value=request(TextureOperation::BindExisting);value.sourceTexture=draft.sourceTexture;
+          if(slot.samplerEditable && draft.samplerDirty) value.sampler=draft.sampler;
+          if(slot.mappingEditable && draft.mappingDirty) value.mapping=mappingPatch();
+          queue(std::move(value));
+        });
+        ImGui::EndDisabled();
+        if(ImGui::TreeNode("UV mapping")) {
+          ImGui::BeginDisabled(!slot.bound || !slot.mappingEditable);
+          int uv=int(draft.texCoord);
+          if(ImGui::Combo("Coordinates",&uv,"UV0\0UV1\0")) {draft.texCoord=uint32_t(uv);draft.mappingDirty=true;}
+          if(slot.channelEditable) {
+            int channel=int(draft.channel);
+            if(ImGui::Combo("Channel",&channel,"Red\0Green\0Blue\0Alpha\0RGB\0")) {draft.channel=uint32_t(channel);draft.mappingDirty=true;}
+          } else ImGui::TextDisabled("Channels are defined by this material slot.");
+          draft.mappingDirty|=ImGui::InputScalarN("Offset",ImGuiDataType_Double,draft.offset.data(),2,nullptr,nullptr,"%.6g");
+          draft.mappingDirty|=ImGui::InputScalarN("Scale",ImGuiDataType_Double,draft.scale.data(),2,nullptr,nullptr,"%.6g");
+          draft.mappingDirty|=ImGui::InputDouble("Rotation (radians)",&draft.rotation,0.,0.,"%.6g");
+          ImGui::BeginDisabled(container::material::MaterialTextureMappingEmpty(mappingPatch()));
+          if(ImGui::Button("Apply mapping")) report([&] {auto value=request(TextureOperation::EditMapping);value.mapping=mappingPatch();queue(std::move(value));});
+          ImGui::EndDisabled();ImGui::SameLine();
+          if(ImGui::Button("Reset mapping")) report([&] {
+            auto value=request(TextureOperation::EditMapping);value.mapping.texCoord=std::monostate{};
+            value.mapping.offset=std::monostate{};value.mapping.scale=std::monostate{};value.mapping.rotation=std::monostate{};
+            if(slot.channelEditable) value.mapping.channel=std::monostate{};queue(std::move(value));
+          });
+          ImGui::SameLine();if(ImGui::Button("Cancel mapping")) draft.mappingDirty=false;
+          ImGui::EndDisabled();ImGui::TreePop();
+        }
+        if(ImGui::TreeNode("Sampler")) {
+          ImGui::BeginDisabled(!slot.samplerEditable);
+          const auto samplerCombo=[&](const char* name,int& value,const char* labels,std::span<const int> values) {
+            int selected=0;for(size_t i=0;i<values.size();++i) if(values[i]==value) selected=int(i);
+            if(ImGui::Combo(name,&selected,labels)) {value=values[size_t(selected)];draft.samplerDirty=true;}
+          };
+          static constexpr std::array minValues{-1,9728,9729,9984,9985,9986,9987};
+          static constexpr std::array magValues{-1,9728,9729};
+          static constexpr std::array wrapValues{10497,33071,33648};
+          samplerCombo("Minification",draft.sampler.minFilter,"Default (trilinear)\0Nearest\0Linear\0Nearest, nearest mip\0Linear, nearest mip\0Nearest, linear mip\0Linear, linear mip\0",minValues);
+          samplerCombo("Magnification",draft.sampler.magFilter,"Default (linear)\0Nearest\0Linear\0",magValues);
+          samplerCombo("Wrap U",draft.sampler.wrapS,"Repeat\0Clamp to edge\0Mirrored repeat\0",wrapValues);
+          samplerCombo("Wrap V",draft.sampler.wrapT,"Repeat\0Clamp to edge\0Mirrored repeat\0",wrapValues);
+          ImGui::BeginDisabled(!slot.bound || !draft.samplerDirty || draft.sampler==slot.sampler);
+          if(ImGui::Button("Apply sampler")) report([&] {auto value=request(TextureOperation::EditSampler);value.sampler=draft.sampler;queue(std::move(value));});
+          ImGui::EndDisabled();ImGui::SameLine();if(ImGui::Button("Cancel sampler")) draft.samplerDirty=false;
+          ImGui::TextDisabled("A shared image keeps its other material bindings.");
+          ImGui::EndDisabled();ImGui::TreePop();
+        }
+        ImGui::EndDisabled();ImGui::TreePop();
+      }
+      ImGui::PopID();
+    }
+    ImGui::TreePop();
+  }
+  for(const auto& info:container::geometry::gltf::GltfMaterialPropertyRegistry()) {
+    const auto index=size_t(info.property);const auto& number=snapshot.numeric[index];
+    ImGui::PushID(int(index));
+    ImGui::TextWrapped("%s",kMaterialPropertyLabels[index]);
+    auto value=materialDraftProperty_==info.property?materialNumericDraft_:number.authored;
+    if(info.property==MaterialProperty::AttenuationDistance && !std::isfinite(value[0])) {
+      ImGui::TextUnformatted("Unlimited");ImGui::SameLine();
+      if(ImGui::SmallButton("Set distance")) report([&] {MaterialPatch patch;patch.values.push_back({info.property,1.});commit(std::move(patch));});
+    } else {
+      double minimum=unitMaterialProperty(info.property)?0.:-std::numeric_limits<float>::max();
+      double maximum=unitMaterialProperty(info.property)?1.:std::numeric_limits<float>::max();
+      ImGui::SetNextItemWidth(std::max(80.f,ImGui::GetContentRegionAvail().x-60.f));
+      const bool changed=ImGui::DragScalarN("##Value",ImGuiDataType_Double,value.data(),number.components,
+          .01f,&minimum,&maximum,"%.6g",ImGuiSliderFlags_AlwaysClamp);
+      const bool activated=ImGui::IsItemActivated(),deactivated=ImGui::IsItemDeactivated();
+      if(activated && materialDraftProperty_!=info.property) report([&] {
+        finishMaterialInspectorGesture(false);
+        if(nextMaterialGesture_>((uint64_t(1)<<53)-1)) throw std::overflow_error("Material gesture identities exhausted");
+        container::material::GltfMaterialEditRequest request;
+        request.sourceMaterial=snapshot.target.sourceMaterial;request.gestureId=nextMaterialGesture_;request.phase=MaterialPhase::Begin;
+        request.patch.values.push_back({info.property,materialNumericValue(value,number.components)});
+        queueMaterialEditRequest({snapshot.target,std::move(request)});
+        materialDraftProperty_=info.property;materialNumericDraft_=value;materialGesture_=nextMaterialGesture_++;
+      });
+      if(materialDraftProperty_==info.property) {
+        if(changed) {
+          materialNumericDraft_=value;
+          if(!activated) report([&] {
+            container::material::GltfMaterialEditRequest request;
+            request.sourceMaterial=snapshot.target.sourceMaterial;request.gestureId=materialGesture_;request.phase=MaterialPhase::Update;
+            request.patch.values.push_back({info.property,materialNumericValue(value,number.components)});
+            queueMaterialEditRequest({snapshot.target,std::move(request)});
+          });
+        }
+        if(deactivated) report([&] {finishMaterialInspectorGesture(false);});
+      }
+    }
+    ImGui::SameLine();
+    if(ImGui::SmallButton("Reset")) report([&] {MaterialPatch patch;patch.values.push_back({info.property,std::monostate{}});commit(std::move(patch));});
+    if(ImGui::IsItemHovered()) {
+      ImGui::BeginTooltip();ImGui::TextUnformatted("Restore this value's default:");
+      for(size_t component=0;component<number.components;++component) {
+        if(component) ImGui::SameLine();
+        if(std::isfinite(number.defaults[component])) ImGui::Text("%.6g",number.defaults[component]);
+        else ImGui::TextUnformatted("unlimited");
+      }
+      ImGui::EndTooltip();
+    }
+    if(!number.present) {ImGui::SameLine();ImGui::TextDisabled("default");}
+    if(number.animated) {
+      ImGui::TextDisabled("Animated; playback uses the curve. Current:");ImGui::SameLine();
+      for(size_t component=0;component<number.components;++component) {
+        if(component) ImGui::SameLine();ImGui::TextDisabled("%.6g",number.evaluated[component]);
+      }
+    }
+    ImGui::PopID();
+  }
+  if(ImGui::TreeNode("Material features")) {
+    for(size_t i=0;i<snapshot.extensions.size();++i) {
+      ImGui::PushID(int(i));bool enabled=snapshot.extensions[i];
+      ImGui::BeginDisabled(enabled && snapshot.animatedExtensions[i]);
+      if(ImGui::Checkbox(kMaterialExtensionLabels[i],&enabled)) report([&] {
+        MaterialPatch patch;patch.extensions.push_back({MaterialExtension(i),enabled});commit(std::move(patch));
+      });
+      ImGui::EndDisabled();
+      if(snapshot.animatedExtensions[i]) {ImGui::SameLine();ImGui::TextDisabled("animated");}
+      ImGui::PopID();
+    }
+    ImGui::TreePop();
+  }
+  if(!materialInspectorError_.empty()) ImGui::TextWrapped("%s",materialInspectorError_.c_str());
+  if(!snapshot.error.empty()) ImGui::TextWrapped("%s",snapshot.error.c_str());
+  ImGui::PopID();ImGui::PopID();
+}
 
 GuiPanelBounds constrainGuiPanelToWorkArea(glm::vec2 workPosition,
                                           glm::vec2 workSize,
@@ -1667,15 +2762,25 @@ GuiPanelBounds constrainGuiPanelToWorkArea(glm::vec2 workPosition,
   return panel;
 }
 
+bool isGltfMergePath(std::string_view path) {
+  if (path.empty() || path.find('\0') != std::string_view::npos) return false;
+  const auto extension = ToLowerAscii(container::util::pathToUtf8(
+      container::util::pathFromUtf8(path).extension()));
+  return extension == ".gltf" || extension == ".glb";
+}
+
 std::optional<size_t> drawSampleModelList(
     std::span<const SampleModelOption> models, std::string &filter,
-    int selectedIndex) {
+    int selectedIndex, bool gltfOnly) {
   ImGui::InputTextWithHint("##SampleModelFilter", "Search model or path", &filter);
   const std::string search = ToLowerAscii(filter);
   std::vector<size_t> matches;
   matches.reserve(models.size());
   int selectedMatch = -1;
+  size_t eligibleCount = 0;
   for (size_t index = 0; index < models.size(); ++index) {
+    if (gltfOnly && !isGltfMergePath(models[index].path)) continue;
+    ++eligibleCount;
     if (!search.empty() &&
         ToLowerAscii(models[index].label).find(search) == std::string::npos &&
         ToLowerAscii(models[index].path).find(search) == std::string::npos)
@@ -1684,7 +2789,7 @@ std::optional<size_t> drawSampleModelList(
       selectedMatch = static_cast<int>(matches.size());
     matches.push_back(index);
   }
-  ImGui::Text("%zu / %zu models", matches.size(), models.size());
+  ImGui::Text("%zu / %zu models", matches.size(), eligibleCount);
   const float height = std::min(
       ImGui::GetTextLineHeightWithSpacing() * 12.0f,
       std::max(60.0f, ImGui::GetMainViewport()->WorkSize.y * 0.5f));
@@ -1713,46 +2818,289 @@ std::optional<size_t> drawSampleModelList(
   return choice;
 }
 
+void GuiManager::drawSceneNodeControls(
+    const container::scene::SceneGraph &sceneGraph, uint32_t selectedNode,
+    const TransformControls &selectedTransform,
+    const std::function<void(uint32_t)> &selectNode,
+    const std::function<void(uint32_t, const TransformControls &)> &applyTransform) {
+  const auto &renderableNodes = sceneGraph.renderableNodes();
+  bool selectionChanged = false;
+  if (!renderableNodes.empty()) {
+    const auto *selectedEntry = sceneGraph.getNode(selectedNode);
+    uint32_t activeMeshNode = selectedEntry && selectedEntry->renderable
+        ? selectedNode : container::scene::SceneGraph::kInvalidNode;
+
+    std::string selectedLabel =
+        activeMeshNode == container::scene::SceneGraph::kInvalidNode
+            ? "None"
+            : "Node " + std::to_string(activeMeshNode);
+    if (activeMeshNode != container::scene::SceneGraph::kInvalidNode) {
+      if (const auto *node = sceneGraph.getNode(activeMeshNode);
+          node != nullptr &&
+          node->primitiveIndex != container::scene::SceneGraph::kInvalidNode) {
+        selectedLabel += " / Primitive " + std::to_string(node->primitiveIndex);
+      }
+    }
+
+    if (ImGui::BeginCombo("Mesh", selectedLabel.c_str())) {
+      const bool noneSelected =
+          activeMeshNode == container::scene::SceneGraph::kInvalidNode;
+      if (ImGui::Selectable("None", noneSelected)) {
+        activeMeshNode = container::scene::SceneGraph::kInvalidNode;
+        selectionChanged = activeMeshNode != selectedNode;
+        selectNode(activeMeshNode);
+      }
+      if (noneSelected) {
+        ImGui::SetItemDefaultFocus();
+      }
+      ImGuiListClipper clipper;
+      const auto count = static_cast<int>(std::min<size_t>(
+          renderableNodes.size(), static_cast<size_t>(std::numeric_limits<int>::max())));
+      clipper.Begin(count, ImGui::GetTextLineHeightWithSpacing());
+      // Include the selected mesh on opening so default focus can scroll to
+      // it, even when most rows are clipped. Closed frames need no list scan.
+      if (ImGui::IsWindowAppearing() && !noneSelected) {
+        const auto found = std::ranges::find(renderableNodes, activeMeshNode);
+        const auto row = found - renderableNodes.begin();
+        if (row < count)
+          clipper.IncludeItemByIndex(static_cast<int>(row));
+      }
+      while (clipper.Step()) {
+        for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
+          const auto nodeIndex = renderableNodes[static_cast<size_t>(row)];
+          std::string label = "Node " + std::to_string(nodeIndex);
+          if (const auto *node = sceneGraph.getNode(nodeIndex);
+              node != nullptr && node->primitiveIndex !=
+                                     container::scene::SceneGraph::kInvalidNode) {
+            label += " / Primitive " + std::to_string(node->primitiveIndex);
+          }
+          const bool selected = nodeIndex == activeMeshNode;
+          if (ImGui::Selectable(label.c_str(), selected)) {
+            activeMeshNode = nodeIndex;
+            selectionChanged = activeMeshNode != selectedNode;
+            selectNode(nodeIndex);
+          }
+          if (selected) {
+            ImGui::SetItemDefaultFocus();
+          }
+        }
+      }
+      ImGui::EndCombo();
+    }
+  }
+  // This snapshot belongs to the selection at entry. A picker choice needs a
+  // fresh snapshot next frame before its transform can be edited.
+  if (!selectionChanged) {
+    if (const auto *selected = sceneGraph.getNode(selectedNode)) {
+      auto editable = selectedTransform;
+      if (DrawTransformControls(
+              selected->renderable ? "Mesh Transform" : "Node Transform", editable,
+              true, 0.05f, &sceneEditGesture_, &nextSceneEditGesture_,
+              &sceneEditGestureActive_))
+        applyTransform(selectedNode, editable);
+    }
+  }
+}
+
 void GuiManager::drawSceneHierarchy(
     const container::scene::SceneGraph &sceneGraph, uint32_t rootSceneNode,
     uint32_t selectedMeshNode,
     const std::function<void(uint32_t)> &selectSceneNode,
     const std::function<void(uint32_t)> &focusSceneNode,
-    const std::function<void(uint32_t, container::scene::NodeFlag, bool)> &setSceneNodeFlag,
+    const std::function<void(uint32_t, bool)> &setSceneNodeVisible,
     const std::function<void(uint32_t, std::optional<uint32_t>)>
-        &reparentSceneNode) {
+        &reparentSceneNode,
+    const std::function<void(uint32_t, bool)> &setSceneNodeSelectable,
+    const std::function<void(uint32_t, bool)> &setSceneNodeHoverable) {
+  auto& inlineEdit = sceneNodeInlineRename_;
+  const std::function<void()> cancelInline = [this] { CancelInlineSceneRename(sceneNodeInlineRename_); };
+  if (inlineEdit.active) {
+    const auto* target = sceneGraph.getNode(inlineEdit.node);
+    if (inlineEdit.graphIdentity != sceneGraph.identity() ||
+        inlineEdit.hierarchyRevision != sceneGraph.hierarchyRevision() ||
+        !target || target->retired || target->name != inlineEdit.originalName ||
+        !sceneGraph.isNodeInActiveHierarchy(inlineEdit.node))
+      cancelInline();
+  }
+  const bool modalActive = sceneNodeAuthoringUi_.openRequested ||
+                          ImGui::IsPopupOpen("###SceneNodeAuthoring");
+  const std::function<void(uint32_t)> beginInline = [this, &sceneGraph, modalActive](uint32_t selected) {
+    try {
+      if (modalActive) throw std::invalid_argument("Finish or cancel the open node editor first");
+      const auto target = container::scene::ResolveSceneNodeAuthoringTarget(sceneGraph, selected,
+          container::scene::SceneNodeAuthoringPurpose::Rename);
+      const auto& name = sceneGraph.getNode(target)->name;
+      if (name.size() > 4096 || name.find('\0') != std::string::npos)
+        throw std::invalid_argument("Use Rename... to replace this imported name");
+      if (sceneNodeInlineRenameSession_ == UINT64_MAX)
+        throw std::overflow_error("Inline rename session limit reached");
+      SceneNodeInlineRenameUiState draft;
+      draft.graphIdentity = sceneGraph.identity(); draft.hierarchyRevision = sceneGraph.hierarchyRevision();
+      draft.session = ++sceneNodeInlineRenameSession_; draft.node = target; draft.originalName = name;
+      std::copy(name.begin(), name.end(), draft.name.begin());
+      draft.active = draft.focusRequested = draft.revealRequested = true;
+      // setExpanded only marks the cache dirty. Context-menu callbacks run
+      // during row iteration, so its row storage must not be rebuilt here.
+      size_t visited{};
+      for (auto parent = sceneGraph.getNode(target)->parent; parent != container::scene::SceneGraph::kInvalidNode;
+           parent = sceneGraph.getNode(parent)->parent) {
+        if (!sceneGraph.getNode(parent) || ++visited > sceneGraph.nodeCount())
+          throw std::invalid_argument("Inline rename has invalid target ancestry");
+        sceneHierarchyCache_.setExpanded(parent, true);
+      }
+      CancelInlineSceneRename(sceneNodeInlineRename_); sceneNodeInlineRename_ = std::move(draft);
+    } catch (const std::exception& error) { setStatusMessage(error.what()); }
+  };
+  const std::function<void()> commitInline = [this, &sceneGraph, cancelInline] {
+    auto& draft = sceneNodeInlineRename_;
+    if (!draft.active) return;
+    try {
+      if (draft.graphIdentity != sceneGraph.identity() || draft.hierarchyRevision != sceneGraph.hierarchyRevision() ||
+          !sceneGraph.getNode(draft.node) || sceneGraph.getNode(draft.node)->name != draft.originalName ||
+          container::scene::ResolveSceneNodeAuthoringTarget(sceneGraph, draft.node,
+              container::scene::SceneNodeAuthoringPurpose::Rename) != draft.node) {
+        cancelInline(); return;
+      }
+      const std::string name(draft.name.data());
+      if (name != draft.originalName)
+        queueSceneNodeAuthoringRequest({SceneNodeAuthoringAction::Rename,draft.graphIdentity,draft.node,name});
+      cancelInline();
+    } catch (const std::exception& error) {
+      draft.error = error.what(); draft.focusRequested = true;
+      setStatusMessage(draft.error);
+    }
+  };
+  const std::function<void(uint32_t, SceneNodeAuthoringAction)> authorNode =
+      [this, &sceneGraph](uint32_t selected, SceneNodeAuthoringAction action) {
+        try {
+          const auto purpose = action == SceneNodeAuthoringAction::Rename
+              ? container::scene::SceneNodeAuthoringPurpose::Rename
+              : action == SceneNodeAuthoringAction::CreateEmpty
+                  ? container::scene::SceneNodeAuthoringPurpose::CreateEmptyChild
+                  : action == SceneNodeAuthoringAction::DuplicateSubtree
+                      ? container::scene::SceneNodeAuthoringPurpose::DuplicateSubtree
+                      : container::scene::SceneNodeAuthoringPurpose::DeleteSubtree;
+          const auto target = container::scene::ResolveSceneNodeAuthoringTarget(
+              sceneGraph, selected, purpose);
+          CancelInlineSceneRename(sceneNodeInlineRename_);
+          sceneNodeAuthoringUi_.request = {action, sceneGraph.identity(), target,
+              action == SceneNodeAuthoringAction::CreateEmpty
+                  ? "Empty" : sceneGraph.getNode(target)->name};
+          if(action == SceneNodeAuthoringAction::DuplicateSubtree) {
+            auto& name=sceneNodeAuthoringUi_.request.name;
+            name+=" copy";
+            try { container::scene::ValidateSceneNodeName(name); }
+            catch(const std::invalid_argument&) { name="Node copy"; }
+          }
+          sceneNodeAuthoringUi_.error.clear();
+          sceneNodeAuthoringUi_.openRequested = true;
+        } catch (const std::exception& error) {
+          setStatusMessage(error.what());
+        }
+      };
   DrawSceneHierarchyPanel(
       sceneGraph,
       SceneHierarchyPanelActions{.rootSceneNode = rootSceneNode,
                                  .selectedMeshNode = selectedMeshNode,
                                  .selectSceneNode = &selectSceneNode,
                                  .focusSceneNode = &focusSceneNode,
-                                 .setSceneNodeFlag = &setSceneNodeFlag,
-                                 .reparentSceneNode = &reparentSceneNode},
-      sceneHierarchyParentCandidateCache_);
+                                 .setSceneNodeVisible = &setSceneNodeVisible,
+                                 .reparentSceneNode = &reparentSceneNode,
+                                 .setSceneNodeSelectable = &setSceneNodeSelectable,
+                                 .setSceneNodeHoverable = &setSceneNodeHoverable,
+                                 .authorSceneNode = &authorNode,
+                                 .inlineRename = &sceneNodeInlineRename_,
+                                 .beginInlineRename = &beginInline,
+                                 .commitInlineRename = &commitInline,
+                                 .cancelInlineRename = &cancelInline},
+      sceneHierarchyParentCandidateCache_, sceneHierarchyCache_,
+      sceneHierarchySubmittedRows_);
+
+  auto& edit = sceneNodeAuthoringUi_;
+  const char* title = edit.request.action == SceneNodeAuthoringAction::Rename
+      ? "Rename node###SceneNodeAuthoring"
+      : edit.request.action == SceneNodeAuthoringAction::CreateEmpty
+          ? "Add empty child###SceneNodeAuthoring"
+          : edit.request.action == SceneNodeAuthoringAction::DuplicateSubtree
+              ? "Duplicate subtree###SceneNodeAuthoring" : "Delete subtree###SceneNodeAuthoring";
+  const bool opening = std::exchange(edit.openRequested, false);
+  if (opening) ImGui::OpenPopup(title);
+  if (ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (edit.request.graphIdentity != sceneGraph.identity() ||
+        !sceneGraph.getNode(edit.request.node) || sceneGraph.isNodeRetired(edit.request.node)) {
+      ImGui::CloseCurrentPopup();
+    } else {
+      const bool deleting = edit.request.action == SceneNodeAuthoringAction::DeleteSubtree;
+      bool enter = false;
+      if (deleting) {
+        ImGui::TextWrapped("Delete %s and its children?", edit.request.name.empty()
+            ? "this node" : edit.request.name.c_str());
+        ImGui::TextDisabled("Undo restores the subtree.");
+        if (gltfAnimationControls().selectedClip >= 0)
+          ImGui::TextDisabled("Animation pauses at the current pose.");
+      } else {
+        if (opening) ImGui::SetKeyboardFocusHere();
+        enter = ImGui::InputText("Name", &edit.request.name, ImGuiInputTextFlags_EnterReturnsTrue);
+      }
+      if (!edit.error.empty()) ImGui::TextWrapped("%s", edit.error.c_str());
+      if (ImGui::Button(deleting ? "Delete" : "Apply") || enter) {
+        try {
+          queueSceneNodeAuthoringRequest(edit.request);
+          ImGui::CloseCurrentPopup();
+        } catch (const std::exception& error) {
+          edit.error = error.what();
+        }
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+}
+
+void GuiManager::queueSceneNodeAuthoringRequest(SceneNodeAuthoringRequest request) {
+  if (request.action != SceneNodeAuthoringAction::Rename &&
+      request.action != SceneNodeAuthoringAction::CreateEmpty &&
+      request.action != SceneNodeAuthoringAction::DuplicateSubtree &&
+      request.action != SceneNodeAuthoringAction::DeleteSubtree)
+    throw std::invalid_argument("Unknown scene node authoring action");
+  if (request.action != SceneNodeAuthoringAction::DeleteSubtree &&
+      !(request.action == SceneNodeAuthoringAction::DuplicateSubtree && request.name.empty()))
+    container::scene::ValidateSceneNodeName(request.name);
+  if (!request.graphIdentity || request.node == container::scene::SceneGraph::kInvalidNode)
+    throw std::invalid_argument("Choose a scene node before editing its name or children");
+  sceneNodeAuthoringRequest_ = std::move(request);
+}
+
+std::optional<SceneNodeAuthoringRequest> GuiManager::consumeSceneNodeAuthoringRequest() {
+  return std::exchange(sceneNodeAuthoringRequest_, std::nullopt);
+}
+
+void GuiManager::setSceneHierarchyNodeExpanded(
+    const container::scene::SceneGraph &sceneGraph, uint32_t nodeIndex,
+    bool expanded) {
+  sceneHierarchyCache_.refresh(sceneGraph);
+  sceneHierarchyCache_.setExpanded(nodeIndex, expanded);
 }
 
 void GuiManager::drawBimElementBrowser(const BimInspectionState &inspection) {
-  if (!inspection.hasScene || !ImGui::TreeNode("BIM Elements")) return;
-  ImGui::InputTextWithHint("##BimElementSearch",
-                            "Search identity, type, name, storey or material",
-                            &bimElementSearch_);
-  const std::string search = ToLowerAscii(bimElementSearch_);
-  std::vector<size_t> matches;
-  matches.reserve(inspection.elements.size());
-  for (size_t index = 0; index < inspection.elements.size(); ++index) {
-    const auto &element = inspection.elements[index];
-    if (!search.empty() &&
-        ToLowerAscii(element.guid).find(search) == std::string::npos &&
-        ToLowerAscii(element.sourceId).find(search) == std::string::npos &&
-        ToLowerAscii(element.type).find(search) == std::string::npos &&
-        ToLowerAscii(element.displayName).find(search) == std::string::npos &&
-        ToLowerAscii(element.storeyName).find(search) == std::string::npos &&
-        ToLowerAscii(element.materialName).find(search) == std::string::npos)
-      continue;
-    matches.push_back(index);
+  if (!inspection.hasScene) {
+    bimElementSearchCache_.clear();
+    return;
   }
+  if (!ImGui::TreeNode("BIM Elements"))
+    return;
+  ImGui::InputTextWithHint("##BimElementSearch",
+                           "Search identity, type, name, storey or material",
+                           &bimElementSearch_);
+  bimElementSearchCache_.refresh(
+      inspection.metadataSource != nullptr ? inspection.metadataSource
+                                           : inspection.elements.data(),
+      inspection.metadataRevision, inspection.elements);
+  const auto matches = bimElementSearchCache_.matches(bimElementSearch_);
   ImGui::Text("%zu / %zu elements", matches.size(), inspection.elements.size());
+  if (matches.empty())
+    ImGui::TextDisabled("No matching elements");
   if (ImGui::BeginTable("BimElementsTable", 7,
                         ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg |
                             ImGuiTableFlags_Resizable |
@@ -1768,6 +3116,9 @@ void GuiManager::drawBimElementBrowser(const BimInspectionState &inspection) {
     ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthFixed, 160.0f);
     ImGui::TableSetupScrollFreeze(2, 1);
     ImGui::TableHeadersRow();
+    // Table headers scope their IDs by column index. Keep row controls in a
+    // separate namespace, including Focus on original metadata row one.
+    ImGui::PushID("BimElementRows");
     ImGuiListClipper clipper;
     clipper.Begin(static_cast<int>(std::min<size_t>(
         matches.size(), static_cast<size_t>(std::numeric_limits<int>::max()))),
@@ -1779,15 +3130,24 @@ void GuiManager::drawBimElementBrowser(const BimInspectionState &inspection) {
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         const bool valid = element.objectIndex != std::numeric_limits<uint32_t>::max();
-        const std::string identity = !element.guid.empty() ? element.guid :
-            (!element.sourceId.empty() ? element.sourceId :
-             "Object " + std::to_string(element.objectIndex));
+        const std::string identity =
+            !element.guid.empty()
+                ? std::string(element.guid)
+                : (!element.sourceId.empty()
+                       ? std::string(element.sourceId)
+                       : "Object " + std::to_string(element.objectIndex));
+        const std::string singleLineIdentity =
+            identity.find_first_of("\r\n\t") == std::string::npos
+                ? std::string{}
+                : SingleLineDisplayText(identity);
         ImGui::BeginDisabled(!valid || !inspection.selectObject);
-        if (ImGui::Selectable(identity.c_str(),
-                               inspection.hasSelection &&
-                                   inspection.selectedObjectIndex == element.objectIndex,
-                               ImGuiSelectableFlags_None,
-                               ImVec2(0.0f, ImGui::GetFrameHeight())))
+        if (ImGui::Selectable(
+                singleLineIdentity.empty() ? identity.c_str()
+                                           : singleLineIdentity.c_str(),
+                inspection.hasSelection &&
+                    inspection.selectedObjectIndex == element.objectIndex,
+                ImGuiSelectableFlags_None,
+                ImVec2(0.0f, ImGui::GetFrameHeight())))
           inspection.selectObject(element.objectIndex);
         ImGui::EndDisabled();
         ShowItemTooltip(identity);
@@ -1796,18 +3156,19 @@ void GuiManager::drawBimElementBrowser(const BimInspectionState &inspection) {
         if (ImGui::Button("Focus")) inspection.focusObject(element.objectIndex);
         ImGui::EndDisabled();
         ImGui::TableNextColumn();
-        ImGui::TextUnformatted(element.type.c_str());
+        DrawSingleLineBimText(element.type);
         ImGui::TableNextColumn();
-        ImGui::TextUnformatted(element.displayName.c_str());
+        DrawSingleLineBimText(element.displayName);
         ImGui::TableNextColumn();
-        ImGui::TextUnformatted(element.storeyName.c_str());
+        DrawSingleLineBimText(element.storeyName);
         ImGui::TableNextColumn();
-        ImGui::TextUnformatted(element.materialName.c_str());
+        DrawSingleLineBimText(element.materialName);
         ImGui::TableNextColumn();
-        ImGui::TextUnformatted(element.sourceId.c_str());
+        DrawSingleLineBimText(element.sourceId);
         ImGui::PopID();
       }
     }
+    ImGui::PopID();
     ImGui::EndTable();
   }
   ImGui::TreePop();
@@ -1820,6 +3181,8 @@ CaptureBimMeasurementPointFromSelection(
   return captureBimMeasurementPointFromSelection(inspection, snapState);
 }
 
+GuiManager::GuiManager()
+    : openVdbAuthoring_(std::make_unique<OpenVdbAuthoringPanel>()) {}
 GuiManager::~GuiManager() = default;
 
 std::span<const container::renderer::BimCoordinationOverlayIssuePin>
@@ -2024,10 +3387,12 @@ int GuiManager::sampleModelIndexForPath(const std::string &path) const {
 }
 
 void GuiManager::queueModelLoadRequest(std::string path, float importScale,
-                                       std::string label) {
+                                       std::string label,
+                                       std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions) {
   pendingModelLoadRequest_ = ModelLoadRequest{.path = std::move(path),
                                               .importScale = importScale,
-                                              .label = std::move(label)};
+                                              .label = std::move(label),
+                                              .openVdbOptions = std::move(openVdbOptions)};
 }
 
 void GuiManager::queueModelUnloadRequest() {
@@ -2035,7 +3400,55 @@ void GuiManager::queueModelUnloadRequest() {
                                              .unload = true};
 }
 
+void GuiManager::queueModelMergeRequest(std::string path, std::string parentName,
+    std::optional<int> incomingScene, const glm::mat4& placementMatrix,
+    std::optional<std::array<double, 16>> authoredPlacement) {
+  if (!isGltfMergePath(path))
+    throw std::invalid_argument("Choose a .gltf or .glb file to import");
+  if (parentName.empty() || parentName.find('\0') != std::string::npos ||
+      std::ranges::all_of(parentName, [](unsigned char value) { return std::isspace(value) != 0; }))
+    throw std::invalid_argument("Enter a name for the imported scene's parent");
+  if (incomingScene && *incomingScene < 0)
+    throw std::invalid_argument("Scene index must be zero or greater");
+  std::array<double, 16> placement;
+  for (int column = 0; column < 4; ++column)
+    for (int row = 0; row < 4; ++row)
+      placement[size_t(column * 4 + row)] = placementMatrix[column][row];
+  container::geometry::gltf::ValidateGltfMergePlacement(placement);
+  if (authoredPlacement) {
+    container::geometry::gltf::ValidateGltfMergePlacement(*authoredPlacement);
+    for (int column = 0; column < 4; ++column)
+      for (int row = 0; row < 4; ++row)
+        if (static_cast<float>((*authoredPlacement)[size_t(column * 4 + row)]) != placementMatrix[column][row])
+          throw std::invalid_argument("Authored merge placement must match its binary32 runtime matrix");
+  }
+  ModelLoadRequest request;
+  request.label = path;
+  request.path = std::move(path);
+  request.merge = ModelMergeRequest{std::move(parentName), incomingScene, placementMatrix, std::move(authoredPlacement)};
+  pendingModelLoadRequest_ = std::move(request);
+}
+
 void GuiManager::resetModelInspectionState() {
+  lightEditControls_.setSnapshot({});
+  CancelInlineSceneRename(sceneNodeInlineRename_);
+  materialInspector_={};materialEditRequests_.clear();materialBindingSelectionRequest_.reset();
+  materialBindingOperationRequest_.reset();materialAssignmentDraft_.reset();
+  materialTextureEditRequest_.reset();materialTextureDrafts_={};
+  materialCatalogSelectionRequest_.reset();materialRetirementRequest_.reset();
+  resourceCatalog_={};resourceCatalogSelectionRequest_.reset();resourceRetirementRequest_.reset();resourceCatalogUiError_.clear();
+  materialDraftProperty_.reset();materialGesture_=0;materialNameActive_=false;materialNameEdited_=false;
+  materialNameDraft_.fill('\0');materialInspectorError_.clear();
+  savedScenePath_.clear();
+  sceneSaveRequest_.reset();
+  materialVariantControls_={};
+  gltfSceneControls_={};
+  // ImGui retains an active InputText buffer independently of std::string.
+  // Reload on its next submission so a completed model change cannot restore
+  // the old model's search text into the strings cleared below.
+  if (auto *context = ImGui::GetCurrentContext();
+      context != nullptr && context->InputTextState.ID != 0u)
+    context->InputTextState.ReloadUserBufAndMoveToEnd();
   bimFilterState_ = {};
   bimPhaseTimelineUiState_ = {};
   bimFloorPlanOverlayState_ = {};
@@ -2046,7 +3459,9 @@ void GuiManager::resetModelInspectionState() {
   bimQuickFilterSearch_.clear();
   bimPropertySearch_.clear();
   bimRelationshipSearch_.clear();
+  bimRelationshipBrowserCache_.clear();
   bimElementSearch_.clear();
+  bimElementSearchCache_.clear();
   sectionPlaneState_ = {};
   sectionPlaneAxis_ = 1;
   bimBoxClipState_ = {};
@@ -2056,6 +3471,8 @@ void GuiManager::resetModelInspectionState() {
   nextBimSelectionSetId_ = 1;
   bcfIssueOverlayPins_.clear();
   sceneHierarchyParentCandidateCache_ = {};
+  sceneHierarchyCache_.clear();
+  sceneHierarchySubmittedRows_ = 0u;
   bimMeasurementModelPath_.clear();
   bimMeasurementEffectiveImportScale_ = 1.0f;
   bimMeasurementObjectCount_ = 0;
@@ -2169,6 +3586,10 @@ void GuiManager::setRenderTechniqueDebugState(
   }
 }
 
+void GuiManager::setPhysicsPanelState(PhysicsPanelState state) {
+  physicsPanelState_ = std::move(state);
+}
+
 const GuiRenderTechniqueDebugState &
 GuiManager::renderTechniqueDebugState() const {
   return renderTechniqueDebugState_;
@@ -2190,20 +3611,21 @@ void GuiManager::startFrame() {
   imguiFrameOpen_ = true;
   if (!ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F5, false))
     shaderReloadRequested_ = true;
-  nodeTransformCancel_ = nodeTransformGestureActive_ &&
-      (ImGui::GetIO().AppFocusLost || ImGui::IsKeyPressed(ImGuiKey_Escape, false));
-  nodeTransformGestureActive_ = false;
+  sceneEditGestureActive_ = false;
   lightEditControls_.processInput();
-  // Text fields own their text undo while they are active.
+  // Text inputs keep their own text undo; scene shortcuts are routed globally
+  // only when no text editor is consuming them.
   if (!ImGui::GetIO().WantTextInput) {
     if (!savedScenePath_.empty() &&
         ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal))
       sceneSaveRequest_ = savedScenePath_;
     if (canRedoEdit_ &&
         (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Y, ImGuiInputFlags_RouteGlobal) ||
-         ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, ImGuiInputFlags_RouteGlobal)))
+         ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z,
+                         ImGuiInputFlags_RouteGlobal)))
       editHistoryRequest_ = EditHistoryRequest::Redo;
-    else if (canUndoEdit_ && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, ImGuiInputFlags_RouteGlobal))
+    else if (canUndoEdit_ &&
+             ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, ImGuiInputFlags_RouteGlobal))
       editHistoryRequest_ = EditHistoryRequest::Undo;
   }
 }
@@ -2788,7 +4210,6 @@ void GuiManager::drawViewportNavigationOverlay(
 
 void GuiManager::drawSceneControls(
     const container::scene::SceneGraph &sceneGraph,
-    bool canExportScene,
     const std::function<void(ScenePrimitiveKind)> &addScenePrimitive,
     const TransformControls &cameraTransform,
     const std::function<void(const TransformControls &)> &applyCameraTransform,
@@ -2806,12 +4227,14 @@ void GuiManager::drawSceneControls(
     uint32_t rootSceneNode,
     const std::function<void(uint32_t)> &selectMeshNode,
     const std::function<void(uint32_t)> &focusSceneNode,
-    const std::function<void(uint32_t, container::scene::NodeFlag, bool)> &setSceneNodeFlag,
+    const std::function<void(uint32_t, bool)> &setSceneNodeVisible,
     const std::function<void(uint32_t, std::optional<uint32_t>)>
         &reparentSceneNode,
     const TransformControls &meshTransform,
     const std::function<void(uint32_t, const TransformControls &)>
-        &applyMeshTransform) {
+        &applyMeshTransform,
+    const std::function<void(uint32_t, bool)> &setSceneNodeSelectable,
+    const std::function<void(uint32_t, bool)> &setSceneNodeHoverable) {
   if (!initialized_)
     return;
 
@@ -2829,7 +4252,8 @@ void GuiManager::drawSceneControls(
                            ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowSizeConstraints(ImVec2(minimum.x, minimum.y),
                                      ImVec2(limits.size.x, limits.size.y));
-  const bool controlsVisible = ImGui::Begin("Scene Controls");
+  const bool controlsVisible = ImGui::Begin("Scene Controls", nullptr,
+                                           ImGuiWindowFlags_MenuBar);
   const ImVec2 position = ImGui::GetWindowPos();
   const ImVec2 size = ImGui::GetWindowSize();
   const GuiPanelBounds constrained = constrainGuiPanelToWorkArea(
@@ -2839,11 +4263,75 @@ void GuiManager::drawSceneControls(
   if (controlsVisible && constrained.size != glm::vec2(size.x, size.y))
     ImGui::SetWindowSize(ImVec2(constrained.size.x, constrained.size.y));
   if (!controlsVisible) {
-    lightEditControls_.finishGesture();
     ImGui::End();
     drawRendererTelemetryWindow();
     return;
   }
+  enum class ControlsSection {
+    None, Project, GltfScene, Hierarchy, Selection, Material, Variants,
+    Animation, Physics, Volumes,
+    Rendering, Lighting, Shadows, Ddgi, PostProcess, Transforms, Bim, Diagnostics
+  };
+  ControlsSection requestedSection = ControlsSection::None;
+  bool focusTelemetry = false;
+  if (ImGui::BeginMenuBar()) {
+    if (ImGui::BeginMenu("Go to")) {
+      const auto sectionItem = [&](const char* label, ControlsSection section) {
+        if (ImGui::MenuItem(label)) requestedSection = section;
+      };
+      sectionItem("Import / save", ControlsSection::Project);
+      if (ImGui::MenuItem("glTF scenes", nullptr, false,
+                          !gltfSceneControls_.names.empty()))
+        requestedSection = ControlsSection::GltfScene;
+      if (gltfSceneControls_.names.empty())
+        ShowItemTooltip("Load a glTF asset to choose its scenes.",
+                        ImGuiHoveredFlags_AllowWhenDisabled);
+      sectionItem("Scene hierarchy", ControlsSection::Hierarchy);
+      sectionItem("Selected object", ControlsSection::Selection);
+      sectionItem("Materials and resources", ControlsSection::Material);
+      if (ImGui::MenuItem("Material variants", nullptr, false,
+                          !materialVariantControls_.names.empty()))
+        requestedSection = ControlsSection::Variants;
+      if (materialVariantControls_.names.empty())
+        ShowItemTooltip("Load a glTF asset with material variants to use this chooser.",
+                        ImGuiHoveredFlags_AllowWhenDisabled);
+      ImGui::Separator();
+      sectionItem("Animation / authored cameras", ControlsSection::Animation);
+      sectionItem("Physics", ControlsSection::Physics);
+      sectionItem("Volumes / OpenVDB tools", ControlsSection::Volumes);
+      ImGui::Separator();
+      sectionItem("Rendering / display / overlays", ControlsSection::Rendering);
+      sectionItem("Lights", ControlsSection::Lighting);
+      sectionItem("Shadows", ControlsSection::Shadows);
+      sectionItem("Global illumination (DDGI)", ControlsSection::Ddgi);
+      sectionItem("Exposure / anti-aliasing / bloom", ControlsSection::PostProcess);
+      sectionItem("Camera / scene transforms", ControlsSection::Transforms);
+      ImGui::Separator();
+      if (ImGui::MenuItem("BIM", nullptr, false, bimInspection.hasScene))
+        requestedSection = ControlsSection::Bim;
+      if (!bimInspection.hasScene)
+        ShowItemTooltip("Load a BIM model to use its inspection tools.",
+                        ImGuiHoveredFlags_AllowWhenDisabled);
+      sectionItem("Diagnostics / render passes", ControlsSection::Diagnostics);
+      if (ImGui::MenuItem("Renderer telemetry")) focusTelemetry = true;
+      ImGui::EndMenu();
+    }
+    if (ImGui::SmallButton("Selection"))
+      requestedSection = ControlsSection::Selection;
+    ShowItemTooltip("Jump to the selected object's controls.");
+    if (ImGui::SmallButton("Material"))
+      requestedSection = ControlsSection::Material;
+    ShowItemTooltip("Jump to resources, texture editing, material properties, Assign and Make unique.");
+    ImGui::EndMenuBar();
+  }
+  const auto sectionAnchor = [&](ControlsSection section) {
+    if (requestedSection != section) return false;
+    // SetScrollFromPosY takes a window-relative screen position and adds the
+    // current scroll itself. GetCursorPosY would count that scroll twice.
+    ImGui::SetScrollFromPosY(ImGui::GetCursorScreenPos().y -
+        ImGui::GetWindowPos().y - ImGui::GetStyle().WindowPadding.y, 0.0f);
+    return true;
+  };
   ImGui::BeginDisabled(!canUndoEdit_);
   if (ImGui::Button("Undo (Ctrl+Z)"))
     editHistoryRequest_ = EditHistoryRequest::Undo;
@@ -2858,6 +4346,7 @@ void GuiManager::drawSceneControls(
     ImGui::SetTooltip("Redo %s", redoEditLabel_.c_str());
   ImGui::EndDisabled();
   ImGui::Separator();
+  sectionAnchor(ControlsSection::Project);
   if (ImGui::Combo("Import scale", &importScaleIndex_,
                    kImportScaleLabels.data(),
                    static_cast<int>(kImportScaleLabels.size()))) {
@@ -2923,29 +4412,123 @@ void GuiManager::drawSceneControls(
     statusMessage_ = "Model unload requested";
   }
 
-  if (gltfSceneNames_.size() > 1 &&
-      ImGui::BeginCombo("glTF scene", gltfSceneNames_.at(gltfSceneIndex_).c_str())) {
-    for (uint32_t scene = 0; scene < gltfSceneNames_.size(); ++scene) {
-      ImGui::PushID(static_cast<int>(scene));
-      if (ImGui::Selectable(gltfSceneNames_[scene].c_str(), scene == gltfSceneIndex_))
-        gltfSceneRequest_ = scene;
-      if (scene == gltfSceneIndex_) ImGui::SetItemDefaultFocus();
-      ImGui::PopID();
+  if (ImGui::Button("Import / Merge glTF...")) {
+    mergeError_.clear();
+    if (mergeModelPathInput_.empty() && isGltfMergePath(modelPathInput_)) {
+      mergeModelPathInput_ = modelPathInput_;
+      selectedMergeSampleIndex_ = sampleModelIndexForPath(mergeModelPathInput_);
     }
-    ImGui::EndCombo();
+    ImGui::OpenPopup("Import glTF / GLB");
   }
+  if (ImGui::IsPopupOpen("Import glTF / GLB"))
+    ImGui::SetNextWindowSizeConstraints(ImVec2(std::min(360.0f, limits.size.x), 0),
+        ImVec2(limits.size.x, limits.size.y));
+  if (ImGui::BeginPopupModal("Import glTF / GLB", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::TextWrapped("Adds a file to the current scene under a named parent.");
+    if (ImGui::InputTextWithHint("File path", "Model.gltf or Model.glb", &mergeModelPathInput_))
+      selectedMergeSampleIndex_ = sampleModelIndexForPath(mergeModelPathInput_);
+    if (!sampleModelOptions_.empty()) {
+      const bool selected = selectedMergeSampleIndex_ >= 0 &&
+          size_t(selectedMergeSampleIndex_) < sampleModelOptions_.size();
+      const auto* preview = selected ? sampleModelOptions_[size_t(selectedMergeSampleIndex_)].label.c_str()
+                                     : "Choose a glTF / GLB sample";
+      if (ImGui::BeginCombo("Sample file", preview)) {
+        if (const auto choice = drawSampleModelList(sampleModelOptions_, mergeModelFilter_,
+                selectedMergeSampleIndex_, true)) {
+          selectedMergeSampleIndex_ = int(*choice);
+          mergeModelPathInput_ = sampleModelOptions_[*choice].path;
+          mergeError_.clear();
+          ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndCombo();
+      }
+    }
+    ImGui::InputText("Parent name", &mergeParentNameInput_);
+    ImGui::Checkbox("Use file's default scene", &mergeUseDefaultScene_);
+    if (!mergeUseDefaultScene_) {
+      ImGui::InputInt("Scene index", &mergeSceneIndex_);
+      ImGui::TextDisabled("Scene numbers start at 0.");
+    }
+    if (!mergeError_.empty()) ImGui::TextWrapped("%s", mergeError_.c_str());
+    if (ImGui::Button("Import")) {
+      try {
+        queueModelMergeRequest(mergeModelPathInput_, mergeParentNameInput_,
+            mergeUseDefaultScene_ ? std::nullopt : std::optional<int>(mergeSceneIndex_));
+        statusMessage_ = "Import requested: " + mergeModelPathInput_;
+        mergeError_.clear();
+        ImGui::CloseCurrentPopup();
+      } catch (const std::exception& error) { mergeError_ = error.what(); }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+  }
+
   ImGui::InputText("Save path (.glb / .gltf)", &sceneSavePathInput_);
-  ImGui::BeginDisabled(savedScenePath_.empty() || !canExportScene);
+  ImGui::BeginDisabled(savedScenePath_.empty());
   if (ImGui::Button("Save scene")) sceneSaveRequest_ = savedScenePath_;
   ImGui::EndDisabled();
   ImGui::SameLine();
-  ImGui::BeginDisabled(sceneSavePathInput_.empty() || !canExportScene);
+  ImGui::BeginDisabled(sceneSavePathInput_.empty());
   if (ImGui::Button("Save As")) sceneSaveRequest_ = sceneSavePathInput_;
   ImGui::EndDisabled();
-  ImGui::SetItemTooltip("Saves the editable primary scene. BIM, USD and VDB use separate files.");
-
+  ImGui::TextWrapped("Exports all scenes in the primary asset. BIM/USD/VDB sidecars, physics setup and renderer settings use their own formats.");
+  if (ImGui::TreeNode("Export Image")) {
+    ImGui::InputText("Output path without extension", &imageExportPathInput_);
+    ImGui::BeginDisabled(imageExportPathInput_.empty());
+    if (ImGui::Button("Scene EXR"))
+      imageExportRequest_ = {imageExportPathInput_ + ".exr", false};
+    ImGui::SameLine();
+    if (ImGui::Button("Viewport PNG"))
+      imageExportRequest_ = {imageExportPathInput_ + "-viewport.png", true};
+    ImGui::SameLine();
+    if (ImGui::Button("Window PNG"))
+      imageExportRequest_ = {imageExportPathInput_ + "-window.png", false};
+    ImGui::EndDisabled();
+    ImGui::TreePop();
+  }
   if (ImGui::Button("Reload Shaders (F5)"))
     shaderReloadRequested_ = true;
+  ImGui::Checkbox("GPU hierarchy transforms", &gpuHierarchyTransforms_);
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Optional compute propagation; keeps CPU state for editing, picking and physics.");
+  sectionAnchor(ControlsSection::GltfScene);
+  if(!gltfSceneControls_.names.empty()) {
+    auto& state=gltfSceneControls_;
+    const char* preview=state.selected>=0 && size_t(state.selected)<state.names.size()
+        ? state.names[size_t(state.selected)].c_str():"Scene";
+    if(ImGui::BeginCombo("glTF scene",preview)) {
+      for(size_t i=0;i<state.names.size();++i) {
+        ImGui::PushID(int(i));
+        const auto label=std::to_string(i)+": "+state.names[i];
+        if(ImGui::Selectable(label.c_str(),state.selected==int(i))) state.requested=int(i);
+        ImGui::PopID();
+      }
+      ImGui::EndCombo();
+    }
+    if(!state.error.empty()) ImGui::TextWrapped("%s",state.error.c_str());
+  }
+  if (sectionAnchor(ControlsSection::Animation)) ImGui::SetNextItemOpen(true);
+  DrawGltfAnimationControls(gltfAnimationControls_);
+  sectionAnchor(ControlsSection::Variants);
+  if (!materialVariantControls_.names.empty()) {
+    const auto& state=materialVariantControls_;
+    const char* preview=state.selected>=0 && size_t(state.selected)<state.names.size()
+        ? state.names[size_t(state.selected)].c_str():"Default";
+    if (ImGui::BeginCombo("Material variant",preview)) {
+      if (ImGui::Selectable("Default",state.selected<0)) materialVariantControls_.requested=-1;
+      for (size_t i=0;i<state.names.size();++i) {
+        ImGui::PushID(int(i));
+        const auto label=state.names[i].empty()?"Unnamed variant":state.names[i].c_str();
+        if (ImGui::Selectable(label,state.selected==int(i))) materialVariantControls_.requested=int(i);
+        ImGui::PopID();
+      }
+      ImGui::EndCombo();
+    }
+    if (ImGui::Button("Restore default materials")) materialVariantControls_.requested=-1;
+    if (!state.error.empty()) ImGui::TextWrapped("%s",state.error.c_str());
+  }
+
   if (ImGui::Button("Add Primitive")) {
     ImGui::OpenPopup("Add Primitive Menu");
   }
@@ -2975,7 +4558,65 @@ void GuiManager::drawSceneControls(
     ImGui::EndPopup();
   }
 
+  if (sectionAnchor(ControlsSection::Physics)) ImGui::SetNextItemOpen(true);
+  drawPhysicsPanel(physicsPanelState_, physicsPanelOptions_);
+
+  if (sectionAnchor(ControlsSection::Volumes)) ImGui::SetNextItemOpen(true);
+  if (const auto output = openVdbAuthoring_->draw()) {
+    modelPathInput_ = *output;
+    importScale_ = 1.0f;
+    importScaleIndex_ = 0;
+    selectedSampleModelIndex_ = sampleModelIndexForPath(modelPathInput_);
+    queueModelLoadRequest(modelPathInput_, 1.0f, modelPathInput_, openVdbAuthoring_->previewOptions());
+    statusMessage_ = "OpenVDB preview load requested: " + modelPathInput_;
+  }
+
+  if (openVdbVolumeLoaded_ && ImGui::CollapsingHeader("OpenVDB volume")) {
+    auto &volume = openVdbVolumeSettings_;
+    ImGui::TextWrapped("%s", openVdbVolumeSource_.c_str());
+    ImGui::Checkbox("Show volume", &volume.enabled);
+    ImGui::Checkbox("Geometry shadows", &volume.receiveShadows);
+    if (openVdbSequence_.available) {
+      auto &sequence = openVdbSequence_;
+      ImGui::Checkbox("Pause volume playback", &sequence.paused);
+      ImGui::Checkbox("Loop volume playback", &sequence.loop);
+      ImGui::DragFloat("Volume playback speed", &sequence.speed, 0.05f, 0.0f, 16.0f);
+      int frame = static_cast<int>(sequence.frameIndex);
+      if (ImGui::SliderInt("Volume frame", &frame, 0, static_cast<int>(sequence.frameCount) - 1,
+                           "%d", ImGuiSliderFlags_AlwaysClamp))
+        pendingOpenVdbSequenceSeek_ = static_cast<uint32_t>(frame);
+      ImGui::Text("CPU volume frames: %.1f MiB", double(sequence.cachedBytes) / (1024.0 * 1024.0));
+      if (sequence.asynchronous) {
+        ImGui::TextUnformatted("Asynchronous sequence streaming");
+        if (sequence.loading)
+          ImGui::Text("%s frame %u; displaying frame %u", sequence.uploading ? "Uploading" : "Loading",
+                      sequence.frameIndex, sequence.displayedFrameIndex);
+      }
+    }
+    ImGui::DragFloat("Density", &volume.densityScale, 0.02f, 0.0f, 10000.0f);
+    ImGui::ColorEdit3("Scattering tint", volume.scatteringColor.data());
+    ImGui::SliderFloat("Anisotropy", &volume.anisotropy, -0.95f, 0.95f);
+    ShowItemTooltip("Negative values favor back scattering; positive values favor forward scattering.");
+    ImGui::SliderFloat("Multiple scattering", &volume.multipleScatteringStrength, 0.0f, 1.0f);
+    ShowItemTooltip("Approximates repeated light scattering. Zero uses single scattering.");
+    if (volume.multipleScatteringStrength > 0.0f) {
+      int orders = static_cast<int>(volume.multipleScatteringOrders);
+      if (ImGui::SliderInt("Additional scattering orders", &orders, 1, 4))
+        volume.multipleScatteringOrders = static_cast<uint32_t>(orders);
+    }
+    ImGui::ColorEdit3("Emission color", volume.emissionColor.data(),
+                      ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float);
+    ImGui::DragFloat("Emission strength", &volume.emissionScale, 0.02f, 0.0f, 10000.0f);
+    if (openVdbHasTemperature_) {
+      ImGui::DragFloat("Temperature scale", &volume.temperatureScale, 1.0f, 0.0f, 100000.0f);
+      ShowItemTooltip("Scales the selected temperature grid into Kelvin. Emission strength controls brightness.");
+    }
+    ImGui::SliderFloat("Ray step scale", &volume.stepScale, 0.25f, 4.0f);
+    ShowItemTooltip("Smaller steps improve volume detail and increase rendering cost.");
+  }
+
   ImGui::Separator();
+  sectionAnchor(ControlsSection::Rendering);
   if (!renderEngineOptions_.empty()) {
     std::string renderEnginePreview{
         container::renderer::renderTechniqueDisplayName(activeRenderEngine_)};
@@ -3139,9 +4780,11 @@ void GuiManager::drawSceneControls(
   ImGui::Text("Renderable primitives: %zu",
               sceneGraph.renderableNodes().size());
 
-  DrawGltfAnimationControls(gltfAnimationControls_);
+  if (sectionAnchor(ControlsSection::Hierarchy) && sceneGraph.nodeCount() != 0)
+    ImGui::SetNextItemOpen(true);
   drawSceneHierarchy(sceneGraph, rootSceneNode, selectedMeshNode, selectMeshNode,
-                     focusSceneNode, setSceneNodeFlag, reparentSceneNode);
+                     focusSceneNode, setSceneNodeVisible, reparentSceneNode,
+                     setSceneNodeSelectable, setSceneNodeHoverable);
 
   if (!bimInspection.hasScene) {
     bimMeasurementModelPath_.clear();
@@ -3186,6 +4829,7 @@ void GuiManager::drawSceneControls(
 
   if (bimInspection.hasScene) {
     ImGui::Separator();
+    if (sectionAnchor(ControlsSection::Bim)) ImGui::SetNextItemOpen(true);
     if (ImGui::TreeNode("BIM")) {
       drawBimElementBrowser(bimInspection);
       ImGui::Text("Objects: %zu", bimInspection.objectCount);
@@ -4081,6 +5725,18 @@ void GuiManager::drawSceneControls(
         ImGui::TreePop();
       }
 
+      if (bimRelationshipBrowserCache_.refresh(
+              bimInspection.metadataSource != nullptr
+                  ? bimInspection.metadataSource
+                  : bimInspection.elements.data(),
+              bimInspection.metadataRevision,
+              bimInspection.relationshipGraph)) {
+        selectedBimStoreyRangeIndex_ = -1;
+      }
+      bimRelationshipBrowserCache_.selectObject(
+          bimInspection.hasSelection ? bimInspection.selectedObjectIndex
+                                     : std::numeric_limits<uint32_t>::max());
+
       if (ImGui::TreeNode("Property Browser")) {
         if (bimInspection.hasSelection) {
           auto drawPropertyRow = [](const char *label,
@@ -4146,27 +5802,35 @@ void GuiManager::drawSceneControls(
               if (ImGui::SmallButton("Clear property search")) {
                 bimPropertySearch_.clear();
               }
-              if (ImGui::BeginTable("BimExtendedProperties", 4,
-                                    ImGuiTableFlags_Borders |
-                                        ImGuiTableFlags_RowBg |
-                                        ImGuiTableFlags_SizingStretchProp |
-                                        ImGuiTableFlags_ScrollY |
-                                        ImGuiTableFlags_ScrollX,
-                                    ImVec2(0.0f, 220.0f), 1000.0f)) {
+              const auto matchedProperties =
+                  bimRelationshipBrowserCache_.filteredPropertyIndices(
+                      bimInspection.selectedObjectIndex,
+                      bimInspection.properties, bimPropertySearch_,
+                      PropertyMatchesSearch);
+              auto &propertyPage =
+                  bimRelationshipBrowserCache_.extendedPropertiesPage;
+              const bool propertyPageChanged = DrawBimBrowserPageControls(
+                  "BimExtendedPropertiesPage", propertyPage,
+                  matchedProperties.size());
+              if (ImGui::BeginTable(
+                      "BimExtendedProperties", 4,
+                      ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                          ImGuiTableFlags_SizingStretchProp |
+                          ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX,
+                      ImVec2(0.0f, 220.0f), 1000.0f)) {
+                if (propertyPageChanged) {
+                  ImGui::SetScrollY(0.0f);
+                }
                 ImGui::TableSetupColumn("Set");
                 ImGui::TableSetupColumn("Name");
                 ImGui::TableSetupColumn("Value");
                 ImGui::TableSetupColumn("Category");
                 ImGui::TableSetupScrollFreeze(0, 1);
                 ImGui::TableHeadersRow();
-                size_t matchedPropertyCount = 0u;
-                for (size_t i = 0; i < bimInspection.properties.size(); ++i) {
+                for (size_t i = propertyPage.begin(matchedProperties.size());
+                     i < propertyPage.end(matchedProperties.size()); ++i) {
                   const container::renderer::BimElementProperty &property =
-                      bimInspection.properties[i];
-                  if (!PropertyMatchesSearch(property, bimPropertySearch_)) {
-                    continue;
-                  }
-                  ++matchedPropertyCount;
+                      bimInspection.properties[matchedProperties[i]];
                   ImGui::TableNextRow();
                   ImGui::TableNextColumn();
                   ImGui::TextWrapped("%s", property.set.c_str());
@@ -4178,7 +5842,7 @@ void GuiManager::drawSceneControls(
                   ImGui::TextWrapped("%s", property.category.c_str());
                 }
                 ImGui::EndTable();
-                if (matchedPropertyCount == 0u) {
+                if (matchedProperties.empty()) {
                   ImGui::TextDisabled("No properties match the search");
                 }
               }
@@ -4205,22 +5869,31 @@ void GuiManager::drawSceneControls(
           if (ImGui::SmallButton("Clear relationship search")) {
             bimRelationshipSearch_.clear();
           }
+          const auto hits =
+              bimRelationshipBrowserCache_.search(bimRelationshipSearch_);
           if (!bimRelationshipSearch_.empty()) {
-            const auto hits = relationshipGraph->search(bimRelationshipSearch_);
+            auto &searchPage = bimRelationshipBrowserCache_.searchPage;
+            const bool searchPageChanged = DrawBimBrowserPageControls(
+                "BimRelationshipSearchPage", searchPage, hits.size());
             if (hits.empty()) {
               ImGui::TextDisabled("No graph matches");
-            } else if (ImGui::BeginTable(
-                           "BimRelationshipSearchResults", 3,
-                           ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                               ImGuiTableFlags_SizingStretchProp |
-                               ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX,
-                           ImVec2(0.0f, 140.0f), 800.0f)) {
+            } else if (ImGui::BeginTable("BimRelationshipSearchResults", 3,
+                                         ImGuiTableFlags_Borders |
+                                             ImGuiTableFlags_RowBg |
+                                             ImGuiTableFlags_SizingStretchProp |
+                                             ImGuiTableFlags_ScrollY |
+                                             ImGuiTableFlags_ScrollX,
+                                         ImVec2(0.0f, 140.0f), 800.0f)) {
+              if (searchPageChanged) {
+                ImGui::SetScrollY(0.0f);
+              }
               ImGui::TableSetupColumn("Object");
               ImGui::TableSetupColumn("Reason");
               ImGui::TableSetupColumn("Match");
               ImGui::TableSetupScrollFreeze(0, 1);
               ImGui::TableHeadersRow();
-              for (size_t i = 0; i < hits.size(); ++i) {
+              for (size_t i = searchPage.begin(hits.size());
+                   i < searchPage.end(hits.size()); ++i) {
                 const auto &hit = hits[i];
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
@@ -4271,16 +5944,23 @@ void GuiManager::drawSceneControls(
                                                : bimInspection.type;
           if (relationshipGraph != nullptr) {
             const auto selectedEdges =
-                relationshipGraph->edgesForObject(
+                bimRelationshipBrowserCache_.selectedEdgeIndices(
                     bimInspection.selectedObjectIndex);
+            auto &selectedEdgesPage =
+                bimRelationshipBrowserCache_.selectedEdgesPage;
+            const bool selectedEdgesPageChanged = DrawBimBrowserPageControls(
+                "BimSelectedRelationshipPage", selectedEdgesPage,
+                selectedEdges.size());
             if (!selectedEdges.empty() &&
-                ImGui::BeginTable("BimSelectedRelationshipEdges", 4,
-                                  ImGuiTableFlags_Borders |
-                                      ImGuiTableFlags_RowBg |
-                                      ImGuiTableFlags_SizingStretchProp |
-                                      ImGuiTableFlags_ScrollY |
-                                      ImGuiTableFlags_ScrollX,
-                                  ImVec2(0.0f, 150.0f), 900.0f)) {
+                ImGui::BeginTable(
+                    "BimSelectedRelationshipEdges", 4,
+                    ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                        ImGuiTableFlags_SizingStretchProp |
+                        ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX,
+                    ImVec2(0.0f, 150.0f), 900.0f)) {
+              if (selectedEdgesPageChanged) {
+                ImGui::SetScrollY(0.0f);
+              }
               ImGui::TableSetupColumn("Relationship");
               ImGui::TableSetupColumn("Direction");
               ImGui::TableSetupColumn("Related node");
@@ -4288,14 +5968,12 @@ void GuiManager::drawSceneControls(
               ImGui::TableSetupScrollFreeze(0, 1);
               ImGui::TableHeadersRow();
               const auto nodes = relationshipGraph->nodes();
-              for (size_t i = 0; i < selectedEdges.size(); ++i) {
-                const auto &edge = selectedEdges[i];
-                if (edge.from >= nodes.size() || edge.to >= nodes.size()) {
-                  continue;
-                }
-                const bool selectedIsFrom =
-                    nodes[edge.from].objectIndex ==
-                    bimInspection.selectedObjectIndex;
+              const auto edges = relationshipGraph->edges();
+              for (size_t i = selectedEdgesPage.begin(selectedEdges.size());
+                   i < selectedEdgesPage.end(selectedEdges.size()); ++i) {
+                const auto &edge = edges[selectedEdges[i]];
+                const bool selectedIsFrom = nodes[edge.from].objectIndex ==
+                                            bimInspection.selectedObjectIndex;
                 const auto &relatedNode =
                     selectedIsFrom ? nodes[edge.to] : nodes[edge.from];
                 ImGui::TableNextRow();
@@ -4386,7 +6064,13 @@ void GuiManager::drawSceneControls(
                         bimInspection.selectedObjectIndex)
                   : std::span<const container::renderer::BimPropertySetGroup>{};
           if (!graphPropertySets.empty()) {
-            for (size_t setIndex = 0; setIndex < graphPropertySets.size();
+            auto &propertySetsPage =
+                bimRelationshipBrowserCache_.propertySetsPage;
+            DrawBimBrowserPageControls("BimPropertySetsPage", propertySetsPage,
+                                       graphPropertySets.size());
+            for (size_t setIndex =
+                     propertySetsPage.begin(graphPropertySets.size());
+                 setIndex < propertySetsPage.end(graphPropertySets.size());
                  ++setIndex) {
               const auto &group = graphPropertySets[setIndex];
               ImGui::PushID(static_cast<int>(setIndex));
@@ -4394,19 +6078,30 @@ void GuiManager::drawSceneControls(
                   group.set + " (" + std::to_string(group.properties.size()) +
                   ")";
               if (ImGui::TreeNode(label.c_str())) {
-                if (ImGui::BeginTable("BimIfcPropertySetProperties", 3,
-                                      ImGuiTableFlags_Borders |
-                                          ImGuiTableFlags_RowBg |
-                                          ImGuiTableFlags_SizingStretchProp |
-                                          ImGuiTableFlags_ScrollY |
-                                          ImGuiTableFlags_ScrollX,
-                                      ImVec2(0.0f, 180.0f), 900.0f)) {
+                auto &groupPage =
+                    bimRelationshipBrowserCache_.propertyPage(setIndex);
+                const bool groupPageChanged = DrawBimBrowserPageControls(
+                    "BimPropertySetPropertiesPage", groupPage,
+                    group.properties.size());
+                if (ImGui::BeginTable(
+                        "BimIfcPropertySetProperties", 3,
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                            ImGuiTableFlags_SizingStretchProp |
+                            ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX,
+                        ImVec2(0.0f, 180.0f), 900.0f)) {
+                  if (groupPageChanged) {
+                    ImGui::SetScrollY(0.0f);
+                  }
                   ImGui::TableSetupColumn("Name");
                   ImGui::TableSetupColumn("Value");
                   ImGui::TableSetupColumn("Category");
                   ImGui::TableSetupScrollFreeze(0, 1);
                   ImGui::TableHeadersRow();
-                  for (const auto &property : group.properties) {
+                  for (size_t propertyIndex =
+                           groupPage.begin(group.properties.size());
+                       propertyIndex < groupPage.end(group.properties.size());
+                       ++propertyIndex) {
+                    const auto &property = group.properties[propertyIndex];
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn();
                     ImGui::TextWrapped("%s", property.name.c_str());
@@ -4424,53 +6119,43 @@ void GuiManager::drawSceneControls(
           } else if (bimInspection.properties.empty()) {
             ImGui::TextDisabled(
                 "No property-set relationships are exposed for this element");
-          } else if (ImGui::BeginTable("BimIfcPropertySetSummary", 3,
-                                       ImGuiTableFlags_Borders |
-                                           ImGuiTableFlags_RowBg |
-                                           ImGuiTableFlags_SizingStretchProp |
-                                           ImGuiTableFlags_ScrollY |
-                                           ImGuiTableFlags_ScrollX,
-                                       ImVec2(0.0f, 160.0f), 800.0f)) {
-            ImGui::TableSetupColumn("Property set");
-            ImGui::TableSetupColumn("Category");
-            ImGui::TableSetupColumn("Properties");
-            ImGui::TableSetupScrollFreeze(0, 1);
-            ImGui::TableHeadersRow();
-            std::vector<std::string> visiblePropertySetKeys;
-            for (const container::renderer::BimElementProperty &property :
-                 bimInspection.properties) {
-              const std::string setName =
-                  !property.set.empty() ? property.set : "(unassigned set)";
-              const std::string categoryName = !property.category.empty()
-                                                   ? property.category
-                                                   : "(unassigned category)";
-              const std::string key = setName + "\n" + categoryName;
-              if (std::ranges::contains(visiblePropertySetKeys, key)) {
-                continue;
+          } else {
+            const auto propertySummary =
+                bimRelationshipBrowserCache_.propertySummary(
+                    bimInspection.selectedObjectIndex,
+                    bimInspection.properties);
+            auto &summaryPage =
+                bimRelationshipBrowserCache_.propertySummaryPage;
+            const bool summaryPageChanged =
+                DrawBimBrowserPageControls("BimPropertySetSummaryPage",
+                                           summaryPage, propertySummary.size());
+            if (ImGui::BeginTable(
+                    "BimIfcPropertySetSummary", 3,
+                    ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                        ImGuiTableFlags_SizingStretchProp |
+                        ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX,
+                    ImVec2(0.0f, 160.0f), 800.0f)) {
+              if (summaryPageChanged) {
+                ImGui::SetScrollY(0.0f);
               }
-              size_t propertyCount = 0u;
-              for (const container::renderer::BimElementProperty &candidate :
-                   bimInspection.properties) {
-                const std::string candidateSet =
-                    !candidate.set.empty() ? candidate.set : "(unassigned set)";
-                const std::string candidateCategory =
-                    !candidate.category.empty() ? candidate.category
-                                                : "(unassigned category)";
-                if (candidateSet == setName &&
-                    candidateCategory == categoryName) {
-                  ++propertyCount;
-                }
+              ImGui::TableSetupColumn("Property set");
+              ImGui::TableSetupColumn("Category");
+              ImGui::TableSetupColumn("Properties");
+              ImGui::TableSetupScrollFreeze(0, 1);
+              ImGui::TableHeadersRow();
+              for (size_t i = summaryPage.begin(propertySummary.size());
+                   i < summaryPage.end(propertySummary.size()); ++i) {
+                const auto &summary = propertySummary[i];
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextWrapped("%s", summary.set.c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextWrapped("%s", summary.category.c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("%zu", summary.propertyCount);
               }
-              visiblePropertySetKeys.push_back(key);
-              ImGui::TableNextRow();
-              ImGui::TableNextColumn();
-              ImGui::TextWrapped("%s", setName.c_str());
-              ImGui::TableNextColumn();
-              ImGui::TextWrapped("%s", categoryName.c_str());
-              ImGui::TableNextColumn();
-              ImGui::Text("%zu", propertyCount);
+              ImGui::EndTable();
             }
-            ImGui::EndTable();
           }
         } else {
           ImGui::TextDisabled(
@@ -4485,25 +6170,31 @@ void GuiManager::drawSceneControls(
             ImGui::TreeNode("Graph spatial edges")) {
           const auto nodes = bimInspection.relationshipGraph->nodes();
           const auto edges = bimInspection.relationshipGraph->edges();
-          if (ImGui::BeginTable("BimGraphSpatialEdges", 3,
-                                ImGuiTableFlags_Borders |
-                                    ImGuiTableFlags_RowBg |
-                                    ImGuiTableFlags_SizingStretchProp |
-                                    ImGuiTableFlags_ScrollY |
-                                    ImGuiTableFlags_ScrollX,
-                                ImVec2(0.0f, 180.0f), 900.0f)) {
+          const auto spatialEdges =
+              bimRelationshipBrowserCache_.spatialEdgeIndices();
+          auto &spatialEdgesPage =
+              bimRelationshipBrowserCache_.spatialEdgesPage;
+          const bool spatialEdgesPageChanged = DrawBimBrowserPageControls(
+              "BimSpatialEdgesPage", spatialEdgesPage, spatialEdges.size());
+          if (ImGui::BeginTable(
+                  "BimGraphSpatialEdges", 3,
+                  ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                      ImGuiTableFlags_SizingStretchProp |
+                      ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX,
+                  ImVec2(0.0f, 180.0f), 900.0f)) {
+            if (spatialEdgesPageChanged) {
+              ImGui::SetScrollY(0.0f);
+            }
             ImGui::TableSetupColumn("Parent");
             ImGui::TableSetupColumn("Child");
             ImGui::TableSetupColumn("Label");
             ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableHeadersRow();
-            for (const auto &edge : edges) {
-              if (edge.kind !=
-                      container::renderer::BimRelationshipKind::SpatialParent ||
-                  edge.from >= nodes.size() || edge.to >= nodes.size()) {
-                continue;
-              }
-              const std::string parent = RelationshipNodeLabel(nodes[edge.from]);
+            for (size_t i = spatialEdgesPage.begin(spatialEdges.size());
+                 i < spatialEdgesPage.end(spatialEdges.size()); ++i) {
+              const auto &edge = edges[spatialEdges[i]];
+              const std::string parent =
+                  RelationshipNodeLabel(nodes[edge.from]);
               const std::string child = RelationshipNodeLabel(nodes[edge.to]);
               ImGui::TableNextRow();
               ImGui::TableNextColumn();
@@ -4530,13 +6221,9 @@ void GuiManager::drawSceneControls(
           if (selectedBimStoreyRangeIndex_ < 0 &&
               bimFilterState_.storeyFilterEnabled &&
               !bimFilterState_.storey.empty()) {
-            for (int i = 0; i < storeyRangeCount; ++i) {
-              if (bimInspection.elementStoreyRanges[static_cast<size_t>(i)]
-                      .label == bimFilterState_.storey) {
-                selectedBimStoreyRangeIndex_ = i;
-                break;
-              }
-            }
+            selectedBimStoreyRangeIndex_ =
+                bimRelationshipBrowserCache_.storeyIndexForLabel(
+                    bimInspection.elementStoreyRanges, bimFilterState_.storey);
           }
           auto selectRelativePlanStorey = [&](int delta) {
             if (storeyRangeCount <= 0) {
@@ -4562,19 +6249,32 @@ void GuiManager::drawSceneControls(
                                   selectedBimStoreyRangeIndex_ < 0)) {
               selectedBimStoreyRangeIndex_ = -1;
             }
-            for (int i = 0; i < storeyRangeCount; ++i) {
-              const auto &storeyRange =
-                  bimInspection.elementStoreyRanges[static_cast<size_t>(i)];
-              const bool selected = selectedBimStoreyRangeIndex_ == i;
-              char label[256]{};
-              std::snprintf(label, sizeof(label), "%s (%.2f..%.2f)",
-                            storeyRange.label.c_str(), storeyRange.minElevation,
-                            storeyRange.maxElevation);
-              if (ImGui::Selectable(label, selected)) {
-                selectedBimStoreyRangeIndex_ = i;
-              }
-              if (selected) {
-                ImGui::SetItemDefaultFocus();
+            ImGuiListClipper storeyClipper;
+            storeyClipper.Begin(storeyRangeCount,
+                                ImGui::GetTextLineHeightWithSpacing());
+            if (ImGui::IsWindowAppearing() &&
+                selectedBimStoreyRangeIndex_ >= 0) {
+              storeyClipper.IncludeItemByIndex(selectedBimStoreyRangeIndex_);
+            }
+            while (storeyClipper.Step()) {
+              for (int i = storeyClipper.DisplayStart;
+                   i < storeyClipper.DisplayEnd; ++i) {
+                const auto &storeyRange =
+                    bimInspection.elementStoreyRanges[static_cast<size_t>(i)];
+                const bool selected = selectedBimStoreyRangeIndex_ == i;
+                char elevation[80]{};
+                std::snprintf(elevation, sizeof(elevation), " (%.2f..%.2f)",
+                              storeyRange.minElevation,
+                              storeyRange.maxElevation);
+                const std::string label = storeyRange.label + elevation;
+                ImGui::PushID(i);
+                if (ImGui::Selectable(label.c_str(), selected)) {
+                  selectedBimStoreyRangeIndex_ = i;
+                }
+                if (selected) {
+                  ImGui::SetItemDefaultFocus();
+                }
+                ImGui::PopID();
               }
             }
             ImGui::EndCombo();
@@ -4626,23 +6326,31 @@ void GuiManager::drawSceneControls(
             statusMessage_ = "Cleared storey visibility preset";
           }
 
-          if (ImGui::BeginTable("BimSpatialStoreys", 4,
-                                ImGuiTableFlags_Borders |
-                                    ImGuiTableFlags_RowBg |
-                                    ImGuiTableFlags_SizingStretchProp |
-                                    ImGuiTableFlags_ScrollY |
-                                    ImGuiTableFlags_ScrollX,
-                                ImVec2(0.0f, 220.0f), 800.0f)) {
+          auto &storeysPage = bimRelationshipBrowserCache_.storeysPage;
+          const bool storeysPageChanged = DrawBimBrowserPageControls(
+              "BimSpatialStoreysPage", storeysPage,
+              bimInspection.elementStoreyRanges.size());
+          if (ImGui::BeginTable(
+                  "BimSpatialStoreys", 4,
+                  ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                      ImGuiTableFlags_SizingStretchProp |
+                      ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX,
+                  ImVec2(0.0f, 220.0f), 800.0f)) {
+            if (storeysPageChanged) {
+              ImGui::SetScrollY(0.0f);
+            }
             ImGui::TableSetupColumn("Storey");
             ImGui::TableSetupColumn("Elevation");
             ImGui::TableSetupColumn("Objects");
             ImGui::TableSetupColumn("Preset");
             ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableHeadersRow();
-            for (int i = 0; i < storeyRangeCount; ++i) {
-              const auto &storeyRange =
-                  bimInspection.elementStoreyRanges[static_cast<size_t>(i)];
-              ImGui::PushID(i);
+            for (size_t i = storeysPage.begin(
+                     bimInspection.elementStoreyRanges.size());
+                 i < storeysPage.end(bimInspection.elementStoreyRanges.size());
+                 ++i) {
+              const auto &storeyRange = bimInspection.elementStoreyRanges[i];
+              ImGui::PushID(static_cast<int>(i));
               ImGui::TableNextRow();
               ImGui::TableNextColumn();
               ImGui::TextWrapped("%s", storeyRange.label.c_str());
@@ -4653,12 +6361,12 @@ void GuiManager::drawSceneControls(
               ImGui::Text("%zu", storeyRange.objectCount);
               ImGui::TableNextColumn();
               if (ImGui::SmallButton("Filter")) {
-                selectedBimStoreyRangeIndex_ = i;
+                selectedBimStoreyRangeIndex_ = static_cast<int>(i);
                 applyStoreyFilter(storeyRange);
               }
               ImGui::SameLine();
               if (ImGui::SmallButton("Plan")) {
-                selectedBimStoreyRangeIndex_ = i;
+                selectedBimStoreyRangeIndex_ = static_cast<int>(i);
                 applyStoreyPlanSlice(storeyRange, true);
               }
               if (floorSliceMatchesStorey(storeyRange)) {
@@ -4670,22 +6378,26 @@ void GuiManager::drawSceneControls(
             ImGui::EndTable();
           }
         } else {
+          auto &storeysPage = bimRelationshipBrowserCache_.storeysPage;
+          const bool storeysPageChanged =
+              DrawBimBrowserPageControls("BimNamedStoreysPage", storeysPage,
+                                         bimInspection.elementStoreys.size());
           if (ImGui::BeginChild("BimStoreyList", ImVec2(0.0f, 220.0f))) {
-            ImGuiListClipper clipper;
-            clipper.Begin(static_cast<int>(std::min<size_t>(
-                bimInspection.elementStoreys.size(),
-                static_cast<size_t>(std::numeric_limits<int>::max()))));
-            while (clipper.Step()) {
-              for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
-                ImGui::PushID(i);
-                ImGui::BulletText("%s", bimInspection.elementStoreys[i].c_str());
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Filter")) {
-                  bimFilterState_.storeyFilterEnabled = true;
-                  bimFilterState_.storey = bimInspection.elementStoreys[i];
-                }
-                ImGui::PopID();
+            if (storeysPageChanged) {
+              ImGui::SetScrollY(0.0f);
+            }
+            for (size_t i =
+                     storeysPage.begin(bimInspection.elementStoreys.size());
+                 i < storeysPage.end(bimInspection.elementStoreys.size());
+                 ++i) {
+              ImGui::PushID(static_cast<int>(i));
+              if (ImGui::SmallButton("Filter")) {
+                bimFilterState_.storeyFilterEnabled = true;
+                bimFilterState_.storey = bimInspection.elementStoreys[i];
               }
+              ImGui::SameLine();
+              ImGui::TextWrapped("%s", bimInspection.elementStoreys[i].c_str());
+              ImGui::PopID();
             }
           }
           ImGui::EndChild();
@@ -5055,9 +6767,6 @@ void GuiManager::drawSceneControls(
                             &bimLayerVisibilityState_.pointCloudVisible);
         layerStateChanged |= ImGui::Checkbox(
             "Curve visibility", &bimLayerVisibilityState_.curvesVisible);
-        layerStateChanged |= ImGui::Checkbox(
-            "Room volumes", &bimLayerVisibilityState_.spaceLayerVisible);
-        ImGui::SetItemTooltip("Show IFC room geometry for BIM inspection");
         ImGui::Separator();
         layerStateChanged |=
             ImGui::Checkbox("Clash markers",
@@ -6210,6 +7919,7 @@ void GuiManager::drawSceneControls(
     }
   }
 
+  sectionAnchor(ControlsSection::Diagnostics);
   if (cullStatsTotal_ > 0) {
     ImGui::Separator();
     ImGui::Text("GPU Culling");
@@ -6252,6 +7962,7 @@ void GuiManager::drawSceneControls(
 
   if (!renderPassToggles_.empty()) {
     ImGui::Separator();
+    if (requestedSection == ControlsSection::Diagnostics) ImGui::SetNextItemOpen(true);
     if (ImGui::TreeNode("Render Passes")) {
       if (ImGui::SmallButton("Enable All")) {
         for (auto &p : renderPassToggles_)
@@ -6291,22 +8002,8 @@ void GuiManager::drawSceneControls(
     }
   }
 
-  if (ImGui::TreeNode("Export Image")) {
-    ImGui::InputText("Output path without extension", &imageExportPathInput_);
-    ImGui::BeginDisabled(imageExportPathInput_.empty());
-    if (ImGui::Button("Scene EXR"))
-      imageExportRequest_ = {imageExportPathInput_ + ".exr", false};
-    ImGui::SameLine();
-    if (ImGui::Button("Viewport PNG"))
-      imageExportRequest_ = {imageExportPathInput_ + "-viewport.png", true};
-    ImGui::SameLine();
-    if (ImGui::Button("Window PNG"))
-      imageExportRequest_ = {imageExportPathInput_ + "-window.png", false};
-    ImGui::EndDisabled();
-    ImGui::TreePop();
-  }
-
   ImGui::Separator();
+  sectionAnchor(ControlsSection::PostProcess);
   ImGui::Text("Post-process");
   int toneMapper = static_cast<int>(displayGrade_.toneMapper);
   static constexpr const char *kToneMapperLabels[] = {
@@ -6424,6 +8121,7 @@ void GuiManager::drawSceneControls(
     ImGui::TextDisabled("Capture must be armed before instance creation.");
     ImGui::TreePop();
   }
+  if (sectionAnchor(ControlsSection::Ddgi)) ImGui::SetNextItemOpen(true);
   drawDdgiControls();
   ImGui::Text("Bloom");
   ImGui::Checkbox("Bloom Enabled", &bloomEnabled_);
@@ -6434,6 +8132,7 @@ void GuiManager::drawSceneControls(
     ImGui::SliderFloat("Bloom Radius", &bloomRadius_, 0.1f, 3.0f);
   }
 
+  if (sectionAnchor(ControlsSection::Shadows)) ImGui::SetNextItemOpen(true);
   if (ImGui::TreeNode("Shadows")) {
     ImGui::TextWrapped("Ray queries: %s", rayShadowStatus_.c_str());
     ImGui::BeginDisabled(!rayShadowSupported_);
@@ -6556,17 +8255,21 @@ void GuiManager::drawSceneControls(
     ImGui::TreePop();
   }
 
+  if (sectionAnchor(ControlsSection::Transforms)) ImGui::SetNextItemOpen(true);
   TransformControls editableCameraTransform = cameraTransform;
   if (DrawTransformControls("Camera", editableCameraTransform, false)) {
     applyCameraTransform(editableCameraTransform);
   }
 
   TransformControls editableSceneTransform = sceneTransform;
+  if (requestedSection == ControlsSection::Transforms) ImGui::SetNextItemOpen(true);
   if (DrawTransformControls("Scene", editableSceneTransform, true, 0.05f,
-          &nodeTransformWidget_, &nextNodeTransformWidget_, &nodeTransformGestureActive_)) {
+                            &sceneEditGesture_, &nextSceneEditGesture_,
+                            &sceneEditGestureActive_)) {
     applySceneTransform(editableSceneTransform);
   }
 
+  if (sectionAnchor(ControlsSection::Lighting)) ImGui::SetNextItemOpen(true);
   if (ImGui::TreeNode("Lights")) {
     ImGui::Text("Editable lights");
     lightEditControls_.drawAddButtons();
@@ -6582,11 +8285,13 @@ void GuiManager::drawSceneControls(
     if (ImGui::BeginCombo("Selected light", selectedEditableLabel)) {
       if (ImGui::Selectable("None",
                             selectedEditableIt == editableLights.end())) {
+        finishLightEditGesture();
         selectEditableLight({});
       }
       for (const EditableLightEntity &light : editableLights) {
         const bool selected = light.id == selectedEditableLight;
         if (ImGui::Selectable(light.label.c_str(), selected)) {
+          finishLightEditGesture();
           selectEditableLight(light.id);
         }
         const std::string lightTooltip =
@@ -6601,10 +8306,11 @@ void GuiManager::drawSceneControls(
       ImGui::EndCombo();
     }
 
-    if (selectedEditableIt != editableLights.end())
+    if (selectedEditableIt != editableLights.end()) {
       drawLightEditInspector();
-    else if (editableLights.empty())
+    } else if (editableLights.empty()) {
       ImGui::TextDisabled("No editable lights");
+    }
 
     if (ImGui::TreeNode("Lighting Settings")) {
       ImGui::SliderFloat("Directional Intensity",
@@ -6698,68 +8404,20 @@ void GuiManager::drawSceneControls(
       ImGui::TreePop();
     }
     ImGui::TreePop();
-  } else {
-    lightEditControls_.finishGesture();
   }
 
-  const auto &renderableNodes = sceneGraph.renderableNodes();
-  if (!renderableNodes.empty()) {
-    uint32_t activeMeshNode = selectedMeshNode;
-    const bool hasActiveMesh =
-        std::ranges::contains(renderableNodes, activeMeshNode);
-    if (!hasActiveMesh) {
-      activeMeshNode = container::scene::SceneGraph::kInvalidNode;
-    }
-
-    std::string selectedLabel =
-        activeMeshNode == container::scene::SceneGraph::kInvalidNode
-            ? "None"
-            : "Node " + std::to_string(activeMeshNode);
-    if (activeMeshNode != container::scene::SceneGraph::kInvalidNode) {
-      if (const auto *node = sceneGraph.getNode(activeMeshNode);
-          node != nullptr &&
-          node->primitiveIndex != container::scene::SceneGraph::kInvalidNode) {
-        selectedLabel += " / Primitive " + std::to_string(node->primitiveIndex);
-      }
-    }
-
-    if (ImGui::BeginCombo("Mesh", selectedLabel.c_str())) {
-      const bool noneSelected =
-          activeMeshNode == container::scene::SceneGraph::kInvalidNode;
-      if (ImGui::Selectable("None", noneSelected)) {
-        activeMeshNode = container::scene::SceneGraph::kInvalidNode;
-        selectMeshNode(activeMeshNode);
-      }
-      if (noneSelected) {
-        ImGui::SetItemDefaultFocus();
-      }
-      for (uint32_t nodeIndex : renderableNodes) {
-        std::string label = "Node " + std::to_string(nodeIndex);
-        if (const auto *node = sceneGraph.getNode(nodeIndex);
-            node != nullptr && node->primitiveIndex !=
-                                   container::scene::SceneGraph::kInvalidNode) {
-          label += " / Primitive " + std::to_string(node->primitiveIndex);
-        }
-        const bool selected = nodeIndex == activeMeshNode;
-        if (ImGui::Selectable(label.c_str(), selected)) {
-          activeMeshNode = nodeIndex;
-          selectMeshNode(nodeIndex);
-        }
-        if (selected) {
-          ImGui::SetItemDefaultFocus();
-        }
-      }
-      ImGui::EndCombo();
-    }
-
-    if (activeMeshNode != container::scene::SceneGraph::kInvalidNode) {
-      TransformControls editableMeshTransform = meshTransform;
-      if (DrawTransformControls("Mesh Transform", editableMeshTransform, true, 0.05f,
-          &nodeTransformWidget_, &nextNodeTransformWidget_, &nodeTransformGestureActive_)) {
-        applyMeshTransform(activeMeshNode, editableMeshTransform);
-      }
+  if (sectionAnchor(ControlsSection::Selection)) {
+    if (const auto* selected = sceneGraph.getNode(selectedMeshNode)) {
+      // The mesh picker precedes this tree, so open its own existing ID rather
+      // than leaving next-item state for the picker to consume.
+      const char* label = selected->renderable ? "Mesh Transform" : "Node Transform";
+      ImGui::GetStateStorage()->SetInt(ImGui::GetID(label), 1);
     }
   }
+  drawSceneNodeControls(sceneGraph, selectedMeshNode, meshTransform,
+                        selectMeshNode, applyMeshTransform);
+  sectionAnchor(ControlsSection::Material);
+  drawMaterialInspector();
 
   if (!statusMessage_.empty()) {
     const std::string statusText = WrapLongPathForImGui(statusMessage_);
@@ -6771,11 +8429,138 @@ void GuiManager::drawSceneControls(
     ImGui::Text("Environment");
     const std::string environmentText = WrapLongPathForImGui(environmentStatus_);
     ImGui::TextWrapped("%s", environmentText.c_str());
+    ImGui::InputText("HDR file (.exr or .hdr)", &environmentPathInput_);
+    ImGui::BeginDisabled(environmentLoading_ || environmentPathInput_.empty());
+    if (ImGui::Button("Load Environment"))
+      pendingEnvironmentPath_ = environmentPathInput_;
+    ImGui::EndDisabled();
+    auto& environment = lightingSettings_.environment;
+    ImGui::SliderFloat("Rotation", &environment.yawDegrees, -180.0f, 180.0f, "%.0f deg",
+                       ImGuiSliderFlags_AlwaysClamp);
+    ImGui::Checkbox("Solid Background", &environment.solidBackground);
+    if (environment.solidBackground)
+      ImGui::ColorEdit3("Background Color", environment.backgroundColor.data());
+    else
+      ImGui::SliderFloat("Background Blur", &environment.backgroundBlur, 0.0f, 1.0f, "%.2f",
+                         ImGuiSliderFlags_AlwaysClamp);
+    ImGui::TextDisabled("Background settings affect the visible sky only.");
+    if (ImGui::TreeNode("Procedural Sky")) {
+      ImGui::BeginDisabled(environmentLoading_);
+      if (ImGui::Button("Use Authored Sky"))
+        pendingAuthoredSky_ = true;
+      ImGui::EndDisabled();
+      using container::renderer::SkyMode;
+      int mode = static_cast<int>(skyDraft_.mode) - 1;
+      if (ImGui::Combo("Sky Type", &mode, "Plain\0Gradient\0Atmosphere\0"))
+        skyDraft_.mode = static_cast<SkyMode>(mode + 1);
+      if (skyDraft_.mode != SkyMode::Atmosphere)
+        ImGui::ColorEdit3(skyDraft_.mode == SkyMode::Gradient ? "Horizon" : "Sky Color",
+                         skyDraft_.horizon.data());
+      if (skyDraft_.mode == SkyMode::Gradient) {
+        ImGui::ColorEdit3("Zenith", skyDraft_.zenith.data());
+        ImGui::ColorEdit3("Ground", skyDraft_.ground.data());
+        ImGui::SliderFloat("Zenith Curve", &skyDraft_.zenithCurve, 0.001f, 1.0f, "%.3f",
+                           ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SliderFloat("Ground Curve", &skyDraft_.groundCurve, 0.001f, 1.0f, "%.3f",
+                           ImGuiSliderFlags_AlwaysClamp);
+      }
+      if (skyDraft_.mode == SkyMode::Atmosphere) {
+        auto& air = skyDraft_.atmosphere;
+        ImGui::Checkbox("Multiple Scattering", &air.multipleScattering);
+        ImGui::Checkbox("Sun Lights Scene", &air.lightScene);
+        auto& local = air.localSun;
+        ImGui::Checkbox("Use Location and Time", &local.enabled);
+        if (local.enabled) {
+          ImGui::InputFloat("Latitude", &local.latitudeDegrees, 0, 0, "%.4f");
+          ImGui::InputFloat("Longitude", &local.longitudeDegrees, 0, 0, "%.4f");
+          int date[] = {local.year, local.month, local.day};
+          int time[] = {local.hour, local.minute};
+          if (ImGui::InputInt3("Local Date (Y/M/D)", date)) {
+            local.year = date[0];
+            local.month = date[1];
+            local.day = date[2];
+          }
+          if (ImGui::InputInt2("Local Time (H/M)", time)) {
+            local.hour = time[0];
+            local.minute = time[1];
+          }
+          ImGui::InputInt("UTC Offset (minutes)", &local.utcOffsetMinutes);
+          if (container::renderer::validSolarTime(local)) {
+            const auto sun = container::renderer::solarPosition(local);
+            ImGui::Text("Sun azimuth %.1f deg, elevation %.1f deg",
+                        sun.azimuthDegrees, sun.elevationDegrees);
+          } else {
+            ImGui::TextDisabled("Enter a valid location, date, time, and UTC offset.");
+          }
+        } else {
+          ImGui::SliderFloat("Sun Azimuth", &air.sunAzimuthDegrees, -180.0f, 180.0f, "%.1f deg", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::SliderFloat("Sun Elevation", &air.sunElevationDegrees, -90.0f, 90.0f, "%.1f deg", ImGuiSliderFlags_AlwaysClamp);
+        }
+        ImGui::SliderFloat("Observer Height (km)", &air.observerHeightKm, 0.002f,
+                           air.atmosphereHeightKm, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::DragFloat("Aerial Scale (m/unit)", &air.aerialMetersPerUnit, 0.1f,
+                         0.0f, 1000.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("Zero disables aerial perspective. Use 1 for a metre-scale scene.");
+        ImGui::ColorEdit3("Ground Albedo", skyDraft_.ground.data());
+        if (ImGui::TreeNode("Atmosphere Parameters")) {
+          ImGui::SliderFloat("Solar Irradiance", &air.solarIrradiance, 0.0f, 64.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::SliderFloat("Planet Radius (km)", &air.planetRadiusKm, 1000.0f, 10000.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::SliderFloat("Atmosphere Height (km)", &air.atmosphereHeightKm, 40.0f, 200.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+          air.observerHeightKm = std::min(air.observerHeightKm, air.atmosphereHeightKm);
+          ImGui::SliderFloat("Rayleigh", &air.rayleighScale, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::SliderFloat("Mie", &air.mieScale, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::SliderFloat("Ozone", &air.ozoneScale, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+          ImGui::TreePop();
+        }
+      }
+      ImGui::BeginDisabled(environmentLoading_ ||
+          (skyDraft_.mode == SkyMode::Atmosphere &&
+           !container::renderer::validAtmosphere(skyDraft_.atmosphere)));
+      if (ImGui::Button("Apply Sky"))
+        pendingSky_ = skyDraft_;
+      ImGui::EndDisabled();
+      if (ImGui::TreeNode("Sky Presets")) {
+        ImGui::InputText("Preset file", &skyPresetPath_);
+        const bool save = ImGui::Button("Save Preset##Sky");
+        ImGui::SameLine();
+        const bool load = ImGui::Button("Load Preset##Sky");
+        if (save || load) {
+          try {
+            const auto path = container::util::pathFromUtf8(skyPresetPath_);
+            if (save) container::renderer::saveSkyPreset(path, skyDraft_);
+            else skyDraft_ = container::renderer::loadSkyPreset(path);
+            skyPresetMessage_ = save ? "Preset saved." : "Preset loaded. Select Apply Sky to use it.";
+          } catch (const std::exception& error) {
+            skyPresetMessage_ = error.what();
+          }
+        }
+        if (!skyPresetMessage_.empty())
+          ImGui::TextWrapped("%s", skyPresetMessage_.c_str());
+        ImGui::TreePop();
+      }
+      ImGui::TreePop();
+    }
   }
 
   ImGui::End();
 
+  if (focusTelemetry) {
+    ImGui::SetNextWindowCollapsed(false);
+    ImGui::SetNextWindowFocus();
+  }
   drawRendererTelemetryWindow();
+}
+
+std::string GuiManager::consumeEnvironmentRequest() {
+  return std::exchange(pendingEnvironmentPath_, {});
+}
+
+std::optional<container::renderer::SkySettings> GuiManager::consumeSkyRequest() {
+  return std::exchange(pendingSky_, std::nullopt);
+}
+
+bool GuiManager::consumeAuthoredSkyRequest() {
+  return std::exchange(pendingAuthoredSky_, false);
 }
 
 void GuiManager::setDdgiState(const container::renderer::DdgiSettings &settings,

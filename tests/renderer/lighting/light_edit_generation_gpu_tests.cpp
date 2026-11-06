@@ -1,49 +1,23 @@
-#include <Container/common/CommonGLFW.h>
-#include <Container/geometry/GltfCompression.h>
-#include <Container/geometry/GltfModelLoader.h>
-#include <Container/utility/AllocationManager.h>
-#include <Container/utility/FileLoader.h>
-#include <Container/utility/PipelineManager.h>
-#include <Container/utility/SceneGraph.h>
-#include <Container/utility/SceneManager.h>
-#include <Container/utility/TextureImageOwnership.h>
-#include <Container/utility/TextureSamplingPlan.h>
-#include <Container/utility/VulkanDevice.h>
-
-#include <gtest/gtest.h>
-
-#include <algorithm>
-#include <array>
-#include <atomic>
-#include <chrono>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <filesystem>
-#include <fstream>
-#include <memory>
-#include <span>
-#include <stdexcept>
-#include <string_view>
-#include <vector>
+#include "../scene/camera_generation_test_support.h"
 
 #include <Container/ecs/World.h>
-#include <Container/geometry/GltfAnimationRuntime.h>
 #include <Container/renderer/lighting/LightingManager.h>
-#include <Container/utility/VulkanInstance.h>
-#include "../scene/material_publication_allocations.h"
+
 #include <bit>
 #include <limits>
 
+#ifndef CONTAINER_LIGHTING_SHADER_ROOT
+#define CONTAINER_LIGHTING_SHADER_ROOT "."
+#endif
+#ifndef CONTAINER_LIGHT_EDIT_SHADER_PATH
+#define CONTAINER_LIGHT_EDIT_SHADER_PATH "spv_shaders/light_edit_contract.comp.spv"
+#endif
+
 namespace {
 using namespace container::renderer;
-using namespace container::scene;
-using namespace container::geometry;
-using namespace container::geometry::gltf;
-using namespace container::gpu;
 using V=tinygltf::Value;using O=V::Object;using A=V::Array;
 using Probe=std::array<glm::uvec4,14>;
-static_assert(offsetof(LightingData, environmentOrientation)==5*sizeof(glm::uvec4));
+static_assert(sizeof(LightingData)==5*sizeof(glm::uvec4));
 static_assert(sizeof(PointLightData)==4*sizeof(glm::uvec4));
 static_assert(sizeof(AreaLightData)==5*sizeof(glm::uvec4));
 glm::uvec4 bits(const glm::vec4& value) {glm::uvec4 out;std::memcpy(&out,&value,sizeof(out));return out;}
@@ -55,33 +29,8 @@ void exactProbe(const Probe& actual,const Probe& expected) {
 uint32_t fields(std::initializer_list<LightEditField> selected) {
   uint32_t result{};for(const auto field:selected) result|=LightEditFieldBit(field);return result;
 }
-GltfLoadResult triangle(const std::string& name) {
-  GltfLoadResult result;auto& source=result.gltfModel;source.asset.version="2.0";
-  const std::array<float,9> positions{0,0,0,1,0,0,0,1,0};
-  const std::array<uint16_t,3> indices{0,1,2};
-  source.buffers.resize(1);source.buffers[0].data.resize(sizeof(positions)+sizeof(indices));
-  std::memcpy(source.buffers[0].data.data(),positions.data(),sizeof(positions));
-  std::memcpy(source.buffers[0].data.data()+sizeof(positions),indices.data(),sizeof(indices));
-  source.bufferViews.resize(2);source.bufferViews[0].buffer=source.bufferViews[1].buffer=0;
-  source.bufferViews[0].byteLength=sizeof(positions);source.bufferViews[1].byteOffset=sizeof(positions);
-  source.bufferViews[1].byteLength=sizeof(indices);
-  source.accessors.resize(2);source.accessors[0].bufferView=0;source.accessors[0].componentType=TINYGLTF_COMPONENT_TYPE_FLOAT;
-  source.accessors[0].type=TINYGLTF_TYPE_VEC3;source.accessors[0].count=3;source.accessors[0].minValues={0,0,0};source.accessors[0].maxValues={1,1,0};
-  source.accessors[1].bufferView=1;source.accessors[1].componentType=TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT;
-  source.accessors[1].type=TINYGLTF_TYPE_SCALAR;source.accessors[1].count=3;
-  source.materials.resize(1);source.materials[0].name=name;source.materials[0].pbrMetallicRoughness.roughnessFactor=.7;
-  source.meshes.resize(1);tinygltf::Primitive primitive;primitive.attributes["POSITION"]=0;primitive.indices=1;primitive.material=0;
-  primitive.mode=TINYGLTF_MODE_TRIANGLES;source.meshes[0].primitives.push_back(primitive);
-  source.nodes.resize(1);source.nodes[0].mesh=0;source.nodes[0].name=name;
-  source.scenes.resize(1);source.scenes[0].nodes={0};source.defaultScene=0;
-  std::vector<Vertex> vertices(3);for(size_t i=0;i<3;++i) {
-    vertices[i].position={positions[i*3],positions[i*3+1],positions[i*3+2]};vertices[i].normal={0,0,1};
-  }
-  result.model=Model::FromMeshes({Mesh(std::move(vertices),{0,1,2},0)});return result;
-}
-
 tinygltf::Model lightAsset() {
-  auto source=triangle("Light surface").gltfModel;source.nodes.resize(9);source.lights.resize(3);
+  auto source=cameraAsset();source.nodes.resize(9);source.lights.resize(3);
   for(int row=0;row<3;++row) {source.nodes[size_t(5+row)].light=row;source.scenes[0].nodes.push_back(5+row);}
   source.nodes[5].translation={3,2,1};source.nodes[6].translation={-2,1,3};
   source.lights[0].name="Known point";source.lights[0].type="point";source.lights[0].color={.25,.5,1};source.lights[0].intensity=7;source.lights[0].range=10;
@@ -109,111 +58,25 @@ void pointerTrack(tinygltf::Model& source,int times,int values,const char* path)
   channel.target_extensions["KHR_animation_pointer"]=V(O{{"pointer",V(std::string(path))}});clip.channels.push_back(channel);
 }
 
-class LightEditGenerationGpu : public ::testing::Test {
+class LightEditGenerationGpu:public CameraProjectionGenerationGpu {
 protected:
-  static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
-      VkDebugUtilsMessageTypeFlagsEXT,const VkDebugUtilsMessengerCallbackDataEXT* data,void* user) {
-    if(severity&VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-      ++static_cast<LightEditGenerationGpu*>(user)->errors;std::fprintf(stderr,"%s\n",data->pMessage);
-    }
-    return VK_FALSE;
-  }
+  const char* gpuEnvironment() const noexcept override {return "CONTAINER_RUN_GPU_LIGHT_EDITS";}
   void SetUp() override {
-    const auto* enabled=std::getenv("CONTAINER_RUN_GPU_LIGHT_EDITS");
-    if(!enabled || std::strcmp(enabled,"1")!=0) GTEST_SKIP()<<"Set CONTAINER_RUN_GPU_LIGHT_EDITS=1";
-    ASSERT_TRUE(std::filesystem::is_regular_file(CONTAINER_LIGHT_EDIT_SHADER_PATH));
-    ASSERT_EQ(glfwInit(),GLFW_TRUE);glfwStarted=true;
-    glfwWindowHint(GLFW_CLIENT_API,GLFW_NO_API);glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);
-    window=glfwCreateWindow(32,32,"Prepared light edit readback",nullptr,nullptr);ASSERT_NE(window,nullptr);
-    uint32_t count{};const auto* extensions=glfwGetRequiredInstanceExtensions(&count);ASSERT_NE(extensions,nullptr);
-    InstanceCreateInfo create;create.enableValidationLayers=true;create.validationLayers={"VK_LAYER_KHRONOS_validation"};
-    create.requiredExtensions.assign(extensions,extensions+count);create.requiredExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-    const auto sync=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT;
-    VkValidationFeaturesEXT validation{VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT};validation.enabledValidationFeatureCount=1;validation.pEnabledValidationFeatures=&sync;create.next=&validation;
-    instance=std::make_unique<VulkanInstance>(create);
-    vk::DebugUtilsMessengerCreateInfoEXT debug;debug.messageSeverity=vk::DebugUtilsMessageSeverityFlagBitsEXT::eError;
-    debug.messageType=vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation|vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance;
-    debug.pfnUserCallback=reinterpret_cast<vk::PFN_DebugUtilsMessengerCallbackEXT>(debugCallback);debug.pUserData=this;
-    messenger=vk::raii::DebugUtilsMessengerEXT(instance->raii(),debug);
-    VkSurfaceKHR rawSurface{};ASSERT_EQ(glfwCreateWindowSurface(instance->instance(),window,nullptr,&rawSurface),VK_SUCCESS);
-    surface=vk::raii::SurfaceKHR(instance->raii(),rawSurface);
-    DeviceCreateInfo info;info.requiredExtensions={VK_KHR_SWAPCHAIN_EXTENSION_NAME};
-    VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
-    v12.bufferDeviceAddress=VK_TRUE;v12.runtimeDescriptorArray=VK_TRUE;v12.descriptorBindingPartiallyBound=VK_TRUE;
-    v12.shaderSampledImageArrayNonUniformIndexing=VK_TRUE;
-    VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
-    v13.synchronization2=VK_TRUE;
-    v12.pNext=&v13;
-    info.next=&v12;
-    device=std::make_shared<VulkanDevice>(*instance,rawSurface,info);
-    pool=vk::raii::CommandPool(device->raii(),vk::CommandPoolCreateInfo(vk::CommandPoolCreateFlagBits::eResetCommandBuffer,device->queueFamilyIndices().graphicsFamily.value()));
-    allocation=std::make_unique<AllocationManager>();allocation->initialize(instance->instance(),device->physicalDevice(),device->device(),device->graphicsQueue(),*pool,{});
-    pipelines=std::make_unique<PipelineManager>(device->device());
-    const auto* artifacts = std::getenv("CONTAINER_LIGHT_EDIT_ARTIFACT_DIR");
-    ASSERT_NE(artifacts, nullptr) << "Set CONTAINER_LIGHT_EDIT_ARTIFACT_DIR";
-    directory = std::filesystem::path(artifacts) /
-        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
-    std::filesystem::create_directories(directory);
+    CameraProjectionGenerationGpu::SetUp();if(::testing::Test::IsSkipped() || HasFatalFailure()) return;
     resetLighting(lightAsset());
   }
-
   void resetLighting(tinygltf::Model source) {
-    device->raii().waitIdle();
-    lighting.reset();
-    world.clear();
-    player.reset();
-    manager.reset();
-    const auto file = directory / ("source-" + std::to_string(++sourceNumber) + ".glb");
-    tinygltf::TinyGLTF writer;
-    ASSERT_TRUE(writer.WriteGltfSceneToFile(&source,file.string(),true,true,true,true));
-    manager=std::make_unique<SceneManager>(*allocation,*pipelines,device,container::app::AppConfig{});
-    manager->initialize(file.string(),1,2);
-    player=manager->takePreparedAnimation();
-    manager->populateSceneGraph(graph);
-    const auto roots=graph.rootNodes();
-    root=graph.createNode(glm::mat4(1),0,false,SceneGraph::kInvalidNode,"Editor root");
-    for(const auto node:roots) graph.setParent(node,root);
-    graph.updateWorldTransforms();
-    world.syncFromSceneGraph(graph);
+    if(device) device->raii().waitIdle();lighting.reset();world.clear();load(std::move(source));root=SceneGraph::kInvalidNode;
+    for(const auto id:graph.rootNodes()) if(graph.getNode(id)->editorSceneRoot) root=id;
+    if(root==SceneGraph::kInvalidNode) throw std::runtime_error("Missing lighting fixture root");
     CameraData camera;camera.cameraWorldPosition={4,5,6,1};(void)world.setActiveCamera(camera,.2f,90);
     lighting=std::make_unique<LightingManager>(device,*allocation,*pipelines,manager.get(),graph,world);
-    lighting->setRootNode(root);
-    lighting->createDescriptorResources(2);
-    lighting->createTiledResources(CONTAINER_LIGHTING_SHADER_ROOT,{32,32});
-    lighting->updateLightingData();
-    lighting->uploadLightingData();
+    lighting->setRootNode(root);lighting->createDescriptorResources(2);lighting->createTiledResources(CONTAINER_LIGHTING_SHADER_ROOT,{32,32});
+    lighting->updateLightingData();lighting->uploadLightingData();
   }
-
   void TearDown() override {
-    if (device) device->raii().waitIdle();
-    lighting.reset();player.reset();manager.reset();pipelines.reset();allocation.reset();
-    pool.clear();device.reset();surface.clear();messenger.clear();instance.reset();
-    if(window) glfwDestroyWindow(window);
-    if(glfwStarted) glfwTerminate();
-    EXPECT_EQ(errors.load(),0u);
+    if(device) device->raii().waitIdle();lighting.reset();CameraProjectionGenerationGpu::TearDown();
   }
-
-  uint32_t allocations() const {
-    VmaTotalStatistics stats{};
-    vmaCalculateStatistics(allocation->memoryManager()->allocator(), &stats);
-    return stats.total.statistics.allocationCount;
-  }
-
-  std::atomic<uint32_t> errors{0};
-  bool glfwStarted{};
-  GLFWwindow* window{};
-  std::unique_ptr<VulkanInstance> instance;
-  vk::raii::DebugUtilsMessengerEXT messenger{nullptr};
-  vk::raii::SurfaceKHR surface{nullptr};
-  std::shared_ptr<VulkanDevice> device;
-  vk::raii::CommandPool pool{nullptr};
-  std::unique_ptr<AllocationManager> allocation;
-  std::unique_ptr<PipelineManager> pipelines;
-  std::unique_ptr<SceneManager> manager;
-  std::unique_ptr<AnimationPlayer> player;
-  SceneGraph graph;
-  std::filesystem::path directory;
-  uint32_t sourceNumber{};
   LightEditSnapshot selected(EditableLightType type,EditableLightSource source=EditableLightSource::Imported) const {
     for(const auto& light:lighting->editableLights()) if(light.type==type && light.source==source) return lighting->lightEditSnapshot(light.id);
     throw std::runtime_error("Missing selected light fixture");
@@ -242,7 +105,7 @@ protected:
     struct Query {uint32_t point,area;} query{point,area};
     const std::array layouts{vk::DescriptorSetLayout(lighting->lightDescriptorSetLayout()),*outputLayout};
     const vk::PushConstantRange push(vk::ShaderStageFlagBits::eCompute,0,sizeof(Query));vk::raii::PipelineLayout layout(device->raii(),vk::PipelineLayoutCreateInfo({},layouts,push));
-    const auto code=container::util::readFile(CONTAINER_LIGHT_EDIT_SHADER_PATH);vk::raii::ShaderModule shader(device->raii(),vk::ShaderModuleCreateInfo({},code.size(),reinterpret_cast<const uint32_t*>(code.data())));
+    const auto code=readFile(CONTAINER_LIGHT_EDIT_SHADER_PATH);vk::raii::ShaderModule shader(device->raii(),vk::ShaderModuleCreateInfo({},code.size(),reinterpret_cast<const uint32_t*>(code.data())));
     vk::raii::Pipeline pipeline(device->raii(),nullptr,vk::ComputePipelineCreateInfo({},vk::PipelineShaderStageCreateInfo({},vk::ShaderStageFlagBits::eCompute,*shader,"computeMain"),*layout));
     allocation->executeStagedCommands([&](VkCommandBuffer command) {
       vkCmdBindPipeline(command,VK_PIPELINE_BIND_POINT_COMPUTE,*pipeline);const std::array<VkDescriptorSet,2> raw{lighting->lightDescriptorSet(image),*sets[0]};
@@ -267,7 +130,7 @@ TEST_F(LightEditGenerationGpu, ImportedPointPublishesActualDescriptorsForEveryIm
   EXPECT_EQ(floats(before[0]),glm::vec4(0,0,-1,0));EXPECT_EQ(floats(before[1]),glm::vec4(.5f,.25f,1,3));
   auto expected=before;expected[5]=bits({-4,-3,2,5});expected[6]=bits({.125f,.25f,.5f,11});
   const auto oldSet=lighting->lightDescriptorSet(0);const auto oldBuffer=lighting->pointLightBuffer().buffer;
-  const auto epoch=manager->animationSourceRevision(),geometry=manager->geometryRevision(),material=manager->materialRevision();
+  const auto epoch=manager->generationEpoch(),geometry=manager->geometryRevision(),material=manager->materialRevision();
   const auto worldCount=world.entityCount();const auto* camera=world.activeCamera();
   auto& context=world.registry().ctx().emplace<std::string>(1024*1024,'L');const auto* contextBytes=context.data();
   auto stage=lighting->prepareLightEdit(selected(EditableLightType::Point).target,pointPatch());const auto command=stage.command();
@@ -277,7 +140,7 @@ TEST_F(LightEditGenerationGpu, ImportedPointPublishesActualDescriptorsForEveryIm
     auto undo=lighting->prepareLightEditReplay(command,false);ASSERT_TRUE(publish(undo));EXPECT_FALSE(command.applied());everyFrame(before);
     auto redo=lighting->prepareLightEditReplay(command,true);ASSERT_TRUE(publish(redo));EXPECT_TRUE(command.applied());everyFrame(expected);
   }
-  EXPECT_EQ(manager->animationSourceRevision(),epoch);EXPECT_EQ(manager->geometryRevision(),geometry);EXPECT_EQ(manager->materialRevision(),material);
+  EXPECT_EQ(manager->generationEpoch(),epoch);EXPECT_EQ(manager->geometryRevision(),geometry);EXPECT_EQ(manager->materialRevision(),material);
   EXPECT_EQ(world.entityCount(),worldCount);EXPECT_EQ(world.activeCamera(),camera);EXPECT_EQ(context.data(),contextBytes);
   EXPECT_EQ(world.registry().ctx().find<std::string>(),&context);
 }
@@ -326,7 +189,7 @@ TEST_F(LightEditGenerationGpu, ManualAndGeneratedOriginalTargetsRetainIndependen
   const auto untouched=read(0,0);EXPECT_EQ(floats(untouched[5]),glm::vec4(3,2,1,10));
   auto undo=lighting->prepareLightEditReplay(command,false);ASSERT_TRUE(publish(undo));everyFrame(before,2);
   auto redo=lighting->prepareLightEditReplay(command,true);ASSERT_TRUE(publish(redo));everyFrame(expected,2);
-  resetLighting(triangle("Light surface").gltfModel);const auto generated=selected(EditableLightType::Directional,EditableLightSource::Generated);ASSERT_TRUE(generated.available);
+  resetLighting(cameraAsset());const auto generated=selected(EditableLightType::Directional,EditableLightSource::Generated);ASSERT_TRUE(generated.available);
   const auto generatedBefore=read();EXPECT_EQ(generatedBefore[2].x,0u);auto generatedExpected=generatedBefore;
   generatedExpected[0]=bits({1,0,0,0});generatedExpected[1]=bits({.125f,.5f,.25f,9});
   LightEditPatch generatedPatch;generatedPatch.fields=fields({LightEditField::Direction,LightEditField::Color,LightEditField::Intensity});
@@ -369,13 +232,12 @@ TEST_F(LightEditGenerationGpu, CurrentAnimatedSourceAndMaterialClockAreNotRewoun
   const auto times=scalarAccessor(source,{0,2}),intensities=scalarAccessor(source,{7,11}),roughness=scalarAccessor(source,{.2f,.8f});
   pointerTrack(source,times,intensities,"/extensions/KHR_lights_punctual/lights/0/intensity");
   pointerTrack(source,times,roughness,"/materials/0/pbrMetallicRoughness/roughnessFactor");resetLighting(std::move(source));
-  ASSERT_NE(player,nullptr);
-  auto dirty=player->selectClip(manager->animationSource(),0);dirty.merge(player->seek(manager->animationSource(),.5));manager->publishAnimationChanges(dirty,graph,root);
+  auto dirty=player->selectClip(manager->animationSource(),0);dirty.merge(player->seek(manager->animationSource(),.5));manager->publishAnimationChanges(dirty,graph);
   lighting->updateLightingData();lighting->uploadLightingData();const auto before=read();EXPECT_EQ(floats(before[6]).w,8);
   player->setSpeed(.625);player->setLoop(false);player->play();LightEditPatch patch;patch.fields=LightEditFieldBit(LightEditField::Intensity);patch.values.intensity=20;
   auto stage=lighting->prepareLightEdit(selected(EditableLightType::Point).target,patch);const auto command=stage.command();ASSERT_TRUE(publish(stage));
   auto expected=before;expected[6].w=std::bit_cast<uint32_t>(20.f);everyFrame(expected);
-  dirty=player->seek(manager->animationSource(),1.5);manager->publishAnimationChanges(dirty,graph,root);lighting->updateLightingData();lighting->uploadLightingData();
+  dirty=player->seek(manager->animationSource(),1.5);manager->publishAnimationChanges(dirty,graph);lighting->updateLightingData();lighting->uploadLightingData();
   everyFrame(expected);const auto materialNow=manager->animationSource().materials[0].pbrMetallicRoughness.roughnessFactor;
   const auto restLight=player->library().restLights[0];const auto restMaterial=player->library().restMaterials[0];
   auto undo=lighting->prepareLightEditReplay(command,false);ASSERT_TRUE(publish(undo));auto atCurrentClock=before;atCurrentClock[6].w=std::bit_cast<uint32_t>(10.f);everyFrame(atCurrentClock);

@@ -3,6 +3,7 @@
 #include "Container/utility/MaterialSamplerKey.h"
 #include "Container/utility/SceneData.h"
 #include "Container/utility/GltfTextureResources.h"
+#include "Container/utility/GltfMaterialConversion.h"
 
 #include <gtest/gtest.h>
 
@@ -1145,9 +1146,10 @@ TEST(MaterialXIntegration, EveryLegacyTextureAliasInBothMapsImportsCanonicalMapp
     EXPECT_EQ(material.*slot.texture,31u);EXPECT_EQ(transform.texCoord,1u);EXPECT_EQ(transform.channel,2u);
     EXPECT_EQ(transform.offset,glm::vec2(.125f,-.25f));EXPECT_EQ(transform.scale,glm::vec2(2.f,-.5f));EXPECT_EQ(transform.rotation,.375f);
     EXPECT_NEAR(material.metallicFactor,.4f,1e-6f);EXPECT_EQ(map.at(slot.name).json_double_value,original.json_double_value);
-    // The explicit source/mapping assertions above are this import oracle.
-    // The separate live-edit converter remains covered by the full editor suite.
-
+    const auto live=ConvertGltfMaterial(source,{3,model.extensionsUsed,roles.color,roles.data,50}).value;
+    EXPECT_EQ(live.*slot.texture,material.*slot.texture);EXPECT_EQ((live.*slot.transform).offset,transform.offset);
+    EXPECT_EQ((live.*slot.transform).scale,transform.scale);EXPECT_EQ((live.*slot.transform).rotation,transform.rotation);
+    EXPECT_EQ((live.*slot.transform).texCoord,transform.texCoord);EXPECT_EQ((live.*slot.transform).channel,transform.channel);
   }
 }
 

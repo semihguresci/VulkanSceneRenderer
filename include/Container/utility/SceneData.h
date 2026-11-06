@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Container/renderer/lighting/EnvironmentPresentation.h"
 #include "Container/renderer/lighting/AtmosphereLutData.h"
 
 #include <glm/glm.hpp>
@@ -192,6 +193,8 @@ inline constexpr uint32_t kObjectFlagUnlit = 1u << 4;
 inline constexpr uint32_t kObjectFlagDeformationWindingFlipped = 1u << 5;
 inline constexpr uint32_t kMaterialTextureDescriptorCapacity = 4096;
 inline constexpr uint32_t kMaterialSamplerWrapModeCount = 3;
+// Legacy wrap-only key prefix. Descriptor allocation is sized from device
+// limits and the active MaterialSamplerKey plan, independently of this value.
 inline constexpr uint32_t kMaterialSamplerDescriptorCapacity =
     kMaterialSamplerWrapModeCount * kMaterialSamplerWrapModeCount;
 inline constexpr uint32_t kMaterialSamplerWrapRepeat = 0;
@@ -250,6 +253,7 @@ struct LightingSettings {
   uint32_t areaLightingMode{1};
   uint32_t areaLightSampleCount{25};
   bool areaEmitterDebug{false};
+  container::renderer::EnvironmentPresentation environment{};
 };
 
 struct LightCullingStats {
@@ -519,7 +523,7 @@ static_assert(offsetof(GpuDrawIndexedIndirectCommand, firstInstance) == 16,
               "GpuDrawIndexedIndirectCommand.firstInstance offset");
 
 static_assert(kMaterialSamplerDescriptorCapacity == 9,
-              "Material sampler table currently stores S/T wrap combinations.");
+              "Default-filter sampler keys retain the legacy S/T wrap prefix.");
 static_assert(sizeof(GpuTextureMetadata) == 16,
               "GpuTextureMetadata size mismatch with shader layout.");
 static_assert(alignof(GpuTextureMetadata) == 4,

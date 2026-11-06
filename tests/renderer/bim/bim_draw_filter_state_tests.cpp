@@ -12,16 +12,17 @@ using container::renderer::BimDrawFilter;
 using container::renderer::BimDrawFilterState;
 using container::renderer::BimDrawFilterStateInputs;
 using container::renderer::BimElementMetadata;
+using container::renderer::BimMetadataTableView;
 using container::renderer::DrawCommand;
 
 [[nodiscard]] BimDrawFilterStateInputs
-makeInputs(uint64_t revision, const std::vector<BimElementMetadata> &metadata,
+makeInputs(uint64_t revision, BimMetadataTableView metadata,
            const std::vector<DrawCommand> &opaqueSingleSided,
            std::span<const std::string> phaseOrder = {}) {
   return BimDrawFilterStateInputs{
       .revision = revision,
       .objectCount = metadata.size(),
-      .metadata = {metadata.data(), metadata.size()},
+      .metadata = metadata,
       .phaseOrder = phaseOrder,
       .opaqueSingleSidedDrawCommands = &opaqueSingleSided,
   };
@@ -88,32 +89,39 @@ TEST(BimDrawFilterStateTests, SelectionFiltersUseProductIdentity) {
   EXPECT_TRUE(state.objectMatchesFilter(2u, hide, inputs));
 }
 
-TEST(BimDrawFilterStateTests, RoomVisibilitySplitsAndRestoresInstancedDraws) {
-  const std::vector<BimElementMetadata> metadata{
-      {.objectIndex = 0u, .type = "IfcWall"},
-      {.objectIndex = 1u, .type = "IfcSpace"},
-      {.objectIndex = 2u, .type = "IfcSpaceHeater"},
-  };
+TEST(BimDrawFilterStateTests, FiltersCompactRowsWithoutEscapingTemporaryViews) {
+  container::renderer::BimMetadataStorage storage;
+  BimElementMetadata element{};
+  element.objectIndex = 0u;
+  element.guid = "wall-product";
+  element.type = "IfcWall";
+  storage.push_back(element);
+  element.objectIndex = 1u;
+  storage.push_back(element);
+  element.objectIndex = 2u;
+  element.guid = "door-product";
+  element.type = "IfcDoor";
+  storage.push_back(element);
+  storage.seal();
   const std::vector<DrawCommand> draws{
-      {.objectIndex = 0u, .firstIndex = 12u, .indexCount = 6u, .instanceCount = 3u},
-  };
-  const auto inputs = makeInputs(1u, metadata, draws);
+      {.objectIndex = 0u, .firstIndex = 3u, .indexCount = 6u,
+       .instanceCount = 3u}};
+  const auto inputs = makeInputs(1u, storage, draws);
+  BimDrawFilter filter{};
+  filter.isolateSelection = true;
+  filter.selectedObjectIndex = 0u;
   BimDrawFilterState state;
-  BimDrawFilter filter{.hideRoomVolumes = true};
-
-  const auto &hidden = state.filteredDrawLists(filter, inputs).opaqueSingleSidedDrawCommands;
-  ASSERT_EQ(hidden.size(), 2u);
-  EXPECT_EQ(hidden[0].objectIndex, 0u);
-  EXPECT_EQ(hidden[0].instanceCount, 1u);
-  EXPECT_EQ(hidden[1].objectIndex, 2u);
-  EXPECT_EQ(hidden[1].instanceCount, 1u);
-  EXPECT_FALSE(state.objectMatchesFilter(1u, filter, inputs));
-
-  filter.hideRoomVolumes = false;
-  const auto &shown = state.filteredDrawLists(filter, inputs).opaqueSingleSidedDrawCommands;
-  ASSERT_EQ(shown.size(), 1u);
-  EXPECT_EQ(shown[0].instanceCount, 3u);
+  EXPECT_TRUE(state.objectMatchesFilter(0u, filter, inputs));
   EXPECT_TRUE(state.objectMatchesFilter(1u, filter, inputs));
+  EXPECT_FALSE(state.objectMatchesFilter(2u, filter, inputs));
+  EXPECT_FALSE(state.objectMatchesFilter(3u, filter, inputs));
+  const auto &lists = state.filteredDrawLists(filter, inputs);
+  ASSERT_EQ(lists.opaqueSingleSidedDrawCommands.size(), 1u);
+  EXPECT_EQ(lists.opaqueSingleSidedDrawCommands.front().instanceCount, 2u);
+  filter.selectedObjectIndex = 99u;
+  EXPECT_FALSE(state.objectMatchesFilter(0u, filter, inputs));
+  EXPECT_TRUE(state.filteredDrawLists(filter, inputs)
+                  .opaqueSingleSidedDrawCommands.empty());
 }
 
 TEST(BimDrawFilterStateTests, CachedListsRefreshOnlyWhenRevisionChanges) {

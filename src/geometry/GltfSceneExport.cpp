@@ -619,12 +619,6 @@ bool resourceHoles(const SceneExportSnapshot& snapshot,const tinygltf::Model& so
   const auto materials=snapshot.materials.empty()?source.materials.size():snapshot.materials.size();
   (void)check(masks.materials,materials);(void)check(masks.nodes,snapshot.graph.nodeCount());return holes;
 }
-
-bool exportNodeActive(const SceneExportSnapshot& snapshot, size_t node) {
-  const auto mask = snapshot.sourceResourceMasks.nodes;
-  return mask.empty() || mask[node] != 0;
-}
-
 void omitInactiveSourceChannels(tinygltf::Model& model,const SceneExportSnapshot& snapshot) {
   const auto& masks=snapshot.sourceResourceMasks;
   constexpr size_t maximum=1'000'000;
@@ -634,7 +628,7 @@ void omitInactiveSourceChannels(tinygltf::Model& model,const SceneExportSnapshot
   for(size_t node=0;node<snapshot.sourceNodeIndices.size();++node) {
     const auto source=snapshot.sourceNodeIndices[node];if(source<0) continue;
     if(size_t(source)>=sourceNodes.size()) fail("source node activity map is invalid");
-    const bool retained=exportNodeActive(snapshot, node);
+    const bool retained=!snapshot.graph.isNodeRetired(uint32_t(node)) && (masks.nodes.empty() || masks.nodes[node]!=0);
     sourceNodes[size_t(source)]=std::max<int8_t>(sourceNodes[size_t(source)],retained?1:0);
   }
   size_t channels=0;
@@ -1139,9 +1133,6 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
   if (!snapshot.sourceNodeIndices.empty() &&
       snapshot.sourceNodeIndices.size() != snapshot.graph.nodeCount())
     fail("source node mapping must cover every runtime node");
-  if (!snapshot.sourceInstanceIndices.empty() &&
-      snapshot.sourceInstanceIndices.size() != snapshot.graph.nodeCount())
-    fail("source instance mapping must cover every runtime node");
   auto scenePlacements = validateSceneRoots(snapshot);
   tinygltf::Model output;
   if (snapshot.source) output = *snapshot.source;
@@ -1258,7 +1249,7 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
       if (!node.matrix.empty()) fail("animated TRS target cannot retain a source matrix");
       const auto pose = sourceTransform(node);
       const glm::dmat4 edited(current.localTransform);
-      if (exportNodeActive(snapshot, i) && !matrixNear(edited, pose)) {
+      if (!snapshot.graph.isNodeRetired(i) && !matrixNear(edited, pose)) {
         const auto inverse = glm::inverse(pose);
         if (!matrixFinite(inverse)) fail("edited animated transform cannot be corrected at a singular pose");
         const auto correction = edited * inverse;
@@ -1282,8 +1273,6 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
     setLocalNodeFlag(node, "KHR_node_visibility", "visible", current.visible);
     setLocalNodeFlag(node, "KHR_node_selectability", "selectable", current.selectable);
     setLocalNodeFlag(node, "KHR_node_hoverability", "hoverable", current.hoverable);
-    if (sourceIndex < 0 && current.interactionBoundary)
-      node.extras = tinygltf::Value(tinygltf::Value::Object{{"containerSceneAdapter", tinygltf::Value(std::string("boundary"))}});
     if (current.renderable) {
       if (current.primitiveIndex >= snapshot.geometry.meshes().size())
         fail("renderable node references an invalid runtime primitive");
@@ -1312,21 +1301,19 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
           const auto& instance = snapshot.source->nodes[size_t(ownerSource)];
           const auto* instances=FindNodeInstancing(sourceInstancing,uint32_t(ownerSource));
           const glm::mat4* instanceLocal=nullptr;
-          const auto instanceIndex = snapshot.sourceInstanceIndices.empty()
-              ? -1 : snapshot.sourceInstanceIndices[i];
-          if (instanceIndex >= 0 && exportNodeActive(snapshot, i)) {
-            if(!instances || size_t(instanceIndex)>=instances->localMatrices.size())
+          if (current.sourceInstanceIndex>=0 && !snapshot.graph.isNodeRetired(i)) {
+            if(!instances || size_t(current.sourceInstanceIndex)>=instances->localMatrices.size())
               fail("renderable source instance identity is invalid");
-            instanceLocal=&instances->localMatrices[size_t(instanceIndex)];
+            instanceLocal=&instances->localMatrices[size_t(current.sourceInstanceIndex)];
             tinygltf::Value::Object attributes;
             for(const auto& attribute:instances->attributes) {
-              const auto key=std::pair{attribute.sourceAccessor,uint32_t(instanceIndex)};
+              const auto key=std::pair{attribute.sourceAccessor,uint32_t(current.sourceInstanceIndex)};
               auto found=singletonAttributes.find(key);
               if(found==singletonAttributes.end()) {
                 const CheckedAccessor reader(*snapshot.source,attribute.sourceAccessor,"instance export",
                     {AccessorUsage::Generic,HasRequiredExtension(*snapshot.source,"KHR_accessor_float64")});
                 Bytes bytes(reader.encodedElementSize());
-                reader.readEncodedElement(size_t(instanceIndex),bytes);
+                reader.readEncodedElement(size_t(current.sourceInstanceIndex),bytes);
                 auto accessor=reader.accessor();
                 accessor.bufferView=appendView(output,bytes); accessor.byteOffset=0; accessor.count=1;
                 accessor.sparse={}; accessor.minValues.clear(); accessor.maxValues.clear();
@@ -1348,7 +1335,7 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
             fail("mesh owner differs from the primitive source mesh");
           if (instance.skin >= 0) {
             uint32_t ancestor = i;
-            while (exportNodeActive(snapshot, i) && ancestor != owner) {
+            while (!snapshot.graph.isNodeRetired(i) && ancestor != owner) {
               if (ancestor == scene::SceneGraph::kInvalidNode ||
                   !matrixNear(glm::dmat4(snapshot.graph.getNode(ancestor)->localTransform),
                       ancestor==i && instanceLocal ? glm::dmat4(*instanceLocal) : glm::dmat4(1)))
@@ -1410,7 +1397,6 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
   for (const auto& [nodeIndex, correction] : corrections) {
     tinygltf::Node wrapper;
     wrapper.name = output.nodes[size_t(nodeIndex)].name + " editor transform";
-    wrapper.extras = tinygltf::Value(tinygltf::Value::Object{{"containerSceneAdapter", tinygltf::Value(std::string("transform"))}});
     setMatrix(wrapper, correction);
     wrapper.children = {nodeIndex};
     if (output.nodes.size() >= size_t(std::numeric_limits<int>::max())) fail("too many correction nodes");
@@ -1440,10 +1426,9 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
       const auto parent = snapshot.graph.getNode(root)->parent;
       if (parent != scene::SceneGraph::kInvalidNode)
         std::erase(output.nodes[parent].children, placement.entry);
-      if (exportNodeActive(snapshot, root) && needsScenePlacement(placement)) {
+      if (!snapshot.graph.isNodeRetired(root) && needsScenePlacement(placement)) {
         tinygltf::Node wrapper;
         wrapper.name = output.nodes[root].name + " scene placement";
-        wrapper.extras = tinygltf::Value(tinygltf::Value::Object{{"containerSceneAdapter", tinygltf::Value(std::string("boundary"))}});
         setMatrix(wrapper, placement.prefix);
         wrapper.children = {placement.entry};
         setLocalNodeFlag(wrapper, "KHR_node_visibility", "visible", placement.visible);
@@ -1509,7 +1494,8 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
     if(output.nodes.size()>limits.maxTableEntries) fail("resource export node activity exceeds its finite capacity");
     std::vector<uint8_t> nodes(output.nodes.size(),1);
     for(size_t node=0;node<snapshot.graph.nodeCount();++node)
-      nodes[node]=exportNodeActive(snapshot, node);
+      nodes[node]=!snapshot.graph.isNodeRetired(uint32_t(node)) &&
+          (snapshot.sourceResourceMasks.nodes.empty() || snapshot.sourceResourceMasks.nodes[node]!=0);
     auto masks=snapshot.sourceResourceMasks;masks.nodes=nodes;
     const auto resources=PlanGltfResourceExportCompaction(output,masks,limits);
     ApplyGltfResourceExportCompaction(output,resources);

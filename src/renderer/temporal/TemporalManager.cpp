@@ -1,5 +1,5 @@
-#include "Container/renderer/pipeline/PreparedGraphicsPipelines.h"
 #include "Container/renderer/temporal/TemporalManager.h"
+#include "Container/renderer/pipeline/PreparedGraphicsPipelines.h"
 #include "Container/renderer/temporal/TemporalVelocityVertexInput.h"
 #include "Container/geometry/Vertex.h"
 #include "Container/renderer/bim/BimSurfacePassRecorder.h"
@@ -7,6 +7,7 @@
 #include "Container/renderer/core/RenderGraph.h"
 #include "Container/renderer/culling/GpuCullManager.h"
 #include "Container/renderer/deferred/DeferredRasterFrameState.h"
+#include "Container/renderer/effects/OpenVdbVolumeRenderer.h"
 #include "Container/renderer/resources/FrameResourceManager.h"
 #include "Container/renderer/resources/FrameResourceRegistry.h"
 #include "Container/renderer/scene/SceneOpaqueDrawRecorder.h"
@@ -63,7 +64,7 @@ void initializeImage(VkCommandBuffer cmd, VkImage image) {
 
 bool needed(const FrameRecordParams &frame) {
   const auto *temporal = frame.services.temporalManager;
-  return temporal && temporal->active() &&
+  return frame.runtime.activeTechnique != RenderTechniqueId::PathTracing && temporal && temporal->active() &&
          (frame.debug.displayMode == 0 || frame.debug.displayMode == 8 ||
           (frame.debug.displayMode >= 100 && frame.debug.displayMode <= 104));
 }
@@ -568,7 +569,8 @@ void TemporalManager::recordVelocity(VkCommandBuffer cmd,
   const DebugOverlayRenderer drawHelper;
   const SceneOpaqueDrawPipelineHandles pipelines{
       velocityPipelines_[0], velocityPipelines_[1], velocityPipelines_[2]};
-  (void)recordTemporalPreviousVertexBinding(cmd, p.scene.vertexSlice, p.scene.previousVertexSlice);
+  (void)recordTemporalPreviousVertexBinding(
+      cmd, p.scene.vertexSlice, p.scene.previousVertexSlice);
   (void)recordSceneOpaqueDrawCommands(
       cmd,
       {.plan = &plan,
@@ -606,6 +608,8 @@ void TemporalManager::recordVelocity(VkCommandBuffer cmd,
         p.bim.opaqueMeshDrawsUseGpuVisibility;
     const auto bimPlan = buildBimSurfacePassPlan(inputs);
     const std::array<VkDescriptorSet, 1> sets = {bimSet};
+    // BIM has rigid object history and its own vertex index space. Never leave
+    // primary-scene deformation history bound while drawing BIM triangles.
     (void)recordTemporalPreviousVertexBinding(cmd, p.bim.scene.vertexSlice);
     (void)recordBimSurfacePassCommands(
         cmd, {.plan = &bimPlan,
@@ -661,8 +665,14 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
                         p.bim.sectionClipCapGeometry.valid() ||
                         hasOpaqueDrawCommands(p.bim.nativePointDraws) ||
                         hasOpaqueDrawCommands(p.bim.nativeCurveDraws);
+  // The volume pass writes exact visible coverage into spare HDR alpha. Merge
+  // it here, after velocity has cleared/rasterized the surface reactive mask.
+  // The flag mirrors the producer so ordinary surface alpha is never consumed.
+  const bool volumeCoverage = p.services.openVdbVolumeRenderer &&
+                             p.services.openVdbVolumeRenderer->records(p);
   const std::array<uint32_t, 4> compose = {
-      extent_.width, extent_.height, transparent ? 1u : 0u, fallback ? 1u : 0u};
+      extent_.width, extent_.height, transparent ? 1u : 0u,
+      (fallback ? 1u : 0u) | (volumeCoverage ? 2u : 0u)};
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, composePipeline_);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, composeLayout_,
                           0, 1, &input.compose, 0, nullptr);

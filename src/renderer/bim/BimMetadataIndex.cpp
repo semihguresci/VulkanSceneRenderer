@@ -14,15 +14,27 @@ void BimMetadataIndex::reserve(size_t objectCount) {
   objectIndicesBySourceId_.reserve(objectCount);
 }
 
-void BimMetadataIndex::index(const BimElementMetadata &metadata) {
+void BimMetadataIndex::index(const BimElementMetadataView &metadata) {
   if (metadata.objectIndex == std::numeric_limits<uint32_t>::max()) {
     return;
   }
   if (!metadata.guid.empty()) {
-    objectIndicesByGuid_[metadata.guid].push_back(metadata.objectIndex);
+    const auto existing = objectIndicesByGuid_.find(metadata.guid);
+    if (existing != objectIndicesByGuid_.end()) {
+      existing->second.push_back(metadata.objectIndex);
+    } else {
+      objectIndicesByGuid_.try_emplace(std::string(metadata.guid))
+          .first->second.push_back(metadata.objectIndex);
+    }
   }
   if (!metadata.sourceId.empty()) {
-    objectIndicesBySourceId_[metadata.sourceId].push_back(metadata.objectIndex);
+    const auto existing = objectIndicesBySourceId_.find(metadata.sourceId);
+    if (existing != objectIndicesBySourceId_.end()) {
+      existing->second.push_back(metadata.objectIndex);
+    } else {
+      objectIndicesBySourceId_.try_emplace(std::string(metadata.sourceId))
+          .first->second.push_back(metadata.objectIndex);
+    }
   }
 }
 

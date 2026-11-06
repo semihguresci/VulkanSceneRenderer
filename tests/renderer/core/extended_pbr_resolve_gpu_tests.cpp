@@ -174,7 +174,7 @@ class ExtendedPbrResolveGpu : public ::testing::Test {
     if (!enabled || std::strcmp(enabled, "1") != 0)
       GTEST_SKIP() << "Set CONTAINER_RUN_GPU_EXTENDED_PBR=1 for actual four-sample resolve checks";
     const char* override = std::getenv("CONTAINER_EXTENDED_PBR_SHADER_DIR");
-    shaderDirectory_ = std::filesystem::path(override ? override : CONTAINER_EXTENDED_PBR_SHADER_DIR);
+    shaderDirectory_ = std::filesystem::path(override ? override : CONTAINER_EXTENDED_PBR_SHADER_DIR) / "spv_shaders";
     for (const auto* stage : {"vert", "frag", "comp"})
       ASSERT_TRUE(std::filesystem::is_regular_file(shaderPath(stage))) << shaderPath(stage);
     ASSERT_EQ(glfwInit(), GLFW_TRUE);

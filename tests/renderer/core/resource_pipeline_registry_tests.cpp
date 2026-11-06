@@ -300,6 +300,34 @@ TEST(FrameResourceRegistryTests, ClearsOnlyRequestedTechniqueResources) {
       nullptr);
 }
 
+TEST(FrameResourceRegistryTests, ExchangesStagedBindingsAndPreservesHandleSequenceOnUndo) {
+  FrameResourceRegistry live;
+  const auto original=live.bindBuffer(RenderTechniqueId::DeferredRaster,"scene-object-buffer",0,
+      FrameBufferBinding{.buffer=fakeHandle<VkBuffer>(0x20),.size=64,
+                         .usage=VK_BUFFER_USAGE_STORAGE_BUFFER_BIT});
+  auto candidate=live;
+  const auto rebound=candidate.bindBuffer(RenderTechniqueId::DeferredRaster,"scene-object-buffer",0,
+      FrameBufferBinding{.buffer=fakeHandle<VkBuffer>(0x30),.size=128,
+                         .usage=VK_BUFFER_USAGE_STORAGE_BUFFER_BIT});
+  const auto added=candidate.bindBuffer(RenderTechniqueId::ForwardRaster,"scene-object-buffer",0,
+      FrameBufferBinding{.buffer=fakeHandle<VkBuffer>(0x30),.size=128,
+                         .usage=VK_BUFFER_USAGE_STORAGE_BUFFER_BIT});
+  EXPECT_EQ(original,rebound);
+  EXPECT_EQ(live.findBinding(original)->buffer.buffer,fakeHandle<VkBuffer>(0x20));
+  live.swapState(candidate);
+  EXPECT_EQ(live.findBinding(original)->buffer.buffer,fakeHandle<VkBuffer>(0x30));
+  EXPECT_EQ(candidate.findBinding(original)->buffer.buffer,fakeHandle<VkBuffer>(0x20));
+  EXPECT_NE(live.findBinding(added),nullptr);
+  live.swapState(candidate);
+  EXPECT_EQ(live.findBinding(original)->buffer.buffer,fakeHandle<VkBuffer>(0x20));
+  EXPECT_EQ(live.findBinding(added),nullptr);
+  const auto next=live.bindBuffer(RenderTechniqueId::DeferredRaster,"another-buffer",0,
+      FrameBufferBinding{.buffer=fakeHandle<VkBuffer>(0x40),.size=32,
+                         .usage=VK_BUFFER_USAGE_STORAGE_BUFFER_BIT});
+  EXPECT_NE(next,original);
+  EXPECT_NE(next,added);
+}
+
 TEST(FrameResourceRegistryTests, BindsProductionFrameResourcesByHandle) {
   FrameResourceRegistry registry;
 
@@ -757,6 +785,8 @@ TEST(PipelineRegistryTests,
   pipelines.transformGizmoSolidOverlay = fakeHandle<VkPipeline>(0x238);
   pipelines.lightGizmo = fakeHandle<VkPipeline>(0x23a);
   pipelines.lightGizmoCoverage = fakeHandle<VkPipeline>(0x23b);
+  pipelines.selectionMask = fakeHandle<VkPipeline>(0x23c);
+  pipelines.selectionOutline = fakeHandle<VkPipeline>(0x23d);
   pipelines.extraHandles.push_back(RegisteredPipelineHandle{
       .key = {RenderTechniqueId::ForwardRaster, "forward-opaque"},
       .pipeline = fakeHandle<VkPipeline>(0x239)});
@@ -765,7 +795,7 @@ TEST(PipelineRegistryTests,
   FrameRecordParams params;
   params.registries.pipelineHandles = pipelines.handleRegistry.get();
 
-  const std::array<std::pair<ForwardRasterPipelineId, VkPipeline>, 17>
+  const std::array<std::pair<ForwardRasterPipelineId, VkPipeline>, 19>
       expected = {
           {{ForwardRasterPipelineId::DepthPrepass, pipelines.depthPrepass},
            {ForwardRasterPipelineId::DepthPrepassFrontCull,
@@ -789,6 +819,9 @@ TEST(PipelineRegistryTests,
            {ForwardRasterPipelineId::LightGizmo, pipelines.lightGizmo},
            {ForwardRasterPipelineId::LightGizmoCoverage,
             pipelines.lightGizmoCoverage},
+           {ForwardRasterPipelineId::SelectionMask, pipelines.selectionMask},
+           {ForwardRasterPipelineId::SelectionOutline,
+            pipelines.selectionOutline},
            {ForwardRasterPipelineId::TransformGizmo, pipelines.transformGizmo},
            {ForwardRasterPipelineId::TransformGizmoSolid,
             pipelines.transformGizmoSolid},
@@ -1686,7 +1719,7 @@ TEST(ForwardRasterPipelineBridgeTests, RayQueryVariantsAreOptionalAndForwardOnly
 
 TEST(ForwardRasterPipelineBridgeTests, CoversEveryExposedPipelineAndLayoutId) {
   PipelineRegistry pipelineHandles;
-  const std::array<std::pair<ForwardRasterPipelineId, const char *>, 20>
+  const std::array<std::pair<ForwardRasterPipelineId, const char *>, 22>
       pipelineNames = {
           {{ForwardRasterPipelineId::DepthPrepass, "depth-prepass"},
            {ForwardRasterPipelineId::DepthPrepassFrontCull,
@@ -1713,6 +1746,8 @@ TEST(ForwardRasterPipelineBridgeTests, CoversEveryExposedPipelineAndLayoutId) {
            {ForwardRasterPipelineId::LightGizmo, "light-gizmo"},
            {ForwardRasterPipelineId::LightGizmoCoverage,
             "light-gizmo-coverage"},
+           {ForwardRasterPipelineId::SelectionMask, "selection-mask"},
+           {ForwardRasterPipelineId::SelectionOutline, "selection-outline"},
            {ForwardRasterPipelineId::TransformGizmo, "transform-gizmo"},
            {ForwardRasterPipelineId::TransformGizmoSolid,
             "transform-gizmo-solid"},

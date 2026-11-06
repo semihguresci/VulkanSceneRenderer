@@ -1,6 +1,8 @@
 #include "Container/common/CommonGLFW.h"
 #include "Container/renderer/raytracing/RaySceneAcceleration.h"
 #include "Container/renderer/raytracing/RaySceneExtraction.h"
+#include "Container/renderer/raytracing/RayInstanceTransformPass.h"
+#include "Container/utility/PipelineManager.h"
 #include <gtest/gtest.h>
 
 #include <array>
@@ -518,5 +520,80 @@ TEST_F(RaySceneGpu, KeepsUnchangedProviderBlasAcrossProviderChanges) {
   const auto removedHits = trace(*removed, probes);
   EXPECT_EQ(removedHits[0].x, 1u);
   EXPECT_EQ(removedHits[1].x, 0u);
+}
+TEST_F(RaySceneGpu, GpuMatricesPublishImmutableTlasAndMatchingSurfaceTransforms) {
+  ASSERT_TRUE(device->rayQueriesEnabled());
+  PipelineManager pipelines(device->device());
+  // Borrow the fixture's device; every publication is destroyed before TearDown.
+  auto borrowed=std::shared_ptr<VulkanDevice>(device.get(),[](VulkanDevice*){});
+  RayInstanceTransformPass producer(borrowed,*memory,pipelines);
+  producer.createResources(CONTAINER_RAY_INSTANCE_SHADER_DIR);
+  TestBuffer objects(*memory,sizeof(ObjectData)*2);
+  TestBuffer firstSurfaces(*memory,sizeof(RaySurfaceInstanceData)*3);
+  TestBuffer secondSurfaces(*memory,sizeof(RaySurfaceInstanceData)*3);
+  std::array<ObjectData,2> gpuObjects{};
+  gpuObjects[0].model=glm::translate(glm::mat4(1),glm::vec3(4,0,0));
+  gpuObjects[1].model=glm::translate(glm::mat4(1),glm::vec3(-2,0,0))*
+      glm::rotate(glm::mat4(1),.3f,glm::vec3(0,0,1))*glm::scale(glm::mat4(1),glm::vec3(-1,2,.5f));
+  const auto upload=[&] {
+    std::memcpy(objects.buffer.allocation_info.pMappedData,gpuObjects.data(),sizeof(gpuObjects));
+    ASSERT_EQ(vmaFlushAllocation(memory->allocator(),objects.buffer.allocation,0,VK_WHOLE_SIZE),VK_SUCCESS);
+  };
+  upload();
+  std::vector<container::geometry::Vertex> vertices(3);
+  vertices[0].position={-1,-1,0};vertices[1].position={1,-1,0};vertices[2].position={0,1,0};
+  const std::array<uint32_t,3> indices{0,1,2};
+  const std::array<RaySceneGeometry,1> geometry{{{{"mesh"},1,1,vertices,indices,true}}};
+  std::array<RaySceneInstance,3> instances{};
+  for(uint32_t i=0;i<3;++i) {
+    instances[i].geometryIndex=0;instances[i].customIndex=100+i;
+    instances[i].doubleSided=true;
+    // Deliberately different valid CPU mirrors prove the GPU stream is used.
+    instances[i].transform=glm::translate(glm::mat4(1),glm::vec3(20+int(i)*4,0,0));
+  }
+  instances[0].gpuObjectIndex=1;
+  instances[1].transform=glm::translate(glm::mat4(1),glm::vec3(-6,0,0));
+  instances[2].gpuObjectIndex=0;instances[2].mask=2;instances[2].flipFacing=true;
+  RaySceneGpuTransforms gpu{&producer,{objects.buffer.buffer,0,sizeof(gpuObjects)},2,
+      {firstSurfaces.buffer.buffer,0,sizeof(RaySurfaceInstanceData)*3}};
+  RaySceneAcceleration backend(*device,*memory);
+  const auto build=[&](const std::shared_ptr<const RaySceneGeneration>& previous={}) {
+    begin();auto generation=backend.recordBuild(command,{geometry,instances,&gpu},previous);
+    VkMemoryBarrier host{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    host.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;host.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
+    vkCmdPipelineBarrier(*command,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,&host,0,nullptr,0,nullptr);
+    submit();return generation;
+  };
+  const auto first=build();
+  EXPECT_EQ(first->stats().gpuInstanceCount,2);
+  EXPECT_EQ(first->stats().gpuTransformUploadBytes,3*24+48);
+  const auto probe=[](float x,uint32_t mask=0xff) {return Probe{{x,0,2,.001f},{0,0,-1,4},{mask,0,0,0}};};
+  const std::array probes{probe(-2),probe(-6),probe(4,1),probe(4,2),probe(20),probe(8,2)};
+  const auto originalHits=trace(*first,probes);
+  EXPECT_EQ(originalHits[0].x,1);EXPECT_EQ(originalHits[0].y,100);
+  EXPECT_EQ(originalHits[1].x,1);EXPECT_EQ(originalHits[1].y,101);
+  EXPECT_EQ(originalHits[2].x,0);EXPECT_EQ(originalHits[3].x,1);EXPECT_EQ(originalHits[3].y,102);
+  EXPECT_EQ(originalHits[4].x,0);EXPECT_EQ(originalHits[5].x,0);
+  ASSERT_EQ(vmaInvalidateAllocation(memory->allocator(),firstSurfaces.buffer.allocation,0,VK_WHOLE_SIZE),VK_SUCCESS);
+  const auto* surface=static_cast<const RaySurfaceInstanceData*>(firstSurfaces.buffer.allocation_info.pMappedData);
+  const std::array expected{gpuObjects[1].model,instances[1].transform,gpuObjects[0].model};
+  for(size_t i=0;i<expected.size();++i) {
+    for(int c=0;c<4;++c) for(int r=0;r<4;++r) EXPECT_NEAR(surface[i].model[c][r],expected[i][c][r],2e-5f);
+    const auto normal=glm::transpose(glm::inverse(glm::mat3(expected[i])));
+    for(int c=0;c<3;++c) for(int r=0;r<3;++r) EXPECT_NEAR(surface[i].normalColumns[c][r],normal[c][r],2e-5f);
+    EXPECT_EQ(surface[i].normalColumns[0].w,glm::determinant(glm::mat3(expected[i]))<0?-1.f:1.f);
+  }
+  gpuObjects[0].model[3].x=8;upload();
+  gpu.surfaces.buffer=secondSurfaces.buffer.buffer;
+  const auto second=build(first);
+  EXPECT_EQ(second->stats().blasBuilt,0);EXPECT_EQ(second->stats().blasReused,1);
+  const auto moved=trace(*second,probes);
+  EXPECT_EQ(moved[3].x,0);EXPECT_EQ(moved[5].x,1);EXPECT_EQ(moved[5].y,102);
+  const auto retained=trace(*first,probes);
+  EXPECT_EQ(retained[3].x,1);EXPECT_EQ(retained[5].x,0);
+  instances[0].gpuObjectIndex=2;
+  EXPECT_THROW((void)backend.recordBuild(command,{geometry,instances,&gpu},first),std::invalid_argument);
+  instances[0].gpuObjectIndex=1;gpu.surfaces.size=16;
+  EXPECT_THROW((void)backend.recordBuild(command,{geometry,instances,&gpu},first),std::invalid_argument);
 }
 } // namespace

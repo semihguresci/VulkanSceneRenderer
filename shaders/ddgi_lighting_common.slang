@@ -7,10 +7,9 @@ static const uint kDdgiMaterialFlagUnlit = 0x10u;
 // The probe trace represents ordinary opaque geometry. A displaced raster
 // surface, thin/transmitting surface or transparent/unlit object cannot share
 // that diffuse transport contract and keeps its existing lighting fallback.
-// Receiver eligibility rejects declared transmission, including texture-backed
-// transmission. This aligns both raster paths even though deferred receivers
-// currently retain an unsampled transmission factor. Secondary hit shading may
-// still treat an actually black transmission texel as an opaque reflector.
+// Receiver eligibility rejects positive declared transmission. A zero factor
+// remains opaque even with a transmission texture. Secondary hit shading may
+// still treat a black texel with a positive factor as an opaque reflector.
 DdgiLookupResult LookupDdgiDiffuseReceiver(GpuMaterial material, uint objectFlags,
     float transmissionFactor, float3 world, float3 geometricNormal,
     float3 shadingNormal, float3 viewDirection)
@@ -20,7 +19,6 @@ DdgiLookupResult LookupDdgiDiffuseReceiver(GpuMaterial material, uint objectFlag
         IsThinSurfaceGpuMaterial(flags) ||
         !isfinite(transmissionFactor) || transmissionFactor > 0.0 ||
         !isfinite(material.transmissionFactor) || material.transmissionFactor > 0.0 ||
-        material.transmissionTextureIndex != kInvalidGpuMaterialTexture ||
         !isfinite(material.heightScale) ||
         (material.heightTextureIndex != 0xffffffffu && abs(material.heightScale) > 1e-7))
         return (DdgiLookupResult)0;

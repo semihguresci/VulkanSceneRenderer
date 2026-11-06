@@ -25,7 +25,6 @@
 #include <limits>
 #include <new>
 #include <glm/gtc/matrix_transform.hpp>
-#include <set>
 #include <span>
 #include <stdexcept>
 #include <type_traits>
@@ -55,7 +54,6 @@ struct LightEditIdentityState {
   };
   uint64_t asset{},graph{},scene{},generator{},bytes{};
   std::vector<Row> rows;
-  std::vector<Row> inactiveImported;
 };
 struct LightEditAddState {
   uint64_t owner{},asset{},graph{},scene{},birth{},pointPrefixBirth{},areaPrefixBirth{},generator{};
@@ -69,118 +67,6 @@ struct LightEditAddState {
 uint64_t SceneLightEdits::identityStorageBytes() const noexcept {return identities?identities->bytes:0;}
 
 namespace {
-
-bool lightSourceMatches(const tinygltf::Node& node, const std::string& extension, int32_t definition) noexcept {
-  if (extension.empty()) return node.light == definition;
-  const auto entry = node.extensions.find(extension);
-  if (entry == node.extensions.end() || !entry->second.IsObject()) return false;
-  const auto& reference = entry->second.Get("light");
-  if (!reference.IsNumber()) return false;
-  const float value = static_cast<float>(reference.GetNumberAsDouble());
-  return std::isfinite(value) && value >= 0 && double(value) <= std::numeric_limits<int32_t>::max() &&
-      static_cast<int32_t>(value) == definition;
-}
-
-using V=tinygltf::Value;
-[[noreturn]] void fail(const char* message) {throw std::invalid_argument(std::string("glTF light edit: ")+message);}
-bool exact(double a,double b) noexcept {return std::bit_cast<uint64_t>(a)==std::bit_cast<uint64_t>(b);}
-bool valueStorage(const V& v) noexcept {
-  return (v.IsString() || v.Get<std::string>().empty()) &&
-      (v.IsBinary() || v.Get<std::vector<unsigned char>>().empty()) &&
-      (v.IsArray() || v.Get<V::Array>().empty()) && (v.IsObject() || v.Get<V::Object>().empty()) &&
-      (v.IsString() || v.IsBinary() || v.IsArray() || v.IsObject() || v.IsBool() || v.IsNumber() || v.Type()==tinygltf::NULL_TYPE);
-}
-bool exactValue(const V& a,const V& b) noexcept {
-  if(a.Type()!=b.Type() || !valueStorage(a) || !valueStorage(b)) return false;
-  if(a.IsInt()) return a.Get<int>()==b.Get<int>();
-  if(a.IsReal()) return exact(a.Get<double>(),b.Get<double>());
-  if(a.IsBool()) return a.Get<bool>()==b.Get<bool>();
-  if(a.IsString()) return a.Get<std::string>()==b.Get<std::string>();
-  if(a.IsBinary()) return a.Get<std::vector<unsigned char>>()==b.Get<std::vector<unsigned char>>();
-  if(a.IsArray()) {
-    const auto& x=a.Get<V::Array>();const auto& y=b.Get<V::Array>();if(x.size()!=y.size()) return false;
-    for(size_t i=0;i<x.size();++i) if(!exactValue(x[i],y[i])) return false;
-  } else if(a.IsObject()) {
-    const auto& x=a.Get<V::Object>();const auto& y=b.Get<V::Object>();if(x.size()!=y.size()) return false;
-    auto next=y.begin();for(const auto& [key,value]:x) {
-      if(key!=next->first || !exactValue(value,next->second)) return false;++next;
-    }
-  }
-  return true;
-}
-bool exactExtensions(const tinygltf::ExtensionMap& a,const tinygltf::ExtensionMap& b) noexcept {
-  if(a.size()!=b.size()) return false;auto next=b.begin();
-  for(const auto& [key,value]:a) {if(key!=next->first || !exactValue(value,next->second)) return false;++next;}
-  return true;
-}
-template<class T> bool exactMetadata(const T& a,const T& b) noexcept {
-  return exactValue(a.extras,b.extras) && exactExtensions(a.extensions,b.extensions) &&
-      a.extras_json_string==b.extras_json_string && a.extensions_json_string==b.extensions_json_string;
-}
-bool exactDoubles(const std::vector<double>& a,const std::vector<double>& b) noexcept {
-  if(a.size()!=b.size()) return false;
-  for(size_t i=0;i<a.size();++i) if(!exact(a[i],b[i])) return false;return true;
-}
-struct LightSourceWitnessLimits {
-  uint64_t maxOwnedBytes{64ull * 1024 * 1024};
-  uint64_t maxMetadataValues{65536};
-  uint32_t maxMetadataDepth{64};
-};
-bool limitsValid(const LightSourceWitnessLimits& l) noexcept {
-  return l.maxOwnedBytes && l.maxOwnedBytes!=UINT64_MAX && l.maxMetadataValues && l.maxMetadataDepth<=256;
-}
-struct Budget {
-  const LightSourceWitnessLimits& limits;uint64_t bytes{},values{};
-  bool add(uint64_t n) noexcept {if(bytes>limits.maxOwnedBytes || n>limits.maxOwnedBytes-bytes) return false;bytes+=n;return true;}
-  bool array(uint64_t count,uint64_t width) noexcept {return count<=UINT64_MAX/width && add(count*width);}
-  bool value(const V& v,uint32_t depth=0) noexcept {
-    if(depth>limits.maxMetadataDepth || values==limits.maxMetadataValues || !valueStorage(v) || !add(sizeof(V))) return false;
-    ++values;
-    if(v.IsString()) return add(v.Get<std::string>().size());
-    if(v.IsBinary()) return add(v.Get<std::vector<unsigned char>>().size());
-    if(v.IsNumber()) return std::isfinite(v.GetNumberAsDouble());
-    if(v.IsArray()) {for(const auto& child:v.Get<V::Array>()) if(!value(child,depth+1)) return false;}
-    else if(v.IsObject()) for(const auto& [key,child]:v.Get<V::Object>())
-      if(!add(128) || !add(key.size()) || !value(child,depth+1)) return false;
-    return true;
-  }
-  bool extensions(const tinygltf::ExtensionMap& map) noexcept {
-    for(const auto& [key,v]:map) if(!add(128) || !add(key.size()) || !value(v)) return false;return true;
-  }
-  template<class T> bool metadata(const T& v) noexcept {
-    return add(v.extras_json_string.size()) && add(v.extensions_json_string.size()) && value(v.extras) && extensions(v.extensions);
-  }
-  bool doubles(const std::vector<double>& v) noexcept {
-    if(!array(v.size(),sizeof(double))) return false;for(const auto n:v) if(!std::isfinite(n)) return false;return true;
-  }
-  bool light(const tinygltf::Light& l) noexcept {
-    return add(sizeof(l)) && add(l.name.size()) && add(l.type.size()) && doubles(l.color) && metadata(l) && metadata(l.spot) &&
-        std::isfinite(l.intensity) && std::isfinite(l.range) && std::isfinite(l.spot.innerConeAngle) && std::isfinite(l.spot.outerConeAngle);
-  }
-};
-uint64_t LightSourceValueStorageBytes(const V& value,const LightSourceWitnessLimits& limits) {
-  if(!limitsValid(limits)) fail("invalid selected value storage limits");Budget budget{limits};
-  if(!budget.value(value)) fail("selected raw value exceeds its finite storage budget");return budget.bytes;
-}
-bool LightSourceValuesMatch(const V& a,const V& b,const LightSourceWitnessLimits& limits) noexcept {
-  if(!limitsValid(limits)) return false;Budget left{limits},right{limits};
-  return left.value(a) && right.value(b) && exactValue(a,b);
-}
-uint64_t LightSourceLightStorageBytes(const tinygltf::Light& light,const LightSourceWitnessLimits& limits) {
-  if(!limitsValid(limits)) fail("invalid selected light storage limits");Budget budget{limits};
-  if(!budget.light(light)) fail("selected light exceeds its finite storage budget");return budget.bytes;
-}
-bool LightSourceLightRecordsMatch(const tinygltf::Light& a,const tinygltf::Light& b,const LightSourceWitnessLimits& limits) noexcept {
-  if(!limitsValid(limits)) return false;Budget left{limits},right{limits};
-  return left.light(a) && right.light(b) && a.name==b.name && a.type==b.type && exactDoubles(a.color,b.color) &&
-      exact(a.intensity,b.intensity) && exact(a.range,b.range) && exact(a.spot.innerConeAngle,b.spot.innerConeAngle) &&
-      exact(a.spot.outerConeAngle,b.spot.outerConeAngle) && exactMetadata(a,b) && exactMetadata(a.spot,b.spot);
-}
-
-size_t sourceSceneIndex(const tinygltf::Model& model) noexcept {
-  return model.defaultScene >= 0 && size_t(model.defaultScene) < model.scenes.size()
-      ? size_t(model.defaultScene) : 0;
-}
 
 uint64_t lightIdentity() {
   static std::atomic<uint64_t> next{1};auto value=next.load(std::memory_order_relaxed);
@@ -207,7 +93,7 @@ bool posePayload(const container::scene::AuthoredDirectionalLight& a,const conta
   return poseVector(a.direction,b.direction) && poseVector(a.colorIntensity,b.colorIntensity);
 }
 bool posePayload(const container::scene::AuthoredLightBinding& a,const container::scene::AuthoredLightBinding& b) noexcept {
-  return a==b;
+  return a.sourceNode==b.sourceNode && a.extension==b.extension;
 }
 template<class T> bool posePayload(const std::optional<T>& a,const std::optional<T>& b) noexcept {
   return bool(a)==bool(b) && (!a || posePayload(*a,*b));
@@ -221,7 +107,7 @@ bool poseSettings(const LightingSettings& a,const LightingSettings& b) noexcept 
       poseFloat(a.environmentIntensity,b.environmentIntensity) && poseFloat(a.bounceIntensity,b.bounceIntensity) &&
       a.localShadowPointBudget==b.localShadowPointBudget && a.localShadowLayerBudget==b.localShadowLayerBudget &&
       a.areaLightingMode==b.areaLightingMode && a.areaLightSampleCount==b.areaLightSampleCount &&
-      a.areaEmitterDebug==b.areaEmitterDebug;
+      a.areaEmitterDebug==b.areaEmitterDebug && a.environment==b.environment;
 }
 bool poseEditable(const std::optional<EditableLightEntity>& a,const std::optional<EditableLightEntity>& b) noexcept {
   if(bool(a)!=bool(b)) return false;if(!a) return true;
@@ -257,18 +143,18 @@ bool poseLights(const container::scene::SceneManager& manager,const container::s
       poseArray(manager.authoredDirectionalLightBindings(),lights.directionalBindings) && poseArray(manager.authoredAreaLightBindings(),lights.areaBindings);
 }
 struct PoseLightBudget {
-  const LightEditLimits& limits;uint64_t cpu{},gpu{};
+  const LightingGraphPoseGenerationLimits& limits;uint64_t cpu{},gpu{};
   void add(uint64_t count,uint64_t stride=1) {
     if(cpu>limits.maxPreparedCpuBytes || (stride && count>(limits.maxPreparedCpuBytes-cpu)/stride))
-      throw std::invalid_argument("Light edit CPU preparation budget exceeded");cpu+=count*stride;
+      throw std::invalid_argument("Graph pose lighting CPU preparation budget exceeded");cpu+=count*stride;
   }
   void device(uint64_t count,uint64_t stride) {
     if(gpu>limits.maxPreparedGpuBytes || (stride && count>(limits.maxPreparedGpuBytes-gpu)/stride))
-      throw std::invalid_argument("Light edit GPU buffer budget exceeded");gpu+=count*stride;
+      throw std::invalid_argument("Graph pose lighting GPU buffer budget exceeded");gpu+=count*stride;
   }
   template<class A> void array(const A& values) {add(values.size(),sizeof(typename A::value_type));}
   template<class A> void bindings(const A& values) {
-    array(values);for(const auto& binding:values) {if(binding.extension.size()>4096) throw std::invalid_argument("Authored light binding metadata exceeds its limit");add(binding.extension.size()+1);}
+    array(values);for(const auto& binding:values) {if(binding.extension.size()>4096) throw std::invalid_argument("Graph pose light binding metadata exceeds its limit");add(binding.extension.size()+1);}
   }
   void edits(const SceneLightEdits& e) {
     add(sizeof(e));array(e.generatedPointOverrides);array(e.importedPointOverrides);array(e.generatedAreaOverrides);array(e.importedAreaOverrides);
@@ -280,7 +166,7 @@ struct PoseLightBudget {
       const PB& pointBindings,const DB& directionalBindings,const AB& areaBindings) {
     if(points.size()>1'000'000 || directions.size()>1'000'000 || areas.size()>1'000'000 ||
         points.size()!=pointBindings.size() || directions.size()!=directionalBindings.size() || areas.size()!=areaBindings.size())
-      throw std::invalid_argument("Authored light/binding table exceeds its fixed capacity or shape");
+      throw std::invalid_argument("Graph pose authored light/binding table exceeds its fixed capacity or shape");
     add(sizeof(container::scene::AuthoredSceneLights));array(points);array(directions);array(areas);
     bindings(pointBindings);bindings(directionalBindings);bindings(areaBindings);
   }
@@ -463,16 +349,181 @@ struct LightingManager::PreparedGeneration::State {
   std::unique_ptr<LightingManager> payload;
   const LightingManager* owner{};
   VkDescriptorSetLayout lightLayout{}, cull0Layout{}, cull1Layout{}, cull2Layout{}, tiledLayout{};
-  bool consumed{};
-  uint64_t cpuBytes{}, gpuBytes{};
+  bool graphPose{},lightOnly{},consumed{};
+  uint64_t cpuBytes{},gpuBytes{},epoch{},graphIdentity{},graphRevision{},cameraRevision{},sourceEpoch{},cameraAsset{};
+  uint32_t root{container::scene::SceneGraph::kInvalidNode};size_t graphNodes{};
+  glm::mat4 beforeRootLocal{1},beforeRootWorld{1},afterRootLocal{1},afterRootWorld{1};
+  container::scene::AuthoredSceneLights beforeLights,afterLights;
+  container::scene::ModelBounds beforeBounds,afterBounds;
+  SceneLightEdits beforeEdits;
+  LightingSettings beforeSettings;
+  LightingData beforeData;
+  EditableLightId beforeSelected;
+  std::weak_ptr<const uint8_t> bindingOwner;
 };
+
+struct LightingManager::PreparedRayShadowBindings::State {
+  std::shared_ptr<container::gpu::VulkanDevice> device;
+  std::weak_ptr<const uint8_t> ownerIdentity;
+  uint64_t epoch{};
+  VkDescriptorSetLayout layout{};
+  VkDescriptorPool sourcePool{}, pool{};
+  std::vector<VkDescriptorSet> sets;
+  std::vector<VkBuffer> uniformBuffers;
+  VkBuffer pointBuffer{}, areaBuffer{};
+  VkImageView matrixView{}, amplitudeView{};
+  VkSampler sampler{};
+  VkDeviceSize maxUniformRange{};
+  std::vector<RayShadowBinding> rayBindings;
+  ~State() {
+    // Only raw-owned, detached pools enter this state, including abandoned
+    // stages. The shared device makes destruction safe after owner teardown.
+    if (pool != VK_NULL_HANDLE)
+      destroyOwnedDescriptorPool(device->device(), pool, nullptr);
+  }
+};
+
+LightingManager::PreparedRayShadowBindings::PreparedRayShadowBindings() noexcept = default;
+LightingManager::PreparedRayShadowBindings::~PreparedRayShadowBindings() = default;
+LightingManager::PreparedRayShadowBindings::PreparedRayShadowBindings(PreparedRayShadowBindings&&) noexcept = default;
+LightingManager::PreparedRayShadowBindings& LightingManager::PreparedRayShadowBindings::operator=(PreparedRayShadowBindings&&) noexcept = default;
+LightingManager::PreparedRayShadowBindings::operator bool() const noexcept {
+  return state_ && state_->pool != VK_NULL_HANDLE;
+}
+VkDescriptorSet LightingManager::PreparedRayShadowBindings::lightDescriptorSet(uint32_t image) const noexcept {
+  return *this && image < state_->sets.size() ? state_->sets[image] : VK_NULL_HANDLE;
+}
+void LightingManager::PreparedRayShadowBindings::updateRayShadowDescriptors(uint32_t image,
+    VkBuffer settings, VkDeviceSize size, VkImageView visibility) {
+  if (!*this || state_->ownerIdentity.expired() || image >= state_->sets.size() ||
+      settings == VK_NULL_HANDLE || size == 0 || size > state_->maxUniformRange || visibility == VK_NULL_HANDLE)
+    throw std::invalid_argument("Invalid staged ray-shadow light descriptor binding");
+  writeRayShadowBindings(state_->device->device(), state_->sets[image], settings, size, visibility);
+  state_->rayBindings[image] = {settings, size, visibility};
+}
+
+LightingManager::PreparedRayShadowBindings LightingManager::prepareRayShadowBindings(uint32_t imageCount) const {
+  if (imageCount == 0 || imageCount > 64 || imageCount != lightingBuffers_.size() ||
+      imageCount != lightDescriptorSets_.size() || imageCount != rayShadowBindings_.size() ||
+      !device_ || device_->device() == VK_NULL_HANDLE || lightDescriptorSetLayout_ == VK_NULL_HANDLE ||
+      lightDescriptorPool_ == VK_NULL_HANDLE || lightSsbo_.buffer == VK_NULL_HANDLE ||
+      areaLightSsbo_.buffer == VK_NULL_HANDLE || !ltcLuts_ ||
+      descriptorBindingEpoch_ == std::numeric_limits<uint64_t>::max())
+    throw std::invalid_argument("Ray-shadow staging requires matching initialized lighting frames");
+  for (uint32_t image = 0; image < imageCount; ++image)
+    if (lightingBuffers_[image].buffer == VK_NULL_HANDLE || lightDescriptorSets_[image] == VK_NULL_HANDLE)
+      throw std::invalid_argument("Ray-shadow staging requires complete lighting buffers and sets");
+  if (ltcLuts_->matrixView() == VK_NULL_HANDLE || ltcLuts_->amplitudeView() == VK_NULL_HANDLE ||
+      ltcLuts_->sampler() == VK_NULL_HANDLE)
+    throw std::invalid_argument("Ray-shadow staging requires resident LTC bindings");
+
+  PreparedRayShadowBindings result;
+  result.state_ = std::make_unique<PreparedRayShadowBindings::State>();
+  auto& state = *result.state_;
+  state.device = device_;
+  state.ownerIdentity = descriptorBindingIdentity_;
+  state.epoch = descriptorBindingEpoch_;
+  state.layout = lightDescriptorSetLayout_;
+  state.sourcePool = lightDescriptorPool_;
+  state.pointBuffer = lightSsbo_.buffer;
+  state.areaBuffer = areaLightSsbo_.buffer;
+  state.matrixView = ltcLuts_->matrixView();
+  state.amplitudeView = ltcLuts_->amplitudeView();
+  state.sampler = ltcLuts_->sampler();
+  VkPhysicalDeviceProperties properties{};
+  vkGetPhysicalDeviceProperties(device_->physicalDevice(), &properties);
+  state.maxUniformRange = properties.limits.maxUniformBufferRange;
+  state.sets.resize(imageCount, VK_NULL_HANDLE);
+  state.uniformBuffers.reserve(imageCount);
+  for (const auto& buffer : lightingBuffers_) state.uniformBuffers.push_back(buffer.buffer);
+  state.rayBindings = rayShadowBindings_;
+
+  const std::array<VkDescriptorPoolSize, 4> sizes{{
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, imageCount * 2u},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, imageCount * 2u},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, imageCount * 3u},
+      {VK_DESCRIPTOR_TYPE_SAMPLER, imageCount}}};
+  VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+  poolInfo.maxSets = imageCount;
+  poolInfo.poolSizeCount = static_cast<uint32_t>(sizes.size());
+  poolInfo.pPoolSizes = sizes.data();
+  if (createOwnedDescriptorPool(device_->device(), &poolInfo, nullptr, &state.pool) != VK_SUCCESS)
+    throw std::runtime_error("Failed to create staged ray-shadow light descriptor pool");
+  const std::vector<VkDescriptorSetLayout> layouts(imageCount, state.layout);
+  VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+  allocate.descriptorPool = state.pool;
+  allocate.descriptorSetCount = imageCount;
+  allocate.pSetLayouts = layouts.data();
+  if (vkAllocateDescriptorSets(device_->device(), &allocate, state.sets.data()) != VK_SUCCESS)
+    throw std::runtime_error("Failed to allocate staged ray-shadow light descriptor sets");
+
+  const VkDescriptorBufferInfo point{state.pointBuffer, 0, sizeof(PointLightData) * kMaxClusteredLights};
+  const VkDescriptorBufferInfo area{state.areaBuffer, 0, sizeof(AreaLightData) * kMaxAreaLights};
+  const VkDescriptorImageInfo matrix{VK_NULL_HANDLE, state.matrixView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  const VkDescriptorImageInfo amplitude{VK_NULL_HANDLE, state.amplitudeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  const VkDescriptorImageInfo sampler{state.sampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
+  for (uint32_t image = 0; image < imageCount; ++image) {
+    const VkDescriptorBufferInfo uniform{state.uniformBuffers[image], 0, sizeof(LightingData)};
+    std::array<VkWriteDescriptorSet, 6> writes{};
+    for (auto& write : writes) {
+      write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      write.dstSet = state.sets[image];
+      write.descriptorCount = 1;
+    }
+    writes[0].dstBinding = 0; writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; writes[0].pBufferInfo = &uniform;
+    writes[1].dstBinding = 1; writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[1].pBufferInfo = &point;
+    writes[2].dstBinding = 2; writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[2].pBufferInfo = &area;
+    writes[3].dstBinding = 5; writes[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; writes[3].pImageInfo = &matrix;
+    writes[4].dstBinding = 6; writes[4].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; writes[4].pImageInfo = &amplitude;
+    writes[5].dstBinding = 7; writes[5].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER; writes[5].pImageInfo = &sampler;
+    vkUpdateDescriptorSets(device_->device(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    const auto& ray = state.rayBindings[image];
+    if (ray.settings != VK_NULL_HANDLE && ray.settingsSize != 0 && ray.settingsSize <= state.maxUniformRange &&
+        ray.visibility != VK_NULL_HANDLE)
+      writeRayShadowBindings(device_->device(), state.sets[image], ray.settings, ray.settingsSize, ray.visibility);
+  }
+  return result;
+}
+
+bool LightingManager::canExchangeRayShadowBindings(const PreparedRayShadowBindings& value) const noexcept {
+  if (!value || value.state_->ownerIdentity.lock() != descriptorBindingIdentity_ ||
+      value.state_->epoch != descriptorBindingEpoch_ ||
+      descriptorBindingEpoch_ == std::numeric_limits<uint64_t>::max()) return false;
+  const auto& state = *value.state_;
+  if (state.device != device_ || state.layout != lightDescriptorSetLayout_ || state.sourcePool != lightDescriptorPool_ ||
+      state.pointBuffer != lightSsbo_.buffer || state.areaBuffer != areaLightSsbo_.buffer || !ltcLuts_ ||
+      state.matrixView != ltcLuts_->matrixView() || state.amplitudeView != ltcLuts_->amplitudeView() ||
+      state.sampler != ltcLuts_->sampler() || state.sets.size() != lightingBuffers_.size() ||
+      state.sets.size() != lightDescriptorSets_.size() || state.sets.size() != rayShadowBindings_.size()) return false;
+  for (size_t image = 0; image < state.sets.size(); ++image) {
+    const auto& ray = state.rayBindings[image];
+    if (state.uniformBuffers[image] != lightingBuffers_[image].buffer || state.sets[image] == VK_NULL_HANDLE ||
+        ray.settings == VK_NULL_HANDLE || ray.settingsSize == 0 || ray.settingsSize > state.maxUniformRange ||
+        ray.visibility == VK_NULL_HANDLE) return false;
+  }
+  return true;
+}
+
+bool LightingManager::exchangeRayShadowBindings(PreparedRayShadowBindings& value) noexcept {
+  if (!canExchangeRayShadowBindings(value)) return false;
+  auto& state = *value.state_;
+  // GPU readers must already be retired. No allocation or descriptor write is
+  // permitted in this final publication phase; the old tracked/raw pool uses
+  // its existing owner path and never enters the detached token.
+  destroyLightDescriptorPool();
+  lightDescriptorPool_ = std::exchange(state.pool, VK_NULL_HANDLE);
+  ownsLightDescriptorPool_ = true;
+  lightDescriptorSets_.swap(state.sets);
+  rayShadowBindings_.swap(state.rayBindings);
+  return true;
+}
 
 LightingManager::PreparedGeneration::PreparedGeneration() noexcept = default;
 LightingManager::PreparedGeneration::~PreparedGeneration() = default;
 LightingManager::PreparedGeneration::PreparedGeneration(PreparedGeneration&&) noexcept = default;
 LightingManager::PreparedGeneration& LightingManager::PreparedGeneration::operator=(PreparedGeneration&&) noexcept = default;
 LightingManager::PreparedGeneration::operator bool() const noexcept {
-  return state_ && state_->payload && !state_->consumed;
+  return state_ && state_->payload && (!(state_->graphPose||state_->lightOnly) || !state_->consumed);
 }
 const LightingData& LightingManager::PreparedGeneration::lightingData() const {
   if (!*this) throw std::logic_error("Empty lighting generation");
@@ -513,21 +564,41 @@ void LightingManager::PreparedGeneration::updateRayShadowDescriptors(uint32_t im
   state_->payload->updateRayShadowDescriptors(image, settings, size, visibility);
 }
 
-LightingManager::PreparedGeneration LightingManager::prepareLightGeneration(
-    const SceneLightEdits& edits, const container::scene::AuthoredSceneLights& authored,
-    const container::scene::ModelBounds& bounds, const LightEditLimits& limits) const {
-  const auto imageCount = uint32_t(lightingBuffers_.size());
+LightingManager::PreparedGeneration LightingManager::prepareGeneration(
+    container::scene::SceneManager& sceneManager, container::scene::SceneGraph& graph,
+    container::ecs::World& world, uint32_t rootNode, const SceneLightEdits& edits,
+    uint32_t imageCount) const {
+  return prepareGenerationImpl(sceneManager,graph,world,rootNode,edits,imageCount,nullptr,nullptr,nullptr);
+}
+LightingManager::PreparedGeneration LightingManager::prepareGraphPoseGeneration(
+    container::scene::SceneManager& sceneManager,const container::scene::SceneGraph& graph,
+    container::ecs::World& world,uint32_t rootNode,const container::scene::AuthoredSceneLights& lights,
+    const container::scene::ModelBounds& bounds,const SceneLightEdits& edits,uint32_t images,
+    const LightingGraphPoseGenerationLimits& limits) const {
+  return prepareGenerationImpl(sceneManager,graph,world,rootNode,edits,images,&lights,&bounds,&limits);
+}
+LightingManager::PreparedGeneration LightingManager::prepareGenerationImpl(
+    container::scene::SceneManager& sceneManager,const container::scene::SceneGraph& graph,
+    container::ecs::World& world,uint32_t rootNode,const SceneLightEdits& edits,uint32_t imageCount,
+    const container::scene::AuthoredSceneLights* candidateLights,const container::scene::ModelBounds* candidateBounds,
+    const LightingGraphPoseGenerationLimits* poseLimits,bool lightOnly) const {
   const auto reject = [](const char* message) {
     throw std::invalid_argument(std::string("Lighting generation: ") + message);
   };
-  if (rootNode_ != container::scene::SceneGraph::kInvalidNode && !sceneGraph_.getNode(rootNode_))
+  const bool graphPose=poseLimits!=nullptr&&!lightOnly;
+  if (lightOnly?(&graph!=&sceneGraph_ || &world!=&world_ || &sceneManager!=sceneManager_):
+      (&graph == &sceneGraph_ || &world == &world_ || (graphPose?&sceneManager!=sceneManager_:&sceneManager==sceneManager_)))
+    reject(graphPose?"graph pose requires this live source plus detached graph and world":"preparation requires detached scene, graph and world inputs");
+  if (rootNode != container::scene::SceneGraph::kInvalidNode && !graph.getNode(rootNode))
     reject("scene anchor root is invalid");
   if (!imageCount || imageCount > 64) reject("image count must be between 1 and 64");
   const auto within = [](size_t source, size_t manual, size_t bound) {
     return source <= bound && manual <= bound - source;
   };
-  const auto points = std::min<size_t>(authored.points.size(), kMaxClusteredLights);
-  const auto areas = std::min<size_t>(authored.areas.size(), kMaxAreaLights);
+  const auto sourcePoints=candidateLights?candidateLights->points.size():sceneManager.authoredPointLights().size();
+  const auto sourceAreas=candidateLights?candidateLights->areas.size():sceneManager.authoredAreaLights().size();
+  const auto points=lightOnly?std::min<size_t>(sourcePoints,kMaxClusteredLights):sourcePoints;
+  const auto areas=lightOnly?std::min<size_t>(sourceAreas,kMaxAreaLights):sourceAreas;
   if (!within(points, edits.manualPointLights.size(), kMaxClusteredLights) ||
       !within(areas, edits.manualAreaLights.size(), kMaxAreaLights) ||
       edits.generatedPointOverrides.size() > kMaxClusteredLights ||
@@ -544,38 +615,78 @@ LightingManager::PreparedGeneration LightingManager::prepareLightGeneration(
       !tiledScratchResourcesReady()))
     reject("live tiled resources are incomplete");
 
-  PoseLightBudget budget{limits};
-  budget.add(sizeof(PreparedGeneration::State)+sizeof(LightingManager)+4096);
-  budget.lights(authored.points, authored.directionals, authored.areas,
-                authored.pointBindings, authored.directionalBindings, authored.areaBindings);
-  budget.edits(edits);
-  budget.add(kMaxClusteredLights, 2*sizeof(PointLightData)+2*sizeof(EditableLightEntity)+768);
-  budget.add(kMaxAreaLights, 2*sizeof(AreaLightData)+2*sizeof(EditableLightEntity)+256);
-  budget.add(imageCount, sizeof(container::gpu::AllocatedBuffer)+sizeof(VkDescriptorSet)+sizeof(RayShadowBinding)+64);
-  budget.device(imageCount, sizeof(LightingData));
-  budget.device(kMaxClusteredLights, sizeof(PointLightData));
-  budget.device(kMaxAreaLights, sizeof(AreaLightData));
+  uint64_t cpuBytes{},gpuBytes{};
+  if(poseLimits) {
+    if(!candidateLights || !candidateBounds || !poseLimits->maxPreparedCpuBytes || poseLimits->maxPreparedCpuBytes==UINT64_MAX ||
+        !poseLimits->maxPreparedGpuBytes || poseLimits->maxPreparedGpuBytes==UINT64_MAX || !poseLimits->maxGraphNodes ||
+        poseLimits->maxGraphNodes>=UINT32_MAX || graph.nodeCount()>poseLimits->maxGraphNodes || sceneGraph_.nodeCount()!=graph.nodeCount() ||
+        sceneGraph_.revision()==UINT64_MAX || sceneManager.cameraRevision()==UINT64_MAX || descriptorBindingEpoch_==UINT64_MAX ||
+        rootNode!=rootNode_ || imageCount!=lightingBuffers_.size() || imageCount!=lightDescriptorSets_.size())
+      reject("graph pose source, root, frame or finite capacities are invalid");
+    const auto* beforeRoot=sceneGraph_.getNode(rootNode);const auto* afterRoot=graph.getNode(rootNode);
+    if(rootNode!=container::scene::SceneGraph::kInvalidNode && (!beforeRoot || beforeRoot->retired || !afterRoot || afterRoot->retired))
+      reject("graph pose root is missing or retired");
+    const auto finiteBounds=[](const container::scene::ModelBounds& b) {
+      for(const auto* v:{&b.min,&b.max,&b.center,&b.size}) for(int i=0;i<3;++i) if(!std::isfinite((*v)[i])) return false;
+      return std::isfinite(b.radius) && b.radius>=0;
+    };
+    if(!finiteBounds(sceneManager.modelBounds()) || !finiteBounds(*candidateBounds)) reject("graph pose bounds are nonfinite");
+    if(edits.generationSettings && !poseSettings(*edits.generationSettings,lightingSettings_))
+      reject("graph pose cannot change current light generation settings");
+    PoseLightBudget budget{*poseLimits};budget.add(sizeof(PreparedGeneration::State)+sizeof(LightingManager)+4096);
+    budget.lights(sceneManager.authoredPointLights(),sceneManager.authoredDirectionalLights(),sceneManager.authoredAreaLights(),
+        sceneManager.authoredPointLightBindings(),sceneManager.authoredDirectionalLightBindings(),sceneManager.authoredAreaLightBindings());
+    budget.lights(candidateLights->points,candidateLights->directionals,candidateLights->areas,
+        candidateLights->pointBindings,candidateLights->directionalBindings,candidateLights->areaBindings);
+    if(directionalOverride_ && directionalOverride_->label.size()>4096) reject("live directional edit label exceeds its limit");
+    budget.add(sceneLightEditsStorageBytes());budget.edits(edits);budget.edits(edits);
+    // Fixed renderer capacities bound vector growth, editable labels and the
+    // detached World's replacement point-light storage, including coexistence.
+    budget.add(kMaxClusteredLights,2*sizeof(PointLightData)+2*sizeof(EditableLightEntity)+768);
+    budget.add(kMaxAreaLights,2*sizeof(AreaLightData)+2*sizeof(EditableLightEntity)+256);
+    budget.add(imageCount,sizeof(container::gpu::AllocatedBuffer)+sizeof(VkDescriptorSet)+sizeof(RayShadowBinding)+64);
+    budget.device(imageCount,sizeof(LightingData));budget.device(kMaxClusteredLights,sizeof(PointLightData));budget.device(kMaxAreaLights,sizeof(AreaLightData));
+    cpuBytes=budget.cpu;gpuBytes=budget.gpu;
+  }
 
   PreparedGeneration result; result.state_ = std::make_unique<PreparedGeneration::State>();
   auto& state = *result.state_;
   state.owner = this; state.lightLayout = lightDescriptorSetLayout_;
   state.cull0Layout = tileCullSet0Layout_; state.cull1Layout = tileCullSet1Layout_;
   state.cull2Layout = tileCullSet2Layout_; state.tiledLayout = tiledDescriptorSetLayout_;
-  state.cpuBytes = budget.cpu;
-  state.gpuBytes = budget.gpu;
-  state.payload.reset(new LightingManager(device_,allocationManager_,pipelineManager_,sceneManager_,
-                                         sceneGraph_,world_,DetachedGraphTag{}));
+  state.graphPose=graphPose;state.lightOnly=lightOnly;state.cpuBytes=cpuBytes;state.gpuBytes=gpuBytes;
+  if(graphPose) {
+    state.bindingOwner=descriptorBindingIdentity_;state.epoch=descriptorBindingEpoch_;
+    state.graphIdentity=sceneGraph_.identity();state.graphRevision=sceneGraph_.revision();state.graphNodes=sceneGraph_.nodeCount();
+    state.cameraRevision=sceneManager.cameraRevision();state.sourceEpoch=sceneManager.generationEpoch();state.cameraAsset=sceneManager.cameraAssetIdentity();
+    state.root=rootNode;state.beforeLights=sceneManager.publishedAuthoredSceneLights();state.afterLights=*candidateLights;
+    state.beforeBounds=sceneManager.modelBounds();state.afterBounds=*candidateBounds;
+    state.beforeEdits=snapshotSceneLightEdits();state.beforeSettings=lightingSettings_;state.beforeData=lightingData_;
+    state.beforeSelected=selectedEditableLight_;
+    if(const auto* root=sceneGraph_.getNode(rootNode)) {state.beforeRootLocal=root->localTransform;state.beforeRootWorld=root->worldTransform;}
+    if(const auto* root=graph.getNode(rootNode)) {state.afterRootLocal=root->localTransform;state.afterRootWorld=root->worldTransform;}
+  }
+  // A private const-graph constructor keeps the old public constructor/API
+  // intact and avoids a throwaway graph copy or a const_cast of caller data.
+  state.payload.reset(new LightingManager(device_,allocationManager_,pipelineManager_,&sceneManager,graph,world,DetachedGraphTag{}));
   auto& next = *state.payload;
-  next.suppressWorldPublication_ = true;
+  next.suppressWorldPublication_=lightOnly;
   next.lightingSettings_ = lightingSettings_;
   next.restoreSceneLightEdits(edits);
   next.selectedEditableLight_ = selectedEditableLight_;
-  next.rootNode_ = rootNode_;
-  next.authoredLightsOverride_ = &authored;
-  next.boundsOverride_ = &bounds;
-  next.updateLightingDataForActiveCamera();
-  next.authoredLightsOverride_ = nullptr;
-  next.boundsOverride_ = nullptr;
+  next.rootNode_ = rootNode;
+  // CPU evaluation touches only the supplied detached world. It preserves its
+  // renderables/camera and replaces its point-light entities before publication.
+  next.authoredLightsOverride_=candidateLights;next.boundsOverride_=candidateBounds;
+  try {
+    next.updateLightingDataForActiveCamera();
+    if(graphPose) {
+      const auto anchor=next.computeSceneLightingAnchor();
+      if(!std::isfinite(anchor.center.x) || !std::isfinite(anchor.center.y) || !std::isfinite(anchor.center.z) ||
+          !std::isfinite(anchor.localRadius) || !std::isfinite(anchor.worldRadius)) reject("candidate graph lighting anchor is nonfinite");
+    }
+  } catch(...) {next.authoredLightsOverride_=nullptr;next.boundsOverride_=nullptr;throw;}
+  next.authoredLightsOverride_=nullptr;next.boundsOverride_=nullptr;
   next.lightingData_.areaLightingMode = lightingSettings_.areaLightingMode && ltcReady() ? 1u : 0u;
   next.lightingData_.shadowEnabled = lightingData_.shadowEnabled;
   next.lightingData_.gtaoEnabled = lightingData_.gtaoEnabled;
@@ -583,13 +694,6 @@ LightingManager::PreparedGeneration LightingManager::prepareLightGeneration(
   next.lightingData_.prefilteredMipCount = lightingData_.prefilteredMipCount;
   next.lightingData_.localShadowEnabled = lightingData_.localShadowEnabled;
   next.lightingData_.localContactVisibility = lightingData_.localContactVisibility;
-  next.lightingData_.environmentOrientation = lightingData_.environmentOrientation;
-  next.lightingData_.environmentBackground = lightingData_.environmentBackground;
-  next.lightingData_.environmentSunDirection = lightingData_.environmentSunDirection;
-  next.lightingData_.environmentSunRadiance = lightingData_.environmentSunRadiance;
-  next.lightingData_.aerialGeometry = lightingData_.aerialGeometry;
-  next.lightingData_.aerialDensity = lightingData_.aerialDensity;
-  next.lightingData_.atmosphereLut = lightingData_.atmosphereLut;
   const auto finite4 = [](const glm::vec4& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) &&
         std::isfinite(value.z) && std::isfinite(value.w);
@@ -712,8 +816,52 @@ bool LightingManager::generationResourcesReady(const PreparedGeneration& value) 
           next.tileCullSet2_!=VK_NULL_HANDLE && next.tiledDescriptorSet_!=VK_NULL_HANDLE));
 }
 
+bool LightingManager::graphPoseGenerationMatches(const PreparedGeneration& value,bool prospective) const noexcept {
+  if(!value || !value.state_->graphPose || !sceneManager_) return false;
+  const auto& s=*value.state_;
+  if(s.consumed || s.bindingOwner.lock()!=descriptorBindingIdentity_ || s.epoch!=descriptorBindingEpoch_ ||
+      s.beforeEdits.identities!=lightEditIdentities_ ||
+      authoredLightsOverride_ || boundsOverride_ || s.payload->authoredLightsOverride_ || s.payload->boundsOverride_ ||
+      rootNode_!=s.root || sceneGraph_.identity()!=s.graphIdentity || sceneGraph_.nodeCount()!=s.graphNodes ||
+      sceneGraph_.revision()!=(prospective?s.graphRevision+1:s.graphRevision) ||
+      sceneManager_->cameraRevision()!=(prospective?s.cameraRevision+1:s.cameraRevision) ||
+      sceneManager_->generationEpoch()!=s.sourceEpoch || sceneManager_->cameraAssetIdentity()!=s.cameraAsset ||
+      !poseSettings(lightingSettings_,s.beforeSettings) || !poseData(lightingData_,s.beforeData) ||
+      selectedEditableLight_.type!=s.beforeSelected.type || selectedEditableLight_.source!=s.beforeSelected.source || selectedEditableLight_.index!=s.beforeSelected.index ||
+      !poseEditable(directionalOverride_,s.beforeEdits.directionalOverride) ||
+      !poseArray(generatedPointOverrides_,s.beforeEdits.generatedPointOverrides) ||
+      !poseArray(importedPointOverrides_,s.beforeEdits.importedPointOverrides) ||
+      !poseArray(generatedAreaOverrides_,s.beforeEdits.generatedAreaOverrides) ||
+      !poseArray(importedAreaOverrides_,s.beforeEdits.importedAreaOverrides) ||
+      !poseArray(manualPointLights_,s.beforeEdits.manualPointLights) || !poseArray(manualAreaLights_,s.beforeEdits.manualAreaLights) ||
+      !poseLights(*sceneManager_,prospective?s.afterLights:s.beforeLights) ||
+      !poseBounds(sceneManager_->modelBounds(),prospective?s.afterBounds:s.beforeBounds)) return false;
+  const auto* root=sceneGraph_.getNode(s.root);
+  return s.root==container::scene::SceneGraph::kInvalidNode || (root && !root->retired &&
+      poseMatrix(root->localTransform,prospective?s.afterRootLocal:s.beforeRootLocal) &&
+      poseMatrix(root->worldTransform,prospective?s.afterRootWorld:s.beforeRootWorld));
+}
+
+bool LightingManager::canExchangeGeneration(const PreparedGeneration& value) const noexcept {
+  return generationResourcesReady(value) && !value.state_->lightOnly && (!value.state_->graphPose || graphPoseGenerationMatches(value,false));
+}
+
+bool LightingManager::exchangeGeneration(PreparedGeneration& value) noexcept {
+  if(value.state_&&value.state_->lightOnly) return false;
+  if (!generationResourcesReady(value) || (value.state_->graphPose?!graphPoseGenerationMatches(value,true):!canExchangeGeneration(value))) return false;
+  exchangeGenerationPayload(value);return true;
+}
 void LightingManager::exchangeGenerationPayload(PreparedGeneration& value) noexcept {
   auto& next = *value.state_->payload;
+  // Retained history may span a viewport resize. Rebind only detached sets to
+  // today's shared scratch buffers before swapping them live. This helper is
+  // raw Vulkan void calls over fixed stack arrays: no allocation or exception.
+  // A pose stage forbids a scratch/descriptor epoch change, so its detached
+  // sets already reference these exact buffers. Keep its final boundary CPU
+  // only. Legacy reversible generations still rebind after viewport resize.
+  if (tileCullPipeline_ != VK_NULL_HANDLE && !value.state_->graphPose && !value.state_->lightOnly)
+    writeTiledDescriptors(device_->device(), next.tileCullSet1_, next.tileCullSet2_, next.tiledDescriptorSet_,
+        next.lightSsbo_, tileGridSsbo_, lightIndexListSsbo_, lightStatsBuffer_, maxClusterCount_);
   using std::swap;
   static_assert(std::is_nothrow_swappable_v<LightingData>);
   static_assert(std::is_nothrow_swappable_v<LightingSettings>);
@@ -738,7 +886,8 @@ void LightingManager::exchangeGenerationPayload(PreparedGeneration& value) noexc
   swap(tiledDescriptorSet_, next.tiledDescriptorSet_);
   lastDispatchClusterCount_ = 0; timingQueriesWritten_ = false;
   invalidateRayShadowBindingPreparations();
-  value.state_->consumed=true;
+  if(value.state_->graphPose||value.state_->lightOnly) value.state_->consumed=true;
+  if(!value.state_->lightOnly&&lightEditRevision_!=UINT64_MAX) ++lightEditRevision_;
 }
 
 LightingManager::~LightingManager() {
@@ -1146,6 +1295,15 @@ void LightingManager::setLightingSettings(const LightingSettings &settings) {
       std::clamp(settings.directionalIntensity, 0.0f, 16.0f);
   lightingSettings_.environmentIntensity =
       std::clamp(settings.environmentIntensity, 0.0f, 16.0f);
+  const auto bounded = [](float value, float min, float max) {
+    return std::isfinite(value) ? std::clamp(value, min, max) : 0.0f;
+  };
+  lightingSettings_.environment = settings.environment;
+  auto& environment = lightingSettings_.environment;
+  environment.yawDegrees = bounded(environment.yawDegrees, -180.0f, 180.0f);
+  environment.backgroundBlur = bounded(environment.backgroundBlur, 0.0f, 1.0f);
+  for (float& channel : environment.backgroundColor)
+    channel = bounded(channel, 0.0f, 1.0f);
   lightingSettings_.bounceIntensity =
       std::clamp(settings.bounceIntensity, 0.0f, 2.0f);
   lightingSettings_.localShadowPointBudget =
@@ -1720,6 +1878,13 @@ void LightingManager::updateLightingData() {
 
   lightingData_ = {};
   lightingData_.environmentIntensity = lightingSettings_.environmentIntensity;
+  const auto& environment = lightingSettings_.environment;
+  const float yaw = glm::radians(environment.yawDegrees);
+  lightingData_.environmentOrientation = {std::cos(yaw), std::sin(yaw),
+                                           environment.backgroundBlur, 0.0f};
+  lightingData_.environmentBackground = {environment.backgroundColor[0],
+      environment.backgroundColor[1], environment.backgroundColor[2],
+      environment.solidBackground ? 1.0f : 0.0f};
   lightingData_.bounceIntensity = lightingSettings_.bounceIntensity;
   lightingData_.areaLightingMode =
       lightingSettings_.areaLightingMode != 0u && ltcReady() ? 1u : 0u;
@@ -2275,8 +2440,8 @@ bool editEntity(const EditableLightEntity& a,const EditableLightEntity& b) noexc
 }
 void LightingManager::synchronizeLightEditIdentities() const {
   if(editableLights_.size()>kMaxClusteredLights+kMaxAreaLights+1) throw std::length_error("Editable light identities exceed their capacity");
-  const auto asset=sceneManager_?sceneManager_->animationSourceRevision():lightEditOwnerIdentity_;
-  const auto scene=sceneManager_?sourceSceneIndex(sceneManager_->animationSource()):0;
+  const auto asset=sceneManager_?sceneManager_->materialAssetIdentity():lightEditOwnerIdentity_;
+  const auto scene=sceneManager_?sceneManager_->selectedScene():0;
   uint64_t work{};
   std::vector<uint32_t> sourceNodes;
   const auto makeRow=[&](const EditableLightEntity& light,const LightEditIdentityState::Row* previous=nullptr) {
@@ -2293,7 +2458,7 @@ void LightingManager::synchronizeLightEditIdentities() const {
         throw std::invalid_argument("Imported light source identity is unavailable");
       if(previous&&previous->sourceNode==row.sourceNode&&previous->extension==row.extension) {
         const auto* node=sceneGraph_.getNode(previous->graphNode);
-        if(node&&node->sourceNodeIndex==row.sourceNode) {
+        if(node&&!node->retired&&node->sourceNodeIndex==row.sourceNode) {
           row.nodeBirth=sceneGraph_.nodeIncarnation(previous->graphNode);row.graphNode=previous->graphNode;
         }
       }
@@ -2304,15 +2469,19 @@ void LightingManager::synchronizeLightEditIdentities() const {
           for(uint32_t i=0;i<sceneGraph_.nodeCount();++i) {
             if(++work>64ull*1024*1024) throw std::length_error("Light identity lookup exceeds its work limit");
             const auto* node=sceneGraph_.getNode(i);
-            if(node&&node->sourceNodeIndex>=0&&size_t(node->sourceNodeIndex)<sourceNodes.size()&&
+            if(node&&!node->retired&&node->sourceNodeIndex>=0&&size_t(node->sourceNodeIndex)<sourceNodes.size()&&
                 sourceNodes[size_t(node->sourceNodeIndex)]==container::scene::SceneGraph::kInvalidNode) sourceNodes[size_t(node->sourceNodeIndex)]=i;
           }
         }
         row.graphNode=sourceNodes[size_t(row.sourceNode)];row.nodeBirth=sceneGraph_.nodeIncarnation(row.graphNode);
       }
-      row.definition = bindings[index].definition;
-      if (!lightSourceMatches(model.nodes[size_t(row.sourceNode)], row.extension, row.definition))
-        throw std::invalid_argument("Imported light association is unavailable");
+      const auto& node=model.nodes[size_t(row.sourceNode)];row.definition=node.light;
+      if(!row.extension.empty()) {
+        const auto ext=node.extensions.find(row.extension);
+        if(ext==node.extensions.end()||!ext->second.IsObject()||!ext->second.Get("light").IsInt())
+          throw std::invalid_argument("Imported area light association is unavailable");
+        row.definition=ext->second.Get("light").Get<int>();
+      }
       if(!row.nodeBirth||row.definition<0) throw std::invalid_argument("Imported light source has no original lifetime");
     }
     return row;
@@ -2343,35 +2512,7 @@ void LightingManager::synchronizeLightEditIdentities() const {
         if(++work>64ull*1024*1024) throw std::length_error("Light identity matching exceeds its work limit");
         if(editRowKey(row,previous)) {row.birth=previous.birth;break;}
       }
-    if (!row.birth && sameOwner && light.source == EditableLightSource::Imported) {
-      for (const auto& previous : old->inactiveImported) {
-        if (++work > 64ull * 1024 * 1024) throw std::length_error("Light identity matching exceeds its work limit");
-        if (editRowKey(row, previous)) { row.birth = previous.birth; break; }
-      }
-    }
     if(!row.birth) row.birth=lightIdentity();next->bytes+=row.extension.size()+1;next->rows.push_back(std::move(row));
-  }
-  if (sameOwner && sceneManager_) {
-    // Hide/show changes the compact editable table. Keep the source birth for
-    // an imported light so older history commands can resolve it on return.
-    std::set<uint64_t> liveBirths;
-    for (const auto& row : next->rows) liveBirths.insert(row.birth);
-    const auto& source = std::as_const(*sceneManager_).animationSource();
-    const auto retain = [&](const auto& rows) {
-      for (const auto& row : rows) {
-        if (row.id.source != EditableLightSource::Imported || liveBirths.contains(row.birth) ||
-            row.sourceNode < 0 || size_t(row.sourceNode) >= source.nodes.size() ||
-            !sceneGraph_.isNodeActive(row.graphNode) || sceneGraph_.nodeIncarnation(row.graphNode) != row.nodeBirth ||
-            !lightSourceMatches(source.nodes[size_t(row.sourceNode)], row.extension, row.definition)) continue;
-        if (next->inactiveImported.size() >= 1'000'000)
-          throw std::length_error("Inactive imported light identities exceed their capacity");
-        next->inactiveImported.push_back(row);
-        liveBirths.insert(row.birth);
-        next->bytes += sizeof(LightEditIdentityState::Row) + 65 + row.extension.size();
-      }
-    };
-    retain(old->rows);
-    retain(old->inactiveImported);
   }
   lightEditIdentities_=std::move(next);
 }
@@ -2382,21 +2523,23 @@ bool LightingManager::lightEditIdentitiesValid() const noexcept {
     const auto& row=set->rows[i];if(row.id!=editableLights_[i].id) return false;
     if(row.id.source!=EditableLightSource::Imported) continue;
     const auto* graphNode=sceneGraph_.getNode(row.graphNode);
-    if(!graphNode||graphNode->sourceNodeIndex!=row.sourceNode||sceneGraph_.nodeIncarnation(row.graphNode)!=row.nodeBirth||
+    if(!graphNode||graphNode->retired||graphNode->sourceNodeIndex!=row.sourceNode||sceneGraph_.nodeIncarnation(row.graphNode)!=row.nodeBirth||
         row.sourceNode<0||size_t(row.sourceNode)>=model.nodes.size()) return false;
     const auto bindings=row.id.type==EditableLightType::Directional?sceneManager_->authoredDirectionalLightBindings():
         row.id.type==EditableLightType::Area?sceneManager_->authoredAreaLightBindings():sceneManager_->authoredPointLightBindings();
     const auto index=row.id.type==EditableLightType::Directional?0u:row.id.index;
     if(index>=bindings.size()||bindings[index].sourceNode!=row.sourceNode||bindings[index].extension!=row.extension) return false;
-    if (bindings[index].definition != row.definition ||
-        !lightSourceMatches(model.nodes[size_t(row.sourceNode)], row.extension, row.definition)) return false;
+    const auto& node=model.nodes[size_t(row.sourceNode)];
+    if(row.extension.empty()) {if(node.light!=row.definition) return false;}
+    else {const auto ext=node.extensions.find(row.extension);
+      if(ext==node.extensions.end()||!ext->second.IsObject()||!ext->second.Get("light").IsInt()||ext->second.Get("light").Get<int>()!=row.definition) return false;}
   }
   return true;
 }
 std::optional<LightEditTarget> LightingManager::currentLightEditTarget(EditableLightId id) const noexcept {
   const auto& set=lightEditIdentities_;if(!set||lightEditRevision_==UINT64_MAX) return {};
-  const auto asset=sceneManager_?sceneManager_->animationSourceRevision():lightEditOwnerIdentity_;
-  const auto scene=sceneManager_?sourceSceneIndex(sceneManager_->animationSource()):0;
+  const auto asset=sceneManager_?sceneManager_->materialAssetIdentity():lightEditOwnerIdentity_;
+  const auto scene=sceneManager_?sceneManager_->selectedScene():0;
   if(set->asset!=asset||set->graph!=sceneGraph_.identity()||set->scene!=scene||set->generator!=generatedLightRevision_) return {};
   for(const auto& row:set->rows) if(row.id==id)
     return LightEditTarget{lightEditOwnerIdentity_,asset,sceneGraph_.identity(),scene,row.birth,lightEditRevision_,id};
@@ -2497,7 +2640,7 @@ EditableLightEntity LightingManager::lightBase(EditableLightId id,LightEditCanon
   if(row==base.editableLights_.end()) throw std::invalid_argument("The original source light is no longer active");return *row;
 }
 struct LightingManager::PreparedLightEdit::State {
-  const LightingManager* owner{};uint64_t revision{},epoch{},graph{},graphRevision{},asset{},scene{},geometry{},material{};
+  const LightingManager* owner{};uint64_t revision{},epoch{},graph{},graphRevision{},asset{},scene{},sourceEpoch{},geometry{},material{},camera{};
   std::shared_ptr<const LightEditIdentityState> identities;
   LightEditTarget target;PreparedLightEditPlan plan;PreparedGeneration generation;
   container::ecs::World::PreparedLightValues world;
@@ -2511,7 +2654,7 @@ struct LightingManager::PreparedLightEdit::State {
   std::optional<tinygltf::Light> rawLight;
   std::optional<tinygltf::Value> rawArea;
   int32_t rawDefinition{-1};std::string rawExtension;
-  LightSourceWitnessLimits metadataLimits;
+  container::geometry::gltf::GltfCameraPoseAuthoringLimits metadataLimits;
   uint64_t bytes{},gpuBytes{};bool consumed{},structuralWorld{};
 };
 LightingManager::PreparedLightEdit::PreparedLightEdit() noexcept=default;
@@ -2555,7 +2698,7 @@ LightingManager::PreparedLightEdit LightingManager::prepareLightEditImpl(const L
   if(limits.maxPreparedCpuBytes<sizeof(PreparedLightEdit::State)+4096+
       editableLights_.size()*(sizeof(LightEditIdentityState::Row)+64)) throw std::invalid_argument("Light edit identity admission exceeds its CPU budget");
   const auto snapshot=lightEditSnapshot(target.id);if(!snapshot.available||snapshot.target!=target) throw std::invalid_argument("The selected light request is stale");
-  LightEditLimits capacity;capacity.maxPreparedCpuBytes=limits.maxPreparedCpuBytes;capacity.maxPreparedGpuBytes=limits.maxPreparedGpuBytes;
+  LightingGraphPoseGenerationLimits capacity;capacity.maxPreparedCpuBytes=limits.maxPreparedCpuBytes;capacity.maxPreparedGpuBytes=limits.maxPreparedGpuBytes;
   PoseLightBudget budget{capacity};budget.add(sizeof(PreparedLightEdit::State)+4096);
   budget.add(pointLightsSsbo_.size(),sizeof(PointLightData)+sizeof(EditableLightEntity)+256);
   budget.add(areaLightsSsbo_.size(),sizeof(AreaLightData)+sizeof(EditableLightEntity)+256);budget.add(4096);
@@ -2564,8 +2707,8 @@ LightingManager::PreparedLightEdit LightingManager::prepareLightEditImpl(const L
   auto result=PreparedLightEdit{};result.state_=std::make_unique<PreparedLightEdit::State>();auto& s=*result.state_;
   s.owner=this;s.revision=lightEditRevision_;s.epoch=descriptorBindingEpoch_;s.graph=sceneGraph_.identity();s.graphRevision=sceneGraph_.revision();
   s.selectedBefore=selectedEditableLight_;
-  s.asset=sceneManager_->animationSourceRevision();s.scene=sourceSceneIndex(sceneManager_->animationSource());
-  s.geometry=sceneManager_->geometryRevision();s.material=sceneManager_->materialRevision();
+  s.asset=sceneManager_->materialAssetIdentity();s.scene=sceneManager_->selectedScene();s.sourceEpoch=sceneManager_->generationEpoch();
+  s.geometry=sceneManager_->geometryRevision();s.material=sceneManager_->materialRevision();s.camera=sceneManager_->cameraRevision();
   LightEditCanonicalPayload raw;
   s.identities=lightEditIdentities_;s.target=target;s.displayed=snapshot.light;s.base=lightBase(target.id,&raw);s.originalOverride=lightOverride(target.id);
   if(s.originalOverride&&target.id.type!=EditableLightType::Directional) raw=lightRawOverride(target.id);
@@ -2580,14 +2723,14 @@ LightingManager::PreparedLightEdit LightingManager::prepareLightEditImpl(const L
     s.metadataLimits.maxOwnedBytes=limits.maxPreparedCpuBytes-budget.cpu;
     if(row->extension.empty()) {
       if(size_t(row->definition)>=model.lights.size()) throw std::invalid_argument("Light source definition is unavailable");
-      budget.add(LightSourceLightStorageBytes(model.lights[size_t(row->definition)],s.metadataLimits));
+      budget.add(container::geometry::gltf::GltfCameraPoseLightStorageBytes(model.lights[size_t(row->definition)],s.metadataLimits));
       s.rawLight.emplace();*s.rawLight=model.lights[size_t(row->definition)];
     } else {
       const auto ext=model.extensions.find(row->extension);
       if(ext==model.extensions.end()||!ext->second.IsObject()||!ext->second.Get("lights").IsArray()||
           size_t(row->definition)>=ext->second.Get("lights").ArrayLen()) throw std::invalid_argument("Area light source definition is unavailable");
       const auto& raw=ext->second.Get("lights").Get(size_t(row->definition));
-      budget.add(LightSourceValueStorageBytes(raw,s.metadataLimits));s.rawArea.emplace(raw);
+      budget.add(container::geometry::gltf::GltfAuthoringValueStorageBytes(raw,s.metadataLimits));s.rawArea.emplace(raw);
     }
   }
   if(const auto* root=sceneGraph_.getNode(rootNode_)) {s.rootLocal=root->localTransform;s.rootWorld=root->worldTransform;}
@@ -2604,7 +2747,7 @@ LightingManager::PreparedLightEdit LightingManager::prepareLightEditImpl(const L
       if(rows.size()<=id.index) rows.resize(size_t(id.index)+1);rows[id.index]=next?std::optional(s.plan.canonicalAfter().point):std::nullopt;}
   }
   auto generationCapacity=capacity;generationCapacity.maxPreparedCpuBytes=limits.maxPreparedCpuBytes-budget.cpu;
-  s.generation=prepareLightGeneration(s.after,s.source,s.bounds,generationCapacity);
+  s.generation=prepareGenerationImpl(*sceneManager_,sceneGraph_,world_,rootNode_,s.after,uint32_t(lightingBuffers_.size()),&s.source,&s.bounds,&generationCapacity,true);
   s.generation.state_->payload->selectEditableLight(target.id);
   budget.add(s.generation.ownedBytes());container::ecs::World::LightValueLimits worldLimits;
   worldLimits.maxOwnedBytes=limits.maxPreparedCpuBytes-budget.cpu;worldLimits.maxWork=limits.maxWork;
@@ -2624,7 +2767,7 @@ LightingManager::PreparedLightEdit LightingManager::prepareLightAddImpl(Editable
   if(limits.maxPreparedCpuBytes<sizeof(PreparedLightEdit::State)+4096+
       editableLights_.size()*(sizeof(LightEditIdentityState::Row)+64)) throw std::invalid_argument("Manual light identity admission exceeds its CPU budget");
   synchronizeLightEditIdentities();
-  LightEditLimits capacity;capacity.maxPreparedCpuBytes=limits.maxPreparedCpuBytes;capacity.maxPreparedGpuBytes=limits.maxPreparedGpuBytes;
+  LightingGraphPoseGenerationLimits capacity;capacity.maxPreparedCpuBytes=limits.maxPreparedCpuBytes;capacity.maxPreparedGpuBytes=limits.maxPreparedGpuBytes;
   PoseLightBudget budget{capacity};budget.add(sizeof(PreparedLightEdit::State)+sizeof(LightEditAddState)+8192);
   budget.add(pointLightsSsbo_.size()+1,3*(sizeof(PointLightData)+sizeof(EditableLightEntity)+256));
   budget.add(areaLightsSsbo_.size()+1,3*(sizeof(AreaLightData)+sizeof(EditableLightEntity)+256));budget.add(8192);
@@ -2643,8 +2786,8 @@ LightingManager::PreparedLightEdit LightingManager::prepareLightAddImpl(Editable
   s.structuralWorld=structuralWorld;
   s.owner=this;s.revision=lightEditRevision_;s.epoch=descriptorBindingEpoch_;s.graph=sceneGraph_.identity();s.graphRevision=sceneGraph_.revision();
   s.selectedBefore=selectedEditableLight_;
-  s.asset=sceneManager_->animationSourceRevision();s.scene=sourceSceneIndex(sceneManager_->animationSource());
-  s.geometry=sceneManager_->geometryRevision();s.material=sceneManager_->materialRevision();
+  s.asset=sceneManager_->materialAssetIdentity();s.scene=sceneManager_->selectedScene();s.sourceEpoch=sceneManager_->generationEpoch();
+  s.geometry=sceneManager_->geometryRevision();s.material=sceneManager_->materialRevision();s.camera=sceneManager_->cameraRevision();
   s.identities=lightEditIdentities_;s.before=snapshotSceneLightEdits();s.after=s.before;
   s.source=sceneManager_->publishedAuthoredSceneLights();s.bounds=sceneManager_->modelBounds();s.settings=lightingSettings_;s.data=lightingData_;s.root=rootNode_;
   if(const auto* root=sceneGraph_.getNode(rootNode_)) {s.rootLocal=root->localTransform;s.rootWorld=root->worldTransform;}
@@ -2740,7 +2883,7 @@ LightingManager::PreparedLightEdit LightingManager::prepareLightAddImpl(Editable
   s.world=world_.prepareLightValues(pointLightsSsbo_,pointLightsSsbo_,worldLimits);budget.add(s.world.ownedBytes());
   if(structuralWorld) {s.beforeWorld=world_.cloneStateWithoutContext();s.nextWorld=world_.cloneStateWithoutContext();}
   auto generationCapacity=capacity;generationCapacity.maxPreparedCpuBytes=limits.maxPreparedCpuBytes-budget.cpu;
-  s.generation=prepareLightGeneration(s.after,s.source,s.bounds,generationCapacity);
+  s.generation=prepareGenerationImpl(*sceneManager_,sceneGraph_,world_,rootNode_,s.after,uint32_t(lightingBuffers_.size()),&s.source,&s.bounds,&generationCapacity,true);
   budget.add(s.generation.ownedBytes());
   if(structuralWorld) s.nextWorld->replacePointLights(s.generation.pointLightsSsbo());
   else if(!poseArray(pointLightsSsbo_,s.generation.pointLightsSsbo())) throw std::invalid_argument("Area/sun creation changed unrelated point lighting");
@@ -2754,8 +2897,8 @@ bool LightingManager::canExchangeLightEdit(const PreparedLightEdit& prepared) co
       s.selectedBefore!=selectedEditableLight_||
       (!s.addition&&(!target||*target!=s.target))||
       s.epoch!=descriptorBindingEpoch_||s.graph!=sceneGraph_.identity()||s.graphRevision!=sceneGraph_.revision()||!sceneManager_||
-      s.asset!=sceneManager_->animationSourceRevision()||s.scene!=sourceSceneIndex(sceneManager_->animationSource())||
-      s.geometry!=sceneManager_->geometryRevision()||s.material!=sceneManager_->materialRevision()||
+      s.asset!=sceneManager_->materialAssetIdentity()||s.scene!=sceneManager_->selectedScene()||s.sourceEpoch!=sceneManager_->generationEpoch()||
+      s.geometry!=sceneManager_->geometryRevision()||s.material!=sceneManager_->materialRevision()||s.camera!=sceneManager_->cameraRevision()||
       s.root!=rootNode_||!poseSettings(s.settings,lightingSettings_)||!poseData(s.data,lightingData_)||!poseLights(*sceneManager_,s.source)||
       !poseBounds(s.bounds,sceneManager_->modelBounds())||!poseEditable(s.before.directionalOverride,directionalOverride_)||
       !poseArray(s.before.generatedPointOverrides,generatedPointOverrides_)||!poseArray(s.before.importedPointOverrides,importedPointOverrides_)||
@@ -2766,12 +2909,12 @@ bool LightingManager::canExchangeLightEdit(const PreparedLightEdit& prepared) co
       (s.structuralWorld&&(!s.beforeWorld||!s.nextWorld||!world_.stateValuesMatch(*s.beforeWorld)))) return false;
   const auto& model=std::as_const(*sceneManager_).animationSource();
   if(s.rawLight&&(s.rawDefinition<0||size_t(s.rawDefinition)>=model.lights.size()||
-      !LightSourceLightRecordsMatch(model.lights[size_t(s.rawDefinition)],*s.rawLight,s.metadataLimits))) return false;
+      !container::geometry::gltf::GltfCameraPoseLightRecordsMatch(model.lights[size_t(s.rawDefinition)],*s.rawLight,s.metadataLimits))) return false;
   if(s.rawArea) {
     const auto ext=model.extensions.find(s.rawExtension);
     if(ext==model.extensions.end()||!ext->second.IsObject()||!ext->second.Get("lights").IsArray()||s.rawDefinition<0||
         size_t(s.rawDefinition)>=ext->second.Get("lights").ArrayLen()||
-        !LightSourceValuesMatch(ext->second.Get("lights").Get(size_t(s.rawDefinition)),*s.rawArea,s.metadataLimits)) return false;
+        !container::geometry::gltf::GltfCameraPoseValuesMatch(ext->second.Get("lights").Get(size_t(s.rawDefinition)),*s.rawArea,s.metadataLimits)) return false;
   }
   const auto row=std::ranges::find_if(editableLights_,[&](const auto& light){return light.id==s.target.id;});
   if(!s.addition&&(row==editableLights_.end()||!editEntity(*row,s.displayed))) return false;

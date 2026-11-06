@@ -4,6 +4,11 @@ VulkanSceneRenderer is a C++23 Vulkan renderer for real-time scene rendering,
 glTF, BIM, and USD content, physically based materials, shadows,
 GPU culling, and debug visualization.
 
+In a current source build, use **Scene Controls → Go to** to reach existing
+tools, or the fixed **Selection** and **Material** shortcuts. The
+[current editor controls guide](docs/current-editor-controls.md) covers practical
+workflows and available features.
+
 The runtime requires a Vulkan 1.4 GPU and driver. Raster passes use dynamic
 rendering and synchronization2; Vulkan-Hpp RAII owns Vulkan objects, VMA owns
 GPU allocations, and Slang compiles shaders to SPIR-V 1.6. Forward and deferred
@@ -41,9 +46,66 @@ irradiance, visibility, classification and relocation probe views. Use
 `--ddgi-debug classification` for a diagnostic capture without the UI.
 This feature is under development in epic #42 and requires a current source build.
 
+Optional [CPU rigid-body physics](docs/physics-integration.md) uses Jolt Physics
+with static, dynamic and kinematic bodies. Open **Scene Controls → Physics**
+to attach a box collider to a selected primary scene mesh or BIM/USD product,
+adjust mass and surface properties, then play, pause, single step or reset the
+simulation. Dynamic bodies expose a gravity factor and continuous collision
+detection for fast translation. The **Joints** controls connect bodies with
+fixed, hinge or slider joints, including limits and velocity/position motors.
+See the [joint guide](docs/physics-joints.md) for setup and validation.
+Runtime regressions cover [glTF/BIM scenes](docs/physics-scene-diversity.md),
+[moving supports](docs/physics-moving-supports.md), and
+[collider growth and imported scales](docs/physics-scale-validation.md).
+The [pending-edit suite](docs/physics-pending-edits.md) also checks Play and
+detach actions in the same frame as transform edits.
+**Create demo** or `--physics-demo` adds a floor and falling boxes. Physics is
+built by default and can be excluded with `-DENABLE_PHYSICS=OFF`; these features
+require a current source build or a newly produced package.
+
 The CMake project and build targets use `VulkanSceneRenderer`. The public
 include root remains `include/Container`, and the source namespace remains
 `container::`, to avoid a broad source-level API rename.
+
+Optional [OpenVDB support](docs/openvdb.md) imports scalar `.vdb` grids as
+surfaces, renders bounded density and temperature-emission volumes, and provides
+CPU voxel/SDF tools including glTF voxelization, resampling, booleans,
+world-space dilation/erosion and Gaussian, mean or median smoothing.
+Particle spheres can be rasterized into SDFs, and fog can be advected through
+world-space vector velocity fields using the CPU tool and APIs.
+Connected SDF surfaces can be separated into named grids, scalar surfaces can
+be exported as OBJ meshes, and VDB metadata and scalar statistics can be inspected.
+Standard PointDataGrid P/v/pscale records round-trip through JSON, scalar/vector
+field calculus includes world-space sampling, and a bounded scalar Poisson solver
+reports the residual of its stored solution. The Scene Controls authoring panel
+also supports seeded point scattering, RK2/RK4 point trajectories, standard
+point attribute sampling, Platonic solids, closed-domain MAC velocity projection
+and coupled density/temperature smoke stepping with gravity and buoyancy.
+Projection reports independently checked divergence, pressure residuals and
+explicit storage-rounding limits.
+The authoring panel
+runs these CPU operations in a background job and can explicitly load generated
+surfaces and physical-radius point markers. A separate CPU spatial path tracer
+provides a transport reference with uncertainty and finite-order diagnostics.
+Native typed point attributes/groups and field sampling, topology morphology/
+Booleans, selected voxel masks, dense arrays, multiresolution grids and ordinary field filtering/compositing have tool and
+authoring routes. Vector glyphs/streamlines, sampled field slices and native
+point attribute/radius/color previews load through the existing scene paths.
+Separate CPU/GPU physical image jobs export linear OpenEXR radiance and
+uncertainty; the viewport transport requirement remains tracked below.
+The [completion ledger](docs/openvdb-feature-status.md) tracks remaining
+capabilities, including full fluid simulation and spatial multiple scattering.
+Volume rendering supports overlapping media, bounded sequence playback with
+optional background loading and fence-polled GPU uploads, area-light scattering,
+geometry shadows, optional bounded multiple scattering, depth-ordered alpha
+glass composition and native sparse NanoVDB traversal without CUDA.
+Enable it with `-DENABLE_OPENVDB=ON`; CMake selects the vcpkg `openvdb` feature
+automatically. OpenVDB is excluded from default builds.
+Native `.nvdb` inspection, validation, copy/re-encoding, checksum repair and
+exact VDB conversion have separate CLI and asynchronous authoring controls.
+`-DENABLE_NANOVDB_IO=ON` enables portable native I/O independently of OpenVDB;
+ZIP/BLOSC support follows the available optional providers. See the
+[native-file contracts and limits](docs/openvdb.md#native-nanovdb-file-tools).
 
 ## Download and Run (Windows x64)
 
@@ -217,10 +279,22 @@ cmake --build out/build/windows-release --target download_usd_models --config Re
   commands, helper scripts, and known test status.
 - [Model loading and UI tests](docs/model-loading-validation.md) - glTF/BIM
   load/unload cycles, failed-load recovery, and hierarchy/model-list scrolling.
+- [glTF runtime capabilities](docs/gltf-capabilities.md) - version policy,
+  required-extension validation and optional texture fallbacks.
+- [Scene edit history](docs/editor-history.md) - undo/redo, gesture grouping,
+  hierarchy restoration and physics validation.
+- [glTF scene export](docs/gltf-scene-export.md) - Save/Save As, portable GLB
+  and glTF resources, current lights and safe output replacement.
+- [glTF animation](docs/gltf-animation.md) - clip playback, numeric animation
+  pointers, authored cameras and current integration limits.
+- [glTF deformation](docs/gltf-deformation.md) - skin/morph data and GPU pass
+  contracts, numerical validation and remaining renderer integration.
 - [BIM performance](docs/bim-performance.md) - Tekla House profiling and
   inspection-cache measurements in Visual Studio Debug and Release builds.
 - [BIM frame caching](docs/bim-frame-cache.md) - scene statistics, shared
   provider topology, cache invalidation and CPU allocation benchmarks.
+- [Scene browser performance](docs/scene-browser-performance.md) - virtualized
+  hierarchy rows, cached BIM queries and bounded relationship tables.
 - [Renderer follow-ups](docs/renderer-follow-ups.md) - remaining improvements
   and their GitHub issues.
 - [Development guide](docs/development-guide.md) - renderer conventions,

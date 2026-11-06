@@ -9,7 +9,7 @@
 [[vk::binding(6, 0)]] StructuredBuffer<uint> nodeCounter;
 [[vk::binding(7, 0)]] ConstantBuffer<OitMetadataBuffer> uOit;
 
-struct ComposeConstants { uint width; uint height; uint oitEnabled; uint forceReactive; };
+struct ComposeConstants { uint width; uint height; uint oitEnabled; uint reactiveFlags; };
 [[vk::push_constant]] ConstantBuffer<ComposeConstants> pc;
 
 float FiniteOr(float value, float fallback) { return isfinite(value) ? value : fallback; }
@@ -22,9 +22,14 @@ void computeMain(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= pc.width || id.y >= pc.height) return;
     uint2 pixel = id.xy;
-    float3 color = FiniteColorOr(sceneColorTexture.Load(int3(pixel, 0)).rgb, 0.0.xxx);
+    float4 sceneColor = sceneColorTexture.Load(int3(pixel, 0));
+    float3 color = FiniteColorOr(sceneColor.rgb, 0.0.xxx);
     float reactive = saturate(FiniteOr(reactiveTexture.Load(int3(pixel, 0)), 1.0));
-    if (pc.forceReactive != 0u) reactive = 1.0;
+    if ((pc.reactiveFlags & 1u) != 0u) reactive = 1.0;
+    // Alpha is volume coverage only when that producer has run this frame.
+    // Ordinary material/sky alpha has no temporal meaning.
+    if ((pc.reactiveFlags & 2u) != 0u)
+        reactive = max(reactive, saturate(FiniteOr(sceneColor.a, 1.0)));
     if (pc.oitEnabled != 0u)
     {
         OitResolveResult oit = ResolveOitPixel(pixel, color);

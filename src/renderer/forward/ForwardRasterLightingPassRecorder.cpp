@@ -151,9 +151,9 @@ primitiveDrawLists(const FrameDrawLists &draws) {
              primitiveDrawLists(p.bim.nativeCurveDraws));
 }
 
-void recordNativePrimitives(VkCommandBuffer cmd, const FrameRecordParams &p,
-                            const DebugOverlayRenderer &overlay,
-                            VkExtent2D extent) {
+void recordNativePrimitivesAndSelection(
+    VkCommandBuffer cmd, const FrameRecordParams &p,
+    const DebugOverlayRenderer &overlay, VkExtent2D extent) {
   const auto layout =
       forwardRasterPipelineLayout(p, ForwardRasterPipelineLayoutId::Wireframe);
   const BimPrimitivePassGeometryBinding geometry{
@@ -168,6 +168,23 @@ void recordNativePrimitives(VkCommandBuffer cmd, const FrameRecordParams &p,
       p, ForwardRasterPipelineId::BimPointCloudDepth);
   const auto curveDepth =
       forwardRasterPipelineHandle(p, ForwardRasterPipelineId::BimCurveDepth);
+  // Depth remains read-only in this single-sample scope; stencil is writable.
+  // Clear only stencil so the selected silhouette preserves resolved depth.
+  VkClearAttachment selectionStencilClear{};
+  selectionStencilClear.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+  selectionStencilClear.clearValue.depthStencil = {0.0f, 0u};
+  const VkClearRect selectionStencilClearRect{
+      .rect = {.offset = {0, 0}, .extent = extent},
+      .baseArrayLayer = 0u,
+      .layerCount = 1u};
+  WireframePushConstants overlayPushConstants =
+      p.pushConstants.wireframe != nullptr ? *p.pushConstants.wireframe
+                                          : WireframePushConstants{};
+  if (p.pushConstants.bindless != nullptr) {
+    overlayPushConstants.sectionPlaneEnabled =
+        p.pushConstants.bindless->sectionPlaneEnabled;
+    overlayPushConstants.sectionPlane = p.pushConstants.bindless->sectionPlane;
+  }
   (void)recordBimPrimitiveFramePassCommands(
       cmd,
       {.style = {.kind = BimPrimitivePassKind::Points,
@@ -208,11 +225,14 @@ void recordNativePrimitives(VkCommandBuffer cmd, const FrameRecordParams &p,
        .pushConstants = p.pushConstants.wireframe,
        .debugOverlay = &overlay,
        .bimManager = p.services.bimManager});
+  if (p.screenshot.sceneLinear) return;
   (void)recordBimLightingOverlayFrameCommands(
       cmd,
       {.bimGeometryReady = hasBimPrimitiveFramePassGeometry(geometry),
        .framebufferExtent = extent,
-       .draws = {.nativePointHover = p.bim.nativePointDraws.hoveredDrawCommands,
+       .draws = {.sceneSelection = p.draws.selectedDrawCommands,
+                 .bimSelection = p.bim.draws.selectedDrawCommands,
+                 .nativePointHover = p.bim.nativePointDraws.hoveredDrawCommands,
                  .nativeCurveHover = p.bim.nativeCurveDraws.hoveredDrawCommands,
                  .nativePointSelection =
                      p.bim.nativePointDraws.selectedDrawCommands,
@@ -221,13 +241,26 @@ void recordNativePrimitives(VkCommandBuffer cmd, const FrameRecordParams &p,
        .nativePointSize = points.pointSize,
        .nativeCurveLineWidth = curves.lineWidth,
        .pipelines = {.bimPointCloudDepth = pointDepth,
-                     .bimCurveDepth = curveDepth},
+                     .bimCurveDepth = curveDepth,
+                     .selectionMask = forwardRasterPipelineHandle(
+                         p, ForwardRasterPipelineId::SelectionMask),
+                     .selectionOutline = forwardRasterPipelineHandle(
+                         p, ForwardRasterPipelineId::SelectionOutline)},
        .wireframeLayout = layout,
+       .scene = {.descriptorSet = forwardRasterDescriptorSet(
+                     p, ForwardRasterDescriptorSetId::Scene),
+                 .vertexSlice = p.scene.vertexSlice,
+                 .indexSlice = p.scene.indexSlice,
+                 .indexType = p.scene.indexType},
        .bim = {.descriptorSet = geometry.sceneDescriptorSet,
                .vertexSlice = geometry.vertexSlice,
                .indexSlice = geometry.indexSlice,
                .indexType = geometry.indexType},
-       .wireframePushConstants = p.pushConstants.wireframe,
+       .selectionStencilClearAttachment = selectionStencilClear,
+       .selectionStencilClearRect = selectionStencilClearRect,
+       .wireframePushConstants = p.pushConstants.wireframe != nullptr
+                                     ? &overlayPushConstants
+                                     : nullptr,
        .debugOverlay = &overlay,
        .wireframeWideLinesSupported = p.debug.wireframeWideLinesSupported});
 }
@@ -504,6 +537,21 @@ checkForwardRasterLightingPassReadiness(const FrameRecordParams& p) {
   const bool sceneTransparentDraws = hasSceneTransparentDraws(p);
   const bool bimOpaqueDraws = hasBimOpaqueDraws(p.bim);
   const bool bimTransparentDraws = hasBimTransparentDraws(p.bim);
+  const bool sceneSelection = !p.screenshot.sceneLinear && hasDrawCommands(p.draws.selectedDrawCommands);
+  const bool bimSelection = !p.screenshot.sceneLinear && hasDrawCommands(p.bim.draws.selectedDrawCommands);
+  if (sceneSelection || bimSelection) {
+    if (p.pushConstants.wireframe == nullptr ||
+        !forwardRasterPipelineLayoutReady(
+            p, ForwardRasterPipelineLayoutId::Wireframe) ||
+        !forwardRasterPipelineReady(p, ForwardRasterPipelineId::SelectionMask) ||
+        !forwardRasterPipelineReady(p, ForwardRasterPipelineId::SelectionOutline)) {
+      return missing(RenderResourceId::SceneColor);
+    }
+    if (sceneSelection && !hasSceneGeometry(p))
+      return missing(RenderResourceId::SceneGeometry);
+    if (bimSelection && !hasBimGeometry(p))
+      return missing(RenderResourceId::BimGeometry);
+  }
   if (hasForwardRasterNativePrimitiveDraws(p)) {
     if (p.pushConstants.wireframe == nullptr || !hasBimGeometry(p))
       return missing(RenderResourceId::BimGeometry);
@@ -656,8 +704,8 @@ bool recordForwardRasterLightingPassCommands(VkCommandBuffer commandBuffer,
       forwardRasterPipelineHandle(p, ForwardRasterPipelineId::TransparentNoCull),
       layout, debugOverlay);
 
-  recordNativePrimitives(commandBuffer, p, debugOverlay,
-                         transparentFramebuffer->extent);
+  recordNativePrimitivesAndSelection(commandBuffer, p, debugOverlay,
+                                    transparentFramebuffer->extent);
 
   (void)recordRenderPassEndCommands(commandBuffer);
   return true;

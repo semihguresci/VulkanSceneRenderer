@@ -411,7 +411,7 @@ allocations.
 
 `--ddgi-surface-memory-mb` defaults to 128 MiB per compact optional surface
 payload: 192 bytes/triangle plus 112 bytes/instance, beyond the existing
-48-byte UV triangle and 16-byte shadow instance metadata. Limits are checked
+64-byte UV/vertex-alpha triangle and 16-byte shadow instance metadata. Limits are checked
 before extracting/uploading optional surfaces. A rejected GI payload preserves
 compact shadow metadata. Invalid optional attributes or an unrepresentable
 normal transform also disable GI with a reported reason while preserving the

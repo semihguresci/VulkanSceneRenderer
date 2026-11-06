@@ -18,6 +18,7 @@
 #include "Container/renderer/deferred/DeferredRasterTransformGizmo.h"
 #include "Container/renderer/deferred/DeferredTransparentOitRecorder.h"
 #include "Container/renderer/effects/BloomManager.h"
+#include "Container/renderer/effects/OpenVdbVolumeRenderer.h"
 #include "Container/renderer/effects/ExposureManager.h"
 #include "Container/renderer/forward/ForwardRasterLightingPassRecorder.h"
 #include "Container/renderer/forward/ForwardRasterPipelineBridge.h"
@@ -238,6 +239,14 @@ void registerForwardRasterPipelineRecipes(PipelineRegistry &registry) {
                             "spv_shaders/wireframe_debug.frag.spv"},
                            "wireframe");
   }
+  registerGraphicsRecipe("selection-mask",
+                         {"spv_shaders/wireframe_debug.vert.spv",
+                          "spv_shaders/wireframe_debug.frag.spv"},
+                         "wireframe");
+  registerGraphicsRecipe("selection-outline",
+                         {"spv_shaders/selection_outline.vert.spv",
+                          "spv_shaders/selection_outline.frag.spv"},
+                         "wireframe");
   registerGraphicsRecipe("post-process",
                          {"spv_shaders/post_process.vert.spv",
                           "spv_shaders/post_process.frag.spv"},
@@ -501,6 +510,16 @@ forwardRasterLocalShadowSceneDraws(const FrameDrawLists &draws) {
           .doubleSided = draws.opaqueDoubleSidedDrawCommands};
 }
 
+[[nodiscard]] ShadowPassDrawLists
+forwardRasterLocalShadowBimDraws(const FrameBimResources &bim) {
+  return {.singleSided =
+              hasDrawCommands(bim.draws.opaqueSingleSidedDrawCommands)
+                  ? bim.draws.opaqueSingleSidedDrawCommands
+                  : bim.draws.opaqueDrawCommands,
+          .windingFlipped = bim.draws.opaqueWindingFlippedDrawCommands,
+          .doubleSided = bim.draws.opaqueDoubleSidedDrawCommands};
+}
+
 [[nodiscard]] bool
 forwardRasterCanRecordLocalShadowPass(const FrameRecordParams &p) {
   return p.shadows.renderPass != VK_NULL_HANDLE &&
@@ -594,7 +613,7 @@ void recordForwardRasterLocalShadowPass(VkCommandBuffer cmd,
                  p.bim.opaqueMeshDrawsUseGpuVisibility &&
                  hasOpaqueDrawCommands(p.bim.draws),
              .sceneDraws = forwardRasterLocalShadowSceneDraws(p.draws),
-             .bimDraws = forwardRasterLocalShadowSceneDraws(p.bim.localShadowDraws)}}));
+             .bimDraws = forwardRasterLocalShadowBimDraws(p.bim)}}));
   }
 }
 
@@ -919,7 +938,7 @@ void recordForwardRasterPostProcessPass(
            p, ForwardRasterPipelineLayoutId::PostProcess),
        .descriptorSets = postProcessSets,
        .frameInputs =
-           {.displayMode = sharedContext.displayMode(),
+           {.displayMode = p.runtime.activeTechnique == RenderTechniqueId::PathTracing ? container::ui::GBufferViewMode::Lit : sharedContext.displayMode(),
             .bloomPassActive = sharedContext.isPassActive(RenderPassId::Bloom),
             .bloomReady = bloomManager != nullptr && bloomManager->isReady(),
             .bloomEnabled = bloomManager != nullptr && bloomManager->enabled(),
@@ -951,7 +970,7 @@ void recordForwardRasterPostProcessPass(
              gui->endFrame();
            return;
          }
-         if (p.services.ddgiManager)
+         if (p.services.ddgiManager && p.runtime.activeTechnique != RenderTechniqueId::PathTracing)
            p.services.ddgiManager->recordDebug(passCmd, p.runtime.imageIndex,
                                                postProcessSets[0]);
          recordForwardRasterLightGizmoOverlay(passCmd, p, sharedContext,
@@ -1233,6 +1252,8 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                            return forwardRasterLocalShadowReadiness(p);
                          });
 
+  // The shared picker copies depth while the prepass image is still in its
+  // attachment layout. Complete the copy before forward transitions it for sampling.
   registerRasterTransparentPickPass(RenderGraphBuilder(graph), context.deferredRaster,
                                     {RenderPassId::BimDepthPrepass});
   graph.addPass(RenderPassId::DepthToReadOnly,
@@ -1307,8 +1328,12 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                         {RenderPassId::CullStatsReadback});
   }
   graph.addPass(RenderPassId::Lighting, {RenderPassId::OitClear},
-                [](VkCommandBuffer cmd, const FrameRecordParams &p) {
+                [sharedContext = context.deferredRaster](VkCommandBuffer cmd, const FrameRecordParams &p) {
                   (void)recordForwardRasterLightingPassCommands(cmd, p);
+                  if (p.services.openVdbVolumeRenderer)
+                    p.services.openVdbVolumeRenderer->record(cmd, p,
+                        sharedContext && sharedContext->isPassActive(RenderPassId::OitClear) &&
+                        sharedContext->isPassActive(RenderPassId::OitResolve));
                 });
   graph.setPassReadiness(RenderPassId::Lighting,
                          [](const FrameRecordParams &p) {

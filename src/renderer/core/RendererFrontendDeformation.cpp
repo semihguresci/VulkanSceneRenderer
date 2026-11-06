@@ -26,7 +26,7 @@ void RendererFrontend::updateGltfDeformation() {
   const auto* scene = subs_.sceneController->deformationScene();
   if (!scene || scene->gpuInstances().empty()) {
     subs_.gltfDeformationPass.reset();
-    gltfDeformationSourceIdentity_ = 0;
+    gltfDeformationGraphIdentity_ = 0;
     gltfDeformationSubmittedEpoch_.reset();
     gltfDeformationMaxPositionDelta_ = 0;
     gltfDeformationHistoryReset_ = true;
@@ -38,15 +38,15 @@ void RendererFrontend::updateGltfDeformation() {
       subs_.gltfDeformationPass = std::make_unique<GltfDeformationPass>(
           svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
       subs_.gltfDeformationPass->createResources(container::util::executableDirectory(), images);
-      gltfDeformationSourceIdentity_ = 0;
+      gltfDeformationGraphIdentity_ = 0;
       gltfDeformationImageCount_ = images;
     }
-    if (gltfDeformationSourceIdentity_ != subs_.sceneManager->animationSourceRevision() ||
+    if (gltfDeformationGraphIdentity_ != sceneGraph_.identity() ||
         gltfDeformationSourceRevision_ != sourceRevision ||
         gltfDeformationTopologyRevision_ != scene->topologyRevision() ||
         gltfDeformationVertexCount_ != vertices.size()) {
       subs_.gltfDeformationPass->setScene(vertices, scene->gpuInstances());
-      gltfDeformationSourceIdentity_ = subs_.sceneManager->animationSourceRevision();
+      gltfDeformationGraphIdentity_ = sceneGraph_.identity();
       gltfDeformationSourceRevision_ = sourceRevision;
       gltfDeformationTopologyRevision_ = scene->topologyRevision();
       gltfDeformationVertexCount_ = vertices.size();
@@ -71,12 +71,9 @@ void RendererFrontend::prepareGltfDeformationFrame(uint32_t imageIndex) {
     gltfDeformationMaxPositionDelta_ = 0;
     const auto current = scene->currentVertices();
     const auto previous = scene->previousVertices();
-    for (const auto& instance : scene->gpuInstances()) {
-      const size_t end = size_t(instance.outputVertexOffset) + instance.primitive->bindVertices.size();
-      for (size_t index = instance.outputVertexOffset; index < end; ++index)
-        gltfDeformationMaxPositionDelta_ = std::max(gltfDeformationMaxPositionDelta_,
-            glm::distance(current[index].position, previous[index].position));
-    }
+    for (size_t i = 0; i < current.size() && i < previous.size(); ++i)
+      gltfDeformationMaxPositionDelta_ = std::max(gltfDeformationMaxPositionDelta_,
+          glm::distance(current[i].position, previous[i].position));
     subs_.gltfDeformationPass->uploadFrame(imageIndex, scene->gpuPoses());
   }
 }

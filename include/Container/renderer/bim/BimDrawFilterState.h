@@ -13,7 +13,7 @@ namespace container::renderer {
 struct BimDrawFilterStateInputs {
   uint64_t revision{0};
   size_t objectCount{0};
-  std::span<const BimElementMetadata> metadata{};
+  BimMetadataTableView metadata{};
   std::span<const std::string> phaseOrder{};
   const std::vector<DrawCommand> *opaqueDrawCommands{nullptr};
   const std::vector<DrawCommand> *opaqueSingleSidedDrawCommands{nullptr};

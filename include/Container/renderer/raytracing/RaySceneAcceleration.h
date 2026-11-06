@@ -12,6 +12,8 @@ struct RaySceneBuildStats {
   uint32_t blasBuilt{0};
   uint32_t blasReused{0};
   uint32_t instanceCount{0};
+  uint32_t gpuInstanceCount{0};
+  VkDeviceSize gpuTransformUploadBytes{0};
   VkDeviceSize accelerationBytes{0};
   VkDeviceSize inputBytes{0};
   VkDeviceSize scratchBytes{0};

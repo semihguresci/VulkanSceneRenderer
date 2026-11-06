@@ -4,8 +4,10 @@
 #include "Container/renderer/core/RenderTechnique.h"
 
 #include <cstddef>
+#include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -183,10 +185,20 @@ class FrameResourceRegistry {
     }
   }
   [[nodiscard]] std::size_t bindingCount() const { return bindings_.size(); }
+  [[nodiscard]] std::span<const FrameResourceDesc> resourceDescriptors() const noexcept {return resources_;}
+  [[nodiscard]] std::span<const FrameResourceBinding> resourceBindings() const noexcept {return bindings_;}
 
   void clearTechnique(RenderTechniqueId technique);
   void clearBindings();
   void clear();
+  // A detached copy may bind a complete scene generation before publication.
+  // Preserve this registry's address and never reuse IDs after history replay.
+  void swapState(FrameResourceRegistry& other) noexcept {
+    const auto nextId = std::max(nextBindingHandleId_, other.nextBindingHandleId_);
+    resources_.swap(other.resources_);
+    bindings_.swap(other.bindings_);
+    nextBindingHandleId_ = other.nextBindingHandleId_ = nextId;
+  }
 
  private:
   [[nodiscard]] std::size_t findIndex(const TechniqueResourceKey& key) const;

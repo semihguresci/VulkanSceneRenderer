@@ -3,6 +3,18 @@ add_library(VulkanSceneRenderer_Core
     app/Application.cpp
 )
 
+# ASL exchange validation stays independently testable without Vulkan startup.
+add_library(VulkanSceneRenderer_asl_pose asl/PoseReplay.cpp asl/HandKinematics.cpp)
+target_compile_features(VulkanSceneRenderer_asl_pose PUBLIC cxx_std_23)
+target_include_directories(VulkanSceneRenderer_asl_pose PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_link_libraries(VulkanSceneRenderer_asl_pose PUBLIC Dep_Math nlohmann_json::nlohmann_json)
+
+# CPU-only numerical processor shared by the workbench's provenance wrapper.
+add_executable(ASLHandKinematicsProcessor asl/HandKinematicsProcessor.cpp)
+set_target_properties(ASLHandKinematicsProcessor PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+target_link_libraries(ASLHandKinematicsProcessor PRIVATE VulkanSceneRenderer_asl_pose)
+container_stage_runtime_dlls(ASLHandKinematicsProcessor)
+
 add_library(VulkanSceneRenderer_bim_ui_support
     renderer/bim/BimMeasurementSnapping.cpp
     renderer/bim/BimModelCompare.cpp
@@ -15,7 +27,6 @@ target_link_libraries(VulkanSceneRenderer_bim_ui_support PUBLIC
     Dep_Math
 )
 
-# Renderer subsystem
 # CPU light intents and selected receipts are shared by UI and renderer.
 add_library(VulkanSceneRenderer_light_edit_support
     renderer/lighting/EditableLight.cpp
@@ -25,22 +36,32 @@ target_compile_features(VulkanSceneRenderer_light_edit_support PUBLIC cxx_std_23
 target_include_directories(VulkanSceneRenderer_light_edit_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 target_link_libraries(VulkanSceneRenderer_light_edit_support PUBLIC Dep_Math Dep_VulkanCore)
 
+# Renderer subsystem
 add_library(VulkanSceneRenderer_renderer
+    asl/PoseReplayScene.cpp
     renderer/core/RenderPassManager.cpp
     renderer/core/CommandBufferScopeRecorder.cpp
     renderer/core/FrameRecorder.cpp
     renderer/core/RendererMsaa.cpp
     renderer/core/RendererFrontend.cpp
-    renderer/core/RendererFrontendAnimation.cpp
+    renderer/core/RendererFrontendReference.cpp
+    renderer/core/RendererFrontendPhysics.cpp
+    renderer/core/RendererFrontendEdits.cpp
+    renderer/core/RendererFrontendRetirement.cpp
+    renderer/core/RendererFrontendMerge.cpp
     renderer/core/RendererFrontendLights.cpp
-    renderer/core/RendererFrontendNodes.cpp
-    renderer/core/RendererFrontendSceneSave.cpp
-    renderer/core/RendererFrontendGltfScenes.cpp
+    renderer/core/RendererFrontendMaterials.cpp
+    renderer/core/RendererFrontendAnimation.cpp
+    renderer/core/RendererFrontendCameras.cpp
+    renderer/core/RendererFrontendCameraPoses.cpp
     renderer/core/RendererFrontendDeformation.cpp
     renderer/core/RendererFrontendDeformationTelemetry.cpp
-    renderer/core/RendererFrontendReference.cpp
+    renderer/scene/SceneLightExport.cpp
     renderer/scene/GltfDeformationPass.cpp
+    renderer/scene/GpuHierarchyPass.cpp
+    renderer/raytracing/RayInstanceTransformPass.cpp
     renderer/scene/PbrAuxiliaryPass.cpp
+    renderer/scene/GltfDeformationScene.cpp
     renderer/core/RendererTelemetry.cpp
     renderer/core/RenderGraph.cpp
     renderer/core/RenderPassGpuProfiler.cpp
@@ -78,11 +99,11 @@ add_library(VulkanSceneRenderer_renderer
     renderer/lighting/LtcLutData.cpp
     renderer/lighting/LtcLutResources.cpp
     renderer/lighting/LightingManager.cpp
-    renderer/lighting/TinyExrImpl.cpp
 
     renderer/effects/BloomManager.cpp
     renderer/effects/ExposureManager.cpp
     renderer/effects/OitManager.cpp
+    renderer/effects/OpenVdbVolumeRenderer.cpp
     renderer/temporal/TemporalManager.cpp
 
     renderer/raytracing/RayScene.cpp
@@ -100,7 +121,6 @@ add_library(VulkanSceneRenderer_renderer
 
     renderer/scene/CameraController.cpp
     renderer/scene/SceneController.cpp
-    renderer/scene/SceneLightExport.cpp
     renderer/scene/SceneDiagnosticCubeRecorder.cpp
     renderer/scene/ScenePrimitives.cpp
     renderer/scene/SceneViewport.cpp
@@ -161,6 +181,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/bim/BimLightingOverlayRecorder.cpp
     renderer/bim/BimInspectionCache.cpp
     renderer/bim/BimStatisticsCache.cpp
+    renderer/bim/BimObjectTransforms.cpp
     renderer/bim/BimManager.cpp
     renderer/bim/BimMetadataCatalog.cpp
     renderer/bim/BimMetadataIndex.cpp
@@ -217,6 +238,7 @@ target_include_directories(VulkanSceneRenderer_renderer PUBLIC
 
 target_link_libraries(VulkanSceneRenderer_renderer PUBLIC
     VulkanSceneRenderer_light_edit_support
+    VulkanSceneRenderer_asl_pose
     Dep_VulkanCore
     Dep_Math
     Dep_SceneIO
@@ -230,21 +252,90 @@ target_link_libraries(VulkanSceneRenderer_renderer PUBLIC
     VulkanSceneRenderer_ecs
 )
 
-# Shared CPU image decoding has no scene/UI ownership.
+# Add subdirectories
+# CPU image decoding has no scene/UI dependency. Geometry image-source
+# selection and GPU uploads share it without a geometry/utility cycle.
 add_library(VulkanSceneRenderer_stb geometry/stb_impl.cpp)
 target_compile_features(VulkanSceneRenderer_stb PUBLIC cxx_std_23)
 target_link_libraries(VulkanSceneRenderer_stb PUBLIC Dep_SceneIO)
-add_library(VulkanSceneRenderer_texture_codecs utility/TextureImageData.cpp utility/TextureUploadPlan.cpp)
+add_library(VulkanSceneRenderer_texture_codecs
+    utility/TextureImageData.cpp utility/TextureUploadPlan.cpp)
 target_compile_features(VulkanSceneRenderer_texture_codecs PUBLIC cxx_std_23)
 target_include_directories(VulkanSceneRenderer_texture_codecs PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(VulkanSceneRenderer_texture_codecs PUBLIC Dep_VulkanCore
     PRIVATE Dep_TextureCodecs VulkanSceneRenderer_stb)
-target_link_libraries(VulkanSceneRenderer_renderer PUBLIC VulkanSceneRenderer_texture_codecs)
 
-# Add subdirectories
 add_subdirectory(geometry)
 add_subdirectory(utility)
 add_subdirectory(ecs)
+
+# One TinyEXR implementation shared by environment loading and volume export.
+add_library(VulkanSceneRenderer_exr renderer/lighting/TinyExrImpl.cpp)
+target_compile_features(VulkanSceneRenderer_exr PUBLIC cxx_std_23)
+target_link_libraries(VulkanSceneRenderer_exr PUBLIC Dep_SceneIO)
+if(TARGET miniz::miniz)
+    target_link_libraries(VulkanSceneRenderer_exr PRIVATE miniz::miniz)
+else()
+    find_library(CONTAINER_TINYEXR_MINIZ_LIBRARY NAMES miniz REQUIRED)
+    target_link_libraries(VulkanSceneRenderer_exr PRIVATE "${CONTAINER_TINYEXR_MINIZ_LIBRARY}")
+endif()
+target_link_libraries(VulkanSceneRenderer_renderer PRIVATE VulkanSceneRenderer_exr)
+
+# Standalone compute reference; the frame renderer retains its interactive path.
+add_library(VulkanSceneRenderer_openvdb_transport_reference
+    renderer/effects/OpenVdbTransportGpuReference.cpp)
+target_compile_features(VulkanSceneRenderer_openvdb_transport_reference PUBLIC cxx_std_23)
+target_include_directories(VulkanSceneRenderer_openvdb_transport_reference PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_link_libraries(VulkanSceneRenderer_openvdb_transport_reference PUBLIC
+    VulkanSceneRenderer_openvdb VulkanSceneRenderer_gpu_resource
+    VulkanSceneRenderer_geometry PRIVATE Dep_NanoVDB)
+
+add_library(VulkanSceneRenderer_openvdb_transport_image
+    geometry/OpenVdbTransportImage.cpp
+    geometry/OpenVdbTransportImageScene.cpp
+    renderer/effects/OpenVdbTransportImageGpu.cpp
+    renderer/effects/OpenVdbTransportRenderJob.cpp)
+target_compile_features(VulkanSceneRenderer_openvdb_transport_image PUBLIC cxx_std_23)
+target_include_directories(VulkanSceneRenderer_openvdb_transport_image PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_link_libraries(VulkanSceneRenderer_openvdb_transport_image PUBLIC
+    VulkanSceneRenderer_openvdb_transport_reference VulkanSceneRenderer_exr)
+target_link_libraries(VulkanSceneRenderer_ui PRIVATE VulkanSceneRenderer_openvdb_transport_image)
+
+add_executable(OpenVdbTransportRender ${CMAKE_SOURCE_DIR}/tools/openvdb_transport_render.cpp)
+target_link_libraries(OpenVdbTransportRender PRIVATE VulkanSceneRenderer_openvdb_transport_image)
+set_target_properties(OpenVdbTransportRender PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+container_stage_runtime_dlls(OpenVdbTransportRender)
+
+if(ENABLE_PHYSICS)
+    add_library(VulkanSceneRenderer_physics
+        physics/PhysicsWorld.cpp
+        physics/PhysicsScene.cpp
+        physics/PhysicsElementBindings.cpp
+    )
+    target_compile_features(VulkanSceneRenderer_physics PUBLIC cxx_std_23)
+    target_include_directories(VulkanSceneRenderer_physics PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    )
+    target_link_libraries(VulkanSceneRenderer_physics PUBLIC
+        Dep_Math
+    )
+    target_link_libraries(VulkanSceneRenderer_physics PRIVATE
+        Dep_Physics
+        VulkanSceneRenderer_scene
+    )
+    target_link_libraries(VulkanSceneRenderer_renderer PRIVATE
+        VulkanSceneRenderer_physics
+    )
+    target_compile_definitions(VulkanSceneRenderer_renderer PUBLIC
+        CONTAINER_HAS_JOLT=1
+    )
+else()
+    target_compile_definitions(VulkanSceneRenderer_renderer PUBLIC
+        CONTAINER_HAS_JOLT=0
+    )
+endif()
 
 target_link_libraries(VulkanSceneRenderer_Core PUBLIC
     VulkanSceneRenderer_renderer

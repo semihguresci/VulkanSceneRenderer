@@ -57,9 +57,6 @@ struct SceneExportSnapshot {
   // is in the supplied runtime export table; node activity is derived from the
   // graph. Spans are borrowed for this call. Filtering precedes image I/O.
   GltfResourceExportMasks sourceResourceMasks{};
-  // Optional runtime node -> instance row mapping for imported instancing.
-  // A negative row denotes an ordinary node.
-  std::span<const int32_t> sourceInstanceIndices{};
 };
 
 // Rebuilds current geometry and hierarchy in glTF-native coordinates. Images

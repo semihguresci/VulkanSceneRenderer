@@ -6,32 +6,8 @@ kernel: diffuse/GGX reflection, thin-sheet transmission, closed homogeneous
 dielectrics, nested media, traced-distance Beer absorption, stochastic alpha
 coverage, emissive geometry and direct environment/point/spot/area/directional
 lighting with MIS. Emissive meshes are reached by path sampling; mesh-light
-next-event sampling remains a gap.
-
-## Using the viewport
-
-Choose **Scene Controls → Rendering Engine → Path tracing**. The status
-line shows the attempted samples per pixel and any path diagnostics.
-The Vulkan device must support ray queries and the shared surface resources.
-The renderer falls back to deferred raster when the required features or
-path-tracing resources are unavailable.
-
-For fixed captures, use `--render-technique path-tracing --path-spp 4
---path-samples 512 --path-bounces 8 --path-seed 1`. The sample limit counts
-attempted samples, and each submitted frame advances the sample sequence by
-up to the configured samples per frame. Capture sequences can switch among
-the three engines and preserve the active camera.
-
-Camera, scene, materials, lights, clipping, and environment changes reset
-accumulation. Switching back to path tracing starts a fresh accumulation.
-Exposure and tone mapping operate on the displayed image. EXR captures export
-the raw float32 mean and include sample and diagnostic counts in the metadata.
-Magenta shows unsupported paths and yellow shows numerical rejection in the
-display. The raw mean excludes diagnostic colors.
-
-Run `tests/validation/reference_path_viewport_regression.py` with the built
-renderer to check progressive stops, alpha coverage, float32 export, engine
-switching, resize, and the raster fallback.
+next-event sampling remains a gap. The viewport frontend is a separate
+publication milestone.
 
 The shared layouts are updated together in host and Slang code:
 

@@ -119,8 +119,7 @@ void Application::initVulkan() {
 
 void Application::mainLoop() {
   if (!config_.screenshotCapturePath.empty() ||
-      !config_.temporalCaptureSequencePath.empty() ||
-      (!config_.sceneExportPath.empty() && !config_.windowVisible)) {
+      !config_.temporalCaptureSequencePath.empty()) {
     screenshotCaptureLoop();
     return;
   }
@@ -143,7 +142,8 @@ void Application::mainLoop() {
   vkDeviceWaitIdle(vulkanContext_->result().deviceWrapper->device());
 
   if (!config_.sceneExportPath.empty())
-    renderer_->saveSceneModel(container::util::pathFromUtf8(config_.sceneExportPath));
+    renderer_->saveSceneModel(std::filesystem::u8path(config_.sceneExportPath));
+
   onMainLoop();
 }
 
@@ -191,6 +191,10 @@ void Application::screenshotCaptureLoop() {
       }
       skip = sample.event.skip || minimized;
     }
+    // Fixed timesteps can render much faster than wall time. Settle the
+    // requested volume frame before advancing a deterministic capture tick.
+    if (!skip && config_.vdbSequenceAsync)
+      renderer_->settlePendingModelLoads();
     renderer_->gfxCaptureTick(frameNumber, skip);
     if (skip)
       continue;
@@ -225,7 +229,8 @@ void Application::screenshotCaptureLoop() {
   vkDeviceWaitIdle(vulkanContext_->result().deviceWrapper->device());
 
   if (!config_.sceneExportPath.empty())
-    renderer_->saveSceneModel(container::util::pathFromUtf8(config_.sceneExportPath));
+    renderer_->saveSceneModel(std::filesystem::u8path(config_.sceneExportPath));
+
   onMainLoop();
 }
 

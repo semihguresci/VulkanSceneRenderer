@@ -66,6 +66,12 @@ struct SceneLightEdits {
   std::shared_ptr<const LightEditIdentityState> identities;
   [[nodiscard]] uint64_t identityStorageBytes() const noexcept;
 };
+struct LightingGraphPoseGenerationLimits {
+  uint64_t maxPreparedCpuBytes{64ull * 1024 * 1024};
+  uint64_t maxPreparedGpuBytes{256ull * 1024 * 1024};
+  uint64_t maxGraphNodes{1'000'000};
+};
+
 // Manages the LightingData uniform buffer, directional + point/area lights,
 // tiled light culling resources, and the light-gizmo draw helper.
 class LightingManager {
@@ -144,6 +150,28 @@ public:
     std::unique_ptr<State> state_;
   };
 
+  // Descriptor-only, one-shot stage. It borrows this manager's unchanged
+  // lighting buffers and LTC resources; no CPU light or World state is copied.
+  // Complete bindings 3/4 for every image before exchange. The caller retires
+  // all readers of the old sets before exchange, which consumes this token.
+  class PreparedRayShadowBindings {
+  public:
+    PreparedRayShadowBindings() noexcept;
+    ~PreparedRayShadowBindings();
+    PreparedRayShadowBindings(PreparedRayShadowBindings&&) noexcept;
+    PreparedRayShadowBindings& operator=(PreparedRayShadowBindings&&) noexcept;
+    PreparedRayShadowBindings(const PreparedRayShadowBindings&) = delete;
+    PreparedRayShadowBindings& operator=(const PreparedRayShadowBindings&) = delete;
+    explicit operator bool() const noexcept;
+    [[nodiscard]] VkDescriptorSet lightDescriptorSet(uint32_t imageIndex) const noexcept;
+    void updateRayShadowDescriptors(uint32_t imageIndex, VkBuffer settings,
+        VkDeviceSize settingsSize, VkImageView visibility);
+  private:
+    friend class LightingManager;
+    struct State;
+    std::unique_ptr<State> state_;
+  };
+
   LightingManager(std::shared_ptr<container::gpu::VulkanDevice> device,
                   container::gpu::AllocationManager &allocationManager,
                   container::gpu::PipelineManager &pipelineManager,
@@ -163,6 +191,32 @@ public:
   // Creates lightDescriptorSetLayout, lightingBuffer, lightDescriptorPool,
   // lightDescriptorSet, and writes the initial descriptor.
   void createDescriptorResources(uint32_t descriptorSetCount);
+  [[nodiscard]] PreparedGeneration prepareGeneration(
+      container::scene::SceneManager& sceneManager,
+      container::scene::SceneGraph& graph, container::ecs::World& world,
+      uint32_t rootNode, const SceneLightEdits& edits, uint32_t imageCount) const;
+  // One-shot graph-pose presentation against this manager's unchanged live
+  // source. Candidate graph/World are detached; candidate source lights/bounds
+  // come from the matching prepared SceneManager pose operation. Only detached
+  // CPU evaluation borrows those overrides; live sources are never mutated.
+  // canExchangeGeneration checks BEFORE source/graph publication. The actual
+  // exchange checks their exact prospective phase, while generationEpoch is
+  // still unchanged; scene bindings publish last in the outer transaction.
+  [[nodiscard]] PreparedGeneration prepareGraphPoseGeneration(
+      container::scene::SceneManager& liveSceneManager,
+      const container::scene::SceneGraph& candidateGraph, container::ecs::World& detachedWorld,
+      uint32_t rootNode, const container::scene::AuthoredSceneLights& candidateLights,
+      const container::scene::ModelBounds& candidateBounds, const SceneLightEdits& edits, uint32_t imageCount,
+      const LightingGraphPoseGenerationLimits& limits = {}) const;
+  [[nodiscard]] bool canExchangeGeneration(const PreparedGeneration&) const noexcept;
+  // No allocation, buffer upload, map or flush. Only owned payloads swap;
+  // stable live world/graph/scene-manager references are never rebound.
+  bool exchangeGeneration(PreparedGeneration&) noexcept;
+  [[nodiscard]] PreparedRayShadowBindings prepareRayShadowBindings(uint32_t imageCount) const;
+  [[nodiscard]] bool canExchangeRayShadowBindings(const PreparedRayShadowBindings&) const noexcept;
+  // No allocation, upload or descriptor writes: only the light descriptor
+  // payload changes. The previous descriptor pool is retired immediately.
+  bool exchangeRayShadowBindings(PreparedRayShadowBindings&) noexcept;
   void updateRayShadowDescriptors(uint32_t imageIndex, VkBuffer settings,
                                   VkDeviceSize settingsSize,
                                   VkImageView visibility);
@@ -326,9 +380,10 @@ private:
   LightingManager(std::shared_ptr<container::gpu::VulkanDevice>, container::gpu::AllocationManager&,
       container::gpu::PipelineManager&, container::scene::SceneManager*, const container::scene::SceneGraph&,
       container::ecs::World&, DetachedGraphTag);
-  [[nodiscard]] PreparedGeneration prepareLightGeneration(const SceneLightEdits&,
-      const container::scene::AuthoredSceneLights&, const container::scene::ModelBounds&,
-      const LightEditLimits&) const;
+  [[nodiscard]] PreparedGeneration prepareGenerationImpl(container::scene::SceneManager&,
+      const container::scene::SceneGraph&, container::ecs::World&, uint32_t, const SceneLightEdits&, uint32_t,
+      const container::scene::AuthoredSceneLights*, const container::scene::ModelBounds*,
+      const LightingGraphPoseGenerationLimits*,bool lightOnly=false) const;
   void exchangeGenerationPayload(PreparedGeneration&) noexcept;
   void synchronizeLightEditIdentities() const;
   [[nodiscard]] bool lightEditIdentitiesValid() const noexcept;
@@ -342,6 +397,7 @@ private:
   [[nodiscard]] PreparedLightEdit prepareLightAddImpl(EditableLightType,const LightEditCommand*,bool applied,const LightEditLimits&) const;
   [[nodiscard]] bool generationResourcesReady(const PreparedGeneration&) const noexcept;
   [[nodiscard]] bool tiledScratchResourcesReady() const noexcept;
+  [[nodiscard]] bool graphPoseGenerationMatches(const PreparedGeneration&, bool prospective) const noexcept;
   bool applyAuthoredDirectionalLight(const SceneLightingAnchor &anchor);
   void appendAuthoredPointLights(const SceneLightingAnchor &anchor);
   void appendAuthoredAreaLights(const SceneLightingAnchor &anchor);

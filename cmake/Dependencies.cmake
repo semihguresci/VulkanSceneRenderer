@@ -13,6 +13,8 @@ include(cmake/DependenciesSettings.cmake)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 include(FetchContent)
+include("${CMAKE_CURRENT_LIST_DIR}/OpenVdbDependencies.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/NanoVdbDependencies.cmake")
 
 # ── Find Vulkan SDK ──────────────────────────────────────────────────────────
 find_package(Vulkan 1.4 REQUIRED)
@@ -120,7 +122,8 @@ endforeach()
 # prefixes (vcpkg's app-local hook only searches its active installation).
 function(container_stage_runtime_dlls target)
     if(WIN32)
-        # Keep DLL paths out of cmd.exe's pipe/metacharacter parsing.
+        # A manifest avoids shell metacharacters in Ninja's nested cmd.exe
+        # post-build command while retaining per-configuration DLL discovery.
         set(runtime_manifest "${CMAKE_CURRENT_BINARY_DIR}/runtime-dlls/${target}-$<CONFIG>.txt")
         file(GENERATE OUTPUT "${runtime_manifest}"
             CONTENT "$<JOIN:$<TARGET_RUNTIME_DLLS:${target}>,\n>")
@@ -130,6 +133,28 @@ function(container_stage_runtime_dlls target)
                 "-DDESTINATION=$<TARGET_FILE_DIR:${target}>"
                 -P "${CMAKE_SOURCE_DIR}/cmake/StageRuntimeDlls.cmake"
             VERBATIM)
+        if(CONTAINER_OPENVDB_RUNTIME_DLL)
+            add_custom_command(TARGET ${target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND}
+                    "-DOPENVDB_DLL=${CONTAINER_OPENVDB_RUNTIME_DLL}"
+                    "-DEXECUTABLE=$<TARGET_FILE:${target}>"
+                    "-DDUMPBIN=${CONTAINER_OPENVDB_DUMPBIN}"
+                    "-DDESTINATION=$<TARGET_FILE_DIR:${target}>"
+                    -P "${CMAKE_SOURCE_DIR}/cmake/StageOpenVdbRuntime.cmake"
+                VERBATIM)
+        elseif(CONTAINER_NANOVDB_RUNTIME_SEEDS)
+            set(nano_manifest "${CMAKE_CURRENT_BINARY_DIR}/runtime-dlls/${target}-nano-$<CONFIG>.txt")
+            file(GENERATE OUTPUT "${nano_manifest}"
+                CONTENT "$<JOIN:${CONTAINER_NANOVDB_RUNTIME_SEEDS},\n>")
+            add_custom_command(TARGET ${target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND}
+                    "-DSEED_DLLS_FILE=${nano_manifest}"
+                    "-DEXECUTABLE=$<TARGET_FILE:${target}>"
+                    "-DDUMPBIN=${CONTAINER_NANOVDB_DUMPBIN}"
+                    "-DDESTINATION=$<TARGET_FILE_DIR:${target}>"
+                    -P "${CMAKE_SOURCE_DIR}/cmake/StageNanoVdbRuntime.cmake"
+                VERBATIM)
+        endif()
     endif()
 endfunction()
 
@@ -316,12 +341,16 @@ target_link_libraries(Dep_ECS INTERFACE
     EnTT::EnTT
 )
 
+# -- Dep_Physics: optional, pinned Jolt CPU rigid-body backend -----------------
+include("${CMAKE_CURRENT_LIST_DIR}/PhysicsDependencies.cmake")
+
+# Optional CPU geometry decoders; Draco remains isolated in its worker.
+include("${CMAKE_CURRENT_LIST_DIR}/GltfCompressionDependencies.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/TextureCodecDependencies.cmake")
+
 # ── Summary
 message(STATUS "--------------------------------------------------")
 message(STATUS "Dependency Configuration Summary:")
 message(STATUS "Vulkan: ${Vulkan_VERSION}")
 message(STATUS "spdlog: ${spdlog_VERSION}")
 message(STATUS "--------------------------------------------------")
-
-include("${CMAKE_CURRENT_LIST_DIR}/GltfCompressionDependencies.cmake")
-include("${CMAKE_CURRENT_LIST_DIR}/TextureCodecDependencies.cmake")

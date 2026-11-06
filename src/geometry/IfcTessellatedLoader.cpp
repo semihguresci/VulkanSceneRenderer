@@ -384,6 +384,9 @@ size_t findMatchingParen(std::string_view text, size_t openPos) {
       continue;
     }
     if (c == '(') {
+      // Argument parsing and StepValue destruction both recurse through lists.
+      if (depth == 128)
+        throw std::runtime_error("IFC entity exceeds the argument nesting limit");
       ++depth;
       continue;
     }
@@ -1335,44 +1338,38 @@ private:
   }
 
   glm::mat4 localPlacement(uint32_t ref) const {
-    if (const auto cached = localPlacementCache_.find(ref);
-        cached != localPlacementCache_.end()) {
-      return cached->second;
-    }
-
+    std::vector<const Entity *> chain;
     std::unordered_set<uint32_t> visiting;
-    return localPlacementRecursive(ref, visiting);
-  }
+    glm::mat4 result(1.0f);
+    bool cyclic = false;
+    while (true) {
+      if (const auto cached = localPlacementCache_.find(ref);
+          cached != localPlacementCache_.end()) {
+        result = cached->second;
+        break;
+      }
+      const Entity *placement = entity(ref);
+      if (placement == nullptr || placement->type != "IFCLOCALPLACEMENT")
+        break;
+      if (!visiting.insert(ref).second) {
+        cyclic = true;
+        break;
+      }
+      chain.push_back(placement);
+      const auto parent = firstRef(*placement, 0);
+      if (!parent)
+        break;
+      ref = *parent;
+    }
 
-  glm::mat4
-  localPlacementRecursive(uint32_t ref,
-                          std::unordered_set<uint32_t> &visiting) const {
-    if (const auto cached = localPlacementCache_.find(ref);
-        cached != localPlacementCache_.end()) {
-      return cached->second;
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+      const Entity &placement = **it;
+      if (const auto relative = firstRef(placement, 1))
+        result *= axis2Placement3D(*relative);
+      // A cycle has no canonical root, so its fallback is specific to this walk.
+      if (!cyclic)
+        localPlacementCache_.emplace(placement.id, result);
     }
-    if (!visiting.insert(ref).second) {
-      return glm::mat4(1.0f);
-    }
-
-    const Entity *placement = entity(ref);
-    if (placement == nullptr || placement->type != "IFCLOCALPLACEMENT") {
-      visiting.erase(ref);
-      return glm::mat4(1.0f);
-    }
-
-    glm::mat4 parent(1.0f);
-    if (const auto parentRef = firstRef(*placement, 0); parentRef.has_value()) {
-      parent = localPlacementRecursive(*parentRef, visiting);
-    }
-    glm::mat4 relative(1.0f);
-    if (const auto relativeRef = firstRef(*placement, 1);
-        relativeRef.has_value()) {
-      relative = axis2Placement3D(*relativeRef);
-    }
-    const glm::mat4 result = parent * relative;
-    visiting.erase(ref);
-    localPlacementCache_[ref] = result;
     return result;
   }
 
@@ -1670,14 +1667,23 @@ private:
     }
   }
 
+  struct MaterialReferenceWalk {
+    ReferenceWalkBudget budget;
+    std::unordered_set<uint32_t> visited;
+
+    bool visit(uint32_t ref, size_t depth) {
+      return budget.visit(depth) && visited.insert(ref).second;
+    }
+  };
+
   SemanticMaterialMetadata materialMetadata(uint32_t ref) const {
-    std::unordered_set<uint32_t> visiting;
-    return materialMetadata(ref, visiting);
+    MaterialReferenceWalk walk;
+    return materialMetadata(ref, walk, 0);
   }
 
-  SemanticMaterialMetadata
-  materialMetadata(uint32_t ref, std::unordered_set<uint32_t> &visiting) const {
-    if (!visiting.insert(ref).second) {
+  SemanticMaterialMetadata materialMetadata(uint32_t ref, MaterialReferenceWalk &walk,
+                                            size_t depth) const {
+    if (!walk.visit(ref, depth)) {
       return {};
     }
 
@@ -1696,7 +1702,7 @@ private:
     auto fromRef = [&](size_t index) {
       if (const auto nestedRef = firstRef(*source, index);
           nestedRef.has_value()) {
-        return materialMetadata(*nestedRef, visiting);
+        return materialMetadata(*nestedRef, walk, depth + 1);
       }
       return SemanticMaterialMetadata{};
     };
@@ -1715,7 +1721,7 @@ private:
     if (source->type == "IFCMATERIALLAYERSET") {
       for (const auto layerRef : refList(argAt(*source, 0))) {
         SemanticMaterialMetadata material =
-            materialMetadata(layerRef, visiting);
+            materialMetadata(layerRef, walk, depth + 1);
         if (!material.empty()) {
           if (material.category.empty()) {
             material.category = stringValue(argAt(*source, 1)).value_or("");
@@ -1760,7 +1766,7 @@ private:
       for (size_t i = 0; i < source->args.list.size(); ++i) {
         for (const auto nestedRef : refList(argAt(*source, i))) {
           SemanticMaterialMetadata material =
-              materialMetadata(nestedRef, visiting);
+              materialMetadata(nestedRef, walk, depth + 1);
           if (!material.empty()) {
             return material;
           }
@@ -1957,15 +1963,14 @@ private:
   }
 
   ProductMetadata materialBrowsingMetadata(uint32_t ref) const {
-    std::unordered_set<uint32_t> visiting;
-    return materialBrowsingMetadata(ref, visiting);
+    MaterialReferenceWalk walk;
+    return materialBrowsingMetadata(ref, walk, 0);
   }
 
-  ProductMetadata
-  materialBrowsingMetadata(uint32_t ref,
-                           std::unordered_set<uint32_t> &visiting) const {
+  ProductMetadata materialBrowsingMetadata(uint32_t ref, MaterialReferenceWalk &walk,
+                                           size_t depth) const {
     ProductMetadata metadata{};
-    if (!visiting.insert(ref).second) {
+    if (!walk.visit(ref, depth)) {
       return metadata;
     }
 
@@ -1976,7 +1981,7 @@ private:
 
     auto mergeNested = [&](uint32_t nestedRef) {
       mergeSemanticProperties(metadata,
-                              materialBrowsingMetadata(nestedRef, visiting));
+                              materialBrowsingMetadata(nestedRef, walk, depth + 1));
     };
 
     if (source->type == "IFCMATERIAL") {
@@ -4927,22 +4932,44 @@ private:
     return appendTriangleMesh(triangles, host.color);
   }
 
+  struct RepresentationWalk {
+    ReferenceWalkBudget budget{65'536};
+    std::unordered_set<uint32_t> visiting;
+    bool exceeded{};
+  };
+
   void collectGeometryInstances(uint32_t ref, const glm::mat4 &transform,
                                 std::vector<GeometryInstance> &instances,
                                 const Entity *product = nullptr) {
-    collectGeometryInstances(ref, transform, instances, {}, product);
+    RepresentationWalk walk;
+    const auto originalSize = instances.size();
+    collectGeometryInstances(ref, transform, instances, walk, product);
+    if (walk.exceeded) {
+      // An incomplete representation can also be used as a Boolean cutter.
+      // Discard its instances so it cannot silently alter the host solid.
+      instances.resize(originalSize);
+      reportGeometryIssue(ref, product, "Representation reference walk exceeds its budget");
+    }
   }
 
   void
   collectGeometryInstances(uint32_t ref, const glm::mat4 &transform,
                            std::vector<GeometryInstance> &instances,
-                           std::unordered_set<uint32_t> visiting,
-                           const Entity *product,
+                           RepresentationWalk &walk, const Entity *product,
                            std::optional<glm::vec4> curveColor = std::nullopt) {
-    if (!visiting.insert(ref).second) {
+    if (!walk.budget.visit(walk.visiting.size())) {
+      walk.exceeded = true;
+      return;
+    }
+    if (!walk.visiting.insert(ref).second) {
       reportGeometryIssue(ref, product, "Cyclic representation reference");
       return;
     }
+    struct VisitGuard {
+      std::unordered_set<uint32_t> &set;
+      uint32_t ref;
+      ~VisitGuard() { set.erase(ref); }
+    } guard{walk.visiting, ref};
     const Entity *source = entity(ref);
     if (source == nullptr) {
       reportGeometryIssue(ref, product, "Missing representation entity");
@@ -4987,9 +5014,12 @@ private:
         return;
       }
       for (const auto &item : items->list) {
+        if (walk.exceeded) return;
         if (item.kind == StepValue::Kind::Ref)
-          collectGeometryInstances(item.ref, transform, instances, visiting,
+          collectGeometryInstances(item.ref, transform, instances, walk,
                                    product, curveColor);
+        else if (!walk.budget.visit(walk.visiting.size()))
+          walk.exceeded = true;
         else
           reportGeometryIssue(ref, product,
                               "Invalid geometric curve-set item reference");
@@ -5076,9 +5106,12 @@ private:
 
     if (source->type == "IFCPRODUCTDEFINITIONSHAPE") {
       for (const auto &rep : asList(argAt(*source, 2))) {
+        if (walk.exceeded) return;
         if (rep.kind == StepValue::Kind::Ref)
-          collectGeometryInstances(rep.ref, transform, instances, visiting,
+          collectGeometryInstances(rep.ref, transform, instances, walk,
                                    product, curveColor);
+        else if (!walk.budget.visit(walk.visiting.size()))
+          walk.exceeded = true;
         else
           reportGeometryIssue(ref, product, "Invalid representation reference");
       }
@@ -5087,9 +5120,12 @@ private:
 
     if (source->type == "IFCSHAPEREPRESENTATION") {
       for (const auto &item : asList(argAt(*source, 3))) {
+        if (walk.exceeded) return;
         if (item.kind == StepValue::Kind::Ref)
-          collectGeometryInstances(item.ref, transform, instances, visiting,
+          collectGeometryInstances(item.ref, transform, instances, walk,
                                    product, curveColor);
+        else if (!walk.budget.visit(walk.visiting.size()))
+          walk.exceeded = true;
         else
           reportGeometryIssue(ref, product,
                               "Invalid representation item reference");
@@ -5108,7 +5144,7 @@ private:
           targetRef.has_value() ? cartesianTransformationOperator3D(*targetRef)
                                 : glm::mat4(1.0f);
       collectGeometryInstances(*sourceRef, transform * target, instances,
-                               visiting, product, curveColor);
+                               walk, product, curveColor);
       return;
     }
 
@@ -5123,13 +5159,13 @@ private:
         origin = axis2Placement3D(*originRef);
       }
       collectGeometryInstances(*mappedRepRef, transform * glm::inverse(origin),
-                               instances, visiting, product, curveColor);
+                               instances, walk, product, curveColor);
       return;
     }
 
     if (source->type == "IFCSTYLEDITEM") {
       if (const auto itemRef = firstRef(*source, 0); itemRef.has_value()) {
-        collectGeometryInstances(*itemRef, transform, instances, visiting,
+        collectGeometryInstances(*itemRef, transform, instances, walk,
                                  product, curveColor);
       }
       return;
