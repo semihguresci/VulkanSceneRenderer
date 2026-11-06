@@ -3525,6 +3525,7 @@ void GuiManager::resetModelInspectionState() {
   materialNameDraft_.fill('\0');materialInspectorError_.clear();
   savedScenePath_.clear();
   sceneSaveRequest_.reset();
+  linkedSceneSaveRequest_.reset();
   materialVariantControls_={};
   gltfSceneControls_={};
   // ImGui retains an active InputText buffer independently of std::string.
@@ -4559,7 +4560,13 @@ void GuiManager::drawSceneControls(
   ImGui::SameLine();
   ImGui::BeginDisabled(sceneSavePathInput_.empty());
   if (ImGui::Button("Save As")) sceneSaveRequest_ = sceneSavePathInput_;
+  if (linkedSceneSaveAvailable_) {
+    ImGui::SameLine();
+    if (ImGui::Button("Save Linked As")) linkedSceneSaveRequest_ = sceneSavePathInput_;
+  }
   ImGui::EndDisabled();
+  if (linkedSceneSaveAvailable_)
+    ImGui::TextWrapped("Save Linked As writes a companion .gltf beside the linked source. Save As makes a portable editable copy.");
   ImGui::TextWrapped("Exports all scenes in the primary asset. BIM/USD/VDB sidecars, physics setup and renderer settings use their own formats.");
   if (ImGui::TreeNode("Export Image")) {
     ImGui::InputText("Output path without extension", &imageExportPathInput_);
@@ -8222,7 +8229,11 @@ void GuiManager::drawSceneControls(
                  exposureSettings_.meteringLowPercentile + 0.01f);
   }
   if (ImGui::TreeNode("Temporal anti-aliasing")) {
-    ImGui::BeginDisabled(msaaSamples_ != 1u);
+    int fsrMode = static_cast<int>(fsrMode_);
+    if (ImGui::Combo("Vulkan FSR", &fsrMode, "Native\0Quality\0Balanced\0Performance\0"))
+      fsrMode_ = static_cast<container::renderer::FsrMode>(fsrMode);
+    if (!fsrStatus_.empty()) ImGui::TextWrapped("%s", fsrStatus_.c_str());
+    ImGui::BeginDisabled(msaaSamples_ != 1u || fsrActive_);
     ImGui::Checkbox("Enable TAA", &temporalSettings_.enabled);
     ImGui::EndDisabled();
     if (msaaSamples_ != 1u)
@@ -8243,7 +8254,7 @@ void GuiManager::drawSceneControls(
     ImGui::Text("Image payload: %.1f MiB",
                 double(temporalBytes_) / (1024.0 * 1024.0));
     ImGui::Text("Effective AA: %s; raster/history %ux%u",
-                temporalSettings_.enabled ? "TAA (1x)" : "MSAA / native raster",
+                fsrActive_ ? "FSR" : temporalSettings_.enabled ? "TAA (1x)" : "MSAA / native raster",
                 temporalExtent_.x, temporalExtent_.y);
     ImGui::Text("Allocated images: %.1f MiB; resolve GPU %.3f ms",
                 double(temporalAllocatedBytes_) / (1024.0 * 1024.0),

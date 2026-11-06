@@ -348,6 +348,7 @@ include("${CMAKE_CURRENT_LIST_DIR}/PhysicsDependencies.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/GltfCompressionDependencies.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/TextureCodecDependencies.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/ReferenceOidnDependencies.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/FsrUpscalerDependencies.cmake")
 
 # ── Summary
 message(STATUS "--------------------------------------------------")

@@ -90,6 +90,7 @@ void RendererFrontend::selectGltfScene(size_t index) {
 
 void RendererFrontend::updateGltfSceneState() {
   if(!subs_.sceneManager) return;
+  if (subs_.guiManager) subs_.guiManager->setLinkedSceneSaveAvailable(subs_.sceneManager->hasLinkedScene());
   if(gltfSceneGraphIdentity_!=sceneGraph_.identity()) {
     gltfSceneGraphIdentity_=sceneGraph_.identity();
     gltfSceneLightEdits_.clear(); gltfImportedLightEdits_.reset();
@@ -168,9 +169,33 @@ void RendererFrontend::processMaterialVariantRequest() {
   const auto selected=subs_.sceneManager->selectedMaterialVariant(); state.selected=selected?int(*selected):-1;
 }
 
-void RendererFrontend::saveSceneModel(const std::filesystem::path& outputPath) {
+void RendererFrontend::saveSceneModel(const std::filesystem::path& outputPath, bool keepLinks) {
   finishEditGestures();
   if (!subs_.sceneManager) throw std::runtime_error("No primary scene is loaded");
+  if (keepLinks) {
+    const auto hasEdits = [](const SceneLightEdits& edits) {
+      const auto anyOverride = [](const auto& values) {
+        return std::ranges::any_of(values, [](const auto& value) { return value.has_value(); });
+      };
+      return edits.directionalOverride || !edits.manualPointLights.empty() || !edits.manualAreaLights.empty() ||
+          anyOverride(edits.importedPointOverrides) || anyOverride(edits.importedAreaOverrides);
+    };
+    auto imported = gltfImportedLightEdits_ ? *gltfImportedLightEdits_ : ImportedSceneLightEdits{};
+    const auto active = subs_.sceneManager->selectedScene();
+    const auto current = subs_.lightingManager ? subs_.lightingManager->snapshotSceneLightEdits() : SceneLightEdits{};
+    imported.capture(subs_.sceneManager->publishedAuthoredSceneLights(), current);
+    const auto anyImported = [](const auto& overrides) {
+      return std::ranges::any_of(overrides, [](const auto& entry) { return entry.second.has_value(); });
+    };
+    if (hasEdits(current) || anyImported(imported.points) || anyImported(imported.areas) || anyImported(imported.directionals) ||
+        std::ranges::any_of(gltfSceneLightEdits_, [&](const auto& entry) {
+          return entry.first != active && hasEdits(*entry.second);
+        }))
+      throw std::runtime_error("Linked save cannot retain light edits. Use portable Save As.");
+    subs_.sceneManager->saveLinkedScene(sceneGraph_, outputPath);
+    return;
+  }
+  subs_.sceneManager->validateSceneExportDestination(outputPath);
   auto snapshot = subs_.sceneManager->buildSceneExport(sceneGraph_);
   if (subs_.lightingManager) {
     std::vector<int32_t> sourceNodes;

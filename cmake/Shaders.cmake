@@ -59,6 +59,7 @@ set(SLANG_INCLUDE_SHADER_NAMES
     shadow_common.slang
     local_shadow_common.slang
     screen_space_light_shadow_common.slang
+    screen_reflections_ray_common.slang
     oit_common.slang
     push_constants_common.slang
     display_tone_curves.slang
@@ -99,6 +100,7 @@ set(SLANG_COMPUTE_SHADER_NAMES
     prefilter_specular.slang
     gtao.slang
     gtao_blur.slang
+    screen_reflections.slang
     frustum_cull.slang
     hiz_generate.slang
     occlusion_cull.slang
@@ -110,6 +112,7 @@ set(SLANG_COMPUTE_SHADER_NAMES
     bloom_upsample.slang
     exposure_histogram.slang
     temporal_compose.slang
+    fsr_inputs.slang
     openvdb_volume.slang
     openvdb_transport_reference.slang
     temporal_resolve.slang
@@ -142,6 +145,7 @@ set(SLANG_RENDER_SHADER_EXCLUDE_NAMES
     ${SLANG_INCLUDE_SHADER_NAMES}
     ${SLANG_COMPUTE_SHADER_NAMES}
     reference_denoise_compose.slang
+    volumetric_fog.slang
 )
 foreach(SLANG_RENDER_SHADER_EXCLUDE_NAME IN LISTS SLANG_RENDER_SHADER_EXCLUDE_NAMES)
     string(REPLACE "." "\\." SLANG_RENDER_SHADER_EXCLUDE_REGEX
@@ -229,6 +233,16 @@ add_slang_output(
     SLANG_OUTPUTS "${SHADERS_DIR}/forward_opaque.slang" "fragMain"
     "${COMPILED_SHADERS_DIR}/forward_opaque_ray.frag.spv"
     -DFORWARD_RAY_QUERY=1 -capability spvRayQueryKHR)
+
+add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/screen_reflections.slang" "computeMain"
+    "${COMPILED_SHADERS_DIR}/screen_reflections_ray.comp.spv"
+    -DSCREEN_REFLECTION_RAY_QUERY=1 -capability spvRayQueryKHR)
+
+foreach(FOG_STAGE inject integrate composite)
+    string(TOUPPER "${FOG_STAGE}" FOG_DEFINE)
+    add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/volumetric_fog.slang" "computeMain"
+        "${COMPILED_SHADERS_DIR}/volumetric_fog_${FOG_STAGE}.comp.spv" "-DFOG_${FOG_DEFINE}=1")
+endforeach()
 
 # Vulkan guarantees only four bound descriptor sets. Keep raster lighting
 # usable on that limit without reserving a fifth set for optional DDGI.

@@ -181,6 +181,27 @@ TEST(TemporalState, DisabledRouteHasExactZeroJitterAndOriginalProjection) {
   EXPECT_EQ(view.temporalInfo.w, 0u);
 }
 
+TEST(TemporalState, ExternalJitterUsesRenderPixelsAndLastSubmittedOffset) {
+  State state;
+  constexpr glm::uvec2 renderExtent{320, 180};
+  const glm::vec4 point(0, 0, -2, 1);
+  auto first = camera();
+  state.prepareCamera(first, renderExtent, enabled(), first.viewProj, glm::vec2(.25f, -.125f));
+  const auto raw = first.unjitteredViewProj * point;
+  const auto jittered = first.viewProj * point;
+  EXPECT_NEAR(jittered.x / jittered.w - raw.x / raw.w, .5f / 320.0f, 1e-6f);
+  EXPECT_NEAR(jittered.y / jittered.w - raw.y / raw.w, .25f / 180.0f, 1e-6f);
+  EXPECT_NEAR(first.jitterUv.x, .25f / 320.0f, 1e-6f);
+  EXPECT_NEAR(first.jitterUv.y, -.125f / 180.0f, 1e-6f);
+  state.commit();
+
+  auto next = camera();
+  state.prepareCamera(next, renderExtent, enabled(), next.viewProj, glm::vec2(-.375f, .25f));
+  EXPECT_EQ(next.temporalInfo.x, 1u);
+  EXPECT_EQ(glm::vec2(next.jitterUv.z, next.jitterUv.w), glm::vec2(first.jitterUv));
+  EXPECT_EQ(next.previousJitteredViewProj, first.viewProj);
+}
+
 TEST(TemporalState, EverySeededJitterCycleHasZeroMean) {
   for (uint32_t seed : {0u, 1u, 17u, 1000u}) {
     glm::vec2 sum{};

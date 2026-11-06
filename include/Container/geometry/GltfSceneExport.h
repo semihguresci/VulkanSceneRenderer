@@ -14,6 +14,9 @@
 
 namespace container::geometry::gltf {
 
+struct GltfLinkedCompositionInfo;
+struct GltfLinkedPlacementEdit;
+
 // Borrowed CPU state. The caller keeps every referenced object alive for the
 // duration of buildExportModel/writeSceneExport; neither function edits it.
 struct SceneExportSnapshot {
@@ -82,5 +85,10 @@ void writeSceneExport(const SceneExportSnapshot& snapshot,
 void writeExportModel(const tinygltf::Model& model,
                       const std::filesystem::path& destination,
                       const GltfLegacyMaterialSerializationLimits& legacyLimits = {});
+
+// Atomic companion-manifest save. Authored external files remain read-only.
+void writeLinkedSceneManifest(const GltfLinkedCompositionInfo&,
+    std::span<const GltfLinkedPlacementEdit>, size_t selectedScene,
+    const std::filesystem::path& destination);
 
 }  // namespace container::geometry::gltf

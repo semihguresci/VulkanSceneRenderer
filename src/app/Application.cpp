@@ -144,7 +144,7 @@ void Application::mainLoop() {
   vkDeviceWaitIdle(vulkanContext_->result().deviceWrapper->device());
 
   if (!config_.sceneExportPath.empty())
-    renderer_->saveSceneModel(std::filesystem::u8path(config_.sceneExportPath));
+    renderer_->saveSceneModel(std::filesystem::u8path(config_.sceneExportPath), config_.sceneExportKeepLinks);
 
   onMainLoop();
 }
@@ -262,7 +262,7 @@ void Application::screenshotCaptureLoop() {
     throw std::runtime_error("Reference sample series ended before all checkpoints were exported");
 
   if (!config_.sceneExportPath.empty())
-    renderer_->saveSceneModel(std::filesystem::u8path(config_.sceneExportPath));
+    renderer_->saveSceneModel(std::filesystem::u8path(config_.sceneExportPath), config_.sceneExportKeepLinks);
 
   onMainLoop();
 }

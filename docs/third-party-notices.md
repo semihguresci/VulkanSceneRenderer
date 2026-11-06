@@ -84,3 +84,9 @@ Optional reference denoising builds statically link NVIDIA's
 Copyright 2026 NVIDIA Corporation, under Apache 2.0. The SDK includes the
 Open Image Denoise network weights. Its complete LICENSE and NOTICE are staged
 as `vk_oidn-LICENSE.txt` and `vk_oidn-NOTICE.txt` in `THIRD_PARTY_LICENSES`.
+# AMD FidelityFX SDK
+
+Windows packages built with the optional Vulkan FSR backend include AMD's
+FidelityFX SDK 1.1.4 signed Vulkan runtime under the MIT license.
+The license is in `THIRD_PARTY_LICENSES/FidelityFX-SDK-MIT.txt`.
+[Pinned SDK license](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/c6efa6bf7f2027b3ec94f28578bb5965eabb9e55/sdk/LICENSE.txt)

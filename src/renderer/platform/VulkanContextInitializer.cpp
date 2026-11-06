@@ -1,4 +1,5 @@
 #include "Container/renderer/platform/VulkanContextInitializer.h"
+#include "Container/renderer/temporal/FsrUpscaler.h"
 
 #include "Container/app/AppConfig.h"
 #include "Container/common/CommonGLFW.h"
@@ -94,6 +95,7 @@ VulkanContextResult VulkanContextInitializer::initialize(
     ci.enabledFeatures.samplerAnisotropy       = VK_TRUE;
     ci.enableRayQueries = config_.enableRayQueries;
     ci.enableOpacityMicromaps = config_.experimentalOpacityMicromaps;
+    ci.enableFsrUpscaling = FsrUpscaler::builtWithSdk();
 #if CONTAINER_HAS_VK_OIDN
     ci.enableReferenceOidn = config_.enableRayQueries;
 #endif

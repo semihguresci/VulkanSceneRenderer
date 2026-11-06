@@ -45,6 +45,9 @@ struct PointLightData
     float4 colorIntensity;
     float4 directionInnerCos;
     float4 coneOuterCosType;
+    float4 iesTangent;
+    float* iesProfile;
+    uint2 iesPadding;
 };
 
 static const float AREA_LIGHT_TYPE_RECTANGLE = 0.0;
@@ -102,6 +105,82 @@ float SpotLightConeAttenuation(float4 directionInnerCos,
     float cosTheta = dot(spotDirection, -surfaceToLight);
     float cone = saturate((cosTheta - outerCos) / max(innerCos - outerCos, 1e-4));
     return cone * cone;
+}
+
+struct IesInterval
+{
+    uint low;
+    uint high;
+    float weight;
+};
+
+IesInterval FindIesInterval(float* angles, uint count, float angle)
+{
+    IesInterval interval;
+    interval.low = 0u;
+    interval.high = count - 1u;
+    interval.weight = 0.0;
+    if (angle <= angles[0])
+    {
+        interval.high = 0u;
+        return interval;
+    }
+    if (angle >= angles[interval.high])
+    {
+        interval.low = interval.high;
+        return interval;
+    }
+    while (interval.high - interval.low > 1u)
+    {
+        uint mid = (interval.low + interval.high) / 2u;
+        if (angles[mid] <= angle) interval.low = mid;
+        else interval.high = mid;
+    }
+    float lo = angles[interval.low];
+    interval.weight = (angle - lo) / (angles[interval.high] - lo);
+    return interval;
+}
+
+float LocalLightAngularIntensity(PointLightData light, float3 surfaceToLight)
+{
+    if (light.iesTangent.w == 0.0)
+        return SpotLightConeAttenuation(light.directionInnerCos, light.coneOuterCosType, surfaceToLight);
+
+    // The CPU validates each immutable table before publishing its address.
+    float* profile = light.iesProfile;
+    uint verticalCount = uint(profile[0]);
+    uint horizontalCount = uint(profile[1]);
+    uint symmetry = uint(profile[2]);
+    float* verticalAngles = profile + 4;
+    float3 emission = -surfaceToLight;
+    float3 forward = light.directionInnerCos.xyz;
+    float vertical = degrees(acos(clamp(dot(forward, emission), -1.0, 1.0)));
+    if (vertical < verticalAngles[0] || vertical > verticalAngles[verticalCount - 1u]) return 0.0;
+    IesInterval v = FindIesInterval(verticalAngles, verticalCount, vertical);
+    float* horizontalAngles = verticalAngles + verticalCount;
+    float* candela = horizontalAngles + horizontalCount;
+    if (symmetry == 0u) return lerp(candela[v.low], candela[v.high], v.weight);
+
+    float3 c0 = light.iesTangent.xyz;
+    float2 projection = float2(dot(c0, emission), dot(cross(c0, forward), emission));
+    float horizontal = any(projection != 0.0.xx) ? degrees(atan2(projection.y, projection.x)) : 0.0;
+    if (horizontal < 0.0) horizontal += 360.0;
+    if (symmetry == 1u)
+    {
+        horizontal = fmod(horizontal, 180.0);
+        horizontal = min(horizontal, 180.0 - horizontal);
+    }
+    else if (symmetry == 2u) horizontal = min(horizontal, 360.0 - horizontal);
+    else if (symmetry == 3u)
+    {
+        if (horizontal < 90.0) horizontal = 180.0 - horizontal;
+        if (horizontal > 270.0) horizontal = 540.0 - horizontal;
+    }
+    IesInterval h = FindIesInterval(horizontalAngles, horizontalCount, horizontal);
+    uint lowRow = h.low * verticalCount;
+    uint highRow = h.high * verticalCount;
+    return lerp(lerp(candela[lowRow + v.low], candela[lowRow + v.high], v.weight),
+                lerp(candela[highRow + v.low], candela[highRow + v.high], v.weight), h.weight);
 }
 
 struct LightingBuffer

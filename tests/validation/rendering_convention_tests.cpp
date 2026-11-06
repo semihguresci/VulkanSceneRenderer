@@ -2165,16 +2165,10 @@ TEST(RenderingConventionTests, SpotLightsSharePointLightDataWithConeFields) {
       readRepoTextFile("src/utility/SceneManager.cpp");
   const std::string lightingManager =
       readRepoTextFile("src/renderer/lighting/LightingManager.cpp");
-  const std::string pointLight = readRepoTextFile("shaders/point_light.slang");
-  const std::string tiledLighting =
-      readRepoTextFile("shaders/tiled_lighting.slang");
-  const std::string transparent =
-      readRepoTextFile("shaders/forward_transparent.slang");
-
   EXPECT_TRUE(contains(sceneData, "kLightTypeSpot = 1.0f"));
   EXPECT_TRUE(contains(sceneData, "directionInnerCos"));
   EXPECT_TRUE(contains(sceneData, "coneOuterCosType"));
-  EXPECT_TRUE(contains(lightingStructs, "SpotLightConeAttenuation"));
+  EXPECT_TRUE(contains(lightingStructs, "return SpotLightConeAttenuation"));
   EXPECT_TRUE(contains(lightingStructs, "LIGHT_TYPE_SPOT = 1.0"));
   EXPECT_TRUE(contains(sceneManager, "gltfSpotConeCosines"));
   EXPECT_TRUE(contains(sceneManager, "lightDefinition.type == \"spot\""));
@@ -2182,9 +2176,11 @@ TEST(RenderingConventionTests, SpotLightsSharePointLightDataWithConeFields) {
       contains(sceneManager, "result.points.push_back(spotLight)"));
   EXPECT_TRUE(
       contains(lightingManager, "authoredLight.coneOuterCosType.y >= 0.5f"));
-  EXPECT_TRUE(contains(pointLight, "SpotLightConeAttenuation"));
-  EXPECT_TRUE(contains(tiledLighting, "SpotLightConeAttenuation"));
-  EXPECT_TRUE(contains(transparent, "SpotLightConeAttenuation"));
+  for (const char* file : {"shaders/point_light.slang", "shaders/tiled_lighting.slang",
+                           "shaders/forward_opaque.slang", "shaders/forward_transparent.slang",
+                           "shaders/ddgi_trace.slang", "shaders/reference_pathtrace.slang",
+                           "shaders/openvdb_volume.slang"})
+    EXPECT_TRUE(contains(readRepoTextFile(file), "LocalLightAngularIntensity")) << file;
 }
 
 TEST(RenderingConventionTests, AreaLightDataLayoutMatchesShaderContract) {

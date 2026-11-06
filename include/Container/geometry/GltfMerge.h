@@ -48,7 +48,7 @@ struct GltfMergeIndexMaps {
   std::vector<int32_t> buffers, bufferViews, accessors, images, samplers, textures;
   std::vector<int32_t> materials, meshes, nodes, skins, cameras, lights;
   std::vector<int32_t> animations, scenes, variants;
-  std::map<std::string,std::vector<int32_t>> areaLights;
+  std::map<std::string,std::vector<int32_t>> extensionLights;
   // Incoming mesh-major primitive identities; never runtime geometry indices.
   std::vector<std::vector<GltfMergePrimitiveIndex>> primitives;
 };

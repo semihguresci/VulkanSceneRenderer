@@ -7,6 +7,8 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cmath>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -73,14 +75,22 @@ bool sameFile(const Path& left, const Path& right) {
   return std::filesystem::equivalent(left, right, error);
 }
 
-Path containedFile(const Path& root, const Path& owner, const Path& relative) {
+Path containedFile(const Path& root, const Path& owner, const Path& relative,
+    GltfLinkedCompositionInfo* composition) {
   const auto candidate = owner.parent_path() / relative;
   std::error_code error;
   auto path = std::filesystem::canonical(candidate, error);
   if (error || !std::filesystem::is_regular_file(path, error) || error)
     fail(utf8(owner), "missing linked file '" + utf8(relative) + "'");
   for (auto ancestor = path.parent_path(); !ancestor.empty();) {
-    if (sameFile(ancestor, root)) return path;
+    if (sameFile(ancestor, root)) {
+      if (composition) {
+        const auto [prior, added] = composition->resolutions.emplace(candidate, path);
+        if (!added && prior->second != path)
+          fail(utf8(owner), "linked URI resolution changed during import");
+      }
+      return path;
+    }
     const auto parent = ancestor.parent_path();
     if (ancestor == parent) break;
     ancestor = parent;
@@ -206,7 +216,7 @@ class Composition {
     if (ancestry_.size() > kMaxDepth) fail(utf8(owner.source), "linked nesting exceeds 16 levels");
     if (++placements_ > kMaxPlacements) fail(utf8(owner.source), "linked placement count exceeds 4096");
     const auto& file = manifest.files[id];
-    auto path = containedFile(owner.root, owner.source, file.uri);
+    auto path = containedFile(owner.root, owner.source, file.uri, owner.composition);
     if (std::ranges::any_of(ancestry_, [&](const auto& parent) { return sameFile(parent, path); }))
       fail(utf8(owner.source), "reference cycle through '" + utf8(file.uri) + "'");
     auto extension = utf8(path.extension());
@@ -216,9 +226,10 @@ class Composition {
     if ((file.mimeType == "model/gltf+json" && extension != ".gltf") ||
         (file.mimeType == "model/gltf-binary" && extension != ".glb"))
       fail(utf8(owner.source), "linked file MIME type and suffix disagree for '" + utf8(file.uri) + "'");
-    GltfLinkedReadContext context{owner.root, std::move(path), {}};
+    GltfLinkedReadContext context{owner.root, std::move(path), {}, owner.composition};
     for (const auto& [name, destination] : file.aliases)
-      context.aliases.emplace(name, containedFile(owner.root, owner.source, manifest.files[destination].uri));
+      context.aliases.emplace(name, containedFile(owner.root, owner.source,
+          manifest.files[destination].uri, owner.composition));
     const auto& source = acquire(std::move(context));
     ancestry_.push_back(source.context.source);
 
@@ -352,18 +363,125 @@ GltfLinkedManifest PrepareGltfLinkedManifest(Json& manifest, bool enabled) {
 Path GltfLinkedReadContext::resource(std::string_view uri) const {
   const auto relative = relativeUri(uri, utf8(source));
   const auto mapped = aliases.find(relative);
-  return mapped == aliases.end() ? containedFile(root, source, relative) : mapped->second;
+  return mapped == aliases.end() ? containedFile(root, source, relative, composition) : mapped->second;
 }
 
-tinygltf::Model LoadGltfLinkedComposition(const Path& path, const GltfLinkedDocumentReader& reader) {
+tinygltf::Model LoadGltfLinkedComposition(const Path& path, const GltfLinkedDocumentReader& reader,
+    GltfLinkedCompositionInfo* composition) {
   std::error_code error;
   auto source = std::filesystem::canonical(path, error);
   if (error || !std::filesystem::is_regular_file(source, error) || error)
     fail(utf8(path), "primary glTF file is missing");
-  GltfLinkedReadContext primary{source.parent_path(), std::move(source), {}};
+  GltfLinkedReadContext primary{source.parent_path(), std::move(source), {}, composition};
   auto document = reader(primary);
   if (document.manifest.nodeFiles.empty()) return std::move(document.model);
+  if (composition) {
+    composition->source = primary.source;
+    composition->primaryNodes = document.manifest.nodeFiles.size();
+    for (size_t node = 0; node < document.manifest.nodeFiles.size(); ++node)
+      if (document.manifest.nodeFiles[node] >= 0) composition->placements.push_back(int(node));
+  }
   return Composition(reader, std::move(primary), std::move(document)).take();
+}
+
+namespace {
+constexpr uint64_t kContentHashSeed = 14695981039346656037ull;
+uint64_t hashContent(uint64_t hash, std::span<const unsigned char> bytes) {
+  for (const auto byte : bytes) {
+    hash ^= byte;
+    hash *= 1099511628211ull;
+  }
+  return hash;
+}
+} // namespace
+
+void GltfLinkedCompositionInfo::observe(const Path& path, std::span<const unsigned char> bytes) {
+  const GltfLinkedFileContents contents{bytes.size(), hashContent(kContentHashSeed, bytes)};
+  const auto [previous, added] = inputs.emplace(path, contents);
+  if (!added && previous->second != contents) fail(utf8(path), "linked input changed during import");
+}
+
+void ValidateGltfLinkedExportDestination(const GltfLinkedCompositionInfo& composition, const Path& destination) {
+  const auto target = std::filesystem::absolute(destination);
+  const auto lexical = target.lexically_normal();
+  std::error_code error;
+  const auto canonical = std::filesystem::weakly_canonical(target, error);
+  const auto matches = [&](const Path& input) {
+    return input.lexically_normal() == lexical || (!error && canonical == input) || sameFile(input, target);
+  };
+  if (std::ranges::any_of(composition.inputs, [&](const auto& input) { return matches(input.first); }) ||
+      std::ranges::any_of(composition.resolutions, [&](const auto& path) {
+        return matches(path.first) || matches(path.second);
+      }))
+    fail(utf8(target), "cannot replace a linked input file");
+}
+
+Json BuildGltfLinkedManifestForSave(const GltfLinkedCompositionInfo& composition,
+    std::span<const GltfLinkedPlacementEdit> edits, size_t selectedScene, const Path& destination) {
+  std::error_code error;
+  const auto target = std::filesystem::absolute(destination);
+  const auto targetRoot = std::filesystem::canonical(target.parent_path(), error);
+  if (error || !sameFile(targetRoot, composition.source.parent_path()))
+    fail(utf8(target), "save beside the original linked manifest to retain relative URIs and aliases");
+  const auto ascii = [](const Path& path) {
+    auto extension = utf8(path.extension());
+    std::ranges::transform(extension, extension.begin(), [](char value) {
+      return value >= 'A' && value <= 'Z' ? char(value - 'A' + 'a') : value;
+    });
+    return extension == ".gltf";
+  };
+  if (!ascii(target) || !ascii(composition.source))
+    fail(utf8(target), "reference-preserving save currently requires ASCII .gltf manifests");
+  if (composition.placements.empty() || !composition.inputs.contains(composition.source))
+    fail(utf8(target), "no retained linked placement source");
+  ValidateGltfLinkedExportDestination(composition, target);
+  for (const auto& [requested, canonical] : composition.resolutions) {
+    if (std::filesystem::canonical(requested, error) != canonical || error)
+      fail(utf8(requested), "linked URI resolution changed after import");
+  }
+
+  std::string manifest;
+  std::array<unsigned char, 64 * 1024> chunk;
+  for (const auto& [path, expected] : composition.inputs) {
+    if (std::filesystem::file_size(path, error) != expected.size || error)
+      fail(utf8(path), "linked input changed after import");
+    std::ifstream stream(path, std::ios::binary);
+    const bool primary = path == composition.source;
+    if (primary) manifest.reserve(size_t(expected.size));
+    uint64_t hash = kContentHashSeed;
+    uint64_t remaining = expected.size;
+    while (remaining) {
+      const auto count = size_t(std::min<uint64_t>(remaining, chunk.size()));
+      if (!stream.read(reinterpret_cast<char*>(chunk.data()), std::streamsize(count)))
+        fail(utf8(path), "could not read the imported linked input");
+      hash = hashContent(hash, std::span(chunk).first(count));
+      if (primary) manifest.append(reinterpret_cast<const char*>(chunk.data()), count);
+      remaining -= count;
+    }
+    if (!stream || stream.peek() != std::char_traits<char>::eof() || hash != expected.hash)
+      fail(utf8(path), "linked input changed after import");
+  }
+
+  auto output = Json::parse(manifest);
+  for (const auto& edit : edits) {
+    if (edit.node < 0 || size_t(edit.node) >= composition.primaryNodes)
+      fail(utf8(target), "edit does not name a node in the primary linked manifest");
+    auto& node = output.at("nodes").at(size_t(edit.node));
+    if (edit.name) node["name"] = *edit.name;
+    if (edit.matrix) {
+      if (!std::ranges::all_of(*edit.matrix, [](double value) { return std::isfinite(value); }))
+        fail(utf8(target), "placement transform contains nonfinite values");
+      node.erase("translation");
+      node.erase("rotation");
+      node.erase("scale");
+      node["matrix"] = *edit.matrix;
+    }
+  }
+  if (output.contains("scenes")) {
+    if (selectedScene >= output.at("scenes").size()) fail(utf8(target), "selected source scene is unavailable");
+    output["scene"] = selectedScene;
+  }
+  return output;
 }
 
 } // namespace container::geometry::gltf

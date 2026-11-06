@@ -184,7 +184,7 @@ float3 LocalSource(float3 world, float3 viewDirection, float3 coefficients[4],
         float distance = sqrt(distanceSq);
         float3 toLight = delta / distance;
         float attenuation = PointLightAttenuation(distanceSq, light.positionRadius.w) *
-                            SpotLightConeAttenuation(light.directionInnerCos, light.coneOuterCosType, toLight);
+                            LocalLightAngularIntensity(light, toLight);
         if (attenuation <= 1e-6) continue;
         float visibility = LightTransmittance(world, toLight, distance, 4u);
         float geometryVisibility = VolumeLocalGeometryVisibility(world, index, light);

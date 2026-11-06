@@ -94,6 +94,8 @@
 #include "Container/renderer/scene/GpuHierarchyPass.h"
 #include "Container/renderer/raytracing/RayInstanceTransformPass.h"
 #include "Container/renderer/scene/PbrAuxiliaryPass.h"
+#include "Container/renderer/effects/ScreenReflectionPass.h"
+#include "Container/renderer/effects/VolumetricFogPass.h"
 #include "Container/renderer/shadow/ShadowPipelineBridge.h"
 #include "Container/renderer/shadow/ShadowResourceBridge.h"
 #include "Container/scene/MeshSceneProviderAssetAdapter.h"
@@ -444,7 +446,7 @@ displayModeFromName(std::string_view value) {
 container::ui::GBufferViewMode
 configuredDisplayMode(const container::app::AppConfig &config) {
   if (config.displayModeOverride.empty()) {
-    return config.enableGui ? container::ui::GBufferViewMode::Lit
+    return config.enableGui || config.fsrMode != FsrMode::Native ? container::ui::GBufferViewMode::Lit
                             : container::ui::GBufferViewMode::Overview;
   }
   if (auto mode = displayModeFromName(config.displayModeOverride)) {
@@ -1657,6 +1659,7 @@ void RendererFrontend::initialize() {
                                      .unavailableReason())
                    : "Disabled or unavailable; raster fallback"));
     subs_.guiManager->setGBufferViewMode(configuredDisplayMode(svc_.config));
+    subs_.guiManager->setFsrMode(svc_.config.fsrMode);
     subs_.guiManager->setDisplayGrade(svc_.config.displayGrade);
     subs_.guiManager->setGpuHierarchyTransforms(gpuHierarchyEnabled_);
     subs_.guiManager->setReferencePathLens(svc_.config.pathLens);
@@ -2241,33 +2244,34 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   temporalClipRevision_ = clipRevision;
   container::temporal::validateSettings(
       temporal.settings(), static_cast<uint32_t>(msaaSampleCount_));
-  if (temporal.settings().enabled && !referencePathActive()) {
+  updateCameraBuffer(imageIndex);
+  reconcileFsrResources();
+  const auto temporalExtent = sceneRenderExtent();
+  if ((temporal.settings().enabled || temporal.fsrActive()) && !referencePathActive()) {
     temporal.createPipelines(activeShaderReload_ ? activeShaderReload_->directory
                                                  : container::util::executableDirectory(),
                              subs_.sceneManager->descriptorSetLayout(),
                              resources_.gBufferFormats.depthStencil);
-    temporal.prepare(*subs_.frameResourceManager,
-                     svc_.swapChainManager.extent(),
+    temporal.prepare(*subs_.frameResourceManager, temporalExtent,
                      static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
   }
   if (svc_.config.taaResetFrame != 0 &&
       frame_.submittedFrameCount + 1 == svc_.config.taaResetFrame)
     temporal.reset("configured capture reset");
-  updateCameraBuffer(imageIndex);
-  const auto temporalExtent = svc_.swapChainManager.extent();
+  const auto displayExtent = svc_.swapChainManager.extent();
   const auto *temporalCamera = subs_.cameraController->camera();
   auto frameTemporalSettings = temporal.settings();
   const auto mode = static_cast<uint32_t>(frontendDisplayMode(
       subs_.guiManager.get(), configuredDisplayMode(svc_.config)));
   frameTemporalSettings.enabled =
-      frameTemporalSettings.enabled && !referencePathActive() &&
+      (frameTemporalSettings.enabled || temporal.fsrActive()) && !referencePathActive() &&
       (mode == 0u || mode == 8u || (mode >= 100u && mode <= 104u));
-  temporal.state().prepareCamera(
+  temporal.prepareCamera(
       buffers_.cameraData, {temporalExtent.width, temporalExtent.height},
       frameTemporalSettings,
       gltfAnimationCamera_ ? gltfAnimationCamera_->projection :
-      temporalCamera->projectionMatrix(float(temporalExtent.width) /
-                                       float(temporalExtent.height)));
+      temporalCamera->projectionMatrix(float(displayExtent.width) /
+                                       float(displayExtent.height)), temporalFrameMilliseconds_);
   SceneController::writeToBuffer(
       svc_.allocationManager, buffers_.cameras[imageIndex],
       &buffers_.cameraData, sizeof(buffers_.cameraData));
@@ -2466,6 +2470,9 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     throw std::runtime_error("failed to submit draw command buffer!");
   }
   subs_.temporalManager->commit();
+  if (subs_.volumetricFogPass)
+    subs_.volumetricFogPass->onSubmitted(
+        subs_.deferredRasterFrameGraphContext->isPassActive(RenderPassId::VolumetricFog));
   if (gpuHierarchyPrepared_ && subs_.gpuHierarchyPass)
     subs_.gpuHierarchyPass->commitFrame(imageIndex);
   commitGltfDeformationFrame();
@@ -3003,6 +3010,8 @@ void RendererFrontend::applyTemporalCapture(
             std::make_shared<container::physics::PhysicsBodySettings>(*event.physicsSettings) : nullptr});
   if (event.taa)
     subs_.temporalManager->settings().enabled = *event.taa;
+  if (event.fsr)
+    captureFsrMode_ = event.fsr;
   if (event.samples)
     recreateMsaaResources(sampleCountFromSamples(*event.samples));
   if (event.reset)
@@ -3143,6 +3152,12 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"resetReason", temporal.state().resetReason()},
         {"imagePayloadBytes", temporal.memoryBytes()},
         {"allocatedImageBytes", temporal.allocatedBytes()}}}};
+  const auto sceneExtent = sceneRenderExtent();
+  json["fsr"] = {{"requested", fsrModeName(fsrResourceRequest_.mode)},
+      {"mode", fsrModeName(temporal.fsrActive() ? fsrResourceRequest_.mode : FsrMode::Native)},
+      {"active", temporal.fsrActive()}, {"status", fsrViewportStatus_},
+      {"renderExtent", {sceneExtent.width, sceneExtent.height}},
+      {"displayExtent", {extent.width, extent.height}}};
   if (referencePathActive()) {
     const auto* path = subs_.referencePathTracePass.get();
     const auto lens = path ? path->effectiveLens() : std::nullopt;
@@ -3541,6 +3556,24 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   json["camera"]["unjitteredViewProjColumns"] = matrix(camera.unjitteredViewProj);
   if (svc_.config.gpuHardwareTelemetry)
     json["gpuHardware"] = gpuHardwareTelemetry(subs_.gpuHardwareMonitor->trySnapshot());
+  if (svc_.config.screenReflections != ScreenReflectionMode::Off) {
+    json["screenReflections"] = {
+        {"mode", static_cast<uint32_t>(svc_.config.screenReflections)},
+        {"allocationBytes", subs_.screenReflectionPass ? subs_.screenReflectionPass->allocationBytes() : 0},
+        {"rayFallbackRequested", svc_.config.screenReflectionRayFallback},
+        {"rayFallbackAvailable", subs_.screenReflectionPass && subs_.screenReflectionPass->rayFallbackAvailable()},
+        {"rayFallbackActive", subs_.screenReflectionPass && subs_.deferredRasterFrameGraphContext &&
+            subs_.deferredRasterFrameGraphContext->isPassActive(RenderPassId::ScreenReflections) &&
+            subs_.screenReflectionPass->rayFallbackActive()}};
+  }
+  if (svc_.config.volumetricFog.mode != VolumetricFogMode::Off) {
+    json["volumetricFog"] = {{"mode", static_cast<uint32_t>(svc_.config.volumetricFog.mode)},
+        {"density", svc_.config.volumetricFog.density},
+        {"active", subs_.volumetricFogPass && subs_.deferredRasterFrameGraphContext &&
+            subs_.deferredRasterFrameGraphContext->isPassActive(RenderPassId::VolumetricFog)},
+        {"historyReprojected", subs_.volumetricFogPass && subs_.volumetricFogPass->historyReprojected()},
+        {"allocationBytes", subs_.volumetricFogPass ? subs_.volumetricFogPass->allocationBytes() : 0}};
+  }
   return json;
 }
 
@@ -3629,10 +3662,6 @@ void RendererFrontend::handleResize() {
         static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
   }
   createFrameResources();
-  if (subs_.environmentManager) {
-    const VkExtent2D ext = svc_.swapChainManager.extent();
-    subs_.environmentManager->recreateGtaoTextures(ext.width, ext.height);
-  }
   if (subs_.bloomManager) {
     const VkExtent2D ext = svc_.swapChainManager.extent();
     subs_.bloomManager->createTextures(ext.width, ext.height);
@@ -3724,6 +3753,8 @@ void RendererFrontend::updateOpenVdbSequence() {
 }
 
 void RendererFrontend::processInput(float deltaTime) {
+  if (std::isfinite(deltaTime) && deltaTime > 0.0f)
+    temporalFrameMilliseconds_ = std::min(deltaTime * 1000.0f, 250.0f);
   if (std::isfinite(deltaTime) && deltaTime > 0.0f)
     pendingGltfAnimationDeltaSeconds_ += deltaTime;
   if (vdbPlayback_ && std::isfinite(deltaTime) && deltaTime > 0.0f &&
@@ -5247,6 +5278,8 @@ void RendererFrontend::shutdown() {
   subs_.frameResourceRegistry.reset();
 
   subs_.temporalManager.reset();
+  subs_.screenReflectionPass.reset();
+  subs_.volumetricFogPass.reset();
   subs_.gltfDeformationPass.reset();
   subs_.gpuHierarchyPass.reset();
   subs_.openVdbVolumeRenderer.reset();
@@ -5663,7 +5696,7 @@ void RendererFrontend::initializeScene() {
   subs_.lightingManager->createLightVolumeGeometry();
   createFrameResources();
   if (subs_.environmentManager) {
-    const VkExtent2D ext = svc_.swapChainManager.extent();
+    const VkExtent2D ext = sceneRenderExtent();
     subs_.environmentManager->createGtaoResources(
         container::util::executableDirectory(), ext.width, ext.height);
   }
@@ -5778,14 +5811,78 @@ void RendererFrontend::createGeometryBuffers() {
   syncSceneStateFromController();
 }
 
+VkExtent2D RendererFrontend::sceneRenderExtent() const {
+  if (subs_.frameResourceManager) {
+    const auto extent = subs_.frameResourceManager->sceneExtent();
+    if (extent.width && extent.height) return extent;
+  }
+  return svc_.swapChainManager.extent();
+}
+
+RendererFrontend::FsrResourceRequest RendererFrontend::currentFsrResourceRequest() const {
+  const auto mode = captureFsrMode_.value_or(subs_.guiManager ? subs_.guiManager->fsrMode()
+                                                           : svc_.config.fsrMode);
+  FsrResourceRequest request{.mode = mode};
+  if (mode == FsrMode::Native || msaaSampleCount_ != VK_SAMPLE_COUNT_1_BIT ||
+      referencePathActive() || svc_.config.maxFramesInFlight > 4 || !subs_.cameraController)
+    return request;
+  const auto display = frontendDisplayMode(subs_.guiManager.get(), configuredDisplayMode(svc_.config));
+  if (display != container::ui::GBufferViewMode::Lit &&
+      display != container::ui::GBufferViewMode::TemporalVelocity &&
+      display != container::ui::GBufferViewMode::TemporalReactive)
+    return request;
+  const auto *camera = dynamic_cast<const container::scene::PerspectiveCamera*>(
+      subs_.cameraController->camera());
+  if (gltfAnimationCamera_) {
+    request.eligible = !gltfAnimationCamera_->orthographic;
+    request.infiniteFar = request.eligible && gltfAnimationCamera_->projection[2][2] == 0.0f;
+  } else if (camera) {
+    request.eligible = true;
+    request.infiniteFar = !std::isfinite(camera->farPlane());
+  }
+  return request;
+}
+
+void RendererFrontend::reconcileFsrResources() {
+  const auto request = currentFsrResourceRequest();
+  if (request == fsrResourceRequest_) return;
+  if (!request.eligible && !subs_.temporalManager->fsrActive()) {
+    fsrResourceRequest_ = request;
+    fsrViewportStatus_ = request.mode == FsrMode::Native ? "" :
+        "FSR requires a perspective raster view at MSAA 1x and a supported display mode";
+    return;
+  }
+  if (vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device()) != VK_SUCCESS)
+    throw std::runtime_error("Failed to retire frames before changing FSR mode");
+  if (subs_.rendererTelemetry) subs_.rendererTelemetry->noteDeviceWaitIdle();
+  invalidateDepthVisibilityFrames();
+  createFrameResources();
+}
+
 void RendererFrontend::createFrameResources() {
   // Auxiliary framebuffers borrow the old depth views. Retire them first.
   subs_.pbrAuxiliaryPass.reset();
+  subs_.screenReflectionPass.reset();
+  subs_.volumetricFogPass.reset();
   if (subs_.temporalManager)
     subs_.temporalManager->destroyImages();
+  const auto previousSceneExtent = sceneRenderExtent();
+  const auto displayExtent = svc_.swapChainManager.extent();
+  auto sceneExtent = displayExtent;
+  fsrResourceRequest_ = currentFsrResourceRequest();
+  fsrViewportStatus_.clear();
+  if (fsrResourceRequest_.eligible && subs_.temporalManager) {
+    const auto requested = fsrRenderExtent(fsrResourceRequest_.mode, displayExtent);
+    if (subs_.temporalManager->prepareFsr(container::util::executableDirectory(),
+            {requested, displayExtent, fsrResourceRequest_.infiniteFar}))
+      sceneExtent = requested;
+    fsrViewportStatus_ = subs_.temporalManager->fsrStatus();
+  } else if (fsrResourceRequest_.mode != FsrMode::Native) {
+    fsrViewportStatus_ = "FSR requires a perspective raster view at MSAA 1x and a supported display mode";
+  }
   ensureObjectBuffers();
   if (subs_.lightingManager) {
-    subs_.lightingManager->resizeTiledResources(svc_.swapChainManager.extent());
+    subs_.lightingManager->resizeTiledResources(sceneExtent);
   }
   const auto objectBuffer = sceneObjectBuffer(0);
   subs_.frameResourceManager->create(
@@ -5796,7 +5893,35 @@ void RendererFrontend::createFrameResources() {
       resources_.renderPasses.forwardLighting,
       resources_.renderPasses.forwardTransparent,
       resources_.renderPasses.transformGizmos, msaaSampleCount_, buffers_.cameras,
-      objectBuffer);
+      objectBuffer, sceneExtent);
+  if (subs_.environmentManager && subs_.environmentManager->isGtaoReady() &&
+      (sceneExtent.width != previousSceneExtent.width || sceneExtent.height != previousSceneExtent.height))
+    subs_.environmentManager->recreateGtaoTextures(sceneExtent.width, sceneExtent.height);
+  if (svc_.config.screenReflections != ScreenReflectionMode::Off) {
+    try {
+      auto reflections = std::make_unique<ScreenReflectionPass>(
+          svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
+      reflections->createResources(container::util::executableDirectory(),
+          *subs_.frameResourceManager, sceneExtent,
+          subs_.lightingManager->lightDescriptorSetLayout(), subs_.sceneManager->descriptorSetLayout(),
+          svc_.config.screenReflectionRayFallback);
+      subs_.screenReflectionPass = std::move(reflections);
+    } catch (const std::exception& error) {
+      container::log::ContainerLogger::instance().renderer()->warn(
+          "Screen reflections unavailable: {}", error.what());
+    }
+  }
+  if (svc_.config.volumetricFog.enabled() && subs_.shadowManager) {
+    try {
+      auto fog = std::make_unique<VolumetricFogPass>(svc_.ctx.deviceWrapper,
+          svc_.allocationManager, svc_.pipelineManager);
+      fog->createResources(container::util::executableDirectory(), *subs_.frameResourceManager,
+          sceneExtent, *subs_.shadowManager, subs_.lightingManager->lightDescriptorSetLayout());
+      subs_.volumetricFogPass = std::move(fog);
+    } catch (const std::exception& error) {
+      container::log::ContainerLogger::instance().renderer()->warn("Volumetric fog unavailable: {}", error.what());
+    }
+  }
   if (subs_.openVdbVolumeRenderer)
     subs_.openVdbVolumeRenderer->prepare(
         *subs_.frameResourceManager, buffers_.cameras,
@@ -5806,7 +5931,7 @@ void RendererFrontend::createFrameResources() {
         subs_.lightingManager->areaLightBuffer(), *subs_.shadowManager);
   if (subs_.rayShadowManager)
     subs_.rayShadowManager->prepare(
-        svc_.swapChainManager.extent(),
+        sceneExtent,
         static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
   if (subs_.ddgiManager)
     subs_.ddgiManager->prepare(
@@ -6154,6 +6279,8 @@ void RendererFrontend::destroyGBufferResources() {
   referenceStatus_.clear();
   referenceRecorded_ = false;
   subs_.pbrAuxiliaryPass.reset();
+  subs_.screenReflectionPass.reset();
+  subs_.volumetricFogPass.reset();
   if (subs_.temporalManager)
     subs_.temporalManager->destroyImages();
   if (subs_.frameResourceManager)
@@ -6483,7 +6610,7 @@ void RendererFrontend::markDepthVisibilityFrameComplete(uint32_t imageIndex,
 
   frame.frameSlot = frameSlot;
   frame.imageIndex = imageIndex;
-  frame.extent = svc_.swapChainManager.extent();
+  frame.extent = sceneRenderExtent();
   frame.format = resources_.gBufferFormats.depthStencil;
   frame.cameraData = buffers_.cameraData;
   frame.objectDataRevision =
@@ -6601,7 +6728,7 @@ bool RendererFrontend::depthVisibilityFrameMatchesCurrentState() const {
     return false;
   }
 
-  const VkExtent2D extent = svc_.swapChainManager.extent();
+  const VkExtent2D extent = sceneRenderExtent();
   if (frame->extent.width != extent.width ||
       frame->extent.height != extent.height || frame->extent.width == 0 ||
       frame->extent.height == 0) {
@@ -6932,6 +7059,16 @@ bool RendererFrontend::samplePickDepthAtCursor(double cursorX, double cursorY,
   return sampleDepthAtCursor(cursorX, cursorY, outDepth, true);
 }
 
+static std::optional<glm::uvec2> scenePixelAtDisplayCursor(
+    double x, double y, VkExtent2D display, VkExtent2D scene) {
+  if (!std::isfinite(x) || !std::isfinite(y) || x < 0.0 || y < 0.0 ||
+      x >= display.width || y >= display.height || !scene.width || !scene.height)
+    return std::nullopt;
+  return glm::uvec2{
+      std::min(static_cast<uint32_t>(x * scene.width / display.width), scene.width - 1u),
+      std::min(static_cast<uint32_t>(y * scene.height / display.height), scene.height - 1u)};
+}
+
 bool RendererFrontend::sampleDepthAtCursor(double cursorX, double cursorY,
                                            float &outDepth, bool pickDepth) {
   if (!depthVisibilityFrameMatchesCurrentState() ||
@@ -6951,10 +7088,9 @@ bool RendererFrontend::sampleDepthAtCursor(double cursorX, double cursorY,
   const VkImage depthImage = deferredRasterRuntimeImage(
       subs_.frameResourceManager.get(), frame->imageIndex,
       pickDepth ? "pick-depth" : "depth-stencil");
-  if (depthImage == VK_NULL_HANDLE || !std::isfinite(cursorX) ||
-      !std::isfinite(cursorY) || cursorX < 0.0 || cursorY < 0.0 ||
-      cursorX >= static_cast<double>(frame->extent.width) ||
-      cursorY >= static_cast<double>(frame->extent.height)) {
+  const auto pixel = scenePixelAtDisplayCursor(cursorX, cursorY,
+      svc_.swapChainManager.extent(), frame->extent);
+  if (depthImage == VK_NULL_HANDLE || !pixel) {
     return false;
   }
 
@@ -6977,12 +7113,8 @@ bool RendererFrontend::sampleDepthAtCursor(double cursorX, double cursorY,
     return false;
   }
 
-  const uint32_t x =
-      std::min<uint32_t>(static_cast<uint32_t>(std::floor(cursorX)),
-                         frame->extent.width - 1u);
-  const uint32_t y =
-      std::min<uint32_t>(static_cast<uint32_t>(std::floor(cursorY)),
-                         frame->extent.height - 1u);
+  const uint32_t x = pixel->x;
+  const uint32_t y = pixel->y;
 
   VkCommandBufferAllocateInfo allocInfo{
       VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -7117,9 +7249,9 @@ bool RendererFrontend::samplePickIdAtCursor(double cursorX, double cursorY,
 
   const VkImage pickIdImage = deferredRasterRuntimeImage(
       subs_.frameResourceManager.get(), frame->imageIndex, "pick-id");
-  if (pickIdImage == VK_NULL_HANDLE || cursorX < 0.0 || cursorY < 0.0 ||
-      cursorX >= static_cast<double>(frame->extent.width) ||
-      cursorY >= static_cast<double>(frame->extent.height)) {
+  const auto pixel = scenePixelAtDisplayCursor(cursorX, cursorY,
+      svc_.swapChainManager.extent(), frame->extent);
+  if (pickIdImage == VK_NULL_HANDLE || !pixel) {
     return false;
   }
 
@@ -7142,12 +7274,8 @@ bool RendererFrontend::samplePickIdAtCursor(double cursorX, double cursorY,
     return false;
   }
 
-  const uint32_t x =
-      std::min<uint32_t>(static_cast<uint32_t>(std::floor(cursorX)),
-                         frame->extent.width - 1u);
-  const uint32_t y =
-      std::min<uint32_t>(static_cast<uint32_t>(std::floor(cursorY)),
-                         frame->extent.height - 1u);
+  const uint32_t x = pixel->x;
+  const uint32_t y = pixel->y;
 
   VkCommandBufferAllocateInfo allocInfo{
       VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -7533,8 +7661,7 @@ void RendererFrontend::presentSceneControls() {
         subs_.temporalManager->state().frameId(),
         subs_.temporalManager->state().epoch(),
         subs_.temporalManager->state().resetReason(),
-        {svc_.swapChainManager.extent().width,
-         svc_.swapChainManager.extent().height},
+        {sceneRenderExtent().width, sceneRenderExtent().height},
         subs_.temporalManager->allocatedBytes(), [&] {
           if (subs_.rendererTelemetry)
             for (const auto &pass : subs_.rendererTelemetry->latest().passes)
@@ -7565,6 +7692,8 @@ void RendererFrontend::presentSceneControls() {
       }
     subs_.guiManager->setDdgiState(gi.settings(), std::move(runtime));
   }
+  subs_.guiManager->setFsrStatus(subs_.temporalManager && subs_.temporalManager->fsrActive(),
+                               fsrViewportStatus_);
   // Sync bloom: push BloomManager settings into GUI before rendering.
   if (subs_.bloomManager) {
     subs_.guiManager->setBloomSettings(
@@ -7974,6 +8103,14 @@ void RendererFrontend::presentSceneControls() {
       subs_.guiManager->acceptSceneSave(*path);
     } catch (const std::exception& error) {
       subs_.guiManager->setStatusMessage("Cannot save scene: " + std::string(error.what()));
+    }
+  }
+  if (auto path = subs_.guiManager->consumeLinkedSceneSaveRequest()) {
+    try {
+      saveSceneModel(container::util::pathFromUtf8(*path), true);
+      subs_.guiManager->setStatusMessage("Saved linked scene: " + *path);
+    } catch (const std::exception& error) {
+      subs_.guiManager->setStatusMessage("Cannot save linked scene: " + std::string(error.what()));
     }
   }
 
@@ -8619,7 +8756,7 @@ void RendererFrontend::ensureExtendedPbrResources() {
                         subs_.sceneManager->descriptorSetLayout(),
                         resources_.gBufferFormats.depthStencil,
                         msaaSampleCount_, depthViews,
-                        svc_.swapChainManager.extent());
+                        sceneRenderExtent());
   subs_.pbrAuxiliaryPass = std::move(pass);
 }
 
@@ -8637,6 +8774,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   p.services.pbrAuxiliaryPass = subs_.pbrAuxiliaryPass.get();
   p.runtime.frameSlot = frame_.currentFrame;
   p.runtime.imageIndex = imageIndex;
+  p.runtime.sceneExtent = sceneRenderExtent();
   p.runtime.activeTechnique =
       subs_.activeTechnique != nullptr ? subs_.activeTechnique->id()
                                        : RenderTechniqueId::DeferredRaster;
@@ -9099,6 +9237,10 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       (subs_.guiManager && (subs_.guiManager->showGeometryOverlay() ||
                             subs_.guiManager->showNormalValidation()));
   p.debug.displayMode = referencePathActive() ? 0u : static_cast<uint32_t>(displayMode);
+  p.debug.screenReflections = svc_.config.screenReflections;
+  if (subs_.rayShadowManager && subs_.rayShadowManager->settings().mode != RayShadowMode::Raster &&
+      subs_.rayShadowManager->settings().debugLayer != 0)
+    p.debug.screenReflections = ScreenReflectionMode::Off;
   const bool shadowAtlasVisible =
       p.runtime.activeTechnique == RenderTechniqueId::ForwardRaster ||
       container::renderer::displayModeRecordsShadowAtlas(displayMode);
@@ -9125,6 +9267,14 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         svc_.commandBufferManager.secondaryBuffer(imageIndex, cascadeIndex, 0);
   }
   p.services.temporalManager = subs_.temporalManager.get();
+  p.services.screenReflectionPass = subs_.screenReflectionPass.get();
+  p.services.volumetricFogPass = subs_.volumetricFogPass.get();
+  p.volumetricFog = {.settings = svc_.config.volumetricFog, .cameraData = &buffers_.cameraData,
+      .lightSet = subs_.lightingManager ? subs_.lightingManager->lightDescriptorSet(imageIndex) : VK_NULL_HANDLE,
+      .historyRevision = p.scene.objectDataRevision ^ (p.bim.scene.objectDataRevision << 1) ^
+          (subs_.lightingManager ? subs_.lightingManager->lightEditRevision() << 2 : 0u) ^
+          (subs_.temporalManager ? uint64_t{subs_.temporalManager->state().epoch()} << 32 : 0u) ^
+          temporalClipRevision_.value_or(0u)};
   p.services.gpuCullManager = subs_.gpuCullManager.get();
   p.services.bimManager = subs_.bimManager.get();
   p.services.bloomManager = subs_.bloomManager.get();
@@ -9172,7 +9322,9 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     const bool giCompatible = p.bim.semanticColorMode == 0u;
     const bool giScene = subs_.ddgiManager && subs_.ddgiManager->wantsScene() &&
                          giCompatible && hasSceneContent;
-    const bool surfaceScene = giScene || referencePathActive();
+    const bool reflectionScene = hasSceneContent && giCompatible && p.services.screenReflectionPass &&
+        p.services.screenReflectionPass->wantsRayScene(p);
+    const bool surfaceScene = giScene || referencePathActive() || reflectionScene;
     subs_.rayShadowManager->requestSurfaceScene(
         surfaceScene, subs_.ddgiManager
                      ? subs_.ddgiManager->settings().surfaceBudgetBytes

@@ -647,6 +647,10 @@ class SceneManager {
   void saveScene(const SceneGraph& sceneGraph,
                  const std::filesystem::path& destination) const;
   [[nodiscard]] tinygltf::Model buildSceneExport(const SceneGraph& sceneGraph) const;
+  void captureLinkedSceneBaseline(const SceneGraph&);
+  [[nodiscard]] bool hasLinkedScene() const noexcept { return bool(linkedComposition_); }
+  void validateSceneExportDestination(const std::filesystem::path&) const;
+  void saveLinkedScene(const SceneGraph&, const std::filesystem::path&) const;
   // Raw graph-slot IDs in buildSceneExport's initial node table. Apply this
   // projection only after light/camera overlays; appended export wrappers use
   // different IDs and never belong to a retired graph subtree.
@@ -924,6 +928,7 @@ class SceneManager {
   void createSceneClipStateBuffer();
   void writeSceneClipStateBuffer();
   void collectAuthoredPunctualLights(const SceneGraph* graph = nullptr);
+  void prepareIesProfileAddresses();
   [[nodiscard]] AuthoredSceneLights evaluateAuthoredSceneLights(
       const SceneGraph* graph, size_t scene, bool includeHidden = false) const;
   [[nodiscard]] GltfSceneActivation planSceneSelection(
@@ -986,6 +991,9 @@ class SceneManager {
   container::geometry::Model model_{};
   struct OpacityMicromapState;
   std::shared_ptr<const OpacityMicromapState> opacityMicromapState_;
+  struct LinkedSceneBaseline;
+  std::shared_ptr<const container::geometry::gltf::GltfLinkedCompositionInfo> linkedComposition_;
+  std::shared_ptr<const LinkedSceneBaseline> linkedSceneBaseline_;
   std::vector<uint32_t> sourcePrimitiveToRuntime_{};
   std::vector<int32_t> runtimePrimitiveToSource_{};
   tinygltf::Model gltfModel_{};
@@ -1057,6 +1065,9 @@ class SceneManager {
   uint64_t authoredMaterialRevision_{0};
   ModelBounds modelBounds_{};
   std::vector<container::gpu::PointLightData> authoredPointLights_{};
+  struct IesGpuProfileCache;
+  std::shared_ptr<IesGpuProfileCache> iesProfileCache_;
+  std::vector<VkDeviceAddress> iesProfileAddresses_;
   std::vector<AuthoredDirectionalLight> authoredDirectionalLights_{};
   std::vector<container::gpu::AreaLightData> authoredAreaLights_{};
   std::vector<AuthoredLightBinding> authoredPointBindings_{};

@@ -21,6 +21,24 @@ TEST(TemporalCapture, ReferenceRendererSwitchIsOneShotAndRejectsUnknownNames) {
   EXPECT_THROW(CaptureSequence{invalid},std::invalid_argument);
 }
 
+TEST(TemporalCapture, FsrModesSelectIndependentSceneGrids) {
+  using container::renderer::FsrMode;
+  using container::renderer::fsrRenderExtent;
+  auto input = json::parse(R"({"schemaVersion":1,"frames":4,"events":[
+    {"frame":2,"fsr":"balanced"},{"frame":4,"fsr":"native"}]})");
+  const CaptureSequence sequence(input);
+  EXPECT_FALSE(sequence.sample(1).event.fsr);
+  EXPECT_EQ(sequence.sample(2).event.fsr, FsrMode::Balanced);
+  EXPECT_FALSE(sequence.sample(3).event.fsr);
+  EXPECT_EQ(sequence.sample(4).event.fsr, FsrMode::Native);
+  const auto scaled = fsrRenderExtent(FsrMode::Balanced, {1281, 721});
+  EXPECT_EQ(scaled.width, 753u);
+  EXPECT_EQ(scaled.height, 424u);
+  EXPECT_EQ(fsrRenderExtent(FsrMode::Native, {1281, 721}).height, 721u);
+  input["events"][0]["fsr"] = "unknown";
+  EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+}
+
 json jointCapture() {
   return json::parse(R"({"schemaVersion":1,"frames":4,"events":[{"frame":2,
     "physicsJointCreate":{"type":"hinge","bodyA":{"node":0},"bodyB":{"bimObject":1},

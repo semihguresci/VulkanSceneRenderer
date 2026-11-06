@@ -31,6 +31,7 @@
 #include "Container/renderer/bim/BimScheduleExtractor.h"
 #include "Container/renderer/lighting/EditableLight.h"
 #include "Container/renderer/temporal/TemporalState.h"
+#include "Container/renderer/temporal/FsrMode.h"
 #include "Container/utility/BimElementSearchCache.h"
 #include "Container/utility/BimRelationshipBrowserCache.h"
 #include "Container/utility/GuiDebugState.h"
@@ -734,6 +735,10 @@ public:
   [[nodiscard]] std::optional<std::string> consumeSceneSaveRequest() {
     return std::exchange(sceneSaveRequest_, std::nullopt);
   }
+  [[nodiscard]] std::optional<std::string> consumeLinkedSceneSaveRequest() {
+    return std::exchange(linkedSceneSaveRequest_, std::nullopt);
+  }
+  void setLinkedSceneSaveAvailable(bool available) noexcept { linkedSceneSaveAvailable_ = available; }
   void acceptSceneSave(std::string path) {
     savedScenePath_ = std::move(path);
     sceneSavePathInput_ = savedScenePath_;
@@ -1148,6 +1153,12 @@ public:
   const container::temporal::Settings &temporalSettings() const {
     return temporalSettings_;
   }
+  void setFsrMode(container::renderer::FsrMode mode) { fsrMode_ = mode; }
+  [[nodiscard]] container::renderer::FsrMode fsrMode() const { return fsrMode_; }
+  void setFsrStatus(bool active, std::string_view status) {
+    fsrActive_ = active;
+    fsrStatus_ = status;
+  }
   bool consumeTemporalReset() {
     return std::exchange(temporalResetRequested_, false);
   }
@@ -1189,6 +1200,8 @@ private:
   MaterialVariantControls materialVariantControls_{};
   MaterialVariantControls gltfSceneControls_{};
   std::optional<std::string> sceneSaveRequest_{};
+  std::optional<std::string> linkedSceneSaveRequest_{};
+  bool linkedSceneSaveAvailable_{};
   std::string savedScenePath_{};
   std::string sceneSavePathInput_{"scene.glb"};
   std::string imageExportPathInput_{"capture"};
@@ -1199,6 +1212,9 @@ private:
   uint64_t nextSceneEditGesture_{0};
   bool sceneEditGestureActive_{false};
   container::temporal::Settings temporalSettings_{};
+  container::renderer::FsrMode fsrMode_{};
+  bool fsrActive_{};
+  std::string fsrStatus_{};
   std::string gfxCaptureStatus_{"Disabled. Launch with tools/gfxreconstruct.ps1 capture to collect Vulkan captures and runtime metadata."};
   uint64_t temporalBytes_{0}, temporalFrame_{0};
   glm::uvec2 temporalExtent_{};

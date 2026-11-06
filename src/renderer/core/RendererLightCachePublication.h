@@ -17,7 +17,8 @@ inline bool sameLightCacheVector(const glm::vec4& a,const glm::vec4& b) noexcept
 }
 inline bool sameLightCacheValue(const container::gpu::PointLightData& a,const container::gpu::PointLightData& b) noexcept {
   return sameLightCacheVector(a.positionRadius,b.positionRadius) && sameLightCacheVector(a.colorIntensity,b.colorIntensity) &&
-      sameLightCacheVector(a.directionInnerCos,b.directionInnerCos) && sameLightCacheVector(a.coneOuterCosType,b.coneOuterCosType);
+      sameLightCacheVector(a.directionInnerCos,b.directionInnerCos) && sameLightCacheVector(a.coneOuterCosType,b.coneOuterCosType) &&
+      sameLightCacheVector(a.iesTangent,b.iesTangent) && a.iesProfileAddress==b.iesProfileAddress;
 }
 inline bool sameLightCacheValue(const container::gpu::AreaLightData& a,const container::gpu::AreaLightData& b) noexcept {
   return sameLightCacheVector(a.positionRange,b.positionRange) && sameLightCacheVector(a.colorIntensity,b.colorIntensity) &&

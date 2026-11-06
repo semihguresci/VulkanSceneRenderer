@@ -3,6 +3,7 @@
 #include <Container/geometry/GltfAccessor.h>
 #include <Container/geometry/GltfAnimation.h>
 #include <Container/geometry/GltfInteractivity.h>
+#include <Container/geometry/GltfIesProfiles.h>
 #include <Container/geometry/GltfMaterialVariants.h>
 #include <Container/geometry/GltfSceneCatalog.h>
 
@@ -26,7 +27,7 @@ constexpr const char* kVariants="KHR_materials_variants";
 constexpr const char* kPunctual="KHR_lights_punctual";
 constexpr const char* kPointer="KHR_animation_pointer";
 constexpr const char* kInstancing="EXT_mesh_gpu_instancing";
-constexpr std::array kAreas{"KHR_lights_area","EXT_lights_area","WEBGI_lights_area","WEBGI_area_light"};
+constexpr std::array kIndexedLights{"KHR_lights_area","EXT_lights_area","WEBGI_lights_area","WEBGI_area_light",kGltfIesExtension};
 
 [[noreturn]] void fail(std::string_view context,std::string_view reason) {
   throw std::runtime_error("glTF merge: "+std::string(context)+": "+std::string(reason));
@@ -59,7 +60,7 @@ const Value& field(const Value& value,const char* key,std::string_view where) {
   if(found==values.end()) fail(where,std::string("missing ")+key); return found->second;
 }
 bool named(std::string_view name,Names names) {return std::ranges::find(names,name)!=names.end();}
-bool areaName(std::string_view name) {return std::ranges::find(kAreas,name)!=kAreas.end();}
+bool indexedLight(std::string_view name) {return std::ranges::find(kIndexedLights,name)!=kIndexedLights.end();}
 void finite(double value,std::string_view where) {
   if(!std::isfinite(value)) fail(where,"nonfinite numeric value");
 }
@@ -91,7 +92,7 @@ void nested(const Value& value,std::string_view label,bool textureTransforms=fal
     if(key=="extras") continue;
     if(key=="extensions") {
       for(const auto& [name,extension]:object(child,label)) {
-        if(!(textureTransforms && name=="KHR_texture_transform") && !(lightAreas && areaName(name)))
+        if(!(textureTransforms && name=="KHR_texture_transform") && !(lightAreas && indexedLight(name)))
           fail(label,"unsupported nested extension reference: "+name);
         object(extension,label); nested(extension,label,false);
       }
@@ -107,7 +108,7 @@ void extensions(const tinygltf::ExtensionMap& values,const tinygltf::Model& mode
     if(!named(name,allowed)) fail(label,"unsupported extension reference: "+name);
     if(!declared(model,name)) fail(label,"extension missing from extensionsUsed: "+name);
     object(value,label); budget.text(name);budget.value(value);
-    nested(value,label,transforms,label=="root" && (name==kPunctual || areaName(name)));
+    nested(value,label,transforms,label=="root" && (name==kPunctual || indexedLight(name)));
   }
 }
 template<class T> void property(const T& value,const tinygltf::Model& model,
@@ -176,7 +177,7 @@ struct Audit {
   container::scene::GltfSceneCatalog catalog;
   std::vector<int> parents;
   size_t variants{};
-  std::map<std::string,size_t> areaCounts;
+  std::map<std::string,size_t> extensionLightCounts;
 };
 
 uint64_t channelDecodedBytes(const tinygltf::Model& model,const tinygltf::Animation& animation,
@@ -196,7 +197,7 @@ void tableCount(size_t count,const GltfMergeLimits& limits,std::string_view labe
   if(count>limits.maxTableEntries || count>INT_MAX) fail(label,"table limit exceeded");
 }
 bool supportedDeclaration(std::string_view name) {
-  return areaName(name) || named(name,{kVariants,kPunctual,kPointer,kInstancing,
+  return indexedLight(name) || named(name,{kVariants,kPunctual,kPointer,kInstancing,
     "KHR_texture_transform","KHR_node_visibility","KHR_node_selectability","KHR_node_hoverability",kGltfInteractivityExtension,
     "KHR_texture_basisu","EXT_texture_webp","MSFT_texture_dds","KHR_mesh_quantization","KHR_accessor_float64",
     "KHR_materials_unlit","KHR_materials_specular","KHR_materials_ior","KHR_materials_dispersion",
@@ -228,7 +229,7 @@ Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label) {
   property(model.asset,model,b,"asset");
   b.text(model.asset.version);b.text(model.asset.minVersion);b.text(model.asset.generator);b.text(model.asset.copyright);
   b.value(model.extras);b.text(model.extras_json_string);b.text(model.extensions_json_string);
-  extensions(model.extensions,model,b,"root",{kVariants,kPunctual,kGltfInteractivityExtension,
+  extensions(model.extensions,model,b,"root",{kVariants,kPunctual,kGltfInteractivityExtension,kGltfIesExtension,
       "KHR_lights_area","EXT_lights_area","WEBGI_lights_area","WEBGI_area_light"});
   ValidateGltfInteractivity(model);
   Audit out;
@@ -248,8 +249,12 @@ Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label) {
   if(const auto root=model.extensions.find(kVariants);root!=model.extensions.end()) {
     out.variants=array(field(root->second,"variants",kVariants),kVariants).size();tableCount(out.variants,lim,kVariants);
   }
-  for(const auto name:kAreas) if(const auto ext=model.extensions.find(name);ext!=model.extensions.end())
-    {out.areaCounts[name]=array(field(ext->second,"lights",name),name).size();tableCount(out.areaCounts[name],lim,name);}
+  for(const auto name:kIndexedLights) if(const auto ext=model.extensions.find(name);ext!=model.extensions.end()) {
+    const auto count=array(field(ext->second,"lights",name),name).size();
+    out.extensionLightCounts[name]=count;tableCount(count,lim,name);
+    if (name==kGltfIesExtension) for(size_t i=0;i<count;++i)
+      if (!GltfIesEmbeddedProfileUri(model,i)) fail(name,"profile was not embedded during source load");
+  }
   if(const auto ext=model.extensions.find(kPunctual);ext!=model.extensions.end()) {
     if(array(field(ext->second,"lights",kPunctual),kPunctual).size()!=model.lights.size())
       fail(kPunctual,"typed and root light tables differ in size");
@@ -328,7 +333,7 @@ Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label) {
     }
   }
   for(const auto& node:model.nodes) {
-    property(node,model,b,"node",{kPunctual,kInstancing,"KHR_node_visibility","KHR_node_selectability","KHR_node_hoverability",
+    property(node,model,b,"node",{kPunctual,kInstancing,kGltfIesExtension,"KHR_node_visibility","KHR_node_selectability","KHR_node_hoverability",
       "KHR_lights_area","EXT_lights_area","WEBGI_lights_area","WEBGI_area_light"});
     if(node.emitter!=-1 || !node.lods.empty()) fail("node","audio/LOD references need a merge handler");
     index(node.mesh,model.meshes.size(),"node mesh",true);index(node.skin,model.skins.size(),"node skin",true);
@@ -339,7 +344,7 @@ Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label) {
        (!node.matrix.empty() && (!node.translation.empty() || !node.rotation.empty() || !node.scale.empty()))) fail("node","invalid matrix/TRS shape");
     for(const auto& [name,value]:node.extensions) {
       if(name==kPunctual) {const auto light=integer(field(value,"light",name),model.lights.size(),name);if(node.light>=0 && node.light!=light) fail(name,"typed and extension bindings differ");b.refs(1);}
-      else if(areaName(name)) {const auto found=out.areaCounts.find(name);if(found==out.areaCounts.end()) fail(name,"missing root light table");integer(field(value,"light",name),found->second,name);b.refs(1);}
+      else if(indexedLight(name)) {const auto found=out.extensionLightCounts.find(name);if(found==out.extensionLightCounts.end()) fail(name,"missing root light table");integer(field(value,"light",name),found->second,name);b.refs(1);}
       else if(name==kInstancing) for(const auto& [semantic,id]:object(field(value,"attributes",name),name)) {b.text(semantic);integer(id,model.accessors.size(),name);b.refs(1);}
     }
   }
@@ -521,8 +526,9 @@ void mergeRoot(tinygltf::Model& output,const tinygltf::Model& base,const tinyglt
     header["lights"]=Value(std::move(lights));output.extensions[kPunctual]=Value(std::move(header));
     if(std::ranges::find(output.extensionsUsed,std::string(kPunctual))==output.extensionsUsed.end()) output.extensionsUsed.emplace_back(kPunctual);
   }
-  for(const auto name:kAreas) if(base.extensions.contains(name) || incoming.extensions.contains(name)) {
+  for(const auto name:kIndexedLights) if(base.extensions.contains(name) || incoming.extensions.contains(name)) {
     auto header=combinedHeader(base,incoming,name,"lights");auto values=rootArray(base,name,"lights");const auto added=rootArray(incoming,name,"lights");
+    if (name==kGltfIesExtension && values.size()+added.size()>kIesMaximumProfiles) fail(name,"profile count exceeds the renderer limit");
     values.insert(values.end(),added.begin(),added.end());header["lights"]=Value(std::move(values));output.extensions[name]=Value(std::move(header));
   }
   if(base.extensions.contains(kVariants) || incoming.extensions.contains(kVariants)) {
@@ -567,7 +573,7 @@ void remapNode(tinygltf::Node& node,const GltfMergeIndexMaps& m) {
   for(auto& child:node.children) child=translated(child,m.nodes,"node child");
   for(auto& [name,value]:node.extensions) {
     if(name==kPunctual) {auto& id=value.Get<Object>().at("light");translate(id,m.lights,name);node.light=id.Get<int>();}
-    else if(areaName(name)) translate(value.Get<Object>().at("light"),m.areaLights.at(name),name);
+    else if(indexedLight(name)) translate(value.Get<Object>().at("light"),m.extensionLights.at(name),name);
     else if(name==kInstancing) for(auto& [_,id]:value.Get<Object>().at("attributes").Get<Object>()) translate(id,m.accessors,name);
   }
   node.extensions_json_string.clear();
@@ -648,7 +654,7 @@ GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& i
   m.skins=identityMap(base.skins.size(),incoming.skins.size(),limits,"skins");m.cameras=identityMap(base.cameras.size(),incoming.cameras.size(),limits,"cameras");
   m.lights=identityMap(base.lights.size(),incoming.lights.size(),limits,"lights");m.animations=identityMap(base.animations.size(),incoming.animations.size(),limits,"animations");
   m.scenes=identityMap(a.catalog.entries.size(),b.catalog.entries.size(),limits,"scenes");m.variants=identityMap(a.variants,b.variants,limits,"variants");
-  for(const auto& [name,count]:b.areaCounts) {const auto found=a.areaCounts.find(name);m.areaLights[name]=identityMap(found==a.areaCounts.end()?0:found->second,count,limits,name);}
+  for(const auto& [name,count]:b.extensionLightCounts) {const auto found=a.extensionLightCounts.find(name);m.extensionLights[name]=identityMap(found==a.extensionLightCounts.end()?0:found->second,count,limits,name);}
   m.primitives.resize(incoming.meshes.size());
   for(size_t mesh=0;mesh<incoming.meshes.size();++mesh) for(size_t primitive=0;primitive<incoming.meshes[mesh].primitives.size();++primitive) {
     if(primitive>INT_MAX) fail("primitive","index overflow");m.primitives[mesh].push_back({m.meshes[mesh],int32_t(primitive)});
@@ -711,7 +717,7 @@ GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& i
     for(const auto child:incoming.nodes[n].children) if(plan.placement.nodes[size_t(child)]>=0) value.children.push_back(plan.placement.nodes[size_t(child)]);
     if(plan.placement.contextOnly[n]) {
       value.mesh=-1;value.skin=-1;value.camera=-1;value.light=-1;value.weights.clear();
-      value.extensions.erase(kPunctual);value.extensions.erase(kInstancing);for(const auto name:kAreas) value.extensions.erase(name);
+      value.extensions.erase(kPunctual);value.extensions.erase(kInstancing);for(const auto name:kIndexedLights) value.extensions.erase(name);
     } else value.skin=translated(incoming.nodes[n].skin,plan.placement.skins,"placed skin",true);
     out.nodes.push_back(std::move(value));
   }

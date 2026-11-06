@@ -242,7 +242,7 @@ bool poseWorldSame(const container::ecs::World& a,const container::ecs::World& b
         } else if constexpr(std::is_same_v<T,container::ecs::TransformComponent>) {
           if(!poseMatrixSame(value.localTransform,other->localTransform) || !poseMatrixSame(value.worldTransform,other->worldTransform)) return false;
         } else if constexpr(std::is_same_v<T,container::ecs::LightComponent>) {
-          static_assert(sizeof(container::gpu::PointLightData)==4*sizeof(glm::vec4));
+          static_assert(sizeof(container::gpu::PointLightData)==6*sizeof(glm::vec4));
           if(std::memcmp(&value.data,&other->data,sizeof(value.data))) return false;
         } else if constexpr(std::is_same_v<T,container::ecs::MeshComponent>) {if(value.primitiveIndex!=other->primitiveIndex) return false;}
         else if constexpr(std::is_same_v<T,container::ecs::MaterialComponent>) {if(value.materialIndex!=other->materialIndex) return false;}
@@ -1869,6 +1869,7 @@ void SceneController::buildSceneGraph(uint32_t& outRootNode,
     }
     sceneGraph_.updateWorldTransforms();
   }
+  sceneManager_.captureLinkedSceneBaseline(sceneGraph_);
 
   const auto& renderable = sceneGraph_.renderableNodes();
   if (renderable.empty()) {

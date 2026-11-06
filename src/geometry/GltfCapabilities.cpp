@@ -1,6 +1,7 @@
 #include <Container/geometry/GltfCapabilities.h>
 #include <Container/geometry/GltfCompression.h>
 #include <Container/geometry/GltfExtendedMaterials.h>
+#include <Container/geometry/GltfIesProfiles.h>
 #include <Container/geometry/GltfOpacityMicromaps.h>
 #include <Container/geometry/GltfXmpMetadata.h>
 #include <Container/utility/TextureImageData.h>
@@ -58,6 +59,8 @@ const std::array kExtensions{
                         "Specular-glossiness is converted to the runtime metallic-roughness approximation"},
     ExtensionCapability{"KHR_lights_punctual", Supported,
                         "Point, directional and spot lights, including range and spot cones"},
+    ExtensionCapability{kGltfIesExtension, Partial,
+                        "LM-63 Type C measured point fixtures, including azimuthal distributions; only TILT=NONE"},
     ExtensionCapability{"KHR_lights_area", Partial,
                         "Area lights use the engine's supported area-light dialect and shading approximation"},
     ExtensionCapability{"EXT_lights_area", Partial,

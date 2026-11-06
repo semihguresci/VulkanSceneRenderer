@@ -5,6 +5,7 @@
 #include <Container/renderer/lighting/LightingManager.h>
 #include <Container/renderer/lighting/ImportedSceneLightEdits.h>
 #include <Container/geometry/GltfAnimation.h>
+#include <Container/geometry/GltfIesProfiles.h>
 #include <Container/utility/SceneManager.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -28,6 +29,7 @@ namespace container::renderer {
 namespace {
 using Object = tinygltf::Value::Object;
 using Value = tinygltf::Value;
+using container::geometry::gltf::kGltfIesExtension;
 constexpr std::array areaExtensions{"KHR_lights_area", "EXT_lights_area",
                                     "WEBGI_lights_area", "WEBGI_area_light"};
 bool areaShape(std::string type) {
@@ -370,6 +372,10 @@ Candidate candidateForBinding(const tinygltf::Model& source,
     require(node.light >= 0 && size_t(node.light) < source.lights.size());
     return {mapped->second,{},source.lights[size_t(node.light)],node.light};
   }
+  if (binding.extension == kGltfIesExtension) {
+    require(node.extensions.contains(kGltfIesExtension));
+    return {mapped->second,binding.extension,{}};
+  }
   require(std::ranges::find(areaExtensions,binding.extension) != areaExtensions.end());
   auto definition = areaDefinition(source,node,binding.extension.c_str());
   require(definition.has_value());
@@ -455,8 +461,14 @@ static std::vector<EditableLightEntity> evaluateEditableSceneLightsImpl(
           glm::vec3(sceneTransform*glm::vec4(glm::vec3(original.directionInnerCos),0)),fallback),
           original.directionInnerCos.w);
     }
-    if (i < edits.importedPointOverrides.size() && edits.importedPointOverrides[i])
-      light = *edits.importedPointOverrides[i];
+    if (i < edits.importedPointOverrides.size() && edits.importedPointOverrides[i]) {
+      const auto& edited = *edits.importedPointOverrides[i];
+      if (light.iesProfileAddress) {
+        if (edited.iesProfileAddress == light.iesProfileAddress) light.colorIntensity = edited.colorIntensity;
+      } else if (!edited.iesProfileAddress) {
+        light = edited;
+      }
+    }
     result.push_back(editablePointLight(EditableLightSource::Imported,uint32_t(i),light,false));
   }
   for (size_t i = 0; i < authored.areas.size(); ++i) {
@@ -584,6 +596,7 @@ static void exportEditableSceneLightsForScene(tinygltf::Model& model,
     double colorScale{1};
   };
   std::vector<Plan> plans;
+  std::vector<std::pair<size_t, Value>> iesEdits;
   std::set<std::tuple<EditableLightSource,int,uint32_t>> identities;
   bool directionalPlanned=false;
   for(const auto& entity:lights) {
@@ -626,6 +639,17 @@ static void exportEditableSceneLightsForScene(tinygltf::Model& model,
           original = candidateForBinding(source,visible.directionalBindings.front(),sourceToExport);
       } else if (!directions.empty()) original=directions.front();
       if (original) require(original->node<model.nodes.size() && visited[original->node]);
+    }
+    if (original && original->extension == kGltfIesExtension) {
+      auto ies = model.nodes[original->node].extensions.at(kGltfIesExtension);
+      auto& fields = ies.Get<Object>();
+      const double scale = std::max({1.0,double(entity.color.r),double(entity.color.g),double(entity.color.b)});
+      require(entity.range == 0.0f && double(entity.intensity) * scale <= std::numeric_limits<float>::max());
+      fields.insert_or_assign("color", Value(Value::Array{Value(entity.color.r / scale),
+          Value(entity.color.g / scale), Value(entity.color.b / scale)}));
+      fields.insert_or_assign("multiplier", Value(double(entity.intensity) * scale));
+      iesEdits.emplace_back(original->node, std::move(ies));
+      continue;
     }
     tinygltf::Light light;
     if(original) light=original->definition;
@@ -707,6 +731,10 @@ static void exportEditableSceneLightsForScene(tinygltf::Model& model,
           static_cast<int>(model.lights.size()+i),importedRangeScale,plans[i].colorScale,animationEdits);
   // Validate the entire overlay before changing the detached export snapshot.
   animationEdits.publish(model);
+  for (auto& [node, ies] : iesEdits) {
+    model.nodes[node].extensions.insert_or_assign(kGltfIesExtension, std::move(ies));
+    model.nodes[node].extensions_json_string.clear();
+  }
   for(auto& plan:plans) {
     if(plan.original) {
       auto& original=model.nodes[plan.original->node];
@@ -810,6 +838,7 @@ void exportEditableSceneLightsForScenes(
     const auto* visible = visibleSceneBindings.empty() ? bindings : &visibleSceneBindings[scene];
     std::vector<EditableLightEntity> filtered;
     std::vector<std::pair<Binding, size_t>> addedBindings;
+    size_t addedLightCount = 0;
     std::vector<size_t> sharedSuns;
     std::set<std::tuple<EditableLightSource, int, uint32_t>> identities;
     bool directionalPlanned = false;
@@ -843,6 +872,7 @@ void exportEditableSceneLightsForScenes(
             throw std::runtime_error("Scene light export: a manual sun cannot replace a source binding shared by multiple scenes; use separate source light nodes");
         }
         filtered.push_back(entity);
+        ++addedLightCount;
         continue;
       }
       Candidate original;
@@ -863,7 +893,7 @@ void exportEditableSceneLightsForScenes(
         if (isActiveDirectional(bindings,visible,entity)) sharedSuns.push_back(previous->second.exportedNode);
         continue;
       }
-      addedBindings.push_back({binding, filtered.size()});
+      if (original.extension != kGltfIesExtension) addedBindings.push_back({binding, addedLightCount++});
       handled.emplace(binding, Handled{entity});
       filtered.push_back(entity);
     }

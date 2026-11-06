@@ -54,6 +54,7 @@ struct EditableLightEntity {
   float outerConeDegrees{0.0f};
   glm::vec2 areaHalfSize{0.5f};
   float areaShape{container::gpu::kAreaLightTypeRectangle};
+  uint64_t iesProfileAddress{};
   bool selected{false};
   bool editable{true};
 };

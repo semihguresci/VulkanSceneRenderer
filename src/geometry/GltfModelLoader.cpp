@@ -3,6 +3,7 @@
 #include <Container/geometry/GltfImageSources.h>
 #include <Container/geometry/GltfNodeFlags.h>
 #include <Container/geometry/GltfExtendedMaterials.h>
+#include <Container/geometry/GltfIesProfiles.h>
 #include <Container/geometry/GltfLinkedAssets.h>
 #include <Container/geometry/GltfInteractivity.h>
 #include <Container/geometry/GltfXmpMetadata.h>
@@ -1254,8 +1255,8 @@ tinygltf::Model loadGltfModel(const std::string& path,
             if (error) *error = "unmapped external URI in linked glTF";
             return false;
           }
-          const auto filePath = resource ? resource->path : std::filesystem::path(
-              std::u8string(filename.begin(), filename.end()));
+          const auto filePath = resource ? resource->path : linkedContext ? linkedContext->source :
+              std::filesystem::path(std::u8string(filename.begin(), filename.end()));
           std::error_code code;
           const uintmax_t bytes = std::filesystem::file_size(filePath, code);
           if (code || bytes > remainingBytes ||
@@ -1274,6 +1275,9 @@ tinygltf::Model loadGltfModel(const std::string& path,
             return false;
           }
           remainingBytes -= bytes;
+          auto* linkedComposition = linkedContext ? linkedContext->composition : nullptr;
+          if (sourceRead && linkedComposition && !linkedComposition->source.empty())
+            linkedComposition->observe(filePath, *output);
           if (!sourceRead) {
             try {
               auto json = parseSourceJson(*output, isBinaryGltf(path));
@@ -1291,6 +1295,11 @@ tinygltf::Model loadGltfModel(const std::string& path,
                 }
               }
               auto linked = PrepareGltfLinkedManifest(json, linkedContext != nullptr);
+              if (linkedComposition) {
+                if (!linked.nodeFiles.empty() && linkedComposition->source.empty())
+                  linkedComposition->source = filePath;
+                if (!linkedComposition->source.empty()) linkedComposition->observe(filePath, *output);
+              }
               const bool normalizedLinkedManifest = linked.normalized;
               if (normalizedLinkedManifest) {
                 if (!linkedManifest || !options.decodeImages)
@@ -1474,6 +1483,14 @@ tinygltf::Model loadGltfModel(const std::string& path,
       if (const auto* resource = linkedResource(image.uri)) image.uri = resource->originalUri;
     (void)ParseMeshGpuInstancing(model, options.instancing);
     (void)ParseGltfNodeFlags(model);
+    const bool iesRequired = std::ranges::find(model.extensionsRequired, kGltfIesExtension) != model.extensionsRequired.end();
+    for (const auto& message : PrepareGltfIesProfiles(model, std::filesystem::u8path(path).parent_path(),
+             !options.requireSelfContained && !linkedContext, remainingBytes)) {
+      if (iesRequired) throw std::invalid_argument(message);
+      CapabilityDiagnostic diagnostic{CapabilitySeverity::Warning, "unsupported_ies_profile", path, message};
+      std::clog << formatCapabilityDiagnostic(diagnostic) << std::endl;
+      if (diagnostics) diagnostics->push_back(std::move(diagnostic));
+    }
     try {
       ValidateGltfInteractivity(model);
     } catch (const std::invalid_argument& error) {
@@ -1557,7 +1574,8 @@ void discardOpacityMicromapMetadata(tinygltf::Model& model) {
 }
 
 tinygltf::Model loadGltfComposition(const std::string& path, const LoadOptions& options,
-                                  std::vector<CapabilityDiagnostic>* diagnostics = nullptr) {
+                                  std::vector<CapabilityDiagnostic>* diagnostics = nullptr,
+                                  GltfLinkedCompositionInfo* composition = nullptr) {
   if (options.requireSelfContained && options.enableLinkedAssets)
     throw gltfError("glTF asset '" + path + "'", "self-contained loading cannot enable linked assets");
   if (!options.enableLinkedAssets) return loadGltfModel(path, options, diagnostics);
@@ -1578,7 +1596,7 @@ tinygltf::Model loadGltfComposition(const std::string& path, const LoadOptions& 
                           std::make_move_iterator(documentDiagnostics.end()));
     return result;
   };
-  return LoadGltfLinkedComposition(std::filesystem::path(std::u8string(path.begin(), path.end())), reader);
+  return LoadGltfLinkedComposition(std::filesystem::path(std::u8string(path.begin(), path.end())), reader, composition);
 }
 
 }  // namespace
@@ -1599,7 +1617,8 @@ GltfLoadResult LoadModelWithSource(const std::string& path) {
 GltfLoadResult LoadModelWithSource(const std::string& path,
                                   const LoadOptions& options) {
   std::vector<CapabilityDiagnostic> diagnostics;
-  auto gltfModel = loadGltfComposition(path, options, &diagnostics);
+  auto linked = options.enableLinkedAssets ? std::make_shared<GltfLinkedCompositionInfo>() : nullptr;
+  auto gltfModel = loadGltfComposition(path, options, &diagnostics, linked.get());
   try {
     GltfOpacityMicromapAssets micromaps;
     if (options.enableOpacityMicromaps && !options.enableLinkedAssets)
@@ -1614,6 +1633,7 @@ GltfLoadResult LoadModelWithSource(const std::string& path,
     GltfLoadResult result{Model::FromMeshes(std::move(meshes)),
                           std::move(gltfModel), std::move(diagnostics)};
     result.opacityMicromaps = std::move(micromaps);
+    if (linked && !linked->placements.empty()) result.linkedComposition = std::move(linked);
     const bool hasMorphs = std::ranges::any_of(result.gltfModel.meshes, [](const auto& mesh) {
       return std::ranges::any_of(mesh.primitives, [](const auto& primitive) {
         return !primitive.targets.empty();

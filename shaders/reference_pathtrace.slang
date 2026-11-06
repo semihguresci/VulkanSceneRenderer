@@ -884,7 +884,7 @@ float3 PtDirect(PtHit hit, PtMaterial material, float3 view, float3 geometricNor
         direction = offset / distance;
         radiance = light.colorIntensity.rgb * light.colorIntensity.a *
             (SmoothRangeAttenuation(square, light.positionRadius.w) / square) *
-            SpotLightConeAttenuation(light.directionInnerCos, light.coneOuterCosType, direction);
+            LocalLightAngularIntensity(light, direction);
     }
     else
     {

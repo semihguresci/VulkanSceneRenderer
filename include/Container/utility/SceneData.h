@@ -395,6 +395,10 @@ struct PointLightData {
   // coneOuterCosType.y stores the light type: 0 = point, 1 = spot.
   alignas(16) glm::vec4 directionInnerCos{0.0f, 0.0f, -1.0f, 1.0f};
   alignas(16) glm::vec4 coneOuterCosType{0.0f, 0.0f, 0.0f, 0.0f};
+  // IES C0 tangent in world space, with .w set only for a resident profile.
+  alignas(16) glm::vec4 iesTangent{0.0f};
+  uint64_t iesProfileAddress{};
+  std::array<uint32_t, 2> iesPadding{};
 };
 
 struct AreaLightData {
@@ -685,7 +689,7 @@ static_assert(offsetof(CameraData, cameraWorldPosition) == 128,
 static_assert(offsetof(CameraData, cameraForward) == 144,
               "CameraData.cameraForward offset");
 
-static_assert(sizeof(PointLightData) == 64,
+static_assert(sizeof(PointLightData) == 96,
               "PointLightData size mismatch with shader PointLightData.");
 static_assert(alignof(PointLightData) == 16,
               "PointLightData must be 16-byte aligned.");
@@ -697,6 +701,9 @@ static_assert(offsetof(PointLightData, directionInnerCos) == 32,
               "PointLightData.directionInnerCos offset");
 static_assert(offsetof(PointLightData, coneOuterCosType) == 48,
               "PointLightData.coneOuterCosType offset");
+static_assert(offsetof(PointLightData, iesTangent) == 64 &&
+              offsetof(PointLightData, iesProfileAddress) == 80 &&
+              offsetof(PointLightData, iesPadding) == 88);
 
 static_assert(sizeof(AreaLightData) == 80,
               "AreaLightData size mismatch with shader AreaLightData.");

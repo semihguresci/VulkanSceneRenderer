@@ -6,6 +6,7 @@
 #include <Container/geometry/GltfDeformation.h>
 #include <Container/geometry/GltfAccessor.h>
 #include <Container/geometry/GltfInstancing.h>
+#include <Container/geometry/GltfLinkedAssets.h>
 #include <Container/geometry/GltfXmpMetadata.h>
 #include <Container/utility/SourcePrimitiveMapping.h>
 
@@ -1560,6 +1561,22 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
 void writeSceneExport(const SceneExportSnapshot& snapshot,
                       const std::filesystem::path& destination) {
   writeExportModel(buildExportModel(snapshot), destination);
+}
+
+void writeLinkedSceneManifest(const GltfLinkedCompositionInfo& composition,
+    std::span<const GltfLinkedPlacementEdit> edits, size_t selectedScene,
+    const std::filesystem::path& destination) {
+  const auto absolute = std::filesystem::absolute(destination);
+  if (std::filesystem::exists(absolute) && !std::filesystem::is_regular_file(absolute))
+    fail("destination is not a regular file");
+  const auto manifest = BuildGltfLinkedManifestForSave(composition, edits, selectedScene, absolute);
+  StagingDirectory staging(absolute.parent_path());
+  const auto staged = staging.path / absolute.filename();
+  std::ofstream file(staged, std::ios::binary | std::ios::trunc);
+  file << manifest << '\n';
+  file.close();
+  if (!file) fail("serializer could not write the staged linked manifest");
+  replaceFile(staged, absolute);
 }
 
 void writeExportModel(const tinygltf::Model& packedModel,

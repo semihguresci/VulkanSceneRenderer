@@ -57,6 +57,7 @@ public:
 
   [[nodiscard]] RenderGraphBuilder graphBuilder() const;
   [[nodiscard]] VkExtent2D swapchainExtent() const;
+  [[nodiscard]] VkExtent2D sceneExtent(const FrameRecordParams &p) const;
   [[nodiscard]] container::ui::GBufferViewMode displayMode() const;
   [[nodiscard]] const OitManager *oitManager() const;
   [[nodiscard]] DeferredTransparentOitFramePassRecorder
@@ -73,7 +74,8 @@ public:
   [[nodiscard]] const container::scene::BaseCamera *camera() const;
   [[nodiscard]] const SceneController *sceneController() const;
   [[nodiscard]] const DebugOverlayRenderer *debugOverlay() const;
-  [[nodiscard]] DeferredRasterLightingPassRecorder lightingPassRecorder() const;
+  [[nodiscard]] DeferredRasterLightingPassRecorder lightingPassRecorder(
+      const FrameRecordParams &p) const;
 
   void recordShadowPass(VkCommandBuffer cmd, const FrameRecordParams &p,
                         uint32_t cascadeIndex) const;

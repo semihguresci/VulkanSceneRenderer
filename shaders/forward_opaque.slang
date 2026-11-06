@@ -763,8 +763,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             float3 pointShadowNormal = ExtendedPbrShadowBiasNormal(
                 surfaceNormal.geometricNormal, L, extendedTerms);
             float attenuation = PointLightAttenuation(distanceSq, lightRadius);
-            float coneAttenuation = SpotLightConeAttenuation(
-                light.directionInnerCos, light.coneOuterCosType, L);
+            float coneAttenuation = LocalLightAngularIntensity(light, L);
             float3 radiance =
                 light.colorIntensity.rgb * light.colorIntensity.a * attenuation *
                 coneAttenuation;

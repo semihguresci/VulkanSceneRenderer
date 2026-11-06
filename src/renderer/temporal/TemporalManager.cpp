@@ -19,6 +19,7 @@
 #include "Container/utility/VulkanDevice.h"
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 namespace container::renderer {
@@ -64,9 +65,12 @@ void initializeImage(VkCommandBuffer cmd, VkImage image) {
 
 bool needed(const FrameRecordParams &frame) {
   const auto *temporal = frame.services.temporalManager;
-  return frame.runtime.activeTechnique != RenderTechniqueId::PathTracing && temporal && temporal->active() &&
-         (frame.debug.displayMode == 0 || frame.debug.displayMode == 8 ||
-          (frame.debug.displayMode >= 100 && frame.debug.displayMode <= 104));
+  if (frame.runtime.activeTechnique == RenderTechniqueId::PathTracing || !temporal || !temporal->active())
+    return false;
+  const auto display = frame.debug.displayMode;
+  if (temporal->fsrActive())
+    return !frame.camera.orthographic && (display == 0 || display == 100 || display == 104);
+  return display == 0 || display == 8 || (display >= 100 && display <= 104);
 }
 } // namespace
 
@@ -85,13 +89,82 @@ TemporalManager::~TemporalManager() {
       destroyOwnedPipeline(device, pipeline, nullptr);
   pipelines_.destroyPipeline(resolvePipeline_);
   pipelines_.destroyPipeline(composePipeline_);
+  pipelines_.destroyPipeline(fsrInputsPipeline_);
   pipelines_.destroyPipelineLayout(velocityLayout_);
   pipelines_.destroyPipelineLayout(resolveLayout_);
   pipelines_.destroyPipelineLayout(composeLayout_);
+  pipelines_.destroyPipelineLayout(fsrInputsLayout_);
   pipelines_.destroyDescriptorSetLayout(resolveSetLayout_);
   pipelines_.destroyDescriptorSetLayout(composeSetLayout_);
+  pipelines_.destroyDescriptorSetLayout(fsrInputsSetLayout_);
   if (sampler_)
     destroyOwnedSampler(device, sampler_, nullptr);
+}
+
+void TemporalManager::createFsrPipeline(const std::filesystem::path& root) {
+  if (fsrInputsPipeline_) return;
+  std::vector<VkDescriptorSetLayoutBinding> bindings;
+  for (uint32_t binding = 0; binding < 8; ++binding)
+    bindings.push_back({binding, binding < 3 ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+  fsrInputsSetLayout_ = pipelines_.createDescriptorSetLayout(bindings,
+      std::vector<VkDescriptorBindingFlags>(bindings.size(), 0));
+  try {
+    fsrInputsLayout_ = pipelines_.createPipelineLayout({fsrInputsSetLayout_},
+        {{VK_SHADER_STAGE_COMPUTE_BIT, 0, 2 * sizeof(uint32_t)}});
+    fsrInputsPipeline_ = pipelines_.createComputePipeline(root / "spv_shaders/fsr_inputs.comp.spv",
+        fsrInputsLayout_, "fsr.inputs");
+  } catch (...) {
+    pipelines_.destroyPipelineLayout(fsrInputsLayout_);
+    pipelines_.destroyDescriptorSetLayout(fsrInputsSetLayout_);
+    fsrInputsLayout_ = {};
+    fsrInputsSetLayout_ = {};
+    throw;
+  }
+}
+
+bool TemporalManager::prepareFsr(const std::filesystem::path& root,
+                                 const FsrUpscalerSettings& settings) {
+  if (!FsrUpscaler::builtWithSdk() || !device_->fsrUpscalingEnabled()) {
+    fsrStatus_ = FsrUpscaler::builtWithSdk() ? "GPU lacks the required Vulkan FSR features"
+                                            : "Built without the Vulkan FSR SDK";
+    return false;
+  }
+  if (!inputs_.empty()) {
+    fsrStatus_ = "Retire temporal frame resources before preparing FSR";
+    return false;
+  }
+  try {
+    auto candidate = std::make_unique<FsrUpscaler>(device_->physicalDevice(), device_->device(), root);
+    if (!candidate->prepare(settings)) {
+      fsrStatus_ = candidate->status();
+      return false;
+    }
+    createFsrPipeline(root);
+    fsrStatus_ = candidate->status();
+    fsrSettings_ = settings;
+    fsr_ = std::move(candidate);
+    return true;
+  } catch (const std::exception& error) {
+    fsrStatus_ = error.what();
+    return false;
+  }
+}
+
+void TemporalManager::prepareCamera(container::gpu::CameraData& camera, glm::uvec2 extent,
+                                    const container::temporal::Settings& settings,
+                                    const glm::mat4& projection, float frameMilliseconds) {
+  std::optional<glm::vec2> jitterOverride;
+  if (fsrActive() && settings.enabled) {
+    const auto jitter = fsr_->nextJitterPixels();
+    if (!jitter) throw std::runtime_error("Could not query the active Vulkan FSR jitter");
+    fsrJitter_ = *jitter;
+    fsrVerticalFov_ = 2.0f * std::atan(1.0f / std::abs(projection[1][1]));
+    fsrFrameMilliseconds_ = std::isfinite(frameMilliseconds) && frameMilliseconds > 0.0f
+        ? frameMilliseconds : 1000.0f / 60.0f;
+    jitterOverride = glm::vec2(fsrJitter_[0], fsrJitter_[1]);
+  }
+  state_.prepareCamera(camera, extent, settings, projection, jitterOverride);
 }
 
 void TemporalManager::createPipelines(const std::filesystem::path &root,
@@ -267,7 +340,8 @@ void TemporalManager::publishVelocityReload(PreparedGraphicsPipelines& candidate
 }
 
 AttachmentImage TemporalManager::image(VkFormat format,
-                                       VkImageUsageFlags usage) {
+                                       VkImageUsageFlags usage,
+                                       VkExtent2D extent) {
   VkFormatProperties features{};
   vkGetPhysicalDeviceFormatProperties(device_->physicalDevice(), format,
                                       &features);
@@ -277,13 +351,13 @@ AttachmentImage TemporalManager::image(VkFormat format,
       (VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT))
     throw std::runtime_error(
-        "TAA history format lacks sampled/storage support; disable TAA");
+        "Temporal image format lacks sampled/storage support");
   AttachmentImage result{};
   result.format = format;
   VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   info.imageType = VK_IMAGE_TYPE_2D;
   info.format = format;
-  info.extent = {extent_.width, extent_.height, 1};
+  info.extent = {extent.width, extent.height, 1};
   info.mipLevels = info.arrayLayers = 1;
   info.samples = VK_SAMPLE_COUNT_1_BIT;
   info.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -293,7 +367,7 @@ AttachmentImage TemporalManager::image(VkFormat format,
   if (vmaCreateImage(allocator_.memoryManager()->allocator(), &info,
                      &allocation, &result.image, &result.allocation,
                      nullptr) != VK_SUCCESS)
-    throw std::runtime_error("TAA history allocation failed");
+    throw std::runtime_error("Temporal image allocation failed");
   VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
   view.image = result.image;
   view.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -303,7 +377,7 @@ AttachmentImage TemporalManager::image(VkFormat format,
       VK_SUCCESS) {
     vmaDestroyImage(allocator_.memoryManager()->allocator(), result.image,
                     result.allocation);
-    throw std::runtime_error("TAA history view creation failed");
+    throw std::runtime_error("Temporal image view creation failed");
   }
   return result;
 }
@@ -318,9 +392,25 @@ void TemporalManager::destroyImage(AttachmentImage &attachment) {
 }
 
 void TemporalManager::destroyImages() {
+  // FSR retains its own Vulkan views of imported frame images.
+  if (fsr_) {
+    fsr_.reset();
+    fsrStatus_ = "native resolution";
+  }
+  destroyFrameImages();
+}
+
+void TemporalManager::destroyFrameImages() {
   if (pool_) {
     destroyOwnedDescriptorPool(device_->device(), pool_, nullptr);
     pool_ = {};
+  }
+  for (auto& input : inputs_) {
+    destroyImage(input.fsrDepth);
+    destroyImage(input.fsrMotion);
+    destroyImage(input.fsrReactive);
+    destroyImage(input.fsrTransparency);
+    destroyImage(input.fsrOutput);
   }
   inputs_.clear();
   for (auto &history : histories_) {
@@ -335,7 +425,8 @@ void TemporalManager::destroyImages() {
 
 void TemporalManager::prepare(FrameResourceManager &frames, VkExtent2D extent,
                               uint32_t imageCount) {
-  if (!settings_.enabled || !extent.width || !extent.height)
+  const bool useFsr = fsrActive();
+  if ((!settings_.enabled && !useFsr) || !extent.width || !extent.height || !imageCount)
     return;
   frames.ensureTemporalAttachments();
   if (inputs_.size() == imageCount && extent_.width == extent.width &&
@@ -343,46 +434,61 @@ void TemporalManager::prepare(FrameResourceManager &frames, VkExtent2D extent,
       inputs_[0].frame.temporalMotion.image ==
           frames.frame(0)->temporalMotion.image)
     return;
-  destroyImages();
+  if (useFsr && (!inputs_.empty() || extent.width != fsrSettings_.renderExtent.width ||
+      extent.height != fsrSettings_.renderExtent.height))
+    throw std::logic_error("FSR requires retired frame resources at its configured render extent");
+  destroyFrameImages();
   extent_ = extent;
   try {
     const auto usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    for (auto &history : histories_) {
-      history.color = image(VK_FORMAT_R16G16B16A16_SFLOAT, usage);
-      history.depth = image(VK_FORMAT_R32G32_SFLOAT, usage);
-      history.identity = image(VK_FORMAT_R32_UINT, usage);
+    if (!useFsr) {
+      for (auto &history : histories_) {
+        history.color = image(VK_FORMAT_R16G16B16A16_SFLOAT, usage, extent);
+        history.depth = image(VK_FORMAT_R32G32_SFLOAT, usage, extent);
+        history.identity = image(VK_FORMAT_R32_UINT, usage, extent);
+      }
     }
     const std::array<VkDescriptorPoolSize, 5> sizes = {
-        {{VK_DESCRIPTOR_TYPE_SAMPLER, imageCount * 3},
-         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, imageCount * 16},
-         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, imageCount * 10},
-         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, imageCount * 3},
+        {{VK_DESCRIPTOR_TYPE_SAMPLER, imageCount * (useFsr ? 1u : 3u)},
+         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, imageCount * (useFsr ? 5u : 16u)},
+         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, imageCount * (useFsr ? 7u : 10u)},
+         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, imageCount * (useFsr ? 1u : 3u)},
          {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, imageCount * 2}}};
     VkDescriptorPoolCreateInfo poolInfo{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    poolInfo.maxSets = imageCount * 3;
+    poolInfo.maxSets = imageCount * (useFsr ? 2u : 3u);
     poolInfo.poolSizeCount = static_cast<uint32_t>(sizes.size());
     poolInfo.pPoolSizes = sizes.data();
     if (createOwnedDescriptorPool(device_->device(), &poolInfo, nullptr,
                                   &pool_) != VK_SUCCESS)
-      throw std::runtime_error("TAA descriptor pool creation failed");
+      throw std::runtime_error("Temporal descriptor pool creation failed");
     inputs_.resize(imageCount);
     for (uint32_t i = 0; i < imageCount; ++i) {
       auto &input = inputs_[i];
       input.frame = *frames.frame(i);
-      const std::array<VkDescriptorSetLayout, 3> layouts = {
-          resolveSetLayout_, resolveSetLayout_, composeSetLayout_};
+      const std::array<VkDescriptorSetLayout, 3> layouts = {composeSetLayout_,
+          useFsr ? fsrInputsSetLayout_ : resolveSetLayout_, resolveSetLayout_};
       VkDescriptorSetAllocateInfo info{
           VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
       info.descriptorPool = pool_;
-      info.descriptorSetCount = 3;
+      info.descriptorSetCount = useFsr ? 2u : 3u;
       info.pSetLayouts = layouts.data();
       std::array<VkDescriptorSet, 3> sets{};
       if (vkAllocateDescriptorSets(device_->device(), &info, sets.data()) !=
           VK_SUCCESS)
-        throw std::runtime_error("TAA descriptor allocation failed");
-      input.resolve = {sets[0], sets[1]};
-      input.compose = sets[2];
+        throw std::runtime_error("Temporal descriptor allocation failed");
+      input.compose = sets[0];
+      if (useFsr) {
+        input.fsrInputs = sets[1];
+        input.fsrDepth = image(VK_FORMAT_R32_SFLOAT, usage, extent);
+        input.fsrMotion = image(VK_FORMAT_R16G16_SFLOAT, usage, extent);
+        input.fsrReactive = image(VK_FORMAT_R8_UNORM, usage, extent);
+        input.fsrTransparency = image(VK_FORMAT_R8_UNORM, usage, extent);
+        input.fsrOutput = image(VK_FORMAT_R16G16B16A16_SFLOAT,
+            usage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, fsrSettings_.displayExtent);
+      } else {
+        input.resolve = {sets[1], sets[2]};
+      }
     }
   } catch (...) {
     destroyImages();
@@ -397,7 +503,7 @@ void TemporalManager::updateDescriptors(
   // fence.
   const std::array<VkDescriptorImageInfo, 3> postImages = {
       {{{},
-        (active() && resolveThisFrame) ? outputView() : frame.sceneColor.view,
+        (active() && resolveThisFrame) ? outputView(imageIndex) : frame.sceneColor.view,
         (active() && resolveThisFrame)
             ? VK_IMAGE_LAYOUT_GENERAL
             : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
@@ -431,7 +537,7 @@ void TemporalManager::updateDescriptors(
   input.frame = frame;
   VkDescriptorBufferInfo cameraInfo{camera.buffer, 0,
                                     sizeof(container::gpu::CameraData)};
-  for (uint32_t slot = 0; slot < 2; ++slot) {
+  for (uint32_t slot = 0; !fsrActive() && slot < 2; ++slot) {
     const auto &old = histories_[slot ^ 1u];
     const auto &output = histories_[slot];
     const std::array<VkImageView, 11> views = {frame.temporalComposite.view,
@@ -506,6 +612,28 @@ void TemporalManager::updateDescriptors(
   vkUpdateDescriptorSets(device_->device(),
                          static_cast<uint32_t>(writes.size()), writes.data(), 0,
                          nullptr);
+  if (fsrActive()) updateFsrDescriptors(input);
+}
+
+void TemporalManager::updateFsrDescriptors(const Input& input) {
+  const auto& frame = input.frame;
+  const std::array views{frame.depthSamplingView, frame.temporalMotion.view,
+      frame.temporalComposite.view, input.fsrDepth.view, input.fsrMotion.view,
+      input.fsrReactive.view, input.fsrTransparency.view, frame.temporalDiagnostics.view};
+  std::array<VkDescriptorImageInfo, views.size()> images{};
+  std::array<VkWriteDescriptorSet, views.size()> writes{};
+  for (uint32_t binding = 0; binding < views.size(); ++binding) {
+    images[binding] = {{}, views[binding], binding == 0 ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                                                      : VK_IMAGE_LAYOUT_GENERAL};
+    auto& write = writes[binding];
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = input.fsrInputs;
+    write.dstBinding = binding;
+    write.descriptorCount = 1;
+    write.descriptorType = binding < 3 ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    write.pImageInfo = &images[binding];
+  }
+  vkUpdateDescriptorSets(device_->device(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
 void TemporalManager::recordVelocity(VkCommandBuffer cmd,
@@ -519,6 +647,11 @@ void TemporalManager::recordVelocity(VkCommandBuffer cmd,
          {f.temporalMotion, f.temporalIdentity, f.temporalReactive,
           f.temporalComposite, f.temporalDiagnostics})
       initializeImage(cmd, attachment.image);
+    if (fsrActive()) {
+      for (const auto& attachment : {input.fsrDepth, input.fsrMotion, input.fsrReactive,
+                                      input.fsrTransparency, input.fsrOutput})
+        initializeImage(cmd, attachment.image);
+    }
     input.initialized = true;
   }
   dependency(cmd,
@@ -632,18 +765,19 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
                                     const FrameRecordParams &p) {
   if (!needed(p))
     return;
-  for (auto &history : histories_)
-    if (!history.initialized) {
-      for (auto attachment : {history.color, history.depth, history.identity}) {
-        initializeImage(cmd, attachment.image);
-        const VkClearColorValue clear{};
-        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
-                                            1};
-        vkCmdClearColorImage(cmd, attachment.image, VK_IMAGE_LAYOUT_GENERAL,
-                             &clear, 1, &range);
+  if (!fsrActive()) {
+    for (auto& history : histories_) {
+      if (!history.initialized) {
+        for (auto attachment : {history.color, history.depth, history.identity}) {
+          initializeImage(cmd, attachment.image);
+          const VkClearColorValue clear{};
+          const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+          vkCmdClearColorImage(cmd, attachment.image, VK_IMAGE_LAYOUT_GENERAL, &clear, 1, &range);
+        }
+        history.initialized = true;
       }
-      history.initialized = true;
     }
+  }
   dependency(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
              VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
   const auto &input = inputs_.at(p.runtime.imageIndex);
@@ -681,6 +815,11 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
   vkCmdDispatch(cmd, (extent_.width + 7) / 8, (extent_.height + 7) / 8, 1);
   dependency(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
              VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+  if (fsrActive()) {
+    recordFsr(cmd, p, input);
+    resolveRecorded_ = true;
+    return;
+  }
   const ResolveConstants constants{extent_.width,
                                    extent_.height,
                                    state_.valid() ? 1u : 0u,
@@ -705,12 +844,73 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
   resolveRecorded_ = true;
 }
 
+void TemporalManager::recordFsr(VkCommandBuffer cmd, const FrameRecordParams& p, const Input& input) {
+  const std::array constants{extent_.width, extent_.height};
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, fsrInputsPipeline_);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, fsrInputsLayout_, 0, 1,
+      &input.fsrInputs, 0, nullptr);
+  vkCmdPushConstants(cmd, fsrInputsLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(constants), constants.data());
+  vkCmdDispatch(cmd, (extent_.width + 7) / 8, (extent_.height + 7) / 8, 1);
+
+  const std::array attachments{input.frame.temporalComposite.image, input.fsrDepth.image,
+      input.fsrMotion.image, input.fsrReactive.image, input.fsrTransparency.image};
+  std::array<VkImageMemoryBarrier2, attachments.size()> barriers{};
+  for (uint32_t i = 0; i < attachments.size(); ++i) {
+    barriers[i] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr,
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, attachments[i],
+        {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+  }
+  VkDependencyInfo inputsReady{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+  inputsReady.imageMemoryBarrierCount = static_cast<uint32_t>(barriers.size());
+  inputsReady.pImageMemoryBarriers = barriers.data();
+  vkCmdPipelineBarrier2(cmd, &inputsReady);
+
+  const auto fsrImage = [this](const AttachmentImage& image) -> FsrImage {
+    return {image.image, image.format, extent_};
+  };
+  const auto result = fsr_->record({.commands = cmd,
+      .color = fsrImage(input.frame.temporalComposite), .depth = fsrImage(input.fsrDepth),
+      .motion = fsrImage(input.fsrMotion), .reactive = fsrImage(input.fsrReactive),
+      .transparency = fsrImage(input.fsrTransparency),
+      .output = {input.fsrOutput.image, input.fsrOutput.format, fsrSettings_.displayExtent},
+      .jitterPixels = fsrJitter_, .cameraNear = p.camera.nearPlane, .cameraFar = p.camera.farPlane,
+      .verticalFovRadians = fsrVerticalFov_, .frameMilliseconds = fsrFrameMilliseconds_,
+      .reset = !state_.valid()});
+  if (result != FsrDispatchResult::Recorded)
+    throw std::runtime_error("Could not record the active Vulkan FSR frame: " + std::string(fsr_->status()));
+
+  // Restore the frame-local resources for the next use of this image. The
+  // SDK leaves the presentation HDR image in GENERAL for post-processing.
+  for (auto& barrier : barriers) {
+    std::swap(barrier.oldLayout, barrier.newLayout);
+    barrier.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+  }
+  vkCmdPipelineBarrier2(cmd, &inputsReady);
+  dependency(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT);
+}
+
 void TemporalManager::commit() {
-  if (!settings_.enabled || resolveRecorded_)
+  if (fsrActive() && resolveRecorded_) fsr_->commit();
+  if ((!settings_.enabled && !fsrActive()) || resolveRecorded_)
     state_.commit();
   else
     state_.reset("temporal pass skipped");
   resolveRecorded_ = false;
+}
+
+VkImageView TemporalManager::outputView(uint32_t image) const {
+  if (fsrActive()) return image < inputs_.size() ? inputs_[image].fsrOutput.view : VK_NULL_HANDLE;
+  return histories_[writeSlot()].color.view;
+}
+
+VkImage TemporalManager::outputImage(uint32_t image) const {
+  if (fsrActive()) return image < inputs_.size() ? inputs_[image].fsrOutput.image : VK_NULL_HANDLE;
+  return histories_[writeSlot()].color.image;
 }
 
 VkImageView TemporalManager::diagnosticView(uint32_t index) const {
@@ -719,6 +919,11 @@ VkImageView TemporalManager::diagnosticView(uint32_t index) const {
 }
 
 uint64_t TemporalManager::memoryBytes() const {
+  if (fsrActive()) {
+    const uint64_t render = uint64_t(extent_.width) * extent_.height;
+    const uint64_t display = uint64_t(fsrSettings_.displayExtent.width) * fsrSettings_.displayExtent.height;
+    return (47u * render + 8u * display) * inputs_.size();
+  }
   return !inputs_.empty() ? uint64_t(extent_.width) * extent_.height *
                                 (40u + 37u * inputs_.size())
                           : 0u;
@@ -745,12 +950,17 @@ uint64_t TemporalManager::allocatedBytes() const {
     add(input.frame.temporalReactive);
     add(input.frame.temporalComposite);
     add(input.frame.temporalDiagnostics);
+    add(input.fsrDepth);
+    add(input.fsrMotion);
+    add(input.fsrReactive);
+    add(input.fsrTransparency);
+    add(input.fsrOutput);
   }
   return bytes;
 }
 
-void registerTemporalPasses(RenderGraphBuilder &graph) {
-  graph.addPass(RenderPassId::TemporalVelocity, {RenderPassId::Lighting},
+void registerTemporalPasses(RenderGraphBuilder& graph, RenderPassId predecessor) {
+  graph.addPass(RenderPassId::TemporalVelocity, {predecessor},
                 [](VkCommandBuffer cmd, const FrameRecordParams &p) {
                   if (p.services.temporalManager)
                     p.services.temporalManager->recordVelocity(cmd, p);
@@ -790,7 +1000,7 @@ VkImageLayout temporalSceneColorLayout(const FrameRecordParams &frame) {
 
 VkImageView temporalSceneColorView(const FrameRecordParams &frame,
                                    VkImageView nativeView) {
-  return needed(frame) ? frame.services.temporalManager->outputView()
+  return needed(frame) ? frame.services.temporalManager->outputView(frame.runtime.imageIndex)
                        : nativeView;
 }
 } // namespace container::renderer

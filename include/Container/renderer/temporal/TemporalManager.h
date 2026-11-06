@@ -3,6 +3,7 @@
 #include "Container/utility/ComputePipeline.h"
 
 #include "Container/renderer/resources/FrameResources.h"
+#include "Container/renderer/temporal/FsrUpscaler.h"
 #include "Container/renderer/temporal/TemporalState.h"
 #include <array>
 #include <filesystem>
@@ -17,6 +18,7 @@ class PipelineManager;
 namespace container::renderer {
 class PreparedGraphicsPipelines;
 struct FrameRecordParams;
+enum class RenderPassId : uint8_t;
 class RenderGraphBuilder;
 class FrameResourceManager;
 
@@ -37,6 +39,13 @@ public:
   const container::temporal::State &state() const { return state_; }
   void createPipelines(const std::filesystem::path &root,
                        VkDescriptorSetLayout sceneLayout, VkFormat depthFormat);
+  [[nodiscard]] bool prepareFsr(const std::filesystem::path& root,
+                                const FsrUpscalerSettings& settings);
+  [[nodiscard]] bool fsrActive() const { return fsr_ && fsr_->available(); }
+  [[nodiscard]] std::string_view fsrStatus() const { return fsrStatus_; }
+  void prepareCamera(container::gpu::CameraData& camera, glm::uvec2 extent,
+                     const container::temporal::Settings& settings,
+                     const glm::mat4& projection, float frameMilliseconds);
   [[nodiscard]] PreparedGraphicsPipelines prepareVelocityReload(const std::filesystem::path& root);
   void publishVelocityReload(PreparedGraphicsPipelines& candidate) noexcept;
   void prepare(FrameResourceManager &frames, VkExtent2D extent,
@@ -48,8 +57,9 @@ public:
   void recordResolve(VkCommandBuffer cmd, const FrameRecordParams &frame);
   void commit();
   void reset(std::string reason) { state_.reset(std::move(reason)); }
-  bool active() const { return settings_.enabled && !inputs_.empty(); }
-  VkImageView outputView() const { return histories_[writeSlot()].color.view; }
+  bool active() const { return (settings_.enabled || fsrActive()) && !inputs_.empty(); }
+  VkImageView outputView(uint32_t image) const;
+  VkImage outputImage(uint32_t image) const;
   VkImageView diagnosticView(uint32_t image) const;
   uint64_t memoryBytes() const;
   uint64_t allocatedBytes() const;
@@ -64,13 +74,19 @@ private:
     FrameResources frame{};
     std::array<VkDescriptorSet, 2> resolve{};
     VkDescriptorSet compose{};
+    VkDescriptorSet fsrInputs{};
+    AttachmentImage fsrDepth, fsrMotion, fsrReactive, fsrTransparency, fsrOutput;
     bool initialized{false};
   };
   uint32_t writeSlot() const {
     return static_cast<uint32_t>(state_.frameId() & 1u);
   }
-  AttachmentImage image(VkFormat format, VkImageUsageFlags usage);
+  AttachmentImage image(VkFormat format, VkImageUsageFlags usage, VkExtent2D extent);
   void destroyImage(AttachmentImage &image);
+  void destroyFrameImages();
+  void createFsrPipeline(const std::filesystem::path& root);
+  void updateFsrDescriptors(const Input& input);
+  void recordFsr(VkCommandBuffer cmd, const FrameRecordParams& frame, const Input& input);
   std::shared_ptr<container::gpu::VulkanDevice> device_;
   container::gpu::AllocationManager &allocator_;
   container::gpu::PipelineManager &pipelines_;
@@ -79,9 +95,17 @@ private:
   std::array<History, 2> histories_{};
   std::vector<Input> inputs_;
   VkExtent2D extent_{};
+  std::unique_ptr<FsrUpscaler> fsr_;
+  FsrUpscalerSettings fsrSettings_{};
+  std::string fsrStatus_{"native resolution"};
+  std::array<float, 2> fsrJitter_{};
+  float fsrVerticalFov_{}, fsrFrameMilliseconds_{};
   VkDescriptorSetLayout resolveSetLayout_{}, composeSetLayout_{};
+  VkDescriptorSetLayout fsrInputsSetLayout_{};
   VkPipelineLayout resolveLayout_{}, composeLayout_{}, velocityLayout_{};
+  VkPipelineLayout fsrInputsLayout_{};
   container::gpu::ComputePipeline resolvePipeline_{}, composePipeline_{};
+  container::gpu::ComputePipeline fsrInputsPipeline_{};
   std::array<VkPipeline, 3> velocityPipelines_{};
   VkFormat velocityDepthFormat_{VK_FORMAT_UNDEFINED};
   VkDescriptorPool pool_{};
@@ -89,7 +113,7 @@ private:
   bool resolveRecorded_{false};
 };
 
-void registerTemporalPasses(RenderGraphBuilder &graph);
+void registerTemporalPasses(RenderGraphBuilder& graph, RenderPassId predecessor);
 VkImageLayout temporalSceneColorLayout(const FrameRecordParams &frame);
 VkImageView temporalSceneColorView(const FrameRecordParams &frame,
                                    VkImageView nativeView);

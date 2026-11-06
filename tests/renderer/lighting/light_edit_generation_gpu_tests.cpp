@@ -17,8 +17,8 @@ namespace {
 using namespace container::renderer;
 using V=tinygltf::Value;using O=V::Object;using A=V::Array;
 using Probe=std::array<glm::uvec4,14>;
-static_assert(sizeof(LightingData)==5*sizeof(glm::uvec4));
-static_assert(sizeof(PointLightData)==4*sizeof(glm::uvec4));
+static_assert(offsetof(LightingData, environmentOrientation)==5*sizeof(glm::uvec4));
+static_assert(sizeof(PointLightData)==6*sizeof(glm::uvec4));
 static_assert(sizeof(AreaLightData)==5*sizeof(glm::uvec4));
 glm::uvec4 bits(const glm::vec4& value) {glm::uvec4 out;std::memcpy(&out,&value,sizeof(out));return out;}
 glm::vec4 floats(const glm::uvec4& value) {glm::vec4 out;std::memcpy(&out,&value,sizeof(out));return out;}

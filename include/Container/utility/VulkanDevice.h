@@ -17,6 +17,7 @@ struct DeviceCreateInfo {
   bool enableRayQueries{false}; // Optional: never disqualifies a raster device.
   bool enableOpacityMicromaps{false};
   bool enableReferenceOidn{false};
+  bool enableFsrUpscaling{false};
   VkPhysicalDeviceFeatures enabledFeatures{};  // Required features.
   VkPhysicalDeviceFeatures optionalFeatures{}; // Enabled when supported.
   const void* next{nullptr};
@@ -61,6 +62,7 @@ class VulkanDevice {
   [[nodiscard]] bool opacityMicromapsEnabled() const noexcept { return opacityMicromapsEnabled_; }
   [[nodiscard]] bool referenceOidnEnabled() const noexcept { return referenceOidnEnabled_; }
   [[nodiscard]] bool referenceOidnCooperativeMatrix() const noexcept { return referenceOidnCooperativeMatrix_; }
+  [[nodiscard]] bool fsrUpscalingEnabled() const noexcept { return fsrUpscalingEnabled_; }
 
  private:
   bool isDeviceSuitable(VkPhysicalDevice device) const;
@@ -89,6 +91,7 @@ class VulkanDevice {
   bool opacityMicromapsEnabled_{false};
   bool referenceOidnEnabled_{false};
   bool referenceOidnCooperativeMatrix_{false};
+  bool fsrUpscalingEnabled_{false};
 };
 
 }  // namespace container::gpu

@@ -26,6 +26,7 @@
 #include "Container/renderer/lighting/DdgiProbeVolume.h"
 #include "Container/renderer/lighting/DdgiSceneChanges.h"
 #include "Container/renderer/pathtracing/ReferenceOidnSettings.h"
+#include "Container/renderer/temporal/FsrMode.h"
 #include "Container/renderer/picking/RenderSurfaceInteractionController.h"
 #include "Container/renderer/resources/RenderResources.h"
 #include "Container/renderer/scene/DrawCommand.h"
@@ -119,6 +120,8 @@ class GltfDeformationPass;
 class GpuHierarchyPass;
 class RayInstanceTransformPass;
 class PbrAuxiliaryPass;
+class ScreenReflectionPass;
+class VolumetricFogPass;
 struct VulkanContextResult;
 } // namespace container::renderer
 
@@ -185,7 +188,7 @@ public:
   // Capture the next submitted frame as an sRGB PNG or scene-linear EXR.
   void requestScreenshot(std::filesystem::path outputPath, bool viewportOnly = false,
                          std::optional<uint32_t> referenceSampleTarget = std::nullopt);
-  void saveSceneModel(const std::filesystem::path& outputPath);
+  void saveSceneModel(const std::filesystem::path& outputPath, bool keepLinks = false);
   bool selectMaterialVariant(std::optional<size_t> variant,bool recordHistory=true);
   void applyTemporalCapture(const container::temporal::CaptureSample &sample);
   [[nodiscard]] bool comfyUiCapturePending() const;
@@ -298,6 +301,16 @@ private:
   container::capture::Journal gfxJournal_;
   [[nodiscard]] nlohmann::json captureTelemetry() const;
   std::optional<float> captureExposure_{};
+  std::optional<FsrMode> captureFsrMode_{};
+  struct FsrResourceRequest {
+    FsrMode mode{};
+    bool eligible{};
+    bool infiniteFar{};
+    bool operator==(const FsrResourceRequest&) const = default;
+  };
+  FsrResourceRequest fsrResourceRequest_{};
+  std::string fsrViewportStatus_{};
+  float temporalFrameMilliseconds_{1000.0f / 60.0f};
   std::optional<glm::vec4> captureSectionPlane_{};
   std::optional<uint32_t> captureBimHiddenObject_{};
   std::optional<int> captureBimLodBias_{};
@@ -333,6 +346,8 @@ private:
     std::unique_ptr<GpuHierarchyPass> gpuHierarchyPass;
     std::unique_ptr<RayInstanceTransformPass> gpuRayInstancePass;
     std::unique_ptr<PbrAuxiliaryPass> pbrAuxiliaryPass;
+    std::unique_ptr<ScreenReflectionPass> screenReflectionPass;
+    std::unique_ptr<VolumetricFogPass> volumetricFogPass;
     std::unique_ptr<CameraController> cameraController;
     std::unique_ptr<LightingManager> lightingManager;
     std::unique_ptr<ShadowCullManager> shadowCullManager;
@@ -818,6 +833,9 @@ private:
   void createSceneBuffers();
   void createGeometryBuffers();
   void createFrameResources();
+  [[nodiscard]] VkExtent2D sceneRenderExtent() const;
+  [[nodiscard]] FsrResourceRequest currentFsrResourceRequest() const;
+  void reconcileFsrResources();
   void ensureCameraBuffers();
   void ensureObjectBuffers();
   void syncSceneProviders();

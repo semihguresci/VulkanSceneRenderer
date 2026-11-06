@@ -561,10 +561,13 @@ float4 fragMain(VSOutput input) : SV_Target0
 
     if (outputMode >= 100u && outputMode <= 104u) {
         if (uCamera.temporalInfo.w == 0u) return float4(0.0, 0.0, 0.0, 1.0);
-        float4 diagnostic = temporalDiagnostics.Load(int3(pixelCoord, 0));
+        uint2 renderExtent;
+        temporalDiagnostics.GetDimensions(renderExtent.x, renderExtent.y);
+        uint2 renderPixel = min(uint2(screenUV * float2(renderExtent)), renderExtent - 1u);
+        float4 diagnostic = temporalDiagnostics.Load(int3(renderPixel, 0));
         if (outputMode == 100u) {
-            float4 motion = temporalMotion.Load(int3(pixelCoord, 0));
-            return float4(motion.w > 0.5 ? saturate(float3(0.5.xx + motion.xy * float2(width, height) / 16.0, 0.5)) : float3(1,0,1), 1);
+            float4 motion = temporalMotion.Load(int3(renderPixel, 0));
+            return float4(motion.w > 0.5 ? saturate(float3(0.5.xx + motion.xy * float2(renderExtent) / 16.0, 0.5)) : float3(1,0,1), 1);
         }
         if (outputMode == 101u) return float4(diagnostic.xxx, 1);
         if (outputMode == 102u) {

@@ -128,7 +128,8 @@ class FrameResourceManager {
               RenderingPassHandle                             transformGizmoPass,
               VkSampleCountFlagBits                    msaaSampleCount,
               std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
-              const container::gpu::AllocatedBuffer& objectBuffer);
+              const container::gpu::AllocatedBuffer& objectBuffer,
+              VkExtent2D sceneExtent = {});
 
   void destroy();
   void ensureTemporalAttachments();
@@ -184,6 +185,7 @@ class FrameResourceManager {
   [[nodiscard]] uint32_t frameCount() const {
     return static_cast<uint32_t>(frames_.size());
   }
+  [[nodiscard]] VkExtent2D sceneExtent() const { return sceneExtent_; }
   [[nodiscard]] const FrameResourceRegistry& resourceRegistry() const {
     return resourceRegistry_;
   }
@@ -193,6 +195,7 @@ class FrameResourceManager {
   void setPostProcessColorSource(uint32_t imageIndex,VkImageView,VkImageLayout);
 
  private:
+  VkExtent2D sceneExtent_{};
   AttachmentImage createAttachment(VkFormat fmt, VkImageUsageFlags usage,
                                    VkImageAspectFlags aspect,
                                    VkSampleCountFlagBits samples =

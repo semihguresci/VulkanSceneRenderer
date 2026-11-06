@@ -21,10 +21,12 @@
 #include "Container/geometry/GltfMaterialExport.h"
 #include "Container/geometry/GltfMaterialTextureAuthoring.h"
 #include "Container/geometry/GltfImageSources.h"
+#include "Container/geometry/GltfIesProfiles.h"
 #include "Container/geometry/GltfMaterialExportCompaction.h"
 #include "Container/geometry/GltfNodeFlags.h"
 #include "Container/geometry/GltfNodeExportCompaction.h"
 #include "Container/geometry/GltfSceneExport.h"
+#include "Container/geometry/GltfLinkedAssets.h"
 #include "Container/geometry/Mesh.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/PipelineManager.h"
@@ -119,6 +121,7 @@ container::geometry::GltfLoadResult prepareDefaultSceneGltfAsset(
       "KHR_node_visibility", "KHR_node_selectability", "KHR_node_hoverability",
       "KHR_interactivity",
       "KHR_lights_punctual", "KHR_lights_area", "EXT_lights_area", "WEBGI_lights_area",
+      "EXT_lights_ies",
       "KHR_xmp_json_ld",
   };
   return prepareSceneGltfAsset(path, std::move(options));
@@ -874,6 +877,46 @@ container::gpu::GpuMaterial makeGpuMaterial(
 
 }  // namespace
 
+struct SceneManager::IesGpuProfileCache {
+  explicit IesGpuProfileCache(container::gpu::AllocationManager& allocation) : allocator(allocation) {}
+  ~IesGpuProfileCache() {
+    for (auto& [key, entry] : entries) allocator.destroyBuffer(entry.buffer);
+  }
+
+  VkDeviceAddress address(const std::string& uri, VkDevice device) {
+    if (const auto found = entries.find(uri); found != entries.end()) return found->second.address;
+    const auto data = container::geometry::gltf::ParseIesProfile(
+        container::geometry::gltf::DecodeGltfIesProfileUri(uri)).packedForGpu();
+    const auto bytes = data.size() * sizeof(float);
+    constexpr size_t capacity = 32 * 1024 * 1024;
+    if (entries.size() >= 256 || uri.size() + bytes > capacity - usedBytes)
+      throw std::length_error("IES profile cache exceeded its resident budget");
+    Entry entry;
+    entry.buffer = allocator.createBuffer(bytes,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT);
+    try {
+      writeHostVisibleBuffer(allocator, entry.buffer, data.data(), bytes);
+      VkBufferDeviceAddressInfo info{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+      info.buffer = entry.buffer.buffer;
+      entry.address = vkGetBufferDeviceAddress(device, &info);
+      if (!entry.address) throw std::runtime_error("IES profile buffer has no device address");
+      entries.emplace(uri, entry);
+    } catch (...) {
+      allocator.destroyBuffer(entry.buffer);
+      throw;
+    }
+    usedBytes += uri.size() + bytes;
+    return entry.address;
+  }
+
+  struct Entry { container::gpu::AllocatedBuffer buffer; VkDeviceAddress address{}; };
+  container::gpu::AllocationManager& allocator;
+  std::map<std::string, Entry, std::less<>> entries;
+  size_t usedBytes{};
+};
+
 SceneManager::SceneManager(
     container::gpu::AllocationManager& allocationManager,
     container::gpu::PipelineManager& pipelineManager,
@@ -882,7 +925,8 @@ SceneManager::SceneManager(
     : allocationManager_(&allocationManager),
       pipelineManager_(&pipelineManager),
       deviceWrapper_(std::move(deviceWrapper)),
-      config_(config) {
+      config_(config),
+      iesProfileCache_(std::make_shared<IesGpuProfileCache>(allocationManager)) {
   // Scratch is not an exported glTF asset. Keep its empty payload canonical
   // before and after move-assignment exchanges, including resident-byte counts.
   modelExchangeScratch_.asset.version.clear();
@@ -1888,11 +1932,88 @@ void SceneManager::rememberExportMaterials(
 
 void SceneManager::saveScene(const SceneGraph& graph,
                              const std::filesystem::path& destination) const {
+  validateSceneExportDestination(destination);
   auto output=buildSceneExport(graph);
   const auto retired=retiredSceneExportNodes(graph);
   if(!retired.empty()) output=container::geometry::gltf::CompactGltfExportNodes(output,retired).model;
   compactRetiredMaterialExport(output);
   container::geometry::gltf::writeExportModel(output, destination);
+}
+
+void SceneManager::validateSceneExportDestination(const std::filesystem::path& destination) const {
+  if (linkedComposition_)
+    container::geometry::gltf::ValidateGltfLinkedExportDestination(*linkedComposition_, destination);
+}
+
+struct SceneManager::LinkedSceneBaseline {
+  std::vector<SceneNode> nodes;
+  uint64_t graph{}, geometry{}, material{}, authoredMaterial{}, materialResources{}, camera{};
+};
+
+void SceneManager::captureLinkedSceneBaseline(const SceneGraph& graph) {
+  linkedSceneBaseline_.reset();
+  if (!linkedComposition_ || !gltfModel_.animations.empty() ||
+      gltfModel_.extensions.contains("KHR_interactivity")) return;
+  constexpr size_t maxBytes = 64 * 1024 * 1024;
+  size_t bytes = graph.nodeCount() * sizeof(SceneNode);
+  for (uint32_t id = 0; id < graph.nodeCount() && bytes <= maxBytes; ++id) {
+    const auto& node = *graph.getNode(id);
+    bytes += node.name.size() + node.children.size() * sizeof(uint32_t);
+  }
+  if (bytes > maxBytes) return;
+  auto baseline = std::make_shared<LinkedSceneBaseline>();
+  baseline->nodes.reserve(graph.nodeCount());
+  for (uint32_t id = 0; id < graph.nodeCount(); ++id)
+    baseline->nodes.push_back(*graph.getNode(id));
+  baseline->graph = graph.identity();
+  baseline->geometry = geometryRevision_;
+  baseline->material = materialRevision_;
+  baseline->authoredMaterial = authoredMaterialRevision_;
+  baseline->materialResources = materialResourceRevision_;
+  baseline->camera = cameraEvaluationRevision_;
+  linkedSceneBaseline_ = std::move(baseline);
+}
+
+void SceneManager::saveLinkedScene(const SceneGraph& graph,
+    const std::filesystem::path& destination) const {
+  using namespace container::geometry::gltf;
+  if (!linkedComposition_) throw std::runtime_error("The primary scene has no retained linked asset manifest");
+  if (!linkedSceneBaseline_)
+    throw std::runtime_error("Linked save requires a static scene within the linked authoring budget. Use portable Save As.");
+  const auto& baseline = *linkedSceneBaseline_;
+  const auto refuseEdits = [] {
+    throw std::runtime_error("Linked save can retain primary node transforms and names. Use portable Save As for other scene edits.");
+  };
+  if (baseline.graph != graph.identity() || baseline.nodes.size() != graph.nodeCount() ||
+      baseline.geometry != geometryRevision_ || baseline.material != materialRevision_ ||
+      baseline.authoredMaterial != authoredMaterialRevision_ || baseline.materialResources != materialResourceRevision_ ||
+      baseline.camera != cameraEvaluationRevision_) refuseEdits();
+  const auto fixedFields = [](const SceneNode& node) {
+    return std::tie(node.parent, node.children, node.materialIndex, node.primitiveIndex, node.sourceNodeIndex,
+        node.editorSceneRoot, node.meshOwnerGraphNode, node.renderable, node.visible, node.sourceMeshIndex,
+        node.sourcePrimitiveIndex, node.sourceInstanceIndex, node.selectable, node.hoverable,
+        node.interactionRootBoundary, node.retired);
+  };
+  std::vector<GltfLinkedPlacementEdit> edits;
+  for (uint32_t id = 0; id < graph.nodeCount(); ++id) {
+    const auto& current = *graph.getNode(id);
+    const auto& original = baseline.nodes[id];
+    if (fixedFields(current) != fixedFields(original)) refuseEdits();
+    const bool renamed = current.name != original.name;
+    const bool moved = current.localTransform != original.localTransform;
+    if (!renamed && !moved) continue;
+    if (current.sourceNodeIndex < 0 || size_t(current.sourceNodeIndex) >= linkedComposition_->primaryNodes) refuseEdits();
+    GltfLinkedPlacementEdit edit{current.sourceNodeIndex};
+    if (renamed) edit.name = current.name;
+    if (moved) {
+      auto& matrix = edit.matrix.emplace();
+      for (int column = 0; column < 4; ++column)
+        for (int row = 0; row < 4; ++row)
+          matrix[size_t(column * 4 + row)] = current.localTransform[column][row];
+    }
+    edits.push_back(std::move(edit));
+  }
+  writeLinkedSceneManifest(*linkedComposition_, edits, selectedScene_, destination);
 }
 
 void SceneManager::compactRetiredMaterialExport(tinygltf::Model& detached) const {
@@ -2556,7 +2677,8 @@ void SceneManager::createDescriptorSetLayout() {
                  nullptr};
 
   bindings[3] = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
+                     VK_SHADER_STAGE_COMPUTE_BIT,
                  nullptr};
 
   bindings[4] = {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
@@ -2817,6 +2939,7 @@ void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
   exportMaterialTextureBindings_.clear();
   exportTextureIndices_.clear();
   authoredPointLights_.clear();
+  iesProfileAddresses_.clear();
   authoredDirectionalLights_.clear();
   authoredAreaLights_.clear();
   authoredPointBindings_.clear();
@@ -2853,6 +2976,7 @@ void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
       selectedScene_=config_.gltfSceneIndex>=0 ? size_t(config_.gltfSceneIndex) : catalog.defaultScene;
       sceneCatalog_=std::move(catalog);
       gltfModel_ = std::move(result.gltfModel);
+      linkedComposition_ = std::move(result.linkedComposition);
       if(!gltfModel_.scenes.empty()) gltfModel_.defaultScene=int(selectedScene_);
       gltfInstancing_ = std::move(result.instancing);
       model_ = std::move(result.model);
@@ -3055,6 +3179,7 @@ void SceneManager::appendSceneAsset(
 }
 
 void SceneManager::collectAuthoredPunctualLights(const SceneGraph* graph) {
+  if (iesProfileAddresses_.empty()) prepareIesProfileAddresses();
   auto lights = evaluateAuthoredSceneLights(graph, selectedScene_);
   authoredPointLights_ = std::move(lights.points);
   authoredDirectionalLights_ = std::move(lights.directionals);
@@ -3062,6 +3187,22 @@ void SceneManager::collectAuthoredPunctualLights(const SceneGraph* graph) {
   authoredPointBindings_ = std::move(lights.pointBindings);
   authoredDirectionalBindings_ = std::move(lights.directionalBindings);
   authoredAreaBindings_ = std::move(lights.areaBindings);
+}
+
+void SceneManager::prepareIesProfileAddresses() {
+  using container::geometry::gltf::GltfIesEmbeddedProfileUri;
+  if (!deviceWrapper_->enabledVulkan12Features().bufferDeviceAddress) return;
+  for (size_t index = 0; const auto* uri = GltfIesEmbeddedProfileUri(gltfModel_, index); ++index) {
+    VkDeviceAddress address{};
+    try {
+      address = iesProfileCache_->address(*uri, deviceWrapper_->device());
+    } catch (const std::exception& error) {
+      std::println(stderr, "EXT_lights_ies profile {} uses punctual fallback: {}", index, error.what());
+      if (std::ranges::find(gltfModel_.extensionsRequired, container::geometry::gltf::kGltfIesExtension) !=
+          gltfModel_.extensionsRequired.end()) throw;
+    }
+    iesProfileAddresses_.push_back(address);
+  }
 }
 
 AuthoredSceneLights SceneManager::evaluateAuthoredSceneLights(
@@ -3155,7 +3296,25 @@ AuthoredSceneLights SceneManager::evaluateAuthoredSceneLights(
   for (const auto& [nodeIndex, sceneLocalTransform] : lightNodes) {
         const auto& node = gltfModel_.nodes[size_t(nodeIndex)];
 
-        if (node.light >= 0 &&
+        using namespace container::geometry::gltf;
+        bool authoredIes = false;
+        if (const auto profile = node.extensions.find(kGltfIesExtension);
+            profile != node.extensions.end() && !iesProfileAddresses_.empty()) {
+          const auto binding = ParseGltfIesBinding(profile->second, iesProfileAddresses_.size());
+          if (const auto address = iesProfileAddresses_[binding.profile]) {
+            container::gpu::PointLightData light;
+            light.positionRadius = glm::vec4(glm::vec3(sceneLocalTransform[3]), 0.0f);
+            light.colorIntensity = glm::vec4(binding.color[0], binding.color[1], binding.color[2], binding.multiplier);
+            light.directionInnerCos = glm::vec4(gltfDirectionalLightDirection(sceneLocalTransform), 1.0f);
+            light.iesTangent = glm::vec4(gltfAreaLightTangent(sceneLocalTransform), 1.0f);
+            light.iesProfileAddress = address;
+            result.points.push_back(light);
+            result.pointBindings.push_back({nodeIndex, kGltfIesExtension});
+            authoredIes = true;
+          }
+        }
+
+        if (!authoredIes && node.light >= 0 &&
             node.light < static_cast<int>(gltfModel_.lights.size())) {
           const tinygltf::Light& lightDefinition =
               gltfModel_.lights[static_cast<size_t>(node.light)];
@@ -3822,6 +3981,8 @@ void SceneManager::writeMaterialDescriptorSetContents(
 
 void SceneManager::resetLoadedAssets() {
   opacityMicromapState_.reset();
+  linkedComposition_.reset();
+  linkedSceneBaseline_.reset();
   if(cameraProjectionRevision_==UINT64_MAX) throw std::overflow_error("Camera publication revision exhausted");
   cameraProjectionNamespace_.reset();++cameraProjectionRevision_;
   if(materialResourceRevision_==UINT64_MAX) throw std::overflow_error("Material resource revision exhausted");
@@ -3872,6 +4033,7 @@ void SceneManager::resetLoadedAssets() {
   materialBaseColor_ = glm::vec4(1.0f);
   modelBounds_ = ModelBounds{};
   authoredPointLights_.clear();
+  iesProfileAddresses_.clear();
   authoredDirectionalLights_.clear();
   authoredAreaLights_.clear();
   authoredPointBindings_.clear();

@@ -32,6 +32,11 @@ VkExtent2D DeferredRasterFrameGraphContext::swapchainExtent() const {
              : VkExtent2D{};
 }
 
+VkExtent2D DeferredRasterFrameGraphContext::sceneExtent(const FrameRecordParams &p) const {
+  return p.runtime.sceneExtent.width && p.runtime.sceneExtent.height
+      ? p.runtime.sceneExtent : swapchainExtent();
+}
+
 container::ui::GBufferViewMode
 DeferredRasterFrameGraphContext::displayMode() const {
   const auto fallbackDisplayMode = services_.fallbackDisplayMode.value_or(
@@ -136,9 +141,9 @@ DeferredRasterFrameGraphContext::debugOverlay() const {
 }
 
 DeferredRasterLightingPassRecorder
-DeferredRasterFrameGraphContext::lightingPassRecorder() const {
+DeferredRasterFrameGraphContext::lightingPassRecorder(const FrameRecordParams &p) const {
   return DeferredRasterLightingPassRecorder(
-      {.framebufferExtent = swapchainExtent(),
+      {.framebufferExtent = sceneExtent(p),
        .lightingManager = services_.lightingManager,
        .sceneController = services_.sceneController,
        .camera = services_.camera,

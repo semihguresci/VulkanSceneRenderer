@@ -320,6 +320,7 @@ void printCommandLineHelp() {
   --display-mode NAME           Display mode (--render-mode is an alias)
   --msaa N                     MSAA sample count
   --taa / --no-taa              Enable/disable temporal antialiasing
+  --fsr MODE                    Vulkan FSR native, quality, balanced, or performance
   --taa-history-weight F        History blend [0,0.98]
   --taa-depth-absolute F         Absolute depth tolerance [0,1000]
   --taa-depth-relative F         Relative depth tolerance [0,1]
@@ -333,6 +334,13 @@ void printCommandLineHelp() {
   --no-ray-shadow-denoise        Disable ray shadow denoising
   --no-ray-query                Disable optional ray queries
   --experimental-opacity-micromaps Enable authored glTF micromaps on compatible ray-query devices
+  --screen-reflections MODE         off, low, high, confidence, distance, or source (deferred raster)
+  --screen-reflections-ray-query   Trace off-screen reflection misses on ray-query devices
+  --volumetric-fog MODE            off, low, high, transmittance, or scattering
+  --fog-density N                 Fog extinction density in inverse scene units
+  --fog-albedo N                  Fog scattering albedo [0,1]
+  --fog-anisotropy N              Fog phase anisotropy [-0.9,0.9]
+  --fog-distance N                Maximum fog integration distance
   --area-lighting sampled|ltc    Area light integration mode
   --area-light-samples 9|25|64    Sampled area light count
   --area-shadow-quality N        Raster area shadow quality [0,3]
@@ -419,6 +427,7 @@ void printCommandLineHelp() {
   --screenshot-viewport         Omit editor overlays from PNG capture
   --gpu-hardware-telemetry      Add optional NVML readings to capture telemetry
   --save-scene PATH              Save primary editable scene as .glb or .gltf
+  --save-linked-scene PATH       Save a companion .gltf with retained URI links
   --gltf-variant N               Select material variant N (zero based; -1 Default)
   --gltf-scene N                 Select glTF scene N (zero based; authored default otherwise)
   --experimental-gltf-linked-assets Enable the pinned glTF 2.1 URI-only linked asset profile
@@ -802,8 +811,48 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     }
     return true;
   };
+  const auto parseRasterEffectsOption = [&](std::string_view arg, int& i) {
+    if (arg == "--fsr") {
+      const auto mode = container::renderer::parseFsrMode(requireValue(argc, argv, i, arg));
+      if (!mode) throw std::invalid_argument("--fsr expects native, quality, balanced, or performance");
+      config.fsrMode = *mode;
+    } else if (arg == "--screen-reflections") {
+      using Mode = container::renderer::ScreenReflectionMode;
+      const auto mode = requireValue(argc, argv, i, arg);
+      if (mode == "off") config.screenReflections = Mode::Off;
+      else if (mode == "low") config.screenReflections = Mode::Low;
+      else if (mode == "high") config.screenReflections = Mode::High;
+      else if (mode == "confidence") config.screenReflections = Mode::Confidence;
+      else if (mode == "distance") config.screenReflections = Mode::Distance;
+      else if (mode == "source") config.screenReflections = Mode::Source;
+      else throw std::invalid_argument("--screen-reflections expects off, low, high, confidence, distance, or source");
+    } else if (arg == "--screen-reflections-ray-query") {
+      config.screenReflectionRayFallback = true;
+    } else if (arg == "--volumetric-fog") {
+      using Mode = container::renderer::VolumetricFogMode;
+      const auto mode = requireValue(argc, argv, i, arg);
+      if (mode == "off") config.volumetricFog.mode = Mode::Off;
+      else if (mode == "low") config.volumetricFog.mode = Mode::Low;
+      else if (mode == "high") config.volumetricFog.mode = Mode::High;
+      else if (mode == "transmittance") config.volumetricFog.mode = Mode::Transmittance;
+      else if (mode == "scattering") config.volumetricFog.mode = Mode::Scattering;
+      else throw std::invalid_argument("--volumetric-fog expects off, low, high, transmittance, or scattering");
+    } else if (arg == "--fog-density") {
+      config.volumetricFog.density = parseFloat(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == "--fog-albedo") {
+      config.volumetricFog.albedo = parseFloat(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == "--fog-anisotropy") {
+      config.volumetricFog.anisotropy = parseFloat(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == "--fog-distance") {
+      config.volumetricFog.distance = parseFloat(requireValue(argc, argv, i, arg), arg);
+    } else {
+      return false;
+    }
+    return true;
+  };
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i] ? std::string_view(argv[i]) : "";
+    if (parseRasterEffectsOption(arg, i)) continue;
     if (parseExtendedPreviewOption(arg,i))continue;
     if (parseVolumeOption(arg, i)) continue;
     if (parseReferencePathOption(arg, i)) continue;
@@ -1064,8 +1113,9 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     } else if (arg == "--visual-regression-capture" || arg == "--screenshot") {
       config.screenshotCapturePath =
           std::string(requireValue(argc, argv, i, arg));
-    } else if (arg == "--save-scene") {
+    } else if (arg == "--save-scene" || arg == "--save-linked-scene") {
       config.sceneExportPath = std::string(requireValue(argc, argv, i, arg));
+      config.sceneExportKeepLinks = arg == "--save-linked-scene";
     } else if (arg == "--animation-clip") {
       const auto clip = parseUint(requireValue(argc, argv, i, arg), arg);
       if (clip > uint32_t(std::numeric_limits<int>::max()))
@@ -1331,6 +1381,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
   }
 
   container::temporal::validateSettings(config.taa, config.msaaSamples);
+  if (!config.volumetricFog.valid())
+    throw std::invalid_argument("Fog density must be in [0,4], albedo [0,1], anisotropy [-0.9,0.9], and distance [0.5,5000]");
   if (!config.pathSampleSeries.empty()) {
     if (config.pathTargetMs > 0.0f)
       throw std::invalid_argument("--path-target-ms cannot be combined with --path-sample-series");

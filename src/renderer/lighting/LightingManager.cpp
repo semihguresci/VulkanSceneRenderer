@@ -83,7 +83,8 @@ bool poseMatrix(const glm::mat4& a,const glm::mat4& b) noexcept {
 }
 bool posePayload(const PointLightData& a,const PointLightData& b) noexcept {
   return poseVector(a.positionRadius,b.positionRadius) && poseVector(a.colorIntensity,b.colorIntensity) &&
-      poseVector(a.directionInnerCos,b.directionInnerCos) && poseVector(a.coneOuterCosType,b.coneOuterCosType);
+      poseVector(a.directionInnerCos,b.directionInnerCos) && poseVector(a.coneOuterCosType,b.coneOuterCosType) &&
+      poseVector(a.iesTangent,b.iesTangent) && a.iesProfileAddress==b.iesProfileAddress;
 }
 bool posePayload(const AreaLightData& a,const AreaLightData& b) noexcept {
   return poseVector(a.positionRange,b.positionRange) && poseVector(a.colorIntensity,b.colorIntensity) && poseVector(a.directionType,b.directionType) &&
@@ -116,7 +117,8 @@ bool poseEditable(const std::optional<EditableLightEntity>& a,const std::optiona
       poseVector(a->tangent,b->tangent) && poseVector(a->bitangent,b->bitangent) && poseVector(a->color,b->color) &&
       poseFloat(a->intensity,b->intensity) && poseFloat(a->range,b->range) && poseFloat(a->innerConeDegrees,b->innerConeDegrees) &&
       poseFloat(a->outerConeDegrees,b->outerConeDegrees) && poseVector(a->areaHalfSize,b->areaHalfSize) &&
-      poseFloat(a->areaShape,b->areaShape) && a->selected==b->selected && a->editable==b->editable;
+      poseFloat(a->areaShape,b->areaShape) && a->iesProfileAddress==b->iesProfileAddress &&
+      a->selected==b->selected && a->editable==b->editable;
 }
 bool poseData(const LightingData& a,const LightingData& b) noexcept {
   return poseVector(a.directionalDirection,b.directionalDirection) && poseVector(a.directionalColorIntensity,b.directionalColorIntensity) &&
@@ -704,7 +706,8 @@ LightingManager::PreparedGeneration LightingManager::prepareGenerationImpl(
       !std::isfinite(next.lightingData_.bounceIntensity)) reject("evaluated lighting is nonfinite");
   for (const auto& light : next.pointLightsSsbo_)
     if (!finite4(light.positionRadius) || !finite4(light.colorIntensity) ||
-        !finite4(light.directionInnerCos) || !finite4(light.coneOuterCosType))
+        !finite4(light.directionInnerCos) || !finite4(light.coneOuterCosType) || !finite4(light.iesTangent) ||
+        (light.iesTangent.w != 0.0f) != (light.iesProfileAddress != 0))
       reject("evaluated point lighting is nonfinite");
   for (const auto& light : next.areaLightsSsbo_)
     if (!finite4(light.positionRange) || !finite4(light.colorIntensity) ||
@@ -1499,7 +1502,7 @@ void LightingManager::appendAuthoredPointLights(
         glm::vec3(anchor.sceneTransform *
                   glm::vec4(glm::vec3(authoredLight.positionRadius), 1.0f)),
         authoredLight.positionRadius.w);
-    if (authoredLight.coneOuterCosType.y >= 0.5f) {
+    if (authoredLight.coneOuterCosType.y >= 0.5f || authoredLight.iesProfileAddress) {
       const glm::vec3 fallbackDirection =
           normalizeOr(glm::vec3(authoredLight.directionInnerCos),
                       glm::vec3(0.0f, 0.0f, -1.0f));
@@ -1510,6 +1513,12 @@ void LightingManager::appendAuthoredPointLights(
           fallbackDirection);
       light.directionInnerCos =
           glm::vec4(worldDirection, authoredLight.directionInnerCos.w);
+      if (authoredLight.iesProfileAddress) {
+        const glm::vec3 tangent = glm::vec3(anchor.sceneTransform * glm::vec4(glm::vec3(authoredLight.iesTangent), 0.0f));
+        const glm::vec3 axis = std::abs(worldDirection.x) < 0.99f ? glm::vec3(1, 0, 0) : glm::vec3(0, 1, 0);
+        const glm::vec3 fallback = glm::normalize(axis - worldDirection * glm::dot(axis, worldDirection));
+        light.iesTangent = glm::vec4(normalizeOr(tangent - worldDirection * glm::dot(tangent, worldDirection), fallback), 1.0f);
+      }
     }
     pointLightsSsbo_.push_back(light);
   }
@@ -1783,8 +1792,13 @@ void LightingManager::applyEditableLightOverrides(
         const size_t count = std::min(
             {sourcePointCount, pointLightsSsbo_.size(), overrides.size()});
         for (size_t i = 0; i < count; ++i) {
-          if (overrides[i]) {
-            pointLightsSsbo_[i] = *overrides[i];
+          if (!overrides[i]) continue;
+          auto& light = pointLightsSsbo_[i];
+          const auto& edited = *overrides[i];
+          if (light.iesProfileAddress) {
+            if (edited.iesProfileAddress == light.iesProfileAddress) light.colorIntensity = edited.colorIntensity;
+          } else if (!edited.iesProfileAddress) {
+            light = edited;
           }
         }
       };
@@ -2698,6 +2712,9 @@ LightingManager::PreparedLightEdit LightingManager::prepareLightEditImpl(const L
   if(limits.maxPreparedCpuBytes<sizeof(PreparedLightEdit::State)+4096+
       editableLights_.size()*(sizeof(LightEditIdentityState::Row)+64)) throw std::invalid_argument("Light edit identity admission exceeds its CPU budget");
   const auto snapshot=lightEditSnapshot(target.id);if(!snapshot.available||snapshot.target!=target) throw std::invalid_argument("The selected light request is stale");
+  if (patch && snapshot.light.iesProfileAddress &&
+      (patch->fields & (LightEditFieldBit(LightEditField::Position) | LightEditFieldBit(LightEditField::Range))))
+    throw std::invalid_argument("Edit the IES fixture transform through its source node. Its range is unbounded.");
   LightingGraphPoseGenerationLimits capacity;capacity.maxPreparedCpuBytes=limits.maxPreparedCpuBytes;capacity.maxPreparedGpuBytes=limits.maxPreparedGpuBytes;
   PoseLightBudget budget{capacity};budget.add(sizeof(PreparedLightEdit::State)+4096);
   budget.add(pointLightsSsbo_.size(),sizeof(PointLightData)+sizeof(EditableLightEntity)+256);

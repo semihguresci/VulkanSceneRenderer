@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/renderer/temporal/FsrMode.h"
+
 #include "Container/physics/PhysicsWorld.h"
 #include "Container/geometry/GltfMergePlacement.h"
 #include "Container/utility/SceneNodeAuthoringPolicy.h"
@@ -144,6 +146,7 @@ struct CaptureEvent {
   bool guiUnload{false};
   bool guiWaitForLoad{true};
   std::optional<bool> taa, orthographic, objectVisible, minimized;
+  std::optional<container::renderer::FsrMode> fsr;
   std::optional<bool> rayShadowDenoise;
   std::optional<bool> ddgiPaused, ddgiEnabled;
   std::optional<uint32_t> ddgiFitProbes;
@@ -297,7 +300,7 @@ public:
         // A typed action has a closed envelope. In particular, false-valued
         // mutation keys cannot bypass isolation by looking inert after parse.
         nodeFields(value,{"frame","lightEdit","lightSelection","lightAdd","expectLightEditFailure",
-            "taa","exposure","resize","depthProbe","environment","environmentAsync","environmentYaw","proceduralSky","technique","rayShadows","rayShadowSamples","rayShadowDenoise","reloadShaders","gpuTransforms",
+            "taa","fsr","exposure","resize","depthProbe","environment","environmentAsync","environmentYaw","proceduralSky","technique","rayShadows","rayShadowSamples","rayShadowDenoise","reloadShaders","gpuTransforms",
             "areaLighting","areaLightSamples","ddgiPaused","ddgiEnabled","samples","reset"},"light action event");
       }
       for(const auto& [field,present,destination]:{
@@ -520,6 +523,11 @@ public:
           target = value.at(name).get<bool>();
       };
       boolean("taa", event.taa);
+      if (value.contains("fsr")) {
+        const auto& mode = value.at("fsr");
+        if (!mode.is_string() || !(event.fsr = container::renderer::parseFsrMode(mode.get<std::string>())))
+          throw std::invalid_argument("Capture fsr expects native, quality, balanced, or performance");
+      }
       boolean("orthographic", event.orthographic);
       boolean("objectVisible", event.objectVisible);
       boolean("minimized", event.minimized);

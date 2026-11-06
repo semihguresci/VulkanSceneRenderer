@@ -36,6 +36,15 @@ target_compile_features(VulkanSceneRenderer_light_edit_support PUBLIC cxx_std_23
 target_include_directories(VulkanSceneRenderer_light_edit_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 target_link_libraries(VulkanSceneRenderer_light_edit_support PUBLIC Dep_Math Dep_VulkanCore)
 
+add_library(VulkanSceneRenderer_fsr renderer/temporal/FsrUpscaler.cpp)
+target_compile_features(VulkanSceneRenderer_fsr PUBLIC cxx_std_23)
+target_include_directories(VulkanSceneRenderer_fsr PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_link_libraries(VulkanSceneRenderer_fsr PUBLIC Dep_VulkanCore)
+if(CONTAINER_FSR_AVAILABLE)
+    target_include_directories(VulkanSceneRenderer_fsr SYSTEM PRIVATE "${CONTAINER_FSR_INCLUDE_DIR}")
+    target_compile_definitions(VulkanSceneRenderer_fsr PRIVATE CONTAINER_HAS_FSR_UPSCALER=1)
+endif()
+
 # Renderer subsystem
 add_library(VulkanSceneRenderer_renderer
     asl/PoseReplayScene.cpp
@@ -107,6 +116,8 @@ add_library(VulkanSceneRenderer_renderer
 
     renderer/effects/BloomManager.cpp
     renderer/effects/ExposureManager.cpp
+    renderer/effects/ScreenReflectionPass.cpp
+    renderer/effects/VolumetricFogPass.cpp
     renderer/effects/OitManager.cpp
     renderer/effects/OpenVdbVolumeRenderer.cpp
     renderer/temporal/TemporalManager.cpp
@@ -284,7 +295,7 @@ else()
     find_library(CONTAINER_TINYEXR_MINIZ_LIBRARY NAMES miniz REQUIRED)
     target_link_libraries(VulkanSceneRenderer_exr PRIVATE "${CONTAINER_TINYEXR_MINIZ_LIBRARY}")
 endif()
-target_link_libraries(VulkanSceneRenderer_renderer PRIVATE VulkanSceneRenderer_exr)
+target_link_libraries(VulkanSceneRenderer_renderer PRIVATE VulkanSceneRenderer_exr VulkanSceneRenderer_fsr)
 if(CONTAINER_VK_OIDN_AVAILABLE)
     target_link_libraries(VulkanSceneRenderer_renderer PRIVATE vk_oidn::vk_oidn)
     target_compile_definitions(VulkanSceneRenderer_renderer PRIVATE CONTAINER_HAS_VK_OIDN=1)

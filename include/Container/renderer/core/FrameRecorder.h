@@ -1,5 +1,8 @@
 #pragma once
 
+#include "Container/renderer/effects/ScreenReflectionSettings.h"
+#include "Container/renderer/effects/VolumetricFogSettings.h"
+
 #include "Container/renderer/effects/DisplayGrade.h"
 
 #include "Container/common/CommonVulkan.h"
@@ -26,6 +29,8 @@ class BloomManager;
 class OpenVdbVolumeRenderer;
 class TemporalManager;
 class PbrAuxiliaryPass;
+class ScreenReflectionPass;
+class VolumetricFogPass;
 class RayShadowManager;
 class DdgiManager;
 class BimManager;
@@ -65,6 +70,7 @@ struct FrameRuntimeResources {
   uint32_t frameSlot{0};
   uint32_t imageIndex{0};
   RenderTechniqueId activeTechnique{RenderTechniqueId::DeferredRaster};
+  VkExtent2D sceneExtent{};
 };
 
 struct FrameSceneGeometry {
@@ -280,6 +286,7 @@ struct FrameRegistryState {
 };
 
 struct FrameDebugState {
+  ScreenReflectionMode screenReflections{};
   bool temporalForceReactive{false};
   uint32_t displayMode{0};
   bool debugDirectionalOnly{false};
@@ -336,6 +343,8 @@ struct FrameScreenshotCapture {
 struct FramePassServices {
   std::function<bool(VkCommandBuffer,const FrameRecordParams&)> referencePathTrace{};
   PbrAuxiliaryPass *pbrAuxiliaryPass{nullptr};
+  ScreenReflectionPass *screenReflectionPass{nullptr};
+  VolumetricFogPass *volumetricFogPass{nullptr};
   RayShadowManager *rayShadowManager{nullptr};
   DdgiManager *ddgiManager{nullptr};
   VkDescriptorSet ddgiReadDescriptorSet{VK_NULL_HANDLE};
@@ -369,6 +378,7 @@ struct FrameRecordParams {
   FrameSwapchainResources swapchain{};
   FrameScreenshotCapture screenshot{};
   FramePassServices services{};
+  VolumetricFogFrame volumetricFog{};
   FramePostProcessState postProcess{};
   ProviderSceneExtraction sceneExtraction{};
   FrameRecordLifecycleHooks lifecycle{};

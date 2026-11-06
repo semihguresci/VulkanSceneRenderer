@@ -12,10 +12,13 @@
 #include <string>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 
 namespace container::geometry {
+
+namespace gltf { struct GltfLinkedCompositionInfo; }
 
 struct GltfLoadResult {
   Model model;
@@ -24,6 +27,7 @@ struct GltfLoadResult {
   std::optional<gltf::DeformationData> deformation;
   gltf::GltfInstancingData instancing;
   gltf::GltfOpacityMicromapAssets opacityMicromaps;
+  std::shared_ptr<const gltf::GltfLinkedCompositionInfo> linkedComposition;
 };
 
 namespace gltf {

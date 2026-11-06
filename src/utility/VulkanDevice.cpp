@@ -117,6 +117,51 @@ struct ReferenceOidnFeatures {
   }
 };
 
+struct FsrFeatures {
+  VkPhysicalDeviceVulkan14Features v14{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES};
+  VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+  VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+  VkPhysicalDeviceVulkan11Features v11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+
+  bool enable(VkPhysicalDevice device, const void* requested, VkPhysicalDeviceFeatures& base) {
+    const auto* head = static_cast<const VkBaseInStructure*>(requested);
+    if (!head || head->sType != v14.sType || !head->pNext || head->pNext->sType != v13.sType ||
+        !head->pNext->pNext || head->pNext->pNext->sType != v12.sType ||
+        !head->pNext->pNext->pNext || head->pNext->pNext->pNext->sType != v11.sType) return false;
+
+    VkPhysicalDeviceFeatures2 supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    supported.pNext = &v13;
+    v13.pNext = &v12;
+    v12.pNext = &v11;
+    vkGetPhysicalDeviceFeatures2(device, &supported);
+    if (!supported.features.shaderStorageImageExtendedFormats ||
+        !supported.features.shaderStorageImageReadWithoutFormat ||
+        !supported.features.shaderStorageImageWriteWithoutFormat ||
+        !v13.subgroupSizeControl || !v13.computeFullSubgroups ||
+        (v12.shaderFloat16 && !v11.storageBuffer16BitAccess)) return false;
+
+    // The pinned library chooses its precision from physical-device features.
+    // Enable the same support on the logical device before the library runs.
+    const VkBool32 float16 = v12.shaderFloat16;
+    const VkBool32 storage16 = v11.storageBuffer16BitAccess;
+    v14 = *reinterpret_cast<const VkPhysicalDeviceVulkan14Features*>(head);
+    v13 = *reinterpret_cast<const VkPhysicalDeviceVulkan13Features*>(head->pNext);
+    v12 = *reinterpret_cast<const VkPhysicalDeviceVulkan12Features*>(head->pNext->pNext);
+    v11 = *reinterpret_cast<const VkPhysicalDeviceVulkan11Features*>(head->pNext->pNext->pNext);
+    v14.pNext = &v13;
+    v13.pNext = &v12;
+    v12.pNext = &v11;
+    v13.subgroupSizeControl = v13.computeFullSubgroups = VK_TRUE;
+    v12.shaderFloat16 = float16;
+    v11.storageBuffer16BitAccess = storage16;
+    base.shaderStorageImageExtendedFormats = VK_TRUE;
+    base.shaderStorageImageReadWithoutFormat = VK_TRUE;
+    base.shaderStorageImageWriteWithoutFormat = VK_TRUE;
+    base.shaderInt16 = supported.features.shaderInt16;
+    return true;
+  }
+};
+
 const VkPhysicalDeviceVulkan12Features* requestedVulkan12Features(
     const void* next) {
   const auto* feature = static_cast<const VkBaseInStructure*>(next);
@@ -366,6 +411,16 @@ void VulkanDevice::createLogicalDevice() {
       addEnabledExtension(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
     coreFeatureChain = &oidn.v14;
     enabledVulkan12Features_ = oidn.v12;
+    enabledVulkan12Features_.pNext = nullptr;
+  }
+
+  FsrFeatures fsr;
+  if (createInfo_.enableFsrUpscaling &&
+      (families[queueFamilyIndices_.graphicsFamily.value()].queueFlags & VK_QUEUE_COMPUTE_BIT) &&
+      fsr.enable(physicalDevice_, coreFeatureChain, enabledFeatures_)) {
+    fsrUpscalingEnabled_ = true;
+    coreFeatureChain = &fsr.v14;
+    enabledVulkan12Features_ = fsr.v12;
     enabledVulkan12Features_.pNext = nullptr;
   }
 

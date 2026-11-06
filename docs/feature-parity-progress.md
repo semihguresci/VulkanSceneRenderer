@@ -3512,3 +3512,110 @@ The RTX 2080 SUPER headless captures matched pixel for pixel across the
 `out/feature-parity/gpu-hardware-native/results.json`.
 
 The final Release build passed all 374 focused CPU cases with zero skips.
+
+### 2026-11-06 Screen reflections, Vulkan FSR, linked export, and IES lighting
+
+[#43](https://github.com/semihguresci/VulkanSceneRenderer/issues/43) adds an
+opt-in deferred screen-space pass with two ray budgets and confidence and
+hit-distance views. A valid opaque hit replaces the matching base specular
+IBL contribution. Misses retain the original environment lighting. Forward
+integration, ray-query fallback, and reflection-specific history remain open.
+[Controls and profile](screen-space-reflections.md)
+
+Eleven native captures verified an analytically placed reflected red card,
+reduced IBL from a reflected black card, confidence and distance output, and
+pixel-exact high-roughness and forward fallbacks. Disabling ray queries also
+produced identical pixels. The 480×360 high-quality mirror case took 0.152 ms
+on the RTX 2080 SUPER and allocated 4,423,680 bytes across the swapchain.
+Evidence is in `out/feature-parity/screen-reflections-native-lit/results.json`.
+Four more captures verified TAA with reflections through a resize and
+deferred-to-forward-to-deferred switches. Evidence is in
+`out/feature-parity/screen-reflections-taa-resize/results.json`.
+
+[#44](https://github.com/semihguresci/VulkanSceneRenderer/issues/44) adds an
+optional wrapper around the pinned FidelityFX Vulkan 3.1.4 SDK. The signed
+runtime passed seven 64×48 to 128×96 HDR dispatches on the RTX 2080 SUPER,
+including recovery from an abandoned recording. An SDK-free build passed the
+fallback case. Viewer integration still requires separate scene and display
+resource grids. [SDK profile](fsr-upscaling.md)
+
+[#102](https://github.com/semihguresci/VulkanSceneRenderer/issues/102) adds
+**Save Linked As** and `--save-linked-scene`. The static ASCII companion keeps
+verified URI and alias definitions beside the original. It preserves edits to
+primary placement transforms and names. Both save routes protect observed
+source files, including physical aliases. Portable Save As remains available
+for editable copies and unsupported linked edits.
+
+Twelve native captures verified distinct picks, shared geometry, and
+pixel-exact linked and flattened GLB reload after placement edits in both
+raster techniques. Two rejection runs protected the source and previous
+companion. Evidence is in
+`out/feature-parity/gltf-linked-assets-save-native/results.json`.
+
+[#46](https://github.com/semihguresci/VulkanSceneRenderer/issues/46) adds
+glTF IES fixtures with Type C LM-63 parsing, original-angle GPU sampling,
+shared profile storage, fixture controls, and portable GLB export. The
+separate volumetric fog workstream remains open. [IES profile](gltf-ies-lights.md)
+
+Eleven native captures verified orientation in forward, deferred, and
+transparent lighting. In deferred, the fixture's mean response across the
+two reference axes was 0.732 and 0.039 and swapped after a 90° rotation.
+The half-intensity capture matched the expected change after ambient
+subtraction with maximum absolute EXR error 0.0001831. Malformed-profile
+fallback and portable GLB reload matched pixel for pixel. The fixture's GPU
+profile payload was 60 bytes, with 32 bytes added per local-light row.
+Evidence is in `out/feature-parity/gltf-ies-native-final/results.json`.
+
+The Release build passed 391 focused CPU and Vulkan cases with zero skips.
+All 110 runtime SPIR-V modules passed validation.
+
+### 2026-11-06 Viewer FSR and raster lighting effects
+
+[#44](https://github.com/semihguresci/VulkanSceneRenderer/issues/44) now runs
+FSR in both raster techniques. Quality, balanced and performance modes render
+the scene on a smaller grid. Exposure, bloom, screenshots and ImGui use the
+reconstructed display grid. Picking and depth probes map display coordinates
+to the scene grid. Native rendering remains available for unsupported views
+and devices. [Controls and requirements](fsr-upscaling.md)
+
+The 39-capture native suite covered camera motion and cuts, scene reload,
+exposure changes, resize, MSAA fallback, moving glass, diagnostics, and UI.
+On the RTX 2080 SUPER, the 640×360 deferred known-pass median was 0.888 ms
+native and 0.711 ms in quality mode. The 1280×720 forward median was 1.756 ms
+native and 1.134 ms in performance mode. Resolve medians were 0.186 and
+0.387 ms. The rerun passed with validation enabled after correcting the pinned
+SDK's luma-history shader format. Evidence is in
+`out/feature-parity/fsr-viewer-format-clean/results.json`.
+
+A separate runtime directory without the AMD DLL reproduced native pixels
+in all six comparisons with Quality requested. Evidence is in
+`out/feature-parity/fsr-no-sdk-format-clean/results.json`.
+
+[#43](https://github.com/semihguresci/VulkanSceneRenderer/issues/43) adds an
+opt-in ray-query fallback for deferred reflection misses and a source view.
+The native suite traced an off-screen card, an opaque blocker, an alpha-mask
+opening and an off-screen shadow caster. Disabling ray queries preserved
+the screen-only output pixel for pixel. In the 480×360 mirror fixture,
+the reflection pass took 0.181 ms screen-only and 0.235 ms hybrid on the
+RTX 2080 SUPER. The shared ray scene used 18,368 bytes in this fixture.
+Evidence is in `out/feature-parity/screen-reflections-ray-native/results.json`.
+
+[#46](https://github.com/semihguresci/VulkanSceneRenderer/issues/46) adds
+homogeneous froxel fog in both raster modes. Directional and point lights use
+the existing shadow atlases. Depth-aware integration and reprojected froxel
+history feed the opaque HDR path. [Controls and limits](volumetric-fog.md)
+
+Eighteen native EXR captures verified zero-density parity, analytic depth
+attenuation, directional and point occlusion, and history behavior through
+motion, a camera cut, and resize. At 320×200, transmittance at depths 3 and 8
+was 0.54834 and 0.20178 with density 0.2. The pass took 0.038–0.062 ms on
+the RTX 2080 SUPER and owned 3,073,920 bytes in that fixture. Evidence is in
+`out/feature-parity/volumetric-fog-native/results.json`.
+
+The combined deferred capture passed Vulkan validation with Performance FSR,
+hybrid reflections and fog enabled. It rendered at 240×180 for a 480×360
+display and read back opaque depth at a display-space pixel. Evidence is in
+`out/feature-parity/fsr-fog-reflection-depth-final/results.json`.
+
+The Release build passed 419 focused CPU and Vulkan cases with zero skips.
+All 115 runtime SPIR-V modules passed validation.

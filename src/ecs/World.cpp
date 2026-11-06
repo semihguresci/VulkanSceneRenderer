@@ -16,7 +16,7 @@
 namespace container::ecs {
 namespace {
 using Point=container::gpu::PointLightData;
-static_assert(std::is_trivially_copyable_v<Point> && sizeof(Point)==16*sizeof(float));
+static_assert(std::is_trivially_copyable_v<Point> && sizeof(Point)==96);
 uint64_t nextLightOwner() noexcept {
   static std::atomic<uint64_t> next{1};
   auto value=next.load(std::memory_order_relaxed);
@@ -27,9 +27,9 @@ uint64_t nextLightOwner() noexcept {
 }
 bool pointEqual(const Point& a,const Point& b) noexcept {return std::memcmp(&a,&b,sizeof(Point))==0;}
 bool pointFinite(const Point& p) noexcept {
-  for(const auto* vector:{&p.positionRadius,&p.colorIntensity,&p.directionInnerCos,&p.coneOuterCosType})
+  for(const auto* vector:{&p.positionRadius,&p.colorIntensity,&p.directionInnerCos,&p.coneOuterCosType,&p.iesTangent})
     for(int i=0;i<4;++i) if(!std::isfinite((*vector)[i])) return false;
-  return true;
+  return (p.iesTangent.w != 0.0f) == (p.iesProfileAddress != 0);
 }
 bool engineType(const entt::type_info& type) noexcept {
   return type==entt::type_id<TransformComponent>() || type==entt::type_id<MeshComponent>() ||

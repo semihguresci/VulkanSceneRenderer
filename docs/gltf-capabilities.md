@@ -40,11 +40,17 @@ the same canonical source and alias context. The selected child scene is copied
 as distinct node identities under each placement, with its original transforms
 and source URI/node provenance. Linked child animations and skins require a
 later profile. Unsupported merge metadata, including XMP packet tables, still
-rejects composition. See [scene export](gltf-scene-export.md) for save behavior.
+rejects composition. Save Linked As retains URI placements in a companion
+manifest, and standard Save As makes a portable editable copy.
+[Scene export](gltf-scene-export.md)
 
 `--experimental-opacity-micromaps` lets compatible Vulkan devices use authored
 `EXT_mesh_opacity_micromap` records on static alpha-mask ray geometry. The core
 glTF material provides sampled-alpha fallback. [Supported profile](gltf-opacity-micromaps.md)
+
+`EXT_lights_ies` imports measured Type C point fixtures from LM-63 files and
+embedded profile data. Optional invalid profiles leave companion punctual
+lights available. [Measured light profiles](gltf-ies-lights.md)
 
 `GltfCapabilities.cpp` is the explicit runtime registry. Parsing an extension's
 JSON does not establish runtime support. An unknown or unsupported required

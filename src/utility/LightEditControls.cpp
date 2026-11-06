@@ -170,7 +170,10 @@ void LightEditControls::draw() {
   const auto section=[](const char* label) {ImGui::Spacing();ImGui::Separator();ImGui::TextUnformatted(label);};
   ImGui::BeginDisabled(!snapshot_.light.editable);
   section("Light Transform");
-  if(snapshot_.light.type!=EditableLightType::Directional) {
+  if(snapshot_.light.iesProfileAddress) {
+    ImGui::TextDisabled("Measured fixture. Move or rotate its source node.");
+    ImGui::Text("Aim: %.3f, %.3f, %.3f", draft_.direction.x, draft_.direction.y, draft_.direction.z);
+  } else if(snapshot_.light.type!=EditableLightType::Directional) {
     vector("Position",draft_.position,LightEditField::Position,.05f);
     scalar("Range",draft_.range,LightEditField::Range,.05f,0,100000);
   }
@@ -193,7 +196,8 @@ void LightEditControls::draw() {
   // ColorEdit's internal float inputs use three decimals. Keep precision-safe
   // numeric RGB entry in the same scalar adapter as the other light fields.
   vector("Color RGB",draft_.color,LightEditField::Color,.005f);
-  scalar("Intensity",draft_.intensity,LightEditField::Intensity,.05f,0,100000);
+  scalar(snapshot_.light.iesProfileAddress ? "Photometric multiplier" : "Intensity",
+      draft_.intensity,LightEditField::Intensity,.05f,0,100000);
   if(snapshot_.light.type==EditableLightType::Spot) {
     section("Spot Beam");
     scalar("Inner cone (degrees)",draft_.innerConeDegrees,LightEditField::SpotCone,.1f,0,179);

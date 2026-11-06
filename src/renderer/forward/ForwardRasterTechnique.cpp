@@ -20,6 +20,7 @@
 #include "Container/renderer/effects/BloomManager.h"
 #include "Container/renderer/effects/OpenVdbVolumeRenderer.h"
 #include "Container/renderer/effects/ExposureManager.h"
+#include "Container/renderer/effects/VolumetricFogPass.h"
 #include "Container/renderer/forward/ForwardRasterLightingPassRecorder.h"
 #include "Container/renderer/forward/ForwardRasterPipelineBridge.h"
 #include "Container/renderer/forward/ForwardRasterResourceBridge.h"
@@ -408,7 +409,7 @@ void recordForwardRasterDepthPrepass(
                 p, ForwardRasterFramebufferId::DepthPrepass),
             .framebuffer = forwardRasterFramebuffer(
                 p, ForwardRasterFramebufferId::DepthPrepass),
-            .extent = sharedContext.swapchainExtent(),
+            .extent = sharedContext.sceneExtent(p),
             .draws = forwardRasterSceneOpaqueDrawLists(p.draws),
             .geometry = {.descriptorSet = forwardRasterDescriptorSet(
                              p, ForwardRasterDescriptorSetId::Scene),
@@ -464,7 +465,7 @@ void recordForwardRasterBimDepthPrepass(
            p, ForwardRasterFramebufferId::BimDepthPrepass),
        .framebuffer = forwardRasterFramebuffer(
            p, ForwardRasterFramebufferId::BimDepthPrepass),
-       .extent = sharedContext.swapchainExtent(),
+       .extent = sharedContext.sceneExtent(p),
        .binding = forwardRasterBimSurfaceFrameBinding(p.bim, descriptorSets),
        .pipelines = forwardRasterBimDepthPrepassPipelines(p),
        .pipelineLayout =
@@ -1353,7 +1354,8 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
       {RenderResourceId::SceneColor, RenderResourceId::OitStorage});
   graph.setPassResourceTransitions(RenderPassId::Lighting, {});
   RenderGraphBuilder temporalGraph(graph);
-  registerTemporalPasses(temporalGraph);
+  registerVolumetricFogPass(temporalGraph, RenderPassId::Lighting);
+  registerTemporalPasses(temporalGraph, RenderPassId::VolumetricFog);
   registerRayShadowPasses(temporalGraph);
   registerDdgiPasses(temporalGraph);
 

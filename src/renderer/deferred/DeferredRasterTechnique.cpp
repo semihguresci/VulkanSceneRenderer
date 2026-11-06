@@ -27,6 +27,8 @@
 #include "Container/renderer/effects/BloomManager.h"
 #include "Container/renderer/effects/OpenVdbVolumeRenderer.h"
 #include "Container/renderer/effects/ExposureManager.h"
+#include "Container/renderer/effects/ScreenReflectionPass.h"
+#include "Container/renderer/effects/VolumetricFogPass.h"
 #include "Container/renderer/lighting/EnvironmentManager.h"
 #include "Container/renderer/lighting/LightingManager.h"
 #include "Container/renderer/picking/TransparentPickRasterPassRecorder.h"
@@ -766,7 +768,7 @@ deferredRasterScenePassInputs(const FrameRecordParams &p,
   return {.kind = kind,
           .renderPass = deferredRasterSceneRenderPass(p, kind),
           .framebuffer = deferredRasterSceneFramebuffer(p, kind),
-          .extent = deferred.swapchainExtent(),
+          .extent = deferred.sceneExtent(p),
           .draws = deferredRasterSceneOpaqueDrawLists(p.draws),
           .geometry = deferredRasterSceneOpaqueGeometry(p),
           .pipelines = deferredRasterScenePipelineInputs(p, kind),
@@ -1071,7 +1073,7 @@ DeferredRasterBimSurfacePassRecordInputs deferredRasterBimSurfacePassInputs(
           .passReady = deferredRasterBimSurfacePassReady(p, kind),
           .renderPass = deferredRasterBimSurfaceRenderPass(p, kind),
           .framebuffer = deferredRasterBimSurfaceFramebuffer(p, kind),
-          .extent = deferred.swapchainExtent(),
+          .extent = deferred.sceneExtent(p),
           .binding =
               deferredRasterBimSurfaceFrameBinding(p.bim, descriptorSets),
           .pipelines = deferredRasterBimSurfacePipelines(p, kind),
@@ -1138,7 +1140,7 @@ void registerRasterTransparentPickPass(
                   if (deferred != nullptr) {
                     static_cast<void>(recordTransparentPickFramePassCommands(
                         cmd, deferredRasterTransparentPickInputs(
-                                 p, deferred->swapchainExtent(), *deferred)));
+                                 p, deferred->sceneExtent(p), *deferred)));
                   }
                 });
   // The pass clears the ID attachment and writes new IDs in both renderers.
@@ -1392,7 +1394,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
     if (!hizPassPlan.active)
       return;
 
-    const auto extent = deferred->swapchainExtent();
+    const auto extent = deferred->sceneExtent(p);
     deferred->gpuCullManager()->ensureHiZImage(p.runtime.imageIndex,
                                                extent.width, extent.height);
     const DeferredRasterHiZDepthTransitionPlan hizDepthTransitionPlan =
@@ -1619,7 +1621,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
              .depthSamplingView = depthSamplingView,
              .cameraBuffer = deferredRasterCameraBuffer(p),
              .cameraBufferSize = deferredRasterCameraBufferSize(p),
-             .screenExtent = deferred->swapchainExtent(),
+             .screenExtent = deferred->sceneExtent(p),
              .cameraNear = p.camera.nearPlane,
              .cameraFar = p.camera.farPlane});
     static_cast<void>(recordDeferredRasterTileCullCommands(
@@ -1638,7 +1640,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
     if (deferred->environmentManager() &&
         deferred->environmentManager()->isGtaoReady() &&
         depthSamplingView != VK_NULL_HANDLE && normalView != VK_NULL_HANDLE) {
-      const auto extent = deferred->swapchainExtent();
+      const auto extent = deferred->sceneExtent(p);
       deferred->environmentManager()->dispatchGtao(
           cmd, extent.width, extent.height, deferredRasterCameraBuffer(p),
           deferredRasterCameraBufferSize(p), depthSamplingView,
@@ -1662,7 +1664,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
         deferredRasterDescriptorSet(p, DeferredRasterDescriptorSetId::Oit),
         deferredRasterDescriptorSet(
             p, DeferredRasterDescriptorSetId::FrameLighting)};
-    deferred->lightingPassRecorder().record(cmd, p,
+    deferred->lightingPassRecorder(p).record(cmd, p,
                                             deferredRasterSceneDescriptorSet(p),
                                             lightingSets, transparentSets);
     if (p.services.openVdbVolumeRenderer)
@@ -1671,17 +1673,36 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
           deferred->isPassActive(RenderPassId::OitResolve));
   });
 
-  registerTemporalPasses(graph);
+  graph.addPass(RenderPassId::ScreenReflections, {RenderPassId::Lighting},
+      [](VkCommandBuffer cmd, const FrameRecordParams& p) {
+        p.services.screenReflectionPass->record(cmd, p);
+      });
+  graph.setPassReadiness(RenderPassId::ScreenReflections, [](const FrameRecordParams& p) {
+    return p.services.screenReflectionPass && p.services.screenReflectionPass->ready(p)
+        ? renderPassReady() : renderPassNotNeeded();
+  });
+  graph.setPassResourceAccess(RenderPassId::ScreenReflections,
+      {RenderResourceId::SceneColor, RenderResourceId::SceneDepth,
+       RenderResourceId::GBufferAlbedo, RenderResourceId::GBufferNormal,
+       RenderResourceId::GBufferMaterial, RenderResourceId::GBufferSpecular,
+       RenderResourceId::GBufferMaterialLayers, RenderResourceId::GBufferMaterialSheen,
+       RenderResourceId::CameraBuffer, RenderResourceId::LightingData, RenderResourceId::EnvironmentMaps},
+      {RenderResourceId::AmbientOcclusion, RenderResourceId::GBufferAnisotropy,
+       RenderResourceId::GBufferDiffuseTransmission, RenderResourceId::RayScene}, {RenderResourceId::SceneColor});
+
+  registerVolumetricFogPass(graph, RenderPassId::ScreenReflections);
+  registerTemporalPasses(graph, RenderPassId::VolumetricFog);
   registerRayShadowPasses(graph);
   registerDdgiPasses(graph);
 
   graph.addPass(RenderPassId::TransformGizmos,
+                {RenderPassId::VolumetricFog, RenderPassId::TemporalResolve},
                 [deferred](VkCommandBuffer cmd, const FrameRecordParams &p) {
                   if (p.services.temporalManager &&
                       p.services.temporalManager->active())
                     return;
                   recordDeferredRasterTransformGizmoFramePass(
-                      cmd, p, deferred->swapchainExtent());
+                      cmd, p, deferred->sceneExtent(p));
                 });
 
   graph.addPass(
@@ -2025,7 +2046,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                     .depthSamplingView = depthSamplingView,
                     .cameraBuffer = deferredRasterCameraBuffer(p),
                     .cameraBufferSize = deferredRasterCameraBufferSize(p),
-                    .screenExtent = deferred->swapchainExtent(),
+                    .screenExtent = deferred->sceneExtent(p),
                     .cameraNear = p.camera.nearPlane,
                     .cameraFar = p.camera.farPlane})
             .readiness;

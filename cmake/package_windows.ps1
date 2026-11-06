@@ -61,6 +61,18 @@ if ($physicsEnabled -and -not (Test-Path -LiteralPath $joltLicense -PathType Lea
 $gltfCompressionEnabled = @{}
 $gltfCompressionNotices = @{}
 $referenceOidnNotices = @{}
+$fsrEnabled = Select-String -LiteralPath $cachePath -Pattern '^CONTAINER_FSR_AVAILABLE:INTERNAL=ON$' -Quiet
+$fsrNotice = Join-Path $buildTreeDirectory 'third_party_licenses/FidelityFX-SDK-MIT.txt'
+if ($fsrEnabled) {
+    if (-not (Test-Path -LiteralPath $fsrNotice -PathType Leaf)) {
+        throw "The enabled Vulkan FSR backend is missing its SDK license: $fsrNotice"
+    }
+    $fsrDll = Join-Path $runtimeDirectory 'amd_fidelityfx_vk.dll'
+    if (-not (Test-Path -LiteralPath $fsrDll -PathType Leaf) -or
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $fsrDll).Hash -ne 'a1624cc4238fef046f30c4d80ce3f47be63fc5f5373f49e3ee9edb9960f54c78') {
+        throw 'The enabled Vulkan FSR backend requires the pinned v1.1.4 amd_fidelityfx_vk.dll.'
+    }
+}
 if (Select-String -LiteralPath $cachePath -Pattern '^CONTAINER_VK_OIDN_AVAILABLE:INTERNAL=ON$' -Quiet) {
     foreach ($noticeName in @('vk_oidn-LICENSE.txt', 'vk_oidn-NOTICE.txt')) {
         $noticePath = Join-Path $buildTreeDirectory "third_party_licenses/$noticeName"
@@ -199,6 +211,11 @@ $requiredFiles = @(
     'spv_shaders/temporal_velocity.frag.spv',
     'spv_shaders/temporal_compose.comp.spv',
     'spv_shaders/temporal_resolve.comp.spv',
+    'spv_shaders/screen_reflections.comp.spv',
+    'spv_shaders/screen_reflections_ray.comp.spv',
+    'spv_shaders/volumetric_fog_inject.comp.spv',
+    'spv_shaders/volumetric_fog_integrate.comp.spv',
+    'spv_shaders/volumetric_fog_composite.comp.spv',
     'spv_shaders/openvdb_transport_reference.comp.spv',
     'spv_shaders/ray_shadow_trace.comp.spv',
     'spv_shaders/ray_shadow_filter.comp.spv',
@@ -225,6 +242,10 @@ if ($gltfCompressionEnabled['DRACO']) {
 if ($referenceOidnNotices.Count) {
     $requiredFiles += @('spv_shaders/reference_guided_pathtrace.comp.spv',
         'spv_shaders/reference_guided_background.comp.spv', 'spv_shaders/reference_denoise_compose.comp.spv')
+}
+if ($fsrEnabled) {
+    $requiredFiles += 'amd_fidelityfx_vk.dll'
+    $requiredFiles += 'spv_shaders/fsr_inputs.comp.spv'
 }
 foreach ($relativePath in $requiredFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $runtimeDirectory $relativePath) -PathType Leaf)) {
@@ -280,7 +301,8 @@ Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/windows-package-quick-s
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/third-party-notices.md') -Destination (Join-Path $stagingDirectory 'THIRD_PARTY_NOTICES.md')
 foreach ($guide in @('gltf-texture-ingestion.md', 'texture-image-data.md', 'material-sampler-publication.md',
         'texture-upload-and-ownership.md', 'reference-path-tracing.md', 'comfyui-bridge.md',
-        'gltf-interactivity.md', 'gltf-opacity-micromaps.md')) {
+        'gltf-interactivity.md', 'gltf-opacity-micromaps.md', 'fsr-upscaling.md',
+        'screen-space-reflections.md', 'gltf-ies-lights.md', 'volumetric-fog.md')) {
     Copy-Item -LiteralPath (Join-Path $sourceDirectory "docs/$guide") -Destination $stagingDirectory
 }
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/ltc-area-lighting.md') -Destination (Join-Path $stagingDirectory 'ltc-area-lighting.md')
@@ -304,6 +326,9 @@ foreach ($workflow in @('hdri.json', 'restyle.json')) {
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/gfxreconstruct.md') -Destination (Join-Path $stagingDirectory 'GFXRECONSTRUCT.md')
 
 $licensesDirectory = (New-Item -ItemType Directory -Path (Join-Path $stagingDirectory 'THIRD_PARTY_LICENSES')).FullName
+if ($fsrEnabled) {
+    Copy-Item -LiteralPath $fsrNotice -Destination $licensesDirectory
+}
 foreach ($noticeName in $referenceOidnNotices.Keys) {
     Copy-Item -LiteralPath $referenceOidnNotices[$noticeName] -Destination (Join-Path $licensesDirectory $noticeName)
 }
@@ -403,6 +428,7 @@ foreach ($file in ($hashedRuntimeFiles | Sort-Object FullName)) {
     texture_ktx_enabled = $textureCodecsEnabled['KTX']
     texture_webp_enabled = $textureCodecsEnabled['WEBP']
     reference_oidn = $(if ($referenceOidnNotices.Count) { '0.2.0' } else { 'disabled' })
+    fsr_upscaler = $(if ($fsrEnabled) { '3.1.4' } else { 'disabled' })
     openvdb_enabled = $openVdbEnabled
     nanovdb_enabled = $nanoVdbEnabled
     nanovdb_io_enabled = $nanoIoEnabled

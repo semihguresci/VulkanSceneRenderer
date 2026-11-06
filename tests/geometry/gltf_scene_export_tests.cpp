@@ -1,5 +1,6 @@
 #include <Container/geometry/GltfModelLoader.h>
 #include <Container/geometry/GltfSceneExport.h>
+#include <Container/geometry/GltfLinkedAssets.h>
 #include <Container/geometry/GltfNodeExportCompaction.h>
 #include <Container/geometry/GltfAnimation.h>
 #include <Container/geometry/GltfInteractivity.h>
@@ -668,6 +669,50 @@ TEST(GltfSceneExport, LinkedDraftSharesNestedSourceAndAliasResourcesAndFlattensP
     EXPECT_EQ(draw, expected.size());
   };
   check(source);
+  ASSERT_TRUE(result.linkedComposition);
+  EXPECT_EQ(result.linkedComposition->placements, (std::vector<int>{0, 1, 2}));
+  const auto linked = input / "saved-linked.gltf";
+  writeLinkedSceneManifest(*result.linkedComposition, {}, 0, linked);
+  const auto originalManifest = Json::parse(readText(path));
+  const auto companion = Json::parse(readText(linked));
+  EXPECT_EQ(companion, originalManifest);
+  EXPECT_FALSE(companion.contains("meshes"));
+  const auto linkedReload = LoadModelWithSource(linked.string(), options);
+  check(linkedReload.gltfModel);
+  EXPECT_EQ(linkedReload.gltfModel.meshes.size(), 1u);
+
+  const std::array edits{GltfLinkedPlacementEdit{0, "Moved placement",
+      std::array<double, 16>{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -4, 0, 0, 1}}};
+  writeLinkedSceneManifest(*result.linkedComposition, edits, 0, linked);
+  const auto edited = Json::parse(readText(linked));
+  EXPECT_EQ(edited["files"], originalManifest["files"]);
+  EXPECT_EQ(edited["externalAssets"], originalManifest["externalAssets"]);
+  EXPECT_EQ(edited["nodes"][0]["name"], "Moved placement");
+  EXPECT_EQ(edited["nodes"][0]["externalAsset"], 0);
+  EXPECT_FALSE(edited["nodes"][0].contains("translation"));
+  EXPECT_EQ(Json::parse(readText(path)), originalManifest);
+  const auto moved = LoadModelWithSource(linked.string(), options);
+  const auto matrices = worldMatrices(moved.gltfModel);
+  EXPECT_EQ(glm::vec3(matrices.at(0)[3]), glm::vec3(-4, 0, 0));
+
+  const auto savedText = readText(linked);
+  EXPECT_NO_THROW(ValidateGltfLinkedExportDestination(*result.linkedComposition, linked));
+  EXPECT_THROW(writeLinkedSceneManifest(*result.linkedComposition, {}, 0, leaf), std::runtime_error);
+  EXPECT_THROW(writeLinkedSceneManifest(*result.linkedComposition, {}, 0, path), std::runtime_error);
+  EXPECT_THROW(writeLinkedSceneManifest(*result.linkedComposition, {}, 0, directory.root / "different.gltf"), std::runtime_error);
+  const auto alias = input / "source-hard-link.gltf";
+  std::error_code aliasError;
+  std::filesystem::create_hard_link(path, alias, aliasError);
+  if (!aliasError) EXPECT_THROW(ValidateGltfLinkedExportDestination(*result.linkedComposition, alias), std::runtime_error);
+  const auto originalDependency = readText(input / "Shared mesh.bin");
+  auto changedDependency = originalDependency;
+  ASSERT_FALSE(changedDependency.empty());
+  changedDependency[0] ^= 1;
+  writeText(input / "Shared mesh.bin", changedDependency);
+  EXPECT_THROW(writeLinkedSceneManifest(*result.linkedComposition, {}, 0, linked), std::runtime_error);
+  EXPECT_EQ(readText(linked), savedText);
+  writeText(input / "Shared mesh.bin", originalDependency);
+
   SceneGraph graph;
   std::vector<int32_t> identities;
   for (size_t i = 0; i < source.nodes.size(); ++i) {

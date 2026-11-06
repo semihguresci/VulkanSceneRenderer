@@ -922,6 +922,13 @@ add_custom_test(temporal_convention_tests
 
 target_sources(temporal_convention_tests PRIVATE ${TEST_RENDERER_CORE_DIR}/temporal_state_tests.cpp)
 
+add_custom_test(fsr_upscaler_gpu_tests
+    ${TEST_RENDERER_CORE_DIR}/fsr_upscaler_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_fsr VulkanSceneRenderer_gpu_resource VulkanSceneRenderer_geometry)
+container_stage_fsr_runtime(fsr_upscaler_gpu_tests)
+set_tests_properties(fsr_upscaler_gpu_tests PROPERTIES
+    LABELS "temporal;requires-vulkan" RUN_SERIAL TRUE TIMEOUT 120)
+
 add_custom_test(temporal_capture_tests
     ${TEST_RENDERER_CORE_DIR}/temporal_capture_tests.cpp "" ${TEST_RESULTS_DIR}
     Dep_Math nlohmann_json::nlohmann_json VulkanSceneRenderer_scene

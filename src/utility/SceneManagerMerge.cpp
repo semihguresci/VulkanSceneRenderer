@@ -824,6 +824,7 @@ SceneManager::PreparedMergeGeneration SceneManager::prepareMergeGeneration(
 
   result.manager_=std::make_unique<SceneManager>(*allocationManager_,*pipelineManager_,deviceWrapper_,config_);
   auto& candidate=*result.manager_;
+  candidate.iesProfileCache_=iesProfileCache_;
   candidate.resetTextureAllocationsOnReset_=false;
   candidate.ownsDescriptorPool_=true;
   candidate.descriptorSetLayout_=descriptorSetLayout_; // Borrow the stable pipeline ABI.
@@ -1188,6 +1189,7 @@ SceneManager::PreparedMergeGeneration SceneManager::prepareSubtreeCloneGeneratio
   cpu.add(container::material::TextureImageOwnershipStorageBytes(textureManager_.textureCount()));
   result.manager_=std::make_unique<SceneManager>(*allocationManager_,*pipelineManager_,deviceWrapper_,config_);
   auto& candidate=*result.manager_;
+  candidate.iesProfileCache_=iesProfileCache_;
   candidate.resetTextureAllocationsOnReset_=false;candidate.ownsDescriptorPool_=true;
   candidate.descriptorSetLayout_=descriptorSetLayout_;
   candidate.textureDescriptorCapacity_=textureDescriptorCapacity_;
@@ -1312,6 +1314,7 @@ void SceneManager::exchangeMergeGeneration(PreparedMergeGeneration& prepared,con
   EXCHANGE_ASSET(cameraProjectionNamespace_);
   EXCHANGE_ASSET(model_); EXCHANGE_ASSET(sourcePrimitiveToRuntime_); EXCHANGE_ASSET(runtimePrimitiveToSource_);
   EXCHANGE_ASSET(opacityMicromapState_);
+  EXCHANGE_ASSET(linkedComposition_); EXCHANGE_ASSET(linkedSceneBaseline_);
   swapSourceModel(gltfModel_,other.gltfModel_); EXCHANGE_ASSET(gltfInstancing_);
   EXCHANGE_ASSET(gltfTextureResources_);
   EXCHANGE_ASSET(archiveResourcePhases_);EXCHANGE_ASSET(gltfResourcePhases_);
@@ -1326,6 +1329,7 @@ void SceneManager::exchangeMergeGeneration(PreparedMergeGeneration& prepared,con
   EXCHANGE_ASSET(exportMaterialSources_); EXCHANGE_ASSET(exportMaterialTextureBindings_); EXCHANGE_ASSET(exportTextureIndices_);
   EXCHANGE_ASSET(vertices_); EXCHANGE_ASSET(indices_); EXCHANGE_ASSET(geometryRevision_); EXCHANGE_ASSET(materialRevision_);
   EXCHANGE_ASSET(modelBounds_); EXCHANGE_ASSET(authoredPointLights_); EXCHANGE_ASSET(authoredDirectionalLights_);
+  EXCHANGE_ASSET(iesProfileAddresses_);
   EXCHANGE_ASSET(authoredAreaLights_); EXCHANGE_ASSET(authoredPointBindings_); EXCHANGE_ASSET(authoredDirectionalBindings_);
   EXCHANGE_ASSET(authoredAreaBindings_); EXCHANGE_ASSET(indexType_); EXCHANGE_ASSET(materialBaseColor_);
   EXCHANGE_ASSET(defaultMaterialIndex_); EXCHANGE_ASSET(diagnosticMaterialIndex_); EXCHANGE_ASSET(sourceMaterialToRuntime_);

@@ -1,4 +1,4 @@
-"""Validate native linked glTF placement, alias reads, picks and portable save."""
+"""Validate linked glTF placement, alias reads, picks and both export routes."""
 
 import argparse
 import base64
@@ -99,6 +99,59 @@ def main():
         references[technique] = pixels(Path(independent["image"]))
         np.testing.assert_array_equal(pixels(Path(linked["image"])), references[technique])
 
+    source_hashes = {path: hashlib.sha256(path.read_bytes()).hexdigest()
+                     for path in primary.parent.rglob("*") if path.is_file()}
+    linked_saved = primary.with_name("companion.gltf")
+    edited_portable = output / "edited-portable.glb"
+    edited_portable.write_bytes(b"Unrelated portable output may be replaced")
+    sequence = output / "placement-edits.json"
+    matrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -.75, .375, 0, 1]
+    write_json(sequence, {"schemaVersion": 1, "frames": 4, "sampleFrames": [4], "events": [
+        {"frame": 2, "nodeAuthoring": {"action": "rename", "sourceNode": 0, "name": "Edited placement"}},
+        {"frame": 3, "nodeTransform": {"node": {"sourceNode": 0}, "matrix": matrix}},
+    ]})
+    authored = json.loads(primary.read_text(encoding="utf-8"))
+    linked_options = (*common, "--experimental-gltf-linked-assets")
+    edited = {}
+    for technique in references:
+        keep_links = technique == "deferred-raster"
+        control = run(renderer, output, primary, f"edited-{technique}", technique, "lit", records,
+                      sequence=sequence, save=None if keep_links else edited_portable,
+                      extra=(*linked_options, "--save-linked-scene", str(linked_saved)) if keep_links else linked_options)[0]
+        edited[technique] = pixels(Path(control["image"]))
+        assert not np.array_equal(edited[technique], references[technique]), "placement edit did not change the capture"
+    companion = json.loads(linked_saved.read_text(encoding="utf-8"))
+    assert companion["files"] == authored["files"] and companion["externalAssets"] == authored["externalAssets"]
+    assert companion["nodes"][0] == {"name": "Edited placement", "externalAsset": 0, "matrix": matrix}
+    assert "meshes" not in companion and "buffers" not in companion
+    assert all(hashlib.sha256(path.read_bytes()).hexdigest() == digest for path, digest in source_hashes.items())
+    for technique in references:
+        restored = run(renderer, output, linked_saved, f"linked-reloaded-{technique}", technique, "lit", records,
+                       extra=linked_options)[0]
+        verify_picks(restored["state"])
+        np.testing.assert_array_equal(pixels(Path(restored["image"])), edited[technique])
+
+    def rejected(prefix, expected, extra, sequence=None):
+        try:
+            run(renderer, output, primary, prefix, "deferred-raster", "lit", records,
+                sequence=sequence, extra=(*linked_options, *extra))
+        except RuntimeError:
+            log = (output / f"{prefix}.log").read_text(encoding="utf-8", errors="replace")
+            assert expected in log, log
+        else:
+            raise AssertionError(f"Expected {prefix} to reject export")
+
+    rejected("protect-source", "cannot replace a linked input file", ("--save-scene", str(primary)))
+    rejected_sequence = output / "payload-edit.json"
+    write_json(rejected_sequence, {"schemaVersion": 1, "frames": 3, "sampleFrames": [3], "events": [
+        {"frame": 2, "nodeAuthoring": {"action": "rename", "sourceNode": 2, "name": "Payload edit"}},
+    ]})
+    companion_bytes = linked_saved.read_bytes()
+    rejected("protect-companion", "Linked save can retain primary node transforms and names",
+             ("--save-linked-scene", str(linked_saved)), rejected_sequence)
+    assert linked_saved.read_bytes() == companion_bytes
+    assert all(hashlib.sha256(path.read_bytes()).hexdigest() == digest for path, digest in source_hashes.items())
+
     model, _ = load_asset(saved)
     assert model["asset"]["version"] == "2.0" and "externalAssets" not in model and "files" not in model
     assert sum("containerLinkedSource" in node.get("extras", {}) for node in model["nodes"]) == 2
@@ -107,9 +160,13 @@ def main():
         restored = run(renderer, output, saved, f"reloaded-{technique}", technique, "lit", records, extra=common)[0]
         verify_picks(restored["state"])
         np.testing.assert_array_equal(pixels(Path(restored["image"])), references[technique])
+        flattened = run(renderer, output, edited_portable, f"edited-flattened-{technique}", technique,
+                        "lit", records, extra=common)[0]
+        verify_picks(flattened["state"])
+        np.testing.assert_array_equal(pixels(Path(flattened["image"])), edited[technique])
     assert hashlib.sha256(renderer.read_bytes()).hexdigest() == renderer_digest
     write_json(output / "results.json", {"passed": True, "rendererSha256": renderer_digest, "captures": records})
-    print("PASS linked shared geometry, two production CPU picks and pixel-exact portable reload", flush=True)
+    print("PASS shared geometry, distinct picks, edited reference preservation and pixel-exact portable reload", flush=True)
 
 
 if __name__ == "__main__":

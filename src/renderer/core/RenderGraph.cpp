@@ -61,6 +61,8 @@ constexpr std::array<std::string_view, kRenderPassIdCount> kRenderPassNames = {
     "DdgiTrace",
     "DdgiUpdate",
     "PbrAuxiliary",
+    "ScreenReflections",
+    "VolumetricFog",
 };
 
 static_assert(kRenderPassNames.size() == kRenderPassIdCount);
@@ -1562,16 +1564,23 @@ uint64_t RenderGraph::computePreparedFrameSignature(
   mix(params.runtime.frameSlot);
   mix(params.runtime.imageIndex);
   mix(static_cast<uint64_t>(params.runtime.activeTechnique));
+  mix(params.runtime.sceneExtent.width);
+  mix(params.runtime.sceneExtent.height);
   mix(params.scene.objectDataRevision);
   mix(params.bim.scene.objectDataRevision);
   mixPointer(params.registries.resourceBindings);
   mixPointer(params.registries.pipelineHandles);
   mixPointer(params.registries.pipelineLayouts);
   mix(params.debug.displayMode);
+  mix(static_cast<uint32_t>(params.debug.screenReflections));
   mix(params.debug.debugDirectionalOnly ? 1u : 0u);
   mix(params.debug.debugVisualizePointLightStencil ? 1u : 0u);
   mix(params.debug.debugFreezeCulling ? 1u : 0u);
   mixPointer(params.services.temporalManager);
+  mixPointer(params.services.screenReflectionPass);
+  mixPointer(params.services.volumetricFogPass);
+  mix(static_cast<uint32_t>(params.volumetricFog.settings.mode));
+  mixFloat(params.volumetricFog.settings.density);
   // The auxiliary pass is fully created before publication and replaced when
   // its depth/extent changes. Its identity invalidates a cached NotNeeded plan.
   mixPointer(params.services.pbrAuxiliaryPass);

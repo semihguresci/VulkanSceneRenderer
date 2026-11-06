@@ -173,12 +173,24 @@ Import / Merge rejects assets declaring this extension before scene publication.
 Each source has its own packet index table, so primary-scene export keeps the
 original table and references together.
 
-The experimental glTF 2.1 URI profile imports links as editable placed content.
-Both save formats flatten that content into glTF 2.0 with portable resources.
+The experimental glTF 2.1 URI profile imports linked content from read-only
+source files. Standard Save As flattens the live scene into an editable glTF
+2.0 or GLB copy with portable resources. Reload that copy to work independently
+of the linked files. Both save routes protect the original inputs, including
+paths that point to the same files.
 The `extras.containerLinkedSource` provenance records the original relative URI
 and node index and carries no file dependency. Linked child document-level
-annotations stay in their original file. Read-only linked editing and saving a
-scene back out as external references remain open under #102.
+annotations stay in their original file.
+
+**Save Linked As** and `--save-linked-scene PATH` preserve the URI, alias, and
+external-asset tables of a static primary ASCII glTF manifest. Choose a new
+`.gltf` filename beside the original so every relative URI keeps its meaning.
+The companion records the selected scene and primary node names and local
+transforms. External assets, images, and buffers retain their original bytes.
+Changes to linked content, topology, cameras, materials, or lights require the
+portable Save As route. Merged generations and animated or interactive primary
+scenes also use portable Save As. The linked writer rejects changed or missing
+inputs before replacing the destination.
 
 This API exports one primary runtime scene. The UI integration must reject
 mixed BIM/USD content, or clearly name a primary-scene-only export scope.

@@ -38,6 +38,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     VulkanSceneRenderer_Core
 )
 container_stage_runtime_dlls(${PROJECT_NAME})
+container_stage_fsr_runtime(${PROJECT_NAME})
 if(TARGET ContainerDracoWorker)
     add_dependencies(${PROJECT_NAME} ContainerDracoWorker)
     add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD

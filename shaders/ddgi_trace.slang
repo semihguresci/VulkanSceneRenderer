@@ -340,7 +340,7 @@ float3 DdgiShadeSurface(RaySurfacePoint point, DdgiShadingMaterial material, flo
         if (!PointLightHasRenderableIntensity(light) || !isfinite(distanceSq) || distanceSq <= 1e-10) continue;
         float distance = sqrt(distanceSq); L = delta / distance;
         float attenuation = PointLightAttenuation(distanceSq, light.positionRadius.w) *
-            SpotLightConeAttenuation(light.directionInnerCos, light.coneOuterCosType, L);
+            LocalLightAngularIntensity(light, L);
         visibilityNormal = DdgiDirectVisibilityNormal(material, geometricNormal, L);
         if (attenuation <= 0.0 || !any(visibilityNormal != 0.0.xxx)) continue;
         radiance += EvaluateDdgiHitDirect(material, geometricNormal, V, L, light.colorIntensity.rgb *

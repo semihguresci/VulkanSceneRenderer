@@ -16,6 +16,7 @@
     "events": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["frame"], "properties": {
       "frame": {"$ref": "#/$defs/frame"},
       "reset": {"type": "boolean"}, "skip": {"type": "boolean"}, "taa": {"type": "boolean"},
+      "fsr": {"enum": ["native", "quality", "balanced", "performance"]},
       "gpuTransforms": {"type": "boolean"},
       "referenceOidn": {"enum": ["off", "fast", "balanced", "high"]},
       "comfyUi": {"type": "object", "additionalProperties": false, "required": ["action"], "properties": {

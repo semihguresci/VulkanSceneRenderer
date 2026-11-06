@@ -21,6 +21,7 @@
 [[vk::binding(20, 0)]] SamplerComparisonState gLocalShadowSampler;
 [[vk::binding(21, 0)]] Texture2D<float4> gMaterialLayersTexture;
 [[vk::binding(22, 0)]] Texture2D<float4> gMaterialSheenTexture;
+[[vk::binding(1, 1)]] StructuredBuffer<PointLightData> uPointLights;
 [[vk::binding(3, 2)]] StructuredBuffer<GpuMaterial> uMaterials;
 
 [[vk::push_constant]]
@@ -140,18 +141,13 @@ float4 fragMain(VSOutput input) : SV_Target0
         bounceIntensity *= 1.0 - saturate(ddgi.coverage);
     }
     float attenuation = PointLightAttenuation(distanceSq, lightRadius);
-    float coneAttenuation =
-        SpotLightConeAttenuation(pc.directionInnerCos, pc.coneOuterCosType, L);
+    PointLightData lightData = uPointLights[pc.padding2];
+    float coneAttenuation = LocalLightAngularIntensity(lightData, L);
     float3 radiance =
         pc.colorIntensity.rgb * pc.colorIntensity.a * attenuation *
         coneAttenuation;
     float3 unshadowedRadiance = radiance;
     float lightVisibility = 1.0;
-    PointLightData lightData;
-    lightData.positionRadius = pc.positionRadius;
-    lightData.colorIntensity = pc.colorIntensity;
-    lightData.directionInnerCos = pc.directionInnerCos;
-    lightData.coneOuterCosType = pc.coneOuterCosType;
     bool useLocalShadowMap =
         LocalShadowMapsEnabled(pc.localShadowEnabled, uLocalShadow) &&
         PointLightHasLocalShadowLayers(lightData, uLocalShadow);

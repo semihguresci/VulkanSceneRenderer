@@ -13,6 +13,8 @@
 #include "Container/common/CommonVulkan.h"
 #include "Container/renderer/effects/DisplayGrade.h"
 #include "Container/renderer/effects/OpenVdbVolumeSettings.h"
+#include "Container/renderer/effects/ScreenReflectionSettings.h"
+#include "Container/renderer/effects/VolumetricFogSettings.h"
 #include "Container/renderer/lighting/DdgiSettings.h"
 #include "Container/renderer/lighting/EnvironmentPresentation.h"
 #include "Container/renderer/lighting/SkySettings.h"
@@ -22,6 +24,7 @@
 #include "Container/renderer/pathtracing/ReferenceOidnSettings.h"
 #include "Container/renderer/raytracing/RayShadowSettings.h"
 #include "Container/renderer/temporal/TemporalState.h"
+#include "Container/renderer/temporal/FsrMode.h"
 
 namespace container::geometry::vdb { struct ImportOptions; }
 
@@ -88,6 +91,10 @@ struct AppConfig {
   uint32_t areaLightSampleCount{25};
   bool areaEmitterDebug{false};
   container::temporal::Settings taa{};
+  container::renderer::FsrMode fsrMode{};
+  container::renderer::ScreenReflectionMode screenReflections{};
+  bool screenReflectionRayFallback{};
+  container::renderer::VolumetricFogSettings volumetricFog{};
   uint32_t taaResetFrame{0};
   std::string renderTechnique{"deferred-raster"};
   std::string displayModeOverride{};
@@ -119,6 +126,7 @@ struct AppConfig {
   bool gpuHardwareTelemetry{false};
   // Export the initialized scene (or final capture-sequence scene) on exit.
   std::string sceneExportPath{};
+  bool sceneExportKeepLinks{false};
   int gltfMaterialVariant{-1};
   int gltfAnimationClip{-1};
   int gltfCameraNode{-1};

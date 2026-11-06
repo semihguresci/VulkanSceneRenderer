@@ -1,5 +1,6 @@
 option(ENABLE_TESTS "Enable building and running tests" ON)
 option(ENABLE_REFERENCE_OIDN "Build optional reference denoising with the vk_oidn 0.2.0 SDK" OFF)
+option(ENABLE_FSR_UPSCALING "Build the optional Vulkan FSR 3.1.4 backend" OFF)
 option(ENABLE_OPENVDB "Build OpenVDB volume import, rendering and voxel/SDF tools" OFF)
 option(ENABLE_NANOVDB "Enable portable native sparse NanoVDB rendering when OpenVDB is enabled" ON)
 option(ENABLE_NANOVDB_IO "Enable portable NanoVDB file tools independently of OpenVDB" ${ENABLE_OPENVDB})

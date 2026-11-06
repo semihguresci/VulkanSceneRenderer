@@ -1,5 +1,6 @@
 #include "Container/geometry/Model.h"
 #include "Container/geometry/GltfModelLoader.h"
+#include "Container/geometry/GltfIesProfiles.h"
 #include "Container/geometry/GltfNodeFlags.h"
 
 #include <gtest/gtest.h>
@@ -1117,4 +1118,91 @@ TEST(GltfModelLoader, ExtendedMaterialStorageIncludesInactiveMaterialsInInputBud
     EXPECT_NE(std::string(error.what()).find("input-memory budget"), std::string::npos);
   }
   EXPECT_EQ(gltf::LoadSourceModel(path.string(), {false, bytes + 1024 * 1024}).materials.size(), 1000u);
+}
+
+namespace {
+constexpr std::string_view kAsymmetricIes =
+    "IESNA:LM-63-2002\r\n[TEST] Fixture\r\nTILT=NONE\r\n"
+    "1 -1 2 3 2 1 2 0 0 0\r\n0.5 1 12\r\n"
+    "0 40 90\r\n0 90\r\n10 30 50\r\n20 50 90\r\n";
+}
+
+TEST(GltfIesProfiles, RetainsCandelaAndAsymmetryAcrossMeasuredAngles) {
+  namespace gltf = container::geometry::gltf;
+  const auto profile = gltf::ParseIesProfile(kAsymmetricIes);
+  EXPECT_EQ(profile.symmetry, gltf::IesHorizontalSymmetry::Quadrant);
+  EXPECT_FLOAT_EQ(profile.sample(20.0f, 45.0f), 27.5f);
+  EXPECT_FLOAT_EQ(profile.sample(40.0f, -90.0f), 50.0f);
+  EXPECT_FLOAT_EQ(profile.sample(90.0f, 180.0f), 50.0f);
+  EXPECT_FLOAT_EQ(profile.sample(90.1f, 0.0f), 0.0f);
+  EXPECT_EQ(profile.packedForGpu(), (std::vector<float>{3, 2, 1, 0, 0, 40, 90, 0, 90, 10, 30, 50, 20, 50, 90}));
+}
+
+TEST(GltfIesProfiles, RejectsUnsupportedTiltTypeAndInvalidTables) {
+  namespace gltf = container::geometry::gltf;
+  const auto edited = [](std::string_view before, std::string_view after) {
+    std::string text(kAsymmetricIes);
+    text.replace(text.find(before), before.size(), after);
+    return text;
+  };
+  EXPECT_THROW(static_cast<void>(gltf::ParseIesProfile(edited("TILT=NONE", "TILT=fixture.ies"))), std::invalid_argument);
+  EXPECT_THROW(static_cast<void>(gltf::ParseIesProfile(edited("3 2 1 2", "3 2 2 2"))), std::invalid_argument);
+  EXPECT_THROW(static_cast<void>(gltf::ParseIesProfile(edited("0 40 90", "0 40 40"))), std::invalid_argument);
+  EXPECT_THROW(static_cast<void>(gltf::ParseIesProfile(edited("10 30 50", "10 30 nan"))), std::invalid_argument);
+  EXPECT_THROW(static_cast<void>(gltf::ParseIesProfile(edited("20 50 90", "20 50"))), std::invalid_argument);
+}
+
+TEST(GltfIesProfiles, EmbedsValidResourcesAndKeepsOptionalPunctualFallback) {
+  namespace gltf = container::geometry::gltf;
+  const auto path = writeTriangleGltf("ies-profile", {0, 1, 2});
+  std::ofstream(path.parent_path() / "luminaire sample.ies", std::ios::binary) << kAsymmetricIes;
+  auto source = readGltfJson(path);
+  source["extensionsUsed"] = {gltf::kGltfIesExtension, "KHR_lights_punctual"};
+  source["extensions"][gltf::kGltfIesExtension]["lights"] = {
+      {{"uri", "missing-profile.ies"}}, {{"uri", "luminaire%20sample.ies"}}};
+  source["extensions"]["KHR_lights_punctual"]["lights"] = {{{"type", "point"}}};
+  source["nodes"][0]["extensions"] = {{gltf::kGltfIesExtension, {{"light", 1}, {"multiplier", 2}}}};
+  source["nodes"].push_back({{"extensions", {{gltf::kGltfIesExtension, {{"light", 0}}},
+      {"KHR_lights_punctual", {{"light", 0}}}}}});
+  source["scenes"][0]["nodes"].push_back(1);
+  writeGltfJson(path, source);
+
+  const auto loaded = gltf::LoadModelWithSource(path.string());
+  const auto& model = loaded.gltfModel;
+  const auto* uri = gltf::GltfIesEmbeddedProfileUri(model, 0);
+  ASSERT_NE(uri, nullptr);
+  EXPECT_EQ(gltf::DecodeGltfIesProfileUri(*uri), kAsymmetricIes);
+  EXPECT_EQ(gltf::ParseGltfIesBinding(model.nodes[0].extensions.at(gltf::kGltfIesExtension), 1).multiplier, 2.0f);
+  EXPECT_FALSE(model.nodes[1].extensions.contains(gltf::kGltfIesExtension));
+  EXPECT_EQ(model.nodes[1].light, 0);
+  EXPECT_TRUE(std::ranges::any_of(loaded.capabilityDiagnostics,
+      [](const auto& diagnostic) { return diagnostic.code == "unsupported_ies_profile"; }));
+
+  source["extensionsRequired"] = {gltf::kGltfIesExtension};
+  writeGltfJson(path, source);
+  EXPECT_THROW(gltf::LoadSourceModel(path.string()), std::runtime_error);
+}
+
+TEST(GltfIesProfiles, ExternalProfileReadConsumesTheLoaderInputBudget) {
+  namespace gltf = container::geometry::gltf;
+  const auto path = writeTriangleGltf("ies-profile-budget", {0, 1, 2});
+  std::string profile(kAsymmetricIes);
+  profile.insert(profile.find("TILT=NONE"), "[MORE] " + std::string(1024 * 1024, 'a') + "\r\n");
+  std::ofstream(path.parent_path() / "ies-profile-budget.ies", std::ios::binary) << profile;
+  auto source = readGltfJson(path);
+  source["extensionsUsed"] = {gltf::kGltfIesExtension};
+  source["extensions"][gltf::kGltfIesExtension]["lights"] = {{{"uri", "ies-profile-budget.ies"}}};
+  source["nodes"][0]["extensions"] = {{gltf::kGltfIesExtension, {{"light", 0}}}};
+  writeGltfJson(path, source);
+
+  gltf::LoadOptions options;
+  options.maxInputBytes = 512 * 1024;
+  const auto loaded = gltf::LoadModelWithSource(path.string(), options);
+  EXPECT_FALSE(loaded.gltfModel.nodes[0].extensions.contains(gltf::kGltfIesExtension));
+  EXPECT_TRUE(std::ranges::any_of(loaded.capabilityDiagnostics, [](const auto& diagnostic) {
+    return diagnostic.code == "unsupported_ies_profile" && diagnostic.message.contains("remaining glTF input byte budget");
+  }));
+  options.maxInputBytes = 2 * 1024 * 1024;
+  const auto permitted = gltf::LoadModelWithSource(path.string(), options);
+  EXPECT_TRUE(permitted.gltfModel.nodes[0].extensions.contains(gltf::kGltfIesExtension));
 }

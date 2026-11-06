@@ -61,6 +61,8 @@ enum class RenderPassId : uint8_t {
   DdgiTrace,
   DdgiUpdate,
   PbrAuxiliary,
+  ScreenReflections,
+  VolumetricFog,
   Count,
   Invalid = Count,
 };

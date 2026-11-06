@@ -211,7 +211,7 @@ FrameResourceManager::~FrameResourceManager() {
 // -----------------------------------------------------------------------
 void FrameResourceManager::createDescriptorSetLayouts() {
   if (lightingLayout_ == VK_NULL_HANDLE) {
-    const std::array<VkDescriptorSetLayoutBinding, 25> b = {{
+    std::array<VkDescriptorSetLayoutBinding, 25> b = {{
         {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,  1,
          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_SAMPLER,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -242,6 +242,8 @@ void FrameResourceManager::createDescriptorSetLayouts() {
         {23, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // anisotropy tangent/strength
         {24, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // diffuse transmission color/factor
     }};
+    for (const auto binding : {0, 2, 3, 4, 10, 11, 12, 13, 14, 15, 16, 17, 21, 22, 23, 24})
+      b[binding].stageFlags |= VK_SHADER_STAGE_COMPUTE_BIT;
     const std::vector<VkDescriptorBindingFlags> flags(b.size(), 0);
     lightingLayout_ = pipelineMgr_->createDescriptorSetLayout(
         {b.begin(), b.end()}, flags);
@@ -351,7 +353,7 @@ void FrameResourceManager::validatePickIdFormatSupport() const {
 
 // -----------------------------------------------------------------------
 uint32_t FrameResourceManager::computeOitNodeCapacity() const {
-  const VkExtent2D ext = swapChain_->extent();
+  const VkExtent2D ext = sceneExtent_.width ? sceneExtent_ : swapChain_->extent();
   const uint64_t   px  = static_cast<uint64_t>(ext.width) *
                          static_cast<uint64_t>(ext.height);
   const uint64_t desired =
@@ -404,8 +406,13 @@ void FrameResourceManager::create(
     RenderingPassHandle                             transformGizmoPass,
     VkSampleCountFlagBits                    msaaSampleCount,
     std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
-    const container::gpu::AllocatedBuffer& objectBuffer) {
+    const container::gpu::AllocatedBuffer& objectBuffer,
+    VkExtent2D sceneExtent) {
   destroy();
+  const VkExtent2D displayExtent = swapChain_->extent();
+  sceneExtent_ = sceneExtent.width && sceneExtent.height ? sceneExtent : displayExtent;
+  if (sceneExtent_.width > displayExtent.width || sceneExtent_.height > displayExtent.height)
+    throw std::invalid_argument("scene extent cannot exceed the presentation extent");
 
   formats_         = formats;
   depthPrepassPass_ = depthPrepassPass;
@@ -493,7 +500,7 @@ void FrameResourceManager::create(
 
   // --- Per-frame attachments, buffers, framebuffers ---
   frames_.resize(n);
-  const VkExtent2D ext = swapChain_->extent();
+  const VkExtent2D ext = sceneExtent_;
   const bool useMsaa = sampleCount_ != VK_SAMPLE_COUNT_1_BIT;
 
   for (uint32_t i = 0; i < n; ++i) {
@@ -1389,7 +1396,7 @@ AttachmentImage FrameResourceManager::createAttachment(VkFormat fmt,
   AttachmentImage a{};
   a.format = fmt;
   a.samples = samples;
-  const VkExtent2D ext = swapChain_->extent();
+  const VkExtent2D ext = sceneExtent_;
 
   VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   ii.imageType   = VK_IMAGE_TYPE_2D;
@@ -1506,7 +1513,7 @@ void FrameResourceManager::transitionToShaderReadOnly(
 
 void FrameResourceManager::writeOitMetadata(FrameResources& frame) const {
   if (frame.oitMetadataBuffer.buffer == VK_NULL_HANDLE) return;
-  const VkExtent2D ext = swapChain_->extent();
+  const VkExtent2D ext = sceneExtent_;
   const OitMetadata meta{frame.oitNodeCapacity, ext.width, ext.height, 0u};
   void* mapped = frame.oitMetadataBuffer.allocation_info.pMappedData;
   bool mappedHere = false;
@@ -1533,8 +1540,7 @@ void FrameResourceManager::writeOitMetadata(FrameResources& frame) const {
 void FrameResourceManager::publishFrameResourceBindings() {
   resourceRegistry_.clearBindings();
 
-  const VkExtent2D ext = swapChain_ != nullptr ? swapChain_->extent()
-                                               : VkExtent2D{};
+  const VkExtent2D ext = sceneExtent_;
   for (uint32_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
     FrameResources& f = frames_[frameIndex];
 
