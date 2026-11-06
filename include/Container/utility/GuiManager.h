@@ -930,7 +930,7 @@ private:
   bool wireframeSupported_{false};
   bool wireframeRasterModeSupported_{false};
   bool wireframeWideLineSupported_{false};
-  GBufferViewMode gBufferViewMode_{GBufferViewMode::Overview};
+  GBufferViewMode gBufferViewMode_{GBufferViewMode::Lit};
   SceneViewportMode sceneViewportMode_{SceneViewportMode::Editor};
   WireframeSettings wireframeSettings_{};
   container::gpu::NormalValidationSettings normalValidationSettings_{};

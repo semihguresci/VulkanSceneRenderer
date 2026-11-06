@@ -2371,6 +2371,15 @@ void GuiManager::drawViewportInteractionControls(
 
   static constexpr float kViewportControlsMinWidth = 260.0f;
   static constexpr float kViewportControlsMaxWidth = 420.0f;
+  static constexpr float kViewportControlsMargin = 12.0f;
+  const ImGuiViewport *viewport = ImGui::GetMainViewport();
+  const ImVec2 bottomRight(
+      viewport->WorkPos.x + viewport->WorkSize.x - kViewportControlsMargin,
+      viewport->WorkPos.y + viewport->WorkSize.y - kViewportControlsMargin);
+  ImGui::SetNextWindowPos(bottomRight, ImGuiCond_Once, ImVec2(1.0f, 1.0f));
+  if (viewport->WorkSize.x < 800.0f) {
+    ImGui::SetNextWindowCollapsed(true, ImGuiCond_Once);
+  }
   const ImGuiWindowFlags viewportWindowFlags =
       ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings;
   ImGui::SetNextWindowSizeConstraints(
@@ -7098,6 +7107,15 @@ void GuiManager::drawRendererTelemetryWindow() {
   if (!initialized_)
     return;
 
+  const ImGuiViewport *viewport = ImGui::GetMainViewport();
+  const ImVec2 topRight(viewport->WorkPos.x + viewport->WorkSize.x - 12.0f,
+                        viewport->WorkPos.y + 12.0f);
+  ImGui::SetNextWindowPos(topRight, ImGuiCond_FirstUseEver, ImVec2(1.0f, 0.0f));
+  ImGui::SetNextWindowSize(
+      ImVec2(std::min(400.0f, viewport->WorkSize.x * 0.33f),
+             std::min(540.0f, viewport->WorkSize.y * 0.75f)),
+      ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowCollapsed(true, ImGuiCond_FirstUseEver);
   const auto &telemetry = rendererTelemetry_;
   if (!ImGui::Begin("Renderer Telemetry")) {
     ImGui::End();

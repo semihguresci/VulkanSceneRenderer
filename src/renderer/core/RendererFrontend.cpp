@@ -370,7 +370,8 @@ displayModeFromName(std::string_view value) {
 container::ui::GBufferViewMode
 configuredDisplayMode(const container::app::AppConfig &config) {
   if (config.displayModeOverride.empty()) {
-    return container::ui::GBufferViewMode::Overview;
+    return config.enableGui ? container::ui::GBufferViewMode::Lit
+                            : container::ui::GBufferViewMode::Overview;
   }
   if (auto mode = displayModeFromName(config.displayModeOverride)) {
     return *mode;
