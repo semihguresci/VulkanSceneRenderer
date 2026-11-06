@@ -508,12 +508,16 @@ private:
   void processCaptureLightEvent();
   EditableLightId resolveCaptureLightTarget(const container::temporal::CaptureLightTarget&) const;
 
-  enum class NodeEditKind { Transform, Visibility, Reparent };
+  enum class NodeEditKind { Transform, Flags, Reparent };
+  struct NodeFlagPatch {
+    std::optional<bool> visible, selectable, hoverable;
+  };
   struct NodePlacement {
     glm::mat4 local{1};
     uint32_t parent{};
     size_t sibling{};
     bool visible{};
+    bool selectable{}, hoverable{};
     bool operator==(const NodePlacement&) const = default;
   };
   struct NodeEditRequest {
@@ -522,7 +526,7 @@ private:
     container::ui::TransformControls controls{};
     std::optional<uint64_t> widget{};
     std::optional<uint32_t> parent{};
-    bool visible{};
+    NodeFlagPatch flags{};
   };
   struct NodeEditSelection {
     uint32_t mesh, bim;
@@ -543,6 +547,7 @@ private:
                             const NodeEditSelection* selection = nullptr);
   bool recordNodeEdit(uint32_t node, NodeEditKind kind, const NodePlacement& before,
                       const NodePlacement& after, std::string label);
+  bool editNodeFlags(uint32_t node, const NodeFlagPatch& flags);
   bool editNodeVisibility(uint32_t node, bool visible);
   bool reparentNode(uint32_t node, std::optional<uint32_t> parent);
   void beginNodeGesture(uint32_t node, uint64_t widget, bool gizmo);

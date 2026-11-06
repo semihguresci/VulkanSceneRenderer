@@ -460,4 +460,22 @@ TEST(TemporalCapture, ParsesGltfSceneSwitchAndSameFrameEditOnlyOnce) {
     EXPECT_THROW(CaptureSequence{request}, std::invalid_argument);
   }
 }
+
+TEST(TemporalCapture, GroupsIndependentNodeFlagsAndRejectsInvalidValues) {
+  auto input = json::parse(R"({"schemaVersion":1,"frames":3,
+    "events":[{"frame":2,"nodeFlags":{"sourceNode":7,"visible":false,"hoverable":true}}]})");
+  const auto parsed = CaptureSequence(input).sample(2).event.nodeEdit;
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(parsed->operation, container::temporal::CaptureNodeEdit::Operation::Flags);
+  EXPECT_EQ(parsed->sourceNode, 7u);
+  EXPECT_EQ(parsed->flagVisible, false);
+  EXPECT_FALSE(parsed->flagSelectable.has_value());
+  EXPECT_EQ(parsed->flagHoverable, true);
+  auto& flags = input["events"][0]["nodeFlags"];
+  flags["hoverable"] = 1;
+  EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+  flags.erase("hoverable");
+  flags.erase("visible");
+  EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+}
 } // namespace

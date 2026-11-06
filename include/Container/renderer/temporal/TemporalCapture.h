@@ -49,13 +49,14 @@ struct CaptureLightAdd {
   std::optional<uint64_t> expectedLightRevision;
 };
 struct CaptureNodeEdit {
-  enum class Operation { Select, Transform, Visibility, Reparent, Begin, Update, End, Cancel };
+  enum class Operation { Select, Transform, Visibility, Flags, Reparent, Begin, Update, End, Cancel };
   Operation operation{};
   uint32_t sourceNode{};
   std::optional<uint32_t> graphNode;
   std::optional<uint32_t> parent;
   glm::mat4 matrix{1};
   bool visible{};
+  std::optional<bool> flagVisible, flagSelectable, flagHoverable;
   CaptureLightGizmo::Tool tool{CaptureLightGizmo::Tool::Translate};
   CaptureLightGizmo::Space space{CaptureLightGizmo::Space::World};
   CaptureLightGizmo::Axis axis{CaptureLightGizmo::Axis::Free};
@@ -146,6 +147,27 @@ public:
       if (value.contains("lightSelection")) event.lightSelection = lightTarget(value.at("lightSelection"));
       if (value.contains("lightAdd")) event.lightAdd = lightAddRequest(value.at("lightAdd"));
       if (value.contains("nodeEdit")) event.nodeEdit = nodeEditRequest(value.at("nodeEdit"));
+      if (value.contains("nodeFlags")) {
+        if (event.nodeEdit) throw std::invalid_argument("Use one node action per capture frame");
+        const auto& fields = value.at("nodeFlags");
+        nodeFields(fields, {"sourceNode", "visible", "selectable", "hoverable"}, "node flags");
+        CaptureNodeEdit flags;
+        flags.operation = CaptureNodeEdit::Operation::Flags;
+        if (!fields.contains("sourceNode")) throw std::invalid_argument("Capture nodeFlags needs a sourceNode");
+        flags.sourceNode = captureNodeIndex(fields.at("sourceNode"));
+        const auto readFlag = [&fields](const char* key) -> std::optional<bool> {
+          if (!fields.contains(key)) return {};
+          const auto& flag = fields.at(key);
+          if (!flag.is_boolean()) throw std::invalid_argument("Capture node flags must be boolean");
+          return flag.get<bool>();
+        };
+        flags.flagVisible = readFlag("visible");
+        flags.flagSelectable = readFlag("selectable");
+        flags.flagHoverable = readFlag("hoverable");
+        if (!flags.flagVisible && !flags.flagSelectable && !flags.flagHoverable)
+          throw std::invalid_argument("Capture nodeFlags needs a flag to edit");
+        event.nodeEdit = flags;
+      }
       if (value.contains("addPrimitive")) {
         const auto& primitive = value.at("addPrimitive");
         if (!primitive.is_string() || primitive.get_ref<const std::string&>().empty())
@@ -169,7 +191,7 @@ public:
       if (lightActions + sceneActions > 1 || (value.contains("expectLightEditFailure") && !lightActions))
         throw std::invalid_argument("Use one edit or history action per capture frame");
       if (lightActions || sceneActions)
-        nodeFields(value, {"frame", "gltfScene", "lightEdit", "lightSelection", "lightAdd", "nodeEdit", "addPrimitive", "sceneHistory", "expectLightEditFailure",
+        nodeFields(value, {"frame", "gltfScene", "lightEdit", "lightSelection", "lightAdd", "nodeEdit", "nodeFlags", "addPrimitive", "sceneHistory", "expectLightEditFailure",
                            "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "rayShadowSamples",
                            "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"},
                    "edit event");

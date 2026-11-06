@@ -34,6 +34,7 @@ struct GLFWwindow;
 
 namespace container::scene {
 class SceneGraph;
+enum class NodeFlag;
 } // namespace container::scene
 
 namespace container::renderer {
@@ -659,7 +660,7 @@ public:
       uint32_t rootSceneNode,
       const std::function<void(uint32_t)> &selectMeshNode,
       const std::function<void(uint32_t)> &focusSceneNode,
-      const std::function<void(uint32_t, bool)> &setSceneNodeVisible,
+      const std::function<void(uint32_t, container::scene::NodeFlag, bool)> &setSceneNodeFlag,
       const std::function<void(uint32_t, std::optional<uint32_t>)>
           &reparentSceneNode,
       const TransformControls &meshTransform,
@@ -672,7 +673,7 @@ public:
       uint32_t selectedMeshNode,
       const std::function<void(uint32_t)> &selectSceneNode,
       const std::function<void(uint32_t)> &focusSceneNode,
-      const std::function<void(uint32_t, bool)> &setSceneNodeVisible,
+      const std::function<void(uint32_t, container::scene::NodeFlag, bool)> &setSceneNodeFlag,
       const std::function<void(uint32_t, std::optional<uint32_t>)>
           &reparentSceneNode);
   void drawBimElementBrowser(const BimInspectionState &inspection);

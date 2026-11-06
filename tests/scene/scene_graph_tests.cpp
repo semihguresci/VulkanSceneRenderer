@@ -19,6 +19,33 @@ namespace {
 using container::scene::SceneGraph;
 using container::scene::SceneNode;
 
+TEST(SceneGraph, PickFlagsInheritIndependentlyAndSkipExportAdapters) {
+  SceneGraph graph;
+  const auto boundary = graph.createNode(glm::mat4(1), 0);
+  const auto group = graph.createNode(glm::mat4(1), 0);
+  const auto adapter = graph.createNode(glm::mat4(1), 0);
+  const auto nested = graph.createNode(glm::mat4(1), 0);
+  const auto geometry = graph.createNode(glm::mat4(1), 0, true, 0);
+  graph.getNode(boundary)->interactionBoundary = true;
+  graph.getNode(adapter)->interactionPassthrough = true;
+  ASSERT_TRUE(graph.setParent(group, boundary));
+  ASSERT_TRUE(graph.setParent(adapter, group));
+  ASSERT_TRUE(graph.setParent(nested, adapter));
+  ASSERT_TRUE(graph.setParent(geometry, nested));
+
+  graph.setSelectable(nested, false);
+  graph.setHoverable(geometry, false);
+  EXPECT_EQ(graph.nearestSelectableAncestor(geometry), group);
+  EXPECT_EQ(graph.nearestHoverableAncestor(geometry), nested);
+  EXPECT_TRUE(graph.isNodeEffectivelyVisible(geometry));
+
+  graph.setSelectable(group, false);
+  graph.setVisible(group, false);
+  EXPECT_EQ(graph.nearestSelectableAncestor(geometry), SceneGraph::kInvalidNode);
+  EXPECT_EQ(graph.nearestHoverableAncestor(geometry), nested);
+  EXPECT_FALSE(graph.isNodeEffectivelyVisible(geometry));
+}
+
 TEST(SceneGraph, SceneMembershipKeepsSharedIdentityAndLocalVisibility) {
   SceneGraph graph;
   const auto context = graph.createNode(glm::mat4(1), 0);

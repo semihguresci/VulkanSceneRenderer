@@ -25,6 +25,7 @@
 #include <limits>
 #include <new>
 #include <glm/gtc/matrix_transform.hpp>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <type_traits>
@@ -54,6 +55,7 @@ struct LightEditIdentityState {
   };
   uint64_t asset{},graph{},scene{},generator{},bytes{};
   std::vector<Row> rows;
+  std::vector<Row> inactiveImported;
 };
 struct LightEditAddState {
   uint64_t owner{},asset{},graph{},scene{},birth{},pointPrefixBirth{},areaPrefixBirth{},generator{};
@@ -2341,7 +2343,35 @@ void LightingManager::synchronizeLightEditIdentities() const {
         if(++work>64ull*1024*1024) throw std::length_error("Light identity matching exceeds its work limit");
         if(editRowKey(row,previous)) {row.birth=previous.birth;break;}
       }
+    if (!row.birth && sameOwner && light.source == EditableLightSource::Imported) {
+      for (const auto& previous : old->inactiveImported) {
+        if (++work > 64ull * 1024 * 1024) throw std::length_error("Light identity matching exceeds its work limit");
+        if (editRowKey(row, previous)) { row.birth = previous.birth; break; }
+      }
+    }
     if(!row.birth) row.birth=lightIdentity();next->bytes+=row.extension.size()+1;next->rows.push_back(std::move(row));
+  }
+  if (sameOwner && sceneManager_) {
+    // Hide/show changes the compact editable table. Keep the source birth for
+    // an imported light so older history commands can resolve it on return.
+    std::set<uint64_t> liveBirths;
+    for (const auto& row : next->rows) liveBirths.insert(row.birth);
+    const auto& source = std::as_const(*sceneManager_).animationSource();
+    const auto retain = [&](const auto& rows) {
+      for (const auto& row : rows) {
+        if (row.id.source != EditableLightSource::Imported || liveBirths.contains(row.birth) ||
+            row.sourceNode < 0 || size_t(row.sourceNode) >= source.nodes.size() ||
+            !sceneGraph_.isNodeActive(row.graphNode) || sceneGraph_.nodeIncarnation(row.graphNode) != row.nodeBirth ||
+            !lightSourceMatches(source.nodes[size_t(row.sourceNode)], row.extension, row.definition)) continue;
+        if (next->inactiveImported.size() >= 1'000'000)
+          throw std::length_error("Inactive imported light identities exceed their capacity");
+        next->inactiveImported.push_back(row);
+        liveBirths.insert(row.birth);
+        next->bytes += sizeof(LightEditIdentityState::Row) + 65 + row.extension.size();
+      }
+    };
+    retain(old->rows);
+    retain(old->inactiveImported);
   }
   lightEditIdentities_=std::move(next);
 }

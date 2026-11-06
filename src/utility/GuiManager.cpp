@@ -367,7 +367,7 @@ struct SceneHierarchyPanelActions {
   uint32_t selectedMeshNode{container::scene::SceneGraph::kInvalidNode};
   const std::function<void(uint32_t)> *selectSceneNode{nullptr};
   const std::function<void(uint32_t)> *focusSceneNode{nullptr};
-  const std::function<void(uint32_t, bool)> *setSceneNodeVisible{nullptr};
+  const std::function<void(uint32_t, container::scene::NodeFlag, bool)> *setSceneNodeFlag{nullptr};
   const std::function<void(uint32_t, std::optional<uint32_t>)>
       *reparentSceneNode{nullptr};
 };
@@ -472,17 +472,25 @@ void DrawSceneHierarchyNode(const container::scene::SceneGraph &sceneGraph,
   }
 
   ImGui::TableNextColumn();
-  bool visible = node->visible;
-  const std::string visibleId =
-      "##SceneHierarchyVisible" + std::to_string(nodeIndex);
-  if (ImGui::Checkbox(visibleId.c_str(), &visible) &&
-      actions.setSceneNodeVisible != nullptr) {
-    (*actions.setSceneNodeVisible)(nodeIndex, visible);
-  }
-  if (!sceneGraph.isNodeEffectivelyVisible(nodeIndex) && node->visible) {
-    ImGui::SameLine();
-    ImGui::TextDisabled("parent");
-  }
+  using container::scene::NodeFlag;
+  ImGui::PushID(static_cast<int>(nodeIndex));
+  const auto flag = [&](NodeFlag kind, const char* label, const char* title, bool value, bool effective) {
+    if (ImGui::Checkbox(label, &value) && actions.setSceneNodeFlag)
+      (*actions.setSceneNodeFlag)(nodeIndex, kind, value);
+    if (ImGui::BeginItemTooltip()) {
+      ImGui::TextUnformatted(title);
+      if (value && !effective) ImGui::TextDisabled("Disabled by a parent");
+      ImGui::EndTooltip();
+    }
+  };
+  flag(NodeFlag::Visible, "V", "Visible", node->visible, sceneGraph.isNodeEffectivelyVisible(nodeIndex));
+  ImGui::SameLine();
+  flag(NodeFlag::Selectable, "S", "Selectable in the viewport", node->selectable,
+       sceneGraph.nearestSelectableAncestor(nodeIndex) == nodeIndex);
+  ImGui::SameLine();
+  flag(NodeFlag::Hoverable, "H", "Hoverable in the viewport", node->hoverable,
+       sceneGraph.nearestHoverableAncestor(nodeIndex) == nodeIndex);
+  ImGui::PopID();
 
   ImGui::TableNextColumn();
   const std::string focusId =
@@ -528,8 +536,8 @@ void DrawSceneHierarchyPanel(const container::scene::SceneGraph &sceneGraph,
                         ImVec2(0.0f, 300.0f), 720.0f)) {
     SceneHierarchyParentChange parentChange{};
     ImGui::TableSetupColumn("Node", ImGuiTableColumnFlags_WidthStretch, 0.48f);
-    ImGui::TableSetupColumn("Visible", ImGuiTableColumnFlags_WidthFixed,
-                            82.0f);
+    ImGui::TableSetupColumn("Flags", ImGuiTableColumnFlags_WidthFixed,
+                            118.0f);
     ImGui::TableSetupColumn("Focus", ImGuiTableColumnFlags_WidthFixed, 72.0f);
     ImGui::TableSetupColumn("Parent", ImGuiTableColumnFlags_WidthStretch,
                             0.32f);
@@ -1710,7 +1718,7 @@ void GuiManager::drawSceneHierarchy(
     uint32_t selectedMeshNode,
     const std::function<void(uint32_t)> &selectSceneNode,
     const std::function<void(uint32_t)> &focusSceneNode,
-    const std::function<void(uint32_t, bool)> &setSceneNodeVisible,
+    const std::function<void(uint32_t, container::scene::NodeFlag, bool)> &setSceneNodeFlag,
     const std::function<void(uint32_t, std::optional<uint32_t>)>
         &reparentSceneNode) {
   DrawSceneHierarchyPanel(
@@ -1719,7 +1727,7 @@ void GuiManager::drawSceneHierarchy(
                                  .selectedMeshNode = selectedMeshNode,
                                  .selectSceneNode = &selectSceneNode,
                                  .focusSceneNode = &focusSceneNode,
-                                 .setSceneNodeVisible = &setSceneNodeVisible,
+                                 .setSceneNodeFlag = &setSceneNodeFlag,
                                  .reparentSceneNode = &reparentSceneNode},
       sceneHierarchyParentCandidateCache_);
 }
@@ -2796,7 +2804,7 @@ void GuiManager::drawSceneControls(
     uint32_t rootSceneNode,
     const std::function<void(uint32_t)> &selectMeshNode,
     const std::function<void(uint32_t)> &focusSceneNode,
-    const std::function<void(uint32_t, bool)> &setSceneNodeVisible,
+    const std::function<void(uint32_t, container::scene::NodeFlag, bool)> &setSceneNodeFlag,
     const std::function<void(uint32_t, std::optional<uint32_t>)>
         &reparentSceneNode,
     const TransformControls &meshTransform,
@@ -3129,7 +3137,7 @@ void GuiManager::drawSceneControls(
 
   DrawGltfAnimationControls(gltfAnimationControls_);
   drawSceneHierarchy(sceneGraph, rootSceneNode, selectedMeshNode, selectMeshNode,
-                     focusSceneNode, setSceneNodeVisible, reparentSceneNode);
+                     focusSceneNode, setSceneNodeFlag, reparentSceneNode);
 
   if (!bimInspection.hasScene) {
     bimMeasurementModelPath_.clear();

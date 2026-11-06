@@ -3,6 +3,7 @@
 #include <Container/renderer/bim/BimManager.h>
 #include <Container/renderer/core/RendererFrontend.h>
 #include <Container/renderer/lighting/DdgiManager.h>
+#include <Container/renderer/lighting/ImportedSceneLightEdits.h>
 #include <Container/renderer/lighting/LightingManager.h>
 #include <Container/renderer/platform/VulkanContext.h>
 #include <Container/renderer/scene/CameraController.h>
@@ -63,7 +64,7 @@ std::optional<RendererFrontend::NodePlacement> RendererFrontend::nodePlacement(
   const auto sibling = sceneGraph_.siblingIndex(node);
   if (!entry || !sibling) return std::nullopt;
   return NodePlacement{entry->localTransform, entry->parent, *sibling,
-                       entry->visible};
+                       entry->visible, entry->selectable, entry->hoverable};
 }
 
 bool RendererFrontend::nodeHasActivePoseTrack(uint32_t node) const {
@@ -94,7 +95,8 @@ RendererFrontend::NodeEditSelection RendererFrontend::nodeEditSelection()
 
 void RendererFrontend::restoreNodeEditSelection(
     const NodeEditSelection& selection) {
-  sceneState_.selectedMeshNode = sceneGraph_.getNode(selection.mesh)
+  sceneState_.selectedMeshNode = sceneGraph_.isNodeEffectivelyVisible(selection.mesh) &&
+                                sceneGraph_.nearestSelectableAncestor(selection.mesh) == selection.mesh
                                      ? selection.mesh
                                      : Graph::kInvalidNode;
   selectedBimObjectIndex_ =
@@ -142,6 +144,7 @@ bool RendererFrontend::recordPrimitiveCreation(ScenePrimitiveKind kind) {
   Graph candidate(sceneGraph_);
   if (edit->root == Graph::kInvalidNode) {
     edit->root = candidate.createNode(glm::mat4(1), material);
+    candidate.getNode(edit->root)->interactionBoundary = true;
     edit->createdRoot = *candidate.getNode(edit->root);
     edit->rootSibling = *candidate.siblingIndex(edit->root);
   }
@@ -268,8 +271,9 @@ bool RendererFrontend::publishNodePlacement(
           current->parent != expected.parent)
         return false;
       break;
-    case NodeEditKind::Visibility:
-      if (current->visible != expected.visible) return false;
+    case NodeEditKind::Flags:
+      if (current->visible != expected.visible || current->selectable != expected.selectable ||
+          current->hoverable != expected.hoverable) return false;
       break;
     case NodeEditKind::Reparent:
       if (current->parent != expected.parent ||
@@ -278,11 +282,11 @@ bool RendererFrontend::publishNodePlacement(
         return false;
       break;
   }
-  if (kind != NodeEditKind::Visibility && nodeHasActivePoseTrack(node))
+  if (kind != NodeEditKind::Flags && nodeHasActivePoseTrack(node))
     throw std::invalid_argument(
         "Clear the active glTF pose clip before changing this node's "
         "transform");
-  if (kind != NodeEditKind::Visibility && !finiteAffine(desired.local))
+  if (kind != NodeEditKind::Flags && !finiteAffine(desired.local))
     throw std::invalid_argument("The node transform must be finite and affine");
 
   Graph candidate(sceneGraph_);
@@ -294,13 +298,16 @@ bool RendererFrontend::publishNodePlacement(
       throw std::invalid_argument("These nodes belong to different glTF scenes");
     if (!candidate.setParentAt(node, parent, desired.sibling)) return false;
   }
-  if (kind == NodeEditKind::Visibility)
+  if (kind == NodeEditKind::Flags) {
     candidate.setVisible(node, desired.visible);
-  else
+    candidate.setSelectable(node, desired.selectable);
+    candidate.setHoverable(node, desired.hoverable);
+  } else {
     candidate.setLocalTransform(node, desired.local);
+  }
   candidate.updateWorldTransforms();
   // An edit can affect descendants even when its own matrix is finite.
-  if (kind != NodeEditKind::Visibility) {
+  if (kind != NodeEditKind::Flags) {
     std::vector<uint32_t> pending{node};
     while (!pending.empty()) {
       const auto index = pending.back();
@@ -321,9 +328,23 @@ bool RendererFrontend::publishNodePlacement(
   auto objects = subs_.sceneController->prepareObjectData(
       candidate, subs_.guiManager && subs_.guiManager->showNormalDiagCube());
   std::optional<container::scene::AuthoredSceneLights> lights;
-  if (kind != NodeEditKind::Visibility)
+  std::shared_ptr<ImportedSceneLightEdits> imported;
+  std::optional<SceneLightEdits> lightEdits;
+  if (kind != NodeEditKind::Flags || current->visible != desired.visible) {
     lights = subs_.sceneManager->evaluateAuthoredSceneLights(
         &candidate, sceneState_.rootNode);
+    if (subs_.lightingManager) {
+      const auto previous = subs_.sceneManager->publishedAuthoredSceneLights();
+      if (previous.pointBindings != lights->pointBindings || previous.areaBindings != lights->areaBindings ||
+          previous.directionalBindings != lights->directionalBindings) {
+        imported = std::make_shared<ImportedSceneLightEdits>();
+        if (gltfImportedLightEdits_) *imported = *gltfImportedLightEdits_;
+        const auto edits = subs_.lightingManager->snapshotSceneLightEdits();
+        imported->capture(previous, edits);
+        lightEdits = imported->merge(*lights, edits);
+      }
+    }
+  }
   std::optional<DdgiManager::PreparedSceneHistoryReset> ddgi;
   if (subs_.ddgiManager && subs_.ddgiManager->supported()) {
     subs_.ddgiManager->synchronizeAsync();
@@ -335,9 +356,14 @@ bool RendererFrontend::publishNodePlacement(
 
   // The renderer thread owns the graph. Frame recording has yet to begin,
   // and GPU object buffers are filled by the regular retired-image path.
+  if (lightEdits) subs_.lightingManager->restoreSceneLightEdits(*lightEdits);
   sceneGraph_.exchangeNodeEdit(candidate);
   subs_.sceneController->exchangeObjectData(objects);
   if (lights) subs_.sceneManager->exchangeAuthoredSceneLights(*lights);
+  if (lightEdits) {
+    gltfImportedLightEdits_.swap(imported);
+    subs_.lightingManager->updateLightingData();
+  }
   if (ddgi && !subs_.ddgiManager->publishSceneHistoryReset(*ddgi))
     std::terminate();
   if (subs_.temporalManager)
@@ -348,7 +374,14 @@ bool RendererFrontend::publishNodePlacement(
   clearHoveredMeshNode();
   selectedDrawCommands_.clear();
   invalidateDepthVisibilityFrames();
-  if (selection) restoreNodeEditSelection(*selection);
+  if (selection) {
+    auto restored = *selection;
+    if (lightEdits && restored.light.source == EditableLightSource::Imported) restored.light = {};
+    restoreNodeEditSelection(restored);
+  } else if (!sceneGraph_.isNodeEffectivelyVisible(sceneState_.selectedMeshNode) ||
+             sceneGraph_.nearestSelectableAncestor(sceneState_.selectedMeshNode) != sceneState_.selectedMeshNode) {
+    sceneState_.selectedMeshNode = Graph::kInvalidNode;
+  }
   return true;
 }
 
@@ -377,12 +410,17 @@ bool RendererFrontend::recordNodeEdit(uint32_t node, NodeEditKind kind,
 }
 
 bool RendererFrontend::editNodeVisibility(uint32_t node, bool visible) {
+  return editNodeFlags(node, {.visible = visible});
+}
+
+bool RendererFrontend::editNodeFlags(uint32_t node, const NodeFlagPatch& flags) {
   const auto before = nodePlacement(node);
   if (!before) return false;
   auto after = *before;
-  after.visible = visible;
-  return recordNodeEdit(node, NodeEditKind::Visibility, *before, after,
-                        "Node visibility");
+  after.visible = flags.visible.value_or(before->visible);
+  after.selectable = flags.selectable.value_or(before->selectable);
+  after.hoverable = flags.hoverable.value_or(before->hoverable);
+  return recordNodeEdit(node, NodeEditKind::Flags, *before, after, "Node flags");
 }
 
 bool RendererFrontend::reparentNode(uint32_t node,
@@ -550,8 +588,8 @@ void RendererFrontend::processNodeEditRequests() {
     }
     auto requests = std::exchange(pendingNodeEdits_, {});
     for (const auto& edit : requests) {
-      if (edit.kind == NodeEditKind::Visibility) {
-        (void)editNodeVisibility(edit.node, edit.visible);
+      if (edit.kind == NodeEditKind::Flags) {
+        (void)editNodeFlags(edit.node, edit.flags);
       } else if (edit.kind == NodeEditKind::Reparent) {
         if (!reparentNode(edit.node, edit.parent))
           subs_.guiManager->setStatusMessage(
@@ -621,6 +659,10 @@ void RendererFrontend::processCaptureNodeEdit() {
       if (!editNodeVisibility(node, edit->visible))
         throw std::invalid_argument("Capture visibility could not be applied");
       return;
+    case Operation::Flags:
+      if (!editNodeFlags(node, {edit->flagVisible, edit->flagSelectable, edit->flagHoverable}))
+        throw std::invalid_argument("Capture node flags could not be applied");
+      return;
     case Operation::Reparent:
       if (!reparentNode(node, edit->parent
                                   ? std::optional(resolve(*edit->parent))
@@ -682,7 +724,11 @@ void RendererFrontend::appendNodeEditTelemetry(nlohmann::json& output) const {
       {"parent", entry->parent},
       {"sibling", *sceneGraph_.siblingIndex(node)},
       {"visible", entry->visible},
+      {"selectable", entry->selectable},
+      {"hoverable", entry->hoverable},
       {"effectiveVisible", sceneGraph_.isNodeEffectivelyVisible(node)},
+      {"effectiveSelectable", sceneGraph_.nearestSelectableAncestor(node) == node},
+      {"effectiveHoverable", sceneGraph_.nearestHoverableAncestor(node) == node},
       {"selected", sceneState_.selectedMeshNode == node},
       {"selectedGraphNode", sceneState_.selectedMeshNode},
       {"gizmoActive", nodeGizmoActive()}};

@@ -173,7 +173,7 @@ TEST_F(SceneControlsWidgetsTests, HierarchyFinalNodeIsReachableAndSelectable) {
     ImGui::SetNextItemOpen(true, ImGuiCond_Always);
     gui.drawSceneHierarchy(scene, container::scene::SceneGraph::kInvalidNode,
         selected, [&](uint32_t node) { selected = node; }, [](uint32_t) {},
-        [](uint32_t, bool) {}, [](uint32_t, std::optional<uint32_t>) {});
+        [](uint32_t, container::scene::NodeFlag, bool) {}, [](uint32_t, std::optional<uint32_t>) {});
   };
   frame(draw);
   frame(draw);
@@ -194,6 +194,44 @@ TEST_F(SceneControlsWidgetsTests, HierarchyFinalNodeIsReachableAndSelectable) {
   ASSERT_GT(finalRowY, table->InnerWindow->InnerRect.Min.y);
   click(draw, ImVec2(table->Columns[0].WorkMinX + 40.0f, finalRowY));
   EXPECT_EQ(selected, count - 1);
+}
+
+TEST_F(SceneControlsWidgetsTests, HierarchyFlagsSendIndependentEdits) {
+  using container::scene::NodeFlag;
+  container::scene::SceneGraph scene;
+  const auto node = scene.createNode(glm::mat4(1), 0);
+  container::ui::GuiManager gui;
+  std::vector<NodeFlag> edits;
+  const auto draw = [&] {
+    ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    gui.drawSceneHierarchy(scene, container::scene::SceneGraph::kInvalidNode,
+        container::scene::SceneGraph::kInvalidNode, [](uint32_t) {}, [](uint32_t) {},
+        [&](uint32_t id, NodeFlag flag, bool value) {
+          EXPECT_EQ(id, node);
+          EXPECT_FALSE(value);
+          edits.push_back(flag);
+          switch (flag) {
+            case NodeFlag::Visible: scene.setVisible(id, value); break;
+            case NodeFlag::Selectable: scene.setSelectable(id, value); break;
+            case NodeFlag::Hoverable: scene.setHoverable(id, value); break;
+          }
+        }, [](uint32_t, std::optional<uint32_t>) {});
+  };
+  frame(draw);
+  frame(draw);
+  const auto* table = tableWithColumns(4);
+  ASSERT_NE(table, nullptr);
+  const float y = (table->RowPosY1 + table->RowPosY2) * .5f;
+  float x = table->Columns[1].WorkMinX + ImGui::GetFrameHeight() * .5f;
+  for (const char* label : {"V", "S", "H"}) {
+    click(draw, ImVec2(x, y));
+    x += ImGui::GetFrameHeight() + ImGui::CalcTextSize(label).x +
+        ImGui::GetStyle().ItemInnerSpacing.x + ImGui::GetStyle().ItemSpacing.x;
+  }
+  EXPECT_EQ(edits, (std::vector{NodeFlag::Visible, NodeFlag::Selectable, NodeFlag::Hoverable}));
+  EXPECT_FALSE(scene.getNode(node)->visible);
+  EXPECT_FALSE(scene.getNode(node)->selectable);
+  EXPECT_FALSE(scene.getNode(node)->hoverable);
 }
 
 TEST_F(SceneControlsWidgetsTests, LargeModelCatalogScrollsToLastEntry) {
@@ -646,6 +684,7 @@ TEST(TechniqueDebugModelTests,
 TEST(TechniqueDebugModelTests,
      GuiClampsUnsupportedDisplayModeWhenTechniqueChanges) {
   container::ui::GuiManager guiManager;
+  guiManager.setGBufferViewMode(container::ui::GBufferViewMode::Overview);
   ASSERT_EQ(guiManager.gBufferViewMode(),
             container::ui::GBufferViewMode::Overview);
 

@@ -862,8 +862,7 @@ container::geometry::gltf::LoadOptions sceneTextureLoadOptions() {
   options.maxInputBytes=512ull*1024*1024;
   options.retainEncodedImages=true;
   options.unavailableRuntimeExtensions={"KHR_materials_anisotropy","KHR_materials_diffuse_transmission",
-      "EXT_mesh_gpu_instancing","KHR_node_visibility","KHR_node_selectability","KHR_node_hoverability",
-      "KHR_materials_variants"};
+      "EXT_mesh_gpu_instancing","KHR_materials_variants"};
   return options;
 }
 } // namespace
@@ -1109,6 +1108,7 @@ void populateSourceGraph(SceneGraph& sceneGraph, const tinygltf::Model& source,
     importRootNode = sceneGraph.createNode(
         importScaleTransform(importScale), defaultMaterial, false,
         SceneGraph::kInvalidNode, "Import Scale");
+    sceneGraph.getNode(*importRootNode)->interactionBoundary = true;
   }
 
   const bool multiScene = source.scenes.size() > 1;
@@ -1155,7 +1155,17 @@ void populateSourceGraph(SceneGraph& sceneGraph, const tinygltf::Model& source,
         false, SceneGraph::kInvalidNode,
         node.name.empty() ? "glTF Node " + std::to_string(work.sourceNode) : node.name);
     sceneGraph.getNode(graphNode)->sourceNodeIndex = work.sourceNode;
-    sceneGraph.setVisible(graphNode, authoredFlags.nodes[size_t(work.sourceNode)].visible);
+    if (node.extras.IsObject() && node.extras.Has("containerSceneAdapter")) {
+      const auto& adapter = node.extras.Get("containerSceneAdapter");
+      if (adapter.IsString()) {
+        sceneGraph.getNode(graphNode)->interactionBoundary = adapter.Get<std::string>() == "boundary";
+        sceneGraph.getNode(graphNode)->interactionPassthrough = adapter.Get<std::string>() == "transform";
+      }
+    }
+    const auto& flags = authoredFlags.nodes[size_t(work.sourceNode)];
+    sceneGraph.setVisible(graphNode, flags.visible);
+    sceneGraph.setSelectable(graphNode, flags.selectable);
+    sceneGraph.setHoverable(graphNode, flags.hoverable);
     if (work.membership) sceneGraph.setSceneMembership(graphNode, work.membership);
     if (work.parent) sceneGraph.setParent(graphNode, work.parent);
     if (node.mesh >= 0 && size_t(node.mesh) < source.meshes.size()) {
@@ -1277,8 +1287,8 @@ void SceneManager::exchangeRuntimeMeshChange(PreparedRuntimeMeshChange& next) no
 }
 
 tinygltf::Model SceneManager::buildSceneExport(
-    const SceneGraph& graph, std::vector<int32_t>& sourceNodes,
-    std::vector<AuthoredSceneLights>& inactiveSceneLights,
+    const SceneGraph& graph, uint32_t editorRoot, std::vector<int32_t>& sourceNodes,
+    std::vector<AuthoredSceneLights>& allLights, std::vector<AuthoredSceneLights>& visibleLights,
     const container::geometry::gltf::AnimationLibrary* animation) const {
   namespace gltf = container::geometry::gltf;
   if (!canExportScene(graph))
@@ -1295,18 +1305,23 @@ tinygltf::Model SceneManager::buildSceneExport(
 
   SceneGraph detached(graph);
   std::vector<std::vector<uint32_t>> sceneRoots;
-  inactiveSceneLights.clear();
-  inactiveSceneLights.resize(std::max(size_t{1}, source.scenes.size()));
+  allLights.assign(std::max(size_t{1}, source.scenes.size()), {});
+  visibleLights.assign(allLights.size(), {});
   int defaultSceneIndex = 0;
   if (graph.activeScene()) {
     defaultSceneIndex = int(*graph.activeScene());
     sceneRoots = sceneRootsForGraph(graph, source);
     for (size_t scene = 0; scene < sceneRoots.size(); ++scene) {
-      if (scene == size_t(defaultSceneIndex)) continue;
-      inactiveSceneLights[scene] = evaluateAuthoredSceneLights(
-          &detached, SceneGraph::kInvalidNode, std::span<const uint32_t>(sceneRoots[scene]));
+      const auto roots = std::span<const uint32_t>(sceneRoots[scene]);
+      const auto anchor = scene == size_t(defaultSceneIndex) ? editorRoot : SceneGraph::kInvalidNode;
+      allLights[scene] = evaluateAuthoredSceneLights(&detached, anchor, roots, true);
+      if (scene != size_t(defaultSceneIndex))
+        visibleLights[scene] = evaluateAuthoredSceneLights(&detached, anchor, roots);
     }
+  } else {
+    allLights[0] = evaluateAuthoredSceneLights(&detached, editorRoot, std::nullopt, true);
   }
+  visibleLights[size_t(defaultSceneIndex)] = publishedAuthoredSceneLights();
   sourceNodes.clear();
   sourceNodes.reserve(detached.nodeCount());
   // The evaluated source carries imported material metadata and animation
@@ -2355,7 +2370,7 @@ void SceneManager::publishSceneSelection(uint32_t scene, const ModelBounds& boun
 
 AuthoredSceneLights SceneManager::evaluateAuthoredSceneLights(
     const SceneGraph* graph, uint32_t editorRoot,
-    std::optional<std::span<const uint32_t>> sceneRoots) const {
+    std::optional<std::span<const uint32_t>> sceneRoots, bool includeHidden) const {
   AuthoredSceneLights next;
   if (gltfModel_.nodes.empty()) return next;
 
@@ -2467,10 +2482,12 @@ AuthoredSceneLights SceneManager::evaluateAuthoredSceneLights(
     const auto roots = sceneRoots.value_or(graph->rootNodes());
     for (auto root = roots.rbegin(); root != roots.rend(); ++root) {
       auto basis = *root == editorRoot ? glm::mat4(1.0f) : detachedRootBasis;
+      bool visible = true;
       if (sceneRoots) {
         std::vector<const SceneNode*> ancestors;
         auto id = graph->getNode(*root)->parent;
         while (const auto* parent = graph->getNode(id)) {
+          visible &= parent->visible;
           if (id == editorRoot) { basis = glm::mat4(1.0f); break; }
           ancestors.push_back(parent);
           id = parent->parent;
@@ -2478,20 +2495,21 @@ AuthoredSceneLights SceneManager::evaluateAuthoredSceneLights(
         for (auto parent = ancestors.rbegin(); parent != ancestors.rend(); ++parent)
           basis *= (*parent)->localTransform;
       }
-      pending.push_back({*root, basis});
+      if (includeHidden || visible) pending.push_back({*root, basis});
     }
     while (!pending.empty()) {
       const auto work = pending.back();
       pending.pop_back();
       const auto* node = graph->getNode(work.node);
-      if (!node || (!sceneRoots && !graph->isNodeActive(work.node))) continue;
+      if (!node || (!sceneRoots && !graph->isNodeActive(work.node)) ||
+          (!includeHidden && !node->visible)) continue;
       const auto transform = work.node == editorRoot ? work.parent : work.parent * node->localTransform;
       if (node->sourceNodeIndex >= 0 && size_t(node->sourceNodeIndex) < gltfModel_.nodes.size())
         appendLight(node->sourceNodeIndex, transform);
       for (auto child = node->children.rbegin(); child != node->children.rend(); ++child)
         pending.push_back({*child, transform});
     }
-    if (sceneRoots) return next;
+    if (sceneRoots || includeHidden) return next;
     // Keep editable-light ordinals stable when reparenting changes traversal.
     const auto keepOrder = [](auto& values, auto& bindings, const auto& previous) {
       if (bindings == previous || bindings.size() != previous.size()) return;
@@ -2521,18 +2539,22 @@ AuthoredSceneLights SceneManager::evaluateAuthoredSceneLights(
     return next;
   }
 
-  std::vector<bool> visited(gltfModel_.nodes.size(), false);
-  std::function<void(int, const glm::mat4&)> traverseNode =
-      [&](int index, const glm::mat4& parent) {
-        if (index < 0 || size_t(index) >= gltfModel_.nodes.size() || visited[size_t(index)]) return;
-        visited[size_t(index)] = true;
-        const auto& node = gltfModel_.nodes[size_t(index)];
-        const auto transform = parent * nodeLocalTransform(node);
-        appendLight(index, transform);
-        for (const int child : node.children) traverseNode(child, transform);
-      };
+  const auto flags = container::geometry::gltf::ParseGltfNodeFlags(gltfModel_);
   const auto importRoot = importScaleTransform(config_.importScale);
-  for (const int root : activeSceneRootNodes(gltfModel_)) traverseNode(root, importRoot);
+  std::vector<std::pair<int, glm::mat4>> pending;
+  const auto roots = activeSceneRootNodes(gltfModel_);
+  for (auto root = roots.rbegin(); root != roots.rend(); ++root)
+    pending.emplace_back(*root, importRoot);
+  while (!pending.empty()) {
+    const auto [index, parent] = pending.back();
+    pending.pop_back();
+    if (!includeHidden && !flags.nodes.at(size_t(index)).visible) continue;
+    const auto& node = gltfModel_.nodes.at(size_t(index));
+    const auto transform = parent * nodeLocalTransform(node);
+    appendLight(index, transform);
+    for (auto child = node.children.rbegin(); child != node.children.rend(); ++child)
+      pending.emplace_back(*child, transform);
+  }
   return next;
 }
 

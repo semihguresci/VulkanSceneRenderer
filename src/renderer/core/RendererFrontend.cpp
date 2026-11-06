@@ -2364,8 +2364,13 @@ void RendererFrontend::applyTemporalCapture(
     refreshSceneObjectData();
   }
   if (event.objectVisible) {
-    sceneGraph_.setVisible(objectNode, *event.objectVisible);
-    refreshSceneObjectData();
+    if (const auto before = nodePlacement(objectNode); before && before->visible != *event.objectVisible) {
+      auto after = *before;
+      after.visible = *event.objectVisible;
+      if (!publishNodePlacement(objectNode, sceneGraph_.identity(), sceneGraph_.nodeIncarnation(objectNode),
+                                NodeEditKind::Flags, *before, after))
+        throw std::invalid_argument("Capture object visibility could not be applied");
+    }
   }
   if (sample.bimTranslation && subs_.bimManager)
     subs_.bimManager->setRootTranslation(*sample.bimTranslation);
@@ -2767,6 +2772,35 @@ void RendererFrontend::writeCaptureTelemetry(
                           ? nlohmann::json(depth) : nlohmann::json(nullptr);
     probe["pick"] = samplePickDepthAtCursor(depthProbe->x, depthProbe->y, depth)
                         ? nlohmann::json(depth) : nlohmann::json(nullptr);
+    if (subs_.sceneController) {
+      const auto describe = [this](uint32_t id) -> nlohmann::json {
+        const auto* hit = sceneGraph_.getNode(id);
+        if (!hit) return nullptr;
+        const auto* source = hit;
+        while (source && source->sourceNodeIndex < 0) source = sceneGraph_.getNode(source->parent);
+        return {{"graphNode", id}, {"sourceNode", source ? source->sourceNodeIndex : -1},
+                {"name", source ? source->name : hit->name}};
+      };
+      const auto routes = [&](uint32_t id) -> nlohmann::json {
+        const bool visible = sceneGraph_.isNodeEffectivelyVisible(id);
+        return {{"hit", describe(id)},
+                {"selection", visible ? describe(sceneGraph_.nearestSelectableAncestor(id)) : nullptr},
+                {"hover", visible ? describe(sceneGraph_.nearestHoverableAncestor(id)) : nullptr}};
+      };
+      glm::vec4 sectionPlane{0, 1, 0, 0};
+      const bool sectionEnabled = currentSectionPlaneEquation(subs_.guiManager.get(), sectionPlane);
+      const auto cpuHit = subs_.sceneController->pickRenderableNodeHit(buffers_.cameraData,
+          svc_.swapChainManager.extent(), depthProbe->x, depthProbe->y, sectionEnabled, sectionPlane);
+      auto& interaction = probe["sceneInteraction"];
+      interaction["cpu"] = routes(cpuHit.hit ? cpuHit.nodeIndex : container::scene::SceneGraph::kInvalidNode);
+      uint32_t id{};
+      if (samplePickIdAtCursor(depthProbe->x, depthProbe->y, id)) {
+        const auto target = decodeGpuPickId(id);
+        interaction["gpu"] = routes(target.kind == GpuPickTargetKind::Scene
+            ? subs_.sceneController->nodeIndexForObject(target.objectIndex)
+            : container::scene::SceneGraph::kInvalidNode);
+      }
+    }
   }
   if (!path.parent_path().empty())
     std::filesystem::create_directories(path.parent_path());
@@ -3036,6 +3070,13 @@ void RendererFrontend::selectMeshNodeAtCursor(double cursorX, double cursorY) {
   auto selectSceneNode = [&](uint32_t nodeIndex,
                              std::optional<glm::vec3> anchorPoint =
                                  std::nullopt) {
+    nodeIndex = sceneGraph_.isNodeEffectivelyVisible(nodeIndex)
+        ? sceneGraph_.nearestSelectableAncestor(nodeIndex)
+        : container::scene::SceneGraph::kInvalidNode;
+    if (nodeIndex == container::scene::SceneGraph::kInvalidNode) {
+      clearSelectedMeshNode();
+      return;
+    }
     sceneState_.selectedMeshNode = nodeIndex;
     selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
     if (subs_.lightingManager) {
@@ -3312,6 +3353,9 @@ void RendererFrontend::hoverMeshNodeAtCursor(double cursorX, double cursorY) {
     }
   }
 
+  hoveredNode = sceneGraph_.isNodeEffectivelyVisible(hoveredNode)
+      ? sceneGraph_.nearestHoverableAncestor(hoveredNode)
+      : container::scene::SceneGraph::kInvalidNode;
   if (hoveredNode == sceneState_.selectedMeshNode) {
     hoveredNode = container::scene::SceneGraph::kInvalidNode;
   }
@@ -6751,8 +6795,14 @@ void RendererFrontend::presentSceneControls() {
                                              std::to_string(nodeIndex));
         }
       },
-      [this](uint32_t nodeIndex, bool visible) {
-        pendingNodeEdits_.push_back({.kind = NodeEditKind::Visibility, .node = nodeIndex, .visible = visible});
+      [this](uint32_t nodeIndex, container::scene::NodeFlag flag, bool value) {
+        NodeFlagPatch flags;
+        switch (flag) {
+          case container::scene::NodeFlag::Visible: flags.visible = value; break;
+          case container::scene::NodeFlag::Selectable: flags.selectable = value; break;
+          case container::scene::NodeFlag::Hoverable: flags.hoverable = value; break;
+        }
+        pendingNodeEdits_.push_back({.kind = NodeEditKind::Flags, .node = nodeIndex, .flags = flags});
       },
       [this](uint32_t nodeIndex, std::optional<uint32_t> parentNode) {
         pendingNodeEdits_.push_back({.kind = NodeEditKind::Reparent, .node = nodeIndex, .parent = parentNode});

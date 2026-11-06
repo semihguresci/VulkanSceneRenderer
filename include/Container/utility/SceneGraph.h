@@ -12,6 +12,8 @@
 
 namespace container::scene {
 
+enum class NodeFlag { Visible, Selectable, Hoverable };
+
 struct SceneNode {
   glm::mat4 localTransform{1.0f};
   glm::mat4 worldTransform{1.0f};
@@ -20,6 +22,10 @@ struct SceneNode {
   uint32_t primitiveIndex = std::numeric_limits<uint32_t>::max();
   bool renderable = false;
   bool visible = true;
+  bool selectable = true;
+  bool hoverable = true;
+  bool interactionBoundary = false;
+  bool interactionPassthrough = false;
   // Identity of an authored node. Generated primitive children have no source node.
   int32_t sourceNodeIndex{-1};
   // Authored mesh owner survives reparenting of an individual primitive.
@@ -61,6 +67,8 @@ class SceneGraph {
   void setLocalTransform(uint32_t nodeIndex, const glm::mat4& localTransform);
   void setRenderable(uint32_t nodeIndex, bool renderable);
   void setVisible(uint32_t nodeIndex, bool visible);
+  void setSelectable(uint32_t nodeIndex, bool selectable);
+  void setHoverable(uint32_t nodeIndex, bool hoverable);
   void setSceneMembership(uint32_t node, std::shared_ptr<const std::vector<uint32_t>> scenes);
   void setActiveScene(uint32_t scene);
   [[nodiscard]] std::optional<uint32_t> activeScene() const noexcept { return activeScene_; }
@@ -82,9 +90,12 @@ class SceneGraph {
     return node < nodes_.size() ? nodes_[node].incarnation : 0;
   }
   [[nodiscard]] bool isNodeEffectivelyVisible(uint32_t nodeIndex) const;
+  [[nodiscard]] uint32_t nearestSelectableAncestor(uint32_t node) const;
+  [[nodiscard]] uint32_t nearestHoverableAncestor(uint32_t node) const;
 
  private:
   uint32_t appendNode(SceneNode node);
+  [[nodiscard]] uint32_t nearestInteractionAncestor(uint32_t node, bool SceneNode::*flag) const;
   [[nodiscard]] bool canSetParent(uint32_t child,
                                   std::optional<uint32_t> parentIndex) const;
   [[nodiscard]] bool isDescendant(uint32_t ancestor,

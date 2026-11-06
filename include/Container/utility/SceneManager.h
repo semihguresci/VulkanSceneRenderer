@@ -222,8 +222,9 @@ class SceneManager {
     return graph.nodeCount() != 0 || !gltfModel_.scenes.empty();
   }
   [[nodiscard]] tinygltf::Model buildSceneExport(
-      const SceneGraph& graph, std::vector<int32_t>& sourceNodes,
-      std::vector<AuthoredSceneLights>& inactiveSceneLights,
+      const SceneGraph& graph, uint32_t editorRoot, std::vector<int32_t>& sourceNodes,
+      std::vector<AuthoredSceneLights>& allLights,
+      std::vector<AuthoredSceneLights>& visibleLights,
       const container::geometry::gltf::AnimationLibrary* animation = nullptr) const;
   void publishAnimationChanges(const container::geometry::gltf::AnimationDirtySet& dirty,
                                const SceneGraph& graph, uint32_t editorRoot);
@@ -317,7 +318,7 @@ class SceneManager {
                       int requestedScene = -1);
   [[nodiscard]] AuthoredSceneLights evaluateAuthoredSceneLights(
       const SceneGraph* graph, uint32_t editorRoot,
-      std::optional<std::span<const uint32_t>> sceneRoots) const;
+      std::optional<std::span<const uint32_t>> sceneRoots, bool includeHidden = false) const;
   void loadDefaultTestSceneAssets();
   void uploadMaterialBuffer();
   void uploadTextureMetadataBuffer();

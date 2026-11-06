@@ -38,6 +38,9 @@
       "lightSelection": {"$ref": "#/$defs/lightTarget"},
       "lightAdd": {"$ref": "#/$defs/lightAdd"},
       "nodeEdit": {"$ref": "#/$defs/nodeEdit"},
+      "nodeFlags": {"type": "object", "required": ["sourceNode"], "minProperties": 2,
+        "additionalProperties": false, "properties": {"sourceNode": {"$ref": "#/$defs/nodeSourceIndex"},
+        "visible": {"type": "boolean"}, "selectable": {"type": "boolean"}, "hoverable": {"type": "boolean"}}},
       "addPrimitive": {"enum": ["Quad", "Plane (double-sided wall)", "Cube", "Sphere", "Triangular Prism", "Pyramid", "Torus"]},
       "sceneHistory": {"enum": ["undo", "redo"]},
       "expectLightEditFailure": {"type": "boolean", "default": false},
@@ -59,10 +62,10 @@
         {"required": ["guiUnload"], "properties": {"guiUnload": {"const": true}}}
       ]}
     }, {
-      "if": {"anyOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}, {"required": ["nodeEdit"]}, {"required": ["addPrimitive"]}, {"required": ["sceneHistory"]}]},
+      "if": {"anyOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}, {"required": ["nodeEdit"]}, {"required": ["nodeFlags"]}, {"required": ["addPrimitive"]}, {"required": ["sceneHistory"]}]},
       "then": {"allOf": [
-        {"oneOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}, {"required": ["nodeEdit"]}, {"required": ["addPrimitive"]}, {"required": ["sceneHistory"]}]},
-        {"propertyNames": {"enum": ["frame", "gltfScene", "lightEdit", "lightSelection", "lightAdd", "nodeEdit", "addPrimitive", "sceneHistory", "expectLightEditFailure", "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "rayShadowSamples", "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"]}}
+        {"oneOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}, {"required": ["nodeEdit"]}, {"required": ["nodeFlags"]}, {"required": ["addPrimitive"]}, {"required": ["sceneHistory"]}]},
+        {"propertyNames": {"enum": ["frame", "gltfScene", "lightEdit", "lightSelection", "lightAdd", "nodeEdit", "nodeFlags", "addPrimitive", "sceneHistory", "expectLightEditFailure", "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "rayShadowSamples", "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"]}}
       ]}
     }, {
       "if": {"required": ["expectLightEditFailure"]},

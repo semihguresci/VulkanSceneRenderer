@@ -485,6 +485,8 @@ std::map<uint32_t, ScenePlacement> validateSceneRoots(const SceneExportSnapshot&
       const auto& node = *snapshot.graph.getNode(*it);
       prefix.prefix *= glm::dmat4(node.localTransform);
       prefix.visible &= node.visible;
+      prefix.selectable &= node.selectable;
+      prefix.hoverable &= node.hoverable;
       if (!matrixFinite(prefix.prefix)) fail("export scene prefix transform is outside the finite runtime range");
       prefixes.emplace(*it, prefix);
     }
@@ -1278,6 +1280,10 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
     node.weights.clear();
     node.extensions_json_string.clear();
     setLocalNodeFlag(node, "KHR_node_visibility", "visible", current.visible);
+    setLocalNodeFlag(node, "KHR_node_selectability", "selectable", current.selectable);
+    setLocalNodeFlag(node, "KHR_node_hoverability", "hoverable", current.hoverable);
+    if (sourceIndex < 0 && current.interactionBoundary)
+      node.extras = tinygltf::Value(tinygltf::Value::Object{{"containerSceneAdapter", tinygltf::Value(std::string("boundary"))}});
     if (current.renderable) {
       if (current.primitiveIndex >= snapshot.geometry.meshes().size())
         fail("renderable node references an invalid runtime primitive");
@@ -1404,6 +1410,7 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
   for (const auto& [nodeIndex, correction] : corrections) {
     tinygltf::Node wrapper;
     wrapper.name = output.nodes[size_t(nodeIndex)].name + " editor transform";
+    wrapper.extras = tinygltf::Value(tinygltf::Value::Object{{"containerSceneAdapter", tinygltf::Value(std::string("transform"))}});
     setMatrix(wrapper, correction);
     wrapper.children = {nodeIndex};
     if (output.nodes.size() >= size_t(std::numeric_limits<int>::max())) fail("too many correction nodes");
@@ -1436,6 +1443,7 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
       if (exportNodeActive(snapshot, root) && needsScenePlacement(placement)) {
         tinygltf::Node wrapper;
         wrapper.name = output.nodes[root].name + " scene placement";
+        wrapper.extras = tinygltf::Value(tinygltf::Value::Object{{"containerSceneAdapter", tinygltf::Value(std::string("boundary"))}});
         setMatrix(wrapper, placement.prefix);
         wrapper.children = {placement.entry};
         setLocalNodeFlag(wrapper, "KHR_node_visibility", "visible", placement.visible);

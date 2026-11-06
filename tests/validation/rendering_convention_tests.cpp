@@ -7673,7 +7673,10 @@ TEST(RenderingConventionTests, SceneHierarchyPanelExposesNodeActions) {
   EXPECT_TRUE(contains(world, "graph.isNodeEffectivelyVisible(nodeIndex)"));
 
   EXPECT_TRUE(contains(guiHeader, "focusSceneNode"));
-  EXPECT_TRUE(contains(guiHeader, "setSceneNodeVisible"));
+  EXPECT_TRUE(contains(guiHeader, "setSceneNodeFlag"));
+  EXPECT_TRUE(contains(gui, "NodeFlag::Visible"));
+  EXPECT_TRUE(contains(gui, "NodeFlag::Selectable"));
+  EXPECT_TRUE(contains(gui, "NodeFlag::Hoverable"));
   EXPECT_TRUE(contains(guiHeader, "reparentSceneNode"));
   EXPECT_TRUE(contains(gui, "Scene Hierarchy"));
   EXPECT_TRUE(contains(gui, "DrawSceneHierarchyPanel"));

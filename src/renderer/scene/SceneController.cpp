@@ -1075,6 +1075,7 @@ void SceneController::buildSceneGraph(uint32_t& outRootNode,
     outRootNode = sceneGraph_.createNode(
         glm::mat4(1.0f), sceneManager_.defaultMaterialIndex(), false,
         container::scene::SceneGraph::kInvalidNode, "Scene Root");
+    sceneGraph_.getNode(outRootNode)->interactionBoundary = true;
     for (uint32_t i = 0; i < existingNodeCount; ++i) {
       const auto* node = sceneGraph_.getNode(i);
       if (node != nullptr &&
@@ -1086,11 +1087,13 @@ void SceneController::buildSceneGraph(uint32_t& outRootNode,
   }
 
   const auto& renderable = sceneGraph_.renderableNodes();
-  if (renderable.empty()) {
-    outSelectedMeshNode = container::scene::SceneGraph::kInvalidNode;
-  } else if (std::find(renderable.begin(), renderable.end(),
-                       outSelectedMeshNode) == renderable.end()) {
-    outSelectedMeshNode = renderable.front();
+  const auto eligible = [this](uint32_t node) {
+    return sceneGraph_.isNodeEffectivelyVisible(node) &&
+        sceneGraph_.nearestSelectableAncestor(node) == node;
+  };
+  if (!eligible(outSelectedMeshNode) || !std::ranges::contains(renderable, outSelectedMeshNode)) {
+    const auto first = std::ranges::find_if(renderable, eligible);
+    outSelectedMeshNode = first == renderable.end() ? container::scene::SceneGraph::kInvalidNode : *first;
   }
   outCubeNode = container::scene::SceneGraph::kInvalidNode;
   invalidateObjectDataCache();

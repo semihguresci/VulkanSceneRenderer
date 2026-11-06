@@ -271,6 +271,42 @@ void SceneGraph::setVisible(uint32_t nodeIndex, bool visible) {
   ++revision_;
 }
 
+void SceneGraph::setSelectable(uint32_t node, bool selectable) {
+  if (node >= nodes_.size() || nodes_[node].selectable == selectable) return;
+  nodes_[node].selectable = selectable;
+  ++revision_;
+}
+
+void SceneGraph::setHoverable(uint32_t node, bool hoverable) {
+  if (node >= nodes_.size() || nodes_[node].hoverable == hoverable) return;
+  nodes_[node].hoverable = hoverable;
+  ++revision_;
+}
+
+uint32_t SceneGraph::nearestInteractionAncestor(uint32_t node, bool SceneNode::*flag) const {
+  if (!isNodeActive(node)) return kInvalidNode;
+  auto target = node;
+  size_t steps = 0;
+  for (auto current = node; current != kInvalidNode; current = nodes_[current].parent) {
+    if (current >= nodes_.size() || steps++ >= nodes_.size()) return kInvalidNode;
+    if (!(nodes_[current].*flag)) target = nodes_[current].parent;
+  }
+  while (const auto* adapter = getNode(target)) {
+    if (!adapter->interactionPassthrough) break;
+    target = adapter->parent;
+  }
+  const auto* resolved = getNode(target);
+  return resolved && !resolved->interactionBoundary && isNodeActive(target) ? target : kInvalidNode;
+}
+
+uint32_t SceneGraph::nearestSelectableAncestor(uint32_t node) const {
+  return nearestInteractionAncestor(node, &SceneNode::selectable);
+}
+
+uint32_t SceneGraph::nearestHoverableAncestor(uint32_t node) const {
+  return nearestInteractionAncestor(node, &SceneNode::hoverable);
+}
+
 bool SceneGraph::isNodeEffectivelyVisible(uint32_t nodeIndex) const {
   if (!isNodeActive(nodeIndex)) return false;
 
