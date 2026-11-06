@@ -48,6 +48,19 @@ struct CaptureLightAdd {
   container::renderer::EditableLightType type{};
   std::optional<uint64_t> expectedLightRevision;
 };
+struct CaptureNodeEdit {
+  enum class Operation { Select, Transform, Visibility, Reparent, Begin, Update, End, Cancel };
+  Operation operation{};
+  uint32_t sourceNode{};
+  std::optional<uint32_t> parent;
+  glm::mat4 matrix{1};
+  bool visible{};
+  CaptureLightGizmo::Tool tool{CaptureLightGizmo::Tool::Translate};
+  CaptureLightGizmo::Space space{CaptureLightGizmo::Space::World};
+  CaptureLightGizmo::Axis axis{CaptureLightGizmo::Axis::Free};
+  glm::vec2 delta{};
+  bool snap{};
+};
 struct CaptureEvent {
   uint32_t frame{0};
   bool reset{false}, skip{false};
@@ -78,6 +91,7 @@ struct CaptureEvent {
   std::optional<CaptureLightEdit> lightEdit;
   std::optional<CaptureLightTarget> lightSelection;
   std::optional<CaptureLightAdd> lightAdd;
+  std::optional<CaptureNodeEdit> nodeEdit;
   std::string sceneHistory;
   bool expectLightEditFailure{};
 };
@@ -127,6 +141,7 @@ public:
       if (value.contains("lightEdit")) event.lightEdit = lightEditRequest(value.at("lightEdit"));
       if (value.contains("lightSelection")) event.lightSelection = lightTarget(value.at("lightSelection"));
       if (value.contains("lightAdd")) event.lightAdd = lightAddRequest(value.at("lightAdd"));
+      if (value.contains("nodeEdit")) event.nodeEdit = nodeEditRequest(value.at("nodeEdit"));
       if (value.contains("sceneHistory")) {
         const auto& history = value.at("sceneHistory");
         if (history != "undo" && history != "redo")
@@ -139,13 +154,13 @@ public:
         event.expectLightEditFailure = expected.get<bool>();
       }
       const unsigned lightActions = unsigned(event.lightEdit.has_value()) + unsigned(event.lightSelection.has_value()) + unsigned(event.lightAdd.has_value());
-      if (lightActions + unsigned(!event.sceneHistory.empty()) > 1 || (value.contains("expectLightEditFailure") && !lightActions))
-        throw std::invalid_argument("Use one light or history action per capture frame");
-      if (lightActions || !event.sceneHistory.empty())
-        nodeFields(value, {"frame", "lightEdit", "lightSelection", "lightAdd", "sceneHistory", "expectLightEditFailure",
+      if (lightActions + unsigned(event.nodeEdit.has_value()) + unsigned(!event.sceneHistory.empty()) > 1 || (value.contains("expectLightEditFailure") && !lightActions))
+        throw std::invalid_argument("Use one edit or history action per capture frame");
+      if (lightActions || event.nodeEdit || !event.sceneHistory.empty())
+        nodeFields(value, {"frame", "lightEdit", "lightSelection", "lightAdd", "nodeEdit", "sceneHistory", "expectLightEditFailure",
                            "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "rayShadowSamples",
                            "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"},
-                   "light event");
+                   "edit event");
       event.acquireOutOfDate = value.value("acquireOutOfDate", false);
       event.presentSuboptimal = value.value("presentSuboptimal", false);
       if (value.contains("bimHiddenObject"))
@@ -495,6 +510,62 @@ private:
       throw std::invalid_argument("Capture light identity must be an integer within its declared bounds");
     return value.get<uint64_t>();
   }
+  static uint32_t captureNodeIndex(const nlohmann::json& value) {
+    if (!value.is_number_integer() || value.get<double>() < 0 || value.get<double>() > INT32_MAX)
+      throw std::invalid_argument("Capture node index must be a nonnegative int32");
+    return value.get<uint32_t>();
+  }
+
+  static CaptureNodeEdit nodeEditRequest(const nlohmann::json& value) {
+    using Operation = CaptureNodeEdit::Operation;
+    nodeFields(value, {"sourceNode", "operation", "matrix", "visible", "parent", "gizmo", "delta"}, "node edit");
+    CaptureNodeEdit edit;
+    edit.sourceNode = captureNodeIndex(value.at("sourceNode"));
+    const auto op = value.at("operation").get<std::string>();
+    if (op == "select" || op == "end" || op == "cancel") {
+      if (value.size() != 2) throw std::invalid_argument("Capture node action has unexpected fields");
+      edit.operation = op == "select" ? Operation::Select : op == "end" ? Operation::End : Operation::Cancel;
+    } else if (op == "transform") {
+      const auto& matrix = value.at("matrix");
+      if (value.size() != 3 || !matrix.is_array() || matrix.size() != 16)
+        throw std::invalid_argument("Capture node transform needs a column-major matrix");
+      for (size_t i = 0; i < 16; ++i) edit.matrix[i / 4][i % 4] = lightNumber(matrix[i]);
+      edit.operation = Operation::Transform;
+    } else if (op == "visibility") {
+      if (value.size() != 3 || !value.at("visible").is_boolean())
+        throw std::invalid_argument("Capture node visibility needs a boolean");
+      edit.visible = value.at("visible").get<bool>();
+      edit.operation = Operation::Visibility;
+    } else if (op == "reparent") {
+      if (value.size() != 3) throw std::invalid_argument("Capture reparent needs exactly one parent");
+      const auto& parent = value.at("parent");
+      if (!parent.is_null()) edit.parent = captureNodeIndex(parent);
+      edit.operation = Operation::Reparent;
+    } else if (op == "begin" || op == "update") {
+      edit.delta = lightVector<2>(value.at("delta"));
+      if (glm::any(glm::greaterThan(glm::abs(edit.delta), glm::vec2(16384))))
+        throw std::invalid_argument("Capture node drag exceeds its screen delta limit");
+      if (op == "begin") {
+        if (value.size() != 4) throw std::invalid_argument("Capture node drag begin needs a gizmo and delta");
+        auto settings = value.at("gizmo");
+        nodeFields(settings, {"tool", "space", "axis", "snap"}, "node gizmo");
+        settings["amount"] = {0, 0, 0};
+        const auto gizmo = lightGizmo(settings);
+        edit.tool = gizmo.tool;
+        edit.space = gizmo.space;
+        edit.axis = gizmo.axis;
+        edit.snap = gizmo.snap;
+        edit.operation = Operation::Begin;
+      } else {
+        if (value.size() != 3) throw std::invalid_argument("Capture node drag update needs only a delta");
+        edit.operation = Operation::Update;
+      }
+    } else {
+      throw std::invalid_argument("Unknown capture node operation");
+    }
+    return edit;
+  }
+
   static glm::vec3 vec3(const nlohmann::json &json) {
     if (!json.is_array() || json.size() != 3)
       throw std::invalid_argument("Capture vector requires three components");

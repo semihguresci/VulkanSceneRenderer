@@ -88,6 +88,7 @@
 #include "Container/utility/Platform.h"
 #include "Container/utility/SceneGraph.h"
 #include "Container/utility/SceneManager.h"
+#include "Container/utility/TransformScale.h"
 #include "Container/utility/SwapChainManager.h"
 #include "stb_image_write.h"
 
@@ -1797,7 +1798,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   applyBimSemanticColorMode();
   updateGltfAnimation();
   processCaptureLightEvent();
-  if (const auto history = std::exchange(captureLightHistoryRequest_, {}); history && !applyEditHistory(*history))
+  processCaptureNodeEdit();
+  if (const auto history = std::exchange(captureHistoryRequest_, {}); history && !applyEditHistory(*history))
     throw std::runtime_error("No capture history command could be applied");
   updateGltfDeformation();
   processPendingDdgiSceneFit();
@@ -2184,7 +2186,9 @@ void RendererFrontend::applyTemporalCapture(
       .waitBeforeAcquire(*subs_.frameSyncManager, frame_.currentFrame);
   const auto &event = sample.event;
   queueCaptureLightEvent(event);
-  if (!event.sceneHistory.empty()) captureLightHistoryRequest_ = event.sceneHistory == "redo";
+  if (!event.sceneHistory.empty()) captureHistoryRequest_ = event.sceneHistory == "redo";
+  if (event.nodeEdit)
+    captureNodeEdit_ = std::make_shared<container::temporal::CaptureNodeEdit>(*event.nodeEdit);
   if (event.bimSelectedObject) {
     if (!subs_.bimManager ||
         !subs_.bimManager->metadataForObject(*event.bimSelectedObject))
@@ -2694,6 +2698,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   appendGltfAnimationTelemetry(json);
   appendGltfDeformationTelemetry(json);
   appendLightEditTelemetry(json);
+  appendNodeEditTelemetry(json);
   return json;
 }
 
@@ -2846,7 +2851,8 @@ void RendererFrontend::processInput(float deltaTime) {
       .guiCapturingMouse =
           subs_.guiManager ? subs_.guiManager->isCapturingMouse() : false,
       .guiCapturingKeyboard = subs_.guiManager &&
-          (subs_.guiManager->isCapturingKeyboard() || subs_.guiManager->lightEditGestureActive()),
+          (subs_.guiManager->isCapturingKeyboard() || subs_.guiManager->lightEditGestureActive() ||
+           subs_.guiManager->nodeTransformGestureActive()),
       .selectedMeshNode = sceneState_.selectedMeshNode,
       .hasSelection =
           sceneState_.selectedMeshNode !=
@@ -2889,10 +2895,19 @@ void RendererFrontend::processInput(float deltaTime) {
           },
       .transformGestureCallbacks = {
           [this](auto tool, auto space, auto axis, bool snap) {
-            beginLightGizmoGesture(tool, space, axis, snap);
+            if (sceneState_.selectedMeshNode != container::scene::SceneGraph::kInvalidNode)
+              beginNodeGesture(sceneState_.selectedMeshNode, 0, true);
+            else
+              beginLightGizmoGesture(tool, space, axis, snap);
           },
-          [this] { endLightGizmoGesture(); },
-          [this](auto reason) { cancelLightGizmoGesture(reason); },
+          [this] {
+            if (nodeGizmoActive()) finishNodeGesture();
+            else endLightGizmoGesture();
+          },
+          [this](auto reason) {
+            if (nodeGizmoActive()) finishNodeGesture(true);
+            else cancelLightGizmoGesture(reason);
+          },
       },
   };
   try {
@@ -2902,7 +2917,7 @@ void RendererFrontend::processInput(float deltaTime) {
     if (subs_.guiManager) subs_.guiManager->setStatusMessage(error.what());
     svc_.inputManager.endFrame();
   }
-  if (interactionController_.state().gesture !=
+  if (!nodeGizmoActive() && interactionController_.state().gesture !=
       container::ui::ViewportGesture::TransformDrag) {
     transformDragSession_.active = false;
   }
@@ -3508,11 +3523,10 @@ void RendererFrontend::transformSelectedNodeByDrag(
         std::exp(static_cast<float>(dragDeltaX - dragDeltaY) * 0.005f), 0.25f,
         4.0f);
     if (axis == container::ui::TransformAxis::Free) {
-      controls.scale = glm::clamp(controls.scale * factor, glm::vec3(0.001f),
-                                  glm::vec3(1000.0f));
+      controls.scale = container::ui::clampSignedScale(controls.scale * factor);
     } else {
       auto applyScaleAxis = [&](float &component) {
-        component = std::clamp(component * factor, 0.001f, 1000.0f);
+        component = container::ui::clampSignedScale(component * factor);
       };
       switch (axis) {
       case container::ui::TransformAxis::X:
@@ -3545,10 +3559,8 @@ void RendererFrontend::transformSelectedNodeByDrag(
                            controls.rotationDegrees, 15.0f);
       break;
     case container::ui::ViewportTool::Scale:
-      controls.scale =
-          glm::clamp(snapRelativeVec3(transformDragSession_.startControls.scale,
-                                      controls.scale, 0.1f),
-                     glm::vec3(0.001f), glm::vec3(1000.0f));
+      controls.scale = container::ui::snapSignedScale(
+          transformDragSession_.startControls.scale, controls.scale, 0.1f);
       break;
     case container::ui::ViewportTool::Select:
       break;
@@ -3629,13 +3641,7 @@ void RendererFrontend::transformSelectedNodeByDrag(
     return;
   }
 
-  subs_.cameraController->applyNodeTransform(sceneState_.selectedMeshNode,
-                                             sceneState_.rootNode, controls);
-  if (sceneState_.selectedMeshNode == sceneState_.rootNode &&
-      subs_.lightingManager) {
-    subs_.lightingManager->updateLightingData();
-  }
-  refreshSceneObjectData();
+  applyNodeGizmoControls(tool, axis, controls);
 }
 
 std::optional<container::ui::TransformAxis>
@@ -6351,8 +6357,9 @@ void RendererFrontend::presentSceneControls() {
   syncGuiRenderEngineOptions();
   ensureSceneEditHistory();
   refreshLightEditInspector();
-  subs_.guiManager->setEditHistoryState(editHistory_.canUndo() || lightEditGestureActive(),
-      editHistory_.canRedo() && !lightEditGestureActive(), std::string(editHistory_.undoLabel()),
+  const bool pendingGesture = lightEditGestureActive() || nodeGesture_;
+  subs_.guiManager->setEditHistoryState(editHistory_.canUndo() || pendingGesture,
+      editHistory_.canRedo() && !pendingGesture, std::string(editHistory_.undoLabel()),
       std::string(editHistory_.redoLabel()));
 
   subs_.guiManager->startFrame();
@@ -6629,12 +6636,8 @@ void RendererFrontend::presentSceneControls() {
           ? subs_.cameraController->nodeTransformControls(sceneState_.rootNode)
           : container::ui::TransformControls{},
       [this](const container::ui::TransformControls &controls) {
-        if (subs_.cameraController)
-          subs_.cameraController->applyNodeTransform(
-              sceneState_.rootNode, sceneState_.rootNode, controls);
-        if (subs_.lightingManager)
-          subs_.lightingManager->updateLightingData();
-        refreshSceneObjectData();
+        pendingNodeEdits_.push_back({NodeEditKind::Transform, sceneState_.rootNode,
+            controls, subs_.guiManager->nodeTransformWidget()});
       },
       subs_.lightingManager ? subs_.lightingManager->directionalLightPosition()
                             : glm::vec3{0.0f},
@@ -6710,60 +6713,21 @@ void RendererFrontend::presentSceneControls() {
         }
       },
       [this](uint32_t nodeIndex, bool visible) {
-        if (sceneGraph_.getNode(nodeIndex) == nullptr) {
-          return;
-        }
-        sceneGraph_.setVisible(nodeIndex, visible);
-        clearHoveredMeshNode();
-        selectedDrawCommands_.clear();
-        selectedBimDrawCommands_.clear();
-        refreshSceneObjectData();
-        syncSceneProviders();
-        if (subs_.guiManager) {
-          subs_.guiManager->setStatusMessage(
-              std::string(visible ? "Showed" : "Hid") + " scene node " +
-              std::to_string(nodeIndex));
-        }
+        pendingNodeEdits_.push_back({.kind = NodeEditKind::Visibility, .node = nodeIndex, .visible = visible});
       },
       [this](uint32_t nodeIndex, std::optional<uint32_t> parentNode) {
-        if (nodeIndex == sceneState_.rootNode ||
-            sceneGraph_.getNode(nodeIndex) == nullptr) {
-          return;
-        }
-        if (!sceneGraph_.setParentPreserveWorldTransform(nodeIndex,
-                                                          parentNode)) {
-          if (subs_.guiManager) {
-            subs_.guiManager->setStatusMessage(
-                "Failed to reparent scene node " + std::to_string(nodeIndex));
-          }
-          return;
-        }
-        selectionNavigationAnchor_ = {};
-        clearHoveredMeshNode();
-        selectedDrawCommands_.clear();
-        selectedBimDrawCommands_.clear();
-        if (subs_.lightingManager)
-          subs_.lightingManager->updateLightingData();
-        refreshSceneObjectData();
-        syncSceneProviders();
-        if (subs_.guiManager) {
-          subs_.guiManager->setStatusMessage("Reparented scene node " +
-                                             std::to_string(nodeIndex));
-        }
+        pendingNodeEdits_.push_back({.kind = NodeEditKind::Reparent, .node = nodeIndex, .parent = parentNode});
       },
       subs_.cameraController ? subs_.cameraController->nodeTransformControls(
                                    sceneState_.selectedMeshNode)
                              : container::ui::TransformControls{},
       [this](uint32_t nodeIndex,
              const container::ui::TransformControls &controls) {
-        if (subs_.cameraController)
-          subs_.cameraController->applyNodeTransform(
-              nodeIndex, sceneState_.rootNode, controls);
-        if (nodeIndex == sceneState_.rootNode && subs_.lightingManager)
-          subs_.lightingManager->updateLightingData();
-        refreshSceneObjectData();
+        pendingNodeEdits_.push_back({NodeEditKind::Transform, nodeIndex,
+            controls, subs_.guiManager->nodeTransformWidget()});
       });
 
+  processNodeEditRequests();
   processLightEditRequests();
   const auto history = subs_.guiManager->consumeEditHistoryRequest();
   if (history != container::ui::GuiManager::EditHistoryRequest::None) {

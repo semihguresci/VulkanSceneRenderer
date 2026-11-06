@@ -471,10 +471,12 @@ void SceneController::createSceneBuffers(
 
 void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
   sceneGraph_.updateWorldTransforms();
-
-  // Sync ECS registry from the scene graph so views are up-to-date.
   world_->syncFromSceneGraph(sceneGraph_);
+  rebuildObjectData(showDiagCube, primitiveBounds_, deformationScene_.get());
+}
 
+void SceneController::rebuildObjectData(bool showDiagCube,
+    std::span<const PrimitiveBounds> primitiveBounds, const GltfDeformationScene* deformationScene) {
   objectData_.clear();
   objectNodeIndices_.clear();
   opaqueDrawCommands_.clear();
@@ -498,7 +500,7 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
   transparentDoubleSidedDrawCommands_.reserve(renderableCount);
 
   world_->forEachRenderableWithNode(
-      [this](const container::ecs::TransformComponent& transform,
+      [this, primitiveBounds, deformationScene](const container::ecs::TransformComponent& transform,
              const container::ecs::MeshComponent&      mesh,
              const container::ecs::MaterialComponent&   material,
              const container::ecs::SceneNodeRef&        nodeRef) {
@@ -509,7 +511,7 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
 
         const auto& primitive =
             sceneManager_.primitiveRanges()[mesh.primitiveIndex];
-        const auto* deformation = deformationScene_ ? deformationScene_->drawRange(nodeRef.nodeIndex) : nullptr;
+        const auto* deformation = deformationScene ? deformationScene->drawRange(nodeRef.nodeIndex) : nullptr;
         const auto materialProperties =
             sceneManager_.materialRenderProperties(material.materialIndex);
         const uint32_t materialIndex = materialProperties.gpuMaterialIndex;
@@ -537,10 +539,10 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
         if (deformation && deformation->orientation == GltfDeformationOrientation::Reversed)
           object.objectInfo.y |= container::gpu::kObjectFlagDeformationWindingFlipped;
 
-        if (deformation || mesh.primitiveIndex < primitiveBounds_.size()) {
+        if (deformation || mesh.primitiveIndex < primitiveBounds.size()) {
           const auto bounds = deformation
               ? PrimitiveBounds{deformation->bounds.center, deformation->bounds.radius, deformation->bounds.valid}
-              : primitiveBounds_[mesh.primitiveIndex];
+              : primitiveBounds[mesh.primitiveIndex];
           if (bounds.valid) {
             const glm::vec3 worldCenter = glm::vec3(
                 transform.worldTransform * glm::vec4(bounds.center, 1.0f));
@@ -618,6 +620,45 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
 
   cachedSceneGraphRevision_ = sceneGraph_.revision();
   cachedShowDiagCube_ = showDiagCube;
+  objectDataCacheValid_ = true;
+  ++objectDataRevision_;
+  ++objectBufferUploadRevision_;
+}
+
+SceneController::PreparedObjectData::PreparedObjectData(std::unique_ptr<SceneController> state)
+    : state_(std::move(state)) {}
+SceneController::PreparedObjectData::PreparedObjectData(PreparedObjectData&&) noexcept = default;
+SceneController::PreparedObjectData& SceneController::PreparedObjectData::operator=(
+    PreparedObjectData&&) noexcept = default;
+SceneController::PreparedObjectData::~PreparedObjectData() = default;
+
+SceneController::PreparedObjectData SceneController::prepareObjectData(
+    container::scene::SceneGraph& candidate, bool showDiagCube) const {
+  auto next = std::make_unique<SceneController>(device_, allocationManager_,
+      pipelineManager_, candidate, sceneManager_, nullptr, config_);
+  next->world_ = world_->cloneStateWithoutContext();
+  next->world_->syncFromSceneGraph(candidate);
+  next->diagCubeVertexSlice_ = diagCubeVertexSlice_;
+  next->rebuildObjectData(showDiagCube, primitiveBounds_, deformationScene_.get());
+  return PreparedObjectData(std::move(next));
+}
+
+void SceneController::exchangeObjectData(PreparedObjectData& prepared) noexcept {
+  auto& next = *prepared.state_;
+  world_->swapStatePreservingContext(*next.world_);
+  objectData_.swap(next.objectData_);
+  objectNodeIndices_.swap(next.objectNodeIndices_);
+  opaqueDrawCommands_.swap(next.opaqueDrawCommands_);
+  transparentDrawCommands_.swap(next.transparentDrawCommands_);
+  opaqueSingleSidedDrawCommands_.swap(next.opaqueSingleSidedDrawCommands_);
+  opaqueWindingFlippedDrawCommands_.swap(next.opaqueWindingFlippedDrawCommands_);
+  opaqueDoubleSidedDrawCommands_.swap(next.opaqueDoubleSidedDrawCommands_);
+  transparentSingleSidedDrawCommands_.swap(next.transparentSingleSidedDrawCommands_);
+  transparentWindingFlippedDrawCommands_.swap(next.transparentWindingFlippedDrawCommands_);
+  transparentDoubleSidedDrawCommands_.swap(next.transparentDoubleSidedDrawCommands_);
+  std::swap(diagCubeObjectIndex_, next.diagCubeObjectIndex_);
+  cachedSceneGraphRevision_ = sceneGraph_.revision();
+  cachedShowDiagCube_ = next.cachedShowDiagCube_;
   objectDataCacheValid_ = true;
   ++objectDataRevision_;
   ++objectBufferUploadRevision_;

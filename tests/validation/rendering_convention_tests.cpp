@@ -7659,6 +7659,9 @@ TEST(RenderingConventionTests, SceneHierarchyPanelExposesNodeActions) {
   const std::string frontend =
       readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
 
+  const std::string nodeEditor = readRepoTextFile("src/renderer/core/RendererFrontendNodes.cpp");
+  EXPECT_TRUE(contains(frontend, "processNodeEditRequests()"));
+  EXPECT_TRUE(contains(nodeEditor, "publishNodePlacement"));
   EXPECT_TRUE(contains(sceneGraphHeader, "rootNodes()"));
   EXPECT_TRUE(contains(sceneGraphHeader, "visible = true"));
   EXPECT_TRUE(contains(sceneGraphHeader, "setParentPreserveWorldTransform"));
@@ -7680,9 +7683,9 @@ TEST(RenderingConventionTests, SceneHierarchyPanelExposesNodeActions) {
   EXPECT_TRUE(contains(gui, "Visible"));
   EXPECT_TRUE(contains(gui, "Parent"));
   EXPECT_TRUE(contains(frontend, "frameNodeOrScene(nodeIndex)"));
-  EXPECT_TRUE(contains(frontend, "setVisible(nodeIndex, visible)"));
-  EXPECT_TRUE(contains(frontend, "setParentPreserveWorldTransform"));
-  EXPECT_TRUE(contains(frontend, "Failed to reparent scene node"));
+  EXPECT_TRUE(contains(nodeEditor, "candidate.setVisible(node, desired.visible)"));
+  EXPECT_TRUE(contains(nodeEditor, "worldPreservingLocalTransform"));
+  EXPECT_TRUE(contains(nodeEditor, "Cannot reparent the selected node"));
   const size_t restoreSnapshot =
       frontend.find("return restoreViewpointSnapshot(snapshot);");
   ASSERT_NE(restoreSnapshot, std::string::npos);

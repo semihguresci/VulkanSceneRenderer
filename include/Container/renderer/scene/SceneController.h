@@ -105,6 +105,20 @@ class SceneController {
   // Rebuilds objectData, opaqueDrawCommands, transparentDrawCommands from
   // the scene graph. Appends the diagnostic cube entry when enabled.
   void syncObjectDataFromSceneGraph(bool showDiagCube);
+  // The detached controller owns only prepared CPU objects and ECS state.
+  class PreparedObjectData {
+   public:
+    PreparedObjectData(PreparedObjectData&&) noexcept;
+    PreparedObjectData& operator=(PreparedObjectData&&) noexcept;
+    ~PreparedObjectData();
+   private:
+    friend class SceneController;
+    explicit PreparedObjectData(std::unique_ptr<SceneController> state);
+    std::unique_ptr<SceneController> state_;
+  };
+  [[nodiscard]] PreparedObjectData prepareObjectData(
+      container::scene::SceneGraph& candidate, bool showDiagCube) const;
+  void exchangeObjectData(PreparedObjectData&) noexcept;
 
   // Calls sync then uploads objectData to objectBuffer; recreates the buffer
   // if needed. Returns true when the buffer was recreated (caller must
@@ -228,6 +242,8 @@ class SceneController {
   };
 
   void rebuildPrimitiveBoundsCache();
+  void rebuildObjectData(bool showDiagCube, std::span<const PrimitiveBounds> bounds,
+                         const GltfDeformationScene* deformation);
   void invalidateObjectDataCache();
   void refreshObjectDataCache(bool showDiagCube);
   [[nodiscard]] SceneNodePickHit pickRenderableNodeHitForDraws(

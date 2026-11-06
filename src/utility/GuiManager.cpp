@@ -1,4 +1,5 @@
 #include "Container/utility/GuiManager.h"
+#include "Container/utility/TransformScale.h"
 #include "Container/renderer/effects/DisplayGradePreset.h"
 
 #include "Container/renderer/bim/BimCoordinationOverlay.h"
@@ -1052,14 +1053,34 @@ void ImGuiTextStringView(const char *label, std::string_view value) {
 }
 
 bool DrawTransformControls(const char *label, TransformControls &transform,
-                           float dragSpeed = 0.05f) {
+                           bool allowMirroring = true, float dragSpeed = 0.05f,
+                           std::optional<uint64_t> *gesture = nullptr,
+                           uint64_t *nextGesture = nullptr,
+                           bool *gestureActive = nullptr) {
   bool changed = false;
+  const auto trackGesture = [&] {
+    if (gesture && nextGesture && ImGui::IsItemActivated())
+      *gesture = ++*nextGesture;
+    if (gestureActive)
+      *gestureActive |= ImGui::IsItemActive();
+  };
   if (ImGui::TreeNode(label)) {
     changed |= ImGui::DragFloat3("Position", &transform.position.x, dragSpeed);
+    trackGesture();
     changed |=
         ImGui::DragFloat3("Rotation", &transform.rotationDegrees.x, 0.5f);
-    changed |= ImGui::DragFloat3("Scale", &transform.scale.x, dragSpeed, 0.001f,
-                                 1000.0f);
+    trackGesture();
+    const auto originalScale = transform.scale;
+    if (ImGui::DragFloat3("Scale", &transform.scale.x, dragSpeed,
+                         allowMirroring ? -1000.0f : 0.001f, 1000.0f)) {
+      for (int axis = 0; axis < 3; ++axis)
+        if (transform.scale[axis] != originalScale[axis])
+          transform.scale[axis] = allowMirroring
+              ? clampSignedScale(transform.scale[axis])
+              : std::clamp(transform.scale[axis], .001f, 1000.0f);
+      changed = true;
+    }
+    trackGesture();
     ImGui::TreePop();
   }
   return changed;
@@ -2157,6 +2178,9 @@ void GuiManager::startFrame() {
   ImGui_ImplGlfw_NewFrame();
   ImGui::NewFrame();
   imguiFrameOpen_ = true;
+  nodeTransformCancel_ = nodeTransformGestureActive_ &&
+      (ImGui::GetIO().AppFocusLost || ImGui::IsKeyPressed(ImGuiKey_Escape, false));
+  nodeTransformGestureActive_ = false;
   lightEditControls_.processInput();
   // Text fields own their text undo while they are active.
   if (!ImGui::GetIO().WantTextInput) {
@@ -6491,12 +6515,13 @@ void GuiManager::drawSceneControls(
   }
 
   TransformControls editableCameraTransform = cameraTransform;
-  if (DrawTransformControls("Camera", editableCameraTransform)) {
+  if (DrawTransformControls("Camera", editableCameraTransform, false)) {
     applyCameraTransform(editableCameraTransform);
   }
 
   TransformControls editableSceneTransform = sceneTransform;
-  if (DrawTransformControls("Scene", editableSceneTransform)) {
+  if (DrawTransformControls("Scene", editableSceneTransform, true, 0.05f,
+          &nodeTransformWidget_, &nextNodeTransformWidget_, &nodeTransformGestureActive_)) {
     applySceneTransform(editableSceneTransform);
   }
 
@@ -6687,7 +6712,8 @@ void GuiManager::drawSceneControls(
 
     if (activeMeshNode != container::scene::SceneGraph::kInvalidNode) {
       TransformControls editableMeshTransform = meshTransform;
-      if (DrawTransformControls("Mesh Transform", editableMeshTransform)) {
+      if (DrawTransformControls("Mesh Transform", editableMeshTransform, true, 0.05f,
+          &nodeTransformWidget_, &nextNodeTransformWidget_, &nodeTransformGestureActive_)) {
         applyMeshTransform(activeMeshNode, editableMeshTransform);
       }
     }

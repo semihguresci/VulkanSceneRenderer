@@ -200,6 +200,9 @@ class SceneManager {
     return authoredAreaBindings_;
   }
   [[nodiscard]] AuthoredSceneLights publishedAuthoredSceneLights() const;
+  [[nodiscard]] AuthoredSceneLights evaluateAuthoredSceneLights(
+      const SceneGraph* graph, uint32_t editorRoot) const;
+  void exchangeAuthoredSceneLights(AuthoredSceneLights&) noexcept;
   [[nodiscard]] tinygltf::Model& animationSource() noexcept { return gltfModel_; }
   [[nodiscard]] const tinygltf::Model& animationSource() const noexcept { return gltfModel_; }
   std::unique_ptr<container::geometry::gltf::AnimationPlayer> takePreparedAnimation() noexcept;

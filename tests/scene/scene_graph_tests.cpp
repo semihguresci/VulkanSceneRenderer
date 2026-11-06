@@ -443,6 +443,37 @@ TEST(SceneGraph, GetNodeConstAndMutableAgree) {
   EXPECT_EQ(graph.getNode(idx)->materialIndex, 5u);
 }
 
+TEST(SceneGraph, DetachedNodeEditRetainsLifetimeAndExactSiblingOrder) {
+  SceneGraph graph;
+  const auto left = graph.createNode(glm::mat4(1), 0);
+  const auto right = graph.createNode(glm::mat4(1), 0);
+  const auto first = graph.createNode(glm::mat4(1), 0);
+  const auto moved = graph.createNode(glm::mat4(1), 0);
+  const auto last = graph.createNode(glm::mat4(1), 0);
+  ASSERT_TRUE(graph.setParent(first, left));
+  ASSERT_TRUE(graph.setParent(moved, left));
+  ASSERT_TRUE(graph.setParent(last, left));
+  graph.updateWorldTransforms();
+  const auto identity = graph.identity();
+  const auto incarnation = graph.nodeIncarnation(moved);
+  const auto revision = graph.revision();
+  SceneGraph candidate(graph);
+  ASSERT_FALSE(candidate.setParentAt(left, moved, 0));
+  EXPECT_EQ(candidate.revision(), revision);
+  ASSERT_TRUE(candidate.setParentAt(moved, right, 0));
+  ASSERT_TRUE(candidate.setParentAt(moved, left, 1));
+  EXPECT_EQ(candidate.getNode(left)->children, (std::vector{first, moved, last}));
+  ASSERT_TRUE(candidate.setParentAt(moved, right, 0));
+  candidate.updateWorldTransforms();
+  graph.exchangeNodeEdit(candidate);
+  EXPECT_EQ(graph.identity(), identity);
+  EXPECT_EQ(graph.nodeIncarnation(moved), incarnation);
+  EXPECT_GT(graph.revision(), revision);
+  EXPECT_EQ(graph.getNode(left)->children, (std::vector{first, last}));
+  EXPECT_EQ(graph.siblingIndex(moved), 0u);
+  EXPECT_EQ(candidate.getNode(left)->children, (std::vector{first, moved, last}));
+}
+
 TEST(SceneGraph, SceneLifetimeDistinguishesReusedNodeIndices) {
   SceneGraph graph;
   const auto node = graph.createNode(glm::mat4(1), 0);

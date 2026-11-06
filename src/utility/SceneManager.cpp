@@ -8,6 +8,8 @@
 #include <format>
 #include <initializer_list>
 #include <limits>
+#include <map>
+#include <tuple>
 #include <optional>
 #include <print>
 #include <stdexcept>
@@ -2146,20 +2148,24 @@ AuthoredSceneLights SceneManager::publishedAuthoredSceneLights() const {
           authoredPointBindings_, authoredDirectionalBindings_, authoredAreaBindings_};
 }
 
+void SceneManager::exchangeAuthoredSceneLights(AuthoredSceneLights& next) noexcept {
+  authoredPointLights_.swap(next.points);
+  authoredDirectionalLights_.swap(next.directionals);
+  authoredAreaLights_.swap(next.areas);
+  authoredPointBindings_.swap(next.pointBindings);
+  authoredDirectionalBindings_.swap(next.directionalBindings);
+  authoredAreaBindings_.swap(next.areaBindings);
+}
+
 void SceneManager::collectAuthoredPunctualLights(const SceneGraph* graph, uint32_t editorRoot) {
+  auto next = evaluateAuthoredSceneLights(graph, editorRoot);
+  exchangeAuthoredSceneLights(next);
+}
+
+AuthoredSceneLights SceneManager::evaluateAuthoredSceneLights(
+    const SceneGraph* graph, uint32_t editorRoot) const {
   AuthoredSceneLights next;
-  const auto publish = [&] {
-    authoredPointLights_.swap(next.points);
-    authoredDirectionalLights_.swap(next.directionals);
-    authoredAreaLights_.swap(next.areas);
-    authoredPointBindings_.swap(next.pointBindings);
-    authoredDirectionalBindings_.swap(next.directionalBindings);
-    authoredAreaBindings_.swap(next.areaBindings);
-  };
-  if (gltfModel_.nodes.empty()) {
-    publish();
-    return;
-  }
+  if (gltfModel_.nodes.empty()) return next;
 
   const auto appendLight = [&](int32_t sourceNode, const glm::mat4& sceneLocalTransform) {
     const auto& node = gltfModel_.nodes[size_t(sourceNode)];
@@ -2258,8 +2264,16 @@ void SceneManager::collectAuthoredPunctualLights(const SceneGraph* graph, uint32
     // Accumulate relative transforms so even a singular editor root is safe.
     struct Work { uint32_t node; glm::mat4 parent; };
     std::vector<Work> pending;
+    glm::mat4 detachedRootBasis(1.0f);
+    if (const auto* anchor = graph->getNode(editorRoot); anchor && graph->rootNodes().size() > 1) {
+      // LightingManager applies the editor anchor to every authored light.
+      // A detached subtree already has world-space coordinates.
+      const double determinant = glm::determinant(glm::dmat3(anchor->worldTransform));
+      if (std::isfinite(determinant) && determinant != 0)
+        detachedRootBasis = glm::mat4(glm::inverse(glm::dmat4(anchor->worldTransform)));
+    }
     for (auto root = graph->rootNodes().rbegin(); root != graph->rootNodes().rend(); ++root)
-      pending.push_back({*root, glm::mat4(1.0f)});
+      pending.push_back({*root, *root == editorRoot ? glm::mat4(1.0f) : detachedRootBasis});
     while (!pending.empty()) {
       const auto work = pending.back();
       pending.pop_back();
@@ -2271,8 +2285,33 @@ void SceneManager::collectAuthoredPunctualLights(const SceneGraph* graph, uint32
       for (auto child = node->children.rbegin(); child != node->children.rend(); ++child)
         pending.push_back({*child, transform});
     }
-    publish();
-    return;
+    // Keep editable-light ordinals stable when reparenting changes traversal.
+    const auto keepOrder = [](auto& values, auto& bindings, const auto& previous) {
+      if (bindings == previous || bindings.size() != previous.size()) return;
+      using Key = std::tuple<int32_t, std::string_view, int32_t>;
+      const auto key = [](const AuthoredLightBinding& b) -> Key {
+        return {b.sourceNode, b.extension, b.definition};
+      };
+      std::map<Key, size_t> rows;
+      for (size_t i = 0; i < bindings.size(); ++i) rows.emplace(key(bindings[i]), i);
+      if (rows.size() != bindings.size()) return;
+      std::vector<size_t> order;
+      order.reserve(previous.size());
+      for (const auto& binding : previous) {
+        const auto item = rows.find(key(binding));
+        if (item == rows.end()) return;
+        order.push_back(item->second);
+      }
+      std::decay_t<decltype(values)> ordered;
+      ordered.reserve(values.size());
+      for (const auto index : order) ordered.push_back(values[index]);
+      values.swap(ordered);
+      bindings = previous;
+    };
+    keepOrder(next.points, next.pointBindings, authoredPointBindings_);
+    keepOrder(next.directionals, next.directionalBindings, authoredDirectionalBindings_);
+    keepOrder(next.areas, next.areaBindings, authoredAreaBindings_);
+    return next;
   }
 
   std::vector<bool> visited(gltfModel_.nodes.size(), false);
@@ -2287,7 +2326,7 @@ void SceneManager::collectAuthoredPunctualLights(const SceneGraph* graph, uint32
       };
   const auto importRoot = importScaleTransform(config_.importScale);
   for (const int root : activeSceneRootNodes(gltfModel_)) traverseNode(root, importRoot);
-  publish();
+  return next;
 }
 
 void SceneManager::publishAnimationChanges(

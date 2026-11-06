@@ -36,6 +36,7 @@ namespace container::temporal {
 struct CaptureSample;
 struct CaptureEvent;
 struct CaptureLightTarget;
+struct CaptureNodeEdit;
 }
 
 // Forward declarations — full headers are only needed in RendererFrontend.cpp.
@@ -457,7 +458,7 @@ private:
 
   container::util::EditHistory editHistory_{};
   uint64_t lightHistoryScene_{}, lightHistoryAsset_{};
-  std::optional<bool> captureLightHistoryRequest_;
+  std::optional<bool> captureHistoryRequest_;
   void ensureSceneEditHistory();
   bool applyEditHistory(bool redo);
   struct LightEditHistory;
@@ -494,6 +495,53 @@ private:
   void queueCaptureLightEvent(const container::temporal::CaptureEvent&);
   void processCaptureLightEvent();
   EditableLightId resolveCaptureLightTarget(const container::temporal::CaptureLightTarget&) const;
+
+  enum class NodeEditKind { Transform, Visibility, Reparent };
+  struct NodePlacement {
+    glm::mat4 local{1};
+    uint32_t parent{};
+    size_t sibling{};
+    bool visible{};
+    bool operator==(const NodePlacement&) const = default;
+  };
+  struct NodeEditRequest {
+    NodeEditKind kind;
+    uint32_t node;
+    container::ui::TransformControls controls{};
+    std::optional<uint64_t> widget{};
+    std::optional<uint32_t> parent{};
+    bool visible{};
+  };
+  struct NodeEditSelection {
+    uint32_t mesh, bim;
+    EditableLightId light;
+    bool sectionEditable;
+  };
+  struct NodeGesture;
+  std::shared_ptr<NodeGesture> nodeGesture_;
+  std::vector<NodeEditRequest> pendingNodeEdits_;
+  std::shared_ptr<container::temporal::CaptureNodeEdit> captureNodeEdit_;
+  std::optional<uint32_t> captureNodeTelemetry_;
+  std::optional<NodePlacement> nodePlacement(uint32_t node) const;
+  bool nodeHasActivePoseTrack(uint32_t node) const;
+  NodeEditSelection nodeEditSelection() const;
+  void restoreNodeEditSelection(const NodeEditSelection&);
+  bool publishNodePlacement(uint32_t node, uint64_t graph, uint64_t incarnation,
+                            NodeEditKind kind, const NodePlacement& expected, const NodePlacement& desired,
+                            const NodeEditSelection* selection = nullptr);
+  bool recordNodeEdit(uint32_t node, NodeEditKind kind, const NodePlacement& before,
+                      const NodePlacement& after, std::string label);
+  bool editNodeVisibility(uint32_t node, bool visible);
+  bool reparentNode(uint32_t node, std::optional<uint32_t> parent);
+  void beginNodeGesture(uint32_t node, uint64_t widget, bool gizmo);
+  bool previewNodePose(const glm::mat4& local);
+  void finishNodeGesture(bool cancel = false);
+  bool nodeGizmoActive() const noexcept;
+  void applyNodeGizmoControls(container::ui::ViewportTool, container::ui::TransformAxis,
+                              const container::ui::TransformControls&);
+  void processNodeEditRequests();
+  void processCaptureNodeEdit();
+  void appendNodeEditTelemetry(nlohmann::json&) const;
 
   struct TransformDragSession {
     bool active{false};

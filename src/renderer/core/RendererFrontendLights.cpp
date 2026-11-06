@@ -88,6 +88,9 @@ void RendererFrontend::ensureSceneEditHistory() {
       lightHistoryAsset_ == asset)
     return;
   editHistory_.clear();
+  nodeGesture_.reset();
+  pendingNodeEdits_.clear();
+  captureNodeTelemetry_.reset();
   lightEditGesture_.reset();
   lightEditError_.clear();
   pendingLightSelection_.reset();
@@ -100,6 +103,7 @@ void RendererFrontend::ensureSceneEditHistory() {
 bool RendererFrontend::applyEditHistory(bool redo) {
   ensureSceneEditHistory();
   finishLightEditInput();
+  finishNodeGesture();
   auto status =
       (redo ? "Redid " : "Undid ") +
       std::string(redo ? editHistory_.redoLabel() : editHistory_.undoLabel());
@@ -126,6 +130,7 @@ void RendererFrontend::reportLightEditError(std::string_view message) {
 void RendererFrontend::selectLightForEditing(EditableLightId id) {
   if (!subs_.lightingManager) return;
   finishLightEditInput();
+  finishNodeGesture();
   subs_.lightingManager->selectEditableLight(id);
   transformDragSession_.active = false;
   sceneState_.selectedMeshNode = container::scene::SceneGraph::kInvalidNode;
@@ -235,6 +240,7 @@ bool RendererFrontend::replayLightEdit(LightEditHistory& state, bool applied) {
 bool RendererFrontend::authorLightEditRequest(const LightEditRequest& request) {
   if (!subs_.lightingManager) throw std::runtime_error("Lighting is not ready");
   ensureSceneEditHistory();
+  finishNodeGesture();
   if (request.phase == LightEditPhase::End ||
       request.phase == LightEditPhase::Cancel) {
     if (!request.gesture ||
@@ -420,6 +426,7 @@ void RendererFrontend::processLightEditRequests() {
 }
 
 bool RendererFrontend::authorManualLightAdd(EditableLightType type) {
+  finishNodeGesture();
   finishLightEditGesture();
   if (!subs_.lightingManager) throw std::runtime_error("Lighting is not ready");
   if (lightEditHistoryCommits_ == UINT64_MAX)

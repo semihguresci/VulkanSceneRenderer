@@ -35,6 +35,7 @@
       "lightEdit": {"$ref": "#/$defs/lightEdit"},
       "lightSelection": {"$ref": "#/$defs/lightTarget"},
       "lightAdd": {"$ref": "#/$defs/lightAdd"},
+      "nodeEdit": {"$ref": "#/$defs/nodeEdit"},
       "sceneHistory": {"enum": ["undo", "redo"]},
       "expectLightEditFailure": {"type": "boolean", "default": false},
       "areaLightPosition": {"$ref": "#/$defs/vec3"},
@@ -55,10 +56,10 @@
         {"required": ["guiUnload"], "properties": {"guiUnload": {"const": true}}}
       ]}
     }, {
-      "if": {"anyOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}, {"required": ["sceneHistory"]}]},
+      "if": {"anyOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}, {"required": ["nodeEdit"]}, {"required": ["sceneHistory"]}]},
       "then": {"allOf": [
-        {"oneOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}, {"required": ["sceneHistory"]}]},
-        {"propertyNames": {"enum": ["frame", "lightEdit", "lightSelection", "lightAdd", "sceneHistory", "expectLightEditFailure", "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "rayShadowSamples", "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"]}}
+        {"oneOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}, {"required": ["nodeEdit"]}, {"required": ["sceneHistory"]}]},
+        {"propertyNames": {"enum": ["frame", "lightEdit", "lightSelection", "lightAdd", "nodeEdit", "sceneHistory", "expectLightEditFailure", "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "rayShadowSamples", "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"]}}
       ]}
     }, {
       "if": {"required": ["expectLightEditFailure"]},
@@ -66,6 +67,29 @@
     }]}}
   },
   "$defs": {
+    "nodeSourceIndex": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+    "nodeEdit": {
+      "type": "object", "additionalProperties": false, "required": ["sourceNode", "operation"],
+      "properties": {
+        "sourceNode": {"$ref": "#/$defs/nodeSourceIndex"},
+        "operation": {"enum": ["select", "transform", "visibility", "reparent", "begin", "update", "end", "cancel"]},
+        "matrix": {"type": "array", "minItems": 16, "maxItems": 16, "items": {"$ref": "#/$defs/lightFloat"}},
+        "visible": {"type": "boolean"},
+        "parent": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/nodeSourceIndex"}]},
+        "delta": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number", "minimum": -16384, "maximum": 16384}},
+        "gizmo": {"type": "object", "additionalProperties": false, "required": ["tool"], "properties": {
+          "tool": {"enum": ["translate", "rotate", "scale"]}, "space": {"enum": ["world", "local"]},
+          "axis": {"enum": ["free", "x", "y", "z"]}, "snap": {"type": "boolean"}}}
+      },
+      "oneOf": [
+        {"properties": {"operation": {"enum": ["select", "end", "cancel"]}}, "maxProperties": 2},
+        {"properties": {"operation": {"const": "transform"}}, "required": ["matrix"], "maxProperties": 3},
+        {"properties": {"operation": {"const": "visibility"}}, "required": ["visible"], "maxProperties": 3},
+        {"properties": {"operation": {"const": "reparent"}}, "required": ["parent"], "maxProperties": 3},
+        {"properties": {"operation": {"const": "begin"}}, "required": ["gizmo", "delta"], "maxProperties": 4},
+        {"properties": {"operation": {"const": "update"}}, "required": ["delta"], "maxProperties": 3}
+      ]
+    },
     "lightType": {"enum": ["point", "spot", "area", "directional"]},
     "safeLightInteger": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
     "lightFloat": {"type": "number", "minimum": -3.4028234663852886e38, "maximum": 3.4028234663852886e38},

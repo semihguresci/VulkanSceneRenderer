@@ -114,6 +114,8 @@ public:
                        container::gpu::CameraData &outCameraData,
                        const container::gpu::AllocatedBuffer &cameraBuffer);
 
+  [[nodiscard]] std::optional<glm::mat4> previewNodeTransform(
+      uint32_t nodeIndex, const container::ui::TransformControls& controls) const;
   void applyNodeTransform(uint32_t nodeIndex, uint32_t rootNode,
                           const container::ui::TransformControls &controls);
 

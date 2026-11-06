@@ -422,6 +422,7 @@ void RenderSurfaceInteractionController::handleViewportActions(
         static_cast<float>(input.cursorDeltaY),
         anyShiftKeyDown(input) ? 0.25f : 1.0f);
   } else if (state_.gesture == container::ui::ViewportGesture::TransformDrag &&
+             !transformConfigurationChanged_ &&
              (input.cursorDeltaX != 0.0 || input.cursorDeltaY != 0.0) &&
              context.transformSelectedByDrag) {
     const double dragScale =

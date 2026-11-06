@@ -588,6 +588,9 @@ public:
   void queueLightAddRequest(container::renderer::EditableLightType type) {lightEditControls_.queueAdd(type);}
   [[nodiscard]] std::optional<container::renderer::EditableLightType> consumeLightAddRequest() noexcept {return lightEditControls_.consumeAdd();}
 
+  [[nodiscard]] std::optional<uint64_t> nodeTransformWidget() const noexcept { return nodeTransformWidget_; }
+  [[nodiscard]] bool nodeTransformGestureActive() const noexcept { return nodeTransformGestureActive_; }
+  bool consumeNodeTransformCancel() noexcept { return std::exchange(nodeTransformCancel_, false); }
   void startFrame();
   void endFrame();
   void render(VkCommandBuffer commandBuffer);
@@ -949,6 +952,9 @@ private:
   bool wireframeSupported_{false};
   bool wireframeRasterModeSupported_{false};
   bool wireframeWideLineSupported_{false};
+  std::optional<uint64_t> nodeTransformWidget_;
+  uint64_t nextNodeTransformWidget_{};
+  bool nodeTransformGestureActive_{}, nodeTransformCancel_{};
   LightEditControls lightEditControls_{};
   EditHistoryRequest editHistoryRequest_{EditHistoryRequest::None};
   bool canUndoEdit_{false}, canRedoEdit_{false};

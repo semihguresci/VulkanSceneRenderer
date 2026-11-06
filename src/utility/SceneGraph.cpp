@@ -122,62 +122,69 @@ bool SceneGraph::canSetParent(uint32_t child,
 }
 
 bool SceneGraph::setParent(uint32_t child, std::optional<uint32_t> parentIndex) {
+  if (parentIndex && *parentIndex >= nodes_.size()) return false;
+  const auto& destination = parentIndex ? nodes_[*parentIndex].children : roots_;
+  return setParentAt(child, parentIndex, destination.size());
+}
+
+bool SceneGraph::setParentAt(uint32_t child, std::optional<uint32_t> parentIndex,
+                             size_t sibling) {
   if (!canSetParent(child, parentIndex)) return false;
-
-  SceneNode& childNode = nodes_[child];
-  const uint32_t newParent =
-      parentIndex.has_value() ? parentIndex.value() : kInvalidNode;
-  if (childNode.parent == newParent) {
-    return false;
-  }
-
-  if (childNode.parent != kInvalidNode) {
-    auto& siblings = nodes_[childNode.parent].children;
-    std::erase(siblings, child);
-  } else {
-    std::erase(roots_, child);
-  }
-
-  if (parentIndex.has_value() && parentIndex.value() < nodes_.size()) {
-    childNode.parent = parentIndex.value();
-    nodes_[childNode.parent].children.push_back(child);
-  } else {
-    childNode.parent = kInvalidNode;
-    roots_.push_back(child);
-  }
+  auto& node = nodes_[child];
+  const auto parent = parentIndex.value_or(kInvalidNode);
+  if (node.parent == parent) return false;
+  auto& destination = parentIndex ? nodes_[parent].children : roots_;
+  if (sibling > destination.size()) return false;
+  // Insert before detaching. The uint32_t vector has a strong allocation
+  // guarantee and grows geometrically on ordinary append.
+  destination.insert(destination.begin() + sibling, child);
+  auto& previous = node.parent == kInvalidNode ? roots_ : nodes_[node.parent].children;
+  std::erase(previous, child);
+  node.parent = parent;
   ++revision_;
   return true;
 }
 
+std::optional<size_t> SceneGraph::siblingIndex(uint32_t node) const {
+  if (node >= nodes_.size()) return std::nullopt;
+  const auto parent = nodes_[node].parent;
+  const auto& siblings = parent == kInvalidNode ? roots_ : nodes_[parent].children;
+  const auto position = std::ranges::find(siblings, node);
+  if (position == siblings.end()) return std::nullopt;
+  return size_t(position - siblings.begin());
+}
+
+std::optional<glm::mat4> SceneGraph::worldPreservingLocalTransform(
+    uint32_t child, std::optional<uint32_t> parentIndex) const {
+  if (!canSetParent(child, parentIndex)) return std::nullopt;
+  const auto parentWorld = parentIndex ? nodes_[*parentIndex].worldTransform : glm::mat4(1.0f);
+  if (!transformBasisInvertible(parentWorld)) return std::nullopt;
+  auto local = glm::inverse(parentWorld) * nodes_[child].worldTransform;
+  const auto affine = [](const glm::mat4& m) {
+    return m[0].w == 0 && m[1].w == 0 && m[2].w == 0 && m[3].w == 1;
+  };
+  if (affine(parentWorld) && affine(nodes_[child].worldTransform)) {
+    for (int column = 0; column < 3; ++column) local[column].w = 0;
+    local[3].w = 1;
+  }
+  return matrixFinite(local) ? std::optional(local) : std::nullopt;
+}
+
 bool SceneGraph::setParentPreserveWorldTransform(
     uint32_t child, std::optional<uint32_t> parentIndex) {
-  if (!canSetParent(child, parentIndex)) return false;
-
-  const uint32_t newParent =
-      parentIndex.has_value() ? parentIndex.value() : kInvalidNode;
-  if (nodes_[child].parent == newParent) {
-    return false;
-  }
-
   updateWorldTransforms();
-  const glm::mat4 originalWorld = nodes_[child].worldTransform;
-  const glm::mat4 parentWorld =
-      parentIndex.has_value() ? nodes_[parentIndex.value()].worldTransform
-                              : glm::mat4(1.0f);
-  if (!transformBasisInvertible(parentWorld)) {
-    return false;
-  }
-  const glm::mat4 newLocal = glm::inverse(parentWorld) * originalWorld;
-  if (!matrixFinite(newLocal)) {
-    return false;
-  }
-  const bool changed = setParent(child, parentIndex);
-  if (!changed) {
-    return false;
-  }
-  nodes_[child].localTransform = newLocal;
+  const auto local = worldPreservingLocalTransform(child, parentIndex);
+  if (!local || !setParent(child, parentIndex)) return false;
+  nodes_[child].localTransform = *local;
   updateWorldTransforms();
   return true;
+}
+
+void SceneGraph::exchangeNodeEdit(SceneGraph& candidate) noexcept {
+  nodes_.swap(candidate.nodes_);
+  roots_.swap(candidate.roots_);
+  renderableNodes_.swap(candidate.renderableNodes_);
+  std::swap(revision_, candidate.revision_);
 }
 
 bool SceneGraph::isDescendant(uint32_t ancestor, uint32_t candidate) const {

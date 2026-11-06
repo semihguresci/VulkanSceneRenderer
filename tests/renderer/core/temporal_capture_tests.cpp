@@ -115,6 +115,26 @@ TEST(TemporalCapture, ParsesTypedLightGestureAndHistoryActions) {
   EXPECT_EQ(sequence.sample(3).event.sceneHistory, "undo");
 }
 
+TEST(TemporalCapture, ParsesNodeDragAndRejectsMixedHistoryActions) {
+  const auto fixture = json::parse(R"({"schemaVersion":1,"frames":3,"events":[
+    {"frame":1,"nodeEdit":{"sourceNode":2,"operation":"begin","gizmo":{"tool":"translate","axis":"x"},"delta":[10,0]}},
+    {"frame":2,"nodeEdit":{"sourceNode":2,"operation":"update","delta":[6,0]}},
+    {"frame":3,"nodeEdit":{"sourceNode":2,"operation":"cancel"}}]})");
+  const CaptureSequence sequence(fixture);
+  ASSERT_TRUE(sequence.sample(1).event.nodeEdit);
+  EXPECT_EQ(sequence.sample(1).event.nodeEdit->sourceNode, 2u);
+  EXPECT_EQ(sequence.sample(1).event.nodeEdit->delta, glm::vec2(10, 0));
+  EXPECT_EQ(sequence.sample(2).event.nodeEdit->delta, glm::vec2(6, 0));
+  EXPECT_EQ(sequence.sample(3).event.nodeEdit->operation,
+            container::temporal::CaptureNodeEdit::Operation::Cancel);
+  auto mixed = fixture;
+  mixed["events"][1]["sceneHistory"] = "undo";
+  EXPECT_THROW((void)CaptureSequence(mixed), std::invalid_argument);
+  auto tooFar = fixture;
+  tooFar["events"][0]["nodeEdit"]["delta"][0] = 20000;
+  EXPECT_THROW((void)CaptureSequence(tooFar), std::invalid_argument);
+}
+
 TEST(TemporalCapture, RejectsMixedAndSkippedLightActions) {
   const json add = {{"type", "point"}};
   const json events[] = {

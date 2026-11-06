@@ -6,6 +6,7 @@
 #include "Container/utility/SceneData.h"
 #include "Container/utility/SceneGraph.h"
 #include "Container/utility/SceneManager.h"
+#include "Container/utility/TransformScale.h"
 #include "Container/utility/SwapChainManager.h"
 #include "Container/utility/VulkanDevice.h"
 
@@ -45,7 +46,7 @@ container::ui::TransformControls decomposeTransform(const glm::mat4 &matrix) {
 }
 
 glm::mat4 composeTransform(const container::ui::TransformControls &controls) {
-  const glm::vec3 safeScale = glm::max(controls.scale, glm::vec3(0.001f));
+  const glm::vec3 safeScale = container::ui::clampSignedScale(controls.scale);
   glm::mat4 transform = glm::translate(glm::mat4(1.0f), controls.position);
   transform *=
       glm::mat4_cast(glm::quat(glm::radians(controls.rotationDegrees)));
@@ -672,12 +673,30 @@ void CameraController::applyCameraTransform(
   updateCameraBuffer(outCameraData, cameraBuffer);
 }
 
+std::optional<glm::mat4> CameraController::previewNodeTransform(
+    uint32_t nodeIndex, const container::ui::TransformControls &controls) const {
+  const auto *node = sceneGraph_.getNode(nodeIndex);
+  if (node == nullptr)
+    return std::nullopt;
+  const auto previous = decomposeTransform(node->localTransform);
+  auto transform = node->localTransform;
+  if (controls.rotationDegrees == previous.rotationDegrees &&
+      controls.scale == previous.scale) {
+    // Physics proxies can cancel a rotated, nonuniformly scaled parent using
+    // a local basis that is not TRS. Moving must retain that compensation.
+    transform[3] = glm::vec4{controls.position, transform[3].w};
+  } else {
+    transform = composeTransform(controls);
+  }
+  return transform;
+}
+
 void CameraController::applyNodeTransform(
     uint32_t nodeIndex, uint32_t rootNode,
     const container::ui::TransformControls &controls) {
-  if (sceneGraph_.getNode(nodeIndex) == nullptr)
-    return;
-  sceneGraph_.setLocalTransform(nodeIndex, composeTransform(controls));
+  const auto transform = previewNodeTransform(nodeIndex, controls);
+  if (!transform) return;
+  sceneGraph_.setLocalTransform(nodeIndex, *transform);
   sceneGraph_.updateWorldTransforms();
   // Caller is responsible for triggering updateLightingData when rootNode
   // changes.

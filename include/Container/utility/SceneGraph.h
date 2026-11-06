@@ -43,6 +43,13 @@ class SceneGraph {
                       uint32_t primitiveIndex = kInvalidNode,
                       std::string name = {});
   bool setParent(uint32_t child, std::optional<uint32_t> parentIndex);
+  bool setParentAt(uint32_t child, std::optional<uint32_t> parentIndex, size_t sibling);
+  [[nodiscard]] std::optional<size_t> siblingIndex(uint32_t node) const;
+  [[nodiscard]] std::optional<glm::mat4> worldPreservingLocalTransform(
+      uint32_t child, std::optional<uint32_t> parentIndex) const;
+  // Exchange an already evaluated copy with the same node membership.
+  // The live graph's identity and node incarnations survive a pose edit.
+  void exchangeNodeEdit(SceneGraph& candidate) noexcept;
   bool setParentPreserveWorldTransform(
       uint32_t child, std::optional<uint32_t> parentIndex);
   void setLocalTransform(uint32_t nodeIndex, const glm::mat4& localTransform);
