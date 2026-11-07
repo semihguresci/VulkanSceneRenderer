@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace container::geometry::gltf {
@@ -29,10 +30,11 @@ struct GltfCameraPoseAuthoringLimits {
   uint64_t maxAnimationClips{65536}, maxAnimationChannels{1'000'000}, maxPointerBytes{4096};
   double maxConditionNumber{1e8}, maxRelativeError{1e-5}, maxAngularError{1e-5}, maxPositionAbsoluteError{1e-4};
 };
-enum class GltfCameraNodeAnimationProperty : uint8_t { Weights };
+enum class GltfCameraNodeAnimationProperty : uint8_t { Translation, Rotation, Scale, Weights };
 struct GltfCameraNodeAnimationBinding {
   size_t clip{}, channel{};
   GltfCameraNodeAnimationProperty property{GltfCameraNodeAnimationProperty::Weights};
+  std::optional<size_t> element;
   bool operator==(const GltfCameraNodeAnimationBinding&) const = default;
 };
 class GltfCameraPoseReceipt;
@@ -55,8 +57,9 @@ private:
 // float publication through the existing camera evaluator. Lens definitions,
 // node metadata/associations/weights and whole source/graph storage are not
 // edited. Source node IDs are explicit independent A/E identities.
-// Selected-node TRS/matrix animation in any clip rejects; weights and current
-// animated ancestors are allowed. Graph/world provenance and incarnations must
+// Selected TRS animation keeps TRS rest endpoints; a selected clip retains
+// ownership of its sampled components. Matrix/unknown targets reject. Weights
+// and animated ancestors are preserved. Graph/world provenance and incarnations must
 // be resolved by the scene owner, not inferred from these numeric values.
 [[nodiscard]] GltfCameraPosePlan PlanGltfCameraViewPose(
     GltfCameraPoseSourceView authored, GltfCameraPoseSourceView evaluated,
@@ -81,7 +84,11 @@ void ValidateGltfCameraPoseEditBefore(const GltfCameraPosePlan&,
 // parent animation/world may advance. No camera/parent/timeline is rewound.
 [[nodiscard]] GltfCameraPosePlan RebaseGltfCameraViewPose(const GltfCameraPosePlan&,
     GltfCameraEditSide, GltfCameraPoseSourceView authored, GltfCameraPoseSourceView evaluated,
-    const GltfCameraPoseGraphState& currentGraph, const GltfCameraPoseAuthoringLimits& limits = {});
+    const GltfCameraPoseGraphState& currentGraph, const GltfCameraPoseAuthoringLimits& limits = {},
+    std::optional<size_t> selectedClip = {});
+// Replay's sampled-component exception is bound to the actual current player
+// selection. New commands have no playback-mask exception to validate here.
+[[nodiscard]] bool GltfCameraPoseReplayClipMatches(const GltfCameraPosePlan&, std::optional<size_t>) noexcept;
 
 [[nodiscard]] uint64_t GltfCameraPoseNodeStorageBytes(const tinygltf::Node&,
     const GltfCameraPoseAuthoringLimits& limits = {});

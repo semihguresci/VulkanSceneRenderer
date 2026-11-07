@@ -81,6 +81,7 @@ def main():
     parser.add_argument("--renderer", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--ray-fallback", action="store_true", help="Also verify off-screen ray hits on a ray-query device")
+    parser.add_argument("--temporal", action="store_true", help="Also verify reflection history with motion and cuts")
     args = parser.parse_args()
     renderer, output = args.renderer.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -92,19 +93,25 @@ def main():
     evidence = {}
 
     def capture(label, mode, *, model="mirror.gltf", forward=False, no_query=False, environment=0,
-                hybrid=False, target=TARGET, directional=0):
+                hybrid=False, target=TARGET, directional=0, sequence=None, taa=False):
         image = output / f"{label}.png"
         command = [str(renderer), "--hidden", "--no-ui", "--validation", "--import-scale", "1",
-                   "--width", str(WIDTH), "--height", str(HEIGHT), "--msaa", "1", "--no-taa",
+                   "--width", str(WIDTH), "--height", str(HEIGHT), "--msaa", "1", "--taa" if taa else "--no-taa",
                    "--no-bloom", "--no-ddgi", "--ray-shadows", "raster", "--sky", "plain",
                    "--sky-horizon", "1", "1", "1", "--display-mode", "lit",
                    "--environment-intensity", str(environment), "--directional-intensity", str(directional),
                    "--directional-direction", "0", "0", "-1", "--exposure", "1",
                    "--camera-position", *map(str, EYE), "--camera-target", *map(str, target),
                    "--camera-fov", str(FOV), "--render-technique", "forward-raster" if forward else "deferred-raster",
-                   "--screen-reflections", mode, "--warmup-frames", "4", "--capture-frame", "5",
+                   "--screen-reflections", mode,
                    "--screenshot-viewport", "--screenshot", str(image), "--model",
                    str(output / model)]
+        if sequence is None:
+            command.extend(("--warmup-frames", "4", "--capture-frame", "5"))
+        else:
+            plan = output / f"{label}.sequence.json"
+            plan.write_text(json.dumps(sequence), encoding="utf-8")
+            command.extend(("--capture-sequence", str(plan), "--fixed-dt", ".016666667"))
         if no_query:
             command.append("--no-ray-query")
         if hybrid:
@@ -114,6 +121,18 @@ def main():
         log = run.stdout + run.stderr
         (output / f"{label}.log").write_text(log, encoding="utf-8")
         assert run.returncode == 0 and not validation_log_error(log), log
+        if sequence is not None:
+            images, routes = {}, {}
+            for frame in sequence["sampleFrames"]:
+                path = image if frame == sequence["frames"] else output / f"{label}.frame-{frame:04d}.png"
+                receipt = json.loads(path.with_suffix(".telemetry.json").read_text(encoding="utf-8"))
+                route = receipt["screenReflections"]
+                pass_state = next((p for p in receipt["passes"] if p["name"] == "ScreenReflections"), None)
+                routes[frame] = {"route": route, "pass": pass_state}
+                with Image.open(path) as result:
+                    images[frame] = np.array(result.convert("RGB"))
+            evidence[label] = routes
+            return images, routes
         receipt = json.loads(image.with_suffix(".telemetry.json").read_text(encoding="utf-8"))
         active = mode != "off" and not forward
         pass_state = next((entry for entry in receipt["passes"] if entry["name"] == "ScreenReflections"), None)
@@ -200,8 +219,68 @@ def main():
             "nearestBlockerRed": red(blocked), "alphaCutoutRed": red(cutout), "litRed": red(lit),
             "shadowedRed": red(shaded), "unsupportedPixelExact": True}
 
+    if args.temporal:
+        # A thin target moves clear of the analytically projected reflector.
+        # Camera motion is small enough to reproject the stationary receiver.
+        thin = (.18, .44)
+        fixture(output / "thin-card.gltf", .045, card_size=thin)
+        moving = {"schemaVersion": 1, "frames": 8, "sampleFrames": [1, 3, 4, 5, 6, 8],
+                  "objectName": "Red card",
+                  "objectTranslation": [{"frame": 1, "translation": [0, 0, 0]},
+                                        {"frame": 4, "translation": [0, 0, 0]},
+                                        {"frame": 5, "translation": [2.5, 0, 0]}],
+                  "camera": [{"frame": 1, "position": EYE.tolist(), "target": TARGET.tolist()},
+                             {"frame": 8, "position": (EYE + [.035, 0, 0]).tolist(), "target": TARGET.tolist()}]}
+        filtered, motion = capture("moving-thin-card", "high", model="thin-card.gltf", sequence=moving)
+        debug, history = capture("moving-thin-history", "history", model="thin-card.gltf", sequence=moving)
+        x, y = project(reflected)
+        center = np.s_[y - 4:y + 5, x - 4:x + 5]
+        red = {frame: float(image[center][..., 0].mean()) for frame, image in filtered.items()}
+        accepted = {frame: float(image[center][..., 0].mean()) for frame, image in debug.items()}
+        assert motion[3]["route"]["historyReprojected"] and history[3]["route"]["historyReprojected"], history
+        assert accepted[1] == 0 and accepted[3] > 150 and accepted[5] < 5, accepted
+        assert red[3] > red[6] + 65 and abs(red[8] - red[6]) < 5, red
+        taa_images, _ = capture("moving-thin-card-taa", "high", model="thin-card.gltf", sequence=moving, taa=True)
+        taa_red = {frame: float(image[center][..., 0].mean()) for frame, image in taa_images.items()}
+        assert taa_red[3] > taa_red[8] + 65 and abs(taa_red[8] - red[8]) < 8, taa_red
+
+        lifecycle = {"schemaVersion": 1, "frames": 17, "sampleFrames": [1, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17],
+                     "camera": [{"frame": 1, "position": EYE.tolist(), "target": TARGET.tolist()},
+                                {"frame": 6, "position": EYE.tolist(), "target": TARGET.tolist()},
+                                {"frame": 7, "position": (EYE + [6, 0, 0]).tolist(), "target": TARGET.tolist()}],
+                     "events": [{"frame": 5, "reset": True}, {"frame": 8, "technique": "forward-raster"},
+                                {"frame": 9, "technique": "deferred-raster"},
+                                {"frame": 11, "materialEdit": {"sourceMaterial": 0, "values": [
+                                    {"property": "pbrMetallicRoughness/roughnessFactor", "value": .22}]}},
+                                {"frame": 13, "resize": [400, 300]},
+                                {"frame": 16, "lightAdd": {"type": "point"}}]}
+        _, routes = capture("history-lifecycle", "history", sequence=lifecycle)
+        expected = {1: False, 3: True, 5: False, 6: True, 7: False, 8: False, 9: False,
+                    10: True, 11: False, 12: True, 13: False, 15: True, 16: False, 17: True}
+        assert {frame: state["route"]["historyReprojected"] for frame, state in routes.items()} == expected, routes
+        assert not routes[8]["pass"] or not routes[8]["pass"]["active"], routes[8]
+
+        roughness = {}
+        for level in (.16, .30, .44, .58):
+            label = f"roughness-{level:.2f}"
+            fixture(output / f"{label}.gltf", level)
+            image = capture(label, "high", model=f"{label}.gltf")
+            roughness[str(level)] = float(image[roi][..., 0].mean())
+        assert roughness["0.16"] > roughness["0.58"] + 70, roughness
+        assert roughness["0.44"] < roughness["0.16"], roughness
+        results["temporal"] = {"movingRed": red, "movingTaaRed": taa_red, "acceptedHistory": accepted,
+                               "historyAfterEvents": expected, "roughnessRed": roughness}
+        if args.ray_fallback:
+            stationary = {"schemaVersion": 1, "frames": 3, "sampleFrames": [1, 3]}
+            ray_history, routes = capture("offscreen-history", "history", model="offscreen.gltf",
+                                          target=target, hybrid=True, sequence=stationary)
+            accepted = {frame: float(image[region][..., 0].mean()) for frame, image in ray_history.items()}
+            assert routes[3]["route"]["rayFallbackActive"] and routes[3]["route"]["historyReprojected"], routes
+            assert accepted[1] == 0 and accepted[3] > 150, accepted
+            results["temporal"]["rayHistory"] = accepted
+
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
-    print("PASS mirror reflection, IBL replacement, confidence/distance, and raster-only/fallback parity")
+    print("PASS mirror reflection, IBL replacement, diagnostics, and requested fallback/history coverage")
 
 
 if __name__ == "__main__":

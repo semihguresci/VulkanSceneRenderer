@@ -4,23 +4,26 @@
 set(SHADERS_DIR "${CMAKE_SOURCE_DIR}/shaders")
 set(COMPILED_SHADERS_DIR "${CMAKE_BINARY_DIR}/spv_shaders")
 
-find_program(SLANGC_VULKAN_SDK_EXECUTABLE
-    slangc
-    HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin"
-    NO_DEFAULT_PATH
-)
-
-if(SLANGC_VULKAN_SDK_EXECUTABLE)
-    set(SLANGC_EXECUTABLE "${SLANGC_VULKAN_SDK_EXECUTABLE}" CACHE FILEPATH
-        "Slang compiler" FORCE)
-else()
-    find_program(SLANGC_EXECUTABLE slangc REQUIRED)
+if(NOT SLANGC_EXECUTABLE)
+    # An empty cache entry is also an unset selection. Preserve every usable
+    # explicit/cached path, even when VULKAN_SDK contains another compiler.
+    unset(SLANGC_EXECUTABLE)
+    unset(SLANGC_EXECUTABLE CACHE)
+    find_program(SLANGC_EXECUTABLE
+        slangc
+        HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin"
+        NO_DEFAULT_PATH
+    )
+    if(NOT SLANGC_EXECUTABLE)
+        find_program(SLANGC_EXECUTABLE slangc REQUIRED)
+    endif()
 endif()
 
 if(NOT SLANGC_EXECUTABLE)
     message(WARNING "slangc not found — shader compilation disabled")
     return()
 endif()
+message(STATUS "Slang compiler: ${SLANGC_EXECUTABLE}")
 
 set(SLANG_MATRIX_LAYOUT_FLAG "-matrix-layout-column-major")
 set(SLANG_SPIRV_FLAGS
@@ -48,6 +51,7 @@ set(SLANG_INCLUDE_SHADER_NAMES
     path_transport_common.slang
     path_dielectric_common.slang
     path_experimental_materials.slang
+    path_clearcoat_common.slang
     object_data_common.slang
     material_data_common.slang
     alpha_mask_common.slang
@@ -65,6 +69,7 @@ set(SLANG_INCLUDE_SHADER_NAMES
     display_tone_curves.slang
     scene_clip_common.slang
     openvdb_geometry_shadow.slang
+    volume_area_light_common.slang
     openvdb_area_light.slang
     openvdb_multiple_scattering.slang
     openvdb_transparency.slang
@@ -145,6 +150,7 @@ set(SLANG_RENDER_SHADER_EXCLUDE_NAMES
     ${SLANG_INCLUDE_SHADER_NAMES}
     ${SLANG_COMPUTE_SHADER_NAMES}
     reference_denoise_compose.slang
+    dlss_transparency.slang
     volumetric_fog.slang
 )
 foreach(SLANG_RENDER_SHADER_EXCLUDE_NAME IN LISTS SLANG_RENDER_SHADER_EXCLUDE_NAMES)
@@ -280,11 +286,27 @@ foreach(SLANG_COMPUTE_SHADER_NAME IN LISTS SLANG_COMPUTE_SHADER_NAMES)
     endif()
 endforeach()
 
-if(CONTAINER_VK_OIDN_AVAILABLE)
+if(CONTAINER_DLSS_AVAILABLE)
+    add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/temporal_compose.slang" "computeMain"
+        "${COMPILED_SHADERS_DIR}/dlss_compose.comp.spv" -DDLSS_TRANSPARENCY=1)
+    add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/dlss_transparency.slang" "computeMain"
+        "${COMPILED_SHADERS_DIR}/dlss_transparency.comp.spv")
+endif()
+
+if(CONTAINER_DLSS_RR_AVAILABLE)
+    add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/reference_pathtrace.slang" "computeMain"
+        "${COMPILED_SHADERS_DIR}/reference_pathtrace_rr.comp.spv" -DREFERENCE_DLSS_RR=1)
+    add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/reference_background.slang" "computeMain"
+        "${COMPILED_SHADERS_DIR}/reference_pathtrace_empty_rr.comp.spv" -DREFERENCE_DLSS_RR=1)
+endif()
+
+if(CONTAINER_VK_OIDN_AVAILABLE OR CONTAINER_OPTIX_AVAILABLE)
     add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/reference_pathtrace.slang" "computeMain"
         "${COMPILED_SHADERS_DIR}/reference_guided_pathtrace.comp.spv" -DREFERENCE_DENOISE_GUIDES=1)
     add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/reference_background.slang" "computeMain"
         "${COMPILED_SHADERS_DIR}/reference_guided_background.comp.spv" -DREFERENCE_DENOISE_GUIDES=1)
+endif()
+if(CONTAINER_VK_OIDN_AVAILABLE OR CONTAINER_OPTIX_AVAILABLE OR CONTAINER_DLSS_RR_AVAILABLE)
     add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/reference_denoise_compose.slang" "computeMain"
         "${COMPILED_SHADERS_DIR}/reference_denoise_compose.comp.spv")
 endif()

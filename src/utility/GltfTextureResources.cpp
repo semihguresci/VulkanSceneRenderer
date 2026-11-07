@@ -116,7 +116,8 @@ bool sameImage(const TextureImageData& first, const TextureImageData& second) {
 PreparedGltfTextures PrepareGltfTextures(const tinygltf::Model& model,
     const TextureDecodeOptions& deviceProfile, uint64_t maxPreparedBytes,
     bool enableExperimentalMaterials) {
-  if (!maxPreparedBytes) throw std::invalid_argument("glTF texture preparation budget must be positive");
+  if (!maxPreparedBytes || maxPreparedBytes > kMaximumGltfTextureMemoryBytes)
+    throw std::invalid_argument("glTF texture preparation budget must be finite and in [1,17179869184] bytes");
   const auto plan = container::geometry::gltf::SelectTextureImageSources(model);
   const auto requiredRoles = roles(model, enableExperimentalMaterials);
   PreparedGltfTextures prepared;
@@ -162,6 +163,11 @@ PreparedGltfTextures PrepareGltfTextures(const tinygltf::Model& model,
         prepared.bindings.push_back({texture, cached->decoded, role == kColor, sampler});
         continue;
       }
+      if (!remaining)
+        throw std::runtime_error("glTF textures exceed the aggregate decoded budget at texture[" +
+            std::to_string(texture) + "].image[" + std::to_string(selection.imageIndex) +
+            "] (" + std::to_string(maxPreparedBytes) +
+            " bytes configured); increase --texture-memory-mb for this load");
       auto options = deviceProfile;
       options.strictKhrBasisu = strict;
       options.maxDecodedBytes = std::min(options.maxDecodedBytes, remaining);

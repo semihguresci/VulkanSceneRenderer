@@ -105,7 +105,7 @@ TEST(CameraViewPoseControls, OnlyFreeViewportModeAndAnUnblockedDestinationCanQue
   s.viewportActive=false;ASSERT_TRUE(SetCameraViewPoseSnapshot(c,s));EXPECT_FALSE(QueueCameraViewPose(c,s.target,s.viewRevision));
   s.viewportActive=true;ASSERT_TRUE(SetCameraViewPoseSnapshot(c,s));c.cameraNode=s.target.camera.sourceNode;
   EXPECT_FALSE(QueueCameraViewPose(c,s.target,s.viewRevision));c.cameraNode=-1;
-  s.blockReason="The selected node has an animated translation.";ASSERT_TRUE(SetCameraViewPoseSnapshot(c,s));
+  s.blockReason="The selected node has an unsupported matrix animation target.";ASSERT_TRUE(SetCameraViewPoseSnapshot(c,s));
   EXPECT_FALSE(QueueCameraViewPose(c,s.target,s.viewRevision));
   ASSERT_TRUE(SetCameraViewPoseSnapshot(c,std::nullopt));EXPECT_FALSE(QueueCameraViewPose(c,s.target,s.viewRevision));
 }
@@ -188,8 +188,19 @@ TEST_F(CameraViewPoseWidgetTests, ExistingPanelButtonQueuesOneWeakWriteWhileTheL
   EXPECT_EQ(c_.requestedCameraViewPose->viewRevision,s.viewRevision);
 }
 
-TEST_F(CameraViewPoseWidgetTests, UnavailableViewportAndAnimatedDestinationReasonsKeepTheButtonInert) {
-  auto s=*c_.cameraViewPose;s.blockReason="This camera node has an animated rotation.";
+TEST_F(CameraViewPoseWidgetTests, DefaultPoseWriteKeepsActivePlaybackAndItsCurrentClock) {
+  c_.selectedClip=2;c_.time=.75;c_.speed=.625;c_.playing=true;c_.loop=false;
+  const auto target=*c_.cameraViewPose;settle();click();ASSERT_TRUE(c_.requestedCameraViewPose);
+  EXPECT_EQ(c_.requestedCameraViewPose->target,target.target);
+  EXPECT_EQ(c_.requestedCameraViewPose->viewRevision,target.viewRevision);
+  EXPECT_EQ(c_.selectedClip,2);EXPECT_DOUBLE_EQ(c_.time,.75);EXPECT_DOUBLE_EQ(c_.speed,.625);
+  EXPECT_TRUE(c_.playing);EXPECT_FALSE(c_.loop);EXPECT_EQ(c_.cameraNode,-1);
+  EXPECT_FALSE(c_.requestedClip);EXPECT_FALSE(c_.requestedTime);EXPECT_FALSE(c_.requestedSpeed);
+  EXPECT_FALSE(c_.requestedPlaying);EXPECT_FALSE(c_.requestedLoop);EXPECT_FALSE(c_.requestedCameraProjection);
+}
+
+TEST_F(CameraViewPoseWidgetTests, UnavailableViewportAndUnsupportedDestinationReasonsKeepTheButtonInert) {
+  auto s=*c_.cameraViewPose;s.blockReason="This camera node has an unsupported matrix animation target.";
   ASSERT_TRUE(SetCameraViewPoseSnapshot(c_,s));settle();click();EXPECT_FALSE(c_.requestedCameraViewPose);
   s.blockReason.clear();s.viewportActive=false;ASSERT_TRUE(SetCameraViewPoseSnapshot(c_,s));settle();click();EXPECT_FALSE(c_.requestedCameraViewPose);
   s.viewportActive=true;ASSERT_TRUE(SetCameraViewPoseSnapshot(c_,s));c_.cameraNode=s.target.camera.sourceNode;settle();click();EXPECT_FALSE(c_.requestedCameraViewPose);

@@ -19,8 +19,11 @@ required; simulation itself is not recorded as a sequence of editor commands.
 
 Undoing primitive creation removes the appended nodes from the hierarchy,
 picking and renderable lists. Redo restores their original node IDs and
-selection. Geometry remains resident for redo until the scene is replaced;
-redo does not append another mesh. Detach any physics bodies attached after
+selection. Matching built-in primitive geometry stays resident until the
+scene is replaced. Repeated adds and redo share that geometry, while each
+node keeps its own transform, material, and selection identity. Starting a
+new branch after undo can reuse the same mesh without reuploading its vertex
+and index data. Detach any physics bodies attached after
 creation before undoing that creation, so no collider/joint can reference a
 removed node. External topology changes which cannot be safely reconciled
 cause replay to refuse the operation.
@@ -48,3 +51,6 @@ Build and run `edit_history_tests`, `scene_edit_history_tests`,
 These cover branching/eviction, rejected commands, exact affine replay,
 interleaved reparent/primitive redo, retained topology, real multi-frame ImGui
 drags, graph replacement and prospective-parent physics validation.
+The native `tests/validation/primitive_history_runtime.py --reuse-only`
+regression checks geometry counts and independent placement through divergent
+adds and replay.

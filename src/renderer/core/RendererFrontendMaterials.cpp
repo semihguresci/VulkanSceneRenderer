@@ -470,6 +470,8 @@ bool RendererFrontend::authorMaterialTexture(const container::material::GltfMate
   const auto runtime=mapping[size_t(request.sourceMaterial)];
   if(!manager.materialIsActive(runtime) || !manager.authoredMaterialIsActive(request.sourceMaterial))
     throw std::invalid_argument("The selected material is retired");
+  if(manager.isLinkedMaterialReadOnly(runtime))
+    throw std::invalid_argument("This linked asset is read-only. Use Make Editable first.");
   const auto& authored=manager.authoredMaterial(request.sourceMaterial);
   container::scene::MaterialGenerationLimits limits;
   (void)GltfMaterialRecordStorageBytes(authored,limits.authoring);
@@ -553,6 +555,9 @@ bool RendererFrontend::replayMaterialTexture(const MaterialTextureHistory& state
   if(!state.references || !state.references->valid() || (!state.resources &&
       (!state.references->resourceDependenciesActive() || !state.references->resourceDependenciesMatch(subs_.sceneManager->resourceLifecycleGeneration())))) return false;
   auto& manager=*subs_.sceneManager;
+  const auto mapping=manager.sourceMaterialRuntimeMapping();
+  const auto source=state.command->destinationMaterial;
+  if(source<0 || size_t(source)>=mapping.size() || manager.isLinkedMaterialReadOnly(mapping[size_t(source)])) return false;
   std::optional<container::scene::SceneManager::PreparedMaterialResources> resources;
   if(state.resources) resources.emplace(manager.prepareMaterialResourcesChange(state.resources,forward));
   const auto plan=manager.rebaseMaterialTextureEdit(*state.command,
@@ -571,6 +576,8 @@ bool RendererFrontend::authorMaterialRetirement(uint32_t runtime,int32_t source,
   if(source< -1 || !manager.materialIsActive(runtime) || manager.sourceMaterialForRuntime(runtime)!=source ||
       (source>=0 && !manager.authoredMaterialIsActive(source)))
     throw std::invalid_argument("The material catalog identity is stale or retired");
+  if(manager.isLinkedMaterialReadOnly(runtime))
+    throw std::invalid_argument("This linked asset is read-only. Use Make Editable first.");
   if(expectedRevision && *expectedRevision!=manager.authoredMaterialRevision())
     throw std::invalid_argument("The material catalog changed; refresh before deleting");
   if(pendingSceneRetirement_ || sceneEditPublicationPending_) publishSceneEdit();
@@ -601,6 +608,7 @@ bool RendererFrontend::authorMaterialRetirement(uint32_t runtime,int32_t source,
 bool RendererFrontend::replayMaterialRetirement(const MaterialRetirementHistory& state,bool retired) {
   if(!subs_.sceneManager || sceneGraph_.identity()!=state.graph || subs_.sceneManager->materialAssetIdentity()!=state.asset) return false;
   auto& manager=*subs_.sceneManager;MaterialPublication publication;publication.editedSource=state.command.sourceMaterial();
+  if(manager.isLinkedMaterialReadOnly(state.command.runtimeMaterial())) return false;
   publication.material.emplace(manager.prepareMaterialRetirementChange(state.command,
       retired?container::scene::MaterialRetirementState::Retired:container::scene::MaterialRetirementState::Active,
       sceneGraph_,gltfAnimation_.get()));
@@ -612,6 +620,8 @@ bool RendererFrontend::authorResourceRetirement(const container::ui::ResourceRet
   finishLightEditInput();
   if(!subs_.sceneManager) throw std::invalid_argument("Resource deletion requires an initialized scene");
   auto& manager=*subs_.sceneManager;(void)resolveResourceTarget(manager,request.target);
+  const auto selection=resourceSelection(request.target);
+  if(manager.isLinkedResourceReadOnly(selection)) throw std::invalid_argument("This linked asset is read-only. Use Make Editable first.");
   if(pendingSceneRetirement_ || sceneEditPublicationPending_) publishSceneEdit();
   (void)resolveResourceTarget(manager,request.target);
   ensureSceneEditHistory();
@@ -623,10 +633,12 @@ bool RendererFrontend::authorResourceRetirement(const container::ui::ResourceRet
   // proved before orphan planning and again during renderer publication.
   if(!subs_.sceneProviderRegistry) throw std::invalid_argument("The resource provider registry is unavailable");
   MaterialExternalProof external(subs_.bimManager.get(),*subs_.sceneProviderRegistry,manager.materialCount(),false,std::nullopt,&manager);
-  const auto selections=manager.planResourceRetirement(resourceSelection(request.target),gltfAnimation_.get(),
+  const auto selections=manager.planResourceRetirement(selection,gltfAnimation_.get(),
       std::min<uint64_t>(64ull*1024*1024,available));
   (void)resolveResourceTarget(manager,request.target);
   if(selections.empty()) throw std::invalid_argument("No current unused resources were selected");
+  if(std::ranges::any_of(selections,[&](const auto& resource) {return manager.isLinkedResourceReadOnly(resource);}))
+    throw std::invalid_argument("Resource deletion includes read-only linked asset resources");
   MaterialPublication publication;publication.resources.emplace(manager.prepareSourceResourceRetirement(
       selections,gltfAnimation_.get(),available));
   auto state=std::make_shared<ResourceRetirementHistory>();state->graph=sceneGraph_.identity();state->asset=manager.materialAssetIdentity();
@@ -648,6 +660,8 @@ bool RendererFrontend::replayResourceRetirement(const ResourceRetirementHistory&
   if(!subs_.sceneManager || sceneGraph_.identity()!=state.graph || subs_.sceneManager->materialAssetIdentity()!=state.asset || !state.command)
     return false;
   using Phase=container::util::ResourceLifecyclePhase;
+  if(std::ranges::any_of(state.command.selections(),[&](const auto& resource) {
+      return subs_.sceneManager->isLinkedResourceReadOnly(resource);})) return false;
   const auto available=state.budget?MaterialBindingBudget::limit-state.budget->reserved:MaterialBindingBudget::limit;
   if(!available) throw std::length_error("Resource replay has no remaining preparation budget");
   MaterialPublication publication;publication.resources.emplace(subs_.sceneManager->prepareSourceResourceRetirement(
@@ -871,6 +885,9 @@ bool RendererFrontend::replayMaterialEdit(const MaterialEditHistory& state,GltfM
   if(!container::material::TextureImageOwnershipValid(state.images,svc_.allocationManager)) return false;
   if(!state.references || !state.references->valid() || !state.references->active() ||
       !state.references->resourceDependenciesMatch(subs_.sceneManager->resourceLifecycleGeneration())) return false;
+  const auto mapping=subs_.sceneManager->sourceMaterialRuntimeMapping();
+  const auto source=state.command->destinationMaterial;
+  if(source<0 || size_t(source)>=mapping.size() || subs_.sceneManager->isLinkedMaterialReadOnly(mapping[size_t(source)])) return false;
   return publishMaterialEdit(subs_.sceneManager->rebaseMaterialEdit(*state.command,side));
 }
 
@@ -881,6 +898,8 @@ bool RendererFrontend::authorMaterialBinding(const container::material::GltfMate
   if(!subs_.sceneManager) throw std::runtime_error("Material assignment requires an initialized scene renderer");
   if(request.operation!=Operation::Assign && request.operation!=Operation::MakeUnique)
     throw std::invalid_argument("Unknown material binding operation");
+  if(subs_.sceneManager->isLinkedNodeReadOnly(sceneGraph_,request.graphNode))
+    throw std::invalid_argument("This linked asset is read-only. Use Make Editable first.");
   if(pendingSceneRetirement_ || sceneEditPublicationPending_) publishSceneEdit();
   ensureSceneEditHistory();
   auto& manager=*subs_.sceneManager;
@@ -959,6 +978,8 @@ bool RendererFrontend::replayMaterialBinding(const MaterialBindingHistory& state
   if(!state.references || !state.references->valid() || !state.references->active() ||
       !state.references->resourceDependenciesMatch(subs_.sceneManager->resourceLifecycleGeneration())) return false;
   auto& manager=*subs_.sceneManager;
+  if(std::ranges::any_of(state.bindings.assignments(),[&](const auto& assignment) {
+      return manager.isLinkedNodeReadOnly(sceneGraph_,assignment.graphNode);})) return false;
   MaterialPublication publication;
   publication.bindings.emplace(RebaseMaterialBindings(sceneGraph_,materialBindingContext(manager),state.bindings,
       redo?MaterialBindingSide::After:MaterialBindingSide::Before));
@@ -981,6 +1002,9 @@ bool RendererFrontend::authorMaterial(const container::material::GltfMaterialEdi
   using Phase=container::material::MaterialEditGesturePhase;
   if(!subs_.sceneManager || request.sourceMaterial<0) throw std::invalid_argument("Choose an authored material before editing");
   if(!subs_.sceneManager->authoredMaterialIsActive(request.sourceMaterial)) throw std::invalid_argument("The selected material is retired");
+  const auto mapping=subs_.sceneManager->sourceMaterialRuntimeMapping();
+  if(size_t(request.sourceMaterial)<mapping.size() && subs_.sceneManager->isLinkedMaterialReadOnly(mapping[size_t(request.sourceMaterial)]))
+    throw std::invalid_argument("This linked asset is read-only. Use Make Editable first.");
   if(!request.patch.textures.empty()) throw std::invalid_argument("Use a texture-slot request to edit resource bindings");
   if(request.phase!=Phase::Commit && request.phase!=Phase::Begin && request.phase!=Phase::Update && request.phase!=Phase::End && request.phase!=Phase::Cancel)
     throw std::invalid_argument("Unknown material gesture phase");

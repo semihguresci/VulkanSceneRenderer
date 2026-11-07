@@ -49,7 +49,8 @@ bool area(std::string_view name) {return std::ranges::find(areaExtensions,name)!
 bool allowed(std::string_view name,Domain domain) {
   if(name=="KHR_xmp_json_ld") return true;
   switch(domain) {
-    case Domain::Root:return name=="KHR_materials_variants" || name=="KHR_lights_punctual" || area(name);
+    case Domain::Root:return name=="KHR_materials_variants" || name=="KHR_lights_punctual" ||
+        name=="KHR_interactivity" || area(name);
     case Domain::Material:return std::ranges::find(materialExtensions,name)!=materialExtensions.end() ||
         std::ranges::find(kGltfExperimentalMaterialExtensions,name)!=kGltfExperimentalMaterialExtensions.end() || name=="MSFT_lod";
     case Domain::Primitive:return name=="KHR_materials_variants" || name=="KHR_draco_mesh_compression";
@@ -273,6 +274,7 @@ struct Scan {
       if(!known && !incomplete(Incomplete::UnknownExtension,name)) return false;
       if(known && (!body.IsObject() || !declared(name))) return fail("Malformed normative extension object");
       if(!metadata(body)) return false;
+      if(domain==Domain::Root && name=="KHR_interactivity" && !behavior(body)) return false;
     }
     return true;
   }
@@ -366,6 +368,168 @@ struct Scan {
     const std::string_view path=field->Get<std::string>();
     return pointerPath(path);
   }
+  // Keep this operation profile aligned with GltfInteractivity::operation.
+  // No runtime compilation is used here: Match must not allocate, and every
+  // graph, including an inactive graph, contributes to the resource proof.
+  bool behaviorOperation(const Value& declaration,std::string_view& op) {
+    if(!declaration.IsObject()) return fail("Malformed behavior declaration");
+    const auto* name=member(declaration,"op");
+    if(!name || !behaviorString(*name)) return fail("Malformed behavior operation");
+    op=name->Get<std::string>();
+    const auto* extension=member(declaration,"extension");
+    if(extension && extension->Type()!=tinygltf::NULL_TYPE) {
+      if(!behaviorString(*extension)) return fail("Malformed behavior operation extension");
+      const std::string_view owner=extension->Get<std::string>();
+      if((owner=="KHR_node_selectability" && op=="event/onSelect") ||
+          (owner=="KHR_node_hoverability" && (op=="event/onHoverIn" || op=="event/onHoverOut"))) return true;
+      return incomplete(Incomplete::UnknownExtension,owner);
+    }
+    constexpr auto supported=std::to_array<std::string_view>({
+        "event/onStart","event/onTick","event/receive","event/send","event/stopPropagation",
+        "flow/sequence","flow/branch","flow/setDelay","flow/cancelDelay",
+        "variable/get","variable/set","variable/interpolate","pointer/get","pointer/set","pointer/interpolate",
+        "animation/start","animation/stop","animation/stopAt","math/add","math/sub","math/mul","math/div",
+        "math/min","math/max","math/clamp","math/mix","math/eq","math/lt","math/le","math/gt","math/ge",
+        "math/select","math/combine2","math/combine3","math/combine4","math/sin","math/cos","math/abs",
+        "math/neg","math/isNaN","type/intToFloat","type/floatToInt","ref/eq"});
+    return std::ranges::find(supported,op)!=supported.end() || incomplete(Incomplete::UnknownExtension,op);
+  }
+  bool behaviorString(const Value& value) {
+    if(!value.IsString()) return false;
+    const auto& text=value.Get<std::string>();
+    return !text.empty() && text.size()<=512 && text.find('\0')==text.npos;
+  }
+  const Value::Array* behaviorArray(const Value* value,size_t maximum,bool optional=false) {
+    static const Value::Array empty;
+    if(optional && (!value || value->Type()==tinygltf::NULL_TYPE)) return &empty;
+    if(!value || !value->IsArray() || value->Get<Value::Array>().size()>maximum) {
+      fail("Malformed or oversized behavior table");return nullptr;
+    }
+    return &value->Get<Value::Array>();
+  }
+  bool behaviorIndex(const Value* value,size_t count,size_t& index) {
+    if(!value || !value->IsInt() || value->Get<int>()<0 || size_t(value->Get<int>())>=count)
+      return fail("Behavior index is outside its table");
+    index=size_t(value->Get<int>());return true;
+  }
+  bool behaviorReference(std::string_view path) {
+    if(!path.starts_with('/')) return incomplete(Incomplete::UnknownAnimationPointer,path);
+    for(const auto [root,count]:{std::pair<std::string_view,size_t>{"/materials/",model->materials.size()},
+        {"/nodes/",model->nodes.size()},{"/cameras/",model->cameras.size()},
+        {"/extensions/KHR_lights_punctual/lights/",model->lights.size()},{"/animations/",model->animations.size()}}) {
+      if(!path.starts_with(root)) continue;
+      const auto tail=path.substr(root.size());const auto slash=tail.find('/');uint64_t id{};
+      if(!pointerIndex(tail.substr(0,slash),id) || id>=count) return fail("Behavior reference targets a missing object");
+      if(root=="/materials/" && !active(masks.materials,size_t(id))) return fail("Behavior reference targets a retired material");
+      return slash==tail.npos || pointerPath(path);
+    }
+    return pointerPath(path); // Resource refs are retained and remain incomplete.
+  }
+  bool behaviorLiteral(const Value& record,const Value::Array& types,bool optional,bool input=false) {
+    if(!record.IsObject()) return fail("Malformed behavior value record");
+    if(input) if(const auto* node=member(record,"node");node && node->Type()!=tinygltf::NULL_TYPE) {
+      if(!node->IsInt() || node->Get<int>()<0) return fail("Malformed behavior value source");
+      if(const auto* value=member(record,"value");value && value->Type()!=tinygltf::NULL_TYPE)
+        return fail("Behavior input combines a source and a literal");
+      return true;
+    }
+    size_t type{};if(!behaviorIndex(member(record,"type"),types.size(),type)) return false;
+    const auto* signature=member(types[type],"signature");
+    if(!signature || !behaviorString(*signature)) return fail("Malformed behavior value type");
+    const auto* value=member(record,"value");
+    if(optional && (!value || value->Type()==tinygltf::NULL_TYPE)) return true;
+    const auto* items=behaviorArray(value,4);if(!items) return false;
+    const std::string_view name=signature->Get<std::string>();
+    const size_t width=name=="float2"?2:name=="float3"?3:name=="float4"?4:1;
+    if(items->size()!=width) return fail("Behavior literal has the wrong component count");
+    if(name!="ref") return true;
+    const auto& first=items->front();
+    if(first.Type()==tinygltf::NULL_TYPE) return true;
+    if(!behaviorString(first)) return fail("Malformed behavior object reference");
+    return behaviorReference(first.Get<std::string>());
+  }
+  bool behaviorValues(const Value* values,const Value::Array& types,bool optional,bool input=false) {
+    if(!values || values->Type()==tinygltf::NULL_TYPE) return true;
+    if(!values->IsObject() || values->Get<Object>().size()>64) return fail("Malformed behavior value sockets");
+    for(const auto& [name,record]:values->Get<Object>())
+      if(!work() || name.empty() || name.size()>512 || !behaviorLiteral(record,types,optional,input)) return false;
+    return true;
+  }
+  bool behaviorPointer(std::string_view path) {
+    // Only an object-ID placeholder is supported. Expand it on the stack over
+    // its complete domain so owner-dependent schemas and retired material
+    // phases receive the same proof as authored constant pointers.
+    for(const auto [root,count]:{std::pair<std::string_view,size_t>{"/materials/",model->materials.size()},
+        {"/nodes/",model->nodes.size()},{"/cameras/",model->cameras.size()},
+        {"/extensions/KHR_lights_punctual/lights/",model->lights.size()}}) {
+      if(!path.starts_with(root)) continue;
+      const auto tail=path.substr(root.size());const auto slash=tail.find('/');const auto id=tail.substr(0,slash);
+      if(id.empty() || id.front()!='{') break;
+      if(id.size()<3 || id.back()!='}' || id.substr(1,id.size()-2).find_first_of("{}")!=id.npos)
+        return fail("Malformed behavior object-ID placeholder");
+      if(!count || slash==tail.npos) return incomplete(Incomplete::UnknownAnimationPointer,path);
+      std::array<char,544> expanded;std::copy(root.begin(),root.end(),expanded.begin());
+      const auto suffix=tail.substr(slash);
+      for(size_t index=0;index<count;++index) {
+        if(!work()) return false;
+        const auto number=std::to_chars(expanded.data()+root.size(),expanded.data()+expanded.size(),index);
+        if(number.ec!=std::errc{} || suffix.size()>size_t(expanded.data()+expanded.size()-number.ptr))
+          return fail("Behavior pointer exceeds its finite capacity",true);
+        std::copy(suffix.begin(),suffix.end(),number.ptr);
+        if(!pointerPath(std::string_view(expanded.data(),size_t(number.ptr-expanded.data())+suffix.size()))) return false;
+      }
+      return true;
+    }
+    return pointerPath(path);
+  }
+  bool behavior(const Value& extension) {
+    const auto* graphs=behaviorArray(member(extension,"graphs"),16);
+    if(!graphs || graphs->empty()) return fail("Behavior extension requires a graph");
+    if(const auto* selected=member(extension,"graph");selected && selected->Type()!=tinygltf::NULL_TYPE) {
+      size_t index{};if(!behaviorIndex(selected,graphs->size(),index)) return false;
+    }
+    for(const auto& graph:*graphs) {
+      if(!work() || !graph.IsObject()) return fail("Malformed behavior graph");
+      const auto* types=behaviorArray(member(graph,"types"),512,true);
+      const auto* declarations=behaviorArray(member(graph,"declarations"),512,true);
+      const auto* nodes=behaviorArray(member(graph,"nodes"),2048,true);
+      const auto* variables=behaviorArray(member(graph,"variables"),512,true);
+      const auto* events=behaviorArray(member(graph,"events"),512,true);
+      if(!types || !declarations || !nodes || !variables || !events) return false;
+      for(const auto& type:*types) {
+        if(!work() || !type.IsObject()) return fail("Malformed behavior value type");
+        const auto* signature=member(type,"signature");
+        if(!signature || !behaviorString(*signature)) return fail("Malformed behavior value type");
+        constexpr std::string_view names[]{"bool","int","float","float2","float3","float4","ref"};
+        if(std::ranges::find(names,signature->Get<std::string>())==std::end(names) &&
+            !incomplete(Incomplete::UnknownExtension,signature->Get<std::string>())) return false;
+      }
+      for(const auto& declaration:*declarations) {
+        std::string_view op;if(!work() || !behaviorOperation(declaration,op)) return false;
+      }
+      for(const auto& variable:*variables) if(!work() || !behaviorLiteral(variable,*types,true)) return false;
+      for(const auto& event:*events) {
+        if(!work() || !event.IsObject()) return fail("Malformed behavior custom event");
+        if(!behaviorValues(member(event,"values"),*types,true)) return false;
+      }
+      for(const auto& node:*nodes) {
+        if(!work() || !node.IsObject()) return fail("Malformed behavior node");
+        size_t declaration{};if(!behaviorIndex(member(node,"declaration"),declarations->size(),declaration)) return false;
+        const auto* name=member((*declarations)[declaration],"op");
+        if(!name || !behaviorString(*name)) return fail("Malformed behavior operation");
+        const auto& op=name->Get<std::string>();
+        if(op=="pointer/get" || op=="pointer/set" || op=="pointer/interpolate") {
+          const auto* configuration=member(node,"configuration");
+          const auto* pointer=configuration?member(*configuration,"pointer"):nullptr;
+          const auto* values=pointer?behaviorArray(member(*pointer,"value"),1):nullptr;
+          if(!values || values->size()!=1 || !behaviorString(values->front())) return fail("Malformed behavior pointer configuration");
+          if(!behaviorPointer(values->front().Get<std::string>())) return false;
+        }
+        if(!behaviorValues(member(node,"values"),*types,false,true)) return false;
+      }
+    }
+    return true;
+  }
   bool pointerPath(std::string_view path) {
     if(path.empty() || path.front()!='/') return fail("Malformed raw animation pointer path");
     for(size_t i=0;i<path.size();++i) {
@@ -413,6 +577,9 @@ struct Scan {
         if(id>=model->nodes.size()) return fail("Animation pointer targets a missing node");
         if(base=="translation" || base=="scale") components=3;
         else if(base=="rotation") {components=4;allowComponent=false;}
+        else if(base=="extensions/KHR_node_visibility/visible" ||
+            base=="extensions/KHR_node_selectability/selectable" ||
+            base=="extensions/KHR_node_hoverability/hoverable") {components=1;allowComponent=false;}
         else if(base=="weights") {
           const auto mesh=model->nodes[size_t(id)].mesh;
           if(mesh<0 || size_t(mesh)>=model->meshes.size() || model->meshes[size_t(mesh)].primitives.empty())

@@ -5,6 +5,7 @@
 #include "Container/renderer/lighting/DdgiSettings.h"
 #include "Container/renderer/raytracing/RayShadowSettings.h"
 #include "Container/renderer/pathtracing/ReferencePathLensSettings.h"
+#include "Container/renderer/pathtracing/ReferencePathDisplayMode.h"
 #include "Container/renderer/pathtracing/ReferenceGroundSettings.h"
 #include "Container/renderer/pathtracing/ReferenceOidnSettings.h"
 
@@ -31,7 +32,7 @@
 #include "Container/renderer/bim/BimScheduleExtractor.h"
 #include "Container/renderer/lighting/EditableLight.h"
 #include "Container/renderer/temporal/TemporalState.h"
-#include "Container/renderer/temporal/FsrMode.h"
+#include "Container/renderer/temporal/UpscaleMode.h"
 #include "Container/utility/BimElementSearchCache.h"
 #include "Container/utility/BimRelationshipBrowserCache.h"
 #include "Container/utility/GuiDebugState.h"
@@ -174,7 +175,7 @@ struct ModelLoadRequest {
   std::optional<ModelMergeRequest> merge{};
 };
 
-enum class SceneNodeAuthoringAction { Rename, CreateEmpty, DeleteSubtree, DuplicateSubtree };
+enum class SceneNodeAuthoringAction { Rename, CreateEmpty, DeleteSubtree, DuplicateSubtree, MakeEditable };
 
 struct SceneNodeAuthoringRequest {
   SceneNodeAuthoringAction action{SceneNodeAuthoringAction::Rename};
@@ -739,6 +740,11 @@ public:
     return std::exchange(linkedSceneSaveRequest_, std::nullopt);
   }
   void setLinkedSceneSaveAvailable(bool available) noexcept { linkedSceneSaveAvailable_ = available; }
+  void setLinkedNodeAuthoringQueries(std::function<bool(uint32_t)> readOnly,
+                                    std::function<bool(uint32_t)> canMakeEditable) {
+    linkedNodeReadOnly_ = std::move(readOnly);
+    canMakeLinkedNodeEditable_ = std::move(canMakeEditable);
+  }
   void acceptSceneSave(std::string path) {
     savedScenePath_ = std::move(path);
     sceneSavePathInput_ = savedScenePath_;
@@ -771,6 +777,8 @@ public:
   [[nodiscard]] std::optional<container::renderer::RenderTechniqueId>
   consumeRenderEngineChange();
   void setReferencePathStatus(std::string status) { referencePathStatus_ = std::move(status); }
+  void setReferencePathDisplay(container::renderer::ReferencePathDisplayMode mode) { referencePathDisplay_ = mode; }
+  [[nodiscard]] container::renderer::ReferencePathDisplayMode referencePathDisplay() const { return referencePathDisplay_; }
   void setReferencePathLens(container::renderer::ReferencePathLensSettings lens) { referencePathLens_ = lens; }
   [[nodiscard]] const container::renderer::ReferencePathLensSettings& referencePathLens() const { return referencePathLens_; }
   void setReferenceFireflyClamp(float clamp) { referenceFireflyClamp_ = clamp; }
@@ -1153,11 +1161,11 @@ public:
   const container::temporal::Settings &temporalSettings() const {
     return temporalSettings_;
   }
-  void setFsrMode(container::renderer::FsrMode mode) { fsrMode_ = mode; }
-  [[nodiscard]] container::renderer::FsrMode fsrMode() const { return fsrMode_; }
-  void setFsrStatus(bool active, std::string_view status) {
-    fsrActive_ = active;
-    fsrStatus_ = status;
+  void setUpscaling(container::renderer::UpscaleSelection selection) { upscaling_ = selection; }
+  [[nodiscard]] container::renderer::UpscaleSelection upscaling() const { return upscaling_; }
+  void setUpscalingStatus(std::optional<container::renderer::UpscaleBackend> active, std::string_view status) {
+    activeUpscaler_ = active;
+    upscalingStatus_ = status;
   }
   bool consumeTemporalReset() {
     return std::exchange(temporalResetRequested_, false);
@@ -1202,6 +1210,7 @@ private:
   std::optional<std::string> sceneSaveRequest_{};
   std::optional<std::string> linkedSceneSaveRequest_{};
   bool linkedSceneSaveAvailable_{};
+  std::function<bool(uint32_t)> linkedNodeReadOnly_, canMakeLinkedNodeEditable_;
   std::string savedScenePath_{};
   std::string sceneSavePathInput_{"scene.glb"};
   std::string imageExportPathInput_{"capture"};
@@ -1212,9 +1221,9 @@ private:
   uint64_t nextSceneEditGesture_{0};
   bool sceneEditGestureActive_{false};
   container::temporal::Settings temporalSettings_{};
-  container::renderer::FsrMode fsrMode_{};
-  bool fsrActive_{};
-  std::string fsrStatus_{};
+  container::renderer::UpscaleSelection upscaling_{};
+  std::optional<container::renderer::UpscaleBackend> activeUpscaler_{};
+  std::string upscalingStatus_{};
   std::string gfxCaptureStatus_{"Disabled. Launch with tools/gfxreconstruct.ps1 capture to collect Vulkan captures and runtime metadata."};
   uint64_t temporalBytes_{0}, temporalFrame_{0};
   glm::uvec2 temporalExtent_{};
@@ -1325,6 +1334,7 @@ private:
   std::optional<uint32_t> pendingMsaaSamples_{};
   std::vector<RenderEngineOption> renderEngineOptions_{};
   std::string referencePathStatus_;
+  container::renderer::ReferencePathDisplayMode referencePathDisplay_{};
   container::renderer::ReferencePathLensSettings referencePathLens_{};
   float referenceFireflyClamp_{};
   bool referenceAutofocusRequested_{};

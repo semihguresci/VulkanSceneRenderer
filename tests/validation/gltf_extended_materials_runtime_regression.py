@@ -60,9 +60,10 @@ def sha(path):
 
 
 def validation_log_error(text):
-    # Newer validation-layer builds also print synchronization errors without
-    # the legacy SYNC-HAZARD prefix or the words "Validation Error".
+    # Synchronization and undefined-storage-image diagnostics can omit both
+    # the VUID and the legacy "Validation Error" prefix.
     return bool(re.search(r'VUID-|SYNC-HAZARD|Validation Error|\bhazard detected\b|'
+        r'Undefined-Value-StorageImage-FormatMismatch-ImageView|undefined values to the whole image|'
         r'\b(?:READ|WRITE)_AFTER_(?:READ|WRITE)\b[^\r\n]*\bhazard\b', text, re.I))
 
 
@@ -661,12 +662,14 @@ def report_merge_self_check():
         'Validation Error: invalid image',
         'validation layer: vkCmdPipelineBarrier2(): WRITE_AFTER_WRITE hazard detected.',
         'READ_AFTER_WRITE synchronization hazard', 'WRITE_AFTER_READ hazard',
-        'READ_AFTER_READ hazard', 'Image hazard detected']
+        'READ_AFTER_READ hazard', 'Image hazard detected',
+        'vkCmdDispatch(): Any loads or stores will produce undefined values to the whole image.',
+        'Undefined-Value-StorageImage-FormatMismatch-ImageView']
     valid_logs = ['Renderer initialized', 'No synchronization hazards detected',
         'Image hazard detector initialized', 'WRITE_AFTER_WRITE symbolic access enumerated']
     require(all(validation_log_error(text) for text in invalid_logs) and
             not any(validation_log_error(text) for text in valid_logs),
-            'Validation log scanner missed an actual hazard or rejected benign status')
+            'Validation log scanner missed a Vulkan diagnostic or rejected benign status')
     uv_plan = build_plan(Path('self-check-does-not-write'), ('uv-mirror',))
     axis_proof = verify_uv_anisotropy_axes(
         uv_plan['fixtures']['uv-transform']['spec']['textures'][f'{ANISO}/anisotropyTexture'])

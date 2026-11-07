@@ -7,11 +7,21 @@ dielectrics, nested media, traced-distance Beer absorption, stochastic alpha
 coverage, unlit surfaces and direct environment, point, spot, area, directional
 and mesh lighting with MIS.
 
+Authored specular/glossiness materials use retained diffuse and specular RGB
+inputs, the existing alpha and glossiness values, and their source texture
+bindings. Diffuse and packed specular RGB decode from sRGB, while packed alpha
+remains linear glossiness. Both bindings retain their UV selection and texture
+transform. The shader derives the diffuse coefficient and F0 from those inputs,
+then evaluates and samples Schlick-weighted Lambert and GGX with roughness equal
+to one minus glossiness. Active SG combinations with clearcoat, transmission,
+volume thickness, anisotropy, diffuse transmission, retroreflection, or scattering
+are diagnosed. Normal mapping, emission, and alpha coverage remain available.
+
 The shared layouts are updated together in host and Slang code:
 
 | Payload | Bytes | Contract |
 | --- | ---: | --- |
-| `GpuMaterial` | 1184 | Existing material offsets retained with appended extended and experimental inputs |
+| `GpuMaterial` | 1216 | Existing material offsets retained with appended extended, experimental, and authored specular/glossiness inputs |
 | `LightingData` | 2224 | Existing 80-byte prefix retained; environment and LUT storage appended |
 | `GpuTextureMetadata` | 16 | Sampler index at byte 0, actual bound sampler count at byte 4 |
 | `RayTriangleData` | 64 | UV0/UV1 and corner opacity |
@@ -56,9 +66,11 @@ bound and the medium stack holds eight nested volumes. Unsupported paths are
 shown in diagnostic display and counted separately from rejected numeric samples;
 diagnostic colors never enter raw moments. Incompatible overlaps, open/clipped
 solid media, coverage holes in solid boundaries, bending delta connections to
-point/directional lights, participating media and remaining material
-layers are still gaps. Filtering, shading-normal energy, convergence/comparison
-and broad scene acceptance remain part of issue #47.
+point/directional lights, participating media and the documented unsupported
+material layers are explicit limits of this reference subset. Ray-cone filtering
+and shading-normal handling retain the documented approximations. Original #47
+acceptance combines numerical lighting tests, scene convergence and matched
+raster calibration; it does not require universal material or medium support.
 
 Build `reference_path_trace_gpu_tests`, `path_transport_gpu_tests` and
 `managed_compute_pipeline_gpu_tests`. Enable their environment gates and run CTest

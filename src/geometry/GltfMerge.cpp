@@ -2,10 +2,12 @@
 #include <Container/geometry/GltfMergePlacement.h>
 #include <Container/geometry/GltfAccessor.h>
 #include <Container/geometry/GltfAnimation.h>
+#include <Container/geometry/GltfCapabilities.h>
 #include <Container/geometry/GltfInteractivity.h>
 #include <Container/geometry/GltfIesProfiles.h>
 #include <Container/geometry/GltfMaterialVariants.h>
 #include <Container/geometry/GltfSceneCatalog.h>
+#include <Container/geometry/GltfXmpMetadata.h>
 
 #include <algorithm>
 #include <charconv>
@@ -71,6 +73,7 @@ void finite(std::span<const double> values,std::string_view where) {
 struct Budget {
   const GltfMergeLimits& limits;
   GltfMergeSummary sum;
+  std::set<std::string_view> opaqueDestinationExtensions;
   void text(std::string_view value) {charge(sum.metadataBytes,add(value.size(),8,"metadata"),limits.maxMetadataBytes,"metadata");}
   void bytes(uint64_t n) {charge(sum.metadataBytes,n,limits.maxMetadataBytes,"metadata");}
   void refs(uint64_t n) {charge(sum.references,n,limits.maxReferences,"references"); bytes(mul(n,16,"references"));}
@@ -87,17 +90,19 @@ struct Budget {
 };
 
 // extras are opaque; nested extension maps still require known schema handlers.
-void nested(const Value& value,std::string_view label,bool textureTransforms=false,bool lightAreas=false) {
+void nested(const Value& value,std::string_view label,const Budget& budget,
+            bool textureTransforms=false,bool lightAreas=false) {
   if(value.IsObject()) for(const auto& [key,child]:value.Get<Object>()) {
     if(key=="extras") continue;
     if(key=="extensions") {
       for(const auto& [name,extension]:object(child,label)) {
+        if(budget.opaqueDestinationExtensions.contains(name)) {object(extension,label);continue;}
         if(!(textureTransforms && name=="KHR_texture_transform") && !(lightAreas && indexedLight(name)))
           fail(label,"unsupported nested extension reference: "+name);
-        object(extension,label); nested(extension,label,false);
+        object(extension,label); nested(extension,label,budget,false);
       }
-    } else nested(child,label,textureTransforms,lightAreas);
-  } else if(value.IsArray()) for(const auto& child:value.Get<Array>()) nested(child,label,textureTransforms,lightAreas);
+    } else nested(child,label,budget,textureTransforms,lightAreas);
+  } else if(value.IsArray()) for(const auto& child:value.Get<Array>()) nested(child,label,budget,textureTransforms,lightAreas);
 }
 bool declared(const tinygltf::Model& model,std::string_view name) {
   return std::ranges::find(model.extensionsUsed,name)!=model.extensionsUsed.end();
@@ -105,10 +110,15 @@ bool declared(const tinygltf::Model& model,std::string_view name) {
 void extensions(const tinygltf::ExtensionMap& values,const tinygltf::Model& model,
     Budget& budget,std::string_view label,Names allowed={},bool transforms=false) {
   for(const auto& [name,value]:values) {
-    if(!named(name,allowed)) fail(label,"unsupported extension reference: "+name);
+    const bool opaque=budget.opaqueDestinationExtensions.contains(name);
+    if(!opaque && !named(name,allowed)) fail(label,"unsupported extension reference: "+name);
     if(!declared(model,name)) fail(label,"extension missing from extensionsUsed: "+name);
-    object(value,label); budget.text(name);budget.value(value);
-    nested(value,label,transforms,label=="root" && (name==kPunctual || indexedLight(name)));
+    budget.text(name);budget.value(value);
+    // XMP's raw packet package and attachment diagnostics live outside
+    // TinyGLTF's typed extension validation.
+    if(name==kGltfXmpExtension) continue;
+    object(value,label);
+    if(!opaque) nested(value,label,budget,transforms,label=="root" && (name==kPunctual || indexedLight(name)));
   }
 }
 template<class T> void property(const T& value,const tinygltf::Model& model,
@@ -197,7 +207,7 @@ void tableCount(size_t count,const GltfMergeLimits& limits,std::string_view labe
   if(count>limits.maxTableEntries || count>INT_MAX) fail(label,"table limit exceeded");
 }
 bool supportedDeclaration(std::string_view name) {
-  return indexedLight(name) || named(name,{kVariants,kPunctual,kPointer,kInstancing,
+  return indexedLight(name) || named(name,{kVariants,kPunctual,kPointer,kInstancing,kGltfXmpExtension,
     "KHR_texture_transform","KHR_node_visibility","KHR_node_selectability","KHR_node_hoverability",kGltfInteractivityExtension,
     "KHR_texture_basisu","EXT_texture_webp","MSFT_texture_dds","KHR_mesh_quantization","KHR_accessor_float64",
     "KHR_materials_unlit","KHR_materials_specular","KHR_materials_ior","KHR_materials_dispersion",
@@ -207,7 +217,7 @@ bool supportedDeclaration(std::string_view name) {
     "KHR_materials_retroreflection","KHR_materials_scatter","KHR_materials_volume_scatter"});
 }
 
-Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label) {
+Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label,bool preserveOpaque=false) {
   const auto& lim=b.limits;
   for(const auto count:{model.buffers.size(),model.bufferViews.size(),model.accessors.size(),model.images.size(),
       model.samplers.size(),model.textures.size(),model.materials.size(),model.meshes.size(),model.nodes.size(),
@@ -215,21 +225,31 @@ Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label) {
     tableCount(count,lim,label);
   if(model.nodes.size()>lim.maxNodes || model.scenes.size()>lim.maxScenes) fail(label,"node/scene limit exceeded");
   if(!model.audioEmitters.empty() || !model.audioSources.empty()) fail(label,"audio references need a merge handler");
-  if(model.asset.version!="2.0" || (!model.asset.minVersion.empty() && model.asset.minVersion!="2.0"))
-    fail(label,"unsupported asset version");
+  const auto version = validateCapabilities({model.asset.version,
+      model.asset.minVersion.empty() ? std::nullopt : std::optional{model.asset.minVersion}}, label);
+  for (const auto& diagnostic : version.diagnostics)
+    if (diagnostic.severity == CapabilitySeverity::Error) fail(label, diagnostic.message);
   std::set<std::string> used,required;
   for(const auto& name:model.extensionsUsed) {
     b.text(name);
-    if(!used.insert(name).second || !supportedDeclaration(name)) fail(label,"unsupported or duplicate declaration: "+name);
+    if(!used.insert(name).second) fail(label,"duplicate declaration: "+name);
+    if(!supportedDeclaration(name)) {
+      // Destination indices stay stable. Preserve bounded unknown optional
+      // metadata on that side without interpreting or remapping its values.
+      if(!preserveOpaque || extensionCapability(name) ||
+          std::ranges::find(model.extensionsRequired,name)!=model.extensionsRequired.end())
+        fail(label,"unsupported declaration: "+name);
+      b.opaqueDestinationExtensions.insert(name);
+    }
   }
   for(const auto& name:model.extensionsRequired) {
     b.text(name);
     if(!required.insert(name).second || !used.contains(name)) fail(label,"invalid required extension declaration");
   }
-  property(model.asset,model,b,"asset");
+  property(model.asset,model,b,"asset",{kGltfXmpExtension});
   b.text(model.asset.version);b.text(model.asset.minVersion);b.text(model.asset.generator);b.text(model.asset.copyright);
   b.value(model.extras);b.text(model.extras_json_string);b.text(model.extensions_json_string);
-  extensions(model.extensions,model,b,"root",{kVariants,kPunctual,kGltfInteractivityExtension,kGltfIesExtension,
+  extensions(model.extensions,model,b,"root",{kVariants,kPunctual,kGltfInteractivityExtension,kGltfIesExtension,kGltfXmpExtension,
       "KHR_lights_area","EXT_lights_area","WEBGI_lights_area","WEBGI_area_light"});
   ValidateGltfInteractivity(model);
   Audit out;
@@ -243,7 +263,7 @@ Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label) {
     charge(b.sum.rootReferences,scene.sourceRoots.size(),lim.maxRootReferences,"scene roots");b.refs(scene.sourceRoots.size());
   }
   for(const auto& scene:model.scenes) {
-    property(scene,model,b,"scene"); if(!scene.audioEmitters.empty()) fail("scene","audio references need a merge handler");
+    property(scene,model,b,"scene",{kGltfXmpExtension}); if(!scene.audioEmitters.empty()) fail("scene","audio references need a merge handler");
   }
   if(model.scenes.empty()) {b.objects(1);b.text("Scene");}
   if(const auto root=model.extensions.find(kVariants);root!=model.extensions.end()) {
@@ -283,7 +303,7 @@ Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label) {
     (void)CheckedAccessor(model,int(i),"merge accessor",{AccessorUsage::Generic,HasRequiredExtension(model,"KHR_accessor_float64")});
   }
   for(const auto& image:model.images) {
-    property(image,model,b,"image");b.text(image.uri);b.text(image.mimeType);
+    property(image,model,b,"image",{kGltfXmpExtension});b.text(image.uri);b.text(image.mimeType);
     index(image.bufferView,model.bufferViews.size(),"image",true);b.refs(image.bufferView>=0);
     if(image.bufferView<0 && image.image.empty()) fail("image","image payload is not resident");
     charge(b.sum.payloadBytes,image.image.size(),lim.maxResidentBytes,"resident images");
@@ -293,14 +313,17 @@ Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label) {
     property(texture,model,b,"texture",{"KHR_texture_basisu","EXT_texture_webp","MSFT_texture_dds"});
     index(texture.source,model.images.size(),"texture image",true);index(texture.sampler,model.samplers.size(),"texture sampler",true);b.refs(2);
     bool source=texture.source>=0;
-    for(const auto& [name,value]:texture.extensions) {integer(field(value,"source",name),model.images.size(),name);b.refs(1);source=true;}
+    for(const auto& [name,value]:texture.extensions) {
+      if(b.opaqueDestinationExtensions.contains(name)) continue;
+      integer(field(value,"source",name),model.images.size(),name);b.refs(1);source=true;
+    }
     if(!source) fail("texture","missing image source");
   }
   for(const auto& material:model.materials) {
     property(material,model,b,"material",{"KHR_materials_unlit","KHR_materials_specular","KHR_materials_ior","KHR_materials_dispersion",
       "KHR_materials_emissive_strength","KHR_materials_transmission","KHR_materials_volume","KHR_materials_clearcoat","KHR_materials_sheen",
       "KHR_materials_iridescence","KHR_materials_anisotropy","KHR_materials_diffuse_transmission","KHR_materials_pbrSpecularGlossiness",
-      "KHR_materials_retroreflection","KHR_materials_scatter","KHR_materials_volume_scatter"},true);
+      "KHR_materials_retroreflection","KHR_materials_scatter","KHR_materials_volume_scatter",kGltfXmpExtension},true);
     if(!material.lods.empty()) fail("material","LOD references need a merge handler");
     property(material.pbrMetallicRoughness,model,b,"metallic roughness");
     textureInfo(material.pbrMetallicRoughness.baseColorTexture,model,b);textureInfo(material.pbrMetallicRoughness.metallicRoughnessTexture,model,b);
@@ -322,7 +345,7 @@ Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label) {
     }
   }
   for(const auto& mesh:model.meshes) {
-    property(mesh,model,b,"mesh");finite(mesh.weights,"mesh weights");b.refs(mesh.weights.size());
+    property(mesh,model,b,"mesh",{kGltfXmpExtension});finite(mesh.weights,"mesh weights");b.refs(mesh.weights.size());
     charge(b.sum.primitives,mesh.primitives.size(),lim.maxPrimitives,"primitives");
     for(const auto& primitive:mesh.primitives) {
       property(primitive,model,b,"primitive",{kVariants});
@@ -333,7 +356,7 @@ Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label) {
     }
   }
   for(const auto& node:model.nodes) {
-    property(node,model,b,"node",{kPunctual,kInstancing,kGltfIesExtension,"KHR_node_visibility","KHR_node_selectability","KHR_node_hoverability",
+    property(node,model,b,"node",{kPunctual,kInstancing,kGltfIesExtension,kGltfXmpExtension,"KHR_node_visibility","KHR_node_selectability","KHR_node_hoverability",
       "KHR_lights_area","EXT_lights_area","WEBGI_lights_area","WEBGI_area_light"});
     if(node.emitter!=-1 || !node.lods.empty()) fail("node","audio/LOD references need a merge handler");
     index(node.mesh,model.meshes.size(),"node mesh",true);index(node.skin,model.skins.size(),"node skin",true);
@@ -364,7 +387,7 @@ Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label) {
     finite(light.spot.innerConeAngle,"spot inner cone");finite(light.spot.outerConeAngle,"spot outer cone");b.text(light.type);
   }
   for(const auto& animation:model.animations) {
-    property(animation,model,b,"animation");tableCount(animation.samplers.size(),lim,"animation samplers");
+    property(animation,model,b,"animation",{kGltfXmpExtension});tableCount(animation.samplers.size(),lim,"animation samplers");
     charge(b.sum.animationChannels,animation.channels.size(),lim.maxAnimationChannels,"animation channels");
     for(const auto& sampler:animation.samplers) {property(sampler,model,b,"animation sampler");b.text(sampler.interpolation);index(sampler.input,model.accessors.size(),"animation input");index(sampler.output,model.accessors.size(),"animation output");b.refs(2);}
     for(const auto& channel:animation.channels) {
@@ -587,6 +610,8 @@ void remapSkin(tinygltf::Skin& skin,const GltfMergeIndexMaps& m,const std::vecto
 
 void placement(const tinygltf::Model& incoming,const Audit& audit,size_t selected,
     GltfMergePlan& plan,size_t canonicalSkinCount,const GltfMergeOptions& options,Budget& b) {
+  const auto previousReferences = b.sum.references;
+  const auto previousMetadata = b.sum.metadataBytes;
   auto& p=plan.placement;const auto size=incoming.nodes.size();
   std::vector<bool> visible(size),closure(size);p.nodes.assign(size,-1);p.contextOnly.assign(size,false);p.skins.assign(incoming.skins.size(),-1);
   std::vector<int> stack(audit.catalog.entries[selected].sourceRoots.begin(),audit.catalog.entries[selected].sourceRoots.end());
@@ -605,7 +630,7 @@ void placement(const tinygltf::Model& incoming,const Audit& audit,size_t selecte
   for(size_t n=0;n<size;++n) if(closure[n]) {
     if(next>INT_MAX || next>=b.limits.maxNodes) fail("placement","node limit exceeded");
     p.nodes[n]=int32_t(next++);p.contextOnly[n]=!visible[n];
-    property(incoming.nodes[n],incoming,b,"placement node",{kPunctual,kInstancing,"KHR_node_visibility","KHR_node_selectability","KHR_node_hoverability","KHR_lights_area","EXT_lights_area","WEBGI_lights_area","WEBGI_area_light"});
+    property(incoming.nodes[n],incoming,b,"placement node",{kPunctual,kInstancing,kGltfXmpExtension,"KHR_node_visibility","KHR_node_selectability","KHR_node_hoverability","KHR_lights_area","EXT_lights_area","WEBGI_lights_area","WEBGI_area_light"});
     b.refs(incoming.nodes[n].children.size()+incoming.nodes[n].matrix.size()+incoming.nodes[n].translation.size()+incoming.nodes[n].rotation.size()+incoming.nodes[n].scale.size()+incoming.nodes[n].weights.size()+4);
   }
   size_t nextSkin=canonicalSkinCount;
@@ -620,9 +645,13 @@ void placement(const tinygltf::Model& incoming,const Audit& audit,size_t selecte
   }
   uint64_t roots=0;for(size_t n=0;n<size;++n) if(closure[n] && (audit.parents[n]<0 || !closure[size_t(audit.parents[n])])) ++roots;
   b.objects(1);b.text(options.parentName);b.refs(roots+16);
+  b.sum.placementReferences = b.sum.references - previousReferences;
+  b.sum.placementMetadataBytes = b.sum.metadataBytes - previousMetadata;
 }
 
 } // namespace
+
+bool GltfMergeSupportsExtension(std::string_view name) { return supportedDeclaration(name); }
 
 GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& incoming,
     const GltfMergeOptions& options,const GltfMergeLimits& limits) try {
@@ -640,7 +669,9 @@ GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& i
     fail("combined nodes","node limit exceeded");
   if(add(std::max(size_t{1},base.scenes.size()),std::max(size_t{1},incoming.scenes.size()),"combined scenes")>limits.maxScenes)
     fail("combined scenes","scene limit exceeded");
-  const auto a=audit(base,budget,"destination"),b=audit(incoming,budget,"incoming");
+  const auto a=audit(base,budget,"destination",true);
+  budget.opaqueDestinationExtensions.clear();
+  const auto b=audit(incoming,budget,"incoming");
   const auto dest=options.destinationScene.value_or(a.catalog.defaultScene),selected=options.incomingScene.value_or(b.catalog.defaultScene);
   if(dest>=a.catalog.entries.size() || selected>=b.catalog.entries.size()) fail("scene selection","index out of bounds");
   if(options.placementMatrix) ValidateGltfMergePlacement(*options.placementMatrix);
@@ -677,8 +708,18 @@ GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& i
   // Root representations can coexist with TinyGLTF's typed light table. Charge
   // the generated representation and retained asset provenance before copying.
   for(const auto& [name,value]:headers.extensions) {budget.text(name);budget.value(value);}
-  property(incoming.asset,incoming,budget,"incoming asset provenance");
+  property(incoming.asset,incoming,budget,"incoming asset provenance",{kGltfXmpExtension});
+  auto xmp = ComposeGltfXmpPackets(base, incoming, limits.maxMetadataDepth);
+  budget.text(xmp.rootExtensionsJson);
+  const auto incomingAssetXmp = incoming.asset.extensions.find(kGltfXmpExtension);
+  if (incomingAssetXmp != incoming.asset.extensions.end()) {
+    budget.text(kGltfXmpExtension);
+    budget.value(incomingAssetXmp->second);
+  }
   plan.model=base;auto& out=plan.model;mergeRoot(out,base,incoming);plan.incomingAsset=incoming.asset;
+  if (base.extensions.contains(kGltfXmpExtension) || incoming.extensions.contains(kGltfXmpExtension))
+    out.extensions.insert_or_assign(kGltfXmpExtension, Value(Object{}));
+  if (!xmp.rootExtensionsJson.empty()) out.extensions_json_string = std::move(xmp.rootExtensionsJson);
   if (auto graph = headers.extensions.extract(kGltfInteractivityExtension); !graph.empty())
     out.extensions.insert_or_assign(kGltfInteractivityExtension, std::move(graph.mapped()));
   if(out.scenes.empty()) {tinygltf::Scene scene;scene.name="Scene";scene.nodes.assign(a.catalog.entries[0].sourceRoots.begin(),a.catalog.entries[0].sourceRoots.end());out.scenes.push_back(std::move(scene));}
@@ -707,6 +748,8 @@ GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& i
   if(incoming.scenes.empty()) {tinygltf::Scene scene;scene.name="Scene";scene.nodes.assign(b.catalog.entries[0].sourceRoots.begin(),b.catalog.entries[0].sourceRoots.end());for(auto& root:scene.nodes) root=translated(root,m.nodes,"scene root");out.scenes.push_back(std::move(scene));}
   else for(auto value:incoming.scenes) {for(auto& root:value.nodes) root=translated(root,m.nodes,"scene root");out.scenes.push_back(std::move(value));}
   tinygltf::Node parent;parent.name=options.parentName;
+  if (incomingAssetXmp != incoming.asset.extensions.end())
+    parent.extensions.emplace(kGltfXmpExtension, incomingAssetXmp->second);
   if(options.placementMatrix) parent.matrix.assign(options.placementMatrix->begin(),options.placementMatrix->end());
   for(const auto root:b.catalog.entries[selected].sourceRoots) parent.children.push_back(plan.placement.nodes[size_t(root)]);
   for(size_t n=0;n<incoming.nodes.size();++n) if(plan.placement.nodes[n]>=0 && plan.placement.contextOnly[n] &&
@@ -733,6 +776,24 @@ GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& i
   }
   out.scenes[dest].nodes.push_back(plan.parentNode);
   out.defaultScene=base.defaultScene<0?0:base.defaultScene;
+  if (declared(out, kGltfXmpExtension)) {
+    const auto remap = [&](auto& record, bool fromDestination) {
+      const auto count = fromDestination ? xmp.destinationPackets : xmp.incomingPackets;
+      const auto offset = fromDestination ? 0 : xmp.destinationPackets;
+      if (RemapGltfXmpAttachment(record.extensions, count, offset)) record.extensions_json_string.clear();
+    };
+    const auto remapTable = [&](auto& records, size_t destinationCount) {
+      for (size_t i = 0; i < records.size(); ++i) remap(records[i], i < destinationCount);
+    };
+    remap(out.asset, true);
+    remap(plan.incomingAsset, false);
+    remapTable(out.scenes, a.catalog.entries.size());
+    remapTable(out.nodes, base.nodes.size());
+    remapTable(out.meshes, base.meshes.size());
+    remapTable(out.materials, base.materials.size());
+    remapTable(out.images, base.images.size());
+    remapTable(out.animations, base.animations.size());
+  }
   // No publication has occurred; verify the final forest and typed clips too.
   (void)container::scene::BuildGltfSceneCatalog(out,{limits.maxScenes,limits.maxRootReferences});
   if(!ParseAnimations(out).diagnostics.empty()) fail("output","unsupported animation target");

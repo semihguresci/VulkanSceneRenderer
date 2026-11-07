@@ -1690,7 +1690,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
       {RenderResourceId::AmbientOcclusion, RenderResourceId::GBufferAnisotropy,
        RenderResourceId::GBufferDiffuseTransmission, RenderResourceId::RayScene}, {RenderResourceId::SceneColor});
 
-  registerVolumetricFogPass(graph, RenderPassId::ScreenReflections);
+  registerVolumetricFogPass(graph, RenderPassId::ScreenReflections, deferred);
   registerTemporalPasses(graph, RenderPassId::VolumetricFog);
   registerRayShadowPasses(graph);
   registerDdgiPasses(graph);

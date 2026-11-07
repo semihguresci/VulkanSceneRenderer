@@ -2,6 +2,7 @@
 
 #include <Container/geometry/GltfAnimationRuntime.h>
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #include <algorithm>
 #include <array>
@@ -216,7 +217,8 @@ const V* objectLeaf(const V& object,std::string_view key) noexcept {
   for(const auto& [name,value]:object.Get<V::Object>()) if(name==key) return &value;
   return nullptr;
 }
-bool selectedNodePointer(std::string_view path,size_t nodes,int32_t selected,bool& weights) noexcept {
+bool selectedNodePointer(std::string_view path,size_t nodes,int32_t selected,
+    std::optional<GltfCameraNodeAnimationBinding>& binding) noexcept {
   if(path.empty() || path.front()!='/') return false;
   if(path=="/nodes") return false;
   if(!path.starts_with("/nodes/")) return true;
@@ -224,11 +226,21 @@ bool selectedNodePointer(std::string_view path,size_t nodes,int32_t selected,boo
   if(!decimal(token,node) || node>=nodes) return false;
   if(node!=size_t(selected)) return true;
   if(slash==std::string_view::npos) return false;path.remove_prefix(slash+1);
-  if(path=="weights") {weights=true;return true;}
-  if(path.starts_with("weights/")) {size_t component{};if(!decimal(path.substr(8),component) || component>UINT32_MAX) return false;weights=true;return true;}
-  return false; // selected TRS/matrix and unknown selected schemas all block
+  const auto componentSlash=path.find('/');const auto property=path.substr(0,componentSlash);
+  GltfCameraNodeAnimationBinding result;
+  if(property=="translation") result.property=GltfCameraNodeAnimationProperty::Translation;
+  else if(property=="rotation") result.property=GltfCameraNodeAnimationProperty::Rotation;
+  else if(property=="scale") result.property=GltfCameraNodeAnimationProperty::Scale;
+  else if(property!="weights") return false;
+  if(componentSlash!=std::string_view::npos) {
+    size_t component{};
+    if(result.property==GltfCameraNodeAnimationProperty::Rotation || !decimal(path.substr(componentSlash+1),component) ||
+        component>(result.property==GltfCameraNodeAnimationProperty::Weights?UINT32_MAX:2)) return false;
+    result.element=component;
+  }
+  binding=result;return true;
 }
-struct ScanInfo {uint64_t bindings{};};
+struct ScanInfo {uint64_t bindings{};uint8_t poseProperties{};};
 template<class Visit> bool scan(GltfCameraPoseSourceView source,int32_t node,const GltfCameraPoseAuthoringLimits& limits,
     Budget* budget,ScanInfo& info,Visit&& visit) {
   if(node<0 || size_t(node)>=source.nodes.size() || source.nodes.size()>limits.maxNodes ||
@@ -238,7 +250,7 @@ template<class Visit> bool scan(GltfCameraPoseSourceView source,int32_t node,con
     const auto& animation=source.animations[c];
     if(animation.channels.size()>limits.maxAnimationChannels-channels) return false;channels+=animation.channels.size();
     for(size_t k=0;k<animation.channels.size();++k) {
-      const auto& channel=animation.channels[k];bool weights=false;
+      const auto& channel=animation.channels[k];std::optional<GltfCameraNodeAnimationBinding> binding;
       if(channel.target_extensions.size()>limits.maxMetadataValues-extensions) return false;extensions+=channel.target_extensions.size();
       const auto ext=std::find_if(channel.target_extensions.begin(),channel.target_extensions.end(),
           [](const auto& item) {return item.first=="KHR_animation_pointer";});
@@ -247,15 +259,26 @@ template<class Visit> bool scan(GltfCameraPoseSourceView source,int32_t node,con
         const auto* pointer=objectLeaf(ext->second,"pointer");if(!pointer || !pointer->IsString()) return false;
         const auto& path=pointer->Get<std::string>();
         if(path.size()>limits.maxPointerBytes || path.size()>limits.maxOwnedBytes-pointerBytes) return false;pointerBytes+=path.size();
-        if(!selectedNodePointer(path,source.nodes.size(),node,weights)) return false;
+        if(!selectedNodePointer(path,source.nodes.size(),node,binding)) return false;
       } else {
         if(channel.target_node< -1 || ext!=channel.target_extensions.end()) return false;
-        if(channel.target_node==node) {if(channel.target_path!="weights") return false;weights=true;}
+        if(channel.target_node==node) {
+          binding.emplace();
+          if(channel.target_path=="translation") binding->property=GltfCameraNodeAnimationProperty::Translation;
+          else if(channel.target_path=="rotation") binding->property=GltfCameraNodeAnimationProperty::Rotation;
+          else if(channel.target_path=="scale") binding->property=GltfCameraNodeAnimationProperty::Scale;
+          else if(channel.target_path!="weights") return false;
+        }
       }
-      if(!weights) continue;
+      if(!binding) continue;
+      if(binding->property!=GltfCameraNodeAnimationProperty::Weights) {
+        if(!source.nodes[size_t(node)].matrix.empty()) return false;
+        info.poseProperties|=uint8_t(1u<<size_t(binding->property));
+      }
       if(channel.sampler<0 || size_t(channel.sampler)>=animation.samplers.size()) return false;
       ++info.bindings;
-      if((budget && !budget->channel(channel)) || !visit(GltfCameraNodeAnimationBinding{c,k},channel)) return false;
+      binding->clip=c;binding->channel=k;
+      if((budget && !budget->channel(channel)) || !visit(*binding,channel)) return false;
     }
   }
   return true;
@@ -276,6 +299,89 @@ void setMatrix(tinygltf::Node& node,const glm::mat4& matrix) {
 void copyPose(tinygltf::Node& to,const tinygltf::Node& from) {
   to.matrix=from.matrix;to.translation=from.translation;to.rotation=from.rotation;to.scale=from.scale;
 }
+uint8_t animatedPoseMask(std::span<const GltfCameraNodeAnimationBinding> bindings) noexcept {
+  uint8_t result{};for(const auto& binding:bindings)
+    if(binding.property!=GltfCameraNodeAnimationProperty::Weights) result|=uint8_t(1u<<size_t(binding.property));
+  return result;
+}
+std::vector<double>& poseValues(tinygltf::Node& node,GltfCameraNodeAnimationProperty property) noexcept {
+  if(property==GltfCameraNodeAnimationProperty::Translation) return node.translation;
+  if(property==GltfCameraNodeAnimationProperty::Rotation) return node.rotation;
+  return node.scale;
+}
+const std::vector<double>& poseValues(const tinygltf::Node& node,GltfCameraNodeAnimationProperty property) noexcept {
+  if(property==GltfCameraNodeAnimationProperty::Translation) return node.translation;
+  if(property==GltfCameraNodeAnimationProperty::Rotation) return node.rotation;
+  return node.scale;
+}
+double poseDefault(GltfCameraNodeAnimationProperty property,size_t component) noexcept {
+  return property==GltfCameraNodeAnimationProperty::Scale ||
+      (property==GltfCameraNodeAnimationProperty::Rotation && component==3)?1.:0.;
+}
+void preserveAnimatedPose(tinygltf::Node& to,const tinygltf::Node& from,
+    std::span<const GltfCameraNodeAnimationBinding> bindings) {
+  for(const auto& binding:bindings) {
+    if(binding.property==GltfCameraNodeAnimationProperty::Weights) continue;
+    auto& destination=poseValues(to,binding.property);const auto& source=poseValues(from,binding.property);
+    if(!binding.element) destination=source;
+    else {
+      if(destination.empty()) destination.assign(3,poseDefault(binding.property,0));
+      destination[*binding.element]=source.empty()?poseDefault(binding.property,*binding.element):source[*binding.element];
+    }
+  }
+}
+bool ownsPoseProperty(const GltfCameraPosePlan& command,GltfCameraNodeAnimationProperty property) noexcept {
+  return !exactDoubles(poseValues(command.authoredBefore,property),poseValues(command.authoredAfter,property)) ||
+      !exactDoubles(poseValues(command.evaluatedBefore,property),poseValues(command.evaluatedAfter,property));
+}
+bool unanimatedPoseMatches(const tinygltf::Node& current,const tinygltf::Node& expected,const tinygltf::Node& rest,
+    const GltfCameraPosePlan& command,std::span<const GltfCameraNodeAnimationBinding> bindings,std::optional<size_t> selectedClip) noexcept {
+  if(!current.matrix.empty() || !expected.matrix.empty()) return false;
+  for(const auto property:{GltfCameraNodeAnimationProperty::Translation,GltfCameraNodeAnimationProperty::Rotation,
+      GltfCameraNodeAnimationProperty::Scale}) {
+    if(!ownsPoseProperty(command,property)) continue;
+    const auto& a=poseValues(current,property);const auto& b=poseValues(expected,property);const auto& defaults=poseValues(rest,property);
+    for(size_t component=0;component<(property==GltfCameraNodeAnimationProperty::Rotation?4u:3u);++component) {
+      const auto targets=[&](const auto& binding) {
+        return binding.property==property && (!binding.element || *binding.element==component);
+      };
+      const bool tracked=std::any_of(bindings.begin(),bindings.end(),targets);
+      const bool animated=selectedClip && std::any_of(bindings.begin(),bindings.end(),[&](const auto& binding) {
+        return binding.clip==*selectedClip && targets(binding);
+      });
+      const auto& wanted=tracked?defaults:b;
+      if(!animated && !exact(a.empty()?poseDefault(property,component):a[component],
+          wanted.empty()?poseDefault(property,component):wanted[component])) return false;
+    }
+  }
+  return true;
+}
+void setTrs(tinygltf::Node& node,const glm::mat4& matrix,const tinygltf::Node& preferred,
+    const GltfCameraPoseAuthoringLimits& limits) {
+  glm::dmat3 rotation(matrix);glm::dvec3 scale;
+  for(int c=0;c<3;++c) {
+    scale[c]=glm::length(rotation[c]);
+    if(!std::isfinite(scale[c]) || scale[c]==0) fail("animated camera rest has a singular TRS scale");
+    rotation[c]/=scale[c];
+  }
+  for(int c=0;c<3;++c) for(int r=0;r<c;++r)
+    if(std::abs(glm::dot(rotation[c],rotation[r]))>limits.maxRelativeError)
+      fail("requested animated camera rest requires local shear and cannot be represented as TRS");
+  glm::dvec3 signs(1);
+  if(preferred.scale.size()==3) for(int c=0;c<3;++c) if(std::signbit(preferred.scale[size_t(c)])) signs[c]=-1;
+  if(glm::determinant(rotation)*signs.x*signs.y*signs.z<0) signs.x=-signs.x;
+  for(int c=0;c<3;++c) {rotation[c]*=signs[c];scale[c]*=signs[c];}
+  auto quaternion=glm::normalize(glm::quat_cast(rotation));
+  if(preferred.rotation.size()==4) {
+    const glm::dquat before(preferred.rotation[3],preferred.rotation[0],preferred.rotation[1],preferred.rotation[2]);
+    if(glm::dot(quaternion,before)<0) quaternion=-quaternion;
+  } else if(quaternion.w<0) quaternion=-quaternion;
+  node.matrix.clear();node.translation={matrix[3][0],matrix[3][1],matrix[3][2]};
+  node.rotation={quaternion.x,quaternion.y,quaternion.z,quaternion.w};node.scale={scale.x,scale.y,scale.z};
+  const auto actual=EvaluateAnimatedNodeLocalTransform(node);
+  if(!matrixNear(actual,matrix,limits.maxRelativeError,limits.maxPositionAbsoluteError))
+    fail("animated camera rest cannot retain its solved pose through binary32 TRS recomposition");
+}
 } // namespace
 
 class GltfCameraPoseReceipt {
@@ -285,6 +391,7 @@ public:
   tinygltf::Camera authoredLens,evaluatedLens;
   SourceWitness authored,evaluated;
   std::shared_ptr<const GltfCameraPoseReceipt> command;
+  std::optional<size_t> selectedClip;
 };
 struct GltfCameraPoseAccess {
   static const auto& receipt(const GltfCameraPosePlan& plan) noexcept {return plan.receipt_;}
@@ -327,7 +434,7 @@ void validateSelection(GltfCameraPoseSourceView source,int32_t node,const GltfCa
 GltfCameraPosePlan buildPlan(GltfCameraPoseSourceView authored,GltfCameraPoseSourceView evaluated,int32_t aNode,int32_t eNode,
     const GltfCameraPoseGraphState& graph,const glm::mat4& desired,const glm::mat4& local,const glm::mat4& world,const glm::mat4& view,
     const tinygltf::Node* restoreA,const tinygltf::Node* restoreE,bool noChange,const GltfCameraPoseAuthoringLimits& limits,
-    std::shared_ptr<const GltfCameraPoseReceipt> command={}) {
+    std::shared_ptr<const GltfCameraPoseReceipt> command={},std::optional<size_t> selectedClip={}) {
   validateSelection(authored,aNode,limits);validateSelection(evaluated,eNode,limits);
   const auto& a=authored.nodes[size_t(aNode)];const auto& e=evaluated.nodes[size_t(eNode)];Budget budget{limits};
   if(!budget.add(sizeof(GltfCameraPosePlan)+sizeof(GltfCameraPoseReceipt)+2048) ||
@@ -336,21 +443,37 @@ GltfCameraPosePlan buildPlan(GltfCameraPoseSourceView authored,GltfCameraPoseSou
   if(!budget.camera(authored.cameras[size_t(a.camera)]) || !budget.camera(evaluated.cameras[size_t(e.camera)])) fail("lens witness metadata exceeds its budget");
   ScanInfo ai,ei;
   if(!scan(authored,aNode,limits,&budget,ai,[](const auto&,const auto&) {return true;}) ||
-      !scan(evaluated,eNode,limits,&budget,ei,[](const auto&,const auto&) {return true;})) fail("selected node pose is animated or its animation context is malformed/over budget");
+      !scan(evaluated,eNode,limits,&budget,ei,[](const auto&,const auto&) {return true;})) fail("selected node animation context is malformed, unsupported or over budget");
   if(!budget.array(ai.bindings,2*sizeof(GltfCameraNodeAnimationBinding)) || !budget.array(ei.bindings,2*sizeof(GltfCameraNodeAnimationBinding)))
     fail("selected raw node target storage exceeds its budget");
   if(restoreA && (!budget.node(*restoreA) || !budget.node(*restoreE))) fail("replayed selected pose storage exceeds its budget");
   GltfCameraPosePlan plan;plan.authoredNode=aNode;plan.evaluatedNode=eNode;plan.authoredCamera=a.camera;plan.evaluatedCamera=e.camera;
   plan.authoredBefore=a;plan.authoredAfter=a;plan.evaluatedBefore=e;plan.evaluatedAfter=e;
-  if(restoreA) {copyPose(plan.authoredAfter,*restoreA);copyPose(plan.evaluatedAfter,*restoreE);}
-  else if(!noChange) {setMatrix(plan.authoredAfter,local);setMatrix(plan.evaluatedAfter,local);}
-  plan.graphBefore=graph;plan.desiredView=desired;plan.localAfter=local;plan.worldAfter=world;plan.viewAfter=view;
-  plan.changed=!exactPose(a,plan.authoredAfter) || !exactPose(e,plan.evaluatedAfter) || !exactMatrix(graph.local,local);
-  plan.peakOwnedBytes=budget.bytes;
   auto receipt=std::make_shared<GltfCameraPoseReceipt>();receipt->limits=limits;receipt->command=std::move(command);
+  receipt->selectedClip=selectedClip;
   receipt->authoredLens=authored.cameras[size_t(a.camera)];receipt->evaluatedLens=evaluated.cameras[size_t(e.camera)];
   capture(authored,aNode,ai,limits,plan.authoredAnimationBindings,receipt->authored);
   capture(evaluated,eNode,ei,limits,plan.evaluatedAnimationBindings,receipt->evaluated);
+  const auto animated=uint8_t(ai.poseProperties|ei.poseProperties);
+  if(animated && !exactMatrix(EvaluateAnimatedNodeLocalTransform(e),graph.local))
+    fail("animated selected node and current graph local pose differ");
+  if(restoreA) {copyPose(plan.authoredAfter,*restoreA);copyPose(plan.evaluatedAfter,*restoreE);}
+  else if(!noChange || (animated && !exactMatrix(EvaluateAnimatedNodeLocalTransform(a),local))) {
+    if(animated) setTrs(plan.authoredAfter,local,e,limits);else setMatrix(plan.authoredAfter,local);
+    copyPose(plan.evaluatedAfter,plan.authoredAfter);
+  }
+  plan.graphBefore=graph;plan.desiredView=desired;plan.localAfter=local;plan.worldAfter=world;plan.viewAfter=view;
+  if(animated) {
+    if(!plan.authoredAfter.matrix.empty() || !plan.evaluatedAfter.matrix.empty()) fail("animated camera rest must retain TRS representation");
+    preserveAnimatedPose(plan.evaluatedAfter,e,plan.evaluatedAnimationBindings);
+    plan.localAfter=EvaluateAnimatedNodeLocalTransform(plan.authoredAfter);plan.worldAfter=graph.parentWorld*plan.localAfter;
+    (void)checkedInverse(plan.worldAfter,limits);
+    const auto candidate=EvaluateAnimatedCamera(evaluated.cameras[size_t(e.camera)],plan.worldAfter,graph.viewportAspect);
+    if(!candidate || !viewMatches(candidate->view,desired,limits)) fail("animated camera rest does not retain the requested eye and roll");
+    plan.viewAfter=candidate->view;
+  }
+  plan.changed=!exactPose(a,plan.authoredAfter) || !exactPose(e,plan.evaluatedAfter) || (!animated && !exactMatrix(graph.local,local));
+  plan.peakOwnedBytes=budget.bytes;
   receipt->expected=plan;GltfCameraPoseAccess::publish(plan,std::move(receipt));return plan;
 }
 } // namespace
@@ -400,7 +523,7 @@ void ValidateGltfCameraPoseEditBefore(const GltfCameraPosePlan& plan,GltfCameraP
 }
 GltfCameraPosePlan RebaseGltfCameraViewPose(const GltfCameraPosePlan& original,GltfCameraEditSide side,
     GltfCameraPoseSourceView authored,GltfCameraPoseSourceView evaluated,const GltfCameraPoseGraphState& graph,
-    const GltfCameraPoseAuthoringLimits& limits) {
+    const GltfCameraPoseAuthoringLimits& limits,std::optional<size_t> selectedClip) {
   if(!limitsValid(limits) || !receiptMatches(original) || (side!=GltfCameraEditSide::Before && side!=GltfCameraEditSide::After))
     fail("invalid or modified pose replay command");
   const auto& receipt=GltfCameraPoseAccess::receipt(original);const auto root=receipt->command?receipt->command:receipt;
@@ -415,15 +538,35 @@ GltfCameraPosePlan RebaseGltfCameraViewPose(const GltfCameraPosePlan& original,G
   const auto& wantedA=side==GltfCameraEditSide::Before?trusted.authoredBefore:trusted.authoredAfter;
   const auto& wantedE=side==GltfCameraEditSide::Before?trusted.evaluatedBefore:trusted.evaluatedAfter;
   const auto& expectedLocal=side==GltfCameraEditSide::Before?trusted.localAfter:trusted.graphBefore.local;
-  const auto& local=side==GltfCameraEditSide::Before?trusted.graphBefore.local:trusted.localAfter;
-  if(a.camera!=trusted.authoredCamera || e.camera!=trusted.evaluatedCamera || !exactPose(a,expectedA) || !exactPose(e,expectedE) ||
-      !exactMatrix(graph.local,expectedLocal)) fail("pose history owned endpoint or camera association changed");
+  auto local=side==GltfCameraEditSide::Before?trusted.graphBefore.local:trusted.localAfter;
+  const bool animated=animatedPoseMask(trusted.authoredAnimationBindings)||animatedPoseMask(trusted.evaluatedAnimationBindings);
+  if(a.camera!=trusted.authoredCamera || e.camera!=trusted.evaluatedCamera || !exactPose(a,expectedA) ||
+      (animated?!unanimatedPoseMatches(e,expectedE,expectedA,trusted,trusted.evaluatedAnimationBindings,selectedClip):!exactPose(e,expectedE)) ||
+      (animated?!exactMatrix(graph.local,EvaluateAnimatedNodeLocalTransform(e)):!exactMatrix(graph.local,expectedLocal)))
+    fail("pose history owned endpoint or camera association changed");
+  if(animated) local=EvaluateAnimatedNodeLocalTransform(wantedA);
   const glm::mat4 world=graph.parentWorld*local;
   (void)checkedInverse(world,limits);
   const auto candidate=EvaluateAnimatedCamera(evaluated.cameras[size_t(e.camera)],world,graph.viewportAspect);
   if(!candidate) fail("replayed camera cannot evaluate its current parent-relative endpoint");
-  return buildPlan(authored,evaluated,trusted.authoredNode,trusted.evaluatedNode,graph,candidate->view,local,world,candidate->view,
-      &wantedA,&wantedE,false,limits,root);
+  Budget replayBudget{limits};
+  if(!replayBudget.add(sizeof(tinygltf::Node)+16*sizeof(double))) fail("replayed evaluated pose scratch exceeds its finite budget");
+  tinygltf::Node wantedEvaluated;copyPose(wantedEvaluated,wantedE);
+  if(animated) for(const auto property:{GltfCameraNodeAnimationProperty::Translation,GltfCameraNodeAnimationProperty::Rotation,
+      GltfCameraNodeAnimationProperty::Scale})
+    if(!ownsPoseProperty(trusted,property)) poseValues(wantedEvaluated,property)=poseValues(e,property);
+  auto result=buildPlan(authored,evaluated,trusted.authoredNode,trusted.evaluatedNode,graph,candidate->view,local,world,candidate->view,
+      &wantedA,&wantedEvaluated,false,limits,root,selectedClip);
+  if(result.authoredAnimationBindings!=trusted.authoredAnimationBindings || result.evaluatedAnimationBindings!=trusted.evaluatedAnimationBindings)
+    fail("pose history selected animation target schema changed");
+  return result;
+}
+bool GltfCameraPoseReplayClipMatches(const GltfCameraPosePlan& plan,std::optional<size_t> selectedClip) noexcept {
+  if(!receiptMatches(plan)) return false;
+  const auto& receipt=GltfCameraPoseAccess::receipt(plan);
+  return !receipt->command ||
+      !(animatedPoseMask(plan.authoredAnimationBindings)||animatedPoseMask(plan.evaluatedAnimationBindings)) ||
+      receipt->selectedClip==selectedClip;
 }
 uint64_t GltfCameraPoseNodeStorageBytes(const tinygltf::Node& node,const GltfCameraPoseAuthoringLimits& limits) {
   if(!limitsValid(limits)) fail("invalid selected node storage limits");Budget budget{limits};

@@ -200,7 +200,7 @@ bool patchProjection(Projection& p, const GltfCameraProjectionPatch& patch,
       if (!seen[0] || !seen[2]) return false;
     } else if (!seen[4] || !seen[5] || !seen[6] || !seen[7]) return false;
   }
-  return validProjection(p);
+  return true;
 }
 void assign(tinygltf::Camera& c, const Projection& p) {
   c.type = p.type == GltfCameraProjection::Perspective ? "perspective" : "orthographic";
@@ -363,7 +363,7 @@ GltfCameraProjectionPlan buildCameraProjectionPlan(
   Projection aBefore, eBefore;
   if (!projection(a, aBefore) || !projection(e, eBefore) || !validProjection(aBefore) || !validProjection(eBefore))
     fail("selected camera has an invalid or unrenderable projection");
-  if (!validProjection(aAfter) || !validProjection(eAfter)) fail("invalid rebased camera projection");
+  if (!validProjection(aAfter)) fail("invalid rebased camera projection");
 
   Budget budget{limits}; ScanInfo aInfo, eInfo;
   // Includes public and immutable receipt records, vector/control overhead and
@@ -384,21 +384,31 @@ GltfCameraProjectionPlan buildCameraProjectionPlan(
   GltfCameraProjectionPlan plan;
   plan.authoredCamera = authoredCamera; plan.evaluatedCamera = evaluatedCamera;
   plan.authoredBefore = a; plan.authoredAfter = a; plan.evaluatedBefore = e; plan.evaluatedAfter = e;
-  assign(plan.authoredAfter, aAfter); assign(plan.evaluatedAfter, eAfter);
+  assign(plan.authoredAfter, aAfter);
   plan.changedType = aBefore.type != aAfter.type || eBefore.type != eAfter.type;
-  plan.changedProperties.reserve(propertyCount);
-  for (size_t i = 0; i < propertyCount; ++i)
-    if (!exact(aBefore.values[i], aAfter.values[i]) || !exact(eBefore.values[i], eAfter.values[i])) plan.changedProperties.push_back(P(i));
-  plan.changed = plan.changedType || !plan.changedProperties.empty();
-  plan.peakOwnedBytes = budget.bytes;
   auto receipt = std::make_shared<GltfCameraAuthoringReceipt>(); receipt->limits = limits;
   receipt->ownership = ownership; receipt->command = std::move(command);
   capture(authored, authoredCamera, limits, aInfo, plan.authoredNodes, plan.authoredAnimationBindings, receipt->authored);
   capture(evaluated, evaluatedCamera, limits, eInfo, plan.evaluatedNodes, plan.evaluatedAnimationBindings, receipt->evaluated);
+  auto prospective = eAfter;
   for (const auto* bindings : {&plan.authoredAnimationBindings, &plan.evaluatedAnimationBindings})
-    for (const auto& binding : *bindings)
-      if (plan.changedType || std::ranges::find(plan.changedProperties, binding.property) != plan.changedProperties.end())
-        fail("changed camera projection field is animated; authored-rest editing is not implemented");
+    for (const auto& binding : *bindings) {
+      const auto property = size_t(binding.property);
+      if (plan.changedType) fail("a camera with animated lens fields cannot change projection type");
+      if ((binding.property == P::PerspectiveAspectRatio || binding.property == P::PerspectiveFar) &&
+          (ownership.properties & uint16_t(1u << property)) && aAfter.values[property] == 0)
+        fail("an animated optional lens field must retain an authored value");
+      // The active sample belongs to the player. Rest editing changes its
+      // fallback, then the selected transaction evaluates today's clip again.
+      prospective.values[property] = eBefore.values[property];
+    }
+  if (!validProjection(prospective)) fail("invalid evaluated camera projection");
+  assign(plan.evaluatedAfter, prospective);
+  plan.changedProperties.reserve(propertyCount);
+  for (size_t i = 0; i < propertyCount; ++i)
+    if (!exact(aBefore.values[i], aAfter.values[i]) || !exact(eBefore.values[i], prospective.values[i])) plan.changedProperties.push_back(P(i));
+  plan.changed = plan.changedType || !plan.changedProperties.empty();
+  plan.peakOwnedBytes = budget.bytes;
   receipt->expected = plan;
   GltfCameraAuthoringAccess::publish(plan, std::move(receipt));
   return plan;
@@ -488,9 +498,15 @@ GltfCameraProjectionPlan RebaseGltfCameraProjectionEdit(const GltfCameraProjecti
   Projection nextA, nextE; projection(a, nextA); projection(e, nextE);
   const auto oldA = scalars(expectedA), oldE = scalars(expectedE), wantedA = scalars(desiredA), wantedE = scalars(desiredE);
   if (a.type != expectedA.type || e.type != expectedE.type) fail("camera replay projection type changed");
+  uint16_t animated{};
+  for (const auto* bindings : {&trusted.authoredAnimationBindings, &trusted.evaluatedAnimationBindings})
+    for (const auto& binding : *bindings) animated |= uint16_t(1u << size_t(binding.property));
   for (size_t i = 0; i < propertyCount; ++i) if (root->ownership.properties & uint16_t(1u << i)) {
-    if (!exact(nextA.values[i], oldA[i]) || !exact(nextE.values[i], oldE[i])) fail("camera replay owned projection leaf changed");
-    nextA.values[i] = wantedA[i]; nextE.values[i] = wantedE[i];
+    if (!exact(nextA.values[i], oldA[i]) ||
+        (!(animated & uint16_t(1u << i)) && !exact(nextE.values[i], oldE[i])))
+      fail("camera replay owned projection leaf changed");
+    nextA.values[i] = wantedA[i];
+    if (!(animated & uint16_t(1u << i))) nextE.values[i] = wantedE[i];
   }
   if (root->ownership.type) {
     nextA.type = desiredA.type == "perspective" ? GltfCameraProjection::Perspective : GltfCameraProjection::Orthographic;

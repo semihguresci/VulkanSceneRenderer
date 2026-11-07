@@ -238,7 +238,47 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(gfx_capture_replay_smoke PROPERTIES
         LABELS "requires-vulkan;requires-display;gfxreconstruct" SKIP_RETURN_CODE 77)
 endif()
-find_package(GTest CONFIG REQUIRED)
+find_package(GTest 1.18.0 EXACT CONFIG REQUIRED)
+container_core_include(GTest::gtest gtest/gtest.h CONTAINER_GTEST_INCLUDE_DIR)
+set(_container_googletest_pins
+    "gtest/gtest-assertion-result.h|c6264d766e880c30452da03c1cf783230f7152233612f13cebff6177f6527cec"
+    "gtest/gtest-death-test.h|d70139e593088f79c9f25ba528ce212fab3cdf9c350fb3cceaa91e1e94d6af00"
+    "gtest/gtest-matchers.h|7116aca6c9c224d8015bf74866e21994231f972a1af3bfceb6dc88e13e48690f"
+    "gtest/gtest-message.h|26f2e9ea9dc21b63eb78d4d3eed423ed00f28bdc6fccc735cff94da0e9c8c55f"
+    "gtest/gtest-param-test.h|7a246e017cb84010ae4bad5b6f789fb16941b4e46a130ffb8de9f328fa19ee78"
+    "gtest/gtest-printers.h|69428a5fa909fd7f8f3bfe1d4f1a8be9a260375bceab738b8813fa4c2f5c9ff4"
+    "gtest/gtest-spi.h|490f165098688c18d053a4ba57b2812bd97535b90af514f5a916116a230374ef"
+    "gtest/gtest-test-part.h|2ba7bcb638f82889a619d52a5e28d4f9dc0aefd718a590beabd35cce8c27550a"
+    "gtest/gtest-typed-test.h|d5c7a2853a4f250cd172f7d4218298f6aa9aa2df219210231e4877cd91bc7790"
+    "gtest/gtest.h|c6f886e33c2e426d6f634112b12b0041aa0bad85b9f897be853b083c14aea169"
+    "gtest/gtest_pred_impl.h|85e850e735a42ebb5f9a01a018708c1c0b9b7d83c94b14b7d5d29512c00b6ffd"
+    "gtest/gtest_prod.h|3c6301ef533db8686e474dd5a0de4d98a31cbb630e2273f712472d1be25aa261"
+    "gtest/internal/custom/gtest-port.h|5e06747c9e8b86e9d841fabd61c2f045b2bb1133716f127be4a963ced1c44e01"
+    "gtest/internal/custom/gtest-printers.h|b95afda2426e8c4f09c11d3296d522fb336b248c0da7e078388db4bb072c2166"
+    "gtest/internal/custom/gtest.h|21d20a1c64ea38c20c4b12337c261a1a18989d2a30710a83dfb5cd9a3bb3c55e"
+    "gtest/internal/custom/README.md|608ec5ac574a6e64e4fc2f4bce2cfc7ff753a04d6822d6ff96e43fff51c6ccc1"
+    "gtest/internal/gtest-death-test-internal.h|5a81ad35daf1049940c677b38c908945040cc25f07366b3ddf577ce72d8c44f1"
+    "gtest/internal/gtest-filepath.h|584be91365316bf97fa7e3fd9f21f595919c48691f0c87071d2b7f739aaabcc0"
+    "gtest/internal/gtest-internal.h|57b904e1b1763a9ac5f381db3717a92e285e707adf093d0f17c5cfc9603a6f34"
+    "gtest/internal/gtest-param-util.h|869ec29efd36f14b75446b06de5bd58491da2b77575d092e67cab3583bb10e7a"
+    "gtest/internal/gtest-port-arch.h|58ca63b3540d7752466cd34b6c87f9fb5605f5aa620fdabe0179e82f0c12e556"
+    "gtest/internal/gtest-port.h|19d5e5bfcba9fb952e46352218d626f6e1778ed5f6186cc6770bcfc7d8a672d0"
+    "gtest/internal/gtest-string.h|794b59f7afd2fbfb9fdfd133244903b4904e39d16d45253a85f1b89c196285ac"
+    "gtest/internal/gtest-type-util.h|94336b1703807db6d9d2b729b5a30cf53016fd236b14774af118467d27f94ad8"
+)
+foreach(_pin IN LISTS _container_googletest_pins)
+    string(REPLACE "|" ";" _pair "${_pin}")
+    list(GET _pair 0 _relative)
+    list(GET _pair 1 _expected)
+    container_check_core_file("${CONTAINER_GTEST_INCLUDE_DIR}/${_relative}" "${_expected}")
+endforeach()
+container_stage_selected_cpp_notice("${CONTAINER_GTEST_INCLUDE_DIR}" gtest GTest-1.18.0-LICENSE.txt
+    "9702de7e4117a8e2b20dafab11ffda58c198aede066406496bef670d40a22138")
+set(CONTAINER_GTEST_VERSION "1.18.0" CACHE INTERNAL "Verified test-only GoogleTest release" FORCE)
+file(SHA256 "${CMAKE_BINARY_DIR}/third_party_licenses/GTest-1.18.0-LICENSE.txt" _gtest_raw)
+file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/selected-test-dependencies.json"
+    CONTENT "{\"libraries\":[{\"name\":\"gtest\",\"version\":\"1.18.0\",\"notice\":\"GTest-1.18.0-LICENSE.txt\",\"sha256\":\"${_gtest_raw}\"}]}\n" @ONLY)
+
 find_package(Threads REQUIRED)
 
 add_executable(asl_pose_replay_tests ${CMAKE_SOURCE_DIR}/tests/asl/pose_replay_tests.cpp)
@@ -393,6 +433,16 @@ add_test(
             "-DTEST_CMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
             -P "${TEST_CMAKE_DIR}/shaders_incremental_config_tests.cmake"
 )
+
+add_test(NAME vulkan_loader_runtime_config_tests
+    COMMAND ${CMAKE_COMMAND}
+        "-DPROJECT_SOURCE_DIR_FOR_TEST=${CMAKE_SOURCE_DIR}"
+        "-DTEST_WORK_DIR=${CMAKE_BINARY_DIR}/cmake_test_work/vulkan_loader_runtime"
+        "-DTEST_VULKAN_LOADER_ROOT=${CONTAINER_VULKAN_LOADER_ROOT}"
+        "-DTEST_CMAKE_GENERATOR=${CMAKE_GENERATOR}"
+        "-DTEST_CMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+        -P "${TEST_CMAKE_DIR}/vulkan_loader_runtime_config_tests.cmake")
+set_tests_properties(vulkan_loader_runtime_config_tests PROPERTIES LABELS "cpu;cmake;packaging" TIMEOUT 60)
 
 add_test(
     NAME physics_dependencies_config_tests
@@ -794,7 +844,7 @@ target_compile_definitions(reference_path_trace_gpu_tests PRIVATE
     CONTAINER_REFERENCE_PATH_SHADER_ROOT="${CMAKE_BINARY_DIR}")
 add_dependencies(reference_path_trace_gpu_tests shaders_all)
 set_tests_properties(reference_path_trace_gpu_tests PROPERTIES
-    LABELS "requires-vulkan;requires-display;ray-query;path-tracing" RUN_SERIAL TRUE TIMEOUT 240)
+    LABELS "requires-vulkan;requires-display;ray-query;path-tracing" RUN_SERIAL TRUE TIMEOUT 600)
 set_tests_properties(ray_shadow_surface_gpu_tests PROPERTIES
     LABELS "requires-vulkan;requires-display;ray-query;ddgi")
 
@@ -922,12 +972,26 @@ add_custom_test(temporal_convention_tests
 
 target_sources(temporal_convention_tests PRIVATE ${TEST_RENDERER_CORE_DIR}/temporal_state_tests.cpp)
 
+add_custom_test(dlss_rr_clear_sync_tests
+    ${TEST_RENDERER_CORE_DIR}/dlss_rr_clear_sync_tests.cpp "" ${TEST_RESULTS_DIR}
+    Threads::Threads)
+target_include_directories(dlss_rr_clear_sync_tests PRIVATE
+    ${Vulkan_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/src/renderer/temporal)
+set_tests_properties(dlss_rr_clear_sync_tests PROPERTIES LABELS "cpu;temporal;dlss;path-tracing")
+
 add_custom_test(fsr_upscaler_gpu_tests
     ${TEST_RENDERER_CORE_DIR}/fsr_upscaler_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_fsr VulkanSceneRenderer_gpu_resource VulkanSceneRenderer_geometry)
 container_stage_fsr_runtime(fsr_upscaler_gpu_tests)
 set_tests_properties(fsr_upscaler_gpu_tests PROPERTIES
     LABELS "temporal;requires-vulkan" RUN_SERIAL TRUE TIMEOUT 120)
+
+add_custom_test(fsr_vulkan_image_adapter_tests
+    ${TEST_RENDERER_CORE_DIR}/fsr_vulkan_image_adapter_tests.cpp "" ${TEST_RESULTS_DIR}
+    Threads::Threads)
+target_include_directories(fsr_vulkan_image_adapter_tests PRIVATE
+    ${Vulkan_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/src)
+set_tests_properties(fsr_vulkan_image_adapter_tests PROPERTIES LABELS "cpu;temporal;fsr")
 
 add_custom_test(temporal_capture_tests
     ${TEST_RENDERER_CORE_DIR}/temporal_capture_tests.cpp "" ${TEST_RESULTS_DIR}
@@ -937,6 +1001,17 @@ add_custom_test(temporal_capture_tests
 add_custom_test(scene_lighting_defaults_tests
     ${TEST_RENDERER_LIGHTING_DIR}/scene_lighting_defaults_tests.cpp "" ${TEST_RESULTS_DIR}
 )
+
+if(Python3_Interpreter_FOUND)
+    add_test(NAME renderer_lighting_cli_tests
+        COMMAND "${Python3_EXECUTABLE}" "${TEST_VALIDATION_DIR}/renderer_lighting_cli_tests.py"
+            --exe "$<TARGET_FILE:VulkanSceneRenderer>")
+    set_tests_properties(renderer_lighting_cli_tests PROPERTIES LABELS "cpu;cli;lighting" TIMEOUT 120)
+    add_test(NAME texture_memory_cli_tests
+        COMMAND "${Python3_EXECUTABLE}" "${TEST_VALIDATION_DIR}/texture_memory_cli_tests.py"
+            --exe "$<TARGET_FILE:VulkanSceneRenderer>")
+    set_tests_properties(texture_memory_cli_tests PROPERTIES LABELS "cpu;cli;texture" TIMEOUT 120)
+endif()
 
 add_test(NAME temporal_quality_metrics
     COMMAND "${Python3_EXECUTABLE}" "${TEST_VALIDATION_DIR}/temporal_regression.py" --self-test)
@@ -1911,7 +1986,7 @@ add_custom_test(bcf_viewpoint_tests
 
 add_custom_test(rendering_convention_tests
     ${TEST_VALIDATION_DIR}/rendering_convention_tests.cpp  ""  ${TEST_RESULTS_DIR}
-    Dep_Math
+    Dep_Math Dep_VulkanCore Dep_SceneIO
 )
 target_sources(rendering_convention_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/renderer/bim/BimSectionCapBuilder.cpp
@@ -2642,3 +2717,15 @@ add_custom_test(runtime_shader_compiler_tests
 target_compile_definitions(runtime_shader_compiler_tests PRIVATE
     CONTAINER_TEST_CMAKE="${CMAKE_COMMAND}")
 set_tests_properties(runtime_shader_compiler_tests PROPERTIES LABELS "renderer;shader-reload" TIMEOUT 30)
+
+if(WIN32)
+    find_program(CONTAINER_PACKAGE_PWSH NAMES pwsh)
+    if(CONTAINER_PACKAGE_PWSH)
+        add_test(NAME windows_package_selected_dependencies_tests
+            COMMAND "${CONTAINER_PACKAGE_PWSH}" -NoProfile -File
+                "${TEST_CMAKE_DIR}/windows_package_selected_dependencies_tests.ps1"
+                -TestWorkDirectory "${CMAKE_BINARY_DIR}/selected-dependency-package-tests")
+        set_tests_properties(windows_package_selected_dependencies_tests PROPERTIES
+            LABELS "packaging;dependencies" TIMEOUT 30)
+    endif()
+endif()

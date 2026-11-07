@@ -37,6 +37,106 @@ tinygltf::Model asset(Json graph) {
   return model;
 }
 
+void defineNodeFlags(tinygltf::Node& node) {
+  node.extensions["KHR_node_visibility"] = convert(Json::parse(R"({"extras":{"retain":true},"future":9})"));
+  node.extensions["KHR_node_selectability"] = convert(Json{{"selectable", true}});
+  node.extensions["KHR_node_hoverability"] = convert(Json{{"hoverable", true}});
+}
+
+TEST(GltfInteractivity, BooleanPointersReadWriteAndRestoreAuthoredDefaults) {
+  auto model = asset(Json::parse(R"json({
+    "types":[{"signature":"bool"}],
+    "declarations":[{"op":"event/onStart"},{"op":"pointer/get"},{"op":"flow/branch"},{"op":"pointer/set"}],
+    "nodes":[
+      {"declaration":0,"flows":{"out":{"node":2}}},
+      {"declaration":1,"configuration":{"pointer":{"value":["/nodes/0/extensions/KHR_node_visibility/visible"]},"type":{"value":[0]}}},
+      {"declaration":2,"values":{"condition":{"node":1}},"flows":{"true":{"node":3}}},
+      {"declaration":3,"configuration":{"pointer":{"value":["/nodes/0/extensions/KHR_node_visibility/visible"]},"type":{"value":[0]}},
+        "values":{"value":{"type":0,"value":[false]}},"flows":{"out":{"node":5}}},
+      {"declaration":1,"configuration":{"pointer":{"value":["/nodes/0/extensions/KHR_node_visibility/visible"]},"type":{"value":[0]}}},
+      {"declaration":3,"configuration":{"pointer":{"value":["/nodes/0/extensions/KHR_node_selectability/selectable"]},"type":{"value":[0]}},
+        "values":{"value":{"node":4}},"flows":{"out":{"node":7}}},
+      {"declaration":1,"configuration":{"pointer":{"value":["/nodes/0/extensions/KHR_node_selectability/selectable"]},"type":{"value":[0]}}},
+      {"declaration":3,"configuration":{"pointer":{"value":["/nodes/0/extensions/KHR_node_hoverability/hoverable"]},"type":{"value":[0]}},
+        "values":{"value":{"node":6}}}
+    ]})json"));
+  defineNodeFlags(model.nodes[0]);
+  const auto authored = model.nodes[0].extensions;
+  GltfInteractivity player(model);
+  const auto dirty = player.advance(model, {}, 0);
+  ASSERT_TRUE(player.diagnostic().empty()) << player.diagnostic();
+  ASSERT_EQ(dirty.nodeFlags.size(), 1u);
+  EXPECT_EQ(dirty.nodeFlags[0].node, 0u);
+  const auto mask = uint8_t(GltfNodeFlag::Visibility) | uint8_t(GltfNodeFlag::Selectability) | uint8_t(GltfNodeFlag::Hoverability);
+  EXPECT_EQ(dirty.nodeFlags[0].mask, mask);
+  EXPECT_TRUE(dirty.nodes.empty());
+  const auto& flags = model.nodes[0].extensions;
+  EXPECT_FALSE(flags.at("KHR_node_visibility").Get("visible").Get<bool>());
+  EXPECT_FALSE(flags.at("KHR_node_selectability").Get("selectable").Get<bool>());
+  EXPECT_FALSE(flags.at("KHR_node_hoverability").Get("hoverable").Get<bool>());
+  EXPECT_EQ(flags.at("KHR_node_visibility").Get("future").Get<int>(), 9);
+  const auto restored = player.reset(model);
+  ASSERT_EQ(restored.nodeFlags.size(), 1u);
+  EXPECT_EQ(restored.nodeFlags[0].mask, mask);
+  EXPECT_EQ(flags, authored);
+  EXPECT_FALSE(flags.at("KHR_node_visibility").Has("visible"));
+  EXPECT_FALSE(player.started());
+}
+
+TEST(GltfInteractivity, BooleanPointerTypeMismatchesUseInvalidReadAndErrorFlow) {
+  auto model = asset(Json::parse(R"json({
+    "types":[{"signature":"bool"},{"signature":"float"}],
+    "declarations":[{"op":"event/onStart"},{"op":"pointer/get"},{"op":"flow/branch"},{"op":"pointer/set"}],
+    "nodes":[
+      {"declaration":0,"flows":{"out":{"node":2}}},
+      {"declaration":1,"configuration":{"pointer":{"value":["/nodes/0/extensions/KHR_node_visibility/visible"]},"type":{"value":[1]}}},
+      {"declaration":2,"values":{"condition":{"node":1,"socket":"isValid"}},"flows":{"false":{"node":4}}},
+      {"declaration":1,"configuration":{"pointer":{"value":["/nodes/0/translation/0"]},"type":{"value":[0]}}},
+      {"declaration":3,"configuration":{"pointer":{"value":["/nodes/0/extensions/KHR_node_selectability/selectable"]},"type":{"value":[0]}},
+        "values":{"value":{"node":3}},"flows":{"out":{"node":5}}},
+      {"declaration":3,"configuration":{"pointer":{"value":["/nodes/0/extensions/KHR_node_visibility/visible"]},"type":{"value":[0]}},
+        "values":{"value":{"type":1,"value":[0]}},"flows":{"err":{"node":6}}},
+      {"declaration":3,"configuration":{"pointer":{"value":["/nodes/0/extensions/KHR_node_hoverability/hoverable"]},"type":{"value":[0]}},
+        "values":{"value":{"type":0,"value":[false]}}}
+    ]})json"));
+  defineNodeFlags(model.nodes[0]);
+  model.nodes[0].translation = {2, 0, 0};
+  GltfInteractivity player(model);
+  const auto dirty = player.advance(model, {}, 0);
+  EXPECT_TRUE(player.playing());
+  EXPECT_TRUE(player.diagnostic().empty()) << player.diagnostic();
+  ASSERT_EQ(dirty.nodeFlags.size(), 1u);
+  EXPECT_EQ(dirty.nodeFlags[0].mask, uint8_t(GltfNodeFlag::Selectability) | uint8_t(GltfNodeFlag::Hoverability));
+  const auto& flags = model.nodes[0].extensions;
+  EXPECT_FALSE(flags.at("KHR_node_visibility").Has("visible"));
+  EXPECT_FALSE(flags.at("KHR_node_selectability").Get("selectable").Get<bool>());
+  EXPECT_FALSE(flags.at("KHR_node_hoverability").Get("hoverable").Get<bool>());
+}
+
+TEST(GltfInteractivity, BooleanPointersDiagnoseMissingParentAndRejectInterpolation) {
+  auto graph = Json::parse(R"json({
+    "types":[{"signature":"bool"},{"signature":"float"}],
+    "declarations":[{"op":"event/onStart"},{"op":"pointer/set"}],
+    "nodes":[
+      {"declaration":0,"flows":{"out":{"node":1}}},
+      {"declaration":1,"configuration":{"pointer":{"value":["/nodes/0/extensions/KHR_node_visibility/visible"]},"type":{"value":[0]}},
+        "values":{"value":{"type":0,"value":[false]}}}
+    ]})json");
+  auto model = asset(graph);
+  GltfInteractivity player(model);
+  EXPECT_TRUE(player.advance(model, {}, 0).empty());
+  EXPECT_FALSE(player.playing());
+  EXPECT_TRUE(std::string_view(player.diagnostic()).contains("pointer/set")) << player.diagnostic();
+  EXPECT_TRUE(std::string_view(player.diagnostic()).contains("parent object")) << player.diagnostic();
+  EXPECT_TRUE(model.nodes[0].extensions.empty());
+
+  graph["declarations"][1]["op"] = "pointer/interpolate";
+  graph["nodes"][1]["values"]["duration"] = {{"type", 1}, {"value", {1}}};
+  auto interpolation = asset(graph);
+  defineNodeFlags(interpolation.nodes[0]);
+  EXPECT_THROW(ValidateGltfInteractivity(interpolation), std::invalid_argument);
+}
+
 TEST(GltfInteractivity, StartMovesAndRecolorsUsingSynchronousFlowOrder) {
   auto model = asset(Json::parse(R"json({
     "types":[{"signature":"float3"},{"signature":"float4"}],

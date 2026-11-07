@@ -57,7 +57,10 @@ opposite environment irradiance and separate DDGI coverage without front AO/GTAO
 
 ## GPU storage and deferred MSAA
 
-`GpuMaterial` is **1184 bytes** with the experimental surface tail. The
+`GpuMaterial` is **1216 bytes** with the experimental surface tail and authored
+specular/glossiness factors. Diffuse RGBA begins at byte 1184 and specular RGB
+with glossiness in alpha begins at byte 1200. These appended values feed the
+[reference BSDF](reference-path-tracing.md). The
 anisotropy and diffuse-transmission portion contains factors at byte 896,
 transmission color at 912, texture indices at
 928/932/936 and three 32-byte transforms at 944/976/1008.

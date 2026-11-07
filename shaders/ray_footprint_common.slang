@@ -28,12 +28,22 @@ float2 RayConeGradient(RayCone cone, float hitT, float3 normal, float3 view,
     return max(RayConeWorldFootprint(cone, hitT, normal, view), 0.0) * texelDensity;
 }
 
-void RayConeTransformGradients(float gradient, float2 row0, float2 row1,
+bool RayConeTransformGradients(float gradient, float2 row0, float2 row1,
                                out float2 dx, out float2 dy)
 {
+    dx = dy = 0.0.xx;
+    if (!(gradient > 0.0) || !isfinite(gradient)) return false;
     // The two UV derivatives are the transform applied to the scaled UV axes.
     dx = float2(row0.x, row1.x) * gradient;
     dy = float2(row0.y, row1.y) * gradient;
+    // Finite inputs can still overflow when the authored UV transform scales
+    // a large footprint. Only submit usable derivatives to the texture unit.
+    if (!all(isfinite(dx)) || !all(isfinite(dy)))
+    {
+        dx = dy = 0.0.xx;
+        return false;
+    }
+    return any(dx != 0.0.xx) || any(dy != 0.0.xx);
 }
 
 float RayConeSolidAngleSpread(float raysOverSphere)

@@ -87,6 +87,7 @@ class CameraProjectionGenerationGpu:public ::testing::Test {
     surface=vk::raii::SurfaceKHR(instance->raii(),raw);DeviceCreateInfo info;info.requiredExtensions={VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};v12.bufferDeviceAddress=VK_TRUE;v12.runtimeDescriptorArray=VK_TRUE;
     v12.descriptorBindingPartiallyBound=VK_TRUE;v12.shaderSampledImageArrayNonUniformIndexing=VK_TRUE;
+    v12.shaderStorageBufferArrayNonUniformIndexing=VK_TRUE;
     VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     v13.synchronization2=VK_TRUE;v13.pNext=&v12;info.next=&v13;
     device=std::make_shared<VulkanDevice>(*instance,raw,info);pool=vk::raii::CommandPool(device->raii(),vk::CommandPoolCreateInfo(

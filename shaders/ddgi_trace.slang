@@ -34,13 +34,10 @@ float4 DdgiTextureGrad(uint index, float4 uv, GpuTextureTransform transform, flo
         ResolveMaterialSamplerIndex(uTextureMetadata[textureIndex]));
     float2 coord = ApplyGpuTextureTransform(uv.xy, uv.zw, transform);
     float gradient = transform.row0.w >= 0.5 ? texGrad.y : texGrad.x;
-    if (gradient > 0.0)
-    {
-        float2 dx, dy;
-        RayConeTransformGradients(gradient, transform.row0.xy, transform.row1.xy, dx, dy);
+    float2 dx, dy;
+    if (RayConeTransformGradients(gradient, transform.row0.xy, transform.row1.xy, dx, dy))
         return materialTextures[textureIndex].SampleGrad(materialSamplers[samplerIndex],
             coord, dx, dy);
-    }
     return materialTextures[textureIndex].SampleLevel(materialSamplers[samplerIndex], coord, 0.0);
 }
 float4 DdgiTexture(uint index, float4 uv, GpuTextureTransform transform)

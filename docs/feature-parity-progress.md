@@ -3619,3 +3619,623 @@ display and read back opaque depth at a display-space pixel. Evidence is in
 
 The Release build passed 419 focused CPU and Vulkan cases with zero skips.
 All 115 runtime SPIR-V modules passed validation.
+
+### 2026-11-06 Reflection history, transparent fog, nested DDGI, and OptiX
+
+[#43](https://github.com/semihguresci/VulkanSceneRenderer/issues/43) adds
+roughness-scaled stochastic sampling and reflection-specific history. The
+renderer reprojects the receiver and rejects depth, normal, material, hit,
+or confidence changes before filtering the specular correction.
+Fifty-seven Vulkan captures verified the roughness sweep, moving thin
+geometry with and without TAA, temporal resets, and off-screen ray history.
+The 480×360 off-screen fixture took 0.18 ms screen-only and 0.24 ms hybrid
+with 10,321,920 bytes of reflection allocation. [Reflection controls](screen-space-reflections.md)
+
+[#46](https://github.com/semihguresci/VulkanSceneRenderer/issues/46) now applies
+fog attenuation and scattering at each alpha-blended or transmissive surface's
+depth before transparency resolves. Thirty-three native captures covered both
+raster techniques, overlapping alpha and glass, zero-density parity, shadows,
+resize, and switches through FSR and reference rendering. The maximum mean
+channel error against the analytic layered fixture was 0.000155. The fog pass
+took 0.057–0.075 ms at 320×200 on the RTX 2080 SUPER with transparency enabled.
+[Volumetric fog](volumetric-fog.md)
+
+[#84](https://github.com/semihguresci/VulkanSceneRenderer/issues/84) has 44
+matched native captures across both raster techniques for the existing
+four-medium DDGI stack. Closed glass and liquid volumes transmitted light and
+preserved colored absorption. Open, overlapping, and same-instance boundaries
+stayed within the blocked thresholds. The clear nested fixture's DDGI trace
+took 0.778 ms in deferred and 0.791 ms in forward at 240×200. Evidence is in
+`out/feature-parity/ddgi-nested-current/dielectric-results.json`.
+
+[#82](https://github.com/semihguresci/VulkanSceneRenderer/issues/82) now uses
+the documented mip-zero fallback for nonfinite, overflowed, or collapsed
+ray texture gradients in DDGI, reflection rays, and reference tracing.
+The existing GPU sampler fixture tests these cases with distinguishable
+authored mip levels.
+
+[#116](https://github.com/semihguresci/VulkanSceneRenderer/issues/116) adds
+optional OptiX 8.1 guided HDR reference denoising. Vulkan stages the inputs and
+publishes the CUDA result on the next compatible submitted frame. Twenty-four
+native captures verified exact raw EXR identity, glass, and history through
+camera and object changes, resize, and backend switches. The four-sample
+Cornell-box capture reduced normalized RGB RMSE from 0.11174 to 0.02150
+against 256 samples. At 256×192 on the RTX 2080 SUPER, OptiX allocated
+32,989,892 bytes and took 5.035 ms in CUDA denoising, excluding staging.
+Evidence is in `out/feature-parity/reference-optix-accepted-fixed/results.json`.
+[Reference denoising controls](reference-path-tracing.md#optional-nvidia-optix-display-denoising)
+
+The existing Vulkan OIDN regression passed on the same enabled executable.
+A separate SDK-disabled build reported OptiX unavailable and produced
+pixel-identical raw display output when OptiX was requested. Evidence is in
+`out/feature-parity/reference-oidn-after-optix/results.json` and
+`out/feature-parity/reference-optix-disabled-native/results.json`.
+
+The Release build passed 561 focused CPU and Vulkan cases with zero skips.
+All 115 runtime SPIR-V modules passed validation.
+
+### 2026-11-06 Vulkan DLSS Super Resolution
+
+[#116](https://github.com/semihguresci/VulkanSceneRenderer/issues/116) adds
+optional DLSS Super Resolution 310.7.0 in both raster techniques. The device
+discovers NGX requirements before Vulkan setup, and NGX selects each preset's
+render extent. The renderer reconstructs opaque HDR and composites the
+current transparent layer afterward. FSR and DLSS share one mode selection.
+
+The RTX 2080 SUPER passed 29 enabled captures and 18 SDK-disabled captures,
+including pixel-identical fallback without the NVIDIA DLL. The full 39-capture
+FSR suite also passed. A combined capture exercised DLSS with fog, hybrid
+reflections, and a display-space depth readback. The Release build passed 420
+focused CPU and Vulkan cases with zero skips, and all 117 runtime SPIR-V
+modules passed validation. [DLSS controls and measurements](dlss-upscaling.md)
+
+Windows package preflight checked the pinned release DLL, shaders and notices.
+Archive extraction remains open.
+
+### 2026-11-06 glTF capability checks during composition
+
+[#87](https://github.com/semihguresci/VulkanSceneRenderer/issues/87) applies
+the shared version policy before resource loading to ordinary merge inputs
+and linked children. A detached import omits declared unknown optional
+extension payloads after an asset-scoped warning. The merge destination
+keeps its opaque optional metadata at its original source indices.
+
+Sixteen Vulkan captures across both raster techniques matched the plain glTF
+control through primary, merge, and linked loading. Required unknown
+extensions and malformed minimum versions left the live scene pixels,
+descriptor generation, and source tables intact. All 148 focused glTF
+cases passed with zero skips. Evidence is in
+`out/feature-parity/gltf-capability-composition-native/results.json`.
+The existing linked-save and portable GLB regression also passed with
+pixel-exact portable reloads in both raster techniques. Evidence is in
+`out/feature-parity/gltf-linked-after-capability-native/results.json`.
+[Capability policy](gltf-capabilities.md)
+
+### 2026-11-06 Vulkan DLSS Ray Reconstruction
+
+[#116](https://github.com/semihguresci/VulkanSceneRenderer/issues/116) adds
+independently optional DLSS Ray Reconstruction 310.7.0 for the reference
+viewport. The temporal reconstruction uses one noisy sample per frame and
+retains the full-resolution raw EXR. Vulkan tests verified that Super
+Resolution and Ray Reconstruction can share an NGX session while retaining
+independent features. A standalone RR-only build also passed.
+
+The RTX 2080 SUPER passed 39 native captures with synchronization validation.
+The suite verified raw EXR identity, preserved camera and object motion
+history, cut reset, resized extents, thin glass, and switches among quality
+presets, the raw display, Vulkan OIDN, and raster. All 119 runtime SPIR-V
+modules passed Vulkan 1.4 validation. A separate native sequence switched
+from Super Resolution to Ray Reconstruction and back in one viewer process
+under synchronization validation.
+[Guide formats and measurements](dlss-upscaling.md#reference-ray-reconstruction)
+
+All 261 focused capture, ray-scene, ray-shadow, and reference-path tests
+passed across five executables. The GPU tests ran on Vulkan with zero skips.
+
+The separate SDK-disabled Release build passed eight native captures without
+either NVIDIA DLL. All three PNG comparisons and the raw EXR comparison
+matched in decoded pixels and encoded bytes. The viewer reported that the
+Ray Reconstruction SDK was disabled at build time.
+
+Windows package preflight accepted the pinned Super Resolution and Ray
+Reconstruction runtime DLLs and notices. Archive extraction still requires
+a clean source tree. Beta Neural Rendering remains a follow-up.
+
+Generated artifacts under `out/` were cleared after validation. Earlier
+receipt paths in this log are historical.
+
+### 2026-11-06 Primitive history, XMP composition, and reference convergence
+
+[#88](https://github.com/semihguresci/VulkanSceneRenderer/issues/88) reuses
+matching source-less geometry for repeated built-in primitive edits. A
+divergent add after undo can reuse both the mesh and its uploaded buffers.
+Each node keeps its own transform, material binding, and history action.
+Eight focused primitive tests passed, including 130 adds of three shapes.
+Twenty-three native captures verified steady geometry counts through eight
+divergent branches, distinct picks for two placements, and exact replay.
+[Scene edit history](editor-history.md)
+
+[#87](https://github.com/semihguresci/VulkanSceneRenderer/issues/87) and
+[#105](https://github.com/semihguresci/VulkanSceneRenderer/issues/105) retain
+XMP packets in source order across merges. Linked glTF placements preserve
+document and scene metadata on separate inspectable nodes. All 116 focused
+loader, merge, session merge, and export tests passed. The portable export
+tests verify that wide JSON integers and distinct packet contexts survive
+serialization. Twelve native captures also verified the linked companion
+and portable GLB routes, pixel-exact reloads, and XMP context preservation
+in the linked and portable files. [glTF scene export](gltf-scene-export.md)
+
+[#47](https://github.com/semihguresci/VulkanSceneRenderer/issues/47) exposes
+relative standard error in the reference viewport. The display reads raw
+accepted-sample moments and bypasses exposure, grading, bloom, and display
+denoising. The reference mean and sample history continue across view
+switches. One Vulkan readback test and eight native captures verified the
+numerical heatmap, pixel-exact Beauty restoration, exposure-invariant
+diagnostic pixels, and byte-identical raw EXRs. The 145 capture parser
+tests and 107 runtime shader validations also passed.
+[Reference controls](reference-path-tracing.md)
+
+The offline Release build and native receipts are under
+`build/codex-gltf-validation` and `build/reference-convergence-check`.
+Physics and optional denoiser, upscaler, and asset SDKs were disabled.
+`out/` stayed empty.
+
+### 2026-11-07 Linked skinning and animated node flags
+
+[#102](https://github.com/semihguresci/VulkanSceneRenderer/issues/102) now
+places animated and skinned URI-backed children, including nested links.
+Placements share their geometry, inverse-bind accessors, and source clips.
+Each placement binds its own joints and receives its own node animation
+targets. A static primary manifest can save a linked companion at the
+authored rest pose. Twenty-six native captures verified companion reload,
+portable reload after removing the original source paths, and pixel-exact
+deformation against baked controls. [Linked asset profile](gltf-capabilities.md)
+
+[#100](https://github.com/semihguresci/VulkanSceneRenderer/issues/100) now
+animates visibility, selectability, and hoverability through Boolean STEP
+`KHR_animation_pointer` channels. Thirty-two native captures verified
+inherited flags, light publication, picking and hover routing, and clip
+restores after glTF or GLB reload. Behavior graph Boolean pointer reads
+and writes remain open under #103. [Node flags](gltf-node-flags.md)
+
+Eleven focused suites passed. The receipts are under
+`build/codex-gltf-validation/animated-linked-native-final` and
+`build/codex-gltf-validation/boolean-flag-native`.
+
+### 2026-11-07 Behavior graph flags and area lights in fog
+
+[#103](https://github.com/semihguresci/VulkanSceneRenderer/issues/103) adds
+Boolean Object Model reads and writes for the three node eligibility flags.
+Reset preserves both explicit values and omitted defaults. Twenty-four
+native captures verified inherited flags, point-light visibility, pick
+routing, and portable glTF and GLB reload in both raster techniques.
+Thirty-six numeric behavior captures also passed, including clip control,
+portable reload, and merge with undo and redo.
+[Behavior graphs](gltf-interactivity.md)
+
+[#46](https://github.com/semihguresci/VulkanSceneRenderer/issues/46) adds
+rectangle and disk lights to homogeneous fog using four emitter samples
+and the raster shadow atlas. Forty native captures passed. Both raster
+techniques matched the numerical scattering reference within 0.23%.
+Blocked and back-facing controls verified shadowing and one-sided emission.
+All four affected shader modules passed Vulkan 1.4 validation.
+[Volumetric fog](volumetric-fog.md)
+
+The offline renderer and six focused glTF suites built and passed. Receipts
+are under `build/codex-gltf-validation`.
+
+### 2026-11-07 Linked source ownership and Make Editable
+
+[#102](https://github.com/semihguresci/VulkanSceneRenderer/issues/102) now
+enforces linked payload and resource locks using ownership recorded during
+import. The placement nodes remain editable. **Make Editable** unlocks the
+shared source and alias family, including connected nested placements, and
+clears edit history. Portable exports retain provenance and reload as
+editable files.
+
+Eight focused suites and 46 native captures passed. The tests verified
+linked edit denial, independent source locks, shared material edits after
+detachment, Import / Merge with undo and redo, and pixel-exact portable
+reload after removing the original source paths. The report is in
+`build/codex-gltf-validation/linked-authoring-native-verified/results.json`.
+
+### 2026-11-07 Hybrid linked companion save
+
+[#102](https://github.com/semihguresci/VulkanSceneRenderer/issues/102) now
+writes detached edits and clips inline in **Save Linked As** companions.
+Remaining URI links retain their aliases and read-only ownership on reload.
+Save checks retained dependencies and protects the original inputs from
+overwrite, including detached paths.
+
+Ten focused suites and 56 native captures passed. The tests verify
+pixel-exact reloads in forward and deferred rendering after removing a
+detached source. The animation sequence also checks that the embedded
+clip and the retained URI clip affect their respective placements.
+The report is in
+`build/codex-gltf-validation/linked-hybrid-native-full/results.json`.
+The `out/` directory is empty.
+
+### 2026-11-07 Animated camera lens defaults
+
+[#109](https://github.com/semihguresci/VulkanSceneRenderer/issues/109) now
+edits authored lens defaults while a clip controls the current projection.
+Undo and redo preserve today's playback time and sampled lens values.
+Returning to the rest pose reveals the edited defaults. Projection type
+and animated optional pointer targets retain their supported schema.
+[Camera controls](gltf-camera-authoring.md)
+
+All 245 cases across eight focused suites passed with zero skips, including
+Vulkan camera-buffer readback. The native run passed 152 captures across
+52 processes in both raster techniques, with 188 image comparisons and six
+glTF/GLB export checks. Reload retained the edited rest default and exact
+original curve keys. The report is in
+`build/codex-gltf-validation/camera-rest-native/results.json`.
+The renderer SHA-256 is
+`eaa66591c1c7a624ae6f0f626912daa6740cdaeabbd17f6819dae508a33f34a8`.
+The `out/` directory is empty.
+
+### 2026-11-07 Reference clearcoat transport
+
+[#47](https://github.com/semihguresci/VulkanSceneRenderer/issues/47) now
+renders clearcoat using the Khronos view-Fresnel layer model, independent
+roughness and normal maps, and complete light/BSDF mixture probabilities.
+The layer attenuates the base and emission. Coated mesh emitters and smooth
+transmission connections use the same outgoing weight as traced paths.
+Reconstruction guides select the dominant specular layer's normal and roughness.
+[Reference material model](reference-path-tracing.md)
+
+All 65 numerical and 79 production Vulkan cases passed with zero skips.
+The production cases include coated emissive meshes, transparent connections,
+shader publication, and resource retirement. Fourteen native captures across
+eleven processes verified texture channels, normal scale, edit history,
+display-independent raw EXRs, and portable glTF/GLB reload after removing
+the original source folder. Seven affected shader modules passed Vulkan 1.4
+validation, including compiled denoising and reconstruction variants.
+Their SDKs were disabled in the native build.
+
+Evidence is in
+`build/codex-gltf-validation/reference-clearcoat-native/results.json` and
+`build/codex-gltf-validation/reference-clearcoat-final-ctest.log`.
+The existing exact sample-series, adaptive batch, and deterministic export
+regression also passed. Its captures and logs are under
+`build/codex-gltf-validation/reference-sample-series-after-clearcoat`.
+The `out/` directory is empty.
+
+### 2026-11-07 Reference specular/glossiness transport
+
+[#47](https://github.com/semihguresci/VulkanSceneRenderer/issues/47) now
+renders authored specular/glossiness inputs directly with the historical
+Khronos diffuse/GGX model. Import and animation retain the diffuse and
+specular RGB factors alongside the raster conversion. Existing CPU fields
+remain authoritative for alpha and glossiness. Source texture RGB decodes
+from sRGB, packed alpha stays linear, and UV selection and transforms are
+preserved. Unsupported active material combinations remain diagnosed.
+[Reference material model](reference-path-tracing.md)
+
+All 489 cases across eleven focused suites passed with zero skips, including
+70 transport-math and 86 production Vulkan cases. The shared 1216-byte GPU
+layout also passed raster, DDGI, and ray-shadow checks. Seven shader modules
+passed Vulkan 1.4 validation, including compiled denoising and reconstruction
+variants. Their SDKs were disabled in the native build.
+
+Twenty native captures across seventeen processes verified factors, texture
+channels, UV1 transforms, animation, undo/redo, and two portable glTF/GLB
+exports. Both reloads matched the animated raw EXR exactly after removing
+the generated source folder. The texture-versus-literal check uses the
+existing half-source-code sRGB fidelity interval, while the literal control
+matches its analytical radiance within 5.64e-9.
+
+Evidence is in
+`build/codex-gltf-validation/reference-sg-native-verified/results.json`,
+`build/codex-gltf-validation/reference-sg-checks/results.json`, and
+`build/codex-gltf-validation/reference-sg-shaders.json`.
+The renderer SHA-256 is
+`bde2fcf5fbe7a3161d7404c5649faa27339be63db2ecfe128e5d67d82bd770ef`.
+The `out/` directory is empty.
+
+### 2026-11-07 Behavior export across retirement
+
+Supported behavior graphs now survive deletion of unrelated nodes and retirement
+of unused materials, textures, images and samplers. Export remaps constant and
+typed references through the final compacted tables. Punctual-light pointers
+follow the actual exported binding, including edited light children. Ambiguous
+destinations, incompatible property conversions and unsafe dynamic ID domains
+remain diagnosed before destination replacement.
+[Behavior export](gltf-interactivity.md)
+
+The combined gate passed 980 executed cases across 31 suites, including production
+reference rendering, material sampling, ray shadows and resource lifecycle.
+Two loader cases were skipped because their external sample assets are absent.
+All 113 generated SPIR-V modules passed Vulkan 1.4 validation with SPIRV-Tools
+2026.4 after rebuilding with Slang 2026.21. Device creation now checks and enables
+the nonuniform storage-buffer capability declared by those material shaders;
+validation remains enabled at the instance level.
+
+The native regression passed 48 captures and 96 checks across 20 processes in
+forward and deferred rendering. Six portable glTF/GLB exports replayed after
+removing the generated source folder. Graph execution, undo/redo, decoded
+geometry, matrices, light bindings and exact independent image controls passed.
+The retained selection handler is inspected structurally; this is not a native
+pointer-picking test. The latest validation layer, 1.4.363.1, was loaded and the
+149 frozen runtime/helper/layer hashes matched before and after the run.
+
+Evidence is in
+`build/codex-gltf-validation/latest-stable-rendering-checks/results.json` and
+`build/codex-gltf-validation/interactivity-export-accepted-native/results.json`.
+The native renderer SHA-256 is
+`4d75368ee2c95d29619d034f9fed5e037445ac23c8f017ed63987dd7f9970a35`.
+Its FSR backend was disabled; new FSR SDK runtime acceptance is separate.
+The `out/` directory is empty.
+
+### 2026-11-07 Latest DLSS Ray Reconstruction and Slang
+
+The optional DLSS backends now use the verified NVIDIA SDK 310.9.16 pin.
+Slang 2026.21 rebuilt all 113 generated SPIR-V modules, which passed Vulkan 1.4
+validation with SPIRV-Tools 2026.4. The enabled reference Ray Reconstruction
+backend passed 39 strict native captures across seven processes on the RTX
+2080 SUPER with validation layer 1.4.363.1 loaded.
+[DLSS controls and measurements](dlss-upscaling.md)
+
+A small NGX-specific Vulkan resolver adds memory dependencies around the two
+observed private initialization clears during the first RR evaluation. Nine
+CPU mock tests passed, including exact command forwarding, field-by-field
+matching guards, and thread, command-buffer and evaluation isolation. The
+signed NVIDIA DLLs remain unchanged. The native gate verified reconstruction
+quality, motion and thin glass, cuts, resize, quality/backend switches, and
+raw EXRs with identical decoded float bits and encoded bytes. Frozen inputs
+matched before and after the run.
+
+Quality reconstruction reduced Cornell-box display RMSE from 0.167962 to
+0.0299094 at frame one, and from 0.094755 to 0.0235967 at frame eight. Median
+NGX dispatch time was 3.010752 ms at 640×360 output; these are fixture
+measurements.
+
+Evidence is in
+`build/codex-gltf-validation/dlss-latest-rr-synchronized-full/results.json`,
+`build/codex-gltf-validation/dlss-latest-rr-synchronized-full-inputs.json`,
+`build/codex-gltf-validation/dlss-rr-clear-sync-cpu/receipt.json`, and
+`build/codex-gltf-validation/latest-stable-rendering-checks/results.json`.
+The accepted RR renderer SHA-256 is
+`432e749a58284e1f1ff601909b1c083c2f2c0cfb03d6884b3ea99ea01d997871`.
+
+The final integrated Super Resolution run passed 29 strict native captures
+across five processes in both raster techniques, including switches to active
+FSR 3.1.6. It verified moving glass, camera cuts, reload, resize and MSAA
+fallback. Frozen inputs matched before and after the run. Its separate
+receipts are
+`build/codex-gltf-validation/latest-dlss-sr-integrated/results.json` and
+`build/codex-gltf-validation/latest-dlss-sr-integrated-inputs.json`.
+The accepted SR renderer SHA-256 is
+`a250881bfdfd0832d11fcf6a7838926e3bc3a59ef6e9c2a098837763ccf0cf63`.
+The `out/` directory is empty.
+
+### 2026-11-07 Latest FSR Vulkan acceptance
+
+The optional FSR backend now uses the verified AMD SDK 2.4.0 pin and reports
+the actual analytical 3.1.6 provider on the RTX 2080 SUPER. Four strict Vulkan
+GPU cases and 18 CPU adapter tests passed. The private Vulkan integration
+matches all fifteen audited internal storage-image formats to the unchanged
+signed shaders and allocates analytical HDR output directly as RGBA32F.
+Automatic ML selection, imported inputs, module leases and native fallback
+remain covered by the integration contract.
+[FSR controls, format profile and measurements](fsr-upscaling.md)
+
+The full native regression passed 39 captures across eight processes in forward
+and deferred rendering, including motion, cuts, resize, quality switches,
+reload, MSAA fallback/recovery, transparency, diagnostics and UI capture.
+Validation layer 1.4.363.1 was loaded with duplicate-message limit 1000; all
+process logs were clean and the frozen input hashes remained unchanged. The
+wider storage removes UNORM8/FP16 rounding; acceptance establishes this fixture's
+behavior and does not claim exact algorithm equivalence or AMD ML support on
+NVIDIA.
+
+At 640×360, the deferred fixture's median instrumented GPU pass total was
+0.868 ms native and 0.925 ms with Quality, including a 0.248 ms reconstruction
+pass. Its maximum mean absolute RGB difference was 1.938/255. The 1280×720
+forward transparency fixture measured 1.434 ms native and 1.129 ms Performance,
+including 0.459 ms reconstruction. These are validation-enabled fixture
+measurements.
+
+Evidence is in
+`build/codex-gltf-validation/latest-fsr-native-full/results.json`,
+`build/codex-gltf-validation/latest-fsr-native-full-inputs.json`, and
+`build/codex-gltf-validation/fsr-vulkan-adapter-cpu/test-results.xml`.
+The accepted renderer SHA-256 is
+`a250881bfdfd0832d11fcf6a7838926e3bc3a59ef6e9c2a098837763ccf0cf63`.
+
+### 2026-11-07 Portable loader and local package acceptance
+
+The optional pinned Windows x64 loader stages LunarG's signed Vulkan Runtime
+1.4.363.0 and its official license; SDK 1.4.363.1 retains that loader component.
+The accepted renderer SHA-256 is
+`5b67eae24ecf8e0eac37e416c1f6ffa78c209089a2a248fb48c15aa2c3dc0acf`.
+The `0.0.0-local-validation` package passed all checks in
+`build/codex-gltf-validation/latest-stable-package-qa-v3/results.json`:
+five signed runtimes, exact notice bytes and normalized legal-content pins,
+131 manifest payload hashes, dependency closure, all 224 ZIP files, clean-PATH
+CPU-only `--help`, and an empty `out/` directory. The ZIP SHA-256 is
+`fe5e6e9fc3ef66cf106d694a137c6de29988db5c05ad09913c60b4986ec2acc6`.
+Its clean local source snapshot is
+`de78428e990fadf1f361ed0d2515208187699118`; this is validation evidence only,
+with no main-checkout commit, publication or release.
+
+### 2026-11-07 OptiX 9.1 native acceptance
+
+The optional reference denoiser now pins NVIDIA OptiX 9.1.0, commit
+`f1f6dd803f3159992d248178f6e09421c6eb8b6d`, including all six consumed
+host headers, the SDK license and both compiled BSD stub notices. Windows
+links CfgMgr32 alongside Advapi32 for the current driver-discovery stubs.
+CUDA/OptiX still load from the installed NVIDIA driver. An explicit Turing
+architecture check and the driver's ABI 118 initialization retain raw fallback
+when the backend cannot initialize.
+
+The enabled renderer
+`b35059a7320d27ce333587e28e8e603464d1c079d6995c7ceb9815031bff519c`
+passes 24 captures across seven processes on the RTX 2080 SUPER/610.88 driver,
+with the portable 1.4.363.0 loader and 1.4.363.1 synchronization validation.
+Four-sample display RMSE improves from 0.11174 to 0.02150 against 256 samples.
+Raw EXRs have identical file bytes and decoded float bits. Eighteen history
+frames verify camera/object motion, resize, disable/re-enable and completion.
+Eleven isolated pin/fallback configuration checks pass. The previous
+SDK-disabled `5b67...` renderer also passes two pixel-exact raw fallback
+captures; that check does not exercise a missing driver or pre-Turing GPU.
+
+Evidence is under
+`build/codex-gltf-validation/optix-9.1-acceptance/results.json` and
+`build/codex-gltf-validation/optix-9.1.0-proposal/review-pin-checks.json`.
+The native harness exited successfully. Its separate initial EXR-byte checker
+omitted the parent process's OpenEXR setting; the corrected postcheck passed
+against unchanged captures without rerunning the renderer. This acceptance
+uses the existing 1.4.328.1 Vulkan headers/import library; the separate portable
+SDK header upgrade and a new enabled package remain pending. No release,
+main-checkout commit or publication was made.
+
+### 2026-11-07 Merged linked-manifest portable save acceptance
+
+The original #102 save requirement permits preserving references or flattening
+the scene. Portable Save As already flattens merged linked manifests; the
+separate Save Linked As guard protects unsupported multi-origin live-reference
+preservation. Removing that guard would prune incoming linked payloads without
+exporting their references, so the guard remains.
+
+The new focused regression passes 24 captures/52 checks across both raster
+techniques on the frozen `b35059...` renderer. Two input roots deliberately
+reuse URI basenames and alias keys with different geometry and image bytes.
+The gate verifies merge undo/redo, read-only source identity, sharing within
+each source, separate identities across sources, portable GLTF/GLB output and
+reload after both source roots move offline. Twenty image comparisons match
+independently baked static controls pixel for pixel. Two additional expected
+save failures protect both original manifests without changing their bytes.
+All native logs are free of Vulkan validation/synchronization errors.
+
+`tests/validation/gltf_linked_merged_export_runtime_regression.py` also passes
+nine negative fixture checks and simulated GLTF/GLB decoding. Actual native
+results are in
+`build/codex-gltf-validation/linked-merged-export-native/results.json`.
+The unchanged 149-file runtime/helper/layer manifest is
+`build/codex-gltf-validation/linked-merged-manifest.json`.
+This closes the merged-manifest flattening acceptance gap without broadening
+the experimental linked-reference format. No GitHub issue or release changed.
+
+### 2026-11-07 Shared lighting setting metadata (#114)
+
+The editor, CLI, MCP schema and lighting manager now share the four lighting
+setting definitions and inclusive ranges. CLI intensity overrides reject invalid
+values before application startup. MCP validates the entire request before
+queueing it, including mixed valid/invalid fields and values that would overflow
+when narrowed to float. Runtime setters retain defensive clamping.
+
+The acceptance gate passes 15 C++ cases, 33 CLI cases, all eight MCP range
+endpoints and ten invalid atomic requests, plus six actual retired GPU timing
+samples. Evidence is in
+`build/codex-gltf-validation/lighting-metadata-acceptance/results.json` on renderer
+`6cb8b06ab39ce4fc4083027130235ca08d7c4f67f9aee850b036a03235c43737`.
+The native MCP run required access to Windows loopback; the sandbox-only attempt
+could not connect to its own listener and is excluded from acceptance.
+
+### 2026-11-07 DDGI normal mips and alpha coverage (#82)
+
+The actual normal/alpha consumer gate passes 112 raw frames across 14 processes
+on both raster techniques, with synchronization validation and frozen inputs.
+All three independent baked comparisons have zero image error: textured normal
+mips versus baked coarse normals, degenerate UV fallback versus base normals,
+and alpha cutouts versus authored strip geometry. Distinct wrong-normal, full
+and empty controls make those comparisons nonvacuous. Candidate/shadow alpha
+coverage deliberately remains at mip zero; closest-hit normal shading uses
+ray gradients. Hardware bandwidth is unavailable; GPU dispatch timing, texture
+bytes and owned allocation sizes are retained.
+
+Evidence is in
+`build/codex-gltf-validation/ray-footprint-normal-alpha-final-dfc887-native/results.json`,
+renderer `dfc887d53da4bb81ac75196f7d554ce0e9bf40e8110aaac72a6c592c8b9e84a4`.
+
+### 2026-11-07 GLM, allocator and portable SDK core validation
+
+The selected core dependencies now use GLM 1.0.3, Vulkan Memory Allocator 3.5.0
+and the headers/import library from Vulkan SDK 1.4.363.1. Scoped overlay ports
+pin the two libraries; CMake verifies the consumed headers and authentic notices
+from their selected prefixes. The optional portable SDK core verifies 64 files
+and watches their contents for reconfiguration, independently of the portable
+runtime loader. No SDK installer or global environment change is required.
+
+The core/camera gate passes 1,393 executed cases in 47 suites; two external-asset
+cases are explicitly skipped. All 115 production SPIR-V modules validate for
+Vulkan 1.4. The aggregate receipt includes the corrected 13-case camera manager
+rerun: its original fixture omitted the animation-to-graph publication step.
+Evidence is in
+`build/codex-gltf-validation/latest-core-camera-accepted-checks/results.json`,
+renderer `fa766498c40e400a071a7991307d11ba951cae22dc4daff71e67bfd052df8c60`.
+Subsequent native receipts identify their own rebuilt applications. Other direct
+dependency upgrades are being checked separately; this checkpoint does not claim
+every library in the build is current.
+
+### 2026-11-07 Animated camera defaults and scene convergence acceptance
+
+The camera gate passes 54 captures, 54 state checks, 64 image checks and four
+source-independent GLTF/GLB exports across 22 processes on both raster engines.
+Full TRS and partial-pointer defaults keep their original curves, sampled pose
+and current playback clock through history. Exported pose fields match the
+separately captured, independently validated authored/rest endpoint exactly;
+constant restoration keys preserve its binary32 values. Unrepresentable local
+shear leaves source, rest, graph, history, clock and warmed allocations unchanged.
+Evidence is in
+`build/codex-gltf-validation/camera-pose-animation-v7-native/results.json`.
+
+The original #47 scene convergence/calibration matrix also passes all 95 captures
+and 40 processes, with frozen inputs and strict synchronization validation.
+Cornell, area lights, blockers, roughness sweeps and interiors all meet the
+declared rising-sample error and variance thresholds against separately measured
+noisy references. Matching raster/reference captures, memory, GPU timing and
+interpretation are documented in [reference calibration](reference-calibration.md).
+Evidence is in
+`build/codex-gltf-validation/reference-convergence-sized-dfc887-native/results.json`.
+Both accepted native gates use renderer
+`dfc887d53da4bb81ac75196f7d554ce0e9bf40e8110aaac72a6c592c8b9e84a4`.
+The earlier 128-pixel hidden-window attempt was rejected because Windows widened
+it to 176 pixels; the accepted gate uses 256×192 with unchanged thresholds.
+
+### 2026-11-07 Final original-scope and latest-library acceptance
+
+The original #121 implementation and acceptance gaps identified by the scope
+audits are complete locally. The final build selects the
+[latest checked library releases](library-versions.md), including the EnTT 4
+pool API, JSON 3.12 ABI rebuild, current ImGui Vulkan/font/texture API and the
+explicit latest-release TinyGLTF/TinyEXR C++ compatibility interfaces. Proper
+PUBLIC/header dependencies replace the old global aggregate include fallback.
+Scoped overlays retain source pins and authentic notices; miniz's MSVC flags
+are platform-specific and pkg-config exports receive relocation fixes.
+
+Renderer `5796c721b60b3967619008f72fc4de67e33e0b6bc53870798b271f5fc2ca292a`
+passes one fresh integrated cohort of **1,408 executed cases in 49 suites**,
+plus **46 CLI/package protocol checks** and all **115 SPIR-V modules**. Two
+missing external sample assets account for the only skips. The retained gate is
+`build/codex-gltf-validation/latest-all-libraries-accepted-checks/results.json`.
+The earlier clean-include attempt stopped at a test target missing its declared
+scene I/O dependency; it is retained separately and excluded from acceptance.
+
+The final native queue passes **235 captures across 83 renderer processes**:
+animated camera defaults/history/export, interactivity portable export, merged
+linked flatten/reload, FSR, DLSS SR, DLSS RR and OptiX. Six full-window Comfy
+captures independently prove actual four-color preview drawing after MSAA
+1→4→1 on both raster paths, using local mock files without network or inference.
+Three raw reference checkpoints preserve every decoded float32 bit and encoded
+EXR byte from the accepted convergence baseline. All consumed input/runtime
+hashes stay unchanged and the actual pinned validation layer is loaded.
+Evidence is in
+`build/codex-gltf-validation/latest-all-5796-native-v1/accepted-results.json`.
+
+The `0.0.0-local-validation` Windows package passes its full CPU QA: five signed
+vendor runtimes, all selected/SDK notices with independent source derivations,
+dependency closure, 133 runtime asset hashes, all 233 ZIP files and clean-PATH
+`--help`. Its ZIP SHA-256 is
+`e17e110c702be63687d1a9f60e50a975fe4cd6f1f8d80c7c40d27b0230a73661`.
+Its clean private source snapshot is
+`406b2b40f9da75d56f697009eaa3b0f670f34c7c`; it is local validation evidence,
+not a main-checkout commit or a published release. QA is in
+`build/codex-gltf-validation/latest-all-package-qa-5796-v1/results.json`.
+The packaged executable also passes actual loopback MCP range endpoints,
+ten atomic invalid requests, capture/model protection and six retired GPU timing
+samples in `build/codex-gltf-validation/latest-all-package-mcp-5796/results.json`.
+`out/` remains empty. Existing documented supported-subset and optional backend
+limits remain explicit; extending every material/medium family is future work
+beyond the original supported-subset requirements.

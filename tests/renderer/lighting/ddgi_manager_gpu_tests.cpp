@@ -114,6 +114,7 @@ protected:
     v12.bufferDeviceAddress = VK_TRUE;
     v12.runtimeDescriptorArray = VK_TRUE;
     v12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+    v12.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
     v12.separateDepthStencilLayouts = VK_TRUE;
     v12.timelineSemaphore = VK_TRUE;
     v12.pNext = &v11;

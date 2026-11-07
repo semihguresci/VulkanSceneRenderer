@@ -1,4 +1,5 @@
 #include <Container/geometry/GltfResourceExportCompaction.h>
+#include <Container/geometry/GltfInteractivity.h>
 #include <Container/geometry/GltfMaterialTextureAuthoring.h>
 #include <Container/geometry/GltfExtendedMaterials.h>
 #include <Container/geometry/GltfLegacyMaterialSerialization.h>
@@ -290,6 +291,8 @@ void ApplyGltfResourceExportCompaction(tinygltf::Model& model,const GltfResource
   std::vector<tinygltf::Image> images(state.imageSources.size());std::vector<tinygltf::Texture> textures(state.textureSources.size());std::vector<tinygltf::Sampler> samplers(state.samplerSources.size());
   for(size_t i=0;i<textures.size();++i) textures[i]=std::move(projected.textures[size_t(state.textureSources[i])]);
   for(size_t i=0;i<samplers.size();++i) samplers[i]=std::move(projected.samplers[size_t(state.samplerSources[i])]);
+  if (model.extensions.contains(kGltfInteractivityExtension))
+    (void)RemapGltfInteractivity(model,GltfInteractivityIdentityMappings(projected),&projected);
   static_assert(std::is_nothrow_move_assignable_v<tinygltf::Image> && std::is_nothrow_move_assignable_v<tinygltf::Node>);
   // All allocation/validation precedes the first source edit. Image move
   // assignment transfers its existing pixel allocation without copying it.

@@ -46,10 +46,7 @@ void RendererFrontend::resetGltfAnimation() {
       auto& mutableSource = subs_.sceneManager->animationSource();
       auto dirty = gltfAnimation_->selectClip(mutableSource,static_cast<size_t>(svc_.config.gltfAnimationClip));
       dirty.merge(gltfAnimation_->seek(mutableSource,svc_.config.gltfAnimationTime));
-      container::geometry::gltf::ApplyAnimatedNodeTransforms(mutableSource,dirty,sceneGraph_);
-      subs_.sceneManager->publishAnimationChanges(dirty,sceneGraph_);
-      if (subs_.lightingManager) subs_.lightingManager->updateLightingData();
-      refreshSceneObjectData(); syncSceneProviders();
+      publishGltfAnimationChanges(dirty);
       if (svc_.config.gltfAnimationPlaying) gltfAnimation_->play();
       if (subs_.temporalManager) subs_.temporalManager->reset("configured glTF animation clip");
     }
@@ -89,6 +86,28 @@ void RendererFrontend::refreshGltfCameraChoices() {
     choices.push_back({std::move(name),index});
   }
 }
+void RendererFrontend::publishGltfAnimationChanges(
+    const container::geometry::gltf::AnimationDirtySet& dirty) {
+  using namespace container::geometry::gltf;
+  auto& source = subs_.sceneManager->animationSource();
+  ApplyAnimatedNodeTransforms(source, dirty, sceneGraph_);
+  if (!dirty.nodeFlags.empty()) {
+    AnimationDirtySet materialAndCamera;
+    materialAndCamera.materials = dirty.materials;
+    materialAndCamera.cameras = dirty.cameras;
+    subs_.sceneManager->publishAnimationChanges(materialAndCamera, sceneGraph_);
+    // Rebuild the visible light bindings only after capturing overrides from
+    // the previous visibility state, as for a direct editor flag change.
+    publishSceneEdit();
+    return;
+  }
+  subs_.sceneManager->publishAnimationChanges(dirty, sceneGraph_);
+  if (subs_.lightingManager && (!dirty.nodes.empty() || !dirty.lights.empty()))
+    subs_.lightingManager->updateLightingData();
+  refreshSceneObjectData();
+  syncSceneProviders();
+}
+
 void RendererFrontend::updateGltfAnimation() {
   using namespace container::geometry::gltf;
   if (gltfAnimationGraphIdentity_ != sceneGraph_.identity()) resetGltfAnimation();
@@ -136,14 +155,10 @@ void RendererFrontend::updateGltfAnimation() {
            (gltfAnimation_->speed() < 0 && gltfAnimation_->time() > previous))) discontinuity = true;
     }
     if (!dirty.empty()) {
-      ApplyAnimatedNodeTransforms(source,dirty,sceneGraph_);
-      subs_.sceneManager->publishAnimationChanges(dirty,sceneGraph_);
-      if (subs_.lightingManager && (!dirty.nodes.empty() || !dirty.lights.empty()))
-        subs_.lightingManager->updateLightingData();
-      refreshSceneObjectData(); syncSceneProviders();
+      publishGltfAnimationChanges(dirty);
       // Rigid and deformed motion retain submitted transform/vertex history.
       // Timeline jumps and mutable shading invalidate incompatible color.
-      if (subs_.temporalManager && (discontinuity ||
+      if (subs_.temporalManager && dirty.nodeFlags.empty() && (discontinuity ||
           !dirty.materials.empty() || !dirty.lights.empty() || !dirty.cameras.empty()))
         subs_.temporalManager->reset("glTF animation seek, deformation or shading change");
     } else if (discontinuity && subs_.temporalManager) subs_.temporalManager->reset("glTF animation timeline or camera selection");

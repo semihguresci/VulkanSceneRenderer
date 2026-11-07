@@ -58,6 +58,10 @@ namespace container::scene {
 class SceneGraph;
 }  // namespace container::scene
 
+namespace container::geometry::gltf {
+struct GltfLinkedPortableExportOptions;
+}
+
 namespace container::renderer {
 struct DrawCommand;
 struct RayOpacityMicromapRange;
@@ -475,7 +479,8 @@ class SceneManager {
       const std::string& path,
       uintmax_t maxInputBytes = std::numeric_limits<uintmax_t>::max(),
       bool enableLinkedAssets = false, bool requireSelfContained = false,
-      bool enableExperimentalMaterials = false, bool enableOpacityMicromaps = false);
+      bool enableExperimentalMaterials = false, bool enableOpacityMicromaps = false,
+      bool mergeInput = false);
 
   bool reloadModel(const std::string& path,
                    float importScale,
@@ -646,9 +651,21 @@ class SceneManager {
   // belong to their own authoring formats and are excluded by the caller.
   void saveScene(const SceneGraph& sceneGraph,
                  const std::filesystem::path& destination) const;
-  [[nodiscard]] tinygltf::Model buildSceneExport(const SceneGraph& sceneGraph) const;
+  [[nodiscard]] tinygltf::Model buildSceneExport(const SceneGraph& sceneGraph,
+      const container::geometry::gltf::GltfLinkedPortableExportOptions* linked = nullptr) const;
   void captureLinkedSceneBaseline(const SceneGraph&);
   [[nodiscard]] bool hasLinkedScene() const noexcept { return bool(linkedComposition_); }
+  [[nodiscard]] const container::geometry::gltf::GltfLinkedCompositionInfo* linkedPrimaryComposition() const noexcept {
+    return linkedComposition_.get();
+  }
+  [[nodiscard]] bool isLinkedSourceCarrier(size_t sourceNode) const noexcept;
+  [[nodiscard]] bool isLinkedNodeReadOnly(const SceneGraph&, uint32_t graphNode) const noexcept;
+  [[nodiscard]] bool isLinkedSourceNodeReadOnly(size_t sourceNode) const noexcept;
+  [[nodiscard]] bool isLinkedMaterialReadOnly(uint32_t runtimeMaterial) const noexcept;
+  [[nodiscard]] bool isLinkedCameraReadOnly(int32_t authored, int32_t evaluated) const noexcept;
+  [[nodiscard]] bool isLinkedResourceReadOnly(const TextureResourceSelection&) const noexcept;
+  [[nodiscard]] bool canMakeLinkedAssetEditable(const SceneGraph&, uint32_t graphNode) const noexcept;
+  size_t makeLinkedAssetEditable(const SceneGraph&, uint32_t graphNode);
   void validateSceneExportDestination(const std::filesystem::path&) const;
   void saveLinkedScene(const SceneGraph&, const std::filesystem::path&) const;
   // Raw graph-slot IDs in buildSceneExport's initial node table. Apply this
@@ -994,6 +1011,13 @@ class SceneManager {
   struct LinkedSceneBaseline;
   std::shared_ptr<const container::geometry::gltf::GltfLinkedCompositionInfo> linkedComposition_;
   std::shared_ptr<const LinkedSceneBaseline> linkedSceneBaseline_;
+  struct LinkedAssetState;
+  using LinkedAssetStatePtr = std::shared_ptr<const LinkedAssetState>;
+  LinkedAssetStatePtr linkedAssetState_;
+  void initializeLinkedAssetState();
+  [[nodiscard]] LinkedAssetStatePtr prepareLinkedMergeOwnership(
+      const container::geometry::GltfLoadResult&, const container::geometry::gltf::GltfMergePlan&) const;
+  [[nodiscard]] uint64_t linkedAssetStateBytes() const noexcept;
   std::vector<uint32_t> sourcePrimitiveToRuntime_{};
   std::vector<int32_t> runtimePrimitiveToSource_{};
   tinygltf::Model gltfModel_{};

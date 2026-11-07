@@ -238,6 +238,9 @@ class SceneController {
 
   // Uploads scene + diagnostic-cube vertices/indices into a shared GPU arena.
   void createGeometryBuffers();
+  // Called after adding a primitive instance, which may share geometry already
+  // published in the current buffers.
+  void refreshPrimitiveGeometryBuffers();
 
   // CPU reconciliation only. Topology changes remain pending until
   // createGeometryBuffers publishes matching bind/index/diagnostic streams.
@@ -294,10 +297,9 @@ class SceneController {
   [[nodiscard]] uint32_t addScenePrimitive(ScenePrimitiveKind kind,
                                            const glm::mat4& transform,
                                            uint32_t& rootNode);
-  // Append retained runtime geometry without publishing a graph instance.
-  // The editor stages final hierarchy/membership and calls createGeometryBuffers
-  // after graph publication. Existing direct creation uses this same routine.
-  [[nodiscard]] uint32_t appendScenePrimitiveGeometry(ScenePrimitiveKind kind);
+  // Find or append retained runtime geometry without publishing a graph
+  // instance. Geometry buffers can be refreshed after graph publication.
+  [[nodiscard]] uint32_t resolveScenePrimitiveGeometry(ScenePrimitiveKind kind);
 
   bool reloadSceneModel(
       const std::string&                      path,

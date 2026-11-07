@@ -107,8 +107,26 @@ TEST_F(CameraProjectionGenerationGpu, AnimatedOtherLensLeavesKeepCurrentClockAnd
   auto redo=manager->prepareCameraProjectionReplay(command,GltfCameraEditSide::After,graph,player.get(),2.f);ASSERT_TRUE(publish(redo));
   EXPECT_DOUBLE_EQ(manager->animationSource().cameras[0].perspective.yfov,currentFov);EXPECT_DOUBLE_EQ(player->library().restCameras[0].perspective.znear,.3);
   EXPECT_DOUBLE_EQ(player->speed(),.625);EXPECT_TRUE(player->playing());EXPECT_FALSE(player->loop());
-  GltfCameraProjectionPatch forbidden;forbidden.values={{Property::PerspectiveYfov,.7}};
-  EXPECT_THROW((void)manager->prepareCameraProjectionEdit(target(),forbidden,graph,player.get(),2.f),std::invalid_argument);
+  const auto curveBytes=manager->animationSource().buffers[1].data;
+  GltfCameraProjectionPatch fov;fov.values={{Property::PerspectiveYfov,.7}};
+  auto animated=manager->prepareCameraProjectionEdit(target(),fov,graph,player.get(),2.f);
+  const auto animatedCommand=animated.command();const auto animatedView=animated.candidateView();
+  ASSERT_TRUE(publish(animated));
+  EXPECT_DOUBLE_EQ(manager->authoredCamera(0).perspective.yfov,.7);
+  EXPECT_DOUBLE_EQ(player->library().restCameras[0].perspective.yfov,.7);
+  EXPECT_DOUBLE_EQ(manager->animationSource().cameras[0].perspective.yfov,currentFov);
+  const auto world=glm::inverse(animatedView.view);
+  const auto edge=probe(world*glm::vec4(0,3.f*std::tan(float(currentFov)/2.f),-3,1));
+  EXPECT_NEAR(edge[0].y/edge[0].w,1.f,1e-4f);
+  auto animatedUndo=manager->prepareCameraProjectionReplay(animatedCommand,GltfCameraEditSide::Before,graph,player.get(),2.f);
+  ASSERT_TRUE(publish(animatedUndo));
+  EXPECT_DOUBLE_EQ(manager->authoredCamera(0).perspective.yfov,.8);
+  EXPECT_DOUBLE_EQ(manager->animationSource().cameras[0].perspective.yfov,currentFov);
+  auto animatedRedo=manager->prepareCameraProjectionReplay(animatedCommand,GltfCameraEditSide::After,graph,player.get(),2.f);
+  ASSERT_TRUE(publish(animatedRedo));
+  dirty=player->clearClip(manager->animationSource());manager->publishAnimationChanges(dirty,graph);
+  EXPECT_DOUBLE_EQ(manager->animationSource().cameras[0].perspective.yfov,.7);
+  EXPECT_EQ(manager->animationSource().buffers[1].data,curveBytes);
 }
 
 TEST_F(CameraProjectionGenerationGpu, StaleRawSelectedGraphPlayerViewportAndSourceRejectBothFinalGuardsWithoutAllocation) {

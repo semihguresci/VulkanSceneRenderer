@@ -45,6 +45,26 @@ if(CONTAINER_FSR_AVAILABLE)
     target_compile_definitions(VulkanSceneRenderer_fsr PRIVATE CONTAINER_HAS_FSR_UPSCALER=1)
 endif()
 
+add_library(VulkanSceneRenderer_dlss
+    renderer/temporal/DlssNgx.cpp
+    renderer/temporal/DlssUpscaler.cpp
+    renderer/pathtracing/ReferenceDlssReconstructor.cpp)
+target_compile_features(VulkanSceneRenderer_dlss PUBLIC cxx_std_23)
+target_include_directories(VulkanSceneRenderer_dlss PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_link_libraries(VulkanSceneRenderer_dlss PUBLIC Dep_VulkanCore)
+if(CONTAINER_DLSS_AVAILABLE OR CONTAINER_DLSS_RR_AVAILABLE)
+    target_include_directories(VulkanSceneRenderer_dlss SYSTEM PRIVATE "${CONTAINER_DLSS_INCLUDE_DIR}")
+    target_compile_definitions(VulkanSceneRenderer_dlss PRIVATE CONTAINER_HAS_DLSS_SDK=1)
+    target_link_libraries(VulkanSceneRenderer_dlss PRIVATE advapi32 user32
+        optimized "${CONTAINER_DLSS_LIBRARY}" debug "${CONTAINER_DLSS_DEBUG_LIBRARY}")
+endif()
+if(CONTAINER_DLSS_AVAILABLE)
+    target_compile_definitions(VulkanSceneRenderer_dlss PRIVATE CONTAINER_HAS_DLSS_UPSCALER=1)
+endif()
+if(CONTAINER_DLSS_RR_AVAILABLE)
+    target_compile_definitions(VulkanSceneRenderer_dlss PRIVATE CONTAINER_HAS_DLSS_RAY_RECONSTRUCTION=1)
+endif()
+
 # Renderer subsystem
 add_library(VulkanSceneRenderer_renderer
     asl/PoseReplayScene.cpp
@@ -295,10 +315,23 @@ else()
     find_library(CONTAINER_TINYEXR_MINIZ_LIBRARY NAMES miniz REQUIRED)
     target_link_libraries(VulkanSceneRenderer_exr PRIVATE "${CONTAINER_TINYEXR_MINIZ_LIBRARY}")
 endif()
-target_link_libraries(VulkanSceneRenderer_renderer PRIVATE VulkanSceneRenderer_exr VulkanSceneRenderer_fsr)
+target_link_libraries(VulkanSceneRenderer_renderer PRIVATE VulkanSceneRenderer_exr VulkanSceneRenderer_fsr VulkanSceneRenderer_dlss)
+if(CONTAINER_DLSS_RR_AVAILABLE)
+    target_sources(VulkanSceneRenderer_renderer PRIVATE renderer/pathtracing/ReferenceDlssPass.cpp)
+    set_property(SOURCE renderer/pathtracing/ReferencePathTracePass.cpp renderer/pathtracing/ReferenceDlssPass.cpp
+        APPEND PROPERTY COMPILE_DEFINITIONS CONTAINER_HAS_DLSS_RR=1)
+endif()
 if(CONTAINER_VK_OIDN_AVAILABLE)
     target_link_libraries(VulkanSceneRenderer_renderer PRIVATE vk_oidn::vk_oidn)
     target_compile_definitions(VulkanSceneRenderer_renderer PRIVATE CONTAINER_HAS_VK_OIDN=1)
+endif()
+if(CONTAINER_OPTIX_AVAILABLE)
+    target_sources(VulkanSceneRenderer_renderer PRIVATE renderer/pathtracing/ReferenceOptixDenoiser.cpp)
+    target_link_libraries(VulkanSceneRenderer_renderer PRIVATE advapi32 cfgmgr32)
+    set_property(SOURCE renderer/pathtracing/ReferencePathTracePass.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS CONTAINER_HAS_REFERENCE_OPTIX=1)
+    set_property(SOURCE renderer/pathtracing/ReferenceOptixDenoiser.cpp APPEND PROPERTY
+        INCLUDE_DIRECTORIES "${CONTAINER_OPTIX_INCLUDE_DIR}" "${CONTAINER_OPTIX_CUDA_INCLUDE_DIR}")
 endif()
 if(WIN32)
     target_link_libraries(VulkanSceneRenderer_renderer PRIVATE ws2_32)

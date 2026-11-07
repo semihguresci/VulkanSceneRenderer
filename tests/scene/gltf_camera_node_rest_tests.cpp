@@ -186,9 +186,8 @@ TEST(GltfCameraNodeRest, ZeroMaterialAndZeroClipSourceStillPublishesOnlyCameraNo
   EXPECT_EQ(player.library().restNodes[0].weights, weights);
 }
 
-TEST(GltfCameraNodeRest, RejectsEverySelectedPoseTargetInEveryClipIncludingUnsupportedRawPointers) {
-  for (const auto& path : {std::string("translation"), std::string("rotation"), std::string("scale"),
-      std::string("/nodes/0/translation/0"), std::string("/nodes/0/rotation/0"),
+TEST(GltfCameraNodeRest, RejectsUnsupportedSelectedMatrixQuaternionComponentsAndUnknownPointers) {
+  for (const auto& path : {std::string("/nodes/0/rotation/0"),
       std::string("/nodes/0/matrix/0"), std::string("/nodes/0/translation/future"), std::string("/nodes/0")}) {
     SCOPED_TRACE(path);
     Fixture fixture;
@@ -200,6 +199,113 @@ TEST(GltfCameraNodeRest, RejectsEverySelectedPoseTargetInEveryClipIncludingUnsup
     channel(fixture.authored, 2, time, values, pointer ? -1 : 0, path);
     fixture.evaluated = fixture.authored;
     EXPECT_THROW((void)fixture.plan(), std::invalid_argument);
+  }
+}
+
+TEST(GltfCameraNodeRest, PartialTranslationRestEditSamplesCurrentClockAndReplaysWithoutRewinding) {
+  Fixture f;
+  channel(f.authored,0,0,floats(f.authored,{3,7},TINYGLTF_TYPE_SCALAR,2),-1,"/nodes/0/translation/0");
+  f.evaluated=f.authored;auto player=f.running();
+  const auto buffers=f.evaluated.buffers;const auto beforeWeights=f.evaluated.nodes[0].weights;
+  f.graph.local=EvaluateAnimatedNodeLocalTransform(f.evaluated.nodes[0]);f.graph.world=f.graph.local;
+  const auto original=f.plan();auto token=player.prepareCameraNodeRestEdit(original,GltfCameraPoseView(f.authored),f.evaluated);
+  auto candidate=token.evaluatedNode();EXPECT_DOUBLE_EQ(candidate.translation[0],4.);
+  EXPECT_EQ(candidate.translation[1],original.authoredAfter.translation[1]);EXPECT_EQ(candidate.weights,beforeWeights);
+  EXPECT_TRUE(candidate.matrix.empty());const auto committed=publish(player,token,f);EXPECT_TRUE(committed.exchanged);EXPECT_EQ(committed.allocations,0u);
+  copyPose(f.authored.nodes[0],original.authoredAfter);copyPose(f.evaluated.nodes[0],candidate);
+  player.seek(f.evaluated,1.5);f.graph.local=EvaluateAnimatedNodeLocalTransform(f.evaluated.nodes[0]);f.graph.world=f.graph.local;++f.graph.revision;
+  const auto undo=RebaseGltfCameraViewPose(original,GltfCameraEditSide::Before,GltfCameraPoseView(f.authored),GltfCameraPoseView(f.evaluated),f.graph,{},player.selectedClip());
+  auto undoToken=player.prepareCameraNodeRestEdit(undo,GltfCameraPoseView(f.authored),f.evaluated);
+  candidate=undoToken.evaluatedNode();EXPECT_DOUBLE_EQ(candidate.translation[0],6.);EXPECT_DOUBLE_EQ(candidate.translation[1],0.);EXPECT_DOUBLE_EQ(candidate.translation[2],6.);
+  EXPECT_TRUE(publish(player,undoToken,f).exchanged);copyPose(f.authored.nodes[0],undo.authoredAfter);copyPose(f.evaluated.nodes[0],candidate);
+  EXPECT_DOUBLE_EQ(player.time(),1.5);EXPECT_TRUE(player.playing());EXPECT_DOUBLE_EQ(player.speed(),1.25);
+  player.clearClip(f.evaluated);f.graph.local=EvaluateAnimatedNodeLocalTransform(f.evaluated.nodes[0]);f.graph.world=f.graph.local;++f.graph.revision;
+  const auto redo=RebaseGltfCameraViewPose(undo,GltfCameraEditSide::After,GltfCameraPoseView(f.authored),GltfCameraPoseView(f.evaluated),f.graph);
+  auto redoToken=player.prepareCameraNodeRestEdit(redo,GltfCameraPoseView(f.authored),f.evaluated);
+  candidate=redoToken.evaluatedNode();EXPECT_EQ(candidate.translation,original.authoredAfter.translation);
+  EXPECT_TRUE(publish(player,redoToken,f).exchanged);EXPECT_FALSE(player.selectedClip());
+  for(size_t i=0;i<buffers.size();++i) EXPECT_EQ(f.evaluated.buffers[i].data,buffers[i].data);
+}
+
+TEST(GltfCameraNodeRest, TrsOnlyCameraWithoutMeshDoesNotRequireMorphTargets) {
+  Fixture f;f.authored.meshes.clear();f.authored.nodes[0].mesh=-1;f.authored.nodes[0].weights.clear();f.authored.animations.clear();
+  const auto input=floats(f.authored,{0,2},TINYGLTF_TYPE_SCALAR,2);
+  channel(f.authored,0,input,floats(f.authored,{0,0,6,4,0,6},TINYGLTF_TYPE_VEC3,2),0,"translation");
+  f.evaluated=f.authored;AnimationPlayer player(f.authored);player.selectClip(f.evaluated,0);player.seek(f.evaluated,.5);
+  f.graph.local=EvaluateAnimatedNodeLocalTransform(f.evaluated.nodes[0]);f.graph.world=f.graph.local;
+  const auto plan=f.plan();auto token=player.prepareCameraNodeRestEdit(plan,GltfCameraPoseView(f.authored),f.evaluated);
+  EXPECT_EQ(token.evaluatedNode().translation,(std::vector<double>{1,0,6}));EXPECT_EQ(token.evaluatedNode().mesh,-1);
+  EXPECT_TRUE(publish(player,token,f).exchanged);EXPECT_EQ(player.library().restNodes[0].translation,plan.authoredAfter.translation);
+}
+
+TEST(GltfCameraNodeRest, InactiveTargetsUseAuthoredEndpointAndRejectConflictingEvaluatedChanges) {
+  for(const bool clear:{false,true}) {
+    Fixture f;channel(f.authored,0,0,floats(f.authored,{3,7},TINYGLTF_TYPE_SCALAR,2),-1,"/nodes/0/translation/0");
+    f.evaluated=f.authored;auto player=f.running();f.graph.local=EvaluateAnimatedNodeLocalTransform(f.evaluated.nodes[0]);f.graph.world=f.graph.local;
+    const auto original=f.plan();auto token=player.prepareCameraNodeRestEdit(original,GltfCameraPoseView(f.authored),f.evaluated);
+    const auto candidate=token.evaluatedNode();ASSERT_TRUE(publish(player,token,f).exchanged);
+    copyPose(f.authored.nodes[0],original.authoredAfter);copyPose(f.evaluated.nodes[0],candidate);
+    if(clear) player.clearClip(f.evaluated);else player.selectClip(f.evaluated,1);
+    f.graph.local=EvaluateAnimatedNodeLocalTransform(f.evaluated.nodes[0]);f.graph.world=f.graph.local;++f.graph.revision;
+    const auto undo=RebaseGltfCameraViewPose(original,GltfCameraEditSide::Before,GltfCameraPoseView(f.authored),GltfCameraPoseView(f.evaluated),f.graph,{},player.selectedClip());
+    EXPECT_NO_THROW((void)player.prepareCameraNodeRestEdit(undo,GltfCameraPoseView(f.authored),f.evaluated));
+    const auto wrongMask=RebaseGltfCameraViewPose(original,GltfCameraEditSide::Before,GltfCameraPoseView(f.authored),GltfCameraPoseView(f.evaluated),f.graph,{},0);
+    EXPECT_THROW((void)player.prepareCameraNodeRestEdit(wrongMask,GltfCameraPoseView(f.authored),f.evaluated),std::invalid_argument);
+    f.evaluated.nodes[0].translation[0]+=1.;f.graph.local=EvaluateAnimatedNodeLocalTransform(f.evaluated.nodes[0]);f.graph.world=f.graph.local;
+    EXPECT_THROW((void)RebaseGltfCameraViewPose(original,GltfCameraEditSide::Before,GltfCameraPoseView(f.authored),GltfCameraPoseView(f.evaluated),f.graph,{},player.selectedClip()),std::invalid_argument);
+  }
+}
+
+TEST(GltfCameraNodeRest, ReplayPreservesUnownedBehaviorAuthoredEvaluatedScale) {
+  Fixture f;f.authored.nodes[0].scale={1,1,1};f.authored.nodes[0].rotation={0,0,0,1};
+  channel(f.authored,0,0,floats(f.authored,{3,7},TINYGLTF_TYPE_SCALAR,2),-1,"/nodes/0/translation/0");
+  f.evaluated=f.authored;auto player=f.running();f.graph.local=EvaluateAnimatedNodeLocalTransform(f.evaluated.nodes[0]);f.graph.world=f.graph.local;
+  const auto original=PlanGltfCameraViewPose(GltfCameraPoseView(f.authored),GltfCameraPoseView(f.evaluated),0,0,f.graph,
+      glm::lookAt(glm::vec3(2,1,8),glm::vec3(2,1,7),glm::vec3(0,1,0)));
+  ASSERT_EQ(original.authoredAfter.scale,original.authoredBefore.scale);
+  auto token=player.prepareCameraNodeRestEdit(original,GltfCameraPoseView(f.authored),f.evaluated);const auto candidate=token.evaluatedNode();
+  ASSERT_TRUE(publish(player,token,f).exchanged);copyPose(f.authored.nodes[0],original.authoredAfter);copyPose(f.evaluated.nodes[0],candidate);
+  player.selectClip(f.evaluated,1);f.evaluated.nodes[0].scale={2,3,4};
+  f.graph.local=EvaluateAnimatedNodeLocalTransform(f.evaluated.nodes[0]);f.graph.world=f.graph.local;++f.graph.revision;
+  const auto undo=RebaseGltfCameraViewPose(original,GltfCameraEditSide::Before,GltfCameraPoseView(f.authored),GltfCameraPoseView(f.evaluated),f.graph,{},player.selectedClip());
+  auto prepared=player.prepareCameraNodeRestEdit(undo,GltfCameraPoseView(f.authored),f.evaluated);
+  EXPECT_EQ(prepared.evaluatedNode().scale,(std::vector<double>{2,3,4}));
+}
+
+TEST(GltfCameraNodeRest, QuaternionAndReflectedScaleTracksKeepTheirCurrentSampleAndOriginalKeys) {
+  for(const bool rotation:{true,false}) {
+    Fixture f;f.authored.meshes.clear();f.authored.nodes[0].mesh=-1;f.authored.nodes[0].weights.clear();f.authored.animations.clear();
+    const auto input=floats(f.authored,{0,2},TINYGLTF_TYPE_SCALAR,2);
+    const auto output=rotation?floats(f.authored,{0,0,0,1,0,0,.70710677f,.70710677f},TINYGLTF_TYPE_VEC4,2):
+        floats(f.authored,{-1,2,3,-2,4,6},TINYGLTF_TYPE_VEC3,2);
+    channel(f.authored,0,input,output,0,rotation?"rotation":"scale");f.evaluated=f.authored;
+    AnimationPlayer player(f.authored);player.selectClip(f.evaluated,0);player.seek(f.evaluated,.5);
+    const auto expected=rotation?f.evaluated.nodes[0].rotation:f.evaluated.nodes[0].scale;const auto bytes=f.evaluated.buffers.back().data;
+    f.graph.local=EvaluateAnimatedNodeLocalTransform(f.evaluated.nodes[0]);f.graph.world=f.graph.local;
+    const auto plan=f.plan();auto token=player.prepareCameraNodeRestEdit(plan,GltfCameraPoseView(f.authored),f.evaluated);
+    const auto candidate=token.evaluatedNode();EXPECT_EQ(rotation?candidate.rotation:candidate.scale,expected);
+    EXPECT_TRUE(candidate.matrix.empty());EXPECT_TRUE(plan.authoredAfter.matrix.empty());
+    EXPECT_TRUE(publish(player,token,f).exchanged);EXPECT_EQ(f.evaluated.buffers.back().data,bytes);
+    EXPECT_DOUBLE_EQ(player.time(),.5);
+  }
+}
+
+TEST(GltfCameraNodeRest, StepLinearAndCubicTranslationsRemainSampledAndRevealEditedRestOnClear) {
+  for(const std::string interpolation:{"STEP","LINEAR","CUBICSPLINE"}) {
+    Fixture f;f.authored.meshes.clear();f.authored.nodes[0].mesh=-1;f.authored.nodes[0].weights.clear();f.authored.animations.clear();
+    const auto input=floats(f.authored,{0,2},TINYGLTF_TYPE_SCALAR,2);
+    const auto output=interpolation=="CUBICSPLINE"?
+        floats(f.authored,{0,0,0,0,0,6,1,0,0,1,0,0,4,0,6,0,0,0},TINYGLTF_TYPE_VEC3,6):
+        floats(f.authored,{0,0,6,4,0,6},TINYGLTF_TYPE_VEC3,2);
+    channel(f.authored,0,input,output,0,"translation");f.authored.animations[0].samplers[0].interpolation=interpolation;
+    f.evaluated=f.authored;AnimationPlayer player(f.authored);player.selectClip(f.evaluated,0);player.seek(f.evaluated,.5);
+    const auto expected=f.evaluated.nodes[0].translation;const auto bytes=f.evaluated.buffers.back().data;
+    f.graph.local=EvaluateAnimatedNodeLocalTransform(f.evaluated.nodes[0]);f.graph.world=f.graph.local;
+    const auto plan=f.plan();auto token=player.prepareCameraNodeRestEdit(plan,GltfCameraPoseView(f.authored),f.evaluated);
+    const auto candidate=token.evaluatedNode();EXPECT_EQ(candidate.translation,expected);
+    EXPECT_TRUE(publish(player,token,f).exchanged);copyPose(f.authored.nodes[0],plan.authoredAfter);copyPose(f.evaluated.nodes[0],candidate);
+    player.clearClip(f.evaluated);EXPECT_EQ(f.evaluated.nodes[0].translation,plan.authoredAfter.translation);
+    EXPECT_EQ(f.evaluated.animations[0].samplers[0].interpolation,interpolation);EXPECT_EQ(f.evaluated.buffers.back().data,bytes);
   }
 }
 

@@ -60,6 +60,9 @@ public:
 
   [[nodiscard]] static bool builtWithSdk() noexcept;
   [[nodiscard]] bool available() const noexcept;
+  // Query after prepare: the pinned analytical shaders require RGBA32F output;
+  // automatic ML providers and the inactive/default profile use RGBA16F.
+  [[nodiscard]] VkFormat outputFormat() const noexcept;
   [[nodiscard]] std::string_view status() const noexcept { return status_; }
 
   // Retire queued work before changing settings or recovering a discarded

@@ -43,6 +43,15 @@ std::string lightLabel(uint32_t fields) {
   if(fields==LightEditFieldBit(LightEditField::AreaShape)) return "Area light shape";
   return "Edit light";
 }
+void requireEditableLinkedLight(const container::scene::SceneManager& scene,EditableLightId id) {
+  if(id.source!=EditableLightSource::Imported) return;
+  const auto bindings=id.type==EditableLightType::Directional?scene.authoredDirectionalLightBindings():
+      id.type==EditableLightType::Area?scene.authoredAreaLightBindings():scene.authoredPointLightBindings();
+  const auto index=id.type==EditableLightType::Directional?0u:id.index;
+  if(index<bindings.size() && bindings[index].sourceNode>=0 &&
+      scene.isLinkedSourceNodeReadOnly(size_t(bindings[index].sourceNode)))
+    throw std::invalid_argument("This linked asset is read-only. Use Make Editable first.");
+}
 uint64_t lightRuntimeBytes(const FrameResourceRegistry& registry) {
   if(registry.size()>4096 || registry.bindingCount()>4096) throw std::length_error("Light frame registry exceeds its staging limit");
   uint64_t bytes=sizeof(registry)+registry.size()*sizeof(FrameResourceDesc)+registry.bindingCount()*sizeof(FrameResourceBinding);
@@ -147,6 +156,7 @@ bool RendererFrontend::publishLightEdit(LightEditPublication& publication) {
   if(!subs_.lightingManager || !subs_.sceneManager || !subs_.frameRuntimeResourceRegistry || !subs_.sceneProviderRegistry)
     throw std::runtime_error("Lighting edits require initialized frame resources");
   auto& manager=*subs_.lightingManager;auto& scene=*subs_.sceneManager;
+  requireEditableLinkedLight(scene,edit.target().id);
   const uint32_t images=uint32_t(svc_.swapChainManager.imageCount());
   if(!images || images>64 || images!=edit.lightingBuffers().size() || lightEditPublications_==UINT64_MAX)
     throw std::length_error("Light frame count or publication generation is invalid");
@@ -249,6 +259,7 @@ bool RendererFrontend::authorLightEditRequest(const LightEditRequest& request) {
   if(!request.patch.fields || (request.patch.fields&~kAllLightEditFields) ||
       (request.phase==LightEditPhase::Commit ? request.gesture!=0 : request.gesture==0))
     throw std::invalid_argument("The light edit intent is invalid");
+  if(subs_.sceneManager) requireEditableLinkedLight(*subs_.sceneManager,request.target.id);
   if(lightEditGesture_ && lightEditGesture_->cancelRequested) finishLightEditGesture(true);
   finishMaterialGesture();
   if(pendingSceneRetirement_ || sceneEditPublicationPending_) publishSceneEdit();
@@ -389,6 +400,8 @@ void RendererFrontend::beginLightGizmoGesture(container::ui::ViewportTool,contai
     container::ui::TransformAxis,bool) {
   if(!subs_.lightingManager || sceneState_.selectedMeshNode!=container::scene::SceneGraph::kInvalidNode) return;
   if(!subs_.lightingManager->selectedEditableLight()) return;
+  if(subs_.sceneManager)
+    requireEditableLinkedLight(*subs_.sceneManager,subs_.lightingManager->selectedEditableLightId());
   if(subs_.guiManager) {subs_.guiManager->finishLightEditGesture();processLightEditRequests();}
   finishLightEditGesture();finishMaterialGesture();
   if(nextLightGizmoGesture_==UINT64_MAX) throw std::overflow_error("Light gizmo identity exhausted");
@@ -509,6 +522,7 @@ void RendererFrontend::processCaptureLightEvent() {
     } else if(pending->edit) {
       const auto& intent=*pending->edit;requireRevision(intent.expectedLightRevision);
       const auto id=resolveCaptureLightTarget(intent.target);
+      if(subs_.sceneManager) requireEditableLinkedLight(*subs_.sceneManager,id);
       const auto snapshot=subs_.lightingManager->lightEditSnapshot(id);
       if(!snapshot.available) throw std::invalid_argument("The capture light is no longer editable");
       const bool terminal=intent.phase==LightEditPhase::End || intent.phase==LightEditPhase::Cancel;

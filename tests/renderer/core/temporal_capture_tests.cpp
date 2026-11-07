@@ -21,21 +21,73 @@ TEST(TemporalCapture, ReferenceRendererSwitchIsOneShotAndRejectsUnknownNames) {
   EXPECT_THROW(CaptureSequence{invalid},std::invalid_argument);
 }
 
+TEST(TemporalCapture, ReferenceDisplaySwitchIsOneShotAndRejectsInvalidModes) {
+  using container::renderer::ReferencePathDisplayMode;
+  auto input = json::parse(R"({"schemaVersion":1,"frames":4,"events":[
+    {"frame":2,"referenceDisplay":"standard-error"},{"frame":4,"referenceDisplay":"beauty"}]})");
+  const CaptureSequence sequence(input);
+  EXPECT_FALSE(sequence.sample(1).event.referenceDisplay);
+  EXPECT_EQ(sequence.sample(2).event.referenceDisplay, ReferencePathDisplayMode::StandardError);
+  EXPECT_FALSE(sequence.sample(3).event.referenceDisplay);
+  EXPECT_EQ(sequence.sample(4).event.referenceDisplay, ReferencePathDisplayMode::Beauty);
+
+  for (const auto& invalid : {json("variance"), json(1), json(nullptr)}) {
+    input["events"][0]["referenceDisplay"] = invalid;
+    EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+  }
+}
+
 TEST(TemporalCapture, FsrModesSelectIndependentSceneGrids) {
-  using container::renderer::FsrMode;
+  using container::renderer::UpscaleBackend;
+  using container::renderer::UpscaleMode;
+  using container::renderer::UpscaleSelection;
   using container::renderer::fsrRenderExtent;
   auto input = json::parse(R"({"schemaVersion":1,"frames":4,"events":[
     {"frame":2,"fsr":"balanced"},{"frame":4,"fsr":"native"}]})");
   const CaptureSequence sequence(input);
-  EXPECT_FALSE(sequence.sample(1).event.fsr);
-  EXPECT_EQ(sequence.sample(2).event.fsr, FsrMode::Balanced);
-  EXPECT_FALSE(sequence.sample(3).event.fsr);
-  EXPECT_EQ(sequence.sample(4).event.fsr, FsrMode::Native);
-  const auto scaled = fsrRenderExtent(FsrMode::Balanced, {1281, 721});
+  EXPECT_FALSE(sequence.sample(1).event.upscaling);
+  EXPECT_EQ(sequence.sample(2).event.upscaling, (UpscaleSelection{UpscaleBackend::Fsr, UpscaleMode::Balanced}));
+  EXPECT_FALSE(sequence.sample(3).event.upscaling);
+  EXPECT_EQ(sequence.sample(4).event.upscaling, (UpscaleSelection{UpscaleBackend::Fsr, UpscaleMode::Native}));
+  const auto scaled = fsrRenderExtent(UpscaleMode::Balanced, {1281, 721});
   EXPECT_EQ(scaled.width, 753u);
   EXPECT_EQ(scaled.height, 424u);
-  EXPECT_EQ(fsrRenderExtent(FsrMode::Native, {1281, 721}).height, 721u);
+  EXPECT_EQ(fsrRenderExtent(UpscaleMode::Native, {1281, 721}).height, 721u);
   input["events"][0]["fsr"] = "unknown";
+  EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+}
+
+TEST(TemporalCapture, DlssSelectionRejectsTwoUpscalersInOneEvent) {
+  using namespace container::renderer;
+  auto input = json::parse(R"({"schemaVersion":1,"frames":4,"events":[
+    {"frame":1,"dlss":"quality"},{"frame":2,"fsr":"balanced"},{"frame":4,"dlss":"native"}]})");
+  const CaptureSequence sequence(input);
+  EXPECT_EQ(sequence.sample(1).event.upscaling, (UpscaleSelection{UpscaleBackend::Dlss, UpscaleMode::Quality}));
+  EXPECT_EQ(sequence.sample(2).event.upscaling, (UpscaleSelection{UpscaleBackend::Fsr, UpscaleMode::Balanced}));
+  EXPECT_FALSE(sequence.sample(3).event.upscaling);
+  EXPECT_EQ(sequence.sample(4).event.upscaling, (UpscaleSelection{UpscaleBackend::Dlss, UpscaleMode::Native}));
+  input["events"][0]["dlss"] = 2;
+  EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+  input["events"][0]["dlss"] = "performance";
+  input["events"][0]["fsr"] = "native";
+  EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+}
+
+TEST(TemporalCapture, ReferenceDlssIsAnIndependentExclusiveDisplayBackend) {
+  using container::renderer::UpscaleMode;
+  auto input = json::parse(R"({"schemaVersion":1,"frames":4,"events":[
+    {"frame":1,"referenceDlss":"quality"},{"frame":3,"referenceDlss":"off"}]})");
+  const CaptureSequence sequence(input);
+  EXPECT_EQ(sequence.sample(1).event.referenceDlss, UpscaleMode::Quality);
+  EXPECT_FALSE(sequence.sample(1).event.upscaling);
+  EXPECT_FALSE(sequence.sample(2).event.referenceDlss);
+  EXPECT_EQ(sequence.sample(3).event.referenceDlss, UpscaleMode::Native);
+  for (const auto* backend : {"referenceOidn", "referenceOptix"}) {
+    auto conflict = input;
+    conflict["events"][0][backend] = std::string_view(backend) == "referenceOidn" ? json("off") : json(false);
+    EXPECT_THROW(CaptureSequence{conflict}, std::invalid_argument);
+  }
+  input["events"][0]["referenceDlss"] = "native";
   EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
 }
 
@@ -1034,6 +1086,17 @@ TEST(TemporalCapture, NodeAuthoringRejectsUnknownActionsFieldsMissingNamesAndAmb
       {{"action", "rename"}, {"graphNode", 0}, {"name", "A"}, {"graphIdentity", 7}}}) {
     EXPECT_THROW((void)CaptureSequence(nodeAuthoringCapture(request)), std::invalid_argument);
   }
+}
+
+TEST(TemporalCapture, MakeEditableUsesNodeIdentityWithoutAnAuthoredName) {
+  const auto input = nodeAuthoringCapture({{"action", "make-editable"}, {"sourceNode", 3}});
+  const CaptureSequence sequence(input);
+  ASSERT_TRUE(sequence.sample(2).event.nodeAuthoring);
+  EXPECT_EQ(sequence.sample(2).event.nodeAuthoring->action, "make-editable");
+  EXPECT_EQ(sequence.sample(2).event.nodeAuthoring->sourceNode, 3);
+  EXPECT_FALSE(sequence.sample(3).event.nodeAuthoring);
+  EXPECT_THROW((void)CaptureSequence(nodeAuthoringCapture(
+      {{"action", "make-editable"}, {"graphNode", 1}, {"name", "Unused"}})), std::invalid_argument);
 }
 
 TEST(TemporalCapture, DeleteSubtreeUsesExistingTypedSelectorsWithoutANameAtOnlyItsEventFrame) {

@@ -1,4 +1,5 @@
 #include "Container/renderer/lighting/LightingManager.h"
+#include "Container/app/RendererLightingSettings.h"
 #include "Container/ecs/World.h"
 #include "Container/renderer/deferred/DeferredLightGizmoPlanner.h"
 #include "Container/renderer/deferred/DeferredLightGizmoRecorder.h"
@@ -43,6 +44,8 @@ using container::gpu::kTileSize;
 using container::gpu::LightCullingStats;
 using container::gpu::LightingData;
 using container::gpu::LightingSettings;
+using container::app::RendererLightingSetting;
+using container::app::clampRendererLightingValue;
 using container::gpu::PointLightData;
 using container::gpu::TileCullPushConstants;
 using container::gpu::TileLightGrid;
@@ -1295,20 +1298,20 @@ void LightingManager::setLightingSettings(const LightingSettings &settings) {
   lightingSettings_.intensityScale =
       std::clamp(settings.intensityScale, 0.0f, 16.0f);
   lightingSettings_.directionalIntensity =
-      std::clamp(settings.directionalIntensity, 0.0f, 16.0f);
+      clampRendererLightingValue(RendererLightingSetting::DirectionalIntensity, settings.directionalIntensity);
   lightingSettings_.environmentIntensity =
-      std::clamp(settings.environmentIntensity, 0.0f, 16.0f);
+      clampRendererLightingValue(RendererLightingSetting::EnvironmentIntensity, settings.environmentIntensity);
   const auto bounded = [](float value, float min, float max) {
     return std::isfinite(value) ? std::clamp(value, min, max) : 0.0f;
   };
   lightingSettings_.environment = settings.environment;
   auto& environment = lightingSettings_.environment;
-  environment.yawDegrees = bounded(environment.yawDegrees, -180.0f, 180.0f);
+  environment.yawDegrees = clampRendererLightingValue(RendererLightingSetting::EnvironmentYaw, environment.yawDegrees);
   environment.backgroundBlur = bounded(environment.backgroundBlur, 0.0f, 1.0f);
   for (float& channel : environment.backgroundColor)
     channel = bounded(channel, 0.0f, 1.0f);
   lightingSettings_.bounceIntensity =
-      std::clamp(settings.bounceIntensity, 0.0f, 2.0f);
+      clampRendererLightingValue(RendererLightingSetting::BounceIntensity, settings.bounceIntensity);
   lightingSettings_.localShadowPointBudget =
       std::min(settings.localShadowPointBudget,
                kMaxLocalShadowOmniPointBudget);

@@ -13,6 +13,7 @@ class VulkanDevice;
 }
 
 namespace container::renderer {
+class DeferredRasterFrameGraphContext;
 class FrameResourceManager;
 class ShadowManager;
 class RenderGraphBuilder;
@@ -29,7 +30,7 @@ class VolumetricFogPass {
   void createResources(const std::filesystem::path& shaderRoot, const FrameResourceManager&, VkExtent2D,
       const ShadowManager&, VkDescriptorSetLayout lightLayout);
   [[nodiscard]] bool ready(const FrameRecordParams&) const;
-  void record(VkCommandBuffer, const FrameRecordParams&);
+  void record(VkCommandBuffer, const FrameRecordParams&, bool transparentOitActive);
   void onSubmitted(bool recorded) noexcept;
   [[nodiscard]] VkDeviceSize allocationBytes() const;
   [[nodiscard]] bool historyReprojected() const noexcept;
@@ -39,6 +40,7 @@ class VolumetricFogPass {
   std::unique_ptr<Impl> impl_;
 };
 
-void registerVolumetricFogPass(RenderGraphBuilder&, RenderPassId predecessor);
+void registerVolumetricFogPass(RenderGraphBuilder&, RenderPassId predecessor,
+    const DeferredRasterFrameGraphContext*);
 
 } // namespace container::renderer

@@ -104,8 +104,9 @@ VulkanMemoryManager::VulkanMemoryManager(VkInstance instance,
   info.instance = instance;
   info.physicalDevice = physical_device;
   info.device = device;
-  // The bundled VMA dispatch table supports core entry points through 1.3.
-  // Those entry points are also valid on the required Vulkan 1.4 device.
+  // Keep the allocator on the existing core 1.3 contract after the VMA
+  // upgrade. These entry points remain valid on the required Vulkan 1.4
+  // device; newer optional allocator features are not requested here.
   info.vulkanApiVersion = std::min(vulkan_api_version, VK_API_VERSION_1_3);
   info.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
   info.pVulkanFunctions = &vulkanFunctions;

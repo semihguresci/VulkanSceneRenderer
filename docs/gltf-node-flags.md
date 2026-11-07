@@ -28,8 +28,17 @@ than selecting a synthetic import/editor root. CPU and GPU ID picking use the
 same routing helpers. This does not trace through excluded geometry to find a
 farther eligible hit. The capability registry reports selection and hover as
 partial. The [behavior graph runtime](gltf-interactivity.md) uses the same
-eligible ancestor route for viewport events. Boolean animation-pointer
-channels remain open.
+eligible ancestor route for viewport events.
+
+`KHR_animation_pointer` can animate each local flag through the corresponding
+node extension property. The enclosing extension object must exist and can
+use the default-true value. Animation uses unsigned-byte SCALAR STEP keys.
+Zero means false and a nonzero byte means true. Seeking and playback publish
+flag changes through the same visibility and interaction updates as editor
+edits. Clearing the clip restores the tracked authored flags, including
+defaulted properties. Save retains the pointer channels and uses the same
+Boolean encoding for cross-clip restore tracks. Behavior graphs can also read
+and write the local flags with Boolean sockets. [Behavior graph pointer rules](gltf-interactivity.md)
 
 The hierarchy's Visible, Selectable and Hoverable controls edit local flags.
 Undo/redo retains all three independently; grouped capture edits are one history

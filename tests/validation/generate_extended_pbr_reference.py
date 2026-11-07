@@ -182,7 +182,7 @@ def document():
     return {
         "schemaVersion": 1, "generator": "tests/validation/generate_extended_pbr_reference.py",
         "oracle": "independent binary64 slope-density GGX; separate legacy-compatible cap/Schlick profile",
-        "materialStrideBytes": 1184, "queryStrideBytes": 112, "resultStrideBytes": 320,
+        "materialStrideBytes": 1216, "queryStrideBytes": 112, "resultStrideBytes": 320,
         "textureSampling": "excluded; supplied sampled factors/colors and texture RG frame directions only",
         "absoluteTolerance": 3e-6, "relativeTolerance": 4e-4,
         "cases": [evaluate(case, index) for index, case in enumerate(cases)],

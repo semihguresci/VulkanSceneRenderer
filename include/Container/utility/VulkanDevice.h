@@ -5,6 +5,7 @@
 #include "Container/utility/RayQuerySupport.h"
 #include "Container/utility/VulkanInstance.h"
 
+#include <string>
 #include <vector>
 
 namespace container::gpu {
@@ -63,6 +64,10 @@ class VulkanDevice {
   [[nodiscard]] bool referenceOidnEnabled() const noexcept { return referenceOidnEnabled_; }
   [[nodiscard]] bool referenceOidnCooperativeMatrix() const noexcept { return referenceOidnCooperativeMatrix_; }
   [[nodiscard]] bool fsrUpscalingEnabled() const noexcept { return fsrUpscalingEnabled_; }
+  [[nodiscard]] bool dlssUpscalingEnabled() const noexcept { return dlssUpscalingStatus_.empty(); }
+  [[nodiscard]] const std::string& dlssUpscalingStatus() const noexcept { return dlssUpscalingStatus_; }
+  [[nodiscard]] bool dlssRayReconstructionEnabled() const noexcept { return dlssRayReconstructionStatus_.empty(); }
+  [[nodiscard]] const std::string& dlssRayReconstructionStatus() const noexcept { return dlssRayReconstructionStatus_; }
 
  private:
   bool isDeviceSuitable(VkPhysicalDevice device) const;
@@ -92,6 +97,8 @@ class VulkanDevice {
   bool referenceOidnEnabled_{false};
   bool referenceOidnCooperativeMatrix_{false};
   bool fsrUpscalingEnabled_{false};
+  std::string dlssUpscalingStatus_;
+  std::string dlssRayReconstructionStatus_;
 };
 
 }  // namespace container::gpu

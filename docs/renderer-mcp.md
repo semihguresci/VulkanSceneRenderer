@@ -48,6 +48,12 @@ Queued operations report their progress separately through
 `renderer_get_status`. Lighting edits update the same runtime settings and
 scene-default policy used by the editor.
 
+Lighting ranges come from the same metadata used by the editor sliders, CLI
+parser and lighting manager. Every supplied value must be finite and within its
+inclusive range; a request with any invalid field rejects before any lighting
+change is queued. The CLI applies these checks to `--environment-intensity`,
+`--directional-intensity` and `--environment-yaw` as well.
+
 Recent-log capture starts when the authenticated listener is active. The
 64-entry ring keeps the timestamp, source, severity and a fixed event
 description for each entry. File paths and original log payloads stay in the

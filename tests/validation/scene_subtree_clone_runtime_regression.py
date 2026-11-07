@@ -54,7 +54,7 @@ UNVERIFIED = [
     'Generated inputs/self-check do not establish native rendering or GPU execution.',
     'Fixed inset image regions exclude selection outlines; full-image equality is used only with matching selection.',
     'CPU deformation samples describe bound streams, not direct GPU vertex readback.',
-    'A moved skinned primitive retains the existing explicit export rejection; its live binding-context coverage is separate from normally parented portable skin coverage.',
+    'The continuously varying owner scale is covered by live binding checks. Portable moved skins use a STEP scale with an exact reciprocal curve.',
     'Physics duplication, allocation failure injection and resource leak counts are outside this cohort.',
     'Per-light manual override mutation is unavailable in the capture API; only observable retained/duplicated authored binding and CLI lighting controls are claimed.']
 
@@ -150,7 +150,7 @@ def edited_control(path, copied):
     asset.model['extensionsUsed'] = ['KHR_materials_unlit']; write_asset(asset, path)
 
 
-def dynamic_fixture(path):
+def dynamic_fixture(path, *, stepped_scale=False):
     asset = Asset()
     asset.model['materials'] = [material('Animated morph material', [1., .25, .125]), material('External bystander', [.125, .25, 1.])]
     asset.model['meshes'] = [dict(name='One morph skin', weights=[.15], primitives=[primitive(asset, QUAD, 0, 'skin', morph=True, skin=True)]),
@@ -167,12 +167,13 @@ def dynamic_fixture(path):
         inverseBindMatrices=asset.accessor('MAT4', [translation(-1.).T.reshape(-1).tolist()]))]
     asset.model['scenes'] = [dict(name='Animated clone', nodes=[0, 1, 3, 4])]
     times = asset.accessor('SCALAR', [0., 2.]); samplers, channels = [], []
-    def channel(kind, values, target):
-        samplers.append(dict(input=times, output=asset.accessor(kind, values), interpolation='LINEAR'))
+    def channel(kind, values, target, *, step=False):
+        samplers.append(dict(input=asset.accessor('SCALAR', [0., 1.]) if step else times,
+            output=asset.accessor(kind, values), interpolation='STEP' if step else 'LINEAR'))
         channels.append(dict(sampler=len(samplers)-1, target=target))
     channel('VEC3', [[0., 0., 0.], [.5, .25, 0.]], dict(node=2, path='translation'))
     channel('SCALAR', [.2, .8], dict(node=0, path='weights'))
-    channel('SCALAR', [1., 1.5], dict(path='pointer', extensions={POINTER: dict(pointer='/nodes/0/scale/0')}))
+    channel('SCALAR', [1., 1.5], dict(path='pointer', extensions={POINTER: dict(pointer='/nodes/0/scale/0')}), step=stepped_scale)
     channel('VEC4', [[1., .25, .125, 1.], [.125, .75, 1., 1.]], dict(path='pointer', extensions={POINTER: dict(pointer='/materials/0/pbrMetallicRoughness/baseColorFactor')}))
     channel('SCALAR', [20., 40.], dict(path='pointer', extensions={POINTER: dict(pointer='/extensions/KHR_lights_punctual/lights/0/intensity')}))
     channel('SCALAR', [.7, .9], dict(path='pointer', extensions={POINTER: dict(pointer='/cameras/0/perspective/yfov')}))
@@ -187,22 +188,22 @@ def linear(first, last, time):
     return np.asarray(a+(b-a)*(time/2.), np.float32).astype(float)
 
 
-def dynamic_values(time):
+def dynamic_values(time, *, stepped_scale=False):
     rest = time is None
     return dict(weight=float(np.float32(.15)) if rest else float(linear(.2, .8, time)),
-        scale=1. if rest else float(linear(1., 1.5, time)),
+        scale=1. if rest else (1. if time < 1. else 1.5) if stepped_scale else float(linear(1., 1.5, time)),
         joint=np.asarray([-.25, -.25, 0.]) if rest else linear([0., 0., 0.], [.5, .25, 0.], time),
         color=np.asarray([1., .25, .125, 1.]) if rest else linear([1., .25, .125, 1.], [.125, .75, 1., 1.], time),
         intensity=20. if rest else float(linear(20., 40., time)), fov=.7 if rest else float(linear(.7, .9, time)))
 
 
-def dynamic_geometry(time, *, binding=False, copied=False, offset=False):
-    values = dynamic_values(time)
+def dynamic_geometry(time, *, binding=False, copied=False, offset=False, stepped_scale=False):
+    values = dynamic_values(time, stepped_scale=stepped_scale)
     owner = translation(-1.25)@np.diag([values['scale'], 1., 1., 1.])
     joint_world = translation(0., .25)@translation(*values['joint'])
     positions = QUAD+np.asarray([.5, .125, 0.])*values['weight']
     local = transformed(positions, np.linalg.inv(owner)@joint_world@translation(-1.))
-    draw_model = translation(-1.25)@np.diag([dynamic_values(.5)['scale'], 1., 1., 1.]) if binding else owner
+    draw_model = translation(-1.25)@np.diag([dynamic_values(.5, stepped_scale=stepped_scale)['scale'], 1., 1., 1.]) if binding else owner
     result = [(local, draw_model, transformed(local, draw_model), values['color'])]
     if copied:
         if binding:
@@ -215,10 +216,10 @@ def dynamic_geometry(time, *, binding=False, copied=False, offset=False):
     return result
 
 
-def dynamic_control(path, time, *, binding=False, copied=False, offset=False):
+def dynamic_control(path, time, *, binding=False, copied=False, offset=False, stepped_scale=False):
     asset = Asset(); values = dynamic_values(time)
     asset.model['materials'] = [material('Baked animated', values['color'][:3].tolist()), material('External bystander', [.125, .25, 1.])]
-    worlds = [(row[2], 0) for row in dynamic_geometry(time, binding=binding, copied=copied, offset=offset)]
+    worlds = [(row[2], 0) for row in dynamic_geometry(time, binding=binding, copied=copied, offset=offset, stepped_scale=stepped_scale)]
     worlds.append((QUAD+[2., -.75, 0.], 1))
     asset.model['meshes'] = [dict(primitives=[primitive(asset, points, mat, 'literal')]) for points, mat in worlds]
     asset.model['nodes'] = [dict(name='Literal skinned world '+str(i), mesh=i) for i in range(len(worlds))]
@@ -304,6 +305,19 @@ def generate(output, cohort):
         duplicate(2, graph=0, name='Animated copy'), transform_event(3, 10, translation(OFFSET, .25))], camera=False)
     scripts['animated-reload'] = script(39, [('zero', 13), ('midpoint', 26), ('one', 39)],
         [dict(frame=1, animationPlaying=False, animationTime=0.), dict(frame=14, animationTime=.5), dict(frame=27, animationTime=1.)], camera=False)
+    if cohort == 'binding':
+        for name in ('binding-portable', 'binding-portable-control'):
+            sources[name] = output/'sources'/(name+'.gltf')
+        dynamic_fixture(sources['binding-portable'], stepped_scale=True)
+        controls['binding-portable-control'] = dynamic_control(sources['binding-portable-control'], 1.,
+            binding=True, copied=True, offset=True, stepped_scale=True)
+        scripts['binding-portable'] = script(13, [('saved', 13)], [dict(frame=1, animationPlaying=False),
+            dict(frame=2, nodeAuthoring=dict(action='create-empty', graphNode=7, name='Binding empty')),
+            dict(frame=3, nodeReparent=dict(node=dict(graphNode=1), parent=dict(graphNode=8))),
+            duplicate(4, graph=8, name='Binding copy'), transform_event(5, 13, translation(OFFSET)),
+            dict(frame=6, animationTime=1.)], camera=False)
+        scripts['binding-portable-reload'] = script(13, [('reloaded', 13)],
+            [dict(frame=1, animationPlaying=False, animationTime=1.)], camera=False)
     for name, value in scripts.items(): document(output/(name+'.json'), value)
     immutable(output/'vk_layer_settings.txt', b'khronos_validation.validate_sync = true\n')
     files = [*sources.values(), *(output/(name+'.json') for name in scripts), output/'vk_layer_settings.txt']
@@ -491,14 +505,15 @@ def animation_spec(name):
     return time, copied, offset
 
 
-def check_deformation(state, time, *, copied, offset, binding=False, owners=(0, 5)):
+def check_deformation(state, time, *, copied, offset, binding=False, owners=(0, 5), stepped_scale=False):
     deformation = state['gltfDeformation']; count = 1+int(copied)
     require(deformation['active'] and deformation['gpuReady'] and deformation['currentBoundToGpu'] and deformation['previousBoundToGpu'] and
         deformation['instanceCount'] == count and deformation['sourceVertexCount'] == 8 and
         deformation['expandedVertexCount'] == 8+4*count and deformation['expandedIndexCount'] == 12+6*count,
         'Incorrect complete-frame source prefix/independent skin instance allocation')
     samples = deformation['instances']; require(len(samples) == count, 'Missing/extra bound deformation samples')
-    expected = dynamic_geometry(time, copied=copied, offset=offset, binding=binding); values = dynamic_values(time)
+    expected = dynamic_geometry(time, copied=copied, offset=offset, binding=binding, stepped_scale=stepped_scale)
+    values = dynamic_values(time)
     by_owner = {row['sourceNodeIndex']: row for row in samples}
     require(set(by_owner) == set(owners[:count]) and len(by_owner) == len(samples), 'Cloned skin aliases an original source owner')
     vertex_ranges, index_ranges = [], []
@@ -625,9 +640,9 @@ def visible_regions(record, centers):
     return dict(passed=True, minimumBackgroundDelta=10., measuredDeltas=deltas)
 
 
-def dynamic_regions(time, *, binding=False, copied=False, offset=False):
+def dynamic_regions(time, *, binding=False, copied=False, offset=False, stepped_scale=False):
     values = dynamic_values(time); focal = HEIGHT/(12.*math.tan(values['fov']/2.)); regions = []
-    for _, _, points, _ in dynamic_geometry(time, binding=binding, copied=copied, offset=offset):
+    for _, _, points, _ in dynamic_geometry(time, binding=binding, copied=copied, offset=offset, stepped_scale=stepped_scale):
         center = points.mean(axis=0); x, y = WIDTH/2+center[0]*focal, HEIGHT/2-center[1]*focal
         regions.append([int(x)-4, int(y)-4, int(x)+5, int(y)+5])
     # Include bystander interior and a background witness; camera projection is already numeric.
@@ -801,6 +816,31 @@ def reload_animated_state(state, inspection, time, baseline):
         savedFileDefaults='midpoint; explicit t=0/.5/1 seeks verify original curves')
 
 
+def inspect_binding_export(path):
+    model, _, meshes = mesh_rows(path)
+    skin_nodes = [row['node'] for row in meshes if 'skin' in model['nodes'][row['node']]]
+    require(len(meshes) == 3 and len(skin_nodes) == 2, 'Portable moved skins lost an original, clone or bystander draw')
+    skins = [model['skins'][model['nodes'][node]['skin']] for node in skin_nodes]
+    require(all(len(skin['joints']) == 1 for skin in skins) and skins[0]['joints'] != skins[1]['joints'],
+        'Portable moved skins share a compensated joint')
+    require(len(model['animations']) == 1, 'Portable moved skins lost the source clip')
+    animation = model['animations'][0]; inverse_targets = set()
+    for channel in animation['channels']:
+        key = node_channel_key(channel)
+        if key[0] != 'node': continue
+        require('matrix' not in model['nodes'][key[1]], 'Animated portable node retained a matrix')
+        if key[2] != 'scale/0' or not model['nodes'][key[1]].get('name', '').endswith(' inverse scale'): continue
+        sampler = animation['samplers'][channel['sampler']]
+        require(sampler.get('interpolation') == 'STEP', 'Portable inverse scale lost STEP interpolation')
+        close(decode_accessor(path, sampler['input']).reshape(-1), [0., 1.], 'inverse scale key times', 0.)
+        close(decode_accessor(path, sampler['output']).reshape(-1), [1., 2./3.], 'inverse scale values')
+        inverse_targets.add(key[1])
+    require(len(inverse_targets) == 2, 'Portable original and duplicate each need an inverse scale track')
+    camera = next(i for i, node in enumerate(model['nodes']) if node.get('name') == 'Selected camera')
+    return dict(passed=True, path=str(path), sha256=sha(path), skinNodes=skin_nodes,
+        inverseScaleTargets=sorted(inverse_targets), cameraSourceNode=camera)
+
+
 def ray_state(state, prepared, name, previous):
     # Same edited graph, without the later transform/childless-owner steps.
     result = prepared_state(state, history=(8, int(name == 'undo'))) if name in ('prepared', 'undo') else edited_state(state, prepared, 'copy')
@@ -844,7 +884,7 @@ def require_fresh_capture(target):
 
 
 def launch(args, output, report, persist, verify, technique, name, source, labels, *, sequence_path=None,
-           save=None, animated=False, camera=None, ray=False, export_rejected=False, sun=0.):
+           save=None, animated=False, camera=None, ray=False, sun=0.):
     verify(); target = output/'captures'/(technique+'-'+name); target.parent.mkdir(parents=True, exist_ok=True)
     require_fresh_capture(target)
     image, log = target.with_suffix('.png'), target.with_suffix('.log')
@@ -863,21 +903,15 @@ def launch(args, output, report, persist, verify, technique, name, source, label
     if save:
         save.parent.mkdir(parents=True, exist_ok=True); require(not save.exists(), 'Refusing to overwrite exported clone evidence')
         command += ['--save-scene', str(save)]
-    row = dict(name=name, technique=technique, command=command, log=str(log), completed=False, expectedExportRejection=export_rejected)
+    row = dict(name=name, technique=technique, command=command, log=str(log), completed=False)
     report['processes'].append(row); report['rendererExecuted'] = True; persist()
     with log.open('x', encoding='utf-8') as stream:
         process = subprocess.run(command, cwd=args.renderer.resolve().parent, stdout=stream, stderr=subprocess.STDOUT, timeout=args.timeout,
             env=dict(os.environ, VK_LAYER_SETTINGS_PATH=str(output)), creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     row.update(returnCode=process.returncode, completed=True, logSha256=sha(log)); persist()
     text = log.read_text(encoding='utf-8', errors='replace'); require(not validation_log_error(text), 'Vulkan validation failed: '+str(log))
-    if export_rejected:
-        require(process.returncode != 0 and 'post-skin primitive transforms or reparenting require baking before export' in text,
-            'Moved skinned primitive did not retain its expected explicit export guard: '+str(log))
-        require(not save.exists(), 'Unsupported post-skin export published a scene file')
-    else: require(process.returncode == 0, 'Native clone process failed: '+str(log))
+    require(process.returncode == 0, 'Native clone process failed: '+str(log))
     records = {}
-    # The expected save rejection happens after the rendering loop has completed,
-    # including its final screenshot rename, unlike a rejected capture event.
     for label, frame in labels:
         sampled = image if frame == labels[-1][1] else image.with_name(image.stem+f'.frame-{frame:04d}.png')
         telemetry = sampled.with_suffix('.telemetry.json'); require(sampled.is_file() and telemetry.is_file(), 'Missing clone sample: '+str(sampled))
@@ -895,8 +929,8 @@ def launch(args, output, report, persist, verify, technique, name, source, label
     persist(); verify(); return records
 
 
-COUNTS = {'edited': (22, 6), 'primitive': (6, 1), 'animated': (25, 11), 'binding': (19, 8), 'ray-ddgi': (4, 1)}
-CHECK_COUNTS = {'edited': (20, 19, 2), 'primitive': (6, 3, 0), 'animated': (18, 21, 2), 'binding': (12, 15, 1), 'ray-ddgi': (4, 0, 0)}
+COUNTS = {'edited': (22, 6), 'primitive': (6, 1), 'animated': (25, 11), 'binding': (24, 13), 'ray-ddgi': (4, 1)}
+CHECK_COUNTS = {'edited': (20, 19, 2), 'primitive': (6, 3, 0), 'animated': (18, 21, 2), 'binding': (14, 20, 2), 'ray-ddgi': (4, 0, 0)}
 
 
 def run_native(args, output, plan, report):
@@ -976,9 +1010,9 @@ def run_native(args, output, plan, report):
                 key = kind+'-control-'+name
                 controls[name] = launch(args, output, report, persist, verify, technique, key, sources[key], [(name, 13)], camera=plan['controlCameraNodes'][key])[name]
             labels = [('loaded', 13), ('before', 26)]+[(name, frame+13) for name, frame in ANIMATED[1:]] if binding else ANIMATED
-            glb = output/'exports'/technique/'binary'/('binding-rejected.glb' if binding else 'animated.glb')
-            records = launch(args, output, report, persist, verify, technique, kind, sources['animated'], labels, sequence_path=scripts[kind], save=glb,
-                animated=True, camera=3, export_rejected=binding)
+            glb = output/'exports'/technique/'binary'/'animated.glb'
+            records = launch(args, output, report, persist, verify, technique, kind, sources['animated'], labels,
+                sequence_path=scripts[kind], save=None if binding else glb, animated=True, camera=3)
             for name, _ in labels:
                 check(kind+'-'+name, technique, animated_state(records[name]['state'], records[name if name == 'loaded' else 'before']['state'], name, binding=binding))
                 if name == 'loaded': continue
@@ -991,8 +1025,30 @@ def run_native(args, output, plan, report):
             check(kind+'-undo-clock-rewind', technique, image_compare(records['before'], records['undo-clone']), pixels=True)
             check(kind+'-redo-clock-restore', technique, image_compare(records['seek'], records['redo-transform']), pixels=True)
             if binding:
-                report['exports'].append(dict(technique=technique, rejected=True, expectedGuard='post-skin primitive transforms or reparenting require baking before export',
-                    postFailureStateObserved=False, portabilityClaim=False)); persist(); continue
+                control = 'binding-portable-control'
+                baked = launch(args, output, report, persist, verify, technique, control, sources[control], [(control, 13)],
+                    camera=plan['controlCameraNodes'][control])[control]
+                regions = dynamic_regions(1., binding=True, copied=True, offset=True, stepped_scale=True)
+                check('binding-portable-control-visible', technique,
+                    visible_regions(baked, [((left+right)//2, (top+bottom)//2) for left, top, right, bottom in regions[:-1]]), pixels=True)
+                for suffix in ('glb', 'gltf'):
+                    exported = output/'exports'/technique/suffix/('binding.'+suffix)
+                    saved = launch(args, output, report, persist, verify, technique, 'binding-save-'+suffix, sources['binding-portable'],
+                        [('saved', 13)], sequence_path=scripts['binding-portable'], save=exported, animated=True, camera=3)['saved']
+                    check('binding-save-'+suffix+'-independent', technique, image_compare(saved, baked, regions=regions), pixels=True)
+                    inspection = inspect_binding_export(exported)
+                    report['exports'].append(dict(technique=technique, format=suffix, **inspection)); persist()
+                    copied, files = portable_copy(exported, output/'portable'/technique/suffix)
+                    report['portableCopies'].append(dict(document=str(copied), files=files)); persist()
+                    reloaded = launch(args, output, report, persist, verify, technique, 'binding-reload-'+suffix, copied,
+                        [('reloaded', 13)], sequence_path=scripts['binding-portable-reload'], animated=True,
+                        camera=inspection['cameraSourceNode'])['reloaded']
+                    check_effective_animation(reloaded['state'], 1., camera=inspection['cameraSourceNode'], copied=True)
+                    check_deformation(reloaded['state'], 1., copied=True, offset=True, binding=True, stepped_scale=True,
+                        owners=tuple(inspection['skinNodes']))
+                    check('binding-reload-'+suffix, technique, dict(passed=True, deformedOwners=2, time=1., reciprocalStep=True))
+                    check('binding-reload-'+suffix+'-independent', technique, image_compare(reloaded, baked, regions=regions), pixels=True)
+                continue
             ascii_path = output/'exports'/technique/'ascii'/'animated.gltf'
             ascii_records = launch(args, output, report, persist, verify, technique, 'animated-ascii', sources['animated'], [('ascii', 13)],
                 sequence_path=scripts['animated-ascii'], save=ascii_path, animated=True, camera=3)
@@ -1223,7 +1279,7 @@ def self_check():
                 ('export-lost-light-alias-track', lambda m: m['animations'][0]['channels'].pop())]:
             bad = copy.deepcopy(original_export); mutate(bad); path = root/(name+'.gltf'); document(path, bad)
             reject(name, lambda: inspect_animated_export(path, source))
-        require(COUNTS == {'edited': (22, 6), 'primitive': (6, 1), 'animated': (25, 11), 'binding': (19, 8), 'ray-ddgi': (4, 1)}, 'Capture completeness constants changed')
+        require(COUNTS == {'edited': (22, 6), 'primitive': (6, 1), 'animated': (25, 11), 'binding': (24, 13), 'ray-ddgi': (4, 1)}, 'Capture completeness constants changed')
     return dict(passed=True, rendererExecuted=False, deterministicInputs=True, literalGraphWorldAndUINT32=True,
         staticHistoryStates=len(EDITED), independentDeformationStates=8, verifierMutationsRejected=rejected,
         syntheticExportInspections=2,

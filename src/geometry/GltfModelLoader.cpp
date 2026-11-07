@@ -6,6 +6,7 @@
 #include <Container/geometry/GltfIesProfiles.h>
 #include <Container/geometry/GltfLinkedAssets.h>
 #include <Container/geometry/GltfInteractivity.h>
+#include <Container/geometry/GltfMerge.h>
 #include <Container/geometry/GltfXmpMetadata.h>
 
 #include <Container/geometry/Mesh.h>
@@ -33,6 +34,7 @@ extern "C" {
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -890,6 +892,47 @@ AssetRequirements sourceRequirements(const nlohmann::json& json) {
   return requirements;
 }
 
+bool omitUnsupportedOptionalCompositionExtensions(nlohmann::json& document,
+    AssetRequirements& requirements, std::span<const std::string_view> unavailable) {
+  const std::set<std::string_view> required(requirements.extensionsRequired.begin(),
+                                             requirements.extensionsRequired.end());
+  std::set<std::string> omitted;
+  for (const auto& name : requirements.extensionsUsed) {
+    if (required.contains(name)) continue;
+    const bool unavailableInComposition = std::ranges::find(unavailable, name) != unavailable.end();
+    if (!unavailableInComposition && (GltfMergeSupportsExtension(name) ||
+        extensionCapability(name))) continue;
+    if (!omitted.insert(name).second)
+      throw std::invalid_argument("duplicate optional extension declaration '" + name + "'");
+  }
+  if (omitted.empty()) return false;
+
+  std::erase_if(requirements.extensionsUsed, [&](const auto& name) { return omitted.contains(name); });
+  document["extensionsUsed"] = std::move(requirements.extensionsUsed);
+
+  // Work on the detached source JSON, not the archive. Remove only the
+  // declared extensions; extras may contain arbitrary application metadata.
+  std::vector<nlohmann::json*> pending{&document};
+  while (!pending.empty()) {
+    auto& value = *pending.back();
+    pending.pop_back();
+    if (value.is_object()) {
+      if (const auto extensions = value.find("extensions"); extensions != value.end() && extensions->is_object()) {
+        for (auto entry = extensions->begin(); entry != extensions->end();) {
+          if (omitted.contains(entry.key())) entry = extensions->erase(entry);
+          else ++entry;
+        }
+      }
+      for (auto entry = value.begin(); entry != value.end(); ++entry)
+        if (entry.key() != "extras" && entry->is_structured()) pending.push_back(&*entry);
+    } else if (value.is_array()) {
+      for (auto& entry : value)
+        if (entry.is_structured()) pending.push_back(&entry);
+    }
+  }
+  return true;
+}
+
 // Keep hierarchy indices in their original JSON representation until they are
 // checked. TinyGLTF stores them as int, so validating its model alone cannot
 // detect an oversized source index that narrowed into an otherwise valid one.
@@ -1277,7 +1320,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
           remainingBytes -= bytes;
           auto* linkedComposition = linkedContext ? linkedContext->composition : nullptr;
           if (sourceRead && linkedComposition && !linkedComposition->source.empty())
-            linkedComposition->observe(filePath, *output);
+            linkedContext->observe(filePath, *output);
           if (!sourceRead) {
             try {
               auto json = parseSourceJson(*output, isBinaryGltf(path));
@@ -1298,9 +1341,12 @@ tinygltf::Model loadGltfModel(const std::string& path,
               if (linkedComposition) {
                 if (!linked.nodeFiles.empty() && linkedComposition->source.empty())
                   linkedComposition->source = filePath;
-                if (!linkedComposition->source.empty()) linkedComposition->observe(filePath, *output);
+                if (!linkedComposition->source.empty()) linkedContext->observe(filePath, *output);
               }
               const bool normalizedLinkedManifest = linked.normalized;
+              const bool linkedChild = linkedContext && linkedContext->child;
+              const bool composing = options.mergeInput || linkedChild ||
+                  std::ranges::any_of(linked.nodeFiles, [](int file) { return file >= 0; });
               if (normalizedLinkedManifest) {
                 if (!linkedManifest || !options.decodeImages)
                   throw std::invalid_argument("linked glTF requires retained image and scene loading");
@@ -1309,8 +1355,13 @@ tinygltf::Model loadGltfModel(const std::string& path,
               const auto experimental = options.enableExperimentalMaterials
                   ? std::span<const std::string_view>(kGltfExperimentalMaterialExtensions)
                   : std::span<const std::string_view>{};
-              auto validation = validateCapabilities(sourceRequirements(json), path,
-                  options.unavailableRuntimeExtensions, experimental);
+              std::vector<std::string_view> compositionUnavailable;
+              if (composing) compositionUnavailable.push_back(kGltfOpacityMicromapExtension);
+              if (linkedChild) compositionUnavailable.push_back(kGltfInteractivityExtension);
+              auto unavailable = options.unavailableRuntimeExtensions;
+              for (const auto name : compositionUnavailable) unavailable.emplace_back(name);
+              auto requirements = sourceRequirements(json);
+              auto validation = validateCapabilities(requirements, path, unavailable, experimental);
               if (normalizedLinkedManifest)
                 validation.diagnostics.push_back({CapabilitySeverity::Warning, "experimental_linked_assets", path,
                     "Using the experimental URI-only glTF 2.1 linked asset profile"});
@@ -1342,6 +1393,8 @@ tinygltf::Model loadGltfModel(const std::string& path,
               const auto experimentalMaterialBytes = options.enableExperimentalMaterials
                   ? ValidateGltfExperimentalMaterialsJson(json) : uint64_t{};
               imageSources = SelectTextureImageSources(json);
+              const bool omittedOptional = composing &&
+                  omitUnsupportedOptionalCompositionExtensions(json, requirements, compositionUnavailable);
               const auto instancing = ValidateMeshGpuInstancingJson(json, options.instancing);
               xmp.emplace(json);
               for (const auto& warning : xmp->warnings()) {
@@ -1354,7 +1407,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
                 const std::string prefix = "__container_gltf_" + std::to_string(
                     std::chrono::steady_clock::now().time_since_epoch().count()) + "_" +
                     std::to_string(sequence.fetch_add(1)) + "_";
-                bool rewritten = xmp->rewroteManifest() || normalizedLinkedManifest || discardedMicromaps;
+                bool rewritten = xmp->rewroteManifest() || normalizedLinkedManifest || discardedMicromaps || omittedOptional;
                 if (linkedContext) {
                   for (const auto* table : {"buffers", "images"}) {
                     auto records = json.find(table);
@@ -1565,7 +1618,8 @@ tinygltf::Model loadGltfModel(const std::string& path,
 
 void discardOpacityMicromapMetadata(tinygltf::Model& model) {
   const std::string extension(kGltfOpacityMicromapExtension);
-  if (model.extensions.erase(extension)) model.extensions_json_string.clear();
+  if (model.extensions.erase(extension) && !model.extensions.contains(kGltfXmpExtension))
+    model.extensions_json_string.clear();
   std::erase(model.extensionsUsed, extension);
   std::erase(model.extensionsRequired, extension);
   for (auto& mesh : model.meshes)
@@ -1589,8 +1643,6 @@ tinygltf::Model loadGltfComposition(const std::string& path, const LoadOptions& 
     const auto source = context.source.generic_u8string();
     result.model = loadGltfModel(std::string(source.begin(), source.end()), bounded,
         diagnostics ? &documentDiagnostics : nullptr, &context, &result.manifest, &remaining);
-    // The linked-assets flattener changes buffer-view and accessor indices.
-    discardOpacityMicromapMetadata(result.model);
     if (diagnostics)
       diagnostics->insert(diagnostics->end(), std::make_move_iterator(documentDiagnostics.begin()),
                           std::make_move_iterator(documentDiagnostics.end()));
@@ -1621,7 +1673,7 @@ GltfLoadResult LoadModelWithSource(const std::string& path,
   auto gltfModel = loadGltfComposition(path, options, &diagnostics, linked.get());
   try {
     GltfOpacityMicromapAssets micromaps;
-    if (options.enableOpacityMicromaps && !options.enableLinkedAssets)
+    if (options.enableOpacityMicromaps && !options.mergeInput && (!linked || linked->placements.empty()))
       micromaps = ParseGltfOpacityMicromaps(gltfModel);
     auto meshes = parseMeshes(gltfModel, micromaps);
     if (meshes.empty()) {

@@ -1,5 +1,6 @@
 #include "brdf_common.slang"
 #include "lighting_structs.slang"
+#include "oit_common.slang"
 
 #if defined(FOG_INJECT)
 #define injectFog computeMain
@@ -18,7 +19,7 @@ struct FogFrameData
     uint4 grid;       // x, y, z slice counts, frame ordinal
     uint4 viewport;   // width, height, display mode, local light limit
     float4 medium;    // extinction, albedo, HG g, view-space distance limit
-    float4 temporal;  // history blend, near plane, orthographic, reserved
+    float4 temporal;  // history blend, near plane, orthographic, transparent OIT active
 };
 
 [[vk::binding(0, 0)]] ConstantBuffer<FogFrameData> fog;
@@ -27,14 +28,19 @@ struct FogFrameData
 [[vk::binding(3, 0)]] StructuredBuffer<float4> previousFroxels;
 [[vk::binding(4, 0)]] RWStructuredBuffer<float4> currentFroxels;
 [[vk::binding(5, 0)]] RWStructuredBuffer<float4> cumulativeFroxels;
+[[vk::binding(6, 0)]] [[vk::image_format("r32ui")]] RWTexture2D<uint> oitHeads;
+[[vk::binding(7, 0)]] RWStructuredBuffer<TransparentNode> oitNodes;
+[[vk::binding(8, 0)]] ConstantBuffer<OitMetadataBuffer> oitMetadata;
 [[vk::binding(0, 1)]] ConstantBuffer<LightingBuffer> lighting;
 [[vk::binding(1, 1)]] StructuredBuffer<PointLightData> pointLights;
+[[vk::binding(2, 1)]] StructuredBuffer<AreaLightData> areaLights;
 
 // Reuse the same raster-atlas visibility as the sparse-volume route. These
 // helpers avoid surface-normal bias and use a four-tap reverse-Z comparison.
 #define camera fog.cameraData
 #include "openvdb_geometry_shadow.slang"
 #undef camera
+#include "volume_area_light_common.slang"
 
 uint FroxelIndex(uint3 coordinate)
 {
@@ -83,6 +89,42 @@ float FogPhase(float cosine)
     return 0.07957747155 * (1.0 - g * g) * rsqrt(denominator) / denominator;
 }
 
+float3 FogAreaRadiance(float3 position, float3 viewRay)
+{
+    float3 result = 0.0.xxx;
+    // Keep the quadrature budget proportional to the punctual-light budget.
+    uint count = min(lighting.areaLightCount,
+        min(VOLUME_MAX_AREA_LIGHTS, fog.viewport.w / VOLUME_AREA_LIGHT_SAMPLES));
+    [loop] for (uint index = 0u; index < count; ++index)
+    {
+        AreaLightData light = areaLights[index];
+        if (!AreaLightHasRenderableRadiance(light) || !all(isfinite(light.positionRange)) ||
+            !all(isfinite(light.directionType)) || !all(isfinite(light.tangentHalfSize)) ||
+            !all(isfinite(light.bitangentHalfSize))) continue;
+        AreaLightFrame frame = BuildAreaLightFrame(light);
+        if (!isfinite(frame.area) || frame.area <= 0.0) continue;
+        float solidAngle = 0.0;
+        float phaseMass = 0.0;
+        [unroll] for (uint sample = 0u; sample < VOLUME_AREA_LIGHT_SAMPLES; ++sample)
+        {
+            float3 samplePosition = VolumeAreaSamplePosition(frame, sample);
+            float3 towardLight;
+            float weight = AreaLightPositionContributionWeight(light, frame, position, samplePosition,
+                1.0 / float(VOLUME_AREA_LIGHT_SAMPLES), towardLight);
+            if (!isfinite(weight) || weight <= 0.0) continue;
+            solidAngle += weight;
+            phaseMass += weight * FogPhase(dot(towardLight, viewRay));
+        }
+        if (!isfinite(solidAngle) || solidAngle <= 0.0 || !isfinite(phaseMass)) continue;
+        // A planar emitter subtends at most a hemisphere. Bound unresolved
+        // near-field quadrature and the integral of the normalized phase.
+        phaseMass = saturate(phaseMass * min(1.0, (2.0 * PI) / solidAngle));
+        float3 radiance = max(light.colorIntensity.rgb, 0.0.xxx) * max(light.colorIntensity.a, 0.0);
+        result += radiance * phaseMass * VolumeAreaGeometryVisibility(position, index, light, frame);
+    }
+    return result;
+}
+
 float3 IncidentFogRadiance(float3 position, float3 viewRay)
 {
     float3 lightDirection = SafeNormalize(-lighting.directionalDirection.xyz, float3(0.0, 1.0, 0.0));
@@ -108,6 +150,7 @@ float3 IncidentFogRadiance(float3 position, float3 viewRay)
         float3 energy = max(light.colorIntensity.rgb, 0.0.xxx) * light.colorIntensity.a;
         radiance += energy * attenuation * FogPhase(dot(towardLight, viewRay)) * VolumeLocalGeometryVisibility(position, index, light);
     }
+    radiance += FogAreaRadiance(position, viewRay);
     return all(isfinite(radiance)) ? radiance : 0.0.xxx;
 }
 
@@ -210,6 +253,36 @@ float3 PartialFog(uint2 coordinate, uint z, float stepLength)
     return AdvanceFog(accumulated, currentFroxels[FroxelIndex(uint3(coordinate, z))], stepLength).rgb;
 }
 
+float FogViewDepth(float2 uv, float depth)
+{
+    float3 position;
+    if (depth > 0.0 && depth <= 1.0 && TryReconstructWorldPosition(uv, depth, fog.cameraData.inverseViewProj, position))
+        return clamp(dot(position - fog.cameraData.cameraWorldPosition.xyz, fog.cameraData.cameraForward.xyz),
+                     0.0, fog.medium.w);
+    return fog.medium.w;
+}
+
+struct FogColumns
+{
+    uint2 lo;
+    uint2 hi;
+    float2 weights;
+};
+
+float3 FoggedColor(float3 source, float viewDepth, float distancePerViewDepth, FogColumns columns)
+{
+    float transmittance = exp(-fog.medium.x * viewDepth * distancePerViewDepth);
+    if (fog.viewport.z == 3u) return transmittance.xxx;
+    uint z = min(uint(FogSliceCoordinate(viewDepth)), fog.grid.z - 1u);
+    float partialLength = max(viewDepth - FogSliceDepth(float(z)), 0.0) * distancePerViewDepth;
+    uint2 lo = columns.lo, hi = columns.hi;
+    float2 w = columns.weights;
+    float3 a = lerp(PartialFog(lo, z, partialLength), PartialFog(uint2(hi.x, lo.y), z, partialLength), w.x);
+    float3 b = lerp(PartialFog(uint2(lo.x, hi.y), z, partialLength), PartialFog(hi, z, partialLength), w.x);
+    float3 scatter = lerp(a, b, w.y);
+    return fog.viewport.z == 4u ? scatter : source * transmittance + scatter;
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void compositeFog(uint3 id : SV_DispatchThreadID)
@@ -218,25 +291,28 @@ void compositeFog(uint3 id : SV_DispatchThreadID)
     float2 uv = (float2(id.xy) + 0.5.xx) / float2(fog.viewport.xy);
     FogRay ray;
     if (!MakeFogRay(uv, ray)) return;
-    float depth = sceneDepth.Load(int3(id.xy, 0));
-    float viewDepth = fog.medium.w;
-    float3 position;
-    if (depth > 0.0 && depth <= 1.0 && TryReconstructWorldPosition(uv, depth, fog.cameraData.inverseViewProj, position))
-        viewDepth = clamp(dot(position - fog.cameraData.cameraWorldPosition.xyz, fog.cameraData.cameraForward.xyz),
-                          0.0, fog.medium.w);
-    uint z = min(uint(FogSliceCoordinate(viewDepth)), fog.grid.z - 1u);
-    float partialLength = max(viewDepth - FogSliceDepth(float(z)), 0.0) * ray.distancePerViewDepth;
     float2 coordinate = clamp(uv * float2(fog.grid.xy) - 0.5.xx, 0.0.xx, float2(fog.grid.xy - 1u));
-    uint2 lo = uint2(coordinate);
-    uint2 hi = min(lo + 1u, fog.grid.xy - 1u);
-    float2 w = frac(coordinate);
-    float3 a = lerp(PartialFog(lo, z, partialLength), PartialFog(uint2(hi.x, lo.y), z, partialLength), w.x);
-    float3 b = lerp(PartialFog(uint2(lo.x, hi.y), z, partialLength), PartialFog(hi, z, partialLength), w.x);
-    float3 scatter = lerp(a, b, w.y);
-    float transmittance = exp(-fog.medium.x * viewDepth * ray.distancePerViewDepth);
+    FogColumns columns;
+    columns.lo = uint2(coordinate);
+    columns.hi = min(columns.lo + 1u, fog.grid.xy - 1u);
+    columns.weights = frac(coordinate);
     float4 source = sceneColor[id.xy];
-    if (fog.viewport.z == 3u) source.rgb = transmittance.xxx;
-    else if (fog.viewport.z == 4u) source.rgb = scatter;
-    else source.rgb = source.rgb * transmittance + scatter;
+    float viewDepth = FogViewDepth(uv, sceneDepth.Load(int3(id.xy, 0)));
+    source.rgb = FoggedColor(source.rgb, viewDepth, ray.distancePerViewDepth, columns);
     sceneColor[id.xy] = source;
+
+    if (fog.temporal.w == 0.0 || id.x >= oitMetadata.viewportWidth || id.y >= oitMetadata.viewportHeight)
+        return;
+
+    // Each node belongs to one pixel. Match the resolver's traversal limit
+    // and preserve alpha so standard over blends fog to each visible depth.
+    uint current = oitHeads[id.xy];
+    [loop] for (uint i = 0u; i < MAX_OIT_NODES_PER_PIXEL && current < oitMetadata.nodeCapacity; ++i)
+    {
+        TransparentNode node = oitNodes[current];
+        float nodeDepth = FogViewDepth(uv, node.depth);
+        node.color.rgb = FoggedColor(node.color.rgb, nodeDepth, ray.distancePerViewDepth, columns);
+        oitNodes[current].color = node.color;
+        current = node.next;
+    }
 }

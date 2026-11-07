@@ -4,8 +4,6 @@
 #include <Container/utility/Material.h>
 #include <Container/utility/SceneGraph.h>
 
-#include <glm/gtc/quaternion.hpp>
-
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -13,54 +11,62 @@
 #include <utility>
 
 namespace container::geometry::gltf {
-namespace {
-glm::mat4 localTransform(const tinygltf::Node& node) {
-  if (!node.matrix.empty()) {
-    if (node.matrix.size() != 16) throw std::invalid_argument("invalid animated node matrix size");
-    glm::mat4 matrix(1);
-    for (int i = 0; i < 16; ++i) matrix[i/4][i%4] = static_cast<float>(node.matrix[static_cast<size_t>(i)]);
-    return matrix;
-  }
-  glm::vec3 translation(0), scale(1);
-  glm::quat rotation(1,0,0,0);
-  if (!node.translation.empty()) {
-    if (node.translation.size() != 3) throw std::invalid_argument("invalid animated translation size");
-    for (int i = 0; i < 3; ++i) translation[i] = static_cast<float>(node.translation[static_cast<size_t>(i)]);
-  }
-  if (!node.scale.empty()) {
-    if (node.scale.size() != 3) throw std::invalid_argument("invalid animated scale size");
-    for (int i = 0; i < 3; ++i) scale[i] = static_cast<float>(node.scale[static_cast<size_t>(i)]);
-  }
-  if (!node.rotation.empty()) {
-    if (node.rotation.size() != 4) throw std::invalid_argument("invalid animated rotation size");
-    rotation = glm::normalize(glm::quat(static_cast<float>(node.rotation[3]),
-      static_cast<float>(node.rotation[0]), static_cast<float>(node.rotation[1]), static_cast<float>(node.rotation[2])));
-  }
-  return glm::translate(glm::mat4(1),translation) * glm::mat4_cast(rotation) * glm::scale(glm::mat4(1),scale);
-}
-} // namespace
-
 bool ApplyAnimatedNodeTransforms(const tinygltf::Model& source,
                                  const AnimationDirtySet& dirty,
                                  container::scene::SceneGraph& graph) {
-  if (dirty.nodes.empty()) return false;
-  std::vector<bool> affected(source.nodes.size(), false);
+  if (dirty.nodes.empty() && dirty.nodeFlags.empty()) return false;
+  std::vector<bool> affected(dirty.nodes.empty() ? 0 : source.nodes.size(), false);
   for (size_t index : dirty.nodes) {
     if (index >= source.nodes.size()) throw std::invalid_argument("animated source node index out of range");
     affected[index] = true;
   }
-  bool changed = false;
+  struct FlagState {
+    uint8_t mask{}, values{};
+  };
+  std::vector<FlagState> flags(dirty.nodeFlags.empty() ? 0 : source.nodes.size());
+  constexpr auto visibility = static_cast<uint8_t>(GltfNodeFlag::Visibility);
+  constexpr auto selectability = static_cast<uint8_t>(GltfNodeFlag::Selectability);
+  constexpr auto hoverability = static_cast<uint8_t>(GltfNodeFlag::Hoverability);
+  for (const auto& change : dirty.nodeFlags) {
+    if (change.node >= flags.size() || (change.mask & ~(visibility | selectability | hoverability)))
+      throw std::invalid_argument("animated node flag index or mask is invalid");
+    const auto& node = source.nodes[change.node];
+    auto& state = flags[change.node];
+    state.mask |= change.mask;
+    if ((change.mask & visibility) && ReadAnimatedNodeFlag(node, GltfNodeFlag::Visibility)) state.values |= visibility;
+    if ((change.mask & selectability) && ReadAnimatedNodeFlag(node, GltfNodeFlag::Selectability)) state.values |= selectability;
+    if ((change.mask & hoverability) && ReadAnimatedNodeFlag(node, GltfNodeFlag::Hoverability)) state.values |= hoverability;
+  }
+  bool transformsChanged = false;
+  bool flagsChanged = false;
   for (uint32_t index = 0; index < graph.nodeCount(); ++index) {
     const auto* node = graph.getNode(index);
-    if (!node || node->retired || node->sourceNodeIndex < 0 || static_cast<size_t>(node->sourceNodeIndex) >= affected.size() ||
-        !affected[static_cast<size_t>(node->sourceNodeIndex)]) continue;
-    const auto transform = localTransform(source.nodes[static_cast<size_t>(node->sourceNodeIndex)]);
-    for (int column = 0; column < 4; ++column) for (int row = 0; row < 4; ++row)
-      if (!std::isfinite(transform[column][row])) throw std::invalid_argument("non-finite animated runtime node transform");
-    if (node->localTransform != transform) { graph.setLocalTransform(index,transform); changed = true; }
+    if (!node || node->retired || node->sourceNodeIndex < 0) continue;
+    const auto sourceIndex = static_cast<size_t>(node->sourceNodeIndex);
+    if (sourceIndex < affected.size() && affected[sourceIndex]) {
+      const auto transform = EvaluateAnimatedNodeLocalTransform(source.nodes[sourceIndex]);
+      if (node->localTransform != transform) {
+        graph.setLocalTransform(index, transform);
+        transformsChanged = true;
+      }
+    }
+    if (sourceIndex >= flags.size()) continue;
+    const auto [mask, values] = flags[sourceIndex];
+    if ((mask & visibility) && node->visible != bool(values & visibility)) {
+      graph.setVisible(index, bool(values & visibility));
+      flagsChanged = true;
+    }
+    if ((mask & selectability) && node->selectable != bool(values & selectability)) {
+      graph.setSelectable(index, bool(values & selectability));
+      flagsChanged = true;
+    }
+    if ((mask & hoverability) && node->hoverable != bool(values & hoverability)) {
+      graph.setHoverable(index, bool(values & hoverability));
+      flagsChanged = true;
+    }
   }
-  if (changed) graph.updateWorldTransforms();
-  return changed;
+  if (transformsChanged) graph.updateWorldTransforms();
+  return transformsChanged || flagsChanged;
 }
 std::optional<AnimatedCameraState> EvaluateAnimatedCamera(
   const tinygltf::Model& source, const container::scene::SceneGraph& graph,

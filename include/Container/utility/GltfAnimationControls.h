@@ -20,6 +20,7 @@ struct CameraProjectionSnapshot {
   // viewport-derived aspect and culling fallbacks never enter this snapshot.
   std::array<double,8> values{};
   uint32_t sharedDefinitionUses{1};
+  std::array<bool,8> animatedProperties{};
   std::array<std::string,8> propertyBlockReasons;
   std::string typeSwitchBlockReason;
 };

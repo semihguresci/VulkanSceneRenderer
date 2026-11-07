@@ -50,6 +50,7 @@ public:
     // and validation guards and must publish completely or leave state unchanged.
     // Empty actions use the built-in graph path; providing only one is invalid.
     std::function<ReparentActions(NodeIndex, const Placement&, const Placement&)> prepareReparent;
+    std::function<void(NodeIndex)> beforeNodeMetadata;
   };
 
   explicit SceneEditHistory(scene::SceneGraph &graph, Callbacks callbacks = {},
@@ -347,6 +348,7 @@ private:
   bool applyName(NodeIndex node, const std::string& name) {
     if (graphIdentity_ != graph_.identity() || !graph_.getNode(node) || graph_.isNodeRetired(node))
       return false;
+    if (callbacks_.beforeNodeMetadata) callbacks_.beforeNodeMetadata(node);
     // SceneGraph takes the copy before replacing the current string. No new
     // name validation applies here: undo restores exact imported metadata.
     graph_.setName(node, name);
@@ -356,12 +358,14 @@ private:
   bool applyVisible(NodeIndex node, bool visible) {
     if (!graph_.getNode(node) || graph_.isNodeRetired(node))
       return false;
+    if (callbacks_.beforeNodeMetadata) callbacks_.beforeNodeMetadata(node);
     graph_.setVisible(node, visible);
     return true;
   }
 
   bool applyInteractionFlag(NodeIndex node, bool value, bool hover) {
     if (!graph_.getNode(node) || graph_.isNodeRetired(node)) return false;
+    if (callbacks_.beforeNodeMetadata) callbacks_.beforeNodeMetadata(node);
     if (hover) graph_.setHoverable(node, value);
     else graph_.setSelectable(node, value);
     return true;
@@ -369,6 +373,7 @@ private:
 
   bool applyNodeFlags(NodeIndex node, const std::array<bool, 3>& flags) {
     if (!graph_.getNode(node) || graph_.isNodeRetired(node)) return false;
+    if (callbacks_.beforeNodeMetadata) callbacks_.beforeNodeMetadata(node);
     graph_.setVisible(node, flags[0]);
     graph_.setSelectable(node, flags[1]);
     graph_.setHoverable(node, flags[2]);

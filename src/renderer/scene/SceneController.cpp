@@ -201,7 +201,7 @@ void poseSourcePreflight(const container::scene::SceneManager& manager,const con
   budget.bytes(images,sizeof(container::gpu::AllocatedBuffer)+128);
   const auto& registry=world.registry();
   for(auto&& [id,pool]:registry.storage()) {
-    (void)id;if(!pool.size()) continue;const auto& type=pool.type();
+    (void)id;if(!pool.size()) continue;const auto& type=pool.info();
     if(type!=entt::type_id<container::ecs::TransformComponent>() && type!=entt::type_id<container::ecs::MeshComponent>() &&
         type!=entt::type_id<container::ecs::MaterialComponent>() && type!=entt::type_id<container::ecs::LightComponent>() &&
         type!=entt::type_id<container::ecs::CameraComponent>() && type!=entt::type_id<container::ecs::RenderableTag>() &&
@@ -255,7 +255,7 @@ bool poseWorldSame(const container::ecs::World& a,const container::ecs::World& b
     return true;
   };
   for(auto&& [id,pool]:right.storage()) {
-    const auto* old=left.storage(id);if(pool.size() && (!old || old->type()!=pool.type() || old->size()!=pool.size())) return false;
+    const auto* old=left.storage(id);if(pool.size() && (!old || old->info()!=pool.info() || old->size()!=pool.size())) return false;
   }
   return compare.template operator()<container::ecs::TransformComponent>() && compare.template operator()<container::ecs::MeshComponent>() &&
       compare.template operator()<container::ecs::MaterialComponent>() && compare.template operator()<container::ecs::LightComponent>() &&
@@ -1323,6 +1323,13 @@ void SceneController::createGeometryBuffers() {
   invalidateObjectDataCache();
 }
 
+void SceneController::refreshPrimitiveGeometryBuffers() {
+  if (deformationTopologyPending_ ||
+      sceneManager_.geometryRevision() != deformationSourceGeometryRevision_ ||
+      !vertexSlice_.buffer || !indexSlice_.buffer)
+    createGeometryBuffers();
+}
+
 void SceneController::createSceneBuffers(
     const container::gpu::AllocatedBuffer& cameraBuffer,
     container::gpu::AllocatedBuffer&       objectBuffer,
@@ -1905,7 +1912,7 @@ void SceneController::addSceneObject(
   }
 }
 
-uint32_t SceneController::appendScenePrimitiveGeometry(ScenePrimitiveKind kind) {
+uint32_t SceneController::resolveScenePrimitiveGeometry(ScenePrimitiveKind kind) {
   if (sceneGraph_.renderableNodes().size() >= config_.maxSceneObjects) {
     if (guiManager_) {
       guiManager_->setStatusMessage("Reached maximum scene object capacity");
@@ -1918,8 +1925,11 @@ uint32_t SceneController::appendScenePrimitiveGeometry(ScenePrimitiveKind kind) 
               std::numeric_limits<uint32_t>::max()
           ? -1
           : static_cast<int32_t>(sceneManager_.defaultMaterialIndex());
-  const uint32_t primitiveIndex =
-      sceneManager_.appendRuntimeMesh(makeScenePrimitive(kind, materialIndex));
+  auto geometry = makeScenePrimitive(kind, materialIndex);
+  if (const auto reused = findReusableScenePrimitive(
+          geometry, sceneManager_.model().meshes(), sceneManager_.runtimePrimitiveToSource()))
+    return *reused;
+  const uint32_t primitiveIndex = sceneManager_.appendRuntimeMesh(std::move(geometry));
   if (primitiveIndex == std::numeric_limits<uint32_t>::max()) {
     if (guiManager_) {
       guiManager_->setStatusMessage("Failed to add primitive");
@@ -1933,7 +1943,7 @@ uint32_t SceneController::appendScenePrimitiveGeometry(ScenePrimitiveKind kind) 
 uint32_t SceneController::addScenePrimitive(ScenePrimitiveKind kind,
                                             const glm::mat4& transform,
                                             uint32_t& rootNode) {
-  const auto primitiveIndex=appendScenePrimitiveGeometry(kind);
+  const auto primitiveIndex=resolveScenePrimitiveGeometry(kind);
   if(primitiveIndex==container::scene::SceneGraph::kInvalidNode) return primitiveIndex;
   if (rootNode == container::scene::SceneGraph::kInvalidNode) {
     rootNode = sceneGraph_.createNode(glm::mat4(1.0f),
@@ -1948,7 +1958,7 @@ uint32_t SceneController::addScenePrimitive(ScenePrimitiveKind kind,
   sceneGraph_.setParent(node, rootNode);
   sceneGraph_.updateWorldTransforms();
   sceneManager_.registerActiveSceneNode(sceneGraph_,node);
-  createGeometryBuffers();
+  refreshPrimitiveGeometryBuffers();
   invalidateObjectDataCache();
 
   if (guiManager_) {

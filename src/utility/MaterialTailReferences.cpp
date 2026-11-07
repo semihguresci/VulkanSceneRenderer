@@ -1,4 +1,6 @@
 #include <Container/utility/MaterialTailReferences.h>
+#include <Container/geometry/GltfInteractivity.h>
+#include <Container/geometry/GltfTextureResourceReferences.h>
 
 #include <algorithm>
 #include <array>
@@ -12,6 +14,7 @@
 
 namespace container::scene {
 namespace {
+using namespace container::geometry::gltf;
 using Value=tinygltf::Value;
 using Object=Value::Object;
 using Side=MaterialBindingSide;
@@ -37,7 +40,8 @@ bool area(std::string_view name) noexcept {return std::ranges::find(areas,name)!
 bool allowed(std::string_view name,Domain domain) noexcept {
   switch(domain) {
     case Domain::RemovedMaterial:return true;
-    case Domain::Root:return name=="KHR_materials_variants" || name=="KHR_lights_punctual" || area(name);
+    case Domain::Root:return name=="KHR_materials_variants" || name=="KHR_lights_punctual" ||
+        name==kGltfInteractivityExtension || area(name);
     case Domain::Material:return std::ranges::find(materials,name)!=materials.end() || name=="MSFT_lod";
     case Domain::Primitive:return name=="KHR_materials_variants" || name=="KHR_draco_mesh_compression";
     case Domain::Node:return name=="KHR_lights_punctual" || area(name) || name=="EXT_mesh_gpu_instancing" ||
@@ -367,6 +371,14 @@ struct Scan {
     return derivedVariants();
   }
 };
+
+bool chargeBehaviorProof(Scan& scan, const GltfTextureResourceReferenceStats& stats) noexcept {
+  return scan.charge(scan.stats.objects,stats.objects,scan.limits.maxObjects) &&
+      scan.charge(scan.stats.references,stats.references,scan.limits.maxReferences) &&
+      scan.charge(scan.stats.metadataValues,stats.metadataValues,scan.limits.maxMetadataValues) &&
+      scan.charge(scan.stats.metadataBytes,stats.metadataBytes,scan.limits.maxMetadataBytes) &&
+      scan.charge(scan.stats.traversalSteps,stats.traversalSteps,scan.limits.maxTraversalSteps);
+}
 } // namespace
 
 struct MaterialTailReferenceAudit::State {
@@ -375,6 +387,8 @@ struct MaterialTailReferenceAudit::State {
   uint64_t graphIdentity{},beforeRevision{},afterRevision{},asset{};
   uint32_t sourceTail{},runtimeTail{},runtimeCount{},primitiveCount{};
   std::vector<uint32_t> mapping,protectedMaterials;
+  std::vector<uint8_t> behaviorMaterialMask;
+  std::array<GltfTextureResourceReferences,2> behaviorProofs;
   MaterialBindingCommand command;Side target{Side::After};bool projected{};
   MaterialTailReferenceLimits limits;MaterialTailReferenceStats stats;
 };
@@ -412,6 +426,39 @@ MaterialReferenceAudit AuditUnusedMaterialReferences(const MaterialReferenceView
           (scan.errorExtension.size()>256?"...":"")+"]");
     fail(scan.error?scan.error:"reference audit failed");
   }
+  const std::array sources{&view.authoredSource,&view.evaluatedSource};
+  const bool hasBehavior = std::ranges::any_of(sources,[](const auto* model) {
+    return extension(model->extensions,kGltfInteractivityExtension) != nullptr;
+  });
+  std::vector<uint8_t> behaviorMaterialMask;
+  std::array<GltfTextureResourceReferences,2> behaviorProofs;
+  if (hasBehavior) {
+    charge(view.context.sourceMaterialToRuntime.size(),sizeof(uint8_t));
+    behaviorMaterialMask.assign(view.context.sourceMaterialToRuntime.size(),uint8_t{1});
+    if (view.sourceMaterial != UINT32_MAX) behaviorMaterialMask[view.sourceMaterial] = 0;
+    for (size_t side = 0; side < sources.size(); ++side) {
+      if (!extension(sources[side]->extensions,kGltfInteractivityExtension)) continue;
+      GltfTextureResourceReferenceLimits proofLimits;
+      proofLimits.maxTableEntries = limits.maxTableEntries;
+      proofLimits.maxObjects = limits.maxObjects - scan.stats.objects;
+      proofLimits.maxReferences = limits.maxReferences - scan.stats.references;
+      proofLimits.maxMetadataValues = limits.maxMetadataValues - scan.stats.metadataValues;
+      proofLimits.maxMetadataBytes = limits.maxMetadataBytes - scan.stats.metadataBytes;
+      proofLimits.maxTraversalSteps = limits.maxTraversalSteps - scan.stats.traversalSteps;
+      proofLimits.maxOwnedBytes = limits.maxOwnedBytes - owned;
+      proofLimits.maxMetadataDepth = limits.maxMetadataDepth;
+      proofLimits.maxDeclarations = limits.maxDeclarations;
+      try {
+        behaviorProofs[side] = ExtractGltfTextureResourceReferences(*sources[side],{behaviorMaterialMask},proofLimits);
+      } catch (const std::invalid_argument& error) {
+        fail(error.what());
+      } catch (const std::length_error& error) {
+        fail(error.what());
+      }
+      charge(behaviorProofs[side].stats().ownedBytes,1);
+      if (!chargeBehaviorProof(scan,behaviorProofs[side].stats())) fail(scan.error);
+    }
+  }
   auto state=std::make_shared<MaterialTailReferenceAccess::State>();
   state->authored=&view.authoredSource;state->evaluated=&view.evaluatedSource;state->graph=&view.graph;state->variants=&view.variants;
   state->graphIdentity=view.graph.identity();state->beforeRevision=view.graph.revision();
@@ -420,6 +467,8 @@ MaterialReferenceAudit AuditUnusedMaterialReferences(const MaterialReferenceView
   state->runtimeCount=view.context.runtimeMaterialCount;state->primitiveCount=view.context.runtimePrimitiveCount;
   state->mapping.assign(view.context.sourceMaterialToRuntime.begin(),view.context.sourceMaterialToRuntime.end());
   state->protectedMaterials.assign(view.protectedRuntimeMaterials.begin(),view.protectedRuntimeMaterials.end());
+  state->behaviorMaterialMask = std::move(behaviorMaterialMask);
+  state->behaviorProofs = std::move(behaviorProofs);
   state->command=command;state->target=target;state->projected=bindings!=nullptr;state->limits=limits;
   state->stats=scan.stats;state->stats.ownedBytes=owned;
   return MaterialTailReferenceAccess::make(std::move(state));
@@ -440,7 +489,16 @@ bool CanRetireUnusedMaterial(const MaterialReferenceView& view,const MaterialTai
       phase==MaterialTailAuditPhase::BeforeBindings?view.context:state->command.context(state->target),
       phase==MaterialTailAuditPhase::BeforeBindings?opposite(state->target):state->target)) return false;
   Scan scan{view,state->limits,{state->projected?&state->command:nullptr,state->target,phase==MaterialTailAuditPhase::BeforeBindings}};
-  return scan.run();
+  if (!scan.run()) return false;
+  const std::array sources{&view.authoredSource,&view.evaluatedSource};
+  for (size_t side = 0; side < sources.size(); ++side) {
+    const bool hasBehavior = extension(sources[side]->extensions,kGltfInteractivityExtension) != nullptr;
+    if (hasBehavior != bool(state->behaviorProofs[side])) return false;
+    if (hasBehavior && (!chargeBehaviorProof(scan,state->behaviorProofs[side].stats()) ||
+        !GltfTextureResourceReferencesMatch(*sources[side],{state->behaviorMaterialMask},state->behaviorProofs[side])))
+      return false;
+  }
+  return true;
 }
 namespace {
 MaterialReferenceView selected(const MaterialTailReferenceView& view) noexcept {

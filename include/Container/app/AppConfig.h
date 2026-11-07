@@ -20,11 +20,13 @@
 #include "Container/renderer/lighting/SkySettings.h"
 #include "Container/renderer/lighting/DdgiVolumeFit.h"
 #include "Container/renderer/pathtracing/ReferencePathLensSettings.h"
+#include "Container/renderer/pathtracing/ReferencePathDisplayMode.h"
 #include "Container/renderer/pathtracing/ReferenceGroundSettings.h"
 #include "Container/renderer/pathtracing/ReferenceOidnSettings.h"
 #include "Container/renderer/raytracing/RayShadowSettings.h"
 #include "Container/renderer/temporal/TemporalState.h"
-#include "Container/renderer/temporal/FsrMode.h"
+#include "Container/renderer/temporal/UpscaleMode.h"
+#include "Container/utility/TextureMemoryBudget.h"
 
 namespace container::geometry::vdb { struct ImportOptions; }
 
@@ -62,6 +64,9 @@ struct AppConfig {
   // Upper bound for the per-object SSBO. This is scene capacity, not a
   // draw-call budget.
   uint32_t maxSceneObjects{4096};
+  // Aggregate decoded glTF image payloads per load; per-image limits remain
+  // independent, and GPU mip/storage allocations can require additional memory.
+  uint32_t textureMemoryMiB{container::material::kDefaultGltfTextureMemoryMiB};
   bool enableValidationLayers{false};
   bool enableRayQueries{true};
   bool experimentalOpacityMicromaps{false};
@@ -80,6 +85,7 @@ struct AppConfig {
   std::vector<uint32_t> pathSampleSeries{};
   float pathTargetMs{};
   float pathFireflyClamp{};
+  container::renderer::ReferencePathDisplayMode pathDisplay{};
   container::renderer::ReferencePathLensSettings pathLens{};
   container::renderer::ReferenceGroundSettings pathGround{};
   container::renderer::ReferenceOidnSettings pathOidn{};
@@ -91,7 +97,7 @@ struct AppConfig {
   uint32_t areaLightSampleCount{25};
   bool areaEmitterDebug{false};
   container::temporal::Settings taa{};
-  container::renderer::FsrMode fsrMode{};
+  container::renderer::UpscaleSelection upscaling{};
   container::renderer::ScreenReflectionMode screenReflections{};
   bool screenReflectionRayFallback{};
   container::renderer::VolumetricFogSettings volumetricFog{};
@@ -165,6 +171,8 @@ struct AppConfig {
   bool useGltfSky{false};
   bool hasDirectionalIntensityOverride{false};
   float directionalIntensity{2.0f};
+  bool hasBounceIntensityOverride{false};
+  float bounceIntensity{1.0f};
   bool hasDirectionalDirectionOverride{false};
   std::array<float, 3> directionalDirection{-0.45f, -1.0f, -0.3f};
   bool hasDirectionalColorOverride{false};

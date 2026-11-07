@@ -1,4 +1,5 @@
 #include <Container/geometry/GltfAnimation.h>
+#include <Container/geometry/GltfAnimationRuntime.h>
 #include <Container/geometry/GltfAccessor.h>
 #include <Container/geometry/GltfSubtreeClone.h>
 #include <Container/geometry/GltfProjectedSubtreeClone.h>
@@ -22,6 +23,54 @@ namespace {
 [[noreturn]] void invalid(const std::string& message) {
   throw std::invalid_argument(message);
 }
+struct NodeFlagProperty {
+  GltfNodeFlag flag;
+  const char* extension;
+  const char* member;
+  std::string_view path;
+};
+constexpr std::array kNodeFlagProperties{
+    NodeFlagProperty{GltfNodeFlag::Visibility, "KHR_node_visibility", "visible",
+        "extensions/KHR_node_visibility/visible"},
+    NodeFlagProperty{GltfNodeFlag::Selectability, "KHR_node_selectability", "selectable",
+        "extensions/KHR_node_selectability/selectable"},
+    NodeFlagProperty{GltfNodeFlag::Hoverability, "KHR_node_hoverability", "hoverable",
+        "extensions/KHR_node_hoverability/hoverable"}};
+
+const NodeFlagProperty& nodeFlagProperty(std::string_view path) {
+  const auto found = std::ranges::find(kNodeFlagProperties, path, &NodeFlagProperty::path);
+  if (found == kNodeFlagProperties.end()) invalid("unsupported animation node flag property");
+  return *found;
+}
+
+const tinygltf::Value* authoredNodeFlag(const tinygltf::Node& node, const NodeFlagProperty& property) {
+  const auto extension = node.extensions.find(property.extension);
+  if (extension == node.extensions.end()) return nullptr;
+  if (!extension->second.IsObject()) invalid("animation node flag extension must be an object");
+  const auto& fields = extension->second.Get<tinygltf::Value::Object>();
+  const auto found = fields.find(property.member);
+  if (found == fields.end()) return nullptr;
+  if (!found->second.IsBool()) invalid("animation node flag property must be Boolean");
+  return &found->second;
+}
+
+void markNodeFlag(AnimationDirtySet& dirty, size_t node, uint8_t mask) {
+  const auto found = std::ranges::find(dirty.nodeFlags, node, &AnimatedNodeFlagChange::node);
+  if (found == dirty.nodeFlags.end()) dirty.nodeFlags.push_back({node, mask});
+  else found->mask |= mask;
+}
+
+bool restoreNodeFlag(tinygltf::Node& node, const tinygltf::Node& rest, const NodeFlagProperty& property) {
+  const auto* saved = authoredNodeFlag(rest, property);
+  const auto* current = authoredNodeFlag(node, property);
+  if ((!saved && !current) || (saved && current && saved->Get<bool>() == current->Get<bool>())) return false;
+  auto& fields = node.extensions.at(property.extension).Get<tinygltf::Value::Object>();
+  if (saved) fields.insert_or_assign(property.member, *saved);
+  else fields.erase(property.member);
+  node.extensions_json_string.clear();
+  return true;
+}
+
 size_t product(size_t a, size_t b) {
   if (b && a > std::numeric_limits<size_t>::max() / b)
     invalid("animation accessor size overflow");
@@ -275,6 +324,16 @@ std::optional<AnimationTarget> pointerTarget(const tinygltf::Model& model,
   size_t propertyBegin = 2;
   if (parts.size() >= 3 && parts[0] == "nodes") {
     const size_t index = requiredIndex(parts[1], model.nodes.size());
+    if (parts.size() == 5 && parts[2] == "extensions") {
+      for (const auto& property : kNodeFlagProperties) {
+        if (parts[3] != property.extension || parts[4] != property.member) continue;
+        const auto& node = model.nodes[index];
+        if (!node.extensions.contains(property.extension)) invalid("animation node flag parent object is missing");
+        (void)authoredNodeFlag(node, property);
+        return AnimationTarget{AnimationTargetKind::NodeFlag, index, std::string(property.path), 1, {}};
+      }
+      return {};
+    }
     if (parts[2] != "translation" && parts[2] != "rotation" &&
         parts[2] != "scale" && parts[2] != "weights") return {};
     target = nodeTarget(model, index, parts[2]);
@@ -489,7 +548,7 @@ bool applyMaterial(tinygltf::Material& material, const AnimatedValue& sample) {
 } // namespace
 
 bool AnimationDirtySet::empty() const {
-  return nodes.empty() && weights.empty() && materials.empty() && lights.empty() && cameras.empty();
+  return nodes.empty() && weights.empty() && materials.empty() && lights.empty() && cameras.empty() && nodeFlags.empty();
 }
 void AnimationDirtySet::merge(const AnimationDirtySet& other) {
   for (size_t v : other.nodes) uniqueAppend(nodes, v);
@@ -497,6 +556,14 @@ void AnimationDirtySet::merge(const AnimationDirtySet& other) {
   for (size_t v : other.materials) uniqueAppend(materials, v);
   for (size_t v : other.lights) uniqueAppend(lights, v);
   for (size_t v : other.cameras) uniqueAppend(cameras, v);
+  for (const auto& change : other.nodeFlags) markNodeFlag(*this, change.node, change.mask);
+}
+
+bool ReadAnimatedNodeFlag(const tinygltf::Node& node, GltfNodeFlag flag) {
+  const auto found = std::ranges::find(kNodeFlagProperties, flag, &NodeFlagProperty::flag);
+  if (found == kNodeFlagProperties.end()) invalid("unsupported animation node flag");
+  const auto* value = authoredNodeFlag(node, *found);
+  return !value || value->Get<bool>();
 }
 namespace {
 AnimationTrack decodeAnimationTrack(const tinygltf::Model& model, const AnimationTarget& target,
@@ -526,6 +593,10 @@ AnimationTrack decodeAnimationTrack(const tinygltf::Model& model, const Animatio
   const size_t width = sampleComponents(target);
   const size_t expectedComponents = target.kind == AnimationTargetKind::NodeWeights ? 1 : width;
   if (vectorComponents(output.type) != expectedComponents) invalid("animation output accessor shape mismatch");
+  if (target.kind == AnimationTargetKind::NodeFlag &&
+      (track.interpolation != AnimationInterpolation::Step ||
+       output.componentType != TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE))
+    invalid("Boolean node flag animation requires STEP and UNSIGNED_BYTE SCALAR output");
   if (!pointer && (target.kind == AnimationTargetKind::NodeTranslation || target.kind == AnimationTargetKind::NodeScale)) {
     if ((output.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT && !(float64 && output.componentType == TINYGLTF_COMPONENT_TYPE_DOUBLE)) || output.normalized)
       invalid("TRS translation/scale animation output must be FLOAT");
@@ -536,6 +607,8 @@ AnimationTrack decodeAnimationTrack(const tinygltf::Model& model, const Animatio
   const size_t expected = product(product(track.times.size(), width), cubic ? 3 : 1);
   if (product(output.count, vectorComponents(output.type)) != expected) invalid("animation output accessor count mismatch");
   track.values = readAccessor(model, sampler.output, remainingDecodedBytes);
+  if (target.kind == AnimationTargetKind::NodeFlag)
+    for (double& value : track.values) value = value != 0 ? 1.0 : 0.0;
   if (target.kind == AnimationTargetKind::Material && extendedUnitIntervalProperty(target.property))
     for (size_t key = 0; key < track.times.size(); ++key) {
       const size_t first = (key*(cubic ? 3 : 1) + (cubic ? 1 : 0))*width;
@@ -622,6 +695,9 @@ std::vector<double> ReadAnimationTarget(const tinygltf::Model& model, const Anim
       result = readVector(node.weights, readVector(mesh.weights, std::vector<double>(weightCount(model, target.index))));
       break;
     }
+    case AnimationTargetKind::NodeFlag:
+      result = {ReadAnimatedNodeFlag(model.nodes.at(target.index), nodeFlagProperty(property).flag) ? 1.0 : 0.0};
+      break;
     case AnimationTargetKind::Material: {
       const auto& material = model.materials.at(target.index);
       const auto& pbr = material.pbrMetallicRoughness;
@@ -687,6 +763,13 @@ std::vector<double> ReadAnimationTarget(const tinygltf::Model& model, const Anim
   return result;
 }
 
+AnimatedValue CaptureAnimationTarget(const tinygltf::Model& model, const AnimationTarget& target) {
+  AnimatedValue result{target, ReadAnimationTarget(model, target)};
+  if (target.kind == AnimationTargetKind::NodeFlag)
+    result.nodeFlagAuthored = authoredNodeFlag(model.nodes.at(target.index), nodeFlagProperty(target.property)) != nullptr;
+  return result;
+}
+
 AnimationPose SampleAnimation(const AnimationClip& clip, double timeSeconds) {
   if (!std::isfinite(timeSeconds)) invalid("animation sample time must be finite");
   AnimationPose pose;
@@ -729,6 +812,7 @@ public:
       case AnimationTargetKind::Camera: copy(cameras_,model_.cameras,"camera"); break;
       case AnimationTargetKind::NodeTranslation: case AnimationTargetKind::NodeRotation:
       case AnimationTargetKind::NodeScale: case AnimationTargetKind::NodeWeights:
+      case AnimationTargetKind::NodeFlag:
         copy(nodes_,model_.nodes,"node"); break;
       default: invalid("unsupported animation pose target kind");
     }
@@ -766,6 +850,12 @@ void validatePoseValues(const AnimationPose& pose) {
     const auto& target = sample.target;
     if (!target.components) invalid("animation pose target has no components");
     if (sample.value.size() != sampleComponents(target)) invalid("animation pose component count mismatch");
+    if (target.kind == AnimationTargetKind::NodeFlag && (target.components != 1 || target.element ||
+        (sample.value.front() != 0 && sample.value.front() != 1)))
+      invalid("invalid Boolean animation pose value");
+    if (sample.nodeFlagAuthored && (target.kind != AnimationTargetKind::NodeFlag ||
+        (!*sample.nodeFlagAuthored && sample.value.front() != 1)))
+      invalid("invalid authored Boolean animation pose value");
     for (double v : sample.value) {
       if (!std::isfinite(v)) invalid("non-finite animation pose value");
       if (std::abs(v) > std::numeric_limits<float>::max())
@@ -778,6 +868,18 @@ void validatePoseValues(const AnimationPose& pose) {
     }
     if (target.element && *target.element >= target.components) invalid("animation pose element out of range");
   }
+}
+template<class Camera>
+auto& cameraScalar(Camera& camera, std::string_view property) {
+  if (property == "perspective/yfov") return camera.perspective.yfov;
+  if (property == "perspective/aspectRatio") return camera.perspective.aspectRatio;
+  if (property == "perspective/znear") return camera.perspective.znear;
+  if (property == "perspective/zfar") return camera.perspective.zfar;
+  if (property == "orthographic/xmag") return camera.orthographic.xmag;
+  if (property == "orthographic/ymag") return camera.orthographic.ymag;
+  if (property == "orthographic/znear") return camera.orthographic.znear;
+  if (property == "orthographic/zfar") return camera.orthographic.zfar;
+  invalid("unsupported animation pose camera property");
 }
 AnimationDirtySet applyPose(tinygltf::Model& model, const AnimationPose& pose,MaterialCacheMasks& caches) {
   AnimationDirtySet dirty;
@@ -802,16 +904,22 @@ AnimationDirtySet applyPose(tinygltf::Model& model, const AnimationPose& pose,Ma
     } else if (target.kind == AnimationTargetKind::Camera) {
       if (target.index >= model.cameras.size()) invalid("animation pose camera index out of range");
       auto& camera = model.cameras[target.index];
-      if (target.property == "perspective/yfov") changed = assignScalar(camera.perspective.yfov, sample);
-      else if (target.property == "perspective/aspectRatio") changed = assignScalar(camera.perspective.aspectRatio, sample);
-      else if (target.property == "perspective/znear") changed = assignScalar(camera.perspective.znear, sample);
-      else if (target.property == "perspective/zfar") changed = assignScalar(camera.perspective.zfar, sample);
-      else if (target.property == "orthographic/xmag") changed = assignScalar(camera.orthographic.xmag, sample);
-      else if (target.property == "orthographic/ymag") changed = assignScalar(camera.orthographic.ymag, sample);
-      else if (target.property == "orthographic/znear") changed = assignScalar(camera.orthographic.znear, sample);
-      else if (target.property == "orthographic/zfar") changed = assignScalar(camera.orthographic.zfar, sample);
-      else invalid("unsupported animation pose camera property");
+      changed = assignScalar(cameraScalar(camera, target.property), sample);
       if (changed) uniqueAppend(dirty.cameras, target.index);
+    } else if (target.kind == AnimationTargetKind::NodeFlag) {
+      auto& node = model.nodes.at(target.index);
+      const auto& property = nodeFlagProperty(target.property);
+      const bool value = sample.value.front() != 0;
+      if (!node.extensions.contains(property.extension)) invalid("animation node flag parent object is missing");
+      const auto* current = authoredNodeFlag(node, property);
+      const bool authored = sample.nodeFlagAuthored.value_or(current || !value);
+      if (authored != (current != nullptr) || (!current || current->Get<bool>()) != value) {
+        auto& fields = node.extensions.at(property.extension).Get<tinygltf::Value::Object>();
+        if (authored) fields.insert_or_assign(property.member, tinygltf::Value(value));
+        else fields.erase(property.member);
+        node.extensions_json_string.clear();
+        markNodeFlag(dirty, target.index, static_cast<uint8_t>(property.flag));
+      }
     } else {
       if (target.index >= model.nodes.size()) invalid("animation pose node index out of range");
       auto& node = model.nodes[target.index];
@@ -848,6 +956,10 @@ AnimationDirtySet restoreRestPose(tinygltf::Model& model, const AnimationLibrary
     } else if (target.kind == AnimationTargetKind::Camera) {
       model.cameras[target.index] = library.restCameras[target.index];
       uniqueAppend(dirty.cameras, target.index);
+    } else if (target.kind == AnimationTargetKind::NodeFlag) {
+      const auto& property = nodeFlagProperty(target.property);
+      restoreNodeFlag(model.nodes[target.index], library.restNodes[target.index], property);
+      markNodeFlag(dirty, target.index, static_cast<uint8_t>(property.flag));
     } else {
       auto& node = model.nodes[target.index]; const auto& rest = library.restNodes[target.index];
       if (target.kind == AnimationTargetKind::NodeTranslation) node.translation = rest.translation;
@@ -969,7 +1081,19 @@ bool cloneTrackEqual(const AnimationTrack& a, const AnimationTrack& b, const Ani
 }
 bool cloneNodeTarget(AnimationTargetKind kind) {
   return kind == AnimationTargetKind::NodeTranslation || kind == AnimationTargetKind::NodeRotation ||
-      kind == AnimationTargetKind::NodeScale || kind == AnimationTargetKind::NodeWeights;
+      kind == AnimationTargetKind::NodeScale || kind == AnimationTargetKind::NodeWeights ||
+      kind == AnimationTargetKind::NodeFlag;
+}
+
+void restoreClonedNodeFlagRests(std::vector<tinygltf::Node>& nodes,
+                               const AnimationLibrary& original, std::span<const int32_t> mapping) {
+  for (const auto& clip : original.clips)
+    for (const auto& track : clip.tracks) {
+      const auto& target = track.target;
+      if (target.kind == AnimationTargetKind::NodeFlag && mapping[target.index] >= 0)
+        restoreNodeFlag(nodes[size_t(mapping[target.index])], original.restNodes[target.index],
+                        nodeFlagProperty(target.property));
+    }
 }
 tinygltf::AnimationChannel cloneRemappedChannel(const tinygltf::AnimationChannel& original,
     size_t sourceNode, int32_t cloneNode) {
@@ -1207,6 +1331,7 @@ AnimationPlayer AnimationPlayer::withClonedSource(const tinygltf::Model& current
     if (clone.contextOnly[n]) rest.weights.clear();
     else rest.weights = original.weights;
   }
+  restoreClonedNodeFlagRests(prepared.library_.restNodes, library_, clone.nodes);
   std::copy(library_.restMaterials.begin(), library_.restMaterials.end(), prepared.library_.restMaterials.begin());
   std::copy(library_.restLights.begin(), library_.restLights.end(), prepared.library_.restLights.begin());
   std::copy(library_.restCameras.begin(), library_.restCameras.end(), prepared.library_.restCameras.begin());
@@ -1327,6 +1452,7 @@ AnimationPlayer AnimationPlayer::withClonedSource(const tinygltf::Model& current
     rest.matrix=original.matrix;rest.translation=original.translation;rest.rotation=original.rotation;rest.scale=original.scale;
     if(projected.retainMeshBindings[n]) rest.weights=original.weights;else rest.weights.clear();
   }
+  restoreClonedNodeFlagRests(prepared.library_.restNodes, library_, clone.nodes);
   prepared.library_.restMaterials=library_.restMaterials;prepared.library_.restLights=library_.restLights;
   prepared.library_.restCameras=library_.restCameras;
   prepared.selected_=selected_;prepared.time_=time_;prepared.speed_=speed_;prepared.playing_=playing_;prepared.loop_=loop_;
@@ -2131,7 +2257,7 @@ struct PreparedCameraRestEdit::State {
   const AnimationPlayer* owner{};
   GltfCameraAnimationEditLimits limits;
   GltfCameraProjectionPlan plan;
-  tinygltf::Camera before, after, scratch;
+  tinygltf::Camera before, after, scratch, evaluated;
   std::optional<size_t> selected;
   double time{}, speed{};
   bool playing{}, loop{}, consumed{}, float64{};
@@ -2150,6 +2276,10 @@ PreparedCameraRestEdit::PreparedCameraRestEdit(PreparedCameraRestEdit&&) noexcep
 PreparedCameraRestEdit& PreparedCameraRestEdit::operator=(PreparedCameraRestEdit&&) noexcept = default;
 PreparedCameraRestEdit::operator bool() const noexcept { return state_ && !state_->consumed; }
 uint64_t PreparedCameraRestEdit::ownedBytes() const noexcept { return state_ ? state_->bytes : 0; }
+const tinygltf::Camera& PreparedCameraRestEdit::evaluatedCamera() const {
+  if (!state_) invalid("selected camera rest preparation is empty");
+  return state_->evaluated;
+}
 
 PreparedCameraRestEdit AnimationPlayer::prepareCameraRestEdit(const GltfCameraProjectionPlan& plan,
     GltfCameraAuthoringSourceView authored, const tinygltf::Model& current,
@@ -2166,13 +2296,15 @@ PreparedCameraRestEdit AnimationPlayer::prepareCameraRestEdit(const GltfCameraPr
   const auto camera = size_t(plan.evaluatedCamera); const auto& rest = library_.restCameras[camera];
   (void)GltfCameraRecordStorageBytes(rest, limits.authoring);
   (void)GltfCameraRecordStorageBytes(plan.authoredAfter, limits.authoring);
+  (void)GltfCameraRecordStorageBytes(plan.evaluatedAfter, limits.authoring);
   budget.add(sizeof(PreparedCameraRestEdit::State) + 1024); budget.add(plan.peakOwnedBytes);
-  budget.copy(rest); budget.copy(plan.authoredAfter);
+  budget.copy(rest); budget.copy(plan.authoredAfter); budget.copy(plan.evaluatedAfter);
   if (!GltfCameraRecordsEqual(rest, plan.authoredBefore) || !GltfCameraProjectionValid(plan.authoredAfter))
     invalid("camera authored rest before witness is stale");
   if (plan.evaluatedAnimationBindings.size() > limits.maxChannels)
     invalid("selected camera curve count exceeds its budget");
   budget.add(product(plan.evaluatedAnimationBindings.size(), sizeof(CameraCurveTrack) + sizeof(CameraCurveSampler) + 2 * sizeof(int)));
+  budget.add(product(plan.evaluatedAnimationBindings.size(), sizeof(AnimatedValue) + sizeof(double) + 512));
   std::vector<int> accessorIds; accessorIds.reserve(product(plan.evaluatedAnimationBindings.size(), 2));
   uint64_t decodedBytes{};
   for (const auto& binding : plan.evaluatedAnimationBindings) {
@@ -2234,6 +2366,23 @@ PreparedCameraRestEdit AnimationPlayer::prepareCameraRestEdit(const GltfCameraPr
     snapshot.clip = binding.clip; snapshot.sampler = size_t(channel.sampler); snapshot.record = sampler;
   }
   if (!selectedCameraTracksMatch(library_, camera, s->tracks, limits)) invalid("selected camera decoded curves changed");
+  s->evaluated = plan.evaluatedAfter;
+  const auto ownership = GltfCameraProjectionOwnedFields(plan);
+  AnimationPose pose;
+  pose.values.reserve(s->tracks.size());
+  for (size_t i = 0; i < s->tracks.size(); ++i) {
+    const auto property = plan.evaluatedAnimationBindings[i].property;
+    if (!(ownership.properties & uint16_t(1u << size_t(property)))) continue;
+    const auto& retained = s->tracks[i];
+    const auto& track = retained.track;
+    cameraScalar(s->evaluated, track.target.property) = cameraScalar(s->after, track.target.property);
+    if (selected_ && retained.clip == *selected_)
+      pose.values.push_back({track.target, sampleTrack(track, time_)});
+  }
+  validatePoseValues(pose);
+  for (const auto& sample : pose.values)
+    (void)assignScalar(cameraScalar(s->evaluated, sample.target.property), sample);
+  if (!GltfCameraProjectionValid(s->evaluated)) invalid("edited camera rest has an invalid current projection");
   s->accessors.reserve(accessorIds.size()); s->views.reserve(viewIds.size()); s->buffers.reserve(bufferIds.size()); s->ranges.reserve(rangeCount);
   for (const auto id : accessorIds) {
     const auto& accessor = current.accessors[size_t(id)]; s->accessors.emplace_back();
@@ -2340,7 +2489,7 @@ bool selectedNodeTracksMatch(const AnimationLibrary& library, size_t node,
       if (track.target.index != node || (kind != AnimationTargetKind::NodeTranslation &&
           kind != AnimationTargetKind::NodeRotation && kind != AnimationTargetKind::NodeScale &&
           kind != AnimationTargetKind::NodeWeights)) continue;
-      if (kind != AnimationTargetKind::NodeWeights || selected >= retained.size() || retained[selected].clip != c ||
+      if (selected >= retained.size() || retained[selected].clip != c ||
           !cloneTrackEqual(retained[selected].track, track, retained[selected].track.target)) return false;
       ++selected;
     }
@@ -2348,6 +2497,21 @@ bool selectedNodeTracksMatch(const AnimationLibrary& library, size_t node,
   return selected == retained.size();
 }
 struct CameraNodeCurveChannel { size_t clip{}, channel{}; tinygltf::AnimationChannel record; };
+std::vector<double>& cameraNodePoseValues(tinygltf::Node& node, AnimationTargetKind kind) {
+  if (kind == AnimationTargetKind::NodeTranslation) return node.translation;
+  if (kind == AnimationTargetKind::NodeRotation) return node.rotation;
+  return node.scale;
+}
+const std::vector<double>& cameraNodePoseValues(const tinygltf::Node& node, AnimationTargetKind kind) {
+  if (kind == AnimationTargetKind::NodeTranslation) return node.translation;
+  if (kind == AnimationTargetKind::NodeRotation) return node.rotation;
+  return node.scale;
+}
+bool cameraNodePoseOwned(const GltfCameraPosePlan& plan, AnimationTargetKind kind) {
+  CurveExactBudget budget{};
+  return !curveExact(cameraNodePoseValues(plan.authoredBefore,kind), cameraNodePoseValues(plan.authoredAfter,kind),budget) ||
+      !curveExact(cameraNodePoseValues(plan.evaluatedBefore,kind), cameraNodePoseValues(plan.evaluatedAfter,kind),budget);
+}
 } // namespace
 
 struct PreparedCameraNodeRestEdit::State {
@@ -2355,9 +2519,11 @@ struct PreparedCameraNodeRestEdit::State {
   GltfCameraNodeAnimationEditLimits limits;
   GltfCameraPosePlan plan;
   CameraNodeRestPose before, after;
+  tinygltf::Node evaluated;
   std::optional<size_t> selected;
   double time{}, speed{};
   bool playing{}, loop{}, consumed{}, float64{};
+  bool hasWeights{};
   uint64_t revision{}, bytes{};
   size_t nodes{}, materials{}, cameras{}, lights{}, clips{};
   int mesh{-1};
@@ -2377,12 +2543,17 @@ PreparedCameraNodeRestEdit::PreparedCameraNodeRestEdit(PreparedCameraNodeRestEdi
 PreparedCameraNodeRestEdit& PreparedCameraNodeRestEdit::operator=(PreparedCameraNodeRestEdit&&) noexcept = default;
 PreparedCameraNodeRestEdit::operator bool() const noexcept { return state_ && !state_->consumed; }
 uint64_t PreparedCameraNodeRestEdit::ownedBytes() const noexcept { return state_ ? state_->bytes : 0; }
+const tinygltf::Node& PreparedCameraNodeRestEdit::evaluatedNode() const {
+  if (!state_ || state_->consumed) invalid("camera node rest token is empty or consumed");
+  return state_->evaluated;
+}
 
 PreparedCameraNodeRestEdit AnimationPlayer::prepareCameraNodeRestEdit(const GltfCameraPosePlan& plan,
     GltfCameraPoseSourceView authored, const tinygltf::Model& current,
     const GltfCameraNodeAnimationEditLimits& limits) const {
   if (!GltfCameraPoseEditMatches(plan, authored, GltfCameraPoseView(current), plan.graphBefore))
     invalid("camera node pose receipt or source is stale");
+  if (!GltfCameraPoseReplayClipMatches(plan,selected_)) invalid("camera node pose replay selection mask is stale");
   const auto copyLimits = cameraNodeCopyLimits(limits); MaterialAnimationCopyBudget budget(copyLimits);
   if (limits.maxDecodedBytes > SIZE_MAX || plan.evaluatedNode < 0 || size_t(plan.evaluatedNode) >= library_.restNodes.size() ||
       authored.nodes.size() > limits.authoring.maxNodes || current.nodes.size() > limits.authoring.maxNodes ||
@@ -2421,12 +2592,15 @@ PreparedCameraNodeRestEdit AnimationPlayer::prepareCameraNodeRestEdit(const Gltf
   // arrays. No rest metadata/weights or whole source/library is copied.
   budget.copy(plan.authoredBefore); budget.copy(plan.authoredAfter);
   budget.copy(plan.evaluatedBefore); budget.copy(plan.evaluatedAfter);
+  budget.copy(plan.evaluatedAfter);
   budget.copy(rest.matrix); budget.copy(rest.translation); budget.copy(rest.rotation); budget.copy(rest.scale);
   budget.copy(plan.authoredAfter.matrix); budget.copy(plan.authoredAfter.translation);
   budget.copy(plan.authoredAfter.rotation); budget.copy(plan.authoredAfter.scale);
   CameraNodeRestPose restBefore; restBefore.copy(rest);
   if (!restBefore.matches(plan.authoredBefore)) invalid("camera node authored rest before witness is stale");
   const auto count = plan.evaluatedAnimationBindings.size();
+  const bool hasWeights = std::any_of(plan.evaluatedAnimationBindings.begin(), plan.evaluatedAnimationBindings.end(),
+      [](const auto& binding) { return binding.property == GltfCameraNodeAnimationProperty::Weights; });
   if (count > limits.maxChannels) invalid("selected camera node channel count exceeds its budget");
   budget.add(product(count, sizeof(CameraCurveTrack) + sizeof(CameraCurveSampler) + sizeof(CameraNodeCurveChannel) + 2 * sizeof(int)));
   std::vector<int> accessorIds; accessorIds.reserve(product(count, 2));
@@ -2447,7 +2621,7 @@ PreparedCameraNodeRestEdit AnimationPlayer::prepareCameraNodeRestEdit(const Gltf
     decodedBytes += amount; budget.add(amount);
     accessorIds.push_back(sampler.input); accessorIds.push_back(sampler.output);
   }
-  if (count) {
+  if (hasWeights) {
     const auto& mesh = checked(current.meshes, current.nodes[node].mesh, "selected camera node morph mesh");
     budget.add(product(mesh.primitives.size(), sizeof(size_t)));
   }
@@ -2474,6 +2648,7 @@ PreparedCameraNodeRestEdit AnimationPlayer::prepareCameraNodeRestEdit(const Gltf
   for (const auto id : bufferIds) { budget.add(sizeof(CurveBufferMetadata) + 128); budget.copy(checked(current.buffers, id, "selected camera node buffer")); }
 
   auto s = std::make_unique<PreparedCameraNodeRestEdit::State>(); s->owner = this; s->limits = limits; s->plan = plan;
+  s->evaluated = plan.evaluatedAfter; s->hasWeights = hasWeights;
   s->before = std::move(restBefore); s->after.copy(plan.authoredAfter); s->revision = cameraNodeRestRevision_; s->bytes = budget.bytes;
   s->selected = selected_; s->time = time_; s->speed = speed_; s->playing = playing_; s->loop = loop_;
   s->nodes = library_.restNodes.size(); s->materials = library_.restMaterials.size(); s->cameras = library_.restCameras.size();
@@ -2492,7 +2667,10 @@ PreparedCameraNodeRestEdit AnimationPlayer::prepareCameraNodeRestEdit(const Gltf
         invalid("selected camera node raw pointer is malformed");
       target = pointerTarget(current, ext->second.Get("pointer").Get<std::string>());
     } else if (channel.target_node >= 0) target = nodeTarget(current, size_t(channel.target_node), channel.target_path);
-    if (!target || target->kind != AnimationTargetKind::NodeWeights || target->index != node)
+    const auto kind = binding.property == GltfCameraNodeAnimationProperty::Translation ? AnimationTargetKind::NodeTranslation :
+        binding.property == GltfCameraNodeAnimationProperty::Rotation ? AnimationTargetKind::NodeRotation :
+        binding.property == GltfCameraNodeAnimationProperty::Scale ? AnimationTargetKind::NodeScale : AnimationTargetKind::NodeWeights;
+    if (!target || target->kind != kind || target->index != node || target->element != binding.element)
       invalid("camera node pose is referenced by an animated or unsupported selected target");
     s->tracks.push_back({binding.clip, decodeAnimationTrack(current, *target, pointer, sampler, remaining)});
     s->samplers.emplace_back(); auto& sampled = s->samplers.back();
@@ -2501,12 +2679,36 @@ PreparedCameraNodeRestEdit AnimationPlayer::prepareCameraNodeRestEdit(const Gltf
     raw.clip = binding.clip; raw.channel = binding.channel; raw.record = channel;
   }
   if (!selectedNodeTracksMatch(library_, node, s->tracks, limits)) invalid("selected camera node decoded curves changed");
-  if (count) {
+  if (hasWeights) {
     s->mesh = current.nodes[node].mesh; s->nodeWeights = current.nodes[node].weights.size();
     const auto& mesh = current.meshes[size_t(s->mesh)]; s->meshWeights = mesh.weights.size();
     s->primitiveTargets.reserve(mesh.primitives.size());
     for (const auto& primitive : mesh.primitives) s->primitiveTargets.push_back(primitive.targets.size());
   }
+  AnimationPose sampled;
+  sampled.values.reserve(count);
+  for (const auto& retained : s->tracks) {
+    const auto& track = retained.track; const auto kind = track.target.kind;
+    if (kind == AnimationTargetKind::NodeWeights || !cameraNodePoseOwned(plan,kind)) continue;
+    auto& destination = cameraNodePoseValues(s->evaluated,kind);
+    const auto& restValues = cameraNodePoseValues(plan.authoredAfter,kind);
+    const std::vector<double> defaults = kind == AnimationTargetKind::NodeScale ? std::vector<double>{1,1,1} :
+        kind == AnimationTargetKind::NodeRotation ? std::vector<double>{0,0,0,1} : std::vector<double>{0,0,0};
+    if (!track.target.element) destination = restValues;
+    else {
+      if (destination.empty()) destination = defaults;
+      destination[*track.target.element] = restValues.empty() ? defaults[*track.target.element] : restValues[*track.target.element];
+    }
+    if (selected_ && retained.clip == *selected_) sampled.values.push_back({track.target,sampleTrack(track,time_)});
+  }
+  validatePoseValues(sampled);
+  for (const auto& value : sampled.values) {
+    auto& destination = cameraNodePoseValues(s->evaluated,value.target.kind);
+    const std::vector<double> defaults = value.target.kind == AnimationTargetKind::NodeScale ? std::vector<double>{1,1,1} :
+        value.target.kind == AnimationTargetKind::NodeRotation ? std::vector<double>{0,0,0,1} : std::vector<double>{0,0,0};
+    (void)assignVector(destination,value,defaults);
+  }
+  (void)EvaluateAnimatedNodeLocalTransform(s->evaluated);
   s->accessors.reserve(accessorIds.size()); s->views.reserve(viewIds.size()); s->buffers.reserve(bufferIds.size()); s->ranges.reserve(rangeCount);
   for (const auto id : accessorIds) {
     const auto& accessor = current.accessors[size_t(id)]; s->accessors.emplace_back();
@@ -2546,7 +2748,7 @@ bool AnimationPlayer::cameraNodeRestEditMatches(const PreparedCameraNodeRestEdit
       HasRequiredExtension(current, "KHR_accessor_float64") != s.float64 ||
       !selectedNodeTracksMatch(library_, size_t(s.plan.evaluatedNode), s.tracks, s.limits) ||
       !s.before.matches(library_.restNodes[size_t(s.plan.evaluatedNode)])) return false;
-  if (!s.tracks.empty()) {
+  if (s.hasWeights) {
     const auto& node = current.nodes[size_t(s.plan.evaluatedNode)];
     if (node.mesh != s.mesh || node.weights.size() != s.nodeWeights || s.mesh < 0 || size_t(s.mesh) >= current.meshes.size()) return false;
     const auto& mesh = current.meshes[size_t(s.mesh)];

@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include <limits>
+#include <stdexcept>
 #include <utility>
 
 namespace container::geometry::gltf {
@@ -13,6 +14,7 @@ using Json = nlohmann::json;
 constexpr auto kInvalidReference = "XMP packet reference must be an object with a nonnegative integer packet index";
 constexpr auto kInvalidTable = "XMP root extension must contain a nonempty packets array";
 constexpr auto kInvalidPacket = "XMP packet must be an object with an @context object";
+constexpr int kInvalidPacketIndex = std::numeric_limits<int>::max();
 
 Json* findXmp(Json& record) {
   auto extensions = record.find("extensions");
@@ -29,6 +31,12 @@ const Json* packetsIn(const Json& package) {
 bool isPacket(const Json& packet) {
   const auto context = packet.find("@context");
   return context != packet.end() && context->is_object();
+}
+
+void checkDepth(const Json& value, uint32_t remaining) {
+  if (value.empty() || !value.is_structured()) return;
+  if (!remaining) throw std::runtime_error("glTF merge: XMP package exceeds the metadata nesting limit");
+  for (const auto& child : value) checkDepth(child, remaining - 1);
 }
 
 }  // namespace
@@ -68,11 +76,15 @@ GltfXmpImport::GltfXmpImport(Json& manifest) {
       return;
     }
     const auto index = id->get<size_t>();
-    if (!packets)
+    if (!packets) {
       warn(context, kInvalidTable);
-    else if (index >= packets->size())
+      *id = kInvalidPacketIndex;
+      rewritten_ = true;
+    } else if (index >= packets->size()) {
       warn(context, "XMP packet index is outside the packets array");
-    else if (!isPacket((*packets)[index]))
+      *id = kInvalidPacketIndex;
+      rewritten_ = true;
+    } else if (!isPacket((*packets)[index]))
       warn(context, kInvalidPacket);
   };
 
@@ -117,6 +129,55 @@ GltfXmpPacketView ResolveGltfXmpPacket(const Json& package, const tinygltf::Exte
   if (index >= packets->size()) return {nullptr, "XMP packet index is outside the packets array"};
   const auto& packet = (*packets)[index];
   return isPacket(packet) ? GltfXmpPacketView{&packet, {}} : GltfXmpPacketView{nullptr, kInvalidPacket};
+}
+
+GltfXmpComposition ComposeGltfXmpPackets(const tinygltf::Model& destination,
+    const tinygltf::Model& incoming, uint32_t maxMetadataDepth) {
+  auto base = ReadGltfXmpPackage(destination);
+  auto added = ReadGltfXmpPackage(incoming);
+  GltfXmpComposition result;
+  if (!base && !added) return result;
+
+  Json package = Json::object();
+  Json packets = Json::array();
+  const auto append = [&](std::optional<Json>& source) -> size_t {
+    if (!source) return 0;
+    checkDepth(*source, maxMetadataDepth);
+    if (!source->is_object()) return 0;
+    size_t count = 0;
+    for (auto entry = source->begin(); entry != source->end(); ++entry) {
+      if (entry.key() == "packets") {
+        if (!entry->is_array()) continue;
+        count = entry->size();
+        if (count > size_t(kInvalidPacketIndex) - packets.size())
+          throw std::runtime_error("glTF merge: XMP packet index limit exceeded");
+        for (auto& packet : *entry) packets.push_back(std::move(packet));
+      } else if (const auto previous = package.find(entry.key()); previous == package.end()) {
+        package[entry.key()] = std::move(*entry);
+      } else if (*previous != *entry) {
+        throw std::runtime_error("glTF merge: conflicting XMP package metadata: " + entry.key());
+      }
+    }
+    return count;
+  };
+  result.destinationPackets = append(base);
+  result.incomingPackets = append(added);
+  if (!packets.empty()) package["packets"] = std::move(packets);
+  result.rootExtensionsJson = Json{{kGltfXmpExtension, std::move(package)}}.dump();
+  return result;
+}
+
+bool RemapGltfXmpAttachment(tinygltf::ExtensionMap& extensions, size_t sourcePackets, size_t offset) {
+  const auto xmp = extensions.find(kGltfXmpExtension);
+  if (xmp == extensions.end() || !xmp->second.IsObject()) return false;
+  auto& fields = xmp->second.Get<tinygltf::Value::Object>();
+  const auto packet = fields.find("packet");
+  if (packet == fields.end() || !packet->second.IsInt() || packet->second.Get<int>() < 0) return false;
+  const int index = packet->second.Get<int>();
+  const int remapped = size_t(index) < sourcePackets ? int(offset + size_t(index)) : kInvalidPacketIndex;
+  if (remapped == index) return false;
+  packet->second = tinygltf::Value(remapped);
+  return true;
 }
 
 }  // namespace container::geometry::gltf

@@ -1,4 +1,5 @@
 #include <Container/geometry/GltfNodeExportCompaction.h>
+#include <Container/geometry/GltfInteractivity.h>
 
 #include <Container/geometry/GltfAccessor.h>
 #include <Container/geometry/GltfAnimation.h>
@@ -54,7 +55,7 @@ bool knownDeclaration(std::string_view name) {
       "KHR_texture_transform", "KHR_node_visibility", "KHR_node_selectability", "KHR_node_hoverability",
       "KHR_lights_punctual", "KHR_texture_basisu", "EXT_texture_webp", "MSFT_texture_dds",
       "KHR_mesh_quantization", "KHR_accessor_float64", "EXT_mesh_gpu_instancing", "KHR_animation_pointer",
-      "KHR_materials_variants", kGltfXmpExtension});
+      "KHR_materials_variants", kGltfXmpExtension, kGltfInteractivityExtension});
 }
 
 // Bounds logical metadata before any model-sized copy or semantic parser. Each
@@ -205,7 +206,7 @@ void audit(const tinygltf::Model& source, Budget& b) {
   b.text(source.asset.generator); b.text(source.asset.copyright);
   b.value(source.extras); b.text(source.extras_json_string); b.text(source.extensions_json_string);
   b.extensions(source.extensions,{"KHR_materials_variants","KHR_lights_punctual",kGltfXmpExtension,
-      "KHR_lights_area","EXT_lights_area","WEBGI_lights_area","WEBGI_area_light"},false,true);
+      "KHR_lights_area","EXT_lights_area","WEBGI_lights_area","WEBGI_area_light",kGltfInteractivityExtension},false,true);
   for (const auto& buffer : source.buffers) {
     b.property(buffer); b.text(buffer.uri);
     if (buffer.data.empty() && !buffer.uri.empty()) fail("buffer is not resident");
@@ -343,7 +344,7 @@ GltfNodeExportCompactionPlan CompactGltfExportNodes(const tinygltf::Model& sourc
   // temporary vector storage while moved survivors replace the copied table.
   const auto workspace = add(mul(source.nodes.size(),sizeof(tinygltf::Node)+64),
       add(mul(source.skins.size(),sizeof(tinygltf::Skin)+32),mul(budget.references,16)));
-  result.metadataBytes = add(mul(budget.metadata,2),workspace);
+  result.metadataBytes = add(mul(budget.metadata, source.extensions.contains(kGltfInteractivityExtension) ? 3 : 2),workspace);
   if (result.metadataBytes > limits.maxMetadataBytes) fail("input/output metadata and workspace exceed budget");
   result.animationDecodedBytes = budget.animationDecoded;
   const auto catalog = container::scene::BuildGltfSceneCatalog(source,
@@ -427,6 +428,14 @@ GltfNodeExportCompactionPlan CompactGltfExportNodes(const tinygltf::Model& sourc
       ++kept;
     }
     animation.channels.resize(kept);
+  }
+  if (source.extensions.contains(kGltfInteractivityExtension)) {
+    auto mappings = GltfInteractivityIdentityMappings(output);
+    mappings[size_t(InteractivityIndexDomain::Node)].oldToNew = result.oldToNewNodes;
+    mappings[size_t(InteractivityIndexDomain::NodeWeights)].oldToNew = result.oldToNewNodes;
+    output.extensions[kGltfInteractivityExtension] = RemapGltfInteractivity(source, mappings, &output);
+    if (!output.extensions.contains(kGltfXmpExtension)) output.extensions_json_string.clear();
+    ValidateGltfInteractivity(output);
   }
   return result;
 }

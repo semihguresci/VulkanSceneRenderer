@@ -2,12 +2,14 @@
 #include <Container/geometry/GltfExtendedMaterials.h>
 #include <Container/geometry/GltfModelLoader.h>
 #include <Container/geometry/GltfImageSources.h>
+#include <Container/geometry/GltfMerge.h>
 #include <Container/utility/TextureImageData.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -137,7 +139,8 @@ void expectLoadError(Load load, const std::filesystem::path& path,
     FAIL() << "Expected a capability rejection";
   } catch (const std::runtime_error& error) {
     const std::string message = error.what();
-    EXPECT_NE(message.find(path.string()), std::string::npos) << message;
+    EXPECT_TRUE(message.find(path.string()) != std::string::npos ||
+                message.find(path.generic_string()) != std::string::npos) << message;
     EXPECT_NE(message.find(detail), std::string::npos) << message;
   }
 }
@@ -335,6 +338,56 @@ TEST(GltfCapabilitiesLoader, ReturnsAssetScopedWarningsWhileImportingFallbackGeo
   EXPECT_EQ(loaded.capabilityDiagnostics[0].severity, CapabilitySeverity::Warning);
 }
 
+TEST(GltfCapabilitiesLoader, CompositionOmitsOptionalExtensionsAndKeepsCoreFallback) {
+  AssetFixture fixture;
+  auto json = fixture.triangle();
+  json["asset"] = {{"version", "2.1"}, {"minVersion", "2.0"}};
+  json["extensionsUsed"] = {"VENDOR_optional"};
+  json["extensions"]["VENDOR_optional"] = {{"accessor", 99}};
+  json["images"] = {{{"uri", kEmbeddedRedPng}}};
+  json["textures"] = {{{"source", 0}, {"extensions", {{"VENDOR_optional", {{"source", 99}}}}}}};
+  json["materials"] = {{{"pbrMetallicRoughness", {{"baseColorTexture", {{"index", 0}}}}}}};
+  auto& primitive = json["meshes"][0]["primitives"][0];
+  primitive["material"] = 0;
+  primitive["extensions"]["VENDOR_optional"] = {{"accessor", 99}};
+  primitive["extras"]["extensions"]["VENDOR_optional"] = {{"keep", true}};
+
+  gltf::LoadOptions composition;
+  composition.mergeInput = true;
+  composition.retainEncodedImages = true;
+  for (const bool binary : {false, true}) {
+    const auto path = fixture.save(json, binary);
+    const auto primary = gltf::LoadModelWithSource(path.string());
+    EXPECT_TRUE(primary.gltfModel.extensions.contains("VENDOR_optional"));
+    const auto incoming = gltf::LoadModelWithSource(path.string(), composition);
+    const auto& source = incoming.gltfModel;
+    ASSERT_EQ(incoming.model.vertices().size(), 3u);
+    EXPECT_TRUE(source.extensionsUsed.empty());
+    EXPECT_TRUE(source.extensions.empty());
+    EXPECT_TRUE(source.meshes[0].primitives[0].extensions.empty());
+    EXPECT_EQ(source.meshes[0].primitives[0].extras, primary.gltfModel.meshes[0].primitives[0].extras);
+    EXPECT_EQ(source.textures[0].source, 0);
+    EXPECT_TRUE(source.textures[0].extensions.empty());
+    EXPECT_TRUE(std::ranges::any_of(incoming.capabilityDiagnostics, [&](const auto& diagnostic) {
+      return diagnostic.assetPath == path.string() && diagnostic.code == "unsupported_optional_extension" &&
+          diagnostic.message.contains("VENDOR_optional");
+    }));
+    EXPECT_NO_THROW((void)gltf::PlanGltfMerge(tinygltf::Model{}, source));
+  }
+
+  auto noFallback = json;
+  noFallback["textures"][0].erase("source");
+  const auto noFallbackPath = fixture.save(noFallback);
+  expectLoadError([&] { (void)gltf::LoadModelWithSource(noFallbackPath.string(), composition); },
+                  noFallbackPath, "fallback");
+
+  json["extensionsRequired"] = {"VENDOR_optional"};
+  json["buffers"][0]["uri"] = "missing.bin";
+  const auto requiredPath = fixture.save(json);
+  expectLoadError([&] { (void)gltf::LoadModelWithSource(requiredPath.string(), composition); },
+                  requiredPath, "unsupported_required_extension");
+}
+
 TEST(GltfCapabilitiesLoader, SelfContainedModeRejectsFileUrisAndPreservesEmbeddedData) {
   AssetFixture fixture;
   auto json = fixture.triangle();
@@ -509,6 +562,12 @@ TEST(GltfCapabilitiesLoader, EnforcesOwnVersionAndMinimumPolicyForJsonFiles) {
   const auto loaded = gltf::LoadModelWithSource(path.string());
   ASSERT_EQ(loaded.capabilityDiagnostics.size(), 1u);
   EXPECT_EQ(loaded.capabilityDiagnostics[0].code, "newer_minor_version");
+  gltf::LoadOptions linked;
+  linked.enableLinkedAssets = true;
+  const auto ordinaryWithLinksEnabled = gltf::LoadModelWithSource(path.string(), linked);
+  EXPECT_EQ(ordinaryWithLinksEnabled.gltfModel.asset.version, "2.1");
+  ASSERT_EQ(ordinaryWithLinksEnabled.capabilityDiagnostics.size(), 1u);
+  EXPECT_EQ(ordinaryWithLinksEnabled.capabilityDiagnostics[0].code, "newer_minor_version");
   json["asset"]["minVersion"] = "2.1";
   path = fixture.save(json);
   expectLoadError([&] { (void)gltf::LoadModelWithSource(path.string()); }, path,
@@ -516,6 +575,8 @@ TEST(GltfCapabilitiesLoader, EnforcesOwnVersionAndMinimumPolicyForJsonFiles) {
   json["asset"]["minVersion"] = "broken";
   path = fixture.save(json);
   expectLoadError([&] { (void)gltf::LoadSourceModel(path.string()); }, path,
+                  "invalid_min_version");
+  expectLoadError([&] { (void)gltf::LoadModelWithSource(path.string(), linked); }, path,
                   "invalid_min_version");
   json["asset"] = {{"version", "3.0"}};
   path = fixture.save(json);

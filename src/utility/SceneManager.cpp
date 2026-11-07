@@ -855,6 +855,8 @@ container::gpu::GpuMaterial makeGpuMaterial(
   gpuMaterial.retroreflectionTextureTransform = makeGpuTextureTransform(experimental.retroreflectionTransform);
   gpuMaterial.scatterStrengthTextureTransform = makeGpuTextureTransform(experimental.scatterStrengthTransform);
   gpuMaterial.scatterColorTextureTransform = makeGpuTextureTransform(experimental.scatterColorTransform);
+  gpuMaterial.specularGlossinessDiffuse = glm::vec4(material.specularGlossinessDiffuse, material.baseColor.a);
+  gpuMaterial.specularGlossinessSpecular = glm::vec4(material.specularGlossinessSpecular, material.roughnessFactor);
 
   if (material.alphaMode == container::material::AlphaMode::Mask) {
     gpuMaterial.flags |= container::gpu::kObjectFlagAlphaMask;
@@ -927,6 +929,7 @@ SceneManager::SceneManager(
       deviceWrapper_(std::move(deviceWrapper)),
       config_(config),
       iesProfileCache_(std::make_shared<IesGpuProfileCache>(allocationManager)) {
+  (void)container::material::GltfTextureMemoryBytes(config_.textureMemoryMiB);
   // Scratch is not an exported glTF asset. Keep its empty payload canonical
   // before and after move-assignment exchanges, including resident-byte counts.
   modelExchangeScratch_.asset.version.clear();
@@ -1671,7 +1674,8 @@ std::optional<uint32_t> SceneManager::retainedPrimitiveNormalTexCoord(uint32_t r
 
 container::geometry::GltfLoadResult SceneManager::prepareGltfModel(
     const std::string& path, uintmax_t maxInputBytes, bool enableLinkedAssets,
-    bool requireSelfContained, bool enableExperimentalMaterials, bool enableOpacityMicromaps) {
+    bool requireSelfContained, bool enableExperimentalMaterials, bool enableOpacityMicromaps,
+    bool mergeInput) {
   auto resolvedPath = container::util::pathFromUtf8(path);
   if (resolvedPath.is_relative() && !std::filesystem::exists(resolvedPath)) {
     resolvedPath = resolveSceneAssetPath(path);
@@ -1682,6 +1686,7 @@ container::geometry::GltfLoadResult SceneManager::prepareGltfModel(
   options.requireSelfContained = requireSelfContained;
   options.enableExperimentalMaterials = enableExperimentalMaterials;
   options.enableOpacityMicromaps = enableOpacityMicromaps;
+  options.mergeInput = mergeInput;
   return prepareSceneGltfAsset(resolvedPath, std::move(options));
 }
 
@@ -1705,7 +1710,7 @@ bool SceneManager::reloadModel(
         if (isProceduralSphereEntry(entry)) continue;
         const auto incoming = prepareDefaultSceneGltfAsset(resolveSceneAssetPath(entry), experimental);
         (void)container::material::PrepareGltfTextures(incoming.gltfModel,
-            allocationManager_->textureDecodeOptions(false), 512ull * 1024 * 1024, experimental);
+            allocationManager_->textureDecodeOptions(false), container::material::GltfTextureMemoryBytes(config_.textureMemoryMiB), experimental);
         const auto keys = container::material::CollectGltfMaterialSamplerKeys(incoming.gltfModel);
         incomingSamplerKeys.insert(incomingSamplerKeys.end(), keys.begin(), keys.end());
       }
@@ -1721,7 +1726,7 @@ bool SceneManager::reloadModel(
       (void)prepareCompleteHierarchy(prepared->gltfModel,prepared->instancing,preflightMaterials,
           importScaleTransform(importScale),1,prepared->model.meshes().size(),config_.maxSceneObjects,config_.gltfSceneIndex);
       incomingTextures = container::material::PrepareGltfTextures(prepared->gltfModel,
-          allocationManager_->textureDecodeOptions(false), 512ull * 1024 * 1024, experimental);
+          allocationManager_->textureDecodeOptions(false), container::material::GltfTextureMemoryBytes(config_.textureMemoryMiB), experimental);
       if(container::material::CountPreparedGltfTextureResources(*incomingTextures)>textureDescriptorCapacity_)
         throw std::runtime_error("Incoming glTF textures exceed the scene image descriptor capacity");
     }
@@ -1940,11 +1945,6 @@ void SceneManager::saveScene(const SceneGraph& graph,
   container::geometry::gltf::writeExportModel(output, destination);
 }
 
-void SceneManager::validateSceneExportDestination(const std::filesystem::path& destination) const {
-  if (linkedComposition_)
-    container::geometry::gltf::ValidateGltfLinkedExportDestination(*linkedComposition_, destination);
-}
-
 struct SceneManager::LinkedSceneBaseline {
   std::vector<SceneNode> nodes;
   uint64_t graph{}, geometry{}, material{}, authoredMaterial{}, materialResources{}, camera{};
@@ -1952,7 +1952,7 @@ struct SceneManager::LinkedSceneBaseline {
 
 void SceneManager::captureLinkedSceneBaseline(const SceneGraph& graph) {
   linkedSceneBaseline_.reset();
-  if (!linkedComposition_ || !gltfModel_.animations.empty() ||
+  if (!linkedComposition_ || linkedComposition_->primaryAnimated ||
       gltfModel_.extensions.contains("KHR_interactivity")) return;
   constexpr size_t maxBytes = 64 * 1024 * 1024;
   size_t bytes = graph.nodeCount() * sizeof(SceneNode);
@@ -1978,8 +1978,12 @@ void SceneManager::saveLinkedScene(const SceneGraph& graph,
     const std::filesystem::path& destination) const {
   using namespace container::geometry::gltf;
   if (!linkedComposition_) throw std::runtime_error("The primary scene has no retained linked asset manifest");
+  if (std::ranges::any_of(linkedComposition_->placements, [&](int sourceNode) {
+        return !isLinkedSourceCarrier(size_t(sourceNode));
+      }))
+    throw std::runtime_error("The scene contains an editable linked source. Use portable Save As.");
   if (!linkedSceneBaseline_)
-    throw std::runtime_error("Linked save requires a static scene within the linked authoring budget. Use portable Save As.");
+    throw std::runtime_error("Linked save requires a static primary manifest within the linked authoring budget. Use portable Save As.");
   const auto& baseline = *linkedSceneBaseline_;
   const auto refuseEdits = [] {
     throw std::runtime_error("Linked save can retain primary node transforms and names. Use portable Save As for other scene edits.");
@@ -2038,8 +2042,16 @@ float SceneManager::importScale() const {
   return sanitizeImportScale(config_.importScale);
 }
 
-tinygltf::Model SceneManager::buildSceneExport(const SceneGraph& graph) const {
+tinygltf::Model SceneManager::buildSceneExport(const SceneGraph& graph,
+    const container::geometry::gltf::GltfLinkedPortableExportOptions* linked) const {
   auto source = exportSource_;
+  if (linked) {
+    if (linked->linkedGraphNodes.size() != graph.nodeCount() ||
+        linked->omittedAnimations.size() != source.animations.size())
+      throw std::runtime_error("Linked export projection tables are incomplete");
+    size_t clip = 0;
+    std::erase_if(source.animations, [&](const auto&) { return linked->omittedAnimations[clip++] != 0; });
+  }
   auto phases = archiveResourcePhases_;
   auto textureMapping = exportTextureIndices_;
   std::map<std::tuple<int32_t, uint32_t, uint32_t>, uint32_t> repackedTextures;
@@ -2152,11 +2164,12 @@ tinygltf::Model SceneManager::buildSceneExport(const SceneGraph& graph) const {
     converted[materialIndex] = true;
   };
   for (uint32_t index=0;index<graph.nodeCount();++index)
-    if(!graph.isNodeRetired(index) && graph.getNode(index)->renderable) convert(graph.getNode(index)->materialIndex);
+    if(!graph.isNodeRetired(index) && (!linked || !linked->linkedGraphNodes[index]) &&
+        graph.getNode(index)->renderable) convert(graph.getNode(index)->materialIndex);
   // Alternate materials can retain edits made before switching away.
   if (materialVariants_.hasVariants())
     for (const auto runtime : sourceMaterialToRuntime_)
-      if(materialIsActive(runtime)) convert(runtime);
+      if(materialIsActive(runtime) && (!linked || !isLinkedMaterialReadOnly(runtime))) convert(runtime);
   std::vector<int32_t> sourceNodes;
   sourceNodes.reserve(graph.nodeCount());
   for (uint32_t i = 0; i < graph.nodeCount(); ++i)
@@ -2174,7 +2187,9 @@ tinygltf::Model SceneManager::buildSceneExport(const SceneGraph& graph) const {
   return container::geometry::gltf::buildExportModel(
       {graph, model_, &source, sourcePath_, sourceNodes, materials, sourceMaterials,
        &exportSource_,roots,int32_t(selectedScene_),runtimePrimitiveToSource_,
-       {phases.images,phases.textures,phases.samplers,materialActive}});
+       {phases.images,phases.textures,phases.samplers,materialActive},
+       linked ? linked->linkedGraphNodes : std::span<const uint8_t>{},
+       linked ? linked->resourceIndexMaps : nullptr});
 }
 
 MaterialVariantGraphEdit SceneManager::planMaterialVariant(const SceneGraph& graph,std::optional<size_t> variant) const {
@@ -2977,6 +2992,7 @@ void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
       sceneCatalog_=std::move(catalog);
       gltfModel_ = std::move(result.gltfModel);
       linkedComposition_ = std::move(result.linkedComposition);
+      initializeLinkedAssetState();
       if(!gltfModel_.scenes.empty()) gltfModel_.defaultScene=int(selectedScene_);
       gltfInstancing_ = std::move(result.instancing);
       model_ = std::move(result.model);
@@ -2994,7 +3010,7 @@ void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
       std::optional<container::material::PreparedGltfTextures> localTextures;
       if (!preparedTextures) {
         localTextures = container::material::PrepareGltfTextures(gltfModel_,
-            allocationManager_->textureDecodeOptions(false), 512ull * 1024 * 1024,
+            allocationManager_->textureDecodeOptions(false), container::material::GltfTextureMemoryBytes(config_.textureMemoryMiB),
             config_.experimentalGltfMaterials);
         preparedTextures = &*localTextures;
       }
@@ -3108,7 +3124,7 @@ void SceneManager::appendSceneAsset(
 
   validateGltfSamplerPolicies(result.gltfModel);
   const auto preparedTextures = container::material::PrepareGltfTextures(result.gltfModel,
-      allocationManager_->textureDecodeOptions(false), 512ull * 1024 * 1024, experimental);
+      allocationManager_->textureDecodeOptions(false), container::material::GltfTextureMemoryBytes(config_.textureMemoryMiB), experimental);
   const auto imageToTexture = container::material::UploadPreparedGltfTextures(
       preparedTextures, textureManager_, [this](const auto& name, const auto& image) {
         return allocationManager_->createTextureFromImageData(name, image);
@@ -3983,6 +3999,7 @@ void SceneManager::resetLoadedAssets() {
   opacityMicromapState_.reset();
   linkedComposition_.reset();
   linkedSceneBaseline_.reset();
+  linkedAssetState_.reset();
   if(cameraProjectionRevision_==UINT64_MAX) throw std::overflow_error("Camera publication revision exhausted");
   cameraProjectionNamespace_.reset();++cameraProjectionRevision_;
   if(materialResourceRevision_==UINT64_MAX) throw std::overflow_error("Material resource revision exhausted");

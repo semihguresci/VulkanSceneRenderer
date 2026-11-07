@@ -5,6 +5,7 @@ mesh/light nodes. Select/hover checks exercise the reference renderer's bounded
 nearest-hit ancestor adaptation; this is not a trace-through implementation of
 the Khronos interaction-ray semantics and does not claim GPU pick readback.
 --generate-only writes fixtures without starting the renderer.
+--animated-only checks STEP Boolean pointers and portable playback.
 --ray adds hard ray shadows and a bounded DDGI execution witness with zero GI
 intensity; it does not claim visual validation of indirect illumination.
 """
@@ -21,6 +22,16 @@ from gltf_material_variants_runtime_regression import pixels, run
 from gltf_texture_formats_runtime_regression import verify_manifest
 
 FLAGS = {'visible': 'KHR_node_visibility', 'selectable': 'KHR_node_selectability', 'hoverable': 'KHR_node_hoverability'}
+POINTER = 'KHR_animation_pointer'
+PUNCTUAL = 'KHR_lights_punctual'
+ANIMATED_PARENT = 'Animated flag parent'
+ANIMATED_MESH = 'Animated flag mesh'
+ANIMATED_SAMPLES = {
+    1: (0, 0, (True, True, True)), 2: (0, .75, (True, True, True)),
+    3: (0, 1.25, (False, True, True)), 4: (0, 2.5, (True, False, True)),
+    5: (0, 3.5, (True, True, False)), 6: (1, .5, (True, True, True)),
+    7: (-1, None, (True, True, True)), 8: (0, 3.5, (True, True, False)),
+}
 # frame -> (interaction branch edited, hidden branch shown, undo depth)
 SAMPLES = {1: (False, False, 0), 5: (True, False, 1), 9: (False, False, 0),
            13: (True, False, 1), 17: (True, True, 2), 21: (True, False, 1),
@@ -185,6 +196,137 @@ def inspect_export(path, original):
     return dict(format=path.suffix, authoredFlagMetadata=True, syntheticFlagsAbsent=True, sceneCount=2)
 
 
+def animated_fixture(path):
+    asset = Asset()
+    mesh(asset, asset.accessor('VEC3', [[-.8,-.6,0],[.8,-.6,0],[.8,.6,0],[-.8,.6,0]]),
+         asset.accessor('VEC3', [[0,0,1]]*4), asset.accessor('VEC2', [[0,0],[1,0],[1,1],[0,1]]))
+    asset.model['materials'] = [dict(extensions={'KHR_materials_unlit': {}},
+        pbrMetallicRoughness=dict(baseColorFactor=[.8,.1,.05,1]))]
+    enabled = dict(**flag('visible', True), **flag('selectable', True), **flag('hoverable', True))
+    asset.model['nodes'] = [dict(name='Offscreen anchor', mesh=0, translation=[20,0,0]),
+        dict(name=ANIMATED_PARENT, children=[2,3], extensions=copy.deepcopy(enabled)),
+        dict(name=ANIMATED_MESH, mesh=0, extensions=enabled),
+        dict(name='Animated flag light', translation=[0,0,1], extensions={PUNCTUAL: dict(light=0)})]
+    asset.model['scenes'][0]['nodes'] = [0, 1]
+    asset.model['extensionsUsed'] = [*FLAGS.values(), POINTER, PUNCTUAL, 'KHR_materials_unlit']
+    asset.model['extensions'] = {PUNCTUAL: dict(lights=[dict(type='point', intensity=12, range=4)])}
+    times = asset.accessor('SCALAR', [0, 1, 2, 3, 4])
+    keys = ([1,0,1,1,1], [1,1,0,1,1], [1,1,1,0,1])
+    asset.model['animations'] = [dict(name='Independent flags',
+        samplers=[dict(input=times, output=asset.accessor('SCALAR', values, 5121), interpolation='STEP')
+                  for values in keys],
+        channels=[dict(sampler=i, target=dict(path='pointer', extensions={POINTER:
+                  dict(pointer=f'/nodes/1/extensions/{extension}/{member}')}))
+                  for i, (member, extension) in enumerate(FLAGS.items())])]
+    asset.model['animations'].append(dict(name='Selectability only',
+        samplers=[dict(input=times, output=asset.accessor('SCALAR', [1,1,1,1,1], 5121), interpolation='STEP')],
+        channels=[dict(sampler=0, target=dict(path='pointer', extensions={POINTER:
+                       dict(pointer='/nodes/1/extensions/KHR_node_selectability/selectable')}))]))
+    asset.write(path)
+
+
+def inspect_animated_flags(state, clip, time, expected, *, portable):
+    flags = state['gltfNodeFlags']
+    require(not flags['truncated'], 'Animated flag telemetry was truncated')
+    rows = {node['graphNode']: node for node in flags['nodes']}
+    nodes = {node['name']: node for node in flags['nodes'] if node['sourceIndex'] >= 0}
+    parent, child = nodes[ANIMATED_PARENT], nodes[ANIMATED_MESH]
+    require(child['parentGraphNode'] == parent['graphNode'], 'Animated flag ancestry changed')
+    for (member, _), value in zip(FLAGS.items(), expected, strict=True):
+        key = member.capitalize()
+        require(parent['local'+key] == value and child['local'+key] is True and
+                child['effective'+key] == value, f'Wrong animated or inherited {member}')
+    visible, selectable, hoverable = expected
+    def below_mesh(probe):
+        current = probe['graphNode']
+        while current in rows:
+            if current == child['graphNode']:
+                return True
+            current = rows[current]['parentGraphNode']
+        return False
+    probes = [probe for probe in flags['probes'] if below_mesh(probe)]
+    if visible:
+        require(len(probes) == 1 and probes[0]['hit'], 'Animated visible child was not hit')
+        probe = probes[0]
+        hit = probe['nearestHitGraphNode']
+        require(hit == probe['graphNode'] and probe['resolvedSelection'] == (hit if selectable else -1) and
+                probe['resolvedHover'] == (hit if hoverable else -1), 'Animated interaction routing is stale')
+    else:
+        require(not any(probe['hit'] for probe in probes), 'Animated hidden child was still picked')
+    animation = state['gltfAnimation']
+    require(animation['available'] and animation['clipCount'] == 2 and animation['diagnostics'] == 0,
+            'Boolean animation clip was unavailable or diagnosed')
+    require(state['gltfScenes']['pointLightCount'] == len(animation['pointLights']) == int(visible),
+            'Animated visibility did not update its attached light')
+    if time is None:
+        require(animation['selectedClip'] == -1 and not animation['targets'], 'Cleared clip retained live targets')
+    else:
+        require(animation['selectedClip'] == clip and abs(animation['time'] - time) < 1e-6, 'Wrong Boolean sample time')
+        targets = {entry['property']: entry['value'] for entry in animation['targets']
+                   if entry['sourceIndex'] == parent['sourceIndex'] and entry['component'] == -1}
+        require(targets == {f'extensions/{extension}/{member}': [int(value)]
+                            for (member, extension), value in zip(FLAGS.items(), expected, strict=True)
+                            if clip == 0 or portable or member == 'selectable'},
+                'Boolean animation target values do not match their STEP samples')
+    require(state['gltfScenes']['editHistoryDepth'] == 0, 'Playback created a user edit history entry')
+
+
+def run_animated_flags(renderer, output, techniques, report, generate_only):
+    source, sequence = output/'animated-flags.gltf', output/'animated-flags.json'
+    animated_fixture(source)
+    events = []
+    previous_clip = None
+    for frame, (clip, time, _) in ANIMATED_SAMPLES.items():
+        event = dict(frame=frame)
+        if clip != previous_clip:
+            event['animationClip'] = clip
+        if time is not None:
+            event['animationTime'] = time
+        events.append(event)
+        previous_clip = clip
+    sequence.write_text(json.dumps(dict(schemaVersion=1, frames=max(ANIMATED_SAMPLES),
+        sampleFrames=list(ANIMATED_SAMPLES), events=events)), encoding='utf-8')
+    report['fixtures'] = dict(source=str(source), sequence=str(sequence))
+    if generate_only:
+        return
+    for technique in techniques:
+        suffix = '.gltf' if technique == 'deferred-raster' else '.glb'
+        destination = output/(technique+'-animated'+suffix)
+        original = run(renderer,output,source,technique+'-animated-source',technique,'lit',report['captures'],
+                       sequence=sequence,save=destination)
+        saved, _ = load_asset(destination)
+        parent = next(i for i, node in enumerate(saved['nodes']) if node.get('name') == ANIMATED_PARENT)
+        require(saved['nodes'][parent]['extensions'][FLAGS['hoverable']]['hoverable'] is False,
+                'Portable node did not retain the non-rest save pose')
+        require(len(saved['animations']) == 2, 'Portable export lost a Boolean clip')
+        for index, clip in enumerate(saved['animations']):
+            channels = {}
+            for channel in clip['channels']:
+                sampler = clip['samplers'][channel['sampler']]
+                accessor = saved['accessors'][sampler['output']]
+                require(sampler['interpolation'] == 'STEP' and accessor['componentType'] == 5121 and
+                        accessor['type'] == 'SCALAR' and not accessor.get('normalized', False), 'Portable Boolean sampler changed')
+                channels[channel['target']['extensions'][POINTER]['pointer']] = accessor['count']
+            require(channels == {f'/nodes/{parent}/extensions/{extension}/{member}':
+                                 5 if index == 0 or member == 'selectable' else 1
+                                 for member, extension in FLAGS.items()}, 'Portable Boolean channels or restore keys changed')
+        reloaded = run(renderer,output,destination,technique+'-animated-reload',technique,'lit',report['captures'],
+                       sequence=sequence)
+        require(len(original) == len(reloaded) == len(ANIMATED_SAMPLES), 'Incomplete Boolean animation captures')
+        for (frame, (clip, time, expected)), before, after in zip(ANIMATED_SAMPLES.items(), original, reloaded, strict=True):
+            inspect_animated_flags(before['state'], clip, time, expected, portable=False)
+            saved_pose = (True, True, False) if clip == -1 else expected
+            inspect_animated_flags(after['state'], clip, time, saved_pose, portable=True)
+            difference = pixels(before['image'], after['image'])
+            require(difference['maximumError'] == 0, 'Portable Boolean playback changed viewport pixels')
+            visibility = pixels(original[0]['image'], before['image'])
+            require(visibility['maximumError'] == 0 if expected[0] else visibility['changedPixelFraction'] > .015,
+                    'Boolean visibility or interaction produced the wrong viewport change')
+            report['checks'].append(dict(technique=technique, frame=frame, time=time, flags=expected,
+                                         portableFormat=suffix, **difference))
+        print('PASS animated Boolean flags', technique, suffix, flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--renderer', required=True, type=Path)
@@ -193,6 +335,7 @@ def main():
     parser.add_argument('--technique', action='append', choices=TECHNIQUES)
     parser.add_argument('--generate-only', action='store_true')
     parser.add_argument('--ray', action='store_true')
+    parser.add_argument('--animated-only', action='store_true')
     args = parser.parse_args()
     renderer, output = args.renderer.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -207,6 +350,16 @@ def main():
         (output/'results.json').write_text(json.dumps(report, indent=2)+'\n', encoding='utf-8')
     if args.manifest: report['nativeManifestBefore'] = verify_manifest(args.manifest)
     try:
+        if args.animated_only:
+            techniques = args.technique or TECHNIQUES
+            report.update(expectedCaptureCount=2*len(ANIMATED_SAMPLES)*len(techniques),
+                          expectedCheckCount=len(ANIMATED_SAMPLES)*len(techniques), ray=False)
+            run_animated_flags(renderer,output,techniques,report,args.generate_only)
+            require(hashlib.sha256(renderer.read_bytes()).hexdigest()==report['rendererSha256'],'Renderer changed during validation')
+            if args.manifest: report['nativeManifestAfter'] = verify_manifest(args.manifest)
+            report['nativeValidationPerformed'] = not args.generate_only
+            report['passed'] = None if args.generate_only else True
+            return
         source = output/'node-flags.gltf'; model = fixture(source)
         oracles = {False: output/'hidden-pruned-oracle.gltf', True: output/'visible-ordinary-oracle.gltf'}
         for shown, path in oracles.items(): visual_reference(model, path, shown)

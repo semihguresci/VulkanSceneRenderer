@@ -1,6 +1,7 @@
 #include "Container/renderer/effects/VolumetricFogPass.h"
 
 #include "Container/renderer/core/FrameRecorder.h"
+#include "Container/renderer/deferred/DeferredRasterFrameGraphContext.h"
 #include "Container/renderer/deferred/DeferredRasterFrameState.h"
 #include "Container/renderer/resources/FrameResourceManager.h"
 #include "Container/renderer/shadow/ShadowManager.h"
@@ -70,7 +71,7 @@ void memoryBarrier(VkCommandBuffer cmd, VkPipelineStageFlags2 sourceStage, VkAcc
   vkCmdPipelineBarrier2(cmd, &dependency);
 }
 
-void colorBarrier(VkCommandBuffer cmd, VkImage image, bool begin) {
+void colorBarrier(VkCommandBuffer cmd, VkImage image, bool begin, VkBuffer oitNodes = VK_NULL_HANDLE) {
   VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
   constexpr VkAccessFlags2 generalAccess = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
   barrier.srcStageMask = begin ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -83,9 +84,22 @@ void colorBarrier(VkCommandBuffer cmd, VkImage image, bool begin) {
   barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   barrier.image = image;
   barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  VkBufferMemoryBarrier2 oitBarrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+  oitBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+  oitBarrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+  oitBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  oitBarrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+  oitBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  oitBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  oitBarrier.buffer = oitNodes;
+  oitBarrier.size = VK_WHOLE_SIZE;
   VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
   dependency.imageMemoryBarrierCount = 1;
   dependency.pImageMemoryBarriers = &barrier;
+  if (oitNodes) {
+    dependency.bufferMemoryBarrierCount = 1;
+    dependency.pBufferMemoryBarriers = &oitBarrier;
+  }
   vkCmdPipelineBarrier2(cmd, &dependency);
 }
 
@@ -101,6 +115,7 @@ struct VolumetricFogPass::Impl {
   struct Slot {
     gpu::AllocatedBuffer parameters;
     VkImage color{VK_NULL_HANDLE};
+    VkBuffer oitNodes{VK_NULL_HANDLE};
     std::array<VkDescriptorSet, 2> sets{};
   };
 
@@ -155,10 +170,12 @@ struct VolumetricFogPass::Impl {
 
   void createSlot(uint32_t index, const FrameResources& frame, const ShadowManager& shadows, VkDeviceSize range) {
     if (frame.sceneColor.format != kSceneColorFormat || !frame.sceneColor.view || !frame.depthSamplingView ||
+        !frame.oitHeadPointers.view || !frame.oitNodeBuffer.buffer || !frame.oitMetadataBuffer.buffer ||
         !shadows.shadowUbo(index).buffer || !shadows.localShadowUbo(index).buffer)
-      throw std::runtime_error("volumetric fog requires resolved HDR, depth and raster shadow resources");
+      throw std::runtime_error("volumetric fog requires resolved HDR, depth, transparency and raster shadow resources");
     auto& slot = slots[index];
     slot.color = frame.sceneColor.image;
+    slot.oitNodes = frame.oitNodeBuffer.buffer;
     slot.parameters = allocator.createBuffer(sizeof(FogUniform), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         VMA_MEMORY_USAGE_AUTO, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT);
     if (!slot.parameters.allocation_info.pMappedData)
@@ -172,18 +189,20 @@ struct VolumetricFogPass::Impl {
     if (vkAllocateDescriptorSets(device->device(), &allocate, slot.sets.data()) != VK_SUCCESS)
       throw std::runtime_error("could not allocate volumetric fog descriptors");
 
-    const std::array<VkDescriptorImageInfo, 4> images{{
+    const std::array<VkDescriptorImageInfo, 5> images{{
         {{}, frame.depthSamplingView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
         {{}, frame.sceneColor.view, VK_IMAGE_LAYOUT_GENERAL},
         {{}, shadows.shadowAtlasArrayView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-        {{}, shadows.localShadowAtlasArrayView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}}};
+        {{}, shadows.localShadowAtlasArrayView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        {{}, frame.oitHeadPointers.view, VK_IMAGE_LAYOUT_GENERAL}}};
     for (uint32_t parity = 0; parity < 2; ++parity) {
-      const std::array<VkDescriptorBufferInfo, 6> buffers{{
+      const std::array<VkDescriptorBufferInfo, 8> buffers{{
           {slot.parameters.buffer, 0, sizeof(FogUniform)},
           {froxels[1u - parity].buffer, 0, range}, {froxels[parity].buffer, 0, range},
           {cumulative.buffer, 0, range}, {shadows.shadowUbo(index).buffer, 0, sizeof(gpu::ShadowData)},
-          {shadows.localShadowUbo(index).buffer, 0, sizeof(gpu::LocalShadowData)}}};
-      std::array<VkWriteDescriptorSet, 10> writes{};
+          {shadows.localShadowUbo(index).buffer, 0, sizeof(gpu::LocalShadowData)},
+          {slot.oitNodes, 0, VK_WHOLE_SIZE}, {frame.oitMetadataBuffer.buffer, 0, sizeof(OitMetadata)}}};
+      std::array<VkWriteDescriptorSet, 13> writes{};
       uint32_t cursor = 0;
       auto write = [&](uint32_t binding, VkDescriptorType type, const VkDescriptorImageInfo* image,
                        const VkDescriptorBufferInfo* buffer) {
@@ -200,6 +219,9 @@ struct VolumetricFogPass::Impl {
       write(1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &images[0], nullptr);
       write(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &images[1], nullptr);
       for (uint32_t i = 0; i < 3; ++i) write(3 + i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &buffers[1 + i]);
+      write(6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &images[4], nullptr);
+      write(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &buffers[6]);
+      write(8, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &buffers[7]);
       write(10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &buffers[4]);
       write(11, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &images[2], nullptr);
       write(12, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &buffers[5]);
@@ -247,6 +269,9 @@ void VolumetricFogPass::createResources(const std::filesystem::path& shaderRoot,
       {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
       {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
       {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {8, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
       {10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
       {11, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
       {12, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
@@ -258,9 +283,9 @@ void VolumetricFogPass::createResources(const std::filesystem::path& shaderRoot,
   state.integration = state.pipelines.createComputePipeline(shaders / "volumetric_fog_integrate.comp.spv", state.layout, "fog-integration");
   state.composition = state.pipelines.createComputePipeline(shaders / "volumetric_fog_composite.comp.spv", state.layout, "fog-composition");
   const uint32_t setCount = frameCount * 2;
-  state.pool = state.pipelines.createDescriptorPool({{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3 * setCount},
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 3 * setCount}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, setCount},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 * setCount}}, setCount);
+  state.pool = state.pipelines.createDescriptorPool({{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4 * setCount},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 3 * setCount}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 * setCount},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 * setCount}}, setCount);
   const VkDeviceSize range = std::max(gridFor(extent, VolumetricFogMode::High).cells(),
       gridFor(extent, VolumetricFogMode::Low).cells()) * sizeof(glm::vec4);
   for (auto* buffer : {&state.froxels[0], &state.froxels[1], &state.cumulative}) {
@@ -279,7 +304,7 @@ bool VolumetricFogPass::ready(const FrameRecordParams& frame) const {
       limitDistance(frame) > frame.camera.nearPlane;
 }
 
-void VolumetricFogPass::record(VkCommandBuffer command, const FrameRecordParams& frame) {
+void VolumetricFogPass::record(VkCommandBuffer command, const FrameRecordParams& frame, bool transparentOitActive) {
   if (!ready(frame)) return;
   auto& state = *impl_;
   auto& slot = state.slots[frame.runtime.imageIndex];
@@ -300,7 +325,8 @@ void VolumetricFogPass::record(VkCommandBuffer command, const FrameRecordParams&
   uniform.viewport = {state.extent.width, state.extent.height, static_cast<uint32_t>(input.settings.mode),
                       input.settings.mode == VolumetricFogMode::Low ? 16u : 32u};
   uniform.medium = {input.settings.density, input.settings.albedo, input.settings.anisotropy, distance};
-  uniform.temporal = {reproject ? 0.8f : 0.0f, frame.camera.nearPlane, frame.camera.orthographic ? 1.0f : 0.0f, 0.0f};
+  uniform.temporal = {reproject ? 0.8f : 0.0f, frame.camera.nearPlane,
+                      frame.camera.orthographic ? 1.0f : 0.0f, transparentOitActive ? 1.0f : 0.0f};
   std::memcpy(slot.parameters.allocation_info.pMappedData, &uniform, sizeof(uniform));
   if (vmaFlushAllocation(state.allocator.memoryManager()->allocator(), slot.parameters.allocation, 0, sizeof(uniform)) != VK_SUCCESS)
     throw std::runtime_error("could not publish volumetric fog parameters");
@@ -324,7 +350,9 @@ void VolumetricFogPass::record(VkCommandBuffer command, const FrameRecordParams&
   colorBarrier(command, slot.color, true);
   vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, state.composition);
   vkCmdDispatch(command, groups(state.extent.width, 8), groups(state.extent.height, 8), 1);
-  colorBarrier(command, slot.color, false);
+  // Both the early temporal resolve and the later native resolve read the
+  // surface nodes. Their original barriers cover the raster producer only.
+  colorBarrier(command, slot.color, false, slot.oitNodes);
 
   state.pending = Impl::History{input.cameraData->viewProj, input.cameraData->cameraWorldPosition,
       input.cameraData->cameraForward, input.settings, frame.runtime.activeTechnique, state.injection.contentIdentity(),
@@ -344,17 +372,22 @@ bool VolumetricFogPass::historyReprojected() const noexcept {
   return impl_->previous && impl_->previous->reprojected;
 }
 
-void registerVolumetricFogPass(RenderGraphBuilder& graph, RenderPassId predecessor) {
-  graph.addPass(RenderPassId::VolumetricFog, {predecessor}, [](VkCommandBuffer cmd, const FrameRecordParams& frame) {
-    frame.services.volumetricFogPass->record(cmd, frame);
-  });
+void registerVolumetricFogPass(RenderGraphBuilder& graph, RenderPassId predecessor,
+    const DeferredRasterFrameGraphContext* context) {
+  graph.addPass(RenderPassId::VolumetricFog, {predecessor},
+      [context](VkCommandBuffer cmd, const FrameRecordParams& frame) {
+        const bool transparentOitActive = context && context->isPassActive(RenderPassId::OitClear) &&
+            context->isPassActive(RenderPassId::OitResolve);
+        frame.services.volumetricFogPass->record(cmd, frame, transparentOitActive);
+      });
   graph.setPassReadiness(RenderPassId::VolumetricFog, [](const FrameRecordParams& frame) {
     return frame.services.volumetricFogPass && frame.services.volumetricFogPass->ready(frame)
         ? renderPassReady() : renderPassNotNeeded();
   });
   graph.setPassResourceAccess(RenderPassId::VolumetricFog,
       {RenderResourceId::SceneColor, RenderResourceId::SceneDepth, RenderResourceId::CameraBuffer, RenderResourceId::LightingData},
-      {RenderResourceId::ShadowAtlas, RenderResourceId::LocalShadowAtlas}, {RenderResourceId::SceneColor});
+      {RenderResourceId::ShadowAtlas, RenderResourceId::LocalShadowAtlas, RenderResourceId::OitStorage},
+      {RenderResourceId::SceneColor, RenderResourceId::OitStorage});
   graph.setPassResourceTransitions(RenderPassId::VolumetricFog, {});
 }
 

@@ -1,5 +1,7 @@
 #include <Container/utility/GltfTextureResources.h>
 #include <gtest/gtest.h>
+#include <limits>
+#include <string>
 
 namespace {
 using namespace container::material;
@@ -208,4 +210,58 @@ TEST(GltfTextureResources, InvalidExtendedMaterialRejectsBeforeDecodingImagePixe
   } catch (const std::runtime_error& error) {
     EXPECT_NE(std::string(error.what()).find("diffuseTransmissionFactor"), std::string::npos);
   }
+}
+
+TEST(GltfTextureResources, TextureMemoryCliBoundsConvertWithoutIntegerOverflow) {
+  EXPECT_EQ(kDefaultGltfTextureMemoryMiB, 1024u);
+  EXPECT_EQ(ParseGltfTextureMemoryMiB("1"), 1u);
+  EXPECT_EQ(ParseGltfTextureMemoryMiB("1024"), 1024u);
+  EXPECT_EQ(ParseGltfTextureMemoryMiB("16384"), 16384u);
+  EXPECT_EQ(GltfTextureMemoryBytes(1), 1ull << 20);
+  EXPECT_EQ(GltfTextureMemoryBytes(1024), 1ull << 30);
+  EXPECT_EQ(GltfTextureMemoryBytes(16384), 1ull << 34);
+  for (const auto value : {"", "0", "-1", "+1", "1.0", "1junk", " 1", "1 ",
+                           "16385", "4294967296", "18446744073709551615", "inf", "nan"})
+    EXPECT_THROW((void)ParseGltfTextureMemoryMiB(value), std::invalid_argument) << value;
+  EXPECT_THROW((void)GltfTextureMemoryBytes(0), std::invalid_argument);
+  EXPECT_THROW((void)GltfTextureMemoryBytes(16385), std::invalid_argument);
+}
+
+TEST(GltfTextureResources, AggregatePreparationRejectsUnlimitedAndOversizedBudgets) {
+  const auto source = model();
+  EXPECT_THROW((void)PrepareGltfTextures(source, {}, 0), std::invalid_argument);
+  EXPECT_THROW((void)PrepareGltfTextures(source, {}, kMaximumGltfTextureMemoryBytes + 1), std::invalid_argument);
+  EXPECT_THROW((void)PrepareGltfTextures(source, {}, std::numeric_limits<uint64_t>::max()), std::invalid_argument);
+  EXPECT_EQ(PrepareGltfTextures(source, {}, kMaximumGltfTextureMemoryBytes).images.size(), 1u);
+}
+
+TEST(GltfTextureResources, ExactAggregateExhaustionAllowsAliasesThenNamesTheUncachedImage) {
+  auto source = model();
+  source.textures.push_back(source.textures[0]);
+  source.materials.push_back(source.materials[0]);
+  source.materials[1].pbrMetallicRoughness.baseColorTexture.index = 1;
+  EXPECT_EQ(PrepareGltfTextures(source, {}, 4).bindings.size(), 2u);
+  source.images.push_back(source.images[0]); source.images[1].image[0] = 129;
+  source.textures.push_back(source.textures[0]); source.textures[2].source = 1;
+  source.materials.push_back(source.materials[0]);
+  source.materials[2].pbrMetallicRoughness.baseColorTexture.index = 2;
+  const auto unchanged = source.images[1].image;
+  try {
+    (void)PrepareGltfTextures(source, {}, 4);
+    FAIL() << "Expected the aggregate image budget to reject a second unique image";
+  } catch (const std::runtime_error& error) {
+    const std::string message = error.what();
+    EXPECT_NE(message.find("aggregate decoded budget"), std::string::npos);
+    EXPECT_NE(message.find("texture[2].image[1]"), std::string::npos);
+    EXPECT_NE(message.find("--texture-memory-mb"), std::string::npos);
+    EXPECT_EQ(message.find("decode limits"), std::string::npos);
+  }
+  EXPECT_EQ(source.images[1].image, unchanged);
+  EXPECT_EQ(PrepareGltfTextures(source, {}, 8).images.size(), 2u);
+}
+
+TEST(GltfTextureResources, RaisingAggregateBudgetKeepsPerImageDecoderLimit) {
+  TextureDecodeOptions profile;
+  profile.maxDecodedBytes = 3;
+  EXPECT_THROW((void)PrepareGltfTextures(model(), profile, GltfTextureMemoryBytes(1024)), std::runtime_error);
 }

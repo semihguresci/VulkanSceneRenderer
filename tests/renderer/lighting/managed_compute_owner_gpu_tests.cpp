@@ -132,13 +132,20 @@ class ManagedComputeOwnerGpu : public ::testing::Test {
     queue.waitIdle();
     command.reset();
   }
-  std::array<std::array<float, 4>, 6> sampleEnvironment(const EnvironmentManager& environment) {
+  using CubeSamples = std::array<std::array<float, 4>, 6>;
+  static CubeSamples cubeAxes(float mip = 0.0f) {
+    return {{{1, 0, 0, mip}, {-1, 0, 0, mip}, {0, 1, 0, mip},
+             {0, -1, 0, mip}, {0, 0, 1, mip}, {0, 0, -1, mip}}};
+  }
+  CubeSamples sampleCube(const EnvironmentManager& environment, VkImageView cube,
+                         const CubeSamples& queries) {
     const std::array<vk::DescriptorSetLayoutBinding, 3> bindings{{
         {0, vk::DescriptorType::eSampledImage, 1, vk::ShaderStageFlagBits::eCompute},
         {1, vk::DescriptorType::eSampler, 1, vk::ShaderStageFlagBits::eCompute},
         {2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute}}};
     vk::raii::DescriptorSetLayout setLayout(device->raii(), vk::DescriptorSetLayoutCreateInfo({}, bindings));
-    vk::raii::PipelineLayout layout(device->raii(), vk::PipelineLayoutCreateInfo({}, *setLayout));
+    const vk::PushConstantRange range(vk::ShaderStageFlagBits::eCompute, 0, sizeof(queries));
+    vk::raii::PipelineLayout layout(device->raii(), vk::PipelineLayoutCreateInfo({}, *setLayout, range));
     auto pipeline = pipelines->createComputePipeline(CONTAINER_ENVIRONMENT_SAMPLE_SPIRV, *layout, "environment.sample");
     const std::array<vk::DescriptorPoolSize, 3> sizes{{
         {vk::DescriptorType::eSampledImage, 1}, {vk::DescriptorType::eSampler, 1},
@@ -146,7 +153,7 @@ class ManagedComputeOwnerGpu : public ::testing::Test {
     vk::raii::DescriptorPool descriptors(device->raii(),
         vk::DescriptorPoolCreateInfo(vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 1, sizes));
     auto sets = device->raii().allocateDescriptorSets(vk::DescriptorSetAllocateInfo(*descriptors, *setLayout));
-    std::array<std::array<float, 4>, 6> values{};
+    CubeSamples values{};
     auto output = allocation->createBuffer(sizeof(values), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT);
@@ -154,7 +161,7 @@ class ManagedComputeOwnerGpu : public ::testing::Test {
       AllocationManager* owner; AllocatedBuffer* buffer;
       ~BufferCleanup() { owner->destroyBuffer(*buffer); }
     } cleanup{allocation.get(), &output};
-    const vk::DescriptorImageInfo image({}, environment.radianceView(), vk::ImageLayout::eShaderReadOnlyOptimal);
+    const vk::DescriptorImageInfo image({}, cube, vk::ImageLayout::eShaderReadOnlyOptimal);
     const vk::DescriptorImageInfo sampler(environment.envSampler(), {}, {});
     const vk::DescriptorBufferInfo buffer(output.buffer, 0, sizeof(values));
     const std::array<vk::WriteDescriptorSet, 3> writes{{
@@ -165,6 +172,8 @@ class ManagedComputeOwnerGpu : public ::testing::Test {
     command.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
     command.bindPipeline(vk::PipelineBindPoint::eCompute, VkPipeline(pipeline));
     command.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *layout, 0, *sets.front(), {});
+    vkCmdPushConstants(*command, *layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                       sizeof(queries), queries.data());
     command.dispatch(6, 1, 1);
     vk::MemoryBarrier2 host(vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite,
                            vk::PipelineStageFlagBits2::eHost, vk::AccessFlagBits2::eHostRead);
@@ -174,6 +183,9 @@ class ManagedComputeOwnerGpu : public ::testing::Test {
     EXPECT_EQ(vmaInvalidateAllocation(allocation->memoryManager()->allocator(), output.allocation, 0, sizeof(values)), VK_SUCCESS);
     std::memcpy(values.data(), output.allocation_info.pMappedData, sizeof(values));
     return values;
+  }
+  CubeSamples sampleEnvironment(const EnvironmentManager& environment) {
+    return sampleCube(environment, environment.radianceView(), cubeAxes());
   }
   std::filesystem::path writeHdr() {
     const auto path = scratch / std::filesystem::path(u8"environment-\u00e7.hdr");
@@ -185,6 +197,29 @@ class ManagedComputeOwnerGpu : public ::testing::Test {
     };
     const std::array<float, 6> pixels{4.0f, 0.5f, 0.25f, 4.0f, 0.5f, 0.25f};
     EXPECT_NE(stbi_write_hdr_to_func(append, &encoded, 2, 1, 3, pixels.data()), 0);
+    std::ofstream stream(path, std::ios::binary); stream.write(encoded.data(), encoded.size());
+    EXPECT_TRUE(stream);
+    return path;
+  }
+  std::filesystem::path writeStripedHdr() {
+    const auto path = scratch / "specular-stripes.hdr";
+    // Authored angular period0.703125degrees: sharp reflections should retain
+    // alternating bright/dark detail instead of aliasing it into a flat field.
+    constexpr int width = 2048, height = 1024;
+    std::vector<float> pixels(width * height * 3);
+    for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
+      const size_t offset = (size_t(y) * width + x) * 3;
+      pixels[offset] = x % 4 < 2 ? 4.0f : 0.125f;
+      pixels[offset + 1] = .5f;
+      pixels[offset + 2] = .25f;
+    }
+    std::vector<char> encoded;
+    const auto append = [](void* context, void* data, int count) {
+      auto& bytes = *static_cast<std::vector<char>*>(context);
+      const auto* first = static_cast<const char*>(data);
+      bytes.insert(bytes.end(), first, first + count);
+    };
+    EXPECT_NE(stbi_write_hdr_to_func(append, &encoded, width, height, 3, pixels.data()), 0);
     std::ofstream stream(path, std::ios::binary); stream.write(encoded.data(), encoded.size());
     EXPECT_TRUE(stream);
     return path;
@@ -344,6 +379,14 @@ TEST_F(ManagedComputeOwnerGpu, PlainGradientAndAtmosphereGenerateActualCubeRadia
   const auto plain = sampleEnvironment(environment);
   for (const auto& pixel : plain) for (size_t c = 0; c < 3; ++c)
     EXPECT_NEAR(pixel[c], sky.horizon[c], 0.001f);
+  // A normalized prefilter must preserve uniform RGB energy at every
+  // roughness, including the sharp first and fully rough final level.
+  for (uint32_t mip = 0; mip < environment.prefilteredMipCount(); ++mip) {
+    SCOPED_TRACE(mip);
+    const auto filtered = sampleCube(environment, environment.prefilteredView(), cubeAxes(float(mip)));
+    for (const auto& pixel : filtered) for (size_t c = 0; c < 3; ++c)
+      EXPECT_NEAR(pixel[c], sky.horizon[c], .002f);
+  }
   const auto revision = environment.environmentRevision();
   sky.mode = SkyMode::Gradient;
   sky.zenith = {.8f, .9f, 1.0f};
@@ -373,6 +416,41 @@ TEST_F(ManagedComputeOwnerGpu, PlainGradientAndAtmosphereGenerateActualCubeRadia
   float scattering = 0;
   for (const auto& texel : environment.activeAtmosphereLut()) scattering += texel[0]+texel[1]+texel[2];
   EXPECT_GT(scattering, 0.0f);
+}
+
+TEST_F(ManagedComputeOwnerGpu, SmoothSpecularReflectionsResolveAuthoredAngularDetailAndRoughnessFiltersIt) {
+  EnvironmentManager environment(device, *allocation, *pipelines, *pool);
+  environment.createResources(root);
+  ASSERT_TRUE(environment.loadHdrEnvironment(writeStripedHdr()));
+  CubeSamples queries{};
+  constexpr double pi = 3.14159265358979323846;
+  for (size_t i = 0; i < queries.size(); ++i) {
+    const double u = (1024.5 + double(i) * 2.0) / 2048.0;
+    const double phi = (u - .5) * (2.0 * pi);
+    queries[i] = {float(std::cos(phi)), 0.0f, float(std::sin(phi)), 0.0f};
+  }
+  const auto radiance = sampleCube(environment, environment.radianceView(), queries);
+  const auto sharp = sampleCube(environment, environment.prefilteredView(), queries);
+  for (size_t i = 0; i < queries.size(); ++i) {
+    SCOPED_TRACE(i);
+    // At zero roughness the specular lobe is the actual reflected direction,
+    // not a diffuse average or an artificially softened source mip.
+    for (size_t c = 0; c < 3; ++c)
+      EXPECT_NEAR(sharp[i][c], radiance[i][c], .025f);
+    EXPECT_NEAR(sharp[i][1], .5f, .002f);
+    EXPECT_NEAR(sharp[i][2], .25f, .002f);
+  }
+  for (size_t i = 0; i < queries.size(); i += 2)
+    EXPECT_GT(sharp[i][0] - sharp[i + 1][0], 1.5f) << i;
+  for (auto& query : queries) query[3] = float(environment.prefilteredMipCount() - 1);
+  const auto rough = sampleCube(environment, environment.prefilteredView(), queries);
+  for (size_t i = 0; i < queries.size(); i += 2)
+    EXPECT_LT(std::abs(rough[i][0] - rough[i + 1][0]), .1f) << i;
+  for (const auto& pixel : rough) {
+    EXPECT_NEAR(pixel[1], .5f, .002f);
+    EXPECT_NEAR(pixel[2], .25f, .002f);
+    for (const float value : pixel) EXPECT_TRUE(std::isfinite(value));
+  }
 }
 
 TEST_F(ManagedComputeOwnerGpu, AsyncHdrAndFailedPublicationPreserveTheActiveGeneration) {

@@ -8,6 +8,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace container::geometry::gltf {
@@ -64,6 +65,7 @@ struct GltfMergeSummary {
   uint64_t objects{}, primitives{}, references{}, rootReferences{};
   uint64_t animationChannels{}, placementNodes{}, clonedChannels{};
   uint64_t payloadBytes{}, peakPayloadBytes{}, metadataBytes{}, accessorDecodedBytes{}, animationDecodedBytes{};
+  uint64_t placementReferences{}, placementMetadataBytes{};
 };
 
 struct GltfMergePlan {
@@ -75,6 +77,8 @@ struct GltfMergePlan {
   // Generator/origin information does not overwrite the destination asset.
   tinygltf::Asset incomingAsset;
 };
+
+[[nodiscard]] bool GltfMergeSupportsExtension(std::string_view name);
 
 // Pure detached authoring merge. Inputs must be validated, resident, normalized
 // loader results (compression already consumed). Rechecks bounded references,

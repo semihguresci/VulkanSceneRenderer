@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -432,6 +433,31 @@ container::geometry::Mesh makeScenePrimitiveTorus(
   }
 
   return {std::move(vertices), std::move(indices), desc.materialIndex, false};
+}
+
+std::optional<uint32_t> findReusableScenePrimitive(
+    const container::geometry::Mesh& geometry,
+    std::span<const container::geometry::Mesh> meshes,
+    std::span<const int32_t> runtimeToSource) {
+  if (geometry.empty() || meshes.size() != runtimeToSource.size() ||
+      meshes.size() >= std::numeric_limits<uint32_t>::max())
+    return std::nullopt;
+
+  const auto equalVertex = [](const auto& a, const auto& b) {
+    return a.position == b.position && a.normal == b.normal && a.tangent == b.tangent &&
+        a.color == b.color && a.colorAlpha == b.colorAlpha &&
+        a.texCoord == b.texCoord && a.texCoord1 == b.texCoord1;
+  };
+  for (uint32_t index = 0; index < meshes.size(); ++index) {
+    const auto& mesh = meshes[index];
+    if (runtimeToSource[index] == -1 &&
+        mesh.materialIndex() == geometry.materialIndex() &&
+        mesh.disableBackfaceCulling() == geometry.disableBackfaceCulling() &&
+        mesh.indices() == geometry.indices() &&
+        std::ranges::equal(mesh.vertices(), geometry.vertices(), equalVertex))
+      return index;
+  }
+  return std::nullopt;
 }
 
 } // namespace container::renderer

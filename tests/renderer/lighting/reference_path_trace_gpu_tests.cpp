@@ -9,6 +9,7 @@
 
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -23,6 +24,55 @@ using namespace container::renderer;
 using namespace container::gpu;
 
 enum class SurfaceFault { Normal, Tangent, Color, InverseTransform };
+
+TEST(ReferenceDenoiserBudget, FullHdWorkingSetFitsFiniteDefaultWhileLargerImagesRemainBounded) {
+  // Measured 960x540 OptiX backend allocation on the capture adapter, scaled to
+  // Full HD, plus the same three RGBA32F reference images charged by production.
+  constexpr uint64_t fullHdBackend = 196073380ull * 4;
+  constexpr uint64_t fullHdImage = 1920ull * 1080 * 16;
+  EXPECT_TRUE(referenceOptixImageBudgetFits(fullHdBackend, fullHdImage, kDefaultReferenceImageBudgetBytes));
+  EXPECT_FALSE(referenceOptixImageBudgetFits(fullHdBackend, fullHdImage, 512ull * 1024 * 1024));
+  EXPECT_FALSE(referenceOptixImageBudgetFits(fullHdBackend * 4, fullHdImage * 4, kDefaultReferenceImageBudgetBytes));
+}
+
+TEST(ReferenceDenoiserBudget, ExactAdmissionBoundaryAndOverflowRejectWithoutAllocating) {
+  EXPECT_TRUE(referenceOptixImageBudgetFits(40, 20, 100));
+  EXPECT_FALSE(referenceOptixImageBudgetFits(41, 20, 100));
+  EXPECT_FALSE(referenceOptixImageBudgetFits(0, 34, 100));
+  EXPECT_FALSE(referenceOptixImageBudgetFits(0, 1, 0));
+  EXPECT_FALSE(referenceOptixImageBudgetFits(std::numeric_limits<uint64_t>::max(), 1, 100));
+  EXPECT_FALSE(referenceOptixImageBudgetFits(0, std::numeric_limits<uint64_t>::max(), 100));
+}
+
+double clearcoatViewWeight(double factor, const glm::dvec3& view, const glm::dvec3& normal) {
+  return factor * (.04 + .96 * std::pow(1 - std::abs(glm::dot(view, normal)), 5));
+}
+
+double unitClearcoatProjected(const glm::dvec3& view, const glm::dvec3& light,
+                             const glm::dvec3& normal, double roughness) {
+  const double nv = glm::dot(normal, view), nl = glm::dot(normal, light);
+  if (nv <= 0 || nl <= 0 || roughness == 0) return 0;
+  const double nh = glm::dot(normal, glm::normalize(view + light));
+  const double alphaSquared = std::pow(roughness, 4);
+  const double denominator = 1 + nh * nh * (alphaSquared - 1);
+  const double distribution = alphaSquared / (glm::pi<double>() * denominator * denominator);
+  const double viewLength = std::sqrt(alphaSquared + (1 - alphaSquared) * nv * nv);
+  const double lightLength = std::sqrt(alphaSquared + (1 - alphaSquared) * nl * nl);
+  const double visibility = .5 / (nl * viewLength + nv * lightLength);
+  return distribution * visibility * nl;
+}
+
+glm::dvec3 specularGlossinessProjected(const glm::dvec3& diffuse, const glm::dvec3& specular,
+                                     double roughness, const glm::dvec3& view,
+                                     const glm::dvec3& light, const glm::dvec3& normal) {
+  const double cosine = glm::dot(normal, light);
+  if (glm::dot(normal, view) <= 0 || cosine <= 0) return glm::dvec3(0);
+  const double diffuseWeight = 1 - std::max({specular.x, specular.y, specular.z});
+  const auto fresnel = specular + (glm::dvec3(1) - specular) *
+      std::pow(1 - glm::dot(view, glm::normalize(view + light)), 5);
+  return (glm::dvec3(1) - fresnel) * diffuse * (diffuseWeight * cosine / glm::pi<double>()) +
+      fresnel * unitClearcoatProjected(view, light, normal, roughness);
+}
 
 class ReferencePathTraceGpu : public ::testing::Test {
 protected:
@@ -90,6 +140,7 @@ protected:
     v12.bufferDeviceAddress = VK_TRUE;
     v12.runtimeDescriptorArray = VK_TRUE;
     v12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+    v12.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
     v12.separateDepthStencilLayouts = VK_TRUE;
     VkPhysicalDeviceVulkan13Features v13{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
@@ -695,6 +746,451 @@ TEST_F(ReferencePathTraceGpu, UnlitUsesTexturedBaseAndEmissionWithoutScatteringO
   EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
   EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
 }
+TEST_F(ReferencePathTraceGpu, ZeroClearcoatPreservesTheOriginalRawMeanAndMomentsExactly) {
+  auto& material = materialValues[0];
+  material.color = {.65f, .3f, .1f, 1};
+  material.specularFactor = 1;
+  material.metallicRoughness = {.25f, .45f};
+  input.settings.sampleLimit = 257;
+  input.settings.samplesPerFrame = 32;
+  syncInputs();
+  const auto original = converge();
+  material.clearcoatFactor = 0;
+  material.clearcoatRoughnessFactor = .73f;
+  material.clearcoatTextureIndex = 23;
+  material.clearcoatRoughnessTextureIndex = 23;
+  material.clearcoatNormalTextureIndex = 23;
+  material.clearcoatNormalTextureScale = .4f;
+  syncInputs();
+  const auto inactive = converge();
+  EXPECT_EQ(inactive.images, original.images);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+}
+TEST_F(ReferencePathTraceGpu, ClearcoatFactorAndRoughnessUseTheirTextureChannelsAndOverrides) {
+  auto& material = materialValues[0];
+  material.color = {.2f, .4f, .6f, 1};
+  material.specularFactor = 0;
+  material.clearcoatFactor = .4f;
+  material.clearcoatRoughnessFactor = .15f;
+  lighting.environmentIntensity = 0;
+  lighting.directionalDirection = {-.6f, 0, -.8f, 0};
+  lighting.directionalColorIntensity = {1, 1, 1, 1};
+  input.settings.sampleLimit = 64;
+  input.settings.maxBounces = 1;
+  syncInputs();
+  const auto constant = converge();
+  material.clearcoatFactor = .8f;
+  material.clearcoatRoughnessFactor = .6f;
+  material.clearcoatTextureIndex = 23;
+  material.clearcoatRoughnessTextureIndex = 23;
+  syncInputs();
+  const auto textured = converge();
+  EXPECT_EQ(textured.images, constant.images);
+
+  material.clearcoatTextureTransform.row1.w = 2;
+  material.clearcoatRoughnessTextureTransform.row1.w = 3;
+  syncInputs();
+  const auto overridden = converge();
+  material.clearcoatTextureIndex = material.clearcoatRoughnessTextureIndex = UINT32_MAX;
+  material.clearcoatFactor = .6f;
+  material.clearcoatRoughnessFactor = .6f;
+  syncInputs();
+  EXPECT_EQ(converge().images, overridden.images);
+  EXPECT_GT(glm::length(overridden.roi() - textured.roi()), .001);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+}
+TEST_F(ReferencePathTraceGpu, ClearcoatAttenuatesUnderlyingEmissionOnlyOnTheOutgoingSegment) {
+  auto& material = materialValues[0];
+  material.color = {0, 0, 0, 1};
+  material.specularFactor = 0;
+  material.emissiveColor = {2, 1, .5f};
+  material.clearcoatFactor = .6f;
+  material.clearcoatRoughnessFactor = .4f;
+  lighting.environmentIntensity = 0;
+  input.settings.sampleLimit = 64;
+  input.settings.maxBounces = 1;
+  syncInputs();
+  const auto pixels = converge();
+  const auto expected = glm::dvec3(material.emissiveColor) * (1 - double(material.clearcoatFactor) * .04);
+  for (int channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR(pixels.roi()[channel], expected[channel], 2e-6);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+}
+TEST_F(ReferencePathTraceGpu, ClearcoatFactorAndRoughnessMatchIndependentDirectionalGgx) {
+  auto& material = materialValues[0];
+  material.color = {.2f, .4f, .6f, 1};
+  material.specularFactor = 0;
+  lighting.environmentIntensity = 0;
+  lighting.directionalDirection = {-.6f, 0, -.8f, 0};
+  lighting.directionalColorIntensity = {1, 1, 1, 1};
+  input.settings.sampleLimit = 64;
+  input.settings.maxBounces = 1;
+  const glm::dvec3 view(0, 0, 1), normal(0, 0, 1);
+  const auto light = glm::normalize(glm::dvec3(.6f, 0, .8f));
+  for (const float factor : {0.f, .35f, 1.f}) {
+    for (const float roughness : {.2f, .65f, 1.f}) {
+      SCOPED_TRACE(::testing::Message() << "factor=" << factor << " roughness=" << roughness);
+      material.clearcoatFactor = factor;
+      material.clearcoatRoughnessFactor = roughness;
+      syncInputs();
+      const auto actual = converge().roi();
+      const double weight = clearcoatViewWeight(factor, view, normal);
+      const auto expected = (1 - weight) * glm::dvec3(material.color) * light.z / glm::pi<double>() +
+          glm::dvec3(weight * unitClearcoatProjected(view, light, normal, roughness));
+      for (int channel = 0; channel < 3; ++channel)
+        EXPECT_NEAR(actual[channel], expected[channel], 4e-6);
+      EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+      EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+    }
+  }
+}
+TEST_F(ReferencePathTraceGpu, ClearcoatNormalAndBaseNormalRemainIndependent) {
+  auto& material = materialValues[0];
+  material.color = {.3f, .4f, .5f, 1};
+  material.specularFactor = 0;
+  material.clearcoatFactor = 1;
+  material.clearcoatRoughnessFactor = .6f;
+  material.clearcoatNormalTextureIndex = 23;
+  lighting.environmentIntensity = 0;
+  lighting.directionalDirection = {0, .6f, -.8f, 0};
+  lighting.directionalColorIntensity = {1, 1, 1, 1};
+  input.settings.sampleLimit = 64;
+  input.settings.maxBounces = 1;
+  const glm::dvec3 view(0, 0, 1), flat(0, 0, 1);
+  const auto mapped = glm::normalize(glm::dvec3(0, -.5, .5));
+  const auto light = glm::normalize(glm::dvec3(0, -.6f, .8f));
+  const auto expected = [&](const glm::dvec3& baseNormal, const glm::dvec3& coatNormal) {
+    const double weight = clearcoatViewWeight(material.clearcoatFactor, view, coatNormal);
+    return (1 - weight) * glm::dvec3(material.color) * glm::dot(baseNormal, light) / glm::pi<double>() +
+        glm::dvec3(weight * unitClearcoatProjected(view, light, coatNormal, material.clearcoatRoughnessFactor));
+  };
+  syncInputs();
+  const auto mappedCoat = converge().roi();
+  for (int channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR(mappedCoat[channel], expected(flat, mapped)[channel], 5e-6);
+  material.clearcoatNormalTextureIndex = UINT32_MAX;
+  material.normalTextureIndex = 23;
+  syncInputs();
+  const auto mappedBase = converge().roi();
+  for (int channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR(mappedBase[channel], expected(mapped, flat)[channel], 5e-6);
+  EXPECT_GT(glm::length(mappedBase - mappedCoat), .02);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+}
+TEST_F(ReferencePathTraceGpu, SmoothClearcoatAddsCoincidentBaseReflectionAndKeepsWhiteTransmissionEnergy) {
+  auto& material = materialValues[0];
+  material.color = {.2f, .4f, .8f, 1};
+  material.specularFactor = 1;
+  material.metallicRoughness = {1, 0};
+  material.clearcoatFactor = 1;
+  material.clearcoatRoughnessFactor = 0;
+  input.settings.sampleLimit = 64;
+  input.settings.maxBounces = 2;
+  input.settings.rouletteDepth = 32;
+  syncInputs();
+  const auto metal = converge();
+  const auto expected = .96 * glm::dvec3(material.color) + glm::dvec3(.04);
+  for (int channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR(metal.roi()[channel], expected[channel], 2e-6);
+  material.color = {1, 1, 1, 1};
+  material.specularFactor = 0;
+  material.metallicRoughness.x = 0;
+  material.transmissionFactor = 1;
+  syncInputs();
+  const auto sheet = converge();
+  for (int channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR(sheet.roi()[channel], 1, 2e-6);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+}
+TEST_F(ReferencePathTraceGpu, RoughClearcoatAreaLightMisMatchesIndependentLayeredQuadrature) {
+  auto& material = materialValues[0];
+  material.color = {.2f, .4f, .6f, 1};
+  material.specularFactor = 0;
+  material.clearcoatFactor = .8f;
+  material.clearcoatRoughnessFactor = .7f;
+  lighting.environmentIntensity = 0;
+  lighting.areaLightCount = 1;
+  auto& light = areaValues.emplace_back();
+  light.positionRange = {0, 0, 2, 0};
+  light.directionType = {0, 0, -1, 0};
+  light.tangentHalfSize = {1, 0, 0, 1};
+  light.bitangentHalfSize = {0, 1, 0, 1};
+  light.colorIntensity = {1, 1, 1, 2};
+  input.settings.sampleLimit = 8192;
+  input.settings.maxBounces = 2;
+  syncInputs();
+  const auto mis = converge();
+  input.settings.maxBounces = 1;
+  const auto nee = converge();
+  glm::dvec3 expected(0);
+  const glm::dvec3 view(0, 0, 1), normal(0, 0, 1);
+  const double weight = clearcoatViewWeight(material.clearcoatFactor, view, normal);
+  constexpr int steps = 128;
+  for (int py = 14; py < 18; ++py) for (int px = 14; px < 18; ++px) {
+    const double x = (px + .5) / 16 - 1, y = 1 - (py + .5) / 16;
+    for (int ly = 0; ly < steps; ++ly) for (int lx = 0; lx < steps; ++lx) {
+      const glm::dvec3 delta(2 * (lx + .5) / steps - 1 - x,
+                             2 * (ly + .5) / steps - 1 - y, 2);
+      const double square = glm::dot(delta, delta);
+      const auto direction = delta / std::sqrt(square);
+      const auto projected = (1 - weight) * glm::dvec3(material.color) * direction.z / glm::pi<double>() +
+          glm::dvec3(weight * unitClearcoatProjected(view, direction, normal, material.clearcoatRoughnessFactor));
+      expected += projected * (2 * direction.z / square) * 4.;
+    }
+  }
+  expected /= 16 * steps * steps;
+  for (int channel = 0; channel < 3; ++channel) {
+    EXPECT_NEAR(mis.roi()[channel], expected[channel], .001);
+    EXPECT_NEAR(nee.roi()[channel], expected[channel], .001);
+    EXPECT_NEAR(mis.roi()[channel], nee.roi()[channel], .001);
+  }
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+  std::printf("REFERENCE_CLEARCOAT_AREA_MIS mean=%.9f nee=%.9f expected=%.9f\n",
+      mis.roi().x, nee.roi().x, expected.x);
+  save(mis, "clearcoat-area-mis");
+}
+TEST_F(ReferencePathTraceGpu, SpecularGlossinessDirectLightingUsesAuthoredLobesAndGlossiness) {
+  auto& material = materialValues[0];
+  material.flags = 0x8u;
+  material.specularGlossinessDiffuse = {.7f, .4f, .2f, .35f};
+  material.specularGlossinessSpecular = {.12f, .3f, .6f, .55f};
+  material.color = {.1f, .8f, .95f, 1};
+  material.metallicRoughness = {.9f, .15f};
+  material.specularFactor = 0;
+  for (auto& vertex : vertices) vertex.color = {.9f, .7f, .5f};
+  ++revision;
+  lighting.environmentIntensity = 0;
+  lighting.directionalDirection = {-.6f, 0, -.8f, 0};
+  lighting.directionalColorIntensity = {1, 1, 1, 1};
+  input.settings.sampleLimit = 64;
+  input.settings.maxBounces = 1;
+  syncInputs(); build(0); build(1);
+  const glm::dvec3 view(0, 0, 1), normal(0, 0, 1);
+  const auto light = glm::normalize(glm::dvec3(.6f, 0, .8f));
+  const auto diffuse = glm::dvec3(material.specularGlossinessDiffuse) * glm::dvec3(vertices[0].color);
+  const auto specular = glm::dvec3(material.specularGlossinessSpecular);
+  for (float gloss : {0.f, .35f, .8f, 1.f}) {
+    SCOPED_TRACE(gloss);
+    material.specularGlossinessSpecular.w = gloss;
+    syncInputs();
+    const auto actual = converge().roi();
+    const auto expected = specularGlossinessProjected(diffuse, specular, 1 - double(gloss), view, light, normal);
+    for (int channel = 0; channel < 3; ++channel)
+      EXPECT_NEAR(actual[channel], expected[channel], 5e-6);
+    EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+    EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+  }
+}
+TEST_F(ReferencePathTraceGpu, SpecularGlossinessTextureUsesRgbSpecularAndLinearAlphaGlossiness) {
+  ASSERT_NO_FATAL_FAILURE(bindTransportMipTexture());
+  vertices.clear(); indices.clear(); objects.clear(); draws.clear();
+  addQuad({0, 0, 0}, 1, 1, true, 0);
+  auto& material = materialValues[0];
+  material.flags = 0x8u;
+  material.specularGlossinessDiffuse = {.7f, .4f, .2f, 1};
+  material.specularGlossinessSpecular = {.8f, .4f, .2f, .8f};
+  material.baseColorTextureIndex = 23;
+  material.specularColorTextureIndex = kMipTextureIndex;
+  material.roughnessTextureIndex = kMipTextureIndex;
+  material.specularColorTextureTransform = minifiedTextureTransform();
+  material.roughnessTextureTransform = minifiedTextureTransform();
+  material.roughnessTextureTransform.row1.w = 0;
+  lighting.environmentIntensity = 0;
+  lighting.directionalDirection = {-.6f, 0, -.8f, 0};
+  lighting.directionalColorIntensity = {1, 1, 1, 1};
+  input.settings.sampleLimit = 64;
+  input.settings.maxBounces = 1;
+  syncInputs(); build(0); build(1);
+  const auto coarse = converge();
+  material.specularColorTextureIndex = material.roughnessTextureIndex = UINT32_MAX;
+  material.specularGlossinessSpecular = {.8f, 0, 0, .6f};
+  syncInputs();
+  EXPECT_EQ(converge().images, coarse.images);
+
+  material.specularGlossinessSpecular = {.8f, .4f, .2f, .8f};
+  material.specularColorTextureIndex = material.roughnessTextureIndex = kMipTextureIndex;
+  material.specularColorTextureTransform = {};
+  material.roughnessTextureTransform = {};
+  material.roughnessTextureTransform.row1.w = 2;
+  syncInputs();
+  const auto fine = converge();
+  material.specularColorTextureIndex = material.roughnessTextureIndex = UINT32_MAX;
+  material.specularGlossinessSpecular = {0, 0, .2f, .2f};
+  syncInputs();
+  EXPECT_EQ(converge().images, fine.images);
+  EXPECT_GT(glm::length(coarse.roi() - fine.roi()), .01);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+}
+TEST_F(ReferencePathTraceGpu, SpecularGlossinessIgnoresItsMetallicRoughnessFallbackFields) {
+  auto& material = materialValues[0];
+  material.flags = 0x8u;
+  material.specularGlossinessDiffuse = {.7f, .4f, .2f, 1};
+  material.specularGlossinessSpecular = {.12f, .3f, .6f, .55f};
+  input.settings.sampleLimit = 257;
+  input.settings.samplesPerFrame = 32;
+  input.settings.maxBounces = 3;
+  input.settings.rouletteDepth = 32;
+  syncInputs();
+  const auto baseline = converge();
+  material.color = {.01f, .95f, .05f, .2f};
+  material.metallicRoughness = {1, .01f};
+  material.specularFactor = .9f;
+  material.specularColorFactor = {.8f, .1f, .5f, 1};
+  material.ior = 2.2f;
+  material.metallicRoughnessTextureIndex = 23;
+  material.metalnessTextureIndex = 23;
+  material.specularTextureIndex = 23;
+  syncInputs();
+  const auto fallbackChanged = converge();
+  EXPECT_EQ(fallbackChanged.images, baseline.images);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+}
+TEST_F(ReferencePathTraceGpu, SpecularGlossinessSmoothColoredReflectionKeepsItsExactFresnelEnergy) {
+  auto& material = materialValues[0];
+  material.flags = 0x8u;
+  material.specularGlossinessDiffuse = {0, 0, 0, 1};
+  material.specularGlossinessSpecular = {.2f, .5f, .9f, 1};
+  material.color = {.95f, .05f, .1f, 1};
+  material.metallicRoughness = {0, 1};
+  material.specularFactor = 0;
+  input.settings.sampleLimit = 64;
+  input.settings.maxBounces = 2;
+  input.settings.rouletteDepth = 32;
+  syncInputs();
+  const auto pixels = converge();
+  const auto expected = glm::dvec3(material.specularGlossinessSpecular);
+  for (int channel = 0; channel < 3; ++channel) {
+    EXPECT_NEAR(pixels.roi()[channel], expected[channel], 2e-6);
+    EXPECT_NEAR(pixels.roi(1)[channel], 0, 2e-6);
+  }
+  material.specularGlossinessDiffuse = glm::vec4(1);
+  material.specularGlossinessSpecular = glm::vec4(1);
+  syncInputs();
+  EXPECT_EQ(converge().roi(), glm::dvec3(1));
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+}
+TEST_F(ReferencePathTraceGpu, SpecularGlossinessEnvironmentMisMatchesIndependentBrdfQuadrature) {
+  auto& material = materialValues[0];
+  material.flags = 0x8u;
+  material.specularGlossinessDiffuse = {.6f, .25f, .1f, 1};
+  material.specularGlossinessSpecular = {.04f, .3f, .7f, .35f};
+  material.metallicRoughness = {1, .05f};
+  material.specularFactor = 0;
+  input.settings.sampleLimit = 8192;
+  input.settings.maxBounces = 2;
+  input.settings.rouletteDepth = 32;
+  syncInputs();
+  const auto pixels = converge();
+  glm::dvec3 expected(0);
+  const glm::dvec3 view(0, 0, 1), normal(0, 0, 1);
+  const auto diffuse = glm::dvec3(material.specularGlossinessDiffuse);
+  const auto specular = glm::dvec3(material.specularGlossinessSpecular);
+  const double roughness = 1 - double(material.specularGlossinessSpecular.w);
+  constexpr int elevations = 192, azimuths = 384;
+  for (int elevation = 0; elevation < elevations; ++elevation) {
+    const double z = (elevation + .5) / elevations, radius = std::sqrt(1 - z * z);
+    for (int azimuth = 0; azimuth < azimuths; ++azimuth) {
+      const double phi = 2 * glm::pi<double>() * (azimuth + .5) / azimuths;
+      expected += specularGlossinessProjected(diffuse, specular, roughness, view,
+          {radius * std::cos(phi), radius * std::sin(phi), z}, normal);
+    }
+  }
+  expected *= 2 * glm::pi<double>() / (elevations * azimuths);
+  for (int channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR(pixels.roi()[channel], expected[channel], .005);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+  std::printf("REFERENCE_SPECULAR_GLOSSINESS_MIS mean=%.9f,%.9f,%.9f expected=%.9f,%.9f,%.9f\n",
+      pixels.roi().x, pixels.roi().y, pixels.roi().z, expected.x, expected.y, expected.z);
+}
+TEST_F(ReferencePathTraceGpu, SpecularGlossinessAlphaEmissionAndNormalUseTheirAuthoredInputs) {
+  auto& material = materialValues[0];
+  material.flags = 0x8u | kObjectFlagAlphaMask;
+  material.specularGlossinessDiffuse = {.8f, .4f, .2f, .25f};
+  material.specularGlossinessSpecular = {0, 0, 0, 1};
+  material.color = {.05f, .95f, .5f, .9f};
+  material.baseColorTextureIndex = 23;
+  material.normalTextureIndex = 23;
+  material.emissiveColor = {.125f, .25f, .5f};
+  material.emissiveTextureIndex = 23;
+  material.alphaCutoff = .2f;
+  for (auto& vertex : vertices) {
+    vertex.color = {.8f, .6f, .4f};
+    vertex.colorAlpha = .5f;
+  }
+  ++revision;
+  lighting.environmentIntensity = 0;
+  lighting.directionalDirection = {0, .6f, -.8f, 0};
+  lighting.directionalColorIntensity = {1, 1, 1, 1};
+  input.settings.sampleLimit = 64;
+  input.settings.maxBounces = 1;
+  syncInputs(); build(0); build(1);
+  EXPECT_EQ(converge().roi(), glm::dvec3(0));
+  material.alphaCutoff = .1f;
+  syncInputs();
+  const auto visible = converge();
+  const glm::dvec3 texture(.5, .25, .75);
+  const auto diffuse = glm::dvec3(material.specularGlossinessDiffuse) * texture * glm::dvec3(vertices[0].color);
+  const auto normal = glm::normalize(glm::dvec3(0, -.5, .5));
+  const auto light = glm::normalize(glm::dvec3(0, -.6f, .8f));
+  const double fresnel = std::pow(1 - glm::dot(glm::dvec3(0, 0, 1),
+      glm::normalize(glm::dvec3(0, 0, 1) + light)), 5);
+  const auto expected = (1 - fresnel) * diffuse * glm::dot(normal, light) / glm::pi<double>() +
+      glm::dvec3(material.emissiveColor) * texture;
+  for (int channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR(visible.roi()[channel], expected[channel], 3e-6);
+  material.flags = 0x8u | kObjectFlagAlphaBlend;
+  input.settings.sampleLimit = 8192;
+  syncInputs();
+  const auto blended = converge();
+  for (int channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR(blended.roi()[channel], expected[channel] * .125, .002);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+}
+TEST_F(ReferencePathTraceGpu, SpecularGlossinessRejectsIncompatibleActiveMaterialExtensions) {
+  auto& material = materialValues[0];
+  material.flags = 0x8u;
+  material.specularGlossinessDiffuse = {.7f, .4f, .2f, 1};
+  material.specularGlossinessSpecular = {.12f, .3f, .6f, .55f};
+  material.metallicRoughness = {1, .3f};
+  material.specularFactor = 1;
+  input.settings.sampleLimit = 64;
+  input.settings.maxBounces = 2;
+  input.settings.rouletteDepth = 32;
+  syncInputs();
+  const auto pure = converge();
+  EXPECT_GT(pure.roi().x, .05);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  const auto original = material;
+  for (int extension : {0, 1, 2}) {
+    SCOPED_TRACE(extension);
+    material = original;
+    if (extension == 0) material.transmissionFactor = .5f;
+    else if (extension == 1) material.clearcoatFactor = .5f;
+    else material.anisotropyDiffuseFactors.x = .5f;
+    syncInputs();
+    const auto rejected = converge();
+    EXPECT_EQ(rejected.roi(), glm::dvec3(0));
+    EXPECT_EQ(rejected.roi(2), glm::dvec3(1, 0, 1));
+    EXPECT_GT(tracer->diagnostics(0).unsupportedSamples, 0);
+    EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+  }
+  material = original;
+  syncInputs();
+  EXPECT_EQ(converge().images, pure.images);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+}
 TEST_F(ReferencePathTraceGpu, UnsupportedSolidVolumeIsVisibleWithoutContaminatingRawMoments) {
   materialValues[0].transmissionFactor=1;materialValues[0].thicknessFactor=1;syncInputs();input.settings.sampleLimit=64;
   auto pixels=render();
@@ -942,6 +1438,48 @@ TEST_F(ReferencePathTraceGpu, DirectMeshLightAndBsdfMisMatchIndependentParallelP
   syncInputs();
   EXPECT_EQ(converge().roi(), glm::dvec3(0));
 }
+TEST_F(ReferencePathTraceGpu, CoatedMeshEmissionMatchesItsNeeAndPathMisOutgoingWeight) {
+  meshLightProposal = true;
+  lighting.environmentIntensity = 0;
+  auto& emitter = materialValues.emplace_back();
+  emitter.color = {0, 0, 0, 1};
+  emitter.specularFactor = 0;
+  emitter.emissiveColor = {1, .25f, .1f};
+  emitter.emissiveStrength = 2;
+  emitter.clearcoatFactor = 1;
+  emitter.clearcoatRoughnessFactor = .5f;
+  addQuad({0, 0, 2}, 1, 1, false, 1);
+  syncInputs(); build(0); build(1);
+  input.settings.sampleLimit = 8192;
+  input.settings.maxBounces = 1;
+  const auto nee = converge().roi();
+  input.settings.maxBounces = 2;
+  const auto mis = converge().roi();
+  double expected = 0;
+  constexpr int steps = 128;
+  for (int py = 14; py < 18; ++py) for (int px = 14; px < 18; ++px) {
+    const double x = (px + .5) / 16 - 1, y = 1 - (py + .5) / 16;
+    for (int ly = 0; ly < steps; ++ly) for (int lx = 0; lx < steps; ++lx) {
+      const glm::dvec3 delta(2 * (lx + .5) / steps - 1 - x,
+                             2 * (ly + .5) / steps - 1 - y, 2);
+      const double square = glm::dot(delta, delta), cosine = 2 / std::sqrt(square);
+      const double coat = .04 + .96 * std::pow(1 - cosine, 5);
+      // Receiver albedo .5 and emitter radiance 2 cancel. Both planes supply
+      // one cosine, and only the emitter's outgoing segment loses (1-q).
+      expected += (1 - coat) * cosine * cosine / (glm::pi<double>() * square) * 4.;
+    }
+  }
+  expected /= 16 * steps * steps;
+  const auto color = glm::dvec3(emitter.emissiveColor);
+  for (int channel = 0; channel < 3; ++channel) {
+    EXPECT_NEAR(nee[channel], expected * color[channel], .001);
+    EXPECT_NEAR(mis[channel], expected * color[channel], .001);
+    EXPECT_NEAR(nee[channel], mis[channel], .001);
+  }
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+  std::printf("REFERENCE_CLEARCOAT_MESH_MIS mean=%.9f nee=%.9f expected=%.9f\n", mis.x, nee.x, expected);
+}
 TEST_F(ReferencePathTraceGpu, AlphaMaskRejectsCoverageWhileOpaqueIgnoresVertexAndMaterialAlpha) {
   for(auto& vertex:vertices) vertex.colorAlpha=.1f;
   ++revision;build(0);build(1);
@@ -967,6 +1505,38 @@ TEST_F(ReferencePathTraceGpu, SampleBatchSizeAndImageSlotChangesPreserveExactSeq
   input.settings.sampleLimit=40;render(1);EXPECT_EQ(tracer->attemptedSamples(),38);EXPECT_EQ(tracer->historyResets(),1);
   input.settings.sampleLimit=8;const auto smaller=converge();EXPECT_EQ(tracer->attemptedSamples(),8);EXPECT_EQ(tracer->historyResets(),2);
   EXPECT_EQ(smaller.images[0][16+16*32].w,8);
+}
+TEST_F(ReferencePathTraceGpu, StandardErrorUsesAcceptedMomentsWithoutResettingRawHistory) {
+  constexpr size_t center = 16 + 16 * 32;
+  input.settings.sampleLimit = 8;
+  input.settings.samplesPerFrame = 1;
+  input.displayMode = ReferencePathDisplayMode::StandardError;
+  const auto single = render();
+  EXPECT_EQ(single.images[0][center].w, 1.0f);
+  EXPECT_EQ(single.images[2][center], glm::vec4(.12f, .12f, .12f, 1.0f));
+
+  input.settings.samplesPerFrame = 8;
+  input.displayMode = ReferencePathDisplayMode::Beauty;
+  const auto beauty = render(1);
+  ASSERT_EQ(beauty.images[0][center].w, 8.0f);
+  ASSERT_EQ(beauty.images[1][center].w, 0.0f);
+
+  input.displayMode = ReferencePathDisplayMode::StandardError;
+  const auto heat = render();
+  EXPECT_EQ(tracer->historyResets(), 1u);
+  EXPECT_EQ(tracer->lastSubmittedSamples(), 0u);
+  EXPECT_EQ(heat.images[0], beauty.images[0]);
+  EXPECT_EQ(heat.images[1], beauty.images[1]);
+  const glm::dvec3 mean(beauty.images[0][center]), moment(beauty.images[1][center]);
+  const double rms = std::sqrt((moment.x + moment.y + moment.z) / (3 * 8 * 7));
+  ASSERT_GT(rms, 0.0);
+  const double relative = rms / std::max(.01, std::sqrt(glm::dot(mean, mean) / 3.0));
+  const glm::dvec3 cyan(0, 1, 1), yellow(1, 1, 0), red(1, 0, 0);
+  const glm::dvec3 expected = relative <= .01 ? cyan * (relative / .01)
+      : relative <= .1 ? glm::mix(cyan, yellow, (relative - .01) / .09)
+      : glm::mix(yellow, red, std::min(1.0, (relative - .1) / .9));
+  for (int channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR(heat.images[2][center][channel], expected[channel], .00002);
 }
 TEST_F(ReferencePathTraceGpu, AlphaBlendEndpointsPreserveOpaqueAndEmptyRadiance) {
   input.settings.sampleLimit=128;
@@ -1175,6 +1745,75 @@ TEST_F(ReferencePathTraceGpu, AreaLightMisThroughTwoReflectivePanesMatchesIndepe
   EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples,0);EXPECT_EQ(tracer->diagnostics(0).rejectedSamples,0);
   std::printf("REFERENCE_THIN_PANE_MIS mean=%.9f nee=%.9f expected=%.9f\n",mis.roi().x,nee.roi().x,expected);
   save(mis,"thin-two-panes-area-mis");
+}
+TEST_F(ReferencePathTraceGpu, CoatedSmoothSheetConnectionsAndPathNullProbabilitiesMatch) {
+  input.data.inverseView = glm::translate(glm::mat4(1), glm::vec3(0, 0, .2f));
+  lighting.environmentIntensity = 0;
+  lighting.pointLightCount = 1;
+  auto& point = pointValues.emplace_back();
+  point.positionRadius = {0, 0, 2, 0};
+  point.colorIntensity = {1, 1, 1, 8};
+  auto& sheet = materialValues.emplace_back();
+  sheet.color = {1, 1, 1, 1};
+  sheet.specularFactor = 0;
+  sheet.transmissionFactor = 1;
+  sheet.metallicRoughness.y = 0;
+  sheet.clearcoatFactor = 1;
+  sheet.clearcoatRoughnessFactor = 0;
+  sheet.flags = kObjectFlagDoubleSided;
+  addQuad({0, 0, .5f}, 1.5f, 1.5f, true, 1);
+  addQuad({0, 0, 1}, 1.5f, 1.5f, true, 1);
+  syncInputs(); build(0); build(1);
+  input.settings.sampleLimit = 1024;
+  input.settings.maxBounces = 1;
+  input.settings.rouletteDepth = 32;
+  const auto pointResult = converge().roi();
+  double expectedPoint = 0;
+  constexpr int steps = 128;
+  for (int y = 0; y < steps; ++y) for (int x = 0; x < steps; ++x) {
+    const double dx = .25 * (x + .5) / steps - .125, dy = .25 * (y + .5) / steps - .125;
+    const double square = 4 + dx * dx + dy * dy, cosine = 2 / std::sqrt(square);
+    const double baseWeight = 1 - (.04 + .96 * std::pow(1 - cosine, 5));
+    expectedPoint += 4 * cosine * baseWeight * baseWeight / (glm::pi<double>() * square);
+  }
+  expectedPoint /= steps * steps;
+  for (int channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR(pointResult[channel], expectedPoint, .00003);
+
+  lighting.pointLightCount = 0;
+  lighting.areaLightCount = 1;
+  auto& area = areaValues.emplace_back();
+  area.positionRange = {0, 0, 2, 0};
+  area.directionType = {0, 0, -1, 0};
+  area.tangentHalfSize = {1, 0, 0, 1};
+  area.bitangentHalfSize = {0, 1, 0, 1};
+  area.colorIntensity = {1, 1, 1, 2};
+  input.settings.sampleLimit = 8192;
+  syncInputs();
+  const auto nee = converge().roi();
+  input.settings.maxBounces = 2;
+  const auto mis = converge().roi();
+  double expectedArea = 0;
+  for (int py = 14; py < 18; ++py) for (int px = 14; px < 18; ++px) {
+    const double x = (px + .5) / 16 - 1, y = 1 - (py + .5) / 16;
+    for (int ly = 0; ly < steps; ++ly) for (int lx = 0; lx < steps; ++lx) {
+      const glm::dvec3 delta(2 * (lx + .5) / steps - 1 - x,
+                             2 * (ly + .5) / steps - 1 - y, 2);
+      const double square = glm::dot(delta, delta), cosine = 2 / std::sqrt(square);
+      const double baseWeight = 1 - (.04 + .96 * std::pow(1 - cosine, 5));
+      expectedArea += baseWeight * baseWeight * cosine * cosine / (glm::pi<double>() * square) * 4.;
+    }
+  }
+  expectedArea /= 16 * steps * steps;
+  for (int channel = 0; channel < 3; ++channel) {
+    EXPECT_NEAR(nee[channel], expectedArea, .001);
+    EXPECT_NEAR(mis[channel], expectedArea, .001);
+    EXPECT_NEAR(nee[channel], mis[channel], .001);
+  }
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+  std::printf("REFERENCE_CLEARCOAT_NULL point=%.9f point_expected=%.9f mis=%.9f nee=%.9f expected=%.9f\n",
+      pointResult.x, expectedPoint, mis.x, nee.x, expectedArea);
 }
 TEST_F(ReferencePathTraceGpu, AreaLightMisAndVisibilityUseTheSameMinifiedSheetTransmission) {
   ASSERT_NO_FATAL_FAILURE(bindTransportMipTexture());

@@ -141,7 +141,7 @@ uint64_t World::stateStorageBytes(uint64_t maximum,uint64_t maximumWork) const {
   charge(1,sizeof(World)+1024);
   for(auto&& [id,pool]:registry_.storage()) {
     (void)id;visit(1);if(!pool.size()) continue;
-    if(!engineType(pool.type())) lightFailure("Cannot stage an unknown ECS component pool");
+    if(!engineType(pool.info())) lightFailure("Cannot stage an unknown ECS component pool");
     charge(pool.capacity(),1024);charge(pool.extent(),2*sizeof(entt::entity));visit(pool.size());
   }
   if(const auto* entities=registry_.storage<entt::entity>()) {
@@ -174,7 +174,7 @@ bool World::stateValuesMatch(const World& other) const noexcept {
   if(activeCameraEntity_!=other.activeCameraEntity_ || entityCount()!=other.entityCount()) return false;
   const auto& right=other.registry_;
   for(const auto* registry:{&registry_,&right}) for(auto&& [id,pool]:registry->storage()) {
-    (void)id;if(pool.size() && !engineType(pool.type())) return false;
+    (void)id;if(pool.size() && !engineType(pool.info())) return false;
   }
   if(const auto* entities=registry_.storage<entt::entity>())
     for(auto&& [entity]:entities->each()) if(!right.valid(entity)) return false;
@@ -216,7 +216,7 @@ std::unique_ptr<World> World::cloneStateImpl(bool includeContext) const {
   for (auto&& [id, pool] : registry_.storage()) {
     (void)id;
     if (!pool.size()) continue;
-    const auto& type = pool.type();
+    const auto& type = pool.info();
     if (type != entt::type_id<TransformComponent>() && type != entt::type_id<MeshComponent>() &&
         type != entt::type_id<MaterialComponent>() && type != entt::type_id<LightComponent>() &&
         type != entt::type_id<CameraComponent>() && type != entt::type_id<RenderableTag>() &&

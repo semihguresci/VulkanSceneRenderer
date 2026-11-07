@@ -1,13 +1,17 @@
 #include <Container/geometry/GltfMaterialExportCompaction.h>
 #include <Container/geometry/GltfSceneExport.h>
 #include <Container/geometry/GltfAnimation.h>
+#include <Container/geometry/GltfCameraPoseAuthoring.h>
+#include <Container/geometry/GltfInteractivity.h>
 
 #include "../renderer/scene/material_publication_allocations.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -195,6 +199,43 @@ TEST(GltfMaterialExportCompaction, EmptyRetirementPreservesExactStorageAndAllUnu
   tinygltf::Model unused;unused.asset.version="2.0";unused.materials.resize(3);unused.materials[1].lods={1,2};
   const auto all=PlanGltfMaterialExportCompaction(unused,std::array<int32_t,3>{2,0,1});
   ApplyGltfMaterialExportCompaction(unused,all);EXPECT_TRUE(unused.materials.empty());
+}
+
+TEST(GltfMaterialExportCompaction, BehaviorReceiptRejectsNextafterLiteralChangesBeforeAnyMutation) {
+  auto model=fixture();
+  const V start(O{{"declaration",V(0)},{"flows",V(O{{"out",V(O{{"node",V(1)}})}})}});
+  const V write(O{{"declaration",V(1)},{"configuration",V(O{
+      {"pointer",V(O{{"value",V(A{V(std::string("/materials/4/pbrMetallicRoughness/metallicFactor"))})}})},
+      {"type",V(O{{"value",V(A{V(0)})}})}})},
+      {"values",V(O{{"value",V(O{{"type",V(0)},{"value",V(A{V(.75)})}})}})}});
+  model.extensions[kGltfInteractivityExtension]=V(O{{"graphs",V(A{V(O{
+      {"types",V(A{V(O{{"signature",V(std::string("float"))}})})},
+      {"declarations",V(A{V(O{{"op",V(std::string("event/onStart"))}}),
+          V(O{{"op",V(std::string("pointer/set"))}})})},
+      {"nodes",V(A{start,write})}})})}});
+  declare(model,kGltfInteractivityExtension);
+  const auto originalGraph=model.extensions.at(kGltfInteractivityExtension);
+  const auto plan=PlanGltfMaterialExportCompaction(model,std::array<int32_t,2>{1,3});
+  auto& graph=model.extensions.at(kGltfInteractivityExtension);
+  auto& literal=graph.Get<O>().at("graphs").Get<A>()[0].Get<O>().at("nodes").Get<A>()[1]
+      .Get<O>().at("values").Get<O>().at("value").Get<O>().at("value").Get<A>()[0];
+  const double changed=std::nextafter(.75,1.0);
+  literal=V(changed);
+  bool fresh{},stale{};size_t allocations{};
+  {
+    material_publication_test::AllocationGuard deny(true);
+    fresh=GltfAuthoringValuesEqual(originalGraph,originalGraph);
+    stale=GltfAuthoringValuesEqual(graph,originalGraph);
+    allocations=deny.allocations();
+  }
+  EXPECT_TRUE(fresh);EXPECT_FALSE(stale);EXPECT_EQ(allocations,0u);
+  const auto* payload=model.buffers[0].data.data();
+  const auto* materials=model.materials.data();
+  EXPECT_THROW(ApplyGltfMaterialExportCompaction(model,plan),std::runtime_error);
+  ASSERT_EQ(model.materials.size(),5u);
+  EXPECT_EQ(model.materials.data(),materials);
+  EXPECT_EQ(model.buffers[0].data.data(),payload);
+  EXPECT_EQ(std::bit_cast<uint64_t>(literal.Get<double>()),std::bit_cast<uint64_t>(changed));
 }
 
 TEST(GltfMaterialExportCompaction, ActualAsciiAndGlbSaveReloadRetainRemappedReferencesAndBinaryGeometry) {

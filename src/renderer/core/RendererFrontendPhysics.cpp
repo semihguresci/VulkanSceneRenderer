@@ -55,6 +55,7 @@ bool RendererFrontend::applySceneNodeTransform(
 
 void RendererFrontend::validateSceneNodeTransform(uint32_t node,
                                                   const glm::mat4 &proposed) {
+  requireEditableSceneNode(node);
 #if CONTAINER_HAS_JOLT
   if (physicsScene_)
     physicsScene_->validateTransform(sceneGraph_, node, proposed);
@@ -302,6 +303,7 @@ void RendererFrontend::performPhysicsAction(std::string_view action,
 
 void RendererFrontend::attachPhysicsBody(
     uint32_t nodeIndex, const container::physics::PhysicsBodySettings &settings) {
+  requireEditableSceneNode(nodeIndex);
   finishEditGestures();
 #if CONTAINER_HAS_JOLT
   const auto *node = sceneGraph_.getNode(nodeIndex);

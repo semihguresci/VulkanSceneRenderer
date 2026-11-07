@@ -24,12 +24,9 @@ float4 reflectionTexture(uint index, float4 uv, GpuTextureTransform transform, f
     uint sampler = NonUniformResourceIndex(ResolveMaterialSamplerIndex(reflectionTextureMetadata[texture]));
     float2 coord = ApplyGpuTextureTransform(uv.xy, uv.zw, transform);
     float gradient = transform.row0.w >= 0.5 ? gradients.y : gradients.x;
-    if (gradient > 0.0 && isfinite(gradient))
-    {
-        float2 dx, dy;
-        RayConeTransformGradients(gradient, transform.row0.xy, transform.row1.xy, dx, dy);
+    float2 dx, dy;
+    if (RayConeTransformGradients(gradient, transform.row0.xy, transform.row1.xy, dx, dy))
         return reflectionMaterialTextures[texture].SampleGrad(reflectionMaterialSamplers[sampler], coord, dx, dy);
-    }
     return reflectionMaterialTextures[texture].SampleLevel(reflectionMaterialSamplers[sampler], coord, 0.0);
 }
 
@@ -179,6 +176,7 @@ struct ReflectionRayHit
     float3 radiance;
     float distance;
     float confidence;
+    uint materialIndex;
 };
 
 ReflectionRayHit traceFallbackReflection(float3 position, float3 normal, float3 direction, float roughness)
@@ -203,10 +201,12 @@ ReflectionRayHit traceFallbackReflection(float3 position, float3 normal, float3 
         instance, reflectionSurfaceInstances[instanceIndex], query.CommittedTriangleBarycentrics(),
         query.CommittedTriangleFrontFace());
     if (point.valid == 0u) return result;
+    result.materialIndex = point.materialIndex;
     result.distance = query.CommittedRayT();
     RayCone cone = {0.0, 2.0 / float(min(settings.extent.x, settings.extent.y)) + roughness * roughness};
     float2 gradients = RayConeGradient(cone, result.distance, point.geometricNormal, -direction, point.texelDensity);
-    if (settings.debugView == 0u) result.radiance = reflectionHitRadiance(point, -direction, gradients);
+    if (settings.debugView == 0u || settings.debugView == 4u)
+        result.radiance = reflectionHitRadiance(point, -direction, gradients);
     if (!all(isfinite(result.radiance))) return (ReflectionRayHit)0;
     result.radiance = clamp(result.radiance, 0.0.xxx, 65504.0.xxx);
     result.confidence = 1.0 - smoothstep(0.70, 1.0, result.distance / kMaxDistance);

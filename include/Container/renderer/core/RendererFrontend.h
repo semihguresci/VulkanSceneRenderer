@@ -26,7 +26,8 @@
 #include "Container/renderer/lighting/DdgiProbeVolume.h"
 #include "Container/renderer/lighting/DdgiSceneChanges.h"
 #include "Container/renderer/pathtracing/ReferenceOidnSettings.h"
-#include "Container/renderer/temporal/FsrMode.h"
+#include "Container/renderer/pathtracing/ReferencePathDisplayMode.h"
+#include "Container/renderer/temporal/UpscaleMode.h"
 #include "Container/renderer/picking/RenderSurfaceInteractionController.h"
 #include "Container/renderer/resources/RenderResources.h"
 #include "Container/renderer/scene/DrawCommand.h"
@@ -301,15 +302,15 @@ private:
   container::capture::Journal gfxJournal_;
   [[nodiscard]] nlohmann::json captureTelemetry() const;
   std::optional<float> captureExposure_{};
-  std::optional<FsrMode> captureFsrMode_{};
-  struct FsrResourceRequest {
-    FsrMode mode{};
+  std::optional<UpscaleSelection> captureUpscaling_{};
+  struct UpscaleResourceRequest {
+    UpscaleSelection selection{};
     bool eligible{};
     bool infiniteFar{};
-    bool operator==(const FsrResourceRequest&) const = default;
+    bool operator==(const UpscaleResourceRequest&) const = default;
   };
-  FsrResourceRequest fsrResourceRequest_{};
-  std::string fsrViewportStatus_{};
+  UpscaleResourceRequest upscaleResourceRequest_{};
+  std::string upscaleViewportStatus_{};
   float temporalFrameMilliseconds_{1000.0f / 60.0f};
   std::optional<glm::vec4> captureSectionPlane_{};
   std::optional<uint32_t> captureBimHiddenObject_{};
@@ -401,6 +402,7 @@ private:
   BorrowedServices svc_;
 
   bool referencePathActive() const;
+  [[nodiscard]] ReferencePathDisplayMode referencePathDisplay() const;
   void ensureReferencePathResources();
   bool recordReferencePathTrace(VkCommandBuffer, const FrameRecordParams&);
   void finishReferencePathTrace(VkCommandBuffer);
@@ -417,6 +419,9 @@ private:
   std::optional<float> referenceTimedLightingMs_;
   std::optional<float> referenceFocusDistanceOverride_;
   std::optional<ReferenceOidnQuality> referenceOidnQualityOverride_;
+  std::optional<bool> referenceOptixOverride_;
+  std::optional<ReferencePathDisplayMode> referencePathDisplayOverride_;
+  std::optional<UpscaleMode> referenceDlssOverride_;
   bool referenceAutofocusRequested_{};
   std::string referenceAutofocusStatus_;
   std::string referenceStatus_;
@@ -483,6 +488,7 @@ private:
   std::shared_ptr<SceneRetirementHistory> pendingSceneRetirement_;
   void resetGltfAnimation();
   void updateGltfAnimation();
+  void publishGltfAnimationChanges(const container::geometry::gltf::AnimationDirtySet&);
   void resetGltfInteractivity();
   void pauseGltfInteractivity();
   container::geometry::gltf::AnimationDirtySet updateGltfInteractivity(double delta, bool& discontinuity);
@@ -573,6 +579,7 @@ private:
   void publishSceneEdit();
   void applyEditHistoryRequest();
   void validateSceneNodeTransform(uint32_t node, const glm::mat4 &proposed);
+  void requireEditableSceneNode(uint32_t node) const;
   void validateSceneNodeReparent(uint32_t node, std::optional<uint32_t> parent,
                                  const glm::mat4 &local);
   struct SceneEditSelection {
@@ -834,8 +841,8 @@ private:
   void createGeometryBuffers();
   void createFrameResources();
   [[nodiscard]] VkExtent2D sceneRenderExtent() const;
-  [[nodiscard]] FsrResourceRequest currentFsrResourceRequest() const;
-  void reconcileFsrResources();
+  [[nodiscard]] UpscaleResourceRequest currentUpscaleResourceRequest() const;
+  void reconcileUpscaleResources();
   void ensureCameraBuffers();
   void ensureObjectBuffers();
   void syncSceneProviders();

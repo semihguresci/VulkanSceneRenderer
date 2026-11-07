@@ -1,4 +1,5 @@
 #include "Container/utility/GuiManager.h"
+#include "Container/app/RendererLightingSettings.h"
 #include "Container/utility/OpenVdbAuthoring.h"
 
 #include "Container/geometry/OpenVdbLoader.h"
@@ -58,6 +59,8 @@ namespace container::ui {
 using container::gpu::kMaxDeferredPointLights;
 using container::gpu::LightingData;
 using container::gpu::LightingSettings;
+using container::app::RendererLightingSetting;
+using container::app::rendererLightingSetting;
 using container::renderer::EditableLightEntity;
 using container::renderer::EditableLightId;
 using container::renderer::EditableLightSource;
@@ -499,6 +502,8 @@ struct SceneHierarchyPanelActions {
   const std::function<void(uint32_t)>* beginInlineRename{nullptr};
   const std::function<void()>* commitInlineRename{nullptr};
   const std::function<void()>* cancelInlineRename{nullptr};
+  const std::function<bool(uint32_t)>* linkedReadOnly{nullptr};
+  const std::function<bool(uint32_t)>* canMakeLinkedEditable{nullptr};
 };
 
 void CancelInlineSceneRename(SceneNodeInlineRenameUiState& edit) {
@@ -584,6 +589,8 @@ void DrawSceneHierarchyRow(
   if (node == nullptr || node->retired) {
     return;
   }
+  const bool linkedReadOnly = actions.linkedReadOnly && *actions.linkedReadOnly &&
+                              (*actions.linkedReadOnly)(nodeIndex);
 
   ImGui::PushID(static_cast<int>(nodeIndex));
   ImGui::TableNextRow(ImGuiTableRowFlags_None, rowHeight);
@@ -605,8 +612,8 @@ void DrawSceneHierarchyRow(
   if (indent > 0.0f)
     ImGui::Indent(indent);
   ImGui::SetNextItemOpen(row.expanded, ImGuiCond_Always);
-  const bool open =
-      ImGui::TreeNodeEx("##SceneHierarchyNode", flags, "%s", editing ? "" : row.label.c_str());
+  const bool open = ImGui::TreeNodeEx("##SceneHierarchyNode", flags, "%s%s",
+      editing ? "" : row.label.c_str(), !editing && linkedReadOnly ? " [Linked]" : "");
   if (row.hasChildren && open != row.expanded)
     hierarchyCache.setExpanded(nodeIndex, open);
   if (ImGui::IsItemClicked(ImGuiMouseButton_Left) &&
@@ -614,6 +621,7 @@ void DrawSceneHierarchyRow(
     (*actions.selectSceneNode)(nodeIndex);
   }
   if (actions.authorSceneNode && ImGui::BeginPopupContextItem("Node actions")) {
+    ImGui::BeginDisabled(linkedReadOnly);
     if (actions.beginInlineRename && ImGui::MenuItem("Rename inline", "F2"))
       (*actions.beginInlineRename)(nodeIndex);
     if (ImGui::MenuItem("Rename..."))
@@ -624,10 +632,19 @@ void DrawSceneHierarchyRow(
       (*actions.authorSceneNode)(nodeIndex, SceneNodeAuthoringAction::DuplicateSubtree);
     if (ImGui::MenuItem("Delete subtree..."))
       (*actions.authorSceneNode)(nodeIndex, SceneNodeAuthoringAction::DeleteSubtree);
+    ImGui::EndDisabled();
+    if (actions.canMakeLinkedEditable && *actions.canMakeLinkedEditable &&
+        (*actions.canMakeLinkedEditable)(nodeIndex)) {
+      ImGui::Separator();
+      if (ImGui::MenuItem("Make Editable"))
+        (*actions.authorSceneNode)(nodeIndex, SceneNodeAuthoringAction::MakeEditable);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Unlock all placements of this linked source and clear the scene edit history");
+    }
     ImGui::EndPopup();
   }
   if (ImGui::IsItemHovered()) {
-    ShowItemTooltip(node->name.empty() ? row.label : node->name);
+    ShowItemTooltip(linkedReadOnly ? "Linked asset (read-only)" : (node->name.empty() ? row.label : node->name));
   }
   if (editing && actions.inlineRename->active && actions.inlineRename->node == nodeIndex) {
     auto& edit = *actions.inlineRename;
@@ -660,10 +677,12 @@ void DrawSceneHierarchyRow(
 
   ImGui::TableNextColumn();
   bool visible = node->visible;
+  ImGui::BeginDisabled(linkedReadOnly);
   if (ImGui::Checkbox("##SceneHierarchyVisible", &visible) &&
       actions.setSceneNodeVisible != nullptr) {
     (*actions.setSceneNodeVisible)(nodeIndex, visible);
   }
+  ImGui::EndDisabled();
   if (!sceneGraph.isNodeEffectivelyVisible(nodeIndex) && node->visible) {
     ImGui::SameLine();
     ImGui::TextDisabled("parent");
@@ -676,25 +695,31 @@ void DrawSceneHierarchyRow(
   }
 
   ImGui::TableNextColumn();
+  ImGui::BeginDisabled(linkedReadOnly);
   SceneHierarchyParentChange nodeParentChange = DrawSceneHierarchyParentCombo(
       sceneGraph, nodeIndex, *node, actions, candidateCache);
+  ImGui::EndDisabled();
   if (!parentChange.requested && nodeParentChange.requested) {
     parentChange = nodeParentChange;
   }
 
   ImGui::TableNextColumn();
   bool selectable = node->selectable;
+  ImGui::BeginDisabled(linkedReadOnly);
   if (ImGui::Checkbox("##SceneHierarchySelectable", &selectable) &&
       actions.setSceneNodeSelectable && *actions.setSceneNodeSelectable)
     (*actions.setSceneNodeSelectable)(nodeIndex, selectable);
+  ImGui::EndDisabled();
   if (node->selectable && !sceneGraph.isNodeEffectivelySelectable(nodeIndex))
     ShowItemTooltip("Selection is disabled by a parent");
 
   ImGui::TableNextColumn();
   bool hoverable = node->hoverable;
+  ImGui::BeginDisabled(linkedReadOnly);
   if (ImGui::Checkbox("##SceneHierarchyHoverable", &hoverable) &&
       actions.setSceneNodeHoverable && *actions.setSceneNodeHoverable)
     (*actions.setSceneNodeHoverable)(nodeIndex, hoverable);
+  ImGui::EndDisabled();
   if (node->hoverable && !sceneGraph.isNodeEffectivelyHoverable(nodeIndex))
     ShowItemTooltip("Hover is disabled by a parent");
 
@@ -2977,11 +3002,15 @@ void GuiManager::drawSceneNodeControls(
   if (!selectionChanged) {
     if (const auto *selected = sceneGraph.getNode(selectedNode)) {
       auto editable = selectedTransform;
+      const bool linkedReadOnly = linkedNodeReadOnly_ && linkedNodeReadOnly_(selectedNode);
+      if (linkedReadOnly) ImGui::TextDisabled("Linked asset (read-only)");
+      ImGui::BeginDisabled(linkedReadOnly);
       if (DrawTransformControls(
               selected->renderable ? "Mesh Transform" : "Node Transform", editable,
               true, 0.05f, &sceneEditGesture_, &nextSceneEditGesture_,
               &sceneEditGestureActive_))
         applyTransform(selectedNode, editable);
+      ImGui::EndDisabled();
     }
   }
 }
@@ -3013,6 +3042,8 @@ void GuiManager::drawSceneHierarchy(
       if (modalActive) throw std::invalid_argument("Finish or cancel the open node editor first");
       const auto target = container::scene::ResolveSceneNodeAuthoringTarget(sceneGraph, selected,
           container::scene::SceneNodeAuthoringPurpose::Rename);
+      if (linkedNodeReadOnly_ && linkedNodeReadOnly_(target))
+        throw std::invalid_argument("This linked asset is read-only. Use Make Editable first.");
       const auto& name = sceneGraph.getNode(target)->name;
       if (name.size() > 4096 || name.find('\0') != std::string::npos)
         throw std::invalid_argument("Use Rename... to replace this imported name");
@@ -3057,6 +3088,11 @@ void GuiManager::drawSceneHierarchy(
   const std::function<void(uint32_t, SceneNodeAuthoringAction)> authorNode =
       [this, &sceneGraph](uint32_t selected, SceneNodeAuthoringAction action) {
         try {
+          if (action == SceneNodeAuthoringAction::MakeEditable) {
+            CancelInlineSceneRename(sceneNodeInlineRename_);
+            queueSceneNodeAuthoringRequest({action, sceneGraph.identity(), selected, {}});
+            return;
+          }
           const auto purpose = action == SceneNodeAuthoringAction::Rename
               ? container::scene::SceneNodeAuthoringPurpose::Rename
               : action == SceneNodeAuthoringAction::CreateEmpty
@@ -3066,6 +3102,8 @@ void GuiManager::drawSceneHierarchy(
                       : container::scene::SceneNodeAuthoringPurpose::DeleteSubtree;
           const auto target = container::scene::ResolveSceneNodeAuthoringTarget(
               sceneGraph, selected, purpose);
+          if (linkedNodeReadOnly_ && linkedNodeReadOnly_(target))
+            throw std::invalid_argument("This linked asset is read-only. Use Make Editable first.");
           CancelInlineSceneRename(sceneNodeInlineRename_);
           sceneNodeAuthoringUi_.request = {action, sceneGraph.identity(), target,
               action == SceneNodeAuthoringAction::CreateEmpty
@@ -3096,7 +3134,9 @@ void GuiManager::drawSceneHierarchy(
                                  .inlineRename = &sceneNodeInlineRename_,
                                  .beginInlineRename = &beginInline,
                                  .commitInlineRename = &commitInline,
-                                 .cancelInlineRename = &cancelInline},
+                                 .cancelInlineRename = &cancelInline,
+                                 .linkedReadOnly = &linkedNodeReadOnly_,
+                                 .canMakeLinkedEditable = &canMakeLinkedNodeEditable_},
       sceneHierarchyParentCandidateCache_, sceneHierarchyCache_,
       sceneHierarchySubmittedRows_);
 
@@ -3146,9 +3186,11 @@ void GuiManager::queueSceneNodeAuthoringRequest(SceneNodeAuthoringRequest reques
   if (request.action != SceneNodeAuthoringAction::Rename &&
       request.action != SceneNodeAuthoringAction::CreateEmpty &&
       request.action != SceneNodeAuthoringAction::DuplicateSubtree &&
-      request.action != SceneNodeAuthoringAction::DeleteSubtree)
+      request.action != SceneNodeAuthoringAction::DeleteSubtree &&
+      request.action != SceneNodeAuthoringAction::MakeEditable)
     throw std::invalid_argument("Unknown scene node authoring action");
   if (request.action != SceneNodeAuthoringAction::DeleteSubtree &&
+      request.action != SceneNodeAuthoringAction::MakeEditable &&
       !(request.action == SceneNodeAuthoringAction::DuplicateSubtree && request.name.empty()))
     container::scene::ValidateSceneNodeName(request.name);
   if (!request.graphIdentity || request.node == container::scene::SceneGraph::kInvalidNode)
@@ -3366,6 +3408,7 @@ void GuiManager::initialize(VkInstance instance, VkDevice device,
   }
 
   ImGui_ImplVulkan_InitInfo initInfo{};
+  initInfo.ApiVersion = VK_API_VERSION_1_4;
   initInfo.Instance = instance;
   initInfo.PhysicalDevice = physicalDevice;
   initInfo.Device = device;
@@ -3373,15 +3416,14 @@ void GuiManager::initialize(VkInstance instance, VkDevice device,
   initInfo.Queue = graphicsQueue;
   initInfo.DescriptorPool = descriptorPool_;
   initInfo.UseDynamicRendering = true;
-  initInfo.PipelineRenderingCreateInfo = renderPass->pipelineInfo();
-  initInfo.Subpass = 0;
+  initInfo.PipelineInfoMain.PipelineRenderingCreateInfo = renderPass->pipelineInfo();
+  initInfo.PipelineInfoMain.Subpass = 0;
   initInfo.MinImageCount = imageCount;
   initInfo.ImageCount = imageCount;
-  initInfo.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+  initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
   initInfo.CheckVkResultFn = CheckVkResult;
 
   ImGui_ImplVulkan_Init(&initInfo);
-  ImGui_ImplVulkan_CreateFontsTexture();
 
   defaultModelPath_ = defaultModelPath;
   modelPathInput_ = defaultModelPath;
@@ -4750,6 +4792,15 @@ void GuiManager::drawSceneControls(
 
   if (activeRenderEngine_ == container::renderer::RenderTechniqueId::PathTracing) {
     if (!referencePathStatus_.empty()) ImGui::TextWrapped("%s", referencePathStatus_.c_str());
+    int pathDisplay = static_cast<int>(referencePathDisplay_);
+    if (ImGui::Combo("Reference display", &pathDisplay, "Beauty\0Standard error\0"))
+      referencePathDisplay_ = static_cast<container::renderer::ReferencePathDisplayMode>(pathDisplay);
+    if (referencePathDisplay_ == container::renderer::ReferencePathDisplayMode::StandardError) {
+      if (referenceGround_.mode == container::renderer::ReferenceGroundMode::ShadowMatte)
+        ImGui::TextDisabled("Standard error is unavailable for shadow matte.");
+      else
+        ImGui::TextWrapped("Relative RGB error. Black = 0%%, cyan = 1%%, yellow = 10%%, red = 100%%+, gray = fewer than two samples.");
+    }
     if (ImGui::TreeNode("Reference camera lens")) {
       using Lens = container::renderer::ReferencePathLensSettings;
       auto lens = referencePathLens_;
@@ -4769,11 +4820,18 @@ void GuiManager::drawSceneControls(
     ShowItemTooltip("Limits the peak RGB value of each sample. Zero keeps the unclamped estimator.");
     if (ImGui::TreeNode("Reference display denoising")) {
       using Quality = container::renderer::ReferenceOidnQuality;
-      int quality = static_cast<int>(referenceOidn_.quality);
-      if (ImGui::Combo("Vulkan OIDN", &quality, "Off\0Fast\0Balanced\0High\0"))
-        referenceOidn_.quality = static_cast<Quality>(quality);
+      using Dlss = container::renderer::UpscaleMode;
+      int backend = referenceOidn_.dlss != Dlss::Native ? 4 + static_cast<int>(referenceOidn_.dlss)
+          : referenceOidn_.optix ? 4 : static_cast<int>(referenceOidn_.quality);
+      if (ImGui::Combo("Display filter", &backend,
+              "Off\0Vulkan OIDN Fast\0Vulkan OIDN Balanced\0Vulkan OIDN High\0OptiX guided HDR\0"
+              "DLSS Ray Reconstruction Quality\0DLSS Ray Reconstruction Balanced\0DLSS Ray Reconstruction Performance\0")) {
+        referenceOidn_.quality = backend < 4 ? static_cast<Quality>(backend) : Quality::Off;
+        referenceOidn_.optix = backend == 4;
+        referenceOidn_.dlss = backend > 4 ? static_cast<Dlss>(backend - 4) : Dlss::Native;
+      }
       int interval = static_cast<int>(referenceOidn_.sampleInterval);
-      if (quality != 0 && ImGui::SliderInt("Sample interval", &interval, 1,
+      if (backend > 0 && backend <= 4 && ImGui::SliderInt("Sample interval", &interval, 1,
               container::renderer::ReferenceOidnSettings::maxSampleInterval))
         referenceOidn_.sampleInterval = static_cast<uint32_t>(interval);
       ImGui::TextDisabled("EXR captures keep the raw accumulation.");
@@ -8229,11 +8287,17 @@ void GuiManager::drawSceneControls(
                  exposureSettings_.meteringLowPercentile + 0.01f);
   }
   if (ImGui::TreeNode("Temporal anti-aliasing")) {
-    int fsrMode = static_cast<int>(fsrMode_);
-    if (ImGui::Combo("Vulkan FSR", &fsrMode, "Native\0Quality\0Balanced\0Performance\0"))
-      fsrMode_ = static_cast<container::renderer::FsrMode>(fsrMode);
-    if (!fsrStatus_.empty()) ImGui::TextWrapped("%s", fsrStatus_.c_str());
-    ImGui::BeginDisabled(msaaSamples_ != 1u || fsrActive_);
+    using renderer::UpscaleBackend;
+    using renderer::UpscaleMode;
+    int mode = static_cast<int>(upscaling_.mode);
+    if (mode != 0 && upscaling_.backend == UpscaleBackend::Dlss) mode += 3;
+    if (ImGui::Combo("Raster reconstruction", &mode,
+                    "Native\0FSR Quality\0FSR Balanced\0FSR Performance\0"
+                    "DLSS Quality\0DLSS Balanced\0DLSS Performance\0"))
+      upscaling_ = {mode > 3 ? UpscaleBackend::Dlss : UpscaleBackend::Fsr,
+                    static_cast<UpscaleMode>(mode > 3 ? mode - 3 : mode)};
+    if (!upscalingStatus_.empty()) ImGui::TextWrapped("%s", upscalingStatus_.c_str());
+    ImGui::BeginDisabled(msaaSamples_ != 1u || activeUpscaler_.has_value());
     ImGui::Checkbox("Enable TAA", &temporalSettings_.enabled);
     ImGui::EndDisabled();
     if (msaaSamples_ != 1u)
@@ -8254,7 +8318,8 @@ void GuiManager::drawSceneControls(
     ImGui::Text("Image payload: %.1f MiB",
                 double(temporalBytes_) / (1024.0 * 1024.0));
     ImGui::Text("Effective AA: %s; raster/history %ux%u",
-                fsrActive_ ? "FSR" : temporalSettings_.enabled ? "TAA (1x)" : "MSAA / native raster",
+                activeUpscaler_ ? (*activeUpscaler_ == UpscaleBackend::Dlss ? "DLSS SR" : "FSR") :
+                    (temporalSettings_.enabled ? "TAA (1x)" : "MSAA / native raster"),
                 temporalExtent_.x, temporalExtent_.y);
     ImGui::Text("Allocated images: %.1f MiB; resolve GPU %.3f ms",
                 double(temporalAllocatedBytes_) / (1024.0 * 1024.0),
@@ -8466,13 +8531,18 @@ void GuiManager::drawSceneControls(
 
     if (ImGui::TreeNode("Lighting Settings")) {
       ImGui::SliderFloat("Directional Intensity",
-                         &lightingSettings_.directionalIntensity, 0.0f, 16.0f,
+                         &lightingSettings_.directionalIntensity,
+                         rendererLightingSetting(RendererLightingSetting::DirectionalIntensity).minimum,
+                         rendererLightingSetting(RendererLightingSetting::DirectionalIntensity).maximum,
                          "%.2f");
       ImGui::SliderFloat("Environment Intensity",
-                         &lightingSettings_.environmentIntensity, 0.0f, 16.0f,
+                         &lightingSettings_.environmentIntensity,
+                         rendererLightingSetting(RendererLightingSetting::EnvironmentIntensity).minimum,
+                         rendererLightingSetting(RendererLightingSetting::EnvironmentIntensity).maximum,
                          "%.2f");
       ImGui::SliderFloat("Bounce Intensity", &lightingSettings_.bounceIntensity,
-                         0.0f, 2.0f, "%.2f");
+                         rendererLightingSetting(RendererLightingSetting::BounceIntensity).minimum,
+                         rendererLightingSetting(RendererLightingSetting::BounceIntensity).maximum, "%.2f");
       ShowItemTooltip("Artistic fill without traced indirect visibility. "
                       "High values brighten occluded surfaces; use zero to "
                       "inspect direct-light shadows.");
@@ -8609,7 +8679,9 @@ void GuiManager::drawSceneControls(
       pendingEnvironmentPath_ = environmentPathInput_;
     ImGui::EndDisabled();
     auto& environment = lightingSettings_.environment;
-    ImGui::SliderFloat("Rotation", &environment.yawDegrees, -180.0f, 180.0f, "%.0f deg",
+    ImGui::SliderFloat("Rotation", &environment.yawDegrees,
+                       rendererLightingSetting(RendererLightingSetting::EnvironmentYaw).minimum,
+                       rendererLightingSetting(RendererLightingSetting::EnvironmentYaw).maximum, "%.0f deg",
                        ImGuiSliderFlags_AlwaysClamp);
     ImGui::Checkbox("Solid Background", &environment.solidBackground);
     if (environment.solidBackground)

@@ -5,8 +5,9 @@ In the deferred renderer's Lit view, select `--screen-reflections low` or
 `--display-mode lit`. The modes cap each pixel at 24 or 72 depth
 samples. `confidence` displays the hit blend weight. `distance` displays the
 dominant hit distance normalized to the 40 m trace limit. `source` shows the
-screen contribution in green and the optional ray contribution in blue. The
-default is `off`.
+screen contribution in green and the optional ray contribution in blue.
+`history` displays the pixels that reused a previous reflection sample.
+The default is `off`.
 
 The pass snapshots the opaque scene-linear HDR buffer after lighting. It
 projects each reflection ray into the current reverse-Z depth grid, clips it
@@ -25,11 +26,31 @@ their existing evaluation.
 
 The pass handles opaque and alpha-masked receivers. Transparency still
 composites after the opaque reflection pass. Transmission receivers and aerial
-perspective use the existing lighting route. Forward rendering and
-reflection-specific temporal history remain outside this integration.
-With TAA enabled, the current reflection is part of the composited scene color.
-Reprojection tracks the receiver surface and can retain a moving reflected hit
-temporarily. Ray-shadow visibility views bypass the reflection pass.
+perspective use the existing lighting route. Forward rendering and ray-shadow
+visibility views bypass the reflection pass.
+
+## Reflection history
+
+Low and high quality vary the reflected direction over a small roughness-scaled
+cone on each submitted frame. A spatial filter samples the screen hit
+neighborhood and rejects depth, normal, and material boundaries. The temporal
+filter reprojects the receiver into the
+previous jittered camera and tests reconstructed position, normal, material,
+hit material and source, hit distance, confidence, and radiance agreement.
+It averages only the signed specular correction. A current miss immediately
+restores the existing IBL. Exposure, fog, transparency, and TAA or FSR are
+applied later.
+
+Camera cuts, material or light edits, resolution or technique changes, and
+shader replacement invalidate reuse. The previous camera and reflection
+history advance on a successful graphics submission. Moving receivers that
+cannot match the previous surface use their current reflection sample. This
+history uses the last submitted frame even when TAA is off.
+
+Two packed RGBA32UI history images add 32 bytes per render pixel. History
+falls back to the deterministic trace if the 128 MiB budget or image
+allocation prevents it. The mirror direction and the confidence, distance,
+and source diagnostics remain deterministic.
 
 ## Off-screen fallback
 
@@ -68,3 +89,13 @@ occluder, alpha cutout, and directional shadow. The full 19-capture Vulkan
 validation run also verified pixel-identical fallback with ray queries
 disabled. The captures and timings are recorded in
 `out/feature-parity/screen-reflections-ray-native/results.json`.
+
+The history run passed 57 captures across 28 Vulkan processes. The thin red
+target fell from a mean red value of 190 to 47 on the first frame after
+disocclusion, and stayed at 47 with and without TAA. The history view also
+confirmed reuse on an off-screen ray hit. The lifecycle captures verified
+camera cuts, material and light edits, resize, and raster technique switches.
+With history enabled at 480×360, the off-screen pass measured 0.18 ms with
+screen tracing and 0.24 ms with ray fallback. Total reflection allocation
+was 10,321,920 bytes. Evidence is in
+`out/feature-parity/screen-reflections-temporal-native/results.json`.

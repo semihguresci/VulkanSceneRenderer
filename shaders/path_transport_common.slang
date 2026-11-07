@@ -1,5 +1,9 @@
 #pragma once
 
+#ifndef REFERENCE_DLSS_RR
+#define REFERENCE_DLSS_RR 0
+#endif
+
 // Reference transport building blocks, independent of raster lighting, LTC,
 // DDGI feedback and display transforms. Directions point AWAY from the surface
 // in an orthonormal, right-handed shading frame whose normal is +Z.
@@ -24,6 +28,9 @@ struct PtBsdfSample
     uint valid;
     uint delta;
     uint rejected; // invalid/unrepresentable input; distinct from a null sample
+#if REFERENCE_DLSS_RR
+    uint specularReflection;
+#endif
 };
 struct PtCameraRay
 {
@@ -318,6 +325,9 @@ PtBsdfSample PtSampleBsdf(PtBsdf bsdf, float3 view, float3 u, float anisotropy =
     float probability = PtSpecularProbability(bsdf, view);
     [branch] if (u.x < probability)
     {
+#if REFERENCE_DLSS_RR
+        result.specularReflection = 1u;
+#endif
         [branch] if (bsdf.roughness == 0.0)
         {
             result.direction = float3(-view.xy, view.z);
@@ -563,4 +573,20 @@ bool PtAccumulate(inout float3 mean, inout float3 secondMoment, inout uint count
     secondMoment = nextMoment;
     ++count;
     return true;
+}
+
+float3 PtStandardErrorColor(float3 mean, float3 secondMoment, uint count)
+{
+    if (count < 2u) return 0.12.xxx;
+    // RMS of the three marginal standard errors. A luminance error would
+    // require RGB covariance, which the accumulator does not retain.
+    const float rmsScale = 0.57735026919;
+    float n = float(count);
+    float error = PtLength(sqrt(max(secondMoment, 0.0.xxx)) * rmsScale) /
+        sqrt(n * float(count - 1u));
+    float relativeError = error / max(0.01, PtLength(mean * rmsScale));
+    const float3 cyan = float3(0, 1, 1), yellow = float3(1, 1, 0), red = float3(1, 0, 0);
+    if (relativeError <= 0.01) return cyan * (relativeError / 0.01);
+    if (relativeError <= 0.1) return lerp(cyan, yellow, (relativeError - 0.01) / 0.09);
+    return lerp(yellow, red, saturate((relativeError - 0.1) / 0.9));
 }

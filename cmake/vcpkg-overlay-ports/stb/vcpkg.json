@@ -1,0 +1,6 @@
+{
+  "name": "stb",
+  "description": "Pinned latest project dependency; see source pin in portfile.cmake",
+  "license": "MIT OR Unlicense",
+  "version-date": "2026-11-07"
+}

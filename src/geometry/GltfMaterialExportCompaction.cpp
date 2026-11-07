@@ -1,6 +1,8 @@
 #include <Container/geometry/GltfMaterialExportCompaction.h>
 
 #include <Container/geometry/GltfAccessor.h>
+#include <Container/geometry/GltfCameraPoseAuthoring.h>
+#include <Container/geometry/GltfInteractivity.h>
 #include <Container/geometry/GltfXmpMetadata.h>
 
 #include <algorithm>
@@ -53,7 +55,7 @@ bool knownDeclaration(std::string_view name) {
       "KHR_lights_punctual", "KHR_texture_basisu", "EXT_texture_webp", "EXT_texture_avif", "MSFT_texture_dds",
       "KHR_mesh_quantization", "KHR_accessor_float64", "EXT_mesh_gpu_instancing", "KHR_animation_pointer",
       "KHR_materials_variants", "MSFT_lod", "KHR_draco_mesh_compression",
-      "EXT_meshopt_compression", "KHR_meshopt_compression", kGltfXmpExtension});
+      "EXT_meshopt_compression", "KHR_meshopt_compression", kGltfXmpExtension, kGltfInteractivityExtension});
 }
 
 // Bounds logical metadata before reference-proof allocation. Each
@@ -206,7 +208,7 @@ void audit(const tinygltf::Model& source, Budget& b) {
   b.text(source.asset.generator); b.text(source.asset.copyright);
   b.value(source.extras); b.text(source.extras_json_string); b.text(source.extensions_json_string);
   b.extensions(source.extensions,{"KHR_materials_variants","KHR_lights_punctual",kGltfXmpExtension,
-      "KHR_lights_area","EXT_lights_area","WEBGI_lights_area","WEBGI_area_light"},false,true);
+      "KHR_lights_area","EXT_lights_area","WEBGI_lights_area","WEBGI_area_light",kGltfInteractivityExtension},false,true);
   for (const auto& buffer : source.buffers) {
     b.property(buffer); b.text(buffer.uri);
     if (buffer.data.empty() && !buffer.uri.empty()) fail("buffer is not resident");
@@ -523,6 +525,7 @@ struct GltfMaterialExportCompactionPlan::State {
   std::vector<uint64_t> shapes;
   std::vector<std::string> pointers;
   Counts counts;
+  tinygltf::Value behaviorBefore, behaviorAfter;
 };
 struct GltfMaterialExportCompactionAccess {
   using State=GltfMaterialExportCompactionPlan::State;
@@ -565,9 +568,22 @@ GltfMaterialExportCompactionPlan PlanGltfMaterialExportCompaction(const tinygltf
   owned=add(owned,add(mul(counts.pointers,sizeof(std::string)+sizeof(StringEdit)+64),mul(counts.pointerBytes,4)));
   owned=add(owned,mul(counts.caches,sizeof(std::string*)));
   if(owned>limits.maxOwnedBytes) fail("reference proof/edit workspace budget exceeded");
+  tinygltf::Value behaviorBefore, behaviorAfter;
+  if (const auto graph = source.extensions.find(kGltfInteractivityExtension); graph != source.extensions.end()) {
+    Budget graphBudget{limits,source};
+    graphBudget.value(graph->second);
+    owned = add(owned,mul(graphBudget.metadata,4));
+    if (owned > limits.maxOwnedBytes) fail("behavior reference proof exceeds the owned-byte budget");
+    auto mappings = GltfInteractivityIdentityMappings(source);
+    mappings[size_t(InteractivityIndexDomain::Material)] = {map,inverse.size()};
+    behaviorAfter = RemapGltfInteractivity(source,mappings);
+    behaviorBefore = graph->second;
+  }
   auto state=std::make_shared<GltfMaterialExportCompactionAccess::State>();
   state->source=&source;state->limits=limits;state->map=std::move(map);state->inverse=std::move(inverse);state->counts=counts;
   state->stats={retired.size(),budget.references,budget.metadata,budget.payload,owned};
+  state->behaviorBefore = std::move(behaviorBefore);
+  state->behaviorAfter = std::move(behaviorAfter);
   state->integers.reserve(size_t(counts.integers));state->shapes.reserve(size_t(counts.shapes));state->pointers.reserve(size_t(counts.pointers));
   Capture capture{state->integers,state->shapes,state->pointers};references(source,state->map,capture);
   return GltfMaterialExportCompactionAccess::make(std::move(state));
@@ -583,6 +599,11 @@ void ApplyGltfMaterialExportCompaction(tinygltf::Model& source,const GltfMateria
   collect.edits.reserve(size_t(state->counts.integers));collect.strings.reserve(size_t(state->counts.pointers));
   collect.caches.reserve(size_t(state->counts.caches));
   references(source,state->map,collect);collect.finish();
+  const auto graph = source.extensions.find(kGltfInteractivityExtension);
+  if ((graph != source.extensions.end()) != state->behaviorBefore.IsObject() ||
+      (graph != source.extensions.end() && !GltfAuthoringValuesEqual(graph->second,state->behaviorBefore)))
+    fail("behavior graph changed after planning");
+  auto behavior = state->behaviorAfter;
   // No throwing operations remain. Integer writes and string swaps precede
   // in-place survivor moves so addresses in the prepared edit list stay valid.
   static_assert(std::is_nothrow_move_assignable_v<tinygltf::Material>);
@@ -594,5 +615,9 @@ void ApplyGltfMaterialExportCompaction(tinygltf::Model& source,const GltfMateria
     if(kept!=id) source.materials[kept]=std::move(source.materials[id]);++kept;
   }
   source.materials.resize(kept);
+  if (graph != source.extensions.end()) {
+    graph->second.Get<Object>().swap(behavior.Get<Object>());
+    if (!source.extensions.contains(kGltfXmpExtension)) source.extensions_json_string.clear();
+  }
 }
 } // namespace container::geometry::gltf

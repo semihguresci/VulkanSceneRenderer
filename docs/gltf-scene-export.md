@@ -153,6 +153,14 @@ poses without moving meshes that share an imported light node. Extra untouched
 source lights, including those beyond the active renderer capacity, remain
 associated with their original source nodes.
 
+Supported `KHR_interactivity` references are remapped through the final node,
+material and resource projections. Punctual-light pointers target the definition
+actually bound to the exported light child. Equivalent shared placements keep
+one target; divergent definitions or incompatible property conversions reject
+before destination replacement. Unreferenced retirement does not by itself
+block saving a supported graph. Dynamic object IDs still require a complete,
+unchanged index domain. See [behavior graph export](gltf-interactivity.md).
+
 Imported light clones retain authored pointer animation as absolute values, so
 animating a field replaces its saved UI override during playback. Pointer ranges
 are converted from authored units by the import scale; HDR color/intensity
@@ -165,32 +173,56 @@ imported pointer channels.
 
 ## Current scope
 
-Primary glTF `KHR_xmp_json_ld` packets and their asset, scene, node, mesh,
-material, image and animation references are preserved for exported records.
-Packet indices stay stable when scene tables are compacted. Import reports
-malformed packets or out-of-range references and keeps the asset renderable.
-Import / Merge rejects assets declaring this extension before scene publication.
-Each source has its own packet index table, so primary-scene export keeps the
-original table and references together.
+glTF `KHR_xmp_json_ld` packets and their asset, scene, node, mesh, material,
+image and animation references are preserved for exported records. Packet
+indices stay stable when scene tables are compacted. Import reports malformed
+packets or out-of-range references and keeps the asset renderable.
+
+Import / Merge keeps the destination's packet indices and appends incoming
+packets in source order. The incoming document packet is attached to the new
+placement node. Imported scenes and objects keep their own attachments, and
+invalid references cannot resolve to packets from another source. Conflicting
+properties on the XMP package wrapper fail before publishing the merge.
 
 The experimental glTF 2.1 URI profile imports linked content from read-only
 source files. Standard Save As flattens the live scene into an editable glTF
 2.0 or GLB copy with portable resources. Reload that copy to work independently
 of the linked files. Both save routes protect the original inputs, including
 paths that point to the same files.
+Portable Save As also supports a scene merged from different linked manifests.
+A focused regression checks colliding relative resource names and alias keys,
+merge undo/redo, source-free glTF/GLB reload and protection of both input roots.
+All 24 captures and 52 checks pass in both raster techniques, including 20
+pixel-exact comparisons against independent static controls. Evidence is under
+`build/codex-gltf-validation/linked-merged-export-native/results.json`.
+The hierarchy marks linked payloads read-only and offers **Make Editable**
+for their shared placement family. Detaching the family clears scene edit
+history. Save Linked As writes the detached family and its edits inline while
+keeping the other families linked.
 The `extras.containerLinkedSource` provenance records the original relative URI
-and node index and carries no file dependency. Linked child document-level
-annotations stay in their original file.
+and node index and carries no file dependency. Flattened linked children share
+one packet table per source and alias context. Each placement exposes its
+child document and selected-scene XMP on metadata nodes beside the source
+roots. A linked skin binds to the joints in its own placement, while linked
+animations share their sample data across placements. Save Linked As keeps
+these definitions in the referenced source files.
 
-**Save Linked As** and `--save-linked-scene PATH` preserve the URI, alias, and
-external-asset tables of a static primary ASCII glTF manifest. Choose a new
-`.gltf` filename beside the original so every relative URI keeps its meaning.
-The companion records the selected scene and primary node names and local
-transforms. External assets, images, and buffers retain their original bytes.
-Changes to linked content, topology, cameras, materials, or lights require the
-portable Save As route. Merged generations and animated or interactive primary
-scenes also use portable Save As. The linked writer rejects changed or missing
-inputs before replacing the destination.
+**Save Linked As** and `--save-linked-scene PATH` write a companion ASCII
+`.gltf` beside the primary manifest so each relative URI keeps its meaning.
+With all families linked, the companion preserves the original URI, alias,
+and external-asset tables. It records the selected scene and edits to primary
+node names and local transforms.
+
+After Make Editable, the companion also includes the current editable
+geometry, materials, and hierarchy. It keeps only the URI links and alias
+rows needed by the remaining families, and reloads their clips and resources
+from those files. Save from the authored rest pose. The writer verifies
+remaining dependencies before replacing the destination. Detached dependency
+files can be absent. Use portable Save As for an active animation, a selected
+material variant, an interactive primary scene, or a copy independent of all
+linked sources. A hybrid companion can retain links from the primary
+manifest. Live links from merged manifests and linked lights with scaled
+ranges or emitter sizes require portable Save As.
 
 This API exports one primary runtime scene. The UI integration must reject
 mixed BIM/USD content, or clearly name a primary-scene-only export scope.
@@ -205,11 +237,21 @@ example, an omitted `KHR_materials_volume.attenuationDistance` means infinity;
 when a different clip needs a constant restore for it, export fails explicitly.
 The property can still be exported when every clip already animates it.
 
-The runtime can apply a synthetic primitive transform after skinning, while
-standard glTF cancels a skinned mesh node's transform. A nonidentity transform,
-animated intermediate node, or reparenting between a skinned primitive and its
-owner therefore requires baking and is refused explicitly. Ordinary identity
-primitive children and different per-instance skins/weights are supported.
+glTF places skinned meshes through their joints. Export gives a transformed or
+reparented skinned primitive a private joint hierarchy and retains its inverse
+binds, vertex influences, morph targets, and animation. An editor transform
+with shear is written as a product of TRS-compatible node transforms. Identity
+primitive children continue to share their original skin. For an edited GPU
+instance the private rig carries its placement and the saved mesh retains any
+custom per-instance attributes.
+
+Shared owner and joint ancestors cancel out before export computes the inverse
+owner path. Translation, rotation, and nonzero STEP or constant scale can be
+inverted while retaining their animation interpolation. Export fails before
+destination replacement when the saved mesh world or a required inverse is
+singular, a continuously varying scale would require a reciprocal curve, or
+`KHR_interactivity` writes a transform that the private hierarchy would have
+to duplicate.
 
 Known separate roughness/metalness/height/opacity maps and their legacy channel
 and factor fields are retained when exact source-binding proofs are available.
@@ -256,7 +298,14 @@ correction parents. Failed animated saves preserve the previous destination.
 Additional regressions switch between clips with whole-vector and component
 TRS/material targets, preserve saved defaults, reject nonfinite restore values,
 and compare regenerated deformation normals with missing base attributes after
-both glTF and GLB reload.
+both glTF and GLB reload. Edited-skin cases compare positions, normals, and
+tangent frames at the saved pose and across clip switches, including shear,
+mirrored reparenting, and an animated mesh owner.
+
+The native subtree-clone binding regression saves a moved skinned primitive
+and its duplicate in both formats. It checks reciprocal STEP scale channels
+and compares the reloaded deformation and raster output against independently
+baked reference geometry.
 
 The native animated-export regression additionally saves from a nonzero pose
 and compares animation endpoints after reload in both raster techniques.

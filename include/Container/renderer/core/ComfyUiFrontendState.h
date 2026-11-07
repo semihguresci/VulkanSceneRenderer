@@ -24,7 +24,6 @@ struct ComfyUiFrontendState {
   std::optional<ComfyUiResult> result;
   std::future<std::string> exportJob;
   std::string uploadedId;
-  VkSampler previewSampler{VK_NULL_HANDLE};
   VkDescriptorSet previewDescriptor{VK_NULL_HANDLE};
   container::material::TextureResource preview;
   std::shared_ptr<const container::gpu::AllocationManager::TextureAllocationLease> previewLease;

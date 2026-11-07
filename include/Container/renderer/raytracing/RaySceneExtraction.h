@@ -107,6 +107,7 @@ struct ExtractedRayScene {
     std::vector<container::geometry::Vertex> vertices;
     std::vector<uint32_t> indices;
     uint32_t firstTriangle{0};
+    uint64_t indexOrderHash{};
     RaySceneStorageIdentity storageIdentity{};
     std::shared_ptr<const container::geometry::gltf::GltfOpacityMicromapAttachment> opacityMicromap;
   };

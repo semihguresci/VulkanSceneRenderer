@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Container/renderer/pathtracing/ReferencePathDisplayMode.h>
 #include <Container/renderer/pathtracing/ReferencePathLensSettings.h>
 #include <Container/renderer/pathtracing/ReferenceGroundSettings.h>
 #include <Container/renderer/pathtracing/ReferenceOidnSettings.h>
@@ -30,7 +31,7 @@ struct alignas(16) ReferencePathTraceData {
   glm::uvec4 sampling{}; // bounces, roulette depth, seed, emissive instance count
   glm::vec4 environmentRadiance{1};
   glm::vec4 trace{}; // bias, maximum secondary distance, aperture radius, focal plane distance
-  glm::vec4 controls{}; // firefly peak RGB limit, one-shot autofocus probe, reserved
+  glm::vec4 controls{}; // firefly peak RGB limit, one-shot autofocus probe, display mode, reserved
   glm::vec4 ground{}; // mode, Y height, metallic, roughness
   glm::vec4 groundColor{};
 };
@@ -45,11 +46,19 @@ struct ReferencePathTraceInput {
   // Includes material/texture contents, lights and environment revisions.
   // Camera, clipping, scene bindings and settings are also compared internally.
   uint64_t contentRevision{};
+  // The temporal reconstruction epoch excludes camera and object poses.
+  uint64_t dlssRevision{};
+  RaySurfaceMotionSnapshot dlssMotion{};
+  float frameMilliseconds{};
   std::optional<uint64_t> autofocusKey;
+  ReferencePathDisplayMode displayMode{ReferencePathDisplayMode::Beauty};
   bool emptyScene{false};
 };
 struct ReferencePathTraceDiagnostics {
-  // Failure-stage bits: accumulation=1, path=2, material=4, hit=8, primary camera ray=16.
+  // Failure-stage bits: accumulation=1, path=2, material=4, hit=8, primary=16,
+  // BSDF sample=32, direct light=64, throughput=128, roulette=256,
+  // final radiance=512, initial medium=1024, invalid sampled local view=2048,
+  // invalid direct local frame=4096. Bits preserve all nested stages.
   uint32_t unsupportedSamples{}, rejectedSamples{}, acceptedSamples{}, failureStages{};
 };
 struct ReferenceAutofocusResult {
@@ -61,6 +70,15 @@ struct ReferenceOidnStatus {
   std::string_view message;
   uint32_t displayedSamples{};
   uint64_t allocatedBytes{};
+  std::optional<double> lastGpuMs;
+};
+
+struct ReferenceDlssStatus {
+  std::string_view message{"off"};
+  bool active{};
+  VkExtent2D renderExtent{}, outputExtent{};
+  uint64_t historyResets{}, historyFrames{}, allocatedBytes{};
+  std::optional<uint64_t> vendorAllocatedBytes;
   std::optional<double> lastGpuMs;
 };
 
@@ -76,7 +94,7 @@ class ReferencePathTracePass {
   ReferencePathTracePass& operator=(const ReferencePathTracePass&)=delete;
   void createResources(const std::filesystem::path&,uint32_t imageCount,VkExtent2D,
                        VkDescriptorSetLayout materials,VkDescriptorSetLayout lights,
-                       uint64_t imageBudgetBytes=512ull*1024*1024,
+                       uint64_t imageBudgetBytes=kDefaultReferenceImageBudgetBytes,
                        ReferenceOidnSettings oidn = {});
   // Optional host views of the same material and ray generations build the
   // mesh-light proposal. They need only survive this call.
@@ -94,8 +112,13 @@ class ReferencePathTracePass {
   [[nodiscard]] ReferenceGroundSettings effectiveGround() const;
   [[nodiscard]] ReferenceOidnStatus oidnStatus() const;
   [[nodiscard]] ReferenceOidnQuality oidnQuality() const;
+  [[nodiscard]] bool optixSelected() const;
+  [[nodiscard]] UpscaleMode dlssQuality() const;
+  [[nodiscard]] ReferenceDlssStatus dlssStatus() const;
+  // The caller retires all frame readers before changing reconstruction mode.
+  void setDlssQuality(const std::filesystem::path& shaderRoot, UpscaleMode mode);
   void setOidnSampleInterval(uint32_t interval);
-  void collectOidnTiming(uint32_t image);
+  void collectDenoiserTiming(uint32_t image);
   [[nodiscard]] uint64_t historyResets() const;
   [[nodiscard]] uint64_t allocatedBytes() const;
   // Require this slot's graphics fence to retire before CPU readback.

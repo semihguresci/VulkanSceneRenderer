@@ -74,9 +74,11 @@ struct GltfCameraProjectionPlan {
 // Pure selected-record preparation: no model/binary/graph copy, mutation,
 // projection convention change, I/O or GPU work. Opaque camera metadata and raw
 // JSON caches survive exactly, including the dormant projection block.
-// Each edited scalar is assigned independently to authored/evaluated records;
-// untouched values remain distinct. Changed animated leaves (or a type switch
-// with any camera animation) reject until an authored-rest transaction exists.
+// Unanimated edits apply independently to authored/evaluated records;
+// untouched values remain distinct. Animated scalar edits change authored rest
+// values while preserving the current evaluated sample. The player transaction
+// restores the new defaults and resamples the selected clip before publication.
+// Animated optional leaves must remain present. Animated type switches reject.
 // Type switches require explicit yfov/near or all four orthographic fields,
 // even when the dormant block was valid. Optional perspective aspect/far keep
 // their dormant values unless explicitly edited/omitted. Edits for the other
@@ -112,7 +114,8 @@ enum class GltfCameraEditSide : uint8_t { Before, After };
 // fields and evaluated animation of other fields survive. Owned current leaves
 // must exactly match the opposite trusted endpoint. Context IDs/shared-node
 // uses/raw camera targets remain exact. The immutable original command is kept
-// once, without chaining previews. Changed animated leaves still reject.
+// once, without chaining previews. Animated evaluated leaves may advance with
+// the current clip; their authored endpoints and curve targets remain exact.
 [[nodiscard]] GltfCameraProjectionPlan RebaseGltfCameraProjectionEdit(
     const GltfCameraProjectionPlan&, GltfCameraEditSide,
     GltfCameraAuthoringSourceView currentAuthored, GltfCameraAuthoringSourceView currentEvaluated,

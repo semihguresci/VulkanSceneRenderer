@@ -129,5 +129,9 @@ struct Material {
   bool specularGlossinessWorkflow{false};
   bool unlit{false};
   ExperimentalMaterialLayer experimental;
+  // Authored SG inputs stay separate from the raster MR approximation.
+  // Alpha and glossiness retain their existing baseColor.a/roughnessFactor owners.
+  glm::vec3 specularGlossinessDiffuse{1.0f};
+  glm::vec3 specularGlossinessSpecular{1.0f};
 };
 }  // namespace container::material

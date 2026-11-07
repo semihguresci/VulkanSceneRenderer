@@ -182,18 +182,23 @@ bool RendererFrontend::authorCameraViewPose(const Target& target,uint64_t expect
   if(subs_.sceneManager && (!gltfAnimation_ || gltfAnimationGraphIdentity_!=sceneGraph_.identity())) resetGltfAnimation();
   if(!subs_.sceneManager || !gltfAnimation_ || gltfAnimationCameraNode_)
     throw std::invalid_argument("Choose the free Viewport before writing its pose to an authored camera");
+  if(subs_.sceneManager->isLinkedNodeReadOnly(sceneGraph_,target.camera.graphNode))
+    throw std::invalid_argument("This linked asset is read-only. Use Make Editable first.");
   if(!expectedViewRevision || refreshCameraViewPoseViewRevision()!=expectedViewRevision)
     throw std::invalid_argument("The viewport pose changed before the camera write");
   if(materialGesture_ || lightEditGestureActive() || transformDragSession_.active || sceneEditPublicationPending_ || pendingSceneRetirement_)
     throw std::invalid_argument("Finish the current scene edit before writing a camera pose");
   if(cameraViewPosePublications_==UINT64_MAX) throw std::overflow_error("Camera pose publication counter exhausted");
-  ensureSceneEditHistory();auto& manager=*subs_.sceneManager;const auto view=cameraViewportUnjitteredView();
+  auto& manager=*subs_.sceneManager;const auto view=cameraViewportUnjitteredView();
   CameraViewPosePublication publication;
   publication.source=manager.prepareCameraViewPoseEdit(target,view,sceneGraph_,gltfAnimation_.get(),poseAspect(svc_.swapChainManager));
+  // A real authored-rest edit may leave every sampled pose field unchanged.
+  // Keep the manager's owned-endpoint decision for history/publication.
   if(!publication.source.changed()) {
     cameraViewPoseDestination_=manager.cameraViewPoseTarget(sceneGraph_,target.camera.graphNode);
     return true;
   }
+  ensureSceneEditHistory();
   if(!cameraViewPoseHistoryBudget_) cameraViewPoseHistoryBudget_=std::make_shared<CameraViewPoseHistoryBudget>();
   const auto budget=cameraViewPoseHistoryBudget_;const auto command=publication.source.command();
   constexpr uint64_t overhead=sizeof(CameraViewPoseHistory)+1024;
@@ -203,7 +208,7 @@ bool RendererFrontend::authorCameraViewPose(const Target& target,uint64_t expect
     throw std::length_error("Camera pose history exceeds its selected-record storage budget");
   auto state=std::make_shared<CameraViewPoseHistory>();state->command=command;state->graph=sceneGraph_.identity();
   state->reservation=command.ownedBytes()+overhead;state->budget=budget;budget->reserved+=state->reservation;
-  container::util::EditHistory::Command history{"Write viewport camera pose",
+  container::util::EditHistory::Command history{"Write viewport camera default",
       [this,state] {return replayCameraViewPose(*state,GltfCameraEditSide::Before);},
       [this,state] {return replayCameraViewPose(*state,GltfCameraEditSide::After);},true};
   if(refreshCameraViewPoseViewRevision()!=expectedViewRevision || !publishCameraViewPose(publication,&view)) return false;
@@ -214,6 +219,7 @@ bool RendererFrontend::authorCameraViewPose(const Target& target,uint64_t expect
 bool RendererFrontend::replayCameraViewPose(const CameraViewPoseHistory& state,GltfCameraEditSide side) {
   if(!subs_.sceneManager || !gltfAnimation_ || state.graph!=sceneGraph_.identity() ||
       cameraViewPosePublications_==UINT64_MAX) return false;
+  if(subs_.sceneManager->isLinkedNodeReadOnly(sceneGraph_,state.command.target().camera.graphNode)) return false;
   if(materialGesture_ || lightEditGestureActive() || transformDragSession_.active || sceneEditPublicationPending_ || pendingSceneRetirement_)
     throw std::invalid_argument("Finish the current scene edit before replaying a camera pose");
   CameraViewPosePublication publication;

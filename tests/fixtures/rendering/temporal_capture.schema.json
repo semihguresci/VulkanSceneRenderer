@@ -17,8 +17,12 @@
       "frame": {"$ref": "#/$defs/frame"},
       "reset": {"type": "boolean"}, "skip": {"type": "boolean"}, "taa": {"type": "boolean"},
       "fsr": {"enum": ["native", "quality", "balanced", "performance"]},
+      "dlss": {"enum": ["native", "quality", "balanced", "performance"]},
       "gpuTransforms": {"type": "boolean"},
       "referenceOidn": {"enum": ["off", "fast", "balanced", "high"]},
+      "referenceOptix": {"type": "boolean"},
+      "referenceDlss": {"enum": ["off", "quality", "balanced", "performance"]},
+      "referenceDisplay": {"enum": ["beauty", "standard-error"]},
       "comfyUi": {"type": "object", "additionalProperties": false, "required": ["action"], "properties": {
         "action": {"enum": ["generate-environment", "restyle-viewport", "apply-environment", "cancel"]},
         "prompt": {"type": "string", "minLength": 1, "maxLength": 2048},
@@ -86,7 +90,10 @@
       "nodeReparent": {"$ref": "#/$defs/nodeReparent"},
       "nodeTransform": {"$ref": "#/$defs/nodeTransform"},
       "addPrimitive": {"$ref": "#/$defs/addPrimitive"}
-    }, "allOf": [{
+    }, "not": {"anyOf": [{"required": ["referenceOidn", "referenceOptix"]},
+                        {"required": ["referenceOidn", "referenceDlss"]},
+                        {"required": ["referenceOptix", "referenceDlss"]},
+                        {"required": ["fsr", "dlss"]}]}, "allOf": [{
       "if": {"required": ["guiWaitForLoad"], "properties": {"guiWaitForLoad": {"const": false}}},
       "then": {"anyOf": [
         {"required": ["guiReload"], "properties": {"guiReload": {"type": "string", "minLength": 1}}},
@@ -103,7 +110,7 @@
       {"if": {"required": ["expectCameraPoseFailure"]}, "then": {"required": ["cameraPose"]}},
       {"if": {"required": ["expectLightEditFailure"]}, "then": {"$ref": "#/$defs/oneLightAction"}},
       {"if": {"anyOf": [{"required": ["lightEdit"]}, {"required": ["lightSelection"]}, {"required": ["lightAdd"]}]},
-       "then": {"allOf": [{"$ref": "#/$defs/oneLightAction"}, {"propertyNames": {"enum": ["frame", "lightEdit", "lightSelection", "lightAdd", "expectLightEditFailure", "taa", "exposure", "resize", "depthProbe", "technique", "rayShadows", "rayShadowSamples", "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"]}}]}},
+       "then": {"allOf": [{"$ref": "#/$defs/oneLightAction"}, {"propertyNames": {"enum": ["frame", "lightEdit", "lightSelection", "lightAdd", "expectLightEditFailure", "taa", "fsr", "dlss", "exposure", "resize", "depthProbe", "technique", "rayShadows", "rayShadowSamples", "rayShadowDenoise", "areaLighting", "areaLightSamples", "ddgiPaused", "ddgiEnabled", "samples", "reset"]}}]}},
       {"if": {"required": ["cameraProjection"]}, "then": {"allOf": [{"$ref": "#/$defs/isolatedCameraAction"}, {"not": {"anyOf": [{"required": ["cameraSelection"]}, {"required": ["cameraPose"]}]}}]}},
       {"if": {"required": ["cameraSelection"]}, "then": {"allOf": [{"$ref": "#/$defs/isolatedCameraAction"}, {"not": {"anyOf": [{"required": ["cameraProjection"]}, {"required": ["cameraPose"]}]}}]}},
       {"if": {"required": ["cameraPose"]}, "then": {"allOf": [{"$ref": "#/$defs/isolatedCameraAction"}, {"not": {"anyOf": [{"required": ["cameraProjection"]}, {"required": ["cameraSelection"]}]}}]}},
@@ -475,15 +482,15 @@
     },
     "nodeAuthoring": {
       "type": "object", "additionalProperties": false, "required": ["action"],
-      "description": "Undoable node rename, empty creation, subtree deletion or duplication. A duplicate may omit name to use the old label plus ' copy'; delete requires omission. Runtime resolves imported primitive owners. Use separate events for other scene mutations.",
+      "description": "Node authoring or Make Editable for a linked source. Make Editable clears the scene edit history. A duplicate may omit name to use the old label plus ' copy'. Runtime resolves imported primitive owners. Use separate events for other scene mutations.",
       "properties": {
-        "action": {"enum": ["rename", "create-empty", "delete-subtree", "duplicate-subtree"]},
+        "action": {"enum": ["rename", "create-empty", "delete-subtree", "duplicate-subtree", "make-editable"]},
         "graphNode": {"type": "integer", "minimum": 0, "maximum": 4294967294},
         "sourceNode": {"type": "integer", "minimum": 0, "maximum": 2147483647},
         "name": {"$ref": "#/$defs/nodeName"}
       },
       "oneOf": [{"required": ["graphNode"]}, {"required": ["sourceNode"]}],
-      "allOf": [{"if": {"properties": {"action": {"const": "delete-subtree"}}},
+      "allOf": [{"if": {"properties": {"action": {"enum": ["delete-subtree", "make-editable"]}}},
         "then": {"not": {"required": ["name"]}}},
         {"if": {"properties": {"action": {"enum": ["rename", "create-empty"]}}}, "then": {"required": ["name"]}}]
     },

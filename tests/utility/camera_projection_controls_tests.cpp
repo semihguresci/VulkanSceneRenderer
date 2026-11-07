@@ -114,6 +114,20 @@ TEST(CameraProjectionControls, ExplicitOptionalOmissionsRemainOmittedAndDoNotCap
   EXPECT_DOUBLE_EQ(c.cameraProjection->values[1],1.5);EXPECT_DOUBLE_EQ(c.cameraProjection->values[3],200.);
 }
 
+TEST(CameraProjectionControls, AnimatedDefaultsAcceptNumbersAndKeepOptionalPointerTargetsPresent) {
+  auto c=controls();auto s=*c.cameraProjection;
+  s.values[1]=1.5;s.values[3]=200.;
+  s.animatedProperties[0]=s.animatedProperties[1]=s.animatedProperties[3]=true;
+  ASSERT_TRUE(SetCameraProjectionSnapshot(c,s));
+  for(const auto property:{Property::PerspectiveAspectRatio,Property::PerspectiveFar}) {
+    EXPECT_FALSE(QueueCameraProjectionEdit(c,s.target,{{},{{property,std::monostate{}}}}));
+    auto draft=c.cameraProjectionDraft;draft.values[size_t(property)]=0;draft.edited[size_t(property)]=true;
+    EXPECT_FALSE(SetCameraProjectionDraft(c,draft));
+  }
+  EXPECT_TRUE(QueueCameraProjectionEdit(c,s.target,{{},{{Property::PerspectiveYfov,.8},
+      {Property::PerspectiveAspectRatio,1.25},{Property::PerspectiveFar,300.}}}));
+}
+
 TEST(CameraProjectionControls, PendingSelectionAndTimelineRequestsCannotShareTheLensApplyQueue) {
   const std::array<std::function<void(GltfAnimationControls&)>,6> conflict{
       [](auto& c) {c.requestedCameraNode=-1;},[](auto& c) {c.requestedClip=0;},[](auto& c) {c.requestedTime=2.;},
@@ -122,7 +136,7 @@ TEST(CameraProjectionControls, PendingSelectionAndTimelineRequestsCannotShareThe
 }
 
 TEST(CameraProjectionControls, PropertyBlockersLeaveUnrelatedLensFieldsUsable) {
-  auto c=controls();auto s=*c.cameraProjection;s.propertyBlockReasons[0]="Animated FOV cannot be edited in this context.";
+  auto c=controls();auto s=*c.cameraProjection;s.propertyBlockReasons[0]="The lens field is locked in this context.";
   s.typeSwitchBlockReason="Projection type is animated.";ASSERT_TRUE(SetCameraProjectionSnapshot(c,s));
   EXPECT_FALSE(QueueCameraProjectionEdit(c,s.target,{{},{{Property::PerspectiveYfov,.8}}}));
   EXPECT_FALSE(QueueCameraProjectionEdit(c,s.target,{Projection::Orthographic,{{Property::OrthographicXmag,8.},

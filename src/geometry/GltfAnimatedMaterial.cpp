@@ -59,6 +59,9 @@ void specularGlossinessFactors(const tinygltf::Value& object, container::materia
   if (object.Has("diffuseFactor") && object.Get("diffuseFactor").IsArray() && object.Get("diffuseFactor").ArrayLen() == 4)
     for (size_t i = 0; i < 4; ++i) if (object.Get("diffuseFactor").Get(i).IsNumber()) diffuse[static_cast<int>(i)] = static_cast<float>(object.Get("diffuseFactor").Get(i).GetNumberAsDouble());
   const auto specular = vector(object,"specularFactor",glm::vec3(1));
+  const float glossiness = scalar(object,"glossinessFactor",1);
+  material.specularGlossinessDiffuse = glm::vec3(diffuse);
+  material.specularGlossinessSpecular = specular;
   // Match the importer's existing specular/glossiness approximation. Updating
   // another channel in this workflow must not reset it to the core MR defaults.
   const auto d = glm::clamp(glm::vec3(diffuse),0.0f,1.0f);
@@ -74,7 +77,7 @@ void specularGlossinessFactors(const tinygltf::Value& object, container::materia
   const auto fromSpecular = (s-glm::vec3(.04f*(1-metallic)))/std::max(metallic,1e-6f);
   material.baseColor = glm::vec4(glm::clamp(glm::mix(fromDiffuse,fromSpecular,metallic*metallic),0.0f,1.0f),std::clamp(diffuse.a,0.0f,1.0f));
   material.metallicFactor = metallic;
-  material.roughnessFactor = std::clamp(scalar(object,"glossinessFactor",1),0.0f,1.0f);
+  material.roughnessFactor = std::clamp(glossiness,0.0f,1.0f);
   const float maximum = std::max({specular.r,specular.g,specular.b});
   material.specularFactor = std::clamp(maximum/.04f,0.0f,1.0f);
   material.specularColorFactor = maximum > 1e-6f ? specular/maximum : glm::vec3(1);
@@ -83,6 +86,8 @@ void specularGlossinessFactors(const tinygltf::Value& object, container::materia
 
 void UpdateAnimatedMaterialProperties(const tinygltf::Material& source,
                                       container::material::Material& material) {
+  material.specularGlossinessDiffuse = glm::vec3(1);
+  material.specularGlossinessSpecular = glm::vec3(1);
   if (source.pbrMetallicRoughness.baseColorFactor.size() == 4)
     for (int i = 0; i < 4; ++i) material.baseColor[i] = static_cast<float>(source.pbrMetallicRoughness.baseColorFactor[static_cast<size_t>(i)]);
   if (source.emissiveFactor.size() == 3)

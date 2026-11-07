@@ -130,8 +130,8 @@ TEST(GltfCameraPoseAuthoring, SourceSiblingCameraPosesAndLiveWeightsAreNotOverwr
   EXPECT_EQ(f.authored.nodes[0].translation,(std::vector<double>{70,80,90}));
 }
 
-TEST(GltfCameraPoseAuthoring, SelectedTrsMatrixAndUnknownPosePointersRejectAcrossEveryClip) {
-  for(const auto* property:{"translation","rotation","scale","matrix","futurePose"}) {
+TEST(GltfCameraPoseAuthoring, SelectedMatrixAndUnknownPosePointersStillRejectAcrossEveryClip) {
+  for(const auto* property:{"matrix","futurePose"}) {
     Fixture f;channel(f.authored,1,property);EXPECT_THROW((void)f.plan(),std::invalid_argument);
     Fixture pointerFixture;channel(pointerFixture.evaluated,-1,std::string("/nodes/2/")+property,true);
     EXPECT_THROW((void)pointerFixture.plan(),std::invalid_argument);
@@ -143,6 +143,47 @@ TEST(GltfCameraPoseAuthoring, SelectedTrsMatrixAndUnknownPosePointersRejectAcros
   f.evaluated.animations.emplace_back();f.evaluated.animations.back().samplers.emplace_back();tinygltf::AnimationChannel target;
   target.target_node=2;target.target_path="translation";target.sampler=0;f.evaluated.animations.back().channels.push_back(target);
   EXPECT_THROW((void)f.plan(),std::invalid_argument);
+}
+
+TEST(GltfCameraPoseAuthoring, AnimatedTrsDefaultsRetainTrsAndCurrentTargetComponents) {
+  for(const auto* property:{"translation","rotation","scale"}) {
+    Fixture f;copyPose(f.evaluated.nodes[2],f.authored.nodes[1]);
+    f.graph.parentWorld=glm::mat4(1);f.graph.local=EvaluateAnimatedNodeLocalTransform(f.evaluated.nodes[2]);f.graph.world=f.graph.local;
+    channel(f.authored,1,property);channel(f.evaluated,2,property);
+    const auto plan=f.plan();ASSERT_TRUE(plan.changed);EXPECT_TRUE(plan.authoredAfter.matrix.empty());EXPECT_TRUE(plan.evaluatedAfter.matrix.empty());
+    matrixNear(EvaluateAnimatedNodeLocalTransform(plan.authoredAfter),plan.localAfter,0);
+    ASSERT_EQ(plan.evaluatedAnimationBindings.size(),1u);EXPECT_TRUE(f.matches(plan));
+    if(std::string(property)=="translation") EXPECT_EQ(plan.evaluatedAfter.translation,f.evaluated.nodes[2].translation);
+    if(std::string(property)=="rotation") EXPECT_EQ(plan.evaluatedAfter.rotation,f.evaluated.nodes[2].rotation);
+    if(std::string(property)=="scale") EXPECT_EQ(plan.evaluatedAfter.scale,f.evaluated.nodes[2].scale);
+  }
+}
+
+TEST(GltfCameraPoseAuthoring, PartialPointerPreservesOnlyItsAnimatedComponent) {
+  Fixture f;copyPose(f.evaluated.nodes[2],f.authored.nodes[1]);
+  f.graph.parentWorld=glm::mat4(1);f.graph.local=EvaluateAnimatedNodeLocalTransform(f.evaluated.nodes[2]);f.graph.world=f.graph.local;
+  channel(f.authored,-1,"/nodes/1/translation/0",true);channel(f.evaluated,-1,"/nodes/2/translation/0",true);
+  const auto plan=f.plan();ASSERT_EQ(plan.evaluatedAnimationBindings[0].element,0u);
+  EXPECT_EQ(plan.evaluatedAfter.translation[0],f.evaluated.nodes[2].translation[0]);
+  EXPECT_EQ(plan.evaluatedAfter.translation[1],plan.authoredAfter.translation[1]);
+  EXPECT_EQ(plan.evaluatedAfter.translation[2],plan.authoredAfter.translation[2]);EXPECT_TRUE(f.matches(plan));
+}
+
+TEST(GltfCameraPoseAuthoring, AnimatedNodeRejectsGenuineLocalShearWithoutChangingSource) {
+  Fixture f;copyPose(f.evaluated.nodes[2],f.authored.nodes[1]);
+  f.graph.local=EvaluateAnimatedNodeLocalTransform(f.evaluated.nodes[2]);f.graph.world=f.graph.parentWorld*f.graph.local;
+  channel(f.authored,1,"translation");channel(f.evaluated,2,"translation");const auto before=f.authored.nodes[1];
+  EXPECT_THROW((void)f.plan(),std::invalid_argument);EXPECT_TRUE(GltfCameraPoseNodeRecordsEqual(before,f.authored.nodes[1]));
+}
+
+TEST(GltfCameraPoseAuthoring, TrueAnimatedRestNoopPreservesOptionalFieldsAndSignedZero) {
+  Fixture f;f.authored.nodes[1].translation[0]=-0.;copyPose(f.evaluated.nodes[2],f.authored.nodes[1]);
+  f.graph.parentWorld=glm::mat4(1);f.graph.local=EvaluateAnimatedNodeLocalTransform(f.evaluated.nodes[2]);f.graph.world=f.graph.local;
+  channel(f.authored,1,"rotation");channel(f.evaluated,2,"rotation");
+  const auto view=EvaluateAnimatedCamera(f.evaluated.cameras[1],f.graph.world,f.graph.viewportAspect);ASSERT_TRUE(view);
+  const auto plan=PlanGltfCameraViewPose(GltfCameraPoseView(f.authored),GltfCameraPoseView(f.evaluated),1,2,f.graph,view->view);
+  EXPECT_FALSE(plan.changed);EXPECT_TRUE(GltfCameraNodePoseEqual(plan.authoredAfter,f.authored.nodes[1]));
+  EXPECT_TRUE(std::signbit(plan.authoredAfter.translation[0]));EXPECT_TRUE(f.matches(plan));
 }
 
 TEST(GltfCameraPoseAuthoring, MalformedPointerAndAmbiguousRawTargetSchemasFailClosed) {

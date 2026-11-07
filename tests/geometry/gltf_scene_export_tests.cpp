@@ -2,6 +2,7 @@
 #include <Container/geometry/GltfSceneExport.h>
 #include <Container/geometry/GltfLinkedAssets.h>
 #include <Container/geometry/GltfNodeExportCompaction.h>
+#include <Container/geometry/GltfMaterialExportCompaction.h>
 #include <Container/geometry/GltfAnimation.h>
 #include <Container/geometry/GltfInteractivity.h>
 #include <Container/geometry/GltfDeformation.h>
@@ -22,14 +23,17 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <functional>
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <vector>
 #include <utility>
@@ -87,6 +91,33 @@ SceneGraph cubeGraph() {
   const auto cube = graph.createNode(glm::mat4(1), 0, true, 0, "Source cube");
   graph.setParent(cube, root);
   return graph;
+}
+
+void scalarBehavior(tinygltf::Model& model, const std::vector<std::string>& paths) {
+  using namespace container::geometry::gltf;
+  using V = tinygltf::Value;
+  using O = V::Object;
+  using A = V::Array;
+  A nodes{V(O{{"declaration",V(0)},{"flows",V(O{{"out",V(O{{"node",V(1)}})}})}})};
+  for (size_t i = 0; i < paths.size(); ++i) {
+    O node{{"declaration",V(1)},{"configuration",V(O{
+        {"pointer",V(O{{"value",V(A{V(paths[i])})}})},
+        {"type",V(O{{"value",V(A{V(0)})}})}})},
+        {"values",V(O{{"value",V(O{{"type",V(0)},{"value",V(A{V(.75)})}})},
+            {"node",V(O{{"type",V(2)},{"value",V(A{V(2)})}})}})}};
+    if (i + 1 < paths.size()) node["flows"] = V(O{{"out",V(O{{"node",V(int(i + 2))}})}});
+    nodes.emplace_back(std::move(node));
+  }
+  V graph(O{{"types",V(A{V(O{{"signature",V(std::string("float"))}}),
+      V(O{{"signature",V(std::string("ref"))}}),V(O{{"signature",V(std::string("int"))}})})},
+      {"declarations",V(A{V(O{{"op",V(std::string("event/onStart"))}}),
+          V(O{{"op",V(std::string("pointer/set"))}})})},
+      {"nodes",V(std::move(nodes))},
+      {"extras",V(O{{"opaqueIndex",V(917)}})}});
+  model.extensions[kGltfInteractivityExtension] = V(O{{"graphs",V(A{graph})},
+      {"extras",V(O{{"opaqueReference",V(std::string("/nodes/917"))}})}});
+  if (std::ranges::find(model.extensionsUsed,kGltfInteractivityExtension) == model.extensionsUsed.end())
+    model.extensionsUsed.push_back(kGltfInteractivityExtension);
 }
 
 TEST(GltfSceneExport, BehaviorGraphTargetsRetainedNodeAndRuntimeMaterialAfterReload) {
@@ -201,7 +232,106 @@ TEST(GltfSceneExport, BehaviorGraphTargetsRetainedNodeAndRuntimeMaterialAfterRel
   auto compacted = snapshot;
   const std::array<uint8_t, 2> activeMaterials{0, 1};
   compacted.sourceResourceMasks.materials = activeMaterials;
-  EXPECT_THROW((void)buildExportModel(compacted), std::runtime_error);
+  EXPECT_NO_THROW((void)buildExportModel(compacted));
+}
+
+tinygltf::Model behaviorExportSource(const Model& cube) {
+  auto source = buildExportModel({cubeGraph(),cube});
+  source.nodes.insert(source.nodes.begin(),tinygltf::Node{});
+  source.nodes[0].name = "Unused retired node";
+  source.nodes[1].children = {2};
+  source.nodes[2].matrix.clear();
+  source.nodes[2].translation = {0,0,0};
+  source.scenes[0].nodes = {0,1};
+  source.materials.resize(3);
+  source.meshes[0].primitives[0].material = 2;
+  source.materials[2].pbrMetallicRoughness.baseColorTexture.index = 1;
+  source.images.resize(2);
+  source.textures.resize(2);
+  source.samplers.resize(2);
+  for (size_t i = 0; i < 2; ++i) {
+    auto& image = source.images[i];
+    image.width = image.height = 1;
+    image.component = 4;
+    image.bits = 8;
+    image.pixel_type = TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE;
+    image.image = {uint8_t(i ? 255 : 0),0,0,255};
+    source.textures[i].source = source.textures[i].sampler = int(i);
+  }
+  source.lights.resize(1);
+  source.lights[0].type = "point";
+  source.lights[0].intensity = 4;
+  source.nodes[2].light = 0;
+  source.extensionsUsed.push_back("KHR_lights_punctual");
+  return source;
+}
+
+TEST(GltfSceneExport, BehaviorSurvivesUnrelatedNodeMaterialAndTextureRetirementAcrossBothFormats) {
+  using namespace container::geometry::gltf;
+  const auto cube = Model::MakeCube();
+  auto source = behaviorExportSource(cube);
+  scalarBehavior(source,{"/nodes/2/translation/0","/materials/2/pbrMetallicRoughness/metallicFactor",
+      "/extensions/KHR_lights_punctual/lights/0/intensity"});
+  const auto original = source;
+  SceneGraph graph;
+  graph.createNode(glm::mat4(1),0,false,SceneGraph::kInvalidNode,"Unused retired node");
+  const auto group = graph.createNode(glm::mat4(1),0,false,SceneGraph::kInvalidNode,"Source group");
+  const auto renderable = graph.createNode(glm::mat4(1),2,true,0,"Source cube");
+  ASSERT_TRUE(graph.setParent(renderable,group));
+  auto retirement = graph.prepareRetireSubtree(0);
+  ASSERT_TRUE(graph.publishRetirement(retirement));
+  const std::array<int32_t,3> identities{0,1,2};
+  const std::array<uint8_t,2> resourcePhases{0,1};
+  const std::array<uint8_t,3> materialPhases{0,1,1};
+  SceneExportSnapshot snapshot{graph,cube,&source,{},identities};
+  snapshot.sourceResourceMasks = {resourcePhases,resourcePhases,resourcePhases,materialPhases};
+  auto packed = buildExportModel(snapshot);
+  ASSERT_EQ(packed.images.size(),1u);
+  ASSERT_EQ(packed.textures.size(),1u);
+  ASSERT_EQ(packed.samplers.size(),1u);
+  auto compacted = CompactGltfExportNodes(packed,std::array<int32_t,1>{0});
+  const auto retainedNode = compacted.oldToNewNodes[renderable];
+  auto& output = compacted.model;
+  const auto materials = PlanGltfMaterialExportCompaction(output,std::array<int32_t,1>{0});
+  ApplyGltfMaterialExportCompaction(output,materials);
+  ExportDirectory directory;
+  for (const auto* suffix : {".gltf",".glb"}) {
+    const auto path = directory.root / (std::string("behavior-retirement") + suffix);
+    writeExportModel(output,path);
+    auto loaded = LoadModelWithSource(path.string()).gltfModel;
+    const auto& extension = loaded.extensions.at(kGltfInteractivityExtension);
+    EXPECT_EQ(extension.Get("extras").Get("opaqueReference").Get<std::string>(),"/nodes/917");
+    GltfInteractivity behavior(loaded);
+    const auto dirty = behavior.advance(loaded,ParseAnimations(loaded),0);
+    EXPECT_EQ(dirty.nodes,std::vector<size_t>{size_t(retainedNode)});
+    EXPECT_EQ(dirty.materials,std::vector<size_t>{1});
+    EXPECT_EQ(dirty.lights,std::vector<size_t>{0});
+    EXPECT_DOUBLE_EQ(loaded.nodes[size_t(retainedNode)].translation[0],.75);
+    EXPECT_DOUBLE_EQ(loaded.materials[1].pbrMetallicRoughness.metallicFactor,.75);
+    EXPECT_DOUBLE_EQ(loaded.lights[0].intensity,.75);
+    EXPECT_EQ(loaded.materials[1].pbrMetallicRoughness.baseColorTexture.index,0);
+  }
+  EXPECT_EQ(source,original);
+}
+
+TEST(GltfSceneExport, BehaviorCompactionRejectsDeletedReferencesAndChangedDynamicDomains) {
+  using namespace container::geometry::gltf;
+  const auto cube = Model::MakeCube();
+  for (const std::string path : {"/nodes/0/translation/0","/nodes/{node}/translation/0"}) {
+    auto source = behaviorExportSource(cube);
+    scalarBehavior(source,{path});
+    const auto original = source;
+    EXPECT_THROW((void)CompactGltfExportNodes(source,std::array<int32_t,1>{0}),std::exception);
+    EXPECT_EQ(source,original);
+  }
+  for (const std::string path : {"/materials/0/pbrMetallicRoughness/metallicFactor",
+                                "/materials/{node}/pbrMetallicRoughness/metallicFactor"}) {
+    auto source = behaviorExportSource(cube);
+    scalarBehavior(source,{path});
+    const auto original = source;
+    EXPECT_THROW((void)PlanGltfMaterialExportCompaction(source,std::array<int32_t,1>{0}),std::exception);
+    EXPECT_EQ(source,original);
+  }
 }
 
 std::filesystem::path texturedSource(const std::filesystem::path& directory,
@@ -458,6 +588,104 @@ struct AnimatedExportFixture {
   }
 };
 
+struct LinkedSkinFixture {
+  ExportDirectory directory;
+  std::filesystem::path input{directory.root / "linked"};
+  std::filesystem::path leaf{input / "leaf.gltf"};
+  std::filesystem::path primary{input / "primary.gltf"};
+  Model geometry{Model::MakeCube()};
+  tinygltf::Model child{buildExportModel({cubeGraph(), geometry})};
+  size_t primaryAccessors{};
+
+  LinkedSkinFixture() {
+    using Json = nlohmann::json;
+    std::filesystem::create_directories(input / "group");
+    child.nodes.assign(5, tinygltf::Node{});
+    child.nodes[0].name = "Inactive leaf node";
+    child.nodes[1].name = "Leaf rig";
+    child.nodes[1].translation = {.25, .1, 0};
+    child.nodes[1].children = {2, 3};
+    child.nodes[2].name = "Leaf mesh";
+    child.nodes[2].mesh = 0;
+    child.nodes[2].skin = 0;
+    child.nodes[2].weights = {.25};
+    child.nodes[3].name = "Leaf root joint";
+    child.nodes[3].children = {4};
+    child.nodes[4].name = "Leaf child joint";
+    child.nodes[4].translation = {0, .5, 0};
+    child.scenes.resize(2);
+    child.scenes[0].nodes = {0};
+    child.scenes[1].nodes = {1};
+    child.defaultScene = 1;
+    child.materials[0].name = "Linked material";
+    child.materials[0].pbrMetallicRoughness.roughnessFactor = .35;
+    auto& primitive = child.meshes[0].primitives[0];
+    const size_t vertices = geometry.meshes()[0].vertices().size();
+    std::vector<uint8_t> joints(vertices * 4), weights(vertices * 4);
+    std::vector<float> positions(vertices * 3);
+    for (size_t i = 0; i < vertices; ++i) {
+      joints[i * 4 + 1] = 1;
+      weights[i * 4] = 192;
+      weights[i * 4 + 1] = 63;
+      positions[i * 3 + 2] = 1.25f;
+    }
+    primitive.attributes["JOINTS_0"] = sourceAccessor(child, joints,
+        TINYGLTF_TYPE_VEC4, TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE);
+    primitive.attributes["WEIGHTS_0"] = sourceAccessor(child, weights,
+        TINYGLTF_TYPE_VEC4, TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE, true);
+    const int morph = sourceAccessor(child, positions, TINYGLTF_TYPE_VEC3, TINYGLTF_COMPONENT_TYPE_FLOAT);
+    child.accessors[size_t(morph)].minValues = {0, 0, 1.25};
+    child.accessors[size_t(morph)].maxValues = {0, 0, 1.25};
+    primitive.targets = {{{"POSITION", morph}}};
+    child.meshes[0].weights = {.1};
+    tinygltf::Skin skin;
+    skin.name = "Leaf skin";
+    skin.skeleton = 3;
+    skin.joints = {3, 4};
+    skin.inverseBindMatrices = sourceAccessor(child,
+        std::vector<float>{1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1,
+                           1,0,0,0, 0,1,0,0, 0,0,1,0, 0,-.5f,0,1},
+        TINYGLTF_TYPE_MAT4, TINYGLTF_COMPONENT_TYPE_FLOAT);
+    child.skins.push_back(std::move(skin));
+    const auto turn = glm::angleAxis(1.25f, glm::vec3(0, 0, 1));
+    sourceTrack(child, 3, "rotation", TINYGLTF_TYPE_VEC4,
+        {0, 0, 0, 1, turn.x, turn.y, turn.z, turn.w});
+    sourceTrack(child, 2, "weights", TINYGLTF_TYPE_SCALAR, {.1f, .9f});
+    sourceTrack(child, -1, "pointer", TINYGLTF_TYPE_SCALAR, {.5f, 1.25f}, "/nodes/4/translation/1");
+    sourceTrack(child, -1, "pointer", TINYGLTF_TYPE_SCALAR, {.2f, .8f},
+        "/materials/0/pbrMetallicRoughness/roughnessFactor");
+    child.animations[0].name = "Linked gesture";
+    child.extensionsUsed.push_back("KHR_animation_pointer");
+    writeExportModel(child, leaf);
+
+    writeText(input / "group" / "nested.gltf", R"({"asset":{"version":"2.1"},
+      "files":[{"uri":"../leaf.gltf","mimeType":"model/gltf+json"},
+               {"uri":"missing-inactive.gltf","mimeType":"model/gltf+json"}],
+      "externalAssets":[{"file":0},{"file":1}],
+      "nodes":[{"externalAsset":1,"name":"Inactive nested placement"},
+               {"externalAsset":0,"translation":[0,0,-2]}],
+      "scenes":[{"nodes":[0]},{"nodes":[1]}],"scene":1})");
+    auto base = buildExportModel({cubeGraph(), geometry});
+    base.materials[0].name = "Primary material";
+    base.materials[0].pbrMetallicRoughness.roughnessFactor = .93;
+    primaryAccessors = base.accessors.size();
+    writeExportModel(base, primary);
+    auto manifest = Json::parse(readText(primary));
+    manifest["asset"]["version"] = "2.1";
+    manifest["files"] = Json::array({{{"uri", "group/nested.gltf"}, {"mimeType", "model/gltf+json"}},
+                                    {{"uri", "leaf.gltf"}, {"mimeType", "model/gltf+json"}}});
+    manifest["externalAssets"] = Json::array({{{"file", 0}}, {{"file", 1}}});
+    for (const auto& [name, link, translation] :
+         std::array{std::tuple{"Left rig", 0, std::array{-3, 0, 0}},
+                    std::tuple{"Right rig", 0, std::array{3, 0, 0}},
+                    std::tuple{"Direct rig", 1, std::array{0, 4, 0}}}) {
+      manifest["scenes"][0]["nodes"].push_back(manifest["nodes"].size());
+      manifest["nodes"].push_back({{"name", name}, {"externalAsset", link}, {"translation", translation}});
+    }
+    writeText(primary, manifest.dump());
+  }
+};
+
 }  // namespace
 
 TEST(GltfSceneExport, RoundTripsCurrentHierarchyTransformsVisibilityAndAppendedGeometry) {
@@ -511,7 +739,7 @@ TEST(GltfSceneExport, RoundTripsCurrentHierarchyTransformsVisibilityAndAppendedG
   EXPECT_EQ(graph.getNode(1)->worldTransform, parentTransform * childTransform);
 }
 
-TEST(GltfSceneExport, XmpPacketsRetainDistinctContextsAndLosslessValuesAcrossFormats) {
+TEST(GltfSceneExport, XmpPacketsRetainDistinctContextsAndLosslessValuesWithVariants) {
   using namespace container::geometry::gltf;
   using Json = nlohmann::json;
   ExportDirectory directory;
@@ -520,7 +748,11 @@ TEST(GltfSceneExport, XmpPacketsRetainDistinctContextsAndLosslessValuesAcrossFor
   const auto graph = cubeGraph();
   writeSceneExport({graph, cube}, input);
   auto manifest = Json::parse(readText(input));
-  manifest["extensionsUsed"] = Json::array({kGltfXmpExtension});
+  const auto variants = "KHR_materials_variants";
+  manifest["extensionsUsed"] = Json::array({kGltfXmpExtension, variants});
+  manifest["extensions"][variants] = Json::parse(R"({"variants":[{"name":"Paint"}]})");
+  manifest["meshes"][0]["primitives"][0]["extensions"][variants] =
+      Json::parse(R"({"mappings":[{"material":0,"variants":[0]}]})");
   manifest["extensions"]["VENDOR_unrelated"] = {{"extra", true}};
   const auto package = Json::parse(R"({"packets":[
     {"@context":{"dc":"http://purl.org/dc/elements/1.1/"},"dc:title":"Whole asset",
@@ -556,6 +788,7 @@ TEST(GltfSceneExport, XmpPacketsRetainDistinctContextsAndLosslessValuesAcrossFor
       EXPECT_EQ(*packet.packet, package["packets"][i]);
     }
     EXPECT_TRUE(model.extensions.contains("VENDOR_unrelated"));
+    EXPECT_TRUE(model.meshes[0].primitives[0].extensions.contains(variants));
     EXPECT_EQ(ResolveGltfXmpPacket(*retained, model.nodes[0].extensions).message,
               "No XMP packet is attached.");
   };
@@ -615,6 +848,21 @@ TEST(GltfSceneExport, LinkedDraftSharesNestedSourceAndAliasResourcesAndFlattensP
   auto leafJson = Json::parse(readText(leaf));
   leafJson["asset"]["version"] = "2.1";
   leafJson["asset"]["minVersion"] = "2.1";
+  leafJson["extensionsUsed"].push_back("KHR_interactivity");
+  leafJson["extensionsUsed"].push_back("VENDOR_optional");
+  leafJson["extensionsUsed"].push_back(kGltfXmpExtension);
+  leafJson["extensions"]["KHR_interactivity"] = Json::parse(R"({
+    "graphs":[{"declarations":[{"op":"event/onStart"}],"nodes":[{"declaration":0}]}]
+  })");
+  leafJson["meshes"][0]["primitives"][0]["extensions"]["VENDOR_optional"] = {{"accessor", 500}};
+  const auto leafPackets = Json::parse(R"([
+    {"@context":{},"label":"Linked asset"},
+    {"@context":{},"label":"Linked scene"},
+    {"@context":{},"label":"Linked mesh","id":18446744073709551614}])");
+  leafJson["extensions"][kGltfXmpExtension] = {{"packets", leafPackets}};
+  leafJson["asset"]["extensions"][kGltfXmpExtension] = {{"packet", 0}};
+  leafJson["scenes"][0]["extensions"][kGltfXmpExtension] = {{"packet", 1}};
+  leafJson["meshes"][0]["extensions"][kGltfXmpExtension] = {{"packet", 2}};
   std::filesystem::copy_file(leaf.parent_path() / leafJson["buffers"][0]["uri"].get<std::string>(),
       input / "Shared mesh.bin");
   leafJson["buffers"][0]["uri"] = "missing%20geometry.bin";
@@ -632,7 +880,7 @@ TEST(GltfSceneExport, LinkedDraftSharesNestedSourceAndAliasResourcesAndFlattensP
 
   auto direct = gltfFile("leaf/Mesh%20part.gltf");
   direct["aliases"] = Json::array({{{"alias", "./missing%20geometry.bin"}, {"file", 2}}});
-  const Json primary = {{"asset", {{"version", "2.1"}}},
+  Json primary = {{"asset", {{"version", "2.1"}}},
       {"files", Json::array({gltfFile("group/nested.gltf"), direct,
           {{"uri", "Shared%20mesh.bin"}, {"mimeType", "application/octet-stream"}}})},
       {"externalAssets", Json::array({{{"file", 0}}, {{"file", 1}}})},
@@ -640,6 +888,12 @@ TEST(GltfSceneExport, LinkedDraftSharesNestedSourceAndAliasResourcesAndFlattensP
           {{"externalAsset", 0}, {"translation", {3, 0, 0}}},
           {{"externalAsset", 1}, {"translation", {0, 5, 0}}}})},
       {"scenes", Json::array({{{"nodes", {0, 1, 2}}}})}, {"scene", 0}};
+  const auto primaryPackets = Json::parse(R"([
+    {"@context":{},"label":"Primary asset"},{"@context":{},"label":"Primary placement"}])");
+  primary["extensionsUsed"] = {kGltfXmpExtension};
+  primary["extensions"][kGltfXmpExtension] = {{"packets", primaryPackets}};
+  primary["asset"]["extensions"][kGltfXmpExtension] = {{"packet", 0}};
+  primary["nodes"][0]["extensions"][kGltfXmpExtension] = {{"packet", 1}};
   const auto path = input / "primary.gltf";
   writeText(path, primary.dump());
   EXPECT_THROW((void)LoadModelWithSource(path.string()), std::runtime_error);
@@ -647,15 +901,51 @@ TEST(GltfSceneExport, LinkedDraftSharesNestedSourceAndAliasResourcesAndFlattensP
   options.enableLinkedAssets = true;
   const auto result = LoadModelWithSource(path.string(), options);
   const auto& source = result.gltfModel;
-  ASSERT_EQ(source.nodes.size(), 11u);
+  ASSERT_EQ(source.nodes.size(), 17u);
   ASSERT_EQ(source.meshes.size(), 1u);
   ASSERT_EQ(source.buffers.size(), 1u);
   ASSERT_EQ(result.model.meshes().size(), 1u);
   ASSERT_EQ(source.scenes.size(), 1u);
   EXPECT_EQ(source.asset.version, "2.0");
+  EXPECT_FALSE(source.extensions.contains("KHR_interactivity"));
+  EXPECT_FALSE(source.meshes[0].primitives[0].extensions.contains("VENDOR_optional"));
+  for (const std::string_view feature : {"KHR_interactivity", "VENDOR_optional"}) {
+    EXPECT_TRUE(std::ranges::any_of(result.capabilityDiagnostics, [&](const auto& diagnostic) {
+      return std::filesystem::path(diagnostic.assetPath).filename() == leaf.filename() &&
+          diagnostic.code == "unsupported_optional_extension" && diagnostic.message.contains(feature);
+    }));
+  }
   const std::vector<glm::vec3> expected{{-3, 0, -2}, {3, 0, -2}, {0, 5, 0}};
   const auto check = [&](const tinygltf::Model& model) {
     const auto matrices = worldMatrices(model);
+    const auto package = ReadGltfXmpPackage(model);
+    ASSERT_TRUE(package);
+    auto packets = primaryPackets;
+    for (const auto& packet : leafPackets) packets.push_back(packet);
+    EXPECT_EQ(package->at("packets"), packets);
+    const auto primaryAsset = ResolveGltfXmpPacket(*package, model.asset.extensions);
+    ASSERT_NE(primaryAsset.packet, nullptr);
+    EXPECT_EQ(*primaryAsset.packet, primaryPackets[0]);
+    const auto primaryPlacement = ResolveGltfXmpPacket(*package, model.nodes[0].extensions);
+    ASSERT_NE(primaryPlacement.packet, nullptr);
+    EXPECT_EQ(*primaryPlacement.packet, primaryPackets[1]);
+    const auto linkedMesh = ResolveGltfXmpPacket(*package, model.meshes[0].extensions);
+    ASSERT_NE(linkedMesh.packet, nullptr);
+    EXPECT_EQ(*linkedMesh.packet, leafPackets[2]);
+    std::array<size_t, 2> metadataCounts{};
+    for (const auto& node : model.nodes) {
+      if (!node.extras.Has("containerLinkedSource")) continue;
+      const auto& origin = node.extras.Get("containerLinkedSource");
+      if (!origin.Has("scope")) continue;
+      const auto scope = origin.Get("scope").Get<std::string>();
+      ASSERT_TRUE(scope == "asset" || scope == "scene");
+      const auto index = scope == "asset" ? 0u : 1u;
+      const auto packet = ResolveGltfXmpPacket(*package, node.extensions);
+      ASSERT_NE(packet.packet, nullptr);
+      EXPECT_EQ(*packet.packet, leafPackets[index]);
+      ++metadataCounts[index];
+    }
+    EXPECT_EQ(metadataCounts, (std::array<size_t, 2>{3, 3}));
     size_t draw = 0;
     for (size_t i = 0; i < model.nodes.size(); ++i) if (model.nodes[i].mesh >= 0) {
       ASSERT_LT(draw, expected.size());
@@ -670,7 +960,92 @@ TEST(GltfSceneExport, LinkedDraftSharesNestedSourceAndAliasResourcesAndFlattensP
   };
   check(source);
   ASSERT_TRUE(result.linkedComposition);
-  EXPECT_EQ(result.linkedComposition->placements, (std::vector<int>{0, 1, 2}));
+  const auto& ownership = *result.linkedComposition;
+  EXPECT_EQ(ownership.primaryNodes, 3u);
+  EXPECT_EQ(ownership.placements, (std::vector<int>{0, 1, 2}));
+  ASSERT_EQ(ownership.nodePlacements.size(), source.nodes.size());
+  ASSERT_EQ(ownership.placementRecords.size(), 5u);
+  ASSERT_EQ(ownership.sourceContexts.size(), 2u);
+  ASSERT_EQ(source.nodes[0].children.size(), 1u);
+  ASSERT_EQ(source.nodes[1].children.size(), 1u);
+  const std::array carriers{0, 1, 2, source.nodes[0].children[0], source.nodes[1].children[0]};
+  std::array<int32_t, 5> placementIndices{};
+  size_t ownedNodes = 0;
+  for (size_t i = 0; i < carriers.size(); ++i) {
+    const auto placement = std::ranges::find(ownership.placementRecords, carriers[i],
+        &GltfLinkedPlacementOwnership::carrierNode);
+    ASSERT_NE(placement, ownership.placementRecords.end());
+    placementIndices[i] = int32_t(placement - ownership.placementRecords.begin());
+    EXPECT_EQ(ownership.nodePlacements.at(size_t(carriers[i])), placement->parentPlacement);
+    auto payload = source.nodes.at(size_t(carriers[i])).children;
+    ASSERT_FALSE(payload.empty());
+    while (!payload.empty()) {
+      const int child = payload.back();
+      payload.pop_back();
+      EXPECT_EQ(ownership.nodePlacements.at(size_t(child)), placementIndices[i]);
+      ++ownedNodes;
+      // A nested carrier belongs to this placement, but its descendants belong to the nested placement.
+      if (std::ranges::find(carriers, child) != carriers.end()) continue;
+      const auto& children = source.nodes.at(size_t(child)).children;
+      payload.insert(payload.end(), children.begin(), children.end());
+    }
+  }
+  EXPECT_EQ(ownedNodes, source.nodes.size() - ownership.primaryNodes);
+  const auto& outer = ownership.placementRecords[size_t(placementIndices[0])];
+  const auto& otherOuter = ownership.placementRecords[size_t(placementIndices[1])];
+  const auto& directLeaf = ownership.placementRecords[size_t(placementIndices[2])];
+  const auto& nestedLeaf = ownership.placementRecords[size_t(placementIndices[3])];
+  const auto& otherNestedLeaf = ownership.placementRecords[size_t(placementIndices[4])];
+  EXPECT_EQ(outer.parentPlacement, -1);
+  EXPECT_EQ(otherOuter.parentPlacement, -1);
+  EXPECT_EQ(directLeaf.parentPlacement, -1);
+  EXPECT_EQ(nestedLeaf.parentPlacement, placementIndices[0]);
+  EXPECT_EQ(otherNestedLeaf.parentPlacement, placementIndices[1]);
+  EXPECT_EQ(outer.sourceContext, otherOuter.sourceContext);
+  EXPECT_NE(outer.sourceContext, directLeaf.sourceContext);
+  EXPECT_EQ(nestedLeaf.sourceContext, directLeaf.sourceContext);
+  EXPECT_EQ(otherNestedLeaf.sourceContext, directLeaf.sourceContext);
+  const auto& sharedLeaf = ownership.sourceContexts.at(directLeaf.sourceContext);
+  EXPECT_EQ(sharedLeaf.source, std::filesystem::canonical(leaf));
+  ASSERT_EQ(sharedLeaf.aliases.size(), 1u);
+  EXPECT_EQ(sharedLeaf.aliases.at("missing geometry.bin"), std::filesystem::canonical(input / "Shared mesh.bin"));
+  EXPECT_EQ(sharedLeaf.meshes.count, 1u);
+  EXPECT_TRUE(sharedLeaf.meshes.contains(0));
+  EXPECT_EQ(sharedLeaf.buffers.count, 1u);
+  EXPECT_TRUE(sharedLeaf.buffers.contains(0));
+
+  // The same leaf and buffer bytes still need separate ownership when the resolved alias differs.
+  const auto alternateBuffer = input / "Alternate mesh.bin";
+  std::filesystem::copy_file(input / "Shared mesh.bin", alternateBuffer);
+  auto alternateLeaf = direct;
+  alternateLeaf["aliases"][0]["file"] = 4;
+  auto alternateManifest = primary;
+  alternateManifest["files"].push_back(alternateLeaf);
+  alternateManifest["files"].push_back({{"uri", "Alternate%20mesh.bin"}, {"mimeType", "application/octet-stream"}});
+  alternateManifest["externalAssets"].push_back({{"file", 3}});
+  alternateManifest["nodes"].push_back({{"externalAsset", 2}});
+  alternateManifest["scenes"][0]["nodes"].push_back(3);
+  const auto alternatePath = input / "alternate.gltf";
+  writeText(alternatePath, alternateManifest.dump());
+  const auto distinct = LoadModelWithSource(alternatePath.string(), options);
+  ASSERT_TRUE(distinct.linkedComposition);
+  ASSERT_EQ(distinct.linkedComposition->sourceContexts.size(), 3u);
+  EXPECT_EQ(distinct.gltfModel.meshes.size(), 2u);
+  const auto contextForCarrier = [&](int carrier) {
+    const auto& records = distinct.linkedComposition->placementRecords;
+    const auto entry = std::ranges::find(records, carrier, &GltfLinkedPlacementOwnership::carrierNode);
+    return entry == records.end() ? distinct.linkedComposition->sourceContexts.size() : entry->sourceContext;
+  };
+  const auto originalContext = contextForCarrier(2), alternateContext = contextForCarrier(3);
+  ASSERT_LT(originalContext, distinct.linkedComposition->sourceContexts.size());
+  ASSERT_LT(alternateContext, distinct.linkedComposition->sourceContexts.size());
+  EXPECT_NE(originalContext, alternateContext);
+  const auto& originalOwner = distinct.linkedComposition->sourceContexts[originalContext];
+  const auto& alternateOwner = distinct.linkedComposition->sourceContexts[alternateContext];
+  EXPECT_EQ(originalOwner.source, alternateOwner.source);
+  EXPECT_EQ(alternateOwner.aliases.at("missing geometry.bin"), std::filesystem::canonical(alternateBuffer));
+  EXPECT_NE(originalOwner.meshes.first, alternateOwner.meshes.first);
+
   const auto linked = input / "saved-linked.gltf";
   writeLinkedSceneManifest(*result.linkedComposition, {}, 0, linked);
   const auto originalManifest = Json::parse(readText(path));
@@ -731,9 +1106,230 @@ TEST(GltfSceneExport, LinkedDraftSharesNestedSourceAndAliasResourcesAndFlattensP
         flattened / (std::string("scene") + format));
   std::filesystem::rename(input, directory.root / "moved-inputs");
   for (const auto* format : {".gltf", ".glb"}) {
-    const auto reloaded = LoadModelWithSource((flattened / (std::string("scene") + format)).string());
+    const auto portablePath = (flattened / (std::string("scene") + format)).string();
+    const auto reloaded = LoadModelWithSource(portablePath);
     check(reloaded.gltfModel);
     EXPECT_EQ(reloaded.gltfModel.asset.version, "2.0");
+    EXPECT_FALSE(reloaded.linkedComposition);
+    const auto optedIn = LoadModelWithSource(portablePath, options);
+    check(optedIn.gltfModel);
+    EXPECT_FALSE(optedIn.linkedComposition);
+  }
+}
+
+TEST(GltfSceneExport, HybridLinkedManifestValidatesOnlyRetainedDependencies) {
+  using namespace container::geometry::gltf;
+  using Json = nlohmann::json;
+  ExportDirectory directory;
+  const auto aPath = directory.root / "A.gltf";
+  const auto bPath = directory.root / "B.gltf";
+  writeSceneExport({cubeGraph(), Model::MakeCube()}, aPath);
+  writeSceneExport({cubeGraph(), Model::MakeCube()}, bPath);
+  auto b = Json::parse(readText(bPath));
+  const auto bBufferUri = b["buffers"][0]["uri"].get<std::string>();
+  const auto bBuffer = directory.root / bBufferUri;
+  b["buffers"][0]["uri"] = "virtual%20B.bin";
+  writeText(bPath, b.dump());
+
+  const auto primary = directory.root / "primary.gltf";
+  const Json manifest = {{"asset", {{"version", "2.1"}, {"minVersion", "2.1"}}},
+      {"files", Json::array({{{"uri", "A.gltf"}, {"mimeType", "model/gltf+json"}},
+          {{"uri", "B.gltf"}, {"mimeType", "model/gltf+json"},
+              {"aliases", Json::array({{{"alias", "virtual%20B.bin"}, {"file", 2}}})}},
+          {{"uri", bBufferUri}, {"mimeType", "application/octet-stream"}}})},
+      {"externalAssets", Json::array({{{"file", 0}}, {{"file", 1}}})},
+      {"nodes", Json::array({{{"externalAsset", 0}}, {{"externalAsset", 0}}, {{"externalAsset", 1}}})},
+      {"scenes", Json::array({{{"nodes", {0, 1, 2}}}})}, {"scene", 0}};
+  writeText(primary, manifest.dump());
+  LoadOptions options;
+  options.enableLinkedAssets = true;
+  const auto loaded = LoadModelWithSource(primary.string(), options);
+  ASSERT_TRUE(loaded.linkedComposition);
+  ASSERT_TRUE(std::filesystem::remove(aPath));
+
+  const auto destination = directory.root / "hybrid.gltf";
+  const std::array retained{GltfLinkedHybridCarrier{2, 1}};
+  const auto patch = BuildGltfLinkedHybridManifest(*loaded.linkedComposition, retained, destination);
+  Json output = {{"asset", {{"version", "2.0"}}},
+      {"nodes", Json::array({{{"name", "Inline A"}}, {{"name", "Linked B"}}})}};
+  ApplyGltfLinkedHybridManifest(output, patch);
+  EXPECT_EQ(output["asset"]["version"], "2.1");
+  EXPECT_FALSE(output["nodes"][0].contains("externalAsset"));
+  ASSERT_EQ(output["externalAssets"].size(), 1u);
+  ASSERT_EQ(output["files"].size(), 2u);
+  const auto& file = output["files"].at(output["externalAssets"].at(
+      output["nodes"][1].at("externalAsset").get<size_t>()).at("file").get<size_t>());
+  EXPECT_EQ(file["uri"], "B.gltf");
+  const auto& alias = file.at("aliases").at(0);
+  EXPECT_EQ(alias["alias"], "virtual%20B.bin");
+  EXPECT_EQ(output["files"].at(alias.at("file").get<size_t>())["uri"], bBufferUri);
+
+  const auto originalBytes = readText(bBuffer);
+  auto changedBytes = originalBytes;
+  ASSERT_FALSE(changedBytes.empty());
+  changedBytes.front() ^= 1;
+  writeText(destination, "preexisting companion");
+  const auto rejectChangedDependency = [&] {
+    try {
+      (void)BuildGltfLinkedHybridManifest(*loaded.linkedComposition, retained, destination);
+      ADD_FAILURE() << "Expected the retained B alias target to be verified";
+    } catch (const std::runtime_error& error) {
+      EXPECT_TRUE(std::string_view(error.what()).contains("changed after import")) << error.what();
+    }
+    EXPECT_EQ(readText(destination), "preexisting companion");
+  };
+  writeText(bBuffer, changedBytes);
+  rejectChangedDependency();
+  writeText(bBuffer, originalBytes);
+  ASSERT_TRUE(std::filesystem::remove(bBuffer));
+  rejectChangedDependency();
+}
+
+TEST(GltfSceneExport, LinkedSkinsAndAnimationsShareResourcesAcrossSelectedNestedPlacements) {
+  using namespace container::geometry::gltf;
+  const LinkedSkinFixture fixture;
+  LoadOptions options;
+  options.enableLinkedAssets = true;
+  const auto composed = LoadModelWithSource(fixture.primary.string(), options);
+  const auto& source = composed.gltfModel;
+  ASSERT_EQ(source.meshes.size(), 2u);
+  EXPECT_EQ(composed.model.meshes().size(), 2u);
+  EXPECT_EQ(source.accessors.size(), fixture.primaryAccessors + fixture.child.accessors.size());
+  ASSERT_EQ(source.animations.size(), 1u);
+  const auto& clip = source.animations[0];
+  ASSERT_EQ(clip.samplers.size(), 4u);
+  std::array<int, 4> uses{};
+  for (const auto& channel : clip.channels) {
+    ASSERT_GE(channel.sampler, 0);
+    ASSERT_LT(size_t(channel.sampler), uses.size());
+    ++uses[size_t(channel.sampler)];
+  }
+  std::ranges::sort(uses);
+  EXPECT_EQ(uses, (std::array{1, 3, 3, 3}));
+
+  const auto referenceAnimation = ParseAnimations(fixture.child);
+  ASSERT_TRUE(referenceAnimation.diagnostics.empty());
+  const auto referenceDeformation = LoadDeformationData(fixture.child, fixture.geometry.meshes());
+  const auto inspect = [&](const container::geometry::GltfLoadResult& loaded) {
+    const auto& model = loaded.gltfModel;
+    ASSERT_TRUE(loaded.deformation);
+    ASSERT_EQ(model.skins.size(), 3u);
+    EXPECT_FALSE(std::ranges::any_of(model.nodes, [](const auto& node) { return node.name.starts_with("Inactive"); }));
+    ASSERT_EQ(model.materials.size(), 2u);
+    EXPECT_EQ(model.materials[0].name, "Primary material");
+    EXPECT_EQ(model.materials[1].name, "Linked material");
+    const auto animation = ParseAnimations(model);
+    ASSERT_TRUE(animation.diagnostics.empty());
+    ASSERT_EQ(animation.clips.size(), 1u);
+    EXPECT_EQ(animation.clips[0].name, "Linked gesture");
+    ASSERT_EQ(animation.clips[0].tracks.size(), 10u);
+    EXPECT_EQ(std::ranges::count_if(animation.clips[0].tracks, [](const auto& track) {
+      return track.target.kind == AnimationTargetKind::Material && track.target.index == 1;
+    }), 1);
+
+    const std::array placements{std::pair{"Left rig", glm::vec3(-3, 0, -2)},
+                                std::pair{"Right rig", glm::vec3(3, 0, -2)},
+                                std::pair{"Direct rig", glm::vec3(0, 4, 0)}};
+    std::array<int, 3> placedMeshes{};
+    std::set<int> skinIds, jointIds;
+    int sharedInverseBind = -1;
+    for (size_t placement = 0; placement < placements.size(); ++placement) {
+      SCOPED_TRACE(placements[placement].first);
+      const auto root = std::ranges::find_if(model.nodes, [&](const auto& node) {
+        return node.name == placements[placement].first;
+      });
+      ASSERT_NE(root, model.nodes.end());
+      std::vector<int> subtree{int(root - model.nodes.begin())};
+      std::vector<int> meshes;
+      for (size_t i = 0; i < subtree.size(); ++i) {
+        const auto& node = model.nodes.at(size_t(subtree[i]));
+        if (node.mesh >= 0 && node.skin >= 0) meshes.push_back(subtree[i]);
+        subtree.insert(subtree.end(), node.children.begin(), node.children.end());
+      }
+      ASSERT_EQ(meshes.size(), 1u);
+      placedMeshes[placement] = meshes[0];
+      const auto& mesh = model.nodes.at(size_t(meshes[0]));
+      EXPECT_TRUE(skinIds.insert(mesh.skin).second);
+      EXPECT_EQ(model.meshes.at(size_t(mesh.mesh)).primitives[0].material, 1);
+      const auto& skin = model.skins.at(size_t(mesh.skin));
+      ASSERT_EQ(skin.joints.size(), 2u);
+      EXPECT_EQ(skin.skeleton, skin.joints[0]);
+      EXPECT_EQ(model.nodes.at(size_t(skin.joints[0])).name, "Leaf root joint");
+      EXPECT_EQ(model.nodes.at(size_t(skin.joints[1])).name, "Leaf child joint");
+      ASSERT_GE(skin.inverseBindMatrices, 0);
+      if (sharedInverseBind < 0) sharedInverseBind = skin.inverseBindMatrices;
+      EXPECT_EQ(skin.inverseBindMatrices, sharedInverseBind);
+      for (const int joint : skin.joints) {
+        EXPECT_TRUE(std::ranges::find(subtree, joint) != subtree.end());
+        EXPECT_TRUE(jointIds.insert(joint).second);
+      }
+    }
+
+    for (double time : {.35, .8, 1.65}) {
+      SCOPED_TRACE(time);
+      auto expectedModel = fixture.child;
+      auto actualModel = model;
+      ApplyAnimationPose(expectedModel, SampleAnimation(referenceAnimation.clips[0], time));
+      ApplyAnimationPose(actualModel, SampleAnimation(animation.clips[0], time));
+      EXPECT_DOUBLE_EQ(actualModel.materials[0].pbrMetallicRoughness.roughnessFactor, .93);
+      EXPECT_NEAR(actualModel.materials[1].pbrMetallicRoughness.roughnessFactor,
+          expectedModel.materials[0].pbrMetallicRoughness.roughnessFactor, 1e-7);
+      const auto expectedWorlds = worldMatrices(expectedModel);
+      const auto actualWorlds = worldMatrices(actualModel);
+      const auto expectedPalette = ComputeSkinPalette(referenceDeformation.skins[0], expectedWorlds[2], expectedWorlds);
+      const auto expected = EvaluatePrimitive(referenceDeformation.primitives[0],
+          std::array{float(expectedModel.nodes[2].weights.at(0))}, expectedPalette);
+      for (size_t placement = 0; placement < placements.size(); ++placement) {
+        SCOPED_TRACE(placements[placement].first);
+        const size_t index = size_t(placedMeshes[placement]);
+        const auto& node = actualModel.nodes[index];
+        const auto palette = ComputeSkinPalette(loaded.deformation->skins.at(size_t(node.skin)),
+            actualWorlds[index], actualWorlds);
+        const auto actual = EvaluatePrimitive(loaded.deformation->primitives.at(size_t(node.mesh)),
+            std::array{float(node.weights.at(0))}, palette);
+        ASSERT_EQ(actual.size(), expected.size());
+        for (size_t i = 0; i < actual.size(); ++i) {
+          const auto a = glm::vec3(actualWorlds[index] * glm::vec4(actual[i].position, 1));
+          const auto b = placements[placement].second + glm::vec3(expectedWorlds[2] * glm::vec4(expected[i].position, 1));
+          EXPECT_NEAR(glm::length(a - b), 0, 2e-5);
+        }
+      }
+    }
+  };
+  inspect(composed);
+
+  std::vector<uint32_t> materials;
+  for (const auto& mesh : composed.model.meshes()) {
+    ASSERT_GE(mesh.materialIndex(), 0);
+    materials.push_back(uint32_t(mesh.materialIndex()));
+  }
+  auto graph = container::scene::BuildGltfSceneHierarchy(source, composed.instancing, materials);
+  std::vector<int32_t> identities;
+  for (uint32_t i = 0; i < graph.nodeCount(); ++i) identities.push_back(graph.getNode(i)->sourceNodeIndex);
+  for (const auto* suffix : {".gltf", ".glb"})
+    writeSceneExport({graph, composed.model, &source, fixture.primary, identities},
+        fixture.directory.root / (std::string("portable") + suffix));
+  std::filesystem::rename(fixture.input, fixture.directory.root / "relocated-linked-inputs");
+  for (const auto* suffix : {".gltf", ".glb"}) {
+    SCOPED_TRACE(suffix);
+    inspect(LoadModelWithSource((fixture.directory.root / (std::string("portable") + suffix)).string()));
+  }
+}
+
+TEST(GltfSceneExport, LinkedSkinRejectsJointOutsideSelectedDefaultScene) {
+  using namespace container::geometry::gltf;
+  LinkedSkinFixture fixture;
+  fixture.child.nodes[3].children.clear();
+  fixture.child.scenes[0].nodes.push_back(4);
+  writeExportModel(fixture.child, fixture.leaf);
+  LoadOptions options;
+  options.enableLinkedAssets = true;
+  try {
+    (void)LoadModelWithSource(fixture.primary.string(), options);
+    ADD_FAILURE() << "Expected the linked skin with an out-of-scene joint to fail";
+  } catch (const std::runtime_error& error) {
+    const std::string_view message(error.what());
+    EXPECT_TRUE(message.contains("leaf.gltf") && message.contains("joint") && message.contains("scene")) << message;
   }
 }
 
@@ -772,11 +1368,11 @@ TEST(GltfSceneExport, LinkedDraftRejectsUnsafeAndUnresolvableReferencesWithConte
   rejected(document("inner.gltf"), "reference cycle");
   writeText(root / "behavior.gltf", R"json({
     "asset":{"version":"2.0"},"nodes":[{}],"scenes":[{"nodes":[0]}],"scene":0,
-    "extensionsUsed":["KHR_interactivity"],
+    "extensionsUsed":["KHR_interactivity"],"extensionsRequired":["KHR_interactivity"],
     "extensions":{"KHR_interactivity":{"graphs":[{"declarations":[{"op":"event/onStart"}],
       "nodes":[{"declaration":0}]}]}}
   })json");
-  rejected(document("behavior.gltf"), "linked behavior graphs require independent runtime instances");
+  rejected(document("behavior.gltf"), "Required extension 'KHR_interactivity' is unavailable");
   auto wrongVersion = document("missing.gltf");
   wrongVersion["asset"]["version"] = "2.2";
   rejected(wrongVersion, "pinned glTF 2.1");
@@ -1109,16 +1705,259 @@ TEST(GltfSceneExport, RoundTripsAnimatedSkinsMorphInstancesPointersAndEditorShea
   EXPECT_EQ(fixture.graph.revision(), revision);
 }
 
-TEST(GltfSceneExport, RejectsPostSkinEditsAndMissingMappingsWithoutReplacingDestination) {
+namespace {
+
+container::geometry::Vertex toWorldFrame(container::geometry::Vertex vertex,
+                                         const glm::mat4& world) {
+  const glm::mat3 linear(world);
+  vertex.position = glm::vec3(world * glm::vec4(vertex.position, 1));
+  vertex.normal = glm::normalize(glm::transpose(glm::inverse(linear)) * vertex.normal);
+  const auto tangent = linear * glm::vec3(vertex.tangent);
+  vertex.tangent = glm::vec4(glm::normalize(tangent - glm::dot(tangent, vertex.normal) * vertex.normal),
+      vertex.tangent.w * (glm::determinant(linear) < 0 ? -1.0f : 1.0f));
+  return vertex;
+}
+
+int exportedSkinMesh(const tinygltf::Model& model, uint32_t carrier) {
+  const auto& node = model.nodes.at(carrier);
+  if (node.mesh >= 0) return int(carrier);
+  const auto mesh = std::ranges::find_if(node.children,
+      [&](int child) { return model.nodes.at(size_t(child)).mesh >= 0; });
+  return mesh == node.children.end() ? -1 : *mesh;
+}
+
+void expectPortableSkinTransforms(const tinygltf::Model& model, int mesh) {
+  std::vector<int> parents(model.nodes.size(), -1);
+  for (size_t i = 0; i < model.nodes.size(); ++i)
+    for (int child : model.nodes[i].children) parents.at(size_t(child)) = int(i);
+  const auto checkPath = [&](int node) {
+    for (; node >= 0; node = parents[size_t(node)]) {
+      SCOPED_TRACE(node);
+      const glm::mat3 linear(nodeMatrix(model.nodes[size_t(node)]));
+      const auto x = glm::normalize(linear[0]), y = glm::normalize(linear[1]), z = glm::normalize(linear[2]);
+      EXPECT_NEAR(glm::dot(x, y), 0, 1e-6);
+      EXPECT_NEAR(glm::dot(x, z), 0, 1e-6);
+      EXPECT_NEAR(glm::dot(y, z), 0, 1e-6);
+    }
+  };
+  checkPath(mesh);
+  for (const int joint : model.skins.at(size_t(model.nodes.at(size_t(mesh)).skin)).joints)
+    checkPath(joint);
+}
+
+void expectPostSkinEditRoundTrip(bool reparent, bool animateOwner = false) {
+  using namespace container::geometry::gltf;
+  constexpr uint32_t owner = 4, edited = 5, sibling = 6, sourceOwner = 1;
+  ExportDirectory directory;
+  AnimatedExportFixture fixture;
+  const auto rotation = glm::angleAxis(1.1f, glm::normalize(glm::vec3(1, 2, 3)));
+  sourceTrack(fixture.source, 3, "rotation", TINYGLTF_TYPE_VEC4,
+      {0, 0, 0, 1, rotation.x, rotation.y, rotation.z, rotation.w});
+  sourceTrack(fixture.source, 3, "translation", TINYGLTF_TYPE_VEC3, {2, 0, 0, -1, 1, 2});
+  sourceTrack(fixture.source, 3, "translation", TINYGLTF_TYPE_VEC3, {2, 0, 0, 3, -1, .5f}, {}, 1);
+  sourceTrack(fixture.source, sourceOwner, "weights", TINYGLTF_TYPE_SCALAR, {.8f, .2f}, {}, 1);
+  fixture.source.animations[1].name = "Joint rotation rest";
+  if (animateOwner) {
+    const auto turn = glm::angleAxis(.9f, glm::normalize(glm::vec3(3, 1, 2)));
+    sourceTrack(fixture.source, sourceOwner, "translation", TINYGLTF_TYPE_VEC3, {3, 0, 0, 2, 1, -.4f});
+    sourceTrack(fixture.source, sourceOwner, "rotation", TINYGLTF_TYPE_VEC4,
+        {0, 0, 0, 1, turn.x, turn.y, turn.z, turn.w});
+    sourceTrack(fixture.source, sourceOwner, "translation", TINYGLTF_TYPE_VEC3, {3, 0, 0, 1, -1, .5f}, {}, 1);
+  }
+  fixture.source.skins[1].inverseBindMatrices = sourceAccessor(fixture.source,
+      std::vector<float>{1,0,0,0, 0,1,0,0, 0,0,1,0, -2,0,0,1},
+      TINYGLTF_TYPE_MAT4, TINYGLTF_COMPONENT_TYPE_FLOAT);
+  std::vector<float> normalDelta;
+  for (const auto& vertex : fixture.geometry.meshes()[0].vertices()) {
+    const auto delta = .2f * glm::cross(vertex.normal, glm::vec3(vertex.tangent));
+    normalDelta.insert(normalDelta.end(), {delta.x, delta.y, delta.z});
+  }
+  const int normalAccessor = sourceAccessor(fixture.source, normalDelta,
+      TINYGLTF_TYPE_VEC3, TINYGLTF_COMPONENT_TYPE_FLOAT);
+  for (auto& primitive : fixture.source.meshes[0].primitives)
+    primitive.targets[0]["NORMAL"] = normalAccessor;
+
+  const auto rest = fixture.source;
+  const auto deformation = LoadDeformationData(rest, fixture.geometry.meshes());
+  AnimationPlayer live(fixture.source);
+  live.selectClip(fixture.source, 0);
+  live.seek(fixture.source, .65);
+  fixture.materials[2] = fixture.source.materials[0];
+  for (uint32_t node = 0; node < fixture.nodes.size(); ++node) {
+    const int source = fixture.nodes[node];
+    if (source >= 0) {
+      const auto local = nodeMatrix(fixture.source.nodes[size_t(source)]);
+      fixture.graph.setLocalTransform(node, source == 0 ? fixture.correction * local : local);
+    }
+  }
+  fixture.graph.updateWorldTransforms();
+
+  auto affine = glm::translate(glm::mat4(1), glm::vec3(1, -.5f, 2));
+  affine[0][0] = reparent ? -1.3f : 1.3f;
+  affine[1][0] = .3f;
+  affine[1][1] = .7f;
+  affine[2][1] = -.2f;
+  if (!reparent && !animateOwner) affine[3][3] = std::nextafter(1.0f, 2.0f);
+  if (reparent) {
+    const auto destination = fixture.graph.createNode(glm::mat4(1), 2, false,
+        SceneGraph::kInvalidNode, "New primitive parent");
+    fixture.nodes.push_back(-1);
+    ASSERT_TRUE(fixture.graph.setParent(destination, 0));
+    ASSERT_TRUE(fixture.graph.setParentPreserveWorldTransform(edited, destination));
+    fixture.graph.setLocalTransform(destination, affine);
+  } else {
+    fixture.graph.setLocalTransform(edited, affine);
+  }
+  fixture.graph.updateWorldTransforms();
+  ASSERT_EQ(fixture.graph.getNode(edited)->meshOwnerGraphNode, owner);
+  auto snapshot = fixture.snapshot();
+  snapshot.animationRestSource = &rest;
+  const auto revision = fixture.graph.revision();
+
+  for (const auto* suffix : {".gltf", ".glb"}) {
+    SCOPED_TRACE(suffix);
+    const auto path = directory.root / (std::string("post-skin") + suffix);
+    ASSERT_NO_THROW(writeSceneExport(snapshot, path));
+    auto loaded = LoadModelWithSource(path.string());
+    ASSERT_TRUE(loaded.deformation);
+    auto& output = loaded.gltfModel;
+    const auto editedParent = fixture.graph.getNode(edited)->parent;
+    ASSERT_LT(editedParent, output.nodes.size());
+    EXPECT_TRUE(std::ranges::any_of(output.nodes[editedParent].children, [&](int child) {
+      return child == int(edited) || output.nodes.at(size_t(child)).children == std::vector<int>{int(edited)};
+    }));
+    const int editedMesh = exportedSkinMesh(output, edited);
+    ASSERT_GE(editedMesh, 0);
+    ASSERT_GE(output.nodes[size_t(editedMesh)].skin, 0);
+    expectPortableSkinTransforms(output, editedMesh);
+    const auto comparePose = [&](const tinygltf::Model& reference) {
+      const auto referenceWorlds = worldMatrices(reference);
+      const auto actualWorlds = worldMatrices(output);
+      const auto ownerWorld = referenceWorlds[sourceOwner];
+      const auto palette = ComputeSkinPalette(deformation.skins[1], ownerWorld, referenceWorlds);
+      const auto& weights = reference.nodes[sourceOwner].weights;
+      for (const auto graphNode : {edited, sibling}) {
+        SCOPED_TRACE(graphNode);
+        const auto expectedWorld = graphNode == sibling ? ownerWorld :
+            reparent ? affine * ownerWorld : ownerWorld * affine;
+        const auto expected = EvaluatePrimitive(
+            deformation.primitives[fixture.graph.getNode(graphNode)->primitiveIndex],
+            std::vector<float>(weights.begin(), weights.end()), palette);
+        const int mesh = exportedSkinMesh(output, graphNode);
+        ASSERT_GE(mesh, 0);
+        const auto& node = output.nodes[size_t(mesh)];
+        ASSERT_GE(node.skin, 0);
+        const auto& actualWorld = actualWorlds[size_t(mesh)];
+        for (int column = 0; column < 4; ++column)
+          EXPECT_NEAR(glm::length(actualWorld[column] - expectedWorld[column]), 0, 3e-5);
+        const auto actualPalette = ComputeSkinPalette(loaded.deformation->skins.at(size_t(node.skin)),
+            actualWorld, actualWorlds);
+        const auto actual = EvaluatePrimitive(loaded.deformation->primitives.at(size_t(node.mesh)),
+            std::vector<float>(node.weights.begin(), node.weights.end()), actualPalette);
+        ASSERT_EQ(actual.size(), expected.size());
+        for (size_t vertex = 0; vertex < actual.size(); ++vertex) {
+          SCOPED_TRACE(vertex);
+          const auto a = toWorldFrame(actual[vertex], actualWorld);
+          const auto b = toWorldFrame(expected[vertex], expectedWorld);
+          EXPECT_NEAR(glm::length(a.position - b.position), 0, 3e-5);
+          EXPECT_NEAR(glm::length(a.normal - b.normal), 0, 3e-5);
+          EXPECT_NEAR(glm::length(glm::vec3(a.tangent - b.tangent)), 0, 3e-5);
+          EXPECT_FLOAT_EQ(a.tangent.w, b.tangent.w);
+        }
+      }
+    };
+    {
+      SCOPED_TRACE("saved pose");
+      comparePose(fixture.source);
+    }
+    AnimationPlayer replay(output);
+    auto reference = rest;
+    AnimationPlayer authored(reference);
+    ASSERT_EQ(replay.library().clips.size(), 2u);
+    for (size_t clip : {0u, 1u, 0u}) {
+      SCOPED_TRACE(clip);
+      replay.selectClip(output, clip);
+      authored.selectClip(reference, clip);
+      for (const double time : {.15, .65, 1.4, 2.0}) {
+        SCOPED_TRACE(time);
+        replay.seek(output, time);
+        authored.seek(reference, time);
+        comparePose(reference);
+      }
+    }
+  }
+  EXPECT_EQ(fixture.graph.revision(), revision);
+}
+
+}  // namespace
+
+TEST(GltfSceneExport, PostSkinAffineEditRetainsAnimatedWorldPositionsAndFrames) {
+  expectPostSkinEditRoundTrip(false);
+}
+
+TEST(GltfSceneExport, PostSkinReparentRetainsAnimatedWorldPositionsAndFrames) {
+  expectPostSkinEditRoundTrip(true);
+}
+
+TEST(GltfSceneExport, PostSkinEditFollowsAnimatedOwnerWithoutFreezingCorrection) {
+  expectPostSkinEditRoundTrip(false, true);
+}
+
+TEST(GltfSceneExport, RejectsContinuousInverseScaleForPostSkinEditWithoutReplacingDestination) {
+  using namespace container::geometry::gltf;
   ExportDirectory directory;
   AnimatedExportFixture fixture;
   const auto path = directory.root / "retained.glb";
   writeSceneExport(fixture.snapshot(), path);
   const auto saved = readText(path);
-  fixture.graph.setLocalTransform(2, glm::translate(glm::mat4(1), glm::vec3(1, 0, 0)));
-  EXPECT_THROW(writeSceneExport(fixture.snapshot(), path), std::runtime_error);
+  sourceTrack(fixture.source, 1, "scale", TINYGLTF_TYPE_VEC3, {1, 1, 1, 2, .5f, 1});
+  const auto rest = fixture.source;
+  AnimationPlayer live(fixture.source);
+  live.selectClip(fixture.source, 0);
+  live.seek(fixture.source, .65);
+  fixture.graph.setLocalTransform(1, fixture.correction * nodeMatrix(fixture.source.nodes[0]));
+  fixture.graph.setLocalTransform(4, nodeMatrix(fixture.source.nodes[1]));
+  fixture.graph.setLocalTransform(7, nodeMatrix(fixture.source.nodes[2]));
+  auto shear = glm::mat4(1);
+  shear[1][0] = .35f;
+  shear[0][1] = .25f;
+  fixture.graph.setLocalTransform(5, shear);
+  fixture.graph.updateWorldTransforms();
+  auto snapshot = fixture.snapshot();
+  snapshot.animationRestSource = &rest;
+  EXPECT_THROW(writeSceneExport(snapshot, path), std::runtime_error);
   EXPECT_EQ(readText(path), saved);
-  fixture.graph.setLocalTransform(2, glm::mat4(1));
+}
+
+TEST(GltfSceneExport, RejectsSingularEditedPrimitiveWorldWithoutReplacingDestination) {
+  ExportDirectory directory;
+  AnimatedExportFixture fixture;
+  const auto path = directory.root / "retained.glb";
+  writeSceneExport(fixture.snapshot(), path);
+  const auto saved = readText(path);
+  const auto parent = fixture.graph.createNode(glm::scale(glm::mat4(1), glm::vec3(1, 0, 1)),
+      2, false, SceneGraph::kInvalidNode, "Singular parent");
+  fixture.nodes.push_back(-1);
+  ASSERT_TRUE(fixture.graph.setParent(parent, 0));
+  ASSERT_TRUE(fixture.graph.setParent(5, parent));
+  fixture.graph.updateWorldTransforms();
+  EXPECT_FLOAT_EQ(glm::determinant(glm::mat3(fixture.graph.getNode(5)->localTransform)), 1);
+  EXPECT_FLOAT_EQ(glm::determinant(glm::mat3(fixture.graph.getNode(5)->worldTransform)), 0);
+  try {
+    writeSceneExport(fixture.snapshot(), path);
+    ADD_FAILURE() << "Expected the edited primitive's singular world transform to fail export";
+  } catch (const std::runtime_error& error) {
+    EXPECT_TRUE(std::string_view(error.what()).contains("singular or unrepresentable world transform"));
+  }
+  EXPECT_EQ(readText(path), saved);
+}
+
+TEST(GltfSceneExport, RejectsMissingMappingsWithoutReplacingDestination) {
+  ExportDirectory directory;
+  AnimatedExportFixture fixture;
+  const auto path = directory.root / "retained.glb";
+  writeSceneExport(fixture.snapshot(), path);
+  const auto saved = readText(path);
   fixture.nodes[7] = -1;
   EXPECT_THROW(writeSceneExport(fixture.snapshot(), path), std::runtime_error);
   EXPECT_EQ(readText(path), saved);
@@ -1749,53 +2588,59 @@ TEST(GltfSceneExport, InstancedSkinMorphExportKeepsTransformOrderAndExactCustomA
   const auto originalBytes=f.source.buffers[0].data;
   const auto sourceDeformation=gltf::LoadDeformationData(f.source,f.geometry.meshes());
   const auto sourceWorlds=worldMatrices(f.source);
-  const auto output=buildExportModel({graph,f.geometry,&f.source,{},sourceNodes});
-  EXPECT_FALSE(output.nodes[0].extensions.contains("EXT_mesh_gpu_instancing"));
   ExportDirectory directory;
-  for(const auto* suffix:{".glb",".gltf"}) {
-    const auto path=directory.root/(std::string("instanced-skin")+suffix);
-    writeExportModel(output,path);
-    const auto loaded=LoadModelWithSource(path.string());
-    ASSERT_TRUE(loaded.deformation);
-    ASSERT_EQ(loaded.instancing.nodes.size(),4u);
-    EXPECT_EQ(loaded.model.vertices().size(),f.geometry.vertices().size());
-    const auto worlds=worldMatrices(loaded.gltfModel);
-    for(const auto& instances:loaded.instancing.nodes) {
-      ASSERT_EQ(instances.localMatrices.size(),1u);
-      const auto& runtime=*graph.getNode(instances.sourceNode);
-      ASSERT_GE(runtime.sourceInstanceIndex,0);
-      const auto which=uint32_t(runtime.sourceInstanceIndex);
-      const auto& node=loaded.gltfModel.nodes[instances.sourceNode];
-      EXPECT_GE(node.skin,0);
-      const auto referencePalette=gltf::ComputeSkinPalette(sourceDeformation.skins[0],sourceWorlds[0],sourceWorlds);
-      const auto palette=gltf::ComputeSkinPalette(loaded.deformation->skins[size_t(node.skin)],worlds[instances.sourceNode],worlds);
-      const auto expected=gltf::EvaluatePrimitive(sourceDeformation.primitives[runtime.primitiveIndex],std::array<float,1>{.25f},referencePalette);
-      const auto actual=gltf::EvaluatePrimitive(loaded.deformation->primitives[size_t(node.mesh)],std::array<float,1>{.25f},palette);
-      ASSERT_EQ(actual.size(),expected.size());
-      for(size_t i=0;i<actual.size();++i) {
-        const auto a=glm::vec3(worlds[instances.sourceNode]*instances.localMatrices[0]*glm::vec4(actual[i].position,1));
-        const auto b=glm::vec3(sourceWorlds[0]*instancing.nodes[0].localMatrices[which]*glm::vec4(expected[i].position,1));
-        for(int axis=0;axis<3;++axis) EXPECT_NEAR(a[axis],b[axis],1e-5);
-      }
-      for(const auto& attribute:instances.attributes) {
-        const gltf::CheckedAccessor reader(loaded.gltfModel,attribute.sourceAccessor,"singleton");
-        EXPECT_EQ(reader.count(),1u);
-        if(attribute.semantic=="_ID") {
-          std::array<uint32_t,1> value{};reader.readUnsigned(0,value);
-          EXPECT_EQ(value[0],which?4294967295u:16777217u);
-        }
-        if(attribute.semantic=="_CODE") {
-          std::array<unsigned char,1> value{};reader.readEncodedElement(0,value);
-          EXPECT_EQ(value[0],which?129:128);
-        }
-      }
-      EXPECT_TRUE(node.extensions.at("EXT_mesh_gpu_instancing").Get("extras").Get("keep").Get<bool>());
-    }
-  }
-  EXPECT_EQ(f.source.buffers[0].data,originalBytes);
   const auto first=graph.renderableNodes()[0];
+  const auto check=[&](const std::string& name) {
+    graph.updateWorldTransforms();
+    const auto output=buildExportModel({graph,f.geometry,&f.source,{},sourceNodes});
+    EXPECT_FALSE(output.nodes[0].extensions.contains("EXT_mesh_gpu_instancing"));
+    for(const auto* suffix:{".glb",".gltf"}) {
+      const auto path=directory.root/(name+suffix);
+      writeExportModel(output,path);
+      const auto loaded=LoadModelWithSource(path.string());
+      ASSERT_TRUE(loaded.deformation);
+      ASSERT_EQ(loaded.instancing.nodes.size(),4u);
+      EXPECT_EQ(loaded.model.vertices().size(),f.geometry.vertices().size());
+      const auto worlds=worldMatrices(loaded.gltfModel);
+      for(const auto& instances:loaded.instancing.nodes) {
+        ASSERT_EQ(instances.localMatrices.size(),1u);
+        const auto runtimeNode=instances.sourceNode<graph.nodeCount()?instances.sourceNode:first;
+        ASSERT_EQ(exportedSkinMesh(loaded.gltfModel,runtimeNode),int(instances.sourceNode));
+        const auto& runtime=*graph.getNode(runtimeNode);
+        ASSERT_GE(runtime.sourceInstanceIndex,0);
+        const auto which=uint32_t(runtime.sourceInstanceIndex);
+        const auto& node=loaded.gltfModel.nodes[instances.sourceNode];
+        EXPECT_GE(node.skin,0);
+        const auto referencePalette=gltf::ComputeSkinPalette(sourceDeformation.skins[0],sourceWorlds[0],sourceWorlds);
+        const auto palette=gltf::ComputeSkinPalette(loaded.deformation->skins[size_t(node.skin)],worlds[instances.sourceNode],worlds);
+        const auto expected=gltf::EvaluatePrimitive(sourceDeformation.primitives[runtime.primitiveIndex],std::array<float,1>{.25f},referencePalette);
+        const auto actual=gltf::EvaluatePrimitive(loaded.deformation->primitives[size_t(node.mesh)],std::array<float,1>{.25f},palette);
+        ASSERT_EQ(actual.size(),expected.size());
+        for(size_t i=0;i<actual.size();++i) {
+          const auto a=glm::vec3(worlds[instances.sourceNode]*instances.localMatrices[0]*glm::vec4(actual[i].position,1));
+          const auto b=glm::vec3(runtime.worldTransform*glm::vec4(expected[i].position,1));
+          for(int axis=0;axis<3;++axis) EXPECT_NEAR(a[axis],b[axis],1e-5);
+        }
+        for(const auto& attribute:instances.attributes) {
+          const gltf::CheckedAccessor reader(loaded.gltfModel,attribute.sourceAccessor,"singleton");
+          EXPECT_EQ(reader.count(),1u);
+          if(attribute.semantic=="_ID") {
+            std::array<uint32_t,1> value{};reader.readUnsigned(0,value);
+            EXPECT_EQ(value[0],which?4294967295u:16777217u);
+          }
+          if(attribute.semantic=="_CODE") {
+            std::array<unsigned char,1> value{};reader.readEncodedElement(0,value);
+            EXPECT_EQ(value[0],which?129:128);
+          }
+        }
+        EXPECT_TRUE(node.extensions.at("EXT_mesh_gpu_instancing").Get("extras").Get("keep").Get<bool>());
+      }
+    }
+  };
+  check("instanced-skin");
   graph.setLocalTransform(first,glm::translate(graph.getNode(first)->localTransform,{.1f,0,0}));
-  EXPECT_THROW((void)buildExportModel({graph,f.geometry,&f.source,{},sourceNodes}),std::runtime_error);
+  check("instanced-skin-edit");
+  EXPECT_EQ(f.source.buffers[0].data,originalBytes);
 }
 
 TEST(GltfSceneExport, PreservesAllScenesSharedRootsInactiveEditsAndAnimationThroughImportPrefixes) {
@@ -2041,9 +2886,12 @@ TEST(GltfSceneExport, NodeFlagDefaultPresenceAndNewLocalOverridesRoundTripIndepe
 TEST(GltfSceneExport, RetiredAnimatedSubtreeKeepsRawIdentityUntilFinalOverlayCompaction) {
   namespace gltf=container::geometry::gltf;
   AnimatedExportFixture fixture;
-  // A post-skin correction needs baking while live. Once its whole owner is
-  // retired, it must not prevent saving or create correction-wrapper orphans.
-  fixture.graph.setLocalTransform(2,glm::translate(glm::mat4(1),{1,0,0}));
+  // Inverting the continuous owner scale for an affine leaf edit is unsupported
+  // while live. Retiring the whole owner must avoid generating any correction.
+  sourceTrack(fixture.source, 0, "scale", TINYGLTF_TYPE_VEC3, {1, 1, 1, 2, .5f, 1});
+  auto shear = glm::mat4(1);
+  shear[1][0] = .35f;
+  fixture.graph.setLocalTransform(2, shear);
   auto retire=fixture.graph.prepareRetireSubtree(1);ASSERT_TRUE(retire);
   ASSERT_TRUE(fixture.graph.publishRetirement(retire));
   const auto raw=buildExportModel(fixture.snapshot());
@@ -2058,7 +2906,7 @@ TEST(GltfSceneExport, RetiredAnimatedSubtreeKeepsRawIdentityUntilFinalOverlayCom
   const auto manualId=int(overlaid.nodes.size());overlaid.nodes.push_back(manual);
   overlaid.scenes[0].nodes.push_back(manualId);
   const auto compact=gltf::CompactGltfExportNodes(overlaid,std::array<int32_t,3>{1,2,3});
-  EXPECT_EQ(compact.droppedChannels,3u);
+  EXPECT_EQ(compact.droppedChannels,4u);
   EXPECT_EQ(compact.oldToNewNodes[1],-1);EXPECT_EQ(compact.oldToNewNodes[2],-1);
   EXPECT_EQ(compact.oldToNewNodes[3],-1);
   EXPECT_EQ(compact.model.nodes[size_t(compact.oldToNewNodes[manualId])].light,1);

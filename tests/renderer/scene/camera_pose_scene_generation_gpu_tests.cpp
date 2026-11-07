@@ -163,6 +163,7 @@ class CameraPoseSceneGenerationGpu : public ::testing::Test {
     VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     v12.bufferDeviceAddress=VK_TRUE;v12.runtimeDescriptorArray=VK_TRUE;
     v12.descriptorBindingPartiallyBound=VK_TRUE;v12.shaderSampledImageArrayNonUniformIndexing=VK_TRUE;
+    v12.shaderStorageBufferArrayNonUniformIndexing=VK_TRUE;
     info.next=&v12;
     device=std::make_shared<VulkanDevice>(*instance,surfaceHandle,info);
     pool=vk::raii::CommandPool(device->raii(),vk::CommandPoolCreateInfo(

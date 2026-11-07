@@ -28,6 +28,11 @@ std::array<double,8> cameraValues(const tinygltf::Camera& camera) noexcept {
 bool sameDefinition(const Target& a,const Target& b) noexcept {
   auto x=a,y=b;x.graphRevision=y.graphRevision=0;return x==y;
 }
+bool linkedCameraProjection(const container::scene::SceneManager& manager,
+    const container::scene::SceneGraph& graph,const Target& target) {
+  return manager.isLinkedNodeReadOnly(graph,target.graphNode) ||
+      manager.isLinkedCameraReadOnly(target.authoredCamera,target.evaluatedCamera);
+}
 nlohmann::json cameraRecord(const tinygltf::Camera& camera) {
   return {{"name",camera.name},{"type",camera.type},{"values",cameraValues(camera)}};
 }
@@ -128,6 +133,8 @@ bool RendererFrontend::authorCameraProjectionSource(int32_t sourceNode,const Glt
 bool RendererFrontend::authorCameraProjection(const Target& target,const GltfCameraProjectionPatch& patch) {
   if(subs_.sceneManager && (!gltfAnimation_ || gltfAnimationGraphIdentity_!=sceneGraph_.identity())) resetGltfAnimation();
   if(!subs_.sceneManager || !gltfAnimation_) throw std::invalid_argument("Camera editing requires the current authored scene and animation rest owner");
+  if(linkedCameraProjection(*subs_.sceneManager,sceneGraph_,target))
+    throw std::invalid_argument("This linked asset is read-only. Use Make Editable first.");
   if(lightEditGestureActive()) throw std::invalid_argument("Finish the light gesture before applying a camera edit");
   if(materialGesture_) throw std::invalid_argument("Finish the material gesture before applying a camera edit");
   if(pendingSceneRetirement_ || sceneEditPublicationPending_) publishSceneEdit();
@@ -158,6 +165,7 @@ bool RendererFrontend::authorCameraProjection(const Target& target,const GltfCam
 bool RendererFrontend::replayCameraProjection(const CameraProjectionHistory& state,GltfCameraEditSide side) {
   if(!subs_.sceneManager || !gltfAnimation_ || state.graph!=sceneGraph_.identity() || cameraProjectionPublications_==UINT64_MAX) return false;
   auto& manager=*subs_.sceneManager;const auto aspect=cameraAspect(svc_.swapChainManager);
+  if(linkedCameraProjection(manager,sceneGraph_,state.command.target())) return false;
   auto prepared=manager.prepareCameraProjectionReplay(state.command,side,sceneGraph_,gltfAnimation_.get(),aspect);
   std::string reason="authored camera projection history";
   if(!manager.canExchangeCameraProjectionEdit(prepared,sceneGraph_,gltfAnimation_.get(),aspect) ||
@@ -216,7 +224,7 @@ void RendererFrontend::refreshCameraProjectionInspector() {
       auto next=std::make_shared<CameraProjectionInspectorCache>();next->snapshot.target=*target;
       next->snapshot.sharedDefinitionUses=uint32_t(plan.authoredNodes.size());
       for(const auto* bindings:{&plan.authoredAnimationBindings,&plan.evaluatedAnimationBindings}) for(const auto& binding:*bindings)
-        next->snapshot.propertyBlockReasons[size_t(binding.property)]="This lens field is animated; edit its animation instead.";
+        next->snapshot.animatedProperties[size_t(binding.property)]=true;
       if(!plan.authoredAnimationBindings.empty() || !plan.evaluatedAnimationBindings.empty())
         next->snapshot.typeSwitchBlockReason="The camera has animated lens fields.";
       next->authoredNodes=authored.nodes.size();next->evaluatedNodes=evaluated.nodes.size();

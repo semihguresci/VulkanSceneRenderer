@@ -7,8 +7,17 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from gltf_accessor_runtime_regression import load_asset
 from gltf_animation_runtime_regression import write_fixture
 from gltf_material_variants_runtime_regression import run
+from gltf_node_flags_runtime_regression import ANIMATED_MESH, ANIMATED_PARENT, FLAGS, POINTER, animated_fixture
+
+
+BOOLEAN_SAMPLES = {
+    1: (True, (True, True, True)), 2: (True, (False, True, True)),
+    3: (False, (True, True, True)), 5: (True, (True, False, True)),
+    6: (True, (True, True, False)), 7: (False, (True, True, True)),
+}
 
 
 def config(*items):
@@ -114,16 +123,145 @@ def check_portability(renderer, output, graph, reference, sequence, saved, techn
     return {"reloaded": len(reloaded), "mergeStates": states}
 
 
+def boolean_fixture(output):
+    path = output / "boolean-behavior.gltf"
+    animated_fixture(path)
+    model = json.loads(path.read_text(encoding="utf-8"))
+    del model["animations"]
+    model["extensionsUsed"].remove(POINTER)
+    model["extensionsUsed"].append("KHR_interactivity")
+    model["extensionsRequired"] = ["KHR_interactivity"]
+    del model["nodes"][1]["extensions"][FLAGS["visible"]]["visible"]
+
+    def target(member):
+        return {"pointer": config(f"/nodes/1/extensions/{FLAGS[member]}/{member}"), "type": config(0)}
+
+    def receive(event, destination):
+        return {"declaration": 0, "configuration": {"event": config(event)}, "flows": {"out": branch(destination)}}
+
+    def write(member, value, **flows):
+        node = {"declaration": 3, "configuration": target(member), "values": {"value": value}}
+        if flows:
+            node["flows"] = flows
+        return node
+
+    model["extensions"]["KHR_interactivity"] = {"graph": 0, "graphs": [{
+        "types": [{"signature": "bool"}],
+        "events": [{"id": name} for name in ("hide", "blockSelection", "blockHover")],
+        "declarations": [{"op": op} for op in ("event/receive", "pointer/get", "flow/branch", "pointer/set")],
+        "nodes": [
+            receive(0, 2), {"declaration": 1, "configuration": target("visible")},
+            {"declaration": 2, "values": {"condition": branch(1)}, "flows": {"true": branch(3)}},
+            write("visible", constant(0, False)),
+            receive(1, 5), write("selectable", constant(0, False)),
+            receive(2, 7), write("selectable", branch(1), out=branch(8)),
+            write("hoverable", constant(0, False)),
+        ],
+    }]}
+    path.write_text(json.dumps(model, indent=2), encoding="utf-8")
+    sequence = output / "boolean-behavior-sequence.json"
+    sequence.write_text(json.dumps({"schemaVersion": 1, "frames": max(BOOLEAN_SAMPLES),
+        "sampleFrames": list(BOOLEAN_SAMPLES), "events": [
+            {"frame": 1, "interactivityPlaying": True}, {"frame": 2, "interactivityEvent": "hide"},
+            {"frame": 3, "interactivityReset": True}, {"frame": 4, "interactivityPlaying": True},
+            {"frame": 5, "interactivityEvent": "blockSelection"}, {"frame": 6, "interactivityEvent": "blockHover"},
+            {"frame": 7, "interactivityReset": True},
+        ]}), encoding="utf-8")
+    return path, sequence
+
+
+def inspect_boolean_behavior(record, playing, expected):
+    state = record["state"]
+    graph = state["gltfInteractivity"]
+    assert graph["available"] and not graph["diagnostic"], graph
+    assert graph["playing"] is playing and graph["started"] is playing, graph
+    flags = state["gltfNodeFlags"]
+    assert not flags["truncated"], flags
+    rows = {node["graphNode"]: node for node in flags["nodes"]}
+    source = {node["name"]: node for node in flags["nodes"] if node["sourceIndex"] >= 0}
+    parent, child = source[ANIMATED_PARENT], source[ANIMATED_MESH]
+    assert child["parentGraphNode"] == parent["graphNode"], (parent, child)
+    for name, value in zip(FLAGS, expected, strict=True):
+        key = name.capitalize()
+        assert parent["local"+key] is value and child["local"+key] is True and child["effective"+key] is value, (name, parent, child)
+    visible, selectable, hoverable = expected
+    assert state["gltfScenes"]["pointLightCount"] == int(visible), state["gltfScenes"]
+    assert state["gltfScenes"]["editHistoryDepth"] == 0, state["gltfScenes"]
+
+    def below_child(probe):
+        node = probe["graphNode"]
+        while node in rows:
+            if node == child["graphNode"]:
+                return True
+            node = rows[node]["parentGraphNode"]
+        return False
+
+    probes = [probe for probe in flags["probes"] if below_child(probe)]
+    if visible:
+        assert len(probes) == 1 and probes[0]["hit"], probes
+        probe = probes[0]
+        hit = probe["nearestHitGraphNode"]
+        assert hit == probe["graphNode"], probe
+        assert probe["resolvedSelection"] == (hit if selectable else -1), probe
+        assert probe["resolvedHover"] == (hit if hoverable else -1), probe
+    else:
+        assert not any(probe["hit"] for probe in probes), probes
+
+
+def run_boolean_behavior(renderer, output, *, generate_only, portability):
+    source, sequence = boolean_fixture(output)
+    if generate_only:
+        return
+    captures, results = [], {}
+    for technique, suffix in (("deferred-raster", ".gltf"), ("forward-raster", ".glb")):
+        destination = output / f"{technique}-boolean{suffix}" if portability else None
+        cohort = run(renderer, output, source, f"{technique}-boolean-source", technique, "lit", captures,
+                     sequence=sequence, save=destination)
+        baseline = pixels(cohort[0])
+        rows = []
+        for (frame, (playing, expected)), record in zip(BOOLEAN_SAMPLES.items(), cohort, strict=True):
+            inspect_boolean_behavior(record, playing, expected)
+            changed = float(np.any(np.abs(pixels(record) - baseline) > 5, axis=2).mean())
+            if expected[0]:
+                np.testing.assert_array_equal(pixels(record), baseline)
+            else:
+                assert changed > .015, (frame, changed)
+            rows.append({"frame": frame, "flags": expected, "changedPixelFraction": changed})
+        results[technique] = {"samples": rows}
+        if destination:
+            saved, _ = load_asset(destination)
+            parent, node = next((i, node) for i, node in enumerate(saved["nodes"]) if node.get("name") == ANIMATED_PARENT)
+            visible = node["extensions"][FLAGS["visible"]]
+            assert "visible" not in visible and visible["extras"]["authoringTag"] == "visible", visible
+            graph = saved["extensions"]["KHR_interactivity"]["graphs"][0]
+            pointers = {node["configuration"]["pointer"]["value"][0] for node in graph["nodes"]
+                        if "pointer" in node.get("configuration", {})}
+            assert pointers == {f"/nodes/{parent}/extensions/{extension}/{member}" for member, extension in FLAGS.items()}, pointers
+            reloaded = run(renderer, output, destination, f"{technique}-boolean-reload", technique, "lit", captures,
+                           sequence=sequence)
+            for (playing, expected), before, after in zip(BOOLEAN_SAMPLES.values(), cohort, reloaded, strict=True):
+                inspect_boolean_behavior(after, playing, expected)
+                np.testing.assert_array_equal(pixels(before), pixels(after))
+            results[technique]["portableFormat"] = suffix
+        print("PASS Boolean behavior", technique, flush=True)
+    (output / "results.json").write_text(json.dumps({"passed": True, "captures": captures, "results": results},
+                                                     indent=2), encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--renderer", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--generate-only", action="store_true")
-    parser.add_argument("--portability", action="store_true", help="Also validate save/reload and live merge")
+    parser.add_argument("--portability", action="store_true", help="Validate save/reload, with live merge in the standard suite")
+    parser.add_argument("--boolean-only", action="store_true", help="Validate Boolean Object Model pointers")
     args = parser.parse_args()
     renderer, output = args.renderer.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="utf-8")
+    if args.boolean_only:
+        run_boolean_behavior(renderer, output, generate_only=args.generate_only, portability=args.portability)
+        return
     graph, reference, sequence = fixture(output)
     if args.generate_only:
         return

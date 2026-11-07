@@ -3,10 +3,13 @@
 #include <Container/geometry/GltfAnimation.h>
 #include <Container/geometry/GltfDeformation.h>
 #include <Container/geometry/GltfMaterialVariants.h>
+#include <Container/geometry/GltfSessionMerge.h>
+#include <Container/geometry/GltfXmpMetadata.h>
 #include <Container/utility/GltfSceneSelection.h>
 
 #include <gtest/gtest.h>
 #include <glm/gtc/matrix_transform.hpp>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -443,6 +446,62 @@ TEST(GltfMerge, CountsImplicitSceneObjectsBeforePublishingAnEmptyMerge) {
   EXPECT_THROW((void)PlanGltfMerge(empty,empty,{},limits),std::runtime_error);
 }
 
+TEST(GltfMerge, RemapsIndependentXmpPacketsAndKeepsInvalidReferencesIsolated) {
+  using Json = nlohmann::json;
+  auto base = fixture(), incoming = fixture();
+  coreAnimation(incoming);
+  const auto retained = [](tinygltf::Model& model, const Json& packets) {
+    declare(model, kGltfXmpExtension);
+    model.extensions.emplace(kGltfXmpExtension, Value(Object{}));
+    model.extensions_json_string = Json{{kGltfXmpExtension, {{"packets", packets}}}}.dump();
+  };
+  const auto attach = [](auto& record, int index) {
+    record.extensions.emplace(kGltfXmpExtension, Value(Object{{"packet", Value(index)}}));
+  };
+  const auto destinationPackets = Json::parse(R"([{"@context":{},"label":"destination"},null])");
+  Json incomingPackets = Json::array();
+  for (const auto* label : {"asset", "scene", "node", "mesh", "material", "image", "animation"}) {
+    incomingPackets.push_back({{"@context", Json::object()}, {"label", label},
+        {"integer", uint64_t{18446744073709551614ull}}, {"empty", Json::array()}});
+  }
+  retained(base, destinationPackets);
+  retained(incoming, incomingPackets);
+  attach(base.asset, 0);
+  attach(base.nodes[0], 4); // Within the combined table, outside its own source table.
+  attach(base.materials[0], 1);
+  attach(incoming.asset, 0);
+  attach(incoming.scenes[0], 1);
+  attach(incoming.nodes[0], 2);
+  attach(incoming.meshes[0], 3);
+  attach(incoming.materials[0], 4);
+  attach(incoming.images[0], 5);
+  attach(incoming.animations[0], 6);
+
+  const auto plan = PlanGltfSessionSources(base, base, incoming, {}, {});
+  const auto& model = plan.merge.model;
+  const auto package = ReadGltfXmpPackage(model);
+  ASSERT_TRUE(package);
+  auto expected = destinationPackets;
+  for (const auto& packet : incomingPackets) expected.push_back(packet);
+  EXPECT_EQ(package->at("packets"), expected);
+  EXPECT_EQ(ResolveGltfXmpPacket(*package, model.asset.extensions).packet, &package->at("packets").at(0));
+  EXPECT_TRUE(ResolveGltfXmpPacket(*package, model.nodes[0].extensions).message.contains("outside"));
+  EXPECT_TRUE(ResolveGltfXmpPacket(*package, plan.evaluatedSource.nodes[0].extensions).message.contains("outside"));
+  EXPECT_TRUE(ResolveGltfXmpPacket(*package, model.materials[0].extensions).message.contains("@context"));
+  const std::array attachments{&model.nodes[size_t(plan.merge.parentNode)].extensions,
+      &model.scenes[size_t(plan.merge.incomingScene)].extensions, &model.nodes[1].extensions,
+      &model.meshes[1].extensions, &model.materials[1].extensions, &model.images[1].extensions,
+      &model.animations[0].extensions};
+  for (size_t i = 0; i < attachments.size(); ++i) {
+    const auto packet = ResolveGltfXmpPacket(*package, *attachments[i]);
+    ASSERT_NE(packet.packet, nullptr);
+    EXPECT_EQ(*packet.packet, incomingPackets[i]);
+  }
+  EXPECT_EQ(model.nodes[size_t(plan.merge.placement.nodes[0])].extensions, model.nodes[1].extensions);
+  EXPECT_EQ(plan.merge.incomingAsset.extensions, model.nodes[size_t(plan.merge.parentNode)].extensions);
+  EXPECT_TRUE(ResolveGltfXmpPacket(*ReadGltfXmpPackage(base), base.nodes[0].extensions).message.contains("outside"));
+}
+
 TEST(GltfMerge, RejectsUnknownExtensionsTargetsAndRootConflictsWithoutInputMutation) {
   const auto base=fixture();auto incoming=fixture();const auto before=base;
   declare(incoming,"VENDOR_references");incoming.nodes[0].extensions["VENDOR_references"]=Value(Object{{"index",Value(0)}});
@@ -451,6 +510,34 @@ TEST(GltfMerge, RejectsUnknownExtensionsTargetsAndRootConflictsWithoutInputMutat
   EXPECT_THROW((void)PlanGltfMerge(withExtras,incoming),std::runtime_error);
   incoming=fixture();coreAnimation(incoming);const auto output=floats(incoming,{0,1},TINYGLTF_TYPE_SCALAR,2);
   pointerChannel(incoming,incoming.animations[0],"/nodes/0/extensions/VENDOR_references/value",output);
+  EXPECT_THROW((void)PlanGltfMerge(base,incoming),std::runtime_error);
+}
+
+TEST(GltfMerge, PreservesOpaqueOptionalDestinationMetadataAtStableIndices) {
+  auto base=fixture();
+  const auto incoming=fixture(33);
+  const std::string name="VENDOR_destination_metadata";
+  const Value metadata(Object{{"source",Value(9001)},{"label",Value(std::string("opaque"))}});
+  declare(base,name);
+  base.extensions[name]=metadata;
+  base.meshes[0].primitives[0].extensions[name]=metadata;
+  base.textures[0].extensions[name]=metadata;
+  base.asset.version="2.1";
+  base.asset.minVersion="2.0";
+
+  const auto merged=PlanGltfMerge(base,incoming);
+  EXPECT_EQ(merged.model.asset.version,"2.1");
+  EXPECT_EQ(merged.model.extensions.at(name),metadata);
+  EXPECT_EQ(merged.model.meshes[0].primitives[0].extensions.at(name),metadata);
+  EXPECT_EQ(merged.model.textures[0].extensions.at(name),metadata);
+  EXPECT_EQ(merged.model.textures[0].source,0);
+  EXPECT_EQ(merged.model.textures[1].source,1);
+  EXPECT_EQ(std::ranges::count(merged.model.extensionsUsed,name),1);
+
+  base.extensionsRequired.push_back(name);
+  EXPECT_THROW((void)PlanGltfMerge(base,incoming),std::runtime_error);
+  base.extensionsRequired.clear();
+  base.textures[0].source=-1;
   EXPECT_THROW((void)PlanGltfMerge(base,incoming),std::runtime_error);
 }
 

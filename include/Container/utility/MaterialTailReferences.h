@@ -51,8 +51,9 @@ struct MaterialTailReferenceStats {
 enum class MaterialTailAuditPhase : uint8_t { BeforeBindings,AfterBindings };
 struct MaterialTailReferenceAccess;
 
-// Copyable immutable audit authority. Owns compact ID arrays and the optional
-// binding command, never Models, variant libraries, images or accessor data.
+// Copyable immutable audit authority. Owns compact ID arrays, bounded source
+// reference/schema witnesses and the optional binding command, never Models,
+// variant libraries, images or accessor data.
 class MaterialTailReferenceAudit {
  public:
   MaterialTailReferenceAudit() noexcept=default;
@@ -90,6 +91,9 @@ using MaterialReferencePhase=MaterialTailAuditPhase;
 // material.lods/MSFT_lod.ids, and raw /materials/N animation pointers including
 // unknown property suffixes. Graph traversal includes inactive/hidden/retired
 // renderables; nonrenderable group material placeholders are not bindings.
+// Supported behavior graphs are proved by the shared raw resource scanner in
+// both source namespaces. Constant/typed references protect their materials;
+// dynamic material IDs protect their complete domain.
 // An optional current one-shot binding proof is projected without mutation and
 // retained by owning command copy. Every graph row and override is validated.
 //

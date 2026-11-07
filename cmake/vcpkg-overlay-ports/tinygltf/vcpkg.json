@@ -1,0 +1,16 @@
+{
+  "name": "tinygltf",
+  "version-semver": "3.1.0",
+  "description": "Official 3.1.0 release; explicit legacy-cpp-deprecated compatibility payload",
+  "homepage": "https://github.com/syoyo/tinygltf",
+  "license": "MIT",
+  "features": {
+    "legacy-cpp": {
+      "description": "Explicit latest-release C++ compatibility interface; legacy-cpp-deprecated",
+      "dependencies": [
+        "nlohmann-json",
+        "stb"
+      ]
+    }
+  }
+}

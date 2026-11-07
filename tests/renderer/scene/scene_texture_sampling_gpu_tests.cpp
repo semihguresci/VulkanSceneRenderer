@@ -165,7 +165,8 @@ class SceneTextureSamplingGpu : public ::testing::Test {
     DeviceCreateInfo info;info.requiredExtensions={VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     v12.bufferDeviceAddress=VK_TRUE;v12.runtimeDescriptorArray=VK_TRUE;v12.descriptorBindingPartiallyBound=VK_TRUE;
-    v12.shaderSampledImageArrayNonUniformIndexing=VK_TRUE;info.next=&v12;
+    v12.shaderSampledImageArrayNonUniformIndexing=VK_TRUE;
+    v12.shaderStorageBufferArrayNonUniformIndexing=VK_TRUE;info.next=&v12;
     device=std::make_shared<VulkanDevice>(*instance,rawSurface,info);
     pool=vk::raii::CommandPool(device->raii(),vk::CommandPoolCreateInfo(vk::CommandPoolCreateFlagBits::eResetCommandBuffer,device->queueFamilyIndices().graphicsFamily.value()));
     allocation=std::make_unique<AllocationManager>();allocation->initialize(instance->instance(),device->physicalDevice(),device->device(),device->graphicsQueue(),*pool,{});

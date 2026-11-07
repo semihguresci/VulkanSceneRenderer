@@ -22,8 +22,14 @@ struct AnimatedCameraState {
   bool orthographic{};
 };
 
+// Canonical binary32 node evaluator used by playback and detached camera-pose
+// preparation. Matrix representation takes precedence; TRS normalizes the
+// quaternion and composes T*R*S. Rejects malformed or non-finite results.
+[[nodiscard]] glm::mat4 EvaluateAnimatedNodeLocalTransform(const tinygltf::Node&);
+
 // Uses sourceNodeIndex associations, including non-renderable joint/groups;
-// primitive children retain their own local transforms and identities.
+// primitive children retain their own local transforms and identities. Only
+// the local node flags explicitly changed by animation are published.
 bool ApplyAnimatedNodeTransforms(const tinygltf::Model& source,
                                  const AnimationDirtySet& dirty,
                                  container::scene::SceneGraph& graph);

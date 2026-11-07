@@ -11,6 +11,12 @@ enum class ScreenReflectionMode : uint32_t {
   Confidence,
   Distance,
   Source,
+  History,
 };
+
+constexpr bool screenReflectionModeUsesHistory(ScreenReflectionMode mode) {
+  return mode == ScreenReflectionMode::Low || mode == ScreenReflectionMode::High ||
+         mode == ScreenReflectionMode::History;
+}
 
 }  // namespace container::renderer

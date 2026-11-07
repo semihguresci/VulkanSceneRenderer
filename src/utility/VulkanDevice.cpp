@@ -1,5 +1,8 @@
 #include <Container/utility/VulkanDevice.h>
+#include "Container/renderer/pathtracing/ReferenceDlssReconstructor.h"
+#include "Container/renderer/temporal/DlssUpscaler.h"
 #include "Container/utility/AsyncComputeQueue.h"
+#include "Container/utility/Platform.h"
 #include "Container/utility/SwapChainManager.h"  // FindQueueFamilies, QuerySwapChainSupport
 
 #include <array>
@@ -9,6 +12,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace container::gpu {
@@ -122,22 +126,27 @@ struct FsrFeatures {
   VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
   VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
   VkPhysicalDeviceVulkan11Features v11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+  VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR derivatives{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR};
 
-  bool enable(VkPhysicalDevice device, const void* requested, VkPhysicalDeviceFeatures& base) {
+  bool enable(VkPhysicalDevice device, std::span<const VkExtensionProperties> extensions,
+              const void* requested, VkPhysicalDeviceFeatures& base) {
     const auto* head = static_cast<const VkBaseInStructure*>(requested);
     if (!head || head->sType != v14.sType || !head->pNext || head->pNext->sType != v13.sType ||
         !head->pNext->pNext || head->pNext->pNext->sType != v12.sType ||
-        !head->pNext->pNext->pNext || head->pNext->pNext->pNext->sType != v11.sType) return false;
+        !head->pNext->pNext->pNext || head->pNext->pNext->pNext->sType != v11.sType ||
+        !hasExtension(extensions, VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME)) return false;
 
     VkPhysicalDeviceFeatures2 supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     supported.pNext = &v13;
     v13.pNext = &v12;
     v12.pNext = &v11;
+    v11.pNext = &derivatives;
     vkGetPhysicalDeviceFeatures2(device, &supported);
     if (!supported.features.shaderStorageImageExtendedFormats ||
         !supported.features.shaderStorageImageReadWithoutFormat ||
         !supported.features.shaderStorageImageWriteWithoutFormat ||
-        !v13.subgroupSizeControl || !v13.computeFullSubgroups ||
+        !v13.subgroupSizeControl || !v13.computeFullSubgroups || !derivatives.computeDerivativeGroupLinear ||
         (v12.shaderFloat16 && !v11.storageBuffer16BitAccess)) return false;
 
     // The pinned library chooses its precision from physical-device features.
@@ -151,6 +160,12 @@ struct FsrFeatures {
     v14.pNext = &v13;
     v13.pNext = &v12;
     v12.pNext = &v11;
+    // The SDK 2.4 portable shaders declare SPV_KHR_compute_shader_derivatives
+    // and ComputeDerivativeGroupLinearKHR. Preserve any OIDN feature tail and
+    // enable only the derivative grouping used by those shaders.
+    derivatives = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR,
+        v11.pNext, VK_FALSE, VK_TRUE};
+    v11.pNext = &derivatives;
     v13.subgroupSizeControl = v13.computeFullSubgroups = VK_TRUE;
     v12.shaderFloat16 = float16;
     v11.storageBuffer16BitAccess = storage16;
@@ -208,6 +223,9 @@ bool supportsRequestedVulkan12Features(
          requestedFeatureSupported(
              requestedFeatures->shaderSampledImageArrayNonUniformIndexing,
              supportedFeatures.shaderSampledImageArrayNonUniformIndexing) &&
+         requestedFeatureSupported(
+             requestedFeatures->shaderStorageBufferArrayNonUniformIndexing,
+             supportedFeatures.shaderStorageBufferArrayNonUniformIndexing) &&
          requestedFeatureSupported(requestedFeatures->bufferDeviceAddress,
                                    supportedFeatures.bufferDeviceAddress) &&
          requestedFeatureSupported(requestedFeatures->drawIndirectCount,
@@ -400,6 +418,37 @@ void VulkanDevice::createLogicalDevice() {
     addEnabledExtension(optionalExtension);
   }
 
+  dlssUpscalingStatus_ = instanceOwner_.dlssUpscalingStatus();
+  dlssRayReconstructionStatus_ = instanceOwner_.dlssRayReconstructionStatus();
+  struct DlssFeatureExtensions {
+    std::string& status;
+    decltype(&renderer::DlssUpscaler::queryDeviceExtensions) query;
+    renderer::DlssExtensionRequirements extensions;
+
+    bool needsPushDescriptors() const {
+      return status.empty() && std::ranges::find(extensions.names, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME) !=
+          extensions.names.end();
+    }
+  };
+  std::array dlssFeaturesByMode{
+      DlssFeatureExtensions{dlssUpscalingStatus_, renderer::DlssUpscaler::queryDeviceExtensions, {}},
+      DlssFeatureExtensions{dlssRayReconstructionStatus_, renderer::ReferenceDlssReconstructor::queryDeviceExtensions, {}}};
+  for (auto& feature : dlssFeaturesByMode) {
+    if (!feature.status.empty()) continue;
+    if (!(families[queueFamilyIndices_.graphicsFamily.value()].queueFlags & VK_QUEUE_COMPUTE_BIT)) {
+      feature.status = "DLSS requires compute support on the graphics queue";
+      continue;
+    }
+    feature.extensions = feature.query(instance_, physicalDevice_, util::executableDirectory());
+    feature.status = std::move(feature.extensions.status);
+    if (!feature.status.empty()) continue;
+    const auto missing = std::ranges::find_if(feature.extensions.names, [&](const std::string& extension) {
+      return !hasExtension(availableExtensions, extension.c_str());
+    });
+    if (missing != feature.extensions.names.end())
+      feature.status = "DLSS requires Vulkan device extension " + *missing;
+  }
+
   ReferenceOidnFeatures oidn;
   const void* coreFeatureChain = createInfo_.next;
   if (createInfo_.enableReferenceOidn && rayQueriesEnabled_ &&
@@ -417,12 +466,40 @@ void VulkanDevice::createLogicalDevice() {
   FsrFeatures fsr;
   if (createInfo_.enableFsrUpscaling &&
       (families[queueFamilyIndices_.graphicsFamily.value()].queueFlags & VK_QUEUE_COMPUTE_BIT) &&
-      fsr.enable(physicalDevice_, coreFeatureChain, enabledFeatures_)) {
+      fsr.enable(physicalDevice_, availableExtensions, coreFeatureChain, enabledFeatures_)) {
     fsrUpscalingEnabled_ = true;
+    addEnabledExtension(VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME);
     coreFeatureChain = &fsr.v14;
     enabledVulkan12Features_ = fsr.v12;
     enabledVulkan12Features_.pNext = nullptr;
   }
+
+  VkPhysicalDeviceVulkan14Features dlssFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES};
+  if (std::ranges::any_of(dlssFeaturesByMode, &DlssFeatureExtensions::needsPushDescriptors)) {
+    // Vulkan 1.4 requires pushDescriptor alongside the extension whenever the
+    // core feature struct is present (VUID-VkDeviceCreateInfo-ppEnabledExtensionNames-10858).
+    const auto* head = static_cast<const VkBaseInStructure*>(coreFeatureChain);
+    std::string pushDescriptorStatus;
+    if (head && head->sType == dlssFeatures.sType) {
+      VkPhysicalDeviceFeatures2 supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &dlssFeatures};
+      vkGetPhysicalDeviceFeatures2(physicalDevice_, &supported);
+      if (dlssFeatures.pushDescriptor) {
+        dlssFeatures = *reinterpret_cast<const VkPhysicalDeviceVulkan14Features*>(head);
+        dlssFeatures.pushDescriptor = VK_TRUE;
+        coreFeatureChain = &dlssFeatures;
+      } else {
+        pushDescriptorStatus = "DLSS requires the Vulkan pushDescriptor feature";
+      }
+    } else if (head) {
+      pushDescriptorStatus = "DLSS requires a Vulkan 1.4 feature chain for push descriptors";
+    }
+    if (!pushDescriptorStatus.empty())
+      for (auto& feature : dlssFeaturesByMode)
+        if (feature.needsPushDescriptors()) feature.status = pushDescriptorStatus;
+  }
+  for (const auto& feature : dlssFeaturesByMode)
+    if (feature.status.empty())
+      for (const auto& extension : feature.extensions.names) addEnabledExtension(extension.c_str());
 
   VkPhysicalDevicePerformanceQueryFeaturesKHR performanceQueryFeatures{};
   performanceQueryFeatures.sType =
@@ -465,14 +542,10 @@ void VulkanDevice::createLogicalDevice() {
       static_cast<uint32_t>(enabledExtensions.size());
   deviceCreateInfo.ppEnabledExtensionNames = enabledExtensions.data();
 
-  if (createInfo_.enableValidationLayers) {
-    deviceCreateInfo.enabledLayerCount =
-        static_cast<uint32_t>(createInfo_.validationLayers.size());
-    deviceCreateInfo.ppEnabledLayerNames = createInfo_.validationLayers.data();
-  } else {
-    deviceCreateInfo.enabledLayerCount = 0;
-    deviceCreateInfo.ppEnabledLayerNames = nullptr;
-  }
+  // Device layers were superseded by instance layers. Validation is enabled
+  // on VulkanInstance; current Vulkan requires the device layer count to be 0.
+  deviceCreateInfo.enabledLayerCount = 0;
+  deviceCreateInfo.ppEnabledLayerNames = nullptr;
 
   const vk::raii::PhysicalDevice physical(instanceOwner_.raii(), physicalDevice_);
   ownedDevice_ = vk::raii::Device(physical,

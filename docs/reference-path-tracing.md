@@ -1,9 +1,11 @@
 # Progressive reference path tracing (#47)
 
-Status: **the progressive Vulkan reference backend is connected to the application
-viewport and existing Rendering Engine selector**. It renders a supported surface
-subset; full #47 material and scene acceptance remains in progress. The UI adds
-one sample/diagnostic status line. No external dependencies were added.
+The progressive Vulkan reference backend is available in the application
+viewport through the Rendering Engine selector. It supports the material/light
+subset documented below and reports unsupported paths separately from raw
+radiance. Sample counts, a standard-error view, deterministic raw EXR checkpoints
+and optional display denoising are implemented. Scene convergence and raster
+calibration acceptance is tracked separately from those features.
 
 ## Application use and presentation
 
@@ -49,6 +51,29 @@ to a peak RGB value of four. It scales all channels equally before updating
 the mean and moments. The default of zero retains unclamped transport.
 Changing the clamp resets accumulation. EXR metadata records the effective
 limit, since a positive limit biases the accumulated result.
+
+### Standard-error view
+
+Choose **Standard error** under **Reference display**, use
+`--path-display standard-error`, or add `"referenceDisplay": "standard-error"`
+to a capture sequence event. The view and viewport PNG captures show the
+estimated sampling error of the raw mean. Switching between this view and
+**Beauty** preserves sample count and history. Raw EXR captures always contain
+the accumulated scene-linear mean. Use `--display-mode lit` with a headless
+EXR capture in either reference display mode.
+
+The diagnostic computes the RMS of the three RGB standard errors using each
+channel's Welford M2 divided by `n × (n − 1)`, where `n` is the number of
+accepted samples at that pixel. It displays that error relative to the RMS
+RGB mean with a denominator floor of 0.01 scene-linear units. Black means
+zero estimated error, cyan means 1%, yellow means 10%, and red means 100% or
+higher. Gray marks pixels with fewer than two samples. Path fault colors
+retain priority. This measures sampling noise, so a stable pixel can still
+have transport bias or differ from the raster renderer.
+
+The view bypasses exposure, tone mapping, bloom, and display denoising.
+Shadow matte keeps its normal display because it accumulates a visibility
+ratio instead of RGB radiance.
 
 ### Analytic ground and shadow matte
 
@@ -102,7 +127,72 @@ its LICENSE and NOTICE. Vulkan storage-image push descriptors and the SDK's
 If setup is unavailable, the raw display continues and reports the reason.
 
 The validation entry point is `tests/validation/reference_oidn_runtime_regression.py`.
+
+### Optional NVIDIA OptiX display denoising
+
+Select **OptiX guided HDR** in the reference display denoising controls or
+pass `--path-optix`. The reference renderer uses one display denoiser at a
+time. Set `--path-denoise-interval N` from 1 to 1,024 attempted samples (default
+8). Use `"referenceOptix": true` or `false` in a capture-sequence event to
+switch OptiX on or off. The existing `referenceOidn` quality event selects
+Vulkan OIDN and accepts `"off"` for the raw display.
+
+OptiX uses the same sample-aligned HDR radiance, albedo and normal guides as
+OIDN. Its spatial HDR model receives normalized camera-space normal X/Y.
+Vulkan stages the completed inputs and uploads the filtered result on the
+following frame. The viewport stays raw until the first filter result is
+ready. For an exact frame capture, allow one additional frame after the
+requested accumulation count. Camera, scene, extent and backend changes
+discard the old result and its pending guides. Reference EXR capture still
+exports the raw linear mean. The reference telemetry and capture metadata
+report the sample count of the displayed OptiX result.
+
+On Windows x64, install CUDA development headers and extract NVIDIA's
+OptiX 9.1.0 header archive. Configure with `-DENABLE_REFERENCE_OPTIX=ON` and
+`-DCONTAINER_OPTIX_SDK_ROOT=<extracted-directory>`. The official source ZIP
+SHA-256 is `1899c049bfe523755eade3aa24aa3dc975eb40d022160536aa32841f69ce3d08`. The pinned
+commit is `f1f6dd803f3159992d248178f6e09421c6eb8b6d`.
+OptiX 9.1 requires a Turing (compute capability 7.5) or newer NVIDIA GPU.
+The NVIDIA R590 or newer display driver supplies the CUDA and OptiX runtime
+libraries. The Vulkan and CUDA adapter UUIDs must match. A missing SDK or an
+incompatible device or runtime leaves the raw reference viewport available
+and reports a capability reason. [NVIDIA OptiX 9.1.0 release](https://github.com/NVIDIA/optix-dev/releases/tag/v9.1.0)
+
+Run `tests/validation/reference_oidn_runtime_regression.py --backend optix`
+to exercise filter quality, raw EXR identity, glass, camera and object motion,
+resize, and backend switching. The `referencePath.optix` telemetry reports
+OptiX GPU time for HDR intensity and filtering, and allocated bytes including
+guide images, host staging and CUDA working buffers. The GPU time excludes
+host staging and transfers.
 Run it with `--expect-unavailable` to verify the unfiltered fallback build.
+
+The earlier OptiX 8.1.0 run at 256×192 on the RTX 2080 SUPER reduced the four-sample Cornell-box
+display RMSE from 0.11174 to 0.02150 against a 256-sample reference. The
+measured filter dispatch took 5.04 ms. The backend used 31.5 MiB, including
+guides and staging. The enabled and raw captures had identical linear EXR
+pixels.
+
+The OptiX 9.1 enabled renderer passes 24 native captures across seven processes
+on the RTX 2080 SUPER with driver 610.88. Its four-sample display RMSE is
+0.11174 before filtering and 0.02150 after filtering against the 256-sample
+reference. Raw EXRs retain identical encoded bytes and decoded float bits.
+Eighteen history frames cover camera/object motion, resize, disabling and
+re-enabling the backend, and sample-limit completion. All logs are free of
+Vulkan validation and synchronization errors. Eleven isolated SDK pin and
+fallback checks also pass. Local evidence is under
+`build/codex-gltf-validation/optix-9.1-acceptance/results.json`, for renderer
+SHA-256 `b35059a7320d27ce333587e28e8e603464d1c079d6995c7ceb9815031bff519c`.
+This is a quality/lifecycle check, not a steady-state timing benchmark or a
+proof of missing-driver/pre-Turing runtime behavior.
+
+CUDA and OptiX entry points are resolved from the installed display driver.
+No CUDA Toolkit runtime or SDK-provided OptiX DLL is redistributed. The SDK's
+Windows stubs additionally use the operating system's CfgMgr32 and registry
+APIs to find the driver.
+
+The optional [DLSS Ray Reconstruction backend](dlss-upscaling.md#reference-ray-reconstruction)
+is also available in the reference display controls and retains the raw
+full-resolution EXR.
 
 The technique shares the forward graph's depth, picking, editor overlays and HDR
 presentation. Surface generations are requested independently of DDGI, including
@@ -278,13 +368,81 @@ continuing BSDF proposal.
 The transport uses no raster bounce term, LTC, DDGI feedback, TAA, or denoising.
 The optional firefly clamp applies only after the complete path is evaluated.
 
-The supported surface subset currently diagnoses specular/glossiness, clearcoat,
-sheen, iridescence and active height displacement. Unsupported paths do not enter
+The supported surface subset currently diagnoses sheen, iridescence and active
+height displacement. Unsupported paths do not enter
 raw moments. Magenta display pixels identify unsupported paths and yellow identifies
 invalid/unrepresentable numerical input. Display diagnostics remain separate
 from accepted raw scene-linear means and moments. Unlit surfaces contribute
 textured base and authored emission, respect opacity coverage, and terminate
 scattering.
+
+Authored `KHR_materials_pbrSpecularGlossiness` inputs feed the reference BSDF
+directly. The diffuse RGB factor multiplies the diffuse texture and vertex color.
+The specular RGB factor multiplies the packed texture's RGB, and glossiness
+multiplies its alpha. Both texture RGB values decode from sRGB. Alpha stays
+linear. Each texture retains its own UV set and `KHR_texture_transform`.
+The diffuse coefficient is the resolved diffuse color times one minus the
+largest specular component. The resolved specular color supplies F0, and
+roughness is one minus glossiness. Evaluation and sampling use the existing
+Schlick-weighted Lambert and GGX lobes. This follows the archived extension's
+input mapping and the historical Khronos renderer's BRDF.
+[Archived extension](https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Archived/KHR_materials_pbrSpecularGlossiness/README.md),
+[Khronos reference shader](https://github.com/KhronosGroup/glTF-Sample-Renderer/blob/69faaea3e75900baf4e9b7b92f5d01d2c9db9f4a/src/shaders/pbr.frag)
+
+The CPU material retains authored diffuse and specular RGB alongside the raster
+conversion. Its existing alpha and glossiness fields remain authoritative.
+Animation, numeric edits, and history publish those values together. SG
+surfaces support normal maps, emission, and alpha coverage. Active clearcoat,
+transmission, volume thickness, anisotropy, diffuse transmission, retroreflection,
+and scattering combined with SG produce unsupported-path diagnostics.
+
+The SG acceptance run passed 489 cases across eleven focused suites with zero
+skips, including 70 transport-math and 86 production Vulkan cases. Raster,
+DDGI, ray-shadow, import, animation, authoring, and capture checks exercise the
+shared 1216-byte material layout. Twenty native captures across seventeen
+processes verified authored factors, linear glossiness alpha, UV1 transforms,
+animation, edit history, and exact portable glTF/GLB reloads after removing
+the generated source folder. The constant-texture comparison propagates a
+half-source-code sRGB sampling interval. Its literal linear-color control
+retains the independent analytical check.
+
+Seven affected shader modules passed Vulkan 1.4 validation, including compiled
+denoising and reconstruction variants. Their SDKs were disabled in the native
+build. Evidence is in
+`build/codex-gltf-validation/reference-sg-native-verified/results.json`,
+`build/codex-gltf-validation/reference-sg-checks/results.json`, and
+`build/codex-gltf-validation/reference-sg-shaders.json`.
+
+Clearcoat uses its red-channel factor, green-channel roughness, and independent
+normal map and scale. Its normal defaults to the interpolated surface normal
+before the base normal map. The layer follows the Khronos view-Fresnel operator
+with IOR 1.5. The coating weight is its factor times Schlick Fresnel at the
+outgoing direction. That weight selects a unit-Fresnel GGX coating, while the
+remaining weight carries the base BSDF and emission. The infinitely thin
+layer keeps each material's existing refraction and medium boundaries.
+This model omits refraction and scattering between coating and base.
+[Khronos clearcoat model](https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_materials_clearcoat/README.md)
+
+The coating has matched evaluation, sampling, and mixture PDFs for continuous
+and smooth delta events. Coincident smooth base and coating reflections combine
+their event masses. Straight-through light connections include the same
+coating attenuation and null-event probability as traced paths. Emissive-mesh
+next-event sampling applies the outgoing coating weight. A zero factor
+delegates to the ordinary material transport.
+
+The clearcoat acceptance run passed 65 transport-math and 79 production Vulkan
+cases, including independent energy integrals, coated mesh emission, smooth
+sheet light connections, shader reloads, and resource retirement. Fourteen
+native captures verified textured factors, independent normals, material
+history, and raw EXR identity through portable glTF and GLB reloads.
+At 192×144 with four samples per batch and a thirteen-sample stop, the captured
+Lighting intervals were 1.52–2.44 ms on the RTX 2080 SUPER. The reference pass
+owned 2,360,592 VMA bytes in both control and coated captures. These measurements
+describe the fixture and capture configuration. Evidence is in
+`build/codex-gltf-validation/reference-clearcoat-native/results.json` and
+`build/codex-gltf-validation/reference-clearcoat-final-ctest.log`.
+The denoising and reconstruction shader variants passed compilation and
+SPIR-V validation with their SDKs disabled in the native acceptance build.
 
 Anisotropic reflection uses the mip-filtered strength and the rotated mesh
 tangent projected onto the final shading normal. Its elliptical GGX
@@ -321,7 +479,7 @@ image reads/writes without a format. Resources require the existing Vulkan 1.4
 engine baseline with synchronization2, ray queries and compatible bindless
 material/light layouts. The minimal bindings need ten storage buffers, three
 storage images and 4,097 sampled images across the compute pipeline. Image
-dimensions, storage ranges, sampling settings and the default 512 MiB image
+dimensions, storage ranges, sampling settings and the default 1024 MiB image
 payload budget are checked before use. Empty scenes use a separate background
 shader without statically accessed acceleration-structure descriptors.
 
@@ -649,20 +807,31 @@ Failed diagnostic attempts and the superseded 636-case checkpoint are excluded. 
 its incremental publication; the mathematical foundation is already published.
 This milestone does not close #47 or the full tracker.
 
-## Remaining implementation
+## Acceptance and supported limits
 
-The full #47 scope remains open. Continue in dependency order:
+Original #47 acceptance covers the supported progressive diffuse/GGX and
+transmission modes. Unsupported materials, topology and connection types remain
+explicit diagnostics. Extending sheen/iridescence, arbitrary overlapping or
+clipped solids, participating media and bending delta-caustic connections is
+possible future work beyond that supported subset.
 
-1. Complete material transport beyond the currently diagnosed subset, including
-   overlapping/clipped volume handling, caustic connections and participating media.
-   Validate normal-map/texture
-   filtering approximations and broader live shader-reload/reset behavior.
-2. Extend sample/convergence/variance telemetry and raster/reference comparison.
-   Validate application Cornell boxes, area
-   lights, blockers, roughness sweeps and interiors, including edits, resize,
-   camera cuts, technique switches, memory and GPU timing.
+The immutable Cornell, area-light, blocker, roughness and interior matrix passes
+95 captures across 40 processes at 256×192. Four seeds at 32/128/512 spp are
+compared with two independent 4096-spp references, retaining measured target
+uncertainty. Every scene passes the declared error/variance bounds, exact sample
+counts, finite radiance and strict synchronization validation. The gate records
+matched camera/display state, GPU timing and owned memory. See
+[calibration workflow and measured limits](reference-calibration.md).
 
-#116 denoising and reconstruction remain open.
+Use the standard-error view to inspect sampling noise, not transport bias.
+Compare raw linear EXRs for energy differences and matched display views for
+presentation. The calibration guide records which raster approximations are
+active so differences in indirect light or area visibility can be interpreted.
+
+Optional #116 Vulkan OIDN, OptiX and DLSS Ray Reconstruction backends are
+implemented with their documented SDK/hardware requirements and raw fallback.
+Their individual acceptance receipts remain tied to their recorded applications
+and do not replace raw-transport convergence evidence.
 
 ## Mathematical references
 

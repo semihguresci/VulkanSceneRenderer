@@ -1,4 +1,5 @@
 #include <Container/utility/MaterialTailReferences.h>
+#include <Container/geometry/GltfInteractivity.h>
 
 #include "../renderer/scene/material_publication_allocations.h"
 
@@ -41,6 +42,19 @@ struct Fixture {
     authored.animations[0].channels.push_back(channel);evaluated=authored;
   }
 };
+
+void behavior(tinygltf::Model& model,const std::string& path) {
+  const V start(O{{"declaration",V(0)},{"flows",V(O{{"out",V(O{{"node",V(1)}})}})}});
+  const V write(O{{"declaration",V(1)},{"configuration",V(O{
+      {"pointer",V(O{{"value",V(A{V(path)})}})},{"type",V(O{{"value",V(A{V(0)})}})}})},
+      {"values",V(O{{"value",V(O{{"type",V(0)},{"value",V(A{V(.5)})}})}})}});
+  model.extensions[kGltfInteractivityExtension]=V(O{{"graphs",V(A{V(O{
+      {"types",V(A{V(O{{"signature",V(std::string("float"))}}),V(O{{"signature",V(std::string("ref"))}})})},
+      {"declarations",V(A{V(O{{"op",V(std::string("event/onStart"))}}),
+          V(O{{"op",V(std::string("pointer/set"))}})})},
+      {"nodes",V(A{start,write})},{"extras",V(O{{"opaqueMaterialIndex",V(0)}})}})})}});
+  model.extensionsUsed.push_back(kGltfInteractivityExtension);
+}
 
 TEST(MaterialReferences, MiddleSourceAndRuntimeRowsUseExplicitNonidentityPairWithoutCompaction) {
   Fixture f;const auto before=f.authored;const auto revision=f.graph.revision();
@@ -151,5 +165,64 @@ TEST(MaterialReferences, RegisteredUnsupportedAlternateImageSourceIsPreservedAsN
   Fixture f;f.authored.extensionsUsed={"EXT_texture_avif"};f.authored.images.resize(1);f.authored.textures.resize(1);
   f.authored.textures[0].extensions["EXT_texture_avif"]=V(O{{"source",V(0)}});f.sync();
   EXPECT_TRUE(AuditUnusedMaterialReferences(f.view()));
+}
+
+TEST(MaterialReferences, UnusedMaterialZeroRetiresWithBehaviorReferencingOnlyMaterialOneWithoutAllocatingAtPublication) {
+  Fixture f;
+  f.authored.meshes[0].primitives[0].material=1;
+  f.graph.setMaterialIndex(f.leaf,f.mapping[1]);
+  behavior(f.authored,"/materials/1/pbrMetallicRoughness/roughnessFactor");f.sync();
+  auto view=f.view();view.sourceMaterial=0;view.runtimeMaterial=f.mapping[0];
+  const auto original=f.authored;
+  const auto audit=AuditUnusedMaterialReferences(view);ASSERT_TRUE(audit);
+  bool before{},after{};size_t attempts{};
+  {
+    material_publication_test::AllocationGuard deny(true);
+    before=CanRetireUnusedMaterial(view,audit,MaterialReferencePhase::BeforeBindings);
+    after=CanRetireUnusedMaterial(view,audit,MaterialReferencePhase::AfterBindings);
+    attempts=deny.allocations();
+  }
+  EXPECT_TRUE(before);EXPECT_TRUE(after);EXPECT_EQ(attempts,0u);EXPECT_EQ(f.authored,original);
+  f.evaluated.extensions.at(kGltfInteractivityExtension).Get<O>().at("graphs").Get<A>()[0]
+      .Get<O>().at("nodes").Get<A>()[1].Get<O>().at("configuration").Get<O>().at("pointer")
+      .Get<O>().at("value").Get<A>()[0]=V(std::string("/materials/0/pbrMetallicRoughness/roughnessFactor"));
+  {
+    material_publication_test::AllocationGuard deny(true);
+    before=CanRetireUnusedMaterial(view,audit,MaterialReferencePhase::BeforeBindings);
+    attempts=deny.allocations();
+  }
+  EXPECT_FALSE(before);EXPECT_EQ(attempts,0u);
+}
+
+TEST(MaterialReferences, BehaviorConstantTypedAndDynamicReferencesKeepTheirSelectedMaterialsProtected) {
+  for(const std::string path:{"/materials/0/pbrMetallicRoughness/roughnessFactor",
+                             "/materials/{material}/pbrMetallicRoughness/roughnessFactor"}) {
+    Fixture f;f.authored.meshes[0].primitives[0].material=1;f.graph.setMaterialIndex(f.leaf,f.mapping[1]);
+    behavior(f.authored,path);f.sync();auto view=f.view();view.sourceMaterial=0;view.runtimeMaterial=f.mapping[0];
+    EXPECT_THROW((void)AuditUnusedMaterialReferences(view),std::invalid_argument);
+  }
+  Fixture f;f.authored.meshes[0].primitives[0].material=1;f.graph.setMaterialIndex(f.leaf,f.mapping[1]);
+  behavior(f.authored,"/materials/1/pbrMetallicRoughness/roughnessFactor");
+  auto& graph=f.authored.extensions.at(kGltfInteractivityExtension).Get<O>().at("graphs").Get<A>()[0].Get<O>();
+  graph["variables"]=V(A{V(O{{"type",V(1)},{"value",V(A{V(std::string("/materials/0"))})}})});
+  f.sync();auto view=f.view();view.sourceMaterial=0;view.runtimeMaterial=f.mapping[0];
+  EXPECT_THROW((void)AuditUnusedMaterialReferences(view),std::invalid_argument);
+}
+
+TEST(MaterialReferences, BehaviorProofsRemainBoundedAndUnknownOperationsDoNotAuthorizeRetirement) {
+  Fixture f;behavior(f.authored,"/materials/0/pbrMetallicRoughness/roughnessFactor");f.sync();
+  const auto audit=AuditUnusedMaterialReferences(f.view());
+  auto& graph=f.authored.extensions.at(kGltfInteractivityExtension).Get<O>().at("graphs").Get<A>()[0].Get<O>();
+  graph.at("declarations").Get<A>()[1].Get<O>().at("op")=V(std::string("pointer/futureResourceWrite"));
+  f.sync();EXPECT_THROW((void)AuditUnusedMaterialReferences(f.view()),std::invalid_argument);
+  EXPECT_FALSE(CanRetireUnusedMaterial(f.view(),audit,MaterialReferencePhase::BeforeBindings));
+  graph.at("declarations").Get<A>()[1].Get<O>().at("op")=V(std::string("pointer/set"));f.sync();
+  MaterialReferenceLimits limits;
+  limits.maxOwnedBytes=audit.stats().ownedBytes-1;
+  EXPECT_THROW((void)AuditUnusedMaterialReferences(f.view(),nullptr,limits),std::invalid_argument);
+  limits={};limits.maxMetadataBytes=64;
+  EXPECT_THROW((void)AuditUnusedMaterialReferences(f.view(),nullptr,limits),std::invalid_argument);
+  limits={};limits.maxTraversalSteps=64;
+  EXPECT_THROW((void)AuditUnusedMaterialReferences(f.view(),nullptr,limits),std::invalid_argument);
 }
 } // namespace

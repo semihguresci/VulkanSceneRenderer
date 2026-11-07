@@ -127,6 +127,7 @@ class MaterialSamplerGpu : public ::testing::Test {
     v12.bufferDeviceAddress = VK_TRUE;
     v12.runtimeDescriptorArray = VK_TRUE;
     v12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+    v12.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
     info.next = &v12;
     device = std::make_shared<VulkanDevice>(*instance, surfaceHandle, info);
     VkPhysicalDeviceProperties properties{};

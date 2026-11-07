@@ -98,7 +98,7 @@ const std::array kExtensions{
     ExtensionCapability{"EXT_mesh_gpu_instancing", Partial,
                         "Shared geometry with per-instance scene transforms, picking and ray placement; singular transforms require geometry baking"},
     ExtensionCapability{"KHR_animation_pointer", Partial,
-                        "Implemented numeric node, material, texture-transform, punctual-light and camera targets are evaluated; arbitrary Object Model properties are diagnosed as unsupported"},
+                        "Implemented numeric node, material, texture-transform, punctual-light and camera targets and STEP node flags are evaluated; arbitrary Object Model properties are diagnosed as unsupported"},
     ExtensionCapability{"KHR_interactivity", Partial,
                         "Bounded behavior graph execution with a documented operation set and numeric Object Model targets"},
     ExtensionCapability{kGltfOpacityMicromapExtension, Partial,

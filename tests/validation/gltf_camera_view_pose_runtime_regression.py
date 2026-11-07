@@ -217,7 +217,7 @@ def profiles():
         (step('seek', 'animated', endpoint=1, pose=1, history=(1, 0), time=1.5, clip=0), dict(animationTime=1.5)),
         (step('undo-current-time', 'animated', pose=2, history=(0, 1), time=1.5, clip=0), dict(sceneHistory='undo')),
         (step('viewport-redo', 'animated', selected=-1, pose=2, history=(0, 1), time=1.5, clip=0), select(-1)),
-        (step('animated-rejected', 'animated', selected=-1, pose=2, history=(0, 1), time=1.5, clip=0, failure_as='viewport-redo'), dict(**pose_action(2), expectCameraPoseFailure=True)),
+        (step('stale-animated-target-rejected', 'animated', selected=-1, pose=2, history=(0, 1), time=1.5, clip=0, failure_as='viewport-redo'), dict(**pose_action(2, expected=9007199254740991), expectCameraPoseFailure=True)),
         (step('redo-current-time', 'animated', endpoint=1, selected=-1, pose=3, history=(1, 0), time=1.5, clip=0), dict(sceneHistory='redo')),
         (step('main-current', 'animated', endpoint=1, pose=3, history=(1, 0), time=1.5, clip=0), select(1)),
         (step('clear-clip', 'animated', endpoint=1, pose=3, history=(1, 0), time=0., clip=-1), dict(animationClip=-1))]

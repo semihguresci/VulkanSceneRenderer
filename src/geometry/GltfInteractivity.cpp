@@ -222,7 +222,8 @@ Graph compileGraph(const tinygltf::Model& source, const Json& json) {
       if (node.op == GetPointer || node.op == SetPointer || node.op == InterpolatePointer) {
         node.pointer = string(singleConfig(sourceNode, "pointer"));
         node.type = types.at(index(singleConfig(sourceNode, "type"), types.size()));
-        if (!node.pointer.starts_with('/') || (node.op != GetPointer && !width(node.type)))
+        const bool writable = width(node.type) || (node.op == SetPointer && node.type == Type::Bool);
+        if (!node.pointer.starts_with('/') || (node.op != GetPointer && !writable))
           invalid("unsupported pointer or writable type");
       }
       for (const auto& [name, socket] : optionalSockets(get(sourceNode, "values"))) {
@@ -431,7 +432,9 @@ struct GltfInteractivity::State {
     const auto result = ResolveAnimationPointer(frame.model, pointer);
     if (!result) invalid("unsupported Object Model pointer '" + pointer + "'");
     const auto components = result->element ? 1 : result->components;
-    if (components != width(node.type)) invalid("Object Model pointer type does not match");
+    const bool typeMatches = result->kind == AnimationTargetKind::NodeFlag ? node.type == Type::Bool :
+        components == width(node.type);
+    if (!typeMatches) invalid("Object Model pointer type does not match");
     return *result;
   }
   void remember(Frame& frame, const AnimationTarget& target) {
@@ -440,7 +443,7 @@ struct GltfInteractivity::State {
     if (std::ranges::any_of(original.values, [&](const auto& entry) { return entry.target == whole; })) return;
     if (original.values.size() >= kMaxTable || whole.components > kMaxSteps)
       invalid("graph writable-property budget exceeded");
-    original.values.push_back({whole, ReadAnimationTarget(frame.model, whole)});
+    original.values.push_back(CaptureAnimationTarget(frame.model, whole));
   }
   void publish(Frame& frame, AnimationPose pose) {
     const size_t before = original.values.size();
@@ -482,7 +485,9 @@ Value GltfInteractivity::State::evaluate(Frame& frame, size_t id, std::string_vi
     auto value = initialValue(node.type);
     bool valid = false;
     try {
-      value = ReadAnimationTarget(frame.model, target(frame, node));
+      auto sample = ReadAnimationTarget(frame.model, target(frame, node));
+      if (node.type == Type::Bool) value = sample.front() != 0;
+      else value = std::move(sample);
       valid = true;
     } catch (const std::invalid_argument&) {
       // Undefined or unsupported reads report isValid=false by specification.
@@ -683,9 +688,13 @@ void GltfInteractivity::State::execute(Frame& frame, size_t id) {
         for (size_t i = 0; i < values.size(); ++i) variables[node.variables[i]] = std::move(values[i]);
         break;
       }
-      case SetPointer:
-        write(frame, target(frame, node), numeric(arg("value")));
+      case SetPointer: {
+        const auto value = arg("value");
+        auto destination = target(frame, node);
+        if (node.type == Type::Bool) write(frame, std::move(destination), {boolean(value) ? 1.0 : 0.0});
+        else write(frame, std::move(destination), numeric(value));
         break;
+      }
       case InterpolateVar:
       case InterpolatePointer: {
         Transition entry;
@@ -1022,6 +1031,11 @@ std::optional<AnimationTarget> readablePointer(const tinygltf::Model& model, con
 }
 }
 
+GltfInteractivityMappings GltfInteractivityIdentityMappings(const tinygltf::Model& model) {
+  return {{{{}, model.nodes.size()}, {{}, model.nodes.size()}, {{}, model.materials.size()},
+           {{}, model.lights.size()}, {{}, model.cameras.size()}, {{}, model.animations.size()}}};
+}
+
 tinygltf::Value RemapGltfInteractivity(const tinygltf::Model& source, const GltfInteractivityMappings& mappings,
     const tinygltf::Model* projected) try {
   const auto found = source.extensions.find(kGltfInteractivityExtension);
@@ -1153,6 +1167,30 @@ std::optional<std::vector<size_t>> GltfInteractivityAnimationClips(const tinyglt
   std::ranges::sort(result);
   result.erase(std::unique(result.begin(), result.end()), result.end());
   return result;
+}
+
+std::vector<GltfInteractivityLightValueUsage> GltfInteractivityLightValueUsages(const tinygltf::Model& source) {
+  const auto found = source.extensions.find(kGltfInteractivityExtension);
+  if (found == source.extensions.end()) return {};
+  if (source.lights.size() > 1'000'000) invalid("light reference table exceeds its finite capacity");
+  std::vector<GltfInteractivityLightValueUsage> usages(source.lights.size());
+  for (const auto& graph : graphTable(found->second)) {
+    for (const auto& node : compileGraph(source,graph).nodes) {
+      const auto path = objectPath(node.pointer);
+      if (!path || path->domain != Domain::Light) continue;
+      const auto mark = [&](GltfInteractivityLightValueUsage& usage) {
+        usage.color |= path->suffix == "/color" || path->suffix.starts_with("/color/");
+        usage.intensity |= path->suffix == "/intensity";
+        usage.range |= path->suffix == "/range";
+      };
+      if (placeholder(path->id)) {
+        for (auto& usage : usages) mark(usage);
+      } else if (const auto index = referenceIndex(path->id,""); index && *index < usages.size()) {
+        mark(usages[*index]);
+      }
+    }
+  }
+  return usages;
 }
 
 } // namespace container::geometry::gltf

@@ -4,6 +4,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <functional>
+#include <limits>
 
 namespace {
 void poseMatrixNear(const glm::mat4& actual,const glm::mat4& expected,float epsilon=2e-5f) {
@@ -24,6 +25,22 @@ int poseFloats(tinygltf::Model& source,std::initializer_list<float> values,int t
   if(type==TINYGLTF_TYPE_SCALAR) {const auto [low,high]=std::minmax_element(values.begin(),values.end());accessor.minValues={*low};accessor.maxValues={*high};}
   const auto result=int(source.accessors.size());source.buffers.push_back(buffer);source.bufferViews.push_back(view);source.accessors.push_back(accessor);return result;
 }
+void poseTrack(tinygltf::Model& source,int node,const char* property,int type,
+    std::initializer_list<float> values,bool pointer=false) {
+  if(source.animations.empty()) source.animations.emplace_back();
+  tinygltf::AnimationSampler sampler;sampler.input=poseFloats(source,{0,2},TINYGLTF_TYPE_SCALAR,2);
+  sampler.output=poseFloats(source,values,type,2);sampler.interpolation="LINEAR";
+  auto& clip=source.animations[0];tinygltf::AnimationChannel channel;channel.sampler=int(clip.samplers.size());
+  channel.target_node=node;channel.target_path=property;
+  if(pointer) {
+    channel.target_node=-1;channel.target_path="pointer";
+    channel.target_extensions["KHR_animation_pointer"]=tinygltf::Value(tinygltf::Value::Object{
+        {"pointer",tinygltf::Value(std::string("/nodes/")+std::to_string(node)+"/"+property)}});
+    if(std::ranges::find(source.extensionsUsed,"KHR_animation_pointer")==source.extensionsUsed.end())
+      source.extensionsUsed.push_back("KHR_animation_pointer");
+  }
+  clip.samplers.push_back(sampler);clip.channels.push_back(channel);
+}
 tinygltf::Model poseLightAsset() {
   auto source=cameraAsset();source.nodes[1].mesh=0;source.nodes[1].light=0;source.nodes[1].children={5};
   source.nodes.emplace_back();source.nodes[5].translation={0,1,0};source.nodes[5].mesh=0;source.nodes[5].light=0;
@@ -34,6 +51,10 @@ tinygltf::Model poseLightAsset() {
 class CameraViewPoseGenerationGpu:public CameraProjectionGenerationGpu {
  protected:
   const char* gpuEnvironment() const noexcept override {return "CONTAINER_RUN_GPU_CAMERA_POSES";}
+  void publishAnimation(const AnimationDirtySet& dirty) {
+    ApplyAnimatedNodeTransforms(manager->animationSource(),dirty,graph);
+    manager->publishAnimationChanges(dirty,graph);
+  }
   CameraViewPoseTarget poseTarget(int source=1) const {
     const auto value=manager->cameraViewPoseTarget(graph,node(source));if(!value) throw std::runtime_error("Missing pose fixture target");return *value;
   }
@@ -107,13 +128,13 @@ TEST_F(CameraViewPoseGenerationGpu, OriginalHistoryUsesCurrentAnimatedParentAndL
   source.animations.emplace_back();tinygltf::AnimationSampler sampler;sampler.input=time;sampler.output=positions;
   source.animations[0].samplers.push_back(sampler);tinygltf::AnimationChannel raw;raw.sampler=0;raw.target_node=4;raw.target_path="translation";
   source.animations[0].channels.push_back(raw);load(std::move(source));
-  auto dirty=player->selectClip(manager->animationSource(),0);dirty.merge(player->seek(manager->animationSource(),.5));manager->publishAnimationChanges(dirty,graph);
+  auto dirty=player->selectClip(manager->animationSource(),0);dirty.merge(player->seek(manager->animationSource(),.5));publishAnimation(dirty);
   player->setSpeed(.625);player->setLoop(false);player->play();const auto originalLocal=graph.getNode(node(1))->localTransform;
   const auto view=desired();auto initial=manager->prepareCameraViewPoseEdit(poseTarget(),view,graph,player.get(),2.f);
   const auto command=initial.command();ASSERT_TRUE(publishPose(initial,&view));
   GltfCameraProjectionPatch patch;patch.values={{Property::PerspectiveNear,.35}};
   auto lensEdit=manager->prepareCameraProjectionEdit(target(),patch,graph,player.get(),2.f);ASSERT_TRUE(publish(lensEdit));
-  dirty=player->seek(manager->animationSource(),1.5);manager->publishAnimationChanges(dirty,graph);
+  dirty=player->seek(manager->animationSource(),1.5);publishAnimation(dirty);
   const auto parentWorld=graph.getNode(node(4))->worldTransform;const auto sibling=*graph.getNode(node(2));const auto timeNow=player->time();
   auto undo=manager->prepareCameraViewPoseReplay(command,GltfCameraEditSide::Before,graph,player.get(),2.f);
   const auto expected=EvaluateAnimatedCamera(manager->animationSource().cameras[0],parentWorld*originalLocal,2.f);ASSERT_TRUE(expected);
@@ -121,9 +142,121 @@ TEST_F(CameraViewPoseGenerationGpu, OriginalHistoryUsesCurrentAnimatedParentAndL
   EXPECT_DOUBLE_EQ(player->time(),timeNow);EXPECT_DOUBLE_EQ(player->speed(),.625);EXPECT_TRUE(player->playing());EXPECT_FALSE(player->loop());
   EXPECT_DOUBLE_EQ(manager->authoredCamera(0).perspective.znear,.35);EXPECT_EQ(*graph.getNode(node(2)),sibling);
   poseMatrixNear(graph.getNode(node(1))->localTransform,originalLocal,0.f);
-  dirty=player->seek(manager->animationSource(),.75);manager->publishAnimationChanges(dirty,graph);
+  dirty=player->seek(manager->animationSource(),.75);publishAnimation(dirty);
   auto redo=manager->prepareCameraViewPoseReplay(command,GltfCameraEditSide::After,graph,player.get(),2.f);ASSERT_TRUE(publishPose(redo));
   EXPECT_DOUBLE_EQ(player->time(),.75);EXPECT_DOUBLE_EQ(manager->authoredCamera(0).perspective.znear,.35);EXPECT_TRUE(command.applied());
+}
+
+TEST_F(CameraViewPoseGenerationGpu, FullyAnimatedSampleEqualityStillAuthorsDefaultsAndReplaysAtCurrentClock) {
+  auto source=cameraAsset();source.nodes[1].name="Animated pose destination";
+  poseTrack(source,1,"translation",TINYGLTF_TYPE_VEC3,{0,0,6,0,0,8});
+  poseTrack(source,1,"rotation",TINYGLTF_TYPE_VEC4,{0,0,0,1,0,0,std::sin(.2f),std::cos(.2f)});
+  poseTrack(source,1,"scale",TINYGLTF_TYPE_VEC3,{1,1,1,2,2,2});
+  tinygltf::Animation other;other.name="Material-only clip";tinygltf::AnimationSampler materialSampler;
+  materialSampler.input=poseFloats(source,{0,2},TINYGLTF_TYPE_SCALAR,2);
+  materialSampler.output=poseFloats(source,{.2f,.8f},TINYGLTF_TYPE_SCALAR,2);materialSampler.interpolation="LINEAR";
+  tinygltf::AnimationChannel materialChannel;materialChannel.sampler=0;materialChannel.target_path="pointer";
+  materialChannel.target_extensions["KHR_animation_pointer"]=tinygltf::Value(tinygltf::Value::Object{
+      {"pointer",tinygltf::Value(std::string("/materials/0/pbrMetallicRoughness/roughnessFactor"))}});
+  other.samplers.push_back(materialSampler);other.channels.push_back(materialChannel);source.animations.push_back(other);
+  source.extensionsUsed.push_back("KHR_animation_pointer");const auto originalCurves=ParseAnimations(source).clips;load(std::move(source));
+  auto dirty=player->selectClip(manager->animationSource(),0);
+  dirty.merge(player->seek(manager->animationSource(),.5));publishAnimation(dirty);
+  player->setSpeed(.625);player->setLoop(false);player->play();
+  const auto original=manager->authoredCameraSourceView().nodes[1];
+  const auto originalRest=player->library().restNodes[1];const auto sampled=manager->animationSource().nodes[1];
+  const auto sampledLocal=graph.getNode(node(1))->localTransform;
+  const auto current=EvaluateAnimatedCamera(manager->animationSource().cameras[0],graph.getNode(node(1))->worldTransform,2.f);ASSERT_TRUE(current);
+  const auto view=current->view;const auto revision=manager->cameraRevision();const auto allocationsBefore=allocations();
+  auto edit=manager->prepareCameraViewPoseEdit(poseTarget(),view,graph,player.get(),2.f);
+  const auto command=edit.command();ASSERT_TRUE(edit.changed());
+  poseMatrixNear(edit.candidateGraph().getNode(node(1))->localTransform,sampledLocal,0.f);
+  poseMatrixNear(edit.candidateView().view,current->view,0.f);ASSERT_TRUE(publishPose(edit,&view));
+  EXPECT_TRUE(command.applied());EXPECT_EQ(manager->cameraRevision(),revision+1);EXPECT_EQ(allocations(),allocationsBefore);
+  const auto edited=manager->authoredCameraSourceView().nodes[1];
+  EXPECT_TRUE(edited.matrix.empty());EXPECT_FALSE(GltfCameraNodePoseEqual(edited,original));
+  EXPECT_TRUE(GltfCameraNodePoseEqual(edited,player->library().restNodes[1]));
+  EXPECT_TRUE(GltfCameraNodePoseEqual(sampled,manager->animationSource().nodes[1]));
+  poseMatrixNear(graph.getNode(node(1))->localTransform,sampledLocal,0.f);
+  dirty=player->seek(manager->animationSource(),1.5);publishAnimation(dirty);
+  const auto later=manager->animationSource().nodes[1];const auto laterLocal=graph.getNode(node(1))->localTransform;
+  auto undo=manager->prepareCameraViewPoseReplay(command,GltfCameraEditSide::Before,graph,player.get(),2.f);
+  ASSERT_TRUE(publishPose(undo));EXPECT_TRUE(GltfCameraNodePoseEqual(manager->authoredCameraSourceView().nodes[1],original));
+  EXPECT_TRUE(GltfCameraNodePoseEqual(player->library().restNodes[1],originalRest));
+  EXPECT_TRUE(GltfCameraNodePoseEqual(manager->animationSource().nodes[1],later));
+  poseMatrixNear(graph.getNode(node(1))->localTransform,laterLocal,0.f);EXPECT_DOUBLE_EQ(player->time(),1.5);
+  dirty=player->seek(manager->animationSource(),.75);publishAnimation(dirty);
+  const auto redoSample=manager->animationSource().nodes[1];
+  auto redo=manager->prepareCameraViewPoseReplay(command,GltfCameraEditSide::After,graph,player.get(),2.f);
+  ASSERT_TRUE(publishPose(redo));EXPECT_TRUE(GltfCameraNodePoseEqual(manager->authoredCameraSourceView().nodes[1],edited));
+  EXPECT_TRUE(GltfCameraNodePoseEqual(manager->animationSource().nodes[1],redoSample));
+  EXPECT_DOUBLE_EQ(player->time(),.75);EXPECT_DOUBLE_EQ(player->speed(),.625);EXPECT_TRUE(player->playing());EXPECT_FALSE(player->loop());
+  const auto checkSaved=[&](const char* phase,const char* extension,const tinygltf::Node& fileDefault) {
+    const auto path=temp/(std::string("animated-pose-")+phase+extension);manager->saveScene(graph,path);
+    auto loaded=LoadSourceModel(path.string());const auto found=std::ranges::find_if(loaded.nodes,[](const auto& row){return row.name=="Animated pose destination";});
+    ASSERT_NE(found,loaded.nodes.end());const auto selected=size_t(found-loaded.nodes.begin());
+    poseMatrixNear(EvaluateAnimatedNodeLocalTransform(loaded.nodes[selected]),EvaluateAnimatedNodeLocalTransform(fileDefault),0.f);
+    EXPECT_TRUE(loaded.nodes[selected].matrix.empty());AnimationPlayer roundtrip(loaded);const auto& clips=roundtrip.library().clips;
+    ASSERT_TRUE(roundtrip.library().diagnostics.empty());ASSERT_EQ(clips.size(),2u);ASSERT_EQ(clips[0].tracks.size(),4u);ASSERT_EQ(clips[1].tracks.size(),4u);
+    for(size_t i=0;i<3;++i) {
+      auto expected=originalCurves[0].tracks[i];expected.target.index=selected;EXPECT_EQ(clips[0].tracks[i],expected);
+    }
+    auto material=originalCurves[1].tracks[0];material.target.index=clips[1].tracks[0].target.index;EXPECT_EQ(clips[1].tracks[0],material);
+    const auto& materialRest=clips[0].tracks[3];EXPECT_EQ(materialRest.target,material.target);
+    EXPECT_EQ(materialRest.interpolation,AnimationInterpolation::Step);EXPECT_EQ(materialRest.times,(std::vector<double>{0}));EXPECT_EQ(materialRest.values,(std::vector<double>{1}));
+    for(size_t i=1;i<4;++i) {
+      const auto& restore=clips[1].tracks[i];EXPECT_EQ(restore.target.index,selected);EXPECT_EQ(restore.interpolation,AnimationInterpolation::Step);
+      auto expectedTarget=originalCurves[0].tracks[i-1].target;expectedTarget.index=selected;EXPECT_EQ(restore.target,expectedTarget);
+      EXPECT_EQ(restore.times,(std::vector<double>{0}));
+      const auto& value=restore.target.kind==AnimationTargetKind::NodeTranslation?edited.translation:
+          restore.target.kind==AnimationTargetKind::NodeRotation?edited.rotation:edited.scale;
+      std::vector<double> binary32;for(const auto component:value) binary32.push_back(double(float(component)));EXPECT_EQ(restore.values,binary32);
+    }
+    (void)roundtrip.selectClip(loaded,0);(void)roundtrip.seek(loaded,.75);
+    ASSERT_EQ(loaded.nodes[selected].translation.size(),3u);EXPECT_DOUBLE_EQ(loaded.nodes[selected].translation[2],6.75);
+    ASSERT_EQ(loaded.nodes[selected].scale.size(),3u);EXPECT_DOUBLE_EQ(loaded.nodes[selected].scale[0],1.375);
+    (void)roundtrip.selectClip(loaded,1);poseMatrixNear(EvaluateAnimatedNodeLocalTransform(loaded.nodes[selected]),EvaluateAnimatedNodeLocalTransform(edited),0.f);
+    (void)roundtrip.clearClip(loaded);poseMatrixNear(EvaluateAnimatedNodeLocalTransform(loaded.nodes[selected]),EvaluateAnimatedNodeLocalTransform(fileDefault),0.f);
+  };
+  for(const auto* extension:{".gltf",".glb"}) checkSaved("sampled",extension,redoSample);
+  dirty=player->clearClip(manager->animationSource());publishAnimation(dirty);
+  EXPECT_TRUE(GltfCameraNodePoseEqual(manager->animationSource().nodes[1],edited));
+  poseMatrixNear(graph.getNode(node(1))->localTransform,EvaluateAnimatedNodeLocalTransform(edited),0.f);
+  for(const auto* extension:{".gltf",".glb"}) checkSaved("rest",extension,edited);
+}
+
+TEST_F(CameraViewPoseGenerationGpu, ComponentAnimationFeedsGraphChildLightsAndBoundsFromSampledCandidate) {
+  auto source=poseLightAsset();poseTrack(source,1,"translation/0",TINYGLTF_TYPE_SCALAR,{0,2},true);load(std::move(source));
+  auto dirty=player->selectClip(manager->animationSource(),0);dirty.merge(player->seek(manager->animationSource(),1.));
+  publishAnimation(dirty);const auto parent=graph.getNode(node(4))->worldTransform;
+  const auto view=desired();auto edit=manager->prepareCameraViewPoseEdit(poseTarget(),view,graph,player.get(),2.f);
+  ASSERT_TRUE(edit.changed());const auto lights=edit.candidateLights();const auto bounds=edit.candidateBounds();
+  const auto* selected=edit.candidateGraph().getNode(node(1));ASSERT_NE(selected,nullptr);
+  EXPECT_FLOAT_EQ(selected->localTransform[3].x,1.f);
+  for(size_t i=0;i<lights.pointBindings.size();++i) {
+    const auto owner=lights.pointBindings[i].sourceNode;
+    if(owner==1 || owner==5) {
+      const auto expected=edit.candidateGraph().getNode(node(owner))->worldTransform[3];
+      for(int axis=0;axis<3;++axis) EXPECT_NEAR(lights.points[i].positionRadius[axis],expected[axis],2e-5f);
+    }
+  }
+  glm::vec3 expectedMin(std::numeric_limits<float>::infinity()),expectedMax(-std::numeric_limits<float>::infinity());
+  for(const auto renderable:edit.candidateGraph().renderableNodes()) for(const auto position:
+      {glm::vec4(0,0,0,1),glm::vec4(1,0,0,1),glm::vec4(0,1,0,1)}) {
+    const auto point=glm::vec3(edit.candidateGraph().getNode(renderable)->worldTransform*position);
+    expectedMin=glm::min(expectedMin,point);expectedMax=glm::max(expectedMax,point);
+  }
+  ASSERT_TRUE(bounds.valid);for(int axis=0;axis<3;++axis) {EXPECT_NEAR(bounds.min[axis],expectedMin[axis],2e-5f);EXPECT_NEAR(bounds.max[axis],expectedMax[axis],2e-5f);}
+  const auto candidateLocal=selected->localTransform;ASSERT_TRUE(publishPose(edit,&view));
+  const auto& authored=manager->authoredCameraSourceView().nodes[1];
+  ASSERT_EQ(authored.translation.size(),3u);EXPECT_GT(std::abs(authored.translation[0]-1.),.1);
+  auto expected=authored;expected.translation[0]=1.;
+  EXPECT_TRUE(GltfCameraNodePoseEqual(manager->animationSource().nodes[1],expected));
+  poseMatrixNear(candidateLocal,EvaluateAnimatedNodeLocalTransform(expected),0.f);
+  poseMatrixNear(graph.getNode(node(1))->worldTransform,parent*candidateLocal,0.f);
+  poseBoundsEqual(manager->modelBounds(),bounds);EXPECT_DOUBLE_EQ(player->time(),1.);
+  ASSERT_EQ(manager->authoredPointLights().size(),lights.points.size());
+  EXPECT_EQ(std::memcmp(manager->authoredPointLights().data(),lights.points.data(),lights.points.size()*sizeof(PointLightData)),0);
 }
 
 TEST_F(CameraViewPoseGenerationGpu, MissingViewportWitnessRejectsAndNoopDoesNotAdvanceSourceGraphOrRestRevisions) {

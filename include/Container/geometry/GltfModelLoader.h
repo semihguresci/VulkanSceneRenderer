@@ -55,6 +55,8 @@ struct LoadOptions {
   std::vector<std::string> unavailableRuntimeExtensions;
   // Remote import keeps embedded buffers and data URIs, and rejects file URIs.
   bool requireSelfContained{false};
+  // The detached source is an incoming scene composition operand.
+  bool mergeInput{false};
 };
 
 // Source-only consumers (for example material import) share the same version

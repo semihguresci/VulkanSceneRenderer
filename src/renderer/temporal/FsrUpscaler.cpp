@@ -2,12 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <limits>
-#include <new>
 #include <numbers>
 #include <utility>
-#include <vector>
 
 #if CONTAINER_HAS_FSR_UPSCALER
 #ifndef NOMINMAX
@@ -17,8 +16,9 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
-#include <ffx_api/ffx_upscale.h>
-#include <ffx_api/vk/ffx_api_vk.h>
+#include <upscalers/include/ffx_upscale.h>
+#include <api/include/vk/ffx_api_vk.h>
+#include "FsrVulkanImageAdapter.h"
 #endif
 
 namespace container::renderer {
@@ -46,7 +46,7 @@ bool isImage(const FsrImage& image, VkFormat format, VkExtent2D extent) {
   return image.image && image.format == format && sameExtent(image.extent, extent);
 }
 
-bool validFrame(const FsrUpscalerFrame& frame, const FsrUpscalerSettings& settings) {
+bool validFrame(const FsrUpscalerFrame& frame, const FsrUpscalerSettings& settings, VkFormat outputFormat) {
   const auto extent = settings.renderExtent;
   const std::array handles{frame.color.image, frame.depth.image, frame.motion.image,
       frame.reactive.image, frame.transparency.image, frame.output.image};
@@ -60,7 +60,7 @@ bool validFrame(const FsrUpscalerFrame& frame, const FsrUpscalerSettings& settin
        isImage(frame.motion, VK_FORMAT_R32G32_SFLOAT, extent)) &&
       (!frame.reactive.image || isImage(frame.reactive, VK_FORMAT_R8_UNORM, extent)) &&
       (!frame.transparency.image || isImage(frame.transparency, VK_FORMAT_R8_UNORM, extent)) &&
-      isImage(frame.output, VK_FORMAT_R16G16B16A16_SFLOAT, settings.displayExtent) &&
+      isImage(frame.output, outputFormat, settings.displayExtent) &&
       std::isfinite(frame.jitterPixels[0]) && std::abs(frame.jitterPixels[0]) <= 0.5f &&
       std::isfinite(frame.jitterPixels[1]) && std::abs(frame.jitterPixels[1]) <= 0.5f &&
       std::isfinite(frame.cameraNear) && frame.cameraNear > 0.0f &&
@@ -99,48 +99,22 @@ FfxApiResource ffxImage(const FsrImage& image, bool output = false) {
           ? FFX_API_RESOURCE_STATE_UNORDERED_ACCESS : FFX_API_RESOURCE_STATE_COMPUTE_READ);
 }
 
-// The v1.1.4 Vulkan luma-instability pass has two SPIR-V permutations. In
-// both, its set 0 binding 7 (rw_luma_history) is the sole variable using the
-// affected image type. The SDK host creates that image as RGBA16F. Correct the
-// GLSL format declaration in memory, leaving AMD's signed DLL intact.
-// https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/issues/161
-struct LumaHistoryShader {
-  size_t words;
-  uint64_t wordFingerprint;
-  size_t formatOperand;
-};
-constexpr LumaHistoryShader lumaHistoryShaders[] = {
-    {1838, 0x58fad9aa9e2ee807ull, 667},
-    {1846, 0x5f2a2e3fe47034c8ull, 675},
-};
-thread_local bool* lumaHistoryCorrection{};
+// Reject a same-name module from another runtime directory before AMD's
+// loader can reuse it. Keep owned module leases until the context is gone.
+bool moduleAtPath(HMODULE module, const std::filesystem::path& expected) {
+  std::array<wchar_t, 32768> location{};
+  const auto count = GetModuleFileNameW(module, location.data(), static_cast<DWORD>(location.size()));
+  if (!count || count >= location.size()) return false;
+  std::error_code error;
+  return std::filesystem::equivalent(expected, std::filesystem::path(location.data()), error) && !error;
+}
 
-VKAPI_ATTR VkResult VKAPI_CALL ffxCreateShaderModule(VkDevice device, const VkShaderModuleCreateInfo* info,
-    const VkAllocationCallbacks* allocator, VkShaderModule* module) {
-  constexpr uint32_t opTypeImage = (9u << 16u) | 25u;
-  constexpr uint32_t rgba8 = 4u;
-  constexpr uint32_t rgba16f = 2u;
-  for (const auto& variant : lumaHistoryShaders) {
-    const auto offset = variant.formatOperand;
-    if (info->codeSize != variant.words * sizeof(uint32_t) ||
-        info->pCode[offset - 8] != opTypeImage || info->pCode[offset] != rgba8) continue;
-    uint64_t fingerprint = 0xcbf29ce484222325ull;
-    for (size_t word = 0; word < variant.words; ++word)
-      fingerprint = (fingerprint ^ info->pCode[word]) * 0x100000001b3ull;
-    if (fingerprint != variant.wordFingerprint) continue;
-    try {
-      std::vector<uint32_t> words(info->pCode, info->pCode + variant.words);
-      words[offset] = rgba16f;
-      auto corrected = *info;
-      corrected.pCode = words.data();
-      const auto result = vkCreateShaderModule(device, &corrected, allocator, module);
-      if (result == VK_SUCCESS && lumaHistoryCorrection) *lumaHistoryCorrection = true;
-      return result;
-    } catch (const std::bad_alloc&) {
-      return VK_ERROR_OUT_OF_HOST_MEMORY;
-    }
-  }
-  return vkCreateShaderModule(device, info, allocator, module);
+HMODULE loadRuntimeModule(const std::filesystem::path& path) {
+  if (auto existing = GetModuleHandleW(path.filename().c_str()); existing && !moduleAtPath(existing, path)) return nullptr;
+  auto module = LoadLibraryExW(path.c_str(), nullptr,
+      LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+  if (module && !moduleAtPath(module, path)) { FreeLibrary(module); return nullptr; }
+  return module;
 }
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL ffxDeviceProcAddr(VkDevice device, const char* name) {
@@ -149,40 +123,87 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL ffxDeviceProcAddr(VkDevice device, cons
   // the optional alias was not enabled on the logical device.
   if (std::strcmp(name, "vkGetBufferMemoryRequirements2KHR") == 0)
     return vkGetDeviceProcAddr(device, "vkGetBufferMemoryRequirements2");
-  if (std::strcmp(name, "vkCreateShaderModule") == 0)
-    return reinterpret_cast<PFN_vkVoidFunction>(ffxCreateShaderModule);
   return vkGetDeviceProcAddr(device, name);
 }
 
 } // namespace
 
 struct FsrUpscaler::Backend {
-  HMODULE module{};
+  HMODULE effectModule{};
+  HMODULE loaderModule{};
   ffxContext context{};
   PfnFfxCreateContext create{};
   PfnFfxDestroyContext destroy{};
   PfnFfxQuery query{};
   PfnFfxDispatch dispatch{};
   ffxCreateBackendVKDesc deviceDesc{};
+  ffxCreateContextDescUpscaleVersion apiVersion{};
+  ffxOverrideVersion providerOverride{};
   ffxCreateContextDescUpscale contextDesc{};
+  std::optional<detail::FsrVulkanImageAdapter> imageAdapter;
+  std::string providerVersion;
   int32_t phaseCount{};
 
   ~Backend() {
-    if (context && destroy) destroy(&context, nullptr);
-    if (module) FreeLibrary(module);
+    if (destroyContext() != FFX_API_RETURN_OK || (imageAdapter && !imageAdapter->empty())) {
+      // Keep module code resident if SDK destruction did not release its
+      // objects. Do not report or simulate successful cleanup of a live context.
+      std::fprintf(stderr, "FSR SDK did not completely release its Vulkan context; retaining runtime module leases\n");
+      return;
+    }
+    if (loaderModule) FreeLibrary(loaderModule);
+    if (effectModule) FreeLibrary(effectModule);
+  }
+
+  ffxReturnCode_t createContext() {
+    if (imageAdapter) {
+      detail::FsrVulkanImageAdapter::Scope scope(*imageAdapter);
+      return create(&context, &contextDesc.header, nullptr);
+    }
+    return create(&context, &contextDesc.header, nullptr);
+  }
+
+  ffxReturnCode_t queryContext(ffxQueryDescHeader* desc, bool versions = false) {
+    if (imageAdapter) {
+      detail::FsrVulkanImageAdapter::Scope scope(*imageAdapter);
+      return query(versions ? nullptr : &context, desc);
+    }
+    return query(versions ? nullptr : &context, desc);
+  }
+
+  ffxReturnCode_t dispatchContext(ffxDispatchDescHeader* desc) {
+    if (imageAdapter) {
+      detail::FsrVulkanImageAdapter::Scope scope(*imageAdapter);
+      return dispatch(&context, desc);
+    }
+    return dispatch(&context, desc);
+  }
+
+  ffxReturnCode_t destroyContext() {
+    if (!context || !destroy) return FFX_API_RETURN_OK;
+    ffxReturnCode_t result;
+    if (imageAdapter) {
+      detail::FsrVulkanImageAdapter::Scope scope(*imageAdapter);
+      result = destroy(&context, nullptr);
+    } else {
+      result = destroy(&context, nullptr);
+    }
+    if (result == FFX_API_RETURN_OK) context = nullptr;
+    return result;
   }
 
   bool open(const std::filesystem::path& directory) {
     std::error_code error;
-    const auto path = std::filesystem::absolute(directory / L"amd_fidelityfx_vk.dll", error);
+    const auto root = std::filesystem::absolute(directory, error);
     if (error) return false;
-    module = LoadLibraryExW(path.c_str(), nullptr,
-        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-    if (!module) return false;
-    create = reinterpret_cast<PfnFfxCreateContext>(GetProcAddress(module, "ffxCreateContext"));
-    destroy = reinterpret_cast<PfnFfxDestroyContext>(GetProcAddress(module, "ffxDestroyContext"));
-    query = reinterpret_cast<PfnFfxQuery>(GetProcAddress(module, "ffxQuery"));
-    dispatch = reinterpret_cast<PfnFfxDispatch>(GetProcAddress(module, "ffxDispatch"));
+    effectModule = loadRuntimeModule(root / L"amd_fidelityfx_upscaler_vk.dll");
+    if (!effectModule) return false;
+    loaderModule = loadRuntimeModule(root / L"amd_fidelityfx_loader_vk.dll");
+    if (!loaderModule) return false;
+    create = reinterpret_cast<PfnFfxCreateContext>(GetProcAddress(loaderModule, "ffxCreateContext"));
+    destroy = reinterpret_cast<PfnFfxDestroyContext>(GetProcAddress(loaderModule, "ffxDestroyContext"));
+    query = reinterpret_cast<PfnFfxQuery>(GetProcAddress(loaderModule, "ffxQuery"));
+    dispatch = reinterpret_cast<PfnFfxDispatch>(GetProcAddress(loaderModule, "ffxDispatch"));
     return create && destroy && query && dispatch;
   }
 };
@@ -193,7 +214,7 @@ struct FsrUpscaler::Backend {};
 FsrUpscaler::FsrUpscaler(VkPhysicalDevice physicalDevice, VkDevice device,
                          std::filesystem::path runtimeDirectory)
     : physicalDevice_(physicalDevice), device_(device), runtimeDirectory_(std::move(runtimeDirectory)),
-      status_(builtWithSdk() ? "FSR 3.1.4 is idle" : "Built without the Vulkan FSR SDK") {}
+      status_(builtWithSdk() ? "FSR SDK 2.4.0 is idle" : "Built without the Vulkan FSR SDK") {}
 
 FsrUpscaler::~FsrUpscaler() = default;
 
@@ -207,6 +228,13 @@ bool FsrUpscaler::builtWithSdk() noexcept {
 
 bool FsrUpscaler::available() const noexcept {
   return backend_ && !discarded_;
+}
+
+VkFormat FsrUpscaler::outputFormat() const noexcept {
+#if CONTAINER_HAS_FSR_UPSCALER
+  if (backend_ && backend_->imageAdapter) return VK_FORMAT_R32G32B32A32_SFLOAT;
+#endif
+  return VK_FORMAT_R16G16B16A16_SFLOAT;
 }
 
 bool FsrUpscaler::prepare(const FsrUpscalerSettings& settings) {
@@ -232,11 +260,12 @@ bool FsrUpscaler::prepare(const FsrUpscalerSettings& settings) {
   }
   auto next = std::make_unique<Backend>();
   if (!next->open(runtimeDirectory_)) {
-    status_ = "The pinned amd_fidelityfx_vk.dll is unavailable beside the executable";
+    status_ = "The pinned FSR SDK 2.4.0 loader/upscaler DLLs are unavailable beside the executable";
     return false;
   }
-  next->deviceDesc = {{FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK},
-      device_, physicalDevice_, ffxDeviceProcAddr};
+  next->apiVersion = {{FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION}, FFX_UPSCALER_VERSION};
+  next->deviceDesc = {{FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK, &next->apiVersion.header},
+      {device_, physicalDevice_, ffxDeviceProcAddr}};
   auto& desc = next->contextDesc;
   desc.header = {FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE, &next->deviceDesc.header};
   desc.flags = FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_DEPTH_INVERTED |
@@ -244,35 +273,99 @@ bool FsrUpscaler::prepare(const FsrUpscalerSettings& settings) {
   if (settings.infiniteFar) desc.flags |= FFX_UPSCALE_ENABLE_DEPTH_INFINITE;
   desc.maxRenderSize = {settings.renderExtent.width, settings.renderExtent.height};
   desc.maxUpscaleSize = {settings.displayExtent.width, settings.displayExtent.height};
-  bool correctedLumaHistory = false;
-  auto* previousCorrection = std::exchange(lumaHistoryCorrection, &correctedLumaHistory);
-  const auto created = next->create(&next->context, &desc.header, nullptr);
-  lumaHistoryCorrection = previousCorrection;
+  const auto created = next->createContext();
   if (created != FFX_API_RETURN_OK) {
     status_ = "Could not create the Vulkan FSR context (" + std::to_string(created) + ")";
     return false;
   }
   ffxQueryGetProviderVersion version{{FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION}};
-  if (next->query(&next->context, &version.header) != FFX_API_RETURN_OK || !version.versionName ||
-      std::string_view(version.versionName) != "3.1.4") {
-    status_ = "Loaded FidelityFX Vulkan runtime did not supply FSR 3.1.4";
+  if (next->queryContext(&version.header) != FFX_API_RETURN_OK || !version.versionName || !version.versionId) {
+    status_ = "Could not query the selected FSR provider";
     return false;
   }
-  if (!correctedLumaHistory) {
-    status_ = "The FSR runtime did not provide a pinned Vulkan luma-history shader";
+  const auto length = strnlen_s(version.versionName, 128);
+  if (!length || length == 128) {
+    status_ = "The selected FSR provider returned an invalid version name";
     return false;
+  }
+  // Copy the actual provider name. SDK 2.4.0 selects analytical 3.1.6 on
+  // compatible non-AMD hardware, and a supported newer provider on AMD GPUs.
+  next->providerVersion.assign(version.versionName, length);
+  if (next->providerVersion == "3.1.6") {
+    // Pinned public ffx_provider_fsr3upscale.cpp provider ID. Do not apply the
+    // analytical source contract to an ML or driver-supplied provider.
+    constexpr uint64_t analyticalId = (uint64_t{0xF5A5CA1E} << 32) | (3u << 22) | (1u << 12) | 6u;
+    if (version.versionId != analyticalId) {
+      status_ = "The selected FSR 3.1.6 provider is outside the pinned analytical image contract";
+      return false;
+    }
+    std::array<uint64_t, 16> ids{};
+    std::array<const char*, 16> names{};
+    uint64_t count = ids.size();
+    ffxQueryDescGetVersions versions{{FFX_API_QUERY_DESC_TYPE_GET_VERSIONS},
+        FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE, &next->deviceDesc.deviceContext, &count, ids.data(), names.data()};
+    if (next->queryContext(&versions.header, true) != FFX_API_RETURN_OK || count > ids.size()) {
+      status_ = "Could not enumerate the pinned analytical FSR provider";
+      return false;
+    }
+    bool enumerated = false;
+    for (size_t index = 0; index < count; ++index)
+      if (ids[index] == analyticalId && names[index] && strnlen_s(names[index], 128) == 5 &&
+          std::strcmp(names[index], "3.1.6") == 0) enumerated = true;
+    if (!enumerated) {
+      status_ = "The selected analytical FSR provider is absent from version enumeration";
+      return false;
+    }
+    if (!detail::FsrVulkanImageAdapter::supports(physicalDevice_, settings.renderExtent, settings.displayExtent,
+            vkGetPhysicalDeviceFormatProperties, vkGetPhysicalDeviceImageFormatProperties)) {
+      status_ = "GPU lacks the exact image formats required by the analytical FSR provider";
+      return false;
+    }
+    // The passthrough probe preserves automatic provider choice. Only its exact
+    // analytical result is rebuilt; an automatically selected ML provider keeps
+    // its original unmodified context and Vulkan dispatch table.
+    const auto destroyed = next->destroyContext();
+    if (destroyed != FFX_API_RETURN_OK) {
+      status_ = "Could not destroy the analytical FSR probe context (" + std::to_string(destroyed) + ")";
+      return false;
+    }
+    next->providerOverride = {{FFX_API_DESC_TYPE_OVERRIDE_VERSION}, analyticalId};
+    next->apiVersion.header.pNext = &next->providerOverride.header;
+    next->imageAdapter.emplace(device_, settings.renderExtent, settings.displayExtent, ffxDeviceProcAddr);
+    next->deviceDesc.deviceContext.vkDeviceProcAddr = detail::FsrVulkanImageAdapter::getDeviceProcAddr;
+    const auto rebuilt = next->createContext();
+    if (rebuilt != FFX_API_RETURN_OK) {
+      status_ = "Could not create the analytical Vulkan FSR context (" + std::to_string(rebuilt) + ")";
+      return false;
+    }
+    ffxQueryGetProviderVersion verified{{FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION}};
+    if (next->queryContext(&verified.header) != FFX_API_RETURN_OK || verified.versionId != analyticalId ||
+        !verified.versionName || strnlen_s(verified.versionName, 128) != 5 ||
+        std::strcmp(verified.versionName, "3.1.6") != 0) {
+      status_ = "The recreated FSR context did not retain the selected analytical provider";
+      return false;
+    }
+    if (!next->imageAdapter->ready()) {
+      status_ = next->imageAdapter->failed() ? next->imageAdapter->failure() :
+          "The analytical FSR provider did not create its fifteen expected internal images";
+      return false;
+    }
   }
   ffxQueryDescUpscaleGetJitterPhaseCount phase{{FFX_API_QUERY_DESC_TYPE_UPSCALE_GETJITTERPHASECOUNT},
       settings.renderExtent.width, settings.displayExtent.width, &next->phaseCount};
-  if (next->query(&next->context, &phase.header) != FFX_API_RETURN_OK || next->phaseCount < 1) {
+  if (next->queryContext(&phase.header) != FFX_API_RETURN_OK || next->phaseCount < 1) {
     status_ = "Could not query the FSR jitter phase count";
+    return false;
+  }
+  if (next->imageAdapter && next->imageAdapter->failed()) {
+    status_ = next->imageAdapter->failure();
     return false;
   }
   backend_ = std::move(next);
   settings_ = settings;
   submittedFrames_ = 0;
   discarded_ = false;
-  status_ = "FSR 3.1.4 is ready";
+  status_ = "FSR " + backend_->providerVersion + " is ready (SDK 2.4.0)";
   return true;
 #else
   (void)settings;
@@ -287,7 +380,8 @@ std::optional<std::array<float, 2>> FsrUpscaler::nextJitterPixels() const {
   const auto phase = static_cast<int32_t>(submittedFrames_ % backend_->phaseCount);
   ffxQueryDescUpscaleGetJitterOffset offset{{FFX_API_QUERY_DESC_TYPE_UPSCALE_GETJITTEROFFSET},
       phase, backend_->phaseCount, &x, &y};
-  if (backend_->query(&backend_->context, &offset.header) == FFX_API_RETURN_OK) {
+  if (backend_->queryContext(&offset.header) == FFX_API_RETURN_OK &&
+      (!backend_->imageAdapter || !backend_->imageAdapter->failed())) {
     // Match the SDK sample's projected pixel displacement and dispatch offset.
     return std::array{-x, -y};
   }
@@ -298,7 +392,7 @@ std::optional<std::array<float, 2>> FsrUpscaler::nextJitterPixels() const {
 FsrDispatchResult FsrUpscaler::record(const FsrUpscalerFrame& frame) {
 #if CONTAINER_HAS_FSR_UPSCALER
   if (!available()) return FsrDispatchResult::Unavailable;
-  if (recorded_ || !validFrame(frame, settings_)) return FsrDispatchResult::InvalidInput;
+  if (recorded_ || !validFrame(frame, settings_, outputFormat())) return FsrDispatchResult::InvalidInput;
   ffxDispatchDescUpscale desc{{FFX_API_DISPATCH_DESC_TYPE_UPSCALE}};
   desc.commandList = reinterpret_cast<void*>(frame.commands);
   desc.color = ffxImage(frame.color);
@@ -320,10 +414,11 @@ FsrDispatchResult FsrUpscaler::record(const FsrUpscalerFrame& frame) {
   desc.cameraFovAngleVertical = frame.verticalFovRadians;
   desc.viewSpaceToMetersFactor = 1.0f;
   if (frame.debugView) desc.flags = FFX_UPSCALE_FLAG_DRAW_DEBUG_VIEW;
-  const auto result = backend_->dispatch(&backend_->context, &desc.header);
-  if (result != FFX_API_RETURN_OK) {
+  const auto result = backend_->dispatchContext(&desc.header);
+  if (result != FFX_API_RETURN_OK || (backend_->imageAdapter && backend_->imageAdapter->failed())) {
     discarded_ = true;
-    status_ = "Vulkan FSR dispatch failed (" + std::to_string(result) + ")";
+    status_ = result != FFX_API_RETURN_OK ? "Vulkan FSR dispatch failed (" + std::to_string(result) + ")" :
+        backend_->imageAdapter->failure();
     return FsrDispatchResult::DiscardCommands;
   }
   recorded_ = true;

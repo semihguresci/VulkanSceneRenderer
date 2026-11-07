@@ -73,6 +73,7 @@ void RendererFrontend::appendGltfDeformationTelemetry(nlohmann::json& json) cons
     flags["nodes"].push_back({{"sourceIndex", node.sourceNodeIndex}, {"graphNode", id},
         {"name", node.name}, {"parentGraphNode", graphId(node.parent)},
         {"active", sceneGraph_.isNodeActive(id)},
+        {"linkedReadOnly", subs_.sceneManager && subs_.sceneManager->isLinkedNodeReadOnly(sceneGraph_, id)},
         {"localVisible", node.visible}, {"localSelectable", node.selectable}, {"localHoverable", node.hoverable},
         {"retired", node.retired},
         {"effectiveVisible", sceneGraph_.isNodeEffectivelyVisible(id)},

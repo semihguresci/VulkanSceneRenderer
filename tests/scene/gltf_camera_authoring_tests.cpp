@@ -195,9 +195,11 @@ TEST(GltfCameraAuthoring, InvalidSelectedIdentitiesAssociationsAndResidentProjec
   f.authored.cameras[0] = perspective(); f.evaluated.cameras[2].type = "unknown"; reject(f, {});
 }
 
-TEST(GltfCameraAuthoring, AnimatedChangedLeavesRejectButOtherFieldsAndExactNoopsRemainUsable) {
+TEST(GltfCameraAuthoring, AnimatedChangesEditRestAndKeepCurrentSampleWhileTypeSwitchesReject) {
   Fixture f; pointer(f.authored, "/cameras/0/perspective/yfov"); pointer(f.evaluated, "/cameras/2/perspective/yfov");
-  reject(f, number(P::PerspectiveYfov, .7));
+  const auto edited = f.plan(number(P::PerspectiveYfov, .7));
+  EXPECT_TRUE(edited.changed); EXPECT_DOUBLE_EQ(edited.authoredAfter.perspective.yfov, .7);
+  EXPECT_DOUBLE_EQ(edited.evaluatedAfter.perspective.yfov, .9); EXPECT_TRUE(f.matches(edited));
   auto other = f.plan(number(P::PerspectiveNear, .2));
   EXPECT_EQ(other.authoredAnimationBindings, (std::vector<GltfCameraAnimationBinding>{{0, 0, P::PerspectiveYfov}}));
   EXPECT_TRUE(f.matches(other));
@@ -209,12 +211,44 @@ TEST(GltfCameraAuthoring, AnimatedChangedLeavesRejectButOtherFieldsAndExactNoops
   reject(f, switchType);
 }
 
-TEST(GltfCameraAuthoring, EvaluatedOnlyAnimationAndSampleDifferenceCannotBeHiddenByAuthoredNoop) {
+TEST(GltfCameraAuthoring, EvaluatedOnlyAnimationKeepsTheSampleForAnAuthoredRestNoop) {
   Fixture f; pointer(f.evaluated, "/cameras/2/perspective/yfov");
-  reject(f, number(P::PerspectiveYfov, .8));
+  const auto noop = f.plan(number(P::PerspectiveYfov, .8));
+  EXPECT_FALSE(noop.changed); EXPECT_TRUE(noop.changedProperties.empty());
+  EXPECT_DOUBLE_EQ(noop.evaluatedAfter.perspective.yfov, .9);
   auto valid = f.plan(number(P::PerspectiveNear, .3));
   EXPECT_TRUE(valid.authoredAnimationBindings.empty()); ASSERT_EQ(valid.evaluatedAnimationBindings.size(), 1u);
   EXPECT_DOUBLE_EQ(valid.evaluatedAfter.perspective.yfov, .9);
+}
+
+TEST(GltfCameraAuthoring, AnimatedOptionalFieldsCannotLoseTheirAuthoredDefault) {
+  for (const auto property : {P::PerspectiveAspectRatio, P::PerspectiveFar}) {
+    Fixture f;
+    f.authored.cameras[0].perspective.zfar = 100.;
+    f.evaluated.cameras[2].perspective.zfar = 120.;
+    const auto suffix = std::string(GltfCameraPropertyPath(property));
+    pointer(f.authored, "/cameras/0/" + suffix); pointer(f.evaluated, "/cameras/2/" + suffix);
+    reject(f, {{}, {{property, std::monostate{}}}});
+    const auto changed = f.plan(number(property, property == P::PerspectiveFar ? 80. : 1.5));
+    EXPECT_TRUE(changed.changed); EXPECT_TRUE(f.matches(changed));
+  }
+}
+
+TEST(GltfCameraAuthoring, AnimatedRestValidationUsesAuthoredPlanesAndKeepsTheCurrentProjection) {
+  Fixture f;
+  f.authored.cameras[0].perspective.zfar = 100.;
+  f.evaluated.cameras[2].perspective.znear = 80.;
+  f.evaluated.cameras[2].perspective.zfar = 100.;
+  for (const auto* property : {"perspective/znear", "perspective/zfar"}) {
+    pointer(f.authored, std::string("/cameras/0/") + property);
+    pointer(f.evaluated, std::string("/cameras/2/") + property);
+  }
+  const auto plan = f.plan(number(P::PerspectiveFar, 50.));
+  EXPECT_DOUBLE_EQ(plan.authoredAfter.perspective.znear, .1);
+  EXPECT_DOUBLE_EQ(plan.authoredAfter.perspective.zfar, 50.);
+  EXPECT_DOUBLE_EQ(plan.evaluatedAfter.perspective.znear, 80.);
+  EXPECT_DOUBLE_EQ(plan.evaluatedAfter.perspective.zfar, 100.);
+  EXPECT_TRUE(f.matches(plan));
 }
 
 TEST(GltfCameraAuthoring, UnsupportedSelectedPointerSchemasAndMalformedTargetsFailClosed) {
@@ -510,6 +544,68 @@ TEST(GltfCameraAnimation, SelectedRestReplaysAtTodaysAnimatedOtherFieldWithoutRe
       GltfCameraSourceView(f.authored), f.evaluated); allocations = deny.allocations(); }
   EXPECT_TRUE(committed); EXPECT_EQ(allocations, 0u); EXPECT_DOUBLE_EQ(player.time(), 1.25);
   EXPECT_DOUBLE_EQ(undo.evaluatedAfter.perspective.yfov, yfov); EXPECT_DOUBLE_EQ(player.library().restCameras[0].perspective.znear, .1);
+}
+
+TEST(GltfCameraAnimation, AnimatedRestEditsAndHistoryPreserveCurrentClipSamplesAndOriginalCurves) {
+  CameraRestFixture f; auto player = f.running(); const auto curves = player.library().clips;
+  auto original = PlanGltfCameraProjectionEdit(GltfCameraSourceView(f.authored), GltfCameraSourceView(f.evaluated),
+      0, 0, number(P::PerspectiveYfov, .65));
+  auto edit = player.prepareCameraRestEdit(original, GltfCameraSourceView(f.authored), f.evaluated);
+  EXPECT_DOUBLE_EQ(original.authoredAfter.perspective.yfov, .65);
+  EXPECT_DOUBLE_EQ(edit.evaluatedCamera().perspective.yfov, f.evaluated.cameras[0].perspective.yfov);
+  bool committed{}; size_t allocations{};
+  { material_publication_test::AllocationGuard deny(true);
+    committed = player.exchangeCameraRestEdit(edit, GltfCameraSourceView(f.authored), f.evaluated);
+    allocations = deny.allocations(); }
+  ASSERT_TRUE(committed); EXPECT_EQ(allocations, 0u); EXPECT_DOUBLE_EQ(player.time(), .5);
+  f.authored.cameras[0] = original.authoredAfter; f.evaluated.cameras[0] = edit.evaluatedCamera();
+  player.seek(f.evaluated, 1.25); const auto sample = f.evaluated.cameras[0].perspective.yfov;
+
+  auto undo = RebaseGltfCameraProjectionEdit(original, GltfCameraEditSide::Before,
+      GltfCameraSourceView(f.authored), GltfCameraSourceView(f.evaluated));
+  auto undoRest = player.prepareCameraRestEdit(undo, GltfCameraSourceView(f.authored), f.evaluated);
+  EXPECT_DOUBLE_EQ(undoRest.evaluatedCamera().perspective.yfov, sample);
+  { material_publication_test::AllocationGuard deny(true);
+    committed = player.exchangeCameraRestEdit(undoRest, GltfCameraSourceView(f.authored), f.evaluated);
+    allocations = deny.allocations(); }
+  ASSERT_TRUE(committed); EXPECT_EQ(allocations, 0u); EXPECT_DOUBLE_EQ(player.time(), 1.25);
+  f.authored.cameras[0] = undo.authoredAfter; f.evaluated.cameras[0] = undoRest.evaluatedCamera();
+  player.clearClip(f.evaluated); EXPECT_DOUBLE_EQ(f.evaluated.cameras[0].perspective.yfov, .8);
+
+  auto redo = RebaseGltfCameraProjectionEdit(original, GltfCameraEditSide::After,
+      GltfCameraSourceView(f.authored), GltfCameraSourceView(f.evaluated));
+  auto redoRest = player.prepareCameraRestEdit(redo, GltfCameraSourceView(f.authored), f.evaluated);
+  EXPECT_DOUBLE_EQ(redoRest.evaluatedCamera().perspective.yfov, .65);
+  ASSERT_TRUE(player.exchangeCameraRestEdit(redoRest, GltfCameraSourceView(f.authored), f.evaluated));
+  f.authored.cameras[0] = redo.authoredAfter; f.evaluated.cameras[0] = redoRest.evaluatedCamera();
+  EXPECT_EQ(player.library().clips, curves); EXPECT_FALSE(player.selectedClip()); EXPECT_FALSE(player.playing());
+  player.selectClip(f.evaluated, 0); player.seek(f.evaluated, .5);
+  EXPECT_NEAR(f.evaluated.cameras[0].perspective.yfov, .9, 1e-7);
+  player.clearClip(f.evaluated); EXPECT_DOUBLE_EQ(f.evaluated.cameras[0].perspective.yfov, .65);
+}
+
+TEST(GltfCameraAnimation, CandidateUsesEditedRestWhenAnotherClipDoesNotControlTheOwnedField) {
+  CameraRestFixture f;
+  f.authored.animations.push_back(f.authored.animations[0]);
+  f.authored.animations.back().channels.erase(f.authored.animations.back().channels.begin());
+  f.evaluated = f.authored;
+  auto player = f.running(); player.selectClip(f.evaluated, 1); player.seek(f.evaluated, .75);
+  auto plan = PlanGltfCameraProjectionEdit(GltfCameraSourceView(f.authored), GltfCameraSourceView(f.evaluated),
+      0, 0, number(P::PerspectiveYfov, .65));
+  auto edit = player.prepareCameraRestEdit(plan, GltfCameraSourceView(f.authored), f.evaluated);
+  EXPECT_DOUBLE_EQ(edit.evaluatedCamera().perspective.yfov, .65);
+  EXPECT_EQ(player.selectedClip(), 1u); EXPECT_DOUBLE_EQ(player.time(), .75);
+}
+
+TEST(GltfCameraAnimation, CandidatePreservesUnownedEvaluatedFieldsAndAnimatedRestNoops) {
+  CameraRestFixture f; auto player = f.running();
+  f.evaluated.cameras[0].perspective.yfov = 1.1;
+  auto edit = player.prepareCameraRestEdit(f.plan(), GltfCameraSourceView(f.authored), f.evaluated);
+  EXPECT_DOUBLE_EQ(edit.evaluatedCamera().perspective.yfov, 1.1);
+  EXPECT_DOUBLE_EQ(edit.evaluatedCamera().perspective.znear, .25);
+  const auto noop = PlanGltfCameraProjectionEdit(GltfCameraSourceView(f.authored), GltfCameraSourceView(f.evaluated),
+      0, 0, number(P::PerspectiveYfov, .8));
+  EXPECT_FALSE(noop.changed); EXPECT_DOUBLE_EQ(noop.evaluatedAfter.perspective.yfov, 1.1);
 }
 
 TEST(GltfCameraAnimation, SelectedRawAndEncodedCurveChangesRejectCanAndDirectExchangeWithoutAllocation) {

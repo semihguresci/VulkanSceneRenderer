@@ -52,7 +52,9 @@ constexpr std::array scalars{
 struct Vector {const char* name;glm::vec3 Material::* member;};
 constexpr std::array vectors{Vector{"emissiveColor",&Material::emissiveColor},Vector{"specularColorFactor",&Material::specularColorFactor},
     Vector{"attenuationColor",&Material::attenuationColor},Vector{"sheenColorFactor",&Material::sheenColorFactor},
-    Vector{"diffuseTransmissionColorFactor",&Material::diffuseTransmissionColorFactor}};
+    Vector{"diffuseTransmissionColorFactor",&Material::diffuseTransmissionColorFactor},
+    Vector{"specularGlossinessDiffuse",&Material::specularGlossinessDiffuse},
+    Vector{"specularGlossinessSpecular",&Material::specularGlossinessSpecular}};
 struct ExtensionSlot {Slot slot;const char* extension;const char* field;uint32_t channel{4};};
 constexpr std::array extensionSlots{
     ExtensionSlot{Slot::Specular,"KHR_materials_specular","specularTexture"},ExtensionSlot{Slot::SpecularColor,"KHR_materials_specular","specularColorTexture"},

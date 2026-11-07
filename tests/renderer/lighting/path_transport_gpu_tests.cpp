@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -1414,6 +1415,44 @@ TEST_F(PathTransportGpu, ReconstructedSurfaceCarriesPerSetTexelDensity) {
   EXPECT_NEAR(float(scaled[0].valuePdf.x), 1.f, 1e-6f);
   EXPECT_NEAR(float(scaled[0].directionPdf.x), .5f, 1e-6f);
 }
+TEST_F(PathTransportGpu, CommittedHitEdgeRoundoffUsesOneUlpBoundWithoutAcceptingOutsideCoordinates) {
+  // Actual 1920x1080 Sponza hit from the first eight samples: the exact sum
+  // of these float32 values exceeds unity by 0.75 ULP, while their rounded
+  // sum exceeds it by one ULP. The +4 variant is 1.25 ULP outside but has
+  // the same rounded sum, so merely allowing nextafter(1,+inf) is too loose.
+  const float u = std::bit_cast<float>(1046439170u), v = std::bit_cast<float>(1061693121u);
+  const float boundary = std::bit_cast<float>(1046439172u);
+  const float outside = std::bit_cast<float>(1046439174u);
+  const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
+  struct Case { float u, v; bool valid; float expectedU, expectedV; };
+  const float complement = float(1.0 - double(v)); // Exact complement in the independent double oracle.
+  const std::array cases{
+      Case{u,v,true,complement,v}, Case{v,u,true,v,complement},
+      Case{boundary,v,true,complement,v}, Case{v,boundary,true,v,complement},
+      Case{.25f,.75f,true,.25f,.75f}, Case{.2f,.3f,true,.2f,.3f},
+      Case{0,0,true,0,0}, Case{1,0,true,1,0}, Case{0,1,true,0,1},
+      Case{outside,v,false,0,0}, Case{v,outside,false,0,0},
+      Case{std::nextafter(1.f,inf),0,false,0,0}, Case{-.000001f,.5f,false,0,0},
+      Case{nan,0,false,0,0}, Case{0,nan,false,0,0}, Case{inf,0,false,0,0}};
+  std::vector<Query> input;
+  for (const auto& item : cases) {
+    Query q; q.controls = {25,1,0,0};
+    q.view = {0,0,0,1}; q.light = {1,0,0,1}; q.previousMean = {0,1,0,1};
+    q.footprintA = {0,0,0,0}; q.footprintB = {1,0,0,0}; q.footprintC = {0,1,0,0};
+    q.previousMoment = {item.u,item.v,0,0}; input.push_back(q);
+  }
+  const auto output = run(input);
+  for (size_t i=0;i<cases.size();++i) {
+    EXPECT_EQ(output[i].valuePdf.w, cases[i].valid ? 1.f : 0.f) << i;
+    if (!cases[i].valid) continue;
+    EXPECT_FLOAT_EQ(output[i].auxiliary.x,cases[i].expectedU) << i;
+    EXPECT_FLOAT_EQ(output[i].auxiliary.y,cases[i].expectedV) << i;
+    EXPECT_FLOAT_EQ(output[i].directionPdf.x,cases[i].expectedU) << i;
+    EXPECT_FLOAT_EQ(output[i].directionPdf.y,cases[i].expectedV) << i;
+    EXPECT_GE(output[i].auxiliary.x,0.f); EXPECT_GE(output[i].auxiliary.y,0.f);
+    EXPECT_LE(double(output[i].auxiliary.x)+double(output[i].auxiliary.y),1.0) << i;
+  }
+}
 TEST_F(PathTransportGpu, EqualSolidAngleProbeSpreadMatchesEquivalentCone) {
   std::vector<Query> input;
   for (uint32_t rays : {1u, 2u, 3u, 4u, 5u, 27u, 128u, 1024u, 4096u}) {
@@ -1480,6 +1519,24 @@ TEST_F(PathTransportGpu, RotatedTextureTransformSelectsMipOnRectangularImage) {
   EXPECT_NEAR(output[0].valuePdf.x, colour.x / 255.f, 1.f / 255.f);
   EXPECT_NEAR(output[0].valuePdf.x, output[0].directionPdf.x, 1.f / 255.f);
 }
+TEST_F(PathTransportGpu, InvalidRayGradientsUseAnExplicitBaseMip) {
+  Query query;
+  query.controls = {27, 0, 0, 0};
+  query.light = {.5f, .5f, 0, 0};
+  query.footprintA = {2.f, 0.f, 0.f, 1.f};
+  std::array<Query, 4> input{query, query, query, query};
+  input[0].previousMean.x = std::numeric_limits<float>::infinity();
+  input[1].previousMean.x = std::numeric_limits<float>::quiet_NaN();
+  input[2].previousMean.x = std::numeric_limits<float>::max(); // Finite input, overflowing UV scale.
+  input[3].previousMean.x = .5f;
+  input[3].footprintA = glm::vec4(0);
+  const auto output = run(input);
+  for (const auto& value : output) {
+    EXPECT_FLOAT_EQ(value.auxiliary.x, 0.f);
+    EXPECT_EQ(value.valuePdf, value.directionPdf); // Exact SampleLevel(..., 0) control.
+    EXPECT_FLOAT_EQ(value.valuePdf.y, 1.f);
+  }
+}
 TEST_F(PathTransportGpu, DispersionChannelIorsMatchTheSharedRasterMapping) {
   std::vector<Query> input;
   struct Case { float ior, dispersion; uint32_t channel; };
@@ -1527,5 +1584,370 @@ TEST_F(PathTransportGpu, SpectralDispersionEstimatorMatchesPerChannelQuadrature)
   for (uint32_t channel = 0; channel < 3; ++channel)
     EXPECT_NEAR(output[0].directionPdf[channel], output[0].valuePdf[channel], .05f)
         << "channel " << channel;
+}
+
+double clearcoatWeight(const Query& q, glm::dvec3 view) {
+  const auto normal = glm::normalize(glm::dvec3(q.footprintA));
+  const double cosine = std::clamp(std::abs(glm::dot(view, normal)), 0.0, 1.0);
+  return q.footprintB.x * (.04 + .96 * std::pow(1 - cosine, 5));
+}
+glm::dvec3 referenceClearcoat(const Query& q, glm::dvec3 view, glm::dvec3 light) {
+  const double weight = clearcoatWeight(q, view);
+  auto value = reference(q, view, light) * (1 - weight);
+  const auto normal = glm::normalize(glm::dvec3(q.footprintA));
+  const double nv = glm::dot(view, normal), nl = glm::dot(light, normal);
+  if (view.z <= 0 || light.z <= 0 || nv <= 0 || nl <= 0 || q.footprintB.y == 0) return value;
+  const auto half = glm::normalize(view + light);
+  const double nh = glm::dot(half, normal), alpha = double(q.footprintB.y) * q.footprintB.y;
+  const double denominator = (1 - nh * nh) + alpha * alpha * nh * nh;
+  const double distribution = alpha * alpha / (pi * denominator * denominator);
+  const auto lambda = [alpha](double cosine) {
+    return .5 * (std::sqrt(1 + alpha * alpha * (1 - cosine * cosine) / (cosine * cosine)) - 1);
+  };
+  const double mask = 1 / (1 + lambda(nv) + lambda(nl));
+  const double coat = distribution * mask / (4 * nv * nl);
+  return value + glm::dvec3(weight * coat * nl / light.z);
+}
+double referenceClearcoatPdf(const Query& q, glm::dvec3 view, glm::dvec3 light) {
+  const double weight = clearcoatWeight(q, view);
+  double pdf = referencePdf(q, view, light) * (1 - weight);
+  const auto normal = glm::normalize(glm::dvec3(q.footprintA));
+  const double nv = glm::dot(view, normal), nl = glm::dot(light, normal);
+  if (view.z <= 0 || light.z <= 0 || nv <= 0 || nl <= 0 || q.footprintB.y == 0) return pdf;
+  const double nh = glm::dot(glm::normalize(view + light), normal);
+  const double alpha = double(q.footprintB.y) * q.footprintB.y;
+  const double denominator = (1 - nh * nh) + alpha * alpha * nh * nh;
+  const double distribution = alpha * alpha / (pi * denominator * denominator);
+  const double lambda = .5 * (std::sqrt(1 + alpha * alpha * (1 - nv * nv) / (nv * nv)) - 1);
+  return pdf + weight * distribution / (4 * nv * (1 + lambda));
+}
+glm::dvec3 integrateClearcoat(const Query& q) {
+  glm::dvec3 sum{};
+  constexpr int elevations = 192, azimuths = 384;
+  const auto view = glm::normalize(glm::dvec3(q.view));
+  for (int elevation = 0; elevation < elevations; ++elevation) {
+    const double z = (elevation + .5) / elevations, radius = std::sqrt(1 - z * z);
+    for (int azimuth = 0; azimuth < azimuths; ++azimuth) {
+      const double phi = 2 * pi * (azimuth + .5) / azimuths;
+      sum += referenceClearcoat(q, view, {radius * std::cos(phi), radius * std::sin(phi), z}) * z;
+    }
+  }
+  return sum * (2 * pi / (elevations * azimuths));
+}
+
+TEST_F(PathTransportGpu, ClearcoatLayerMatchesIndependentNormalsAndCompleteMixturePdf) {
+  std::vector<Query> input;
+  for (float roughness : {.25f, .55f, 1.f})
+    for (float tilt : {0.f, .45f})
+      for (float cosine : {1.f, .6f, .08f}) {
+        Query q;
+        q.controls.x = 34;
+        q.footprintB = {.8f, roughness, 0, 0};
+        q.footprintA = glm::vec4(glm::normalize(glm::vec3(tilt, .12f, 1)), 0);
+        q.view = {std::sqrt(1 - cosine * cosine), 0, cosine, 0};
+        for (glm::vec3 light : {glm::vec3(0, 0, 1), glm::normalize(glm::vec3(-.6f, .3f, .5f)),
+                               glm::normalize(glm::vec3(.7f, .4f, -.1f))}) {
+          q.light = glm::vec4(light, 0);
+          input.push_back(q);
+        }
+      }
+  const auto output = run(input);
+  for (size_t i = 0; i < input.size(); ++i) {
+    const auto view = glm::normalize(glm::dvec3(input[i].view));
+    const auto light = glm::normalize(glm::dvec3(input[i].light));
+    const auto expected = referenceClearcoat(input[i], view, light);
+    const double pdf = referenceClearcoatPdf(input[i], view, light);
+    ASSERT_FLOAT_EQ(output[i].auxiliary.z, 1.f) << i;
+    for (int channel = 0; channel < 3; ++channel)
+      EXPECT_NEAR(output[i].valuePdf[channel], expected[channel], 2e-5 + std::abs(expected[channel]) * 3e-4) << i;
+    EXPECT_NEAR(output[i].valuePdf.w, pdf, 2e-5 + pdf * 3e-4) << i;
+  }
+}
+
+TEST_F(PathTransportGpu, ClearcoatVndfSamplingAndEnvironmentMisAgreeWithLayerQuadrature) {
+  for (float roughness : {.55f, 1.f}) {
+    Query q;
+    q.diffuseRoughness = {.7f, .25f, .08f, .6f};
+    q.f0Scale = {.08f, .16f, .3f, .8f};
+    q.view = glm::vec4(glm::normalize(glm::vec3(.95f, .08f, .18f)), 0);
+    q.footprintA = glm::vec4(glm::normalize(glm::vec3(-.1f, .18f, 1)), 0);
+    q.footprintB = {1, roughness, 0, 0};
+    const auto sampled = run(sampling(q, 8192, 35));
+    size_t nulls{};
+    for (const auto& sample : sampled) {
+      EXPECT_FLOAT_EQ(sample.auxiliary.y, 0.f);
+      if (sample.weightValid.w == 0) { ++nulls; continue; }
+      const auto view = glm::normalize(glm::dvec3(q.view));
+      const auto light = glm::normalize(glm::dvec3(sample.directionPdf));
+      const double pdf = referenceClearcoatPdf(q, view, light);
+      const auto weight = referenceClearcoat(q, view, light) * (light.z / pdf);
+      ASSERT_GT(pdf, 0);
+      EXPECT_GT(light.z, 0);
+      EXPECT_FLOAT_EQ(sample.auxiliary.x, 0.f);
+      EXPECT_NEAR(sample.directionPdf.w, pdf, 2e-5 + pdf * 5e-4);
+      for (int channel = 0; channel < 3; ++channel)
+        EXPECT_NEAR(sample.weightValid[channel], weight[channel], 3e-5 + std::abs(weight[channel]) * 5e-4);
+    }
+    EXPECT_GT(nulls, 0u);
+    const auto estimates = run(sampling(q, 65536, 36));
+    const auto mean = meanWeights(estimates), expected = integrateClearcoat(q);
+    glm::dvec3 variance{};
+    for (const auto& estimate : estimates) {
+      const auto error = glm::dvec3(estimate.weightValid) - mean;
+      variance += error * error;
+    }
+    variance /= estimates.size() - 1;
+    for (int channel = 0; channel < 3; ++channel) {
+      EXPECT_NEAR(mean[channel], expected[channel], .008);
+      EXPECT_NEAR(mean[channel], expected[channel], 6 * std::sqrt(variance[channel] / estimates.size()) + .0005);
+    }
+  }
+}
+
+TEST_F(PathTransportGpu, ClearcoatSmoothCoincidentDeltasMergeTheirCompleteMassAndEnergy) {
+  Query q;
+  q.controls.x = 37;
+  q.diffuseRoughness = {.6f, .2f, .1f, 0};
+  q.f0Scale = {.1f, .4f, .9f, 1};
+  q.view = {.8f, 0, .6f, 0};
+  q.footprintA = {0, 0, 1, 0};
+  q.footprintB = {.8f, 0, 0, 0};
+  q.previousMean = {0, .3f, .7f, 0};
+  const double coating = clearcoatWeight(q, glm::dvec3(q.view));
+  const double base = probability(q, glm::dvec3(q.view));
+  std::array input{q, q};
+  input[1].previousMean.x = float(coating + (1 - coating) * base * .5);
+  const auto output = run(input);
+  const double mass = coating + (1 - coating) * base;
+  const auto fresnel = glm::dvec3(q.f0Scale) + (glm::dvec3(1) - glm::dvec3(q.f0Scale)) * std::pow(1 - double(q.view.z), 5);
+  const auto expected = (glm::dvec3(coating) + fresnel * (1 - coating)) / mass;
+  for (const auto& sample : output) {
+    ASSERT_FLOAT_EQ(sample.weightValid.w, 1.f);
+    EXPECT_FLOAT_EQ(sample.auxiliary.x, 1.f);
+    EXPECT_FLOAT_EQ(sample.auxiliary.y, 0.f);
+    EXPECT_NEAR(sample.directionPdf.w, mass, 2e-7);
+    for (int channel = 0; channel < 3; ++channel)
+      EXPECT_NEAR(sample.weightValid[channel], expected[channel], 2e-6);
+  }
+  EXPECT_EQ(output[0].directionPdf, output[1].directionPdf);
+}
+
+TEST_F(PathTransportGpu, ClearcoatDistinctSmoothNormalsKeepSeparateDiscreteEvents) {
+  Query q;
+  q.controls.x = 37;
+  q.diffuseRoughness = {0, 0, 0, 0};
+  q.f0Scale = {.1f, .4f, .9f, 1};
+  q.footprintA = glm::vec4(glm::normalize(glm::vec3(.00001f, 0, 1)), 0);
+  q.footprintB = {.9f, 0, 0, 0};
+  q.previousMean = {0, .3f, .7f, 0};
+  std::array input{q, q};
+  input[1].previousMean.x = .5f;
+  const auto output = run(input);
+  const double coating = clearcoatWeight(q, glm::dvec3(q.view));
+  ASSERT_FLOAT_EQ(output[0].weightValid.w, 1.f);
+  ASSERT_FLOAT_EQ(output[1].weightValid.w, 1.f);
+  EXPECT_NE(output[0].directionPdf.x, output[1].directionPdf.x);
+  EXPECT_NEAR(output[0].directionPdf.w, coating, 1e-7);
+  EXPECT_NEAR(output[1].directionPdf.w, 1 - coating, 1e-7);
+  EXPECT_EQ(output[0].weightValid, glm::vec4(1));
+  for (int channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR(output[1].weightValid[channel], q.f0Scale[channel], 1e-7);
+}
+
+TEST_F(PathTransportGpu, ClearcoatZeroFactorDelegatesExactlyAndTiltedBelowBaseSamplesAreNull) {
+  Query q;
+  q.previousMean = {.02f, .3f, .7f, 0};
+  q.controls.x = 37;
+  q.footprintA = glm::vec4(std::numeric_limits<float>::quiet_NaN());
+  q.footprintB = {0, std::numeric_limits<float>::quiet_NaN(), 0, 0};
+  auto base = q;
+  base.controls.x = 4;
+  const auto output = run(std::array{q, base});
+  EXPECT_EQ(output[0].directionPdf, output[1].directionPdf);
+  EXPECT_EQ(output[0].weightValid, output[1].weightValid);
+  EXPECT_EQ(output[0].valuePdf, output[1].valuePdf);
+
+  q.footprintA = glm::vec4(glm::normalize(glm::vec3(.9f, 0, .1f)), 0);
+  q.footprintB = {1, 0, 0, 0};
+  q.previousMean.x = 0;
+  const auto tilted = run(std::array{q});
+  EXPECT_FLOAT_EQ(tilted[0].weightValid.w, 0.f);
+  EXPECT_FLOAT_EQ(tilted[0].auxiliary.y, 0.f);
+  q.footprintA = {0, 0, -1, 0};
+  const auto away = run(std::array{q});
+  EXPECT_FLOAT_EQ(away[0].weightValid.w, 0.f);
+  EXPECT_FLOAT_EQ(away[0].auxiliary.y, 0.f);
+}
+
+TEST_F(PathTransportGpu, ClearcoatInvalidInputsRejectWithoutReturningAValidSample) {
+  Query q;
+  q.controls.x = 37;
+  q.footprintA = {0, 0, 1, 0};
+  q.footprintB = {.8f, .5f, 0, 0};
+  q.previousMean = {0, .3f, .7f, 0};
+  std::array input{q, q, q, q, q, q, q};
+  input[0].footprintB.x = -1;
+  input[1].footprintB.x = 1.01f;
+  input[2].footprintB.x = std::numeric_limits<float>::quiet_NaN();
+  input[3].footprintB.y = -1;
+  input[4].footprintB.y = 1.01f;
+  input[5].footprintA = glm::vec4(0);
+  input[6].view = glm::vec4(0);
+  const auto output = run(input);
+  for (const auto& sample : output) {
+    EXPECT_FLOAT_EQ(sample.weightValid.w, 0.f);
+    EXPECT_FLOAT_EQ(sample.auxiliary.y, 1.f);
+  }
+}
+TEST_F(PathTransportGpu, SpecularGlossinessMappedLobesMatchCanonicalFresnelAndReciprocalGgx) {
+  std::vector<Query> input;
+  for (float roughness : {0.f, .1f, .35f, .8f, 1.f})
+    for (float viewCosine : {1.f, .8f, .3f, .02f})
+      for (float lightCosine : {1.f, .7f, .1f}) {
+        Query q;
+        q.controls.x = 38;
+        q.diffuseRoughness = {.14f, .08f, .04f, roughness};
+        q.f0Scale = {.04f, .3f, .8f, 1};
+        q.view = {std::sqrt(1 - viewCosine * viewCosine), 0, viewCosine, 0};
+        q.light = {0, std::sqrt(1 - lightCosine * lightCosine), lightCosine, 0};
+        input.push_back(q);
+        std::swap(q.view, q.light);
+        input.push_back(q);
+      }
+  const auto output = run(input);
+  for (size_t i = 0; i < input.size(); ++i) {
+    const auto view = glm::normalize(glm::dvec3(input[i].view));
+    const auto light = glm::normalize(glm::dvec3(input[i].light));
+    const auto expected = reference(input[i], view, light);
+    const double pdf = referencePdf(input[i], view, light);
+    EXPECT_FLOAT_EQ(output[i].auxiliary.z, 1);
+    EXPECT_NEAR(output[i].auxiliary.x, probability(input[i], view), 2e-6);
+    for (int channel = 0; channel < 3; ++channel) {
+      EXPECT_NEAR(output[i].valuePdf[channel], expected[channel], 1e-5 + std::abs(expected[channel]) * 8e-5) << i;
+      if (i % 2)
+        EXPECT_NEAR(output[i].valuePdf[channel], output[i - 1].valuePdf[channel],
+            1e-6 + std::abs(expected[channel]) * 1e-5) << i;
+    }
+    EXPECT_NEAR(output[i].valuePdf.w, pdf, 1e-5 + pdf * 8e-5) << i;
+  }
+}
+
+TEST_F(PathTransportGpu, SpecularGlossinessSamplesUseTheCompleteFresnelWeightedMixture) {
+  std::vector<Query> input;
+  for (float roughness : {.12f, .4f, .8f, 1.f}) for (float cosine : {1.f, .7f, .1f}) {
+    Query q;
+    q.diffuseRoughness = {.14f, .08f, .04f, roughness};
+    q.f0Scale = {.04f, .3f, .8f, 1};
+    q.view = {std::sqrt(1 - cosine * cosine), 0, cosine, 0};
+    const auto batch = sampling(q, 1024, 39);
+    input.insert(input.end(), batch.begin(), batch.end());
+  }
+  const auto output = run(input);
+  size_t nulls = 0;
+  for (size_t i = 0; i < output.size(); ++i) {
+    const auto& sample = output[i];
+    EXPECT_FLOAT_EQ(sample.auxiliary.y, 0);
+    if (sample.weightValid.w == 0) { ++nulls; continue; }
+    const auto view = glm::normalize(glm::dvec3(input[i].view));
+    const auto light = glm::normalize(glm::dvec3(sample.directionPdf));
+    const double pdf = referencePdf(input[i], view, light);
+    ASSERT_GT(pdf, 0);
+    const auto expected = reference(input[i], view, light) * (light.z / pdf);
+    EXPECT_FLOAT_EQ(sample.auxiliary.x, 0);
+    EXPECT_NEAR(sample.directionPdf.w, pdf, 2e-6 + pdf * 4e-4) << i;
+    EXPECT_NEAR(sample.valuePdf.w, sample.directionPdf.w, 1e-7 + pdf * 1e-6) << i;
+    for (int channel = 0; channel < 3; ++channel)
+      EXPECT_NEAR(sample.weightValid[channel], expected[channel], 2e-5 + std::abs(expected[channel]) * 5e-4) << i;
+  }
+  EXPECT_GT(nulls, 10u);
+  EXPECT_LT(nulls, input.size() / 2);
+}
+
+TEST_F(PathTransportGpu, SpecularGlossinessFurnaceAndEnvironmentMisMatchIndependentIntegrals) {
+  std::array<Query, 3> materials;
+  materials[0].diffuseRoughness = {.7f, .4f, .2f, 0};
+  materials[0].f0Scale = {0, 0, 0, 1};
+  materials[1].diffuseRoughness = {0, 0, 0, 1};
+  materials[1].f0Scale = {1, 1, 1, 1};
+  materials[2].diffuseRoughness = {.14f, .08f, .04f, .55f};
+  materials[2].f0Scale = {.04f, .3f, .8f, 1};
+  materials[2].view = {.8f, 0, .6f, 0};
+  for (size_t i = 0; i < materials.size(); ++i) {
+    const auto expected = i == 1 ? glm::dvec3(1 - std::log(2.)) : integrate(materials[i]);
+    for (uint32_t operation : {39u, 40u}) {
+      const auto estimates = run(sampling(materials[i], 65536, operation));
+      const auto mean = meanWeights(estimates);
+      glm::dvec3 variance(0);
+      for (const auto& estimate : estimates) {
+        const auto error = glm::dvec3(estimate.weightValid) - mean;
+        variance += error * error;
+      }
+      variance /= estimates.size() - 1;
+      for (int channel = 0; channel < 3; ++channel) {
+        EXPECT_NEAR(mean[channel], expected[channel], .008) << i << ',' << operation;
+        EXPECT_NEAR(mean[channel], expected[channel],
+            6 * std::sqrt(variance[channel] / estimates.size()) + .0004) << i << ',' << operation;
+        EXPECT_GE(mean[channel], 0);
+        EXPECT_LE(mean[channel], 1);
+      }
+      std::printf("PATH_SPECULAR_GLOSSINESS material=%zu operation=%u mean=%.9f,%.9f,%.9f expected=%.9f,%.9f,%.9f\n",
+          i, operation, mean.x, mean.y, mean.z, expected.x, expected.y, expected.z);
+    }
+  }
+}
+
+TEST_F(PathTransportGpu, SpecularGlossinessSmoothDeltaKeepsItsMassAndFresnelWeightedDiffuseDensity) {
+  Query q;
+  q.controls.x = 41;
+  q.diffuseRoughness = {.07f, .02f, .01f, 0};
+  q.f0Scale = {.2f, .6f, .9f, 1};
+  q.view = {.8f, 0, .6f, 0};
+  q.previousMean = {0, .3f, .7f, 0};
+  const double p = probability(q, glm::dvec3(q.view));
+  auto diffuse = q;
+  diffuse.previousMean.x = float(p + (1 - p) * .5);
+  const auto output = run(std::array{q, diffuse});
+  const auto fresnel = glm::dvec3(q.f0Scale) +
+      (glm::dvec3(1) - glm::dvec3(q.f0Scale)) * std::pow(1 - double(q.view.z), 5);
+  ASSERT_FLOAT_EQ(output[0].weightValid.w, 1);
+  EXPECT_FLOAT_EQ(output[0].auxiliary.x, 1);
+  EXPECT_NEAR(output[0].directionPdf.w, p, 2e-7);
+  EXPECT_FLOAT_EQ(output[0].directionPdf.x, -q.view.x);
+  EXPECT_FLOAT_EQ(output[0].directionPdf.z, q.view.z);
+  for (int channel = 0; channel < 3; ++channel) {
+    EXPECT_NEAR(output[0].weightValid[channel], fresnel[channel] / p, 2e-6);
+    EXPECT_NEAR(output[0].valuePdf[channel], q.diffuseRoughness[channel] * (1 - fresnel[channel]) / pi, 2e-8);
+  }
+  ASSERT_FLOAT_EQ(output[1].weightValid.w, 1);
+  EXPECT_FLOAT_EQ(output[1].auxiliary.x, 0);
+  const double density = (1 - p) * output[1].directionPdf.z / pi;
+  EXPECT_NEAR(output[1].directionPdf.w, density, 1e-7);
+  const auto light = glm::normalize(glm::dvec3(output[1].directionPdf));
+  const auto expectedDiffuse = reference(q, glm::dvec3(q.view), light) * (light.z / density);
+  for (int channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR(output[1].weightValid[channel], expectedDiffuse[channel], 2e-6);
+}
+
+TEST_F(PathTransportGpu, SpecularGlossinessMappedLobesRetainExactMetallicRoughnessKernelCompatibility) {
+  std::vector<Query> input;
+  for (int lobe : {0, 1, 2}) {
+    Query q;
+    q.diffuseRoughness = lobe == 0 ? glm::vec4(0, 0, 0, .6f) : glm::vec4(.14f, .08f, .04f, .6f);
+    q.f0Scale = {.2f, .4f, .8f, lobe == 1 ? 0.f : 1.f};
+    q.view = {.8f, 0, .6f, 0};
+    for (const auto& sample : sampling(q, 2048, 1)) {
+      input.push_back(sample);
+      auto sg = sample;
+      sg.controls.x = 39;
+      input.push_back(sg);
+    }
+  }
+  const auto output = run(input);
+  for (size_t i = 0; i < output.size(); i += 2) {
+    EXPECT_EQ(output[i].valuePdf, output[i + 1].valuePdf);
+    EXPECT_EQ(output[i].directionPdf, output[i + 1].directionPdf);
+    EXPECT_EQ(output[i].weightValid, output[i + 1].weightValid);
+    EXPECT_EQ(output[i].auxiliary, output[i + 1].auxiliary);
+  }
 }
 } // namespace

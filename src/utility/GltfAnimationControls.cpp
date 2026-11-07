@@ -73,7 +73,7 @@ bool patchMatches(const CameraProjectionSnapshot& s,const Patch& patch) noexcept
       if(!std::isfinite(*number) || ((index==1 || index==3) && *number<=0)) return false;
       values[index]=*number;
     } else {
-      if(index!=1 && index!=3) return false;values[index]=0;
+      if((index!=1 && index!=3) || s.animatedProperties[index]) return false;values[index]=0;
     }
     if(!exact(values[index],s.values[index])) {
       if(!s.propertyBlockReasons[index].empty()) return false;changed=true;
@@ -96,6 +96,8 @@ bool draftCanApply(const GltfAnimationControls& c) noexcept {
   if(!c.cameraProjection || c.requestedCameraProjection || conflictingRequest(c)) return false;
   const auto& d=c.cameraProjectionDraft;const auto& s=*c.cameraProjection;
   if(d.target!=s.target || !validLens(d.type,d.values)) return false;
+  for(size_t i : {size_t{1},size_t{3}})
+    if(d.edited[i] && d.values[i]==0 && s.animatedProperties[i]) return false;
   if(d.type!=s.type) return d.typeEdited && s.typeSwitchBlockReason.empty();
   for(size_t i=0;i<propertyCount;++i) if(activeProperty(d.type,i) && d.edited[i] &&
       !exact(d.values[i],s.values[i]) && s.propertyBlockReasons[i].empty()) return true;
@@ -150,7 +152,8 @@ bool SetCameraProjectionDraft(GltfAnimationControls& c,const CameraProjectionDra
       (!draft.edited[0] || !draft.edited[2]):(!draft.edited[4] || !draft.edited[5] || !draft.edited[6] || !draft.edited[7]))) return false;
   for(size_t i=0;i<propertyCount;++i) if(draft.edited[i] &&
       (!activeProperty(draft.type,i) || (!exact(draft.values[i],c.cameraProjection->values[i]) &&
-          !c.cameraProjection->propertyBlockReasons[i].empty()))) return false;
+          !c.cameraProjection->propertyBlockReasons[i].empty()) ||
+       ((i==1 || i==3) && draft.values[i]==0 && c.cameraProjection->animatedProperties[i]))) return false;
   c.cameraProjectionDraft=draft;return true;
 }
 bool QueueCameraProjectionEdit(GltfAnimationControls& c,const Target& target,const Patch& patch) {
@@ -185,6 +188,7 @@ void DrawCameraViewPoseControls(GltfAnimationControls& c) {
   if(snapshot) {
     if(snapshot->destinationName.empty()) ImGui::Text("Destination: camera node %d",snapshot->target.camera.sourceNode);
     else ImGui::TextWrapped("Destination: %s",snapshot->destinationName.c_str());
+    ImGui::TextWrapped("Writes the node's default pose and keeps its lens. Active animation still controls targeted pose components; clear or switch the clip to see their edited defaults.");
   }
   const char* reason=nullptr;
   if(!snapshot) reason="Choose an authored camera, then switch to Viewport camera to write its pose.";
@@ -194,7 +198,7 @@ void DrawCameraViewPoseControls(GltfAnimationControls& c) {
   if(reason) ImGui::TextWrapped("%s",reason);
   if(!c.cameraViewPoseError.empty()) ImGui::TextWrapped("%s",c.cameraViewPoseError.c_str());
   ImGui::BeginDisabled(!poseCanApply(c));
-  if(ImGui::Button("Write viewport pose (keep lens)") && snapshot) {
+  if(ImGui::Button("Write viewport pose as default") && snapshot) {
     if(QueueCameraViewPose(c,snapshot->target,snapshot->viewRevision)) c.cameraViewPoseError.clear();
     else c.cameraViewPoseError="The destination or viewport changed. Refresh the camera selection.";
   }
@@ -209,6 +213,8 @@ void DrawCameraProjectionControls(GltfAnimationControls& c) {
   const auto& snapshot=*c.cameraProjection;
   ImGui::Separator();ImGui::TextUnformatted("Camera projection");
   ImGui::Text("Definition used by %u source node%s",snapshot.sharedDefinitionUses,snapshot.sharedDefinitionUses==1?"":"s");
+  if(std::ranges::any_of(snapshot.animatedProperties,[](bool value) {return value;}))
+    ImGui::TextWrapped("Lens edits change authored defaults. Active animation keeps controlling its lens fields.");
   if(!c.cameraProjectionError.empty()) ImGui::TextWrapped("%s",c.cameraProjectionError.c_str());
   const bool pending=bool(c.requestedCameraProjection);auto draft=c.cameraProjectionDraft;
   ImGui::BeginDisabled(pending || conflictingRequest(c));
@@ -241,7 +247,7 @@ void DrawCameraProjectionControls(GltfAnimationControls& c) {
   if(draft.type==Projection::Perspective) {
     input("Vertical FOV (degrees)",0,false,true);
     const auto optional=[&](const char* label,size_t index,double enabledValue) {
-      ImGui::BeginDisabled(!snapshot.propertyBlockReasons[index].empty());
+      ImGui::BeginDisabled(!snapshot.propertyBlockReasons[index].empty() || snapshot.animatedProperties[index]);
       bool omitted=draft.values[index]==0;
       if(ImGui::Checkbox(label,&omitted)) {
         auto next=draft;next.values[index]=omitted?0:enabledValue;next.edited[index]=true;

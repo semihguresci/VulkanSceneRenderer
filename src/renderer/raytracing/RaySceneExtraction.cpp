@@ -107,7 +107,8 @@ void appendInstances(std::vector<RaySceneInstance> &instances,
         .transform = object.model,
         .doubleSided = (object.objectInfo.y & container::gpu::kObjectFlagDoubleSided) != 0u,
         .flipFacing = (object.objectInfo.y & container::gpu::kObjectFlagDeformationWindingFlipped) != 0u,
-        .gpuObjectIndex = provider.gpuObjects.buffer ? draw.objectIndex+i : UINT32_MAX});
+        .gpuObjectIndex = provider.gpuObjects.buffer ? draw.objectIndex+i : UINT32_MAX,
+        .sourceObjectIndex = draw.objectIndex + i});
     metadata.push_back({glm::uvec4(firstTriangle, object.objectInfo.x,
                                    object.objectInfo.y, draw.indexCount / 3u)});
     if (surfaces)
@@ -289,10 +290,12 @@ extractRayScene(std::span<const RaySceneProviderSource> providers,
             reinterpret_cast<uintptr_t>(provider.vertices.data()),
             reinterpret_cast<uintptr_t>(provider.indices.data())};
         geometry.firstTriangle = static_cast<uint32_t>(scene.triangles.size());
+        geometry.indexOrderHash = 14695981039346656037ull;
         std::unordered_map<uint32_t, uint32_t> remap;
         geometry.indices.reserve(draw.indexCount);
         for (uint32_t i = 0; i < draw.indexCount; ++i) {
           const uint32_t sourceIndex = provider.indices[draw.firstIndex + i];
+          geometry.indexOrderHash = (geometry.indexOrderHash ^ sourceIndex) * 1099511628211ull;
           if (sourceIndex >= provider.vertices.size())
             throw std::invalid_argument("ray provider vertex is out of bounds");
           auto [entry, inserted] = remap.try_emplace(

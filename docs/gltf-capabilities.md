@@ -38,10 +38,23 @@ nodes and 512 MiB of encoded input. The existing merge resource limits also appl
 Repeated placements share mesh, buffer, texture and material definitions from
 the same canonical source and alias context. The selected child scene is copied
 as distinct node identities under each placement, with its original transforms
-and source URI/node provenance. Linked child animations and skins require a
-later profile. Unsupported merge metadata, including XMP packet tables, still
-rejects composition. Save Linked As retains URI placements in a companion
-manifest, and standard Save As makes a portable editable copy.
+and source URI/node provenance. Each placement gets its own skin bindings and
+shares the source inverse-bind and animation accessors. Supported node animation
+channels target every placement of that source context. Material, light, and
+camera channels target the shared definitions once. The selected child scene
+must contain the joints and skeleton of each skin it uses.
+
+XMP packet tables follow the same remapping rules as Import / Merge. Linked
+payload nodes and shared resources are read-only in the editor. Placement
+nodes retain their own editable names and transforms. Import / Merge
+preserves trusted ownership independently of the exported provenance extras.
+
+Right-click a placement or its payload in the hierarchy and choose
+**Make Editable** to unlock the placements of that source and alias context.
+Nested placement families detach together so editable shared resources stay
+separate from still-linked families. The command clears scene edit history
+and protects the original files. Save As writes a portable copy with the
+current edits, supported animation clips, and skins.
 [Scene export](gltf-scene-export.md)
 
 `--experimental-opacity-micromaps` lets compatible Vulkan devices use authored
@@ -68,6 +81,19 @@ supported geometry extensions and reports required scene or material extensions
 as unavailable. Optional extensions in either path produce an asset-scoped
 warning and retain the ordinary geometry or material fallback.
 
+Import / Merge and linked placement use the same version policy for ordinary
+documents, including compatible 2.x files opened with linked assets enabled.
+When preparing a detached incoming scene or flattening a linked scene, the
+loader omits declared unknown optional extension payloads after reporting the
+asset and extension. It preserves the core fallback, `extras`, and supported
+extension references. Declared unknown optional metadata already present on
+the merge destination stays intact because its source indices are stable.
+Linked children can fall back to their static scene when
+`KHR_interactivity` is optional. A required graph in a linked child or required
+opacity micromaps in a composition produce a capability error before reading
+dependent buffers or images. The merge planner validates supported extension
+references before moving them into the destination scene.
+
 Supported capabilities include:
 
 - `KHR_texture_transform`: per-slot offset, rotation and scale, including
@@ -83,7 +109,9 @@ Supported capabilities include:
 
 Implemented approximations are accepted even when required, with an explicit
 `partial_extension_support` warning. `KHR_materials_pbrSpecularGlossiness`
-converts into the runtime metallic-roughness workflow. `KHR_lights_area`,
+retains authored inputs for the [reference BSDF](reference-path-tracing.md)
+and converts them to the metallic-roughness approximation for raster rendering.
+`KHR_lights_area`,
 `EXT_lights_area` and `WEBGI_lights_area` use the existing supported area-light
 dialects and renderer approximation. The registry describes import and runtime
 feature availability; it does not promise exact reference-image equivalence
@@ -95,9 +123,11 @@ accepted with an explicit partial-support warning.
 
 `KHR_animation_pointer` is partially supported with that same explicit warning.
 The animation runtime evaluates numeric node, material, punctual-light and
-camera targets described in [glTF animation](gltf-animation.md). Unknown pointer
-properties are diagnosed. The implemented texture slots also support animated
-offset, scale and rotation. GPU skin/morph evaluation consumes authored defaults
+camera targets, Boolean node visibility, selectability and hoverability, and
+offset, scale and rotation for supported texture slots. The runtime diagnoses
+unknown pointer properties. [glTF animation](gltf-animation.md)
+
+GPU skin/morph evaluation consumes authored defaults
 and sampled weight channels in both raster techniques; its rendering consumers
 and remaining fallback limits are described in [glTF deformation](gltf-deformation.md).
 
@@ -164,7 +194,8 @@ insufficient.
 
 The primary glTF loader supports a bounded default `KHR_interactivity`
 graph with events, flow, typed variables, numeric Object Model pointers,
-interpolation, and clip control. See [behavior graphs](gltf-interactivity.md)
+Boolean node flag reads and writes, interpolation, and clip control.
+See [behavior graphs](gltf-interactivity.md)
 for the operation list, authoring limits, and diagnostics.
 
 Errors and warnings identify the asset path, a stable diagnostic code and the

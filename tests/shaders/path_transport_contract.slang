@@ -1,6 +1,7 @@
 #include "path_transport_common.slang"
 #include "path_dielectric_common.slang"
 #include "path_experimental_materials.slang"
+#include "path_clearcoat_common.slang"
 #include "material_data_common.slang"
 #include "ray_scene_data.slang"
 #include "ray_surface_common.slang"
@@ -34,6 +35,36 @@ struct Result
 [[vk::binding(2, 0)]] Texture2D<float4> contractTexture;
 [[vk::binding(3, 0)]] SamplerState contractSampler;
 
+PtBsdfSample PtContractBaseDelta(PtBsdf bsdf, float3 view, float3 direction)
+{
+    if (bsdf.roughness != 0.0 || bsdf.specularScale == 0.0 ||
+        !all(direction == float3(-view.xy, view.z))) return (PtBsdfSample)0;
+    return PtSampleBsdf(bsdf, view, 0.0.xxx);
+}
+
+PtBsdfSample PtContractSampleClearcoat(PtBsdf bsdf, PtClearcoat coat, float3 view, float3 random)
+{
+    if (coat.factor == 0.0) return PtSampleBsdf(bsdf, view, random);
+    const float q = PtClearcoatWeight(coat, view);
+    if (q < 0.0 || !all(isfinite(random)) || any(random < 0.0.xxx) || any(random >= 1.0.xxx))
+        return PtRejectedBsdfSample();
+    const bool sampledCoat = random.x < q;
+    const float probability = sampledCoat ? q : 1.0 - q;
+    random.x = min((sampledCoat ? random.x : random.x - q) / probability, asfloat(0x3f7fffffu));
+    const PtBsdfSample selected = sampledCoat ? PtSampleClearcoat(coat, view, random)
+        : PtSampleBsdf(bsdf, view, random);
+    PtBsdfEvaluation base = (PtBsdfEvaluation)0;
+    PtBsdfSample other = (PtBsdfSample)0;
+    if (selected.valid != 0u)
+    {
+        base = PtEvaluateBsdf(bsdf, view, selected.direction);
+        if (selected.delta != 0u)
+            other = sampledCoat ? PtContractBaseDelta(bsdf, view, selected.direction)
+                : PtClearcoatDelta(coat, view, selected.direction);
+    }
+    return PtCompleteClearcoatSample(coat, view, sampledCoat, selected, base, other);
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void computeMain(uint3 tid : SV_DispatchThreadID)
@@ -49,20 +80,21 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
     bsdf.specularScale = query.f0Scale.w;
     Result result = (Result)0;
     uint operation = query.controls.x;
-    if (operation == 0u)
+    if (operation == 0u || operation == 38u)
     {
         PtBsdfEvaluation evaluated = PtEvaluateBsdf(bsdf, query.view.xyz, query.light.xyz, query.footprintC.w);
         result.valuePdf = float4(evaluated.value, evaluated.pdf);
         result.auxiliary.x = PtSpecularProbability(bsdf, query.view.xyz);
         result.auxiliary.z = float(evaluated.valid);
     }
-    else if (operation == 1u || operation == 2u || operation == 4u)
+    else if (operation == 1u || operation == 2u || operation == 4u ||
+             operation == 39u || operation == 40u || operation == 41u)
     {
         float3 random = float3(
             PtRandom(query.controls.z, query.controls.w, 0u, 0u, query.controls.y),
             PtRandom(query.controls.z, query.controls.w, 0u, 1u, query.controls.y),
             PtRandom(query.controls.z, query.controls.w, 0u, 2u, query.controls.y));
-        if (operation == 4u) random = query.previousMean.xyz;
+        if (operation == 4u || operation == 41u) random = query.previousMean.xyz;
         PtBsdfSample sampled = PtSampleBsdf(bsdf, query.view.xyz, random, query.footprintC.w);
         result.directionPdf = float4(sampled.direction, sampled.pdf);
         result.weightValid = float4(sampled.weight, float(sampled.valid));
@@ -71,7 +103,7 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
         result.auxiliary.x = float(sampled.delta);
         result.auxiliary.y = float(sampled.rejected);
         result.auxiliary.z = float(evaluated.valid);
-        if (operation == 2u)
+        if (operation == 2u || operation == 40u)
         {
             // Two-proposal next-event estimator for a constant unit environment:
             // one uniform-sphere light sample and one BSDF sample, with MIS.
@@ -307,10 +339,11 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
             result.valuePdf.x = RayConeSolidAngleSpread(float(query.controls.z));
         else if (operation == 27u)
         {
-            float gradient = max(query.previousMean.x, 0.0);
             float2 dx, dy;
-            RayConeTransformGradients(gradient, query.footprintA.xy, query.footprintA.zw, dx, dy);
-            result.valuePdf = contractTexture.SampleGrad(contractSampler, query.light.xy, dx, dy);
+            bool usable = RayConeTransformGradients(query.previousMean.x, query.footprintA.xy, query.footprintA.zw, dx, dy);
+            result.valuePdf = usable ? contractTexture.SampleGrad(contractSampler, query.light.xy, dx, dy) :
+                contractTexture.SampleLevel(contractSampler, query.light.xy, 0.0);
+            result.auxiliary.x = usable ? 1.0 : 0.0;
             result.directionPdf = contractTexture.SampleLevel(contractSampler,
                 query.light.xy, max(query.previousMean.y, 0.0));
         }
@@ -404,6 +437,47 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
         result.valuePdf.rgb = reflected;
         result.directionPdf.rgb = diffuseThrough;
         result.weightValid.rgb = specularThrough;
+    }
+    if (operation >= 34u && operation <= 37u)
+    {
+        PtClearcoat coat;
+        coat.factor = query.footprintB.x;
+        coat.roughness = query.footprintB.y;
+        coat.normal = query.footprintA.xyz;
+        if (operation == 34u)
+        {
+            const PtBsdfEvaluation evaluated = PtEvaluateClearcoatLayer(coat, query.view.xyz, query.light.xyz,
+                PtEvaluateBsdf(bsdf, query.view.xyz, query.light.xyz));
+            result.valuePdf = float4(evaluated.value, evaluated.pdf);
+            result.auxiliary.z = float(evaluated.valid);
+        }
+        else
+        {
+            float3 random = float3(PtRandom(query.controls.z, query.controls.w, 0u, 0u, query.controls.y),
+                PtRandom(query.controls.z, query.controls.w, 0u, 1u, query.controls.y),
+                PtRandom(query.controls.z, query.controls.w, 0u, 2u, query.controls.y));
+            if (operation == 37u) random = query.previousMean.xyz;
+            const PtBsdfSample sampled = PtContractSampleClearcoat(bsdf, coat, query.view.xyz, random);
+            const PtBsdfEvaluation evaluated = sampled.valid != 0u
+                ? PtEvaluateClearcoatLayer(coat, query.view.xyz, sampled.direction,
+                    PtEvaluateBsdf(bsdf, query.view.xyz, sampled.direction)) : (PtBsdfEvaluation)0;
+            result.valuePdf = float4(evaluated.value, evaluated.pdf);
+            result.directionPdf = float4(sampled.direction, sampled.pdf);
+            result.weightValid = float4(sampled.weight, float(sampled.valid));
+            result.auxiliary = float4(float(sampled.delta), float(sampled.rejected), float(evaluated.valid), 0.0);
+            if (operation == 36u)
+            {
+                const float3 light = PtUniformSphere(float2(PtRandom(query.controls.z, query.controls.w, 0u, 3u, query.controls.y),
+                    PtRandom(query.controls.z, query.controls.w, 0u, 4u, query.controls.y)));
+                const PtBsdfEvaluation direct = PtEvaluateClearcoatLayer(coat, query.view.xyz, light,
+                    PtEvaluateBsdf(bsdf, query.view.xyz, light));
+                const float lightPdf = 1.0 / (4.0 * PT_PI);
+                float3 estimate = direct.value * abs(light.z) * PtPowerHeuristic(lightPdf, direct.pdf) / lightPdf;
+                if (sampled.valid != 0u)
+                    estimate += sampled.weight * (sampled.delta != 0u ? 1.0 : PtPowerHeuristic(sampled.pdf, lightPdf));
+                result.weightValid.rgb = estimate;
+            }
+        }
     }
     results[tid.x] = result;
 }

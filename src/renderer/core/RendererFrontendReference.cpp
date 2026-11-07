@@ -23,6 +23,7 @@
 #include <glm/gtc/matrix_inverse.hpp>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <span>
 #include <utility>
 
@@ -46,14 +47,30 @@ void displayBarrier(VkCommandBuffer command, VkImage image, bool forReading) {
 }
 } // namespace
 
+ReferencePathDisplayMode RendererFrontend::referencePathDisplay() const {
+  const auto ground = subs_.guiManager ? subs_.guiManager->referenceGround() : svc_.config.pathGround;
+  if (ground.mode == ReferenceGroundMode::ShadowMatte) return ReferencePathDisplayMode::Beauty;
+  return subs_.guiManager ? subs_.guiManager->referencePathDisplay()
+                          : referencePathDisplayOverride_.value_or(svc_.config.pathDisplay);
+}
+
 void RendererFrontend::ensureReferencePathResources() {
   referenceRecorded_ = false;
   if (!referencePathActive()) return;
   auto oidn = subs_.guiManager ? subs_.guiManager->referenceOidn() : svc_.config.pathOidn;
   if (!subs_.guiManager && referenceOidnQualityOverride_)
     oidn.quality = *referenceOidnQualityOverride_;
+  if (!subs_.guiManager && referenceOptixOverride_)
+    oidn.optix = *referenceOptixOverride_;
+  if (!subs_.guiManager && referenceDlssOverride_)
+    oidn.dlss = *referenceDlssOverride_;
+  const auto shaderRoot = activeShaderReload_ ? activeShaderReload_->directory : container::util::executableDirectory();
   if (auto& current = subs_.referencePathTracePass) {
-    if (current->oidnQuality() == oidn.quality) {
+    if (current->optixSelected() == oidn.optix && (oidn.optix || current->oidnQuality() == oidn.quality)) {
+      if (current->dlssQuality() != oidn.dlss) {
+        subs_.frameSyncManager->waitForAllFrames();
+        current->setDlssQuality(shaderRoot, oidn.dlss);
+      }
       current->setOidnSampleInterval(oidn.sampleInterval);
       return;
     }
@@ -65,10 +82,10 @@ void RendererFrontend::ensureReferencePathResources() {
   try {
     auto pass = std::make_unique<ReferencePathTracePass>(svc_.ctx.deviceWrapper,
         *svc_.allocationManager.memoryManager(), svc_.pipelineManager);
-    pass->createResources(activeShaderReload_ ? activeShaderReload_->directory : container::util::executableDirectory(),
+    pass->createResources(shaderRoot,
         uint32_t(svc_.swapChainManager.imageCount()), svc_.swapChainManager.extent(),
         subs_.sceneManager->descriptorSetLayout(), subs_.lightingManager->lightDescriptorSetLayout(),
-        512ull * 1024 * 1024, oidn);
+        kDefaultReferenceImageBudgetBytes, oidn);
     subs_.referencePathTracePass = std::move(pass);
     referenceDiagnosticSeen_.assign(svc_.swapChainManager.imageCount(), 0);
     referenceDiagnosticEpoch_ = referenceUnsupported_ = referenceRejected_ = 0;
@@ -89,6 +106,7 @@ bool RendererFrontend::recordReferencePathTrace(VkCommandBuffer command, const F
   const auto image = frame.runtime.imageIndex;
   auto& pass = *subs_.referencePathTracePass;
   ReferencePathTraceInput input;
+  input.displayMode = referencePathDisplay();
   input.settings.samplesPerFrame = referenceAdaptiveBatch_.value_or(svc_.config.pathSamplesPerFrame);
   input.settings.resetSamplesPerFrame = svc_.config.pathSamplesPerFrame;
   input.settings.sampleLimit = screenshot_.pending
@@ -144,10 +162,10 @@ bool RendererFrontend::recordReferencePathTrace(VkCommandBuffer command, const F
     }
   };
   const auto hash = [&](const auto& value) { hashValue(revision, value); };
-  hash(subs_.rayShadowManager->sceneRevision());
   hash(shaderReloadGeneration_);
   const auto autofocusKey = [&] {
     uint64_t key = revision;
+    hashValue(key, subs_.rayShadowManager->sceneRevision());
     hashValue(key, extent);
     hashValue(key, input.data.inverseProjection);
     hashValue(key, input.data.inverseView);
@@ -204,6 +222,14 @@ bool RendererFrontend::recordReferencePathTrace(VkCommandBuffer command, const F
   for (const auto& light : subs_.lightingManager->pointLightsSsbo()) hash(light);
   for (const auto& light : subs_.lightingManager->areaLightsSsbo()) hash(light);
   input.contentRevision = revision;
+  hashValue(input.contentRevision, subs_.rayShadowManager->sceneRevision());
+  if (pass.dlssQuality() != UpscaleMode::Native) {
+    input.dlssRevision = revision;
+    hashValue(input.dlssRevision, sceneGraph_.identity());
+    hashValue(input.dlssRevision, subs_.sceneManager->materialRevision());
+    input.dlssMotion = subs_.rayShadowManager->surfaceMotionSnapshot(image);
+    input.frameMilliseconds = temporalFrameMilliseconds_;
+  }
   pass.prepareFrame(image, input, subs_.sceneManager->gpuMaterialData(),
       subs_.rayShadowManager->surfaceInstanceMetadata(image));
   pass.record(command, image);
@@ -222,7 +248,7 @@ void RendererFrontend::collectReferenceDiagnostics(uint32_t image) {
   if (!pass || image >= referenceDiagnosticSeen_.size()) return;
   const auto serial = pass->diagnosticSubmission(image);
   if (!serial || referenceDiagnosticSeen_[image] == serial) return;
-  pass->collectOidnTiming(image);
+  pass->collectDenoiserTiming(image);
   referenceDiagnosticSeen_[image] = serial;
   const auto epoch = pass->diagnosticEpoch(image);
   if (epoch != pass->historyResets()) return;
@@ -233,6 +259,11 @@ void RendererFrontend::collectReferenceDiagnostics(uint32_t image) {
   const auto diagnostics = pass->diagnostics(image);
   referenceUnsupported_ += diagnostics.unsupportedSamples;
   referenceRejected_ += diagnostics.rejectedSamples;
+  if (diagnostics.rejectedSamples != 0)
+    std::fprintf(stderr,
+        "[ReferencePath] rejected=%u accepted=%u unsupported=%u failureStages=0x%08x epoch=%llu submission=%llu\n",
+        diagnostics.rejectedSamples, diagnostics.acceptedSamples, diagnostics.unsupportedSamples,
+        diagnostics.failureStages, static_cast<unsigned long long>(epoch), static_cast<unsigned long long>(serial));
 }
 
 void RendererFrontend::updateReferenceSampleBudget(float lightingMs) {

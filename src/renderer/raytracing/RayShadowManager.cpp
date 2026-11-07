@@ -163,6 +163,7 @@ struct RayShadowManager::Impl {
     std::shared_ptr<const Buffer> surfaceTriangles;
     std::unique_ptr<Buffer> surfaceInstances;
     std::vector<RayInstanceData> surfaceMetadata;
+    uint64_t surfaceTopology{};
     bool hasSurfaceData{false};
   };
   struct Slot {
@@ -392,6 +393,11 @@ std::span<const RayInstanceData> RayShadowManager::surfaceInstanceMetadata(uint3
   if (!surfaceBindings(image))
     return {};
   return impl_->slots[image].generation->surfaceMetadata;
+}
+RaySurfaceMotionSnapshot RayShadowManager::surfaceMotionSnapshot(uint32_t image) const {
+  if (!surfaceBindings(image)) return {};
+  const auto& generation = impl_->slots[image].generation;
+  return {generation, generation->surfaceTopology};
 }
 const std::string &RayShadowManager::surfaceUnsupportedReason() const {
   return impl_->surfaceUnsupported;
@@ -882,6 +888,21 @@ void RayShadowManager::recordBuild(VkCommandBuffer cmd, uint32_t image) {
              p.pending->instances.instanceData.size()))
       throw std::runtime_error("incomplete ray scene surface metadata");
     generation->hasSurfaceData = geometry.hasSurfaceData;
+    if (geometry.hasSurfaceData) {
+      uint64_t topology = hashValue(14695981039346656037ull, geometry.geometry.size());
+      for (const auto& entry : geometry.geometry) {
+        topology = hashValue(topology, entry.provider.value.size());
+        for (const char byte : entry.provider.value)
+          topology = hashValue(topology, byte);
+        topology = hashValue(topology, entry.id);
+        topology = hashValue(topology, entry.indexOrderHash);
+      }
+      for (const auto& instance : p.pending->instances.instances) {
+        topology = hashValue(topology, instance.geometryIndex);
+        topology = hashValue(topology, instance.sourceObjectIndex);
+      }
+      generation->surfaceTopology = topology;
+    }
     // Triangle UV metadata is immutable with the compact geometry. Share it
     // through the same fence-retained generations as reused BLAS allocations.
     if (p.current && p.current->geometry.lock() == p.pending->geometry) {

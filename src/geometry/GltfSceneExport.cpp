@@ -7,8 +7,13 @@
 #include <Container/geometry/GltfAccessor.h>
 #include <Container/geometry/GltfInstancing.h>
 #include <Container/geometry/GltfLinkedAssets.h>
+#include <Container/geometry/GltfNodeExportCompaction.h>
 #include <Container/geometry/GltfXmpMetadata.h>
 #include <Container/utility/SourcePrimitiveMapping.h>
+
+#include "GltfLinkedExportResources.h"
+#include "GltfSkinExportAffine.h"
+#include "GltfSkinExportAnimation.h"
 
 #include <stb_image_write.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -27,6 +32,7 @@
 #include <iomanip>
 #include <limits>
 #include <map>
+#include <ranges>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -392,6 +398,13 @@ bool matrixFinite(const glm::dmat4& matrix) {
   return true;
 }
 
+glm::dmat4 inverseAffine(const glm::dmat4& matrix) {
+  const auto inverseLinear = glm::inverse(glm::dmat3(matrix));
+  glm::dmat4 inverse(inverseLinear);
+  inverse[3] = glm::dvec4(-inverseLinear * glm::dvec3(matrix[3]), 1);
+  return inverse;
+}
+
 glm::dmat4 sourceTransform(const tinygltf::Node& node) {
   glm::dmat4 matrix(1);
   if (!node.matrix.empty()) {
@@ -611,6 +624,329 @@ void retargetChannel(tinygltf::AnimationChannel& channel, ChannelTarget target, 
   extension["pointer"] = tinygltf::Value(std::move(pointer));
   channel.target_extensions_json_string.clear();
 }
+
+bool isTransformTarget(const ChannelTarget& target) {
+  return target.table == TargetTable::Node &&
+      (target.property == "translation" || target.property == "rotation" || target.property == "scale");
+}
+
+struct PostSkinExport {
+  int primitive;
+  int owner;
+};
+
+constexpr auto kPostSkinLimits = GltfResourceExportCompactionLimits{};
+constexpr size_t kMaxPostSkinEntries = kPostSkinLimits.maxTableEntries;
+
+int appendSkinNode(tinygltf::Model& model, int parent, tinygltf::Node node) {
+  if (model.nodes.size() >= kMaxPostSkinEntries)
+    fail("edited skin hierarchy exceeds the export node capacity");
+  const int index = static_cast<int>(model.nodes.size());
+  model.nodes.push_back(std::move(node));
+  if (parent >= 0) model.nodes[size_t(parent)].children.push_back(index);
+  return index;
+}
+
+std::array<glm::dmat4, 2> skinTransformFactors(const glm::dmat4& transform) {
+  const auto factors = detail::factorSkinExportAffine(transform);
+  if (!factors) fail("edited skin transform cannot be expressed as finite glTF TRS nodes");
+  return *factors;
+}
+
+glm::dmat4 skinAffineTransform(const tinygltf::Node& node) {
+  auto transform = sourceTransform(node);
+  // The editor uses a binary32 inverse to preserve world placement during
+  // reparenting. Its homogeneous 1 can acquire roundoff even on affine input.
+  if (transform[0].w != 0 || transform[1].w != 0 || transform[2].w != 0 ||
+      std::abs(transform[3].w - 1) > 8 * std::numeric_limits<float>::epsilon())
+    fail("edited skin transform must be affine");
+  transform[3].w = 1;
+  return transform;
+}
+
+int appendSkinTransform(tinygltf::Model& model, int parent, tinygltf::Node node,
+                        const glm::dmat4& transform) {
+  const auto [first, second] = skinTransformFactors(transform);
+  if (second == glm::dmat4(1)) {
+    if (first != glm::dmat4(1)) setMatrix(node, first);
+  } else {
+    tinygltf::Node wrapper;
+    wrapper.name = node.name + " basis";
+    setMatrix(wrapper, first);
+    parent = appendSkinNode(model, parent, std::move(wrapper));
+    setMatrix(node, second);
+  }
+  return appendSkinNode(model, parent, std::move(node));
+}
+
+int appendInverseSkinSampler(tinygltf::Model& model, tinygltf::Animation& animation,
+                             int samplerIndex, const ChannelTarget& target, size_t& remainingBytes) {
+  auto sampler = animation.samplers.at(size_t(samplerIndex));
+  const CheckedAccessor reader(model, sampler.output, "edited skin animation",
+      {AccessorUsage::Generic, HasRequiredExtension(model, "KHR_accessor_float64")});
+  const auto count = reader.count();
+  const auto components = reader.components();
+  if (count > kMaxPostSkinEntries)
+    fail("edited skin animation exceeds the export sample capacity");
+  const auto type = reader.accessor().type;
+  const bool isDouble = reader.accessor().componentType == TINYGLTF_COMPONENT_TYPE_DOUBLE;
+  const size_t byteCount = count * components * (isDouble ? sizeof(double) : sizeof(float));
+  if (byteCount > remainingBytes) fail("edited skin animations exceed the export payload capacity");
+  remainingBytes -= byteCount;
+  std::vector<double> values(count * components);
+  for (size_t i = 0; i < count; ++i)
+    reader.readDoubles(i, std::span(values).subspan(i * components, components));
+  const auto component = target.tokens.size() > target.indexToken + 2
+      ? std::optional<size_t>(pointerIndex(target.tokens[target.indexToken + 2])) : std::nullopt;
+  const auto inverse = detail::inverseSkinExportAnimationSamples(
+      std::move(values), target.property,
+      sampler.interpolation.empty() ? "LINEAR" : sampler.interpolation, component);
+  if (!inverse)
+    fail("edited skin owner has a singular or continuously varying scale that cannot be inverted in glTF");
+  if (model.accessors.size() >= kMaxPostSkinEntries || model.bufferViews.size() >= kMaxPostSkinEntries ||
+      animation.samplers.size() >= kMaxPostSkinEntries)
+    fail("edited skin animation exceeds the export sampler capacity");
+  Bytes bytes;
+  bytes.reserve(byteCount);
+  for (const auto value : *inverse) {
+    if (isDouble) appendScalar(bytes, value);
+    else {
+      if (std::abs(value) > std::numeric_limits<float>::max() || (value != 0 && float(value) == 0))
+        fail("edited skin inverse animation is outside the glTF FLOAT range");
+      appendScalar(bytes, float(value));
+    }
+  }
+  if (isDouble) alignBuffer(model.buffers.front().data, alignof(double));
+  sampler.output = appendAccessor(model, std::move(bytes), count, type,
+      isDouble ? TINYGLTF_COMPONENT_TYPE_DOUBLE : TINYGLTF_COMPONENT_TYPE_FLOAT, 0);
+  const int result = static_cast<int>(animation.samplers.size());
+  animation.samplers.push_back(std::move(sampler));
+  return result;
+}
+
+// A skinned glTF mesh is placed by the joints. Give an edited primitive its own
+// skeleton with joint worlds P * inverse(O) * J, where P is the primitive world
+// transform and O is its original owner world transform.
+void reconcileDeformationTransforms(tinygltf::Model& model, std::span<const PostSkinExport> edits,
+                                    const std::set<int>& interactiveTransforms,
+                                    std::map<int, std::vector<int>>& morphNodes,
+                                    const SceneExportSnapshot& snapshot) {
+  std::set<int> animated;
+  std::set<int> weights;
+  for (const auto& animation : model.animations)
+    for (const auto& channel : animation.channels) {
+      const auto target = channelTarget(channel);
+      if (isTransformTarget(target)) animated.insert(target.index);
+      if (target.table == TargetTable::Node && target.property == "weights" &&
+          !snapshot.graph.isNodeRetired(uint32_t(target.index)) &&
+          (snapshot.sourceResourceMasks.nodes.empty() || snapshot.sourceResourceMasks.nodes[size_t(target.index)] != 0))
+        weights.insert(target.index);
+    }
+  if (edits.empty() && weights.empty()) return;
+  if (model.nodes.size() >= kMaxPostSkinEntries)
+    fail("deformation hierarchy exceeds the export node capacity");
+  std::vector<int> parents(model.nodes.size(), -1);
+  for (size_t i = 0; i < parents.size(); ++i)
+    for (const int child : model.nodes[i].children) parents.at(size_t(child)) = static_cast<int>(i);
+
+  std::map<int, std::vector<int>> forwardTargets;
+  std::map<int, std::vector<std::array<int, 3>>> inverseTargets;
+  std::map<int, int> meshTargets;
+  std::set<int> matrixNodes;
+  size_t remainingSteps = kPostSkinLimits.maxTraversalSteps;
+  const auto parentOf = [&](int node) {
+    if (remainingSteps == 0) fail("edited skin hierarchy exceeds the export traversal capacity");
+    --remainingSteps;
+    return parents[size_t(node)];
+  };
+  const auto markPath = [&](int node) {
+    for (; node >= 0 && matrixNodes.insert(node).second; node = parentOf(node)) {}
+  };
+  const auto checkClone = [&](int source) {
+    if (interactiveTransforms.contains(source))
+      fail("edited skin cannot duplicate a transform written by KHR_interactivity");
+  };
+  const auto transformNode = [&](int source, std::string_view suffix) {
+    tinygltf::Node node;
+    node.name = model.nodes[size_t(source)].name + std::string(suffix);
+    return node;
+  };
+
+  for (const auto& [primitive, owner] : edits) {
+    auto& carrier = model.nodes[size_t(primitive)];
+    auto skin = model.skins.at(size_t(carrier.skin));
+    glm::dmat4 world(1);
+    for (int source = primitive; source >= 0; source = parentOf(source))
+      world = skinAffineTransform(model.nodes[size_t(source)]) * world;
+    if (!matrixFinite(world) || !matrixFinite(inverseAffine(glm::dmat4(glm::mat4(world)))))
+      fail("edited skinned primitive has a singular or unrepresentable world transform");
+    tinygltf::Node mesh;
+    mesh.name = carrier.name + " skinned mesh";
+    mesh.mesh = std::exchange(carrier.mesh, -1);
+    carrier.skin = -1;
+    mesh.weights = std::exchange(carrier.weights, {});
+    if (auto instance = carrier.extensions.extract("EXT_mesh_gpu_instancing"); !instance.empty()) {
+      auto& attributes = instance.mapped().Get<tinygltf::Value::Object>()
+          .at("attributes").Get<tinygltf::Value::Object>();
+      for (const auto* semantic : {"TRANSLATION", "ROTATION", "SCALE"}) attributes.erase(semantic);
+      if (!attributes.empty()) mesh.extensions.insert(std::move(instance));
+    }
+    if (model.skins.size() >= kMaxPostSkinEntries)
+      fail("edited skins exceed the export skin capacity");
+    mesh.skin = static_cast<int>(model.skins.size());
+    meshTargets.emplace(primitive, appendSkinNode(model, primitive, std::move(mesh)));
+    const int root = appendSkinNode(model, primitive, transformNode(primitive, " skin rig"));
+    markPath(primitive);
+    markPath(owner);
+
+    // Cancel the common world prefix before generating inverses. In particular,
+    // animation on shared rig ancestors requires no reciprocal scale channels.
+    std::map<int, size_t> ownerPath;
+    for (int node = owner; node >= 0; node = parentOf(node))
+      ownerPath.emplace(node, ownerPath.size());
+    int common = owner;
+    for (const int joint : skin.joints) {
+      markPath(joint);
+      int ancestor = joint;
+      while (ancestor >= 0 && !ownerPath.contains(ancestor)) ancestor = parentOf(ancestor);
+      if (ancestor < 0 || (common >= 0 && ownerPath.at(ancestor) > ownerPath.at(common))) common = ancestor;
+    }
+
+    int parent = root;
+    for (int source = owner; source != common; source = parentOf(source)) {
+      checkClone(source);
+      const auto& original = model.nodes[size_t(source)];
+      if (!animated.contains(source)) {
+        const auto local = skinAffineTransform(original);
+        parent = appendSkinTransform(model, parent, transformNode(source, " inverse"), inverseAffine(local));
+        continue;
+      }
+
+      // Inverse(T * R * S) = inverse(S) * inverse(R) * inverse(T). Keeping
+      // each property on its own node preserves its source interpolation.
+      auto scale = transformNode(source, " inverse scale");
+      auto rotation = transformNode(source, " inverse rotation");
+      auto translation = transformNode(source, " inverse translation");
+      scale.scale = original.scale.empty() ? std::vector<double>{1, 1, 1} : original.scale;
+      rotation.rotation = original.rotation.empty() ? std::vector<double>{0, 0, 0, 1} : original.rotation;
+      translation.translation = original.translation.empty() ? std::vector<double>{0, 0, 0} : original.translation;
+      for (auto& value : scale.scale) {
+        value = 1.0 / value;
+        if (!std::isfinite(value) || std::abs(value) > std::numeric_limits<float>::max())
+          fail("edited skin owner has a singular or unrepresentable scale");
+      }
+      for (size_t i = 0; i < 3; ++i) {
+        rotation.rotation[i] = -rotation.rotation[i];
+        translation.translation[i] = -translation.translation[i];
+      }
+      const int s = appendSkinNode(model, parent, std::move(scale));
+      const int r = appendSkinNode(model, s, std::move(rotation));
+      const int t = appendSkinNode(model, r, std::move(translation));
+      inverseTargets[source].push_back({t, r, s});
+      parent = t;
+    }
+
+    std::map<int, int> clones{{common, parent}};
+    for (auto& joint : skin.joints) {
+      std::vector<int> path;
+      for (int source = joint; !clones.contains(source); source = parentOf(source))
+        path.push_back(source);
+      for (const int source : path | std::views::reverse) {
+        checkClone(source);
+        const int cloneParent = clones.at(parentOf(source));
+        const auto& original = model.nodes[size_t(source)];
+        auto node = transformNode(source, " skin joint");
+        int clone;
+        if (animated.contains(source)) {
+          node.translation = original.translation;
+          node.rotation = original.rotation;
+          node.scale = original.scale;
+          clone = appendSkinNode(model, cloneParent, std::move(node));
+          forwardTargets[source].push_back(clone);
+        } else {
+          const auto transform = skinAffineTransform(original);
+          clone = appendSkinTransform(model, cloneParent, std::move(node), transform);
+        }
+        clones.emplace(source, clone);
+      }
+      joint = clones.at(joint);
+    }
+    const auto skeleton = clones.find(skin.skeleton);
+    skin.skeleton = skin.skeleton >= 0 && skeleton != clones.end() ? skeleton->second : root;
+    model.skins.push_back(std::move(skin));
+  }
+
+  // The same placement hierarchy must be portable even when an editor affine
+  // has shear or the source node is itself a weights-animation target.
+  matrixNodes.insert(weights.begin(), weights.end());
+  for (const int source : matrixNodes) {
+    auto& node = model.nodes[size_t(source)];
+    if (node.matrix.empty()) continue;
+    const auto [first, second] = skinTransformFactors(skinAffineTransform(node));
+    const bool weightTarget = weights.contains(source) && !meshTargets.contains(source);
+    if (second == glm::dmat4(1) && !weightTarget) {
+      node.matrix.back() = 1;
+      continue;
+    }
+    tinygltf::Node wrapper = transformNode(source, " transform basis");
+    wrapper.children = {source};
+    if (weightTarget) node.matrix.clear();
+    else setMatrix(node, second);
+    if (first == glm::dmat4(1) && second == glm::dmat4(1)) continue;
+    setMatrix(wrapper, first);
+    const int entry = appendSkinNode(model, -1, std::move(wrapper));
+    const int parent = parentOf(source);
+    if (parent >= 0) std::ranges::replace(model.nodes[size_t(parent)].children, source, entry);
+    else for (auto& scene : model.scenes) std::ranges::replace(scene.nodes, source, entry);
+    if (weightTarget && second != glm::dmat4(1)) {
+      tinygltf::Node remainder = transformNode(source, " transform rotation");
+      remainder.children = {source};
+      setMatrix(remainder, second);
+      model.nodes[size_t(entry)].children.front() = appendSkinNode(model, -1, std::move(remainder));
+    }
+  }
+
+  if (edits.empty()) return;
+  for (auto& [source, destinations] : morphNodes)
+    for (auto& destination : destinations)
+      if (const auto mesh = meshTargets.find(destination); mesh != meshTargets.end()) destination = mesh->second;
+
+  size_t remainingBytes = kPostSkinLimits.maxPayloadBytes;
+  for (auto& animation : model.animations) {
+    const size_t originalCount = animation.channels.size();
+    std::map<std::pair<int, std::string>, int> inverseSamplers;
+    for (size_t i = 0; i < originalCount; ++i) {
+      const auto channel = animation.channels[i];
+      const auto target = channelTarget(channel);
+      if (target.table != TargetTable::Node) continue;
+      const auto appendChannel = [&](int node, int sampler) {
+        if (animation.channels.size() >= kMaxPostSkinEntries)
+          fail("edited skin animation exceeds the export channel capacity");
+        auto copy = channel;
+        copy.sampler = sampler;
+        retargetChannel(copy, target, node);
+        animation.channels.push_back(std::move(copy));
+      };
+      if (target.property == "weights") {
+        if (const auto mesh = meshTargets.find(target.index); mesh != meshTargets.end())
+          retargetChannel(animation.channels[i], target, mesh->second);
+      } else if (isTransformTarget(target)) {
+        if (const auto forward = forwardTargets.find(target.index); forward != forwardTargets.end())
+          for (const int node : forward->second) appendChannel(node, channel.sampler);
+        if (const auto inverse = inverseTargets.find(target.index); inverse != inverseTargets.end()) {
+          auto key = target.property;
+          if (target.tokens.size() > target.indexToken + 2) key += "/" + target.tokens[target.indexToken + 2];
+          auto [sampler, inserted] = inverseSamplers.try_emplace({channel.sampler, std::move(key)}, -1);
+          if (inserted)
+            sampler->second = appendInverseSkinSampler(model, animation, channel.sampler, target, remainingBytes);
+          const size_t slot = target.property == "translation" ? 0 : target.property == "rotation" ? 1 : 2;
+          for (const auto& nodes : inverse->second) appendChannel(nodes[slot], sampler->second);
+        }
+      }
+    }
+  }
+}
+
 bool resourceHoles(const SceneExportSnapshot& snapshot,const tinygltf::Model& source) {
   const auto check=[](std::span<const uint8_t> mask,size_t count) {
     if((!mask.empty() && mask.size()!=count) || !std::ranges::all_of(mask,[](uint8_t x){return x<=1;}))
@@ -861,6 +1197,7 @@ std::vector<double> animationRestValue(const tinygltf::Model& rest,
     if (target.kind == AnimationTargetKind::NodeScale) return vectorOr(node.scale, 1);
     if (target.kind == AnimationTargetKind::NodeRotation)
       return node.rotation.empty() ? std::vector<double>{0,0,0,1} : vectorOr(node.rotation, 0);
+    if (target.kind == AnimationTargetKind::NodeFlag) return ReadAnimationTarget(rest, target);
     if (target.kind == AnimationTargetKind::NodeWeights) {
       if (!node.weights.empty()) return vectorOr(node.weights, 0);
       if (node.mesh < 0 || size_t(node.mesh) >= rest.meshes.size())
@@ -922,14 +1259,16 @@ void appendAnimationRestores(tinygltf::Model& model, const tinygltf::Model& rest
         model.accessors[size_t(timeAccessor)].maxValues = {0};
       }
       const auto append = [&](std::optional<size_t> element) {
+        const auto& target = property.target;
+        const bool nodeFlag = target.kind == AnimationTargetKind::NodeFlag;
         Bytes bytes;
         for (size_t c = 0; c < values.size(); ++c) {
           if (element && c != *element) continue;
           if (!std::isfinite(values[c]) || std::abs(values[c]) > std::numeric_limits<float>::max())
             fail("authored animation rest value cannot be represented by a finite FLOAT restore channel");
-          appendScalar(bytes, static_cast<float>(values[c]));
+          if (nodeFlag) appendScalar(bytes, static_cast<uint8_t>(values[c] != 0));
+          else appendScalar(bytes, static_cast<float>(values[c]));
         }
-        const auto& target = property.target;
         const size_t width = element ? 1 : target.components;
         int type = TINYGLTF_TYPE_SCALAR;
         if (target.kind != AnimationTargetKind::NodeWeights) {
@@ -942,14 +1281,14 @@ void appendAnimationRestores(tinygltf::Model& model, const tinygltf::Model& rest
         sampler.input = timeAccessor;
         sampler.output = appendAccessor(model, std::move(bytes),
             target.kind == AnimationTargetKind::NodeWeights ? width : 1,
-            type, TINYGLTF_COMPONENT_TYPE_FLOAT, 0);
+            type, nodeFlag ? TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE : TINYGLTF_COMPONENT_TYPE_FLOAT, 0);
         sampler.interpolation = "STEP";
         tinygltf::AnimationChannel channel;
         channel.sampler = static_cast<int>(animation.samplers.size());
         const bool node = target.kind == AnimationTargetKind::NodeTranslation ||
             target.kind == AnimationTargetKind::NodeRotation || target.kind == AnimationTargetKind::NodeScale ||
-            target.kind == AnimationTargetKind::NodeWeights;
-        if (node && !element) {
+            target.kind == AnimationTargetKind::NodeWeights || nodeFlag;
+        if (node && !element && !nodeFlag) {
           channel.target_node = static_cast<int>(target.index);
           channel.target_path = target.property;
         } else {
@@ -1141,21 +1480,17 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
   if (!snapshot.sourceNodeIndices.empty() &&
       snapshot.sourceNodeIndices.size() != snapshot.graph.nodeCount())
     fail("source node mapping must cover every runtime node");
+  if (!snapshot.omitNodeMeshes.empty() &&
+      (snapshot.omitNodeMeshes.size() != snapshot.graph.nodeCount() ||
+       std::ranges::any_of(snapshot.omitNodeMeshes, [](uint8_t value) { return value > 1; })))
+    fail("linked payload mask must cover every runtime node");
+  if (snapshot.resourceIndexMaps) *snapshot.resourceIndexMaps = {};
   auto scenePlacements = validateSceneRoots(snapshot);
   tinygltf::Model output;
   if (snapshot.source) output = *snapshot.source;
   output.asset.version = "2.0";
   if (output.asset.generator.empty()) output.asset.generator = "Container scene editor";
   const bool compactResources=resourceHoles(snapshot,output);
-  if (hasBehavior) {
-    bool compactNodes = false;
-    for (uint32_t i = 0; i < snapshot.graph.nodeCount() && !compactNodes; ++i)
-      compactNodes = snapshot.graph.isNodeRetired(i);
-    if (compactResources || compactNodes ||
-        std::ranges::find(snapshot.sourceResourceMasks.nodes, uint8_t{0}) != snapshot.sourceResourceMasks.nodes.end() ||
-        std::ranges::find(snapshot.sourceResourceMasks.materials, uint8_t{0}) != snapshot.sourceResourceMasks.materials.end())
-      fail("KHR_interactivity export requires unretired node and resource indices");
-  }
   if(compactResources) {omitInactiveSourceChannels(output,snapshot);packBuffers(output,snapshot.sourcePath);}
   else packResources(output, snapshot.sourcePath);
   // Validate source tracks while their original material/node index spaces
@@ -1230,10 +1565,13 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
       fail("source node mapping must not contain duplicate source nodes");
   }
   std::set<int> animatedTransforms;
+  std::set<int> interactiveTransforms;
   if (hasBehavior) {
     try {
-      for (const auto node : GltfInteractivityTransformNodes(*snapshot.source))
+      for (const auto node : GltfInteractivityTransformNodes(*snapshot.source)) {
         animatedTransforms.insert(static_cast<int>(node));
+        interactiveTransforms.insert(mappedNode(sourceToRuntime, static_cast<int>(node)));
+      }
     } catch (const std::invalid_argument& error) {
       fail("invalid KHR_interactivity export graph: " + std::string(error.what()));
     }
@@ -1241,9 +1579,7 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
   for (const auto& animation : output.animations)
     for (const auto& channel : animation.channels) {
       const auto target = channelTarget(channel);
-      if (target.table == TargetTable::Node &&
-          (target.property == "translation" || target.property == "rotation" || target.property == "scale"))
-        animatedTransforms.insert(target.index);
+      if (isTransformTarget(target)) animatedTransforms.insert(target.index);
     }
   for (auto& skin : output.skins) {
     for (auto& joint : skin.joints) joint = mappedNode(sourceToRuntime, joint);
@@ -1252,8 +1588,8 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
   std::map<int, std::vector<int>> morphNodes;
   const auto sourceInstancing=snapshot.source ? ParseMeshGpuInstancing(*snapshot.source) : GltfInstancingData{};
   std::map<std::pair<int,uint32_t>,int> singletonAttributes;
-  bool hasExportedInstancing=false;
   std::map<int, glm::dmat4> corrections;
+  std::vector<PostSkinExport> postSkinEdits;
   for (uint32_t i = 0; i < snapshot.graph.nodeCount(); ++i) {
     const auto& current = *snapshot.graph.getNode(i);
     auto& node = output.nodes[i];
@@ -1277,7 +1613,7 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
       const auto pose = sourceTransform(node);
       const glm::dmat4 edited(current.localTransform);
       if (!snapshot.graph.isNodeRetired(i) && !matrixNear(edited, pose)) {
-        const auto inverse = glm::inverse(pose);
+        const auto inverse = inverseAffine(pose);
         if (!matrixFinite(inverse)) fail("edited animated transform cannot be corrected at a singular pose");
         const auto correction = edited * inverse;
         if (!matrixFinite(correction)) fail("animated editor correction is outside the finite runtime range");
@@ -1300,7 +1636,7 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
     setLocalNodeFlag(node, "KHR_node_visibility", "visible", current.visible);
     setLocalNodeFlag(node, "KHR_node_selectability", "selectable", current.selectable);
     setLocalNodeFlag(node, "KHR_node_hoverability", "hoverable", current.hoverable);
-    if (current.renderable) {
+    if (current.renderable && (snapshot.omitNodeMeshes.empty() || !snapshot.omitNodeMeshes[i])) {
       if (current.primitiveIndex >= snapshot.geometry.meshes().size())
         fail("renderable node references an invalid runtime primitive");
       if (current.materialIndex >= output.materials.size())
@@ -1352,7 +1688,6 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
             auto extension=instance.extensions.at("EXT_mesh_gpu_instancing");
             extension.Get<tinygltf::Value::Object>()["attributes"]=tinygltf::Value(std::move(attributes));
             node.extensions["EXT_mesh_gpu_instancing"]=std::move(extension);
-            hasExportedInstancing=true;
             const auto inverse=glm::inverse(glm::dmat4(*instanceLocal));
             if(!matrixFinite(inverse)) fail("singular source instance export requires geometry baking");
             setMatrix(node,matrixNear(glm::dmat4(current.localTransform),glm::dmat4(*instanceLocal))
@@ -1364,13 +1699,15 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
             uint32_t ancestor = i;
             while (!snapshot.graph.isNodeRetired(i) && ancestor != owner) {
               if (ancestor == scene::SceneGraph::kInvalidNode ||
-                  !matrixNear(glm::dmat4(snapshot.graph.getNode(ancestor)->localTransform),
-                      ancestor==i && instanceLocal ? glm::dmat4(*instanceLocal) : glm::dmat4(1)))
-                fail("post-skin primitive transforms or reparenting require baking before export");
+                  snapshot.graph.getNode(ancestor)->localTransform !=
+                      (ancestor == i && instanceLocal ? *instanceLocal : glm::mat4(1))) break;
               const int identity = snapshot.sourceNodeIndices.empty() ? -1 : snapshot.sourceNodeIndices[ancestor];
-              if (animatedTransforms.contains(identity))
-                fail("animated post-skin primitive transforms require baking before export");
+              if (animatedTransforms.contains(identity)) break;
               ancestor = snapshot.graph.getNode(ancestor)->parent;
+            }
+            if (!snapshot.graph.isNodeRetired(i) && ancestor != owner) {
+              if (instanceLocal) setMatrix(node, glm::dmat4(current.localTransform));
+              postSkinEdits.push_back({static_cast<int>(i), static_cast<int>(owner)});
             }
             node.skin = instance.skin;
           }
@@ -1412,14 +1749,6 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
   }
   if (snapshot.source)
     CopyMaterialVariantMetadataForExport(output,ParseMaterialVariants(*snapshot.source),snapshot.sourceMaterialToRuntimeIndices,variantExports);
-  if(hasExportedInstancing) {
-    for(auto* declarations:{&output.extensionsUsed,&output.extensionsRequired})
-      if(std::ranges::find(*declarations,"EXT_mesh_gpu_instancing")==declarations->end())
-        declarations->push_back("EXT_mesh_gpu_instancing");
-  } else {
-    std::erase(output.extensionsUsed,"EXT_mesh_gpu_instancing");
-    std::erase(output.extensionsRequired,"EXT_mesh_gpu_instancing");
-  }
   std::map<int, int> entries;
   for (const auto& [nodeIndex, correction] : corrections) {
     tinygltf::Node wrapper;
@@ -1510,6 +1839,17 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
     }
     animation.channels = std::move(channels);
   }
+  reconcileDeformationTransforms(output, postSkinEdits, interactiveTransforms, morphNodes, snapshot);
+  if (std::ranges::any_of(output.nodes, [](const auto& node) {
+        return node.extensions.contains("EXT_mesh_gpu_instancing");
+      })) {
+    for (auto* declarations : {&output.extensionsUsed, &output.extensionsRequired})
+      if (std::ranges::find(*declarations, "EXT_mesh_gpu_instancing") == declarations->end())
+        declarations->push_back("EXT_mesh_gpu_instancing");
+  } else {
+    std::erase(output.extensionsUsed, "EXT_mesh_gpu_instancing");
+    std::erase(output.extensionsRequired, "EXT_mesh_gpu_instancing");
+  }
   for (const auto* extension : {"KHR_node_visibility", "KHR_node_selectability", "KHR_node_hoverability"})
     if (std::ranges::any_of(output.nodes, [&](const auto& node) { return node.extensions.contains(extension); }) &&
         std::ranges::find(output.extensionsUsed, extension) == output.extensionsUsed.end())
@@ -1524,9 +1864,9 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
         {nodeMap, output.nodes.size()},
         {weightsMap, output.nodes.size()},
         {snapshot.sourceMaterialToRuntimeIndices, output.materials.size()},
-        // Renderer light export can independently clone a shared source
-        // definition for each edited binding after this projection.
-        {{}, 0},
+        // The light overlay subsequently projects these stable source rows to
+        // the definitions actually bound by the exported nodes.
+        {{}, output.lights.size()},
         {{}, output.cameras.size()},
         {{}, output.animations.size()},
     }};
@@ -1534,7 +1874,7 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
       output.extensions[kGltfInteractivityExtension] = RemapGltfInteractivity(*snapshot.source, mappings, &output);
       if (std::ranges::find(output.extensionsUsed, kGltfInteractivityExtension) == output.extensionsUsed.end())
         output.extensionsUsed.emplace_back(kGltfInteractivityExtension);
-      output.extensions_json_string.clear();
+      if (!output.extensions.contains(kGltfXmpExtension)) output.extensions_json_string.clear();
       ValidateGltfInteractivity(output);
     } catch (const std::invalid_argument& error) {
       fail(error.what());
@@ -1551,6 +1891,14 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
           (snapshot.sourceResourceMasks.nodes.empty() || snapshot.sourceResourceMasks.nodes[node]!=0);
     auto masks=snapshot.sourceResourceMasks;masks.nodes=nodes;
     const auto resources=PlanGltfResourceExportCompaction(output,masks,limits);
+    if (auto* maps = snapshot.resourceIndexMaps) {
+      const auto images = resources.oldToNewImages();
+      const auto textures = resources.oldToNewTextures();
+      const auto samplers = resources.oldToNewSamplers();
+      maps->images.assign(images.begin(), images.end());
+      maps->textures.assign(textures.begin(), textures.end());
+      maps->samplers.assign(samplers.begin(), samplers.end());
+    }
     ApplyGltfResourceExportCompaction(output,resources);
     packImagesAndAudio(output,snapshot.sourcePath);
   }
@@ -1579,9 +1927,12 @@ void writeLinkedSceneManifest(const GltfLinkedCompositionInfo& composition,
   replaceFile(staged, absolute);
 }
 
-void writeExportModel(const tinygltf::Model& packedModel,
+namespace {
+
+void writePackedScene(const tinygltf::Model& packedModel,
                       const std::filesystem::path& destination,
-                      const GltfLegacyMaterialSerializationLimits& legacyLimits) {
+                      const GltfLegacyMaterialSerializationLimits& legacyLimits,
+                      const nlohmann::json& linkedPatch = {}) {
   const auto extension = lower(destination.extension().string());
   if (extension != ".gltf" && extension != ".glb")
     fail("destination must have a .gltf or .glb extension");
@@ -1613,6 +1964,7 @@ void writeExportModel(const tinygltf::Model& packedModel,
   StagingDirectory staging(absolute.parent_path());
   const auto stagedFile = staging.path / absolute.filename();
   const bool binary = extension == ".glb";
+  if (binary && !linkedPatch.empty()) fail("linked companions must use .gltf");
   std::string dependency;
   if (!binary && !model.buffers.empty()) {
     dependency = resourceName(model.buffers.front().data);
@@ -1627,10 +1979,104 @@ void writeExportModel(const tinygltf::Model& packedModel,
   if (!std::filesystem::is_regular_file(stagedFile) ||
       std::filesystem::file_size(stagedFile) == 0)
     fail("serializer produced no scene file");
+  if (!linkedPatch.empty()) {
+    if (std::filesystem::file_size(stagedFile) > legacyLimits.maxJsonBytes)
+      fail("staged linked scene exceeds the JSON byte budget");
+    std::ifstream input(stagedFile, std::ios::binary);
+    auto document = nlohmann::json::parse(input);
+    input.close();
+    ApplyGltfLinkedHybridManifest(document, linkedPatch);
+    const auto serialized = document.dump();
+    if (serialized.size() >= legacyLimits.maxJsonBytes)
+      fail("linked scene exceeds the JSON byte budget");
+    std::ofstream output(stagedFile, std::ios::binary | std::ios::trunc);
+    output << serialized << '\n';
+    output.close();
+    if (!output) fail("serializer could not write the staged linked scene");
+  }
   if (!dependency.empty())
     installResource(staging.path / dependency, absolute.parent_path() / dependency,
                      model.buffers.front().data);
   replaceFile(stagedFile, absolute);
+}
+
+std::vector<int32_t> linkedNodeCut(const tinygltf::Model& model, std::span<const uint8_t> graphMask) {
+  if (graphMask.size() > model.nodes.size() ||
+      model.nodes.size() > size_t(std::numeric_limits<int32_t>::max()))
+    fail("linked cut has an invalid node table");
+  std::vector<uint8_t> cut(model.nodes.size());
+  std::vector<int32_t> retired;
+  for (size_t i = 0; i < graphMask.size(); ++i) {
+    if (graphMask[i] > 1) fail("linked cut has an invalid graph mask");
+    if (!graphMask[i]) continue;
+    cut[i] = 1;
+    retired.push_back(static_cast<int32_t>(i));
+  }
+  for (size_t i = 0; i < retired.size(); ++i) {
+    for (const int child : model.nodes[size_t(retired[i])].children) {
+      if (child < 0 || size_t(child) >= cut.size()) fail("linked cut has an invalid child");
+      if (cut[size_t(child)]) continue;
+      if (size_t(child) < graphMask.size()) fail("linked cut crosses editable hierarchy");
+      cut[size_t(child)] = 1;
+      retired.push_back(child);
+    }
+  }
+  return retired;
+}
+
+void projectLinkedRange(GltfLinkedIndexRange& range, std::span<const int32_t> map) {
+  if (!range.count || map.empty()) return;
+  if (range.first < 0 || size_t(range.first) >= map.size() ||
+      range.count > map.size() - size_t(range.first))
+    fail("linked resource range is outside the export map");
+  const auto indices = map.subspan(size_t(range.first), range.count);
+  if (indices.front() < 0) fail("linked resource was retired in the portable projection");
+  for (size_t i = 0; i < indices.size(); ++i)
+    if (indices[i] < 0 || size_t(indices[i]) != size_t(indices.front()) + i)
+      fail("linked resources lost their contiguous export range");
+  range.first = indices.front();
+}
+
+}  // namespace
+
+void writeExportModel(const tinygltf::Model& packedModel,
+                      const std::filesystem::path& destination,
+                      const GltfLegacyMaterialSerializationLimits& legacyLimits) {
+  writePackedScene(packedModel, destination, legacyLimits);
+}
+
+void writeLinkedHybridScene(tinygltf::Model model, const GltfLinkedHybridExport& options,
+                            const std::filesystem::path& destination) {
+  std::vector<GltfLinkedHybridCarrier> carriers(options.carriers.begin(), options.carriers.end());
+  const auto retired = linkedNodeCut(model, options.prunedGraphNodes);
+  if (!retired.empty() || !options.linkedContexts.empty()) {
+    auto compacted = CompactGltfExportNodes(model, retired);
+    for (auto& carrier : carriers) {
+      if (carrier.outputNode < 0 || size_t(carrier.outputNode) >= compacted.oldToNewNodes.size())
+        fail("linked carrier is outside the export node table");
+      carrier.outputNode = compacted.oldToNewNodes[size_t(carrier.outputNode)];
+      if (carrier.outputNode < 0) fail("linked carrier was cut from the export");
+    }
+    model = std::move(compacted.model);
+    std::erase_if(model.animations, [](const auto& animation) { return animation.channels.empty(); });
+  }
+  const auto patch = BuildGltfLinkedHybridManifest(options.composition, carriers, destination);
+  std::vector<GltfLinkedSourceOwnership> contexts;
+  contexts.reserve(options.linkedContexts.size());
+  for (const auto id : options.linkedContexts) {
+    if (id >= options.composition.sourceContexts.size()) fail("linked resource context is outside the export");
+    const auto& source = options.composition.sourceContexts[id];
+    auto& context = contexts.emplace_back(GltfLinkedSourceOwnership{
+        .images = source.images, .samplers = source.samplers, .textures = source.textures,
+        .materials = source.materials, .cameras = source.cameras, .lights = source.lights,
+        .variants = source.variants, .xmpPackets = source.xmpPackets, .extensionLights = source.extensionLights});
+    projectLinkedRange(context.images, options.resourceIndexMaps.images);
+    projectLinkedRange(context.textures, options.resourceIndexMaps.textures);
+    projectLinkedRange(context.samplers, options.resourceIndexMaps.samplers);
+  }
+  detail::compactLinkedExportResources(model, contexts,
+      options.sourceMaterialToExport, options.retiredMaterials, options.animatedLinkedMaterials);
+  writePackedScene(model, destination, {}, patch);
 }
 
 }  // namespace container::geometry::gltf

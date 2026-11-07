@@ -6,10 +6,14 @@
 #include <glm/gtc/packing.hpp>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -17,7 +21,6 @@ using namespace container::renderer;
 using namespace container::gpu;
 
 constexpr FsrUpscalerSettings settings{{64, 48}, {128, 96}, true};
-constexpr VkDeviceSize outputBytes = VkDeviceSize(settings.displayExtent.width) * settings.displayExtent.height * 8;
 
 struct Image {
   FsrImage resource;
@@ -73,16 +76,28 @@ protected:
       if (*physical) break;
     }
     ASSERT_TRUE(bool(*physical));
+    const auto extensions = physical.enumerateDeviceExtensionProperties();
+    if (std::none_of(extensions.begin(), extensions.end(), [](const auto& extension) {
+          return std::strcmp(extension.extensionName, VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME) == 0;
+        }))
+      GTEST_SKIP() << "FSR SDK 2.4.0 requires VK_KHR_compute_shader_derivatives";
+    VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR derivatives{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR};
     VkPhysicalDeviceVulkan11Features v11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+    v11.pNext = &derivatives;
     VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, &v11};
     VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, &v12};
     VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &v13};
     vkGetPhysicalDeviceFeatures2(*physical, &features);
+    if (!derivatives.computeDerivativeGroupLinear)
+      GTEST_SKIP() << "FSR SDK 2.4.0 requires computeDerivativeGroupLinear";
+    derivatives.computeDerivativeGroupQuads = VK_FALSE;
     ASSERT_TRUE(features.features.shaderStorageImageExtendedFormats);
     const float priority = 1.0f;
     const vk::DeviceQueueCreateInfo queueInfo({}, family, 1, &priority);
-    const auto extension = VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME;
-    const vk::DeviceCreateInfo deviceInfo({}, 1, &queueInfo, 0, nullptr, 1, &extension, nullptr, &features);
+    const std::array enabledExtensions{VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME, VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME};
+    const vk::DeviceCreateInfo deviceInfo({}, 1, &queueInfo, 0, nullptr,
+        static_cast<uint32_t>(enabledExtensions.size()), enabledExtensions.data(), nullptr, &features);
     device = vk::raii::Device(physical, deviceInfo);
     queue = vk::raii::Queue(device, family, 0);
     memory = std::make_unique<VulkanMemoryManager>(instance->instance(), *physical, *device);
@@ -93,6 +108,10 @@ protected:
     timestamps = vk::raii::QueryPool(device, vk::QueryPoolCreateInfo({}, vk::QueryType::eTimestamp, 2));
     upscaler = std::make_unique<FsrUpscaler>(*physical, *device, container::util::executableDirectory());
     ASSERT_TRUE(upscaler->prepare(settings)) << upscaler->status();
+    if (physical.getProperties().vendorID == 0x10de) {
+      ASSERT_EQ(upscaler->status(), "FSR 3.1.6 is ready (SDK 2.4.0)");
+      ASSERT_EQ(upscaler->outputFormat(), VK_FORMAT_R32G32B32A32_SFLOAT);
+    }
   }
 
   void TearDown() override {
@@ -178,12 +197,87 @@ protected:
 
 TEST(FsrUpscalerAvailability, InvalidDeviceLeavesBackendInactive) {
   FsrUpscaler upscaler(VK_NULL_HANDLE, VK_NULL_HANDLE, {});
+  EXPECT_EQ(upscaler.outputFormat(), VK_FORMAT_R16G16B16A16_SFLOAT);
   EXPECT_FALSE(upscaler.prepare(settings));
   EXPECT_FALSE(upscaler.available());
   EXPECT_FALSE(upscaler.nextJitterPixels().has_value());
   EXPECT_EQ(upscaler.record({}), FsrDispatchResult::Unavailable);
   EXPECT_FALSE(upscaler.status().empty());
 }
+
+#ifdef _WIN32
+class IsolatedFsrRuntime {
+public:
+  IsolatedFsrRuntime() {
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    directory = container::util::executableDirectory() / ("fsr-runtime-test-" + std::to_string(stamp));
+    if (!std::filesystem::create_directory(directory)) throw std::runtime_error("Could not create isolated FSR runtime");
+  }
+  ~IsolatedFsrRuntime() {
+    std::error_code error;
+    const auto root = std::filesystem::weakly_canonical(container::util::executableDirectory(), error);
+    if (error) { ADD_FAILURE() << "Cannot resolve FSR test root: " << error.message(); return; }
+    const auto target = std::filesystem::weakly_canonical(directory, error);
+    if (error || target.parent_path() != root || !target.filename().string().starts_with("fsr-runtime-test-")) {
+      ADD_FAILURE() << "Refusing to clean an invalid isolated FSR runtime path";
+      return;
+    }
+    std::filesystem::remove_all(target, error);
+    EXPECT_FALSE(error) << "Could not clean isolated FSR runtime: " << error.message();
+  }
+  std::filesystem::path containing(std::string_view name, std::initializer_list<const char*> modules) const {
+    const auto path = directory / name;
+    std::filesystem::create_directory(path);
+    for (const auto module : modules)
+      std::filesystem::copy_file(container::util::executableDirectory() / module, path / module);
+    return path;
+  }
+private:
+  std::filesystem::path directory;
+};
+
+TEST_F(FsrVulkan, RequiresBothRuntimeModulesAndReleasesFailedCandidateLeases) {
+  upscaler.reset();
+  ASSERT_EQ(GetModuleHandleW(L"amd_fidelityfx_loader_vk.dll"), nullptr);
+  ASSERT_EQ(GetModuleHandleW(L"amd_fidelityfx_upscaler_vk.dll"), nullptr);
+  IsolatedFsrRuntime runtime;
+  const auto missingLoader = runtime.containing("missing-loader", {"amd_fidelityfx_upscaler_vk.dll"});
+  const auto missingEffect = runtime.containing("missing-upscaler", {"amd_fidelityfx_loader_vk.dll"});
+  for (const auto& path : {missingLoader, missingEffect}) {
+    FsrUpscaler candidate(*physical, *device, path);
+    EXPECT_FALSE(candidate.prepare(settings));
+    EXPECT_FALSE(candidate.available());
+    EXPECT_FALSE(candidate.nextJitterPixels());
+    EXPECT_EQ(candidate.record({}), FsrDispatchResult::Unavailable);
+  }
+  ASSERT_EQ(GetModuleHandleW(L"amd_fidelityfx_loader_vk.dll"), nullptr);
+  ASSERT_EQ(GetModuleHandleW(L"amd_fidelityfx_upscaler_vk.dll"), nullptr);
+  const auto complete = runtime.containing("complete", {"amd_fidelityfx_loader_vk.dll", "amd_fidelityfx_upscaler_vk.dll"});
+  {
+    FsrUpscaler candidate(*physical, *device, complete);
+    ASSERT_TRUE(candidate.prepare(settings)) << candidate.status();
+    EXPECT_TRUE(candidate.available());
+    EXPECT_TRUE(candidate.nextJitterPixels());
+  }
+  EXPECT_EQ(GetModuleHandleW(L"amd_fidelityfx_loader_vk.dll"), nullptr);
+  EXPECT_EQ(GetModuleHandleW(L"amd_fidelityfx_upscaler_vk.dll"), nullptr);
+}
+
+TEST_F(FsrVulkan, RejectsDifferentDirectoryModulesWithoutDisturbingLiveBackend) {
+  const auto before = upscaler->nextJitterPixels();
+  const std::string status(upscaler->status());
+  IsolatedFsrRuntime runtime;
+  const auto other = runtime.containing("other-directory", {"amd_fidelityfx_loader_vk.dll", "amd_fidelityfx_upscaler_vk.dll"});
+  {
+    FsrUpscaler candidate(*physical, *device, other);
+    EXPECT_FALSE(candidate.prepare(settings));
+    EXPECT_FALSE(candidate.available());
+  }
+  EXPECT_TRUE(upscaler->available());
+  EXPECT_EQ(upscaler->nextJitterPixels(), before);
+  EXPECT_EQ(upscaler->status(), status);
+}
+#endif
 
 TEST_F(FsrVulkan, UpscalesHdrAndRecreatesAnAbandonedRecording) {
   FsrUpscaler missing(*physical, *device, container::util::executableDirectory() / "no-fsr-sdk");
@@ -198,7 +292,11 @@ TEST_F(FsrVulkan, UpscalesHdrAndRecreatesAnAbandonedRecording) {
   frame.motion = image(VK_FORMAT_R16G16_SFLOAT, settings.renderExtent, inputs);
   frame.reactive = image(VK_FORMAT_R8_UNORM, settings.renderExtent, inputs);
   frame.transparency = image(VK_FORMAT_R8_UNORM, settings.renderExtent, inputs);
-  frame.output = image(VK_FORMAT_R16G16B16A16_SFLOAT, settings.displayExtent,
+  const auto outputFormat = upscaler->outputFormat();
+  ASSERT_TRUE(outputFormat == VK_FORMAT_R16G16B16A16_SFLOAT || outputFormat == VK_FORMAT_R32G32B32A32_SFLOAT);
+  const VkDeviceSize outputBytes = VkDeviceSize(settings.displayExtent.width) * settings.displayExtent.height *
+      (outputFormat == VK_FORMAT_R32G32B32A32_SFLOAT ? 16u : 8u);
+  frame.output = image(outputFormat, settings.displayExtent,
       VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
   ASSERT_FALSE(::testing::Test::HasFailure());
   readback = memory->createBuffer(outputBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO,
@@ -231,6 +329,10 @@ TEST_F(FsrVulkan, UpscalesHdrAndRecreatesAnAbandonedRecording) {
     auto bad = frame;
     --bad.output.extent.width;
     EXPECT_EQ(upscaler->record(bad), FsrDispatchResult::InvalidInput);
+    bad = frame;
+    bad.output.format = outputFormat == VK_FORMAT_R32G32B32A32_SFLOAT ?
+        VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R32G32B32A32_SFLOAT;
+    EXPECT_EQ(upscaler->record(bad), FsrDispatchResult::InvalidInput);
     vkCmdResetQueryPool(*command, *timestamps, 0, 2);
     vkCmdWriteTimestamp2(*command, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, *timestamps, 0);
     ASSERT_EQ(upscaler->record(frame), FsrDispatchResult::Recorded) << upscaler->status();
@@ -254,17 +356,22 @@ TEST_F(FsrVulkan, UpscalesHdrAndRecreatesAnAbandonedRecording) {
     submit();
     ASSERT_FALSE(::testing::Test::HasFailure());
     ASSERT_EQ(vmaInvalidateAllocation(memory->allocator(), readback.allocation, 0, outputBytes), VK_SUCCESS);
-    const auto* pixels = static_cast<const uint16_t*>(readback.allocation_info.pMappedData);
+    const auto component = [&](uint32_t index) {
+      if (outputFormat == VK_FORMAT_R32G32B32A32_SFLOAT)
+        return static_cast<const float*>(readback.allocation_info.pMappedData)[index];
+      return glm::unpackHalf1x16(static_cast<const uint16_t*>(readback.allocation_info.pMappedData)[index]);
+    };
     for (uint32_t pixel = 0; pixel < settings.displayExtent.width * settings.displayExtent.height; ++pixel) {
-      ASSERT_NEAR(glm::unpackHalf1x16(pixels[4 * pixel]), 0.25f, 0.02f);
-      ASSERT_NEAR(glm::unpackHalf1x16(pixels[4 * pixel + 1]), 0.5f, 0.02f);
-      ASSERT_NEAR(glm::unpackHalf1x16(pixels[4 * pixel + 2]), 2.0f, 0.04f);
+      ASSERT_NEAR(component(4 * pixel), 0.25f, 0.02f);
+      ASSERT_NEAR(component(4 * pixel + 1), 0.5f, 0.02f);
+      ASSERT_NEAR(component(4 * pixel + 2), 2.0f, 0.04f);
     }
     ASSERT_EQ(vkGetQueryPoolResults(*device, *timestamps, 0, 2, sizeof(ticks), ticks.data(),
         sizeof(uint64_t), VK_QUERY_RESULT_64_BIT), VK_SUCCESS);
     EXPECT_GT(ticks[1], ticks[0]);
   }
-  std::printf("Vulkan FSR 3.1.4, 64x48 to 128x96, last dispatch %.3f ms\n",
+  std::printf("Vulkan %.*s, 64x48 to 128x96, last dispatch %.3f ms\n",
+      static_cast<int>(upscaler->status().size()), upscaler->status().data(),
       (ticks[1] - ticks[0]) * physical.getProperties().limits.timestampPeriod / 1e6);
   command.reset();
   command.begin(vk::CommandBufferBeginInfo{});
@@ -273,6 +380,7 @@ TEST_F(FsrVulkan, UpscalesHdrAndRecreatesAnAbandonedRecording) {
   command.reset();
   EXPECT_FALSE(upscaler->available());
   ASSERT_TRUE(upscaler->prepare(settings)) << upscaler->status();
+  EXPECT_EQ(upscaler->outputFormat(), outputFormat);
   EXPECT_EQ(upscaler->nextJitterPixels(), firstJitter);
 }
 

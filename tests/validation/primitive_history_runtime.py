@@ -120,6 +120,60 @@ def deformation(renderer, output):
     return len(frames)
 
 
+def reused_geometry(renderer, output):
+    source = output / 'reuse-receiver.gltf'
+    fixture(source)
+    options = (*LIGHT, '--no-ray-query')
+    control = run(renderer, output, 'reuse-baseline', source, 'deferred-raster',
+                  [2], extra=options, fix_camera=True)[2]
+    base = topology(control)
+    births = list(range(3, 18, 2))
+    undos = [frame + 1 for frame in births[:-1]]
+    events = [dict(frame=frame, addPrimitive=dict(kind='torus', name=f'Torus {frame}'))
+              for frame in births]
+    events.extend(action(frame, 'undo') for frame in undos)
+    events.append(dict(frame=18, addPrimitive=dict(kind='torus', name='Second torus')))
+    move = np.eye(4)
+    move[0, 3] = 1.4
+    events.extend([
+        dict(frame=19, nodeTransform=dict(node=dict(graphNode=base[0] + 1), matrix=columns(move))),
+        action(20, 'undo'), action(21, 'undo'), action(22, 'redo'), action(23, 'redo'),
+    ])
+    frames = run(renderer, output, 'reused-procedural-geometry', source, 'deferred-raster',
+                 list(range(2, 24)), sorted(events, key=lambda event: event['frame']),
+                 options, fix_camera=True)
+    assert topology(frames[2]) == base
+    exact(control, frames[2])
+    single = topology(frames[3])
+    assert single[:2] == (base[0] + 1, base[1] + 1)
+    assert single[2] > base[2] and single[3] > base[3], (base, single)
+    visibly_changed(frames[2], frames[3])
+    for frame in births:
+        assert topology(frames[frame]) == single
+        assert frames[frame][1]['gltfScenes']['editHistoryDepth'] == 1
+        exact(frames[3], frames[frame])
+    for frame in undos:
+        assert topology(frames[frame]) == (*base[:2], *single[2:])
+        exact(frames[2], frames[frame])
+
+    # The simultaneous placements have one geometry allocation and distinct
+    # picks. Moving one changes the image, with exact undo and redo.
+    assert topology(frames[19]) == (base[0] + 2, base[1] + 2, *single[2:])
+    toruses = [item for item in frames[19][1]['gltfNodeFlags']['probes']
+               if item['sourceName'] in ('Torus 17', 'Second torus')]
+    assert len(toruses) == 2 and toruses[0]['graphNode'] != toruses[1]['graphNode']
+    assert all(item['projected'] and item['hit'] and
+               item['resolvedSelection'] == item['nearestHitGraphNode'] == item['graphNode']
+               for item in toruses), toruses
+    assert topology(frames[21]) == single
+    exact(frames[17], frames[21])
+    exact(frames[18], frames[20])
+    exact(frames[18], frames[22])
+    exact(frames[19], frames[23])
+    visibly_changed(frames[18], frames[19])
+    return len(frames) + 1
+
+
 def temporal_lighting(renderer, output):
     frames = run(renderer, output, 'temporal-lighting', output / 'receiver.gltf',
                  'deferred-raster', [2, 4, 6, 8], [
@@ -140,10 +194,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--renderer', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--reuse-only', action='store_true')
     args = parser.parse_args()
     renderer, output = args.renderer.resolve(strict=True), args.output.resolve()
     output.mkdir(parents=True)
     (output / 'vk_layer_settings.txt').write_text('khronos_validation.validate_sync = true\n')
+    results = {'reuse': reused_geometry(renderer, output)}
+    print('PASS shared primitive geometry across divergent branches and replay', flush=True)
+    if args.reuse_only:
+        (output / 'results.json').write_text(json.dumps(dict(passed=True, captures=results), indent=2))
+        return
     # Keep one non-primary triangle in the ray scene while editing an empty
     # primary graph. The triangle sits beyond the camera frustum.
     source = output / 'sidecar.ifcx'
@@ -152,7 +212,6 @@ def main():
         'usd::usdgeom::mesh': {'points': [[20, 0, 0], [21, 0, 0], [20, 0, 1]],
                                'faceVertexIndices': [0, 1, 2]},
     }}]})
-    results = {}
     for technique in ('deferred-raster', 'forward-raster', 'path-tracing'):
         results[technique] = empty_scene(renderer, output, source, technique)
         print(f'PASS {technique} empty scene, selection, and divergent history', flush=True)

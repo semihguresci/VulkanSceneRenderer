@@ -17,7 +17,9 @@ include("${CMAKE_CURRENT_LIST_DIR}/OpenVdbDependencies.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/NanoVdbDependencies.cmake")
 
 # ── Find Vulkan SDK ──────────────────────────────────────────────────────────
+include("${CMAKE_CURRENT_LIST_DIR}/VulkanSdkCore.cmake")
 find_package(Vulkan 1.4 REQUIRED)
+include("${CMAKE_CURRENT_LIST_DIR}/VulkanLoaderRuntime.cmake")
 
 if(Vulkan_FOUND)
     message(STATUS "✅ Vulkan found - Version: ${Vulkan_VERSION}")
@@ -25,33 +27,9 @@ else()
     message(FATAL_ERROR "❌ Vulkan not found - Please install Vulkan SDK and set VULKAN_SDK")
 endif()
 
-# ── Vulkan Memory Allocator ──────────────────────────────────────────────────
-find_package(VulkanMemoryAllocator CONFIG REQUIRED)
-
-message(STATUS "---- VMA targets check ----")
-if(TARGET GPUOpen::VulkanMemoryAllocator)
-  message(STATUS "Found target: GPUOpen::VulkanMemoryAllocator")
-endif()
-if(TARGET VulkanMemoryAllocator::VulkanMemoryAllocator)
-  message(STATUS "Found target: VulkanMemoryAllocator::VulkanMemoryAllocator")
-endif()
-if(TARGET VulkanMemoryAllocator)
-  message(STATUS "Found target: VulkanMemoryAllocator")
-endif()
-message(STATUS "---------------------------")
-
-set(VMA_TARGET "")
-if(TARGET GPUOpen::VulkanMemoryAllocator)
-  set(VMA_TARGET GPUOpen::VulkanMemoryAllocator)
-elseif(TARGET VulkanMemoryAllocator::VulkanMemoryAllocator)
-  set(VMA_TARGET VulkanMemoryAllocator::VulkanMemoryAllocator)
-elseif(TARGET VulkanMemoryAllocator)
-  set(VMA_TARGET VulkanMemoryAllocator)
-else()
-  message(FATAL_ERROR "VMA found but no known imported target name is available.")
-endif()
-get_target_property(_vma_includes ${VMA_TARGET} INTERFACE_INCLUDE_DIRECTORIES)
-message(STATUS "VMA include dirs: ${_vma_includes}")
+# ── Pinned GLM and Vulkan Memory Allocator ───────────────────────────────────
+include("${CMAKE_CURRENT_LIST_DIR}/CoreLibraryDependencies.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/ActiveLibraryDependencies.cmake")
 
 # ── Validation layers ────────────────────────────────────────────────────────
 option(ENABLE_VULKAN_VALIDATION_LAYERS "Enable Vulkan validation layers" ON)
@@ -101,9 +79,7 @@ endif()
 
 # ── Find all required packages ───────────────────────────────────────────────
 set(REQUIRED_PACKAGES
-    VulkanMemoryAllocator
     MaterialX
-    glm
     earcut_hpp
     manifold
     fmt
@@ -155,44 +131,23 @@ function(container_stage_runtime_dlls target)
                     -P "${CMAKE_SOURCE_DIR}/cmake/StageNanoVdbRuntime.cmake"
                 VERBATIM)
         endif()
+        container_stage_vulkan_loader_runtime(${target})
     endif()
 endfunction()
 
-# Handle TinyGLTF separately
-find_package(tinygltf CONFIG QUIET)
-if(NOT tinygltf_FOUND)
-    find_path(TINYGLTF_INCLUDE_DIRS "tiny_gltf.h")
-    if(TINYGLTF_INCLUDE_DIRS)
-        add_library(tinygltf INTERFACE)
-        target_include_directories(tinygltf INTERFACE ${TINYGLTF_INCLUDE_DIRS})
-        add_library(tinygltf::tinygltf ALIAS tinygltf)
-        message(STATUS "✅ TinyGLTF found (manual)")
-    else()
-        message(WARNING "⚠️ TinyGLTF not found - some features may be disabled")
-    endif()
-endif()
+include("${CMAKE_CURRENT_LIST_DIR}/SceneIoLibraryDependencies.cmake")
 
-find_package(tinyexr CONFIG QUIET)
-find_package(miniz CONFIG QUIET)
-if(tinyexr_FOUND)
-    if(TARGET unofficial::tinyexr::tinyexr AND NOT TARGET tinyexr::tinyexr)
-        add_library(tinyexr::tinyexr ALIAS unofficial::tinyexr::tinyexr)
-    endif()
-    message(STATUS "✅ TinyEXR found (config)")
-else()
-    find_path(TINYEXR_INCLUDE_DIRS "tinyexr.h")
-    find_path(MINIZ_INCLUDE_DIRS "miniz.h" PATH_SUFFIXES miniz)
-    if(TINYEXR_INCLUDE_DIRS)
-        add_library(tinyexr INTERFACE)
-        target_include_directories(tinyexr INTERFACE
-            ${TINYEXR_INCLUDE_DIRS}
-            $<$<BOOL:${MINIZ_INCLUDE_DIRS}>:${MINIZ_INCLUDE_DIRS}>)
-        add_library(tinyexr::tinyexr ALIAS tinyexr)
-        message(STATUS "✅ TinyEXR found (manual): ${TINYEXR_INCLUDE_DIRS}")
-    else()
-        message(WARNING "⚠️ TinyEXR not found - HDR environment loading will be disabled")
-    endif()
-endif()
+include("${CMAKE_CURRENT_LIST_DIR}/MergeSelectedDependencyIndices.cmake")
+set(_container_selected_runtime_versions
+    fmt=12.2.0 spdlog=1.17.0 glfw3=3.5.1 imgui=1.93.0 materialx=1.39.5
+    miniz=3.1.2 stb=snapshot-4e9b368bfc071e97206ea5c6adba68dd0cbf8897
+    entt=4.0.0 nlohmann-json=3.12.0 tinygltf=3.1.0 tinyexr=3.4.0)
+container_merge_selected_dependency_indices(
+    "${CMAKE_BINARY_DIR}/third_party_licenses/selected-dependencies.json"
+    "${_container_selected_runtime_versions}"
+    "${CMAKE_BINARY_DIR}/third_party_licenses/selected-active-dependencies.json"
+    "${CMAKE_BINARY_DIR}/selected-ecs-json-dependencies.json"
+    "${CMAKE_BINARY_DIR}/selected-import-dependencies.json")
 
 find_path(STB_INCLUDE_DIRS stb_image.h PATH_SUFFIXES stb)
 if(STB_INCLUDE_DIRS)
@@ -277,7 +232,8 @@ endif()
 
 # -- Dep_VulkanCore: Vulkan SDK + VMA ----------------------------------------
 add_library(Dep_VulkanCore INTERFACE)
-target_include_directories(Dep_VulkanCore INTERFACE ${Vulkan_INCLUDE_DIRS})
+target_include_directories(Dep_VulkanCore BEFORE INTERFACE
+    "${CONTAINER_GLM_INCLUDE_DIR}" "${CONTAINER_VMA_INCLUDE_DIR}" ${Vulkan_INCLUDE_DIRS})
 target_link_libraries(Dep_VulkanCore INTERFACE
     Vulkan::Vulkan
     $<IF:$<TARGET_EXISTS:Vulkan::Headers>,Vulkan::Headers,>
@@ -293,7 +249,8 @@ target_compile_definitions(Dep_VulkanCore INTERFACE
 
 # -- Dep_Math: GLM with project-wide defines --------------------------------
 add_library(Dep_Math INTERFACE)
-target_link_libraries(Dep_Math INTERFACE glm::glm)
+target_include_directories(Dep_Math BEFORE INTERFACE "${CONTAINER_GLM_INCLUDE_DIR}")
+target_link_libraries(Dep_Math INTERFACE glm::glm-header-only)
 target_compile_definitions(Dep_Math INTERFACE
     GLM_FORCE_COLUMN_MAJOR
     GLM_FORCE_DEPTH_ZERO_TO_ONE
@@ -348,7 +305,9 @@ include("${CMAKE_CURRENT_LIST_DIR}/PhysicsDependencies.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/GltfCompressionDependencies.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/TextureCodecDependencies.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/ReferenceOidnDependencies.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/ReferenceOptixDependencies.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/FsrUpscalerDependencies.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/DlssUpscalerDependencies.cmake")
 
 # ── Summary
 message(STATUS "--------------------------------------------------")

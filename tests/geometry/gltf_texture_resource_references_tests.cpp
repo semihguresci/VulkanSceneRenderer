@@ -36,6 +36,19 @@ void pointer(tinygltf::Model& model,std::string path) {
   channel.target_extensions["KHR_animation_pointer"]=Value(Object{{"pointer",Value(std::move(path))}});
   model.animations[0].channels.push_back(std::move(channel));
 }
+Value behaviorGraph(std::string path) {
+  return Value(Object{
+      {"types",Value(Value::Array{Value(Object{{"signature",Value(std::string("float"))}}),
+          Value(Object{{"signature",Value(std::string("ref"))}})})},
+      {"declarations",Value(Value::Array{Value(Object{{"op",Value(std::string("pointer/get"))}})})},
+      {"nodes",Value(Value::Array{Value(Object{{"declaration",Value(0)},
+          {"configuration",Value(Object{{"pointer",Value(Object{{"value",Value(Value::Array{Value(std::move(path))})}})},
+              {"type",Value(Object{{"value",Value(Value::Array{Value(0)})}})}})}})})}});
+}
+void behavior(tinygltf::Model& model,Value::Array graphs) {
+  declare(model,"KHR_interactivity");
+  model.extensions["KHR_interactivity"]=Value(Object{{"graphs",Value(std::move(graphs))}});
+}
 
 TEST(GltfTextureResourceReferences,RawCoreExtensionsAndShadowedLegacyIndicesAllRemainDependencies) {
   auto sourceModel=model();auto& m=sourceModel.materials[0];
@@ -194,7 +207,7 @@ TEST(GltfTextureResourceReferences,UnknownPointerSuffixesNeverInheritKnownOwnerC
       "/materials/0/extensions/KHR_materials_specular/futureTexture",
       "/materials/0/normalTexture/extensions/KHR_texture_transform/texCoord",
       "/materials/0/normalTexture/extensions/KHR_texture_transform/futureIndex",
-      "/materials/0/extras/texture","/nodes/0/translation/extra","/nodes/0/extensions/KHR_node_visibility/visible",
+      "/materials/0/extras/texture","/nodes/0/translation/extra","/nodes/0/extensions/KHR_node_visibility/futureFlag",
       "/cameras/0/perspective/texture","/extensions/KHR_lights_punctual/lights/0/cookie",
       "/extensions/KHR_lights_area/lights/0/intensity","/images/0/name","/textures/0/name","/samplers/0/wrapS"}) {
     SCOPED_TRACE(path);auto sourceModel=model();sourceModel.nodes.resize(1);sourceModel.cameras.resize(1);sourceModel.lights.resize(1);
@@ -229,18 +242,146 @@ TEST(GltfTextureResourceReferences,PointerOwnerBoundsPhasesAndVectorComponentsAr
 TEST(GltfTextureResourceReferences,SharedNonResourcePointerClassifierUsesTheSameGrammarWithoutAllocation) {
   auto source=model();source.nodes.resize(1);source.cameras.resize(1);source.cameras[0].type="perspective";
   const std::string longUnknown="/materials/0/"+std::string(4096,'x');
-  bool material{},transform{},node{},camera{},unknown{},resource{},bounds{},escaped{};size_t attempts{};
+  bool material{},transform{},node{},visible{},selectable{},hoverable{},flagComponent{},camera{},unknown{},resource{},bounds{},escaped{};size_t attempts{};
   {material_publication_test::AllocationGuard deny(true);
     material=IsSupportedGltfNonResourceAnimationPointer(source,"/materials/0/pbrMetallicRoughness/roughnessFactor");
     transform=IsSupportedGltfNonResourceAnimationPointer(source,"/materials/0/normalTexture/extensions/KHR_texture_transform/offset/1");
     node=IsSupportedGltfNonResourceAnimationPointer(source,"/nodes/0/translation/2");
+    visible=IsSupportedGltfNonResourceAnimationPointer(source,"/nodes/0/extensions/KHR_node_visibility/visible");
+    selectable=IsSupportedGltfNonResourceAnimationPointer(source,"/nodes/0/extensions/KHR_node_selectability/selectable");
+    hoverable=IsSupportedGltfNonResourceAnimationPointer(source,"/nodes/0/extensions/KHR_node_hoverability/hoverable");
+    flagComponent=IsSupportedGltfNonResourceAnimationPointer(source,"/nodes/0/extensions/KHR_node_visibility/visible/0");
     camera=IsSupportedGltfNonResourceAnimationPointer(source,"/cameras/0/perspective/yfov");
     unknown=IsSupportedGltfNonResourceAnimationPointer(source,longUnknown);
     resource=IsSupportedGltfNonResourceAnimationPointer(source,"/textures/0/name");
     bounds=IsSupportedGltfNonResourceAnimationPointer(source,"/nodes/0/rotation/0");
     escaped=IsSupportedGltfNonResourceAnimationPointer(source,"/materials/0/emissiveFactor~2");attempts=deny.allocations();}
   EXPECT_TRUE(material);EXPECT_TRUE(transform);EXPECT_TRUE(node);EXPECT_TRUE(camera);
+  EXPECT_TRUE(visible);EXPECT_TRUE(selectable);EXPECT_TRUE(hoverable);EXPECT_FALSE(flagComponent);
   EXPECT_FALSE(unknown);EXPECT_FALSE(resource);EXPECT_FALSE(bounds);EXPECT_FALSE(escaped);EXPECT_EQ(attempts,0u);
+}
+
+TEST(GltfTextureResourceReferences,BehaviorGraphsProveAllSupportedNumericDomainsAndTypedObjectReferences) {
+  auto source=model();source.nodes.resize(1);source.cameras.resize(1);source.cameras[0].type="perspective";
+  source.lights.resize(1);source.lights[0].type="spot";source.animations.resize(1);
+  Value::Array graphs;
+  for(const auto* path:{"/materials/0/pbrMetallicRoughness/roughnessFactor",
+      "/materials/0/normalTexture/extensions/KHR_texture_transform/offset/1",
+      "/nodes/0/translation/2","/nodes/0/extensions/KHR_node_visibility/visible",
+      "/cameras/0/perspective/yfov","/extensions/KHR_lights_punctual/lights/0/color/2"})
+    graphs.push_back(behaviorGraph(path));
+  Value::Array variables;
+  for(const auto* ref:{"/nodes/0","/materials/1","/cameras/0","/extensions/KHR_lights_punctual/lights/0","/animations/0"})
+    variables.push_back(Value(Object{{"type",Value(1)},{"value",Value(Value::Array{Value(std::string(ref))})}}));
+  graphs[0].Get<Object>()["variables"]=Value(std::move(variables));
+  graphs[0].Get<Object>()["events"]=Value(Value::Array{Value(Object{{"id",Value(std::string("demo"))},
+      {"values",Value(Object{{"target",Value(Object{{"type",Value(1)},{"value",Value(Value::Array{Value(std::string("/materials/0"))})}})}})}})});
+  graphs[0].Get<Object>()["extras"]=Value(Object{{"index",Value(999)},{"pointer",Value(std::string("/textures/999"))}});
+  behavior(source,std::move(graphs));
+  const auto proof=ExtractGltfTextureResourceReferences(source);
+  EXPECT_TRUE(proof.complete());EXPECT_TRUE(proof.sourceReferences().empty());
+  auto& variableType=source.extensions.at("KHR_interactivity").Get<Object>().at("graphs").Get<Value::Array>()[0]
+      .Get<Object>().at("variables").Get<Value::Array>()[0].Get<Object>().at("type").Get<int>();
+  bool matches{},stale{};size_t attempts{};
+  {material_publication_test::AllocationGuard deny(true);
+    matches=GltfTextureResourceReferencesMatch(source,{},proof);
+    variableType=0;
+    stale=GltfTextureResourceReferencesMatch(source,{},proof);attempts=deny.allocations();}
+  EXPECT_TRUE(matches);EXPECT_FALSE(stale);EXPECT_EQ(attempts,0u);
+}
+
+TEST(GltfTextureResourceReferences,InactiveBehaviorGraphsCannotHideUnknownOperationsOrResourcePaths) {
+  for(const auto* path:{"/materials/0/pbrMetallicRoughness/baseColorTexture/index",
+      "/materials/0/normalTexture/extensions/KHR_texture_transform/texCoord",
+      "/textures/4/source","/extensions/VENDOR_state/texture"}) {
+    SCOPED_TRACE(path);auto source=model();
+    behavior(source,{behaviorGraph("/materials/0/emissiveFactor"),behaviorGraph(path)});
+    EXPECT_THROW((void)ExtractGltfTextureResourceReferences(source),std::invalid_argument);
+    GltfTextureResourceReferenceLimits limits;limits.policy=GltfTextureResourceReferencePolicy::RecordIncomplete;
+    const auto proof=ExtractGltfTextureResourceReferences(source,{},limits);
+    ASSERT_FALSE(proof.complete());ASSERT_EQ(proof.incompleteReasons().size(),1u);
+    bool matches{};size_t attempts{};
+    {material_publication_test::AllocationGuard deny(true);
+      matches=GltfTextureResourceReferencesMatch(source,{},proof);attempts=deny.allocations();}
+    EXPECT_TRUE(matches);EXPECT_EQ(attempts,0u);
+  }
+  auto source=model();auto inactive=behaviorGraph("/materials/0/emissiveFactor");
+  inactive.Get<Object>().at("declarations").Get<Value::Array>()[0].Get<Object>().at("op")=Value(std::string("pointer/futureResourceWrite"));
+  behavior(source,{behaviorGraph("/materials/0/emissiveFactor"),std::move(inactive)});
+  EXPECT_THROW((void)ExtractGltfTextureResourceReferences(source),std::invalid_argument);
+  GltfTextureResourceReferenceLimits limits;limits.policy=GltfTextureResourceReferencePolicy::RecordIncomplete;
+  const auto proof=ExtractGltfTextureResourceReferences(source,{},limits);
+  ASSERT_FALSE(proof.complete());ASSERT_EQ(proof.incompleteReasons().size(),1u);
+  EXPECT_EQ(proof.incompleteReasons()[0].kind,GltfTextureResourceIncompleteKind::UnknownExtension);
+}
+
+TEST(GltfTextureResourceReferences,BehaviorDynamicObjectIdsProveEveryOwnerAndRetirementPhaseWithoutAllocation) {
+  auto source=model();source.nodes.resize(1);source.cameras.resize(1);source.cameras[0].type="perspective";
+  source.lights.resize(1);source.lights[0].type="spot";
+  behavior(source,{behaviorGraph("/materials/{material}/normalTexture/extensions/KHR_texture_transform/scale"),
+      behaviorGraph("/nodes/{node}/translation"),behaviorGraph("/cameras/{camera}/perspective/yfov"),
+      behaviorGraph("/extensions/KHR_lights_punctual/lights/{light}/intensity")});
+  const auto proof=ExtractGltfTextureResourceReferences(source);EXPECT_TRUE(proof.complete());
+  bool matches{};size_t attempts{};
+  {material_publication_test::AllocationGuard deny(true);
+    matches=GltfTextureResourceReferencesMatch(source,{},proof);attempts=deny.allocations();}
+  EXPECT_TRUE(matches);EXPECT_EQ(attempts,0u);
+  const std::array<uint8_t,2> materials{1,0};GltfTextureResourceMasks masks;masks.materials=materials;
+  EXPECT_THROW((void)ExtractGltfTextureResourceReferences(source,masks),std::invalid_argument);
+  EXPECT_FALSE(GltfTextureResourceReferencesMatch(source,masks,proof));
+  source.cameras.emplace_back().type="orthographic";
+  EXPECT_THROW((void)ExtractGltfTextureResourceReferences(source),std::invalid_argument);
+  behavior(source,{behaviorGraph("/materials/{material}/pbrMetallicRoughness/baseColorTexture/index")});
+  EXPECT_THROW((void)ExtractGltfTextureResourceReferences(source),std::invalid_argument);
+}
+
+TEST(GltfTextureResourceReferences,BehaviorResourceReferencesAndMalformedInactiveMetadataNeverAuthorizeRetirement) {
+  auto source=model();auto graph=behaviorGraph("/materials/0/emissiveFactor");
+  graph.Get<Object>()["variables"]=Value(Value::Array{Value(Object{{"type",Value(1)},
+      {"value",Value(Value::Array{Value(std::string("/textures/4"))})}})});
+  behavior(source,{graph});
+  EXPECT_THROW((void)ExtractGltfTextureResourceReferences(source),std::invalid_argument);
+  GltfTextureResourceReferenceLimits limits;limits.policy=GltfTextureResourceReferencePolicy::RecordIncomplete;
+  const auto opaque=ExtractGltfTextureResourceReferences(source,{},limits);
+  ASSERT_FALSE(opaque.complete());ASSERT_EQ(opaque.sourceReferences().size(),1u);
+  EXPECT_EQ(opaque.sourceReferences()[0],(GltfTextureResourceReference{Kind::Texture,4}));
+  graph.Get<Object>().at("variables").Get<Value::Array>()[0].Get<Object>().at("value")=Value(Value::Array{Value(4)});
+  behavior(source,{behaviorGraph("/materials/0/emissiveFactor"),graph});
+  EXPECT_THROW((void)ExtractGltfTextureResourceReferences(source,{},limits),std::invalid_argument);
+  graph=behaviorGraph("/materials/0/emissiveFactor");
+  graph.Get<Object>().at("nodes").Get<Value::Array>()[0].Get<Object>().at("configuration")
+      .Get<Object>().at("pointer").Get<Object>().at("value")=Value(Value::Array{});
+  behavior(source,{behaviorGraph("/materials/0/emissiveFactor"),graph});
+  EXPECT_THROW((void)ExtractGltfTextureResourceReferences(source,{},limits),std::invalid_argument);
+  behavior(source,{behaviorGraph("/materials/0/emissiveFactor")});
+  source.extensions["KHR_interactivity"].Get<Object>().at("graphs")=Value(0);
+  EXPECT_THROW((void)ExtractGltfTextureResourceReferences(source,{},limits),std::invalid_argument);
+}
+
+TEST(GltfTextureResourceReferences,BehaviorProofBoundsIgnoredAnnotationsAndPreparationAllocationFailures) {
+  auto source=model();auto graph=behaviorGraph("/materials/0/emissiveFactor");
+  Value annotation(Object{{"c",Value(std::string(2048,'x'))}});
+  annotation=Value(Object{{"b",std::move(annotation)}});
+  graph.Get<Object>()["extras"]=Value(Object{{"a",std::move(annotation)}});
+  behavior(source,{std::move(graph)});
+  const auto proof=ExtractGltfTextureResourceReferences(source);
+  GltfTextureResourceReferenceLimits limits;limits.maxMetadataDepth=3;
+  EXPECT_THROW((void)ExtractGltfTextureResourceReferences(source,{},limits),std::length_error);
+  limits={};limits.maxMetadataBytes=1024;
+  EXPECT_THROW((void)ExtractGltfTextureResourceReferences(source,{},limits),std::length_error);
+  limits={};limits.maxTraversalSteps=8;
+  EXPECT_THROW((void)ExtractGltfTextureResourceReferences(source,{},limits),std::length_error);
+  limits={};limits.maxOwnedBytes=64;
+  EXPECT_THROW((void)ExtractGltfTextureResourceReferences(source,{},limits),std::length_error);
+  size_t allocations{};
+  {material_publication_test::AllocationGuard count(false);auto prepared=ExtractGltfTextureResourceReferences(source);allocations=count.allocations();}
+  ASSERT_GT(allocations,0u);ASSERT_LT(allocations,100u);
+  for(size_t allowance=0;allowance<allocations;++allowance) {
+    bool failed{};
+    {material_publication_test::AllocationGuard deny(false,allowance);
+      try {(void)ExtractGltfTextureResourceReferences(source);} catch(const std::bad_alloc&) {failed=true;}}
+    EXPECT_TRUE(failed);EXPECT_TRUE(GltfTextureResourceReferencesMatch(source,{},proof));
+  }
 }
 
 TEST(GltfTextureResourceReferences,MalformedReferencesNeverBecomePermittedOpaqueSchemas) {

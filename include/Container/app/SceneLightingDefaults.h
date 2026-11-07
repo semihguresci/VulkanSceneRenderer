@@ -16,6 +16,7 @@ struct SceneLightingOverrides {
   bool directionalIntensity{false};
   bool environmentIntensity{false};
   bool bloomEnabled{false};
+  bool bounceIntensity{false};
 };
 
 // Scene presets own only values that the user has left at their automatic
@@ -32,7 +33,7 @@ public:
            previous_.environmentIntensity, automatic_.environmentIntensity,
            overrides.environmentIntensity);
     update(current.bounceIntensity, defaults.bounceIntensity,
-           previous_.bounceIntensity, automaticBounce_, false);
+           previous_.bounceIntensity, automaticBounce_, overrides.bounceIntensity);
     update(current.bloomEnabled, defaults.bloomEnabled, previous_.bloomEnabled,
            automatic_.bloomEnabled, overrides.bloomEnabled);
     update(current.localShadowLayerBudget, defaults.localShadowLayerBudget,

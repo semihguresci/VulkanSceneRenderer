@@ -45,7 +45,7 @@ UNVERIFIED = [
     'Camera/source/history telemetry and analytical matrix checks are CPU evidence, not actual camera UBO GPU readback; the separate backend GPU suite covers that boundary.',
     'Native image controls prove visible framing, shared definition selection and lens changes, not complete graphics parity or all temporal consumers.',
     'The headless capture protocol is not native ImGui interaction; separate headless ImGui widget tests exercise the real controls.',
-    'Update from view, authored camera pose writeback and editing animated lens leaves remain outside this slice.',
+    'Update from view and authored camera pose writeback remain outside this slice.',
     'Portable glTF/GLB here use the CLI graph-save path; coverage of both public backend save APIs belongs to the separate backend tests.']
 
 
@@ -76,13 +76,13 @@ def records(*, edited=False, ortho=False, auto=False, infinite=False, near=False
 
 
 def step(label, *, authored=None, selected=1, history=(0, 0), pubs=0,
-         time=None, clip=None, resolution=(WIDTH, HEIGHT), scene=0, failure_as=None):
+         time=None, clip=None, resolution=(WIDTH, HEIGHT), scene=0, failure_as=None, unchanged_as=None):
     authored = copy.deepcopy(authored if authored is not None else camera_records())
     evaluated = copy.deepcopy(authored)
     if time is not None and clip == 0: evaluated[0]['values'][0] = sampled_fov(time)
     return dict(label=label, authored=authored, evaluated=evaluated, rests=copy.deepcopy(authored), selected=selected,
                 history=list(history), pubs=pubs, time=time, clip=clip, resolution=list(resolution), msaa=1,
-                scene=scene, failureAs=failure_as)
+                scene=scene, failureAs=failure_as, unchangedAs=unchanged_as)
 
 
 def lens(source=1, *, expected=None, **values):
@@ -125,22 +125,33 @@ def profiles():
         (step('scene-camera', authored=ortho, selected=4, pubs=3, scene=1), dict(cameraSelection=dict(nodeName='Ortho camera'))),
     ]
     near = records(near=True)
+    animated_default = copy.deepcopy(near)
+    animated_default[0]['values'][0] = .55
     animation = [
         (step('before', time=.5, clip=0), None),
         (step('near', authored=near, history=(1, 0), pubs=1, time=.5, clip=0), lens(**{'2': .2})),
         (step('seek', authored=near, history=(1, 0), pubs=1, time=1.5, clip=0), dict(animationTime=1.5)),
         (step('undo-current-time', history=(0, 1), pubs=2, time=1.5, clip=0), dict(sceneHistory='undo')),
-        (step('animated-rejected', history=(0, 1), pubs=2, time=1.5, clip=0, failure_as='undo-current-time'),
-         dict(**lens(**{'0': .55}), expectCameraProjectionFailure=True)),
         (step('redo-current-time', authored=near, history=(1, 0), pubs=3, time=1.5, clip=0), dict(sceneHistory='redo')),
-        (step('clear-clip', authored=near, history=(1, 0), pubs=3, time=0., clip=-1), dict(animationClip=-1)),
+        (step('animated-default', authored=animated_default, history=(2, 0), pubs=4, time=1.5, clip=0,
+              unchanged_as='redo-current-time'), lens(**{'0': .55})),
+        (step('seek-animated-default', authored=animated_default, history=(2, 0), pubs=4, time=.75, clip=0),
+         dict(animationTime=.75)),
+        (step('undo-animated-current-time', authored=near, history=(1, 1), pubs=5, time=.75, clip=0,
+              unchanged_as='seek-animated-default'), dict(sceneHistory='undo')),
+        (step('redo-animated-current-time', authored=animated_default, history=(2, 0), pubs=6, time=.75, clip=0,
+              unchanged_as='seek-animated-default'), dict(sceneHistory='redo')),
+        (step('clear-clip', authored=animated_default, history=(2, 0), pubs=6, time=0., clip=-1), dict(animationClip=-1)),
+        (step('undo-animated-rest', authored=near, history=(1, 1), pubs=7, time=0., clip=-1), dict(sceneHistory='undo')),
+        (step('redo-animated-rest', authored=animated_default, history=(2, 0), pubs=8, time=0., clip=-1), dict(sceneHistory='redo')),
     ]
     runs = []
     for name, values, selected, extra in [('shared-perspective', descriptions, 1, dict(save='gltf')),
             ('orthographic-scene', ortho_descriptions, 4, {}),
-            ('animated-rest', animation, 1, dict(animated=True, save='glb'))]:
+            ('animated-rest', animation, 1, dict(animated=True, save='glb')),
+            ('animated-rest-gltf', animation, 1, dict(animated=True, save='gltf'))]:
         steps, events = [], [dict(frame=1, cameraSelection=dict(sourceNode=selected))]
-        for index, (expected, event) in enumerate(values):
+        for index, (expected, event) in enumerate(copy.deepcopy(values)):
             expected['frame'] = 13*(index+1); steps.append(expected)
             if event is not None: events.append(dict(frame=13*index+1, **event))
         runs.append(dict(name=name, steps=steps, events=events, **extra))
@@ -251,12 +262,27 @@ def generate(output):
         run['script'] = str(script); inputs.append(script)
         if 'save' in run:
             reload_script = output/'scripts'/(run['name']+'-reload.json')
-            document(reload_script, dict(schemaVersion=1, frames=13, sampleFrames=[13],
+            expected = copy.deepcopy(run['steps'][-1])
+            expected.update(label='reload', frame=13, pubs=0, history=[0, 0], unchangedAs=None)
+            reload_steps = [expected]
+            reload_events = [dict(frame=1, cameraSelection=dict(nodeName=NAMES[expected['selected']]))]
+            if run.get('animated'):
+                posed = copy.deepcopy(expected)
+                posed.update(label='reload-curve', frame=26, clip=0, time=.75)
+                posed['evaluated'][0]['values'][0] = sampled_fov(.75)
+                restored = copy.deepcopy(expected)
+                restored.update(label='reload-rest', frame=39)
+                reload_steps += [posed, restored]
+                reload_events += [dict(frame=14, animationClip=0, animationTime=.75, animationPlaying=False),
+                                  dict(frame=27, animationClip=-1)]
+            run['reloadSteps'] = reload_steps
+            document(reload_script, dict(schemaVersion=1, frames=reload_steps[-1]['frame'],
+                sampleFrames=[s['frame'] for s in reload_steps],
                 camera=[dict(frame=1, position=[0., 0., 6.], target=[0., 0., 0.])],
-                events=[dict(frame=1, cameraSelection=dict(nodeName=NAMES[run['steps'][-1]['selected']]))]))
+                events=reload_events))
             run['reloadScript'] = str(reload_script); inputs.append(reload_script)
-    count = len(controls)+sum(len(r['steps'])+int('save' in r) for r in runs)
-    image_checks = count+sum(bool(s['failureAs']) for r in runs for s in r['steps'])+6
+    count = len(controls)+sum(len(r['steps'])+len(r.get('reloadSteps', [])) for r in runs)
+    image_checks = count+sum(bool(s['failureAs'])+bool(s['unchangedAs']) for r in runs for s in r['steps'])+8
     plan = dict(schemaVersion=1, sources={k: str(v) for k, v in sources.items()}, controls=controls, runs=runs,
         expectedCaptureCount=count, expectedProcessCount=len(controls)+len(runs)+sum('save' in r for r in runs),
         expectedImageCheckCount=image_checks, expectedExportCount=sum('save' in r for r in runs),
@@ -343,7 +369,7 @@ def check_state(state, expected, baseline=None, *, reload=False):
     if expected['time'] is not None:
         player = state['gltfAnimation']; require(player['selectedClip'] == expected['clip'] and not player['playing'] and player['loop'], 'Camera edit changed animation controls')
         close(player['time'], expected['time'], 'current clock');close(player['speed'], 1., 'playback speed')
-        if expected['clip'] == 0:
+        if expected['clip'] == 0 and not reload:
             materials = state['gltfMaterialBindings']['materials']; first = next(m for m in materials if m['sourceMaterial'] == 0)
             a, b = map(float, np.asarray([.2, .8], dtype=np.float32)); rough = a+(b-a)*expected['time']/2
             close(first['evaluated']['pbrMetallicRoughness']['roughnessFactor'], rough, 'unrelated animated material')
@@ -600,19 +626,27 @@ def run_native(args, output, plan, report):
                         earlier = captures[expected['failureAs']]
                         require(failure_signature(record['state']) == failure_signature(earlier['state']), 'Rejected camera action changed clocks/source/history/resources/render inputs')
                         check('imageChecks', technique, run['name']+'/'+expected['label']+'-failure-unchanged', compare_images(record, earlier))
+                    if expected['unchangedAs']:
+                        check('imageChecks', technique, run['name']+'/'+expected['label']+'-sample-unchanged',
+                              compare_images(record, captures[expected['unchangedAs']]))
                 if save:
                     last = run['steps'][-1];report['exports'].append(dict(technique=technique, **inspect_export(save, last, animated=run.get('animated', False))));persist()
                     copied, files = portable_copy(save, output/'portable'/technique/run['name']);report['portableCopies'].append(dict(files=files));persist()
-                    expected = copy.deepcopy(last);expected.update(label='reload', frame=13, pubs=0, history=[0, 0])
-                    reload_record = binding.launch(args, output, report, persist, verify, technique, run['name']+'-reload', copied, [expected],
-                        script=Path(run['reloadScript']), initial=expected)['reload']
-                    check('stateChecks', technique, run['name']+'-portable-reload', check_state(reload_record['state'], expected, reload=True))
-                    check('imageChecks', technique, run['name']+'-portable-reload', compare_images(reload_record, captures[last['label']]))
+                    reloads = binding.launch(args, output, report, persist, verify, technique, run['name']+'-reload', copied,
+                        run['reloadSteps'], script=Path(run['reloadScript']), initial=run['reloadSteps'][0])
+                    for expected in run['reloadSteps']:
+                        record = reloads[expected['label']]
+                        reference = captures['seek-animated-default'] if expected['clip'] == 0 else captures[last['label']]
+                        check('stateChecks', technique, run['name']+'/'+expected['label'],
+                              check_state(record['state'], expected, reload=True))
+                        check('imageChecks', technique, run['name']+'/'+expected['label'], compare_images(record, reference))
             core, ortho, animation = (cohorts[n] for n in ('shared-perspective', 'orthographic-scene', 'animated-rest'))
             for name, a, b in [('perspective-lens-positive', core['before'], core['lens']),
                                ('shared-node-pose-positive', core['redo'], core['shared']),
                                ('orthographic-xy-positive', ortho['before'], ortho['lens']),
                                ('animated-fov-positive', animation['near'], animation['seek']),
+                               ('animated-default-rest-positive', animation['clear-clip'], animation['undo-animated-rest']),
+                               ('animated-default-redo-positive', animation['undo-animated-rest'], animation['redo-animated-rest']),
                                ('near-clipping-positive', animation['before'], animation['near']),
                                ('infinite-far-clipping-positive', core['auto-aspect'], core['infinite-far'])]:
                 check('imageChecks', technique, name, changed(a, b))
@@ -677,7 +711,7 @@ def self_check():
     with tempfile.TemporaryDirectory(prefix='camera-projection-selfcheck-') as directory:
         output = Path(directory);plan = generate(output)
         require([plan[key]*2 for key in ('expectedCaptureCount', 'expectedProcessCount', 'expectedImageCheckCount', 'expectedExportCount')] ==
-                [104, 44, 126, 4], 'Camera cohort changed its exact declared bounds')
+                [152, 52, 188, 6], 'Camera cohort changed its exact declared bounds')
         controls_by_name = {c['name']: c for c in plan['controls']}
         for run in plan['runs']:
             script = json.loads(Path(run['script']).read_text());frames = [e['frame'] for e in script['events']]
@@ -686,6 +720,10 @@ def self_check():
             for expected in run['steps']:
                 check_state(synthetic(expected), expected);checks.append(run['name']+'/'+expected['label']+'-state-oracle')
                 check_literal_context(expected, controls_by_name[expected['control']])
+                if expected['unchangedAs']:
+                    previous = next(s for s in run['steps'] if s['label'] == expected['unchangedAs'])
+                    require(visual_key(expected) == visual_key(previous), 'Animated default changed the sampled-view oracle')
+                    checks.append(run['name']+'/'+expected['label']+'-unchanged-sample-oracle')
             temporal = {};epoch = 100
             for expected in run['steps']:
                 if not expected['failureAs']: epoch += 1

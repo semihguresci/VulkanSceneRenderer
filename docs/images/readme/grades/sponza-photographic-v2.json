@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "toneMap": "agx",
+  "saturation": 1.0,
+  "contrast": 1.0,
+  "temperatureKelvin": 6506.11144,
+  "tintDuv": 0.00325895312,
+  "vibrance": 0.02,
+  "shadowTone": [
+    1,
+    1,
+    1
+  ],
+  "highlightTone": [
+    1,
+    1,
+    1
+  ]
+}

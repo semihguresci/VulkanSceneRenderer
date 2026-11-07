@@ -40,6 +40,8 @@ struct RaySurfacePoint
     uint objectFlags;
     uint frontFace;
     uint valid;
+    // Local reconstruction diagnostics only; this point is never a buffer ABI.
+    uint reconstructionFault;
 };
 
 float3 RaySurfaceNormalize(float3 value, float3 fallback)
@@ -63,6 +65,30 @@ float3 RaySurfaceTransformNormal(RaySurfaceInstanceData instance, float3 normal)
            instance.normalColumns[2].xyz * normal.z;
 }
 
+bool RaySurfaceCanonicalizeBarycentrics(inout float2 barycentrics)
+{
+    if (!all(isfinite(barycentrics)) || any(barycentrics < 0.0.xx) ||
+        any(barycentrics > 1.0.xx)) return false;
+    const float larger = max(barycentrics.x, barycentrics.y);
+    if (larger >= 0.5)
+    {
+        // Hardware intersection coordinates are float32. At a shared edge a
+        // valid committed hit can round just beyond u+v=1. Preserve the larger
+        // coordinate and its exact Sterbenz complement, accepting no more than
+        // one float32 ULP at unity. Computing u+v first would accept a looser
+        // band because its rounding can hide an excess greater than this bound.
+        precise float complement = 1.0 - larger;
+        precise float excess = min(barycentrics.x, barycentrics.y) - complement;
+        if (excess > 1.1920928955078125e-7) return false;
+        if (excess > 0.0)
+        {
+            if (barycentrics.x <= barycentrics.y) barycentrics.x = complement;
+            else barycentrics.y = complement;
+        }
+    }
+    return true;
+}
+
 // Accept only an already selected, consumer-approved hit. Closest traversal
 // must continue after candidate commits (no ACCEPT_FIRST_HIT flag). The caller
 // owns clipping, alpha, transmission/displacement support and ray-facing policy.
@@ -75,12 +101,13 @@ RaySurfacePoint ReconstructRaySurface(RayTriangleData uv,
     result.materialIndex = metadata.info.y;
     result.objectFlags = metadata.info.z;
     result.frontFace = frontFace ? 1u : 0u;
-    if (!all(isfinite(barycentrics)) || any(barycentrics < 0.0.xx) ||
-        barycentrics.x + barycentrics.y > 1.0) return result;
+    if (!all(isfinite(barycentrics))) { result.reconstructionFault = 8192u; return result; }
+    if (any(barycentrics < 0.0.xx)) { result.reconstructionFault = 16384u; return result; }
+    if (!RaySurfaceCanonicalizeBarycentrics(barycentrics)) { result.reconstructionFault = 32768u; return result; }
     for (uint column = 0u; column < 4u; ++column)
-        if (!all(isfinite(instance.model[column]))) return result;
+        if (!all(isfinite(instance.model[column]))) { result.reconstructionFault = 65536u; return result; }
     for (uint column = 0u; column < 3u; ++column)
-        if (!all(isfinite(instance.normalColumns[column]))) return result;
+        if (!all(isfinite(instance.normalColumns[column]))) { result.reconstructionFault = 131072u; return result; }
 
     float3 weights = float3(1.0 - barycentrics.x - barycentrics.y,
                             barycentrics.x, barycentrics.y);
@@ -89,7 +116,7 @@ RaySurfacePoint ReconstructRaySurface(RayTriangleData uv,
     float3 edge1 = RaySurfaceNormalize(
         triangle.positions[2].xyz - triangle.positions[0].xyz, 0.0.xxx);
     float3 objectGeometricNormal = RaySurfaceNormalize(cross(edge0, edge1), 0.0.xxx);
-    if (dot(objectGeometricNormal, objectGeometricNormal) == 0.0) return result;
+    if (dot(objectGeometricNormal, objectGeometricNormal) == 0.0) { result.reconstructionFault = 262144u; return result; }
     if ((metadata.info.z & kObjectFlagDeformationWindingFlipped) != 0u)
         objectGeometricNormal = -objectGeometricNormal;
     // Vulkan's ray-facing classification uses object-space winding. Transform
@@ -97,7 +124,7 @@ RaySurfacePoint ReconstructRaySurface(RayTriangleData uv,
     // the TLAS facing flag does. Normals/tangent.w already contain skinning.
     result.geometricNormal = RaySurfaceNormalize(
         RaySurfaceTransformNormal(instance, objectGeometricNormal), 0.0.xxx);
-    if (dot(result.geometricNormal, result.geometricNormal) == 0.0) return result;
+    if (dot(result.geometricNormal, result.geometricNormal) == 0.0) { result.reconstructionFault = 524288u; return result; }
 
     float3 objectPosition = 0.0.xxx;
     float3 worldNormal = 0.0.xxx, worldTangent = 0.0.xxx;
@@ -108,7 +135,7 @@ RaySurfacePoint ReconstructRaySurface(RayTriangleData uv,
             !all(isfinite(triangle.normals[corner])) ||
             !all(isfinite(triangle.tangents[corner])) ||
             !all(isfinite(triangle.colors[corner])) ||
-            !all(isfinite(uv.uv[corner]))) return result;
+            !all(isfinite(uv.uv[corner]))) { result.reconstructionFault = 1048576u; return result; }
         objectPosition += triangle.positions[corner].xyz * weights[corner];
         // Match raster's per-vertex transform/normalization before interpolation
         // under nonuniform scales. Re-orthogonalize the interpolated frame below.
@@ -172,6 +199,11 @@ RaySurfacePoint ReconstructRaySurface(RayTriangleData uv,
         all(isfinite(result.uv)) && all(isfinite(result.shadingNormal)) &&
         all(isfinite(result.texelDensity)) &&
         all(isfinite(result.tangent)) && all(isfinite(result.bitangent)) ? 1u : 0u;
+    if (!all(isfinite(result.position))) result.reconstructionFault |= 2097152u;
+    if (!all(isfinite(result.color)) || !isfinite(result.colorAlpha)) result.reconstructionFault |= 4194304u;
+    if (!all(isfinite(result.uv)) || !all(isfinite(result.texelDensity))) result.reconstructionFault |= 8388608u;
+    if (!all(isfinite(result.shadingNormal)) || !all(isfinite(result.tangent)) || !all(isfinite(result.bitangent)))
+        result.reconstructionFault |= 16777216u;
     return result;
 }
 

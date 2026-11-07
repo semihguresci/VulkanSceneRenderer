@@ -11,7 +11,10 @@
 #include "Container/utility/GuiManager.h"
 #include "Container/utility/SceneManager.h"
 #include "Container/utility/SceneNodeAuthoringPolicy.h"
+#include "Container/utility/SourceMaterialMapping.h"
 #include "Container/utility/VulkanDevice.h"
+#include "Container/geometry/GltfInteractivity.h"
+#include "Container/geometry/GltfLinkedAssets.h"
 #include "Container/geometry/GltfSceneExport.h"
 #include "Container/geometry/GltfNodeExportCompaction.h"
 #include "Container/renderer/scene/SceneLightExport.h"
@@ -20,11 +23,123 @@
 #include "Container/physics/PhysicsScene.h"
 #endif
 
-#include <stdexcept>
+#include <algorithm>
 #include <exception>
+#include <stdexcept>
 #include <utility>
 
 namespace container::renderer {
+namespace {
+using namespace container::geometry::gltf;
+
+struct LinkedExportPlan {
+  std::vector<GltfLinkedHybridCarrier> carriers;
+  std::vector<uint8_t> linkedGraphNodes, prunedGraphNodes, omittedAnimations;
+  std::vector<size_t> linkedContexts;
+  std::vector<int32_t> sourceMaterialToExport, animatedLinkedMaterials;
+  GltfExportResourceIndexMaps resources;
+};
+
+LinkedExportPlan planLinkedExport(const container::scene::SceneManager& manager,
+    const container::scene::SceneGraph& graph, const GltfLinkedCompositionInfo& composition) {
+  LinkedExportPlan plan;
+  plan.linkedGraphNodes.resize(graph.nodeCount());
+  plan.prunedGraphNodes.resize(graph.nodeCount());
+  std::vector<int32_t> carriers(composition.primaryNodes, -1);
+  for (uint32_t id = 0; id < graph.nodeCount(); ++id) {
+    const auto source = graph.getNode(id)->sourceNodeIndex;
+    const bool linked = manager.isLinkedNodeReadOnly(graph, id);
+    const bool retired = graph.isNodeRetired(id);
+    plan.linkedGraphNodes[id] = linked;
+    plan.prunedGraphNodes[id] = linked || retired;
+    if (source < 0 || retired) continue;
+    const auto index = size_t(source);
+    if (!manager.isLinkedSourceCarrier(index) && !linked) continue;
+    if (index >= composition.nodePlacements.size())
+      throw std::runtime_error("Linked save cannot retain references from a merged manifest. Use portable Save As.");
+    if (index >= carriers.size() || linked) continue;
+    if (carriers[index] >= 0)
+      throw std::runtime_error("A linked placement has more than one export node.");
+    carriers[index] = static_cast<int32_t>(id);
+  }
+  std::vector<bool> retained(composition.placementRecords.size());
+  std::vector<bool> contexts(composition.sourceContexts.size());
+  for (size_t i = 0; i < composition.placementRecords.size(); ++i) {
+    const auto& placement = composition.placementRecords[i];
+    retained[i] = manager.isLinkedSourceCarrier(size_t(placement.carrierNode));
+    if (placement.parentPlacement < 0) {
+      if (!retained[i]) continue;
+      const auto output = carriers.at(size_t(placement.carrierNode));
+      if (output < 0) throw std::runtime_error("A retained linked placement has no export node.");
+      plan.carriers.push_back({placement.carrierNode, output});
+    } else if (size_t(placement.parentPlacement) >= i || retained[i] != retained[size_t(placement.parentPlacement)]) {
+      throw std::runtime_error("Linked save requires the complete nested placement family.");
+    }
+    if (retained[i]) contexts.at(placement.sourceContext) = true;
+  }
+
+  const auto& source = manager.animationSource();
+  if (source.extensions.contains(kGltfInteractivityExtension))
+    throw std::runtime_error("Linked save after detachment requires a scene without interactivity. Use portable Save As.");
+  if (!plan.carriers.empty() && manager.selectedMaterialVariant())
+    throw std::runtime_error("Linked save requires the default material variant. Use portable Save As for the selected variant.");
+  plan.omittedAnimations.resize(source.animations.size());
+  for (size_t i = 0; i < contexts.size(); ++i) {
+    if (!contexts[i]) continue;
+    plan.linkedContexts.push_back(i);
+    const auto range = composition.sourceContexts[i].animations;
+    const auto first = size_t(range.first);
+    if (first > plan.omittedAnimations.size() || range.count > plan.omittedAnimations.size() - first)
+      throw std::runtime_error("Linked animation ownership is outside the export clip table.");
+    std::fill_n(plan.omittedAnimations.begin() + first, range.count, uint8_t{1});
+  }
+  plan.sourceMaterialToExport = container::scene::ExportSourceMaterialMapping(
+      manager.sourceMaterialRuntimeMapping(), source.materials.size(), manager.materialCount());
+  for (size_t i = 0; i < source.animations.size(); ++i) {
+    if (!plan.omittedAnimations[i]) continue;
+    for (const auto& channel : source.animations[i].channels) {
+      const auto pointer = channel.target_extensions.find("KHR_animation_pointer");
+      if (pointer == channel.target_extensions.end() || !pointer->second.Has("pointer")) continue;
+      const auto& path = pointer->second.Get("pointer");
+      if (!path.IsString() || !path.Get<std::string>().starts_with("/materials/")) continue;
+      const auto target = ResolveAnimationPointer(source, path.Get<std::string>());
+      if (target && target->kind == AnimationTargetKind::Material)
+        plan.animatedLinkedMaterials.push_back(plan.sourceMaterialToExport.at(target->index));
+    }
+  }
+  std::ranges::sort(plan.animatedLinkedMaterials);
+  plan.animatedLinkedMaterials.erase(std::unique(plan.animatedLinkedMaterials.begin(),
+      plan.animatedLinkedMaterials.end()), plan.animatedLinkedMaterials.end());
+  return plan;
+}
+
+void omitLinkedLightOverlays(const container::scene::SceneManager& manager, const SceneLightEdits& edits,
+    const container::scene::AuthoredSceneLights& full, container::scene::AuthoredSceneLights& visible,
+    std::vector<EditableLightEntity>& lights) {
+  const auto linked = [&](const auto& binding) {
+    return binding.sourceNode >= 0 && manager.isLinkedSourceNodeReadOnly(size_t(binding.sourceNode));
+  };
+  std::erase_if(lights, [&](const auto& light) {
+    if (light.source != EditableLightSource::Imported) return false;
+    const auto& bindings = light.type == EditableLightType::Area ? full.areaBindings
+        : light.type == EditableLightType::Directional ? full.directionalBindings : full.pointBindings;
+    if (!linked(bindings.at(light.id.index))) return false;
+    if (manager.importScale() != 1.0f &&
+        (light.type == EditableLightType::Area ||
+         (light.type != EditableLightType::Directional && light.range > 0.0f)))
+      throw std::runtime_error("Linked save cannot preserve scaled light ranges or areas. Use portable Save As.");
+    return true;
+  });
+  // An exported manual sun becomes the first scene root. Its original
+  // linked sun will be restored by the URI and needs no inline replacement.
+  if (edits.directionalOverride && edits.directionalOverride->source == EditableLightSource::Manual &&
+      !visible.directionalBindings.empty() && linked(visible.directionalBindings.front())) {
+    visible.directionalBindings.clear();
+    visible.directionals.clear();
+  }
+}
+
+} // namespace
 
 void RendererFrontend::captureImportedLightEdits() {
   if(!subs_.sceneManager || !subs_.lightingManager) return;
@@ -172,7 +287,14 @@ void RendererFrontend::processMaterialVariantRequest() {
 void RendererFrontend::saveSceneModel(const std::filesystem::path& outputPath, bool keepLinks) {
   finishEditGestures();
   if (!subs_.sceneManager) throw std::runtime_error("No primary scene is loaded");
-  if (keepLinks) {
+  const auto& manager = *subs_.sceneManager;
+  if (keepLinks && gltfAnimation_ && gltfAnimation_->selectedClip())
+    throw std::runtime_error("Linked save requires the authored rest pose. Use portable Save As for the active animation.");
+  const auto* composition = keepLinks ? manager.linkedPrimaryComposition() : nullptr;
+  const bool hybrid = composition && std::ranges::any_of(composition->placements, [&](int source) {
+    return !manager.isLinkedSourceCarrier(size_t(source));
+  });
+  if (keepLinks && !hybrid) {
     const auto hasEdits = [](const SceneLightEdits& edits) {
       const auto anyOverride = [](const auto& values) {
         return std::ranges::any_of(values, [](const auto& value) { return value.has_value(); });
@@ -192,11 +314,17 @@ void RendererFrontend::saveSceneModel(const std::filesystem::path& outputPath, b
           return entry.first != active && hasEdits(*entry.second);
         }))
       throw std::runtime_error("Linked save cannot retain light edits. Use portable Save As.");
-    subs_.sceneManager->saveLinkedScene(sceneGraph_, outputPath);
+    manager.saveLinkedScene(sceneGraph_, outputPath);
     return;
   }
-  subs_.sceneManager->validateSceneExportDestination(outputPath);
-  auto snapshot = subs_.sceneManager->buildSceneExport(sceneGraph_);
+  manager.validateSceneExportDestination(outputPath);
+  std::optional<LinkedExportPlan> linked;
+  GltfLinkedPortableExportOptions projection;
+  if (hybrid) {
+    linked = planLinkedExport(manager, sceneGraph_, *composition);
+    projection = {linked->linkedGraphNodes, linked->omittedAnimations, &linked->resources};
+  }
+  auto snapshot = manager.buildSceneExport(sceneGraph_, linked ? &projection : nullptr);
   if (subs_.lightingManager) {
     std::vector<int32_t> sourceNodes;
     sourceNodes.reserve(sceneGraph_.nodeCount());
@@ -219,15 +347,23 @@ void RendererFrontend::saveSceneModel(const std::filesystem::path& outputPath, b
       const auto edits=index==active?current:cached==gltfSceneLightEdits_.end()?SceneLightEdits{}:*cached->second;
       sceneLights[index]=evaluateEditableSceneLightsForExport(sceneBindings[index],
           visibleSceneBindings[index],edits,imported,outerTransform);
+      if (linked) omitLinkedLightOverlays(manager, edits, sceneBindings[index], visibleSceneBindings[index], sceneLights[index]);
     }
     exportEditableSceneLightsForScenes(snapshot,sceneLights,
         &subs_.sceneManager->animationSource(),sourceNodes,subs_.sceneManager->importScale(),
         sceneBindings,visibleSceneBindings);
   }
-  const auto retired = subs_.sceneManager->retiredSceneExportNodes(sceneGraph_);
+  if (linked) {
+    const auto retiredMaterials = manager.retiredMaterialIndices();
+    writeLinkedHybridScene(std::move(snapshot), {*composition, linked->carriers, linked->prunedGraphNodes,
+        linked->linkedContexts, linked->sourceMaterialToExport, retiredMaterials,
+        linked->animatedLinkedMaterials, linked->resources}, outputPath);
+    return;
+  }
+  const auto retired = manager.retiredSceneExportNodes(sceneGraph_);
   if (!retired.empty())
     snapshot = container::geometry::gltf::CompactGltfExportNodes(snapshot, retired).model;
-  subs_.sceneManager->compactRetiredMaterialExport(snapshot);
+  manager.compactRetiredMaterialExport(snapshot);
   container::geometry::gltf::writeExportModel(snapshot, outputPath);
 }
 
@@ -250,9 +386,15 @@ void RendererFrontend::ensureSceneEditHistory() {
                 const container::util::SceneEditHistory::Placement& before,
                 const container::util::SceneEditHistory::Placement& after) {
               return prepareSceneReparent(node,before,after);
-            }});
+            },
+            .beforeNodeMetadata = [this](uint32_t node) { requireEditableSceneNode(node); }});
   }
   sceneEdits_->sync();
+}
+
+void RendererFrontend::requireEditableSceneNode(uint32_t node) const {
+  if (subs_.sceneManager && subs_.sceneManager->isLinkedNodeReadOnly(sceneGraph_, node))
+    throw std::invalid_argument("This linked asset is read-only. Use Make Editable first.");
 }
 
 void RendererFrontend::processSceneNodeAuthoringRequest() {
@@ -267,7 +409,9 @@ void RendererFrontend::processSceneNodeAuthoringRequest() {
               : request->action == container::ui::SceneNodeAuthoringAction::CreateEmpty
                   ? "Added empty scene node"
                   : request->action == container::ui::SceneNodeAuthoringAction::DuplicateSubtree
-                      ? "Duplicated scene subtree" : "Deleted scene subtree");
+                      ? "Duplicated scene subtree"
+                      : request->action == container::ui::SceneNodeAuthoringAction::MakeEditable
+                          ? "Made linked source editable" : "Deleted scene subtree");
   } catch (const std::exception& error) {
     subs_.guiManager->setStatusMessage("Cannot edit scene node: " + std::string(error.what()));
   }
@@ -279,6 +423,18 @@ bool RendererFrontend::authorSceneNode(const container::ui::SceneNodeAuthoringRe
   using container::ui::SceneNodeAuthoringAction;
   if (request.graphIdentity != sceneGraph_.identity())
     throw std::invalid_argument("The requested node belongs to a replaced scene");
+  if (request.action == SceneNodeAuthoringAction::MakeEditable) {
+    if (!subs_.sceneManager || !subs_.sceneManager->canMakeLinkedAssetEditable(sceneGraph_, request.node))
+      throw std::invalid_argument("Choose a linked asset placement or its contents");
+    finishEditGestures();
+    ensureSceneEditHistory();
+    if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
+    if (vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device()) != VK_SUCCESS)
+      throw std::runtime_error("Failed to retire readers before making the linked asset editable");
+    if (subs_.sceneManager->makeLinkedAssetEditable(sceneGraph_, request.node) == 0) return false;
+    sceneEdits_->clear();
+    return true;
+  }
   if (request.action != SceneNodeAuthoringAction::Rename &&
       request.action != SceneNodeAuthoringAction::CreateEmpty &&
       request.action != SceneNodeAuthoringAction::DuplicateSubtree &&
@@ -296,6 +452,7 @@ bool RendererFrontend::authorSceneNode(const container::ui::SceneNodeAuthoringRe
       : container::scene::SceneNodeAuthoringPurpose::CreateEmptyChild;
   const auto target = container::scene::ResolveSceneNodeAuthoringTarget(
       sceneGraph_, request.node, purpose);
+  requireEditableSceneNode(target);
   ensureSceneEditHistory();
   transformDragSession_.active = false;
   sceneEdits_->finishGesture();
@@ -377,6 +534,7 @@ uint32_t RendererFrontend::addScenePrimitive(ScenePrimitiveKind kind,std::string
   if(!name.empty()) container::scene::ValidateSceneNodeName(name);
   const auto target=container::scene::ResolveSceneNodeAuthoringTarget(sceneGraph_,
       parent.value_or(sceneState_.rootNode),container::scene::SceneNodeAuthoringPurpose::CreateEmptyChild);
+  requireEditableSceneNode(target);
 #if CONTAINER_HAS_JOLT
   if(physicsElements_ && physicsElements_->ownsNode(sceneGraph_,target))
     throw std::invalid_argument("Physics product internals cannot receive editor primitives");
@@ -387,7 +545,7 @@ uint32_t RendererFrontend::addScenePrimitive(ScenePrimitiveKind kind,std::string
   ensureSceneEditHistory(); sceneEdits_->finishGesture();
   const auto before=sceneEditSelection();
   const auto first=static_cast<uint32_t>(sceneGraph_.nodeCount());
-  const auto primitive=subs_.sceneController->appendScenePrimitiveGeometry(kind);
+  const auto primitive=subs_.sceneController->resolveScenePrimitiveGeometry(kind);
   if(primitive==SceneGraph::kInvalidNode) return primitive;
   container::scene::SceneNode leaf;
   leaf.parent=target; leaf.renderable=true; leaf.primitiveIndex=primitive;
@@ -446,7 +604,7 @@ uint32_t RendererFrontend::addScenePrimitive(ScenePrimitiveKind kind,std::string
   // Commit history before the ordinary geometry/provider refresh, so a refresh
   // failure retains a reversible graph/membership edit.
   sceneEdits_->recordApplied(std::move(command));
-  subs_.sceneController->createGeometryBuffers();
+  subs_.sceneController->refreshPrimitiveGeometryBuffers();
   syncSceneStateFromController();
   restoreSceneEditSelection(after);
   selectionNavigationAnchor_={}; clearHoveredMeshNode();
@@ -457,6 +615,8 @@ uint32_t RendererFrontend::addScenePrimitive(ScenePrimitiveKind kind,std::string
 }
 
 bool RendererFrontend::reparentSceneNode(uint32_t node,std::optional<uint32_t> parent) {
+  requireEditableSceneNode(node);
+  if (parent) requireEditableSceneNode(*parent);
   finishEditGestures();
   if(sceneEditPublicationPending_ || pendingSceneRetirement_) publishSceneEdit();
   ensureSceneEditHistory(); sceneEdits_->finishGesture();
@@ -497,6 +657,8 @@ container::util::SceneEditHistory::ReparentActions RendererFrontend::prepareScen
 void RendererFrontend::validateSceneNodeReparent(uint32_t node,
                                                  std::optional<uint32_t> parent,
                                                  const glm::mat4 &local) {
+  requireEditableSceneNode(node);
+  if (parent) requireEditableSceneNode(*parent);
   if (node == sceneState_.rootNode)
     throw std::invalid_argument("The scene root cannot be reparented");
   if(subs_.sceneManager && subs_.sceneManager->sceneCatalog().entries.size()>1) {

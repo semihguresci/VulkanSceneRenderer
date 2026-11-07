@@ -264,6 +264,9 @@ TEST(GltfMaterialConversion, SpecularGlossinessSharesColorRgbAndLinearAlphaAndRe
       {"diffuseTexture", info(0)}, {"specularGlossinessTexture", info(1)}});
   const auto sg = ConvertGltfMaterial(fixture.material, fixture.context());
   EXPECT_TRUE(sg.value.specularGlossinessWorkflow);
+  EXPECT_EQ(sg.value.specularGlossinessDiffuse, glm::vec3(0));
+  EXPECT_EQ(sg.value.specularGlossinessSpecular, glm::vec3(1, .766f, .336f));
+  EXPECT_FLOAT_EQ(sg.value.baseColor.a, .6f);
   EXPECT_EQ(sg.value.baseColorTextureIndex, 1000u);
   EXPECT_EQ(sg.value.roughnessTextureIndex, 1001u);
   EXPECT_EQ(sg.value.specularColorTextureIndex, 1001u);
@@ -280,6 +283,8 @@ TEST(GltfMaterialConversion, SpecularGlossinessSharesColorRgbAndLinearAlphaAndRe
   fixture.material.pbrMetallicRoughness.metallicRoughnessTexture.index = 0;
   const auto mr = ConvertGltfMaterial(fixture.material, fixture.context());
   EXPECT_FALSE(mr.value.specularGlossinessWorkflow);
+  EXPECT_EQ(mr.value.specularGlossinessDiffuse, glm::vec3(1));
+  EXPECT_EQ(mr.value.specularGlossinessSpecular, glm::vec3(1));
   EXPECT_EQ(mr.value.metallicRoughnessTextureIndex, 2000u);
   EXPECT_EQ(mr.value.roughnessTextureIndex, invalid);
   EXPECT_EQ(mr.value.specularColorTextureIndex, invalid);
@@ -291,6 +296,8 @@ TEST(GltfMaterialConversion, SpecularGlossinessPackedColorNeedsNoSeparateDataUpl
   Fixture fixture(2);fixture.data.assign(2,invalid);
   fixture.extension("KHR_materials_pbrSpecularGlossiness",{{"diffuseTexture",info(0)},{"specularGlossinessTexture",info(1)}});
   const auto converted=ConvertGltfMaterial(fixture.material,fixture.context());
+  EXPECT_EQ(converted.value.specularGlossinessDiffuse, glm::vec3(1));
+  EXPECT_EQ(converted.value.specularGlossinessSpecular, glm::vec3(1));
   EXPECT_EQ(converted.value.roughnessTextureIndex,1001u);EXPECT_EQ(converted.value.specularColorTextureIndex,1001u);
   EXPECT_EQ(converted.sourceTextures[size_t(GltfMaterialTextureSlot::Roughness)],1);
   EXPECT_EQ(converted.sourceTextures[size_t(GltfMaterialTextureSlot::SpecularColor)],1);
@@ -478,6 +485,8 @@ TEST(GltfMaterialConversion, ValidCoreAndSgImportsMatchExistingNumericAndRoleCon
     EXPECT_EQ(converted.value.baseColor.a, old.baseColor.a);
     EXPECT_NEAR(converted.value.metallicFactor, old.metallicFactor, 1e-6f);
     EXPECT_EQ(converted.value.roughnessFactor, old.roughnessFactor);
+    EXPECT_EQ(converted.value.specularGlossinessDiffuse, old.specularGlossinessDiffuse);
+    EXPECT_EQ(converted.value.specularGlossinessSpecular, old.specularGlossinessSpecular);
     EXPECT_EQ(converted.value.specularGlossinessWorkflow, old.specularGlossinessWorkflow);
     EXPECT_EQ(converted.value.doubleSided, old.doubleSided);
     EXPECT_EQ(converted.runtimeBindings.runtimeIndices, container::geometry::gltf::snapshotMaterialTextureBindings(old).runtimeIndices);

@@ -8,6 +8,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -83,6 +84,31 @@ void addPointer(tinygltf::Model& model, const std::string& pointer, int type,
   tinygltf::AnimationSampler sampler;
   sampler.input = floatAccessor(model, TINYGLTF_TYPE_SCALAR, {0, 2});
   sampler.output = floatAccessor(model, type, values);
+  tinygltf::AnimationChannel channel;
+  channel.sampler = static_cast<int>(animation.samplers.size());
+  setPointer(channel, pointer);
+  animation.samplers.push_back(sampler);
+  animation.channels.push_back(channel);
+}
+void addNodeFlagTrack(tinygltf::Model& model, const std::string& pointer, std::array<uint8_t, 2> keys) {
+  if (model.animations.empty()) model.animations.emplace_back();
+  auto& animation = model.animations.front();
+  tinygltf::AnimationSampler sampler;
+  sampler.input = floatAccessor(model, TINYGLTF_TYPE_SCALAR, {0, 2});
+  sampler.output = static_cast<int>(model.accessors.size());
+  sampler.interpolation = "STEP";
+  tinygltf::BufferView view;
+  view.buffer = 0;
+  view.byteOffset = model.buffers[0].data.size();
+  view.byteLength = keys.size();
+  model.buffers[0].data.insert(model.buffers[0].data.end(), keys.begin(), keys.end());
+  tinygltf::Accessor accessor;
+  accessor.bufferView = static_cast<int>(model.bufferViews.size());
+  accessor.type = TINYGLTF_TYPE_SCALAR;
+  accessor.componentType = TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE;
+  accessor.count = keys.size();
+  model.bufferViews.push_back(view);
+  model.accessors.push_back(accessor);
   tinygltf::AnimationChannel channel;
   channel.sampler = static_cast<int>(animation.samplers.size());
   setPointer(channel, pointer);
@@ -546,9 +572,19 @@ TEST(GltfAnimationRuntime, ClearcoatNormalScaleAndLegacyFactorsReachShaderFields
   EXPECT_NEAR(runtime.baseColor.b,.8f,1e-6f); EXPECT_NEAR(runtime.baseColor.a,.9f,1e-6f);
   EXPECT_NEAR(runtime.specularFactor,1,1e-6f); EXPECT_EQ(runtime.specularColorFactor,glm::vec3(1));
   EXPECT_FLOAT_EQ(runtime.roughnessFactor,.5f); EXPECT_TRUE(runtime.specularGlossinessWorkflow);
+  const glm::vec3 expectedDiffuse(.4f, .6f, .8f), expectedSpecular(.04f);
+  for (int component = 0; component < 3; ++component) {
+    EXPECT_NEAR(runtime.specularGlossinessDiffuse[component], expectedDiffuse[component], 1e-7f);
+    EXPECT_NEAR(runtime.specularGlossinessSpecular[component], expectedSpecular[component], 1e-7f);
+  }
+  UpdateAnimatedMaterialProperties(tinygltf::Material{}, runtime);
+  EXPECT_EQ(runtime.specularGlossinessDiffuse, glm::vec3(1));
+  EXPECT_EQ(runtime.specularGlossinessSpecular, glm::vec3(1));
   player.clearClip(model); expectMaterialDataEqual(model.materials[0],rest);
   UpdateAnimatedMaterialProperties(model.materials[0],runtime);
   EXPECT_FLOAT_EQ(runtime.clearcoatNormalTextureScale,1); EXPECT_FLOAT_EQ(runtime.roughnessFactor,1);
+  EXPECT_EQ(runtime.specularGlossinessDiffuse, glm::vec3(1));
+  EXPECT_EQ(runtime.specularGlossinessSpecular, glm::vec3(1));
 }
 
 TEST(GltfAnimation, LinearTranslationClampsBeforeAndAfterKeys) {
@@ -844,6 +880,67 @@ TEST(GltfAnimationRuntime, SourceAssociationsUpdateGroupsAndRetainEditorChildren
   graph.getNode(replacement)->sourceNodeIndex = 0;
   EXPECT_TRUE(ApplyAnimatedNodeTransforms(source,dirty,graph));
   EXPECT_FLOAT_EQ(graph.getNode(replacement)->localTransform[3].z,3);
+}
+TEST(GltfAnimationRuntime, BooleanStepPointersPublishIndependentInheritedFlagsAndExactRest) {
+  tinygltf::Model source;
+  source.nodes.resize(1);
+  source.nodes[0].extensions["KHR_node_visibility"] = tinygltf::Value(
+      tinygltf::Value::Object{{"extras", tinygltf::Value(std::string("retain"))}});
+  for (const auto* name : {"KHR_node_selectability", "KHR_node_hoverability"})
+    source.nodes[0].extensions[name] = tinygltf::Value(tinygltf::Value::Object{});
+  addNodeFlagTrack(source, "/nodes/0/extensions/KHR_node_visibility/visible", {0, 255});
+  addNodeFlagTrack(source, "/nodes/0/extensions/KHR_node_selectability/selectable", {255, 0});
+  addNodeFlagTrack(source, "/nodes/0/extensions/KHR_node_hoverability/hoverable", {7, 7});
+
+  container::scene::SceneGraph graph;
+  const auto transform = glm::translate(glm::mat4(1), glm::vec3(3, 0, 0));
+  const auto parent = graph.createNode(transform, 0);
+  graph.getNode(parent)->sourceNodeIndex = 0;
+  const auto child = graph.createNode(glm::mat4(1), 0);
+  ASSERT_TRUE(graph.setParent(child, parent));
+  AnimationPlayer player(source);
+  EXPECT_TRUE(player.library().diagnostics.empty());
+  ASSERT_TRUE(ApplyAnimatedNodeTransforms(source, player.selectClip(source, 0), graph));
+  EXPECT_FALSE(graph.isNodeEffectivelyVisible(child));
+  EXPECT_TRUE(graph.isNodeEffectivelySelectable(child));
+  EXPECT_TRUE(graph.isNodeEffectivelyHoverable(child));
+  graph.setHoverable(parent, false);
+
+  const auto transition = player.seek(source, 2);
+  ASSERT_EQ(transition.nodeFlags.size(), 1u);
+  EXPECT_EQ(transition.nodeFlags.front().mask, 3u);
+  EXPECT_TRUE(transition.nodes.empty());
+  EXPECT_TRUE(ApplyAnimatedNodeTransforms(source, transition, graph));
+  EXPECT_TRUE(graph.isNodeEffectivelyVisible(child));
+  EXPECT_FALSE(graph.isNodeEffectivelySelectable(child));
+  EXPECT_FALSE(graph.isNodeEffectivelyHoverable(child));
+  EXPECT_EQ(graph.getNode(parent)->localTransform, transform);
+
+  EXPECT_TRUE(ApplyAnimatedNodeTransforms(source, player.clearClip(source), graph));
+  EXPECT_TRUE(graph.isNodeEffectivelyVisible(child));
+  EXPECT_TRUE(graph.isNodeEffectivelySelectable(child));
+  EXPECT_TRUE(graph.isNodeEffectivelyHoverable(child));
+  const auto& restored = source.nodes[0].extensions.at("KHR_node_visibility");
+  EXPECT_FALSE(restored.Has("visible"));
+  EXPECT_EQ(restored.Get("extras").Get<std::string>(), "retain");
+}
+TEST(GltfAnimation, BooleanNodeFlagsRequireStepUnsignedByteAndDefinedParent) {
+  tinygltf::Model source;
+  source.nodes.resize(1);
+  source.nodes[0].extensions["KHR_node_visibility"] = tinygltf::Value(tinygltf::Value::Object{});
+  addNodeFlagTrack(source, "/nodes/0/extensions/KHR_node_visibility/visible", {0, 128});
+  auto& sampler = source.animations.front().samplers.front();
+  auto& output = source.accessors[size_t(sampler.output)];
+  output.normalized = true;
+  EXPECT_EQ(onlyValue(SampleAnimation(ParseAnimations(source).clips.front(), 2)), (std::vector<double>{1}));
+  sampler.interpolation = "LINEAR";
+  EXPECT_THROW(ParseAnimations(source), std::invalid_argument);
+  sampler.interpolation = "STEP";
+  output.componentType = TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT;
+  EXPECT_THROW(ParseAnimations(source), std::invalid_argument);
+  output.componentType = TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE;
+  source.nodes[0].extensions.clear();
+  EXPECT_THROW(ParseAnimations(source), std::invalid_argument);
 }
 TEST(GltfAnimationRuntime, NumericMaterialsPreserveUploadedTextureHandlesAndTransforms) {
   tinygltf::Material source;

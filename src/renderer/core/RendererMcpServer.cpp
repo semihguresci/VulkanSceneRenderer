@@ -9,6 +9,7 @@
 #endif
 
 #include "Container/renderer/core/RendererMcpServer.h"
+#include "Container/app/RendererLightingSettings.h"
 #include "Container/renderer/core/RenderGraph.h"
 #include "Container/renderer/core/RendererTelemetry.h"
 #include "Container/utility/Platform.h"
@@ -313,11 +314,16 @@ const Json& tools() {
   };
   const Json path{{"type", "string"}, {"maxLength", 1024}};
   const Json measurementId{{"id", integer(1, UINT32_MAX)}};
+  const auto lightingProperties = [&] {
+    Json properties = Json::object();
+    for (const auto& setting : container::app::kRendererLightingSettings)
+      properties[std::string(setting.name)] = number(setting.minimum, setting.maximum);
+    return properties;
+  };
   static const Json result = Json::array({
       tool("renderer_get_settings", "Read the current renderer and live lighting settings."),
       tool("renderer_set_lighting", "Set any of these live lighting controls.",
-           {{"environmentIntensity", number(0, 16)}, {"directionalIntensity", number(0, 16)},
-            {"bounceIntensity", number(0, 2)}, {"environmentYaw", number(-180, 180)}}),
+           lightingProperties()),
       tool("renderer_get_status", "Read model, environment, capture and shader reload status."),
       tool("renderer_recent_logs", "Read a bounded set of redacted renderer and Vulkan events.",
            {{"limit", integer(1, 32)}}),

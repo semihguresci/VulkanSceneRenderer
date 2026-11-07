@@ -67,8 +67,10 @@ Every imported binding is overlaid once, including unvisited scene range scaling
 and content beyond the current GPU light-table capacity. Conflicting edits on a
 shared binding fail transactionally. A manual sun replacing a source sun shared
 between scenes currently receives an explicit export diagnostic; preserving that
-scene-local override requires a separate source light node. Existing post-skin
-or custom-material baking limits also remain explicit.
+scene-local override requires a separate source light node. Edited skinned
+placements use private joint hierarchies. The
+[scene export guide](gltf-scene-export.md) describes the remaining animation and
+custom-material limits.
 
 Authored scene roots keep their global parent when an asset has multiple scenes.
 Their transforms and children remain editable. This prevents reparenting one

@@ -28,13 +28,16 @@ class ScreenReflectionPass {
   void createResources(const std::filesystem::path& shaderRoot,
                        const FrameResourceManager& frames, VkExtent2D extent,
                        VkDescriptorSetLayout lightLayout, VkDescriptorSetLayout sceneLayout,
-                       bool requestRayFallback = false);
+                       bool requestRayFallback, bool enableHistory);
   [[nodiscard]] bool ready(const FrameRecordParams& frame) const;
   [[nodiscard]] bool wantsRayScene(const FrameRecordParams& frame) const;
   [[nodiscard]] bool rayFallbackAvailable() const;
   [[nodiscard]] bool rayFallbackActive() const;
   [[nodiscard]] VkDeviceSize allocationBytes() const;
-  void record(VkCommandBuffer command, const FrameRecordParams& frame) const;
+  [[nodiscard]] bool historyAvailable() const;
+  [[nodiscard]] bool historyReprojected() const;
+  void record(VkCommandBuffer command, const FrameRecordParams& frame);
+  void onSubmitted(bool recorded) noexcept;
 
  private:
   struct Impl;

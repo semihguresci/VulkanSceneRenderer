@@ -105,6 +105,29 @@ def exercise(client, root, *, shader_reload, environment=None):
     assert {"renderer_load_model", "renderer_set_lighting",
             "renderer_start_gpu_measurement", "renderer_capture"} <= names
 
+    lighting_schema = next(tool for tool in listed["result"]["tools"] if tool["name"] == "renderer_set_lighting")["inputSchema"]
+    ranges = {"environmentIntensity": (0, 16), "directionalIntensity": (0, 16),
+              "bounceIntensity": (0, 2), "environmentYaw": (-180, 180)}
+    assert lighting_schema["additionalProperties"] is False and set(lighting_schema["properties"]) == set(ranges)
+    original_lighting = client.call("renderer_get_settings")["lighting"]
+    for name, (low, high) in ranges.items():
+        assert lighting_schema["properties"][name] == {"type": "number", "minimum": low, "maximum": high}
+        for boundary in (low, high):
+            client.call("renderer_set_lighting", {name: boundary})
+            actual = client.call("renderer_get_settings")["lighting"]
+            assert actual[name] == boundary and all(actual[key] == original_lighting[key] for key in ranges if key != name), actual
+            client.call("renderer_set_lighting", original_lighting)
+        for invalid in (low - .001, high + .001):
+            # A changed valid field must not publish when any sibling is invalid.
+            other = "bounceIntensity" if name != "bounceIntensity" else "directionalIntensity"
+            value = .375 if original_lighting[other] != .375 else .5
+            client.call("renderer_set_lighting", {other: value, name: invalid}, error=True)
+            assert client.call("renderer_get_settings")["lighting"] == original_lighting
+    for invalid in (16.0000001, -1e-8):
+        client.call("renderer_set_lighting", {"environmentIntensity": invalid}, error=True)
+        assert client.call("renderer_get_settings")["lighting"] == original_lighting
+    evidence["lightingBoundaries"] = dict(fields=4, acceptedEndpoints=8, rejectedAtomicRequests=10)
+
     client.call("renderer_set_lighting", {"environmentIntensity": 1e6}, error=True)
     client.call("renderer_load_model", {"path": "../escape.gltf"}, error=True)
     external = json.loads((root / "fixture.gltf").read_text(encoding="utf-8"))

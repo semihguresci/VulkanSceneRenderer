@@ -1,4 +1,5 @@
 #include <Container/geometry/GltfSessionMerge.h>
+#include <Container/geometry/GltfXmpMetadata.h>
 
 #include <algorithm>
 #include <cmath>
@@ -361,6 +362,19 @@ GltfSessionMergePlan PlanGltfSessionSources(const tinygltf::Model& live, const t
   result.evaluatedSource = result.merge.model;
   std::copy(live.nodes.begin(),live.nodes.end(),result.evaluatedSource.nodes.begin());
   std::copy(live.materials.begin(),live.materials.end(),result.evaluatedSource.materials.begin());
+  const auto preserveXmp = [](auto& evaluated, const auto& authored, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+      const auto reference = authored[i].extensions.find(kGltfXmpExtension);
+      if (reference == authored[i].extensions.end()) continue;
+      auto& record = evaluated[i];
+      const auto current = record.extensions.find(kGltfXmpExtension);
+      if (current != record.extensions.end() && current->second == reference->second) continue;
+      record.extensions.insert_or_assign(kGltfXmpExtension, reference->second);
+      record.extensions_json_string.clear();
+    }
+  };
+  preserveXmp(result.evaluatedSource.nodes, result.merge.model.nodes, live.nodes.size());
+  preserveXmp(result.evaluatedSource.materials, result.merge.model.materials, live.materials.size());
   std::copy(live.lights.begin(),live.lights.end(),result.evaluatedSource.lights.begin());
   std::copy(live.cameras.begin(),live.cameras.end(),result.evaluatedSource.cameras.begin());
   result.evaluatedSource.defaultScene = live.defaultScene;

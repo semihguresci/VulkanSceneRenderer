@@ -1,4 +1,5 @@
 #include <Container/geometry/GltfMaterialVariants.h>
+#include <Container/geometry/GltfXmpMetadata.h>
 
 #include <algorithm>
 #include <array>
@@ -379,7 +380,8 @@ void CopyMaterialVariantMetadataForExport(tinygltf::Model& destination,const Mat
     maps.push_back(std::move(map));
   }
   destination.extensions.swap(root); destination.extensionsUsed.swap(used); destination.extensionsRequired.swap(required);
-  destination.extensions_json_string.clear();
+  // XMP stores its lossless packet JSON separately from the typed extensions.
+  if (!destination.extensions.contains(kGltfXmpExtension)) destination.extensions_json_string.clear();
   for (size_t i=0;i<replacements.size();++i) {
     auto& primitive=destination.meshes[replacements[i].mesh].primitives[replacements[i].primitive];
     primitive.extensions.swap(maps[i]); primitive.extensions_json_string.clear();

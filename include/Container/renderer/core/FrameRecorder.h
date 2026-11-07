@@ -296,6 +296,13 @@ struct FrameDebugState {
   bool wireframeWideLinesSupported{false};
 };
 
+struct FrameScreenReflectionHistory {
+  uint32_t cameraEpoch{};
+  uint64_t materialRevision{};
+  uint64_t lightRevision{};
+  bool operator==(const FrameScreenReflectionHistory&) const = default;
+};
+
 struct FramePushConstantState {
   container::gpu::BindlessPushConstants *bindless{nullptr};
   LightPushConstants *light{nullptr};
@@ -378,6 +385,7 @@ struct FrameRecordParams {
   FrameSwapchainResources swapchain{};
   FrameScreenshotCapture screenshot{};
   FramePassServices services{};
+  FrameScreenReflectionHistory reflectionHistory{};
   VolumetricFogFrame volumetricFog{};
   FramePostProcessState postProcess{};
   ProviderSceneExtraction sceneExtraction{};

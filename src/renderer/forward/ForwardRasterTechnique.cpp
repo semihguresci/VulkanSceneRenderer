@@ -747,6 +747,8 @@ void recordForwardRasterSceneColorReadBarrier(VkCommandBuffer cmd,
 [[nodiscard]] RenderPassReadiness forwardRasterExposureAdaptationReadiness(
     const FrameRecordParams &p,
     const DeferredRasterFrameGraphContext &sharedContext) {
+  if (p.runtime.activeTechnique == RenderTechniqueId::PathTracing && p.debug.displayMode != 0)
+    return renderPassNotNeeded();
   ExposureManager *exposureManager = sharedContext.exposureManager();
   if (exposureManager == nullptr || !exposureManager->isReady()) {
     return renderPassNotNeeded();
@@ -788,6 +790,8 @@ void recordForwardRasterExposureAdaptation(
 [[nodiscard]] RenderPassReadiness forwardRasterBloomReadiness(
     const FrameRecordParams &p,
     const DeferredRasterFrameGraphContext &sharedContext) {
+  if (p.runtime.activeTechnique == RenderTechniqueId::PathTracing && p.debug.displayMode != 0)
+    return renderPassNotNeeded();
   BloomManager *bloomManager = sharedContext.bloomManager();
   if (bloomManager == nullptr || !bloomManager->isReady() ||
       !bloomManager->enabled()) {
@@ -939,7 +943,8 @@ void recordForwardRasterPostProcessPass(
            p, ForwardRasterPipelineLayoutId::PostProcess),
        .descriptorSets = postProcessSets,
        .frameInputs =
-           {.displayMode = p.runtime.activeTechnique == RenderTechniqueId::PathTracing ? container::ui::GBufferViewMode::Lit : sharedContext.displayMode(),
+           {.displayMode = p.runtime.activeTechnique == RenderTechniqueId::PathTracing
+                ? static_cast<container::ui::GBufferViewMode>(p.debug.displayMode) : sharedContext.displayMode(),
             .bloomPassActive = sharedContext.isPassActive(RenderPassId::Bloom),
             .bloomReady = bloomManager != nullptr && bloomManager->isReady(),
             .bloomEnabled = bloomManager != nullptr && bloomManager->enabled(),
@@ -1354,7 +1359,7 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
       {RenderResourceId::SceneColor, RenderResourceId::OitStorage});
   graph.setPassResourceTransitions(RenderPassId::Lighting, {});
   RenderGraphBuilder temporalGraph(graph);
-  registerVolumetricFogPass(temporalGraph, RenderPassId::Lighting);
+  registerVolumetricFogPass(temporalGraph, RenderPassId::Lighting, context.deferredRaster);
   registerTemporalPasses(temporalGraph, RenderPassId::VolumetricFog);
   registerRayShadowPasses(temporalGraph);
   registerDdgiPasses(temporalGraph);

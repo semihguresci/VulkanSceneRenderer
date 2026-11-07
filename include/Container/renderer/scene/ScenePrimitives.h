@@ -3,6 +3,8 @@
 #include "Container/geometry/Mesh.h"
 
 #include <cstdint>
+#include <optional>
+#include <span>
 #include <string_view>
 
 #include <glm/vec3.hpp>
@@ -61,6 +63,13 @@ struct ScenePrimitiveTorusDesc {
 
 [[nodiscard]] container::geometry::Mesh makeScenePrimitive(
     ScenePrimitiveKind kind, int32_t materialIndex = -1);
+
+// Built-in instances may share identical immutable runtime geometry. Authored
+// primitives retain their source identity even when their geometry matches.
+[[nodiscard]] std::optional<uint32_t> findReusableScenePrimitive(
+    const container::geometry::Mesh& geometry,
+    std::span<const container::geometry::Mesh> meshes,
+    std::span<const int32_t> runtimeToSource);
 
 [[nodiscard]] container::geometry::Mesh makeScenePrimitiveQuad(
     const ScenePrimitivePlaneDesc &desc = {});

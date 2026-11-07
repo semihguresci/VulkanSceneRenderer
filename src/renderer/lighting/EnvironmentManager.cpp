@@ -49,7 +49,11 @@ struct EnvironmentManager::EnvironmentGeneration {
   container::gpu::AllocatedBuffer staging{};
   Image equirect{}, cube{}, irradiance{}, prefiltered{};
   VkImageView cubeStorage{}, irradianceStorage{};
-  static constexpr uint32_t mipCount = 5;
+  // Match the HDR radiance cube at smooth roughness, retaining an 8x8 final
+  // level for roughness1. Storage views, descriptors and publication all use
+  // this same count; surface shaders obtain it through prefilteredMipCount().
+  static constexpr uint32_t prefilterSize = 512;
+  static constexpr uint32_t mipCount = 7;
   std::array<VkImageView, mipCount> prefilteredStorage{};
   VkDescriptorPool pool{};
   VkCommandBuffer command{};
@@ -801,7 +805,7 @@ bool EnvironmentManager::submitEnvironment(
   const uint32_t     kEnvMips        =
       static_cast<uint32_t>(std::floor(std::log2(static_cast<float>(kEnvSize)))) + 1u;
   constexpr uint32_t kIrradianceSize = 32;
-  constexpr uint32_t kPrefilterSize  = 128;
+  constexpr uint32_t kPrefilterSize  = EnvironmentGeneration::prefilterSize;
   constexpr uint32_t kPrefilterMips  = EnvironmentGeneration::mipCount;
 
   auto createCube = [&](uint32_t size, uint32_t mips,
@@ -875,7 +879,7 @@ bool EnvironmentManager::submitEnvironment(
     return failGeneration("Environment storage image view creation failed");
 
   // ---- 4. Allocate transient descriptors for the persistent IBL pipelines ---
-  // Descriptor pool: 7 sets total (1 equirect + 1 irradiance + 5 prefilter mips).
+  // One equirect set, one irradiance set and one set per prefilter mip.
   constexpr uint32_t kTotalSets = 1 + 1 + kPrefilterMips;
   try {
     pool = pipelineManager_.createDescriptorPool(

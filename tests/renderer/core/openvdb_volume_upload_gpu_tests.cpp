@@ -152,6 +152,7 @@ protected:
     v12.bufferDeviceAddress = VK_TRUE;
     v12.timelineSemaphore = VK_TRUE;
     v12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+    v12.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
     v12.separateDepthStencilLayouts = VK_TRUE;
     VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     v13.synchronization2 = VK_TRUE;

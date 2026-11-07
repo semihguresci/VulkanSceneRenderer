@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Container/renderer/temporal/FsrMode.h"
+#include "Container/renderer/temporal/UpscaleMode.h"
 
 #include "Container/physics/PhysicsWorld.h"
 #include "Container/geometry/GltfMergePlacement.h"
@@ -12,6 +12,7 @@
 #include "Container/renderer/lighting/LightEditTypes.h"
 #include "Container/renderer/lighting/SkySettings.h"
 #include "Container/renderer/pathtracing/ReferenceOidnSettings.h"
+#include "Container/renderer/pathtracing/ReferencePathDisplayMode.h"
 
 #include <glm/glm.hpp>
 #include <nlohmann/json.hpp>
@@ -146,7 +147,7 @@ struct CaptureEvent {
   bool guiUnload{false};
   bool guiWaitForLoad{true};
   std::optional<bool> taa, orthographic, objectVisible, minimized;
-  std::optional<container::renderer::FsrMode> fsr;
+  std::optional<container::renderer::UpscaleSelection> upscaling;
   std::optional<bool> rayShadowDenoise;
   std::optional<bool> ddgiPaused, ddgiEnabled;
   std::optional<uint32_t> ddgiFitProbes;
@@ -171,6 +172,9 @@ struct CaptureEvent {
   bool reloadShaders{};
   bool referenceAutofocus{};
   std::optional<container::renderer::ReferenceOidnQuality> referenceOidn;
+  std::optional<bool> referenceOptix;
+  std::optional<container::renderer::UpscaleMode> referenceDlss;
+  std::optional<container::renderer::ReferencePathDisplayMode> referenceDisplay;
   std::optional<CaptureComfyUi> comfyUi;
   std::optional<bool> gpuTransforms;
   std::optional<container::renderer::SkyMode> proceduralSky;
@@ -300,7 +304,7 @@ public:
         // A typed action has a closed envelope. In particular, false-valued
         // mutation keys cannot bypass isolation by looking inert after parse.
         nodeFields(value,{"frame","lightEdit","lightSelection","lightAdd","expectLightEditFailure",
-            "taa","fsr","exposure","resize","depthProbe","environment","environmentAsync","environmentYaw","proceduralSky","technique","rayShadows","rayShadowSamples","rayShadowDenoise","reloadShaders","gpuTransforms",
+            "taa","fsr","dlss","exposure","resize","depthProbe","environment","environmentAsync","environmentYaw","proceduralSky","technique","rayShadows","rayShadowSamples","rayShadowDenoise","reloadShaders","gpuTransforms",
             "areaLighting","areaLightSamples","ddgiPaused","ddgiEnabled","samples","reset"},"light action event");
       }
       for(const auto& [field,present,destination]:{
@@ -523,10 +527,19 @@ public:
           target = value.at(name).get<bool>();
       };
       boolean("taa", event.taa);
-      if (value.contains("fsr")) {
-        const auto& mode = value.at("fsr");
-        if (!mode.is_string() || !(event.fsr = container::renderer::parseFsrMode(mode.get<std::string>())))
-          throw std::invalid_argument("Capture fsr expects native, quality, balanced, or performance");
+      const bool hasFsr = value.contains("fsr");
+      const bool hasDlss = value.contains("dlss");
+      if (hasFsr && hasDlss)
+        throw std::invalid_argument("A capture event selects only one temporal upscaler");
+      if (hasFsr || hasDlss) {
+        const char* key = hasFsr ? "fsr" : "dlss";
+        const auto& requested = value.at(key);
+        const auto mode = requested.is_string() ?
+            container::renderer::parseUpscaleMode(requested.get<std::string>()) : std::nullopt;
+        if (!mode)
+          throw std::invalid_argument(std::string("Capture ") + key + " expects native, quality, balanced, or performance");
+        event.upscaling = container::renderer::UpscaleSelection{
+            hasFsr ? container::renderer::UpscaleBackend::Fsr : container::renderer::UpscaleBackend::Dlss, *mode};
       }
       boolean("orthographic", event.orthographic);
       boolean("objectVisible", event.objectVisible);
@@ -574,9 +587,26 @@ public:
         event.reloadShaders = value.at("reloadShaders").get<bool>();
       if (value.contains("referenceAutofocus"))
         event.referenceAutofocus = value.at("referenceAutofocus").get<bool>();
+      if (value.contains("referenceDisplay")) {
+        const auto& mode = value.at("referenceDisplay");
+        if (mode.is_string())
+          event.referenceDisplay = container::renderer::parseReferencePathDisplay(mode.get<std::string>());
+        if (!event.referenceDisplay) throw std::invalid_argument("Invalid capture referenceDisplay mode");
+      }
       if (value.contains("referenceOidn")) {
         event.referenceOidn = container::renderer::parseReferenceOidnQuality(value.at("referenceOidn").get<std::string>());
         if (!event.referenceOidn) throw std::invalid_argument("Invalid capture referenceOidn quality");
+      }
+      if (value.contains("referenceOptix")) {
+        if (event.referenceOidn || !value.at("referenceOptix").is_boolean())
+          throw std::invalid_argument("Capture referenceOptix requires a boolean and a separate backend event");
+        event.referenceOptix = value.at("referenceOptix").get<bool>();
+      }
+      if (value.contains("referenceDlss")) {
+        if (event.referenceOidn || event.referenceOptix)
+          throw std::invalid_argument("Capture referenceDlss requires a separate backend event");
+        event.referenceDlss = container::renderer::parseReferenceDlssQuality(value.at("referenceDlss").get<std::string>());
+        if (!event.referenceDlss) throw std::invalid_argument("Invalid capture referenceDlss quality");
       }
       if (value.contains("comfyUi")) {
         const auto& job = value.at("comfyUi");
@@ -1435,11 +1465,13 @@ private:
         throw std::invalid_argument("Unknown capture nodeAuthoring field: " + field);
     }
     if (!value.contains("action") || !value.at("action").is_string())
-      throw std::invalid_argument("Capture nodeAuthoring requires a rename, create-empty, delete-subtree or duplicate-subtree action");
+      throw std::invalid_argument("Capture nodeAuthoring requires an action");
     CaptureNodeAuthoring request;
     request.action = value.at("action").get<std::string>();
-    if (request.action != "rename" && request.action != "create-empty" && request.action != "delete-subtree" && request.action != "duplicate-subtree")
-      throw std::invalid_argument("Capture nodeAuthoring action must be rename, create-empty, delete-subtree or duplicate-subtree");
+    if (request.action != "rename" && request.action != "create-empty" &&
+        request.action != "delete-subtree" && request.action != "duplicate-subtree" &&
+        request.action != "make-editable")
+      throw std::invalid_argument("Unknown capture nodeAuthoring action '" + request.action + "'");
     if (value.contains("graphNode") == value.contains("sourceNode"))
       throw std::invalid_argument("Capture nodeAuthoring requires exactly one graphNode or sourceNode");
     if (value.contains("graphNode")) {
@@ -1458,9 +1490,9 @@ private:
         throw std::invalid_argument("Capture nodeAuthoring sourceNode must be an integer in [0,INT_MAX]");
       request.sourceNode = node.get<int>();
     }
-    if (request.action == "delete-subtree") {
+    if (request.action == "delete-subtree" || request.action == "make-editable") {
       if (value.contains("name"))
-        throw std::invalid_argument("Capture delete-subtree requires the name field omitted");
+        throw std::invalid_argument("Capture " + request.action + " requires the name field omitted");
       return request;
     }
     if (request.action == "duplicate-subtree" && !value.contains("name")) return request;

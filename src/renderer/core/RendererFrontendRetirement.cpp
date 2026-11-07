@@ -291,6 +291,7 @@ bool RendererFrontend::retireSceneNode(uint32_t selected) {
   if (pendingSceneRetirement_) retirementError("the previous deletion refresh must complete first");
   const auto root = container::scene::ResolveSceneNodeAuthoringTarget(sceneGraph_, selected,
       container::scene::SceneNodeAuthoringPurpose::DeleteSubtree);
+  requireEditableSceneNode(root);
   const auto& source = subs_.sceneManager->animationSource();
   const auto subtree = validateBindings(sceneGraph_, source, root
 #if CONTAINER_HAS_JOLT

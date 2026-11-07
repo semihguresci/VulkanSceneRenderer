@@ -6,6 +6,7 @@
 #include <Container/geometry/GltfModelLoader.h>
 #include <Container/geometry/GltfSceneExport.h>
 #include <Container/geometry/GltfAnimation.h>
+#include <Container/geometry/GltfInteractivity.h>
 
 #include <gtest/gtest.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -52,6 +53,24 @@ EditableLightEntity entity(EditableLightType type, EditableLightSource source, u
   light.tangent = {1, 0, 0};
   light.bitangent = {0, 1, 0};
   return light;
+}
+
+void lightBehavior(tinygltf::Model& model, const std::string& property) {
+  using Array = Value::Array;
+  using namespace container::geometry::gltf;
+  const Value start(Object{{"declaration",Value(0)},
+      {"flows",Value(Object{{"out",Value(Object{{"node",Value(1)}})}})}});
+  const Value write(Object{{"declaration",Value(1)},{"configuration",Value(Object{
+      {"pointer",Value(Object{{"value",Value(Array{Value(
+          std::string("/extensions/KHR_lights_punctual/lights/0/") + property)})}})},
+      {"type",Value(Object{{"value",Value(Array{Value(0)})}})}})},
+      {"values",Value(Object{{"value",Value(Object{{"type",Value(0)},{"value",Value(Array{Value(.75)})}})}})}});
+  model.extensions[kGltfInteractivityExtension] = Value(Object{{"graphs",Value(Array{Value(Object{
+      {"types",Value(Array{Value(Object{{"signature",Value(std::string("float"))}})})},
+      {"declarations",Value(Array{Value(Object{{"op",Value(std::string("event/onStart"))}}),
+          Value(Object{{"op",Value(std::string("pointer/set"))}})})},
+      {"nodes",Value(Array{start,write})}})})}});
+  model.extensionsUsed = {"KHR_lights_punctual",kGltfInteractivityExtension};
 }
 
 glm::mat4 matrix(const tinygltf::Node& node) {
@@ -1332,4 +1351,78 @@ TEST(SceneLightExport, IterativeWorldTraversalRejectsLateSceneCyclesAndDuplicate
     EXPECT_THROW(exportEditableSceneLightsForScenes(model,lights,nullptr,{},1,tables,tables),std::runtime_error);
     EXPECT_EQ(model,original);
   }
+}
+
+TEST(SceneLightExport, BehaviorWritesTheExportedSharedLightDefinitionAfterOverlay) {
+  using namespace container::geometry::gltf;
+  auto model = scene(2);
+  model.lights.resize(1);
+  model.lights[0].type = "point";
+  model.lights[0].intensity = 10;
+  model.nodes[0].light = model.nodes[1].light = 0;
+  lightBehavior(model,"intensity");
+  const auto source = model;
+  const std::array identities{int32_t{0},int32_t{1}};
+  const std::array lights{entity(EditableLightType::Point,EditableLightSource::Imported,0),
+                         entity(EditableLightType::Point,EditableLightSource::Imported,1)};
+  exportEditableSceneLights(model,lights,&source,identities);
+  ASSERT_EQ(model.nodes.size(),4u);
+  ASSERT_GE(model.nodes[2].light,0);
+  EXPECT_EQ(model.nodes[2].light,model.nodes[3].light);
+  GltfInteractivity behavior(model);
+  const auto dirty = behavior.advance(model,ParseAnimations(model),0);
+  EXPECT_EQ(dirty.lights,std::vector<size_t>{size_t(model.nodes[2].light)});
+  EXPECT_DOUBLE_EQ(model.lights[size_t(model.nodes[2].light)].intensity,.75);
+  EXPECT_DOUBLE_EQ(source.lights[0].intensity,10);
+}
+
+TEST(SceneLightExport, BehaviorRejectsDivergentSharedDefinitionsAtomically) {
+  auto model = scene(2);
+  model.lights.resize(1);
+  model.lights[0].type = "point";
+  model.nodes[0].light = model.nodes[1].light = 0;
+  lightBehavior(model,"intensity");
+  const auto original = model;
+  const std::array identities{int32_t{0},int32_t{1}};
+  auto first = entity(EditableLightType::Point,EditableLightSource::Imported,0);
+  auto second = entity(EditableLightType::Point,EditableLightSource::Imported,1);
+  second.intensity = first.intensity * 2;
+  const std::array lights{first,second};
+  EXPECT_THROW(exportEditableSceneLights(model,lights,&original,identities),std::runtime_error);
+  EXPECT_EQ(model,original);
+}
+
+TEST(SceneLightExport, BehaviorValueSpaceChecksOnlyTheConsumedLightProperty) {
+  using namespace container::geometry::gltf;
+  for (const std::string property : {"intensity","range"}) {
+    auto model = scene(1);
+    model.lights.resize(1);
+    model.lights[0].type = "point";
+    model.nodes[0].light = 0;
+    lightBehavior(model,property);
+    const auto original = model;
+    const std::array identities{int32_t{0}};
+    const std::array lights{entity(EditableLightType::Point,EditableLightSource::Imported,0)};
+    if (property == "range") {
+      EXPECT_THROW(exportEditableSceneLights(model,lights,&original,identities,2),std::runtime_error);
+      EXPECT_EQ(model,original);
+    } else {
+      ASSERT_NO_THROW(exportEditableSceneLights(model,lights,&original,identities,2));
+      GltfInteractivity behavior(model);
+      (void)behavior.advance(model,ParseAnimations(model),0);
+      EXPECT_DOUBLE_EQ(model.lights[size_t(model.nodes.back().light)].intensity,.75);
+    }
+  }
+  auto model = scene(1);
+  model.lights.resize(1);
+  model.lights[0].type = "point";
+  model.nodes[0].light = 0;
+  lightBehavior(model,"intensity");
+  const auto original = model;
+  const std::array identities{int32_t{0}};
+  auto light = entity(EditableLightType::Point,EditableLightSource::Imported,0);
+  light.color = {3,2,1};
+  const std::array lights{light};
+  EXPECT_THROW(exportEditableSceneLights(model,lights,&original,identities),std::runtime_error);
+  EXPECT_EQ(model,original);
 }

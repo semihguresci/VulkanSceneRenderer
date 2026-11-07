@@ -4,6 +4,7 @@
 #include <Container/geometry/GltfMaterialAuthoring.h>
 #include <Container/geometry/GltfCameraAuthoring.h>
 #include <Container/geometry/GltfCameraPoseAuthoring.h>
+#include <Container/geometry/GltfNodeFlags.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -21,7 +22,7 @@ class GltfProjectedCloneOwnershipProof;
 enum class AnimationInterpolation { Step, Linear, CubicSpline };
 enum class AnimationTargetKind {
   NodeTranslation, NodeRotation, NodeScale, NodeWeights,
-  Material, Light, Camera
+  Material, Light, Camera, NodeFlag
 };
 
 struct AnimationTarget {
@@ -71,8 +72,15 @@ struct AnimationLibrary {
 struct AnimatedValue {
   AnimationTarget target;
   std::vector<double> value;
+  // When captured for reset, retain whether a Boolean flag leaf was authored.
+  std::optional<bool> nodeFlagAuthored{};
 };
 struct AnimationPose { std::vector<AnimatedValue> values; };
+
+struct AnimatedNodeFlagChange {
+  size_t node{};
+  uint8_t mask{};
+};
 
 struct AnimationDirtySet {
   std::vector<size_t> nodes;
@@ -80,6 +88,7 @@ struct AnimationDirtySet {
   std::vector<size_t> materials;
   std::vector<size_t> lights;
   std::vector<size_t> cameras;
+  std::vector<AnimatedNodeFlagChange> nodeFlags;
   [[nodiscard]] bool empty() const;
   void merge(const AnimationDirtySet& other);
 };
@@ -89,11 +98,13 @@ struct AnimationDirtySet {
 // imply a corresponding renderer feature. Overlapping targets are rejected.
 AnimationLibrary ParseAnimations(const tinygltf::Model& model);
 AnimationPose SampleAnimation(const AnimationClip& clip, double timeSeconds);
-// Shared numeric Object Model access for behavior graphs. Targets outside
+// Shared typed Object Model access for behavior graphs. Targets outside
 // the animation pointer table return nullopt, with malformed paths diagnosed.
 std::optional<AnimationTarget> ResolveAnimationPointer(const tinygltf::Model&,
     const std::string& pointer);
 std::vector<double> ReadAnimationTarget(const tinygltf::Model&, const AnimationTarget&);
+AnimatedValue CaptureAnimationTarget(const tinygltf::Model&, const AnimationTarget&);
+bool ReadAnimatedNodeFlag(const tinygltf::Node&, GltfNodeFlag);
 // Publication is atomic: every sampled numeric value is validated before any
 // write, and target objects are restored if a later property operation fails.
 // Only touched source objects are staged; asset buffers/accessors are not copied.
@@ -131,6 +142,7 @@ public:
   PreparedCameraRestEdit& operator=(const PreparedCameraRestEdit&) = delete;
   explicit operator bool() const noexcept;
   [[nodiscard]] uint64_t ownedBytes() const noexcept;
+  [[nodiscard]] const tinygltf::Camera& evaluatedCamera() const;
 private:
   struct State;
   std::unique_ptr<State> state_;
@@ -154,6 +166,7 @@ public:
   PreparedCameraNodeRestEdit& operator=(const PreparedCameraNodeRestEdit&) = delete;
   explicit operator bool() const noexcept;
   [[nodiscard]] uint64_t ownedBytes() const noexcept;
+  [[nodiscard]] const tinygltf::Node& evaluatedNode() const;
 private:
   struct State;
   std::unique_ptr<State> state_;
@@ -268,7 +281,8 @@ public:
   // Selected-camera rest transaction. Only the selected rest, decoded camera
   // tracks and their exact raw samplers/accessor byte ranges are retained.
   // Other rests/clips/curves and every playback control remain current. The
-  // planner still rejects editing animated projection leaves.
+  // token also owns the candidate camera with edited defaults and today's
+  // selected tracks applied to those leaves. Unowned evaluated fields survive.
   [[nodiscard]] PreparedCameraRestEdit prepareCameraRestEdit(
       const GltfCameraProjectionPlan&, GltfCameraAuthoringSourceView authoredSource,
       const tinygltf::Model& evaluatedSource, const GltfCameraAnimationEditLimits& limits = {}) const;
@@ -282,8 +296,9 @@ public:
   // Pose-only selected-node rest transaction for write-from-view. Stores only
   // the selected rest's matrix/TRS arrays; current morph weights, metadata,
   // associations, other rest rows and the decoded library remain untouched.
-  // Every selected pose channel in any clip rejects. Selected weights channels
-  // are proved against the existing decoder and exact encoded ranges instead.
+  // Owned TRS defaults are sampled at today's selected clip/time into the
+  // detached evaluatedNode candidate. Untouched evaluated fields and weights
+  // survive. Selected pose/weight curves retain exact decoded/raw proofs.
   [[nodiscard]] PreparedCameraNodeRestEdit prepareCameraNodeRestEdit(
       const GltfCameraPosePlan&, GltfCameraPoseSourceView authoredSource,
       const tinygltf::Model& evaluatedSource, const GltfCameraNodeAnimationEditLimits& limits = {}) const;

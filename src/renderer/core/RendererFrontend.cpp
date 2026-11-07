@@ -446,7 +446,7 @@ displayModeFromName(std::string_view value) {
 container::ui::GBufferViewMode
 configuredDisplayMode(const container::app::AppConfig &config) {
   if (config.displayModeOverride.empty()) {
-    return config.enableGui || config.fsrMode != FsrMode::Native ? container::ui::GBufferViewMode::Lit
+    return config.enableGui || config.upscaling.mode != UpscaleMode::Native ? container::ui::GBufferViewMode::Lit
                             : container::ui::GBufferViewMode::Overview;
   }
   if (auto mode = displayModeFromName(config.displayModeOverride)) {
@@ -1636,6 +1636,13 @@ void RendererFrontend::initialize() {
   if (svc_.config.enableGui) {
     subs_.guiManager = std::make_unique<container::ui::GuiManager>();
     subs_.guiManager->setGpuHardwareMonitor(subs_.gpuHardwareMonitor.get());
+    subs_.guiManager->setLinkedNodeAuthoringQueries(
+        [this](uint32_t node) {
+          return subs_.sceneManager && subs_.sceneManager->isLinkedNodeReadOnly(sceneGraph_, node);
+        },
+        [this](uint32_t node) {
+          return subs_.sceneManager && subs_.sceneManager->canMakeLinkedAssetEditable(sceneGraph_, node);
+        });
     subs_.guiManager->initialize(
         svc_.ctx.instance, svc_.ctx.deviceWrapper->device(),
         svc_.ctx.deviceWrapper->physicalDevice(),
@@ -1659,11 +1666,12 @@ void RendererFrontend::initialize() {
                                      .unavailableReason())
                    : "Disabled or unavailable; raster fallback"));
     subs_.guiManager->setGBufferViewMode(configuredDisplayMode(svc_.config));
-    subs_.guiManager->setFsrMode(svc_.config.fsrMode);
+    subs_.guiManager->setUpscaling(svc_.config.upscaling);
     subs_.guiManager->setDisplayGrade(svc_.config.displayGrade);
     subs_.guiManager->setGpuHierarchyTransforms(gpuHierarchyEnabled_);
     subs_.guiManager->setReferencePathLens(svc_.config.pathLens);
     subs_.guiManager->setReferenceFireflyClamp(svc_.config.pathFireflyClamp);
+    subs_.guiManager->setReferencePathDisplay(svc_.config.pathDisplay);
     subs_.guiManager->setReferenceGround(svc_.config.pathGround);
     subs_.guiManager->setReferenceOidn(svc_.config.pathOidn);
     if (svc_.config.hasManualExposureOverride)
@@ -2155,10 +2163,17 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
       status += std::to_string(subs_.referencePathTracePass->attemptedSamples()) + " samples";
       if (referenceUnsupported_) status += "; unsupported paths (magenta)";
       if (referenceRejected_) status += "; rejected paths (yellow)";
-      if (subs_.referencePathTracePass->oidnQuality() != ReferenceOidnQuality::Off) {
-        const auto oidn = subs_.referencePathTracePass->oidnStatus();
-        status += oidn.displayedSamples ? "; OIDN at " + std::to_string(oidn.displayedSamples) + " samples"
-                                        : "; OIDN " + std::string(oidn.message);
+      const bool optix = subs_.referencePathTracePass->optixSelected();
+      const bool beauty = referencePathDisplay() == ReferencePathDisplayMode::Beauty;
+      if (beauty && (optix || subs_.referencePathTracePass->oidnQuality() != ReferenceOidnQuality::Off)) {
+        const auto denoiser = subs_.referencePathTracePass->oidnStatus();
+        status += optix ? "; OptiX " : "; OIDN ";
+        status += denoiser.displayedSamples ? "at " + std::to_string(denoiser.displayedSamples) + " samples"
+                                            : std::string(denoiser.message);
+      }
+      if (beauty && subs_.referencePathTracePass->dlssQuality() != UpscaleMode::Native) {
+        status += " | DLSS Ray Reconstruction ";
+        status += subs_.referencePathTracePass->dlssStatus().message;
       }
     }
     subs_.guiManager->setReferencePathStatus(std::move(status));
@@ -2245,9 +2260,9 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   container::temporal::validateSettings(
       temporal.settings(), static_cast<uint32_t>(msaaSampleCount_));
   updateCameraBuffer(imageIndex);
-  reconcileFsrResources();
+  reconcileUpscaleResources();
   const auto temporalExtent = sceneRenderExtent();
-  if ((temporal.settings().enabled || temporal.fsrActive()) && !referencePathActive()) {
+  if ((temporal.settings().enabled || temporal.upscalingActive()) && !referencePathActive()) {
     temporal.createPipelines(activeShaderReload_ ? activeShaderReload_->directory
                                                  : container::util::executableDirectory(),
                              subs_.sceneManager->descriptorSetLayout(),
@@ -2264,7 +2279,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   const auto mode = static_cast<uint32_t>(frontendDisplayMode(
       subs_.guiManager.get(), configuredDisplayMode(svc_.config)));
   frameTemporalSettings.enabled =
-      (frameTemporalSettings.enabled || temporal.fsrActive()) && !referencePathActive() &&
+      (frameTemporalSettings.enabled || temporal.upscalingActive()) && !referencePathActive() &&
       (mode == 0u || mode == 8u || (mode >= 100u && mode <= 104u));
   temporal.prepareCamera(
       buffers_.cameraData, {temporalExtent.width, temporalExtent.height},
@@ -2470,6 +2485,9 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     throw std::runtime_error("failed to submit draw command buffer!");
   }
   subs_.temporalManager->commit();
+  if (subs_.screenReflectionPass)
+    subs_.screenReflectionPass->onSubmitted(
+        subs_.deferredRasterFrameGraphContext->isPassActive(RenderPassId::ScreenReflections));
   if (subs_.volumetricFogPass)
     subs_.volumetricFogPass->onSubmitted(
         subs_.deferredRasterFrameGraphContext->isPassActive(RenderPassId::VolumetricFog));
@@ -2630,13 +2648,23 @@ void RendererFrontend::applyTemporalCapture(
     processShaderReload(true, true);
   if (event.referenceAutofocus)
     referenceAutofocusRequested_ = true;
-  if (event.referenceOidn) {
+  if (event.referenceDisplay) {
+    if (subs_.guiManager) subs_.guiManager->setReferencePathDisplay(*event.referenceDisplay);
+    else referencePathDisplayOverride_ = event.referenceDisplay;
+  }
+  if (event.referenceOidn || event.referenceOptix || event.referenceDlss) {
     if (subs_.guiManager) {
       auto settings = subs_.guiManager->referenceOidn();
-      settings.quality = *event.referenceOidn;
+      if (event.referenceOidn) settings.quality = *event.referenceOidn;
+      if (event.referenceDlss) settings.quality = ReferenceOidnQuality::Off;
+      settings.optix = event.referenceOptix.value_or(false);
+      settings.dlss = event.referenceDlss.value_or(UpscaleMode::Native);
       subs_.guiManager->setReferenceOidn(settings);
     } else {
-      referenceOidnQualityOverride_ = *event.referenceOidn;
+      if (event.referenceOidn) referenceOidnQualityOverride_ = *event.referenceOidn;
+      if (event.referenceDlss) referenceOidnQualityOverride_ = ReferenceOidnQuality::Off;
+      referenceOptixOverride_ = event.referenceOptix.value_or(false);
+      referenceDlssOverride_ = event.referenceDlss.value_or(UpscaleMode::Native);
     }
   }
   if (event.comfyUi)
@@ -2916,7 +2944,8 @@ void RendererFrontend::applyTemporalCapture(
         ? container::ui::SceneNodeAuthoringAction::Rename
         : edit.action == "create-empty" ? container::ui::SceneNodeAuthoringAction::CreateEmpty
         : edit.action == "duplicate-subtree" ? container::ui::SceneNodeAuthoringAction::DuplicateSubtree
-                                             : container::ui::SceneNodeAuthoringAction::DeleteSubtree,
+        : edit.action == "make-editable" ? container::ui::SceneNodeAuthoringAction::MakeEditable
+                                         : container::ui::SceneNodeAuthoringAction::DeleteSubtree,
         sceneGraph_.identity(), target, edit.name});
   }
   const auto resolveNode=[this](const container::temporal::CaptureNodeReference& reference) {
@@ -2979,13 +3008,9 @@ void RendererFrontend::applyTemporalCapture(
           : gltfAnimation_->clearClip(source));
       if(event.animationTime) dirty.merge(gltfAnimation_->seek(source,*event.animationTime));
       pendingGltfAnimationDeltaSeconds_=0;
-      if(!dirty.empty()) {
-        container::geometry::gltf::ApplyAnimatedNodeTransforms(source,dirty,sceneGraph_);
-        subs_.sceneManager->publishAnimationChanges(dirty,sceneGraph_);
-        if(subs_.lightingManager) subs_.lightingManager->updateLightingData();
-        refreshSceneObjectData(); syncSceneProviders();
-      }
-      if(subs_.temporalManager) subs_.temporalManager->reset("capture glTF animation timeline");
+      if (!dirty.empty()) publishGltfAnimationChanges(dirty);
+      if (subs_.temporalManager && dirty.nodeFlags.empty())
+        subs_.temporalManager->reset("capture glTF animation timeline");
     }
     if(event.animationPlaying) {
       if (*event.animationPlaying) gltfAnimation_->play();
@@ -3010,8 +3035,8 @@ void RendererFrontend::applyTemporalCapture(
             std::make_shared<container::physics::PhysicsBodySettings>(*event.physicsSettings) : nullptr});
   if (event.taa)
     subs_.temporalManager->settings().enabled = *event.taa;
-  if (event.fsr)
-    captureFsrMode_ = event.fsr;
+  if (event.upscaling)
+    captureUpscaling_ = event.upscaling;
   if (event.samples)
     recreateMsaaResources(sampleCountFromSamples(*event.samples));
   if (event.reset)
@@ -3070,6 +3095,7 @@ void RendererFrontend::applyTemporalCapture(
     const auto *node = sceneGraph_.getNode(nodeIndex);
     if (!node)
       throw std::invalid_argument("Capture objectNode does not exist");
+    requireEditableSceneNode(nodeIndex);
     if (!captureObjectBase_ || captureObjectNode_ != nodeIndex) {
       captureObjectBase_ = node->localTransform;
       captureObjectNode_ = nodeIndex;
@@ -3088,6 +3114,7 @@ void RendererFrontend::applyTemporalCapture(
   if (objectTracksActive && event.objectVisible) {
     if (!sceneGraph_.getNode(objectNode))
       throw std::invalid_argument("Capture objectNode does not exist");
+    requireEditableSceneNode(objectNode);
     finishEditGestures();
     sceneGraph_.setVisible(objectNode, *event.objectVisible);
     publishSceneEdit();
@@ -3106,6 +3133,12 @@ void RendererFrontend::applyTemporalCapture(
     if (it == lights.end())
       throw std::invalid_argument(
           "Capture areaLightPosition needs an area light");
+    if (subs_.sceneManager && it->source == EditableLightSource::Imported) {
+      const auto bindings = subs_.sceneManager->authoredAreaLightBindings();
+      if (it->id.index < bindings.size() &&
+          subs_.sceneManager->isLinkedSourceNodeReadOnly(bindings[it->id.index].sourceNode))
+        throw std::invalid_argument("This linked asset is read-only. Use Make Editable first.");
+    }
     auto light = *it;
     light.position = *event.areaLightPosition;
     if (!subs_.lightingManager->updateEditableLight(light))
@@ -3153,16 +3186,30 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"imagePayloadBytes", temporal.memoryBytes()},
         {"allocatedImageBytes", temporal.allocatedBytes()}}}};
   const auto sceneExtent = sceneRenderExtent();
-  json["fsr"] = {{"requested", fsrModeName(fsrResourceRequest_.mode)},
-      {"mode", fsrModeName(temporal.fsrActive() ? fsrResourceRequest_.mode : FsrMode::Native)},
-      {"active", temporal.fsrActive()}, {"status", fsrViewportStatus_},
-      {"renderExtent", {sceneExtent.width, sceneExtent.height}},
-      {"displayExtent", {extent.width, extent.height}}};
+  const auto upscaleTelemetry = [&](UpscaleBackend backend, bool active) {
+    const auto& selection = upscaleResourceRequest_.selection;
+    const auto requested = selection.backend == backend ? selection.mode : UpscaleMode::Native;
+    return nlohmann::json{{"requested", upscaleModeName(requested)},
+        {"mode", upscaleModeName(active ? requested : UpscaleMode::Native)},
+        {"active", active},
+        {"status", requested == UpscaleMode::Native ? std::string_view{} : std::string_view{upscaleViewportStatus_}},
+        {"renderExtent", {sceneExtent.width, sceneExtent.height}},
+        {"displayExtent", {extent.width, extent.height}}};
+  };
+  json["fsr"] = upscaleTelemetry(UpscaleBackend::Fsr, temporal.fsrActive());
+  json["dlss"] = upscaleTelemetry(UpscaleBackend::Dlss, temporal.dlssActive());
+  if (const auto bytes = temporal.dlssAllocatedBytes())
+    json["dlss"]["sdkAllocatedBytes"] = *bytes;
   if (referencePathActive()) {
     const auto* path = subs_.referencePathTracePass.get();
     const auto lens = path ? path->effectiveLens() : std::nullopt;
-    const auto oidn = path ? path->oidnStatus() : ReferenceOidnStatus{};
+    const bool optixSelected = path ? path->optixSelected() : svc_.config.pathOidn.optix;
+    const auto denoiser = path ? path->oidnStatus() : ReferenceOidnStatus{};
+    const auto oidn = optixSelected ? ReferenceOidnStatus{} : denoiser;
+    const auto optix = optixSelected ? denoiser : ReferenceOidnStatus{};
+    const auto rr = path ? path->dlssStatus() : ReferenceDlssStatus{};
     json["referencePath"] = {{"active", path != nullptr}, {"status", referenceStatus_},
+        {"display", referencePathDisplayName(referencePathDisplay())},
         {"attemptedSamples", path ? path->attemptedSamples() : 0},
         {"historyResets", path ? path->historyResets() : 0},
         {"allocatedBytes", path ? path->allocatedBytes() : 0},
@@ -3174,10 +3221,22 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"adaptiveTargetMs", svc_.config.pathTargetMs},
         {"lastTimedLightingMs", referenceTimedLightingMs_ ? nlohmann::json(*referenceTimedLightingMs_) : nlohmann::json(nullptr)},
         {"fireflyClamp", path ? path->effectiveFireflyClamp() : 0.0f},
-        {"oidn", {{"quality", referenceOidnQualityName(path ? path->oidnQuality() : svc_.config.pathOidn.quality)},
+        {"oidn", {{"quality", referenceOidnQualityName(path ? path->oidnQuality() :
+                      optixSelected ? ReferenceOidnQuality::Off : svc_.config.pathOidn.quality)},
                   {"status", oidn.message}, {"displayedSamples", oidn.displayedSamples},
                   {"allocatedBytes", oidn.allocatedBytes},
                   {"lastGpuMs", oidn.lastGpuMs ? nlohmann::json(*oidn.lastGpuMs) : nlohmann::json(nullptr)}}},
+        {"optix", {{"requested", optixSelected}, {"status", optix.message},
+                   {"displayedSamples", optix.displayedSamples}, {"allocatedBytes", optix.allocatedBytes},
+                   {"lastGpuMs", optix.lastGpuMs ? nlohmann::json(*optix.lastGpuMs) : nlohmann::json(nullptr)}}},
+        {"dlss", {{"quality", referenceDlssQualityName(path ? path->dlssQuality() : svc_.config.pathOidn.dlss)},
+                  {"status", rr.message}, {"active", rr.active},
+                  {"renderExtent", {rr.renderExtent.width, rr.renderExtent.height}},
+                  {"outputExtent", {rr.outputExtent.width, rr.outputExtent.height}},
+                  {"historyResets", rr.historyResets}, {"historyFrames", rr.historyFrames},
+                  {"allocatedBytes", rr.allocatedBytes},
+                  {"vendorAllocatedBytes", rr.vendorAllocatedBytes ? nlohmann::json(*rr.vendorAllocatedBytes) : nlohmann::json(nullptr)},
+                  {"lastGpuMs", rr.lastGpuMs ? nlohmann::json(*rr.lastGpuMs) : nlohmann::json(nullptr)}}},
         {"ground", referenceGroundMetadata(path ? path->effectiveGround() : ReferenceGroundSettings{})},
         {"autofocusStatus", referenceAutofocusStatus_},
         {"maxBounces", svc_.config.pathMaxBounces}, {"seed", svc_.config.pathSeed},
@@ -3524,6 +3583,11 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   if (subs_.bimManager) {
     json["scene"]["auxiliaryObjectCount"] =
         subs_.bimManager->objectData().size();
+    const auto bounds = subs_.bimManager->sceneProviderBounds();
+    if (bounds.valid)
+      json["scene"]["auxiliaryBounds"] = {
+          {"min", {bounds.min.x, bounds.min.y, bounds.min.z}},
+          {"max", {bounds.max.x, bounds.max.y, bounds.max.z}}};
     const auto &report = subs_.bimManager->importReport();
     json["scene"]["import"] = {
         {"status",
@@ -3562,6 +3626,8 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"allocationBytes", subs_.screenReflectionPass ? subs_.screenReflectionPass->allocationBytes() : 0},
         {"rayFallbackRequested", svc_.config.screenReflectionRayFallback},
         {"rayFallbackAvailable", subs_.screenReflectionPass && subs_.screenReflectionPass->rayFallbackAvailable()},
+        {"historyAvailable", subs_.screenReflectionPass && subs_.screenReflectionPass->historyAvailable()},
+        {"historyReprojected", subs_.screenReflectionPass && subs_.screenReflectionPass->historyReprojected()},
         {"rayFallbackActive", subs_.screenReflectionPass && subs_.deferredRasterFrameGraphContext &&
             subs_.deferredRasterFrameGraphContext->isPassActive(RenderPassId::ScreenReflections) &&
             subs_.screenReflectionPass->rayFallbackActive()}};
@@ -5035,7 +5101,7 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
         else
           prepared->gltf = container::scene::SceneManager::prepareGltfModel(path,
               merge || remote ? 512ull * 1024 * 1024 : std::numeric_limits<uintmax_t>::max(),
-              linked, remote, experimental, micromaps && !merge);
+              linked, remote, experimental, micromaps && !merge, merge);
         return prepared;
       });
       // Keep at least the request frame interactive, even for tiny models.
@@ -5597,13 +5663,16 @@ void RendererFrontend::applySceneLightingDefaults() {
     current.directionalIntensity = svc_.config.directionalIntensity;
   if (svc_.config.hasEnvironmentIntensityOverride)
     current.environmentIntensity = svc_.config.environmentIntensity;
+  if (svc_.config.hasBounceIntensityOverride)
+    current.bounceIntensity = svc_.config.bounceIntensity;
   if (svc_.config.hasBloomEnabledOverride)
     current.bloomEnabled = svc_.config.bloomEnabled;
   current = sceneLightingDefaults_.apply(
       current, defaults,
       {svc_.config.hasDirectionalIntensityOverride,
        svc_.config.hasEnvironmentIntensityOverride,
-       svc_.config.hasBloomEnabledOverride});
+       svc_.config.hasBloomEnabledOverride,
+       svc_.config.hasBounceIntensityOverride});
   settings.directionalIntensity = current.directionalIntensity;
   settings.environmentIntensity = current.environmentIntensity;
   settings.bounceIntensity = current.bounceIntensity;
@@ -5819,11 +5888,13 @@ VkExtent2D RendererFrontend::sceneRenderExtent() const {
   return svc_.swapChainManager.extent();
 }
 
-RendererFrontend::FsrResourceRequest RendererFrontend::currentFsrResourceRequest() const {
-  const auto mode = captureFsrMode_.value_or(subs_.guiManager ? subs_.guiManager->fsrMode()
-                                                           : svc_.config.fsrMode);
-  FsrResourceRequest request{.mode = mode};
-  if (mode == FsrMode::Native || msaaSampleCount_ != VK_SAMPLE_COUNT_1_BIT ||
+RendererFrontend::UpscaleResourceRequest RendererFrontend::currentUpscaleResourceRequest() const {
+  const auto selection = captureUpscaling_.value_or(subs_.guiManager ? subs_.guiManager->upscaling()
+                                                                     : svc_.config.upscaling);
+  if (selection.mode == UpscaleMode::Native)
+    return {};
+  UpscaleResourceRequest request{.selection = selection};
+  if (msaaSampleCount_ != VK_SAMPLE_COUNT_1_BIT ||
       referencePathActive() || svc_.config.maxFramesInFlight > 4 || !subs_.cameraController)
     return request;
   const auto display = frontendDisplayMode(subs_.guiManager.get(), configuredDisplayMode(svc_.config));
@@ -5843,17 +5914,17 @@ RendererFrontend::FsrResourceRequest RendererFrontend::currentFsrResourceRequest
   return request;
 }
 
-void RendererFrontend::reconcileFsrResources() {
-  const auto request = currentFsrResourceRequest();
-  if (request == fsrResourceRequest_) return;
-  if (!request.eligible && !subs_.temporalManager->fsrActive()) {
-    fsrResourceRequest_ = request;
-    fsrViewportStatus_ = request.mode == FsrMode::Native ? "" :
-        "FSR requires a perspective raster view at MSAA 1x and a supported display mode";
+void RendererFrontend::reconcileUpscaleResources() {
+  const auto request = currentUpscaleResourceRequest();
+  if (request == upscaleResourceRequest_) return;
+  if (!request.eligible && !subs_.temporalManager->upscalingActive()) {
+    upscaleResourceRequest_ = request;
+    upscaleViewportStatus_ = request.selection.mode == UpscaleMode::Native ? "" :
+        "Upscaling requires a perspective raster view at MSAA 1x and a supported display mode";
     return;
   }
   if (vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device()) != VK_SUCCESS)
-    throw std::runtime_error("Failed to retire frames before changing FSR mode");
+    throw std::runtime_error("Failed to retire frames before changing the upscaling mode");
   if (subs_.rendererTelemetry) subs_.rendererTelemetry->noteDeviceWaitIdle();
   invalidateDepthVisibilityFrames();
   createFrameResources();
@@ -5869,31 +5940,56 @@ void RendererFrontend::createFrameResources() {
   const auto previousSceneExtent = sceneRenderExtent();
   const auto displayExtent = svc_.swapChainManager.extent();
   auto sceneExtent = displayExtent;
-  fsrResourceRequest_ = currentFsrResourceRequest();
-  fsrViewportStatus_.clear();
-  if (fsrResourceRequest_.eligible && subs_.temporalManager) {
-    const auto requested = fsrRenderExtent(fsrResourceRequest_.mode, displayExtent);
-    if (subs_.temporalManager->prepareFsr(container::util::executableDirectory(),
-            {requested, displayExtent, fsrResourceRequest_.infiniteFar}))
-      sceneExtent = requested;
-    fsrViewportStatus_ = subs_.temporalManager->fsrStatus();
-  } else if (fsrResourceRequest_.mode != FsrMode::Native) {
-    fsrViewportStatus_ = "FSR requires a perspective raster view at MSAA 1x and a supported display mode";
+  upscaleResourceRequest_ = currentUpscaleResourceRequest();
+  upscaleViewportStatus_.clear();
+  const auto selection = upscaleResourceRequest_.selection;
+  if (upscaleResourceRequest_.eligible && subs_.temporalManager) {
+    auto& temporal = *subs_.temporalManager;
+    const auto root = container::util::executableDirectory();
+    if (selection.backend == UpscaleBackend::Dlss) {
+      if (const auto optimal = temporal.prepareDlss(root, selection.mode, displayExtent))
+        sceneExtent = *optimal;
+    } else {
+      const auto requested = fsrRenderExtent(selection.mode, displayExtent);
+      if (temporal.prepareFsr(root, {requested, displayExtent, upscaleResourceRequest_.infiniteFar}))
+        sceneExtent = requested;
+    }
+    upscaleViewportStatus_ = temporal.upscalingStatus();
+  } else if (selection.mode != UpscaleMode::Native) {
+    upscaleViewportStatus_ = "Upscaling requires a perspective raster view at MSAA 1x and a supported display mode";
   }
   ensureObjectBuffers();
-  if (subs_.lightingManager) {
-    subs_.lightingManager->resizeTiledResources(sceneExtent);
-  }
   const auto objectBuffer = sceneObjectBuffer(0);
-  subs_.frameResourceManager->create(
-      resources_.gBufferFormats, resources_.renderPasses.depthPrepass,
-      resources_.renderPasses.bimDepthPrepass, resources_.renderPasses.gBuffer,
-      resources_.renderPasses.bimGBuffer,
-      resources_.renderPasses.transparentPick, resources_.renderPasses.lighting,
-      resources_.renderPasses.forwardLighting,
-      resources_.renderPasses.forwardTransparent,
-      resources_.renderPasses.transformGizmos, msaaSampleCount_, buffers_.cameras,
-      objectBuffer, sceneExtent);
+  const auto createSceneGrid = [&] {
+    if (subs_.lightingManager)
+      subs_.lightingManager->resizeTiledResources(sceneExtent);
+    subs_.frameResourceManager->create(
+        resources_.gBufferFormats, resources_.renderPasses.depthPrepass,
+        resources_.renderPasses.bimDepthPrepass, resources_.renderPasses.gBuffer,
+        resources_.renderPasses.bimGBuffer,
+        resources_.renderPasses.transparentPick, resources_.renderPasses.lighting,
+        resources_.renderPasses.forwardLighting, resources_.renderPasses.forwardTransparent,
+        resources_.renderPasses.transformGizmos, msaaSampleCount_, buffers_.cameras,
+        objectBuffer, sceneExtent);
+  };
+  if (subs_.temporalManager && subs_.temporalManager->dlssActive()) {
+    auto& temporal = *subs_.temporalManager;
+    try {
+      createSceneGrid();
+      temporal.createPipelines(activeShaderReload_ ? activeShaderReload_->directory :
+          container::util::executableDirectory(), subs_.sceneManager->descriptorSetLayout(),
+          resources_.gBufferFormats.depthStencil);
+      temporal.prepare(*subs_.frameResourceManager, sceneExtent,
+          static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
+    } catch (const std::exception& error) {
+      temporal.destroyImages();
+      sceneExtent = displayExtent;
+      upscaleViewportStatus_ = std::string("DLSS resource setup failed: ") + error.what();
+      createSceneGrid();
+    }
+  } else {
+    createSceneGrid();
+  }
   if (subs_.environmentManager && subs_.environmentManager->isGtaoReady() &&
       (sceneExtent.width != previousSceneExtent.width || sceneExtent.height != previousSceneExtent.height))
     subs_.environmentManager->recreateGtaoTextures(sceneExtent.width, sceneExtent.height);
@@ -5904,7 +6000,8 @@ void RendererFrontend::createFrameResources() {
       reflections->createResources(container::util::executableDirectory(),
           *subs_.frameResourceManager, sceneExtent,
           subs_.lightingManager->lightDescriptorSetLayout(), subs_.sceneManager->descriptorSetLayout(),
-          svc_.config.screenReflectionRayFallback);
+          svc_.config.screenReflectionRayFallback,
+          screenReflectionModeUsesHistory(svc_.config.screenReflections));
       subs_.screenReflectionPass = std::move(reflections);
     } catch (const std::exception& error) {
       container::log::ContainerLogger::instance().renderer()->warn(
@@ -6500,7 +6597,8 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
                           {"includesUi", !screenshot_.sceneLinear && !screenshot_.viewportOnly && subs_.guiManager != nullptr}};
   if (referenceCapture) {
     const auto lens = referenceCapture->effectiveLens();
-    const auto oidn = referenceCapture->oidnStatus();
+    const auto denoiser = referenceCapture->oidnStatus();
+    const bool optix = referenceCapture->optixSelected();
     metadata["referencePath"] = {
         {"attemptedSamplesPerPixel", referenceCapture->attemptedSamples()},
         {"sampleLimit", svc_.config.pathSampleLimit},
@@ -6508,8 +6606,10 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
         {"samplesPerFrame", svc_.config.pathSamplesPerFrame},
         {"adaptiveTargetMs", svc_.config.pathTargetMs},
         {"lastSubmittedSamples", referenceCapture->lastSubmittedSamples()},
+        {"display", referencePathDisplayName(referencePathDisplay())},
         {"fireflyClamp", referenceCapture->effectiveFireflyClamp()},
-        {"oidnDisplaySamples", screenshot_.sceneLinear ? 0u : oidn.displayedSamples},
+        {"oidnDisplaySamples", screenshot_.sceneLinear || optix ? 0u : denoiser.displayedSamples},
+        {"optixDisplaySamples", screenshot_.sceneLinear || !optix ? 0u : denoiser.displayedSamples},
         {"ground", referenceGroundMetadata(ground)},
         {"maxBounces", svc_.config.pathMaxBounces},
         {"seed", svc_.config.pathSeed},
@@ -6564,6 +6664,10 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
     metadata["exposureMode"] = automatic ? "auto" : "manual";
     metadata["manualExposure"] = automatic ? nlohmann::json(nullptr) : nlohmann::json(exposure.manualExposure);
     metadata["toneMapper"] = static_cast<uint32_t>(params.postProcess.displayGrade.toneMapper);
+    if (referenceCapture && referencePathDisplay() == ReferencePathDisplayMode::StandardError) {
+      metadata["exposureApplied"] = false;
+      metadata["toneMappingApplied"] = false;
+    }
   }
   container::util::writeFileAtomically(metadataPath, metadata.dump(2) + '\n', publication);
 }
@@ -7692,8 +7796,8 @@ void RendererFrontend::presentSceneControls() {
       }
     subs_.guiManager->setDdgiState(gi.settings(), std::move(runtime));
   }
-  subs_.guiManager->setFsrStatus(subs_.temporalManager && subs_.temporalManager->fsrActive(),
-                               fsrViewportStatus_);
+  subs_.guiManager->setUpscalingStatus(subs_.temporalManager && subs_.temporalManager->upscalingActive()
+      ? std::optional{upscaleResourceRequest_.selection.backend} : std::nullopt, upscaleViewportStatus_);
   // Sync bloom: push BloomManager settings into GUI before rendering.
   if (subs_.bloomManager) {
     subs_.guiManager->setBloomSettings(
@@ -9236,7 +9340,12 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   p.debug.temporalForceReactive =
       (subs_.guiManager && (subs_.guiManager->showGeometryOverlay() ||
                             subs_.guiManager->showNormalValidation()));
-  p.debug.displayMode = referencePathActive() ? 0u : static_cast<uint32_t>(displayMode);
+  // Reference diagnostics are already display colors. Use the postprocess
+  // raw-color mode also used by the raster object-space normals view.
+  p.debug.displayMode = referencePathActive()
+      ? (referencePathDisplay() == ReferencePathDisplayMode::StandardError
+            ? static_cast<uint32_t>(container::ui::GBufferViewMode::ObjectSpaceNormals) : 0u)
+      : static_cast<uint32_t>(displayMode);
   p.debug.screenReflections = svc_.config.screenReflections;
   if (subs_.rayShadowManager && subs_.rayShadowManager->settings().mode != RayShadowMode::Raster &&
       subs_.rayShadowManager->settings().debugLayer != 0)
@@ -9268,6 +9377,10 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   }
   p.services.temporalManager = subs_.temporalManager.get();
   p.services.screenReflectionPass = subs_.screenReflectionPass.get();
+  p.reflectionHistory = {
+      .cameraEpoch = subs_.temporalManager ? subs_.temporalManager->state().epoch() : 0u,
+      .materialRevision = subs_.sceneManager ? subs_.sceneManager->materialRevision() : 0u,
+      .lightRevision = subs_.lightingManager ? subs_.lightingManager->lightEditRevision() : 0u};
   p.services.volumetricFogPass = subs_.volumetricFogPass.get();
   p.volumetricFog = {.settings = svc_.config.volumetricFog, .cameraData = &buffers_.cameraData,
       .lightSet = subs_.lightingManager ? subs_.lightingManager->lightDescriptorSet(imageIndex) : VK_NULL_HANDLE,

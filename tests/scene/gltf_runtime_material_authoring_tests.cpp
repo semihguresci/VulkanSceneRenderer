@@ -228,6 +228,13 @@ TEST(GltfRuntimeMaterialAuthoring, RetainedSpecularGlossinessNeedsNoInverseAppro
   EXPECT_THROW((void)materialize(value,ids,fixture.context()),std::invalid_argument);
   auto changed=value;changed.baseColor.x=std::nextafter(changed.baseColor.x,0.f);
   EXPECT_THROW((void)materialize(changed,ids,fixture.context(),&fixture.source),std::invalid_argument);
+  changed=value;changed.specularGlossinessDiffuse.x=std::nextafter(changed.specularGlossinessDiffuse.x,0.f);
+  EXPECT_THROW((void)materialize(changed,ids,fixture.context(),&fixture.source),std::invalid_argument);
+  changed=value;changed.specularGlossinessSpecular.y=std::nextafter(changed.specularGlossinessSpecular.y,0.f);
+  EXPECT_THROW((void)materialize(changed,ids,fixture.context(),&fixture.source),std::invalid_argument);
+  changed=value;changed.roughnessFactor=.45f;
+  auto glossiness=materialize(changed,ids,fixture.context(),&fixture.source);
+  expectRoundTrip(glossiness,changed,fixture.context());
 }
 
 TEST(GltfRuntimeMaterialAuthoring, SpecularGlossinessPackedColorAliasesValidateWithOrWithoutIndependentDataRole) {
@@ -376,6 +383,13 @@ TEST(GltfRuntimeMaterialAuthoring, EqualityIsBitExactForEveryRuntimeFieldAndIgno
     [](auto& m){m.diffuseTransmissionFactor=-0.f;},[](auto& m){m.diffuseTransmissionColorFactor.z=0.f;},
     [](auto& m){m.alphaMode=AlphaMode::Blend;},[](auto& m){m.doubleSided=true;},[](auto& m){m.specularGlossinessWorkflow=true;},[](auto& m){m.unlit=true;}};
   for(const auto& change:changes) {auto after=before;change(after);EXPECT_FALSE(RuntimeMaterialsEqual(before,after));}
+  for (int component = 0; component < 3; ++component) {
+    auto diffuse = before, specular = before;
+    diffuse.specularGlossinessDiffuse[component] = .5f;
+    specular.specularGlossinessSpecular[component] = .5f;
+    EXPECT_FALSE(RuntimeMaterialsEqual(before, diffuse));
+    EXPECT_FALSE(RuntimeMaterialsEqual(before, specular));
+  }
   auto a=before,b=before;a.baseColor.x=b.baseColor.x=std::numeric_limits<float>::quiet_NaN();EXPECT_TRUE(RuntimeMaterialsEqual(a,b));
   for(auto* value:{&a,&b}) value->baseColor.x=1.f;
   a.baseColorTextureIndex=0;EXPECT_FALSE(RuntimeMaterialsEqual(a,b));b.baseColorTextureIndex=0;EXPECT_TRUE(RuntimeMaterialsEqual(a,b));

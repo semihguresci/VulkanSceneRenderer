@@ -6,7 +6,7 @@ param(
     [string]$Version,
     [Parameter(Mandatory = $true)][string]$RuntimeDirectory,
     [Parameter(Mandatory = $true)][string]$VcpkgInstalledDirectory,
-    [Parameter(Mandatory = $true)][string]$TinyUsdzSourceDirectory,
+    [string]$TinyUsdzSourceDirectory = '',
     [string]$OpenVdbInstalledDirectory = '',
     [string]$BuildDirectory = '',
     [string]$OutputDirectory = (Join-Path $PSScriptRoot '../out/packages')
@@ -17,7 +17,6 @@ $ErrorActionPreference = 'Stop'
 $sourceDirectory = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $runtimeDirectory = (Resolve-Path $RuntimeDirectory).Path
 $dependencyDirectory = (Resolve-Path (Join-Path $VcpkgInstalledDirectory 'x64-windows/share')).Path
-$tinyDirectory = (Resolve-Path $TinyUsdzSourceDirectory).Path
 $outputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 $packageName = "VulkanSceneRenderer-$Version-windows-x64"
 $stagingDirectory = Join-Path $outputDirectory $packageName
@@ -44,6 +43,68 @@ $cachePath = Join-Path $buildTreeDirectory 'CMakeCache.txt'
 if (-not (Test-Path -LiteralPath $cachePath -PathType Leaf)) {
     throw "Missing build cache: $cachePath"
 }
+$portableVulkanLoader = Select-String -LiteralPath $cachePath -Pattern '^CONTAINER_VULKAN_LOADER_AVAILABLE:INTERNAL=ON$' -Quiet
+$vulkanLoaderRootOption = @(Select-String -LiteralPath $cachePath -Pattern '^CONTAINER_VULKAN_LOADER_ROOT:PATH=(.+)$')
+if ($vulkanLoaderRootOption.Count -gt 0 -and -not $portableVulkanLoader) {
+    throw 'The selected portable Vulkan loader was not configured successfully. Reconfigure and rebuild before packaging.'
+}
+$vulkanLoaderVersion = 'unrecorded'
+$vulkanLoaderHash = ''
+$vulkanLoaderLicense = Join-Path $buildTreeDirectory 'third_party_licenses/VulkanRT-License.txt'
+if ($portableVulkanLoader) {
+    $vulkanLoaderVersion = '1.4.363.0'
+    $vulkanLoaderHash = 'e1fcfc9489beefa6a6d9d11d6c7517f6a2b7f16e0d3fb8f4103bee0210f314a3'
+    foreach ($pin in @(
+        @{ Path=(Join-Path $runtimeDirectory 'vulkan-1.dll'); Hash=$vulkanLoaderHash },
+        @{ Path=$vulkanLoaderLicense; Hash='404deb98dabf3e54bf9070d59676b31d69a3da2f9f6e56bdf09ad315c04c718c' })) {
+        if (-not (Test-Path -LiteralPath $pin.Path -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $pin.Path -Algorithm SHA256).Hash -ne $pin.Hash) {
+            throw "The selected portable Vulkan loader requires its pinned 1.4.363.0 runtime and notice: $($pin.Path)"
+        }
+    }
+}
+$portableVulkanSdkCore = Select-String -LiteralPath $cachePath -Pattern '^CONTAINER_VULKAN_SDK_CORE_AVAILABLE:INTERNAL=ON$' -Quiet
+$vulkanSdkCoreRootOption = @(Select-String -LiteralPath $cachePath -Pattern '^CONTAINER_VULKAN_SDK_CORE_ROOT:PATH=(.+)$')
+if ($vulkanSdkCoreRootOption.Count -gt 0 -and -not $portableVulkanSdkCore) {
+    throw 'The selected portable Vulkan SDK core was not configured successfully. Reconfigure and rebuild before packaging.'
+}
+$vulkanSdkCoreNotices = @()
+if ($portableVulkanSdkCore) {
+    $sdkVersion = @(Select-String -LiteralPath $cachePath -Pattern '^CONTAINER_VULKAN_SDK_CORE_VERSION:INTERNAL=1\.4\.363\.1$')
+    if ($sdkVersion.Count -ne 1) { throw 'The portable Vulkan SDK core version is missing or ambiguous.' }
+    foreach ($pin in @(
+        @{ Name='Vulkan-Headers-1.4.363-LICENSE.md'; Hash='95ad366d23fadf701d355bc45fb8b82ae2d700239471d35d41286ac3b08ff903' },
+        @{ Name='Vulkan-Loader-1.4.363-LICENSE.txt'; Hash='43c0a37e6a0fa7ff3c843b3ec5a4fac84b712558ddac103fbd4c1649662a9ece' })) {
+        $notice = Join-Path $buildTreeDirectory ('third_party_licenses/' + $pin.Name)
+        if (-not (Test-Path -LiteralPath $notice -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $notice -Algorithm SHA256).Hash -ne $pin.Hash) {
+            throw "The portable Vulkan SDK core requires its pinned notice: $notice"
+        }
+        $vulkanSdkCoreNotices += $notice
+    }
+}
+$tinyUsdzOption = @(Select-String -LiteralPath $cachePath -Pattern '^ENABLE_TINYUSDZ_USD_LOADER:BOOL=(.*)$')
+if ($tinyUsdzOption.Count -ne 1) {
+    throw 'The build does not record ENABLE_TINYUSDZ_USD_LOADER. Reconfigure and rebuild before packaging.'
+}
+$tinyUsdzValue = $tinyUsdzOption[0].Matches[0].Groups[1].Value
+$tinyUsdzEnabled = $tinyUsdzValue -notmatch '^(|0|OFF|NO|FALSE|N|IGNORE|NOTFOUND)$' -and
+    $tinyUsdzValue -notmatch '-NOTFOUND$'
+$tinyDirectory = ''
+if ($tinyUsdzEnabled) {
+    if ([string]::IsNullOrWhiteSpace($TinyUsdzSourceDirectory)) {
+        throw 'The TinyUSDZ-enabled build requires -TinyUsdzSourceDirectory for its upstream and bundled notices.'
+    }
+    $tinyDirectory = (Resolve-Path -LiteralPath $TinyUsdzSourceDirectory).Path
+    foreach ($notice in @('LICENSE', 'README.md')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $tinyDirectory $notice) -PathType Leaf)) {
+            throw "The TinyUSDZ-enabled build is missing its upstream notice: $notice"
+        }
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $tinyDirectory 'src') -PathType Container)) {
+        throw 'The TinyUSDZ-enabled build requires its src directory to collect bundled copyright and license notices.'
+    }
+}
 $physicsOption = @(Select-String -LiteralPath $cachePath -Pattern '^ENABLE_PHYSICS:BOOL=(.*)$')
 if ($physicsOption.Count -ne 1) {
     throw 'The build does not record ENABLE_PHYSICS. Reconfigure and rebuild before packaging.'
@@ -61,18 +122,59 @@ if ($physicsEnabled -and -not (Test-Path -LiteralPath $joltLicense -PathType Lea
 $gltfCompressionEnabled = @{}
 $gltfCompressionNotices = @{}
 $referenceOidnNotices = @{}
-$fsrEnabled = Select-String -LiteralPath $cachePath -Pattern '^CONTAINER_FSR_AVAILABLE:INTERNAL=ON$' -Quiet
-$fsrNotice = Join-Path $buildTreeDirectory 'third_party_licenses/FidelityFX-SDK-MIT.txt'
-if ($fsrEnabled) {
-    if (-not (Test-Path -LiteralPath $fsrNotice -PathType Leaf)) {
-        throw "The enabled Vulkan FSR backend is missing its SDK license: $fsrNotice"
-    }
-    $fsrDll = Join-Path $runtimeDirectory 'amd_fidelityfx_vk.dll'
-    if (-not (Test-Path -LiteralPath $fsrDll -PathType Leaf) -or
-        (Get-FileHash -Algorithm SHA256 -LiteralPath $fsrDll).Hash -ne 'a1624cc4238fef046f30c4d80ce3f47be63fc5f5373f49e3ee9edb9960f54c78') {
-        throw 'The enabled Vulkan FSR backend requires the pinned v1.1.4 amd_fidelityfx_vk.dll.'
+$referenceOptixEnabled = Select-String -LiteralPath $cachePath -Pattern '^CONTAINER_OPTIX_AVAILABLE:INTERNAL=ON$' -Quiet
+$referenceOptixNotices = @()
+if ($referenceOptixEnabled) {
+    foreach ($noticeName in @('optix-9.1.0-LICENSE.txt', 'optix-9.1.0-BSD-3-Clause.txt', 'optix-9.1.0-LICENSE-INFO.txt')) {
+        $noticePath = Join-Path $buildTreeDirectory "third_party_licenses/$noticeName"
+        if (-not (Test-Path -LiteralPath $noticePath -PathType Leaf)) {
+            throw "The enabled OptiX backend is missing its SDK notice: $noticePath"
+        }
+        $referenceOptixNotices += $noticePath
     }
 }
+$fsrEnabled = Select-String -LiteralPath $cachePath -Pattern '^CONTAINER_FSR_AVAILABLE:INTERNAL=ON$' -Quiet
+$fsrNotices = @(
+    (Join-Path $buildTreeDirectory 'third_party_licenses/AMD-FSR-SDK-2.4.0-LICENSE.txt'),
+    (Join-Path $buildTreeDirectory 'third_party_licenses/AMD-FSR-SDK-2.4.0-THIRD-PARTY-NOTICES.md'))
+$fsrRuntimeFiles = @(
+    @{ Name='amd_fidelityfx_loader_vk.dll'; Hash='38a56a01fb3565c0757d9f5c1e4e69de4b65e5f2e5769b323b200dc1f142bab9' },
+    @{ Name='amd_fidelityfx_upscaler_vk.dll'; Hash='4a7e895af6e0b615d40a84d59eb8c2b1054ad91cdd0c739567940270d51bdab7' })
+if ($fsrEnabled) {
+    foreach ($noticePath in $fsrNotices) {
+        if (-not (Test-Path -LiteralPath $noticePath -PathType Leaf)) {
+            throw "The enabled Vulkan FSR backend is missing its SDK notice: $noticePath"
+        }
+    }
+    foreach ($entry in $fsrRuntimeFiles) {
+        $path = Join-Path $runtimeDirectory $entry.Name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash -ne $entry.Hash) {
+            throw "The enabled Vulkan FSR backend requires the pinned SDK 2.4.0 $($entry.Name)."
+        }
+    }
+}
+$dlssEnabled = Select-String -LiteralPath $cachePath -Pattern '^CONTAINER_DLSS_AVAILABLE:INTERNAL=ON$' -Quiet
+$dlssRrEnabled = Select-String -LiteralPath $cachePath -Pattern '^CONTAINER_DLSS_RR_AVAILABLE:INTERNAL=ON$' -Quiet
+$dlssLicense = Join-Path $buildTreeDirectory 'third_party_licenses/DLSS-310.9.16-LICENSE.txt'
+$dlssNotices = Join-Path $sourceDirectory 'cmake/licenses/DLSS-310.9.16-THIRD-PARTY-NOTICES.txt'
+if ($dlssEnabled -or $dlssRrEnabled) {
+    foreach ($noticePath in @($dlssLicense, $dlssNotices)) {
+        if (-not (Test-Path -LiteralPath $noticePath -PathType Leaf)) {
+            throw "The enabled Vulkan DLSS backend is missing an SDK notice: $noticePath"
+        }
+    }
+}
+function Assert-DlssRuntime([string]$Name, [string]$HashVariable) {
+    $hash = @(Select-String -LiteralPath $cachePath -Pattern "^$($HashVariable):INTERNAL=([0-9a-f]{64})$")
+    $dll = Join-Path $runtimeDirectory $Name
+    if ($hash.Count -ne 1 -or -not (Test-Path -LiteralPath $dll -PathType Leaf) -or
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $dll).Hash -ne $hash[0].Matches[0].Groups[1].Value) {
+        throw "The enabled Vulkan DLSS backend requires the pinned 310.9.16 release $Name. Reconfigure and rebuild before packaging."
+    }
+}
+if ($dlssEnabled) { Assert-DlssRuntime 'nvngx_dlss.dll' 'CONTAINER_DLSS_RUNTIME_SHA256' }
+if ($dlssRrEnabled) { Assert-DlssRuntime 'nvngx_dlssd.dll' 'CONTAINER_DLSS_RR_RUNTIME_SHA256' }
 if (Select-String -LiteralPath $cachePath -Pattern '^CONTAINER_VK_OIDN_AVAILABLE:INTERNAL=ON$' -Quiet) {
     foreach ($noticeName in @('vk_oidn-LICENSE.txt', 'vk_oidn-NOTICE.txt')) {
         $noticePath = Join-Path $buildTreeDirectory "third_party_licenses/$noticeName"
@@ -239,12 +341,25 @@ if ($openVdbEnabled -or $nanoIoEnabled) {
 if ($gltfCompressionEnabled['DRACO']) {
     $requiredFiles += 'ContainerDracoWorker.exe'
 }
-if ($referenceOidnNotices.Count) {
+if ($referenceOidnNotices.Count -or $referenceOptixEnabled) {
     $requiredFiles += @('spv_shaders/reference_guided_pathtrace.comp.spv',
-        'spv_shaders/reference_guided_background.comp.spv', 'spv_shaders/reference_denoise_compose.comp.spv')
+        'spv_shaders/reference_guided_background.comp.spv')
+}
+if ($referenceOidnNotices.Count -or $referenceOptixEnabled -or $dlssRrEnabled) {
+    $requiredFiles += 'spv_shaders/reference_denoise_compose.comp.spv'
 }
 if ($fsrEnabled) {
-    $requiredFiles += 'amd_fidelityfx_vk.dll'
+    $requiredFiles += @($fsrRuntimeFiles | ForEach-Object { $_.Name })
+}
+if ($dlssEnabled) {
+    $requiredFiles += @('nvngx_dlss.dll', 'spv_shaders/dlss_compose.comp.spv',
+        'spv_shaders/dlss_transparency.comp.spv')
+}
+if ($dlssRrEnabled) {
+    $requiredFiles += @('nvngx_dlssd.dll', 'spv_shaders/reference_pathtrace_rr.comp.spv',
+        'spv_shaders/reference_pathtrace_empty_rr.comp.spv')
+}
+if ($fsrEnabled -or $dlssEnabled) {
     $requiredFiles += 'spv_shaders/fsr_inputs.comp.spv'
 }
 foreach ($relativePath in $requiredFiles) {
@@ -252,8 +367,26 @@ foreach ($relativePath in $requiredFiles) {
         throw "Missing runtime file: $relativePath"
     }
 }
-$shaders = @(Get-ChildItem -LiteralPath (Join-Path $runtimeDirectory 'spv_shaders') -Filter '*.spv' -File)
+$shaders = @(Get-ChildItem -LiteralPath (Join-Path $runtimeDirectory 'spv_shaders') -Filter '*.spv' -File |
+    Where-Object { $dlssRrEnabled -or $_.Name -notin @('reference_pathtrace_rr.comp.spv', 'reference_pathtrace_empty_rr.comp.spv') })
 if ($shaders.Count -eq 0) { throw 'No compiled shaders were found.' }
+# These notices come from the actual selected imported-target prefixes, not an
+# unrelated aggregate vcpkg share/ directory that may retain older packages.
+$coreLibraries = @(
+    @{ Name='glm'; Cache='CONTAINER_GLM_VERSION'; Version='1.0.3'; Notice='GLM-1.0.3-LICENSE.txt'; Hash='62d2d642c7d054d4fb4c9b42faad617d6c88fcd91e317f8035aa9f277cc159c3' },
+    @{ Name='vma'; Cache='CONTAINER_VMA_VERSION'; Version='3.5.0'; Notice='VMA-3.5.0-LICENSE.txt'; Hash='52df2c03d6cfc9ffec13c9d3626c530fc9ce0cbe41d5ea3d10cd46edeb1aeb38' })
+foreach ($coreLibrary in $coreLibraries) {
+    $pattern = '^' + $coreLibrary.Cache + ':INTERNAL=(.*)$'
+    $selected = @(Select-String -LiteralPath $cachePath -Pattern $pattern)
+    $notice = Join-Path $buildTreeDirectory ('third_party_licenses/' + $coreLibrary.Notice)
+    if ($selected.Count -ne 1 -or $selected[0].Matches[0].Groups[1].Value -ne $coreLibrary.Version -or
+        -not (Test-Path -LiteralPath $notice -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $notice -Algorithm SHA256).Hash -ne $coreLibrary.Hash) {
+        throw "The selected $($coreLibrary.Name) build requires its verified version and notice: $notice"
+    }
+}
+. (Join-Path $PSScriptRoot 'SelectedDependencyPackage.ps1')
+$selectedDependencies = @(Read-ContainerSelectedDependencies -BuildDirectory $buildTreeDirectory)
 foreach ($path in @($stagingDirectory, $archivePath)) {
     if (Test-Path -LiteralPath $path) { throw "Output already exists: $path. Use a fresh output directory." }
 }
@@ -300,8 +433,8 @@ Copy-Item -LiteralPath (Join-Path $sourceDirectory 'LICENSE') -Destination $stag
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/windows-package-quick-start.md') -Destination (Join-Path $stagingDirectory 'README.md')
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/third-party-notices.md') -Destination (Join-Path $stagingDirectory 'THIRD_PARTY_NOTICES.md')
 foreach ($guide in @('gltf-texture-ingestion.md', 'texture-image-data.md', 'material-sampler-publication.md',
-        'texture-upload-and-ownership.md', 'reference-path-tracing.md', 'comfyui-bridge.md',
-        'gltf-interactivity.md', 'gltf-opacity-micromaps.md', 'fsr-upscaling.md',
+        'texture-upload-and-ownership.md', 'reference-path-tracing.md', 'reference-calibration.md', 'comfyui-bridge.md',
+        'gltf-interactivity.md', 'gltf-opacity-micromaps.md', 'fsr-upscaling.md', 'dlss-upscaling.md',
         'screen-space-reflections.md', 'gltf-ies-lights.md', 'volumetric-fog.md')) {
     Copy-Item -LiteralPath (Join-Path $sourceDirectory "docs/$guide") -Destination $stagingDirectory
 }
@@ -326,11 +459,30 @@ foreach ($workflow in @('hdri.json', 'restyle.json')) {
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/gfxreconstruct.md') -Destination (Join-Path $stagingDirectory 'GFXRECONSTRUCT.md')
 
 $licensesDirectory = (New-Item -ItemType Directory -Path (Join-Path $stagingDirectory 'THIRD_PARTY_LICENSES')).FullName
+foreach ($notice in $vulkanSdkCoreNotices) {
+    Copy-Item -LiteralPath $notice -Destination $licensesDirectory
+}
+foreach ($coreLibrary in $coreLibraries) {
+    Copy-Item -LiteralPath (Join-Path $buildTreeDirectory ('third_party_licenses/' + $coreLibrary.Notice)) -Destination $licensesDirectory
+}
+foreach ($library in $selectedDependencies) {
+    Copy-Item -LiteralPath (Join-Path $buildTreeDirectory ('third_party_licenses/' + $library.notice)) -Destination $licensesDirectory
+}
+Copy-Item -LiteralPath (Join-Path $buildTreeDirectory 'third_party_licenses/selected-dependencies.json') -Destination $licensesDirectory
+if ($portableVulkanLoader) {
+    Copy-Item -LiteralPath $vulkanLoaderLicense -Destination $licensesDirectory
+}
 if ($fsrEnabled) {
-    Copy-Item -LiteralPath $fsrNotice -Destination $licensesDirectory
+    Copy-Item -LiteralPath $fsrNotices -Destination $licensesDirectory
+}
+if ($dlssEnabled -or $dlssRrEnabled) {
+    Copy-Item -LiteralPath @($dlssLicense, $dlssNotices) -Destination $licensesDirectory
 }
 foreach ($noticeName in $referenceOidnNotices.Keys) {
     Copy-Item -LiteralPath $referenceOidnNotices[$noticeName] -Destination (Join-Path $licensesDirectory $noticeName)
+}
+foreach ($noticePath in $referenceOptixNotices) {
+    Copy-Item -LiteralPath $noticePath -Destination $licensesDirectory
 }
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/tone-curves-Apache-2.0.txt') -Destination (Join-Path $licensesDirectory 'ToneCurves-Apache-2.0.txt')
 foreach ($noticeName in $gltfCompressionNotices.Keys) {
@@ -357,9 +509,7 @@ if ($openVdbEnabled -or $nanoCodecNotices.Count -gt 0) {
             }
         }
 }
-foreach ($package in @('entt', 'fmt', 'glfw3', 'glm', 'imgui', 'MaterialX', 'mikktspace',
-        'miniz', 'nlohmann-json', 'shader-slang', 'spdlog', 'stb', 'tinyexr', 'tinygltf',
-        'vulkan', 'vulkan-headers', 'vulkan-loader', 'vulkan-memory-allocator')) {
+foreach ($package in @('mikktspace', 'shader-slang', 'vulkan', 'vulkan-headers', 'vulkan-loader')) {
     Copy-Item -LiteralPath (Join-Path $dependencyDirectory "$package/copyright") -Destination (Join-Path $licensesDirectory "$package.txt")
 }
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'cmake/licenses/Apache-2.0.txt') -Destination $licensesDirectory
@@ -367,33 +517,35 @@ Copy-Item -LiteralPath (Join-Path $sourceDirectory 'cmake/licenses/Boost-1.0.txt
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'cmake/licenses/Earcut-ISC.txt') -Destination $licensesDirectory
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'cmake/licenses/Manifold-Apache-2.0.txt') -Destination $licensesDirectory
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'cmake/licenses/Clipper2-Boost-1.0.txt') -Destination $licensesDirectory
-Copy-Item -LiteralPath (Join-Path $tinyDirectory 'LICENSE') -Destination (Join-Path $licensesDirectory 'tinyusdz.txt')
-Copy-Item -LiteralPath (Join-Path $tinyDirectory 'README.md') -Destination (Join-Path $licensesDirectory 'tinyusdz-third-party.md')
-$tinyLicenses = Join-Path $licensesDirectory 'tinyusdz-bundled'
-$tinySource = Join-Path $tinyDirectory 'src'
-Get-ChildItem -LiteralPath $tinySource -File -Recurse |
-    Where-Object { $_.Name -match 'LICENSE|COPYING|NOTICE' } |
-    ForEach-Object {
-        $relativePath = $_.FullName.Substring($tinySource.Length).TrimStart('\', '/')
-        $destination = Join-Path $tinyLicenses $relativePath
-        New-Item -ItemType Directory -Path (Split-Path $destination) -Force | Out-Null
-        Copy-Item -LiteralPath $_.FullName -Destination $destination
-    }
-# Several bundled libraries carry their notices in source comments rather
-# than separate license files. Preserve those copyright/license blocks too.
-$embeddedNotices = New-Object System.Collections.Generic.List[string]
-Get-ChildItem -LiteralPath $tinySource -File -Recurse |
-    Where-Object { $_.Extension -in '.h', '.hpp', '.c', '.cc', '.cpp' } |
-    ForEach-Object {
-        $text = [IO.File]::ReadAllText($_.FullName)
-        $blocks = @([regex]::Matches($text, '/\*[\s\S]*?\*/|(?m)^[ \t]*//[^\r\n]*(?:\r?\n[ \t]*//[^\r\n]*)*') |
-            Where-Object { $_.Value -match '(?i)copyright|license|permission is hereby granted' })
-        if ($blocks.Count -gt 0) {
-            $embeddedNotices.Add($_.FullName.Substring($tinySource.Length).TrimStart('\', '/'))
-            foreach ($block in $blocks) { $embeddedNotices.Add($block.Value) }
+if ($tinyUsdzEnabled) {
+    Copy-Item -LiteralPath (Join-Path $tinyDirectory 'LICENSE') -Destination (Join-Path $licensesDirectory 'tinyusdz.txt')
+    Copy-Item -LiteralPath (Join-Path $tinyDirectory 'README.md') -Destination (Join-Path $licensesDirectory 'tinyusdz-third-party.md')
+    $tinyLicenses = Join-Path $licensesDirectory 'tinyusdz-bundled'
+    $tinySource = Join-Path $tinyDirectory 'src'
+    Get-ChildItem -LiteralPath $tinySource -File -Recurse |
+        Where-Object { $_.Name -match 'LICENSE|COPYING|NOTICE' } |
+        ForEach-Object {
+            $relativePath = $_.FullName.Substring($tinySource.Length).TrimStart('\', '/')
+            $destination = Join-Path $tinyLicenses $relativePath
+            New-Item -ItemType Directory -Path (Split-Path $destination) -Force | Out-Null
+            Copy-Item -LiteralPath $_.FullName -Destination $destination
         }
-    }
-$embeddedNotices | Set-Content -LiteralPath (Join-Path $licensesDirectory 'tinyusdz-embedded-notices.txt') -Encoding UTF8
+    # Several bundled libraries carry their notices in source comments rather
+    # than separate license files. Preserve those copyright/license blocks too.
+    $embeddedNotices = New-Object System.Collections.Generic.List[string]
+    Get-ChildItem -LiteralPath $tinySource -File -Recurse |
+        Where-Object { $_.Extension -in '.h', '.hpp', '.c', '.cc', '.cpp' } |
+        ForEach-Object {
+            $text = [IO.File]::ReadAllText($_.FullName)
+            $blocks = @([regex]::Matches($text, '/\*[\s\S]*?\*/|(?m)^[ \t]*//[^\r\n]*(?:\r?\n[ \t]*//[^\r\n]*)*') |
+                Where-Object { $_.Value -match '(?i)copyright|license|permission is hereby granted' })
+            if ($blocks.Count -gt 0) {
+                $embeddedNotices.Add($_.FullName.Substring($tinySource.Length).TrimStart('\', '/'))
+                foreach ($block in $blocks) { $embeddedNotices.Add($block.Value) }
+            }
+        }
+    $embeddedNotices | Set-Content -LiteralPath (Join-Path $licensesDirectory 'tinyusdz-embedded-notices.txt') -Encoding UTF8
+}
 
 # Bind the build manifest to the staged payload that is actually archived.
 $runtimeDlls = @(Get-ChildItem -LiteralPath $stagingDirectory -Filter '*.dll' -File)
@@ -420,7 +572,16 @@ foreach ($file in ($hashedRuntimeFiles | Sort-Object FullName)) {
     platform = 'windows-x64'
     configuration = 'Release'
     vulkan_api = '1.4'
+    portable_vulkan_loader = $portableVulkanLoader
+    vulkan_loader_version = $vulkanLoaderVersion
+    vulkan_loader_sha256 = $vulkanLoaderHash
+    portable_vulkan_sdk_core = $portableVulkanSdkCore
+    vulkan_sdk_core = $(if ($portableVulkanSdkCore) { '1.4.363.1' } else { 'unrecorded' })
+    vulkan_headers = $(if ($portableVulkanSdkCore) { '1.4.363' } else { 'unrecorded' })
     shader_format = 'SPIR-V 1.6'
+    glm = '1.0.3'
+    vulkan_memory_allocator = '3.5.0'
+    selected_dependencies = $selectedDependencies
     physics_enabled = $physicsEnabled
     physics_engine = $(if ($physicsEnabled) { 'Jolt 5.6.0' } else { 'disabled' })
     gltf_draco_enabled = $gltfCompressionEnabled['DRACO']
@@ -428,7 +589,12 @@ foreach ($file in ($hashedRuntimeFiles | Sort-Object FullName)) {
     texture_ktx_enabled = $textureCodecsEnabled['KTX']
     texture_webp_enabled = $textureCodecsEnabled['WEBP']
     reference_oidn = $(if ($referenceOidnNotices.Count) { '0.2.0' } else { 'disabled' })
-    fsr_upscaler = $(if ($fsrEnabled) { '3.1.4' } else { 'disabled' })
+    reference_optix = $(if ($referenceOptixEnabled) { '9.1.0' } else { 'disabled' })
+    fsr_sdk = $(if ($fsrEnabled) { '2.4.0' } else { 'disabled' })
+    fsr_upscaler = $(if ($fsrEnabled) { 'runtime-selected compatible provider' } else { 'disabled' })
+    fsr_bundled_portable = $(if ($fsrEnabled) { '3.1.6' } else { 'disabled' })
+    dlss_upscaler = $(if ($dlssEnabled) { '310.9.16' } else { 'disabled' })
+    dlss_ray_reconstruction = $(if ($dlssRrEnabled) { '310.9.16' } else { 'disabled' })
     openvdb_enabled = $openVdbEnabled
     nanovdb_enabled = $nanoVdbEnabled
     nanovdb_io_enabled = $nanoIoEnabled
@@ -437,7 +603,7 @@ foreach ($file in ($hashedRuntimeFiles | Sort-Object FullName)) {
     ltc_asset_file_count = $ltcAssets.Count
     runtime_sha256 = $runtimeHashes
     packaged_at_utc = [DateTime]::UtcNow.ToString('o')
-} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $stagingDirectory 'build-info.json') -Encoding UTF8
+} | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath (Join-Path $stagingDirectory 'build-info.json') -Encoding UTF8
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 # Include one top-level directory so Extract All keeps the complete runtime together.

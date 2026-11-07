@@ -26,12 +26,15 @@
 [[vk::binding(0, 3)]] Texture2D<float4> opaqueColor;
 [[vk::binding(1, 3)]] [[vk::image_format("rgba16f")]] RWTexture2D<float4> sceneColor;
 [[vk::binding(2, 3)]] Texture2D<float> sceneDepth;
+[[vk::binding(8, 3)]] Texture2D<uint4> previousReflection;
+[[vk::binding(9, 3)]] [[vk::image_format("rgba32ui")]] RWTexture2D<uint4> currentReflection;
 
 struct ScreenReflectionConstants
 {
     uint2 extent;
     uint maxSteps;
     uint debugView;
+    uint4 history; // save, reproject, reserved, reserved
 #if SCREEN_REFLECTION_RAY_QUERY
     uint4 rayLimits;
     float4 sectionPlane;
@@ -75,6 +78,95 @@ bool reflectionPosition(int2 pixel, out float3 world)
 float reflectionViewDepth(float3 world)
 {
     return dot(world - camera.cameraWorldPosition.xyz, camera.cameraForward.xyz);
+}
+
+uint reflectionHash(uint value)
+{
+    value ^= value >> 16;
+    value *= 0x7feb352du;
+    value ^= value >> 15;
+    value *= 0x846ca68bu;
+    return value ^ (value >> 16);
+}
+
+float3 sampleRoughDirection(float3 direction, float roughness, uint2 pixel)
+{
+    if (settings.history.x == 0u || roughness <= 0.12)
+        return direction;
+    uint seed = reflectionHash(pixel.x + pixel.y * settings.extent.x) ^ camera.temporalInfo.y;
+    float2 noise = float2(reflectionHash(seed) & 0xffffu, reflectionHash(seed ^ 0x934ff631u) & 0xffffu) / 65536.0;
+    float angle = noise.x * 6.28318531;
+    float radius = roughness * roughness * 0.45 * sqrt(noise.y) * smoothstep(0.12, 0.24, roughness);
+    float3 axis = abs(direction.y) < 0.9 ? float3(0, 1, 0) : float3(1, 0, 0);
+    float3 tangent = normalize(cross(axis, direction));
+    return normalize(direction + radius * (cos(angle) * tangent + sin(angle) * cross(direction, tangent)));
+}
+
+uint packReflectionNormal(float3 normal)
+{
+    uint3 quantized = uint3(round(saturate(normal * 0.5 + 0.5) * 31.0));
+    return quantized.x | (quantized.y << 5u) | (quantized.z << 10u);
+}
+
+float3 unpackReflectionNormal(uint bits)
+{
+    float3 components = float3(bits & 31u, (bits >> 5u) & 31u, (bits >> 10u) & 31u);
+    return SafeNormalize(components * (2.0 / 31.0) - 1.0, float3(0, 1, 0));
+}
+
+float3 filterReflection(int2 pixel, float3 world, float3 normal, uint materialIndex, uint hitKey,
+    float hitDistance, float roughness, float confidence, float3 correction, out bool accepted,
+    out uint4 stored)
+{
+    accepted = false;
+    stored = uint4(0);
+    if (settings.history.x == 0u || materialIndex > 0xffffu || hitKey > 0xffffu || confidence < 0.01)
+        return correction;
+    float depth = sceneDepth.Load(int3(pixel, 0));
+    if (depth < 1e-5)
+        return correction;
+
+    uint distanceCode = uint(round(saturate(log2(1.0 + hitDistance) / log2(1.0 + kMaxDistance)) * 255.0));
+    if (settings.history.y != 0u)
+    {
+        TemporalProjectedPoint projected = temporalProjectSceneClip(mul(camera.previousJitteredViewProj, float4(world, 1.0)));
+        if (projected.valid && all(projected.uv >= 0.0) && all(projected.uv < 1.0))
+        {
+            int2 address = int2(projected.uv * settings.extent);
+            uint4 past = previousReflection.Load(int3(address, 0));
+            float previousConfidence = float((past.y >> 16u) & 255u) / 255.0;
+            float previousDepth = f16tof32(past.z & 0xffffu);
+            float3 previousWorld;
+            if (previousConfidence > 0.0 && abs(previousConfidence - confidence) < 0.25 &&
+                (past.z >> 16u) == materialIndex && (past.w >> 16u) == hitKey &&
+                abs(float(past.y >> 24u) - float(distanceCode)) <= 2.0 + 12.0 * roughness &&
+                dot(unpackReflectionNormal(past.w), normal) > 0.94 &&
+                TryReconstructWorldPosition(reflectionPixelUv(address), previousDepth,
+                    camera.previousInverseViewProj, previousWorld) &&
+                distance(world, previousWorld) < 0.02 + 0.012 * reflectionViewDepth(world))
+            {
+                float3 old = float3(f16tof32(past.x & 0xffffu), f16tof32(past.x >> 16u), f16tof32(past.y & 0xffffu));
+                // Large changes indicate moving reflected content or lighting.
+                // Clamp smaller stochastic deviations before accumulating.
+                float3 magnitude = max(abs(correction), abs(old));
+                float peak = max(magnitude.x, max(magnitude.y, magnitude.z));
+                if (all(abs(old - correction) <= 0.015 + 0.4 * peak))
+                {
+                    float clip = 0.01 + 0.20 * peak;
+                    float weight = lerp(0.45, 0.8, smoothstep(0.12, 0.5, roughness));
+                    correction = lerp(correction, clamp(old, correction - clip, correction + clip), weight);
+                    accepted = true;
+                }
+            }
+        }
+    }
+
+    correction = clamp(correction, -65504.0.xxx, 65504.0.xxx);
+    uint confidenceCode = uint(round(saturate(confidence) * 255.0));
+    stored = uint4(f32tof16(correction.x) | (f32tof16(correction.y) << 16u),
+        f32tof16(correction.z) | (confidenceCode << 16u) | (distanceCode << 24u),
+        f32tof16(depth) | (materialIndex << 16u), packReflectionNormal(normal) | (hitKey << 16u));
+    return correction;
 }
 
 // Bound the projected ray to the Vulkan clip volume before dividing by W.
@@ -179,6 +271,7 @@ float3 roughReflectionColor(ReflectionHit hit, float roughness)
         return result;
     float centerDepth = reflectionViewDepth(center);
     float3 centerNormal = reflectionNormal(hit.pixel);
+    uint centerMaterial = DecodeGBufferMaterialIndex(materialImage.Load(int3(hit.pixel, 0)).w);
     float weight = 1.0;
     const int2 offsets[4] = {int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1)};
     for (uint i = 0; i < 4; ++i)
@@ -189,7 +282,8 @@ float3 roughReflectionColor(ReflectionHit hit, float roughness)
         float3 world;
         if (!reflectionPosition(pixel, world) ||
             abs(reflectionViewDepth(world) - centerDepth) > 0.03 + centerDepth * 0.01 ||
-            dot(reflectionNormal(pixel), centerNormal) < 0.85)
+            dot(reflectionNormal(pixel), centerNormal) < 0.85 ||
+            DecodeGBufferMaterialIndex(materialImage.Load(int3(pixel, 0)).w) != centerMaterial)
             continue;
         result += opaqueColor.Load(int3(pixel, 0)).rgb * 0.5;
         weight += 0.5;
@@ -206,6 +300,7 @@ void computeMain(uint3 id : SV_DispatchThreadID)
     int2 pixel = int2(id.xy);
     float4 base = opaqueColor.Load(int3(pixel, 0));
     float4 result = settings.debugView != 0 ? float4(0.0, 0.0, 0.0, base.a) : base;
+    uint4 stored = uint4(0);
     float3 world;
     float4 albedo = albedoImage.Load(int3(pixel, 0));
     float4 parameters = materialImage.Load(int3(pixel, 0));
@@ -214,7 +309,8 @@ void computeMain(uint3 id : SV_DispatchThreadID)
     {
         float roughness = clamp(parameters.y, 0.045, 1.0);
         float metallic = saturate(parameters.x);
-        GpuMaterial material = materials[DecodeGBufferMaterialIndex(parameters.w)];
+        uint materialIndex = DecodeGBufferMaterialIndex(parameters.w);
+        GpuMaterial material = materials[materialIndex];
         DeferredMaterialLayerTerms layers = DecodeDeferredMaterialLayerTerms(material,
             materialLayers.Load(int3(pixel, 0)), materialSheen.Load(int3(pixel, 0)));
         ExtendedPbrTerms extended = LoadDeferredExtendedPbrTerms(material, pixel, layers.transmissionFactor);
@@ -223,6 +319,7 @@ void computeMain(uint3 id : SV_DispatchThreadID)
         bool orthographic = all(camera.viewProj[3].xyz == 0.0);
         float3 traceView = orthographic ? -camera.cameraForward.xyz : view;
         float3 direction = reflect(-traceView, ExtendedPbrIblNormal(normal, traceView, roughness, extended));
+        direction = sampleRoughDirection(direction, roughness, id.xy);
         // Opaque/alpha-masked base lobes only. With aerial perspective the HDR
         // input contains distance-dependent eye-path in-scattering.
         if (layers.transmissionFactor <= 0.0 && lights.aerialGeometry.w <= 0.0 && dot(normal, direction) > 0.0)
@@ -231,12 +328,14 @@ void computeMain(uint3 id : SV_DispatchThreadID)
             float roughnessWeight = 1.0 - smoothstep(0.30, kMaxRoughness, roughness);
             float fallbackConfidence = 0.0;
             float fallbackDistance = 0.0;
+            uint fallbackMaterial = 0u;
 #if SCREEN_REFLECTION_RAY_QUERY
             ReflectionRayHit rayHit = {};
             if (hit.confidence < 1.0 && roughnessWeight > 0.0)
                 rayHit = traceFallbackReflection(world, normal, direction, roughness);
             fallbackConfidence = (1.0 - hit.confidence) * rayHit.confidence * roughnessWeight;
             fallbackDistance = rayHit.distance;
+            fallbackMaterial = rayHit.materialIndex;
 #endif
             hit.confidence *= roughnessWeight;
             if (settings.debugView == 1)
@@ -268,25 +367,35 @@ void computeMain(uint3 id : SV_DispatchThreadID)
                     DeferredClearcoatBaseEnergyScale(layers.clearcoatFactor) *
                     DeferredSheenBaseEnergyScale(layers.sheenColor);
                 float3 originalIbl = EvaluateSpecularIblMultipleScattering(fallback, f0, brdf);
-#if SCREEN_REFLECTION_RAY_QUERY
                 // Each route spends only its share of the original IBL.
                 // The ray branch fills the complement of screen confidence.
                 float3 change = 0.0.xxx;
                 if (hit.confidence > 0.0)
                     change += hit.confidence * (EvaluateSpecularIblMultipleScattering(
                         roughReflectionColor(hit, roughness), f0, brdf) - originalIbl);
+#if SCREEN_REFLECTION_RAY_QUERY
                 if (fallbackConfidence > 0.0)
                     change += fallbackConfidence * (EvaluateSpecularIblMultipleScattering(
                         rayHit.radiance, f0, brdf) - originalIbl);
-                if (all(isfinite(change)))
-                    result.rgb = clamp(base.rgb + change * scale, 0.0.xxx, 65504.0.xxx);
-#else
-                float3 change = EvaluateSpecularIblMultipleScattering(roughReflectionColor(hit, roughness), f0, brdf) - originalIbl;
-                if (all(isfinite(change)))
-                    result.rgb = max(base.rgb + change * scale * hit.confidence, 0.0.xxx);
 #endif
+                float3 correction = change * scale;
+                if (all(isfinite(correction)))
+                {
+                    bool fromRay = fallbackConfidence > hit.confidence;
+                    uint hitMaterial = fromRay ? fallbackMaterial :
+                        DecodeGBufferMaterialIndex(materialImage.Load(int3(hit.pixel, 0)).w);
+                    uint hitKey = hitMaterial < 0x8000u ? hitMaterial | (fromRay ? 0x8000u : 0u) : 0x10000u;
+                    bool accepted;
+                    correction = filterReflection(pixel, world, normal, materialIndex, hitKey,
+                        fromRay ? fallbackDistance : hit.distance, roughness,
+                        hit.confidence + fallbackConfidence, correction, accepted, stored);
+                    result.rgb = settings.debugView == 4u ? float(accepted).xxx :
+                        clamp(base.rgb + correction, 0.0.xxx, 65504.0.xxx);
+                }
             }
         }
     }
+    if (settings.history.x != 0u)
+        currentReflection[pixel] = stored;
     sceneColor[pixel] = result;
 }

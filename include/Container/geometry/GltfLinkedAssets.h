@@ -9,6 +9,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -38,16 +39,59 @@ struct GltfLinkedFileContents {
   bool operator==(const GltfLinkedFileContents&) const = default;
 };
 
+// Indices refer to the flattened model returned by the same load.
+struct GltfLinkedIndexRange {
+  int32_t first{};
+  size_t count{};
+
+  [[nodiscard]] bool contains(int32_t index) const noexcept {
+    return index >= first && size_t(index - first) < count;
+  }
+};
+
+struct GltfLinkedReadWitnesses {
+  std::set<std::filesystem::path> inputs, resolutions;
+};
+
+struct GltfLinkedSourceOwnership {
+  std::filesystem::path source;
+  std::map<std::filesystem::path, std::filesystem::path> aliases;
+  GltfLinkedIndexRange buffers, bufferViews, accessors, images, samplers, textures;
+  GltfLinkedIndexRange materials, meshes, cameras, lights, animations, variants, xmpPackets;
+  std::map<std::string, GltfLinkedIndexRange> extensionLights;
+  GltfLinkedReadWitnesses reads;
+};
+
+struct GltfLinkedPlacementOwnership {
+  int32_t carrierNode{-1};
+  // An outer placement owns a nested link's carrier, but the nested
+  // placement owns the payload attached to that carrier.
+  int32_t parentPlacement{-1};
+  size_t sourceContext{};
+  size_t manifestFile{};
+  GltfLinkedIndexRange skins;
+  size_t bindingWitness{};
+};
+
 // Captured only by scene imports. Canonical resolution and encoded content
 // witnesses prevent a linked save from silently changing its source inputs.
 struct GltfLinkedCompositionInfo {
   std::filesystem::path source;
   size_t primaryNodes{};
+  bool primaryAnimated{};
   std::vector<int> placements;
   std::map<std::filesystem::path, std::filesystem::path> resolutions;
   std::map<std::filesystem::path, GltfLinkedFileContents> inputs;
+  // Trusted, import-local ownership. The provenance extras written to
+  // portable files are independent and never populate these tables.
+  std::vector<GltfLinkedSourceOwnership> sourceContexts;
+  std::vector<GltfLinkedPlacementOwnership> placementRecords;
+  std::vector<int32_t> nodePlacements; // Source node -> concrete placement, or -1.
+  std::vector<std::set<std::filesystem::path>> bindingResolutions;
+  uint64_t dependencyWitnessBytes{};
 
   void observe(const std::filesystem::path&, std::span<const unsigned char>);
+  void recordWitness(std::set<std::filesystem::path>&, const std::filesystem::path&);
 };
 
 struct GltfLinkedPlacementEdit {
@@ -67,12 +111,26 @@ void ValidateGltfLinkedExportDestination(const GltfLinkedCompositionInfo&, const
     std::span<const GltfLinkedPlacementEdit>, size_t selectedScene,
     const std::filesystem::path& destination);
 
+struct GltfLinkedHybridCarrier {
+  int32_t sourceNode{-1}, outputNode{-1};
+};
+
+// Return a detached JSON patch for surviving primary carriers. Only their
+// resolved dependency closures must still exist. The primary manifest and all
+// originally imported paths remain protected from replacement.
+[[nodiscard]] nlohmann::json BuildGltfLinkedHybridManifest(const GltfLinkedCompositionInfo&,
+    std::span<const GltfLinkedHybridCarrier>, const std::filesystem::path& destination);
+void ApplyGltfLinkedHybridManifest(nlohmann::json& document, const nlohmann::json& patch);
+
 struct GltfLinkedReadContext {
   std::filesystem::path root, source;
   std::map<std::filesystem::path, std::filesystem::path> aliases;
   GltfLinkedCompositionInfo* composition{};
+  bool child{};
+  GltfLinkedReadWitnesses* witnesses{};
 
   [[nodiscard]] std::filesystem::path resource(std::string_view uri) const;
+  void observe(const std::filesystem::path&, std::span<const unsigned char>) const;
 };
 
 struct GltfLinkedDocument {

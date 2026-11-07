@@ -175,20 +175,11 @@ void RendererFrontend::processComfyUi() {
     return;
   state.uploadedId = state.result->id;
   try {
-    if (state.previewSampler == VK_NULL_HANDLE) {
-      VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-      sampler.magFilter = sampler.minFilter = VK_FILTER_LINEAR;
-      sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-      sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-      sampler.maxLod = VK_LOD_CLAMP_NONE;
-      sampler.maxAnisotropy = 1.f;
-      if (createOwnedSampler(svc_.ctx.deviceWrapper->device(), &sampler, nullptr, &state.previewSampler) != VK_SUCCESS)
-        throw std::runtime_error("Could not create generated preview sampler");
-    }
+    // ImGui 1.93 owns a linear, clamp-to-edge sampler matching this preview.
     auto batch = svc_.allocationManager.beginTextureAllocationBatch();
     auto texture = svc_.allocationManager.createTextureFromImageData("Generated ComfyUI preview", state.result->preview);
     auto lease = batch.commit();
-    auto descriptor = ImGui_ImplVulkan_AddTexture(state.previewSampler, texture.imageView,
+    auto descriptor = ImGui_ImplVulkan_AddTexture(texture.imageView,
                                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     if (descriptor == VK_NULL_HANDLE) throw std::runtime_error("Could not allocate generated preview descriptor");
     state.preview = std::move(texture);
@@ -292,8 +283,6 @@ void RendererFrontend::retireComfyUiPreview() {
 void RendererFrontend::shutdownComfyUi() {
   if (!comfyUi_) return;
   retireComfyUiPreview();
-  if (comfyUi_->previewSampler != VK_NULL_HANDLE)
-    destroyOwnedSampler(svc_.ctx.deviceWrapper->device(), comfyUi_->previewSampler, nullptr);
   comfyUi_.reset();
 }
 

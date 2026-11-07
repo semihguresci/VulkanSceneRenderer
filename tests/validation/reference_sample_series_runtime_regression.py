@@ -153,10 +153,10 @@ def main():
     capture("adaptive-conflict", emitter, "--path-sample-series", series, "--path-target-ms", "10",
             "--screenshot", str(single), error="cannot be combined")
 
-    unsupported = output / "clearcoat.gltf"
-    material["extensions"]["KHR_materials_clearcoat"] = {"clearcoatFactor": 1}
+    unsupported = output / "sheen.gltf"
+    material["extensions"]["KHR_materials_sheen"] = {"sheenColorFactor": [1, 1, 1]}
     unsupported_model = emitter_fixture(unsupported, material)
-    unsupported_model["extensionsUsed"].append("KHR_materials_clearcoat")
+    unsupported_model["extensionsUsed"].append("KHR_materials_sheen")
     unsupported.write_text(json.dumps(unsupported_model), encoding="utf-8")
     capture("unsupported", unsupported, "--path-sample-series", "1", "--screenshot",
             str(output / "unsupported.exr"), error="unsupported and 0 rejected samples")

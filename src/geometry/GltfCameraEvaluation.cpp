@@ -2,14 +2,50 @@
 
 #include <Container/common/CommonMath.h>
 
+#include <glm/gtc/quaternion.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
 
-// Pure detached camera math is a separate archive member so CPU authoring
+// Pure detached node/camera math is a separate archive member so CPU authoring
 // consumers do not pull the SceneGraph runtime adapters into their link.
 namespace container::geometry::gltf {
+namespace {
+glm::mat4 localTransform(const tinygltf::Node& node) {
+  if (!node.matrix.empty()) {
+    if (node.matrix.size() != 16) throw std::invalid_argument("invalid animated node matrix size");
+    glm::mat4 matrix(1);
+    for (int i = 0; i < 16; ++i) matrix[i/4][i%4] = static_cast<float>(node.matrix[static_cast<size_t>(i)]);
+    return matrix;
+  }
+  glm::vec3 translation(0), scale(1);
+  glm::quat rotation(1,0,0,0);
+  if (!node.translation.empty()) {
+    if (node.translation.size() != 3) throw std::invalid_argument("invalid animated translation size");
+    for (int i = 0; i < 3; ++i) translation[i] = static_cast<float>(node.translation[static_cast<size_t>(i)]);
+  }
+  if (!node.scale.empty()) {
+    if (node.scale.size() != 3) throw std::invalid_argument("invalid animated scale size");
+    for (int i = 0; i < 3; ++i) scale[i] = static_cast<float>(node.scale[static_cast<size_t>(i)]);
+  }
+  if (!node.rotation.empty()) {
+    if (node.rotation.size() != 4) throw std::invalid_argument("invalid animated rotation size");
+    rotation = glm::normalize(glm::quat(static_cast<float>(node.rotation[3]),
+      static_cast<float>(node.rotation[0]), static_cast<float>(node.rotation[1]), static_cast<float>(node.rotation[2])));
+  }
+  return glm::translate(glm::mat4(1),translation) * glm::mat4_cast(rotation) * glm::scale(glm::mat4(1),scale);
+}
+} // namespace
+
+glm::mat4 EvaluateAnimatedNodeLocalTransform(const tinygltf::Node& node) {
+  const auto transform = localTransform(node);
+  for (int column = 0; column < 4; ++column) for (int row = 0; row < 4; ++row)
+    if (!std::isfinite(transform[column][row])) throw std::invalid_argument("non-finite animated runtime node transform");
+  return transform;
+}
+
 std::optional<AnimatedCameraState> EvaluateAnimatedCamera(
   const tinygltf::Camera& sourceCamera,const glm::mat4& world,float viewportAspect) {
   if (!std::isfinite(viewportAspect) || viewportAspect <= 0) throw std::invalid_argument("invalid animation camera viewport aspect");

@@ -1,5 +1,6 @@
 
 #include "Container/app/AppConfig.h"
+#include "Container/app/RendererLightingSettings.h"
 #include "Container/app/Application.h"
 #include "Container/geometry/OpenVdbLoader.h"
 #include "Container/renderer/lighting/DdgiPreset.h"
@@ -27,6 +28,10 @@
 #include <vector>
 
 namespace {
+
+using container::app::RendererLightingSetting;
+using container::app::rendererLightingSetting;
+using container::app::parseRendererLightingValue;
 
 std::string lowerAscii(std::string_view value) {
   std::string result(value);
@@ -300,6 +305,7 @@ void printCommandLineHelp() {
   --no-vdb-volume               Keep the loaded volume hidden
   --vdb-volume-scale F          Positive world-space volume scale (1)
   --width N --height N          Window dimensions
+  --texture-memory-mb N         Decoded glTF texture budget [1,16384] MiB (1024)
   --render-technique NAME       Render technique
   --path-spp N                 Reference samples per frame [1,64] (1)
   --path-target-ms F           Adapt samples to a reference GPU pass budget [0.1,1000] ms
@@ -314,13 +320,18 @@ void printCommandLineHelp() {
   --path-ground-metallic F     Ground metallic factor [0,1] (0)
   --path-ground-roughness F    Ground roughness [0,1] (1)
   --path-oidn QUALITY          Vulkan OIDN display filter off|fast|balanced|high (off)
-  --path-oidn-interval N       Filter every N samples and at the stop [1,1024] (8)
+  --path-optix                 OptiX guided HDR display filter (requires OptiX build)
+  --path-dlss QUALITY          DLSS Ray Reconstruction off|quality|balanced|performance (off)
+  --path-display MODE          Reference viewport beauty|standard-error (beauty)
+  --path-denoise-interval N    Filter every N samples and at the stop [1,1024] (8)
+  --path-oidn-interval N        Alias for --path-denoise-interval
   --path-aperture F            Perspective lens aperture radius in scene units (0)
   --path-focus-distance F      Perspective focal plane distance in scene units (10)
   --display-mode NAME           Display mode (--render-mode is an alias)
   --msaa N                     MSAA sample count
   --taa / --no-taa              Enable/disable temporal antialiasing
   --fsr MODE                    Vulkan FSR native, quality, balanced, or performance
+  --dlss MODE                   Vulkan DLSS SR native, quality, balanced, or performance
   --taa-history-weight F        History blend [0,0.98]
   --taa-depth-absolute F         Absolute depth tolerance [0,1000]
   --taa-depth-relative F         Relative depth tolerance [0,1]
@@ -334,7 +345,7 @@ void printCommandLineHelp() {
   --no-ray-shadow-denoise        Disable ray shadow denoising
   --no-ray-query                Disable optional ray queries
   --experimental-opacity-micromaps Enable authored glTF micromaps on compatible ray-query devices
-  --screen-reflections MODE         off, low, high, confidence, distance, or source (deferred raster)
+  --screen-reflections MODE         off, low, high, confidence, distance, source, or history (deferred raster)
   --screen-reflections-ray-query   Trace off-screen reflection misses on ray-query devices
   --volumetric-fog MODE            off, low, high, transmittance, or scattering
   --fog-density N                 Fog extinction density in inverse scene units
@@ -420,6 +431,7 @@ void printCommandLineHelp() {
   --background-blur F             Visible sky blur (0 to 1)
   --background-color R G B        Solid scene-linear background, independent of lighting
   --directional-intensity F      Directional light intensity
+  --bounce-intensity F           Artistic raster fill intensity (0 to 2)
   --directional-direction X Y Z  Directional light direction
   --directional-color R G B      Directional light color
   --bloom / --no-bloom            Enable/disable bloom
@@ -768,18 +780,32 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
         throw std::invalid_argument("--path-bounces must be in [1,32]");
     } else if (arg == "--path-seed") {
       config.pathSeed = parseUint(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == "--path-display") {
+      const auto mode = container::renderer::parseReferencePathDisplay(requireValue(argc, argv, i, arg));
+      if (!mode) throw std::invalid_argument("--path-display requires beauty or standard-error");
+      config.pathDisplay = *mode;
     } else if (arg == "--path-firefly-clamp") {
       config.pathFireflyClamp = parseFloat(requireValue(argc, argv, i, arg), arg);
       if (!container::renderer::validReferenceFireflyClamp(config.pathFireflyClamp))
         throw std::invalid_argument("--path-firefly-clamp must be 0 or in [1e-6,1e20]");
-    } else if (arg == "--path-oidn") {
-      const auto quality = container::renderer::parseReferenceOidnQuality(requireValue(argc, argv, i, arg));
-      if (!quality) throw std::invalid_argument("--path-oidn requires off, fast, balanced or high");
-      config.pathOidn.quality = *quality;
-    } else if (arg == "--path-oidn-interval") {
+    } else if (arg == "--path-oidn" || arg == "--path-optix") {
+      config.pathOidn.dlss = container::renderer::UpscaleMode::Native;
+      config.pathOidn.optix = arg == "--path-optix";
+      if (!config.pathOidn.optix) {
+        const auto quality = container::renderer::parseReferenceOidnQuality(requireValue(argc, argv, i, arg));
+        if (!quality) throw std::invalid_argument("--path-oidn requires off, fast, balanced or high");
+        config.pathOidn.quality = *quality;
+      }
+    } else if (arg == "--path-dlss") {
+      const auto quality = container::renderer::parseReferenceDlssQuality(requireValue(argc, argv, i, arg));
+      if (!quality) throw std::invalid_argument("--path-dlss requires off, quality, balanced or performance");
+      config.pathOidn.dlss = *quality;
+      config.pathOidn.optix = false;
+      config.pathOidn.quality = container::renderer::ReferenceOidnQuality::Off;
+    } else if (arg == "--path-oidn-interval" || arg == "--path-denoise-interval") {
       const auto interval = parseUint(requireValue(argc, argv, i, arg), arg);
       if (interval == 0 || interval > container::renderer::ReferenceOidnSettings::maxSampleInterval)
-        throw std::invalid_argument("--path-oidn-interval must be in [1,1024]");
+        throw std::invalid_argument(std::string(arg) + " must be in [1,1024]");
       config.pathOidn.sampleInterval = interval;
     } else if (arg == "--path-ground") {
       using Ground = container::renderer::ReferenceGroundMode;
@@ -812,10 +838,11 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     return true;
   };
   const auto parseRasterEffectsOption = [&](std::string_view arg, int& i) {
-    if (arg == "--fsr") {
-      const auto mode = container::renderer::parseFsrMode(requireValue(argc, argv, i, arg));
-      if (!mode) throw std::invalid_argument("--fsr expects native, quality, balanced, or performance");
-      config.fsrMode = *mode;
+    if (arg == "--fsr" || arg == "--dlss") {
+      const auto mode = container::renderer::parseUpscaleMode(requireValue(argc, argv, i, arg));
+      if (!mode) throw std::invalid_argument(std::string(arg) + " expects native, quality, balanced, or performance");
+      config.upscaling = {arg == "--fsr" ? container::renderer::UpscaleBackend::Fsr :
+                                           container::renderer::UpscaleBackend::Dlss, *mode};
     } else if (arg == "--screen-reflections") {
       using Mode = container::renderer::ScreenReflectionMode;
       const auto mode = requireValue(argc, argv, i, arg);
@@ -825,7 +852,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       else if (mode == "confidence") config.screenReflections = Mode::Confidence;
       else if (mode == "distance") config.screenReflections = Mode::Distance;
       else if (mode == "source") config.screenReflections = Mode::Source;
-      else throw std::invalid_argument("--screen-reflections expects off, low, high, confidence, distance, or source");
+      else if (mode == "history") config.screenReflections = Mode::History;
+      else throw std::invalid_argument("--screen-reflections expects off, low, high, confidence, distance, source, or history");
     } else if (arg == "--screen-reflections-ray-query") {
       config.screenReflectionRayFallback = true;
     } else if (arg == "--volumetric-fog") {
@@ -1097,6 +1125,9 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
           parseUint(requireValue(argc, argv, i, arg), arg);
       if (config.areaShadowQuality > 3u)
         throw std::invalid_argument("Area shadow quality must be in [0,3]");
+    } else if (arg == "--texture-memory-mb") {
+      config.textureMemoryMiB = container::material::ParseGltfTextureMemoryMiB(
+          requireValue(argc, argv, i, arg));
     } else if (arg == "--import-scale") {
       config.importScale = parseFloat(requireValue(argc, argv, i, arg), arg);
     } else if (arg == "--bim-model") {
@@ -1278,10 +1309,11 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       if (field == fields.end())
         throw std::invalid_argument("unknown atmosphere option " + std::string(arg));
       config.sky.atmosphere.*(field->second) = parseFloat(requireValue(argc, argv, i, arg), arg);
-    } else if (arg == "--environment-yaw" || arg == "--background-blur") {
-      const auto value = parseFloat(requireValue(argc, argv, i, arg), arg);
-      const bool yaw = arg == "--environment-yaw";
-      if (value < (yaw ? -180.0f : 0.0f) || value > (yaw ? 180.0f : 1.0f))
+    } else if (arg == rendererLightingSetting(RendererLightingSetting::EnvironmentYaw).cliOption || arg == "--background-blur") {
+      const bool yaw = arg == rendererLightingSetting(RendererLightingSetting::EnvironmentYaw).cliOption;
+      const auto text = requireValue(argc, argv, i, arg);
+      const auto value = yaw ? parseRendererLightingValue(RendererLightingSetting::EnvironmentYaw, text) : parseFloat(text, arg);
+      if (!yaw && (value < 0.0f || value > 1.0f))
         throw std::invalid_argument(std::string(arg) + " is outside its supported range");
       if (yaw) config.environmentPresentation.yawDegrees = value;
       else config.environmentPresentation.backgroundBlur = value;
@@ -1291,14 +1323,18 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
         throw std::invalid_argument("--background-color channels must be in [0,1]");
       config.environmentPresentation.backgroundColor = color;
       config.environmentPresentation.solidBackground = true;
-    } else if (arg == "--environment-intensity") {
-      config.environmentIntensity =
-          parseFloat(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == rendererLightingSetting(RendererLightingSetting::EnvironmentIntensity).cliOption) {
+      config.environmentIntensity = parseRendererLightingValue(
+          RendererLightingSetting::EnvironmentIntensity, requireValue(argc, argv, i, arg));
       config.hasEnvironmentIntensityOverride = true;
-    } else if (arg == "--directional-intensity") {
-      config.directionalIntensity =
-          parseFloat(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == rendererLightingSetting(RendererLightingSetting::DirectionalIntensity).cliOption) {
+      config.directionalIntensity = parseRendererLightingValue(
+          RendererLightingSetting::DirectionalIntensity, requireValue(argc, argv, i, arg));
       config.hasDirectionalIntensityOverride = true;
+    } else if (arg == rendererLightingSetting(RendererLightingSetting::BounceIntensity).cliOption) {
+      config.bounceIntensity = parseRendererLightingValue(
+          RendererLightingSetting::BounceIntensity, requireValue(argc, argv, i, arg));
+      config.hasBounceIntensityOverride = true;
     } else if (arg == "--directional-direction") {
       config.directionalDirection = parseVec3(argc, argv, i, arg);
       config.hasDirectionalDirectionOverride = true;

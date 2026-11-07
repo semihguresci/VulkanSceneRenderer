@@ -39,6 +39,7 @@ target_link_libraries(VulkanSceneRenderer_vulkan_device PUBLIC
     Dep_Math
     Dep_Windowing
 )
+target_link_libraries(VulkanSceneRenderer_vulkan_device PRIVATE VulkanSceneRenderer_dlss)
 
 # ── 3. GPU resources (memory, buffers, textures, pipelines) ──────────────────
 add_library(VulkanSceneRenderer_gpu_resource
@@ -56,6 +57,7 @@ target_include_directories(VulkanSceneRenderer_gpu_resource PUBLIC
     ${_UTILITY_INCLUDE_DIR}
 )
 target_link_libraries(VulkanSceneRenderer_gpu_resource PUBLIC
+    nlohmann_json::nlohmann_json
     Dep_VulkanCore
     Dep_Math
     Dep_SceneIO
@@ -83,6 +85,7 @@ add_library(VulkanSceneRenderer_scene
     SceneManager.cpp
     SceneManagerCameras.cpp
     SceneManagerCameraPoses.cpp
+    SceneManagerLinkedAssets.cpp
     SceneManagerMerge.cpp
     SceneManagerMaterials.cpp
     SceneManagerOpacityMicromaps.cpp

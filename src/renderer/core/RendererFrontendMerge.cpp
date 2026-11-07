@@ -150,7 +150,7 @@ bool RendererFrontend::mergeSceneModel(const std::string& path,
   std::optional<container::geometry::GltfLoadResult> local;
   if (!prepared) {
     local=container::scene::SceneManager::prepareGltfModel(path,512ull*1024*1024,
-        svc_.config.experimentalGltfLinkedAssets, false, svc_.config.experimentalGltfMaterials);
+        svc_.config.experimentalGltfLinkedAssets, false, svc_.config.experimentalGltfMaterials, false, true);
     prepared=&*local;
   }
   if(!mergeBudget_) mergeBudget_=std::make_shared<SceneMergeBudget>();
@@ -180,6 +180,7 @@ bool RendererFrontend::duplicateSceneNode(uint32_t node,std::optional<std::strin
   const auto root=container::scene::ResolveSceneNodeAuthoringTarget(sceneGraph_,node,
       container::scene::SceneNodeAuthoringPurpose::DuplicateSubtree);
   const auto closure=container::scene::CollectSceneNodeAuthoringSubtree(sceneGraph_,root);
+  for (const auto id : closure.nodes) requireEditableSceneNode(id);
   if(closure.containsProtectedNodes)
     throw std::invalid_argument("A protected structural node cannot be duplicated");
   if(!name) {

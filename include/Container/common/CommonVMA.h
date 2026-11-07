@@ -13,4 +13,9 @@
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #endif
 
-#include <vma/vk_mem_alloc.h>
+#include <vk_mem_alloc.h>
+
+#ifndef VMA_VERSION
+#error "VMA release version is unavailable; check the selected include target"
+#endif
+static_assert(VMA_VERSION == VK_MAKE_VERSION(3, 5, 0), "This build requires VMA 3.5.0");

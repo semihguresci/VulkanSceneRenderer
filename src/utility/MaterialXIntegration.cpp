@@ -1329,6 +1329,8 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
               diffuseFactor, specularFactor, glossinessFactor);
 
       material.specularGlossinessWorkflow = true;
+      material.specularGlossinessDiffuse = glm::vec3(diffuseFactor);
+      material.specularGlossinessSpecular = specularFactor;
       material.baseColor = approximation.baseColor;
       material.metallicFactor = approximation.metallic;
       material.roughnessFactor =

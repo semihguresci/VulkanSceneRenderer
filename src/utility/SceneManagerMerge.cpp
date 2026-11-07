@@ -534,6 +534,7 @@ uint64_t SceneManager::mergeHistoryResidentBytes() const {
     mergeFailure("retained material resource provenance tables disagree");
   Budget bytes{UINT64_MAX};
   bytes.add(sizeof(*this));
+  bytes.add(linkedAssetStateBytes());
   retainedSourceModel(bytes,gltfModel_); retainedSourceModel(bytes,exportSource_);
   retainedSourceModel(bytes,modelExchangeScratch_);
   retainedGeometry(bytes,model_);
@@ -854,6 +855,9 @@ SceneManager::PreparedMergeGeneration SceneManager::prepareMergeGeneration(
   candidate.sourcePath_=sourcePath_; // Secondary URI resolution never uses this path.
   candidate.exportSource_=plan.model;
   candidate.gltfModel_=result.sources_->evaluatedSource;
+  candidate.linkedComposition_=linkedComposition_;
+  candidate.linkedAssetState_=prepareLinkedMergeOwnership(incoming,plan);
+  cpu.add(candidate.linkedAssetStateBytes());
   const auto inheritPhase=[&](auto& destination,const auto& original,size_t count) {
     if(original.empty()) return;
     cpu.add(checkedBytes(std::max(count,original.size()),sizeof(uint8_t)));
@@ -1211,6 +1215,8 @@ SceneManager::PreparedMergeGeneration SceneManager::prepareSubtreeCloneGeneratio
   candidate.textureImageOwnership_=textureImageOwnership_;candidate.model_=model_;
   candidate.sourcePrimitiveToRuntime_=sourcePrimitiveToRuntime_;candidate.runtimePrimitiveToSource_=runtimePrimitiveToSource_;
   candidate.gltfModel_=plan.evaluatedSource;candidate.exportSource_=plan.authoredSource;candidate.sourcePath_=sourcePath_;
+  candidate.linkedComposition_=linkedComposition_;
+  candidate.linkedAssetState_=linkedAssetState_;
   candidate.inheritCameraProjectionNamespace(*this);cpu.add(candidate.cameraProjectionNamespaceBytes());
   candidate.archiveResourcePhases_=archiveResourcePhases_;candidate.gltfResourcePhases_=gltfResourcePhases_;
   candidate.gltfTextureResources_=gltfTextureResources_;
@@ -1314,7 +1320,7 @@ void SceneManager::exchangeMergeGeneration(PreparedMergeGeneration& prepared,con
   EXCHANGE_ASSET(cameraProjectionNamespace_);
   EXCHANGE_ASSET(model_); EXCHANGE_ASSET(sourcePrimitiveToRuntime_); EXCHANGE_ASSET(runtimePrimitiveToSource_);
   EXCHANGE_ASSET(opacityMicromapState_);
-  EXCHANGE_ASSET(linkedComposition_); EXCHANGE_ASSET(linkedSceneBaseline_);
+  EXCHANGE_ASSET(linkedComposition_); EXCHANGE_ASSET(linkedSceneBaseline_); EXCHANGE_ASSET(linkedAssetState_);
   swapSourceModel(gltfModel_,other.gltfModel_); EXCHANGE_ASSET(gltfInstancing_);
   EXCHANGE_ASSET(gltfTextureResources_);
   EXCHANGE_ASSET(archiveResourcePhases_);EXCHANGE_ASSET(gltfResourcePhases_);

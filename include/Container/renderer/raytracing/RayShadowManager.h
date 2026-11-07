@@ -37,6 +37,14 @@ struct RaySurfaceGpuBindings {
   }
 };
 
+// Retains the positions and transforms associated with one submitted ray scene.
+// The topology hash excludes pose changes and includes the ordered triangle
+// corner and instance identities used to reconstruct previous hit positions.
+struct RaySurfaceMotionSnapshot {
+  std::shared_ptr<const void> lifetime;
+  uint64_t topology{};
+};
+
 // Graphics-queue AS generations and independent visibility history. The
 // frontend calls prepare only after resize idle, and update after image fence
 // retirement; generations are retained per swapchain image through its fence.
@@ -93,6 +101,7 @@ public:
   [[nodiscard]] VkDescriptorSetLayout traceDescriptorLayout() const;
   [[nodiscard]] VkDescriptorSet traceDescriptorSet(uint32_t image) const;
   [[nodiscard]] RaySurfaceGpuBindings surfaceBindings(uint32_t image) const;
+  [[nodiscard]] RaySurfaceMotionSnapshot surfaceMotionSnapshot(uint32_t image) const;
   // Host metadata for the same fence-retained surface generation.
   [[nodiscard]] std::span<const RayInstanceData> surfaceInstanceMetadata(uint32_t image) const;
   [[nodiscard]] const std::string &surfaceUnsupportedReason() const;

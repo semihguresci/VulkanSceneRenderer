@@ -94,6 +94,7 @@ struct SceneManager::PreparedCameraProjectionEdit::State {
   CameraProjectionCommand command;
   GltfCameraProjectionPlan plan;
   PreparedCameraRestEdit rest;
+  tinygltf::Camera evaluated;
   const AnimationPlayer* player{};
   AnimatedCameraState view;
   glm::mat4 world{1},local{1};
@@ -220,10 +221,12 @@ SceneManager::PreparedCameraProjectionEdit SceneManager::prepareCameraProjection
     c.owner=this;c.ownerIdentity=sceneRootOwnerIdentity_;c.identity=s.identity;c.target=target;c.original=s.plan;
     c.bytes=sizeof(CameraProjectionCommand::State)+256+c.original.peakOwnedBytes;
   }
-  const auto view=EvaluateAnimatedCamera(s.plan.evaluatedAfter,s.world,aspect);
-  if(!view) cameraFailure("The selected camera has no renderable candidate projection");s.view=*view;
   auto animation=limits.animation;animation.authoring=limits.authoring;animation.maxOwnedBytes=std::min(animation.maxOwnedBytes,budget.available);
   s.rest=player->prepareCameraRestEdit(s.plan,authoredCameraSourceView(),gltfModel_,animation);budget.add(s.rest.ownedBytes());
+  budget.add(GltfCameraRecordStorageBytes(s.rest.evaluatedCamera(),limits.authoring));
+  s.evaluated=s.rest.evaluatedCamera();
+  const auto view=EvaluateAnimatedCamera(s.evaluated,s.world,aspect);
+  if(!view) cameraFailure("The selected camera has no renderable candidate projection");s.view=*view;
   s.bytes=limits.maxPreparedCpuBytes-budget.available;
   if(!canExchangeCameraProjectionEdit(result,graph,player,aspect)) cameraFailure("Camera source changed during detached projection preparation");
   return result;
@@ -256,7 +259,7 @@ bool SceneManager::exchangeCameraProjectionEdit(PreparedCameraProjectionEdit& to
       scratch=std::move(live);live=std::move(after);after=std::move(scratch);
     };
     exchange(exportSource_.cameras[size_t(s.target.authoredCamera)],s.plan.authoredAfter,s.scratch[0]);
-    exchange(gltfModel_.cameras[size_t(s.target.evaluatedCamera)],s.plan.evaluatedAfter,s.scratch[1]);
+    exchange(gltfModel_.cameras[size_t(s.target.evaluatedCamera)],s.evaluated,s.scratch[1]);
     ++cameraProjectionRevision_;++cameraEvaluationRevision_;
   }
   s.command.state_->published=true;s.command.state_->applied=s.side==GltfCameraEditSide::After;s.consumed=true;

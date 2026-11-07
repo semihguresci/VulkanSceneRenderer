@@ -11,6 +11,9 @@
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
+static_assert(GLM_VERSION_MAJOR == 1 && GLM_VERSION_MINOR == 0 && GLM_VERSION_PATCH == 3,
+    "This build requires GLM 1.0.3; check the selected include target");
+
 // Right-handed coordinate system throughout (glTF native).
 // Projection helpers target Vulkan's clip/depth conventions:
 //   - clip/NDC depth range [0, 1]

@@ -129,6 +129,8 @@ struct GpuMaterial
     GpuTextureTransform retroreflectionTextureTransform;
     GpuTextureTransform scatterStrengthTextureTransform;
     GpuTextureTransform scatterColorTextureTransform;
+    float4 specularGlossinessDiffuse;
+    float4 specularGlossinessSpecular; // RGB F0, W glossiness.
 };
 
 // KHR_materials_dispersion channel mapping shared by raster transmission

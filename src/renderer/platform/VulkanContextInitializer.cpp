@@ -1,4 +1,6 @@
 #include "Container/renderer/platform/VulkanContextInitializer.h"
+#include "Container/renderer/pathtracing/ReferenceDlssReconstructor.h"
+#include "Container/renderer/temporal/DlssUpscaler.h"
 #include "Container/renderer/temporal/FsrUpscaler.h"
 
 #include "Container/app/AppConfig.h"
@@ -36,6 +38,8 @@ VulkanContextResult VulkanContextInitializer::initialize(
     ci.enableValidationLayers  = config_.enableValidationLayers;
     ci.validationLayers       = config_.validationLayers;
     ci.requiredExtensions     = requiredWindowExtensions;
+    ci.enableDlssUpscaling     = DlssUpscaler::builtWithSdk();
+    ci.enableDlssRayReconstruction = ReferenceDlssReconstructor::builtWithSdk();
     if (config_.gfxrecon.enabled())
       ci.additionalLayers.push_back(container::capture::kLayerName);
     if (config_.enableValidationLayers || config_.gfxrecon.enabled()) {
@@ -122,7 +126,9 @@ VulkanContextResult VulkanContextInitializer::initialize(
     vulkan12Features.runtimeDescriptorArray = VK_TRUE;
     vulkan12Features.descriptorBindingPartiallyBound = VK_TRUE;
     vulkan12Features.descriptorBindingVariableDescriptorCount = VK_TRUE;
+    // Slang's bindless material modules declare both nonuniform capabilities.
     vulkan12Features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+    vulkan12Features.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
     vulkan12Features.bufferDeviceAddress = VK_TRUE;
     vulkan12Features.drawIndirectCount = VK_TRUE;
     vulkan12Features.hostQueryReset = VK_TRUE;
@@ -165,6 +171,16 @@ VulkanContextResult VulkanContextInitializer::initialize(
                    ? "supported; raster lighting remains default"
                    : "disabled by configuration")
             : raySupport.unavailableReason());
+    if (DlssUpscaler::builtWithSdk()) {
+      container::log::ContainerLogger::instance().renderer()->info(
+          "DLSS Vulkan extensions: {}", result.deviceWrapper->dlssUpscalingEnabled()
+              ? "enabled" : result.deviceWrapper->dlssUpscalingStatus());
+    }
+    if (ReferenceDlssReconstructor::builtWithSdk()) {
+      container::log::ContainerLogger::instance().renderer()->info(
+          "DLSS Ray Reconstruction Vulkan extensions: {}", result.deviceWrapper->dlssRayReconstructionEnabled()
+              ? "enabled" : result.deviceWrapper->dlssRayReconstructionStatus());
+    }
     result.wireframeRasterModeSupported = enabled.fillModeNonSolid == VK_TRUE;
     result.wireframeWideLinesSupported  = result.wireframeRasterModeSupported
                                               ? (enabled.wideLines == VK_TRUE)

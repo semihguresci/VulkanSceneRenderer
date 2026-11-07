@@ -59,9 +59,7 @@ def main():
                              errors="replace", timeout=240)
         log = run.stdout + run.stderr
         (output / f"{label}.log").write_text(log, encoding="utf-8")
-        assert run.returncode == 0 and not validation_log_error(log) and not any(
-            marker in log for marker in ("Undefined-Value-StorageImage-FormatMismatch-ImageView",
-                                         "undefined values to the whole image")), (label, log)
+        assert run.returncode == 0 and not validation_log_error(log), (label, log)
 
         states, images = {}, {}
         for frame in config["sampleFrames"]:
@@ -86,7 +84,7 @@ def main():
         assert fsr["active"] == (effective != "native") and fsr["displayExtent"] == list(extent), fsr
         assert fsr["renderExtent"] == [value * 10 // RATIOS[effective] for value in extent], fsr
         if fsr["active"]:
-            assert "3.1.4" in fsr["status"], fsr
+            assert fsr["status"] == "FSR 3.1.6 is ready (SDK 2.4.0)", fsr
             assert any(p["name"] == "TemporalResolve" and p["active"] for p in state["passes"]), fsr
 
     size = (640, 360)

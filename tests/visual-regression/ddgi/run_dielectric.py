@@ -162,7 +162,13 @@ def capture(exe, output, environment, scene, frames, timeout, *, technique, diel
         thin.require(gi["settings"]["thinGlassTransmission"] is False,
                      "Legacy thin opt-in confounds the dielectric capture")
         thin.require(gi["settings"]["intensity"] == int(primary), "GI pair intensity mismatched")
+        timings = {entry["name"]: entry["gpuMs"] for entry in telemetry.get("passes", [])
+                   if entry["name"] in ("DdgiTrace", "DdgiUpdate") and entry["gpuTimed"]}
+        thin.require(all(math.isfinite(value) and value >= 0 for value in timings.values()),
+                     "Nonfinite dielectric GPU pass timing")
         record.update(png=png.name, gpu=telemetry["gpu"], ddgi=gi,
+                      passGpuMilliseconds=timings, profiler=telemetry.get("gpuProfiler"),
+                      raySceneAllocatedBytes=telemetry.get("rayShadows", {}).get("totalAllocatedBytes"),
                       receivers=receiver_metrics(png, scene, telemetry["camera"]))
     except (OSError, ValueError, KeyError, AssertionError) as error:
         record["failures"].append(str(error))
@@ -247,7 +253,9 @@ def main():
     result = {"schemaVersion": 1, "startedUtc": datetime.now(timezone.utc).isoformat(),
               "exeSha256": hashlib.sha256(exe.read_bytes()).hexdigest(),
               "runtimeShaderSha256": runtime_shader_hashes(exe), "cases": [],
+              "captureFrames": args.frames, "resolution": [args.width, args.height],
               "measurementLimits": ["Quantized ACES/sRGB images estimate radiance, not float readbacks.",
+                "Pass GPU times are the latest available timestamp samples at capture, not a frame-time average.",
                 "Four nested homogeneous media share the eight-event crossing/reflection budget.",
                 "Primary raster transport is unchanged; direct emitter connections remain conservative."]}
     techniques = TECHNIQUES if args.technique == "both" else (args.technique,)

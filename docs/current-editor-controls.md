@@ -95,7 +95,9 @@ deletion. Hidden objects still count as users.
 stay stable in the editing session, and retired rows disappear from Assign and
 catalog choices. Save As writes a dense material table and remaps surviving
 references. Deleting a material retains its images and textures for other uses
-and history; image/texture record deletion remains separate work.
+and history. Use **Resource catalog** and **Delete unused resource** to remove
+an unused texture or image and its proved orphan resources. The panel explains
+which live references prevent deletion. Resource deletion supports Undo/Redo.
 
 ## Play animation or choose an authored camera
 
@@ -107,24 +109,42 @@ An authored camera selection also exposes **Projection**, **Vertical FOV
 (degrees)**, automatic/fixed aspect, near/far or **Infinite far**, and separate
 orthographic horizontal/vertical magnitudes. Click **Apply camera edit** to
 record one Undo/Redo action. Shared camera definitions show their use count.
-Animated lens fields explain why they are read-only; unanimated fields remain
-editable during playback. Both save paths retain the lens and its authored rest.
+Lens edits change authored defaults while active animation continues to control
+the sampled projection. Undo/Redo keeps the current playback time. Projection
+type changes and removing animated optional fields remain restricted when they
+would invalidate clip targets. Both save paths retain the lens and its authored rest.
 
 To move an authored camera from the free view, select it in **Camera**, verify
 **Camera pose → Destination**, then choose **Viewport camera**. Navigate and
-click **Write viewport pose (keep lens)**. The write keeps you in the free
-viewport and preserves the destination lens; choose the authored camera again
-to see its framing. Only that node moves, with its children, under the same
-parent. Other nodes sharing its lens keep their poses.
+click **Write viewport pose as default**. The write changes the node's authored
+default pose, keeps you in the free viewport and preserves its lens. Choose the
+authored camera again to see its current framing. Only that node and its
+attached children are affected, under the same parent; other nodes sharing its
+lens keep their poses.
 
-One changed write is one shared Undo/Redo action. Replay uses the current parent
-pose and preserves the animation clock. The destination can expire after a
-reload or node replacement; reselect the authored camera if it disappears.
-Selected-node TRS/matrix animation, active edit conflicts and physics/provider
-ownership can block a write, with a reason in the panel. Animated lens-rest and
-pose-keyframe authoring remain separate work. See
+Selected-node translation, rotation and scale targets are supported in selected
+or unselected clips. Active keys keep controlling their components; edited
+untargeted defaults appear immediately. Choose **Rest pose**, or a clip without
+those targets, to see the other edited defaults. The action keeps the original
+curve keys and does not create keyframes.
+
+One changed write is one **Write viewport camera default** Undo/Redo action,
+even when the visible sampled pose stays unchanged. Replay restores defaults
+against today's parent pose and samples today's clip at the current clock.
+The destination can expire after reload or node replacement; reselect it if it
+disappears. A genuinely sheared local result that cannot be stored as animated
+TRS rejects atomically. Unsupported matrix/quaternion-component animation,
+active edit conflicts and physics/provider ownership can also block a write,
+with a reason in the panel. Read-only linked assets require **Make Editable**.
+See
 [Authored camera editing](gltf-camera-authoring.md) for the complete workflow
 and supported scope.
+
+Selected-node TRS default writing passed 43 isolated CPU cases with GLM 1.0.3
+and Vulkan 1.4.363 headers (23 planner, 20 rest). Thirteen main manager cases and
+54 native captures also pass, including current-clock undo/redo, atomic shear
+rejection and source-independent GLTF/GLB reload. The native receipt is
+`build/codex-gltf-validation/camera-pose-animation-v7-native/results.json`.
 
 Saving an animated scene keeps its current pose as the file's defaults while retaining its clips and original keys. Clearing playback after reload returns to those saved defaults. The playback clock itself is not saved. See [glTF scene export](gltf-scene-export.md) for the full export contract.
 
@@ -149,6 +169,11 @@ When a volume is loaded, **OpenVDB volume** exposes visibility, geometry shadows
 | **Exposure / anti-aliasing / bloom** | Edit manual/automatic exposure, TAA and bloom. TAA requires MSAA 1x; use **Reset temporal history** when needed. DDGI sits between the TAA and bloom sections in the existing scroll layout. |
 | **Diagnostics / render passes** | Inspect culling and technique information; enable/disable optional render passes. Protected passes stay locked and dependencies can disable optional passes. **F8** freezes the culling camera. |
 | **Renderer telemetry** | Read CPU phases, workload/culling, render graph and synchronization measurements in the separate window. GPU timing describes completed work and may have limited coverage. |
+
+Use `--bounce-intensity F` in `[0,2]` to override the artistic raster fill at
+startup and across scene reloads. `--bounce-intensity 0` removes that fill while
+retaining the configured environment and direct lighting. Without the flag,
+the existing viewer and authored-light scene defaults remain in effect.
 
 **Vulkan runtime capture** reports capture status. Capture must be armed before Vulkan instance creation; this section is not a live Record switch.
 

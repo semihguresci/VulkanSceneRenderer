@@ -16,6 +16,17 @@ namespace container::geometry::gltf {
 
 struct GltfLinkedCompositionInfo;
 struct GltfLinkedPlacementEdit;
+struct GltfLinkedHybridCarrier;
+
+struct GltfExportResourceIndexMaps {
+  std::vector<int32_t> images, textures, samplers;
+};
+
+struct GltfLinkedPortableExportOptions {
+  // Payloads will be replaced by URI references after projection.
+  std::span<const uint8_t> linkedGraphNodes, omittedAnimations;
+  GltfExportResourceIndexMaps* resourceIndexMaps{};
+};
 
 // Borrowed CPU state. The caller keeps every referenced object alive for the
 // duration of buildExportModel/writeSceneExport; neither function edits it.
@@ -60,6 +71,8 @@ struct SceneExportSnapshot {
   // is in the supplied runtime export table; node activity is derived from the
   // graph. Spans are borrowed for this call. Filtering precedes image I/O.
   GltfResourceExportMasks sourceResourceMasks{};
+  std::span<const uint8_t> omitNodeMeshes{};
+  GltfExportResourceIndexMaps* resourceIndexMaps{};
 };
 
 // Rebuilds current geometry and hierarchy in glTF-native coordinates. Images
@@ -90,5 +103,17 @@ void writeExportModel(const tinygltf::Model& model,
 void writeLinkedSceneManifest(const GltfLinkedCompositionInfo&,
     std::span<const GltfLinkedPlacementEdit>, size_t selectedScene,
     const std::filesystem::path& destination);
+
+struct GltfLinkedHybridExport {
+  const GltfLinkedCompositionInfo& composition;
+  std::span<const GltfLinkedHybridCarrier> carriers; // output IDs before node compaction
+  std::span<const uint8_t> prunedGraphNodes;
+  std::span<const size_t> linkedContexts;
+  std::span<const int32_t> sourceMaterialToExport, retiredMaterials, animatedLinkedMaterials;
+  const GltfExportResourceIndexMaps& resourceIndexMaps;
+};
+
+void writeLinkedHybridScene(tinygltf::Model model, const GltfLinkedHybridExport&,
+                            const std::filesystem::path& destination);
 
 }  // namespace container::geometry::gltf

@@ -3,6 +3,7 @@
 #include "Container/utility/ComputePipeline.h"
 
 #include "Container/renderer/resources/FrameResources.h"
+#include "Container/renderer/temporal/DlssUpscaler.h"
 #include "Container/renderer/temporal/FsrUpscaler.h"
 #include "Container/renderer/temporal/TemporalState.h"
 #include <array>
@@ -41,8 +42,15 @@ public:
                        VkDescriptorSetLayout sceneLayout, VkFormat depthFormat);
   [[nodiscard]] bool prepareFsr(const std::filesystem::path& root,
                                 const FsrUpscalerSettings& settings);
+  [[nodiscard]] std::optional<VkExtent2D> prepareDlss(const std::filesystem::path& root,
+                                                     UpscaleMode mode, VkExtent2D display);
   [[nodiscard]] bool fsrActive() const { return fsr_ && fsr_->available(); }
-  [[nodiscard]] std::string_view fsrStatus() const { return fsrStatus_; }
+  [[nodiscard]] bool dlssActive() const { return dlss_ && dlss_->available(); }
+  [[nodiscard]] std::optional<uint64_t> dlssAllocatedBytes() const {
+    return dlss_ ? dlss_->allocatedBytes() : std::nullopt;
+  }
+  [[nodiscard]] bool upscalingActive() const { return fsrActive() || dlssActive(); }
+  [[nodiscard]] std::string_view upscalingStatus() const { return upscalingStatus_; }
   void prepareCamera(container::gpu::CameraData& camera, glm::uvec2 extent,
                      const container::temporal::Settings& settings,
                      const glm::mat4& projection, float frameMilliseconds);
@@ -57,7 +65,7 @@ public:
   void recordResolve(VkCommandBuffer cmd, const FrameRecordParams &frame);
   void commit();
   void reset(std::string reason) { state_.reset(std::move(reason)); }
-  bool active() const { return (settings_.enabled || fsrActive()) && !inputs_.empty(); }
+  bool active() const { return (settings_.enabled || upscalingActive()) && !inputs_.empty(); }
   VkImageView outputView(uint32_t image) const;
   VkImage outputImage(uint32_t image) const;
   VkImageView diagnosticView(uint32_t image) const;
@@ -74,8 +82,10 @@ private:
     FrameResources frame{};
     std::array<VkDescriptorSet, 2> resolve{};
     VkDescriptorSet compose{};
-    VkDescriptorSet fsrInputs{};
-    AttachmentImage fsrDepth, fsrMotion, fsrReactive, fsrTransparency, fsrOutput;
+    VkDescriptorSet upscaleInputs{};
+    VkDescriptorSet dlssTransparency{};
+    AttachmentImage upscaleDepth, upscaleMotion, upscaleReactive, upscaleTransparency, upscaleOutput;
+    AttachmentImage dlssOitLayer;
     bool initialized{false};
   };
   uint32_t writeSlot() const {
@@ -84,9 +94,13 @@ private:
   AttachmentImage image(VkFormat format, VkImageUsageFlags usage, VkExtent2D extent);
   void destroyImage(AttachmentImage &image);
   void destroyFrameImages();
-  void createFsrPipeline(const std::filesystem::path& root);
-  void updateFsrDescriptors(const Input& input);
-  void recordFsr(VkCommandBuffer cmd, const FrameRecordParams& frame, const Input& input);
+  void createUpscaleInputPipeline(const std::filesystem::path& root);
+  void createDlssCompositionPipelines(const std::filesystem::path& root);
+  void destroyDlssCompositionPipelines();
+  void updateUpscaleDescriptors(const Input& input);
+  void updateDlssTransparencyDescriptors(const Input& input);
+  void recordUpscale(VkCommandBuffer cmd, const FrameRecordParams& frame, const Input& input,
+                     bool hasTransparency);
   std::shared_ptr<container::gpu::VulkanDevice> device_;
   container::gpu::AllocationManager &allocator_;
   container::gpu::PipelineManager &pipelines_;
@@ -96,16 +110,20 @@ private:
   std::vector<Input> inputs_;
   VkExtent2D extent_{};
   std::unique_ptr<FsrUpscaler> fsr_;
-  FsrUpscalerSettings fsrSettings_{};
-  std::string fsrStatus_{"native resolution"};
-  std::array<float, 2> fsrJitter_{};
-  float fsrVerticalFov_{}, fsrFrameMilliseconds_{};
+  std::unique_ptr<DlssUpscaler> dlss_;
+  VkExtent2D upscaleRenderExtent_{}, upscaleDisplayExtent_{};
+  std::string upscalingStatus_{"native resolution"};
+  std::array<float, 2> upscaleJitter_{};
+  float fsrVerticalFov_{}, upscaleFrameMilliseconds_{};
   VkDescriptorSetLayout resolveSetLayout_{}, composeSetLayout_{};
-  VkDescriptorSetLayout fsrInputsSetLayout_{};
+  VkDescriptorSetLayout upscaleInputsSetLayout_{};
+  VkDescriptorSetLayout dlssComposeSetLayout_{}, dlssTransparencySetLayout_{};
   VkPipelineLayout resolveLayout_{}, composeLayout_{}, velocityLayout_{};
-  VkPipelineLayout fsrInputsLayout_{};
+  VkPipelineLayout upscaleInputsLayout_{};
+  VkPipelineLayout dlssComposeLayout_{}, dlssTransparencyLayout_{};
   container::gpu::ComputePipeline resolvePipeline_{}, composePipeline_{};
-  container::gpu::ComputePipeline fsrInputsPipeline_{};
+  container::gpu::ComputePipeline upscaleInputsPipeline_{};
+  container::gpu::ComputePipeline dlssComposePipeline_{}, dlssTransparencyPipeline_{};
   std::array<VkPipeline, 3> velocityPipelines_{};
   VkFormat velocityDepthFormat_{VK_FORMAT_UNDEFINED};
   VkDescriptorPool pool_{};

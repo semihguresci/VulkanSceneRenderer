@@ -163,6 +163,8 @@ struct GpuMaterial {
   alignas(16) GpuTextureTransform retroreflectionTextureTransform{};
   alignas(16) GpuTextureTransform scatterStrengthTextureTransform{};
   alignas(16) GpuTextureTransform scatterColorTextureTransform{};
+  alignas(16) glm::vec4 specularGlossinessDiffuse{1.0f};
+  alignas(16) glm::vec4 specularGlossinessSpecular{1.0f};
 };
 
 struct NormalValidationSettings {
@@ -1323,7 +1325,7 @@ static_assert(offsetof(GpuTextureTransform, row0) == 0,
 static_assert(offsetof(GpuTextureTransform, row1) == 16,
               "GpuTextureTransform.row1 offset");
 
-static_assert(sizeof(GpuMaterial) == 1184,
+static_assert(sizeof(GpuMaterial) == 1216,
               "GpuMaterial size mismatch with "
               "shaders/material_data_common.slang. Update shader GpuMaterial "
               "in lockstep.");
@@ -1478,6 +1480,8 @@ static_assert(offsetof(GpuMaterial, experimentalTextures) == 1072);
 static_assert(offsetof(GpuMaterial, retroreflectionTextureTransform) == 1088);
 static_assert(offsetof(GpuMaterial, scatterStrengthTextureTransform) == 1120);
 static_assert(offsetof(GpuMaterial, scatterColorTextureTransform) == 1152);
+static_assert(offsetof(GpuMaterial, specularGlossinessDiffuse) == 1184);
+static_assert(offsetof(GpuMaterial, specularGlossinessSpecular) == 1200);
 static_assert(kMaterialTextureDescriptorCapacity - 1u <=
                   kMaxExactGBufferMaterialMetadataIndex,
               "G-buffer float material metadata must round-trip all material "

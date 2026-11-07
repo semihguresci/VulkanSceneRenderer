@@ -118,6 +118,9 @@ PtBsdfSample PtSampleVolumeBsdf(PtVolumeBsdf bsdf, float3 view, float3 u)
         if (all(fresnel == 0.0.xxx) && all(bsdf.transmission * (1.0.xxx - fresnel) == 0.0.xxx)) return result;
         float reflectionProbability = PtVolumeReflectionProbability(bsdf, fresnel);
         bool reflection = u.x / probability < reflectionProbability;
+#if REFERENCE_DLSS_RR
+        result.specularReflection = reflection ? 1u : 0u;
+#endif
         if (reflection)
             result.direction = reflect(-view, halfVector);
         else

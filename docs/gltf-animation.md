@@ -55,14 +55,15 @@ to the same property. Disjoint vector components may use separate channels.
 
 ## Pointer coverage
 
-The runtime implements a numeric subset of
+The runtime implements a typed subset of
 [`KHR_animation_pointer`](https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_animation_pointer/README.md),
-using typed node/material/light/camera source indices. It does not advertise
-arbitrary JSON mutation. The supported paths are:
+using node, material, light, and camera source indices. The supported paths
+are listed below.
 
 | Source prefix | Mutable property suffixes |
 | --- | --- |
 | `/nodes/{i}/` | `translation`, `rotation`, `scale`, `weights` |
+| `/nodes/{i}/extensions/` | `KHR_node_visibility/visible`, `KHR_node_selectability/selectable`, `KHR_node_hoverability/hoverable` |
 | `/materials/{i}/` | `pbrMetallicRoughness/baseColorFactor`, `pbrMetallicRoughness/metallicFactor`, `pbrMetallicRoughness/roughnessFactor`, `emissiveFactor`, `alphaCutoff`, `normalTexture/scale`, `occlusionTexture/strength` |
 | `/materials/{i}/extensions/KHR_materials_emissive_strength/` | `emissiveStrength` |
 | `/materials/{i}/extensions/KHR_materials_ior/` | `ior` |
@@ -111,11 +112,15 @@ the other component, and selecting rest pose restores the exact authored
 optional objects and leaves. Applying a sample changes only the numeric leaf;
 texture indices, `texCoord`, other extensions, and extras remain authored.
 Malformed supported parents/vectors are rejected with channel context.
-Optional camera `aspectRatio`/`zfar` and light
-`range` must be defined in the source to be targeted. Boolean/integer object
-properties (including texture indices and UV-set selection), extras, and
-shader-unrepresented anisotropy fields are outside
-this subset and are diagnosed rather than silently treated as supported.
+Optional camera `aspectRatio`/`zfar` and light `range` must be defined in the
+source to be targeted. The three Boolean node flag pointers use SCALAR
+`UNSIGNED_BYTE` output and `STEP` interpolation. An existing extension object
+can omit its Boolean property to use the default `true` value. Zero keys
+evaluate to `false` and nonzero keys evaluate to `true`. [glTF node flags](gltf-node-flags.md)
+
+The runtime diagnoses pointers to other Boolean or integer fields, including
+texture indices and UV-set selection, as well as extras and anisotropy fields
+that the shaders do not represent.
 
 ## Renderer publication
 

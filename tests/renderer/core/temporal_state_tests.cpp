@@ -311,4 +311,15 @@ TEST(TemporalState, ExtendedMaterialFactorsAndTextureCoordinatesRejectStaleHisto
               container::temporal::materialRevision(edited)) << field;
   }
 }
+
+TEST(TemporalState, AuthoredSpecularGlossinessFactorsInvalidateTheShaderMaterialRevision) {
+  container::gpu::GpuMaterial original{};
+  for (int component = 0; component < 4; ++component) {
+    auto diffuse = original, specular = original;
+    diffuse.specularGlossinessDiffuse[component] = .5f;
+    specular.specularGlossinessSpecular[component] = .5f;
+    EXPECT_NE(container::temporal::materialRevision(original), container::temporal::materialRevision(diffuse));
+    EXPECT_NE(container::temporal::materialRevision(original), container::temporal::materialRevision(specular));
+  }
+}
 } // namespace

@@ -46,10 +46,22 @@ footprints: each of `rayCount` equal-solid-angle sphere samples owns
 `4*pi/rayCount` steradians, the equivalent cone's diameter drives hit-texture
 filtering through per-coordinate-set UV gradients, and refracted continuations
 inherit the slant-corrected footprint of the surface they left. Coverage
-candidates and visibility shadow connections keep base-mip reads. The optional
+candidates and visibility shadow connections keep base-mip reads. A missing,
+nonfinite, or overflowing transformed footprint also uses an explicit base-mip
+sample. The optional
 glass policies below add straight-through
 thin-sheet or bounded refractive secondary paths; transmissive primary receivers
 keep fallback.
+
+The normal/alpha footprint acceptance gate passes 112 raw captures across both
+raster techniques. Authored coarse normal mips match an independent baked-normal
+control exactly; degenerate UVs match the base-normal fallback. Conservative
+cutout coverage matches independently authored strip geometry exactly, while
+wrong-normal, full and empty controls remain distinct. Results are in
+`build/codex-gltf-validation/ray-footprint-normal-alpha-final-dfc887-native/results.json`
+on renderer `dfc887d53da4bb81ac75196f7d554ce0e9bf40e8110aaac72a6c592c8b9e84a4`.
+Dispatch timing, texture sizes and owned allocations are recorded; hardware
+bandwidth counters are unavailable on this device.
 
 Direct-hit lighting supports directional, punctual and rectangle/disk emitters,
 emission, vertex colors, normal maps and diffuse energy attenuation from
@@ -324,6 +336,18 @@ volumes with disabled, opaque-terminal, open, overlapping and same-instance
 controls. GPU transport contracts independently check Snell entry and exit,
 TIR, relative IOR, GGX sample directions, stack order and colored absorption
 at several scales. Run native and GPU workloads serially.
+
+The 240×200 native cohort passed 44 captures across forward and deferred
+raster. With 44 updates of 32,768 rays each, the matched clear nested receiver
+measured indirect luminance 0.05121 in deferred and 0.05162 in forward. The
+absorbing stack retained blue at 0.03468 and 0.03519, with red at 0 and 0.00023.
+Open, intersecting, and same-instance shells stayed within the fixture's
+blocked controls. The clear nested captures sampled 0.778–0.791 ms for
+`DdgiTrace` and 0.240–0.243 ms for `DdgiUpdate` on the RTX 2080 SUPER. DDGI
+owned 5,549,936 bytes and the shared ray scene reported 10,852,288 bytes in
+this fixture. The trace timings are the most recent retired timestamps at
+capture. The full receipt is in
+`out/feature-parity/ddgi-nested-current/dielectric-results.json`.
 
 ```powershell
 python -B tests/visual-regression/ddgi/run_extensions.py

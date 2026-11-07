@@ -60,6 +60,10 @@ struct InteractivityIndexMapping {
 using GltfInteractivityMappings = std::array<InteractivityIndexMapping,
     size_t(InteractivityIndexDomain::Count)>;
 
+// Identity indices with the destination's complete table sizes. A projection
+// replaces only the domains whose indices it changes.
+[[nodiscard]] GltfInteractivityMappings GltfInteractivityIdentityMappings(const tinygltf::Model&);
+
 // Preserve all supported graphs and annotations in a detached extension.
 // Authored pointer templates with an object-index placeholder require an
 // identity mapping over the complete original and destination domains.
@@ -68,5 +72,12 @@ tinygltf::Value RemapGltfInteractivity(const tinygltf::Model& source,
 std::vector<size_t> GltfInteractivityTransformNodes(const tinygltf::Model& source);
 // An unresolved clip input can refer to any clip and returns nullopt.
 std::optional<std::vector<size_t>> GltfInteractivityAnimationClips(const tinygltf::Model& source);
+
+struct GltfInteractivityLightValueUsage {
+  bool color{}, intensity{}, range{};
+};
+// Includes every supported graph. A dynamic light ID marks every source row
+// for the configured property; typed references are covered by their consumers.
+std::vector<GltfInteractivityLightValueUsage> GltfInteractivityLightValueUsages(const tinygltf::Model&);
 
 } // namespace container::geometry::gltf

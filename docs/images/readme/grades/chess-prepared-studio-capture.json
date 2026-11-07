@@ -1,0 +1,414 @@
+{
+  "schemaVersion": 1,
+  "frames": 256,
+  "sampleFrames": [
+    128,
+    256
+  ],
+  "events": [
+    {
+      "frame": 1,
+      "nodeAuthoring": {
+        "action": "create-empty",
+        "graphNode": 0,
+        "name": "README studio capture selection"
+      }
+    },
+    {
+      "frame": 2,
+      "nodeFlags": {
+        "sourceNode": 0,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 3,
+      "nodeFlags": {
+        "sourceNode": 1,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 4,
+      "nodeFlags": {
+        "sourceNode": 2,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 5,
+      "nodeFlags": {
+        "sourceNode": 3,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 6,
+      "nodeFlags": {
+        "sourceNode": 4,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 7,
+      "nodeFlags": {
+        "sourceNode": 6,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 8,
+      "nodeFlags": {
+        "sourceNode": 8,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 9,
+      "nodeFlags": {
+        "sourceNode": 10,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 10,
+      "nodeFlags": {
+        "sourceNode": 12,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 11,
+      "nodeFlags": {
+        "sourceNode": 14,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 12,
+      "nodeFlags": {
+        "sourceNode": 16,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 13,
+      "nodeFlags": {
+        "sourceNode": 18,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 14,
+      "nodeFlags": {
+        "sourceNode": 20,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 15,
+      "nodeFlags": {
+        "sourceNode": 22,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 16,
+      "nodeFlags": {
+        "sourceNode": 24,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 17,
+      "nodeFlags": {
+        "sourceNode": 26,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 18,
+      "nodeFlags": {
+        "sourceNode": 28,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 19,
+      "nodeFlags": {
+        "sourceNode": 30,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 20,
+      "nodeFlags": {
+        "sourceNode": 32,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 21,
+      "nodeFlags": {
+        "sourceNode": 34,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 22,
+      "nodeFlags": {
+        "sourceNode": 36,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 23,
+      "nodeFlags": {
+        "sourceNode": 37,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 24,
+      "nodeFlags": {
+        "sourceNode": 38,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 25,
+      "nodeFlags": {
+        "sourceNode": 39,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 26,
+      "nodeFlags": {
+        "sourceNode": 40,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 27,
+      "nodeFlags": {
+        "sourceNode": 41,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 28,
+      "nodeFlags": {
+        "sourceNode": 42,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 29,
+      "nodeFlags": {
+        "sourceNode": 43,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 30,
+      "nodeFlags": {
+        "sourceNode": 44,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 31,
+      "nodeFlags": {
+        "sourceNode": 45,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 32,
+      "nodeFlags": {
+        "sourceNode": 46,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 33,
+      "nodeFlags": {
+        "sourceNode": 47,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 34,
+      "nodeFlags": {
+        "sourceNode": 48,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 35,
+      "nodeFlags": {
+        "sourceNode": 49,
+        "selectable": false,
+        "hoverable": false
+      }
+    },
+    {
+      "frame": 36,
+      "lightAdd": {
+        "type": "area"
+      }
+    },
+    {
+      "frame": 37,
+      "lightEdit": {
+        "target": {
+          "type": "area",
+          "source": "manual",
+          "index": 0
+        },
+        "phase": "commit",
+        "values": {
+          "position": [
+            -0.4,
+            0.65,
+            0.35
+          ],
+          "color": [
+            1.0,
+            0.95,
+            0.88
+          ],
+          "intensity": 12.0,
+          "range": 0.0,
+          "areaSize": [
+            0.55,
+            0.45
+          ],
+          "areaShape": "rectangle",
+          "areaBasis": {
+            "tangent": [
+              -0.658504607868518,
+              0.0,
+              -0.7525766947068779
+            ],
+            "bitangent": [
+              0.5713629774724782,
+              0.6508469400644157,
+              -0.49994260528841833
+            ]
+          }
+        }
+      }
+    },
+    {
+      "frame": 38,
+      "lightAdd": {
+        "type": "area"
+      }
+    },
+    {
+      "frame": 39,
+      "lightEdit": {
+        "target": {
+          "type": "area",
+          "source": "manual",
+          "index": 1
+        },
+        "phase": "commit",
+        "values": {
+          "position": [
+            0.45,
+            0.4,
+            -0.2
+          ],
+          "color": [
+            0.88,
+            0.94,
+            1.0
+          ],
+          "intensity": 4.0,
+          "range": 0.0,
+          "areaSize": [
+            0.35,
+            0.4
+          ],
+          "areaShape": "rectangle",
+          "areaBasis": {
+            "tangent": [
+              0.4061384660534476,
+              -0.0,
+              0.9138115486202572
+            ],
+            "bitangent": [
+              -0.5489208195721925,
+              0.7994792717492892,
+              0.24396480869875217
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "camera": [
+    {
+      "frame": 128,
+      "position": [
+        0.65,
+        0.46,
+        0.8
+      ],
+      "target": [
+        0,
+        -0.045,
+        0
+      ]
+    },
+    {
+      "frame": 129,
+      "position": [
+        0.58,
+        0.32,
+        0.54
+      ],
+      "target": [
+        0,
+        0.045,
+        0
+      ]
+    }
+  ]
+}

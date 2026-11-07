@@ -295,6 +295,7 @@ struct SceneManager::PreparedCameraViewPoseEdit::State {
   CameraViewPoseCommand command;
   GltfCameraPosePlan plan;
   PreparedCameraNodeRestEdit rest;
+  tinygltf::Node evaluatedAfter;
   SceneGraph::PreparedPlacement placement;
   std::vector<PoseAncestor> ancestors;
   std::vector<SceneNode> beforeRows;
@@ -368,7 +369,8 @@ SceneManager::PreparedCameraViewPoseEdit SceneManager::prepareCameraViewPoseRepl
   PoseBudget budget{limits.maxPreparedCpuBytes}; budget.add(command.ownedBytes()); std::vector<PoseAncestor> ancestors;
   const auto context=capturePoseGraph(graph,*current,aspect,limits,budget,ancestors);
   auto authoring=limits.authoring; authoring.maxOwnedBytes=std::min(authoring.maxOwnedBytes,budget.available/2);
-  auto plan=RebaseGltfCameraViewPose(c.original,side,GltfCameraPoseView(exportSource_),GltfCameraPoseView(gltfModel_),context,authoring);
+  auto plan=RebaseGltfCameraViewPose(c.original,side,GltfCameraPoseView(exportSource_),GltfCameraPoseView(gltfModel_),context,authoring,
+      player?player->selectedClip():std::nullopt);
   std::vector<PoseAncestor>().swap(ancestors);
   return prepareCameraViewPoseImpl(*current,std::move(plan),&command,side,graph,player,aspect,limits);
 }
@@ -408,9 +410,22 @@ SceneManager::PreparedCameraViewPoseEdit SceneManager::prepareCameraViewPoseImpl
   // reject even untracked getNode() writes to unrelated nodes. This complete
   // before witness is preparation-only and never retained by history.
   budget.add(placement.maxPayloadBytes);
+  auto animation=limits.animation; animation.authoring=limits.authoring;
+  animation.maxOwnedBytes=std::min(animation.maxOwnedBytes,budget.available);
+  s.rest=player->prepareCameraNodeRestEdit(s.plan,GltfCameraPoseView(exportSource_),gltfModel_,animation);
+  budget.add(s.rest.ownedBytes());
+  // Authored rest and today's sampled pose are separate endpoints. Preserve
+  // only the candidate's owned arrays for the allocation-free E publication;
+  // metadata, weights and source associations remain borrowed/current.
+  const auto& evaluated=s.rest.evaluatedNode();
+  budget.add(evaluated.matrix.size()+evaluated.translation.size()+evaluated.rotation.size()+evaluated.scale.size(),sizeof(double));
+  s.evaluatedAfter.matrix=evaluated.matrix;s.evaluatedAfter.translation=evaluated.translation;
+  s.evaluatedAfter.rotation=evaluated.rotation;s.evaluatedAfter.scale=evaluated.scale;
+  const auto evaluatedLocal=EvaluateAnimatedNodeLocalTransform(evaluated);
+  const auto evaluatedWorld=context.parentWorld*evaluatedLocal;
   s.placement=graph.preparePlacement(target.camera.graphNode,
       context.parent==SceneGraph::kInvalidNode?std::optional<uint32_t>{}:std::optional<uint32_t>{context.parent},
-      s.plan.localAfter,context.siblingIndex,graph.activeRoots(),placement);
+      evaluatedLocal,context.siblingIndex,graph.activeRoots(),placement);
   const auto* candidate=s.placement.candidateGraph();
   if(!candidate) poseFailure("Camera pose candidate exceeds graph capacity or changes an invalid placement");
   s.beforeRows.reserve(graph.nodeCount());s.beforeBirths.reserve(graph.nodeCount());
@@ -419,19 +434,16 @@ SceneManager::PreparedCameraViewPoseEdit SceneManager::prepareCameraViewPoseImpl
   }
   s.beforeRoots=graph.rootNodes();s.beforeRenderables=graph.renderableNodes();s.beforeActiveRoots=graph.activeRoots();
   const auto* node=candidate->getNode(target.camera.graphNode);
-  if(!node || !exactPoseMatrix(node->localTransform,s.plan.localAfter) || !exactPoseMatrix(node->worldTransform,s.plan.worldAfter))
+  if(!node || !exactPoseMatrix(node->localTransform,evaluatedLocal) || !exactPoseMatrix(node->worldTransform,evaluatedWorld))
     poseFailure("Camera pose candidate graph differs from the proved float endpoint");
   const auto view=EvaluateAnimatedCamera(gltfModel_.cameras[size_t(target.camera.evaluatedCamera)],node->worldTransform,aspect);
-  if(!view || !exactPoseMatrix(view->view,s.plan.viewAfter)) poseFailure("Camera pose candidate has no exact current render view");
+  if(!view) poseFailure("Camera pose candidate has no current sampled render view");
   s.view=*view;
   preflightPoseDerivedWork(*candidate,gltfModel_,model_.primitiveRanges(),indices_.size(),limits.maxDerivedWork);
   capturePoseLightSources(gltfModel_,*candidate,limits,budget,s.lightSources);
   s.lights=evaluateAuthoredSceneLights(*candidate,selectedScene_);
   s.bounds=calculateModelBounds(candidate);
-  auto animation=limits.animation; animation.authoring=limits.authoring;
-  animation.maxOwnedBytes=std::min(animation.maxOwnedBytes,budget.available);
-  s.rest=player->prepareCameraNodeRestEdit(s.plan,GltfCameraPoseView(exportSource_),gltfModel_,animation);
-  budget.add(s.rest.ownedBytes()); s.bytes=limits.maxPreparedCpuBytes-budget.available;
+  s.bytes=limits.maxPreparedCpuBytes-budget.available;
   const auto* desired=s.replay?nullptr:&s.plan.desiredView;
   if(!canExchangeCameraViewPoseEdit(result,graph,player,aspect,desired))
     poseFailure("Camera pose source changed during detached preparation");
@@ -466,7 +478,7 @@ bool SceneManager::exchangeCameraViewPoseEdit(PreparedCameraViewPoseEdit& token,
   if(s.plan.changed) {
     if(!player->exchangeCameraNodeRestEdit(s.rest,GltfCameraPoseView(exportSource_),gltfModel_)) return false;
     exchangeNodePose(exportSource_.nodes[size_t(s.plan.authoredNode)],s.plan.authoredAfter);
-    exchangeNodePose(gltfModel_.nodes[size_t(s.plan.evaluatedNode)],s.plan.evaluatedAfter);
+    exchangeNodePose(gltfModel_.nodes[size_t(s.plan.evaluatedNode)],s.evaluatedAfter);
     // The exact placement was rechecked before any source/rest swap; those
     // swaps cannot alter this single-threaded graph authority or allocate.
     if(!graph.publishPlacement(s.placement)) std::terminate();

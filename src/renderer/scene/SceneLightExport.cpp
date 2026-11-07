@@ -5,7 +5,9 @@
 #include <Container/renderer/lighting/LightingManager.h>
 #include <Container/renderer/lighting/ImportedSceneLightEdits.h>
 #include <Container/geometry/GltfAnimation.h>
+#include <Container/geometry/GltfInteractivity.h>
 #include <Container/geometry/GltfIesProfiles.h>
+#include <Container/geometry/GltfXmpMetadata.h>
 #include <Container/utility/SceneManager.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -127,6 +129,20 @@ struct Candidate {
   tinygltf::Light definition;
   int sourceLight{-1};
 };
+struct LightProjection {
+  int source{-1}, destination{-1};
+  double rangeScale{1}, colorScale{1};
+};
+bool sameLightDefinition(const tinygltf::Light& a, const tinygltf::Light& b) {
+  // TinyGLTF's Light equality omits intensity, range, spot fields and metadata.
+  return a.name == b.name && a.type == b.type && a.color == b.color &&
+      a.intensity == b.intensity && a.range == b.range &&
+      a.spot.innerConeAngle == b.spot.innerConeAngle && a.spot.outerConeAngle == b.spot.outerConeAngle &&
+      a.spot.extensions == b.spot.extensions && a.spot.extras == b.spot.extras &&
+      a.spot.extensions_json_string == b.spot.extensions_json_string && a.spot.extras_json_string == b.spot.extras_json_string &&
+      a.extensions == b.extensions && a.extras == b.extras &&
+      a.extensions_json_string == b.extensions_json_string && a.extras_json_string == b.extras_json_string;
+}
 
 // Preserve the active sun's traversal priority without detaching it from its
 // animated ancestors. Reordering siblings changes no world transforms.
@@ -544,6 +560,63 @@ std::vector<EditableLightEntity> evaluateEditableSceneLightsForExport(
   return result;
 }
 
+static void projectBehaviorLights(const tinygltf::Model& source, tinygltf::Model& output,
+                                 std::span<const LightProjection> projections) {
+  using namespace container::geometry::gltf;
+  if (!source.extensions.contains(kGltfInteractivityExtension)) return;
+  const auto usages = GltfInteractivityLightValueUsages(source);
+  std::vector<std::vector<int>> destinations(source.lights.size());
+  for (const auto& node : output.nodes)
+    if (node.light >= 0 && size_t(node.light) < source.lights.size())
+      destinations[size_t(node.light)].push_back(node.light);
+  std::vector<uint8_t> converted(source.lights.size());
+  for (const auto& projection : projections) {
+    require(projection.source >= 0 && size_t(projection.source) < destinations.size() &&
+            projection.destination >= 0 && size_t(projection.destination) < output.lights.size());
+    destinations[size_t(projection.source)].push_back(projection.destination);
+    const auto& usage = usages.at(size_t(projection.source));
+    converted[size_t(projection.source)] |= (projection.rangeScale != 1 && usage.range) ||
+        (projection.colorScale != 1 && (usage.color || usage.intensity));
+  }
+  std::vector<int32_t> lightMap(source.lights.size());
+  std::vector<int32_t> aliases(output.lights.size());
+  for (size_t i = 0; i < aliases.size(); ++i) aliases[i] = int32_t(i);
+  for (size_t id = 0; id < destinations.size(); ++id) {
+    auto& targets = destinations[id];
+    if (targets.empty()) targets.push_back(int(id)); // An unbound definition stays unbound.
+    const int canonical = targets.front();
+    const bool equal = std::ranges::all_of(targets, [&](int target) {
+      return sameLightDefinition(output.lights[size_t(target)],output.lights[size_t(canonical)]);
+    });
+    lightMap[id] = equal && !converted[id] ? canonical : -1;
+    if (lightMap[id] >= 0)
+      for (const int target : targets) aliases[size_t(target)] = canonical;
+  }
+  // Equal placements of one authored definition keep a shared global light.
+  // Definitions with different per-binding edits cannot receive one global
+  // Object Model value without losing those edits.
+  for (auto& node : output.nodes) if (node.light >= 0) {
+    const auto mapped = aliases.at(size_t(node.light));
+    if (mapped == node.light) continue;
+    node.light = mapped;
+    if (auto binding = node.extensions.find("KHR_lights_punctual"); binding != node.extensions.end()) {
+      require(binding->second.IsObject());
+      binding->second.Get<Object>()["light"] = Value(mapped);
+    }
+    node.extensions_json_string.clear();
+  }
+  auto mappings = GltfInteractivityIdentityMappings(output);
+  mappings[size_t(InteractivityIndexDomain::Light)].oldToNew = lightMap;
+  try {
+    output.extensions[kGltfInteractivityExtension] = RemapGltfInteractivity(source,mappings,&output);
+  } catch (const std::invalid_argument& error) {
+    throw std::runtime_error("Scene light export cannot preserve a behavior reference across split light definitions "
+        "or converted light value spaces: " + std::string(error.what()));
+  }
+  if (!output.extensions.contains(kGltfXmpExtension)) output.extensions_json_string.clear();
+  ValidateGltfInteractivity(output);
+}
+
 static void exportEditableSceneLightsForScene(tinygltf::Model& model,
                                std::span<const EditableLightEntity> lights,
                                const tinygltf::Model* originalSource,
@@ -551,7 +624,8 @@ static void exportEditableSceneLightsForScene(tinygltf::Model& model,
                                double importedRangeScale,
                                std::optional<size_t> sourceSceneOverride = {},
                                const container::scene::AuthoredSceneLights* sceneBindings = nullptr,
-                               const container::scene::AuthoredSceneLights* visibleBindings = nullptr) {
+                               const container::scene::AuthoredSceneLights* visibleBindings = nullptr,
+                               std::vector<LightProjection>* projections = nullptr) {
   require(std::isfinite(importedRangeScale) && importedRangeScale > 0);
   if (model.scenes.empty() || model.defaultScene < 0 || size_t(model.defaultScene)>=model.scenes.size())
     throw std::runtime_error("Scene light export needs an active glTF scene");
@@ -707,6 +781,21 @@ static void exportEditableSceneLightsForScene(tinygltf::Model& model,
       light.spot.innerConeAngle=glm::radians(double(entity.innerConeDegrees));
       light.spot.outerConeAngle=glm::radians(double(entity.outerConeDegrees));
     }
+    if (original && entity.source == EditableLightSource::Imported && colorScale == 1) {
+      const auto& authored = original->definition;
+      bool sameColor = authored.color.empty() || authored.color.size() == light.color.size();
+      for (size_t channel = 0; channel < light.color.size() && sameColor; ++channel)
+        sameColor = float(authored.color.empty() ? 1 : authored.color[channel]) == float(light.color[channel]);
+      if (sameColor) light.color = authored.color;
+      if (float(authored.intensity) == float(light.intensity)) light.intensity = authored.intensity;
+      if (importedRangeScale == 1 && float(authored.range) == float(light.range)) light.range = authored.range;
+      if (entity.type == EditableLightType::Spot) {
+        if (glm::degrees(float(authored.spot.innerConeAngle)) == entity.innerConeDegrees)
+          light.spot.innerConeAngle = authored.spot.innerConeAngle;
+        if (glm::degrees(float(authored.spot.outerConeAngle)) == entity.outerConeDegrees)
+          light.spot.outerConeAngle = authored.spot.outerConeAngle;
+      }
+    }
     tinygltf::Node node;
     node.name=entity.label.empty()?"Authored light":entity.label;
     const bool activeDirectional=isActiveDirectional(sceneBindings,visibleBindings,entity);
@@ -754,6 +843,8 @@ static void exportEditableSceneLightsForScene(tinygltf::Model& model,
     } else if(!plan.original)
       model.scenes[model.defaultScene].nodes.push_back(static_cast<int>(model.nodes.size()));
     plan.node.light=static_cast<int>(model.lights.size());
+    if (projections && plan.animatedSourceLight >= 0)
+      projections->push_back({plan.animatedSourceLight,plan.node.light,importedRangeScale,plan.colorScale});
     model.lights.push_back(std::move(plan.light));
     model.nodes.push_back(std::move(plan.node));
     if(plan.activeDirectional && !plan.rootDirectional)
@@ -769,8 +860,12 @@ void exportEditableSceneLights(tinygltf::Model& model,
                                const tinygltf::Model* originalSource,
                                std::span<const int32_t> sourceNodeIndices,
                                double importedRangeScale) {
-  exportEditableSceneLightsForScene(model, lights, originalSource,
-                                   sourceNodeIndices, importedRangeScale);
+  auto output = model;
+  std::vector<LightProjection> projections;
+  exportEditableSceneLightsForScene(output, lights, originalSource,
+                                   sourceNodeIndices, importedRangeScale, {}, nullptr, nullptr, &projections);
+  projectBehaviorLights(model,output,projections);
+  model = std::move(output);
 }
 
 void exportEditableSceneLightsForScenes(
@@ -831,6 +926,7 @@ void exportEditableSceneLightsForScenes(
   // The full batch is transactional, including later conflicts and failures
   // while adding animation data or preserving a directional ancestor.
   auto output = model;
+  std::vector<LightProjection> projections;
   const int selectedScene = output.defaultScene;
   for (size_t scene = 0; scene < sceneLights.size(); ++scene) {
     output.defaultScene = static_cast<int>(scene);
@@ -902,7 +998,7 @@ void exportEditableSceneLightsForScenes(
     if (!filtered.empty()) {
       sourceNodes.resize(output.nodes.size(), -1);
       exportEditableSceneLightsForScene(output, filtered, &source, sourceNodes,
-                                       importedRangeScale, scene, bindings, visible);
+                                       importedRangeScale, scene, bindings, visible, &projections);
       for (const auto& [binding, ordinal] : addedBindings) {
         const auto light = firstLight + ordinal;
         const auto found = std::find_if(output.nodes.begin() + firstNode, output.nodes.end(),
@@ -914,6 +1010,7 @@ void exportEditableSceneLightsForScenes(
     for (const auto sun : sharedSuns) prioritizeNode(output, sun);
   }
   output.defaultScene = selectedScene;
+  projectBehaviorLights(model,output,projections);
   model = std::move(output);
 }
 } // namespace container::renderer
