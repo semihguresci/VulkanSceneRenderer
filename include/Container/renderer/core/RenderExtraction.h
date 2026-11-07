@@ -107,10 +107,11 @@ class ProviderBackedMeshRasterExtractor final : public MeshRasterExtractor {
     const std::size_t primitiveCount =
         provider.primitiveCount > 0 ? provider.primitiveCount
                                     : provider.elementCount;
+    const bool complete = provider.triangleBatchesAuthoritative || !provider.triangleBatches.empty();
     return {.providerId = provider.id,
             .providerKind = provider.kind,
-            .opaqueBatchCount = primitiveCount,
-            .transparentBatchCount = 0,
+            .opaqueBatchCount = complete ? provider.opaqueBatchCount : primitiveCount,
+            .transparentBatchCount = complete ? provider.transparentBatchCount : 0,
             .usesGpuVisibility = false};
   }
 };
@@ -149,11 +150,17 @@ class ProviderBackedRayTracingSceneExtractor final
           provider.primitiveCount > 0 ? provider.primitiveCount
                                       : provider.elementCount;
       const std::size_t instanceCount =
+          provider.triangleBatchesAuthoritative ? provider.instanceCount :
           provider.instanceCount > 0 ? provider.instanceCount
                                      : (provider.elementCount > 0 ? 1u : 0u);
       const std::size_t triangleGeometryCount =
-          !provider.triangleBatches.empty() ? provider.triangleBatches.size()
-                                            : primitiveCount;
+          provider.triangleBatchesAuthoritative || !provider.triangleBatches.empty()
+              ? provider.triangleBatches.size() : primitiveCount;
+      bool hasOpaque = triangleGeometryCount > 0;
+      if(provider.triangleBatchesAuthoritative || !provider.triangleBatches.empty()) {
+        hasOpaque = false;
+        for(const auto& batch : provider.triangleBatches) hasOpaque |= !batch.transparent;
+      }
       inputs.push_back({
           .providerId = provider.id,
           .triangleGeometryCount = triangleGeometryCount,
@@ -162,7 +169,7 @@ class ProviderBackedRayTracingSceneExtractor final
           .materialRevision = provider.revision.materials,
           .instanceRevision = provider.revision.instances,
           .bounds = provider.bounds,
-          .hasOpaqueGeometry = triangleGeometryCount > 0,
+          .hasOpaqueGeometry = hasOpaque,
           .triangleBatches = provider.triangleBatches,
       });
     }

@@ -15,8 +15,7 @@ float4 SamplePbrTexture(uint textureIndex, float2 texCoord, float4 fallback)
 
     uint texIndex = NonUniformResourceIndex(textureIndex);
     uint samplerIndex = NonUniformResourceIndex(
-        min(uTextureMetadata[texIndex].samplerIndex,
-            MATERIAL_SAMPLER_DESCRIPTOR_COUNT - 1u));
+        ResolveMaterialSamplerIndex(uTextureMetadata[texIndex]));
     return materialTextures[texIndex].Sample(
         materialSamplers[samplerIndex], texCoord);
 }
@@ -31,8 +30,7 @@ float4 SamplePbrTextureLevel(uint textureIndex, float2 texCoord, float lod,
 
     uint texIndex = NonUniformResourceIndex(textureIndex);
     uint samplerIndex = NonUniformResourceIndex(
-        min(uTextureMetadata[texIndex].samplerIndex,
-            MATERIAL_SAMPLER_DESCRIPTOR_COUNT - 1u));
+        ResolveMaterialSamplerIndex(uTextureMetadata[texIndex]));
     return materialTextures[texIndex].SampleLevel(
         materialSamplers[samplerIndex], texCoord, lod);
 }
@@ -49,22 +47,12 @@ float MaxComponent(float3 value)
 
 float TextureBackedScalarFactor(float factor, uint textureIndex)
 {
-    float value = factor;
-    if (textureIndex != kInvalidMaterialTexture && value <= 0.0)
-    {
-        value = 1.0;
-    }
-    return value;
+    return ResolveMaterialScalarFactor(factor);
 }
 
 float3 TextureBackedColorFactor(float3 factor, uint textureIndex)
 {
-    float3 value = max(factor, 0.0.xxx);
-    if (textureIndex != kInvalidMaterialTexture && MaxComponent(value) <= 0.0)
-    {
-        value = 1.0.xxx;
-    }
-    return value;
+    return ResolveMaterialColorFactor(factor);
 }
 
 float EvaluateOpacity(float baseAlpha, uint opacityTextureIndex,

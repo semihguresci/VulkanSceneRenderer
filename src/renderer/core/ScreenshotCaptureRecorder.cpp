@@ -4,7 +4,7 @@ namespace container::renderer {
 
 bool hasScreenshotCopyWork(const ScreenshotCopyInputs& inputs) {
   return inputs.commandBuffer != VK_NULL_HANDLE &&
-         inputs.swapChainImage != VK_NULL_HANDLE &&
+         inputs.sourceImage != VK_NULL_HANDLE &&
          inputs.readbackBuffer != VK_NULL_HANDLE &&
          inputs.extent.width > 0 && inputs.extent.height > 0;
 }
@@ -21,7 +21,7 @@ void recordScreenshotCaptureCopy(const ScreenshotCopyInputs& inputs) {
   toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
   toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  toTransfer.image = inputs.swapChainImage;
+  toTransfer.image = inputs.sourceImage;
   toTransfer.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
   vkCmdPipelineBarrier(inputs.commandBuffer,
                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -32,7 +32,7 @@ void recordScreenshotCaptureCopy(const ScreenshotCopyInputs& inputs) {
   copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   copyRegion.imageSubresource.layerCount = 1;
   copyRegion.imageExtent = {inputs.extent.width, inputs.extent.height, 1};
-  vkCmdCopyImageToBuffer(inputs.commandBuffer, inputs.swapChainImage,
+  vkCmdCopyImageToBuffer(inputs.commandBuffer, inputs.sourceImage,
                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                          inputs.readbackBuffer, 1, &copyRegion);
 
@@ -56,6 +56,18 @@ void recordScreenshotCaptureCopy(const ScreenshotCopyInputs& inputs) {
   vkCmdPipelineBarrier(inputs.commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
                        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0,
                        nullptr, 1, &toPresent);
+}
+
+void recordLinearCaptureHostBarrier(VkCommandBuffer commandBuffer, VkBuffer readbackBuffer) {
+  VkBufferMemoryBarrier hostRead{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+  hostRead.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+  hostRead.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+  hostRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  hostRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  hostRead.buffer = readbackBuffer;
+  hostRead.size = VK_WHOLE_SIZE;
+  vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                       VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &hostRead, 0, nullptr);
 }
 
 }  // namespace container::renderer

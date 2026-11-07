@@ -18,7 +18,7 @@ struct RayShadowTraceData
     column_major float4x4 previousInverseViewProj;
     float4 sectionPlane;
     BoxClipState boxClip;
-    uint4 frame; // history valid, sample frame, section enabled, unused
+    uint4 frame; // history valid, sample frame, section enabled, raster subpixel bits
 };
 
 float3 RayShadowWorld(uint2 pixel, float depth, CameraBuffer camera)

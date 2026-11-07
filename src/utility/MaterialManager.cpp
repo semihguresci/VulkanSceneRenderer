@@ -8,7 +8,7 @@ uint32_t MaterialManager::createMaterial(const Material& material) {
   return static_cast<uint32_t>(materials_.size() - 1);
 }
 
-bool MaterialManager::updateMaterial(uint32_t index, const Material& material) {
+bool MaterialManager::updateMaterial(uint32_t index, const Material& material) noexcept {
   if (index >= materials_.size()) return false;
   materials_[index] = material;
   return true;

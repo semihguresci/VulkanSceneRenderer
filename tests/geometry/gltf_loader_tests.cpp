@@ -1,6 +1,10 @@
 #include "Container/geometry/Model.h"
+#include "Container/geometry/GltfModelLoader.h"
+#include "Container/geometry/GltfIesProfiles.h"
+#include "Container/geometry/GltfNodeFlags.h"
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <glm/geometric.hpp>
 #include <glm/vec4.hpp>
@@ -12,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -327,7 +332,8 @@ std::filesystem::path writeDenseOpenReliefGltf(std::string_view name) {
 
 std::filesystem::path writeTangentTriangleGltf(
     std::string_view name,
-    const std::array<glm::vec4, 3>& tangents) {
+    const std::array<glm::vec4, 3>& tangents,
+    bool includeNormals = true) {
   const std::filesystem::path dir =
       std::filesystem::temp_directory_path() / "container_gltf_loader_tests";
   std::filesystem::create_directories(dir);
@@ -402,7 +408,8 @@ std::filesystem::path writeTangentTriangleGltf(
       << "  ],\n"
       << "  \"materials\": [{}],\n"
       << "  \"meshes\": [{\"primitives\": [{\"attributes\": {\"POSITION\": 0, "
-         "\"NORMAL\": 1, \"TEXCOORD_0\": 2, \"TANGENT\": 3}, "
+      << (includeNormals ? "\"NORMAL\": 1, " : "")
+      << "\"TEXCOORD_0\": 2, \"TANGENT\": 3}, "
          "\"indices\": 4, \"mode\": 4, \"material\": 0}]}],\n"
       << "  \"nodes\": [{\"mesh\": 0}],\n"
       << "  \"scenes\": [{\"nodes\": [0]}],\n"
@@ -410,6 +417,78 @@ std::filesystem::path writeTangentTriangleGltf(
       << "}\n";
 
   return gltfPath;
+}
+
+template <class T>
+int appendUvTriangleAccessor(tinygltf::Model& source, const std::vector<T>& values,
+                              int type, int component) {
+  auto& bytes = source.buffers[0].data;
+  while (bytes.size() % 4) bytes.push_back(0);
+  tinygltf::BufferView view;
+  view.buffer = 0;
+  view.byteOffset = bytes.size();
+  view.byteLength = values.size() * sizeof(T);
+  const auto* begin = reinterpret_cast<const unsigned char*>(values.data());
+  bytes.insert(bytes.end(), begin, begin + view.byteLength);
+  tinygltf::Accessor accessor;
+  accessor.bufferView = static_cast<int>(source.bufferViews.size());
+  accessor.type = type;
+  accessor.componentType = component;
+  accessor.count = values.size() / static_cast<size_t>(tinygltf::GetNumComponentsInType(type));
+  source.bufferViews.push_back(view);
+  source.accessors.push_back(accessor);
+  return static_cast<int>(source.accessors.size() - 1);
+}
+
+std::filesystem::path writeNormalMapUvTriangleGltf(
+    std::string_view name, int texCoord, std::optional<int> transformTexCoord,
+    const std::optional<std::array<glm::vec4,3>>& tangents = {}, bool skinned = false) {
+  const std::array<glm::vec4,3> absent{};
+  const auto path = writeTangentTriangleGltf(name, tangents ? *tangents : absent);
+  auto source = container::geometry::gltf::LoadSourceModel(path.string());
+  auto& primitive = source.meshes[0].primitives[0];
+  if (!tangents) primitive.attributes.erase("TANGENT");
+  // UV0 gives T=+Y, w=-1. UV1 reverses U, giving T=-Y, w=+1.
+  // Position/normal/index order stays identical in both parameterizations.
+  primitive.attributes["TEXCOORD_1"] = appendUvTriangleAccessor(source,
+      std::vector<float>{0,0, 0,1, -1,0}, TINYGLTF_TYPE_VEC2, TINYGLTF_COMPONENT_TYPE_FLOAT);
+  tinygltf::Image image;
+  image.name = "Neutral normal";
+  image.uri = "neutral_normal.png";
+  image.mimeType = "image/png";
+  image.width = image.height = 1;
+  image.component = 4;
+  image.bits = 8;
+  image.pixel_type = TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE;
+  image.image = {128,128,255,255};
+  source.images.push_back(std::move(image));
+  source.textures.emplace_back();
+  source.textures[0].source = 0;
+  auto& normal = source.materials[0].normalTexture;
+  normal.index = 0;
+  normal.texCoord = texCoord;
+  if (transformTexCoord) {
+    normal.extensions["KHR_texture_transform"] = tinygltf::Value(
+        tinygltf::Value::Object{{"texCoord", tinygltf::Value(*transformTexCoord)}});
+    source.extensionsUsed.push_back("KHR_texture_transform");
+  }
+  if (skinned) {
+    primitive.attributes["JOINTS_0"] = appendUvTriangleAccessor(source,
+        std::vector<uint8_t>(12,0), TINYGLTF_TYPE_VEC4, TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE);
+    primitive.attributes["WEIGHTS_0"] = appendUvTriangleAccessor(source,
+        std::vector<float>{1,0,0,0, 1,0,0,0, 1,0,0,0},
+        TINYGLTF_TYPE_VEC4, TINYGLTF_COMPONENT_TYPE_FLOAT);
+    tinygltf::Skin skin;
+    skin.joints = {1};
+    source.skins.push_back(skin);
+    source.nodes[0].skin = 0;
+    source.nodes.emplace_back();
+    source.scenes[0].nodes.push_back(1);
+  }
+  tinygltf::TinyGLTF writer;
+  if (!writer.WriteGltfSceneToFile(&source, path.string(), true, true, true, false))
+    throw std::runtime_error("Could not write normal-map UV triangle fixture");
+  return path;
 }
 
 glm::vec3 firstTriangleFaceNormal(const container::geometry::Model& model) {
@@ -617,6 +696,19 @@ TEST(GltfModelLoader, PreservesValidImportedTangents) {
   }
 }
 
+TEST(GltfModelLoader, IgnoresSuppliedTangentsWhenBaseNormalsAreMissing) {
+  const glm::vec4 wrongTangent(1, 0, 0, 1);
+  const auto path = writeTangentTriangleGltf(
+      "missing_normal_authored_tangent", {wrongTangent, wrongTangent, wrongTangent}, false);
+  const auto model = container::geometry::Model::LoadFromGltf(path.string());
+  ASSERT_EQ(model.vertices().size(), 3u);
+  for (const auto& vertex : model.vertices()) {
+    expectFiniteOrthonormalTangent(vertex);
+    EXPECT_GT(vertex.normal.z, .99f);
+    expectTangentNear(vertex.tangent, glm::vec4(0, 1, 0, -1));
+  }
+}
+
 TEST(GltfModelLoader, RepairsInvalidImportedTangentsFromGeometry) {
   const glm::vec4 expectedTangent(0.0f, 1.0f, 0.0f, -1.0f);
   const float nan = std::numeric_limits<float>::quiet_NaN();
@@ -633,4 +725,484 @@ TEST(GltfModelLoader, RepairsInvalidImportedTangentsFromGeometry) {
     expectFiniteOrthonormalTangent(vertex);
     expectTangentNear(vertex.tangent, expectedTangent);
   }
+}
+
+TEST(GltfModelLoader, GeneratesMissingTangentsFromNormalTextureUvSelection) {
+  for (bool skinned : {false, true}) {
+    for (int selected : {0,1}) {
+      const auto path = writeNormalMapUvTriangleGltf(
+          std::string(skinned ? "skin" : "static") + "_normal_uv" + std::to_string(selected),
+          selected, {}, {}, skinned);
+      const auto loaded = container::geometry::gltf::LoadModelWithSource(path.string());
+      ASSERT_EQ(loaded.model.vertices().size(), 3u);
+      EXPECT_EQ(loaded.deformation.has_value(), skinned);
+      const auto expected = selected == 0 ? glm::vec4(0,1,0,-1) : glm::vec4(0,-1,0,1);
+      for (const auto& vertex : loaded.model.vertices()) {
+        expectFiniteOrthonormalTangent(vertex);
+        expectTangentNear(vertex.tangent, expected);
+      }
+      if (skinned) {
+        ASSERT_EQ(loaded.deformation->primitives.size(), 1u);
+        EXPECT_EQ(loaded.deformation->primitives[0].normalTextureTexCoord, selected);
+        EXPECT_TRUE(loaded.deformation->primitives[0].authoredBaseNormal);
+        EXPECT_FALSE(loaded.deformation->primitives[0].authoredBaseTangent);
+      }
+    }
+  }
+}
+
+TEST(GltfModelLoader, NormalTextureTransformUvOverrideControlsGeneratedTangents) {
+  for (int selected : {0,1}) {
+    const auto path = writeNormalMapUvTriangleGltf(
+        "normal_texture_override_uv" + std::to_string(selected), 1-selected, selected, {}, true);
+    const auto loaded = container::geometry::gltf::LoadModelWithSource(path.string());
+    ASSERT_EQ(loaded.model.vertices().size(), 3u);
+    ASSERT_TRUE(loaded.deformation.has_value());
+    EXPECT_EQ(loaded.deformation->primitives[0].normalTextureTexCoord, selected);
+    const auto expected = selected == 0 ? glm::vec4(0,1,0,-1) : glm::vec4(0,-1,0,1);
+    for (const auto& vertex : loaded.model.vertices()) expectTangentNear(vertex.tangent, expected);
+  }
+}
+
+TEST(GltfModelLoader, UvSelectionPreservesAuthoredTangentsAndRepairsOnlyInvalidVertices) {
+  const glm::vec4 authored(1,0,0,-1);
+  const auto validPath = writeNormalMapUvTriangleGltf("authored_normal_uv1", 1, {},
+      std::array{authored,authored,authored});
+  const auto valid = container::geometry::gltf::LoadModelWithSource(validPath.string());
+  ASSERT_EQ(valid.model.vertices().size(), 3u);
+  for (const auto& vertex : valid.model.vertices()) expectTangentNear(vertex.tangent, authored);
+
+  const auto repairedPath = writeNormalMapUvTriangleGltf("invalid_normal_uv1", 0, 1,
+      std::array{authored,glm::vec4(0),glm::vec4(0)}, true);
+  const auto repaired = container::geometry::gltf::LoadModelWithSource(repairedPath.string());
+  ASSERT_EQ(repaired.model.vertices().size(), 3u);
+  expectTangentNear(repaired.model.vertices()[0].tangent, authored);
+  for (size_t i : {1u,2u}) {
+    expectFiniteOrthonormalTangent(repaired.model.vertices()[i]);
+    expectTangentNear(repaired.model.vertices()[i].tangent, glm::vec4(0,-1,0,1));
+  }
+}
+
+TEST(GltfModelLoader, InstancingUsesSharedGeometryAndRejectsBadMetadataBeforeBufferIo) {
+  namespace gltf=container::geometry::gltf;
+  const auto path=writeTriangleGltf("instanced-shared",{0,1,2});
+  nlohmann::json source; {std::ifstream file(path);file>>source;}
+  source["extensionsUsed"]=source["extensionsRequired"]={"EXT_mesh_gpu_instancing"};
+  source["nodes"][0]["extensions"]["EXT_mesh_gpu_instancing"]["attributes"]={{"TRANSLATION",0}};
+  {std::ofstream file(path);file<<source.dump();}
+  const auto loaded=gltf::LoadModelWithSource(path.string());
+  ASSERT_EQ(loaded.instancing.nodes.size(),1u);
+  EXPECT_EQ(loaded.instancing.summary.instances,3u); EXPECT_EQ(loaded.model.vertices().size(),3u);
+  EXPECT_EQ(loaded.model.primitiveRanges().size(),1u);
+  source["buffers"][0]["uri"]="must-not-be-opened.bin";
+  source["nodes"][0]["extensions"]["EXT_mesh_gpu_instancing"]["attributes"]["TRANSLATION"]=4294967297ull;
+  {std::ofstream file(path);file<<source.dump();}
+  try { (void)gltf::LoadModelWithSource(path.string()); FAIL()<<"Expected checked metadata rejection"; }
+  catch(const std::runtime_error& error) {
+    EXPECT_NE(std::string(error.what()).find("EXT_mesh_gpu_instancing"),std::string::npos);
+    EXPECT_NE(std::string(error.what()).find("TRANSLATION"),std::string::npos);
+  }
+}
+
+namespace {
+
+nlohmann::json readGltfJson(const std::filesystem::path& path) {
+  nlohmann::json source;
+  std::ifstream file(path);
+  file >> source;
+  return source;
+}
+
+void writeGltfJson(const std::filesystem::path& path, const nlohmann::json& source) {
+  std::ofstream file(path);
+  file << source.dump();
+}
+
+void expectSceneRejectionBeforeBufferIo(const std::filesystem::path& path,
+                                      nlohmann::json source,
+                                      std::string_view expected) {
+  source["buffers"][0]["uri"] = "scene-metadata-must-not-be-opened.bin";
+  writeGltfJson(path, source);
+  try {
+    (void)container::geometry::gltf::LoadSourceModel(path.string());
+    FAIL() << "Expected scene metadata rejection";
+  } catch (const std::runtime_error& error) {
+    const std::string message(error.what());
+    EXPECT_NE(message.find("glTF scene hierarchy:"), std::string::npos) << message;
+    EXPECT_NE(message.find(expected), std::string::npos) << message;
+    EXPECT_EQ(message.find("scene-metadata-must-not-be-opened.bin"), std::string::npos)
+        << "Scene metadata must reject before opening an external buffer";
+  }
+}
+
+}  // namespace
+
+TEST(GltfModelLoader, SceneMetadataPreservesSharedRootsDuplicateNamesAndEmptyScenes) {
+  const auto path = writeTriangleGltf("scene-metadata-valid", {0, 1, 2});
+  auto source = readGltfJson(path);
+  source["nodes"][0]["children"] = {1};
+  source["nodes"].push_back({{"name", "Shared child"}});
+  source["scenes"] = {
+      {{"name", "Repeated name"}, {"nodes", {0}}},
+      {{"name", "Repeated name"}, {"nodes", {0}}},
+      {{"name", "Empty"}},
+      {{"nodes", nlohmann::json::array()}}};
+  source["scene"] = 1;
+  writeGltfJson(path, source);
+  const auto loaded = container::geometry::gltf::LoadModelWithSource(path.string());
+  EXPECT_EQ(loaded.model.vertices().size(), 3u);
+  ASSERT_EQ(loaded.gltfModel.scenes.size(), 4u);
+  EXPECT_EQ(loaded.gltfModel.defaultScene, 1);
+  EXPECT_EQ(loaded.gltfModel.scenes[0].nodes, loaded.gltfModel.scenes[1].nodes);
+  EXPECT_EQ(loaded.gltfModel.scenes[0].name, loaded.gltfModel.scenes[1].name);
+  EXPECT_TRUE(loaded.gltfModel.scenes[2].nodes.empty());
+  EXPECT_TRUE(loaded.gltfModel.scenes[3].nodes.empty());
+
+  source["scene"] = 2;
+  writeGltfJson(path, source);
+  EXPECT_EQ(container::geometry::gltf::LoadSourceModel(path.string()).defaultScene, 2);
+  source.erase("scene");
+  writeGltfJson(path, source);
+  EXPECT_EQ(container::geometry::gltf::LoadSourceModel(path.string()).defaultScene, -1);
+  source.erase("scenes");
+  writeGltfJson(path, source);
+  const auto implicit = container::geometry::gltf::LoadSourceModel(path.string());
+  EXPECT_EQ(implicit.defaultScene, -1);
+  EXPECT_TRUE(implicit.scenes.empty());
+  EXPECT_EQ(implicit.nodes[0].children, std::vector<int>{1});
+}
+
+TEST(GltfModelLoader, SceneMetadataRejectsNarrowingAndNonIntegerIndicesBeforeResourceIo) {
+  const auto path = writeTriangleGltf("scene-metadata-indices", {0, 1, 2});
+  const auto valid = readGltfJson(path);
+  const std::vector<nlohmann::json> invalid = {
+      -1, 1, 4294967296ull, 4294967297ull, UINT64_MAX,
+      0.0, 0.5, "0", nullptr, true, nlohmann::json::object(),
+      nlohmann::json::array()};
+  for (const auto& index : invalid) {
+    SCOPED_TRACE(index.dump());
+    auto source = valid;
+    source["scene"] = index;
+    expectSceneRejectionBeforeBufferIo(path, source, "scene");
+    source = valid;
+    source["scenes"][0]["nodes"] = nlohmann::json::array({index});
+    expectSceneRejectionBeforeBufferIo(path, source, "scenes[0].nodes");
+    source = valid;
+    source["nodes"][0]["children"] = nlohmann::json::array({index});
+    expectSceneRejectionBeforeBufferIo(path, source, "nodes[0].children");
+  }
+  auto source = valid;
+  source.erase("scenes");
+  expectSceneRejectionBeforeBufferIo(path, source, "scene");
+}
+
+TEST(GltfModelLoader, SceneMetadataValidatesGlobalForestIncludingUnusedComponents) {
+  const auto path = writeTriangleGltf("scene-metadata-forest", {0, 1, 2});
+  auto valid = readGltfJson(path);
+  valid["nodes"].push_back(nlohmann::json::object());
+  valid["nodes"].push_back(nlohmann::json::object());
+  auto source = valid;
+  source["nodes"][0]["children"] = {1, 1};
+  expectSceneRejectionBeforeBufferIo(path, source, "repeats a node");
+  source = valid;
+  source["nodes"][0]["children"] = {2};
+  source["nodes"][1]["children"] = {2};
+  expectSceneRejectionBeforeBufferIo(path, source, "multiple parents");
+  source = valid;
+  source["nodes"][1]["children"] = {2};
+  source["nodes"][2]["children"] = {1};
+  expectSceneRejectionBeforeBufferIo(path, source, "cycle");
+  source = valid;
+  source["nodes"][1]["children"] = {1};
+  expectSceneRejectionBeforeBufferIo(path, source, "cycle");
+  source = valid;
+  source["nodes"][1]["children"] = {0};
+  expectSceneRejectionBeforeBufferIo(path, source, "root is also a node child");
+  source = valid;
+  source["scenes"][0]["nodes"] = {0, 0};
+  expectSceneRejectionBeforeBufferIo(path, source, "repeats a scene root");
+}
+
+TEST(GltfModelLoader, SceneMetadataRejectsInvalidTableAndReferenceTypesBeforeResourceIo) {
+  const auto path = writeTriangleGltf("scene-metadata-types", {0, 1, 2});
+  const auto valid = readGltfJson(path);
+  for (const auto& value : std::vector<nlohmann::json>{nullptr, 0, "bad", true,
+                                                     nlohmann::json::object()}) {
+    SCOPED_TRACE(value.dump());
+    auto source = valid;
+    source["nodes"] = value;
+    expectSceneRejectionBeforeBufferIo(path, source, "nodes must be an array");
+    source = valid;
+    source["scenes"] = value;
+    expectSceneRejectionBeforeBufferIo(path, source, "scenes must be an array");
+    source = valid;
+    source["nodes"][0]["children"] = value;
+    expectSceneRejectionBeforeBufferIo(path, source, "children must be an array");
+    source = valid;
+    source["scenes"][0]["nodes"] = value;
+    expectSceneRejectionBeforeBufferIo(path, source, ".nodes must be an array");
+  }
+  auto source = valid;
+  source["nodes"][0] = nullptr;
+  expectSceneRejectionBeforeBufferIo(path, source, "nodes[0] must be an object");
+  source = valid;
+  source["scenes"][0] = nullptr;
+  expectSceneRejectionBeforeBufferIo(path, source, "scenes[0] must be an object");
+}
+
+TEST(GltfModelLoader, SceneMetadataBoundsTablesAndRootReferencesBeforeResourceIo) {
+  const auto path = writeTriangleGltf("scene-metadata-limits", {0, 1, 2});
+  const auto valid = readGltfJson(path);
+  auto source = valid;
+  source["scenes"] = std::vector<nlohmann::json>(65537, nlohmann::json::object());
+  expectSceneRejectionBeforeBufferIo(path, std::move(source), "scene table exceeds");
+  source = valid;
+  source["nodes"] = std::vector<nlohmann::json>(1'000'001, nlohmann::json::object());
+  expectSceneRejectionBeforeBufferIo(path, std::move(source), "node table exceeds");
+  source = valid;
+  source["scenes"][0]["nodes"] = std::vector<uint32_t>(1'000'001, 0);
+  expectSceneRejectionBeforeBufferIo(path, std::move(source), "aggregate reference limit");
+}
+
+TEST(GltfModelLoader, SceneMetadataAcceptsDeepImplicitForestWithoutRecursiveTraversal) {
+  const auto path = writeTriangleGltf("scene-metadata-deep", {0, 1, 2});
+  auto source = readGltfJson(path);
+  constexpr size_t depth = 10000;
+  source["nodes"] = std::vector<nlohmann::json>(depth, nlohmann::json::object());
+  for (size_t i = 0; i + 1 < depth; ++i) source["nodes"][i]["children"] = {i + 1};
+  source["nodes"][depth - 1]["mesh"] = 0;
+  source.erase("scenes");
+  source.erase("scene");
+  writeGltfJson(path, source);
+  const auto loaded = container::geometry::gltf::LoadSourceModel(path.string());
+  ASSERT_EQ(loaded.nodes.size(), depth);
+  EXPECT_EQ(loaded.nodes.front().children, std::vector<int>{1});
+  EXPECT_EQ(loaded.nodes.back().mesh, 0);
+}
+
+TEST(GltfModelLoader, AuthoredNodeFlagsSurviveRequiredExtensionLoadingWithoutFlattening) {
+  namespace gltf = container::geometry::gltf;
+  const auto path = writeTriangleGltf("node-flags-valid", {0, 1, 2});
+  auto source = readGltfJson(path);
+  source["extensionsUsed"] = source["extensionsRequired"] = {
+      "KHR_node_visibility", "KHR_node_selectability", "KHR_node_hoverability"};
+  source["nodes"][0]["extensions"] = {
+      {"KHR_node_visibility", {{"visible", false}, {"extras", {{"marker", "retained"}}}}},
+      {"KHR_node_selectability", {{"selectable", true}}},
+      {"KHR_node_hoverability", {{"hoverable", false}}}};
+  source["nodes"][0]["children"] = {1};
+  source["nodes"].push_back({{"extensions", {
+      {"KHR_node_visibility", {{"visible", true}}},
+      {"KHR_node_selectability", nlohmann::json::object()}}}});
+  writeGltfJson(path, source);
+  const auto loaded = gltf::LoadModelWithSource(path.string());
+  EXPECT_EQ(loaded.model.vertices().size(), 3u);
+  const auto flags = gltf::ParseGltfNodeFlags(loaded.gltfModel);
+  ASSERT_EQ(flags.nodes.size(), 2u);
+  EXPECT_FALSE(flags.nodes[0].visible);
+  EXPECT_TRUE(flags.nodes[0].selectable);
+  EXPECT_FALSE(flags.nodes[0].hoverable);
+  EXPECT_TRUE(flags.nodes[1].visible);
+  EXPECT_TRUE(flags.nodes[1].selectable);
+  EXPECT_TRUE(flags.nodes[1].hasExtension(gltf::GltfNodeFlag::Selectability));
+  EXPECT_FALSE(flags.nodes[1].hasProperty(gltf::GltfNodeFlag::Selectability));
+  EXPECT_EQ(loaded.gltfModel.nodes[0].extensions.at("KHR_node_visibility")
+      .Get("extras").Get("marker").Get<std::string>(), "retained");
+  const auto sourceOnly = gltf::LoadSourceModel(path.string(), {false, 65536});
+  EXPECT_EQ(gltf::ParseGltfNodeFlags(sourceOnly).nodes, flags.nodes);
+  EXPECT_EQ(gltf::LoadModelFromFile(path.string()).vertices().size(), 3u);
+  EXPECT_EQ(container::geometry::Model::LoadFromGltf(path.string()).vertices().size(), 3u);
+}
+
+TEST(GltfModelLoader, NodeFlagSchemaRejectsBeforeBufferAndImageIoAtEveryEntryPoint) {
+  namespace gltf = container::geometry::gltf;
+  const auto path = writeTriangleGltf("node-flags-before-io", {0, 1, 2});
+  auto valid = readGltfJson(path);
+  valid["buffers"][0]["uri"] = "node-flags-must-not-be-opened.bin";
+  valid["images"] = {{{"uri", "node-flags-must-not-be-decoded.png"}}};
+  const std::array extensions{
+      "KHR_node_visibility", "KHR_node_selectability", "KHR_node_hoverability"};
+  const std::array properties{"visible", "selectable", "hoverable"};
+  valid["extensionsUsed"] = valid["extensionsRequired"] = extensions;
+  for (size_t i = 0; i < extensions.size(); ++i) {
+    for (const auto& malformed : std::vector<nlohmann::json>{
+             nullptr, 0, 1, 1.0, "true", nlohmann::json::array(), nlohmann::json::object()}) {
+      SCOPED_TRACE(std::string(extensions[i]) + " " + malformed.dump());
+      auto source = valid;
+      source["nodes"][0]["extensions"][extensions[i]][properties[i]] = malformed;
+      writeGltfJson(path, source);
+      const auto check = [&](auto load) {
+        try {
+          load();
+          FAIL() << "Expected node flag metadata rejection";
+        } catch (const std::runtime_error& error) {
+          const std::string message(error.what());
+          EXPECT_NE(message.find("glTF node flags node[0].extensions." +
+              std::string(extensions[i]) + "." + properties[i]), std::string::npos) << message;
+          EXPECT_EQ(message.find("node-flags-must-not-be-opened.bin"), std::string::npos);
+          EXPECT_EQ(message.find("node-flags-must-not-be-decoded.png"), std::string::npos);
+        }
+      };
+      check([&] { (void)gltf::LoadModelWithSource(path.string()); });
+      check([&] { (void)gltf::LoadModelWithSource(path.string(), {false, 65536}); });
+      check([&] { (void)gltf::LoadSourceModel(path.string()); });
+      check([&] { (void)gltf::LoadModelFromFile(path.string()); });
+      check([&] { (void)container::geometry::Model::LoadFromGltf(path.string()); });
+    }
+  }
+}
+
+TEST(GltfModelLoader, NodeFlagStorageCountsInactiveNodesAgainstAggregateInputBudget) {
+  namespace gltf = container::geometry::gltf;
+  const auto path = writeTriangleGltf("node-flags-input-budget", {0, 1, 2});
+  auto source = readGltfJson(path);
+  source["nodes"] = std::vector<nlohmann::json>(1000, nlohmann::json::object());
+  source["nodes"][0]["mesh"] = 0;
+  writeGltfJson(path, source);
+  const auto sourceBytes = std::filesystem::file_size(path);
+  try {
+    // This covers the source, triangle buffers/conversion and a small margin,
+    // but cannot also retain local flags for all 1,000 authored source nodes.
+    (void)gltf::LoadSourceModel(path.string(), {false, sourceBytes + 1024});
+    FAIL() << "Expected aggregate local-flag storage rejection";
+  } catch (const std::runtime_error& error) {
+    EXPECT_NE(std::string(error.what()).find("input-memory budget"), std::string::npos);
+  }
+  EXPECT_EQ(gltf::LoadSourceModel(path.string(), {false, sourceBytes + 10000}).nodes.size(), 1000u);
+}
+
+TEST(GltfModelLoader, ExtendedMaterialSchemaFailsBeforeExternalResourceIo) {
+  namespace gltf = container::geometry::gltf;
+  const auto path = writeTriangleGltf("extended-materials-before-io", {0, 1, 2});
+  auto valid = readGltfJson(path);
+  valid["buffers"][0]["uri"] = "extended-materials-must-not-be-opened.bin";
+  valid["images"] = {{{"uri", "extended-materials-must-not-be-decoded.png"}}};
+  const std::array extensions{"KHR_materials_anisotropy", "KHR_materials_diffuse_transmission"};
+  const std::array properties{"anisotropyStrength", "diffuseTransmissionFactor"};
+  valid["extensionsUsed"] = extensions;
+  for (size_t i = 0; i < extensions.size(); ++i) {
+    for (const auto& malformed : std::vector<nlohmann::json>{nullptr, -1, 1.1, true, "0", nlohmann::json::array()}) {
+      auto source = valid;
+      source["materials"][0]["extensions"][extensions[i]][properties[i]] = malformed;
+      writeGltfJson(path, source);
+      const auto check = [&](auto load) {
+        try { load(); FAIL() << "Expected advanced material validation failure"; }
+        catch (const std::runtime_error& error) {
+          const std::string message(error.what());
+          EXPECT_NE(message.find("glTF extended materials"), std::string::npos) << message;
+          EXPECT_NE(message.find(properties[i]), std::string::npos) << message;
+          EXPECT_EQ(message.find("must-not-be-opened.bin"), std::string::npos);
+          EXPECT_EQ(message.find("must-not-be-decoded.png"), std::string::npos);
+        }
+      };
+      check([&] { (void)gltf::LoadModelWithSource(path.string()); });
+      check([&] { (void)gltf::LoadModelWithSource(path.string(), {false, 65536}); });
+      check([&] { (void)gltf::LoadSourceModel(path.string()); });
+      check([&] { (void)gltf::LoadModelFromFile(path.string()); });
+      check([&] { (void)container::geometry::Model::LoadFromGltf(path.string()); });
+    }
+  }
+}
+
+TEST(GltfModelLoader, ExtendedMaterialStorageIncludesInactiveMaterialsInInputBudget) {
+  namespace gltf = container::geometry::gltf;
+  const auto path = writeTriangleGltf("extended-materials-input-budget", {0, 1, 2});
+  auto source = readGltfJson(path);
+  source["materials"] = std::vector<nlohmann::json>(1000, nlohmann::json::object());
+  writeGltfJson(path, source);
+  const auto bytes = std::filesystem::file_size(path);
+  try {
+    (void)gltf::LoadSourceModel(path.string(), {false, bytes + 1024});
+    FAIL() << "Expected aggregate local-material storage rejection";
+  } catch (const std::runtime_error& error) {
+    EXPECT_NE(std::string(error.what()).find("input-memory budget"), std::string::npos);
+  }
+  EXPECT_EQ(gltf::LoadSourceModel(path.string(), {false, bytes + 1024 * 1024}).materials.size(), 1000u);
+}
+
+namespace {
+constexpr std::string_view kAsymmetricIes =
+    "IESNA:LM-63-2002\r\n[TEST] Fixture\r\nTILT=NONE\r\n"
+    "1 -1 2 3 2 1 2 0 0 0\r\n0.5 1 12\r\n"
+    "0 40 90\r\n0 90\r\n10 30 50\r\n20 50 90\r\n";
+}
+
+TEST(GltfIesProfiles, RetainsCandelaAndAsymmetryAcrossMeasuredAngles) {
+  namespace gltf = container::geometry::gltf;
+  const auto profile = gltf::ParseIesProfile(kAsymmetricIes);
+  EXPECT_EQ(profile.symmetry, gltf::IesHorizontalSymmetry::Quadrant);
+  EXPECT_FLOAT_EQ(profile.sample(20.0f, 45.0f), 27.5f);
+  EXPECT_FLOAT_EQ(profile.sample(40.0f, -90.0f), 50.0f);
+  EXPECT_FLOAT_EQ(profile.sample(90.0f, 180.0f), 50.0f);
+  EXPECT_FLOAT_EQ(profile.sample(90.1f, 0.0f), 0.0f);
+  EXPECT_EQ(profile.packedForGpu(), (std::vector<float>{3, 2, 1, 0, 0, 40, 90, 0, 90, 10, 30, 50, 20, 50, 90}));
+}
+
+TEST(GltfIesProfiles, RejectsUnsupportedTiltTypeAndInvalidTables) {
+  namespace gltf = container::geometry::gltf;
+  const auto edited = [](std::string_view before, std::string_view after) {
+    std::string text(kAsymmetricIes);
+    text.replace(text.find(before), before.size(), after);
+    return text;
+  };
+  EXPECT_THROW(static_cast<void>(gltf::ParseIesProfile(edited("TILT=NONE", "TILT=fixture.ies"))), std::invalid_argument);
+  EXPECT_THROW(static_cast<void>(gltf::ParseIesProfile(edited("3 2 1 2", "3 2 2 2"))), std::invalid_argument);
+  EXPECT_THROW(static_cast<void>(gltf::ParseIesProfile(edited("0 40 90", "0 40 40"))), std::invalid_argument);
+  EXPECT_THROW(static_cast<void>(gltf::ParseIesProfile(edited("10 30 50", "10 30 nan"))), std::invalid_argument);
+  EXPECT_THROW(static_cast<void>(gltf::ParseIesProfile(edited("20 50 90", "20 50"))), std::invalid_argument);
+}
+
+TEST(GltfIesProfiles, EmbedsValidResourcesAndKeepsOptionalPunctualFallback) {
+  namespace gltf = container::geometry::gltf;
+  const auto path = writeTriangleGltf("ies-profile", {0, 1, 2});
+  std::ofstream(path.parent_path() / "luminaire sample.ies", std::ios::binary) << kAsymmetricIes;
+  auto source = readGltfJson(path);
+  source["extensionsUsed"] = {gltf::kGltfIesExtension, "KHR_lights_punctual"};
+  source["extensions"][gltf::kGltfIesExtension]["lights"] = {
+      {{"uri", "missing-profile.ies"}}, {{"uri", "luminaire%20sample.ies"}}};
+  source["extensions"]["KHR_lights_punctual"]["lights"] = {{{"type", "point"}}};
+  source["nodes"][0]["extensions"] = {{gltf::kGltfIesExtension, {{"light", 1}, {"multiplier", 2}}}};
+  source["nodes"].push_back({{"extensions", {{gltf::kGltfIesExtension, {{"light", 0}}},
+      {"KHR_lights_punctual", {{"light", 0}}}}}});
+  source["scenes"][0]["nodes"].push_back(1);
+  writeGltfJson(path, source);
+
+  const auto loaded = gltf::LoadModelWithSource(path.string());
+  const auto& model = loaded.gltfModel;
+  const auto* uri = gltf::GltfIesEmbeddedProfileUri(model, 0);
+  ASSERT_NE(uri, nullptr);
+  EXPECT_EQ(gltf::DecodeGltfIesProfileUri(*uri), kAsymmetricIes);
+  EXPECT_EQ(gltf::ParseGltfIesBinding(model.nodes[0].extensions.at(gltf::kGltfIesExtension), 1).multiplier, 2.0f);
+  EXPECT_FALSE(model.nodes[1].extensions.contains(gltf::kGltfIesExtension));
+  EXPECT_EQ(model.nodes[1].light, 0);
+  EXPECT_TRUE(std::ranges::any_of(loaded.capabilityDiagnostics,
+      [](const auto& diagnostic) { return diagnostic.code == "unsupported_ies_profile"; }));
+
+  source["extensionsRequired"] = {gltf::kGltfIesExtension};
+  writeGltfJson(path, source);
+  EXPECT_THROW(gltf::LoadSourceModel(path.string()), std::runtime_error);
+}
+
+TEST(GltfIesProfiles, ExternalProfileReadConsumesTheLoaderInputBudget) {
+  namespace gltf = container::geometry::gltf;
+  const auto path = writeTriangleGltf("ies-profile-budget", {0, 1, 2});
+  std::string profile(kAsymmetricIes);
+  profile.insert(profile.find("TILT=NONE"), "[MORE] " + std::string(1024 * 1024, 'a') + "\r\n");
+  std::ofstream(path.parent_path() / "ies-profile-budget.ies", std::ios::binary) << profile;
+  auto source = readGltfJson(path);
+  source["extensionsUsed"] = {gltf::kGltfIesExtension};
+  source["extensions"][gltf::kGltfIesExtension]["lights"] = {{{"uri", "ies-profile-budget.ies"}}};
+  source["nodes"][0]["extensions"] = {{gltf::kGltfIesExtension, {{"light", 0}}}};
+  writeGltfJson(path, source);
+
+  gltf::LoadOptions options;
+  options.maxInputBytes = 512 * 1024;
+  const auto loaded = gltf::LoadModelWithSource(path.string(), options);
+  EXPECT_FALSE(loaded.gltfModel.nodes[0].extensions.contains(gltf::kGltfIesExtension));
+  EXPECT_TRUE(std::ranges::any_of(loaded.capabilityDiagnostics, [](const auto& diagnostic) {
+    return diagnostic.code == "unsupported_ies_profile" && diagnostic.message.contains("remaining glTF input byte budget");
+  }));
+  options.maxInputBytes = 2 * 1024 * 1024;
+  const auto permitted = gltf::LoadModelWithSource(path.string(), options);
+  EXPECT_TRUE(permitted.gltfModel.nodes[0].extensions.contains(gltf::kGltfIesExtension));
 }

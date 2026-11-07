@@ -14,32 +14,28 @@ uint32_t semanticIdFromZeroBased(uint32_t id) {
   return id == std::numeric_limits<uint32_t>::max() ? 0u : id + 1u;
 }
 
-uint32_t semanticIdFromLabel(std::string_view label,
-                             const std::vector<std::string> &values) {
+template <class LabelMap>
+uint32_t semanticIdFromLabel(std::string_view label, const LabelMap &ids) {
   if (label.empty()) {
     return 0u;
   }
-  const auto it = std::ranges::find(values, label);
-  if (it == values.end()) {
+  const auto it = ids.find(label);
+  if (it == ids.end()) {
     return 0u;
   }
-  const size_t offset = static_cast<size_t>(std::distance(values.begin(), it));
-  if (offset >= std::numeric_limits<uint32_t>::max()) {
-    return 0u;
-  }
-  return static_cast<uint32_t>(offset + 1u);
+  return semanticIdFromZeroBased(it->second);
 }
 
 } // namespace
 
-std::string bimMetadataStoreyLabel(const BimElementMetadata &metadata) {
+std::string_view bimMetadataStoreyLabel(const BimElementMetadataView &metadata) {
   if (!metadata.storeyName.empty()) {
     return metadata.storeyName;
   }
   return metadata.storeyId;
 }
 
-std::string bimMetadataMaterialLabel(const BimElementMetadata &metadata) {
+std::string_view bimMetadataMaterialLabel(const BimElementMetadataView &metadata) {
   if (!metadata.materialName.empty()) {
     return metadata.materialName;
   }
@@ -75,15 +71,17 @@ void BimMetadataCatalog::clearLabels() {
 }
 
 void BimMetadataCatalog::reserve(size_t objectCount) {
-  typeIds_.reserve(objectCount);
-  storeyIds_.reserve(objectCount);
-  materialIds_.reserve(objectCount);
-  disciplineIds_.reserve(objectCount);
-  phaseIds_.reserve(objectCount);
-  fireRatingIds_.reserve(objectCount);
-  loadBearingIds_.reserve(objectCount);
-  statusIds_.reserve(objectCount);
-  storeyRangeIndices_.reserve(objectCount);
+  constexpr size_t maxInitialUniqueLabels = 128u;
+  const size_t uniqueLabelHint = std::min(objectCount, maxInitialUniqueLabels);
+  typeIds_.reserve(uniqueLabelHint);
+  storeyIds_.reserve(uniqueLabelHint);
+  materialIds_.reserve(uniqueLabelHint);
+  disciplineIds_.reserve(uniqueLabelHint);
+  phaseIds_.reserve(uniqueLabelHint);
+  fireRatingIds_.reserve(uniqueLabelHint);
+  loadBearingIds_.reserve(uniqueLabelHint);
+  statusIds_.reserve(uniqueLabelHint);
+  storeyRangeIndices_.reserve(uniqueLabelHint);
 }
 
 void BimMetadataCatalog::setModelUnitMetadata(BimModelUnitMetadata metadata) {
@@ -141,26 +139,34 @@ const std::vector<BimStoreyRange> &BimMetadataCatalog::storeyRanges() const {
 }
 
 uint32_t BimMetadataCatalog::registerUniqueLabel(
-    std::unordered_map<std::string, uint32_t> &ids,
-    std::vector<std::string> &values, std::string label) {
+    LabelIds &ids, std::vector<std::string> &values, std::string_view label) {
   if (label.empty()) {
     return std::numeric_limits<uint32_t>::max();
   }
-  auto [it, inserted] =
-      ids.try_emplace(label, static_cast<uint32_t>(ids.size()));
-  if (inserted) {
-    values.push_back(std::move(label));
+  if (const auto existing = ids.find(label); existing != ids.end()) {
+    return existing->second;
   }
-  return it->second;
+  if (ids.size() >= std::numeric_limits<uint32_t>::max()) {
+    return std::numeric_limits<uint32_t>::max();
+  }
+  const uint32_t id = static_cast<uint32_t>(ids.size());
+  values.emplace_back(label);
+  try {
+    ids.try_emplace(values.back(), id);
+  } catch (...) {
+    values.pop_back();
+    throw;
+  }
+  return id;
 }
 
-uint32_t BimMetadataCatalog::registerType(std::string label) {
-  return registerUniqueLabel(typeIds_, types_, std::move(label));
+uint32_t BimMetadataCatalog::registerType(std::string_view label) {
+  return registerUniqueLabel(typeIds_, types_, label);
 }
 
-void BimMetadataCatalog::registerStorey(const BimElementMetadata &metadata,
+void BimMetadataCatalog::registerStorey(const BimElementMetadataView &metadata,
                                         const BimElementBounds &bounds) {
-  const std::string label = bimMetadataStoreyLabel(metadata);
+  const std::string_view label = bimMetadataStoreyLabel(metadata);
   if (label.empty()) {
     return;
   }
@@ -169,11 +175,11 @@ void BimMetadataCatalog::registerStorey(const BimElementMetadata &metadata,
     return;
   }
 
-  const auto [rangeIt, insertedRange] =
-      storeyRangeIndices_.try_emplace(label, storeyRanges_.size());
-  if (insertedRange) {
+  const auto existingRange = storeyRangeIndices_.find(label);
+  if (existingRange == storeyRangeIndices_.end()) {
+    storeyRangeIndices_.try_emplace(std::string(label), storeyRanges_.size());
     storeyRanges_.push_back(BimStoreyRange{
-        .label = label,
+        .label = std::string(label),
         .minElevation = bounds.min.y,
         .maxElevation = bounds.max.y,
         .objectCount = 1u,
@@ -181,35 +187,35 @@ void BimMetadataCatalog::registerStorey(const BimElementMetadata &metadata,
     return;
   }
 
-  BimStoreyRange &range = storeyRanges_[rangeIt->second];
+  BimStoreyRange &range = storeyRanges_[existingRange->second];
   range.minElevation = std::min(range.minElevation, bounds.min.y);
   range.maxElevation = std::max(range.maxElevation, bounds.max.y);
   ++range.objectCount;
 }
 
-void BimMetadataCatalog::registerMaterial(const BimElementMetadata &metadata) {
+void BimMetadataCatalog::registerMaterial(const BimElementMetadataView &metadata) {
   registerUniqueLabel(materialIds_, materials_,
                       bimMetadataMaterialLabel(metadata));
 }
 
-void BimMetadataCatalog::registerDiscipline(std::string label) {
-  registerUniqueLabel(disciplineIds_, disciplines_, std::move(label));
+void BimMetadataCatalog::registerDiscipline(std::string_view label) {
+  registerUniqueLabel(disciplineIds_, disciplines_, label);
 }
 
-void BimMetadataCatalog::registerPhase(std::string label) {
-  registerUniqueLabel(phaseIds_, phases_, std::move(label));
+void BimMetadataCatalog::registerPhase(std::string_view label) {
+  registerUniqueLabel(phaseIds_, phases_, label);
 }
 
-void BimMetadataCatalog::registerFireRating(std::string label) {
-  registerUniqueLabel(fireRatingIds_, fireRatings_, std::move(label));
+void BimMetadataCatalog::registerFireRating(std::string_view label) {
+  registerUniqueLabel(fireRatingIds_, fireRatings_, label);
 }
 
-void BimMetadataCatalog::registerLoadBearing(std::string label) {
-  registerUniqueLabel(loadBearingIds_, loadBearingValues_, std::move(label));
+void BimMetadataCatalog::registerLoadBearing(std::string_view label) {
+  registerUniqueLabel(loadBearingIds_, loadBearingValues_, label);
 }
 
-void BimMetadataCatalog::registerStatus(std::string label) {
-  registerUniqueLabel(statusIds_, statuses_, std::move(label));
+void BimMetadataCatalog::registerStatus(std::string_view label) {
+  registerUniqueLabel(statusIds_, statuses_, label);
 }
 
 void BimMetadataCatalog::sortStoreyRanges() {
@@ -227,27 +233,27 @@ BimMetadataCatalog::semanticIdForCategory(BimMetadataSemanticCategory category,
                                           std::string_view label) const {
   switch (category) {
   case BimMetadataSemanticCategory::Type:
-    return semanticIdFromLabel(label, types_);
+    return semanticIdFromLabel(label, typeIds_);
   case BimMetadataSemanticCategory::Storey:
-    return semanticIdFromLabel(label, storeys_);
+    return semanticIdFromLabel(label, storeyIds_);
   case BimMetadataSemanticCategory::Material:
-    return semanticIdFromLabel(label, materials_);
+    return semanticIdFromLabel(label, materialIds_);
   case BimMetadataSemanticCategory::Discipline:
-    return semanticIdFromLabel(label, disciplines_);
+    return semanticIdFromLabel(label, disciplineIds_);
   case BimMetadataSemanticCategory::Phase:
-    return semanticIdFromLabel(label, phases_);
+    return semanticIdFromLabel(label, phaseIds_);
   case BimMetadataSemanticCategory::FireRating:
-    return semanticIdFromLabel(label, fireRatings_);
+    return semanticIdFromLabel(label, fireRatingIds_);
   case BimMetadataSemanticCategory::LoadBearing:
-    return semanticIdFromLabel(label, loadBearingValues_);
+    return semanticIdFromLabel(label, loadBearingIds_);
   case BimMetadataSemanticCategory::Status:
-    return semanticIdFromLabel(label, statuses_);
+    return semanticIdFromLabel(label, statusIds_);
   }
   return 0u;
 }
 
 uint32_t
-BimMetadataCatalog::semanticIdForMetadata(const BimElementMetadata &metadata,
+BimMetadataCatalog::semanticIdForMetadata(const BimElementMetadataView &metadata,
                                           BimSemanticColorMode mode) const {
   switch (mode) {
   case BimSemanticColorMode::Type:
@@ -273,7 +279,7 @@ BimMetadataCatalog::semanticIdForMetadata(const BimElementMetadata &metadata,
 }
 
 BimVisibilityGpuObjectMetadata BimMetadataCatalog::visibilityGpuMetadata(
-    const BimElementMetadata &metadata) const {
+    const BimElementMetadataView &metadata) const {
   BimVisibilityGpuObjectMetadata gpuMetadata{};
   gpuMetadata.semanticIds = {
       semanticIdFromZeroBased(metadata.semanticTypeId),

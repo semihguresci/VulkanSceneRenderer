@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -103,6 +104,9 @@ struct MeshSceneAsset {
   std::size_t instanceCount{0};
   ImmutableSceneTriangleBatches triangleBatches{};
   SceneProviderBounds bounds{};
+  // An empty complete binding view means no mesh draw, even when retained
+  // imported geometry still exists. Legacy count-only providers may omit it.
+  bool triangleBatchesAuthoritative{false};
 };
 
 struct BimSceneAsset {
@@ -155,13 +159,42 @@ struct SceneProviderSnapshot {
   uint32_t sphericalHarmonicCoefficientCount{0};
   uint32_t fieldCount{0};
   bool hasOccupancyData{false};
+  bool triangleBatchesAuthoritative{false};
 };
+
+// Borrowed for a synchronous final publication guard. Strings and immutable
+// batch storage stay owned by the provider; retaining a view is not ownership.
+struct SceneProviderMaterialReferenceView {
+  SceneProviderKind kind{};
+  std::string_view id,displayName;
+  SceneProviderRevision revision{};
+  std::span<const SceneProviderTriangleBatch> triangleBatches;
+  std::size_t elementCount{},primitiveCount{},materialCount{},instanceCount{};
+  std::size_t nativePointRangeCount{},nativeCurveRangeCount{};
+  bool triangleBatchesAuthoritative{},complete{};
+};
+
+[[nodiscard]] inline bool SceneProviderMaterialReferenceViewMatches(
+    const SceneProviderMaterialReferenceView& current,const SceneProviderSnapshot& before) noexcept {
+  return current.complete && current.kind==before.kind && current.id==before.id.value && current.displayName==before.displayName &&
+      current.revision.geometry==before.revision.geometry && current.revision.materials==before.revision.materials &&
+      current.revision.instances==before.revision.instances && current.elementCount==before.elementCount &&
+      current.primitiveCount==before.primitiveCount && current.materialCount==before.materialCount &&
+      current.instanceCount==before.instanceCount && current.nativePointRangeCount==before.nativePointRangeCount &&
+      current.nativeCurveRangeCount==before.nativeCurveRangeCount &&
+      current.triangleBatchesAuthoritative==before.triangleBatchesAuthoritative &&
+      current.triangleBatches.data()==before.triangleBatches.data() && current.triangleBatches.size()==before.triangleBatches.size();
+}
 
 class IRenderSceneProvider {
 public:
   virtual ~IRenderSceneProvider() = default;
 
   [[nodiscard]] virtual SceneProviderSnapshot snapshot() const = 0;
+  // Unknown implementations cannot establish the material-reference domain.
+  [[nodiscard]] virtual std::optional<SceneProviderMaterialReferenceView> materialReferenceView() const noexcept {
+    return std::nullopt;
+  }
 };
 
 class MeshSceneProvider final : public IRenderSceneProvider {
@@ -180,6 +213,11 @@ public:
   }
 
   [[nodiscard]] SceneProviderSnapshot snapshot() const override {
+    const bool complete = asset_.triangleBatchesAuthoritative || !asset_.triangleBatches.empty();
+    std::size_t opaque{}, transparent{};
+    for(const auto& batch : asset_.triangleBatches) {
+      if(batch.transparent) ++transparent; else ++opaque;
+    }
     return {
         .kind = SceneProviderKind::Mesh,
         .id = id_,
@@ -190,13 +228,22 @@ public:
         .primitiveCount = asset_.primitiveCount,
         .materialCount = asset_.materialCount,
         .instanceCount = asset_.instanceCount,
-        .opaqueBatchCount = asset_.primitiveCount,
-        .transparentBatchCount = 0,
+        .opaqueBatchCount = complete ? opaque : asset_.primitiveCount,
+        .transparentBatchCount = transparent,
         .triangleBatches = asset_.triangleBatches,
+        .triangleBatchesAuthoritative = complete,
     };
   }
 
   [[nodiscard]] const MeshSceneAsset &asset() const { return asset_; }
+
+  [[nodiscard]] std::optional<SceneProviderMaterialReferenceView> materialReferenceView() const noexcept override {
+    const bool authoritative=asset_.triangleBatchesAuthoritative || !asset_.triangleBatches.empty();
+    return SceneProviderMaterialReferenceView{.kind=SceneProviderKind::Mesh,.id=id_.value,.displayName=displayName_,
+        .revision=revision_,.triangleBatches=asset_.triangleBatches.view(),.elementCount=asset_.primitiveCount,
+        .primitiveCount=asset_.primitiveCount,.materialCount=asset_.materialCount,.instanceCount=asset_.instanceCount,
+        .triangleBatchesAuthoritative=authoritative,.complete=authoritative || asset_.primitiveCount==0};
+  }
 
 private:
   SceneProviderId id_{};
@@ -246,6 +293,13 @@ public:
 
   [[nodiscard]] const BimSceneAsset &asset() const { return asset_; }
 
+  [[nodiscard]] std::optional<SceneProviderMaterialReferenceView> materialReferenceView() const noexcept override {
+    return SceneProviderMaterialReferenceView{.kind=SceneProviderKind::Bim,.id=id_.value,.displayName=displayName_,
+        .revision=revision_,.triangleBatches=asset_.triangleBatches.view(),.elementCount=asset_.elementCount,
+        .primitiveCount=asset_.meshPrimitiveCount,.instanceCount=asset_.elementCount,
+        .nativePointRangeCount=asset_.nativePointRangeCount,.nativeCurveRangeCount=asset_.nativeCurveRangeCount,.complete=true};
+  }
+
 private:
   SceneProviderId id_{};
   std::string displayName_{};
@@ -284,6 +338,11 @@ public:
 
   [[nodiscard]] const GaussianSplatSceneAsset &asset() const { return asset_; }
 
+  [[nodiscard]] std::optional<SceneProviderMaterialReferenceView> materialReferenceView() const noexcept override {
+    return SceneProviderMaterialReferenceView{.kind=SceneProviderKind::GaussianSplatting,.id=id_.value,.displayName=displayName_,
+        .revision=revision_,.elementCount=asset_.splatCount,.complete=true};
+  }
+
 private:
   SceneProviderId id_{};
   std::string displayName_{};
@@ -320,6 +379,11 @@ public:
   }
 
   [[nodiscard]] const RadianceFieldSceneAsset &asset() const { return asset_; }
+
+  [[nodiscard]] std::optional<SceneProviderMaterialReferenceView> materialReferenceView() const noexcept override {
+    return SceneProviderMaterialReferenceView{.kind=SceneProviderKind::RadianceField,.id=id_.value,.displayName=displayName_,
+        .revision=revision_,.elementCount=asset_.fieldCount,.complete=true};
+  }
 
 private:
   SceneProviderId id_{};
@@ -378,6 +442,11 @@ public:
   }
 
   void clear() { providers_.clear(); }
+
+  // Exchange with the matching provider owners after their detached preparation.
+  void swapState(SceneProviderRegistry &other) noexcept {
+    providers_.swap(other.providers_);
+  }
 
 private:
   std::vector<const IRenderSceneProvider *> providers_{};

@@ -133,6 +133,7 @@ void RenderPassGpuProfiler::beginFrame(VkCommandBuffer cmd,
   activeFrameSlot_ = frameSlot % frameSlots_;
   activeWrittenPasses_.fill(0u);
   activeFrameRecording_ = true;
+  ++recordingSerial_;
   const uint32_t queryCount =
       backend_ == Backend::PerformanceQuery ? kPerformanceQueriesPerFrame
                                             : kQueriesPerFrame;
@@ -173,6 +174,7 @@ void RenderPassGpuProfiler::endPass(VkCommandBuffer cmd, RenderPassId id) {
     latestWrittenPasses_ = activeWrittenPasses_;
     latestFrameSlot_ = activeFrameSlot_;
     latestFrameHasQueries_ = true;
+    latestRecordingSerial_ = recordingSerial_;
   }
 }
 

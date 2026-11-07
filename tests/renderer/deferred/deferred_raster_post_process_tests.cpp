@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+
 namespace {
 
 using container::renderer::buildDeferredPostProcessFrameState;
@@ -56,6 +58,8 @@ TEST(DeferredRasterPostProcessTests, MapsExposureCameraBloomAndOitState) {
                                              .bloomEnabled = true,
                                              .bloomIntensity = 0.75f,
                                              .exposureSettings = exposure,
+                                             .displayGrade = {container::renderer::ToneMapper::Reinhard,
+                                                              0.75f, 1.25f},
                                              .resolvedExposure = 1.4f,
                                              .cameraNear = 0.25f,
                                              .cameraFar = 500.0f,
@@ -73,6 +77,27 @@ TEST(DeferredRasterPostProcessTests, MapsExposureCameraBloomAndOitState) {
   EXPECT_FLOAT_EQ(pc.minExposure, 0.05f);
   EXPECT_FLOAT_EQ(pc.maxExposure, 6.0f);
   EXPECT_FLOAT_EQ(pc.adaptationRate, 2.5f);
+  EXPECT_EQ(pc.toneMapper, static_cast<uint32_t>(container::renderer::ToneMapper::Reinhard));
+  EXPECT_FLOAT_EQ(pc.saturation, 0.75f);
+  EXPECT_FLOAT_EQ(pc.contrast, 1.25f);
+}
+
+TEST(DeferredRasterPostProcessTests, WhiteBalanceUsesNeutralAndFiniteConeGains) {
+  const auto neutral = buildDeferredPostProcessPushConstants({});
+  for (const float gain : neutral.whiteBalanceGain)
+    EXPECT_FLOAT_EQ(gain, 1.0f);
+
+  for (const float temperature : {2000.0f, 15000.0f}) {
+    for (const float tint : {-0.025f, 0.025f}) {
+      const auto pc = buildDeferredPostProcessPushConstants(
+          {.displayGrade = {.temperatureKelvin = temperature, .tintDuv = tint}});
+      for (const float gain : pc.whiteBalanceGain) {
+        EXPECT_TRUE(std::isfinite(gain));
+        EXPECT_GT(gain, 0.0f);
+      }
+      EXPECT_NE(pc.whiteBalanceGain[0], pc.whiteBalanceGain[2]);
+    }
+  }
 }
 
 TEST(DeferredRasterPostProcessTests, KeepsInactiveTileCullFallbackCompact) {

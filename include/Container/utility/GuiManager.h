@@ -1,11 +1,20 @@
 #pragma once
+#include "Container/renderer/lighting/SkySettings.h"
+#include "Container/renderer/effects/DisplayGrade.h"
+#include "Container/renderer/effects/OpenVdbVolumeSettings.h"
 #include "Container/renderer/lighting/DdgiSettings.h"
 #include "Container/renderer/raytracing/RayShadowSettings.h"
+#include "Container/renderer/pathtracing/ReferencePathLensSettings.h"
+#include "Container/renderer/pathtracing/ReferencePathDisplayMode.h"
+#include "Container/renderer/pathtracing/ReferenceGroundSettings.h"
+#include "Container/renderer/pathtracing/ReferenceOidnSettings.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -19,13 +28,25 @@
 #include "Container/renderer/bim/BimCoordinationOverlay.h"
 #include "Container/renderer/bim/BimGeoreferenceTransform.h"
 #include "Container/renderer/bim/BimModelCompare.h"
+#include "Container/renderer/bim/BimMetadata.h"
 #include "Container/renderer/bim/BimScheduleExtractor.h"
 #include "Container/renderer/lighting/EditableLight.h"
 #include "Container/renderer/temporal/TemporalState.h"
+#include "Container/renderer/temporal/UpscaleMode.h"
+#include "Container/utility/BimElementSearchCache.h"
+#include "Container/utility/BimRelationshipBrowserCache.h"
 #include "Container/utility/GuiDebugState.h"
+#include "Container/utility/PhysicsControls.h"
+#include "Container/utility/GltfAnimationControls.h"
+#include "Container/utility/GltfMaterialEditRequest.h"
 #include "Container/utility/SceneData.h"
+#include "Container/utility/SceneHierarchyCache.h"
+#include "Container/utility/ResourceCatalogControls.h"
+#include "Container/utility/LightEditControls.h"
 
 struct GLFWwindow;
+namespace tinygltf { class Model; }
+namespace container::geometry::vdb { struct ImportOptions; }
 
 namespace container::scene {
 class SceneGraph;
@@ -42,10 +63,13 @@ struct BimElementMetadata;
 class BimRelationshipGraph;
 struct BimStoreyRange;
 struct CullStats;
+class GpuHardwareMonitor;
 struct RendererTelemetryView;
 } // namespace container::renderer
 
 namespace container::ui {
+
+class OpenVdbAuthoringPanel;
 
 enum class GBufferViewMode : uint32_t {
   Lit = 0,
@@ -132,11 +156,169 @@ struct RenderEngineOption {
   std::string unavailableReason{};
 };
 
+struct ModelMergeRequest {
+  std::string parentName{"Imported scene"};
+  std::optional<int> incomingScene{};
+  glm::mat4 placementMatrix{1.0f};
+  // Capture/script placements keep their authored precision for source export;
+  // ordinary GUI transforms omit this and retain their binary32 values.
+  std::optional<std::array<double, 16>> authoredPlacementMatrix{};
+};
+
 struct ModelLoadRequest {
   std::string path{};
   float importScale{1.0f};
   std::string label{};
   bool unload{false};
+  std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions;
+  // Replacement uses importScale; merges inherit the current session scale.
+  std::optional<ModelMergeRequest> merge{};
+};
+
+enum class SceneNodeAuthoringAction { Rename, CreateEmpty, DeleteSubtree, DuplicateSubtree, MakeEditable };
+
+struct SceneNodeAuthoringRequest {
+  SceneNodeAuthoringAction action{SceneNodeAuthoringAction::Rename};
+  uint64_t graphIdentity{};
+  uint32_t node{std::numeric_limits<uint32_t>::max()};
+  std::string name{};
+};
+
+struct SceneNodeAuthoringUiState {
+  SceneNodeAuthoringRequest request{};
+  bool openRequested{false};
+  std::string error{};
+};
+
+// One fixed-height hierarchy text editor. The bounded buffer holds only the
+// actual node name, never the cache's decorated display label.
+struct SceneNodeInlineRenameUiState {
+  uint64_t graphIdentity{}, hierarchyRevision{}, session{};
+  uint32_t node{std::numeric_limits<uint32_t>::max()}, inputId{};
+  std::array<char, 4097> name{};
+  std::string originalName{}, error{};
+  bool active{}, focusRequested{}, revealRequested{}, hadFocus{};
+};
+
+struct MaterialInspectorTarget {
+  uint64_t graphIdentity{}, assetIdentity{}, authoredRevision{};
+  uint32_t selectedGraphNode{UINT32_MAX}, bindingGraphNode{UINT32_MAX}, runtimeMaterial{UINT32_MAX};
+  int32_t sourceMaterial{-1};
+  bool operator==(const MaterialInspectorTarget&) const = default;
+};
+struct MaterialBindingChoice {
+  uint32_t graphNode{UINT32_MAX}, runtimeMaterial{UINT32_MAX};
+  int32_t sourceMaterial{-1};
+  std::string label;
+};
+// Explicit source/runtime identity pairs supplied by the scene owner. A
+// runtime-only entry keeps sourceMaterial == -1; UI never reconstructs source
+// records or texture provenance from a packed material or deduplicated handles.
+struct MaterialAssignmentChoice {
+  int32_t sourceMaterial{-1};
+  uint32_t runtimeMaterial{UINT32_MAX};
+  std::string label;
+};
+// Catalog actions are independent of graph selection. These are weak revision
+// guards and explicit identity pairs, never resource-retaining capabilities.
+struct MaterialCatalogTarget {
+  uint64_t graphIdentity{},assetIdentity{},authoredRevision{},materialRevision{};
+  uint32_t runtimeMaterial{UINT32_MAX};
+  int32_t sourceMaterial{-1};
+  bool operator==(const MaterialCatalogTarget&) const = default;
+};
+struct MaterialCatalogSelectionRequest {
+  MaterialCatalogTarget target;
+  int32_t sourceMaterial{-1};
+  uint32_t runtimeMaterial{UINT32_MAX};
+};
+struct MaterialRetirementRequest { MaterialCatalogTarget target; };
+struct MaterialInspectorNumeric {
+  std::array<double,4> authored{}, evaluated{}, defaults{};
+  uint8_t components{};
+  bool present{}, animated{};
+};
+struct MaterialTextureChoice {
+  uint32_t sourceTexture{UINT32_MAX};
+  int32_t evaluatedTexture{-1};
+  std::string label, file;
+  // The owner can prepare this role, including a retained archive-only image.
+  bool colorAvailable{}, dataAvailable{};
+};
+struct MaterialInspectorTexture {
+  bool available{}, bound{}, srgb{}, mappingEditable{}, samplerEditable{}, channelEditable{};
+  int32_t authoredTexture{-1}, evaluatedTexture{-1};
+  std::string label, file, error, sourceField;
+  uint32_t texCoord{}, channel{4};
+  std::array<double,2> offset{0.,0.}, scale{1.,1.};
+  double rotation{};
+  container::material::MaterialTextureSamplerDescription sampler;
+  std::optional<container::geometry::gltf::GltfMaterialTextureSlot> coupledSlot;
+};
+struct MaterialInspectorSnapshot {
+  MaterialInspectorTarget target;
+  bool available{};
+  uint32_t sharedUsers{};
+  std::string name, error;
+  container::geometry::gltf::GltfMaterialAlphaMode alphaMode{};
+  bool doubleSided{};
+  std::array<MaterialInspectorNumeric,size_t(container::geometry::gltf::GltfMaterialProperty::Count)> numeric{};
+  std::array<bool,size_t(container::geometry::gltf::GltfMaterialExtension::Count)> extensions{}, animatedExtensions{};
+  std::vector<MaterialBindingChoice> choices;
+  // Binding actions are independent of factor editing: an implicit/runtime
+  // material can receive an existing material even when available is false.
+  // The coordinator advertises capabilities only after proving provenance.
+  std::vector<MaterialAssignmentChoice> assignmentChoices;
+  std::vector<MaterialAssignmentChoice> catalogChoices;
+  MaterialCatalogTarget catalogTarget;
+  bool materialRetirementAvailable{};
+  std::string materialRetirementReason,materialCatalogError;
+  bool bindingOperationsAvailable{}, makeUniqueAvailable{};
+  std::string bindingOperationsError;
+  std::array<MaterialInspectorTexture,size_t(container::geometry::gltf::GltfMaterialTextureSlot::Count)> textureSlots{};
+  std::vector<MaterialTextureChoice> textureChoices;
+  uint64_t resourceRevision{};
+  bool textureEditingAvailable{};
+  std::string textureEditingError;
+};
+// Reads only registered numeric leaves, flags and a bounded name/choice list.
+// No raw metadata, resource table or source-record pointers survive this call.
+[[nodiscard]] MaterialInspectorSnapshot BuildMaterialInspectorSnapshot(
+    MaterialInspectorTarget target, const tinygltf::Material& authored,
+    const tinygltf::Material& evaluated, uint32_t sharedUsers,
+    std::span<const MaterialBindingChoice> choices = {},
+    std::span<const bool> animatedProperties = {},
+    std::span<const bool> animatedExtensions = {});
+struct QueuedMaterialEdit {
+  MaterialInspectorTarget target;
+  container::material::GltfMaterialEditRequest request;
+};
+struct QueuedMaterialTextureEdit {
+  MaterialInspectorTarget target;
+  container::material::GltfMaterialTextureEditRequest request;
+};
+struct MaterialBindingSelectionRequest {
+  MaterialInspectorTarget target;
+  uint32_t bindingGraphNode{UINT32_MAX};
+};
+enum class MaterialBindingOperation : uint8_t { Assign, MakeUnique };
+struct MaterialBindingOperationRequest {
+  MaterialInspectorTarget target;
+  MaterialBindingOperation operation{MaterialBindingOperation::Assign};
+  // Assign: explicit destination pair from assignmentChoices. MakeUnique:
+  // exact selected pair to duplicate; the backend allocates the new identity.
+  int32_t sourceMaterial{-1};
+  uint32_t runtimeMaterial{UINT32_MAX};
+  std::optional<std::string> name;
+};
+
+struct OpenVdbSequenceControls {
+  bool available{false}, paused{false}, loop{true};
+  float speed{1.0f};
+  uint32_t frameIndex{0}, frameCount{0};
+  uint64_t cachedBytes{0};
+  bool asynchronous{false}, loading{false}, uploading{false};
+  uint32_t displayedFrameIndex{0};
 };
 
 struct ViewportInteractionState {
@@ -338,8 +520,10 @@ struct BimClipCapHatchingUiState {
 
 struct BimInspectionState {
   bool hasScene{false};
+  const void *metadataSource{nullptr};
+  uint64_t metadataRevision{0};
   std::string modelPath{};
-  std::span<const container::renderer::BimElementMetadata> elements{};
+  container::renderer::BimMetadataTableView elements{};
   std::function<void(uint32_t)> selectObject{};
   std::function<void(uint32_t)> focusObject{};
   const container::geometry::ImportReport *importReport{nullptr};
@@ -483,12 +667,24 @@ struct SceneHierarchyParentCandidateRow {
 };
 
 struct SceneHierarchyParentCandidateCacheState {
+  const container::scene::SceneGraph *source{nullptr};
+  uint64_t identity{0};
   uint64_t revision{std::numeric_limits<uint64_t>::max()};
   size_t nodeCount{0};
   size_t rootCount{0};
   uint32_t nodeIndex{std::numeric_limits<uint32_t>::max()};
   uint32_t currentParent{std::numeric_limits<uint32_t>::max()};
+  bool popupOpen{false};
+  std::optional<size_t> selectedRow{};
   std::vector<SceneHierarchyParentCandidateRow> rows{};
+};
+
+struct SceneHierarchyUiStatistics {
+  size_t visibleRows{0};
+  size_t submittedRows{0};
+  uint64_t cacheRebuilds{0};
+  // Conservative retained-capacity estimate, including cached label storage.
+  size_t cachedBytes{0};
 };
 
 struct GuiPanelBounds {
@@ -510,11 +706,57 @@ struct SampleModelOption {
 // index always refers to the original catalog, even after filtering/clipping.
 [[nodiscard]] std::optional<size_t> drawSampleModelList(
     std::span<const SampleModelOption> models, std::string &filter,
-    int selectedIndex);
+    int selectedIndex, bool gltfOnly = false);
+
+[[nodiscard]] bool isGltfMergePath(std::string_view path);
 
 class GuiManager {
 public:
-  GuiManager() = default;
+  enum class EditHistoryRequest { None, Undo, Redo };
+  struct MaterialVariantControls {
+    std::vector<std::string> names;
+    int selected{-1};
+    std::optional<int> requested;
+    std::string error;
+  };
+  [[nodiscard]] MaterialVariantControls& materialVariantControls() { return materialVariantControls_; }
+  [[nodiscard]] MaterialVariantControls& gltfSceneControls() { return gltfSceneControls_; }
+  [[nodiscard]] GltfAnimationControls& gltfAnimationControls() { return gltfAnimationControls_; }
+  [[nodiscard]] const GltfAnimationControls& gltfAnimationControls() const { return gltfAnimationControls_; }
+  void setEditHistoryState(bool canUndo, bool canRedo, std::string undoLabel,
+                          std::string redoLabel) {
+    canUndoEdit_ = canUndo;
+    canRedoEdit_ = canRedo;
+    undoEditLabel_ = std::move(undoLabel);
+    redoEditLabel_ = std::move(redoLabel);
+  }
+  [[nodiscard]] EditHistoryRequest consumeEditHistoryRequest() {
+    return std::exchange(editHistoryRequest_, EditHistoryRequest::None);
+  }
+  [[nodiscard]] std::optional<std::string> consumeSceneSaveRequest() {
+    return std::exchange(sceneSaveRequest_, std::nullopt);
+  }
+  [[nodiscard]] std::optional<std::string> consumeLinkedSceneSaveRequest() {
+    return std::exchange(linkedSceneSaveRequest_, std::nullopt);
+  }
+  void setLinkedSceneSaveAvailable(bool available) noexcept { linkedSceneSaveAvailable_ = available; }
+  void setLinkedNodeAuthoringQueries(std::function<bool(uint32_t)> readOnly,
+                                    std::function<bool(uint32_t)> canMakeEditable) {
+    linkedNodeReadOnly_ = std::move(readOnly);
+    canMakeLinkedNodeEditable_ = std::move(canMakeEditable);
+  }
+  void acceptSceneSave(std::string path) {
+    savedScenePath_ = std::move(path);
+    sceneSavePathInput_ = savedScenePath_;
+    statusMessage_ = "Saved primary scene: " + savedScenePath_;
+  }
+  [[nodiscard]] std::optional<uint64_t> sceneEditGesture() const {
+    return sceneEditGesture_;
+  }
+  [[nodiscard]] bool sceneEditGestureActive() const {
+    return sceneEditGestureActive_ || lightEditControls_.gestureActive();
+  }
+  GuiManager();
   ~GuiManager();
 
   void initialize(VkInstance instance, VkDevice device,
@@ -534,15 +776,36 @@ public:
       container::renderer::RenderTechniqueId active);
   [[nodiscard]] std::optional<container::renderer::RenderTechniqueId>
   consumeRenderEngineChange();
+  void setReferencePathStatus(std::string status) { referencePathStatus_ = std::move(status); }
+  void setReferencePathDisplay(container::renderer::ReferencePathDisplayMode mode) { referencePathDisplay_ = mode; }
+  [[nodiscard]] container::renderer::ReferencePathDisplayMode referencePathDisplay() const { return referencePathDisplay_; }
+  void setReferencePathLens(container::renderer::ReferencePathLensSettings lens) { referencePathLens_ = lens; }
+  [[nodiscard]] const container::renderer::ReferencePathLensSettings& referencePathLens() const { return referencePathLens_; }
+  void setReferenceFireflyClamp(float clamp) { referenceFireflyClamp_ = clamp; }
+  [[nodiscard]] float referenceFireflyClamp() const { return referenceFireflyClamp_; }
+  [[nodiscard]] bool consumeReferenceAutofocusRequest();
+  void setReferenceGround(container::renderer::ReferenceGroundSettings ground) { referenceGround_ = ground; }
+  [[nodiscard]] const container::renderer::ReferenceGroundSettings& referenceGround() const { return referenceGround_; }
+  void setReferenceOidn(container::renderer::ReferenceOidnSettings settings) { referenceOidn_ = settings; }
+  [[nodiscard]] container::renderer::ReferenceOidnSettings referenceOidn() const { return referenceOidn_; }
   [[nodiscard]] container::renderer::RenderTechniqueId activeRenderEngine()
       const;
   void setRenderTechniqueDebugState(GuiRenderTechniqueDebugState state);
+  void setPhysicsPanelState(PhysicsPanelState state);
   [[nodiscard]] const GuiRenderTechniqueDebugState &
   renderTechniqueDebugState() const;
   [[nodiscard]] std::optional<ModelLoadRequest> consumeModelLoadRequest();
   // Shared by widgets and deterministic captures; consumed before NewFrame.
   void queueModelLoadRequest(std::string path, float importScale,
-                             std::string label);
+                             std::string label,
+                             std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions = {});
+  // Validates before replacing any queued operation. Shared by the import
+  // dialog and deterministic captures; source I/O stays on the serial worker.
+  void queueModelMergeRequest(std::string path,
+      std::string parentName = "Imported scene",
+      std::optional<int> incomingScene = std::nullopt,
+      const glm::mat4& placementMatrix = glm::mat4(1.0f),
+      std::optional<std::array<double, 16>> authoredPlacement = {});
   void queueModelUnloadRequest();
   // Only call once a model replacement/unload has succeeded.
   void resetModelInspectionState();
@@ -551,6 +814,18 @@ public:
   void startFrame();
   void endFrame();
   void render(VkCommandBuffer commandBuffer);
+  [[nodiscard]] bool consumeShaderReloadRequest() {
+    return std::exchange(shaderReloadRequested_, false);
+  }
+  void setGpuHierarchyTransforms(bool enabled) { gpuHierarchyTransforms_ = enabled; }
+  [[nodiscard]] bool gpuHierarchyTransforms() const { return gpuHierarchyTransforms_; }
+  struct ImageExportRequest {
+    std::string path;
+    bool viewportOnly{};
+  };
+  [[nodiscard]] ImageExportRequest consumeImageExportRequest() {
+    return std::exchange(imageExportRequest_, {});
+  }
   // Safe while scene resources are being replaced: uses only ImGui state.
   void drawModelLoadingProgress(std::string_view label, bool unloading,
                                 std::string_view stage);
@@ -587,10 +862,6 @@ public:
       container::renderer::EditableLightId selectedEditableLight,
       const std::function<void(container::renderer::EditableLightId)>
           &selectEditableLight,
-      const std::function<void(const container::renderer::EditableLightEntity
-                                   &)> &updateEditableLight,
-      const std::function<void(container::renderer::EditableLightType)>
-          &addManualEditableLight,
       uint32_t selectedMeshNode, const BimInspectionState &bimInspection,
       const ViewpointSnapshotState &currentViewpoint,
       const std::function<bool(const ViewpointSnapshotState &)>
@@ -603,7 +874,19 @@ public:
           &reparentSceneNode,
       const TransformControls &meshTransform,
       const std::function<void(uint32_t, const TransformControls &)>
-          &applyMeshTransform);
+          &applyMeshTransform,
+      const std::function<void(uint32_t, bool)> &setSceneNodeSelectable = {},
+      const std::function<void(uint32_t, bool)> &setSceneNodeHoverable = {},
+      const tinygltf::Model* gltfSource = nullptr);
+
+  // Widget-only entry point; caller owns the current ImGui frame/window.
+  // The transform snapshot belongs to selectedNode; picker changes wait for
+  // the caller's refreshed snapshot before exposing the next node's inspector.
+  void drawSceneNodeControls(
+      const container::scene::SceneGraph &sceneGraph, uint32_t selectedNode,
+      const TransformControls &selectedTransform,
+      const std::function<void(uint32_t)> &selectNode,
+      const std::function<void(uint32_t, const TransformControls &)> &applyTransform);
 
   // Widget-only entry point; caller owns the current ImGui frame/window.
   void drawSceneHierarchy(
@@ -613,8 +896,62 @@ public:
       const std::function<void(uint32_t)> &focusSceneNode,
       const std::function<void(uint32_t, bool)> &setSceneNodeVisible,
       const std::function<void(uint32_t, std::optional<uint32_t>)>
-          &reparentSceneNode);
+          &reparentSceneNode,
+      const std::function<void(uint32_t, bool)> &setSceneNodeSelectable = {},
+      const std::function<void(uint32_t, bool)> &setSceneNodeHoverable = {});
+  void
+  setSceneHierarchyNodeExpanded(const container::scene::SceneGraph &sceneGraph,
+                                uint32_t nodeIndex, bool expanded);
+  [[nodiscard]] SceneHierarchyUiStatistics sceneHierarchyStatistics() const {
+    return {sceneHierarchyCache_.rows().size(), sceneHierarchySubmittedRows_,
+            sceneHierarchyCache_.rebuildCount(),
+            sceneHierarchyCache_.cachedBytes()};
+  }
+  // Hierarchy widgets queue edits; the renderer consumes them after drawing.
+  // Graph identity prevents a delayed request from editing a replacement scene.
+  void queueSceneNodeAuthoringRequest(SceneNodeAuthoringRequest request);
+  [[nodiscard]] std::optional<SceneNodeAuthoringRequest>
+  consumeSceneNodeAuthoringRequest();
+  void setLightEditSnapshot(container::renderer::LightEditSnapshot snapshot) {lightEditControls_.setSnapshot(std::move(snapshot));}
+  [[nodiscard]] const container::renderer::LightEditSnapshot& lightEditSnapshot() const noexcept {return lightEditControls_.snapshot();}
+  void drawLightEditInspector() {lightEditControls_.draw();}
+  void queueLightEditRequest(container::renderer::LightEditRequest request) {lightEditControls_.queue(request);}
+  [[nodiscard]] std::vector<container::renderer::LightEditRequest> consumeLightEditRequests() {return lightEditControls_.consume();}
+  void finishLightEditGesture(bool cancel=false) {lightEditControls_.finishGesture(cancel);}
+  [[nodiscard]] bool lightEditGestureActive() const noexcept {return lightEditControls_.gestureActive();}
+  [[nodiscard]] bool hasPendingLightEditRequests() const noexcept {return lightEditControls_.hasPending();}
+  void queueLightAddRequest(container::renderer::EditableLightType type) {lightEditControls_.queueAdd(type);}
+  [[nodiscard]] std::optional<container::renderer::EditableLightType> consumeLightAddRequest() noexcept {return lightEditControls_.consumeAdd();}
+  void setMaterialInspectorSnapshot(MaterialInspectorSnapshot snapshot);
+  [[nodiscard]] const MaterialInspectorSnapshot& materialInspectorSnapshot() const { return materialInspector_; }
+  // Widget-only entry point; also used by drawSceneControls.
+  void drawMaterialInspector();
+  void queueMaterialEditRequest(QueuedMaterialEdit request);
+  // Ordered, bounded batch preserves Begin/Update/End emitted in one frame.
+  [[nodiscard]] std::vector<QueuedMaterialEdit> consumeMaterialEditRequests();
+  void queueMaterialBindingSelectionRequest(uint32_t bindingGraphNode);
+  [[nodiscard]] std::optional<MaterialBindingSelectionRequest> consumeMaterialBindingSelectionRequest();
+  // One guarded action at a time. It does not end the current factor gesture;
+  // the coordinator first stages the entire successor, then finishes history.
+  void queueMaterialBindingOperationRequest(MaterialBindingOperationRequest request);
+  [[nodiscard]] std::optional<MaterialBindingOperationRequest> consumeMaterialBindingOperationRequest();
+  void queueMaterialTextureEditRequest(QueuedMaterialTextureEdit request);
+  [[nodiscard]] std::optional<QueuedMaterialTextureEdit> consumeMaterialTextureEditRequest();
+  void queueMaterialCatalogSelectionRequest(MaterialCatalogSelectionRequest);
+  [[nodiscard]] std::optional<MaterialCatalogSelectionRequest> consumeMaterialCatalogSelectionRequest();
+  void queueMaterialRetirementRequest(MaterialRetirementRequest);
+  [[nodiscard]] std::optional<MaterialRetirementRequest> consumeMaterialRetirementRequest();
+  void setResourceCatalogSnapshot(ResourceCatalogSnapshot);
+  [[nodiscard]] const ResourceCatalogSnapshot& resourceCatalogSnapshot() const { return resourceCatalog_; }
+  void queueResourceCatalogSelectionRequest(ResourceCatalogSelectionRequest);
+  [[nodiscard]] std::optional<ResourceCatalogSelectionRequest> consumeResourceCatalogSelectionRequest();
+  void queueResourceRetirementRequest(ResourceRetirementRequest);
+  [[nodiscard]] std::optional<ResourceRetirementRequest> consumeResourceRetirementRequest();
+  void drawResourceCatalog();
   void drawBimElementBrowser(const BimInspectionState &inspection);
+  [[nodiscard]] const BimElementSearchCache &bimElementSearchCache() const {
+    return bimElementSearchCache_;
+  }
 
   [[nodiscard]] bool isCapturingInput() const;
   [[nodiscard]] bool isCapturingMouse() const;
@@ -722,6 +1059,11 @@ public:
   void setEnvironmentStatus(std::string status) {
     environmentStatus_ = std::move(status);
   }
+  void setEnvironmentLoading(bool loading) { environmentLoading_ = loading; }
+  [[nodiscard]] std::string consumeEnvironmentRequest();
+  [[nodiscard]] std::optional<container::renderer::SkySettings> consumeSkyRequest();
+  [[nodiscard]] bool consumeAuthoredSkyRequest();
+  void setSkyDraft(container::renderer::SkySettings settings) { skyDraft_ = settings; }
   void setWireframeCapabilities(bool supported, bool rasterModeSupported,
                                 bool wideLineSupported);
   void setCullStats(uint32_t total, uint32_t frustumPassed,
@@ -729,7 +1071,25 @@ public:
   void setLightCullingStats(const container::gpu::LightCullingStats &stats);
   void setRendererTelemetry(
       const container::renderer::RendererTelemetryView &telemetry);
+  void setGpuHardwareMonitor(const container::renderer::GpuHardwareMonitor* monitor) {
+    gpuHardwareMonitor_ = monitor;
+  }
   void setLightingSettings(const container::gpu::LightingSettings &settings);
+  void setOpenVdbVolumeState(
+      bool loaded, const container::renderer::OpenVdbVolumeSettings &settings,
+      std::string source, bool hasTemperature = false) {
+    openVdbVolumeLoaded_ = loaded;
+    openVdbVolumeSettings_ = settings;
+    openVdbVolumeSource_ = std::move(source);
+    openVdbHasTemperature_ = hasTemperature;
+  }
+  [[nodiscard]] const container::renderer::OpenVdbVolumeSettings &
+  openVdbVolumeSettings() const { return openVdbVolumeSettings_; }
+  void setOpenVdbSequenceState(OpenVdbSequenceControls state) { openVdbSequence_ = state; }
+  [[nodiscard]] const OpenVdbSequenceControls& openVdbSequenceControls() const { return openVdbSequence_; }
+  std::optional<uint32_t> consumeOpenVdbSequenceSeek() {
+    return std::exchange(pendingOpenVdbSequenceSeek_, std::nullopt);
+  }
   [[nodiscard]] const container::gpu::LightingSettings &
   lightingSettings() const {
     return lightingSettings_;
@@ -801,6 +1161,12 @@ public:
   const container::temporal::Settings &temporalSettings() const {
     return temporalSettings_;
   }
+  void setUpscaling(container::renderer::UpscaleSelection selection) { upscaling_ = selection; }
+  [[nodiscard]] container::renderer::UpscaleSelection upscaling() const { return upscaling_; }
+  void setUpscalingStatus(std::optional<container::renderer::UpscaleBackend> active, std::string_view status) {
+    activeUpscaler_ = active;
+    upscalingStatus_ = status;
+  }
   bool consumeTemporalReset() {
     return std::exchange(temporalResetRequested_, false);
   }
@@ -812,8 +1178,13 @@ public:
   [[nodiscard]] float bloomKnee() const { return bloomKnee_; }
   [[nodiscard]] float bloomIntensity() const { return bloomIntensity_; }
   [[nodiscard]] float bloomRadius() const { return bloomRadius_; }
+  [[nodiscard]] auto displayGrade() const { return displayGrade_; }
+  void setDisplayGrade(container::renderer::DisplayGrade grade) { displayGrade_ = grade; }
   [[nodiscard]] const container::gpu::ExposureSettings& exposureSettings() const {
     return exposureSettings_;
+  }
+  void setExposureSettings(const container::gpu::ExposureSettings& settings) {
+    exposureSettings_ = settings;
   }
   [[nodiscard]] float postProcessExposure() const {
     return exposureSettings_.manualExposure;
@@ -829,7 +1200,30 @@ public:
   }
 
 private:
+  void finishMaterialInspectorGesture(bool cancel);
+  bool canUndoEdit_{false}, canRedoEdit_{false};
+  std::string undoEditLabel_, redoEditLabel_;
+  EditHistoryRequest editHistoryRequest_{EditHistoryRequest::None};
+  GltfAnimationControls gltfAnimationControls_{};
+  MaterialVariantControls materialVariantControls_{};
+  MaterialVariantControls gltfSceneControls_{};
+  std::optional<std::string> sceneSaveRequest_{};
+  std::optional<std::string> linkedSceneSaveRequest_{};
+  bool linkedSceneSaveAvailable_{};
+  std::function<bool(uint32_t)> linkedNodeReadOnly_, canMakeLinkedNodeEditable_;
+  std::string savedScenePath_{};
+  std::string sceneSavePathInput_{"scene.glb"};
+  std::string imageExportPathInput_{"capture"};
+  ImageExportRequest imageExportRequest_{};
+  bool shaderReloadRequested_{false};
+  bool gpuHierarchyTransforms_{false};
+  std::optional<uint64_t> sceneEditGesture_{};
+  uint64_t nextSceneEditGesture_{0};
+  bool sceneEditGestureActive_{false};
   container::temporal::Settings temporalSettings_{};
+  container::renderer::UpscaleSelection upscaling_{};
+  std::optional<container::renderer::UpscaleBackend> activeUpscaler_{};
+  std::string upscalingStatus_{};
   std::string gfxCaptureStatus_{"Disabled. Launch with tools/gfxreconstruct.ps1 capture to collect Vulkan captures and runtime metadata."};
   uint64_t temporalBytes_{0}, temporalFrame_{0};
   glm::uvec2 temporalExtent_{};
@@ -907,11 +1301,18 @@ private:
   bool wireframeSupported_{false};
   bool wireframeRasterModeSupported_{false};
   bool wireframeWideLineSupported_{false};
-  GBufferViewMode gBufferViewMode_{GBufferViewMode::Overview};
+  GBufferViewMode gBufferViewMode_{GBufferViewMode::Lit};
   SceneViewportMode sceneViewportMode_{SceneViewportMode::Editor};
   WireframeSettings wireframeSettings_{};
   container::gpu::NormalValidationSettings normalValidationSettings_{};
   std::string modelPathInput_{};
+  std::string mergeModelPathInput_{};
+  std::string mergeParentNameInput_{"Imported scene"};
+  std::string mergeModelFilter_{};
+  std::string mergeError_{};
+  int selectedMergeSampleIndex_{-1};
+  bool mergeUseDefaultScene_{true};
+  int mergeSceneIndex_{0};
   std::string defaultModelPath_{};
   std::vector<SampleModelOption> sampleModelOptions_;
   std::string sampleModelFilter_{};
@@ -920,21 +1321,46 @@ private:
   float importScale_{1.0f};
   std::string statusMessage_{};
   std::string environmentStatus_{};
+  std::string environmentPathInput_;
+  std::string pendingEnvironmentPath_;
+  container::renderer::SkySettings skyDraft_{.mode = container::renderer::SkyMode::Plain};
+  std::optional<container::renderer::SkySettings> pendingSky_;
+  bool pendingAuthoredSky_{false};
+  std::string skyPresetPath_{"sky.json"};
+  std::string skyPresetMessage_;
+  bool environmentLoading_{false};
   std::vector<uint32_t> msaaSampleOptions_{1u};
   uint32_t msaaSamples_{1u};
   std::optional<uint32_t> pendingMsaaSamples_{};
   std::vector<RenderEngineOption> renderEngineOptions_{};
+  std::string referencePathStatus_;
+  container::renderer::ReferencePathDisplayMode referencePathDisplay_{};
+  container::renderer::ReferencePathLensSettings referencePathLens_{};
+  float referenceFireflyClamp_{};
+  bool referenceAutofocusRequested_{};
+  container::renderer::ReferenceGroundSettings referenceGround_{};
+  container::renderer::ReferenceOidnSettings referenceOidn_{};
   container::renderer::RenderTechniqueId activeRenderEngine_{};
   std::optional<container::renderer::RenderTechniqueId>
       pendingRenderEngineChange_{};
   std::optional<ModelLoadRequest> pendingModelLoadRequest_{};
   GuiRenderTechniqueDebugState renderTechniqueDebugState_{};
+  PhysicsPanelState physicsPanelState_{};
+  PhysicsPanelOptions physicsPanelOptions_{};
   uint32_t cullStatsTotal_{0};
   uint32_t cullStatsFrustum_{0};
   uint32_t cullStatsOcclusion_{0};
   container::gpu::LightCullingStats lightCullingStats_{};
   GuiRendererTelemetryView rendererTelemetry_{};
+  const container::renderer::GpuHardwareMonitor* gpuHardwareMonitor_{};
   container::gpu::LightingSettings lightingSettings_{};
+  bool openVdbVolumeLoaded_{false};
+  std::unique_ptr<OpenVdbAuthoringPanel> openVdbAuthoring_;
+  bool openVdbHasTemperature_{false};
+  container::renderer::OpenVdbVolumeSettings openVdbVolumeSettings_{};
+  std::string openVdbVolumeSource_{};
+  OpenVdbSequenceControls openVdbSequence_{};
+  std::optional<uint32_t> pendingOpenVdbSequenceSeek_{};
   std::string ltcStatus_{};
   container::gpu::ShadowSettings shadowSettings_{};
   container::renderer::RayShadowSettings rayShadowSettings_{};
@@ -961,6 +1387,9 @@ private:
   float bloomIntensity_{0.3f};
   float bloomRadius_{1.0f};
   container::gpu::ExposureSettings exposureSettings_{};
+  container::renderer::DisplayGrade displayGrade_{};
+  std::string displayGradePath_{"display-grade.json"};
+  std::string displayGradeMessage_;
   std::vector<RenderPassToggle> renderPassToggles_;
   BimFilterState bimFilterState_{};
   BimPhaseTimelineUiState bimPhaseTimelineUiState_{};
@@ -973,6 +1402,8 @@ private:
   std::string bimPropertySearch_{};
   std::string bimRelationshipSearch_{};
   std::string bimElementSearch_{};
+  BimElementSearchCache bimElementSearchCache_{};
+  BimRelationshipBrowserCache bimRelationshipBrowserCache_{};
   container::renderer::BimSemanticColorMode bimSemanticColorMode_{};
   SectionPlaneState sectionPlaneState_{};
   BimBoxClipUiState bimBoxClipState_{};
@@ -1004,6 +1435,46 @@ private:
   std::vector<container::renderer::BimModelCompareChange>
       bimCompareChanges_{};
   SceneHierarchyParentCandidateCacheState sceneHierarchyParentCandidateCache_{};
+  SceneHierarchyCache sceneHierarchyCache_{};
+  SceneNodeAuthoringUiState sceneNodeAuthoringUi_{};
+  SceneNodeInlineRenameUiState sceneNodeInlineRename_{};
+  uint64_t sceneNodeInlineRenameSession_{};
+  std::optional<SceneNodeAuthoringRequest> sceneNodeAuthoringRequest_{};
+  MaterialInspectorSnapshot materialInspector_{};
+  LightEditControls lightEditControls_{};
+  std::vector<QueuedMaterialEdit> materialEditRequests_{};
+  std::optional<MaterialBindingSelectionRequest> materialBindingSelectionRequest_{};
+  std::optional<MaterialBindingOperationRequest> materialBindingOperationRequest_{};
+  std::optional<QueuedMaterialTextureEdit> materialTextureEditRequest_{};
+  std::optional<MaterialCatalogSelectionRequest> materialCatalogSelectionRequest_{};
+  std::optional<MaterialRetirementRequest> materialRetirementRequest_{};
+  ResourceCatalogSnapshot resourceCatalog_{};
+  std::optional<ResourceCatalogSelectionRequest> resourceCatalogSelectionRequest_{};
+  std::optional<ResourceRetirementRequest> resourceRetirementRequest_{};
+  std::string resourceCatalogUiError_;
+  [[nodiscard]] bool resourceCatalogActionPending() const noexcept {
+    return resourceCatalogSelectionRequest_.has_value() || resourceRetirementRequest_.has_value();
+  }
+  struct MaterialTextureDraft {
+    bool initialized{}, mappingDirty{}, samplerDirty{};
+    uint64_t resourceRevision{};
+    int32_t authoredTexture{-1}, evaluatedTexture{-1};
+    std::string path;
+    std::optional<uint32_t> sourceTexture;
+    uint32_t texCoord{}, channel{4};
+    std::array<double,2> offset{0.,0.}, scale{1.,1.};
+    double rotation{};
+    container::material::MaterialTextureSamplerDescription sampler;
+  };
+  std::array<MaterialTextureDraft,size_t(container::geometry::gltf::GltfMaterialTextureSlot::Count)> materialTextureDrafts_{};
+  std::optional<std::pair<int32_t,uint32_t>> materialAssignmentDraft_{};
+  std::optional<container::geometry::gltf::GltfMaterialProperty> materialDraftProperty_{};
+  std::array<double,4> materialNumericDraft_{};
+  uint64_t nextMaterialGesture_{1}, materialGesture_{};
+  std::array<char,4097> materialNameDraft_{};
+  std::string materialInspectorError_;
+  bool materialNameActive_{}, materialNameEdited_{};
+  size_t sceneHierarchySubmittedRows_{0};
   BimLodStreamingUiState bimLodStreamingUiState_{};
   BimClipCapHatchingUiState bimClipCapHatchingUiState_{};
   std::string bimMeasurementModelPath_{};

@@ -158,14 +158,14 @@ TEST(RenderTechniqueRegistry,
 
   const auto pathTracing = findDescriptor(RenderTechniqueId::PathTracing);
   ASSERT_NE(pathTracing, descriptors.end());
-  EXPECT_FALSE(pathTracing->implemented);
+  EXPECT_TRUE(pathTracing->implemented);
   EXPECT_TRUE(pathTracing->requiresPathTracing);
 
   container::renderer::RenderTechniqueRegistry registry =
       container::renderer::createDefaultRenderTechniqueRegistry();
-  EXPECT_EQ(registry.techniques().size(), 2u);
+  EXPECT_EQ(registry.techniques().size(), 3u);
   EXPECT_EQ(registry.find(RenderTechniqueId::RayTracing), nullptr);
-  EXPECT_EQ(registry.find(RenderTechniqueId::PathTracing), nullptr);
+  EXPECT_NE(registry.find(RenderTechniqueId::PathTracing), nullptr);
 }
 
 TEST(RenderTechniqueRegistry, RejectsNullAndDuplicateRegistrations) {
@@ -256,7 +256,7 @@ TEST(RendererDeviceCapabilities, ReportsMissingRayAndPathRequirements) {
 
   const std::vector<std::string> missingPathTracing =
       rasterOnly.missingPathTracingRequirements();
-  EXPECT_NE(std::ranges::find(missingPathTracing, "storage image atomics"),
+  EXPECT_NE(std::ranges::find(missingPathTracing, "ray queries"),
             missingPathTracing.end());
 
   container::renderer::RendererDeviceCapabilities full{};
@@ -264,7 +264,9 @@ TEST(RendererDeviceCapabilities, ReportsMissingRayAndPathRequirements) {
   full.bufferDeviceAddress = true;
   full.accelerationStructure = true;
   full.rayTracingPipeline = true;
-  full.storageImageAtomics = true;
+  full.rayQuery = true;
+  EXPECT_TRUE(full.supportsPathTracing());
+  full.rayTracingPipeline = false; // Inline queries do not need an RT pipeline or image atomics.
   EXPECT_TRUE(full.supportsPathTracing());
   EXPECT_TRUE(full.missingPathTracingRequirements().empty());
 }
@@ -278,7 +280,7 @@ TEST(RenderTechniqueRegistry, DefaultRegistryRegistersDeferredAndForwardRaster) 
       nullptr);
   ASSERT_NE(registry.find(container::renderer::RenderTechniqueId::ForwardRaster),
             nullptr);
-  EXPECT_EQ(registry.techniques().size(), 2u);
+  EXPECT_EQ(registry.techniques().size(), 3u);
 }
 
 TEST(RenderTechniqueGuardrails, FrameRecorderDoesNotOwnGraphRegistration) {

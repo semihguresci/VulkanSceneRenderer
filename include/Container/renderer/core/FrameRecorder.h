@@ -1,5 +1,10 @@
 #pragma once
 
+#include "Container/renderer/effects/ScreenReflectionSettings.h"
+#include "Container/renderer/effects/VolumetricFogSettings.h"
+
+#include "Container/renderer/effects/DisplayGrade.h"
+
 #include "Container/common/CommonVulkan.h"
 #include "Container/renderer/core/RenderExtraction.h"
 #include "Container/renderer/core/RenderGraph.h"
@@ -21,7 +26,11 @@
 // Forward declarations — full headers only needed in FrameRecorder.cpp.
 namespace container::renderer {
 class BloomManager;
+class OpenVdbVolumeRenderer;
 class TemporalManager;
+class PbrAuxiliaryPass;
+class ScreenReflectionPass;
+class VolumetricFogPass;
 class RayShadowManager;
 class DdgiManager;
 class BimManager;
@@ -61,6 +70,7 @@ struct FrameRuntimeResources {
   uint32_t frameSlot{0};
   uint32_t imageIndex{0};
   RenderTechniqueId activeTechnique{RenderTechniqueId::DeferredRaster};
+  VkExtent2D sceneExtent{};
 };
 
 struct FrameSceneGeometry {
@@ -72,6 +82,9 @@ struct FrameSceneGeometry {
   VkBuffer objectBuffer{VK_NULL_HANDLE};
   VkDeviceSize objectBufferSize{0};
   uint32_t diagCubeObjectIndex{std::numeric_limits<uint32_t>::max()};
+  // Same vertex/index correspondence as vertexSlice, from the last submitted
+  // frame. A null buffer reuses vertexSlice for ordinary rigid geometry.
+  container::gpu::BufferSlice previousVertexSlice{};
 };
 
 struct FrameDrawLists {
@@ -273,6 +286,7 @@ struct FrameRegistryState {
 };
 
 struct FrameDebugState {
+  ScreenReflectionMode screenReflections{};
   bool temporalForceReactive{false};
   uint32_t displayMode{0};
   bool debugDirectionalOnly{false};
@@ -280,6 +294,13 @@ struct FrameDebugState {
   bool debugFreezeCulling{false};
   bool wireframeRasterModeSupported{false};
   bool wireframeWideLinesSupported{false};
+};
+
+struct FrameScreenReflectionHistory {
+  uint32_t cameraEpoch{};
+  uint64_t materialRevision{};
+  uint64_t lightRevision{};
+  bool operator==(const FrameScreenReflectionHistory&) const = default;
 };
 
 struct FramePushConstantState {
@@ -319,18 +340,25 @@ struct FrameSwapchainResources {
 
 struct FrameScreenshotCapture {
   bool enabled{false};
-  VkImage swapChainImage{VK_NULL_HANDLE};
+  bool viewportOnly{false};
+  bool sceneLinear{false};
+  VkImage sourceImage{VK_NULL_HANDLE};
   VkBuffer readbackBuffer{VK_NULL_HANDLE};
   VkExtent2D extent{};
 };
 
 struct FramePassServices {
+  std::function<bool(VkCommandBuffer,const FrameRecordParams&)> referencePathTrace{};
+  PbrAuxiliaryPass *pbrAuxiliaryPass{nullptr};
+  ScreenReflectionPass *screenReflectionPass{nullptr};
+  VolumetricFogPass *volumetricFogPass{nullptr};
   RayShadowManager *rayShadowManager{nullptr};
   DdgiManager *ddgiManager{nullptr};
   VkDescriptorSet ddgiReadDescriptorSet{VK_NULL_HANDLE};
   GpuCullManager *gpuCullManager{nullptr};
   BimManager *bimManager{nullptr};
   BloomManager *bloomManager{nullptr};
+  OpenVdbVolumeRenderer *openVdbVolumeRenderer{nullptr};
   TemporalManager *temporalManager{nullptr};
   RendererTelemetry *telemetry{nullptr};
   RenderPassGpuProfiler *gpuProfiler{nullptr};
@@ -339,6 +367,7 @@ struct FramePassServices {
 struct FramePostProcessState {
   RenderingPassHandle renderPass{VK_NULL_HANDLE};
   container::gpu::ExposureSettings exposureSettings{};
+  DisplayGrade displayGrade{};
 };
 
 // All per-frame render state needed by FrameRecorder::record().
@@ -356,6 +385,8 @@ struct FrameRecordParams {
   FrameSwapchainResources swapchain{};
   FrameScreenshotCapture screenshot{};
   FramePassServices services{};
+  FrameScreenReflectionHistory reflectionHistory{};
+  VolumetricFogFrame volumetricFog{};
   FramePostProcessState postProcess{};
   ProviderSceneExtraction sceneExtraction{};
   FrameRecordLifecycleHooks lifecycle{};

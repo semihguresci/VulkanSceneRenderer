@@ -402,4 +402,42 @@ TEST(BimRelationshipGraphTests,
   EXPECT_TRUE(graph.edgesForObject(299u).empty());
 }
 
+TEST(BimRelationshipGraphTests, OwnsResolvedCompactStorageMetadata) {
+  auto wall = makeElement(0u, "wall-guid", "wall-source", "IfcWall",
+                           "Rated wall");
+  wall.objectType = "Basic Wall";
+  wall.storeyName = "Level 01";
+  wall.storeyId = "storey-source";
+  wall.materialName = "Concrete";
+  wall.properties.push_back({.set = "Pset_WallCommon",
+                             .name = "FireRating",
+                             .value = "2HR",
+                             .category = "IfcPropertySet"});
+  container::renderer::BimMetadataStorage storage;
+  storage.push_back(std::move(wall));
+  storage.seal();
+  BimRelationshipGraph graph;
+  graph.build(storage);
+  storage.clear();
+
+  ASSERT_FALSE(graph.nodes().empty());
+  EXPECT_EQ(graph.nodes().front().guid, "wall-guid");
+  EXPECT_EQ(graph.nodes().front().sourceId, "wall-source");
+  EXPECT_EQ(graph.nodes().front().label, "Rated wall");
+  EXPECT_EQ(graph.nodes().front().ifcClass, "IfcWall");
+  EXPECT_TRUE(hasSearchHit(graph, "wall-guid", 0u, "guid"));
+  EXPECT_TRUE(hasSearchHit(graph, "Concrete", 0u, "material"));
+  EXPECT_TRUE(hasSearchHit(graph, "2HR", 0u, "property value"));
+  EXPECT_TRUE(hasEdge(graph.edgesForObject(0u),
+                      BimRelationshipKind::SpatialParent));
+  EXPECT_TRUE(hasEdge(graph.edgesForObject(0u),
+                      BimRelationshipKind::MaterialAssignment));
+  ASSERT_EQ(graph.propertySetsForObject(0u).size(), 1u);
+  const auto &group = graph.propertySetsForObject(0u).front();
+  EXPECT_EQ(group.set, "Pset_WallCommon");
+  ASSERT_EQ(group.properties.size(), 1u);
+  EXPECT_EQ(group.properties.front().name, "FireRating");
+  EXPECT_EQ(group.properties.front().value, "2HR");
+}
+
 } // namespace

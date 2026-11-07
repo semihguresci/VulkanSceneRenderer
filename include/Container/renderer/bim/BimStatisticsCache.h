@@ -10,7 +10,7 @@ class BimStatisticsCache {
 public:
   void clear();
   void rebuild(BimSceneStats modelStats,
-               std::span<const BimElementMetadata> metadata,
+               BimMetadataTableView metadata,
                std::span<const container::gpu::ObjectData> objects,
                std::span<const DrawCommand> opaque,
                std::span<const DrawCommand> transparent);

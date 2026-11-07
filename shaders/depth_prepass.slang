@@ -5,7 +5,7 @@
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(1, 0)]] StructuredBuffer<ObjectBuffer> uObjects;
-[[vk::binding(2, 0)]] SamplerState materialSamplers[MATERIAL_SAMPLER_DESCRIPTOR_COUNT];
+[[vk::binding(2, 0)]] SamplerState materialSamplers[];
 [[vk::binding(3, 0)]] StructuredBuffer<GpuMaterial> uMaterials;
 [[vk::binding(4, 0)]] StructuredBuffer<GpuTextureMetadata> uTextureMetadata;
 [[vk::binding(5, 0)]] Texture2D materialTextures[MATERIAL_TEXTURE_DESCRIPTOR_COUNT];
@@ -24,6 +24,7 @@ struct VSInput
     [[vk::location(2)]] float2 inTexCoord;
     [[vk::location(3)]] float3 inNormal;
     [[vk::location(5)]] float2 inTexCoord1;
+    [[vk::location(8)]] float inColorAlpha;
 };
 
 struct VSOutput
@@ -62,7 +63,7 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
     output.baseColorTextureIndex = material.baseColorTextureIndex;
     output.flags = material.flags | obj.objectInfo.y;
     output.alphaCutoff = material.alphaCutoff;
-    output.baseColorAlpha = material.color.a;
+    output.baseColorAlpha = material.color.a * input.inColorAlpha;
     output.opacityTextureIndex = material.opacityTextureIndex;
     output.opacityFactor = material.opacityFactor;
     output.objectIndex = objectIndex;
@@ -97,6 +98,7 @@ void fragMain(VSOutput input)
         ApplyGpuTextureTransform(input.texCoord, input.texCoord1,
                                  material.opacityTextureTransform),
         material.opacityTextureTransform);
+    alpha = ResolveGpuMaterialAlpha(alpha, material.flags);
 
     if ((input.flags & 0x1u) != 0u &&
         !AlphaMaskPass(alpha, input.alphaCutoff, input.pos))

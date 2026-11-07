@@ -7,6 +7,13 @@ cmake_minimum_required(VERSION 3.23)
 cmake_policy(SET CMP0091 NEW)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
+# vcpkg resolves manifest features during project(), before dependencies load.
+include(cmake/Options.cmake)
+if(ENABLE_OPENVDB)
+    list(APPEND VCPKG_MANIFEST_FEATURES openvdb)
+    list(REMOVE_DUPLICATES VCPKG_MANIFEST_FEATURES)
+endif()
+
 project(VulkanSceneRenderer)
 
 # Set the C++ standard
@@ -16,7 +23,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 # Include third-party dependencies
-include(cmake/Options.cmake)
 include(cmake/Dependencies.cmake)
 
 add_subdirectory(src)
@@ -32,6 +38,20 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     VulkanSceneRenderer_Core
 )
 container_stage_runtime_dlls(${PROJECT_NAME})
+container_stage_fsr_runtime(${PROJECT_NAME})
+container_stage_dlss_runtime(${PROJECT_NAME})
+if(TARGET ContainerDracoWorker)
+    add_dependencies(${PROJECT_NAME} ContainerDracoWorker)
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:ContainerDracoWorker>"
+            "$<TARGET_FILE_DIR:${PROJECT_NAME}>/ContainerDracoWorker$<TARGET_FILE_SUFFIX:ContainerDracoWorker>"
+        VERBATIM)
+endif()
+if(ENABLE_OPENVDB OR ENABLE_NANOVDB_IO)
+    add_dependencies(${PROJECT_NAME} OpenVdbTool)
+endif()
+add_dependencies(${PROJECT_NAME} OpenVdbTransportRender)
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -65,6 +85,7 @@ if(CMAKE_CONFIGURATION_TYPES)
         VERBATIM
     )
     add_dependencies(stage_runtime_assets shaders copy_materials generate_models)
+    add_dependencies(stage_runtime_assets OpenVdbTransportRender)
     if(TARGET copy_hdr)
         add_dependencies(stage_runtime_assets copy_hdr)
         add_custom_command(TARGET stage_runtime_assets POST_BUILD

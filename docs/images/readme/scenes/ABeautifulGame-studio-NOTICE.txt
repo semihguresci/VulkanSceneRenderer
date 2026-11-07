@@ -1,0 +1,11 @@
+A Beautiful Game — static studio gallery variant
+
+Original model by Moeen Sayed and Mujtaba Sayed for SideFX; original-model rights © 2020 ASWF/MaterialX Project.
+glTF conversion © 2022 Ed Mackey; initial geometry conversion by Chris Rydalch and Jonathan Stone.
+Source: https://github.com/KhronosGroup/glTF-Sample-Assets/tree/8f492390ddc7a2ae221a1369ef560589cf8c70fb/Models/ABeautifulGame
+License: Creative Commons Attribution 4.0 International, https://creativecommons.org/licenses/by/4.0/
+
+Gallery change: one 100m square XZ receiver, world Y=-0.001m, with one neutral matte material.
+The original 49 instances, geometry, materials, UVs and original 2048x2048 textures are unchanged.
+The wrapper references the original external binary and image URIs; resources are not copied or resampled.
+Original source files are retained unchanged. The additional receiver is prepared for native rendering, not image retouching.

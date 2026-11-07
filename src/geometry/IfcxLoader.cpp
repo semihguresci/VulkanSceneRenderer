@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -1517,6 +1518,17 @@ struct PcdHeader {
   size_t dataOffset{0};
 };
 
+template <class T>
+T readPcdUnsigned(std::string_view text) {
+  T value{};
+  const auto end = text.data() + text.size();
+  const auto parsed = std::from_chars(text.data(), end, value);
+  if (parsed.ec != std::errc{} || parsed.ptr != end) {
+    throw std::runtime_error("IFCX PCD header has an invalid unsigned integer");
+  }
+  return value;
+}
+
 PcdHeader parsePcdHeader(const std::vector<uint8_t> &bytes) {
   PcdHeader header{};
   size_t cursor = 0;
@@ -1549,7 +1561,7 @@ PcdHeader parsePcdHeader(const std::vector<uint8_t> &bytes) {
       header.fields.assign(words.begin() + 1, words.end());
     } else if (key == "size") {
       for (auto it = words.begin() + 1; it != words.end(); ++it) {
-        header.sizes.push_back(static_cast<uint32_t>(std::stoul(*it)));
+        header.sizes.push_back(readPcdUnsigned<uint32_t>(*it));
       }
     } else if (key == "type") {
       for (auto it = words.begin() + 1; it != words.end(); ++it) {
@@ -1557,14 +1569,14 @@ PcdHeader parsePcdHeader(const std::vector<uint8_t> &bytes) {
       }
     } else if (key == "count") {
       for (auto it = words.begin() + 1; it != words.end(); ++it) {
-        header.counts.push_back(static_cast<uint32_t>(std::stoul(*it)));
+        header.counts.push_back(readPcdUnsigned<uint32_t>(*it));
       }
     } else if (key == "width" && words.size() > 1u) {
-      header.width = static_cast<size_t>(std::stoull(words[1]));
+      header.width = readPcdUnsigned<size_t>(words[1]);
     } else if (key == "height" && words.size() > 1u) {
-      header.height = static_cast<size_t>(std::stoull(words[1]));
+      header.height = readPcdUnsigned<size_t>(words[1]);
     } else if (key == "points" && words.size() > 1u) {
-      header.points = static_cast<size_t>(std::stoull(words[1]));
+      header.points = readPcdUnsigned<size_t>(words[1]);
     } else if (key == "data" && words.size() > 1u) {
       header.data = lowerAscii(words[1]);
       header.dataOffset = cursor;
@@ -1607,16 +1619,16 @@ std::optional<size_t> pcdFieldIndex(const PcdHeader &header,
   return std::nullopt;
 }
 
-uint32_t pcdFieldSize(const PcdHeader &header, size_t field) {
-  return header.sizes[field] * header.counts[field];
-}
-
-std::vector<uint32_t> pcdFieldOffsets(const PcdHeader &header) {
-  std::vector<uint32_t> offsets(header.fields.size(), 0u);
-  uint32_t offset = 0;
+std::vector<size_t> pcdFieldOffsets(const PcdHeader &header) {
+  std::vector<size_t> offsets(header.fields.size() + 1u, 0u);
   for (size_t i = 0; i < header.fields.size(); ++i) {
-    offsets[i] = offset;
-    offset += pcdFieldSize(header, i);
+    const size_t size = header.sizes[i];
+    const size_t count = header.counts[i];
+    if (size == 0 || count == 0 ||
+        size > (std::numeric_limits<size_t>::max() - offsets[i]) / count) {
+      throw std::runtime_error("IFCX PCD field layout has an invalid stride");
+    }
+    offsets[i + 1u] = offsets[i] + size * count;
   }
   return offsets;
 }
@@ -1720,15 +1732,15 @@ PointCloud readPcdAscii(const PcdHeader &header,
   const auto rgbField = pcdFieldIndex(header, "rgb");
   const auto rgbaField = pcdFieldIndex(header, "rgba");
 
+  const size_t bodySize = bytes.size() - header.dataOffset;
+  if (header.points > bodySize) {
+    throw std::runtime_error("IFCX ASCII PCD point count exceeds payload size");
+  }
   std::string body(
       reinterpret_cast<const char *>(bytes.data() + header.dataOffset),
-      bytes.size() - header.dataOffset);
+      bodySize);
   std::istringstream stream(body);
   PointCloud cloud{};
-  cloud.positions.reserve(header.points);
-  if (rgbField || rgbaField) {
-    cloud.colors.reserve(header.points);
-  }
 
   std::string line;
   while (std::getline(stream, line) && cloud.positions.size() < header.points) {
@@ -1752,6 +1764,9 @@ PointCloud readPcdAscii(const PcdHeader &header,
       cloud.colors.push_back(colorFromPackedRgb(packed));
     }
   }
+  if (cloud.positions.size() != header.points) {
+    throw std::runtime_error("IFCX ASCII PCD payload contains fewer points than declared");
+  }
   return cloud;
 }
 
@@ -1764,44 +1779,37 @@ PointCloud readPcdBinaryPayload(const PcdHeader &header,
     return {};
   }
 
+  const auto offsets = pcdFieldOffsets(header);
+  const size_t pointStep = offsets.back();
   if (compressed) {
     if (payload.size() < 8u) {
       throw std::runtime_error("IFCX compressed PCD payload is too small");
     }
     const uint32_t compressedSize = readLe32(payload.data());
     const uint32_t uncompressedSize = readLe32(payload.data() + 4u);
-    if (8u + compressedSize > payload.size()) {
+    if (compressedSize > payload.size() - 8u) {
       throw std::runtime_error("IFCX compressed PCD payload is truncated");
+    }
+    // The longest LZF reference produces 264 bytes from a three-byte token.
+    constexpr uint64_t kMaxLzfExpansion = 88;
+    if (uncompressedSize > kMaxLzfExpansion * compressedSize) {
+      throw std::runtime_error("IFCX compressed PCD exceeds the LZF expansion limit");
+    }
+    if (header.points > uncompressedSize / pointStep) {
+      throw std::runtime_error("IFCX compressed PCD point count exceeds payload size");
     }
     payload =
         lzfDecompress(payload.data() + 8u, compressedSize, uncompressedSize);
-  }
-
-  const std::vector<uint32_t> offsets = pcdFieldOffsets(header);
-  uint32_t pointStep = 0;
-  for (size_t i = 0; i < header.fields.size(); ++i) {
-    pointStep += pcdFieldSize(header, i);
-  }
-  if (pointStep == 0u) {
-    return {};
+  } else if (header.points > payload.size() / pointStep) {
+    throw std::runtime_error("IFCX binary PCD point count exceeds payload size");
   }
 
   auto fieldPointer = [&](size_t point, size_t field) -> const uint8_t * {
-    const size_t scalarSize = header.sizes[field];
     if (compressed) {
-      size_t base = 0;
-      for (size_t i = 0; i < field; ++i) {
-        base += static_cast<size_t>(pcdFieldSize(header, i)) * header.points;
-      }
-      const size_t offset =
-          base + point * static_cast<size_t>(pcdFieldSize(header, field));
-      return offset + scalarSize <= payload.size() ? payload.data() + offset
-                                                   : nullptr;
+      const size_t fieldSize = offsets[field + 1u] - offsets[field];
+      return payload.data() + offsets[field] * header.points + point * fieldSize;
     }
-    const size_t offset =
-        point * static_cast<size_t>(pointStep) + offsets[field];
-    return offset + scalarSize <= payload.size() ? payload.data() + offset
-                                                 : nullptr;
+    return payload.data() + point * pointStep + offsets[field];
   };
 
   PointCloud cloud{};
@@ -1815,9 +1823,6 @@ PointCloud readPcdBinaryPayload(const PcdHeader &header,
     const uint8_t *x = fieldPointer(point, *xField);
     const uint8_t *y = fieldPointer(point, *yField);
     const uint8_t *z = fieldPointer(point, *zField);
-    if (x == nullptr || y == nullptr || z == nullptr) {
-      break;
-    }
     cloud.positions.emplace_back(
         readPcdScalar(x, header.sizes[*xField], header.types[*xField]),
         readPcdScalar(y, header.sizes[*yField], header.types[*yField]),
@@ -1825,19 +1830,17 @@ PointCloud readPcdBinaryPayload(const PcdHeader &header,
     const auto colorField = rgbField ? rgbField : rgbaField;
     if (colorField) {
       const uint8_t *rgb = fieldPointer(point, *colorField);
-      if (rgb != nullptr) {
-        uint32_t packed = 0;
-        if (header.types[*colorField] == 'F' ||
-            header.types[*colorField] == 'f') {
-          const float packedFloat = readPcdScalar(
-              rgb, header.sizes[*colorField], header.types[*colorField]);
-          std::memcpy(&packed, &packedFloat, sizeof(packed));
-        } else {
-          packed = static_cast<uint32_t>(readPcdScalar(
-              rgb, header.sizes[*colorField], header.types[*colorField]));
-        }
-        cloud.colors.push_back(colorFromPackedRgb(packed));
+      uint32_t packed = 0;
+      if (header.types[*colorField] == 'F' ||
+          header.types[*colorField] == 'f') {
+        const float packedFloat = readPcdScalar(
+            rgb, header.sizes[*colorField], header.types[*colorField]);
+        std::memcpy(&packed, &packedFloat, sizeof(packed));
+      } else {
+        packed = static_cast<uint32_t>(readPcdScalar(
+            rgb, header.sizes[*colorField], header.types[*colorField]));
       }
+      cloud.colors.push_back(colorFromPackedRgb(packed));
     }
   }
   return cloud;

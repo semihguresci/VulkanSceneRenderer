@@ -1,5 +1,6 @@
 #include "Container/renderer/raytracing/RaySceneExtraction.h"
 
+#include <algorithm>
 #include <cmath>
 #include <glm/geometric.hpp>
 #include <glm/matrix.hpp>
@@ -36,7 +37,7 @@ glm::vec3 surfaceFallbackTangent(glm::vec3 normal) {
 }
 void validateSurfaceVertex(const container::geometry::Vertex &vertex) {
   if (!finite(vertex.position) || !finite(vertex.normal) ||
-      !finite(vertex.tangent) || !finite(vertex.color) ||
+      !finite(vertex.tangent) || !finite(vertex.color) || !std::isfinite(vertex.colorAlpha) ||
       !finite(glm::vec4(vertex.texCoord, vertex.texCoord1)))
     throw std::invalid_argument("ray surface attributes must be finite");
 }
@@ -78,6 +79,16 @@ uint64_t geometryId(const DrawCommand &draw) {
   return (uint64_t(draw.firstIndex) << 32) | draw.indexCount;
 }
 
+auto opacityMicromap(const RaySceneProviderSource& provider, uint64_t range) {
+  const auto key = [](const RayOpacityMicromapRange& candidate) {
+    return (uint64_t(candidate.firstIndex) << 32) | candidate.indexCount;
+  };
+  const auto found = std::ranges::lower_bound(provider.opacityMicromaps, range, {}, key);
+  using Attachment = container::geometry::gltf::GltfOpacityMicromapAttachment;
+  return found != provider.opacityMicromaps.end() && key(*found) == range
+      ? found->attachment : std::shared_ptr<const Attachment>{};
+}
+
 void appendInstances(std::vector<RaySceneInstance> &instances,
                      std::vector<RayInstanceData> &metadata,
                      const RaySceneProviderSource &provider,
@@ -90,10 +101,16 @@ void appendInstances(std::vector<RaySceneInstance> &instances,
     const auto &object = provider.objects[draw.objectIndex + i];
     (void)rayInstanceTransform(object.model);
     const auto customIndex = static_cast<uint32_t>(instances.size());
-    instances.push_back({geometryIndex, customIndex, object.model,
-                         (object.objectInfo.y & 4u) != 0u});
+    instances.push_back({
+        .geometryIndex = geometryIndex,
+        .customIndex = customIndex,
+        .transform = object.model,
+        .doubleSided = (object.objectInfo.y & container::gpu::kObjectFlagDoubleSided) != 0u,
+        .flipFacing = (object.objectInfo.y & container::gpu::kObjectFlagDeformationWindingFlipped) != 0u,
+        .gpuObjectIndex = provider.gpuObjects.buffer ? draw.objectIndex+i : UINT32_MAX,
+        .sourceObjectIndex = draw.objectIndex + i});
     metadata.push_back({glm::uvec4(firstTriangle, object.objectInfo.x,
-                                   object.objectInfo.y, 0u)});
+                                   object.objectInfo.y, draw.indexCount / 3u)});
     if (surfaces)
       surfaces->push_back(surfaceInstance(object.model));
   }
@@ -120,6 +137,12 @@ uint64_t geometrySignature(std::span<const RaySceneProviderSource> providers,
     // storage identity must not accidentally reuse the previous compact copy.
     value(reinterpret_cast<uintptr_t>(provider.vertices.data()));
     value(reinterpret_cast<uintptr_t>(provider.indices.data()));
+    value(provider.opacityMicromaps.size());
+    for (const auto& candidate : provider.opacityMicromaps) {
+      value(candidate.firstIndex);
+      value(candidate.indexCount);
+      value(reinterpret_cast<uintptr_t>(candidate.attachment.get()));
+    }
     value(provider.draws.size());
     for (const auto &draw : provider.draws) {
       value(draw.objectIndex);
@@ -156,10 +179,14 @@ std::optional<RaySurfacePoint> reconstructRaySurface(
       glm::vec3(triangle.positions[1] - triangle.positions[0]), glm::vec3(0));
   const glm::vec3 edge1 = surfaceNormalize(
       glm::vec3(triangle.positions[2] - triangle.positions[0]), glm::vec3(0));
-  const glm::vec3 objectGeometricNormal =
+  glm::vec3 objectGeometricNormal =
       surfaceNormalize(glm::cross(edge0, edge1), glm::vec3(0));
   if (glm::dot(objectGeometricNormal, objectGeometricNormal) == 0.0f)
     return std::nullopt;
+  // Match the TLAS facing inversion for local mirrored deformation. Shading
+  // normals and tangent.w already include skinning's normal/handedness change.
+  if ((metadata.info.z & container::gpu::kObjectFlagDeformationWindingFlipped) != 0u)
+    objectGeometricNormal = -objectGeometricNormal;
 
   RaySurfacePoint result;
   result.geometricNormal =
@@ -191,6 +218,7 @@ std::optional<RaySurfacePoint> reconstructRaySurface(
     worldTangent += tangent * weights[i];
     tangentHandedness += handedness * weights[i];
     result.color += glm::vec3(triangle.colors[i]) * weights[i];
+    result.colorAlpha += triangle.colors[i].w * weights[i];
     result.uv += uv.uv[i] * weights[i];
   }
   result.position = glm::vec3(instance.model * glm::vec4(objectPosition, 1));
@@ -210,7 +238,8 @@ std::optional<RaySurfacePoint> reconstructRaySurface(
   result.frontFace = frontFace;
   if (!finite(result.position) || !finite(result.geometricNormal) ||
       !finite(result.shadingNormal) || !finite(result.tangent) ||
-      !finite(result.bitangent) || !finite(result.color) || !finite(result.uv))
+      !finite(result.bitangent) || !finite(result.color) ||
+      !std::isfinite(result.colorAlpha) || !finite(result.uv))
     return std::nullopt;
   return result;
 }
@@ -221,7 +250,7 @@ std::vector<RaySceneGeometry> ExtractedRayScene::geometryViews() const {
   for (const auto &source : geometry)
     views.push_back({source.provider, source.id, source.revision,
                      source.vertices, source.indices, false,
-                     source.storageIdentity});
+                     source.storageIdentity, source.opacityMicromap});
   // Candidates remain non-opaque even for solid materials: section planes and
   // box clipping must be evaluated at the ray hit rather than at the instance.
   return views;
@@ -256,14 +285,17 @@ extractRayScene(std::span<const RaySceneProviderSource> providers,
         geometry.provider = provider.provider;
         geometry.id = id;
         geometry.revision = provider.geometryRevision;
+        geometry.opacityMicromap = opacityMicromap(provider, id);
         geometry.storageIdentity = {
             reinterpret_cast<uintptr_t>(provider.vertices.data()),
             reinterpret_cast<uintptr_t>(provider.indices.data())};
         geometry.firstTriangle = static_cast<uint32_t>(scene.triangles.size());
+        geometry.indexOrderHash = 14695981039346656037ull;
         std::unordered_map<uint32_t, uint32_t> remap;
         geometry.indices.reserve(draw.indexCount);
         for (uint32_t i = 0; i < draw.indexCount; ++i) {
           const uint32_t sourceIndex = provider.indices[draw.firstIndex + i];
+          geometry.indexOrderHash = (geometry.indexOrderHash ^ sourceIndex) * 1099511628211ull;
           if (sourceIndex >= provider.vertices.size())
             throw std::invalid_argument("ray provider vertex is out of bounds");
           auto [entry, inserted] = remap.try_emplace(
@@ -274,8 +306,11 @@ extractRayScene(std::span<const RaySceneProviderSource> providers,
           if (i % 3 == 0)
             scene.triangles.emplace_back();
           const auto &vertex = provider.vertices[sourceIndex];
+          if (!std::isfinite(vertex.colorAlpha))
+            throw std::invalid_argument("ray vertex alpha must be finite");
           scene.triangles.back().uv[i % 3] =
               glm::vec4(vertex.texCoord, vertex.texCoord1);
+          scene.triangles.back().vertexAlpha[i % 3] = vertex.colorAlpha;
           if (options.includeSurfaceData) {
             validateSurfaceVertex(vertex);
             if (i % 3 == 0)
@@ -284,7 +319,7 @@ extractRayScene(std::span<const RaySceneProviderSource> providers,
             surface.positions[i % 3] = glm::vec4(vertex.position, 1.0f);
             surface.normals[i % 3] = glm::vec4(vertex.normal, 0.0f);
             surface.tangents[i % 3] = vertex.tangent;
-            surface.colors[i % 3] = glm::vec4(vertex.color, 1.0f);
+            surface.colors[i % 3] = glm::vec4(vertex.color, vertex.colorAlpha);
           }
         }
       }
@@ -323,7 +358,8 @@ extractRaySceneInstances(const ExtractedRayScene &geometry,
       if (found == ranges.end() ||
           geometry.geometry[found->second].revision !=
               provider.geometryRevision ||
-          geometry.geometry[found->second].storageIdentity != storage)
+          geometry.geometry[found->second].storageIdentity != storage ||
+          geometry.geometry[found->second].opacityMicromap != opacityMicromap(provider, geometryId(draw)))
         throw std::invalid_argument("ray geometry snapshot is stale");
       appendInstances(
           snapshot.instances, snapshot.instanceData, provider, draw,

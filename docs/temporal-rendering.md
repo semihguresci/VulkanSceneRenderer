@@ -379,6 +379,62 @@ compilation and SPIR-V legality; it does not execute a GPU parity test or claim
 TAA image-quality validation. The opt-in `temporal_regression.py` suite supplies
 runtime sequence, reference, lifecycle and performance evidence.
 
+Physics capture events use `physicsAttach` (`static`, `kinematic`, `dynamic`)
+and `physicsAction` (`play`, `pause`, `step`, `reset`, `clear`, `detach`). Omitted
+or empty commands do nothing. `physicsNode` targets an explicit primary scene
+node for attachment/detach; otherwise the current BIM/USD selection targets its
+whole product, including all fragments sharing its identity. Attachment may
+share an event with play/pause/step. Reset, clear and detach require a separate
+event. Commands execute after settled model changes and frame-fence retirement,
+before the named frame's fixed physics step.
+
+Primary object tracks continue sampling their last key after its frame. An
+explicit `guiUnload` retires their target: the frontend clears the authored
+transform cache and uses its invalid cached-node sentinel to suspend
+`objectName` resolution, `objectTranslation`, `objectScale` and `objectVisible`. A subsequent
+`reload`, `guiReload` or `guiSampleModel` event resets the cache to an active
+state and reacquires the named/indexed target in that scene. Invalid target
+names or indices remain errors while the tracks are active.
+
+`objectScale` uses keys such as
+`[{"frame":1,"scale":[1,1,1]},{"frame":91,"scale":[10,1,4]}]`.
+Each axis multiplies its captured authored base-matrix column; it does not
+replace imported scale or compound the previous frame's result. An absent or
+empty track leaves the authored basis unchanged. Scale and `objectTranslation`
+tracks share `objectNode`/`objectName`: scale multiplies columns 0–2 while
+translation adds to column 3. Values interpolate linearly and hold their first
+and last keys outside the keyed interval. Components must be finite native
+floats and nonzero; each axis keeps the same sign across adjacent keys so the
+interpolation cannot cross a singular zero scale. Negative multipliers remain
+valid for a consistently mirrored track. Target an imported source parent when
+world-space motion should precede that parent's scale, while physics can remain
+attached to its renderable primitive child.
+
+An attachment may include `physicsSettings` with `mass`, `friction`,
+`restitution`, `gravityFactor`, `useCCD`, `linearVelocity` and `angularVelocity`.
+Omitted fields retain backend defaults. The object requires `physicsAttach`;
+the command determines motion type and the imported scene determines pose.
+Numeric fields must be finite, mass positive, friction nonnegative and
+restitution within `[0,1]`; `useCCD` is a strict boolean. Capture telemetry's
+body `settings` records the attachment settings, including initial velocities.
+
+`tests/validation/physics_auxiliary_regression.py` generates small glTF, DotBIM
+and USD fixtures, then checks product motion, actual rendered fragment matrices,
+bounds, normal transforms, source identity, unrelated products and reset/detach/
+reload/unload. Set `CONTAINER_RUN_GPU_PHYSICS=1` for its opt-in CTest run. Its
+`--format`, `--technique` and `--mode` filters support focused native probes;
+`--check-existing` revalidates saved evidence and clears any stale pass first.
+
+`physicsJointCreate` creates and selects a fixed, hinge or slider joint. Its
+`bodyA`/`bodyB` selectors each name either a primary `node` or a `bimObject`;
+body A may instead be `{"world":true}`. The required `anchor` is a world position.
+Optional `axis`, `limits`, `motor` and `collideConnected` specify the mechanism.
+Limits contain zero and use radians for hinges or scene units for sliders.
+`physicsJointMotorVelocity` updates the selected joint without changing its
+reference frames; `physicsJointAction` removes the selected joint (`remove`) or
+all joints (`clear`). Creation and retirement require separate events. See
+[physics joint validation](physics-joints.md) for the fixture and lifecycle checks.
+
 In a Visual Studio Developer Command Prompt, after configuring the project:
 
 ```powershell

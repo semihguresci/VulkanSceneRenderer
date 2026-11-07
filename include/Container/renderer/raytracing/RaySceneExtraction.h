@@ -3,6 +3,7 @@
 #include "Container/renderer/raytracing/RayScene.h"
 #include "Container/renderer/scene/DrawCommand.h"
 #include "Container/utility/SceneData.h"
+#include "Container/utility/VulkanMemoryManager.h"
 
 #include <array>
 #include <memory>
@@ -10,7 +11,14 @@
 #include <span>
 #include <vector>
 
+namespace container::geometry::gltf { struct GltfOpacityMicromapAttachment; }
+
 namespace container::renderer {
+
+struct RayOpacityMicromapRange {
+  uint32_t firstIndex{}, indexCount{};
+  std::shared_ptr<const container::geometry::gltf::GltfOpacityMicromapAttachment> attachment;
+};
 
 // CPU geometry and semantic visibility, before camera/Hi-Z/draw-budget culling.
 // The caller advances geometryRevision only when vertex/index data changes.
@@ -21,19 +29,26 @@ struct RaySceneProviderSource {
   std::span<const uint32_t> indices;
   std::span<const container::gpu::ObjectData> objects;
   std::span<const DrawCommand> draws;
+  // Optional GPU model stream, reconciled to these CPU objects before AS build.
+  container::gpu::BufferSlice gpuObjects{};
+  uint64_t gpuTransformRevision{};
+  // Sorted, unique draw ranges whose current material matches baked coverage.
+  std::span<const RayOpacityMicromapRange> opacityMicromaps{};
 };
 
-// UV0/UV1 at each triangle corner. Matches ray_visibility_common.slang.
+// UV0/UV1 and COLOR_0 alpha at each corner. Matches ray_scene_data.slang.
 struct RayTriangleData {
   std::array<glm::vec4, 3> uv{};
+  glm::vec4 vertexAlpha{1.0f}; // xyz = triangle corners; w reserved
 };
 struct RayInstanceData {
   glm::uvec4 info{
-      0}; // first triangle, GPU material, object flags, provider kind
+      0}; // first triangle, GPU material, object flags, triangle count
 };
-static_assert(sizeof(RayTriangleData) == 48);
+static_assert(sizeof(RayTriangleData) == 64);
 static_assert(sizeof(RayInstanceData) == 16);
 static_assert(offsetof(RayTriangleData, uv) == 0);
+static_assert(offsetof(RayTriangleData, vertexAlpha) == 48);
 static_assert(offsetof(RayInstanceData, info) == 0);
 
 // Optional closest-hit attributes, separate from the small shadow metadata.
@@ -74,6 +89,7 @@ struct RaySurfacePoint {
   glm::vec4 tangent{};
   glm::vec3 bitangent{};
   glm::vec3 color{};
+  float colorAlpha{};
   glm::vec4 uv{};
   uint32_t materialIndex{0}, objectFlags{0};
   bool frontFace{true};
@@ -91,7 +107,9 @@ struct ExtractedRayScene {
     std::vector<container::geometry::Vertex> vertices;
     std::vector<uint32_t> indices;
     uint32_t firstTriangle{0};
+    uint64_t indexOrderHash{};
     RaySceneStorageIdentity storageIdentity{};
+    std::shared_ptr<const container::geometry::gltf::GltfOpacityMicromapAttachment> opacityMicromap;
   };
   std::vector<Geometry> geometry;
   std::vector<RaySceneInstance> instances;

@@ -33,6 +33,8 @@ The Tekla House performance measurements and remaining work are documented in
 Static category counts, bounds, provider triangle batches and unchanged filtered
 LOD totals are also cached; their live-field and lifetime contracts are documented
 in [BIM frame caching](bim-frame-cache.md).
+Hierarchy virtualization, cached element queries and paged wrapped tables are
+documented in [scene browser performance](scene-browser-performance.md).
 
 Run the CPU UI and capture tests after a Release build:
 
@@ -46,6 +48,16 @@ window. Capture parser tests check one-shot unload events and reject conflicting
 model actions. Python harness tests verify that stale images, missing telemetry,
 runtime errors and failed assertions cannot produce a passing report.
 The Python capture and harness tests require NumPy and Pillow.
+
+The glTF loader generates missing tangents from the normal map's selected UV0
+or UV1 coordinates, including `KHR_texture_transform.texCoord` overrides.
+Valid authored tangents are retained during malformed-neighbor repair.
+`gltf_loader_tests` checks analytical opposite-UV triangles in static and
+skin-only meshes. The separate native
+[`gltf_tangent_uv_runtime_regression.py`](../tests/validation/gltf_tangent_uv_runtime_regression.py)
+compares generated frames with authored tangents and visible wrong-UV controls;
+its invocation and validated matrix are documented in
+[glTF deformation](gltf-deformation.md).
 
 Run the native model suites on a Vulkan-capable Windows desktop:
 

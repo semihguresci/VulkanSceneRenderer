@@ -2,6 +2,7 @@
 
 #include "Container/common/CommonMath.h"
 
+#include <array>
 #include <cstdint>
 #include <limits>
 
@@ -21,6 +22,23 @@ struct TextureTransform {
   // 0-3 select RGBA. Values above 3 mean the shader should use the
   // material-model channel convention for that texture slot.
   uint32_t channel{4};
+};
+
+struct ExperimentalMaterialLayer {
+  float retroreflection{};
+  float scatterStrength{};
+  float scatterAnisotropy{};
+  glm::vec3 scatterColor{1.0f};
+  uint32_t retroreflectionTexture{std::numeric_limits<uint32_t>::max()};
+  uint32_t scatterStrengthTexture{std::numeric_limits<uint32_t>::max()};
+  uint32_t scatterColorTexture{std::numeric_limits<uint32_t>::max()};
+  TextureTransform retroreflectionTransform;
+  TextureTransform scatterStrengthTransform;
+  TextureTransform scatterColorTransform;
+
+  [[nodiscard]] std::array<uint32_t, 3> textureResources() const {
+    return {retroreflectionTexture, scatterStrengthTexture, scatterColorTexture};
+  }
 };
 
 struct Material {
@@ -52,6 +70,10 @@ struct Material {
   float iridescenceIor{1.3f};
   float iridescenceThicknessMinimum{100.0f};
   float iridescenceThicknessMaximum{400.0f};
+  float anisotropyStrength{0.0f};
+  float anisotropyRotation{0.0f};
+  float diffuseTransmissionFactor{0.0f};
+  glm::vec3 diffuseTransmissionColorFactor{1.0f};
   uint32_t baseColorTextureIndex{std::numeric_limits<uint32_t>::max()};
   uint32_t normalTextureIndex{std::numeric_limits<uint32_t>::max()};
   uint32_t occlusionTextureIndex{std::numeric_limits<uint32_t>::max()};
@@ -72,6 +94,9 @@ struct Material {
   uint32_t sheenRoughnessTextureIndex{std::numeric_limits<uint32_t>::max()};
   uint32_t iridescenceTextureIndex{std::numeric_limits<uint32_t>::max()};
   uint32_t iridescenceThicknessTextureIndex{std::numeric_limits<uint32_t>::max()};
+  uint32_t anisotropyTextureIndex{std::numeric_limits<uint32_t>::max()};
+  uint32_t diffuseTransmissionTextureIndex{std::numeric_limits<uint32_t>::max()};
+  uint32_t diffuseTransmissionColorTextureIndex{std::numeric_limits<uint32_t>::max()};
   TextureTransform baseColorTextureTransform{};
   TextureTransform normalTextureTransform{};
   TextureTransform occlusionTextureTransform{};
@@ -92,9 +117,21 @@ struct Material {
   TextureTransform sheenRoughnessTextureTransform{};
   TextureTransform iridescenceTextureTransform{};
   TextureTransform iridescenceThicknessTextureTransform{};
+  TextureTransform anisotropyTextureTransform{};
+  TextureTransform diffuseTransmissionTextureTransform = [] {
+    TextureTransform transform;
+    transform.channel = 3;
+    return transform;
+  }();
+  TextureTransform diffuseTransmissionColorTextureTransform{};
   AlphaMode alphaMode{AlphaMode::Opaque};
   bool doubleSided{false};
   bool specularGlossinessWorkflow{false};
   bool unlit{false};
+  ExperimentalMaterialLayer experimental;
+  // Authored SG inputs stay separate from the raster MR approximation.
+  // Alpha and glossiness retain their existing baseColor.a/roughnessFactor owners.
+  glm::vec3 specularGlossinessDiffuse{1.0f};
+  glm::vec3 specularGlossinessSpecular{1.0f};
 };
 }  // namespace container::material

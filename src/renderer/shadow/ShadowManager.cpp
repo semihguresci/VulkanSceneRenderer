@@ -756,13 +756,22 @@ void ShadowManager::update(const container::scene::BaseCamera* camera,
     nearPlane = orthoCam->nearPlane();
     farPlane = orthoCam->farPlane();
   }
+  update(camera->viewMatrix(), camera->projectionMatrix(aspectRatio),
+         nearPlane, farPlane, lightDirection, shadowSettings,
+         casterSceneBounds, imageIndex);
+}
+
+void ShadowManager::update(
+    const glm::mat4& cameraView, const glm::mat4& cameraProj,
+    float nearPlane, float farPlane,
+    const glm::vec3& lightDirection,
+    const container::gpu::ShadowSettings& shadowSettings,
+    const ShadowCasterSceneBounds* casterSceneBounds,
+    uint32_t imageIndex) {
   nearPlane = std::max(nearPlane, 1.0e-4f);
   farPlane = std::max(farPlane, nearPlane + 1.0e-3f);
 
   computeCascadeSplits(nearPlane, farPlane);
-
-  const glm::mat4 cameraView = camera->viewMatrix();
-  glm::mat4 cameraProj = camera->projectionMatrix(aspectRatio);
 
   const float normalBiasMinTexels =
       std::max(shadowSettings.normalBiasMinTexels, 0.0f);

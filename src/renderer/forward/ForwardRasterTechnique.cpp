@@ -18,7 +18,9 @@
 #include "Container/renderer/deferred/DeferredRasterTransformGizmo.h"
 #include "Container/renderer/deferred/DeferredTransparentOitRecorder.h"
 #include "Container/renderer/effects/BloomManager.h"
+#include "Container/renderer/effects/OpenVdbVolumeRenderer.h"
 #include "Container/renderer/effects/ExposureManager.h"
+#include "Container/renderer/effects/VolumetricFogPass.h"
 #include "Container/renderer/forward/ForwardRasterLightingPassRecorder.h"
 #include "Container/renderer/forward/ForwardRasterPipelineBridge.h"
 #include "Container/renderer/forward/ForwardRasterResourceBridge.h"
@@ -238,6 +240,14 @@ void registerForwardRasterPipelineRecipes(PipelineRegistry &registry) {
                             "spv_shaders/wireframe_debug.frag.spv"},
                            "wireframe");
   }
+  registerGraphicsRecipe("selection-mask",
+                         {"spv_shaders/wireframe_debug.vert.spv",
+                          "spv_shaders/wireframe_debug.frag.spv"},
+                         "wireframe");
+  registerGraphicsRecipe("selection-outline",
+                         {"spv_shaders/selection_outline.vert.spv",
+                          "spv_shaders/selection_outline.frag.spv"},
+                         "wireframe");
   registerGraphicsRecipe("post-process",
                          {"spv_shaders/post_process.vert.spv",
                           "spv_shaders/post_process.frag.spv"},
@@ -399,7 +409,7 @@ void recordForwardRasterDepthPrepass(
                 p, ForwardRasterFramebufferId::DepthPrepass),
             .framebuffer = forwardRasterFramebuffer(
                 p, ForwardRasterFramebufferId::DepthPrepass),
-            .extent = sharedContext.swapchainExtent(),
+            .extent = sharedContext.sceneExtent(p),
             .draws = forwardRasterSceneOpaqueDrawLists(p.draws),
             .geometry = {.descriptorSet = forwardRasterDescriptorSet(
                              p, ForwardRasterDescriptorSetId::Scene),
@@ -455,7 +465,7 @@ void recordForwardRasterBimDepthPrepass(
            p, ForwardRasterFramebufferId::BimDepthPrepass),
        .framebuffer = forwardRasterFramebuffer(
            p, ForwardRasterFramebufferId::BimDepthPrepass),
-       .extent = sharedContext.swapchainExtent(),
+       .extent = sharedContext.sceneExtent(p),
        .binding = forwardRasterBimSurfaceFrameBinding(p.bim, descriptorSets),
        .pipelines = forwardRasterBimDepthPrepassPipelines(p),
        .pipelineLayout =
@@ -737,6 +747,8 @@ void recordForwardRasterSceneColorReadBarrier(VkCommandBuffer cmd,
 [[nodiscard]] RenderPassReadiness forwardRasterExposureAdaptationReadiness(
     const FrameRecordParams &p,
     const DeferredRasterFrameGraphContext &sharedContext) {
+  if (p.runtime.activeTechnique == RenderTechniqueId::PathTracing && p.debug.displayMode != 0)
+    return renderPassNotNeeded();
   ExposureManager *exposureManager = sharedContext.exposureManager();
   if (exposureManager == nullptr || !exposureManager->isReady()) {
     return renderPassNotNeeded();
@@ -778,6 +790,8 @@ void recordForwardRasterExposureAdaptation(
 [[nodiscard]] RenderPassReadiness forwardRasterBloomReadiness(
     const FrameRecordParams &p,
     const DeferredRasterFrameGraphContext &sharedContext) {
+  if (p.runtime.activeTechnique == RenderTechniqueId::PathTracing && p.debug.displayMode != 0)
+    return renderPassNotNeeded();
   BloomManager *bloomManager = sharedContext.bloomManager();
   if (bloomManager == nullptr || !bloomManager->isReady() ||
       !bloomManager->enabled()) {
@@ -929,13 +943,15 @@ void recordForwardRasterPostProcessPass(
            p, ForwardRasterPipelineLayoutId::PostProcess),
        .descriptorSets = postProcessSets,
        .frameInputs =
-           {.displayMode = sharedContext.displayMode(),
+           {.displayMode = p.runtime.activeTechnique == RenderTechniqueId::PathTracing
+                ? static_cast<container::ui::GBufferViewMode>(p.debug.displayMode) : sharedContext.displayMode(),
             .bloomPassActive = sharedContext.isPassActive(RenderPassId::Bloom),
             .bloomReady = bloomManager != nullptr && bloomManager->isReady(),
             .bloomEnabled = bloomManager != nullptr && bloomManager->enabled(),
             .bloomIntensity =
                 bloomManager != nullptr ? bloomManager->intensity() : 0.0f,
             .exposureSettings = exposureSettings,
+            .displayGrade = p.postProcess.displayGrade,
             .resolvedExposure =
                 exposureManager != nullptr
                     ? exposureManager->resolvedExposure(exposureSettings)
@@ -952,9 +968,15 @@ void recordForwardRasterPostProcessPass(
                     : 0u,
             .transparentOitActive =
                 sharedContext.isPassActive(RenderPassId::OitResolve)},
+       .captureSceneLinear = p.screenshot.sceneLinear,
        .recordAfterFullscreenDraw = [&sharedContext, &p,
                                      postProcessSets](VkCommandBuffer passCmd) {
-         if (p.services.ddgiManager)
+         if (p.screenshot.viewportOnly) {
+           if (auto* gui = sharedContext.guiManager())
+             gui->endFrame();
+           return;
+         }
+         if (p.services.ddgiManager && p.runtime.activeTechnique != RenderTechniqueId::PathTracing)
            p.services.ddgiManager->recordDebug(passCmd, p.runtime.imageIndex,
                                                postProcessSets[0]);
          recordForwardRasterLightGizmoOverlay(passCmd, p, sharedContext,
@@ -1236,7 +1258,12 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                            return forwardRasterLocalShadowReadiness(p);
                          });
 
-  graph.addPass(RenderPassId::DepthToReadOnly, {RenderPassId::LocalShadowDepth},
+  // The shared picker copies depth while the prepass image is still in its
+  // attachment layout. Complete the copy before forward transitions it for sampling.
+  registerRasterTransparentPickPass(RenderGraphBuilder(graph), context.deferredRaster,
+                                    {RenderPassId::BimDepthPrepass});
+  graph.addPass(RenderPassId::DepthToReadOnly,
+                {RenderPassId::LocalShadowDepth, RenderPassId::TransparentPick},
                 [](VkCommandBuffer cmd, const FrameRecordParams &p) {
                   recordForwardRasterDepthReadOnlyTransition(cmd, p);
                 });
@@ -1307,8 +1334,12 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                         {RenderPassId::CullStatsReadback});
   }
   graph.addPass(RenderPassId::Lighting, {RenderPassId::OitClear},
-                [](VkCommandBuffer cmd, const FrameRecordParams &p) {
+                [sharedContext = context.deferredRaster](VkCommandBuffer cmd, const FrameRecordParams &p) {
                   (void)recordForwardRasterLightingPassCommands(cmd, p);
+                  if (p.services.openVdbVolumeRenderer)
+                    p.services.openVdbVolumeRenderer->record(cmd, p,
+                        sharedContext && sharedContext->isPassActive(RenderPassId::OitClear) &&
+                        sharedContext->isPassActive(RenderPassId::OitResolve));
                 });
   graph.setPassReadiness(RenderPassId::Lighting,
                          [](const FrameRecordParams &p) {
@@ -1328,7 +1359,8 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
       {RenderResourceId::SceneColor, RenderResourceId::OitStorage});
   graph.setPassResourceTransitions(RenderPassId::Lighting, {});
   RenderGraphBuilder temporalGraph(graph);
-  registerTemporalPasses(temporalGraph);
+  registerVolumetricFogPass(temporalGraph, RenderPassId::Lighting, context.deferredRaster);
+  registerTemporalPasses(temporalGraph, RenderPassId::VolumetricFog);
   registerRayShadowPasses(temporalGraph);
   registerDdgiPasses(temporalGraph);
 

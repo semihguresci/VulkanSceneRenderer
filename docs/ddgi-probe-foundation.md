@@ -40,11 +40,28 @@ unsupported secondary transport conservatively supplies black radiance and a
 finite occluder distance. An actually black transmission texel can act as an
 opaque secondary reflector. Active height displacement disables the shared
 ray scene; BIM semantic-color diagnostic modes use raster lighting. Native
-points/polylines have no triangle AS representation. General glossy reflection,
-caustics and mip footprints are outside this diffuse route; ray material textures
-use base-mip sampling. The optional glass policies below add straight-through
+points/polylines have no triangle AS representation. General glossy reflection
+and caustics are outside this diffuse route. Probe rays carry ray-cone
+footprints: each of `rayCount` equal-solid-angle sphere samples owns
+`4*pi/rayCount` steradians, the equivalent cone's diameter drives hit-texture
+filtering through per-coordinate-set UV gradients, and refracted continuations
+inherit the slant-corrected footprint of the surface they left. Coverage
+candidates and visibility shadow connections keep base-mip reads. A missing,
+nonfinite, or overflowing transformed footprint also uses an explicit base-mip
+sample. The optional
+glass policies below add straight-through
 thin-sheet or bounded refractive secondary paths; transmissive primary receivers
 keep fallback.
+
+The normal/alpha footprint acceptance gate passes 112 raw captures across both
+raster techniques. Authored coarse normal mips match an independent baked-normal
+control exactly; degenerate UVs match the base-normal fallback. Conservative
+cutout coverage matches independently authored strip geometry exactly, while
+wrong-normal, full and empty controls remain distinct. Results are in
+`build/codex-gltf-validation/ray-footprint-normal-alpha-final-dfc887-native/results.json`
+on renderer `dfc887d53da4bb81ac75196f7d554ce0e9bf40e8110aaac72a6c592c8b9e84a4`.
+Dispatch timing, texture sizes and owned allocations are recorded; hardware
+bandwidth counters are unavailable on this device.
 
 Direct-hit lighting supports directional, punctual and rectangle/disk emitters,
 emission, vertex colors, normal maps and diffuse energy attenuation from
@@ -265,14 +282,22 @@ A zero factor retains a thin surface: rough transmission scatters the continuing
 direction without declaring an enclosed medium. The separate thin-glass opt-in
 keeps its previous smooth, straight-through behavior when this mode is disabled.
 
-The bounded traversal supports one closed homogeneous volume at a time, whose
-entry/exit boundaries belong to the same ray instance. Nested/intersecting media,
-open or malformed volumes, opaque terminal geometry and an exhausted eight-hit
-interface/reflection budget stop conservatively. Rays preserve their original
-probe direction and finite total world-distance budget; refracted visibility
-moments use path distance. Curved-path backfaces do not provide evidence that
-the original probe lies inside an opaque solid. Matching IORs leave direction
-unchanged; zero attenuation channels remain black without producing NaNs.
+The bounded traversal supports up to four nested closed homogeneous media.
+Each shell has its own ray instance and material. A ray must leave shells in
+reverse entry order through their matching back faces. Snell and Fresnel use
+the IORs on either side of the boundary. Only the innermost medium absorbs each
+segment, and leaving it restores the enclosing medium. Total internal
+reflection retains the current medium. An unmatched or repeated boundary, an
+opaque interior, a thin sheet within a medium or an exhausted eight-event
+crossing/reflection budget stops the path conservatively. Intersections that
+produce inconsistent crossing order are blocked. The traversal checks the
+topology observed by each ray.
+
+Rays preserve their original probe direction and finite total world-distance
+budget. Refracted visibility moments use path distance. Curved-path backfaces
+do not provide evidence that the original probe lies inside an opaque solid.
+Matching IORs leave direction unchanged. Zero attenuation channels remain
+black without producing NaNs.
 
 This secondary path adds no transparent receiver GI, primary raster refraction,
 scattering, dispersion, caustics or non-TIR reflected branch. Direct-light queries
@@ -305,12 +330,24 @@ and the status message report the actual mode. Telemetry also separates
 ownership transfer is required because this route uses the graphics family;
 dedicated queues from other families are outside the current implementation.
 
-The extended fixture runner is `run_dielectric.py`; its matched active GI1/GI0
-captures compare clear/rough/absorbing volumes with disabled, opaque-terminal,
-malformed-open and nested-volume controls in both raster routes. GPU transport
-contracts independently check Snell entry/exit, TIR, IOR matching, GGX sample
-directions and finite absorption. These checks complement CPU placement, scroll,
-preset migration and queue lifecycle tests. Run native/GPU workloads serially:
+The extended fixture runner `run_dielectric.py` uses matched active GI1/GI0
+captures in both raster routes. It compares clear, rough, absorbing and nested
+volumes with disabled, opaque-terminal, open, overlapping and same-instance
+controls. GPU transport contracts independently check Snell entry and exit,
+TIR, relative IOR, GGX sample directions, stack order and colored absorption
+at several scales. Run native and GPU workloads serially.
+
+The 240×200 native cohort passed 44 captures across forward and deferred
+raster. With 44 updates of 32,768 rays each, the matched clear nested receiver
+measured indirect luminance 0.05121 in deferred and 0.05162 in forward. The
+absorbing stack retained blue at 0.03468 and 0.03519, with red at 0 and 0.00023.
+Open, intersecting, and same-instance shells stayed within the fixture's
+blocked controls. The clear nested captures sampled 0.778–0.791 ms for
+`DdgiTrace` and 0.240–0.243 ms for `DdgiUpdate` on the RTX 2080 SUPER. DDGI
+owned 5,549,936 bytes and the shared ray scene reported 10,852,288 bytes in
+this fixture. The trace timings are the most recent retired timestamps at
+capture. The full receipt is in
+`out/feature-parity/ddgi-nested-current/dielectric-results.json`.
 
 ```powershell
 python -B tests/visual-regression/ddgi/run_extensions.py
@@ -411,7 +448,7 @@ allocations.
 
 `--ddgi-surface-memory-mb` defaults to 128 MiB per compact optional surface
 payload: 192 bytes/triangle plus 112 bytes/instance, beyond the existing
-48-byte UV triangle and 16-byte shadow instance metadata. Limits are checked
+64-byte UV/vertex-alpha triangle and 16-byte shadow instance metadata. Limits are checked
 before extracting/uploading optional surfaces. A rejected GI payload preserves
 compact shadow metadata. Invalid optional attributes or an unrepresentable
 normal transform also disable GI with a reported reason while preserving the

@@ -1,0 +1,16 @@
+{
+  "name": "miniz",
+  "description": "Pinned latest project dependency; see source pin in portfile.cmake",
+  "license": "MIT",
+  "version": "3.1.2",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ]
+}

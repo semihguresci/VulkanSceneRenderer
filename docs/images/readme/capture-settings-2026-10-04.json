@@ -1,0 +1,241 @@
+{
+  "rendererCommit": "65b58c1514281105a3d9a6733712ff4d33ae9ea0",
+  "width": 1600,
+  "height": 900,
+  "renderTechnique": "deferred-raster",
+  "taa": true,
+  "msaa": 1,
+  "fixedDt": 0.016666667,
+  "warmupFrames": 8,
+  "scenes": [
+    {
+      "name": "sponza-hallway",
+      "model": "<glTF-Sample-Assets>/Models/Sponza/glTF/Sponza.gltf",
+      "args": [
+        "--camera-position",
+        "8",
+        "1.8",
+        "0",
+        "--camera-target",
+        "-8",
+        "2.8",
+        "0",
+        "--camera-fov",
+        "65",
+        "--directional-direction",
+        "0.35",
+        "-1",
+        "-0.08",
+        "--directional-color",
+        "1",
+        "1",
+        "1",
+        "--directional-intensity",
+        "8",
+        "--environment-intensity",
+        "0.08",
+        "--exposure",
+        "0.22",
+        "--no-bloom"
+      ],
+      "captureFrame": 40000,
+      "lightingNotes": "Steep directional sunlight (0.35, -1, -0.08), intensity 8, neutral color; environment fill 0.08 and exposure 0.22 to show courtyard and arcade shadows."
+    },
+    {
+      "name": "flight-helmet-pbr",
+      "model": "<glTF-Sample-Assets>/Models/FlightHelmet/glTF/FlightHelmet.gltf",
+      "args": [
+        "--camera-position",
+        "-0.65",
+        "0.62",
+        "0.8",
+        "--camera-target",
+        "0",
+        "0.36",
+        "0",
+        "--camera-fov",
+        "46",
+        "--no-bloom"
+      ],
+      "captureFrame": 25000
+    },
+    {
+      "name": "toy-car-pbr",
+      "model": "<glTF-Sample-Assets>/Models/ToyCar/glTF/ToyCar.gltf",
+      "args": [
+        "--import-scale",
+        "100",
+        "--camera-position",
+        "8",
+        "5",
+        "9",
+        "--camera-target",
+        "0",
+        "-0.2",
+        "0",
+        "--camera-fov",
+        "40",
+        "--exposure",
+        "0.3",
+        "--no-bloom"
+      ],
+      "captureFrame": 25000
+    },
+    {
+      "name": "usd-teapot",
+      "model": "<tinyusdz>/models/teapot-pbr.usdc",
+      "args": [
+        "--camera-position",
+        "2",
+        "1.7",
+        "3",
+        "--camera-target",
+        "0",
+        "0",
+        "0",
+        "--camera-fov",
+        "40",
+        "--no-bloom"
+      ],
+      "captureFrame": 48
+    },
+    {
+      "name": "usd-suzanne",
+      "model": "<tinyusdz>/models/suzanne-pbr.usda",
+      "args": [
+        "--camera-position",
+        "3",
+        "1.7",
+        "4.5",
+        "--camera-target",
+        "0",
+        "0",
+        "0",
+        "--camera-fov",
+        "40",
+        "--no-bloom"
+      ],
+      "captureFrame": 48
+    },
+    {
+      "name": "bim-tekla-house",
+      "model": "<IFC5-development>/examples/Tekla House/TeklaHouse.ifcx",
+      "args": [
+        "--camera-position",
+        "90",
+        "53",
+        "50",
+        "--camera-target",
+        "27",
+        "16",
+        "-15",
+        "--camera-fov",
+        "45",
+        "--directional-intensity",
+        "1",
+        "--environment-intensity",
+        "0.7",
+        "--no-bloom"
+      ],
+      "captureFrame": 48
+    },
+    {
+      "name": "bim-acca-building",
+      "model": "<IFC5-development>/examples/ACCA Building/esempio_01 edificius.ifcx",
+      "args": [
+        "--camera-fov",
+        "40",
+        "--camera-position",
+        "66.4244",
+        "50.8638",
+        "-43.3006",
+        "--camera-target",
+        "12",
+        "-3",
+        "12",
+        "--directional-intensity",
+        "1.5",
+        "--environment-intensity",
+        "0.8",
+        "--exposure",
+        "0.22",
+        "--no-bloom"
+      ],
+      "captureFrame": 48
+    },
+    {
+      "name": "geometric-shadows",
+      "model": "docs/images/readme/scenes/shadow-blockers.gltf",
+      "args": [
+        "--camera-position",
+        "4.5",
+        "4",
+        "6",
+        "--camera-target",
+        "-0.1",
+        "0.8",
+        "0",
+        "--camera-fov",
+        "48",
+        "--directional-intensity",
+        "0",
+        "--environment-intensity",
+        "0.05",
+        "--exposure",
+        "0.25",
+        "--no-bloom"
+      ],
+      "captureFrame": 40000,
+      "lightingVariant": "Point light at (-2.2, 3.5, 2.5), intensity 220, range 15; geometry from models/validation/taa_equivalent.gltf."
+    },
+    {
+      "name": "lamp-shadows",
+      "model": "<glTF-Sample-Assets>/Models/LightsPunctualLamp/glTF/LightsPunctualLamp-gallery.gltf",
+      "args": [
+        "--camera-position",
+        "3.2",
+        "2.9",
+        "4.4",
+        "--camera-target",
+        "0.3",
+        "0.7",
+        "0",
+        "--camera-fov",
+        "45",
+        "--directional-intensity",
+        "0",
+        "--environment-intensity",
+        "0.1",
+        "--exposure",
+        "0.28",
+        "--no-bloom"
+      ],
+      "captureFrame": 40000,
+      "lightingVariant": "Run prepare_lamp_scene.py on LightsPunctualLamp.gltf; adds floor and key light, scales authored light intensities by 0.02."
+    },
+    {
+      "name": "debug-render-targets",
+      "model": "<glTF-Sample-Assets>/Models/FlightHelmet/glTF/FlightHelmet.gltf",
+      "args": [
+        "--display-mode",
+        "overview",
+        "--camera-position",
+        "-0.65",
+        "0.62",
+        "0.8",
+        "--camera-target",
+        "0",
+        "0.36",
+        "0",
+        "--camera-fov",
+        "46",
+        "--no-bloom"
+      ],
+      "captureFrame": 10000
+    }
+  ],
+  "sourceVersions": {
+    "buildingSMART_IFC5": "1a63082ada967c683cfacee2005f8f749c8e1b79",
+    "tinyusdz": "v0.9.3"
+  }
+}

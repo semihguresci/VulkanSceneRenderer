@@ -6,6 +6,7 @@
 #include "Container/renderer/deferred/DeferredTransparentOitFramePassRecorder.h"
 #include "Container/renderer/shadow/ShadowCascadeFramePassRecorder.h"
 
+#include <initializer_list>
 #include <optional>
 
 namespace container::gpu {
@@ -56,6 +57,7 @@ public:
 
   [[nodiscard]] RenderGraphBuilder graphBuilder() const;
   [[nodiscard]] VkExtent2D swapchainExtent() const;
+  [[nodiscard]] VkExtent2D sceneExtent(const FrameRecordParams &p) const;
   [[nodiscard]] container::ui::GBufferViewMode displayMode() const;
   [[nodiscard]] const OitManager *oitManager() const;
   [[nodiscard]] DeferredTransparentOitFramePassRecorder
@@ -72,7 +74,8 @@ public:
   [[nodiscard]] const container::scene::BaseCamera *camera() const;
   [[nodiscard]] const SceneController *sceneController() const;
   [[nodiscard]] const DebugOverlayRenderer *debugOverlay() const;
-  [[nodiscard]] DeferredRasterLightingPassRecorder lightingPassRecorder() const;
+  [[nodiscard]] DeferredRasterLightingPassRecorder lightingPassRecorder(
+      const FrameRecordParams &p) const;
 
   void recordShadowPass(VkCommandBuffer cmd, const FrameRecordParams &p,
                         uint32_t cascadeIndex) const;
@@ -104,5 +107,10 @@ private:
   DebugOverlayRenderer debugOverlay_{};
   ShadowCascadeFramePassRecorder shadowCascadeFramePassRecorder_{};
 };
+
+// The forward and deferred graphs share the pick targets and draw routes.
+void registerRasterTransparentPickPass(
+    RenderGraphBuilder graph, DeferredRasterFrameGraphContext *context,
+    std::initializer_list<RenderPassId> dependencies = {});
 
 } // namespace container::renderer

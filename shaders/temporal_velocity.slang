@@ -5,7 +5,7 @@
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(1, 0)]] StructuredBuffer<ObjectBuffer> uObjects;
-[[vk::binding(2, 0)]] SamplerState materialSamplers[MATERIAL_SAMPLER_DESCRIPTOR_COUNT];
+[[vk::binding(2, 0)]] SamplerState materialSamplers[];
 [[vk::binding(3, 0)]] StructuredBuffer<GpuMaterial> uMaterials;
 [[vk::binding(4, 0)]] StructuredBuffer<GpuTextureMetadata> uTextureMetadata;
 [[vk::binding(5, 0)]] Texture2D materialTextures[MATERIAL_TEXTURE_DESCRIPTOR_COUNT];
@@ -25,6 +25,9 @@ struct VSInput
     [[vk::location(2)]] float2 inTexCoord;
     [[vk::location(3)]] float3 inNormal;
     [[vk::location(5)]] float2 inTexCoord1;
+    [[vk::location(8)]] float inColorAlpha;
+    [[vk::location(6)]] float3 inPreviousPosition;
+    [[vk::location(7)]] float3 inPreviousNormal;
 };
 
 struct VSOutput
@@ -58,6 +61,12 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
         input.inPosition, input.inNormal, heightTexCoord,
         material.heightTextureIndex, material.heightTextureTransform,
         material.heightScale, material.heightOffset);
+    // UVs and material parameters share the existing revision contract. Local
+    // position/normal can deform independently of the object's rigid matrices.
+    float3 previousObjectPosition = ApplyHeightDisplacement(
+        input.inPreviousPosition, input.inPreviousNormal, heightTexCoord,
+        material.heightTextureIndex, material.heightTextureTransform,
+        material.heightScale, material.heightOffset);
     float4 worldPos = mul(obj.model, float4(objectPosition, 1.0));
     output.pos = mul(uCamera.viewProj, worldPos);
     output.texCoord = input.inTexCoord;
@@ -65,13 +74,13 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
     output.baseColorTextureIndex = material.baseColorTextureIndex;
     output.flags = material.flags | obj.objectInfo.y;
     output.alphaCutoff = material.alphaCutoff;
-    output.baseColorAlpha = material.color.a;
+    output.baseColorAlpha = material.color.a * input.inColorAlpha;
     output.opacityTextureIndex = material.opacityTextureIndex;
     output.opacityFactor = material.opacityFactor;
     output.objectIndex = objectIndex;
     output.worldPos = worldPos.xyz;
     output.currentClip = mul(uCamera.unjitteredViewProj, worldPos);
-    output.previousClip = mul(uCamera.previousViewProj, mul(obj.previousModel, float4(objectPosition, 1.0)));
+    output.previousClip = mul(uCamera.previousViewProj, mul(obj.previousModel, float4(previousObjectPosition, 1.0)));
     return output;
 }
 
@@ -104,6 +113,7 @@ VelocityOutput fragMain(VSOutput input)
         ApplyGpuTextureTransform(input.texCoord, input.texCoord1,
                                  material.opacityTextureTransform),
         material.opacityTextureTransform);
+    alpha = ResolveGpuMaterialAlpha(alpha, material.flags);
 
     if ((input.flags & 0x1u) != 0u &&
         !AlphaMaskPass(alpha, input.alphaCutoff, input.pos))

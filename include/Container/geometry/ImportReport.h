@@ -42,14 +42,17 @@ struct ImportReport {
   std::map<std::string, size_t> representationWarnings{};
   // A prepared IFCX model may be displayed after the STEP import fails.
   std::string fallbackSource{};
+  // Other importers share this report without inheriting IFC terminology.
+  std::string sourceFormat{"IFC"};
+  std::string sourceItemName{"products"};
 
   [[nodiscard]] std::string summary() const {
     if (completeness == ImportCompleteness::Unreported)
       return {};
     std::string result =
         std::string(importCompletenessName(completeness)) +
-        " IFC import: " + std::to_string(importedProductCount) + "/" +
-        std::to_string(sourceProductCount) + " products imported, " +
+        " " + sourceFormat + " import: " + std::to_string(importedProductCount) + "/" +
+        std::to_string(sourceProductCount) + " " + sourceItemName + " imported, " +
         std::to_string(skippedProductCount) + " skipped, " +
         std::to_string(partialProductCount) + " incomplete; " +
         std::to_string(diagnostics.size()) + " representation warnings";

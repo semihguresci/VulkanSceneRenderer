@@ -1,0 +1,15 @@
+{
+  "name": "tinyexr",
+  "version-semver": "3.4.0",
+  "description": "Official 3.4.0 release; explicit legacy-cpp-v1 compatibility payload",
+  "homepage": "https://github.com/syoyo/tinyexr",
+  "license": "BSD-3-Clause",
+  "features": {
+    "legacy-cpp": {
+      "description": "Explicit latest-release C++ compatibility interface; legacy-cpp-v1",
+      "dependencies": [
+        "miniz"
+      ]
+    }
+  }
+}

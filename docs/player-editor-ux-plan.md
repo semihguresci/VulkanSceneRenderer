@@ -2,9 +2,10 @@
 
 This plan defines the user experience direction for splitting the renderer into
 two primary modes: a focused player/renderer mode and a full editor mode. The
-goal is to grow the project toward a professional scene creation tool inspired
-by Blender, Maya, Revit, Unreal Engine, and AI-assisted workflows without
-copying their complexity directly.
+goal is to grow the project toward a professional scene creation tool using
+familiar workflows from Blender, Unreal Editor, Substance 3D Painter, Revit,
+3ds Max, AutoCAD and Fusion, while preserving its existing BIM and renderer
+engineering tools.
 
 ## Product Direction
 
@@ -20,16 +21,31 @@ previewable, reversible, and understandable.
 
 ## UI Framework Direction
 
-The editor should use Qt 6 as the desktop application framework and an advanced
-docking system for the professional editor layout. ImGui should not be the main
-UI engine for the application shell.
+The editor should use open source libraries with permissive licenses. The user
+selected this direction on 26 October 2026, superseding the earlier Qt proposal.
+Use Dear ImGui docking and the existing GLFW and Vulkan integration for the
+application shell. The detailed component, workspace, feature coverage and
+license requirements are in [UI UX Design Guide](ui-ux-design-guide.md).
+
+Follow the guide's established editor patterns: top workspace tabs, a left Scene
+tree, a central viewport, a right contextual Inspector and task panels below.
+Use Unreal-style synchronized selection and quick asset access, Blender-style
+workspace layouts, and Painter-style material and texture organization. Apply
+Revit project and property organization to BIM, 3ds Max numeric transforms and
+view controls to scene editing, AutoCAD command and snap feedback to precision
+tools, and Fusion contextual tool options to active tasks. Keep one shared
+selection and command history. These are proposed UI requirements; the detailed
+guide preserves each capability's implementation status.
 
 Recommended stack:
 
-- Qt 6: application lifecycle, main window, menus, toolbars, dialogs, native
-  controls, file pickers, model/view widgets, and platform integration.
-- KDDockWidgets or Qt Advanced Docking System: dockable panels, floating
-  windows, tabbed panels, saved layouts, nested docking, and workspace presets.
+- Dear ImGui (MIT): menus, toolbars, inspectors, virtualized tables and the
+  docking shell, using a pinned docking revision.
+- GLFW (Zlib): application windows, input, DPI and Vulkan surface integration.
+- Application-owned workspace state: dockable and tabbed panels, saved layouts
+  and workspace presets; floating windows require lifecycle validation.
+- Optional ImGuizmo (MIT), ImPlot (MIT) and Native File Dialog Extended (Zlib):
+  adopt for a specific need, with exact pins and packaged license notices.
 - Vulkan renderer: central and secondary realtime viewports, player mode
   viewports, editor overlays, picking, gizmos, render targets, and final render
   output.
@@ -43,8 +59,8 @@ Recommended stack:
 The ownership boundaries should stay clear:
 
 ```text
-Qt 6 owns the desktop application shell.
-The advanced docking system owns panel layout and workspace presets.
+Dear ImGui and GLFW own the desktop application shell.
+ImGui docking and application workspace state own panel layout and presets.
 Vulkan owns viewport rendering.
 The viewport manager owns view instances, targets, and view configuration.
 The scene engine owns scene data.
@@ -120,7 +136,7 @@ change.
 The default editor layout should be:
 
 ```text
-Qt Main Window
+Editor Main Window
 | Menu Bar: File Edit Scene Add Render AI Window Help          |
 | Toolbar: Select Move Rotate Scale Snap Mode                  |
 |--------------------------------------------------------------|
@@ -326,8 +342,8 @@ or hiding essential mode controls.
 
 ### Phase 1: Mode Foundation
 
-- Create the Qt 6 application shell.
-- Integrate KDDockWidgets or another advanced Qt docking system.
+- Create the Dear ImGui and GLFW application shell using permissive libraries.
+- Integrate a pinned Dear ImGui docking revision and application workspace state.
 - Embed the Vulkan renderer as the central viewport.
 - Add a viewport manager that can create one or more docked/floating view
   windows.

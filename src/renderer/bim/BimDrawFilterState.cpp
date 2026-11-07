@@ -13,13 +13,13 @@
 namespace container::renderer {
 namespace {
 
-[[nodiscard]] const BimElementMetadata *
-metadataForObject(std::span<const BimElementMetadata> metadata,
+[[nodiscard]] std::optional<BimElementMetadataView>
+metadataForObject(BimMetadataTableView metadata,
                   uint32_t objectIndex) {
   if (objectIndex >= metadata.size()) {
-    return nullptr;
+    return std::nullopt;
   }
-  return &metadata[objectIndex];
+  return metadata[objectIndex];
 }
 
 [[nodiscard]] std::string lowerAscii(std::string_view value) {
@@ -76,7 +76,7 @@ metadataForObject(std::span<const BimElementMetadata> metadata,
          containsBoundedToken(lowered, "hvac");
 }
 
-[[nodiscard]] bool containsAnyMepToken(const BimElementMetadata &metadata) {
+[[nodiscard]] bool containsAnyMepToken(const BimElementMetadataView &metadata) {
   const std::array<std::string_view, 3u> values{{
       metadata.type,
       metadata.objectType,
@@ -91,7 +91,7 @@ metadataForObject(std::span<const BimElementMetadata> metadata,
 }
 
 [[nodiscard]] bool metadataMatchesDisciplinePreset(
-    const BimElementMetadata &metadata, BimDisciplinePreset preset) {
+    const BimElementMetadataView &metadata, BimDisciplinePreset preset) {
   switch (preset) {
   case BimDisciplinePreset::None:
     return true;
@@ -103,7 +103,7 @@ metadataForObject(std::span<const BimElementMetadata> metadata,
   return true;
 }
 
-[[nodiscard]] bool phaseIsDemolished(const BimElementMetadata &metadata) {
+[[nodiscard]] bool phaseIsDemolished(const BimElementMetadataView &metadata) {
   return containsToken(metadata.status, "demolish") ||
          containsToken(metadata.phase, "demolish");
 }
@@ -122,7 +122,7 @@ phaseIndex(std::span<const std::string> phaseOrder,
 }
 
 [[nodiscard]] bool metadataMatchesPhaseTimeline(
-    const BimElementMetadata &metadata, const BimDrawFilter &filter,
+    const BimElementMetadataView &metadata, const BimDrawFilter &filter,
     const BimDrawFilterStateInputs &inputs) {
   if (!filter.phaseTimelineEnabled) {
     return true;
@@ -149,20 +149,20 @@ phaseIndex(std::span<const std::string> phaseOrder,
 }
 
 [[nodiscard]] bool
-metadataMatchesFilter(uint32_t objectIndex, const BimElementMetadata &metadata,
+metadataMatchesFilter(uint32_t objectIndex, const BimElementMetadataView &metadata,
                       const BimDrawFilter &filter,
-                      const BimElementMetadata *selectedMetadata,
+                      const std::optional<BimElementMetadataView> &selectedMetadata,
                       const BimDrawFilterStateInputs &inputs) {
   const bool hasSelectedFilter =
       filter.selectedObjectIndex != std::numeric_limits<uint32_t>::max();
   if (filter.isolateSelection && hasSelectedFilter) {
-    if (selectedMetadata == nullptr ||
+    if (!selectedMetadata ||
         !sameBimProductIdentity(*selectedMetadata, metadata)) {
       return false;
     }
   }
   if (filter.hideSelection && hasSelectedFilter &&
-      selectedMetadata != nullptr &&
+      selectedMetadata &&
       sameBimProductIdentity(*selectedMetadata, metadata)) {
     return false;
   }
@@ -299,13 +299,13 @@ bool BimDrawFilterState::objectMatchesFilter(
     return objectIndex < inputs.objectCount;
   }
 
-  const BimElementMetadata *metadata =
+  const auto metadata =
       metadataForObject(inputs.metadata, objectIndex);
-  if (metadata == nullptr) {
+  if (!metadata) {
     return false;
   }
 
-  const BimElementMetadata *selectedMetadata = nullptr;
+  std::optional<BimElementMetadataView> selectedMetadata;
   if ((filter.isolateSelection || filter.hideSelection) &&
       filter.selectedObjectIndex != std::numeric_limits<uint32_t>::max()) {
     selectedMetadata =
@@ -327,7 +327,7 @@ BimDrawFilterState::filteredDrawLists(const BimDrawFilter &filter,
   cachedFilter_ = filter;
   cachedRevision_ = inputs.revision;
 
-  const BimElementMetadata *selectedMetadata = nullptr;
+  std::optional<BimElementMetadataView> selectedMetadata;
   if ((filter.isolateSelection || filter.hideSelection) &&
       filter.selectedObjectIndex != std::numeric_limits<uint32_t>::max()) {
     selectedMetadata =
@@ -368,9 +368,9 @@ BimDrawFilterState::filteredDrawLists(const BimDrawFilter &filter,
           break;
         }
         const uint32_t objectIndex = command.objectIndex + instanceOffset;
-        const BimElementMetadata *metadata =
+        const auto metadata =
             metadataForObject(inputs.metadata, objectIndex);
-        if (metadata == nullptr ||
+        if (!metadata ||
             !metadataMatchesFilter(objectIndex, *metadata, filter,
                                    selectedMetadata, inputs)) {
           continue;

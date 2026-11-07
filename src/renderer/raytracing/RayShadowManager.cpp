@@ -1,15 +1,18 @@
 #include "Container/renderer/raytracing/RayShadowManager.h"
+#include "Container/renderer/pipeline/RayEffectPipelines.h"
 
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/core/RenderGraph.h"
 #include "Container/renderer/core/RendererMsaa.h"
 #include "Container/renderer/raytracing/RaySceneAcceleration.h"
+#include "Container/renderer/raytracing/RayInstanceTransformPass.h"
 #include "Container/utility/FileLoader.h"
 #include "Container/utility/Logger.h"
 
 #include <array>
 #include <cstring>
 #include <optional>
+#include <limits>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -36,13 +39,13 @@ struct Buffer {
   container::gpu::AllocatedBuffer value;
   VkDeviceSize size;
   Buffer(container::gpu::VulkanMemoryManager &memory, VkDeviceSize size,
-         VkBufferUsageFlags usage)
+         VkBufferUsageFlags usage, bool upload = true)
       : memory(memory),
         value(memory.createBuffer(
             std::max<VkDeviceSize>(size, 16), usage,
-            VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                VMA_ALLOCATION_CREATE_MAPPED_BIT)),
+            upload ? VMA_MEMORY_USAGE_AUTO_PREFER_HOST : VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+            upload ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                VMA_ALLOCATION_CREATE_MAPPED_BIT : 0)),
         size(std::max<VkDeviceSize>(size, 16)) {}
   ~Buffer() { memory.destroyBuffer(value); }
   void write(const void *data, VkDeviceSize bytes) {
@@ -147,6 +150,8 @@ struct RayShadowManager::Impl {
   std::shared_ptr<container::gpu::VulkanDevice> device;
   container::gpu::VulkanMemoryManager &memory;
   RaySceneAcceleration acceleration;
+  RaySceneGpuTransforms gpuTransforms;
+  RayInstanceTransformPass* gpuTransformProducer{};
   RayShadowSettings settings;
   RendererMsaaDeviceSupport msaaSupport;
   VkExtent2D extent{};
@@ -157,6 +162,8 @@ struct RayShadowManager::Impl {
     std::unique_ptr<Buffer> instances;
     std::shared_ptr<const Buffer> surfaceTriangles;
     std::unique_ptr<Buffer> surfaceInstances;
+    std::vector<RayInstanceData> surfaceMetadata;
+    uint64_t surfaceTopology{};
     bool hasSurfaceData{false};
   };
   struct Slot {
@@ -179,10 +186,17 @@ struct RayShadowManager::Impl {
   vk::raii::Pipeline tracePipeline{nullptr}, filterPipeline{nullptr};
   vk::raii::DescriptorPool pool{nullptr};
   std::vector<vk::raii::DescriptorSet> ownedSets;
+  std::filesystem::path pipelineRoot;
+  VkDescriptorSetLayout sceneLayout{}, lightLayout{};
   uint64_t sceneHash{0}, lightingHash{0}, frameId{0}, generationId{0},
       resets{0}, sceneRevision{0};
   VkDeviceSize maxStorageBufferRange{0};
+  uint32_t subPixelPrecisionBits{0};
   uint64_t surfaceBudgetBytes{128ull * 1024 * 1024};
+  // A target scene can gain/lose all geometry. Validate its source request
+  // against the captured live controls, independently of the staged target.
+  bool detachedRequestProof{false}, sourceSurfaceRequested{false};
+  uint64_t sourceSurfaceBudgetBytes{};
   std::string surfaceUnsupported;
   std::optional<uint64_t> rejectedSurfaceScene;
   std::string rejectedSurfaceReason;
@@ -200,6 +214,10 @@ struct RayShadowManager::Impl {
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(this->device->physicalDevice(), &properties);
     maxStorageBufferRange = properties.limits.maxStorageBufferRange;
+    // Vulkan specifies raster vertex XY precision in framebuffer subpixels.
+    // Depth-reconstructed compute receivers need the same quantization bound
+    // when offsetting shadow rays away from the rasterized surface.
+    subPixelPrecisionBits = properties.limits.subPixelPrecisionBits;
   }
   VkDeviceSize storageBytes(size_t count, size_t stride) const {
     if (!stride || count > maxStorageBufferRange / stride ||
@@ -322,6 +340,7 @@ RayShadowManager::RayShadowManager(
     container::gpu::VulkanMemoryManager &memory)
     : impl_(std::make_unique<Impl>(std::move(device), memory)) {}
 RayShadowManager::~RayShadowManager() = default;
+void RayShadowManager::setGpuTransformProducer(RayInstanceTransformPass* producer) {impl_->gpuTransformProducer=producer;}
 RayShadowSettings &RayShadowManager::settings() { return impl_->settings; }
 bool RayShadowManager::supported() const {
   return impl_->acceleration.supported();
@@ -369,6 +388,16 @@ RaySurfaceGpuBindings RayShadowManager::surfaceBindings(uint32_t image) const {
           generation->surfaceInstances->size,
           uint32_t(generation->triangles->size / sizeof(RayTriangleData)),
           generation->as->stats().instanceCount};
+}
+std::span<const RayInstanceData> RayShadowManager::surfaceInstanceMetadata(uint32_t image) const {
+  if (!surfaceBindings(image))
+    return {};
+  return impl_->slots[image].generation->surfaceMetadata;
+}
+RaySurfaceMotionSnapshot RayShadowManager::surfaceMotionSnapshot(uint32_t image) const {
+  if (!surfaceBindings(image)) return {};
+  const auto& generation = impl_->slots[image].generation;
+  return {generation, generation->surfaceTopology};
 }
 const std::string &RayShadowManager::surfaceUnsupportedReason() const {
   return impl_->surfaceUnsupported;
@@ -422,22 +451,84 @@ void RayShadowManager::createPipelines(const std::filesystem::path &root,
   const vk::PushConstantRange push(vk::ShaderStageFlagBits::eCompute, 0, 4);
   p.filterLayout = vk::raii::PipelineLayout(
       vk, vk::PipelineLayoutCreateInfo({}, *p.filterSetLayout, push));
-  auto compute = [&](const char *name, const vk::raii::PipelineLayout &layout) {
-    const auto bytes = container::util::readFile(root / "spv_shaders" / name);
-    // readFile byte storage may be unaligned; copy into the SPIR-V word ABI.
-    if (bytes.size() % 4)
-      throw std::runtime_error("invalid ray shadow SPIR-V");
-    std::vector<uint32_t> words(bytes.size() / 4);
-    std::memcpy(words.data(), bytes.data(), bytes.size());
-    vk::raii::ShaderModule module(
-        vk, vk::ShaderModuleCreateInfo({}, words.size() * 4, words.data()));
-    vk::PipelineShaderStageCreateInfo stage(
-        {}, vk::ShaderStageFlagBits::eCompute, *module, "computeMain");
-    return vk::raii::Pipeline(
-        vk, nullptr, vk::ComputePipelineCreateInfo({}, stage, *layout));
-  };
-  p.tracePipeline = compute("ray_shadow_trace.comp.spv", p.traceLayout);
-  p.filterPipeline = compute("ray_shadow_filter.comp.spv", p.filterLayout);
+  publishShaderReload(prepareShaderReload(root));
+  p.sceneLayout = scene;
+  p.lightLayout = light;
+}
+
+RayEffectPipelines RayShadowManager::prepareShaderReload(const std::filesystem::path& root) const {
+  const auto& p = *impl_;
+  if (!*p.traceLayout || !*p.filterLayout)
+    return {};
+  const auto& device = p.device->raii();
+  const auto shaders = root / "spv_shaders";
+  return {root, loadRayEffectComputePipeline(device, shaders / "ray_shadow_trace.comp.spv", *p.traceLayout),
+                loadRayEffectComputePipeline(device, shaders / "ray_shadow_filter.comp.spv", *p.filterLayout)};
+}
+
+void RayShadowManager::publishShaderReload(RayEffectPipelines candidate) noexcept {
+  if (!*candidate.trace)
+    return;
+  auto& p = *impl_;
+  if (*p.tracePipeline)
+    p.invalidate();
+  p.tracePipeline = std::move(candidate.trace);
+  p.filterPipeline = std::move(candidate.auxiliary);
+  p.pipelineRoot.swap(candidate.root);
+}
+
+std::unique_ptr<RayShadowManager> RayShadowManager::createDetachedGeneration() const {
+  const auto& p = *impl_;
+  if (!p.extent.width || !p.extent.height || p.slots.empty() ||
+      (supported() && (!*p.tracePipeline || !*p.filterPipeline)))
+    throw std::logic_error("Ray scene generation requires prepared frame resources");
+  auto candidate = std::make_unique<RayShadowManager>(p.device, p.memory);
+  candidate->createPipelines(p.pipelineRoot, p.sceneLayout, p.lightLayout);
+  candidate->prepare(p.extent, uint32_t(p.slots.size()));
+  auto& next = *candidate->impl_;
+  next.settings = p.settings;
+  next.surfaceRequested = p.surfaceRequested;
+  next.surfaceBudgetBytes = p.surfaceBudgetBytes;
+  next.detachedRequestProof = true;
+  next.sourceSurfaceRequested = p.surfaceRequested;
+  next.sourceSurfaceBudgetBytes = p.surfaceBudgetBytes;
+  next.current = p.current;
+  next.extractionCache = p.extractionCache;
+  next.generationId = p.generationId;
+  next.resets = p.resets;
+  return candidate;
+}
+
+bool RayShadowManager::canExchangeGeneration(const RayShadowManager& other) const noexcept {
+  const auto& p = *impl_;
+  const auto& q = *other.impl_;
+  return this != &other && p.device.get() == q.device.get() &&
+         &p.memory == &q.memory && p.extent.width == q.extent.width &&
+         p.extent.height == q.extent.height && p.slots.size() == q.slots.size() &&
+         p.sceneLayout == q.sceneLayout && p.lightLayout == q.lightLayout &&
+         p.settings.mode == q.settings.mode && p.settings.areaSamples == q.settings.areaSamples &&
+         p.settings.localLightBudget == q.settings.localLightBudget &&
+         p.settings.denoise == q.settings.denoise && p.settings.debugLayer == q.settings.debugLayer &&
+         p.surfaceRequested == (q.detachedRequestProof ? q.sourceSurfaceRequested : q.surfaceRequested) &&
+         p.surfaceBudgetBytes == (q.detachedRequestProof ? q.sourceSurfaceBudgetBytes : q.surfaceBudgetBytes) &&
+         q.fallback && q.fallback->initialized && !q.pending &&
+         (!q.sceneEnabled || (q.current && std::all_of(q.slots.begin(), q.slots.end(),
+             [&](const auto& slot) { return slot.generation == q.current; }))) &&
+         p.generationId != UINT64_MAX && q.generationId != UINT64_MAX &&
+         p.resets != UINT64_MAX && q.resets != UINT64_MAX;
+}
+
+bool RayShadowManager::exchangeGeneration(RayShadowManager& other) noexcept {
+  if (!canExchangeGeneration(other)) return false;
+  const auto nextGeneration = std::max(impl_->generationId, other.impl_->generationId)+1;
+  const auto nextResets = std::max(impl_->resets, other.impl_->resets)+1;
+  impl_.swap(other.impl_);
+  impl_->detachedRequestProof = false;
+  impl_->generationId = nextGeneration;
+  impl_->resets = nextResets;
+  impl_->validHistory = false;
+  impl_->recorded = false;
+  return true;
 }
 
 void RayShadowManager::prepare(VkExtent2D extent, uint32_t imageCount) {
@@ -617,7 +708,16 @@ void RayShadowManager::update(
   p.data.boxClip = boxClip;
   uint64_t sceneHash = 1469598103934665603ull;
   sceneHash = hashValue(sceneHash, sources.size());
+  p.gpuTransforms={};
   for (const auto &source : sources) {
+    const bool gpu=source.gpuObjects.buffer!=VK_NULL_HANDLE;
+    sceneHash=hashValue(sceneHash,gpu);
+    if(gpu) {
+      if(!p.gpuTransformProducer || p.gpuTransforms.objects.buffer)
+        throw std::invalid_argument("ray scene GPU transforms require one configured object stream");
+      p.gpuTransforms={p.gpuTransformProducer,source.gpuObjects,uint32_t(source.objects.size()),{}};
+      sceneHash=hashValue(sceneHash,source.gpuTransformRevision);
+    }
     sceneHash = hashValue(sceneHash, source.provider.value.size());
     sceneHash = hashBytes(sceneHash, source.provider.value.data(),
                           source.provider.value.size());
@@ -628,6 +728,12 @@ void RayShadowManager::update(
                           reinterpret_cast<uintptr_t>(source.vertices.data()));
     sceneHash = hashValue(sceneHash,
                           reinterpret_cast<uintptr_t>(source.indices.data()));
+    sceneHash = hashValue(sceneHash, source.opacityMicromaps.size());
+    for (const auto& candidate : source.opacityMicromaps) {
+      sceneHash = hashValue(sceneHash, candidate.firstIndex);
+      sceneHash = hashValue(sceneHash, candidate.indexCount);
+      sceneHash = hashValue(sceneHash, reinterpret_cast<uintptr_t>(candidate.attachment.get()));
+    }
     sceneHash = hashValue(sceneHash, source.draws.size());
     for (const auto &draw : source.draws) {
       sceneHash = hashValue(sceneHash, draw.objectIndex);
@@ -713,7 +819,7 @@ void RayShadowManager::update(
   p.sceneRevision = hashValue(p.sceneRevision, boxClip);
   p.lightingHash = lightHash;
   p.data.frame = {p.validHistory ? 1u : 0u, uint32_t(p.frameId),
-                  sectionPlaneEnabled, 0u};
+                  sectionPlaneEnabled, p.subPixelPrecisionBits};
   slot.read->write(&p.data.read, sizeof(ReadData));
   slot.trace->write(&p.data, sizeof(TraceData));
   if (!p.enabled) {
@@ -782,6 +888,21 @@ void RayShadowManager::recordBuild(VkCommandBuffer cmd, uint32_t image) {
              p.pending->instances.instanceData.size()))
       throw std::runtime_error("incomplete ray scene surface metadata");
     generation->hasSurfaceData = geometry.hasSurfaceData;
+    if (geometry.hasSurfaceData) {
+      uint64_t topology = hashValue(14695981039346656037ull, geometry.geometry.size());
+      for (const auto& entry : geometry.geometry) {
+        topology = hashValue(topology, entry.provider.value.size());
+        for (const char byte : entry.provider.value)
+          topology = hashValue(topology, byte);
+        topology = hashValue(topology, entry.id);
+        topology = hashValue(topology, entry.indexOrderHash);
+      }
+      for (const auto& instance : p.pending->instances.instances) {
+        topology = hashValue(topology, instance.geometryIndex);
+        topology = hashValue(topology, instance.sourceObjectIndex);
+      }
+      generation->surfaceTopology = topology;
+    }
     // Triangle UV metadata is immutable with the compact geometry. Share it
     // through the same fence-retained generations as reused BLAS allocations.
     if (p.current && p.current->geometry.lock() == p.pending->geometry) {
@@ -808,24 +929,28 @@ void RayShadowManager::recordBuild(VkCommandBuffer cmd, uint32_t image) {
         generation->surfaceTriangles = std::move(triangles);
       }
       generation->surfaceInstances = std::make_unique<Buffer>(
-          p.memory, surfaceInstanceBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-      generation->surfaceInstances->write(
-          p.pending->instances.surfaceInstanceData.data(),
-          surfaceInstanceBytes);
+          p.memory, surfaceInstanceBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,!p.gpuTransforms.producer);
+      if(!p.gpuTransforms.producer)
+        generation->surfaceInstances->write(p.pending->instances.surfaceInstanceData.data(),surfaceInstanceBytes);
     }
     const auto views = geometry.geometryViews();
     // The command buffer belongs to CommandBufferManager. Release the temporary
     // Vulkan-Hpp wrapper on both success and failure; it must never free it.
     vk::raii::CommandBuffer borrowed(p.device->raii(), cmd, VK_NULL_HANDLE);
     try {
+      auto gpuTransforms=p.gpuTransforms;
+      if(gpuTransforms.producer && generation->surfaceInstances)
+        gpuTransforms.surfaces={generation->surfaceInstances->value.buffer,0,generation->surfaceInstances->size};
       generation->as = p.acceleration.recordBuild(
-          borrowed, {views, p.pending->instances.instances},
+          borrowed, {views, p.pending->instances.instances,gpuTransforms.producer?&gpuTransforms:nullptr},
           p.current ? p.current->as : nullptr);
       (void)borrowed.release();
     } catch (...) {
       (void)borrowed.release();
       throw;
     }
+    if (generation->hasSurfaceData)
+      generation->surfaceMetadata = std::move(p.pending->instances.instanceData);
     p.current = std::move(generation);
     p.pending.reset();
     ++p.generationId;

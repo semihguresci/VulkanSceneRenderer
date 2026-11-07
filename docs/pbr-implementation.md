@@ -168,7 +168,7 @@ The scene descriptor set should keep one stable bindless material model:
 - Object SSBO with transform data, normal matrix, `objectInfo`, and bounds.
 - Material SSBO with `GpuMaterial` factors, texture indices, core texture
   transforms, and feature flags.
-- Shared material sampler array for glTF wrap-mode combinations.
+- Shared material sampler array for authored glTF filter and wrap policies.
 - Bindless sampled image array for material textures.
 
 The material SSBO stores texture references as bindless sampled-image indices;
@@ -205,17 +205,49 @@ G-buffer, depth, shadow, debug, and transparent passes fetch `GpuMaterial` with
 that index when they need material factors, texture indices, or feature flags.
 Cull shaders should continue to read only object transform/bounds data unless
 they explicitly need material-driven displacement or visibility behavior.
-`GpuTextureMetadata.samplerIndex` selects the sampler for each texture object,
-so glTF `wrapS` and `wrapT` settings survive even when several texture objects
-reference the same image with different sampler state. The bindless
-sampled-image array remains the final binding because it uses Vulkan variable
-descriptor count semantics.
+`GpuTextureMetadata.samplerIndex` selects a dense active sampler slot for each
+texture object, so images shared by different filtering or wrapping policies
+remain distinct texture bindings. Its `samplerCount` bounds shader lookup while
+preserving the existing 16-byte metadata layout. The vertex layout is 72 bytes,
+with color alpha appended at byte 68 and all earlier offsets preserved.
+`MaterialSamplerKey` normalizes source policy independently of descriptor slots;
+the default-filter wrap keys retain their existing values. The scene rebuilds
+the active slot plan on model replacement, so cached sampler handles from an
+earlier scene consume no slots in the current scene.
+Replacement loads validate a fresh default-plus-incoming policy table before
+retiring live assets; additive texture loads validate the combined active table.
+Both imported and direct texture caches distinguish color-space interpretation
+as well as image identity and sampler policy.
 
-If texture metadata becomes necessary later, add a separate compact texture
-metadata SSBO rather than replacing the bindless sampled-image array. That
-metadata SSBO can describe sampler policy, color-space flags, or source asset
-properties, while `GpuMaterial` continues to reference textures by bindless
-image index.
+`COLOR_0` retains RGBA: float or normalized unsigned VEC4 inputs supply alpha;
+VEC3 and absent colors use alpha 1. Vertex alpha is interpolated and multiplied
+with material/base-color texture/opacity alpha before MASK or BLEND evaluation.
+OPAQUE resolves alpha to 1, including physically transmissive materials.
+Transmission routes to its rendering pass independently of authored coverage;
+it does not convert OPAQUE into BLEND. Depth, directional/local shadows, temporal velocity,
+transparent picking and ray/DDGI masks share this coverage input. Portable glTF
+and GLB exports serialize `COLOR_0` as float VEC4.
+
+The sampler array is a runtime shader array with a fixed, device-checked layout
+capacity. The capacity reserves samplers used by the other sets in the largest
+scene/light/frame/DDGI pipeline. The scene creates only requested sampler
+objects, fills unused descriptor slots with the default sampler, and rejects a
+scene whose distinct policies exceed that capacity. Binding 5 also has a fixed
+capacity with partially bound image descriptors; neither binding uses variable
+descriptor counts because camera data occupies the highest binding.
+
+All six glTF minification modes and both magnification modes are mapped in
+`MaterialSamplerKey.cpp`. Omitted or unknown filter enums select linear
+magnification and trilinear minification; omitted or unknown wrap enums select
+repeat, matching the existing compatibility policy. Explicit non-mipmapped
+NEAREST/LINEAR minification uses nearest mip selection and a maximum LOD of .25
+to stay on the base level while preserving distinct minification and
+magnification filters. A zero maximum LOD would always choose magnification;
+this mapping follows the [Vulkan sampler specification](https://registry.khronos.org/vulkan/specs/latest/man/html/VkSamplerCreateInfo.html).
+Authored filtering uses no anisotropy override. Existing mip generation supplies
+the image chain when the format supports linear blits; a one-level image view
+naturally keeps sampling on its available base level. Ray consumers continue to
+use their explicit base-LOD footprint policy.
 
 The include-only Slang files for both object and material layouts are shader
 build dependencies, so editing shared ABI files triggers shader rebuilds.
@@ -589,6 +621,35 @@ Build and tests:
 cmd /c "call ""C:\Program Files\Microsoft Visual Studio\18\Insiders\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 && cmake --build out\build\windows-debug"
 cmd /c "call ""C:\Program Files\Microsoft Visual Studio\18\Insiders\Common7\Tools\VsDevCmd.bat"" -arch=x64 -host_arch=x64 && ctest --test-dir out\build\windows-debug --output-on-failure"
 ```
+
+Sampler filtering has an independent GPU oracle for all minification and
+magnification modes, wrap boundaries, shared-image policies, and a one-level
+image view. Enable its Vulkan tests explicitly. The native regression also
+checks both raster paths, alpha coverage, live factor edits, saved policies and
+pixels, and the ray-shadow/DDGI descriptor layouts:
+
+```powershell
+$env:CONTAINER_RUN_GPU_MATERIAL_SAMPLERS = "1"
+ctest --test-dir out/build/feature-parity -R "^(material_sampler_key_tests|materialx_integration_tests|material_sampler_gpu_tests)$" --output-on-failure
+python tests/validation/gltf_sampler_filter_runtime_regression.py --renderer out/build/feature-parity/VulkanSceneRenderer.exe --output out/feature-parity/sampler-filter-runtime --roundtrip --ray-smoke --case mag --case min --case shared --case transparent --case mask --case edit
+```
+
+The validated Windows checkpoint passes 8 policy, 14 MaterialX and 3 actual
+Vulkan sampler cases. Its native matrix plus the focused shared-image
+visibility rerun passes 96 captures/74 checks. All 46 saved/reloaded comparisons
+are pixel exact. Both hard-ray/DDGI smoke captures trace 1,536 DDGI rays with
+zero validation/synchronization errors. Reports are in
+`out/feature-parity/sampler-filter-runtime/results.json` and
+`out/feature-parity/sampler-shared-visibility/results.json`; each records the
+unchanged executable SHA-256 and all launch commands.
+
+Anisotropy and diffuse transmission use the shared extended-material math in
+forward, deferred, transparent and DDGI hit shading. Deferred rendering replays
+opaque coverage into two lazy auxiliary attachments and stores transmission
+color premultiplied by its factor for MSAA resolve. See
+[extended glTF materials](gltf-extended-materials.md) for the 1040-byte material
+layout, texture roles, zero-factor behavior, approximations and validation
+checkpoints.
 
 Visual sample set:
 

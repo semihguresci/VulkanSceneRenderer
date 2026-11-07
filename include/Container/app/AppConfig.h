@@ -7,13 +7,28 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <memory>
 
 #include "Container/app/GfxCapture.h"
 #include "Container/common/CommonVulkan.h"
+#include "Container/renderer/effects/DisplayGrade.h"
+#include "Container/renderer/effects/OpenVdbVolumeSettings.h"
+#include "Container/renderer/effects/ScreenReflectionSettings.h"
+#include "Container/renderer/effects/VolumetricFogSettings.h"
 #include "Container/renderer/lighting/DdgiSettings.h"
+#include "Container/renderer/lighting/EnvironmentPresentation.h"
+#include "Container/renderer/lighting/SkySettings.h"
 #include "Container/renderer/lighting/DdgiVolumeFit.h"
+#include "Container/renderer/pathtracing/ReferencePathLensSettings.h"
+#include "Container/renderer/pathtracing/ReferencePathDisplayMode.h"
+#include "Container/renderer/pathtracing/ReferenceGroundSettings.h"
+#include "Container/renderer/pathtracing/ReferenceOidnSettings.h"
 #include "Container/renderer/raytracing/RayShadowSettings.h"
 #include "Container/renderer/temporal/TemporalState.h"
+#include "Container/renderer/temporal/UpscaleMode.h"
+#include "Container/utility/TextureMemoryBudget.h"
+
+namespace container::geometry::vdb { struct ImportOptions; }
 
 namespace container::app {
 
@@ -49,8 +64,12 @@ struct AppConfig {
   // Upper bound for the per-object SSBO. This is scene capacity, not a
   // draw-call budget.
   uint32_t maxSceneObjects{4096};
+  // Aggregate decoded glTF image payloads per load; per-image limits remain
+  // independent, and GPU mip/storage allocations can require additional memory.
+  uint32_t textureMemoryMiB{container::material::kDefaultGltfTextureMemoryMiB};
   bool enableValidationLayers{false};
   bool enableRayQueries{true};
+  bool experimentalOpacityMicromaps{false};
   container::renderer::RayShadowSettings rayShadows{};
   container::renderer::DdgiSettings ddgi{};
   // Explicit preset operations only; no implicit loading changes defaults.
@@ -61,6 +80,16 @@ struct AppConfig {
   bool ddgiFitScene{false};
   container::renderer::DdgiVolumeFitOptions ddgiFit{};
   bool enableGui{true};
+  bool gpuHierarchyTransforms{false};
+  uint32_t pathSamplesPerFrame{1},pathSampleLimit{65536},pathMaxBounces{8},pathSeed{1};
+  std::vector<uint32_t> pathSampleSeries{};
+  float pathTargetMs{};
+  float pathFireflyClamp{};
+  container::renderer::ReferencePathDisplayMode pathDisplay{};
+  container::renderer::ReferencePathLensSettings pathLens{};
+  container::renderer::ReferenceGroundSettings pathGround{};
+  container::renderer::ReferenceOidnSettings pathOidn{};
+  bool physicsDemo{false};
   bool windowVisible{true};
   uint32_t msaaSamples{1};
   uint32_t areaShadowQuality{2};
@@ -68,6 +97,10 @@ struct AppConfig {
   uint32_t areaLightSampleCount{25};
   bool areaEmitterDebug{false};
   container::temporal::Settings taa{};
+  container::renderer::UpscaleSelection upscaling{};
+  container::renderer::ScreenReflectionMode screenReflections{};
+  bool screenReflectionRayFallback{};
+  container::renderer::VolumetricFogSettings volumetricFog{};
   uint32_t taaResetFrame{0};
   std::string renderTechnique{"deferred-raster"};
   std::string displayModeOverride{};
@@ -75,8 +108,51 @@ struct AppConfig {
   float importScale{1.0f};
   std::string bimModelPath{};
   float bimImportScale{1.0f};
+  std::string vdbVolumePath{};
+  std::vector<std::string> vdbAdditionalVolumePaths{};
+  std::string vdbSequenceDirectory{};
+  float vdbSequenceFps{24.0f};
+  float vdbSequenceSpeed{1.0f};
+  uint32_t vdbSequenceStartFrame{0};
+  uint32_t vdbSequenceCacheMiB{512};
+  bool vdbSequenceLoop{true};
+  bool vdbSequencePaused{false};
+  bool vdbSequenceAsync{false};
+  bool vdbSparse{false};
+  std::string vdbGridName{};
+  std::string vdbTemperatureGridName{};
+  uint32_t vdbVolumeResolution{128};
+  container::renderer::OpenVdbVolumeSettings vdbVolumeSettings{};
+  float vdbVolumeImportScale{1.0f};
+  // Immutable per-load scalar/standard-point or explicit vector/slice/native-
+  // point preview settings, shared safely with asynchronous model requests.
+  std::shared_ptr<const container::geometry::vdb::ImportOptions> vdbModelOptions;
   std::string screenshotCapturePath{};
+  bool screenshotViewportOnly{false};
+  bool gpuHardwareTelemetry{false};
+  // Export the initialized scene (or final capture-sequence scene) on exit.
+  std::string sceneExportPath{};
+  bool sceneExportKeepLinks{false};
+  int gltfMaterialVariant{-1};
+  int gltfAnimationClip{-1};
+  int gltfCameraNode{-1};
+  int gltfSceneIndex{-1};
+  bool experimentalGltfLinkedAssets{false};
+  bool experimentalGltfMaterials{false};
+  double gltfAnimationTime{0};
+  double gltfAnimationSpeed{1};
+  bool gltfAnimationPlaying{true};
+  bool gltfAnimationLoop{true};
   std::string temporalCaptureSequencePath{};
+  // Versioned ASL observation replay, rendered in image XY (nonmetric Z).
+  std::string aslPosePath{};
+  float aslPoseSpeed{1.0f};
+  uint32_t aslPoseStartMs{0};
+  bool aslPoseLoop{true};
+  bool aslHandKinematics{false};
+  float aslHandAspectRatio{1.0f};
+  float aslHandAngularVelocity{12.0f};
+  std::string aslHandReportPath{};
   uint32_t screenshotWarmupFrames{8};
   uint32_t screenshotCaptureFrame{9};
   float screenshotFixedTimestepSeconds{1.0f / 60.0f};
@@ -86,10 +162,17 @@ struct AppConfig {
   float cameraVerticalFovDegrees{60.0f};
   bool hasManualExposureOverride{false};
   float manualExposure{0.25f};
+  container::renderer::DisplayGrade displayGrade{};
   bool hasEnvironmentIntensityOverride{false};
   float environmentIntensity{1.0f};
+  std::string environmentPath;
+  container::renderer::EnvironmentPresentation environmentPresentation{};
+  container::renderer::SkySettings sky{};
+  bool useGltfSky{false};
   bool hasDirectionalIntensityOverride{false};
   float directionalIntensity{2.0f};
+  bool hasBounceIntensityOverride{false};
+  float bounceIntensity{1.0f};
   bool hasDirectionalDirectionOverride{false};
   std::array<float, 3> directionalDirection{-0.45f, -1.0f, -0.3f};
   bool hasDirectionalColorOverride{false};

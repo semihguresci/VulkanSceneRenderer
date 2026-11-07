@@ -64,6 +64,16 @@ class ShadowManager {
               const container::gpu::ShadowSettings& shadowSettings,
               const ShadowCasterSceneBounds* casterSceneBounds,
               uint32_t imageIndex);
+  // Authored scene cameras supply their exact world view and a projection
+  // with finite far corners for cascade reconstruction. Main rendering may
+  // independently retain the source camera's infinite projection.
+  void update(const glm::mat4& cameraView,
+              const glm::mat4& cameraProjection,
+              float cameraNear, float cameraFar,
+              const glm::vec3& lightDirection,
+              const container::gpu::ShadowSettings& shadowSettings,
+              const ShadowCasterSceneBounds* casterSceneBounds,
+              uint32_t imageIndex);
   void updateLocalShadows(
       std::span<const container::gpu::PointLightData> pointLights,
       std::span<const container::gpu::AreaLightData> areaLights,

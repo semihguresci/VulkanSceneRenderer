@@ -1,3 +1,4 @@
+#include "Container/geometry/GltfOpacityMicromaps.h"
 #include "Container/renderer/raytracing/RayScene.h"
 #include "Container/renderer/raytracing/RaySceneExtraction.h"
 #include "Container/renderer/raytracing/RayShadowSettings.h"
@@ -5,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <bit>
 #include <glm/gtc/matrix_transform.hpp>
 #include <limits>
 
@@ -23,6 +25,9 @@ std::vector<container::geometry::Vertex> surfaceTestVertices() {
   vertices[0].color = {1, 0, 0};
   vertices[1].color = {0, 1, 0};
   vertices[2].color = {0, 0, 1};
+  vertices[0].colorAlpha = 0.0f;
+  vertices[1].colorAlpha = 0.5f;
+  vertices[2].colorAlpha = 1.0f;
   vertices[0].texCoord = {0, 0};
   vertices[1].texCoord = {1, 0};
   vertices[2].texCoord = {0, 1};
@@ -60,7 +65,8 @@ TEST(RaySurface, MetadataIsOptionalAndRetainsSourceCornerAttributes) {
               glm::vec4(vertices[corner].position, 1));
     EXPECT_EQ(surface.normals[corner], glm::vec4(vertices[corner].normal, 0));
     EXPECT_EQ(surface.tangents[corner], vertices[corner].tangent);
-    EXPECT_EQ(surface.colors[corner], glm::vec4(vertices[corner].color, 1));
+    EXPECT_EQ(surface.colors[corner], glm::vec4(vertices[corner].color, vertices[corner].colorAlpha));
+    EXPECT_FLOAT_EQ(shadows.triangles[0].vertexAlpha[corner], vertices[corner].colorAlpha);
     EXPECT_EQ(surfaces.triangles[0].uv[corner],
               glm::vec4(vertices[corner].texCoord, vertices[corner].texCoord1));
   }
@@ -89,10 +95,58 @@ TEST(RaySurface, ReconstructsMirroredFrameAndKeepsBackFacePolicyExplicit) {
   EXPECT_EQ(point->tangent.w, -1.0f);
   expectSurfaceVector(point->bitangent, {0, 1, 0});
   expectSurfaceVector(point->color, {0.5f, 0.25f, 0.25f});
+  EXPECT_FLOAT_EQ(point->colorAlpha, 0.375f);
   EXPECT_EQ(point->uv, glm::vec4(0.25f, 0.25f, 0.75f, 0.75f));
   EXPECT_EQ(point->materialIndex, 17u);
   EXPECT_EQ(point->objectFlags, 4u);
   EXPECT_FALSE(point->frontFace);
+}
+
+TEST(RaySurface, VertexAlphaMetadataDefaultsOpaqueAndRejectsNonfiniteInput) {
+  EXPECT_EQ(sizeof(RayTriangleData), 64u);
+  EXPECT_EQ(offsetof(RayTriangleData, vertexAlpha), 48u);
+  EXPECT_EQ(RayTriangleData{}.vertexAlpha, glm::vec4(1));
+  auto vertices = surfaceTestVertices();
+  const std::vector<uint32_t> indices{0, 1, 2};
+  const std::vector<container::gpu::ObjectData> objects(1);
+  const std::vector<DrawCommand> draws{{0, 0, 3}};
+  const std::array providers{
+      RaySceneProviderSource{{"mesh"}, 1, vertices, indices, objects, draws}};
+  vertices[0].colorAlpha = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_THROW(extractRayScene(providers), std::invalid_argument);
+  EXPECT_THROW(extractRayScene(providers, {.includeSurfaceData = true}), std::invalid_argument);
+}
+
+TEST(RaySurface, MirroredDeformationKeepsAuthoredNormalAndSingleHandednessChange) {
+  auto vertices = surfaceTestVertices();
+  // A uniform skin mirror changes local positions/tangents and tangent.w.
+  // Its inverse-transpose leaves the authored +Z normal pointing outward.
+  for (auto& vertex : vertices) {
+    vertex.position.x = -vertex.position.x;
+    vertex.tangent = {-1, 0, 0, -1};
+  }
+  const std::vector<uint32_t> indices{0, 1, 2};
+  std::vector<container::gpu::ObjectData> objects(1);
+  objects[0].objectInfo.y = container::gpu::kObjectFlagDeformationWindingFlipped;
+  const std::vector<DrawCommand> draws{{0, 0, 3}};
+  const std::array providers{
+      RaySceneProviderSource{{"mesh"}, 1, vertices, indices, objects, draws}};
+  for (const bool modelMirror : {false, true}) {
+    SCOPED_TRACE(modelMirror);
+    objects[0].model = glm::scale(glm::mat4(1), glm::vec3(modelMirror ? -1.f : 1.f, 1, 1));
+    const auto scene = extractRayScene(providers, {.includeSurfaceData = true});
+    ASSERT_TRUE(scene.instances[0].flipFacing);
+    const auto point = reconstructRaySurface(
+        scene.triangles[0], scene.surfaceTriangles[0], scene.instanceData[0],
+        scene.surfaceInstanceData[0], {0.25f, 0.25f}, true);
+    ASSERT_TRUE(point.has_value());
+    expectSurfaceVector(point->geometricNormal, {0, 0, 1});
+    expectSurfaceVector(point->shadingNormal, {0, 0, 1});
+    expectSurfaceVector(glm::vec3(point->tangent), {modelMirror ? 1.f : -1.f, 0, 0});
+    EXPECT_FLOAT_EQ(point->tangent.w, modelMirror ? 1.f : -1.f);
+    expectSurfaceVector(point->bitangent, {0, 1, 0});
+    EXPECT_TRUE(point->frontFace);
+  }
 }
 
 TEST(RaySurface,
@@ -279,6 +333,16 @@ TEST(RayScene, ConvertsAffineTransformToVulkanRowsWithoutChangingHandedness) {
             VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR);
 }
 
+TEST(RayScene, LocalDeformationFacingCombinesWithDoubleSidedCullingFlags) {
+  EXPECT_EQ(rayInstanceFlags(false, true),
+            VK_GEOMETRY_INSTANCE_TRIANGLE_FLIP_FACING_BIT_KHR);
+  EXPECT_EQ(rayInstanceFlags(true, true),
+            VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR |
+            VK_GEOMETRY_INSTANCE_TRIANGLE_FLIP_FACING_BIT_KHR);
+  EXPECT_EQ(rayInstanceFlags(true, false),
+            VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR);
+}
+
 TEST(RayScene, RejectsInvalidTransformsAndAcceptsSmallInvertibleScales) {
   EXPECT_NO_THROW(
       (void)rayInstanceTransform(glm::scale(glm::mat4(1), glm::vec3(1e-9f))));
@@ -328,6 +392,31 @@ TEST(RayScene, ValidatesGeometryAndProviderLocalIdentities) {
   EXPECT_NO_THROW(validateRayScene({}));
 }
 
+TEST(RayExtraction, GpuObjectBindingsFollowDrawOrderAndKeepCpuProviderFallback) {
+  const auto vertices=surfaceTestVertices();const std::vector<uint32_t> indices{0,1,2};
+  std::vector<container::gpu::ObjectData> meshObjects(4),bimObjects(1);
+  const std::vector<DrawCommand> meshDraws{{3,0,3},{1,0,3,2}},bimDraws{{0,0,3}};
+  std::array providers{RaySceneProviderSource{{"mesh"},1,vertices,indices,meshObjects,meshDraws},
+                       RaySceneProviderSource{{"bim"},1,vertices,indices,bimObjects,bimDraws}};
+  RaySceneExtractionCache cache;
+  const auto cpu=cache.update(providers,{true});
+  for(const auto& instance:cpu.instances.instances) EXPECT_EQ(instance.gpuObjectIndex,UINT32_MAX);
+  // Pure extraction treats this as an opaque identity; no Vulkan call uses it.
+  providers[0].gpuObjects={std::bit_cast<VkBuffer>(uintptr_t(1)),0,sizeof(container::gpu::ObjectData)*4};
+  const auto gpu=cache.update(providers,{true});
+  EXPECT_EQ(gpu.geometry,cpu.geometry);
+  ASSERT_EQ(gpu.instances.instances.size(),4);
+  const std::array<uint32_t,4> expected{3,1,2,UINT32_MAX};
+  for(size_t i=0;i<4;++i) EXPECT_EQ(gpu.instances.instances[i].gpuObjectIndex,expected[i]);
+  providers[0].gpuObjects.buffer=std::bit_cast<VkBuffer>(uintptr_t(2));
+  EXPECT_EQ(cache.update(providers,{true}).geometry,cpu.geometry);
+  providers[0].gpuObjects={};
+  const auto restored=cache.update(providers,{true});
+  EXPECT_EQ(restored.geometry,cpu.geometry);
+  for(const auto& instance:restored.instances.instances) EXPECT_EQ(instance.gpuObjectIndex,UINT32_MAX);
+  EXPECT_EQ(gpu.instances.instances[0].gpuObjectIndex,3);
+}
+
 TEST(RayExtraction, CompactsReferencedVerticesAndSharesInstancedGeometry) {
   std::vector<container::geometry::Vertex> vertices(100);
   vertices[77].position = {0, 0, 0};
@@ -362,6 +451,40 @@ TEST(RayExtraction, CompactsReferencedVerticesAndSharesInstancedGeometry) {
   auto views = moved.geometryViews();
   EXPECT_NO_THROW(validateRayScene({views, moved.instances}));
   EXPECT_FALSE(views[0].opaque);
+}
+
+TEST(RayExtraction, LocalWindingFlagIsIndependentOfInstanceModelMirrors) {
+  const auto vertices = surfaceTestVertices();
+  const std::vector<uint32_t> indices{0, 1, 2};
+  std::vector<container::gpu::ObjectData> objects(4);
+  objects[1].model = glm::scale(glm::mat4(1), glm::vec3(-1, 1, 1));
+  objects[2].objectInfo.y = container::gpu::kObjectFlagDeformationWindingFlipped;
+  objects[3].model = objects[1].model;
+  objects[3].objectInfo.y = container::gpu::kObjectFlagDeformationWindingFlipped |
+                          container::gpu::kObjectFlagDoubleSided;
+  const std::vector<DrawCommand> draws{{0, 0, 3, 4}};
+  const std::array providers{
+      RaySceneProviderSource{{"mesh"}, 1, vertices, indices, objects, draws}};
+  RaySceneExtractionCache cache;
+  const auto first = cache.update(providers);
+  ASSERT_EQ(first.instances.instances.size(), 4u);
+  EXPECT_FALSE(first.instances.instances[0].flipFacing);
+  EXPECT_FALSE(first.instances.instances[1].flipFacing);
+  EXPECT_TRUE(first.instances.instances[2].flipFacing);
+  EXPECT_TRUE(first.instances.instances[3].flipFacing);
+  EXPECT_TRUE(first.instances.instances[3].doubleSided);
+  EXPECT_EQ(first.instances.instanceData[2].info.z,
+            container::gpu::kObjectFlagDeformationWindingFlipped);
+  // Reclassifying a compatible local winding changes only the instance view;
+  // immutable compact geometry remains shared with previous submissions.
+  objects[0].objectInfo.y = container::gpu::kObjectFlagDeformationWindingFlipped;
+  objects[2].objectInfo.y = 0;
+  const auto next = cache.update(providers);
+  EXPECT_EQ(next.geometry, first.geometry);
+  EXPECT_TRUE(next.instances.instances[0].flipFacing);
+  EXPECT_FALSE(next.instances.instances[2].flipFacing);
+  EXPECT_FALSE(first.instances.instances[0].flipFacing);
+  EXPECT_TRUE(first.instances.instances[2].flipFacing);
 }
 
 TEST(RayExtraction, ProviderNamespacesAndDistinctRangesStayIndependent) {
@@ -450,6 +573,33 @@ TEST(RayExtraction, CacheRetainsGeometryAcrossTransformsAndMaterialUpdates) {
   EXPECT_FALSE(initial.instances.instances[0].doubleSided);
   EXPECT_EQ(materialChanged.geometry->triangles[0].uv[1],
             glm::vec4(0.7f, 0.9f, 0.2f, 0.3f));
+}
+
+TEST(RayExtraction, CacheInvalidatesOpacityMicromapEligibilityAndIdentity) {
+  using container::geometry::gltf::GltfOpacityMicromapAttachment;
+  const auto vertices = surfaceTestVertices();
+  const std::array<uint32_t, 3> indices{0, 1, 2};
+  const std::array<container::gpu::ObjectData, 1> objects{};
+  const std::array draws{DrawCommand{0, 0, 3}};
+  std::array providers{RaySceneProviderSource{{"mesh"}, 7, vertices, indices, objects, draws}};
+  RaySceneExtractionCache cache;
+  const auto raw = cache.update(providers);
+  ASSERT_FALSE(raw.geometry->geometryViews().at(0).opacityMicromap);
+
+  const auto attachment = std::make_shared<const GltfOpacityMicromapAttachment>();
+  const std::array ranges{RayOpacityMicromapRange{0, 3, attachment}};
+  providers[0].opacityMicromaps = ranges;
+  EXPECT_THROW(extractRaySceneInstances(*raw.geometry, providers), std::invalid_argument);
+  const auto attached = cache.update(providers);
+  EXPECT_NE(attached.geometry, raw.geometry);
+  EXPECT_EQ(attached.geometry->geometryViews().at(0).opacityMicromap, attachment);
+  EXPECT_EQ(cache.update(providers).geometry, attached.geometry);
+
+  providers[0].opacityMicromaps = {};
+  const auto reverted = cache.update(providers);
+  EXPECT_NE(reverted.geometry, attached.geometry);
+  EXPECT_FALSE(reverted.geometry->geometryViews().at(0).opacityMicromap);
+  EXPECT_EQ(attached.geometry->geometryViews().at(0).opacityMicromap, attachment);
 }
 
 TEST(RayExtraction,

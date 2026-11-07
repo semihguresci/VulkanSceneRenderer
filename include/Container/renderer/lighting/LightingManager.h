@@ -1,8 +1,11 @@
 #pragma once
 
+#include "Container/utility/ComputePipeline.h"
+
 #include "Container/common/CommonMath.h"
 #include "Container/common/CommonVulkan.h"
 #include "Container/renderer/lighting/EditableLight.h"
+#include "Container/renderer/lighting/LightEditReceipt.h"
 #include "Container/renderer/lighting/LightPushConstants.h"
 #include "Container/utility/SceneData.h"
 #include "Container/utility/SceneGraph.h"
@@ -30,11 +33,14 @@ class World;
 namespace container::scene {
 class BaseCamera;
 class SceneManager;
+struct AuthoredSceneLights;
+struct ModelBounds;
 } // namespace container::scene
 
 namespace container::renderer {
 
 class LtcLutResources;
+struct LightEditIdentityState;
 
 // Struct carrying the scene-space anchor used for light positioning.
 struct SceneLightingAnchor {
@@ -44,10 +50,128 @@ struct SceneLightingAnchor {
   float worldRadius{1.0f};
 };
 
+// Scene-local edits retain only explicit overrides and manual lights. The
+// evaluated authored light table is rebuilt from the selected source scene.
+struct SceneLightEdits {
+  std::optional<container::gpu::LightingSettings> generationSettings{};
+  std::optional<EditableLightEntity> directionalOverride{};
+  std::vector<std::optional<container::gpu::PointLightData>>
+      generatedPointOverrides{}, importedPointOverrides{};
+  std::vector<std::optional<container::gpu::AreaLightData>>
+      generatedAreaOverrides{}, importedAreaOverrides{};
+  std::vector<container::gpu::PointLightData> manualPointLights{};
+  std::vector<container::gpu::AreaLightData> manualAreaLights{};
+  // Editor lifetime authority travels with properly retained generations. It
+  // never enters glTF output and is not inferred from equal vector payloads.
+  std::shared_ptr<const LightEditIdentityState> identities;
+  [[nodiscard]] uint64_t identityStorageBytes() const noexcept;
+};
+struct LightingGraphPoseGenerationLimits {
+  uint64_t maxPreparedCpuBytes{64ull * 1024 * 1024};
+  uint64_t maxPreparedGpuBytes{256ull * 1024 * 1024};
+  uint64_t maxGraphNodes{1'000'000};
+};
+
 // Manages the LightingData uniform buffer, directional + point/area lights,
 // tiled light culling resources, and the light-gizmo draw helper.
 class LightingManager {
 public:
+  using LightEditCommand=container::renderer::LightEditCommand;
+  class PreparedLightEdit {
+  public:
+    PreparedLightEdit() noexcept;
+    ~PreparedLightEdit();
+    PreparedLightEdit(PreparedLightEdit&&) noexcept;
+    PreparedLightEdit& operator=(PreparedLightEdit&&) noexcept;
+    PreparedLightEdit(const PreparedLightEdit&)=delete;
+    PreparedLightEdit& operator=(const PreparedLightEdit&)=delete;
+    explicit operator bool() const noexcept;
+    [[nodiscard]] bool changed() const noexcept;
+    [[nodiscard]] uint64_t ownedBytes() const noexcept;
+    [[nodiscard]] uint64_t ownedGpuBytes() const noexcept;
+    [[nodiscard]] LightEditCommand command() const noexcept;
+    [[nodiscard]] LightEditTarget target() const noexcept;
+    [[nodiscard]] const SceneLightEdits& edits() const;
+    [[nodiscard]] const SceneLightEdits& beforeEdits() const;
+    [[nodiscard]] const EditableLightEntity& selectedLight() const;
+    [[nodiscard]] const container::gpu::LightingData& lightingData() const;
+    [[nodiscard]] const std::vector<container::gpu::PointLightData>& pointLightsSsbo() const;
+    [[nodiscard]] const std::vector<container::gpu::AreaLightData>& areaLightsSsbo() const;
+    [[nodiscard]] std::span<const container::gpu::AllocatedBuffer> lightingBuffers() const noexcept;
+    [[nodiscard]] const container::gpu::AllocatedBuffer& pointLightBuffer() const;
+    [[nodiscard]] const container::gpu::AllocatedBuffer& areaLightBuffer() const;
+    [[nodiscard]] VkDescriptorSet lightDescriptorSet(uint32_t) const noexcept;
+    [[nodiscard]] VkDescriptorSet tiledDescriptorSet() const noexcept;
+    void updateRayShadowDescriptors(uint32_t,VkBuffer,VkDeviceSize,VkImageView);
+  private:
+    struct State;
+    std::unique_ptr<State> state_;
+    friend class LightingManager;
+  };
+  [[nodiscard]] LightEditSnapshot lightEditSnapshot(EditableLightId) const;
+  [[nodiscard]] uint64_t lightEditRevision() const noexcept {return lightEditRevision_;}
+  [[nodiscard]] PreparedLightEdit prepareLightEdit(const LightEditTarget&,const LightEditPatch&,
+      const LightEditCommand* originalGesture=nullptr,const LightEditLimits& = {}) const;
+  [[nodiscard]] PreparedLightEdit prepareLightEditReplay(const LightEditCommand&,bool applied,const LightEditLimits& = {}) const;
+  [[nodiscard]] PreparedLightEdit prepareLightAdd(EditableLightType,const LightEditLimits& = {}) const;
+  [[nodiscard]] bool canExchangeLightEdit(const PreparedLightEdit&) const noexcept;
+  [[nodiscard]] bool lightEditCommandMatches(const LightEditCommand&) const noexcept;
+  [[nodiscard]] bool exchangeLightEdit(PreparedLightEdit&) noexcept;
+  // Owns one detached CPU/GPU lighting payload. Layouts, LTC/icon images,
+  // pipelines and tiled scratch resources remain owned by the live manager.
+  // Retire all GPU readers before exchange or destruction. Exchange is
+  // reversible: the token then retains the previous generation for history.
+  class PreparedGeneration {
+  public:
+    PreparedGeneration() noexcept;
+    ~PreparedGeneration();
+    PreparedGeneration(PreparedGeneration&&) noexcept;
+    PreparedGeneration& operator=(PreparedGeneration&&) noexcept;
+    PreparedGeneration(const PreparedGeneration&) = delete;
+    PreparedGeneration& operator=(const PreparedGeneration&) = delete;
+    explicit operator bool() const noexcept;
+    [[nodiscard]] const container::gpu::LightingData& lightingData() const;
+    [[nodiscard]] const std::vector<container::gpu::PointLightData>& pointLightsSsbo() const;
+    [[nodiscard]] const std::vector<container::gpu::AreaLightData>& areaLightsSsbo() const;
+    [[nodiscard]] std::span<const container::gpu::AllocatedBuffer> lightingBuffers() const noexcept;
+    [[nodiscard]] const container::gpu::AllocatedBuffer& pointLightBuffer() const;
+    [[nodiscard]] const container::gpu::AllocatedBuffer& areaLightBuffer() const;
+    [[nodiscard]] VkDescriptorSet lightDescriptorSet(uint32_t imageIndex) const noexcept;
+    [[nodiscard]] VkDescriptorSet tiledDescriptorSet() const noexcept;
+    [[nodiscard]] uint64_t ownedBytes() const noexcept;
+    [[nodiscard]] uint64_t ownedGpuBytes() const noexcept;
+    // Complete bindings 3/4 against the matching detached ray generation
+    // before publishing any live subsystem. Other bindings are already ready.
+    void updateRayShadowDescriptors(uint32_t imageIndex, VkBuffer settings,
+        VkDeviceSize settingsSize, VkImageView visibility);
+  private:
+    friend class LightingManager;
+    struct State;
+    std::unique_ptr<State> state_;
+  };
+
+  // Descriptor-only, one-shot stage. It borrows this manager's unchanged
+  // lighting buffers and LTC resources; no CPU light or World state is copied.
+  // Complete bindings 3/4 for every image before exchange. The caller retires
+  // all readers of the old sets before exchange, which consumes this token.
+  class PreparedRayShadowBindings {
+  public:
+    PreparedRayShadowBindings() noexcept;
+    ~PreparedRayShadowBindings();
+    PreparedRayShadowBindings(PreparedRayShadowBindings&&) noexcept;
+    PreparedRayShadowBindings& operator=(PreparedRayShadowBindings&&) noexcept;
+    PreparedRayShadowBindings(const PreparedRayShadowBindings&) = delete;
+    PreparedRayShadowBindings& operator=(const PreparedRayShadowBindings&) = delete;
+    explicit operator bool() const noexcept;
+    [[nodiscard]] VkDescriptorSet lightDescriptorSet(uint32_t imageIndex) const noexcept;
+    void updateRayShadowDescriptors(uint32_t imageIndex, VkBuffer settings,
+        VkDeviceSize settingsSize, VkImageView visibility);
+  private:
+    friend class LightingManager;
+    struct State;
+    std::unique_ptr<State> state_;
+  };
+
   LightingManager(std::shared_ptr<container::gpu::VulkanDevice> device,
                   container::gpu::AllocationManager &allocationManager,
                   container::gpu::PipelineManager &pipelineManager,
@@ -67,6 +191,32 @@ public:
   // Creates lightDescriptorSetLayout, lightingBuffer, lightDescriptorPool,
   // lightDescriptorSet, and writes the initial descriptor.
   void createDescriptorResources(uint32_t descriptorSetCount);
+  [[nodiscard]] PreparedGeneration prepareGeneration(
+      container::scene::SceneManager& sceneManager,
+      container::scene::SceneGraph& graph, container::ecs::World& world,
+      uint32_t rootNode, const SceneLightEdits& edits, uint32_t imageCount) const;
+  // One-shot graph-pose presentation against this manager's unchanged live
+  // source. Candidate graph/World are detached; candidate source lights/bounds
+  // come from the matching prepared SceneManager pose operation. Only detached
+  // CPU evaluation borrows those overrides; live sources are never mutated.
+  // canExchangeGeneration checks BEFORE source/graph publication. The actual
+  // exchange checks their exact prospective phase, while generationEpoch is
+  // still unchanged; scene bindings publish last in the outer transaction.
+  [[nodiscard]] PreparedGeneration prepareGraphPoseGeneration(
+      container::scene::SceneManager& liveSceneManager,
+      const container::scene::SceneGraph& candidateGraph, container::ecs::World& detachedWorld,
+      uint32_t rootNode, const container::scene::AuthoredSceneLights& candidateLights,
+      const container::scene::ModelBounds& candidateBounds, const SceneLightEdits& edits, uint32_t imageCount,
+      const LightingGraphPoseGenerationLimits& limits = {}) const;
+  [[nodiscard]] bool canExchangeGeneration(const PreparedGeneration&) const noexcept;
+  // No allocation, buffer upload, map or flush. Only owned payloads swap;
+  // stable live world/graph/scene-manager references are never rebound.
+  bool exchangeGeneration(PreparedGeneration&) noexcept;
+  [[nodiscard]] PreparedRayShadowBindings prepareRayShadowBindings(uint32_t imageCount) const;
+  [[nodiscard]] bool canExchangeRayShadowBindings(const PreparedRayShadowBindings&) const noexcept;
+  // No allocation, upload or descriptor writes: only the light descriptor
+  // payload changes. The previous descriptor pool is retired immediately.
+  bool exchangeRayShadowBindings(PreparedRayShadowBindings&) noexcept;
   void updateRayShadowDescriptors(uint32_t imageIndex, VkBuffer settings,
                                   VkDeviceSize settingsSize,
                                   VkImageView visibility);
@@ -128,6 +278,13 @@ public:
     return lightingSettings_;
   }
   void setLightingSettings(const container::gpu::LightingSettings &settings);
+  [[nodiscard]] SceneLightEdits snapshotSceneLightEdits() const;
+  // Logical bytes required by a detached edit snapshot, without allocating it.
+  // Saturates on overflow so callers can reject before copying unbounded edits.
+  [[nodiscard]] uint64_t sceneLightEditsStorageBytes() const noexcept;
+  // Restores CPU edit state and clears selection. The caller publishes the
+  // selected source scene before calling updateLightingData() and uploading.
+  void restoreSceneLightEdits(const SceneLightEdits &edits);
   // Scene light indices belong to one loaded source. Drop their edits and
   // selection when replacing that source; preserve user-created manual lights.
   // Recomputes CPU lighting only. The caller uploads after retiring GPU reads.
@@ -156,6 +313,12 @@ public:
   }
   std::span<const container::gpu::AllocatedBuffer> lightingBuffers() const {
     return lightingBuffers_;
+  }
+  const container::gpu::AllocatedBuffer& pointLightBuffer() const {
+    return lightSsbo_;
+  }
+  const container::gpu::AllocatedBuffer& areaLightBuffer() const {
+    return areaLightSsbo_;
   }
 
   SceneLightingAnchor computeSceneLightingAnchor() const;
@@ -212,6 +375,29 @@ public:
   }
 
 private:
+  friend struct LightingScratchRecoveryTestAccess;
+  struct DetachedGraphTag {};
+  LightingManager(std::shared_ptr<container::gpu::VulkanDevice>, container::gpu::AllocationManager&,
+      container::gpu::PipelineManager&, container::scene::SceneManager*, const container::scene::SceneGraph&,
+      container::ecs::World&, DetachedGraphTag);
+  [[nodiscard]] PreparedGeneration prepareGenerationImpl(container::scene::SceneManager&,
+      const container::scene::SceneGraph&, container::ecs::World&, uint32_t, const SceneLightEdits&, uint32_t,
+      const container::scene::AuthoredSceneLights*, const container::scene::ModelBounds*,
+      const LightingGraphPoseGenerationLimits*,bool lightOnly=false) const;
+  void exchangeGenerationPayload(PreparedGeneration&) noexcept;
+  void synchronizeLightEditIdentities() const;
+  [[nodiscard]] bool lightEditIdentitiesValid() const noexcept;
+  [[nodiscard]] std::optional<LightEditTarget> currentLightEditTarget(EditableLightId) const noexcept;
+  [[nodiscard]] std::optional<EditableLightEntity> lightOverride(EditableLightId) const;
+  [[nodiscard]] std::optional<LightEditValues> lightOverrideValues(EditableLightId) const noexcept;
+  [[nodiscard]] EditableLightEntity lightBase(EditableLightId,LightEditCanonicalPayload* raw=nullptr) const;
+  [[nodiscard]] LightEditCanonicalPayload lightRawOverride(EditableLightId) const noexcept;
+  [[nodiscard]] PreparedLightEdit prepareLightEditImpl(const LightEditTarget&,const LightEditPatch*,
+      const LightEditCommand*,bool replay,bool applied,const LightEditLimits&) const;
+  [[nodiscard]] PreparedLightEdit prepareLightAddImpl(EditableLightType,const LightEditCommand*,bool applied,const LightEditLimits&) const;
+  [[nodiscard]] bool generationResourcesReady(const PreparedGeneration&) const noexcept;
+  [[nodiscard]] bool tiledScratchResourcesReady() const noexcept;
+  [[nodiscard]] bool graphPoseGenerationMatches(const PreparedGeneration&, bool prospective) const noexcept;
   bool applyAuthoredDirectionalLight(const SceneLightingAnchor &anchor);
   void appendAuthoredPointLights(const SceneLightingAnchor &anchor);
   void appendAuthoredAreaLights(const SceneLightingAnchor &anchor);
@@ -229,11 +415,13 @@ private:
   void assignLocalShadowLayerMetadata();
   void publishPointLights();
   void publishAreaLights();
-  void rebuildPointLightSsboFromEcs();
   void writeLightDescriptorStorageBuffers() const;
   void writeLtcDescriptors() const;
   void allocateClusterBuffers(VkExtent2D extent);
-  void writeTiledResourceDescriptors() const;
+  void writeTiledResourceDescriptors() const noexcept;
+  void destroyLightDescriptorPool() noexcept;
+  void invalidateRayShadowBindingPreparations() noexcept;
+  void destroyTileCullDescriptorPool() noexcept;
   void createLightGizmoIconDescriptorResources();
   void loadLightGizmoIconResources(const std::filesystem::path &assetRoot);
   void writeLightGizmoIconDescriptor() const;
@@ -241,8 +429,15 @@ private:
   container::gpu::AllocationManager &allocationManager_;
   container::gpu::PipelineManager &pipelineManager_;
   container::scene::SceneManager *sceneManager_{nullptr};
-  container::scene::SceneGraph &sceneGraph_;
+  const container::scene::SceneGraph &sceneGraph_;
   container::ecs::World &world_;
+  // Set only on a detached payload during fallible CPU evaluation. Always
+  // cleared before return/publication; these are never exchanged or retained.
+  const container::scene::AuthoredSceneLights* authoredLightsOverride_{};
+  const container::scene::ModelBounds* boundsOverride_{};
+  bool suppressWorldPublication_{};
+  uint64_t lightEditOwnerIdentity_{},lightEditRevision_{1},generatedLightRevision_{1};
+  mutable std::shared_ptr<const LightEditIdentityState> lightEditIdentities_;
 
   container::gpu::LightingData lightingData_{};
   container::gpu::LightingSettings lightingSettings_{};
@@ -255,7 +450,21 @@ private:
   std::vector<container::gpu::AllocatedBuffer> lightingBuffers_{};
   VkDescriptorSetLayout lightDescriptorSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool lightDescriptorPool_{VK_NULL_HANDLE};
+  bool ownsLightDescriptorPool_{false};
   std::vector<VkDescriptorSet> lightDescriptorSets_{};
+  struct RayShadowBinding {
+    VkBuffer settings{VK_NULL_HANDLE};
+    VkDeviceSize settingsSize{};
+    VkImageView visibility{VK_NULL_HANDLE};
+  };
+  std::vector<RayShadowBinding> rayShadowBindings_{};
+  // Never exchanged with asset generations: tokens belong to this lifetime
+  // and to precisely the binding resources against which they were prepared.
+  std::shared_ptr<const uint8_t> descriptorBindingIdentity_{std::make_shared<const uint8_t>(0)};
+  uint64_t descriptorBindingEpoch_{1};
+  // Named fixture-only seam: one-shot failure immediately before one of the
+  // two scratch replacement allocations, after the real invalidation path.
+  uint8_t scratchAllocationFailureForTest_{};
 
   // ---- Tiled light culling ------------------------------------------------
   std::vector<container::gpu::PointLightData> pointLightsSsbo_{};
@@ -287,7 +496,7 @@ private:
   mutable bool timingQueriesWritten_{false};
 
   // Compute pipeline
-  VkPipeline tileCullPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline tileCullPipeline_{};
   VkPipelineLayout tileCullPipelineLayout_{VK_NULL_HANDLE};
 
   // Descriptor resources for the compute cull shader (set 0 = camera+depth,
@@ -297,6 +506,7 @@ private:
   VkDescriptorSetLayout tileCullSet2Layout_{
       VK_NULL_HANDLE}; // tile grid + index list
   VkDescriptorPool tileCullDescriptorPool_{VK_NULL_HANDLE};
+  bool ownsTileCullDescriptorPool_{false};
   VkDescriptorSet tileCullSet0_{VK_NULL_HANDLE};
   VkDescriptorSet tileCullSet1_{VK_NULL_HANDLE};
   VkDescriptorSet tileCullSet2_{VK_NULL_HANDLE};

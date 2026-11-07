@@ -1,0 +1,125 @@
+#pragma once
+
+// Shared by the recorder and Slang shader. A filled pixel disk produces a
+// continuous stroke even when the selected silhouette is only one pixel wide.
+#ifdef __cplusplus
+#include <array>
+#include <cstdint>
+#include <algorithm>
+#include <limits>
+#include <stdexcept>
+namespace container::renderer {
+inline constexpr uint32_t kSelectionStrokeRadius = 5;
+inline constexpr uint32_t kSelectionStrokeSampleCount = 80;
+struct SelectionStrokeInstanceBatch {
+  uint32_t objectIndex, objectCount, instanceCount;
+};
+// A draw expands whole object groups only. Call again on the remaining range
+// when multiplication would exceed vkCmdDrawIndexed's uint32 instance count.
+inline SelectionStrokeInstanceBatch PlanSelectionStrokeInstanceBatch(
+    uint32_t firstObject, uint32_t objectCount) {
+  const auto count = std::max(objectCount, 1u);
+  if (uint64_t(firstObject) + count - 1 > std::numeric_limits<uint32_t>::max())
+    throw std::invalid_argument("Selection stroke object group overflows");
+  const auto batch = std::min(count,
+      std::numeric_limits<uint32_t>::max() / kSelectionStrokeSampleCount);
+  return {firstObject, batch, batch * kSelectionStrokeSampleCount};
+}
+struct SelectionStrokeOffset { int32_t x, y; };
+inline constexpr std::array<SelectionStrokeOffset, kSelectionStrokeSampleCount>
+    kSelectionStrokeOffsets = {{
+#define CONTAINER_SELECTION_STROKE_OFFSET(x, y) SelectionStrokeOffset{x, y}
+#else
+static const uint kSelectionStrokeRadius = 5;
+static const uint kSelectionStrokeSampleCount = 80;
+static const int2 kSelectionStrokeOffsets[kSelectionStrokeSampleCount] = {
+#define CONTAINER_SELECTION_STROKE_OFFSET(x, y) int2(x, y)
+#endif
+    CONTAINER_SELECTION_STROKE_OFFSET(0, -5),
+    CONTAINER_SELECTION_STROKE_OFFSET(-3, -4),
+    CONTAINER_SELECTION_STROKE_OFFSET(-2, -4),
+    CONTAINER_SELECTION_STROKE_OFFSET(-1, -4),
+    CONTAINER_SELECTION_STROKE_OFFSET(0, -4),
+    CONTAINER_SELECTION_STROKE_OFFSET(1, -4),
+    CONTAINER_SELECTION_STROKE_OFFSET(2, -4),
+    CONTAINER_SELECTION_STROKE_OFFSET(3, -4),
+    CONTAINER_SELECTION_STROKE_OFFSET(-4, -3),
+    CONTAINER_SELECTION_STROKE_OFFSET(-3, -3),
+    CONTAINER_SELECTION_STROKE_OFFSET(-2, -3),
+    CONTAINER_SELECTION_STROKE_OFFSET(-1, -3),
+    CONTAINER_SELECTION_STROKE_OFFSET(0, -3),
+    CONTAINER_SELECTION_STROKE_OFFSET(1, -3),
+    CONTAINER_SELECTION_STROKE_OFFSET(2, -3),
+    CONTAINER_SELECTION_STROKE_OFFSET(3, -3),
+    CONTAINER_SELECTION_STROKE_OFFSET(4, -3),
+    CONTAINER_SELECTION_STROKE_OFFSET(-4, -2),
+    CONTAINER_SELECTION_STROKE_OFFSET(-3, -2),
+    CONTAINER_SELECTION_STROKE_OFFSET(-2, -2),
+    CONTAINER_SELECTION_STROKE_OFFSET(-1, -2),
+    CONTAINER_SELECTION_STROKE_OFFSET(0, -2),
+    CONTAINER_SELECTION_STROKE_OFFSET(1, -2),
+    CONTAINER_SELECTION_STROKE_OFFSET(2, -2),
+    CONTAINER_SELECTION_STROKE_OFFSET(3, -2),
+    CONTAINER_SELECTION_STROKE_OFFSET(4, -2),
+    CONTAINER_SELECTION_STROKE_OFFSET(-4, -1),
+    CONTAINER_SELECTION_STROKE_OFFSET(-3, -1),
+    CONTAINER_SELECTION_STROKE_OFFSET(-2, -1),
+    CONTAINER_SELECTION_STROKE_OFFSET(-1, -1),
+    CONTAINER_SELECTION_STROKE_OFFSET(0, -1),
+    CONTAINER_SELECTION_STROKE_OFFSET(1, -1),
+    CONTAINER_SELECTION_STROKE_OFFSET(2, -1),
+    CONTAINER_SELECTION_STROKE_OFFSET(3, -1),
+    CONTAINER_SELECTION_STROKE_OFFSET(4, -1),
+    CONTAINER_SELECTION_STROKE_OFFSET(-5, 0),
+    CONTAINER_SELECTION_STROKE_OFFSET(-4, 0),
+    CONTAINER_SELECTION_STROKE_OFFSET(-3, 0),
+    CONTAINER_SELECTION_STROKE_OFFSET(-2, 0),
+    CONTAINER_SELECTION_STROKE_OFFSET(-1, 0),
+    CONTAINER_SELECTION_STROKE_OFFSET(1, 0),
+    CONTAINER_SELECTION_STROKE_OFFSET(2, 0),
+    CONTAINER_SELECTION_STROKE_OFFSET(3, 0),
+    CONTAINER_SELECTION_STROKE_OFFSET(4, 0),
+    CONTAINER_SELECTION_STROKE_OFFSET(5, 0),
+    CONTAINER_SELECTION_STROKE_OFFSET(-4, 1),
+    CONTAINER_SELECTION_STROKE_OFFSET(-3, 1),
+    CONTAINER_SELECTION_STROKE_OFFSET(-2, 1),
+    CONTAINER_SELECTION_STROKE_OFFSET(-1, 1),
+    CONTAINER_SELECTION_STROKE_OFFSET(0, 1),
+    CONTAINER_SELECTION_STROKE_OFFSET(1, 1),
+    CONTAINER_SELECTION_STROKE_OFFSET(2, 1),
+    CONTAINER_SELECTION_STROKE_OFFSET(3, 1),
+    CONTAINER_SELECTION_STROKE_OFFSET(4, 1),
+    CONTAINER_SELECTION_STROKE_OFFSET(-4, 2),
+    CONTAINER_SELECTION_STROKE_OFFSET(-3, 2),
+    CONTAINER_SELECTION_STROKE_OFFSET(-2, 2),
+    CONTAINER_SELECTION_STROKE_OFFSET(-1, 2),
+    CONTAINER_SELECTION_STROKE_OFFSET(0, 2),
+    CONTAINER_SELECTION_STROKE_OFFSET(1, 2),
+    CONTAINER_SELECTION_STROKE_OFFSET(2, 2),
+    CONTAINER_SELECTION_STROKE_OFFSET(3, 2),
+    CONTAINER_SELECTION_STROKE_OFFSET(4, 2),
+    CONTAINER_SELECTION_STROKE_OFFSET(-4, 3),
+    CONTAINER_SELECTION_STROKE_OFFSET(-3, 3),
+    CONTAINER_SELECTION_STROKE_OFFSET(-2, 3),
+    CONTAINER_SELECTION_STROKE_OFFSET(-1, 3),
+    CONTAINER_SELECTION_STROKE_OFFSET(0, 3),
+    CONTAINER_SELECTION_STROKE_OFFSET(1, 3),
+    CONTAINER_SELECTION_STROKE_OFFSET(2, 3),
+    CONTAINER_SELECTION_STROKE_OFFSET(3, 3),
+    CONTAINER_SELECTION_STROKE_OFFSET(4, 3),
+    CONTAINER_SELECTION_STROKE_OFFSET(-3, 4),
+    CONTAINER_SELECTION_STROKE_OFFSET(-2, 4),
+    CONTAINER_SELECTION_STROKE_OFFSET(-1, 4),
+    CONTAINER_SELECTION_STROKE_OFFSET(0, 4),
+    CONTAINER_SELECTION_STROKE_OFFSET(1, 4),
+    CONTAINER_SELECTION_STROKE_OFFSET(2, 4),
+    CONTAINER_SELECTION_STROKE_OFFSET(3, 4),
+    CONTAINER_SELECTION_STROKE_OFFSET(0, 5),
+#ifdef __cplusplus
+}};
+} // namespace container::renderer
+#else
+};
+#endif
+#undef CONTAINER_SELECTION_STROKE_OFFSET
+

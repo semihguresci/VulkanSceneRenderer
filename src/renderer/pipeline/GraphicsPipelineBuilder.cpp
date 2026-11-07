@@ -274,14 +274,14 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       attribDescs[0]};
   std::array<VkVertexInputAttributeDescription, 2> posTexAttribs = {
       attribDescs[0], attribDescs[2]};
-  std::array<VkVertexInputAttributeDescription, 4> posTexNormAttribs = {
-      attribDescs[0], attribDescs[2], attribDescs[3], attribDescs[5]};
+  std::array<VkVertexInputAttributeDescription, 5> posTexNormAttribs = {
+      attribDescs[0], attribDescs[2], attribDescs[3], attribDescs[5], attribDescs[6]};
   std::array<VkVertexInputAttributeDescription, 3> posTexNormNoTex1Attribs = {
       attribDescs[0], attribDescs[2], attribDescs[3]};
-  std::array<VkVertexInputAttributeDescription, 6>
+  std::array<VkVertexInputAttributeDescription, 7>
       posColorTexNormTangentAttribs = {attribDescs[0], attribDescs[1],
                                        attribDescs[2], attribDescs[3],
-                                       attribDescs[4], attribDescs[5]};
+                                       attribDescs[4], attribDescs[5], attribDescs[6]};
 
   VkPipelineVertexInputStateCreateInfo posOnlyInput = fullVertexInput;
   posOnlyInput.vertexAttributeDescriptionCount = 1;
@@ -621,7 +621,10 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       device_->raii(), vk::DescriptorSetLayoutCreateInfo{});
   const VkDescriptorSetLayout emptySet =
       static_cast<VkDescriptorSetLayout>(*emptyDescriptorLayout);
-  PipelineLayouts layouts;
+  PipelineBuildResult result{};
+  const auto rollback = [this](PipelineBuildResult* value) { destroy(*value); };
+  std::unique_ptr<PipelineBuildResult, decltype(rollback)> guard(&result, rollback);
+  auto& layouts = result.layouts;
   layouts.scene = pipelineManager_.createPipelineLayout(
       {descriptorLayouts.scene}, {scenePCR});
   std::vector<VkDescriptorSetLayout> transparentSets{
@@ -725,7 +728,8 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   transparentPickPCI.renderPass = renderPasses.transparentPick;
 
   // ---- create pipelines -----------------------------------------------------
-  GraphicsPipelines pipelines;
+  auto& pipelines = result.pipelines;
+  pipelines.extraHandles.reserve(7);
 
   // Depth prepass
   scenePCI.pVertexInputState = &posTexNormInput;
@@ -1198,7 +1202,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   RenderingGraphicsPipelineCreateInfo onPCI = meshPCI;
   onPCI.stageCount = static_cast<uint32_t>(onStages.size());
   onPCI.pStages = onStages.data();
-  onPCI.pVertexInputState = &posTexNormNoTex1Input;
+  onPCI.pVertexInputState = &posTexNormInput;
   onPCI.pColorBlendState = &overlayBlend;
   onPCI.pDepthStencilState = &normalLineDS;
   onPCI.layout = layouts.scene;
@@ -1284,7 +1288,101 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
 
   pipelines.handleRegistry = buildGraphicsPipelineHandleRegistry(pipelines);
 
-  return {layouts, pipelines};
+  guard.release();
+  return result;
+}
+
+void GraphicsPipelineBuilder::destroy(PipelineBuildResult& result) const noexcept {
+  auto &pipelines = result.pipelines;
+  auto destroyPipeline = [this](VkPipeline &pipeline) {
+    pipelineManager_.destroyPipeline(pipeline);
+  };
+  destroyPipeline(pipelines.depthPrepass);
+  destroyPipeline(pipelines.depthPrepassFrontCull);
+  destroyPipeline(pipelines.depthPrepassNoCull);
+  destroyPipeline(pipelines.bimDepthPrepass);
+  destroyPipeline(pipelines.bimDepthPrepassFrontCull);
+  destroyPipeline(pipelines.bimDepthPrepassNoCull);
+  destroyPipeline(pipelines.gBuffer);
+  destroyPipeline(pipelines.gBufferFrontCull);
+  destroyPipeline(pipelines.gBufferNoCull);
+  destroyPipeline(pipelines.bimGBuffer);
+  destroyPipeline(pipelines.bimGBufferFrontCull);
+  destroyPipeline(pipelines.bimGBufferNoCull);
+  destroyPipeline(pipelines.shadowDepth);
+  destroyPipeline(pipelines.shadowDepthFrontCull);
+  destroyPipeline(pipelines.shadowDepthNoCull);
+  destroyPipeline(pipelines.localShadowDepth);
+  destroyPipeline(pipelines.localShadowDepthFrontCull);
+  destroyPipeline(pipelines.localShadowDepthNoCull);
+  destroyPipeline(pipelines.directionalLight);
+  destroyPipeline(pipelines.stencilVolume);
+  destroyPipeline(pipelines.pointLight);
+  destroyPipeline(pipelines.pointLightStencilDebug);
+  destroyPipeline(pipelines.tiledPointLight);
+  destroyPipeline(pipelines.transparent);
+  destroyPipeline(pipelines.transparentFrontCull);
+  destroyPipeline(pipelines.transparentNoCull);
+  destroyPipeline(pipelines.transparentPick);
+  destroyPipeline(pipelines.transparentPickFrontCull);
+  destroyPipeline(pipelines.transparentPickNoCull);
+  destroyPipeline(pipelines.postProcess);
+  destroyPipeline(pipelines.geometryDebug);
+  destroyPipeline(pipelines.normalValidation);
+  destroyPipeline(pipelines.normalValidationFrontCull);
+  destroyPipeline(pipelines.normalValidationNoCull);
+  destroyPipeline(pipelines.wireframeDepth);
+  destroyPipeline(pipelines.wireframeDepthFrontCull);
+  destroyPipeline(pipelines.wireframeNoDepth);
+  destroyPipeline(pipelines.wireframeNoDepthFrontCull);
+  destroyPipeline(pipelines.selectionMask);
+  destroyPipeline(pipelines.selectionOutline);
+  destroyPipeline(pipelines.bimFloorPlanDepth);
+  destroyPipeline(pipelines.bimFloorPlanNoDepth);
+  destroyPipeline(pipelines.bimPointCloudDepth);
+  destroyPipeline(pipelines.bimPointCloudNoDepth);
+  destroyPipeline(pipelines.bimCurveDepth);
+  destroyPipeline(pipelines.bimCurveNoDepth);
+  destroyPipeline(pipelines.bimSectionClipCapFill);
+  destroyPipeline(pipelines.bimSectionClipCapHatch);
+  destroyPipeline(pipelines.surfaceNormalLine);
+  destroyPipeline(pipelines.objectNormalDebug);
+  destroyPipeline(pipelines.objectNormalDebugFrontCull);
+  destroyPipeline(pipelines.objectNormalDebugNoCull);
+  destroyPipeline(pipelines.lightGizmo);
+  destroyPipeline(pipelines.lightGizmoCoverage);
+  destroyPipeline(pipelines.lightGizmoPick);
+  destroyPipeline(pipelines.transformGizmo);
+  destroyPipeline(pipelines.transformGizmoSolid);
+  destroyPipeline(pipelines.transformGizmoOverlay);
+  destroyPipeline(pipelines.transformGizmoSolidOverlay);
+  for (RegisteredPipelineHandle &handle : pipelines.extraHandles) {
+    destroyPipeline(handle.pipeline);
+  }
+  pipelines.extraHandles.clear();
+
+  auto &layouts = result.layouts;
+  auto destroyLayout = [this](VkPipelineLayout &layout) {
+    pipelineManager_.destroyPipelineLayout(layout);
+  };
+  destroyLayout(layouts.scene);
+  destroyLayout(layouts.transparent);
+  destroyLayout(layouts.forwardRay);
+  destroyLayout(layouts.lighting);
+  destroyLayout(layouts.lightGizmo);
+  destroyLayout(layouts.tiledLighting);
+  destroyLayout(layouts.shadow);
+  destroyLayout(layouts.postProcess);
+  destroyLayout(layouts.wireframe);
+  destroyLayout(layouts.normalValidation);
+  destroyLayout(layouts.surfaceNormal);
+  destroyLayout(layouts.transformGizmo);
+  for (RegisteredPipelineLayout &layout : layouts.extraLayouts) {
+    destroyLayout(layout.layout);
+  }
+  layouts.extraLayouts.clear();
+
+  result = {};
 }
 
 } // namespace container::renderer

@@ -1,0 +1,11 @@
+# These project-owned compatibility metadata files have exact byte pins.
+cmake/vcpkg-overlay-ports/**/copyright text eol=lf
+cmake/vcpkg-overlay-ports/tinygltf/json.hpp -text whitespace=cr-at-eol
+# Retain the byte-pinned combined upstream notice, including its final blank line.
+cmake/vcpkg-overlay-ports/tinygltf/copyright whitespace=-blank-at-eof
+
+# Preserve captured preset bytes, including their original line endings.
+docs/images/readme/grades/*.json -text whitespace=cr-at-eol
+# Preserve the published byte identities of the prepared gallery scene.
+docs/images/readme/scenes/ABeautifulGame-studio-prepared.gltf text eol=lf
+docs/images/readme/scenes/ABeautifulGame-studio-NOTICE.txt text eol=lf

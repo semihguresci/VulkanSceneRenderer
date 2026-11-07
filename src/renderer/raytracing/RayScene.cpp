@@ -31,11 +31,13 @@ VkTransformMatrixKHR rayInstanceTransform(const glm::mat4 &transform) {
   return result;
 }
 
-VkGeometryInstanceFlagsKHR rayInstanceFlags(bool doubleSided) {
+VkGeometryInstanceFlagsKHR rayInstanceFlags(bool doubleSided, bool flipFacing) {
   // Facing is evaluated in object space. Mirrored instance transforms must not
-  // flip this flag; raster's front-cull variant preserves that same local face.
-  return doubleSided ? VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR
-                     : 0;
+  // flip this flag; mirrored deformation changes that object-space geometry.
+  VkGeometryInstanceFlagsKHR flags = doubleSided
+      ? VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR : 0;
+  if (flipFacing) flags |= VK_GEOMETRY_INSTANCE_TRIANGLE_FLIP_FACING_BIT_KHR;
+  return flags;
 }
 
 void validateRayScene(const RaySceneInput &input) {

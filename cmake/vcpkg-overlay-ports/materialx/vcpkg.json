@@ -1,0 +1,16 @@
+{
+  "name": "materialx",
+  "description": "Pinned latest project dependency; see source pin in portfile.cmake",
+  "license": "Apache-2.0 AND MIT",
+  "version": "1.39.5",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ]
+}

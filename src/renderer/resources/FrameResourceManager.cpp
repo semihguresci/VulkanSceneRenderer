@@ -82,6 +82,95 @@ FrameFramebufferBinding frameFramebufferBinding(RenderingTargetHandle framebuffe
 
 }  // namespace
 
+struct FrameResourceManager::PreparedAuxiliaryBindings::State {
+  struct Frame {
+    VkDescriptorSet set{VK_NULL_HANDLE};
+    std::array<VkDescriptorImageInfo,2> images{};
+  };
+  const FrameResourceManager* owner{};
+  std::shared_ptr<const uint8_t> identity;
+  uint64_t epoch{};
+  VkDescriptorPool pool{VK_NULL_HANDLE};
+  VkDescriptorSetLayout layout{VK_NULL_HANDLE};
+  bool anisotropyFallback{},diffuseFallback{};
+  std::vector<Frame> frames;
+};
+
+FrameResourceManager::PreparedAuxiliaryBindings::PreparedAuxiliaryBindings() noexcept=default;
+FrameResourceManager::PreparedAuxiliaryBindings::~PreparedAuxiliaryBindings()=default;
+FrameResourceManager::PreparedAuxiliaryBindings::PreparedAuxiliaryBindings(
+    PreparedAuxiliaryBindings&&) noexcept=default;
+FrameResourceManager::PreparedAuxiliaryBindings& FrameResourceManager::PreparedAuxiliaryBindings::operator=(
+    PreparedAuxiliaryBindings&&) noexcept=default;
+FrameResourceManager::PreparedAuxiliaryBindings::operator bool() const noexcept {
+  return state_ && state_->owner;
+}
+
+FrameResourceManager::PreparedAuxiliaryBindings FrameResourceManager::prepareAuxiliaryBindings(
+    std::span<const VkImageView> anisotropyViews,
+    std::span<const VkImageView> diffuseTransmissionViews) const {
+  if(!device_ || device_->device()==VK_NULL_HANDLE || !lightingPool_ || !lightingLayout_ ||
+      frames_.empty() || frames_.size()>64 || descriptorBindingEpoch_==UINT64_MAX)
+    throw std::invalid_argument("Auxiliary scene bindings require an initialized bounded frame table");
+  if((!anisotropyViews.empty() && anisotropyViews.size()!=frames_.size()) ||
+      (!diffuseTransmissionViews.empty() && diffuseTransmissionViews.size()!=frames_.size()))
+    throw std::invalid_argument("Auxiliary image views must be empty or cover every frame");
+  // Validate the complete table before copying any prepared rows.
+  for(size_t i=0;i<frames_.size();++i) {
+    if(!frames_[i].lightingDescriptorSet ||
+        !(anisotropyViews.empty()?frames_[i].normal.view:anisotropyViews[i]) ||
+        !(diffuseTransmissionViews.empty()?frames_[i].normal.view:diffuseTransmissionViews[i]))
+      throw std::invalid_argument("Auxiliary binding contains a null descriptor set or image view");
+  }
+  PreparedAuxiliaryBindings result;
+  result.state_=std::make_unique<PreparedAuxiliaryBindings::State>();
+  auto& state=*result.state_;
+  state.owner=this;state.identity=descriptorBindingOwner_;state.epoch=descriptorBindingEpoch_;
+  state.pool=lightingPool_;state.layout=lightingLayout_;
+  state.anisotropyFallback=anisotropyViews.empty();state.diffuseFallback=diffuseTransmissionViews.empty();
+  state.frames.reserve(frames_.size());
+  for(size_t i=0;i<frames_.size();++i) {
+    PreparedAuxiliaryBindings::State::Frame row;
+    row.set=frames_[i].lightingDescriptorSet;
+    row.images[0]={VK_NULL_HANDLE,anisotropyViews.empty()?frames_[i].normal.view:anisotropyViews[i],
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    row.images[1]={VK_NULL_HANDLE,diffuseTransmissionViews.empty()?frames_[i].normal.view:diffuseTransmissionViews[i],
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    state.frames.push_back(row);
+  }
+  return result;
+}
+
+bool FrameResourceManager::canPublishAuxiliaryBindings(const PreparedAuxiliaryBindings& value) const noexcept {
+  if(!value) return false;
+  const auto& state=*value.state_;
+  if(state.owner!=this || state.identity!=descriptorBindingOwner_ || state.epoch!=descriptorBindingEpoch_ ||
+      descriptorBindingEpoch_==UINT64_MAX || state.pool!=lightingPool_ || state.layout!=lightingLayout_ ||
+      state.frames.size()!=frames_.size()) return false;
+  for(size_t i=0;i<frames_.size();++i)
+    if(state.frames[i].set!=frames_[i].lightingDescriptorSet ||
+        (state.anisotropyFallback && state.frames[i].images[0].imageView!=frames_[i].normal.view) ||
+        (state.diffuseFallback && state.frames[i].images[1].imageView!=frames_[i].normal.view)) return false;
+  return true;
+}
+
+bool FrameResourceManager::publishAuxiliaryBindings(PreparedAuxiliaryBindings& value) noexcept {
+  if(!canPublishAuxiliaryBindings(value)) return false;
+  for(const auto& row:value.state_->frames) {
+    std::array<VkWriteDescriptorSet,2> writes{};
+    for(uint32_t i=0;i<writes.size();++i) {
+      auto& write=writes[i];write.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      write.dstSet=row.set;write.dstBinding=23+i;write.descriptorCount=1;
+      write.descriptorType=VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;write.pImageInfo=&row.images[i];
+    }
+    vkUpdateDescriptorSets(device_->device(),static_cast<uint32_t>(writes.size()),writes.data(),0,nullptr);
+  }
+  descriptorUpdateKeyValid_=false;
+  ++descriptorBindingEpoch_;
+  value.state_->owner=nullptr; // Keep prepared storage for destruction outside publication.
+  return true;
+}
+
 // -----------------------------------------------------------------------
 FrameResourceManager::FrameResourceManager(
     std::shared_ptr<container::gpu::VulkanDevice> device,
@@ -122,7 +211,7 @@ FrameResourceManager::~FrameResourceManager() {
 // -----------------------------------------------------------------------
 void FrameResourceManager::createDescriptorSetLayouts() {
   if (lightingLayout_ == VK_NULL_HANDLE) {
-    const std::array<VkDescriptorSetLayoutBinding, 23> b = {{
+    std::array<VkDescriptorSetLayoutBinding, 25> b = {{
         {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,  1,
          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_SAMPLER,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -150,14 +239,18 @@ void FrameResourceManager::createDescriptorSetLayouts() {
         {20, VK_DESCRIPTOR_TYPE_SAMPLER,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {21, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // material layers
         {22, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // material sheen
+        {23, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // anisotropy tangent/strength
+        {24, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // diffuse transmission color/factor
     }};
+    for (const auto binding : {0, 2, 3, 4, 10, 11, 12, 13, 14, 15, 16, 17, 21, 22, 23, 24})
+      b[binding].stageFlags |= VK_SHADER_STAGE_COMPUTE_BIT;
     const std::vector<VkDescriptorBindingFlags> flags(b.size(), 0);
     lightingLayout_ = pipelineMgr_->createDescriptorSetLayout(
         {b.begin(), b.end()}, flags);
   }
 
   if (postProcessLayout_ == VK_NULL_HANDLE) {
-    const std::array<VkDescriptorSetLayoutBinding, 16> b = {{
+    const std::array<VkDescriptorSetLayoutBinding, 17> b = {{
         {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
          nullptr},
         {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -188,6 +281,7 @@ void FrameResourceManager::createDescriptorSetLayouts() {
         {14, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,       1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // temporal motion
         {15, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // temporal diagnostics
         {13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // exposure state
+        {16, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // linear capture
     }};
     const std::vector<VkDescriptorBindingFlags> flags(b.size(), 0);
     postProcessLayout_ = pipelineMgr_->createDescriptorSetLayout(
@@ -259,7 +353,7 @@ void FrameResourceManager::validatePickIdFormatSupport() const {
 
 // -----------------------------------------------------------------------
 uint32_t FrameResourceManager::computeOitNodeCapacity() const {
-  const VkExtent2D ext = swapChain_->extent();
+  const VkExtent2D ext = sceneExtent_.width ? sceneExtent_ : swapChain_->extent();
   const uint64_t   px  = static_cast<uint64_t>(ext.width) *
                          static_cast<uint64_t>(ext.height);
   const uint64_t desired =
@@ -312,8 +406,13 @@ void FrameResourceManager::create(
     RenderingPassHandle                             transformGizmoPass,
     VkSampleCountFlagBits                    msaaSampleCount,
     std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
-    const container::gpu::AllocatedBuffer& objectBuffer) {
+    const container::gpu::AllocatedBuffer& objectBuffer,
+    VkExtent2D sceneExtent) {
   destroy();
+  const VkExtent2D displayExtent = swapChain_->extent();
+  sceneExtent_ = sceneExtent.width && sceneExtent.height ? sceneExtent : displayExtent;
+  if (sceneExtent_.width > displayExtent.width || sceneExtent_.height > displayExtent.height)
+    throw std::invalid_argument("scene extent cannot exceed the presentation extent");
 
   formats_         = formats;
   depthPrepassPass_ = depthPrepassPass;
@@ -344,7 +443,7 @@ void FrameResourceManager::create(
     std::array<VkDescriptorPoolSize, 3> sizes = {{
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, n * 3},
         {VK_DESCRIPTOR_TYPE_SAMPLER, n * 6},    // gbuf + shadow + local shadow + env + BRDF LUT + AO
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 14}, // 8(gbuf/depth) + 2(shadows) + 3(IBL) + 1(AO)
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 16}, // G-buffer, extended PBR, shadows, IBL, AO
     }};
     VkDescriptorPoolCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     ci.maxSets       = n;
@@ -357,7 +456,7 @@ void FrameResourceManager::create(
     std::array<VkDescriptorPoolSize, 4> sizes = {{
         {VK_DESCRIPTOR_TYPE_SAMPLER, n * 2},          // gBuffer sampler + bloom sampler
         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 10},    // sceneColor + 4 gbuf + depth + bloom + shadow atlas
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, n * 2},   // tile grid SSBO + exposure state
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, n * 3},   // tile grid, exposure state, linear capture
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, n * 2},   // camera + shadow UBO
     }};
     VkDescriptorPoolCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -401,7 +500,7 @@ void FrameResourceManager::create(
 
   // --- Per-frame attachments, buffers, framebuffers ---
   frames_.resize(n);
-  const VkExtent2D ext = swapChain_->extent();
+  const VkExtent2D ext = sceneExtent_;
   const bool useMsaa = sampleCount_ != VK_SAMPLE_COUNT_1_BIT;
 
   for (uint32_t i = 0; i < n; ++i) {
@@ -513,6 +612,8 @@ void FrameResourceManager::create(
     transitionToGeneral(f.oitHeadPointers.image, VK_IMAGE_ASPECT_COLOR_BIT);
 
     f.oitNodeCapacity = computeOitNodeCapacity();
+    f.linearCaptureFallback = allocationMgr_->createBuffer(
+        sizeof(glm::vec4), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO);
     f.oitNodeBuffer = allocationMgr_->createBuffer(
         sizeof(OitNode) * f.oitNodeCapacity,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -741,6 +842,7 @@ void FrameResourceManager::create(
 
 // -----------------------------------------------------------------------
 void FrameResourceManager::destroy() {
+  if(descriptorBindingEpoch_!=UINT64_MAX) ++descriptorBindingEpoch_;
   VkDevice dev = device_->device();
 
   for (auto& f : frames_) {
@@ -790,6 +892,7 @@ void FrameResourceManager::destroy() {
     destroyAttachment(f.oitHeadPointers);
 
     allocationMgr_->destroyBuffer(f.oitNodeBuffer);
+    allocationMgr_->destroyBuffer(f.linearCaptureFallback);
     allocationMgr_->destroyBuffer(f.oitCounterBuffer);
     allocationMgr_->destroyBuffer(f.oitMetadataBuffer);
 
@@ -879,6 +982,27 @@ FrameResources* FrameResourceManager::frame(uint32_t imageIndex) {
 }
 
 // -----------------------------------------------------------------------
+void FrameResourceManager::setPostProcessColorSource(uint32_t imageIndex,VkImageView view,VkImageLayout layout) {
+  VkDescriptorImageInfo info{VK_NULL_HANDLE,view,layout};
+  VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+  write.dstSet=frames_.at(imageIndex).postProcessDescriptorSet;write.dstBinding=1;
+  write.descriptorCount=1;write.descriptorType=VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;write.pImageInfo=&info;
+  vkUpdateDescriptorSets(device_->device(),1,&write,0,nullptr);
+}
+void FrameResourceManager::setLinearCaptureTarget(uint32_t imageIndex, VkBuffer buffer) {
+  const auto& resources = frames_.at(imageIndex);
+  const VkDescriptorBufferInfo target = buffer
+      ? VkDescriptorBufferInfo{buffer, 0, VK_WHOLE_SIZE}
+      : VkDescriptorBufferInfo{resources.linearCaptureFallback.buffer, 0, sizeof(glm::vec4)};
+  VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+  write.dstSet = resources.postProcessDescriptorSet;
+  write.dstBinding = 16;
+  write.descriptorCount = 1;
+  write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  write.pBufferInfo = &target;
+  vkUpdateDescriptorSets(device_->device(), 1, &write, 0, nullptr);
+}
+
 void FrameResourceManager::updateDescriptorSets(
     std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
     const container::gpu::AllocatedBuffer& objectBuffer,
@@ -900,7 +1024,9 @@ void FrameResourceManager::updateDescriptorSets(
     VkBuffer    tileGridBuffer,
     VkDeviceSize tileGridBufferSize,
     std::span<const container::gpu::AllocatedBuffer> exposureStateBuffers,
-    VkDeviceSize exposureStateBufferSize) {
+    VkDeviceSize exposureStateBufferSize,
+    std::span<const VkImageView> anisotropyViews,
+    std::span<const VkImageView> diffuseTransmissionViews) {
   (void)objectBuffer;  // reserved for future per-frame object buffer binding
   if (cameraBuffers.empty()) return;
 
@@ -937,10 +1063,14 @@ void FrameResourceManager::updateDescriptorSets(
     nextKey.exposureStateBuffers.push_back(exposureStateBuffer.buffer);
   }
   nextKey.exposureStateBufferSize = exposureStateBufferSize;
+  nextKey.anisotropyViews.assign(anisotropyViews.begin(), anisotropyViews.end());
+  nextKey.diffuseTransmissionViews.assign(diffuseTransmissionViews.begin(),
+                                          diffuseTransmissionViews.end());
 
   if (descriptorUpdateKeyValid_ && nextKey == descriptorUpdateKey_) {
     return;
   }
+  if(descriptorBindingEpoch_!=UINT64_MAX) ++descriptorBindingEpoch_;
   descriptorUpdateKey_      = std::move(nextKey);
   descriptorUpdateKeyValid_ = true;
 
@@ -966,6 +1096,15 @@ void FrameResourceManager::updateDescriptorSets(
     auto specular = imgInfo(f.specular.view,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     auto materialLayers = imgInfo(f.materialLayers.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     auto materialSheen = imgInfo(f.materialSheen.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    // Inactive materials never read these fallbacks. Keep all bindings valid
+    // without allocating full-resolution outputs for ordinary scenes.
+    auto anisotropy = imgInfo(frameIndex < anisotropyViews.size()
+                                 ? anisotropyViews[frameIndex] : f.normal.view,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    auto diffuseTransmission = imgInfo(
+        frameIndex < diffuseTransmissionViews.size()
+            ? diffuseTransmissionViews[frameIndex] : f.normal.view,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     auto depthImg = imgInfo(f.depthSamplingView,
                             VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL);
     auto scColor  = imgInfo(f.sceneColor.view,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -974,7 +1113,7 @@ void FrameResourceManager::updateDescriptorSets(
 
     // Lighting set
     {
-      std::array<VkWriteDescriptorSet, 23> w{};
+      std::array<VkWriteDescriptorSet, 25> w{};
       auto set = f.lightingDescriptorSet;
       auto buf = [&](int b, VkDescriptorType t, const VkDescriptorBufferInfo* i) {
         w[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1115,13 +1254,15 @@ void FrameResourceManager::updateDescriptorSets(
       img(17, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &specular);
       img(21, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &materialLayers);
       img(22, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &materialSheen);
+      img(23, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &anisotropy);
+      img(24, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &diffuseTransmission);
 
       vkUpdateDescriptorSets(dev, static_cast<uint32_t>(w.size()), w.data(), 0, nullptr);
     }
 
     // Post-process set
     {
-      std::array<VkWriteDescriptorSet, 16> w{};
+      std::array<VkWriteDescriptorSet, 17> w{};
       auto set = f.postProcessDescriptorSet;
       auto buf = [&](int b, VkDescriptorType t, const VkDescriptorBufferInfo* i) {
         w[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1213,6 +1354,8 @@ void FrameResourceManager::updateDescriptorSets(
       // Valid initialized fallbacks while temporal rendering is disabled.
       img(14, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &normal);
       img(15, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &emissive);
+      const VkDescriptorBufferInfo captureFallback{f.linearCaptureFallback.buffer, 0, sizeof(glm::vec4)};
+      buf(16, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &captureFallback);
 
       vkUpdateDescriptorSets(dev, static_cast<uint32_t>(w.size()), w.data(), 0, nullptr);
     }
@@ -1253,7 +1396,7 @@ AttachmentImage FrameResourceManager::createAttachment(VkFormat fmt,
   AttachmentImage a{};
   a.format = fmt;
   a.samples = samples;
-  const VkExtent2D ext = swapChain_->extent();
+  const VkExtent2D ext = sceneExtent_;
 
   VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   ii.imageType   = VK_IMAGE_TYPE_2D;
@@ -1370,7 +1513,7 @@ void FrameResourceManager::transitionToShaderReadOnly(
 
 void FrameResourceManager::writeOitMetadata(FrameResources& frame) const {
   if (frame.oitMetadataBuffer.buffer == VK_NULL_HANDLE) return;
-  const VkExtent2D ext = swapChain_->extent();
+  const VkExtent2D ext = sceneExtent_;
   const OitMetadata meta{frame.oitNodeCapacity, ext.width, ext.height, 0u};
   void* mapped = frame.oitMetadataBuffer.allocation_info.pMappedData;
   bool mappedHere = false;
@@ -1397,8 +1540,7 @@ void FrameResourceManager::writeOitMetadata(FrameResources& frame) const {
 void FrameResourceManager::publishFrameResourceBindings() {
   resourceRegistry_.clearBindings();
 
-  const VkExtent2D ext = swapChain_ != nullptr ? swapChain_->extent()
-                                               : VkExtent2D{};
+  const VkExtent2D ext = sceneExtent_;
   for (uint32_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
     FrameResources& f = frames_[frameIndex];
 

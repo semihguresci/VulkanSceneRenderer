@@ -1,6 +1,6 @@
 #define DDGI_SET 3
 #include "material_data_common.slang"
-[[vk::binding(2, 0)]] SamplerState materialSamplers[MATERIAL_SAMPLER_DESCRIPTOR_COUNT];
+[[vk::binding(2, 0)]] SamplerState materialSamplers[];
 [[vk::binding(3, 0)]] StructuredBuffer<GpuMaterial> uMaterials;
 [[vk::binding(4, 0)]] StructuredBuffer<GpuTextureMetadata> uTextureMetadata;
 [[vk::binding(5, 0)]] Texture2D materialTextures[MATERIAL_TEXTURE_DESCRIPTOR_COUNT];
@@ -9,6 +9,8 @@
 [[vk::binding(2, 1)]] StructuredBuffer<AreaLightData> uAreaLights;
 #include "area_light_common.slang"
 #include "ray_surface_common.slang"
+#include "ray_footprint_common.slang"
+#include "ddgi_material_common.slang"
 #include "ddgi_transport_common.slang"
 #include "ddgi_lookup_common.slang"
 
@@ -23,24 +25,36 @@
 [[vk::binding(9, DDGI_SET)]] TextureCube<float4> gDdgiEnvironment;
 [[vk::binding(10, DDGI_SET)]] SamplerState gDdgiEnvironmentSampler;
 
-float4 DdgiTexture(uint index, float4 uv, GpuTextureTransform transform)
+float4 DdgiTextureGrad(uint index, float4 uv, GpuTextureTransform transform, float2 texGrad)
 {
     if (index == kInvalidGpuMaterialTexture || index >= MATERIAL_TEXTURE_DESCRIPTOR_COUNT)
         return 1.0.xxxx;
     uint textureIndex = NonUniformResourceIndex(index);
-    uint samplerIndex = NonUniformResourceIndex(min(uTextureMetadata[textureIndex].samplerIndex,
-                                                  MATERIAL_SAMPLER_DESCRIPTOR_COUNT - 1u));
-    // Ray footprints have no raster derivatives. This initial route uses base
-    // mip consistently, including alpha masks; all authored UV transforms apply.
-    return materialTextures[textureIndex].SampleLevel(materialSamplers[samplerIndex],
-        ApplyGpuTextureTransform(uv.xy, uv.zw, transform), 0.0);
+    uint samplerIndex = NonUniformResourceIndex(
+        ResolveMaterialSamplerIndex(uTextureMetadata[textureIndex]));
+    float2 coord = ApplyGpuTextureTransform(uv.xy, uv.zw, transform);
+    float gradient = transform.row0.w >= 0.5 ? texGrad.y : texGrad.x;
+    float2 dx, dy;
+    if (RayConeTransformGradients(gradient, transform.row0.xy, transform.row1.xy, dx, dy))
+        return materialTextures[textureIndex].SampleGrad(materialSamplers[samplerIndex],
+            coord, dx, dy);
+    return materialTextures[textureIndex].SampleLevel(materialSamplers[samplerIndex], coord, 0.0);
+}
+float4 DdgiTexture(uint index, float4 uv, GpuTextureTransform transform)
+{
+    // Coverage candidates and visibility shadow connections carry no footprint.
+    return DdgiTextureGrad(index, uv, transform, 0.0.xx);
+}
+float DdgiScalarGrad(float factor, uint index, float4 uv, GpuTextureTransform transform,
+                     uint channel, float2 texGrad)
+{
+    return ResolveDdgiScalarFactor(factor, DdgiTextureGrad(index, uv, transform, texGrad),
+        transform, channel);
 }
 float DdgiScalar(float factor, uint index, float4 uv, GpuTextureTransform transform,
-                 uint channel, bool textureBacked)
+                 uint channel)
 {
-    factor = FiniteScalarOr(factor, 0.0);
-    if (textureBacked && index != kInvalidGpuMaterialTexture && factor <= 0.0) factor = 1.0;
-    return saturate(factor * SelectGpuTextureChannel(DdgiTexture(index, uv, transform), transform, channel));
+    return DdgiScalarGrad(factor, index, uv, transform, channel, 0.0.xx);
 }
 bool DdgiCandidateAccepted(uint instanceIndex, uint primitive, float2 bary, float3 world)
 {
@@ -55,7 +69,8 @@ bool DdgiCandidateAccepted(uint instanceIndex, uint primitive, float2 bary, floa
     {
         RayTriangleData triangle = uDdgiTriangles[instance.info.x + primitive];
         float4 uv = triangle.uv[0] * (1.0 - bary.x - bary.y) + triangle.uv[1] * bary.x + triangle.uv[2] * bary.y;
-        float alpha = material.color.a * saturate(material.opacityFactor) *
+        float alpha = material.color.a * RayTriangleColorAlpha(triangle, bary) *
+            saturate(material.opacityFactor) *
             DdgiTexture(material.baseColorTextureIndex, uv, material.baseColorTextureTransform).a;
         alpha *= SelectGpuTextureChannel(DdgiTexture(material.opacityTextureIndex, uv,
             material.opacityTextureTransform), material.opacityTextureTransform, 0u);
@@ -102,29 +117,33 @@ struct DdgiSurfaceTransmission
     float3 tint;
     uint flags;
 };
-DdgiSurfaceTransmission DdgiResolveSurfaceTransmission(RaySurfacePoint point, GpuMaterial material)
+DdgiSurfaceTransmission DdgiResolveSurfaceTransmission(RaySurfacePoint point, GpuMaterial material,
+                                                        float2 texGrad)
 {
     DdgiSurfaceTransmission result = (DdgiSurfaceTransmission)0;
-    float4 baseColor = DdgiTexture(material.baseColorTextureIndex, point.uv, material.baseColorTextureTransform);
-    float alpha = material.color.a * material.opacityFactor * baseColor.a *
-        SelectGpuTextureChannel(DdgiTexture(material.opacityTextureIndex, point.uv,
-            material.opacityTextureTransform), material.opacityTextureTransform, 0u);
-    float transmission = DdgiScalar(material.transmissionFactor, material.transmissionTextureIndex,
-        point.uv, material.transmissionTextureTransform, 0u, true);
+    float4 baseColor = DdgiTextureGrad(material.baseColorTextureIndex, point.uv,
+        material.baseColorTextureTransform, texGrad);
+    float alpha = material.color.a * point.colorAlpha * material.opacityFactor * baseColor.a *
+        SelectGpuTextureChannel(DdgiTextureGrad(material.opacityTextureIndex, point.uv,
+            material.opacityTextureTransform, texGrad), material.opacityTextureTransform, 0u);
+    float transmission = DdgiScalarGrad(material.transmissionFactor, material.transmissionTextureIndex,
+        point.uv, material.transmissionTextureTransform, 0u, texGrad);
     float metallic = material.metallicRoughness.x *
-        DdgiTexture(material.metallicRoughnessTextureIndex, point.uv, material.metallicRoughnessTextureTransform).b *
-        SelectGpuTextureChannel(DdgiTexture(material.metalnessTextureIndex, point.uv,
-            material.metalnessTextureTransform), material.metalnessTextureTransform, 0u);
+        DdgiTextureGrad(material.metallicRoughnessTextureIndex, point.uv,
+            material.metallicRoughnessTextureTransform, texGrad).b *
+        SelectGpuTextureChannel(DdgiTextureGrad(material.metalnessTextureIndex, point.uv,
+            material.metalnessTextureTransform, texGrad), material.metalnessTextureTransform, 0u);
     uint flags = point.objectFlags | material.flags;
+    alpha = ResolveGpuMaterialAlpha(alpha, material.flags);
     float roughness = material.metallicRoughness.y;
     if ((flags & 0x8u) != 0u)
         roughness = 1.0 - saturate(roughness * SelectGpuTextureChannel(
-            DdgiTexture(material.roughnessTextureIndex, point.uv, material.roughnessTextureTransform),
+            DdgiTextureGrad(material.roughnessTextureIndex, point.uv, material.roughnessTextureTransform, texGrad),
             material.roughnessTextureTransform, 3u));
     else
-        roughness *= DdgiTexture(material.metallicRoughnessTextureIndex, point.uv,
-            material.metallicRoughnessTextureTransform).g * SelectGpuTextureChannel(
-                DdgiTexture(material.roughnessTextureIndex, point.uv, material.roughnessTextureTransform),
+        roughness *= DdgiTextureGrad(material.metallicRoughnessTextureIndex, point.uv,
+            material.metallicRoughnessTextureTransform, texGrad).g * SelectGpuTextureChannel(
+                DdgiTextureGrad(material.roughnessTextureIndex, point.uv, material.roughnessTextureTransform, texGrad),
                 material.roughnessTextureTransform, 0u);
     result.transmission = transmission;
     result.alpha = alpha;
@@ -134,26 +153,27 @@ DdgiSurfaceTransmission DdgiResolveSurfaceTransmission(RaySurfacePoint point, Gp
     result.flags = flags;
     return result;
 }
-DdgiThinGlassResult DdgiSurfaceThinGlass(RaySurfacePoint point, GpuMaterial material, float3 direction)
+DdgiThinGlassResult DdgiSurfaceThinGlass(RaySurfacePoint point, GpuMaterial material,
+    float3 direction, float2 texGrad)
 {
     if (point.valid == 0u || (uint(uDdgi.intensityBias.w) & 3u) == 0u)
         return (DdgiThinGlassResult)0;
-    DdgiSurfaceTransmission surface = DdgiResolveSurfaceTransmission(point, material);
+    DdgiSurfaceTransmission surface = DdgiResolveSurfaceTransmission(point, material, texGrad);
     return DdgiThinGlassTransmission(material, surface.flags, surface.transmission,
         surface.alpha, surface.metallic, surface.roughness, surface.tint,
         dot(point.geometricNormal, direction),
         (uint(uDdgi.intensityBias.w) & 3u) != 0u);
 }
 DdgiDielectricResult DdgiSurfaceDielectric(RaySurfacePoint point, GpuMaterial material,
-                                         float3 direction, uint seed)
+                                         float3 direction, uint seed, float2 texGrad, float ambientIor)
 {
     if (point.valid == 0u || (uint(uDdgi.intensityBias.w) & 2u) == 0u)
         return (DdgiDielectricResult)0;
-    DdgiSurfaceTransmission surface = DdgiResolveSurfaceTransmission(point, material);
+    DdgiSurfaceTransmission surface = DdgiResolveSurfaceTransmission(point, material, texGrad);
     return DdgiSampleDielectric(material, surface.flags, surface.transmission,
         surface.alpha, surface.metallic, surface.roughness, surface.tint, direction,
         point.geometricNormal, point.frontFace != 0u,
-        float2(DdgiRandom(seed), DdgiRandom(seed ^ 0xa511e9b3u)), true);
+        float2(DdgiRandom(seed), DdgiRandom(seed ^ 0xa511e9b3u)), true, ambientIor);
 }
 float DdgiNextRayMinimum(float hitDistance, float minimumBias)
 {
@@ -194,7 +214,7 @@ float3 DdgiLightVisibility(float3 world, float3 geometricNormal, float3 directio
         DdgiClosestHit hit = DdgiTraceClosest(ray);
         if (hit.hit == 0u) return throughput;
         GpuMaterial material = uMaterials[uDdgiInstances[hit.instanceIndex].info.y];
-        DdgiThinGlassResult glass = DdgiSurfaceThinGlass(hit.point, material, direction);
+        DdgiThinGlassResult glass = DdgiSurfaceThinGlass(hit.point, material, direction, 0.0.xx);
         if (!DdgiAdvanceThinGlass(throughput, glass, crossed)) return 0.0.xxx;
         ray.TMin = DdgiNextRayMinimum(hit.distance, bias);
         if (!isfinite(ray.TMin)) return 0.0.xxx;
@@ -203,61 +223,54 @@ float3 DdgiLightVisibility(float3 world, float3 geometricNormal, float3 directio
     return 0.0.xxx;
 }
 
-struct DdgiDiffuseMaterial
+DdgiShadingMaterial DdgiEvaluateMaterial(RaySurfacePoint point, GpuMaterial material,
+    float3 V, float2 texGrad)
 {
-    float3 albedo;
-    float3 f0;
-    float3 emissive;
-    float3 normal;
-    float metallic;
-    float roughness;
-    float layerScale;
-    float occlusion;
-    uint unsupported;
-    uint unlit;
-};
-DdgiDiffuseMaterial DdgiEvaluateMaterial(RaySurfacePoint point, GpuMaterial material, float3 V)
-{
-    DdgiDiffuseMaterial result = (DdgiDiffuseMaterial)0;
+    DdgiShadingMaterial result = (DdgiShadingMaterial)0;
     result.albedo = max(Finite3Or(material.color.rgb * point.color *
-        DdgiTexture(material.baseColorTextureIndex, point.uv, material.baseColorTextureTransform).rgb, 0.0.xxx), 0.0.xxx);
+        DdgiTextureGrad(material.baseColorTextureIndex, point.uv,
+            material.baseColorTextureTransform, texGrad).rgb, 0.0.xxx), 0.0.xxx);
     result.metallic = saturate(FiniteScalarOr(material.metallicRoughness.x, 0.0) *
-        DdgiTexture(material.metallicRoughnessTextureIndex, point.uv, material.metallicRoughnessTextureTransform).b);
-    result.metallic *= SelectGpuTextureChannel(DdgiTexture(material.metalnessTextureIndex,
-        point.uv, material.metalnessTextureTransform), material.metalnessTextureTransform, 0u);
+        DdgiTextureGrad(material.metallicRoughnessTextureIndex, point.uv,
+            material.metallicRoughnessTextureTransform, texGrad).b);
+    result.metallic *= SelectGpuTextureChannel(DdgiTextureGrad(material.metalnessTextureIndex,
+        point.uv, material.metalnessTextureTransform, texGrad), material.metalnessTextureTransform, 0u);
     result.metallic = saturate(FiniteScalarOr(result.metallic, 0.0));
     uint flags = point.objectFlags | material.flags;
     float roughness = FiniteScalarOr(material.metallicRoughness.y, 1.0);
     if ((flags & 0x8u) != 0u)
     {
-        roughness *= SelectGpuTextureChannel(DdgiTexture(material.roughnessTextureIndex,
-            point.uv, material.roughnessTextureTransform), material.roughnessTextureTransform, 3u);
+        roughness *= SelectGpuTextureChannel(DdgiTextureGrad(material.roughnessTextureIndex,
+            point.uv, material.roughnessTextureTransform, texGrad), material.roughnessTextureTransform, 3u);
         roughness = 1.0 - saturate(roughness);
     }
     else
     {
-        roughness *= DdgiTexture(material.metallicRoughnessTextureIndex, point.uv,
-            material.metallicRoughnessTextureTransform).g;
-        roughness *= SelectGpuTextureChannel(DdgiTexture(material.roughnessTextureIndex,
-            point.uv, material.roughnessTextureTransform), material.roughnessTextureTransform, 0u);
+        roughness *= DdgiTextureGrad(material.metallicRoughnessTextureIndex, point.uv,
+            material.metallicRoughnessTextureTransform, texGrad).g;
+        roughness *= SelectGpuTextureChannel(DdgiTextureGrad(material.roughnessTextureIndex,
+            point.uv, material.roughnessTextureTransform, texGrad), material.roughnessTextureTransform, 0u);
     }
     result.roughness = clamp(FiniteScalarOr(roughness, 1.0), 0.045, 1.0);
-    float specular = DdgiScalar(material.specularFactor, material.specularTextureIndex,
-        point.uv, material.specularTextureTransform, 3u, false);
+    float specular = DdgiScalarGrad(material.specularFactor, material.specularTextureIndex,
+        point.uv, material.specularTextureTransform, 3u, texGrad);
     float3 sampledSpecularColor = material.specularColorTextureIndex != kInvalidGpuMaterialTexture ?
-        DdgiTexture(material.specularColorTextureIndex, point.uv, material.specularColorTextureTransform).rgb :
-        DdgiTexture(material.specularTextureIndex, point.uv, material.specularTextureTransform).rgb;
+        DdgiTextureGrad(material.specularColorTextureIndex, point.uv,
+            material.specularColorTextureTransform, texGrad).rgb :
+        DdgiTextureGrad(material.specularTextureIndex, point.uv,
+            material.specularTextureTransform, texGrad).rgb;
     float3 specularColor = saturate(Finite3Or(material.specularColorFactor.rgb * sampledSpecularColor, 1.0.xxx));
-    float iridescence = DdgiScalar(material.iridescenceFactor, material.iridescenceTextureIndex,
-        point.uv, material.iridescenceTextureTransform, 0u, true);
+    float iridescence = DdgiScalarGrad(material.iridescenceFactor, material.iridescenceTextureIndex,
+        point.uv, material.iridescenceTextureTransform, 0u, texGrad);
     float filmThickness = lerp(material.iridescenceThicknessMinimum, material.iridescenceThicknessMaximum,
-        saturate(SelectGpuTextureChannel(DdgiTexture(material.iridescenceThicknessTextureIndex,
-            point.uv, material.iridescenceThicknessTextureTransform), material.iridescenceThicknessTextureTransform, 1u)));
+        saturate(SelectGpuTextureChannel(DdgiTextureGrad(material.iridescenceThicknessTextureIndex,
+            point.uv, material.iridescenceThicknessTextureTransform, texGrad),
+            material.iridescenceThicknessTextureTransform, 1u)));
     result.normal = point.shadingNormal;
     if (material.normalTextureIndex != kInvalidGpuMaterialTexture)
     {
-        float3 tangentNormal = DdgiTexture(material.normalTextureIndex, point.uv,
-            material.normalTextureTransform).xyz * 2.0 - 1.0;
+        float3 tangentNormal = DdgiTextureGrad(material.normalTextureIndex, point.uv,
+            material.normalTextureTransform, texGrad).xyz * 2.0 - 1.0;
         tangentNormal.xy *= FiniteScalarOr(material.normalTextureScale, 1.0);
         tangentNormal = SafeNormalize(tangentNormal, float3(0, 0, 1));
         result.normal = SafeNormalize(point.tangent.xyz * tangentNormal.x +
@@ -267,37 +280,38 @@ DdgiDiffuseMaterial DdgiEvaluateMaterial(RaySurfacePoint point, GpuMaterial mate
     result.f0 = EvaluatePbrF0WithDielectricTint(result.albedo, result.metallic,
         specular, specularColor, material.ior, ApproximateDeferredIridescenceTint(iridescence,
             material.iridescenceIor, filmThickness, saturate(dot(result.normal, V))));
-    float clearcoat = DdgiScalar(material.clearcoatFactor, material.clearcoatTextureIndex,
-        point.uv, material.clearcoatTextureTransform, 0u, true);
+    float clearcoat = DdgiScalarGrad(material.clearcoatFactor, material.clearcoatTextureIndex,
+        point.uv, material.clearcoatTextureTransform, 0u, texGrad);
     float3 sheen = ResolveDeferredTextureBackedColor(material.sheenColorFactor.rgb,
-        material.sheenColorTextureIndex) * DdgiTexture(material.sheenColorTextureIndex,
-            point.uv, material.sheenColorTextureTransform).rgb;
+        material.sheenColorTextureIndex) * DdgiTextureGrad(material.sheenColorTextureIndex,
+            point.uv, material.sheenColorTextureTransform, texGrad).rgb;
     result.layerScale = DeferredClearcoatBaseEnergyScale(clearcoat) * DeferredSheenBaseEnergyScale(sheen);
+    result.clearcoat = clearcoat;
+    result.clearcoatRoughness = DdgiScalarGrad(material.clearcoatRoughnessFactor,
+        material.clearcoatRoughnessTextureIndex, point.uv, material.clearcoatRoughnessTextureTransform, 1u, texGrad);
+    result.sheenColor = sheen;
+    result.sheenRoughness = DdgiScalarGrad(material.sheenRoughnessFactor,
+        material.sheenRoughnessTextureIndex, point.uv, material.sheenRoughnessTextureTransform, 3u, texGrad);
     result.emissive = max(Finite3Or(material.emissiveColor * material.emissiveStrength *
-        DdgiTexture(material.emissiveTextureIndex, point.uv, material.emissiveTextureTransform).rgb, 0.0.xxx), 0.0.xxx);
-    result.occlusion = lerp(1.0, saturate(DdgiTexture(material.occlusionTextureIndex, point.uv,
-        material.occlusionTextureTransform).r), saturate(FiniteScalarOr(material.occlusionStrength, 1.0)));
+        DdgiTextureGrad(material.emissiveTextureIndex, point.uv, material.emissiveTextureTransform, texGrad).rgb, 0.0.xxx), 0.0.xxx);
+    result.occlusion = lerp(1.0, saturate(DdgiTextureGrad(material.occlusionTextureIndex, point.uv,
+        material.occlusionTextureTransform, texGrad).r), saturate(FiniteScalarOr(material.occlusionStrength, 1.0)));
     result.unlit = (flags & 0x10u) != 0u ? 1u : 0u;
     // The AS has undisplaced triangles and this transport route is diffuse.
     // Keep unsupported closest geometry in visibility, with black radiance,
     // rather than accidentally turning it into an environment leak.
-    float transmission = DdgiScalar(material.transmissionFactor, material.transmissionTextureIndex,
-        point.uv, material.transmissionTextureTransform, 0u, true);
+    float transmission = DdgiScalarGrad(material.transmissionFactor, material.transmissionTextureIndex,
+        point.uv, material.transmissionTextureTransform, 0u, texGrad);
+    result.extended = ResolveDdgiExtendedPbrTerms(material, point, result.normal, transmission,
+        DdgiTextureGrad(material.anisotropyTextureIndex, point.uv, material.anisotropyTextureTransform, texGrad),
+        DdgiTextureGrad(material.diffuseTransmissionTextureIndex, point.uv, material.diffuseTransmissionTextureTransform, texGrad),
+        DdgiTextureGrad(material.diffuseTransmissionColorTextureIndex, point.uv, material.diffuseTransmissionColorTextureTransform, texGrad));
     result.unsupported = ((flags & kGpuMaterialFlagAlphaBlend) != 0u || IsThinSurfaceGpuMaterial(flags) ||
         !isfinite(material.transmissionFactor) || transmission > 0.0 || !isfinite(material.heightScale) ||
         (material.heightTextureIndex != kInvalidGpuMaterialTexture && abs(material.heightScale) > 1e-7)) ? 1u : 0u;
     return result;
 }
-float3 DdgiReflectedDiffuse(DdgiDiffuseMaterial material, float3 V, float3 L, float3 radiance)
-{
-    float cosine = saturate(dot(material.normal, L));
-    if (cosine <= 0.0 || dot(material.normal, V) <= 0.0) return 0.0.xxx;
-    float3 H = SafeNormalize(V + L, material.normal);
-    float3 energy = (1.0.xxx - FresnelSchlick(saturate(dot(H, V)), material.f0)) *
-        (1.0 - material.metallic) * material.layerScale;
-    return max(Finite3Or(radiance, 0.0.xxx), 0.0.xxx) * saturate(material.albedo) * energy * (cosine / PI);
-}
-float3 DdgiShadeSurface(RaySurfacePoint point, DdgiDiffuseMaterial material, float3 V, uint seed)
+float3 DdgiShadeSurface(RaySurfacePoint point, DdgiShadingMaterial material, float3 V, uint seed)
 {
     if (material.unsupported != 0u) return 0.0.xxx;
     if (material.unlit != 0u) return material.albedo + material.emissive;
@@ -307,9 +321,10 @@ float3 DdgiShadeSurface(RaySurfacePoint point, DdgiDiffuseMaterial material, flo
     float3 directional = max(Finite3Or(uLighting.directionalColorIntensity.rgb *
         uLighting.directionalColorIntensity.w, 0.0.xxx), 0.0.xxx);
     float3 L = SafeNormalize(-uLighting.directionalDirection.xyz, float3(0, 1, 0));
-    if (any(directional > 0.0.xxx) && dot(material.normal, L) > 0.0 && dot(geometricNormal, L) > 0.0)
-        radiance += DdgiReflectedDiffuse(material, V, L, directional) *
-            DdgiLightVisibility(point.position, geometricNormal, L, 1e20);
+    float3 visibilityNormal = DdgiDirectVisibilityNormal(material, geometricNormal, L);
+    if (any(directional > 0.0.xxx) && any(visibilityNormal != 0.0.xxx))
+        radiance += EvaluateDdgiHitDirect(material, geometricNormal, V, L, directional) *
+            DdgiLightVisibility(point.position, visibilityNormal, L, 1e20);
     uint pointCount = min(uLighting.pointLightCount, MAX_CLUSTERED_LIGHTS);
     uint pointSamples = min(pointCount, uDdgiScene.limits.z);
     float pointWeight = float(pointCount) / float(max(pointSamples, 1u));
@@ -322,10 +337,11 @@ float3 DdgiShadeSurface(RaySurfacePoint point, DdgiDiffuseMaterial material, flo
         if (!PointLightHasRenderableIntensity(light) || !isfinite(distanceSq) || distanceSq <= 1e-10) continue;
         float distance = sqrt(distanceSq); L = delta / distance;
         float attenuation = PointLightAttenuation(distanceSq, light.positionRadius.w) *
-            SpotLightConeAttenuation(light.directionInnerCos, light.coneOuterCosType, L);
-        if (attenuation <= 0.0 || dot(material.normal, L) <= 0.0 || dot(geometricNormal, L) <= 0.0) continue;
-        radiance += DdgiReflectedDiffuse(material, V, L, light.colorIntensity.rgb *
-            light.colorIntensity.a * attenuation * pointWeight) * DdgiLightVisibility(point.position, geometricNormal, L, distance);
+            LocalLightAngularIntensity(light, L);
+        visibilityNormal = DdgiDirectVisibilityNormal(material, geometricNormal, L);
+        if (attenuation <= 0.0 || !any(visibilityNormal != 0.0.xxx)) continue;
+        radiance += EvaluateDdgiHitDirect(material, geometricNormal, V, L, light.colorIntensity.rgb *
+            light.colorIntensity.a * attenuation * pointWeight) * DdgiLightVisibility(point.position, visibilityNormal, L, distance);
     }
     uint areaCount = min(uLighting.areaLightCount, MAX_AREA_LIGHTS);
     uint areaSamples = min(areaCount, uDdgiScene.limits.z);
@@ -349,18 +365,23 @@ float3 DdgiShadeSurface(RaySurfacePoint point, DdgiDiffuseMaterial material, flo
                                                frame.bitangent * offset.y * frame.halfSize.y;
             float weight = AreaLightPositionContributionWeight(light, frame, point.position, position,
                 1.0 / float(samples), L);
-            if (weight <= 0.0 || dot(material.normal, L) <= 0.0 || dot(geometricNormal, L) <= 0.0) continue;
-            radiance += DdgiReflectedDiffuse(material, V, L, light.colorIntensity.rgb *
+            visibilityNormal = DdgiDirectVisibilityNormal(material, geometricNormal, L);
+            if (weight <= 0.0 || !any(visibilityNormal != 0.0.xxx)) continue;
+            radiance += EvaluateDdgiHitDirect(material, geometricNormal, V, L, light.colorIntensity.rgb *
                 light.colorIntensity.a * weight * areaWeight) * DdgiLightVisibility(point.position,
-                    geometricNormal, L, length(position - point.position));
+                    visibilityNormal, L, length(position - point.position));
         }
     }
     // Previous-only feedback amortizes diffuse bounces across submissions; no
     // current target atlas reads or environment double-counting at shaded hits.
     DdgiLookupResult previous = LookupDdgiIrradiance(point.position, geometricNormal, material.normal, V);
-    float3 indirectEnergy = (1.0.xxx - FresnelSchlickRoughness(saturate(dot(material.normal, V)),
-        material.f0, material.roughness)) * (1.0 - material.metallic) * material.layerScale;
-    radiance += previous.irradiance * saturate(material.albedo) * indirectEnergy * material.occlusion / PI;
+    float3 backIrradiance = 0.0.xxx;
+    if (material.extended.diffuseTransmissionFactor > 0.0)
+    {
+        DdgiLookupResult back = LookupDdgiIrradiance(point.position, -geometricNormal, -material.normal, -V);
+        backIrradiance = back.irradiance;
+    }
+    radiance += EvaluateDdgiDiffuseFeedback(material, V, previous.irradiance, backIrradiance);
     return max(Finite3Or(radiance, 0.0.xxx), 0.0.xxx);
 }
 
@@ -389,8 +410,12 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
     float3 throughput = 1.0.xxx;
     float traveled = 0.0;
     float segmentBias = 0.0;
-    uint mediumInstance = 0xffffffffu;
-    uint mediumMaterial = 0xffffffffu;
+    DdgiMediumStack media = (DdgiMediumStack)0;
+    // Probe-ray footprints (#82): each of rayCount equal-solid-angle sphere
+    // samples owns 4*pi/rayCount steradians; the equivalent cone's diameter
+    // growth per unit travel drives hit-texture filtering.
+    RayCone cone = (RayCone)0;
+    cone.spread = RayConeSolidAngleSpread(update.rayCount);
     for (uint crossed = 0u; crossed <= DDGI_MAX_GLASS_CROSSINGS; ++crossed)
     {
         DdgiClosestHit hit = DdgiTraceClosest(ray);
@@ -398,13 +423,14 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
         {
             // An unmatched volume entry must never become a clear environment
             // path, including clipped, open or malformed transmitting meshes.
-            if (mediumInstance != 0xffffffffu)
+            if (media.count != 0u)
             {
                 sample.radianceAndDistance.w = clamp(traveled, 0.0, uDdgi.trace.x);
                 sample.directionAndReserved.w = 2.0;
                 break;
             }
-            float3 environment = gDdgiEnvironment.SampleLevel(gDdgiEnvironmentSampler, ray.Direction, 0.0).rgb *
+            float3 environment = gDdgiEnvironment.SampleLevel(gDdgiEnvironmentSampler,
+                RotateEnvironmentDirection(ray.Direction, uLighting.environmentOrientation.xy), 0.0).rgb *
                 max(FiniteScalarOr(uLighting.environmentIntensity, 0.0), 0.0);
             sample.radianceAndDistance.rgb = throughput * max(Finite3Or(environment, 0.0.xxx), 0.0.xxx);
             break;
@@ -413,23 +439,29 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
         RaySurfacePoint point = hit.point;
         GpuMaterial material = uMaterials[instance.info.y];
         float totalDistance = traveled + hit.distance;
+        // Slant-corrected world footprint of this probe-ray cone at the hit;
+        // refracted continuations inherit it as their starting width.
+        float worldFoot = RayConeWorldFootprint(cone, hit.distance,
+            point.geometricNormal, -ray.Direction);
+        float2 texGrad = worldFoot * point.texelDensity;
+        bool entering = point.frontFace != 0u;
+        DdgiMedium boundary = { hit.instanceIndex, instance.info.y, material.ior };
         DdgiDielectricResult dielectric = DdgiSurfaceDielectric(point, material, ray.Direction,
-            DdgiHash(tid.x ^ (uDdgi.frame.x * 12347u) ^ (crossed * 0x68bc21ebu)));
-        if (mediumInstance != 0xffffffffu)
+            DdgiHash(tid.x ^ (uDdgi.frame.x * 12347u) ^ (crossed * 0x68bc21ebu)), texGrad,
+            DdgiAmbientIor(media, entering));
+        if (media.count != 0u)
         {
             float3 absorption;
-            if (!DdgiVolumeAbsorption(uMaterials[mediumMaterial], hit.distance + segmentBias, absorption))
+            DdgiMedium current = media.media[media.count - 1u];
+            if (!DdgiVolumeAbsorption(uMaterials[current.materialIndex], hit.distance + segmentBias, absorption))
             {
                 sample.radianceAndDistance.w = clamp(totalDistance, 0.0, uDdgi.trace.x);
                 sample.directionAndReserved.w = 2.0;
                 break;
             }
             throughput *= absorption;
-            // Single homogeneous volumes are supported. A different instance,
-            // a front face before the matching exit, or an opaque interior
-            // remains blocking; nested and intersecting media need a medium stack.
-            if (hit.instanceIndex != mediumInstance || point.frontFace != 0u ||
-                dielectric.supported == 0u || dielectric.volume == 0u)
+            // An interior opaque surface or thin sheet remains blocking.
+            if (dielectric.supported == 0u || dielectric.volume == 0u)
             {
                 sample.radianceAndDistance.w = clamp(totalDistance, 0.0, uDdgi.trace.x);
                 sample.directionAndReserved.w = 2.0;
@@ -439,7 +471,7 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
         if (dielectric.supported != 0u)
         {
             if (crossed >= DDGI_MAX_GLASS_CROSSINGS ||
-                (dielectric.volume != 0u && mediumInstance == 0xffffffffu && point.frontFace == 0u))
+                (dielectric.volume != 0u && !DdgiCanCrossMedium(media, boundary, entering)))
             {
                 sample.radianceAndDistance.w = clamp(totalDistance, 0.0, uDdgi.trace.x);
                 sample.directionAndReserved.w = 2.0;
@@ -454,18 +486,7 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
                 break;
             }
             if (dielectric.volume != 0u && dielectric.totalInternalReflection == 0u)
-            {
-                if (point.frontFace != 0u)
-                {
-                    mediumInstance = hit.instanceIndex;
-                    mediumMaterial = instance.info.y;
-                }
-                else
-                {
-                    mediumInstance = 0xffffffffu;
-                    mediumMaterial = 0xffffffffu;
-                }
-            }
+                DdgiCommitMediumCrossing(media, boundary, entering);
             // A changed direction starts a new segment. Preserve total world
             // distance and the original probe direction in the visibility atlas.
             // This is a conservative path-distance moment, not a refracted
@@ -483,9 +504,12 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
                 sample.directionAndReserved.w = 2.0;
                 break;
             }
+            // The refracted segment restarts at this surface, so its cone
+            // inherits the slant-corrected footprint measured here.
+            cone.width = worldFoot;
             continue;
         }
-        DdgiThinGlassResult glass = DdgiSurfaceThinGlass(point, material, ray.Direction);
+        DdgiThinGlassResult glass = DdgiSurfaceThinGlass(point, material, ray.Direction, texGrad);
         if (glass.supported != 0u)
         {
             // Traversed glass is not an enclosing back face and does not turn
@@ -496,6 +520,9 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
                 sample.directionAndReserved.w = 2.0;
                 break;
             }
+            // The straight continuation keeps the original ray origin, so the
+            // cone's accumulated width + spread * total distance already
+            // covers the travelled segment; no footprint update is needed.
             ray.TMin = DdgiNextRayMinimum(hit.distance, minimumBias);
             if (!isfinite(ray.TMin))
             {
@@ -516,7 +543,7 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
         if (point.valid != 0u && (front || doubleSided))
         {
             point = OrientRaySurfaceForShading(point, material.flags);
-            DdgiDiffuseMaterial evaluated = DdgiEvaluateMaterial(point, material, -ray.Direction);
+            DdgiShadingMaterial evaluated = DdgiEvaluateMaterial(point, material, -ray.Direction, texGrad);
             sample.directionAndReserved.w = evaluated.unsupported != 0u ? 2.0 : 1.0;
             sample.radianceAndDistance.rgb = throughput * DdgiShadeSurface(point, evaluated, -ray.Direction,
                 DdgiHash(tid.x + uDdgi.frame.x * 12347u));

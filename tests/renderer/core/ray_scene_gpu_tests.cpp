@@ -1,9 +1,13 @@
 #include "Container/common/CommonGLFW.h"
+#include "Container/geometry/GltfOpacityMicromaps.h"
 #include "Container/renderer/raytracing/RaySceneAcceleration.h"
 #include "Container/renderer/raytracing/RaySceneExtraction.h"
+#include "Container/renderer/raytracing/RayInstanceTransformPass.h"
+#include "Container/utility/PipelineManager.h"
 #include <gtest/gtest.h>
 
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <bit>
 #include <cstdio>
@@ -38,6 +42,7 @@ static_assert(sizeof(Probe) == 48);
 class RaySceneGpu : public ::testing::Test {
 protected:
   virtual bool enableQueries() const { return true; }
+  virtual bool enableMicromaps() const { return false; }
   static VKAPI_ATTR VkBool32 VKAPI_CALL validationCallback(
       VkDebugUtilsMessageSeverityFlagBitsEXT severity,
       VkDebugUtilsMessageTypeFlagsEXT,
@@ -93,6 +98,7 @@ protected:
     DeviceCreateInfo deviceInfo;
     deviceInfo.requiredExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     deviceInfo.enableRayQueries = enableQueries();
+    deviceInfo.enableOpacityMicromaps = enableMicromaps();
     VkPhysicalDeviceVulkan12Features v12{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     v12.bufferDeviceAddress = VK_TRUE;
@@ -148,21 +154,31 @@ protected:
     queue.waitIdle();
   }
   std::vector<glm::uvec4> trace(const RaySceneGeneration &generation,
-                                std::span<const Probe> probes) {
+                                std::span<const Probe> probes,
+                                std::span<const RayTriangleData> triangles = {},
+                                double* elapsedNanoseconds = nullptr) {
     TestBuffer inputs(*memory, probes.size_bytes());
     TestBuffer output(*memory, probes.size() * sizeof(glm::uvec4));
+    TestBuffer attributes(*memory, std::max(triangles.size_bytes(), sizeof(RayTriangleData)));
+    if (!triangles.empty())
+      std::memcpy(attributes.buffer.allocation_info.pMappedData, triangles.data(), triangles.size_bytes());
+    if (vmaFlushAllocation(memory->allocator(), attributes.buffer.allocation, 0,
+                           VK_WHOLE_SIZE) != VK_SUCCESS)
+      throw std::runtime_error("triangle metadata upload failed");
     std::memcpy(inputs.buffer.allocation_info.pMappedData, probes.data(),
                 probes.size_bytes());
     if (vmaFlushAllocation(memory->allocator(), inputs.buffer.allocation, 0,
                            VK_WHOLE_SIZE) != VK_SUCCESS)
       throw std::runtime_error("probe upload failed");
-    std::array<vk::DescriptorSetLayoutBinding, 3> bindings{
+    std::array<vk::DescriptorSetLayoutBinding, 4> bindings{
         vk::DescriptorSetLayoutBinding(
             0, vk::DescriptorType::eAccelerationStructureKHR, 1,
             vk::ShaderStageFlagBits::eCompute),
         vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eStorageBuffer, 1,
                                        vk::ShaderStageFlagBits::eCompute),
         vk::DescriptorSetLayoutBinding(2, vk::DescriptorType::eStorageBuffer, 1,
+                                       vk::ShaderStageFlagBits::eCompute),
+        vk::DescriptorSetLayoutBinding(3, vk::DescriptorType::eStorageBuffer, 1,
                                        vk::ShaderStageFlagBits::eCompute)};
     vk::raii::DescriptorSetLayout layout(
         device->raii(), vk::DescriptorSetLayoutCreateInfo({}, bindings));
@@ -172,7 +188,7 @@ protected:
     std::array<vk::DescriptorPoolSize, 2> sizes{
         vk::DescriptorPoolSize(vk::DescriptorType::eAccelerationStructureKHR,
                                1),
-        vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, 2)};
+        vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, 3)};
     vk::raii::DescriptorPool descriptorPool(
         device->raii(),
         vk::DescriptorPoolCreateInfo(
@@ -181,11 +197,12 @@ protected:
         vk::DescriptorSetAllocateInfo(*descriptorPool, layoutHandle));
     const vk::AccelerationStructureKHR tlas = generation.tlas();
     vk::WriteDescriptorSetAccelerationStructureKHR accelerationWrite(tlas);
-    std::array<vk::DescriptorBufferInfo, 2> bufferInfo{
+    std::array<vk::DescriptorBufferInfo, 3> bufferInfo{
         vk::DescriptorBufferInfo(inputs.buffer.buffer, 0, VK_WHOLE_SIZE),
-        vk::DescriptorBufferInfo(output.buffer.buffer, 0, VK_WHOLE_SIZE)};
-    std::array<vk::WriteDescriptorSet, 3> writes{};
-    for (uint32_t i = 0; i < 3; ++i) {
+        vk::DescriptorBufferInfo(output.buffer.buffer, 0, VK_WHOLE_SIZE),
+        vk::DescriptorBufferInfo(attributes.buffer.buffer, 0, VK_WHOLE_SIZE)};
+    std::array<vk::WriteDescriptorSet, 4> writes{};
+    for (uint32_t i = 0; i < writes.size(); ++i) {
       writes[i].dstSet = *sets.front();
       writes[i].dstBinding = i;
       writes[i].descriptorCount = 1;
@@ -215,11 +232,29 @@ protected:
     vk::raii::Pipeline pipeline(
         device->raii(), nullptr,
         vk::ComputePipelineCreateInfo({}, stage, *pipelineLayout));
+    vk::raii::QueryPool timing{nullptr};
+    uint32_t timestampBits = 0;
+    if (elapsedNanoseconds) {
+      uint32_t count = 0;
+      vkGetPhysicalDeviceQueueFamilyProperties(device->physicalDevice(), &count, nullptr);
+      std::vector<VkQueueFamilyProperties> families(count);
+      vkGetPhysicalDeviceQueueFamilyProperties(device->physicalDevice(), &count, families.data());
+      timestampBits = families.at(device->queueFamilyIndices().graphicsFamily.value()).timestampValidBits;
+      if (timestampBits)
+        timing = vk::raii::QueryPool(device->raii(), vk::QueryPoolCreateInfo({}, vk::QueryType::eTimestamp, 2));
+      *elapsedNanoseconds = 0;
+    }
     begin();
     command.bindPipeline(vk::PipelineBindPoint::eCompute, *pipeline);
     command.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *pipelineLayout,
                                0, *sets.front(), {});
+    if (timestampBits) {
+      command.resetQueryPool(*timing, 0, 2);
+      command.writeTimestamp2(vk::PipelineStageFlagBits2::eTopOfPipe, *timing, 0);
+    }
     command.dispatch(static_cast<uint32_t>(probes.size()), 1, 1);
+    if (timestampBits)
+      command.writeTimestamp2(vk::PipelineStageFlagBits2::eBottomOfPipe, *timing, 1);
     vk::MemoryBarrier2 barrier(vk::PipelineStageFlagBits2::eComputeShader,
                                vk::AccessFlagBits2::eShaderWrite,
                                vk::PipelineStageFlagBits2::eHost,
@@ -229,6 +264,16 @@ protected:
     dependency.pMemoryBarriers = &barrier;
     command.pipelineBarrier2(dependency);
     submit();
+    if (timestampBits) {
+      std::array<uint64_t, 2> timestamps{};
+      if (vkGetQueryPoolResults(device->device(), *timing, 0, 2, sizeof(timestamps), timestamps.data(),
+                                sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
+        throw std::runtime_error("ray query timestamp readback failed");
+      VkPhysicalDeviceProperties properties{};
+      vkGetPhysicalDeviceProperties(device->physicalDevice(), &properties);
+      const uint64_t mask = UINT64_MAX >> (64 - timestampBits);
+      *elapsedNanoseconds = double((timestamps[1] - timestamps[0]) & mask) * properties.limits.timestampPeriod;
+    }
     if (vmaInvalidateAllocation(memory->allocator(), output.buffer.allocation,
                                 0, VK_WHOLE_SIZE) != VK_SUCCESS)
       throw std::runtime_error("probe readback failed");
@@ -257,6 +302,156 @@ TEST_F(RaySceneRasterFallbackGpu, DisabledBackendDoesNotCreateRayResources) {
   RaySceneAcceleration backend(*device, *memory);
   EXPECT_FALSE(backend.supported());
   EXPECT_THROW((void)backend.recordBuild(command, {}), std::runtime_error);
+}
+
+class RaySceneMicromapGpu : public RaySceneGpu {
+  bool enableMicromaps() const override { return true; }
+};
+
+struct MicromapFixture {
+  using Attachment = container::geometry::gltf::GltfOpacityMicromapAttachment;
+  using Map = container::geometry::gltf::GltfOpacityMicromap;
+  std::array<container::geometry::Vertex, 12> vertices{};
+  std::array<uint32_t, 12> indices{};
+  std::array<RayTriangleData, 4> alpha{};
+  std::shared_ptr<const Attachment> attachment;
+  std::shared_ptr<const Attachment> specials;
+  std::array<RaySceneGeometry, 2> geometry;
+  std::array<RaySceneInstance, 2> instances;
+
+  MicromapFixture() {
+    for (uint32_t triangle = 0; triangle < 4; ++triangle) {
+      const float x = float(triangle * 3);
+      vertices[3 * triangle].position = {x - 1, -1, 0};
+      vertices[3 * triangle + 1].position = {x + 1, -1, 0};
+      vertices[3 * triangle + 2].position = {x, 1, 0};
+      for (uint32_t corner = 0; corner < 3; ++corner)
+        indices[3 * triangle + corner] = 3 * triangle + corner;
+      alpha[triangle].vertexAlpha = glm::vec4(triangle == 1 || triangle == 2 ? 1.f : 0.f);
+    }
+    auto source = std::make_shared<Map>();
+    source->data = {std::byte{0}, std::byte{1}, std::byte{2}};
+    source->triangles = {{0, 0, VK_OPACITY_MICROMAP_FORMAT_2_STATE_EXT},
+                         {1, 0, VK_OPACITY_MICROMAP_FORMAT_2_STATE_EXT},
+                         {2, 0, VK_OPACITY_MICROMAP_FORMAT_4_STATE_EXT}};
+    source->usage = {{2, 0, VK_OPACITY_MICROMAP_FORMAT_2_STATE_EXT},
+                     {1, 0, VK_OPACITY_MICROMAP_FORMAT_4_STATE_EXT}};
+    attachment = std::make_shared<Attachment>(Attachment{source, {0, 1, 2, UINT32_MAX - 3}, source->usage});
+    specials = std::make_shared<Attachment>(Attachment{source,
+        {UINT32_MAX, UINT32_MAX - 1, UINT32_MAX - 2, UINT32_MAX - 3}, {}});
+    geometry = {RaySceneGeometry{{"micromap"}, 1, 1, vertices, indices, false},
+                RaySceneGeometry{{"micromap"}, 2, 1, vertices, indices, false}};
+    instances = {RaySceneInstance{0, 10},
+                 RaySceneInstance{1, 11, glm::translate(glm::mat4(1), glm::vec3(0, 4, 0))}};
+  }
+
+  static std::vector<Probe> probes(uint32_t repeats = 1, bool forcedNonOpaque = false) {
+    std::vector<Probe> result;
+    result.reserve(repeats * 8);
+    for (uint32_t repeat = 0; repeat < repeats; ++repeat)
+      for (uint32_t copy = 0; copy < 2; ++copy)
+        for (uint32_t triangle = 0; triangle < 4; ++triangle)
+          result.push_back({{float(triangle * 3), float(copy * 4), 2, .001f}, {0, 0, -1, 4},
+              {forcedNonOpaque ? 0x1ffu : 0xffu, std::bit_cast<uint32_t>(1.f), std::bit_cast<uint32_t>(.5f), 2}});
+    return result;
+  }
+};
+
+TEST_F(RaySceneGpu, DisabledMicromapsPreserveSampledAlphaAndOrdinaryReuse) {
+  if (!device->rayQueriesEnabled()) GTEST_SKIP() << device->rayQuerySupport().unavailableReason();
+  ASSERT_FALSE(device->opacityMicromapsEnabled());
+  MicromapFixture fixture;
+  fixture.geometry[0].opacityMicromap = fixture.attachment;
+  fixture.geometry[1].opacityMicromap = fixture.specials;
+  RaySceneAcceleration backend(*device, *memory);
+  begin();
+  const auto fallback = backend.recordBuild(command, {fixture.geometry, fixture.instances});
+  submit();
+  ASSERT_EQ(fallback->stats().opacityMicromapCount, 0u);
+  EXPECT_EQ(fallback->stats().opacityMicromapFallbackBlas, 2u);
+  const auto hits = trace(*fallback, MicromapFixture::probes(), fixture.alpha);
+  for (size_t probe = 0; probe < hits.size(); ++probe) {
+    EXPECT_EQ(hits[probe].x, probe % 4 == 1 || probe % 4 == 2 ? 1u : 0u);
+    EXPECT_EQ(hits[probe].z, 1u);
+  }
+  fixture.geometry[0].opacityMicromap.reset();
+  begin();
+  const auto reused = backend.recordBuild(command, {fixture.geometry, fixture.instances}, fallback);
+  submit();
+  EXPECT_EQ(reused->stats().blasReused, 2u);
+}
+
+TEST_F(RaySceneMicromapGpu, BuildsSharedMapWithCutoutParityAndRetainedGenerations) {
+  if (!device->opacityMicromapsEnabled()) GTEST_SKIP() << "VK_EXT_opacity_micromap unavailable";
+  MicromapFixture fixture;
+  RaySceneAcceleration backend(*device, *memory);
+  const auto build = [&](const std::shared_ptr<const RaySceneGeneration>& previous = {}) {
+    begin();
+    auto generation = backend.recordBuild(command, {fixture.geometry, fixture.instances}, previous);
+    submit();
+    return generation;
+  };
+  const auto baseline = build();
+  fixture.geometry[0].opacityMicromap = fixture.attachment;
+  fixture.geometry[1].opacityMicromap = fixture.specials;
+  const auto mapped = build(baseline);
+  ASSERT_EQ(mapped->stats().blasBuilt, 2u);
+  ASSERT_EQ(mapped->stats().opacityMicromapAttachedBlas, 2u);
+  EXPECT_EQ(mapped->stats().opacityMicromapCount, 1u);
+  EXPECT_EQ(mapped->stats().opacityMicromapBuilt, 1u);
+  EXPECT_GT(mapped->stats().opacityMicromapBytes, 0u);
+  EXPECT_EQ(mapped->stats().opacityMicromapFallbackBlas, 0u);
+
+  const auto probes = MicromapFixture::probes(512);
+  double baselineNs = 0, mappedNs = 0;
+  const auto ordinaryHits = trace(*baseline, probes, fixture.alpha, &baselineNs);
+  const auto mappedHits = trace(*mapped, probes, fixture.alpha, &mappedNs);
+  ASSERT_EQ(ordinaryHits.size(), mappedHits.size());
+  for (size_t probe = 0; probe < mappedHits.size(); ++probe) {
+    EXPECT_EQ(mappedHits[probe].x, ordinaryHits[probe].x) << "visibility probe " << probe;
+    EXPECT_EQ(mappedHits[probe].y, ordinaryHits[probe].y) << "identity probe " << probe;
+    EXPECT_EQ(mappedHits[probe].w, ordinaryHits[probe].w) << "distance probe " << probe;
+    EXPECT_EQ(mappedHits[probe].z, probe % 4 >= 2 ? 1u : 0u) << "candidate probe " << probe;
+  }
+  const auto forced = trace(*mapped, MicromapFixture::probes(1, true), fixture.alpha);
+  EXPECT_EQ(forced[0].z, 0u); // FORCE_NON_OPAQUE cannot restore known-transparent microtriangles.
+  EXPECT_EQ(forced[1].z, 1u); // Known-opaque triangles still reach existing sampled-alpha shaders.
+  EXPECT_EQ(forced[4].z, 0u);
+  EXPECT_EQ(forced[5].z, 1u);
+
+  const auto reused = build(mapped);
+  EXPECT_EQ(reused->stats().blasReused, 2u);
+  EXPECT_EQ(reused->stats().opacityMicromapBuilt, 0u);
+  const auto total = [](const RaySceneBuildStats& stats) {
+    return stats.accelerationAllocatedBytes + stats.inputAllocatedBytes + stats.scratchAllocatedBytes;
+  };
+  const std::array mappedOnly{mapped};
+  EXPECT_EQ(RaySceneGeneration::retainedAllocatedBytes(mappedOnly), total(mapped->stats()));
+  const std::array retained{mapped, reused};
+  EXPECT_LT(RaySceneGeneration::retainedAllocatedBytes(retained), total(mapped->stats()) + total(reused->stats()));
+
+  auto incompatible = std::make_shared<MicromapFixture::Attachment>(*fixture.attachment);
+  incompatible->indices[0] = 8;
+  fixture.geometry[0].opacityMicromap = std::move(incompatible);
+  const auto rejected = build(reused);
+  EXPECT_EQ(rejected->stats().opacityMicromapFallbackBlas, 1u);
+  EXPECT_EQ(rejected->stats().blasBuilt, 1u);
+  EXPECT_EQ(rejected->stats().blasReused, 1u);
+  EXPECT_EQ(trace(*rejected, MicromapFixture::probes(), fixture.alpha)[0].z, 1u);
+  EXPECT_EQ(trace(*mapped, MicromapFixture::probes(), fixture.alpha)[0].z, 0u);
+
+  auto changed = std::make_shared<MicromapFixture::Attachment>(*fixture.attachment);
+  changed->indices[0] = UINT32_MAX - 1;
+  --changed->usage[0].count;
+  fixture.geometry[0].opacityMicromap = std::move(changed);
+  const auto reattached = build(mapped);
+  EXPECT_EQ(reattached->stats().blasBuilt, 1u);
+  EXPECT_EQ(reattached->stats().opacityMicromapBuilt, 0u);
+  EXPECT_EQ(trace(*reattached, MicromapFixture::probes(), fixture.alpha)[0].x, 1u);
+  std::printf("Opacity micromap fixture: %zu rays, sampled %.3f us, mapped %.3f us, map storage %llu bytes, allocation totals %llu -> %llu bytes\n",
+      probes.size(), baselineNs / 1000., mappedNs / 1000.,
+      static_cast<unsigned long long>(mapped->stats().opacityMicromapBytes),
+      static_cast<unsigned long long>(total(baseline->stats())), static_cast<unsigned long long>(total(mapped->stats())));
 }
 
 TEST_F(RaySceneGpu,
@@ -362,6 +557,83 @@ TEST_F(RaySceneGpu,
               static_cast<unsigned long long>(first->stats().scratchBytes));
 }
 
+TEST_F(RaySceneGpu, InterpolatedVertexAlphaMasksCandidatesAndOpaqueIgnoresAlpha) {
+  if (!device->rayQueriesEnabled())
+    GTEST_SKIP() << device->rayQuerySupport().unavailableReason();
+  std::vector<container::geometry::Vertex> vertices(3);
+  vertices[0].position = {-1, -1, 0};
+  vertices[1].position = {1, -1, 0};
+  vertices[2].position = {-1, 1, 0};
+  vertices[0].colorAlpha = 0;
+  vertices[1].colorAlpha = 1;
+  vertices[2].colorAlpha = .5f;
+  const std::vector<uint32_t> indices{0, 1, 2};
+  const std::vector<container::gpu::ObjectData> objects(1);
+  const std::vector<DrawCommand> draws{{0, 0, 3}};
+  const std::array providers{
+      RaySceneProviderSource{{"rgba"}, 1, vertices, indices, objects, draws}};
+  const auto extracted = extractRayScene(providers);
+  const auto views = extracted.geometryViews();
+  RaySceneAcceleration backend(*device, *memory);
+  begin();
+  const auto generation = backend.recordBuild(command, {views, extracted.instances});
+  submit();
+  const auto probe = [](float x, float y, uint32_t flags) {
+    return Probe{{x, y, 2, .001f}, {0, 0, -1, 4},
+        {0xff, std::bit_cast<uint32_t>(.8f), std::bit_cast<uint32_t>(.4f), flags + 1}};
+  };
+  // Barycentrics (1/4,1/4) -> alpha .375*.8=.3; (3/4,1/8)
+  // -> .8125*.8=.65. OPAQUE must accept even the zero-alpha corner.
+  const std::array probes{probe(-.5f, -.5f, 1), probe(.5f, -.75f, 1),
+      probe(-.99f, -.99f, 0), probe(-.5f, -.5f, 2)};
+  const auto results = trace(*generation, probes, extracted.triangles);
+  const std::array<uint32_t, 4> expected{0, 1, 1, 0};
+  ASSERT_EQ(results.size(), expected.size());
+  for (size_t i = 0; i < results.size(); ++i) {
+    EXPECT_EQ(results[i].z, 1u) << "candidate " << i;
+    EXPECT_EQ(results[i].x, expected[i]) << "alpha probe " << i;
+  }
+}
+
+TEST_F(RaySceneGpu, LocalMirroredGeometryFacingIsIndependentOfInstanceTransform) {
+  if (!device->rayQueriesEnabled())
+    GTEST_SKIP() << device->rayQuerySupport().unavailableReason();
+  std::vector<container::geometry::Vertex> mirrored(3);
+  mirrored[0].position = {1, -1, 0};
+  mirrored[1].position = {-1, -1, 0};
+  mirrored[2].position = {0, 1, 0};
+  const std::vector<uint32_t> indices{0, 1, 2};
+  const std::array geometries{
+      RaySceneGeometry{{"locally-mirrored-skin"}, 1, 1, mirrored, indices, true}};
+  std::vector<RaySceneInstance> instances;
+  for (uint32_t i = 0; i < 4; ++i) {
+    RaySceneInstance instance;
+    instance.customIndex = i;
+    instance.transform = glm::translate(glm::mat4(1), glm::vec3(i * 4, 0, 0));
+    instance.flipFacing = i != 0;
+    instance.doubleSided = i == 3;
+    if (i == 2)
+      instance.transform *= glm::scale(glm::mat4(1), glm::vec3(-1, 1, 1));
+    instances.push_back(instance);
+  }
+  RaySceneAcceleration backend(*device, *memory);
+  begin();
+  auto generation = backend.recordBuild(command, {geometries, instances});
+  submit();
+  std::vector<Probe> probes;
+  for (uint32_t instance = 0; instance < 4; ++instance)
+    for (const bool back : {false, true})
+      probes.push_back({{float(instance * 4), 0, back ? -2.f : 2.f, 0.001f},
+                        {0, 0, back ? 1.f : -1.f, 4}, {0xff, 0, 0, 0}});
+  const auto hits = trace(*generation, probes);
+  // Uncorrected local mirror accepts the wrong side. Correcting it accepts
+  // authored +Z, including under a model mirror; no-cull accepts both sides.
+  const std::array<uint32_t, 8> expected{0, 1, 1, 0, 1, 0, 1, 1};
+  ASSERT_EQ(hits.size(), expected.size());
+  for (size_t i = 0; i < hits.size(); ++i)
+    EXPECT_EQ(hits[i].x, expected[i]) << "probe " << i;
+}
+
 TEST_F(RaySceneGpu, KeepsUnchangedProviderBlasAcrossProviderChanges) {
   if (!device->rayQueriesEnabled())
     GTEST_SKIP() << device->rayQuerySupport().unavailableReason();
@@ -430,5 +702,80 @@ TEST_F(RaySceneGpu, KeepsUnchangedProviderBlasAcrossProviderChanges) {
   const auto removedHits = trace(*removed, probes);
   EXPECT_EQ(removedHits[0].x, 1u);
   EXPECT_EQ(removedHits[1].x, 0u);
+}
+TEST_F(RaySceneGpu, GpuMatricesPublishImmutableTlasAndMatchingSurfaceTransforms) {
+  ASSERT_TRUE(device->rayQueriesEnabled());
+  PipelineManager pipelines(device->device());
+  // Borrow the fixture's device; every publication is destroyed before TearDown.
+  auto borrowed=std::shared_ptr<VulkanDevice>(device.get(),[](VulkanDevice*){});
+  RayInstanceTransformPass producer(borrowed,*memory,pipelines);
+  producer.createResources(CONTAINER_RAY_INSTANCE_SHADER_DIR);
+  TestBuffer objects(*memory,sizeof(ObjectData)*2);
+  TestBuffer firstSurfaces(*memory,sizeof(RaySurfaceInstanceData)*3);
+  TestBuffer secondSurfaces(*memory,sizeof(RaySurfaceInstanceData)*3);
+  std::array<ObjectData,2> gpuObjects{};
+  gpuObjects[0].model=glm::translate(glm::mat4(1),glm::vec3(4,0,0));
+  gpuObjects[1].model=glm::translate(glm::mat4(1),glm::vec3(-2,0,0))*
+      glm::rotate(glm::mat4(1),.3f,glm::vec3(0,0,1))*glm::scale(glm::mat4(1),glm::vec3(-1,2,.5f));
+  const auto upload=[&] {
+    std::memcpy(objects.buffer.allocation_info.pMappedData,gpuObjects.data(),sizeof(gpuObjects));
+    ASSERT_EQ(vmaFlushAllocation(memory->allocator(),objects.buffer.allocation,0,VK_WHOLE_SIZE),VK_SUCCESS);
+  };
+  upload();
+  std::vector<container::geometry::Vertex> vertices(3);
+  vertices[0].position={-1,-1,0};vertices[1].position={1,-1,0};vertices[2].position={0,1,0};
+  const std::array<uint32_t,3> indices{0,1,2};
+  const std::array<RaySceneGeometry,1> geometry{{{{"mesh"},1,1,vertices,indices,true}}};
+  std::array<RaySceneInstance,3> instances{};
+  for(uint32_t i=0;i<3;++i) {
+    instances[i].geometryIndex=0;instances[i].customIndex=100+i;
+    instances[i].doubleSided=true;
+    // Deliberately different valid CPU mirrors prove the GPU stream is used.
+    instances[i].transform=glm::translate(glm::mat4(1),glm::vec3(20+int(i)*4,0,0));
+  }
+  instances[0].gpuObjectIndex=1;
+  instances[1].transform=glm::translate(glm::mat4(1),glm::vec3(-6,0,0));
+  instances[2].gpuObjectIndex=0;instances[2].mask=2;instances[2].flipFacing=true;
+  RaySceneGpuTransforms gpu{&producer,{objects.buffer.buffer,0,sizeof(gpuObjects)},2,
+      {firstSurfaces.buffer.buffer,0,sizeof(RaySurfaceInstanceData)*3}};
+  RaySceneAcceleration backend(*device,*memory);
+  const auto build=[&](const std::shared_ptr<const RaySceneGeneration>& previous={}) {
+    begin();auto generation=backend.recordBuild(command,{geometry,instances,&gpu},previous);
+    VkMemoryBarrier host{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    host.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;host.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
+    vkCmdPipelineBarrier(*command,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,&host,0,nullptr,0,nullptr);
+    submit();return generation;
+  };
+  const auto first=build();
+  EXPECT_EQ(first->stats().gpuInstanceCount,2);
+  EXPECT_EQ(first->stats().gpuTransformUploadBytes,3*24+48);
+  const auto probe=[](float x,uint32_t mask=0xff) {return Probe{{x,0,2,.001f},{0,0,-1,4},{mask,0,0,0}};};
+  const std::array probes{probe(-2),probe(-6),probe(4,1),probe(4,2),probe(20),probe(8,2)};
+  const auto originalHits=trace(*first,probes);
+  EXPECT_EQ(originalHits[0].x,1);EXPECT_EQ(originalHits[0].y,100);
+  EXPECT_EQ(originalHits[1].x,1);EXPECT_EQ(originalHits[1].y,101);
+  EXPECT_EQ(originalHits[2].x,0);EXPECT_EQ(originalHits[3].x,1);EXPECT_EQ(originalHits[3].y,102);
+  EXPECT_EQ(originalHits[4].x,0);EXPECT_EQ(originalHits[5].x,0);
+  ASSERT_EQ(vmaInvalidateAllocation(memory->allocator(),firstSurfaces.buffer.allocation,0,VK_WHOLE_SIZE),VK_SUCCESS);
+  const auto* surface=static_cast<const RaySurfaceInstanceData*>(firstSurfaces.buffer.allocation_info.pMappedData);
+  const std::array expected{gpuObjects[1].model,instances[1].transform,gpuObjects[0].model};
+  for(size_t i=0;i<expected.size();++i) {
+    for(int c=0;c<4;++c) for(int r=0;r<4;++r) EXPECT_NEAR(surface[i].model[c][r],expected[i][c][r],2e-5f);
+    const auto normal=glm::transpose(glm::inverse(glm::mat3(expected[i])));
+    for(int c=0;c<3;++c) for(int r=0;r<3;++r) EXPECT_NEAR(surface[i].normalColumns[c][r],normal[c][r],2e-5f);
+    EXPECT_EQ(surface[i].normalColumns[0].w,glm::determinant(glm::mat3(expected[i]))<0?-1.f:1.f);
+  }
+  gpuObjects[0].model[3].x=8;upload();
+  gpu.surfaces.buffer=secondSurfaces.buffer.buffer;
+  const auto second=build(first);
+  EXPECT_EQ(second->stats().blasBuilt,0);EXPECT_EQ(second->stats().blasReused,1);
+  const auto moved=trace(*second,probes);
+  EXPECT_EQ(moved[3].x,0);EXPECT_EQ(moved[5].x,1);EXPECT_EQ(moved[5].y,102);
+  const auto retained=trace(*first,probes);
+  EXPECT_EQ(retained[3].x,1);EXPECT_EQ(retained[5].x,0);
+  instances[0].gpuObjectIndex=2;
+  EXPECT_THROW((void)backend.recordBuild(command,{geometry,instances,&gpu},first),std::invalid_argument);
+  instances[0].gpuObjectIndex=1;gpu.surfaces.size=16;
+  EXPECT_THROW((void)backend.recordBuild(command,{geometry,instances,&gpu},first),std::invalid_argument);
 }
 } // namespace

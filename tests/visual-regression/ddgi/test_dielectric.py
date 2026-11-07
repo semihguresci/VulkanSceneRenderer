@@ -20,7 +20,8 @@ def synthetic_cases():
                     rgb = [1, 1, 1] if fixture == "open-control" else (
                         [.5, .5, .5] if fixture == "thick-clear" and enabled else
                         [.2, .2, .2] if fixture == "thick-rough" else
-                        [.01, .1, .2] if fixture == "thick-absorbing" else [.001] * 3)
+                        [.4, .4, .4] if fixture == "nested-volumes" else
+                        [.01, .1, .2] if fixture in ("thick-absorbing", "nested-absorbing") else [.001] * 3)
                     value = sum(rgb) / 3 if primary else 0
                     cases.append({"name": glass.case_name(fixture, technique, enabled, primary),
                         "technique": technique, "fixture": fixture, "dielectric": enabled,
@@ -37,7 +38,7 @@ class DielectricHarnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
             manifest = glass.write_dielectric_fixtures(output)
-            self.assertEqual(len(manifest["fixtures"]), 7)
+            self.assertEqual([scene["name"] for scene in manifest["fixtures"]], list(glass.VARIANTS))
             for scene in manifest["fixtures"]:
                 document = json.loads((output / scene["gltf"]).read_text())
                 material = next(m for m in document["materials"] if m["name"] == "partition")
@@ -52,8 +53,19 @@ class DielectricHarnessTests(unittest.TestCase):
                 if scene["name"] == "thick-absorbing":
                     self.assertEqual(volume["attenuationColor"], [.001, .15, .8])
                     self.assertEqual(volume["attenuationDistance"], .1)
+                elif scene["name"] == "nested-absorbing":
+                    self.assertEqual(volume["attenuationColor"], [.002, .8, 1])
+                    self.assertEqual(volume["attenuationDistance"], .1)
                 else:
                     self.assertNotIn("attenuationDistance", volume)
+                inner = [mesh for mesh in document["meshes"] if mesh["name"] == "Inner dielectric"]
+                if scene["name"] in ("nested-volumes", "nested-absorbing", "intersecting-volumes"):
+                    self.assertEqual(len(inner), 1)
+                    inner_material = document["materials"][inner[0]["primitives"][0]["material"]]
+                    self.assertEqual(inner_material["extensions"]["KHR_materials_ior"]["ior"], 1.33)
+                    self.assertNotEqual(inner_material, material)
+                else:
+                    self.assertFalse(inner)
                 self.assertEqual(len(scene["gltfSha256"]), 64)
 
     def test_actual_closed_slab_has_both_entry_exit_and_no_probe_inside(self):
@@ -123,11 +135,11 @@ class DielectricHarnessTests(unittest.TestCase):
 
     def test_comparison_rejects_no_signal_wrong_absorption_and_terminal_leaks(self):
         for fixture in glass.VARIANTS:
-            if fixture == "thick-absorbing":
+            if fixture in ("thick-absorbing", "nested-absorbing"):
                 field, value = "estimatedRadiance", [.8] * 3
             else:
                 field, value = "estimatedLuminance", (
-                    .3 if fixture in ("open-control", "thick-clear", "thick-rough") else 1.)
+                    .3 if fixture in ("open-control", "thick-clear", "thick-rough", "nested-volumes") else 1.)
             cases = synthetic_cases()
             chosen = next(case for case in cases if case["fixture"] == fixture and
                           case["dielectric"] and case["primaryIndirect"])

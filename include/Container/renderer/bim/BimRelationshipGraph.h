@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/renderer/bim/BimMetadata.h"
+
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -15,8 +17,6 @@ struct ElementRelationship;
 } // namespace container::geometry::dotbim
 
 namespace container::renderer {
-
-struct BimElementMetadata;
 
 enum class BimRelationshipKind : uint32_t {
   SpatialParent,
@@ -65,7 +65,7 @@ class BimRelationshipGraph {
 public:
   void clear(const std::function<void()> &progress = {});
   void build(
-      std::span<const BimElementMetadata> metadata,
+      BimMetadataTableView metadata,
       std::span<const container::geometry::dotbim::ElementRelationship>
           relationships = {},
       const std::function<void()> &progress = {});
@@ -107,7 +107,7 @@ private:
   };
 
   [[nodiscard]] uint32_t addNode(BimRelationshipNode node);
-  [[nodiscard]] uint32_t addObjectNode(const BimElementMetadata &metadata);
+  [[nodiscard]] uint32_t addObjectNode(const BimElementMetadataView &metadata);
   [[nodiscard]] uint32_t syntheticNode(std::string key, std::string label,
                                        std::string ifcClass,
                                        std::string guid = {},
@@ -125,10 +125,10 @@ private:
       std::string_view guid, std::string_view sourceId) const;
   void addEdge(uint32_t from, uint32_t to, BimRelationshipKind kind,
                std::string label);
-  void addSearchField(uint32_t objectIndex, std::string text,
+  void addSearchField(uint32_t objectIndex, std::string_view text,
                       std::string reason);
   void indexNodeIdentity(uint32_t nodeIndex, const BimRelationshipNode &node);
-  void buildPropertySets(const BimElementMetadata &metadata);
+  void buildPropertySets(const BimElementMetadataView &metadata);
 
   std::vector<BimRelationshipNode> nodes_{};
   std::vector<BimRelationshipEdge> edges_{};

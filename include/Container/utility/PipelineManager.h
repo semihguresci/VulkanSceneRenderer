@@ -1,8 +1,11 @@
 #pragma once
 
 #include "Container/common/CommonVulkan.h"
+#include "Container/utility/ComputePipeline.h"
 
+#include <filesystem>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -46,15 +49,37 @@ class PipelineManager {
       const RenderingGraphicsPipelineCreateInfo& pipelineInfo,
       const std::string& cacheKey);
 
-  VkPipeline createComputePipeline(
-      const VkComputePipelineCreateInfo& pipelineInfo,
-      const std::string& cacheKey);
+  ComputePipeline createComputePipeline(const std::filesystem::path& shader,
+                                        VkPipelineLayout layout, const std::string& cacheKey);
+
+  class ComputeReload {
+   public:
+    ComputeReload() = default;
+    ComputeReload(ComputeReload&&) noexcept = default;
+    ComputeReload& operator=(ComputeReload&&) noexcept = default;
+    [[nodiscard]] size_t size() const noexcept { return changes_.size(); }
+    [[nodiscard]] bool changesShader(std::string_view filename) const;
+
+   private:
+    friend class PipelineManager;
+    std::filesystem::path directory_;
+    std::vector<std::pair<std::shared_ptr<ComputePipeline::State>, ComputePipeline>> changes_;
+  };
+
+  [[nodiscard]] ComputeReload prepareComputeReload(const std::filesystem::path& directory);
+  void publishComputeReload(ComputeReload& candidate) noexcept;
 
   void destroyPipeline(VkPipeline& pipeline);
+  void destroyPipeline(ComputePipeline& pipeline) noexcept { pipeline.reset(); }
 
   void destroyManagedResources();
 
  private:
+  ComputePipeline buildComputePipeline(const std::filesystem::path& shader,
+                                       VkPipelineLayout layout, const std::string& cacheKey,
+                                       std::vector<char> code);
+  std::vector<std::weak_ptr<ComputePipeline::State>> computePipelines_;
+  std::filesystem::path activeComputeDirectory_;
   VkDevice device_{VK_NULL_HANDLE};
   std::unordered_map<std::string, VkPipelineCache> pipelineCaches_{};
   std::vector<VkDescriptorSetLayout> descriptorSetLayouts_{};

@@ -24,5 +24,8 @@ float4 fragMain(VSOutput input) : SV_Target0
 {
     float2 uv = (floor(input.pos.xy) + 0.5.xx) * uCamera.renderExtent.zw;
     return float4(SampleEnvironmentBackground(uv, uCamera.inverseViewProj,
-        uLighting.environmentIntensity, environment, environmentSampler), 1);
+        uLighting.environmentIntensity, uLighting.environmentOrientation,
+        uLighting.environmentBackground, uLighting.prefilteredMipCount,
+        uLighting.environmentSunDirection, uLighting.environmentSunRadiance.rgb,
+        environment, environmentSampler), 1);
 }

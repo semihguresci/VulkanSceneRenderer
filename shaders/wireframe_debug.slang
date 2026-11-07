@@ -5,7 +5,7 @@
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(1, 0)]] StructuredBuffer<ObjectBuffer> uObjects;
-[[vk::binding(2, 0)]] SamplerState materialSamplers[MATERIAL_SAMPLER_DESCRIPTOR_COUNT];
+[[vk::binding(2, 0)]] SamplerState materialSamplers[];
 [[vk::binding(3, 0)]] StructuredBuffer<GpuMaterial> uMaterials;
 [[vk::binding(4, 0)]] StructuredBuffer<GpuTextureMetadata> uTextureMetadata;
 [[vk::binding(5, 0)]] Texture2D materialTextures[MATERIAL_TEXTURE_DESCRIPTOR_COUNT];
@@ -32,6 +32,13 @@ struct VSOutput
     [[vk::location(1)]] nointerpolation float4 objectColor;
 };
 
+struct PSInput
+{
+    float4 pos : SV_Position;
+    [[vk::location(0)]] float3 worldPos;
+    [[vk::location(1)]] nointerpolation float4 objectColor;
+};
+
 [shader("vertex")]
 VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
                   uint startInstance : SV_StartInstanceLocation)
@@ -54,7 +61,7 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
 }
 
 [shader("fragment")]
-float4 fragMain(VSOutput input) : SV_Target0
+float4 fragMain(PSInput input) : SV_Target0
 {
     if (SceneClipPlanesClip(input.worldPos, pc.sectionPlaneEnabled, pc.sectionPlane))
     {

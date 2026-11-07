@@ -76,8 +76,7 @@ inline LocalShadowLayerAllocationResult assignLocalShadowLayerMetadata(
       continue;
     }
 
-    // z/w are intentionally reserved as local-shadow metadata while keeping
-    // PointLightData at 64 bytes for existing clustered-light paths.
+    // z/w are reserved as local-shadow metadata.
     light.coneOuterCosType.z = static_cast<float>(result.usedLayerCount + 1u);
     light.coneOuterCosType.w = static_cast<float>(layerCount);
     result.usedLayerCount += layerCount;

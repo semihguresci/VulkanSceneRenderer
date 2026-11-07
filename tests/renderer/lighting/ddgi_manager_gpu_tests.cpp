@@ -14,6 +14,8 @@
 #include <limits>
 #include <stdexcept>
 #include <vector>
+#include <type_traits>
+#include <utility>
 
 namespace {
 using namespace container::renderer;
@@ -110,7 +112,9 @@ protected:
     VkPhysicalDeviceVulkan12Features v12{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     v12.bufferDeviceAddress = VK_TRUE;
+    v12.runtimeDescriptorArray = VK_TRUE;
     v12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+    v12.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
     v12.separateDepthStencilLayouts = VK_TRUE;
     v12.timelineSemaphore = VK_TRUE;
     v12.pNext = &v11;
@@ -729,6 +733,266 @@ TEST_F(DdgiManagerGpu, EnableAfterDisabledPreparationProducesSubmittedHistory) {
   EXPECT_EQ(manager->frameNumber(), 2u);
   EXPECT_EQ(manager->lastBatch().firstProbe, 2u);
   EXPECT_EQ(manager->refreshRemainingProbes(), 0u);
+}
+
+TEST_F(DdgiManagerGpu, DetachedHistoryResetLeavesFieldAliveUntilPublication) {
+  enable();
+  ASSERT_NO_THROW(run(0));
+  const auto frameNumber = manager->frameNumber();
+  const auto resets = manager->historyResets();
+  const auto bytes = manager->allocatedBytes();
+  const auto descriptors = manager->readDescriptors(0);
+  auto prepared = manager->prepareSceneHistoryReset();
+  EXPECT_EQ(manager->frameNumber(), frameNumber);
+  EXPECT_EQ(manager->historyResets(), resets);
+  EXPECT_TRUE(manager->active());
+  auto moved = std::move(prepared);
+  EXPECT_FALSE(manager->canPublishSceneHistoryReset(prepared));
+  EXPECT_FALSE(manager->publishSceneHistoryReset(prepared));
+  ASSERT_TRUE(manager->canPublishSceneHistoryReset(moved));
+  ASSERT_TRUE(manager->publishSceneHistoryReset(moved));
+  EXPECT_EQ(manager->historyResets(), resets+1);
+  EXPECT_EQ(manager->frameNumber(), 0u);
+  EXPECT_EQ(manager->refreshRemainingProbes(), 4u);
+  EXPECT_FALSE(manager->active());
+  EXPECT_EQ(manager->allocatedBytes(), bytes);
+  EXPECT_EQ(manager->readDescriptors(0), descriptors);
+  EXPECT_FALSE(manager->publishSceneHistoryReset(moved));
+  EXPECT_EQ(manager->historyResets(), resets+1);
+  ASSERT_NO_THROW(run(1));
+  EXPECT_TRUE(manager->active());
+}
+
+TEST_F(DdgiManagerGpu, DiscardedOrStaleHistoryResetDoesNotResetLiveField) {
+  enable();
+  ASSERT_NO_THROW(run(0));
+  const auto resets = manager->historyResets();
+  {
+    auto discarded = manager->prepareSceneHistoryReset();
+    EXPECT_TRUE(manager->canPublishSceneHistoryReset(discarded));
+  }
+  EXPECT_EQ(manager->historyResets(), resets);
+  EXPECT_EQ(manager->frameNumber(), 1u);
+  auto stale = manager->prepareSceneHistoryReset();
+  config.enabled = false;
+  ASSERT_NO_THROW(manager->applySettings(config));
+  const auto afterSettings = manager->historyResets();
+  EXPECT_FALSE(manager->canPublishSceneHistoryReset(stale));
+  EXPECT_FALSE(manager->publishSceneHistoryReset(stale));
+  EXPECT_EQ(manager->historyResets(), afterSettings);
+}
+
+static_assert(!std::is_copy_constructible_v<DdgiManager::PreparedLightSnapshotCapacity>);
+static_assert(std::is_nothrow_move_constructible_v<DdgiManager::PreparedLightSnapshotCapacity>);
+static_assert(std::is_nothrow_move_assignable_v<DdgiManager::PreparedLightSnapshotCapacity>);
+static_assert(noexcept(std::declval<DdgiManager&>().publishLightSnapshotCapacity(
+    std::declval<DdgiManager::PreparedLightSnapshotCapacity&>())));
+
+TEST_F(DdgiManagerGpu, DetachedLightSnapshotGrowthPreparesEverySlotWithoutResettingHistory) {
+  enable();
+  ASSERT_NO_THROW(run(0));
+  ASSERT_NO_THROW(run(1));
+  const auto bytes = manager->allocatedBytes(), frame = manager->frameNumber();
+  const auto resets = manager->historyResets(); const auto epoch = manager->contentEpoch();
+  const auto read0 = manager->readDescriptors(0), read1 = manager->readDescriptors(1);
+  const auto liveAllocations = [&] {
+    VmaTotalStatistics stats{}; vmaCalculateStatistics(memory->allocator(), &stats);
+    return stats.total.statistics.allocationCount;
+  };
+  const auto count = liveAllocations();
+  {
+    auto prepared = manager->prepareLightSnapshotCapacity(17, 5);
+    EXPECT_EQ(manager->allocatedBytes(), bytes); EXPECT_EQ(liveAllocations(), count + 4);
+    EXPECT_EQ(manager->frameNumber(), frame); EXPECT_EQ(manager->historyResets(), resets);
+    auto moved = std::move(prepared);
+    EXPECT_FALSE(manager->canPublishLightSnapshotCapacity(prepared));
+    EXPECT_FALSE(manager->publishLightSnapshotCapacity(prepared));
+    ASSERT_TRUE(manager->canPublishLightSnapshotCapacity(moved));
+    ASSERT_TRUE(manager->publishLightSnapshotCapacity(moved));
+    EXPECT_FALSE(manager->publishLightSnapshotCapacity(moved));
+    EXPECT_GT(manager->allocatedBytes(), bytes);
+    EXPECT_EQ(liveAllocations(), count + 4); // the consumed proof still owns retired buffers
+    EXPECT_EQ(manager->frameNumber(), frame); EXPECT_EQ(manager->historyResets(), resets);
+    EXPECT_EQ(manager->contentEpoch(), epoch); EXPECT_TRUE(manager->active());
+    EXPECT_EQ(manager->readDescriptors(0), read0); EXPECT_EQ(manager->readDescriptors(1), read1);
+  }
+  EXPECT_EQ(liveAllocations(), count);
+  const auto grown = manager->allocatedBytes();
+  auto noGrowth = manager->prepareLightSnapshotCapacity(17, 5);
+  EXPECT_EQ(liveAllocations(), count); ASSERT_TRUE(manager->publishLightSnapshotCapacity(noGrowth));
+  EXPECT_EQ(manager->allocatedBytes(), grown);
+  const std::vector<PointLightData> points(17); const std::vector<AreaLightData> areas(5);
+  auto moreLights = lighting; moreLights.pointLightCount = uint32_t(points.size()); moreLights.areaLightCount = uint32_t(areas.size());
+  for (uint32_t image : {0u, 1u}) {
+    manager->retireImage(image);
+    ASSERT_NO_THROW(manager->update(image, *sets[0], *sets[1], moreLights, points, areas,
+        0, {}, {}, *environmentView, *sampler));
+    EXPECT_EQ(manager->allocatedBytes(), grown); EXPECT_TRUE(manager->active());
+  }
+  ASSERT_NO_THROW(run(0)); EXPECT_EQ(manager->allocatedBytes(), grown);
+}
+
+TEST_F(DdgiManagerGpu, InvalidDiscardedForeignAndStaleLightCapacityProofsLeaveLiveResourcesUntouched) {
+  enable(); ASSERT_NO_THROW(run(0));
+  const auto bytes = manager->allocatedBytes(), resets = manager->historyResets();
+  const auto readSet = manager->readDescriptors(0);
+  EXPECT_THROW((void)manager->prepareLightSnapshotCapacity(size_t(kMaxClusteredLights) + 1, 0), std::invalid_argument);
+  EXPECT_THROW((void)manager->prepareLightSnapshotCapacity(0, size_t(kMaxAreaLights) + 1), std::invalid_argument);
+  {
+    auto discarded = manager->prepareLightSnapshotCapacity(8, 2);
+    DdgiManager foreign(device, *memory, *rayScene, config);
+    EXPECT_FALSE(foreign.canPublishLightSnapshotCapacity(discarded));
+    EXPECT_FALSE(foreign.publishLightSnapshotCapacity(discarded));
+  }
+  EXPECT_EQ(manager->allocatedBytes(), bytes); EXPECT_EQ(manager->historyResets(), resets);
+  EXPECT_EQ(manager->readDescriptors(0), readSet);
+  auto stale = manager->prepareLightSnapshotCapacity(8, 2);
+  manager->prepare(2, *environmentView, *sampler); // same slot count, new resource generation
+  const auto preparedBytes = manager->allocatedBytes(); const auto freshRead = manager->readDescriptors(0);
+  EXPECT_FALSE(manager->canPublishLightSnapshotCapacity(stale));
+  EXPECT_FALSE(manager->publishLightSnapshotCapacity(stale));
+  EXPECT_EQ(manager->allocatedBytes(), preparedBytes); EXPECT_EQ(manager->readDescriptors(0), freshRead);
+  config.payloadBudgetBytes = preparedBytes + 1024;
+  ASSERT_NO_THROW(manager->applySettings(config));
+  const auto limitedBytes = manager->allocatedBytes(), limitedResets = manager->historyResets();
+  EXPECT_THROW((void)manager->prepareLightSnapshotCapacity(kMaxClusteredLights, kMaxAreaLights), std::invalid_argument);
+  EXPECT_EQ(manager->allocatedBytes(), limitedBytes); EXPECT_EQ(manager->historyResets(), limitedResets);
+}
+
+TEST_F(DdgiManagerGpu, LightCapacityPublicationRefusesPendingAsyncWorkAndPreservesTimelineValues) {
+  config.asyncCompute = true; enable();
+  if (!manager->asyncActive()) GTEST_SKIP() << "A compatible second compute queue is unavailable";
+  ASSERT_NO_THROW(run(0));
+  auto prepared = manager->prepareLightSnapshotCapacity(8, 2);
+  EXPECT_FALSE(manager->canPublishLightSnapshotCapacity(prepared));
+  EXPECT_FALSE(manager->publishLightSnapshotCapacity(prepared));
+  ASSERT_NO_THROW(manager->synchronizeAsync());
+  const auto submitted = manager->asyncSubmittedUpdates(), published = manager->asyncPublishedUpdates();
+  const auto frame = manager->frameNumber(), resets = manager->historyResets();
+  ASSERT_GT(submitted, 0u); ASSERT_GT(published, 0u);
+  ASSERT_TRUE(manager->canPublishLightSnapshotCapacity(prepared));
+  ASSERT_TRUE(manager->publishLightSnapshotCapacity(prepared));
+  EXPECT_EQ(manager->asyncSubmittedUpdates(), submitted); EXPECT_EQ(manager->asyncPublishedUpdates(), published);
+  EXPECT_EQ(manager->frameNumber(), frame); EXPECT_EQ(manager->historyResets(), resets);
+  ASSERT_NO_THROW(run(1));
+  ASSERT_NO_THROW(manager->synchronizeAsync());
+}
+
+TEST_F(DdgiManagerGpu, DetachedSurfaceRequestCanChangeWhileSourceControlProofRemainsStable) {
+  // The live raster scene has no surface consumer. The detached generation
+  // enables one, as when a merge adds the first geometry used by DDGI.
+  ASSERT_NO_THROW(run(0));
+  ASSERT_NO_THROW(run(1));
+  constexpr uint64_t baseBudget = 128ull * 1024 * 1024;
+  constexpr uint64_t targetBudget = 64ull * 1024 * 1024;
+  rayScene->requestSurfaceScene(false, baseBudget);
+  EXPECT_FALSE(rayScene->surfaceBindings(0));
+  const auto originalGeneration = rayScene->sceneGeneration();
+  const auto originalBytes = rayScene->allocatedBytes();
+  auto* stableManager = rayScene.get();
+  auto candidate = rayScene->createDetachedGeneration();
+  candidate->requestSurfaceScene(true, targetBudget);
+  const std::array providers{
+      RaySceneProviderSource{{"mesh"}, 2, vertices, indices, objects, draws}};
+  for (uint32_t image = 0; image < 2; ++image) {
+    ASSERT_NO_THROW(candidate->update(image, camera, frame, *sets[0], *sets[1], providers,
+        lighting, {}, {}, 0, {}, {}, [](uint32_t) { return uint64_t(1); }));
+    command.reset();
+    command.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+    ASSERT_NO_THROW(candidate->recordBuild(*command, image));
+    submit();
+  }
+  const auto staged = candidate->surfaceBindings(0);
+  ASSERT_TRUE(staged);
+  EXPECT_EQ(candidate->surfaceBindings(1).tlas, staged.tlas);
+  EXPECT_FALSE(rayScene->surfaceBindings(0));
+  EXPECT_FALSE(rayScene->surfaceBindings(1));
+  EXPECT_EQ(rayScene->sceneGeneration(), originalGeneration);
+  EXPECT_EQ(rayScene->allocatedBytes(), originalBytes);
+  ASSERT_TRUE(rayScene->canExchangeGeneration(*candidate));
+
+  // A target request change is allowed, but changes to either captured live
+  // source control invalidate the proof before any exchange can occur.
+  rayScene->requestSurfaceScene(true, baseBudget);
+  EXPECT_FALSE(rayScene->canExchangeGeneration(*candidate));
+  EXPECT_FALSE(rayScene->exchangeGeneration(*candidate));
+  rayScene->requestSurfaceScene(false, baseBudget + 4096);
+  EXPECT_FALSE(rayScene->canExchangeGeneration(*candidate));
+  EXPECT_FALSE(rayScene->exchangeGeneration(*candidate));
+  rayScene->requestSurfaceScene(false, baseBudget);
+  ASSERT_TRUE(rayScene->canExchangeGeneration(*candidate));
+  ASSERT_TRUE(rayScene->exchangeGeneration(*candidate));
+  EXPECT_EQ(rayScene.get(), stableManager);
+  EXPECT_GT(rayScene->sceneGeneration(), originalGeneration);
+  EXPECT_EQ(rayScene->surfaceBindings(0).tlas, staged.tlas);
+  EXPECT_EQ(rayScene->surfaceBindings(1).tlas, staged.tlas);
+}
+
+TEST_F(DdgiManagerGpu, DetachedRaySceneFailurePreservesLiveGeneration) {
+  enable();
+  ASSERT_NO_THROW(run(0));
+  const auto bindings = rayScene->surfaceBindings(0);
+  ASSERT_TRUE(bindings);
+  const auto generation = rayScene->sceneGeneration();
+  auto candidate = rayScene->createDetachedGeneration();
+  EXPECT_FALSE(rayScene->canExchangeGeneration(*candidate));
+  auto invalidIndices = indices;
+  invalidIndices[0] = UINT32_MAX;
+  const std::array providers{
+      RaySceneProviderSource{{"mesh"}, 2, vertices, invalidIndices, objects, draws}};
+  EXPECT_THROW(candidate->update(0, camera, frame, *sets[0], *sets[1], providers,
+      lighting, {}, {}, 0, {}, {}, [](uint32_t) { return uint64_t(1); }),
+      std::exception);
+  EXPECT_EQ(rayScene->sceneGeneration(), generation);
+  EXPECT_EQ(rayScene->surfaceBindings(0).tlas, bindings.tlas);
+  EXPECT_TRUE(manager->active());
+  candidate.reset();
+  ASSERT_NO_THROW(run(1));
+  EXPECT_EQ(rayScene->surfaceBindings(1).tlas, bindings.tlas);
+}
+
+TEST_F(DdgiManagerGpu, DetachedRaySceneExchangeRetainsStableManagerAndUndoResources) {
+  enable();
+  ASSERT_NO_THROW(run(0));
+  ASSERT_NO_THROW(run(1));
+  const auto original = rayScene->surfaceBindings(0);
+  ASSERT_TRUE(original);
+  auto* stableManager = rayScene.get();
+  auto candidate = rayScene->createDetachedGeneration();
+  auto mergedVertices = vertices;
+  for (auto& vertex : mergedVertices) vertex.position.z = 200.f;
+  const std::array providers{
+      RaySceneProviderSource{{"mesh"}, 2, mergedVertices, indices, objects, draws}};
+  for (uint32_t image = 0; image < 2; ++image) {
+    ASSERT_NO_THROW(candidate->update(image, camera, frame, *sets[0], *sets[1], providers,
+        lighting, {}, {}, 0, {}, {}, [](uint32_t) { return uint64_t(1); }));
+    EXPECT_FALSE(rayScene->canExchangeGeneration(*candidate));
+    command.reset();
+    command.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+    ASSERT_NO_THROW(candidate->recordBuild(*command, image));
+    submit();
+  }
+  const auto staged = candidate->surfaceBindings(0);
+  ASSERT_TRUE(staged);
+  EXPECT_NE(staged.tlas, original.tlas);
+  EXPECT_EQ(rayScene->surfaceBindings(0).tlas, original.tlas);
+  const auto beforeEpoch = rayScene->sceneGeneration();
+  ASSERT_TRUE(rayScene->canExchangeGeneration(*candidate));
+  ASSERT_TRUE(rayScene->exchangeGeneration(*candidate));
+  EXPECT_EQ(rayScene.get(), stableManager);
+  EXPECT_GT(rayScene->sceneGeneration(), beforeEpoch);
+  EXPECT_EQ(rayScene->surfaceBindings(0).tlas, staged.tlas);
+  EXPECT_EQ(rayScene->surfaceBindings(1).tlas, staged.tlas);
+  EXPECT_EQ(candidate->surfaceBindings(0).tlas, original.tlas);
+  const auto mergedEpoch = rayScene->sceneGeneration();
+  ASSERT_TRUE(rayScene->exchangeGeneration(*candidate));
+  EXPECT_GT(rayScene->sceneGeneration(), mergedEpoch);
+  EXPECT_EQ(rayScene->surfaceBindings(0).tlas, original.tlas);
+  candidate.reset();
+  // DDGI retains RayShadowManager&, which must still designate the live owner.
+  ASSERT_NO_THROW(run(0));
+  EXPECT_TRUE(manager->active());
+  EXPECT_EQ(rayScene->surfaceBindings(0).tlas, original.tlas);
 }
 
 TEST_F(DdgiManagerGpu, AdditionalVolumesShareCapacityAndRefreshAllPackedProbes) {

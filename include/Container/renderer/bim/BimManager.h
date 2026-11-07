@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/utility/ComputePipeline.h"
+
 #include "Container/common/CommonVulkan.h"
 #include "Container/geometry/ImportReport.h"
 #include "Container/geometry/DotBimLoader.h"
@@ -8,6 +10,8 @@
 #include "Container/renderer/bim/BimDrawingExport.h"
 #include "Container/renderer/bim/BimFloorPlanOverlayData.h"
 #include "Container/renderer/bim/BimRelationshipGraph.h"
+#include "Container/renderer/bim/BimMetadata.h"
+#include "Container/renderer/bim/BimObjectTransforms.h"
 #include "Container/renderer/bim/BimSectionCapBuilder.h"
 #include "Container/renderer/bim/BimSemanticColorMode.h"
 #include "Container/renderer/debug/DebugOverlayRenderer.h"
@@ -26,6 +30,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -42,6 +47,7 @@ struct AllocatedBuffer;
 namespace container::geometry::dotbim {
 struct Model;
 } // namespace container::geometry::dotbim
+namespace container::geometry::vdb { struct ImportOptions; }
 
 namespace container::scene {
 class SceneManager;
@@ -62,16 +68,6 @@ struct BimPickHit {
   glm::vec3 worldPosition{0.0f};
   bool hasWorldPosition{false};
   bool hit{false};
-};
-
-struct BimElementBounds {
-  bool valid{false};
-  glm::vec3 min{0.0f};
-  glm::vec3 max{0.0f};
-  glm::vec3 center{0.0f};
-  glm::vec3 size{0.0f};
-  float radius{0.0f};
-  float floorElevation{0.0f};
 };
 
 struct BimCoordinationMarkerDrawData {
@@ -140,52 +136,9 @@ struct BimModelGeoreferenceMetadata {
   std::string mapConversionName{};
 };
 
-enum class BimGeometryKind : uint32_t {
-  Mesh = 0,
-  Points = 1,
-  Curves = 2,
-};
-
-struct BimElementProperty {
-  std::string set{};
-  std::string name{};
-  std::string value{};
-  std::string category{};
-};
-
-struct BimElementMetadata {
-  uint32_t objectIndex{std::numeric_limits<uint32_t>::max()};
-  uint32_t sourceElementIndex{std::numeric_limits<uint32_t>::max()};
-  uint32_t meshId{0};
-  uint32_t sourceMaterialIndex{std::numeric_limits<uint32_t>::max()};
-  uint32_t materialIndex{std::numeric_limits<uint32_t>::max()};
-  uint32_t semanticTypeId{std::numeric_limits<uint32_t>::max()};
-  uint32_t productIdentityId{0};
-  glm::vec4 sourceColor{0.8f, 0.82f, 0.86f, 1.0f};
-  std::string guid{};
-  std::string type{};
-  std::string displayName{};
-  std::string objectType{};
-  std::string storeyName{};
-  std::string storeyId{};
-  std::string materialName{};
-  std::string materialCategory{};
-  std::string discipline{};
-  std::string phase{};
-  std::string fireRating{};
-  std::string loadBearing{};
-  std::string status{};
-  std::string sourceId{};
-  std::vector<BimElementProperty> properties{};
-  bool transparent{false};
-  bool doubleSided{false};
-  BimElementBounds bounds{};
-  BimGeometryKind geometryKind{BimGeometryKind::Mesh};
-};
-
 [[nodiscard]] inline bool
-sameBimProductIdentity(const BimElementMetadata &selected,
-                       const BimElementMetadata &candidate) {
+sameBimProductIdentity(const BimElementMetadataView &selected,
+                       const BimElementMetadataView &candidate) {
   constexpr uint32_t invalidObjectIndex = std::numeric_limits<uint32_t>::max();
   if (selected.objectIndex != invalidObjectIndex &&
       selected.objectIndex == candidate.objectIndex) {
@@ -619,12 +572,14 @@ public:
   BimManager &operator=(const BimManager &) = delete;
 
   void loadModel(const std::string &path, float importScale,
-                 container::scene::SceneManager &sceneManager);
+                 container::scene::SceneManager &sceneManager,
+                 std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions = {});
   struct PreparedScene {
     container::geometry::dotbim::Model model;
     std::filesystem::path assetPath;
     std::string format;
     std::string requestedPath;
+    std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions;
     std::vector<container::geometry::Vertex> uploadVertices;
     std::vector<uint32_t> uploadIndices;
     BimFloorPlanOverlayData floorPlanGround;
@@ -634,7 +589,9 @@ public:
   };
   // CPU-only staging: no live renderer state, callback or Vulkan access.
   [[nodiscard]] static PreparedScene prepareScene(const std::string &path,
-                                                  float importScale);
+                                                  float importScale,
+      std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions = {});
+  [[nodiscard]] const auto& openVdbOptions() const { return openVdbOptions_; }
   void loadPreparedScene(const PreparedScene &prepared,
                          container::scene::SceneManager &sceneManager);
   // Commit/unload checkpoints run on the calling render thread. The callback
@@ -675,13 +632,18 @@ public:
   }
   [[nodiscard]] std::span<const uint32_t> indices() const { return indices_; }
   [[nodiscard]] uint64_t geometryRevision() const { return geometryRevision_; }
+  // Advances on clear and after complete metadata installation, including
+  // replacements that reuse metadata storage or geometry revision values.
+  [[nodiscard]] uint64_t metadataRevision() const {
+    return statisticsRevision_;
+  }
 
   [[nodiscard]] const std::vector<container::gpu::ObjectData> &
   objectData() const {
     return objectData_;
   }
-  [[nodiscard]] const std::vector<BimElementMetadata> &elementMetadata() const {
-    return elementMetadata_;
+  [[nodiscard]] BimMetadataTableView elementMetadata() const {
+    return elementMetadata_.view();
   }
   [[nodiscard]] BimCoordinationOverlayResult buildCoordinationOverlay(
       const BimCoordinationOverlayBuildOptions &options,
@@ -704,7 +666,7 @@ public:
   [[nodiscard]] const BimRelationshipGraph &relationshipGraph() const {
     return relationshipGraph_;
   }
-  [[nodiscard]] const BimElementMetadata *
+  [[nodiscard]] std::optional<BimElementMetadataView>
   metadataForObject(uint32_t objectIndex) const;
   [[nodiscard]] std::span<const uint32_t>
   objectIndicesForGuid(std::string_view guid) const;
@@ -729,7 +691,16 @@ public:
     return semanticColorMode_;
   }
   bool setSemanticColorMode(BimSemanticColorMode mode);
+  // Publish complete current-world transforms without changing imported text,
+  // geometry, product identity or temporal source tokens. Caller retires GPU
+  // readers through the frame's existing synchronization before publication.
+  bool setObjectTransforms(
+      std::span<const container::gpu::ObjectTransformUpdate> updates);
+  // Check the same CPU publication and buffer readiness policy without writes.
+  void validateObjectTransforms(
+      std::span<const container::gpu::ObjectTransformUpdate> updates) const;
   void setRootTranslation(glm::vec3 translation);
+  [[nodiscard]] glm::vec3 rootTranslation() const { return temporalRootTranslation_; }
   [[nodiscard]] BimSceneStats sceneStats() const;
   [[nodiscard]] const container::scene::ImmutableSceneTriangleBatches &
   sceneProviderTriangleBatches() const;
@@ -882,6 +853,8 @@ public:
       uint32_t objectIndex, std::vector<DrawCommand> &outCommands) const;
 
 private:
+  [[nodiscard]] std::vector<uint32_t> changedTransformObjects(
+      std::span<const container::gpu::ObjectTransformUpdate> updates) const;
   struct MeshRange {
     uint32_t meshId{0};
     uint32_t firstIndex{0};
@@ -952,6 +925,7 @@ private:
   container::gpu::AllocationManager &allocationManager_;
   container::gpu::PipelineManager &pipelineManager_;
   std::string modelPath_{};
+  std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions_;
   container::geometry::ImportReport importReport_{};
   std::function<void(std::string_view)> loadProgressCallback_{};
 
@@ -975,7 +949,8 @@ private:
   glm::vec3 temporalRootTranslation_{0};
   uint64_t nextTemporalObjectId_{1};
   std::vector<container::gpu::ObjectData> objectData_{};
-  std::vector<BimElementMetadata> elementMetadata_{};
+  BimObjectTransforms runtimeObjectTransforms_{};
+  BimMetadataStorage elementMetadata_{};
   BimRelationshipGraph relationshipGraph_{};
   std::vector<DrawCommand> objectDrawCommands_{};
   std::vector<uint32_t> objectDrawCommandOffsets_{};
@@ -1006,7 +981,7 @@ private:
   VkDescriptorPool meshletResidencyDescriptorPool_{VK_NULL_HANDLE};
   VkDescriptorSet meshletResidencyDescriptorSet_{VK_NULL_HANDLE};
   VkPipelineLayout meshletResidencyPipelineLayout_{VK_NULL_HANDLE};
-  VkPipeline meshletResidencyPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline meshletResidencyPipeline_{};
   BimMeshletResidencySettings meshletResidencySettings_{};
   VkBuffer meshletResidencyCameraBuffer_{VK_NULL_HANDLE};
   VkDeviceSize meshletResidencyCameraBufferSize_{0};
@@ -1023,7 +998,7 @@ private:
   VkDescriptorPool visibilityFilterDescriptorPool_{VK_NULL_HANDLE};
   VkDescriptorSet visibilityFilterDescriptorSet_{VK_NULL_HANDLE};
   VkPipelineLayout visibilityFilterPipelineLayout_{VK_NULL_HANDLE};
-  VkPipeline visibilityFilterPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline visibilityFilterPipeline_{};
   bool visibilityFilterDescriptorsDirty_{false};
   bool visibilityFilterDispatchPending_{false};
   bool visibilityFilterMaskCurrent_{false};
@@ -1035,7 +1010,7 @@ private:
   std::array<VkDescriptorSet, kBimDrawCompactionSlotCount>
       drawCompactionDescriptorSets_{};
   VkPipelineLayout drawCompactionPipelineLayout_{VK_NULL_HANDLE};
-  VkPipeline drawCompactionPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline drawCompactionPipeline_{};
   BimFloorPlanOverlayData floorPlanGround_{};
   BimFloorPlanOverlayData floorPlanSourceElevation_{};
   BimSectionClipCapDrawData sectionClipCapDrawData_{};

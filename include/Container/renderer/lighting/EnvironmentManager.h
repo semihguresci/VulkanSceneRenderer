@@ -1,13 +1,20 @@
 #pragma once
 
+#include "Container/utility/ComputePipeline.h"
+
 #include "Container/common/CommonVulkan.h"
 #include "Container/common/CommonVMA.h"
 #include "Container/utility/VulkanMemoryManager.h"
+#include "Container/utility/TextureImageData.h"
+#include "Container/renderer/lighting/SkySettings.h"
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <future>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace container::gpu {
 class AllocationManager;
@@ -36,13 +43,47 @@ class EnvironmentManager {
   // Must be called once after construction.
   void createResources(const std::filesystem::path& shaderDir);
 
-  // Load an equirectangular HDR (.exr) environment map, convert to a cubemap,
+  // Load an equirectangular OpenEXR or Radiance HDR environment, convert to a cubemap,
   // and generate the diffuse-irradiance and pre-filtered specular cubemaps.
   // Replaces the placeholder cubemaps created by createResources().
-  // Returns true on success. On failure (missing file, unsupported format,
-  // etc.) the placeholder cubemaps remain untouched.
-  bool loadHdrEnvironment(const std::filesystem::path& shaderDir,
-                          const std::filesystem::path& hdrPath);
+  // Returns true on success. On failure the current cubemaps remain active.
+  bool loadHdrEnvironment(const std::filesystem::path& hdrPath);
+  // Supply already read bytes for generated environments, so the same decoder
+  // and publication path can use an immutable result instead of reopening it.
+  bool requestHdrEnvironment(const std::filesystem::path& path,
+      std::shared_ptr<const std::vector<std::byte>> encoded = {});
+  bool loadSkyEnvironment(const SkySettings& settings);
+  bool requestSkyEnvironment(const SkySettings& settings);
+  [[nodiscard]] SkyMode activeSkyMode() const { return activeSkyMode_; }
+  [[nodiscard]] const AtmosphereSun& activeSun() const { return activeSun_; }
+  [[nodiscard]] const AtmosphereSettings& activeAtmosphere() const { return activeAtmosphere_; }
+  [[nodiscard]] const AtmosphereLut& activeAtmosphereLut() const { return activeAtmosphereLut_; }
+  // Radiance generation identity, independent of recycled Vulkan handles.
+  // BRDF-only rebakes do not change the radiometric environment.
+  [[nodiscard]] uint64_t environmentRevision() const { return environmentRevision_; }
+  // The worker owns only CPU data. Vulkan generation and publication occur
+  // here, on the render thread, after the asynchronous decode is ready.
+  bool pollEnvironment(bool wait, const std::function<void()>& beforePublish);
+  [[nodiscard]] bool environmentLoading() const { return hdrDecode_.valid() || bool(environmentGeneration_); }
+  [[nodiscard]] bool environmentGenerating() const { return bool(environmentGeneration_); }
+  [[nodiscard]] const std::filesystem::path& activeHdrPath() const { return activeHdrPath_; }
+  class PreparedShaderBake {
+   public:
+    ~PreparedShaderBake();
+    PreparedShaderBake(const PreparedShaderBake&) = delete;
+    PreparedShaderBake& operator=(const PreparedShaderBake&) = delete;
+   private:
+    friend class EnvironmentManager;
+    struct State;
+    PreparedShaderBake();
+    std::unique_ptr<State> state_;
+  };
+  [[nodiscard]] std::unique_ptr<PreparedShaderBake> prepareShaderBake(
+      const std::filesystem::path& shaders, bool brdf, bool environment);
+  [[nodiscard]] bool canPublishShaderBake(const PreparedShaderBake& candidate) const noexcept;
+  // The caller retires all readers, then refreshes descriptors before retiring
+  // this candidate, which owns the previous textures after publication.
+  void publishShaderBake(PreparedShaderBake& candidate) noexcept;
 
   // Create GTAO resources: AO textures, blur texture, compute pipelines.
   void createGtaoResources(const std::filesystem::path& shaderDir,
@@ -84,6 +125,7 @@ class EnvironmentManager {
   [[nodiscard]] VkImageView   brdfLutView()           const { return brdfLutView_; }
   [[nodiscard]] VkSampler     brdfLutSampler()        const { return brdfLutSampler_; }
   [[nodiscard]] VkImageView   irradianceView()        const { return irradianceCubeView_; }
+  [[nodiscard]] VkImageView   radianceView()          const { return radianceCubeView_; }
   [[nodiscard]] VkImageView   prefilteredView()       const { return prefilteredCubeView_; }
   [[nodiscard]] uint32_t      prefilteredMipCount()   const { return prefilteredMipCount_; }
   [[nodiscard]] VkSampler     envSampler()            const { return envSampler_; }
@@ -108,11 +150,33 @@ class EnvironmentManager {
   void destroyGtaoTextures();
   [[nodiscard]] VkFormat selectGtaoStorageFormat() const;
   void destroyEnvironmentCubemaps();
+  bool submitEnvironment(const std::filesystem::path& path,
+                            container::material::TextureMipLevel source,
+                            const SkySettings* sky = nullptr,
+                            std::shared_ptr<const std::vector<std::byte>> encoded = {});
+  bool publishEnvironment(bool wait, const std::function<void()>& beforePublish);
 
   std::shared_ptr<container::gpu::VulkanDevice> device_;
   container::gpu::AllocationManager&            allocationManager_;
   container::gpu::PipelineManager&              pipelineManager_;
   VkCommandPool                                  commandPool_{VK_NULL_HANDLE};
+  std::filesystem::path activeHdrPath_;
+  SkyMode activeSkyMode_{SkyMode::Hdr};
+  AtmosphereSun activeSun_{};
+  AtmosphereSettings activeAtmosphere_{};
+  AtmosphereLut activeAtmosphereLut_{};
+  SkySettings activeSkySettings_{};
+  uint64_t publicationRevision_{};
+  uint64_t environmentRevision_{};
+  std::shared_ptr<const std::vector<std::byte>> activeHdrBytes_;
+  std::filesystem::path pendingHdrPath_;
+  struct HdrSource {
+    container::material::TextureMipLevel image;
+    std::shared_ptr<const std::vector<std::byte>> encoded;
+  };
+  std::future<HdrSource> hdrDecode_;
+  struct EnvironmentGeneration;
+  std::unique_ptr<EnvironmentGeneration> environmentGeneration_;
 
   // ---- BRDF LUT ----
   VkImage       brdfLutImage_{VK_NULL_HANDLE};
@@ -121,6 +185,9 @@ class EnvironmentManager {
   VkSampler     brdfLutSampler_{VK_NULL_HANDLE};
 
   // ---- Environment cubemaps (placeholder white for now) ----
+  VkImage radianceCubeImage_{VK_NULL_HANDLE};
+  VmaAllocation radianceCubeAlloc_{nullptr};
+  VkImageView radianceCubeView_{VK_NULL_HANDLE};
   VkImage       irradianceCubeImage_{VK_NULL_HANDLE};
   VmaAllocation irradianceCubeAlloc_{nullptr};
   VkImageView   irradianceCubeView_{VK_NULL_HANDLE};
@@ -133,17 +200,17 @@ class EnvironmentManager {
   VkSampler     envSampler_{VK_NULL_HANDLE};
 
   // ---- BRDF LUT compute pipeline ----
-  VkPipeline              brdfLutPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline brdfLutPipeline_{};
   VkPipelineLayout        brdfLutPipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout   brdfLutSetLayout_{VK_NULL_HANDLE};
 
   // ---- HDR -> IBL compute pipelines ----
   VkDescriptorSetLayout   iblSetLayout_{VK_NULL_HANDLE};
-  VkPipeline              equirectToCubemapPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline equirectToCubemapPipeline_{};
   VkPipelineLayout        equirectToCubemapPipelineLayout_{VK_NULL_HANDLE};
-  VkPipeline              irradiancePipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline irradiancePipeline_{};
   VkPipelineLayout        irradiancePipelineLayout_{VK_NULL_HANDLE};
-  VkPipeline              prefilterPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline prefilterPipeline_{};
   VkPipelineLayout        prefilterPipelineLayout_{VK_NULL_HANDLE};
 
   // ---- GTAO ----
@@ -161,13 +228,13 @@ class EnvironmentManager {
   uint32_t      gtaoHeight_{0};
 
   // GTAO compute pipelines
-  VkPipeline            gtaoPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline gtaoPipeline_{};
   VkPipelineLayout      gtaoPipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout gtaoSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool      gtaoDescriptorPool_{VK_NULL_HANDLE};
   VkDescriptorSet       gtaoSet_{VK_NULL_HANDLE};
 
-  VkPipeline            gtaoBlurPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline gtaoBlurPipeline_{};
   VkPipelineLayout      gtaoBlurPipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout gtaoBlurSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool      gtaoBlurDescriptorPool_{VK_NULL_HANDLE};

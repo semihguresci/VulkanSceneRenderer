@@ -72,6 +72,9 @@ const char* transformAxisLabel(container::ui::TransformAxis axis) {
 
 void RenderSurfaceInteractionController::setTool(
     container::ui::ViewportTool tool) {
+  if (state_.gesture == container::ui::ViewportGesture::TransformDrag &&
+      (state_.tool != tool || state_.transformAxis != container::ui::TransformAxis::Free))
+    transformConfigurationChanged_ = true;
   state_.tool = tool;
   state_.transformAxis = container::ui::TransformAxis::Free;
   state_.hoverTransformAxis = container::ui::TransformAxis::Free;
@@ -79,11 +82,15 @@ void RenderSurfaceInteractionController::setTool(
 
 void RenderSurfaceInteractionController::setTransformSpace(
     container::ui::TransformSpace transformSpace) {
+  if (state_.gesture == container::ui::ViewportGesture::TransformDrag && state_.transformSpace != transformSpace)
+    transformConfigurationChanged_ = true;
   state_.transformSpace = transformSpace;
 }
 
 void RenderSurfaceInteractionController::setTransformAxis(
     container::ui::TransformAxis transformAxis) {
+  if (state_.gesture == container::ui::ViewportGesture::TransformDrag && state_.transformAxis != transformAxis)
+    transformConfigurationChanged_ = true;
   state_.transformAxis = transformAxis;
 }
 
@@ -94,6 +101,8 @@ void RenderSurfaceInteractionController::setNavigationStyle(
 
 void RenderSurfaceInteractionController::setTransformSnapEnabled(
     bool enabled) {
+  if (state_.gesture == container::ui::ViewportGesture::TransformDrag && state_.transformSnapEnabled != enabled)
+    transformConfigurationChanged_ = true;
   state_.transformSnapEnabled = enabled;
 }
 
@@ -105,12 +114,49 @@ void RenderSurfaceInteractionController::setGesture(
   }
 }
 
+void RenderSurfaceInteractionController::beginTransformGesture(
+    container::ui::ViewportTool tool, container::ui::TransformSpace space,
+    container::ui::TransformAxis axis, bool snapEnabled,
+    const TransformGestureCallbacks& callbacks, int pointerButton) {
+  if (state_.gesture != container::ui::ViewportGesture::None) return;
+  if (callbacks.begin) callbacks.begin(tool, space, axis, snapEnabled);
+  state_.tool = tool;
+  state_.transformSpace = space;
+  state_.transformAxis = axis;
+  state_.transformSnapEnabled = snapEnabled;
+  setGesture(container::ui::ViewportGesture::TransformDrag);
+  activePointerButton_ = pointerButton;
+  transformConfigurationChanged_ = false;
+}
+
+void RenderSurfaceInteractionController::processTransformGestureLifecycle(
+    const container::window::InputFrameSnapshot& input,
+    const TransformGestureCallbacks& callbacks, bool hasSelection) {
+  if (state_.gesture != container::ui::ViewportGesture::TransformDrag) return;
+  std::optional<TransformGestureCancelReason> cancel;
+  if (!input.focused) cancel = TransformGestureCancelReason::FocusLost;
+  else if (escapePressed(input)) cancel = TransformGestureCancelReason::Escape;
+  else if (!hasSelection) cancel = TransformGestureCancelReason::SelectionLost;
+  if (cancel) {
+    if (callbacks.cancel) callbacks.cancel(*cancel);
+  } else {
+    const bool released = activePointerButton_ >= 0 &&
+        (input.mouseButtonReleased(activePointerButton_) || !input.mouseButtonDown(activePointerButton_));
+    if (!released && !transformConfigurationChanged_) return;
+    if (callbacks.end) callbacks.end();
+  }
+  setGesture(container::ui::ViewportGesture::None);
+  activePointerButton_ = -1;
+  transformConfigurationChanged_ = false;
+}
+
 void RenderSurfaceInteractionController::process(Context context) {
   const auto input = context.inputManager.frameSnapshot();
 
   const bool cancelPressed = escapePressed(input);
   const bool hadActiveGesture =
       state_.gesture != container::ui::ViewportGesture::None;
+  processTransformGestureLifecycle(input, context.transformGestureCallbacks, context.hasSelection);
   if (!input.focused) {
     context.inputManager.setLookMode(false);
     setGesture(container::ui::ViewportGesture::None);
@@ -249,7 +295,11 @@ void RenderSurfaceInteractionController::handleToolShortcuts(
     }
   };
 
-  if (state_.tool != container::ui::ViewportTool::Select) {
+  // Modified editor shortcuts must not also change the active transform axis.
+  const bool commandModifier = input.keyDown(GLFW_KEY_LEFT_CONTROL) ||
+      input.keyDown(GLFW_KEY_RIGHT_CONTROL) || input.keyDown(GLFW_KEY_LEFT_SUPER) ||
+      input.keyDown(GLFW_KEY_RIGHT_SUPER);
+  if (state_.tool != container::ui::ViewportTool::Select && !commandModifier) {
     if (input.keyPressed(GLFW_KEY_X)) {
       toggleAxisWithStatus(container::ui::TransformAxis::X, "X");
     } else if (input.keyPressed(GLFW_KEY_Y)) {
@@ -314,10 +364,8 @@ void RenderSurfaceInteractionController::handleLookOwnership(
       context.pickTransformGizmoAxisAtCursor) {
     if (const auto pickedAxis = context.pickTransformGizmoAxisAtCursor(
             input.framebufferCursorX, input.framebufferCursorY)) {
-      setTransformAxis(*pickedAxis);
-      state_.hoverTransformAxis = container::ui::TransformAxis::Free;
-      setGesture(container::ui::ViewportGesture::TransformDrag);
-      activePointerButton_ = GLFW_MOUSE_BUTTON_LEFT;
+      beginTransformGesture(state_.tool, state_.transformSpace, *pickedAxis,
+          state_.transformSnapEnabled, context.transformGestureCallbacks, GLFW_MOUSE_BUTTON_LEFT);
       if (context.setStatusMessage) {
         context.setStatusMessage(std::string("Transform axis: ") +
                                  transformAxisLabel(*pickedAxis));

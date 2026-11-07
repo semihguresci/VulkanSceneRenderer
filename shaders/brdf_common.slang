@@ -326,6 +326,74 @@ float3 EvaluatePbrDirectLight(float3 albedo, float3 F0, float metallic,
     return (diffuse + specular) * radiance * NdotL;
 }
 
+float DistributionAnisotropicGGXLegacyCompatible(
+    float3 N, float3 H, float3 T, float3 B, float roughness, float strength)
+{
+    roughness = clamp(FiniteScalarOr(roughness, 1.0), 0.045, 1.0);
+    strength = saturate(FiniteScalarOr(strength, 0.0));
+    if (strength <= 0.0)
+    {
+        return DistributionGGX(N, H, roughness);
+    }
+
+    float alpha = roughness * roughness;
+    float at = lerp(alpha, 1.0, strength * strength);
+    float ab = alpha;
+    float atab = at * ab;
+    float TdotH = dot(T, H), BdotH = dot(B, H);
+    float NdotH = saturate(dot(N, H));
+    float q = (TdotH * TdotH) / (at * at) +
+              (BdotH * BdotH) / (ab * ab) + NdotH * NdotH;
+    float denominator = atab * q;
+    // This is the physical elliptical GGX distribution except for the existing
+    // renderer denominator cap. At at=ab=alpha it reduces to DistributionGGX,
+    // so a tiny positive strength does not switch to an uncapped lobe. This
+    // compatibility approximation is not a normalized physical NDF near its cap.
+    return atab / max(PI * denominator * denominator, 1e-4);
+}
+
+float3 EvaluateAnisotropicPbrDirectLight(
+    float3 albedo, float3 F0, float metallic, float roughness, float3 N,
+    float3 V, float3 L, float3 radiance, float3 anisotropyTangent,
+    float anisotropyStrength)
+{
+    float strength = saturate(FiniteScalarOr(anisotropyStrength, 0.0));
+    if (strength <= 0.0)
+    {
+        // Preserve the old entrypoint's exact isotropic result and sanitizing.
+        return EvaluatePbrDirectLight(albedo, F0, metallic, roughness, N, V, L, radiance);
+    }
+    albedo = max(Finite3Or(albedo, 0.0.xxx), 0.0.xxx);
+    F0 = saturate(Finite3Or(F0, 0.04.xxx));
+    metallic = saturate(FiniteScalarOr(metallic, 0.0));
+    roughness = clamp(FiniteScalarOr(roughness, 1.0), 0.045, 1.0);
+    radiance = max(Finite3Or(radiance, 0.0.xxx), 0.0.xxx);
+    N = SafeNormalize(N, float3(0.0, 1.0, 0.0));
+    V = SafeNormalize(V, float3(0.0, 0.0, 1.0));
+    L = SafeNormalize(L, float3(0.0, 1.0, 0.0));
+    float NdotL = saturate(FiniteScalarOr(dot(N, L), 0.0));
+    float NdotV = saturate(FiniteScalarOr(dot(N, V), 0.0));
+    if (NdotL <= 0.0 || NdotV <= 0.0)
+    {
+        return 0.0.xxx;
+    }
+
+    float3 axis = abs(N.y) < 0.999 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
+    float3 fallbackTangent = SafeNormalize(cross(axis, N), float3(1.0, 0.0, 0.0));
+    float3 T = Finite3Or(anisotropyTangent, fallbackTangent);
+    T = SafeNormalize(T - N * dot(N, T), fallbackTangent);
+    float3 B = cross(N, T);
+    float3 H = SafeNormalize(V + L, N);
+    float NDF = DistributionAnisotropicGGXLegacyCompatible(N, H, T, B, roughness, strength);
+    // Keep the old Schlick masking approximation at every strength. Switching
+    // to correlated Smith only above zero would visibly jump at small strengths.
+    float G = GeometrySmith(N, V, L, roughness);
+    float3 F = FresnelSchlick(saturate(dot(H, V)), F0);
+    float3 specular = (NDF * G * F) / max(4.0 * NdotV * NdotL, 1e-4);
+    float3 diffuse = (1.0 - F) * (1.0 - metallic) * albedo / PI;
+    return (diffuse + specular) * radiance * NdotL;
+}
+
 float3 EvaluateDiffuseBounceLight(float3 albedo, float metallic,
                                   float3 shadingNormal,
                                   float3 geometricNormal, float3 V, float3 L,

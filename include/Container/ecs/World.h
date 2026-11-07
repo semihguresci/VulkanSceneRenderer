@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <span>
 
 namespace container::scene {
@@ -22,7 +23,42 @@ namespace container::ecs {
 // entities so that ECS views can be used for draw-call extraction.
 class World {
 public:
-  World() = default;
+  World();
+
+  struct LightValueLimits {
+    uint64_t maxLights{1'000'000};
+    uint64_t maxOwnedBytes{64ull * 1024 * 1024};
+    uint64_t maxWork{64ull * 1024 * 1024};
+  };
+  // Fixed-count point/spot mirror update. No registry replacement, context
+  // copy, entity creation/destruction or user signals occur at publication.
+  class PreparedLightValues {
+  public:
+    PreparedLightValues() noexcept;
+    ~PreparedLightValues();
+    PreparedLightValues(PreparedLightValues&&) noexcept;
+    PreparedLightValues& operator=(PreparedLightValues&&) noexcept;
+    PreparedLightValues(const PreparedLightValues&)=delete;
+    PreparedLightValues& operator=(const PreparedLightValues&)=delete;
+    explicit operator bool() const noexcept;
+    [[nodiscard]] uint64_t ownedBytes() const noexcept;
+  private:
+    struct State;
+    std::unique_ptr<State> state_;
+    friend class World;
+  };
+  // ECS storage order differs from the renderer's canonical light order.
+  // Match the complete old payload multiset to distinct current entities,
+  // including duplicate records, before assigning desired canonical rows.
+  [[nodiscard]] PreparedLightValues prepareLightValues(
+      std::span<const container::gpu::PointLightData> beforeCanonical,
+      std::span<const container::gpu::PointLightData> desiredCanonical) const;
+  [[nodiscard]] PreparedLightValues prepareLightValues(
+      std::span<const container::gpu::PointLightData> beforeCanonical,
+      std::span<const container::gpu::PointLightData> desiredCanonical,
+      const LightValueLimits&) const;
+  [[nodiscard]] bool canExchangeLightValues(const PreparedLightValues&) const noexcept;
+  [[nodiscard]] bool exchangeLightValues(PreparedLightValues&) noexcept;
 
   // Rebuild renderable entities from the current SceneGraph state.
   // Re-creates one entity per renderable node with TransformComponent,
@@ -76,11 +112,32 @@ public:
   // Remove all entities and components.
   void clear();
 
+  // Detached copy of the engine's component set, entity identities, active
+  // camera and copyable registry context. Unknown nonempty component pools
+  // reject, rather than silently disappearing from a staged scene.
+  [[nodiscard]] std::unique_ptr<World> cloneState() const;
+  // Same checked engine component/entity copy, without copying opaque context
+  // values. Used by pose generations that retain each World's own context.
+  [[nodiscard]] std::unique_ptr<World> cloneStateWithoutContext() const;
+  // Bounded admission and exact engine-state witness for rare structural
+  // staging. Opaque context is neither counted/copied nor compared.
+  [[nodiscard]] uint64_t stateStorageBytes(uint64_t maxOwnedBytes,uint64_t maxWork) const;
+  [[nodiscard]] bool stateValuesMatch(const World&) const noexcept;
+
+  // Exchanges the complete ECS state, including context and active camera,
+  // without replacing either World or registry object. Existing views and
+  // component pointers must be reacquired after the exchange.
+  void swapState(World& other) noexcept;
+  void swapStatePreservingContext(World& other) noexcept;
+
 private:
+  [[nodiscard]] std::unique_ptr<World> cloneStateImpl(bool includeContext) const;
   void clearRenderables();
+  void lightStateChanged() noexcept;
 
   entt::registry registry_;
   entt::entity activeCameraEntity_{entt::null};
+  uint64_t lightOwnerIdentity_{},lightRevision_{1};
 };
 
 } // namespace container::ecs

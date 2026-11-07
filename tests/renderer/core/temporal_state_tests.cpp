@@ -181,6 +181,27 @@ TEST(TemporalState, DisabledRouteHasExactZeroJitterAndOriginalProjection) {
   EXPECT_EQ(view.temporalInfo.w, 0u);
 }
 
+TEST(TemporalState, ExternalJitterUsesRenderPixelsAndLastSubmittedOffset) {
+  State state;
+  constexpr glm::uvec2 renderExtent{320, 180};
+  const glm::vec4 point(0, 0, -2, 1);
+  auto first = camera();
+  state.prepareCamera(first, renderExtent, enabled(), first.viewProj, glm::vec2(.25f, -.125f));
+  const auto raw = first.unjitteredViewProj * point;
+  const auto jittered = first.viewProj * point;
+  EXPECT_NEAR(jittered.x / jittered.w - raw.x / raw.w, .5f / 320.0f, 1e-6f);
+  EXPECT_NEAR(jittered.y / jittered.w - raw.y / raw.w, .25f / 180.0f, 1e-6f);
+  EXPECT_NEAR(first.jitterUv.x, .25f / 320.0f, 1e-6f);
+  EXPECT_NEAR(first.jitterUv.y, -.125f / 180.0f, 1e-6f);
+  state.commit();
+
+  auto next = camera();
+  state.prepareCamera(next, renderExtent, enabled(), next.viewProj, glm::vec2(-.375f, .25f));
+  EXPECT_EQ(next.temporalInfo.x, 1u);
+  EXPECT_EQ(glm::vec2(next.jitterUv.z, next.jitterUv.w), glm::vec2(first.jitterUv));
+  EXPECT_EQ(next.previousJitteredViewProj, first.viewProj);
+}
+
 TEST(TemporalState, EverySeededJitterCycleHasZeroMean) {
   for (uint32_t seed : {0u, 1u, 17u, 1000u}) {
     glm::vec2 sum{};
@@ -267,8 +288,38 @@ TEST(TemporalState, MaterialPaddingDoesNotCauseUnrelatedHistoryRejection) {
     bytes[index] = 0xa5;
   EXPECT_EQ(container::temporal::materialRevision(a),
             container::temporal::materialRevision(b));
+  b.extendedPadding = 0xa5a5a5a5;
+  EXPECT_EQ(container::temporal::materialRevision(a),
+            container::temporal::materialRevision(b));
   b.baseColorTextureTransform.row0.x = 2;
   EXPECT_NE(container::temporal::materialRevision(a),
             container::temporal::materialRevision(b));
+}
+
+TEST(TemporalState, ExtendedMaterialFactorsAndTextureCoordinatesRejectStaleHistory) {
+  container::gpu::GpuMaterial original{};
+  for (int field = 0; field < 7; ++field) {
+    auto edited = original;
+    if (field == 0) edited.anisotropyDiffuseFactors.x = .8f;
+    if (field == 1) edited.anisotropyDiffuseFactors.y = .6f;
+    if (field == 2) edited.anisotropyDiffuseFactors.z = .4f;
+    if (field == 3) edited.diffuseTransmissionColorFactor.y = .1f;
+    if (field == 4) edited.anisotropyTextureIndex = 0;
+    if (field == 5) edited.diffuseTransmissionTextureTransform.row0.z = .25f;
+    if (field == 6) edited.diffuseTransmissionColorTextureTransform.row1.y = 2;
+    EXPECT_NE(container::temporal::materialRevision(original),
+              container::temporal::materialRevision(edited)) << field;
+  }
+}
+
+TEST(TemporalState, AuthoredSpecularGlossinessFactorsInvalidateTheShaderMaterialRevision) {
+  container::gpu::GpuMaterial original{};
+  for (int component = 0; component < 4; ++component) {
+    auto diffuse = original, specular = original;
+    diffuse.specularGlossinessDiffuse[component] = .5f;
+    specular.specularGlossinessSpecular[component] = .5f;
+    EXPECT_NE(container::temporal::materialRevision(original), container::temporal::materialRevision(diffuse));
+    EXPECT_NE(container::temporal::materialRevision(original), container::temporal::materialRevision(specular));
+  }
 }
 } // namespace

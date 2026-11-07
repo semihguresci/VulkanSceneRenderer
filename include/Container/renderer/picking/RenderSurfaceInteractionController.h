@@ -22,6 +22,13 @@ struct DebugRenderState;
 // an active viewport gesture, camera navigation, or debug shortcuts.
 class RenderSurfaceInteractionController {
  public:
+  enum class TransformGestureCancelReason { Escape, FocusLost, SelectionLost };
+  struct TransformGestureCallbacks {
+    std::function<void(container::ui::ViewportTool, container::ui::TransformSpace,
+                       container::ui::TransformAxis, bool)> begin{};
+    std::function<void()> end{};
+    std::function<void(TransformGestureCancelReason)> cancel{};
+  };
   struct Context {
     container::window::InputManager& inputManager;
     CameraController& cameraController;
@@ -45,6 +52,7 @@ class RenderSurfaceInteractionController {
                        double)> transformSelectedByDrag{};
     std::function<void(std::string)> setStatusMessage{};
     std::function<void()> onCullingUnfrozen{};
+    TransformGestureCallbacks transformGestureCallbacks{};
   };
 
   void process(Context context);
@@ -56,6 +64,15 @@ class RenderSurfaceInteractionController {
   void setTransformAxis(container::ui::TransformAxis transformAxis);
   void setNavigationStyle(container::ui::ViewportNavigationStyle style);
   void setTransformSnapEnabled(bool enabled);
+
+  // The same lifecycle path is usable with detached input snapshots, without
+  // constructing navigation/GPU services. Callbacks run before ownership is
+  // changed; a failed publication leaves the active gesture available.
+  void beginTransformGesture(container::ui::ViewportTool tool,
+      container::ui::TransformSpace space, container::ui::TransformAxis axis,
+      bool snapEnabled, const TransformGestureCallbacks&, int pointerButton = 0);
+  void processTransformGestureLifecycle(const container::window::InputFrameSnapshot&,
+      const TransformGestureCallbacks&, bool hasSelection = true);
 
  private:
   void handleDebugShortcuts(const container::window::InputFrameSnapshot& input,
@@ -72,6 +89,7 @@ class RenderSurfaceInteractionController {
 
   container::ui::ViewportInteractionState state_{};
   int activePointerButton_{-1};
+  bool transformConfigurationChanged_{false};
 };
 
 }  // namespace container::renderer

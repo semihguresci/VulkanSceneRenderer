@@ -7,6 +7,7 @@
 namespace container::temporal {
 // Hash shader-visible fields only. C++ alignment padding is not a material
 // revision and can differ between otherwise identical upload representations.
+// The appended authored SG vectors participate through the full record size.
 inline uint64_t materialRevision(const container::gpu::GpuMaterial &material) {
   using Material = container::gpu::GpuMaterial;
   const auto *bytes = reinterpret_cast<const unsigned char *>(&material);
@@ -16,6 +17,9 @@ inline uint64_t materialRevision(const container::gpu::GpuMaterial &material) {
   uint64_t hash = 1469598103934665603ull;
   for (size_t i = 0; i < sizeof(Material); ++i) {
     if (i >= scalarEnd && i < vectorBegin)
+      continue;
+    if (i >= offsetof(Material, extendedPadding) &&
+        i < offsetof(Material, extendedPadding) + sizeof(uint32_t))
       continue;
     hash ^= bytes[i];
     hash *= 1099511628211ull;

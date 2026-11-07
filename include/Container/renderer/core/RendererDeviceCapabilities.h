@@ -31,7 +31,7 @@ struct RendererDeviceCapabilities {
   }
 
   [[nodiscard]] bool supportsPathTracing() const {
-    return supportsRayTracing() && storageImageAtomics;
+    return supportsRayQueries();
   }
 
   [[nodiscard]] std::vector<std::string> missingRayTracingRequirements()
@@ -54,10 +54,11 @@ struct RendererDeviceCapabilities {
 
   [[nodiscard]] std::vector<std::string> missingPathTracingRequirements()
       const {
-    std::vector<std::string> missing = missingRayTracingRequirements();
-    if (!storageImageAtomics) {
-      missing.push_back("storage image atomics");
-    }
+    std::vector<std::string> missing;
+    if(!descriptorIndexing) missing.push_back("descriptor indexing");
+    if(!bufferDeviceAddress) missing.push_back("buffer device address");
+    if(!accelerationStructure) missing.push_back("acceleration structure");
+    if(!rayQuery) missing.push_back("ray queries");
     return missing;
   }
 };

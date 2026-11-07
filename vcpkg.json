@@ -16,12 +16,32 @@
     },
     "vulkan-memory-allocator",
     "shader-slang",
-    "tinygltf",
-    "tinyexr",
+    {
+      "name": "tinygltf",
+      "default-features": false,
+      "features": [
+        "legacy-cpp"
+      ]
+    },
+    {
+      "name": "tinyexr",
+      "default-features": false,
+      "features": [
+        "legacy-cpp"
+      ]
+    },
     "stb",
     "mikktspace",
     "spdlog",
     "entt",
     "materialx"
-  ]
+  ],
+  "features": {
+    "openvdb": {
+      "description": "OpenVDB volume import, rendering and voxel/SDF processing",
+      "dependencies": [
+        "openvdb"
+      ]
+    }
+  }
 }

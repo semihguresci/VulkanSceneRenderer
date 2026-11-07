@@ -13,6 +13,7 @@
 
 namespace container::renderer {
 class RenderGraphBuilder;
+struct RayEffectPipelines;
 struct FrameRecordParams;
 struct RaySceneBuildStats;
 
@@ -36,6 +37,14 @@ struct RaySurfaceGpuBindings {
   }
 };
 
+// Retains the positions and transforms associated with one submitted ray scene.
+// The topology hash excludes pose changes and includes the ordered triangle
+// corner and instance identities used to reconstruct previous hit positions.
+struct RaySurfaceMotionSnapshot {
+  std::shared_ptr<const void> lifetime;
+  uint64_t topology{};
+};
+
 // Graphics-queue AS generations and independent visibility history. The
 // frontend calls prepare only after resize idle, and update after image fence
 // retirement; generations are retained per swapchain image through its fence.
@@ -49,7 +58,19 @@ public:
   void createPipelines(const std::filesystem::path &root,
                        VkDescriptorSetLayout scene,
                        VkDescriptorSetLayout light);
+  [[nodiscard]] RayEffectPipelines prepareShaderReload(const std::filesystem::path& root) const;
+  void publishShaderReload(RayEffectPipelines candidate) noexcept;
   void prepare(VkExtent2D extent, uint32_t imageCount);
+  void setGpuTransformProducer(class RayInstanceTransformPass* producer);
+  // Independent pipelines, descriptors and upload slots, sharing only immutable
+  // old AS/geometry generations for optional build reuse. Update and recordBuild
+  // every image on the candidate, then submit/retire that build before exchange.
+  // Destruction before exchange leaves the active scene unchanged.
+  [[nodiscard]] std::unique_ptr<RayShadowManager> createDetachedGeneration() const;
+  [[nodiscard]] bool canExchangeGeneration(const RayShadowManager& other) const noexcept;
+  // Retire graphics readers and asynchronous surface consumers first. The
+  // manager object address stays stable for consumers retaining its reference.
+  [[nodiscard]] bool exchangeGeneration(RayShadowManager& other) noexcept;
   // Call before update. Surface consumers share the shadow AS, including when
   // shadow mode is Raster, without enabling shadow tracing/history images.
   void requestSurfaceScene(bool requested,
@@ -80,6 +101,9 @@ public:
   [[nodiscard]] VkDescriptorSetLayout traceDescriptorLayout() const;
   [[nodiscard]] VkDescriptorSet traceDescriptorSet(uint32_t image) const;
   [[nodiscard]] RaySurfaceGpuBindings surfaceBindings(uint32_t image) const;
+  [[nodiscard]] RaySurfaceMotionSnapshot surfaceMotionSnapshot(uint32_t image) const;
+  // Host metadata for the same fence-retained surface generation.
+  [[nodiscard]] std::span<const RayInstanceData> surfaceInstanceMetadata(uint32_t image) const;
   [[nodiscard]] const std::string &surfaceUnsupportedReason() const;
   [[nodiscard]] uint64_t allocatedBytes() const;
   [[nodiscard]] const RaySceneBuildStats *buildStats() const;

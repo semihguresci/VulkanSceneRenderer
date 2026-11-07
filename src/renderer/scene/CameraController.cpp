@@ -23,17 +23,16 @@ container::ui::TransformControls decomposeTransform(const glm::mat4 &matrix) {
   container::ui::TransformControls controls{};
   controls.position = glm::vec3(matrix[3]);
 
-  glm::vec3 basisX = glm::vec3(matrix[0]);
-  glm::vec3 basisY = glm::vec3(matrix[1]);
-  glm::vec3 basisZ = glm::vec3(matrix[2]);
-  controls.scale =
-      glm::vec3(glm::length(basisX), glm::length(basisY), glm::length(basisZ));
-  controls.scale = glm::max(controls.scale, glm::vec3(0.001f));
-
   glm::mat3 rotationMatrix{};
-  rotationMatrix[0] = basisX / controls.scale.x;
-  rotationMatrix[1] = basisY / controls.scale.y;
-  rotationMatrix[2] = basisZ / controls.scale.z;
+  for (int axis = 0; axis < 3; ++axis) {
+    const glm::dvec3 basis{matrix[axis]};
+    const double length = glm::length(basis);
+    // Use the actual column length for orientation. An editing floor here
+    // distorted rotations and enlarged valid small imported transforms.
+    controls.scale[axis] = length > 0.0 ? static_cast<float>(length) : 1e-6f;
+    rotationMatrix[axis] = length > 0.0
+        ? glm::vec3{basis / length} : glm::vec3{glm::mat3{1.0f}[axis]};
+  }
   if (glm::determinant(rotationMatrix) < 0.0f) {
     controls.scale.x *= -1.0f;
     rotationMatrix[0] *= -1.0f;
@@ -45,7 +44,12 @@ container::ui::TransformControls decomposeTransform(const glm::mat4 &matrix) {
 }
 
 glm::mat4 composeTransform(const container::ui::TransformControls &controls) {
-  const glm::vec3 safeScale = glm::max(controls.scale, glm::vec3(0.001f));
+  glm::vec3 safeScale = controls.scale;
+  // Move/Rotate must preserve imported magnitudes and reflection signs. The
+  // scale widgets enforce their own limits when a scale component is edited.
+  for (int axis = 0; axis < 3; ++axis)
+    if (safeScale[axis] == 0.0f)
+      safeScale[axis] = std::copysign(1e-6f, safeScale[axis]);
   glm::mat4 transform = glm::translate(glm::mat4(1.0f), controls.position);
   transform *=
       glm::mat4_cast(glm::quat(glm::radians(controls.rotationDegrees)));
@@ -214,6 +218,7 @@ void CameraController::resetCameraForBounds(const SceneViewBounds &bounds,
 
 CameraController::ViewPivot
 CameraController::resolveViewPivot(uint32_t nodeIndex) const {
+  if (sceneGraph_.isNodeRetired(nodeIndex)) return {};
   if (selectionPivotOverride_ && selectionPivotOverride_->valid) {
     return ViewPivot{selectionPivotOverride_->center,
                      std::max(selectionPivotOverride_->radius, 0.25f), true};
@@ -323,6 +328,7 @@ void CameraController::syncOrthographicViewHeight(const ViewPivot &pivot) {
 void CameraController::cancelViewAnimation() { viewAnimation_.active = false; }
 
 void CameraController::frameNodeOrScene(uint32_t nodeIndex) {
+  if (sceneGraph_.isNodeRetired(nodeIndex)) return;
   if (!camera_) {
     return;
   }
@@ -653,6 +659,7 @@ CameraController::cameraTransformControls() const {
 
 container::ui::TransformControls
 CameraController::nodeTransformControls(uint32_t nodeIndex) const {
+  if (sceneGraph_.isNodeRetired(nodeIndex)) return {};
   if (const auto *node = sceneGraph_.getNode(nodeIndex)) {
     return decomposeTransform(node->localTransform);
   }
@@ -672,21 +679,45 @@ void CameraController::applyCameraTransform(
   updateCameraBuffer(outCameraData, cameraBuffer);
 }
 
-void CameraController::applyNodeTransform(
+std::optional<glm::mat4> CameraController::previewNodeTransform(
+    uint32_t nodeIndex, const container::ui::TransformControls &controls) const {
+  const auto *node = sceneGraph_.getNode(nodeIndex);
+  if (node == nullptr || node->retired)
+    return std::nullopt;
+  const auto previous = decomposeTransform(node->localTransform);
+  auto transform = node->localTransform;
+  if (controls.rotationDegrees == previous.rotationDegrees &&
+      controls.scale == previous.scale) {
+    // Physics proxies can cancel a rotated, nonuniformly scaled parent using
+    // a local basis that is not TRS. Moving must retain that compensation.
+    transform[3] = glm::vec4{controls.position, transform[3].w};
+  } else {
+    transform = composeTransform(controls);
+  }
+  return transform;
+}
+
+bool CameraController::applyNodeTransform(
     uint32_t nodeIndex, uint32_t rootNode,
-    const container::ui::TransformControls &controls) {
-  if (sceneGraph_.getNode(nodeIndex) == nullptr)
-    return;
-  sceneGraph_.setLocalTransform(nodeIndex, composeTransform(controls));
+    const container::ui::TransformControls &controls,
+    const std::function<void(const glm::mat4 &)> &beforeApply) {
+  const auto transform = previewNodeTransform(nodeIndex, controls);
+  if (!transform || *transform == sceneGraph_.getNode(nodeIndex)->localTransform)
+    return false;
+  if (beforeApply)
+    beforeApply(*transform);
+  sceneGraph_.setLocalTransform(nodeIndex, *transform);
   sceneGraph_.updateWorldTransforms();
   // Caller is responsible for triggering updateLightingData when rootNode
   // changes.
   (void)rootNode;
+  return true;
 }
 
 void CameraController::selectMeshNode(uint32_t nodeIndex,
                                       uint32_t &selectedMeshNode) const {
-  selectedMeshNode = sceneGraph_.getNode(nodeIndex) != nullptr
+  selectedMeshNode = sceneGraph_.getNode(nodeIndex) != nullptr &&
+                         !sceneGraph_.isNodeRetired(nodeIndex)
                          ? nodeIndex
                          : container::scene::SceneGraph::kInvalidNode;
 }

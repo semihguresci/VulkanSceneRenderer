@@ -4,16 +4,20 @@
 #include "Container/utility/PipelineManager.h"
 #include "Container/utility/SceneData.h"
 #include "Container/utility/ShaderModule.h"
+#include "Container/utility/TextureImageData.h"
 #include "Container/utility/VulkanDevice.h"
 
 #include <tinyexr.h>
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <print>
 #include <stdexcept>
 #include <vector>
@@ -25,6 +29,83 @@ using container::gpu::EquirectPushConstants;
 using container::gpu::GtaoPushConstants;
 using container::gpu::IrradiancePushConstants;
 using container::gpu::PrefilterPushConstants;
+
+struct EnvironmentManager::EnvironmentGeneration {
+  struct Image {
+    VkImage image{};
+    VmaAllocation allocation{};
+    VkImageView view{};
+  };
+
+  EnvironmentManager& owner;
+  std::filesystem::path path;
+  std::string readyStatus;
+  SkyMode skyMode{SkyMode::Hdr};
+  AtmosphereSun sun{};
+  AtmosphereSettings atmosphere{};
+  AtmosphereLut atmosphereLut{};
+  SkySettings skySettings{};
+  std::shared_ptr<const std::vector<std::byte>> encoded;
+  container::gpu::AllocatedBuffer staging{};
+  Image equirect{}, cube{}, irradiance{}, prefiltered{};
+  VkImageView cubeStorage{}, irradianceStorage{};
+  // Match the HDR radiance cube at smooth roughness, retaining an 8x8 final
+  // level for roughness1. Storage views, descriptors and publication all use
+  // this same count; surface shaders obtain it through prefilteredMipCount().
+  static constexpr uint32_t prefilterSize = 512;
+  static constexpr uint32_t mipCount = 7;
+  std::array<VkImageView, mipCount> prefilteredStorage{};
+  VkDescriptorPool pool{};
+  VkCommandBuffer command{};
+  VkFence fence{};
+  VkQueryPool timestamps{};
+  uint32_t timestampBits{};
+  float timestampPeriod{};
+  bool submitted{};
+
+  ~EnvironmentGeneration() {
+    const auto dev = owner.device_->device();
+    if (submitted)
+      vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX);
+    if (fence)
+      vkDestroyFence(dev, fence, nullptr);
+    if (timestamps)
+      vkDestroyQueryPool(dev, timestamps, nullptr);
+    if (command)
+      vkFreeCommandBuffers(dev, owner.commandPool_, 1, &command);
+    if (pool)
+      owner.pipelineManager_.destroyDescriptorPool(pool);
+    for (auto view : prefilteredStorage)
+      if (view) destroyVulkanImageView(dev, view, nullptr);
+    for (auto view : {cubeStorage, irradianceStorage})
+      if (view) destroyVulkanImageView(dev, view, nullptr);
+    const auto allocator = owner.allocationManager_.memoryManager()->allocator();
+    for (const auto* image : {&equirect, &cube, &irradiance, &prefiltered}) {
+      if (image->view) destroyVulkanImageView(dev, image->view, nullptr);
+      if (image->image) vmaDestroyImage(allocator, image->image, image->allocation);
+    }
+    if (staging.buffer)
+      owner.allocationManager_.destroyBuffer(staging);
+  }
+};
+
+struct EnvironmentManager::PreparedShaderBake::State {
+  container::gpu::PipelineManager pipelines;
+  EnvironmentManager baked;
+  bool brdf{}, environment{};
+  const EnvironmentManager* owner;
+  VkImageView previousBrdf{}, previousEnvironment{};
+  uint64_t previousRevision{};
+
+  explicit State(EnvironmentManager& owner)
+      : pipelines(owner.device_->device()),
+        baked(owner.device_, owner.allocationManager_, pipelines, owner.commandPool_),
+      owner(&owner), previousBrdf(owner.brdfLutView_), previousEnvironment(owner.prefilteredCubeView_),
+      previousRevision(owner.publicationRevision_) {}
+};
+
+EnvironmentManager::PreparedShaderBake::PreparedShaderBake() = default;
+EnvironmentManager::PreparedShaderBake::~PreparedShaderBake() = default;
 
 EnvironmentManager::EnvironmentManager(
     std::shared_ptr<container::gpu::VulkanDevice> device,
@@ -51,6 +132,8 @@ void EnvironmentManager::createResources(const std::filesystem::path& shaderDir)
   createPlaceholderCubemaps();
   usingPlaceholderEnvironment_ = true;
   environmentStatus_ = "Environment: placeholder cubemaps active";
+  ++publicationRevision_;
+  ++environmentRevision_;
 }
 
 void EnvironmentManager::createGtaoResources(
@@ -70,11 +153,26 @@ void EnvironmentManager::recreateGtaoTextures(uint32_t fullWidth,
 }
 
 void EnvironmentManager::destroy() {
+  ++publicationRevision_;
+  ++environmentRevision_;
+  environmentGeneration_.reset();
+  hdrDecode_ = {};
+  activeHdrBytes_.reset();
   VkDevice dev = device_->device();
   usingPlaceholderEnvironment_ = true;
   environmentStatus_ = "Environment: destroyed";
 
   destroyGtaoTextures();
+
+  pipelineManager_.destroyPipeline(gtaoPipeline_);
+  pipelineManager_.destroyPipeline(gtaoBlurPipeline_);
+  pipelineManager_.destroyPipelineLayout(gtaoPipelineLayout_);
+  pipelineManager_.destroyPipelineLayout(gtaoBlurPipelineLayout_);
+  pipelineManager_.destroyDescriptorPool(gtaoDescriptorPool_);
+  pipelineManager_.destroyDescriptorPool(gtaoBlurDescriptorPool_);
+  pipelineManager_.destroyDescriptorSetLayout(gtaoSetLayout_);
+  pipelineManager_.destroyDescriptorSetLayout(gtaoBlurSetLayout_);
+  gtaoSet_ = gtaoBlurSet_ = VK_NULL_HANDLE;
 
   auto destroyView = [&](VkImageView& v) {
     if (v != VK_NULL_HANDLE) { destroyVulkanImageView(dev, v, nullptr); v = VK_NULL_HANDLE; }
@@ -96,6 +194,8 @@ void EnvironmentManager::destroy() {
   pipelineManager_.destroyDescriptorSetLayout(brdfLutSetLayout_);
   destroySampler(brdfLutSampler_);
 
+  destroyView(radianceCubeView_);
+  destroyImage(radianceCubeImage_, radianceCubeAlloc_);
   destroyView(irradianceCubeView_);
   destroyImage(irradianceCubeImage_, irradianceCubeAlloc_);
 
@@ -165,8 +265,14 @@ void EnvironmentManager::createBrdfLut(const std::filesystem::path& shaderDir) {
     brdfLutSetLayout_ = lutSetLayout;
   }
 
-  VkDescriptorPool lutPool = pipelineManager_.createDescriptorPool(
-      {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}}, 1, 0);
+  struct TemporaryPool {
+    container::gpu::PipelineManager& manager;
+    VkDescriptorPool pool;
+    ~TemporaryPool() { manager.destroyDescriptorPool(pool); }
+  };
+  TemporaryPool pool{pipelineManager_, pipelineManager_.createDescriptorPool(
+      {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}}, 1, 0)};
+  const auto lutPool = pool.pool;
 
   VkDescriptorSet lutSet = VK_NULL_HANDLE;
   {
@@ -182,39 +288,10 @@ void EnvironmentManager::createBrdfLut(const std::filesystem::path& shaderDir) {
       {lutSetLayout}, {});
 
   std::filesystem::path spvPath = shaderDir / "spv_shaders" / "brdf_lut.comp.spv";
-  const auto spvData = container::util::readFile(spvPath);
-  VkShaderModule module = container::gpu::createShaderModule(dev, spvData);
+  brdfLutPipeline_ = pipelineManager_.createComputePipeline(
+      spvPath, brdfLutPipelineLayout_, "brdf_lut");
 
-  VkPipelineShaderStageCreateInfo stage{};
-  stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
-  stage.module = module;
-  stage.pName  = "computeMain";
-
-  VkComputePipelineCreateInfo ci{};
-  ci.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-  ci.stage  = stage;
-  ci.layout = brdfLutPipelineLayout_;
-
-  brdfLutPipeline_ = pipelineManager_.createComputePipeline(ci, "brdf_lut");
-
-  destroyOwnedShaderModule(dev, module, nullptr);
-
-  // Transition image to GENERAL for compute write.
-  VkCommandBuffer cmd = VK_NULL_HANDLE;
-  {
-    VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    ai.commandPool        = commandPool_;
-    ai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    ai.commandBufferCount = 1;
-    if (vkAllocateCommandBuffers(dev, &ai, &cmd) != VK_SUCCESS)
-      throw std::runtime_error("failed to allocate BRDF LUT command buffer");
-  }
-
-  VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-  beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  vkBeginCommandBuffer(cmd, &beginInfo);
-
+  allocationManager_.executeStagedCommands([&](VkCommandBuffer cmd) {
   // Transition to GENERAL.
   {
     VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -268,16 +345,8 @@ void EnvironmentManager::createBrdfLut(const std::filesystem::path& shaderDir) {
         0, 0, nullptr, 0, nullptr, 1, &barrier);
   }
 
-  vkEndCommandBuffer(cmd);
+  });
 
-  VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-  submitInfo.commandBufferCount = 1;
-  submitInfo.pCommandBuffers    = &cmd;
-  vkQueueSubmit(device_->graphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE);
-  vkQueueWaitIdle(device_->graphicsQueue());
-
-  vkFreeCommandBuffers(dev, commandPool_, 1, &cmd);
-  pipelineManager_.destroyDescriptorPool(lutPool);
 }
 
 // ---------------------------------------------------------------------------
@@ -295,6 +364,8 @@ void EnvironmentManager::destroyEnvironmentCubemaps() {
     }
     img = VK_NULL_HANDLE; alloc = nullptr;
   };
+  destroyView(radianceCubeView_);
+  destroyImage(radianceCubeImage_, radianceCubeAlloc_);
   destroyView(irradianceCubeView_);
   destroyImage(irradianceCubeImage_, irradianceCubeAlloc_);
   destroyView(prefilteredCubeView_);
@@ -308,16 +379,146 @@ void EnvironmentManager::destroyEnvironmentCubemaps() {
 
 namespace {
 
-std::string EnvironmentStatusWithPath(std::string_view state,
-                                      const std::filesystem::path& path) {
-  return std::string(state) + ": " + path.string();
+AtmosphereSun evaluateAtmosphereSun(const AtmosphereSettings& air) {
+  const auto angles = air.localSun.enabled ? solarPosition(air.localSun) :
+      SolarAngles{air.sunAzimuthDegrees, air.sunElevationDegrees};
+  const double azimuth = glm::radians(angles.azimuthDegrees);
+  const double elevation = glm::radians(angles.elevationDegrees);
+  const glm::dvec3 direction(std::cos(elevation) * std::sin(azimuth), std::sin(elevation),
+                            std::cos(elevation) * std::cos(azimuth));
+  AtmosphereSun result{
+      .direction = {float(direction.x), float(direction.y), float(direction.z)},
+      .lightScene = air.lightScene,
+  };
+  const double radius = air.planetRadiusKm;
+  const double observer = radius + air.observerHeightKm;
+  const double top = radius + air.atmosphereHeightKm;
+  const double projection = observer * direction.y;
+  if (projection < 0.0 && projection * projection >= (observer - radius) * (observer + radius))
+    return result;
+  const double length = std::sqrt(projection * projection + (top - observer) * (top + observer))
+                      - projection;
+  glm::dvec3 column(0.0);
+  constexpr int samples = 96;
+  double previous = 0.0;
+  for (int i = 1; i <= samples; ++i) {
+    const double u = double(i) / samples;
+    const double next = length * u * u;
+    const double distance = 0.5 * (previous + next);
+    const double altitude = std::max(glm::length(glm::dvec3(0.0, observer, 0.0) +
+                                                  direction * distance) - radius, 0.0);
+    const glm::dvec3 density(std::exp(-altitude / 8.0), std::exp(-altitude / 1.2),
+                             std::max(1.0 - std::abs(altitude - 25.0) / 15.0, 0.0));
+    column += density * (next - previous);
+    previous = next;
+  }
+  const glm::dvec3 opticalDepth =
+      glm::dvec3(0.005802, 0.013558, 0.033100) * (column.x * air.rayleighScale) +
+      glm::dvec3(0.004440) * (column.y * air.mieScale) +
+      glm::dvec3(0.000650, 0.001881, 0.000085) * (column.z * air.ozoneScale);
+  for (size_t i = 0; i < result.irradiance.size(); ++i)
+    result.irradiance[i] = float(air.solarIrradiance * std::exp(-opticalDepth[static_cast<int>(i)]));
+  return result;
 }
 
-VkShaderModule loadComputeModule(VkDevice dev,
-                                  const std::filesystem::path& spv) {
-  const auto data = container::util::readFile(spv);
-  return container::gpu::createShaderModule(dev, data);
+std::string EnvironmentStatusWithPath(std::string_view state,
+                                      const std::filesystem::path& path) {
+  const auto utf8 = path.u8string();
+  return std::string(state) + ": " + std::string(utf8.begin(), utf8.end());
 }
+
+container::material::TextureMipLevel decodeEnvironmentImage(
+    const std::filesystem::path& path, std::shared_ptr<const std::vector<std::byte>>& encoded) {
+  constexpr uint64_t maxBytes = 256ull * 1024 * 1024;
+  constexpr uint32_t maxDimension = 16384;
+  auto extension = path.extension().u8string();
+  for (auto& c : extension)
+    if (c >= u8'A' && c <= u8'Z') c += u8'a' - u8'A';
+  if (extension != u8".exr" && extension != u8".hdr")
+    throw std::runtime_error("expected an OpenEXR (.exr) or Radiance (.hdr) file");
+
+  if (!encoded) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file)
+      throw std::runtime_error("could not open the HDR file");
+    const auto size = file.tellg();
+    if (size <= 0 || size > static_cast<std::streamoff>(maxBytes))
+      throw std::runtime_error("encoded HDR file must contain 1 to 256 MiB of data");
+    auto bytes = std::make_shared<std::vector<std::byte>>(static_cast<size_t>(size));
+    file.seekg(0);
+    if (!file.read(reinterpret_cast<char*>(bytes->data()), static_cast<std::streamsize>(bytes->size())) ||
+        file.peek() != std::char_traits<char>::eof())
+      throw std::runtime_error("HDR file changed or could not be read");
+    encoded = std::move(bytes);
+  }
+  const auto& bytes = *encoded;
+  if (bytes.empty() || bytes.size() > maxBytes)
+    throw std::runtime_error("encoded HDR data must contain 1 to 256 MiB of data");
+
+  if (extension == u8".hdr") {
+    const auto* data = reinterpret_cast<const char*>(bytes.data());
+    const std::string_view prefix(data, std::min<size_t>(bytes.size(), 10));
+    if (!prefix.starts_with("#?RADIANCE") && !prefix.starts_with("#?RGBE"))
+      throw std::runtime_error("missing Radiance HDR signature");
+    container::material::TextureDecodeOptions options;
+    options.allowedFormats = {VK_FORMAT_R32G32B32A32_SFLOAT};
+    auto decoded = container::material::DecodeTextureImage(bytes, options);
+    return std::move(decoded.mips.front());
+  }
+
+  const auto* data = reinterpret_cast<const unsigned char*>(bytes.data());
+  EXRVersion version{};
+  if (ParseEXRVersionFromMemory(&version, data, bytes.size()) != TINYEXR_SUCCESS ||
+      version.multipart || version.non_image)
+    throw std::runtime_error("expected a single-part, non-deep OpenEXR image");
+  EXRHeader header;
+  InitEXRHeader(&header);
+  const char* error = nullptr;
+  const int headerResult = ParseEXRHeaderFromMemory(&header, &version, data, bytes.size(), &error);
+  const auto window = header.data_window;
+  const int channels = header.num_channels;
+  FreeEXRHeader(&header);
+  const auto checkResult = [&](int result) {
+    const std::unique_ptr<const char, decltype(&FreeEXRErrorMessage)> message(error, FreeEXRErrorMessage);
+    error = nullptr;
+    if (result != TINYEXR_SUCCESS)
+      throw std::runtime_error(message ? message.get() : "OpenEXR decoder failed");
+  };
+  checkResult(headerResult);
+  const int64_t width = int64_t(window.max_x) - window.min_x + 1;
+  const int64_t height = int64_t(window.max_y) - window.min_y + 1;
+  if (width <= 0 || height <= 0 || width > maxDimension || height > maxDimension ||
+      channels <= 0 || channels > 16 ||
+      uint64_t(width) * height * std::max(4, channels) * sizeof(float) > maxBytes)
+    throw std::runtime_error("OpenEXR dimensions exceed the HDR image budget");
+
+  float* raw = nullptr;
+  int decodedWidth = 0, decodedHeight = 0;
+  const int result = LoadEXRFromMemory(&raw, &decodedWidth, &decodedHeight, data, bytes.size(), &error);
+  const std::unique_ptr<float, decltype(&std::free)> pixels(raw, std::free);
+  checkResult(result);
+  if (!pixels || decodedWidth != width || decodedHeight != height)
+    throw std::runtime_error("OpenEXR decoder returned inconsistent dimensions");
+  const auto pixelBytes = static_cast<size_t>(width * height) * 4 * sizeof(float);
+  container::material::TextureMipLevel image{
+      static_cast<uint32_t>(width), static_cast<uint32_t>(height), std::vector<std::byte>(pixelBytes)};
+  std::memcpy(image.bytes.data(), pixels.get(), pixelBytes);
+  return image;
+}
+
+container::material::TextureMipLevel decodeValidatedEnvironmentImage(
+    const std::filesystem::path& path, std::shared_ptr<const std::vector<std::byte>>& encoded) {
+  auto source = decodeEnvironmentImage(path, encoded);
+  for (size_t offset = 0; offset < source.bytes.size(); offset += sizeof(float)) {
+    float component;
+    std::memcpy(&component, source.bytes.data() + offset, sizeof(component));
+    if (!std::isfinite(component) || std::abs(component) > 65504.0f)
+      throw std::runtime_error("HDR values must be finite and fit the Vulkan half-float cubemap");
+  }
+  return source;
+}
+
+
 
 }  // namespace
 
@@ -329,8 +530,6 @@ void EnvironmentManager::createIblPipelines(
       prefilterPipeline_ != VK_NULL_HANDLE) {
     return;
   }
-
-  VkDevice dev = device_->device();
 
   const std::array<VkDescriptorSetLayoutBinding, 3> bindings = {{
       {0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
@@ -350,22 +549,7 @@ void EnvironmentManager::createIblPipelines(
     outLayout = pipelineManager_.createPipelineLayout(
         {iblSetLayout_}, {pushConstants});
 
-    VkShaderModule module = loadComputeModule(dev, spv);
-    VkPipelineShaderStageCreateInfo stage{};
-    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = module;
-    stage.pName = "computeMain";
-
-    VkComputePipelineCreateInfo ci{};
-    ci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    ci.stage = stage;
-    ci.layout = outLayout;
-
-    VkPipeline pipeline =
-        pipelineManager_.createComputePipeline(ci, spv.filename().string());
-    destroyOwnedShaderModule(dev, module, nullptr);
-    return pipeline;
+    return pipelineManager_.createComputePipeline(spv, outLayout, spv.filename().string());
   };
 
   equirectToCubemapPipeline_ = buildPipeline(
@@ -379,103 +563,223 @@ void EnvironmentManager::createIblPipelines(
       sizeof(PrefilterPushConstants), prefilterPipelineLayout_);
 }
 
-bool EnvironmentManager::loadHdrEnvironment(
-    const std::filesystem::path& shaderDir,
-    const std::filesystem::path& hdrPath) {
-  VkDevice     dev       = device_->device();
-  VmaAllocator allocator = allocationManager_.memoryManager()->allocator();
-
-  auto destroyImageView = [&](VkImageView& view) {
-    if (view != VK_NULL_HANDLE) {
-      destroyVulkanImageView(dev, view, nullptr);
-      view = VK_NULL_HANDLE;
+std::unique_ptr<EnvironmentManager::PreparedShaderBake> EnvironmentManager::prepareShaderBake(
+    const std::filesystem::path& shaders, bool brdf, bool environment) {
+  environment = environment && !usingPlaceholderEnvironment_;
+  if (!brdf && !environment)
+    return {};
+  if (environmentLoading())
+    throw std::runtime_error("Finish the pending environment load before reloading bake shaders");
+  auto result = std::unique_ptr<PreparedShaderBake>(new PreparedShaderBake());
+  result->state_ = std::make_unique<PreparedShaderBake::State>(*this);
+  auto& state = *result->state_;
+  if (brdf) {
+    state.baked.createBrdfLut(shaders);
+    state.brdf = true;
+  }
+  if (environment) {
+    state.baked.createSamplers();
+    state.baked.createIblPipelines(shaders);
+    bool submitted;
+    if (activeSkyMode_ == SkyMode::Hdr) {
+      if (!activeHdrBytes_)
+        throw std::runtime_error("The active HDR source snapshot is unavailable");
+      auto bytes = activeHdrBytes_;
+      auto image = decodeValidatedEnvironmentImage(activeHdrPath_, bytes);
+      submitted = state.baked.submitEnvironment(activeHdrPath_, std::move(image), nullptr, std::move(bytes));
+    } else {
+      submitted = state.baked.requestSkyEnvironment(activeSkySettings_);
     }
+    if (!submitted || !state.baked.publishEnvironment(true, {}))
+      throw std::runtime_error(state.baked.environmentStatus());
+    state.environment = true;
+  }
+  return result;
+}
+
+bool EnvironmentManager::canPublishShaderBake(const PreparedShaderBake& candidate) const noexcept {
+  return candidate.state_ && candidate.state_->owner == this && !environmentLoading() &&
+         candidate.state_->previousRevision == publicationRevision_ &&
+         candidate.state_->previousBrdf == brdfLutView_ &&
+         candidate.state_->previousEnvironment == prefilteredCubeView_;
+}
+
+void EnvironmentManager::publishShaderBake(PreparedShaderBake& candidate) noexcept {
+  auto& state = *candidate.state_;
+  auto& previous = state.baked;
+  if (state.brdf) {
+    std::swap(brdfLutImage_, previous.brdfLutImage_);
+    std::swap(brdfLutAlloc_, previous.brdfLutAlloc_);
+    std::swap(brdfLutView_, previous.brdfLutView_);
+  }
+  if (state.environment) {
+    std::swap(radianceCubeImage_, previous.radianceCubeImage_);
+    std::swap(radianceCubeAlloc_, previous.radianceCubeAlloc_);
+    std::swap(radianceCubeView_, previous.radianceCubeView_);
+    std::swap(irradianceCubeImage_, previous.irradianceCubeImage_);
+    std::swap(irradianceCubeAlloc_, previous.irradianceCubeAlloc_);
+    std::swap(irradianceCubeView_, previous.irradianceCubeView_);
+    std::swap(prefilteredCubeImage_, previous.prefilteredCubeImage_);
+    std::swap(prefilteredCubeAlloc_, previous.prefilteredCubeAlloc_);
+    std::swap(prefilteredCubeView_, previous.prefilteredCubeView_);
+    std::swap(prefilteredMipCount_, previous.prefilteredMipCount_);
+    ++environmentRevision_;
+  }
+  ++publicationRevision_;
+}
+
+bool EnvironmentManager::loadHdrEnvironment(const std::filesystem::path& path) {
+  try {
+    std::shared_ptr<const std::vector<std::byte>> encoded;
+    auto image = decodeValidatedEnvironmentImage(path, encoded);
+    return submitEnvironment(path, std::move(image), nullptr, std::move(encoded)) &&
+           publishEnvironment(true, {});
+  } catch (const std::exception& error) {
+    environmentStatus_ = EnvironmentStatusWithPath(error.what(), path);
+    std::println(stderr, "[HDR] {}", environmentStatus_);
+    return false;
+  }
+}
+
+bool EnvironmentManager::requestHdrEnvironment(const std::filesystem::path& path,
+    std::shared_ptr<const std::vector<std::byte>> encoded) {
+  if (environmentLoading())
+    return false;
+  try {
+    pendingHdrPath_ = path;
+    environmentStatus_ = EnvironmentStatusWithPath("Preparing HDR environment", path);
+    hdrDecode_ = std::async(std::launch::async, [path, encoded = std::move(encoded)] {
+      HdrSource source;
+      source.encoded = encoded;
+      source.image = decodeValidatedEnvironmentImage(path, source.encoded);
+      if (encoded && source.image.width != 2 * source.image.height)
+        throw std::runtime_error("Generated HDR environments must be 2:1 equirectangular images");
+      return source;
+    });
+    return true;
+  } catch (const std::exception& error) {
+    environmentStatus_ = EnvironmentStatusWithPath(error.what(), path);
+    pendingHdrPath_.clear();
+    return false;
+  }
+}
+
+bool EnvironmentManager::loadSkyEnvironment(const SkySettings& settings) {
+  return requestSkyEnvironment(settings) && publishEnvironment(true, {});
+}
+
+bool EnvironmentManager::requestSkyEnvironment(const SkySettings& settings) {
+  if (environmentLoading())
+    return false;
+  const auto validColor = [](const std::array<float, 3>& color) {
+    return std::ranges::all_of(color, [](float channel) {
+      return std::isfinite(channel) && channel >= 0.0f && channel <= 1.0f;
+    });
   };
-  auto destroyImage = [&](VkImage& image, VmaAllocation& alloc) {
-    if (image != VK_NULL_HANDLE && alloc != nullptr) {
-      vmaDestroyImage(allocator, image, alloc);
+  if ((settings.mode != SkyMode::Plain && settings.mode != SkyMode::Gradient &&
+       settings.mode != SkyMode::Atmosphere) ||
+      !validColor(settings.horizon) || !validColor(settings.zenith) || !validColor(settings.ground) ||
+      (settings.mode == SkyMode::Gradient && !validGradient(settings)) ||
+      (settings.mode == SkyMode::Atmosphere && !validAtmosphere(settings.atmosphere))) {
+    environmentStatus_ = "Sky colors or atmosphere settings are outside the supported range.";
+    return false;
+  }
+  try {
+    // Keep the sampled-image descriptor valid in the shared compute layout.
+    // The procedural branch writes its radiance directly to the cubemap.
+    return submitEnvironment({}, {1, 1, std::vector<std::byte>(4 * sizeof(float))}, &settings);
+  } catch (const std::exception& error) {
+    environmentStatus_ = error.what();
+    return false;
+  }
+}
+
+bool EnvironmentManager::pollEnvironment(
+    bool wait, const std::function<void()>& beforePublish) {
+  if (environmentGeneration_)
+    return publishEnvironment(wait, beforePublish);
+  if (!hdrDecode_.valid() ||
+      (!wait && hdrDecode_.wait_for(std::chrono::seconds(0)) != std::future_status::ready))
+    return false;
+  auto path = std::move(pendingHdrPath_);
+  pendingHdrPath_.clear();
+  try {
+    auto source = hdrDecode_.get();
+    if (!submitEnvironment(path, std::move(source.image), nullptr, std::move(source.encoded)))
+      return false;
+    // Normal frames observe the submitted generation on a later poll.
+    return wait && publishEnvironment(true, beforePublish);
+  } catch (const std::exception& error) {
+    environmentStatus_ = EnvironmentStatusWithPath(error.what(), path);
+    std::println(stderr, "[HDR] {}", environmentStatus_);
+    return false;
+  }
+}
+
+bool EnvironmentManager::submitEnvironment(
+    const std::filesystem::path& hdrPath, container::material::TextureMipLevel source,
+    const SkySettings* sky, std::shared_ptr<const std::vector<std::byte>> encoded) {
+  const auto readyStatus = sky ? (sky->mode == SkyMode::Atmosphere ? "Atmosphere active" :
+      sky->mode == SkyMode::Plain ? "Plain sky active" : "Gradient sky active")
+      : EnvironmentStatusWithPath("Environment HDR loaded and IBL generated", hdrPath);
+  auto generation = std::make_unique<EnvironmentGeneration>(
+      *this, hdrPath, readyStatus);
+  generation->encoded = std::move(encoded);
+  if (sky) {
+    generation->skyMode = sky->mode;
+    generation->skySettings = *sky;
+  }
+  if (sky && sky->mode == SkyMode::Atmosphere) {
+    generation->atmosphere = sky->atmosphere;
+    generation->sun = evaluateAtmosphereSun(sky->atmosphere);
+    if (sky->atmosphere.multipleScattering) {
+      generation->atmosphereLut = buildAtmosphereLut(*sky);
+      source.width = static_cast<uint32_t>(kAtmosphereLutWidth);
+      source.height = static_cast<uint32_t>(kAtmosphereLutHeight);
+      source.bytes.resize(sizeof(AtmosphereLut));
+      std::memcpy(source.bytes.data(), generation->atmosphereLut.data(), source.bytes.size());
     }
-    image = VK_NULL_HANDLE;
-    alloc = nullptr;
+  }
+  const auto dev = device_->device();
+  const auto allocator = allocationManager_.memoryManager()->allocator();
+  const auto failGeneration = [&](std::string_view reason) {
+    environmentStatus_ = sky ? std::string(reason) : EnvironmentStatusWithPath(reason, hdrPath);
+    return false;
   };
 
-  // ---- 1. Load EXR -----------------------------------------------------
-  if (!std::filesystem::exists(hdrPath)) {
-    std::println(stderr, "[HDR] File not found: {}", hdrPath.string());
-    environmentStatus_ =
-        EnvironmentStatusWithPath("Environment HDR missing", hdrPath);
-    usingPlaceholderEnvironment_ = true;
+  const VkDeviceSize equirectBytes = source.bytes.size();
+  VkPhysicalDeviceProperties properties{};
+  vkGetPhysicalDeviceProperties(device_->physicalDevice(), &properties);
+  if (std::max(source.width, source.height) > properties.limits.maxImageDimension2D) {
+    environmentStatus_ = EnvironmentStatusWithPath("HDR dimensions exceed the Vulkan device limit", hdrPath);
     return false;
   }
-
-  float*      rgba = nullptr;
-  int         exrW = 0, exrH = 0;
-  const char* exrErr = nullptr;
-  if (LoadEXR(&rgba, &exrW, &exrH, hdrPath.string().c_str(), &exrErr) !=
-      TINYEXR_SUCCESS) {
-    std::println(stderr, "[HDR] LoadEXR failed: {} ({})",
-                 hdrPath.string(), exrErr ? exrErr : "unknown");
-    if (exrErr) FreeEXRErrorMessage(exrErr);
-    environmentStatus_ =
-        EnvironmentStatusWithPath("Environment HDR load failed", hdrPath);
-    usingPlaceholderEnvironment_ = true;
-    return false;
-  }
-  if (!rgba || exrW <= 0 || exrH <= 0) {
-    std::println(stderr, "[HDR] Invalid EXR dimensions");
-    if (rgba) free(rgba);
-    environmentStatus_ =
-        EnvironmentStatusWithPath("Environment HDR invalid dimensions", hdrPath);
-    usingPlaceholderEnvironment_ = true;
-    return false;
-  }
-
-  const VkDeviceSize equirectBytes =
-      static_cast<VkDeviceSize>(exrW) * static_cast<VkDeviceSize>(exrH) *
-      4ull * sizeof(float);
-
-  std::println("[HDR] Loaded {} ({}x{})", hdrPath.string(), exrW, exrH);
+  if (!sky)
+    std::println("[HDR] {}", EnvironmentStatusWithPath(
+        std::format("Loaded {}x{}", source.width, source.height), hdrPath));
 
   // ---- 2. Upload equirect to a sampled texture -------------------------
-  container::gpu::AllocatedBuffer staging =
+  auto& staging = generation->staging;
+  staging =
       allocationManager_.createBuffer(
           equirectBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
           VMA_MEMORY_USAGE_AUTO,
           VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
               VMA_ALLOCATION_CREATE_MAPPED_BIT);
-  if (staging.allocation_info.pMappedData == nullptr) {
-    std::println(stderr, "[HDR] Staging buffer not mapped");
-    free(rgba);
-    allocationManager_.destroyBuffer(staging);
-    environmentStatus_ =
-        EnvironmentStatusWithPath("Environment staging buffer mapping failed", hdrPath);
-    usingPlaceholderEnvironment_ = true;
-    return false;
-  }
-  std::memcpy(staging.allocation_info.pMappedData, rgba,
+  if (staging.allocation_info.pMappedData == nullptr)
+    return failGeneration("Environment staging buffer mapping failed");
+  std::memcpy(staging.allocation_info.pMappedData, source.bytes.data(),
               static_cast<size_t>(equirectBytes));
-  if (vmaFlushAllocation(allocationManager_.memoryManager()->allocator(),
-                         staging.allocation, 0, equirectBytes) != VK_SUCCESS) {
-    std::println(stderr, "[HDR] Failed to flush staging buffer");
-    free(rgba);
-    allocationManager_.destroyBuffer(staging);
-    environmentStatus_ =
-        EnvironmentStatusWithPath("Environment staging buffer flush failed", hdrPath);
-    usingPlaceholderEnvironment_ = true;
-    return false;
-  }
-  free(rgba);
-  rgba = nullptr;
+  if (vmaFlushAllocation(allocator, staging.allocation, 0, equirectBytes) != VK_SUCCESS)
+    return failGeneration("Environment staging buffer flush failed");
 
-  VkImage       equirectImage = VK_NULL_HANDLE;
-  VmaAllocation equirectAlloc = nullptr;
-  VkImageView   equirectView  = VK_NULL_HANDLE;
+  auto& [equirectImage, equirectAlloc, equirectView] = generation->equirect;
   {
     VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ii.imageType   = VK_IMAGE_TYPE_2D;
     ii.format      = VK_FORMAT_R32G32B32A32_SFLOAT;
-    ii.extent      = {static_cast<uint32_t>(exrW),
-                      static_cast<uint32_t>(exrH), 1};
+    ii.extent      = {source.width,
+                      source.height, 1};
     ii.mipLevels   = 1;
     ii.arrayLayers = 1;
     ii.samples     = VK_SAMPLE_COUNT_1_BIT;
@@ -485,29 +789,24 @@ bool EnvironmentManager::loadHdrEnvironment(
     VmaAllocationCreateInfo ai{};
     ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     if (vmaCreateImage(allocator, &ii, &ai, &equirectImage,
-                        &equirectAlloc, nullptr) != VK_SUCCESS) {
-      std::println(stderr, "[HDR] Failed to create equirect image");
-      allocationManager_.destroyBuffer(staging);
-      environmentStatus_ =
-          EnvironmentStatusWithPath("Environment equirect image creation failed", hdrPath);
-      usingPlaceholderEnvironment_ = true;
-      return false;
-    }
+                       &equirectAlloc, nullptr) != VK_SUCCESS)
+      return failGeneration("Environment equirect image creation failed");
     VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vi.image    = equirectImage;
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vi.format   = VK_FORMAT_R32G32B32A32_SFLOAT;
     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    createVulkanImageView(dev, &vi, nullptr, &equirectView);
+    if (createVulkanImageView(dev, &vi, nullptr, &equirectView) != VK_SUCCESS)
+      return failGeneration("Environment equirect image view creation failed");
   }
 
   // ---- 3. Create the three cubemap targets ----------------------------
-  constexpr uint32_t kEnvSize        = 512;
+  const uint32_t kEnvSize = sky && sky->mode == SkyMode::Atmosphere ? 128u : 512u;
   const uint32_t     kEnvMips        =
       static_cast<uint32_t>(std::floor(std::log2(static_cast<float>(kEnvSize)))) + 1u;
   constexpr uint32_t kIrradianceSize = 32;
-  constexpr uint32_t kPrefilterSize  = 128;
-  constexpr uint32_t kPrefilterMips  = 5;
+  constexpr uint32_t kPrefilterSize  = EnvironmentGeneration::prefilterSize;
+  constexpr uint32_t kPrefilterMips  = EnvironmentGeneration::mipCount;
 
   auto createCube = [&](uint32_t size, uint32_t mips,
                         VkImageUsageFlags usage,
@@ -536,15 +835,9 @@ bool EnvironmentManager::loadHdrEnvironment(
     return createVulkanImageView(dev, &vi, nullptr, &cubeView) == VK_SUCCESS;
   };
 
-  VkImage       envImage = VK_NULL_HANDLE;
-  VmaAllocation envAlloc = nullptr;
-  VkImageView   envCubeView = VK_NULL_HANDLE;
-  VkImage       newIrradianceImage = VK_NULL_HANDLE;
-  VmaAllocation newIrradianceAlloc = nullptr;
-  VkImageView   newIrradianceView  = VK_NULL_HANDLE;
-  VkImage       newPrefilteredImage = VK_NULL_HANDLE;
-  VmaAllocation newPrefilteredAlloc = nullptr;
-  VkImageView   newPrefilteredView  = VK_NULL_HANDLE;
+  auto& [envImage, envAlloc, envCubeView] = generation->cube;
+  auto& [newIrradianceImage, newIrradianceAlloc, newIrradianceView] = generation->irradiance;
+  auto& [newPrefilteredImage, newPrefilteredAlloc, newPrefilteredView] = generation->prefiltered;
   if (!createCube(kEnvSize, kEnvMips,
                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
@@ -557,19 +850,8 @@ bool EnvironmentManager::loadHdrEnvironment(
       !createCube(kPrefilterSize, kPrefilterMips,
                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                   newPrefilteredImage,
-                  newPrefilteredAlloc, newPrefilteredView)) {
-    destroyImageView(envCubeView);
-    destroyImage(envImage, envAlloc);
-    destroyImageView(newIrradianceView);
-    destroyImage(newIrradianceImage, newIrradianceAlloc);
-    destroyImageView(newPrefilteredView);
-    destroyImage(newPrefilteredImage, newPrefilteredAlloc);
-    std::println(stderr, "[HDR] Failed to create cubemap images");
-    environmentStatus_ =
-        EnvironmentStatusWithPath("Environment cubemap creation failed", hdrPath);
-    usingPlaceholderEnvironment_ = true;
-    return false;
-  }
+                  newPrefilteredAlloc, newPrefilteredView))
+    return failGeneration("Environment cubemap creation failed");
 
   auto makeArrayView = [&](VkImage img, uint32_t mip) {
     VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -582,22 +864,32 @@ bool EnvironmentManager::loadHdrEnvironment(
     return v;
   };
 
-  VkImageView envStorageView        = makeArrayView(envImage, 0);
-  VkImageView irradianceStorageView = makeArrayView(newIrradianceImage, 0);
-  std::array<VkImageView, kPrefilterMips> prefilterStorageViews{};
+  auto& envStorageView = generation->cubeStorage;
+  auto& irradianceStorageView = generation->irradianceStorage;
+  auto& prefilterStorageViews = generation->prefilteredStorage;
+  envStorageView = makeArrayView(envImage, 0);
+  irradianceStorageView = makeArrayView(newIrradianceImage, 0);
   for (uint32_t m = 0; m < kPrefilterMips; ++m)
     prefilterStorageViews[m] = makeArrayView(newPrefilteredImage, m);
 
-  // ---- 4. Allocate transient descriptors for the persistent IBL pipelines ---
-  createIblPipelines(shaderDir);
+  auto& pool = generation->pool;
+  auto& cmd = generation->command;
+  if (!envStorageView || !irradianceStorageView ||
+      std::ranges::find(prefilterStorageViews, VK_NULL_HANDLE) != prefilterStorageViews.end())
+    return failGeneration("Environment storage image view creation failed");
 
-  // Descriptor pool: 7 sets total (1 equirect + 1 irradiance + 5 prefilter mips).
+  // ---- 4. Allocate transient descriptors for the persistent IBL pipelines ---
+  // One equirect set, one irradiance set and one set per prefilter mip.
   constexpr uint32_t kTotalSets = 1 + 1 + kPrefilterMips;
-  VkDescriptorPool pool = pipelineManager_.createDescriptorPool(
-      {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kTotalSets},
-       {VK_DESCRIPTOR_TYPE_SAMPLER,        kTotalSets},
-       {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,  kTotalSets}},
-      kTotalSets, 0);
+  try {
+    pool = pipelineManager_.createDescriptorPool(
+        {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kTotalSets},
+         {VK_DESCRIPTOR_TYPE_SAMPLER,        kTotalSets},
+         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,  kTotalSets}},
+        kTotalSets, 0);
+  } catch (const std::exception& error) {
+    return failGeneration(error.what());
+  }
 
   auto allocSet = [&]() {
     VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -612,6 +904,9 @@ bool EnvironmentManager::loadHdrEnvironment(
   VkDescriptorSet irradianceSet = allocSet();
   std::array<VkDescriptorSet, kPrefilterMips> prefilterSets{};
   for (auto& s : prefilterSets) s = allocSet();
+  if (!equirectSet || !irradianceSet ||
+      std::ranges::find(prefilterSets, VK_NULL_HANDLE) != prefilterSets.end())
+    return failGeneration("Environment descriptor allocation failed");
 
   auto writeSet = [&](VkDescriptorSet set, VkImageView sampledView,
                       VkImageLayout sampledLayout, VkImageView storageView) {
@@ -647,17 +942,37 @@ bool EnvironmentManager::loadHdrEnvironment(
              prefilterStorageViews[m]);
 
   // ---- 5. Record everything on a single-use command buffer ------------
-  VkCommandBuffer cmd = VK_NULL_HANDLE;
   {
     VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     ai.commandPool = commandPool_;
     ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     ai.commandBufferCount = 1;
-    vkAllocateCommandBuffers(dev, &ai, &cmd);
+    if (vkAllocateCommandBuffers(dev, &ai, &cmd) != VK_SUCCESS)
+      return failGeneration("Environment command buffer allocation failed");
   }
   VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  vkBeginCommandBuffer(cmd, &bi);
+  if (vkBeginCommandBuffer(cmd, &bi) != VK_SUCCESS)
+    return failGeneration("Environment command buffer recording failed");
+
+  if (sky && sky->mode == SkyMode::Atmosphere) {
+    uint32_t familyCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(device_->physicalDevice(), &familyCount, nullptr);
+    std::vector<VkQueueFamilyProperties> families(familyCount);
+    vkGetPhysicalDeviceQueueFamilyProperties(device_->physicalDevice(), &familyCount, families.data());
+    const auto family = device_->queueFamilyIndices().graphicsFamily.value();
+    if (family < familyCount && families[family].timestampValidBits > 0) {
+      VkQueryPoolCreateInfo query{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+      query.queryType = VK_QUERY_TYPE_TIMESTAMP;
+      query.queryCount = 2;
+      if (vkCreateQueryPool(dev, &query, nullptr, &generation->timestamps) == VK_SUCCESS) {
+        generation->timestampBits = families[family].timestampValidBits;
+        generation->timestampPeriod = properties.limits.timestampPeriod;
+        vkCmdResetQueryPool(cmd, generation->timestamps, 0, 2);
+        vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, generation->timestamps, 0);
+      }
+    }
+  }
 
   auto barrier = [&](VkImage img, VkImageLayout oldL, VkImageLayout newL,
                       VkAccessFlags srcA, VkAccessFlags dstA,
@@ -684,7 +999,7 @@ bool EnvironmentManager::loadHdrEnvironment(
   {
     VkBufferImageCopy r{};
     r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    r.imageExtent = {static_cast<uint32_t>(exrW), static_cast<uint32_t>(exrH), 1};
+    r.imageExtent = {source.width, source.height, 1};
     vkCmdCopyBufferToImage(cmd, staging.buffer, equirectImage,
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
   }
@@ -714,6 +1029,30 @@ bool EnvironmentManager::loadHdrEnvironment(
                           0, 1, &equirectSet, 0, nullptr);
   for (uint32_t face = 0; face < 6; ++face) {
     EquirectPushConstants push{face, kEnvSize};
+    if (sky) {
+      const auto rgb = [](const std::array<float, 3>& color) {
+        return glm::vec4(color[0], color[1], color[2], 0.0f);
+      };
+      push.skyMode = static_cast<uint32_t>(sky->mode);
+      push.horizon = rgb(sky->horizon);
+      push.zenith = rgb(sky->zenith);
+      push.ground = rgb(sky->ground);
+      if (sky->mode == SkyMode::Gradient) {
+        push.zenith.w = sky->zenithCurve;
+        push.ground.w = sky->groundCurve;
+        const auto& up = sky->gradientUp;
+        push.atmosphereGeometry = {up[0], up[1], up[2], 0.0f};
+      }
+      if (sky->mode == SkyMode::Atmosphere) {
+        const auto& air = sky->atmosphere;
+        const auto& direction = generation->sun.direction;
+        push.sun = {direction[0], direction[1], direction[2], air.solarIrradiance};
+        push.atmosphereGeometry = {air.planetRadiusKm, air.atmosphereHeightKm,
+                                   air.observerHeightKm, 0.0f};
+        push.atmosphereDensity = {air.rayleighScale, air.mieScale, air.ozoneScale,
+                                  air.multipleScattering ? 1.0f : 0.0f};
+      }
+    }
     vkCmdPushConstants(cmd, equirectToCubemapPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(push), &push);
     const uint32_t g = (kEnvSize + 15) / 16;
@@ -791,59 +1130,99 @@ bool EnvironmentManager::loadHdrEnvironment(
     }
   }
 
-  // Final transitions to SHADER_READ_ONLY for the fragment lighting pass.
+  // Final transitions to SHADER_READ_ONLY for raster lighting and DDGI.
   barrier(newIrradianceImage, VK_IMAGE_LAYOUT_GENERAL,
           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
           VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
           0, 1, 0, 6);
   barrier(newPrefilteredImage, VK_IMAGE_LAYOUT_GENERAL,
           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
           VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
           0, kPrefilterMips, 0, 6);
 
-  vkEndCommandBuffer(cmd);
+  if (generation->timestamps)
+    vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, generation->timestamps, 1);
+  if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
+    return failGeneration("Environment command buffer finalization failed");
+  auto buildingStatus = sky ? std::string("Generating sky lighting maps")
+                            : EnvironmentStatusWithPath("Generating HDR lighting maps", hdrPath);
+  VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+  if (vkCreateFence(dev, &fenceInfo, nullptr, &generation->fence) != VK_SUCCESS)
+    return failGeneration("Environment generation fence creation failed");
   VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
   si.commandBufferCount = 1;
-  si.pCommandBuffers    = &cmd;
-  vkQueueSubmit(device_->graphicsQueue(), 1, &si, VK_NULL_HANDLE);
-  vkQueueWaitIdle(device_->graphicsQueue());
-  vkFreeCommandBuffers(dev, commandPool_, 1, &cmd);
-  pipelineManager_.destroyDescriptorPool(pool);
+  si.pCommandBuffers = &cmd;
+  if (vkQueueSubmit(device_->graphicsQueue(), 1, &si, generation->fence) != VK_SUCCESS)
+    return failGeneration("Environment queue submission failed");
+  generation->submitted = true;
+  environmentGeneration_ = std::move(generation);
+  environmentStatus_ = std::move(buildingStatus);
+  return true;
+}
 
-  // ---- 6. Cleanup transient resources ---------------------------------
-  for (auto v : prefilterStorageViews)
-    if (v != VK_NULL_HANDLE) destroyVulkanImageView(dev, v, nullptr);
-  if (irradianceStorageView != VK_NULL_HANDLE)
-    destroyVulkanImageView(dev, irradianceStorageView, nullptr);
-  if (envStorageView != VK_NULL_HANDLE)
-    destroyVulkanImageView(dev, envStorageView, nullptr);
-  if (envCubeView != VK_NULL_HANDLE)
-    destroyVulkanImageView(dev, envCubeView, nullptr);
-  if (envImage != VK_NULL_HANDLE && envAlloc != nullptr)
-    vmaDestroyImage(allocator, envImage, envAlloc);
-
-  if (equirectView != VK_NULL_HANDLE)
-    destroyVulkanImageView(dev, equirectView, nullptr);
-  if (equirectImage != VK_NULL_HANDLE && equirectAlloc != nullptr)
-    vmaDestroyImage(allocator, equirectImage, equirectAlloc);
-
-  allocationManager_.destroyBuffer(staging);
+bool EnvironmentManager::publishEnvironment(
+    bool wait, const std::function<void()>& beforePublish) {
+  auto& pending = *environmentGeneration_;
+  const auto dev = device_->device();
+  const auto result = wait
+      ? vkWaitForFences(dev, 1, &pending.fence, VK_TRUE, UINT64_MAX)
+      : vkGetFenceStatus(dev, pending.fence);
+  if (result == VK_NOT_READY)
+    return false;
+  auto generation = std::move(environmentGeneration_);
+  if (result != VK_SUCCESS) {
+    environmentStatus_ = EnvironmentStatusWithPath("Environment generation fence failed", generation->path);
+    return false;
+  }
+  generation->submitted = false;
+  if (generation->timestamps) {
+    std::array<uint64_t, 2> ticks{};
+    if (vkGetQueryPoolResults(dev, generation->timestamps, 0, 2, sizeof(ticks),
+                              ticks.data(), sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+      const auto mask = UINT64_MAX >> (64 - generation->timestampBits);
+      const double milliseconds = double((ticks[1] - ticks[0]) & mask) *
+                                  generation->timestampPeriod * 1e-6;
+      std::println("[Sky] Atmosphere map generation GPU time: {:.3f} ms", milliseconds);
+    }
+  }
+  try {
+    if (beforePublish)
+      beforePublish();
+  } catch (const std::exception& error) {
+    environmentStatus_ = EnvironmentStatusWithPath(error.what(), generation->path);
+    return false;
+  }
 
   destroyEnvironmentCubemaps();
-  irradianceCubeImage_ = newIrradianceImage;
-  irradianceCubeAlloc_ = newIrradianceAlloc;
-  irradianceCubeView_ = newIrradianceView;
-  prefilteredCubeImage_ = newPrefilteredImage;
-  prefilteredCubeAlloc_ = newPrefilteredAlloc;
-  prefilteredCubeView_ = newPrefilteredView;
-  prefilteredMipCount_ = kPrefilterMips;
-
-  std::println("[HDR] IBL generation complete");
-  environmentStatus_ =
-      EnvironmentStatusWithPath("Environment HDR loaded and IBL generated", hdrPath);
+  auto [radianceImage, radianceAlloc, radianceView] = std::exchange(generation->cube, {});
+  radianceCubeImage_=radianceImage;radianceCubeAlloc_=radianceAlloc;radianceCubeView_=radianceView;
+  auto [irradianceImage, irradianceAlloc, irradianceView] =
+      std::exchange(generation->irradiance, {});
+  auto [prefilteredImage, prefilteredAlloc, prefilteredView] =
+      std::exchange(generation->prefiltered, {});
+  irradianceCubeImage_ = irradianceImage;
+  irradianceCubeAlloc_ = irradianceAlloc;
+  irradianceCubeView_ = irradianceView;
+  prefilteredCubeImage_ = prefilteredImage;
+  prefilteredCubeAlloc_ = prefilteredAlloc;
+  prefilteredCubeView_ = prefilteredView;
+  prefilteredMipCount_ = EnvironmentGeneration::mipCount;
+  environmentStatus_ = std::move(generation->readyStatus);
+  activeHdrPath_ = std::move(generation->path);
+  activeSkyMode_ = generation->skyMode;
+  activeSun_ = generation->sun;
+  activeAtmosphere_ = generation->atmosphere;
+  activeAtmosphereLut_ = generation->atmosphereLut;
+  activeSkySettings_ = generation->skySettings;
+  activeHdrBytes_ = std::move(generation->encoded);
   usingPlaceholderEnvironment_ = false;
+  ++publicationRevision_;
+  ++environmentRevision_;
+  std::println("[HDR] IBL generation complete");
   return true;
 }
 
@@ -891,6 +1270,7 @@ void EnvironmentManager::createPlaceholderCubemaps() {
   };
 
   createCube(1, irradianceCubeImage_, irradianceCubeAlloc_, irradianceCubeView_);
+  createCube(1, radianceCubeImage_, radianceCubeAlloc_, radianceCubeView_);
   createCube(1, prefilteredCubeImage_, prefilteredCubeAlloc_, prefilteredCubeView_);
   prefilteredMipCount_ = 1;
 
@@ -930,6 +1310,8 @@ void EnvironmentManager::createPlaceholderCubemaps() {
   };
 
   // Transition to TRANSFER_DST_OPTIMAL so we can clear the cubemaps.
+  transitionCube(radianceCubeImage_, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
   transitionCube(irradianceCubeImage_,
       VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
       0, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -949,12 +1331,16 @@ void EnvironmentManager::createPlaceholderCubemaps() {
   clearColor.float32[2] = 0.25f;
   clearColor.float32[3] = 1.0f;
   VkImageSubresourceRange clearRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
+  vkCmdClearColorImage(cmd, radianceCubeImage_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearColor, 1, &clearRange);
   vkCmdClearColorImage(cmd, irradianceCubeImage_,
       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearColor, 1, &clearRange);
   vkCmdClearColorImage(cmd, prefilteredCubeImage_,
       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearColor, 1, &clearRange);
 
   // Transition to SHADER_READ_ONLY for sampling in the lighting pass.
+  transitionCube(radianceCubeImage_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+      VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
   transitionCube(irradianceCubeImage_,
       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
       VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
@@ -1064,22 +1450,8 @@ void EnvironmentManager::createGtaoPipelines(const std::filesystem::path& shader
         {gtaoSetLayout_}, {pcRange});
 
     std::filesystem::path spvPath = shaderDir / "spv_shaders" / "gtao.comp.spv";
-    const auto spvData = container::util::readFile(spvPath);
-    VkShaderModule module = container::gpu::createShaderModule(dev, spvData);
-
-    VkPipelineShaderStageCreateInfo stage{};
-    stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = module;
-    stage.pName  = "computeMain";
-
-    VkComputePipelineCreateInfo ci{};
-    ci.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    ci.stage  = stage;
-    ci.layout = gtaoPipelineLayout_;
-
-    gtaoPipeline_ = pipelineManager_.createComputePipeline(ci, "gtao");
-    destroyOwnedShaderModule(dev, module, nullptr);
+    gtaoPipeline_ = pipelineManager_.createComputePipeline(
+        spvPath, gtaoPipelineLayout_, "gtao");
   }
 
   // GTAO blur pipeline.
@@ -1103,22 +1475,8 @@ void EnvironmentManager::createGtaoPipelines(const std::filesystem::path& shader
         {gtaoBlurSetLayout_}, {pcRange});
 
     std::filesystem::path spvPath = shaderDir / "spv_shaders" / "gtao_blur.comp.spv";
-    const auto spvData = container::util::readFile(spvPath);
-    VkShaderModule module = container::gpu::createShaderModule(dev, spvData);
-
-    VkPipelineShaderStageCreateInfo stage{};
-    stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = module;
-    stage.pName  = "computeMain";
-
-    VkComputePipelineCreateInfo ci{};
-    ci.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    ci.stage  = stage;
-    ci.layout = gtaoBlurPipelineLayout_;
-
-    gtaoBlurPipeline_ = pipelineManager_.createComputePipeline(ci, "gtao_blur");
-    destroyOwnedShaderModule(dev, module, nullptr);
+    gtaoBlurPipeline_ = pipelineManager_.createComputePipeline(
+        spvPath, gtaoBlurPipelineLayout_, "gtao_blur");
   }
 
   // Descriptor pools.

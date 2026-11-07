@@ -13,6 +13,9 @@
 #include <filesystem>
 #include <stdexcept>
 #include <vector>
+#include <limits>
+#include <type_traits>
+#include <utility>
 
 namespace container::renderer {
 
@@ -79,6 +82,28 @@ bool cascadeBufferReadyAt(
 
 } // namespace
 
+struct ShadowCullManager::PreparedGeneration::State {
+  const ShadowCullManager* owner{};
+  std::unique_ptr<ShadowCullManager> candidate;
+  VkDescriptorPool pool{};
+  std::vector<VkBuffer> objects,shadows;
+  std::vector<VkDeviceSize> objectSizes;
+  std::vector<uint32_t> capacities;
+  VkDeviceSize shadowBytes{};
+  bool published{};
+};
+ShadowCullManager::PreparedGeneration::PreparedGeneration() noexcept=default;
+ShadowCullManager::PreparedGeneration::~PreparedGeneration()=default;
+ShadowCullManager::PreparedGeneration::PreparedGeneration(PreparedGeneration&&) noexcept=default;
+ShadowCullManager::PreparedGeneration& ShadowCullManager::PreparedGeneration::operator=(PreparedGeneration&&) noexcept=default;
+bool ShadowCullManager::PreparedGeneration::ready() const noexcept {return state_ && state_->candidate;}
+uint32_t ShadowCullManager::PreparedGeneration::maxDrawCount(uint32_t image) const noexcept {return ready()?state_->candidate->maxDrawCount(image):0;}
+VkBuffer ShadowCullManager::PreparedGeneration::indirectDrawBuffer(uint32_t image,uint32_t cascade) const noexcept {return ready()?state_->candidate->indirectDrawBuffer(image,cascade):VK_NULL_HANDLE;}
+VkBuffer ShadowCullManager::PreparedGeneration::drawCountBuffer(uint32_t image,uint32_t cascade) const noexcept {return ready()?state_->candidate->drawCountBuffer(image,cascade):VK_NULL_HANDLE;}
+ShadowCullManager& ShadowCullManager::PreparedGeneration::manager() {
+  if(!ready()) throw std::logic_error("empty shadow cull generation");return *state_->candidate;
+}
+
 ShadowCullManager::ShadowCullManager(
 	std::shared_ptr<container::gpu::VulkanDevice> device,
 	container::gpu::AllocationManager&            allocationManager,
@@ -95,14 +120,92 @@ ShadowCullManager::~ShadowCullManager() {
   destroyCascadeBuffers(allocationManager_, indirectDrawBuffers_);
   destroyCascadeBuffers(allocationManager_, drawCountBuffers_);
 
+  destroyGenerationPool();
+  if(!ownsSharedResources_) return;
+
   if (shadowCullPipeline_ != VK_NULL_HANDLE)
 	pipelineManager_.destroyPipeline(shadowCullPipeline_);
   if (shadowCullPipelineLayout_ != VK_NULL_HANDLE)
 	pipelineManager_.destroyPipelineLayout(shadowCullPipelineLayout_);
-  if (shadowCullPool_ != VK_NULL_HANDLE)
-	pipelineManager_.destroyDescriptorPool(shadowCullPool_);
   if (shadowCullSetLayout_ != VK_NULL_HANDLE)
 	pipelineManager_.destroyDescriptorSetLayout(shadowCullSetLayout_);
+}
+
+void ShadowCullManager::destroyGenerationPool() {
+  if(ownsGenerationPool_) {
+    if(shadowCullPool_) destroyOwnedDescriptorPool(device_->device(),shadowCullPool_,nullptr);
+    shadowCullPool_=VK_NULL_HANDLE;
+  } else pipelineManager_.destroyDescriptorPool(shadowCullPool_);
+}
+
+ShadowCullManager::PreparedGeneration ShadowCullManager::prepareGeneration(
+    std::span<const container::gpu::AllocatedBuffer> objects,std::span<const size_t> capacities,
+    std::span<const VkBuffer> shadows,VkDeviceSize shadowBytes,
+    std::span<const DrawCommand> commands,uint64_t sourceRevision) const {
+  const auto images=objects.size();
+  if(!images || images>UINT32_MAX/(4u*container::gpu::kShadowCascadeCount) || images!=capacities.size() ||
+      images!=shadows.size() || images!=objectSsboBuffers_.size() || shadowBytes<sizeof(ShadowCullData) || commands.size()>UINT32_MAX)
+    throw std::invalid_argument("invalid detached shadow cull input tables");
+  VkPhysicalDeviceProperties properties{};vkGetPhysicalDeviceProperties(device_->physicalDevice(),&properties);
+  const auto count=std::max<size_t>(commands.size(),64);
+  if(shadowBytes>properties.limits.maxUniformBufferRange || count>properties.limits.maxDrawIndirectCount ||
+      count>properties.limits.maxStorageBufferRange/sizeof(GpuDrawIndexedIndirectCommand))
+    throw std::length_error("detached shadow cull buffers exceed device limits");
+  size_t minimumCapacity=SIZE_MAX;
+  for(size_t image=0;image<images;++image) {
+    if(!objects[image].buffer || !shadows[image] || !capacities[image] ||
+        capacities[image]>properties.limits.maxStorageBufferRange/sizeof(container::gpu::ObjectData))
+      throw std::invalid_argument("invalid detached shadow cull object/uniform binding");
+    minimumCapacity=std::min(minimumCapacity,capacities[image]);
+  }
+  for(const auto& command:commands)
+    if(command.objectIndex>=minimumCapacity || std::max(command.instanceCount,1u)>minimumCapacity-command.objectIndex)
+      throw std::invalid_argument("detached shadow cull command exceeds object table");
+  PreparedGeneration result;result.state_=std::make_unique<PreparedGeneration::State>();
+  auto& state=*result.state_;state.owner=this;state.pool=shadowCullPool_;
+  state.objects=objectSsboBuffers_;state.objectSizes=objectSsboSizes_;state.capacities=drawCapacities_;
+  state.shadows=shadowCullBuffers_;state.shadowBytes=shadowCullUboSize_;
+  state.candidate=std::make_unique<ShadowCullManager>(device_,allocationManager_,pipelineManager_);
+  auto& next=*state.candidate;next.ownsSharedResources_=false;next.ownsGenerationPool_=true;
+  next.shadowCullPipeline_=shadowCullPipeline_.share();next.shadowCullPipelineLayout_=shadowCullPipelineLayout_;
+  next.shadowCullSetLayout_=shadowCullSetLayout_;next.shadowCullUboSize_=shadowBytes;
+  if(!isReady()) {
+    next.objectSsboBuffers_.assign(images,VK_NULL_HANDLE);next.objectSsboSizes_.assign(images,0);
+    next.objectCounts_.assign(images,0);next.shadowCullBuffers_.assign(images,VK_NULL_HANDLE);
+    next.resizePerImageBufferState(uint32_t(images));return result;
+  }
+  next.recreatePerFrameResources(uint32_t(images));next.uploadScratch_.reserve(count);
+  next.ensureBufferCapacity(uint32_t(commands.size()));
+  for(uint32_t image=0;image<images;++image) {
+    next.updateShadowCullDescriptor(image,shadows[image],shadowBytes);
+    next.updateObjectSsboDescriptor(image,objects[image].buffer,capacities[image]*sizeof(container::gpu::ObjectData));
+    next.uploadDrawCommands(image,commands,sourceRevision);
+  }
+  return result;
+}
+
+bool ShadowCullManager::canExchangeGeneration(const PreparedGeneration& prepared) const noexcept {
+  if(!prepared.ready() || prepared.state_->owner!=this) return false;
+  const auto& state=*prepared.state_;const auto& other=*state.candidate;
+  if(other.device_.get()!=device_.get() || other.shadowCullPipeline_!=shadowCullPipeline_ ||
+      other.objectSsboBuffers_.size()!=objectSsboBuffers_.size()) return false;
+  return state.published || (state.pool==shadowCullPool_ && state.objects==objectSsboBuffers_ &&
+      state.objectSizes==objectSsboSizes_ && state.capacities==drawCapacities_ &&
+      state.shadows==shadowCullBuffers_ && state.shadowBytes==shadowCullUboSize_);
+}
+
+bool ShadowCullManager::exchangeGeneration(PreparedGeneration& prepared) noexcept {
+  if(!canExchangeGeneration(prepared)) return false;
+  auto& other=*prepared.state_->candidate;using std::swap;
+#define SHADOW_CULL_EXCHANGE(field) static_assert(std::is_nothrow_swappable_v<decltype(field)>);swap(field,other.field)
+  SHADOW_CULL_EXCHANGE(maxDrawCount_);SHADOW_CULL_EXCHANGE(shadowCullUboSize_);SHADOW_CULL_EXCHANGE(uploadScratch_);
+  SHADOW_CULL_EXCHANGE(lastUploadSourceData_);SHADOW_CULL_EXCHANGE(lastUploadSourceSize_);SHADOW_CULL_EXCHANGE(lastUploadSourceRevision_);
+  SHADOW_CULL_EXCHANGE(shadowCullBuffers_);SHADOW_CULL_EXCHANGE(objectSsboBuffers_);SHADOW_CULL_EXCHANGE(objectSsboSizes_);
+  SHADOW_CULL_EXCHANGE(objectCounts_);SHADOW_CULL_EXCHANGE(inputDrawBuffers_);SHADOW_CULL_EXCHANGE(indirectDrawBuffers_);
+  SHADOW_CULL_EXCHANGE(drawCountBuffers_);SHADOW_CULL_EXCHANGE(drawCapacities_);SHADOW_CULL_EXCHANGE(shadowCullPool_);
+  SHADOW_CULL_EXCHANGE(shadowCullSets_);SHADOW_CULL_EXCHANGE(ownsGenerationPool_);
+#undef SHADOW_CULL_EXCHANGE
+  prepared.state_->published=true;return true;
 }
 
 bool ShadowCullManager::isReady() const {
@@ -147,13 +250,17 @@ void ShadowCullManager::recreatePerFrameResources(uint32_t descriptorSetCount) {
 	const uint32_t setCount = std::max<uint32_t>(1u, descriptorSetCount);
 	const std::vector<uint32_t> previousCapacities = drawCapacities_;
 	const uint32_t previousCapacity = maxDrawCount_;
-	if (shadowCullPool_ != VK_NULL_HANDLE) {
-	  pipelineManager_.destroyDescriptorPool(shadowCullPool_);
-	}
-	shadowCullPool_ = pipelineManager_.createDescriptorPool(
-		{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, setCount * container::gpu::kShadowCascadeCount},
-		 {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, setCount * container::gpu::kShadowCascadeCount * 4}},
-		setCount * container::gpu::kShadowCascadeCount, 0);
+  destroyGenerationPool();
+  const uint32_t total=setCount*container::gpu::kShadowCascadeCount;
+  if(ownsGenerationPool_) {
+    const std::array<VkDescriptorPoolSize,2> sizes{{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,total},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,total*4}}};
+    VkDescriptorPoolCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    info.maxSets=total;info.poolSizeCount=uint32_t(sizes.size());info.pPoolSizes=sizes.data();
+    if(createOwnedDescriptorPool(device_->device(),&info,nullptr,&shadowCullPool_)!=VK_SUCCESS)
+      throw std::runtime_error("failed to create detached shadow cull descriptor pool");
+  } else shadowCullPool_=pipelineManager_.createDescriptorPool(
+      {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,total},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,total*4}},total,0);
 
 	const VkBuffer fallbackObjectBuffer =
 		objectSsboBuffers_.empty() ? VK_NULL_HANDLE : objectSsboBuffers_.back();
@@ -245,7 +352,7 @@ bool ShadowCullManager::ensureBufferCapacity(uint32_t imageIndex,
 		  allocationManager_.createBuffer(
 			  sizeof(GpuDrawIndexedIndirectCommand) * capacity,
 			  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-				  VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+				  VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 			  VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
 	  drawCountBuffers_[imageIndex][cascadeIndex] =
 		  allocationManager_.createBuffer(
@@ -272,6 +379,11 @@ void ShadowCullManager::uploadDrawCommands(
 	uint32_t imageIndex,
 	const std::vector<DrawCommand>& commands,
 	uint64_t sourceRevision) {
+  uploadDrawCommands(imageIndex,std::span<const DrawCommand>(commands),sourceRevision);
+}
+
+void ShadowCullManager::uploadDrawCommands(uint32_t imageIndex,
+    std::span<const DrawCommand> commands,uint64_t sourceRevision) {
   const GpuCullDrawUploadCacheView uploadCache{
 	  .sourceData = std::span<const DrawCommand *const>(
 		  lastUploadSourceData_.data(), lastUploadSourceData_.size()),
@@ -311,7 +423,7 @@ void ShadowCullManager::uploadDrawCommands(
 
 void ShadowCullManager::updateObjectSsboDescriptor(
 	VkBuffer objectBuffer,
-	VkDeviceSize objectBufferSize) {
+	VkDeviceSize objectBufferSize) noexcept {
 	for (uint32_t i = 0; i < shadowCullBuffers_.size(); ++i) {
 	updateObjectSsboDescriptor(i, objectBuffer, objectBufferSize);
   }
@@ -320,7 +432,7 @@ void ShadowCullManager::updateObjectSsboDescriptor(
 void ShadowCullManager::updateObjectSsboDescriptor(
 	uint32_t imageIndex,
 	VkBuffer objectBuffer,
-	VkDeviceSize objectBufferSize) {
+	VkDeviceSize objectBufferSize) noexcept {
 	if (imageIndex >= objectSsboBuffers_.size() ||
 		imageIndex >= objectSsboSizes_.size() ||
 		imageIndex >= objectCounts_.size()) {
@@ -446,24 +558,8 @@ void ShadowCullManager::createShadowCullPipeline(
 
 	if (shadowCullPipelineLayout_ == VK_NULL_HANDLE) return;
 
-	const auto spvData = container::util::readFile(compPath);
-	VkShaderModule compModule =
-		container::gpu::createShaderModule(device_->device(), spvData);
-
-	VkPipelineShaderStageCreateInfo stage{};
-	stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
-	stage.module = compModule;
-	stage.pName  = "computeMain";
-
-	VkComputePipelineCreateInfo ci{};
-	ci.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-	ci.stage  = stage;
-	ci.layout = shadowCullPipelineLayout_;
-
-	shadowCullPipeline_ =
-		pipelineManager_.createComputePipeline(ci, "shadow_cull");
-	destroyOwnedShaderModule(device_->device(), compModule, nullptr);
+	shadowCullPipeline_ = pipelineManager_.createComputePipeline(
+	    compPath, shadowCullPipelineLayout_, "shadow_cull");
 }
 
 size_t ShadowCullManager::descriptorSetIndex(uint32_t imageIndex,
@@ -498,7 +594,7 @@ void ShadowCullManager::updateGlobalDrawCapacity() {
   }
 }
 
-void ShadowCullManager::writeDescriptorSets(uint32_t imageIndex) {
+void ShadowCullManager::writeDescriptorSets(uint32_t imageIndex) noexcept {
   if (imageIndex >= shadowCullBuffers_.size()) return;
 	if (imageIndex >= objectSsboBuffers_.size() ||
 		imageIndex >= objectSsboSizes_.size()) {
@@ -537,8 +633,8 @@ void ShadowCullManager::writeDescriptorSets(uint32_t imageIndex) {
 		  : VK_NULL_HANDLE,
 	  0, sizeof(uint32_t)};
 
-  std::vector<VkWriteDescriptorSet> writes;
-  writes.reserve(5);
+    std::array<VkWriteDescriptorSet,5> writes{};
+    uint32_t writeCount{};
 
   const auto addBufferWrite = [&](uint32_t binding,
                                   VkDescriptorType descriptorType,
@@ -551,7 +647,7 @@ void ShadowCullManager::writeDescriptorSets(uint32_t imageIndex) {
     write.descriptorCount = 1;
     write.descriptorType  = descriptorType;
     write.pBufferInfo     = &bufferInfo;
-    writes.push_back(write);
+      writes[writeCount++]=write;
   };
 
   addBufferWrite(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, shadowCullInfo);
@@ -560,9 +656,9 @@ void ShadowCullManager::writeDescriptorSets(uint32_t imageIndex) {
   addBufferWrite(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, outputDrawInfo);
   addBufferWrite(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, drawCountInfo);
 
-  if (!writes.empty()) {
+    if (writeCount) {
     vkUpdateDescriptorSets(device_->device(),
-                           static_cast<uint32_t>(writes.size()),
+                             writeCount,
                            writes.data(), 0, nullptr);
   }
   }

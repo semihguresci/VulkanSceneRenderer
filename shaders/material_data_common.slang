@@ -2,8 +2,6 @@
 
 // Must match container::gpu::kMaterialTextureDescriptorCapacity.
 static const uint MATERIAL_TEXTURE_DESCRIPTOR_COUNT = 4096u;
-// Must match container::gpu::kMaterialSamplerDescriptorCapacity.
-static const uint MATERIAL_SAMPLER_DESCRIPTOR_COUNT = 9u;
 static const uint kInvalidGpuMaterialTexture = 0xffffffffu;
 // Float metadata stores materialIndex plus a 0.5 thin-surface bit. Keep the
 // material index range below 2^23 so the integer and half-bit round-trip in
@@ -12,6 +10,14 @@ static const uint MAX_EXACT_GBUFFER_MATERIAL_INDEX = 8388607u;
 static const uint kGpuMaterialFlagAlphaMask = 0x1u;
 static const uint kGpuMaterialFlagAlphaBlend = 0x2u;
 static const uint kGpuMaterialFlagDoubleSided = 0x4u;
+
+// glTF OPAQUE ignores every alpha source, including COLOR_0.w. Resolve after
+// interpolation and texture/opacity evaluation so all coverage passes agree.
+float ResolveGpuMaterialAlpha(float alpha, uint flags)
+{
+    return (flags & (kGpuMaterialFlagAlphaMask | kGpuMaterialFlagAlphaBlend)) == 0u
+        ? 1.0 : alpha;
+}
 static const float kGBufferMaterialThinSurfaceBit = 0.5;
 static const uint kBimSemanticColorModeOff = 0u;
 
@@ -26,10 +32,15 @@ struct GpuTextureTransform
 struct GpuTextureMetadata
 {
     uint samplerIndex;
-    uint padding0;
+    uint samplerCount;
     uint padding1;
     uint padding2;
 };
+
+uint ResolveMaterialSamplerIndex(GpuTextureMetadata metadata)
+{
+    return min(metadata.samplerIndex, max(metadata.samplerCount, 1u) - 1u);
+}
 
 struct GpuMaterial
 {
@@ -102,7 +113,44 @@ struct GpuMaterial
     GpuTextureTransform sheenRoughnessTextureTransform;
     GpuTextureTransform iridescenceTextureTransform;
     GpuTextureTransform iridescenceThicknessTextureTransform;
+    // xyz = anisotropy strength/rotation, diffuse factor; w = scene-wide aux flag.
+    float4 anisotropyDiffuseFactors;
+    float4 diffuseTransmissionColorFactor;
+    uint anisotropyTextureIndex;
+    uint diffuseTransmissionTextureIndex;
+    uint diffuseTransmissionColorTextureIndex;
+    uint extendedPadding;
+    GpuTextureTransform anisotropyTextureTransform;
+    GpuTextureTransform diffuseTransmissionTextureTransform;
+    GpuTextureTransform diffuseTransmissionColorTextureTransform;
+    float4 experimentalFactors;
+    float4 scatterColorFactor;
+    uint4 experimentalTextures;
+    GpuTextureTransform retroreflectionTextureTransform;
+    GpuTextureTransform scatterStrengthTextureTransform;
+    GpuTextureTransform scatterColorTextureTransform;
+    float4 specularGlossinessDiffuse;
+    float4 specularGlossinessSpecular; // RGB F0, W glossiness.
 };
+
+// KHR_materials_dispersion channel mapping shared by raster transmission
+// shading and reference transport: red bends least, blue most, and green
+// keeps the authored IOR. A nonpositive dispersion value disables the
+// spread; the red channel never drops below one.
+float GpuMaterialChannelIor(float ior, float dispersion, uint channel)
+{
+    float safeIor = max(ior, 1.0);
+    float halfSpread = (safeIor - 1.0) * 0.025 * max(dispersion, 0.0);
+    if (channel == 0u) return max(safeIor - halfSpread, 1.0);
+    if (channel == 2u) return safeIor + halfSpread;
+    return safeIor;
+}
+float3 GpuMaterialChannelIors(GpuMaterial material)
+{
+    return float3(GpuMaterialChannelIor(material.ior, material.dispersion, 0u),
+                  GpuMaterialChannelIor(material.ior, material.dispersion, 1u),
+                  GpuMaterialChannelIor(material.ior, material.dispersion, 2u));
+}
 
 struct DeferredMaterialLayerTerms
 {
@@ -171,35 +219,33 @@ float MaxGpuMaterialComponent(float3 value)
     return max(max(value.x, value.y), value.z);
 }
 
+// Authored factors multiply sampled values. A texture never enables a layer
+// whose factor is zero; omission/defaults are resolved by material conversion.
+float ResolveMaterialScalarFactor(float factor)
+{
+    return max(isfinite(factor) ? factor : 0.0, 0.0);
+}
+
+float3 ResolveMaterialColorFactor(float3 factor)
+{
+    return float3(ResolveMaterialScalarFactor(factor.r),
+                  ResolveMaterialScalarFactor(factor.g),
+                  ResolveMaterialScalarFactor(factor.b));
+}
+
 float ResolveDeferredTextureBackedFactor(float factor, uint textureIndex)
 {
-    float value = saturate(factor);
-    if (HasGpuMaterialTexture(textureIndex) && value <= 0.0)
-    {
-        value = 1.0;
-    }
-    return value;
+    return saturate(ResolveMaterialScalarFactor(factor));
 }
 
 float ResolveDeferredTextureBackedRoughness(float factor, uint textureIndex)
 {
-    float value = factor;
-    if (HasGpuMaterialTexture(textureIndex) && value <= 0.0)
-    {
-        value = 0.5;
-    }
-    return clamp(value, 0.045, 1.0);
+    return clamp(ResolveMaterialScalarFactor(factor), 0.045, 1.0);
 }
 
 float3 ResolveDeferredTextureBackedColor(float3 factor, uint textureIndex)
 {
-    float3 value = max(factor, 0.0.xxx);
-    if (HasGpuMaterialTexture(textureIndex) &&
-        MaxGpuMaterialComponent(value) <= 0.0)
-    {
-        value = 1.0.xxx;
-    }
-    return value;
+    return ResolveMaterialColorFactor(factor);
 }
 
 DeferredMaterialLayerTerms ResolveDeferredMaterialLayerTerms(GpuMaterial material)

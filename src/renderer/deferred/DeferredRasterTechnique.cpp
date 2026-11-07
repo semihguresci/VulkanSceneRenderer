@@ -19,12 +19,16 @@
 #include "Container/renderer/deferred/DeferredRasterResourceBridge.h"
 #include "Container/renderer/deferred/DeferredRasterSceneColorReadBarrierRecorder.h"
 #include "Container/renderer/deferred/DeferredRasterScenePassRecorder.h"
+#include "Container/renderer/deferred/DeferredRasterSceneGpuCullRoutePlanner.h"
 #include "Container/renderer/deferred/DeferredRasterTileCullPlanner.h"
 #include "Container/renderer/deferred/DeferredRasterTileCullRecorder.h"
 #include "Container/renderer/deferred/DeferredRasterTransformGizmo.h"
 #include "Container/renderer/deferred/DeferredTransparentOitFramePassRecorder.h"
 #include "Container/renderer/effects/BloomManager.h"
+#include "Container/renderer/effects/OpenVdbVolumeRenderer.h"
 #include "Container/renderer/effects/ExposureManager.h"
+#include "Container/renderer/effects/ScreenReflectionPass.h"
+#include "Container/renderer/effects/VolumetricFogPass.h"
 #include "Container/renderer/lighting/EnvironmentManager.h"
 #include "Container/renderer/lighting/LightingManager.h"
 #include "Container/renderer/picking/TransparentPickRasterPassRecorder.h"
@@ -32,6 +36,7 @@
 #include "Container/renderer/resources/FrameResourceManager.h"
 #include "Container/renderer/resources/FrameResourceRegistry.h"
 #include "Container/renderer/scene/SceneController.h"
+#include "Container/renderer/scene/PbrAuxiliaryPass.h"
 #include "Container/renderer/scene/SceneViewport.h"
 #include "Container/renderer/shadow/ShadowCullManager.h"
 #include "Container/renderer/shadow/ShadowCullPassPlanner.h"
@@ -763,7 +768,7 @@ deferredRasterScenePassInputs(const FrameRecordParams &p,
   return {.kind = kind,
           .renderPass = deferredRasterSceneRenderPass(p, kind),
           .framebuffer = deferredRasterSceneFramebuffer(p, kind),
-          .extent = deferred.swapchainExtent(),
+          .extent = deferred.sceneExtent(p),
           .draws = deferredRasterSceneOpaqueDrawLists(p.draws),
           .geometry = deferredRasterSceneOpaqueGeometry(p),
           .pipelines = deferredRasterScenePipelineInputs(p, kind),
@@ -1068,7 +1073,7 @@ DeferredRasterBimSurfacePassRecordInputs deferredRasterBimSurfacePassInputs(
           .passReady = deferredRasterBimSurfacePassReady(p, kind),
           .renderPass = deferredRasterBimSurfaceRenderPass(p, kind),
           .framebuffer = deferredRasterBimSurfaceFramebuffer(p, kind),
-          .extent = deferred.swapchainExtent(),
+          .extent = deferred.sceneExtent(p),
           .binding =
               deferredRasterBimSurfaceFrameBinding(p.bim, descriptorSets),
           .pipelines = deferredRasterBimSurfacePipelines(p, kind),
@@ -1123,6 +1128,63 @@ void recordDeferredRasterTransformGizmoOverlay(VkCommandBuffer cmd,
 }
 
 } // namespace
+
+void registerRasterTransparentPickPass(
+    RenderGraphBuilder graph, DeferredRasterFrameGraphContext *deferred,
+    std::initializer_list<RenderPassId> dependencies) {
+  const auto schedule = dependencies.size() == 0
+                            ? renderPassScheduleDependencies(RenderPassId::TransparentPick)
+                            : std::span<const RenderPassId>(dependencies.begin(), dependencies.size());
+  graph.addPass(RenderPassId::TransparentPick, schedule,
+                [deferred](VkCommandBuffer cmd, const FrameRecordParams &p) {
+                  if (deferred != nullptr) {
+                    static_cast<void>(recordTransparentPickFramePassCommands(
+                        cmd, deferredRasterTransparentPickInputs(
+                                 p, deferred->sceneExtent(p), *deferred)));
+                  }
+                });
+  // The pass clears the ID attachment and writes new IDs in both renderers.
+  graph.setPassResourceAccess(RenderPassId::TransparentPick,
+      {RenderResourceId::SceneGeometry, RenderResourceId::BimGeometry,
+       RenderResourceId::CameraBuffer, RenderResourceId::ObjectBuffer,
+       RenderResourceId::BimObjectBuffer, RenderResourceId::SceneDepth}, {},
+      {RenderResourceId::PickId, RenderResourceId::PickDepth});
+  graph.setPassReadiness(
+      RenderPassId::TransparentPick, [deferred](const FrameRecordParams &p) {
+        if (deferred == nullptr) {
+          return renderPassNotNeeded();
+        }
+        if (deferredRasterFramebuffer(
+                p, DeferredRasterFramebufferId::TransparentPick) ==
+                VK_NULL_HANDLE ||
+            !deferredRasterImageReady(p, DeferredRasterImageId::DepthStencil) ||
+            !deferredRasterImageReady(p, DeferredRasterImageId::PickDepth) ||
+            !deferredRasterImageReady(p, DeferredRasterImageId::PickId) ||
+            deferredRasterRenderPass(
+                p, DeferredRasterFramebufferId::TransparentPick) ==
+                VK_NULL_HANDLE) {
+          return renderPassMissingResource(RenderResourceId::PickId);
+        }
+        const bool lightGizmoPickReady =
+            deferredRasterLightGizmoPickReady(p, *deferred);
+        if (!hasOpaqueDrawCommands(p.draws) && !hasBimOpaqueDrawCommands(p.bim) &&
+            !hasTransparentDrawCommands(p) && !lightGizmoPickReady) {
+          return renderPassNotNeeded();
+        }
+        const bool sceneDrawable =
+            deferredRasterSceneDescriptorSet(p) != VK_NULL_HANDLE &&
+            p.scene.vertexSlice.buffer != VK_NULL_HANDLE &&
+            p.scene.indexSlice.buffer != VK_NULL_HANDLE &&
+            (hasOpaqueDrawCommands(p.draws) ||
+             hasTransparentDrawCommands(p.draws));
+        if (!lightGizmoPickReady && !sceneDrawable &&
+            !hasBimOpaqueDrawCommands(p.bim) &&
+            !hasBimTransparentGeometry(p)) {
+          return renderPassMissingResource(RenderResourceId::SceneGeometry);
+        }
+        return renderPassReady();
+      });
+}
 
 std::string_view DeferredRasterTechnique::name() const {
   return renderTechniqueName(id());
@@ -1332,7 +1394,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
     if (!hizPassPlan.active)
       return;
 
-    const auto extent = deferred->swapchainExtent();
+    const auto extent = deferred->sceneExtent(p);
     deferred->gpuCullManager()->ensureHiZImage(p.runtime.imageIndex,
                                                extent.width, extent.height);
     const DeferredRasterHiZDepthTransitionPlan hizDepthTransitionPlan =
@@ -1392,12 +1454,76 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                                bimDescriptorSets)));
                 });
 
-  graph.addPass(RenderPassId::TransparentPick,
+  graph.addPass(RenderPassId::PbrAuxiliary,
                 [deferred](VkCommandBuffer cmd, const FrameRecordParams &p) {
-                  static_cast<void>(recordTransparentPickFramePassCommands(
-                      cmd, deferredRasterTransparentPickInputs(
-                               p, deferred->swapchainExtent(), *deferred)));
-                });
+    auto* pass = p.services.pbrAuxiliaryPass;
+    if (!pass || !pass->ready() || !p.pushConstants.bindless) return;
+    const auto scene = deferredRasterScenePassInputs(
+        p, SceneRasterPassKind::GBuffer, *deferred);
+    const auto* cull = scene.gpuCullManager;
+    const bool cullReady = cull && cull->isReady();
+    const auto route = buildDeferredRasterSceneGpuCullRoutePlan(
+        {.kind = SceneRasterPassKind::GBuffer,
+         .gpuCullManagerReady = cullReady,
+         .frustumCullActive = scene.frustumCullActive,
+         .frustumDrawsValid = cullReady && cull->frustumDrawsValid(p.runtime.imageIndex),
+         .occlusionCullActive = scene.occlusionCullActive,
+         .occlusionDrawsValid = cullReady && cull->occlusionDrawsValid(p.runtime.imageIndex)});
+    const auto plan = buildSceneRasterPassPlan(
+        {.kind = SceneRasterPassKind::GBuffer,
+         .gpuIndirectAvailable = route.gpuIndirectAvailable,
+         .occludedGpuIndirectAvailable = route.occludedGpuIndirectAvailable,
+         .preferOccludedGpuIndirect = route.preferOccludedGpuIndirect,
+         .draws = scene.draws,
+         .pipelines = {.primary = pass->backCullPipeline(),
+                       .frontCull = pass->frontCullPipeline(),
+                       .noCull = pass->noCullPipeline()}});
+    pass->begin(cmd, p.runtime.imageIndex);
+    recordSceneViewportAndScissor(cmd, pass->extent());
+    static_cast<void>(recordSceneOpaqueDrawCommands(
+        cmd, {.plan = &plan.drawPlan,
+              .geometry = scene.geometry,
+              .pipelines = plan.pipelines,
+              .pipelineLayout = pass->pipelineLayout(),
+              .pushConstants = *p.pushConstants.bindless,
+              .imageIndex = p.runtime.imageIndex,
+              .debugOverlay = scene.debugOverlay,
+              .gpuCullManager = cull}));
+    auto diagnostic = scene.diagnosticCube;
+    diagnostic.pipeline = pass->backCullPipeline();
+    diagnostic.pipelineLayout = pass->pipelineLayout();
+    static_cast<void>(recordSceneDiagnosticCubeCommands(cmd, diagnostic));
+
+    // Replay the same mesh/placeholder, cull, compaction, and semantic routes
+    // after Scene geometry. Equal-depth ownership follows G-buffer ordering.
+    const std::array<VkDescriptorSet, 1> sets = {deferredRasterBimSceneDescriptorSet(p)};
+    const auto bim = deferredRasterBimSurfacePassInputs(
+        p, BimSurfacePassKind::GBuffer, *deferred, sets);
+    const auto bimPlan = buildBimSurfaceFramePassPlan(
+        {.kind = BimSurfacePassKind::GBuffer,
+         .passReady = bim.passReady,
+         .draws = bim.binding.draws,
+         .geometry = bim.binding.geometry,
+         .pipelines = {.singleSided = pass->backCullPipeline(),
+                       .windingFlipped = pass->frontCullPipeline(),
+                       .doubleSided = pass->noCullPipeline()},
+         .pushConstants = p.pushConstants.bindless,
+         .semanticColorMode = bim.binding.semanticColorMode});
+    static_cast<void>(recordBimSurfacePassCommands(
+        cmd, {.plan = &bimPlan,
+              .geometry = bim.binding.geometry,
+              .singleSidedPipeline = pass->backCullPipeline(),
+              .windingFlippedPipeline = pass->frontCullPipeline(),
+              .doubleSidedPipeline = pass->noCullPipeline(),
+              .pipelineLayout = pass->pipelineLayout(),
+              .pushConstants = bimSurfaceRasterPassPushConstants(
+                  *p.pushConstants.bindless, bimPlan),
+              .debugOverlay = bim.debugOverlay,
+              .bimManager = bim.bimManager}));
+    pass->end(cmd);
+  });
+
+  registerRasterTransparentPickPass(graph, deferred);
 
   graph.addPass(
       RenderPassId::OitClear,
@@ -1495,7 +1621,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
              .depthSamplingView = depthSamplingView,
              .cameraBuffer = deferredRasterCameraBuffer(p),
              .cameraBufferSize = deferredRasterCameraBufferSize(p),
-             .screenExtent = deferred->swapchainExtent(),
+             .screenExtent = deferred->sceneExtent(p),
              .cameraNear = p.camera.nearPlane,
              .cameraFar = p.camera.farPlane});
     static_cast<void>(recordDeferredRasterTileCullCommands(
@@ -1514,7 +1640,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
     if (deferred->environmentManager() &&
         deferred->environmentManager()->isGtaoReady() &&
         depthSamplingView != VK_NULL_HANDLE && normalView != VK_NULL_HANDLE) {
-      const auto extent = deferred->swapchainExtent();
+      const auto extent = deferred->sceneExtent(p);
       deferred->environmentManager()->dispatchGtao(
           cmd, extent.width, extent.height, deferredRasterCameraBuffer(p),
           deferredRasterCameraBufferSize(p), depthSamplingView,
@@ -1538,22 +1664,45 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
         deferredRasterDescriptorSet(p, DeferredRasterDescriptorSetId::Oit),
         deferredRasterDescriptorSet(
             p, DeferredRasterDescriptorSetId::FrameLighting)};
-    deferred->lightingPassRecorder().record(cmd, p,
+    deferred->lightingPassRecorder(p).record(cmd, p,
                                             deferredRasterSceneDescriptorSet(p),
                                             lightingSets, transparentSets);
+    if (p.services.openVdbVolumeRenderer)
+      p.services.openVdbVolumeRenderer->record(cmd, p,
+          deferred->isPassActive(RenderPassId::OitClear) &&
+          deferred->isPassActive(RenderPassId::OitResolve));
   });
 
-  registerTemporalPasses(graph);
+  graph.addPass(RenderPassId::ScreenReflections, {RenderPassId::Lighting},
+      [](VkCommandBuffer cmd, const FrameRecordParams& p) {
+        p.services.screenReflectionPass->record(cmd, p);
+      });
+  graph.setPassReadiness(RenderPassId::ScreenReflections, [](const FrameRecordParams& p) {
+    return p.services.screenReflectionPass && p.services.screenReflectionPass->ready(p)
+        ? renderPassReady() : renderPassNotNeeded();
+  });
+  graph.setPassResourceAccess(RenderPassId::ScreenReflections,
+      {RenderResourceId::SceneColor, RenderResourceId::SceneDepth,
+       RenderResourceId::GBufferAlbedo, RenderResourceId::GBufferNormal,
+       RenderResourceId::GBufferMaterial, RenderResourceId::GBufferSpecular,
+       RenderResourceId::GBufferMaterialLayers, RenderResourceId::GBufferMaterialSheen,
+       RenderResourceId::CameraBuffer, RenderResourceId::LightingData, RenderResourceId::EnvironmentMaps},
+      {RenderResourceId::AmbientOcclusion, RenderResourceId::GBufferAnisotropy,
+       RenderResourceId::GBufferDiffuseTransmission, RenderResourceId::RayScene}, {RenderResourceId::SceneColor});
+
+  registerVolumetricFogPass(graph, RenderPassId::ScreenReflections, deferred);
+  registerTemporalPasses(graph, RenderPassId::VolumetricFog);
   registerRayShadowPasses(graph);
   registerDdgiPasses(graph);
 
   graph.addPass(RenderPassId::TransformGizmos,
+                {RenderPassId::VolumetricFog, RenderPassId::TemporalResolve},
                 [deferred](VkCommandBuffer cmd, const FrameRecordParams &p) {
                   if (p.services.temporalManager &&
                       p.services.temporalManager->active())
                     return;
                   recordDeferredRasterTransformGizmoFramePass(
-                      cmd, p, deferred->swapchainExtent());
+                      cmd, p, deferred->sceneExtent(p));
                 });
 
   graph.addPass(
@@ -1650,6 +1799,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
               .bloomEnabled = bloomManager && bloomManager->enabled(),
               .bloomIntensity = bloomManager ? bloomManager->intensity() : 0.0f,
               .exposureSettings = exposureSettings,
+              .displayGrade = p.postProcess.displayGrade,
               .resolvedExposure =
                   exposureManager
                       ? exposureManager->resolvedExposure(exposureSettings)
@@ -1668,8 +1818,14 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                       : 0u,
               .transparentOitActive =
                   deferred->isPassActive(RenderPassId::OitResolve)},
+         .captureSceneLinear = p.screenshot.sceneLinear,
          .recordAfterFullscreenDraw = [deferred, &p,
                                        ppSets](VkCommandBuffer passCmd) {
+           if (p.screenshot.viewportOnly) {
+             if (auto* gui = deferred->guiManager())
+               gui->endFrame();
+             return;
+           }
            if (p.services.ddgiManager)
              p.services.ddgiManager->recordDebug(passCmd, p.runtime.imageIndex,
                                                  ppSets[0]);
@@ -1810,37 +1966,10 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
         return renderPassReady();
       });
 
-  graph.setPassReadiness(
-      RenderPassId::TransparentPick, [deferred](const FrameRecordParams &p) {
-        if (deferredRasterFramebuffer(
-                p, DeferredRasterFramebufferId::TransparentPick) ==
-                VK_NULL_HANDLE ||
-            !deferredRasterImageReady(p, DeferredRasterImageId::DepthStencil) ||
-            !deferredRasterImageReady(p, DeferredRasterImageId::PickDepth) ||
-            !deferredRasterImageReady(p, DeferredRasterImageId::PickId) ||
-            deferredRasterRenderPass(
-                p, DeferredRasterFramebufferId::TransparentPick) ==
-                VK_NULL_HANDLE) {
-          return renderPassMissingResource(RenderResourceId::PickId);
-        }
-        const bool lightGizmoPickReady =
-            deferredRasterLightGizmoPickReady(p, *deferred);
-        if (!hasOpaqueDrawCommands(p.draws) && !hasBimOpaqueDrawCommands(p.bim) &&
-            !hasTransparentDrawCommands(p) && !lightGizmoPickReady) {
-          return renderPassNotNeeded();
-        }
-        const bool sceneDrawable =
-            deferredRasterSceneDescriptorSet(p) != VK_NULL_HANDLE &&
-            p.scene.vertexSlice.buffer != VK_NULL_HANDLE &&
-            p.scene.indexSlice.buffer != VK_NULL_HANDLE &&
-            (hasOpaqueDrawCommands(p.draws) ||
-             hasTransparentDrawCommands(p.draws));
-        if (!lightGizmoPickReady && !sceneDrawable &&
-            !hasBimOpaqueDrawCommands(p.bim) &&
-            !hasBimTransparentGeometry(p)) {
-          return renderPassMissingResource(RenderResourceId::SceneGeometry);
-        }
-        return renderPassReady();
+  graph.setPassReadiness(RenderPassId::PbrAuxiliary,
+      [](const FrameRecordParams &p) {
+        return p.services.pbrAuxiliaryPass && p.services.pbrAuxiliaryPass->ready()
+                   ? renderPassReady() : renderPassNotNeeded();
       });
 
   graph.setPassReadiness(RenderPassId::OitClear,
@@ -1917,7 +2046,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                     .depthSamplingView = depthSamplingView,
                     .cameraBuffer = deferredRasterCameraBuffer(p),
                     .cameraBufferSize = deferredRasterCameraBufferSize(p),
-                    .screenExtent = deferred->swapchainExtent(),
+                    .screenExtent = deferred->sceneExtent(p),
                     .cameraNear = p.camera.nearPlane,
                     .cameraFar = p.camera.farPlane})
             .readiness;

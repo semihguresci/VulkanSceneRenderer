@@ -9,6 +9,7 @@
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/InputManager.h"
 #include "Container/utility/PipelineManager.h"
+#include "Container/utility/Platform.h"
 #include "Container/utility/SwapChainManager.h"
 #include "Container/utility/WindowManager.h"
 
@@ -19,7 +20,9 @@
 #include "Container/renderer/resources/CommandBufferManager.h"
 
 #include <algorithm>
+#include <chrono>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 namespace container::app {
@@ -98,6 +101,7 @@ void Application::initVulkan() {
       ctx.deviceWrapper->device(),
       ctx.deviceWrapper->graphicsQueue(),
       commandBufferManager_->pool(), config_);
+  allocationManager_->setTextureCompressionFeatures(ctx.deviceWrapper->enabledFeatures());
 
   renderer_ = std::make_unique<container::renderer::RendererFrontend>(
       container::renderer::RendererFrontendCreateInfo{
@@ -139,6 +143,9 @@ void Application::mainLoop() {
   }
   vkDeviceWaitIdle(vulkanContext_->result().deviceWrapper->device());
 
+  if (!config_.sceneExportPath.empty())
+    renderer_->saveSceneModel(std::filesystem::u8path(config_.sceneExportPath), config_.sceneExportKeepLinks);
+
   onMainLoop();
 }
 
@@ -155,19 +162,27 @@ void Application::screenshotCaptureLoop() {
       sequence ? sequence->frameCount
                : std::max(config_.screenshotCaptureFrame,
                config_.screenshotWarmupFrames + 1u);
+  const auto& sampleSeries = config_.pathSampleSeries;
+  const bool captureSampleSeries = !sampleSeries.empty();
+  auto checkpoint = sampleSeries.begin();
+  uint32_t seriesSamples = 0;
   const float fixedDt = config_.screenshotFixedTimestepSeconds > 0.0f
                             ? config_.screenshotFixedTimestepSeconds
                             : 1.0f / 60.0f;
 
-  for (uint32_t frameNumber = 1; frameNumber <= captureFrame &&
-                                     !window_->shouldClose();
+  for (uint32_t frameNumber = 1; !window_->shouldClose() &&
+       (captureSampleSeries ? checkpoint != sampleSeries.end() : frameNumber <= captureFrame);
        ++frameNumber) {
     window_->pollEvents();
-    renderer_->processInput(fixedDt);
+    renderer_->processInput(captureSampleSeries ? 0.0f : fixedDt);
     bool skip = false;
+    bool waitForComfyUi = false;
+    std::optional<glm::uvec2> depthProbe;
     if (sequence) {
       const auto sample = sequence->sample(frameNumber);
       renderer_->applyTemporalCapture(sample);
+      waitForComfyUi = sample.event.comfyUi && sample.event.comfyUi->wait;
+      depthProbe = sample.event.depthProbe;
       if (sample.event.minimized) {
         minimized = *sample.event.minimized;
         if (minimized)
@@ -184,22 +199,50 @@ void Application::screenshotCaptureLoop() {
       }
       skip = sample.event.skip || minimized;
     }
+    if (waitForComfyUi) {
+      using namespace std::chrono_literals;
+      if (skip) throw std::runtime_error("Cannot wait for ComfyUI on a skipped capture frame");
+      const auto deadline = std::chrono::steady_clock::now() + 30s;
+      while (renderer_->comfyUiCapturePending()) {
+        window_->pollEvents();
+        if (window_->shouldClose() || std::chrono::steady_clock::now() >= deadline)
+          throw std::runtime_error("Capture timed out waiting for ComfyUI");
+        renderer_->drawFrame(framebufferResized_);
+        std::this_thread::sleep_for(10ms);
+      }
+    }
+    // Fixed timesteps can render much faster than wall time. Settle the
+    // requested volume frame before advancing a deterministic capture tick.
+    if (!skip && config_.vdbSequenceAsync)
+      renderer_->settlePendingModelLoads();
     renderer_->gfxCaptureTick(frameNumber, skip);
     if (skip)
       continue;
     std::filesystem::path capturePath;
-    if (!config_.screenshotCapturePath.empty() &&
-        (sequence ? sequence->captures(frameNumber)
-                  : frameNumber == captureFrame)) {
-      capturePath = config_.screenshotCapturePath;
-      if (sequence && frameNumber != captureFrame) {
-        std::ostringstream suffix;
-        suffix << ".frame-" << std::setw(4) << std::setfill('0') << frameNumber;
-        capturePath = capturePath.parent_path() /
-                      (capturePath.stem().string() + suffix.str() +
-                       capturePath.extension().string());
+    std::optional<uint32_t> sampleTarget;
+    if (checkpoint != sampleSeries.end()) {
+      seriesSamples += std::min(config_.pathSamplesPerFrame, *checkpoint - seriesSamples);
+      if (seriesSamples == *checkpoint) {
+        sampleTarget = *checkpoint;
+        ++checkpoint;
       }
-      renderer_->requestScreenshot(capturePath);
+    }
+    const bool captureThisFrame = captureSampleSeries ? sampleTarget.has_value()
+        : sequence ? sequence->captures(frameNumber) : frameNumber == captureFrame;
+    if (captureThisFrame && !config_.screenshotCapturePath.empty()) {
+      capturePath = container::util::pathFromUtf8(config_.screenshotCapturePath);
+      if (sampleTarget || (sequence && frameNumber != captureFrame)) {
+        std::ostringstream suffix;
+        if (sampleTarget)
+          suffix << ".samples-" << std::setw(8) << std::setfill('0') << *sampleTarget;
+        else
+          suffix << ".frame-" << std::setw(4) << std::setfill('0') << frameNumber;
+        auto filename = capturePath.stem();
+        filename += suffix.str();
+        filename += capturePath.extension();
+        capturePath.replace_filename(filename);
+      }
+      renderer_->requestScreenshot(capturePath, config_.screenshotViewportOnly, sampleTarget);
     }
     bool submitted = false;
     for (uint32_t retry = 0; retry < 4 && !submitted; ++retry)
@@ -210,11 +253,16 @@ void Application::screenshotCaptureLoop() {
     if (!capturePath.empty()) {
       auto telemetryPath = capturePath;
       telemetryPath.replace_extension(".telemetry.json");
-      renderer_->writeCaptureTelemetry(telemetryPath);
+      renderer_->writeCaptureTelemetry(telemetryPath, depthProbe);
     }
     if (renderer_->gfxCaptureComplete()) break;
   }
   vkDeviceWaitIdle(vulkanContext_->result().deviceWrapper->device());
+  if (checkpoint != sampleSeries.end())
+    throw std::runtime_error("Reference sample series ended before all checkpoints were exported");
+
+  if (!config_.sceneExportPath.empty())
+    renderer_->saveSceneModel(std::filesystem::u8path(config_.sceneExportPath), config_.sceneExportKeepLinks);
 
   onMainLoop();
 }

@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "frames": 80,
+  "sampleFrames": [
+    40,
+    80
+  ],
+  "events": [],
+  "camera": [
+    {
+      "frame": 40,
+      "position": [
+        90,
+        53,
+        50
+      ],
+      "target": [
+        31,
+        13,
+        -19
+      ]
+    },
+    {
+      "frame": 41,
+      "position": [
+        65,
+        27,
+        22
+      ],
+      "target": [
+        39,
+        19,
+        -8
+      ]
+    }
+  ]
+}

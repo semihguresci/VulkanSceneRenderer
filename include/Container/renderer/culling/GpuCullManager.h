@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/utility/ComputePipeline.h"
+
 #include "Container/common/CommonVulkan.h"
 #include "Container/common/CommonMath.h"
 #include "Container/renderer/debug/DebugOverlayRenderer.h"
@@ -10,6 +12,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <vector>
 
 namespace container::gpu {
@@ -40,6 +43,37 @@ class GpuCullManager {
   GpuCullManager(const GpuCullManager&) = delete;
   GpuCullManager& operator=(const GpuCullManager&) = delete;
 
+  class PreparedGeneration {
+   public:
+    PreparedGeneration() noexcept;
+    ~PreparedGeneration();
+    PreparedGeneration(PreparedGeneration&&) noexcept;
+    PreparedGeneration& operator=(PreparedGeneration&&) noexcept;
+    PreparedGeneration(const PreparedGeneration&) = delete;
+    PreparedGeneration& operator=(const PreparedGeneration&) = delete;
+    [[nodiscard]] bool ready() const noexcept;
+    [[nodiscard]] uint32_t maxDrawCount() const noexcept;
+    [[nodiscard]] VkBuffer indirectDrawBuffer(uint32_t image) const noexcept;
+    [[nodiscard]] VkBuffer drawCountBuffer(uint32_t image) const noexcept;
+    [[nodiscard]] GpuCullManager& manager();
+   private:
+    friend class GpuCullManager;
+    struct State;
+    std::unique_ptr<State> state_;
+  };
+  // Detached buffer/descriptor preparation sharing immutable pipelines and the
+  // live Hi-Z/frozen-camera resources. Command storage must survive publication
+  // to retain the upload cache. Retire readers before exchange/destruction and
+  // destroy prepared histories before this manager and its shared layouts.
+  [[nodiscard]] PreparedGeneration prepareGeneration(
+      std::span<const container::gpu::AllocatedBuffer> objects,
+      std::span<const size_t> objectCapacities,
+      std::span<const container::gpu::AllocatedBuffer> cameras,
+      VkDeviceSize cameraBytes,std::span<const DrawCommand> commands,
+      uint64_t sourceRevision) const;
+  [[nodiscard]] bool canExchangeGeneration(const PreparedGeneration&) const noexcept;
+  bool exchangeGeneration(PreparedGeneration&) noexcept;
+
   // Create compute pipelines and descriptor resources.
   void createResources(const std::filesystem::path& shaderDir,
                        uint32_t descriptorSetCount = 1);
@@ -52,6 +86,8 @@ class GpuCullManager {
   // Upload CPU-side draw commands to the input SSBO and prepare for culling.
   void uploadDrawCommands(uint32_t imageIndex,
                           const std::vector<DrawCommand>& commands,
+                          uint64_t sourceRevision);
+  void uploadDrawCommands(uint32_t imageIndex,std::span<const DrawCommand> commands,
                           uint64_t sourceRevision);
 
   // Reset per-frame validity bits before recording the render graph.
@@ -176,6 +212,7 @@ class GpuCullManager {
   void destroyFrozenCameraBuffers();
   void resizePerImageState(uint32_t imageCount);
   void createHiZSampler();
+  void destroyGenerationPool(VkDescriptorPool& pool);
 
   struct HiZFrameResources {
     VkImage image{VK_NULL_HANDLE};
@@ -190,6 +227,8 @@ class GpuCullManager {
   std::shared_ptr<container::gpu::VulkanDevice> device_;
   container::gpu::AllocationManager&            allocationManager_;
   container::gpu::PipelineManager&            pipelineManager_;
+  bool ownsSharedResources_{true};
+  bool ownsGenerationPools_{false};
 
   uint32_t maxObjectCount_{0};
   std::vector<container::gpu::GpuDrawIndexedIndirectCommand> uploadScratch_{};
@@ -212,14 +251,14 @@ class GpuCullManager {
   std::vector<container::gpu::AllocatedBuffer> occlusionCountBuffers_{};
 
   // Frustum cull compute pipeline.
-  VkPipeline           frustumCullPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline frustumCullPipeline_{};
   VkPipelineLayout     frustumCullPipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout frustumCullSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool     frustumCullPool_{VK_NULL_HANDLE};
   std::vector<VkDescriptorSet> frustumCullSets_{};
 
   // Hi-Z generation.
-  VkPipeline           hizPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline hizPipeline_{};
   VkPipelineLayout     hizPipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout hizSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool     hizPool_{VK_NULL_HANDLE};
@@ -230,7 +269,7 @@ class GpuCullManager {
   uint32_t             hizMipLevels_{0};
 
   // Occlusion cull compute pipeline.
-  VkPipeline           occlusionCullPipeline_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline occlusionCullPipeline_{};
   VkPipelineLayout     occlusionCullPipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout occlusionCullSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool     occlusionCullPool_{VK_NULL_HANDLE};

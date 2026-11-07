@@ -1014,7 +1014,15 @@ TEST(RenderingConventionTests, SamplePickerPathTooltipsWrapLongPaths) {
   EXPECT_TRUE(contains(guiManager, "ImGui::TextUnformatted"));
   EXPECT_TRUE(
       contains(guiManager, "tooltipText = WrapLongPathForImGui(text)"));
-  EXPECT_TRUE(contains(guiManager, "ShowItemTooltip(option.path)"));
+  const size_t sampleListBegin = guiManager.find("drawSampleModelList(");
+  ASSERT_NE(sampleListBegin, std::string::npos);
+  const size_t sampleListEnd =
+      guiManager.find("void GuiManager::drawSceneHierarchy", sampleListBegin);
+  ASSERT_NE(sampleListEnd, std::string::npos);
+  const std::string sampleList =
+      guiManager.substr(sampleListBegin, sampleListEnd - sampleListBegin);
+  EXPECT_TRUE(contains(sampleList, "ShowItemTooltip(models[index].path)"));
+  EXPECT_FALSE(contains(sampleList, "ImGui::SetTooltip("));
   EXPECT_TRUE(contains(guiManager, "ShowItemTooltip(option.unavailableReason"));
   EXPECT_TRUE(contains(guiManager, "ImGuiHoveredFlags_AllowWhenDisabled"));
   EXPECT_TRUE(
@@ -1032,7 +1040,6 @@ TEST(RenderingConventionTests, SamplePickerPathTooltipsWrapLongPaths) {
   EXPECT_TRUE(contains(guiManager, "TextWrappedPathValue(\"Cache path\""));
   EXPECT_TRUE(contains(guiManager, "ShowItemTooltip(annotationTooltip)"));
   EXPECT_TRUE(contains(guiManager, "ShowWrappedTooltip(\"Drag to rotate."));
-  EXPECT_FALSE(contains(guiManager, "ImGui::SetTooltip("));
   EXPECT_FALSE(
       contains(guiManager, "ImGui::SetTooltip(\"%s\", option.path.c_str())"));
   EXPECT_FALSE(contains(
@@ -1175,16 +1182,25 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(contains(renderGraph, "\"GBufferSpecular\""));
 
   const size_t lightingLayoutPos = pipelineBuilder.find(
-      "layouts.lighting = pipelineManager_.createPipelineLayout(");
+      "std::vector<VkDescriptorSetLayout> lightingSets{");
   ASSERT_NE(lightingLayoutPos, std::string::npos);
   const size_t tiledLayoutPos =
-      pipelineBuilder.find("layouts.tiledLighting", lightingLayoutPos);
+      pipelineBuilder.find("std::vector<VkDescriptorSetLayout> tiledSets{",
+                           lightingLayoutPos);
   ASSERT_NE(tiledLayoutPos, std::string::npos);
   const std::string lightingLayoutBlock = pipelineBuilder.substr(
       lightingLayoutPos, tiledLayoutPos - lightingLayoutPos);
   EXPECT_TRUE(contains(lightingLayoutBlock, "descriptorLayouts.lighting"));
   EXPECT_TRUE(contains(lightingLayoutBlock, "descriptorLayouts.light"));
   EXPECT_TRUE(contains(lightingLayoutBlock, "descriptorLayouts.scene"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      lightingLayoutBlock,
+      "lightingSets{descriptorLayouts.lighting, descriptorLayouts.light,"
+      "descriptorLayouts.scene};"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      lightingLayoutBlock,
+      "layouts.lighting = pipelineManager_.createPipelineLayout("
+      "lightingSets, {lightPCR});"));
   const size_t shadowLayoutPos =
       pipelineBuilder.find("layouts.shadow", tiledLayoutPos);
   ASSERT_NE(shadowLayoutPos, std::string::npos);
@@ -1193,6 +1209,14 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(contains(tiledLayoutBlock, "descriptorLayouts.lighting"));
   EXPECT_TRUE(contains(tiledLayoutBlock, "descriptorLayouts.tiled"));
   EXPECT_TRUE(contains(tiledLayoutBlock, "descriptorLayouts.scene"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      tiledLayoutBlock,
+      "tiledSets{descriptorLayouts.lighting, descriptorLayouts.tiled,"
+      "descriptorLayouts.scene, descriptorLayouts.light};"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      tiledLayoutBlock,
+      "layouts.tiledLighting = pipelineManager_.createPipelineLayout("
+      "tiledSets, {tiledLightPCR});"));
 
   EXPECT_TRUE(contains(directionalRecorder, "std::array<VkDescriptorSet, 3>"));
   EXPECT_TRUE(contains(directionalRecorder, "inputs.descriptorSets.data()"));
@@ -1210,6 +1234,7 @@ TEST(RenderingConventionTests,
 
 TEST(RenderingConventionTests, DeferredMaterialParityUsesSharedLayeredHelpers) {
   const std::string brdfCommon = readRepoTextFile("shaders/brdf_common.slang");
+  const std::string extendedPbr = readRepoTextFile("shaders/pbr_extended_common.slang");
   const std::string directional =
       readRepoTextFile("shaders/deferred_directional.slang");
   const std::string pointLight = readRepoTextFile("shaders/point_light.slang");
@@ -1223,6 +1248,25 @@ TEST(RenderingConventionTests, DeferredMaterialParityUsesSharedLayeredHelpers) {
   EXPECT_TRUE(contains(brdfCommon, "EvaluateDeferredClearcoatDirectLight"));
   EXPECT_TRUE(contains(brdfCommon, "EvaluateDeferredSheenDirectLight"));
   EXPECT_TRUE(contains(brdfCommon, "EvaluateDeferredLayeredDirectLight"));
+  const size_t layeredStart = extendedPbr.find("float3 EvaluateExtendedPbrLayeredDirectLight(");
+  ASSERT_NE(layeredStart, std::string::npos);
+  const std::string_view extendedLayered(extendedPbr.data() + layeredStart,
+                                        extendedPbr.size() - layeredStart);
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      extendedLayered,
+      "return EvaluateDeferredLayeredDirectLight(albedo, F0, metallic, roughness,"
+      "N, V, L, radiance, clearcoatFactor, clearcoatRoughness,"
+      "sheenColor, sheenRoughness);"));
+  const size_t disabledGuard = extendedLayered.find("if (!HasExtendedPbrEffect(terms))");
+  const size_t legacyFallback = extendedLayered.find("return EvaluateDeferredLayeredDirectLight(");
+  const size_t extendedEvaluation = extendedLayered.find("float3 lighting = EvaluateExtendedPbrDirectLight(");
+  ASSERT_NE(disabledGuard, std::string::npos);
+  ASSERT_NE(legacyFallback, std::string::npos);
+  ASSERT_NE(extendedEvaluation, std::string::npos);
+  EXPECT_LT(disabledGuard, legacyFallback);
+  EXPECT_LT(legacyFallback, extendedEvaluation);
+  EXPECT_TRUE(contains(extendedPbr, "EvaluateDeferredClearcoatDirectLight("));
+  EXPECT_TRUE(contains(extendedPbr, "EvaluateDeferredSheenDirectLight("));
 
   EXPECT_TRUE(contains(directional, "gSpecularTexture"));
   EXPECT_TRUE(
@@ -1232,7 +1276,7 @@ TEST(RenderingConventionTests, DeferredMaterialParityUsesSharedLayeredHelpers) {
   EXPECT_TRUE(contains(directional, "gMaterialLayersTexture.Load"));
   EXPECT_TRUE(contains(directional, "gMaterialSheenTexture.Load"));
   EXPECT_TRUE(contains(directional, "layerTerms.iridescenceThickness"));
-  EXPECT_TRUE(contains(directional, "EvaluateDeferredLayeredDirectLight("));
+  EXPECT_TRUE(contains(directional, "EvaluateExtendedPbrLayeredDirectLight("));
 
   EXPECT_TRUE(contains(pointLight, "gSpecularTexture"));
   EXPECT_TRUE(
@@ -1242,7 +1286,7 @@ TEST(RenderingConventionTests, DeferredMaterialParityUsesSharedLayeredHelpers) {
   EXPECT_TRUE(contains(pointLight, "gMaterialLayersTexture.Load"));
   EXPECT_TRUE(contains(pointLight, "gMaterialSheenTexture.Load"));
   EXPECT_TRUE(contains(pointLight, "layerTerms.iridescenceThickness"));
-  EXPECT_TRUE(contains(pointLight, "EvaluateDeferredLayeredDirectLight("));
+  EXPECT_TRUE(contains(pointLight, "EvaluateExtendedPbrLayeredDirectLight("));
   EXPECT_TRUE(contains(
       pointLight,
       "[[vk::binding(3, 2)]] StructuredBuffer<GpuMaterial> uMaterials"));
@@ -1257,7 +1301,7 @@ TEST(RenderingConventionTests, DeferredMaterialParityUsesSharedLayeredHelpers) {
   EXPECT_TRUE(contains(tiledLighting, "gMaterialLayersTexture.Load"));
   EXPECT_TRUE(contains(tiledLighting, "gMaterialSheenTexture.Load"));
   EXPECT_TRUE(contains(tiledLighting, "layerTerms.iridescenceThickness"));
-  EXPECT_TRUE(contains(tiledLighting, "EvaluateDeferredLayeredDirectLight("));
+  EXPECT_TRUE(contains(tiledLighting, "EvaluateExtendedPbrLayeredDirectLight("));
   EXPECT_TRUE(contains(
       tiledLighting,
       "[[vk::binding(3, 2)]] StructuredBuffer<GpuMaterial> uMaterials"));
@@ -1283,7 +1327,7 @@ TEST(RenderingConventionTests,
     const std::string shader =
         readRepoTextFile(std::filesystem::path(shaderPath));
 
-    EXPECT_GE(countOccurrences(shader, "EvaluateDeferredLayeredDirectLight("),
+    EXPECT_GE(countOccurrences(shader, "EvaluateExtendedPbrLayeredDirectLight("),
               3u)
         << shaderPath;
     EXPECT_TRUE(contains(shader, "clearcoat, clearcoatRoughness"))
@@ -1598,11 +1642,16 @@ TEST(
   EXPECT_TRUE(contains(screenSpaceShadow, "coplanarReceiverSurface"));
   EXPECT_TRUE(contains(screenSpaceShadow, "continue"));
 
-  EXPECT_TRUE(contains(pointLight, "geometricNormal, pc.positionRadius.xyz"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      pointLight, "float3 shadowNormal = ExtendedPbrDeferredShadowNormal("
+                  "geometricNormal, normal, L, extended);"));
+  EXPECT_TRUE(contains(pointLight, "shadowNormal, pc.positionRadius.xyz"));
   EXPECT_TRUE(contains(pointLight, "gDepthTexture"));
   EXPECT_TRUE(contains(pointLight, "gNormalTexture"));
-  EXPECT_TRUE(
-      contains(tiledLighting, "geometricNormal, light.positionRadius.xyz"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      tiledLighting, "float3 shadowNormal = ExtendedPbrDeferredShadowNormal("
+                     "geometricNormal, normal, L, extended);"));
+  EXPECT_TRUE(contains(tiledLighting, "shadowNormal, light.positionRadius.xyz"));
   EXPECT_TRUE(contains(tiledLighting, "gDepthTexture"));
   EXPECT_TRUE(contains(tiledLighting, "gNormalTexture"));
 }
@@ -1705,29 +1754,57 @@ TEST(RenderingConventionTests,
       readRepoTextFile("shaders/tiled_lighting.slang");
   const std::string transparent =
       readRepoTextFile("shaders/forward_transparent.slang");
+  const std::string deferredBias =
+      readRepoTextFile("shaders/pbr_extended_deferred_common.slang");
+  const std::string forwardBias =
+      readRepoTextFile("shaders/pbr_extended_sampling_common.slang");
+
+  // The new helper may orient a geometric normal toward a back-side emitter;
+  // the shading normal can gate that decision but must never supply the bias.
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      deferredBias,
+      "return terms.diffuseTransmissionFactor > 0.0 &&"
+      "dot(geometricNormal, lightDirection) < 0.0 &&"
+      "dot(shadingNormal, lightDirection) < 0.0"
+      "? -geometricNormal : geometricNormal;"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      forwardBias,
+      "return terms.diffuseTransmissionFactor > 0.0 &&"
+      "dot(geometricNormal, surfaceToLight) < 0.0"
+      "? -geometricNormal : geometricNormal;"));
 
   EXPECT_TRUE(contains(deferredDirectional, "float3 geometricNormal"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      deferredDirectional, "float3 shadowNormal = ExtendedPbrDeferredShadowNormal("
+                           "geometricNormal, normal, L, extended);"));
   EXPECT_TRUE(contains(deferredDirectional,
-                       "worldPosition, geometricNormal, "
+                       "worldPosition, shadowNormal, "
                        "uLighting.directionalDirection.xyz"));
   EXPECT_TRUE(contains(deferredDirectional, "geometricNormal, normal, V"));
 
   EXPECT_TRUE(contains(pointLight, "float3 geometricNormal"));
   EXPECT_TRUE(
-      contains(pointLight, "lightData, worldPosition, geometricNormal"));
-  EXPECT_TRUE(contains(pointLight, "worldPosition, geometricNormal, "
+      contains(pointLight, "lightData, worldPosition, shadowNormal"));
+  EXPECT_TRUE(contains(pointLight, "worldPosition, shadowNormal, "
                                    "pc.positionRadius.xyz"));
 
   EXPECT_TRUE(contains(tiledLighting, "float3 geometricNormal"));
-  EXPECT_TRUE(contains(tiledLighting, "light, worldPosition, geometricNormal"));
-  EXPECT_TRUE(contains(tiledLighting, "worldPosition, geometricNormal, "
+  EXPECT_TRUE(contains(tiledLighting, "light, worldPosition, shadowNormal"));
+  EXPECT_TRUE(contains(tiledLighting, "worldPosition, shadowNormal, "
                                       "light.positionRadius.xyz"));
 
   EXPECT_TRUE(contains(transparent, "surfaceNormal.geometricNormal"));
-  EXPECT_TRUE(
-      contains(transparent, "vertIn.worldPos, surfaceNormal.geometricNormal"));
-  EXPECT_TRUE(contains(
-      transparent, "i, light, vertIn.worldPos, surfaceNormal.geometricNormal"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      transparent, "float3 directionalShadowNormal = ExtendedPbrShadowBiasNormal("
+                   "surfaceNormal.geometricNormal, directionalL, extendedTerms);"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      transparent, "float3 pointShadowNormal = ExtendedPbrShadowBiasNormal("
+                   "surfaceNormal.geometricNormal, L, extendedTerms);"));
+  EXPECT_TRUE(contains(transparent, "vertIn.worldPos, directionalShadowNormal"));
+  EXPECT_TRUE(contains(transparent, "light, vertIn.worldPos, pointShadowNormal"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      transparent, "ExtendedPbrShadowBiasNormal(surfaceNormal.geometricNormal,"
+                   "L, extendedTerms)"));
 }
 
 TEST(RenderingConventionTests,
@@ -1771,7 +1848,13 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(containsIgnoringWhitespace(
       deferredDirectional,
       "ComputeDiffuseAmbientFloor("
-      "albedo.rgb, occlusion, ssao, environmentIntensity, bounceIntensity);"));
+      "albedo.rgb, occlusion, ssao, environmentIntensity, bounceIntensity) *"
+      "((1.0 - ddgiCoverage) * diffuseReflectionWeight);"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      deferredDirectional,
+      "float diffuseReflectionWeight = ExtendedPbrDiffuseReflectionWeight(extended);"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      deferredDirectional, "bounceIntensity *= 1.0 - ddgiCoverage;"));
 
   EXPECT_TRUE(contains(forwardOpaque, "float bounceIntensity"));
   EXPECT_TRUE(contains(forwardOpaque, "float environmentFloorScale"));
@@ -1782,7 +1865,15 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(containsIgnoringWhitespace(
       forwardOpaque,
       "ComputeForwardAmbientFloor("
-      "baseColor, occlusion, environmentIntensity, uLighting.bounceIntensity);"));
+      "diffuseBaseColor, occlusion, environmentIntensity, bounceIntensity) *"
+      "(1.0 - ddgiCoverage);"));
+  EXPECT_TRUE(containsIgnoringWhitespace(forwardOpaque, "float3 diffuseBaseColor = baseColor;"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      forwardOpaque, "diffuseBaseColor *= ExtendedPbrDiffuseReflectionWeight(extendedTerms);"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      forwardOpaque,
+      "float bounceIntensity = max(ForwardFiniteOr("
+      "uLighting.bounceIntensity, 0.0), 0.0) * (1.0 - ddgiCoverage);"));
 
   EXPECT_TRUE(contains(forwardTransparent, "float bounceIntensity"));
   EXPECT_TRUE(contains(forwardTransparent, "float environmentFloorScale"));
@@ -1793,7 +1884,10 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(containsIgnoringWhitespace(
       forwardTransparent,
       "ComputeTransparentAmbientFloor("
-      "baseColor, occlusion, environmentIntensity, uLighting.bounceIntensity);"));
+      "diffuseBaseColor, occlusion, environmentIntensity, uLighting.bounceIntensity);"));
+  EXPECT_TRUE(containsIgnoringWhitespace(forwardTransparent, "float3 diffuseBaseColor = baseColor;"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      forwardTransparent, "diffuseBaseColor *= ExtendedPbrDiffuseReflectionWeight(extendedTerms);"));
 }
 
 TEST(RenderingConventionTests,
@@ -1886,42 +1980,51 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(containsIgnoringWhitespace(
       deferredDirectional,
       "EvaluateDiffuseBounceLight("
-      "albedo.rgb, metallic, normal, geometricNormal, V, L, lightColor,"
+      "albedo.rgb * diffuseReflectionWeight, metallic, normal, geometricNormal, V, L, lightColor,"
       "shadowFactor, occlusion, bounceIntensity);"));
 
   EXPECT_TRUE(contains(pointLight, "float3 unshadowedRadiance = radiance;"));
+  EXPECT_TRUE(contains(pointLight, "float bounceIntensity = pc.bounceIntensity;"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      pointLight, "bounceIntensity *= 1.0 - saturate(ddgi.coverage);"));
   EXPECT_TRUE(containsIgnoringWhitespace(
       pointLight,
       "EvaluateDiffuseBounceLight("
-      "albedo.rgb, metallic, normal, geometricNormal, V, L,"
+      "albedo.rgb * ExtendedPbrDiffuseReflectionWeight(extended), metallic,"
+      "normal, geometricNormal, V, L,"
       "unshadowedRadiance, lightVisibility, saturate(material.z),"
-      "pc.bounceIntensity);"));
+      "bounceIntensity);"));
   EXPECT_TRUE(contains(tiledLighting, "float3 unshadowedRadiance = radiance;"));
+  EXPECT_TRUE(
+      contains(tiledLighting, "float bounceIntensity = pc.bounceIntensity;"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      tiledLighting, "bounceIntensity *= 1.0 - saturate(ddgi.coverage);"));
   EXPECT_TRUE(containsIgnoringWhitespace(
       tiledLighting,
       "EvaluateDiffuseBounceLight("
-      "albedo.rgb, metallic, normal, geometricNormal, V, L,"
+      "albedo.rgb * ExtendedPbrDiffuseReflectionWeight(extended), metallic,"
+      "normal, geometricNormal, V, L,"
       "unshadowedRadiance, lightVisibility, saturate(material.z),"
-      "pc.bounceIntensity);"));
+      "bounceIntensity);"));
 
   EXPECT_TRUE(containsIgnoringWhitespace(
       forwardOpaque,
       "EvaluateDiffuseBounceLight("
-      "baseColor, metallic, surfaceNormal.shadingNormal,"
+      "diffuseBaseColor, metallic, surfaceNormal.shadingNormal,"
       "surfaceNormal.geometricNormal, V, directionalL,"
       "directionalRadiance, shadowFactor, occlusion,"
-      "uLighting.bounceIntensity);"));
+      "bounceIntensity);"));
   EXPECT_TRUE(containsIgnoringWhitespace(
       forwardTransparent,
       "EvaluateDiffuseBounceLight("
-      "baseColor, metallic, surfaceNormal.shadingNormal,"
+      "diffuseBaseColor, metallic, surfaceNormal.shadingNormal,"
       "surfaceNormal.geometricNormal, V, directionalL,"
       "directionalRadiance, shadowFactor, occlusion,"
       "uLighting.bounceIntensity);"));
   EXPECT_FALSE(containsIgnoringWhitespace(
       forwardOpaque,
       "directionalRadiance * shadowFactor, shadowFactor, occlusion,"
-      "uLighting.bounceIntensity"));
+      "bounceIntensity"));
   EXPECT_FALSE(containsIgnoringWhitespace(
       forwardTransparent,
       "directionalRadiance * shadowFactor, shadowFactor, occlusion,"
@@ -2062,26 +2165,22 @@ TEST(RenderingConventionTests, SpotLightsSharePointLightDataWithConeFields) {
       readRepoTextFile("src/utility/SceneManager.cpp");
   const std::string lightingManager =
       readRepoTextFile("src/renderer/lighting/LightingManager.cpp");
-  const std::string pointLight = readRepoTextFile("shaders/point_light.slang");
-  const std::string tiledLighting =
-      readRepoTextFile("shaders/tiled_lighting.slang");
-  const std::string transparent =
-      readRepoTextFile("shaders/forward_transparent.slang");
-
   EXPECT_TRUE(contains(sceneData, "kLightTypeSpot = 1.0f"));
   EXPECT_TRUE(contains(sceneData, "directionInnerCos"));
   EXPECT_TRUE(contains(sceneData, "coneOuterCosType"));
-  EXPECT_TRUE(contains(lightingStructs, "SpotLightConeAttenuation"));
+  EXPECT_TRUE(contains(lightingStructs, "return SpotLightConeAttenuation"));
   EXPECT_TRUE(contains(lightingStructs, "LIGHT_TYPE_SPOT = 1.0"));
   EXPECT_TRUE(contains(sceneManager, "gltfSpotConeCosines"));
   EXPECT_TRUE(contains(sceneManager, "lightDefinition.type == \"spot\""));
   EXPECT_TRUE(
-      contains(sceneManager, "authoredPointLights_.push_back(spotLight)"));
+      contains(sceneManager, "result.points.push_back(spotLight)"));
   EXPECT_TRUE(
       contains(lightingManager, "authoredLight.coneOuterCosType.y >= 0.5f"));
-  EXPECT_TRUE(contains(pointLight, "SpotLightConeAttenuation"));
-  EXPECT_TRUE(contains(tiledLighting, "SpotLightConeAttenuation"));
-  EXPECT_TRUE(contains(transparent, "SpotLightConeAttenuation"));
+  for (const char* file : {"shaders/point_light.slang", "shaders/tiled_lighting.slang",
+                           "shaders/forward_opaque.slang", "shaders/forward_transparent.slang",
+                           "shaders/ddgi_trace.slang", "shaders/reference_pathtrace.slang",
+                           "shaders/openvdb_volume.slang"})
+    EXPECT_TRUE(contains(readRepoTextFile(file), "LocalLightAngularIntensity")) << file;
 }
 
 TEST(RenderingConventionTests, AreaLightDataLayoutMatchesShaderContract) {
@@ -2102,7 +2201,14 @@ TEST(RenderingConventionTests, AreaLightDataLayoutMatchesShaderContract) {
   EXPECT_EQ(offsetof(AreaLightData, tangentHalfSize), 48u);
   EXPECT_EQ(offsetof(AreaLightData, bitangentHalfSize), 64u);
 
-  EXPECT_EQ(sizeof(LightingData), 80u);
+  EXPECT_EQ(sizeof(LightingData), 2224u);
+  EXPECT_EQ(offsetof(LightingData, environmentOrientation), 80u);
+  EXPECT_EQ(offsetof(LightingData, environmentBackground), 96u);
+  EXPECT_EQ(offsetof(LightingData, environmentSunDirection), 112u);
+  EXPECT_EQ(offsetof(LightingData, environmentSunRadiance), 128u);
+  EXPECT_EQ(offsetof(LightingData, aerialGeometry), 144u);
+  EXPECT_EQ(offsetof(LightingData, aerialDensity), 160u);
+  EXPECT_EQ(offsetof(LightingData, atmosphereLut), 176u);
   EXPECT_EQ(offsetof(LightingData, areaLightCount), 56u);
   EXPECT_EQ(offsetof(LightingData, localShadowEnabled), 60u);
   EXPECT_EQ(offsetof(LightingData, bounceIntensity), 64u);
@@ -2183,7 +2289,7 @@ TEST(RenderingConventionTests, RectangularAndDiskAreaLightsImportToCpuBuffers) {
   EXPECT_TRUE(contains(sceneManager, "type == \"rect\""));
   EXPECT_TRUE(contains(sceneManager, "type == \"disk\""));
   EXPECT_TRUE(
-      contains(sceneManager, "authoredAreaLights_.push_back(*areaLight)"));
+      contains(sceneManager, "result.areas.push_back(*areaLight)"));
   EXPECT_TRUE(contains(sceneManager, "gltfAreaLightTangent"));
   EXPECT_TRUE(contains(sceneManager, "gltfAreaLightBitangent"));
 
@@ -2447,6 +2553,8 @@ TEST(RenderingConventionTests, MaterialTextureSamplersUsePerTextureMetadata) {
   EXPECT_EQ(container::gpu::kMaterialSamplerWrapMirroredRepeat, 2u);
   EXPECT_EQ(sizeof(GpuTextureMetadata), 16u);
   EXPECT_EQ(offsetof(GpuTextureMetadata, samplerIndex), 0u);
+  EXPECT_EQ(offsetof(GpuTextureMetadata, samplerCount), 4u);
+  EXPECT_EQ(GpuTextureMetadata{}.samplerCount, 1u);
 
   const std::string sceneManager =
       readRepoTextFile("src/utility/SceneManager.cpp");
@@ -2459,27 +2567,25 @@ TEST(RenderingConventionTests, MaterialTextureSamplersUsePerTextureMetadata) {
   const std::string gbuffer = readRepoTextFile("shaders/gbuffer.slang");
 
   EXPECT_TRUE(contains(materialX, "gltfTextureSamplerIndex"));
-  EXPECT_TRUE(contains(materialX, "TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE"));
-  EXPECT_TRUE(contains(materialX, "TINYGLTF_TEXTURE_WRAP_MIRRORED_REPEAT"));
+  EXPECT_TRUE(contains(materialX, "NormalizeMaterialSamplerKey"));
   EXPECT_TRUE(contains(materialX, "textureCacheKey"));
   EXPECT_TRUE(contains(materialX, "resource.samplerIndex = samplerIndex"));
 
-  EXPECT_TRUE(contains(sceneManager, "materialSamplerAddressMode"));
-  EXPECT_TRUE(contains(sceneManager, "VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE"));
-  EXPECT_TRUE(
-      contains(sceneManager, "VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT"));
+  EXPECT_TRUE(contains(sceneManager, "MakeMaterialSamplerCreateInfo"));
+  EXPECT_TRUE(contains(sceneManager, "PlanMaterialSamplerSlots"));
+  // Source-aware loader cache identity and sampler separation are exercised
+  // behaviorally by SceneMergeGenerationGpu.TextureSourceProducerKeepsPairedSourceIdsAndIndependentColorDataRoles.
   EXPECT_TRUE(contains(sceneManager, "uploadTextureMetadataBuffer"));
   EXPECT_TRUE(contains(sceneManager, "dstBinding = 4"));
   EXPECT_TRUE(contains(sceneManager, "dstBinding = 5"));
 
-  EXPECT_TRUE(
-      contains(materialCommon, "MATERIAL_SAMPLER_DESCRIPTOR_COUNT = 9u"));
   EXPECT_TRUE(contains(materialCommon, "struct GpuTextureMetadata"));
-  EXPECT_TRUE(contains(pbrCommon, "uTextureMetadata[texIndex].samplerIndex"));
+  EXPECT_TRUE(contains(materialCommon, "uint samplerCount"));
+  EXPECT_TRUE(contains(pbrCommon, "ResolveMaterialSamplerIndex(uTextureMetadata[texIndex])"));
   EXPECT_TRUE(contains(pbrCommon, "materialSamplers[samplerIndex]"));
   EXPECT_TRUE(contains(
       gbuffer,
-      "SamplerState materialSamplers[MATERIAL_SAMPLER_DESCRIPTOR_COUNT]"));
+      "SamplerState materialSamplers[]"));
   EXPECT_TRUE(contains(
       gbuffer, "StructuredBuffer<GpuTextureMetadata> uTextureMetadata"));
   EXPECT_TRUE(
@@ -2487,14 +2593,55 @@ TEST(RenderingConventionTests, MaterialTextureSamplersUsePerTextureMetadata) {
   EXPECT_FALSE(contains(gbuffer, "SamplerState baseSampler"));
 }
 
+TEST(RenderingConventionTests, SamplerReplacementBudgetIsCheckedBeforeRetiringAssets) {
+  const std::string source = readRepoTextFile("src/utility/SceneManager.cpp");
+  const auto start = source.find("bool SceneManager::reloadModel(");
+  const auto finish = source.find("void SceneManager::updateDescriptorSets(", start);
+  ASSERT_NE(start, std::string::npos);
+  ASSERT_NE(finish, std::string::npos);
+  const auto reload = source.substr(start, finish - start);
+  const auto check = reload.find("PlanMaterialSamplerSlots(");
+  const auto retire = reload.find("resetLoadedAssets()");
+  ASSERT_NE(check, std::string::npos);
+  ASSERT_NE(retire, std::string::npos);
+  EXPECT_LT(check, retire);
+  const auto preparation = reload.substr(0, retire);
+  EXPECT_TRUE(contains(preparation, "CollectGltfMaterialSamplerKeys(prepared->gltfModel)"));
+  EXPECT_TRUE(contains(preparation, "kDefaultSceneModelRelativePaths"));
+  EXPECT_FALSE(contains(preparation, "validateMaterialSamplerPolicies("));
+}
+
+TEST(RenderingConventionTests, DefaultScenePreflightAndUploadUseTheSameGltfCapabilityPolicy) {
+  const auto source = readRepoTextFile("src/utility/SceneManager.cpp");
+  const auto policy = source.find("GltfLoadResult prepareDefaultSceneGltfAsset(");
+  const auto policyEnd = source.find("bool hasMaterialTexture(", policy);
+  ASSERT_NE(policy, std::string::npos);
+  ASSERT_NE(policyEnd, std::string::npos);
+  const auto restrictions = source.substr(policy, policyEnd - policy);
+  EXPECT_TRUE(contains(restrictions, "unavailableRuntimeExtensions"));
+  EXPECT_TRUE(contains(restrictions, "EXT_mesh_gpu_instancing"));
+  EXPECT_TRUE(contains(restrictions, "options.enableExperimentalMaterials = enableExperimentalMaterials"));
+
+  const auto reload = source.find("bool SceneManager::reloadModel(");
+  const auto retire = source.find("resetLoadedAssets()", reload);
+  const auto append = source.find("void SceneManager::appendSceneAsset(");
+  const auto upload = source.find("UploadPreparedGltfTextures(", append);
+  ASSERT_NE(reload, std::string::npos);
+  ASSERT_NE(retire, std::string::npos);
+  ASSERT_NE(append, std::string::npos);
+  ASSERT_NE(upload, std::string::npos);
+  const auto preflight = source.substr(reload, retire - reload);
+  const auto publication = source.substr(append, upload - append);
+  for (const auto& step : {preflight, publication})
+    EXPECT_TRUE(contains(step, "const bool experimental = config_.experimentalGltfMaterials"));
+  EXPECT_TRUE(contains(preflight, "prepareDefaultSceneGltfAsset(resolveSceneAssetPath(entry), experimental)"));
+  EXPECT_TRUE(contains(publication, "prepareDefaultSceneGltfAsset(assetPath, experimental)"));
+}
+
 TEST(RenderingConventionTests,
      MaterialTexturesUseRuntimeMipSelectionToAvoidTemporalShimmer) {
   const std::string pbrCommon =
       readRepoTextFile("shaders/pbr_material_common.slang");
-  const std::string allocationManager =
-      readRepoTextFile("src/utility/AllocationManager.cpp");
-  const std::string allocationManagerHeader =
-      readRepoTextFile("include/Container/utility/AllocationManager.h");
   const std::string sceneManager =
       readRepoTextFile("src/utility/SceneManager.cpp");
 
@@ -2515,29 +2662,9 @@ TEST(RenderingConventionTests,
   const std::string explicitSample = pbrCommon.substr(explicitSampleStart);
   EXPECT_TRUE(contains(explicitSample, ".SampleLevel("));
 
-  EXPECT_TRUE(contains(allocationManager, "CalculateTextureMipLevels"));
-  EXPECT_TRUE(contains(allocationManager, "textureFormatSupportsLinearBlit"));
-  EXPECT_TRUE(contains(allocationManager, "VK_FORMAT_FEATURE_BLIT_SRC_BIT"));
-  EXPECT_TRUE(contains(allocationManager, "VK_FORMAT_FEATURE_BLIT_DST_BIT"));
-  EXPECT_TRUE(contains(allocationManager, "generateTextureMipmaps"));
-  EXPECT_TRUE(contains(allocationManager, "vkCmdBlitImage"));
-  EXPECT_TRUE(contains(allocationManager,
-                       "VK_IMAGE_USAGE_TRANSFER_SRC_BIT"));
-  EXPECT_TRUE(contains(allocationManager, "imageInfo.mipLevels = mipLevels"));
-  EXPECT_TRUE(containsIgnoringWhitespace(
-      allocationManager,
-      "VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u, 0u, mipLevels"));
-  EXPECT_TRUE(containsIgnoringWhitespace(
-      allocationManager,
-      "createImageView(image, imageInfo.format, VK_IMAGE_VIEW_TYPE_2D, 1u, "
-      "mipLevels)"));
-  EXPECT_TRUE(contains(allocationManagerHeader, "generateTextureMipmaps"));
-  EXPECT_TRUE(contains(allocationManagerHeader, "uint32_t levelCount = 1u"));
-
-  EXPECT_TRUE(contains(sceneManager,
-                       "info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR"));
-  EXPECT_TRUE(contains(sceneManager, "info.minLod = 0.0f"));
-  EXPECT_TRUE(contains(sceneManager, "info.maxLod = VK_LOD_CLAMP_NONE"));
+  // Authored-level preservation and generated linear/sRGB mip values are
+  // checked through real AllocationManager GPU readback in texture_upload_gpu_tests.
+  EXPECT_TRUE(contains(sceneManager, "MakeMaterialSamplerCreateInfo"));
 }
 
 TEST(RenderingConventionTests, IndirectDrawObjectIndexUsesBaseInstance) {
@@ -2883,8 +3010,17 @@ TEST(RenderingConventionTests, BimFloorPlanOverlayCanBeEnabledInViewer) {
       contains(bimManagerHeader, "floorPlanSourceElevationDrawCommands()"));
   EXPECT_TRUE(contains(bimManagerHeader, "hasFloorPlanOverlay()"));
   EXPECT_TRUE(contains(bimManager, "appendFloorPlanOverlayGeometry"));
-  EXPECT_TRUE(contains(bimManager, "floorPlanGround_.firstIndex"));
-  EXPECT_TRUE(contains(bimManager, "floorPlanSourceElevation_.firstIndex"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager, "floorPlanGround_ = prepared->floorPlanGround;"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager,
+      "floorPlanSourceElevation_ = prepared->floorPlanSourceElevation;"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager, "overlay.firstIndex = result.firstIndex;"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager, "buildFloorPlan(false, floorPlanGround_);"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager, "buildFloorPlan(true, floorPlanSourceElevation_);"));
   EXPECT_TRUE(contains(bimManager, "appendFloorPlanOverlay(floorPlanGround_)"));
   EXPECT_TRUE(contains(bimManager,
                        "appendFloorPlanOverlay(floorPlanSourceElevation_)"));
@@ -3045,7 +3181,9 @@ TEST(RenderingConventionTests, GltfPunctualPointLightsImportAsAuthoredLights) {
       contains(lightingManager, "sceneManager_->authoredPointLights()"));
   EXPECT_TRUE(
       contains(lightingManager, "sceneManager_->authoredDirectionalLights()"));
-  EXPECT_TRUE(contains(lightingManager, "authoredDirectionalLights().front()"));
+  EXPECT_TRUE(contains(lightingManager, "authoredLightsOverride_->directionals"));
+  EXPECT_TRUE(contains(lightingManager, "if (lights.empty())"));
+  EXPECT_TRUE(contains(lightingManager, "lights.front()"));
   EXPECT_TRUE(contains(lightingManager,
                        "glm::vec4(glm::vec3(authoredLight.direction), 0.0f)"));
   EXPECT_TRUE(contains(
@@ -3090,31 +3228,31 @@ TEST(RenderingConventionTests, SceneControlsExposeEditableLightInspector) {
   const std::string frontend =
       readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
 
+  const auto controls = readRepoTextFile("src/utility/LightEditControls.cpp");
   EXPECT_TRUE(contains(header, "EditableLightEntity"));
-  EXPECT_TRUE(contains(header, "addManualEditableLight"));
+  EXPECT_TRUE(contains(header, "queueLightAddRequest"));
   EXPECT_TRUE(contains(gui, "Editable lights"));
-  EXPECT_TRUE(contains(gui, "Selected Light Properties"));
-  EXPECT_TRUE(contains(gui, "Light Transform"));
-  EXPECT_TRUE(contains(gui, "Light Radiance"));
-  EXPECT_TRUE(contains(gui, "Spot Beam"));
-  EXPECT_TRUE(contains(gui, "Area Emitter"));
-  EXPECT_TRUE(contains(gui, "Area Width"));
-  EXPECT_TRUE(contains(gui, "Area Height"));
-  EXPECT_TRUE(contains(gui, "Shadow Eligibility"));
+  EXPECT_TRUE(contains(controls, "Selected Light Properties"));
+  EXPECT_TRUE(contains(controls, "Light Transform"));
+  EXPECT_TRUE(contains(controls, "Light Radiance"));
+  EXPECT_TRUE(contains(controls, "Spot Beam"));
+  EXPECT_TRUE(contains(controls, "Area Emitter"));
+  EXPECT_TRUE(contains(controls, "Area Width"));
+  EXPECT_TRUE(contains(controls, "Area Height"));
+  EXPECT_TRUE(contains(controls, "Shadow Eligibility"));
   EXPECT_TRUE(
-      contains(gui, "Local shadow budget assigns the first eligible point/spot "
-                    "lights"));
-  EXPECT_TRUE(contains(gui, "Directional direction"));
+      contains(controls, "first eligible point and spot lights"));
+  EXPECT_TRUE(contains(controls, "LightEditField::Direction"));
   EXPECT_TRUE(contains(gui, "Light Runtime Stats"));
   EXPECT_TRUE(contains(gui, "Lighting Settings"));
   EXPECT_EQ(gui.find("Lighting Preset"), std::string::npos);
   EXPECT_EQ(gui.find("LightingPreset("), std::string::npos);
   EXPECT_LT(gui.find("Editable lights"), gui.find("Light Runtime Stats"));
-  EXPECT_TRUE(contains(gui, "Add point"));
-  EXPECT_TRUE(contains(gui, "Add spot"));
-  EXPECT_TRUE(contains(gui, "Add area"));
+  EXPECT_TRUE(contains(controls, "Add point"));
+  EXPECT_TRUE(contains(controls, "Add spot"));
+  EXPECT_TRUE(contains(controls, "Add area"));
   EXPECT_TRUE(contains(frontend, "editableLights()"));
-  EXPECT_TRUE(contains(frontend, "updateEditableLight"));
+  EXPECT_TRUE(contains(frontend, "processLightEditRequests"));
 }
 
 TEST(RenderingConventionTests, LocalPointShadowsHaveRuntimeBudget) {
@@ -3234,6 +3372,8 @@ TEST(RenderingConventionTests, SceneControlsExposePrimitiveAddMenu) {
   const std::string gui = readRepoTextFile("src/utility/GuiManager.cpp");
   const std::string frontend =
       readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+  const std::string edits =
+      readRepoTextFile("src/renderer/core/RendererFrontendEdits.cpp");
 
   EXPECT_TRUE(contains(primitivesHeader, "enum class ScenePrimitiveKind"));
   EXPECT_TRUE(contains(primitivesHeader, "TriangularPrism"));
@@ -3255,9 +3395,15 @@ TEST(RenderingConventionTests, SceneControlsExposePrimitiveAddMenu) {
   ASSERT_NE(addPrimitiveEnd, std::string::npos);
   const std::string addPrimitiveBlock =
       frontend.substr(addPrimitiveStart, addPrimitiveEnd - addPrimitiveStart);
-  EXPECT_TRUE(contains(addPrimitiveBlock, "syncSceneStateFromController()"));
-  EXPECT_TRUE(contains(addPrimitiveBlock, "refreshSceneObjectData()"));
-  EXPECT_TRUE(contains(addPrimitiveBlock, "syncSceneProviders()"));
+  EXPECT_TRUE(contains(addPrimitiveBlock, "this->addScenePrimitive(kind)"));
+  const auto factoryStart = edits.find("uint32_t RendererFrontend::addScenePrimitive(");
+  ASSERT_NE(factoryStart, std::string::npos);
+  const auto factoryEnd = edits.find("bool RendererFrontend::reparentSceneNode(", factoryStart);
+  ASSERT_NE(factoryEnd, std::string::npos);
+  const auto factory = edits.substr(factoryStart, factoryEnd - factoryStart);
+  EXPECT_TRUE(contains(factory, "syncSceneStateFromController()"));
+  EXPECT_TRUE(contains(factory, "refreshSceneObjectData()"));
+  EXPECT_TRUE(contains(factory, "syncSceneProviders()"));
 }
 
 TEST(RenderingConventionTests,
@@ -3266,10 +3412,11 @@ TEST(RenderingConventionTests,
       readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
 
   EXPECT_TRUE(contains(frontend, "selectedEditableLight()"));
-  EXPECT_TRUE(contains(frontend, "translateSelectedEditableLight"));
-  EXPECT_TRUE(contains(frontend, "rotateSelectedEditableLight"));
-  EXPECT_TRUE(contains(frontend, "scaleSelectedEditableLight"));
-  EXPECT_TRUE(contains(frontend, "Selected editable light"));
+  const auto lights = readRepoTextFile("src/renderer/core/RendererFrontendLights.cpp");
+  EXPECT_TRUE(contains(frontend, "applyLightGizmoControls"));
+  EXPECT_TRUE(contains(lights, "LightEditField::Position"));
+  EXPECT_TRUE(contains(lights, "LightEditField::Direction"));
+  EXPECT_TRUE(contains(lights, "LightEditField::Range"));
 }
 
 TEST(RenderingConventionTests, ViewportSelectionChecksEditableLightGizmos) {
@@ -3349,7 +3496,7 @@ TEST(RenderingConventionTests,
   EXPECT_EQ(offsetof(ExposureSettings, meteringLowPercentile), 24u);
   EXPECT_EQ(offsetof(ExposureSettings, meteringHighPercentile), 28u);
 
-  EXPECT_EQ(sizeof(PostProcessPushConstants), 76u);
+  EXPECT_EQ(sizeof(PostProcessPushConstants), 128u);
   EXPECT_EQ(offsetof(PostProcessPushConstants, outputMode), 0u);
   EXPECT_EQ(offsetof(PostProcessPushConstants, bloomEnabled), 4u);
   EXPECT_EQ(offsetof(PostProcessPushConstants, bloomIntensity), 8u);
@@ -3366,6 +3513,13 @@ TEST(RenderingConventionTests,
   EXPECT_EQ(offsetof(PostProcessPushConstants, minExposure), 64u);
   EXPECT_EQ(offsetof(PostProcessPushConstants, maxExposure), 68u);
   EXPECT_EQ(offsetof(PostProcessPushConstants, adaptationRate), 72u);
+  EXPECT_EQ(offsetof(PostProcessPushConstants, toneMapper), 76u);
+  EXPECT_EQ(offsetof(PostProcessPushConstants, saturation), 80u);
+  EXPECT_EQ(offsetof(PostProcessPushConstants, contrast), 84u);
+  EXPECT_EQ(offsetof(PostProcessPushConstants, whiteBalanceGain), 88u);
+  EXPECT_EQ(offsetof(PostProcessPushConstants, vibrance), 100u);
+  EXPECT_EQ(offsetof(PostProcessPushConstants, shadowTone), 104u);
+  EXPECT_EQ(offsetof(PostProcessPushConstants, highlightTone), 116u);
 
   const ExposureSettings exposureSettings{};
   EXPECT_EQ(exposureSettings.mode, container::gpu::kExposureModeManual);
@@ -3999,15 +4153,15 @@ TEST(RenderingConventionTests,
       readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
 
   EXPECT_TRUE(
-      contains(rendererFrontendHeader, "void updateObjectBuffer(uint32_t imageIndex)"));
+      contains(rendererFrontendHeader, "void updateObjectBuffer(uint32_t imageIndex,"));
   EXPECT_TRUE(contains(rendererFrontendHeader, "void updateAllObjectBuffers()"));
   EXPECT_TRUE(contains(rendererFrontendHeader, "void refreshSceneObjectData()"));
-  EXPECT_TRUE(contains(rendererFrontend, "updateObjectBuffer(imageIndex);"));
+  EXPECT_TRUE(contains(rendererFrontend, "updateObjectBuffer(imageIndex,gpuObjectUploadDeferred_);"));
   EXPECT_TRUE(contains(rendererFrontend, "updateAllObjectBuffers();"));
   EXPECT_TRUE(contains(rendererFrontend, "refreshSceneObjectData();"));
   EXPECT_TRUE(contains(rendererFrontend,
                        "void RendererFrontend::updateObjectBuffer("
-                       "uint32_t imageIndex)"));
+                       "uint32_t imageIndex,"));
   EXPECT_TRUE(contains(rendererFrontend,
                        "void RendererFrontend::updateAllObjectBuffers()"));
   EXPECT_FALSE(contains(rendererFrontend, "void RendererFrontend::updateObjectBuffer()"));
@@ -7658,6 +7812,8 @@ TEST(RenderingConventionTests, SceneHierarchyPanelExposesNodeActions) {
   const std::string gui = readRepoTextFile("src/utility/GuiManager.cpp");
   const std::string frontend =
       readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+  const std::string edits =
+      readRepoTextFile("src/renderer/core/RendererFrontendEdits.cpp");
 
   EXPECT_TRUE(contains(sceneGraphHeader, "rootNodes()"));
   EXPECT_TRUE(contains(sceneGraphHeader, "visible = true"));
@@ -7681,8 +7837,9 @@ TEST(RenderingConventionTests, SceneHierarchyPanelExposesNodeActions) {
   EXPECT_TRUE(contains(gui, "Parent"));
   EXPECT_TRUE(contains(frontend, "frameNodeOrScene(nodeIndex)"));
   EXPECT_TRUE(contains(frontend, "setVisible(nodeIndex, visible)"));
-  EXPECT_TRUE(contains(frontend, "setParentPreserveWorldTransform"));
-  EXPECT_TRUE(contains(frontend, "Failed to reparent scene node"));
+  EXPECT_TRUE(contains(frontend, "reparentSceneNode(nodeIndex, parentNode)"));
+  EXPECT_TRUE(containsIgnoringWhitespace(edits, "return sceneEdits_->reparent(node, parent);"));
+  EXPECT_TRUE(contains(frontend, "Cannot reparent scene node"));
   const size_t restoreSnapshot =
       frontend.find("return restoreViewpointSnapshot(snapshot);");
   ASSERT_NE(restoreSnapshot, std::string::npos);
@@ -8419,6 +8576,8 @@ TEST(RenderingConventionTests, BimMeshletLodStreamingMetadataIsIdentitySafe) {
       readRepoTextFile("src/renderer/bim/BimManager.cpp");
   const std::string bimDrawFilterState =
       readRepoTextFile("src/renderer/bim/BimDrawFilterState.cpp");
+  const std::string bimStatisticsCache =
+      readRepoTextFile("src/renderer/bim/BimStatisticsCache.cpp");
   const std::string rendererFrontend =
       readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
   const std::string bimFrameRoutingPlanner =
@@ -8473,7 +8632,14 @@ TEST(RenderingConventionTests, BimMeshletLodStreamingMetadataIsIdentitySafe) {
   EXPECT_TRUE(contains(bimManager, "drawFilterState_->objectMatchesFilter"));
   EXPECT_TRUE(
       contains(bimDrawFilterState, "metadataMatchesFilter(objectIndex"));
-  EXPECT_TRUE(contains(bimManager, "visibleMeshletClusterReferences"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager,
+      "return statisticsCache_->drawBudgetLodStats("
+      "filter, drawFilterStateInputs(), objectLodMetadata_, statisticsRevision_,"
+      "visibilityFilterRevision_);"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimStatisticsCache,
+      "stats.visibleMeshletClusterReferences += lod[objectIndex].clusterCount;"));
 
   EXPECT_TRUE(contains(rendererFrontend, "optimizedModelMetadata()"));
   EXPECT_TRUE(contains(rendererFrontend, "drawBudgetLodStats"));
@@ -9255,8 +9421,10 @@ TEST(RenderingConventionTests, BimMeshletLodStreamingMetadataIsSurfaced) {
   EXPECT_TRUE(contains(bimManager, "meshletClusterCountForModel"));
   EXPECT_TRUE(contains(bimManager, "buildMeshletClusterMetadataForModel"));
   EXPECT_TRUE(contains(bimManager, "model.meshletClusters.size()"));
-  EXPECT_TRUE(contains(
-      bimManager, "meshletClusters_ = buildMeshletClusterMetadataForModel"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager,
+      "meshletClusters_ = prepared ? prepared->meshletClusters :"
+      "buildMeshletClusterMetadataForModel(model);"));
   EXPECT_TRUE(
       contains(bimManager, "meshletClusterCount_ = meshletClusters_.size()"));
   EXPECT_TRUE(contains(bimManager, "buildOptimizedModelMetadata"));
@@ -10347,6 +10515,8 @@ TEST(RenderingConventionTests, BimGenericPropertiesAndGeoreferenceReachUi) {
       readRepoTextFile("include/Container/geometry/DotBimLoader.h");
   const std::string bimManagerHeader =
       readRepoTextFile("include/Container/renderer/bim/BimManager.h");
+  const std::string bimMetadataHeader =
+      readRepoTextFile("include/Container/renderer/bim/BimMetadata.h");
   const std::string bimManager =
       readRepoTextFile("src/renderer/bim/BimManager.cpp");
   const std::string guiManagerHeader =
@@ -10358,11 +10528,15 @@ TEST(RenderingConventionTests, BimGenericPropertiesAndGeoreferenceReachUi) {
 
   EXPECT_TRUE(contains(dotBimHeader, "ElementProperty"));
   EXPECT_TRUE(contains(dotBimHeader, "ModelGeoreferenceMetadata"));
-  EXPECT_TRUE(contains(bimManagerHeader, "BimElementProperty"));
+  EXPECT_TRUE(contains(bimManagerHeader,
+                       "#include \"Container/renderer/bim/BimMetadata.h\""));
+  EXPECT_TRUE(contains(bimMetadataHeader, "BimElementProperty"));
   EXPECT_TRUE(contains(bimManagerHeader, "BimModelGeoreferenceMetadata"));
   EXPECT_TRUE(contains(bimManagerHeader, "modelGeoreferenceMetadata()"));
   EXPECT_TRUE(
-      contains(bimManagerHeader, "std::vector<BimElementProperty> properties"));
+      contains(bimMetadataHeader, "std::vector<BimElementProperty> properties"));
+  EXPECT_TRUE(contains(
+      bimMetadataHeader, "std::span<const BimElementProperty> properties"));
   EXPECT_TRUE(contains(bimManager, "bimElementProperties(element.properties)"));
   EXPECT_TRUE(contains(
       bimManager, "bimModelGeoreferenceMetadata(model.georeferenceMetadata)"));
@@ -10417,4 +10591,24 @@ TEST(RenderingConventionTests, BimSectionPlaneVisualIsEditableAndRendered) {
   EXPECT_TRUE(contains(lightingPassRecorder, "sectionPlaneVisualScene"));
   EXPECT_TRUE(contains(rendererFrontend, "rebuildSectionPlaneVisualGeometry"));
   EXPECT_TRUE(contains(rendererFrontend, "transformingSectionPlane"));
+}
+
+
+TEST(RenderingConventions, NestedNonuniformRotationsKeepSphereBoundsConservativeAtFrustumEdge) {
+  const auto basis=glm::scale(glm::mat4(1),glm::vec3(-2,.5f,1)) *
+      glm::rotate(glm::mat4(1),glm::radians(45.f),glm::vec3(0,0,1));
+  const auto bound=container::math::conservativeSphereScale(basis);
+  const auto old=std::max({glm::length(glm::vec3(basis[0])),
+      glm::length(glm::vec3(basis[1])),glm::length(glm::vec3(basis[2]))});
+  EXPECT_LT(old,1.8f); EXPECT_GE(bound,2.f); EXPECT_LT(bound,2.00001f);
+  // A sphere centered outside the x>=0 frustum plane still has visible points.
+  const glm::vec3 center(-1.8f,0,0);
+  const auto point=center+glm::vec3(basis*glm::vec4(-std::sqrt(.5f),std::sqrt(.5f),0,0));
+  EXPECT_GT(point.x,0); EXPECT_LT(center.x+old,0); EXPECT_GT(center.x+bound,0);
+  for(int a=0;a<40;++a) for(int b=0;b<40;++b) {
+    const float theta=float(a)*glm::pi<float>()/39,phi=float(b)*2*glm::pi<float>()/39;
+    const glm::vec3 direction(std::sin(theta)*std::cos(phi),std::sin(theta)*std::sin(phi),std::cos(theta));
+    EXPECT_LE(glm::length(glm::vec3(basis*glm::vec4(direction,0))),bound);
+  }
+  EXPECT_FLOAT_EQ(container::math::conservativeSphereScale(glm::mat4(0)),0);
 }

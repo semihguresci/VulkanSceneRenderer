@@ -1,6 +1,6 @@
 // prefilter_specular.slang — Compute shader for split-sum pre-filtered
 // specular environment cubemap.  Dispatched per face per mip level.
-// Output: 128×128 base, 5 mip levels (roughness 0.0 → 1.0).
+// EnvironmentManager supplies the output size and roughness levels (0.0→1.0).
 
 static const float PI = 3.14159265359;
 static const uint  SAMPLE_COUNT = 1024u;
@@ -81,6 +81,15 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
 
     float2 uv = (float2(dtid.xy) + 0.5) / float(pc.faceSize);
     float3 N = CubeTexelToDir(pc.faceIndex, uv);
+    // The zero-roughness GGX limit is a delta at the reflected direction.
+    // Integrating its singular distribution can introduce numerical angular
+    // spread; preserve source detail directly and avoid redundant samples.
+    if (pc.roughness == 0.0)
+    {
+        outPrefiltered[uint3(dtid.xy, pc.faceIndex)] =
+            float4(envCubemap.SampleLevel(envSampler, N, 0.0).rgb, 1.0);
+        return;
+    }
     float3 R = N;
     float3 V = R;
 

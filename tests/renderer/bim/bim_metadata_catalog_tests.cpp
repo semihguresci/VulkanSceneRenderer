@@ -2,6 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
+#include <string>
+
 namespace {
 
 using container::renderer::BimElementBounds;
@@ -112,6 +115,47 @@ TEST(BimMetadataCatalogTests, ClearResetsLabelsAndModelMetadata) {
   EXPECT_TRUE(catalog.types().empty());
   EXPECT_FALSE(catalog.modelUnitMetadata().hasSourceUnits);
   EXPECT_TRUE(catalog.modelUnitMetadata().sourceUnits.empty());
+}
+
+TEST(BimMetadataCatalogTests, ObjectReserveHintDoesNotAllocatePerObjectLabels) {
+  BimMetadataCatalog catalog;
+  // Even an unbounded object estimate is a small dictionary hint. The former
+  // per-object reserves threw or attempted enormous bucket allocations here.
+  ASSERT_NO_THROW(catalog.reserve(std::numeric_limits<size_t>::max()));
+  for (uint32_t id = 0; id < 512u; ++id) {
+    const std::string label = "Type " + std::to_string(id);
+    EXPECT_EQ(catalog.registerType(label), id);
+    EXPECT_EQ(catalog.registerType(label), id);
+    EXPECT_EQ(catalog.semanticIdForCategory(BimMetadataSemanticCategory::Type,
+                                            label), id + 1u);
+  }
+  EXPECT_EQ(catalog.types().size(), 512u);
+}
+
+TEST(BimMetadataCatalogTests, OwnsDictionaryLabelsResolvedFromCompactStorage) {
+  container::renderer::BimMetadataStorage storage;
+  BimElementMetadata metadata{};
+  metadata.type = "IfcWall";
+  metadata.storeyName = std::string("Level\0One", 9u);
+  metadata.materialCategory = "Concrete";
+  storage.push_back(std::move(metadata));
+  storage.seal();
+
+  BimMetadataCatalog catalog;
+  const auto element = storage.front();
+  EXPECT_EQ(catalog.registerType(element.type), 0u);
+  catalog.registerStorey(element, bounds(1.0f, 3.0f));
+  catalog.registerMaterial(element);
+  storage.clear();
+
+  EXPECT_EQ(catalog.types().front(), "IfcWall");
+  EXPECT_EQ(catalog.storeys().front(), std::string("Level\0One", 9u));
+  EXPECT_EQ(catalog.materials().front(), "Concrete");
+  EXPECT_EQ(catalog.semanticIdForCategory(BimMetadataSemanticCategory::Storey,
+                                          std::string("Level\0One", 9u)), 1u);
+  ASSERT_EQ(catalog.storeyRanges().size(), 1u);
+  EXPECT_EQ(catalog.storeyRanges().front().label,
+            std::string("Level\0One", 9u));
 }
 
 } // namespace

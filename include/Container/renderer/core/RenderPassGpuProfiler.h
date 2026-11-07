@@ -49,6 +49,9 @@ class RenderPassGpuProfiler {
   [[nodiscard]] uint32_t resultLatencyFrames() const {
     return latestFrameHasQueries_ ? 1u : 0u;
   }
+  [[nodiscard]] uint64_t latestRecordingSerial() const {
+    return latestFrameHasQueries_ ? latestRecordingSerial_ : 0u;
+  }
 
   void beginFrame(VkCommandBuffer cmd, uint32_t frameSlot);
   void beginPass(VkCommandBuffer cmd, RenderPassId id);
@@ -96,6 +99,8 @@ class RenderPassGpuProfiler {
 
   uint32_t activeFrameSlot_{0};
   bool activeFrameRecording_{false};
+  uint64_t recordingSerial_{0};
+  uint64_t latestRecordingSerial_{0};
   mutable uint32_t latestFrameSlot_{0};
   mutable bool latestFrameHasQueries_{false};
   std::array<uint8_t, kRenderPassIdCount> activeWrittenPasses_{};

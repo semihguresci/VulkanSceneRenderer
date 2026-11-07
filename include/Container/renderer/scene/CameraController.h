@@ -4,6 +4,7 @@
 #include "Container/utility/GuiManager.h"
 
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -106,16 +107,27 @@ public:
   // ---- Transform helpers --------------------------------------------------
 
   container::ui::TransformControls cameraTransformControls() const;
+  // Reflection signs use a canonical negative X scale. Move/Rotate preserve
+  // nonzero imported magnitudes, including values outside scale-edit limits.
   container::ui::TransformControls
   nodeTransformControls(uint32_t nodeIndex) const;
+
+  // Compose exactly the local matrix applyNodeTransform would commit, without
+  // changing graph state. Missing nodes have no proposed transform.
+  [[nodiscard]] std::optional<glm::mat4> previewNodeTransform(
+      uint32_t nodeIndex, const container::ui::TransformControls &controls) const;
 
   void
   applyCameraTransform(const container::ui::TransformControls &controls,
                        container::gpu::CameraData &outCameraData,
                        const container::gpu::AllocatedBuffer &cameraBuffer);
 
-  void applyNodeTransform(uint32_t nodeIndex, uint32_t rootNode,
-                          const container::ui::TransformControls &controls);
+  // Missing/unchanged targets return false without invoking beforeApply or
+  // publishing world transforms. A changed candidate is offered before graph
+  // writes, so a validation exception leaves the graph untouched.
+  bool applyNodeTransform(uint32_t nodeIndex, uint32_t rootNode,
+                          const container::ui::TransformControls &controls,
+                          const std::function<void(const glm::mat4 &)> &beforeApply = {});
 
   void selectMeshNode(uint32_t nodeIndex, uint32_t &selectedMeshNode) const;
 

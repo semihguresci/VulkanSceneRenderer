@@ -24,6 +24,13 @@ struct VSOutput
     [[vk::location(1)]] float3 worldPos;
 };
 
+struct PSInput
+{
+    float4 pos : SV_Position;
+    [[vk::location(0)]] float3 color;
+    [[vk::location(1)]] float3 worldPos;
+};
+
 float3 hashColor(uint index)
 {
     float scalar = float(index + 1u);
@@ -51,7 +58,7 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
 }
 
 [shader("fragment")]
-float4 fragMain(VSOutput input) : SV_Target0
+float4 fragMain(PSInput input) : SV_Target0
 {
     if (SceneClipPlanesClip(input.worldPos, pc.sectionPlaneEnabled, pc.sectionPlane))
     {

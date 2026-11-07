@@ -27,9 +27,78 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace {
+
+TEST(ECS_World, CloneRetainsCameraLightsContextAndEntityIdentitiesIndependently) {
+  container::ecs::World world;
+  container::gpu::CameraData camera; camera.cameraWorldPosition={3,4,5,1};
+  const auto cameraEntity=world.setActiveCamera(camera,.2f,75);
+  container::gpu::PointLightData light; light.colorIntensity={.2f,.3f,.4f,7};
+  const auto lightEntity=world.createPointLight(light);
+  world.registry().ctx().emplace<std::string>("retained session");
+  auto clone=world.cloneState();
+  ASSERT_NE(clone,nullptr); EXPECT_EQ(clone->entityCount(),world.entityCount());
+  EXPECT_TRUE(clone->registry().valid(cameraEntity)); EXPECT_TRUE(clone->registry().valid(lightEntity));
+  ASSERT_NE(clone->activeCamera(),nullptr);
+  EXPECT_EQ(clone->activeCamera()->data.cameraWorldPosition,camera.cameraWorldPosition);
+  EXPECT_FLOAT_EQ(clone->activeCamera()->nearPlane,.2f); EXPECT_FLOAT_EQ(clone->activeCamera()->farPlane,75);
+  EXPECT_EQ(clone->registry().get<container::ecs::LightComponent>(lightEntity).data.colorIntensity,light.colorIntensity);
+  EXPECT_EQ(clone->registry().ctx().get<std::string>(),"retained session");
+  clone->registry().ctx().get<std::string>()="candidate"; clone->clearActiveCamera(); clone->clearPointLights();
+  EXPECT_EQ(world.registry().ctx().get<std::string>(),"retained session");
+  EXPECT_TRUE(world.hasActiveCamera()); EXPECT_EQ(world.pointLightCount(),1u);
+}
+
+TEST(ECS_World, SwapKeepsWorldAndRegistryAddressesWhileExchangingEntireState) {
+  container::ecs::World live,candidate;
+  const auto* worldAddress=&live; const auto* registryAddress=&live.registry();
+  container::gpu::CameraData camera; camera.cameraWorldPosition={9,8,7,1};
+  const auto cameraEntity=live.setActiveCamera(camera,.3f,80);
+  live.registry().ctx().emplace<std::string>("old context");
+  candidate.registry().ctx().emplace<std::string>("new context");
+  (void)candidate.createPointLight({});
+  static_assert(noexcept(live.swapState(candidate)));
+  live.swapState(candidate);
+  EXPECT_EQ(&live,worldAddress); EXPECT_EQ(&live.registry(),registryAddress);
+  EXPECT_FALSE(live.hasActiveCamera()); EXPECT_EQ(live.pointLightCount(),1u);
+  EXPECT_EQ(live.registry().ctx().get<std::string>(),"new context");
+  ASSERT_NE(candidate.activeCamera(),nullptr);
+  EXPECT_TRUE(candidate.registry().valid(cameraEntity));
+  EXPECT_EQ(candidate.activeCamera()->data.cameraWorldPosition,camera.cameraWorldPosition);
+  EXPECT_EQ(candidate.registry().ctx().get<std::string>(),"old context");
+  live.swapState(candidate);
+  EXPECT_TRUE(live.hasActiveCamera()); EXPECT_EQ(live.pointLightCount(),0u);
+  EXPECT_EQ(live.registry().ctx().get<std::string>(),"old context");
+}
+
+TEST(ECS_World, CloneThenGraphSyncPreservesCameraAndLightsWithoutMutatingLiveRenderables) {
+  container::scene::SceneGraph before,after;
+  (void)before.createNode(glm::mat4(1),4,true,2);
+  (void)after.createNode(glm::mat4(1),7,true,5);
+  (void)after.createNode(glm::mat4(1),8,true,6);
+  container::ecs::World live; live.syncFromSceneGraph(before);
+  const auto camera=live.setActiveCamera({}); const auto light=live.createPointLight({});
+  auto staged=live.cloneState(); staged->syncFromSceneGraph(after);
+  EXPECT_EQ(live.renderableCount(),1u); EXPECT_EQ(staged->renderableCount(),2u);
+  EXPECT_TRUE(staged->registry().valid(camera)); EXPECT_TRUE(staged->registry().valid(light));
+  EXPECT_TRUE(staged->hasActiveCamera()); EXPECT_EQ(staged->pointLightCount(),1u);
+  live.swapState(*staged);
+  EXPECT_EQ(live.renderableCount(),2u); EXPECT_EQ(staged->renderableCount(),1u);
+}
+
+TEST(ECS_World, UnknownComponentPoolRejectsCloneWithoutMutatingLive) {
+  struct ExternalComponent { int value; };
+  container::ecs::World live;
+  const auto entity=live.registry().create(); live.registry().emplace<ExternalComponent>(entity,19);
+  EXPECT_THROW((void)live.cloneState(),std::runtime_error);
+  EXPECT_TRUE(live.registry().valid(entity)); EXPECT_EQ(live.registry().get<ExternalComponent>(entity).value,19);
+}
 
 // ============================================================================
 // Component Defaults

@@ -8,7 +8,7 @@ namespace container::renderer {
 
 bool BimInspectionCache::refresh(
     const void *source, uint64_t geometryRevision,
-    std::span<const BimElementMetadata> metadata) {
+    BimMetadataTableView metadata) {
   if (source == nullptr) {
     clear();
     return false;
@@ -23,29 +23,29 @@ bool BimInspectionCache::refresh(
   std::vector<BimScheduleElement> scheduleElements;
   scheduleElements.reserve(metadata.size());
   replacement.compareElements_.reserve(metadata.size());
-  for (const BimElementMetadata &element : metadata) {
-    const std::string &storey =
+  for (const BimElementMetadataView &element : metadata) {
+    const std::string_view storey =
         !element.storeyName.empty() ? element.storeyName : element.storeyId;
-    const std::string &material = !element.materialName.empty()
+    const std::string_view material = !element.materialName.empty()
                                       ? element.materialName
                                       : element.materialCategory;
     scheduleElements.push_back(
-        {.guid = element.guid,
-         .sourceId = element.sourceId,
-         .ifcClass = element.type,
-         .type = element.objectType,
-         .storey = storey,
-         .material = material,
+        {.guid = std::string(element.guid),
+         .sourceId = std::string(element.sourceId),
+         .ifcClass = std::string(element.type),
+         .type = std::string(element.objectType),
+         .storey = std::string(storey),
+         .material = std::string(material),
          .bounds = {.valid = element.bounds.valid,
                     .min = element.bounds.min,
                     .max = element.bounds.max}});
     replacement.compareElements_.push_back(
-        {.guid = element.guid,
-         .sourceId = element.sourceId,
-         .ifcClass = element.type,
-         .type = element.objectType,
-         .storey = storey,
-         .material = material,
+        {.guid = std::string(element.guid),
+         .sourceId = std::string(element.sourceId),
+         .ifcClass = std::string(element.type),
+         .type = std::string(element.objectType),
+         .storey = std::string(storey),
+         .material = std::string(material),
          .bounds = {.valid = element.bounds.valid,
                     .min = element.bounds.min,
                     .max = element.bounds.max}});

@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -88,7 +89,8 @@ public:
 
   void prepareCamera(container::gpu::CameraData &camera, glm::uvec2 extent,
                      const Settings &settings,
-                     const glm::mat4 &projection = glm::mat4(1.0f)) {
+                     const glm::mat4 &projection = glm::mat4(1.0f),
+                     std::optional<glm::vec2> jitterOverride = std::nullopt) {
     if (extent != extent_ || settings.enabled != enabled_ ||
         settings.jitterSeed != seed_) {
       reset(extent != extent_ ? "render extent changed"
@@ -117,7 +119,7 @@ public:
     camera.previousInverseViewProj =
         valid_ ? previousCamera_.inverseViewProj : camera.inverseViewProj;
     const Jitter jitter = makeJitter(
-        enabled_ ? jitterPixels(sequenceFrame_, seed_) : glm::vec2(0), extent);
+        enabled_ ? jitterOverride.value_or(jitterPixels(sequenceFrame_, seed_)) : glm::vec2(0), extent);
     const glm::vec2 previousJitter =
         valid_ ? glm::vec2(previousCamera_.jitterUv) : jitter.uv;
     camera.jitterUv = glm::vec4(jitter.uv, previousJitter);

@@ -17,6 +17,7 @@
 namespace {
 
 using container::renderer::ScenePrimitiveKind;
+using container::renderer::findReusableScenePrimitive;
 using container::renderer::makeScenePrimitive;
 using container::renderer::makeScenePrimitiveCube;
 using container::renderer::makeScenePrimitivePlane;
@@ -27,6 +28,44 @@ using container::renderer::makeScenePrimitiveTorus;
 using container::renderer::makeScenePrimitiveTriangularPrism;
 
 using Edge = std::pair<uint32_t, uint32_t>;
+
+TEST(ScenePrimitives, ReusesOnlyMatchingRuntimeGeometry) {
+  const auto torus = makeScenePrimitive(ScenePrimitiveKind::Torus, 4);
+  auto changedVertices = torus.vertices();
+  changedVertices.front().texCoord1.x = 0.5f;
+  const std::array meshes{
+      torus,
+      makeScenePrimitive(ScenePrimitiveKind::Torus, 5),
+      container::geometry::Mesh(torus.vertices(), torus.indices(), 4, true),
+      container::geometry::Mesh(std::move(changedVertices), torus.indices(), 4),
+      torus,
+  };
+  const std::array<int32_t, 5> runtimeToSource{0, -1, -1, -1, -1};
+  EXPECT_EQ(findReusableScenePrimitive(torus, meshes, runtimeToSource), 4u);
+  EXPECT_FALSE(findReusableScenePrimitive(torus, std::span(meshes).first(4),
+                                           std::span(runtimeToSource).first(4)));
+  EXPECT_FALSE(findReusableScenePrimitive(torus, meshes, {}));
+  EXPECT_FALSE(findReusableScenePrimitive({}, meshes, runtimeToSource));
+}
+
+TEST(ScenePrimitives, RepeatedAddsRetainOneMeshPerShape) {
+  std::vector<container::geometry::Mesh> retained;
+  std::vector<int32_t> runtimeToSource;
+  constexpr std::array kinds{ScenePrimitiveKind::Torus, ScenePrimitiveKind::Sphere,
+      ScenePrimitiveKind::Cube};
+  for (size_t edit = 0; edit < 130; ++edit) {
+    auto geometry = makeScenePrimitive(kinds[edit % kinds.size()], 4);
+    const auto existing = findReusableScenePrimitive(geometry, retained, runtimeToSource);
+    if (edit < kinds.size()) {
+      EXPECT_FALSE(existing);
+      retained.push_back(std::move(geometry));
+      runtimeToSource.push_back(-1);
+    } else {
+      EXPECT_EQ(existing, edit % kinds.size());
+    }
+  }
+  EXPECT_EQ(retained.size(), kinds.size());
+}
 
 Edge orderedEdge(uint32_t a, uint32_t b) {
   return a < b ? Edge{a, b} : Edge{b, a};

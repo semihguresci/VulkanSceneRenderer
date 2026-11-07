@@ -150,6 +150,11 @@ EditableLightEntity editablePointLight(
   entity.color = nonNegativeFiniteColor(glm::vec3(light.colorIntensity));
   entity.intensity = nonNegativeFinite(light.colorIntensity.a, 1.0f);
   entity.range = nonNegativeFinite(light.positionRadius.w, 1.0f);
+  entity.iesProfileAddress = light.iesProfileAddress;
+  if (entity.iesProfileAddress) {
+    entity.label = "IES " + entity.label;
+    entity.tangent = glm::vec3(light.iesTangent);
+  }
   if (spot) {
     entity.innerConeDegrees = degreesFromCos(light.directionInnerCos.w);
     entity.outerConeDegrees = degreesFromCos(light.coneOuterCosType.x);
@@ -237,6 +242,10 @@ pointLightDataFromEditable(const EditableLightEntity &entity) {
     light.directionInnerCos = glm::vec4(direction, 1.0f);
     light.coneOuterCosType =
         glm::vec4(0.0f, container::gpu::kLightTypePoint, 0.0f, 0.0f);
+    if (entity.iesProfileAddress) {
+      light.iesTangent = glm::vec4(entity.tangent, 1.0f);
+      light.iesProfileAddress = entity.iesProfileAddress;
+    }
   }
   return light;
 }

@@ -3,11 +3,13 @@
 #include "area_light_common.slang"
 #include "area_light_ltc.slang"
 #include "material_data_common.slang"
+#include "pbr_extended_deferred_common.slang"
 #include "ddgi_lighting_common.slang"
 #include "local_shadow_common.slang"
 #include "screen_space_light_shadow_common.slang"
 #include "shadow_common.slang"
 #include "environment_sky_common.slang"
+#include "aerial_perspective.slang"
 #include "ray_shadow_read.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
@@ -108,7 +110,10 @@ VSOutput vertMain(uint vertexIndex : SV_VertexID)
 float3 SampleBackgroundSky(float2 uv, float environmentIntensity)
 {
     return SampleEnvironmentBackground(uv, uCamera.inverseViewProj,
-        environmentIntensity, gPrefilteredCubemap, envSampler);
+        environmentIntensity, uLighting.environmentOrientation,
+        uLighting.environmentBackground, uLighting.prefilteredMipCount,
+        uLighting.environmentSunDirection, uLighting.environmentSunRadiance.rgb,
+        gPrefilteredCubemap, envSampler);
 }
 
 float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
@@ -117,6 +122,7 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
                                  float3 geometricNormal, float3 normal, float3 V,
                                  float3 worldPosition,
                                  DeferredMaterialLayerTerms layerTerms,
+                                 ExtendedPbrTerms extended,
                                  bool thinSurface, float alpha,
                                  float occlusion, float bounceIntensity, float4 pixelPosition)
 {
@@ -151,7 +157,9 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
                 continue;
             }
             areaShadowVisibility += weight * LocalAreaLightShadowVisibility(
-                areaIndex, light, worldPosition, geometricNormal, visibilitySample,
+                areaIndex, light, worldPosition,
+                ExtendedPbrDeferredShadowNormal(geometricNormal, normal,
+                    visibilitySurfaceToLight, extended), visibilitySample,
                 uLocalShadow, gLocalShadowAtlas, gLocalShadowSampler);
             visibilityWeightSum += weight;
         }
@@ -172,7 +180,7 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
         worldPosition, albedo, F0, metallic, roughness, normal, V,
         layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,
         layerTerms.sheenColor, layerTerms.sheenRoughness,
-        thinSurface || transmissionWeight > 0.0, ltcTerms);
+        thinSurface || transmissionWeight > 0.0 || HasExtendedPbrEffect(extended), ltcTerms);
     bool correctDiffuseFresnel = useLtc && any(ltcTerms.diffuseCorrectionScale > 0.0.xxx);
     bool sampleDirectTerms = useLtc &&
         (ltcTerms.stableWeight < 1.0 || ltcTerms.fresnelWeight < 1.0);
@@ -198,10 +206,10 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
         float lightVisibility = areaShadowVisibility;
         float3 directRadiance = radiance * lightVisibility;
         if (!useLtc)
-            directLighting += EvaluateDeferredLayeredDirectLight(
+            directLighting += EvaluateExtendedPbrLayeredDirectLight(
                 albedo, F0, metallic, roughness, normal, V, L, directRadiance,
                 layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,
-                layerTerms.sheenColor, layerTerms.sheenRoughness);
+                layerTerms.sheenColor, layerTerms.sheenRoughness, extended);
         else if (sampleDirectTerms)
         {
             AreaLightDirectTerms sample = EvaluateAreaLightSampledDirectTerms(
@@ -213,13 +221,15 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
         }
         if (bounceIntensity > 0.0)
             directLighting += EvaluateDiffuseBounceLight(
-                albedo, metallic, normal, geometricNormal, V, L, radiance,
+                albedo * ExtendedPbrDiffuseReflectionWeight(extended), metallic,
+                normal, geometricNormal, V, L, radiance,
                 lightVisibility, occlusion, bounceIntensity);
         if (correctDiffuseFresnel)
             diffuseCorrection += EvaluateAreaLightDiffuseFresnelCorrection(
                 ltcTerms.diffuseCorrectionScale, normal, V, L, directRadiance);
 
-        if (thinSurface || transmissionWeight > 0.0)
+        if (extended.diffuseTransmissionFactor <= 0.0 &&
+            (thinSurface || transmissionWeight > 0.0))
         {
             float transmissionAlpha =
                 thinSurface ? lerp(alpha, 0.0, transmissionWeight) : 0.0;
@@ -318,6 +328,9 @@ float4 fragMain(VSOutput input) : SV_Target0
         clamp(DeferredFiniteOr(layerTerms.sheenRoughness, 1.0), 0.045, 1.0);
     layerTerms.iridescenceFactor =
         saturate(DeferredFiniteOr(layerTerms.iridescenceFactor, 0.0));
+    ExtendedPbrTerms extended = LoadDeferredExtendedPbrTerms(
+        materialData, int2(pixelCoord), layerTerms.transmissionFactor);
+    float diffuseReflectionWeight = ExtendedPbrDiffuseReflectionWeight(extended);
 
     float metallic = saturate(DeferredFiniteOr(material.x, 0.0));
     float roughness = clamp(DeferredFiniteOr(material.y, 1.0), 0.045, 1.0);
@@ -359,19 +372,21 @@ float4 fragMain(VSOutput input) : SV_Target0
     // Shadow evaluation.
     float shadowFactor = 1.0;
     float contactVisibility = 1.0;
-    float NdotLForShadow = dot(geometricNormal, L);
+    float3 shadowNormal = ExtendedPbrDeferredShadowNormal(
+        geometricNormal, normal, L, extended);
+    float NdotLForShadow = dot(shadowNormal, L);
     if (!RayDirectionalSelected() && uLighting.shadowEnabled != 0u &&
         (NdotLForShadow > 0.0 || thinSurface))
     {
         shadowFactor = ComputeShadowFactor(
-            worldPosition, geometricNormal, uLighting.directionalDirection.xyz,
+            worldPosition, shadowNormal, uLighting.directionalDirection.xyz,
             viewDepth, uShadow, gShadowAtlas, gShadowSampler);
         if (shadowFactor > DIRECTIONAL_CONTACT_SHADOW_LIT_THRESHOLD &&
             directionalRadiance > DIRECTIONAL_CONTACT_SHADOW_RADIANCE_THRESHOLD &&
             ShadowFiniteOr(uShadow.contactShadowSettings.x, 0.0) > 0.0)
         {
             contactVisibility = ScreenSpaceDirectionalContactVisibility(
-                worldPosition, geometricNormal, L,
+                worldPosition, shadowNormal, L,
                 uShadow.contactShadowSettings.y,
                 uShadow.contactShadowSettings.z,
                 uShadow.contactShadowSettings.w,
@@ -387,18 +402,20 @@ float4 fragMain(VSOutput input) : SV_Target0
         iridescenceThickness, NdotV);
     if (RayDirectionalSelected()) shadowFactor = RayShadowVisibility(input.pos, 0u);
     float directShadowVisibility = shadowFactor * contactVisibility;
-    float3 directLighting = EvaluateDeferredLayeredDirectLight(
+    float3 directLighting = EvaluateExtendedPbrLayeredDirectLight(
         albedo.rgb, F0, metallic, roughness, normal, V, L, lightColor,
         layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,
-        layerTerms.sheenColor, layerTerms.sheenRoughness) * directShadowVisibility;
+        layerTerms.sheenColor, layerTerms.sheenRoughness, extended) * directShadowVisibility;
     directLighting += EvaluateDiffuseBounceLight(
-        albedo.rgb, metallic, normal, geometricNormal, V, L, lightColor,
+        albedo.rgb * diffuseReflectionWeight, metallic,
+        normal, geometricNormal, V, L, lightColor,
         shadowFactor, occlusion, bounceIntensity);
 
     float transmissionWeight =
         saturate(DeferredFiniteOr(layerTerms.transmissionFactor, 0.0) *
                  (1.0 - metallic));
-    if (thinSurface || transmissionWeight > 0.0)
+    if (extended.diffuseTransmissionFactor <= 0.0 &&
+        (thinSurface || transmissionWeight > 0.0))
     {
         float transmissionAlpha =
             thinSurface ? lerp(albedo.a, 0.0, transmissionWeight) : 0.0;
@@ -413,7 +430,7 @@ float4 fragMain(VSOutput input) : SV_Target0
     {
         directLighting += EvaluateDeferredAreaLight(
             areaIndex, uAreaLights[areaIndex], albedo.rgb, F0, metallic, roughness,
-            geometricNormal, normal, V, worldPosition, layerTerms, thinSurface,
+            geometricNormal, normal, V, worldPosition, layerTerms, extended, thinSurface,
             albedo.a, occlusion, bounceIntensity, input.pos);
     }
 
@@ -422,17 +439,19 @@ float4 fragMain(VSOutput input) : SV_Target0
     float3 kD_ibl = (1.0 - kS_ibl) * (1.0 - metallic);
 
     float3 irradiance =
-        DeferredFinite3Or(gIrradianceCubemap.Sample(envSampler, normal).rgb,
+        DeferredFinite3Or(gIrradianceCubemap.Sample(envSampler, RotateEnvironmentDirection(normal, uLighting.environmentOrientation.xy)).rgb,
                           0.0.xxx) *
         environmentIntensity;
     irradiance = lerp(irradiance, DdgiDiffuseIrradiance(ddgi), ddgiCoverage);
-    float3 diffuseIBL = irradiance * albedo.rgb;
+    float3 diffuseIBL = irradiance * albedo.rgb * diffuseReflectionWeight;
 
     float3 R = reflect(-V, normal);
+    float3 baseSpecularR = reflect(-V,
+        ExtendedPbrIblNormal(normal, V, roughness, extended));
     float maxMipLevel = max(float(uLighting.prefilteredMipCount) - 1.0, 0.0);
     float3 prefilteredColor =
         DeferredFinite3Or(
-            gPrefilteredCubemap.SampleLevel(envSampler, R,
+            gPrefilteredCubemap.SampleLevel(envSampler, RotateEnvironmentDirection(baseSpecularR, uLighting.environmentOrientation.xy),
                                             roughness * maxMipLevel).rgb,
             0.0.xxx) *
         environmentIntensity;
@@ -454,16 +473,34 @@ float4 fragMain(VSOutput input) : SV_Target0
     float specularOcclusion = saturate(pow(NdotV + diffuseAO, exp2(-16.0 * roughness - 1.0)) - 1.0 + diffuseAO);
     specularOcclusion = lerp(1.0, specularOcclusion, saturate(1.0 - roughness));
     float3 ambientLighting = kD_ibl * diffuseIBL * diffuseAO + specularIBL * specularOcclusion;
+    if (extended.diffuseTransmissionFactor > 0.0)
+    {
+        // Incident light from the other hemisphere has independent probe
+        // coverage and uses the opposite environment direction. Front AO is
+        // not a measurement of occlusion behind a thin transmitting surface.
+        DdgiLookupResult backDdgi = LookupDdgiDiffuseBackReceiver(
+            materialData, ddgiReceiverFlags, layerTerms.transmissionFactor,
+            extended.diffuseTransmissionFactor, worldPosition,
+            geometricNormal, normal, V);
+        float3 backIrradiance = DeferredFinite3Or(
+            gIrradianceCubemap.Sample(envSampler, RotateEnvironmentDirection(-normal, uLighting.environmentOrientation.xy)).rgb, 0.0.xxx) *
+            environmentIntensity;
+        backIrradiance = lerp(backIrradiance,
+            DdgiDiffuseIrradiance(backDdgi), saturate(backDdgi.coverage));
+        ambientLighting += kD_ibl * backIrradiance *
+            extended.diffuseTransmissionColor *
+            ExtendedPbrDiffuseTransmissionWeight(extended);
+    }
     ambientLighting += ComputeDiffuseAmbientFloor(
         albedo.rgb, occlusion, ssao, environmentIntensity, bounceIntensity) *
-        (1.0 - ddgiCoverage);
+        ((1.0 - ddgiCoverage) * diffuseReflectionWeight);
     // Layer the environment response exactly once, using the geometry pass's
     // sampled factors. Direct lighting already evaluates these layers above.
     if (layerTerms.clearcoatFactor > 0.0)
     {
         float clearcoatRoughness = layerTerms.clearcoatRoughness;
         float3 clearcoatPrefiltered = DeferredFinite3Or(
-            gPrefilteredCubemap.SampleLevel(envSampler, R,
+            gPrefilteredCubemap.SampleLevel(envSampler, RotateEnvironmentDirection(R, uLighting.environmentOrientation.xy),
                 clearcoatRoughness * maxMipLevel).rgb, 0.0.xxx) * environmentIntensity;
         float2 clearcoatBrdf = max(DeferredFinite2Or(
             gBrdfLUT.Sample(brdfSampler, float2(NdotV, clearcoatRoughness)),
@@ -485,5 +522,5 @@ float4 fragMain(VSOutput input) : SV_Target0
     float3 finalColor =
         DeferredFinite3Or(ambientLighting + directLighting + emissive, 0.0.xxx);
 
-    return float4(finalColor, 1.0);
+    return float4(ApplyAerialPerspective(finalColor, worldPosition, uCamera, uLighting), 1.0);
 }

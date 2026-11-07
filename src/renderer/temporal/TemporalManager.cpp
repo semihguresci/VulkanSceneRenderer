@@ -1,10 +1,13 @@
 #include "Container/renderer/temporal/TemporalManager.h"
+#include "Container/renderer/pipeline/PreparedGraphicsPipelines.h"
+#include "Container/renderer/temporal/TemporalVelocityVertexInput.h"
 #include "Container/geometry/Vertex.h"
 #include "Container/renderer/bim/BimSurfacePassRecorder.h"
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/core/RenderGraph.h"
 #include "Container/renderer/culling/GpuCullManager.h"
 #include "Container/renderer/deferred/DeferredRasterFrameState.h"
+#include "Container/renderer/effects/OpenVdbVolumeRenderer.h"
 #include "Container/renderer/resources/FrameResourceManager.h"
 #include "Container/renderer/resources/FrameResourceRegistry.h"
 #include "Container/renderer/scene/SceneOpaqueDrawRecorder.h"
@@ -16,6 +19,7 @@
 #include "Container/utility/VulkanDevice.h"
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 namespace container::renderer {
@@ -26,6 +30,23 @@ struct ResolveConstants {
   float nearPlane, farPlane, previousNear, previousFar;
 };
 static_assert(sizeof(ResolveConstants) == 48);
+
+constexpr std::array<VkDescriptorSetLayoutBinding, 8> composeBindings{{
+    {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+    {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+    {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+    {3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+    {4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+    {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+    {6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+    {7, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+}};
+
+struct TransparencyConstants {
+  uint32_t width, height;
+  float jitterX, jitterY;
+};
+static_assert(sizeof(TransparencyConstants) == 16);
 
 void dependency(VkCommandBuffer cmd, VkPipelineStageFlags2 destination,
                 VkAccessFlags2 access) {
@@ -61,9 +82,12 @@ void initializeImage(VkCommandBuffer cmd, VkImage image) {
 
 bool needed(const FrameRecordParams &frame) {
   const auto *temporal = frame.services.temporalManager;
-  return temporal && temporal->active() &&
-         (frame.debug.displayMode == 0 || frame.debug.displayMode == 8 ||
-          (frame.debug.displayMode >= 100 && frame.debug.displayMode <= 104));
+  if (frame.runtime.activeTechnique == RenderTechniqueId::PathTracing || !temporal || !temporal->active())
+    return false;
+  const auto display = frame.debug.displayMode;
+  if (temporal->upscalingActive())
+    return !frame.camera.orthographic && (display == 0 || display == 100 || display == 104);
+  return display == 0 || display == 8 || (display >= 100 && display <= 104);
 }
 } // namespace
 
@@ -76,19 +100,165 @@ TemporalManager::TemporalManager(
 
 TemporalManager::~TemporalManager() {
   destroyImages();
+  destroyDlssCompositionPipelines();
   const VkDevice device = device_->device();
   for (auto pipeline : velocityPipelines_)
     if (pipeline)
       destroyOwnedPipeline(device, pipeline, nullptr);
   pipelines_.destroyPipeline(resolvePipeline_);
   pipelines_.destroyPipeline(composePipeline_);
+  pipelines_.destroyPipeline(upscaleInputsPipeline_);
   pipelines_.destroyPipelineLayout(velocityLayout_);
   pipelines_.destroyPipelineLayout(resolveLayout_);
   pipelines_.destroyPipelineLayout(composeLayout_);
+  pipelines_.destroyPipelineLayout(upscaleInputsLayout_);
   pipelines_.destroyDescriptorSetLayout(resolveSetLayout_);
   pipelines_.destroyDescriptorSetLayout(composeSetLayout_);
+  pipelines_.destroyDescriptorSetLayout(upscaleInputsSetLayout_);
   if (sampler_)
     destroyOwnedSampler(device, sampler_, nullptr);
+}
+
+void TemporalManager::createDlssCompositionPipelines(const std::filesystem::path& root) {
+  if (dlssComposePipeline_ && dlssTransparencyPipeline_) return;
+  std::vector<VkDescriptorSetLayoutBinding> bindings(composeBindings.begin(), composeBindings.end());
+  bindings.push_back({8, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+  const std::vector<VkDescriptorSetLayoutBinding> layerBindings{
+      {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+  try {
+    dlssComposeSetLayout_ = pipelines_.createDescriptorSetLayout(bindings,
+        std::vector<VkDescriptorBindingFlags>(bindings.size()));
+    dlssTransparencySetLayout_ = pipelines_.createDescriptorSetLayout(layerBindings, {0, 0, 0});
+    dlssComposeLayout_ = pipelines_.createPipelineLayout({dlssComposeSetLayout_},
+        {{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16}});
+    dlssTransparencyLayout_ = pipelines_.createPipelineLayout({dlssTransparencySetLayout_},
+        {{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TransparencyConstants)}});
+    dlssComposePipeline_ = pipelines_.createComputePipeline(root / "spv_shaders/dlss_compose.comp.spv",
+        dlssComposeLayout_, "dlss.compose");
+    dlssTransparencyPipeline_ = pipelines_.createComputePipeline(root / "spv_shaders/dlss_transparency.comp.spv",
+        dlssTransparencyLayout_, "dlss.transparency");
+  } catch (...) {
+    destroyDlssCompositionPipelines();
+    throw;
+  }
+}
+
+void TemporalManager::destroyDlssCompositionPipelines() {
+  pipelines_.destroyPipeline(dlssComposePipeline_);
+  pipelines_.destroyPipeline(dlssTransparencyPipeline_);
+  pipelines_.destroyPipelineLayout(dlssComposeLayout_);
+  pipelines_.destroyPipelineLayout(dlssTransparencyLayout_);
+  pipelines_.destroyDescriptorSetLayout(dlssComposeSetLayout_);
+  pipelines_.destroyDescriptorSetLayout(dlssTransparencySetLayout_);
+}
+
+void TemporalManager::createUpscaleInputPipeline(const std::filesystem::path& root) {
+  if (upscaleInputsPipeline_) return;
+  std::vector<VkDescriptorSetLayoutBinding> bindings;
+  for (uint32_t binding = 0; binding < 8; ++binding)
+    bindings.push_back({binding, binding < 3 ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+  upscaleInputsSetLayout_ = pipelines_.createDescriptorSetLayout(bindings,
+      std::vector<VkDescriptorBindingFlags>(bindings.size(), 0));
+  try {
+    upscaleInputsLayout_ = pipelines_.createPipelineLayout({upscaleInputsSetLayout_},
+        {{VK_SHADER_STAGE_COMPUTE_BIT, 0, 2 * sizeof(uint32_t)}});
+    upscaleInputsPipeline_ = pipelines_.createComputePipeline(root / "spv_shaders/fsr_inputs.comp.spv",
+        upscaleInputsLayout_, "fsr.inputs");
+  } catch (...) {
+    pipelines_.destroyPipelineLayout(upscaleInputsLayout_);
+    pipelines_.destroyDescriptorSetLayout(upscaleInputsSetLayout_);
+    upscaleInputsLayout_ = {};
+    upscaleInputsSetLayout_ = {};
+    throw;
+  }
+}
+
+bool TemporalManager::prepareFsr(const std::filesystem::path& root,
+                                 const FsrUpscalerSettings& settings) {
+  if (!FsrUpscaler::builtWithSdk() || !device_->fsrUpscalingEnabled()) {
+    upscalingStatus_ = FsrUpscaler::builtWithSdk() ? "GPU lacks the required Vulkan FSR features"
+                                            : "Built without the Vulkan FSR SDK";
+    return false;
+  }
+  if (!inputs_.empty() || dlss_) {
+    upscalingStatus_ = "Retire temporal frame resources before preparing FSR";
+    return false;
+  }
+  try {
+    auto candidate = std::make_unique<FsrUpscaler>(device_->physicalDevice(), device_->device(), root);
+    if (!candidate->prepare(settings)) {
+      upscalingStatus_ = candidate->status();
+      return false;
+    }
+    createUpscaleInputPipeline(root);
+    upscalingStatus_ = candidate->status();
+    upscaleRenderExtent_ = settings.renderExtent;
+    upscaleDisplayExtent_ = settings.displayExtent;
+    fsr_ = std::move(candidate);
+    return true;
+  } catch (const std::exception& error) {
+    upscalingStatus_ = error.what();
+    return false;
+  }
+}
+
+std::optional<VkExtent2D> TemporalManager::prepareDlss(const std::filesystem::path& root,
+                                                      UpscaleMode mode, VkExtent2D display) {
+  if (!DlssUpscaler::builtWithSdk()) {
+    upscalingStatus_ = "Built without the Vulkan DLSS SDK";
+    return std::nullopt;
+  }
+  if (!device_->dlssUpscalingEnabled()) {
+    upscalingStatus_ = device_->dlssUpscalingStatus();
+    return std::nullopt;
+  }
+  if (!inputs_.empty() || fsr_) {
+    upscalingStatus_ = "Retire temporal frame resources before preparing DLSS";
+    return std::nullopt;
+  }
+  if (!device_->enabledFeatures().shaderStorageImageExtendedFormats) {
+    upscalingStatus_ = "GPU lacks the storage image formats required by DLSS inputs";
+    return std::nullopt;
+  }
+  try {
+    auto candidate = std::make_unique<DlssUpscaler>(device_->instance(), device_->physicalDevice(),
+        device_->device(), device_->graphicsQueue(), device_->queueFamilyIndices().graphicsFamily.value(), root);
+    if (!candidate->prepare(mode, display)) {
+      upscalingStatus_ = candidate->status();
+      return std::nullopt;
+    }
+    createUpscaleInputPipeline(root);
+    createDlssCompositionPipelines(root);
+    upscalingStatus_ = candidate->status();
+    upscaleRenderExtent_ = candidate->renderExtent();
+    upscaleDisplayExtent_ = display;
+    dlss_ = std::move(candidate);
+    return upscaleRenderExtent_;
+  } catch (const std::exception& error) {
+    upscalingStatus_ = error.what();
+    return std::nullopt;
+  }
+}
+
+void TemporalManager::prepareCamera(container::gpu::CameraData& camera, glm::uvec2 extent,
+                                    const container::temporal::Settings& settings,
+                                    const glm::mat4& projection, float frameMilliseconds) {
+  std::optional<glm::vec2> jitterOverride;
+  if (fsrActive() && settings.enabled) {
+    const auto jitter = fsr_->nextJitterPixels();
+    if (!jitter) throw std::runtime_error("Could not query the active Vulkan FSR jitter");
+    upscaleJitter_ = *jitter;
+    fsrVerticalFov_ = 2.0f * std::atan(1.0f / std::abs(projection[1][1]));
+    jitterOverride = glm::vec2(upscaleJitter_[0], upscaleJitter_[1]);
+  }
+  state_.prepareCamera(camera, extent, settings, projection, jitterOverride);
+  upscaleFrameMilliseconds_ = std::isfinite(frameMilliseconds) && frameMilliseconds > 0.0f
+      ? frameMilliseconds : 1000.0f / 60.0f;
+  if (dlssActive() && settings.enabled)
+    upscaleJitter_ = {camera.jitterUv.x * extent.x, camera.jitterUv.y * extent.y};
 }
 
 void TemporalManager::createPipelines(const std::filesystem::path &root,
@@ -97,10 +267,6 @@ void TemporalManager::createPipelines(const std::filesystem::path &root,
   if (resolvePipeline_)
     return;
   const VkDevice device = device_->device();
-  auto module = [&](const char *name) {
-    return container::gpu::createShaderModule(
-        device, container::util::readFile(root / "spv_shaders" / name));
-  };
   std::vector<VkDescriptorSetLayoutBinding> bindings;
   for (uint32_t binding = 0; binding < 13; ++binding) {
     const auto type = binding == 0   ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
@@ -112,22 +278,7 @@ void TemporalManager::createPipelines(const std::filesystem::path &root,
   }
   resolveSetLayout_ = pipelines_.createDescriptorSetLayout(
       bindings, std::vector<VkDescriptorBindingFlags>(bindings.size(), 0));
-  bindings = {
-      {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-      {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT,
-       nullptr},
-      {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT,
-       nullptr},
-      {3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT,
-       nullptr},
-      {4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT,
-       nullptr},
-      {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
-       nullptr},
-      {6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
-       nullptr},
-      {7, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
-       nullptr}};
+  bindings.assign(composeBindings.begin(), composeBindings.end());
   composeSetLayout_ = pipelines_.createDescriptorSetLayout(
       bindings, std::vector<VkDescriptorBindingFlags>(bindings.size(), 0));
   resolveLayout_ = pipelines_.createPipelineLayout(
@@ -139,30 +290,11 @@ void TemporalManager::createPipelines(const std::filesystem::path &root,
       {sceneLayout},
       {{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
         sizeof(container::gpu::BindlessPushConstants)}});
-  auto compute = [&](const char *file, VkPipelineLayout layout,
-                     const char *key) {
-    VkShaderModule shader = module(file);
-    VkComputePipelineCreateInfo info{
-        VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    info.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-    info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    info.stage.module = shader;
-    info.stage.pName = "computeMain";
-    info.layout = layout;
-    VkPipeline pipeline{};
-    try {
-      pipeline = pipelines_.createComputePipeline(info, key);
-    } catch (...) {
-      destroyOwnedShaderModule(device, shader, nullptr);
-      throw;
-    }
-    destroyOwnedShaderModule(device, shader, nullptr);
-    return pipeline;
-  };
-  resolvePipeline_ =
-      compute("temporal_resolve.comp.spv", resolveLayout_, "taa.resolve");
-  composePipeline_ =
-      compute("temporal_compose.comp.spv", composeLayout_, "taa.compose");
+  const auto shaders = root / "spv_shaders";
+  resolvePipeline_ = pipelines_.createComputePipeline(
+      shaders / "temporal_resolve.comp.spv", resolveLayout_, "taa.resolve");
+  composePipeline_ = pipelines_.createComputePipeline(
+      shaders / "temporal_compose.comp.spv", composeLayout_, "taa.compose");
   VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
   samplerInfo.magFilter = samplerInfo.minFilter = VK_FILTER_LINEAR;
   samplerInfo.addressModeU = samplerInfo.addressModeV =
@@ -171,6 +303,20 @@ void TemporalManager::createPipelines(const std::filesystem::path &root,
       VK_SUCCESS)
     throw std::runtime_error("TAA sampler creation failed");
 
+  velocityDepthFormat_ = depthFormat;
+  auto candidate = prepareVelocityReload(root);
+  publishVelocityReload(candidate);
+}
+
+PreparedGraphicsPipelines TemporalManager::prepareVelocityReload(const std::filesystem::path& root) {
+  PreparedGraphicsPipelines candidate(pipelines_);
+  if (!velocityLayout_)
+    return candidate;
+  const VkDevice device = device_->device();
+  auto module = [&](const char *name) {
+    return container::gpu::createShaderModule(
+        device, container::util::readFile(root / "spv_shaders" / name));
+  };
   VkShaderModule vertex = module("temporal_velocity.vert.spv");
   VkShaderModule fragment{};
   try {
@@ -184,16 +330,13 @@ void TemporalManager::createPipelines(const std::filesystem::path &root,
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     stages[1].module = fragment;
     stages[1].pName = "fragMain";
-    const auto vertexBinding =
-        container::geometry::Vertex::bindingDescription();
-    const auto allAttributes =
-        container::geometry::Vertex::attributeDescriptions();
-    const std::array<VkVertexInputAttributeDescription, 4> attributes = {
-        allAttributes[0], allAttributes[2], allAttributes[3], allAttributes[5]};
+    const auto vertexBindings = temporalVelocityVertexBindings();
+    const auto attributes = temporalVelocityVertexAttributes();
     VkPipelineVertexInputStateCreateInfo input{
         VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-    input.vertexBindingDescriptionCount = 1;
-    input.pVertexBindingDescriptions = &vertexBinding;
+    input.vertexBindingDescriptionCount =
+        static_cast<uint32_t>(vertexBindings.size());
+    input.pVertexBindingDescriptions = vertexBindings.data();
     input.vertexAttributeDescriptionCount =
         static_cast<uint32_t>(attributes.size());
     input.pVertexAttributeDescriptions = attributes.data();
@@ -235,7 +378,7 @@ void TemporalManager::createPipelines(const std::filesystem::path &root,
         VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     rendering.colorAttachmentCount = 3;
     rendering.pColorAttachmentFormats = formats.data();
-    rendering.depthAttachmentFormat = depthFormat;
+    rendering.depthAttachmentFormat = velocityDepthFormat_;
     VkGraphicsPipelineCreateInfo info{
         VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     info.pNext = &rendering;
@@ -256,7 +399,7 @@ void TemporalManager::createPipelines(const std::filesystem::path &root,
       raster.cullMode = culls[i];
       if (createOwnedGraphicsPipelines(
               device, pipelines_.getOrCreatePipelineCache("taa.velocity"), 1,
-              &info, nullptr, &velocityPipelines_[i]) != VK_SUCCESS)
+              &info, nullptr, &candidate.handles[i]) != VK_SUCCESS)
         throw std::runtime_error("TAA velocity pipeline creation failed");
     }
   } catch (...) {
@@ -267,10 +410,17 @@ void TemporalManager::createPipelines(const std::filesystem::path &root,
   }
   destroyOwnedShaderModule(device, fragment, nullptr);
   destroyOwnedShaderModule(device, vertex, nullptr);
+  return candidate;
+}
+
+void TemporalManager::publishVelocityReload(PreparedGraphicsPipelines& candidate) noexcept {
+  if (candidate.handles[0])
+    velocityPipelines_.swap(candidate.handles);
 }
 
 AttachmentImage TemporalManager::image(VkFormat format,
-                                       VkImageUsageFlags usage) {
+                                       VkImageUsageFlags usage,
+                                       VkExtent2D extent) {
   VkFormatProperties features{};
   vkGetPhysicalDeviceFormatProperties(device_->physicalDevice(), format,
                                       &features);
@@ -280,13 +430,13 @@ AttachmentImage TemporalManager::image(VkFormat format,
       (VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT))
     throw std::runtime_error(
-        "TAA history format lacks sampled/storage support; disable TAA");
+        "Temporal image format lacks sampled/storage support");
   AttachmentImage result{};
   result.format = format;
   VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   info.imageType = VK_IMAGE_TYPE_2D;
   info.format = format;
-  info.extent = {extent_.width, extent_.height, 1};
+  info.extent = {extent.width, extent.height, 1};
   info.mipLevels = info.arrayLayers = 1;
   info.samples = VK_SAMPLE_COUNT_1_BIT;
   info.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -296,7 +446,7 @@ AttachmentImage TemporalManager::image(VkFormat format,
   if (vmaCreateImage(allocator_.memoryManager()->allocator(), &info,
                      &allocation, &result.image, &result.allocation,
                      nullptr) != VK_SUCCESS)
-    throw std::runtime_error("TAA history allocation failed");
+    throw std::runtime_error("Temporal image allocation failed");
   VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
   view.image = result.image;
   view.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -306,7 +456,7 @@ AttachmentImage TemporalManager::image(VkFormat format,
       VK_SUCCESS) {
     vmaDestroyImage(allocator_.memoryManager()->allocator(), result.image,
                     result.allocation);
-    throw std::runtime_error("TAA history view creation failed");
+    throw std::runtime_error("Temporal image view creation failed");
   }
   return result;
 }
@@ -321,9 +471,25 @@ void TemporalManager::destroyImage(AttachmentImage &attachment) {
 }
 
 void TemporalManager::destroyImages() {
+  // Retire the vendor feature before releasing its imported frame images.
+  fsr_.reset();
+  dlss_.reset();
+  upscalingStatus_ = "native resolution";
+  destroyFrameImages();
+}
+
+void TemporalManager::destroyFrameImages() {
   if (pool_) {
     destroyOwnedDescriptorPool(device_->device(), pool_, nullptr);
     pool_ = {};
+  }
+  for (auto& input : inputs_) {
+    destroyImage(input.upscaleDepth);
+    destroyImage(input.upscaleMotion);
+    destroyImage(input.upscaleReactive);
+    destroyImage(input.upscaleTransparency);
+    destroyImage(input.upscaleOutput);
+    destroyImage(input.dlssOitLayer);
   }
   inputs_.clear();
   for (auto &history : histories_) {
@@ -338,54 +504,80 @@ void TemporalManager::destroyImages() {
 
 void TemporalManager::prepare(FrameResourceManager &frames, VkExtent2D extent,
                               uint32_t imageCount) {
-  if (!settings_.enabled || !extent.width || !extent.height)
+  const bool useUpscaler = upscalingActive();
+  const bool useDlss = dlssActive();
+  const VkFormat upscaleOutputFormat = fsrActive() ? fsr_->outputFormat() : VK_FORMAT_R16G16B16A16_SFLOAT;
+  if ((!settings_.enabled && !useUpscaler) || !extent.width || !extent.height || !imageCount)
     return;
   frames.ensureTemporalAttachments();
   if (inputs_.size() == imageCount && extent_.width == extent.width &&
       extent_.height == extent.height &&
+      (!useUpscaler || inputs_[0].upscaleOutput.format == upscaleOutputFormat) &&
       inputs_[0].frame.temporalMotion.image ==
           frames.frame(0)->temporalMotion.image)
     return;
-  destroyImages();
+  if (useUpscaler && (!inputs_.empty() || extent.width != upscaleRenderExtent_.width ||
+      extent.height != upscaleRenderExtent_.height))
+    throw std::logic_error("The upscaler requires retired frame resources at its configured render extent");
+  destroyFrameImages();
   extent_ = extent;
   try {
     const auto usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    for (auto &history : histories_) {
-      history.color = image(VK_FORMAT_R16G16B16A16_SFLOAT, usage);
-      history.depth = image(VK_FORMAT_R32G32_SFLOAT, usage);
-      history.identity = image(VK_FORMAT_R32_UINT, usage);
+    if (!useUpscaler) {
+      for (auto &history : histories_) {
+        history.color = image(VK_FORMAT_R16G16B16A16_SFLOAT, usage, extent);
+        history.depth = image(VK_FORMAT_R32G32_SFLOAT, usage, extent);
+        history.identity = image(VK_FORMAT_R32_UINT, usage, extent);
+      }
     }
     const std::array<VkDescriptorPoolSize, 5> sizes = {
-        {{VK_DESCRIPTOR_TYPE_SAMPLER, imageCount * 3},
-         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, imageCount * 16},
-         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, imageCount * 10},
-         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, imageCount * 3},
+        {{VK_DESCRIPTOR_TYPE_SAMPLER, imageCount * (useDlss ? 2u : useUpscaler ? 1u : 3u)},
+         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, imageCount * (useDlss ? 6u : useUpscaler ? 5u : 16u)},
+         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, imageCount * (useDlss ? 9u : useUpscaler ? 7u : 10u)},
+         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, imageCount * (useUpscaler ? 1u : 3u)},
          {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, imageCount * 2}}};
     VkDescriptorPoolCreateInfo poolInfo{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    poolInfo.maxSets = imageCount * 3;
+    const uint32_t setCount = useUpscaler && !useDlss ? 2u : 3u;
+    poolInfo.maxSets = imageCount * setCount;
     poolInfo.poolSizeCount = static_cast<uint32_t>(sizes.size());
     poolInfo.pPoolSizes = sizes.data();
     if (createOwnedDescriptorPool(device_->device(), &poolInfo, nullptr,
                                   &pool_) != VK_SUCCESS)
-      throw std::runtime_error("TAA descriptor pool creation failed");
+      throw std::runtime_error("Temporal descriptor pool creation failed");
     inputs_.resize(imageCount);
     for (uint32_t i = 0; i < imageCount; ++i) {
       auto &input = inputs_[i];
       input.frame = *frames.frame(i);
       const std::array<VkDescriptorSetLayout, 3> layouts = {
-          resolveSetLayout_, resolveSetLayout_, composeSetLayout_};
+          useDlss ? dlssComposeSetLayout_ : composeSetLayout_,
+          useUpscaler ? upscaleInputsSetLayout_ : resolveSetLayout_,
+          useDlss ? dlssTransparencySetLayout_ : resolveSetLayout_};
       VkDescriptorSetAllocateInfo info{
           VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
       info.descriptorPool = pool_;
-      info.descriptorSetCount = 3;
+      info.descriptorSetCount = setCount;
       info.pSetLayouts = layouts.data();
       std::array<VkDescriptorSet, 3> sets{};
       if (vkAllocateDescriptorSets(device_->device(), &info, sets.data()) !=
           VK_SUCCESS)
-        throw std::runtime_error("TAA descriptor allocation failed");
-      input.resolve = {sets[0], sets[1]};
-      input.compose = sets[2];
+        throw std::runtime_error("Temporal descriptor allocation failed");
+      input.compose = sets[0];
+      if (useUpscaler) {
+        input.upscaleInputs = sets[1];
+        input.upscaleDepth = image(VK_FORMAT_R32_SFLOAT, usage, extent);
+        input.upscaleMotion = image(VK_FORMAT_R16G16_SFLOAT, usage, extent);
+        input.upscaleReactive = image(VK_FORMAT_R8_UNORM, usage, extent);
+        input.upscaleTransparency = image(VK_FORMAT_R8_UNORM, usage, extent);
+        input.upscaleOutput = image(upscaleOutputFormat,
+            usage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, upscaleDisplayExtent_);
+        if (useDlss) {
+          input.dlssTransparency = sets[2];
+          input.dlssOitLayer = image(VK_FORMAT_R16G16B16A16_SFLOAT, usage, extent);
+        }
+      } else {
+        input.resolve = {sets[1], sets[2]};
+      }
     }
   } catch (...) {
     destroyImages();
@@ -400,7 +592,7 @@ void TemporalManager::updateDescriptors(
   // fence.
   const std::array<VkDescriptorImageInfo, 3> postImages = {
       {{{},
-        (active() && resolveThisFrame) ? outputView() : frame.sceneColor.view,
+        (active() && resolveThisFrame) ? outputView(imageIndex) : frame.sceneColor.view,
         (active() && resolveThisFrame)
             ? VK_IMAGE_LAYOUT_GENERAL
             : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
@@ -434,7 +626,7 @@ void TemporalManager::updateDescriptors(
   input.frame = frame;
   VkDescriptorBufferInfo cameraInfo{camera.buffer, 0,
                                     sizeof(container::gpu::CameraData)};
-  for (uint32_t slot = 0; slot < 2; ++slot) {
+  for (uint32_t slot = 0; !upscalingActive() && slot < 2; ++slot) {
     const auto &old = histories_[slot ^ 1u];
     const auto &output = histories_[slot];
     const std::array<VkImageView, 11> views = {frame.temporalComposite.view,
@@ -478,25 +670,27 @@ void TemporalManager::updateDescriptors(
                            static_cast<uint32_t>(writes.size()), writes.data(),
                            0, nullptr);
   }
-  const std::array<VkDescriptorImageInfo, 5> images = {
+  const std::array<VkDescriptorImageInfo, 6> images = {
       {{sampler_, {}, {}},
        {{}, frame.sceneColor.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
        {{}, frame.temporalReactive.view, VK_IMAGE_LAYOUT_GENERAL},
        {{}, frame.temporalComposite.view, VK_IMAGE_LAYOUT_GENERAL},
-       {{}, frame.oitHeadPointers.view, VK_IMAGE_LAYOUT_GENERAL}}};
+       {{}, frame.oitHeadPointers.view, VK_IMAGE_LAYOUT_GENERAL},
+       {{}, input.dlssOitLayer.view, VK_IMAGE_LAYOUT_GENERAL}}};
   const std::array<VkDescriptorBufferInfo, 3> buffers = {
       {{frame.oitNodeBuffer.buffer, 0, VK_WHOLE_SIZE},
        {frame.oitCounterBuffer.buffer, 0, sizeof(uint32_t)},
        {frame.oitMetadataBuffer.buffer, 0, sizeof(OitMetadata)}}};
-  std::array<VkWriteDescriptorSet, 8> writes{};
-  for (uint32_t binding = 0; binding < 8; ++binding) {
+  std::array<VkWriteDescriptorSet, 9> writes{};
+  const uint32_t composeWrites = dlssActive() ? 9u : 8u;
+  for (uint32_t binding = 0; binding < composeWrites; ++binding) {
     auto &write = writes[binding];
     write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     write.dstSet = input.compose;
     write.dstBinding = binding;
     write.descriptorCount = 1;
-    if (binding < 5) {
-      write.pImageInfo = &images[binding];
+    if (binding < 5 || binding == 8) {
+      write.pImageInfo = &images[binding == 8 ? 5u : binding];
       write.descriptorType = binding == 0  ? VK_DESCRIPTOR_TYPE_SAMPLER
                              : binding < 3 ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
                                            : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -506,9 +700,45 @@ void TemporalManager::updateDescriptors(
                                           : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     }
   }
-  vkUpdateDescriptorSets(device_->device(),
-                         static_cast<uint32_t>(writes.size()), writes.data(), 0,
-                         nullptr);
+  vkUpdateDescriptorSets(device_->device(), composeWrites, writes.data(), 0, nullptr);
+  if (upscalingActive()) updateUpscaleDescriptors(input);
+  if (dlssActive()) updateDlssTransparencyDescriptors(input);
+}
+
+void TemporalManager::updateDlssTransparencyDescriptors(const Input& input) {
+  const std::array<VkDescriptorImageInfo, 3> images{{
+      {sampler_, {}, {}},
+      {{}, input.dlssOitLayer.view, VK_IMAGE_LAYOUT_GENERAL},
+      {{}, input.upscaleOutput.view, VK_IMAGE_LAYOUT_GENERAL},
+  }};
+  const std::array types{VK_DESCRIPTOR_TYPE_SAMPLER, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                         VK_DESCRIPTOR_TYPE_STORAGE_IMAGE};
+  std::array<VkWriteDescriptorSet, images.size()> writes{};
+  for (uint32_t binding = 0; binding < writes.size(); ++binding)
+    writes[binding] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+        input.dlssTransparency, binding, 0, 1, types[binding], &images[binding]};
+  vkUpdateDescriptorSets(device_->device(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+}
+
+void TemporalManager::updateUpscaleDescriptors(const Input& input) {
+  const auto& frame = input.frame;
+  const std::array views{frame.depthSamplingView, frame.temporalMotion.view,
+      frame.temporalComposite.view, input.upscaleDepth.view, input.upscaleMotion.view,
+      input.upscaleReactive.view, input.upscaleTransparency.view, frame.temporalDiagnostics.view};
+  std::array<VkDescriptorImageInfo, views.size()> images{};
+  std::array<VkWriteDescriptorSet, views.size()> writes{};
+  for (uint32_t binding = 0; binding < views.size(); ++binding) {
+    images[binding] = {{}, views[binding], binding == 0 ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                                                      : VK_IMAGE_LAYOUT_GENERAL};
+    auto& write = writes[binding];
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = input.upscaleInputs;
+    write.dstBinding = binding;
+    write.descriptorCount = 1;
+    write.descriptorType = binding < 3 ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    write.pImageInfo = &images[binding];
+  }
+  vkUpdateDescriptorSets(device_->device(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
 void TemporalManager::recordVelocity(VkCommandBuffer cmd,
@@ -522,6 +752,13 @@ void TemporalManager::recordVelocity(VkCommandBuffer cmd,
          {f.temporalMotion, f.temporalIdentity, f.temporalReactive,
           f.temporalComposite, f.temporalDiagnostics})
       initializeImage(cmd, attachment.image);
+    if (upscalingActive()) {
+      for (const auto& attachment : {input.upscaleDepth, input.upscaleMotion, input.upscaleReactive,
+                                      input.upscaleTransparency, input.upscaleOutput})
+        initializeImage(cmd, attachment.image);
+    }
+    if (dlssActive())
+      initializeImage(cmd, input.dlssOitLayer.image);
     input.initialized = true;
   }
   dependency(cmd,
@@ -572,6 +809,8 @@ void TemporalManager::recordVelocity(VkCommandBuffer cmd,
   const DebugOverlayRenderer drawHelper;
   const SceneOpaqueDrawPipelineHandles pipelines{
       velocityPipelines_[0], velocityPipelines_[1], velocityPipelines_[2]};
+  (void)recordTemporalPreviousVertexBinding(
+      cmd, p.scene.vertexSlice, p.scene.previousVertexSlice);
   (void)recordSceneOpaqueDrawCommands(
       cmd,
       {.plan = &plan,
@@ -609,6 +848,9 @@ void TemporalManager::recordVelocity(VkCommandBuffer cmd,
         p.bim.opaqueMeshDrawsUseGpuVisibility;
     const auto bimPlan = buildBimSurfacePassPlan(inputs);
     const std::array<VkDescriptorSet, 1> sets = {bimSet};
+    // BIM has rigid object history and its own vertex index space. Never leave
+    // primary-scene deformation history bound while drawing BIM triangles.
+    (void)recordTemporalPreviousVertexBinding(cmd, p.bim.scene.vertexSlice);
     (void)recordBimSurfacePassCommands(
         cmd, {.plan = &bimPlan,
               .geometry = {sets, p.bim.scene.vertexSlice,
@@ -630,18 +872,19 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
                                     const FrameRecordParams &p) {
   if (!needed(p))
     return;
-  for (auto &history : histories_)
-    if (!history.initialized) {
-      for (auto attachment : {history.color, history.depth, history.identity}) {
-        initializeImage(cmd, attachment.image);
-        const VkClearColorValue clear{};
-        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
-                                            1};
-        vkCmdClearColorImage(cmd, attachment.image, VK_IMAGE_LAYOUT_GENERAL,
-                             &clear, 1, &range);
+  if (!upscalingActive()) {
+    for (auto& history : histories_) {
+      if (!history.initialized) {
+        for (auto attachment : {history.color, history.depth, history.identity}) {
+          initializeImage(cmd, attachment.image);
+          const VkClearColorValue clear{};
+          const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+          vkCmdClearColorImage(cmd, attachment.image, VK_IMAGE_LAYOUT_GENERAL, &clear, 1, &range);
+        }
+        history.initialized = true;
       }
-      history.initialized = true;
     }
+  }
   dependency(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
              VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
   const auto &input = inputs_.at(p.runtime.imageIndex);
@@ -663,16 +906,28 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
                         p.bim.sectionClipCapGeometry.valid() ||
                         hasOpaqueDrawCommands(p.bim.nativePointDraws) ||
                         hasOpaqueDrawCommands(p.bim.nativeCurveDraws);
+  // The volume pass writes exact visible coverage into spare HDR alpha. Merge
+  // it here, after velocity has cleared/rasterized the surface reactive mask.
+  // The flag mirrors the producer so ordinary surface alpha is never consumed.
+  const bool volumeCoverage = p.services.openVdbVolumeRenderer &&
+                             p.services.openVdbVolumeRenderer->records(p);
   const std::array<uint32_t, 4> compose = {
-      extent_.width, extent_.height, transparent ? 1u : 0u, fallback ? 1u : 0u};
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, composePipeline_);
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, composeLayout_,
+      extent_.width, extent_.height, transparent ? 1u : 0u,
+      (fallback ? 1u : 0u) | (volumeCoverage ? 2u : 0u)};
+  const auto composeLayout = dlssActive() ? dlssComposeLayout_ : composeLayout_;
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dlssActive() ? dlssComposePipeline_ : composePipeline_);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, composeLayout,
                           0, 1, &input.compose, 0, nullptr);
-  vkCmdPushConstants(cmd, composeLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+  vkCmdPushConstants(cmd, composeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                      sizeof(compose), compose.data());
   vkCmdDispatch(cmd, (extent_.width + 7) / 8, (extent_.height + 7) / 8, 1);
   dependency(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
              VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+  if (upscalingActive()) {
+    recordUpscale(cmd, p, input, transparent);
+    resolveRecorded_ = true;
+    return;
+  }
   const ResolveConstants constants{extent_.width,
                                    extent_.height,
                                    state_.valid() ? 1u : 0u,
@@ -697,12 +952,99 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
   resolveRecorded_ = true;
 }
 
+void TemporalManager::recordUpscale(VkCommandBuffer cmd, const FrameRecordParams& p, const Input& input,
+                                    bool hasTransparency) {
+  const std::array constants{extent_.width, extent_.height};
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, upscaleInputsPipeline_);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, upscaleInputsLayout_, 0, 1,
+      &input.upscaleInputs, 0, nullptr);
+  vkCmdPushConstants(cmd, upscaleInputsLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(constants), constants.data());
+  vkCmdDispatch(cmd, (extent_.width + 7) / 8, (extent_.height + 7) / 8, 1);
+
+  const std::array attachments{input.frame.temporalComposite.image, input.upscaleDepth.image,
+      input.upscaleMotion.image, input.upscaleReactive.image, input.upscaleTransparency.image};
+  std::array<VkImageMemoryBarrier2, attachments.size()> barriers{};
+  for (uint32_t i = 0; i < attachments.size(); ++i) {
+    barriers[i] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr,
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, attachments[i],
+        {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+  }
+  VkDependencyInfo inputsReady{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+  inputsReady.imageMemoryBarrierCount = static_cast<uint32_t>(barriers.size());
+  inputsReady.pImageMemoryBarriers = barriers.data();
+  vkCmdPipelineBarrier2(cmd, &inputsReady);
+
+  if (dlssActive()) {
+    const auto dlssImage = [this](const AttachmentImage& image) -> DlssImage {
+      return {image.image, image.view, image.format, extent_};
+    };
+    const auto result = dlss_->record({.commands = cmd,
+        .color = dlssImage(input.frame.temporalComposite), .depth = dlssImage(input.upscaleDepth),
+        .motion = dlssImage(input.upscaleMotion),
+        .output = {input.upscaleOutput.image, input.upscaleOutput.view, input.upscaleOutput.format, upscaleDisplayExtent_},
+        .jitterPixels = upscaleJitter_, .reset = !state_.valid(), .frameMilliseconds = upscaleFrameMilliseconds_});
+    if (result != DlssDispatchResult::Recorded)
+      throw std::runtime_error("Could not record the active Vulkan DLSS frame: " + std::string(dlss_->status()));
+    if (hasTransparency) {
+      dependency(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                 VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+      const TransparencyConstants layer{upscaleDisplayExtent_.width, upscaleDisplayExtent_.height,
+          upscaleJitter_[0] / extent_.width, upscaleJitter_[1] / extent_.height};
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dlssTransparencyPipeline_);
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dlssTransparencyLayout_, 0, 1,
+          &input.dlssTransparency, 0, nullptr);
+      vkCmdPushConstants(cmd, dlssTransparencyLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(layer), &layer);
+      vkCmdDispatch(cmd, (layer.width + 7u) / 8u, (layer.height + 7u) / 8u, 1);
+    }
+  } else {
+    const auto fsrImage = [this](const AttachmentImage& image) -> FsrImage {
+      return {image.image, image.format, extent_};
+    };
+    const auto result = fsr_->record({.commands = cmd,
+        .color = fsrImage(input.frame.temporalComposite), .depth = fsrImage(input.upscaleDepth),
+        .motion = fsrImage(input.upscaleMotion), .reactive = fsrImage(input.upscaleReactive),
+        .transparency = fsrImage(input.upscaleTransparency),
+        .output = {input.upscaleOutput.image, input.upscaleOutput.format, upscaleDisplayExtent_},
+        .jitterPixels = upscaleJitter_, .cameraNear = p.camera.nearPlane, .cameraFar = p.camera.farPlane,
+        .verticalFovRadians = fsrVerticalFov_, .frameMilliseconds = upscaleFrameMilliseconds_,
+        .reset = !state_.valid()});
+    if (result != FsrDispatchResult::Recorded)
+      throw std::runtime_error("Could not record the active Vulkan FSR frame: " + std::string(fsr_->status()));
+  }
+
+  // Restore the frame-local resources for the next use of this image. The
+  // SDK leaves the presentation HDR image in GENERAL for post-processing.
+  for (auto& barrier : barriers) {
+    std::swap(barrier.oldLayout, barrier.newLayout);
+    barrier.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+  }
+  vkCmdPipelineBarrier2(cmd, &inputsReady);
+  dependency(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT);
+}
+
 void TemporalManager::commit() {
-  if (!settings_.enabled || resolveRecorded_)
+  if (fsrActive() && resolveRecorded_) fsr_->commit();
+  if (dlssActive() && resolveRecorded_) dlss_->commit();
+  if ((!settings_.enabled && !upscalingActive()) || resolveRecorded_)
     state_.commit();
   else
     state_.reset("temporal pass skipped");
   resolveRecorded_ = false;
+}
+
+VkImageView TemporalManager::outputView(uint32_t image) const {
+  if (upscalingActive()) return image < inputs_.size() ? inputs_[image].upscaleOutput.view : VK_NULL_HANDLE;
+  return histories_[writeSlot()].color.view;
+}
+
+VkImage TemporalManager::outputImage(uint32_t image) const {
+  if (upscalingActive()) return image < inputs_.size() ? inputs_[image].upscaleOutput.image : VK_NULL_HANDLE;
+  return histories_[writeSlot()].color.image;
 }
 
 VkImageView TemporalManager::diagnosticView(uint32_t index) const {
@@ -711,6 +1053,12 @@ VkImageView TemporalManager::diagnosticView(uint32_t index) const {
 }
 
 uint64_t TemporalManager::memoryBytes() const {
+  if (upscalingActive()) {
+    const uint64_t render = uint64_t(extent_.width) * extent_.height;
+    const uint64_t display = uint64_t(upscaleDisplayExtent_.width) * upscaleDisplayExtent_.height;
+    const uint64_t outputPixelBytes = fsrActive() && fsr_->outputFormat() == VK_FORMAT_R32G32B32A32_SFLOAT ? 16u : 8u;
+    return ((dlssActive() ? 55u : 47u) * render + outputPixelBytes * display) * inputs_.size();
+  }
   return !inputs_.empty() ? uint64_t(extent_.width) * extent_.height *
                                 (40u + 37u * inputs_.size())
                           : 0u;
@@ -737,12 +1085,18 @@ uint64_t TemporalManager::allocatedBytes() const {
     add(input.frame.temporalReactive);
     add(input.frame.temporalComposite);
     add(input.frame.temporalDiagnostics);
+    add(input.upscaleDepth);
+    add(input.upscaleMotion);
+    add(input.upscaleReactive);
+    add(input.upscaleTransparency);
+    add(input.upscaleOutput);
+    add(input.dlssOitLayer);
   }
   return bytes;
 }
 
-void registerTemporalPasses(RenderGraphBuilder &graph) {
-  graph.addPass(RenderPassId::TemporalVelocity, {RenderPassId::Lighting},
+void registerTemporalPasses(RenderGraphBuilder& graph, RenderPassId predecessor) {
+  graph.addPass(RenderPassId::TemporalVelocity, {predecessor},
                 [](VkCommandBuffer cmd, const FrameRecordParams &p) {
                   if (p.services.temporalManager)
                     p.services.temporalManager->recordVelocity(cmd, p);
@@ -782,7 +1136,7 @@ VkImageLayout temporalSceneColorLayout(const FrameRecordParams &frame) {
 
 VkImageView temporalSceneColorView(const FrameRecordParams &frame,
                                    VkImageView nativeView) {
-  return needed(frame) ? frame.services.temporalManager->outputView()
+  return needed(frame) ? frame.services.temporalManager->outputView(frame.runtime.imageIndex)
                        : nativeView;
 }
 } // namespace container::renderer

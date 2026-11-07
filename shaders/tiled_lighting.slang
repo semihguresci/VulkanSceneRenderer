@@ -6,6 +6,7 @@
 #include "depth_normal_common.slang"
 #include "lighting_structs.slang"
 #include "material_data_common.slang"
+#include "pbr_extended_deferred_common.slang"
 #include "ddgi_lighting_common.slang"
 #include "push_constants_common.slang"
 #include "local_shadow_common.slang"
@@ -141,6 +142,8 @@ float4 fragMain(VSOutput input) : SV_Target0
     float metallic = saturate(material.x);
     float roughness = clamp(material.y, 0.045, 1.0);
     bool thinSurface = IsThinSurfaceGpuMaterial(materialData.flags);
+    ExtendedPbrTerms extended = LoadDeferredExtendedPbrTerms(
+        materialData, int2(pixelCoord), layerTerms.transmissionFactor);
     float3 V = SafeNormalize(uCamera.cameraWorldPosition.xyz - worldPosition, float3(0.0, 0.0, 1.0));
     float bounceIntensity = pc.bounceIntensity;
     if (bounceIntensity > 0.0)
@@ -182,9 +185,10 @@ float4 fragMain(VSOutput input) : SV_Target0
 
         float invDistance = rsqrt(max(distanceSq, 1e-8));
         float3 L = lightVector * invDistance;
+        float3 shadowNormal = ExtendedPbrDeferredShadowNormal(
+            geometricNormal, normal, L, extended);
         float attenuation = PointLightAttenuation(distanceSq, lightRadius);
-        float coneAttenuation = SpotLightConeAttenuation(
-            light.directionInnerCos, light.coneOuterCosType, L);
+        float coneAttenuation = LocalLightAngularIntensity(light, L);
         float3 radiance =
             light.colorIntensity.rgb * light.colorIntensity.a * attenuation *
             coneAttenuation;
@@ -196,26 +200,28 @@ float4 fragMain(VSOutput input) : SV_Target0
         if (!RayPointSelected(lightIdx) && useLocalShadowMap)
         {
             lightVisibility *= LocalPointLightShadowVisibility(
-                light, worldPosition, geometricNormal, L, uLocalShadow,
+                light, worldPosition, shadowNormal, L, uLocalShadow,
                 gLocalShadowAtlas, gLocalShadowSampler);
         }
         if (!RayPointSelected(lightIdx) && pc.contactVisibilityEnabled != 0u &&
             ShouldTracePointLightContactShadow(radiance, lightVisibility))
         {
             lightVisibility *= ScreenSpacePointLightContactVisibility(
-                worldPosition, geometricNormal, light.positionRadius.xyz, gDepthTexture,
+                worldPosition, shadowNormal, light.positionRadius.xyz, gDepthTexture,
                 gNormalTexture, uCamera.viewProj, uCamera.inverseViewProj);
         }
         if (RayPointSelected(lightIdx)) lightVisibility = RayShadowVisibility(input.pos, 1u + lightIdx);
         radiance *= lightVisibility;
-        totalLighting += EvaluateDeferredLayeredDirectLight(
+        totalLighting += EvaluateExtendedPbrLayeredDirectLight(
             albedo.rgb, F0, metallic, roughness, normal, V, L, radiance,
             layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,
-            layerTerms.sheenColor, layerTerms.sheenRoughness);
+            layerTerms.sheenColor, layerTerms.sheenRoughness, extended);
         totalLighting += EvaluateDiffuseBounceLight(
-            albedo.rgb, metallic, normal, geometricNormal, V, L, unshadowedRadiance,
+            albedo.rgb * ExtendedPbrDiffuseReflectionWeight(extended), metallic,
+            normal, geometricNormal, V, L, unshadowedRadiance,
             lightVisibility, saturate(material.z), bounceIntensity);
-        if (thinSurface || transmissionWeight > 0.0)
+        if (extended.diffuseTransmissionFactor <= 0.0 &&
+            (thinSurface || transmissionWeight > 0.0))
         {
             float transmissionAlpha =
                 thinSurface ? lerp(albedo.a, 0.0, transmissionWeight) : 0.0;

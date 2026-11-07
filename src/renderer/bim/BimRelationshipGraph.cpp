@@ -173,7 +173,7 @@ void BimRelationshipGraph::clear(const std::function<void()> &progress) {
 }
 
 void BimRelationshipGraph::build(
-    std::span<const BimElementMetadata> metadata,
+    BimMetadataTableView metadata,
     std::span<const container::geometry::dotbim::ElementRelationship>
         relationships,
     const std::function<void()> &progress) {
@@ -192,12 +192,12 @@ void BimRelationshipGraph::build(
   propertySetsByObject_.reserve(metadata.size());
   edgeIdentities_.reserve(metadata.size());
 
-  for (const BimElementMetadata &element : metadata) {
+  for (const BimElementMetadataView &element : metadata) {
     checkpoint();
     (void)addObjectNode(element);
   }
 
-  for (const BimElementMetadata &element : metadata) {
+  for (const BimElementMetadataView &element : metadata) {
     checkpoint();
     const uint32_t elementNode = objectNodeIndex(element.objectIndex);
     if (elementNode == kInvalidNodeIndex) {
@@ -209,7 +209,7 @@ void BimRelationshipGraph::build(
     if (!storey.empty()) {
       const uint32_t storeyNode =
           syntheticNode("storey:" + storey, storey, "IfcBuildingStorey", {},
-                        element.storeyId);
+                        std::string(element.storeyId));
       addEdge(storeyNode, elementNode, BimRelationshipKind::SpatialParent,
               defaultRelationshipLabel(BimRelationshipKind::SpatialParent));
     }
@@ -364,18 +364,18 @@ uint32_t BimRelationshipGraph::addNode(BimRelationshipNode node) {
 }
 
 uint32_t
-BimRelationshipGraph::addObjectNode(const BimElementMetadata &metadata) {
+BimRelationshipGraph::addObjectNode(const BimElementMetadataView &metadata) {
   if (!isValidObjectIndex(metadata.objectIndex)) {
     return kInvalidNodeIndex;
   }
   const uint32_t nodeIndex = addNode(BimRelationshipNode{
       .objectIndex = metadata.objectIndex,
-      .guid = metadata.guid,
-      .sourceId = metadata.sourceId,
+      .guid = std::string(metadata.guid),
+      .sourceId = std::string(metadata.sourceId),
       .label = firstNonEmpty({metadata.displayName, metadata.objectType,
                               metadata.type, metadata.guid,
                               metadata.sourceId}),
-      .ifcClass = metadata.type,
+      .ifcClass = std::string(metadata.type),
   });
   nodeByObjectIndex_[metadata.objectIndex] = nodeIndex;
 
@@ -522,14 +522,14 @@ void BimRelationshipGraph::addEdge(uint32_t from, uint32_t to,
 }
 
 void BimRelationshipGraph::addSearchField(uint32_t objectIndex,
-                                          std::string text,
+                                          std::string_view text,
                                           std::string reason) {
   if (!isValidObjectIndex(objectIndex) || text.empty()) {
     return;
   }
   searchFields_.push_back(SearchField{
       .objectIndex = objectIndex,
-      .text = std::move(text),
+      .text = std::string(text),
       .reason = std::move(reason),
   });
 }
@@ -552,7 +552,7 @@ void BimRelationshipGraph::indexNodeIdentity(
 }
 
 void BimRelationshipGraph::buildPropertySets(
-    const BimElementMetadata &metadata) {
+    const BimElementMetadataView &metadata) {
   if (!isValidObjectIndex(metadata.objectIndex) || metadata.properties.empty()) {
     return;
   }

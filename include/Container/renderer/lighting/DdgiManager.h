@@ -16,6 +16,8 @@ class VulkanMemoryManager;
 } // namespace container::gpu
 namespace container::renderer {
 class RayShadowManager;
+class DdgiDebugRenderer;
+struct RayEffectPipelines;
 class RenderGraphBuilder;
 
 // Bounded packed world-space volumes. Optional second-queue updates publish
@@ -34,6 +36,10 @@ public:
                        VkDescriptorSetLayout scene, VkDescriptorSetLayout light,
                        VkDescriptorSetLayout postProcess = VK_NULL_HANDLE,
                        VkFormat colorFormat = VK_FORMAT_UNDEFINED);
+  [[nodiscard]] RayEffectPipelines prepareShaderReload(const std::filesystem::path& root) const;
+  void publishShaderReload(RayEffectPipelines candidate) noexcept;
+  [[nodiscard]] std::unique_ptr<DdgiDebugRenderer> prepareDebugReload(const std::filesystem::path& root) const;
+  void publishDebugReload(std::unique_ptr<DdgiDebugRenderer> candidate) noexcept;
   // Call between frames, before assembling their descriptor snapshots. Invalid
   // settings leave the current configuration untouched. Allocation changes
   // retire the device and rebuild; live controls retain history. Camera-follow
@@ -43,6 +49,62 @@ public:
   // writer and disables old irradiance immediately; the next graphics trace
   // clears both atlases/states even while paused, without reallocating them.
   void resetSceneHistory();
+  // All graphics and asynchronous readers must be retired before replacement.
+  void replaceEnvironment(VkImageView environment, VkSampler sampler);
+  class PreparedSceneHistoryReset {
+  public:
+    PreparedSceneHistoryReset() = default;
+    PreparedSceneHistoryReset(PreparedSceneHistoryReset&&) noexcept;
+    PreparedSceneHistoryReset& operator=(PreparedSceneHistoryReset&&) noexcept;
+    PreparedSceneHistoryReset(const PreparedSceneHistoryReset&) = delete;
+    PreparedSceneHistoryReset& operator=(const PreparedSceneHistoryReset&) = delete;
+  private:
+    friend class DdgiManager;
+    const void* owner_{};
+    size_t probeCount_{};
+    bool ready_{}, enabled_{};
+    DdgiPriorityScheduler scheduler_;
+    std::vector<bool> fresh_;
+    std::string status_;
+  };
+  // Staging allocates only CPU reset state and leaves the live field unchanged.
+  // Serialize settings/scene edits and synchronizeAsync before publication.
+  [[nodiscard]] PreparedSceneHistoryReset prepareSceneHistoryReset() const;
+  // Borrowed CPU admission for a coexisting light-edit reset and per-image
+  // snapshot-capacity preparation. Excludes GPU storage, which has its own
+  // coexistence budget. Does not allocate, snapshot or mutate live DDGI state.
+  [[nodiscard]] uint64_t lightEditPreparationCpuBytes() const;
+  [[nodiscard]] bool canPublishSceneHistoryReset(
+      const PreparedSceneHistoryReset& reset) const noexcept;
+  [[nodiscard]] bool publishSceneHistoryReset(
+      PreparedSceneHistoryReset& reset) noexcept;
+  class PreparedLightSnapshotCapacity {
+  public:
+    PreparedLightSnapshotCapacity() noexcept;
+    ~PreparedLightSnapshotCapacity();
+    PreparedLightSnapshotCapacity(PreparedLightSnapshotCapacity&&) noexcept;
+    PreparedLightSnapshotCapacity& operator=(PreparedLightSnapshotCapacity&&) noexcept;
+    PreparedLightSnapshotCapacity(const PreparedLightSnapshotCapacity&) = delete;
+    PreparedLightSnapshotCapacity& operator=(const PreparedLightSnapshotCapacity&) = delete;
+    explicit operator bool() const noexcept;
+  private:
+    friend class DdgiManager;
+    struct State;
+    std::unique_ptr<State> state_;
+  };
+  // Prepare every image's point/area snapshot capacity before a scene commit.
+  // Growth stays detached until all allocations fit the storage and aggregate
+  // VMA budget (including temporary coexistence with the old buffers). A
+  // discarded/failed preparation changes no live resources or history state.
+  [[nodiscard]] PreparedLightSnapshotCapacity prepareLightSnapshotCapacity(
+      size_t pointCount, size_t areaCount) const;
+  // Caller retires graphics readers and synchronizeAsync before publication.
+  // No allocation/upload/map/flush or timeline/history reset occurs here. The
+  // consumed token retains old buffers until it is destroyed after retirement.
+  [[nodiscard]] bool canPublishLightSnapshotCapacity(
+      const PreparedLightSnapshotCapacity&) const noexcept;
+  [[nodiscard]] bool publishLightSnapshotCapacity(
+      PreparedLightSnapshotCapacity&) noexcept;
   void prepare(uint32_t imageCount, VkImageView environment, VkSampler sampler);
   void update(uint32_t image, VkDescriptorSet scene, VkDescriptorSet light,
               const container::gpu::LightingData &lighting,

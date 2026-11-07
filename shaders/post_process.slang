@@ -1,6 +1,7 @@
 #include "lighting_structs.slang"
 #include "oit_common.slang"
 #include "push_constants_common.slang"
+#include "display_tone_curves.slang"
 
 [[vk::binding(0, 0)]] SamplerState gBufferSampler;
 [[vk::binding(1, 0)]] Texture2D<float4> sceneColorTexture;
@@ -17,6 +18,7 @@
 [[vk::binding(13, 0)]] StructuredBuffer<ExposureStateData> uExposureState;
 [[vk::binding(14, 0)]] Texture2D<float4> temporalMotion;
 [[vk::binding(15, 0)]] Texture2D<float4> temporalDiagnostics;
+[[vk::binding(16, 0)]] RWStructuredBuffer<float4> linearCapture;
 
 [[vk::binding(9, 0)]] StructuredBuffer<TileLightGrid> uTileGrid;
 [[vk::binding(0, 1)]] RWTexture2D<uint> headPointerImage;
@@ -57,6 +59,9 @@ float3 ToneMapACES(float3 color)
     {
         color = 0.0.xxx;
     }
+    // The curve already saturates at this magnitude. Bound the quadratic
+    // terms so a finite scene-linear input cannot produce inf / inf.
+    color = clamp(color, -64.0.xxx, 64.0.xxx);
     const float a = 2.51;
     const float b = 0.03;
     const float c = 2.43;
@@ -70,6 +75,52 @@ float3 ToSwapchainLinear(float3 color)
     // The swapchain is created with an sRGB format, so Vulkan performs the
     // final linear-to-sRGB conversion when this fragment output is stored.
     return saturate(color);
+}
+
+float3 MapSceneColor(float3 exposedColor)
+{
+    exposedColor = ApplyWhiteBalance(exposedColor, float3(
+        pc.whiteBalanceGain[0], pc.whiteBalanceGain[1], pc.whiteBalanceGain[2]));
+    float3 positive = clamp(FiniteColorOr(exposedColor, 0.0.xxx), 0.0.xxx, 65536.0.xxx);
+    float3 mapped;
+    switch (pc.toneMapper)
+    {
+    case 1u: mapped = positive / (1.0.xxx + positive); break;
+    case 2u: mapped = saturate(positive); break;
+    case 3u: mapped = FilmicDisplayLinear(positive); break;
+    case 4u: mapped = UnchartedDisplayLinear(positive); break;
+    case 5u: mapped = AgXDisplayLinear(positive); break;
+    case 6u: mapped = PbrNeutralDisplayLinear(positive); break;
+    default: mapped = ToneMapACES(exposedColor); break;
+    }
+
+    float saturation = clamp(FiniteOr(pc.saturation, 1.0), 0.0, 2.0);
+    float contrast = clamp(FiniteOr(pc.contrast, 1.0), 0.5, 2.0);
+    if (saturation != 1.0)
+    {
+        float luminance = dot(mapped, float3(0.2126, 0.7152, 0.0722));
+        mapped = lerp(luminance.xxx, mapped, saturation);
+    }
+    float vibrance = clamp(FiniteOr(pc.vibrance, 0.0), -1.0, 1.0);
+    if (vibrance != 0.0)
+    {
+        float chroma = max(mapped.r, max(mapped.g, mapped.b)) -
+                       min(mapped.r, min(mapped.g, mapped.b));
+        float luminance = dot(mapped, float3(0.2126, 0.7152, 0.0722));
+        mapped = lerp(luminance.xxx, mapped, 1.0 + vibrance * (1.0 - saturate(chroma)));
+    }
+    if (contrast != 1.0)
+    {
+        mapped = (mapped - 0.18.xxx) * contrast + 0.18.xxx;
+    }
+    float3 shadowTone = float3(pc.shadowTone[0], pc.shadowTone[1], pc.shadowTone[2]);
+    float3 highlightTone = float3(pc.highlightTone[0], pc.highlightTone[1], pc.highlightTone[2]);
+    if (any(shadowTone != 1.0) || any(highlightTone != 1.0))
+    {
+        float luminance = dot(mapped, float3(0.2126, 0.7152, 0.0722));
+        mapped *= lerp(shadowTone, highlightTone, smoothstep(0.0, 1.0, luminance));
+    }
+    return ToSwapchainLinear(mapped);
 }
 
 float ResolveExposureForToneMapping()
@@ -253,7 +304,7 @@ float3 LitViewColor(float2 uv, uint2 pixelCoord, float resolvedExposure,
         compositedColor += bloom * max(FiniteOr(pc.bloomIntensity, 0.0), 0.0);
     }
 
-    return ToSwapchainLinear(ToneMapACES(compositedColor * resolvedExposure));
+    return MapSceneColor(compositedColor * resolvedExposure);
 }
 
 float3 ShadowCascadeViewColor(uint2 pixelCoord, float3 sceneRgb)
@@ -499,13 +550,24 @@ float4 fragMain(VSOutput input) : SV_Target0
     sceneColor.rgb = FiniteColorOr(sceneColor.rgb, 0.0.xxx);
     sceneColor.a = FiniteOr(sceneColor.a, 1.0);
 
-    uint outputMode = pc.outputMode;
+    bool captureSceneLinear = (pc.outputMode & 0x80000000u) != 0u;
+    uint outputMode = pc.outputMode & 0x7fffffffu;
+    bool oitAvailable = pc.oitEnabled != 0u;
+    float3 compositedColor = sceneColor.rgb;
+    if (oitAvailable && (outputMode == 0u || captureSceneLinear) && uCamera.temporalInfo.w == 0u)
+        compositedColor = ResolveOitPixel(pixelCoord, sceneColor.rgb).compositedColor;
+    if (captureSceneLinear)
+        linearCapture[pixelCoord.y * width + pixelCoord.x] = float4(compositedColor, 1.0);
+
     if (outputMode >= 100u && outputMode <= 104u) {
         if (uCamera.temporalInfo.w == 0u) return float4(0.0, 0.0, 0.0, 1.0);
-        float4 diagnostic = temporalDiagnostics.Load(int3(pixelCoord, 0));
+        uint2 renderExtent;
+        temporalDiagnostics.GetDimensions(renderExtent.x, renderExtent.y);
+        uint2 renderPixel = min(uint2(screenUV * float2(renderExtent)), renderExtent - 1u);
+        float4 diagnostic = temporalDiagnostics.Load(int3(renderPixel, 0));
         if (outputMode == 100u) {
-            float4 motion = temporalMotion.Load(int3(pixelCoord, 0));
-            return float4(motion.w > 0.5 ? saturate(float3(0.5.xx + motion.xy * float2(width, height) / 16.0, 0.5)) : float3(1,0,1), 1);
+            float4 motion = temporalMotion.Load(int3(renderPixel, 0));
+            return float4(motion.w > 0.5 ? saturate(float3(0.5.xx + motion.xy * float2(renderExtent) / 16.0, 0.5)) : float3(1,0,1), 1);
         }
         if (outputMode == 101u) return float4(diagnostic.xxx, 1);
         if (outputMode == 102u) {
@@ -516,18 +578,7 @@ float4 fragMain(VSOutput input) : SV_Target0
         if (outputMode == 103u) return float4(diagnostic.zzz, 1);
         return float4(diagnostic.www, 1);
     }
-    float3 compositedColor = sceneColor.rgb;
     float resolvedExposure = ResolveExposureForToneMapping();
-
-    bool oitAvailable = pc.oitEnabled != 0u;
-    bool resolveCurrentPixelOit =
-        oitAvailable && outputMode == 0u && uCamera.temporalInfo.w == 0u;
-
-    if (resolveCurrentPixelOit)
-    {
-        OitResolveResult oit = ResolveOitPixel(pixelCoord, sceneColor.rgb);
-        compositedColor = oit.compositedColor;
-    }
 
     if ((outputMode >= 1u && outputMode <= 7u) ||
         outputMode == 11u || outputMode == 12u ||
@@ -605,8 +656,7 @@ float4 fragMain(VSOutput input) : SV_Target0
                 ResolveOitPixel(pixelCoord, sceneColor.rgb);
             overviewCompositedColor = overviewOit.compositedColor;
         }
-        float3 overviewBackground = ToneMapACES(overviewCompositedColor * resolvedExposure);
-        overviewBackground = ToSwapchainLinear(overviewBackground);
+        float3 overviewBackground = MapSceneColor(overviewCompositedColor * resolvedExposure);
         overviewBackground = lerp(overviewBackground, panelTileBackgroundColor, 0.35);
         return float4(overviewBackground, 1.0);
     }
@@ -626,7 +676,5 @@ float4 fragMain(VSOutput input) : SV_Target0
         finalHdr += bloom * max(FiniteOr(pc.bloomIntensity, 0.0), 0.0);
     }
 
-    float3 mapped = ToneMapACES(FiniteColorOr(finalHdr, 0.0.xxx) *
-                                resolvedExposure);
-    return float4(ToSwapchainLinear(mapped), 1.0);
+    return float4(MapSceneColor(FiniteColorOr(finalHdr, 0.0.xxx) * resolvedExposure), 1.0);
 }

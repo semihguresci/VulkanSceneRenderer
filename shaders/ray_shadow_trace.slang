@@ -1,5 +1,5 @@
 #include "material_data_common.slang"
-[[vk::binding(2, 0)]] SamplerState materialSamplers[MATERIAL_SAMPLER_DESCRIPTOR_COUNT];
+[[vk::binding(2, 0)]] SamplerState materialSamplers[];
 [[vk::binding(3, 0)]] StructuredBuffer<GpuMaterial> uMaterials;
 [[vk::binding(4, 0)]] StructuredBuffer<GpuTextureMetadata> uTextureMetadata;
 [[vk::binding(5, 0)]] Texture2D materialTextures[MATERIAL_TEXTURE_DESCRIPTOR_COUNT];
@@ -14,7 +14,8 @@
 [[vk::binding(6, 2)]] RWTexture2D<float4> gSurface;
 
 float3 SurfaceDerivativeDirection(uint2 pixel, int2 axis, uint2 extent,
-                                  float depth, float3 world, float2 sampleOffset)
+                                  float depth, float3 world, float2 sampleOffset,
+                                  out float3 samplePlaneFootprint)
 {
     float3 best = 0.0.xxx;
     float bestLength = 1e30;
@@ -45,6 +46,7 @@ float3 SurfaceDerivativeDirection(uint2 pixel, int2 axis, uint2 extent,
     // normal fallback for small world-space pixels.
     float3 footprint = RayShadowWorldAtSample(pixel + uint2(axis), sampleOffset,
                                              depth, uRayTrace.camera) - world;
+    samplePlaneFootprint = footprint;
     float footprintLengthSquared = dot(footprint, footprint);
     if (!isfinite(bestLength) || bestLength <= 1e-30 ||
         !isfinite(footprintLengthSquared) || footprintLengthSquared <= 1e-30 ||
@@ -63,6 +65,7 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
     float visibility = 1.0;
     bool valid = isfinite(depth) && depth > 0.0;
     float3 world = 0.0.xxx, normal = 0.0.xxx;
+    float receiverError = 0.0;
     if (valid)
     {
         bool reconstructionReliable;
@@ -71,15 +74,25 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
             uRayTrace.read.options.w, reconstructionReliable, sampleOffset);
         if (!RayShadowHasStandardMsaa(uRayTrace.read.options.w) || reconstructionReliable)
         {
-            float3 dx = SurfaceDerivativeDirection(tid.xy, int2(1, 0), extent, depth, world, sampleOffset);
-            float3 dy = SurfaceDerivativeDirection(tid.xy, int2(0, 1), extent, depth, world, sampleOffset);
+            float3 footprintX, footprintY;
+            float3 dx = SurfaceDerivativeDirection(tid.xy, int2(1, 0), extent, depth, world, sampleOffset, footprintX);
+            float3 dy = SurfaceDerivativeDirection(tid.xy, int2(0, 1), extent, depth, world, sampleOffset, footprintY);
             normal = SafeNormalize(cross(dx, dy), 0.0.xxx);
+            // Raster vertices are quantized in framebuffer XY before depth
+            // interpolation. TAA changes that rounding each frame, so inverse
+            // projection can put a planar receiver inside its exact ray mesh.
+            // Bound one device subpixel of normal displacement at fixed depth;
+            // surface tangents themselves cannot measure this plane error.
+            float quantum = exp2(-float(clamp(uRayTrace.frame.w, 4u, 24u)));
+            receiverError = quantum * (abs(dot(normal, footprintX)) +
+                                        abs(dot(normal, footprintY)));
+            if (!isfinite(receiverError)) receiverError = 0.0;
         }
         // A zero normal denotes an unreliable neighbourhood. It requests the
         // conservative trace bias and rejects normal-compatible filter history.
         if (tid.z == 0u && any(uLighting.directionalColorIntensity.rgb * uLighting.directionalColorIntensity.w > 0.0))
             visibility = TraceRayVisibility(world, normal,
-                SafeNormalize(-uLighting.directionalDirection.xyz, float3(0, 1, 0)), 1e20);
+                SafeNormalize(-uLighting.directionalDirection.xyz, float3(0, 1, 0)), 1e20, receiverError);
         else if (tid.z >= 1u && tid.z <= uRayTrace.read.limits.y)
         {
             PointLightData light = uPointLights[tid.z - 1u];
@@ -87,12 +100,12 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
             float distance = length(delta);
             if (PointLightHasRenderableIntensity(light) && distance > 1e-5 &&
                 (!PointLightHasFiniteRange(light.positionRadius.w) || distance < light.positionRadius.w))
-                visibility = TraceRayVisibility(world, normal, delta / distance, distance);
+                visibility = TraceRayVisibility(world, normal, delta / distance, distance, receiverError);
         }
         else if (tid.z >= 5u && tid.z < 5u + uRayTrace.read.limits.z)
         {
             visibility = TraceAreaRayVisibility(uAreaLights[tid.z - 5u], world,
-                                               normal, tid.xy, tid.z);
+                                               normal, tid.xy, tid.z, receiverError);
         }
     }
     gRaw[tid] = visibility;

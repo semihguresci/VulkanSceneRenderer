@@ -6,6 +6,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -813,6 +814,35 @@ TEST(IfcxLoader, PcdBase64UsesOrganizedWidthHeightPointCount) {
   EXPECT_NEAR(fourthPointColor.r, 1.0f, 1.0e-6f);
   EXPECT_NEAR(fourthPointColor.g, 1.0f, 1.0e-6f);
   EXPECT_NEAR(fourthPointColor.b, 1.0f, 1.0e-6f);
+}
+
+TEST(IfcxLoader, RejectsPointCountsAndCompressedSizesBeforeDecoding) {
+  const auto expectInvalid = [](std::string_view base64,
+                                std::string_view diagnostic) {
+    const std::string json =
+        R"({"data":[{"path":"points","attributes":{"pcd::base64":")" +
+        std::string(base64) + R"("}}]})";
+    try {
+      static_cast<void>(container::geometry::ifcx::LoadFromJson(json));
+      ADD_FAILURE() << "PCD payload accepted";
+    } catch (const std::runtime_error &error) {
+      EXPECT_NE(std::string_view(error.what()).find(diagnostic),
+                std::string_view::npos) << error.what();
+    }
+  };
+
+  // ASCII declares UINT64_MAX points with a single row.
+  expectInvalid("RklFTERTIHggeSB6ClNJWkUgNCA0IDQKVFlQRSBGIEYgRgpDT1VOVCAxIDEgMQpQ"
+                "T0lOVFMgMTg0NDY3NDQwNzM3MDk1NTE2MTUKREFUQSBhc2NpaQowIDAgMAo=",
+                "ASCII PCD point count exceeds payload size");
+  // Binary declares two points with one complete point in the payload.
+  expectInvalid("RklFTERTIHggeSB6ClNJWkUgNCA0IDQKVFlQRSBGIEYgRgpDT1VOVCAxIDEgMQpQ"
+                "T0lOVFMgMgpEQVRBIGJpbmFyeQoAAIA/AAAAQAAAQEA=",
+                "binary PCD point count exceeds payload size");
+  // One LZF input byte claims to expand to 32,760 bytes.
+  expectInvalid("RklFTERTIHggeSB6ClNJWkUgNCA0IDQKVFlQRSBGIEYgRgpDT1VOVCAxIDEgMQpQ"
+                "T0lOVFMgMjczMApEQVRBIGJpbmFyeV9jb21wcmVzc2VkCgEAAAD4fwAAAA==",
+                "exceeds the LZF expansion limit");
 }
 
 TEST(IfcxLoader, DecodesCompressedPcdExtendedLzfReferences) {

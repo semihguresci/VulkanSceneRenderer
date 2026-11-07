@@ -7,6 +7,17 @@
 // reflected energy is conservative rather than an extra diffuse contribution.
 static const uint DDGI_MAX_GLASS_CROSSINGS = 8u;
 static const float DDGI_MIN_TRANSPORT_THROUGHPUT = 1e-4;
+static const uint DDGI_MAX_MEDIA = DDGI_MAX_GLASS_CROSSINGS / 2u;
+
+// This stochastic continuation samples an isotropic specular dielectric only.
+// Active anisotropic reflection/diffuse BTDF mixtures need their own sampling
+// probabilities and PDFs. Neutral factors stay neutral with texture bindings.
+bool DdgiHasUnsupportedExtendedDielectric(GpuMaterial material)
+{
+    return !all(isfinite(material.anisotropyDiffuseFactors.xyz)) ||
+        material.anisotropyDiffuseFactors.x != 0.0 ||
+        material.anisotropyDiffuseFactors.z != 0.0;
+}
 
 struct DdgiThinGlassResult
 {
@@ -19,7 +30,8 @@ DdgiThinGlassResult DdgiThinGlassTransmission(GpuMaterial material, uint flags,
     float3 tint, float incidenceCosine, bool enabled)
 {
     DdgiThinGlassResult result = (DdgiThinGlassResult)0;
-    if (!enabled || !isfinite(transmission) || transmission <= 0.0 ||
+    if (!enabled || DdgiHasUnsupportedExtendedDielectric(material) ||
+        !isfinite(transmission) || transmission <= 0.0 ||
         !isfinite(material.transmissionFactor) ||
         !isfinite(alpha) || abs(alpha - 1.0) > 1e-5 ||
         !isfinite(metallic) || metallic > 1e-5 || metallic < 0.0 ||
@@ -81,6 +93,50 @@ struct DdgiDielectricResult
     uint volume;
     uint totalInternalReflection;
 };
+
+struct DdgiMedium
+{
+    uint instanceIndex;
+    uint materialIndex;
+    float ior;
+};
+
+struct DdgiMediumStack
+{
+    DdgiMedium media[DDGI_MAX_MEDIA];
+    uint count;
+};
+
+float DdgiAmbientIor(DdgiMediumStack stack, bool entering)
+{
+    // The other side of an entering boundary is the current medium. For an
+    // exit, it is the parent medium or air below the bottom of the stack.
+    if (stack.count == 0u || (!entering && stack.count == 1u)) return 1.0;
+    return stack.media[stack.count - (entering ? 1u : 2u)].ior;
+}
+
+bool DdgiCanCrossMedium(DdgiMediumStack stack, DdgiMedium boundary, bool entering)
+{
+    if (!entering)
+    {
+        if (stack.count == 0u) return false;
+        DdgiMedium current = stack.media[stack.count - 1u];
+        return current.instanceIndex == boundary.instanceIndex &&
+            current.materialIndex == boundary.materialIndex;
+    }
+    if (stack.count >= DDGI_MAX_MEDIA) return false;
+    for (uint i = 0u; i < stack.count; ++i)
+        if (stack.media[i].instanceIndex == boundary.instanceIndex) return false;
+    return true;
+}
+
+void DdgiCommitMediumCrossing(inout DdgiMediumStack stack, DdgiMedium boundary, bool entering)
+{
+    if (entering)
+        stack.media[stack.count++] = boundary;
+    else
+        --stack.count;
+}
 
 float DdgiDielectricFresnel(float incidentCosine, float etaIncident, float etaTransmitted)
 {
@@ -180,10 +236,12 @@ bool DdgiVolumeAbsorption(GpuMaterial material, float distance, out float3 absor
 
 DdgiDielectricResult DdgiSampleDielectric(GpuMaterial material, uint flags,
     float transmission, float alpha, float metallic, float roughness, float3 tint,
-    float3 direction, float3 geometricNormal, bool entering, float2 random, bool enabled)
+    float3 direction, float3 geometricNormal, bool entering, float2 random,
+    bool enabled, float ambientIor)
 {
     DdgiDielectricResult result = (DdgiDielectricResult)0;
-    if (!enabled || !isfinite(material.transmissionFactor) ||
+    if (!enabled || DdgiHasUnsupportedExtendedDielectric(material) ||
+        !isfinite(material.transmissionFactor) ||
         !isfinite(transmission) || transmission < 0.0 || transmission > 1.0 ||
         !isfinite(alpha) || abs(alpha - 1.0) > 1e-5 ||
         !isfinite(metallic) || metallic > 1e-5 || metallic < 0.0 ||
@@ -193,6 +251,7 @@ DdgiDielectricResult DdgiSampleDielectric(GpuMaterial material, uint flags,
         !all(isfinite(geometricNormal)) || abs(dot(geometricNormal, geometricNormal) - 1.0) > 1e-3 ||
         !all(isfinite(random)) || any(random < 0.0.xx) || any(random >= 1.0.xx) ||
         !isfinite(material.ior) || material.ior < 1.0 || material.ior > 3.0 ||
+        !isfinite(ambientIor) || ambientIor < 1.0 || ambientIor > 3.0 ||
         !isfinite(material.thicknessFactor) || material.thicknessFactor < 0.0 ||
         !isfinite(material.heightScale) ||
         (material.heightTextureIndex != kInvalidGpuMaterialTexture && abs(material.heightScale) > 1e-7) ||
@@ -215,10 +274,13 @@ DdgiDielectricResult DdgiSampleDielectric(GpuMaterial material, uint flags,
     if ((entering || result.volume == 0u) && transmission <= 0.0) return result;
     float3 absorption;
     if (result.volume != 0u && !DdgiVolumeAbsorption(material, 0.0, absorption)) return result;
+    bool exitingVolume = result.volume != 0u && !entering;
+    float etaIncident = exitingVolume ? material.ior : ambientIor;
+    float etaTransmitted = exitingVolume ? ambientIor : material.ior;
     float3 normal = entering ? geometricNormal : -geometricNormal;
     float macroIncidence = dot(-direction, normal);
-    if (macroIncidence < 0.0 || (macroIncidence <= 1e-7 && material.ior != 1.0)) return result;
-    if (material.ior == 1.0)
+    if (macroIncidence < 0.0 || (macroIncidence <= 1e-7 && etaIncident != etaTransmitted)) return result;
+    if (etaIncident == etaTransmitted)
     {
         result.direction = direction;
         result.weight = entering || result.volume == 0u ? saturate(tint) * transmission : 1.0.xxx;
@@ -228,8 +290,6 @@ DdgiDielectricResult DdgiSampleDielectric(GpuMaterial material, uint flags,
     float ggxAlpha = max(roughness * roughness, 1e-4);
     float3 microNormal = roughness <= 1e-4 ? normal :
         DdgiVisibleGgxNormal(normal, -direction, ggxAlpha, random);
-    float etaIncident = result.volume != 0u && !entering ? material.ior : 1.0;
-    float etaTransmitted = result.volume != 0u && !entering ? 1.0 : material.ior;
     float incidentCosine = saturate(dot(-direction, microNormal));
     float fresnel = DdgiDielectricFresnel(incidentCosine, etaIncident, etaTransmitted);
     if (result.volume == 0u)

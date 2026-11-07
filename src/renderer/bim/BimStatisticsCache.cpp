@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <utility>
 
 namespace container::renderer {
@@ -16,7 +17,7 @@ void BimStatisticsCache::clear() {
 }
 
 void BimStatisticsCache::rebuild(
-    BimSceneStats modelStats, std::span<const BimElementMetadata> metadata,
+    BimSceneStats modelStats, BimMetadataTableView metadata,
     std::span<const container::gpu::ObjectData> objects,
     std::span<const DrawCommand> opaque,
     std::span<const DrawCommand> transparent) {
@@ -62,9 +63,10 @@ void BimStatisticsCache::rebuild(
     for (const auto &command : commands) {
       if (command.indexCount == 0)
         continue;
-      const auto *element = command.objectIndex < metadata.size()
-                                ? &metadata[command.objectIndex]
-                                : nullptr;
+      const std::optional<BimElementMetadataView> element =
+          command.objectIndex < metadata.size()
+              ? std::optional{metadata[command.objectIndex]}
+              : std::nullopt;
       if (element && element->geometryKind != BimGeometryKind::Mesh)
         continue;
       uint32_t material = std::numeric_limits<uint32_t>::max();

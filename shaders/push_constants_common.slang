@@ -127,6 +127,13 @@ struct PostProcessPushConstants
     float minExposure;
     float maxExposure;
     float adaptationRate;
+    uint toneMapper;
+    float saturation;
+    float contrast;
+    float whiteBalanceGain[3];
+    float vibrance;
+    float shadowTone[3];
+    float highlightTone[3];
 };
 
 struct TileCullPushConstants
@@ -280,6 +287,14 @@ struct EquirectPushConstants
 {
     uint faceIndex;
     uint faceSize;
+    uint skyMode;
+    uint reserved;
+    float4 horizon;
+    float4 zenith;
+    float4 ground;
+    float4 sun;
+    float4 atmosphereGeometry;
+    float4 atmosphereDensity;
 };
 
 struct IrradiancePushConstants

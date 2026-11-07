@@ -5,9 +5,12 @@
 
 #include <cstdint>
 #include <glm/mat4x4.hpp>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
+
+namespace container::geometry::gltf { struct GltfOpacityMicromapAttachment; }
 
 namespace container::renderer {
 
@@ -30,6 +33,8 @@ struct RaySceneGeometry {
   std::span<const uint32_t> indices{};
   bool opaque{true}; // Alpha-tested geometry must remain non-opaque.
   RaySceneStorageIdentity storageIdentity{};
+  // Immutable, active only when this geometry's alpha coverage still matches.
+  std::shared_ptr<const container::geometry::gltf::GltfOpacityMicromapAttachment> opacityMicromap;
 };
 
 struct RaySceneInstance {
@@ -38,17 +43,25 @@ struct RaySceneInstance {
   glm::mat4 transform{1.0f};
   bool doubleSided{false};
   uint8_t mask{0xff};
+  // Local vertex deformation can reverse authored winding independently of
+  // the instance model transform, whose determinant never sets this flag.
+  bool flipFacing{false};
+  uint32_t gpuObjectIndex{UINT32_MAX};
+  uint32_t sourceObjectIndex{UINT32_MAX};
 };
 
+struct RaySceneGpuTransforms;
 struct RaySceneInput {
   std::span<const RaySceneGeometry> geometries{};
   std::span<const RaySceneInstance> instances{};
+  const RaySceneGpuTransforms* gpuTransforms{};
 };
 
 // Validate before allocating resources or touching command buffers.
 void validateRayScene(const RaySceneInput &input);
 [[nodiscard]] VkTransformMatrixKHR
 rayInstanceTransform(const glm::mat4 &transform);
-[[nodiscard]] VkGeometryInstanceFlagsKHR rayInstanceFlags(bool doubleSided);
+[[nodiscard]] VkGeometryInstanceFlagsKHR rayInstanceFlags(
+    bool doubleSided, bool flipFacing = false);
 
 } // namespace container::renderer

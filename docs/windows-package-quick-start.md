@@ -33,6 +33,12 @@ Use `--render-technique forward-raster` for the forward path. TAA currently
 supports native-resolution rigid surfaces at 1x samples; transparent and emissive
 pixels use current color. Existing MSAA remains available with `--no-taa`.
 
+Physics-enabled packages include Jolt rigid-body simulation. Run
+`VulkanSceneRenderer.exe --physics-demo` for a floor and falling boxes, or attach
+bodies through **Scene Controls → Physics**. Pause, single-step and reset are
+available in that panel. See [the physics guide](physics-integration.md) for
+collider choices and scene support; no separate physics runtime is required.
+
 Try diffuse irradiance probes on the Cornell sample:
 
 ```powershell

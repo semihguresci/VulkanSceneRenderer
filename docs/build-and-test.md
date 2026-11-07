@@ -14,7 +14,7 @@ The script enables synchronization validation and writes selected PNGs,
 effective settings/timing/allocation sidecars and result JSON under
 `out/taa-regression`. Use `--suite quality`, `stress`, or `performance` to narrow
 the run, and `--analyze` to recompute metrics from existing captures.
-Run `--suite mutations --slangc C:/VulkanSDK/1.4.328.1/Bin/slangc.exe` after
+Run `--suite mutations --slangc C:/Tools/slang/bin/slangc.exe` after
 the quality suite to verify detection of deliberately inverted velocity, stale
 history addressing and skipped invalidation. This temporarily replaces runtime
 SPIR-V, restores it in `finally`, and must run without concurrent builds/captures.
@@ -30,8 +30,69 @@ See
 - Vulkan 1.4 SDK, including `glslangValidator`, `slangc`, and validation layers.
 - vcpkg with manifest dependencies from `vcpkg.json`.
 
+Optional [OpenVDB import, volume rendering and voxel/SDF tools](openvdb.md)
+are enabled with `-DENABLE_OPENVDB=ON`. CMake automatically selects the vcpkg
+`openvdb` feature. Run the `openvdb_*` CPU and configuration tests after building
+their targets.
+
 Set `VCPKG_ROOT` before configuring. Keep machine-local overrides in an
 untracked `CMakeUserPresets.json`.
+
+Use the latest stable dependency releases, with pinned versions, hashes and
+notices updated together after the relevant build and runtime checks pass.
+An installed SDK or a reused cache can still select an older tool; this policy
+does not mean every dependency in the current build has already been updated.
+The scoped vcpkg overlays pin the [selected library releases](library-versions.md)
+without changing the registry baseline for unrelated ports. GLM remains
+header-only with the project's
+existing matrix, radians and depth definitions. CMake verifies the selected
+headers and stages their notices from their actual package prefixes. For a
+standalone upstream install, also copy its unmodified `copying.txt` to
+`<prefix>/share/glm/copyright` or `LICENSE.txt` to
+`<prefix>/share/vulkan-memory-allocator/copyright`, respectively.
+Select a separately installed Slang compiler explicitly when configuring:
+
+```powershell
+cmake --preset windows-release "-DSLANGC_EXECUTABLE=C:/Tools/slang/bin/slangc.exe"
+```
+
+CMake logs the selected compiler and retains explicit or cached selections.
+Without a selection, it searches `VULKAN_SDK` first, then normal program paths
+including `PATH`. Choose a different compiler with `-DSLANGC_EXECUTABLE=...`,
+or clear that cache entry with `-U SLANGC_EXECUTABLE` to repeat discovery.
+
+For a portable Windows x64 package, optionally select LunarG's signed Vulkan
+Runtime 1.4.363.0 component (also used by SDK 1.4.363.1):
+
+```powershell
+cmake --preset windows-release "-DCONTAINER_VULKAN_LOADER_ROOT=C:/Tools/VulkanRT-1.4.363.0/x64-portable"
+```
+
+That directory must contain the official `vulkan-1.dll` and
+`VulkanRT-License.txt`. CMake checks both exact hashes and stages the loader and
+notice beside each runtime; packaging checks them again and records the version
+and hash. Nothing is downloaded or installed by this option. Without it, ordinary
+development builds retain their existing OS or dependency-provided loader.
+
+The optional portable SDK core selection is independent of that runtime loader:
+
+```powershell
+cmake --preset windows-release "-DCONTAINER_VULKAN_SDK_CORE_ROOT=C:/Tools/VulkanSDK-1.4.363.1-core"
+```
+
+This Windows x64 subset contains the official SDK's `Include/vulkan`,
+`Include/vk_video` and `Lib/vulkan-1.lib`, plus the pinned header and loader
+notices under `licenses/Vulkan-Headers-LICENSE.md` and
+`licenses/Vulkan-Loader-LICENSE.txt`. CMake checks all 64 files, selects those
+include/library paths and watches them for changes that require a new hash
+check. Packaging retains both notices and records SDK 1.4.363.1/header 1.4.363.
+The option does not install the SDK or change the physical device's API/features.
+
+Slang 2026.21 emits storage-buffer nonuniform indexing in the shared bindless
+material shaders as well as sampled-image nonuniform indexing. Device selection
+checks both features before creating the device, and enables both explicitly.
+Shader validation must therefore include a native run against the selected
+device; standalone SPIR-V validation does not check enabled device features.
 
 On Windows, use a Visual Studio Developer Command Prompt so MSVC, Windows SDK,
 and Ninja are discoverable.
@@ -142,6 +203,10 @@ After a Release build, create a portable ZIP and SHA-256 checksum file:
 For a Ninja preset, use `out/build/windows-release` as the runtime directory
 and its corresponding `vcpkg_installed` and `_deps/tinyusdz-src` paths.
 If dependencies were reused from another build, pass those actual paths.
+Omit `-TinyUsdzSourceDirectory` when the build cache records
+`ENABLE_TINYUSDZ_USD_LOADER=OFF`. An enabled build requires that source
+directory's upstream and bundled notices. Use `-BuildDirectory` when the
+runtime has been staged separately from its CMake cache.
 The script requires an unused staging directory, includes dependency notices,
 and writes the archive, `SHA256SUMS.txt`, and a build manifest to `out/packages`.
 It deliberately includes local samples rather than the large downloaded model

@@ -1,6 +1,13 @@
 #include "Container/renderer/core/RendererFrontend.h"
+#include "Container/renderer/core/ComfyUiFrontendState.h"
+#if CONTAINER_HAS_JOLT
+#include "Container/physics/PhysicsScene.h"
+#include "Container/physics/PhysicsElementBindings.h"
+#endif
+#include "Container/asl/PoseReplayScene.h"
 #include "Container/renderer/raytracing/RaySceneAcceleration.h"
 #include "Container/renderer/raytracing/RayShadowManager.h"
+#include "Container/renderer/pathtracing/ReferencePathTracePass.h"
 #include "Container/renderer/lighting/DdgiManager.h"
 #include "Container/renderer/lighting/DdgiPreset.h"
 #include "Container/renderer/lighting/DdgiSceneBounds.h"
@@ -8,6 +15,11 @@
 #include "Container/renderer/lighting/DdgiVolumePlacement.h"
 #include "Container/renderer/temporal/TemporalCapture.h"
 #include "Container/renderer/temporal/TemporalManager.h"
+#include "Container/geometry/OpenVdbVolume.h"
+#include "Container/geometry/OpenVdbVolumeSequence.h"
+#include "Container/geometry/GltfMerge.h"
+#include "Container/geometry/GltfSky.h"
+#include "Container/renderer/effects/OpenVdbVolumeRenderer.h"
 #include <fstream>
 
 #include <algorithm>
@@ -15,6 +27,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <filesystem>
@@ -41,9 +54,11 @@
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/core/RenderExtraction.h"
 #include "Container/renderer/core/RenderPassGpuProfiler.h"
+#include "Container/renderer/core/RendererMcpServer.h"
 #include "Container/renderer/core/RenderTechnique.h"
 #include "Container/renderer/core/RendererMsaa.h"
 #include "Container/renderer/core/RendererTelemetry.h"
+#include "Container/renderer/core/GpuHardwareMonitor.h"
 #include "Container/renderer/culling/GpuCullManager.h"
 #include "Container/renderer/debug/DebugUiPresenter.h"
 #include "Container/renderer/deferred/DeferredLightGizmoPlanner.h"
@@ -55,7 +70,13 @@
 #include "Container/renderer/lighting/EnvironmentManager.h"
 #include "Container/renderer/lighting/LightingManager.h"
 #include "Container/renderer/picking/RenderSurfaceInteractionController.h"
+#include "Container/renderer/picking/DepthReadback.h"
 #include "Container/renderer/pipeline/GraphicsPipelineBuilder.h"
+#include "Container/renderer/pipeline/RuntimeShaderCompiler.h"
+#include "Container/renderer/pipeline/RayEffectPipelines.h"
+#include "Container/renderer/pipeline/PreparedGraphicsPipelines.h"
+#include "Container/renderer/debug/DdgiDebugRenderer.h"
+#include "Container/common/VulkanObjectCounts.h"
 #include "Container/renderer/pipeline/PipelineRegistry.h"
 #include "Container/renderer/platform/VulkanContextInitializer.h"
 #include "Container/renderer/resources/CommandBufferManager.h"
@@ -65,8 +86,16 @@
 #include "Container/renderer/scene/SceneController.h"
 #include "Container/renderer/scene/ScenePrimitives.h"
 #include "Container/renderer/scene/SceneProviderSynchronizer.h"
+#include "Container/renderer/scene/MeshSceneProviderBindings.h"
+#include "Container/renderer/scene/SceneReloadPublication.h"
 #include "Container/renderer/shadow/ShadowCullManager.h"
 #include "Container/renderer/shadow/ShadowManager.h"
+#include "Container/renderer/scene/GltfDeformationPass.h"
+#include "Container/renderer/scene/GpuHierarchyPass.h"
+#include "Container/renderer/raytracing/RayInstanceTransformPass.h"
+#include "Container/renderer/scene/PbrAuxiliaryPass.h"
+#include "Container/renderer/effects/ScreenReflectionPass.h"
+#include "Container/renderer/effects/VolumetricFogPass.h"
 #include "Container/renderer/shadow/ShadowPipelineBridge.h"
 #include "Container/renderer/shadow/ShadowResourceBridge.h"
 #include "Container/scene/MeshSceneProviderAssetAdapter.h"
@@ -84,7 +113,11 @@
 #include "Container/utility/SceneGraph.h"
 #include "Container/utility/SceneManager.h"
 #include "Container/utility/SwapChainManager.h"
+#include "Container/utility/TransformScale.h"
 #include "stb_image_write.h"
+#include "Container/utility/AtomicFile.h"
+
+#include <tinyexr.h>
 
 namespace container::renderer {
 
@@ -98,6 +131,9 @@ struct RendererFrontend::ModelLoadState {
   };
   container::util::AsyncModelPreparation<std::unique_ptr<Prepared>> worker;
   std::optional<container::ui::ModelLoadRequest> request;
+  std::optional<container::ui::ModelLoadRequest> queued;
+  bool queuedRemote{false};
+  bool remote{false};
   std::unique_ptr<Prepared> ready;
   bool committing{false};
   std::exception_ptr presentationFailure;
@@ -108,7 +144,52 @@ struct RendererFrontend::ModelLoadState {
 
 namespace {
 
+nlohmann::json referenceGroundMetadata(const ReferenceGroundSettings& ground) {
+  nlohmann::json metadata{{"mode", referenceGroundModeName(ground.mode)}};
+  if (ground.mode != ReferenceGroundMode::Off)
+    metadata["height"] = ground.height;
+  if (ground.mode == ReferenceGroundMode::Surface) {
+    metadata["color"] = {ground.color.r, ground.color.g, ground.color.b};
+    metadata["metallic"] = ground.metallic;
+    metadata["roughness"] = ground.roughness;
+  }
+  return metadata;
+}
+
 using TelemetryClock = std::chrono::steady_clock;
+
+std::shared_ptr<const container::geometry::vdb::ImportOptions> vdbOptionsForReload(
+    const std::string& path,
+    const std::shared_ptr<const container::geometry::vdb::ImportOptions>& explicitOptions,
+    const std::string& currentPath,
+    const std::shared_ptr<const container::geometry::vdb::ImportOptions>& currentOptions,
+    const std::shared_ptr<const container::geometry::vdb::ImportOptions>& configuredOptions) {
+  const auto dot=path.find_last_of('.');
+  auto extension=dot==std::string::npos ? std::string{} : path.substr(dot);
+  std::ranges::transform(extension,extension.begin(),[](unsigned char c){return char(std::tolower(c));});
+  if (extension!=".vdb") return {};
+  if (explicitOptions) return explicitOptions;
+  if (currentOptions && !currentPath.empty()) {
+    if (path==currentPath) return currentOptions;
+    try {
+      const auto resolve=[](std::filesystem::path value) {
+        std::error_code error;
+        if (!std::filesystem::exists(value,error)) {
+          const auto relative=container::util::executableDirectory()/value;
+          if (std::filesystem::exists(relative,error)) return relative;
+        }
+        return value;
+      };
+      std::error_code error;
+      const bool same=std::filesystem::equivalent(resolve(container::util::pathFromUtf8(path)),
+          resolve(container::util::pathFromUtf8(currentPath)),error);
+      if (!error && same) return currentOptions;
+    } catch (const std::filesystem::filesystem_error&) {
+      // Keep malformed/inaccessible path reporting inside model preparation.
+    }
+  }
+  return configuredOptions;
+}
 
 class GuiFrameExceptionGuard {
 public:
@@ -283,7 +364,7 @@ bool isAuxiliaryRenderModelPath(std::string_view path) {
   const std::string extension = lowerAscii(path.substr(dot));
   return extension == ".bim" || extension == ".ifc" || extension == ".ifcx" ||
          extension == ".usd" || extension == ".usda" || extension == ".usdc" ||
-         extension == ".usdz";
+         extension == ".usdz" || extension == ".vdb";
 }
 
 glm::vec3 arrayToVec3(const std::array<float, 3> &value) {
@@ -365,7 +446,8 @@ displayModeFromName(std::string_view value) {
 container::ui::GBufferViewMode
 configuredDisplayMode(const container::app::AppConfig &config) {
   if (config.displayModeOverride.empty()) {
-    return container::ui::GBufferViewMode::Overview;
+    return config.enableGui || config.upscaling.mode != UpscaleMode::Native ? container::ui::GBufferViewMode::Lit
+                            : container::ui::GBufferViewMode::Overview;
   }
   if (auto mode = displayModeFromName(config.displayModeOverride)) {
     return *mode;
@@ -662,12 +744,51 @@ void applyConfiguredDirectionalLightOverrides(
 }
 
 void applyConfiguredLightingOverrides(
-    LightingManager *lightingManager, const container::app::AppConfig &config) {
+    LightingManager *lightingManager, const container::app::AppConfig &config,
+    const EnvironmentManager* environment) {
   if (lightingManager == nullptr) {
     return;
   }
-  applyConfiguredDirectionalLightOverrides(lightingManager->lightingData(),
-                                           config);
+  auto& lighting = lightingManager->lightingData();
+  applyConfiguredDirectionalLightOverrides(lighting, config);
+  lighting.environmentSunDirection = glm::vec4(0.0f);
+  lighting.environmentSunRadiance = glm::vec4(0.0f);
+  lighting.aerialGeometry = glm::vec4(0.0f);
+  lighting.aerialDensity = glm::vec4(0.0f);
+  lighting.atmosphereLut = {};
+  if (!environment || environment->activeSkyMode() != SkyMode::Atmosphere)
+    return;
+
+  const auto& sun = environment->activeSun();
+  const auto localDirection = arrayToVec3(sun.direction);
+  constexpr float radius = 0.0046542113f; // 0.26667 degrees
+  constexpr float projectedSolidAngle = 0.0000680528f;
+  const auto irradiance = arrayToVec3(sun.irradiance);
+  lighting.environmentSunDirection = {localDirection, std::cos(radius)};
+  lighting.environmentSunRadiance = {irradiance / projectedSolidAngle, 0.0f};
+  const auto& air = environment->activeAtmosphere();
+  if (air.multipleScattering && air.aerialMetersPerUnit > 0.0f) {
+    lighting.environmentSunRadiance.w = 1.0f;
+    lighting.atmosphereLut = environment->activeAtmosphereLut();
+  }
+  lighting.aerialGeometry = {air.planetRadiusKm, air.atmosphereHeightKm,
+                             air.observerHeightKm, air.aerialMetersPerUnit * 0.001f};
+  lighting.aerialDensity = {air.rayleighScale, air.mieScale, air.ozoneScale,
+                            air.solarIrradiance * lighting.environmentIntensity};
+  if (!sun.lightScene)
+    return;
+
+  const auto yaw = lighting.environmentOrientation;
+  const glm::vec3 worldDirection(yaw.x * localDirection.x + yaw.y * localDirection.z,
+                                 localDirection.y,
+                                 -yaw.y * localDirection.x + yaw.x * localDirection.z);
+  lighting.directionalDirection = {-worldDirection, 0.0f};
+  const float peak = std::max({irradiance.r, irradiance.g, irradiance.b});
+  const float directionalScale = config.hasDirectionalIntensityOverride
+      ? std::max(config.directionalIntensity, 0.0f) : 1.0f;
+  lighting.directionalColorIntensity = peak > 0.0f
+      ? glm::vec4(irradiance / peak, peak * lighting.environmentIntensity * directionalScale)
+      : glm::vec4(0.0f);
 }
 
 glm::vec4
@@ -1000,14 +1121,18 @@ bool displayModeRecordsGtao(container::ui::GBufferViewMode mode) {
          mode == container::ui::GBufferViewMode::Overview;
 }
 
-std::string bimSelectionLabel(const BimElementMetadata &metadata) {
+std::string bimSelectionLabel(const BimElementMetadataView &metadata) {
   std::string label =
       "Selected BIM object " + std::to_string(metadata.objectIndex);
   if (!metadata.type.empty() && metadata.type != "Unknown") {
-    label += " (" + metadata.type + ")";
+    label += " (";
+    label += metadata.type;
+    label += ")";
   }
   if (!metadata.guid.empty()) {
-    label += " [" + metadata.guid + "]";
+    label += " [";
+    label += metadata.guid;
+    label += "]";
   }
   return label;
 }
@@ -1292,6 +1417,16 @@ RendererFrontend::~RendererFrontend() { shutdown(); }
 // ---------------------------------------------------------------------------
 
 void RendererFrontend::initialize() {
+  // Start capture object tracks active. kInvalidNode later suspends them after
+  // an explicit unload until a capture model-load event reactivates them.
+  captureObjectNode_ = 0;
+  if (svc_.config.enableGui || svc_.config.gpuHardwareTelemetry) {
+    const bool interactive = svc_.config.enableGui && svc_.config.screenshotCapturePath.empty() &&
+        svc_.config.temporalCaptureSequencePath.empty() && svc_.config.pathSampleSeries.empty();
+    const auto* requested = interactive ? std::getenv("CONTAINER_MONITOR_GPU") : nullptr;
+    const bool enabled = svc_.config.gpuHardwareTelemetry || (requested && std::string_view(requested) == "1");
+    subs_.gpuHardwareMonitor = std::make_unique<GpuHardwareMonitor>(svc_.ctx.deviceWrapper->physicalDevice(), enabled);
+  }
   // Initialization order mirrors runtime dependencies: render passes define
   // attachment compatibility, scene/lighting managers create descriptor
   // layouts, and only then can graphics pipelines be built.
@@ -1330,7 +1465,7 @@ void RendererFrontend::initialize() {
         container::util::executableDirectory());
     subs_.bimManager->loadModel(svc_.config.bimModelPath,
                                 svc_.config.bimImportScale,
-                                *subs_.sceneManager);
+                                *subs_.sceneManager, svc_.config.vdbModelOptions);
     activeAuxiliaryModelPath_ = svc_.config.bimModelPath;
     activeAuxiliaryImportScale_ = svc_.config.bimImportScale;
   }
@@ -1338,6 +1473,7 @@ void RendererFrontend::initialize() {
   subs_.sceneController = std::make_unique<SceneController>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager,
       sceneGraph_, *subs_.sceneManager, nullptr, svc_.config);
+  gpuHierarchyEnabled_ = svc_.config.gpuHierarchyTransforms;
   subs_.lightingManager = std::make_unique<LightingManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager,
       subs_.sceneManager.get(), sceneGraph_, subs_.sceneController->world());
@@ -1357,12 +1493,39 @@ void RendererFrontend::initialize() {
       svc_.commandBufferManager.pool());
   subs_.environmentManager->createResources(
       container::util::executableDirectory());
+  std::optional<SkySettings> authoredSky;
+  std::string authoredSkyMessage;
   {
     const auto exeDir = container::util::executableDirectory();
-    const std::filesystem::path hdrPath =
-        exeDir / container::app::kDefaultEnvironmentHdrRelativePath;
-    if (std::filesystem::exists(hdrPath)) {
-      subs_.environmentManager->loadHdrEnvironment(exeDir, hdrPath);
+    if (svc_.config.useGltfSky) {
+      try {
+        authoredSky = container::geometry::gltf::readAuthoredSky(
+            subs_.sceneManager->animationSource(), subs_.sceneManager->selectedScene());
+        if (!authoredSky)
+          authoredSkyMessage = "The selected glTF scene has no authored sky.";
+        else if (!subs_.environmentManager->loadSkyEnvironment(*authoredSky)) {
+          authoredSkyMessage = subs_.environmentManager->environmentStatus();
+          authoredSky.reset();
+        }
+      } catch (const std::exception& error) {
+        authoredSkyMessage = error.what();
+      }
+      if (!authoredSkyMessage.empty())
+        std::println(stderr, "[Sky] {}", authoredSkyMessage);
+    }
+    if (!authoredSky) {
+      if (svc_.config.sky.mode != SkyMode::Hdr) {
+        if (!subs_.environmentManager->loadSkyEnvironment(svc_.config.sky))
+          throw std::runtime_error(subs_.environmentManager->environmentStatus());
+      } else if (!svc_.config.environmentPath.empty()) {
+        const auto path = container::util::pathFromUtf8(svc_.config.environmentPath);
+        if (!subs_.environmentManager->loadHdrEnvironment(path))
+          throw std::runtime_error(subs_.environmentManager->environmentStatus());
+      } else {
+        const auto path = exeDir / container::app::kDefaultEnvironmentHdrRelativePath;
+        if (std::filesystem::exists(path))
+          subs_.environmentManager->loadHdrEnvironment(path);
+      }
     }
   }
   subs_.gpuCullManager = std::make_unique<GpuCullManager>(
@@ -1374,6 +1537,57 @@ void RendererFrontend::initialize() {
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager,
       svc_.commandBufferManager.pool());
   subs_.bloomManager->createResources(container::util::executableDirectory());
+  if (!svc_.config.vdbVolumePath.empty() || !svc_.config.vdbSequenceDirectory.empty()) {
+    const container::geometry::OpenVdbVolumeOptions volumeOptions{
+        .gridName = svc_.config.vdbGridName,
+        .maxResolution = svc_.config.vdbVolumeResolution,
+        .importScale = svc_.config.vdbVolumeImportScale,
+        .temperatureGridName = svc_.config.vdbTemperatureGridName,
+        .sparse = svc_.config.vdbSparse};
+    std::vector<container::geometry::OpenVdbVolume> volumes;
+    if (!svc_.config.vdbSequenceDirectory.empty()) {
+      auto manifest = container::geometry::discoverOpenVdbVolumeSequence(
+          container::util::pathFromUtf8(svc_.config.vdbSequenceDirectory),
+          svc_.config.vdbSequenceFps);
+      if (svc_.config.vdbSequenceStartFrame >= manifest.frames.size())
+        throw std::invalid_argument("--vdb-start-frame exceeds the sequence frame count");
+      vdbPlayback_ = std::make_unique<container::geometry::OpenVdbSequencePlayback>(
+          manifest, container::geometry::OpenVdbSequencePlaybackOptions{
+              .loop = svc_.config.vdbSequenceLoop,
+              .paused = svc_.config.vdbSequencePaused,
+              .speed = svc_.config.vdbSequenceSpeed});
+      vdbPlayback_->seekSeconds(double(svc_.config.vdbSequenceStartFrame) / manifest.framesPerSecond);
+      vdbSequence_ = std::make_unique<container::geometry::OpenVdbVolumeSequence>(
+          std::move(manifest), volumeOptions,
+          container::geometry::OpenVdbSequenceCacheOptions{
+              .maxCachedFrames = 2,
+              .maxCachedBytes = uint64_t(svc_.config.vdbSequenceCacheMiB) * 1024 * 1024});
+      vdbLoadedFrame_ = vdbPlayback_->frameIndex();
+      volumes.push_back(vdbSequence_->frame(*vdbLoadedFrame_));
+    }
+    std::vector<std::string> staticPaths;
+    if (!svc_.config.vdbVolumePath.empty()) staticPaths.push_back(svc_.config.vdbVolumePath);
+    staticPaths.insert(staticPaths.end(), svc_.config.vdbAdditionalVolumePaths.begin(),
+                       svc_.config.vdbAdditionalVolumePaths.end());
+    for (const auto& path : staticPaths)
+      volumes.push_back(container::geometry::loadOpenVdbVolume(
+          container::util::pathFromUtf8(path), volumeOptions));
+    subs_.openVdbVolumeRenderer = std::make_unique<OpenVdbVolumeRenderer>(
+        svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager,
+        svc_.commandBufferManager.pool());
+    subs_.openVdbVolumeRenderer->initialize(
+        container::util::executableDirectory(), volumes, svc_.config.vdbVolumeSettings);
+    container::log::ContainerLogger::instance().renderer()->info(
+        "OpenVDB loaded {} media, {} storage, sequence {} frames",
+        volumes.size(), svc_.config.vdbSparse ? "native sparse NanoVDB" : "dense preview",
+        vdbSequence_ ? vdbSequence_->manifest().frames.size() : 0);
+    if (svc_.config.vdbSequenceAsync && vdbSequence_) {
+      // Release startup copies before the worker starts reserving CPU payloads.
+      volumes.clear();
+      vdbAsyncSequence_ = std::make_unique<container::geometry::OpenVdbAsyncVolumeSequence>(
+          std::move(vdbSequence_));
+    }
+  }
   applySceneLightingDefaults();
   subs_.exposureManager = std::make_unique<ExposureManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
@@ -1412,6 +1626,7 @@ void RendererFrontend::initialize() {
   initialLighting.areaLightingMode = svc_.config.areaLightingMode;
   initialLighting.areaLightSampleCount = svc_.config.areaLightSampleCount;
   initialLighting.areaEmitterDebug = svc_.config.areaEmitterDebug;
+  initialLighting.environment = svc_.config.environmentPresentation;
   subs_.lightingManager->setLightingSettings(initialLighting);
   createGraphicsPipelines();
   svc_.swapChainManager.createFramebuffers(resources_.renderPasses.postProcess);
@@ -1420,6 +1635,14 @@ void RendererFrontend::initialize() {
 
   if (svc_.config.enableGui) {
     subs_.guiManager = std::make_unique<container::ui::GuiManager>();
+    subs_.guiManager->setGpuHardwareMonitor(subs_.gpuHardwareMonitor.get());
+    subs_.guiManager->setLinkedNodeAuthoringQueries(
+        [this](uint32_t node) {
+          return subs_.sceneManager && subs_.sceneManager->isLinkedNodeReadOnly(sceneGraph_, node);
+        },
+        [this](uint32_t node) {
+          return subs_.sceneManager && subs_.sceneManager->canMakeLinkedAssetEditable(sceneGraph_, node);
+        });
     subs_.guiManager->initialize(
         svc_.ctx.instance, svc_.ctx.deviceWrapper->device(),
         svc_.ctx.deviceWrapper->physicalDevice(),
@@ -1443,6 +1666,22 @@ void RendererFrontend::initialize() {
                                      .unavailableReason())
                    : "Disabled or unavailable; raster fallback"));
     subs_.guiManager->setGBufferViewMode(configuredDisplayMode(svc_.config));
+    subs_.guiManager->setUpscaling(svc_.config.upscaling);
+    subs_.guiManager->setDisplayGrade(svc_.config.displayGrade);
+    subs_.guiManager->setGpuHierarchyTransforms(gpuHierarchyEnabled_);
+    subs_.guiManager->setReferencePathLens(svc_.config.pathLens);
+    subs_.guiManager->setReferenceFireflyClamp(svc_.config.pathFireflyClamp);
+    subs_.guiManager->setReferencePathDisplay(svc_.config.pathDisplay);
+    subs_.guiManager->setReferenceGround(svc_.config.pathGround);
+    subs_.guiManager->setReferenceOidn(svc_.config.pathOidn);
+    if (svc_.config.hasManualExposureOverride)
+      subs_.guiManager->setExposureSettings(exposureSettingsFromConfig(svc_.config));
+    if (authoredSky)
+      subs_.guiManager->setSkyDraft(*authoredSky);
+    else if (svc_.config.sky.mode != SkyMode::Hdr)
+      subs_.guiManager->setSkyDraft(svc_.config.sky);
+    if (!authoredSkyMessage.empty())
+      subs_.guiManager->setStatusMessage(authoredSkyMessage);
     if (subs_.environmentManager) {
       subs_.guiManager->setEnvironmentStatus(
           subs_.environmentManager->environmentStatus());
@@ -1479,6 +1718,10 @@ void RendererFrontend::initialize() {
       std::make_unique<container::scene::SceneProviderRegistry>();
   syncSceneProviders();
   auto techniqueRegistry = createDefaultRenderTechniqueRegistry();
+  const bool queries = svc_.ctx.deviceWrapper->rayQueriesEnabled();
+  subs_.deviceCapabilities.bufferDeviceAddress = queries;
+  subs_.deviceCapabilities.accelerationStructure = queries;
+  subs_.deviceCapabilities.rayQuery = queries;
   subs_.techniqueRegistry =
       std::make_unique<RenderTechniqueRegistry>(std::move(techniqueRegistry));
   const RenderTechniqueId requestedTechnique =
@@ -1506,6 +1749,17 @@ void RendererFrontend::initialize() {
   subs_.rendererTelemetry = std::make_unique<RendererTelemetry>();
 
   initializeScene();
+  initializeComfyUi();
+  if (svc_.config.screenshotCapturePath.empty() &&
+      svc_.config.temporalCaptureSequencePath.empty() && svc_.config.pathSampleSeries.empty()) {
+    try {
+      subs_.mcpServer = RendererMcpServer::startFromEnvironment();
+      if (subs_.mcpServer)
+        spdlog::info("Renderer MCP endpoint listening on http://127.0.0.1:{}/mcp", subs_.mcpServer->port());
+    } catch (const std::exception& error) {
+      spdlog::warn("Renderer MCP endpoint disabled: {}", error.what());
+    }
+  }
   if (svc_.config.ddgiFitScene)
     fitDdgiToActiveScene(svc_.config.ddgiFit.maxProbes);
   if (!svc_.config.ddgiDetailNode.empty())
@@ -1614,6 +1868,11 @@ void RendererFrontend::applyPendingRenderTechniqueChange() {
   pendingRenderTechniqueChange_.reset();
   if (subs_.temporalManager)
     subs_.temporalManager->reset("render technique changed");
+  if (subs_.referencePathTracePass)
+    subs_.referencePathTracePass->invalidateHistory();
+  referenceAdaptiveBatch_.reset();
+  referenceTimedLightingMs_.reset();
+  referenceStatus_.clear();
   initializeRenderTechnique(requested, renderTechniqueName(requested));
   syncGuiRenderEngineOptions();
 
@@ -1627,10 +1886,127 @@ void RendererFrontend::applyPendingRenderTechniqueChange() {
   }
 }
 
+void RendererFrontend::processEnvironmentLoad(bool wait) {
+  auto* environment = subs_.environmentManager.get();
+  if (!environment)
+    return;
+  if (environment->pollEnvironment(wait, [this] {
+        // Frames submitted after the environment bake can still sample the
+        // previous maps. Retire those readers before replacing their views.
+        if (vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device()) != VK_SUCCESS)
+          throw std::runtime_error("Failed to retire environment readers");
+        if (subs_.ddgiManager)
+          subs_.ddgiManager->resetSceneHistory();
+        if (subs_.referencePathTracePass)
+          subs_.referencePathTracePass->invalidateHistory();
+      })) {
+    if (subs_.ddgiManager)
+      subs_.ddgiManager->replaceEnvironment(environment->prefilteredView(), environment->envSampler());
+    if (subs_.lightingManager)
+      subs_.lightingManager->updateLightingDataForActiveCamera();
+    updateFrameDescriptorSets();
+    if (subs_.temporalManager)
+      subs_.temporalManager->reset("environment changed");
+  }
+  if (subs_.guiManager) {
+    subs_.guiManager->setEnvironmentStatus(environment->environmentStatus());
+    subs_.guiManager->setEnvironmentLoading(environment->environmentLoading());
+  }
+}
+
+void RendererFrontend::processMcpRequests() {
+  if (!subs_.mcpServer) return;
+  subs_.mcpServer->pump([this](std::string_view tool, const nlohmann::json& args) -> nlohmann::json {
+    using Json = nlohmann::json;
+    const auto lighting = [this] {
+      const auto& current = subs_.lightingManager->lightingSettings();
+      return Json{{"environmentIntensity", current.environmentIntensity},
+                  {"directionalIntensity", current.directionalIntensity},
+                  {"bounceIntensity", current.bounceIntensity},
+                  {"environmentYaw", current.environment.yawDegrees}};
+    };
+    if (tool == "renderer_get_settings") {
+      return {{"lighting", lighting()},
+              {"technique", subs_.activeTechnique ? renderTechniqueName(subs_.activeTechnique->id()) : ""}};
+    }
+    if (tool == "renderer_get_status") {
+      return {{"activeModel", activePrimaryModelPath_.empty() ? activeAuxiliaryModelPath_ : activePrimaryModelPath_},
+              {"modelLoading", modelLoad_ && (modelLoad_->request || modelLoad_->queued)},
+              {"modelStage", modelLoad_ ? modelLoad_->stage : ""},
+              {"modelStatus", mcpModelStatus_},
+              {"environmentLoading", subs_.environmentManager->environmentLoading()},
+              {"environmentStatus", subs_.environmentManager->environmentStatus()},
+              {"shaderReloadBusy", shaderReloadJob_.valid()}, {"shaderReloadStatus", shaderReloadStatus_},
+              {"shaderReloadGeneration", shaderReloadGeneration_},
+              {"capturePending", screenshot_.pending}, {"captureStatus", mcpCaptureStatus_}};
+    }
+    if (tool == "renderer_set_lighting") {
+      if (args.empty()) throw std::invalid_argument("Supply at least one lighting control");
+      const auto& current = subs_.lightingManager->lightingSettings();
+      auto settings = current;
+      settings.environmentIntensity = args.value("environmentIntensity", current.environmentIntensity);
+      settings.directionalIntensity = args.value("directionalIntensity", current.directionalIntensity);
+      settings.bounceIntensity = args.value("bounceIntensity", current.bounceIntensity);
+      settings.environment.yawDegrees = args.value("environmentYaw", current.environment.yawDegrees);
+      const bool yawChanged = settings.environment.yawDegrees != current.environment.yawDegrees;
+      if (yawChanged || settings.environmentIntensity != current.environmentIntensity ||
+          settings.directionalIntensity != current.directionalIntensity ||
+          settings.bounceIntensity != current.bounceIntensity) {
+        if (yawChanged && subs_.ddgiManager) subs_.ddgiManager->resetSceneHistory();
+        if (subs_.temporalManager) subs_.temporalManager->reset("lighting settings changed");
+        subs_.lightingManager->setLightingSettings(settings);
+        if (subs_.guiManager) subs_.guiManager->setLightingSettings(settings);
+        subs_.lightingManager->updateLightingData();
+        updateFrameDescriptorSets();
+      }
+      return {{"lighting", lighting()}};
+    }
+    if (tool == "renderer_load_model") {
+      if (!modelLoad_) modelLoad_ = std::make_unique<ModelLoadState>();
+      if (modelLoad_->request || modelLoad_->queued)
+        throw std::runtime_error("A model import is already in progress");
+      modelLoad_->queued = container::ui::ModelLoadRequest{
+          .path = args.at("path").get<std::string>(), .importScale = args.value("importScale", 1.0f)};
+      modelLoad_->queuedRemote = true;
+      mcpModelStatus_ = "Queued";
+      return {{"queued", true}};
+    }
+    if (tool == "renderer_load_environment") {
+      if (subs_.environmentManager->environmentLoading())
+        throw std::runtime_error("An environment import is already in progress");
+      if (!subs_.environmentManager->requestHdrEnvironment(
+              container::util::pathFromUtf8(args.at("path").get_ref<const std::string&>())))
+        throw std::runtime_error(subs_.environmentManager->environmentStatus());
+      return {{"queued", true}};
+    }
+    if (tool == "renderer_reload_shaders") {
+      if (shaderReloadJob_.valid()) throw std::runtime_error("Shader reload is already in progress");
+      processShaderReload(true);
+      if (shaderReloadStatus_.starts_with("Shader reload failed")) throw std::runtime_error(shaderReloadStatus_);
+      return {{"queued", true}};
+    }
+    if (tool == "renderer_capture") {
+      if (screenshot_.pending) throw std::runtime_error("An image capture is already pending");
+      requestScreenshot(container::util::pathFromUtf8(args.at("path").get_ref<const std::string&>()),
+                        args.value("viewportOnly", false));
+      screenshot_.remote = true;
+      mcpCaptureStatus_ = "Queued";
+      return {{"queued", true}};
+    }
+    throw std::invalid_argument("Unknown renderer MCP tool");
+  });
+}
+
 bool RendererFrontend::drawFrame(bool &framebufferResized) {
   // Commit outside the ImGui frame and before acquiring a swapchain image:
   // cooperative loading frames must own their acquire/submit/present cycle.
   processPendingGuiModelLoadRequest();
+  processShaderReload(subs_.guiManager && subs_.guiManager->consumeShaderReloadRequest());
+  if (subs_.guiManager && subs_.environmentManager) {
+    const auto path = subs_.guiManager->consumeEnvironmentRequest();
+    if (!path.empty())
+      subs_.environmentManager->requestHdrEnvironment(container::util::pathFromUtf8(path));
+  }
   if (modelLoad_ && modelLoad_->request && !modelLoad_->committing)
     ++modelLoad_->preparationFrames;
   const auto frameStart = TelemetryClock::now();
@@ -1649,11 +2025,40 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   auto phaseStart = TelemetryClock::now();
   concurrencyPolicy.waitBeforeAcquire(*subs_.frameSyncManager,
                                       frame_.currentFrame);
+  processEnvironmentLoad();
+  if (subs_.guiManager && subs_.environmentManager) {
+    auto sky = subs_.guiManager->consumeSkyRequest();
+    if (subs_.guiManager->consumeAuthoredSkyRequest() && subs_.sceneManager) {
+      try {
+        sky = container::geometry::gltf::readAuthoredSky(
+            subs_.sceneManager->animationSource(), subs_.sceneManager->selectedScene());
+        if (sky)
+          subs_.guiManager->setSkyDraft(*sky);
+        else
+          subs_.guiManager->setStatusMessage("The selected glTF scene has no authored sky.");
+      } catch (const std::exception& error) {
+        sky.reset();
+        subs_.guiManager->setStatusMessage(error.what());
+      }
+    }
+    if (sky) {
+      subs_.environmentManager->requestSkyEnvironment(*sky);
+      subs_.guiManager->setEnvironmentStatus(subs_.environmentManager->environmentStatus());
+      subs_.guiManager->setEnvironmentLoading(subs_.environmentManager->environmentLoading());
+    }
+  }
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::WaitForFrame,
                            elapsedMilliseconds(phaseStart));
     if (subs_.renderPassGpuProfiler) {
       const auto gpuTimings = subs_.renderPassGpuProfiler->collectLatest();
+      if (subs_.mcpServer)
+        subs_.mcpServer->observeGpuTimings(subs_.renderPassGpuProfiler->latestRecordingSerial(),
+            rendererGpuTimingSourceName(subs_.renderPassGpuProfiler->timingSource()), gpuTimings);
+      if (svc_.config.pathTargetMs > 0.0f) {
+        const auto lighting = std::ranges::find(gpuTimings, RenderPassId::Lighting, &RendererPassGpuTiming::id);
+        updateReferenceSampleBudget(lighting == gpuTimings.end() ? 0.0f : lighting->milliseconds);
+      }
       telemetry->setPassGpuTimings(gpuTimings,
                                    subs_.renderPassGpuProfiler->timingSource());
       telemetry->setGpuProfilerStatus(RendererGpuProfilerTelemetry{
@@ -1666,7 +2071,10 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     }
   }
 
+  processMcpRequests();
+  processComfyUi();
   applyPendingRenderTechniqueChange();
+  updateOpenVdbSequence();
 
   if (pendingMsaaSampleCount_) {
     phaseStart = TelemetryClock::now();
@@ -1733,12 +2141,43 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   }
 
   phaseStart = TelemetryClock::now();
-  if (frame_.imagesInFlight[imageIndex]) {
-    vkWaitForFences(svc_.ctx.deviceWrapper->device(), 1,
-                    &frame_.imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
+  if (const auto imageFence = frame_.imagesInFlight[imageIndex];
+      imageFence != VK_NULL_HANDLE) {
+    const VkResult waitResult = vkWaitForFences(
+        svc_.ctx.deviceWrapper->device(), 1, &imageFence, VK_TRUE, UINT64_MAX);
+    if (waitResult != VK_SUCCESS) {
+      throw std::runtime_error("Failed to wait for the swap chain image fence: " +
+                               std::to_string(waitResult));
+    }
   }
   if (subs_.ddgiManager)
     subs_.ddgiManager->retireImage(imageIndex);
+  collectReferenceDiagnostics(imageIndex);
+  ensureReferencePathResources();
+  if (!svc_.config.pathSampleSeries.empty() && !referencePathActive())
+    throw std::runtime_error("Reference sample series requires an active path tracer. " + referenceStatus_);
+  if (subs_.guiManager) {
+    std::string status = referenceStatus_;
+    if (subs_.referencePathTracePass) {
+      if (!status.empty()) status += "; ";
+      status += std::to_string(subs_.referencePathTracePass->attemptedSamples()) + " samples";
+      if (referenceUnsupported_) status += "; unsupported paths (magenta)";
+      if (referenceRejected_) status += "; rejected paths (yellow)";
+      const bool optix = subs_.referencePathTracePass->optixSelected();
+      const bool beauty = referencePathDisplay() == ReferencePathDisplayMode::Beauty;
+      if (beauty && (optix || subs_.referencePathTracePass->oidnQuality() != ReferenceOidnQuality::Off)) {
+        const auto denoiser = subs_.referencePathTracePass->oidnStatus();
+        status += optix ? "; OptiX " : "; OIDN ";
+        status += denoiser.displayedSamples ? "at " + std::to_string(denoiser.displayedSamples) + " samples"
+                                            : std::string(denoiser.message);
+      }
+      if (beauty && subs_.referencePathTracePass->dlssQuality() != UpscaleMode::Native) {
+        status += " | DLSS Ray Reconstruction ";
+        status += subs_.referencePathTracePass->dlssStatus().message;
+      }
+    }
+    subs_.guiManager->setReferencePathStatus(std::move(status));
+  }
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::ImageFenceWait,
                            elapsedMilliseconds(phaseStart));
@@ -1758,7 +2197,13 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   }
 
   phaseStart = TelemetryClock::now();
+  updateGltfSceneState();
+  updateMaterialVariantState();
   presentSceneControls();
+  updateGltfAnimation();
+  processCaptureLightEvent();
+  advancePhysics();
+  updateGltfDeformation();
   processPendingDdgiSceneFit();
   processPendingDdgiDetailFit();
   processPendingDdgiPreset();
@@ -1814,35 +2259,43 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   temporalClipRevision_ = clipRevision;
   container::temporal::validateSettings(
       temporal.settings(), static_cast<uint32_t>(msaaSampleCount_));
-  if (temporal.settings().enabled) {
-    temporal.createPipelines(container::util::executableDirectory(),
+  updateCameraBuffer(imageIndex);
+  reconcileUpscaleResources();
+  const auto temporalExtent = sceneRenderExtent();
+  if ((temporal.settings().enabled || temporal.upscalingActive()) && !referencePathActive()) {
+    temporal.createPipelines(activeShaderReload_ ? activeShaderReload_->directory
+                                                 : container::util::executableDirectory(),
                              subs_.sceneManager->descriptorSetLayout(),
                              resources_.gBufferFormats.depthStencil);
-    temporal.prepare(*subs_.frameResourceManager,
-                     svc_.swapChainManager.extent(),
+    temporal.prepare(*subs_.frameResourceManager, temporalExtent,
                      static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
   }
   if (svc_.config.taaResetFrame != 0 &&
       frame_.submittedFrameCount + 1 == svc_.config.taaResetFrame)
     temporal.reset("configured capture reset");
-  updateCameraBuffer(imageIndex);
-  const auto temporalExtent = svc_.swapChainManager.extent();
+  const auto displayExtent = svc_.swapChainManager.extent();
   const auto *temporalCamera = subs_.cameraController->camera();
   auto frameTemporalSettings = temporal.settings();
   const auto mode = static_cast<uint32_t>(frontendDisplayMode(
       subs_.guiManager.get(), configuredDisplayMode(svc_.config)));
   frameTemporalSettings.enabled =
-      frameTemporalSettings.enabled &&
+      (frameTemporalSettings.enabled || temporal.upscalingActive()) && !referencePathActive() &&
       (mode == 0u || mode == 8u || (mode >= 100u && mode <= 104u));
-  temporal.state().prepareCamera(
+  temporal.prepareCamera(
       buffers_.cameraData, {temporalExtent.width, temporalExtent.height},
       frameTemporalSettings,
-      temporalCamera->projectionMatrix(float(temporalExtent.width) /
-                                       float(temporalExtent.height)));
+      gltfAnimationCamera_ ? gltfAnimationCamera_->projection :
+      temporalCamera->projectionMatrix(float(displayExtent.width) /
+                                       float(displayExtent.height)), temporalFrameMilliseconds_);
   SceneController::writeToBuffer(
       svc_.allocationManager, buffers_.cameras[imageIndex],
       &buffers_.cameraData, sizeof(buffers_.cameraData));
-  updateObjectBuffer(imageIndex);
+  prepareGltfDeformationFrame(imageIndex);
+  cpuObjectUploadBytes_=0;
+  if(subs_.guiManager) gpuHierarchyEnabled_=subs_.guiManager->gpuHierarchyTransforms();
+  gpuObjectUploadDeferred_=gpuHierarchyEnabled_;
+  updateObjectBuffer(imageIndex,gpuObjectUploadDeferred_);
+  prepareGpuHierarchyFrame(imageIndex);
   if (frameTemporalSettings.enabled) {
     auto objects = subs_.sceneController->objectData();
     for (auto &object : objects) {
@@ -1853,10 +2306,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
           (subs_.sceneManager->temporalMaterialRevision(object.objectInfo.x) ^
            (uint64_t(object.objectInfo.y) << 32u)));
     }
-    if (!objects.empty())
-      SceneController::writeToBuffer(
-          svc_.allocationManager, buffers_.objects[imageIndex], objects.data(),
-          objects.size() * sizeof(objects[0]));
+    uploadPreparedObjectData(imageIndex,objects);
     if (subs_.bimManager && subs_.bimManager->objectAllocatedBuffer().buffer) {
       uint64_t providerRevision = 0;
       // Residency policy changes invalidate only the sidecar provider;
@@ -1886,10 +2336,12 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     }
   }
 
+  if(!frameTemporalSettings.enabled && gpuHierarchyPrepared_)
+    uploadPreparedObjectData(imageIndex,subs_.sceneController->objectData());
   if (subs_.lightingManager && subs_.cameraController) {
     subs_.lightingManager->updateLightingDataForActiveCamera();
     applyConfiguredLightingOverrides(subs_.lightingManager.get(),
-                                      svc_.config);
+                                      svc_.config, subs_.environmentManager.get());
   }
 
   if (subs_.shadowManager && subs_.lightingManager && subs_.cameraController) {
@@ -1907,12 +2359,20 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     const std::optional<ShadowCasterSceneBounds> shadowCasterBounds =
         accumulateShadowCasterSceneBounds(subs_.sceneController.get(),
                                           subs_.bimManager.get());
-    subs_.shadowManager->update(subs_.cameraController->camera(), aspect,
-                                glm::vec3(ld.directionalDirection),
-                                shadowSettings,
-                                shadowCasterBounds ? &*shadowCasterBounds
-                                                   : nullptr,
-                                imageIndex);
+    if (gltfAnimationCamera_) {
+      const auto& camera = *gltfAnimationCamera_;
+      subs_.shadowManager->update(
+          camera.view, camera.shadowProjection, camera.nearPlane, camera.farPlane,
+          glm::vec3(ld.directionalDirection), shadowSettings,
+          shadowCasterBounds ? &*shadowCasterBounds : nullptr, imageIndex);
+    } else {
+      subs_.shadowManager->update(subs_.cameraController->camera(), aspect,
+                                  glm::vec3(ld.directionalDirection),
+                                  shadowSettings,
+                                  shadowCasterBounds ? &*shadowCasterBounds
+                                                     : nullptr,
+                                  imageIndex);
+    }
     subs_.shadowManager->updateLocalShadows(
         subs_.lightingManager->pointLightsSsbo(),
         subs_.lightingManager->areaLightsSsbo(), shadowSettings,
@@ -1923,12 +2383,32 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                            elapsedMilliseconds(phaseStart));
   }
 
-  const bool screenshotThisFrame = screenshot_.pending;
+  if (!screenshot_.pending && svc_.config.pathSampleSeries.empty() && subs_.guiManager) {
+    const auto request = subs_.guiManager->consumeImageExportRequest();
+    if (!request.path.empty()) {
+      try {
+        requestScreenshot(container::util::pathFromUtf8(request.path), request.viewportOnly);
+        screenshot_.interactive = true;
+      } catch (const std::exception& error) {
+        subs_.guiManager->setStatusMessage(error.what());
+      }
+    }
+  }
+  bool screenshotThisFrame = screenshot_.pending;
   if (screenshotThisFrame) {
     phaseStart = TelemetryClock::now();
-    ensureScreenshotReadbackBuffer(frame_.currentFrame,
-                                   svc_.swapChainManager.extent(),
-                                   svc_.swapChainManager.imageFormat());
+    try {
+      ensureScreenshotReadbackBuffer(frame_.currentFrame, svc_.swapChainManager.extent(),
+          screenshot_.sceneLinear ? VK_FORMAT_R32G32B32A32_SFLOAT
+                                  : svc_.swapChainManager.imageFormat());
+    } catch (const std::exception& error) {
+      const bool comfyCapture = finishComfyUiCapture(error.what());
+      if (!screenshot_.interactive && !screenshot_.remote && !comfyCapture)
+        throw;
+      screenshot_.pending = screenshotThisFrame = false;
+      if (screenshot_.remote) mcpCaptureStatus_ = std::string("Capture failed: ") + error.what();
+      if (screenshot_.interactive) subs_.guiManager->setStatusMessage(error.what());
+    }
     if (telemetry) {
       telemetry->addCpuPhase(RendererTelemetryPhase::ResourceGrowth,
                              elapsedMilliseconds(phaseStart));
@@ -1940,6 +2420,9 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
 
   phaseStart = TelemetryClock::now();
   updateFrameDescriptorSets(imageIndex, &frameRecordParams);
+  if (frameRecordParams.screenshot.sceneLinear)
+    subs_.frameResourceManager->setLinearCaptureTarget(
+        imageIndex, frameRecordParams.screenshot.readbackBuffer);
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::DescriptorUpdate,
                            elapsedMilliseconds(phaseStart));
@@ -2002,7 +2485,25 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     throw std::runtime_error("failed to submit draw command buffer!");
   }
   subs_.temporalManager->commit();
+  if (subs_.screenReflectionPass)
+    subs_.screenReflectionPass->onSubmitted(
+        subs_.deferredRasterFrameGraphContext->isPassActive(RenderPassId::ScreenReflections));
+  if (subs_.volumetricFogPass)
+    subs_.volumetricFogPass->onSubmitted(
+        subs_.deferredRasterFrameGraphContext->isPassActive(RenderPassId::VolumetricFog));
+  if (gpuHierarchyPrepared_ && subs_.gpuHierarchyPass)
+    subs_.gpuHierarchyPass->commitFrame(imageIndex);
+  commitGltfDeformationFrame();
   subs_.rayShadowManager->commit();
+  if (referenceRecorded_ && subs_.referencePathTracePass) {
+    auto& path = *subs_.referencePathTracePass;
+    const uint64_t epoch = path.historyResets();
+    path.commitFrame(imageIndex);
+    if (path.historyResets() != epoch) {
+      referenceAdaptiveBatch_.reset();
+      referenceTimedLightingMs_.reset();
+    }
+  }
   if (subs_.ddgiManager) {
     subs_.ddgiManager->commit();
     subs_.ddgiManager->submitAsync(imageIndex);
@@ -2014,6 +2515,19 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                            elapsedMilliseconds(phaseStart));
   }
 
+  if (!svc_.config.pathSampleSeries.empty()) {
+    const uint32_t limit = screenshot_.pending
+        ? screenshot_.referenceSampleTarget.value_or(svc_.config.pathSampleLimit)
+        : svc_.config.pathSampleLimit;
+    if (limit <= referenceSeriesSamples_)
+      throw std::runtime_error("Reference sample series did not advance");
+    const uint32_t batch = std::min(svc_.config.pathSamplesPerFrame, limit - referenceSeriesSamples_);
+    if (!referenceRecorded_ || !subs_.referencePathTracePass ||
+        subs_.referencePathTracePass->attemptedSamples() != referenceSeriesSamples_ + batch)
+      throw std::runtime_error("Reference accumulation changed during the sample series");
+    referenceSeriesSamples_ += batch;
+  }
+
   if (screenshotThisFrame) {
     phaseStart = TelemetryClock::now();
     const VkFence fence = subs_.frameSyncManager->fence(frame_.currentFrame);
@@ -2021,7 +2535,26 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                         UINT64_MAX) != VK_SUCCESS) {
       throw std::runtime_error("failed to wait for screenshot frame");
     }
-    writePendingScreenshotPng(frame_.currentFrame);
+    if (frameRecordParams.screenshot.sceneLinear)
+      subs_.frameResourceManager->setLinearCaptureTarget(imageIndex);
+    // This graphics fence also retires every earlier reference submission.
+    for (uint32_t i = 0; i < referenceDiagnosticSeen_.size(); ++i)
+      collectReferenceDiagnostics(i);
+    try {
+      writePendingScreenshot(frame_.currentFrame, frameRecordParams);
+      finishComfyUiCapture();
+      if (screenshot_.remote && !screenshot_.pending) mcpCaptureStatus_ = "Saved";
+      if (screenshot_.interactive)
+        subs_.guiManager->setStatusMessage("Saved image: " +
+            container::util::pathToUtf8(screenshot_.outputPath));
+    } catch (const std::exception& error) {
+      screenshot_.pending = false;
+      const bool comfyCapture = finishComfyUiCapture(error.what());
+      if (!screenshot_.interactive && !screenshot_.remote && !comfyCapture)
+        throw;
+      if (screenshot_.remote) mcpCaptureStatus_ = std::string("Capture failed: ") + error.what();
+      if (screenshot_.interactive) subs_.guiManager->setStatusMessage(error.what());
+    }
     if (telemetry) {
       telemetry->setCpuPhase(RendererTelemetryPhase::Screenshot,
                              elapsedMilliseconds(phaseStart));
@@ -2107,12 +2640,71 @@ void RendererFrontend::applyTemporalCapture(
   FrameConcurrencyPolicy::serializedGpuResources("capture scene mutation")
       .waitBeforeAcquire(*subs_.frameSyncManager, frame_.currentFrame);
   const auto &event = sample.event;
-  if (event.bimSelectedObject) {
-    if (!subs_.bimManager ||
-        !subs_.bimManager->metadataForObject(*event.bimSelectedObject))
-      throw std::runtime_error("Capture BIM selection index is not present in the active model");
-    selectBimObject(*event.bimSelectedObject);
+  if (event.gpuTransforms) {
+    gpuHierarchyEnabled_ = *event.gpuTransforms;
+    if (subs_.guiManager) subs_.guiManager->setGpuHierarchyTransforms(gpuHierarchyEnabled_);
   }
+  if (event.reloadShaders)
+    processShaderReload(true, true);
+  if (event.referenceAutofocus)
+    referenceAutofocusRequested_ = true;
+  if (event.referenceDisplay) {
+    if (subs_.guiManager) subs_.guiManager->setReferencePathDisplay(*event.referenceDisplay);
+    else referencePathDisplayOverride_ = event.referenceDisplay;
+  }
+  if (event.referenceOidn || event.referenceOptix || event.referenceDlss) {
+    if (subs_.guiManager) {
+      auto settings = subs_.guiManager->referenceOidn();
+      if (event.referenceOidn) settings.quality = *event.referenceOidn;
+      if (event.referenceDlss) settings.quality = ReferenceOidnQuality::Off;
+      settings.optix = event.referenceOptix.value_or(false);
+      settings.dlss = event.referenceDlss.value_or(UpscaleMode::Native);
+      subs_.guiManager->setReferenceOidn(settings);
+    } else {
+      if (event.referenceOidn) referenceOidnQualityOverride_ = *event.referenceOidn;
+      if (event.referenceDlss) referenceOidnQualityOverride_ = ReferenceOidnQuality::Off;
+      referenceOptixOverride_ = event.referenceOptix.value_or(false);
+      referenceDlssOverride_ = event.referenceDlss.value_or(UpscaleMode::Native);
+    }
+  }
+  if (event.comfyUi)
+    applyComfyUiCaptureAction(*event.comfyUi);
+  if (event.proceduralSky && subs_.environmentManager) {
+    if (subs_.environmentManager->requestSkyEnvironment({.mode = *event.proceduralSky}))
+      processEnvironmentLoad(true);
+  }
+  if (!event.environment.empty() && subs_.environmentManager) {
+    if (subs_.environmentManager->requestHdrEnvironment(container::util::pathFromUtf8(event.environment)) &&
+        !event.environmentAsync)
+      processEnvironmentLoad(true);
+  }
+  if (event.environmentYaw && subs_.lightingManager) {
+    auto settings = subs_.lightingManager->lightingSettings();
+    if (settings.environment.yawDegrees != *event.environmentYaw) {
+      settings.environment.yawDegrees = *event.environmentYaw;
+      if (subs_.ddgiManager)
+        subs_.ddgiManager->resetSceneHistory();
+      subs_.lightingManager->setLightingSettings(settings);
+      if (subs_.guiManager)
+        subs_.guiManager->setLightingSettings(settings);
+      if (subs_.temporalManager)
+        subs_.temporalManager->reset("environment rotation changed");
+    }
+  }
+  queueCaptureLightEvent(event);
+  // Terminals complete the existing edit before any unrelated event can
+  // finish it. In particular, a patch-free End must keep its gesture ID.
+  const bool materialTerminal=event.materialEdit &&
+      (event.materialEdit->phase==container::material::MaterialEditGesturePhase::End ||
+       event.materialEdit->phase==container::material::MaterialEditGesturePhase::Cancel);
+  if(materialTerminal && !authorMaterial(*event.materialEdit))
+    throw std::runtime_error("Capture material gesture could not be completed");
+  if(!event.reload.empty() || !event.guiReload.empty() || !event.guiSampleModel.empty() || event.guiUnload || event.merge ||
+      event.materialVariant || event.gltfScene || !event.sceneHistory.empty() || event.nodeFlags || event.nodeAuthoring ||
+      event.nodeReparent || event.nodeTransform || event.addPrimitive || event.animationPlaying || event.animationClip ||
+      event.animationTime || !event.physicsAttach.empty() || !event.physicsAction.empty() || event.physicsJointCreate ||
+      !event.physicsJointAction.empty() || event.physicsJointMotorVelocity || event.samples || event.resize || !event.technique.empty())
+    finishEditGestures();
   if (event.ddgiFitProbes)
     pendingDdgiSceneFit_ = *event.ddgiFitProbes;
   if (subs_.ddgiManager && (event.ddgiPaused || event.ddgiEnabled)) {
@@ -2164,6 +2756,7 @@ void RendererFrontend::applyTemporalCapture(
   if (!event.reload.empty()) {
     settlePendingModelLoads();
     captureObjectBase_.reset();
+    captureObjectNode_ = 0;
     reloadSceneModel(event.reload);
   }
   if (!event.guiReload.empty()) {
@@ -2171,6 +2764,7 @@ void RendererFrontend::applyTemporalCapture(
       throw std::runtime_error(
           "GUI reload requires an initialized GUI manager");
     captureObjectBase_.reset();
+    captureObjectNode_ = 0;
     subs_.guiManager->queueModelLoadRequest(event.guiReload, 1.0f,
                                             event.guiReload);
   }
@@ -2180,18 +2774,269 @@ void RendererFrontend::applyTemporalCapture(
       throw std::runtime_error("GUI sample model not found: " +
                                event.guiSampleModel);
     captureObjectBase_.reset();
+    captureObjectNode_ = 0;
   }
   if (event.guiUnload) {
     if (!subs_.guiManager)
       throw std::runtime_error("GUI unload requires an initialized GUI manager");
     captureObjectBase_.reset();
+    captureObjectNode_ = container::scene::SceneGraph::kInvalidNode;
     subs_.guiManager->queueModelUnloadRequest();
   }
+  if (event.merge) {
+    glm::mat4 placement(1.0f);
+    if (event.merge->placementMatrix)
+      for (size_t column=0; column<4; ++column)
+        for (size_t row=0; row<4; ++row)
+          placement[column][row]=static_cast<float>((*event.merge->placementMatrix)[column*4+row]);
+    if(subs_.guiManager) subs_.guiManager->queueModelMergeRequest(event.merge->path,
+        event.merge->parentName,event.merge->incomingScene,placement,event.merge->placementMatrix);
+    else {
+      if(!modelLoad_) modelLoad_=std::make_unique<ModelLoadState>();
+      container::ui::ModelLoadRequest request;
+      request.path=event.merge->path; request.label=event.merge->path;
+      request.merge=container::ui::ModelMergeRequest{
+          event.merge->parentName,event.merge->incomingScene,placement,event.merge->placementMatrix};
+      modelLoad_->queued=std::move(request);
+    }
+  }
   if (event.guiWaitForLoad &&
-      (!event.guiReload.empty() || !event.guiSampleModel.empty() || event.guiUnload))
+      (!event.guiReload.empty() || !event.guiSampleModel.empty() || event.guiUnload || event.merge))
     settlePendingModelLoads();
+  if(event.materialEdit && !materialTerminal && !authorMaterial(*event.materialEdit))
+    throw std::runtime_error("Capture material edit could not be applied");
+  if(event.materialBinding && !authorMaterialBinding(*event.materialBinding))
+    throw std::runtime_error("Capture material binding could not be applied");
+  const auto cameraAction=[&](auto&& apply,bool expectedFailure,const char* label) {
+    if(!expectedFailure) {
+      if(!apply()) throw std::runtime_error(std::string("Capture ")+label+" could not be applied");
+      return;
+    }
+    std::string failure;
+    try {if(!apply()) failure="The camera action could not be published";}
+    catch(const std::exception& error) {failure=error.what();}
+    if(failure.empty()) throw std::runtime_error(std::string("Expected ")+label+" failure did not occur");
+    size_t end=std::min<size_t>(failure.size(),4096);
+    while(end<failure.size() && end && (uint8_t(failure[end])&0xc0)==0x80) --end;
+    failure.resize(end);spdlog::warn("Expected capture {} failure: {}",label,failure);
+  };
+  if(event.cameraProjection) {
+    const auto& request=*event.cameraProjection;
+    cameraAction([&] {return authorCameraProjectionSource(request.sourceNode,request.patch,request.expectedCameraRevision);},
+        event.expectCameraProjectionFailure,"camera projection");
+  }
+  if(event.cameraSelection) {
+    const auto& request=*event.cameraSelection;
+    cameraAction([&] {return setGltfCameraNode(request.viewport?std::nullopt:std::optional<size_t>(
+        request.sourceNode?size_t(*request.sourceNode):cameraNodeByName(*request.nodeName)));},
+        event.expectCameraSelectionFailure,"camera selection");
+  }
+  if(event.resourceRetirement) {
+    const auto& request=*event.resourceRetirement;
+    const auto apply=[&] {
+      if(!subs_.sceneManager) throw std::runtime_error("The resource catalog is unavailable");
+      auto& manager=*subs_.sceneManager;const auto generation=manager.resourceLifecycleGeneration();
+      using D=container::ui::ResourceCatalogDomain;using K=container::ui::ResourceCatalogKind;
+      using Domain=container::util::ResourceDomainKind;using Kind=container::util::ResourceKind;
+      const auto domain=[&] {
+        switch(request.domain) {case D::Archive:return Domain::Archive;case D::Evaluated:return Domain::Evaluated;case D::Runtime:return Domain::Runtime;}
+        throw std::invalid_argument("The resource domain is invalid");
+      }();
+      const auto kind=[&] {
+        switch(request.kind) {case K::Image:return Kind::Image;case K::Texture:return Kind::Texture;
+          case K::Sampler:return Kind::Sampler;case K::RuntimeTexture:return Kind::RuntimeTexture;}
+        throw std::invalid_argument("The resource kind is invalid");
+      }();
+      const container::scene::TextureResourceSelection selection{domain,kind,request.row};
+      if(!generation || !generation->valid() || !generation->active(selection))
+        throw std::invalid_argument("The requested resource is no longer active");
+      // Capture is also used with --no-ui. Resolve weak intent from the scene
+      // owner's current catalog, then use the same authoritative author path.
+      const auto handle=generation->resource(selection);
+      if(!handle) throw std::invalid_argument("The requested resource has no current identity");
+      const container::ui::ResourceCatalogTarget target{manager.materialAssetIdentity(),manager.materialResourceRevision(),
+          handle.domain().identity(),handle.incarnation(),request.row,request.domain,request.kind};
+      if((request.expectedResourceRevision && *request.expectedResourceRevision!=target.resourceRevision) ||
+          (request.expectedIncarnation && *request.expectedIncarnation!=target.incarnation))
+        throw std::invalid_argument("The requested resource catalog revision or incarnation has changed");
+      return authorResourceRetirement({target});
+    };
+    if(!event.expectResourceRetirementFailure) {
+      if(!apply()) throw std::runtime_error("Capture resource retirement could not be applied");
+    } else {
+      std::string failure;
+      try {if(!apply()) failure="The resource retirement could not be applied";}
+      catch(const std::exception& error) {failure=error.what();}
+      if(failure.empty()) throw std::runtime_error("Expected resource retirement failure did not occur");
+      size_t end=std::min<size_t>(failure.size(),4096);
+      while(end<failure.size() && end && (uint8_t(failure[end])&0xc0)==0x80) --end;
+      failure.resize(end);resourceCatalogError_="Cannot delete resource: "+failure;
+      spdlog::warn("Expected capture resource retirement failure: {}",failure);
+    }
+  }
+  if(event.materialRetirement) {
+    const auto& request=*event.materialRetirement;
+    const auto apply=[&] {return authorMaterialRetirement(request.runtimeMaterial,request.sourceMaterial,request.expectedAuthoredRevision);};
+    if(!event.expectMaterialRetirementFailure) {
+      if(!apply()) throw std::runtime_error("Capture material retirement could not be applied");
+    } else {
+      std::string failure;
+      try {if(!apply()) failure="The material retirement could not be applied";}
+      catch(const std::exception& error) {failure=error.what();}
+      if(failure.empty()) throw std::runtime_error("Expected material retirement failure did not occur");
+      size_t end=std::min<size_t>(failure.size(),4096);
+      while(end<failure.size() && end && (uint8_t(failure[end])&0xc0)==0x80) --end;
+      failure.resize(end);
+      spdlog::warn("Expected capture material retirement failure: {}",failure);
+    }
+  }
+  if(event.materialTextureEdit) {
+    if(!event.expectMaterialTextureFailure) {
+      if(!authorMaterialTexture(*event.materialTextureEdit))
+        throw std::runtime_error("Capture material texture edit could not be applied");
+    } else {
+      std::string failure;
+      try {
+        if(!authorMaterialTexture(*event.materialTextureEdit)) failure="The texture edit could not be applied";
+      } catch(const std::exception& error) {failure=error.what();}
+      if(failure.empty()) throw std::runtime_error("Expected material texture failure did not occur");
+      materialTextureError_="Cannot edit texture: "+failure;
+      size_t end=std::min<size_t>(materialTextureError_.size(),4096);
+      while(end<materialTextureError_.size() && end && (uint8_t(materialTextureError_[end])&0xc0)==0x80) --end;
+      materialTextureError_.resize(end);materialTextureErrorSource_=event.materialTextureEdit->sourceMaterial;
+      materialTextureErrorAsset_=subs_.sceneManager?subs_.sceneManager->materialAssetIdentity():0;
+    }
+  }
+  if (event.bimSelectedObject) {
+    if (!subs_.bimManager ||
+        !subs_.bimManager->metadataForObject(*event.bimSelectedObject))
+      throw std::runtime_error("Capture BIM selection index is not present in the active model");
+    selectBimObject(*event.bimSelectedObject);
+  }
+  if (event.materialVariant) captureMaterialVariant_=event.materialVariant;
+  if (event.gltfScene) captureGltfScene_=event.gltfScene;
+  if (!event.sceneHistory.empty()) captureSceneHistory_=event.sceneHistory;
+  if (event.nodeFlags) {
+    uint32_t target = container::scene::SceneGraph::kInvalidNode;
+    for (uint32_t id = 0; id < sceneGraph_.nodeCount(); ++id)
+      if (sceneGraph_.getNode(id)->sourceNodeIndex == event.nodeFlags->sourceNode) {
+        target = id; break;
+      }
+    const auto* node = sceneGraph_.getNode(target);
+    if (!node) throw std::invalid_argument("Capture nodeFlags sourceNode does not exist");
+    ensureSceneEditHistory();
+    sceneEdits_->setNodeFlags(target, event.nodeFlags->visible.value_or(node->visible),
+        event.nodeFlags->selectable.value_or(node->selectable),
+        event.nodeFlags->hoverable.value_or(node->hoverable));
+  }
+  if (event.nodeAuthoring) {
+    const auto& edit = *event.nodeAuthoring;
+    auto target = edit.graphNode.value_or(container::scene::SceneGraph::kInvalidNode);
+    if (edit.sourceNode) {
+      for (uint32_t node = 0; node < sceneGraph_.nodeCount(); ++node) {
+        if (sceneGraph_.getNode(node)->sourceNodeIndex != *edit.sourceNode) continue;
+        if (target != container::scene::SceneGraph::kInvalidNode)
+          throw std::invalid_argument("Capture nodeAuthoring source identity is ambiguous");
+        target = node;
+      }
+    }
+    authorSceneNode({edit.action == "rename"
+        ? container::ui::SceneNodeAuthoringAction::Rename
+        : edit.action == "create-empty" ? container::ui::SceneNodeAuthoringAction::CreateEmpty
+        : edit.action == "duplicate-subtree" ? container::ui::SceneNodeAuthoringAction::DuplicateSubtree
+        : edit.action == "make-editable" ? container::ui::SceneNodeAuthoringAction::MakeEditable
+                                         : container::ui::SceneNodeAuthoringAction::DeleteSubtree,
+        sceneGraph_.identity(), target, edit.name});
+  }
+  const auto resolveNode=[this](const container::temporal::CaptureNodeReference& reference) {
+    auto target=reference.graphNode.value_or(container::scene::SceneGraph::kInvalidNode);
+    if(reference.sourceNode) {
+      for(uint32_t node=0;node<sceneGraph_.nodeCount();++node) {
+        if(sceneGraph_.getNode(node)->sourceNodeIndex!=*reference.sourceNode) continue;
+        if(target!=container::scene::SceneGraph::kInvalidNode)
+          throw std::invalid_argument("Capture node source identity is ambiguous");
+        target=node;
+      }
+    }
+    const auto* node=sceneGraph_.getNode(target);
+    if(!node || (!sceneGraph_.isNodeInActiveHierarchy(target) && !node->editorSceneRoot) || sceneGraph_.isNodeRetired(target))
+      throw std::invalid_argument("Capture node reference does not identify an active hierarchy node");
+    return target;
+  };
+  if(event.nodeReparent) {
+    const auto node=resolveNode(event.nodeReparent->node),parent=resolveNode(event.nodeReparent->parent);
+    if(sceneGraph_.getNode(node)->parent!=parent && !reparentSceneNode(node,parent))
+      throw std::invalid_argument("Capture node reparent was rejected");
+  }
+  if(event.nodeTransform) {
+    const auto node=resolveNode(event.nodeTransform->node);
+    ensureSceneEditHistory(); sceneEdits_->finishGesture();
+    if(sceneGraph_.getNode(node)->localTransform!=event.nodeTransform->matrix &&
+        !sceneEdits_->setTransform(node,event.nodeTransform->matrix))
+      throw std::invalid_argument("Capture node transform was rejected");
+  }
+  if(event.addPrimitive) {
+    const auto& edit=*event.addPrimitive;
+    const std::pair<std::string_view,ScenePrimitiveKind> kinds[]={
+        {"quad",ScenePrimitiveKind::Quad},{"plane",ScenePrimitiveKind::Plane},
+        {"cube",ScenePrimitiveKind::Cube},{"sphere",ScenePrimitiveKind::Sphere},
+        {"triangular-prism",ScenePrimitiveKind::TriangularPrism},
+        {"pyramid",ScenePrimitiveKind::Pyramid},{"torus",ScenePrimitiveKind::Torus}};
+    const auto found=std::ranges::find_if(kinds,[&](const auto& item) { return item.first==edit.kind; });
+    if(found==std::end(kinds)) throw std::invalid_argument("Capture primitive kind is unsupported");
+    const auto parent=edit.parent ? std::optional<uint32_t>(resolveNode(*edit.parent)) : std::nullopt;
+    if(addScenePrimitive(found->second,edit.name,parent)==container::scene::SceneGraph::kInvalidNode)
+      throw std::invalid_argument("Capture primitive creation failed");
+  }
+  if (event.interactivityPlaying || event.interactivityReset || event.interactivityEvent)
+    gltfInteractivityRequest_ = {event.interactivityPlaying, event.interactivityReset, event.interactivityEvent};
+  if (event.animationPlaying || event.animationClip || event.animationTime) {
+    if (!gltfAnimation_) resetGltfAnimation();
+    if(!gltfAnimation_ || !subs_.sceneManager)
+      throw std::invalid_argument("Capture animation controls require a primary glTF animation player");
+    const auto selected=event.animationClip ? (*event.animationClip<0 ? std::optional<size_t>{}
+        : std::optional<size_t>(size_t(*event.animationClip))) : gltfAnimation_->selectedClip();
+    if(selected && *selected>=gltfAnimation_->library().clips.size())
+      throw std::invalid_argument("Capture animation clip is out of range");
+    if((event.animationTime || event.animationPlaying.value_or(false)) && !selected)
+      throw std::invalid_argument("Capture animation time/play requires a selected glTF animation clip");
+    container::geometry::gltf::AnimationDirtySet dirty;
+    if(event.animationClip || event.animationTime) {
+      if(subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
+      auto& source=subs_.sceneManager->animationSource();
+      if(event.animationClip) dirty.merge(selected ? gltfAnimation_->selectClip(source,*selected)
+          : gltfAnimation_->clearClip(source));
+      if(event.animationTime) dirty.merge(gltfAnimation_->seek(source,*event.animationTime));
+      pendingGltfAnimationDeltaSeconds_=0;
+      if (!dirty.empty()) publishGltfAnimationChanges(dirty);
+      if (subs_.temporalManager && dirty.nodeFlags.empty())
+        subs_.temporalManager->reset("capture glTF animation timeline");
+    }
+    if(event.animationPlaying) {
+      if (*event.animationPlaying) gltfAnimation_->play();
+      else gltfAnimation_->pause();
+    }
+    if (subs_.guiManager) {
+      auto& controls = subs_.guiManager->gltfAnimationControls();
+      controls.requestedPlaying.reset(); controls.requestedClip.reset(); controls.requestedTime.reset();
+      controls.selectedClip=gltfAnimation_->selectedClip()?int(*gltfAnimation_->selectedClip()):-1;
+      controls.time=gltfAnimation_->time();
+      controls.playing = gltfAnimation_->playing();
+    }
+  }
+  if (!event.physicsAttach.empty() || !event.physicsAction.empty() ||
+      event.physicsJointCreate || !event.physicsJointAction.empty() || event.physicsJointMotorVelocity)
+    pendingPhysicsActions_.push_back({event.physicsNode, selectedBimObjectIndex_,
+        event.physicsAttach, event.physicsAction,
+        event.physicsJointCreate ?
+            std::make_shared<container::temporal::CapturePhysicsJointCreate>(*event.physicsJointCreate) : nullptr,
+        event.physicsJointAction, event.physicsJointMotorVelocity,
+        event.physicsSettings ?
+            std::make_shared<container::physics::PhysicsBodySettings>(*event.physicsSettings) : nullptr});
   if (event.taa)
     subs_.temporalManager->settings().enabled = *event.taa;
+  if (event.upscaling)
+    captureUpscaling_ = event.upscaling;
   if (event.samples)
     recreateMsaaResources(sampleCountFromSamples(*event.samples));
   if (event.reset)
@@ -2222,8 +3067,19 @@ void RendererFrontend::applyTemporalCapture(
     }
     applyCameraOverride(subs_.cameraController->camera(), poseConfig);
   }
+  // A camera pose write samples this frame's navigation track. Dispatch after
+  // applying it, rather than accidentally authoring the previous frame's view.
+  if(event.cameraPose) {
+    const auto& request=*event.cameraPose;
+    cameraAction([&] {return authorCameraViewPoseSource(request.sourceNode,request.expectedCameraRevision);},
+        event.expectCameraPoseFailure,"camera pose");
+  }
   uint32_t objectNode = sample.objectNode;
-  if (!sample.objectName.empty()) {
+  // Capture tracks are sampled past their last key. An explicit unload retires
+  // their target; only a later capture load event permits target lookup again.
+  const bool objectTracksActive =
+      captureObjectNode_ != container::scene::SceneGraph::kInvalidNode;
+  if (objectTracksActive && !sample.objectName.empty()) {
     bool found = false;
     for (uint32_t node = 0; node < sceneGraph_.nodeCount(); ++node)
       if (sceneGraph_.getNode(node)->name == sample.objectName) {
@@ -2234,27 +3090,39 @@ void RendererFrontend::applyTemporalCapture(
     if (!found)
       throw std::invalid_argument("Capture objectName does not exist");
   }
-  if (sample.objectTranslation) {
+  if (objectTracksActive && (sample.objectTranslation || sample.objectScale)) {
     const uint32_t nodeIndex = objectNode;
     const auto *node = sceneGraph_.getNode(nodeIndex);
     if (!node)
       throw std::invalid_argument("Capture objectNode does not exist");
+    requireEditableSceneNode(nodeIndex);
     if (!captureObjectBase_ || captureObjectNode_ != nodeIndex) {
       captureObjectBase_ = node->localTransform;
       captureObjectNode_ = nodeIndex;
     }
     glm::mat4 transform = *captureObjectBase_;
-    transform[3] += glm::vec4(*sample.objectTranslation, 0);
+    if (sample.objectScale)
+      for (int column = 0; column < 3; ++column)
+        transform[column] *= (*sample.objectScale)[column];
+    if (sample.objectTranslation)
+      transform[3] += glm::vec4(*sample.objectTranslation, 0);
+    if(node->localTransform!=transform) finishEditGestures();
     sceneGraph_.setLocalTransform(nodeIndex, transform);
     sceneGraph_.updateWorldTransforms();
     refreshSceneObjectData();
   }
-  if (event.objectVisible) {
+  if (objectTracksActive && event.objectVisible) {
+    if (!sceneGraph_.getNode(objectNode))
+      throw std::invalid_argument("Capture objectNode does not exist");
+    requireEditableSceneNode(objectNode);
+    finishEditGestures();
     sceneGraph_.setVisible(objectNode, *event.objectVisible);
-    refreshSceneObjectData();
+    publishSceneEdit();
   }
-  if (sample.bimTranslation && subs_.bimManager)
+  if (sample.bimTranslation && subs_.bimManager) {
+    if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
     subs_.bimManager->setRootTranslation(*sample.bimTranslation);
+  }
   if (event.exposure)
     captureExposure_ = *event.exposure;
   if (event.areaLightPosition) {
@@ -2265,6 +3133,12 @@ void RendererFrontend::applyTemporalCapture(
     if (it == lights.end())
       throw std::invalid_argument(
           "Capture areaLightPosition needs an area light");
+    if (subs_.sceneManager && it->source == EditableLightSource::Imported) {
+      const auto bindings = subs_.sceneManager->authoredAreaLightBindings();
+      if (it->id.index < bindings.size() &&
+          subs_.sceneManager->isLinkedSourceNodeReadOnly(bindings[it->id.index].sourceNode))
+        throw std::invalid_argument("This linked asset is read-only. Use Make Editable first.");
+    }
     auto light = *it;
     light.position = *event.areaLightPosition;
     if (!subs_.lightingManager->updateEditableLight(light))
@@ -2278,12 +3152,25 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   const auto extent = svc_.swapChainManager.extent();
   VkPhysicalDeviceProperties gpu{};
   vkGetPhysicalDeviceProperties(svc_.ctx.deviceWrapper->physicalDevice(), &gpu);
+  const auto owned = container::gpu::ownedVulkanObjectCounts(svc_.ctx.deviceWrapper->device());
+  VmaTotalStatistics allocationStats{};
+  vmaCalculateStatistics(svc_.allocationManager.memoryManager()->allocator(), &allocationStats);
   nlohmann::json json{
       {"schemaVersion", 1},
       {"gpu", gpu.deviceName},
       {"driverVersion", gpu.driverVersion},
       {"vulkanApiVersion", gpu.apiVersion},
       {"technique", std::string(subs_.activeTechnique->name())},
+      {"hierarchyTransforms", {{"enabled", gpuHierarchyEnabled_}, {"active", gpuHierarchyPrepared_},
+                                {"cpuObjectUploadBytes",cpuObjectUploadBytes_},
+                                {"status", gpuHierarchyStatus_}}},
+      {"shaderReload", {{"generation", shaderReloadGeneration_}, {"status", shaderReloadStatus_},
+          {"ownedObjects", {{"pipelines", owned.pipelines}, {"pipelineLayouts", owned.pipelineLayouts},
+                            {"pipelineCaches", owned.pipelineCaches}, {"descriptorPools", owned.descriptorPools},
+                            {"descriptorSetLayouts", owned.descriptorSetLayouts}, {"imageViews", owned.imageViews},
+                            {"samplers", owned.samplers}, {"shaderModules", owned.shaderModules}}},
+          {"vmaAllocations", allocationStats.total.statistics.allocationCount},
+          {"vmaBytes", allocationStats.total.statistics.allocationBytes}}},
       {"resolution", {extent.width, extent.height}},
       {"msaaSamples", sampleCountToSamples(msaaSampleCount_)},
       {"taa",
@@ -2298,6 +3185,91 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"resetReason", temporal.state().resetReason()},
         {"imagePayloadBytes", temporal.memoryBytes()},
         {"allocatedImageBytes", temporal.allocatedBytes()}}}};
+  const auto sceneExtent = sceneRenderExtent();
+  const auto upscaleTelemetry = [&](UpscaleBackend backend, bool active) {
+    const auto& selection = upscaleResourceRequest_.selection;
+    const auto requested = selection.backend == backend ? selection.mode : UpscaleMode::Native;
+    return nlohmann::json{{"requested", upscaleModeName(requested)},
+        {"mode", upscaleModeName(active ? requested : UpscaleMode::Native)},
+        {"active", active},
+        {"status", requested == UpscaleMode::Native ? std::string_view{} : std::string_view{upscaleViewportStatus_}},
+        {"renderExtent", {sceneExtent.width, sceneExtent.height}},
+        {"displayExtent", {extent.width, extent.height}}};
+  };
+  json["fsr"] = upscaleTelemetry(UpscaleBackend::Fsr, temporal.fsrActive());
+  json["dlss"] = upscaleTelemetry(UpscaleBackend::Dlss, temporal.dlssActive());
+  if (const auto bytes = temporal.dlssAllocatedBytes())
+    json["dlss"]["sdkAllocatedBytes"] = *bytes;
+  if (referencePathActive()) {
+    const auto* path = subs_.referencePathTracePass.get();
+    const auto lens = path ? path->effectiveLens() : std::nullopt;
+    const bool optixSelected = path ? path->optixSelected() : svc_.config.pathOidn.optix;
+    const auto denoiser = path ? path->oidnStatus() : ReferenceOidnStatus{};
+    const auto oidn = optixSelected ? ReferenceOidnStatus{} : denoiser;
+    const auto optix = optixSelected ? denoiser : ReferenceOidnStatus{};
+    const auto rr = path ? path->dlssStatus() : ReferenceDlssStatus{};
+    json["referencePath"] = {{"active", path != nullptr}, {"status", referenceStatus_},
+        {"display", referencePathDisplayName(referencePathDisplay())},
+        {"attemptedSamples", path ? path->attemptedSamples() : 0},
+        {"historyResets", path ? path->historyResets() : 0},
+        {"allocatedBytes", path ? path->allocatedBytes() : 0},
+        {"diagnosticEpoch", referenceDiagnosticEpoch_},
+        {"unsupportedSamples", referenceUnsupported_}, {"rejectedSamples", referenceRejected_},
+        {"samplesPerFrame", svc_.config.pathSamplesPerFrame}, {"sampleLimit", svc_.config.pathSampleLimit},
+        {"scheduledSamplesPerFrame", referenceAdaptiveBatch_.value_or(svc_.config.pathSamplesPerFrame)},
+        {"lastSubmittedSamples", path ? path->lastSubmittedSamples() : 0},
+        {"adaptiveTargetMs", svc_.config.pathTargetMs},
+        {"lastTimedLightingMs", referenceTimedLightingMs_ ? nlohmann::json(*referenceTimedLightingMs_) : nlohmann::json(nullptr)},
+        {"fireflyClamp", path ? path->effectiveFireflyClamp() : 0.0f},
+        {"oidn", {{"quality", referenceOidnQualityName(path ? path->oidnQuality() :
+                      optixSelected ? ReferenceOidnQuality::Off : svc_.config.pathOidn.quality)},
+                  {"status", oidn.message}, {"displayedSamples", oidn.displayedSamples},
+                  {"allocatedBytes", oidn.allocatedBytes},
+                  {"lastGpuMs", oidn.lastGpuMs ? nlohmann::json(*oidn.lastGpuMs) : nlohmann::json(nullptr)}}},
+        {"optix", {{"requested", optixSelected}, {"status", optix.message},
+                   {"displayedSamples", optix.displayedSamples}, {"allocatedBytes", optix.allocatedBytes},
+                   {"lastGpuMs", optix.lastGpuMs ? nlohmann::json(*optix.lastGpuMs) : nlohmann::json(nullptr)}}},
+        {"dlss", {{"quality", referenceDlssQualityName(path ? path->dlssQuality() : svc_.config.pathOidn.dlss)},
+                  {"status", rr.message}, {"active", rr.active},
+                  {"renderExtent", {rr.renderExtent.width, rr.renderExtent.height}},
+                  {"outputExtent", {rr.outputExtent.width, rr.outputExtent.height}},
+                  {"historyResets", rr.historyResets}, {"historyFrames", rr.historyFrames},
+                  {"allocatedBytes", rr.allocatedBytes},
+                  {"vendorAllocatedBytes", rr.vendorAllocatedBytes ? nlohmann::json(*rr.vendorAllocatedBytes) : nlohmann::json(nullptr)},
+                  {"lastGpuMs", rr.lastGpuMs ? nlohmann::json(*rr.lastGpuMs) : nlohmann::json(nullptr)}}},
+        {"ground", referenceGroundMetadata(path ? path->effectiveGround() : ReferenceGroundSettings{})},
+        {"autofocusStatus", referenceAutofocusStatus_},
+        {"maxBounces", svc_.config.pathMaxBounces}, {"seed", svc_.config.pathSeed},
+        {"apertureRadius", lens ? lens->apertureRadius : 0.0f},
+        {"focusDistance", lens ? nlohmann::json(lens->focusDistance) : nlohmann::json(nullptr)}};
+  }
+  if (subs_.gpuHierarchyPass && gpuHierarchyPrepared_) {
+    const auto stats = subs_.gpuHierarchyPass->stats(gpuHierarchyImage_);
+    json["hierarchyTransforms"]["nodes"] = stats.nodes;
+    json["hierarchyTransforms"]["objects"] = stats.objects;
+    json["hierarchyTransforms"]["levels"] = stats.levels;
+    json["hierarchyTransforms"]["dispatchedLevels"] = stats.dispatchedLevels;
+    json["hierarchyTransforms"]["dirtyLocals"] = stats.dirtyLocals;
+    json["hierarchyTransforms"]["uploadedBytes"] = stats.uploadedBytes;
+    json["hierarchyTransforms"]["prepareMs"] = stats.prepareMs;
+    json["hierarchyTransforms"]["objectMetadataBytes"] = stats.objectMetadataBytes;
+    json["hierarchyTransforms"]["objectMetadataMs"] = stats.objectMetadataMs;
+    if (stats.previousGpuMs >= 0) json["hierarchyTransforms"]["previousGpuMs"] = stats.previousGpuMs;
+  }
+  if (vdbPlayback_) {
+    const auto target = vdbPlayback_->frameIndex();
+    const auto bytes = vdbAsyncSequence_ ? vdbAsyncSequence_->status().residentBytes : vdbSequence_->cachedBytes();
+    json["openvdbSequence"] = {
+        {"requestedFrame", target},
+        {"displayedFrame", vdbLoadedFrame_.value_or(0)},
+        {"asynchronous", bool(vdbAsyncSequence_)},
+        {"pending", !vdbLoadedFrame_ || *vdbLoadedFrame_ != target},
+        {"gpuUploadPending", vdbUploadingFrame_.has_value()},
+        {"gpuUploadSubmitted", vdbUploadSubmitted_},
+        {"gpuUploadPublished", vdbUploadPublished_},
+        {"gpuUploadDiscarded", vdbUploadDiscarded_},
+        {"residentBytes", bytes}};
+  }
   if (subs_.lightingManager) {
     const auto &lighting = subs_.lightingManager->lightingData();
     json["lighting"] = {
@@ -2407,11 +3379,20 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
           {"directionalContactThickness", shadow.directionalContactThickness},
           {"directionalContactFadeDistance", shadow.directionalContactFadeDistance},
           {"localContactVisibility", shadow.localContactVisibility}};
-      if (subs_.environmentManager)
-        json["environment"] = {
-            {"hdrPath", container::app::kDefaultEnvironmentHdrRelativePath},
-            {"status", subs_.environmentManager->environmentStatus()}};
     }
+  }
+  if (subs_.environmentManager)
+    json["environment"] = {
+        {"hdrPath", container::util::pathToUtf8(subs_.environmentManager->activeHdrPath())},
+        {"loading", subs_.environmentManager->environmentLoading()},
+        {"generating", subs_.environmentManager->environmentGenerating()},
+        {"skyMode", static_cast<uint32_t>(subs_.environmentManager->activeSkyMode())},
+        {"status", subs_.environmentManager->environmentStatus()}};
+  if (subs_.environmentManager && subs_.lightingManager) {
+    const auto& environment = subs_.lightingManager->lightingSettings().environment;
+    json["environment"]["yawDegrees"] = environment.yawDegrees;
+    json["environment"]["backgroundBlur"] = environment.backgroundBlur;
+    json["environment"]["solidBackground"] = environment.solidBackground;
   }
   if (subs_.rendererTelemetry) {
     const auto &snapshot = subs_.rendererTelemetry->latest();
@@ -2461,6 +3442,27 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   // renderer buffers, so an unloaded scene has an unambiguous zero count.
   json["scene"]["primaryObjectCount"] = sceneGraph_.renderableNodes().size();
   json["scene"]["primaryNodeCount"] = sceneGraph_.nodeCount();
+  appendPhysicsTelemetry(json);
+  appendGltfAnimationTelemetry(json);
+  appendGltfInteractivityTelemetry(json);
+  if (subs_.sceneManager) {
+    auto& variants=json["gltfMaterialVariants"];
+    const auto selected=subs_.sceneManager->selectedMaterialVariant();
+    variants={{"selected",selected?int(*selected):-1},{"count",subs_.sceneManager->materialVariants().names().size()},
+      {"assignments",nlohmann::json::array()}};
+    if (sceneEdits_) { variants["undoCount"]=sceneEdits_->undoCount(); variants["redoCount"]=sceneEdits_->redoCount(); }
+    for (const auto nodeIndex:sceneGraph_.renderableNodes()) {
+      const auto& node=*sceneGraph_.getNode(nodeIndex);
+      if (node.sourceMeshIndex<0 || node.sourcePrimitiveIndex<0) continue;
+      const auto properties=subs_.sceneManager->materialRenderProperties(node.materialIndex);
+      variants["assignments"].push_back({{"node",nodeIndex},{"mesh",node.sourceMeshIndex},{"primitive",node.sourcePrimitiveIndex},
+        {"material",node.materialIndex},{"transparent",properties.transparent},{"alphaMasked",properties.alphaMasked},
+        {"doubleSided",properties.doubleSided},{"rayCompatible",subs_.sceneManager->rayGeometryCompatible(node.materialIndex)}});
+    }
+  }
+  appendGltfDeformationTelemetry(json);
+  appendGltfMergeTelemetry(json);
+  appendMaterialAuthoringTelemetry(json);
   json["scene"]["primaryVertexCount"] =
       subs_.sceneManager ? subs_.sceneManager->vertices().size() : 0u;
   json["scene"]["primaryIndexCount"] =
@@ -2480,11 +3482,21 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
                           {"totalAllocatedBytes", ray.allocatedBytes()},
                           {"generation", ray.sceneGeneration()},
                           {"historyResets", ray.historyResets()}};
+    json["rayShadows"]["opacityMicromaps"] = {
+        {"requested", svc_.config.experimentalOpacityMicromaps},
+        {"deviceEnabled", svc_.ctx.deviceWrapper->opacityMicromapsEnabled()}};
     if (const auto *stats = ray.buildStats())
       json["rayShadows"]["build"] = {
           {"blasBuilt", stats->blasBuilt},
           {"blasReused", stats->blasReused},
+          {"gpuInstances", stats->gpuInstanceCount},
+          {"gpuTransformUploadBytes", stats->gpuTransformUploadBytes},
           {"instances", stats->instanceCount},
+          {"opacityMicromaps", stats->opacityMicromapCount},
+          {"opacityMicromapsBuilt", stats->opacityMicromapBuilt},
+          {"opacityMicromapBlas", stats->opacityMicromapAttachedBlas},
+          {"opacityMicromapFallbackBlas", stats->opacityMicromapFallbackBlas},
+          {"opacityMicromapBytes", stats->opacityMicromapBytes},
           {"asAllocatedBytes", stats->accelerationAllocatedBytes},
           {"inputAllocatedBytes", stats->inputAllocatedBytes},
           {"scratchAllocatedBytes", stats->scratchAllocatedBytes}};
@@ -2571,6 +3583,11 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   if (subs_.bimManager) {
     json["scene"]["auxiliaryObjectCount"] =
         subs_.bimManager->objectData().size();
+    const auto bounds = subs_.bimManager->sceneProviderBounds();
+    if (bounds.valid)
+      json["scene"]["auxiliaryBounds"] = {
+          {"min", {bounds.min.x, bounds.min.y, bounds.min.z}},
+          {"max", {bounds.max.x, bounds.max.y, bounds.max.z}}};
     const auto &report = subs_.bimManager->importReport();
     json["scene"]["import"] = {
         {"status",
@@ -2582,8 +3599,8 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"representationWarnings", report.representationWarnings},
         {"fallbackSource", report.fallbackSource}};
   }
-  if (subs_.guiManager)
-    json["gui"]["modelLoading"] = {
+  json["gui"]["selectedMeshNodeId"] = sceneState_.selectedMeshNode;
+  json["gui"]["modelLoading"] = {
         {"pending", modelLoad_ && modelLoad_->request.has_value()},
         {"requests", modelLoad_ ? modelLoad_->requests : 0u},
         {"completed", modelLoad_ ? modelLoad_->completed : 0u},
@@ -2601,12 +3618,44 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   };
   json["camera"]["viewProjColumns"] = matrix(camera.viewProj);
   json["camera"]["unjitteredViewProjColumns"] = matrix(camera.unjitteredViewProj);
+  if (svc_.config.gpuHardwareTelemetry)
+    json["gpuHardware"] = gpuHardwareTelemetry(subs_.gpuHardwareMonitor->trySnapshot());
+  if (svc_.config.screenReflections != ScreenReflectionMode::Off) {
+    json["screenReflections"] = {
+        {"mode", static_cast<uint32_t>(svc_.config.screenReflections)},
+        {"allocationBytes", subs_.screenReflectionPass ? subs_.screenReflectionPass->allocationBytes() : 0},
+        {"rayFallbackRequested", svc_.config.screenReflectionRayFallback},
+        {"rayFallbackAvailable", subs_.screenReflectionPass && subs_.screenReflectionPass->rayFallbackAvailable()},
+        {"historyAvailable", subs_.screenReflectionPass && subs_.screenReflectionPass->historyAvailable()},
+        {"historyReprojected", subs_.screenReflectionPass && subs_.screenReflectionPass->historyReprojected()},
+        {"rayFallbackActive", subs_.screenReflectionPass && subs_.deferredRasterFrameGraphContext &&
+            subs_.deferredRasterFrameGraphContext->isPassActive(RenderPassId::ScreenReflections) &&
+            subs_.screenReflectionPass->rayFallbackActive()}};
+  }
+  if (svc_.config.volumetricFog.mode != VolumetricFogMode::Off) {
+    json["volumetricFog"] = {{"mode", static_cast<uint32_t>(svc_.config.volumetricFog.mode)},
+        {"density", svc_.config.volumetricFog.density},
+        {"active", subs_.volumetricFogPass && subs_.deferredRasterFrameGraphContext &&
+            subs_.deferredRasterFrameGraphContext->isPassActive(RenderPassId::VolumetricFog)},
+        {"historyReprojected", subs_.volumetricFogPass && subs_.volumetricFogPass->historyReprojected()},
+        {"allocationBytes", subs_.volumetricFogPass ? subs_.volumetricFogPass->allocationBytes() : 0}};
+  }
   return json;
 }
 
 void RendererFrontend::writeCaptureTelemetry(
-    const std::filesystem::path &path) const {
-  const auto json = captureTelemetry();
+    const std::filesystem::path &path, std::optional<glm::uvec2> depthProbe) {
+  auto json = captureTelemetry();
+  if (comfyUi_) json["comfyUi"] = comfyUiCaptureTelemetry();
+  if (depthProbe) {
+    auto &probe = json["depthProbe"];
+    probe["pixel"] = {depthProbe->x, depthProbe->y};
+    float depth = 0.0f;
+    probe["opaque"] = sampleDepthAtCursor(depthProbe->x, depthProbe->y, depth)
+                          ? nlohmann::json(depth) : nlohmann::json(nullptr);
+    probe["pick"] = samplePickDepthAtCursor(depthProbe->x, depthProbe->y, depth)
+                        ? nlohmann::json(depth) : nlohmann::json(nullptr);
+  }
   if (!path.parent_path().empty())
     std::filesystem::create_directories(path.parent_path());
   std::ofstream stream(path);
@@ -2654,6 +3703,9 @@ void RendererFrontend::handleResize() {
   vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device());
 
   destroyGBufferResources();
+  subs_.gpuHierarchyPass.reset();
+  gpuHierarchyPrepared_ = false;
+  gpuHierarchyObjectBuffers_.clear();
   invalidateDepthVisibilityFrames();
   svc_.swapChainManager.recreate(resources_.renderPasses.postProcess);
   ensureCameraBuffers();
@@ -2676,10 +3728,6 @@ void RendererFrontend::handleResize() {
         static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
   }
   createFrameResources();
-  if (subs_.environmentManager) {
-    const VkExtent2D ext = svc_.swapChainManager.extent();
-    subs_.environmentManager->recreateGtaoTextures(ext.width, ext.height);
-  }
   if (subs_.bloomManager) {
     const VkExtent2D ext = svc_.swapChainManager.extent();
     subs_.bloomManager->createTextures(ext.width, ext.height);
@@ -2716,7 +3764,72 @@ void RendererFrontend::handleResize() {
   updateFrameDescriptorSets();
 }
 
+void RendererFrontend::updateOpenVdbSequence() {
+  if (!vdbPlayback_ || !subs_.openVdbVolumeRenderer) return;
+  const auto index = vdbPlayback_->frameIndex();
+  if (vdbAsyncSequence_) {
+    // drawFrame retires all graphics readers before this call. Capture settling
+    // performs the same retirement before polling or publishing an upload.
+    if (vdbUploadingFrame_) {
+      if (!subs_.openVdbVolumeRenderer->volumeReplacementReady()) return;
+      if (*vdbUploadingFrame_ == index) {
+        if (!subs_.openVdbVolumeRenderer->publishVolumeReplacement())
+          throw std::logic_error("OpenVDB upload became unavailable before publication");
+        vdbLoadedFrame_ = index;
+        ++vdbUploadPublished_;
+      } else {
+        if (!subs_.openVdbVolumeRenderer->discardVolumeReplacement())
+          throw std::logic_error("OpenVDB upload became unavailable before discard");
+        ++vdbUploadDiscarded_;
+      }
+      vdbUploadingFrame_.reset();
+    }
+    const auto prefetchNext = [&] {
+      if (vdbPlayback_->options().paused || vdbPlayback_->options().speed <= 0.0) return;
+      const auto count = vdbAsyncSequence_->manifest().frames.size();
+      if (index + 1 < count) vdbAsyncSequence_->prefetch(index + 1);
+      else if (vdbPlayback_->options().loop && count > 1) vdbAsyncSequence_->prefetch(0);
+    };
+    if (!vdbLoadedFrame_ || *vdbLoadedFrame_ != index) {
+      (void)vdbAsyncSequence_->request(index);
+      auto completed = vdbAsyncSequence_->tryTakeFrame();
+      if (!completed) return;
+      if (!completed->error.empty()) throw std::runtime_error(completed->error);
+      if (completed->frameIndex != index || !completed->volume)
+        throw std::logic_error("OpenVDB background loader returned an unexpected frame");
+      if (!subs_.openVdbVolumeRenderer->beginReplaceVolume(0, *completed->volume))
+        throw std::logic_error("OpenVDB upload is busy without a tracked pending frame");
+      vdbUploadingFrame_ = index;
+      ++vdbUploadSubmitted_;
+      // Staging owns the copied bytes. Release this CPU lease before prefetch.
+      completed.reset();
+      prefetchNext();
+      return;
+    }
+    prefetchNext();
+    return;
+  }
+  if (!vdbSequence_) return;
+  if (vdbLoadedFrame_ && *vdbLoadedFrame_ == index) return;
+  // Called after in-flight frame retirement and before swapchain acquisition.
+  // The renderer also retires graphics readers before replacing one medium.
+  const auto& volume = vdbSequence_->frame(index);
+  subs_.openVdbVolumeRenderer->replaceVolume(0, volume);
+  vdbLoadedFrame_ = index;
+}
+
 void RendererFrontend::processInput(float deltaTime) {
+  if (std::isfinite(deltaTime) && deltaTime > 0.0f)
+    temporalFrameMilliseconds_ = std::min(deltaTime * 1000.0f, 250.0f);
+  if (std::isfinite(deltaTime) && deltaTime > 0.0f)
+    pendingGltfAnimationDeltaSeconds_ += deltaTime;
+  if (vdbPlayback_ && std::isfinite(deltaTime) && deltaTime > 0.0f &&
+      (!vdbAsyncSequence_ || (vdbLoadedFrame_ && *vdbLoadedFrame_ == vdbPlayback_->frameIndex())))
+    vdbPlayback_->advance(deltaTime);
+  if (std::isfinite(deltaTime) && deltaTime > 0.0f)
+    pendingPhysicsDeltaSeconds_ = deltaTime;
+  if (aslPoseReplay_)
+    aslPoseReplay_->tick(deltaTime, svc_.nativeWindow);
   if (!subs_.cameraController) {
     svc_.inputManager.endFrame();
     return;
@@ -2734,6 +3847,7 @@ void RendererFrontend::processInput(float deltaTime) {
       subs_.guiManager &&
       subs_.guiManager->sectionPlaneState().enabled &&
       subs_.guiManager->sectionPlaneState().visualPlaneEditable;
+  try {
   interactionController_.process(RenderSurfaceInteractionController::Context{
       .inputManager = svc_.inputManager,
       .cameraController = *subs_.cameraController,
@@ -2757,7 +3871,10 @@ void RendererFrontend::processInput(float deltaTime) {
           [this](double cursorX, double cursorY) {
             hoverMeshNodeAtCursor(cursorX, cursorY);
           },
-      .clearHover = [this]() { clearHoveredMeshNode(); },
+      .clearHover = [this]() {
+        updateGltfInteractivityHover(container::scene::SceneGraph::kInvalidNode);
+        clearHoveredMeshNode();
+      },
       .clearSelection = [this]() { clearSelectedMeshNode(); },
       .pickTransformGizmoAxisAtCursor =
           [this](double cursorX, double cursorY) {
@@ -2783,9 +3900,20 @@ void RendererFrontend::processInput(float deltaTime) {
               subs_.gpuCullManager->unfreezeCulling();
             }
           },
+      .transformGestureCallbacks = {
+          .begin = [this](container::ui::ViewportTool tool,container::ui::TransformSpace space,
+                           container::ui::TransformAxis axis,bool snap) {beginLightGizmoGesture(tool,space,axis,snap);},
+          .end = [this]() {endLightGizmoGesture();},
+          .cancel = [this](RenderSurfaceInteractionController::TransformGestureCancelReason reason) {cancelLightGizmoGesture(reason);}},
   });
+  } catch (const std::exception& error) {
+    if(!hasSelectedEditableLight && !lightEditGestureActive()) throw;
+    reportLightEditError(error.what());
+  }
   if (interactionController_.state().gesture !=
       container::ui::ViewportGesture::TransformDrag) {
+    if (transformDragSession_.active && sceneEdits_)
+      sceneEdits_->finishGesture();
     transformDragSession_.active = false;
   }
 }
@@ -2794,6 +3922,7 @@ void RendererFrontend::selectBimObject(uint32_t objectIndex,
                                       std::optional<glm::vec3> anchorPoint) {
   if (!subs_.bimManager || !subs_.bimManager->metadataForObject(objectIndex))
     return;
+  finishEditGestures();
   sceneState_.selectedMeshNode = container::scene::SceneGraph::kInvalidNode;
   selectedBimObjectIndex_ = objectIndex;
   if (subs_.lightingManager)
@@ -2824,30 +3953,22 @@ void RendererFrontend::selectMeshNodeAtCursor(double cursorX, double cursorY) {
   if (!subs_.sceneController) {
     return;
   }
+  finishEditGestures();
 
-  auto selectEditableLight = [&](EditableLightId id) {
-    if (!subs_.lightingManager) {
-      return;
-    }
-    subs_.lightingManager->selectEditableLight(id);
-    sceneState_.selectedMeshNode = container::scene::SceneGraph::kInvalidNode;
-    selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
-    selectionNavigationAnchor_ = {};
-    clearHoveredMeshNode();
-    selectedDrawCommands_.clear();
-    selectedBimDrawCommands_.clear();
-    selectedBimNativePointDrawCommands_.clear();
-    selectedBimNativeCurveDrawCommands_.clear();
-    if (subs_.guiManager) {
-      subs_.guiManager->setSectionPlaneVisualEditable(false);
-      subs_.guiManager->setStatusMessage("Selected editable light");
-    }
-  };
+  auto selectEditableLight = [&](EditableLightId id) {selectLightForEditing(id);};
 
   auto selectSceneNode = [&](uint32_t nodeIndex,
                              std::optional<glm::vec3> anchorPoint =
                                  std::nullopt) {
+    // Both GPU IDs and CPU rays resolve the nearest geometric hit first.
+    // Reference parity routes an excluded subtree to its eligible ancestor.
+    nodeIndex = sceneGraph_.nearestSelectableAncestor(nodeIndex);
+    if (nodeIndex == container::scene::SceneGraph::kInvalidNode) {
+      clearSelectedMeshNode();
+      return;
+    }
     sceneState_.selectedMeshNode = nodeIndex;
+    queueGltfInteractivitySelection(nodeIndex, anchorPoint);
     selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
     if (subs_.lightingManager) {
       subs_.lightingManager->selectEditableLight({});
@@ -2967,6 +4088,7 @@ void RendererFrontend::selectMeshNodeAtCursor(double cursorX, double cursorY) {
 
 void RendererFrontend::hoverMeshNodeAtCursor(double cursorX, double cursorY) {
   if (!subs_.sceneController) {
+    updateGltfInteractivityHover(container::scene::SceneGraph::kInvalidNode);
     clearHoveredMeshNode();
     return;
   }
@@ -2988,6 +4110,7 @@ void RendererFrontend::hoverMeshNodeAtCursor(double cursorX, double cursorY) {
       hoverPickCache_.selectedMeshNode == sceneState_.selectedMeshNode &&
       hoverPickCache_.selectedBimObjectIndex == selectedBimObjectIndex_ &&
       hoverPickCache_.objectDataRevision == objectRevision &&
+      hoverPickCache_.sceneGraphRevision == sceneGraph_.revision() &&
       hoverPickCache_.bimObjectDataRevision == bimObjectRevision &&
       hoverPickCache_.bimTypeFilterEnabled == bimFilter.typeFilterEnabled &&
       hoverPickCache_.bimFilterType == bimFilter.type &&
@@ -3044,6 +4167,7 @@ void RendererFrontend::hoverMeshNodeAtCursor(double cursorX, double cursorY) {
       .selectedMeshNode = sceneState_.selectedMeshNode,
       .selectedBimObjectIndex = selectedBimObjectIndex_,
       .objectDataRevision = objectRevision,
+      .sceneGraphRevision = sceneGraph_.revision(),
       .bimObjectDataRevision = bimObjectRevision,
       .bimTypeFilterEnabled = bimFilter.typeFilterEnabled,
       .bimFilterType = bimFilter.type,
@@ -3121,17 +4245,19 @@ void RendererFrontend::hoverMeshNodeAtCursor(double cursorX, double cursorY) {
     }
   }
 
+  hoveredNode = sceneGraph_.nearestHoverableAncestor(hoveredNode);
+  updateGltfInteractivityHover(hoveredNode);
   if (hoveredNode == sceneState_.selectedMeshNode) {
     hoveredNode = container::scene::SceneGraph::kInvalidNode;
   }
   if (hoveredBimObject != std::numeric_limits<uint32_t>::max() &&
       selectedBimObjectIndex_ != std::numeric_limits<uint32_t>::max() &&
       subs_.bimManager) {
-    const auto *selectedMetadata =
+    const auto selectedMetadata =
         subs_.bimManager->metadataForObject(selectedBimObjectIndex_);
-    const auto *hoveredMetadata =
+    const auto hoveredMetadata =
         subs_.bimManager->metadataForObject(hoveredBimObject);
-    if (selectedMetadata != nullptr && hoveredMetadata != nullptr &&
+    if (selectedMetadata && hoveredMetadata &&
         sameBimProductIdentity(*selectedMetadata, *hoveredMetadata)) {
       hoveredBimObject = std::numeric_limits<uint32_t>::max();
     }
@@ -3179,6 +4305,7 @@ void RendererFrontend::clearSelectedMeshNode() {
     return;
   }
 
+  finishEditGestures();
   sceneState_.selectedMeshNode = container::scene::SceneGraph::kInvalidNode;
   selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
   if (subs_.lightingManager) {
@@ -3255,6 +4382,7 @@ void RendererFrontend::transformSelectedNodeByDrag(
     const FrameTransformGizmoState gizmo = buildTransformGizmoState();
     transformDragSession_ = TransformDragSession{
         .active = true,
+        .historyGesture = ++nextViewportEditGesture_,
         .nodeIndex = selectedNode,
         .tool = tool,
         .space = space,
@@ -3387,11 +4515,12 @@ void RendererFrontend::transformSelectedNodeByDrag(
         std::exp(static_cast<float>(dragDeltaX - dragDeltaY) * 0.005f), 0.25f,
         4.0f);
     if (axis == container::ui::TransformAxis::Free) {
-      controls.scale = glm::clamp(controls.scale * factor, glm::vec3(0.001f),
-                                  glm::vec3(1000.0f));
+      if (factor != 1.0f)
+        controls.scale = container::ui::clampSignedScale(controls.scale * factor);
     } else {
       auto applyScaleAxis = [&](float &component) {
-        component = std::clamp(component * factor, 0.001f, 1000.0f);
+        if (factor != 1.0f)
+          component = container::ui::clampSignedScale(component * factor);
       };
       switch (axis) {
       case container::ui::TransformAxis::X:
@@ -3425,9 +4554,8 @@ void RendererFrontend::transformSelectedNodeByDrag(
       break;
     case container::ui::ViewportTool::Scale:
       controls.scale =
-          glm::clamp(snapRelativeVec3(transformDragSession_.startControls.scale,
-                                      controls.scale, 0.1f),
-                     glm::vec3(0.001f), glm::vec3(1000.0f));
+          container::ui::snapSignedScale(transformDragSession_.startControls.scale,
+                                         controls.scale, 0.1f);
       break;
     case container::ui::ViewportTool::Select:
       break;
@@ -3435,66 +4563,11 @@ void RendererFrontend::transformSelectedNodeByDrag(
   }
 
   if (transformingEditableLight && subs_.lightingManager) {
-    bool lightChanged = false;
-    switch (tool) {
-    case container::ui::ViewportTool::Select:
-      break;
-    case container::ui::ViewportTool::Translate: {
-      const glm::vec3 delta =
-          controls.position - transformDragSession_.startControls.position;
-      if (glm::dot(delta, delta) > 1.0e-10f) {
-        lightChanged =
-            subs_.lightingManager->translateSelectedEditableLight(delta);
-      }
-      break;
-    }
-    case container::ui::ViewportTool::Rotate: {
-      const glm::vec3 rotationDelta =
-          controls.rotationDegrees -
-          transformDragSession_.startControls.rotationDegrees;
-      auto rotateAxis = [&](const glm::vec3 &axisVector, float degrees) {
-        if (std::abs(degrees) > 1.0e-4f) {
-          lightChanged |= subs_.lightingManager->rotateSelectedEditableLight(
-              axisVector, degrees);
-        }
-      };
-      switch (axis) {
-      case container::ui::TransformAxis::X:
-        rotateAxis(transformDragSession_.axisX, rotationDelta.x);
-        break;
-      case container::ui::TransformAxis::Y:
-        rotateAxis(transformDragSession_.axisY, rotationDelta.y);
-        break;
-      case container::ui::TransformAxis::Z:
-        rotateAxis(transformDragSession_.axisZ, rotationDelta.z);
-        break;
-      case container::ui::TransformAxis::Free:
-        rotateAxis(transformDragSession_.axisY, rotationDelta.y);
-        rotateAxis(transformDragSession_.axisX, rotationDelta.x);
-        break;
-      }
-      break;
-    }
-    case container::ui::ViewportTool::Scale: {
-      const float startScale =
-          std::max((transformDragSession_.startControls.scale.x +
-                    transformDragSession_.startControls.scale.y +
-                    transformDragSession_.startControls.scale.z) *
-                       0.33333334f,
-                   0.001f);
-      const float newScale =
-          std::max((controls.scale.x + controls.scale.y + controls.scale.z) *
-                       0.33333334f,
-                   0.001f);
-      lightChanged = subs_.lightingManager->scaleSelectedEditableLight(
-          newScale / startScale);
-      break;
-    }
-    }
-    if (lightChanged) {
-      subs_.lightingManager->updateLightingData();
-      updateFrameDescriptorSets();
-      transformDragSession_.active = false;
+    try {
+      if (!lightEditGestureActive()) beginLightGizmoGesture(tool, space, axis, snapEnabled);
+      (void)applyLightGizmoControls(tool, axis, controls);
+    } catch (const std::exception& error) {
+      reportLightEditError(error.what());
     }
     return;
   }
@@ -3567,8 +4640,8 @@ void RendererFrontend::transformSelectedNodeByDrag(
     return;
   }
 
-  subs_.cameraController->applyNodeTransform(sceneState_.selectedMeshNode,
-                                             sceneState_.rootNode, controls);
+  if (!applySceneNodeTransform(sceneState_.selectedMeshNode, controls))
+    return;
   if (sceneState_.selectedMeshNode == sceneState_.rootNode &&
       subs_.lightingManager) {
     subs_.lightingManager->updateLightingData();
@@ -3734,19 +4807,44 @@ RendererFrontend::pickTransformGizmoAxisAtCursor(double cursorX,
   return bestAxis;
 }
 
-void RendererFrontend::requestScreenshot(std::filesystem::path outputPath) {
+bool RendererFrontend::referencePathActive() const {
+  return subs_.activeTechnique && subs_.activeTechnique->id() == RenderTechniqueId::PathTracing;
+}
+
+void RendererFrontend::requestScreenshot(std::filesystem::path outputPath, bool viewportOnly,
+                                         std::optional<uint32_t> referenceSampleTarget) {
   if (outputPath.empty()) {
     throw std::runtime_error("screenshot output path is empty");
   }
-  if (!svc_.swapChainManager.supportsTransferSrc()) {
+  auto extension = container::util::pathToUtf8(outputPath.extension());
+  std::ranges::transform(extension, extension.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  const bool sceneLinear = extension == ".exr";
+  if (!sceneLinear && extension != ".png")
+    throw std::runtime_error("screenshot path must end in .png or .exr");
+  if (referenceSampleTarget &&
+      (!sceneLinear || !referencePathActive() || *referenceSampleTarget == 0 ||
+       *referenceSampleTarget > svc_.config.pathSampleLimit))
+    throw std::runtime_error("Reference sample checkpoints require path tracing, EXR and a valid sample count");
+  if (sceneLinear &&
+      frontendDisplayMode(subs_.guiManager.get(), configuredDisplayMode(svc_.config)) !=
+          container::ui::GBufferViewMode::Lit)
+    throw std::runtime_error("select Lit view before exporting a scene-linear EXR");
+  if (!sceneLinear && !svc_.swapChainManager.supportsTransferSrc()) {
     throw std::runtime_error(
         "swapchain does not support VK_IMAGE_USAGE_TRANSFER_SRC_BIT");
   }
-  if (!isSupportedScreenshotFormat(svc_.swapChainManager.imageFormat())) {
+  if (!sceneLinear && !isSupportedScreenshotFormat(svc_.swapChainManager.imageFormat())) {
     throw std::runtime_error("unsupported swapchain screenshot format");
   }
 
   screenshot_.outputPath = std::move(outputPath);
+  screenshot_.referenceSampleTarget = referenceSampleTarget;
+  screenshot_.sceneLinear = sceneLinear;
+  screenshot_.viewportOnly = viewportOnly && !sceneLinear;
+  screenshot_.interactive = false;
+  screenshot_.remote = false;
   screenshot_.pending = true;
 }
 
@@ -3754,6 +4852,7 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
                                         float importScale) {
   if (!subs_.sceneController || !subs_.sceneManager)
     return false;
+  finishEditGestures();
 
   ensureObjectBuffers();
   if (buffers_.objects.empty() || buffers_.objectCapacities.empty())
@@ -3762,6 +4861,7 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
   const auto cameraBuffer = buffers_.cameras.empty()
                                 ? container::gpu::AllocatedBuffer{}
                                 : buffers_.cameras.front();
+  const uint64_t previousGraphIdentity = sceneGraph_.identity();
   auto reloadPrimary = [&](const std::string &modelPath, float scale) {
     auto *prepared = modelLoad_ && modelLoad_->committing && modelLoad_->ready &&
                              modelLoad_->request && modelLoad_->request->path == modelPath &&
@@ -3780,7 +4880,10 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
     std::fill(buffers_.shadowObjectDescriptorReady.begin(),
               buffers_.shadowObjectDescriptorReady.end(), false);
     syncSceneStateFromController();
+    retireBindingsAfterSceneReload(sceneGraph_, previousGraphIdentity,
+                                   [this] { clearPhysicsBindings(); });
     if (replacedModel) {
+      materialGesture_.reset();lastEditedSourceMaterial_=-1;materialInspectorBinding_=UINT32_MAX;
       clearSelectedMeshNode();
       clearHoveredMeshNode();
       captureObjectBase_.reset();
@@ -3820,6 +4923,7 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
     const float previousPrimaryScale = activePrimaryImportScale_;
     const std::string previousAuxiliaryPath = activeAuxiliaryModelPath_;
     const float previousAuxiliaryScale = activeAuxiliaryImportScale_;
+    const auto previousOpenVdbOptions = subs_.bimManager ? subs_.bimManager->openVdbOptions() : nullptr;
 
     if (!subs_.bimManager) {
       subs_.bimManager = std::make_unique<BimManager>(
@@ -3841,7 +4945,11 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
       if (modelLoad_ && modelLoad_->committing && modelLoad_->ready && modelLoad_->ready->bim)
         prepared = &*modelLoad_->ready->bim;
       else {
-        localPrepared = BimManager::prepareScene(path, importScale);
+        const auto requestedOptions=modelLoad_ && modelLoad_->request
+            ? modelLoad_->request->openVdbOptions : nullptr;
+        localPrepared = BimManager::prepareScene(path, importScale,
+            vdbOptionsForReload(path,requestedOptions,previousAuxiliaryPath,
+                                previousOpenVdbOptions,svc_.config.vdbModelOptions));
         prepared = &*localPrepared;
       }
       retiredPreviousScene = true;
@@ -3862,7 +4970,7 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
           try {
             subs_.bimManager->loadModel(previousAuxiliaryPath,
                                         previousAuxiliaryScale,
-                                        *subs_.sceneManager);
+                                      *subs_.sceneManager, previousOpenVdbOptions);
           } catch (const std::exception &restoreError) {
             container::log::ContainerLogger::instance().renderer()->error(
                 "Failed to restore auxiliary model '{}': {}",
@@ -3913,11 +5021,12 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
     // SceneManager rebuilds its shared material/texture table on rollback.
     // Recreate the retained auxiliary scene against that restored table before
     // exposing its draw commands again.
+    const auto previousOpenVdbOptions = subs_.bimManager->openVdbOptions();
     subs_.bimManager->clear();
     try {
       subs_.bimManager->loadModel(activeAuxiliaryModelPath_,
                                   activeAuxiliaryImportScale_,
-                                  *subs_.sceneManager);
+                                  *subs_.sceneManager, previousOpenVdbOptions);
     } catch (const std::exception &error) {
       container::log::ContainerLogger::instance().renderer()->error(
           "Failed to restore auxiliary model '{}': {}",
@@ -3938,30 +5047,61 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
 }
 
 void RendererFrontend::processPendingGuiModelLoadRequest() {
-  if (!subs_.guiManager) return;
-  if (auto request = subs_.guiManager->consumeModelLoadRequest()) {
+  auto queuedRequest=subs_.guiManager?subs_.guiManager->consumeModelLoadRequest()
+      : std::optional<container::ui::ModelLoadRequest>{};
+  bool remote = false;
+  if (!queuedRequest && modelLoad_ && modelLoad_->queued) {
+    queuedRequest = std::exchange(modelLoad_->queued, {});
+    remote = std::exchange(modelLoad_->queuedRemote, false);
+  }
+  if (queuedRequest) {
+    finishEditGestures();
+    queuedRequest->openVdbOptions=vdbOptionsForReload(queuedRequest->path,queuedRequest->openVdbOptions,
+        activeAuxiliaryModelPath_,subs_.bimManager ? subs_.bimManager->openVdbOptions() : nullptr,
+        svc_.config.vdbModelOptions);
     if (!modelLoad_) modelLoad_ = std::make_unique<ModelLoadState>();
     if (modelLoad_->request) {
+      if (modelLoad_->remote) mcpModelStatus_ = "Superseded by a newer model request";
+      if(modelLoad_->request->merge) {
+        mergeRequest_.outcome=MergeRequestOutcome::Failed;
+        mergeRequest_.error="Cancelled by a newer model request";
+      }
       ++modelLoad_->cancelled;
       ++modelLoad_->completed;
     }
     modelLoad_->worker.cancel();
     if (modelLoad_->ready) modelLoad_->worker.discard(std::move(modelLoad_->ready));
-    modelLoad_->request = std::move(request);
+    modelLoad_->request = std::move(queuedRequest);
+    modelLoad_->remote = remote;
     ++modelLoad_->requests;
     const auto &action = *modelLoad_->request;
+    if(action.merge) {
+      ++mergeRequest_.requestId;
+      mergeRequest_.outcome=MergeRequestOutcome::Pending;
+      mergeRequest_.error.clear();
+      mergeRequest_.parentName=action.merge->parentName;
+      ++mergeRequest_.sourceReadCount;
+    }
     modelLoad_->stage = action.unload ? "Unloading models" : "Reading and preparing model";
-    subs_.guiManager->setStatusMessage(modelLoad_->stage + ": " +
+    if(subs_.guiManager) subs_.guiManager->setStatusMessage(modelLoad_->stage + ": " +
         (action.label.empty() ? action.path : action.label));
-    if (action.unload || action.path.empty() || action.path == "__default_test_scene__") {
+    if (action.unload || action.path.empty() ||
+        action.path == container::app::kDefaultSceneModelToken) {
       modelLoad_->ready = std::make_unique<ModelLoadState::Prepared>();
     } else {
-      (void)modelLoad_->worker.start([path = action.path, scale = action.importScale] {
+      (void)modelLoad_->worker.start([path = action.path, scale = action.importScale,
+                                    openVdbOptions = action.openVdbOptions,
+                                    merge = action.merge.has_value(),
+                                    linked = svc_.config.experimentalGltfLinkedAssets && !remote,
+                                    micromaps = svc_.config.experimentalOpacityMicromaps && !remote,
+                                    experimental = svc_.config.experimentalGltfMaterials, remote] {
         auto prepared = std::make_unique<ModelLoadState::Prepared>();
         if (isAuxiliaryRenderModelPath(path))
-          prepared->bim = BimManager::prepareScene(path, scale);
+          prepared->bim = BimManager::prepareScene(path, scale, openVdbOptions);
         else
-          prepared->gltf = container::scene::SceneManager::prepareGltfModel(path);
+          prepared->gltf = container::scene::SceneManager::prepareGltfModel(path,
+              merge || remote ? 512ull * 1024 * 1024 : std::numeric_limits<uintmax_t>::max(),
+              linked, remote, experimental, micromaps && !merge, merge);
         return prepared;
       });
       // Keep at least the request frame interactive, even for tiny models.
@@ -3990,24 +5130,46 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
       subs_.bimManager->setLoadProgressCallback([this](std::string_view stage) {
         pumpModelLoadProgress(stage);
       });
-    const bool success = reloadSceneModel(request.unload ? "" : request.path,
+    bool success{};
+    if (request.merge) {
+      container::geometry::gltf::GltfMergeOptions options;
+      options.parentName=request.merge->parentName;
+      if (request.merge->incomingScene)
+        options.incomingScene=static_cast<size_t>(*request.merge->incomingScene);
+      std::array<double,16> placement;
+      for (size_t column=0; column<4; ++column)
+        for (size_t row=0; row<4; ++row)
+          placement[column*4+row]=request.merge->placementMatrix[column][row];
+      options.placementMatrix=request.merge->authoredPlacementMatrix
+          ? request.merge->authoredPlacementMatrix : std::optional{placement};
+      success=mergeSceneModel(request.path,options,
+          state.ready->gltf ? &*state.ready->gltf : nullptr);
+      mergeRequest_.outcome=success?MergeRequestOutcome::Committed:MergeRequestOutcome::Failed;
+      if (success && subs_.guiManager) subs_.guiManager->setStatusMessage("Merged model: "+statusLabel);
+    } else success=reloadSceneModel(request.unload ? "" : request.path,
         request.unload ? 1.0f : request.importScale);
-    if (success && request.unload)
+    if (state.remote) mcpModelStatus_ = success ? "Loaded" : "Model import failed";
+    if (success && request.unload && subs_.guiManager)
       subs_.guiManager->setStatusMessage("Unloaded models.");
-    if (!success && subs_.guiManager->statusMessage().empty())
+    if (!success && subs_.guiManager && subs_.guiManager->statusMessage().empty())
       subs_.guiManager->setStatusMessage("Failed to load model: " + statusLabel);
   } catch (const std::exception &e) {
+    if (state.remote) mcpModelStatus_ = std::string("Model import failed: ") + e.what();
+    if(request.merge) { mergeRequest_.outcome=MergeRequestOutcome::Failed; mergeRequest_.error=e.what(); }
     container::log::ContainerLogger::instance().renderer()->error(
         "Failed to load model '{}': {}", request.path, e.what());
-    subs_.guiManager->setStatusMessage("Failed to load model: " + statusLabel + "\n" + e.what());
+    if(subs_.guiManager) subs_.guiManager->setStatusMessage("Failed to load model: " + statusLabel + "\n" + e.what());
   } catch (...) {
-    subs_.guiManager->setStatusMessage("Failed to load model: " + statusLabel + " (unknown error)");
+    if (state.remote) mcpModelStatus_ = "Model import failed: unknown error";
+    if(request.merge) { mergeRequest_.outcome=MergeRequestOutcome::Failed; mergeRequest_.error="Unknown scene merge error"; }
+    if(subs_.guiManager) subs_.guiManager->setStatusMessage("Failed to load model: " + statusLabel + " (unknown error)");
   }
   svc_.allocationManager.setLoadProgressCallback({});
   if (subs_.bimManager) subs_.bimManager->setLoadProgressCallback({});
   state.committing = false;
   if (state.ready) state.worker.discard(std::move(state.ready));
   state.request.reset();
+  state.remote = false;
   ++state.completed;
   // Acquired images/semaphores and reset submission fences cannot be recovered
   // as a bad model request. Propagate presentation errors after callback cleanup.
@@ -4021,6 +5183,28 @@ void RendererFrontend::settlePendingModelLoads() {
     pumpModelLoadProgress("Reading and preparing model");
     processPendingGuiModelLoadRequest();
     if (modelLoad_->request) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  if (!vdbAsyncSequence_ || !vdbPlayback_ ||
+      (svc_.config.screenshotCapturePath.empty() && svc_.config.temporalCaptureSequencePath.empty()))
+    return;
+  // Capture polling runs outside drawFrame's normal before-acquire retirement.
+  // No frame submissions occur during this loop, so one retirement covers every
+  // descriptor publication until the requested sequence frame is settled.
+  subs_.frameSyncManager->waitForAllFrames();
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (!vdbLoadedFrame_ || *vdbLoadedFrame_ != vdbPlayback_->frameIndex()) {
+    // All graphics readers were retired before entering this polling loop.
+    updateOpenVdbSequence();
+    if (vdbLoadedFrame_ && *vdbLoadedFrame_ == vdbPlayback_->frameIndex()) break;
+    if (svc_.nativeWindow) {
+      glfwPollEvents();
+      if (glfwWindowShouldClose(svc_.nativeWindow))
+        throw std::runtime_error("OpenVDB capture cancelled while waiting for a sequence frame");
+    }
+    if (std::chrono::steady_clock::now() >= deadline)
+      throw std::runtime_error("OpenVDB capture timed out waiting for background frame " +
+                               std::to_string(vdbPlayback_->frameIndex()));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 }
 
@@ -4122,6 +5306,18 @@ void RendererFrontend::drawModelLoadProgressFrame() {
 }
 
 void RendererFrontend::shutdown() {
+  subs_.mcpServer.reset();
+  if (shaderReloadJob_.valid()) {
+    shaderReloadStop_.request_stop();
+    shaderReloadJob_.wait();
+    shaderReloadJob_ = {};
+  }
+  // Drop the unfinished gesture before histories and their asset services.
+  materialGesture_.reset();
+  clearPhysicsBindings();
+#if CONTAINER_HAS_JOLT
+  physicsScene_.reset();
+#endif
   // Import jobs own only CPU payloads; join before releasing scene services.
   modelLoad_.reset();
   meshProviderAssetCache_.clear();
@@ -4129,6 +5325,13 @@ void RendererFrontend::shutdown() {
     return;
 
   vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device());
+
+  // History may own inactive scene generations and descriptor pools. Release
+  // them while their allocator/pipeline services and live managers still exist.
+  sceneEdits_.reset();
+  for (auto& objectBuffer : buffers_.objects)
+    if (subs_.sceneController && subs_.sceneController->ownsObjectBuffer(objectBuffer.buffer))
+      objectBuffer = {};
 
   subs_.frameSyncManager.reset();
   subs_.deferredRasterFrameGraphContext.reset();
@@ -4141,16 +5344,29 @@ void RendererFrontend::shutdown() {
   subs_.frameResourceRegistry.reset();
 
   subs_.temporalManager.reset();
+  subs_.screenReflectionPass.reset();
+  subs_.volumetricFogPass.reset();
+  subs_.gltfDeformationPass.reset();
+  subs_.gpuHierarchyPass.reset();
+  subs_.openVdbVolumeRenderer.reset();
+  vdbUploadingFrame_.reset();
+  vdbAsyncSequence_.reset();
+  vdbPlayback_.reset();
+  vdbSequence_.reset();
   subs_.ddgiManager.reset();
+  subs_.referencePathTracePass.reset();
   subs_.rayShadowManager.reset();
+  subs_.gpuRayInstancePass.reset();
   destroyGBufferResources();
   subs_.frameResourceManager.reset();
 
+  shutdownComfyUi();
   if (subs_.guiManager) {
     subs_.guiManager->shutdown(svc_.ctx.deviceWrapper->device());
     subs_.guiManager.reset();
   }
   subs_.rendererTelemetry.reset();
+  subs_.gpuHardwareMonitor.reset();
 
   subs_.renderPassManager.reset();
   resources_.renderPasses = {};
@@ -4205,6 +5421,12 @@ void RendererFrontend::createRenderPasses() {
 }
 
 void RendererFrontend::createGraphicsPipelines() {
+  resources_.builtPipelines = buildGraphicsPipelines(
+      activeShaderReload_ ? activeShaderReload_->directory : container::util::executableDirectory());
+}
+
+PipelineBuildResult RendererFrontend::buildGraphicsPipelines(
+    const std::filesystem::path& shaderDirectory) {
   if (!subs_.pipelineBuilder) {
     subs_.pipelineBuilder = std::make_unique<GraphicsPipelineBuilder>(
         svc_.ctx.deviceWrapper, svc_.pipelineManager);
@@ -4236,111 +5458,111 @@ void RendererFrontend::createGraphicsPipelines() {
                                 resources_.renderPasses.transformGizmos,
                                 resources_.renderPasses.postProcess,
                                 resources_.renderPasses.forwardLighting};
-  resources_.builtPipelines = subs_.pipelineBuilder->build(
-      container::util::executableDirectory(), descLayouts, rp,
-      msaaSampleCount_);
-  if (!resources_.builtPipelines.pipelines.layoutRegistry) {
-    resources_.builtPipelines.pipelines.layoutRegistry =
-        resources_.builtPipelines.layouts.layoutRegistry
-            ? resources_.builtPipelines.layouts.layoutRegistry
-            : buildGraphicsPipelineLayoutRegistry(
-                  resources_.builtPipelines.layouts);
-  }
-  resources_.builtPipelines.layouts.layoutRegistry =
-      resources_.builtPipelines.pipelines.layoutRegistry;
+  auto result = subs_.pipelineBuilder->build(shaderDirectory, descLayouts, rp, msaaSampleCount_);
+  result.pipelines.layoutRegistry = result.layouts.layoutRegistry;
+  return result;
 }
 
 void RendererFrontend::destroyGraphicsPipelines() {
-  auto &pipelines = resources_.builtPipelines.pipelines;
-  auto destroyPipeline = [this](VkPipeline &pipeline) {
-    svc_.pipelineManager.destroyPipeline(pipeline);
-  };
-  destroyPipeline(pipelines.depthPrepass);
-  destroyPipeline(pipelines.depthPrepassFrontCull);
-  destroyPipeline(pipelines.depthPrepassNoCull);
-  destroyPipeline(pipelines.bimDepthPrepass);
-  destroyPipeline(pipelines.bimDepthPrepassFrontCull);
-  destroyPipeline(pipelines.bimDepthPrepassNoCull);
-  destroyPipeline(pipelines.gBuffer);
-  destroyPipeline(pipelines.gBufferFrontCull);
-  destroyPipeline(pipelines.gBufferNoCull);
-  destroyPipeline(pipelines.bimGBuffer);
-  destroyPipeline(pipelines.bimGBufferFrontCull);
-  destroyPipeline(pipelines.bimGBufferNoCull);
-  destroyPipeline(pipelines.shadowDepth);
-  destroyPipeline(pipelines.shadowDepthFrontCull);
-  destroyPipeline(pipelines.shadowDepthNoCull);
-  destroyPipeline(pipelines.localShadowDepth);
-  destroyPipeline(pipelines.localShadowDepthFrontCull);
-  destroyPipeline(pipelines.localShadowDepthNoCull);
-  destroyPipeline(pipelines.directionalLight);
-  destroyPipeline(pipelines.stencilVolume);
-  destroyPipeline(pipelines.pointLight);
-  destroyPipeline(pipelines.pointLightStencilDebug);
-  destroyPipeline(pipelines.tiledPointLight);
-  destroyPipeline(pipelines.transparent);
-  destroyPipeline(pipelines.transparentFrontCull);
-  destroyPipeline(pipelines.transparentNoCull);
-  destroyPipeline(pipelines.transparentPick);
-  destroyPipeline(pipelines.transparentPickFrontCull);
-  destroyPipeline(pipelines.transparentPickNoCull);
-  destroyPipeline(pipelines.postProcess);
-  destroyPipeline(pipelines.geometryDebug);
-  destroyPipeline(pipelines.normalValidation);
-  destroyPipeline(pipelines.normalValidationFrontCull);
-  destroyPipeline(pipelines.normalValidationNoCull);
-  destroyPipeline(pipelines.wireframeDepth);
-  destroyPipeline(pipelines.wireframeDepthFrontCull);
-  destroyPipeline(pipelines.wireframeNoDepth);
-  destroyPipeline(pipelines.wireframeNoDepthFrontCull);
-  destroyPipeline(pipelines.selectionMask);
-  destroyPipeline(pipelines.selectionOutline);
-  destroyPipeline(pipelines.bimFloorPlanDepth);
-  destroyPipeline(pipelines.bimFloorPlanNoDepth);
-  destroyPipeline(pipelines.bimPointCloudDepth);
-  destroyPipeline(pipelines.bimPointCloudNoDepth);
-  destroyPipeline(pipelines.bimCurveDepth);
-  destroyPipeline(pipelines.bimCurveNoDepth);
-  destroyPipeline(pipelines.bimSectionClipCapFill);
-  destroyPipeline(pipelines.bimSectionClipCapHatch);
-  destroyPipeline(pipelines.surfaceNormalLine);
-  destroyPipeline(pipelines.objectNormalDebug);
-  destroyPipeline(pipelines.objectNormalDebugFrontCull);
-  destroyPipeline(pipelines.objectNormalDebugNoCull);
-  destroyPipeline(pipelines.lightGizmo);
-  destroyPipeline(pipelines.lightGizmoCoverage);
-  destroyPipeline(pipelines.lightGizmoPick);
-  destroyPipeline(pipelines.transformGizmo);
-  destroyPipeline(pipelines.transformGizmoSolid);
-  destroyPipeline(pipelines.transformGizmoOverlay);
-  destroyPipeline(pipelines.transformGizmoSolidOverlay);
-  for (RegisteredPipelineHandle &handle : pipelines.extraHandles) {
-    destroyPipeline(handle.pipeline);
-  }
-  pipelines.extraHandles.clear();
+  if (subs_.pipelineBuilder)
+    subs_.pipelineBuilder->destroy(resources_.builtPipelines);
+}
 
-  auto &layouts = resources_.builtPipelines.layouts;
-  auto destroyLayout = [this](VkPipelineLayout &layout) {
-    svc_.pipelineManager.destroyPipelineLayout(layout);
+void RendererFrontend::processShaderReload(bool request, bool wait) {
+  if (!request && !shaderReloadJob_.valid())
+    return;
+  const auto report = [this](std::string status) {
+    shaderReloadStatus_ = std::move(status);
+    if (subs_.guiManager)
+      subs_.guiManager->setStatusMessage(shaderReloadStatus_);
   };
-  destroyLayout(layouts.scene);
-  destroyLayout(layouts.transparent);
-  destroyLayout(layouts.forwardRay);
-  destroyLayout(layouts.lighting);
-  destroyLayout(layouts.lightGizmo);
-  destroyLayout(layouts.tiledLighting);
-  destroyLayout(layouts.shadow);
-  destroyLayout(layouts.postProcess);
-  destroyLayout(layouts.wireframe);
-  destroyLayout(layouts.normalValidation);
-  destroyLayout(layouts.surfaceNormal);
-  destroyLayout(layouts.transformGizmo);
-  for (RegisteredPipelineLayout &layout : layouts.extraLayouts) {
-    destroyLayout(layout.layout);
-  }
-  layouts.extraLayouts.clear();
+  try {
+    if (request && !shaderReloadJob_.valid()) {
+      shaderReloadStop_ = std::stop_source{};
+      shaderReloadJob_ = std::async(std::launch::async,
+          [directory = container::util::executableDirectory(),
+           stop = shaderReloadStop_.get_token()] {
+            return compileShaderCandidate(directory, stop);
+          });
+      report("Compiling shaders");
+    }
+    if (!wait && shaderReloadJob_.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+      return;
 
-  resources_.builtPipelines = {};
+    auto compiled = shaderReloadJob_.get();
+    auto computeCandidate = svc_.pipelineManager.prepareComputeReload(compiled->directory);
+    const bool rebakeBrdf = computeCandidate.changesShader("brdf_lut.comp.spv");
+    const bool rebakeEnvironment = computeCandidate.changesShader("equirect_to_cubemap.comp.spv") ||
+        computeCandidate.changesShader("irradiance_convolution.comp.spv") ||
+        computeCandidate.changesShader("prefilter_specular.comp.spv");
+    if (rebakeBrdf || rebakeEnvironment)
+      processEnvironmentLoad(true);
+    auto bakeCandidate = subs_.environmentManager
+        ? subs_.environmentManager->prepareShaderBake(compiled->directory, rebakeBrdf, rebakeEnvironment)
+        : std::unique_ptr<EnvironmentManager::PreparedShaderBake>{};
+    auto velocityCandidate = subs_.temporalManager
+        ? subs_.temporalManager->prepareVelocityReload(compiled->directory)
+        : PreparedGraphicsPipelines(svc_.pipelineManager);
+    auto pbrCandidate = subs_.pbrAuxiliaryPass
+        ? subs_.pbrAuxiliaryPass->prepareShaderReload(compiled->directory)
+        : PreparedGraphicsPipelines(svc_.pipelineManager);
+    auto debugCandidate = subs_.ddgiManager
+        ? subs_.ddgiManager->prepareDebugReload(compiled->directory)
+        : std::unique_ptr<DdgiDebugRenderer>{};
+    auto rayCandidate = subs_.rayShadowManager
+        ? subs_.rayShadowManager->prepareShaderReload(compiled->directory) : RayEffectPipelines{};
+    auto ddgiCandidate = subs_.ddgiManager
+        ? subs_.ddgiManager->prepareShaderReload(compiled->directory) : RayEffectPipelines{};
+    auto ddgiReset = subs_.ddgiManager
+        ? subs_.ddgiManager->prepareSceneHistoryReset() : DdgiManager::PreparedSceneHistoryReset{};
+    if (subs_.ddgiManager)
+      subs_.ddgiManager->synchronizeAsync();
+    auto candidate = buildGraphicsPipelines(compiled->directory);
+    if (vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device()) != VK_SUCCESS) {
+      subs_.pipelineBuilder->destroy(candidate);
+      throw std::runtime_error("Failed to retire in-flight graphics pipelines");
+    }
+    if (bakeCandidate && !subs_.environmentManager->canPublishShaderBake(*bakeCandidate)) {
+      subs_.pipelineBuilder->destroy(candidate);
+      throw std::runtime_error("The active environment changed during shader baking");
+    }
+    if (subs_.ddgiManager && !subs_.ddgiManager->publishSceneHistoryReset(ddgiReset)) {
+      subs_.pipelineBuilder->destroy(candidate);
+      throw std::runtime_error("DDGI history reset became stale during shader reload");
+    }
+    std::swap(resources_.builtPipelines, candidate);
+    subs_.pipelineBuilder->destroy(candidate);
+    svc_.pipelineManager.publishComputeReload(computeCandidate);
+    if (subs_.temporalManager)
+      subs_.temporalManager->publishVelocityReload(velocityCandidate);
+    if (subs_.pbrAuxiliaryPass)
+      subs_.pbrAuxiliaryPass->publishShaderReload(pbrCandidate);
+    if (subs_.ddgiManager)
+      subs_.ddgiManager->publishDebugReload(std::move(debugCandidate));
+    if (subs_.rayShadowManager)
+      subs_.rayShadowManager->publishShaderReload(std::move(rayCandidate));
+    if (subs_.ddgiManager)
+      subs_.ddgiManager->publishShaderReload(std::move(ddgiCandidate));
+    if (bakeCandidate) {
+      subs_.environmentManager->publishShaderBake(*bakeCandidate);
+      if (subs_.ddgiManager)
+        subs_.ddgiManager->replaceEnvironment(subs_.environmentManager->prefilteredView(),
+                                               subs_.environmentManager->envSampler());
+      updateFrameDescriptorSets();
+    }
+    activeShaderReload_ = std::move(compiled);
+    ++shaderReloadGeneration_;
+    if (subs_.temporalManager)
+      subs_.temporalManager->reset("shaders reloaded");
+    invalidateDepthVisibilityFrames();
+    report("Shaders reloaded (" + std::to_string(activeShaderReload_->compiledStages) +
+           " stages compiled, " + std::to_string(computeCandidate.size()) +
+           " managed compute " + (computeCandidate.size() == 1 ? "pipeline" : "pipelines") +
+           " replaced)");
+  } catch (const std::exception& error) {
+    report(std::string("Shader reload failed: ") + error.what());
+    spdlog::warn("{}", shaderReloadStatus_);
+  }
 }
 
 void RendererFrontend::recreateMsaaResources(
@@ -4365,6 +5587,7 @@ void RendererFrontend::recreateMsaaResources(
 
   const bool guiWasInitialized = subs_.guiManager != nullptr;
   if (guiWasInitialized) {
+    retireComfyUiPreview();
     subs_.guiManager->shutdown(svc_.ctx.deviceWrapper->device());
   }
 
@@ -4440,13 +5663,16 @@ void RendererFrontend::applySceneLightingDefaults() {
     current.directionalIntensity = svc_.config.directionalIntensity;
   if (svc_.config.hasEnvironmentIntensityOverride)
     current.environmentIntensity = svc_.config.environmentIntensity;
+  if (svc_.config.hasBounceIntensityOverride)
+    current.bounceIntensity = svc_.config.bounceIntensity;
   if (svc_.config.hasBloomEnabledOverride)
     current.bloomEnabled = svc_.config.bloomEnabled;
   current = sceneLightingDefaults_.apply(
       current, defaults,
       {svc_.config.hasDirectionalIntensityOverride,
        svc_.config.hasEnvironmentIntensityOverride,
-       svc_.config.hasBloomEnabledOverride});
+       svc_.config.hasBloomEnabledOverride,
+       svc_.config.hasBounceIntensityOverride});
   settings.directionalIntensity = current.directionalIntensity;
   settings.environmentIntensity = current.environmentIntensity;
   settings.bounceIntensity = current.bounceIntensity;
@@ -4462,10 +5688,16 @@ void RendererFrontend::resetCameraForActiveScene() {
     return;
   }
 
+  auto bounds = cameraSceneBoundsFromActiveContent(subs_.sceneManager.get(),
+                                                   subs_.bimManager.get());
+  if (subs_.openVdbVolumeRenderer)
+    includeSceneViewBounds(
+        bounds, {.min = arrayToVec3(subs_.openVdbVolumeRenderer->minimum()),
+                 .max = arrayToVec3(subs_.openVdbVolumeRenderer->maximum()),
+                 .valid = true});
   subs_.cameraController->resetCameraForBounds(
-      cameraSceneBoundsFromActiveContent(subs_.sceneManager.get(),
-                                         subs_.bimManager.get()),
-      !subs_.bimManager || !subs_.bimManager->hasScene());
+      bounds, !subs_.openVdbVolumeRenderer &&
+                  (!subs_.bimManager || !subs_.bimManager->hasScene()));
 }
 
 void RendererFrontend::syncCameraSelectionPivotOverride() {
@@ -4516,13 +5748,24 @@ void RendererFrontend::syncCameraSelectionPivotOverride() {
 
 void RendererFrontend::initializeScene() {
   buildSceneGraph();
+  if (!svc_.config.aslPosePath.empty()) {
+    aslPoseReplay_ = std::make_unique<container::asl::PoseReplayScene>(
+        container::asl::PoseReplay::load(
+            container::util::pathFromUtf8(svc_.config.aslPosePath)),
+        sceneGraph_, *subs_.sceneManager, svc_.config.aslPoseStartMs,
+        svc_.config.aslPoseSpeed, svc_.config.aslPoseLoop, svc_.config.aslHandKinematics,
+        svc_.config.aslHandAspectRatio, svc_.config.aslHandAngularVelocity,
+        container::util::pathFromUtf8(svc_.config.aslHandReportPath));
+    subs_.sceneManager->refreshActiveScene(sceneGraph_);
+    sceneState_.indexType = subs_.sceneManager->indexType();
+  }
   createSceneBuffers();
   subs_.lightingManager->updateLightingData();
-  applyConfiguredLightingOverrides(subs_.lightingManager.get(), svc_.config);
+  applyConfiguredLightingOverrides(subs_.lightingManager.get(), svc_.config, subs_.environmentManager.get());
   subs_.lightingManager->createLightVolumeGeometry();
   createFrameResources();
   if (subs_.environmentManager) {
-    const VkExtent2D ext = svc_.swapChainManager.extent();
+    const VkExtent2D ext = sceneRenderExtent();
     subs_.environmentManager->createGtaoResources(
         container::util::executableDirectory(), ext.width, ext.height);
   }
@@ -4539,6 +5782,9 @@ void RendererFrontend::initializeScene() {
   updateFrameDescriptorSets();
   syncSceneProviders();
 
+  if (svc_.config.physicsDemo)
+    createPhysicsDemo();
+
   container::log::ContainerLogger::instance().renderer()->info(
       "Initializing Vulkan renderer");
   container::log::ContainerLogger::instance().vulkan()->debug(
@@ -4548,6 +5794,10 @@ void RendererFrontend::initializeScene() {
 void RendererFrontend::buildSceneGraph() {
   if (!subs_.sceneController)
     return;
+  finishEditGestures();
+  if (sceneEdits_) sceneEdits_->clear();
+  pendingLightSelection_.reset();
+  transformDragSession_.active = false;
   subs_.sceneController->buildSceneGraph(
       sceneState_.rootNode, sceneState_.selectedMeshNode, sceneState_.cubeNode);
   selectionNavigationAnchor_ = {};
@@ -4587,7 +5837,8 @@ void RendererFrontend::ensureObjectBuffers() {
   }
 
   for (auto &objectBuffer : buffers_.objects) {
-    if (objectBuffer.buffer != VK_NULL_HANDLE) {
+    if (objectBuffer.buffer != VK_NULL_HANDLE &&
+        (!subs_.sceneController || !subs_.sceneController->ownsObjectBuffer(objectBuffer.buffer))) {
       svc_.allocationManager.destroyBuffer(objectBuffer);
     }
   }
@@ -4629,26 +5880,155 @@ void RendererFrontend::createGeometryBuffers() {
   syncSceneStateFromController();
 }
 
+VkExtent2D RendererFrontend::sceneRenderExtent() const {
+  if (subs_.frameResourceManager) {
+    const auto extent = subs_.frameResourceManager->sceneExtent();
+    if (extent.width && extent.height) return extent;
+  }
+  return svc_.swapChainManager.extent();
+}
+
+RendererFrontend::UpscaleResourceRequest RendererFrontend::currentUpscaleResourceRequest() const {
+  const auto selection = captureUpscaling_.value_or(subs_.guiManager ? subs_.guiManager->upscaling()
+                                                                     : svc_.config.upscaling);
+  if (selection.mode == UpscaleMode::Native)
+    return {};
+  UpscaleResourceRequest request{.selection = selection};
+  if (msaaSampleCount_ != VK_SAMPLE_COUNT_1_BIT ||
+      referencePathActive() || svc_.config.maxFramesInFlight > 4 || !subs_.cameraController)
+    return request;
+  const auto display = frontendDisplayMode(subs_.guiManager.get(), configuredDisplayMode(svc_.config));
+  if (display != container::ui::GBufferViewMode::Lit &&
+      display != container::ui::GBufferViewMode::TemporalVelocity &&
+      display != container::ui::GBufferViewMode::TemporalReactive)
+    return request;
+  const auto *camera = dynamic_cast<const container::scene::PerspectiveCamera*>(
+      subs_.cameraController->camera());
+  if (gltfAnimationCamera_) {
+    request.eligible = !gltfAnimationCamera_->orthographic;
+    request.infiniteFar = request.eligible && gltfAnimationCamera_->projection[2][2] == 0.0f;
+  } else if (camera) {
+    request.eligible = true;
+    request.infiniteFar = !std::isfinite(camera->farPlane());
+  }
+  return request;
+}
+
+void RendererFrontend::reconcileUpscaleResources() {
+  const auto request = currentUpscaleResourceRequest();
+  if (request == upscaleResourceRequest_) return;
+  if (!request.eligible && !subs_.temporalManager->upscalingActive()) {
+    upscaleResourceRequest_ = request;
+    upscaleViewportStatus_ = request.selection.mode == UpscaleMode::Native ? "" :
+        "Upscaling requires a perspective raster view at MSAA 1x and a supported display mode";
+    return;
+  }
+  if (vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device()) != VK_SUCCESS)
+    throw std::runtime_error("Failed to retire frames before changing the upscaling mode");
+  if (subs_.rendererTelemetry) subs_.rendererTelemetry->noteDeviceWaitIdle();
+  invalidateDepthVisibilityFrames();
+  createFrameResources();
+}
+
 void RendererFrontend::createFrameResources() {
+  // Auxiliary framebuffers borrow the old depth views. Retire them first.
+  subs_.pbrAuxiliaryPass.reset();
+  subs_.screenReflectionPass.reset();
+  subs_.volumetricFogPass.reset();
   if (subs_.temporalManager)
     subs_.temporalManager->destroyImages();
-  ensureObjectBuffers();
-  if (subs_.lightingManager) {
-    subs_.lightingManager->resizeTiledResources(svc_.swapChainManager.extent());
+  const auto previousSceneExtent = sceneRenderExtent();
+  const auto displayExtent = svc_.swapChainManager.extent();
+  auto sceneExtent = displayExtent;
+  upscaleResourceRequest_ = currentUpscaleResourceRequest();
+  upscaleViewportStatus_.clear();
+  const auto selection = upscaleResourceRequest_.selection;
+  if (upscaleResourceRequest_.eligible && subs_.temporalManager) {
+    auto& temporal = *subs_.temporalManager;
+    const auto root = container::util::executableDirectory();
+    if (selection.backend == UpscaleBackend::Dlss) {
+      if (const auto optimal = temporal.prepareDlss(root, selection.mode, displayExtent))
+        sceneExtent = *optimal;
+    } else {
+      const auto requested = fsrRenderExtent(selection.mode, displayExtent);
+      if (temporal.prepareFsr(root, {requested, displayExtent, upscaleResourceRequest_.infiniteFar}))
+        sceneExtent = requested;
+    }
+    upscaleViewportStatus_ = temporal.upscalingStatus();
+  } else if (selection.mode != UpscaleMode::Native) {
+    upscaleViewportStatus_ = "Upscaling requires a perspective raster view at MSAA 1x and a supported display mode";
   }
+  ensureObjectBuffers();
   const auto objectBuffer = sceneObjectBuffer(0);
-  subs_.frameResourceManager->create(
-      resources_.gBufferFormats, resources_.renderPasses.depthPrepass,
-      resources_.renderPasses.bimDepthPrepass, resources_.renderPasses.gBuffer,
-      resources_.renderPasses.bimGBuffer,
-      resources_.renderPasses.transparentPick, resources_.renderPasses.lighting,
-      resources_.renderPasses.forwardLighting,
-      resources_.renderPasses.forwardTransparent,
-      resources_.renderPasses.transformGizmos, msaaSampleCount_, buffers_.cameras,
-      objectBuffer);
+  const auto createSceneGrid = [&] {
+    if (subs_.lightingManager)
+      subs_.lightingManager->resizeTiledResources(sceneExtent);
+    subs_.frameResourceManager->create(
+        resources_.gBufferFormats, resources_.renderPasses.depthPrepass,
+        resources_.renderPasses.bimDepthPrepass, resources_.renderPasses.gBuffer,
+        resources_.renderPasses.bimGBuffer,
+        resources_.renderPasses.transparentPick, resources_.renderPasses.lighting,
+        resources_.renderPasses.forwardLighting, resources_.renderPasses.forwardTransparent,
+        resources_.renderPasses.transformGizmos, msaaSampleCount_, buffers_.cameras,
+        objectBuffer, sceneExtent);
+  };
+  if (subs_.temporalManager && subs_.temporalManager->dlssActive()) {
+    auto& temporal = *subs_.temporalManager;
+    try {
+      createSceneGrid();
+      temporal.createPipelines(activeShaderReload_ ? activeShaderReload_->directory :
+          container::util::executableDirectory(), subs_.sceneManager->descriptorSetLayout(),
+          resources_.gBufferFormats.depthStencil);
+      temporal.prepare(*subs_.frameResourceManager, sceneExtent,
+          static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
+    } catch (const std::exception& error) {
+      temporal.destroyImages();
+      sceneExtent = displayExtent;
+      upscaleViewportStatus_ = std::string("DLSS resource setup failed: ") + error.what();
+      createSceneGrid();
+    }
+  } else {
+    createSceneGrid();
+  }
+  if (subs_.environmentManager && subs_.environmentManager->isGtaoReady() &&
+      (sceneExtent.width != previousSceneExtent.width || sceneExtent.height != previousSceneExtent.height))
+    subs_.environmentManager->recreateGtaoTextures(sceneExtent.width, sceneExtent.height);
+  if (svc_.config.screenReflections != ScreenReflectionMode::Off) {
+    try {
+      auto reflections = std::make_unique<ScreenReflectionPass>(
+          svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
+      reflections->createResources(container::util::executableDirectory(),
+          *subs_.frameResourceManager, sceneExtent,
+          subs_.lightingManager->lightDescriptorSetLayout(), subs_.sceneManager->descriptorSetLayout(),
+          svc_.config.screenReflectionRayFallback,
+          screenReflectionModeUsesHistory(svc_.config.screenReflections));
+      subs_.screenReflectionPass = std::move(reflections);
+    } catch (const std::exception& error) {
+      container::log::ContainerLogger::instance().renderer()->warn(
+          "Screen reflections unavailable: {}", error.what());
+    }
+  }
+  if (svc_.config.volumetricFog.enabled() && subs_.shadowManager) {
+    try {
+      auto fog = std::make_unique<VolumetricFogPass>(svc_.ctx.deviceWrapper,
+          svc_.allocationManager, svc_.pipelineManager);
+      fog->createResources(container::util::executableDirectory(), *subs_.frameResourceManager,
+          sceneExtent, *subs_.shadowManager, subs_.lightingManager->lightDescriptorSetLayout());
+      subs_.volumetricFogPass = std::move(fog);
+    } catch (const std::exception& error) {
+      container::log::ContainerLogger::instance().renderer()->warn("Volumetric fog unavailable: {}", error.what());
+    }
+  }
+  if (subs_.openVdbVolumeRenderer)
+    subs_.openVdbVolumeRenderer->prepare(
+        *subs_.frameResourceManager, buffers_.cameras,
+        subs_.lightingManager->lightingBuffers(),
+        subs_.sceneManager->sceneClipBuffer(),
+        subs_.lightingManager->pointLightBuffer(),
+        subs_.lightingManager->areaLightBuffer(), *subs_.shadowManager);
   if (subs_.rayShadowManager)
     subs_.rayShadowManager->prepare(
-        svc_.swapChainManager.extent(),
+        sceneExtent,
         static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
   if (subs_.ddgiManager)
     subs_.ddgiManager->prepare(
@@ -4666,6 +6046,10 @@ void RendererFrontend::updateCameraBuffer(uint32_t imageIndex) {
     return;
   subs_.cameraController->updateCameraBuffer(buffers_.cameraData,
                                              buffers_.cameras[imageIndex]);
+  (void)applyGltfAnimationCamera(imageIndex);
+  // Keep weak viewport intent initialized in headless captures as well as the
+  // editor. Failed writes then do not create a view revision by lazy setup.
+  (void)refreshCameraViewPoseViewRevision();
 }
 
 void RendererFrontend::refreshSceneObjectData() {
@@ -4679,7 +6063,95 @@ void RendererFrontend::refreshSceneObjectData() {
       subs_.sceneController->diagCubeObjectIndex();
 }
 
-void RendererFrontend::updateObjectBuffer(uint32_t imageIndex) {
+void RendererFrontend::prepareGpuHierarchyFrame(uint32_t imageIndex) {
+  gpuHierarchyPrepared_ = false;
+  if (subs_.guiManager) gpuHierarchyEnabled_ = subs_.guiManager->gpuHierarchyTransforms();
+  // A GPU-written SSBO may outlive a path switch without its CPU revision
+  // changing. Restore that image's mirror before TAA adds submitted history.
+  const auto restoreCpu = [&] {
+    if (!subs_.sceneController || imageIndex >= buffers_.objects.size()) return;
+    const bool previousGpu=imageIndex<gpuHierarchyObjectBuffers_.size() &&
+        gpuHierarchyObjectBuffers_[imageIndex]==buffers_.objects[imageIndex].buffer;
+    if (gpuObjectUploadDeferred_ || (previousGpu && subs_.sceneController->lastObjectUploadBytes()==0)) {
+      const auto& objects = subs_.sceneController->objectData();
+      if (!objects.empty()) {
+        SceneController::writeToBuffer(svc_.allocationManager, buffers_.objects[imageIndex],
+            objects.data(), objects.size()*sizeof(container::gpu::ObjectData));
+        cpuObjectUploadBytes_+=objects.size()*sizeof(container::gpu::ObjectData);
+      }
+    }
+    if(imageIndex<gpuHierarchyObjectBuffers_.size()) gpuHierarchyObjectBuffers_[imageIndex] = VK_NULL_HANDLE;
+    gpuObjectUploadDeferred_=false;
+  };
+  if (!gpuHierarchyEnabled_ || !subs_.sceneController) {
+    restoreCpu();
+    gpuHierarchyStatus_ = "CPU";
+    return;
+  }
+  try {
+    if (!subs_.gpuHierarchyPass) {
+      auto pass = std::make_unique<GpuHierarchyPass>(svc_.ctx.deviceWrapper,
+          *svc_.allocationManager.memoryManager(), svc_.pipelineManager);
+      pass->createResources(activeShaderReload_ ? activeShaderReload_->directory
+                                               : container::util::executableDirectory(),
+                            uint32_t(svc_.swapChainManager.imageCount()));
+      subs_.gpuHierarchyPass = std::move(pass);
+    }
+    std::vector<HierarchyLocalTransform> locals;
+    if (!subs_.gpuRayInstancePass && svc_.ctx.deviceWrapper->rayQueriesEnabled()) {
+      auto pass=std::make_unique<RayInstanceTransformPass>(svc_.ctx.deviceWrapper,
+          *svc_.allocationManager.memoryManager(),svc_.pipelineManager);
+      pass->createResources(activeShaderReload_?activeShaderReload_->directory:container::util::executableDirectory());
+      subs_.gpuRayInstancePass=std::move(pass);
+    }
+    locals.reserve(sceneGraph_.nodeCount());
+    for (uint32_t i=0;i<sceneGraph_.nodeCount();++i) {
+      const auto& node = *sceneGraph_.getNode(i);
+      locals.push_back({node.localTransform,node.parent});
+    }
+    const auto& objects = subs_.sceneController->objectData();
+    subs_.gpuHierarchyPass->prepareFrame(imageIndex, locals, subs_.sceneController->objectNodeIndices(),
+        {buffers_.objects.at(imageIndex).buffer, 0, uint64_t(objects.size())*sizeof(container::gpu::ObjectData)});
+    gpuHierarchyImage_ = imageIndex;
+    gpuHierarchyObjectBuffers_.resize(svc_.swapChainManager.imageCount(), VK_NULL_HANDLE);
+    gpuHierarchyObjectBuffers_[imageIndex] = buffers_.objects.at(imageIndex).buffer;
+    gpuHierarchyPrepared_ = true;
+    gpuObjectUploadDeferred_=false;
+    gpuHierarchyStatus_ = "GPU propagation; CPU mirror retained";
+  } catch (const std::exception& error) {
+    restoreCpu();
+    const std::string status = std::string("CPU fallback: ") + error.what();
+    if (gpuHierarchyStatus_ != status) {
+      spdlog::warn("{}", status);
+      if (subs_.guiManager) subs_.guiManager->setStatusMessage(status);
+    }
+    gpuHierarchyStatus_ = status;
+  }
+}
+
+void RendererFrontend::uploadPreparedObjectData(uint32_t imageIndex,std::span<const container::gpu::ObjectData> objects) {
+  if(gpuHierarchyPrepared_ && subs_.gpuHierarchyPass) {
+    try {
+      subs_.gpuHierarchyPass->uploadObjectMetadata(imageIndex,objects);
+      return;
+    } catch(const std::exception& error) {
+      gpuHierarchyPrepared_=false;
+      if(imageIndex<gpuHierarchyObjectBuffers_.size()) gpuHierarchyObjectBuffers_[imageIndex]=VK_NULL_HANDLE;
+      const std::string status=std::string("CPU fallback: ")+error.what();
+      if(gpuHierarchyStatus_!=status) {
+        spdlog::warn("{}",status);
+        if(subs_.guiManager) subs_.guiManager->setStatusMessage(status);
+      }
+      gpuHierarchyStatus_=status;
+    }
+  }
+  if(!objects.empty()) {
+    SceneController::writeToBuffer(svc_.allocationManager,buffers_.objects.at(imageIndex),objects.data(),objects.size_bytes());
+    cpuObjectUploadBytes_+=objects.size_bytes();
+  }
+}
+
+void RendererFrontend::updateObjectBuffer(uint32_t imageIndex, bool deferUploadToGpu) {
   if (!subs_.sceneController)
     return;
   ensureObjectBuffers();
@@ -4694,7 +6166,8 @@ void RendererFrontend::updateObjectBuffer(uint32_t imageIndex) {
           : container::gpu::AllocatedBuffer{};
   const bool recreated = subs_.sceneController->updateObjectBuffer(
       buffers_.objects[imageIndex], buffers_.objectCapacities[imageIndex],
-      cameraBuffer);
+      cameraBuffer,deferUploadToGpu);
+  cpuObjectUploadBytes_+=subs_.sceneController->lastObjectUploadBytes();
   if (subs_.shadowCullManager &&
       imageIndex < buffers_.shadowObjectDescriptorReady.size() &&
       (recreated || !buffers_.shadowObjectDescriptorReady[imageIndex])) {
@@ -4788,7 +6261,7 @@ void RendererFrontend::updateFrameDescriptorSets(
 
     if (subs_.lightingManager) {
       applyConfiguredLightingOverrides(subs_.lightingManager.get(),
-                                        svc_.config);
+                                        svc_.config, subs_.environmentManager.get());
       auto &lightingData = subs_.lightingManager->lightingData();
       const container::gpu::ShadowSettings shadowSettings =
           subs_.guiManager ? subs_.guiManager->shadowSettings()
@@ -4865,6 +6338,14 @@ void RendererFrontend::updateFrameDescriptorSets(
       exposureStateBufferSize =
           subs_.exposureManager->exposureStateBufferSize();
     }
+    std::vector<VkImageView> anisotropyViews, diffuseTransmissionViews;
+    if (subs_.pbrAuxiliaryPass && subs_.pbrAuxiliaryPass->ready()) {
+      for (uint32_t i = 0; i < subs_.pbrAuxiliaryPass->frameCount(); ++i) {
+        anisotropyViews.push_back(subs_.pbrAuxiliaryPass->anisotropyView(i));
+        diffuseTransmissionViews.push_back(
+            subs_.pbrAuxiliaryPass->diffuseTransmissionView(i));
+      }
+    }
     const auto objectBuffer = sceneObjectBuffer(0);
     subs_.frameResourceManager->updateDescriptorSets(
         buffers_.cameras, objectBuffer, shadowView, shadowSampler,
@@ -4872,10 +6353,11 @@ void RendererFrontend::updateFrameDescriptorSets(
         irradianceView, prefilteredView, brdfLutView, envSampler,
         brdfLutSampler, aoTextureView, aoSampler, bloomTextureView,
         bloomSampler, tileGridBuffer, tileGridBufferSize, exposureStateBuffers,
-        exposureStateBufferSize);
+        exposureStateBufferSize, anisotropyViews, diffuseTransmissionViews);
   }
   if (subs_.temporalManager && preparedParams &&
       imageIndex < buffers_.cameras.size()) {
+    if (!referencePathActive()) updateReferenceColorSource(imageIndex, false);
     if (const auto *frame = subs_.frameResourceManager->frame(imageIndex))
       subs_.temporalManager->updateDescriptors(
           imageIndex, *frame, buffers_.cameras[imageIndex],
@@ -4883,9 +6365,19 @@ void RendererFrontend::updateFrameDescriptorSets(
               preparedParams->debug.displayMode == 8 ||
               preparedParams->debug.displayMode >= 100);
   }
+  if (referencePathActive() && preparedParams)
+    updateReferenceColorSource(imageIndex, preparedParams->screenshot.sceneLinear);
 }
 
 void RendererFrontend::destroyGBufferResources() {
+  subs_.referencePathTracePass.reset();
+  referenceColorBound_.clear();
+  referenceDiagnosticSeen_.clear();
+  referenceStatus_.clear();
+  referenceRecorded_ = false;
+  subs_.pbrAuxiliaryPass.reset();
+  subs_.screenReflectionPass.reset();
+  subs_.volumetricFogPass.reset();
   if (subs_.temporalManager)
     subs_.temporalManager->destroyImages();
   if (subs_.frameResourceManager)
@@ -4979,13 +6471,20 @@ void RendererFrontend::ensureScreenshotReadbackBuffer(uint32_t frameSlot,
   if (extent.width == 0 || extent.height == 0) {
     throw std::runtime_error("cannot capture a zero-sized swapchain image");
   }
-  if (!isSupportedScreenshotFormat(format)) {
-    throw std::runtime_error("unsupported swapchain screenshot format");
+  if (screenshot_.sceneLinear ? format != VK_FORMAT_R32G32B32A32_SFLOAT
+                              : !isSupportedScreenshotFormat(format)) {
+    throw std::runtime_error("unsupported screenshot source format");
   }
 
   const VkDeviceSize requiredSize = static_cast<VkDeviceSize>(extent.width) *
                                     static_cast<VkDeviceSize>(extent.height) *
-                                    4u;
+                                    (screenshot_.sceneLinear ? 16u : 4u);
+  if (screenshot_.sceneLinear) {
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(svc_.ctx.deviceWrapper->physicalDevice(), &properties);
+    if (requiredSize > properties.limits.maxStorageBufferRange)
+      throw std::runtime_error("scene-linear capture exceeds the Vulkan storage buffer size limit");
+  }
   HostReadbackSlot& readback =
       ensureReadbackSlot(screenshot_.readbacks, frameSlot);
   if (readback.readbackBuffer.buffer != VK_NULL_HANDLE &&
@@ -4999,7 +6498,9 @@ void RendererFrontend::ensureScreenshotReadbackBuffer(uint32_t frameSlot,
     svc_.allocationManager.destroyBuffer(readback.readbackBuffer);
   }
   readback.readbackBuffer = svc_.allocationManager.createBuffer(
-      requiredSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO,
+      requiredSize, screenshot_.sceneLinear ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+                                            : VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+      VMA_MEMORY_USAGE_AUTO,
       VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
           VMA_ALLOCATION_CREATE_MAPPED_BIT);
   readback.readbackSize = requiredSize;
@@ -5007,9 +6508,20 @@ void RendererFrontend::ensureScreenshotReadbackBuffer(uint32_t frameSlot,
   readback.format = format;
 }
 
-void RendererFrontend::writePendingScreenshotPng(uint32_t frameSlot) {
+void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRecordParams& params) {
   if (!screenshot_.pending) {
     return;
+  }
+  const auto* referenceCapture = referencePathActive() ? subs_.referencePathTracePass.get() : nullptr;
+  const auto ground = referenceCapture ? referenceCapture->effectiveGround() : ReferenceGroundSettings{};
+  const bool shadowMatte = ground.mode == ReferenceGroundMode::ShadowMatte;
+  if (const auto target = screenshot_.referenceSampleTarget) {
+    if (!referenceCapture || referenceCapture->attemptedSamples() != *target)
+      throw std::runtime_error("Reference sample checkpoint did not reach " + std::to_string(*target) + " samples");
+    if (referenceUnsupported_ != 0 || referenceRejected_ != 0)
+      throw std::runtime_error("Reference sample checkpoint contains " +
+          std::to_string(referenceUnsupported_) + " unsupported and " +
+          std::to_string(referenceRejected_) + " rejected samples");
   }
   if (frameSlot >= screenshot_.readbacks.size()) {
     throw std::runtime_error("screenshot readback buffer is not initialized");
@@ -5046,8 +6558,23 @@ void RendererFrontend::writePendingScreenshotPng(uint32_t frameSlot) {
   const auto *src = static_cast<const unsigned char *>(mapped);
   const size_t pixelCount = static_cast<size_t>(readback.extent.width) *
                             static_cast<size_t>(readback.extent.height);
-  std::vector<unsigned char> rgba =
-      convertSwapchainBytesToRgba(src, pixelCount, readback.format);
+  std::vector<unsigned char> rgba;
+  std::vector<float> radiance;
+  if (screenshot_.sceneLinear) {
+    radiance.resize(pixelCount * 3u);
+    for (size_t pixel = 0; pixel < pixelCount; ++pixel) {
+      auto* rgb = radiance.data() + pixel * 3u;
+      std::memcpy(rgb, src + pixel * 4u * sizeof(float), 3u * sizeof(float));
+      if (shadowMatte) {
+        const float opacity = rgb[1] > 0.0f
+            ? std::clamp(rgb[0] / rgb[1], 0.0f, 1.0f) * std::clamp(rgb[2], 0.0f, 1.0f)
+            : 0.0f;
+        std::fill_n(rgb, 3, opacity);
+      }
+    }
+  } else {
+    rgba = convertSwapchainBytesToRgba(src, pixelCount, readback.format);
+  }
 
   if (mappedHere) {
     vmaUnmapMemory(svc_.allocationManager.memoryManager()->allocator(),
@@ -5059,14 +6586,90 @@ void RendererFrontend::writePendingScreenshotPng(uint32_t frameSlot) {
   }
   const std::string outputPath =
       container::util::pathToUtf8(screenshot_.outputPath);
-  const int ok = stbi_write_png(
-      outputPath.c_str(), static_cast<int>(readback.extent.width),
-      static_cast<int>(readback.extent.height), 4, rgba.data(),
-      static_cast<int>(readback.extent.width * 4));
   screenshot_.pending = false;
-  if (ok == 0) {
-    throw std::runtime_error("failed to write screenshot PNG: " + outputPath);
+  auto metadataPath = screenshot_.outputPath;
+  metadataPath += ".capture.json";
+  const bool srgb = readback.format == VK_FORMAT_B8G8R8A8_SRGB ||
+                    readback.format == VK_FORMAT_R8G8B8A8_SRGB;
+  nlohmann::json metadata{{"schemaVersion", 1},
+                          {"width", readback.extent.width}, {"height", readback.extent.height},
+                          {"colorSpace", screenshot_.sceneLinear ? "linear-sRGB" : srgb ? "sRGB" : "linear-sRGB"},
+                          {"includesUi", !screenshot_.sceneLinear && !screenshot_.viewportOnly && subs_.guiManager != nullptr}};
+  if (referenceCapture) {
+    const auto lens = referenceCapture->effectiveLens();
+    const auto denoiser = referenceCapture->oidnStatus();
+    const bool optix = referenceCapture->optixSelected();
+    metadata["referencePath"] = {
+        {"attemptedSamplesPerPixel", referenceCapture->attemptedSamples()},
+        {"sampleLimit", svc_.config.pathSampleLimit},
+        {"sampleLimitReached", referenceCapture->attemptedSamples() >= svc_.config.pathSampleLimit},
+        {"samplesPerFrame", svc_.config.pathSamplesPerFrame},
+        {"adaptiveTargetMs", svc_.config.pathTargetMs},
+        {"lastSubmittedSamples", referenceCapture->lastSubmittedSamples()},
+        {"display", referencePathDisplayName(referencePathDisplay())},
+        {"fireflyClamp", referenceCapture->effectiveFireflyClamp()},
+        {"oidnDisplaySamples", screenshot_.sceneLinear || optix ? 0u : denoiser.displayedSamples},
+        {"optixDisplaySamples", screenshot_.sceneLinear || !optix ? 0u : denoiser.displayedSamples},
+        {"ground", referenceGroundMetadata(ground)},
+        {"maxBounces", svc_.config.pathMaxBounces},
+        {"seed", svc_.config.pathSeed},
+        {"apertureRadius", lens ? lens->apertureRadius : 0.0f},
+        {"focusDistance", lens ? nlohmann::json(lens->focusDistance) : nlohmann::json(nullptr)},
+        {"historyResets", referenceCapture->historyResets()},
+        {"unsupportedSamples", referenceUnsupported_}, {"rejectedSamples", referenceRejected_},
+        {"hasDiagnostics", referenceUnsupported_ != 0 || referenceRejected_ != 0},
+        {"status", referenceStatus_}};
+    if (const auto target = screenshot_.referenceSampleTarget) {
+      metadata["referencePath"]["requestedSamplesPerPixel"] = *target;
+      metadata["referencePath"]["acceptedSamplesPerPixel"] = *target;
+    }
   }
+  const auto publication = (screenshot_.remote || (comfyUi_ && !comfyUi_->captureId.empty()))
+      ? container::util::AtomicFilePublication::CreateNew :
+      container::util::AtomicFilePublication::ReplaceExisting;
+  if (screenshot_.sceneLinear) {
+    unsigned char* encoded = nullptr;
+    const char* error = nullptr;
+    const int size = SaveEXRToMemory(radiance.data(), static_cast<int>(readback.extent.width),
+        static_cast<int>(readback.extent.height), 3, 0, &encoded, &error);
+    const std::unique_ptr<unsigned char, decltype(&std::free)> bytes(encoded, &std::free);
+    if (size <= 0 || !bytes) {
+      const std::string reason = error ? error : "unknown encoder error";
+      if (error)
+        FreeEXRErrorMessage(error);
+      throw std::runtime_error("failed to encode scene-linear EXR: " + reason);
+    }
+    container::util::writeFileAtomically(screenshot_.outputPath,
+        {reinterpret_cast<const char*>(bytes.get()), static_cast<size_t>(size)}, publication);
+    metadata["source"] = shadowMatte ? "path-trace-shadow-matte" :
+        (referenceCapture ? "path-trace-mean" : "raster-scene-composite");
+    if (shadowMatte) metadata["colorSpace"] = "linear-mask";
+    metadata["exposureApplied"] = false;
+    metadata["toneMappingApplied"] = false;
+  } else {
+    std::string png;
+    const auto append = [](void* context, void* data, int size) {
+      static_cast<std::string*>(context)->append(static_cast<const char*>(data), size);
+    };
+    if (!stbi_write_png_to_func(append, &png, static_cast<int>(readback.extent.width),
+                                static_cast<int>(readback.extent.height), 4, rgba.data(),
+                                static_cast<int>(readback.extent.width * 4))) {
+      throw std::runtime_error("failed to encode screenshot PNG: " + outputPath);
+    }
+    container::util::writeFileAtomically(screenshot_.outputPath, png, publication);
+    const auto exposure = sanitizeExposureSettings(params.postProcess.exposureSettings);
+    const bool automatic = exposure.mode == container::gpu::kExposureModeAuto;
+    metadata["source"] = screenshot_.viewportOnly ? "viewport" : "window";
+    metadata["displayMode"] = params.debug.displayMode;
+    metadata["exposureMode"] = automatic ? "auto" : "manual";
+    metadata["manualExposure"] = automatic ? nlohmann::json(nullptr) : nlohmann::json(exposure.manualExposure);
+    metadata["toneMapper"] = static_cast<uint32_t>(params.postProcess.displayGrade.toneMapper);
+    if (referenceCapture && referencePathDisplay() == ReferencePathDisplayMode::StandardError) {
+      metadata["exposureApplied"] = false;
+      metadata["toneMappingApplied"] = false;
+    }
+  }
+  container::util::writeFileAtomically(metadataPath, metadata.dump(2) + '\n', publication);
 }
 
 void RendererFrontend::ensureDepthVisibilityReadbackBuffer(uint32_t frameSlot) {
@@ -5111,7 +6714,7 @@ void RendererFrontend::markDepthVisibilityFrameComplete(uint32_t imageIndex,
 
   frame.frameSlot = frameSlot;
   frame.imageIndex = imageIndex;
-  frame.extent = svc_.swapChainManager.extent();
+  frame.extent = sceneRenderExtent();
   frame.format = resources_.gBufferFormats.depthStencil;
   frame.cameraData = buffers_.cameraData;
   frame.objectDataRevision =
@@ -5229,7 +6832,7 @@ bool RendererFrontend::depthVisibilityFrameMatchesCurrentState() const {
     return false;
   }
 
-  const VkExtent2D extent = svc_.swapChainManager.extent();
+  const VkExtent2D extent = sceneRenderExtent();
   if (frame->extent.width != extent.width ||
       frame->extent.height != extent.height || frame->extent.width == 0 ||
       frame->extent.height == 0) {
@@ -5369,9 +6972,9 @@ bool RendererFrontend::bimObjectVisibleByLayer(uint32_t objectIndex) const {
   if (!subs_.bimManager) {
     return false;
   }
-  const BimElementMetadata *metadata =
+  const auto metadata =
       subs_.bimManager->metadataForObject(objectIndex);
-  if (metadata == nullptr) {
+  if (!metadata) {
     return false;
   }
   if (!subs_.guiManager) {
@@ -5403,7 +7006,7 @@ RendererFrontend::currentViewpointSnapshot() const {
   }
   if (subs_.bimManager && subs_.bimManager->hasScene()) {
     snapshot.bimModelPath = subs_.bimManager->modelPath();
-    if (const auto *metadata =
+    if (const auto metadata =
             subs_.bimManager->metadataForObject(selectedBimObjectIndex_)) {
       snapshot.selectedBimObjectIndex = metadata->objectIndex;
       snapshot.selectedBimGuid = metadata->guid;
@@ -5419,6 +7022,7 @@ bool RendererFrontend::restoreViewpointSnapshot(
   if (!subs_.cameraController) {
     return false;
   }
+  finishEditGestures();
 
   subs_.cameraController->applyCameraTransform(
       snapshot.camera, buffers_.cameraData,
@@ -5464,10 +7068,10 @@ bool RendererFrontend::restoreViewpointSnapshot(
         return snapshot.selectedBimObjectIndex;
       }
       for (uint32_t objectIndex : objectIndices) {
-        const BimElementMetadata *metadata =
+        const auto metadata =
             subs_.bimManager->metadataForObject(objectIndex);
         if (snapshot.selectedBimType.empty() ||
-            (metadata != nullptr &&
+            (metadata &&
              metadata->type == snapshot.selectedBimType)) {
           return objectIndex;
         }
@@ -5490,18 +7094,18 @@ bool RendererFrontend::restoreViewpointSnapshot(
     if (sameBimScene && restoredBimObjectIndex == invalidObjectIndex &&
         snapshot.selectedBimObjectIndex <
             subs_.bimManager->objectData().size()) {
-      const auto *metadata =
+      const auto metadata =
           subs_.bimManager->metadataForObject(snapshot.selectedBimObjectIndex);
       const bool guidCompatible =
           snapshot.selectedBimGuid.empty() ||
-          (metadata != nullptr && metadata->guid == snapshot.selectedBimGuid);
+          (metadata && metadata->guid == snapshot.selectedBimGuid);
       const bool sourceIdCompatible =
           snapshot.selectedBimSourceId.empty() ||
-          (metadata != nullptr &&
+          (metadata &&
            metadata->sourceId == snapshot.selectedBimSourceId);
       const bool typeCompatible =
           snapshot.selectedBimType.empty() ||
-          (metadata != nullptr && metadata->type == snapshot.selectedBimType);
+          (metadata && metadata->type == snapshot.selectedBimType);
       if (guidCompatible && sourceIdCompatible && typeCompatible) {
         restoredBimObjectIndex = snapshot.selectedBimObjectIndex;
       }
@@ -5559,6 +7163,16 @@ bool RendererFrontend::samplePickDepthAtCursor(double cursorX, double cursorY,
   return sampleDepthAtCursor(cursorX, cursorY, outDepth, true);
 }
 
+static std::optional<glm::uvec2> scenePixelAtDisplayCursor(
+    double x, double y, VkExtent2D display, VkExtent2D scene) {
+  if (!std::isfinite(x) || !std::isfinite(y) || x < 0.0 || y < 0.0 ||
+      x >= display.width || y >= display.height || !scene.width || !scene.height)
+    return std::nullopt;
+  return glm::uvec2{
+      std::min(static_cast<uint32_t>(x * scene.width / display.width), scene.width - 1u),
+      std::min(static_cast<uint32_t>(y * scene.height / display.height), scene.height - 1u)};
+}
+
 bool RendererFrontend::sampleDepthAtCursor(double cursorX, double cursorY,
                                            float &outDepth, bool pickDepth) {
   if (!depthVisibilityFrameMatchesCurrentState() ||
@@ -5578,9 +7192,9 @@ bool RendererFrontend::sampleDepthAtCursor(double cursorX, double cursorY,
   const VkImage depthImage = deferredRasterRuntimeImage(
       subs_.frameResourceManager.get(), frame->imageIndex,
       pickDepth ? "pick-depth" : "depth-stencil");
-  if (depthImage == VK_NULL_HANDLE || cursorX < 0.0 || cursorY < 0.0 ||
-      cursorX >= static_cast<double>(frame->extent.width) ||
-      cursorY >= static_cast<double>(frame->extent.height)) {
+  const auto pixel = scenePixelAtDisplayCursor(cursorX, cursorY,
+      svc_.swapChainManager.extent(), frame->extent);
+  if (depthImage == VK_NULL_HANDLE || !pixel) {
     return false;
   }
 
@@ -5603,12 +7217,8 @@ bool RendererFrontend::sampleDepthAtCursor(double cursorX, double cursorY,
     return false;
   }
 
-  const uint32_t x =
-      std::min<uint32_t>(static_cast<uint32_t>(std::floor(cursorX)),
-                         frame->extent.width - 1u);
-  const uint32_t y =
-      std::min<uint32_t>(static_cast<uint32_t>(std::floor(cursorY)),
-                         frame->extent.height - 1u);
+  const uint32_t x = pixel->x;
+  const uint32_t y = pixel->y;
 
   VkCommandBufferAllocateInfo allocInfo{
       VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -5650,7 +7260,8 @@ bool RendererFrontend::sampleDepthAtCursor(double cursorX, double cursorY,
   toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   toTransfer.image = depthImage;
-  toTransfer.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+  toTransfer.subresourceRange = {
+      depthReadbackBarrierAspects(frame->format), 0, 1, 0, 1};
   vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
                        nullptr, 1, &toTransfer);
@@ -5742,9 +7353,9 @@ bool RendererFrontend::samplePickIdAtCursor(double cursorX, double cursorY,
 
   const VkImage pickIdImage = deferredRasterRuntimeImage(
       subs_.frameResourceManager.get(), frame->imageIndex, "pick-id");
-  if (pickIdImage == VK_NULL_HANDLE || cursorX < 0.0 || cursorY < 0.0 ||
-      cursorX >= static_cast<double>(frame->extent.width) ||
-      cursorY >= static_cast<double>(frame->extent.height)) {
+  const auto pixel = scenePixelAtDisplayCursor(cursorX, cursorY,
+      svc_.swapChainManager.extent(), frame->extent);
+  if (pickIdImage == VK_NULL_HANDLE || !pixel) {
     return false;
   }
 
@@ -5767,12 +7378,8 @@ bool RendererFrontend::samplePickIdAtCursor(double cursorX, double cursorY,
     return false;
   }
 
-  const uint32_t x =
-      std::min<uint32_t>(static_cast<uint32_t>(std::floor(cursorX)),
-                         frame->extent.width - 1u);
-  const uint32_t y =
-      std::min<uint32_t>(static_cast<uint32_t>(std::floor(cursorY)),
-                         frame->extent.height - 1u);
+  const uint32_t x = pixel->x;
+  const uint32_t y = pixel->y;
 
   VkCommandBufferAllocateInfo allocInfo{
       VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -5899,9 +7506,9 @@ void RendererFrontend::fitDdgiToActiveScene(uint32_t maxProbes) {
     const auto &transparent = subs_.sceneController->transparentDrawCommands();
     meshDraws.insert(meshDraws.end(), transparent.begin(), transparent.end());
     sources.push_back({{"mesh-fit"},
-                       subs_.sceneManager->geometryRevision(),
-                       subs_.sceneManager->vertices(),
-                       subs_.sceneManager->indices(),
+                       subs_.sceneController->geometryRevision(),
+                       subs_.sceneController->geometryVertices(),
+                       subs_.sceneController->geometryIndices(),
                        subs_.sceneController->objectData(),
                        meshDraws});
   }
@@ -5986,7 +7593,7 @@ void RendererFrontend::fitDdgiDetailToSelection(uint32_t maxProbes, std::string_
       }
     if (subs_.bimManager)
       for (uint32_t object = 0; object < subs_.bimManager->objectData().size(); ++object)
-        if (const auto *metadata = subs_.bimManager->metadataForObject(object);
+        if (const auto metadata = subs_.bimManager->metadataForObject(object);
             metadata && (metadata->displayName == nodeName || metadata->guid == nodeName)) {
           if (bimObject != invalid && !sameBimProductIdentity(
                 *subs_.bimManager->metadataForObject(bimObject), *metadata))
@@ -5999,14 +7606,14 @@ void RendererFrontend::fitDdgiDetailToSelection(uint32_t maxProbes, std::string_
   std::vector<DrawCommand> draws;
   std::vector<RaySceneProviderSource> sources;
   if (bimObject != invalid && subs_.bimManager && subs_.bimManager->hasScene()) {
-    const auto *selected = subs_.bimManager->metadataForObject(bimObject);
+    const auto selected = subs_.bimManager->metadataForObject(bimObject);
     if (!selected) throw std::invalid_argument("Selected BIM element has no metadata");
     auto append = [&](const auto &commands) {
       for (const auto &command : commands)
         for (uint32_t instance = 0; instance < command.instanceCount; ++instance) {
           const auto object = uint64_t(command.objectIndex) + instance;
           if (object >= subs_.bimManager->objectData().size()) continue;
-          if (const auto *metadata = subs_.bimManager->metadataForObject(uint32_t(object));
+          if (const auto metadata = subs_.bimManager->metadataForObject(uint32_t(object));
               metadata && sameBimProductIdentity(*selected, *metadata))
             draws.push_back({uint32_t(object), command.firstIndex, command.indexCount, 1});
         }
@@ -6026,8 +7633,8 @@ void RendererFrontend::fitDdgiDetailToSelection(uint32_t maxProbes, std::string_
       subs_.sceneController->collectDrawCommandsForNode(nodes[index], selected);
       draws.insert(draws.end(), selected.begin(), selected.end());
     }
-    sources.push_back({{"mesh-detail"}, subs_.sceneManager->geometryRevision(),
-        subs_.sceneManager->vertices(), subs_.sceneManager->indices(),
+    sources.push_back({{"mesh-detail"}, subs_.sceneController->geometryRevision(),
+        subs_.sceneController->geometryVertices(), subs_.sceneController->geometryIndices(),
         subs_.sceneController->objectData(), draws});
   }
   const auto bounds = computeDdgiSceneBounds(sources);
@@ -6096,6 +7703,35 @@ void RendererFrontend::processPendingDdgiPreset() {
 void RendererFrontend::presentSceneControls() {
   if (!subs_.guiManager)
     return;
+  ensureSceneEditHistory();
+  subs_.guiManager->setEditHistoryState(
+      sceneEdits_->canUndo() && !transformDragSession_.active,
+      sceneEdits_->canRedo() && !transformDragSession_.active,
+      std::string(sceneEdits_->undoLabel()), std::string(sceneEdits_->redoLabel()));
+  presentPhysicsControls();
+  subs_.guiManager->setOpenVdbVolumeState(
+      bool(subs_.openVdbVolumeRenderer),
+      subs_.openVdbVolumeRenderer ? subs_.openVdbVolumeRenderer->settings()
+                                  : svc_.config.vdbVolumeSettings,
+      (svc_.config.vdbSequenceDirectory.empty() ? svc_.config.vdbVolumePath :
+          svc_.config.vdbSequenceDirectory) +
+          (subs_.openVdbVolumeRenderer ? " (" + std::to_string(subs_.openVdbVolumeRenderer->volumeCount()) + " media)" : ""),
+      !svc_.config.vdbTemperatureGridName.empty());
+  if (vdbPlayback_) {
+    const auto& manifest = vdbAsyncSequence_ ? vdbAsyncSequence_->manifest() : vdbSequence_->manifest();
+    subs_.guiManager->setOpenVdbSequenceState({
+        .available = true,
+        .paused = vdbPlayback_->options().paused,
+        .loop = vdbPlayback_->options().loop,
+        .speed = static_cast<float>(vdbPlayback_->options().speed),
+        .frameIndex = static_cast<uint32_t>(vdbPlayback_->frameIndex()),
+        .frameCount = static_cast<uint32_t>(manifest.frames.size()),
+        .cachedBytes = vdbAsyncSequence_ ? vdbAsyncSequence_->status().residentBytes : vdbSequence_->cachedBytes(),
+        .asynchronous = bool(vdbAsyncSequence_),
+        .loading = !vdbLoadedFrame_ || *vdbLoadedFrame_ != vdbPlayback_->frameIndex(),
+        .uploading = vdbUploadingFrame_.has_value(),
+        .displayedFrameIndex = static_cast<uint32_t>(vdbLoadedFrame_.value_or(0))});
+  }
 
   // A load replaces scene lighting/bloom defaults. Publish the new scene's
   // values below, otherwise GUI writeback restores the previous scene's values.
@@ -6129,8 +7765,7 @@ void RendererFrontend::presentSceneControls() {
         subs_.temporalManager->state().frameId(),
         subs_.temporalManager->state().epoch(),
         subs_.temporalManager->state().resetReason(),
-        {svc_.swapChainManager.extent().width,
-         svc_.swapChainManager.extent().height},
+        {sceneRenderExtent().width, sceneRenderExtent().height},
         subs_.temporalManager->allocatedBytes(), [&] {
           if (subs_.rendererTelemetry)
             for (const auto &pass : subs_.rendererTelemetry->latest().passes)
@@ -6161,6 +7796,8 @@ void RendererFrontend::presentSceneControls() {
       }
     subs_.guiManager->setDdgiState(gi.settings(), std::move(runtime));
   }
+  subs_.guiManager->setUpscalingStatus(subs_.temporalManager && subs_.temporalManager->upscalingActive()
+      ? std::optional{upscaleResourceRequest_.selection.backend} : std::nullopt, upscaleViewportStatus_);
   // Sync bloom: push BloomManager settings into GUI before rendering.
   if (subs_.bloomManager) {
     subs_.guiManager->setBloomSettings(
@@ -6214,6 +7851,8 @@ void RendererFrontend::presentSceneControls() {
                                 subs_.bimManager->geometryRevision(),
                                 elementMetadata);
     bimInspection.hasScene = true;
+    bimInspection.metadataSource = subs_.bimManager.get();
+    bimInspection.metadataRevision = subs_.bimManager->metadataRevision();
     bimInspection.elements = elementMetadata;
     bimInspection.selectObject = [this](uint32_t objectIndex) {
       selectBimObject(objectIndex);
@@ -6343,7 +7982,7 @@ void RendererFrontend::presentSceneControls() {
     bimInspection.elementStoreyRanges = std::span<const BimStoreyRange>(
         elementStoreyRanges.data(), elementStoreyRanges.size());
     bimInspection.relationshipGraph = &subs_.bimManager->relationshipGraph();
-    if (const auto *metadata =
+    if (const auto metadata =
             subs_.bimManager->metadataForObject(selectedBimObjectIndex_)) {
       bimInspection.hasSelection = true;
       bimInspection.selectedObjectIndex = metadata->objectIndex;
@@ -6402,36 +8041,12 @@ void RendererFrontend::presentSceneControls() {
   };
   const std::function<void(container::renderer::ScenePrimitiveKind)>
       addScenePrimitive = [this](container::renderer::ScenePrimitiveKind kind) {
-        if (!subs_.sceneController) {
-          return;
-        }
-        if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
-        const uint32_t node = subs_.sceneController->addScenePrimitive(
-            kind, glm::mat4(1.0f), sceneState_.rootNode);
-        if (node == container::scene::SceneGraph::kInvalidNode) {
-          return;
-        }
-        if (subs_.cameraController) {
-          subs_.cameraController->selectMeshNode(node,
-                                                 sceneState_.selectedMeshNode);
-        } else {
-          sceneState_.selectedMeshNode = node;
-        }
-        if (subs_.lightingManager) {
-          subs_.lightingManager->selectEditableLight({});
-        }
-        if (subs_.guiManager) {
-          subs_.guiManager->setSectionPlaneVisualEditable(false);
-        }
-        syncSceneStateFromController();
-        selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
-        selectionNavigationAnchor_ = {};
-        clearHoveredMeshNode();
-        selectedDrawCommands_.clear();
-        selectedBimDrawCommands_.clear();
-        refreshSceneObjectData();
-        syncSceneProviders();
+        (void)this->addScenePrimitive(kind);
       };
+  refreshMaterialInspector();
+  refreshCameraProjectionInspector();
+  refreshCameraViewPoseInspector();
+  refreshLightEditInspector();
   subs_.guiManager->drawSceneControls(
       sceneGraph_,
       addScenePrimitive,
@@ -6450,9 +8065,8 @@ void RendererFrontend::presentSceneControls() {
           ? subs_.cameraController->nodeTransformControls(sceneState_.rootNode)
           : container::ui::TransformControls{},
       [this](const container::ui::TransformControls &controls) {
-        if (subs_.cameraController)
-          subs_.cameraController->applyNodeTransform(
-              sceneState_.rootNode, sceneState_.rootNode, controls);
+        if (!applySceneNodeTransform(sceneState_.rootNode, controls))
+          return;
         if (subs_.lightingManager)
           subs_.lightingManager->updateLightingData();
         refreshSceneObjectData();
@@ -6463,59 +8077,7 @@ void RendererFrontend::presentSceneControls() {
                             : container::gpu::LightingData{},
       pointLights, editableLights, selectedEditableLight,
       [this](container::renderer::EditableLightId id) {
-        if (!subs_.lightingManager) {
-          return;
-        }
-        subs_.lightingManager->selectEditableLight(id);
-        sceneState_.selectedMeshNode =
-            container::scene::SceneGraph::kInvalidNode;
-        selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
-        selectionNavigationAnchor_ = {};
-        clearHoveredMeshNode();
-        selectedDrawCommands_.clear();
-        selectedBimDrawCommands_.clear();
-        if (subs_.guiManager) {
-          subs_.guiManager->setSectionPlaneVisualEditable(false);
-          if (container::renderer::isValidEditableLightId(id)) {
-            subs_.guiManager->setStatusMessage("Selected editable light");
-          }
-        }
-      },
-      [this](const container::renderer::EditableLightEntity &light) {
-        if (!subs_.lightingManager ||
-            !subs_.lightingManager->updateEditableLight(light)) {
-          return;
-        }
-        sceneState_.selectedMeshNode =
-            container::scene::SceneGraph::kInvalidNode;
-        selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
-        selectionNavigationAnchor_ = {};
-        if (subs_.guiManager) {
-          subs_.guiManager->setSectionPlaneVisualEditable(false);
-        }
-        subs_.lightingManager->updateLightingData();
-        updateFrameDescriptorSets();
-      },
-      [this](container::renderer::EditableLightType type) {
-        if (!subs_.lightingManager) {
-          return;
-        }
-        const auto id = subs_.lightingManager->addManualEditableLight(type);
-        subs_.lightingManager->updateLightingData();
-        subs_.lightingManager->selectEditableLight(id);
-        sceneState_.selectedMeshNode =
-            container::scene::SceneGraph::kInvalidNode;
-        selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
-        selectionNavigationAnchor_ = {};
-        selectedDrawCommands_.clear();
-        selectedBimDrawCommands_.clear();
-        if (subs_.guiManager) {
-          subs_.guiManager->setSectionPlaneVisualEditable(false);
-        }
-        updateFrameDescriptorSets();
-        if (subs_.guiManager) {
-          subs_.guiManager->setStatusMessage("Selected editable light");
-        }
+        pendingLightSelection_=id;
       },
       sceneState_.selectedMeshNode, bimInspection, currentViewpoint,
       [this](const container::ui::ViewpointSnapshotState &snapshot) {
@@ -6523,6 +8085,7 @@ void RendererFrontend::presentSceneControls() {
       },
       sceneState_.rootNode,
       [this](uint32_t nodeIndex) {
+        finishEditGestures();
         if (nodeIndex == container::scene::SceneGraph::kInvalidNode) {
           clearSelectedMeshNode();
           return;
@@ -6553,6 +8116,7 @@ void RendererFrontend::presentSceneControls() {
             sceneGraph_.getNode(nodeIndex) == nullptr) {
           return;
         }
+        finishEditGestures();
         if (subs_.cameraController) {
           subs_.cameraController->selectMeshNode(nodeIndex,
                                                  sceneState_.selectedMeshNode);
@@ -6578,15 +8142,9 @@ void RendererFrontend::presentSceneControls() {
         }
       },
       [this](uint32_t nodeIndex, bool visible) {
-        if (sceneGraph_.getNode(nodeIndex) == nullptr) {
-          return;
-        }
-        sceneGraph_.setVisible(nodeIndex, visible);
-        clearHoveredMeshNode();
-        selectedDrawCommands_.clear();
-        selectedBimDrawCommands_.clear();
-        refreshSceneObjectData();
-        syncSceneProviders();
+        finishEditGestures();
+        ensureSceneEditHistory();
+        if (!sceneEdits_->setVisible(nodeIndex, visible)) return;
         if (subs_.guiManager) {
           subs_.guiManager->setStatusMessage(
               std::string(visible ? "Showed" : "Hid") + " scene node " +
@@ -6594,26 +8152,14 @@ void RendererFrontend::presentSceneControls() {
         }
       },
       [this](uint32_t nodeIndex, std::optional<uint32_t> parentNode) {
-        if (nodeIndex == sceneState_.rootNode ||
-            sceneGraph_.getNode(nodeIndex) == nullptr) {
+        try {
+          if (!reparentSceneNode(nodeIndex, parentNode)) return;
+        } catch (const std::exception &error) {
+          subs_.guiManager->setStatusMessage(
+              "Cannot reparent scene node " + std::to_string(nodeIndex) +
+              ": " + error.what());
           return;
         }
-        if (!sceneGraph_.setParentPreserveWorldTransform(nodeIndex,
-                                                          parentNode)) {
-          if (subs_.guiManager) {
-            subs_.guiManager->setStatusMessage(
-                "Failed to reparent scene node " + std::to_string(nodeIndex));
-          }
-          return;
-        }
-        selectionNavigationAnchor_ = {};
-        clearHoveredMeshNode();
-        selectedDrawCommands_.clear();
-        selectedBimDrawCommands_.clear();
-        if (subs_.lightingManager)
-          subs_.lightingManager->updateLightingData();
-        refreshSceneObjectData();
-        syncSceneProviders();
         if (subs_.guiManager) {
           subs_.guiManager->setStatusMessage("Reparented scene node " +
                                              std::to_string(nodeIndex));
@@ -6624,13 +8170,53 @@ void RendererFrontend::presentSceneControls() {
                              : container::ui::TransformControls{},
       [this](uint32_t nodeIndex,
              const container::ui::TransformControls &controls) {
-        if (subs_.cameraController)
-          subs_.cameraController->applyNodeTransform(
-              nodeIndex, sceneState_.rootNode, controls);
+        if (!applySceneNodeTransform(nodeIndex, controls))
+          return;
         if (nodeIndex == sceneState_.rootNode && subs_.lightingManager)
           subs_.lightingManager->updateLightingData();
         refreshSceneObjectData();
-      });
+      },
+      [this](uint32_t nodeIndex, bool selectable) {
+        finishEditGestures();
+        ensureSceneEditHistory();
+        sceneEdits_->setSelectable(nodeIndex, selectable);
+      },
+      [this](uint32_t nodeIndex, bool hoverable) {
+        finishEditGestures();
+        ensureSceneEditHistory();
+        sceneEdits_->setHoverable(nodeIndex, hoverable);
+      },
+      subs_.sceneManager ? &subs_.sceneManager->animationSource() : nullptr);
+
+  processLightEditRequests();
+  processMaterialEditRequests();
+  processCameraProjectionRequests();
+  processCameraViewPoseRequests();
+  if (!subs_.guiManager->sceneEditGestureActive() && !transformDragSession_.active)
+    sceneEdits_->finishGesture();
+  processSceneNodeAuthoringRequest();
+  if (pendingSceneRetirement_) publishSceneEdit();
+  applyEditHistoryRequest();
+  processGltfSceneRequest();
+  processMaterialVariantRequest();
+  if (sceneEditPublicationPending_) publishSceneEdit();
+
+  if (auto path = subs_.guiManager->consumeSceneSaveRequest()) {
+    try {
+      saveSceneModel(container::util::pathFromUtf8(*path));
+      subs_.guiManager->acceptSceneSave(*path);
+    } catch (const std::exception& error) {
+      subs_.guiManager->setStatusMessage("Cannot save scene: " + std::string(error.what()));
+    }
+  }
+  if (auto path = subs_.guiManager->consumeLinkedSceneSaveRequest()) {
+    try {
+      saveSceneModel(container::util::pathFromUtf8(*path), true);
+      subs_.guiManager->setStatusMessage("Saved linked scene: " + *path);
+    } catch (const std::exception& error) {
+      subs_.guiManager->setStatusMessage("Cannot save linked scene: " + std::string(error.what()));
+    }
+  }
 
   if (auto requested = subs_.guiManager->consumeRenderEngineChange()) {
     requestRenderTechnique(*requested);
@@ -6721,6 +8307,7 @@ void RendererFrontend::presentSceneControls() {
     }
   }
 
+  drawComfyUi();
   subs_.guiManager->drawViewportInteractionControls(
       interactionController_.state(),
       [this](container::ui::ViewportTool tool) {
@@ -6803,6 +8390,19 @@ void RendererFrontend::presentSceneControls() {
     if (subs_.guiManager->consumeTemporalReset())
       subs_.temporalManager->reset("user requested reset");
   }
+  if (subs_.openVdbVolumeRenderer) {
+    subs_.openVdbVolumeRenderer->setSettings(
+        subs_.guiManager->openVdbVolumeSettings());
+  }
+  if (vdbPlayback_) {
+    const auto& manifest = vdbAsyncSequence_ ? vdbAsyncSequence_->manifest() : vdbSequence_->manifest();
+    const auto& controls = subs_.guiManager->openVdbSequenceControls();
+    vdbPlayback_->setPaused(controls.paused);
+    vdbPlayback_->setLoop(controls.loop);
+    if (std::isfinite(controls.speed)) vdbPlayback_->setSpeed(std::clamp(controls.speed, 0.0f, 16.0f));
+    if (const auto seek = subs_.guiManager->consumeOpenVdbSequenceSeek())
+      vdbPlayback_->seekSeconds(double(*seek) / manifest.framesPerSecond);
+  }
   if (subs_.ddgiManager) {
     auto &gi = *subs_.ddgiManager;
     const auto previous = gi.settings();
@@ -6859,6 +8459,7 @@ void RendererFrontend::presentSceneControls() {
             currentLightingSettings.directionalIntensity ||
         guiLightingSettings.environmentIntensity !=
             currentLightingSettings.environmentIntensity ||
+        guiLightingSettings.environment != currentLightingSettings.environment ||
         guiLightingSettings.bounceIntensity !=
             currentLightingSettings.bounceIntensity ||
         guiLightingSettings.localShadowPointBudget !=
@@ -6874,6 +8475,9 @@ void RendererFrontend::presentSceneControls() {
     if (lightingSettingsChanged) {
       if (subs_.temporalManager)
         subs_.temporalManager->reset("lighting settings changed");
+      if (subs_.ddgiManager && guiLightingSettings.environment.yawDegrees !=
+                                   currentLightingSettings.environment.yawDegrees)
+        subs_.ddgiManager->resetSceneHistory();
       subs_.lightingManager->setLightingSettings(guiLightingSettings);
       subs_.lightingManager->updateLightingData();
       updateFrameDescriptorSets();
@@ -7012,9 +8616,10 @@ FrameTransformGizmoState RendererFrontend::buildTransformGizmoState() const {
       boundsMin = light.position - glm::vec3(lightRadius);
       boundsMax = light.position + glm::vec3(lightRadius);
       hasBounds = true;
-      useLocalAxes = light.type == EditableLightType::Area ||
-                     light.type == EditableLightType::Spot ||
-                     light.type == EditableLightType::Directional;
+      useLocalAxes = interaction.transformSpace == container::ui::TransformSpace::Local &&
+                     (light.type == EditableLightType::Area ||
+                      light.type == EditableLightType::Spot ||
+                      light.type == EditableLightType::Directional);
     }
   }
 
@@ -7223,16 +8828,57 @@ void RendererFrontend::publishFrameRuntimeResourceBindings(
                                    sizeof(container::gpu::ObjectData),
                            .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT});
   }
+  publishReferenceColorBinding(imageIndex);
+}
+
+void RendererFrontend::ensureExtendedPbrResources() {
+  if (!subs_.sceneManager || !subs_.frameResourceManager ||
+      !subs_.sceneManager->hasExtendedPbrMaterials() ||
+      (subs_.activeTechnique &&
+       subs_.activeTechnique->id() != RenderTechniqueId::DeferredRaster) ||
+      (subs_.pbrAuxiliaryPass && subs_.pbrAuxiliaryPass->ready())) {
+    return;
+  }
+  const auto count = subs_.frameResourceManager->frameCount();
+  if (count == 0) return;
+  // First activation can follow an animation or material edit. Descriptor sets
+  // are shared across frame slots, so retire every reader before publication.
+  if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
+  vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device());
+  std::vector<VkImageView> depthViews;
+  depthViews.reserve(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    const auto* frame = subs_.frameResourceManager->frame(i);
+    depthViews.push_back(msaaSampleCount_ == VK_SAMPLE_COUNT_1_BIT
+                            ? frame->depthStencil.view
+                            : frame->depthStencilMsaa.view);
+  }
+  auto pass = std::make_unique<PbrAuxiliaryPass>(
+      svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
+  pass->createResources(activeShaderReload_ ? activeShaderReload_->directory
+                                           : container::util::executableDirectory(),
+                        subs_.sceneManager->descriptorSetLayout(),
+                        resources_.gBufferFormats.depthStencil,
+                        msaaSampleCount_, depthViews,
+                        sceneRenderExtent());
+  subs_.pbrAuxiliaryPass = std::move(pass);
 }
 
 FrameRecordParams
 RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
+  ensureExtendedPbrResources();
   publishFrameRuntimeResourceBindings(imageIndex);
   syncSceneProviders();
 
   FrameRecordParams p{};
+  if (referencePathActive() && subs_.referencePathTracePass)
+    p.services.referencePathTrace = [this](VkCommandBuffer command, const FrameRecordParams& frame) {
+      return recordReferencePathTrace(command, frame);
+    };
+  p.services.pbrAuxiliaryPass = subs_.pbrAuxiliaryPass.get();
   p.runtime.frameSlot = frame_.currentFrame;
   p.runtime.imageIndex = imageIndex;
+  p.runtime.sceneExtent = sceneRenderExtent();
   p.runtime.activeTechnique =
       subs_.activeTechnique != nullptr ? subs_.activeTechnique->id()
                                        : RenderTechniqueId::DeferredRaster;
@@ -7240,6 +8886,15 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   p.registries.pipelineRecipes = subs_.pipelineRegistry.get();
   p.registries.resourceBindings = subs_.frameRuntimeResourceRegistry.get();
   p.scene.vertexSlice = sceneState_.vertexSlice;
+  p.scene.previousVertexSlice = p.scene.vertexSlice;
+  gltfDeformationCurrentBoundToGpu_ = false;
+  gltfDeformationPreviousBoundToGpu_ = false;
+  if (subs_.gltfDeformationPass) {
+    p.scene.vertexSlice = subs_.gltfDeformationPass->currentVertices(imageIndex);
+    p.scene.previousVertexSlice = subs_.gltfDeformationPass->previousVertices(imageIndex);
+    gltfDeformationCurrentBoundToGpu_ = p.scene.vertexSlice.buffer != VK_NULL_HANDLE;
+    gltfDeformationPreviousBoundToGpu_ = p.scene.previousVertexSlice.buffer != VK_NULL_HANDLE;
+  }
   p.scene.indexSlice = sceneState_.indexSlice;
   p.scene.indexType = sceneState_.indexType;
   p.draws.opaqueDrawCommands = &subs_.sceneController->opaqueDrawCommands();
@@ -7660,8 +9315,9 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     }
   }
   p.camera.orthographic =
-      subs_.cameraController != nullptr &&
-      subs_.cameraController->isOrthographic();
+      gltfAnimationCamera_ ? gltfAnimationCamera_->orthographic :
+      (subs_.cameraController != nullptr &&
+       subs_.cameraController->isOrthographic());
   if (subs_.shadowManager) {
     p.shadows.renderPass = resources_.renderPasses.shadow;
     p.shadows.shadowFramebuffers = subs_.shadowManager->framebuffers().data();
@@ -7682,9 +9338,18 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   const auto displayMode = frontendDisplayMode(
       subs_.guiManager.get(), configuredDisplayMode(svc_.config));
   p.debug.temporalForceReactive =
-      subs_.guiManager && (subs_.guiManager->showGeometryOverlay() ||
-                           subs_.guiManager->showNormalValidation());
-  p.debug.displayMode = static_cast<uint32_t>(displayMode);
+      (subs_.guiManager && (subs_.guiManager->showGeometryOverlay() ||
+                            subs_.guiManager->showNormalValidation()));
+  // Reference diagnostics are already display colors. Use the postprocess
+  // raw-color mode also used by the raster object-space normals view.
+  p.debug.displayMode = referencePathActive()
+      ? (referencePathDisplay() == ReferencePathDisplayMode::StandardError
+            ? static_cast<uint32_t>(container::ui::GBufferViewMode::ObjectSpaceNormals) : 0u)
+      : static_cast<uint32_t>(displayMode);
+  p.debug.screenReflections = svc_.config.screenReflections;
+  if (subs_.rayShadowManager && subs_.rayShadowManager->settings().mode != RayShadowMode::Raster &&
+      subs_.rayShadowManager->settings().debugLayer != 0)
+    p.debug.screenReflections = ScreenReflectionMode::Off;
   const bool shadowAtlasVisible =
       p.runtime.activeTechnique == RenderTechniqueId::ForwardRaster ||
       container::renderer::displayModeRecordsShadowAtlas(displayMode);
@@ -7711,9 +9376,22 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         svc_.commandBufferManager.secondaryBuffer(imageIndex, cascadeIndex, 0);
   }
   p.services.temporalManager = subs_.temporalManager.get();
+  p.services.screenReflectionPass = subs_.screenReflectionPass.get();
+  p.reflectionHistory = {
+      .cameraEpoch = subs_.temporalManager ? subs_.temporalManager->state().epoch() : 0u,
+      .materialRevision = subs_.sceneManager ? subs_.sceneManager->materialRevision() : 0u,
+      .lightRevision = subs_.lightingManager ? subs_.lightingManager->lightEditRevision() : 0u};
+  p.services.volumetricFogPass = subs_.volumetricFogPass.get();
+  p.volumetricFog = {.settings = svc_.config.volumetricFog, .cameraData = &buffers_.cameraData,
+      .lightSet = subs_.lightingManager ? subs_.lightingManager->lightDescriptorSet(imageIndex) : VK_NULL_HANDLE,
+      .historyRevision = p.scene.objectDataRevision ^ (p.bim.scene.objectDataRevision << 1) ^
+          (subs_.lightingManager ? subs_.lightingManager->lightEditRevision() << 2 : 0u) ^
+          (subs_.temporalManager ? uint64_t{subs_.temporalManager->state().epoch()} << 32 : 0u) ^
+          temporalClipRevision_.value_or(0u)};
   p.services.gpuCullManager = subs_.gpuCullManager.get();
   p.services.bimManager = subs_.bimManager.get();
   p.services.bloomManager = subs_.bloomManager.get();
+  p.services.openVdbVolumeRenderer = subs_.openVdbVolumeRenderer.get();
   p.services.telemetry = subs_.rendererTelemetry.get();
   p.services.gpuProfiler = subs_.renderPassGpuProfiler.get();
   p.services.rayShadowManager = subs_.rayShadowManager.get();
@@ -7727,6 +9405,8 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     p.postProcess.exposureSettings.mode = container::gpu::kExposureModeManual;
     p.postProcess.exposureSettings.manualExposure = *captureExposure_;
   }
+  p.postProcess.displayGrade = subs_.guiManager ? subs_.guiManager->displayGrade()
+                                               : svc_.config.displayGrade;
   p.postProcess.renderPass = resources_.renderPasses.postProcess;
   if (subs_.sceneProviderRegistry) {
     p.sceneExtraction = extractProviderSceneFrameInputs(
@@ -7738,7 +9418,9 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       sizeof(container::gpu::ObjectData) * sceneObjectCapacity(imageIndex);
   if (screenshot_.pending) {
     p.screenshot.enabled = true;
-    p.screenshot.swapChainImage = svc_.swapChainManager.image(imageIndex);
+    p.screenshot.viewportOnly = screenshot_.viewportOnly;
+    p.screenshot.sceneLinear = screenshot_.sceneLinear;
+    p.screenshot.sourceImage = svc_.swapChainManager.image(imageIndex);
     if (frame_.currentFrame < screenshot_.readbacks.size()) {
       p.screenshot.readbackBuffer =
           screenshot_.readbacks[frame_.currentFrame].readbackBuffer.buffer;
@@ -7746,14 +9428,18 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     p.screenshot.extent = svc_.swapChainManager.extent();
   }
   if (subs_.rayShadowManager && subs_.lightingManager) {
+    subs_.rayShadowManager->setGpuTransformProducer(subs_.gpuRayInstancePass.get());
     std::vector<RaySceneProviderSource> sources;
     const bool hasSceneContent = !sceneGraph_.renderableNodes().empty() ||
         (subs_.bimManager && subs_.bimManager->hasScene());
     const bool giCompatible = p.bim.semanticColorMode == 0u;
     const bool giScene = subs_.ddgiManager && subs_.ddgiManager->wantsScene() &&
                          giCompatible && hasSceneContent;
+    const bool reflectionScene = hasSceneContent && giCompatible && p.services.screenReflectionPass &&
+        p.services.screenReflectionPass->wantsRayScene(p);
+    const bool surfaceScene = giScene || referencePathActive() || reflectionScene;
     subs_.rayShadowManager->requestSurfaceScene(
-        giScene, subs_.ddgiManager
+        surfaceScene, subs_.ddgiManager
                      ? subs_.ddgiManager->settings().surfaceBudgetBytes
                      : svc_.config.ddgi.surfaceBudgetBytes);
     if (subs_.guiManager)
@@ -7762,7 +9448,8 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     const auto meshProvider = subs_.sceneProviderRegistry->providersForKind(
         container::scene::SceneProviderKind::Mesh);
     std::vector<DrawCommand> meshRayDraws;
-    if (giScene) {
+    std::vector<RayOpacityMicromapRange> opacityMicromaps;
+    if (surfaceScene) {
       meshRayDraws = subs_.sceneController->opaqueDrawCommands();
       const auto &transparent =
           subs_.sceneController->transparentDrawCommands();
@@ -7770,20 +9457,37 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
                           transparent.end());
     }
     if (!meshProvider.empty() && subs_.rayShadowManager->supported() &&
-        (giScene ||
-         subs_.rayShadowManager->settings().mode != RayShadowMode::Raster))
+        (surfaceScene ||
+         subs_.rayShadowManager->settings().mode != RayShadowMode::Raster)) {
       sources.push_back(
           {meshProvider.front()->snapshot().id,
-           subs_.sceneManager->geometryRevision(),
-           subs_.sceneManager->vertices(), subs_.sceneManager->indices(),
+           subs_.sceneController->geometryRevision(),
+           subs_.sceneController->geometryVertices(), subs_.sceneController->geometryIndices(),
            subs_.sceneController->objectData(),
-           giScene ? std::span<const DrawCommand>(meshRayDraws)
+           surfaceScene ? std::span<const DrawCommand>(meshRayDraws)
                    : std::span<const DrawCommand>(
                          subs_.sceneController->opaqueDrawCommands())});
+      auto& primary = sources.back();
+      // Forward MSAA uses the TLAS to prove raster receiver identity. The
+      // proof must see every masked triangle, even those removed by a map.
+      const bool forwardMsaa = p.runtime.activeTechnique == RenderTechniqueId::ForwardRaster &&
+          msaaSampleCount_ != VK_SAMPLE_COUNT_1_BIT;
+      const auto& indices = subs_.sceneManager->indices();
+      if (svc_.ctx.deviceWrapper->opacityMicromapsEnabled() && !forwardMsaa &&
+          primary.indices.data() == indices.data() && primary.indices.size() == indices.size()) {
+        opacityMicromaps = subs_.sceneManager->rayOpacityMicromaps(primary.draws, primary.objects);
+        primary.opacityMicromaps = opacityMicromaps;
+      }
+    }
+    if(gpuHierarchyPrepared_ && subs_.gpuRayInstancePass && !sources.empty() && !sources.back().draws.empty()) {
+      sources.back().gpuObjects={buffers_.objects.at(imageIndex).buffer,0,
+          uint64_t(subs_.sceneController->objectData().size())*sizeof(container::gpu::ObjectData)};
+      sources.back().gpuTransformRevision=shaderReloadGeneration_;
+    }
     std::vector<DrawCommand> bimDraws;
     if (subs_.bimManager && subs_.bimManager->hasScene() &&
         subs_.rayShadowManager->supported() &&
-        (giScene || subs_.rayShadowManager->settings().mode != RayShadowMode::Raster)) {
+        (surfaceScene || subs_.rayShadowManager->settings().mode != RayShadowMode::Raster)) {
       auto filter = currentBimDrawFilter();
       // Draw budget/LOD and screen visibility limit raster work, not blockers.
       filter.drawBudgetEnabled = false;
@@ -7792,7 +9496,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         if (subs_.bimManager->objectMatchesFilter(draw.objectIndex, filter) &&
             bimObjectVisibleByLayer(draw.objectIndex))
           bimDraws.push_back(draw);
-      if (giScene)
+      if (surfaceScene)
         for (const auto &draw : subs_.bimManager->transparentDrawCommands())
           if (subs_.bimManager->objectMatchesFilter(draw.objectIndex, filter) &&
               bimObjectVisibleByLayer(draw.objectIndex))
@@ -7907,6 +9611,7 @@ void RendererFrontend::attachActiveTechniqueLifecycle(
   switch (params.runtime.activeTechnique) {
   case RenderTechniqueId::DeferredRaster:
   case RenderTechniqueId::ForwardRaster:
+  case RenderTechniqueId::PathTracing:
     params.lifecycle =
         subs_.deferredRasterFrameGraphContext->lifecycleHooks();
     break;
@@ -7914,6 +9619,32 @@ void RendererFrontend::attachActiveTechniqueLifecycle(
     params.lifecycle = {};
     break;
   }
+  if (subs_.gltfDeformationPass) {
+    auto previous = std::move(params.lifecycle.afterCommandBufferBegin);
+    params.lifecycle.afterCommandBufferBegin =
+        [this, previous = std::move(previous)](VkCommandBuffer command,
+                                               const FrameRecordParams& frame) {
+          if (previous) previous(command, frame);
+          subs_.gltfDeformationPass->record(command, frame.runtime.imageIndex);
+        };
+  }
+  if (gpuHierarchyPrepared_ && subs_.gpuHierarchyPass) {
+    auto previous = std::move(params.lifecycle.afterCommandBufferBegin);
+    params.lifecycle.afterCommandBufferBegin =
+        [this, previous = std::move(previous)](VkCommandBuffer command, const FrameRecordParams& frame) {
+          if (previous) previous(command, frame);
+          subs_.gpuHierarchyPass->record(command, frame.runtime.imageIndex);
+        };
+  }
+  if (referencePathActive() && subs_.referencePathTracePass) {
+    auto previous = std::move(params.lifecycle.afterGraphExecution);
+    params.lifecycle.afterGraphExecution =
+        [this, previous = std::move(previous)](VkCommandBuffer command, const FrameRecordParams& frame) {
+          if (previous) previous(command, frame);
+          finishReferencePathTrace(command);
+        };
+  }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -7925,14 +9656,32 @@ void RendererFrontend::syncSceneProviders() {
     return;
   }
 
+  subs_.sceneProviderSynchronizer->sync(*subs_.sceneProviderRegistry,
+                                        buildSceneProviderSyncInput());
+}
+
+SceneProviderSyncInput RendererFrontend::buildSceneProviderSyncInput(const MeshSceneProviderSyncInput* preparedMesh) {
   SceneProviderSyncInput syncInput{};
 
-  if (subs_.sceneManager) {
+  if(preparedMesh) {
+    syncInput.mesh=*preparedMesh;
+  } else if (subs_.sceneManager) {
     const auto &sceneManager = *subs_.sceneManager;
-    const auto meshBounds =
+    auto meshBounds =
         sceneProviderBoundsFromModelBounds(sceneManager.modelBounds());
+    if (subs_.sceneController && sceneManager.deformationData()) {
+      const auto bounds = subs_.sceneController->nodeWorldBounds(sceneState_.rootNode);
+      if (bounds.valid) meshBounds = {bounds.min, bounds.max, true};
+    }
     const std::size_t meshInstanceCount =
         subs_.sceneController ? subs_.sceneController->objectData().size() : 0u;
+    std::optional<container::scene::MeshSceneProviderBindingView> meshBindings;
+    if(subs_.sceneController) {
+      const auto& controller = *subs_.sceneController;
+      meshBindings = MakeMeshSceneProviderBindingView(
+          controller.objectData(), controller.opaqueDrawCommands(),
+          controller.transparentDrawCommands(), uint64_t(controller.geometryIndices().size()));
+    }
     const auto &meshAsset = meshProviderAssetCache_.get({
             .primitiveRanges = sceneManager.primitiveRanges(),
             .materialCount = sceneManager.materialCount(),
@@ -7947,6 +9696,7 @@ void RendererFrontend::syncSceneProviders() {
                       .doubleSided = properties.doubleSided,
                   };
                 },
+            .bindings = meshBindings,
         }, {.geometry = sceneManager.geometryRevision(),
             .materials = sceneManager.materialRevision()}, &sceneManager);
     const uint64_t objectRevision =
@@ -7959,11 +9709,13 @@ void RendererFrontend::syncSceneProviders() {
         .instanceCount = meshAsset.instanceCount,
         .triangleBatches = meshAsset.triangleBatches,
         .bounds = meshAsset.bounds,
-        .geometryRevision = sceneManager.geometryRevision(),
+        .geometryRevision = subs_.sceneController ? subs_.sceneController->geometryRevision()
+                                                 : sceneManager.geometryRevision(),
         .materialRevision = sceneManager.materialRevision(),
         .instanceRevision = objectRevision,
         .displayName = sceneProviderDisplayName(activePrimaryModelPath_,
                                                 "Primary mesh scene"),
+        .triangleBatchesAuthoritative = meshAsset.triangleBatchesAuthoritative,
     };
   } else {
     meshProviderAssetCache_.clear();
@@ -7998,8 +9750,7 @@ void RendererFrontend::syncSceneProviders() {
     };
   }
 
-  subs_.sceneProviderSynchronizer->sync(*subs_.sceneProviderRegistry,
-                                        syncInput);
+  return syncInput;
 }
 
 void RendererFrontend::syncSceneStateFromController() {

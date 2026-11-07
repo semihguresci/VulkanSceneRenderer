@@ -49,14 +49,6 @@ SurfaceNormalState EvaluateSurfaceNormal(float3 worldNormal, float4 worldTangent
     state.geometricNormal =
         SafeNormalize(worldNormal, float3(0.0, 1.0, 0.0)) * orientedFaceSign;
     state.shadingNormal = state.geometricNormal;
-    state.tangent = 0.0.xxx;
-    state.bitangent = 0.0.xxx;
-
-    if (normalTextureIndex == 0xffffffff)
-    {
-        return state;
-    }
-
     float3 tangent = worldTangent.xyz;
     tangent -= state.geometricNormal * dot(state.geometricNormal, tangent);
     tangent = SafeNormalize(tangent, FallbackTangent(state.geometricNormal));
@@ -70,6 +62,13 @@ SurfaceNormalState EvaluateSurfaceNormal(float3 worldNormal, float4 worldTangent
 
     state.tangent = tangent;
     state.bitangent = bitangent;
+
+    // An authored tangent frame is also needed by anisotropy without a normal
+    // texture. Keep normal evaluation unchanged while publishing that frame.
+    if (normalTextureIndex == 0xffffffff)
+    {
+        return state;
+    }
 
     float3 normalSample =
         SamplePbrTexture(normalTextureIndex, texCoord, 1.0.xxxx).xyz * 2.0 - 1.0;
@@ -93,4 +92,31 @@ SurfaceNormalState EvaluateSurfaceNormal(float3 worldNormal, float4 worldTangent
 {
     return EvaluateSurfaceNormal(worldNormal, worldTangent, texCoord,
                                  normalTextureIndex, normalTextureScale, 1.0);
+}
+
+float3 BuildAnisotropyTangent(SurfaceNormalState surfaceNormal,
+                              float4 worldTangent, float2 textureRG,
+                              float rotation)
+{
+    float3 geometricNormal = SafeNormalize(
+        surfaceNormal.geometricNormal, float3(0.0, 1.0, 0.0));
+    float3 tangent = worldTangent.xyz;
+    tangent -= geometricNormal * dot(geometricNormal, tangent);
+    tangent = SafeNormalize(tangent, FallbackTangent(geometricNormal));
+    // BuildWorldTangent already folds sign(det(model)) into TANGENT.w.
+    float tangentSign = FiniteScalarOr(worldTangent.w, 1.0) < 0.0 ? -1.0 : 1.0;
+    float3 bitangent = cross(geometricNormal, tangent) * tangentSign;
+
+    float2 direction = Finite2Or(textureRG, float2(1.0, 0.5)) * 2.0 - 1.0;
+    direction = SafeNormalize(float3(direction, 0.0), float3(1.0, 0.0, 0.0)).xy;
+    float angle = FiniteScalarOr(rotation, 0.0);
+    float c = cos(angle), s = sin(angle);
+    // Positive rotation is counterclockwise from authored T toward authored B;
+    // a mirrored transform changes B through the tangent sign, not the angle.
+    float2 rotated = float2(c * direction.x - s * direction.y,
+                            s * direction.x + c * direction.y);
+    float3 result = tangent * rotated.x + bitangent * rotated.y;
+    float3 shadingNormal = SafeNormalize(surfaceNormal.shadingNormal, geometricNormal);
+    result -= shadingNormal * dot(shadingNormal, result);
+    return SafeNormalize(result, FallbackTangent(shadingNormal));
 }
