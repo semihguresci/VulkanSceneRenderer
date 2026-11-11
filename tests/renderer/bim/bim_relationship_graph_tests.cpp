@@ -24,6 +24,7 @@ using container::renderer::BimElementProperty;
 using container::renderer::BimRelationshipEdge;
 using container::renderer::BimRelationshipGraph;
 using container::renderer::BimRelationshipKind;
+using container::renderer::BimRelationshipNode;
 
 [[nodiscard]] BimElementMetadata makeElement(uint32_t objectIndex,
                                              std::string_view guid,
@@ -183,6 +184,69 @@ TEST(BimRelationshipGraphTests, ReusesRealStoreyNodeForInferredSpatialParent) {
   EXPECT_EQ(storeyIdentityCount, 1);
 }
 
+TEST(BimRelationshipGraphTests, ResolvesSharedLabelsByCompatibleClass) {
+  std::vector<BimElementMetadata> metadata{
+      makeElement(30u, "wall", "", "IfcWall", "Shared label"),
+      makeElement(20u, "first-type", "", "IfcWallTYPE", "Shared label"),
+      makeElement(10u, "second-type", "", "IfcSlabType", "Shared label"),
+      makeElement(40u, "storey", "", "IfcBuildingStorey", "Shared label"),
+      makeElement(50u, "first-child", "", "IfcWall", "Wall A"),
+      makeElement(60u, "second-child", "", "IfcWall", "Wall B"),
+  };
+  for (auto &child : std::span(metadata).subspan(4)) {
+    child.objectType = "Shared label";
+    child.storeyName = "Shared label";
+    child.materialName = "Shared label";
+  }
+
+  BimRelationshipGraph graph;
+  graph.build(metadata);
+
+  for (const uint32_t child : {50u, 60u}) {
+    const auto parents = graph.parentsForObject(child);
+    ASSERT_EQ(parents.size(), 3u);
+    EXPECT_EQ(parents[0].objectIndex, 40u);
+    EXPECT_EQ(parents[1].ifcClass, "IfcMaterial");
+    EXPECT_TRUE(parents[1].guid.empty());
+    EXPECT_EQ(parents[2].objectIndex, 20u);
+  }
+  EXPECT_EQ(std::ranges::count(graph.nodes(), std::string_view("IfcMaterial"),
+                               &BimRelationshipNode::ifcClass),
+            1);
+
+  metadata[0].type = "IfcWallType";
+  graph.build(metadata);
+  const auto parents = graph.parentsForObject(60u);
+  ASSERT_EQ(parents.size(), 3u);
+  EXPECT_EQ(parents[2].objectIndex, 30u);
+}
+
+TEST(BimRelationshipGraphTests, StoreyIdentityTakesPrecedenceOverSharedLabel) {
+  std::vector<BimElementMetadata> metadata{
+      makeElement(1u, "first", "storey-1", "IfcBuildingStorey", "Same level"),
+      makeElement(2u, "second", "storey-2", "IfcBuildingStorey", "Same level"),
+      makeElement(3u, "first-child", "", "IfcWall", "Wall A"),
+      makeElement(4u, "second-child", "", "IfcWall", "Wall B"),
+      makeElement(5u, "third-child", "", "IfcWall", "Wall C"),
+  };
+  metadata[2].storeyName = "Same level";
+  metadata[2].storeyId = "storey-2";
+  metadata[3].storeyName = "Same level";
+  metadata[4].storeyName = "Same level";
+  metadata[4].storeyId = "storey-2";
+
+  BimRelationshipGraph graph;
+  graph.build(metadata);
+
+  const auto firstChildren = graph.childrenForObject(1u);
+  ASSERT_EQ(firstChildren.size(), 1u);
+  EXPECT_EQ(firstChildren[0].objectIndex, 4u);
+  const auto secondChildren = graph.childrenForObject(2u);
+  ASSERT_EQ(secondChildren.size(), 2u);
+  EXPECT_EQ(secondChildren[0].objectIndex, 3u);
+  EXPECT_EQ(secondChildren[1].objectIndex, 5u);
+}
+
 TEST(BimRelationshipGraphTests,
      ExplicitRelationshipsAttachToDuplicateProductIdentities) {
   std::vector<BimElementMetadata> metadata;
@@ -208,6 +272,39 @@ TEST(BimRelationshipGraphTests,
                       BimRelationshipKind::SystemAssignment));
   EXPECT_TRUE(hasSearchHit(graph, "Supply Air", 10u, "relationship"));
   EXPECT_TRUE(hasSearchHit(graph, "Supply Air", 11u, "relationship"));
+}
+
+TEST(BimRelationshipGraphTests, ExplicitRelationshipsMergeIdentitiesInNodeOrder) {
+  const std::vector<BimElementMetadata> metadata{
+      makeElement(42u, "other-guid", "shared-source", "IfcWall", "Wall A"),
+      makeElement(13u, "shared-guid", "shared-source", "IfcWall", "Wall B"),
+      makeElement(2u, "shared-guid", "other-source", "IfcWall", "Wall C"),
+      makeElement(0u, "other-guid", "other-source", "IfcWall", "Wall D"),
+  };
+  const ElementRelationship relationship{.fromGuid = "system-guid",
+                                         .toGuid = "shared-guid",
+                                         .toSourceId = "shared-source",
+                                         .kind = "system",
+                                         .label = "Mechanical Circuit"};
+  const std::array relationships{relationship, relationship};
+  BimRelationshipGraph graph;
+  graph.build(metadata, relationships);
+
+  std::vector<uint32_t> linkedObjects;
+  for (const auto &edge : graph.edges()) {
+    if (edge.kind == BimRelationshipKind::SystemAssignment) {
+      linkedObjects.push_back(graph.nodes()[edge.to].objectIndex);
+    }
+  }
+  EXPECT_EQ(linkedObjects, (std::vector<uint32_t>{42u, 13u, 2u}));
+
+  std::vector<uint32_t> searchObjects;
+  for (const auto &hit : graph.search("Mechanical Circuit")) {
+    EXPECT_EQ(hit.reason, "relationship");
+    searchObjects.push_back(hit.objectIndex);
+  }
+  EXPECT_EQ(searchObjects,
+            (std::vector<uint32_t>{42u, 13u, 2u, 42u, 13u, 2u}));
 }
 
 TEST(BimRelationshipGraphTests,
@@ -467,7 +564,7 @@ TEST(BimRelationshipGraphTests, CancelDuringPropertyIndexing) {
   EXPECT_LT(processed, elements.front().properties.size());
 }
 
-class BimPreparationCancellationTests : public testing::Test {
+class BimPreparationTests : public testing::Test {
 protected:
   void SetUp() override {
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -489,6 +586,8 @@ protected:
     std::error_code ignored;
     std::filesystem::remove(fixture_, ignored);
   }
+
+  const std::filesystem::path &fixturePath() const { return fixture_; }
 
   void cancelAt(std::string_view target) const {
     const auto path = container::util::pathToUtf8(fixture_);
@@ -515,12 +614,101 @@ private:
   std::filesystem::path fixture_;
 };
 
-TEST_F(BimPreparationCancellationTests, CancelsDuringFloorPlanProjection) {
+TEST_F(BimPreparationTests, CancelsDuringFloorPlanProjection) {
   cancelAt("Building BIM floor plans");
 }
 
-TEST_F(BimPreparationCancellationTests, CancelsDuringMetadataIndexing) {
+TEST_F(BimPreparationTests, CancelsDuringMetadataIndexing) {
   cancelAt("Indexing BIM objects");
+}
+
+TEST_F(BimPreparationTests, BuildsGroundAndStoreyFloorPlansInOrder) {
+  std::ofstream file(fixturePath(), std::ios::binary);
+  file << R"json({
+    "schema_version": "1.1.0",
+    "meshes": [
+      {"mesh_id": 1, "coordinates": [0,0,0, 2,0,0, 0,0,2],
+       "indices": [0,1,2]},
+      {"mesh_id": 2, "coordinates": [0,0,0, 2,0,0, 0,2,0],
+       "indices": [0,1,2]}
+    ],
+    "elements": [
+      {"mesh_id": 1, "guid": "first", "type": "IfcWall",
+       "storeyName": "Lower", "vector": {"z": 3}},
+      {"mesh_id": 1, "guid": "second", "type": "IfcWall",
+       "storeyId": "Lower", "vector": {"x": 4, "z": 1}},
+      {"mesh_id": 1, "guid": "roof", "type": "IfcRoof",
+       "storeyName": "Lower", "vector": {"x": -100, "z": -10}},
+      {"mesh_id": 1, "guid": "upper", "type": "IfcWall",
+       "storeyName": "Upper", "storeyId": "Lower", "vector": {"z": 7}},
+      {"mesh_id": 1, "guid": "unassigned", "type": "IfcWall",
+       "vector": {"x": 8, "y": -3, "z": 5}},
+      {"mesh_id": 1, "guid": "duplicate", "type": "IfcWall",
+       "storeyName": "Lower", "vector": {"z": 2}},
+      {"mesh_id": 2, "guid": "slab", "type": "IfcSlab",
+       "storeyName": "Lower", "vector": {"x": 12, "z": -2}}
+    ]
+  })json";
+  file.close();
+  ASSERT_TRUE(file);
+
+  const auto scene = container::renderer::BimManager::prepareScene(
+      container::util::pathToUtf8(fixturePath()), 1.0f);
+  const auto &ground = scene.floorPlanGround;
+  const auto &storeys = scene.floorPlanSourceElevation;
+  const std::array groundPositions{
+      glm::vec3{0, 0, 0}, glm::vec3{2, 0, 0}, glm::vec3{4, 0, 0},
+      glm::vec3{6, 0, 0}, glm::vec3{8, 0, 3}, glm::vec3{10, 0, 3}};
+  const std::array storeyPositions{
+      glm::vec3{0, -2, 0}, glm::vec3{2, -2, 0}, glm::vec3{4, -2, 0},
+      glm::vec3{6, -2, 0}, glm::vec3{0, 7, 0}, glm::vec3{2, 7, 0},
+      glm::vec3{8, 5, 3}, glm::vec3{10, 5, 3}};
+  const auto verify = [&](const auto &overlay, const auto &positions,
+                          size_t firstVertex, size_t firstIndex) {
+    EXPECT_EQ(overlay.firstIndex, firstIndex);
+    ASSERT_EQ(overlay.indexCount, positions.size());
+    ASSERT_LE(firstIndex + positions.size(), scene.uploadIndices.size());
+    ASSERT_LE(firstVertex + positions.size(), scene.uploadVertices.size());
+    for (size_t i = 0; i < positions.size(); ++i) {
+      EXPECT_EQ(scene.uploadIndices[firstIndex + i], firstVertex + i);
+      EXPECT_EQ(scene.uploadVertices[firstVertex + i].position, positions[i]);
+    }
+  };
+  verify(ground, groundPositions, scene.model.vertices.size(),
+         scene.model.indices.size());
+  verify(storeys, storeyPositions,
+         scene.model.vertices.size() + groundPositions.size(),
+         scene.model.indices.size() + groundPositions.size());
+  const size_t overlaySize = groundPositions.size() + storeyPositions.size();
+  EXPECT_EQ(scene.uploadVertices.size(), scene.model.vertices.size() + overlaySize);
+  EXPECT_EQ(scene.uploadIndices.size(), scene.model.indices.size() + overlaySize);
+  EXPECT_EQ(ground.boundsCenter, (glm::vec3{5, 0, 1.5f}));
+  EXPECT_EQ(storeys.boundsCenter, (glm::vec3{5, 2.5f, 1.5f}));
+  EXPECT_NEAR(ground.boundsRadius * ground.boundsRadius, 27.25f, 0.00001f);
+  EXPECT_NEAR(storeys.boundsRadius * storeys.boundsRadius, 47.5f, 0.00001f);
+}
+
+TEST_F(BimPreparationTests, DiscardsFloorPlanWithNoDistinctLines) {
+  std::ofstream file(fixturePath(), std::ios::binary);
+  file << R"json({
+    "schema_version": "1.1.0",
+    "meshes": [{"mesh_id": 1, "indices": [0,1,2],
+      "coordinates": [-0.00049,0.00049,0, 0.00049,-0.00049,0, -0.00049,0.00049,2]}],
+    "elements": [{"mesh_id": 1, "guid": "wall", "type": "IfcWall"}]
+  })json";
+  file.close();
+  ASSERT_TRUE(file);
+
+  const auto scene = container::renderer::BimManager::prepareScene(
+      container::util::pathToUtf8(fixturePath()), 1.0f);
+  EXPECT_EQ(scene.uploadIndices, scene.model.indices);
+  EXPECT_EQ(scene.uploadVertices.size(), scene.model.vertices.size());
+  for (const auto *overlay : {&scene.floorPlanGround, &scene.floorPlanSourceElevation}) {
+    EXPECT_EQ(overlay->firstIndex, scene.model.indices.size());
+    EXPECT_EQ(overlay->indexCount, 0u);
+    EXPECT_EQ(overlay->boundsCenter, glm::vec3(0.0f));
+    EXPECT_EQ(overlay->boundsRadius, 0.0f);
+  }
 }
 
 } // namespace

@@ -1,10 +1,10 @@
 #include "Container/renderer/bim/BimRelationshipGraph.h"
 
 #include "Container/geometry/DotBimLoader.h"
-#include "Container/renderer/bim/BimManager.h"
 
 #include <algorithm>
 #include <cctype>
+#include <iterator>
 #include <string>
 
 namespace container::renderer {
@@ -76,24 +76,6 @@ relationshipKindFromString(std::string_view text) {
   return std::string(bimRelationshipKindLabel(kind));
 }
 
-void appendIdentityMatches(
-    const std::unordered_map<std::string, std::vector<uint32_t>> &index,
-    std::string_view key, std::vector<uint32_t> &nodes) {
-  if (key.empty()) {
-    return;
-  }
-  const auto it = index.find(std::string(key));
-  if (it == index.end()) {
-    return;
-  }
-  // Identity indexes are appended in node order. Merge the two sorted lists
-  // once rather than scanning every preceding match for each draw element.
-  const auto previousSize = nodes.size();
-  nodes.insert(nodes.end(), it->second.begin(), it->second.end());
-  std::inplace_merge(nodes.begin(), nodes.begin() + previousSize, nodes.end());
-  nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
-}
-
 [[nodiscard]] bool compatibleSyntheticClass(std::string_view requested,
                                             std::string_view existing) {
   if (requested.empty() || existing.empty() || requested == existing) {
@@ -155,6 +137,7 @@ void BimRelationshipGraph::clear(const std::function<void()> &progress) {
     drainIndex(nodeByGuid_);
     drainIndex(nodeBySourceId_);
     drainIndex(nodeByLabel_);
+    drainIndex(sharedLabelMatches_);
     drainIndex(syntheticNodeByKey_);
     drainIndex(propertySetsByObject_);
     drainVector(searchFields_);
@@ -167,6 +150,7 @@ void BimRelationshipGraph::clear(const std::function<void()> &progress) {
   nodeByGuid_.clear();
   nodeBySourceId_.clear();
   nodeByLabel_.clear();
+  sharedLabelMatches_.clear();
   syntheticNodeByKey_.clear();
   propertySetsByObject_.clear();
   searchFields_.clear();
@@ -235,6 +219,8 @@ void BimRelationshipGraph::build(
     buildPropertySets(element, checkpoint);
   }
 
+  std::vector<uint32_t> fromNodes;
+  std::vector<uint32_t> toNodes;
   for (const container::geometry::dotbim::ElementRelationship &relationship :
        relationships) {
     checkpoint();
@@ -242,10 +228,11 @@ void BimRelationshipGraph::build(
         relationshipKindFromString(relationship.kind);
     const std::string label =
         firstNonEmpty({relationship.label, bimRelationshipKindLabel(kind)});
-    const std::vector<uint32_t> fromNodes = resolveRelationshipEndpoints(
-        relationship.fromGuid, relationship.fromSourceId, {}, kind);
-    const std::vector<uint32_t> toNodes = resolveRelationshipEndpoints(
-        relationship.toGuid, relationship.toSourceId, label, kind);
+    resolveRelationshipEndpoints(relationship.fromGuid,
+                                 relationship.fromSourceId, {}, kind,
+                                 fromNodes);
+    resolveRelationshipEndpoints(relationship.toGuid, relationship.toSourceId,
+                                 label, kind, toNodes);
     for (const uint32_t from : fromNodes) {
       for (const uint32_t to : toNodes) {
         checkpoint();
@@ -265,6 +252,12 @@ void BimRelationshipGraph::build(
         }
       }
     }
+  }
+  // The label compatibility cache is only needed during construction.
+  for (auto it = sharedLabelMatches_.begin();
+       it != sharedLabelMatches_.end();) {
+    checkpoint();
+    it = sharedLabelMatches_.erase(it);
   }
   if (progress) {
     progress();
@@ -441,53 +434,89 @@ uint32_t BimRelationshipGraph::objectNodeIndex(uint32_t objectIndex) const {
   return it != nodeByObjectIndex_.end() ? it->second : kInvalidNodeIndex;
 }
 
-std::vector<uint32_t> BimRelationshipGraph::resolveRelationshipEndpoints(
+std::span<const uint32_t>
+BimRelationshipGraph::identityMatches(const NodeIndex &index,
+                                      std::string_view key) {
+  if (key.empty()) {
+    return {};
+  }
+  const auto it = index.find(key);
+  return it == index.end() ? std::span<const uint32_t>{} : it->second;
+}
+
+void BimRelationshipGraph::resolveRelationshipEndpoints(
     std::string_view guid, std::string_view sourceId, std::string_view label,
-    BimRelationshipKind kind) {
-  std::vector<uint32_t> result;
-  appendIdentityMatches(nodeByGuid_, guid, result);
-  appendIdentityMatches(nodeBySourceId_, sourceId, result);
-  if (!result.empty()) {
-    return result;
+    BimRelationshipKind kind, std::vector<uint32_t> &result) {
+  const auto guidNodes = identityMatches(nodeByGuid_, guid);
+  const auto sourceNodes = identityMatches(nodeBySourceId_, sourceId);
+  result.clear();
+  if (!guidNodes.empty() && !sourceNodes.empty()) {
+    // Each posting list contains unique node indexes in insertion order.
+    (void)std::ranges::set_union(guidNodes, sourceNodes,
+                                 std::back_inserter(result));
+    return;
+  }
+  if (!guidNodes.empty()) {
+    result.assign(guidNodes.begin(), guidNodes.end());
+    return;
+  }
+  if (!sourceNodes.empty()) {
+    result.assign(sourceNodes.begin(), sourceNodes.end());
+    return;
   }
   const uint32_t external =
       externalRelationshipNode(guid, sourceId, label, kind);
   if (external != kInvalidNodeIndex) {
     result.push_back(external);
   }
-  return result;
 }
 
 uint32_t BimRelationshipGraph::existingObjectNodeForSynthetic(
     std::string_view label, std::string_view ifcClass, std::string_view guid,
-    std::string_view sourceId) const {
-  std::vector<uint32_t> identityMatches;
-  appendIdentityMatches(nodeByGuid_, guid, identityMatches);
-  appendIdentityMatches(nodeBySourceId_, sourceId, identityMatches);
-  for (const uint32_t nodeIndex : identityMatches) {
-    if (nodeIndex < nodes_.size() &&
-        isValidObjectIndex(nodes_[nodeIndex].objectIndex)) {
-      return nodeIndex;
+    std::string_view sourceId) {
+  const auto firstObject = [this](std::span<const uint32_t> candidates) {
+    // Real objects are indexed before synthetic nodes.
+    if (candidates.empty() ||
+        !isValidObjectIndex(nodes_[candidates.front()].objectIndex)) {
+      return kInvalidNodeIndex;
     }
+    return candidates.front();
+  };
+  const uint32_t identityMatch =
+      std::min(firstObject(identityMatches(nodeByGuid_, guid)),
+               firstObject(identityMatches(nodeBySourceId_, sourceId)));
+  if (identityMatch != kInvalidNodeIndex) {
+    return identityMatch;
   }
 
   if (label.empty()) {
     return kInvalidNodeIndex;
   }
-  const auto labelIt = nodeByLabel_.find(std::string(label));
+  const auto labelIt = nodeByLabel_.find(label);
   if (labelIt == nodeByLabel_.end()) {
     return kInvalidNodeIndex;
   }
-  for (const uint32_t nodeIndex : labelIt->second) {
-    if (nodeIndex >= nodes_.size() ||
-        !isValidObjectIndex(nodes_[nodeIndex].objectIndex)) {
-      continue;
-    }
-    if (compatibleSyntheticClass(ifcClass, nodes_[nodeIndex].ifcClass)) {
-      return nodeIndex;
-    }
+  const auto &candidates = labelIt->second;
+  const auto findCompatible = [&] {
+    const auto match = std::ranges::find_if(candidates, [&](uint32_t nodeIndex) {
+      return compatibleSyntheticClass(ifcClass, nodes_[nodeIndex].ifcClass);
+    });
+    return match == candidates.end() ? kInvalidNodeIndex : *match;
+  };
+  if (candidates.size() == 1u) {
+    return findCompatible();
   }
-  return kInvalidNodeIndex;
+
+  // The first real node uniquely identifies this label. Its candidate list is
+  // fixed during inference, so reuse both matches and misses for this class.
+  auto &byClass = sharedLabelMatches_[candidates.front()];
+  const auto known = byClass.find(ifcClass);
+  if (known != byClass.end()) {
+    return known->second;
+  }
+  const uint32_t match = findCompatible();
+  byClass.emplace(ifcClass, match);
+  return match;
 }
 
 size_t BimRelationshipGraph::EdgeIdentityHash::operator()(

@@ -1080,15 +1080,6 @@ preparedIfcSidecarPath(const std::filesystem::path &path) {
   return std::nullopt;
 }
 
-struct BimFloorPlanBuildResult {
-  uint32_t firstIndex{0};
-  uint32_t indexCount{0};
-  glm::vec3 boundsCenter{0.0f};
-  float boundsRadius{0.0f};
-
-  [[nodiscard]] bool valid() const { return indexCount >= 2u; }
-};
-
 struct FloorPlanPointKey {
   int64_t x{0};
   int64_t y{0};
@@ -1244,151 +1235,23 @@ stringContainsAny(std::string_view value,
   return true;
 }
 
-BimFloorPlanBuildResult appendFloorPlanOverlayGeometry(
-    const container::geometry::dotbim::Model &model,
-    std::vector<container::geometry::Vertex> &vertices,
-    std::vector<uint32_t> &indices, bool preserveElevation,
-    std::stop_token stop = {},
-    const std::function<void(std::string_view)> &progress = {}) {
-  constexpr double kQuantizationScale = 1000.0;
-  constexpr float kVerticalFaceMaxUp = 0.55f;
-  constexpr float kMinSegmentLength2 = 0.000001f;
-  constexpr float kMinTriangleArea2 = 0.00000001f;
+constexpr double kFloorPlanQuantizationScale = 1000.0;
 
-  BimFloorPlanBuildResult result{};
-  result.firstIndex = static_cast<uint32_t>(
-      std::min<size_t>(indices.size(), std::numeric_limits<uint32_t>::max()));
-  const size_t firstVertex = vertices.size();
-  const size_t firstIndex = indices.size();
+[[nodiscard]] int64_t quantizeFloorPlanCoordinate(float coordinate) {
+  return static_cast<int64_t>(std::llround(static_cast<double>(coordinate) *
+                                           kFloorPlanQuantizationScale));
+}
 
-  std::unordered_map<uint32_t, container::geometry::dotbim::MeshRange>
-      rangesByMeshId;
-  rangesByMeshId.reserve(model.meshRanges.size());
-  for (const auto &range : model.meshRanges) {
-    container::util::checkModelImportCancellation(stop);
-    rangesByMeshId.emplace(range.meshId, range);
-  }
+struct FloorPlanGeometry {
+  std::vector<glm::vec3> positions;
+  std::vector<FloorPlanEdgeKey> lines;
+};
 
-  auto floorPlanStoreyLabel =
-      [](const container::geometry::dotbim::Element &element) {
-        return !element.storeyName.empty() ? element.storeyName
-                                           : element.storeyId;
-      };
-  auto computeElementBaseElevation =
-      [&](const container::geometry::dotbim::Element &element,
-          const container::geometry::dotbim::MeshRange &range)
-      -> std::optional<float> {
-    if (range.firstIndex >= model.indices.size()) {
-      return std::nullopt;
-    }
-    const size_t begin = range.firstIndex;
-    const size_t end = std::min(model.indices.size(),
-                                begin + static_cast<size_t>(range.indexCount));
-    float minY = std::numeric_limits<float>::max();
-    bool found = false;
-    for (size_t index = begin; index < end; ++index) {
-      if ((index - begin) % 4096u == 0u)
-        container::util::checkModelImportCancellation(stop);
-      const uint32_t vertexIndex = model.indices[index];
-      if (vertexIndex >= model.vertices.size()) {
-        continue;
-      }
-      const glm::vec3 worldPosition =
-          glm::vec3(element.transform *
-                    glm::vec4(model.vertices[vertexIndex].position, 1.0f));
-      if (!isFiniteVec3(worldPosition)) {
-        continue;
-      }
-      minY = std::min(minY, worldPosition.y);
-      found = true;
-    }
-    if (!found) {
-      return std::nullopt;
-    }
-    return minY;
-  };
-
-  std::vector<std::optional<float>> elementBaseElevations;
-  std::unordered_map<std::string, float> storeyBaseElevations;
-  if (preserveElevation) {
-    elementBaseElevations.resize(model.elements.size());
-    storeyBaseElevations.reserve(model.elements.size());
-    for (size_t elementIndex = 0; elementIndex < model.elements.size();
-         ++elementIndex) {
-      container::util::checkModelImportCancellation(stop);
-      const auto &element = model.elements[elementIndex];
-      if (!elementContributesToFloorPlan(element)) {
-        continue;
-      }
-      const auto rangeIt = rangesByMeshId.find(element.meshId);
-      if (rangeIt == rangesByMeshId.end() || rangeIt->second.indexCount == 0u) {
-        continue;
-      }
-      const std::optional<float> baseElevation =
-          computeElementBaseElevation(element, rangeIt->second);
-      if (!baseElevation.has_value()) {
-        continue;
-      }
-      elementBaseElevations[elementIndex] = baseElevation;
-      const std::string storeyLabel = floorPlanStoreyLabel(element);
-      if (storeyLabel.empty()) {
-        continue;
-      }
-      const auto [storeyIt, inserted] =
-          storeyBaseElevations.try_emplace(storeyLabel, *baseElevation);
-      if (!inserted) {
-        storeyIt->second = std::min(storeyIt->second, *baseElevation);
-      }
-    }
-  }
-
-  std::unordered_map<FloorPlanPointKey, uint32_t, FloorPlanPointKeyHash>
-      pointIndices;
-  std::unordered_set<FloorPlanEdgeKey, FloorPlanEdgeKeyHash> edges;
-  pointIndices.reserve(model.vertices.size());
-  edges.reserve(model.indices.size() / 2u);
-
-  glm::vec3 boundsMin(std::numeric_limits<float>::max());
-  glm::vec3 boundsMax(std::numeric_limits<float>::lowest());
-  auto addProjectedPoint = [&](const glm::vec3 &worldPosition,
-                               float elevation) -> uint32_t {
-    const double projectedY =
-        preserveElevation ? static_cast<double>(elevation) : 0.0;
-    const FloorPlanPointKey key{
-        static_cast<int64_t>(std::llround(static_cast<double>(worldPosition.x) *
-                                          kQuantizationScale)),
-        static_cast<int64_t>(std::llround(projectedY * kQuantizationScale)),
-        static_cast<int64_t>(std::llround(static_cast<double>(worldPosition.z) *
-                                          kQuantizationScale))};
-    const auto existing = pointIndices.find(key);
-    if (existing != pointIndices.end()) {
-      return existing->second;
-    }
-
-    container::geometry::Vertex vertex{};
-    vertex.position = {
-        static_cast<float>(static_cast<double>(key.x) / kQuantizationScale),
-        static_cast<float>(static_cast<double>(key.y) / kQuantizationScale),
-        static_cast<float>(static_cast<double>(key.z) / kQuantizationScale)};
-    vertex.normal = {0.0f, 1.0f, 0.0f};
-    vertex.color = {1.0f, 1.0f, 1.0f};
-    const uint32_t vertexIndex = static_cast<uint32_t>(std::min<size_t>(
-        vertices.size(), std::numeric_limits<uint32_t>::max()));
-    vertices.push_back(vertex);
-    pointIndices.emplace(key, vertexIndex);
-    boundsMin = glm::min(boundsMin, vertex.position);
-    boundsMax = glm::max(boundsMax, vertex.position);
-    return vertexIndex;
-  };
-
-  auto addProjectedSegment = [&](const glm::vec3 &a, const glm::vec3 &b,
-                                 float elevation) {
-    const glm::vec2 delta{a.x - b.x, a.z - b.z};
-    if (glm::dot(delta, delta) <= kMinSegmentLength2) {
-      return;
-    }
-    uint32_t ia = addProjectedPoint(a, elevation);
-    uint32_t ib = addProjectedPoint(b, elevation);
+class FloorPlanGeometryBuilder {
+ public:
+  void addSegment(const FloorPlanPointKey &a, const FloorPlanPointKey &b) {
+    uint32_t ia = addPoint(a);
+    uint32_t ib = addPoint(b);
     if (ia == ib) {
       return;
     }
@@ -1396,46 +1259,152 @@ BimFloorPlanBuildResult appendFloorPlanOverlayGeometry(
       std::swap(ia, ib);
     }
     const FloorPlanEdgeKey edge{ia, ib};
-    if (!edges.insert(edge).second) {
-      return;
+    if (edges_.insert(edge).second) {
+      geometry.lines.push_back(edge);
     }
-    indices.push_back(ia);
-    indices.push_back(ib);
+  }
+
+  FloorPlanGeometry geometry;
+
+ private:
+  uint32_t addPoint(const FloorPlanPointKey &key) {
+    const auto [point, inserted] = pointIndices_.try_emplace(
+        key, static_cast<uint32_t>(std::min<size_t>(
+                 geometry.positions.size(), std::numeric_limits<uint32_t>::max())));
+    if (inserted) {
+      geometry.positions.emplace_back(
+          static_cast<float>(static_cast<double>(key.x) / kFloorPlanQuantizationScale),
+          static_cast<float>(static_cast<double>(key.y) / kFloorPlanQuantizationScale),
+          static_cast<float>(static_cast<double>(key.z) / kFloorPlanQuantizationScale));
+    }
+    return point->second;
+  }
+
+  std::unordered_map<FloorPlanPointKey, uint32_t, FloorPlanPointKeyHash>
+      pointIndices_;
+  std::unordered_set<FloorPlanEdgeKey, FloorPlanEdgeKeyHash> edges_;
+};
+
+[[nodiscard]] std::pair<FloorPlanGeometry, FloorPlanGeometry>
+buildFloorPlanOverlays(const container::geometry::dotbim::Model &model,
+                       std::stop_token stop,
+                       const std::function<void(std::string_view)> &progress) {
+  constexpr float kVerticalFaceMaxUp = 0.55f;
+  constexpr float kMinSegmentLength2 = 0.000001f;
+  constexpr float kMinTriangleArea2 = 0.00000001f;
+
+  using container::geometry::dotbim::Element;
+  using container::geometry::dotbim::MeshRange;
+  std::unordered_map<uint32_t, const MeshRange *> rangesByMeshId;
+  rangesByMeshId.reserve(model.meshRanges.size());
+  for (const auto &range : model.meshRanges) {
+    container::util::checkModelImportCancellation(stop);
+    rangesByMeshId.emplace(range.meshId, &range);
+  }
+
+  const auto worldPosition = [&](const Element &element, uint32_t index) {
+    return glm::vec3(element.transform *
+                     glm::vec4(model.vertices[index].position, 1.0f));
+  };
+  const auto computeBaseElevation = [&](const Element &element, size_t begin,
+                                        size_t end) -> std::optional<float> {
+    float minY = std::numeric_limits<float>::max();
+    bool found = false;
+    for (size_t index = begin; index < end; ++index) {
+      if ((index - begin) % 4096u == 0u) {
+        container::util::checkModelImportCancellation(stop);
+      }
+      const uint32_t vertexIndex = model.indices[index];
+      if (vertexIndex >= model.vertices.size()) {
+        continue;
+      }
+      const glm::vec3 position = worldPosition(element, vertexIndex);
+      if (isFiniteVec3(position)) {
+        minY = std::min(minY, position.y);
+        found = true;
+      }
+    }
+    return found ? std::optional<float>{minY} : std::nullopt;
   };
 
-  for (size_t elementIndex = 0; elementIndex < model.elements.size();
-       ++elementIndex) {
+  struct FloorPlanElement {
+    const Element *element;
+    const MeshRange *range;
+    size_t endIndex;
+    float baseElevation;
+    const float *storeyBaseElevation;
+  };
+  std::vector<FloorPlanElement> elements;
+  std::unordered_map<std::string_view, float> storeyBaseElevations;
+  for (const auto &element : model.elements) {
     container::util::checkModelImportCancellation(stop);
-    const auto &element = model.elements[elementIndex];
     if (!elementContributesToFloorPlan(element)) {
       continue;
     }
     const auto rangeIt = rangesByMeshId.find(element.meshId);
-    if (rangeIt == rangesByMeshId.end() || rangeIt->second.indexCount < 3u ||
-        rangeIt->second.firstIndex >= model.indices.size()) {
+    if (rangeIt == rangesByMeshId.end()) {
       continue;
     }
-
-    const auto &range = rangeIt->second;
-    float overlayElevation = 0.0f;
-    if (preserveElevation) {
-      const std::string storeyLabel = floorPlanStoreyLabel(element);
-      const auto storeyIt = storeyBaseElevations.find(storeyLabel);
-      if (storeyIt != storeyBaseElevations.end()) {
-        overlayElevation = storeyIt->second;
-      } else if (elementIndex < elementBaseElevations.size() &&
-                 elementBaseElevations[elementIndex].has_value()) {
-        overlayElevation = *elementBaseElevations[elementIndex];
-      }
-    }
+    const auto &range = *rangeIt->second;
     const size_t begin = range.firstIndex;
     const size_t end = std::min(model.indices.size(),
                                 begin + static_cast<size_t>(range.indexCount));
+    const auto baseElevation = computeBaseElevation(element, begin, end);
+    if (!baseElevation) {
+      continue;
+    }
+    const std::string_view storeyLabel =
+        element.storeyName.empty() ? element.storeyId : element.storeyName;
+    const float *storeyBaseElevation = nullptr;
+    if (!storeyLabel.empty()) {
+      const auto [storey, inserted] =
+          storeyBaseElevations.try_emplace(storeyLabel, *baseElevation);
+      if (!inserted) {
+        storey->second = std::min(storey->second, *baseElevation);
+      }
+      // References to map entries survive rehashing as more storeys are found.
+      storeyBaseElevation = &storey->second;
+    }
+    if (begin + 2u < end) {
+      elements.push_back({&element, &range, end, *baseElevation,
+                          storeyBaseElevation});
+    }
+  }
+
+  FloorPlanGeometryBuilder ground;
+  FloorPlanGeometryBuilder elevated;
+  for (const auto &projection : elements) {
+    container::util::checkModelImportCancellation(stop);
+    const auto &element = *projection.element;
+    const auto &range = *projection.range;
+    const size_t begin = range.firstIndex;
+    const int64_t elevation = quantizeFloorPlanCoordinate(
+        projection.storeyBaseElevation ? *projection.storeyBaseElevation
+                                       : projection.baseElevation);
     const float edgeVerticalTolerance =
         std::max(0.03f, range.boundsRadius * 0.0025f);
-    for (size_t index = begin; index + 2u < end; index += 3u) {
-      if ((index - begin) % 3072u == 0u)
+    const auto addHorizontalEdge = [&](const glm::vec3 &a, const glm::vec3 &b) {
+      if (std::abs(a.y - b.y) > edgeVerticalTolerance) {
+        return;
+      }
+      const glm::vec2 delta{a.x - b.x, a.z - b.z};
+      if (glm::dot(delta, delta) <= kMinSegmentLength2) {
+        return;
+      }
+      FloorPlanPointKey pointA{quantizeFloorPlanCoordinate(a.x), 0,
+                               quantizeFloorPlanCoordinate(a.z)};
+      FloorPlanPointKey pointB{quantizeFloorPlanCoordinate(b.x), 0,
+                               quantizeFloorPlanCoordinate(b.z)};
+      ground.addSegment(pointA, pointB);
+      pointA.y = elevation;
+      pointB.y = elevation;
+      elevated.addSegment(pointA, pointB);
+    };
+    for (size_t index = begin; index + 2u < projection.endIndex; index += 3u) {
+      const bool checkpoint = (index - begin) % 3072u == 0u;
+      if (checkpoint) {
         container::util::checkModelImportCancellation(stop);
+      }
       const uint32_t i0 = model.indices[index];
       const uint32_t i1 = model.indices[index + 1u];
       const uint32_t i2 = model.indices[index + 2u];
@@ -1444,12 +1413,9 @@ BimFloorPlanBuildResult appendFloorPlanOverlayGeometry(
         continue;
       }
 
-      const glm::vec3 v0 = glm::vec3(
-          element.transform * glm::vec4(model.vertices[i0].position, 1.0f));
-      const glm::vec3 v1 = glm::vec3(
-          element.transform * glm::vec4(model.vertices[i1].position, 1.0f));
-      const glm::vec3 v2 = glm::vec3(
-          element.transform * glm::vec4(model.vertices[i2].position, 1.0f));
+      const glm::vec3 v0 = worldPosition(element, i0);
+      const glm::vec3 v1 = worldPosition(element, i1);
+      const glm::vec3 v2 = worldPosition(element, i2);
       if (!isFiniteVec3(v0) || !isFiniteVec3(v1) || !isFiniteVec3(v2)) {
         continue;
       }
@@ -1459,40 +1425,97 @@ BimFloorPlanBuildResult appendFloorPlanOverlayGeometry(
       if (normalLength2 <= kMinTriangleArea2) {
         continue;
       }
-      const glm::vec3 unitNormal = normal * (1.0f / std::sqrt(normalLength2));
-      if (std::abs(unitNormal.y) > kVerticalFaceMaxUp) {
+      const float up = normal.y * (1.0f / std::sqrt(normalLength2));
+      if (std::abs(up) > kVerticalFaceMaxUp) {
         continue;
       }
 
-      auto addHorizontalEdge = [&](const glm::vec3 &a, const glm::vec3 &b) {
-        if (std::abs(a.y - b.y) > edgeVerticalTolerance) {
-          return;
-        }
-        addProjectedSegment(a, b, overlayElevation);
-      };
       addHorizontalEdge(v0, v1);
       addHorizontalEdge(v1, v2);
       addHorizontalEdge(v2, v0);
-      if (progress && (index - begin) % 3072u == 0u) {
+      if (progress && checkpoint) {
         progress("Building BIM floor plans");
         container::util::checkModelImportCancellation(stop);
       }
     }
   }
+  return {std::move(ground.geometry), std::move(elevated.geometry)};
+}
 
-  result.indexCount = static_cast<uint32_t>(std::min<size_t>(
-      indices.size() - firstIndex, std::numeric_limits<uint32_t>::max()));
-  if (!result.valid()) {
-    vertices.resize(firstVertex);
-    indices.resize(firstIndex);
-    result.indexCount = 0u;
-    return result;
-  }
+void appendFloorPlanOverlays(
+    const container::geometry::dotbim::Model &model,
+    std::vector<container::geometry::Vertex> &vertices,
+    std::vector<uint32_t> &indices, BimFloorPlanOverlayData &groundOverlay,
+    BimFloorPlanOverlayData &elevatedOverlay, std::stop_token stop = {},
+    const std::function<void(std::string_view)> &progress = {}) {
+  const auto [ground, elevated] = buildFloorPlanOverlays(model, stop, progress);
+  container::util::checkModelImportCancellation(stop);
 
-  result.boundsCenter = (boundsMin + boundsMax) * 0.5f;
-  const glm::vec3 extent = boundsMax - result.boundsCenter;
-  result.boundsRadius = std::max(glm::length(extent), 0.001f);
-  return result;
+  // Keep ground and source-elevation geometry contiguous in the upload buffers.
+  const auto pointCount = [](const FloorPlanGeometry &geometry) {
+    return geometry.lines.empty() ? size_t{0} : geometry.positions.size();
+  };
+  vertices.reserve(vertices.size() + pointCount(ground) + pointCount(elevated));
+  indices.reserve(indices.size() + 2u * (ground.lines.size() + elevated.lines.size()));
+
+  const auto append = [&](const FloorPlanGeometry &geometry,
+                          BimFloorPlanOverlayData &overlay) {
+    constexpr size_t kMaxIndex = std::numeric_limits<uint32_t>::max();
+    const size_t firstVertex = vertices.size();
+    const size_t firstIndex = indices.size();
+    overlay.firstIndex = static_cast<uint32_t>(std::min(firstIndex, kMaxIndex));
+    overlay.indexCount = 0u;
+    overlay.boundsCenter = glm::vec3(0.0f);
+    overlay.boundsRadius = 0.0f;
+    if (geometry.lines.empty() || firstVertex >= kMaxIndex) {
+      return;
+    }
+
+    const size_t maxLocalIndex = kMaxIndex - firstVertex;
+    std::optional<std::unordered_set<uint32_t>> edgesToLastIndex;
+    if (geometry.positions.size() - 1u > maxLocalIndex) {
+      edgesToLastIndex.emplace();
+    }
+    for (size_t i = 0; i < geometry.lines.size(); ++i) {
+      if (i % 4096u == 0u) {
+        container::util::checkModelImportCancellation(stop);
+      }
+      const auto &line = geometry.lines[i];
+      // Preserve the original deduplication when global vertex indices saturate.
+      if (edgesToLastIndex && line.b >= maxLocalIndex &&
+          (line.a >= maxLocalIndex || !edgesToLastIndex->insert(line.a).second)) {
+        continue;
+      }
+      indices.push_back(static_cast<uint32_t>(firstVertex + line.a));
+      indices.push_back(static_cast<uint32_t>(
+          firstVertex + std::min<size_t>(line.b, maxLocalIndex)));
+    }
+    if (indices.size() == firstIndex) {
+      return;
+    }
+    overlay.indexCount = static_cast<uint32_t>(
+        std::min(indices.size() - firstIndex, kMaxIndex));
+
+    glm::vec3 boundsMin(std::numeric_limits<float>::max());
+    glm::vec3 boundsMax(std::numeric_limits<float>::lowest());
+    for (size_t i = 0; i < geometry.positions.size(); ++i) {
+      if (i % 4096u == 0u) {
+        container::util::checkModelImportCancellation(stop);
+      }
+      container::geometry::Vertex vertex{};
+      vertex.position = geometry.positions[i];
+      vertex.normal = {0.0f, 1.0f, 0.0f};
+      vertex.color = {1.0f, 1.0f, 1.0f};
+      vertices.push_back(vertex);
+      boundsMin = glm::min(boundsMin, vertex.position);
+      boundsMax = glm::max(boundsMax, vertex.position);
+    }
+    overlay.boundsCenter = (boundsMin + boundsMax) * 0.5f;
+    overlay.boundsRadius =
+        std::max(glm::length(boundsMax - overlay.boundsCenter), 0.001f);
+  };
+  append(ground, groundOverlay);
+  append(elevated, elevatedOverlay);
 }
 
 } // namespace
@@ -1529,6 +1552,16 @@ BimManager::PreparedScene::~PreparedScene() = default;
 BimManager::PreparedScene::PreparedScene(PreparedScene &&) noexcept = default;
 BimManager::PreparedScene &
 BimManager::PreparedScene::operator=(PreparedScene &&) noexcept = default;
+
+BimMetadataTableView BimManager::PreparedScene::metadata() const noexcept {
+  return drawData ? BimMetadataTableView(drawData->metadata) : BimMetadataTableView{};
+}
+
+const BimRelationshipGraph &BimManager::PreparedScene::relationships() const {
+  if (!drawData)
+    throw std::logic_error("BIM relationship graph requires a prepared scene");
+  return drawData->relationships;
+}
 
 BimManager::BimManager(std::shared_ptr<container::gpu::VulkanDevice> device,
                        container::gpu::AllocationManager &allocationManager,
@@ -2944,8 +2977,11 @@ BimManager::resolveModelPath(const std::string &path) {
 BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
                                                    float importScale,
     std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions,
-    std::stop_token stop, const std::function<void(std::string_view)> &progress) {
+    std::stop_token stop, const std::function<void(std::string_view)> &progress,
+    const std::function<void(std::string_view)> &profileStage) {
   container::util::checkModelImportCancellation(stop);
+  if (profileStage)
+    profileStage("parse");
   PreparedScene prepared;
   prepared.assetPath = resolveModelPath(path);
   prepared.requestedPath = path;
@@ -3003,26 +3039,25 @@ BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
   }
   container::util::checkModelImportCancellation(stop);
   requireGeometry();
+  if (profileStage)
+    profileStage("meshlets");
   prepared.meshletClusters = buildMeshletClusterMetadataForModel(prepared.model, stop);
+  if (profileStage)
+    profileStage("optimizedMetadata");
   prepared.optimizedMetadata = buildOptimizedModelMetadata(
       prepared.assetPath, prepared.model, prepared.meshletClusters, stop);
   container::util::checkModelImportCancellation(stop);
+  if (profileStage)
+    profileStage("geometryCopy");
   prepared.uploadVertices = prepared.model.vertices;
   container::util::checkModelImportCancellation(stop);
   prepared.uploadIndices = prepared.model.indices;
-  const auto prepareFloorPlan = [&](bool preserveElevation,
-                                    BimFloorPlanOverlayData &overlay) {
-    const auto result = appendFloorPlanOverlayGeometry(
-        prepared.model, prepared.uploadVertices, prepared.uploadIndices,
-        preserveElevation, stop, progress);
-    overlay.firstIndex = result.firstIndex;
-    overlay.indexCount = result.indexCount;
-    overlay.boundsCenter = result.boundsCenter;
-    overlay.boundsRadius = result.boundsRadius;
-  };
-  prepareFloorPlan(false, prepared.floorPlanGround);
-  prepareFloorPlan(true, prepared.floorPlanSourceElevation);
-  prepared.drawData = prepareDrawData(prepared.model, stop, progress);
+  if (profileStage)
+    profileStage("floorPlans");
+  appendFloorPlanOverlays(prepared.model, prepared.uploadVertices,
+                          prepared.uploadIndices, prepared.floorPlanGround,
+                          prepared.floorPlanSourceElevation, stop, progress);
+  prepared.drawData = prepareDrawData(prepared.model, stop, progress, profileStage);
   container::util::checkModelImportCancellation(stop);
   return prepared;
 }
@@ -3186,20 +3221,10 @@ void BimManager::loadPreparedModel(
   } else {
     localUploadVertices = model.vertices;
     localUploadIndices = model.indices;
-    const auto buildFloorPlan = [&](bool preserveElevation,
-                                    BimFloorPlanOverlayData &overlay) {
-      notifyLoadProgress("Building BIM floor plans");
-      const auto result = appendFloorPlanOverlayGeometry(
-          model, localUploadVertices, localUploadIndices, preserveElevation);
-      overlay.firstIndex = result.firstIndex;
-      overlay.indexCount = result.indexCount;
-      overlay.boundsCenter = result.boundsCenter;
-      overlay.boundsRadius = result.boundsRadius;
-    };
-    buildFloorPlan(false, floorPlanGround_);
-    logStage("ground floor plan");
-    buildFloorPlan(true, floorPlanSourceElevation_);
-    logStage("storey floor plan");
+    notifyLoadProgress("Building BIM floor plans");
+    appendFloorPlanOverlays(model, localUploadVertices, localUploadIndices,
+                            floorPlanGround_, floorPlanSourceElevation_);
+    logStage("floor plans");
   }
 
   notifyLoadProgress("Uploading BIM geometry");
@@ -3228,7 +3253,10 @@ void BimManager::loadPreparedModel(
 std::unique_ptr<BimManager::PreparedDrawData> BimManager::prepareDrawData(
     const container::geometry::dotbim::Model &model,
     std::stop_token stop,
-    const std::function<void(std::string_view)> &progress) {
+    const std::function<void(std::string_view)> &progress,
+    const std::function<void(std::string_view)> &profileStage) {
+  if (profileStage)
+    profileStage("drawMetadata");
   auto result = std::make_unique<PreparedDrawData>();
   result->catalog.setModelUnitMetadata(bimModelUnitMetadata(model.unitMetadata));
   result->catalog.setModelGeoreferenceMetadata(
@@ -3483,6 +3511,8 @@ std::unique_ptr<BimManager::PreparedDrawData> BimManager::prepareDrawData(
   for (auto &draw : transparentPendingDraws)
     appendMetadata(draw);
   result->metadata.seal();
+  if (profileStage)
+    profileStage("relationships");
   result->relationships.build(result->metadata, model.relationships, [&] {
     container::util::checkModelImportCancellation(stop);
     if (progress)

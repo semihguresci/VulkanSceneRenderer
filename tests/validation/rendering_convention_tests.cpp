@@ -3009,18 +3009,20 @@ TEST(RenderingConventionTests, BimFloorPlanOverlayCanBeEnabledInViewer) {
   EXPECT_TRUE(
       contains(bimManagerHeader, "floorPlanSourceElevationDrawCommands()"));
   EXPECT_TRUE(contains(bimManagerHeader, "hasFloorPlanOverlay()"));
-  EXPECT_TRUE(contains(bimManager, "appendFloorPlanOverlayGeometry"));
   EXPECT_TRUE(containsIgnoringWhitespace(
       bimManager, "floorPlanGround_ = prepared->floorPlanGround;"));
   EXPECT_TRUE(containsIgnoringWhitespace(
       bimManager,
       "floorPlanSourceElevation_ = prepared->floorPlanSourceElevation;"));
   EXPECT_TRUE(containsIgnoringWhitespace(
-      bimManager, "overlay.firstIndex = result.firstIndex;"));
+      bimManager,
+      "appendFloorPlanOverlays(model, localUploadVertices, localUploadIndices,"
+      "floorPlanGround_, floorPlanSourceElevation_);"));
   EXPECT_TRUE(containsIgnoringWhitespace(
-      bimManager, "buildFloorPlan(false, floorPlanGround_);"));
-  EXPECT_TRUE(containsIgnoringWhitespace(
-      bimManager, "buildFloorPlan(true, floorPlanSourceElevation_);"));
+      bimManager,
+      "appendFloorPlanOverlays(prepared.model, prepared.uploadVertices,"
+      "prepared.uploadIndices, prepared.floorPlanGround,"
+      "prepared.floorPlanSourceElevation, stop, progress);"));
   EXPECT_TRUE(contains(bimManager, "appendFloorPlanOverlay(floorPlanGround_)"));
   EXPECT_TRUE(contains(bimManager,
                        "appendFloorPlanOverlay(floorPlanSourceElevation_)"));
@@ -7962,14 +7964,8 @@ TEST(RenderingConventionTests, BimFloorPlanSkipsPointCurvePlaceholders) {
 
   EXPECT_TRUE(contains(dotBimHeader, "enum class GeometryKind"));
   EXPECT_TRUE(contains(dotBimHeader, "GeometryKind geometryKind"));
-  EXPECT_TRUE(contains(bimManager, "int64_t y{0}"));
-  EXPECT_TRUE(contains(bimManager, "bool preserveElevation"));
-  EXPECT_TRUE(contains(bimManager, "preserveElevation ?"));
-  EXPECT_TRUE(contains(bimManager, "computeElementBaseElevation"));
-  EXPECT_TRUE(contains(bimManager, "storeyBaseElevations"));
-  EXPECT_TRUE(contains(bimManager, "floorPlanGround_"));
-  EXPECT_TRUE(contains(bimManager, "floorPlanSourceElevation_"));
   EXPECT_TRUE(contains(bimManager, "element.geometryKind !="));
+  EXPECT_TRUE(contains(bimManager, "if (!elementContributesToFloorPlan(element))"));
   EXPECT_TRUE(contains(bimManager, "bimGeometryKind(element.geometryKind)"));
   EXPECT_TRUE(contains(usdLoader, "dotbim::GeometryKind::Points"));
   EXPECT_TRUE(contains(usdLoader, "dotbim::GeometryKind::Curves"));

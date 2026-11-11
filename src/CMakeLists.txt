@@ -364,6 +364,22 @@ target_link_libraries(OpenVdbTransportRender PRIVATE VulkanSceneRenderer_openvdb
 set_target_properties(OpenVdbTransportRender PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 container_stage_runtime_dlls(OpenVdbTransportRender)
 
+# Exercise the model import worker without a Vulkan device. Allocation counting
+# has its own binary so the timing build uses the default allocator unchanged.
+foreach(target BimImportBenchmark BimImportAllocationBenchmark)
+    add_executable(${target} EXCLUDE_FROM_ALL ${CMAKE_SOURCE_DIR}/tools/bim_import_benchmark.cpp)
+    target_link_libraries(${target} PRIVATE VulkanSceneRenderer_Core nlohmann_json::nlohmann_json)
+    target_compile_definitions(${target} PRIVATE
+        CONTAINER_GIT_REVISION="${CONTAINER_GIT_REVISION}"
+        CONTAINER_BUILD_CONFIG="$<CONFIG>"
+        CONTAINER_BUILD_COMPILER="${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}"
+    )
+    set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    container_stage_runtime_dlls(${target})
+endforeach()
+target_sources(BimImportAllocationBenchmark PRIVATE ${CMAKE_SOURCE_DIR}/tools/bim_import_allocation_counter.cpp)
+target_compile_definitions(BimImportAllocationBenchmark PRIVATE CONTAINER_BIM_IMPORT_COUNT_ALLOCATIONS)
+
 if(ENABLE_PHYSICS)
     add_library(VulkanSceneRenderer_physics
         physics/PhysicsWorld.cpp

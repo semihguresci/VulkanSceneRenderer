@@ -1,0 +1,1615 @@
+{
+  "schemaVersion": 1,
+  "issue": "https://github.com/semihguresci/VulkanSceneRenderer/issues/76",
+  "measurementDate": "2026-11-11",
+  "baselineCommit": "7276fb47c2996c4f6b04aa4f6afe1462992dd4b7",
+  "optimizedCommit": "b6c4677bc88662139005808f57fa73084298b16b",
+  "fixtureRevision": "1a63082ada967c683cfacee2005f8f749c8e1b79",
+  "cpu": "AMD Ryzen 9 3900X 12-Core Processor",
+  "releaseBaselineProbe": {
+    "model": "TeklaHouse.ifcx",
+    "graph": {
+      "realIndexMs": 18.366,
+      "inferenceMs": 2260.923,
+      "inferredLabelLookups": 8788,
+      "inferredCompatibilityChecks": 27562568
+    },
+    "floorPlans": {
+      "ground": {
+        "trianglesVisited": 2775390,
+        "lines": 151598,
+        "durationMs": 162.621
+      },
+      "sourceElevation": {
+        "trianglesVisited": 2775390,
+        "baseElevationIndicesVisited": 8326170,
+        "lines": 332108,
+        "durationMs": 242.778
+      }
+    }
+  },
+  "builds": {
+    "release": {
+      "configuration": "Release",
+      "compiler": "MSVC-19.51.36260.0",
+      "cmakeFlags": {
+        "CMAKE_CXX_FLAGS": "/DWIN32 /D_WINDOWS /EHsc",
+        "CMAKE_CXX_FLAGS_RELEASE": "/O2 /Ob2 /DNDEBUG",
+        "ENABLE_BIM_FRAME_CACHE_BENCHMARK": "OFF",
+        "ENABLE_BIM_SAMPLE_MODEL_DOWNLOAD": "OFF",
+        "ENABLE_DLSS_RAY_RECONSTRUCTION": "ON",
+        "ENABLE_DLSS_UPSCALING": "ON",
+        "ENABLE_FSR_UPSCALING": "ON",
+        "ENABLE_GLTF_DRACO": "OFF",
+        "ENABLE_GLTF_MESHOPT": "OFF",
+        "ENABLE_NANOVDB": "ON",
+        "ENABLE_NANOVDB_BLOSC": "ON",
+        "ENABLE_NANOVDB_IO": "OFF",
+        "ENABLE_NANOVDB_ZIP": "ON",
+        "ENABLE_OPENVDB": "OFF",
+        "ENABLE_PHYSICS": "OFF",
+        "ENABLE_REFERENCE_OIDN": "OFF",
+        "ENABLE_REFERENCE_OPTIX": "ON",
+        "ENABLE_SAMPLE_MODEL_DOWNLOAD": "OFF",
+        "ENABLE_SCENE_BROWSER_BENCHMARK": "OFF",
+        "ENABLE_TESTS": "ON",
+        "ENABLE_TEXTURE_KTX": "OFF",
+        "ENABLE_TEXTURE_WEBP": "OFF",
+        "ENABLE_TINYUSDZ_USD_LOADER": "OFF",
+        "ENABLE_USD_SAMPLE_MODEL_DOWNLOAD": "OFF",
+        "ENABLE_VULKAN_VALIDATION_LAYERS": "ON",
+        "ENABLE_WINDOWED_TESTS": "OFF",
+        "CMAKE_GENERATOR": "Ninja"
+      },
+      "msvcRuntime": "/MD",
+      "extraCompileDefinitions": [],
+      "timingProtocol": {
+        "freshProcess": "first import in a new child process; OS file cache is uncontrolled",
+        "repeatInProcess": "subsequent imports of the same file in the same child process",
+        "processMemory": "process lifetime high-water marks sampled immediately after import, before semantic hashing",
+        "elapsedTime": "steady-clock wall time in CPU preparation, including reads and excluding scene destruction",
+        "allocations": "when enabled, replaceable C++ allocation calls and requested bytes on the preparation thread; collect timing with the uninstrumented target",
+        "semanticDigest": "FNV-1a-64 of selected ordered source and prepared scene fields, per section",
+        "iterationsPerProcess": 2,
+        "processesPerBuildAndModel": 3
+      },
+      "allocationProtocol": {
+        "freshProcess": "first import in a new child process; OS file cache is uncontrolled",
+        "repeatInProcess": "subsequent imports of the same file in the same child process",
+        "processMemory": "process lifetime high-water marks sampled immediately after import, before semantic hashing",
+        "elapsedTime": "steady-clock wall time in CPU preparation, including reads and excluding scene destruction",
+        "allocations": "when enabled, replaceable C++ allocation calls and requested bytes on the preparation thread; collect timing with the uninstrumented target",
+        "semanticDigest": "FNV-1a-64 of selected ordered source and prepared scene fields, per section",
+        "iterationsPerProcess": 1,
+        "processesPerBuildAndModel": 1
+      },
+      "exeSha256": {
+        "timing": {
+          "before": "3d5a7d62eae9ffc28721ef929f6b65f5c59942d58cea0e106e414ad51594f64d",
+          "after": "72b05fd10e3c316566ac6fea778900c15a6e4cc8a12261aed59878d08f6aef55"
+        },
+        "allocations": {
+          "before": "3558f6b16c59dade11a1f349023d60378ba9296ff7eb3cb1e08acb1a2bf762d2",
+          "after": "9ce4e3763c87bb1dc2eb33b516842488700e8e4ac137ef7f0471a8b4a2725d74"
+        }
+      },
+      "models": {
+        "hello-wall.ifc": {
+          "sourceBytes": 79592,
+          "sourceSha256": "0ab20f4ea355ea9aa4fade7264b97ee9f9929addfa3961b2437c4381bd674014",
+          "loadedSourceSha256": "0ab20f4ea355ea9aa4fade7264b97ee9f9929addfa3961b2437c4381bd674014",
+          "semantics": {
+            "completeness": "Complete",
+            "counts": {
+              "diagnostics": 0,
+              "elements": 17,
+              "groundIndices": 78,
+              "importedProducts": 4,
+              "indices": 894,
+              "materials": 0,
+              "meshletClusters": 4,
+              "metadataProperties": 192,
+              "metadataRows": 17,
+              "partialProducts": 0,
+              "propertyGroups": 89,
+              "relationshipEdges": 138,
+              "relationshipNodes": 112,
+              "skippedProducts": 0,
+              "sourceElevationIndices": 78,
+              "sourceProducts": 4,
+              "uploadIndices": 1050,
+              "uploadVertices": 962,
+              "vertices": 894
+            },
+            "digest": {
+              "diagnostics": "669143c4f0fe7725",
+              "geometry": "0c773640f98c1c49",
+              "metadata": "46e6f45f773a6b30",
+              "relationships": "71f1051c9a73c7ba",
+              "source": "2fcf890cb9b94e6a",
+              "uploadAndOverlays": "6c1bcc395ca410fb"
+            },
+            "fallback": false,
+            "format": "IFC",
+            "sourceFormat": "IFC"
+          },
+          "timing": {
+            "before": {
+              "freshProcess": {
+                "samples": 3,
+                "medianElapsedMs": 5.7387,
+                "medianStageMs": {
+                  "drawMetadata": 0.0813,
+                  "floorPlans": 0.0746,
+                  "geometryCopy": 0.0173,
+                  "meshlets": 0.0043,
+                  "optimizedMetadata": 0.0105,
+                  "parse": 5.3021,
+                  "relationships": 0.251
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 2912256,
+                  "peakWorkingSetBytes": 7016448
+                }
+              },
+              "repeatInProcess": {
+                "samples": 3,
+                "medianElapsedMs": 5.019,
+                "medianStageMs": {
+                  "drawMetadata": 0.0601,
+                  "floorPlans": 0.0694,
+                  "geometryCopy": 0.0206,
+                  "meshlets": 0.003,
+                  "optimizedMetadata": 0.0076,
+                  "parse": 4.6441,
+                  "relationships": 0.2317
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 3137536,
+                  "peakWorkingSetBytes": 7491584
+                }
+              }
+            },
+            "after": {
+              "freshProcess": {
+                "samples": 3,
+                "medianElapsedMs": 5.7347,
+                "medianStageMs": {
+                  "drawMetadata": 0.0797,
+                  "floorPlans": 0.0702,
+                  "geometryCopy": 0.0174,
+                  "meshlets": 0.0047,
+                  "optimizedMetadata": 0.0087,
+                  "parse": 5.3146,
+                  "relationships": 0.2382
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 2969600,
+                  "peakWorkingSetBytes": 7348224
+                }
+              },
+              "repeatInProcess": {
+                "samples": 3,
+                "medianElapsedMs": 4.9003,
+                "medianStageMs": {
+                  "drawMetadata": 0.0635,
+                  "floorPlans": 0.0591,
+                  "geometryCopy": 0.0167,
+                  "meshlets": 0.0054,
+                  "optimizedMetadata": 0.0066,
+                  "parse": 4.5286,
+                  "relationships": 0.2173
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 2969600,
+                  "peakWorkingSetBytes": 7348224
+                }
+              }
+            }
+          },
+          "allocations": {
+            "before": {
+              "drawMetadata": {
+                "count": 433,
+                "requestedBytes": 83841
+              },
+              "floorPlans": {
+                "count": 208,
+                "requestedBytes": 160470
+              },
+              "geometryCopy": {
+                "count": 2,
+                "requestedBytes": 67983
+              },
+              "meshlets": {
+                "count": 15,
+                "requestedBytes": 1680
+              },
+              "optimizedMetadata": {
+                "count": 13,
+                "requestedBytes": 1687
+              },
+              "parse": {
+                "count": 30063,
+                "requestedBytes": 14843031
+              },
+              "relationships": {
+                "count": 1648,
+                "requestedBytes": 348965
+              }
+            },
+            "after": {
+              "drawMetadata": {
+                "count": 435,
+                "requestedBytes": 84121
+              },
+              "floorPlans": {
+                "count": 226,
+                "requestedBytes": 90254
+              },
+              "geometryCopy": {
+                "count": 2,
+                "requestedBytes": 67983
+              },
+              "meshlets": {
+                "count": 15,
+                "requestedBytes": 1680
+              },
+              "optimizedMetadata": {
+                "count": 13,
+                "requestedBytes": 1687
+              },
+              "parse": {
+                "count": 30063,
+                "requestedBytes": 14843031
+              },
+              "relationships": {
+                "count": 1546,
+                "requestedBytes": 345865
+              }
+            }
+          }
+        },
+        "hello-wall.ifcx": {
+          "sourceBytes": 42935,
+          "sourceSha256": "4294362c0bd17f27af2c53e68c3f2bffd86f2d71f1b1b5d08b3d86fc8de6332b",
+          "loadedSourceSha256": "4294362c0bd17f27af2c53e68c3f2bffd86f2d71f1b1b5d08b3d86fc8de6332b",
+          "semantics": {
+            "completeness": "Unreported",
+            "counts": {
+              "diagnostics": 0,
+              "elements": 12,
+              "groundIndices": 78,
+              "importedProducts": 0,
+              "indices": 424,
+              "materials": 0,
+              "meshletClusters": 8,
+              "metadataProperties": 50,
+              "metadataRows": 12,
+              "partialProducts": 0,
+              "propertyGroups": 20,
+              "relationshipEdges": 32,
+              "relationshipNodes": 35,
+              "skippedProducts": 0,
+              "sourceElevationIndices": 86,
+              "sourceProducts": 0,
+              "uploadIndices": 588,
+              "uploadVertices": 500,
+              "vertices": 424
+            },
+            "digest": {
+              "diagnostics": "3edf60ff1484cc22",
+              "geometry": "58266c2ed69dc325",
+              "metadata": "b9e6bb66b4b3b6a0",
+              "relationships": "63ce5fdb064ba72e",
+              "source": "9d504d0210bee264",
+              "uploadAndOverlays": "d35b0a824d533504"
+            },
+            "fallback": false,
+            "format": "IFCX",
+            "sourceFormat": "IFC"
+          },
+          "timing": {
+            "before": {
+              "freshProcess": {
+                "samples": 3,
+                "medianElapsedMs": 3.2827,
+                "medianStageMs": {
+                  "drawMetadata": 0.0747,
+                  "floorPlans": 0.0548,
+                  "geometryCopy": 0.0088,
+                  "meshlets": 0.0027,
+                  "optimizedMetadata": 0.0078,
+                  "parse": 3.0244,
+                  "relationships": 0.0888
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 1232896,
+                  "peakWorkingSetBytes": 5599232
+                }
+              },
+              "repeatInProcess": {
+                "samples": 3,
+                "medianElapsedMs": 2.9396,
+                "medianStageMs": {
+                  "drawMetadata": 0.0659,
+                  "floorPlans": 0.0578,
+                  "geometryCopy": 0.0094,
+                  "meshlets": 0.0005,
+                  "optimizedMetadata": 0.0061,
+                  "parse": 2.7373,
+                  "relationships": 0.0775
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 1245184,
+                  "peakWorkingSetBytes": 5668864
+                }
+              }
+            },
+            "after": {
+              "freshProcess": {
+                "samples": 3,
+                "medianElapsedMs": 3.3234,
+                "medianStageMs": {
+                  "drawMetadata": 0.0838,
+                  "floorPlans": 0.0582,
+                  "geometryCopy": 0.0094,
+                  "meshlets": 0.0026,
+                  "optimizedMetadata": 0.009,
+                  "parse": 3.0695,
+                  "relationships": 0.0876
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 1220608,
+                  "peakWorkingSetBytes": 5632000
+                }
+              },
+              "repeatInProcess": {
+                "samples": 3,
+                "medianElapsedMs": 3.0467,
+                "medianStageMs": {
+                  "drawMetadata": 0.0673,
+                  "floorPlans": 0.0504,
+                  "geometryCopy": 0.0097,
+                  "meshlets": 0.0006,
+                  "optimizedMetadata": 0.0064,
+                  "parse": 2.7931,
+                  "relationships": 0.0818
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 1277952,
+                  "peakWorkingSetBytes": 5730304
+                }
+              }
+            }
+          },
+          "allocations": {
+            "before": {
+              "drawMetadata": {
+                "count": 246,
+                "requestedBytes": 90345
+              },
+              "floorPlans": {
+                "count": 204,
+                "requestedBytes": 81923
+              },
+              "geometryCopy": {
+                "count": 2,
+                "requestedBytes": 32263
+              },
+              "meshlets": {
+                "count": 1,
+                "requestedBytes": 320
+              },
+              "optimizedMetadata": {
+                "count": 13,
+                "requestedBytes": 1687
+              },
+              "parse": {
+                "count": 15183,
+                "requestedBytes": 1235947
+              },
+              "relationships": {
+                "count": 398,
+                "requestedBytes": 113907
+              }
+            },
+            "after": {
+              "drawMetadata": {
+                "count": 248,
+                "requestedBytes": 90625
+              },
+              "floorPlans": {
+                "count": 235,
+                "requestedBytes": 56767
+              },
+              "geometryCopy": {
+                "count": 2,
+                "requestedBytes": 32263
+              },
+              "meshlets": {
+                "count": 1,
+                "requestedBytes": 320
+              },
+              "optimizedMetadata": {
+                "count": 13,
+                "requestedBytes": 1687
+              },
+              "parse": {
+                "count": 15183,
+                "requestedBytes": 1235947
+              },
+              "relationships": {
+                "count": 402,
+                "requestedBytes": 114635
+              }
+            }
+          }
+        },
+        "TeklaHouse.ifc": {
+          "sourceBytes": 19152920,
+          "sourceSha256": "1e0e087b7b5a9a8aaaccb2896ad9317c5a1cf1a86da30236b04a3ead8d9eac71",
+          "loadedSourceSha256": "1e0e087b7b5a9a8aaaccb2896ad9317c5a1cf1a86da30236b04a3ead8d9eac71",
+          "semantics": {
+            "completeness": "Complete",
+            "counts": {
+              "diagnostics": 0,
+              "elements": 77736,
+              "groundIndices": 1002632,
+              "importedProducts": 10042,
+              "indices": 11833736,
+              "materials": 0,
+              "meshletClusters": 62619,
+              "metadataProperties": 1869391,
+              "metadataRows": 77736,
+              "partialProducts": 0,
+              "propertyGroups": 406066,
+              "relationshipEdges": 561538,
+              "relationshipNodes": 483819,
+              "skippedProducts": 0,
+              "sourceElevationIndices": 2467110,
+              "sourceProducts": 10042,
+              "uploadIndices": 15303478,
+              "uploadVertices": 13183172,
+              "vertices": 11833736
+            },
+            "digest": {
+              "diagnostics": "35d053be8ffcc7f9",
+              "geometry": "1bec4ff2b7e85199",
+              "metadata": "ec312a036e6307fa",
+              "relationships": "6a4425a45f60c074",
+              "source": "eb49f4b394e6625d",
+              "uploadAndOverlays": "b8fb23adedd48e59"
+            },
+            "fallback": false,
+            "format": "IFC",
+            "sourceFormat": "IFC"
+          },
+          "timing": {
+            "before": {
+              "freshProcess": {
+                "samples": 3,
+                "medianElapsedMs": 7985.9814,
+                "medianStageMs": {
+                  "drawMetadata": 593.6973,
+                  "floorPlans": 1722.4066,
+                  "geometryCopy": 101.3238,
+                  "meshlets": 4.5439,
+                  "optimizedMetadata": 0.24,
+                  "parse": 3853.3598,
+                  "relationships": 1705.2126
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 4607836160,
+                  "peakWorkingSetBytes": 3936301056
+                }
+              },
+              "repeatInProcess": {
+                "samples": 3,
+                "medianElapsedMs": 8082.1347,
+                "medianStageMs": {
+                  "drawMetadata": 593.6914,
+                  "floorPlans": 1725.0035,
+                  "geometryCopy": 102.3362,
+                  "meshlets": 4.7881,
+                  "optimizedMetadata": 0.4187,
+                  "parse": 3893.7151,
+                  "relationships": 1758.8662
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 4612784128,
+                  "peakWorkingSetBytes": 3938414592
+                }
+              }
+            },
+            "after": {
+              "freshProcess": {
+                "samples": 3,
+                "medianElapsedMs": 7919.3854,
+                "medianStageMs": {
+                  "drawMetadata": 595.7669,
+                  "floorPlans": 1632.9626,
+                  "geometryCopy": 103.1597,
+                  "meshlets": 4.7732,
+                  "optimizedMetadata": 0.3675,
+                  "parse": 3883.3056,
+                  "relationships": 1755.5365
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 4269400064,
+                  "peakWorkingSetBytes": 3936792576
+                }
+              },
+              "repeatInProcess": {
+                "samples": 3,
+                "medianElapsedMs": 7944.0258,
+                "medianStageMs": {
+                  "drawMetadata": 600.5162,
+                  "floorPlans": 1636.6604,
+                  "geometryCopy": 102.7881,
+                  "meshlets": 4.5854,
+                  "optimizedMetadata": 0.3173,
+                  "parse": 3886.2189,
+                  "relationships": 1709.8176
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 4274450432,
+                  "peakWorkingSetBytes": 3938353152
+                }
+              }
+            }
+          },
+          "allocations": {
+            "before": {
+              "drawMetadata": {
+                "count": 1432474,
+                "requestedBytes": 455068533
+              },
+              "floorPlans": {
+                "count": 3495614,
+                "requestedBytes": 2279974478
+              },
+              "geometryCopy": {
+                "count": 2,
+                "requestedBytes": 899364014
+              },
+              "meshlets": {
+                "count": 11768,
+                "requestedBytes": 8234125
+              },
+              "optimizedMetadata": {
+                "count": 13,
+                "requestedBytes": 1687
+              },
+              "parse": {
+                "count": 5823441,
+                "requestedBytes": 7592693427
+              },
+              "relationships": {
+                "count": 7416378,
+                "requestedBytes": 2958610418
+              }
+            },
+            "after": {
+              "drawMetadata": {
+                "count": 1432476,
+                "requestedBytes": 455068813
+              },
+              "floorPlans": {
+                "count": 3223601,
+                "requestedBytes": 1376796433
+              },
+              "geometryCopy": {
+                "count": 2,
+                "requestedBytes": 899364014
+              },
+              "meshlets": {
+                "count": 11768,
+                "requestedBytes": 8234125
+              },
+              "optimizedMetadata": {
+                "count": 13,
+                "requestedBytes": 1687
+              },
+              "parse": {
+                "count": 5823441,
+                "requestedBytes": 7592693427
+              },
+              "relationships": {
+                "count": 7091582,
+                "requestedBytes": 2948016594
+              }
+            }
+          }
+        },
+        "TeklaHouse.ifcx": {
+          "sourceBytes": 41766481,
+          "sourceSha256": "c5a42d143554ac3505bc6f55ee2e4962cb257eeaca0a0f9c49958b4ba823c401",
+          "loadedSourceSha256": "c5a42d143554ac3505bc6f55ee2e4962cb257eeaca0a0f9c49958b4ba823c401",
+          "semantics": {
+            "completeness": "Unreported",
+            "counts": {
+              "diagnostics": 0,
+              "elements": 8788,
+              "groundIndices": 303196,
+              "importedProducts": 0,
+              "indices": 341202,
+              "materials": 0,
+              "meshletClusters": 2042,
+              "metadataProperties": 0,
+              "metadataRows": 8788,
+              "partialProducts": 0,
+              "propertyGroups": 0,
+              "relationshipEdges": 8788,
+              "relationshipNodes": 8797,
+              "skippedProducts": 0,
+              "sourceElevationIndices": 664216,
+              "sourceProducts": 0,
+              "uploadIndices": 1308614,
+              "uploadVertices": 650123,
+              "vertices": 341202
+            },
+            "digest": {
+              "diagnostics": "3edf60ff1484cc22",
+              "geometry": "54fee8c79961113a",
+              "metadata": "d6a1cd6dc7b65837",
+              "relationships": "6d14156bfd6f7100",
+              "source": "8d882b2788855d77",
+              "uploadAndOverlays": "20fafd65eb52993d"
+            },
+            "fallback": false,
+            "format": "IFCX",
+            "sourceFormat": "IFC"
+          },
+          "timing": {
+            "before": {
+              "freshProcess": {
+                "samples": 3,
+                "medianElapsedMs": 4542.772,
+                "medianStageMs": {
+                  "drawMetadata": 74.6111,
+                  "floorPlans": 397.9061,
+                  "geometryCopy": 3.263,
+                  "meshlets": 0.083,
+                  "optimizedMetadata": 0.0682,
+                  "parse": 1774.9174,
+                  "relationships": 2294.5517
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 212090880,
+                  "peakWorkingSetBytes": 198979584
+                }
+              },
+              "repeatInProcess": {
+                "samples": 3,
+                "medianElapsedMs": 4566.7839,
+                "medianStageMs": {
+                  "drawMetadata": 74.5065,
+                  "floorPlans": 393.2965,
+                  "geometryCopy": 3.0684,
+                  "meshlets": 0.0708,
+                  "optimizedMetadata": 0.0619,
+                  "parse": 1798.5673,
+                  "relationships": 2294.8011
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 212291584,
+                  "peakWorkingSetBytes": 199122944
+                }
+              }
+            },
+            "after": {
+              "freshProcess": {
+                "samples": 3,
+                "medianElapsedMs": 2288.1262,
+                "medianStageMs": {
+                  "drawMetadata": 74.4932,
+                  "floorPlans": 393.46,
+                  "geometryCopy": 3.3819,
+                  "meshlets": 0.0756,
+                  "optimizedMetadata": 0.0696,
+                  "parse": 1793.1489,
+                  "relationships": 22.5989
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 211890176,
+                  "peakWorkingSetBytes": 198733824
+                }
+              },
+              "repeatInProcess": {
+                "samples": 3,
+                "medianElapsedMs": 2269.0396,
+                "medianStageMs": {
+                  "drawMetadata": 73.681,
+                  "floorPlans": 389.197,
+                  "geometryCopy": 3.3148,
+                  "meshlets": 0.0736,
+                  "optimizedMetadata": 0.0661,
+                  "parse": 1774.3286,
+                  "relationships": 23.0326
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 212439040,
+                  "peakWorkingSetBytes": 199221248
+                }
+              }
+            }
+          },
+          "allocations": {
+            "before": {
+              "drawMetadata": {
+                "count": 104364,
+                "requestedBytes": 52024315
+              },
+              "floorPlans": {
+                "count": 804309,
+                "requestedBytes": 169509397
+              },
+              "geometryCopy": {
+                "count": 2,
+                "requestedBytes": 25931430
+              },
+              "meshlets": {
+                "count": 2,
+                "requestedBytes": 122559
+              },
+              "optimizedMetadata": {
+                "count": 13,
+                "requestedBytes": 1687
+              },
+              "parse": {
+                "count": 10806826,
+                "requestedBytes": 1066951538
+              },
+              "relationships": {
+                "count": 11896726,
+                "requestedBytes": 406715037
+              }
+            },
+            "after": {
+              "drawMetadata": {
+                "count": 104366,
+                "requestedBytes": 52024595
+              },
+              "floorPlans": {
+                "count": 796925,
+                "requestedBytes": 150162333
+              },
+              "geometryCopy": {
+                "count": 2,
+                "requestedBytes": 25931430
+              },
+              "meshlets": {
+                "count": 2,
+                "requestedBytes": 122559
+              },
+              "optimizedMetadata": {
+                "count": 13,
+                "requestedBytes": 1687
+              },
+              "parse": {
+                "count": 10806826,
+                "requestedBytes": 1066951538
+              },
+              "relationships": {
+                "count": 130014,
+                "requestedBytes": 30183045
+              }
+            }
+          }
+        }
+      }
+    },
+    "debug": {
+      "configuration": "Debug",
+      "compiler": "MSVC-19.51.36260.0",
+      "cmakeFlags": {
+        "CMAKE_CXX_FLAGS": "/DWIN32 /D_WINDOWS /EHsc",
+        "CMAKE_CXX_FLAGS_DEBUG": "/Z7 /Ob0 /Od /RTC1",
+        "CMAKE_MAP_IMPORTED_CONFIG_DEBUG": "Release;",
+        "ENABLE_BIM_FRAME_CACHE_BENCHMARK": "OFF",
+        "ENABLE_BIM_SAMPLE_MODEL_DOWNLOAD": "OFF",
+        "ENABLE_DLSS_RAY_RECONSTRUCTION": "ON",
+        "ENABLE_DLSS_UPSCALING": "ON",
+        "ENABLE_FSR_UPSCALING": "ON",
+        "ENABLE_GLTF_DRACO": "OFF",
+        "ENABLE_GLTF_MESHOPT": "OFF",
+        "ENABLE_NANOVDB": "ON",
+        "ENABLE_NANOVDB_BLOSC": "ON",
+        "ENABLE_NANOVDB_IO": "OFF",
+        "ENABLE_NANOVDB_ZIP": "ON",
+        "ENABLE_OPENVDB": "OFF",
+        "ENABLE_PHYSICS": "OFF",
+        "ENABLE_REFERENCE_OIDN": "OFF",
+        "ENABLE_REFERENCE_OPTIX": "ON",
+        "ENABLE_SAMPLE_MODEL_DOWNLOAD": "OFF",
+        "ENABLE_SCENE_BROWSER_BENCHMARK": "OFF",
+        "ENABLE_TESTS": "ON",
+        "ENABLE_TEXTURE_KTX": "OFF",
+        "ENABLE_TEXTURE_WEBP": "OFF",
+        "ENABLE_TINYUSDZ_USD_LOADER": "OFF",
+        "ENABLE_USD_SAMPLE_MODEL_DOWNLOAD": "OFF",
+        "ENABLE_VULKAN_VALIDATION_LAYERS": "ON",
+        "ENABLE_WINDOWED_TESTS": "OFF",
+        "CMAKE_GENERATOR": "Ninja"
+      },
+      "msvcRuntime": "/MD",
+      "extraCompileDefinitions": [
+        "_ITERATOR_DEBUG_LEVEL=0"
+      ],
+      "timingProtocol": {
+        "freshProcess": "first import in a new child process; OS file cache is uncontrolled",
+        "repeatInProcess": "subsequent imports of the same file in the same child process",
+        "processMemory": "process lifetime high-water marks sampled immediately after import, before semantic hashing",
+        "elapsedTime": "steady-clock wall time in CPU preparation, including reads and excluding scene destruction",
+        "allocations": "when enabled, replaceable C++ allocation calls and requested bytes on the preparation thread; collect timing with the uninstrumented target",
+        "semanticDigest": "FNV-1a-64 of selected ordered source and prepared scene fields, per section",
+        "iterationsPerProcess": 2,
+        "processesPerBuildAndModel": 1
+      },
+      "allocationProtocol": {
+        "freshProcess": "first import in a new child process; OS file cache is uncontrolled",
+        "repeatInProcess": "subsequent imports of the same file in the same child process",
+        "processMemory": "process lifetime high-water marks sampled immediately after import, before semantic hashing",
+        "elapsedTime": "steady-clock wall time in CPU preparation, including reads and excluding scene destruction",
+        "allocations": "when enabled, replaceable C++ allocation calls and requested bytes on the preparation thread; collect timing with the uninstrumented target",
+        "semanticDigest": "FNV-1a-64 of selected ordered source and prepared scene fields, per section",
+        "iterationsPerProcess": 1,
+        "processesPerBuildAndModel": 1
+      },
+      "exeSha256": {
+        "timing": {
+          "before": "a28552a89c3d7e2bfcbb9d130081b61276b001647ce2a5ee79c3ae9b2c6bfbe7",
+          "after": "33b5d55124408b21738bd07a77a09d35fd18b4fb1f11641caf38f20dc70586bd"
+        },
+        "allocations": {
+          "before": "be53fa681f12139b3f43ef6c48f936989eb1fe998ed3ff7215326b0cd428e79a",
+          "after": "c3940f99bec137530cd2764e7d67e76ac887a8a6f14280aea9ac11a8507b2a25"
+        }
+      },
+      "models": {
+        "hello-wall.ifc": {
+          "sourceBytes": 79592,
+          "sourceSha256": "0ab20f4ea355ea9aa4fade7264b97ee9f9929addfa3961b2437c4381bd674014",
+          "loadedSourceSha256": "0ab20f4ea355ea9aa4fade7264b97ee9f9929addfa3961b2437c4381bd674014",
+          "semantics": {
+            "completeness": "Complete",
+            "counts": {
+              "diagnostics": 0,
+              "elements": 17,
+              "groundIndices": 78,
+              "importedProducts": 4,
+              "indices": 894,
+              "materials": 0,
+              "meshletClusters": 4,
+              "metadataProperties": 192,
+              "metadataRows": 17,
+              "partialProducts": 0,
+              "propertyGroups": 89,
+              "relationshipEdges": 138,
+              "relationshipNodes": 112,
+              "skippedProducts": 0,
+              "sourceElevationIndices": 78,
+              "sourceProducts": 4,
+              "uploadIndices": 1050,
+              "uploadVertices": 962,
+              "vertices": 894
+            },
+            "digest": {
+              "diagnostics": "669143c4f0fe7725",
+              "geometry": "0c773640f98c1c49",
+              "metadata": "46e6f45f773a6b30",
+              "relationships": "71f1051c9a73c7ba",
+              "source": "2fcf890cb9b94e6a",
+              "uploadAndOverlays": "6c1bcc395ca410fb"
+            },
+            "fallback": false,
+            "format": "IFC",
+            "sourceFormat": "IFC"
+          },
+          "timing": {
+            "before": {
+              "freshProcess": {
+                "samples": 1,
+                "medianElapsedMs": 47.2945,
+                "medianStageMs": {
+                  "drawMetadata": 1.6119,
+                  "floorPlans": 1.075,
+                  "geometryCopy": 0.0288,
+                  "meshlets": 0.0306,
+                  "optimizedMetadata": 0.0446,
+                  "parse": 41.8449,
+                  "relationships": 2.4303
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 3379200,
+                  "peakWorkingSetBytes": 11730944
+                }
+              },
+              "repeatInProcess": {
+                "samples": 1,
+                "medianElapsedMs": 41.3342,
+                "medianStageMs": {
+                  "drawMetadata": 1.4926,
+                  "floorPlans": 1.0302,
+                  "geometryCopy": 0.0296,
+                  "meshlets": 0.0174,
+                  "optimizedMetadata": 0.0277,
+                  "parse": 36.35,
+                  "relationships": 2.3849
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 3641344,
+                  "peakWorkingSetBytes": 12587008
+                }
+              }
+            },
+            "after": {
+              "freshProcess": {
+                "samples": 1,
+                "medianElapsedMs": 44.4269,
+                "medianStageMs": {
+                  "drawMetadata": 1.6631,
+                  "floorPlans": 0.78,
+                  "geometryCopy": 0.0307,
+                  "meshlets": 0.0355,
+                  "optimizedMetadata": 0.0509,
+                  "parse": 39.5201,
+                  "relationships": 2.3233
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 3239936,
+                  "peakWorkingSetBytes": 11759616
+                }
+              },
+              "repeatInProcess": {
+                "samples": 1,
+                "medianElapsedMs": 41.9641,
+                "medianStageMs": {
+                  "drawMetadata": 1.5135,
+                  "floorPlans": 0.7355,
+                  "geometryCopy": 0.0222,
+                  "meshlets": 0.0187,
+                  "optimizedMetadata": 0.0322,
+                  "parse": 37.3659,
+                  "relationships": 2.274
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 3424256,
+                  "peakWorkingSetBytes": 12386304
+                }
+              }
+            }
+          },
+          "allocations": {
+            "before": {
+              "drawMetadata": {
+                "count": 433,
+                "requestedBytes": 83841
+              },
+              "floorPlans": {
+                "count": 208,
+                "requestedBytes": 160470
+              },
+              "geometryCopy": {
+                "count": 2,
+                "requestedBytes": 67983
+              },
+              "meshlets": {
+                "count": 15,
+                "requestedBytes": 1680
+              },
+              "optimizedMetadata": {
+                "count": 13,
+                "requestedBytes": 1655
+              },
+              "parse": {
+                "count": 30063,
+                "requestedBytes": 14843031
+              },
+              "relationships": {
+                "count": 1648,
+                "requestedBytes": 348965
+              }
+            },
+            "after": {
+              "drawMetadata": {
+                "count": 435,
+                "requestedBytes": 84121
+              },
+              "floorPlans": {
+                "count": 226,
+                "requestedBytes": 90254
+              },
+              "geometryCopy": {
+                "count": 2,
+                "requestedBytes": 67983
+              },
+              "meshlets": {
+                "count": 15,
+                "requestedBytes": 1680
+              },
+              "optimizedMetadata": {
+                "count": 13,
+                "requestedBytes": 1623
+              },
+              "parse": {
+                "count": 30063,
+                "requestedBytes": 14843031
+              },
+              "relationships": {
+                "count": 1546,
+                "requestedBytes": 345865
+              }
+            }
+          }
+        },
+        "hello-wall.ifcx": {
+          "sourceBytes": 42935,
+          "sourceSha256": "4294362c0bd17f27af2c53e68c3f2bffd86f2d71f1b1b5d08b3d86fc8de6332b",
+          "loadedSourceSha256": "4294362c0bd17f27af2c53e68c3f2bffd86f2d71f1b1b5d08b3d86fc8de6332b",
+          "semantics": {
+            "completeness": "Unreported",
+            "counts": {
+              "diagnostics": 0,
+              "elements": 12,
+              "groundIndices": 78,
+              "importedProducts": 0,
+              "indices": 424,
+              "materials": 0,
+              "meshletClusters": 8,
+              "metadataProperties": 50,
+              "metadataRows": 12,
+              "partialProducts": 0,
+              "propertyGroups": 20,
+              "relationshipEdges": 32,
+              "relationshipNodes": 35,
+              "skippedProducts": 0,
+              "sourceElevationIndices": 86,
+              "sourceProducts": 0,
+              "uploadIndices": 588,
+              "uploadVertices": 500,
+              "vertices": 424
+            },
+            "digest": {
+              "diagnostics": "3edf60ff1484cc22",
+              "geometry": "58266c2ed69dc325",
+              "metadata": "b9e6bb66b4b3b6a0",
+              "relationships": "63ce5fdb064ba72e",
+              "source": "9d504d0210bee264",
+              "uploadAndOverlays": "d35b0a824d533504"
+            },
+            "fallback": false,
+            "format": "IFCX",
+            "sourceFormat": "IFC"
+          },
+          "timing": {
+            "before": {
+              "freshProcess": {
+                "samples": 1,
+                "medianElapsedMs": 26.749,
+                "medianStageMs": {
+                  "drawMetadata": 0.7766,
+                  "floorPlans": 1.068,
+                  "geometryCopy": 0.0184,
+                  "meshlets": 0.0116,
+                  "optimizedMetadata": 0.0378,
+                  "parse": 24.0362,
+                  "relationships": 0.7894
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 1794048,
+                  "peakWorkingSetBytes": 10080256
+                }
+              },
+              "repeatInProcess": {
+                "samples": 1,
+                "medianElapsedMs": 25.6369,
+                "medianStageMs": {
+                  "drawMetadata": 0.7375,
+                  "floorPlans": 1.0531,
+                  "geometryCopy": 0.0137,
+                  "meshlets": 0.0076,
+                  "optimizedMetadata": 0.0322,
+                  "parse": 23.047,
+                  "relationships": 0.7443
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 1794048,
+                  "peakWorkingSetBytes": 10149888
+                }
+              }
+            },
+            "after": {
+              "freshProcess": {
+                "samples": 1,
+                "medianElapsedMs": 26.4602,
+                "medianStageMs": {
+                  "drawMetadata": 0.7809,
+                  "floorPlans": 0.7644,
+                  "geometryCopy": 0.0139,
+                  "meshlets": 0.0108,
+                  "optimizedMetadata": 0.0343,
+                  "parse": 24.106,
+                  "relationships": 0.7328
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 1777664,
+                  "peakWorkingSetBytes": 10067968
+                }
+              },
+              "repeatInProcess": {
+                "samples": 1,
+                "medianElapsedMs": 24.8873,
+                "medianStageMs": {
+                  "drawMetadata": 0.7192,
+                  "floorPlans": 0.7237,
+                  "geometryCopy": 0.0131,
+                  "meshlets": 0.0042,
+                  "optimizedMetadata": 0.0284,
+                  "parse": 22.6844,
+                  "relationships": 0.7128
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 1814528,
+                  "peakWorkingSetBytes": 10182656
+                }
+              }
+            }
+          },
+          "allocations": {
+            "before": {
+              "drawMetadata": {
+                "count": 246,
+                "requestedBytes": 90345
+              },
+              "floorPlans": {
+                "count": 204,
+                "requestedBytes": 81923
+              },
+              "geometryCopy": {
+                "count": 2,
+                "requestedBytes": 32263
+              },
+              "meshlets": {
+                "count": 1,
+                "requestedBytes": 320
+              },
+              "optimizedMetadata": {
+                "count": 13,
+                "requestedBytes": 1655
+              },
+              "parse": {
+                "count": 15183,
+                "requestedBytes": 1235947
+              },
+              "relationships": {
+                "count": 398,
+                "requestedBytes": 113907
+              }
+            },
+            "after": {
+              "drawMetadata": {
+                "count": 248,
+                "requestedBytes": 90625
+              },
+              "floorPlans": {
+                "count": 235,
+                "requestedBytes": 56767
+              },
+              "geometryCopy": {
+                "count": 2,
+                "requestedBytes": 32263
+              },
+              "meshlets": {
+                "count": 1,
+                "requestedBytes": 320
+              },
+              "optimizedMetadata": {
+                "count": 13,
+                "requestedBytes": 1623
+              },
+              "parse": {
+                "count": 15183,
+                "requestedBytes": 1235947
+              },
+              "relationships": {
+                "count": 402,
+                "requestedBytes": 114635
+              }
+            }
+          }
+        },
+        "TeklaHouse.ifc": {
+          "sourceBytes": 19152920,
+          "sourceSha256": "1e0e087b7b5a9a8aaaccb2896ad9317c5a1cf1a86da30236b04a3ead8d9eac71",
+          "loadedSourceSha256": "1e0e087b7b5a9a8aaaccb2896ad9317c5a1cf1a86da30236b04a3ead8d9eac71",
+          "semantics": {
+            "completeness": "Complete",
+            "counts": {
+              "diagnostics": 0,
+              "elements": 77736,
+              "groundIndices": 1002632,
+              "importedProducts": 10042,
+              "indices": 11833736,
+              "materials": 0,
+              "meshletClusters": 62619,
+              "metadataProperties": 1869391,
+              "metadataRows": 77736,
+              "partialProducts": 0,
+              "propertyGroups": 406066,
+              "relationshipEdges": 561538,
+              "relationshipNodes": 483819,
+              "skippedProducts": 0,
+              "sourceElevationIndices": 2467110,
+              "sourceProducts": 10042,
+              "uploadIndices": 15303478,
+              "uploadVertices": 13183172,
+              "vertices": 11833736
+            },
+            "digest": {
+              "diagnostics": "35d053be8ffcc7f9",
+              "geometry": "1bec4ff2b7e85199",
+              "metadata": "ec312a036e6307fa",
+              "relationships": "6a4425a45f60c074",
+              "source": "eb49f4b394e6625d",
+              "uploadAndOverlays": "b8fb23adedd48e59"
+            },
+            "fallback": false,
+            "format": "IFC",
+            "sourceFormat": "IFC"
+          },
+          "timing": {
+            "before": {
+              "freshProcess": {
+                "samples": 1,
+                "medianElapsedMs": 160795.6057,
+                "medianStageMs": {
+                  "drawMetadata": 31267.5356,
+                  "floorPlans": 84447.9872,
+                  "geometryCopy": 104.0001,
+                  "meshlets": 41.2029,
+                  "optimizedMetadata": 1.093,
+                  "parse": 29026.8234,
+                  "relationships": 15906.9529
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 4608397312,
+                  "peakWorkingSetBytes": 3941326848
+                }
+              },
+              "repeatInProcess": {
+                "samples": 1,
+                "medianElapsedMs": 160997.4193,
+                "medianStageMs": {
+                  "drawMetadata": 31224.6632,
+                  "floorPlans": 84719.1227,
+                  "geometryCopy": 106.4204,
+                  "meshlets": 41.0774,
+                  "optimizedMetadata": 1.1261,
+                  "parse": 29097.6403,
+                  "relationships": 15807.3629
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 4611547136,
+                  "peakWorkingSetBytes": 3943354368
+                }
+              }
+            },
+            "after": {
+              "freshProcess": {
+                "samples": 1,
+                "medianElapsedMs": 132367.6502,
+                "medianStageMs": {
+                  "drawMetadata": 31106.5716,
+                  "floorPlans": 56867.7327,
+                  "geometryCopy": 101.6696,
+                  "meshlets": 41.0572,
+                  "optimizedMetadata": 1.1019,
+                  "parse": 28967.5865,
+                  "relationships": 15281.9151
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 4270448640,
+                  "peakWorkingSetBytes": 3942113280
+                }
+              },
+              "repeatInProcess": {
+                "samples": 1,
+                "medianElapsedMs": 132403.6491,
+                "medianStageMs": {
+                  "drawMetadata": 31137.3671,
+                  "floorPlans": 56845.9947,
+                  "geometryCopy": 101.4129,
+                  "meshlets": 41.5132,
+                  "optimizedMetadata": 1.1007,
+                  "parse": 28942.6952,
+                  "relationships": 15333.5587
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 4274311168,
+                  "peakWorkingSetBytes": 3944058880
+                }
+              }
+            }
+          },
+          "allocations": {
+            "before": {
+              "drawMetadata": {
+                "count": 1432474,
+                "requestedBytes": 455068533
+              },
+              "floorPlans": {
+                "count": 3495614,
+                "requestedBytes": 2279974478
+              },
+              "geometryCopy": {
+                "count": 2,
+                "requestedBytes": 899364014
+              },
+              "meshlets": {
+                "count": 11768,
+                "requestedBytes": 8234125
+              },
+              "optimizedMetadata": {
+                "count": 13,
+                "requestedBytes": 1655
+              },
+              "parse": {
+                "count": 5823441,
+                "requestedBytes": 7592693427
+              },
+              "relationships": {
+                "count": 7416378,
+                "requestedBytes": 2958610418
+              }
+            },
+            "after": {
+              "drawMetadata": {
+                "count": 1432476,
+                "requestedBytes": 455068813
+              },
+              "floorPlans": {
+                "count": 3223601,
+                "requestedBytes": 1376796433
+              },
+              "geometryCopy": {
+                "count": 2,
+                "requestedBytes": 899364014
+              },
+              "meshlets": {
+                "count": 11768,
+                "requestedBytes": 8234125
+              },
+              "optimizedMetadata": {
+                "count": 13,
+                "requestedBytes": 1623
+              },
+              "parse": {
+                "count": 5823441,
+                "requestedBytes": 7592693427
+              },
+              "relationships": {
+                "count": 7091582,
+                "requestedBytes": 2948016594
+              }
+            }
+          }
+        },
+        "TeklaHouse.ifcx": {
+          "sourceBytes": 41766481,
+          "sourceSha256": "c5a42d143554ac3505bc6f55ee2e4962cb257eeaca0a0f9c49958b4ba823c401",
+          "loadedSourceSha256": "c5a42d143554ac3505bc6f55ee2e4962cb257eeaca0a0f9c49958b4ba823c401",
+          "semantics": {
+            "completeness": "Unreported",
+            "counts": {
+              "diagnostics": 0,
+              "elements": 8788,
+              "groundIndices": 303196,
+              "importedProducts": 0,
+              "indices": 341202,
+              "materials": 0,
+              "meshletClusters": 2042,
+              "metadataProperties": 0,
+              "metadataRows": 8788,
+              "partialProducts": 0,
+              "propertyGroups": 0,
+              "relationshipEdges": 8788,
+              "relationshipNodes": 8797,
+              "skippedProducts": 0,
+              "sourceElevationIndices": 664216,
+              "sourceProducts": 0,
+              "uploadIndices": 1308614,
+              "uploadVertices": 650123,
+              "vertices": 341202
+            },
+            "digest": {
+              "diagnostics": "3edf60ff1484cc22",
+              "geometry": "54fee8c79961113a",
+              "metadata": "d6a1cd6dc7b65837",
+              "relationships": "6d14156bfd6f7100",
+              "source": "8d882b2788855d77",
+              "uploadAndOverlays": "20fafd65eb52993d"
+            },
+            "fallback": false,
+            "format": "IFCX",
+            "sourceFormat": "IFC"
+          },
+          "timing": {
+            "before": {
+              "freshProcess": {
+                "samples": 1,
+                "medianElapsedMs": 57914.3696,
+                "medianStageMs": {
+                  "drawMetadata": 4597.0616,
+                  "floorPlans": 14706.4336,
+                  "geometryCopy": 3.1142,
+                  "meshlets": 0.4072,
+                  "optimizedMetadata": 0.1341,
+                  "parse": 15635.809,
+                  "relationships": 22971.399
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 212389888,
+                  "peakWorkingSetBytes": 202518528
+                }
+              },
+              "repeatInProcess": {
+                "samples": 1,
+                "medianElapsedMs": 57857.899,
+                "medianStageMs": {
+                  "drawMetadata": 4592.7042,
+                  "floorPlans": 14712.9585,
+                  "geometryCopy": 3.2755,
+                  "meshlets": 0.4085,
+                  "optimizedMetadata": 0.15,
+                  "parse": 15562.7476,
+                  "relationships": 22985.6485
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 212389888,
+                  "peakWorkingSetBytes": 202821632
+                }
+              }
+            },
+            "after": {
+              "freshProcess": {
+                "samples": 1,
+                "medianElapsedMs": 30790.8099,
+                "medianStageMs": {
+                  "drawMetadata": 4581.2282,
+                  "floorPlans": 10574.9296,
+                  "geometryCopy": 3.1333,
+                  "meshlets": 0.4175,
+                  "optimizedMetadata": 0.1408,
+                  "parse": 15475.287,
+                  "relationships": 155.6579
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 212504576,
+                  "peakWorkingSetBytes": 202608640
+                }
+              },
+              "repeatInProcess": {
+                "samples": 1,
+                "medianElapsedMs": 30762.7711,
+                "medianStageMs": {
+                  "drawMetadata": 4568.5246,
+                  "floorPlans": 10578.5019,
+                  "geometryCopy": 3.1045,
+                  "meshlets": 0.4029,
+                  "optimizedMetadata": 0.1277,
+                  "parse": 15453.007,
+                  "relationships": 159.0962
+                },
+                "medianProcessMemory": {
+                  "peakCommitBytes": 212574208,
+                  "peakWorkingSetBytes": 203001856
+                }
+              }
+            }
+          },
+          "allocations": {
+            "before": {
+              "drawMetadata": {
+                "count": 104364,
+                "requestedBytes": 52024315
+              },
+              "floorPlans": {
+                "count": 804309,
+                "requestedBytes": 169509397
+              },
+              "geometryCopy": {
+                "count": 2,
+                "requestedBytes": 25931430
+              },
+              "meshlets": {
+                "count": 2,
+                "requestedBytes": 122559
+              },
+              "optimizedMetadata": {
+                "count": 13,
+                "requestedBytes": 1655
+              },
+              "parse": {
+                "count": 10806826,
+                "requestedBytes": 1066951538
+              },
+              "relationships": {
+                "count": 11896726,
+                "requestedBytes": 406715037
+              }
+            },
+            "after": {
+              "drawMetadata": {
+                "count": 104366,
+                "requestedBytes": 52024595
+              },
+              "floorPlans": {
+                "count": 796925,
+                "requestedBytes": 150162333
+              },
+              "geometryCopy": {
+                "count": 2,
+                "requestedBytes": 25931430
+              },
+              "meshlets": {
+                "count": 2,
+                "requestedBytes": 122559
+              },
+              "optimizedMetadata": {
+                "count": 13,
+                "requestedBytes": 1623
+              },
+              "parse": {
+                "count": 10806826,
+                "requestedBytes": 1066951538
+              },
+              "relationships": {
+                "count": 130014,
+                "requestedBytes": 30183045
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "host": {
+    "platform": "Windows-11-10.0.26300-SP0",
+    "architecture": "AMD64",
+    "processor": "AMD64 Family 23 Model 113 Stepping 0, AuthenticAMD",
+    "logicalCpus": 24
+  },
+  "nativeValidation": {
+    "layer": "VK_LAYER_KHRONOS_validation",
+    "baselineCommit": "1d88c793a8a65a1abb6579a02c609217e726e4f1",
+    "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+    "width": 400,
+    "height": 360,
+    "fixedTimestepSeconds": 0.016666667,
+    "manualExposure": 1.0,
+    "captureFrame": 8,
+    "sceneTelemetryMatched": true,
+    "beforeAndAfterRgbaSha256": {
+      "hello-wall.ifc-deferred-raster": "a1a4c7df09d26c18a9a3781053188292357e685528505bfaa373e1fb39292632",
+      "hello-wall.ifc-forward-raster": "2a9833cdc82d81ba37ecc881f86d61d84256e2237f3c04553743711b7bb8d787",
+      "hello-wall.ifcx-deferred-raster": "e0cceeba84d88d7243df9ac97b61b395129a79b3d2874105437393f0ae1ee1d0",
+      "hello-wall.ifcx-forward-raster": "0818ff6539a25751558c374393c09bb0b666e2c32064ea3b5650047fcfcce043",
+      "TeklaHouse.ifc-deferred-raster": "fae8134b959d0b7f7d6d7f38b1e13ab4032b3cfccef681a44a26fe88cb6a06a6",
+      "TeklaHouse.ifc-forward-raster": "10c9096441c20f55b3cba7b43eba5070132fe4a3016d9ae3c9d20d02e73cd933",
+      "TeklaHouse.ifcx-deferred-raster": "1a1422633f560dd39ca03647213c81fb87a941200dc5f24b10050d6badeb62fc",
+      "TeklaHouse.ifcx-forward-raster": "4449712eed7237f1ced67dc87320d384bc4a18b26bc111369b09af2838204734"
+    },
+    "guiRegressions": {
+      "lifecycle": {
+        "casesPassed": 10,
+        "synchronizationValidation": true
+      },
+      "cancellation": {
+        "casesPassed": 2,
+        "synchronizationValidation": true
+      }
+    }
+  }
+}
