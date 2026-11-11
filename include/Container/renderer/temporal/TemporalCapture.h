@@ -9,6 +9,7 @@
 #include "Container/utility/GltfMaterialBindingRequest.h"
 #include "Container/utility/ResourceCatalogControls.h"
 #include "Container/geometry/GltfCameraAuthoring.h"
+#include "Container/renderer/lighting/DdgiSettings.h"
 #include "Container/renderer/lighting/LightEditTypes.h"
 #include "Container/renderer/lighting/SkySettings.h"
 #include "Container/renderer/pathtracing/ReferenceOidnSettings.h"
@@ -150,6 +151,7 @@ struct CaptureEvent {
   std::optional<container::renderer::UpscaleSelection> upscaling;
   std::optional<bool> rayShadowDenoise;
   std::optional<bool> ddgiPaused, ddgiEnabled;
+  std::optional<float> ddgiIntensity;
   std::optional<uint32_t> ddgiFitProbes;
   std::optional<uint32_t> rayShadowSamples;
   std::optional<uint32_t> areaLightSamples;
@@ -305,7 +307,7 @@ public:
         // mutation keys cannot bypass isolation by looking inert after parse.
         nodeFields(value,{"frame","lightEdit","lightSelection","lightAdd","expectLightEditFailure",
             "taa","fsr","dlss","exposure","resize","depthProbe","environment","environmentAsync","environmentYaw","proceduralSky","technique","rayShadows","rayShadowSamples","rayShadowDenoise","reloadShaders","gpuTransforms",
-            "areaLighting","areaLightSamples","ddgiPaused","ddgiEnabled","samples","reset"},"light action event");
+            "areaLighting","areaLightSamples","ddgiPaused","ddgiEnabled","ddgiIntensity","samples","reset"},"light action event");
       }
       for(const auto& [field,present,destination]:{
           std::tuple{"expectCameraProjectionFailure",event.cameraProjection.has_value(),&event.expectCameraProjectionFailure},
@@ -550,6 +552,15 @@ public:
       }
       boolean("ddgiPaused", event.ddgiPaused);
       boolean("ddgiEnabled", event.ddgiEnabled);
+      if (value.contains("ddgiIntensity")) {
+        const auto &input = value.at("ddgiIntensity");
+        const double intensity = input.is_number() ? input.get<double>() : -1.0;
+        if (!std::isfinite(intensity) || intensity < 0.0 ||
+            intensity > container::renderer::kMaxDdgiIntensity)
+          throw std::invalid_argument(
+              "Capture ddgiIntensity must be a finite number in [0,10000]");
+        event.ddgiIntensity = static_cast<float>(intensity);
+      }
       if (value.contains("ddgiFitProbes")) {
         const auto &probes = value.at("ddgiFitProbes");
         const double count = probes.is_number() ? probes.get<double>() : -1.0;

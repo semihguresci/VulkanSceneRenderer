@@ -372,7 +372,7 @@ void printCommandLineHelp() {
                                 Enable/disable supported thin-glass transmission
   --ddgi-fit-scene              Fit probes and trace settings once to scene bounds
   --ddgi-fit-probes N           Maximum fitted probes, >=27 (2048); requires fit
-  --ddgi-debug VIEW             off|irradiance|visibility|classification|relocation
+  --ddgi-debug VIEW             off|irradiance|visibility|classification|relocation|visibility-spread
   --ddgi-probe-radius F         Diagnostic sphere radius in world units (0.06)
   --ddgi-origin X Y Z            First world-space probe (-1.5,-0.1,-1.5)
   --ddgi-spacing X Y Z           Positive world-space spacing (0.5,0.5,0.5)
@@ -1036,6 +1036,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
         config.ddgi.debugView = DdgiDebugView::Classification;
       else if (view == "relocation")
         config.ddgi.debugView = DdgiDebugView::Relocation;
+      else if (view == "visibility-spread")
+        config.ddgi.debugView = DdgiDebugView::VisibilitySpread;
       else
         throw std::invalid_argument("Unknown DDGI debug view");
       rememberDdgi([](auto &s) -> auto & { return s.debugView; });

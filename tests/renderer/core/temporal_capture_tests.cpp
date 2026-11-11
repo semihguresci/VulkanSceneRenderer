@@ -688,6 +688,39 @@ TEST(TemporalCapture, DdgiFlagsApplyOnceIncludingFalse) {
   EXPECT_EQ(sequence.sample(3).event.ddgiPaused, false);
   EXPECT_EQ(sequence.sample(3).event.ddgiEnabled, true);
 }
+
+TEST(TemporalCapture, DdgiIntensityAppliesOnceIncludingZero) {
+  const CaptureSequence sequence(json::parse(R"({"schemaVersion":1,"frames":6,
+    "events":[{"frame":1,"ddgiIntensity":1},
+              {"frame":3,"ddgiIntensity":0,"ddgiPaused":true},
+              {"frame":5,"ddgiIntensity":0.125},
+              {"frame":6,"ddgiIntensity":10000}]})"));
+  EXPECT_EQ(sequence.sample(1).event.ddgiIntensity, 1.f);
+  EXPECT_FALSE(sequence.sample(1).event.ddgiPaused.has_value());
+  EXPECT_FALSE(sequence.sample(2).event.ddgiIntensity.has_value());
+  EXPECT_EQ(sequence.sample(3).event.ddgiIntensity, 0.f);
+  EXPECT_EQ(sequence.sample(3).event.ddgiPaused, true);
+  EXPECT_FALSE(sequence.sample(3).event.ddgiEnabled.has_value());
+  EXPECT_FALSE(sequence.sample(4).event.ddgiIntensity.has_value());
+  EXPECT_EQ(sequence.sample(5).event.ddgiIntensity, .125f);
+  EXPECT_EQ(sequence.sample(6).event.ddgiIntensity,
+            container::renderer::kMaxDdgiIntensity);
+}
+
+TEST(TemporalCapture, RejectsInvalidDdgiIntensityBeforeNarrowing) {
+  auto input = json::parse(
+      R"({"schemaVersion":1,"frames":2,"events":[{"frame":1}]})");
+  auto &intensity = input["events"][0]["ddgiIntensity"];
+  for (const char *encoded : {"-0.00001", "10000.0001", "1e39", "\"1\"", "true",
+                              "false", "null", "[]", "{}"}) {
+    SCOPED_TRACE(encoded);
+    intensity = json::parse(encoded);
+    EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+  }
+  intensity = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+}
+
 TEST(TemporalCapture, DdgiSceneFitIsAnExactEventWithoutImplicitEnable) {
   CaptureSequence sequence(json::parse(R"({"schemaVersion":1,"frames":4,
     "events":[{"frame":2,"ddgiFitProbes":1024}]})"));
@@ -2254,7 +2287,7 @@ TEST(TemporalCapture, CameraActionsRequireSeparateMutationEventsAndAllowDisplayC
       event[action]=request;
       EXPECT_THROW((void)CaptureSequence(typedEditCapture(event)),std::invalid_argument)<<event;
     }
-    EXPECT_NO_THROW((void)CaptureSequence(typedEditCapture({{action,request},{"taa",false},{"exposure",.35},{"resize",{640,360}}})));
+    EXPECT_NO_THROW((void)CaptureSequence(typedEditCapture({{action,request},{"taa",false},{"exposure",.35},{"resize",{640,360}},{"ddgiIntensity",0}})));
   }
 }
 

@@ -24,6 +24,9 @@ from quality_fixtures import write_fixtures
 from run_runtime import repository_path, write_json, VALIDATION_ERROR, validate_selected_probes
 
 EXPOSURE = .04
+COARSE_GRID = ((.75, .75, .75), (9, 5, 5))
+FINE_GRID = ((.25, .25, .25), (25, 13, 13))
+LUMINANCE_WEIGHTS = np.array([.2126, .7152, .0722])
 
 
 def decode_radiance(rgb, exposure=EXPOSURE):
@@ -36,11 +39,9 @@ def decode_radiance(rgb, exposure=EXPOSURE):
     return x / exposure
 
 
-def receiver_metrics(png, scene, camera=None):
-    image = np.asarray(Image.open(png).convert("RGB"))
+def receiver_pixels(image, scene, camera):
     if list(image.shape[:2][::-1]) != scene["captureSize"]:
         raise AssertionError("Capture resolution differs from fixture ROI")
-    result = {}
     for receiver in scene["receivers"]:
         left, top, right, bottom = receiver["pixelRoi"]
         if camera:
@@ -55,24 +56,62 @@ def receiver_metrics(png, scene, camera=None):
         if not (0 <= left < right <= image.shape[1] and
                 0 <= top < bottom <= image.shape[0]):
             raise AssertionError("Receiver ROI outside capture")
-        pixels = image[top:bottom, left:right]
+        yield receiver["name"], [left, top, right, bottom], image[top:bottom, left:right]
+
+
+def receiver_metrics(png, scene, camera=None):
+    with Image.open(png) as source:
+        image = np.asarray(source.convert("RGB"))
+    result = {}
+    for name, roi, pixels in receiver_pixels(image, scene, camera):
         hdr = decode_radiance(pixels)
         mean = hdr.mean(axis=(0, 1))
-        result[receiver["name"]] = {
-            "pixelRoi": [left, top, right, bottom], "meanRgb8": pixels.mean(axis=(0, 1)).tolist(),
+        codes = pixels.astype(np.float64)
+        lower = decode_radiance(np.clip(codes - .5, 0, 255)).mean(axis=(0, 1))
+        upper = decode_radiance(np.clip(codes + .5, 0, 255)).mean(axis=(0, 1))
+        result[name] = {
+            "pixelRoi": roi, "meanRgb8": pixels.mean(axis=(0, 1)).tolist(),
             "estimatedRadiance": mean.tolist(),
-            "estimatedLuminance": float(mean @ [.2126, .7152, .0722]),
+            "estimatedLuminance": float(mean @ LUMINANCE_WEIGHTS),
+            "luminanceQuantizationInterval": [float(lower @ LUMINANCE_WEIGHTS),
+                                              float(upper @ LUMINANCE_WEIGHTS)],
             "saturatedChannelFraction": float((pixels >= 254).mean()),
         }
     return result
 
 
+def exr_decoder():
+    os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
+    try:
+        import cv2
+    except ImportError as error:
+        raise ValueError("Scene-linear EXR measurement requires OpenCV with OpenEXR enabled") from error
+    return cv2
+
+
+def linear_receiver_metrics(exr, scene, camera=None):
+    cv2 = exr_decoder()
+    try:
+        bgr = cv2.imdecode(np.frombuffer(exr.read_bytes(), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    except cv2.error as error:
+        raise ValueError(f"Could not decode scene-linear EXR: {exr}") from error
+    if bgr is None or bgr.ndim != 3 or bgr.shape[2] != 3 or bgr.dtype != np.float32 or not np.isfinite(bgr).all():
+        raise ValueError(f"Expected finite float32 RGB in {exr}")
+    result = {}
+    for name, roi, pixels in receiver_pixels(bgr[:, :, ::-1], scene, camera):
+        mean = pixels.mean(axis=(0, 1), dtype=np.float64)
+        luminance = float(mean @ LUMINANCE_WEIGHTS)
+        result[name] = {"pixelRoi": roi, "estimatedRadiance": mean.tolist(), "estimatedLuminance": luminance,
+                        "luminanceFloatInterval": [luminance, luminance]}
+    return result
+
+
 def command_for(exe, output, scene, name, frames, enabled=True, coarse=False,
                 fine=False, technique="deferred-raster", sequence=None,
-                preset=None, save_preset=None):
+                preset=None, save_preset=None, extra=(), linear=False):
     volume = scene["volume"]
-    spacing = [.75, .75, .75] if coarse else [.25, .25, .25] if fine else volume["spacing"]
-    counts = [9, 5, 5] if coarse else [25, 13, 13] if fine else volume["counts"]
+    spacing, counts = (COARSE_GRID if coarse else FINE_GRID if fine else
+                       (volume["spacing"], volume["counts"]))
     command = [str(exe), "--model", str(output / scene["gltf"]),
         "--width", str(scene["captureSize"][0]), "--height", str(scene["captureSize"][1]),
         "--hidden", "--no-ui", "--validation", "--no-bloom", "--no-taa", "--msaa", "1",
@@ -82,7 +121,7 @@ def command_for(exe, output, scene, name, frames, enabled=True, coarse=False,
         "--camera-fov", str(scene["camera"]["fov"]), "--exposure", str(EXPOSURE),
         "--environment-intensity", "0", "--directional-intensity", "0",
         "--ray-shadows", "hard", "--area-lighting", "sampled", "--area-light-samples", "64",
-        "--screenshot", str(output / f"{name}.png"),
+        "--screenshot", str(output / (f"{name}.exr" if linear else f"{name}.png")),
         "--warmup-frames", str(frames - 1), "--capture-frame", str(frames)]
     # Keep the field active in both captures so coverage suppresses the same
     # legacy ambient/bounce approximation. Only primary indirect output differs.
@@ -97,11 +136,14 @@ def command_for(exe, output, scene, name, frames, enabled=True, coarse=False,
         command += ["--ddgi-preset", str(preset)]
     if save_preset:
         command += ["--ddgi-save-preset", str(save_preset)]
-    return command
+    return command + list(extra)
 
 
 def capture(exe, output, environment, scene, name, frames, timeout, **options):
     command = command_for(exe, output, scene, name, frames, **options)
+    linear = options.get("linear", False)
+    extension = "exr" if linear else "png"
+    measure_receivers = linear_receiver_metrics if linear else receiver_metrics
     sample_frames = (json.loads(options["sequence"].read_text())["sampleFrames"]
                      if options.get("sequence") else [frames])
     record = {"name": name, "fixture": scene["name"], "command": command,
@@ -109,10 +151,12 @@ def capture(exe, output, environment, scene, name, frames, timeout, **options):
     paths = []
     for frame in sample_frames:
         stem = name if frame == frames else f"{name}.frame-{frame:04d}"
-        png, telemetry = output / f"{stem}.png", output / f"{stem}.telemetry.json"
-        png.unlink(missing_ok=True)
+        image, telemetry = output / f"{stem}.{extension}", output / f"{stem}.telemetry.json"
+        capture_metadata = image.with_name(f"{image.name}.capture.json")
+        image.unlink(missing_ok=True)
         telemetry.unlink(missing_ok=True)
-        paths.append((frame, png, telemetry))
+        capture_metadata.unlink(missing_ok=True)
+        paths.append((frame, image, telemetry, capture_metadata))
     started = time.monotonic()
     try:
         run = subprocess.run(command, cwd=exe.parent, env=environment, capture_output=True,
@@ -126,15 +170,20 @@ def capture(exe, output, environment, scene, name, frames, timeout, **options):
                   validationErrors=[line for line in log.splitlines() if VALIDATION_ERROR.search(line)])
     if code != 0 or record["validationErrors"]:
         record["failures"].append("Renderer failed or logged validation/runtime errors")
-    for frame, png, telemetry_path in paths:
+    for frame, image, telemetry_path, capture_metadata in paths:
         try:
             telemetry = json.loads(telemetry_path.read_text(encoding="utf-8"))
             gi = telemetry["ddgi"]
             if not gi["active"]:
                 raise AssertionError(f"Inactive DDGI: {gi['status']}")
-            record["frames"].append({"frame": frame, "png": png.name, "gpu": telemetry["gpu"],
+            record["frames"].append({"frame": frame, extension: image.name, "gpu": telemetry["gpu"],
                 "ddgi": gi, "rayShadows": telemetry["rayShadows"],
-                "camera": telemetry["camera"], "receivers": receiver_metrics(png, scene, telemetry["camera"])})
+                "camera": telemetry["camera"], "scene": telemetry.get("scene"),
+                "technique": telemetry.get("technique"), "lighting": telemetry.get("lighting"),
+                "passes": telemetry.get("passes", []),
+                "capture": (json.loads(capture_metadata.read_text(encoding="utf-8"))
+                            if capture_metadata.is_file() else None),
+                "receivers": measure_receivers(image, scene, telemetry["camera"])})
         except (OSError, ValueError, KeyError, AssertionError) as error:
             record["failures"].append(str(error))
     record["passed"] = not record["failures"]

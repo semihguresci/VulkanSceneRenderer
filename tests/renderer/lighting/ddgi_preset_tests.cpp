@@ -48,7 +48,7 @@ DdgiPreset variedPreset() {
   settings.viewBias = .0625f;
   settings.visibilityBias = .25f;
   settings.intensity = 2.25f;
-  settings.debugView = DdgiDebugView::Relocation;
+  settings.debugView = DdgiDebugView::VisibilitySpread;
   settings.debugProbeRadius = .25f;
   settings.payloadBudgetBytes = 32ull * 1024 * 1024;
   settings.surfaceBudgetBytes = 96ull * 1024 * 1024;
@@ -268,7 +268,7 @@ TEST(DdgiPresetTests, RejectsNonfiniteOverflowAndInvalidSettings) {
            {"/settings/hysteresis", 1},
            {"/settings/normalBias", 21},
            {"/settings/payloadBudgetBytes", 1},
-           {"/settings/debugView", 5}}) {
+           {"/settings/debugView", 6}}) {
     auto document = original;
     document[Json::json_pointer(field)] = value;
     EXPECT_THROW((void)decodeDdgiPreset(document.dump()), std::invalid_argument)

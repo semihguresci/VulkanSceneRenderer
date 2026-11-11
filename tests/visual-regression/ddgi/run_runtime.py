@@ -178,12 +178,15 @@ def surface_validation_cases(output):
     ]
 
 
+PROBE_DEBUG_VIEWS = ("irradiance", "visibility", "classification", "relocation", "visibility-spread")
+
+
 def debug_cases():
     cases = []
     for technique in ("deferred-raster", "forward-raster"):
         prefix = technique.split("-")[0]
         cases.append(Case(f"debug-{prefix}-off", technique, frame_count=6))
-        for view in ("irradiance", "visibility", "classification", "relocation"):
+        for view in PROBE_DEBUG_VIEWS:
             cases.append(Case(f"debug-{prefix}-{view}", technique,
                               ("--ddgi-debug", view), frame_count=6))
     cases += [
@@ -205,12 +208,16 @@ def check_debug_images(output):
     for technique in ("deferred", "forward"):
         baseline = np.asarray(Image.open(output / f"debug-{technique}-off.png").convert("RGB"),
                               dtype=np.int16)
-        for view in ("irradiance", "visibility", "classification", "relocation"):
+        for view in PROBE_DEBUG_VIEWS:
             overlay = np.asarray(Image.open(output / f"debug-{technique}-{view}.png").convert("RGB"),
                                  dtype=np.int16)
             changed = int(np.count_nonzero(np.max(np.abs(overlay - baseline), axis=2) > 8))
             require(changed > 20, f"{technique} {view}: probe overlay did not change the image")
             comparisons.append({"technique": technique, "view": view, "changedPixels": changed})
+        mean = np.asarray(Image.open(output / f"debug-{technique}-visibility.png").convert("RGB"), dtype=np.int16)
+        spread = np.asarray(Image.open(output / f"debug-{technique}-visibility-spread.png").convert("RGB"), dtype=np.int16)
+        require(np.count_nonzero(np.max(np.abs(mean - spread), axis=2) > 8) > 20,
+                f"{technique}: visibility spread did not differ from mean distance")
     return comparisons
 
 

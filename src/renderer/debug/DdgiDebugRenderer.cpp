@@ -100,7 +100,8 @@ void DdgiDebugRenderer::record(VkCommandBuffer cmd, VkDescriptorSet postSet,
                                DdgiDebugView view, float radius) const {
   const auto mode = static_cast<uint32_t>(view);
   if (cmd == VK_NULL_HANDLE || postSet == VK_NULL_HANDLE ||
-      ddgiSet == VK_NULL_HANDLE || probeCount == 0 || mode < 1 || mode > 4 ||
+      ddgiSet == VK_NULL_HANDLE || probeCount == 0 || view == DdgiDebugView::Off ||
+      mode > static_cast<uint32_t>(DdgiDebugView::VisibilitySpread) ||
       !std::isfinite(radius) || radius <= 0.f || radius > kMaxDdgiTraceDistance)
     return;
   const auto &p = *impl_;

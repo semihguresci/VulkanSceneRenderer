@@ -34,8 +34,8 @@ void validateDdgiSettings(const DdgiSettings &settings) {
               "visibilityBias");
   finiteRange(settings.intensity, 0.f, kMaxDdgiIntensity, "intensity");
   if (static_cast<uint32_t>(settings.debugView) >
-      static_cast<uint32_t>(DdgiDebugView::Relocation))
-    throw std::invalid_argument("DDGI debugView must be in [0,4]");
+      static_cast<uint32_t>(DdgiDebugView::VisibilitySpread))
+    throw std::invalid_argument("DDGI debugView must be in [0,5]");
   if (!std::isfinite(settings.debugProbeRadius) ||
       settings.debugProbeRadius <= 0.f ||
       settings.debugProbeRadius > kMaxDdgiTraceDistance)
