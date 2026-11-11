@@ -89,6 +89,18 @@ public:
   propertySetsForObject(uint32_t objectIndex) const;
 
 private:
+  struct StringHash {
+    using is_transparent = void;
+
+    size_t operator()(std::string_view value) const noexcept {
+      return std::hash<std::string_view>{}(value);
+    }
+  };
+  template <typename Value>
+  using StringIndex =
+      std::unordered_map<std::string, Value, StringHash, std::equal_to<>>;
+  using NodeIndex = StringIndex<std::vector<uint32_t>>;
+
   struct EdgeIdentity {
     uint32_t from;
     uint32_t to;
@@ -117,12 +129,14 @@ private:
                                                   std::string_view label,
                                                   BimRelationshipKind kind);
   [[nodiscard]] uint32_t objectNodeIndex(uint32_t objectIndex) const;
-  [[nodiscard]] std::vector<uint32_t> resolveRelationshipEndpoints(
+  [[nodiscard]] static std::span<const uint32_t>
+  identityMatches(const NodeIndex &index, std::string_view key);
+  void resolveRelationshipEndpoints(
       std::string_view guid, std::string_view sourceId, std::string_view label,
-      BimRelationshipKind kind);
+      BimRelationshipKind kind, std::vector<uint32_t> &result);
   [[nodiscard]] uint32_t existingObjectNodeForSynthetic(
       std::string_view label, std::string_view ifcClass,
-      std::string_view guid, std::string_view sourceId) const;
+      std::string_view guid, std::string_view sourceId);
   void addEdge(uint32_t from, uint32_t to, BimRelationshipKind kind,
                std::string label);
   void addSearchField(uint32_t objectIndex, std::string_view text,
@@ -135,9 +149,10 @@ private:
   std::vector<BimRelationshipEdge> edges_{};
   std::unordered_set<EdgeIdentity, EdgeIdentityHash> edgeIdentities_{};
   std::unordered_map<uint32_t, uint32_t> nodeByObjectIndex_{};
-  std::unordered_map<std::string, std::vector<uint32_t>> nodeByGuid_{};
-  std::unordered_map<std::string, std::vector<uint32_t>> nodeBySourceId_{};
-  std::unordered_map<std::string, std::vector<uint32_t>> nodeByLabel_{};
+  NodeIndex nodeByGuid_{};
+  NodeIndex nodeBySourceId_{};
+  NodeIndex nodeByLabel_{};
+  std::unordered_map<uint32_t, StringIndex<uint32_t>> sharedLabelMatches_{};
   std::unordered_map<std::string, uint32_t> syntheticNodeByKey_{};
   std::unordered_map<uint32_t, std::vector<BimPropertySetGroup>>
       propertySetsByObject_{};
