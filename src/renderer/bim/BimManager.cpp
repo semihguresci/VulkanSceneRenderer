@@ -1530,6 +1530,16 @@ BimManager::PreparedScene::PreparedScene(PreparedScene &&) noexcept = default;
 BimManager::PreparedScene &
 BimManager::PreparedScene::operator=(PreparedScene &&) noexcept = default;
 
+BimMetadataTableView BimManager::PreparedScene::metadata() const noexcept {
+  return drawData ? BimMetadataTableView(drawData->metadata) : BimMetadataTableView{};
+}
+
+const BimRelationshipGraph &BimManager::PreparedScene::relationships() const {
+  if (!drawData)
+    throw std::logic_error("BIM relationship graph requires a prepared scene");
+  return drawData->relationships;
+}
+
 BimManager::BimManager(std::shared_ptr<container::gpu::VulkanDevice> device,
                        container::gpu::AllocationManager &allocationManager,
                        container::gpu::PipelineManager &pipelineManager)
@@ -2944,8 +2954,11 @@ BimManager::resolveModelPath(const std::string &path) {
 BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
                                                    float importScale,
     std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions,
-    std::stop_token stop, const std::function<void(std::string_view)> &progress) {
+    std::stop_token stop, const std::function<void(std::string_view)> &progress,
+    const std::function<void(std::string_view)> &profileStage) {
   container::util::checkModelImportCancellation(stop);
+  if (profileStage)
+    profileStage("parse");
   PreparedScene prepared;
   prepared.assetPath = resolveModelPath(path);
   prepared.requestedPath = path;
@@ -3003,13 +3016,21 @@ BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
   }
   container::util::checkModelImportCancellation(stop);
   requireGeometry();
+  if (profileStage)
+    profileStage("meshlets");
   prepared.meshletClusters = buildMeshletClusterMetadataForModel(prepared.model, stop);
+  if (profileStage)
+    profileStage("optimizedMetadata");
   prepared.optimizedMetadata = buildOptimizedModelMetadata(
       prepared.assetPath, prepared.model, prepared.meshletClusters, stop);
   container::util::checkModelImportCancellation(stop);
+  if (profileStage)
+    profileStage("geometryCopy");
   prepared.uploadVertices = prepared.model.vertices;
   container::util::checkModelImportCancellation(stop);
   prepared.uploadIndices = prepared.model.indices;
+  if (profileStage)
+    profileStage("floorPlans");
   const auto prepareFloorPlan = [&](bool preserveElevation,
                                     BimFloorPlanOverlayData &overlay) {
     const auto result = appendFloorPlanOverlayGeometry(
@@ -3022,7 +3043,7 @@ BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
   };
   prepareFloorPlan(false, prepared.floorPlanGround);
   prepareFloorPlan(true, prepared.floorPlanSourceElevation);
-  prepared.drawData = prepareDrawData(prepared.model, stop, progress);
+  prepared.drawData = prepareDrawData(prepared.model, stop, progress, profileStage);
   container::util::checkModelImportCancellation(stop);
   return prepared;
 }
@@ -3228,7 +3249,10 @@ void BimManager::loadPreparedModel(
 std::unique_ptr<BimManager::PreparedDrawData> BimManager::prepareDrawData(
     const container::geometry::dotbim::Model &model,
     std::stop_token stop,
-    const std::function<void(std::string_view)> &progress) {
+    const std::function<void(std::string_view)> &progress,
+    const std::function<void(std::string_view)> &profileStage) {
+  if (profileStage)
+    profileStage("drawMetadata");
   auto result = std::make_unique<PreparedDrawData>();
   result->catalog.setModelUnitMetadata(bimModelUnitMetadata(model.unitMetadata));
   result->catalog.setModelGeoreferenceMetadata(
@@ -3483,6 +3507,8 @@ std::unique_ptr<BimManager::PreparedDrawData> BimManager::prepareDrawData(
   for (auto &draw : transparentPendingDraws)
     appendMetadata(draw);
   result->metadata.seal();
+  if (profileStage)
+    profileStage("relationships");
   result->relationships.build(result->metadata, model.relationships, [&] {
     container::util::checkModelImportCancellation(stop);
     if (progress)

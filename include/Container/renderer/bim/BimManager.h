@@ -583,6 +583,9 @@ public:
     PreparedScene(PreparedScene &&) noexcept;
     PreparedScene &operator=(PreparedScene &&) noexcept;
 
+    [[nodiscard]] BimMetadataTableView metadata() const noexcept;
+    [[nodiscard]] const BimRelationshipGraph &relationships() const;
+
     container::geometry::dotbim::Model model;
     std::filesystem::path assetPath;
     std::string format;
@@ -598,11 +601,13 @@ public:
   };
   // CPU-only staging. The optional observer runs inline and may request a stop.
   // It must not access live renderer state or Vulkan resources.
+  // The profiling observer receives one notification at the start of each stage.
   [[nodiscard]] static PreparedScene prepareScene(const std::string &path,
                                                   float importScale,
       std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions = {},
       std::stop_token stop = {},
-      const std::function<void(std::string_view)> &progress = {});
+      const std::function<void(std::string_view)> &progress = {},
+      const std::function<void(std::string_view)> &profileStage = {});
   [[nodiscard]] const auto& openVdbOptions() const { return openVdbOptions_; }
   void loadPreparedScene(PreparedScene &&prepared,
                          container::scene::SceneManager &sceneManager);
@@ -895,7 +900,8 @@ private:
                          PreparedScene *prepared = nullptr);
   [[nodiscard]] static std::unique_ptr<PreparedDrawData> prepareDrawData(
       const container::geometry::dotbim::Model &model, std::stop_token stop,
-      const std::function<void(std::string_view)> &progress = {});
+      const std::function<void(std::string_view)> &progress = {},
+      const std::function<void(std::string_view)> &profileStage = {});
   void installDrawData(const container::geometry::dotbim::Model &model,
                        PreparedDrawData &prepared,
                        container::scene::SceneManager &sceneManager);
