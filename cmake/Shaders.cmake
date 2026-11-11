@@ -42,6 +42,7 @@ endif()
 file(GLOB SLANG_SOURCES CONFIGURE_DEPENDS "${SHADERS_DIR}/*.slang")
 set(SLANG_INCLUDE_SHADER_NAMES
     depth_normal_common.slang
+    ltc_path_profile.slang
     surface_normal_common.slang
     pbr_material_common.slang
     pbr_extended_common.slang
@@ -172,6 +173,7 @@ file(WRITE "${CMAKE_BINARY_DIR}/runtime_shader_reload_tool.txt" "${CMAKE_COMMAND
 
 function(add_slang_output OUTPUTS_VAR SLANG_SOURCE ENTRY_POINT OUTPUT_PATH)
     get_filename_component(_output_name "${OUTPUT_PATH}" NAME)
+    get_filename_component(_output_directory "${OUTPUT_PATH}" DIRECTORY)
     set(_reflection "${RELOAD_INTERFACE_DIR}/${_output_name}.json")
     set(_depfile "${RELOAD_INTERFACE_DIR}/${_output_name}.d")
     set(_interface_flags)
@@ -179,6 +181,7 @@ function(add_slang_output OUTPUTS_VAR SLANG_SOURCE ENTRY_POINT OUTPUT_PATH)
     set(_fingerprint_command)
     get_filename_component(_source_directory "${SLANG_SOURCE}" DIRECTORY)
     if(_source_directory STREQUAL SHADERS_DIR AND
+       _output_directory STREQUAL COMPILED_SHADERS_DIR AND
        NOT _output_name STREQUAL "openvdb_transport_reference.comp.spv")
         set(_interface_flags -reflection-json "${_reflection}")
         set(_interface_products BYPRODUCTS "${_reflection}" "${_depfile}.sha256")
@@ -196,7 +199,7 @@ function(add_slang_output OUTPUTS_VAR SLANG_SOURCE ENTRY_POINT OUTPUT_PATH)
     add_custom_command(
         OUTPUT "${OUTPUT_PATH}"
         ${_interface_products}
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${COMPILED_SHADERS_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${_output_directory}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${RELOAD_INTERFACE_DIR}"
         COMMAND "${SLANGC_EXECUTABLE}" "${SLANG_SOURCE}"
                 ${SLANG_SPIRV_FLAGS}
@@ -259,6 +262,32 @@ endforeach()
 add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/forward_opaque.slang" "fragMain"
     "${COMPILED_SHADERS_DIR}/forward_opaque_ray_no_ddgi.frag.spv"
     -DDDGI_DISABLED=1 -DFORWARD_RAY_QUERY=1 -capability spvRayQueryKHR)
+
+# Keep diagnostic SPIR-V out of both default staging and runtime reload.
+set(LTC_PROFILE_OUTPUTS)
+set(LTC_PROFILE_SHADER_DIR "${CMAKE_BINARY_DIR}/ltc_profile_shaders")
+set(LTC_PROFILE_SHADER_NAMES deferred_directional deferred_directional_no_ddgi post_process)
+foreach(LTC_PROFILE_SHADER IN LISTS LTC_PROFILE_SHADER_NAMES)
+    string(REGEX REPLACE "_no_ddgi$" "" LTC_PROFILE_SOURCE "${LTC_PROFILE_SHADER}")
+    set(LTC_PROFILE_DEFINES -DCONTAINER_PROFILE_LTC_PATHS=1)
+    if(LTC_PROFILE_SHADER MATCHES "_no_ddgi$")
+        list(APPEND LTC_PROFILE_DEFINES -DDDGI_DISABLED=1)
+    endif()
+    add_slang_output(LTC_PROFILE_OUTPUTS "${SHADERS_DIR}/${LTC_PROFILE_SOURCE}.slang" "fragMain"
+        "${LTC_PROFILE_SHADER_DIR}/ltc_profile_${LTC_PROFILE_SHADER}.frag.spv" ${LTC_PROFILE_DEFINES})
+    list(APPEND LTC_PROFILE_OUTPUTS "${COMPILED_SHADERS_DIR}/${LTC_PROFILE_SHADER}.frag.spv")
+endforeach()
+set(LTC_PROFILE_HASHES "${LTC_PROFILE_SHADER_DIR}/shader-pairs.sha256")
+add_custom_command(OUTPUT "${LTC_PROFILE_HASHES}"
+    COMMAND ${CMAKE_COMMAND}
+        "-DORDINARY_SHADER_DIR=${COMPILED_SHADERS_DIR}"
+        "-DPROFILE_SHADER_DIR=${LTC_PROFILE_SHADER_DIR}"
+        "-DPROFILE_SHADER_NAMES=${LTC_PROFILE_SHADER_NAMES}"
+        -P "${CMAKE_CURRENT_LIST_DIR}/LtcProfileShaderHashes.cmake"
+    DEPENDS ${LTC_PROFILE_OUTPUTS} "${CMAKE_CURRENT_LIST_DIR}/LtcProfileShaderHashes.cmake"
+    COMMENT "Recording ordinary and diagnostic LTC shader hashes"
+    VERBATIM)
+add_custom_target(ltc_profile_shaders DEPENDS "${LTC_PROFILE_HASHES}")
 
 # Geometry shaders for specific files.
 foreach(SLANG_GEOMETRY_SHADER_NAME IN LISTS SLANG_GEOMETRY_SHADER_NAMES)

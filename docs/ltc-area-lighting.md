@@ -188,7 +188,8 @@ The GPU matrix checks rectangle/disk near-field, horizon, grazing, sidedness,
 mirrored transforms, roughness, layers and transparency. It also checks
 forward/deferred parity, raster/hard-ray/soft-ray visibility, missing/corrupt
 assets in independent runtimes, and integration/quality changes with TAA enabled.
-Benchmarks measure the Lighting pass at 1, 8, 32 and 128 emitters.
+The repeatable benchmark measures Lighting and G-buffer cost at 1, 8, 32 and
+128 emitters.
 The material-layer regression isolates environment-only and direct-only
 lighting, checks metallic iridescence and sampled extension textures, and
 compares UV-set/transform selection and MSAA/resize transitions in both pipelines.
@@ -201,6 +202,72 @@ gaps between them. It reports centre-normalized and local errors separately.
 Run that group with `--case spatial`. For a diffuse-material cost comparison,
 use `--case benchmark` with
 `--benchmark-material dielectric --benchmark-lights 32`.
+
+### Repeatable disk profiling
+
+Use a Release renderer and enable GPU tests with `CONTAINER_RUN_GPU_LTC=1`.
+Use `--case correctness` or the opt-in GPU CTest target for the accuracy
+suite alone. The benchmark commands assume a Ninja Release build at `$build`.
+The benchmark first records independent timing processes with validation off,
+then captures both modes with Khronos synchronization validation and checks
+them against the same numerical reference and thresholds as the quality
+suite. Configure `VK_LAYER_PATH` if the SDK's validation layer is outside the
+Vulkan loader's normal search path.
+
+```powershell
+$env:CONTAINER_RUN_GPU_LTC = '1'
+python -B tests/validation/ltc_area_light_regression.py `
+  --case benchmark --exe "$build/VulkanSceneRenderer.exe" --output out/ltc-baseline `
+  --benchmark-repeats 5 --benchmark-warmup 48 --benchmark-frames 8 `
+  --benchmark-stride 4 --benchmark-order alternate --benchmark-seed 71
+```
+
+The default matrix uses both metallic and dielectric receivers for coarse
+disks and rectangle controls at 1, 8, 32 and 128 coincident emitters. The
+aggregate emitter radiance stays constant as light count changes. Additional
+single-emitter cases exercise adaptive near-field and horizon clipping,
+guarded material residual, and low-roughness sampled fallback. Use
+`--benchmark-domain` to expand selected cases to every requested light
+count. The older single-run numbers below use their original validation and
+fixture settings.
+
+`benchmark-results.json` records the actual order, executable and shader
+hashes, LUT hashes, GPU/driver identity, capture settings, fixture hashes,
+and raw retired GPU recordings. Each process reports its median and linearly
+interpolated P95 for Lighting and G-buffer, plus the sum of the available
+timed passes. The sum is descriptive because pass coverage can vary. The
+renderer currently supplies pass timestamps. A full-frame timestamp is
+reported when available. Samples use telemetry-only frames to
+avoid image readback during the timing window. The recorded frame is the
+observation frame and the recording serial identifies the previous GPU draw.
+The report also records the capture path's serialized submission policy and
+frames-in-flight setting.
+
+Uncertainty is a descriptive 95% percentile bootstrap of the median of
+independent process medians. Sampled-to-LTC comparisons resample the paired
+ratios. A comparison between builds resamples each build's process medians
+independently. Three repeats are the minimum for a decision and five or more
+are useful when results sit close to a threshold. Re-run with more repeats
+if the interval is wide or crosses the threshold.
+
+For #70, repeat the same command against the new Release executable and add
+`--benchmark-baseline out/ltc-baseline/benchmark-results.json`. Select a
+baseline for the same GPU, driver, Vulkan version and fixture settings.
+Both builds must also use the same LTC table binaries.
+The default 5% allowed increase applies to absolute LTC Lighting medians.
+`--benchmark-threshold-percent` changes it. The comparison exits 1 when the
+entire 95% interval exceeds the limit, 2 when the interval straddles it or
+there are too few repeats, and 0 when the entire interval is within it.
+
+For path diagnostics, install OpenCV with OpenEXR support, build the optional
+`ltc_profile_shaders` target from
+the same build and pass `--benchmark-profile-shaders "$build/ltc_profile_shaders"`.
+The runner stages an isolated shader set and checks its paired hashes. The
+diagnostic shader preserves RGB and writes overlapping per-pixel path flags
+to the final scene-linear EXR. The report counts receiving pixels that took
+each branch at least once across emitters or BRDF terms. A separate matched
+LTC process pair measures the overhead before the EXR capture. The baseline
+timings and regression gate use the ordinary shaders.
 
 The October 8, 2026 validation run on an RTX 2080 SUPER passed 136 quality
 comparisons and 34 absolute forward/deferred comparisons. The largest measured
@@ -381,8 +448,8 @@ shadow launches from unrelated working directories with Windows-only PATH and
 SDK/Vulkan overrides removed. Its 78 shaders, eight DLLs and four LTC files
 matched all 91 payload hashes before and after testing. The original extraction
 was preserved. Package launches disable validation; the full matrix above
-provides synchronization-validation coverage. Screenshot telemetry currently
-does not expose a build revision, so package provenance uses the clean build
+provides synchronization-validation coverage. This historical package predates
+build identity in screenshot telemetry. Its provenance uses the clean build
 log, source checkpoint, archive checksum and payload hashes.
 
 This local test archive is `VulkanSceneRenderer-v0.1.0-ltc-validation-windows-x64.zip`

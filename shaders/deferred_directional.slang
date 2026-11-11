@@ -184,6 +184,19 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
     bool correctDiffuseFresnel = useLtc && any(ltcTerms.diffuseCorrectionScale > 0.0.xxx);
     bool sampleDirectTerms = useLtc &&
         (ltcTerms.stableWeight < 1.0 || ltcTerms.fresnelWeight < 1.0);
+#ifdef CONTAINER_PROFILE_LTC_PATHS
+    if (useLtc)
+    {
+        if (sampleDirectTerms)
+            areaLtcPathMask |= LTC_PROFILE_SAMPLED_BLEND;
+        if (correctDiffuseFresnel)
+            areaLtcPathMask |= LTC_PROFILE_DIFFUSE_FRESNEL;
+        if (correctDiffuseFresnel || ltcTerms.fresnelWeight < ltcTerms.stableWeight)
+            areaLtcPathMask |= LTC_PROFILE_MATERIAL_RESIDUAL;
+    }
+    else if (uLighting.areaLightingMode == AREA_LIGHTING_MODE_LTC)
+        areaLtcPathMask |= LTC_PROFILE_SAMPLED_FALLBACK;
+#endif
     if (useLtc && !sampleDirectTerms && bounceIntensity <= 0.0 && !correctDiffuseFresnel)
     {
         directLighting += (ltcTerms.lighting.stable + ltcTerms.lighting.fresnel) *
@@ -246,6 +259,9 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
         if (!TryCombineAreaLightLtcTerms(ltcTerms, areaShadowVisibility,
                 diffuseCorrection, sampledTerms, ltcContribution))
         {
+#ifdef CONTAINER_PROFILE_LTC_PATHS
+            areaLtcPathMask |= LTC_PROFILE_SAMPLED_FALLBACK;
+#endif
             // A coarse quadrature correction must not remove more energy
             // than the analytic diffuse term. Recover the sampled BRDF.
             ltcContribution = sampleDirectTerms ?
@@ -425,6 +441,9 @@ float4 fragMain(VSOutput input) : SV_Target0
             transmissionScale * directShadowVisibility;
     }
 
+#ifdef CONTAINER_PROFILE_LTC_PATHS
+    areaLtcPathMask = 0u;
+#endif
     uint areaLightCount = min(uLighting.areaLightCount, MAX_AREA_LIGHTS);
     for (uint areaIndex = 0u; areaIndex < areaLightCount; ++areaIndex)
     {
@@ -522,5 +541,10 @@ float4 fragMain(VSOutput input) : SV_Target0
     float3 finalColor =
         DeferredFinite3Or(ambientLighting + directLighting + emissive, 0.0.xxx);
 
+#ifdef CONTAINER_PROFILE_LTC_PATHS
+    float sceneAlpha = float(LTC_PROFILE_MARKER + areaLtcPathMask);
+    return float4(ApplyAerialPerspective(finalColor, worldPosition, uCamera, uLighting), sceneAlpha);
+#else
     return float4(ApplyAerialPerspective(finalColor, worldPosition, uCamera, uLighting), 1.0);
+#endif
 }
