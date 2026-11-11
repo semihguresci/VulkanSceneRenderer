@@ -1,5 +1,6 @@
 #include <Container/geometry/GltfDracoWorker.h>
 #include <Container/geometry/GltfDracoProtocol.h>
+#include <Container/utility/ModelImportCancellation.h>
 
 #include <gtest/gtest.h>
 
@@ -9,8 +10,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <future>
 #include <limits>
 #include <string>
+#include <thread>
 
 #ifndef CONTAINER_HAS_DRACO
 #define CONTAINER_HAS_DRACO 0
@@ -161,6 +164,40 @@ TEST(DracoWorkerClient, TimeoutsCrashesOversizedAndMalformedResponsesLeaveNoFile
     EXPECT_LT(std::chrono::steady_clock::now() - begin, std::chrono::seconds(6));
     EXPECT_TRUE(std::filesystem::is_empty(directory.path));
   }
+}
+
+TEST(DracoWorkerClient, CancelsAStartedDecoderAndCleansOwnedFiles) {
+  using namespace std::chrono_literals;
+  Directory directory;
+  const std::array input{std::byte{7}};
+  const std::array attributes{DracoAttributeRequest{39, 1}};
+  const DracoWorkerOptions options{
+      executable("CONTAINER_DRACO_PROBE_EXECUTABLE", CONTAINER_DRACO_PROBE_EXECUTABLE), directory.path};
+  ASSERT_TRUE(std::filesystem::is_regular_file(options.workerExecutable));
+  auto budget = limits();
+  budget.timeoutMs = 9000;
+  std::stop_source source;
+  auto decode = std::async(std::launch::async, [&] {
+    return DecodeDracoInWorker(input, attributes, budget, options, source.get_token());
+  });
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  bool started = false;
+  while (!started && std::chrono::steady_clock::now() < deadline &&
+         decode.wait_for(0ms) != std::future_status::ready) {
+    for (const auto& entry : std::filesystem::directory_iterator(directory.path)) {
+      std::error_code ignored;
+      if (std::filesystem::is_regular_file(entry.path() / "response.bin", ignored)) {
+        started = true;
+        break;
+      }
+    }
+    if (!started) std::this_thread::sleep_for(2ms);
+  }
+  source.request_stop();
+  EXPECT_TRUE(started);
+  EXPECT_EQ(decode.wait_for(3s), std::future_status::ready);
+  EXPECT_THROW((void)decode.get(), container::util::ModelImportCancelled);
+  EXPECT_TRUE(std::filesystem::is_empty(directory.path));
 }
 
 TEST(DracoWorkerClient, CleanupNeverDeletesVictimFilesThroughWorkerCreatedJunction) {

@@ -2,6 +2,7 @@
 
 #include <Container/geometry/Mesh.h>
 
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -32,7 +33,7 @@ class Model {
   Model& operator=(Model&&) noexcept = default;
 
   static Model LoadFromGltf(const std::string& path);
-  static Model FromMeshes(std::vector<Mesh> meshes);
+  static Model FromMeshes(std::vector<Mesh> meshes, const std::stop_token& stop = {});
   static Model MakeCube();
   static Model MakeSphere(uint32_t latitudeSegments = 16,
                           uint32_t longitudeSegments = 24,
@@ -50,8 +51,8 @@ class Model {
   friend Model gltf::LoadModelFromFile(const std::string& path);
   friend GltfLoadResult gltf::LoadModelWithSource(const std::string& path);
 
-  explicit Model(std::vector<Mesh> meshes);
-  void flattenMeshes();
+  explicit Model(std::vector<Mesh> meshes, const std::stop_token& stop = {});
+  void flattenMeshes(const std::stop_token& stop);
 
   std::vector<Mesh> meshes_{};
   std::vector<Vertex> vertices_{};

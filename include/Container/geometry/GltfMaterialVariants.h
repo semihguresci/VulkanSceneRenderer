@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -64,7 +65,7 @@ public:
 private:
   void validateMaterialCountChange(size_t expectedCurrentMaterialCount,
       size_t newMaterialCount,const MaterialVariantGrowthLimits&) const;
-  friend MaterialVariantLibrary ParseMaterialVariants(const tinygltf::Model&);
+  friend MaterialVariantLibrary ParseMaterialVariants(const tinygltf::Model&, const std::stop_token&);
   friend void CopyMaterialVariantMetadataForExport(tinygltf::Model&,const MaterialVariantLibrary&,
       std::span<const int32_t>,std::span<const struct MaterialVariantExportPrimitive>);
   size_t materialCount_{};
@@ -83,7 +84,8 @@ private:
 // source, material objects, resources and unknown metadata are never modified.
 // Duplicate/empty variant names are legal; duplicate variant IDs in one
 // primitive's mappings are invalid even when they name the same material.
-[[nodiscard]] MaterialVariantLibrary ParseMaterialVariants(const tinygltf::Model& source);
+[[nodiscard]] MaterialVariantLibrary ParseMaterialVariants(const tinygltf::Model& source,
+                                                            const std::stop_token& stop = {});
 
 struct MaterialVariantAssignment {
   size_t sourceMesh{}, sourcePrimitive{};

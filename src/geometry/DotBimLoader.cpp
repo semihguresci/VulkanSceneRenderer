@@ -1,4 +1,5 @@
 #include "Container/geometry/DotBimLoader.h"
+#include "BimImportInput.h"
 
 #include "Container/geometry/CoordinateSystem.h"
 #include "Container/utility/Platform.h"
@@ -239,7 +240,8 @@ ElementProperty propertyFromJsonObject(const Json &value,
   return property;
 }
 
-std::vector<ElementProperty> readElementProperties(const Json &source) {
+std::vector<ElementProperty> readElementProperties(const Json &source,
+                                                   std::stop_token stop) {
   std::vector<ElementProperty> properties;
   if (!source.is_object() || !source.contains("properties")) {
     return properties;
@@ -249,11 +251,13 @@ std::vector<ElementProperty> readElementProperties(const Json &source) {
   if (value.is_array()) {
     properties.reserve(value.size());
     for (const Json &item : value) {
+      container::util::checkModelImportCancellation(stop);
       appendProperty(properties, propertyFromJsonObject(item));
     }
   } else if (value.is_object()) {
     properties.reserve(value.size());
     for (auto it = value.begin(); it != value.end(); ++it) {
+      container::util::checkModelImportCancellation(stop);
       appendProperty(properties, propertyFromJsonObject(it.value(), it.key()));
     }
   }
@@ -286,7 +290,8 @@ ElementRelationship relationshipFromJsonObject(const Json &value) {
   return relationship;
 }
 
-std::vector<ElementRelationship> readElementRelationships(const Json &root) {
+std::vector<ElementRelationship> readElementRelationships(const Json &root,
+                                                          std::stop_token stop) {
   std::vector<ElementRelationship> relationships;
   if (!root.is_object()) {
     return relationships;
@@ -306,6 +311,7 @@ std::vector<ElementRelationship> readElementRelationships(const Json &root) {
 
   relationships.reserve(relationshipArray->size());
   for (const Json &item : *relationshipArray) {
+    container::util::checkModelImportCancellation(stop);
     ElementRelationship relationship = relationshipFromJsonObject(item);
     if (relationship.fromGuid.empty() && relationship.fromSourceId.empty()) {
       continue;
@@ -446,7 +452,8 @@ Vertex makeVertex(const glm::vec3 &position, const glm::vec3 &normal,
 }
 
 std::vector<glm::vec3> readCoordinates(const Json &mesh,
-                                       std::string_view context) {
+                                       std::string_view context,
+                                       std::stop_token stop) {
   const Json *coordinates = nullptr;
   if (mesh.contains("coordinates")) {
     coordinates = &requiredArray(mesh, "coordinates", context);
@@ -461,6 +468,8 @@ std::vector<glm::vec3> readCoordinates(const Json &mesh,
   std::vector<glm::vec3> result;
   result.reserve(coordinates->size() / 3u);
   for (size_t i = 0; i < coordinates->size(); i += 3u) {
+    if ((i % 3072u) == 0u)
+      container::util::checkModelImportCancellation(stop);
     if (!(*coordinates)[i].is_number() || !(*coordinates)[i + 1].is_number() ||
         !(*coordinates)[i + 2].is_number()) {
       throw std::runtime_error(std::string("dotbim ") + std::string(context) +
@@ -474,7 +483,7 @@ std::vector<glm::vec3> readCoordinates(const Json &mesh,
 }
 
 std::vector<uint32_t> readIndices(const Json &mesh, std::string_view context,
-                                  size_t vertexCount) {
+                                  size_t vertexCount, std::stop_token stop) {
   const Json &indices = requiredArray(mesh, "indices", context);
   if ((indices.size() % 3u) != 0u) {
     throw std::runtime_error(std::string("dotbim ") + std::string(context) +
@@ -484,6 +493,8 @@ std::vector<uint32_t> readIndices(const Json &mesh, std::string_view context,
   std::vector<uint32_t> result;
   result.reserve(indices.size());
   for (const Json &value : indices) {
+    if ((result.size() % 4096u) == 0u)
+      container::util::checkModelImportCancellation(stop);
     if (!value.is_number_unsigned() && !value.is_number_integer()) {
       throw std::runtime_error(std::string("dotbim ") + std::string(context) +
                                " indices must contain integers");
@@ -499,21 +510,27 @@ std::vector<uint32_t> readIndices(const Json &mesh, std::string_view context,
 }
 
 std::pair<glm::vec3, float>
-computeBounds(const std::vector<glm::vec3> &coordinates) {
+computeBounds(const std::vector<glm::vec3> &coordinates, std::stop_token stop) {
   if (coordinates.empty()) {
     return {{0.0f, 0.0f, 0.0f}, 0.0f};
   }
 
   glm::vec3 minBounds(std::numeric_limits<float>::max());
   glm::vec3 maxBounds(std::numeric_limits<float>::lowest());
-  for (const auto &point : coordinates) {
+  for (size_t i = 0; i < coordinates.size(); ++i) {
+    if ((i % 4096u) == 0u)
+      container::util::checkModelImportCancellation(stop);
+    const auto &point = coordinates[i];
     minBounds = glm::min(minBounds, point);
     maxBounds = glm::max(maxBounds, point);
   }
 
   const glm::vec3 center = (minBounds + maxBounds) * 0.5f;
   float radius = 0.0f;
-  for (const auto &point : coordinates) {
+  for (size_t i = 0; i < coordinates.size(); ++i) {
+    if ((i % 4096u) == 0u)
+      container::util::checkModelImportCancellation(stop);
+    const auto &point = coordinates[i];
     radius = std::max(radius, glm::length(point - center));
   }
   return {center, radius};
@@ -541,19 +558,21 @@ ModelUnitMetadata makeUnitMetadata(float importScale) {
 
 } // namespace
 
-Model LoadFromJson(std::string_view jsonText, float importScale) {
-  const Json root = Json::parse(jsonText.begin(), jsonText.end());
+Model LoadFromJson(std::string_view jsonText, float importScale,
+                   std::stop_token stop) {
+  const Json root = bim_import::parseJson(jsonText, stop);
   const Json &meshes = requiredArray(root, "meshes", "file");
   const Json &elements = requiredArray(root, "elements", "file");
 
   Model model{};
   model.unitMetadata = makeUnitMetadata(importScale);
   model.georeferenceMetadata = readGeoreferenceMetadata(root);
-  model.relationships = readElementRelationships(root);
+  model.relationships = readElementRelationships(root, stop);
   model.meshRanges.reserve(meshes.size());
   std::unordered_set<uint32_t> seenMeshIds;
 
   for (size_t meshIndex = 0; meshIndex < meshes.size(); ++meshIndex) {
+    container::util::checkModelImportCancellation(stop);
     const Json &mesh = meshes[meshIndex];
     const std::string context = "mesh[" + std::to_string(meshIndex) + "]";
     const uint32_t meshId = requiredMeshId(mesh, context);
@@ -562,17 +581,19 @@ Model LoadFromJson(std::string_view jsonText, float importScale) {
                                std::to_string(meshId));
     }
 
-    const auto coordinates = readCoordinates(mesh, context);
-    const auto sourceIndices = readIndices(mesh, context, coordinates.size());
+    const auto coordinates = readCoordinates(mesh, context, stop);
+    const auto sourceIndices = readIndices(mesh, context, coordinates.size(), stop);
 
     MeshRange range{};
     range.meshId = meshId;
     range.firstIndex = static_cast<uint32_t>(model.indices.size());
-    const auto [center, radius] = computeBounds(coordinates);
+    const auto [center, radius] = computeBounds(coordinates, stop);
     range.boundsCenter = center;
     range.boundsRadius = radius;
 
     for (size_t i = 0; i < sourceIndices.size(); i += 3u) {
+      if ((i % 3072u) == 0u)
+        container::util::checkModelImportCancellation(stop);
       const glm::vec3 &a = coordinates[sourceIndices[i]];
       const glm::vec3 &b = coordinates[sourceIndices[i + 1u]];
       const glm::vec3 &c = coordinates[sourceIndices[i + 2u]];
@@ -593,6 +614,7 @@ Model LoadFromJson(std::string_view jsonText, float importScale) {
   model.elements.reserve(elements.size());
   for (size_t elementIndex = 0; elementIndex < elements.size();
        ++elementIndex) {
+    container::util::checkModelImportCancellation(stop);
     const Json &source = elements[elementIndex];
     const std::string context = "element[" + std::to_string(elementIndex) + "]";
     Element element{};
@@ -632,22 +654,23 @@ Model LoadFromJson(std::string_view jsonText, float importScale) {
                                           "element_status"});
     element.sourceId =
         firstStringOrEmpty(source, {"sourceId", "source_id"});
-    element.properties = readElementProperties(source);
+    element.properties = readElementProperties(source, stop);
     model.elements.push_back(std::move(element));
   }
 
+  container::util::checkModelImportCancellation(stop);
   return model;
 }
 
-Model LoadFromFile(const std::filesystem::path &path, float importScale) {
+Model LoadFromFile(const std::filesystem::path &path, float importScale,
+                   std::stop_token stop) {
+  container::util::checkModelImportCancellation(stop);
   std::ifstream file(path, std::ios::binary);
   if (!file) {
     throw std::runtime_error("failed to open dotbim file: " +
                              container::util::pathToUtf8(path));
   }
-  std::string text((std::istreambuf_iterator<char>(file)),
-                   std::istreambuf_iterator<char>());
-  return LoadFromJson(text, importScale);
+  return LoadFromJson(bim_import::readText(file, stop), importScale, stop);
 }
 
 } // namespace container::geometry::dotbim

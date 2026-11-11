@@ -2,10 +2,16 @@
 
 #include "Container/geometry/DotBimLoader.h"
 #include "Container/renderer/bim/BimManager.h"
+#include "Container/utility/ModelImportCancellation.h"
+#include "Container/utility/Platform.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -438,6 +444,83 @@ TEST(BimRelationshipGraphTests, OwnsResolvedCompactStorageMetadata) {
   ASSERT_EQ(group.properties.size(), 1u);
   EXPECT_EQ(group.properties.front().name, "FireRating");
   EXPECT_EQ(group.properties.front().value, "2HR");
+}
+
+TEST(BimRelationshipGraphTests, CancelDuringPropertyIndexing) {
+  auto wall = makeElement(0u, "wall-guid", "wall-source", "IfcWall", "Wall");
+  wall.properties.resize(4096u, {.set = "Pset_WallCommon", .name = "FireRating",
+                                 .value = "2HR", .category = "IfcPropertySet"});
+  const std::array elements{std::move(wall)};
+  std::stop_source cancellation;
+  const auto stop = cancellation.get_token();
+  BimRelationshipGraph graph;
+  size_t checkpoints = 0;
+  EXPECT_THROW(graph.build(elements, {}, [&] {
+    // The second build checkpoint is inside the first row's properties.
+    if (++checkpoints == 2u)
+      cancellation.request_stop();
+    container::util::checkModelImportCancellation(stop);
+  }), container::util::ModelImportCancelled);
+  ASSERT_EQ(graph.propertySetsForObject(0u).size(), 1u);
+  const auto processed = graph.propertySetsForObject(0u).front().properties.size();
+  EXPECT_GT(processed, 0u);
+  EXPECT_LT(processed, elements.front().properties.size());
+}
+
+class BimPreparationCancellationTests : public testing::Test {
+protected:
+  void SetUp() override {
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    fixture_ = std::filesystem::temp_directory_path() /
+        ("container-bim-preparation-" + std::to_string(nonce) + ".bim");
+    std::ofstream file(fixture_, std::ios::binary);
+    file << R"json({
+      "schema_version": "1.1.0",
+      "meshes": [{"mesh_id": 1, "coordinates": [0,0,0, 2,0,0, 0,0,2],
+                  "indices": [0,1,2]}],
+      "elements": [{"mesh_id": 1, "guid": "wall-guid", "type": "IfcWall",
+                     "storeyName": "Ground floor", "materialName": "Brick"}]
+    })json";
+    file.close();
+    ASSERT_TRUE(file);
+  }
+
+  void TearDown() override {
+    std::error_code ignored;
+    std::filesystem::remove(fixture_, ignored);
+  }
+
+  void cancelAt(std::string_view target) const {
+    const auto path = container::util::pathToUtf8(fixture_);
+    std::stop_source cancellation;
+    size_t observed = 0;
+    EXPECT_THROW((void)container::renderer::BimManager::prepareScene(
+        path, 1.0f, {}, cancellation.get_token(), [&](std::string_view stage) {
+          if (stage == target) {
+            ++observed;
+            cancellation.request_stop();
+          }
+        }), container::util::ModelImportCancelled);
+    EXPECT_EQ(observed, 1u);
+
+    const auto replay = container::renderer::BimManager::prepareScene(path, 1.0f);
+    ASSERT_EQ(replay.model.elements.size(), 1u);
+    EXPECT_EQ(replay.model.elements.front().guid, "wall-guid");
+    EXPECT_EQ(replay.floorPlanGround.indexCount, 2u);
+    EXPECT_EQ(replay.floorPlanSourceElevation.indexCount, 2u);
+    EXPECT_EQ(replay.optimizedMetadata.meshObjectCount, 1u);
+  }
+
+private:
+  std::filesystem::path fixture_;
+};
+
+TEST_F(BimPreparationCancellationTests, CancelsDuringFloorPlanProjection) {
+  cancelAt("Building BIM floor plans");
+}
+
+TEST_F(BimPreparationCancellationTests, CancelsDuringMetadataIndexing) {
+  cancelAt("Indexing BIM objects");
 }
 
 } // namespace

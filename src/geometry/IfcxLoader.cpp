@@ -1,4 +1,5 @@
 #include "Container/geometry/IfcxLoader.h"
+#include "BimImportInput.h"
 
 #include "Container/geometry/CoordinateSystem.h"
 #include "Container/geometry/PolylineGeometry.h"
@@ -190,31 +191,39 @@ container::geometry::Vertex makeVertex(const glm::vec3 &position,
 }
 
 std::pair<glm::vec3, float>
-computeBounds(const std::vector<glm::vec3> &points) {
+computeBounds(const std::vector<glm::vec3> &points, std::stop_token stop) {
   if (points.empty()) {
     return {glm::vec3(0.0f), 0.0f};
   }
 
   glm::vec3 minBounds = points.front();
   glm::vec3 maxBounds = points.front();
-  for (const glm::vec3 &point : points) {
+  for (size_t i = 0; i < points.size(); ++i) {
+    if ((i % 4096u) == 0u)
+      container::util::checkModelImportCancellation(stop);
+    const auto &point = points[i];
     minBounds = glm::min(minBounds, point);
     maxBounds = glm::max(maxBounds, point);
   }
 
   const glm::vec3 center = (minBounds + maxBounds) * 0.5f;
   float radius = 0.0f;
-  for (const glm::vec3 &point : points) {
-    radius = std::max(radius, glm::length(point - center));
+  for (size_t i = 0; i < points.size(); ++i) {
+    if ((i % 4096u) == 0u)
+      container::util::checkModelImportCancellation(stop);
+    radius = std::max(radius, glm::length(points[i] - center));
   }
   return {center, radius};
 }
 
-std::vector<glm::vec3> readPoints(const Json &mesh, std::string_view context) {
+std::vector<glm::vec3> readPoints(const Json &mesh, std::string_view context,
+                                  std::stop_token stop) {
   const Json &points = requiredArray(mesh, "points", context);
   std::vector<glm::vec3> result;
   result.reserve(points.size());
   for (const Json &point : points) {
+    if ((result.size() % 4096u) == 0u)
+      container::util::checkModelImportCancellation(stop);
     if (auto parsed = readVec3(point)) {
       result.push_back(*parsed);
     } else {
@@ -227,7 +236,8 @@ std::vector<glm::vec3> readPoints(const Json &mesh, std::string_view context) {
 
 std::vector<uint32_t> readTriangulatedIndices(const Json &mesh,
                                               std::string_view context,
-                                              size_t vertexCount) {
+                                              size_t vertexCount,
+                                              std::stop_token stop) {
   const Json &sourceIndices = requiredArray(mesh, "faceVertexIndices", context);
   const Json *faceVertexCounts = nullptr;
   if (mesh.contains("faceVertexCounts") &&
@@ -238,6 +248,8 @@ std::vector<uint32_t> readTriangulatedIndices(const Json &mesh,
   std::vector<uint32_t> rawIndices;
   rawIndices.reserve(sourceIndices.size());
   for (const Json &value : sourceIndices) {
+    if ((rawIndices.size() % 4096u) == 0u)
+      container::util::checkModelImportCancellation(stop);
     if (auto index = readIndex(value, vertexCount)) {
       rawIndices.push_back(*index);
     } else {
@@ -257,6 +269,7 @@ std::vector<uint32_t> readTriangulatedIndices(const Json &mesh,
   std::vector<uint32_t> triangles;
   size_t cursor = 0;
   for (const Json &countValue : *faceVertexCounts) {
+    container::util::checkModelImportCancellation(stop);
     if (!countValue.is_number_integer() && !countValue.is_number_unsigned()) {
       throw std::runtime_error("IFCX " + std::string(context) +
                                " has an invalid face vertex count");
@@ -269,6 +282,8 @@ std::vector<uint32_t> readTriangulatedIndices(const Json &mesh,
 
     const uint32_t first = rawIndices[cursor];
     for (int64_t i = 1; i + 1 < count; ++i) {
+      if ((i % 1024) == 0)
+        container::util::checkModelImportCancellation(stop);
       triangles.push_back(first);
       triangles.push_back(rawIndices[cursor + static_cast<size_t>(i)]);
       triangles.push_back(rawIndices[cursor + static_cast<size_t>(i + 1)]);
@@ -346,9 +361,10 @@ void appendUniqueReference(std::vector<std::string> &references,
   }
 }
 
-NodeGraph buildGraph(const Json &data) {
+NodeGraph buildGraph(const Json &data, std::stop_token stop) {
   NodeGraph graph{};
   for (const Json &item : data) {
+    container::util::checkModelImportCancellation(stop);
     if (!item.is_object() || !item.contains("path") ||
         !item.at("path").is_string()) {
       continue;
@@ -363,9 +379,11 @@ NodeGraph buildGraph(const Json &data) {
     if (item.contains("children") && item.at("children").is_object()) {
       for (auto it = item.at("children").begin();
            it != item.at("children").end(); ++it) {
+        container::util::checkModelImportCancellation(stop);
         std::vector<std::string> childPaths;
         collectReferences(it.value(), childPaths);
         for (const std::string &childPath : childPaths) {
+          container::util::checkModelImportCancellation(stop);
           appendUniqueReference(node.children, childPath);
           graph.directChildren.insert(childPath);
         }
@@ -375,6 +393,7 @@ NodeGraph buildGraph(const Json &data) {
       std::vector<std::string> inheritedPaths;
       collectReferences(item.at("inherits"), inheritedPaths);
       for (const std::string &inheritedPath : inheritedPaths) {
+        container::util::checkModelImportCancellation(stop);
         appendUniqueReference(node.inherits, inheritedPath);
         graph.inheritedReferences.insert(inheritedPath);
       }
@@ -743,19 +762,21 @@ void appendProperty(std::vector<dotbim::ElementProperty> &properties,
 void collectPropertiesFromPath(
     const std::string &path, const std::unordered_map<std::string, Node> &nodes,
     std::vector<dotbim::ElementProperty> &properties,
-    std::unordered_set<std::string> &visiting) {
+    std::unordered_set<std::string> &visiting, std::stop_token stop) {
+  container::util::checkModelImportCancellation(stop);
   if (!visiting.insert(path).second) {
     return;
   }
   if (const auto nodeIt = nodes.find(path); nodeIt != nodes.end()) {
     const Node &node = nodeIt->second;
     for (auto it = node.attributes.begin(); it != node.attributes.end(); ++it) {
+      container::util::checkModelImportCancellation(stop);
       if (auto property = propertyFromIfcAttribute(it.key(), it.value())) {
         appendProperty(properties, std::move(*property));
       }
     }
     for (const std::string &inheritedPath : node.inherits) {
-      collectPropertiesFromPath(inheritedPath, nodes, properties, visiting);
+      collectPropertiesFromPath(inheritedPath, nodes, properties, visiting, stop);
     }
   }
   visiting.erase(path);
@@ -763,7 +784,7 @@ void collectPropertiesFromPath(
 
 std::vector<dotbim::ElementProperty> inheritedProperties(
     const std::vector<std::string> &chain,
-    const std::unordered_map<std::string, Node> &nodes) {
+    const std::unordered_map<std::string, Node> &nodes, std::stop_token stop) {
   std::vector<dotbim::ElementProperty> properties;
   std::unordered_set<std::string> checked;
   for (const std::string &path : chain) {
@@ -771,7 +792,7 @@ std::vector<dotbim::ElementProperty> inheritedProperties(
       continue;
     }
     std::unordered_set<std::string> visiting;
-    collectPropertiesFromPath(path, nodes, properties, visiting);
+    collectPropertiesFromPath(path, nodes, properties, visiting, stop);
   }
   return properties;
 }
@@ -1194,7 +1215,7 @@ void appendQuad(Model &model, const glm::vec3 &a, const glm::vec3 &b,
 
 void appendNativePointRange(Model &model, const PointCloud &cloud,
                             uint32_t meshId, const glm::vec3 &boundsCenter,
-                            float boundsRadius) {
+                            float boundsRadius, std::stop_token stop) {
   if (cloud.positions.empty()) {
     return;
   }
@@ -1205,6 +1226,8 @@ void appendNativePointRange(Model &model, const PointCloud &cloud,
   range.boundsCenter = boundsCenter;
   range.boundsRadius = boundsRadius;
   for (size_t i = 0; i < cloud.positions.size(); ++i) {
+    if ((i % 1024u) == 0u)
+      container::util::checkModelImportCancellation(stop);
     const glm::vec3 color =
         i < cloud.colors.size() ? cloud.colors[i] : glm::vec3(1.0f);
     const uint32_t vertexIndex = static_cast<uint32_t>(model.vertices.size());
@@ -1221,7 +1244,8 @@ void appendNativePointRange(Model &model, const PointCloud &cloud,
 }
 
 void appendMeshletClustersForRange(Model &model,
-                                   const dotbim::MeshRange &range) {
+                                   const dotbim::MeshRange &range,
+                                   std::stop_token stop) {
   constexpr uint32_t kMeshletTriangleBudget = 64u;
   constexpr uint32_t kMeshletIndexBudget = kMeshletTriangleBudget * 3u;
   const uint32_t endIndex = range.firstIndex + range.indexCount;
@@ -1231,6 +1255,7 @@ void appendMeshletClustersForRange(Model &model,
 
   for (uint32_t firstIndex = range.firstIndex; firstIndex + 2u < endIndex;
        firstIndex += kMeshletIndexBudget) {
+    container::util::checkModelImportCancellation(stop);
     const uint32_t indexCount =
         std::min(kMeshletIndexBudget, endIndex - firstIndex);
     const uint32_t triangleAlignedIndexCount = (indexCount / 3u) * 3u;
@@ -1248,7 +1273,7 @@ void appendMeshletClustersForRange(Model &model,
     if (clusterPoints.empty()) {
       continue;
     }
-    const auto [center, radius] = computeBounds(clusterPoints);
+    const auto [center, radius] = computeBounds(clusterPoints, stop);
     model.meshletClusters.push_back(dotbim::MeshletClusterRange{
         .meshId = range.meshId,
         .firstIndex = firstIndex,
@@ -1262,10 +1287,10 @@ void appendMeshletClustersForRange(Model &model,
 }
 
 bool appendMesh(Model &model, const Json &mesh, uint32_t meshId,
-                std::string_view context) {
-  const std::vector<glm::vec3> points = readPoints(mesh, context);
+                std::string_view context, std::stop_token stop) {
+  const std::vector<glm::vec3> points = readPoints(mesh, context, stop);
   const std::vector<uint32_t> sourceIndices =
-      readTriangulatedIndices(mesh, context, points.size());
+      readTriangulatedIndices(mesh, context, points.size(), stop);
   if (points.empty() || sourceIndices.empty()) {
     return false;
   }
@@ -1273,11 +1298,13 @@ bool appendMesh(Model &model, const Json &mesh, uint32_t meshId,
   dotbim::MeshRange range{};
   range.meshId = meshId;
   range.firstIndex = static_cast<uint32_t>(model.indices.size());
-  const auto [center, radius] = computeBounds(points);
+  const auto [center, radius] = computeBounds(points, stop);
   range.boundsCenter = center;
   range.boundsRadius = radius;
 
   for (size_t i = 0; i + 2u < sourceIndices.size(); i += 3u) {
+    if ((i % 3072u) == 0u)
+      container::util::checkModelImportCancellation(stop);
     const glm::vec3 &a = points[sourceIndices[i]];
     const glm::vec3 &b = points[sourceIndices[i + 1u]];
     const glm::vec3 &c = points[sourceIndices[i + 2u]];
@@ -1290,13 +1317,13 @@ bool appendMesh(Model &model, const Json &mesh, uint32_t meshId,
     return false;
   }
   model.meshRanges.push_back(range);
-  appendMeshletClustersForRange(model, range);
+  appendMeshletClustersForRange(model, range, stop);
   return true;
 }
 
 bool appendBasisCurves(Model &model, const Json &curves, uint32_t meshId,
-                       std::string_view context) {
-  const std::vector<glm::vec3> points = readPoints(curves, context);
+                       std::string_view context, std::stop_token stop) {
+  const std::vector<glm::vec3> points = readPoints(curves, context, stop);
   if (points.size() < 2u) {
     return false;
   }
@@ -1308,6 +1335,7 @@ bool appendBasisCurves(Model &model, const Json &curves, uint32_t meshId,
     curveVertexCounts.reserve(counts.size());
     size_t total = 0;
     for (const Json &countValue : counts) {
+      container::util::checkModelImportCancellation(stop);
       if (!countValue.is_number_integer() && !countValue.is_number_unsigned()) {
         throw std::runtime_error("IFCX " + std::string(context) +
                                  " has an invalid curve vertex count");
@@ -1328,11 +1356,11 @@ bool appendBasisCurves(Model &model, const Json &curves, uint32_t meshId,
     curveVertexCounts.push_back(points.size());
   }
 
-  const auto [center, radius] = computeBounds(points);
+  const auto [center, radius] = computeBounds(points, stop);
   const float tubeRadius =
       radius > 0.0f ? std::clamp(radius * 0.004f, 0.01f, 0.05f) : 0.02f;
   return appendPolylineGeometry(model, points, curveVertexCounts, meshId,
-                                tubeRadius);
+                                tubeRadius, stop);
 }
 
 int base64Value(char c) {
@@ -1354,11 +1382,14 @@ int base64Value(char c) {
   return -1;
 }
 
-std::vector<uint8_t> decodeBase64(std::string_view text) {
+std::vector<uint8_t> decodeBase64(std::string_view text, std::stop_token stop) {
   std::vector<uint8_t> result;
   uint32_t accumulator = 0;
   int bits = -8;
-  for (char c : text) {
+  for (size_t i = 0; i < text.size(); ++i) {
+    if ((i % 4096u) == 0u)
+      container::util::checkModelImportCancellation(stop);
+    const char c = text[i];
     if (c == '=') {
       break;
     }
@@ -1392,7 +1423,7 @@ float readLeFloat32(const uint8_t *bytes) {
 
 std::vector<glm::vec3>
 vec3ArrayFromFloatBytes(const std::vector<uint8_t> &bytes,
-                        std::string_view context) {
+                        std::string_view context, std::stop_token stop) {
   if ((bytes.size() % (sizeof(float) * 3u)) != 0u) {
     throw std::runtime_error("IFCX " + std::string(context) +
                              " base64 vec3 data has an invalid size");
@@ -1401,6 +1432,8 @@ vec3ArrayFromFloatBytes(const std::vector<uint8_t> &bytes,
   std::vector<glm::vec3> result;
   result.reserve(bytes.size() / (sizeof(float) * 3u));
   for (size_t offset = 0; offset + 11u < bytes.size(); offset += 12u) {
+    if ((offset % 12288u) == 0u)
+      container::util::checkModelImportCancellation(stop);
     result.emplace_back(readLeFloat32(bytes.data() + offset),
                         readLeFloat32(bytes.data() + offset + 4u),
                         readLeFloat32(bytes.data() + offset + 8u));
@@ -1408,7 +1441,8 @@ vec3ArrayFromFloatBytes(const std::vector<uint8_t> &bytes,
   return result;
 }
 
-PointCloud readPointsArray(const Json &value, std::string_view context) {
+PointCloud readPointsArray(const Json &value, std::string_view context,
+                            std::stop_token stop) {
   if (!value.is_object() || !value.contains("positions") ||
       !value.at("positions").is_array()) {
     throw std::runtime_error("IFCX " + std::string(context) +
@@ -1419,6 +1453,8 @@ PointCloud readPointsArray(const Json &value, std::string_view context) {
   const Json &positions = value.at("positions");
   cloud.positions.reserve(positions.size());
   for (const Json &position : positions) {
+    if ((cloud.positions.size() % 1024u) == 0u)
+      container::util::checkModelImportCancellation(stop);
     if (auto parsed = readVec3(position)) {
       cloud.positions.push_back(*parsed);
     } else {
@@ -1431,6 +1467,8 @@ PointCloud readPointsArray(const Json &value, std::string_view context) {
     const size_t colorCount = std::min(colors.size(), cloud.positions.size());
     cloud.colors.assign(colorCount, glm::vec3(1.0f));
     for (size_t i = 0; i < colorCount; ++i) {
+      if ((i % 1024u) == 0u)
+        container::util::checkModelImportCancellation(stop);
       if (auto parsed = readVec3(colors[i])) {
         cloud.colors[i] =
             glm::clamp(*parsed, glm::vec3(0.0f), glm::vec3(1.0f));
@@ -1440,7 +1478,8 @@ PointCloud readPointsArray(const Json &value, std::string_view context) {
   return cloud;
 }
 
-PointCloud readPointsBase64(const Json &value, std::string_view context) {
+PointCloud readPointsBase64(const Json &value, std::string_view context,
+                             std::stop_token stop) {
   if (!value.is_object() || !value.contains("positions") ||
       !value.at("positions").is_string()) {
     throw std::runtime_error("IFCX " + std::string(context) +
@@ -1449,12 +1488,16 @@ PointCloud readPointsBase64(const Json &value, std::string_view context) {
 
   PointCloud cloud{};
   cloud.positions = vec3ArrayFromFloatBytes(
-      decodeBase64(value.at("positions").get<std::string>()), context);
+      decodeBase64(value.at("positions").get_ref<const std::string &>(), stop),
+      context, stop);
   if (value.contains("colors") && value.at("colors").is_string()) {
     cloud.colors = vec3ArrayFromFloatBytes(
-        decodeBase64(value.at("colors").get<std::string>()), context);
-    for (glm::vec3 &color : cloud.colors) {
-      color = glm::clamp(color, glm::vec3(0.0f), glm::vec3(1.0f));
+        decodeBase64(value.at("colors").get_ref<const std::string &>(), stop),
+        context, stop);
+    for (size_t i = 0; i < cloud.colors.size(); ++i) {
+      if ((i % 1024u) == 0u)
+        container::util::checkModelImportCancellation(stop);
+      cloud.colors[i] = glm::clamp(cloud.colors[i], glm::vec3(0.0f), glm::vec3(1.0f));
     }
   }
   return cloud;
@@ -1677,11 +1720,12 @@ glm::vec3 colorFromPackedRgb(uint32_t packed) {
 }
 
 std::vector<uint8_t> lzfDecompress(const uint8_t *input, size_t inputSize,
-                                   size_t outputSize) {
+                                   size_t outputSize, std::stop_token stop) {
   std::vector<uint8_t> output(outputSize);
   size_t in = 0;
   size_t out = 0;
   while (in < inputSize && out < outputSize) {
+    container::util::checkModelImportCancellation(stop);
     const uint8_t ctrl = input[in++];
     if (ctrl < 32u) {
       const size_t length = static_cast<size_t>(ctrl) + 1u;
@@ -1722,7 +1766,7 @@ std::vector<uint8_t> lzfDecompress(const uint8_t *input, size_t inputSize,
 }
 
 PointCloud readPcdAscii(const PcdHeader &header,
-                        const std::vector<uint8_t> &bytes) {
+                        const std::vector<uint8_t> &bytes, std::stop_token stop) {
   const auto xField = pcdFieldIndex(header, "x");
   const auto yField = pcdFieldIndex(header, "y");
   const auto zField = pcdFieldIndex(header, "z");
@@ -1744,6 +1788,7 @@ PointCloud readPcdAscii(const PcdHeader &header,
 
   std::string line;
   while (std::getline(stream, line) && cloud.positions.size() < header.points) {
+    container::util::checkModelImportCancellation(stop);
     const std::vector<std::string> words = splitWords(line);
     if (words.size() < header.fields.size()) {
       continue;
@@ -1771,7 +1816,8 @@ PointCloud readPcdAscii(const PcdHeader &header,
 }
 
 PointCloud readPcdBinaryPayload(const PcdHeader &header,
-                                std::vector<uint8_t> payload, bool compressed) {
+                                std::vector<uint8_t> payload, bool compressed,
+                                std::stop_token stop) {
   const auto xField = pcdFieldIndex(header, "x");
   const auto yField = pcdFieldIndex(header, "y");
   const auto zField = pcdFieldIndex(header, "z");
@@ -1799,7 +1845,7 @@ PointCloud readPcdBinaryPayload(const PcdHeader &header,
       throw std::runtime_error("IFCX compressed PCD point count exceeds payload size");
     }
     payload =
-        lzfDecompress(payload.data() + 8u, compressedSize, uncompressedSize);
+        lzfDecompress(payload.data() + 8u, compressedSize, uncompressedSize, stop);
   } else if (header.points > payload.size() / pointStep) {
     throw std::runtime_error("IFCX binary PCD point count exceeds payload size");
   }
@@ -1820,6 +1866,8 @@ PointCloud readPcdBinaryPayload(const PcdHeader &header,
     cloud.colors.reserve(header.points);
   }
   for (size_t point = 0; point < header.points; ++point) {
+    if ((point % 1024u) == 0u)
+      container::util::checkModelImportCancellation(stop);
     const uint8_t *x = fieldPointer(point, *xField);
     const uint8_t *y = fieldPointer(point, *yField);
     const uint8_t *z = fieldPointer(point, *zField);
@@ -1846,27 +1894,28 @@ PointCloud readPcdBinaryPayload(const PcdHeader &header,
   return cloud;
 }
 
-PointCloud readPcdBase64(const Json &value) {
+PointCloud readPcdBase64(const Json &value, std::stop_token stop) {
   if (!value.is_string()) {
     return {};
   }
 
-  const std::vector<uint8_t> bytes = decodeBase64(value.get<std::string>());
+  const std::vector<uint8_t> bytes = decodeBase64(value.get_ref<const std::string &>(), stop);
   const PcdHeader header = parsePcdHeader(bytes);
   if (header.data == "ascii") {
-    return readPcdAscii(header, bytes);
+    return readPcdAscii(header, bytes, stop);
   }
   if (header.data == "binary" || header.data == "binary_compressed") {
     std::vector<uint8_t> payload(
         bytes.begin() + static_cast<std::ptrdiff_t>(header.dataOffset),
         bytes.end());
     return readPcdBinaryPayload(header, std::move(payload),
-                                header.data == "binary_compressed");
+                                header.data == "binary_compressed", stop);
   }
   return {};
 }
 
-bool appendPointCloud(Model &model, const PointCloud &cloud, uint32_t meshId) {
+bool appendPointCloud(Model &model, const PointCloud &cloud, uint32_t meshId,
+                      std::stop_token stop) {
   if (cloud.positions.empty()) {
     return false;
   }
@@ -1874,13 +1923,15 @@ bool appendPointCloud(Model &model, const PointCloud &cloud, uint32_t meshId) {
   dotbim::MeshRange range{};
   range.meshId = meshId;
   range.firstIndex = static_cast<uint32_t>(model.indices.size());
-  const auto [center, radius] = computeBounds(cloud.positions);
+  const auto [center, radius] = computeBounds(cloud.positions, stop);
   const float pointRadius =
       radius > 0.0f ? std::clamp(radius * 0.012f, 0.006f, 0.04f) : 0.02f;
   range.boundsCenter = center;
   range.boundsRadius = radius + pointRadius;
 
   for (size_t i = 0; i < cloud.positions.size(); ++i) {
+    if ((i % 1024u) == 0u)
+      container::util::checkModelImportCancellation(stop);
     const glm::vec3 color =
         i < cloud.colors.size() ? cloud.colors[i] : glm::vec3(1.0f);
     const glm::vec3 p = cloud.positions[i];
@@ -1907,7 +1958,7 @@ bool appendPointCloud(Model &model, const PointCloud &cloud, uint32_t meshId) {
     return false;
   }
   model.meshRanges.push_back(range);
-  appendNativePointRange(model, cloud, meshId, center, radius);
+  appendNativePointRange(model, cloud, meshId, center, radius, stop);
   return true;
 }
 
@@ -1920,6 +1971,7 @@ struct SceneBuilder {
   std::unordered_map<std::string, uint32_t> materialOpacityCache{};
   uint32_t nextMeshId{0};
   glm::mat4 importTransform{1.0f};
+  std::stop_token stop;
 };
 
 bool appendGeometryIfNeeded(SceneBuilder &builder, const std::string &key,
@@ -1931,9 +1983,9 @@ bool appendGeometryIfNeeded(SceneBuilder &builder, const std::string &key,
   const uint32_t meshId = builder.nextMeshId++;
   bool appended = false;
   if (key.starts_with("mesh:")) {
-    appended = appendMesh(builder.model, geometry, meshId, context);
+    appended = appendMesh(builder.model, geometry, meshId, context, builder.stop);
   } else if (key.starts_with("curve:")) {
-    appended = appendBasisCurves(builder.model, geometry, meshId, context);
+    appended = appendBasisCurves(builder.model, geometry, meshId, context, builder.stop);
   }
   if (!appended) {
     return false;
@@ -2086,7 +2138,7 @@ void appendElement(SceneBuilder &builder, const std::string &geometryKey,
       inheritedStringAttribute(chain, builder.graph.nodes,
                                {"sourceId", "source_id"})
           .value_or(logicalPath);
-  element.properties = inheritedProperties(chain, builder.graph.nodes);
+  element.properties = inheritedProperties(chain, builder.graph.nodes, builder.stop);
   builder.model.elements.push_back(std::move(element));
 }
 
@@ -2111,6 +2163,7 @@ void traverseNode(SceneBuilder &builder, const std::string &path,
                   const std::vector<std::string> &fallbackChain,
                   bool currentIsFallback,
                   std::unordered_set<std::string> &visiting) {
+  container::util::checkModelImportCancellation(builder.stop);
   const auto nodeIt = builder.graph.nodes.find(path);
   if (nodeIt == builder.graph.nodes.end()) {
     return;
@@ -2157,8 +2210,8 @@ void traverseNode(SceneBuilder &builder, const std::string &path,
       if (!builder.geometryCache.contains(key)) {
         const uint32_t meshId = builder.nextMeshId++;
         const PointCloud cloud = readPointsArray(
-            node.attributes.at("points::array"), "points[" + logicalPath + "]");
-        if (appendPointCloud(builder.model, cloud, meshId)) {
+            node.attributes.at("points::array"), "points[" + logicalPath + "]", builder.stop);
+        if (appendPointCloud(builder.model, cloud, meshId, builder.stop)) {
           builder.geometryCache.emplace(key, meshId);
         }
       }
@@ -2171,8 +2224,8 @@ void traverseNode(SceneBuilder &builder, const std::string &path,
         const uint32_t meshId = builder.nextMeshId++;
         const PointCloud cloud =
             readPointsBase64(node.attributes.at("points::base64"),
-                             "points-base64[" + logicalPath + "]");
-        if (appendPointCloud(builder.model, cloud, meshId)) {
+                             "points-base64[" + logicalPath + "]", builder.stop);
+        if (appendPointCloud(builder.model, cloud, meshId, builder.stop)) {
           builder.geometryCache.emplace(key, meshId);
         }
       }
@@ -2183,8 +2236,8 @@ void traverseNode(SceneBuilder &builder, const std::string &path,
       if (!builder.geometryCache.contains(key)) {
         const uint32_t meshId = builder.nextMeshId++;
         const PointCloud cloud =
-            readPcdBase64(node.attributes.at("pcd::base64"));
-        if (appendPointCloud(builder.model, cloud, meshId)) {
+            readPcdBase64(node.attributes.at("pcd::base64"), builder.stop);
+        if (appendPointCloud(builder.model, cloud, meshId, builder.stop)) {
           builder.geometryCache.emplace(key, meshId);
         }
       }
@@ -2205,12 +2258,13 @@ void traverseNode(SceneBuilder &builder, const std::string &path,
   visiting.erase(path);
 }
 
-bool hasRenderableData(const Json &root) {
+bool hasRenderableData(const Json &root, std::stop_token stop) {
   if (!root.is_object() || !root.contains("data") ||
       !root.at("data").is_array()) {
     return false;
   }
   for (const Json &item : root.at("data")) {
+    container::util::checkModelImportCancellation(stop);
     if (!item.is_object() || !item.contains("attributes") ||
         !item.at("attributes").is_object()) {
       continue;
@@ -2227,19 +2281,21 @@ bool hasRenderableData(const Json &root) {
   return false;
 }
 
-bool hasUnresolvedGraphReferences(const Json &root) {
+bool hasUnresolvedGraphReferences(const Json &root, std::stop_token stop) {
   if (!root.is_object() || !root.contains("data") ||
       !root.at("data").is_array()) {
     return false;
   }
 
-  const NodeGraph graph = buildGraph(root.at("data"));
+  const NodeGraph graph = buildGraph(root.at("data"), stop);
   for (const std::string &childPath : graph.directChildren) {
+    container::util::checkModelImportCancellation(stop);
     if (!graph.nodes.contains(childPath)) {
       return true;
     }
   }
   for (const std::string &inheritedPath : graph.inheritedReferences) {
+    container::util::checkModelImportCancellation(stop);
     if (!graph.nodes.contains(inheritedPath)) {
       return true;
     }
@@ -2248,12 +2304,14 @@ bool hasUnresolvedGraphReferences(const Json &root) {
 }
 
 void normalizeRootMaterialTexturePaths(Json &root,
-                                       const std::filesystem::path &sourceDir) {
+                                       const std::filesystem::path &sourceDir,
+                                       std::stop_token stop) {
   if (!root.is_object() || !root.contains("data") ||
       !root.at("data").is_array()) {
     return;
   }
   for (Json &item : root.at("data")) {
+    container::util::checkModelImportCancellation(stop);
     if (!item.is_object() || !item.contains("attributes") ||
         !item.at("attributes").is_object()) {
       continue;
@@ -2266,25 +2324,25 @@ void normalizeRootMaterialTexturePaths(Json &root,
   }
 }
 
-void appendRootData(Json &data, const Json &root) {
+void appendRootData(Json &data, Json &&root, std::stop_token stop) {
   if (!root.is_object() || !root.contains("data") ||
       !root.at("data").is_array()) {
     return;
   }
-  for (const Json &item : root.at("data")) {
-    data.push_back(item);
+  for (Json &item : root.at("data")) {
+    container::util::checkModelImportCancellation(stop);
+    data.push_back(std::move(item));
   }
 }
 
-Json readJsonFile(const std::filesystem::path &path) {
+Json readJsonFile(const std::filesystem::path &path, std::stop_token stop) {
+  container::util::checkModelImportCancellation(stop);
   std::ifstream file(path, std::ios::binary);
   if (!file) {
     throw std::runtime_error("failed to open IFCX file: " +
                              container::util::pathToUtf8(path));
   }
-  std::string text((std::istreambuf_iterator<char>(file)),
-                   std::istreambuf_iterator<char>());
-  return Json::parse(text.begin(), text.end());
+  return bim_import::parseJson(bim_import::readText(file, stop), stop);
 }
 
 bool startsWith(std::string_view value, std::string_view prefix) {
@@ -2388,39 +2446,40 @@ heuristicBaseLayerPath(const std::filesystem::path &path) {
 }
 
 Json composeRootFromFile(const std::filesystem::path &path,
-                         std::unordered_set<std::string> &visiting) {
+                         std::unordered_set<std::string> &visiting,
+                         std::stop_token stop) {
+  container::util::checkModelImportCancellation(stop);
   const std::filesystem::path normalized = path.lexically_normal();
   const std::string key = container::util::pathToUtf8(normalized);
   if (!visiting.insert(key).second) {
     return Json{{"data", Json::array()}};
   }
 
-  const Json root = readJsonFile(normalized);
-  Json localRoot = root;
-  normalizeRootMaterialTexturePaths(localRoot, normalized.parent_path());
+  Json root = readJsonFile(normalized, stop);
   Json composed{{"data", Json::array()}};
   const std::vector<std::filesystem::path> imports =
       localImportPaths(root, normalized.parent_path());
   for (const std::filesystem::path &importPath : imports) {
-    appendRootData(composed["data"], composeRootFromFile(importPath, visiting));
+    appendRootData(composed["data"], composeRootFromFile(importPath, visiting, stop), stop);
   }
   if (imports.empty() &&
-      (!hasRenderableData(root) || hasUnresolvedGraphReferences(root))) {
+      (!hasRenderableData(root, stop) || hasUnresolvedGraphReferences(root, stop))) {
     if (auto baseLayer = heuristicBaseLayerPath(normalized)) {
       appendRootData(composed["data"],
-                     composeRootFromFile(*baseLayer, visiting));
+                     composeRootFromFile(*baseLayer, visiting, stop), stop);
     }
   }
-  appendRootData(composed["data"], localRoot);
+  normalizeRootMaterialTexturePaths(root, normalized.parent_path(), stop);
+  appendRootData(composed["data"], std::move(root), stop);
 
   visiting.erase(key);
   return composed;
 }
 
 Model loadFromRoot(const Json &root, float importScale,
-                   const std::filesystem::path *sourceDir) {
+                   const std::filesystem::path *sourceDir, std::stop_token stop) {
   const Json &data = requiredArray(root, "data", "file");
-  const NodeGraph graph = buildGraph(data);
+  const NodeGraph graph = buildGraph(data, stop);
 
   SceneBuilder builder{
       Model{},
@@ -2432,7 +2491,8 @@ Model loadFromRoot(const Json &root, float importScale,
       0u,
       container::geometry::zUpForwardYToRendererAxes() *
            glm::scale(glm::mat4(1.0f),
-                     glm::vec3(sanitizeImportScale(importScale)))};
+                     glm::vec3(sanitizeImportScale(importScale))),
+      stop};
   builder.model.unitMetadata = makeUnitMetadata(importScale);
   builder.model.georeferenceMetadata =
       readGeoreferenceMetadata(root, graph);
@@ -2440,6 +2500,7 @@ Model loadFromRoot(const Json &root, float importScale,
   std::vector<std::string> roots;
   roots.reserve(graph.nodes.size());
   for (const auto &[path, node] : graph.nodes) {
+    container::util::checkModelImportCancellation(stop);
     (void)node;
     if (!graph.directChildren.contains(path) &&
         !graph.inheritedReferences.contains(path)) {
@@ -2448,6 +2509,7 @@ Model loadFromRoot(const Json &root, float importScale,
   }
   if (roots.empty()) {
     for (const auto &[path, node] : graph.nodes) {
+      container::util::checkModelImportCancellation(stop);
       if (node.attributes.contains("usd::usdgeom::mesh") ||
           node.attributes.contains("usd::usdgeom::basiscurves") ||
           node.attributes.contains("points::array") ||
@@ -2464,21 +2526,24 @@ Model loadFromRoot(const Json &root, float importScale,
     traverseNode(builder, rootPath, rootPath, glm::mat4(1.0f), {}, {}, {},
                  false, visiting);
   }
+  container::util::checkModelImportCancellation(stop);
   return std::move(builder.model);
 }
 
 } // namespace
 
-Model LoadFromJson(std::string_view jsonText, float importScale) {
-  const Json root = Json::parse(jsonText.begin(), jsonText.end());
-  return loadFromRoot(root, importScale, nullptr);
+Model LoadFromJson(std::string_view jsonText, float importScale,
+                   std::stop_token stop) {
+  const Json root = bim_import::parseJson(jsonText, stop);
+  return loadFromRoot(root, importScale, nullptr, stop);
 }
 
-Model LoadFromFile(const std::filesystem::path &path, float importScale) {
+Model LoadFromFile(const std::filesystem::path &path, float importScale,
+                   std::stop_token stop) {
   std::unordered_set<std::string> visiting;
-  const Json root = composeRootFromFile(path, visiting);
+  const Json root = composeRootFromFile(path, visiting, stop);
   const std::filesystem::path sourceDir = path.parent_path();
-  return loadFromRoot(root, importScale, &sourceDir);
+  return loadFromRoot(root, importScale, &sourceDir, stop);
 }
 
 } // namespace container::geometry::ifcx

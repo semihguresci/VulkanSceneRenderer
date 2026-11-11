@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <stop_token>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -163,8 +164,10 @@ struct Model {
 };
 
 [[nodiscard]] Model LoadFromFile(const std::filesystem::path& path,
-                                 float importScale = 1.0f);
+                                 float importScale = 1.0f,
+                                 std::stop_token stop = {});
 [[nodiscard]] Model LoadFromJson(std::string_view jsonText,
-                                 float importScale = 1.0f);
+                                 float importScale = 1.0f,
+                                 std::stop_token stop = {});
 
 }  // namespace container::geometry::dotbim

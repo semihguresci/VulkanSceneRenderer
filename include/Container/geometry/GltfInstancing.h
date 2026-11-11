@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stop_token>
+
 #include <glm/mat4x4.hpp>
 #include <nlohmann/json_fwd.hpp>
 #include <tiny_gltf.h>
@@ -46,7 +48,8 @@ struct GltfInstancingData {
 // does not read buffers or decode values. Runtime publication also validates
 // the active hierarchy, render-object budget and Vulkan transform limits.
 [[nodiscard]] InstancingSummary ValidateMeshGpuInstancingJson(
-    const nlohmann::json& source, const InstancingLimits& limits = {});
+    const nlohmann::json& source, const InstancingLimits& limits = {},
+    const std::stop_token& stop = {});
 
 // Immutable checked-accessor CPU parser, independent of the renderer/scene graph.
 // FLOAT TRS and normalized signed BYTE/SHORT rotation are supported. Missing
@@ -54,7 +57,8 @@ struct GltfInstancingData {
 // share one positive count. Quaternions must be unit within storage precision,
 // then are normalized before constructing T*R*S.
 [[nodiscard]] GltfInstancingData ParseMeshGpuInstancing(
-    const tinygltf::Model& source, const InstancingLimits& limits = {});
+    const tinygltf::Model& source, const InstancingLimits& limits = {},
+    const std::stop_token& stop = {});
 [[nodiscard]] const NodeInstancing* FindNodeInstancing(
     const GltfInstancingData& data, uint32_t sourceNode) noexcept;
 

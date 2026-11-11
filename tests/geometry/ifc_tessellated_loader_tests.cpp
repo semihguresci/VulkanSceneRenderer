@@ -2,6 +2,7 @@
 #include "Container/geometry/IfcxLoader.h"
 #include "Container/geometry/ParametricCurve.h"
 #include "Container/geometry/PolylineGeometry.h"
+#include "Container/utility/ModelImportCancellation.h"
 
 #include <gtest/gtest.h>
 
@@ -26,6 +27,16 @@
 #endif
 
 namespace {
+
+TEST(IfcTessellatedLoader, CancelledImportDoesNotReadOrParse) {
+  std::stop_source cancellation;
+  cancellation.request_stop();
+  const auto stop = cancellation.get_token();
+  EXPECT_THROW((void)container::geometry::ifc::LoadFromStep("invalid source", 1.0f, stop),
+               container::util::ModelImportCancelled);
+  EXPECT_THROW((void)container::geometry::ifc::LoadFromFile("", 1.0f, stop),
+               container::util::ModelImportCancelled);
+}
 
 using container::geometry::ImportCompleteness;
 using IfcModel = container::geometry::ifc::Model;

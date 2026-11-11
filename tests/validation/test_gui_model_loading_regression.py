@@ -1,4 +1,4 @@
-"""CPU assertions for GUI-request load, rollback and actual-unload GPU cases."""
+"""CPU assertions for GUI model loading, cancellation, rollback and unload."""
 import copy
 import json
 from pathlib import Path
@@ -80,6 +80,37 @@ def synthetic_asynchronous_record():
             telemetry["gui"]["status"] = "Reading and preparing model: large.ifcx"
         record["samples"].append({"frame": frame, "telemetry": telemetry})
     return record
+
+
+def synthetic_active_cancellation_record():
+    ordinary = {sample["frame"]: sample["telemetry"] for sample in synthetic_record()["samples"]}
+    samples = []
+    for frame, source, pending, requests, completed, preparation, progress in (
+            (3, 8, False, 0, 0, 0, 0),
+            (4, 8, True, 1, 0, 1, 0),
+            (5, 104, False, 2, 2, 2, 1),
+            (6, 104, False, 2, 2, 2, 1),
+            (8, 108, False, 3, 3, 3, 1),
+            (9, 108, True, 4, 3, 4, 1),
+            (10, 72, False, 5, 5, 4, 2),
+            (14, 72, False, 5, 5, 4, 2),
+            (22, 104, False, 6, 6, 5, 3)):
+        telemetry = copy.deepcopy(ordinary[source])
+        cancelled = int(frame >= 5) + int(frame >= 10)
+        retired = int(frame >= 5) + int(frame >= 14)
+        telemetry["gui"]["modelLoading"] = {
+            "pending": pending, "requests": requests, "completed": completed,
+            "preparationFrames": preparation, "progressFrames": progress, "eventPumps": 2 * progress,
+            "cancelled": cancelled, "retiredActiveRequests": retired, "cooperativeExits": retired,
+            "lastCancellationRetirementMs": (0, 2.5, 7.25)[retired]}
+        if pending:
+            telemetry["gui"]["status"] = "Reading and preparing model"
+        telemetry["shaderReload"] = {
+            "vmaAllocations": 30 if source == 72 else 42,
+            "vmaBytes": 524288 if source == 72 else 1048576,
+            "ownedObjects": {"pipelines": 5}}
+        samples.append({"frame": frame, "telemetry": telemetry})
+    return {"samples": samples}
 
 
 class GuiModelLifecycleHarnessTests(unittest.TestCase):
@@ -211,6 +242,37 @@ class GuiModelLifecycleHarnessTests(unittest.TestCase):
         record["samples"][4]["telemetry"]["gui"]["modelLoading"]["completed"] = 2
         with self.assertRaisesRegex(AssertionError, "exactly once"):
             gui.check_asynchronous_cancellation(record, CORNELL)
+
+    def test_active_cancellation_reports_both_measured_retirements(self):
+        self.assertEqual(gui.check_active_cancellation(synthetic_active_cancellation_record(), CORNELL,
+                                                       synthetic_active_cancellation_record()),
+                         {"bimReplacement": 2.5, "gltfUnload": 7.25})
+
+    def test_active_cancellation_requires_checkpoint_exits_and_valid_latency(self):
+        for frame, expected in ((5, 1), (14, 2)):
+            mutations = [(key, expected - 1, "stop at a checkpoint")
+                         for key in ("cancelled", "retiredActiveRequests", "cooperativeExits")]
+            mutations += [("lastCancellationRetirementMs", value, "retirement latency")
+                          for value in (0, -1, True, None, float("nan"), float("inf"))]
+            for key, value, message in mutations:
+                record = synthetic_active_cancellation_record()
+                sample = next(sample for sample in record["samples"] if sample["frame"] == frame)
+                sample["telemetry"]["gui"]["modelLoading"][key] = value
+                with self.subTest(frame=frame, key=key, value=value), self.assertRaisesRegex(AssertionError, message):
+                    gui.check_active_cancellation(record, CORNELL, synthetic_active_cancellation_record())
+
+    def test_active_cancellation_rejects_vulkan_inventory_changes(self):
+        for frames, key, value in (
+                ((6,), "vmaAllocations", 43),
+                ((8,), "ownedObjects", {"pipelines": 6}),
+                ((14,), "vmaAllocations", 31),
+                ((22,), "vmaBytes", 1048577)):
+            record = synthetic_active_cancellation_record()
+            for sample in record["samples"]:
+                if sample["frame"] in frames:
+                    sample["telemetry"]["shaderReload"][key] = value
+            with self.subTest(frames=frames, key=key), self.assertRaisesRegex(AssertionError, "Vulkan inventory"):
+                gui.check_active_cancellation(record, CORNELL, synthetic_active_cancellation_record())
 
     def test_pixels_detect_missing_models_and_failed_load_scene_changes(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -1,10 +1,21 @@
 #include "Container/geometry/DotBimLoader.h"
+#include "Container/utility/ModelImportCancellation.h"
 
 #include <gtest/gtest.h>
 
 #include <stdexcept>
 
 namespace {
+
+TEST(DotBimLoader, CancelledImportDoesNotReadOrParse) {
+  std::stop_source cancellation;
+  cancellation.request_stop();
+  const auto stop = cancellation.get_token();
+  EXPECT_THROW((void)container::geometry::dotbim::LoadFromJson("invalid source", 1.0f, stop),
+               container::util::ModelImportCancelled);
+  EXPECT_THROW((void)container::geometry::dotbim::LoadFromFile("", 1.0f, stop),
+               container::util::ModelImportCancelled);
+}
 
 TEST(DotBimLoader, ParsesMeshElementTransformAndColor) {
   constexpr const char *kDotBimJson = R"json(

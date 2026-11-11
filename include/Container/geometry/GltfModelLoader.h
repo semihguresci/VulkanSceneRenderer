@@ -15,6 +15,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stop_token>
 
 namespace container::geometry {
 
@@ -57,6 +58,7 @@ struct LoadOptions {
   bool requireSelfContained{false};
   // The detached source is an incoming scene composition operand.
   bool mergeInput{false};
+  std::stop_token stop;
 };
 
 // Source-only consumers (for example material import) share the same version

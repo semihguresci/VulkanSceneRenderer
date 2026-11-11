@@ -1,6 +1,7 @@
 #include <Container/geometry/Model.h>
 
 #include <Container/geometry/GltfModelLoader.h>
+#include <Container/utility/ModelImportCancellation.h>
 
 #include <glm/geometric.hpp>
 
@@ -12,20 +13,24 @@
 namespace container::geometry {
 namespace {
 
+using container::util::checkModelImportCancellation;
+
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kTwoPi = kPi * 2.0f;
 
-uint32_t countVertices(const std::vector<Mesh>& meshes) {
+uint32_t countVertices(const std::vector<Mesh>& meshes, const std::stop_token& stop) {
   uint32_t total = 0;
   for (const auto& mesh : meshes) {
+    checkModelImportCancellation(stop);
     total += static_cast<uint32_t>(mesh.vertices().size());
   }
   return total;
 }
 
-uint32_t countIndices(const std::vector<Mesh>& meshes) {
+uint32_t countIndices(const std::vector<Mesh>& meshes, const std::stop_token& stop) {
   uint32_t total = 0;
   for (const auto& mesh : meshes) {
+    checkModelImportCancellation(stop);
     total += static_cast<uint32_t>(mesh.indices().size());
   }
   return total;
@@ -92,34 +97,45 @@ void appendQuadFace(std::vector<Vertex>& vertices, std::vector<uint32_t>& indice
 }
 
 void appendFlattenedMesh(const Mesh& mesh, std::vector<Vertex>& vertices,
-                         std::vector<uint32_t>& indices) {
+                         std::vector<uint32_t>& indices, const std::stop_token& stop) {
   const uint32_t vertexOffset = static_cast<uint32_t>(vertices.size());
-  vertices.insert(vertices.end(), mesh.vertices().begin(), mesh.vertices().end());
+  const auto& sourceVertices = mesh.vertices();
+  constexpr size_t chunkSize = 4096;
+  for (size_t offset = 0; offset < sourceVertices.size();) {
+    checkModelImportCancellation(stop);
+    const auto count = std::min(chunkSize, sourceVertices.size() - offset);
+    const auto first = sourceVertices.begin() + offset;
+    vertices.insert(vertices.end(), first, first + count);
+    offset += count;
+  }
 
   indices.reserve(indices.size() + mesh.indices().size());
-  for (const auto index : mesh.indices()) {
-    indices.push_back(index + vertexOffset);
+  for (size_t i = 0; i < mesh.indices().size(); ++i) {
+    if (i % chunkSize == 0) checkModelImportCancellation(stop);
+    indices.push_back(mesh.indices()[i] + vertexOffset);
   }
 }
 
 }  // namespace
 
-Model::Model(std::vector<Mesh> meshes) : meshes_(std::move(meshes)) {
-  flattenMeshes();
+Model::Model(std::vector<Mesh> meshes, const std::stop_token& stop)
+    : meshes_(std::move(meshes)) {
+  flattenMeshes(stop);
 }
 
-void Model::flattenMeshes() {
+void Model::flattenMeshes(const std::stop_token& stop) {
+  checkModelImportCancellation(stop);
   vertices_.clear();
   indices_.clear();
   primitiveRanges_.clear();
 
-  vertices_.reserve(countVertices(meshes_));
-  indices_.reserve(countIndices(meshes_));
+  vertices_.reserve(countVertices(meshes_, stop));
+  indices_.reserve(countIndices(meshes_, stop));
   primitiveRanges_.reserve(meshes_.size());
 
   for (const auto& mesh : meshes_) {
     const uint32_t firstIndex = static_cast<uint32_t>(indices_.size());
-    appendFlattenedMesh(mesh, vertices_, indices_);
+    appendFlattenedMesh(mesh, vertices_, indices_, stop);
     primitiveRanges_.push_back(
         {firstIndex, static_cast<uint32_t>(mesh.indices().size()),
          mesh.materialIndex(), mesh.disableBackfaceCulling()});
@@ -130,8 +146,8 @@ Model Model::LoadFromGltf(const std::string& path) {
   return gltf::LoadModelFromFile(path);
 }
 
-Model Model::FromMeshes(std::vector<Mesh> meshes) {
-  return Model(std::move(meshes));
+Model Model::FromMeshes(std::vector<Mesh> meshes, const std::stop_token& stop) {
+  return Model(std::move(meshes), stop);
 }
 
 Model Model::MakeCube() {

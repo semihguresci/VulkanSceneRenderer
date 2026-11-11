@@ -32,6 +32,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -562,6 +563,8 @@ struct BimDrawLists {
 // Supports dotbim, tessellated IFC, IFCX, USD/USDC/USDZ meshes, and
 // glTF fallback content routed through the same BIM render passes.
 class BimManager {
+  struct PreparedDrawData;
+
 public:
   BimManager(std::shared_ptr<container::gpu::VulkanDevice> device,
              container::gpu::AllocationManager &allocationManager,
@@ -575,6 +578,11 @@ public:
                  container::scene::SceneManager &sceneManager,
                  std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions = {});
   struct PreparedScene {
+    PreparedScene();
+    ~PreparedScene();
+    PreparedScene(PreparedScene &&) noexcept;
+    PreparedScene &operator=(PreparedScene &&) noexcept;
+
     container::geometry::dotbim::Model model;
     std::filesystem::path assetPath;
     std::string format;
@@ -586,13 +594,17 @@ public:
     BimFloorPlanOverlayData floorPlanSourceElevation;
     std::vector<BimMeshletClusterMetadata> meshletClusters;
     BimOptimizedModelMetadata optimizedMetadata;
+    std::unique_ptr<PreparedDrawData> drawData;
   };
-  // CPU-only staging: no live renderer state, callback or Vulkan access.
+  // CPU-only staging. The optional observer runs inline and may request a stop.
+  // It must not access live renderer state or Vulkan resources.
   [[nodiscard]] static PreparedScene prepareScene(const std::string &path,
                                                   float importScale,
-      std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions = {});
+      std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions = {},
+      std::stop_token stop = {},
+      const std::function<void(std::string_view)> &progress = {});
   [[nodiscard]] const auto& openVdbOptions() const { return openVdbOptions_; }
-  void loadPreparedScene(const PreparedScene &prepared,
+  void loadPreparedScene(PreparedScene &&prepared,
                          container::scene::SceneManager &sceneManager);
   // Commit/unload checkpoints run on the calling render thread. The callback
   // may present a standalone progress frame, but must not reenter scene APIs.
@@ -880,9 +892,13 @@ private:
                          const std::filesystem::path &path,
                          std::string_view format,
                          container::scene::SceneManager &sceneManager,
-                         const PreparedScene *prepared = nullptr);
-  void buildDrawDataFromModel(const container::geometry::dotbim::Model &model,
-                              container::scene::SceneManager &sceneManager);
+                         PreparedScene *prepared = nullptr);
+  [[nodiscard]] static std::unique_ptr<PreparedDrawData> prepareDrawData(
+      const container::geometry::dotbim::Model &model, std::stop_token stop,
+      const std::function<void(std::string_view)> &progress = {});
+  void installDrawData(const container::geometry::dotbim::Model &model,
+                       PreparedDrawData &prepared,
+                       container::scene::SceneManager &sceneManager);
   [[nodiscard]] BimDrawFilterStateInputs drawFilterStateInputs() const;
   void rebuildSceneStatisticsCache();
   [[nodiscard]] BimPickHit pickRenderableObjectForDraws(

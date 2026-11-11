@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stop_token>
+
 #include <tiny_gltf.h>
 #include <nlohmann/json_fwd.hpp>
 
@@ -55,7 +57,7 @@ struct CompressionStatistics {
 // fail clearly. No resource reads or allocations proportional to decoded data.
 [[nodiscard]] CompressionSourcePlan InspectCompressedGltfSource(
     const nlohmann::json& source, bool binary,
-    const CompressionLimits& limits = {});
+    const CompressionLimits& limits = {}, const std::stop_token& stop = {});
 
 // Ownership-taking normalization. Passing an lvalue copies it; callers can
 // move a freshly loaded model to avoid an extra encoded-resource copy. Original
@@ -70,6 +72,7 @@ struct CompressionStatistics {
 [[nodiscard]] tinygltf::Model DecodeCompressedGltf(
     tinygltf::Model source, const CompressionLimits& limits = {},
     CompressionStatistics* statistics = nullptr,
-    std::span<const CompressionPlaceholder> placeholders = {});
+    std::span<const CompressionPlaceholder> placeholders = {},
+    const std::stop_token& stop = {});
 
 } // namespace container::geometry::gltf

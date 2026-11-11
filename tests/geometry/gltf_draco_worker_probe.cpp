@@ -61,6 +61,12 @@ int wmain(int argc, wchar_t** argv) {
     const auto request = draco_worker::ReadRequest(argv[1]);
     const auto action = std::to_integer<unsigned char>(request.compressed.front());
     if (action == 1) { Sleep(10'000); return 0; }
+    if (action == 7) {
+      // Let the parent cancel only after this process starts decoding.
+      std::ofstream(argv[2], std::ios::binary).put('r');
+      Sleep(10'000);
+      return 0;
+    }
     if (action == 2) return 17;
     if (action == 3) {
       std::ofstream output(argv[2], std::ios::binary);

@@ -3,6 +3,7 @@
 #include "Container/geometry/DotBimLoader.h"
 
 #include <filesystem>
+#include <stop_token>
 #include <string_view>
 
 namespace container::geometry::ifc {
@@ -13,8 +14,10 @@ namespace container::geometry::ifc {
 using Model = container::geometry::dotbim::Model;
 
 [[nodiscard]] Model LoadFromFile(const std::filesystem::path& path,
-                                 float importScale = 1.0f);
+                                 float importScale = 1.0f,
+                                 std::stop_token stop = {});
 [[nodiscard]] Model LoadFromStep(std::string_view stepText,
-                                 float importScale = 1.0f);
+                                 float importScale = 1.0f,
+                                 std::stop_token stop = {});
 
 }  // namespace container::geometry::ifc

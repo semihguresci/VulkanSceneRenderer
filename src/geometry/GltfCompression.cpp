@@ -1,4 +1,5 @@
 #include <Container/geometry/GltfCompression.h>
+#include <Container/utility/ModelImportCancellation.h>
 #if defined(CONTAINER_HAS_DRACO)
 #include <Container/geometry/GltfDracoWorker.h>
 #endif
@@ -24,6 +25,7 @@
 namespace container::geometry::gltf {
 namespace {
 using Json = nlohmann::json;
+using container::util::checkModelImportCancellation;
 using Bytes = std::vector<unsigned char>;
 constexpr const char* kDraco = "KHR_draco_mesh_compression";
 constexpr const char* kExt = "EXT_meshopt_compression";
@@ -229,10 +231,11 @@ Json extensions(const tinygltf::ExtensionMap& values) {
     if (const auto found=values.find(name); found!=values.end()) result[name] = jsonValue(found->second);
   return result;
 }
-Json metadata(const tinygltf::Model& model) {
+Json metadata(const tinygltf::Model& model, const std::stop_token& stop) {
   Json result{{"extensionsUsed",model.extensionsUsed},{"extensionsRequired",model.extensionsRequired},
       {"buffers",Json::array()},{"bufferViews",Json::array()},{"accessors",Json::array()},{"meshes",Json::array()}};
   for (const auto& buffer : model.buffers) {
+    checkModelImportCancellation(stop);
     Json item{{"byteLength",buffer.data.size()},{"extensions",extensions(buffer.extensions)}};
     if (!buffer.uri.empty()) item["uri"] = "resident:";
     // Resident byte arrays supplied directly by CPU callers have no URI.
@@ -241,12 +244,14 @@ Json metadata(const tinygltf::Model& model) {
     result["buffers"].push_back(std::move(item));
   }
   for (const auto& view : model.bufferViews) {
+    checkModelImportCancellation(stop);
     Json item{{"buffer",view.buffer},{"byteOffset",view.byteOffset},{"byteLength",view.byteLength},
         {"extensions",extensions(view.extensions)}};
     if (view.byteStride) item["byteStride"] = view.byteStride;
     result["bufferViews"].push_back(std::move(item));
   }
   for (const auto& accessor : model.accessors) {
+    checkModelImportCancellation(stop);
     const char* type = accessor.type == TINYGLTF_TYPE_SCALAR ? "SCALAR" : accessor.type == TINYGLTF_TYPE_VEC2 ? "VEC2" :
         accessor.type == TINYGLTF_TYPE_VEC3 ? "VEC3" : accessor.type == TINYGLTF_TYPE_VEC4 ? "VEC4" : "MATRIX";
     result["accessors"].push_back(Json{{"count",accessor.count},{"componentType",accessor.componentType},
@@ -255,6 +260,7 @@ Json metadata(const tinygltf::Model& model) {
   for (const auto& mesh : model.meshes) {
     Json primitives = Json::array();
     for (const auto& primitive : mesh.primitives) {
+      checkModelImportCancellation(stop);
       Json item{{"attributes",primitive.attributes},{"mode",primitive.mode < 0 ? 4 : primitive.mode},
           {"extensions",extensions(primitive.extensions)}};
       if (primitive.indices >= 0) item["indices"] = primitive.indices;
@@ -315,13 +321,15 @@ template<class T> void append(Bytes& bytes,T value) {
   if constexpr (std::endian::native == std::endian::big) std::reverse(raw.begin(),raw.end());
   bytes.insert(bytes.end(),raw.begin(),raw.end());
 }
-Bytes convert(const DracoDecodedAttribute& attribute,const tinygltf::Accessor& accessor,uint32_t points) {
+Bytes convert(const DracoDecodedAttribute& attribute,const tinygltf::Accessor& accessor,uint32_t points,
+              const std::stop_token& stop) {
   const auto sourceWidth = DracoScalarByteWidth(attribute.scalarType);
   const auto count = product(points,attribute.componentCount);
   if (attribute.values.size() != product(count,sourceWidth)) fail("Draco attribute payload size disagrees");
   Bytes output;
   output.reserve(size_t(product(count,width(uint64_t(accessor.componentType)))));
   for (uint64_t i=0;i<count;++i) {
+    if (i % 1024 == 0) checkModelImportCancellation(stop);
     const auto* bytes = attribute.values.data()+size_t(i*sourceWidth);
     const auto encode = [&]<class T>(T value) {
       const auto integer = [&]<class D>() {
@@ -364,7 +372,8 @@ Bytes convert(const DracoDecodedAttribute& attribute,const tinygltf::Accessor& a
   return output;
 }
 void decodeDraco(tinygltf::Model& model,tinygltf::Primitive& primitive,const Json& description,const Json& accessorDescriptions,
-                 const std::vector<tinygltf::Accessor>& originals,const CompressionLimits& limits) {
+                 const std::vector<tinygltf::Accessor>& originals,const CompressionLimits& limits,
+                 const std::stop_token& stop) {
   const auto& dracoExtension = *extension(description,kDraco);
   const auto viewIndex = required(dracoExtension,"bufferView");
   if (viewIndex >= model.bufferViews.size()) fail("Draco buffer view is missing");
@@ -394,7 +403,7 @@ void decodeDraco(tinygltf::Model& model,tinygltf::Primitive& primitive,const Jso
   workerLimits.timeoutMs = limits.dracoTimeoutMs;
   const auto decoded = DecodeDracoInWorker(
       {reinterpret_cast<const std::byte*>(bytes.data()+view.byteOffset),view.byteLength},requests,workerLimits,
-      {limits.dracoWorkerExecutable,limits.dracoTemporaryRoot});
+      {limits.dracoWorkerExecutable,limits.dracoTemporaryRoot},stop);
   if (decoded.pointCount != points || decoded.faceIndices.size() != indexCount || decoded.attributes.size() != requests.size())
     fail("Draco decoded counts disagree with source accessors");
   // Append per-primitive accessor copies. Shared original metadata can describe
@@ -406,8 +415,10 @@ void decodeDraco(tinygltf::Model& model,tinygltf::Primitive& primitive,const Jso
       const auto stride = (element+3)&~size_t(3);
       if (stride != element) {
         Bytes padded(size_t(product(accessor.count,stride)),0);
-        for (size_t point=0;point<accessor.count;++point)
+        for (size_t point=0;point<accessor.count;++point) {
+          if (point % 1024 == 0) checkModelImportCancellation(stop);
           std::memcpy(padded.data()+point*stride,data.data()+point*element,element);
+        }
         data = std::move(padded);
         output.byteStride = stride;
       }
@@ -427,13 +438,15 @@ void decodeDraco(tinygltf::Model& model,tinygltf::Primitive& primitive,const Jso
     if (found == decoded.attributes.end()) fail("Draco unique attribute ID is absent from decoded mesh");
     const auto& accessor = originals[size_t(primitive.attributes.at(semantic))];
     if (found->componentCount != uint32_t(tinygltf::GetNumComponentsInType(accessor.type))) fail("Draco attribute shape disagrees");
-    primitive.attributes[semantic] = materialize(accessor,convert(*found,accessor,decoded.pointCount),TINYGLTF_TARGET_ARRAY_BUFFER);
+    primitive.attributes[semantic] = materialize(accessor,convert(*found,accessor,decoded.pointCount,stop),TINYGLTF_TARGET_ARRAY_BUFFER);
   }
   tinygltf::Accessor indices;
   if (primitive.indices >= 0) indices = originals[size_t(primitive.indices)];
   else { indices.type = TINYGLTF_TYPE_SCALAR; indices.componentType = 5125; indices.count = indexCount; }
   Bytes output;
-  for (const auto index : decoded.faceIndices) {
+  for (size_t i=0;i<decoded.faceIndices.size();++i) {
+    if (i % 1024 == 0) checkModelImportCancellation(stop);
+    const auto index = decoded.faceIndices[i];
     if (index >= points) fail("Draco face index exceeds point count");
     if (indices.componentType == 5121) {
       if (index > UINT8_MAX) fail("Draco index exceeds declared UBYTE range");
@@ -466,7 +479,9 @@ bool IsGeometryCompressionExtension(std::string_view name) noexcept {
   return name == kDraco || name == kExt || name == kKhr;
 }
 
-CompressionSourcePlan InspectCompressedGltfSource(const Json& source,bool binary,const CompressionLimits& limits) {
+CompressionSourcePlan InspectCompressedGltfSource(const Json& source,bool binary,const CompressionLimits& limits,
+                                                   const std::stop_token& stop) {
+  checkModelImportCancellation(stop);
   try {
     CompressionSourcePlan plan;
     for (const auto* name : {kExt,kKhr,kDraco})
@@ -478,6 +493,7 @@ CompressionSourcePlan InspectCompressedGltfSource(const Json& source,bool binary
     std::vector<bool> requiredReferences(buffers.size(),true);
     std::set<size_t> encodedSources;
     for (const auto& view : views) {
+      checkModelImportCancellation(stop);
       const auto buffer = required(view,"buffer");
       const auto size = required(at(buffers,buffer,"buffer"),"byteLength");
       range(optional(view,"byteOffset"),required(view,"byteLength"),size,"parent buffer view");
@@ -499,6 +515,7 @@ CompressionSourcePlan InspectCompressedGltfSource(const Json& source,bool binary
       }
     }
     for (size_t i=0;i<buffers.size();++i) {
+      checkModelImportCancellation(stop);
       const auto& buffer = buffers[i];
       const auto* ext = extension(buffer,kExt);
       const auto* khr = extension(buffer,kKhr);
@@ -523,7 +540,8 @@ CompressionSourcePlan InspectCompressedGltfSource(const Json& source,bool binary
       }
     }
     for (const auto& mesh : table(source,"meshes"))
-      for (const auto& primitive : table(mesh,"primitives"))
+      for (const auto& primitive : table(mesh,"primitives")) {
+        checkModelImportCancellation(stop);
         if (const auto* draco = extension(primitive,kDraco)) {
           declaration(source,kDraco,HasDracoDecoder());
           if (!HasDracoDecoder()) continue;
@@ -532,13 +550,16 @@ CompressionSourcePlan InspectCompressedGltfSource(const Json& source,bool binary
           charge(plan.decodedBytes,dracoBudget(primitive,table(source,"accessors")),limits);
           ++plan.dracoPrimitives;
         }
+      }
     return plan;
   } catch(const Json::exception& error) { fail(std::string("invalid compression metadata: ")+error.what()); }
 }
 
 tinygltf::Model DecodeCompressedGltf(tinygltf::Model source,const CompressionLimits& limits,CompressionStatistics* statistics,
-                                    std::span<const CompressionPlaceholder> placeholders) {
-  const auto hasMap=[](const tinygltf::ExtensionMap& map) {
+                                    std::span<const CompressionPlaceholder> placeholders, const std::stop_token& stop) {
+  checkModelImportCancellation(stop);
+  const auto hasMap=[&stop](const tinygltf::ExtensionMap& map) {
+    checkModelImportCancellation(stop);
     return map.contains(kExt) || map.contains(kKhr) || map.contains(kDraco);
   };
   bool compressed=!placeholders.empty() || std::ranges::any_of(source.extensionsUsed,IsGeometryCompressionExtension) ||
@@ -553,22 +574,24 @@ tinygltf::Model DecodeCompressedGltf(tinygltf::Model source,const CompressionLim
     if (statistics) *statistics={};
     return source;
   }
-  auto description = metadata(source);
+  auto description = metadata(source, stop);
   std::set<size_t> placeholderIndices;
   for (const auto& placeholder : placeholders) {
+    checkModelImportCancellation(stop);
     if (placeholder.bufferIndex >= source.buffers.size() || !placeholderIndices.insert(placeholder.bufferIndex).second)
       fail("invalid or duplicate stand-in placeholder buffer");
     auto& buffer = description.at("buffers").at(placeholder.bufferIndex);
     buffer["byteLength"] = placeholder.byteLength;
     buffer.erase("uri");
   }
-  const auto plan = InspectCompressedGltfSource(description,false,limits);
+  const auto plan = InspectCompressedGltfSource(description,false,limits,stop);
   if (plan.placeholders.size() != placeholders.size())
     fail("unresolved placeholder buffer was not supplied by source preflight");
   CompressionStatistics completed;
   completed.decodedBytes = plan.decodedBytes;
   const auto originalAccessors = source.accessors;
   for (size_t i=0;i<source.bufferViews.size();++i) {
+    checkModelImportCancellation(stop);
     auto& view = source.bufferViews[i];
     const auto& item = description.at("bufferViews").at(i);
     if (!extension(item,kExt) && !extension(item,kKhr)) continue;
@@ -584,17 +607,19 @@ tinygltf::Model DecodeCompressedGltf(tinygltf::Model source,const CompressionLim
   }
   for (size_t mesh=0;mesh<source.meshes.size();++mesh)
     for (size_t p=0;p<source.meshes[mesh].primitives.size();++p) {
+      checkModelImportCancellation(stop);
       auto& primitive = source.meshes[mesh].primitives[p];
       if (!primitive.extensions.contains(kDraco)) continue;
       if (HasDracoDecoder()) {
 #if defined(CONTAINER_HAS_DRACO)
-        decodeDraco(source,primitive,description.at("meshes").at(mesh).at("primitives").at(p),description.at("accessors"),originalAccessors,limits);
+        decodeDraco(source,primitive,description.at("meshes").at(mesh).at("primitives").at(p),description.at("accessors"),originalAccessors,limits,stop);
         ++completed.dracoPrimitives;
 #endif
       } else ++completed.fallbackPrimitives;
       remove(primitive.extensions,kDraco,primitive.extensions_json_string);
     }
   for (auto& buffer : source.buffers) {
+    checkModelImportCancellation(stop);
     remove(buffer.extensions,kExt,buffer.extensions_json_string);
     remove(buffer.extensions,kKhr,buffer.extensions_json_string);
   }
@@ -606,6 +631,7 @@ tinygltf::Model DecodeCompressedGltf(tinygltf::Model source,const CompressionLim
   }
   std::erase_if(source.extensionsUsed,IsGeometryCompressionExtension);
   std::erase_if(source.extensionsRequired,IsGeometryCompressionExtension);
+  checkModelImportCancellation(stop);
   if (statistics) *statistics = completed;
   return source;
 }

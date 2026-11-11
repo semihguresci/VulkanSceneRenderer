@@ -3,9 +3,11 @@
 Scene Controls replaces the current model when Load model or a sample model is
 selected. Unload model clears both primary glTF and auxiliary BIM/USD content.
 File decoding and BIM floor-plan preparation run on a serial background worker;
-the current scene remains interactive while those CPU jobs run. New requests
-replace queued requests, and Unload cancels a pending load without waiting for
-its importer or allowing that model to appear later. GPU installation and
+the current scene remains interactive while those CPU jobs run. A replacement,
+unload, or shutdown requests cancellation of the active CPU import. The import
+checks for cancellation during file reads and CPU preparation. Unload clears
+the scene immediately, and only the latest request can publish a model or a
+load error. GPU installation and
 unload cleanup run on the render thread with a live loading view and window
 event checkpoints. Uploads wait on their own fences rather than idling the
 whole graphics queue. Discarded CPU payloads are destroyed on the worker.
@@ -16,6 +18,16 @@ glTF/BIM inputs are decoded before live assets are retired, preserving the
 current scene, camera and lighting when parsing fails.
 Primary geometry arenas reuse their existing capacity after the previous GPU
 readers retire, preventing repeated reloads from growing their allocations.
+
+The native BIM readers check cancellation between 64 KiB reads and throughout
+parsing and model preparation. glTF reads use 1 MiB chunks, with checkpoints in
+source validation, linked composition, and geometry conversion. A checkpoint
+can run only after an individual library call returns. This includes TinyGLTF
+JSON and embedded-resource decoding, image and meshoptimizer codec calls,
+MikkTSpace, IFC triangulation or Boolean kernels, and USD and OpenVDB importers.
+On Windows, the isolated Draco decoder can be signaled during its wait, then
+the worker terminates the child through its job object and removes its temporary
+files.
 
 Scene Controls stays inside the viewport work area when a saved window size or
 position exceeds the screen. The scene hierarchy, sample-model catalog and BIM
@@ -63,10 +75,10 @@ Run the native model suites on a Vulkan-capable Windows desktop:
 
 ```powershell
 $env:CONTAINER_RUN_GPU_GUI_MODEL_LOADING = '1'
-ctest --test-dir out/build/visual-studio -C Release --output-on-failure -R '^gui_model_(loading|lifecycle)_gpu_regression$'
+ctest --test-dir out/build/visual-studio -C Release --output-on-failure -R '^gui_model_(loading|lifecycle|cancellation)_gpu_regression$'
 ```
 
-Both suites use the same deferred GUI request methods as the widgets, with the
+The native suites use the same deferred GUI request methods as the widgets, with the
 application's ImGui frame lifecycle active. They do not automate OS mouse clicks.
 The legacy suite covers discovered IFC/IFCX sample selection and startup versus
 UI rendering. The lifecycle suite covers repeated glTF/BIM loads, failed-load
@@ -79,8 +91,16 @@ telemetry file must be newly produced.
 Request telemetry also checks submitted preparation/progress frames and event
 processing. Captures normally settle a model event without advancing the scene
 script, continuing to render the loading view while waiting. Setting
-`guiWaitForLoad: false` leaves that GUI event asynchronous; the cancellation cases unload it on
-the following frame and verify that its discarded model never becomes active.
+`guiWaitForLoad: false` leaves that GUI event asynchronous. The active cancellation
+suite generates large BIM and glTF files from the packaged validation fixtures.
+It replaces the active BIM import and unloads during the active glTF import in both
+raster techniques. It checks that each importer exited at a cancellation checkpoint,
+the cancelled models never became active, and the settled Vulkan resource inventory
+matched the same lifecycle without the cancelled requests. Telemetry measures the
+time from request invalidation through worker-side cleanup and reports it as
+`lastCancellationRetirementMs`. On a Ryzen 9 3900X and RTX 2080 SUPER, a Windows
+Release run retired the 35.0 MB dotBIM job in 2.3–2.6 ms and the 12.2 MB glTF job
+in 6.7–7.6 ms, with Vulkan synchronization validation enabled.
 The worker's CPU tests gate real threads with promises, covering nonblocking
 polling, superseded requests, failures, unload cancellation and worker-thread
 payload destruction.
@@ -88,10 +108,11 @@ payload destruction.
 For a standalone run with evidence in an ignored output directory:
 
 ```powershell
-python -B tests/validation/gui_model_loading_regression.py --exe out/build/visual-studio/Release/VulkanSceneRenderer.exe --suite all --output out/model-lifecycle-validation
+python -B tests/validation/gui_model_loading_regression.py --exe out/build/visual-studio/Release/VulkanSceneRenderer.exe --suite cancellation --output out/model-cancellation-validation
 ```
 
 GPU suites are opt-in and report CTest skip code 77 when not enabled. The
-application's packaged `models` directory must contain the validation scenes and
-buildingSMART samples. Asynchronous GI may use its reported serialized fallback
+application's packaged `models` directory must contain the validation scenes.
+The legacy and lifecycle suites also use the buildingSMART samples.
+Asynchronous GI may use its reported serialized fallback
 on devices without a suitable compute queue.

@@ -1,4 +1,5 @@
 #include "Container/geometry/PolylineGeometry.h"
+#include "Container/utility/ModelImportCancellation.h"
 
 #include <algorithm>
 #include <array>
@@ -12,16 +13,21 @@ namespace container::geometry {
 bool appendPolylineGeometry(dotbim::Model &model,
                             std::span<const glm::vec3> points,
                             std::span<const size_t> pathVertexCounts,
-                            uint32_t meshId, float pickingRadius) {
+                            uint32_t meshId, float pickingRadius,
+                            std::stop_token stop) {
+  container::util::checkModelImportCancellation(stop);
   if (points.size() < 2 || pathVertexCounts.empty() ||
       !std::isfinite(pickingRadius) || pickingRadius <= 0)
     return false;
   const auto finite = [](const glm::vec3 &p) {
     return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
   };
-  for (const auto &p : points)
-    if (!finite(p))
+  for (size_t i = 0; i < points.size(); ++i) {
+    if ((i % 1024u) == 0u)
+      container::util::checkModelImportCancellation(stop);
+    if (!finite(points[i]))
       return false;
+  }
 
   struct Segment {
     glm::vec3 a, b;
@@ -31,9 +37,12 @@ bool appendPolylineGeometry(dotbim::Model &model,
   size_t cursor = 0;
   glm::dvec3 minimum(std::numeric_limits<double>::max()), maximum(-minimum);
   for (size_t count : pathVertexCounts) {
+    container::util::checkModelImportCancellation(stop);
     if (count == 0 || count > points.size() - cursor)
       return false;
     for (size_t i = 1; i < count; ++i) {
+      if ((i % 1024u) == 0u)
+        container::util::checkModelImportCancellation(stop);
       const auto a = points[cursor + i - 1], b = points[cursor + i];
       const auto delta = glm::dvec3(b) - glm::dvec3(a);
       if (glm::dot(delta, delta) == 0)
@@ -99,7 +108,10 @@ bool appendPolylineGeometry(dotbim::Model &model,
   };
   dotbim::MeshRange proxy{meshId, static_cast<uint32_t>(model.indices.size()),
                           0, center, proxyRadius};
-  for (const auto &s : segments) {
+  for (size_t index = 0; index < segments.size(); ++index) {
+    if ((index % 1024u) == 0u)
+      container::util::checkModelImportCancellation(stop);
+    const auto &s = segments[index];
     for (size_t i = 0; i < 4; ++i)
       quad(s.start[i], s.end[i], s.end[(i + 1) % 4], s.start[(i + 1) % 4]);
     quad(s.start[0], s.start[1], s.start[2], s.start[3]);
@@ -110,13 +122,17 @@ bool appendPolylineGeometry(dotbim::Model &model,
   model.meshRanges.push_back(proxy);
   dotbim::NativePrimitiveRange lines{
       meshId, static_cast<uint32_t>(model.indices.size()), 0, center, radius};
-  for (const auto &s : segments)
+  for (size_t index = 0; index < segments.size(); ++index) {
+    if ((index % 1024u) == 0u)
+      container::util::checkModelImportCancellation(stop);
+    const auto &s = segments[index];
     for (const auto &p : {s.a, s.b}) {
       Vertex vertex{};
       vertex.position = p;
       model.indices.push_back(static_cast<uint32_t>(model.vertices.size()));
       model.vertices.push_back(vertex);
     }
+  }
   lines.indexCount =
       static_cast<uint32_t>(model.indices.size()) - lines.firstIndex;
   model.nativeCurveRanges.push_back(lines);

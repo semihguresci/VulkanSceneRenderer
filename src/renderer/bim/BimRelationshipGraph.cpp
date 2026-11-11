@@ -179,7 +179,7 @@ void BimRelationshipGraph::build(
     const std::function<void()> &progress) {
   clear(progress);
   size_t completedSteps = 0u;
-  const auto checkpoint = [&]() {
+  const std::function<void()> checkpoint = [&]() {
     if (progress && (completedSteps++ % 128u) == 0u) {
       progress();
     }
@@ -232,7 +232,7 @@ void BimRelationshipGraph::build(
               defaultRelationshipLabel(BimRelationshipKind::TypeDefinition));
     }
 
-    buildPropertySets(element);
+    buildPropertySets(element, checkpoint);
   }
 
   for (const container::geometry::dotbim::ElementRelationship &relationship :
@@ -552,13 +552,15 @@ void BimRelationshipGraph::indexNodeIdentity(
 }
 
 void BimRelationshipGraph::buildPropertySets(
-    const BimElementMetadataView &metadata) {
+    const BimElementMetadataView &metadata,
+    const std::function<void()> &checkpoint) {
   if (!isValidObjectIndex(metadata.objectIndex) || metadata.properties.empty()) {
     return;
   }
 
   auto &groups = propertySetsByObject_[metadata.objectIndex];
   for (const BimElementProperty &property : metadata.properties) {
+    checkpoint();
     const std::string set =
         !property.set.empty() ? property.set : "(unassigned set)";
     const std::string category = !property.category.empty()
@@ -585,6 +587,7 @@ void BimRelationshipGraph::buildPropertySets(
 
   const uint32_t elementNode = objectNodeIndex(metadata.objectIndex);
   for (const BimPropertySetGroup &group : groups) {
+    checkpoint();
     const std::string key = "pset:" + std::to_string(metadata.objectIndex) +
                             ":" + group.set + ":" + group.category;
     const uint32_t propertySetNode =

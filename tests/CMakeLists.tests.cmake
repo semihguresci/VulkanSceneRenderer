@@ -1043,6 +1043,14 @@ add_test(NAME gui_model_lifecycle_gpu_regression
 set_tests_properties(gui_model_lifecycle_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 TIMEOUT 600 LABELS "requires-vulkan;requires-display;visual-regression")
 
+add_test(NAME gui_model_cancellation_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/gui_model_loading_regression.py"
+            --exe "$<TARGET_FILE:VulkanSceneRenderer>"
+            --suite cancellation
+            --output "${TEST_RESULTS_DIR}/gui-model-cancellation")
+set_tests_properties(gui_model_cancellation_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 TIMEOUT 600 LABELS "requires-vulkan;requires-display;visual-regression")
+
 add_test(NAME gui_model_loading_harness_tests
     COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover
             -s "${TEST_VALIDATION_DIR}" -p "test_gui_model_loading_regression.py")

@@ -1,4 +1,5 @@
 #include <Container/geometry/GltfAccessor.h>
+#include <Container/utility/ModelImportCancellation.h>
 
 #include <algorithm>
 #include <bit>
@@ -23,7 +24,8 @@ bool HasRequiredExtension(const tinygltf::Model& source, std::string_view extens
   throw std::runtime_error("glTF " + label_ + ": " + std::string(message));
 }
 CheckedAccessor::CheckedAccessor(const tinygltf::Model& source, int index,
-                                 std::string_view label, AccessorReadOptions options)
+                                 std::string_view label, AccessorReadOptions options,
+                                 const std::stop_token& stop)
   : label_(label), options_(options) {
   if (index < 0 || static_cast<size_t>(index) >= source.accessors.size()) fail("accessor index is out of range");
   accessor_ = &source.accessors[static_cast<size_t>(index)];
@@ -101,6 +103,7 @@ CheckedAccessor::CheckedAccessor(const tinygltf::Model& source, int index,
     sparseValues_ = bytes(a.sparse.values.bufferView,a.sparse.values.byteOffset,sparseCount_,elementExtent,encodedStride_,componentWidth_,true,true,stride);
     uint64_t previous = 0;
     for (size_t i = 0; i < sparseCount_; ++i) {
+      if (i % 1024 == 0) container::util::checkModelImportCancellation(stop);
       const auto value = unsignedValue(sparseIndices_+i*sparseIndexWidth_,sparseIndexWidth_);
       if (value >= a.count || (i && value <= previous)) fail("sparse indices must be strictly increasing and within accessor count");
       previous = value;

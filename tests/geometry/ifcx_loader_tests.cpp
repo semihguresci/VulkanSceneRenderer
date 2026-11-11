@@ -1,4 +1,5 @@
 #include "Container/geometry/IfcxLoader.h"
+#include "Container/utility/ModelImportCancellation.h"
 
 #include <gtest/gtest.h>
 
@@ -18,6 +19,16 @@
 #endif
 
 namespace {
+
+TEST(IfcxLoader, CancelledImportDoesNotReadOrParse) {
+  std::stop_source cancellation;
+  cancellation.request_stop();
+  const auto stop = cancellation.get_token();
+  EXPECT_THROW((void)container::geometry::ifcx::LoadFromJson("invalid source", 1.0f, stop),
+               container::util::ModelImportCancelled);
+  EXPECT_THROW((void)container::geometry::ifcx::LoadFromFile("", 1.0f, stop),
+               container::util::ModelImportCancelled);
+}
 
 std::string readTextFile(const std::filesystem::path &path) {
   std::ifstream file(path, std::ios::binary);

@@ -3,6 +3,7 @@
 #include <tiny_gltf.h>
 #include <cstddef>
 #include <cstdint>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,7 @@ struct GltfSceneCatalogLimits {
 // Pure source metadata validation, independent of live scene graphs and Vulkan.
 // Duplicate display names and parentless roots shared between scenes are valid.
 [[nodiscard]] GltfSceneCatalog BuildGltfSceneCatalog(
-    const tinygltf::Model& source, const GltfSceneCatalogLimits& limits = {});
+    const tinygltf::Model& source, const GltfSceneCatalogLimits& limits = {},
+    const std::stop_token& stop = {});
 
 } // namespace container::scene

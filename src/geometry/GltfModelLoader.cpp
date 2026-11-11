@@ -10,6 +10,7 @@
 #include <Container/geometry/GltfXmpMetadata.h>
 
 #include <Container/geometry/Mesh.h>
+#include <Container/utility/ModelImportCancellation.h>
 
 #include <tiny_gltf.h>
 #include <stb_image.h>
@@ -47,6 +48,13 @@ namespace container::geometry {
 namespace gltf {
 namespace {
 
+using container::util::checkModelImportCancellation;
+using container::util::ModelImportCancelled;
+
+void checkImportIteration(const std::stop_token& stop, size_t iteration) {
+  if (iteration % 1024 == 0) checkModelImportCancellation(stop);
+}
+
 bool isBinaryGltf(const std::string& path) {
   const auto dotPos = path.find_last_of('.');
   if (dotPos == std::string::npos || dotPos + 1 >= path.size()) return false;
@@ -68,9 +76,10 @@ struct AccessorReadView {
 };
 AccessorReadView checkedAccessorReadView(const tinygltf::Model& model,
                                          int index, std::string_view label,
+                                         const std::stop_token& stop,
                                          bool repairFloatFrame = false) {
   CheckedAccessor reader(model,index,label,{AccessorUsage::VertexAttribute,
-    HasRequiredExtension(model,"KHR_accessor_float64"),repairFloatFrame});
+    HasRequiredExtension(model,"KHR_accessor_float64"),repairFloatFrame},stop);
   const auto& accessor = reader.accessor();
   return {std::move(reader),accessor};
 }
@@ -164,12 +173,15 @@ glm::vec4 orthonormalizeTangent(const glm::vec3& normal,
 }
 
 void generateMissingNormals(std::vector<Vertex>& vertices,
-                            const std::vector<uint32_t>& indices) {
-  for (auto& vertex : vertices) {
-    vertex.normal = glm::vec3(0.0f);
+                            const std::vector<uint32_t>& indices,
+                            const std::stop_token& stop) {
+  for (size_t i = 0; i < vertices.size(); ++i) {
+    checkImportIteration(stop, i);
+    vertices[i].normal = glm::vec3(0.0f);
   }
 
   for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+    checkImportIteration(stop, i);
     const uint32_t i0 = indices[i];
     const uint32_t i1 = indices[i + 1];
     const uint32_t i2 = indices[i + 2];
@@ -189,7 +201,9 @@ void generateMissingNormals(std::vector<Vertex>& vertices,
     vertices[i2].normal += faceNormal;
   }
 
-  for (auto& vertex : vertices) {
+  for (size_t i = 0; i < vertices.size(); ++i) {
+    checkImportIteration(stop, i);
+    auto& vertex = vertices[i];
     if (glm::dot(vertex.normal, vertex.normal) < 1e-8f) {
       vertex.normal = glm::vec3(0.0f, 1.0f, 0.0f);
       continue;
@@ -198,9 +212,10 @@ void generateMissingNormals(std::vector<Vertex>& vertices,
   }
 }
 
-void normalizeLoadedNormals(std::vector<Vertex>& vertices) {
-  for (auto& vertex : vertices) {
-    vertex.normal = sanitizeNormal(vertex.normal);
+void normalizeLoadedNormals(std::vector<Vertex>& vertices, const std::stop_token& stop) {
+  for (size_t i = 0; i < vertices.size(); ++i) {
+    checkImportIteration(stop, i);
+    vertices[i].normal = sanitizeNormal(vertices[i].normal);
   }
 }
 
@@ -245,7 +260,7 @@ uint64_t edgeKey(uint32_t a, uint32_t b) {
   return (static_cast<uint64_t>(a) << 32u) | static_cast<uint64_t>(b);
 }
 
-bool isDenseOpenReliefTopology(const std::vector<uint32_t>& indices) {
+bool isDenseOpenReliefTopology(const std::vector<uint32_t>& indices, const std::stop_token& stop) {
   const size_t triangleCount = indices.size() / 3u;
   if (triangleCount < 1024u) {
     return false;
@@ -254,6 +269,7 @@ bool isDenseOpenReliefTopology(const std::vector<uint32_t>& indices) {
   std::vector<uint64_t> edges;
   edges.reserve(triangleCount * 3u);
   for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+    checkImportIteration(stop, i);
     edges.push_back(edgeKey(indices[i], indices[i + 1]));
     edges.push_back(edgeKey(indices[i + 1], indices[i + 2]));
     edges.push_back(edgeKey(indices[i + 2], indices[i]));
@@ -262,13 +278,22 @@ bool isDenseOpenReliefTopology(const std::vector<uint32_t>& indices) {
     return false;
   }
 
-  std::sort(edges.begin(), edges.end());
+  if (stop.stop_possible()) {
+    size_t comparisons = 0;
+    std::sort(edges.begin(), edges.end(), [&](uint64_t a, uint64_t b) {
+      checkImportIteration(stop, comparisons++);
+      return a < b;
+    });
+  } else {
+    std::sort(edges.begin(), edges.end());
+  }
   size_t uniqueEdgeCount = 0;
   size_t boundaryEdgeCount = 0;
   for (size_t i = 0; i < edges.size();) {
     const uint64_t key = edges[i];
     size_t runCount = 0;
     while (i < edges.size() && edges[i] == key) {
+      checkImportIteration(stop, i);
       ++i;
       ++runCount;
     }
@@ -294,11 +319,12 @@ bool isDenseOpenReliefTopology(const std::vector<uint32_t>& indices) {
 
 WindingRepairResult repairTriangleWindingFromNormals(
     const std::vector<Vertex>& vertices,
-    std::vector<uint32_t>& indices) {
+    std::vector<uint32_t>& indices, const std::stop_token& stop) {
   size_t agreeingTriangleCount = 0;
   size_t disagreeingTriangleCount = 0;
 
   for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+    checkImportIteration(stop, i);
     float agreement = 0.0f;
     if (!triangleNormalAgreement(vertices, indices[i], indices[i + 1],
                                  indices[i + 2], agreement)) {
@@ -323,14 +349,17 @@ WindingRepairResult repairTriangleWindingFromNormals(
 
   WindingRepairResult result{};
   for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+    checkImportIteration(stop, i);
     std::swap(indices[i + 1], indices[i + 2]);
     ++result.repairedTriangleCount;
   }
   return result;
 }
 
-void sanitizeTangents(std::vector<Vertex>& vertices) {
-  for (auto& vertex : vertices) {
+void sanitizeTangents(std::vector<Vertex>& vertices, const std::stop_token& stop) {
+  for (size_t i = 0; i < vertices.size(); ++i) {
+    checkImportIteration(stop, i);
+    auto& vertex = vertices[i];
     vertex.normal = sanitizeNormal(vertex.normal);
     vertex.tangent = orthonormalizeTangent(vertex.normal, vertex.tangent);
   }
@@ -447,10 +476,11 @@ void mikkSetTangent(const SMikkTSpaceContext* context, const float tangent[3],
 
 std::vector<TangentBasis> accumulateGeometryTangents(
     const std::vector<Vertex>& vertices,
-    const std::vector<uint32_t>& indices, uint32_t texCoord) {
+    const std::vector<uint32_t>& indices, uint32_t texCoord, const std::stop_token& stop) {
   std::vector<TangentBasis> bases(vertices.size());
 
   for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+    checkImportIteration(stop, i);
     const uint32_t i0 = indices[i];
     const uint32_t i1 = indices[i + 1];
     const uint32_t i2 = indices[i + 2];
@@ -528,7 +558,7 @@ glm::vec4 makeGeneratedTangent(const Vertex& vertex,
 
 void generateTangentsFromGeometry(std::vector<Vertex>& vertices,
                                   const std::vector<uint32_t>& indices,
-                                  uint32_t texCoord) {
+                                  uint32_t texCoord, const std::stop_token& stop = {}) {
   if (texCoord > 1)
     throw gltfError("normal texture", "tangent generation supports UV0 and UV1");
   std::vector<uint8_t> tangentWritten(vertices.size(), 0u);
@@ -549,12 +579,15 @@ void generateTangentsFromGeometry(std::vector<Vertex>& vertices,
   mikkContext.m_pInterface = &mikkInterface;
   mikkContext.m_pUserData = &tangentContext;
 
+  checkModelImportCancellation(stop);
   const bool generatedByMikk =
       !vertices.empty() && indices.size() >= 3u &&
       genTangSpaceDefault(&mikkContext) != 0;
+  checkModelImportCancellation(stop);
 
-  const auto bases = accumulateGeometryTangents(vertices, indices, texCoord);
+  const auto bases = accumulateGeometryTangents(vertices, indices, texCoord, stop);
   for (size_t i = 0; i < vertices.size(); ++i) {
+    checkImportIteration(stop, i);
     vertices[i].normal = sanitizeNormal(vertices[i].normal);
     if (!generatedByMikk || tangentWritten[i] == 0u ||
         !hasTrustworthyTangent(vertices[i])) {
@@ -568,10 +601,11 @@ void generateTangentsFromGeometry(std::vector<Vertex>& vertices,
 
 void repairInvalidTangents(std::vector<Vertex>& vertices,
                            const std::vector<uint32_t>& indices,
-                           uint32_t texCoord) {
+                           uint32_t texCoord, const std::stop_token& stop) {
   bool hasInvalidTangent = false;
 
   for (size_t i = 0; i < vertices.size(); ++i) {
+    checkImportIteration(stop, i);
     vertices[i].normal = sanitizeNormal(vertices[i].normal);
     if (!hasTrustworthyTangent(vertices[i])) {
       hasInvalidTangent = true;
@@ -579,7 +613,7 @@ void repairInvalidTangents(std::vector<Vertex>& vertices,
   }
 
   if (!hasInvalidTangent) {
-    sanitizeTangents(vertices);
+    sanitizeTangents(vertices, stop);
     return;
   }
 
@@ -587,12 +621,17 @@ void repairInvalidTangents(std::vector<Vertex>& vertices,
   // those values while repairing only vertices that need the selected UV set.
   std::vector<glm::vec4> authored;
   authored.reserve(vertices.size());
-  for (const auto& vertex : vertices)
+  for (size_t i = 0; i < vertices.size(); ++i) {
+    checkImportIteration(stop, i);
+    const auto& vertex = vertices[i];
     authored.push_back(hasTrustworthyTangent(vertex) ? vertex.tangent : glm::vec4(0));
-  generateTangentsFromGeometry(vertices, indices, texCoord);
-  for (size_t i = 0; i < vertices.size(); ++i)
+  }
+  generateTangentsFromGeometry(vertices, indices, texCoord, stop);
+  for (size_t i = 0; i < vertices.size(); ++i) {
+    checkImportIteration(stop, i);
     if (authored[i].w != 0)
       vertices[i].tangent = orthonormalizeTangent(vertices[i].normal, authored[i]);
+  }
 }
 
 struct PrimitiveVertexData {
@@ -603,7 +642,7 @@ struct PrimitiveVertexData {
 
 std::vector<uint32_t> readIndices(const tinygltf::Model& model,
                                   const tinygltf::Primitive& primitive,
-                                  size_t vertexCount) {
+                                  size_t vertexCount, const std::stop_token& stop) {
   if (primitive.mode != TINYGLTF_MODE_TRIANGLES) {
     throw std::runtime_error("Only glTF triangle primitives are supported");
   }
@@ -614,15 +653,17 @@ std::vector<uint32_t> readIndices(const tinygltf::Model& model,
     }
     std::vector<uint32_t> sequential(vertexCount);
     for (size_t i = 0; i < vertexCount; ++i) {
+      checkImportIteration(stop, i);
       sequential[i] = static_cast<uint32_t>(i);
     }
     return sequential;
   }
 
-  CheckedAccessor reader(model,primitive.indices,"indices",{AccessorUsage::Indices});
+  CheckedAccessor reader(model,primitive.indices,"indices",{AccessorUsage::Indices},stop);
   if (reader.accessor().type != TINYGLTF_TYPE_SCALAR) throw gltfError("indices","accessor must be scalar");
   std::vector<uint32_t> indices(reader.count());
   for (size_t i = 0; i < indices.size(); ++i) {
+    checkImportIteration(stop, i);
     reader.readUnsigned(i,std::span(indices).subspan(i,1));
     if (indices[i] >= vertexCount) throw gltfError("indices","vertex index is out of range");
   }
@@ -630,14 +671,15 @@ std::vector<uint32_t> readIndices(const tinygltf::Model& model,
 }
 
 PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
-                                    const tinygltf::Primitive& primitive) {
+                                    const tinygltf::Primitive& primitive,
+                                    const std::stop_token& stop) {
   auto positionIt = primitive.attributes.find("POSITION");
   if (positionIt == primitive.attributes.end()) {
     throw std::runtime_error("glTF primitive is missing POSITION attribute");
   }
 
   const auto positionData =
-      checkedAccessorReadView(model, positionIt->second, "POSITION");
+      checkedAccessorReadView(model, positionIt->second, "POSITION", stop);
   const auto& positionAccessor = positionData.accessor;
   if (positionAccessor.type != TINYGLTF_TYPE_VEC3 ||
       !(floatingComponent(model,positionAccessor) || (HasRequiredExtension(model,"KHR_mesh_quantization") && integer8or16(positionAccessor)))) {
@@ -650,6 +692,7 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
     throw gltfError("POSITION","vertex count exceeds the runtime index range");
   primitiveData.vertices.resize(positionAccessor.count);
   for (size_t i = 0; i < positionAccessor.count; ++i) {
+    checkImportIteration(stop, i);
     primitiveData.vertices[i].position =
         readVec3f(positionData, i);
   }
@@ -657,7 +700,7 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
   auto colorIt = primitive.attributes.find("COLOR_0");
   if (colorIt != primitive.attributes.end()) {
     const auto colorData =
-        checkedAccessorReadView(model, colorIt->second, "COLOR_0");
+        checkedAccessorReadView(model, colorIt->second, "COLOR_0", stop);
     const auto& colorAccessor = colorData.accessor;
     if ((colorAccessor.type != TINYGLTF_TYPE_VEC3 &&
          colorAccessor.type != TINYGLTF_TYPE_VEC4) ||
@@ -670,6 +713,7 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
     }
 
     for (size_t i = 0; i < primitiveData.vertices.size(); ++i) {
+      checkImportIteration(stop, i);
       if (colorAccessor.type == TINYGLTF_TYPE_VEC3) {
         primitiveData.vertices[i].color = glm::clamp(readVec3f(colorData,i),0.0f,1.0f);
         primitiveData.vertices[i].colorAlpha = 1;
@@ -684,7 +728,7 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
   auto texCoordIt = primitive.attributes.find("TEXCOORD_0");
   if (texCoordIt != primitive.attributes.end()) {
     const auto texCoordData =
-        checkedAccessorReadView(model, texCoordIt->second, "TEXCOORD_0");
+        checkedAccessorReadView(model, texCoordIt->second, "TEXCOORD_0", stop);
     const auto& texCoordAccessor = texCoordData.accessor;
     if (texCoordAccessor.type != TINYGLTF_TYPE_VEC2 ||
         !isTexCoordComponentTypeSupported(model,texCoordAccessor)) {
@@ -697,6 +741,7 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
     }
 
     for (size_t i = 0; i < primitiveData.vertices.size(); ++i) {
+      checkImportIteration(stop, i);
       primitiveData.vertices[i].texCoord =
           readVec2f(texCoordData, i);
       primitiveData.vertices[i].texCoord1 = primitiveData.vertices[i].texCoord;
@@ -706,7 +751,7 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
   auto texCoord1It = primitive.attributes.find("TEXCOORD_1");
   if (texCoord1It != primitive.attributes.end()) {
     const auto texCoordData =
-        checkedAccessorReadView(model, texCoord1It->second, "TEXCOORD_1");
+        checkedAccessorReadView(model, texCoord1It->second, "TEXCOORD_1", stop);
     const auto& texCoordAccessor = texCoordData.accessor;
     if (texCoordAccessor.type != TINYGLTF_TYPE_VEC2 ||
         !isTexCoordComponentTypeSupported(model,texCoordAccessor)) {
@@ -719,6 +764,7 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
     }
 
     for (size_t i = 0; i < primitiveData.vertices.size(); ++i) {
+      checkImportIteration(stop, i);
       primitiveData.vertices[i].texCoord1 =
           readVec2f(texCoordData, i);
     }
@@ -727,7 +773,7 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
   auto normalIt = primitive.attributes.find("NORMAL");
   if (normalIt != primitive.attributes.end()) {
     const auto normalData =
-        checkedAccessorReadView(model, normalIt->second, "NORMAL",true);
+        checkedAccessorReadView(model, normalIt->second, "NORMAL", stop, true);
     const auto& normalAccessor = normalData.accessor;
     if (normalAccessor.type != TINYGLTF_TYPE_VEC3 ||
         !isNormalComponentTypeSupported(model,normalAccessor)) {
@@ -740,6 +786,7 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
 
     primitiveData.hasNormals = true;
     for (size_t i = 0; i < primitiveData.vertices.size(); ++i) {
+      checkImportIteration(stop, i);
       primitiveData.vertices[i].normal =
           readVec3f(normalData, i);
     }
@@ -748,7 +795,7 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
   auto tangentIt = primitive.attributes.find("TANGENT");
   if (tangentIt != primitive.attributes.end()) {
     const auto tangentData =
-        checkedAccessorReadView(model, tangentIt->second, "TANGENT",true);
+        checkedAccessorReadView(model, tangentIt->second, "TANGENT", stop, true);
     const auto& tangentAccessor = tangentData.accessor;
     if (tangentAccessor.type != TINYGLTF_TYPE_VEC4 ||
         !isTangentComponentTypeSupported(model,tangentAccessor)) {
@@ -761,6 +808,7 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
 
     primitiveData.hasTangents = true;
     for (size_t i = 0; i < primitiveData.vertices.size(); ++i) {
+      checkImportIteration(stop, i);
       primitiveData.vertices[i].tangent =
           readVec4f(tangentData, i);
     }
@@ -785,25 +833,27 @@ uint32_t normalTextureTexCoord(const tinygltf::Model& model,
   return static_cast<uint32_t>(selected);
 }
 
-std::vector<Mesh> parseMeshes(const tinygltf::Model& model, GltfOpacityMicromapAssets& micromaps) {
+std::vector<Mesh> parseMeshes(const tinygltf::Model& model, GltfOpacityMicromapAssets& micromaps,
+                             const std::stop_token& stop) {
   std::vector<Mesh> meshes;
   for (size_t meshIndex = 0; meshIndex < model.meshes.size(); ++meshIndex) {
     const auto& mesh = model.meshes[meshIndex];
     for (size_t primitiveIndex = 0; primitiveIndex < mesh.primitives.size(); ++primitiveIndex) {
+      checkModelImportCancellation(stop);
       const auto& primitive = mesh.primitives[primitiveIndex];
-      auto primitiveData = mergeAttributes(model, primitive);
-      auto indices = readIndices(model, primitive, primitiveData.vertices.size());
+      auto primitiveData = mergeAttributes(model, primitive, stop);
+      auto indices = readIndices(model, primitive, primitiveData.vertices.size(), stop);
       WindingRepairResult windingRepair{};
       if (!primitiveData.hasNormals) {
-        generateMissingNormals(primitiveData.vertices, indices);
+        generateMissingNormals(primitiveData.vertices, indices, stop);
       } else {
-        normalizeLoadedNormals(primitiveData.vertices);
+        normalizeLoadedNormals(primitiveData.vertices, stop);
         windingRepair =
-            repairTriangleWindingFromNormals(primitiveData.vertices, indices);
+            repairTriangleWindingFromNormals(primitiveData.vertices, indices, stop);
       }
       const bool disableBackfaceCulling =
           windingRepair.disableBackfaceCulling ||
-          isDenseOpenReliefTopology(indices);
+          isDenseOpenReliefTopology(indices, stop);
       // Micromap cells are addressed in the source triangle's ordered
       // barycentric frame. A winding repair swaps two corners of that frame.
       if (windingRepair.repairedTriangleCount && micromaps.find(meshIndex, primitiveIndex)) {
@@ -817,9 +867,9 @@ std::vector<Mesh> parseMeshes(const tinygltf::Model& model, GltfOpacityMicromapA
       const auto tangentTexCoord = normalTextureTexCoord(model, primitive);
       if (!primitiveData.hasNormals || !primitiveData.hasTangents ||
           windingRepair.repairedTriangleCount > 0) {
-        generateTangentsFromGeometry(primitiveData.vertices, indices, tangentTexCoord);
+        generateTangentsFromGeometry(primitiveData.vertices, indices, tangentTexCoord, stop);
       } else {
-        repairInvalidTangents(primitiveData.vertices, indices, tangentTexCoord);
+        repairInvalidTangents(primitiveData.vertices, indices, tangentTexCoord, stop);
       }
       meshes.emplace_back(std::move(primitiveData.vertices), std::move(indices),
                           primitive.material, disableBackfaceCulling);
@@ -828,7 +878,8 @@ std::vector<Mesh> parseMeshes(const tinygltf::Model& model, GltfOpacityMicromapA
   return meshes;
 }
 
-nlohmann::json parseSourceJson(const std::vector<unsigned char>& bytes, bool binary) {
+nlohmann::json parseSourceJson(const std::vector<unsigned char>& bytes, bool binary,
+                               const std::stop_token& stop) {
   size_t begin = 0, length = bytes.size();
   if (binary) {
     auto word = [&](size_t offset) {
@@ -842,8 +893,18 @@ nlohmann::json parseSourceJson(const std::vector<unsigned char>& bytes, bool bin
     begin = 20;
     length = word(12);
   }
-  return nlohmann::json::parse(bytes.begin() + begin,
-                                bytes.begin() + begin + length);
+  nlohmann::json::parser_callback_t checkpoint;
+  if (stop.stop_possible()) {
+    checkpoint = [&stop, events = size_t{}](int, nlohmann::json::parse_event_t,
+                                         nlohmann::json&) mutable {
+      checkImportIteration(stop, events++);
+      return true;
+    };
+  }
+  auto document = nlohmann::json::parse(bytes.begin() + begin, bytes.begin() + begin + length,
+                                       std::move(checkpoint));
+  checkModelImportCancellation(stop);
+  return document;
 }
 
 // TinyGLTF treats every URI-less GLB buffer as BIN and rejects URI-less ASCII
@@ -937,7 +998,7 @@ bool omitUnsupportedOptionalCompositionExtensions(nlohmann::json& document,
 // checked. TinyGLTF stores them as int, so validating its model alone cannot
 // detect an oversized source index that narrowed into an otherwise valid one.
 // This runs while reading the source document, before any resource callback.
-void validateSceneHierarchyJson(const nlohmann::json& json) {
+void validateSceneHierarchyJson(const nlohmann::json& json, const std::stop_token& stop) {
   constexpr size_t maxScenes = 65536;
   constexpr size_t maxNodes = 1'000'000;
   constexpr size_t maxRootReferences = 1'000'000;
@@ -966,7 +1027,9 @@ void validateSceneHierarchyJson(const nlohmann::json& json) {
     (void)checkedIndex(*selected, sceneCount, "scene");
 
   std::vector<int32_t> parents(nodeCount, -1);
+  size_t references = 0;
   for (size_t i = 0; i < nodeCount; ++i) {
+    checkImportIteration(stop, i);
     const auto& node = nodes->at(i);
     const auto label = "nodes[" + std::to_string(i) + "]";
     if (!node.is_object()) fail(label + " must be an object");
@@ -976,6 +1039,7 @@ void validateSceneHierarchyJson(const nlohmann::json& json) {
     if (children->size() > nodeCount)
       fail(label + ".children exceeds the node count");
     for (const auto& child : *children) {
+      checkImportIteration(stop, references++);
       const auto index = checkedIndex(child, nodeCount, label + ".children");
       if (parents[index] >= 0)
         fail(label + ".children repeats a node or gives it multiple parents");
@@ -989,18 +1053,25 @@ void validateSceneHierarchyJson(const nlohmann::json& json) {
   // Iteration keeps even a maximum-depth asset off the native call stack.
   std::vector<uint32_t> pending;
   pending.reserve(nodeCount);
-  for (size_t i = 0; i < nodeCount; ++i)
+  for (size_t i = 0; i < nodeCount; ++i) {
+    checkImportIteration(stop, i);
     if (parents[i] < 0) pending.push_back(static_cast<uint32_t>(i));
+  }
   for (size_t cursor = 0; cursor < pending.size(); ++cursor) {
+    checkImportIteration(stop, cursor);
     const auto& node = nodes->at(pending[cursor]);
     if (const auto children = node.find("children"); children != node.end())
-      for (const auto& child : *children) pending.push_back(child.get<uint32_t>());
+      for (const auto& child : *children) {
+        checkImportIteration(stop, references++);
+        pending.push_back(child.get<uint32_t>());
+      }
   }
   if (pending.size() != nodeCount) fail("node hierarchy contains a cycle");
 
   size_t rootReferences = 0;
   std::vector<uint32_t> rootScene(nodeCount, UINT32_MAX);
   for (size_t i = 0; i < sceneCount; ++i) {
+    checkImportIteration(stop, i);
     const auto& scene = scenes->at(i);
     const auto label = "scenes[" + std::to_string(i) + "]";
     if (!scene.is_object()) fail(label + " must be an object");
@@ -1011,6 +1082,7 @@ void validateSceneHierarchyJson(const nlohmann::json& json) {
       fail("scene roots exceed the aggregate reference limit");
     rootReferences += roots->size();
     for (const auto& root : *roots) {
+      checkImportIteration(stop, references++);
       const auto index = checkedIndex(root, nodeCount, label + ".nodes");
       if (parents[index] >= 0) fail(label + ".nodes root is also a node child");
       if (rootScene[index] == i) fail(label + ".nodes repeats a scene root");
@@ -1212,6 +1284,8 @@ tinygltf::Model loadGltfModel(const std::string& path,
                              const GltfLinkedReadContext* linkedContext = nullptr,
                              GltfLinkedManifest* linkedManifest = nullptr,
                              uintmax_t* linkedBudget = nullptr) {
+  const auto& stop = options.stop;
+  checkModelImportCancellation(stop);
   tinygltf::TinyGLTF loader;
   tinygltf::Model model;
   std::string err;
@@ -1244,6 +1318,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
       [&](tinygltf::Image* image, int imageIndex, std::string* error,
           std::string* warning, int requiredWidth, int requiredHeight,
           const unsigned char* bytes, int size, void*) {
+        checkModelImportCancellation(stop);
         (void)image; (void)warning; (void)requiredWidth; (void)requiredHeight;
         if (!options.decodeImages) return true;
         if (imageIndex < 0 || size_t(imageIndex) >= stagedImages.size()) {
@@ -1272,6 +1347,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
   {
     tinygltf::FsCallbacks callbacks{
         [&](const std::string& filename, void*) {
+          checkModelImportCancellation(stop);
           if (options.requireSelfContained && sourceRead)
             return syntheticSize(filename).has_value();
           if (linkedContext && sourceRead)
@@ -1280,6 +1356,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
         }, tinygltf::ExpandFilePath,
         [&](std::vector<unsigned char>* output, std::string* error,
             const std::string& filename, void*) {
+          checkModelImportCancellation(stop);
           if (const auto placeholder = syntheticSize(filename)) {
             if (*placeholder > remainingBytes || *placeholder > std::numeric_limits<size_t>::max()) {
               if (error) *error = "meshopt placeholder exceeds the aggregate input budget";
@@ -1310,10 +1387,19 @@ tinygltf::Model loadGltfModel(const std::string& path,
             return false;
           }
           std::ifstream file(filePath, std::ios::binary);
-          output->resize(static_cast<size_t>(bytes));
-          if (!file.read(reinterpret_cast<char*>(output->data()),
-                         static_cast<std::streamsize>(bytes)) ||
-              file.peek() != std::char_traits<char>::eof()) {
+          output->clear();
+          output->reserve(static_cast<size_t>(bytes));
+          constexpr size_t readChunkBytes = 1024 * 1024;
+          for (size_t offset = 0; offset < bytes && file;) {
+            checkModelImportCancellation(stop);
+            const auto chunkBytes = std::min(readChunkBytes, static_cast<size_t>(bytes) - offset);
+            output->resize(offset + chunkBytes);
+            file.read(reinterpret_cast<char*>(output->data() + offset),
+                      static_cast<std::streamsize>(chunkBytes));
+            offset += chunkBytes;
+          }
+          checkModelImportCancellation(stop);
+          if (!file || file.peek() != std::char_traits<char>::eof()) {
             if (error) *error = "glTF resource changed size or could not be read";
             return false;
           }
@@ -1323,7 +1409,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
             linkedContext->observe(filePath, *output);
           if (!sourceRead) {
             try {
-              auto json = parseSourceJson(*output, isBinaryGltf(path));
+              auto json = parseSourceJson(*output, isBinaryGltf(path), stop);
               if (options.requireSelfContained) {
                 for (const auto* table : {"buffers", "images"}) {
                   const auto records = json.find(table);
@@ -1337,7 +1423,8 @@ tinygltf::Model loadGltfModel(const std::string& path,
                   }
                 }
               }
-              auto linked = PrepareGltfLinkedManifest(json, linkedContext != nullptr);
+              checkModelImportCancellation(stop);
+              auto linked = PrepareGltfLinkedManifest(json, linkedContext != nullptr, stop);
               if (linkedComposition) {
                 if (!linked.nodeFiles.empty() && linkedComposition->source.empty())
                   linkedComposition->source = filePath;
@@ -1387,7 +1474,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
                   discardedMicromaps = true;
                 }
               }
-              validateSceneHierarchyJson(json);
+              validateSceneHierarchyJson(json, stop);
               const auto nodeFlags = ValidateGltfNodeFlagsJson(json);
               const auto extendedMaterials = ValidateGltfExtendedMaterialsJson(json);
               const auto experimentalMaterialBytes = options.enableExperimentalMaterials
@@ -1395,7 +1482,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
               imageSources = SelectTextureImageSources(json);
               const bool omittedOptional = composing &&
                   omitUnsupportedOptionalCompositionExtensions(json, requirements, compositionUnavailable);
-              const auto instancing = ValidateMeshGpuInstancingJson(json, options.instancing);
+              const auto instancing = ValidateMeshGpuInstancingJson(json, options.instancing, stop);
               xmp.emplace(json);
               for (const auto& warning : xmp->warnings()) {
                 CapabilityDiagnostic diagnostic{CapabilitySeverity::Warning, "xmp_metadata", path, warning};
@@ -1426,7 +1513,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
                 }
                 parserImageReferences = prepareImageReferences(json, syntheticBuffers, prefix, rewritten);
                 stagedImages.resize(parserImageReferences.size());
-                compressionPlan = InspectCompressedGltfSource(json, isBinaryGltf(path), options.compression);
+                compressionPlan = InspectCompressedGltfSource(json, isBinaryGltf(path), options.compression, stop);
                 uint64_t retainedBytes = compressionPlan.decodedBytes;
                 for (const uint64_t bytes : {instancing.decodedBytes, nodeFlags.retainedBytes,
                                             extendedMaterials.retainedBytes, experimentalMaterialBytes,
@@ -1446,8 +1533,12 @@ tinygltf::Model loadGltfModel(const std::string& path,
                   json.at("buffers").at(placeholder.bufferIndex)["byteLength"] = 1;
                   rewritten = true;
                 }
+                checkModelImportCancellation(stop);
                 if (rewritten) replaceSourceJson(*output, json, isBinaryGltf(path));
               }
+              checkModelImportCancellation(stop);
+            } catch (const ModelImportCancelled&) {
+              throw;
             } catch (const nlohmann::json::exception& exception) {
               throw gltfError("glTF asset '" + path + "'", exception.what());
             } catch (const std::invalid_argument& exception) {
@@ -1460,6 +1551,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
           return true;
         }, tinygltf::WriteWholeFile,
         [&](size_t* size, std::string* error, const std::string& filename, void*) {
+          checkModelImportCancellation(stop);
           if (const auto placeholder = syntheticSize(filename)) {
             if (*placeholder > remainingBytes || *placeholder > std::numeric_limits<size_t>::max()) {
               if (error) *error = "meshopt placeholder exceeds the aggregate input budget";
@@ -1501,6 +1593,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
   } else {
     loaded = loader.LoadASCIIFromFile(&model, &err, &warn, path);
   }
+  checkModelImportCancellation(stop);
 
   if (!warn.empty()) {
     CapabilityDiagnostic diagnostic{CapabilitySeverity::Warning, "parser_warning", path, warn};
@@ -1517,6 +1610,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
     if (model.images.size() != parserImageReferences.size())
       throw std::runtime_error("parser image table differs from source preflight");
     for (size_t image = 0; image < model.images.size(); ++image) {
+      checkImportIteration(stop, image);
       const auto& reference = parserImageReferences[image];
       if (reference.bufferView < 0) continue;
       model.images[image].bufferView = reference.bufferView;
@@ -1525,7 +1619,8 @@ tinygltf::Model loadGltfModel(const std::string& path,
     }
     CompressionStatistics compressionStatistics;
     model = DecodeCompressedGltf(std::move(model), options.compression, &compressionStatistics,
-                                compressionPlan.placeholders);
+                                compressionPlan.placeholders, stop);
+    checkModelImportCancellation(stop);
     if (compressionStatistics.dracoPrimitives || compressionStatistics.meshoptViews ||
         compressionStatistics.fallbackPrimitives || compressionStatistics.fallbackViews)
       discardOpacityMicromapMetadata(model);
@@ -1534,7 +1629,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
       if (const auto* resource = linkedResource(buffer.uri)) buffer.uri = resource->originalUri;
     for (auto& image : model.images)
       if (const auto* resource = linkedResource(image.uri)) image.uri = resource->originalUri;
-    (void)ParseMeshGpuInstancing(model, options.instancing);
+    (void)ParseMeshGpuInstancing(model, options.instancing, stop);
     (void)ParseGltfNodeFlags(model);
     const bool iesRequired = std::ranges::find(model.extensionsRequired, kGltfIesExtension) != model.extensionsRequired.end();
     for (const auto& message : PrepareGltfIesProfiles(model, std::filesystem::u8path(path).parent_path(),
@@ -1554,6 +1649,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
     }
     (void)ParseGltfExtendedMaterials(model);
     if (xmp) std::move(*xmp).retain(model);
+    checkModelImportCancellation(stop);
     if (!options.decodeImages) return model;
     // Sponza's ordinary source images total about272MiB of decoded RGBA.
     // Keep a finite asset-wide default while retaining per-image codec bounds.
@@ -1562,6 +1658,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
     for (const auto& selected : imageSources.textures)
       if (selected.kind != TextureImageSourceKind::Core) selectedAlternate[size_t(selected.imageIndex)] = true;
     for (size_t imageIndex = 0; imageIndex < model.images.size(); ++imageIndex) {
+      checkModelImportCancellation(stop);
       auto& image = model.images[imageIndex];
       auto& encoded = stagedImages[imageIndex];
       const auto label = "image[" + std::to_string(imageIndex) + "]";
@@ -1610,7 +1707,10 @@ tinygltf::Model loadGltfModel(const std::string& path,
                                  encoded.data(), int(encoded.size()), nullptr))
         throw std::runtime_error(label + ": " + imageError);
     }
+    checkModelImportCancellation(stop);
     return model;
+  } catch (const ModelImportCancelled&) {
+    throw;
   } catch (const std::exception& exception) {
     throw gltfError("glTF asset '" + path + "'", exception.what());
   }
@@ -1630,6 +1730,7 @@ void discardOpacityMicromapMetadata(tinygltf::Model& model) {
 tinygltf::Model loadGltfComposition(const std::string& path, const LoadOptions& options,
                                   std::vector<CapabilityDiagnostic>* diagnostics = nullptr,
                                   GltfLinkedCompositionInfo* composition = nullptr) {
+  checkModelImportCancellation(options.stop);
   if (options.requireSelfContained && options.enableLinkedAssets)
     throw gltfError("glTF asset '" + path + "'", "self-contained loading cannot enable linked assets");
   if (!options.enableLinkedAssets) return loadGltfModel(path, options, diagnostics);
@@ -1648,7 +1749,8 @@ tinygltf::Model loadGltfComposition(const std::string& path, const LoadOptions& 
                           std::make_move_iterator(documentDiagnostics.end()));
     return result;
   };
-  return LoadGltfLinkedComposition(std::filesystem::path(std::u8string(path.begin(), path.end())), reader, composition);
+  return LoadGltfLinkedComposition(std::filesystem::path(std::u8string(path.begin(), path.end())),
+                                   reader, composition, options.stop);
 }
 
 }  // namespace
@@ -1672,17 +1774,18 @@ GltfLoadResult LoadModelWithSource(const std::string& path,
   auto linked = options.enableLinkedAssets ? std::make_shared<GltfLinkedCompositionInfo>() : nullptr;
   auto gltfModel = loadGltfComposition(path, options, &diagnostics, linked.get());
   try {
+    checkModelImportCancellation(options.stop);
     GltfOpacityMicromapAssets micromaps;
     if (options.enableOpacityMicromaps && !options.mergeInput && (!linked || linked->placements.empty()))
       micromaps = ParseGltfOpacityMicromaps(gltfModel);
-    auto meshes = parseMeshes(gltfModel, micromaps);
+    auto meshes = parseMeshes(gltfModel, micromaps, options.stop);
     if (meshes.empty()) {
       throw std::runtime_error("No renderable primitives found in glTF file");
     }
     // Runtime export rebuilds topology and resources from the core material.
     // Keep the optional acceleration payload only in the runtime side table.
     discardOpacityMicromapMetadata(gltfModel);
-    GltfLoadResult result{Model::FromMeshes(std::move(meshes)),
+    GltfLoadResult result{Model::FromMeshes(std::move(meshes), options.stop),
                           std::move(gltfModel), std::move(diagnostics)};
     result.opacityMicromaps = std::move(micromaps);
     if (linked && !linked->placements.empty()) result.linkedComposition = std::move(linked);
@@ -1692,9 +1795,12 @@ GltfLoadResult LoadModelWithSource(const std::string& path,
       });
     });
     if (!result.gltfModel.skins.empty() || hasMorphs)
-      result.deformation = LoadDeformationData(result.gltfModel, result.model.meshes());
-    result.instancing = ParseMeshGpuInstancing(result.gltfModel, options.instancing);
+      result.deformation = LoadDeformationData(result.gltfModel, result.model.meshes(), options.stop);
+    result.instancing = ParseMeshGpuInstancing(result.gltfModel, options.instancing, options.stop);
+    checkModelImportCancellation(options.stop);
     return result;
+  } catch (const ModelImportCancelled&) {
+    throw;
   } catch (const std::runtime_error& exception) {
     throw gltfError("glTF asset '" + path + "'", exception.what());
   }

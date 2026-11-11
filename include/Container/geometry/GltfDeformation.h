@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <stop_token>
 #include <vector>
 
 namespace container::geometry::gltf {
@@ -76,7 +77,8 @@ struct DeformationData {
 // Invalid accessors, skin references and non-finite values throw runtime_error.
 DeformationData LoadDeformationData(
     const tinygltf::Model& source,
-    std::span<const Mesh> runtimePrimitives);
+    std::span<const Mesh> runtimePrimitives,
+    const std::stop_token& stop = {});
 
 // Palette maps bind mesh coordinates into the owning mesh node's local space:
 // inverse(meshNodeWorld) * jointWorld * inverseBind. Applying meshNodeWorld

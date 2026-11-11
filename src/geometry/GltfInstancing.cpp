@@ -1,4 +1,5 @@
 #include <Container/geometry/GltfInstancing.h>
+#include <Container/utility/ModelImportCancellation.h>
 #include <Container/geometry/GltfAccessor.h>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -16,6 +17,7 @@
 
 namespace container::geometry::gltf {
 namespace {
+using container::util::checkModelImportCancellation;
 using Json = nlohmann::json;
 constexpr std::string_view kExtension = "EXT_mesh_gpu_instancing";
 [[noreturn]] void fail(std::string_view context, std::string_view message) {
@@ -116,10 +118,12 @@ void attribute(NodePlan& node, std::string_view semantic, int index,
   budget.bytes(semantic.size(), 1, context);
   node.attributes.push_back({std::string(semantic), index, accessor});
 }
-std::vector<NodePlan> modelLayout(const tinygltf::Model& source, Budget& budget) {
+std::vector<NodePlan> modelLayout(const tinygltf::Model& source, Budget& budget,
+                                  const std::stop_token& stop) {
   if (source.nodes.size() > UINT32_MAX) fail("nodes", "source node identity exceeds uint32 range");
   std::vector<NodePlan> result;
   for (size_t i = 0; i < source.nodes.size(); ++i) {
+    if (i % 1024 == 0) checkModelImportCancellation(stop);
     const auto& node = source.nodes[i];
     const auto extension = node.extensions.find(std::string(kExtension));
     if (extension == node.extensions.end()) continue;
@@ -156,7 +160,8 @@ bool finiteAffine(const glm::mat4& matrix) {
 }
 } // namespace
 
-InstancingSummary ValidateMeshGpuInstancingJson(const Json& source, const InstancingLimits& limits) {
+InstancingSummary ValidateMeshGpuInstancingJson(const Json& source, const InstancingLimits& limits,
+                                                const std::stop_token& stop) {
   try {
     Budget budget(limits);
     const auto& nodes = table(source, "nodes");
@@ -164,6 +169,7 @@ InstancingSummary ValidateMeshGpuInstancingJson(const Json& source, const Instan
     const auto& accessors = table(source, "accessors");
     if (nodes.size() > UINT32_MAX) fail("nodes", "source node identity exceeds uint32 range");
     for (size_t i = 0; i < nodes.size(); ++i) {
+      if (i % 1024 == 0) checkModelImportCancellation(stop);
       const auto& node = nodes[i];
       if (!node.is_object()) fail("nodes", "node must be an object");
       const auto extensions = node.find("extensions");
@@ -199,24 +205,28 @@ InstancingSummary ValidateMeshGpuInstancingJson(const Json& source, const Instan
     return budget.summary;
   } catch (const Json::exception& error) { fail("metadata", error.what()); }
 }
-GltfInstancingData ParseMeshGpuInstancing(const tinygltf::Model& source, const InstancingLimits& limits) {
+GltfInstancingData ParseMeshGpuInstancing(const tinygltf::Model& source, const InstancingLimits& limits,
+                                         const std::stop_token& stop) {
   Budget budget(limits);
-  auto layout = modelLayout(source, budget);
+  auto layout = modelLayout(source, budget, stop);
   GltfInstancingData result;
   result.summary = budget.summary;
   result.nodes.reserve(layout.size());
   for (auto& plan : layout) {
+    checkModelImportCancellation(stop);
     const auto context = label(plan.node);
     NodeInstancing output{plan.node, plan.mesh, plan.primitives};
     std::vector<CheckedAccessor> readers;
     readers.reserve(plan.attributes.size());
     for (const auto& attribute : plan.attributes) {
       readers.emplace_back(source, attribute.accessor, context + "." + attribute.semantic,
-          AccessorReadOptions{AccessorUsage::Generic, HasRequiredExtension(source, "KHR_accessor_float64")});
+          AccessorReadOptions{AccessorUsage::Generic, HasRequiredExtension(source, "KHR_accessor_float64")},
+          stop);
       output.attributes.push_back({attribute.semantic, attribute.accessor});
     }
     output.localMatrices.reserve(size_t(plan.count));
     for (size_t instance = 0; instance < plan.count; ++instance) {
+      if (instance % 1024 == 0) checkModelImportCancellation(stop);
       glm::vec3 translation(0), scale(1);
       glm::quat rotation(1,0,0,0);
       for (size_t slot = 0; slot < plan.attributes.size(); ++slot) {
