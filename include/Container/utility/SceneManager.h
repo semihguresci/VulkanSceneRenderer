@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -480,7 +481,7 @@ class SceneManager {
       uintmax_t maxInputBytes = std::numeric_limits<uintmax_t>::max(),
       bool enableLinkedAssets = false, bool requireSelfContained = false,
       bool enableExperimentalMaterials = false, bool enableOpacityMicromaps = false,
-      bool mergeInput = false);
+      bool mergeInput = false, std::stop_token stop = {});
 
   bool reloadModel(const std::string& path,
                    float importScale,

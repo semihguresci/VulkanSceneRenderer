@@ -11,6 +11,7 @@
 #include <optional>
 #include <set>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -32,7 +33,8 @@ struct GltfLinkedManifest {
 
 // Parse only the pinned 2.1 draft URI composition fields. Normalize the
 // validated manifest to 2.0 for the ordinary parser and flattening pipeline.
-[[nodiscard]] GltfLinkedManifest PrepareGltfLinkedManifest(nlohmann::json&, bool enabled);
+[[nodiscard]] GltfLinkedManifest PrepareGltfLinkedManifest(nlohmann::json&, bool enabled,
+                                                           std::stop_token stop = {});
 
 struct GltfLinkedFileContents {
   uint64_t size{}, hash{};
@@ -90,7 +92,7 @@ struct GltfLinkedCompositionInfo {
   std::vector<std::set<std::filesystem::path>> bindingResolutions;
   uint64_t dependencyWitnessBytes{};
 
-  void observe(const std::filesystem::path&, std::span<const unsigned char>);
+  void observe(const std::filesystem::path&, std::span<const unsigned char>, std::stop_token stop = {});
   void recordWitness(std::set<std::filesystem::path>&, const std::filesystem::path&);
 };
 
@@ -128,6 +130,7 @@ struct GltfLinkedReadContext {
   GltfLinkedCompositionInfo* composition{};
   bool child{};
   GltfLinkedReadWitnesses* witnesses{};
+  std::stop_token stop;
 
   [[nodiscard]] std::filesystem::path resource(std::string_view uri) const;
   void observe(const std::filesystem::path&, std::span<const unsigned char>) const;
@@ -144,6 +147,6 @@ using GltfLinkedDocumentReader = std::function<GltfLinkedDocument(const GltfLink
 // placement gets its own node identities. All resolved reads stay in root.
 [[nodiscard]] tinygltf::Model LoadGltfLinkedComposition(
     const std::filesystem::path&, const GltfLinkedDocumentReader&,
-    GltfLinkedCompositionInfo* = nullptr);
+    GltfLinkedCompositionInfo* = nullptr, std::stop_token stop = {});
 
 } // namespace container::geometry::gltf

@@ -4,6 +4,7 @@
 #include "Container/geometry/PolylineGeometry.h"
 #include "Container/geometry/SweptDiskGeometry.h"
 #include "Container/utility/Platform.h"
+#include "BimImportInput.h"
 #include "IfcBrepFaceGeometry.h"
 #include "IfcCurveReader.h"
 
@@ -158,7 +159,7 @@ makeUnitMetadata(const LengthUnitMetadata &lengthUnit, float importScale) {
 
 class ValueParser {
 public:
-  explicit ValueParser(std::string_view text) : text_(text) {}
+  ValueParser(std::string_view text, std::stop_token stop) : text_(text), stop_(stop) {}
 
   StepValue parseArguments() {
     StepValue result{};
@@ -189,14 +190,23 @@ public:
 private:
   [[nodiscard]] bool atEnd() const { return pos_ >= text_.size(); }
 
+  void checkpoint() {
+    if (pos_ >= nextCheckpoint_) {
+      container::util::checkModelImportCancellation(stop_);
+      nextCheckpoint_ = pos_ + 4096u;
+    }
+  }
+
   void skipWhitespace() {
     while (!atEnd() &&
            std::isspace(static_cast<unsigned char>(text_[pos_])) != 0) {
+      checkpoint();
       ++pos_;
     }
   }
 
   StepValue parseValue() {
+    checkpoint();
     skipWhitespace();
     if (atEnd()) {
       return {};
@@ -263,6 +273,7 @@ private:
     ++pos_;
 
     while (!atEnd()) {
+      checkpoint();
       const char c = text_[pos_++];
       if (c == '\'') {
         if (!atEnd() && text_[pos_] == '\'') {
@@ -285,6 +296,7 @@ private:
     const size_t start = pos_;
     while (!atEnd() &&
            std::isdigit(static_cast<unsigned char>(text_[pos_])) != 0) {
+      checkpoint();
       ++pos_;
     }
     if (start == pos_) {
@@ -305,6 +317,7 @@ private:
     ++pos_;
     const size_t start = pos_;
     while (!atEnd() && text_[pos_] != '.') {
+      checkpoint();
       ++pos_;
     }
     if (atEnd()) {
@@ -318,6 +331,7 @@ private:
   StepValue parseTokenOrTypedValue() {
     const size_t start = pos_;
     while (!atEnd()) {
+      checkpoint();
       const char c = text_[pos_];
       if (std::isspace(static_cast<unsigned char>(c)) != 0 || c == ',' ||
           c == '(' || c == ')') {
@@ -357,16 +371,20 @@ private:
 
   std::string_view text_{};
   size_t pos_{0};
+  std::stop_token stop_;
+  size_t nextCheckpoint_{0};
 };
 
 bool isIdentChar(char c) {
   return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
 }
 
-size_t findMatchingParen(std::string_view text, size_t openPos) {
+size_t findMatchingParen(std::string_view text, size_t openPos, std::stop_token stop) {
   size_t depth = 0;
   bool inString = false;
   for (size_t i = openPos; i < text.size(); ++i) {
+    if ((i % 4096u) == 0u)
+      container::util::checkModelImportCancellation(stop);
     const char c = text[i];
     if (inString) {
       if (c == '\'') {
@@ -403,11 +421,13 @@ size_t findMatchingParen(std::string_view text, size_t openPos) {
   throw std::runtime_error("IFC entity has unterminated argument list");
 }
 
-std::unordered_map<uint32_t, Entity> parseEntities(std::string_view text) {
+std::unordered_map<uint32_t, Entity> parseEntities(std::string_view text,
+                                                  std::stop_token stop) {
   std::unordered_map<uint32_t, Entity> entities;
 
   size_t pos = 0;
   while (pos < text.size()) {
+    container::util::checkModelImportCancellation(stop);
     const size_t hash = text.find('#', pos);
     if (hash == std::string_view::npos) {
       break;
@@ -461,7 +481,7 @@ std::unordered_map<uint32_t, Entity> parseEntities(std::string_view text) {
       continue;
     }
 
-    const size_t close = findMatchingParen(text, cursor);
+    const size_t close = findMatchingParen(text, cursor, stop);
     const std::string digits(text.substr(idStart, idEnd - idStart));
     const auto parsedId = std::stoull(digits);
     if (parsedId > std::numeric_limits<uint32_t>::max()) {
@@ -473,7 +493,7 @@ std::unordered_map<uint32_t, Entity> parseEntities(std::string_view text) {
     Entity entity{};
     entity.id = static_cast<uint32_t>(parsedId);
     entity.type = type;
-    entity.args = ValueParser(argsText).parseArguments();
+    entity.args = ValueParser(argsText, stop).parseArguments();
     entities[entity.id] = std::move(entity);
     pos = close + 1u;
   }
@@ -586,14 +606,20 @@ struct ReferenceWalkBudget {
 class IfcModelBuilder {
 public:
   IfcModelBuilder(std::unordered_map<uint32_t, Entity> entities,
-                  float importScale)
+                  float importScale, std::stop_token stop)
       : entities_(std::move(entities)),
-        importScale_(sanitizeImportScale(importScale)) {
+        importScale_(sanitizeImportScale(importScale)), stop_(stop) {
     sortedEntityIds_.reserve(entities_.size());
     for (const auto &[id, _] : entities_) {
+      checkCancellation();
       sortedEntityIds_.push_back(id);
     }
-    std::ranges::sort(sortedEntityIds_);
+    size_t comparisons = 0;
+    std::ranges::sort(sortedEntityIds_, [&](uint32_t left, uint32_t right) {
+      if ((comparisons++ % 4096u) == 0u)
+        checkCancellation();
+      return left < right;
+    });
     unitMetadata_ = detectLengthUnitMetadata();
     unitScale_ = unitMetadata_.authored ? unitMetadata_.metersPerUnit : 1.0f;
     model_.unitMetadata = makeUnitMetadata(unitMetadata_, importScale_);
@@ -627,10 +653,15 @@ public:
     appendFallbackElements();
     finishImportReport();
     compactDrawableGeometry();
+    checkCancellation();
     return std::move(model_);
   }
 
 private:
+  void checkCancellation() const {
+    container::util::checkModelImportCancellation(stop_);
+  }
+
   const Entity *entity(uint32_t id) const {
     const auto it = entities_.find(id);
     return it == entities_.end() ? nullptr : &it->second;
@@ -1235,6 +1266,7 @@ private:
 
   LengthUnitMetadata detectLengthUnitMetadata() const {
     for (const auto id : sortedEntityIds_) {
+      checkCancellation();
       const Entity *unit = entity(id);
       if (unit == nullptr || unit->type != "IFCSIUNIT") {
         continue;
@@ -1535,6 +1567,7 @@ private:
 
   void cacheStyleColors() {
     for (const auto id : sortedEntityIds_) {
+      checkCancellation();
       const Entity *styledItem = entity(id);
       if (styledItem == nullptr || styledItem->type != "IFCSTYLEDITEM") {
         continue;
@@ -1550,6 +1583,7 @@ private:
     }
 
     for (const auto id : sortedEntityIds_) {
+      checkCancellation();
       const Entity *colorMap = entity(id);
       if (colorMap == nullptr || colorMap->type != "IFCINDEXEDCOLOURMAP") {
         continue;
@@ -1584,6 +1618,7 @@ private:
 
   void cacheVoidRelations() {
     for (const auto id : sortedEntityIds_) {
+      checkCancellation();
       const Entity *relation = entity(id);
       if (relation == nullptr || relation->type != "IFCRELVOIDSELEMENT") {
         continue;
@@ -1603,6 +1638,7 @@ private:
 
   void cacheFillRelations() {
     for (const auto id : sortedEntityIds_) {
+      checkCancellation();
       const Entity *relation = entity(id);
       if (relation == nullptr || relation->type != "IFCRELFILLSELEMENT") {
         continue;
@@ -1630,6 +1666,7 @@ private:
 
   void cacheSpatialContainmentRelations() {
     for (const auto id : sortedEntityIds_) {
+      checkCancellation();
       const Entity *relation = entity(id);
       if (relation == nullptr ||
           relation->type != "IFCRELCONTAINEDINSPATIALSTRUCTURE") {
@@ -1783,6 +1820,7 @@ private:
 
   void cacheMaterialRelations() {
     for (const auto id : sortedEntityIds_) {
+      checkCancellation();
       const Entity *relation = entity(id);
       if (relation == nullptr || relation->type != "IFCRELASSOCIATESMATERIAL") {
         continue;
@@ -2337,6 +2375,7 @@ private:
 
   void cachePropertyRelations() {
     for (const auto id : sortedEntityIds_) {
+      checkCancellation();
       const Entity *relation = entity(id);
       if (relation == nullptr ||
           relation->type != "IFCRELDEFINESBYPROPERTIES") {
@@ -2416,6 +2455,7 @@ private:
 
   void cacheClassificationRelations() {
     for (const auto id : sortedEntityIds_) {
+      checkCancellation();
       const Entity *relation = entity(id);
       if (relation == nullptr ||
           relation->type != "IFCRELASSOCIATESCLASSIFICATION") {
@@ -2456,6 +2496,7 @@ private:
 
   void cacheGroupRelations() {
     for (const auto id : sortedEntityIds_) {
+      checkCancellation();
       const Entity *relation = entity(id);
       if (relation == nullptr || relation->type != "IFCRELASSIGNSTOGROUP") {
         continue;
@@ -2474,6 +2515,7 @@ private:
 
   void cacheHierarchyRelations() {
     for (const auto id : sortedEntityIds_) {
+      checkCancellation();
       const Entity *relation = entity(id);
       if (relation == nullptr || (relation->type != "IFCRELAGGREGATES" &&
                                   relation->type != "IFCRELNESTS")) {
@@ -2528,6 +2570,7 @@ private:
 
   void cacheTypeRelations() {
     for (const auto id : sortedEntityIds_) {
+      checkCancellation();
       const Entity *relation = entity(id);
       if (relation == nullptr || relation->type != "IFCRELDEFINESBYTYPE") {
         continue;
@@ -2596,6 +2639,7 @@ private:
 
   void appendTessellatedGeometry() {
     for (const auto id : sortedEntityIds_) {
+      checkCancellation();
       const Entity *faceSet = entity(id);
       if (faceSet == nullptr)
         continue;
@@ -2620,8 +2664,9 @@ private:
 
   // IFC face loops are planar and preserve authored outward winding. Project
   // onto their dominant plane for Earcut, then restore the 3D orientation.
-  static std::optional<std::vector<TriangleVertices>>
-  triangulatePlanarLoops(std::vector<std::vector<glm::vec3>> loops) {
+  std::optional<std::vector<TriangleVertices>>
+  triangulatePlanarLoops(std::vector<std::vector<glm::vec3>> loops) const {
+    checkCancellation();
     if (loops.empty() || loops.front().size() < 3u)
       return std::nullopt;
     const glm::dvec3 origin(loops.front().front());
@@ -2721,6 +2766,8 @@ private:
         for (size_t s = r; s < polygon.size(); ++s) {
           const auto &other = polygon[s];
           for (size_t j = s == r ? i + 1u : 0; j < other.size(); ++j) {
+            if ((j % 1024u) == 0u)
+              checkCancellation();
             const size_t nextJ = (j + 1u) % other.size();
             if (s == r && (j == nextI || nextJ == i))
               continue;
@@ -2730,7 +2777,9 @@ private:
         }
       }
     }
+    checkCancellation();
     const auto indices = mapbox::earcut<uint32_t>(polygon);
+    checkCancellation();
     std::vector<TriangleVertices> triangles;
     std::vector<bool> used(flattened.size(), false);
     double triangulatedArea = 0.0;
@@ -3490,6 +3539,7 @@ private:
 
   void appendSweptSolidGeometry() {
     for (const auto id : sortedEntityIds_) {
+      checkCancellation();
       const Entity *solid = entity(id);
       if (solid == nullptr) {
         continue;
@@ -3716,6 +3766,7 @@ private:
 
   std::optional<double> projectPlaneAngleScale() const {
     for (uint32_t id : sortedEntityIds_) {
+      checkCancellation();
       const auto *project = entity(id);
       if (project->type != "IFCPROJECT")
         continue;
@@ -4578,10 +4629,13 @@ private:
                   std::optional<glm::vec4> overrideColor = std::nullopt,
                   const std::unordered_set<uint32_t> *cutOrigins = nullptr,
                   std::optional<glm::vec4> cutColor = std::nullopt) {
+    checkCancellation();
     const auto mesh = solid.GetMeshGL64();
+    checkCancellation();
     std::map<uint32_t, std::pair<glm::vec4, std::vector<TriangleVertices>>>
         groups;
     for (size_t run = 0; run < mesh.runOriginalID.size(); ++run) {
+      checkCancellation();
       const auto original = mesh.runOriginalID[run];
       const auto color = overrideColor.value_or(
           cutOrigins && cutOrigins->contains(original) && cutColor ? *cutColor
@@ -4590,6 +4644,8 @@ private:
       auto &group = groups[packColor(color)];
       group.first = color;
       for (size_t i = mesh.runIndex[run]; i < mesh.runIndex[run + 1]; i += 3) {
+        if ((i - mesh.runIndex[run]) % 3072u == 0u)
+          checkCancellation();
         TriangleVertices triangle;
         for (size_t j = 0; j < 3; ++j) {
           const size_t vertex = size_t(mesh.triVerts[i + j]) * mesh.numProp;
@@ -4986,7 +5042,7 @@ private:
         const auto points = readRenderCurve(ref, error);
         const std::array<size_t, 1> counts{points.size()};
         if (appendPolylineGeometry(model_, points, counts, nextMeshId_,
-                                   .005f / unitScale_)) {
+                                   .005f / unitScale_, stop_)) {
           groupsByItem_[ref] = {{nextMeshId_++,
                                  styleColorByItem_.contains(ref)
                                      ? styleColorByItem_.at(ref)
@@ -5383,6 +5439,7 @@ private:
   void appendProductElements() {
     const glm::mat4 unitTransform = importUnitTransform();
     for (const auto id : sortedEntityIds_) {
+      checkCancellation();
       const Entity *product = entity(id);
       if (product == nullptr || product->args.kind != StepValue::Kind::List ||
           product->args.list.size() < 7u) {
@@ -5465,13 +5522,17 @@ private:
 
   void compactDrawableGeometry() {
     std::unordered_set<uint32_t> referenced;
-    for (const auto &element : model_.elements)
+    for (const auto &element : model_.elements) {
+      checkCancellation();
       referenced.insert(element.meshId);
+    }
     size_t indexCount = 0;
     const auto countIndices = [&](const auto &ranges) {
-      for (const auto &range : ranges)
+      for (const auto &range : ranges) {
+        checkCancellation();
         if (referenced.contains(range.meshId))
           indexCount += range.indexCount;
+      }
     };
     countIndices(model_.meshRanges);
     countIndices(model_.nativeCurveRanges);
@@ -5483,14 +5544,17 @@ private:
     const uint32_t missing = std::numeric_limits<uint32_t>::max();
     std::vector<uint32_t> remap(model_.vertices.size(), missing);
     const auto compactRanges = [&](auto &sourceRanges) {
-      auto ranges = sourceRanges;
-      sourceRanges.clear();
+      auto ranges = std::exchange(sourceRanges, {});
+      sourceRanges.reserve(ranges.size());
       for (auto range : ranges) {
+        checkCancellation();
         if (!referenced.contains(range.meshId))
           continue;
         const size_t start = range.firstIndex;
         range.firstIndex = static_cast<uint32_t>(indices.size());
         for (size_t i = start; i < start + range.indexCount; ++i) {
+          if ((i - start) % 4096u == 0u)
+            checkCancellation();
           const auto original = model_.indices[i];
           if (remap[original] == missing) {
             remap[original] = static_cast<uint32_t>(vertices.size());
@@ -5516,6 +5580,7 @@ private:
 
     const glm::mat4 transform = importUnitTransform();
     for (const auto id : sortedEntityIds_) {
+      checkCancellation();
       const auto groupIt = groupsByItem_.find(id);
       if (groupIt == groupsByItem_.end()) {
         continue;
@@ -5536,6 +5601,7 @@ private:
   std::unordered_map<uint32_t, Entity> entities_;
   std::vector<uint32_t> sortedEntityIds_{};
   float importScale_{1.0f};
+  std::stop_token stop_;
   LengthUnitMetadata unitMetadata_{};
   float unitScale_{1.0f};
   uint32_t nextMeshId_{1};
@@ -5563,19 +5629,21 @@ private:
 
 } // namespace
 
-Model LoadFromStep(std::string_view stepText, float importScale) {
-  return IfcModelBuilder(parseEntities(stepText), importScale).build();
+Model LoadFromStep(std::string_view stepText, float importScale,
+                   std::stop_token stop) {
+  container::util::checkModelImportCancellation(stop);
+  return IfcModelBuilder(parseEntities(stepText, stop), importScale, stop).build();
 }
 
-Model LoadFromFile(const std::filesystem::path &path, float importScale) {
+Model LoadFromFile(const std::filesystem::path &path, float importScale,
+                   std::stop_token stop) {
+  container::util::checkModelImportCancellation(stop);
   std::ifstream file(path, std::ios::binary);
   if (!file) {
     throw std::runtime_error("failed to open IFC file: " +
                              container::util::pathToUtf8(path));
   }
-  std::string text((std::istreambuf_iterator<char>(file)),
-                   std::istreambuf_iterator<char>());
-  return LoadFromStep(text, importScale);
+  return LoadFromStep(bim_import::readText(file, stop), importScale, stop);
 }
 
 } // namespace container::geometry::ifc

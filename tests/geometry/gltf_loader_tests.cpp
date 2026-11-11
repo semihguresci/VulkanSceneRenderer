@@ -1,7 +1,9 @@
 #include "Container/geometry/Model.h"
+#include "Container/geometry/GltfLinkedAssets.h"
 #include "Container/geometry/GltfModelLoader.h"
 #include "Container/geometry/GltfIesProfiles.h"
 #include "Container/geometry/GltfNodeFlags.h"
+#include "Container/utility/ModelImportCancellation.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -560,6 +562,60 @@ std::filesystem::path findSampleAsset(std::string_view relativePath) {
 }
 
 }  // namespace
+
+TEST(GltfModelLoader, CancelledRequestsFailBeforeSourceIoAndAllowAReplacement) {
+  using namespace container::geometry::gltf;
+  const auto path = writeTriangleGltf("cancelled_before_read", {0, 1, 2});
+  std::stop_source cancelled;
+  cancelled.request_stop();
+  LoadOptions options;
+  options.stop = cancelled.get_token();
+  const auto absent = path.parent_path() / "cancelled_source_does_not_exist.gltf";
+  EXPECT_THROW((void)LoadSourceModel(absent.string(), options),
+               container::util::ModelImportCancelled);
+  EXPECT_THROW((void)LoadModelWithSource(path.string(), options),
+               container::util::ModelImportCancelled);
+
+  std::stop_source replacement;
+  options.stop = replacement.get_token();
+  const auto loaded = LoadModelWithSource(path.string(), options);
+  ASSERT_EQ(loaded.model.meshes().size(), 1);
+  EXPECT_EQ(loaded.model.meshes()[0].vertices().size(), 3);
+}
+
+TEST(GltfModelLoader, LinkedCompositionStopsAfterReadingAnActiveChild) {
+  using namespace container::geometry::gltf;
+  const auto parent = writeTriangleGltf("cancelled_link_parent", {0, 1, 2});
+  const auto child = writeTriangleGltf("cancelled_link_child", {0, 1, 2});
+  const auto read = [&](const GltfLinkedReadContext& context) {
+    LoadOptions options;
+    options.stop = context.stop;
+    GltfLinkedDocument document{LoadSourceModel(context.source.string(), options), {}};
+    if (!context.child) {
+      document.model.nodes[0].mesh = -1;
+      document.manifest.nodeFiles = {0};
+      document.manifest.files.push_back({child.filename(), "model/gltf+json", {}});
+    }
+    return document;
+  };
+
+  std::stop_source source;
+  size_t documents = 0;
+  GltfLinkedCompositionInfo cancelled;
+  EXPECT_THROW((void)LoadGltfLinkedComposition(parent, [&](const auto& context) {
+    auto document = read(context);
+    ++documents;
+    if (context.child) source.request_stop();
+    return document;
+  }, &cancelled, source.get_token()), container::util::ModelImportCancelled);
+  EXPECT_EQ(documents, 2);
+  EXPECT_TRUE(cancelled.placementRecords.empty());
+
+  GltfLinkedCompositionInfo completed;
+  const auto model = LoadGltfLinkedComposition(parent, read, &completed);
+  ASSERT_EQ(model.nodes.size(), 2);
+  EXPECT_EQ(completed.placementRecords.size(), 1);
+}
 
 TEST(GltfModelLoader, RepairsTriangleWindingOppositeImportedNormals) {
   const auto gltfPath = writeTriangleGltf("bad_winding", {0, 1, 2});

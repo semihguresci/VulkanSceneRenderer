@@ -3,6 +3,7 @@
 #include "Container/geometry/DotBimLoader.h"
 
 #include <span>
+#include <stop_token>
 
 namespace container::geometry {
 
@@ -12,6 +13,7 @@ namespace container::geometry {
 [[nodiscard]] bool
 appendPolylineGeometry(dotbim::Model &model, std::span<const glm::vec3> points,
                        std::span<const size_t> pathVertexCounts,
-                       uint32_t meshId, float pickingRadius);
+                       uint32_t meshId, float pickingRadius,
+                       std::stop_token stop = {});
 
 } // namespace container::geometry

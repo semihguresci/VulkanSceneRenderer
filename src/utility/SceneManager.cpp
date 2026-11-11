@@ -29,6 +29,7 @@
 #include "Container/geometry/GltfLinkedAssets.h"
 #include "Container/geometry/Mesh.h"
 #include "Container/utility/AllocationManager.h"
+#include "Container/utility/ModelImportCancellation.h"
 #include "Container/utility/PipelineManager.h"
 #include "Container/utility/Platform.h"
 #include "Container/utility/SceneData.h"
@@ -105,8 +106,9 @@ container::geometry::GltfLoadResult prepareSceneGltfAsset(
   options.retainEncodedImages = true;
   auto result = container::geometry::gltf::LoadModelWithSource(
       container::util::pathToUtf8(path), options);
-  (void)container::geometry::gltf::ParseMaterialVariants(result.gltfModel);
-  (void)BuildGltfSceneCatalog(result.gltfModel);
+  (void)container::geometry::gltf::ParseMaterialVariants(result.gltfModel, options.stop);
+  (void)BuildGltfSceneCatalog(result.gltfModel, {}, options.stop);
+  container::util::checkModelImportCancellation(options.stop);
   return result;
 }
 
@@ -1675,7 +1677,8 @@ std::optional<uint32_t> SceneManager::retainedPrimitiveNormalTexCoord(uint32_t r
 container::geometry::GltfLoadResult SceneManager::prepareGltfModel(
     const std::string& path, uintmax_t maxInputBytes, bool enableLinkedAssets,
     bool requireSelfContained, bool enableExperimentalMaterials, bool enableOpacityMicromaps,
-    bool mergeInput) {
+    bool mergeInput, std::stop_token stop) {
+  container::util::checkModelImportCancellation(stop);
   auto resolvedPath = container::util::pathFromUtf8(path);
   if (resolvedPath.is_relative() && !std::filesystem::exists(resolvedPath)) {
     resolvedPath = resolveSceneAssetPath(path);
@@ -1687,6 +1690,7 @@ container::geometry::GltfLoadResult SceneManager::prepareGltfModel(
   options.enableExperimentalMaterials = enableExperimentalMaterials;
   options.enableOpacityMicromaps = enableOpacityMicromaps;
   options.mergeInput = mergeInput;
+  options.stop = stop;
   return prepareSceneGltfAsset(resolvedPath, std::move(options));
 }
 

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <span>
+#include <stop_token>
 #include <vector>
 
 namespace container::geometry::gltf {
@@ -67,6 +68,7 @@ struct DracoDecodedMesh {
     std::span<const std::byte> compressed,
     std::span<const DracoAttributeRequest> attributes,
     const DracoDecodeLimits& limits = {},
-    const DracoWorkerOptions& options = {});
+    const DracoWorkerOptions& options = {},
+    const std::stop_token& stop = {});
 
 } // namespace container::geometry::gltf

@@ -4,6 +4,7 @@
 #include <Container/geometry/GltfInteractivity.h>
 #include <Container/geometry/GltfXmpMetadata.h>
 #include <Container/geometry/GltfSceneCatalog.h>
+#include <Container/utility/ModelImportCancellation.h>
 
 #include <nlohmann/json.hpp>
 
@@ -22,6 +23,7 @@ namespace {
 using Json = nlohmann::json;
 using Path = std::filesystem::path;
 using Aliases = std::map<Path, Path>;
+using container::util::checkModelImportCancellation;
 constexpr size_t kMaxTableEntries = 4096;
 constexpr size_t kMaxSources = 64;
 constexpr size_t kMaxDepth = 16;
@@ -126,8 +128,8 @@ const Json& table(const Json& manifest, const char* key) {
   return *found;
 }
 
-std::vector<int> roots(const tinygltf::Model& model) {
-  const auto catalog = container::scene::BuildGltfSceneCatalog(model);
+std::vector<int> roots(const tinygltf::Model& model, const std::stop_token& stop) {
+  const auto catalog = container::scene::BuildGltfSceneCatalog(model, {}, stop);
   return catalog.entries[catalog.defaultScene].sourceRoots;
 }
 
@@ -214,23 +216,27 @@ class Composition {
  public:
   Composition(const GltfLinkedDocumentReader& reader, GltfLinkedReadContext primary,
       GltfLinkedDocument document)
-      : reader_(reader), composition_(primary.composition), output_(std::move(document.model)) {
+      : reader_(reader), composition_(primary.composition), stop_(primary.stop),
+        output_(std::move(document.model)) {
     if (document.manifest.nodeFiles.size() != output_.nodes.size())
       fail(utf8(primary.source), "parsed node table does not match the linked manifest");
     if (output_.nodes.size() > kMaxNodes) fail(utf8(primary.source), "primary node budget exceeded");
     if (composition_) nodePlacements_.resize(output_.nodes.size(), -1);
     const auto label = utf8(primary.source);
     for (const auto& animation : output_.animations)
-      for (const auto& channel : animation.channels)
+      for (const auto& channel : animation.channels) {
+        checkModelImportCancellation(stop_);
         animationCost_.add(output_, animation, channel, label);
+      }
     if (output_.scenes.empty()) {
       tinygltf::Scene scene;
-      scene.nodes = roots(output_);
+      scene.nodes = roots(output_, stop_);
       output_.scenes.push_back(std::move(scene));
       output_.defaultScene = 0;
     }
     ancestry_.push_back(primary.source);
     for (size_t node = 0; node < document.manifest.nodeFiles.size(); ++node) {
+      if (node % 1024 == 0) checkModelImportCancellation(stop_);
       const int file = document.manifest.nodeFiles[node];
       if (file >= 0) place(int(node), primary, document.manifest, size_t(file), -1);
     }
@@ -279,6 +285,7 @@ class Composition {
   };
 
   Source& acquire(GltfLinkedReadContext context) {
+    checkModelImportCancellation(stop_);
     for (const auto& source : sources_)
       if (sameContext(source->context, context)) return *source;
     if (sources_.size() >= kMaxSources) fail(utf8(context.source), "linked source count exceeds 64");
@@ -286,6 +293,7 @@ class Composition {
     GltfLinkedReadWitnesses witnesses;
     if (composition_) context.witnesses = &witnesses;
     auto child = reader_(context);
+    checkModelImportCancellation(stop_);
     context.witnesses = nullptr;
     if (!child.manifest.nodeFiles.empty() && child.manifest.nodeFiles.size() != child.model.nodes.size())
       fail(utf8(context.source), "parsed node table does not match the linked manifest");
@@ -313,10 +321,11 @@ class Composition {
     const auto firstXmpPacket = composition_ ? xmpPacketCount(output_) : 0;
     GltfMergePlan merged;
     try {
-      merged = PlanGltfMerge(output_, child.model);
+      merged = PlanGltfMerge(output_, child.model, {}, {}, stop_);
     } catch (const std::runtime_error& error) {
       fail(label, error.what());
     }
+    checkModelImportCancellation(stop_);
     if (std::ranges::find(merged.placement.contextOnly, true) != merged.placement.contextOnly.end())
       fail(label, "skin joints and skeleton must belong to the selected linked scene");
     if (const auto packet = merged.incomingAsset.extensions.find(kGltfXmpExtension);
@@ -333,6 +342,7 @@ class Composition {
     for (auto& root : source->roots) root -= firstPrototype;
     source->nodes.reserve(size_t(merged.summary.placementNodes));
     for (size_t i = 0; i < child.model.nodes.size(); ++i) {
+      if (i % 1024 == 0) checkModelImportCancellation(stop_);
       const int placed = merged.placement.nodes[i];
       if (placed < 0) continue;
       auto node = std::move(merged.model.nodes[size_t(placed)]);
@@ -342,6 +352,7 @@ class Composition {
       source->nodes.push_back({std::move(node), int(i), nestedFile});
     }
     for (size_t i = size_t(firstSkinPrototype); i < merged.model.skins.size(); ++i) {
+      checkModelImportCancellation(stop_);
       auto skin = std::move(merged.model.skins[i]);
       for (auto& joint : skin.joints) joint -= firstPrototype;
       if (skin.skeleton >= 0) skin.skeleton -= firstPrototype;
@@ -353,6 +364,7 @@ class Composition {
       for (const int root : source->roots) {
         pending.push_back(root);
         while (!pending.empty()) {
+          checkModelImportCancellation(stop_);
           const int node = pending.back();
           pending.pop_back();
           rootByNode[size_t(node)] = root;
@@ -377,6 +389,7 @@ class Composition {
       AnimationPlacement placement{firstAnimation + clips.size(), {}};
       std::vector<tinygltf::AnimationChannel> shared;
       for (size_t j = 0; j < clip.channels.size(); ++j) {
+        if (j % 1024 == 0) checkModelImportCancellation(stop_);
         auto& channel = clip.channels[j];
         const auto node = animationNode(channel);
         if (!node) {
@@ -429,6 +442,7 @@ class Composition {
 
   void place(int target, const GltfLinkedReadContext& owner, const GltfLinkedManifest& manifest,
              size_t id, int32_t parentPlacement) {
+    checkModelImportCancellation(stop_);
     if (ancestry_.size() > kMaxDepth) fail(utf8(owner.source), "linked nesting exceeds 16 levels");
     if (++placements_ > kMaxPlacements) fail(utf8(owner.source), "linked placement count exceeds 4096");
     const auto& file = manifest.files[id];
@@ -451,7 +465,7 @@ class Composition {
     if ((file.mimeType == "model/gltf+json" && extension != ".gltf") ||
         (file.mimeType == "model/gltf-binary" && extension != ".glb"))
       fail(utf8(owner.source), "linked file MIME type and suffix disagree for '" + utf8(file.uri) + "'");
-    GltfLinkedReadContext context{owner.root, std::move(path), {}, owner.composition, true};
+    GltfLinkedReadContext context{owner.root, std::move(path), {}, owner.composition, true, nullptr, stop_};
     for (const auto& [name, destination] : file.aliases)
       context.aliases.emplace(name, containedFile(owner.root, owner.source,
           manifest.files[destination].uri, owner.composition, binding));
@@ -477,6 +491,7 @@ class Composition {
     for (auto it = source.roots.rbegin(); it != source.roots.rend(); ++it) pending.emplace_back(target, *it);
     const auto origin = utf8(source.context.source.lexically_relative(owner.root));
     while (!pending.empty()) {
+      checkModelImportCancellation(stop_);
       const auto [parent, prototype] = pending.back();
       pending.pop_back();
       if (output_.nodes.size() >= kMaxNodes) fail(utf8(owner.source), "linked output node budget exceeded");
@@ -501,6 +516,7 @@ class Composition {
         pending.emplace_back(destination, *it);
     }
     for (auto skin : source.skins) {
+      checkModelImportCancellation(stop_);
       for (auto& joint : skin.joints) joint = placed.at(size_t(joint));
       if (skin.skeleton >= 0) skin.skeleton = placed.at(size_t(skin.skeleton));
       output_.skins.push_back(std::move(skin));
@@ -508,6 +524,7 @@ class Composition {
     for (const auto& animation : source.animations) {
       auto& clip = output_.animations[animation.clip];
       for (const auto& [node, prototype] : animation.channels) {
+        checkModelImportCancellation(stop_);
         auto channel = prototype;
         setAnimationNode(channel, placed.at(size_t(node)));
         clip.channels.push_back(std::move(channel));
@@ -537,6 +554,7 @@ class Composition {
 
   const GltfLinkedDocumentReader& reader_;
   GltfLinkedCompositionInfo* composition_;
+  std::stop_token stop_;
   tinygltf::Model output_;
   std::vector<std::unique_ptr<Source>> sources_;
   std::vector<Path> ancestry_;
@@ -551,10 +569,14 @@ class Composition {
 
 } // namespace
 
-GltfLinkedManifest PrepareGltfLinkedManifest(Json& manifest, bool enabled) {
+GltfLinkedManifest PrepareGltfLinkedManifest(Json& manifest, bool enabled, std::stop_token stop) {
+  checkModelImportCancellation(stop);
   const auto nodes = manifest.find("nodes");
   const bool references = nodes != manifest.end() && nodes->is_array() &&
-      std::ranges::any_of(*nodes, [](const auto& node) { return node.contains("externalAsset"); });
+      std::ranges::any_of(*nodes, [&stop, i = size_t{}](const auto& node) mutable {
+        if (i++ % 1024 == 0) checkModelImportCancellation(stop);
+        return node.contains("externalAsset");
+      });
   const bool hasLinks = references || manifest.contains("externalAssets");
   const auto assetRecord = manifest.find("asset");
   const bool optedDraft = enabled && assetRecord != manifest.end() && assetRecord->is_object() &&
@@ -583,6 +605,7 @@ GltfLinkedManifest PrepareGltfLinkedManifest(Json& manifest, bool enabled) {
   result.files.reserve(files.size());
   size_t aliasCount = 0;
   for (size_t i = 0; i < files.size(); ++i) {
+    checkModelImportCancellation(stop);
     const auto& file = files[i];
     const auto label = "files[" + std::to_string(i) + "]";
     if (file.contains("bufferView") || file.contains("data")) fail(label, "embedded linked files are unsupported");
@@ -605,6 +628,7 @@ GltfLinkedManifest PrepareGltfLinkedManifest(Json& manifest, bool enabled) {
   std::vector<int> externalFiles;
   externalFiles.reserve(external.size());
   for (size_t i = 0; i < external.size(); ++i) {
+    checkModelImportCancellation(stop);
     const auto& entry = external[i];
     const auto label = "externalAssets[" + std::to_string(i) + "]";
     const auto file = entry.find("file");
@@ -618,6 +642,7 @@ GltfLinkedManifest PrepareGltfLinkedManifest(Json& manifest, bool enabled) {
     if (nodes->size() > kMaxNodes) fail("nodes", "linked manifest node budget exceeded");
     result.nodeFiles.assign(nodes->size(), -1);
     for (size_t i = 0; i < nodes->size(); ++i) {
+      if (i % 1024 == 0) checkModelImportCancellation(stop);
       auto& node = (*nodes)[i];
       const auto reference = node.find("externalAsset");
       if (reference == node.end()) continue;
@@ -650,18 +675,20 @@ Path GltfLinkedReadContext::resource(std::string_view uri) const {
 
 void GltfLinkedReadContext::observe(const Path& path, std::span<const unsigned char> bytes) const {
   if (!composition) return;
-  composition->observe(path, bytes);
+  composition->observe(path, bytes, stop);
   if (witnesses) composition->recordWitness(witnesses->inputs, path);
 }
 
 tinygltf::Model LoadGltfLinkedComposition(const Path& path, const GltfLinkedDocumentReader& reader,
-    GltfLinkedCompositionInfo* composition) {
+    GltfLinkedCompositionInfo* composition, std::stop_token stop) {
+  checkModelImportCancellation(stop);
   std::error_code error;
   auto source = std::filesystem::canonical(path, error);
   if (error || !std::filesystem::is_regular_file(source, error) || error)
     fail(utf8(path), "primary glTF file is missing");
-  GltfLinkedReadContext primary{source.parent_path(), std::move(source), {}, composition};
+  GltfLinkedReadContext primary{source.parent_path(), std::move(source), {}, composition, false, nullptr, stop};
   auto document = reader(primary);
+  checkModelImportCancellation(stop);
   if (document.manifest.nodeFiles.empty()) return std::move(document.model);
   if (composition) {
     composition->source = primary.source;
@@ -670,7 +697,9 @@ tinygltf::Model LoadGltfLinkedComposition(const Path& path, const GltfLinkedDocu
     for (size_t node = 0; node < document.manifest.nodeFiles.size(); ++node)
       if (document.manifest.nodeFiles[node] >= 0) composition->placements.push_back(int(node));
   }
-  return Composition(reader, std::move(primary), std::move(document)).take();
+  auto result = Composition(reader, std::move(primary), std::move(document)).take();
+  checkModelImportCancellation(stop);
+  return result;
 }
 
 namespace {
@@ -684,8 +713,17 @@ uint64_t hashContent(uint64_t hash, std::span<const unsigned char> bytes) {
 }
 } // namespace
 
-void GltfLinkedCompositionInfo::observe(const Path& path, std::span<const unsigned char> bytes) {
-  const GltfLinkedFileContents contents{bytes.size(), hashContent(kContentHashSeed, bytes)};
+void GltfLinkedCompositionInfo::observe(const Path& path, std::span<const unsigned char> bytes,
+    std::stop_token stop) {
+  const auto byteCount = bytes.size();
+  uint64_t hash = kContentHashSeed;
+  while (!bytes.empty()) {
+    checkModelImportCancellation(stop);
+    const auto chunk = std::min(size_t{1024 * 1024}, bytes.size());
+    hash = hashContent(hash, bytes.first(chunk));
+    bytes = bytes.subspan(chunk);
+  }
+  const GltfLinkedFileContents contents{byteCount, hash};
   const auto [previous, added] = inputs.emplace(path, contents);
   if (!added && previous->second != contents) fail(utf8(path), "linked input changed during import");
 }

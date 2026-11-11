@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 
@@ -34,7 +35,8 @@ struct AccessorReadOptions {
 class CheckedAccessor {
 public:
   CheckedAccessor(const tinygltf::Model& source, int index,
-                  std::string_view label, AccessorReadOptions options = {});
+                  std::string_view label, AccessorReadOptions options = {},
+                  const std::stop_token& stop = {});
   [[nodiscard]] size_t count() const { return accessor_->count; }
   [[nodiscard]] size_t components() const { return components_; }
   [[nodiscard]] const tinygltf::Accessor& accessor() const { return *accessor_; }

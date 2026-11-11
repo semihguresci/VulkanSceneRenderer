@@ -1,5 +1,6 @@
 #include <Container/geometry/GltfDracoWorker.h>
 #include <Container/geometry/GltfDracoProtocol.h>
+#include <Container/utility/ModelImportCancellation.h>
 
 #include <atomic>
 #include <chrono>
@@ -20,6 +21,8 @@
 
 namespace container::geometry::gltf {
 namespace {
+using container::util::checkModelImportCancellation;
+
 [[noreturn]] void fail(std::string_view reason) {
   throw std::runtime_error("Bounded Draco decode: " + std::string(reason));
 }
@@ -142,8 +145,23 @@ public:
   }
 };
 
+DWORD waitForWorker(HANDLE process, DWORD timeoutMs, const std::stop_token& stop) {
+  if (!stop.stop_possible()) return WaitForSingleObject(process, timeoutMs);
+  Handle cancelled(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+  if (!cancelled.get()) fail("cannot create the decoder cancellation event");
+  const std::stop_callback signalCancellation(stop, [event = cancelled.get()] {
+    (void)SetEvent(event);
+  });
+  const HANDLE handles[]{process, cancelled.get()};
+  const DWORD result = WaitForMultipleObjects(2, handles, FALSE, timeoutMs);
+  checkModelImportCancellation(stop);
+  return result;
+}
+
 void runWorker(const std::filesystem::path& executable,
-               const TemporaryDirectory& temporary, const DracoDecodeLimits& limits) {
+               const TemporaryDirectory& temporary, const DracoDecodeLimits& limits,
+               const std::stop_token& stop) {
+  checkModelImportCancellation(stop);
   Child child;
   child.job.reset(CreateJobObjectW(nullptr, nullptr));
   if (!child.job.get()) fail("cannot create decoder memory-limit job");
@@ -172,7 +190,7 @@ void runWorker(const std::filesystem::path& executable,
   if (!AssignProcessToJobObject(child.job.get(), child.process.get()))
     fail("cannot assign decoder to the bounded job; decode was not started");
   if (ResumeThread(child.thread.get()) == DWORD(-1)) fail("cannot start the bounded decoder");
-  const DWORD wait = WaitForSingleObject(child.process.get(), limits.timeoutMs);
+  const DWORD wait = waitForWorker(child.process.get(), limits.timeoutMs, stop);
   if (wait == WAIT_TIMEOUT) fail("worker wall timeout exceeded");
   if (wait != WAIT_OBJECT_0) fail("cannot wait for the bounded decoder");
   child.finished = true;
@@ -193,14 +211,18 @@ bool DracoWorkerPlatformSupported() noexcept {
 
 DracoDecodedMesh DecodeDracoInWorker(std::span<const std::byte> compressed,
     std::span<const DracoAttributeRequest> attributes, const DracoDecodeLimits& limits,
-    const DracoWorkerOptions& options) {
+    const DracoWorkerOptions& options, const std::stop_token& stop) {
+  checkModelImportCancellation(stop);
   draco_worker::ValidateRequest(compressed, attributes, limits);
 #ifdef _WIN32
   const auto executable = workerPath(options);
   TemporaryDirectory temporary(options.tempRoot);
   draco_worker::WriteRequest(temporary.request(), compressed, attributes, limits);
-  runWorker(executable, temporary, limits);
-  return draco_worker::ReadResponse(temporary.response(), attributes, limits);
+  runWorker(executable, temporary, limits, stop);
+  checkModelImportCancellation(stop);
+  auto decoded = draco_worker::ReadResponse(temporary.response(), attributes, limits);
+  checkModelImportCancellation(stop);
+  return decoded;
 #else
   (void)options;
   fail("bounded worker unavailable on this platform; no in-process fallback is permitted");

@@ -120,6 +120,8 @@ public:
   void pop_back() noexcept;
   // Discard the construction-only lookup map after publishing immutable rows.
   void seal() noexcept;
+  // Bind the runtime material after installing the prepared row's source material.
+  void setMaterialIndex(size_t index, uint32_t materialIndex);
   // Build a complete replacement before retiring this model's publication.
   void replace(BimMetadataTableView metadata);
   void swap(BimMetadataStorage &other) noexcept;

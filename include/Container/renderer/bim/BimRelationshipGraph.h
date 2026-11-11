@@ -128,7 +128,8 @@ private:
   void addSearchField(uint32_t objectIndex, std::string_view text,
                       std::string reason);
   void indexNodeIdentity(uint32_t nodeIndex, const BimRelationshipNode &node);
-  void buildPropertySets(const BimElementMetadataView &metadata);
+  void buildPropertySets(const BimElementMetadataView &metadata,
+                         const std::function<void()> &checkpoint);
 
   std::vector<BimRelationshipNode> nodes_{};
   std::vector<BimRelationshipEdge> edges_{};

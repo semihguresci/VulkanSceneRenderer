@@ -165,6 +165,7 @@ def legacy_main(argv=None):
 
 TECHNIQUES = ("deferred-raster", "forward-raster")
 LIFECYCLE_MODES = ("raster", "rays-taa", "ddgi-async")
+INVALID_PRIMARY_NODE_IDS = (-1, (1 << 32) - 1)
 VALIDATION_ERROR = re.compile(
     r"VUID-|SYNC-HAZARD|Validation Error|VK_ERROR_[A-Z_]+|"
     r"Unhandled exception|uncaught exception|Assertion failed|"
@@ -343,7 +344,7 @@ def check_loaded(telemetry, path, *, auxiliary, require_gui=True):
                 scene["primaryNodeCount"] > 0, "glTF load left geometry/hierarchy empty")
     if require_gui:
         require(telemetry["gui"]["status"].startswith("Loaded model:"), "GUI load did not finish successfully")
-        require(telemetry["gui"]["selectedMeshNodeId"] == -1 and
+        require(telemetry["gui"]["selectedMeshNodeId"] in INVALID_PRIMARY_NODE_IDS and
                 telemetry["gui"]["selectedBimObjectIndex"] == -1, "Replacement retained stale selection")
 
 
@@ -354,7 +355,7 @@ def check_unloaded(telemetry):
                 "auxiliaryObjectCount"):
         require(scene[key] == 0, f"Unload retained {key}: {scene[key]}")
     require(telemetry["gui"]["status"] == "Unloaded models.", "GUI unload did not report success")
-    require(telemetry["gui"]["selectedMeshNodeId"] == -1 and
+    require(telemetry["gui"]["selectedMeshNodeId"] in INVALID_PRIMARY_NODE_IDS and
             telemetry["gui"]["selectedBimObjectIndex"] == -1, "Unload retained stale selection")
     require(not telemetry["rayShadows"]["active"], "Unload retained active ray shadows")
     if "build" in telemetry["rayShadows"]:
@@ -539,6 +540,127 @@ def check_asynchronous_cancellation(record, cornell):
                                  {3: 0, 5: 2, 10: 2, 20: 3}, successful_frames=(5, 20))
 
 
+def make_cancellation_fixtures(models, output, copies=160_000):
+    """Generate large, self-contained inputs from the packaged geometry fixtures."""
+    bim = json.loads((models / "taa_equivalent.bim").read_text(encoding="utf-8"))
+    element = bim["elements"][1]
+    for index in range(copies):
+        bim["elements"].append({**element, "guid": f"cancellation-{index}",
+                               "vector": {"x": index % 400, "y": index // 400, "z": 0}})
+    large_bim = output / "large-cancellation.bim"
+    large_bim.write_text(json.dumps(bim, separators=(",", ":")), encoding="utf-8")
+
+    gltf = json.loads((models / "taa_equivalent.gltf").read_text(encoding="utf-8"))
+    nodes = gltf["nodes"]
+    first = len(nodes)
+    nodes[0]["children"].extend(range(first, first + copies))
+    for index in range(copies):
+        nodes.append({"name": f"Cancellation node {index}", "mesh": 1,
+                      "translation": [index % 400, 0, index // 400]})
+    large_gltf = output / "large-cancellation.gltf"
+    large_gltf.write_text(json.dumps(gltf, separators=(",", ":")), encoding="utf-8")
+    return large_bim, large_gltf
+
+
+def active_cancellation_sequence(cornell, large_bim, large_gltf, malformed):
+    return {"schemaVersion": 1, "frames": 22, "sampleFrames": [3, 4, 5, 6, 8, 9, 10, 14, 22],
+            "events": [{"frame": 4, "guiReload": str(large_bim), "guiWaitForLoad": False},
+                       {"frame": 5, "guiReload": str(cornell)},
+                       {"frame": 8, "guiReload": str(malformed)},
+                       {"frame": 9, "guiReload": str(large_gltf), "guiWaitForLoad": False},
+                       {"frame": 10, "guiUnload": True},
+                       {"frame": 18, "guiReload": str(cornell)}]}
+
+
+def check_active_cancellation(record, cornell, control):
+    samples = {sample["frame"]: sample["telemetry"] for sample in record["samples"]}
+    require(len(samples) == len(record["samples"]) and sorted(samples) == [3, 4, 5, 6, 8, 9, 10, 14, 22],
+            "Active cancellation samples are incomplete or duplicated")
+    loading = {frame: sample["gui"]["modelLoading"] for frame, sample in samples.items()}
+
+    def resources(telemetry):
+        inventory = telemetry["shaderReload"]
+        return tuple(inventory[key] for key in ("vmaAllocations", "vmaBytes", "ownedObjects"))
+
+    check_loaded(samples[3], cornell, auxiliary=False, require_gui=False)
+    for pending, before in ((4, 3), (9, 8)):
+        require(loading[pending]["pending"] is True and
+                loading[pending]["requests"] == loading[before]["requests"] + 1 and
+                loading[pending]["completed"] == loading[before]["completed"],
+                f"Large import was not pending at frame {pending}")
+        require(loading[pending]["preparationFrames"] > loading[before]["preparationFrames"],
+                f"Large import blocked rendering at frame {pending}")
+        require(scene_signature(samples[pending]) == scene_signature(samples[before]) and
+                stable_camera(samples[pending]) == stable_camera(samples[before]) and
+                stable_lighting(samples[pending]) == stable_lighting(samples[before]) and
+                stable_reload_state(samples[pending]) == stable_reload_state(samples[before]),
+                f"Background preparation changed the live scene at frame {pending}")
+
+    for frame in (5, 6, 22):
+        check_loaded(samples[frame], cornell, auxiliary=False)
+    require(samples[8]["gui"]["status"].startswith("Failed to load model:") and
+            scene_signature(samples[8]) == scene_signature(samples[6]) and
+            stable_camera(samples[8]) == stable_camera(samples[6]),
+            "The real parse error was suppressed or changed the live scene")
+    for frame in (10, 14):
+        check_unloaded(samples[frame])
+    require(scene_signature(samples[14]) == scene_signature(samples[10]),
+            "Cancelled glTF work published geometry after unload")
+    control_samples = {sample["frame"]: sample["telemetry"] for sample in control["samples"]}
+    for frame in (6, 8, 14, 22):
+        require(scene_signature(samples[frame]) == scene_signature(control_samples[frame]) and
+                resources(samples[frame]) == resources(control_samples[frame]),
+                f"Settled scene or Vulkan inventory differs from the matched control at frame {frame}")
+
+    latencies = {}
+    for frame, expected, kind in ((5, 1, "bimReplacement"), (14, 2, "gltfUnload")):
+        state = loading[frame]
+        counts = (state["cancelled"], state["retiredActiveRequests"], state["cooperativeExits"])
+        require(all(type(count) is int and count == expected for count in counts),
+                f"Expected active importer to stop at a checkpoint before frame {frame}: {state}")
+        latency = state["lastCancellationRetirementMs"]
+        require(isinstance(latency, (float, int)) and not isinstance(latency, bool) and
+                math.isfinite(latency) and latency > 0, f"Missing retirement latency at frame {frame}")
+        latencies[kind] = latency
+
+    settled = {3: 0, 5: 2, 6: 2, 8: 3, 10: 5, 14: 5, 22: 6}
+    check_model_request_progress({frame: samples[frame] for frame in settled}, settled,
+                                 successful_frames=(5, 10, 22))
+    return latencies
+
+
+def run_active_cancellation(exe, output, techniques, timeout):
+    output.mkdir(parents=True, exist_ok=True)
+    models = exe.parent / "models/validation"
+    cornell = models / "cornell_box_local_light.gltf"
+    large_bim, large_gltf = make_cancellation_fixtures(models, output)
+    malformed = output / "malformed-cancellation.gltf"
+    malformed.write_text("{broken JSON", encoding="utf-8")
+    (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="utf-8")
+    sequence = active_cancellation_sequence(cornell, large_bim, large_gltf, malformed)
+    control_sequence = {**sequence, "events": [event for event in sequence["events"]
+                                              if event.get("guiWaitForLoad", True)]}
+    result = {"exeSha256": hashlib.sha256(exe.read_bytes()).hexdigest(), "cases": [], "failures": [],
+              "fixtureBytes": {"bim": large_bim.stat().st_size, "gltf": large_gltf.stat().st_size}}
+    for technique in techniques:
+        name = f"{technique}-active-cancellation"
+        try:
+            record = run_lifecycle_capture(exe, output, name, cornell, sequence, technique, "raster", timeout=timeout)
+            control = run_lifecycle_capture(exe, output, f"{name}-control", cornell, control_sequence,
+                                            technique, "raster", timeout=timeout)
+            record["cancellationRetirementMs"] = check_active_cancellation(record, cornell, control)
+            log = (output / f"{name}.log").read_text(encoding="utf-8", errors="replace")
+            for path in (large_bim, large_gltf):
+                require(f"Failed to load model '{path}'" not in log, f"Cancelled import logged an error: {path}")
+            result["cases"].append({**record, "control": control})
+        except (AssertionError, OSError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
+            result["failures"].append(f"{name}: {error}")
+    result["passed"] = not result["failures"]
+    (output / "cancellation-results.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps({"suite": "cancellation", "passed": result["passed"], "failures": result["failures"]}), flush=True)
+    return result
+
+
 def run_lifecycle_matrix(exe, output, modes=LIFECYCLE_MODES, techniques=TECHNIQUES, timeout=240):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
@@ -610,7 +732,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--exe", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--suite", choices=("legacy", "lifecycle", "all"), default="all")
+    parser.add_argument("--suite", choices=("legacy", "lifecycle", "cancellation", "all"), default="all")
     parser.add_argument("--modes", nargs="+", choices=LIFECYCLE_MODES, default=list(LIFECYCLE_MODES))
     parser.add_argument("--technique", choices=("both",) + TECHNIQUES, default="both")
     parser.add_argument("--timeout", type=float, default=240)
@@ -631,6 +753,9 @@ def main():
     if args.suite in ("lifecycle", "all"):
         result["lifecycle"] = run_lifecycle_matrix(exe, output / "lifecycle", tuple(args.modes), techniques, args.timeout)
         result["passed"] &= result["lifecycle"]["passed"]
+    if args.suite in ("cancellation", "all"):
+        result["cancellation"] = run_active_cancellation(exe, output / "cancellation", techniques, args.timeout)
+        result["passed"] &= result["cancellation"]["passed"]
     output.mkdir(parents=True, exist_ok=True)
     (output / "results.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return 0 if result["passed"] else 1

@@ -4,9 +4,12 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <utility>
@@ -15,22 +18,26 @@ namespace {
 using namespace std::chrono_literals;
 using Worker = container::util::AsyncModelPreparation<int>;
 
-// A preparation task is held until the test explicitly releases it. The guard
-// must be declared after its worker so assertion exits cannot strand a join.
+// A preparation task is held until a stop request or explicit release. The
+// guard must be declared after its worker so assertion exits cannot strand a join.
 struct Gate {
   std::promise<void> entered;
   std::future<void> enteredSignal{entered.get_future()};
-  std::promise<void> release;
-  std::shared_future<void> releaseSignal{release.get_future().share()};
-  std::atomic<bool> released{false};
+  std::mutex mutex;
+  std::condition_variable_any changed;
+  bool released = false;
 
-  void hold() {
+  void hold(std::stop_token stop = {}) {
+    std::unique_lock lock(mutex);
     entered.set_value();
-    releaseSignal.wait();
+    changed.wait(lock, stop, [&] { return released; });
   }
   void unblock() {
-    if (!released.exchange(true))
-      release.set_value();
+    {
+      std::lock_guard lock(mutex);
+      released = true;
+    }
+    changed.notify_all();
   }
 };
 
@@ -88,7 +95,7 @@ TEST(AsyncModelPreparation, StartsIdleAndRejectsEmptyCallable) {
   Worker worker;
   EXPECT_FALSE(worker.busy());
   EXPECT_FALSE(worker.tryTake());
-  EXPECT_THROW(worker.start({}), std::invalid_argument);
+  EXPECT_THROW((void)worker.start({}), std::invalid_argument);
   EXPECT_FALSE(worker.busy());
 }
 
@@ -98,7 +105,7 @@ TEST(AsyncModelPreparation, PreparationRunsOffThreadAndPollingDoesNotWaitForIt) 
   ReleaseOnExit guard{gate};
   const auto callerThread = std::this_thread::get_id();
   std::thread::id preparationThread;
-  const auto request = worker.start([&] {
+  const auto request = worker.start([&](std::stop_token) {
     preparationThread = std::this_thread::get_id();
     gate.hold();
     return 42;
@@ -126,7 +133,7 @@ TEST(AsyncModelPreparation, PreparationRunsOffThreadAndPollingDoesNotWaitForIt) 
 
 TEST(AsyncModelPreparation, SupportsOwnedMoveOnlyInputsAndResults) {
   container::util::AsyncModelPreparation<std::unique_ptr<int>> worker;
-  const auto request = worker.start([value = std::make_unique<int>(73)]() mutable {
+  const auto request = worker.start([value = std::make_unique<int>(73)](std::stop_token) mutable {
     return std::move(value);
   });
   auto completed = takeReady(worker);
@@ -139,7 +146,7 @@ TEST(AsyncModelPreparation, SupportsOwnedMoveOnlyInputsAndResults) {
 
 TEST(AsyncModelPreparation, ReturnsImporterErrorForHandlingOnCallerThread) {
   Worker worker;
-  const auto request = worker.start([]() -> int {
+  const auto request = worker.start([](std::stop_token) -> int {
     throw std::runtime_error("malformed model: missing geometry");
   });
   auto completed = takeReady(worker);
@@ -153,7 +160,7 @@ TEST(AsyncModelPreparation, ReturnsImporterErrorForHandlingOnCallerThread) {
     EXPECT_EQ(std::string(error.what()), "malformed model: missing geometry");
   }
   EXPECT_FALSE(worker.busy());
-  const auto recovery = worker.start([] { return 9; });
+  const auto recovery = worker.start([](std::stop_token) { return 9; });
   auto recovered = takeReady(worker);
   ASSERT_TRUE(recovered);
   EXPECT_EQ(recovered->requestId, recovery);
@@ -163,7 +170,7 @@ TEST(AsyncModelPreparation, ReturnsImporterErrorForHandlingOnCallerThread) {
 
 TEST(AsyncModelPreparation, PreservesNonStandardImporterExceptions) {
   Worker worker;
-  const auto request = worker.start([]() -> int { throw 19; });
+  const auto request = worker.start([](std::stop_token) -> int { throw 19; });
   auto completed = takeReady(worker);
   ASSERT_TRUE(completed);
   EXPECT_EQ(completed->requestId, request);
@@ -187,18 +194,18 @@ TEST(AsyncModelPreparation, OnlyNewestPendingRequestExecutesAndActiveResultIsDis
     int peak = peakExecuting.load();
     while (peak < active && !peakExecuting.compare_exchange_weak(peak, active)) {}
   };
-  const auto first = worker.start([&] {
+  const auto first = worker.start([&](std::stop_token) {
     enter();
     gate.hold();
     --executing;
     return 1;
   });
   ASSERT_EQ(gate.enteredSignal.wait_for(2s), std::future_status::ready);
-  const auto middle = worker.start([&] {
+  const auto middle = worker.start([&](std::stop_token) {
     middleExecuted = true;
     return 2;
   });
-  const auto latest = worker.start([&] {
+  const auto latest = worker.start([&](std::stop_token) {
     enter();
     --executing;
     return 3;
@@ -220,9 +227,9 @@ TEST(AsyncModelPreparation, OnlyNewestPendingRequestExecutesAndActiveResultIsDis
 
 TEST(AsyncModelPreparation, NewRequestAlsoDiscardsAlreadyReadyResult) {
   Worker worker;
-  const auto first = worker.start([] { return 1; });
+  const auto first = worker.start([](std::stop_token) { return 1; });
   ASSERT_TRUE(await([&] { return !worker.busy(); }));
-  const auto latest = worker.start([] { return 2; });
+  const auto latest = worker.start([](std::stop_token) { return 2; });
   EXPECT_GT(latest, first);
   auto completed = takeReady(worker);
   ASSERT_TRUE(completed);
@@ -234,12 +241,12 @@ TEST(AsyncModelPreparation, NewRequestAlsoDiscardsAlreadyReadyResult) {
 
 TEST(AsyncModelPreparation, UnloadCancellationAlsoDiscardsAlreadyPreparedScene) {
   Worker worker;
-  const auto first = worker.start([] { return 1; });
+  const auto first = worker.start([](std::stop_token) { return 1; });
   ASSERT_TRUE(await([&] { return !worker.busy(); }));
   worker.cancel();
   EXPECT_FALSE(worker.tryTake());
   EXPECT_FALSE(worker.busy());
-  const auto replacement = worker.start([] { return 2; });
+  const auto replacement = worker.start([](std::stop_token) { return 2; });
   EXPECT_GT(replacement, first);
   auto completed = takeReady(worker);
   ASSERT_TRUE(completed);
@@ -253,13 +260,13 @@ TEST(AsyncModelPreparation, UnloadCancellationReturnsImmediatelyAndPreventsLateL
   Worker worker;
   ReleaseOnExit guard{gate};
   std::atomic<bool> queuedExecuted{false}, activeFinished{false};
-  const auto first = worker.start([&] {
+  const auto first = worker.start([&](std::stop_token) {
     gate.hold();
     activeFinished = true;
     return 1;
   });
   ASSERT_EQ(gate.enteredSignal.wait_for(2s), std::future_status::ready);
-  const auto queued = worker.start([&] {
+  const auto queued = worker.start([&](std::stop_token) {
     queuedExecuted = true;
     return 2;
   });
@@ -281,14 +288,14 @@ TEST(AsyncModelPreparation, CanQueueNewLoadAfterCancelingActiveLoad) {
   Gate gate;
   Worker worker;
   ReleaseOnExit guard{gate};
-  const auto first = worker.start([&] {
+  const auto first = worker.start([&](std::stop_token) {
     gate.hold();
     return 1;
   });
   ASSERT_EQ(gate.enteredSignal.wait_for(2s), std::future_status::ready);
   worker.cancel();
   EXPECT_FALSE(worker.busy());
-  const auto replacement = worker.start([] { return 5; });
+  const auto replacement = worker.start([](std::stop_token) { return 5; });
   EXPECT_GT(replacement, first);
   EXPECT_TRUE(worker.busy());
   gate.unblock();
@@ -299,18 +306,105 @@ TEST(AsyncModelPreparation, CanQueueNewLoadAfterCancelingActiveLoad) {
   EXPECT_EQ(std::get<0>(completed->outcome), 5);
 }
 
+TEST(AsyncModelPreparation, SupersessionStopsAndReclaimsActiveWorkBeforeReplacement) {
+  Gate gate;
+  const auto destruction = std::make_shared<PayloadDestruction>();
+  std::thread::id preparationThread;
+  PayloadWorker worker;
+  ReleaseOnExit guard{gate};
+
+  const auto first = worker.start([&](std::stop_token stop) {
+    preparationThread = std::this_thread::get_id();
+    auto partial = std::make_unique<CpuPayload>(destruction);
+    gate.hold(stop);
+    container::util::checkModelImportCancellation(stop);
+    return partial;
+  });
+  ASSERT_EQ(gate.enteredSignal.wait_for(2s), std::future_status::ready);
+  const auto replacement = worker.start([&](std::stop_token stop) {
+    EXPECT_FALSE(stop.stop_requested());
+    EXPECT_EQ(destruction->signal.wait_for(0s), std::future_status::ready);
+    EXPECT_EQ(worker.cancellationStats().cooperativeExits, 1u);
+    return Payload{};
+  });
+
+  const auto completed = takeReady(worker);
+  ASSERT_TRUE(completed);
+  EXPECT_GT(replacement, first);
+  EXPECT_EQ(completed->requestId, replacement);
+  EXPECT_EQ(completed->outcome.index(), 0u);
+  ASSERT_EQ(destruction->signal.wait_for(0s), std::future_status::ready);
+  EXPECT_EQ(destruction->signal.get(), preparationThread);
+  const auto stats = worker.cancellationStats();
+  EXPECT_EQ(stats.retiredActiveRequests, 1u);
+  EXPECT_EQ(stats.cooperativeExits, 1u);
+  EXPECT_GE(stats.lastRetirementMs, 0.0);
+  EXPECT_FALSE(worker.tryTake());
+}
+
+TEST(AsyncModelPreparation, UnloadSuppressesFailureRacingCancellation) {
+  Gate gate;
+  Worker worker;
+  ReleaseOnExit guard{gate};
+  const auto request = worker.start([&](std::stop_token stop) -> int {
+    gate.hold(stop);
+    EXPECT_TRUE(stop.stop_requested());
+    throw std::runtime_error("importer error after unload");
+  });
+  ASSERT_EQ(gate.enteredSignal.wait_for(2s), std::future_status::ready);
+  worker.cancel();
+
+  EXPECT_FALSE(worker.busy());
+  ASSERT_TRUE(await([&] { return worker.cancellationStats().retiredActiveRequests == 1; }));
+  EXPECT_EQ(worker.cancellationStats().cooperativeExits, 0u);
+  EXPECT_FALSE(worker.tryTake());
+  const auto replacement = worker.start([](std::stop_token stop) {
+    EXPECT_FALSE(stop.stop_requested());
+    return 2;
+  });
+  ASSERT_GT(replacement, request);
+  const auto completed = takeReady(worker);
+  ASSERT_TRUE(completed);
+  EXPECT_EQ(completed->requestId, replacement);
+  ASSERT_EQ(completed->outcome.index(), 0u);
+  EXPECT_EQ(std::get<0>(completed->outcome), 2);
+}
+
+TEST(AsyncModelPreparation, ShutdownStopsCooperativeTaskBeforeJoining) {
+  Gate gate;
+  Worker worker;
+  ReleaseOnExit guard{gate};
+  const auto request = worker.start([&](std::stop_token stop) {
+    gate.hold(stop);
+    container::util::checkModelImportCancellation(stop);
+    return 1;
+  });
+  EXPECT_NE(request, 0u);
+  ASSERT_EQ(gate.enteredSignal.wait_for(2s), std::future_status::ready);
+
+  auto shutdown = std::async(std::launch::async, [&] { worker.shutdown(); });
+  const auto shutdownState = shutdown.wait_for(2s);
+  gate.unblock();
+  EXPECT_EQ(shutdownState, std::future_status::ready);
+  shutdown.get();
+  EXPECT_EQ(worker.cancellationStats().retiredActiveRequests, 1u);
+  EXPECT_EQ(worker.cancellationStats().cooperativeExits, 1u);
+  EXPECT_FALSE(worker.tryTake());
+  EXPECT_FALSE(worker.busy());
+}
+
 TEST(AsyncModelPreparation, ShutdownJoinsActiveWorkDropsQueueAndRejectsNewRequests) {
   Gate gate;
   Worker worker;
   ReleaseOnExit guard{gate};
   std::atomic<bool> activeFinished{false}, queuedExecuted{false};
-  const auto first = worker.start([&] {
+  const auto first = worker.start([&](std::stop_token) {
     gate.hold();
     activeFinished = true;
     return 1;
   });
   ASSERT_EQ(gate.enteredSignal.wait_for(2s), std::future_status::ready);
-  const auto queued = worker.start([&] {
+  const auto queued = worker.start([&](std::stop_token) {
     queuedExecuted = true;
     return 2;
   });
@@ -320,7 +414,7 @@ TEST(AsyncModelPreparation, ShutdownJoinsActiveWorkDropsQueueAndRejectsNewReques
   const auto beforeRelease = shutdown.wait_for(0s);
   // Evaluate start only after shutdown has invalidated the latest request.
   if (stopping)
-    EXPECT_THROW(worker.start([] { return 3; }), std::logic_error);
+    EXPECT_THROW((void)worker.start([](std::stop_token) { return 3; }), std::logic_error);
   gate.unblock();
   EXPECT_TRUE(stopping);
   EXPECT_EQ(beforeRelease, std::future_status::timeout);
@@ -338,7 +432,7 @@ TEST(AsyncModelPreparation, DestructionJoinsOwnedTaskWithoutPublishingStaleScene
   auto worker = std::make_unique<Worker>();
   ReleaseOnExit guard{gate};
   std::atomic<bool> finished{false};
-  const auto request = worker->start([&] {
+  const auto request = worker->start([&](std::stop_token) {
     gate.hold();
     finished = true;
     return 1;
@@ -359,7 +453,7 @@ TEST(AsyncModelPreparation, DiscardedInstalledPayloadIsDestroyedOnPreparationThr
   PayloadWorker worker;
   auto destruction = std::make_shared<PayloadDestruction>();
   std::thread::id preparationThread;
-  const auto request = worker.start([&] {
+  const auto request = worker.start([&](std::stop_token) {
     preparationThread = std::this_thread::get_id();
     return std::make_unique<CpuPayload>(destruction);
   });
@@ -379,7 +473,7 @@ TEST(AsyncModelPreparation, CanceledReadyPayloadIsDestroyedOnPreparationThread) 
   PayloadWorker worker;
   auto destruction = std::make_shared<PayloadDestruction>();
   std::thread::id preparationThread;
-  const auto request = worker.start([&] {
+  const auto request = worker.start([&](std::stop_token) {
     preparationThread = std::this_thread::get_id();
     return std::make_unique<CpuPayload>(destruction);
   });
@@ -396,12 +490,12 @@ TEST(AsyncModelPreparation, CanceledReadyPayloadIsDestroyedOnPreparationThread) 
 TEST(AsyncModelPreparation, SupersededReadyPayloadIsReclaimedBeforeNextPreparation) {
   PayloadWorker worker;
   auto destruction = std::make_shared<PayloadDestruction>();
-  const auto first = worker.start([destruction] {
+  const auto first = worker.start([destruction](std::stop_token) {
     return std::make_unique<CpuPayload>(destruction);
   });
   ASSERT_TRUE(await([&] { return !worker.busy(); }));
   std::atomic<bool> reclaimedBeforePreparation{false};
-  const auto replacement = worker.start([&] {
+  const auto replacement = worker.start([&](std::stop_token) {
     reclaimedBeforePreparation =
         destruction->signal.wait_for(0s) == std::future_status::ready;
     return Payload{};
@@ -421,7 +515,7 @@ TEST(AsyncModelPreparation, DiscardIsNonblockingDuringImportAndShutdownDrainsRet
   ReleaseOnExit guard{gate};
   auto destruction = std::make_shared<PayloadDestruction>();
   std::thread::id preparationThread;
-  const auto request = worker.start([&] {
+  const auto request = worker.start([&](std::stop_token) {
     preparationThread = std::this_thread::get_id();
     gate.hold();
     return Payload{};

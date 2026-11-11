@@ -8,6 +8,7 @@
 #include <Container/geometry/GltfMaterialVariants.h>
 #include <Container/geometry/GltfSceneCatalog.h>
 #include <Container/geometry/GltfXmpMetadata.h>
+#include <Container/utility/ModelImportCancellation.h>
 
 #include <algorithm>
 #include <charconv>
@@ -21,6 +22,7 @@
 
 namespace container::geometry::gltf {
 namespace {
+using container::util::checkModelImportCancellation;
 using Value=tinygltf::Value;
 using Object=Value::Object;
 using Array=Value::Array;
@@ -72,6 +74,7 @@ void finite(std::span<const double> values,std::string_view where) {
 
 struct Budget {
   const GltfMergeLimits& limits;
+  const std::stop_token& stop;
   GltfMergeSummary sum;
   std::set<std::string_view> opaqueDestinationExtensions;
   void text(std::string_view value) {charge(sum.metadataBytes,add(value.size(),8,"metadata"),limits.maxMetadataBytes,"metadata");}
@@ -79,6 +82,7 @@ struct Budget {
   void refs(uint64_t n) {charge(sum.references,n,limits.maxReferences,"references"); bytes(mul(n,16,"references"));}
   void objects(uint64_t n) {charge(sum.objects,n,limits.maxTotalObjects,"objects"); bytes(mul(n,64,"objects"));}
   void value(const Value& value,uint32_t depth=0) {
+    checkModelImportCancellation(stop);
     if(depth>limits.maxMetadataDepth) fail("metadata","nesting limit exceeded");
     bytes(16);
     if(value.IsString()) text(value.Get<std::string>());
@@ -256,7 +260,8 @@ Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label,bool p
   uint64_t edges=0;
   for(const auto& node:model.nodes) charge(edges,node.children.size(),lim.maxReferences,"hierarchy edges");
   if(add(b.sum.references,edges,"hierarchy edges")>lim.maxReferences) fail("hierarchy edges","aggregate limit exceeded");
-  out.catalog=container::scene::BuildGltfSceneCatalog(model,{lim.maxScenes,lim.maxRootReferences-b.sum.rootReferences});
+  out.catalog=container::scene::BuildGltfSceneCatalog(
+      model,{lim.maxScenes,lim.maxRootReferences-b.sum.rootReferences},b.stop);
   out.parents.assign(model.nodes.size(),-1);
   for(size_t i=0;i<model.nodes.size();++i) for(const auto child:model.nodes[i].children) out.parents[size_t(child)]=int(i);
   for(const auto& scene:out.catalog.entries) {
@@ -300,7 +305,8 @@ Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label,bool p
       index(a.sparse.indices.bufferView,model.bufferViews.size(),"sparse indices");
       index(a.sparse.values.bufferView,model.bufferViews.size(),"sparse values");b.refs(2);
     }
-    (void)CheckedAccessor(model,int(i),"merge accessor",{AccessorUsage::Generic,HasRequiredExtension(model,"KHR_accessor_float64")});
+    (void)CheckedAccessor(model,int(i),"merge accessor",
+        {AccessorUsage::Generic,HasRequiredExtension(model,"KHR_accessor_float64")},b.stop);
   }
   for(const auto& image:model.images) {
     property(image,model,b,"image",{kGltfXmpExtension});b.text(image.uri);b.text(image.mimeType);
@@ -374,7 +380,11 @@ Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label,bool p
   for(const auto& skin:model.skins) {
     property(skin,model,b,"skin");index(skin.skeleton,model.nodes.size(),"skin skeleton",true);index(skin.inverseBindMatrices,model.accessors.size(),"inverse binds",true);b.refs(skin.joints.size()+2);
     if(skin.joints.empty()) fail("skin","empty joint table");std::set<int> joints;
-    for(const auto joint:skin.joints) {index(joint,model.nodes.size(),"skin joint");if(!joints.insert(joint).second) fail("skin","duplicate joint");}
+    for(const auto joint:skin.joints) {
+      if(joints.size()%1024==0) checkModelImportCancellation(b.stop);
+      index(joint,model.nodes.size(),"skin joint");
+      if(!joints.insert(joint).second) fail("skin","duplicate joint");
+    }
   }
   for(const auto& camera:model.cameras) {
     property(camera,model,b,"camera");b.text(camera.type);property(camera.perspective,model,b,"perspective camera");property(camera.orthographic,model,b,"orthographic camera");
@@ -400,9 +410,11 @@ Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label,bool p
   }
   // Potentially allocating libraries run only after the complete metadata,
   // primitive/reference and channel-expansion preflight above.
-  (void)ParseMaterialVariants(model);
+  (void)ParseMaterialVariants(model,b.stop);
+  checkModelImportCancellation(b.stop);
   // Reject channels the runtime would otherwise diagnose/omit, never lose them.
   const auto library=ParseAnimations(model);
+  checkModelImportCancellation(b.stop);
   if(!library.diagnostics.empty()) fail(label,"unsupported animation target: "+library.diagnostics.front().message);
   return out;
 }
@@ -615,10 +627,16 @@ void placement(const tinygltf::Model& incoming,const Audit& audit,size_t selecte
   auto& p=plan.placement;const auto size=incoming.nodes.size();
   std::vector<bool> visible(size),closure(size);p.nodes.assign(size,-1);p.contextOnly.assign(size,false);p.skins.assign(incoming.skins.size(),-1);
   std::vector<int> stack(audit.catalog.entries[selected].sourceRoots.begin(),audit.catalog.entries[selected].sourceRoots.end());
-  while(!stack.empty()) {const int id=stack.back();stack.pop_back();if(visible[size_t(id)]) continue;visible[size_t(id)]=true;
+  while(!stack.empty()) {checkModelImportCancellation(b.stop);const int id=stack.back();stack.pop_back();if(visible[size_t(id)]) continue;visible[size_t(id)]=true;
     const auto& children=incoming.nodes[size_t(id)].children;stack.insert(stack.end(),children.begin(),children.end());}
   closure=visible;
-  const auto include=[&](int id) {while(id>=0 && !closure[size_t(id)]) {closure[size_t(id)]=true;id=audit.parents[size_t(id)];}};
+  const auto include=[&](int id) {
+    while(id>=0 && !closure[size_t(id)]) {
+      checkModelImportCancellation(b.stop);
+      closure[size_t(id)]=true;
+      id=audit.parents[size_t(id)];
+    }
+  };
   for(size_t n=0;n<size;++n) if(visible[n] && incoming.nodes[n].skin>=0) {
     const auto id=size_t(incoming.nodes[n].skin);p.skins[id]=0;const auto& skin=incoming.skins[id];
     for(const auto joint:skin.joints) include(joint);if(skin.skeleton>=0) include(skin.skeleton);
@@ -654,8 +672,9 @@ void placement(const tinygltf::Model& incoming,const Audit& audit,size_t selecte
 bool GltfMergeSupportsExtension(std::string_view name) { return supportedDeclaration(name); }
 
 GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& incoming,
-    const GltfMergeOptions& options,const GltfMergeLimits& limits) try {
-  Budget budget{limits};
+    const GltfMergeOptions& options,const GltfMergeLimits& limits,const std::stop_token& stop) try {
+  checkModelImportCancellation(stop);
+  Budget budget{limits,stop};
   if(!limits.maxTableEntries || !limits.maxMetadataBytes || !limits.maxMetadataDepth) fail("limits","zero budget");
   for(const auto [a,b]:{std::pair{base.buffers.size(),incoming.buffers.size()},
       std::pair{base.bufferViews.size(),incoming.bufferViews.size()},std::pair{base.accessors.size(),incoming.accessors.size()},
@@ -688,6 +707,7 @@ GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& i
   for(const auto& [name,count]:b.extensionLightCounts) {const auto found=a.extensionLightCounts.find(name);m.extensionLights[name]=identityMap(found==a.extensionLightCounts.end()?0:found->second,count,limits,name);}
   m.primitives.resize(incoming.meshes.size());
   for(size_t mesh=0;mesh<incoming.meshes.size();++mesh) for(size_t primitive=0;primitive<incoming.meshes[mesh].primitives.size();++primitive) {
+    checkModelImportCancellation(stop);
     if(primitive>INT_MAX) fail("primitive","index overflow");m.primitives[mesh].push_back({m.meshes[mesh],int32_t(primitive)});
   }
   const auto canonicalNodes=add(base.nodes.size(),incoming.nodes.size(),"nodes");
@@ -716,23 +736,35 @@ GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& i
     budget.text(kGltfXmpExtension);
     budget.value(incomingAssetXmp->second);
   }
-  plan.model=base;auto& out=plan.model;mergeRoot(out,base,incoming);plan.incomingAsset=incoming.asset;
+  checkModelImportCancellation(stop);
+  plan.model=base;
+  checkModelImportCancellation(stop);
+  auto& out=plan.model;mergeRoot(out,base,incoming);plan.incomingAsset=incoming.asset;
   if (base.extensions.contains(kGltfXmpExtension) || incoming.extensions.contains(kGltfXmpExtension))
     out.extensions.insert_or_assign(kGltfXmpExtension, Value(Object{}));
   if (!xmp.rootExtensionsJson.empty()) out.extensions_json_string = std::move(xmp.rootExtensionsJson);
   if (auto graph = headers.extensions.extract(kGltfInteractivityExtension); !graph.empty())
     out.extensions.insert_or_assign(kGltfInteractivityExtension, std::move(graph.mapped()));
   if(out.scenes.empty()) {tinygltf::Scene scene;scene.name="Scene";scene.nodes.assign(a.catalog.entries[0].sourceRoots.begin(),a.catalog.entries[0].sourceRoots.end());out.scenes.push_back(std::move(scene));}
-  for(auto value:incoming.buffers) out.buffers.push_back(std::move(value));
+  for(const auto& value:incoming.buffers) {
+    checkModelImportCancellation(stop);
+    out.buffers.push_back(value);
+  }
   for(auto value:incoming.bufferViews) {value.buffer=translated(value.buffer,m.buffers,"buffer view");out.bufferViews.push_back(std::move(value));}
   for(auto value:incoming.accessors) {value.bufferView=translated(value.bufferView,m.bufferViews,"accessor",true);if(value.sparse.isSparse) {value.sparse.indices.bufferView=translated(value.sparse.indices.bufferView,m.bufferViews,"sparse indices");value.sparse.values.bufferView=translated(value.sparse.values.bufferView,m.bufferViews,"sparse values");}out.accessors.push_back(std::move(value));}
-  for(auto value:incoming.images) {value.bufferView=translated(value.bufferView,m.bufferViews,"image",true);out.images.push_back(std::move(value));}
+  for(const auto& image:incoming.images) {
+    checkModelImportCancellation(stop);
+    auto value=image;
+    value.bufferView=translated(value.bufferView,m.bufferViews,"image",true);
+    out.images.push_back(std::move(value));
+  }
   for(auto& image:out.images) if(!image.image.empty()) image.uri.clear();
   out.samplers.insert(out.samplers.end(),incoming.samplers.begin(),incoming.samplers.end());
   for(auto value:incoming.textures) {value.source=translated(value.source,m.images,"texture image",true);value.sampler=translated(value.sampler,m.samplers,"texture sampler",true);for(auto& [name,ext]:value.extensions) translate(ext.Get<Object>().at("source"),m.images,name);value.extensions_json_string.clear();out.textures.push_back(std::move(value));}
   for(auto value:incoming.materials) {materialTextures(value,m);out.materials.push_back(std::move(value));}
   for(auto value:incoming.meshes) {
     for(auto& primitive:value.primitives) {
+      checkModelImportCancellation(stop);
       primitive.material=translated(primitive.material,m.materials,"primitive material",true);primitive.indices=translated(primitive.indices,m.accessors,"primitive indices",true);
       for(auto& [_,id]:primitive.attributes) id=translated(id,m.accessors,"attribute");for(auto& target:primitive.targets) for(auto& [_,id]:target) id=translated(id,m.accessors,"morph attribute");
       if(auto ext=primitive.extensions.find(kVariants);ext!=primitive.extensions.end()) for(auto& mapping:ext->second.Get<Object>().at("mappings").Get<Array>()) {
@@ -742,7 +774,11 @@ GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& i
     }
     out.meshes.push_back(std::move(value));
   }
-  for(auto value:incoming.nodes) {remapNode(value,m);out.nodes.push_back(std::move(value));}
+  for(auto value:incoming.nodes) {
+    checkModelImportCancellation(stop);
+    remapNode(value,m);
+    out.nodes.push_back(std::move(value));
+  }
   for(auto value:incoming.skins) {remapSkin(value,m);out.skins.push_back(std::move(value));}
   out.cameras.insert(out.cameras.end(),incoming.cameras.begin(),incoming.cameras.end());out.lights.insert(out.lights.end(),incoming.lights.begin(),incoming.lights.end());
   if(incoming.scenes.empty()) {tinygltf::Scene scene;scene.name="Scene";scene.nodes.assign(b.catalog.entries[0].sourceRoots.begin(),b.catalog.entries[0].sourceRoots.end());for(auto& root:scene.nodes) root=translated(root,m.nodes,"scene root");out.scenes.push_back(std::move(scene));}
@@ -756,6 +792,7 @@ GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& i
       (b.parents[n]<0 || plan.placement.nodes[size_t(b.parents[n])]<0)) parent.children.push_back(plan.placement.nodes[n]);
   out.nodes.push_back(std::move(parent));
   for(size_t n=0;n<incoming.nodes.size();++n) if(plan.placement.nodes[n]>=0) {
+    checkModelImportCancellation(stop);
     auto value=incoming.nodes[n];remapNode(value,m);value.children.clear();
     for(const auto child:incoming.nodes[n].children) if(plan.placement.nodes[size_t(child)]>=0) value.children.push_back(plan.placement.nodes[size_t(child)]);
     if(plan.placement.contextOnly[n]) {
@@ -769,6 +806,7 @@ GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& i
     for(auto& sampler:value.samplers) {sampler.input=translated(sampler.input,m.accessors,"animation input");sampler.output=translated(sampler.output,m.accessors,"animation output");}
     const auto originalChannels=value.channels.size();
     for(size_t i=0;i<originalChannels;++i) {
+      if(i%1024==0) checkModelImportCancellation(stop);
       auto original=value.channels[i];channelTarget(value.channels[i],m);
       if(clonedTarget(original,plan.placement)) {channelTarget(original,m,&plan.placement.nodes);value.channels.push_back(std::move(original));}
     }
@@ -783,7 +821,10 @@ GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& i
       if (RemapGltfXmpAttachment(record.extensions, count, offset)) record.extensions_json_string.clear();
     };
     const auto remapTable = [&](auto& records, size_t destinationCount) {
-      for (size_t i = 0; i < records.size(); ++i) remap(records[i], i < destinationCount);
+      for (size_t i = 0; i < records.size(); ++i) {
+        if (i % 1024 == 0) checkModelImportCancellation(stop);
+        remap(records[i], i < destinationCount);
+      }
     };
     remap(out.asset, true);
     remap(plan.incomingAsset, false);
@@ -795,9 +836,12 @@ GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& i
     remapTable(out.animations, base.animations.size());
   }
   // No publication has occurred; verify the final forest and typed clips too.
-  (void)container::scene::BuildGltfSceneCatalog(out,{limits.maxScenes,limits.maxRootReferences});
+  (void)container::scene::BuildGltfSceneCatalog(out,{limits.maxScenes,limits.maxRootReferences},stop);
+  checkModelImportCancellation(stop);
   if(!ParseAnimations(out).diagnostics.empty()) fail("output","unsupported animation target");
+  checkModelImportCancellation(stop);
   ValidateGltfInteractivity(out);
+  checkModelImportCancellation(stop);
   plan.summary=budget.sum;return plan;
 } catch(const std::invalid_argument& error) {
   fail("validation",error.what());

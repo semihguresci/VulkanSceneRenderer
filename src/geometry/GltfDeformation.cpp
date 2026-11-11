@@ -1,5 +1,6 @@
 #include <Container/geometry/GltfDeformation.h>
 #include <Container/geometry/GltfAccessor.h>
+#include <Container/utility/ModelImportCancellation.h>
 
 #include <glm/geometric.hpp>
 #include <glm/mat3x3.hpp>
@@ -19,6 +20,8 @@
 
 namespace container::geometry::gltf {
 namespace {
+
+using container::util::checkModelImportCancellation;
 
 [[noreturn]] void fail(std::string_view label, std::string_view message) {
   throw std::runtime_error("glTF deformation " + std::string(label) + ": " +
@@ -47,7 +50,8 @@ void requireCount(const tinygltf::Accessor& accessor, size_t count,
 std::vector<glm::vec3> readDeltas(const tinygltf::Model& source,
                                  const tinygltf::Primitive& primitive,
                                  const std::map<std::string, int>& target,
-                                 const char* semantic, size_t vertexCount) {
+                                 const char* semantic, size_t vertexCount,
+                                 const std::stop_token& stop) {
   const auto found = target.find(semantic);
   if (found == target.end()) return {};
   if (!primitive.attributes.contains(semantic)) {
@@ -63,9 +67,10 @@ std::vector<glm::vec3> readDeltas(const tinygltf::Model& source,
     fail(semantic,"morph deltas require FLOAT, declared DOUBLE, or valid declared signed quantization");
   requireCount(accessor, vertexCount, semantic);
   CheckedAccessor values(source,found->second,semantic,{AccessorUsage::VertexAttribute,
-    HasRequiredExtension(source,"KHR_accessor_float64")});
+    HasRequiredExtension(source,"KHR_accessor_float64")},stop);
   std::vector<glm::vec3> result(vertexCount);
   for (size_t i = 0; i < vertexCount; ++i) {
+    if (i % 1024 == 0) checkModelImportCancellation(stop);
     std::array<float,3> value{}; values.readFloats(i,value);
     result[i] = glm::vec3(value[0],value[1],value[2]);
   }
@@ -73,12 +78,13 @@ std::vector<glm::vec3> readDeltas(const tinygltf::Model& source,
 }
 
 std::vector<float> weights(const std::vector<double>& values, size_t count,
-                           std::string_view label) {
+                           std::string_view label, const std::stop_token& stop) {
   if (!values.empty() && values.size() != count) {
     fail(label, "weight count differs from morph target count");
   }
   std::vector<float> result(count, 0.0f);
   for (size_t i = 0; i < values.size(); ++i) {
+    if (i % 1024 == 0) checkModelImportCancellation(stop);
     if (!std::isfinite(values[i]) ||
         std::abs(values[i]) > static_cast<double>(std::numeric_limits<float>::max())) {
       fail(label, "morph weight is non-finite or outside float range");
@@ -138,7 +144,8 @@ size_t setIndex(std::string_view semantic, std::string_view prefix) {
 
 DeformationPrimitive loadPrimitive(const tinygltf::Model& source,
                                     size_t meshIndex, size_t primitiveIndex,
-                                    const Mesh& runtime) {
+                                    const Mesh& runtime, const std::stop_token& stop) {
+  checkModelImportCancellation(stop);
   const auto& mesh = source.meshes[meshIndex];
   const auto& primitive = mesh.primitives[primitiveIndex];
   DeformationPrimitive result;
@@ -169,7 +176,9 @@ DeformationPrimitive loadPrimitive(const tinygltf::Model& source,
     fail("primitive", "missing positions or empty runtime vertices");
   }
   requireCount(accessorAt(source, position->second, "POSITION"), count, "POSITION");
-  for (const auto& vertex : result.bindVertices) {
+  for (size_t i = 0; i < count; ++i) {
+    if (i % 1024 == 0) checkModelImportCancellation(stop);
+    const auto& vertex = result.bindVertices[i];
     if (!finite(vertex.position) || !finite(vertex.normal) ||
         !finite(glm::vec3(vertex.tangent)) || !std::isfinite(vertex.tangent.w) || !std::isfinite(vertex.colorAlpha)) {
       fail("primitive", "bind vertex contains non-finite deformation attributes");
@@ -194,7 +203,10 @@ DeformationPrimitive loadPrimitive(const tinygltf::Model& source,
   }
   if (!jointSets.empty()) result.influences.resize(count);
   if (jointSets.size() > std::numeric_limits<size_t>::max()/4) fail("JOINTS","influence count overflow");
-  for (auto& vertex : result.influences) vertex.values.reserve(jointSets.size()*4);
+  for (size_t i = 0; i < result.influences.size(); ++i) {
+    if (i % 1024 == 0) checkModelImportCancellation(stop);
+    result.influences[i].values.reserve(jointSets.size()*4);
+  }
   size_t expectedSet = 0;
   for (const auto& [set, jointIndex] : jointSets) {
     const auto weight = weightSets.find(set);
@@ -220,10 +232,11 @@ DeformationPrimitive loadPrimitive(const tinygltf::Model& source,
     }
     requireCount(joints, count, "JOINTS");
     requireCount(weightAccessor, count, "WEIGHTS");
-    CheckedAccessor jointValues(source,jointIndex,"JOINTS",{AccessorUsage::VertexAttribute});
+    CheckedAccessor jointValues(source,jointIndex,"JOINTS",{AccessorUsage::VertexAttribute},stop);
     CheckedAccessor weightValues(source,weight->second,"WEIGHTS",{AccessorUsage::VertexAttribute,
-      HasRequiredExtension(source,"KHR_accessor_float64")});
+      HasRequiredExtension(source,"KHR_accessor_float64")},stop);
     for (size_t i = 0; i < count; ++i) {
+      if (i % 1024 == 0) checkModelImportCancellation(stop);
       std::array<uint32_t,4> jointIndices{}; jointValues.readUnsigned(i,jointIndices);
       std::array<float,4> decodedWeights{}; weightValues.readFloats(i,decodedWeights);
       for (size_t c = 0; c < 4; ++c) {
@@ -236,7 +249,9 @@ DeformationPrimitive loadPrimitive(const tinygltf::Model& source,
       }
     }
   }
-  for (auto& vertex : result.influences) {
+  for (size_t i = 0; i < result.influences.size(); ++i) {
+    if (i % 1024 == 0) checkModelImportCancellation(stop);
+    auto& vertex = result.influences[i];
     double sum = 0.0;
     for (const auto& influence : vertex.values) sum += influence.weight;
     if (!(sum > 0.0) || !std::isfinite(sum)) {
@@ -249,24 +264,27 @@ DeformationPrimitive loadPrimitive(const tinygltf::Model& source,
 
   result.morphTargets.reserve(primitive.targets.size());
   for (const auto& target : primitive.targets) {
+    checkModelImportCancellation(stop);
     for (const auto& [semantic, unused] : target) {
       (void)unused;
       if (semantic != "POSITION" && semantic != "NORMAL" && semantic != "TANGENT")
         fail(semantic,"unsupported morph target semantic; UV/color morph playback is not implemented");
     }
     result.morphTargets.push_back({
-        readDeltas(source, primitive, target, "POSITION", count),
-        readDeltas(source, primitive, target, "NORMAL", count),
-        readDeltas(source, primitive, target, "TANGENT", count)});
+        readDeltas(source, primitive, target, "POSITION", count, stop),
+        readDeltas(source, primitive, target, "NORMAL", count, stop),
+        readDeltas(source, primitive, target, "TANGENT", count, stop)});
   }
-  result.meshDefaultWeights = weights(mesh.weights, primitive.targets.size(), "mesh weights");
+  result.meshDefaultWeights = weights(mesh.weights, primitive.targets.size(), "mesh weights", stop);
   return result;
 }
 
 }  // namespace
 
 DeformationData LoadDeformationData(const tinygltf::Model& source,
-                                     std::span<const Mesh> runtimePrimitives) {
+                                     std::span<const Mesh> runtimePrimitives,
+                                     const std::stop_token& stop) {
+  checkModelImportCancellation(stop);
   DeformationData result;
   size_t primitiveCount = 0;
   for (const auto& mesh : source.meshes) {
@@ -276,6 +294,7 @@ DeformationData LoadDeformationData(const tinygltf::Model& source,
     primitiveCount += mesh.primitives.size();
     if (!mesh.primitives.empty()) {
       for (const auto& primitive : mesh.primitives) {
+        checkModelImportCancellation(stop);
         if (primitive.targets.size() != mesh.primitives.front().targets.size()) {
           fail("morph", "mesh primitives have different morph target counts");
         }
@@ -290,12 +309,13 @@ DeformationData LoadDeformationData(const tinygltf::Model& source,
     for (size_t primitive = 0; primitive < source.meshes[mesh].primitives.size(); ++primitive) {
       const size_t runtimeIndex = result.primitives.size();
       result.primitives.push_back(loadPrimitive(source, mesh, primitive,
-                                                 runtimePrimitives[runtimeIndex]));
+                                                 runtimePrimitives[runtimeIndex], stop));
     }
   }
 
   result.skins.reserve(source.skins.size());
   for (const auto& skin : source.skins) {
+    checkModelImportCancellation(stop);
     if (skin.joints.empty()) fail("skin", "skin has no joints");
     DeformationSkin converted;
     converted.skeleton = skin.skeleton;
@@ -305,6 +325,7 @@ DeformationData LoadDeformationData(const tinygltf::Model& source,
     }
     std::set<int> uniqueJoints;
     for (const int joint : skin.joints) {
+      if (converted.joints.size() % 1024 == 0) checkModelImportCancellation(stop);
       if (joint < 0 || static_cast<size_t>(joint) >= source.nodes.size() ||
           !uniqueJoints.insert(joint).second) {
         fail("skin", "joint node is out of range or duplicated");
@@ -320,8 +341,9 @@ DeformationData LoadDeformationData(const tinygltf::Model& source,
         fail("inverse bind", "matrix count is smaller than joint count");
       }
       CheckedAccessor values(source,skin.inverseBindMatrices,"inverse bind",{AccessorUsage::Generic,
-        HasRequiredExtension(source,"KHR_accessor_float64")});
+        HasRequiredExtension(source,"KHR_accessor_float64")},stop);
       for (size_t i = 0; i < accessor.count; ++i) {
+        if (i % 1024 == 0) checkModelImportCancellation(stop);
         std::array<float,16> decoded{}; values.readFloats(i,decoded);
         glm::mat4 matrix(1.0f);
         for (size_t c = 0; c < 4; ++c) {
@@ -338,6 +360,7 @@ DeformationData LoadDeformationData(const tinygltf::Model& source,
 
   result.nodes.reserve(source.nodes.size());
   for (const auto& node : source.nodes) {
+    checkModelImportCancellation(stop);
     if (node.mesh < -1 || (node.mesh >= 0 && static_cast<size_t>(node.mesh) >= source.meshes.size())) {
       fail("node", "mesh index is out of range");
     }
@@ -351,13 +374,16 @@ DeformationData LoadDeformationData(const tinygltf::Model& source,
       const auto& mesh = source.meshes[static_cast<size_t>(node.mesh)];
       const size_t count = mesh.primitives.empty() ? 0 : mesh.primitives.front().targets.size();
       converted.defaultMorphWeights = weights(node.weights.empty() ? mesh.weights : node.weights,
-                                               count, "node weights");
+                                               count, "node weights", stop);
       if (node.skin >= 0) {
         const size_t joints = result.skins[static_cast<size_t>(node.skin)].joints.size();
         for (const auto& primitive : result.primitives) {
+          checkModelImportCancellation(stop);
           if (primitive.sourceMesh != static_cast<size_t>(node.mesh)) continue;
           if (!primitive.hasSkinning()) fail("node", "skinned mesh is missing joint attributes");
-          for (const auto& vertex : primitive.influences) {
+          for (size_t i = 0; i < primitive.influences.size(); ++i) {
+            if (i % 1024 == 0) checkModelImportCancellation(stop);
+            const auto& vertex = primitive.influences[i];
             for (const auto& influence : vertex.values) {
               if (influence.joint >= joints) fail("JOINTS", "joint index is outside the node's skin");
             }

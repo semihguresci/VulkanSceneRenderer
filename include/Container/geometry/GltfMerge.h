@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -94,6 +95,7 @@ struct GltfMergePlan {
 // This does not publish renderer state, preserve session playback, or add undo.
 [[nodiscard]] GltfMergePlan PlanGltfMerge(
     const tinygltf::Model& base, const tinygltf::Model& incoming,
-    const GltfMergeOptions& options = {}, const GltfMergeLimits& limits = {});
+    const GltfMergeOptions& options = {}, const GltfMergeLimits& limits = {},
+    const std::stop_token& stop = {});
 
 } // namespace container::geometry::gltf

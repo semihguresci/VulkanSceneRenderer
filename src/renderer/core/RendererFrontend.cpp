@@ -37,6 +37,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -129,7 +130,8 @@ struct RendererFrontend::ModelLoadState {
     std::optional<container::geometry::GltfLoadResult> gltf;
     std::optional<BimManager::PreparedScene> bim;
   };
-  container::util::AsyncModelPreparation<std::unique_ptr<Prepared>> worker;
+  using Worker = container::util::AsyncModelPreparation<std::unique_ptr<Prepared>>;
+  Worker worker;
   std::optional<container::ui::ModelLoadRequest> request;
   std::optional<container::ui::ModelLoadRequest> queued;
   bool queuedRemote{false};
@@ -3600,11 +3602,16 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"fallbackSource", report.fallbackSource}};
   }
   json["gui"]["selectedMeshNodeId"] = sceneState_.selectedMeshNode;
+  const auto cancellation = modelLoad_ ? modelLoad_->worker.cancellationStats()
+      : ModelLoadState::Worker::CancellationStats{};
   json["gui"]["modelLoading"] = {
         {"pending", modelLoad_ && modelLoad_->request.has_value()},
         {"requests", modelLoad_ ? modelLoad_->requests : 0u},
         {"completed", modelLoad_ ? modelLoad_->completed : 0u},
         {"cancelled", modelLoad_ ? modelLoad_->cancelled : 0u},
+        {"retiredActiveRequests", cancellation.retiredActiveRequests},
+        {"cooperativeExits", cancellation.cooperativeExits},
+        {"lastCancellationRetirementMs", cancellation.lastRetirementMs},
         {"preparationFrames", modelLoad_ ? modelLoad_->preparationFrames : 0u},
         {"progressFrames", modelLoad_ ? modelLoad_->progressFrames : 0u},
         {"eventPumps", modelLoad_ ? modelLoad_->eventPumps : 0u}};
@@ -4941,7 +4948,7 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
       // Parse and validate CPU geometry before replacing either live provider.
       // A bad BIM path must preserve glTF edits and existing material indices.
       std::optional<BimManager::PreparedScene> localPrepared;
-      const BimManager::PreparedScene *prepared = nullptr;
+      BimManager::PreparedScene *prepared = nullptr;
       if (modelLoad_ && modelLoad_->committing && modelLoad_->ready && modelLoad_->ready->bim)
         prepared = &*modelLoad_->ready->bim;
       else {
@@ -4955,7 +4962,7 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
       retiredPreviousScene = true;
       if (!reloadPrimary("", 1.0f))
         throw std::runtime_error("Failed to clear the primary scene");
-      subs_.bimManager->loadPreparedScene(*prepared, *subs_.sceneManager);
+      subs_.bimManager->loadPreparedScene(std::move(*prepared), *subs_.sceneManager);
     } catch (const std::exception &error) {
       const std::string loadError = error.what();
       container::log::ContainerLogger::instance().renderer()->error(
@@ -5094,14 +5101,14 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
                                     merge = action.merge.has_value(),
                                     linked = svc_.config.experimentalGltfLinkedAssets && !remote,
                                     micromaps = svc_.config.experimentalOpacityMicromaps && !remote,
-                                    experimental = svc_.config.experimentalGltfMaterials, remote] {
+                                    experimental = svc_.config.experimentalGltfMaterials, remote](std::stop_token stop) {
         auto prepared = std::make_unique<ModelLoadState::Prepared>();
         if (isAuxiliaryRenderModelPath(path))
-          prepared->bim = BimManager::prepareScene(path, scale, openVdbOptions);
+          prepared->bim = BimManager::prepareScene(path, scale, openVdbOptions, stop);
         else
           prepared->gltf = container::scene::SceneManager::prepareGltfModel(path,
               merge || remote ? 512ull * 1024 * 1024 : std::numeric_limits<uintmax_t>::max(),
-              linked, remote, experimental, micromaps && !merge, merge);
+              linked, remote, experimental, micromaps && !merge, merge, stop);
         return prepared;
       });
       // Keep at least the request frame interactive, even for tiny models.

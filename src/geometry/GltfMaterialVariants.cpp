@@ -1,5 +1,6 @@
 #include <Container/geometry/GltfMaterialVariants.h>
 #include <Container/geometry/GltfXmpMetadata.h>
+#include <Container/utility/ModelImportCancellation.h>
 
 #include <algorithm>
 #include <array>
@@ -253,15 +254,20 @@ void MaterialVariantLibrary::validateMaterialCountChange(size_t expectedCurrentM
   }
 }
 
-MaterialVariantLibrary ParseMaterialVariants(const tinygltf::Model& source) {
+MaterialVariantLibrary ParseMaterialVariants(const tinygltf::Model& source,
+                                             const std::stop_token& stop) {
+  using container::util::checkModelImportCancellation;
+  checkModelImportCancellation(stop);
   MaterialVariantLibrary result;
   result.materialCount_=source.materials.size();
   result.required_=std::ranges::find(source.extensionsRequired,std::string(kExtension))!=source.extensionsRequired.end();
   if (result.materialCount_>size_t(std::numeric_limits<int32_t>::max())) fail("materials","too many source materials");
   const auto root=source.extensions.find(kExtension);
   bool anyMapping=false;
-  for (const auto& mesh:source.meshes) for (const auto& primitive:mesh.primitives)
+  for (const auto& mesh:source.meshes) for (const auto& primitive:mesh.primitives) {
+    checkModelImportCancellation(stop);
     anyMapping=anyMapping || primitive.extensions.contains(kExtension);
+  }
   const bool declared=std::ranges::find(source.extensionsUsed,std::string(kExtension))!=source.extensionsUsed.end();
   if ((root!=source.extensions.end() || anyMapping) && !declared) fail("root","extension is missing from extensionsUsed");
   if (anyMapping && root==source.extensions.end()) fail("root","primitive mappings require a root variants table");
@@ -270,6 +276,7 @@ MaterialVariantLibrary ParseMaterialVariants(const tinygltf::Model& source) {
     const auto& names=array(field(root->second,"variants","root"),"root variants");
     if (names.empty()) fail("root variants","at least one variant is required");
     for (size_t i=0;i<names.size();++i) {
+      if (i%1024==0) checkModelImportCancellation(stop);
       const auto label="variant "+std::to_string(i);
       property(names[i],label,true);
       const auto& name=field(names[i],"name",label);
@@ -283,6 +290,7 @@ MaterialVariantLibrary ParseMaterialVariants(const tinygltf::Model& source) {
   for (size_t m=0;m<source.meshes.size();++m) {
     result.meshOffsets_.push_back(result.primitives_.size());
     for (size_t p=0;p<source.meshes[m].primitives.size();++p) {
+      checkModelImportCancellation(stop);
       const auto& primitive=source.meshes[m].primitives[p];
       const auto label=context(m,p);
       if (primitive.material < -1 || (primitive.material>=0 && size_t(primitive.material)>=source.materials.size()))
@@ -295,12 +303,14 @@ MaterialVariantLibrary ParseMaterialVariants(const tinygltf::Model& source) {
         if (mappings.empty()) fail(label,"at least one mapping is required");
         std::set<size_t> seen;
         for (size_t i=0;i<mappings.size();++i) {
+          checkModelImportCancellation(stop);
           const auto mappingLabel=label+" mapping "+std::to_string(i);
           property(mappings[i],mappingLabel,true);
           const auto mapped=index(field(mappings[i],"material",mappingLabel),source.materials.size(),mappingLabel+" material");
           const auto& variants=array(field(mappings[i],"variants",mappingLabel),mappingLabel+" variants");
           if (variants.empty()) fail(mappingLabel,"at least one variant index is required");
           for (size_t v=0;v<variants.size();++v) {
+            if (v%1024==0) checkModelImportCancellation(stop);
             const auto variant=index(variants[v],result.names_.size(),mappingLabel+" variant "+std::to_string(v));
             if (!seen.insert(variant).second) fail(mappingLabel,"variant index is assigned more than once in this primitive");
             parsed.mappings.emplace_back(variant,int32_t(mapped));

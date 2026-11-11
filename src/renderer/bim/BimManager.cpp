@@ -17,6 +17,7 @@
 #include "Container/utility/GltfMaterialConversion.h"
 #include "Container/utility/Logger.h"
 #include "Container/utility/Material.h"
+#include "Container/utility/ModelImportCancellation.h"
 #include "Container/utility/PipelineManager.h"
 #include "Container/utility/Platform.h"
 #include "Container/utility/SceneManager.h"
@@ -145,10 +146,12 @@ bimElementProperty(const container::geometry::dotbim::ElementProperty &source) {
 }
 
 std::vector<BimElementProperty> bimElementProperties(
-    const std::vector<container::geometry::dotbim::ElementProperty> &source) {
+    const std::vector<container::geometry::dotbim::ElementProperty> &source,
+    std::stop_token stop) {
   std::vector<BimElementProperty> properties;
   properties.reserve(source.size());
   for (const auto &property : source) {
+    container::util::checkModelImportCancellation(stop);
     if (!property.name.empty() && !property.value.empty()) {
       properties.push_back(bimElementProperty(property));
     }
@@ -479,6 +482,7 @@ enum class DrawBucket : uint8_t {
 struct PendingDraw {
   container::gpu::ObjectData object{};
   BimElementMetadata metadata{};
+  uint32_t objectIndex{0};
   uint32_t firstIndex{0};
   uint32_t indexCount{0};
   uint32_t nativeFirstIndex{0};
@@ -721,13 +725,15 @@ size_t meshletClusterCountForRange(uint32_t indexCount) {
 }
 
 size_t
-meshletClusterCountForModel(const container::geometry::dotbim::Model &model) {
+meshletClusterCountForModel(const container::geometry::dotbim::Model &model,
+                            std::stop_token stop = {}) {
   if (!model.meshletClusters.empty()) {
     return model.meshletClusters.size();
   }
   std::unordered_set<uint32_t> meshGeometryIds;
   meshGeometryIds.reserve(model.elements.size());
   for (const auto &element : model.elements) {
+    container::util::checkModelImportCancellation(stop);
     if (element.geometryKind ==
         container::geometry::dotbim::GeometryKind::Mesh) {
       meshGeometryIds.insert(element.meshId);
@@ -735,6 +741,7 @@ meshletClusterCountForModel(const container::geometry::dotbim::Model &model) {
   }
   size_t clusterCount = 0;
   for (const auto &range : model.meshRanges) {
+    container::util::checkModelImportCancellation(stop);
     if (!meshGeometryIds.contains(range.meshId)) {
       continue;
     }
@@ -750,10 +757,12 @@ uint32_t saturatingUint32(size_t value) {
 }
 
 std::unordered_set<uint32_t>
-meshGeometryIdsForModel(const container::geometry::dotbim::Model &model) {
+meshGeometryIdsForModel(const container::geometry::dotbim::Model &model,
+                         std::stop_token stop) {
   std::unordered_set<uint32_t> meshGeometryIds;
   meshGeometryIds.reserve(model.elements.size());
   for (const auto &element : model.elements) {
+    container::util::checkModelImportCancellation(stop);
     if (element.geometryKind ==
         container::geometry::dotbim::GeometryKind::Mesh) {
       meshGeometryIds.insert(element.meshId);
@@ -763,11 +772,12 @@ meshGeometryIdsForModel(const container::geometry::dotbim::Model &model) {
 }
 
 std::vector<BimMeshletClusterMetadata> buildMeshletClusterMetadataForModel(
-    const container::geometry::dotbim::Model &model) {
+    const container::geometry::dotbim::Model &model, std::stop_token stop = {}) {
   std::vector<BimMeshletClusterMetadata> clusters;
   if (!model.meshletClusters.empty()) {
     clusters.reserve(model.meshletClusters.size());
     for (const auto &source : model.meshletClusters) {
+      container::util::checkModelImportCancellation(stop);
       clusters.push_back(BimMeshletClusterMetadata{
           .meshId = source.meshId,
           .firstIndex = source.firstIndex,
@@ -781,17 +791,19 @@ std::vector<BimMeshletClusterMetadata> buildMeshletClusterMetadataForModel(
     }
   } else {
     const std::unordered_set<uint32_t> meshGeometryIds =
-        meshGeometryIdsForModel(model);
-    clusters.reserve(meshletClusterCountForModel(model));
+        meshGeometryIdsForModel(model, stop);
+    clusters.reserve(meshletClusterCountForModel(model, stop));
     constexpr uint32_t kMeshletTriangleBudget = 64u;
     constexpr uint32_t kMeshletIndexBudget = kMeshletTriangleBudget * 3u;
     for (const auto &range : model.meshRanges) {
+      container::util::checkModelImportCancellation(stop);
       if (!meshGeometryIds.contains(range.meshId)) {
         continue;
       }
       const uint32_t endIndex = range.firstIndex + range.indexCount;
       for (uint32_t firstIndex = range.firstIndex; firstIndex < endIndex;
            firstIndex += kMeshletIndexBudget) {
+        container::util::checkModelImportCancellation(stop);
         const uint32_t remaining = endIndex - firstIndex;
         const uint32_t indexCount =
             std::min(kMeshletIndexBudget, remaining) / 3u * 3u;
@@ -812,8 +824,11 @@ std::vector<BimMeshletClusterMetadata> buildMeshletClusterMetadataForModel(
     }
   }
 
-  std::ranges::stable_sort(clusters, [](const BimMeshletClusterMetadata &lhs,
+  size_t comparisons = 0;
+  std::ranges::stable_sort(clusters, [&](const BimMeshletClusterMetadata &lhs,
                                         const BimMeshletClusterMetadata &rhs) {
+    if ((comparisons++ % 1024u) == 0u)
+      container::util::checkModelImportCancellation(stop);
     if (lhs.meshId != rhs.meshId) {
       return lhs.meshId < rhs.meshId;
     }
@@ -1013,13 +1028,15 @@ void refreshOptimizedModelMetadataCache(
 BimOptimizedModelMetadata buildOptimizedModelMetadata(
     const std::filesystem::path &path,
     const container::geometry::dotbim::Model &model,
-    std::span<const BimMeshletClusterMetadata> clusters) {
+    std::span<const BimMeshletClusterMetadata> clusters,
+    std::stop_token stop = {}) {
   BimOptimizedModelMetadata metadata{};
   metadata.cacheable = !path.empty() && !model.vertices.empty() &&
                        !model.indices.empty() && !clusters.empty();
   metadata.hasSourceMeshletClusters = !model.meshletClusters.empty();
   metadata.meshletClusterCount = clusters.size();
   for (const BimMeshletClusterMetadata &cluster : clusters) {
+    container::util::checkModelImportCancellation(stop);
     if (cluster.estimated) {
       ++metadata.estimatedMeshletClusterCount;
     } else {
@@ -1028,6 +1045,7 @@ BimOptimizedModelMetadata buildOptimizedModelMetadata(
     metadata.maxLodLevel = std::max(metadata.maxLodLevel, cluster.lodLevel);
   }
   for (const auto &element : model.elements) {
+    container::util::checkModelImportCancellation(stop);
     if (element.geometryKind ==
         container::geometry::dotbim::GeometryKind::Mesh) {
       ++metadata.meshObjectCount;
@@ -1229,7 +1247,9 @@ stringContainsAny(std::string_view value,
 BimFloorPlanBuildResult appendFloorPlanOverlayGeometry(
     const container::geometry::dotbim::Model &model,
     std::vector<container::geometry::Vertex> &vertices,
-    std::vector<uint32_t> &indices, bool preserveElevation) {
+    std::vector<uint32_t> &indices, bool preserveElevation,
+    std::stop_token stop = {},
+    const std::function<void(std::string_view)> &progress = {}) {
   constexpr double kQuantizationScale = 1000.0;
   constexpr float kVerticalFaceMaxUp = 0.55f;
   constexpr float kMinSegmentLength2 = 0.000001f;
@@ -1245,6 +1265,7 @@ BimFloorPlanBuildResult appendFloorPlanOverlayGeometry(
       rangesByMeshId;
   rangesByMeshId.reserve(model.meshRanges.size());
   for (const auto &range : model.meshRanges) {
+    container::util::checkModelImportCancellation(stop);
     rangesByMeshId.emplace(range.meshId, range);
   }
 
@@ -1266,6 +1287,8 @@ BimFloorPlanBuildResult appendFloorPlanOverlayGeometry(
     float minY = std::numeric_limits<float>::max();
     bool found = false;
     for (size_t index = begin; index < end; ++index) {
+      if ((index - begin) % 4096u == 0u)
+        container::util::checkModelImportCancellation(stop);
       const uint32_t vertexIndex = model.indices[index];
       if (vertexIndex >= model.vertices.size()) {
         continue;
@@ -1292,6 +1315,7 @@ BimFloorPlanBuildResult appendFloorPlanOverlayGeometry(
     storeyBaseElevations.reserve(model.elements.size());
     for (size_t elementIndex = 0; elementIndex < model.elements.size();
          ++elementIndex) {
+      container::util::checkModelImportCancellation(stop);
       const auto &element = model.elements[elementIndex];
       if (!elementContributesToFloorPlan(element)) {
         continue;
@@ -1381,6 +1405,7 @@ BimFloorPlanBuildResult appendFloorPlanOverlayGeometry(
 
   for (size_t elementIndex = 0; elementIndex < model.elements.size();
        ++elementIndex) {
+    container::util::checkModelImportCancellation(stop);
     const auto &element = model.elements[elementIndex];
     if (!elementContributesToFloorPlan(element)) {
       continue;
@@ -1409,6 +1434,8 @@ BimFloorPlanBuildResult appendFloorPlanOverlayGeometry(
     const float edgeVerticalTolerance =
         std::max(0.03f, range.boundsRadius * 0.0025f);
     for (size_t index = begin; index + 2u < end; index += 3u) {
+      if ((index - begin) % 3072u == 0u)
+        container::util::checkModelImportCancellation(stop);
       const uint32_t i0 = model.indices[index];
       const uint32_t i1 = model.indices[index + 1u];
       const uint32_t i2 = model.indices[index + 2u];
@@ -1446,6 +1473,10 @@ BimFloorPlanBuildResult appendFloorPlanOverlayGeometry(
       addHorizontalEdge(v0, v1);
       addHorizontalEdge(v1, v2);
       addHorizontalEdge(v2, v0);
+      if (progress && (index - begin) % 3072u == 0u) {
+        progress("Building BIM floor plans");
+        container::util::checkModelImportCancellation(stop);
+      }
     }
   }
 
@@ -1483,6 +1514,21 @@ namespace detail {
 }
 
 } // namespace detail
+
+struct BimManager::PreparedDrawData {
+  std::vector<PendingDraw> opaque;
+  std::vector<PendingDraw> transparent;
+  BimMetadataCatalog catalog;
+  BimMetadataStorage metadata;
+  BimMetadataIndex index;
+  BimRelationshipGraph relationships;
+};
+
+BimManager::PreparedScene::PreparedScene() = default;
+BimManager::PreparedScene::~PreparedScene() = default;
+BimManager::PreparedScene::PreparedScene(PreparedScene &&) noexcept = default;
+BimManager::PreparedScene &
+BimManager::PreparedScene::operator=(PreparedScene &&) noexcept = default;
 
 BimManager::BimManager(std::shared_ptr<container::gpu::VulkanDevice> device,
                        container::gpu::AllocationManager &allocationManager,
@@ -2897,9 +2943,13 @@ BimManager::resolveModelPath(const std::string &path) {
 
 BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
                                                    float importScale,
-    std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions) {
-  PreparedScene prepared{.assetPath = resolveModelPath(path),
-                         .requestedPath = path, .openVdbOptions = std::move(openVdbOptions)};
+    std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions,
+    std::stop_token stop, const std::function<void(std::string_view)> &progress) {
+  container::util::checkModelImportCancellation(stop);
+  PreparedScene prepared;
+  prepared.assetPath = resolveModelPath(path);
+  prepared.requestedPath = path;
+  prepared.openVdbOptions = std::move(openVdbOptions);
   const auto extension = lowerAscii(prepared.assetPath.extension().string());
   auto requireGeometry = [&]() {
     if (!hasRenderableSourceGeometry(prepared.model)) {
@@ -2914,16 +2964,17 @@ BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
   };
   if (extension == ".bim") {
     prepared.format = "dotbim";
-    prepared.model = container::geometry::dotbim::LoadFromFile(prepared.assetPath, importScale);
+    prepared.model = container::geometry::dotbim::LoadFromFile(prepared.assetPath, importScale, stop);
   } else if (extension == ".ifcx") {
     prepared.format = "IFCX";
-    prepared.model = container::geometry::ifcx::LoadFromFile(prepared.assetPath, importScale);
+    prepared.model = container::geometry::ifcx::LoadFromFile(prepared.assetPath, importScale, stop);
   } else if (extension == ".ifc") {
     prepared.format = "IFC";
     try {
-      prepared.model = container::geometry::ifc::LoadFromFile(prepared.assetPath, importScale);
+      prepared.model = container::geometry::ifc::LoadFromFile(prepared.assetPath, importScale, stop);
       requireGeometry();
     } catch (const std::exception &error) {
+      container::util::checkModelImportCancellation(stop);
       const auto sidecar = preparedIfcSidecarPath(prepared.assetPath);
       if (!sidecar)
         throw;
@@ -2933,7 +2984,7 @@ BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
         originalReport.diagnostics.push_back({"IFC_FILE", 0, 0, {}, error.what()});
         originalReport.representationWarnings["IFC_FILE"] = 1;
       }
-      prepared.model = container::geometry::ifcx::LoadFromFile(*sidecar, importScale);
+      prepared.model = container::geometry::ifcx::LoadFromFile(*sidecar, importScale, stop);
       originalReport.fallbackSource = sidecar->string();
       prepared.model.importReport = std::move(originalReport);
       prepared.assetPath = *sidecar;
@@ -2950,17 +3001,20 @@ BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
   } else {
     throw std::runtime_error("unsupported auxiliary model format '" + extension + "'");
   }
+  container::util::checkModelImportCancellation(stop);
   requireGeometry();
-  prepared.meshletClusters = buildMeshletClusterMetadataForModel(prepared.model);
+  prepared.meshletClusters = buildMeshletClusterMetadataForModel(prepared.model, stop);
   prepared.optimizedMetadata = buildOptimizedModelMetadata(
-      prepared.assetPath, prepared.model, prepared.meshletClusters);
+      prepared.assetPath, prepared.model, prepared.meshletClusters, stop);
+  container::util::checkModelImportCancellation(stop);
   prepared.uploadVertices = prepared.model.vertices;
+  container::util::checkModelImportCancellation(stop);
   prepared.uploadIndices = prepared.model.indices;
   const auto prepareFloorPlan = [&](bool preserveElevation,
                                     BimFloorPlanOverlayData &overlay) {
     const auto result = appendFloorPlanOverlayGeometry(
         prepared.model, prepared.uploadVertices, prepared.uploadIndices,
-        preserveElevation);
+        preserveElevation, stop, progress);
     overlay.firstIndex = result.firstIndex;
     overlay.indexCount = result.indexCount;
     overlay.boundsCenter = result.boundsCenter;
@@ -2968,10 +3022,12 @@ BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
   };
   prepareFloorPlan(false, prepared.floorPlanGround);
   prepareFloorPlan(true, prepared.floorPlanSourceElevation);
+  prepared.drawData = prepareDrawData(prepared.model, stop, progress);
+  container::util::checkModelImportCancellation(stop);
   return prepared;
 }
 
-void BimManager::loadPreparedScene(const PreparedScene &prepared,
+void BimManager::loadPreparedScene(PreparedScene &&prepared,
                                     container::scene::SceneManager &sceneManager) {
   clear();
   loadPreparedModel(prepared.model, prepared.assetPath, prepared.format,
@@ -3083,7 +3139,7 @@ void BimManager::loadPreparedModel(
     const container::geometry::dotbim::Model &model,
     const std::filesystem::path &path, std::string_view format,
     container::scene::SceneManager &sceneManager,
-    const PreparedScene *prepared) {
+    PreparedScene *prepared) {
   const auto logger = container::log::ContainerLogger::instance().renderer();
   auto stageStart = std::chrono::steady_clock::now();
   auto logStage = [&](std::string_view stage) {
@@ -3115,15 +3171,11 @@ void BimManager::loadPreparedModel(
     throw std::runtime_error(message);
   }
 
-  metadataCatalog_->setModelUnitMetadata(
-      bimModelUnitMetadata(model.unitMetadata));
-  metadataCatalog_->setModelGeoreferenceMetadata(
-      bimModelGeoreferenceMetadata(model.georeferenceMetadata));
   notifyLoadProgress("Preparing BIM upload metadata");
-  meshletClusters_ = prepared ? prepared->meshletClusters
+  meshletClusters_ = prepared ? std::move(prepared->meshletClusters)
                              : buildMeshletClusterMetadataForModel(model);
   meshletClusterCount_ = meshletClusters_.size();
-  optimizedModelMetadata_ = prepared ? prepared->optimizedMetadata
+  optimizedModelMetadata_ = prepared ? std::move(prepared->optimizedMetadata)
       : buildOptimizedModelMetadata(path, model, meshletClusters_);
   logStage("meshlet metadata");
   std::vector<container::geometry::Vertex> localUploadVertices;
@@ -3156,16 +3208,13 @@ void BimManager::loadPreparedModel(
                  prepared ? std::span<const uint32_t>(prepared->uploadIndices)
                           : std::span<const uint32_t>(localUploadIndices));
   logStage("geometry upload");
-  notifyLoadProgress("Building BIM draw metadata");
-  buildDrawDataFromModel(model, sceneManager);
-  elementMetadata_.seal();
+  auto localDrawData = prepared ? nullptr : prepareDrawData(model, {},
+      [this](std::string_view stage) { notifyLoadProgress(stage); });
+  auto &drawData = prepared ? *prepared->drawData : *localDrawData;
+  notifyLoadProgress("Installing BIM draw metadata");
+  installDrawData(model, drawData, sceneManager);
   logStage("draw metadata");
-  notifyLoadProgress("Building BIM relationships");
-  relationshipGraph_.build(elementMetadata_, model.relationships,
-      loadProgressCallback_
-          ? std::function<void()>([this] { notifyLoadProgress("Building BIM relationships"); })
-          : std::function<void()>{});
-  logStage("relationship graph");
+  relationshipGraph_ = std::move(drawData.relationships);
   notifyLoadProgress("Uploading BIM residency data");
   uploadMeshletResidencyBuffers();
   logStage("residency upload");
@@ -3176,16 +3225,18 @@ void BimManager::loadPreparedModel(
   rebuildSceneStatisticsCache();
 }
 
-void BimManager::buildDrawDataFromModel(
+std::unique_ptr<BimManager::PreparedDrawData> BimManager::prepareDrawData(
     const container::geometry::dotbim::Model &model,
-    container::scene::SceneManager &sceneManager) {
-  std::unordered_map<uint32_t, uint32_t> colorMaterialCache;
-  colorMaterialCache.reserve(model.elements.size());
-  std::vector<uint32_t> sourceMaterialCache(model.materials.size(),
-                                            kInvalidMaterialIndex);
+    std::stop_token stop,
+    const std::function<void(std::string_view)> &progress) {
+  auto result = std::make_unique<PreparedDrawData>();
+  result->catalog.setModelUnitMetadata(bimModelUnitMetadata(model.unitMetadata));
+  result->catalog.setModelGeoreferenceMetadata(
+      bimModelGeoreferenceMetadata(model.georeferenceMetadata));
   std::unordered_map<uint32_t, MeshRange> rangesByMeshId;
   rangesByMeshId.reserve(model.meshRanges.size());
   for (const auto &sourceRange : model.meshRanges) {
+    container::util::checkModelImportCancellation(stop);
     rangesByMeshId.emplace(sourceRange.meshId,
                            MeshRange{sourceRange.meshId, sourceRange.firstIndex,
                                      sourceRange.indexCount,
@@ -3195,6 +3246,7 @@ void BimManager::buildDrawDataFromModel(
   std::unordered_map<uint32_t, MeshRange> nativePointRangesByMeshId;
   nativePointRangesByMeshId.reserve(model.nativePointRanges.size());
   for (const auto &sourceRange : model.nativePointRanges) {
+    container::util::checkModelImportCancellation(stop);
     nativePointRangesByMeshId.emplace(
         sourceRange.meshId,
         MeshRange{sourceRange.meshId, sourceRange.firstIndex,
@@ -3204,27 +3256,19 @@ void BimManager::buildDrawDataFromModel(
   std::unordered_map<uint32_t, MeshRange> nativeCurveRangesByMeshId;
   nativeCurveRangesByMeshId.reserve(model.nativeCurveRanges.size());
   for (const auto &sourceRange : model.nativeCurveRanges) {
+    container::util::checkModelImportCancellation(stop);
     nativeCurveRangesByMeshId.emplace(
         sourceRange.meshId,
         MeshRange{sourceRange.meshId, sourceRange.firstIndex,
                   sourceRange.indexCount, sourceRange.boundsCenter,
                   sourceRange.boundsRadius});
   }
-  const std::unordered_map<uint32_t, MeshletClusterSpan> clusterSpansByMeshId =
-      meshletClusterSpansByMeshId(meshletClusters_);
-
-  std::vector<PendingDraw> opaquePendingDraws;
-  std::vector<PendingDraw> transparentPendingDraws;
+  auto &opaquePendingDraws = result->opaque;
+  auto &transparentPendingDraws = result->transparent;
   opaquePendingDraws.reserve(model.elements.size());
   transparentPendingDraws.reserve(model.elements.size());
-  elementMetadata_.clear();
-  objectLodMetadata_.clear();
-  metadataIndex_->clear();
-  metadataCatalog_->clearLabels();
-  metadataIndex_->reserve(model.elements.size());
-  metadataCatalog_->reserve(model.elements.size());
-  std::unordered_map<std::string, uint32_t> productIdentityIds;
-  productIdentityIds.reserve(model.elements.size());
+  result->index.reserve(model.elements.size());
+  result->catalog.reserve(model.elements.size());
 
   auto computeWorldBounds = [&](const MeshRange &range,
                                 const glm::mat4 &transform) {
@@ -3241,8 +3285,10 @@ void BimManager::buildDrawDataFromModel(
                                        model.indices.size() - firstIndex);
     const size_t endIndex = firstIndex + indexCount;
     for (size_t index = firstIndex; index < endIndex; ++index) {
-      if (index != firstIndex && ((index - firstIndex) % 65536u) == 0u) {
-        notifyLoadProgress("Computing BIM object bounds");
+      if (((index - firstIndex) % 4096u) == 0u) {
+        container::util::checkModelImportCancellation(stop);
+        if (progress && index != firstIndex && ((index - firstIndex) % 65536u) == 0u)
+          progress("Computing BIM object bounds");
       }
       const uint32_t vertexIndex = model.indices[index];
       if (vertexIndex >= model.vertices.size()) {
@@ -3268,8 +3314,9 @@ void BimManager::buildDrawDataFromModel(
 
   for (size_t elementIndex = 0; elementIndex < model.elements.size();
        ++elementIndex) {
-    if ((elementIndex % 128u) == 0u) {
-      notifyLoadProgress("Building BIM draw metadata");
+    container::util::checkModelImportCancellation(stop);
+    if (progress && (elementIndex % 128u) == 0u) {
+      progress("Building BIM draw metadata");
     }
     const auto &element = model.elements[elementIndex];
     const auto rangeIt = rangesByMeshId.find(element.meshId);
@@ -3279,35 +3326,14 @@ void BimManager::buildDrawDataFromModel(
 
     glm::vec4 color =
         glm::clamp(element.color, glm::vec4(0.0f), glm::vec4(1.0f));
-    uint32_t materialIndex = kInvalidMaterialIndex;
     bool transparent = isTransparentColor(color);
     bool materialDoubleSided = false;
     if (isValidMaterialIndex(element.materialIndex, model)) {
-      materialIndex = sourceMaterialCache[element.materialIndex];
-      if (materialIndex == kInvalidMaterialIndex) {
-        const auto &sourceMaterial = model.materials[element.materialIndex];
-        const auto preparedMaterial = makeSceneMaterial(sourceMaterial, sceneManager);
-        materialIndex = sceneManager.createMaterial(
-            preparedMaterial.value, preparedMaterial.textures);
-        sourceMaterialCache[element.materialIndex] = materialIndex;
-      }
-      const auto properties =
-          sceneManager.materialRenderProperties(materialIndex);
-      transparent = transparent || properties.transparent;
-      materialDoubleSided = properties.doubleSided;
-    } else {
-      const auto alphaMode = transparent
-                                 ? container::material::AlphaMode::Blend
-                                 : container::material::AlphaMode::Opaque;
-      const uint32_t colorKey = packColor(color);
-      auto materialIt = colorMaterialCache.find(colorKey);
-      if (materialIt == colorMaterialCache.end()) {
-        const uint32_t newMaterialIndex =
-            sceneManager.createSolidMaterial(color, false, alphaMode);
-        materialIt =
-            colorMaterialCache.emplace(colorKey, newMaterialIndex).first;
-      }
-      materialIndex = materialIt->second;
+      // The texture bindings assigned during installation do not affect routing.
+      const auto &source = model.materials[element.materialIndex].pbr;
+      transparent = transparent || source.alphaMode == container::material::AlphaMode::Blend ||
+                    source.transmissionFactor > 0.0f;
+      materialDoubleSided = source.doubleSided;
     }
 
     const auto &range = rangeIt->second;
@@ -3317,23 +3343,23 @@ void BimManager::buildDrawDataFromModel(
     const bool windingFlipped =
         !doubleSided && transformFlipsWinding(element.transform);
     const std::string elementType = normalizedElementType(element.type);
-    const uint32_t semanticTypeId = metadataCatalog_->registerType(elementType);
+    const uint32_t semanticTypeId = result->catalog.registerType(elementType);
     BimElementMetadata metadataLabelProbe{};
     metadataLabelProbe.storeyName = element.storeyName;
     metadataLabelProbe.storeyId = element.storeyId;
     metadataLabelProbe.materialName = element.materialName;
     metadataLabelProbe.materialCategory = element.materialCategory;
-    metadataCatalog_->registerStorey(metadataLabelProbe, elementBounds);
-    metadataCatalog_->registerMaterial(metadataLabelProbe);
-    metadataCatalog_->registerDiscipline(element.discipline);
-    metadataCatalog_->registerPhase(element.phase);
-    metadataCatalog_->registerFireRating(element.fireRating);
-    metadataCatalog_->registerLoadBearing(element.loadBearing);
-    metadataCatalog_->registerStatus(element.status);
+    result->catalog.registerStorey(metadataLabelProbe, elementBounds);
+    result->catalog.registerMaterial(metadataLabelProbe);
+    result->catalog.registerDiscipline(element.discipline);
+    result->catalog.registerPhase(element.phase);
+    result->catalog.registerFireRating(element.fireRating);
+    result->catalog.registerLoadBearing(element.loadBearing);
+    result->catalog.registerStatus(element.status);
 
     PendingDraw pending{};
     pending.object =
-        makeObjectData(element.transform, materialIndex, doubleSided,
+        makeObjectData(element.transform, kInvalidMaterialIndex, doubleSided,
                        range.boundsCenter, range.boundsRadius);
     pending.object.objectInfo.w = semanticTypeId + 1u;
     pending.metadata = BimElementMetadata{
@@ -3341,7 +3367,6 @@ void BimManager::buildDrawDataFromModel(
             elementIndex, std::numeric_limits<uint32_t>::max())),
         .meshId = element.meshId,
         .sourceMaterialIndex = element.materialIndex,
-        .materialIndex = materialIndex,
         .semanticTypeId = semanticTypeId,
         .sourceColor = color,
         .guid = element.guid,
@@ -3358,7 +3383,7 @@ void BimManager::buildDrawDataFromModel(
         .loadBearing = element.loadBearing,
         .status = element.status,
         .sourceId = element.sourceId,
-        .properties = bimElementProperties(element.properties),
+        .properties = bimElementProperties(element.properties, stop),
         .transparent = transparent,
         .doubleSided = doubleSided,
         .bounds = elementBounds,
@@ -3389,7 +3414,7 @@ void BimManager::buildDrawDataFromModel(
       } else {
         pending.bucket = DrawBucket::TransparentSingleSided;
       }
-      transparentPendingDraws.push_back(pending);
+      transparentPendingDraws.push_back(std::move(pending));
     } else {
       if (doubleSided) {
         pending.bucket = DrawBucket::OpaqueDoubleSided;
@@ -3398,32 +3423,20 @@ void BimManager::buildDrawDataFromModel(
       } else {
         pending.bucket = DrawBucket::OpaqueSingleSided;
       }
-      opaquePendingDraws.push_back(pending);
+      opaquePendingDraws.push_back(std::move(pending));
     }
   }
 
   if (opaquePendingDraws.empty() && transparentPendingDraws.empty()) {
-    return;
+    return result;
   }
 
-  metadataCatalog_->sortStoreyRanges();
+  result->catalog.sortStoreyRanges();
 
-  std::ranges::sort(
-      opaquePendingDraws, [](const PendingDraw &lhs, const PendingDraw &rhs) {
-        if (lhs.bucket != rhs.bucket) {
-          return bucketSortKey(lhs.bucket) < bucketSortKey(rhs.bucket);
-        }
-        if (lhs.metadata.geometryKind != rhs.metadata.geometryKind) {
-          return geometryKindSortKey(lhs.metadata.geometryKind) <
-                 geometryKindSortKey(rhs.metadata.geometryKind);
-        }
-        if (lhs.firstIndex != rhs.firstIndex) {
-          return lhs.firstIndex < rhs.firstIndex;
-        }
-        return lhs.indexCount < rhs.indexCount;
-      });
-  std::ranges::sort(transparentPendingDraws, [](const PendingDraw &lhs,
-                                                const PendingDraw &rhs) {
+  size_t comparisons = 0;
+  const auto compareDraws = [&](const PendingDraw &lhs, const PendingDraw &rhs) {
+    if ((comparisons++ % 1024u) == 0u)
+      container::util::checkModelImportCancellation(stop);
     if (lhs.bucket != rhs.bucket) {
       return bucketSortKey(lhs.bucket) < bucketSortKey(rhs.bucket);
     }
@@ -3435,13 +3448,106 @@ void BimManager::buildDrawDataFromModel(
       return lhs.firstIndex < rhs.firstIndex;
     }
     return lhs.indexCount < rhs.indexCount;
-  });
+  };
+  std::ranges::sort(opaquePendingDraws, compareDraws);
+  std::ranges::sort(transparentPendingDraws, compareDraws);
 
-  auto countPendingKind = [](const std::vector<PendingDraw> &draws,
+  const size_t totalDraws = opaquePendingDraws.size() + transparentPendingDraws.size();
+  result->metadata.reserve(totalDraws);
+  std::unordered_map<std::string, uint32_t> productIdentityIds;
+  productIdentityIds.reserve(totalDraws);
+  auto appendMetadata = [&](PendingDraw &pending) {
+    container::util::checkModelImportCancellation(stop);
+    auto &metadata = pending.metadata;
+    metadata.objectIndex = static_cast<uint32_t>(result->metadata.size());
+    pending.objectIndex = metadata.objectIndex;
+    std::string productKey;
+    if (!metadata.guid.empty()) {
+      productKey = "g:" + metadata.guid;
+    } else if (!metadata.sourceId.empty()) {
+      productKey = "s:" + metadata.sourceId;
+    } else {
+      productKey = "o:" + std::to_string(metadata.objectIndex);
+    }
+    metadata.productIdentityId = productIdentityIds.try_emplace(
+        productKey, saturatingUint32(productIdentityIds.size() + 1u)).first->second;
+    result->metadata.push_back(std::move(metadata));
+    result->index.index(result->metadata.back());
+    if (progress && (pending.objectIndex % 128u) == 0u) {
+      progress("Indexing BIM objects");
+      container::util::checkModelImportCancellation(stop);
+    }
+  };
+  for (auto &draw : opaquePendingDraws)
+    appendMetadata(draw);
+  for (auto &draw : transparentPendingDraws)
+    appendMetadata(draw);
+  result->metadata.seal();
+  result->relationships.build(result->metadata, model.relationships, [&] {
+    container::util::checkModelImportCancellation(stop);
+    if (progress)
+      progress("Building BIM relationships");
+  });
+  return result;
+}
+
+void BimManager::installDrawData(const container::geometry::dotbim::Model &model,
+                                  PreparedDrawData &prepared,
+                                  container::scene::SceneManager &sceneManager) {
+  const auto &opaquePendingDraws = prepared.opaque;
+  const auto &transparentPendingDraws = prepared.transparent;
+  *metadataCatalog_ = std::move(prepared.catalog);
+  *metadataIndex_ = std::move(prepared.index);
+  elementMetadata_ = std::move(prepared.metadata);
+  objectLodMetadata_.clear();
+  if (elementMetadata_.empty()) {
+    return;
+  }
+
+  // Draw order is already fixed. Create materials in source order so their
+  // runtime IDs follow the same order as a direct model load.
+  std::vector<uint32_t> sourceObjects(model.elements.size(), kInvalidMaterialIndex);
+  for (const auto row : elementMetadata_)
+    sourceObjects[row.sourceElementIndex] = row.objectIndex;
+  std::unordered_map<uint32_t, uint32_t> colorMaterialCache;
+  colorMaterialCache.reserve(model.elements.size());
+  std::vector<uint32_t> sourceMaterialCache(model.materials.size(), kInvalidMaterialIndex);
+  size_t installedMaterials = 0;
+  for (const uint32_t objectIndex : sourceObjects) {
+    if (objectIndex == kInvalidMaterialIndex)
+      continue;
+    if ((installedMaterials++ % 128u) == 0u)
+      notifyLoadProgress("Installing BIM object materials");
+    const auto row = elementMetadata_[objectIndex];
+    uint32_t materialIndex;
+    if (isValidMaterialIndex(row.sourceMaterialIndex, model)) {
+      auto &cached = sourceMaterialCache[row.sourceMaterialIndex];
+      if (cached == kInvalidMaterialIndex) {
+        const auto material = makeSceneMaterial(model.materials[row.sourceMaterialIndex], sceneManager);
+        cached = sceneManager.createMaterial(material.value, material.textures);
+      }
+      materialIndex = cached;
+    } else {
+      const uint32_t key = packColor(row.sourceColor);
+      auto material = colorMaterialCache.find(key);
+      if (material == colorMaterialCache.end()) {
+        const auto alphaMode = row.transparent ? container::material::AlphaMode::Blend
+                                               : container::material::AlphaMode::Opaque;
+        const uint32_t created = sceneManager.createSolidMaterial(row.sourceColor, false, alphaMode);
+        material = colorMaterialCache.emplace(key, created).first;
+      }
+      materialIndex = material->second;
+    }
+    elementMetadata_.setMaterialIndex(objectIndex, materialIndex);
+  }
+
+  const auto clusterSpansByMeshId = meshletClusterSpansByMeshId(meshletClusters_);
+
+  auto countPendingKind = [&](const std::vector<PendingDraw> &draws,
                              BimGeometryKind kind) {
     return static_cast<size_t>(
-        std::ranges::count_if(draws, [kind](const PendingDraw &pending) {
-          return pending.metadata.geometryKind == kind;
+        std::ranges::count_if(draws, [&](const PendingDraw &pending) {
+          return elementMetadata_[pending.objectIndex].geometryKind == kind;
         }));
   };
   const size_t opaqueMeshDrawCount =
@@ -3466,7 +3572,6 @@ void BimManager::buildDrawDataFromModel(
   objectDrawCommands_.reserve(totalDraws + floorPlanDrawCount);
   objectDrawCommandOffsets_.reserve(totalDraws + floorPlanDrawCount);
   objectDrawCommandCounts_.reserve(totalDraws + floorPlanDrawCount);
-  elementMetadata_.reserve(totalDraws);
   objectLodMetadata_.reserve(totalDraws);
   opaqueDrawCommands_.reserve(opaqueMeshDrawCount);
   opaqueSingleSidedDrawCommands_.reserve(opaqueMeshDrawCount);
@@ -3483,13 +3588,15 @@ void BimManager::buildDrawDataFromModel(
   nativeCurveDrawLists_.reserve(opaqueCurveDrawCount,
                                 transparentCurveDrawCount);
 
-  auto appendPendingDraw = [this, &clusterSpansByMeshId, &productIdentityIds](
+  auto appendPendingDraw = [this, &clusterSpansByMeshId](
                                const PendingDraw &pending, bool allowMerge) {
-    const uint32_t objectIndex = static_cast<uint32_t>(objectData_.size());
+    const uint32_t objectIndex = pending.objectIndex;
     if ((objectIndex % 128u) == 0u) {
       notifyLoadProgress("Indexing BIM objects");
     }
+    const auto installedMetadata = elementMetadata_[objectIndex];
     auto object = pending.object;
+    object.objectInfo.x = installedMetadata.materialIndex;
     const uint64_t temporalIdentity = nextTemporalObjectId_++;
     object.temporalInfo.z = static_cast<uint32_t>(temporalIdentity);
     object.temporalInfo.w = static_cast<uint32_t>(temporalIdentity >> 32u);
@@ -3503,25 +3610,6 @@ void BimManager::buildDrawDataFromModel(
         .instanceCount = 1u,
     });
     objectDrawCommandCounts_.push_back(1u);
-    BimElementMetadata metadata = pending.metadata;
-    metadata.objectIndex = objectIndex;
-    std::string productKey;
-    if (!metadata.guid.empty()) {
-      productKey = "g:" + metadata.guid;
-    } else if (!metadata.sourceId.empty()) {
-      productKey = "s:" + metadata.sourceId;
-    } else {
-      productKey = "o:" + std::to_string(objectIndex);
-    }
-    auto [productIt, insertedProduct] = productIdentityIds.try_emplace(
-        productKey, static_cast<uint32_t>(std::min<size_t>(
-                        productIdentityIds.size() + 1u,
-                        std::numeric_limits<uint32_t>::max())));
-    (void)insertedProduct;
-    metadata.productIdentityId = productIt->second;
-    elementMetadata_.push_back(std::move(metadata));
-    const auto installedMetadata = elementMetadata_.back();
-    metadataIndex_->index(installedMetadata);
     BimObjectLodStreamingMetadata lodMetadata{};
     lodMetadata.objectIndex = objectIndex;
     lodMetadata.sourceElementIndex = installedMetadata.sourceElementIndex;
@@ -3549,7 +3637,7 @@ void BimManager::buildDrawDataFromModel(
                         pending.indexCount, false);
     };
 
-    switch (pending.metadata.geometryKind) {
+    switch (installedMetadata.geometryKind) {
     case BimGeometryKind::Points:
       if (pending.nativeIndexCount > 0u) {
         appendDrawCommandToGeometryLists(nativePointDrawLists_, pending.bucket,

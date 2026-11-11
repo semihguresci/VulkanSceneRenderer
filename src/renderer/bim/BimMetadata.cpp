@@ -271,6 +271,12 @@ void BimMetadataStorage::seal() noexcept {
   impl_->lookupReady = false;
 }
 
+void BimMetadataStorage::setMaterialIndex(size_t index, uint32_t materialIndex) {
+  if (index >= size())
+    throw std::out_of_range("BIM metadata row is unavailable");
+  impl_->records[index].materialIndex = materialIndex;
+}
+
 void BimMetadataStorage::replace(BimMetadataTableView metadata) {
   BimMetadataStorage replacement;
   replacement.reserve(metadata.size());
