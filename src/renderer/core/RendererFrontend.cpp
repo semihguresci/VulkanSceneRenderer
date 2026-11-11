@@ -2709,19 +2709,24 @@ void RendererFrontend::applyTemporalCapture(
     finishEditGestures();
   if (event.ddgiFitProbes)
     pendingDdgiSceneFit_ = *event.ddgiFitProbes;
-  if (subs_.ddgiManager && (event.ddgiPaused || event.ddgiEnabled)) {
-    auto settings = subs_.ddgiManager->settings();
+  if (subs_.ddgiManager &&
+      (event.ddgiPaused || event.ddgiEnabled || event.ddgiIntensity)) {
+    const auto &previous = subs_.ddgiManager->settings();
+    auto settings = previous;
     if (event.ddgiPaused)
       settings.paused = *event.ddgiPaused;
     if (event.ddgiEnabled)
       settings.enabled = *event.ddgiEnabled;
-    const bool appearanceChanged =
-        settings.enabled != subs_.ddgiManager->settings().enabled;
+    if (event.ddgiIntensity)
+      settings.intensity = *event.ddgiIntensity;
+    const bool enabledChanged = settings.enabled != previous.enabled;
+    const bool intensityChanged = settings.intensity != previous.intensity;
     subs_.ddgiManager->applySettings(settings);
     if (subs_.guiManager)
       subs_.guiManager->trySetDdgiSettings(settings);
-    if (appearanceChanged && subs_.temporalManager)
-      subs_.temporalManager->reset("capture DDGI enable changed");
+    if ((enabledChanged || intensityChanged) && subs_.temporalManager)
+      subs_.temporalManager->reset(enabledChanged ? "capture DDGI enable changed"
+                                                  : "capture DDGI intensity changed");
   }
   if (subs_.lightingManager &&
       (!event.areaLighting.empty() || event.areaLightSamples)) {

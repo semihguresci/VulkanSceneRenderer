@@ -8993,7 +8993,7 @@ void GuiManager::drawDdgiControls() {
   int debugView = static_cast<int>(candidate.debugView);
   if (ImGui::Combo(
           "Probe visualization", &debugView,
-          "Off\0Irradiance\0Visibility\0Classification\0Relocation\0")) {
+          "Off\0Irradiance\0Visibility\0Classification\0Relocation\0Visibility spread\0")) {
     candidate.debugView =
         static_cast<container::renderer::DdgiDebugView>(debugView);
     changed = true;

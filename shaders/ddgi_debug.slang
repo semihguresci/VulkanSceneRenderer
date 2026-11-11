@@ -165,11 +165,21 @@ float4 fragMain(VSOutput input) : SV_Target0
         float3 irradiance = max(gDdgiIrradiance.SampleLevel(gDdgiSampler, atlasUv, 0).rgb, 0.0.xxx) / PI;
         color = all(isfinite(irradiance)) ? irradiance / (1.0.xxx + irradiance) : float3(1, 0, 1);
     }
-    else if (pc.mode == 2u)
+    else if (pc.mode == 2u || pc.mode == 5u)
     {
         float2 atlasUv = DdgiAtlasUv(input.probeIndex, normal, uDdgi.visibilityLayout, uDdgi.extents.y);
         float2 moments = gDdgiVisibility.SampleLevel(gDdgiSampler, atlasUv, 0);
-        color = all(isfinite(moments)) ? DdgiDebugHeat(moments.x / max(uDdgi.trace.x, 1e-10)) : float3(1, 0, 1);
+        if (!all(isfinite(moments))) return float4(1, 0, 1, 1);
+        float range = max(uDdgi.trace.x, 1e-10);
+        float mean = moments.x / range;
+        float display = mean;
+        if (pc.mode == 5u)
+        {
+            // Normalize both moments before taking the distance standard deviation.
+            float second = (moments.y / range) / range;
+            display = sqrt(max(second - mean * mean, 0.0));
+        }
+        color = DdgiDebugHeat(display);
     }
     return float4(color, 1);
 }

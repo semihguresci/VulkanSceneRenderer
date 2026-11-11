@@ -393,13 +393,14 @@ trace/update GPU times. Appearance/structural edits reset TAA where necessary.
 Diagnostic spheres use actual relocated world-space probe centers and sampled
 main-scene reverse-Z depth. They draw after tone mapping in both raster
 techniques, before the GUI, with no effect on probe transport or TAA history.
-CLI equivalents are `--ddgi-debug off|irradiance|visibility|classification|relocation`,
+CLI equivalents are `--ddgi-debug off|irradiance|visibility|classification|relocation|visibility-spread`,
 `--ddgi-probe-radius F` and `--ddgi-pause`.
 
 | View | Display |
 | --- | --- |
 | Irradiance | Directional `E/pi`, mapped with `x/(1+x)` at a fixed diagnostic exposure |
 | Visibility | Directional mean hit distance / max trace distance, blue to yellow |
+| Visibility spread | Directional hit-distance standard deviation / max trace distance, blue to yellow |
 | Classification | Gray uninitialized, green active/valid, red inactive, orange awaiting valid rays, magenta HDR clamp |
 | Relocation | Movement / maximum diagonal relocation, blue to yellow; sphere centers include relocation |
 
@@ -490,6 +491,8 @@ and the scheduled batch indices. A paused batch has zero first/next indices;
 `schedulingCursor` separately reports the retained next probe after submission,
 including pause/disable frames, and is visible in the controls. Capture events
 `ddgiPaused` and `ddgiEnabled` accept booleans and use the live manager settings.
+`ddgiIntensity` accepts a finite number in [0, 10000]. It changes primary
+indirect output while preserving the probe field, including when paused.
 `ddgiFitProbes` accepts an integer budget and queues one scene fit at its named
 frame, through the same path as the UI button. `ddgi.sceneFit` records the
 source world bounds, requested budget, fitted probe count, exact CPU payload
@@ -668,6 +671,91 @@ scene-specific checks. PNG-derived luminance carries quantization and tone-map
 inversion error. A zero-primary control can retain legacy ambient terms where
 probe coverage is unavailable; its signed matched difference isolates the
 primary probe contribution.
+
+### Mixed IFCX and glTF leakage fixtures
+
+The BIM matrix keeps a native IFCX back wall and the glTF floor, room shell and
+rectangle light in every scene. It compares an open partition boundary, a
+double-sided sheet, a closed 3 cm partition, a 12 cm gap, two overlapping
+solids, and an IFCX opening with a glTF glass insert. The mixed fixture runs
+with conservative blocking and with opt-in thin-glass transport. IFCX metres
+and millimetres import to the same world bounds. The paired receiver patches
+sample both BIM and glTF geometry.
+
+Each pair completes a fresh probe sweep, pauses updates, and captures primary
+DDGI intensity 1 and 0 from the same camera and exposure. The signed difference
+isolates primary indirect output with the same active coverage in both images.
+The report keeps the inverse ACES/sRGB rounding intervals and compares each
+receiver with its matched open control. The independent Lambertian CPU
+reference covers open, sealed, gap, and overlap geometry with fixed sampling
+and reports standard error. Sheet and glass results measure GPU material
+policy against the open control. Use `--linear` with OpenCV to measure the
+same receiver patches from ungraded float EXR captures.
+
+The 56-pair Windows Release matrix on the RTX 2080 SUPER used 0.75 m coarse
+cells (225 probes) and 0.25 m dense cells (4,225 probes). The back-wall results
+below span both raster techniques and both authored units for PNG. A companion
+14-pair EXR run measures the same topologies on the deferred metre route.
+Shaded values are percentages of matched open-room indirect output. The last
+column gives the largest PNG lit-back shortfall against the open-normalized
+CPU reference, in percentage points.
+
+| Fixture and policy | Coarse shaded PNG | Dense shaded PNG | Shaded EXR, coarse / dense | Lit-back shortfall, coarse / dense |
+| --- | ---: | ---: | ---: | ---: |
+| Open | 100% | 100% | 100 / 100% | 0 / 0 pp |
+| Double-sided sheet | 0% | 0% | 2.24 / 0.49% | — |
+| Closed partition | 0% | 0% | 1.88 / 0.26% | 5.73 / 1.74 pp |
+| 12 cm gap | 12.66–13.48% | 11.99–12.66% | 8.09 / 7.90% | 6.93 / 4.59 pp |
+| Overlapping solids | 0% | 0% | 2.46 / 0.29% | 5.20 / 1.27 pp |
+| Glass with conservative blocking | 0% | 0% | 1.69 / 0.26% | — |
+| Glass with thin-glass transport | 41.73–44.43% | 41.50–43.36% | 41.99 / 42.85% | — |
+
+The PNG rounding envelopes for nominal zero shaded results extend to about
+±7.62 percentage points coarse and ±7.13 dense. EXR resolves the residuals
+at the four blocked boundaries. The dense grid reduced these measured leaks
+by 78–88% in the deferred metre route. The 8,192-path reference
+estimated 7.21% of open indirect at the gap's shaded back wall. It measured
+0.02179 ± 0.00107 standard error there and 0.30241 ± 0.00392 in the open
+control. The largest measured difference between raster techniques was
+0.205 percentage points of matched open output. Coarse metre and millimetre
+imports differed by up to 0.161 estimated luminance on the lit back wall,
+with a largest open-normalized difference of 3.34 percentage points across
+the lit and shaded back patches. The dense normalized difference reached
+1.86 points. Unit equivalence of geometry is checked separately at a
+10 µm world-bound tolerance.
+
+For setup, compare wall thickness and gap width with the cell size on their
+respective axes, and check that the lattice contains the receiver points. The
+diagnostics report records those ratios and the receiver margins in cells.
+Place a finer detail volume around affected receivers with enough padding to
+keep them beyond its blend band. Use Classification and Relocation to locate
+inactive or displaced probes. Visibility and Visibility spread show the
+directional mean and standard deviation from the two distance moments. A wide
+spread can indicate that a tile mixes nearby blockers with long rays. Compare
+receiver and visibility bias settings with a fixed camera before tuning them
+on a thin partition.
+
+The diagnostics capture aggregate `DdgiTrace` and `DdgiUpdate` timestamps,
+probe overlays, and signed receiver changes under bias sweeps. `DdgiUpdate`
+includes classification, relocation, and moment accumulation. Three coarse
+gap captures per raster path gave median update times of 0.193 ms deferred
+and 0.160 ms forward with validation enabled. Increasing the normal/view bias
+from 0.03/0.01 m to 0.09/0.03 m or visibility bias from 0.05 m to 0.15 m
+changed the sampled shaded-back signed output by at most 0.00009 estimated
+luminance in this fixture. A 0.25 m camera move followed by return restored
+the paused image exactly, and updates resumed from 48 to 50 on both paths.
+
+The coarse 3 cm wall is 0.04 cells thick and the 12 cm gap is 0.16 cells wide.
+In the 48-update open control, placing the first Z plane on the receiver
+wall produced a 0.07367 lit-back difference between authored units. Shifting
+that lattice 5 cm along −Z made all four matched receiver differences zero
+at PNG precision in that capture. The original 8.24% coarse closed-wall
+measurement applies to its original geometry and settings.
+
+```powershell
+python -B tests/visual-regression/ddgi/run_bim_leakage.py --exe out/build/visual-studio/Release/VulkanSceneRenderer.exe --warm-visits 8 --reference-samples 8192
+python -B tests/visual-regression/ddgi/run_bim_leakage_diagnostics.py --exe out/build/visual-studio/Release/VulkanSceneRenderer.exe
+```
 
 Forward and deferred each passed a 24-frame lifecycle sequence that starts with
 disabled fallback resources, enables the field, pauses/resumes, disables it and

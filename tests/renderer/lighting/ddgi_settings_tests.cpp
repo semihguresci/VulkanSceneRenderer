@@ -59,9 +59,9 @@ TEST(DdgiSettingsTests, PauseRetainsTheConfiguredResourceCapacity) {
 
 TEST(DdgiSettingsTests, DiagnosticsRejectInvalidEnumsAndNonpositiveRadius) {
   DdgiSettings settings;
-  settings.debugView = static_cast<DdgiDebugView>(5u);
+  settings.debugView = static_cast<DdgiDebugView>(6u);
   expectInvalidContaining([&] { validateDdgiSettings(settings); }, "debugView");
-  settings.debugView = DdgiDebugView::Classification;
+  settings.debugView = DdgiDebugView::VisibilitySpread;
   for (const float radius : {0.f, -1.f, std::numeric_limits<float>::infinity(),
                              std::numeric_limits<float>::quiet_NaN()}) {
     settings.debugProbeRadius = radius;

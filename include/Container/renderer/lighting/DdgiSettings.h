@@ -18,6 +18,7 @@ enum class DdgiDebugView : uint32_t {
   Visibility = 2,
   Classification = 3,
   Relocation = 4,
+  VisibilitySpread = 5,
 };
 
 // DDGI is optional and defaults off. Origin and all biases are in world-space

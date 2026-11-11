@@ -5,6 +5,7 @@ import copy
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 import numpy as np
 from PIL import Image
@@ -106,6 +107,16 @@ class QualityMetricTests(unittest.TestCase):
         self.assertAlmostEqual(result["saturatedChannelFraction"], 1 / 3)
         self.assertAlmostEqual(result["estimatedLuminance"],
                                np.dot(result["estimatedRadiance"], [.2126, .7152, .0722]))
+
+    def test_linear_receiver_reads_rgb_channels_and_preserves_float_radiance(self):
+        self.png.write_bytes(b"encoded image bytes")
+        decoder = Mock()
+        decoder.imdecode.return_value = np.broadcast_to(np.array([.5, 2, 4], dtype=np.float32), (24, 32, 3))
+        with patch("run_quality.exr_decoder", return_value=decoder):
+            result = quality.linear_receiver_metrics(self.png, self.scene)["receiver"]
+        self.assertEqual(result["pixelRoi"], [8, 6, 20, 18])
+        self.assertEqual(result["estimatedRadiance"], [4, 2, .5])
+        self.assertEqual(result["luminanceFloatInterval"], [result["estimatedLuminance"]] * 2)
 
     def test_camera_projection_transposes_column_upload_and_negates_scene_y(self):
         self.save_image()
