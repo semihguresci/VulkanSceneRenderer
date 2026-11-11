@@ -4,14 +4,15 @@
 #include <stdexcept>
 
 namespace container::renderer {
+namespace {
 
-DdgiVolumeScrollPlan
-planDdgiVolumeScroll(const DdgiProbeVolumeDesc &previous,
-                     glm::vec3 cameraWorldPosition, uint32_t maxProbes) {
-  const DdgiProbeVolume oldVolume(previous);
+DdgiVolumeScrollPlan planScrollTarget(const DdgiProbeVolume &oldVolume,
+                                     glm::vec3 cameraWorldPosition,
+                                     uint32_t maxProbes) {
   if (oldVolume.probeCount() > maxProbes)
     throw std::invalid_argument(
         "DDGI scrolling exceeds maxProbes CPU-work budget; reduce the lattice counts");
+  const auto &previous = oldVolume.description();
   DdgiVolumeScrollPlan result;
   result.previous = previous;
   result.target = previous;
@@ -36,14 +37,20 @@ planDdgiVolumeScroll(const DdgiProbeVolumeDesc &previous,
     result.target.origin[axis] = float(origin);
     result.changed |= result.cellShift[axis] != 0;
   }
+  return result;
+}
+
+void populateScrollRemap(const DdgiProbeVolume &oldVolume,
+                         DdgiVolumeScrollPlan &result) {
   const DdgiProbeVolume newVolume(result.target);
   result.previousIndexForNewProbe.assign(oldVolume.probeCount(), kDdgiNoPreviousProbe);
   result.exposedProbeIndices.reserve(oldVolume.probeCount());
   uint32_t preserved = 0;
   bool disjoint = false;
+  const auto &counts = result.previous.counts;
   for (int axis = 0; axis < 3; ++axis)
-    disjoint |= result.cellShift[axis] <= -int64_t(previous.counts[axis]) ||
-                result.cellShift[axis] >= int64_t(previous.counts[axis]);
+    disjoint |= result.cellShift[axis] <= -int64_t(counts[axis]) ||
+                result.cellShift[axis] >= int64_t(counts[axis]);
   for (uint32_t index = 0; index < newVolume.probeCount(); ++index) {
     const auto coordinate = newVolume.coordinates(index);
     glm::uvec3 oldCoordinate{};
@@ -53,8 +60,8 @@ planDdgiVolumeScroll(const DdgiProbeVolumeDesc &previous,
         // The prior disjoint check bounds the shift by a uint32 count, so
         // adding a coordinate here cannot overflow int64.
         const int64_t old = int64_t(coordinate[axis]) + result.cellShift[axis];
-        overlaps &= old >= 0 && old < previous.counts[axis];
-        if (old >= 0 && old < previous.counts[axis])
+        overlaps &= old >= 0 && old < counts[axis];
+        if (old >= 0 && old < counts[axis])
           oldCoordinate[axis] = uint32_t(old);
       }
     }
@@ -69,6 +76,26 @@ planDdgiVolumeScroll(const DdgiProbeVolumeDesc &previous,
     result.exposedProbeIndices.push_back(index);
   }
   result.clearsHistory = preserved == 0;
+}
+
+} // namespace
+
+DdgiVolumeScrollPlan
+planDdgiVolumeScroll(const DdgiProbeVolumeDesc &previous,
+                     glm::vec3 cameraWorldPosition, uint32_t maxProbes) {
+  const DdgiProbeVolume oldVolume(previous);
+  auto result = planScrollTarget(oldVolume, cameraWorldPosition, maxProbes);
+  populateScrollRemap(oldVolume, result);
+  return result;
+}
+
+std::optional<DdgiVolumeScrollPlan>
+planDdgiVolumeScrollIfChanged(const DdgiProbeVolume &previous,
+                             glm::vec3 cameraWorldPosition, uint32_t maxProbes) {
+  auto result = planScrollTarget(previous, cameraWorldPosition, maxProbes);
+  if (!result.changed)
+    return std::nullopt;
+  populateScrollRemap(previous, result);
   return result;
 }
 

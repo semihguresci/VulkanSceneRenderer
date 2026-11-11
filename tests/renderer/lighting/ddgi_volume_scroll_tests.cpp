@@ -181,4 +181,50 @@ TEST(DdgiVolumeScrollTests, RejectsCpuWorkCapBeforeBuildingMapping) {
   EXPECT_NO_THROW((void)planDdgiVolumeScroll(desc, {4, 4, 4}, 729));
 }
 
+TEST(DdgiVolumeScrollTests, OnlyPlansRuntimeRemapWhenCameraLeavesCell) {
+  const DdgiProbeVolume volume({{-31.5f, -15.5f, -15.5f}, {1, 1, 1}, {64, 32, 32}});
+  ASSERT_EQ(volume.probeCount(), 65536u);
+  for (const auto camera : {glm::vec3(0), glm::vec3(.499f), glm::vec3(-.499f)})
+    EXPECT_FALSE(planDdgiVolumeScrollIfChanged(volume, camera).has_value());
+
+  const DdgiProbeVolume large({{100000000.f, 0, 0}, {32, 1, 1}, {5, 3, 3}});
+  EXPECT_FALSE(planDdgiVolumeScrollIfChanged(large, {100000056.f, 1, 1}).has_value());
+  EXPECT_FALSE(planDdgiVolumeScrollIfChanged(large, {100000072.f, 1, 1}).has_value());
+}
+
+TEST(DdgiVolumeScrollTests, RuntimeRemapsMatchFullPlans) {
+  const DdgiProbeVolume volume({{-1, -1, -1}, {1, 1, 1}, {3, 3, 3}});
+  for (const float x : {-.5f, .5f, -1000000.f, 1000000.f}) {
+    SCOPED_TRACE(x);
+    const auto plan = planDdgiVolumeScrollIfChanged(volume, {x, 0, 0}, volume.probeCount());
+    ASSERT_TRUE(plan.has_value());
+    const auto full = planDdgiVolumeScroll(volume.description(), {x, 0, 0});
+    EXPECT_TRUE(plan->changed);
+    EXPECT_EQ(plan->previous, full.previous);
+    EXPECT_EQ(plan->target, full.target);
+    EXPECT_EQ(plan->cellShift, full.cellShift);
+    EXPECT_EQ(plan->previousIndexForNewProbe, full.previousIndexForNewProbe);
+    EXPECT_EQ(plan->exposedProbeIndices, full.exposedProbeIndices);
+    EXPECT_EQ(plan->clearsHistory, full.clearsHistory);
+
+    const DdgiProbeVolume moved(plan->target);
+    const glm::vec3 movedCenter = plan->target.origin + glm::vec3(1);
+    EXPECT_FALSE(planDdgiVolumeScrollIfChanged(moved, movedCenter).has_value());
+  }
+}
+
+TEST(DdgiVolumeScrollTests, RuntimePlannerRetainsInputAndBudgetChecks) {
+  const DdgiProbeVolume volume({{0, 0, 0}, {1, 1, 1}, {3, 3, 3}});
+  EXPECT_THROW((void)planDdgiVolumeScrollIfChanged(volume, {1, 1, 1}, 26),
+               std::invalid_argument);
+  EXPECT_THROW((void)planDdgiVolumeScrollIfChanged(volume, {2, 1, 1}, 26),
+               std::invalid_argument);
+  for (float invalid : {std::numeric_limits<float>::quiet_NaN(),
+                        std::numeric_limits<float>::infinity(),
+                        std::numeric_limits<float>::max(), 100000000.f}) {
+    EXPECT_THROW((void)planDdgiVolumeScrollIfChanged(volume, {1, invalid, 1}),
+                 std::invalid_argument);
+  }
+}
+
 } // namespace

@@ -27,6 +27,16 @@ def lifecycle():
     return result
 
 
+def scroll_samples():
+    result = [sample(frame, moved=frame >= 35) for frame in (1, 32, 34, 35, 40, 41, 64)]
+    for item in result:
+        if 33 <= item["frame"] <= 40:
+            item["ddgi"].update(paused=True, selectedProbes=[], updatedProbes=0,
+                                tracedRays=0, updateFrame=32,
+                                refreshRemainingProbes=91 if item["frame"] >= 35 else 0)
+    return result
+
+
 class ExtensionsHarnessTests(unittest.TestCase):
     def test_async_geometry_requires_invalidation_and_a_completed_refresh(self):
         samples = [sample(1, asynchronous=True), sample(20, asynchronous=True), sample(64, asynchronous=True)]
@@ -65,36 +75,54 @@ class ExtensionsHarnessTests(unittest.TestCase):
                 extensions.check_detail(invalid, [-.015, 0., -2.], [.015, 2.8, 1.])
 
     def test_single_cell_scroll_preserves_history_and_configuration(self):
-        extensions.check_scroll([sample(1), sample(64, moved=True)])
+        extensions.check_scroll(scroll_samples())
 
     def test_scroll_cannot_pass_with_a_grid_that_was_already_moved(self):
+        samples = scroll_samples()
+        samples[0] = sample(1, moved=True)
         with self.assertRaisesRegex(AssertionError, "before"):
-            extensions.check_scroll([sample(1, moved=True), sample(64, moved=True)])
+            extensions.check_scroll(samples)
 
     def test_scroll_must_wait_for_the_scripted_cell_crossing(self):
+        samples = scroll_samples()
+        samples[2]["ddgi"]["scroll"] = samples[3]["ddgi"]["scroll"]
         with self.assertRaisesRegex(AssertionError, "cell crossing"):
-            extensions.check_scroll([sample(1), sample(32, moved=True), sample(64, moved=True)])
+            extensions.check_scroll(samples)
 
     def test_scroll_cannot_claim_preservation_after_reallocation_or_reset(self):
         for key in ("historyResets", "totalAllocatedBytes"):
-            samples = [sample(1), sample(64, moved=True)]
+            samples = scroll_samples()
             samples[-1]["ddgi"][key] += 1
             with self.assertRaises(AssertionError):
                 extensions.check_scroll(samples)
 
     def test_scroll_requires_exact_overlap_and_runtime_origin(self):
         for key, value in (("preservedProbes", 819), ("origin", [-4., -2., -2.5])):
-            samples = [sample(1), sample(64, moved=True)]
+            samples = scroll_samples()
             samples[-1]["ddgi"]["scroll"][key] = value
             with self.assertRaises(AssertionError):
                 extensions.check_scroll(samples)
 
     def test_scroll_rejects_duplicate_work_and_unrefreshed_exposed_cells(self):
         for change in ({"selectedProbes": [0, 0]}, {"refreshRemainingProbes": 1}):
-            samples = [sample(1), sample(64, moved=True)]
+            samples = scroll_samples()
             samples[-1]["ddgi"].update(change)
             with self.assertRaises(AssertionError):
                 extensions.check_scroll(samples)
+
+    def test_scroll_pause_preserves_updates_and_marks_only_the_exposed_cells(self):
+        for change, error in (({"updateFrame": 33}, "pause submitted"),
+                              ({"refreshRemainingProbes": 819}, "exposed cells")):
+            samples = scroll_samples()
+            samples[3]["ddgi"].update(change)
+            with self.assertRaisesRegex(AssertionError, error):
+                extensions.check_scroll(samples)
+
+    def test_scroll_requires_updates_to_resume(self):
+        samples = scroll_samples()
+        samples[-1]["ddgi"]["updateFrame"] = 32
+        with self.assertRaisesRegex(AssertionError, "did not resume"):
+            extensions.check_scroll(samples)
 
     def test_async_pause_and_resume_accepts_delayed_publication(self):
         extensions.check_async(lifecycle())

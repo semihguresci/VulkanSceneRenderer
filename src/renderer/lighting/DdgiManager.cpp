@@ -1084,26 +1084,24 @@ void DdgiManager::update(uint32_t image, VkDescriptorSet scene,
   }
   if (p.active && p.settings.cameraFollow && hints.cameraPosition) {
     try {
-      const auto scroll = planDdgiVolumeScroll(
-          p.volumes.volume(0).description(), *hints.cameraPosition,
-          p.volumes.probeCount());
-      if (scroll.changed) {
+      if (const auto scroll = planDdgiVolumeScrollIfChanged(
+              p.volumes.volume(0), *hints.cameraPosition, p.volumes.probeCount())) {
         // Cell moves retire only the outstanding GI writer. All previous
         // graphics readers precede this frame's remap on the graphics queue.
         synchronizeAsync();
         auto runtime = p.settings;
-        runtime.volume = scroll.target;
+        runtime.volume = scroll->target;
         const DdgiVolumeSet moved(runtime);
         std::vector<uint32_t> mapping(p.volumes.probeCount());
+        const auto &primaryMapping = scroll->previousIndexForNewProbe;
         for (uint32_t index = 0; index < mapping.size(); ++index)
-          mapping[index] = index < scroll.previousIndexForNewProbe.size()
-              ? scroll.previousIndexForNewProbe[index] : index;
+          mapping[index] = index < primaryMapping.size() ? primaryMapping[index] : index;
         std::vector<bool> fresh(mapping.size(), false);
         uint32_t preserved = 0;
         for (uint32_t index = 0; index < mapping.size(); ++index)
           if (mapping[index] != kDdgiNoPreviousProbe) {
             fresh[index] = p.epochFresh[mapping[index]];
-            if (index < scroll.previousIndexForNewProbe.size()) ++preserved;
+            if (index < primaryMapping.size()) ++preserved;
           }
         p.scheduler.remap(mapping);
         p.scrollMapping = std::move(mapping);
