@@ -249,6 +249,24 @@ whole-cell steps to keep its center near the camera. Counts and spacing remain
 fixed. Detail volumes retain their world positions. Camera movement does not
 invalidate all transported light or start a new content epoch.
 
+Each camera-follow frame checks the three cell shifts against the live lattice.
+If the camera stays in the same cell, the scroll check allocates no remap
+buffers and visits no probes. The CPU builds a remap only when a cell changes.
+
+A Windows Release component benchmark on a Ryzen 9 3900X measured the following
+planning times per call. Each entry is the median of seven batch means.
+
+| Probes | Sub-half-cell before | Sub-half-cell after | One-cell before | One-cell after |
+| ---: | ---: | ---: | ---: | ---: |
+| 819 | 28.3 µs | 39.3 ns | 27.6 µs | 27.7 µs |
+| 3,600 | 124.1 µs | 39.3 ns | 183.4 µs | 149.3 µs |
+| 65,536 | 2.432 ms | 39.4 ns | 2.395 ms | 2.399 ms |
+
+Centered cameras measured within the same range as sub-half-cell motion. Both
+went from two heap allocations per check to zero. One-cell moves made two
+allocations and produced identical remaps in both planners. One-cell timings
+varied between runs. The measurements cover CPU scroll planning only.
+
 History is remapped only where the previous and new CPU-rounded world probe
 positions match exactly. Overlapping nodes preserve atlas/state history and
 scheduling age; newly exposed cells start uninitialized and are prioritized for

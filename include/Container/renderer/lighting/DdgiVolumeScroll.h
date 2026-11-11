@@ -5,6 +5,7 @@
 #include <glm/vec3.hpp>
 #include <glm/ext/vector_int3_sized.hpp>
 #include <limits>
+#include <optional>
 #include <vector>
 
 namespace container::renderer {
@@ -33,5 +34,13 @@ struct DdgiVolumeScrollPlan {
 [[nodiscard]] DdgiVolumeScrollPlan
 planDdgiVolumeScroll(const DdgiProbeVolumeDesc &previous,
                      glm::vec3 cameraWorldPosition, uint32_t maxProbes = 65536);
+
+// Camera-follow path for a validated live volume. A zero cell shift returns
+// nullopt without visiting probes or allocating remap vectors. A changed
+// lattice uses the same validation and mapping as planDdgiVolumeScroll.
+[[nodiscard]] std::optional<DdgiVolumeScrollPlan>
+planDdgiVolumeScrollIfChanged(const DdgiProbeVolume &previous,
+                             glm::vec3 cameraWorldPosition,
+                             uint32_t maxProbes = 65536);
 
 } // namespace container::renderer
