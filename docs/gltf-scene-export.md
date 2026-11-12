@@ -189,6 +189,8 @@ The read-only summary shows scalar values, lists, and language tags. Expand
 When Save As writes a generated primitive node for a source mesh, that node
 shares the authored node's packet reference. Picking the primitive after
 reopening a portable glTF or GLB resolves the same node metadata.
+Native tests check viewport selection, packet contents, and pixel-exact
+round trips in both raster paths. [Windows NVIDIA results](../tests/visual-regression/gltf-xmp/windows-nvidia/gltf-xmp-results.json)
 
 Import / Merge keeps the destination's packet indices and appends incoming
 packets in source order. The incoming document packet is attached to the new
