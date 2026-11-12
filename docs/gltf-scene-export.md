@@ -105,10 +105,11 @@ does not record the viewer's playback clock.
 
 Source buffers and encoded image resources are packed into one aligned binary
 buffer. External images, image data URIs, and GLB image buffer views are
-supported. External source resources must remain readable until export has
-finished; an unavailable resource fails before destination replacement. Image
-buffer views preserve encoded source bytes. In-memory 8-bit images without an
-encoded source can be encoded as PNG.
+supported. The application's import archive retains loaded resource bytes for
+portable export after the original files move. A caller-supplied resource that
+still needs a file read must be available before destination replacement.
+Image buffer views preserve encoded source bytes. In-memory 8-bit images
+without an encoded source can be encoded as PNG.
 
 GLB output is self-contained. ASCII glTF output has one adjacent binary
 dependency named `container-<content hash>-<byte length>.bin`; image data lives
@@ -117,12 +118,12 @@ together. Neither format depends on the original source directory.
 
 The destination parent directory must already exist. Export first builds an
 independent model, then serializes all files in a uniquely named staging
-directory beside the destination. ASCII dependencies are installed under
-immutable content-addressed names and verified before reuse. The completed
-scene file replaces the destination with the platform's atomic file rename
-operation. Old dependencies are retained so another exported glTF can continue
-to reference them. A failed final replacement may leave an unused dependency;
-it cannot overwrite an earlier dependency or change the earlier scene file.
+directory beside the destination. ASCII dependencies are published atomically
+under immutable content-addressed names and verified before reuse. The
+completed scene file replaces the destination with the platform's atomic file
+rename operation. Old dependencies remain available to other exported glTF
+files. A failed final replacement leaves the earlier scene and dependencies
+intact and may leave a complete unused dependency.
 Temporary staging directories are removed on success and failure.
 
 ## Saving from the application
@@ -144,9 +145,10 @@ VulkanSceneRenderer.exe --model source.gltf --screenshot preview.png --save-scen
 
 Both paths explicitly save the primary editable scene. BIM/USD/VDB sidecars,
 physics configuration, viewer camera/exposure/environment settings, and renderer
-presets keep their own formats. Imported glTF camera definitions remain part of
-the scene. Current edited imported lights and manual lights are serialized;
-generated diagnostic lighting is excluded. Imported light IDs use original
+presets keep their own formats. Save rejects destinations that identify the
+loaded auxiliary source, including filesystem aliases. Imported glTF camera
+definitions remain part of the scene. Save serializes edited imported lights
+and manual lights. Imported light IDs use original
 source traversal and stable source node identities, so graph reparenting cannot
 redirect an edit to another lamp. Light-only child nodes carry current world
 poses without moving meshes that share an imported light node. Extra untouched
@@ -154,10 +156,12 @@ source lights, including those beyond the active renderer capacity, remain
 associated with their original source nodes.
 
 Supported `KHR_interactivity` references are remapped through the final node,
-material and resource projections. Punctual-light pointers target the definition
-actually bound to the exported light child. Equivalent shared placements keep
-one target; divergent definitions or incompatible property conversions reject
-before destination replacement. Unreferenced retirement does not by itself
+material and resource projections. Save omits clips whose channels all target
+retired nodes and updates behavior references to surviving clips. A behavior
+that requires a removed clip prevents publication. Punctual-light pointers
+target the definition bound to the exported light child. Equivalent shared
+placements keep one target. Divergent definitions or incompatible property
+conversions prevent destination replacement. Unreferenced retirement does not by itself
 block saving a supported graph. Dynamic object IDs still require a complete,
 unchanged index domain. See [behavior graph export](gltf-interactivity.md).
 
@@ -169,7 +173,8 @@ color range. Clearing playback restores the exported edited rest table. The
 active imported sun keeps its animated ancestry. Competing ancestor directional
 bindings move onto identity children after the active branch to preserve the
 same active-sun traversal policy. A manual sun override remains independent of
-imported pointer channels.
+imported pointer channels and applies only to its authored scene. Scenes that
+share the imported sun retain access to its common definition.
 
 ## Current scope
 
@@ -294,8 +299,9 @@ they describe obsolete source representations. Material-variant definitions
 and primitive mappings are retained with remapped material IDs; the currently
 rendered assignment becomes the saved core material and reloads as Default.
 Source geometry arrays remain available to preserved supported metadata; they
-are not used as a substitute for current edited geometry. Imported scenes other
-than the active primary scene are not included.
+support remapping alongside the current edited geometry. The export retains
+the primary document's authored scenes and stores the selected scene as the
+default.
 
 ## Verification
 

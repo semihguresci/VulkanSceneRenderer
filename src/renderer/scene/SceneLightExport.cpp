@@ -408,6 +408,10 @@ bool isActiveDirectional(const container::scene::AuthoredSceneLights* full,
       full->directionalBindings[entity.id.index] == active.directionalBindings.front();
 }
 
+bool isManualSun(const EditableLightEntity& entity) {
+  return entity.source == EditableLightSource::Manual && entity.type == EditableLightType::Directional;
+}
+
 bool sameImportedLightEdit(const EditableLightEntity& a,
                           const EditableLightEntity& b) {
   if (a.type != b.type || a.color != b.color || a.intensity != b.intensity) return false;
@@ -523,7 +527,6 @@ std::vector<EditableLightEntity> evaluateEditableSceneLights(
 
 std::vector<EditableLightEntity> evaluateEditableSceneLightsForExport(
     const container::scene::AuthoredSceneLights& full,
-    const container::scene::AuthoredSceneLights& visible,
     const SceneLightEdits& localEdits,
     const ImportedSceneLightEdits& globalImportedEdits,
     const glm::mat4& sceneTransform) {
@@ -538,8 +541,6 @@ std::vector<EditableLightEntity> evaluateEditableSceneLightsForExport(
       localEdits.directionalOverride->source == EditableLightSource::Manual;
   for (size_t i = 0; i < full.directionals.size(); ++i) {
     const auto& binding = full.directionalBindings[i];
-    if (manualSun && !visible.directionalBindings.empty() &&
-        binding == visible.directionalBindings.front()) continue;
     container::scene::AuthoredSceneLights sun;
     sun.directionals.push_back(full.directionals[i]);
     SceneLightEdits override;
@@ -625,7 +626,8 @@ static void exportEditableSceneLightsForScene(tinygltf::Model& model,
                                std::optional<size_t> sourceSceneOverride = {},
                                const container::scene::AuthoredSceneLights* sceneBindings = nullptr,
                                const container::scene::AuthoredSceneLights* visibleBindings = nullptr,
-                               std::vector<LightProjection>* projections = nullptr) {
+                               std::vector<LightProjection>* projections = nullptr,
+                               bool retainOverriddenSun = false) {
   require(std::isfinite(importedRangeScale) && importedRangeScale > 0);
   if (model.scenes.empty() || model.defaultScene < 0 || size_t(model.defaultScene)>=model.scenes.size())
     throw std::runtime_error("Scene light export needs an active glTF scene");
@@ -659,6 +661,7 @@ static void exportEditableSceneLightsForScene(tinygltf::Model& model,
   const auto& points = candidates.points;
   const auto& directions = candidates.directions;
   const auto& areas = candidates.areas;
+  const bool manualSun = std::ranges::any_of(lights, isManualSun);
   bool punctualUsed=false, areaUsed=false;
   struct Plan {
     std::optional<Candidate> original;
@@ -706,7 +709,7 @@ static void exportEditableSceneLightsForScene(tinygltf::Model& model,
         original=candidates[entity.id.index];
       }
       require(original->node<model.nodes.size() && visited[original->node]);
-    } else if(entity.type==EditableLightType::Directional) {
+    } else if(entity.type==EditableLightType::Directional && !retainOverriddenSun) {
       if (sceneBindings) {
         const auto& visible = visibleBindings ? *visibleBindings : *sceneBindings;
         if (!visible.directionalBindings.empty())
@@ -798,8 +801,8 @@ static void exportEditableSceneLightsForScene(tinygltf::Model& model,
     }
     tinygltf::Node node;
     node.name=entity.label.empty()?"Authored light":entity.label;
-    const bool activeDirectional=isActiveDirectional(sceneBindings,visibleBindings,entity);
-    const bool rootDirectional=entity.type==EditableLightType::Directional && entity.source==EditableLightSource::Manual;
+    const bool activeDirectional=!manualSun && isActiveDirectional(sceneBindings,visibleBindings,entity);
+    const bool rootDirectional=isManualSun(entity);
     if(original && !rootDirectional) {
       transform=relativeAffine(worlds[original->node],transform);
     }
@@ -932,6 +935,19 @@ void exportEditableSceneLightsForScenes(
     output.defaultScene = static_cast<int>(scene);
     const auto* bindings = sceneBindings.empty() ? nullptr : &sceneBindings[scene];
     const auto* visible = visibleSceneBindings.empty() ? bindings : &visibleSceneBindings[scene];
+    const bool manualSun = std::ranges::any_of(sceneLights[scene], isManualSun);
+    std::optional<Binding> overriddenSun;
+    if (manualSun) {
+      std::optional<Candidate> original;
+      if (visible && !visible->directionalBindings.empty())
+        original = candidateForBinding(source, visible->directionalBindings.front(), sourceToExport);
+      else if (!bindings && !candidates[scene].directions.empty())
+        original = candidates[scene].directions.front();
+      if (original) overriddenSun.emplace(original->node, original->extension);
+    }
+    // A manual root can take priority in one scene without removing the
+    // authored binding or its animation from other scenes that share it.
+    const bool retainOverriddenSun = overriddenSun && bindingSceneCounts.at(*overriddenSun) > 1;
     std::vector<EditableLightEntity> filtered;
     std::vector<std::pair<Binding, size_t>> addedBindings;
     size_t addedLightCount = 0;
@@ -959,14 +975,6 @@ void exportEditableSceneLightsForScenes(
               std::isfinite(entity.range) && entity.range >= 0 &&
               std::isfinite(glm::length(entity.direction)) && glm::length(entity.direction) > 1e-8f);
       if (entity.source == EditableLightSource::Manual) {
-        if (entity.type == EditableLightType::Directional) {
-          std::optional<Candidate> original;
-          if (visible && !visible->directionalBindings.empty())
-            original = candidateForBinding(source,visible->directionalBindings.front(),sourceToExport);
-          else if (!bindings && !candidates[scene].directions.empty()) original = candidates[scene].directions.front();
-          if (original && bindingSceneCounts.at({original->node, original->extension}) > 1)
-            throw std::runtime_error("Scene light export: a manual sun cannot replace a source binding shared by multiple scenes; use separate source light nodes");
-        }
         filtered.push_back(entity);
         ++addedLightCount;
         continue;
@@ -983,10 +991,11 @@ void exportEditableSceneLightsForScenes(
       }
       require(original.node < model.nodes.size());
       const Binding binding{original.node, original.extension};
+      if (overriddenSun == binding && !retainOverriddenSun) continue;
       if (const auto previous = handled.find(binding); previous != handled.end()) {
         if (!sameImportedLightEdit(previous->second.entity, entity))
           throw std::runtime_error("Scene light export: conflicting edits on a source light node shared by multiple scenes; use separate source light nodes");
-        if (isActiveDirectional(bindings,visible,entity)) sharedSuns.push_back(previous->second.exportedNode);
+        if (!manualSun && isActiveDirectional(bindings,visible,entity)) sharedSuns.push_back(previous->second.exportedNode);
         continue;
       }
       if (original.extension != kGltfIesExtension) addedBindings.push_back({binding, addedLightCount++});
@@ -998,7 +1007,7 @@ void exportEditableSceneLightsForScenes(
     if (!filtered.empty()) {
       sourceNodes.resize(output.nodes.size(), -1);
       exportEditableSceneLightsForScene(output, filtered, &source, sourceNodes,
-                                       importedRangeScale, scene, bindings, visible, &projections);
+                                       importedRangeScale, scene, bindings, visible, &projections, retainOverriddenSun);
       for (const auto& [binding, ordinal] : addedBindings) {
         const auto light = firstLight + ordinal;
         const auto found = std::find_if(output.nodes.begin() + firstNode, output.nodes.end(),

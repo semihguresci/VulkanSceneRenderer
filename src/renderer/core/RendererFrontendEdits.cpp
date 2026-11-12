@@ -1,5 +1,6 @@
 #include "Container/renderer/core/RendererFrontend.h"
 
+#include "Container/renderer/bim/BimManager.h"
 #include "Container/renderer/lighting/DdgiManager.h"
 #include "Container/renderer/lighting/LightingManager.h"
 #include "Container/renderer/lighting/ImportedSceneLightEdits.h"
@@ -26,6 +27,7 @@
 #include <algorithm>
 #include <exception>
 #include <stdexcept>
+#include <system_error>
 #include <utility>
 
 namespace container::renderer {
@@ -315,6 +317,14 @@ void RendererFrontend::saveSceneModel(const std::filesystem::path& outputPath, b
   const auto* composition = keepLinks ? manager.linkedPrimaryComposition() : nullptr;
   if (keepLinks && !composition)
     throw std::runtime_error("The primary scene has no retained linked asset manifest");
+  if (subs_.bimManager && !subs_.bimManager->loadedSourcePath().empty()) {
+    const auto& source = subs_.bimManager->loadedSourcePath();
+    std::error_code error;
+    const auto target = std::filesystem::weakly_canonical(outputPath, error);
+    if (outputPath.lexically_normal() == source || (!error && target == source) ||
+        std::filesystem::equivalent(outputPath, source, error))
+      throw std::runtime_error("Scene export cannot replace the loaded auxiliary model");
+  }
   manager.validateSceneExportDestination(outputPath);
   if (composition) {
     const auto hasEdits = [](const SceneLightEdits& edits) {
@@ -365,8 +375,7 @@ void RendererFrontend::saveSceneModel(const std::filesystem::path& outputPath, b
       visibleSceneBindings[index]=subs_.sceneManager->evaluateAuthoredSceneLights(sceneGraph_,index);
       const auto cached=gltfSceneLightEdits_.find(index);
       const auto edits=index==active?current:cached==gltfSceneLightEdits_.end()?SceneLightEdits{}:*cached->second;
-      sceneLights[index]=evaluateEditableSceneLightsForExport(sceneBindings[index],
-          visibleSceneBindings[index],edits,imported,outerTransform);
+      sceneLights[index]=evaluateEditableSceneLightsForExport(sceneBindings[index],edits,imported,outerTransform);
       if (linked) omitLinkedLightOverlays(manager, edits, sceneBindings[index], visibleSceneBindings[index], sceneLights[index]);
     }
     exportEditableSceneLightsForScenes(snapshot,sceneLights,

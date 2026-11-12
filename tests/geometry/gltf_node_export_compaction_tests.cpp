@@ -1,5 +1,6 @@
 #include <Container/geometry/GltfNodeExportCompaction.h>
 #include <Container/geometry/GltfAnimation.h>
+#include <Container/geometry/GltfInteractivity.h>
 #include <Container/geometry/GltfSceneCatalog.h>
 
 #include <gtest/gtest.h>
@@ -8,7 +9,11 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#include <optional>
+#include <stdexcept>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace {
 using namespace container::geometry::gltf;
@@ -96,6 +101,21 @@ void animate(tinygltf::Model& model) {
       "/materials/0/pbrMetallicRoughness/roughnessFactor");
   model.animations.push_back(clip);
 }
+void startClipOnLoad(tinygltf::Model& model, int clip) {
+  const Value start(Object{{"declaration", Value(0)}, {"flows", Value(Object{
+      {"out", Value(Object{{"node", Value(1)}})}})}});
+  const Value reference(Object{{"type", Value(0)},
+      {"value", Value(Array{Value("/animations/" + std::to_string(clip))})}});
+  const Value play(Object{{"declaration", Value(1)},
+      {"values", Value(Object{{"animation", reference}})}});
+  const Value graph(Object{{"declarations", Value(Array{
+      Value(Object{{"op", Value(std::string("event/onStart"))}}),
+      Value(Object{{"op", Value(std::string("animation/start"))}})})},
+      {"types", Value(Array{Value(Object{{"signature", Value(std::string("ref"))}})})},
+      {"nodes", Value(Array{start, play})}});
+  model.extensions[kGltfInteractivityExtension] = Value(Object{{"graphs", Value(Array{graph})}});
+  declare(model, kGltfInteractivityExtension);
+}
 std::string pointerText(const tinygltf::AnimationChannel& channel) {
   return channel.target_extensions.at("KHR_animation_pointer").Get("pointer").Get<std::string>();
 }
@@ -151,10 +171,57 @@ TEST(GltfNodeExportCompaction,RetiresAnEntireClipTargetSetButKeepsItsMetadataAnd
   auto source = fixture(); tinygltf::Animation clip; clip.name = "Now empty";
   clip.extras = Value(Object{{"keep",Value(true)}});
   channel(source,clip,2,"scale",{1,1,1, 2,2,2},TINYGLTF_TYPE_VEC3); source.animations.push_back(clip);
-  const auto plan = CompactGltfExportNodes(source,std::array<int32_t,2>{1,2});
+  auto plan = CompactGltfExportNodes(source,std::array<int32_t,2>{1,2});
   ASSERT_EQ(plan.model.animations.size(),1u); EXPECT_TRUE(plan.model.animations[0].channels.empty());
   EXPECT_EQ(plan.model.animations[0].samplers,clip.samplers); EXPECT_EQ(plan.model.animations[0].extras,clip.extras);
   EXPECT_EQ(plan.model.accessors,source.accessors); EXPECT_EQ(plan.model.buffers,source.buffers);
+  DropEmptyGltfExportAnimations(plan.model);
+  EXPECT_TRUE(plan.model.animations.empty());
+  EXPECT_EQ(plan.model.accessors,source.accessors); EXPECT_EQ(plan.model.buffers,source.buffers);
+}
+
+TEST(GltfNodeExportCompaction, SerializationDropsEmptyClipsAndRemapsBehaviorToSurvivingOrder) {
+  auto source = fixture();
+  tinygltf::Animation removed;
+  removed.name = "Retired target";
+  channel(source, removed, 2, "scale", {1,1,1, 2,2,2}, TINYGLTF_TYPE_VEC3);
+  source.animations.push_back(removed);
+  animate(source);
+  source.animations.push_back(removed);
+  tinygltf::Animation last;
+  last.name = "Other scene animation";
+  channel(source, last, 5, "translation", {0,0,0, 1,2,3}, TINYGLTF_TYPE_VEC3);
+  source.animations.push_back(last);
+  startClipOnLoad(source, 3);
+
+  auto compacted = CompactGltfExportNodes(source, std::array<int32_t,2>{1,2}).model;
+  const auto firstSurvivor = compacted.animations[1];
+  const auto lastSurvivor = compacted.animations[3];
+  DropEmptyGltfExportAnimations(compacted);
+  EXPECT_EQ(compacted.animations, (std::vector{firstSurvivor, lastSurvivor}));
+  EXPECT_EQ(compacted.buffers, source.buffers);
+  EXPECT_EQ(compacted.accessors, source.accessors);
+  ASSERT_NO_THROW(ValidateGltfInteractivity(compacted));
+  EXPECT_EQ(GltfInteractivityAnimationClips(compacted), std::optional(std::vector<size_t>{1}));
+}
+
+TEST(GltfNodeExportCompaction, SerializationRejectsBehaviorThatRequiresAnEmptyClip) {
+  auto source = fixture();
+  tinygltf::Animation removed;
+  channel(source, removed, 2, "scale", {1,1,1, 2,2,2}, TINYGLTF_TYPE_VEC3);
+  source.animations.push_back(removed);
+  startClipOnLoad(source, 0);
+
+  auto compacted = CompactGltfExportNodes(source, std::array<int32_t,2>{1,2}).model;
+  const auto before = compacted;
+  try {
+    DropEmptyGltfExportAnimations(compacted);
+    FAIL() << "A behavior still targets the empty clip";
+  } catch (const std::runtime_error& error) {
+    EXPECT_TRUE(std::string_view(error.what()).contains("no surviving channels"));
+    EXPECT_TRUE(std::string_view(error.what()).contains("no unique retained destination"));
+  }
+  EXPECT_EQ(compacted, before);
 }
 
 TEST(GltfNodeExportCompaction,RemapsSurvivingSkinsAndDropsOnlyAffectedSkinsWithoutSurvivingOwners) {
