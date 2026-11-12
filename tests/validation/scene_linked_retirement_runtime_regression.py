@@ -18,6 +18,7 @@ from gltf_merge_runtime_regression import sha
 TECHNIQUES = ('deferred-raster', 'forward-raster')
 COMMON = ('--import-scale', '1', '--sky', 'plain', '--no-ray-query', '--ray-shadows', 'raster')
 LINKED = (*COMMON, '--experimental-gltf-linked-assets')
+NO_SELECTION = 0xffffffff
 
 
 def node_tree(state, name):
@@ -84,11 +85,15 @@ def main():
         primary, _ = fixture(output)
         live = output / 'retirement.json'
         reject = output / 'protected-retirement.json'
+        reload = output / 'portable-reload.json'
         write_json(live, dict(schemaVersion=1, frames=14, sampleFrames=[2, 5, 8, 11, 14], events=[
             node_authoring(4, 'make-editable', 0), node_authoring(7, 'delete-subtree', 0),
             dict(frame=10, sceneHistory='undo'), dict(frame=13, sceneHistory='redo')]))
         write_json(reject, dict(schemaVersion=1, frames=5, sampleFrames=[2, 5], events=[
             node_authoring(4, 'delete-subtree', 0)]))
+        # Startup selects the first mesh. Match the vacant selection after deletion before comparing pixels.
+        write_json(reload, dict(schemaVersion=1, frames=5, sampleFrames=[5], events=[
+            dict(frame=2, viewportPointer=dict(action='select', pixel=[40, 180]))]))
         if args.generate_only:
             report['passed'] = True
             return
@@ -147,7 +152,7 @@ def main():
             names = [node.get('name') for node in model['nodes']]
             require('Placement 0' not in names and names.count('Placement 1') == 1 and 'files' not in model and
                     'externalAssets' not in model, 'Portable save retained the retired placement or source links')
-            saved[technique] = (portable, redone['image'])
+            saved[technique] = (portable, redone)
             report['checks'].append(dict(technique=technique, rejectedBeforeSave=True, stableSlots=True,
                                          siblingPixelsExact=True, historyPixelsExact=True, exportCompacted=True))
 
@@ -158,9 +163,13 @@ def main():
                 'Portable export changed the original linked files')
         for technique, (portable, reference) in saved.items():
             reopened, = run(renderer, output, portable, f'{technique}-reopened', technique, 'lit',
-                            report['captures'], extra=COMMON, require_validation=True)
+                            report['captures'], sequence=reload, extra=COMMON, require_validation=True)
+            require(reopened['state']['gui']['selectedMeshNodeId'] ==
+                    reference['state']['gui']['selectedMeshNodeId'] == NO_SELECTION,
+                    'Reload and retirement must have matching vacant viewport selections')
             require(reopened['state']['gltfScenes']['activeRenderableCount'] == 1 and
-                    np.array_equal(pixels(reopened['image']), pixels(reference)), 'Source-free reload changed the retained placement')
+                    np.array_equal(pixels(reopened['image']), pixels(reference['image'])),
+                    'Source-free reload changed the retained placement')
             report['checks'].append(dict(technique=technique, portableReloadPixelsExact=True))
         for log in {row['log'] for row in report['captures']}:
             validate_log(Path(log))

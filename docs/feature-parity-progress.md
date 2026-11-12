@@ -774,6 +774,19 @@ Evidence: `out/feature-parity/node-authoring-completion-validation-checkpoint.js
 
 Changes remain local/uncommitted; issue and tracker stay open pending integration. Continuing **#108 material/texture authoring**; its isolated pure planner is source-only, unregistered/unbuilt and excluded from this completion. The full tracker goal remains active.
 
+### #107 hierarchy authoring follow-up — 2026-11-12
+
+Hierarchy dialogs close on scene or hierarchy changes. A queued action must
+still match the original graph and node incarnation before it can mutate the
+scene. Renaming a camera node updates the camera chooser and named selection
+through undo and redo. Undo restores an unnamed node's empty name for export.
+
+Subtree deletion checks linked ownership before publishing. The editor offers
+**Make Editable** for a linked placement family so the user can detach it and
+then edit the subtree. The Windows validation covers both raster paths,
+including the rejection, detachment, history, and source-free reload cases.
+[Windows Vulkan results](../tests/visual-regression/editor-history/windows-nvidia/scene-hierarchy-authoring-results.json)
+
 ### Continuous selection stroke correction — 2026-10-26
 
 The yellow outline now fills a complete five-pixel disk around the selected silhouette. Eight boundary translations had left gaps on thin geometry: a preserved one-pixel native baseline missed 1,128 required stroke pixels. Eighty nonzero integer offsets now form a continuous opaque stroke, batched as instances with explicit object-group indexing and checked whole-object overflow splitting. The stencil mask and shared forward/deferred implementation remain in use.
