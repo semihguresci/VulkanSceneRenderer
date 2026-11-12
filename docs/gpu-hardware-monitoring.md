@@ -21,13 +21,19 @@ average readings over their own sampling windows. Use the separate Vulkan pass
 timings and engine allocation counters for renderer-specific measurements.
 
 One worker initializes and queries NVML. It waits one second after each poll
-before starting the next one. The panel shows how long the latest poll took.
+before starting the next one. The panel shows the age and duration of the
+last completed poll. It marks the sample stale after three seconds without a
+new result while the worker is expected to keep polling. The last readings
+remain visible with that warning until the worker publishes a new sample.
 Both the UI and capture exporter attempt a single nonblocking snapshot read.
 Telemetry with the flag adds a separate `gpuHardware` object with the NVML
 backend, device scope, status, PCI address, and optional readings. Its UTC
 timestamp is Unix milliseconds at poll completion. Sample age is milliseconds
-on the monotonic clock. Poll duration is microseconds of worker time, including
-NVML initialization on the first poll. Unavailable readings are `null`. Driver
+on the monotonic clock. `sampleStale` reports the same freshness as the panel
+and is `null` before the first completed poll or while a sample is being
+published. Terminal failures report their age with `sampleStale` set to false.
+Poll duration is elapsed time in microseconds on the worker, including NVML
+initialization on the first poll. Unavailable readings are `null`. Driver
 memory is expressed in bytes and power in milliwatts. GPU pass timings and
 renderer allocations remain in their existing fields.
 

@@ -9180,6 +9180,16 @@ void GuiManager::drawRendererTelemetryWindow() {
         const auto& pci = *sample->pci;
         ImGui::Text("Vulkan GPU PCI: %04x:%02x:%02x.%x", pci.domain, pci.bus, pci.device, pci.function);
       }
+      if (const auto timing = container::renderer::gpuHardwareSampleTiming(*sample)) {
+        const double ageSeconds = timing->age.count() / 1000.0;
+        if (timing->stale) {
+          ImGui::TextColored(ImVec4(1.0f, 0.68f, 0.22f, 1.0f),
+                             "Stale sample (%.1f s old)", ageSeconds);
+        } else {
+          ImGui::TextDisabled("Sample age: %.1f s", ageSeconds);
+        }
+        ImGui::TextDisabled("Worker poll duration: %.3f ms", sample->pollMicroseconds / 1000.0);
+      }
       if (sample->status == container::renderer::GpuHardwareMonitorStatus::Available) {
         const auto reading = [](const char* label, std::optional<double> value, const char* unit) {
           if (value) ImGui::Text("%s: %.1f %s", label, *value, unit);
@@ -9198,7 +9208,6 @@ void GuiManager::drawRendererTelemetryWindow() {
         reading("Memory clock", sample->memoryClockMHz, "MHz");
         reading("Temperature", sample->temperatureCelsius, "C");
         reading("Power", sample->powerMilliwatts.transform([](auto mw) { return mw / 1000.0; }), "W");
-        ImGui::TextDisabled("Last worker poll: %.3f ms", sample->pollMicroseconds / 1000.0);
       }
     } else {
       ImGui::TextDisabled("Publishing hardware readings");
