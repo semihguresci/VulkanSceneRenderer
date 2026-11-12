@@ -4,7 +4,13 @@ The renderer already lists and selects camera-bearing source nodes, evaluates
 their complete parent world transforms and roll, and supports authored
 perspective and orthographic projections. Camera selection lives in the existing
 animation controls. Startup captures can select a source node with
-`--gltf-camera-node`.
+`--gltf-camera-node`. A model replacement opens in the viewport camera.
+
+Camera references and lens fields are checked before glTF or GLB resource
+loading. Whole-number references written as decimals or exponents resolve to
+the same camera index as integer references. Omit `aspectRatio` to use the
+viewport aspect and omit `zfar` for an infinite perspective projection.
+[glTF camera specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#cameras)
 
 ## Edit a camera lens
 
@@ -196,3 +202,8 @@ claimed. CPU evidence is in
 `build/codex-gltf-validation/camera-pose-cpu/verification.md`.
 Validation provenance is recorded in
 [feature parity progress](feature-parity-progress.md).
+
+The Windows regression covers camera import, startup selection and model
+replacement, parented views, lens and pose history, and portable glTF and GLB
+reloads in both raster paths.
+[Windows Vulkan results](../tests/visual-regression/gltf-cameras/windows-nvidia/gltf-camera-results.json)

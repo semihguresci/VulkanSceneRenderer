@@ -499,7 +499,7 @@ private:
   bool replaySceneRetirement(SceneRetirementHistory& state, bool retired);
   void publishSceneRetirementRefresh();
   std::shared_ptr<SceneRetirementHistory> pendingSceneRetirement_;
-  void resetGltfAnimation();
+  void resetGltfAnimation(bool applyStartupOptions = false);
   void updateGltfAnimation();
   void publishGltfAnimationChanges(const container::geometry::gltf::AnimationDirtySet&);
   void resetGltfInteractivity();

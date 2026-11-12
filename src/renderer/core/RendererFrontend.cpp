@@ -5952,6 +5952,11 @@ void RendererFrontend::initializeScene() {
   if (svc_.config.physicsDemo)
     createPhysicsDemo();
 
+  // Resolve startup selectors against the initial model before capture
+  // actions or editor requests can replace it.
+  if (svc_.config.gltfCameraNode >= 0 || svc_.config.gltfAnimationClip >= 0)
+    resetGltfAnimation(true);
+
   container::log::ContainerLogger::instance().renderer()->info(
       "Initializing Vulkan renderer");
   container::log::ContainerLogger::instance().vulkan()->debug(

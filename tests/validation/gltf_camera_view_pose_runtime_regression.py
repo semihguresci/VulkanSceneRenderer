@@ -544,8 +544,7 @@ def inspect_export(path, expected, *, literal_time=None, literal=False, authored
         target = mapping[12] if direct else light_carrier;definition = 0 if direct else 1
         require(target is not None, 'Portable point light carrier is missing')
         if not direct:
-            quantized = copy.deepcopy(wanted);quantized['color'] = f32(wanted['color']).tolist()
-            require(light[1] == quantized, 'Portable renderer point light values or retained metadata changed')
+            require(light[1] == wanted, 'Portable renderer point light values or retained metadata changed')
             worlds = world_matrices(nodes);authored_world = world_matrices(original)[12]
             desired = np.eye(4);desired[:3, 3] = authored_world[:3, 3]
             close(worlds[target], desired, 'portable point carrier world/scale-shear cancellation')
@@ -605,7 +604,7 @@ def write_point_carrier_oracle(source, destination):
             'Point carrier oracle requires the untouched authored light binding')
     worlds = world_matrices(model['nodes']);desired = np.eye(4);desired[:3, 3] = f32(worlds[owner][:3, 3])
     local = f32(np.linalg.inv(worlds[owner])@desired)
-    light = copy.deepcopy(model['extensions'][LIGHT]['lights'][0]);light['color'] = f32(light['color']).tolist()
+    light = copy.deepcopy(model['extensions'][LIGHT]['lights'][0])
     model['extensions'][LIGHT]['lights'].append(light)
     model['nodes'][owner]['extensions'].pop(LIGHT)
     if not model['nodes'][owner]['extensions']: model['nodes'][owner].pop('extensions')

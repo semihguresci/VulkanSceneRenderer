@@ -1,0 +1,228 @@
+{
+  "schemaVersion": 1,
+  "rendererRevision": "96a3cd154480d84265d9a8738f42f5782c21dbab",
+  "rendererSha256": "8b5f69cae132360de040dea88f7adb4dfd2c71632da851fb9febf85092c63ddd",
+  "platform": "Windows x64",
+  "configuration": "Release",
+  "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+  "driverVersion": 2559967232,
+  "vulkanApiVersion": 4211029,
+  "vulkanValidationLayer": "1.4.363.1",
+  "vulkanSynchronizationValidation": true,
+  "ctestCases": 784,
+  "ctestSha256": "55d9e23163ebe3197c8cbff02d166f479319cca3033f8803cc81ad93d4546fe0",
+  "ctest": [
+    {
+      "target": "gltf_loader_tests",
+      "cases": 38,
+      "xmlSha256": "81b126ae2758cf0f1ab477580a3ad77773211652ca61c249a88601e6afe51c86"
+    },
+    {
+      "target": "gltf_capabilities_tests",
+      "cases": 47,
+      "xmlSha256": "e2f8f5803d2f4e48714de90545335e3368c315887c95dcb25053ef232a596355"
+    },
+    {
+      "target": "gltf_scene_export_tests",
+      "cases": 54,
+      "xmlSha256": "68932d3f77272402d84959803fd791d5cd38d6fbdd63379a06b58978bce2f2f4"
+    },
+    {
+      "target": "gltf_animation_tests",
+      "cases": 62,
+      "xmlSha256": "fb6150680d314544aec452c47ee2e1c3a63f39bb7cd1b50cc1cf7aafebffb1b3"
+    },
+    {
+      "target": "gltf_camera_authoring_tests",
+      "cases": 40,
+      "xmlSha256": "c2250cb28964086db24258c6c78131f89b014191cdb25070c21262846ede5697"
+    },
+    {
+      "target": "gltf_camera_pose_authoring_tests",
+      "cases": 23,
+      "xmlSha256": "0a1519379f1f56b662939d6e8b80fc19568fc784bdbe3a5ca0b168d36bac059d"
+    },
+    {
+      "target": "gltf_camera_node_rest_tests",
+      "cases": 20,
+      "xmlSha256": "35daf0e1820878528f762f4859b3ac1797b224186f6cc6f292aa2c61f6aa04d6"
+    },
+    {
+      "target": "gltf_scene_selection_tests",
+      "cases": 9,
+      "xmlSha256": "ed9bc8880ed21047de923e83debb41019c78f6ae1c35ea67232045995958187b"
+    },
+    {
+      "target": "camera_controller_transform_tests",
+      "cases": 16,
+      "xmlSha256": "750bb33fcb1a9ca36e12a93259af1c242bcdc77278c93627501e415b037d7901"
+    },
+    {
+      "target": "camera_projection_controls_tests",
+      "cases": 15,
+      "xmlSha256": "5222a0a089107b09b81e96b248fc22b06260dbf2abe23e0db4fb0ea7f7f44641"
+    },
+    {
+      "target": "camera_view_pose_controls_tests",
+      "cases": 15,
+      "xmlSha256": "e30e9523caecac7aeacfc234d1171f778440e2645336ebd5f68e6394abce1bdb"
+    },
+    {
+      "target": "temporal_capture_tests",
+      "cases": 151,
+      "xmlSha256": "e400c733bd34bc062bfccf2915ec2342db26365e0f562e91afde86f624ebc099"
+    },
+    {
+      "target": "scene_light_export_tests",
+      "cases": 50,
+      "xmlSha256": "66c67657886afcdd5c9a125c7e7f42890a36d657cefdc3060db5151e4f732c7e"
+    },
+    {
+      "target": "camera_projection_generation_gpu_tests",
+      "cases": 12,
+      "xmlSha256": "f97b03bf994065c36e483f82f5d8bc7c315bd77ebee65b4c1f2c0fbcd9ee5104"
+    },
+    {
+      "target": "camera_pose_scene_generation_gpu_tests",
+      "cases": 8,
+      "xmlSha256": "d519f8cfa2a35539215d99811bc3e83808dfc39ba82227f1814c2787e6ca048a"
+    },
+    {
+      "target": "camera_view_pose_generation_gpu_tests",
+      "cases": 13,
+      "xmlSha256": "764935c834c52596e7a4532d48f85d9a2558f0f0e93b47ae8d0ee4e38c45e4ae"
+    },
+    {
+      "target": "camera_pose_lighting_gpu_tests",
+      "cases": 7,
+      "xmlSha256": "7b1c696d18280544be85d79e3e5a5080aa762ed2a5667bddd712346b0983092f"
+    },
+    {
+      "target": "scene_merge_generation_gpu_tests",
+      "cases": 90,
+      "xmlSha256": "4703344e13591b4da8b5da149741262105769630e6ebf08bee01b97b562eac1d"
+    },
+    {
+      "target": "scene_controller_generation_gpu_tests",
+      "cases": 18,
+      "xmlSha256": "4ec3ead7099287cef6ec38058939d5bd208ecec08773273fc53bb2bbbbafc7ad"
+    },
+    {
+      "target": "gltf_deformation_gpu_tests",
+      "cases": 6,
+      "xmlSha256": "b0714877662930da9151c85901433201e77026b71d6cfc7fe5b404243e1bf2d3"
+    },
+    {
+      "target": "gltf_merge_tests",
+      "cases": 36,
+      "xmlSha256": "43814c1b86bce27fe34dd48b216bc2bd4353a22dd01dc5212d77078cfdbda003"
+    },
+    {
+      "target": "gltf_session_merge_tests",
+      "cases": 12,
+      "xmlSha256": "7bb0266ce18ded88369e0eb2bfe5dc15f145dee6daaee82c14d8c0513ffe20ba"
+    },
+    {
+      "target": "gltf_node_export_compaction_tests",
+      "cases": 16,
+      "xmlSha256": "6949ef9d2ec80a481cf48667e8b9a72decc4f17b9b300c3649281fc9b4b929b4"
+    },
+    {
+      "target": "gltf_material_variants_tests",
+      "cases": 26,
+      "xmlSha256": "8f1f963d109af4624a70e5d35ccd3b43e4b40cd64b6c2d4411cf5de5e47175db"
+    }
+  ],
+  "nativeCaptures": 390,
+  "expectedRejectedProcesses": 15,
+  "nativeProcesses": 173,
+  "native": {
+    "source": {
+      "captures": 12,
+      "processes": 17,
+      "expectedRejectedProcesses": 11,
+      "resultSha256": "d5170b53f162a34d554519cb9410abf2aefc7cc11573dae74a58c309267f5652",
+      "captureSha256": "a374b3ec8cae0619a34b010961b5c65218f246f66a4a2d89aa1515fac32e2056",
+      "logSha256": "3c20e687df9e0babb884505663a141def5d5ec1169fc18be860f53a366cc0346",
+      "manifestSha256": "8c059d88596692631782252e9441ca2e54ee6bf0b10a9d11c0e60ee56a771038",
+      "manifestEntries": 331,
+      "unrelatedHarnessChanges": [
+        "gltf_camera_view_pose_runtime_regression.py"
+      ],
+      "checkCount": 12,
+      "exportInspectionCount": 4
+    },
+    "startup": {
+      "captures": 12,
+      "processes": 8,
+      "expectedRejectedProcesses": 4,
+      "resultSha256": "7d5cf8161e1ec9ea01985ad7873b0fd9a5c0b97834d2e75c7c0daff9e6f08495",
+      "captureSha256": "dbdc9231e677b6027e061ff8264b2ffbd1428ff862c121be0dec2890a06753cb",
+      "logSha256": "d43e2af9a96a6b92b632be63e54b7e83384e824e9cebec5fee171a7e5f8b25f3",
+      "manifestSha256": "8c059d88596692631782252e9441ca2e54ee6bf0b10a9d11c0e60ee56a771038",
+      "manifestEntries": 331,
+      "unrelatedHarnessChanges": [
+        "gltf_camera_view_pose_runtime_regression.py"
+      ],
+      "checkCount": 12
+    },
+    "projection": {
+      "captures": 152,
+      "processes": 52,
+      "expectedRejectedProcesses": 0,
+      "resultSha256": "3e4a3d5984c91ebd101811420cdc7fda49aea79526793ffe7821df346fb0c3ba",
+      "captureSha256": "3faeac8d2dc1c16fd9e687500af6443908e29822a00699c418bfc6e79647c4eb",
+      "logSha256": "a71674fbf5c457703cbe1cbec4207cf03dae498488ceac50608ab29a9f2926ce",
+      "manifestSha256": "8c059d88596692631782252e9441ca2e54ee6bf0b10a9d11c0e60ee56a771038",
+      "manifestEntries": 331,
+      "unrelatedHarnessChanges": [
+        "gltf_camera_view_pose_runtime_regression.py"
+      ],
+      "stateCheckCount": 152,
+      "imageCheckCount": 188,
+      "exportInspectionCount": 6
+    },
+    "pose": {
+      "captures": 150,
+      "processes": 70,
+      "expectedRejectedProcesses": 0,
+      "resultSha256": "8ced622c35a24dc53951dbac933f8e30d4e67d8883fba2e77fed091c49701340",
+      "captureSha256": "3d1c817eb10da6966caaf5bbcc5ddac399086ceea93e0cbc15d4c435ed2d7b30",
+      "logSha256": "7d2fe543028386c31a810a6b7511721d91cb6afa14bb2f9836237ef677ae046b",
+      "manifestSha256": "5e7f51431bd553a04d5c14d0438a1fb5edba54a87fd03f1c307130889ba8a08a",
+      "manifestEntries": 331,
+      "unrelatedHarnessChanges": [],
+      "stateCheckCount": 150,
+      "imageCheckCount": 172,
+      "exportInspectionCount": 6
+    },
+    "animated": {
+      "captures": 54,
+      "processes": 22,
+      "expectedRejectedProcesses": 0,
+      "resultSha256": "492aaf70db3b8febbbb0886235d04c507306262fb1daf7532061cf3e89a00c70",
+      "captureSha256": "d87b41720f7663c44fcf61eb0db73834428c9007bb523576b8096d3ed9a67b92",
+      "logSha256": "5c6e40eece78ad035586b52134dce39d8d82a5d0928ce20460f0e1607862559d",
+      "manifestSha256": "5e7f51431bd553a04d5c14d0438a1fb5edba54a87fd03f1c307130889ba8a08a",
+      "manifestEntries": 331,
+      "unrelatedHarnessChanges": [],
+      "stateCheckCount": 54,
+      "imageCheckCount": 64,
+      "exportInspectionCount": 4
+    },
+    "rename": {
+      "captures": 10,
+      "processes": 4,
+      "expectedRejectedProcesses": 0,
+      "resultSha256": "57b4d83e0cb15c34c5175fa06802cd5a6e7a2605a429f76c11226e76dadc350d",
+      "captureSha256": "a450e12207e79abcf7803ed43679b87cd71e67ae493ae8c32c95d858a1634f28",
+      "logSha256": "394664297b4d62363ac7b5d733c5d84cc17d1c24ed16f82e57e2736bbb48e836",
+      "manifestSha256": "8c059d88596692631782252e9441ca2e54ee6bf0b10a9d11c0e60ee56a771038",
+      "manifestEntries": 331,
+      "unrelatedHarnessChanges": [
+        "gltf_camera_view_pose_runtime_regression.py"
+      ],
+      "checkCount": 10
+    }
+  }
+}
