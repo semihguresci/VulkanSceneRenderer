@@ -223,7 +223,9 @@ def run_benchmark(runtime, args, make_case, make_model, exposure_for):
         print(f"LTC timing {fixture.id} ({args.benchmark_repeats} process pairs)", flush=True)
         model = make_model(runtime.output / "benchmark-fixtures" / fixture.id /
                            "models/validation/cornell_box_local_light.gltf", fixture.settings, fixture.count)
-        exposure = exposure_for(fixture.settings)
+        exposure = fixture.manual_exposure
+        if exposure is None:
+            exposure = exposure_for(fixture.settings)
         settings = fixture.manifest(model, *RESOLUTION, SAMPLES, exposure)
         settings.update(warmupFrames=args.benchmark_warmup, observedFrames=frames,
                         fixedTimestepSeconds=FIXED_DT)

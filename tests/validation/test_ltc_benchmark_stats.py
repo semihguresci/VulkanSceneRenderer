@@ -5,6 +5,7 @@ import random
 import unittest
 
 from ltc_benchmark import run_order
+from ltc_benchmark_fixtures import BENCHMARK_COUNTS, benchmark_fixtures
 import ltc_benchmark_stats as stats
 
 
@@ -241,6 +242,27 @@ class RunOrderTests(unittest.TestCase):
         self.assertEqual(order, run_order(7, "random", random.Random(71)))
         self.assertTrue(all(set(pair) == set(stats.MODES) for pair in order))
         self.assertIn(order.count(stats.MODES), (3, 4))
+
+
+class FixtureTests(unittest.TestCase):
+    def test_legacy_disk_reproduces_original_settings_without_changing_defaults(self):
+        def make_case(name, **settings):
+            return {"name": name, **settings}
+
+        default = list(benchmark_fixtures(make_case))
+        self.assertEqual(len(default), 24)
+        self.assertTrue(all(fixture.manual_exposure is None for fixture in default))
+        legacy = list(benchmark_fixtures(make_case, ("metallic",), domains=("legacy-disk",)))
+        self.assertEqual([fixture.count for fixture in legacy], list(BENCHMARK_COUNTS))
+        for fixture in legacy:
+            self.assertEqual(fixture.manual_exposure, .2)
+            self.assertTrue(fixture.settings["disk"])
+            self.assertEqual(fixture.settings["metallic"], 1.0)
+            self.assertEqual(fixture.settings["roughness"], .6)
+            self.assertEqual(fixture.settings["halfSize"], [.4, .4])
+            self.assertEqual(fixture.settings["light"], [0, 0, 1.5])
+            self.assertEqual(fixture.settings["camera"], [0, 0, 5])
+            self.assertEqual(fixture.settings["intensity"], 8.0)
 
 
 if __name__ == "__main__":
