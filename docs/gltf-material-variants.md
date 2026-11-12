@@ -148,22 +148,31 @@ contains `results.json`, captured pixels, renderer telemetry and Vulkan
 validation logs.
 
 From the repository root, build and run the focused tests and native harness.
-The example uses the Visual Studio build directory configured with
+The example uses the Windows Release build directory configured with
 `ENABLE_WINDOWED_TESTS=ON`. The native run requires Python with NumPy and
 Pillow, a Vulkan device with ray-query support, and `VK_LAYER_KHRONOS_validation`.
 
 ```powershell
-cmake --build out/build/visual-studio --config Release --target VulkanSceneRenderer `
-  gltf_capabilities_tests gltf_material_variants_tests scene_hierarchy_ui_tests scene_merge_generation_gpu_tests
+$build = 'out/build/windows-release'
+cmake --build $build --target VulkanSceneRenderer gltf_capabilities_tests `
+  gltf_material_variants_tests gltf_primitive_frame_variants_tests scene_hierarchy_ui_tests `
+  scene_graph_tests scene_edit_history_tests temporal_capture_tests scene_merge_generation_gpu_tests
 $env:CONTAINER_RUN_GPU_SCENE_MERGE = '1'
-ctest --test-dir out/build/visual-studio -C Release --output-on-failure -R '^(gltf_capabilities_tests|gltf_material_variants_tests|scene_hierarchy_ui_tests|scene_merge_generation_gpu_tests)$'
+ctest --test-dir $build --output-on-failure -R '^(gltf_capabilities_tests|gltf_material_variants_tests|gltf_primitive_frame_variants_tests|scene_hierarchy_ui_tests|scene_graph_tests|scene_edit_history_tests|temporal_capture_tests|scene_merge_generation_gpu_tests)$'
 python tests/validation/gltf_material_variants_runtime_regression.py `
-  --renderer out/build/visual-studio/Release/VulkanSceneRenderer.exe `
+  --renderer "$build/VulkanSceneRenderer.exe" `
   --output out/validation/gltf-material-variants
 ```
 
 Add `--generate-only` to generate fixtures and a report with
 `nativeValidationPerformed` set to `false`.
+
+The November 12, 2026 Release run on an NVIDIA GeForce RTX 2080 SUPER passed
+445 test cases without skips and 94 pixel-exact checks across 120 native
+captures. Vulkan and synchronization validation reported zero errors. The
+report records the tested renderer revision, selective assignments, portable
+exports, and malformed reload recovery.
+[Windows NVIDIA verification report](../tests/visual-regression/variants/windows-nvidia/material-variant-results.json).
 
 The October 25, 2026 checkpoint in
 `out/feature-parity/material-variants-runtime-data-uri/results.json` recorded 105 native

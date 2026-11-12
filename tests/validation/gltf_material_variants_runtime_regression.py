@@ -125,7 +125,7 @@ def classification_fixtures(output):
     return path, oracles
 
 
-def classification_reload_fixture(output, source):
+def classification_reload_fixture(output, source, oracles):
     model = read_model(source)
     invalid = copy.deepcopy(model)
     invalid['meshes'][0]['primitives'][0]['extensions'][EXTENSION]['mappings'].append(
@@ -135,14 +135,21 @@ def classification_reload_fixture(output, source):
     replacement = output/'classification-replacement.gltf'
     replacement.write_text(json.dumps(model, indent=2), encoding='utf-8')
 
+    camera = [dict(frame=1, position=[0, 0, 4], target=[0, 0, 0])]
     sequence = output/'classification-live-reload.json'
     sequence.write_text(json.dumps(dict(
-        schemaVersion=1, frames=9, sampleFrames=[1, 3, 5, 7, 9],
-        camera=[dict(frame=1, position=[0, 0, 4], target=[0, 0, 0])],
+        schemaVersion=1, frames=9, sampleFrames=[1, 3, 5, 7, 9], camera=camera,
         events=[dict(frame=3, materialVariant=0), dict(frame=5, reload=str(malformed)),
                 dict(frame=7, reload=str(replacement)), dict(frame=9, materialVariant=1)]),
         indent=2), encoding='utf-8')
-    return malformed, replacement, sequence
+    # A successful reload clears the editor selection and its viewport outline.
+    # Reload each independent core-material oracle to match that editor state.
+    oracle_sequence = output/'classification-live-reload-oracles.json'
+    oracle_sequence.write_text(json.dumps(dict(
+        schemaVersion=1, frames=5, sampleFrames=[3, 5], camera=camera,
+        events=[dict(frame=2, reload=str(oracles['default'])), dict(frame=4, reload=str(oracles['mask']))]),
+        indent=2), encoding='utf-8')
+    return malformed, replacement, sequence, oracle_sequence
 
 
 def mapped_primitives(model):
@@ -222,7 +229,7 @@ def check_classification(capture, selection, appearance, mapped_primitives):
     return unmapped
 
 
-def check_live_reload(captures, mapped, malformed, replacement, oracles, checks):
+def check_live_reload(captures, mapped, malformed, replacement, oracles, reloaded_oracles, checks):
     expected = [(1, -1, 'default'), (3, 0, 'blend'), (5, 0, 'blend'), (7, -1, 'default'), (9, 1, 'mask')]
     uv.require(len(captures) == len(expected), 'Live reload capture count mismatch')
     selected, rejected, recovered = (record['state'] for record in captures[1:4])
@@ -241,7 +248,10 @@ def check_live_reload(captures, mapped, malformed, replacement, oracles, checks)
                f'Missing malformed asset and mapping diagnostic: {log}')
     for record, (frame, selection, appearance) in zip(captures, expected):
         check_classification(record, selection, appearance, mapped)
-        error = pixels(record['image'], oracles[appearance]['image'])
+        reference = (reloaded_oracles if frame >= 7 else oracles)[appearance]
+        uv.require(record['state']['gui']['selectedMeshNodeId'] == reference['state']['gui']['selectedMeshNodeId'],
+                   f'Live reload and oracle selection differ at frame {frame}')
+        error = pixels(record['image'], reference['image'])
         uv.require(error['maximumError'] == 0, f'Live reload pixels differ at frame {frame}: {error}')
         checks.append(dict(case='classification', technique=record['state']['technique'],
                            liveReload=True, frame=frame, selected=selection, **error))
@@ -403,10 +413,11 @@ def main():
                 schemaVersion=1, frames=5, sampleFrames=[1, 3, 5],
                 events=[dict(frame=3, materialVariant=1), dict(frame=5, materialVariant=-1)]),
                 indent=2), encoding='utf-8')
-            malformed, replacement, live_sequence = classification_reload_fixture(output, source)
+            malformed, replacement, live_sequence, oracle_sequence = classification_reload_fixture(output, source, oracle_paths)
             report['cases'].append(dict(case='classification', source=str(source),
                                         oracles={k:str(v) for k,v in oracle_paths.items()}, sequence=str(sequence),
                                         roundtripSequence=str(roundtrip_sequence), liveReloadSequence=str(live_sequence),
+                                        liveReloadOracleSequence=str(oracle_sequence),
                                         malformedSource=str(malformed), replacementSource=str(replacement)))
             if not args.generate_only:
                 for technique in uv.TECHNIQUES:
@@ -475,8 +486,15 @@ def main():
                             report['checks'].append(dict(case='classification', technique=technique, roundtrip=True,
                                                          format=format_name, frame=frame, selected=selection, **error))
                     if technique == 'deferred-raster':
+                        reloaded = capture(oracle_paths['default'], prefix+'-live-oracles', technique, 'lit',
+                                           sequence=oracle_sequence, ray=ray)
+                        uv.require(len(reloaded) == 2, 'Live reload oracle capture count mismatch')
+                        reloaded_oracles = dict(zip(('default', 'mask'), reloaded))
+                        for appearance, record in reloaded_oracles.items():
+                            uv.require(Path(record['state']['scene']['primary']).resolve() == oracle_paths[appearance],
+                                       f'Live reload did not install the independent {appearance} oracle')
                         live = capture(source, prefix+'-live-reload', technique, 'lit', sequence=live_sequence, ray=ray)
-                        check_live_reload(live, source_mapped, malformed, replacement, oracles, report['checks'])
+                        check_live_reload(live, source_mapped, malformed, replacement, oracles, reloaded_oracles, report['checks'])
                     persist()
                     print('PASS', prefix, flush=True)
         uv.require(hashlib.sha256(renderer.read_bytes()).hexdigest() == binary_hash, 'Renderer changed during validation')
