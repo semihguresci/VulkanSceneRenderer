@@ -1644,3 +1644,37 @@ TEST_F(HierarchyWidgetsTests, ContextMenuClosesWhenTheSameGraphSlotIsReused) {
   ASSERT_NE(context_->ActiveId, 0u);
   EXPECT_EQ(context_->ActiveId, context_->InputTextState.ID);
 }
+
+TEST_F(HierarchyWidgetsTests, SceneResetClosesModalAndAnUnnamedNodeGetsAUsableCopyName) {
+  SceneGraph graph;
+  const auto node = addNode(graph, "");
+  graph.setActiveRoots(std::array{node});
+  const auto revision = graph.hierarchyRevision();
+  container::ui::GuiManager gui;
+  const auto draw = [&] {
+    ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    gui.drawSceneHierarchy(graph, SceneGraph::kInvalidNode, node,
+        [](uint32_t) {}, [](uint32_t) {}, [](uint32_t, bool) {},
+        [](uint32_t, std::optional<uint32_t>) {});
+  };
+
+  const auto* menu = openLastHierarchyRowContextMenu(draw);
+  ASSERT_NE(menu, nullptr);
+  selectNodeContextAction(draw, *menu, 3); // Duplicate subtree...
+  ASSERT_FALSE(context_->OpenPopupStack.empty());
+  gui.resetSceneNodeAuthoring();
+  frame(draw);
+  EXPECT_TRUE(context_->OpenPopupStack.empty());
+  EXPECT_FALSE(gui.consumeSceneNodeAuthoringRequest());
+  EXPECT_EQ(graph.hierarchyRevision(), revision);
+
+  menu = openLastHierarchyRowContextMenu(draw);
+  ASSERT_NE(menu, nullptr);
+  selectNodeContextAction(draw, *menu, 3);
+  key(draw, ImGuiKey_Enter);
+  const auto request = gui.consumeSceneNodeAuthoringRequest();
+  ASSERT_TRUE(request);
+  EXPECT_EQ(request->action, container::ui::SceneNodeAuthoringAction::DuplicateSubtree);
+  EXPECT_EQ(request->nodeIncarnation, graph.nodeIncarnation(node));
+  EXPECT_EQ(request->name, "Node copy");
+}

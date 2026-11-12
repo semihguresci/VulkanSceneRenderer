@@ -182,7 +182,8 @@ bool RendererFrontend::duplicateSceneNode(uint32_t node,std::optional<std::strin
   if(closure.containsProtectedNodes)
     throw std::invalid_argument("A protected structural node cannot be duplicated");
   if(!name) {
-    name=sceneGraph_.getNode(root)->name+" copy";
+    const auto& original = sceneGraph_.getNode(root)->name;
+    name = original.empty() ? "Node copy" : original + " copy";
     try { container::scene::ValidateSceneNodeName(*name); }
     catch(const std::invalid_argument&) { name="Node copy"; }
   } else container::scene::ValidateSceneNodeName(*name);

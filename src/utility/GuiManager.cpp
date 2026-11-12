@@ -3117,7 +3117,7 @@ void GuiManager::drawSceneHierarchy(
           sceneNodeAuthoringUi_.hierarchyRevision = sceneGraph.hierarchyRevision();
           if(action == SceneNodeAuthoringAction::DuplicateSubtree) {
             auto& name=sceneNodeAuthoringUi_.request.name;
-            name+=" copy";
+            name = name.empty() ? "Node copy" : name + " copy";
             try { container::scene::ValidateSceneNodeName(name); }
             catch(const std::invalid_argument&) { name="Node copy"; }
           }
