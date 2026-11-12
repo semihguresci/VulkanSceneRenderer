@@ -113,9 +113,19 @@ in both Vulkan raster techniques. `gltf_interactivity_tests` covers numeric
 and Boolean writes, synchronous order, custom and node events, easing, clip lifecycle,
 malformed graphs, and the execution budget. Use `--scheduler-only` to exercise
 delay cancellation and explicit writes during interpolation in both techniques.
+Use `--viewport-events-only` to replay viewport hover and selection and check
+that GPU picking and CPU hit results agree. The graph changes the material on
+hover entry, hover exit and selection of the authored node. A background click
+clears selection while preserving the material color.
 The native regression accepts `--portability` to check saved GLB reload and
 Import / Merge, including undo and redo. CPU cases cover independent-graph
 rejection, missing placement targets, and typed reference remapping.
+
+`gltf_interactivity_deformation_runtime_regression.py` starts and stops a morph
+clip through custom graph events in both raster techniques. It checks GPU pose
+history against independently evaluated weights and compares raster captures
+with baked meshes. Stopping holds the last pose and resetting restores the
+original pose and resets deformation history.
 
 `gltf_interactivity_export_runtime_regression.py` additionally exercises node
 deletion, material and texture-resource retirement, undo/redo, and portable glTF
