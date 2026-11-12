@@ -31,6 +31,10 @@ ALPHA_TEXTURE = 128 / 255
 MATERIAL_ALPHA = .75
 CUTOFF = ALPHA_TEXTURE * MATERIAL_ALPHA * .5
 CUTOFF_CASES = (('below', .49, .5), ('equal', .5, .5), ('above', .51, .5), ('zero-equal', 0., 0.))
+POINT_CUTOFF_CASES = CUTOFF_CASES[:3] + (
+    ('one-ulp-below', float(np.nextafter(np.float32(.5), np.float32(0))), .5),
+    ('one-ulp-above', float(np.nextafter(np.float32(.5), np.float32(1))), .5),
+)
 CUTOFF_PIXEL = (129, 128)  # The old Bayer test rejected equality at this parity.
 CUTOFF_EDGE_PIXEL = (128, 131)  # Highest Bayer threshold in the transition column.
 CUTOFF_ROI = np.s_[112:144, 112:144]
@@ -215,15 +219,21 @@ def shadow_metrics(actual, clear):
                 medianShadowDarkening=blocked_darkening, litErrorP95=lit_error)
 
 
-def write_cutoff_fixture(path, alpha, cutoff, *, shadow=None, transmission=False, clear=False):
+def write_cutoff_fixture(path, alpha, cutoff, *, shadow=None, transmission=False, clear=False,
+                         textured_vertex_alpha=None):
     asset = Asset()
     asset.model['nodes'][0]['name'] = 'Constant alpha panel'
+    colors = (asset.accessor('VEC4', [[1, 1, 1, textured_vertex_alpha]] * 4)
+              if textured_vertex_alpha is not None else None)
     mesh(asset, asset.accessor('VEC3', [[-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0]]),
-         asset.accessor('VEC3', [[0, 0, 1]] * 4), asset.accessor('VEC2', UV))
+         asset.accessor('VEC3', [[0, 0, 1]] * 4), asset.accessor('VEC2', UV), colors=colors)
     asset.model['materials'] = [dict(doubleSided=True, alphaMode='MASK', alphaCutoff=cutoff,
         pbrMetallicRoughness=dict(baseColorFactor=[0, 1, 0, alpha], metallicFactor=0, roughnessFactor=1),
         extensions=dict(KHR_materials_unlit={}))]
     asset.model['extensionsUsed'] = ['KHR_materials_unlit']
+    if textured_vertex_alpha is not None:
+        texture = asset.image(np.full((2, 2, 4), 255, dtype=np.uint8))
+        asset.model['materials'][0]['pbrMetallicRoughness']['baseColorTexture'] = dict(index=texture)
     if shadow:
         # A receiver ray from the center toward the light meets the panel
         # center, while the camera's center ray sees only the receiver.
@@ -326,10 +336,16 @@ def run_cutoff_suite(run, techniques, *, generate_only, color_only):
         shadow_models = {}
         for light in ('directional', 'point'):
             shadow_models[light] = {}
-            for label, alpha, cutoff in CUTOFF_CASES[:3]:
+            cases = POINT_CUTOFF_CASES if light == 'point' else CUTOFF_CASES[:3]
+            for label, alpha, cutoff in cases:
                 model = run.output / f'cutoff-shadow-{light}-{label}.gltf'
                 write_cutoff_fixture(model, alpha, cutoff, shadow=light)
                 shadow_models[light][label] = model
+                if light == 'point' and label in ('equal', 'one-ulp-below', 'one-ulp-above'):
+                    textured = f'textured-vertex-{label}'
+                    model = run.output / f'cutoff-shadow-{light}-{textured}.gltf'
+                    write_cutoff_fixture(model, 1., cutoff, shadow=light, textured_vertex_alpha=alpha)
+                    shadow_models[light][textured] = model
             run.report['fixtures'].append(dict(suite='cutoff', case=f'{light}-shadow',
                                                 paths={k: str(v) for k, v in shadow_models[light].items()}))
         transmission_models = {}
@@ -424,8 +440,23 @@ def run_cutoff_suite(run, techniques, *, generate_only, color_only):
             equal_mean = float(shadows['equal'].mean())
             require(lit_mean - shadow_mean > 20 and np.array_equal(shadows['equal'], shadows['above']),
                     f'{technique} {light} cutoff shadow: below={lit_mean}, equal={equal_mean}, above={shadow_mean}')
-            run.report['checks'].append(dict(suite='cutoff', check='raster-shadow', technique=technique, light=light,
-                                            belowMean=lit_mean, equalMean=equal_mean, aboveMean=shadow_mean))
+            check = dict(suite='cutoff', check='raster-shadow', technique=technique, light=light,
+                         belowMean=lit_mean, equalMean=equal_mean, aboveMean=shadow_mean)
+            if light == 'point':
+                for reference in ('below', 'above'):
+                    adjacent = shadows[f'one-ulp-{reference}']
+                    require(np.array_equal(adjacent, shadows[reference]),
+                            f'{technique} point shadow one ULP {reference} the cutoff differs from its control')
+                check.update(oneUlpBelowMean=float(shadows['one-ulp-below'].mean()),
+                             oneUlpAboveMean=float(shadows['one-ulp-above'].mean()))
+                for reference in ('equal', 'one-ulp-below', 'one-ulp-above'):
+                    textured = shadows[f'textured-vertex-{reference}']
+                    require(np.array_equal(textured, shadows[reference]),
+                            f'{technique} textured vertex point shadow differs from untextured {reference} control')
+                check.update(texturedVertexEqualMean=float(shadows['textured-vertex-equal'].mean()),
+                             texturedVertexOneUlpBelowMean=float(shadows['textured-vertex-one-ulp-below'].mean()),
+                             texturedVertexOneUlpAboveMean=float(shadows['textured-vertex-one-ulp-above'].mean()))
+            run.report['checks'].append(check)
 
         transmission = {}
         for label, model in transmission_models.items():

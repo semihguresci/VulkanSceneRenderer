@@ -39,8 +39,8 @@ struct VSOutput
     [[vk::location(2)]] float2 texCoord1;
     [[vk::location(3)]] uint baseColorTextureIndex;
     [[vk::location(4)]] uint opacityTextureIndex;
-    [[vk::location(5)]] float opacityFactor;
-    [[vk::location(6)]] float alphaCutoff;
+    [[vk::location(5)]] nointerpolation float flatVertexAlpha;
+    [[vk::location(6)]] float untexturedMaskDistance;
     [[vk::location(7)]] uint flags;
     [[vk::location(8)]] uint objectIndex;
     [[vk::location(9)]] float3 worldPos;
@@ -70,8 +70,8 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
     output.texCoord1 = input.inTexCoord1;
     output.baseColorTextureIndex = material.baseColorTextureIndex;
     output.opacityTextureIndex = material.opacityTextureIndex;
-    output.opacityFactor = material.opacityFactor;
-    output.alphaCutoff = material.alphaCutoff;
+    output.flatVertexAlpha = input.inColorAlpha;
+    output.untexturedMaskDistance = UntexturedAlphaMaskDistance(input.inColorAlpha, material);
     output.flags = material.flags | obj.objectInfo.y;
     output.objectIndex = objectIndex;
     output.worldPos = worldPos.xyz;
@@ -95,19 +95,19 @@ uint fragMain(VSOutput vertIn) : SV_Target0
         vertIn.texCoord, vertIn.texCoord1,
         material.opacityTextureTransform);
 
-    float baseAlpha = vertIn.baseColor.a;
+    float baseAlpha = RasterBaseAlpha(vertIn.baseColor.a, vertIn.flatVertexAlpha, material);
     if (vertIn.baseColorTextureIndex != 0xffffffff)
     {
         baseAlpha *= SamplePbrTexture(
             vertIn.baseColorTextureIndex, baseColorTexCoord, 1.0.xxxx).a;
     }
     baseAlpha = EvaluateOpacity(
-        baseAlpha, vertIn.opacityTextureIndex, vertIn.opacityFactor,
+        baseAlpha, vertIn.opacityTextureIndex, material.opacityFactor,
         opacityTexCoord, material.opacityTextureTransform);
     baseAlpha = ResolveGpuMaterialAlpha(baseAlpha, material.flags);
 
     const bool alphaMasked = (vertIn.flags & kObjectFlagAlphaCutoff) != 0u;
-    if (alphaMasked && !AlphaMaskPass(baseAlpha, vertIn.alphaCutoff, vertIn.pos))
+    if (alphaMasked && !AlphaMaskPass(baseAlpha, vertIn.untexturedMaskDistance, material, vertIn.pos))
     {
         discard;
     }

@@ -241,8 +241,9 @@ TEST(ForwardRasterTechniqueTests, PublishesForwardRecipesBackedByShaderSource) {
   EXPECT_FALSE(contains(shader, "[earlydepthstencil]"));
   EXPECT_TRUE(contains(shader, "#include \"alpha_mask_common.slang\""));
   EXPECT_TRUE(contains(
-      shader, "AlphaMaskPass(baseAlpha, vertIn.alphaCutoff, vertIn.pos)"));
-  EXPECT_FALSE(contains(shader, "baseAlpha < vertIn.alphaCutoff"));
+      shader, "AlphaMaskPass(baseAlpha, vertIn.untexturedMaskDistance, "
+              "material, vertIn.pos)"));
+  EXPECT_FALSE(contains(shader, "baseAlpha < material.alphaCutoff"));
   const auto transparentOnlyGuard =
       shader.find("if ((vertIn.flags & kObjectFlagTransparentOnly) != 0u)");
   ASSERT_NE(transparentOnlyGuard, std::string::npos);

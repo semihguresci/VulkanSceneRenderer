@@ -36,10 +36,10 @@ struct VSOutput
     [[vk::location(1)]] float2 texCoord;
     [[vk::location(2)]] uint baseColorTextureIndex;
     [[vk::location(3)]] uint flags;
-    [[vk::location(4)]] float alphaCutoff;
+    [[vk::location(4)]] float untexturedMaskDistance;
     [[vk::location(5)]] float baseColorAlpha;
     [[vk::location(6)]] uint opacityTextureIndex;
-    [[vk::location(7)]] float opacityFactor;
+    [[vk::location(7)]] nointerpolation float flatVertexAlpha;
     [[vk::location(8)]] uint objectIndex;
     [[vk::location(9)]] float3 worldPos;
 };
@@ -63,10 +63,10 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
     output.texCoord = input.inTexCoord;
     output.baseColorTextureIndex = material.baseColorTextureIndex;
     output.flags = material.flags | obj.objectInfo.y;
-    output.alphaCutoff = material.alphaCutoff;
+    output.untexturedMaskDistance = UntexturedAlphaMaskDistance(input.inColorAlpha, material);
     output.baseColorAlpha = material.color.a * input.inColorAlpha;
     output.opacityTextureIndex = material.opacityTextureIndex;
-    output.opacityFactor = material.opacityFactor;
+    output.flatVertexAlpha = input.inColorAlpha;
     output.objectIndex = objectIndex;
     output.worldPos = worldPos.xyz;
     return output;
@@ -85,7 +85,7 @@ float4 fragMain(VSOutput input) : SV_Target0
     }
 
     GpuMaterial material = uMaterials[uObjects[input.objectIndex].objectInfo.x];
-    float alpha = input.baseColorAlpha;
+    float alpha = RasterBaseAlpha(input.baseColorAlpha, input.flatVertexAlpha, material);
     if (input.baseColorTextureIndex != 0xffffffff)
     {
         float2 baseColorTexCoord = ApplyGpuTextureTransform(
@@ -94,14 +94,14 @@ float4 fragMain(VSOutput input) : SV_Target0
             input.baseColorTextureIndex, baseColorTexCoord, 1.0.xxxx).a;
     }
     alpha = EvaluateOpacity(
-        alpha, input.opacityTextureIndex, input.opacityFactor,
+        alpha, input.opacityTextureIndex, material.opacityFactor,
         ApplyGpuTextureTransform(input.texCoord, input.texCoord,
                                  material.opacityTextureTransform),
         material.opacityTextureTransform);
     alpha = ResolveGpuMaterialAlpha(alpha, material.flags);
 
     if ((input.flags & 0x1u) != 0u &&
-        !AlphaMaskPass(alpha, input.alphaCutoff, input.pos))
+        !AlphaMaskPass(alpha, input.untexturedMaskDistance, material, input.pos))
     {
         discard;
     }

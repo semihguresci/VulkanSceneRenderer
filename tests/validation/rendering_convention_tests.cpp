@@ -1686,9 +1686,9 @@ TEST(RenderingConventionTests,
 
   EXPECT_TRUE(contains(shader, "#include \"alpha_mask_common.slang\""));
   EXPECT_TRUE(
-      contains(shader, "AlphaMaskPass(baseAlpha, vertIn.alphaCutoff, "
-                       "vertIn.pos)"));
-  EXPECT_FALSE(contains(shader, "baseAlpha < vertIn.alphaCutoff"));
+      contains(shader, "AlphaMaskPass(baseAlpha, vertIn.untexturedMaskDistance, "
+                       "material, vertIn.pos)"));
+  EXPECT_FALSE(contains(shader, "baseAlpha < material.alphaCutoff"));
 }
 
 TEST(RenderingConventionTests,
