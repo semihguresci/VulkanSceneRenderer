@@ -266,14 +266,17 @@ def pixels(first, second):
                 changedPixelFraction=float(np.any(diff > 0, axis=2).mean()))
 
 
-def run(renderer, output, fixture, prefix, technique, display, records, *, sequence=None, save=None, timeout=180, ray=False, variant=None, gltf_scene=None, extra=(), require_validation=False, use_authored_sun=False):
+def run(renderer, output, fixture, prefix, technique, display, records, *, sequence=None, save=None,
+        timeout=180, ray=False, variant=None, gltf_scene=None, extra=(), require_validation=False,
+        use_authored_sun=False, with_ui=False):
     image = output / (prefix+'.png')
     log = output / (prefix+'.log')
     for pattern in (prefix+'*.png', prefix+'*.telemetry.json'):
         for stale in output.glob(pattern):
             stale.unlink()
     sun = () if use_authored_sun else ('--directional-intensity', '3', '--directional-direction', '0', '1', '-1')
-    command = [str(renderer), '--hidden', '--no-ui', '--validation', '--width', '640', '--height', '360',
+    gui = () if with_ui else ('--no-ui',)
+    command = [str(renderer), '--hidden', *gui, '--validation', '--width', '640', '--height', '360',
                '--msaa', '1', '--no-taa', '--warmup-frames', '1', '--capture-frame', '2', '--fixed-dt', '.016666667',
                '--render-technique', technique, '--display-mode', display, '--no-bloom',
                '--environment-intensity', '0', *sun,

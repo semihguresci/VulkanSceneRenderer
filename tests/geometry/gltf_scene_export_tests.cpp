@@ -381,6 +381,7 @@ std::filesystem::path texturedSource(const std::filesystem::path& directory,
   camera.type = "perspective";
   camera.perspective.yfov = 0.75;
   camera.perspective.znear = 0.1;
+  camera.perspective.zfar = 100.0;
   source.cameras.push_back(camera);
   source.nodes[0].camera = 0;
   tinygltf::Value::Object metadata;
@@ -2412,6 +2413,7 @@ TEST(GltfSceneExport, PreservesMissingBaseFramesAndRegeneratedDeformationNormals
       else primitive.attributes.erase("NORMAL"); // Even a supplied tangent must be ignored here.
     }
     const auto sourcePath = directory.root / (authoredNormal ? "no-tangent.glb" : "no-normal.glb");
+    fixture.source.cameras[0].perspective.zfar = 100.0;
     tinygltf::TinyGLTF writer;
     ASSERT_TRUE(writer.WriteGltfSceneToFile(&fixture.source, sourcePath.string(), true, true, true, true));
     const auto original = LoadModelWithSource(sourcePath.string());
