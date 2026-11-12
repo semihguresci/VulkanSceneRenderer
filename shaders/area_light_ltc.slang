@@ -18,7 +18,7 @@ static uint areaLtcPathMask;
 
 static const float AREA_LTC_LUT_SIZE = 64.0;
 static const uint AREA_LTC_DISK_SEGMENTS = 32u;
-static const uint AREA_LTC_DISK_MAX_SUBDIVISIONS = 512u;
+static const uint AREA_LTC_DISK_MAX_SUBDIVISION_LEVEL = 9u;
 static const float AREA_LTC_DISK_CURVATURE_TOLERANCE = 0.002;
 
 struct AreaLightDirectTerms
@@ -64,13 +64,8 @@ float AreaLtcClosestChordDistance(float3 a, float3 b)
     return length(a + t * chord);
 }
 
-float AreaLtcIntegrateEdge(float3 a, float3 b)
+float AreaLtcIntegrateUnitEdge(float3 a, float3 b)
 {
-    float lengthSqA = dot(a, a);
-    float lengthSqB = dot(b, b);
-    if (min(lengthSqA, lengthSqB) <= 1.0e-20) return 0.0;
-    a *= rsqrt(lengthSqA);
-    b *= rsqrt(lengthSqB);
     float x = clamp(dot(a, b), -1.0, 1.0);
     float3 edgeNormal = cross(a, b);
     if (x < -0.999)
@@ -89,6 +84,14 @@ float AreaLtcIntegrateEdge(float3 a, float3 b)
     float edgeScale = x > 0.0 ? v :
         0.5 * rsqrt(max(1.0 - x * x, 1.0e-7)) - v;
     return edgeNormal.z * edgeScale;
+}
+
+float AreaLtcIntegrateEdge(float3 a, float3 b)
+{
+    float lengthSqA = dot(a, a);
+    float lengthSqB = dot(b, b);
+    if (min(lengthSqA, lengthSqB) <= 1.0e-20) return 0.0;
+    return AreaLtcIntegrateUnitEdge(a * rsqrt(lengthSqA), b * rsqrt(lengthSqB));
 }
 
 void AreaLtcAccumulateClippedEdge(float3 previous, float3 current,
@@ -170,6 +173,54 @@ void AreaLtcAccumulateReceiverEdge(float3 previous, float3 current,
     }
 }
 
+bool AreaLtcDiskInsideHorizons(float3 center, float3 axisX, float3 axisY,
+                              float4 packedInverse, float3 fittedX, float3 fittedY)
+{
+    // Sum absolute axis heights to bound the whole disk. Include slack for
+    // the 31 single-precision rotations and endpoint arithmetic. Bound the
+    // fitted roundoff using absolute terms before the matrix transform, so
+    // cancellation in a fitted axis cannot underestimate that error.
+    const float roundoff = 1.0e-4;
+    const float minimumHeight = 1.0e-8;
+    float physicalHeight = abs(axisX.z) + abs(axisY.z);
+    if (!(center.z > physicalHeight * (1.0 + roundoff) + minimumHeight))
+        return false;
+
+    float fittedHeight = abs(fittedX.z) + abs(fittedY.z);
+    float fittedCenter = AreaLtcTransformLocal(center, packedInverse).z;
+    float2 magnitude = abs(center.xz) + abs(axisX.xz) + abs(axisY.xz);
+    float fittedScale = dot(abs(packedInverse.yw), magnitude);
+    return fittedCenter > fittedHeight + fittedScale * roundoff + minimumHeight;
+}
+
+float3 AreaLtcNormalizeFittedVertex(float3 point, float4 packedInverse)
+{
+    float3 fitted = AreaLtcTransformLocal(point, packedInverse);
+    return fitted * rsqrt(dot(fitted, fitted));
+}
+
+float AreaLtcIntegrateUnclippedDisk(float3 center, float3 axisX, float3 axisY,
+                                   float4 packedInverse, float2 sectorRotation)
+{
+    // Proven positive fitted heights keep these endpoints outside the
+    // degenerate length guard. Each transformed unit vector is used twice.
+    float3 first = AreaLtcNormalizeFittedVertex(center + axisX, packedInverse);
+    float3 previous = first;
+    float2 offset = float2(1.0, 0.0);
+    float integral = 0.0;
+    [loop]
+    for (uint i = 1u; i < AREA_LTC_DISK_SEGMENTS; ++i)
+    {
+        offset = float2(sectorRotation.x * offset.x - sectorRotation.y * offset.y,
+                        sectorRotation.y * offset.x + sectorRotation.x * offset.y);
+        float3 current = AreaLtcNormalizeFittedVertex(
+            center + axisX * offset.x + axisY * offset.y, packedInverse);
+        integral += AreaLtcIntegrateUnitEdge(previous, current);
+        previous = current;
+    }
+    return integral + AreaLtcIntegrateUnitEdge(previous, first);
+}
+
 float AreaLtcPolygonIntegral(AreaLightFrame frame, float3 worldPosition,
                              float3 N, float3 V, float4 packedInverse)
 {
@@ -229,6 +280,14 @@ float AreaLtcPolygonIntegral(AreaLightFrame frame, float3 worldPosition,
 #ifdef CONTAINER_PROFILE_LTC_PATHS
             areaLtcPathMask |= LTC_PROFILE_COARSE_DISK;
 #endif
+            [branch]
+            if (AreaLtcDiskInsideHorizons(center, axisX, axisY, packedInverse,
+                                          transformedX, transformedY))
+            {
+                integral = AreaLtcIntegrateUnclippedDisk(
+                    center, axisX, axisY, packedInverse, sectorRotation);
+                return saturate(abs(FiniteScalarOr(integral, 0.0)));
+            }
             // Keep the ordinary distant-disk kernel free of nested adaptive
             // loops. The global bound proves every coarse sector is safe.
             float2 offset = float2(1.0, 0.0);
@@ -251,6 +310,9 @@ float AreaLtcPolygonIntegral(AreaLightFrame frame, float3 worldPosition,
 #ifdef CONTAINER_PROFILE_LTC_PATHS
             areaLtcPathMask |= LTC_PROFILE_ADAPTIVE_DISK;
 #endif
+            // NaN cannot improve through a local chord bound. Positive
+            // infinity can, so keep the local refinement path for it.
+            if (isnan(globalRelativeCurvature)) return -1.0;
             float2 sectorStart = float2(1.0, 0.0);
             float3 previous = center + axisX;
             [loop]
@@ -262,30 +324,24 @@ float AreaLtcPolygonIntegral(AreaLightFrame frame, float3 worldPosition,
                 float3 coarseEnd = center + axisX * sectorEnd.x + axisY * sectorEnd.y;
                 // A chord and its arc differ by at most curvatureBound. Their
                 // nearest distances therefore differ by no more than that bound.
-                float relativeCurvature = globalRelativeCurvature;
-                [branch]
-                if (relativeCurvature > AREA_LTC_DISK_CURVATURE_TOLERANCE)
-                {
-                    float minimumDistance = max(boundaryDistance,
-                        AreaLtcClosestChordDistance(previous, coarseEnd) - curvatureBound);
-                    float minimumTransformedDistance = max(transformedBoundaryDistance,
-                        AreaLtcClosestChordDistance(AreaLtcTransformLocal(previous, packedInverse),
-                            AreaLtcTransformLocal(coarseEnd, packedInverse)) - transformedCurvatureBound);
-                    relativeCurvature = max(curvatureBound / max(minimumDistance, 1.0e-20),
-                        transformedCurvatureBound / max(minimumTransformedDistance, 1.0e-20));
-                }
-                uint subdivisions = 1u;
-                [loop]
-                while (relativeCurvature > AREA_LTC_DISK_CURVATURE_TOLERANCE &&
-                       subdivisions < AREA_LTC_DISK_MAX_SUBDIVISIONS)
-                {
-                    subdivisions *= 2u;
-                    relativeCurvature *= 0.25;
-                }
-                // Do not silently integrate an unbounded approximation when the
-                // source size/transform exceeds this finite refinement budget.
-                if (!isfinite(relativeCurvature) ||
-                    relativeCurvature > AREA_LTC_DISK_CURVATURE_TOLERANCE) return -1.0;
+                float minimumDistance = max(boundaryDistance,
+                    AreaLtcClosestChordDistance(previous, coarseEnd) - curvatureBound);
+                float minimumTransformedDistance = max(transformedBoundaryDistance,
+                    AreaLtcClosestChordDistance(AreaLtcTransformLocal(previous, packedInverse),
+                        AreaLtcTransformLocal(coarseEnd, packedInverse)) - transformedCurvatureBound);
+                float relativeCurvature = max(curvatureBound / max(minimumDistance, 1.0e-20),
+                    transformedCurvatureBound / max(minimumTransformedDistance, 1.0e-20));
+                if (!isfinite(relativeCurvature)) return -1.0;
+                // Positive normal float32 bit patterns are ordered by value.
+                // Multiplying by four advances the exponent by two, or 1<<24
+                // in the representation. Round up to find the first acceptable
+                // level, with level zero for values already within tolerance.
+                const uint exponentStep = 1u << 24u;
+                uint bitDistance = asuint(max(relativeCurvature, AREA_LTC_DISK_CURVATURE_TOLERANCE)) -
+                    asuint(AREA_LTC_DISK_CURVATURE_TOLERANCE);
+                uint subdivisionLevel = (bitDistance + (exponentStep - 1u)) >> 24u;
+                if (subdivisionLevel > AREA_LTC_DISK_MAX_SUBDIVISION_LEVEL) return -1.0;
+                uint subdivisions = 1u << subdivisionLevel;
                 float2 rotation = sectorRotation;
                 if (subdivisions > 1u)
                 {
