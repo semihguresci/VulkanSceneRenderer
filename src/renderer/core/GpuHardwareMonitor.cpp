@@ -51,8 +51,9 @@ class NvmlLibrary {
     module_ = LoadLibraryExW(L"nvml.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!module_) {
       PWSTR programFiles{};
-      if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_ProgramFiles, 0, nullptr, &programFiles))) {
-        const std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> folder(programFiles, &CoTaskMemFree);
+      const HRESULT result = SHGetKnownFolderPath(FOLDERID_ProgramFiles, 0, nullptr, &programFiles);
+      const std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> folder(programFiles, &CoTaskMemFree);
+      if (SUCCEEDED(result) && folder) {
         std::wstring path(folder.get());
         path += L"\\NVIDIA Corporation\\NVSMI\\nvml.dll";
         module_ = LoadLibraryExW(path.c_str(), nullptr,
@@ -270,6 +271,15 @@ std::string_view gpuHardwareMonitorStatusText(GpuHardwareMonitorStatus status) {
   return "Hardware monitor status unavailable.";
 }
 
+std::optional<GpuHardwareSampleTiming> gpuHardwareSampleTiming(const GpuHardwareSnapshot& sample,
+    std::chrono::steady_clock::time_point now) {
+  if (!sample.sampledAt) return std::nullopt;
+  const auto age = std::max(std::chrono::milliseconds::zero(),
+      std::chrono::duration_cast<std::chrono::milliseconds>(now - *sample.sampledAt));
+  const bool polling = sample.status == Status::Available || sample.status == Status::SensorsUnavailable;
+  return GpuHardwareSampleTiming{age, polling && age >= GpuHardwareMonitor::staleAfter};
+}
+
 nlohmann::json gpuHardwareTelemetry(const std::optional<GpuHardwareSnapshot>& snapshot,
                                     std::chrono::steady_clock::time_point now) {
   using Json = nlohmann::json;
@@ -278,8 +288,7 @@ nlohmann::json gpuHardwareTelemetry(const std::optional<GpuHardwareSnapshot>& sn
       "available", "worker-unavailable"};
   const auto value = [](const auto& optional) { return optional ? Json(*optional) : Json(nullptr); };
   const auto sample = snapshot.value_or(GpuHardwareSnapshot{});
-  const auto age = sample.sampledAt ? std::max(int64_t{0}, std::chrono::duration_cast<std::chrono::milliseconds>(
-      now - *sample.sampledAt).count()) : 0;
+  const auto timing = gpuHardwareSampleTiming(sample, now);
   Json pci = nullptr;
   if (sample.pci) {
     const auto& address = *sample.pci;
@@ -289,7 +298,8 @@ nlohmann::json gpuHardwareTelemetry(const std::optional<GpuHardwareSnapshot>& sn
       {"status", snapshot ? statusNames.at(static_cast<size_t>(sample.status)) : "publishing"},
       {"pci", std::move(pci)},
       {"sampleUnixMilliseconds", sample.sampledAt ? Json(sample.timestampUnixMilliseconds) : Json(nullptr)},
-      {"sampleAgeMilliseconds", sample.sampledAt ? Json(age) : Json(nullptr)},
+      {"sampleAgeMilliseconds", timing ? Json(timing->age.count()) : Json(nullptr)},
+      {"sampleStale", timing ? Json(timing->stale) : Json(nullptr)},
       {"pollMicroseconds", sample.sampledAt ? Json(sample.pollMicroseconds) : Json(nullptr)},
       {"utilizationPercent", value(sample.utilizationPercent)},
       {"driverUsedMemoryBytes", value(sample.usedMemoryBytes)}, {"driverTotalMemoryBytes", value(sample.totalMemoryBytes)},

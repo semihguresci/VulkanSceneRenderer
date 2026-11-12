@@ -42,11 +42,17 @@ struct GpuHardwareSnapshot {
   std::optional<std::chrono::steady_clock::time_point> sampledAt;
 };
 
+struct GpuHardwareSampleTiming {
+  std::chrono::milliseconds age;
+  bool stale;
+};
+
 // All NVML operations run on one worker. Frame readers never wait for it.
 class GpuHardwareMonitor {
  public:
   using PollFunction = std::move_only_function<GpuHardwareSnapshot()>;
   static constexpr std::chrono::seconds pollInterval{1};
+  static constexpr auto staleAfter = 3 * pollInterval;
 
   GpuHardwareMonitor(VkPhysicalDevice device, bool enabled);
   explicit GpuHardwareMonitor(PollFunction poll);
@@ -62,6 +68,8 @@ class GpuHardwareMonitor {
 };
 
 [[nodiscard]] std::string_view gpuHardwareMonitorStatusText(GpuHardwareMonitorStatus status);
+[[nodiscard]] std::optional<GpuHardwareSampleTiming> gpuHardwareSampleTiming(const GpuHardwareSnapshot& sample,
+    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
 [[nodiscard]] nlohmann::json gpuHardwareTelemetry(const std::optional<GpuHardwareSnapshot>& snapshot,
     std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
 

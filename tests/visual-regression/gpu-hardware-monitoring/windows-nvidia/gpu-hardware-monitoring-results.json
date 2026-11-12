@@ -1,0 +1,752 @@
+{
+  "schemaVersion": 1,
+  "issue": 120,
+  "platform": "Windows x64",
+  "build": {
+    "compiler": "MSVC-19.51.36260.0",
+    "configuration": "Release",
+    "revision": "74656471f3562a4f6671220b5774d594a154f077"
+  },
+  "rendererSha256": "79b614a66c239478c53375bd43166332995e8e8b47a82e2a284c336580413d78",
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+    "vendorId": 4318,
+    "deviceId": 7809,
+    "driverVersion": 2559967232,
+    "vulkanApiVersion": 4211029,
+    "pci": {
+      "bus": 45,
+      "device": 0,
+      "domain": 0,
+      "function": 0
+    }
+  },
+  "fixture": {
+    "path": "models/validation/cornell_box_local_light.gltf",
+    "sha256": "8a70d05c4a1bcfbfd9aee215f89db7120357c995f22c8a228b9ab789988e3fa6"
+  },
+  "validation": {
+    "layer": "VK_LAYER_KHRONOS_validation",
+    "packageVersion": "1.4.363.1",
+    "manifestApiVersion": "1.4.363",
+    "manifestSha256": "672a281330703083230ff02cabdd1afd524b600e0a11ae8610119e06e4183b02",
+    "librarySha256": "451ed11cbc799f858cbc0e843766d2990527c03f93f7a85f03bc1e67b605a435",
+    "synchronizationValidation": true,
+    "processesWithInstanceAndDeviceProof": 6
+  },
+  "ctest": {
+    "receiptSha256": "0c217a3e83d72fffeb12ca0fc50de8cf995ef73e427c1d4ee52afd7fa7b4ac4d",
+    "junitSha256": "2361d9d4deb0ee78167b0eb56306f9d74450f65a1c612564b48fd1aeeed315f3",
+    "casesPassed": 17,
+    "casesFailed": 0,
+    "casesSkipped": 0,
+    "suites": {
+      "renderer_telemetry_tests": 8,
+      "renderer_mcp_measurement_tests": 4,
+      "gpu_hardware_monitor_tests": 5
+    },
+    "monitorCases": [
+      "GpuHardwareMonitor.ABlockedSensorPollDoesNotHoldTheReaderLock",
+      "GpuHardwareMonitor.AnEnabledMonitorWithoutADeviceReportsNoReadings",
+      "GpuHardwareMonitor.CaptureTelemetryUsesMonotonicAgeAndNullUnsupportedReadings",
+      "GpuHardwareMonitor.LastSampleAgesWhileTheNextPollIsBlocked",
+      "GpuHardwareMonitor.SuccessfulPollsAreRateLimitedAndKeepUnsupportedValuesEmpty"
+    ]
+  },
+  "native": {
+    "receiptSha256": "384f863c5fbc244a10aeff731fda524f82d36f29c6a205883216f65b70c87873",
+    "resultsSha256": "00073f76f56007864f2e1cfb34fa53f29c5f088e7fb2e98413d95ac18900cf07",
+    "manifest": {
+      "sha256": "909f2a314b82c81c61c1e916cdeb4852927d876e0191f2dfd7ea43c90a68c28f",
+      "entries": 147
+    },
+    "harnessSha256": "0622b9b20ec6c41cb281dad719f95f6ce0b7549f4dedf0d301caf3ef625b2bbd",
+    "harnessRevision": "eea78a9f8ad23762c17c0bad393b438d78ca4e62",
+    "captures": 30,
+    "successfulProcesses": 6,
+    "matchedFramePairs": 15,
+    "framesPerProcess": 480,
+    "pairs": [
+      {
+        "launchOrder": [
+          "disabled",
+          "enabled"
+        ],
+        "pixelExactFrames": [
+          1,
+          120,
+          240,
+          360,
+          480
+        ],
+        "runs": {
+          "disabled": {
+            "elapsedSeconds": 49.92407949999324,
+            "cpuMilliseconds": {
+              "frames": 238,
+              "median": {
+                "Frame": 7.885800123214722,
+                "Frame wait": 0.0031999999191612005
+              },
+              "p95": {
+                "Frame": 8.486335039138794,
+                "Frame wait": 0.004945000051520765
+              }
+            },
+            "completedGpuProfile": {
+              "available": true,
+              "recordingSerial": 479,
+              "resultLatencyFrames": 1,
+              "source": "timestamp queries",
+              "status": "using timestamp queries; performance queries unavailable: device does not expose VK_KHR_performance_query",
+              "gpuKnownMs": 3.7559359073638916,
+              "measuredPasses": 22
+            },
+            "validationLayer": {
+              "instance": true,
+              "device": true,
+              "logSha256": "91d1af12b77cabe8dafc52a68730e69fe6cf7b8232f1ba961f59941a661d53de"
+            }
+          },
+          "enabled": {
+            "elapsedSeconds": 7.224876499996753,
+            "cpuMilliseconds": {
+              "frames": 238,
+              "median": {
+                "Frame": 7.793900012969971,
+                "Frame wait": 0.0031999999191612005
+              },
+              "p95": {
+                "Frame": 8.41349515914917,
+                "Frame wait": 0.003800000064074993
+              }
+            },
+            "completedGpuProfile": {
+              "available": true,
+              "recordingSerial": 479,
+              "resultLatencyFrames": 1,
+              "source": "timestamp queries",
+              "status": "using timestamp queries; performance queries unavailable: device does not expose VK_KHR_performance_query",
+              "gpuKnownMs": 3.6351358890533447,
+              "measuredPasses": 23
+            },
+            "validationLayer": {
+              "instance": true,
+              "device": true,
+              "logSha256": "a8047b1ea25fff586e4df5434c6de3a82625c8434367a407e9c6d7a3d7b79634"
+            }
+          }
+        },
+        "enabledMinusDisabledCpuMilliseconds": {
+          "median": {
+            "Frame": -0.09190011024475098,
+            "Frame wait": 0.0
+          },
+          "p95": {
+            "Frame": -0.07283987998962438,
+            "Frame wait": -0.0011449999874457717
+          }
+        },
+        "worker": {
+          "observedPolls": 5,
+          "completionGapsUnixMilliseconds": [
+            1005,
+            1007,
+            1008,
+            1009
+          ],
+          "pollMicroseconds": [
+            40229,
+            5468,
+            5505,
+            6931,
+            8407
+          ],
+          "medianPollMicroseconds": 6931,
+          "maxPollMicroseconds": 40229,
+          "supportedSensors": [
+            "utilizationPercent",
+            "driverUsedMemoryBytes",
+            "driverTotalMemoryBytes",
+            "graphicsClockMHz",
+            "memoryClockMHz",
+            "temperatureCelsius",
+            "powerMilliwatts"
+          ]
+        },
+        "samples": [
+          {
+            "frame": 1,
+            "backend": "nvml",
+            "driverTotalMemoryBytes": 8589934592,
+            "driverUsedMemoryBytes": 3251228672,
+            "graphicsClockMHz": 1650,
+            "memoryClockMHz": 7750,
+            "pci": {
+              "bus": 45,
+              "device": 0,
+              "domain": 0,
+              "function": 0
+            },
+            "pollMicroseconds": 40229,
+            "powerMilliwatts": 61603,
+            "sampleAgeMilliseconds": 890,
+            "sampleStale": false,
+            "sampleUnixMilliseconds": 1794503955851,
+            "scope": "device",
+            "status": "available",
+            "temperatureCelsius": 40,
+            "utilizationPercent": 2
+          },
+          {
+            "frame": 120,
+            "backend": "nvml",
+            "driverTotalMemoryBytes": 8589934592,
+            "driverUsedMemoryBytes": 3921506304,
+            "graphicsClockMHz": 1650,
+            "memoryClockMHz": 7750,
+            "pci": {
+              "bus": 45,
+              "device": 0,
+              "domain": 0,
+              "function": 0
+            },
+            "pollMicroseconds": 5468,
+            "powerMilliwatts": 67637,
+            "sampleAgeMilliseconds": 931,
+            "sampleStale": false,
+            "sampleUnixMilliseconds": 1794503956856,
+            "scope": "device",
+            "status": "available",
+            "temperatureCelsius": 41,
+            "utilizationPercent": 8
+          },
+          {
+            "frame": 240,
+            "backend": "nvml",
+            "driverTotalMemoryBytes": 8589934592,
+            "driverUsedMemoryBytes": 3921506304,
+            "graphicsClockMHz": 2010,
+            "memoryClockMHz": 7750,
+            "pci": {
+              "bus": 45,
+              "device": 0,
+              "domain": 0,
+              "function": 0
+            },
+            "pollMicroseconds": 5505,
+            "powerMilliwatts": 108064,
+            "sampleAgeMilliseconds": 936,
+            "sampleStale": false,
+            "sampleUnixMilliseconds": 1794503957863,
+            "scope": "device",
+            "status": "available",
+            "temperatureCelsius": 44,
+            "utilizationPercent": 46
+          },
+          {
+            "frame": 360,
+            "backend": "nvml",
+            "driverTotalMemoryBytes": 8589934592,
+            "driverUsedMemoryBytes": 3921506304,
+            "graphicsClockMHz": 2010,
+            "memoryClockMHz": 7750,
+            "pci": {
+              "bus": 45,
+              "device": 0,
+              "domain": 0,
+              "function": 0
+            },
+            "pollMicroseconds": 6931,
+            "powerMilliwatts": 111015,
+            "sampleAgeMilliseconds": 968,
+            "sampleStale": false,
+            "sampleUnixMilliseconds": 1794503958871,
+            "scope": "device",
+            "status": "available",
+            "temperatureCelsius": 44,
+            "utilizationPercent": 46
+          },
+          {
+            "frame": 480,
+            "backend": "nvml",
+            "driverTotalMemoryBytes": 8589934592,
+            "driverUsedMemoryBytes": 3921506304,
+            "graphicsClockMHz": 2010,
+            "memoryClockMHz": 7750,
+            "pci": {
+              "bus": 45,
+              "device": 0,
+              "domain": 0,
+              "function": 0
+            },
+            "pollMicroseconds": 8407,
+            "powerMilliwatts": 126002,
+            "sampleAgeMilliseconds": 973,
+            "sampleStale": false,
+            "sampleUnixMilliseconds": 1794503959880,
+            "scope": "device",
+            "status": "available",
+            "temperatureCelsius": 44,
+            "utilizationPercent": 46
+          }
+        ]
+      },
+      {
+        "launchOrder": [
+          "enabled",
+          "disabled"
+        ],
+        "pixelExactFrames": [
+          1,
+          120,
+          240,
+          360,
+          480
+        ],
+        "runs": {
+          "enabled": {
+            "elapsedSeconds": 7.34337940000114,
+            "cpuMilliseconds": {
+              "frames": 238,
+              "median": {
+                "Frame": 7.831549882888794,
+                "Frame wait": 0.003000000026077032
+              },
+              "p95": {
+                "Frame": 8.40843997001648,
+                "Frame wait": 0.003700000001117587
+              }
+            },
+            "completedGpuProfile": {
+              "available": true,
+              "recordingSerial": 479,
+              "resultLatencyFrames": 1,
+              "source": "timestamp queries",
+              "status": "using timestamp queries; performance queries unavailable: device does not expose VK_KHR_performance_query",
+              "gpuKnownMs": 3.742112398147583,
+              "measuredPasses": 26
+            },
+            "validationLayer": {
+              "instance": true,
+              "device": true,
+              "logSha256": "3de73142328cae1c5275392810a29c1ebe721eb3347a7fcaf29b5b5e6ba16b69"
+            }
+          },
+          "disabled": {
+            "elapsedSeconds": 7.279294299994945,
+            "cpuMilliseconds": {
+              "frames": 238,
+              "median": {
+                "Frame": 7.772949934005737,
+                "Frame wait": 0.0031999999191612005
+              },
+              "p95": {
+                "Frame": 8.181840181350708,
+                "Frame wait": 0.003599999938160181
+              }
+            },
+            "completedGpuProfile": {
+              "available": true,
+              "recordingSerial": 479,
+              "resultLatencyFrames": 1,
+              "source": "timestamp queries",
+              "status": "using timestamp queries; performance queries unavailable: device does not expose VK_KHR_performance_query",
+              "gpuKnownMs": 4.022239685058594,
+              "measuredPasses": 24
+            },
+            "validationLayer": {
+              "instance": true,
+              "device": true,
+              "logSha256": "be213313bd773acc8fe0c1221d9e43e03a498ca7e4f68ba59d20eb854ada0005"
+            }
+          }
+        },
+        "enabledMinusDisabledCpuMilliseconds": {
+          "median": {
+            "Frame": 0.05859994888305664,
+            "Frame wait": -0.00019999989308416843
+          },
+          "p95": {
+            "Frame": 0.22659978866577113,
+            "Frame wait": 0.00010000006295740604
+          }
+        },
+        "worker": {
+          "observedPolls": 5,
+          "completionGapsUnixMilliseconds": [
+            1007,
+            1010,
+            2012,
+            1007
+          ],
+          "pollMicroseconds": [
+            26423,
+            6944,
+            9406,
+            5322,
+            5593
+          ],
+          "medianPollMicroseconds": 6944,
+          "maxPollMicroseconds": 26423,
+          "supportedSensors": [
+            "utilizationPercent",
+            "driverUsedMemoryBytes",
+            "driverTotalMemoryBytes",
+            "graphicsClockMHz",
+            "memoryClockMHz",
+            "temperatureCelsius",
+            "powerMilliwatts"
+          ]
+        },
+        "samples": [
+          {
+            "frame": 1,
+            "backend": "nvml",
+            "driverTotalMemoryBytes": 8589934592,
+            "driverUsedMemoryBytes": 2747912192,
+            "graphicsClockMHz": 1650,
+            "memoryClockMHz": 7750,
+            "pci": {
+              "bus": 45,
+              "device": 0,
+              "domain": 0,
+              "function": 0
+            },
+            "pollMicroseconds": 26423,
+            "powerMilliwatts": 62820,
+            "sampleAgeMilliseconds": 948,
+            "sampleStale": false,
+            "sampleUnixMilliseconds": 1794503963122,
+            "scope": "device",
+            "status": "available",
+            "temperatureCelsius": 41,
+            "utilizationPercent": 0
+          },
+          {
+            "frame": 120,
+            "backend": "nvml",
+            "driverTotalMemoryBytes": 8589934592,
+            "driverUsedMemoryBytes": 3921506304,
+            "graphicsClockMHz": 1650,
+            "memoryClockMHz": 7750,
+            "pci": {
+              "bus": 45,
+              "device": 0,
+              "domain": 0,
+              "function": 0
+            },
+            "pollMicroseconds": 6944,
+            "powerMilliwatts": 66475,
+            "sampleAgeMilliseconds": 988,
+            "sampleStale": false,
+            "sampleUnixMilliseconds": 1794503964129,
+            "scope": "device",
+            "status": "available",
+            "temperatureCelsius": 41,
+            "utilizationPercent": 8
+          },
+          {
+            "frame": 240,
+            "backend": "nvml",
+            "driverTotalMemoryBytes": 8589934592,
+            "driverUsedMemoryBytes": 3921506304,
+            "graphicsClockMHz": 2010,
+            "memoryClockMHz": 7750,
+            "pci": {
+              "bus": 45,
+              "device": 0,
+              "domain": 0,
+              "function": 0
+            },
+            "pollMicroseconds": 9406,
+            "powerMilliwatts": 108945,
+            "sampleAgeMilliseconds": 987,
+            "sampleStale": false,
+            "sampleUnixMilliseconds": 1794503965139,
+            "scope": "device",
+            "status": "available",
+            "temperatureCelsius": 44,
+            "utilizationPercent": 34
+          },
+          {
+            "frame": 360,
+            "backend": "nvml",
+            "driverTotalMemoryBytes": 8589934592,
+            "driverUsedMemoryBytes": 3921506304,
+            "graphicsClockMHz": 2010,
+            "memoryClockMHz": 7750,
+            "pci": {
+              "bus": 45,
+              "device": 0,
+              "domain": 0,
+              "function": 0
+            },
+            "pollMicroseconds": 5322,
+            "powerMilliwatts": 123610,
+            "sampleAgeMilliseconds": 84,
+            "sampleStale": false,
+            "sampleUnixMilliseconds": 1794503967151,
+            "scope": "device",
+            "status": "available",
+            "temperatureCelsius": 45,
+            "utilizationPercent": 44
+          },
+          {
+            "frame": 480,
+            "backend": "nvml",
+            "driverTotalMemoryBytes": 8589934592,
+            "driverUsedMemoryBytes": 3921571840,
+            "graphicsClockMHz": 2010,
+            "memoryClockMHz": 7750,
+            "pci": {
+              "bus": 45,
+              "device": 0,
+              "domain": 0,
+              "function": 0
+            },
+            "pollMicroseconds": 5593,
+            "powerMilliwatts": 129206,
+            "sampleAgeMilliseconds": 101,
+            "sampleStale": false,
+            "sampleUnixMilliseconds": 1794503968158,
+            "scope": "device",
+            "status": "available",
+            "temperatureCelsius": 46,
+            "utilizationPercent": 44
+          }
+        ]
+      },
+      {
+        "launchOrder": [
+          "disabled",
+          "enabled"
+        ],
+        "pixelExactFrames": [
+          1,
+          120,
+          240,
+          360,
+          480
+        ],
+        "runs": {
+          "disabled": {
+            "elapsedSeconds": 7.370032300008461,
+            "cpuMilliseconds": {
+              "frames": 238,
+              "median": {
+                "Frame": 7.8219499588012695,
+                "Frame wait": 0.0032999999821186066
+              },
+              "p95": {
+                "Frame": 8.376150035858155,
+                "Frame wait": 0.0038999998942017555
+              }
+            },
+            "completedGpuProfile": {
+              "available": true,
+              "recordingSerial": 479,
+              "resultLatencyFrames": 1,
+              "source": "timestamp queries",
+              "status": "using timestamp queries; performance queries unavailable: device does not expose VK_KHR_performance_query",
+              "gpuKnownMs": 3.7842559814453125,
+              "measuredPasses": 22
+            },
+            "validationLayer": {
+              "instance": true,
+              "device": true,
+              "logSha256": "14ff0dfe1e91de6418223fe4d865c94708d0e8a6f9a88de500a368d78aeb71f6"
+            }
+          },
+          "enabled": {
+            "elapsedSeconds": 7.393886999998358,
+            "cpuMilliseconds": {
+              "frames": 238,
+              "median": {
+                "Frame": 7.800800085067749,
+                "Frame wait": 0.0032999999821186066
+              },
+              "p95": {
+                "Frame": 8.290460252761841,
+                "Frame wait": 0.0038999998942017555
+              }
+            },
+            "completedGpuProfile": {
+              "available": true,
+              "recordingSerial": 479,
+              "resultLatencyFrames": 1,
+              "source": "timestamp queries",
+              "status": "using timestamp queries; performance queries unavailable: device does not expose VK_KHR_performance_query",
+              "gpuKnownMs": 3.7065279483795166,
+              "measuredPasses": 23
+            },
+            "validationLayer": {
+              "instance": true,
+              "device": true,
+              "logSha256": "d4dc62d33fc13ae0346316f167963f81b1305611b6076fc0b3007081d1bbe92f"
+            }
+          }
+        },
+        "enabledMinusDisabledCpuMilliseconds": {
+          "median": {
+            "Frame": -0.021149873733520508,
+            "Frame wait": 0.0
+          },
+          "p95": {
+            "Frame": -0.08568978309631348,
+            "Frame wait": 0.0
+          }
+        },
+        "worker": {
+          "observedPolls": 5,
+          "completionGapsUnixMilliseconds": [
+            2016,
+            1007,
+            1006,
+            1007
+          ],
+          "pollMicroseconds": [
+            25182,
+            7106,
+            7100,
+            6212,
+            5508
+          ],
+          "medianPollMicroseconds": 7100,
+          "maxPollMicroseconds": 25182,
+          "supportedSensors": [
+            "utilizationPercent",
+            "driverUsedMemoryBytes",
+            "driverTotalMemoryBytes",
+            "graphicsClockMHz",
+            "memoryClockMHz",
+            "temperatureCelsius",
+            "powerMilliwatts"
+          ]
+        },
+        "samples": [
+          {
+            "frame": 1,
+            "backend": "nvml",
+            "driverTotalMemoryBytes": 8589934592,
+            "driverUsedMemoryBytes": 2445856768,
+            "graphicsClockMHz": 1650,
+            "memoryClockMHz": 7750,
+            "pci": {
+              "bus": 45,
+              "device": 0,
+              "domain": 0,
+              "function": 0
+            },
+            "pollMicroseconds": 25182,
+            "powerMilliwatts": 62421,
+            "sampleAgeMilliseconds": 982,
+            "sampleStale": false,
+            "sampleUnixMilliseconds": 1794503985237,
+            "scope": "device",
+            "status": "available",
+            "temperatureCelsius": 42,
+            "utilizationPercent": 0
+          },
+          {
+            "frame": 120,
+            "backend": "nvml",
+            "driverTotalMemoryBytes": 8589934592,
+            "driverUsedMemoryBytes": 3921571840,
+            "graphicsClockMHz": 2010,
+            "memoryClockMHz": 7750,
+            "pci": {
+              "bus": 45,
+              "device": 0,
+              "domain": 0,
+              "function": 0
+            },
+            "pollMicroseconds": 7106,
+            "powerMilliwatts": 127460,
+            "sampleAgeMilliseconds": 21,
+            "sampleStale": false,
+            "sampleUnixMilliseconds": 1794503987253,
+            "scope": "device",
+            "status": "available",
+            "temperatureCelsius": 45,
+            "utilizationPercent": 29
+          },
+          {
+            "frame": 240,
+            "backend": "nvml",
+            "driverTotalMemoryBytes": 8589934592,
+            "driverUsedMemoryBytes": 3921506304,
+            "graphicsClockMHz": 2010,
+            "memoryClockMHz": 7750,
+            "pci": {
+              "bus": 45,
+              "device": 0,
+              "domain": 0,
+              "function": 0
+            },
+            "pollMicroseconds": 7100,
+            "powerMilliwatts": 126401,
+            "sampleAgeMilliseconds": 55,
+            "sampleStale": false,
+            "sampleUnixMilliseconds": 1794503988260,
+            "scope": "device",
+            "status": "available",
+            "temperatureCelsius": 47,
+            "utilizationPercent": 46
+          },
+          {
+            "frame": 360,
+            "backend": "nvml",
+            "driverTotalMemoryBytes": 8589934592,
+            "driverUsedMemoryBytes": 3933335552,
+            "graphicsClockMHz": 2010,
+            "memoryClockMHz": 7750,
+            "pci": {
+              "bus": 45,
+              "device": 0,
+              "domain": 0,
+              "function": 0
+            },
+            "pollMicroseconds": 6212,
+            "powerMilliwatts": 130187,
+            "sampleAgeMilliseconds": 80,
+            "sampleStale": false,
+            "sampleUnixMilliseconds": 1794503989266,
+            "scope": "device",
+            "status": "available",
+            "temperatureCelsius": 47,
+            "utilizationPercent": 45
+          },
+          {
+            "frame": 480,
+            "backend": "nvml",
+            "driverTotalMemoryBytes": 8589934592,
+            "driverUsedMemoryBytes": 3933990912,
+            "graphicsClockMHz": 2010,
+            "memoryClockMHz": 7750,
+            "pci": {
+              "bus": 45,
+              "device": 0,
+              "domain": 0,
+              "function": 0
+            },
+            "pollMicroseconds": 5508,
+            "powerMilliwatts": 129239,
+            "sampleAgeMilliseconds": 164,
+            "sampleStale": false,
+            "sampleUnixMilliseconds": 1794503990273,
+            "scope": "device",
+            "status": "available",
+            "temperatureCelsius": 47,
+            "utilizationPercent": 46
+          }
+        ]
+      }
+    ]
+  },
+  "timingNotes": "Single-device matched pairs, alternating launch order. CPU median and p95 exclude screenshot frames. NVML durations are worker time; UTC completion gaps are descriptive. No universal timing threshold is claimed.",
+  "optionalNvml": {
+    "rendererDependentsSha256": "f94511033fd8099e0d54c1ad0b58520d6ca5dff8e7fbe24105a0b992e632e389",
+    "nvmlPresentInRendererImportTable": false
+  }
+}
