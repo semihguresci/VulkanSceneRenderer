@@ -1,0 +1,863 @@
+{
+  "schemaVersion": 1,
+  "passed": true,
+  "issue": 157,
+  "platform": "Windows",
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+    "vendorId": 4318,
+    "deviceId": 7809,
+    "driverVersion": 2559967232,
+    "vulkanApiVersion": 4211029
+  },
+  "build": {
+    "revision": "a2dbdbf9f139cf4c8ee89fccfbc6edb321c2c9db",
+    "baselineSourceRevision": "0c05c1fbd442cc41930ef8dd0970b76cbb6dcebe",
+    "baselineEmbeddedRevision": "f51edea3a6c02001a44bec771e26e407d3346e16",
+    "configuration": "Release",
+    "rendererSha256": "f4a031b62bb9f25014e54428c9de22b7a34fc2af1cb0498f0d4d2c573046fd0f",
+    "baselineRendererSha256": "9953237ec2c0076f51c62fc1d107922d7b2e3026d51d815c492a1e981fdeb753",
+    "buildNinjaSha256": "50bb807fa88b3681c64aeb77af1d6b426f7407bf410c4556def66bb81c29aac4",
+    "buildLogSha256": "4f8aa9d978b31602e5ba7db682436157f2f99d0cf3ec19302574eb7518e91ec5",
+    "sourceSha256": {
+      "shaders/alpha_mask_common.slang": "6080e370eb5f9e644fb5a7af3a91327224ad40cee6177766c13d9a1db93d5a35",
+      "shaders/depth_prepass.slang": "d23b2aab5accbe1e1b5b8516b0adb6077f257e005d54acea06e24c5ef8f73c3b",
+      "shaders/extended_material_aux.slang": "ca837f80cd8a2c889ec8e7e9201f2fe669d10c40db209acd013128304ab151d8",
+      "shaders/forward_opaque.slang": "5796d9c5f6a46fe2d48d172e25d37cbfa86b4a4a80ff2a11383fb6fe04ab8af9",
+      "shaders/forward_transparent.slang": "08648d0aa77929bd22ed25586df3d74676e359705f4d2249402adadbd69ef391",
+      "shaders/gbuffer.slang": "91158e8186b336d5859e77df2d5d6c3581e2be4f18781d467a57c96022159705",
+      "shaders/local_shadow_depth.slang": "dc6df58356b382da62321109b84224fb581fad67060df0238ef7c5da75967d62",
+      "shaders/object_normals.slang": "fc4b8683e1266ef9a6d6ea0c8dbb32295b70a29bf342d78ada484070cd1aff3f",
+      "shaders/shadow_depth.slang": "a48c1c8fd7f762aa2823af38dc2206a8c60e7cda57e7a5e2534b8c6eed862a5b",
+      "shaders/temporal_velocity.slang": "dc71c50c5a2a2e57e20f53d4c8ec54f32841b1ab1df8432ea593ceb9bc5915a0",
+      "shaders/transparent_pick.slang": "e1f32dbf2c367c211f54b0a67ca2bf319eee39ced39d6653df5d033a62ce3865",
+      "tests/validation/gltf_vertex_alpha_runtime_regression.py": "bcd2305c7c4f8ca9ba44c80756746228814b0e02815cc116232eef3dc8a3eb9a",
+      "tests/validation/gltf_accessor_runtime_regression.py": "a9992d3d53476cb4f288c867f8728aef745a29d9e1bc45fced6041edd0a49bbc"
+    }
+  },
+  "validation": {
+    "layer": "VK_LAYER_KHRONOS_validation",
+    "packageVersion": "1.4.363.1",
+    "apiVersion": "1.4.363",
+    "synchronizationValidation": true,
+    "filesSha256": {
+      "VkLayer_khronos_validation.json": "672a281330703083230ff02cabdd1afd524b600e0a11ae8610119e06e4183b02",
+      "VkLayer_khronos_validation.dll": "451ed11cbc799f858cbc0e843766d2990527c03f93f7a85f03bc1e67b605a435"
+    }
+  },
+  "cutoff": {
+    "baseline": {
+      "captures": 8,
+      "rendererSha256": "9953237ec2c0076f51c62fc1d107922d7b2e3026d51d815c492a1e981fdeb753",
+      "embeddedRevision": "f51edea3a6c02001a44bec771e26e407d3346e16",
+      "receiptSha256": "fea2b62b625a47f7acafab019bb07d8bb63e77d1ea1c4cb51e81294e2966666d",
+      "artifactCount": 39,
+      "artifactSetSha256": "bb7e050c91ce1826b15fc75f39af845131dab52301dc747d6c1e39cbf4b55dd2",
+      "colorDepthPicking": [
+        {
+          "technique": "deferred-raster",
+          "case": "above",
+          "alpha": 0.51,
+          "cutoff": 0.5,
+          "greenPixels": 1024,
+          "expectedGreenPixels": 1024,
+          "opaqueDepth": 0.016568323597311974,
+          "expectedDepth": 0.016568322976430256,
+          "pickDepth": null,
+          "rawGpuId": 1,
+          "sourceNode": 0,
+          "depthOk": true,
+          "pickOk": true
+        },
+        {
+          "technique": "deferred-raster",
+          "case": "below",
+          "alpha": 0.49,
+          "cutoff": 0.5,
+          "greenPixels": 0,
+          "expectedGreenPixels": 0,
+          "opaqueDepth": 0.0,
+          "expectedDepth": 0.0,
+          "pickDepth": null,
+          "rawGpuId": 0,
+          "sourceNode": null,
+          "depthOk": true,
+          "pickOk": true
+        },
+        {
+          "technique": "deferred-raster",
+          "case": "equal",
+          "alpha": 0.5,
+          "cutoff": 0.5,
+          "greenPixels": 512,
+          "expectedGreenPixels": 1024,
+          "opaqueDepth": 0.0,
+          "expectedDepth": 0.016568322976430256,
+          "pickDepth": null,
+          "rawGpuId": 1,
+          "sourceNode": 0,
+          "depthOk": false,
+          "pickOk": true
+        },
+        {
+          "technique": "deferred-raster",
+          "case": "zero-equal",
+          "alpha": 0.0,
+          "cutoff": 0.0,
+          "greenPixels": 512,
+          "expectedGreenPixels": 1024,
+          "opaqueDepth": 0.0,
+          "expectedDepth": 0.016568322976430256,
+          "pickDepth": null,
+          "rawGpuId": 0,
+          "sourceNode": null,
+          "depthOk": false,
+          "pickOk": false
+        },
+        {
+          "technique": "forward-raster",
+          "case": "above",
+          "alpha": 0.51,
+          "cutoff": 0.5,
+          "greenPixels": 1024,
+          "expectedGreenPixels": 1024,
+          "opaqueDepth": 0.016568323597311974,
+          "expectedDepth": 0.016568322976430256,
+          "pickDepth": null,
+          "rawGpuId": 1,
+          "sourceNode": 0,
+          "depthOk": true,
+          "pickOk": true
+        },
+        {
+          "technique": "forward-raster",
+          "case": "below",
+          "alpha": 0.49,
+          "cutoff": 0.5,
+          "greenPixels": 0,
+          "expectedGreenPixels": 0,
+          "opaqueDepth": 0.0,
+          "expectedDepth": 0.0,
+          "pickDepth": null,
+          "rawGpuId": 0,
+          "sourceNode": null,
+          "depthOk": true,
+          "pickOk": true
+        },
+        {
+          "technique": "forward-raster",
+          "case": "equal",
+          "alpha": 0.5,
+          "cutoff": 0.5,
+          "greenPixels": 512,
+          "expectedGreenPixels": 1024,
+          "opaqueDepth": 0.0,
+          "expectedDepth": 0.016568322976430256,
+          "pickDepth": null,
+          "rawGpuId": 1,
+          "sourceNode": 0,
+          "depthOk": false,
+          "pickOk": true
+        },
+        {
+          "technique": "forward-raster",
+          "case": "zero-equal",
+          "alpha": 0.0,
+          "cutoff": 0.0,
+          "greenPixels": 0,
+          "expectedGreenPixels": 1024,
+          "opaqueDepth": 0.0,
+          "expectedDepth": 0.016568322976430256,
+          "pickDepth": null,
+          "rawGpuId": 0,
+          "sourceNode": null,
+          "depthOk": false,
+          "pickOk": false
+        }
+      ],
+      "expectedFailure": true,
+      "runnerLogSha256": "4d8edaad882bbfb970d9926ac824664b49f8dddea26d286ba537aabbacbdcc79"
+    },
+    "exact": {
+      "captures": 52,
+      "rendererSha256": "f4a031b62bb9f25014e54428c9de22b7a34fc2af1cb0498f0d4d2c573046fd0f",
+      "embeddedRevision": "a2dbdbf9f139cf4c8ee89fccfbc6edb321c2c9db",
+      "receiptSha256": "39cf5ab7036c6b83d27d9fab36fc63558aafdadad117893161bb88ebafd3c49d",
+      "artifactCount": 233,
+      "artifactSetSha256": "d43928699b50096960ec3c54c81d57b22db79d4d982ccc59f3b9c74fe9f94689",
+      "colorDepthPicking": [
+        {
+          "technique": "deferred-raster",
+          "case": "above",
+          "alpha": 0.51,
+          "cutoff": 0.5,
+          "greenPixels": 1024,
+          "expectedGreenPixels": 1024,
+          "opaqueDepth": 0.016568323597311974,
+          "expectedDepth": 0.016568322976430256,
+          "pickDepth": null,
+          "rawGpuId": 1,
+          "sourceNode": 0,
+          "depthOk": true,
+          "pickOk": true
+        },
+        {
+          "technique": "deferred-raster",
+          "case": "below",
+          "alpha": 0.49,
+          "cutoff": 0.5,
+          "greenPixels": 0,
+          "expectedGreenPixels": 0,
+          "opaqueDepth": 0.0,
+          "expectedDepth": 0.0,
+          "pickDepth": null,
+          "rawGpuId": 0,
+          "sourceNode": null,
+          "depthOk": true,
+          "pickOk": true
+        },
+        {
+          "technique": "deferred-raster",
+          "case": "equal",
+          "alpha": 0.5,
+          "cutoff": 0.5,
+          "greenPixels": 1024,
+          "expectedGreenPixels": 1024,
+          "opaqueDepth": 0.016568323597311974,
+          "expectedDepth": 0.016568322976430256,
+          "pickDepth": null,
+          "rawGpuId": 1,
+          "sourceNode": 0,
+          "depthOk": true,
+          "pickOk": true
+        },
+        {
+          "technique": "deferred-raster",
+          "case": "zero-equal",
+          "alpha": 0.0,
+          "cutoff": 0.0,
+          "greenPixels": 1024,
+          "expectedGreenPixels": 1024,
+          "opaqueDepth": 0.016568323597311974,
+          "expectedDepth": 0.016568322976430256,
+          "pickDepth": null,
+          "rawGpuId": 1,
+          "sourceNode": 0,
+          "depthOk": true,
+          "pickOk": true
+        },
+        {
+          "technique": "forward-raster",
+          "case": "above",
+          "alpha": 0.51,
+          "cutoff": 0.5,
+          "greenPixels": 1024,
+          "expectedGreenPixels": 1024,
+          "opaqueDepth": 0.016568323597311974,
+          "expectedDepth": 0.016568322976430256,
+          "pickDepth": null,
+          "rawGpuId": 1,
+          "sourceNode": 0,
+          "depthOk": true,
+          "pickOk": true
+        },
+        {
+          "technique": "forward-raster",
+          "case": "below",
+          "alpha": 0.49,
+          "cutoff": 0.5,
+          "greenPixels": 0,
+          "expectedGreenPixels": 0,
+          "opaqueDepth": 0.0,
+          "expectedDepth": 0.0,
+          "pickDepth": null,
+          "rawGpuId": 0,
+          "sourceNode": null,
+          "depthOk": true,
+          "pickOk": true
+        },
+        {
+          "technique": "forward-raster",
+          "case": "equal",
+          "alpha": 0.5,
+          "cutoff": 0.5,
+          "greenPixels": 1024,
+          "expectedGreenPixels": 1024,
+          "opaqueDepth": 0.016568323597311974,
+          "expectedDepth": 0.016568322976430256,
+          "pickDepth": null,
+          "rawGpuId": 1,
+          "sourceNode": 0,
+          "depthOk": true,
+          "pickOk": true
+        },
+        {
+          "technique": "forward-raster",
+          "case": "zero-equal",
+          "alpha": 0.0,
+          "cutoff": 0.0,
+          "greenPixels": 1024,
+          "expectedGreenPixels": 1024,
+          "opaqueDepth": 0.016568323597311974,
+          "expectedDepth": 0.016568322976430256,
+          "pickDepth": null,
+          "rawGpuId": 1,
+          "sourceNode": 0,
+          "depthOk": true,
+          "pickOk": true
+        }
+      ],
+      "reference": [
+        {
+          "case": "below",
+          "samples": 4,
+          "greenPixels": 0,
+          "expectedGreenPixels": 0
+        },
+        {
+          "case": "equal",
+          "samples": 4,
+          "greenPixels": 1024,
+          "expectedGreenPixels": 1024
+        },
+        {
+          "case": "above",
+          "samples": 4,
+          "greenPixels": 1024,
+          "expectedGreenPixels": 1024
+        },
+        {
+          "case": "zero-equal",
+          "samples": 4,
+          "greenPixels": 1024,
+          "expectedGreenPixels": 1024
+        }
+      ],
+      "motion": [
+        {
+          "technique": "deferred-raster",
+          "case": "below",
+          "validPixels": 0,
+          "movedPixels": 0
+        },
+        {
+          "technique": "deferred-raster",
+          "case": "equal",
+          "validPixels": 1024,
+          "movedPixels": 1024
+        },
+        {
+          "technique": "deferred-raster",
+          "case": "above",
+          "validPixels": 1024,
+          "movedPixels": 1024
+        },
+        {
+          "technique": "deferred-raster",
+          "case": "zero-equal",
+          "validPixels": 1024,
+          "movedPixels": 1024
+        },
+        {
+          "technique": "forward-raster",
+          "case": "below",
+          "validPixels": 0,
+          "movedPixels": 0
+        },
+        {
+          "technique": "forward-raster",
+          "case": "equal",
+          "validPixels": 1024,
+          "movedPixels": 1024
+        },
+        {
+          "technique": "forward-raster",
+          "case": "above",
+          "validPixels": 1024,
+          "movedPixels": 1024
+        },
+        {
+          "technique": "forward-raster",
+          "case": "zero-equal",
+          "validPixels": 1024,
+          "movedPixels": 1024
+        }
+      ],
+      "rasterShadows": [
+        {
+          "technique": "deferred-raster",
+          "light": "directional",
+          "belowMean": 193.33333333333334,
+          "equalMean": 0.0,
+          "aboveMean": 0.0
+        },
+        {
+          "technique": "deferred-raster",
+          "light": "point",
+          "belowMean": 215.712890625,
+          "equalMean": 0.0,
+          "aboveMean": 0.0,
+          "oneUlpBelowMean": 215.712890625,
+          "oneUlpAboveMean": 0.0,
+          "texturedVertexEqualMean": 0.0,
+          "texturedVertexOneUlpBelowMean": 215.712890625,
+          "texturedVertexOneUlpAboveMean": 0.0
+        },
+        {
+          "technique": "forward-raster",
+          "light": "directional",
+          "belowMean": 193.33333333333334,
+          "equalMean": 0.0,
+          "aboveMean": 0.0
+        },
+        {
+          "technique": "forward-raster",
+          "light": "point",
+          "belowMean": 215.740234375,
+          "equalMean": 0.0,
+          "aboveMean": 0.0,
+          "oneUlpBelowMean": 215.740234375,
+          "oneUlpAboveMean": 0.0,
+          "texturedVertexEqualMean": 0.0,
+          "texturedVertexOneUlpBelowMean": 215.740234375,
+          "texturedVertexOneUlpAboveMean": 0.0
+        }
+      ],
+      "transmission": [
+        {
+          "technique": "deferred-raster",
+          "probes": {
+            "equal": {
+              "opaqueDepth": 0.014607341960072517,
+              "expectedDepth": 0.014607342626036638,
+              "pickDepth": 0.016568323597311974,
+              "rawGpuId": 2,
+              "sourceNode": 0,
+              "depthOk": true,
+              "pickOk": true
+            },
+            "above": {
+              "opaqueDepth": 0.014607341960072517,
+              "expectedDepth": 0.014607342626036638,
+              "pickDepth": 0.016568323597311974,
+              "rawGpuId": 2,
+              "sourceNode": 0,
+              "depthOk": true,
+              "pickOk": true
+            },
+            "clear": {
+              "opaqueDepth": 0.014607341960072517,
+              "expectedDepth": 0.014607342626036638,
+              "pickDepth": null,
+              "rawGpuId": 1,
+              "sourceNode": 1,
+              "depthOk": true,
+              "pickOk": true
+            }
+          },
+          "receiverMeanAbsoluteDifference": 76.66666666666667
+        },
+        {
+          "technique": "forward-raster",
+          "probes": {
+            "equal": {
+              "opaqueDepth": 0.014607341960072517,
+              "expectedDepth": 0.014607342626036638,
+              "pickDepth": 0.016568323597311974,
+              "rawGpuId": 2,
+              "sourceNode": 0,
+              "depthOk": true,
+              "pickOk": true
+            },
+            "above": {
+              "opaqueDepth": 0.014607341960072517,
+              "expectedDepth": 0.014607342626036638,
+              "pickDepth": 0.016568323597311974,
+              "rawGpuId": 2,
+              "sourceNode": 0,
+              "depthOk": true,
+              "pickOk": true
+            },
+            "clear": {
+              "opaqueDepth": 0.014607341960072517,
+              "expectedDepth": 0.014607342626036638,
+              "pickDepth": null,
+              "rawGpuId": 1,
+              "sourceNode": 1,
+              "depthOk": true,
+              "pickOk": true
+            }
+          },
+          "receiverMeanAbsoluteDifference": 76.66666666666667
+        }
+      ],
+      "gradientEdgeAa": [
+        {
+          "technique": "deferred-raster",
+          "source": "vertex",
+          "left": 0,
+          "edge": 16,
+          "right": 32,
+          "probe": {
+            "opaqueDepth": 0.0,
+            "expectedDepth": 0.0,
+            "pickDepth": null,
+            "rawGpuId": 0,
+            "sourceNode": null,
+            "depthOk": true,
+            "pickOk": true
+          }
+        },
+        {
+          "technique": "deferred-raster",
+          "source": "texture",
+          "left": 0,
+          "edge": 24,
+          "right": 32,
+          "probe": {
+            "opaqueDepth": 0.0,
+            "expectedDepth": 0.0,
+            "pickDepth": null,
+            "rawGpuId": 0,
+            "sourceNode": null,
+            "depthOk": true,
+            "pickOk": true
+          }
+        },
+        {
+          "technique": "forward-raster",
+          "source": "vertex",
+          "left": 0,
+          "edge": 16,
+          "right": 32,
+          "probe": {
+            "opaqueDepth": 0.0,
+            "expectedDepth": 0.0,
+            "pickDepth": null,
+            "rawGpuId": 0,
+            "sourceNode": null,
+            "depthOk": true,
+            "pickOk": true
+          }
+        },
+        {
+          "technique": "forward-raster",
+          "source": "texture",
+          "left": 0,
+          "edge": 24,
+          "right": 32,
+          "probe": {
+            "opaqueDepth": 0.0,
+            "expectedDepth": 0.0,
+            "pickDepth": null,
+            "rawGpuId": 0,
+            "sourceNode": null,
+            "depthOk": true,
+            "pickOk": true
+          }
+        }
+      ],
+      "pointShadowAdjacentAlphas": {
+        "cutoff": 0.5,
+        "below": 0.4999999701976776,
+        "above": 0.5000000596046448
+      }
+    },
+    "intermediatePointShadow": {
+      "technique": "deferred-raster",
+      "scope": "Intermediate shader preview using the baseline executable",
+      "belowMean": 215.712890625,
+      "equalMean": 156.7783203125,
+      "aboveMean": 0.0,
+      "captures": 18,
+      "rendererSha256": "9953237ec2c0076f51c62fc1d107922d7b2e3026d51d815c492a1e981fdeb753",
+      "embeddedRevision": "f51edea3a6c02001a44bec771e26e407d3346e16",
+      "receiptSha256": "d3d155815cff71b37d1671acf412db0c3925453a2aeb2c02fe2eb463188ef074",
+      "artifactCount": 91,
+      "artifactSetSha256": "8c96884ea48c12ba796353e70047f2cb74a75e78f8b645cbd4f6148ab9d97dd9",
+      "runnerLogSha256": "b740c9199872d9532a08816405f35805488763d0877cffe1f9eb8f19fb2dcf60"
+    },
+    "intermediateTexturedPointShadow": {
+      "technique": "deferred-raster",
+      "scope": "Intermediate shader preview using the baseline executable",
+      "receiverMeans": {
+        "equal": 177.109375,
+        "one-ulp-below": 191.3125,
+        "one-ulp-above": 55.759765625
+      },
+      "artifactCount": 18,
+      "artifactSetSha256": "8a2aedb26a9245ca6795c2d90e5b91d8f2f854cd9cff34d144ca51cdd0cecadb"
+    }
+  },
+  "originalGradient": {
+    "baseline": {
+      "captures": 24,
+      "rendererSha256": "9953237ec2c0076f51c62fc1d107922d7b2e3026d51d815c492a1e981fdeb753",
+      "embeddedRevision": "f51edea3a6c02001a44bec771e26e407d3346e16",
+      "receiptSha256": "32c301668338d1803f13888e6e49169385088c71db7846a2d09c5ef2415ef97a",
+      "artifactCount": 107,
+      "artifactSetSha256": "98861e9eb55123f7c13ccababc94b8c66d00216b65bfbc097adda3f0bbbb3aaa",
+      "checks": 12
+    },
+    "exact": {
+      "captures": 24,
+      "rendererSha256": "f4a031b62bb9f25014e54428c9de22b7a34fc2af1cb0498f0d4d2c573046fd0f",
+      "embeddedRevision": "a2dbdbf9f139cf4c8ee89fccfbc6edb321c2c9db",
+      "receiptSha256": "4a935f82cbcc44a4af604ebfc7d3390244eec9b379583af12cefbe5df29f5eb6",
+      "artifactCount": 107,
+      "artifactSetSha256": "a4a162f20c01db09dd2f92c205cf66de1320273b26df6769d53e67dc434c4344",
+      "checks": 12
+    },
+    "comparison": {
+      "fixtureSha256": {
+        "float-mask-dropped.gltf": "92b930eef8354d2192cbf632cb2ddc51a06a55e397146345ccdad334505d2385",
+        "float-mask-reference.gltf": "52a531ffd511c9514fa1d0db0b6c1f866a010177b1fb549cccfae1b68ccbada4",
+        "float-mask-source.gltf": "39c003f061f903ace87559028e9d17b03b02ccd72ec25653525eebc9481bcb98",
+        "alpha-shadow-clear.gltf": "e1b7de03ef551c2ca70c795460fa588ebef7cc21a68e2d043b6ae8f6dc49e18f",
+        "alpha-shadow-reference.gltf": "2c84449ee12cca294217f449f8904a6f609ef55fe61352e3ac9d0e0521aec3b3",
+        "alpha-shadow-source.gltf": "9b8434aaf633622ca5d8a83223f22c845a1022dff1da7972ee6b9a5429b08e8c",
+        "u16-mask-dropped.gltf": "b581aaec2cde10297232f5b3e09c248a57418bb3447d95e78f2fc3a77d662c93",
+        "u16-mask-reference.gltf": "52a531ffd511c9514fa1d0db0b6c1f866a010177b1fb549cccfae1b68ccbada4",
+        "u16-mask-source.gltf": "72dda27b32a3648a601115c3a59f1aa681c28892233900f9fb6bf523666dc662"
+      },
+      "capturesCompared": 24,
+      "pixelIdenticalCaptures": 24,
+      "maximumPixelChannelError": 0,
+      "differingCaptures": {}
+    }
+  },
+  "spirv": {
+    "schemaVersion": 1,
+    "passed": true,
+    "shaderCount": 116,
+    "changedCount": 23,
+    "unchangedCount": 93,
+    "baselineShaderInventorySha256": "365c89d7e181838410695f410eadcf1b39c0b9e6c3ea94b8aa021d418b09e598",
+    "exactShaderInventorySha256": "f5a4184e1aa17e080847bfc51d7c81d3cfa128cb4209cbab4e53889ae8bbd052",
+    "validator": {
+      "vulkanSdkVersion": "1.4.363.1",
+      "version": "SPIRV-Tools v2026.4 v2026.4-0-gef96ed76",
+      "flags": [
+        "--target-env",
+        "vulkan1.4"
+      ],
+      "toolFilesSha256": {
+        "spirv-val.exe": "d1930e9772e19d0a7393a6c17cbbfc09959afa8ad87e37300391a4631e9aab68",
+        "SPIRV-Tools-shared.dll": "d23a959e4fca4157b97862c550e1b20509892800c7a017a4d255a01f604a7d19"
+      },
+      "baselineValidated": 23,
+      "exactValidated": 23
+    },
+    "modules": [
+      {
+        "module": "depth_prepass.frag.spv",
+        "source": "depth_prepass.slang",
+        "entryPoint": "fragMain",
+        "baselineSha256": "1f2d8aab716e41e7fe3a338f1a7818e8789b1245cb0253a7f21472851a33c806",
+        "exactSha256": "344ad197a335aac14d15dd8b9234a0625bc601a3a5a3711afd7d8a4f1a658967"
+      },
+      {
+        "module": "depth_prepass.vert.spv",
+        "source": "depth_prepass.slang",
+        "entryPoint": "vertMain",
+        "baselineSha256": "2b2a368b6ac05baf6e8422c327a8ddeb48147a558bfd11adb2e14e50e797c519",
+        "exactSha256": "6464f1fe011cf62ca71e58b22f4843bd58a55ff014db55774a6a1591d520c375"
+      },
+      {
+        "module": "extended_material_aux.frag.spv",
+        "source": "extended_material_aux.slang",
+        "entryPoint": "fragMain",
+        "baselineSha256": "93b79a71c4e6734ae76f1f90ef2137cf711ec92aca71b9cf980a681e5ea7d6b1",
+        "exactSha256": "0718f3dd04de6868d25c511a6b53637c790d07d2271f730692d0610dbaf0e2e6"
+      },
+      {
+        "module": "extended_material_aux.vert.spv",
+        "source": "extended_material_aux.slang",
+        "entryPoint": "vertMain",
+        "baselineSha256": "6b982c25473496861d9ada00f7f0d34bb21d97b839ad404089bc7efd0b5673a8",
+        "exactSha256": "4d6d6b8cc7f48718e52db26e4a5a1dab4f526b0e0b26b77caaa117e937988a79"
+      },
+      {
+        "module": "forward_opaque.frag.spv",
+        "source": "forward_opaque.slang",
+        "entryPoint": "fragMain",
+        "baselineSha256": "694ea3276eb118f22b234676d4f7d9e9bbae37f64cf80503c37cf564e2db1cad",
+        "exactSha256": "fb5f033f7532405a52c536d3b296c9820f70fd3e9ac2b0364c99a38dc77628e1"
+      },
+      {
+        "module": "forward_opaque.vert.spv",
+        "source": "forward_opaque.slang",
+        "entryPoint": "vertMain",
+        "baselineSha256": "e28f7c7fadf9d0888dafd2dc987829234064d65f3017ae76ea8fe60553474c6d",
+        "exactSha256": "8d1892fc4cc288b459d085fb1afe8930c741dd1af3fd81b350bd41e2f85ed752"
+      },
+      {
+        "module": "forward_opaque_no_ddgi.frag.spv",
+        "source": "forward_opaque.slang",
+        "entryPoint": "fragMain",
+        "baselineSha256": "a54ed1cf35a1fe9ce329957fbfecb614d697b752603aa525423cc4230ee10c98",
+        "exactSha256": "dddf425078d2e296adbfb7a5561f0cb4bcb57a74d2a15cb16dc47ddecb55e521"
+      },
+      {
+        "module": "forward_opaque_ray.frag.spv",
+        "source": "forward_opaque.slang",
+        "entryPoint": "fragMain",
+        "baselineSha256": "a6779326c9987c5e6a20024a3f92b549aa3822cfdbd93882672128fae5fc00b0",
+        "exactSha256": "40e42e4648e644bd6f946665297f8813d6b87333671789c011b61c655ec85c8f"
+      },
+      {
+        "module": "forward_opaque_ray_no_ddgi.frag.spv",
+        "source": "forward_opaque.slang",
+        "entryPoint": "fragMain",
+        "baselineSha256": "5273175f5e26aa44b10d5e0e737397086d0fbcc458068b044b32a6046bc7a96a",
+        "exactSha256": "7ac3c17d864ccfdb196768433a0c24e79d5548b53bb18dae518a9723bb6e4944"
+      },
+      {
+        "module": "forward_transparent.frag.spv",
+        "source": "forward_transparent.slang",
+        "entryPoint": "fragMain",
+        "baselineSha256": "9c151fbdc6e67b929087f87303ab34beae39de6e550d48a9dd9b3b20d69cc8f4",
+        "exactSha256": "24f41f7f2052b51060aaf85045937e3ce3aea03d2120ce2edc16e11752b02834"
+      },
+      {
+        "module": "forward_transparent.vert.spv",
+        "source": "forward_transparent.slang",
+        "entryPoint": "vertMain",
+        "baselineSha256": "e28f7c7fadf9d0888dafd2dc987829234064d65f3017ae76ea8fe60553474c6d",
+        "exactSha256": "8d1892fc4cc288b459d085fb1afe8930c741dd1af3fd81b350bd41e2f85ed752"
+      },
+      {
+        "module": "gbuffer.frag.spv",
+        "source": "gbuffer.slang",
+        "entryPoint": "fragMain",
+        "baselineSha256": "8c4646044d380c9cfdaf13708317a7435a6a231cc7275dba1092e7b215664f44",
+        "exactSha256": "c0fd343d9ea5859f001747ec9a09ca986e87829f6d502a1621b11397f35c6e13"
+      },
+      {
+        "module": "gbuffer.vert.spv",
+        "source": "gbuffer.slang",
+        "entryPoint": "vertMain",
+        "baselineSha256": "6b982c25473496861d9ada00f7f0d34bb21d97b839ad404089bc7efd0b5673a8",
+        "exactSha256": "4d6d6b8cc7f48718e52db26e4a5a1dab4f526b0e0b26b77caaa117e937988a79"
+      },
+      {
+        "module": "local_shadow_depth.frag.spv",
+        "source": "local_shadow_depth.slang",
+        "entryPoint": "fragMain",
+        "baselineSha256": "b3326b2f335019cb70aa27c78be9ada066b0ad0c15815d40fa9a3f6bd62ceeb8",
+        "exactSha256": "578043c59b4b70230158c35c24568d3259f70afa785bdb9e3a5f85698ceb3662"
+      },
+      {
+        "module": "local_shadow_depth.vert.spv",
+        "source": "local_shadow_depth.slang",
+        "entryPoint": "vertMain",
+        "baselineSha256": "65ff7eca021ec38e65c356a45e1405127d38214ebb61d83f39c0ad5049ef3fe0",
+        "exactSha256": "a9f76b043d9e850164e67ef9ad69c0760dc3b8e459fde13c44b76a8dba559082"
+      },
+      {
+        "module": "object_normals.frag.spv",
+        "source": "object_normals.slang",
+        "entryPoint": "fragMain",
+        "baselineSha256": "08ee401bfbfcbdce6802a2f8e206fc5df064630eac5b4a6f748d4419ab1bd549",
+        "exactSha256": "81d1d2dbc2171e425080406de0bc2072731584a97d05e805fc202d43962edad6"
+      },
+      {
+        "module": "object_normals.vert.spv",
+        "source": "object_normals.slang",
+        "entryPoint": "vertMain",
+        "baselineSha256": "b76e5e62da0304cbc632547662bed4df255ef87884741182b04439b2a7faa732",
+        "exactSha256": "9ea29dfeab7f2902913efdbb702cf30e601bdaf423a074cba09c1b0990c8d21f"
+      },
+      {
+        "module": "shadow_depth.frag.spv",
+        "source": "shadow_depth.slang",
+        "entryPoint": "fragMain",
+        "baselineSha256": "b3326b2f335019cb70aa27c78be9ada066b0ad0c15815d40fa9a3f6bd62ceeb8",
+        "exactSha256": "578043c59b4b70230158c35c24568d3259f70afa785bdb9e3a5f85698ceb3662"
+      },
+      {
+        "module": "shadow_depth.vert.spv",
+        "source": "shadow_depth.slang",
+        "entryPoint": "vertMain",
+        "baselineSha256": "f9e0cc3fa4580021c221e46e5592efd15bba5c2d66dd0ea2d07109fec7b1ca49",
+        "exactSha256": "e8f405571252ad9e86b61dd5ed40343ee4ba00cfbc470f0bb19168d0edd64432"
+      },
+      {
+        "module": "temporal_velocity.frag.spv",
+        "source": "temporal_velocity.slang",
+        "entryPoint": "fragMain",
+        "baselineSha256": "c535d847f53615f84cbb0e14c760c8385b78eae8005f7be0451ba6731a416634",
+        "exactSha256": "1d7f3b782b9ed806278be0c442d5e362379bee1801edf996eb82c064dfff687e"
+      },
+      {
+        "module": "temporal_velocity.vert.spv",
+        "source": "temporal_velocity.slang",
+        "entryPoint": "vertMain",
+        "baselineSha256": "b96148bda1667df9bcfbaef44f7cd220b74df8d8836f1fb9d7687a4657215891",
+        "exactSha256": "633b9f55e199f4a432fefec1817767b26c8637d13fe13f5fe28bb34f807d10ec"
+      },
+      {
+        "module": "transparent_pick.frag.spv",
+        "source": "transparent_pick.slang",
+        "entryPoint": "fragMain",
+        "baselineSha256": "c3b77f9d306fcfd797703bbd9a709aece0e339ee8c10045f0784cbbbe002d2d5",
+        "exactSha256": "215b69a5b546298e77131471db23cfd713c808bcae14732d4fd8e4d202b6ffc3"
+      },
+      {
+        "module": "transparent_pick.vert.spv",
+        "source": "transparent_pick.slang",
+        "entryPoint": "vertMain",
+        "baselineSha256": "4ea668e5c9dbcbea6104a1ebcf35158237752bfc23349f61a0a9ec70dbfc09bc",
+        "exactSha256": "87bbdd66dd19cdad14a6a588654e3c6e2038168dfc4eb02de64b9247421a8708"
+      }
+    ],
+    "receiptSha256": "5027322be3666002139466f362ab83ef1c5762b5696da52304bad45cedcf2757"
+  },
+  "ctest": {
+    "targetsPassed": 8,
+    "gtestCasesPassed": 250,
+    "vulkanGpuCasesPassed": 8,
+    "failed": 0,
+    "skipped": 0,
+    "targets": {
+      "rendering_convention_tests": {
+        "sourceSha256": "462f988fb029a311bb9ecfdc0c1971d79a5e796b6abce51127f045b478588259",
+        "gtestCasesPassed": 197,
+        "binarySha256": "1b00d129b1840d6f0ca1f04aed27207ace012a954e049bd856b53c27b825ab29"
+      },
+      "forward_raster_technique_tests": {
+        "sourceSha256": "655c24670f1467cecb13ad8fdcfdb28393ff338219449eec5e0c98b08ad595d7",
+        "gtestCasesPassed": 11,
+        "binarySha256": "3b66cabeb7b11bd1284aa20a927d9e81484bb4db65568b91066d2ddb0bea95c8"
+      },
+      "gltf_vertex_alpha_tests": {
+        "sourceSha256": "d3194b2ed6e3c0d860879d1d8c23d8f711c21f66b8d7e8a7f0def02af4df40c2",
+        "gtestCasesPassed": 5,
+        "binarySha256": "b5989d59c43c919c9d8d5b9fedca8ff6735a26f343eafe40ccff3f5670ae900a"
+      },
+      "ray_scene_tests": {
+        "sourceSha256": "61034cfe6313581b7379a10579b8dd85ba2e448cbdf591a3a7cb53fc72c5f225",
+        "gtestCasesPassed": 25,
+        "binarySha256": "d88b76d45e27a41a611597d616bc970b5c7ff8db58bf4faf46cf491b3cbd5b47"
+      },
+      "ray_scene_gpu_tests": {
+        "sourceSha256": "e0637043ece160342353dcf95ab4f3268d3edf869b837966401a367033795d1d",
+        "gtestCasesPassed": 8,
+        "binarySha256": "92879dcd794a803fddbfe838584c1b5c2cc1b54d16c3ff573d22329d9dcbfcdb"
+      },
+      "runtime_shader_compiler_tests": {
+        "sourceSha256": "defa4b3c6b0c6dc0fb10da7daa6cb875667e69d9aa8aa4be0dd5437c4e153050",
+        "gtestCasesPassed": 4,
+        "binarySha256": "ad62b807e5198149308121cbe5cd1dd16ed5b73cf7c0901825ae95dba9bf7292"
+      },
+      "runtime_shader_include_lookup_tests": {
+        "sourceSha256": "2b7d2e2fbdbce21eb015c7d2f0fc2a39c8bc7314acbbd5151d556575b2aedc13"
+      },
+      "shaders_incremental_config_tests": {
+        "sourceSha256": "29d422ce9d0484859634b6eea2b40c25361d33f48b36ea14a6485090ee41ccc8"
+      }
+    },
+    "artifactCount": 11,
+    "artifactSetSha256": "b8a4c19aaf720537af6eb7a1893c51e8f8a984a1beb101009c448aa93bf9f768"
+  }
+}
