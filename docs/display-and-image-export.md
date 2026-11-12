@@ -16,8 +16,10 @@ Expand **Export Image** and enter an output path without an extension:
 
 Each image has a `.capture.json` sidecar recording dimensions, color space,
 source, display settings, and whether UI is included. Transparent raster
-surfaces are composited before EXR readback. Export errors appear in Scene
-Controls; interactive errors leave the application running.
+surfaces are composited before EXR readback. The temporal resolve discards prior
+color when switching between the editor view and EXR capture so selection
+outlines stay out of raw exports. Export errors appear in Scene Controls, and
+interactive errors leave the application running.
 
 Both raster renderers and the progressive path-tracing viewport use the same
 display and capture path. Path-traced EXR metadata identifies its source as
@@ -67,12 +69,14 @@ OpenCV with OpenEXR support. Run on a Vulkan device with validation layers:
 ```text
 python tests/validation/display_grade_runtime_regression.py PATH_TO_EXE OUTPUT_DIRECTORY
 python tests/validation/scene_linear_capture_runtime_regression.py PATH_TO_EXE OUTPUT_DIRECTORY
+python tests/validation/scene_linear_selection_history_runtime_regression.py PATH_TO_EXE OUTPUT_DIRECTORY
 python tests/validation/reference_sample_series_runtime_regression.py PATH_TO_EXE OUTPUT_DIRECTORY
 ```
 
 They check analytic tone curves and emission, transparent coverage, preset
 validation, raw-radiance independence, resize with TAA, and overlay exclusion on
-both raster renderers. The reference series test checks exact checkpoints,
+both raster renderers, including selection outlines from earlier frames. The
+reference series test checks exact checkpoints,
 batch-size independence, GPU-timed adaptive batches, and rejection of diagnosed
 paths. It also checks that blocked sidecars preserve earlier checkpoints and
 existing outputs, and that a retry can publish the full checkpoint.
