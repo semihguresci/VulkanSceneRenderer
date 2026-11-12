@@ -178,6 +178,47 @@ packaged renderer DLL directory on `PATH`. Each prints JSON. An optional first
 argument selects a fixture count from 100 through 10,000,000. Keep build/test processes idle
 during measurements, and use the same fixture count/toolchain for both variants.
 
+### Current Release widget measurements
+
+The November 12, 2026 run used an AMD Ryzen 9 3900X, MSVC 19.51.36260.0,
+and Dear ImGui 1.93.0. Each view ran in three independent processes. Each
+process measured seven batches of warmed CPU ImGui frames without a Vulkan
+backend. The table reports the median of the process frame-time medians and
+the median peak working set in MiB. Working-set peaks include fixture
+construction and interaction checks.
+
+| View | 10,001 rich µs/frame | 10,001 rich peak MiB | 100,001 compact µs/frame | 100,001 compact peak MiB |
+| --- | ---: | ---: | ---: | ---: |
+| Hierarchy expanded | 43.1 | 12.6 | 38.7 | 50.0 |
+| Hierarchy root collapsed | 10.7 | 12.1 | 10.5 | 50.0 |
+| Hierarchy panel closed | 3.7 | 12.1 | 3.6 | 50.0 |
+| BIM Elements, empty query | 44.0 | 13.6 | 28.1 | 37.5 |
+| BIM Elements, unchanged filtered query | 11.9 | 13.6 | 10.9 | 37.9 |
+| BIM Elements panel closed | 3.3 | 12.2 | 3.3 | 32.0 |
+
+The expanded hierarchy retained an estimated 0.99 MiB of cache capacity at
+10,001 nodes and 8.47 MiB at 100,001 nodes. Its closed-panel fixture kept no
+hierarchy cache. The compact BIM index retained 6.18 MiB with the browser open.
+Warmed compact BIM frames requested no C++ or ImGui allocations for either
+unchanged query. The current hierarchy includes Selectable and Hoverable
+columns, and the historical timings below used ImGui 1.91.8.
+
+All 36 benchmark processes passed their interaction and cache-reuse checks.
+Eight focused Release CTest targets also passed, covering 166 C++ cases and
+14 Python runner checks. The real widgets exercised held clicks and open
+popups across graph replacement, BIM search retirement while closed, and
+paging through 10,001 spatial relationships with wrapped labels.
+[Current measurement record](../tests/benchmarks/results/scene-browser-current-windows.json)
+
+Set `$build` to the Ninja Release build directory configured with
+`ENABLE_SCENE_BROWSER_BENCHMARK=ON`. Run the scale runner three times per
+fixture with a distinct output path for each repeat.
+
+```powershell
+python -B tests/benchmarks/run_scene_browser_scale.py --exe "$build/benchmarks/scene_browser_benchmark.exe" --counts 10001 --fixture rich --sample-interval 0.01 --output out/scene-browser/rich-1.json
+python -B tests/benchmarks/run_scene_browser_scale.py --exe "$build/benchmarks/scene_browser_benchmark.exe" --counts 100001 --fixture compact --sample-interval 0.01 --output out/scene-browser/compact-1.json
+```
+
 ### Initial Release widget measurements, before packed storage
 
 These historical measurements precede the packed-index optimization below.
