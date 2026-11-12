@@ -1,5 +1,6 @@
 #include "Container/geometry/Model.h"
 #include "Container/geometry/GltfLinkedAssets.h"
+#include "Container/geometry/GltfMerge.h"
 #include "Container/geometry/GltfModelLoader.h"
 #include "Container/geometry/GltfIesProfiles.h"
 #include "Container/geometry/GltfNodeFlags.h"
@@ -926,6 +927,79 @@ TEST(GltfModelLoader, SceneMetadataPreservesSharedRootsDuplicateNamesAndEmptySce
   EXPECT_EQ(implicit.defaultScene, -1);
   EXPECT_TRUE(implicit.scenes.empty());
   EXPECT_EQ(implicit.nodes[0].children, std::vector<int>{1});
+}
+
+TEST(GltfModelLoader, MergeInputPlacesAHierarchyWithOnlyLightsAndCameras) {
+  using namespace container::geometry::gltf;
+  const auto basePath = writeTriangleGltf("geometry-free-merge-base", {0, 1, 2});
+  const auto path = basePath.parent_path() / "geometry-free-merge.gltf";
+  writeGltfJson(path, nlohmann::json::parse(R"({
+    "asset": {"version": "2.0"},
+    "extensionsUsed": ["KHR_lights_punctual"],
+    "extensionsRequired": ["KHR_lights_punctual"],
+    "extensions": {"KHR_lights_punctual": {"lights": [{"type": "point"}]}},
+    "cameras": [{"type": "perspective", "perspective": {"yfov": 0.8, "znear": 0.1}}],
+    "nodes": [
+      {"name": "Rig", "children": [1, 2], "translation": [1, 2, 3]},
+      {"name": "Light", "extensions": {"KHR_lights_punctual": {"light": 0}}},
+      {"name": "Camera", "camera": 0}
+    ],
+    "scenes": [{"nodes": [0]}],
+    "scene": 0
+  })"));
+
+  EXPECT_THROW((void)LoadModelWithSource(path.string()), std::runtime_error);
+  LoadOptions options;
+  options.maxInputBytes = 512ull * 1024 * 1024;
+  options.mergeInput = true;
+  const auto incoming = LoadModelWithSource(path.string(), options);
+  EXPECT_TRUE(incoming.model.empty());
+  const auto base = LoadSourceModel(basePath.string());
+  const auto plan = PlanGltfMerge(base, incoming.gltfModel);
+  ASSERT_EQ(plan.placement.nodes.size(), 3u);
+  ASSERT_GE(plan.parentNode, 0);
+  const auto& parent = plan.model.nodes.at(plan.parentNode);
+  const auto& rig = plan.model.nodes.at(plan.placement.nodes[0]);
+  EXPECT_EQ(parent.children, std::vector<int>{plan.placement.nodes[0]});
+  EXPECT_EQ(rig.name, "Rig");
+  EXPECT_EQ(rig.translation, (std::vector<double>{1, 2, 3}));
+  EXPECT_EQ(rig.children, (std::vector<int>{plan.placement.nodes[1], plan.placement.nodes[2]}));
+  EXPECT_EQ(plan.model.nodes.at(plan.placement.nodes[1]).light, 0);
+  EXPECT_EQ(plan.model.nodes.at(plan.placement.nodes[2]).camera, 0);
+  EXPECT_EQ(plan.model.meshes.size(), base.meshes.size());
+}
+
+TEST(GltfModelLoader, MergeInputAcceptsEmptyScenesAndRejectsInvalidMeshData) {
+  using namespace container::geometry::gltf;
+  const auto dir = std::filesystem::temp_directory_path() / "container_gltf_loader_tests";
+  std::filesystem::create_directories(dir);
+  const auto path = dir / "empty-scene-merge.gltf";
+  auto source = nlohmann::json::parse(R"({
+    "asset": {"version": "2.0"}, "scenes": [{"name": "Empty"}], "scene": 0
+  })");
+  writeGltfJson(path, source);
+  LoadOptions options;
+  options.mergeInput = true;
+  const auto incoming = LoadModelWithSource(path.string(), options);
+  EXPECT_TRUE(incoming.model.empty());
+  EXPECT_TRUE(incoming.gltfModel.nodes.empty());
+  ASSERT_EQ(incoming.gltfModel.scenes.size(), 1u);
+  EXPECT_EQ(incoming.gltfModel.scenes[0].name, "Empty");
+  EXPECT_THROW((void)LoadModelWithSource(path.string()), std::runtime_error);
+
+  source["meshes"] = nlohmann::json::object();
+  writeGltfJson(path, source);
+  EXPECT_THROW((void)LoadModelWithSource(path.string(), options), std::runtime_error);
+
+  source.erase("meshes");
+  source["nodes"] = {{{"mesh", 0}}};
+  source["scenes"][0]["nodes"] = {0};
+  writeGltfJson(path, source);
+  EXPECT_THROW((void)LoadModelWithSource(path.string(), options), std::runtime_error);
+
+  source["meshes"] = {{{"primitives", nlohmann::json::array()}}};
+  writeGltfJson(path, source);
+  EXPECT_THROW((void)LoadModelWithSource(path.string(), options), std::runtime_error);
 }
 
 TEST(GltfModelLoader, SceneMetadataRejectsNarrowingAndNonIntegerIndicesBeforeResourceIo) {

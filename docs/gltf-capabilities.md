@@ -98,6 +98,16 @@ loader reports and omits optional payloads it cannot remap. It preserves the
 core fallback, `extras`, and supported extension references. Opaque optional
 metadata already present on the merge destination stays intact when its
 source indices are stable.
+
+Import / Merge accepts glTF and GLB scenes with lights or cameras and no
+meshes. Each import adds a named placement to the active scene. Incoming
+asset attribution and document `extras` are stored under
+`extras.containerMergeSource` on the placement node, so distinct imports can
+retain their own metadata. If the active destination changes while an import
+is preparing, the renderer asks the user to select the destination and retry.
+Undo and redo use the resident merge data, and scene export includes the
+placement and its dependencies.
+
 Linked children can fall back to their static scene when
 `KHR_interactivity` is optional. A required graph in a linked child or required
 opacity micromaps in a composition produce a capability error before reading

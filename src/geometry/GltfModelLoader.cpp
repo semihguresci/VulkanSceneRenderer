@@ -1033,7 +1033,8 @@ std::optional<int> normalizeSourceInteger(nlohmann::json& value, bool& rewritten
 // checked. TinyGLTF stores them as int, so validating its model alone cannot
 // detect an oversized source index that narrowed into an otherwise valid one.
 // This runs while reading the source document, before any resource callback.
-bool normalizeSceneHierarchyJson(nlohmann::json& json, const std::stop_token& stop) {
+bool normalizeSceneHierarchyJson(nlohmann::json& json, bool mergeInput,
+                                 const std::stop_token& stop) {
   constexpr size_t maxScenes = 65536;
   constexpr size_t maxNodes = 1'000'000;
   constexpr size_t maxRootReferences = 1'000'000;
@@ -1042,8 +1043,11 @@ bool normalizeSceneHierarchyJson(nlohmann::json& json, const std::stop_token& st
   };
   const auto nodes = json.find("nodes");
   const auto scenes = json.find("scenes");
+  const auto meshes = json.find("meshes");
   if (nodes != json.end() && !nodes->is_array()) fail("nodes must be an array");
   if (scenes != json.end() && !scenes->is_array()) fail("scenes must be an array");
+  if (mergeInput && meshes != json.end() && !meshes->is_array()) fail("meshes must be an array");
+  const bool geometryFreeMerge = mergeInput && (meshes == json.end() || meshes->empty());
   const size_t nodeCount = nodes == json.end() ? 0 : nodes->size();
   const size_t sceneCount = scenes == json.end() ? 0 : scenes->size();
   if (nodeCount > maxNodes) fail("node table exceeds its count limit");
@@ -1068,6 +1072,7 @@ bool normalizeSceneHierarchyJson(nlohmann::json& json, const std::stop_token& st
     auto& node = nodes->at(i);
     const auto label = "nodes[" + std::to_string(i) + "]";
     if (!node.is_object()) fail(label + " must be an object");
+    if (geometryFreeMerge && node.contains("mesh")) fail(label + ".mesh references a missing entry");
     const auto children = node.find("children");
     if (children == node.end()) continue;
     if (!children->is_array()) fail(label + ".children must be an array");
@@ -1684,7 +1689,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
                   discardedMicromaps = true;
                 }
               }
-              const bool normalizedHierarchyIndices = normalizeSceneHierarchyJson(json, stop);
+              const bool normalizedHierarchyIndices = normalizeSceneHierarchyJson(json, options.mergeInput, stop);
               const auto nodeFlags = ValidateGltfNodeFlagsJson(json);
               const auto extendedMaterials = ValidateGltfExtendedMaterialsJson(json);
               const auto experimentalMaterialBytes = options.enableExperimentalMaterials
@@ -2005,7 +2010,7 @@ GltfLoadResult LoadModelWithSource(const std::string& path,
     if (options.enableOpacityMicromaps && !options.mergeInput && (!linked || linked->placements.empty()))
       micromaps = ParseGltfOpacityMicromaps(gltfModel);
     auto meshes = parseMeshes(gltfModel, micromaps, options.stop);
-    if (meshes.empty()) {
+    if (meshes.empty() && (!options.mergeInput || !gltfModel.meshes.empty())) {
       throw std::runtime_error("No renderable primitives found in glTF file");
     }
     // Runtime export rebuilds topology and resources from the core material.

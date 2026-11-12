@@ -131,9 +131,14 @@ struct RendererFrontend::ModelLoadState {
     std::optional<container::geometry::GltfLoadResult> gltf;
     std::optional<BimManager::PreparedScene> bim;
   };
+  struct MergeDestination {
+    uint64_t graphIdentity;
+    size_t scene;
+  };
   using Worker = container::util::AsyncModelPreparation<std::unique_ptr<Prepared>>;
   Worker worker;
   std::optional<container::ui::ModelLoadRequest> request;
+  std::optional<MergeDestination> mergeDestination;
   std::optional<container::ui::ModelLoadRequest> queued;
   bool queuedRemote{false};
   bool remote{false};
@@ -5219,10 +5224,14 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
     modelLoad_->worker.cancel();
     if (modelLoad_->ready) modelLoad_->worker.discard(std::move(modelLoad_->ready));
     modelLoad_->request = std::move(queuedRequest);
+    modelLoad_->mergeDestination.reset();
     modelLoad_->remote = remote;
     ++modelLoad_->requests;
     const auto &action = *modelLoad_->request;
     if(action.merge) {
+      if (subs_.sceneManager)
+        modelLoad_->mergeDestination = ModelLoadState::MergeDestination{
+            sceneGraph_.identity(), subs_.sceneManager->selectedScene()};
       ++mergeRequest_.requestId;
       mergeRequest_.outcome=MergeRequestOutcome::Pending;
       mergeRequest_.error.clear();
@@ -5260,6 +5269,15 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
   const auto request = *state.request;
   const std::string statusLabel = request.label.empty() ? request.path : request.label;
   try {
+    // The active scene can change while the CPU worker is preparing the source.
+    if (request.merge && (!state.mergeDestination || !subs_.sceneManager ||
+        sceneGraph_.identity() != state.mergeDestination->graphIdentity ||
+        subs_.sceneManager->selectedScene() != state.mergeDestination->scene)) {
+      state.worker.cancel();
+      ++state.cancelled;
+      throw std::runtime_error("The import destination is no longer active. "
+                               "Select the destination scene and import again.");
+    }
     if (!state.ready) {
       auto completion = state.worker.tryTake();
       if (!completion) return;
@@ -5280,6 +5298,7 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
     bool success{};
     if (request.merge) {
       container::geometry::gltf::GltfMergeOptions options;
+      options.destinationScene=state.mergeDestination->scene;
       options.parentName=request.merge->parentName;
       if (request.merge->incomingScene)
         options.incomingScene=static_cast<size_t>(*request.merge->incomingScene);
@@ -5316,6 +5335,7 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
   state.committing = false;
   if (state.ready) state.worker.discard(std::move(state.ready));
   state.request.reset();
+  state.mergeDestination.reset();
   state.remote = false;
   ++state.completed;
   // Acquired images/semaphores and reset submission fences cannot be recovered

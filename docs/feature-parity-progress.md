@@ -714,6 +714,20 @@ Evidence: `out/feature-parity/merge106-completion-validation-checkpoint.json`, `
 
 Limits: settled VMA equality does not prove complete driver-object/descriptor-pool leak freedom; direct GPU pick readback and frontend allocation-failure injection were not exercised. Native live playback is held at speed zero; advancing authored animations is covered by reloads and existing animation/deformation tests. Intensity-zero DDGI witnesses prove execution/publication, not visible indirect illumination. These instrumentation limits do not represent missing merge behavior. All changes remain local/uncommitted and issues stay open pending integration. #107 rename and empty-node creation are now being implemented; their later source changes are excluded from this build. The full tracker goal remains active.
 
+### Import / Merge follow-up — 2026-11-12
+
+Import / Merge accepts mesh-free glTF and GLB scenes, retains incoming
+attribution and document `extras` on the placement, and binds asynchronous
+preparation to the graph and scene active when the request starts.
+
+The Windows Vulkan regressions resolve viewport picks to the expected source
+geometry, materials, textures, and samplers across merge, undo, and redo. They
+also verify cancellation after a scene switch and compare the light and camera
+rig against an independently authored scene. Portable glTF and GLB files reopen
+with the original source files moved out of reach. The renderer revision,
+capture counts, and resource checks are recorded in the
+[Windows Vulkan results](../tests/visual-regression/gltf-scene-merge/windows-nvidia/gltf-scene-merge-results.json).
+
 ### #107 rename and empty-node milestone — 2026-10-26
 
 Rename and empty-child creation now work through hierarchy controls, typed capture actions and edit history. Imported primitive selections resolve to their stable source owner. UTF-8 labels are validated before replacing a pending request; delayed requests cannot modify a replacement graph. Empty nodes retain graph identity, exact optional active views and selected-scene membership through undo/redo and later scene switches. Scene root registration uses detached, lifetime-bound receipts and publishes after the matching graph proof.
