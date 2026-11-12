@@ -8197,6 +8197,7 @@ void RendererFrontend::presentSceneControls() {
   refreshCameraProjectionInspector();
   refreshCameraViewPoseInspector();
   refreshLightEditInspector();
+  const auto* gltfSceneManager = subs_.sceneManager.get();
   subs_.guiManager->drawSceneControls(
       sceneGraph_,
       addScenePrimitive,
@@ -8336,7 +8337,9 @@ void RendererFrontend::presentSceneControls() {
         ensureSceneEditHistory();
         sceneEdits_->setHoverable(nodeIndex, hoverable);
       },
-      subs_.sceneManager ? &subs_.sceneManager->animationSource() : nullptr);
+      gltfSceneManager ? container::ui::GltfInspectorSource{
+          &gltfSceneManager->animationSource(), gltfSceneManager->authoredMaterialResources().images,
+          gltfSceneManager->generationEpoch()} : container::ui::GltfInspectorSource{});
 
   processLightEditRequests();
   processMaterialEditRequests();

@@ -70,6 +70,13 @@ struct RendererTelemetryView;
 namespace container::ui {
 
 class OpenVdbAuthoringPanel;
+namespace detail { class GltfXmpInspector; }
+
+struct GltfInspectorSource {
+  const tinygltf::Model* model{};
+  std::span<const tinygltf::Image> archiveImages;
+  uint64_t generation{};
+};
 
 enum class GBufferViewMode : uint32_t {
   Lit = 0,
@@ -883,7 +890,7 @@ public:
           &applyMeshTransform,
       const std::function<void(uint32_t, bool)> &setSceneNodeSelectable = {},
       const std::function<void(uint32_t, bool)> &setSceneNodeHoverable = {},
-      const tinygltf::Model* gltfSource = nullptr);
+      const GltfInspectorSource& gltfSource = {});
 
   // Widget-only entry point; caller owns the current ImGui frame/window.
   // The transform snapshot belongs to selectedNode; picker changes wait for
@@ -931,7 +938,7 @@ public:
   void setMaterialInspectorSnapshot(MaterialInspectorSnapshot snapshot);
   [[nodiscard]] const MaterialInspectorSnapshot& materialInspectorSnapshot() const { return materialInspector_; }
   // Widget-only entry point; also used by drawSceneControls.
-  void drawMaterialInspector();
+  void drawMaterialInspector(std::span<const tinygltf::Image> gltfArchiveImages = {});
   void queueMaterialEditRequest(QueuedMaterialEdit request);
   // Ordered, bounded batch preserves Begin/Update/End emitted in one frame.
   [[nodiscard]] std::vector<QueuedMaterialEdit> consumeMaterialEditRequests();
@@ -953,7 +960,7 @@ public:
   [[nodiscard]] std::optional<ResourceCatalogSelectionRequest> consumeResourceCatalogSelectionRequest();
   void queueResourceRetirementRequest(ResourceRetirementRequest);
   [[nodiscard]] std::optional<ResourceRetirementRequest> consumeResourceRetirementRequest();
-  void drawResourceCatalog();
+  void drawResourceCatalog(std::span<const tinygltf::Image> gltfArchiveImages);
   void drawGltfSceneSelector();
   void drawMaterialVariantSelector();
   void drawBimElementBrowser(const BimInspectionState &inspection);
@@ -1364,6 +1371,7 @@ private:
   container::gpu::LightingSettings lightingSettings_{};
   bool openVdbVolumeLoaded_{false};
   std::unique_ptr<OpenVdbAuthoringPanel> openVdbAuthoring_;
+  std::unique_ptr<detail::GltfXmpInspector> gltfXmpInspector_;
   bool openVdbHasTemperature_{false};
   container::renderer::OpenVdbVolumeSettings openVdbVolumeSettings_{};
   std::string openVdbVolumeSource_{};

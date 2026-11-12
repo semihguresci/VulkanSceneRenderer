@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -15,6 +16,22 @@ constexpr auto kInvalidReference = "XMP packet reference must be an object with 
 constexpr auto kInvalidTable = "XMP root extension must contain a nonempty packets array";
 constexpr auto kInvalidPacket = "XMP packet must be an object with an @context object";
 constexpr int kInvalidPacketIndex = std::numeric_limits<int>::max();
+
+std::optional<int> sourcePacketIndex(const Json& value) {
+  if (value.is_number_unsigned()) {
+    const auto number = value.get<uint64_t>();
+    return number < kInvalidPacketIndex ? static_cast<int>(number) : kInvalidPacketIndex;
+  } else if (value.is_number_integer()) {
+    const auto number = value.get<int64_t>();
+    if (number >= 0) return number < kInvalidPacketIndex ? static_cast<int>(number) : kInvalidPacketIndex;
+  } else if (value.is_number_float()) {
+    // glTF allows integral values encoded with a decimal or exponent.
+    const auto number = value.get<double>();
+    if (number >= 0 && std::isfinite(number) && std::trunc(number) == number)
+      return number < kInvalidPacketIndex ? static_cast<int>(number) : kInvalidPacketIndex;
+  }
+  return std::nullopt;
+}
 
 Json* findXmp(Json& record) {
   auto extensions = record.find("extensions");
@@ -67,25 +84,29 @@ GltfXmpImport::GltfXmpImport(Json& manifest) {
     auto* extension = findXmp(record);
     if (!extension) return;
     const auto id = extension->find("packet");
-    if (id == extension->end() || !id->is_number_integer() ||
-        *id < 0 || *id > std::numeric_limits<int>::max()) {
+    const auto index = id == extension->end() ? std::nullopt : sourcePacketIndex(*id);
+    if (!index) {
       warn(context, kInvalidReference);
       // An empty extension remains visible as malformed in the inspector.
       *extension = Json::object();
       rewritten_ = true;
       return;
     }
-    const auto index = id->get<size_t>();
     if (!packets) {
       warn(context, kInvalidTable);
       *id = kInvalidPacketIndex;
       rewritten_ = true;
-    } else if (index >= packets->size()) {
+    } else if (*index == kInvalidPacketIndex || static_cast<size_t>(*index) >= packets->size()) {
       warn(context, "XMP packet index is outside the packets array");
       *id = kInvalidPacketIndex;
       rewritten_ = true;
-    } else if (!isPacket((*packets)[index]))
-      warn(context, kInvalidPacket);
+    } else {
+      if (id->is_number_float()) {
+        *id = *index;
+        rewritten_ = true;
+      }
+      if (!isPacket((*packets)[static_cast<size_t>(*index)])) warn(context, kInvalidPacket);
+    }
   };
 
   if (auto asset = manifest.find("asset"); asset != manifest.end()) checkReference(*asset, "asset");

@@ -1,6 +1,7 @@
 #include <Container/geometry/GltfModelLoader.h>
 #include <Container/geometry/GltfSceneExport.h>
 #include <Container/geometry/GltfLinkedAssets.h>
+#include <Container/geometry/GltfMaterialExport.h>
 #include <Container/geometry/GltfNodeExportCompaction.h>
 #include <Container/geometry/GltfMaterialExportCompaction.h>
 #include <Container/geometry/GltfAnimation.h>
@@ -766,11 +767,13 @@ TEST(GltfSceneExport, XmpPacketsRetainDistinctContextsAndLosslessValuesWithVaria
     {"@context":{"dc":"http://purl.org/dc/elements/1.1/"},"dc:title":"Scene"}
   ]})");
   manifest["extensions"][kGltfXmpExtension] = package;
-  const auto bind = [](Json& record, int packet) {record["extensions"][kGltfXmpExtension] = {{"packet", packet}};};
+  const auto bind = [](Json& record, Json packet) {record["extensions"][kGltfXmpExtension] = {{"packet", packet}};};
   bind(manifest["asset"], 0);
-  bind(manifest["nodes"][1], 1);
-  bind(manifest["meshes"][0], 2);
+  bind(manifest["nodes"][1], 1.0);
+  bind(manifest["meshes"][0], 2.0);
   bind(manifest["materials"][0], 3);
+  manifest["materials"][0]["extensions"][kGltfXmpExtension]["extras"] =
+      {{"previewTexture", {{"index", 42}}}};
   bind(manifest["scenes"][0], 4);
   writeText(input, manifest.dump());
   const auto check = [&](const tinygltf::Model& model) {
@@ -790,11 +793,20 @@ TEST(GltfSceneExport, XmpPacketsRetainDistinctContextsAndLosslessValuesWithVaria
     }
     EXPECT_TRUE(model.extensions.contains("VENDOR_unrelated"));
     EXPECT_TRUE(model.meshes[0].primitives[0].extensions.contains(variants));
+    using Value = tinygltf::Value;
+    const Value extras(Value::Object{{"previewTexture", Value(Value::Object{{"index", Value(42)}})}});
+    EXPECT_EQ(model.materials[0].extensions.at(kGltfXmpExtension).Get("extras"), extras);
     EXPECT_EQ(ResolveGltfXmpPacket(*retained, model.nodes[0].extensions).message,
               "No XMP packet is attached.");
   };
   const auto source = LoadModelWithSource(input.string());
+  EXPECT_EQ(std::ranges::count(source.capabilityDiagnostics, "xmp_metadata", &CapabilityDiagnostic::code), 0);
   check(source.gltfModel);
+  tinygltf::Model archive;
+  const auto materials = appendExportResources(archive, source.gltfModel, input);
+  ASSERT_EQ(materials.size(), 1u);
+  EXPECT_EQ(materials[0].extensions.at(kGltfXmpExtension),
+            source.gltfModel.materials[0].extensions.at(kGltfXmpExtension));
   const std::array<int32_t, 2> nodeIdentities{0, 1};
   for (const auto* format : {".gltf", ".glb"}) {
     const auto output = directory.root / (std::string("xmp-round-trip") + format);
@@ -813,6 +825,7 @@ TEST(GltfSceneExport, MalformedXmpReportsWarningsAndKeepsPacketIndicesStable) {
   manifest["extensionsUsed"] = Json::array({kGltfXmpExtension});
   manifest["extensions"][kGltfXmpExtension] = Json::parse(R"({"packets":[null,{"@context":{},"xmp:Label":"second slot"}]})");
   manifest["asset"]["extensions"][kGltfXmpExtension] = {{"packet", 0}};
+  manifest["nodes"][0]["extensions"][kGltfXmpExtension] = {{"packet", 0.5}};
   manifest["nodes"][1]["extensions"][kGltfXmpExtension] = {{"packet", uint64_t(4294967297)}};
   manifest["meshes"][0]["extensions"][kGltfXmpExtension] = {{"packet", 1}};
   manifest["materials"][0]["extensions"][kGltfXmpExtension] = {{"packet", 9}};
@@ -822,12 +835,13 @@ TEST(GltfSceneExport, MalformedXmpReportsWarningsAndKeepsPacketIndicesStable) {
   const auto& model = result.gltfModel;
   const auto package = ReadGltfXmpPackage(model);
   ASSERT_TRUE(package);
-  EXPECT_EQ(std::ranges::count(result.capabilityDiagnostics, "xmp_metadata", &CapabilityDiagnostic::code), 5);
+  EXPECT_EQ(std::ranges::count(result.capabilityDiagnostics, "xmp_metadata", &CapabilityDiagnostic::code), 6);
   const auto mesh = ResolveGltfXmpPacket(*package, model.meshes[0].extensions);
   ASSERT_NE(mesh.packet, nullptr);
   EXPECT_EQ(mesh.packet->at("xmp:Label"), "second slot");
   EXPECT_TRUE(ResolveGltfXmpPacket(*package, model.asset.extensions).message.contains("@context"));
-  EXPECT_TRUE(ResolveGltfXmpPacket(*package, model.nodes[1].extensions).message.contains("integer"));
+  EXPECT_TRUE(ResolveGltfXmpPacket(*package, model.nodes[0].extensions).message.contains("integer"));
+  EXPECT_TRUE(ResolveGltfXmpPacket(*package, model.nodes[1].extensions).message.contains("outside"));
   EXPECT_TRUE(ResolveGltfXmpPacket(*package, model.materials[0].extensions).message.contains("outside"));
   EXPECT_TRUE(ResolveGltfXmpPacket(*package, model.scenes[0].extensions).message.contains("integer"));
   manifest.erase("extensions");

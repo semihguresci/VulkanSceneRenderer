@@ -2,6 +2,7 @@
 #include <Container/geometry/GltfImageSources.h>
 #include <Container/geometry/GltfMaterialTextureAuthoring.h>
 #include <Container/geometry/GltfLegacyMaterialSerialization.h>
+#include <Container/geometry/GltfXmpMetadata.h>
 
 #include <algorithm>
 #include <array>
@@ -371,8 +372,11 @@ std::vector<tinygltf::Material> appendExportResources(
     offsetTexture(m.normalTexture, textureOffset, source.textures.size());
     offsetTexture(m.occlusionTexture, textureOffset, source.textures.size());
     offsetTexture(m.emissiveTexture, textureOffset, source.textures.size());
-    for (auto& [_, extension] : m.extensions)
-      remapTextureObjects(extension, textureOffset, source.textures.size());
+    for (auto& [name, extension] : m.extensions) {
+      // XMP attachments reference the packet table. Their extras are opaque.
+      if (name != kGltfXmpExtension)
+        remapTextureObjects(extension, textureOffset, source.textures.size());
+    }
     for(auto* values:{&m.values,&m.additionalValues}) for(const auto name:KnownLegacyMaterialTextureFields())
       if(const auto found=values->find(std::string(name));found!=values->end()) {
         const auto index=found->second.json_double_value.find("index");

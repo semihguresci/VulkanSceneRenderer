@@ -178,6 +178,18 @@ image and animation references are preserved for exported records. Packet
 indices stay stable when scene tables are compacted. Import reports malformed
 packets or out-of-range references and keeps the asset renderable.
 
+Open the glTF metadata sections in Scene controls to inspect the asset,
+active scene, or selected animation. Select a hierarchy node or click a
+surface to inspect the node, mesh, and surface material packets. The material
+and resource catalogs also show the selected source material or image packet.
+The read-only summary shows scalar values, lists, and language tags. Expand
+**Raw packet JSON** and choose **Copy JSON** for the complete packet.
+[KHR_xmp_json_ld](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_xmp_json_ld)
+
+When Save As writes a generated primitive node for a source mesh, that node
+shares the authored node's packet reference. Picking the primitive after
+reopening a portable glTF or GLB resolves the same node metadata.
+
 Import / Merge keeps the destination's packet indices and appends incoming
 packets in source order. The incoming document packet is attached to the new
 placement node. Imported scenes and objects keep their own attachments, and

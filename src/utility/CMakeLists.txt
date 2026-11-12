@@ -142,6 +142,7 @@ add_library(VulkanSceneRenderer_ui
     BimElementSearchCache.cpp
     DisplayGradePreset.cpp
     GuiManager.cpp
+    GltfXmpInspector.cpp
     OpenVdbAuthoring.cpp
     PhysicsControls.cpp
     SolarPosition.cpp
