@@ -1,4 +1,4 @@
-"""Bounded #106 descriptor/resource publication witnesses (8 processes/36 PNGs).
+"""Bounded #106 descriptor/resource publication witnesses (10 processes/48 PNGs).
 
 Complements the independent static/dynamic merge cohorts. GUI loading is checked
 through actual progress-frame telemetry, not changing UI pixels. Hard-ray/DDGI
@@ -6,6 +6,8 @@ uses lit opaque receivers and zero GI intensity: AS construction and published
 probe work are execution witnesses, not a visual indirect-lighting oracle.
 The first extended-material merge has a separately authored zero-factor variant
 which must visibly differ, then return exactly to the active Default appearance.
+The stale-destination case changes scene during source preparation and verifies
+that the import is cancelled before installing resources.
 
 --generate-only and --self-check never launch a renderer. Native execution needs
 an explicit frozen manifest; all its entries and generated inputs are checked
@@ -34,7 +36,7 @@ from gltf_texture_formats_runtime_regression import verify_manifest
 
 
 TECHNIQUES = ('deferred-raster', 'forward-raster')
-CASES = ('gui-progress', 'ray-ddgi', 'frame-rebuild', 'first-extended')
+CASES = ('gui-progress', 'ray-ddgi', 'frame-rebuild', 'first-extended', 'stale-destination')
 ANISO, DIFFUSE, VARIANTS = ('KHR_materials_anisotropy',
     'KHR_materials_diffuse_transmission', 'KHR_materials_variants')
 WIDTH, HEIGHT = 640, 360
@@ -110,11 +112,18 @@ def build_plan(output, techniques, cases):
             events += [dict(frame=30, presentSuboptimal=True), dict(frame=43, acquireOutOfDate=True)]
         if case == 'first-extended':
             events += [dict(frame=53, materialVariant=0), dict(frame=66, materialVariant=-1)]
+        if case == 'stale-destination':
+            # Queue on a skipped frame so drawFrame starts the second import
+            # just before it applies the switch to the first import's scene.
+            frames += [54, 65]
+            events += [dict(frame=53, skip=True, guiWaitForLoad=False,
+                merge=dict(path=str(incoming), parentName='Stale destination')),
+                dict(frame=54, gltfScene=1)]
         sequence = dict(schemaVersion=1, frames=frames[-1], sampleFrames=frames,
             camera=[dict(frame=1, position=[0., 0., 4.], target=[0., 0., 0.])],
             events=sorted(events, key=lambda event: event['frame']))
         launches.append(dict(case=case, source=str(paths['A']), incoming=str(incoming), parentName=parent,
-            sequence=sequence, guiEnabled=case == 'gui-progress', ray=case == 'ray-ddgi'))
+            sequence=sequence, guiEnabled=case in ('gui-progress', 'stale-destination'), ray=case == 'ray-ddgi'))
         captures += len(frames)
     return dict(schemaVersion=1, techniques=list(techniques), launches=launches,
         paths={key: str(value) for key, value in paths.items()},
@@ -190,8 +199,40 @@ def history_schema_self_check():
                 postCommitMissingRedoRejected=True)
 
 
+def validate_stale_destination(records, checks):
+    before, pending, failed = (row['state'] for row in records)
+    original = before['gltfMerge']
+    loading = before['gui']['modelLoading']
+    for state, waiting in ((pending, True), (failed, False)):
+        merge, scene = state['gltfMerge'], state['gltfScenes']
+        current_load = state['gui']['modelLoading']
+        require(merge['requestId'] == original['requestId']+1 and
+                merge['sourceReadCount'] == original['sourceReadCount']+1 and
+                merge['parentName'] == 'Stale destination', 'Unexpected import request after scene switch')
+        require(all(merge[key] == original[key] for key in ('generationPublications', 'commitGeneration',
+                'descriptorGeneration', 'graphNodeCount', 'sourceTables')), 'Stale import published scene content')
+        require(scene['graphIdentity'] == before['gltfScenes']['graphIdentity'] and scene['selected'] == 1 and
+                scene['names'] == before['gltfScenes']['names'] and scene['activeRenderableCount'] == 1,
+                'The scene switch did not expose only the canonical incoming scene')
+        require(history_cursor(state['gltfMaterialVariants'], initial_sample=False) == (0, 0),
+                'Stale import added edit history after the scene switch')
+        require(current_load['pending'] is waiting and current_load['requests'] == loading['requests']+1 and
+                current_load['completed'] == loading['completed']+int(not waiting) and
+                current_load['cancelled'] == loading['cancelled']+int(not waiting) and
+                current_load['progressFrames'] == loading['progressFrames'], 'Stale import reached installation or did not settle')
+        require(merge['outcome'] == ('pending' if waiting else 'failed'), 'Wrong stale import outcome')
+    error = failed['gltfMerge']['error']
+    require('Select the destination scene and import again.' in error and error in failed['gui']['status'],
+            'The cancelled import did not explain how to retry')
+    checks.append(dict(name='stale-destination-cancelled', passed=True, selectedScene=1,
+        generationPublications=original['generationPublications'], diagnostic=error))
+
+
 def validate_series(launch, records, checks):
     baseline, case = records[0]['state'], launch['case']
+    if case == 'stale-destination':
+        validate_stale_destination(records[-3:], checks)
+        records = records[:4]
     base_merge = baseline['gltfMerge']
     for index, record in enumerate(records):
         state, merged = record['state'], index not in (0, 2)

@@ -502,12 +502,44 @@ TEST(GltfMerge, RemapsIndependentXmpPacketsAndKeepsInvalidReferencesIsolated) {
   EXPECT_TRUE(ResolveGltfXmpPacket(*ReadGltfXmpPackage(base), base.nodes[0].extensions).message.contains("outside"));
 }
 
-TEST(GltfMerge, RejectsUnknownExtensionsTargetsAndRootConflictsWithoutInputMutation) {
+TEST(GltfMerge, PreservesIndependentDocumentMetadataOnEachPlacement) {
+  auto base = fixture();
+  base.asset.copyright = "Primary notice";
+  base.asset.minVersion = "2.0";
+  base.asset.extras = Value(Object{{"author", Value(std::string("Primary author"))}});
+  base.extras = Value(Object{{"project", Value(1)}});
+  auto incoming = fixture(33);
+  incoming.asset.copyright = "Incoming notice";
+  incoming.asset.generator = "Incoming authoring tool";
+  incoming.asset.minVersion = "2.0";
+  incoming.asset.extras = Value(Object{{"author", Value(std::string("Incoming author"))}});
+  incoming.extras = Value(Object{{"project", Value(2)}});
+  const auto originalBase = base;
+  const auto originalIncoming = incoming;
+  const auto merged = PlanGltfMerge(base, incoming);
+  EXPECT_EQ(merged.model.asset, base.asset);
+  EXPECT_EQ(merged.model.extras, base.extras);
+  const auto& placement = merged.model.nodes.at(size_t(merged.parentNode));
+  ASSERT_TRUE(placement.extras.Has("containerMergeSource"));
+  const auto& metadata = placement.extras.Get("containerMergeSource");
+  const auto& asset = metadata.Get("asset");
+  EXPECT_EQ(asset.Get("copyright").Get<std::string>(), incoming.asset.copyright);
+  EXPECT_EQ(asset.Get("generator").Get<std::string>(), incoming.asset.generator);
+  EXPECT_EQ(asset.Get("version").Get<std::string>(), incoming.asset.version);
+  EXPECT_EQ(asset.Get("minVersion").Get<std::string>(), incoming.asset.minVersion);
+  EXPECT_EQ(asset.Get("extras"), incoming.asset.extras);
+  EXPECT_EQ(metadata.Get("extras"), incoming.extras);
+  const auto repeated = PlanGltfMerge(merged.model, incoming);
+  EXPECT_EQ(repeated.model.nodes.at(size_t(merged.parentNode)).extras, placement.extras);
+  EXPECT_EQ(repeated.model.nodes.at(size_t(repeated.parentNode)).extras, placement.extras);
+  EXPECT_EQ(base, originalBase);
+  EXPECT_EQ(incoming, originalIncoming);
+}
+
+TEST(GltfMerge, RejectsUnknownExtensionsAndTargetsWithoutInputMutation) {
   const auto base=fixture();auto incoming=fixture();const auto before=base;
   declare(incoming,"VENDOR_references");incoming.nodes[0].extensions["VENDOR_references"]=Value(Object{{"index",Value(0)}});
   EXPECT_THROW((void)PlanGltfMerge(base,incoming),std::runtime_error);EXPECT_EQ(base,before);
-  incoming=fixture();incoming.extras=Value(Object{{"different",Value(2)}});auto withExtras=base;withExtras.extras=Value(Object{{"different",Value(1)}});
-  EXPECT_THROW((void)PlanGltfMerge(withExtras,incoming),std::runtime_error);
   incoming=fixture();coreAnimation(incoming);const auto output=floats(incoming,{0,1},TINYGLTF_TYPE_SCALAR,2);
   pointerChannel(incoming,incoming.animations[0],"/nodes/0/extensions/VENDOR_references/value",output);
   EXPECT_THROW((void)PlanGltfMerge(base,incoming),std::runtime_error);

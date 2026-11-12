@@ -134,7 +134,7 @@ container::scene::SceneProviderBounds mergeBounds(const SceneController::Prepare
 } // namespace
 
 bool RendererFrontend::mergeSceneModel(const std::string& path,
-    const container::geometry::gltf::GltfMergeOptions& requested,
+    const container::geometry::gltf::GltfMergeOptions& options,
     const container::geometry::GltfLoadResult* prepared) {
   finishEditGestures();
   if(!subs_.sceneManager || !subs_.sceneController || !subs_.lightingManager)
@@ -145,8 +145,6 @@ bool RendererFrontend::mergeSceneModel(const std::string& path,
   if(subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
   if(vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device())!=VK_SUCCESS)
     throw std::runtime_error("Failed to retire scene readers before merge");
-  auto options=requested;
-  options.destinationScene=subs_.sceneManager->selectedScene();
   std::optional<container::geometry::GltfLoadResult> local;
   if (!prepared) {
     local=container::scene::SceneManager::prepareGltfModel(path,512ull*1024*1024,

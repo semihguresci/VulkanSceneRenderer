@@ -502,10 +502,19 @@ std::optional<int> clonedTarget(const tinygltf::AnimationChannel& channel,const 
   return node;
 }
 
-Value opaque(const Value& base,const Value& incoming,std::string_view label) {
-  if(incoming==Value{}) return base;
-  if(base==Value{} || base==incoming) return incoming;
-  fail(label,"conflicting root metadata cannot be represented without a policy");
+Value mergeSourceExtras(const tinygltf::Model& source) {
+  Object asset;
+  if (!source.asset.copyright.empty()) asset.emplace("copyright", Value(source.asset.copyright));
+  if (!source.asset.generator.empty()) asset.emplace("generator", Value(source.asset.generator));
+  if (source.asset.extras != Value{}) asset.emplace("extras", source.asset.extras);
+  if (asset.empty() && source.extras == Value{}) return {};
+  if (!source.asset.version.empty()) asset.emplace("version", Value(source.asset.version));
+  if (!source.asset.minVersion.empty()) asset.emplace("minVersion", Value(source.asset.minVersion));
+
+  Object metadata;
+  if (!asset.empty()) metadata.emplace("asset", Value(std::move(asset)));
+  if (source.extras != Value{}) metadata.emplace("extras", source.extras);
+  return Value(Object{{"containerMergeSource", Value(std::move(metadata))}});
 }
 Object rootHeader(const tinygltf::Model& model,const char* name,const char* entries) {
   if(const auto found=model.extensions.find(name);found!=model.extensions.end()) {
@@ -543,11 +552,9 @@ Value lightValue(const tinygltf::Light& light,const Value* original) {
   return Value(std::move(out));
 }
 void mergeRoot(tinygltf::Model& output,const tinygltf::Model& base,const tinygltf::Model& incoming) {
-  output.extras=opaque(base.extras,incoming.extras,"root extras");
-  output.asset.extras=opaque(base.asset.extras,incoming.asset.extras,"asset extras");
-  if(base.asset.copyright.empty()) output.asset.copyright=incoming.asset.copyright;
-  else if(!incoming.asset.copyright.empty() && base.asset.copyright!=incoming.asset.copyright)
-    fail("asset copyright","conflicting values need an explicit preservation policy");
+  output.extras = base.extras != Value{} ? base.extras : incoming.extras;
+  output.asset.extras = base.asset.extras != Value{} ? base.asset.extras : incoming.asset.extras;
+  if (base.asset.copyright.empty()) output.asset.copyright = incoming.asset.copyright;
   if(output.asset.minVersion.empty()) output.asset.minVersion=incoming.asset.minVersion;
   for(const auto* names:{&incoming.extensionsUsed,&incoming.extensionsRequired}) {
     auto& dest=names==&incoming.extensionsUsed?output.extensionsUsed:output.extensionsRequired;
@@ -730,6 +737,8 @@ GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& i
   // the generated representation and retained asset provenance before copying.
   for(const auto& [name,value]:headers.extensions) {budget.text(name);budget.value(value);}
   property(incoming.asset,incoming,budget,"incoming asset provenance",{kGltfXmpExtension});
+  auto parentExtras = mergeSourceExtras(incoming);
+  if (parentExtras != Value{}) budget.value(parentExtras);
   auto xmp = ComposeGltfXmpPackets(base, incoming, limits.maxMetadataDepth);
   budget.text(xmp.rootExtensionsJson);
   const auto incomingAssetXmp = incoming.asset.extensions.find(kGltfXmpExtension);
@@ -785,6 +794,7 @@ GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& i
   if(incoming.scenes.empty()) {tinygltf::Scene scene;scene.name="Scene";scene.nodes.assign(b.catalog.entries[0].sourceRoots.begin(),b.catalog.entries[0].sourceRoots.end());for(auto& root:scene.nodes) root=translated(root,m.nodes,"scene root");out.scenes.push_back(std::move(scene));}
   else for(auto value:incoming.scenes) {for(auto& root:value.nodes) root=translated(root,m.nodes,"scene root");out.scenes.push_back(std::move(value));}
   tinygltf::Node parent;parent.name=options.parentName;
+  parent.extras = std::move(parentExtras);
   if (incomingAssetXmp != incoming.asset.extensions.end())
     parent.extensions.emplace(kGltfXmpExtension, incomingAssetXmp->second);
   if(options.placementMatrix) parent.matrix.assign(options.placementMatrix->begin(),options.placementMatrix->end());
