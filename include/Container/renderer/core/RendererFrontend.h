@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <glm/vec2.hpp>
@@ -335,6 +336,7 @@ private:
   bool captureAcquireOutOfDate_{false}, capturePresentSuboptimal_{false};
   std::optional<glm::mat4> captureObjectBase_{};
   uint32_t captureObjectNode_{std::numeric_limits<uint32_t>::max()};
+  std::optional<std::pair<uint64_t, uint32_t>> captureNodeGizmoTarget_;
   // Owned subsystems are listed roughly in construction/use order. shutdown()
   // releases them in dependency-aware order because many destructors touch
   // Vulkan objects owned by earlier services.
@@ -549,6 +551,7 @@ private:
   [[nodiscard]] bool lightEditGestureActive() const noexcept;
   void finishLightEditInput();
   void finishEditGestures();
+  void finishSceneTransformGesture(bool cancel = false);
   void refreshLightEditInspector();
   void reportLightEditError(std::string_view);
   void selectLightForEditing(EditableLightId);

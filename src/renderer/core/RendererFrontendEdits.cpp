@@ -403,7 +403,14 @@ void RendererFrontend::ensureSceneEditHistory() {
               return Actions{
                   [apply, before = edit.before] { apply(before); },
                   [apply, after = edit.after] { apply(after); }};
-            }});
+            },
+            .meshSelection = [this] {
+              const auto selection = sceneEditSelection();
+              return container::util::SceneEditHistory::MeshSelection{
+                  selection.mesh, selection.bim != container::scene::SceneGraph::kInvalidNode ||
+                      isValidEditableLightId(selection.light) || selection.sectionEditable};
+            },
+            .setMeshSelection = [this](uint32_t node) noexcept { sceneState_.selectedMeshNode = node; }});
   }
   sceneEdits_->sync();
 }

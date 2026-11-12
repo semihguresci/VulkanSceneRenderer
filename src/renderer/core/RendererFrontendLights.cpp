@@ -121,6 +121,7 @@ void RendererFrontend::finishLightEditInput() {
   finishLightEditGesture();
 }
 void RendererFrontend::finishEditGestures() {
+  if (sceneEdits_) sceneEdits_->finishGesture();
   finishLightEditInput();finishMaterialGesture();
 }
 void RendererFrontend::reportLightEditError(std::string_view message) {lightEditError_=lightMessage(message);}

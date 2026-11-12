@@ -139,6 +139,8 @@ TEST(SceneEditHistory, InvalidRenameAndNoOpsPreserveRedoAndTheCurrentTransformGe
   EXPECT_FALSE(history.setName(node, "Original"));
   EXPECT_FALSE(history.setName(999, "Missing node"));
   ASSERT_TRUE(history.setTransform(node, translated(2), 19));
+  EXPECT_EQ(history.size(), 0u);
+  history.finishGesture();
   EXPECT_EQ(history.size(), 1u); // Rejected metadata did not split the gesture.
   ASSERT_TRUE(history.undo()); EXPECT_EQ(history.redoCount(), 1u);
   expectInvalidUnchanged();
@@ -179,6 +181,54 @@ TEST(SceneEditHistory, MissingRenameNodeLeavesPlaybackCursorAndNotificationsUnch
   EXPECT_FALSE(history.redo()); EXPECT_EQ(history.redoCount(), 1u); EXPECT_EQ(notifications, 2);
   ASSERT_TRUE(graph.restoreTail(*beforeRedo));
   ASSERT_TRUE(history.redo()); EXPECT_EQ(graph.getNode(node)->name, "Renamed tail");
+}
+
+TEST(SceneEditHistory, ReusedTailSlotsCannotReceiveStaleMetadataOrReparentPlayback) {
+  enum class Edit { Rename, Flags, Reparent };
+  constexpr auto none = SceneGraph::kInvalidNode;
+  for (const auto edit : {Edit::Rename, Edit::Flags, Edit::Reparent}) {
+    SCOPED_TRACE(static_cast<int>(edit));
+    SceneGraph graph;
+    const auto parent = graph.createNode(glm::mat4(1), 0);
+    const auto node = graph.createNode(sheared(), 0, false, none, "Original");
+    History history(graph);
+    switch (edit) {
+      case Edit::Rename: ASSERT_TRUE(history.setName(node, "Edited")); break;
+      case Edit::Flags: ASSERT_TRUE(history.setNodeFlags(node, false, false, false)); break;
+      case Edit::Reparent: ASSERT_TRUE(history.reparent(node, parent)); break;
+    }
+    const auto original = graph.detachTail(node);
+    ASSERT_TRUE(original);
+    ASSERT_TRUE(graph.restoreTail(*original));
+    ASSERT_TRUE(history.undo());
+    ASSERT_TRUE(history.redo());
+
+    ASSERT_TRUE(graph.detachTail(node));
+    ASSERT_EQ(graph.createNode(translated(4), 0, false, none, "Replacement"), node);
+    const auto revision = graph.revision();
+    EXPECT_FALSE(history.undo());
+    EXPECT_EQ(history.undoCount(), 1u);
+    EXPECT_EQ(graph.revision(), revision);
+  }
+
+  for (const bool undo : {true, false}) {
+    SCOPED_TRACE(undo);
+    SceneGraph graph;
+    const auto retainedParent = graph.createNode(glm::mat4(1), 0);
+    const auto child = graph.createNode(translated(2), 0);
+    const auto tailParent = graph.createNode(glm::mat4(1), 0);
+    ASSERT_TRUE(graph.setParent(child, undo ? tailParent : retainedParent));
+    History history(graph);
+    ASSERT_TRUE(history.reparent(child, undo ? retainedParent : tailParent));
+    if (!undo) ASSERT_TRUE(history.undo());
+    ASSERT_TRUE(graph.detachTail(tailParent));
+    ASSERT_EQ(graph.createNode(translated(4), 0), tailParent);
+    const auto revision = graph.revision();
+    EXPECT_FALSE(undo ? history.undo() : history.redo());
+    EXPECT_EQ(history.undoCount(), undo ? 1u : 0u);
+    EXPECT_EQ(graph.getNode(child)->parent, retainedParent);
+    EXPECT_EQ(graph.revision(), revision);
+  }
 }
 
 TEST(SceneEditHistory, RenameRefreshExceptionRetainsTheCompletedNameAndHistoryCursor) {
@@ -290,6 +340,78 @@ TEST(SceneEditHistory, NodeFlagSourceActionsFollowLocalEditsAndPlayback) {
   ASSERT_TRUE(history.redo());
   EXPECT_EQ(source, (std::array{false, false, false}));
   matchesSource();
+}
+
+TEST(SceneEditHistory, SelectabilityPlaybackRestoresOnlyTheSelectionItDisplaced) {
+  constexpr auto none = SceneGraph::kInvalidNode;
+  SceneGraph graph;
+  const auto parent = graph.createNode(glm::mat4(1), 0);
+  const auto child = graph.createNode(glm::mat4(1), 0);
+  const auto other = graph.createNode(glm::mat4(1), 0);
+  ASSERT_TRUE(graph.setParent(child, parent));
+  uint32_t selected = child;
+  bool anotherTargetSelected = false;
+  History history(graph, {
+      .meshSelection = [&] { return History::MeshSelection{selected, anotherTargetSelected}; },
+      .setMeshSelection = [&](uint32_t node) { selected = node; }});
+
+  ASSERT_TRUE(history.setSelectable(parent, false));
+  EXPECT_EQ(selected, none);
+  ASSERT_TRUE(history.undo());
+  EXPECT_EQ(selected, child);
+  ASSERT_TRUE(history.redo());
+  EXPECT_EQ(selected, none);
+  selected = other;
+  ASSERT_TRUE(history.undo());
+  EXPECT_EQ(selected, other);
+
+  history.clear();
+  graph.setSelectable(parent, false);
+  selected = none;
+  ASSERT_TRUE(history.setNodeFlags(parent, true, true, true));
+  selected = child;
+  ASSERT_TRUE(history.undo());
+  EXPECT_EQ(selected, none);
+  ASSERT_TRUE(history.redo());
+  EXPECT_EQ(selected, child);
+  ASSERT_TRUE(history.undo());
+  anotherTargetSelected = true;
+  ASSERT_TRUE(history.redo());
+  EXPECT_EQ(selected, none);
+}
+
+TEST(SceneEditHistory, ReparentPlaybackRestoresSelectionWhenItsAncestorChanges) {
+  constexpr auto none = SceneGraph::kInvalidNode;
+  SceneGraph graph;
+  const auto allowed = graph.createNode(glm::mat4(1), 0);
+  const auto blocked = graph.createNode(glm::mat4(1), 0);
+  const auto child = graph.createNode(glm::mat4(1), 0);
+  const auto selectedDescendant = graph.createNode(glm::mat4(1), 0);
+  ASSERT_TRUE(graph.setParent(child, allowed));
+  ASSERT_TRUE(graph.setParent(selectedDescendant, child));
+  graph.setSelectable(blocked, false);
+  auto selected = selectedDescendant;
+  bool rejectReplay = false;
+  History history(graph, {
+      .beforeReparent = [&](uint32_t, History::Parent, const glm::mat4&) {
+        if (rejectReplay) throw std::runtime_error("blocked replay");
+      },
+      .meshSelection = [&] { return History::MeshSelection{selected, false}; },
+      .setMeshSelection = [&](uint32_t node) { selected = node; }});
+
+  ASSERT_TRUE(history.reparent(child, blocked));
+  EXPECT_EQ(selected, none);
+  rejectReplay = true;
+  EXPECT_THROW(history.undo(), std::runtime_error);
+  EXPECT_EQ(graph.getNode(child)->parent, blocked);
+  EXPECT_EQ(selected, none);
+  rejectReplay = false;
+  ASSERT_TRUE(history.undo());
+  EXPECT_EQ(graph.getNode(child)->parent, allowed);
+  EXPECT_EQ(selected, selectedDescendant);
+  ASSERT_TRUE(history.redo());
+  EXPECT_EQ(graph.getNode(child)->parent, blocked);
+  EXPECT_EQ(selected, none);
 }
 
 TEST(SceneEditHistory, TransformPlaybackRetainsExactImportedShear) {
@@ -551,11 +673,12 @@ TEST(SceneEditHistory, GesturesMergePerNodeUntilFinished) {
   History history(graph);
   ASSERT_TRUE(history.setTransform(first, translated(1.0f), 42));
   ASSERT_TRUE(history.setTransform(first, translated(2.0f), 42));
-  EXPECT_EQ(history.size(), 1u);
+  EXPECT_EQ(history.size(), 0u);
   history.finishGesture();
+  EXPECT_EQ(history.size(), 1u);
   ASSERT_TRUE(history.setTransform(first, translated(3.0f), 42));
   ASSERT_TRUE(history.setTransform(second, translated(4.0f), 42));
-  EXPECT_EQ(history.size(), 3u);
+  EXPECT_EQ(history.size(), 2u);
   ASSERT_TRUE(history.undo());
   EXPECT_EQ(graph.getNode(second)->localTransform, glm::mat4(1.0f));
   ASSERT_TRUE(history.undo());
@@ -564,6 +687,45 @@ TEST(SceneEditHistory, GesturesMergePerNodeUntilFinished) {
   EXPECT_EQ(graph.getNode(first)->localTransform, sheared());
   ASSERT_TRUE(history.redo());
   EXPECT_EQ(graph.getNode(first)->localTransform, translated(2.0f));
+}
+
+TEST(SceneEditHistory, TransformPreviewsAndNoOpOrCancelledGesturesPreserveRedo) {
+  SceneGraph graph;
+  const auto node = graph.createNode(sheared(), 0);
+  int notifications = 0;
+  History history(graph, {{}, {}, [&] { ++notifications; }}, 1);
+  ASSERT_TRUE(history.setTransform(node, translated(1)));
+  ASSERT_TRUE(history.undo());
+
+  ASSERT_TRUE(history.setTransform(node, translated(2), 42));
+  EXPECT_EQ(history.undoCount(), 0u);
+  EXPECT_EQ(history.redoCount(), 1u);
+  EXPECT_EQ(graph.getNode(node)->localTransform, translated(2));
+  ASSERT_NE(history.transformGestureStart(node, 42), nullptr);
+  EXPECT_EQ(*history.transformGestureStart(node, 42), sheared());
+  ASSERT_TRUE(history.setTransform(node, sheared(), 42));
+  history.finishGesture();
+  EXPECT_EQ(history.redoCount(), 1u);
+  EXPECT_EQ(notifications, 4);
+
+  ASSERT_TRUE(history.setTransform(node, translated(3), 43));
+  ASSERT_TRUE(history.cancelTransformGesture());
+  EXPECT_EQ(graph.getNode(node)->localTransform, sheared());
+  EXPECT_EQ(history.redoCount(), 1u);
+  EXPECT_EQ(notifications, 6);
+  ASSERT_TRUE(history.redo());
+  EXPECT_EQ(graph.getNode(node)->localTransform, translated(1));
+
+  ASSERT_TRUE(history.undo());
+  ASSERT_TRUE(history.setTransform(node, translated(4), 44));
+  ASSERT_TRUE(history.setTransform(node, translated(5), 44));
+  history.finishGesture();
+  EXPECT_EQ(history.undoCount(), 1u);
+  EXPECT_FALSE(history.canRedo());
+  ASSERT_TRUE(history.undo());
+  EXPECT_EQ(graph.getNode(node)->localTransform, sheared());
+  ASSERT_TRUE(history.redo());
+  EXPECT_EQ(graph.getNode(node)->localTransform, translated(5));
 }
 
 TEST(SceneEditHistory,

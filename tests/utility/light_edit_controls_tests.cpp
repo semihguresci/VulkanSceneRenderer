@@ -168,8 +168,26 @@ TEST_F(LightEditWidgetTests, TypedEscapeCancelsAndAddQueuesTheExistingGestureEnd
   io.AddMouseButtonEvent(ImGuiMouseButton_Left,false);frame();io.AddKeyEvent(ImGuiMod_Ctrl,false);frame();
   io.AddKeyEvent(ImGuiMod_Ctrl,true);io.AddKeyEvent(ImGuiKey_A,true);frame();
   io.AddKeyEvent(ImGuiKey_A,false);io.AddKeyEvent(ImGuiMod_Ctrl,false);frame();io.AddInputCharactersUTF8("12.25");frame();
+  ASSERT_EQ(events.size(),1u);
+  ASSERT_EQ(events[0].phase,LightEditPhase::Begin);
+  EXPECT_FLOAT_EQ(events[0].patch.values.intensity,12.25f);
+  const auto gesture=events[0].gesture;
+  ASSERT_NE(gesture,0u);
+  ++state.target.revision;
+  state.light.intensity=events[0].patch.values.intensity;
+  controls.setSnapshot(state);
+  io.AddInputCharactersUTF8("5");frame();
+  ASSERT_EQ(events.size(),2u);
+  EXPECT_EQ(events[1].phase,LightEditPhase::Update);
+  EXPECT_EQ(events[1].gesture,gesture);
+  EXPECT_FLOAT_EQ(events[1].patch.values.intensity,12.255f);
   io.AddKeyEvent(ImGuiKey_Escape,true);frame();io.AddKeyEvent(ImGuiKey_Escape,false);frame();
-  EXPECT_EQ(count(LightEditPhase::Cancel),1u);EXPECT_EQ(count(LightEditPhase::End),0u);
+  ASSERT_EQ(events.size(),3u);
+  EXPECT_EQ(events[2].phase,LightEditPhase::Cancel);
+  EXPECT_EQ(events[2].gesture,gesture);
+  EXPECT_EQ(events[2].target,state.target);
+  EXPECT_EQ(events[2].patch.fields,0u);
+  EXPECT_FALSE(controls.gestureActive());
 }
 
 TEST_F(LightEditWidgetTests, ColorComponentNumericEntryRetainsFloatPrecisionInTheColorPatch) {

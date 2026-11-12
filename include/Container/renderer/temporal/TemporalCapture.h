@@ -122,6 +122,13 @@ struct CaptureLightGizmo {
   Axis axis{Axis::Free};
   bool snap{};
 };
+struct CaptureNodeGizmo {
+  enum class Operation { Select, Begin, Update, End, Cancel };
+  Operation operation{};
+  CaptureNodeReference node;
+  CaptureLightGizmo gizmo;
+  glm::vec2 delta{};
+};
 struct CaptureLightEdit {
   CaptureLightTarget target;
   container::renderer::LightEditPhase phase{container::renderer::LightEditPhase::Commit};
@@ -201,6 +208,7 @@ struct CaptureEvent {
   std::optional<CaptureNodeAuthoring> nodeAuthoring;
   std::optional<CaptureNodeReparent> nodeReparent;
   std::optional<CaptureNodeTransform> nodeTransform;
+  std::optional<CaptureNodeGizmo> nodeGizmo;
   std::optional<CaptureAddPrimitive> addPrimitive;
   std::optional<CaptureMaterialEdit> materialEdit;
   std::optional<CaptureMaterialBinding> materialBinding;
@@ -301,6 +309,8 @@ public:
         event.nodeReparent = nodeReparentRequest(value.at("nodeReparent"));
       if (value.contains("nodeTransform"))
         event.nodeTransform = nodeTransformRequest(value.at("nodeTransform"));
+      if (value.contains("nodeGizmo"))
+        event.nodeGizmo = nodeGizmoRequest(value.at("nodeGizmo"));
       if (value.contains("addPrimitive"))
         event.addPrimitive = addPrimitiveRequest(value.at("addPrimitive"));
       if (value.contains("materialEdit"))
@@ -784,15 +794,18 @@ public:
           !event.physicsJointAction.empty() || event.physicsJointMotorVelocity || event.physicsSettings || event.physicsNode))
         throw std::invalid_argument("Capture material retirement and model/scene/material/history/timeline/physics mutations need separate events");
       const unsigned authoringCommands = unsigned(event.nodeAuthoring.has_value()) + unsigned(event.nodeReparent.has_value()) +
-          unsigned(event.nodeTransform.has_value()) + unsigned(event.addPrimitive.has_value()) + unsigned(animationControl);
+          unsigned(event.nodeTransform.has_value()) + unsigned(event.nodeGizmo.has_value()) +
+          unsigned(event.addPrimitive.has_value()) + unsigned(animationControl);
       if (authoringCommands > 1)
         throw std::invalid_argument("Capture node edits and animation controls need separate events");
-      if ((event.nodeReparent || event.nodeTransform || event.addPrimitive || animationControl) && (event.merge || event.gltfScene || event.materialVariant || event.nodeFlags ||
+      if ((event.nodeReparent || event.nodeTransform || event.nodeGizmo || event.addPrimitive || animationControl) && (event.merge || event.gltfScene || event.materialVariant || event.nodeFlags ||
           !event.sceneHistory.empty() || !event.reload.empty() || !event.guiReload.empty() ||
           !event.guiSampleModel.empty() || event.guiUnload || event.objectVisible || event.bimHiddenObject ||
           !event.physicsAttach.empty() || !event.physicsAction.empty() || event.physicsJointCreate ||
           !event.physicsJointAction.empty() || event.physicsJointMotorVelocity || event.physicsSettings || event.physicsNode))
         throw std::invalid_argument("Capture node edits/animation controls and model/scene/history/physics mutations need separate events");
+      if (event.nodeGizmo && event.viewportPointer)
+        throw std::invalid_argument("Capture node gizmo and viewport pointer actions need separate events");
       if (value.contains("guiWaitForLoad") &&
           !value.at("guiWaitForLoad").is_boolean())
         throw std::invalid_argument("Capture guiWaitForLoad must be a boolean");
@@ -851,6 +864,9 @@ public:
   }
   [[nodiscard]] bool hasViewportPointer() const {
     return std::ranges::any_of(events_, [](const auto& event) { return event.viewportPointer.has_value(); });
+  }
+  [[nodiscard]] bool hasNodeGizmo() const {
+    return std::ranges::any_of(events_, [](const auto& event) { return event.nodeGizmo.has_value(); });
   }
   uint32_t frameCount{0};
   std::vector<uint32_t> sampleFrames;
@@ -1497,6 +1513,37 @@ private:
       if (((index == 3 || index == 7 || index == 11) && number != 0) || (index == 15 && number != 1))
         throw std::invalid_argument("Capture nodeTransform matrix must be column-major affine");
       request.matrix[index / 4][index % 4] = static_cast<float>(number);
+    }
+    return request;
+  }
+  static CaptureNodeGizmo nodeGizmoRequest(const nlohmann::json& value) {
+    nodeFields(value, {"node", "operation", "gizmo", "delta"}, "nodeGizmo");
+    if (!value.contains("node") || !value.contains("operation") || !value.at("operation").is_string())
+      throw std::invalid_argument("Capture node gizmo requires a node reference and operation");
+    using Operation = CaptureNodeGizmo::Operation;
+    CaptureNodeGizmo request;
+    request.node = nodeReference(value.at("node"));
+    const auto& operation = value.at("operation").get_ref<const std::string&>();
+    if (operation == "select") request.operation = Operation::Select;
+    else if (operation == "begin") request.operation = Operation::Begin;
+    else if (operation == "update") request.operation = Operation::Update;
+    else if (operation == "end") request.operation = Operation::End;
+    else if (operation == "cancel") request.operation = Operation::Cancel;
+    else throw std::invalid_argument("Unknown capture node gizmo operation");
+    const bool begin = request.operation == Operation::Begin;
+    const bool drag = begin || request.operation == Operation::Update;
+    if (value.contains("gizmo") != begin || value.contains("delta") != drag)
+      throw std::invalid_argument("Capture node gizmo settings belong to begin and deltas belong to begin or update");
+    if (begin) {
+      auto settings = value.at("gizmo");
+      nodeFields(settings, {"tool", "space", "axis", "snap"}, "node gizmo settings");
+      settings["amount"] = {0, 0, 0};
+      request.gizmo = lightGizmo(settings);
+    }
+    if (drag) {
+      request.delta = lightVector<2>(value.at("delta"));
+      if (std::abs(request.delta.x) > 16384 || std::abs(request.delta.y) > 16384)
+        throw std::invalid_argument("Capture node gizmo delta exceeds its screen bound");
     }
     return request;
   }

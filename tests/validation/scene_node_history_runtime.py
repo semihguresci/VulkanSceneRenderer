@@ -16,6 +16,7 @@ EDITED = REST.copy()
 EDITED[0, 3] = .26
 EDITED[1, 3] = -.52
 LIGHT = dict(type='point', source='imported', nodeName='Point owner')
+INVALID_NODE = 2**32 - 1
 
 
 def columns(matrix):
@@ -27,7 +28,15 @@ def matrix(value):
 
 
 def node(frame, operation, source=2, **values):
-    return dict(frame=frame, nodeEdit=dict(operation=operation, sourceNode=source, **values))
+    target = dict(sourceNode=source)
+    if operation == 'transform':
+        return dict(frame=frame, nodeTransform=dict(node=target, matrix=values['matrix']))
+    if operation == 'visibility':
+        return dict(frame=frame, nodeFlags=dict(sourceNode=source, visible=values['visible']))
+    if operation == 'reparent':
+        return dict(frame=frame, nodeReparent=dict(node=target, parent=dict(sourceNode=values['parent'])))
+    assert operation in ('select', 'begin', 'update', 'end', 'cancel'), operation
+    return dict(frame=frame, nodeGizmo=dict(node=target, operation=operation, **values))
 
 
 def build_fixture(path, local=REST, *, two_lights=False):
@@ -64,7 +73,17 @@ def build_fixture(path, local=REST, *, two_lights=False):
 
 
 def state(sample):
-    return sample[1]['nodeEdit']
+    telemetry = sample[1]
+    row = next(item for item in telemetry['gltfMerge']['authoringNodes'] if item['sourceNode'] == 2)
+    graph_node = row['graphNode']
+    selected = telemetry['gui']['selectedMeshNodeId']
+    flags = next(item for item in telemetry['gltfNodeFlags']['nodes'] if item['graphNode'] == graph_node)
+    gizmo = telemetry.get('nodeGizmo', {})
+    return dict(graphNode=graph_node, local=np.asarray(row['localColumns']).flatten().tolist(),
+                world=np.asarray(row['worldColumns']).flatten().tolist(), parent=row['parentGraphNode'],
+                sibling=gizmo.get('siblingIndex') if gizmo.get('graphNode') == graph_node else None,
+                effectiveVisible=flags['effectiveVisible'], selected=selected == graph_node,
+                selectedGraphNode=selected, gizmoActive=gizmo.get('active', False))
 
 
 def near(a, b):
@@ -89,11 +108,13 @@ def raster(renderer, output, technique, source, literal):
         grab(25, tool='scale', space='local', delta=(40,0)), node(26, 'end'),
         action(27, 'undo'), action(28, 'redo'),
         node(29, 'select', 3), action(30, 'undo'), action(31, 'redo'),
+        action(32, 'undo'), grab(33, delta=(30, 0)), node(34, 'update', delta=[-30,0]),
+        node(35, 'end'), action(36, 'redo'),
     ]
-    captures = run(renderer, output, technique + '-node', source, technique, list(range(2,32)),
-                   commands, ('--no-ray-query',))
+    captures = run(renderer, output, technique + '-node', source, technique, list(range(2,37)),
+                   commands, ('--no-ray-query',), fix_camera=True)
     baked = run(renderer, output, technique + '-node-baked', literal, technique, [2],
-                extra=('--no-ray-query',))[2]
+                [node(1, 'select')], ('--no-ray-query',), fix_camera=True)[2]
     near(matrix(state(captures[2])['world']), A @ REST)
     near(matrix(state(captures[3])['world']), A @ EDITED)
     assert state(captures[2])['selected']
@@ -123,12 +144,24 @@ def raster(renderer, output, technique, source, literal):
     history(captures[19], 3, 0)
     history(captures[22], 3, 0)
     history(captures[26], 4, 0)
+    for frame in (13, 14, 18, 21, 25, 33, 34):
+        assert state(captures[frame])['gizmoActive'], frame
+    for frame in (15, 19, 22, 26, 35):
+        assert not state(captures[frame])['gizmoActive'], frame
     assert np.linalg.det(matrix(state(captures[26])['local'])[:3,:3]) < 0
     selected = state(captures[26])['graphNode']
     assert state(captures[29])['selectedGraphNode'] != selected
     assert state(captures[30])['selectedGraphNode'] == state(captures[31])['selectedGraphNode'] == selected
+    assert state(captures[33])['local'] != state(captures[32])['local']
+    assert state(captures[34])['local'] == state(captures[35])['local'] == state(captures[32])['local']
+    history(captures[32], 3, 1)
+    history(captures[33], 3, 1)
+    history(captures[34], 3, 1)
+    history(captures[35], 3, 1)
+    history(captures[36], 4, 0)
     for a, b in [(2,4), (3,5), (5,7), (6,8), (9,11), (10,12), (14,15), (12,16),
-                 (15,17), (17,19), (12,20), (20,23), (22,24), (24,27), (26,28), (24,30), (26,31)]:
+                 (15,17), (17,19), (12,20), (20,23), (22,24), (24,27), (26,28), (24,30), (26,31),
+                 (32,34), (32,35), (26,36)]:
         exact(captures[a], captures[b])
     exact(captures[3], baked)
     for a, b in [(2,3), (3,6), (12,15), (17,18), (20,22), (24,26)]:
@@ -145,9 +178,9 @@ def mixed_history(renderer, output, source):
         node(7,'transform',2,matrix=columns(EDITED)),
         action(8,'undo'), action(9,'undo'), action(10,'undo'),
         action(11,'redo'), action(12,'redo'), action(13,'redo'),
-        action(14,'undo'), dict(frame=15,reload=str(source)),
+        action(14,'undo'), dict(frame=15,reload=str(source)), node(16, 'select', 4),
     ]
-    frames = run(renderer, output, 'mixed-history', source, 'deferred-raster', list(range(2,16)),
+    frames = run(renderer, output, 'mixed-history', source, 'deferred-raster', list(range(2,17)),
                  commands, ('--no-ray-query',), fix_camera=True)
     near(point(frames[3])['position'], (A @ moved)[:3,3])
     near(point(frames[4])['position'], point(frames[2])['position'])
@@ -156,9 +189,10 @@ def mixed_history(renderer, output, source):
     history(frames[10], 0, 3)
     history(frames[13], 3, 0)
     history(frames[14], 2, 1)
-    history(frames[15], 0, 0)
-    assert 'nodeEdit' not in frames[15][1]
-    for a,b in [(2,4),(3,5),(6,8),(5,9),(2,10),(5,11),(6,12),(7,13),(6,14),(2,15)]:
+    assert frames[15][1].get('sceneEditHistory', dict(undo=0, redo=0)) == dict(undo=0, redo=0)
+    assert 'nodeGizmo' not in frames[15][1]
+    assert frames[15][1]['gltfMerge']['graphIdentity'] != frames[2][1]['gltfMerge']['graphIdentity']
+    for a,b in [(2,4),(3,5),(6,8),(5,9),(2,10),(5,11),(6,12),(7,13),(6,14),(2,16)]:
         exact(frames[a],frames[b])
     visibly_changed(frames[2],frames[3])
     visibly_changed(frames[6],frames[7])
@@ -178,7 +212,7 @@ def stable_light_bindings(renderer, output):
                 if item['source'] == 1 and item['type'] == 1}
     for frame in frames:
         first, second = (rows(frame)[source] for source in (4, 6))
-        assert (first['index'], second['index']) == (0, 1)
+        assert (first['index'], second['index']) == ((1, 0) if frame in (4, 8) else (0, 1))
         assert second['intensity'] == 12
         near(first['position'], rows(2)[4]['position'])
     assert rows(2)[4]['intensity'] == rows(6)[4]['intensity'] == 24
@@ -187,6 +221,40 @@ def stable_light_bindings(renderer, output):
     for a,b in [(2,6),(3,5),(3,7),(4,8)]:
         exact(frames[a],frames[b])
     return len(frames)
+
+
+def viewport_selection_history(renderer, output, source):
+    # The fixed camera projects the center of A @ REST inside this pixel's quad.
+    pixel = [279, 169]
+    commands = [dict(frame=2, viewportPointer=dict(action='select', pixel=pixel)),
+                dict(frame=3, nodeFlags=dict(sourceNode=0, selectable=False)),
+                action(4, 'undo'), action(5, 'redo'), action(6, 'undo')]
+    for command in commands:
+        command['depthProbe'] = pixel
+    captures = run(renderer, output, 'viewport-selection-history', source, 'deferred-raster',
+                   list(range(2, 7)), commands, ('--no-ray-query',), fix_camera=True)
+    initial = captures[2][1]
+    picked = initial['depthProbe']['sceneInteraction']['gpu']['hit']
+    assert picked['sourceNode'] == 2 and picked['sourceMesh'] == 0, picked
+    selected = picked['graphNode']
+    for frame, capture in captures.items():
+        telemetry = capture[1]
+        eligible = frame in (2, 4, 6)
+        expected = selected if eligible else INVALID_NODE
+        assert telemetry['gui']['selectedMeshNodeId'] == expected, (frame, telemetry['gui'])
+        interaction = telemetry['depthProbe']['sceneInteraction']
+        assert interaction['rawGpuId'] > 0, (frame, interaction)
+        for route in (interaction['cpu'], interaction['gpu']):
+            assert route['hit']['graphNode'] == selected, (frame, route)
+            assert (route['selection']['graphNode'] if route['selection'] else INVALID_NODE) == expected, (frame, route)
+        if frame == 2:
+            assert telemetry.get('sceneEditHistory', dict(undo=0, redo=0)) == dict(undo=0, redo=0)
+        else:
+            undo, redo = (0, 1) if eligible else (1, 0)
+            history(capture, undo, redo)
+    exact(captures[3], captures[5])
+    exact(captures[4], captures[6])
+    return len(captures)
 
 
 def main():
@@ -208,6 +276,7 @@ def main():
         print(f'PASS {technique} node transform, visibility, hierarchy and viewport drag replay', flush=True)
     counts['mixed-history'] = mixed_history(renderer, output, source)
     counts['light-binding-order'] = stable_light_bindings(renderer, output)
+    counts['viewport-selection-history'] = viewport_selection_history(renderer, output, source)
     if not args.raster_only:
         samples = run(renderer, output, 'node-path', source, 'path-tracing', [2,4,6,8],
                       [node(3,'visibility',visible=False),action(5,'undo'),action(7,'redo')],
@@ -221,10 +290,13 @@ def main():
         counts['path-tracing'] = len(samples)
         samples = run(renderer, output, 'node-ddgi', source, 'deferred-raster', [2,4,6,8],
                       [node(3,'visibility',visible=False),action(5,'undo'),action(7,'redo')],
-                      ('--taa','--ddgi','--ddgi-async','--ddgi-counts','3','3','3','--ddgi-rays','16'))
+                      ('--taa','--ray-shadows','hard','--ddgi','--ddgi-async','--ddgi-counts','3','3','3','--ddgi-rays','16'))
         gi = [sample['ddgi'] for _,sample in samples.values()]
         taa = [sample['taa'] for _,sample in samples.values()]
+        ray = [sample['rayShadows'] for _,sample in samples.values()]
         assert all(row['active'] for row in gi)
+        assert all(row['active'] for row in ray)
+        assert [row['build']['instances'] for row in ray] == [3,2,3,2]
         assert all(a['historyResets'] < b['historyResets'] for a,b in zip(gi,gi[1:]))
         assert all(a['epoch'] < b['epoch'] for a,b in zip(taa,taa[1:]))
         counts['taa-ddgi'] = len(samples)

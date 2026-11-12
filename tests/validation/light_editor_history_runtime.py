@@ -146,7 +146,7 @@ def raster_cases(renderer, output, technique, source, baked):
     captures = run(renderer, output, technique, source, technique, list(range(2, 23)), events,
                    ('--no-ray-query',), fix_camera=True)
     literal = run(renderer, output, technique + '-baked', baked, technique, [2],
-                  extra=('--no-ray-query',))[2]
+                  [dict(frame=1, lightSelection=POINT)], ('--no-ray-query',), fix_camera=True)[2]
     assert point(captures[3])['intensity'] == 35 and point(captures[4])['intensity'] == 45
     history(captures[4], 0, 0)
     history(captures[5], 1, 0)
