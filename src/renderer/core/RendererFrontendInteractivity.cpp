@@ -4,6 +4,7 @@
 #include <Container/renderer/temporal/TemporalCapture.h>
 #include <Container/utility/GuiManager.h>
 #include <Container/utility/SceneManager.h>
+#include <Container/utility/SwapChainManager.h>
 
 #include <nlohmann/json.hpp>
 
@@ -15,6 +16,9 @@ namespace container::renderer {
 using namespace container::geometry::gltf;
 
 void RendererFrontend::applyCaptureViewportPointer(const container::temporal::CaptureViewportPointer& pointer) {
+  const auto extent = svc_.swapChainManager.extent();
+  if (pointer.pixel.x >= extent.width || pointer.pixel.y >= extent.height)
+    throw std::invalid_argument("Capture viewportPointer pixel is outside the completed viewport");
   using Action = container::temporal::CaptureViewportPointer::Action;
   if (pointer.action == Action::Select)
     selectMeshNodeAtCursor(pointer.pixel.x, pointer.pixel.y);

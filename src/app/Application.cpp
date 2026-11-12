@@ -204,6 +204,8 @@ void Application::screenshotCaptureLoop() {
       }
       skip = sample.event.skip || minimized;
     }
+    if (skip && viewportPointer)
+      throw std::runtime_error("Cannot dispatch a viewport pointer on a skipped capture frame");
     if (waitForComfyUi) {
       using namespace std::chrono_literals;
       if (skip) throw std::runtime_error("Cannot wait for ComfyUI on a skipped capture frame");

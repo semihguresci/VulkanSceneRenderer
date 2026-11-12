@@ -10,6 +10,10 @@
 
 namespace container::geometry::gltf {
 
+// Portable exports can fold import-only ancestry into scene entry wrappers.
+// This extras key identifies those wrappers for interaction routing on reload.
+inline constexpr char kScenePlacementBoundaryExtra[] = "VulkanSceneRenderer.scenePlacementBoundary";
+
 enum class GltfNodeFlag : uint8_t {
   Visibility = 1,
   Selectability = 2,

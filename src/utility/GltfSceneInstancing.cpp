@@ -26,6 +26,20 @@ bool finiteAffine(const glm::mat4& matrix) {
       matrix[2][3] == 0.0f && matrix[3][3] == 1.0f;
 }
 
+bool isScenePlacementWrapper(const tinygltf::Node& node) {
+  if (!node.extras.IsObject()) return false;
+  const auto& extras = node.extras.Get<tinygltf::Value::Object>();
+  const auto marker = extras.find(geometry::gltf::kScenePlacementBoundaryExtra);
+  if (marker == extras.end() || !marker->second.IsBool() || !marker->second.Get<bool>()) return false;
+  if (node.children.size() != 1 || node.matrix.size() != 16 || node.mesh >= 0 ||
+      node.skin >= 0 || node.camera >= 0 || node.light >= 0 || node.emitter >= 0 ||
+      !node.weights.empty() || !node.lods.empty()) return false;
+  return std::ranges::all_of(node.extensions, [](const auto& entry) {
+    return entry.first == "KHR_node_visibility" || entry.first == "KHR_node_selectability" ||
+        entry.first == "KHR_node_hoverability";
+  });
+}
+
 glm::mat4 ownerWorldFromLocals(const SceneGraph& graph,
                              const GltfMeshAttachment& input) {
   // Graph population need not have updated cached world transforms yet.
@@ -241,6 +255,10 @@ SceneGraph BuildGltfSceneHierarchy(const tinygltf::Model& source,
     for(size_t i=0;i<child.size();++i) if(!child[i]) roots.push_back(int(i));
     if (roots.empty()) reject("node hierarchy has no root");
   }
+  std::vector<bool> sceneEntries(source.nodes.size());
+  for (const auto& scene : source.scenes)
+    for (const auto entry : scene.nodes)
+      if (entry >= 0 && size_t(entry) < sceneEntries.size()) sceneEntries[size_t(entry)] = true;
   struct Pending { int source; std::optional<uint32_t> parent; };
   std::vector<Pending> stack;
   for(auto it=roots.rbegin();it!=roots.rend();++it) stack.push_back({*it,importRoot});
@@ -257,7 +275,14 @@ SceneGraph BuildGltfSceneHierarchy(const tinygltf::Model& source,
     const auto world=parentWorld*local;
     if(!finiteAffine(world)) reject("node world transform exceeds finite affine range");
     const auto id=graph.createNode(local,0,false,SceneGraph::kInvalidNode,node.name.empty()?"glTF Node "+std::to_string(pending.source):node.name);
-    graph.getNode(id)->sourceNodeIndex=pending.source;
+    auto& runtime = *graph.getNode(id);
+    runtime.sourceNodeIndex=pending.source;
+    // Repeated scaled exports and root transform corrections can create a
+    // chain of marked wrappers. An ordinary authored parent ends that chain.
+    const bool declaredEntry = pending.parent == importRoot && sceneEntries[size_t(pending.source)];
+    const bool underPlacement = pending.parent && pending.parent != importRoot &&
+        graph.getNode(*pending.parent)->interactionRootBoundary;
+    runtime.interactionRootBoundary = (declaredEntry || underPlacement) && isScenePlacementWrapper(node);
     graph.setParent(id,pending.parent);
     graph.getNode(id)->worldTransform=world;
     const auto& flags=nodeFlags.nodes[size_t(pending.source)];

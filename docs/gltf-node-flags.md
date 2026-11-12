@@ -44,6 +44,8 @@ The hierarchy's Visible, Selectable and Hoverable controls edit local flags.
 Undo/redo retains all three independently; grouped capture edits are one history
 command. A capture event can use
 `{"frame":2,"nodeFlags":{"sourceNode":3,"visible":false,"hoverable":true}}`.
+Edits and their undo/redo update existing authored flag properties in the
+evaluated glTF model, so behavior pointers read the same local values.
 Use `{"frame":3,"viewportPointer":{"action":"select","pixel":[320,180]}}`
 or `"hover"` to run the normal viewport handler on the completed frame. The
 behavior graph processes that input on the next frame. A sequence with these
@@ -51,14 +53,17 @@ events uses scripted pointer input and retains the fixed timestep and camera tra
 Scene switches retain local edits while clearing selection and hover. Publication
 invalidates hover caches, refreshes visible lights/providers and resets temporal
 history. Light overrides follow source-node/dialect identities when visibility
-changes their compact runtime ordinals.
+changes their compact runtime ordinals. Hide and show preserve an authored
+light's edit history while that light's source binding exists.
 
 GLB and ASCII saves retain authored extension presence, empty/defaulted objects,
 explicit true values, unknown properties and extras. Editing a default true
 flag does not add an extension unless its new value is false. Source metadata
 is not copied to synthetic geometry children. Full light export includes hidden
 bindings and their edits/range scaling, while the current visible table selects
-the active authored sun.
+the active authored sun. Generated scene placement nodes carry renderer metadata
+that keeps them out of ancestor routing after reload. The authored root remains
+editable, including when its flags originally blocked selection and hover.
 
 ## Validation
 

@@ -77,6 +77,28 @@ def capture(renderer, output, name, source, technique, sample_frames, events=(),
     return states
 
 
+def subtree(nodes, root):
+    pending, visited = [root], set()
+    while pending:
+        index = pending.pop()
+        assert type(index) is int and 0 <= index < len(nodes) and index not in visited, index
+        visited.add(index)
+        yield index
+        pending.extend(nodes[index].get('children', ()))
+
+
+def verify_hidden_light(saved, group):
+    nodes = saved['nodes']
+    owners = [index for index, node in enumerate(nodes) if node.get('name') == 'Point owner']
+    assert len(owners) == 1 and owners[0] in subtree(nodes, group), owners
+    descendants = (nodes[index] for index in subtree(nodes, owners[0]))
+    bindings = [node['extensions'][PUNCTUAL]['light'] for node in descendants if PUNCTUAL in node.get('extensions', {})]
+    definitions = saved['extensions'][PUNCTUAL]['lights']
+    assert len(bindings) == 1 and type(bindings[0]) is int and 0 <= bindings[0] < len(definitions), bindings
+    light = definitions[bindings[0]]
+    assert light['type'] == 'point' and light['intensity'] == 40 and light['range'] == 16, light
+
+
 def verify_history(renderer, output, source, technique, suffix):
     destination = output / ('portable.' + suffix)
     other = 'forward-raster' if technique == 'deferred-raster' else 'deferred-raster'
@@ -126,15 +148,27 @@ def verify_history(renderer, output, source, technique, suffix):
     assert panel['extensions'][HOVERABLE]['hoverable'] is False
     group = next(index for index, node in enumerate(saved['nodes']) if node.get('name') == 'Hidden group')
     assert saved['nodes'][group]['extensions'][VISIBLE]['visible'] is False
-    point_owner = next(node for node in saved['nodes'] if node.get('name') == 'Point owner')
-    point_index = point_owner['extensions'][PUNCTUAL]['light']
-    assert saved['extensions'][PUNCTUAL]['lights'][point_index]['intensity'] == 40
-    reloaded = capture(renderer, output, technique + '-reload', destination, technique, [3, 4, 6],
-                       [dict(frame=1, gltfScene=1), dict(frame=2, gltfScene=0), flags(4, group, visible=True),
-                        dict(frame=5, gltfScene=1), dict(frame=6, depthProbe=PROBE)], ('--no-ray-query',))
+    verify_hidden_light(saved, group)
+    blocked = next(index for index, node in enumerate(saved['nodes']) if node.get('name') == 'Blocked scene root')
+    reload_events = [
+        dict(frame=1, gltfScene=1), dict(frame=2, gltfScene=0), flags(4, group, visible=True),
+        dict(frame=5, gltfScene=1), dict(frame=6, depthProbe=PROBE),
+        dict(flags(7, blocked, selectable=True, hoverable=True), depthProbe=PROBE),
+        dict(action(8, 'undo'), depthProbe=PROBE),
+    ]
+    reloaded = capture(renderer, output, technique + '-reload', destination, technique, [3, 4, 6, 7, 8],
+                       reload_events, ('--no-ray-query',))
     exact_view(states[15], reloaded[3])
     exact_view(states[9], reloaded[4])
     probe(reloaded[6], ('Primitive 0', None, None))
+    probe(reloaded[7], ('Primitive 0',) * 3)
+    probe(reloaded[8], ('Primitive 0', None, None))
+    history(reloaded[7], 1, 0)
+    history(reloaded[8], 0, 1)
+    for frame, enabled in [(6, False), (7, True), (8, False)]:
+        nodes = reloaded[frame][1]['gltfNodeFlags']['nodes']
+        root = next(node for node in nodes if node['sourceIndex'] == blocked)
+        assert root['localSelectable'] is enabled and root['localHoverable'] is enabled, (frame, root)
     print(f'PASS {technique} flags, {suffix.upper()}, light undo and scene changes', flush=True)
 
 

@@ -9,6 +9,7 @@
 #include <Container/geometry/GltfDeformationFrames.h>
 #include <Container/geometry/GltfAccessor.h>
 #include <Container/geometry/GltfMaterialVariants.h>
+#include <Container/geometry/GltfNodeFlags.h>
 #include <Container/geometry/GltfImageSources.h>
 #include <Container/geometry/GltfXmpMetadata.h>
 #include <Container/utility/GltfSceneInstancing.h>
@@ -2781,6 +2782,92 @@ TEST(GltfSceneExport, SceneCatalogReusesIdentityRootsAndPreservesHiddenSynthetic
   EXPECT_FALSE(hidden.nodes[1].extensions.contains("KHR_node_hoverability"));
   for (const auto* name:{"KHR_node_visibility","KHR_node_selectability","KHR_node_hoverability"})
     EXPECT_EQ(std::ranges::count(hidden.extensionsUsed,std::string(name)),1);
+}
+
+TEST(GltfSceneExport, PortablePlacementKeepsBlockedAuthoredRootAndItsEdits) {
+  namespace gltf = container::geometry::gltf;
+  using V = tinygltf::Value;
+  const auto cube = Model::MakeCube();
+  auto source = buildExportModel({cubeGraph(), cube});
+  auto& authored = source.nodes.at(0);
+  authored.matrix.clear();
+  authored.translation = {0, 0, 0};
+  authored.extensions["KHR_node_selectability"] = V(V::Object{{"selectable", V(false)}});
+  authored.extensions["KHR_node_hoverability"] = V(V::Object{{"hoverable", V(false)}});
+  source.extensionsUsed = {"KHR_node_selectability", "KHR_node_hoverability"};
+  sourceTrack(source, 0, "translation", TINYGLTF_TYPE_VEC3, {0, 0, 0, 0, 1, 0});
+  const std::array<uint32_t, 1> materials{0};
+  const auto scale = glm::scale(glm::mat4(1), glm::vec3(2));
+  const auto findNode = [](const SceneGraph& graph, int sourceIndex) {
+    for (uint32_t i = 0; i < graph.nodeCount(); ++i)
+      if (graph.getNode(i)->sourceNodeIndex == sourceIndex) return i;
+    return SceneGraph::kInvalidNode;
+  };
+  const auto exportGraph = [&](const tinygltf::Model& current, const SceneGraph& graph,
+                               const Model& geometry) {
+    std::vector<int32_t> sourceNodes;
+    for (uint32_t i = 0; i < graph.nodeCount(); ++i)
+      sourceNodes.push_back(graph.getNode(i)->sourceNodeIndex);
+    const std::vector<std::vector<uint32_t>> scenes{{findNode(graph, current.scenes.at(0).nodes.at(0))}};
+    SceneExportSnapshot snapshot{graph, geometry, &current, {}, sourceNodes, current.materials};
+    snapshot.runtimeSceneRoots = scenes;
+    snapshot.defaultSceneIndex = 0;
+    return buildExportModel(snapshot);
+  };
+
+  auto original = container::scene::BuildGltfSceneHierarchy(source, {}, materials, scale);
+  const auto root = findNode(original, 0);
+  ASSERT_NE(root, SceneGraph::kInvalidNode);
+  original.setActiveRoots(std::array{root});
+  // This edit requires an animated correction between the placement and root.
+  original.setLocalTransform(root, glm::translate(glm::mat4(1), glm::vec3(1, 0, 0)));
+  original.updateWorldTransforms();
+  ASSERT_EQ(original.renderableNodes().size(), 1u);
+  const auto originalHit = original.renderableNodes().front();
+  EXPECT_EQ(original.nearestSelectableAncestor(originalHit), SceneGraph::kInvalidNode);
+  EXPECT_EQ(original.nearestHoverableAncestor(originalHit), SceneGraph::kInvalidNode);
+  const auto output = exportGraph(source, original, cube);
+  const int placement = output.scenes.at(0).nodes.at(0);
+  const int correction = output.nodes.at(size_t(placement)).children.at(0);
+  const int restoredRoot = output.nodes.at(size_t(correction)).children.at(0);
+  EXPECT_EQ(output.nodes.at(size_t(restoredRoot)).name, authored.name);
+  for (const auto index : {placement, correction})
+    EXPECT_TRUE(output.nodes.at(size_t(index)).extras.Get(gltf::kScenePlacementBoundaryExtra).Get<bool>());
+
+  ExportDirectory directory;
+  for (const auto* suffix : {".glb", ".gltf"}) {
+    const auto path = directory.root / (std::string("interaction-placement") + suffix);
+    writeExportModel(output, path);
+    const auto loaded = LoadModelWithSource(path.string());
+    auto graph = container::scene::BuildGltfSceneHierarchy(loaded.gltfModel, {}, materials);
+    const auto placementNode = findNode(graph, placement);
+    const auto correctionNode = findNode(graph, correction);
+    const auto authoredNode = findNode(graph, restoredRoot);
+    ASSERT_NE(placementNode, SceneGraph::kInvalidNode);
+    ASSERT_NE(correctionNode, SceneGraph::kInvalidNode);
+    ASSERT_NE(authoredNode, SceneGraph::kInvalidNode);
+    EXPECT_TRUE(graph.getNode(placementNode)->interactionRootBoundary);
+    EXPECT_TRUE(graph.getNode(correctionNode)->interactionRootBoundary);
+    EXPECT_FALSE(graph.getNode(authoredNode)->interactionRootBoundary);
+    ASSERT_EQ(graph.renderableNodes().size(), 1u);
+    const auto hit = graph.renderableNodes().front();
+    EXPECT_EQ(graph.getNode(hit)->worldTransform, original.getNode(originalHit)->worldTransform);
+    EXPECT_EQ(graph.nearestSelectableAncestor(hit), SceneGraph::kInvalidNode);
+    EXPECT_EQ(graph.nearestHoverableAncestor(hit), SceneGraph::kInvalidNode);
+    EXPECT_THROW((void)graph.prepareRetireSubtree(placementNode), std::invalid_argument);
+    EXPECT_NO_THROW((void)graph.prepareRetireSubtree(authoredNode));
+    graph.setSelectable(authoredNode, true);
+    graph.setHoverable(authoredNode, true);
+    EXPECT_EQ(graph.nearestSelectableAncestor(hit), hit);
+    EXPECT_EQ(graph.nearestHoverableAncestor(hit), hit);
+
+    const auto scaledAgain = container::scene::BuildGltfSceneHierarchy(loaded.gltfModel, {}, materials, scale);
+    const auto repeated = exportGraph(loaded.gltfModel, scaledAgain, loaded.model);
+    const auto reloaded = container::scene::BuildGltfSceneHierarchy(repeated, {}, materials);
+    ASSERT_EQ(reloaded.renderableNodes().size(), 1u);
+    EXPECT_EQ(reloaded.nearestSelectableAncestor(reloaded.renderableNodes().front()), SceneGraph::kInvalidNode);
+    EXPECT_EQ(reloaded.nearestHoverableAncestor(reloaded.renderableNodes().front()), SceneGraph::kInvalidNode);
+  }
 }
 
 TEST(GltfSceneExport, InvalidSceneCatalogFailsBeforeDestinationOrLiveStateChanges) {
