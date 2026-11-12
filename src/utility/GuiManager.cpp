@@ -436,8 +436,7 @@ struct SceneHierarchyPanelActions {
   const std::function<bool(uint32_t)>* canMakeLinkedEditable{nullptr};
 };
 
-void CloseSceneHierarchyRowPopup(SceneHierarchyRowPopupState &popup) {
-  const uint32_t id = std::exchange(popup, {}).popupId;
+void CloseSceneHierarchyPopup(uint32_t id) {
   auto *context = ImGui::GetCurrentContext();
   if (!id || !context)
     return;
@@ -482,7 +481,7 @@ SceneHierarchyParentChange DrawSceneHierarchyParentCombo(
           ? "None"
           : SceneHierarchyNodeName(sceneGraph, currentParent);
   if (ImGui::BeginCombo("##SceneHierarchyParent", parentPreview.c_str())) {
-    actions.rowPopup = {sceneGraph.identity(), nodeIndex,
+    actions.rowPopup = {sceneGraph.identity(), sceneGraph.nodeIncarnation(nodeIndex), nodeIndex,
                         ImGui::GetCurrentContext()->BeginPopupStack.back().PopupId};
     candidateCache.popupOpen = true;
     RefreshSceneHierarchyParentCandidateCache(sceneGraph, nodeIndex,
@@ -576,7 +575,7 @@ void DrawSceneHierarchyRow(
     (*actions.selectSceneNode)(nodeIndex);
   }
   if (actions.authorSceneNode && ImGui::BeginPopupContextItem("Node actions")) {
-    actions.rowPopup = {sceneGraph.identity(), nodeIndex,
+    actions.rowPopup = {sceneGraph.identity(), sceneGraph.nodeIncarnation(nodeIndex), nodeIndex,
                         ImGui::GetCurrentContext()->BeginPopupStack.back().PopupId};
     ImGui::BeginDisabled(linkedReadOnly);
     if (actions.beginInlineRename && ImGui::MenuItem("Rename inline", "F2"))
@@ -3026,8 +3025,9 @@ void GuiManager::drawSceneHierarchy(
     const std::function<void(uint32_t, bool)> &setSceneNodeHoverable) {
   if (sceneHierarchyRowPopup_.popupId &&
       (sceneHierarchyRowPopup_.graphIdentity != sceneGraph.identity() ||
+       sceneHierarchyRowPopup_.nodeIncarnation != sceneGraph.nodeIncarnation(sceneHierarchyRowPopup_.nodeIndex) ||
        !sceneGraph.isNodeInActiveHierarchy(sceneHierarchyRowPopup_.nodeIndex)))
-    CloseSceneHierarchyRowPopup(sceneHierarchyRowPopup_);
+    CloseSceneHierarchyPopup(std::exchange(sceneHierarchyRowPopup_, {}).popupId);
   auto& inlineEdit = sceneNodeInlineRename_;
   const std::function<void()> cancelInline = [this] { CancelInlineSceneRename(sceneNodeInlineRename_); };
   if (inlineEdit.active) {
@@ -3081,7 +3081,8 @@ void GuiManager::drawSceneHierarchy(
       }
       const std::string name(draft.name.data());
       if (name != draft.originalName)
-        queueSceneNodeAuthoringRequest({SceneNodeAuthoringAction::Rename,draft.graphIdentity,draft.node,name});
+        queueSceneNodeAuthoringRequest({SceneNodeAuthoringAction::Rename, draft.graphIdentity,
+            draft.node, name, sceneGraph.nodeIncarnation(draft.node)});
       cancelInline();
     } catch (const std::exception& error) {
       draft.error = error.what(); draft.focusRequested = true;
@@ -3093,7 +3094,8 @@ void GuiManager::drawSceneHierarchy(
         try {
           if (action == SceneNodeAuthoringAction::MakeEditable) {
             CancelInlineSceneRename(sceneNodeInlineRename_);
-            queueSceneNodeAuthoringRequest({action, sceneGraph.identity(), selected, {}});
+            queueSceneNodeAuthoringRequest({action, sceneGraph.identity(), selected, {},
+                sceneGraph.nodeIncarnation(selected)});
             return;
           }
           const auto purpose = action == SceneNodeAuthoringAction::Rename
@@ -3110,10 +3112,12 @@ void GuiManager::drawSceneHierarchy(
           CancelInlineSceneRename(sceneNodeInlineRename_);
           sceneNodeAuthoringUi_.request = {action, sceneGraph.identity(), target,
               action == SceneNodeAuthoringAction::CreateEmpty
-                  ? "Empty" : sceneGraph.getNode(target)->name};
+                  ? "Empty" : sceneGraph.getNode(target)->name,
+              sceneGraph.nodeIncarnation(target)};
+          sceneNodeAuthoringUi_.hierarchyRevision = sceneGraph.hierarchyRevision();
           if(action == SceneNodeAuthoringAction::DuplicateSubtree) {
             auto& name=sceneNodeAuthoringUi_.request.name;
-            name+=" copy";
+            name = name.empty() ? "Node copy" : name + " copy";
             try { container::scene::ValidateSceneNodeName(name); }
             catch(const std::invalid_argument&) { name="Node copy"; }
           }
@@ -3154,9 +3158,13 @@ void GuiManager::drawSceneHierarchy(
   const bool opening = std::exchange(edit.openRequested, false);
   if (opening) ImGui::OpenPopup(title);
   if (ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    edit.popupId = ImGui::GetCurrentContext()->BeginPopupStack.back().PopupId;
     if (edit.request.graphIdentity != sceneGraph.identity() ||
-        !sceneGraph.getNode(edit.request.node) || sceneGraph.isNodeRetired(edit.request.node)) {
+        edit.hierarchyRevision != sceneGraph.hierarchyRevision() ||
+        edit.request.nodeIncarnation != sceneGraph.nodeIncarnation(edit.request.node) ||
+        sceneGraph.isNodeRetired(edit.request.node)) {
       ImGui::CloseCurrentPopup();
+      edit = {};
     } else {
       const bool deleting = edit.request.action == SceneNodeAuthoringAction::DeleteSubtree;
       bool enter = false;
@@ -3197,13 +3205,20 @@ void GuiManager::queueSceneNodeAuthoringRequest(SceneNodeAuthoringRequest reques
       request.action != SceneNodeAuthoringAction::MakeEditable &&
       !(request.action == SceneNodeAuthoringAction::DuplicateSubtree && request.name.empty()))
     container::scene::ValidateSceneNodeName(request.name);
-  if (!request.graphIdentity || request.node == container::scene::SceneGraph::kInvalidNode)
+  if (!request.graphIdentity || !request.nodeIncarnation || request.node == container::scene::SceneGraph::kInvalidNode)
     throw std::invalid_argument("Choose a scene node before editing its name or children");
   sceneNodeAuthoringRequest_ = std::move(request);
 }
 
 std::optional<SceneNodeAuthoringRequest> GuiManager::consumeSceneNodeAuthoringRequest() {
   return std::exchange(sceneNodeAuthoringRequest_, std::nullopt);
+}
+
+void GuiManager::resetSceneNodeAuthoring() {
+  CancelInlineSceneRename(sceneNodeInlineRename_);
+  CloseSceneHierarchyPopup(std::exchange(sceneHierarchyRowPopup_, {}).popupId);
+  CloseSceneHierarchyPopup(std::exchange(sceneNodeAuthoringUi_, {}).popupId);
+  sceneNodeAuthoringRequest_.reset();
 }
 
 void GuiManager::setSceneHierarchyNodeExpanded(
@@ -3627,8 +3642,7 @@ void GuiManager::queueModelMergeRequest(std::string path, std::string parentName
 void GuiManager::resetModelInspectionState() {
   lightEditControls_.setSnapshot({});
   gltfXmpInspector_->setSource(nullptr, 0, 0);
-  CancelInlineSceneRename(sceneNodeInlineRename_);
-  CloseSceneHierarchyRowPopup(sceneHierarchyRowPopup_);
+  resetSceneNodeAuthoring();
   materialInspector_={};materialEditRequests_.clear();materialBindingSelectionRequest_.reset();
   materialBindingOperationRequest_.reset();materialAssignmentDraft_.reset();
   materialTextureEditRequest_.reset();materialTextureDrafts_={};

@@ -182,7 +182,8 @@ bool RendererFrontend::duplicateSceneNode(uint32_t node,std::optional<std::strin
   if(closure.containsProtectedNodes)
     throw std::invalid_argument("A protected structural node cannot be duplicated");
   if(!name) {
-    name=sceneGraph_.getNode(root)->name+" copy";
+    const auto& original = sceneGraph_.getNode(root)->name;
+    name = original.empty() ? "Node copy" : original + " copy";
     try { container::scene::ValidateSceneNodeName(*name); }
     catch(const std::invalid_argument&) { name="Node copy"; }
   } else container::scene::ValidateSceneNodeName(*name);
@@ -548,19 +549,7 @@ bool RendererFrontend::publishSceneMerge(SceneMergeHistory& state,
       animationControls.time=player.time(); animationControls.speed=player.speed();
       animationControls.playing=player.playing(); animationControls.loop=player.loop();
     }
-    const auto& source=manager.animationSource();
-    for(uint32_t node=0;node<graph.nodeCount();++node) {
-      const auto* runtimeNode=graph.getNode(node);
-      if(!graph.isNodeActive(node) || runtimeNode->sourceNodeIndex<0) continue;
-      const auto sourceNode=size_t(runtimeNode->sourceNodeIndex);
-      if(sourceNode>=source.nodes.size()) continue;
-      const auto camera=source.nodes[sourceNode].camera;
-      if(camera<0 || size_t(camera)>=source.cameras.size()) continue;
-      auto name=source.cameras[size_t(camera)].name;
-      if(name.empty()) name="Camera "+std::to_string(camera+1);
-      if(!source.nodes[sourceNode].name.empty()) name+=" ("+source.nodes[sourceNode].name+")";
-      animationControls.cameras.push_back({std::move(name),sourceNode});
-    }
+    setGltfCameraChoices(graph, manager.animationSource(), animationControls);
     animationControls.cameraNode=state.cameraNode?static_cast<int>(*state.cameraNode):-1;
   }
   // Progress callbacks can submit loading frames. Retire them before the

@@ -205,6 +205,7 @@ void RendererFrontend::selectGltfScene(size_t index, bool expectRejection) {
   physicsJointFirstNode_.reset(); physicsJointFirstBody_=0; physicsJointFirstGraph_=0;
   physicsJointFirstIsWorld_=false; physicsSelectedJoint_=0;
   if(subs_.guiManager) {
+    subs_.guiManager->resetSceneNodeAuthoring();
     auto& animation=subs_.guiManager->gltfAnimationControls();
     animation.requestedClip.reset(); animation.requestedCameraNode.reset();
     animation.requestedTime.reset(); animation.requestedPlaying.reset();
@@ -416,7 +417,14 @@ void RendererFrontend::ensureSceneEditHistory() {
                 const container::util::SceneEditHistory::Placement& after) {
               return prepareSceneReparent(node,before,after);
             },
-            .beforeNodeMetadata = [this](uint32_t node) { requireEditableSceneNode(node); },
+            .beforeNodeMetadata = [this](uint32_t node) {
+              requireEditableSceneNode(node);
+              if (!subs_.sceneManager || !subs_.guiManager) return;
+              const auto sourceNode = sceneGraph_.getNode(node)->sourceNodeIndex;
+              const auto& nodes = subs_.sceneManager->animationSource().nodes;
+              gltfCameraChoicesDirty_ |= sourceNode >= 0 && size_t(sourceNode) < nodes.size() &&
+                  nodes[size_t(sourceNode)].camera >= 0;
+            },
             .prepareNodeFlags = [this](uint32_t node,
                 const container::util::SceneEditHistory::NodeFlagChanges& changes) {
               using Actions = container::util::SceneEditHistory::NodeFlagActions;
@@ -489,6 +497,9 @@ bool RendererFrontend::authorSceneNode(const container::ui::SceneNodeAuthoringRe
   using container::ui::SceneNodeAuthoringAction;
   if (request.graphIdentity != sceneGraph_.identity())
     throw std::invalid_argument("The requested node belongs to a replaced scene");
+  if (!request.nodeIncarnation || request.nodeIncarnation != sceneGraph_.nodeIncarnation(request.node) ||
+      sceneGraph_.isNodeRetired(request.node))
+    throw std::invalid_argument("The requested scene node is no longer available. Select it and try again.");
   if (request.action == SceneNodeAuthoringAction::MakeEditable) {
     if (!subs_.sceneManager || !subs_.sceneManager->canMakeLinkedAssetEditable(sceneGraph_, request.node))
       throw std::invalid_argument("Choose a linked asset placement or its contents");
@@ -789,6 +800,7 @@ void RendererFrontend::publishSceneEdit() {
 }
 
 void RendererFrontend::refreshSceneEditView() {
+  if (gltfCameraChoicesDirty_) refreshGltfCameraChoices();
   selectionNavigationAnchor_ = {};
   clearHoveredMeshNode();
   selectedDrawCommands_.clear();

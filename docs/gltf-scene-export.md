@@ -49,7 +49,8 @@ nested texture-transform extensions are declared in `extensionsUsed`.
 Every runtime node is serialized, including groups, synthetic primitive
 children, hidden nodes, and procedural additions. Node names, local matrices,
 child/root ordering, material assignments, and visibility come from the current
-graph. Mesh instances share serialized geometry where possible; vertices stay
+graph. Unnamed imported nodes keep their empty names through editing, undo, and
+export. Mesh instances share serialized geometry where possible. Vertices stay
 in mesh-local coordinates. Matrices remain column-major, right-handed, +Y up,
 with no viewport or projection conversion. Hidden nodes use the optional
 `KHR_node_visibility` extension with `visible: false`, preserving the local
@@ -216,9 +217,10 @@ pixel-exact comparisons against independent static controls. The verification
 also covers distinct GPU picks for nested placements and companion reloads
 with inline edits and animation. [Windows NVIDIA results](../tests/visual-regression/gltf-linked-assets/windows-nvidia/gltf-linked-assets-results.json)
 The hierarchy marks linked payloads read-only and offers **Make Editable**
-for their shared placement family. Detaching the family clears scene edit
-history. Save Linked As writes the detached family and its edits inline while
-keeping the other families linked.
+for their shared placement family. Use **Make Editable** before deleting or
+duplicating a subtree that contains a linked payload. Detaching the family
+clears scene edit history. Save Linked As writes the detached family and its
+edits inline while keeping the other families linked.
 The `extras.containerLinkedSource` provenance records the original relative URI
 and node index and carries no file dependency. Flattened linked children share
 one packet table per source and alias context. Each placement exposes its

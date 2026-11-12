@@ -1,0 +1,312 @@
+{
+  "schemaVersion": 1,
+  "rendererRevision": "35f403836918ed103b5ac3e5b35226cf271d9e57",
+  "rendererSha256": "5fa6cd914ea695567a8b161cbbc334e7ca6873d4dc1564acbc99bf88f1cbf2eb",
+  "platform": "Windows x64",
+  "configuration": "Release",
+  "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+  "driverVersion": 2559967232,
+  "vulkanApiVersion": 4211029,
+  "vulkanValidationLayer": "1.4.363.1",
+  "vulkanSynchronizationValidation": true,
+  "ctestCases": 652,
+  "ctestSha256": "57737bc4eb0fa11e65fcfc8b782164a569f111aef06e109551d60d22adc20f03",
+  "ctest": [
+    {
+      "target": "scene_hierarchy_ui_tests",
+      "cases": 46,
+      "xmlSha256": "8c1c2fc86994e6db33f3a10cbc9d1735781ee93f87a1e75b5d9376be687f0f55"
+    },
+    {
+      "target": "gui_scene_node_authoring_tests",
+      "cases": 4,
+      "xmlSha256": "8c8333ad5878908a3328fbf3682b59fb5a31e76fb8dc5ec2c112646ca0274ceb"
+    },
+    {
+      "target": "scene_node_authoring_policy_tests",
+      "cases": 16,
+      "xmlSha256": "a22b3edc8405316d483a5d360e88780301f654122928b8ca348e8ba56a2a7d44"
+    },
+    {
+      "target": "scene_node_lifetime_tests",
+      "cases": 13,
+      "xmlSha256": "432c06344eaf0ca9ba0741e3276c42cedcee494f645865f7c6dfa7a1f986007f"
+    },
+    {
+      "target": "scene_edit_history_tests",
+      "cases": 40,
+      "xmlSha256": "928266fe08868eef9c6c482b838b19ad9ef99d69477fef38c0f39135092102cf"
+    },
+    {
+      "target": "gltf_scene_export_tests",
+      "cases": 54,
+      "xmlSha256": "615d24478c77a07f2d3202de0d59b650e6834997275a997bd85615bda525b123"
+    },
+    {
+      "target": "gltf_scene_instancing_tests",
+      "cases": 13,
+      "xmlSha256": "fe3794658936e35c4bd9bd06d263d884528842f4300a7e29332824240ae1d85e"
+    },
+    {
+      "target": "gltf_scene_selection_tests",
+      "cases": 9,
+      "xmlSha256": "e7d30b3df51226e150a314b82fd272bddb70e268f4daed638613acddf3aa540f"
+    },
+    {
+      "target": "gltf_node_export_compaction_tests",
+      "cases": 16,
+      "xmlSha256": "c09280de9e572102583c37c7d96c13757d631e99aa9ea487d32b062ea6d102b7"
+    },
+    {
+      "target": "gltf_projected_subtree_clone_tests",
+      "cases": 12,
+      "xmlSha256": "85bb05d946ab86da95d6c5f3b66cc7def5a71556965f072271690dfe1cb615be"
+    },
+    {
+      "target": "gltf_subtree_clone_tests",
+      "cases": 14,
+      "xmlSha256": "b0980ae97986773609e4b94be4270b3ca90cf25930ac4c296ff03b74a282c953"
+    },
+    {
+      "target": "gltf_merge_tests",
+      "cases": 36,
+      "xmlSha256": "ac68d8669c0f858599631090fcb994db3c59cf77aac930a48e052239be4be623"
+    },
+    {
+      "target": "gltf_camera_authoring_tests",
+      "cases": 40,
+      "xmlSha256": "870e9406b4b95c04d8906a0b0103ad4e42c61448b6c56a24147ccb7b315e36ca"
+    },
+    {
+      "target": "gltf_camera_pose_authoring_tests",
+      "cases": 23,
+      "xmlSha256": "229ee07bd050e1c4513b6b318e5c65d1619dad9830e760b1b689b74c898308d0"
+    },
+    {
+      "target": "gltf_camera_node_rest_tests",
+      "cases": 20,
+      "xmlSha256": "0c83883679f316e48b0eb6f87cadda3d4d8632080489b4f128fde8fcef3da92f"
+    },
+    {
+      "target": "camera_projection_controls_tests",
+      "cases": 15,
+      "xmlSha256": "d55663cd22bc0b4c09207240de490fa78ce1c7928e208963fc732706e306ce92"
+    },
+    {
+      "target": "camera_view_pose_controls_tests",
+      "cases": 15,
+      "xmlSha256": "f00962c03da4193bfb13f22da7a394d7c1c0da982aedb7a8e4585c33ae7c6b26"
+    },
+    {
+      "target": "scene_merge_generation_gpu_tests",
+      "cases": 90,
+      "xmlSha256": "63c9b7984ee3ed8dce8fa9c5a99f934ba70f05cf8dce547ca077ec7a8314a4d6"
+    },
+    {
+      "target": "camera_pose_scene_generation_gpu_tests",
+      "cases": 8,
+      "xmlSha256": "67a777fa49946a7ec554a3d3b80e23320499bc2ee5d5a30a25d09eb34863a37d"
+    },
+    {
+      "target": "camera_view_pose_generation_gpu_tests",
+      "cases": 13,
+      "xmlSha256": "6a031766ff0d988f238a5f5dab2c75c7023387c7877ed419ac4c9d7c6e9b91f1"
+    },
+    {
+      "target": "camera_pose_lighting_gpu_tests",
+      "cases": 7,
+      "xmlSha256": "ca6e13ce9ab0c3c37c15e008cecb50bf6451f2ea4ec3bc953eb0eea865773588"
+    },
+    {
+      "target": "source_resource_retirement_gpu_tests",
+      "cases": 19,
+      "xmlSha256": "eacf7aa3690a108d05835f1b3a4120f05337174ef33ba20aeac3dc79112cb0ce"
+    },
+    {
+      "target": "scene_controller_generation_gpu_tests",
+      "cases": 18,
+      "xmlSha256": "6268680d1fea5bbe0387fd1af6251d534b3e759edc6eeeb3cd8572caac2ba796"
+    },
+    {
+      "target": "gltf_deformation_gpu_tests",
+      "cases": 6,
+      "xmlSha256": "8e3a54ed3b40843d9c67c8f84fccb12bb01a80974be644be734707fc99131d4f"
+    },
+    {
+      "target": "gpu_hierarchy_tests",
+      "cases": 5,
+      "xmlSha256": "8e505ef55c8762c14648c727ed23b6465759d13658d3d366d141703277da3bb1"
+    },
+    {
+      "target": "physics_scene_tests",
+      "cases": 76,
+      "xmlSha256": "858c9994463891055b1470579231c953a7e27dc5b0e880725c7c8ca425f4f08d"
+    },
+    {
+      "target": "physics_element_bindings_tests",
+      "cases": 24,
+      "xmlSha256": "31a6c1829a26b49e090d8e90391f2a281d99982d2949169dcd913ea6e2e2af86"
+    }
+  ],
+  "nativeCaptures": 288,
+  "successfulProcessCaptures": 284,
+  "preRejectionCaptures": 4,
+  "native": {
+    "authoring": {
+      "captures": 42,
+      "evidenceCaptures": 42,
+      "processes": 16,
+      "expectedRejectedProcesses": 0,
+      "preRejectionCaptures": 0,
+      "resultSha256": "21a07d1c6ff88bd4ce4cfbec73b18b6fe0a6d5911f2d11e4833f7b391c4bd78f",
+      "captureSha256": "54da55c19c3f7a505cf16e9a88c0d4698a8bb62e650a8042277692114c5b4a71",
+      "logSha256": "c9d29bc854f84844a528c2d3e5e0987bcb897d26b4679ccb6caaaf11d7a7f205",
+      "manifestSha256": "aa67cd00e52b15fbabee270c7304e3ecf0a00b9ff3206e1d8820e662f6dad296",
+      "manifestEntries": 329,
+      "unrelatedHarnessChanges": [],
+      "stateCheckCount": 42,
+      "imageCheckCount": 40,
+      "exportInspectionCount": 8
+    },
+    "retirement": {
+      "captures": 52,
+      "evidenceCaptures": 52,
+      "processes": 14,
+      "expectedRejectedProcesses": 2,
+      "preRejectionCaptures": 2,
+      "resultSha256": "582972c855bc616397190dcac532833091f9a9d10bee509e695ef45833afb418",
+      "captureSha256": "ed41ba61c25dcc2b50377a457a696d731fce53b5c31720196bce1ad63d87cb1b",
+      "logSha256": "d77c6d2ee0431cc924ed54274ce581c9cbc77b58fd26e83e5034cde302c4b467",
+      "manifestSha256": "aa67cd00e52b15fbabee270c7304e3ecf0a00b9ff3206e1d8820e662f6dad296",
+      "manifestEntries": 329,
+      "unrelatedHarnessChanges": [],
+      "stateCheckCount": 50,
+      "imageCheckCount": 42,
+      "exportInspectionCount": 4
+    },
+    "retirement-ray": {
+      "captures": 8,
+      "evidenceCaptures": 8,
+      "processes": 2,
+      "expectedRejectedProcesses": 0,
+      "preRejectionCaptures": 0,
+      "resultSha256": "a5364450e431661fb5bcc69d87fbf6c858e62d00b38529ae1c28040abc92653e",
+      "captureSha256": "af9529557d3fe375bc0852caa6086477fdc2f6c221c8f6596a3855bebc285567",
+      "logSha256": "3577654e1bf1178d343064683bf68b89a447f39d8c9518a79aa1e1dc0f2121ad",
+      "manifestSha256": "aa67cd00e52b15fbabee270c7304e3ecf0a00b9ff3206e1d8820e662f6dad296",
+      "manifestEntries": 329,
+      "unrelatedHarnessChanges": [],
+      "stateCheckCount": 8,
+      "imageCheckCount": 0,
+      "exportInspectionCount": 0
+    },
+    "clone-edited": {
+      "captures": 44,
+      "evidenceCaptures": 44,
+      "processes": 12,
+      "expectedRejectedProcesses": 0,
+      "preRejectionCaptures": 0,
+      "resultSha256": "0aa692000ba0bfdf3ad052c54366de2ff2b47bf9a2e9c64cfd47f2466dbab8b8",
+      "captureSha256": "c80438ef42476743f9f9f886398b46c845339666b8f5d90b7b14f363bb7ef0f0",
+      "logSha256": "12cec5fba07356ae9c62d8dc9dadf3421067b8ec99487634d62e159f6711aebb",
+      "manifestSha256": "aa67cd00e52b15fbabee270c7304e3ecf0a00b9ff3206e1d8820e662f6dad296",
+      "manifestEntries": 329,
+      "unrelatedHarnessChanges": [],
+      "stateCheckCount": 40,
+      "imageCheckCount": 38,
+      "exportInspectionCount": 4
+    },
+    "clone-primitive": {
+      "captures": 12,
+      "evidenceCaptures": 12,
+      "processes": 2,
+      "expectedRejectedProcesses": 0,
+      "preRejectionCaptures": 0,
+      "resultSha256": "c2370a19ff18ef58bb9f1d62e192a96ad418a22a68b3dc14822af7b2b6cb00b7",
+      "captureSha256": "c93d83014bf6bcc5b7c4348039f8c9ec569292df0bef5b5b7c87fa436510f40e",
+      "logSha256": "61c32e780534ad56e4318cb2668a585d916afb250fb7a36a510d81ee1368482e",
+      "manifestSha256": "aa67cd00e52b15fbabee270c7304e3ecf0a00b9ff3206e1d8820e662f6dad296",
+      "manifestEntries": 329,
+      "unrelatedHarnessChanges": [],
+      "stateCheckCount": 12,
+      "imageCheckCount": 6,
+      "exportInspectionCount": 0
+    },
+    "clone-animated": {
+      "captures": 50,
+      "evidenceCaptures": 50,
+      "processes": 22,
+      "expectedRejectedProcesses": 0,
+      "preRejectionCaptures": 0,
+      "resultSha256": "b766c9839030730cf058e0f6e95d54bc9523b25e49d2d5ef1490212a4357ffc8",
+      "captureSha256": "ced530080dc9dc80213e78b6478dbff02db9e4970e3a054e8550b14178c5a4f8",
+      "logSha256": "2af95f21c3dfed8511f63204c383f7514b1f4ea6915e2fb18f8ca7a595c5bbce",
+      "manifestSha256": "aa67cd00e52b15fbabee270c7304e3ecf0a00b9ff3206e1d8820e662f6dad296",
+      "manifestEntries": 329,
+      "unrelatedHarnessChanges": [],
+      "stateCheckCount": 36,
+      "imageCheckCount": 42,
+      "exportInspectionCount": 4
+    },
+    "clone-binding": {
+      "captures": 48,
+      "evidenceCaptures": 48,
+      "processes": 26,
+      "expectedRejectedProcesses": 0,
+      "preRejectionCaptures": 0,
+      "resultSha256": "af114d002a3a4c6b4ac5da0ebf3d7b148338d7d4b1c5bd3b3194037894002e4c",
+      "captureSha256": "c576f247a17743f8cc10e586977f6155855f154ac794e139ba023d7bcbc4e712",
+      "logSha256": "c2a77607cb5150101083507bf30d2f8c56959ed919267a2c27bdc5f00716a0ed",
+      "manifestSha256": "aa67cd00e52b15fbabee270c7304e3ecf0a00b9ff3206e1d8820e662f6dad296",
+      "manifestEntries": 329,
+      "unrelatedHarnessChanges": [],
+      "stateCheckCount": 28,
+      "imageCheckCount": 40,
+      "exportInspectionCount": 4
+    },
+    "clone-ray": {
+      "captures": 8,
+      "evidenceCaptures": 8,
+      "processes": 2,
+      "expectedRejectedProcesses": 0,
+      "preRejectionCaptures": 0,
+      "resultSha256": "5459eabe303721a46b868c9a2b14300045a6300e3b9277244a07ccf437745a1e",
+      "captureSha256": "52c85ee8adc28b00fdb6fb631ac9e4f1efa52924d87ec65f88356e53076ecd7a",
+      "logSha256": "3fae307dab3d7269d8040ee0b72d083981e29c6737b52b8fbf1f572022b96294",
+      "manifestSha256": "aa67cd00e52b15fbabee270c7304e3ecf0a00b9ff3206e1d8820e662f6dad296",
+      "manifestEntries": 329,
+      "unrelatedHarnessChanges": [],
+      "stateCheckCount": 8,
+      "imageCheckCount": 0,
+      "exportInspectionCount": 0
+    },
+    "linked": {
+      "captures": 12,
+      "evidenceCaptures": 14,
+      "processes": 6,
+      "expectedRejectedProcesses": 2,
+      "preRejectionCaptures": 2,
+      "resultSha256": "c379262f816e659f32e9febc8d19dc25ec789691606e2e827287ccf9f56cfc7d",
+      "captureSha256": "025a9aa00ee93252269c2c4ae112267c957e826635ea8c29c29f001a7d025bd1",
+      "logSha256": "82eb2b6bb2d39bb15335f441d8e5700fd1b1a71defc31f6ccc6d05ecc8b274c2",
+      "manifestSha256": "aa67cd00e52b15fbabee270c7304e3ecf0a00b9ff3206e1d8820e662f6dad296",
+      "manifestEntries": 329,
+      "unrelatedHarnessChanges": [],
+      "checkCount": 4
+    },
+    "camera": {
+      "captures": 10,
+      "evidenceCaptures": 10,
+      "processes": 4,
+      "expectedRejectedProcesses": 0,
+      "preRejectionCaptures": 0,
+      "resultSha256": "b91ca52161e1425482817ea2255f40ba4a8a3d799b1e61fe8a15c4a349958f0c",
+      "captureSha256": "6c6644633cc51cd7896f1abeeb30e2825ee310990e42f57ac56587ebad6abd3c",
+      "logSha256": "b6255b0fb7290e24dd744504767d2d9c95b0b9838f1d63c5f2daff74f57ff275",
+      "manifestSha256": "aa67cd00e52b15fbabee270c7304e3ecf0a00b9ff3206e1d8820e662f6dad296",
+      "manifestEntries": 329,
+      "unrelatedHarnessChanges": [],
+      "checkCount": 10
+    }
+  }
+}

@@ -189,10 +189,13 @@ struct SceneNodeAuthoringRequest {
   uint64_t graphIdentity{};
   uint32_t node{std::numeric_limits<uint32_t>::max()};
   std::string name{};
+  uint64_t nodeIncarnation{};
 };
 
 struct SceneNodeAuthoringUiState {
   SceneNodeAuthoringRequest request{};
+  uint64_t hierarchyRevision{};
+  uint32_t popupId{};
   bool openRequested{false};
   std::string error{};
 };
@@ -688,6 +691,7 @@ struct SceneHierarchyParentCandidateCacheState {
 
 struct SceneHierarchyRowPopupState {
   uint64_t graphIdentity{};
+  uint64_t nodeIncarnation{};
   uint32_t nodeIndex{};
   uint32_t popupId{};
 };
@@ -925,6 +929,7 @@ public:
   void queueSceneNodeAuthoringRequest(SceneNodeAuthoringRequest request);
   [[nodiscard]] std::optional<SceneNodeAuthoringRequest>
   consumeSceneNodeAuthoringRequest();
+  void resetSceneNodeAuthoring();
   void setLightEditSnapshot(container::renderer::LightEditSnapshot snapshot) {lightEditControls_.setSnapshot(std::move(snapshot));}
   [[nodiscard]] const container::renderer::LightEditSnapshot& lightEditSnapshot() const noexcept {return lightEditControls_.snapshot();}
   void drawLightEditInspector() {lightEditControls_.draw();}

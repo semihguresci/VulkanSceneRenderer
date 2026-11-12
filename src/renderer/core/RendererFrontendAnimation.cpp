@@ -70,21 +70,28 @@ void RendererFrontend::resetGltfAnimation() {
   updateCameraViewPoseDestination();
 }
 void RendererFrontend::refreshGltfCameraChoices() {
-  if(!subs_.sceneManager || !subs_.guiManager) return;
-  auto& choices=subs_.guiManager->gltfAnimationControls().cameras; choices.clear();
-  const auto& source=subs_.sceneManager->animationSource();
-  for(uint32_t graphIndex=0;graphIndex<sceneGraph_.nodeCount();++graphIndex) {
-    const auto& runtime=*sceneGraph_.getNode(graphIndex);
-    if(!sceneGraph_.isNodeActive(graphIndex) || runtime.sourceNodeIndex<0) continue;
+  if (subs_.sceneManager && subs_.guiManager)
+    setGltfCameraChoices(sceneGraph_, subs_.sceneManager->animationSource(),
+                         subs_.guiManager->gltfAnimationControls());
+  gltfCameraChoicesDirty_ = false;
+}
+
+void RendererFrontend::setGltfCameraChoices(const container::scene::SceneGraph& graph,
+    const tinygltf::Model& source, container::ui::GltfAnimationControls& controls) {
+  std::vector<container::ui::GltfAnimationCameraChoice> choices;
+  for(uint32_t graphIndex=0;graphIndex<graph.nodeCount();++graphIndex) {
+    const auto& runtime=*graph.getNode(graphIndex);
+    if(!graph.isNodeActive(graphIndex) || runtime.sourceNodeIndex<0) continue;
     const auto index=size_t(runtime.sourceNodeIndex);
     if(index>=source.nodes.size()) continue;
     const auto& node=source.nodes[index];
     if(node.camera<0 || size_t(node.camera)>=source.cameras.size()) continue;
     const auto& camera=source.cameras[size_t(node.camera)];
     std::string name=camera.name.empty()?"Camera "+std::to_string(node.camera+1):camera.name;
-    if(!node.name.empty()) name+=" ("+node.name+")";
+    if(!runtime.name.empty()) name+=" ("+runtime.name+")";
     choices.push_back({std::move(name),index});
   }
+  controls.cameras = std::move(choices);
 }
 void RendererFrontend::publishGltfAnimationChanges(
     const container::geometry::gltf::AnimationDirtySet& dirty) {

@@ -116,7 +116,8 @@ singular, ill-conditioned or unrepresentable transforms and stale source/view
 proofs reject before a pose action is published.
 
 Capture scripts can use `cameraSelection` with exactly one of `sourceNode`, an
-exact unique authored node `nodeName`, or `viewport: true`. `cameraProjection`
+exact unique camera node `nodeName`, or `viewport: true`. Name selection uses
+the current hierarchy name, including after rename, undo, and redo. `cameraProjection`
 addresses an active source node and applies an explicit typed patch.
 `cameraPose: {sourceNode, fromViewport: true}` writes that node from the current
 free viewport; an optional `expectedCameraRevision` rejects a stale request.

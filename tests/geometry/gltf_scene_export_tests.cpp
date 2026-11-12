@@ -14,6 +14,7 @@
 #include <Container/geometry/GltfImageSources.h>
 #include <Container/geometry/GltfXmpMetadata.h>
 #include <Container/utility/GltfSceneInstancing.h>
+#include <Container/utility/SceneEditHistory.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -2991,6 +2992,36 @@ TEST(GltfSceneExport, PortablePlacementKeepsBlockedAuthoredRootAndItsEdits) {
     EXPECT_EQ(reloaded.nearestSelectableAncestor(reloaded.renderableNodes().front()), SceneGraph::kInvalidNode);
     EXPECT_EQ(reloaded.nearestHoverableAncestor(reloaded.renderableNodes().front()), SceneGraph::kInvalidNode);
   }
+}
+
+TEST(GltfSceneExport, UnnamedImportedNodeRoundTripsAfterRenameUndo) {
+  const auto cube = Model::MakeCube();
+  auto source = buildExportModel({cubeGraph(), cube});
+  source.nodes.at(0).name.clear();
+  auto graph = container::scene::BuildGltfSceneHierarchy(source, {}, std::array<uint32_t, 1>{0});
+  std::vector<int32_t> sourceNodes;
+  for (uint32_t node = 0; node < graph.nodeCount(); ++node)
+    sourceNodes.push_back(graph.getNode(node)->sourceNodeIndex);
+  const auto owner = std::ranges::find(sourceNodes, 0);
+  ASSERT_NE(owner, sourceNodes.end());
+  const auto target = static_cast<uint32_t>(owner - sourceNodes.begin());
+  const SceneExportSnapshot snapshot{graph, cube, &source, {}, sourceNodes, source.materials};
+  EXPECT_TRUE(buildExportModel(snapshot).nodes.at(target).name.empty());
+
+  container::util::SceneEditHistory history(graph);
+  ASSERT_TRUE(history.setName(target, "glTF Node 0"));
+  EXPECT_EQ(buildExportModel(snapshot).nodes.at(target).name, "glTF Node 0");
+  ASSERT_TRUE(history.undo());
+  const auto undone = buildExportModel(snapshot);
+  EXPECT_TRUE(undone.nodes.at(target).name.empty());
+  ExportDirectory directory;
+  for (const auto* suffix : {".gltf", ".glb"}) {
+    const auto path = directory.root / (std::string("unnamed-node") + suffix);
+    writeExportModel(undone, path);
+    EXPECT_TRUE(LoadModelWithSource(path.string()).gltfModel.nodes.at(target).name.empty());
+  }
+  ASSERT_TRUE(history.redo());
+  EXPECT_EQ(buildExportModel(snapshot).nodes.at(target).name, "glTF Node 0");
 }
 
 TEST(GltfSceneExport, InvalidSceneCatalogFailsBeforeDestinationOrLiveStateChanges) {
