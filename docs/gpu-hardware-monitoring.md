@@ -41,7 +41,14 @@ The `gpu_hardware_monitor_tests` suite checks rate limiting, null readings,
 timestamp and age serialization, and that a blocked driver call on the worker
 leaves the reader available. The headless regression at
 `tests/validation/gpu_hardware_telemetry_runtime_regression.py` compares captures
-and frame timing with the optional monitor enabled and disabled.
+and frame timing with the optional monitor enabled and disabled. Use `--pairs 3`
+to alternate launch order and record paired frame-time medians and p95 values.
+
+On a Windows RTX 2080 SUPER, all 15 matched frame pairs were pixel-identical
+across six 480-frame runs. Vulkan timestamp profiling remained active in every
+run. Median frame wait differed by less than 0.001 ms within each pair. The
+observed NVML polls took 5.3–9.4 ms after the first poll, which took 25.2–40.2 ms
+and included initialization. [Windows Vulkan results](../tests/visual-regression/gpu-hardware-monitoring/windows-nvidia/gpu-hardware-monitoring-results.json)
 
 See the [Vulkan PCI address reference](https://docs.vulkan.org/refpages/latest/refpages/source/VkPhysicalDevicePCIBusInfoPropertiesEXT.html)
 and the [NVIDIA NVML device queries](https://docs.nvidia.com/deploy/nvml-api/latest/api/group__nvmlDeviceQueries.html)
