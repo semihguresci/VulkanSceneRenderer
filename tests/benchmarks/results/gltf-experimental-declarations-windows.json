@@ -1,0 +1,286 @@
+{
+  "schemaVersion": 1,
+  "issue": 151,
+  "platform": "Windows x64",
+  "configuration": "Release",
+  "reproductionSourceRevision": "b46a7965d1b64a16686fe29946716088f823bbfa",
+  "method": "Steady-clock elapsed time around production LoadModelWithSource with experimental glTF materials enabled. Excludes process/application startup and Vulkan initialization. Each sample uses a fresh process. Baseline and fixed runs alternate on the same host. Process wall medians are reported separately.",
+  "measuredRounds": 3,
+  "warmupRounds": 0,
+  "probes": {
+    "baseline": {
+      "revision": "b02e62fd609774eb0a8337989b860ceb32545219",
+      "geometrySha256": "ded56e47f9602bf92ae4ee38656d8dd608d660d0242efbced1d31705d1f498f8",
+      "sourceSha256": "da18fdf707f4db970a1a9cf39420faf8c8680f510172720773716c17e1aecd2f",
+      "probeObjectSha256": "9a682e0c89c58c7999a818fbedf210d6aad32c0d7ad57680f997c1fbda290f5a",
+      "executableSha256": "5fca25b9e97131544fde532fbccf5975eab694954cc0004e03d814817865e093",
+      "linkMapSha256": "0831ccf0620d2bca25a5fbdbf87145daef06b1b2c3a3ff34d2a6b98378c38e69",
+      "loaderSourceSha256": {
+        "src/geometry/GltfModelLoader.cpp": "675cd9cd7e0a67fba3f1b38cec815d45f61d63a063c704557e5f6b459900f902",
+        "src/geometry/GltfExtendedMaterials.cpp": "cb379f124bb255447cfdd290cb073aa95b0ab48d81da8c471d43ab0e18b729f8"
+      }
+    },
+    "fixed": {
+      "revision": "9e53c3e5e268bdaac7dbf0247f2f0324b60d9622",
+      "geometrySha256": "0f616277db94af467921eda8f1a6042d4ba2831a21a23476756de25c8fef873a",
+      "sourceSha256": "da18fdf707f4db970a1a9cf39420faf8c8680f510172720773716c17e1aecd2f",
+      "probeObjectSha256": "9a682e0c89c58c7999a818fbedf210d6aad32c0d7ad57680f997c1fbda290f5a",
+      "executableSha256": "76b4d115d9bb0fe7f2bc944dd55e74d92f830421222d154454cd23024e7a2487",
+      "linkMapSha256": "3fa41148165f48816b6bdaa5603ab606752fdb188a76d2ac98213ee6d9493870",
+      "loaderSourceSha256": {
+        "src/geometry/GltfModelLoader.cpp": "675cd9cd7e0a67fba3f1b38cec815d45f61d63a063c704557e5f6b459900f902",
+        "src/geometry/GltfExtendedMaterials.cpp": "431c91189ba69d6628042e84c4cf6e4bfe402e763c26a48944179c6f94d2c481"
+      }
+    }
+  },
+  "fixtures": {
+    "many-many": {
+      "materials": 30000,
+      "usedNames": 2,
+      "requiredNames": 75000,
+      "bytes": 3450630,
+      "sha256": "f16b10c77fe083a6d9521b904f8a247efd25e7a614b5e3ead9206df40cf56ac5",
+      "outcome": "missing external buffer",
+      "returnCode": 1,
+      "detailedFallbackWarnings": 32,
+      "summarizedMalformedLayers": 29968,
+      "summaryWarnings": 1,
+      "baseline": {
+        "importerSamplesMs": [
+          16878.297,
+          16791.7327,
+          16750.7932
+        ],
+        "medianImporterMs": 16791.7327,
+        "medianProcessWallMs": 16819.325699994806
+      },
+      "fixed": {
+        "importerSamplesMs": [
+          375.0207,
+          371.6965,
+          374.6495
+        ],
+        "medianImporterMs": 374.6495,
+        "medianProcessWallMs": 403.8782999996329
+      },
+      "importerSpeedup": 44.81984548224408
+    },
+    "many-one": {
+      "materials": 30000,
+      "usedNames": 2,
+      "requiredNames": 1,
+      "bytes": 1950650,
+      "sha256": "edaca66cac932ffdc1afa4543e6a2e689d2e8277be9dad20327d9d26bcd1185a",
+      "outcome": "missing external buffer",
+      "returnCode": 1,
+      "detailedFallbackWarnings": 32,
+      "summarizedMalformedLayers": 29968,
+      "summaryWarnings": 1,
+      "baseline": {
+        "importerSamplesMs": [
+          367.6795,
+          278.467,
+          279.2705
+        ],
+        "medianImporterMs": 279.2705,
+        "medianProcessWallMs": 308.7962999998126
+      },
+      "fixed": {
+        "importerSamplesMs": [
+          277.2139,
+          275.3184,
+          277.2937
+        ],
+        "medianImporterMs": 277.2139,
+        "medianProcessWallMs": 305.5739999981597
+      },
+      "importerSpeedup": 1.0074188199076597
+    },
+    "one-many": {
+      "materials": 1,
+      "usedNames": 2,
+      "requiredNames": 75000,
+      "bytes": 1500695,
+      "sha256": "9376d2b39856b0e7c949ede883e317050c216cbe2e5b39e57731cb4e1bf72687",
+      "outcome": "missing external buffer",
+      "returnCode": 1,
+      "detailedFallbackWarnings": 1,
+      "summarizedMalformedLayers": 0,
+      "summaryWarnings": 0,
+      "baseline": {
+        "importerSamplesMs": [
+          155.0524,
+          90.5638,
+          91.2263
+        ],
+        "medianImporterMs": 91.2263,
+        "medianProcessWallMs": 120.54920000082348
+      },
+      "fixed": {
+        "importerSamplesMs": [
+          90.6452,
+          95.0914,
+          90.0202
+        ],
+        "medianImporterMs": 90.6452,
+        "medianProcessWallMs": 119.07899999641813
+      },
+      "importerSpeedup": 1.0064107090061027
+    },
+    "one-one": {
+      "materials": 1,
+      "usedNames": 2,
+      "requiredNames": 1,
+      "bytes": 715,
+      "sha256": "b01898faa27f122afaf77d782faf9161726359c03cc59df4381a02aff1bab55d",
+      "outcome": "missing external buffer",
+      "returnCode": 1,
+      "detailedFallbackWarnings": 1,
+      "summarizedMalformedLayers": 0,
+      "summaryWarnings": 0,
+      "baseline": {
+        "importerSamplesMs": [
+          1.1528,
+          1.1147,
+          1.1063
+        ],
+        "medianImporterMs": 1.1147,
+        "medianProcessWallMs": 28.94860001106281
+      },
+      "fixed": {
+        "importerSamplesMs": [
+          1.1197,
+          1.1219,
+          1.0755
+        ],
+        "medianImporterMs": 1.1197,
+        "medianProcessWallMs": 28.534400000353344
+      },
+      "importerSpeedup": 0.9955345181745111
+    },
+    "many-many-used": {
+      "materials": 30000,
+      "usedNames": 75001,
+      "requiredNames": 1,
+      "bytes": 3450630,
+      "sha256": "b273e2e9416d00eb01db95670629d14a085dc583f667ba0b904e5467de0f72af",
+      "outcome": "missing external buffer",
+      "returnCode": 1,
+      "detailedFallbackWarnings": 32,
+      "summarizedMalformedLayers": 29968,
+      "summaryWarnings": 1,
+      "baseline": {
+        "importerSamplesMs": [
+          33209.207,
+          33098.3177,
+          33078.9819
+        ],
+        "medianImporterMs": 33098.3177,
+        "medianProcessWallMs": 33128.05630000366
+      },
+      "fixed": {
+        "importerSamplesMs": [
+          375.4525,
+          382.1051,
+          375.4398
+        ],
+        "medianImporterMs": 375.4525,
+        "medianProcessWallMs": 408.848000006401
+      },
+      "importerSpeedup": 88.15580586092781
+    },
+    "one-many-used": {
+      "materials": 1,
+      "usedNames": 75001,
+      "requiredNames": 1,
+      "bytes": 1500695,
+      "sha256": "bea8120b799bfd5d762dafc86a0b88b0b90cc170325d0566d7e8b3ce2ab63fac",
+      "outcome": "missing external buffer",
+      "returnCode": 1,
+      "detailedFallbackWarnings": 1,
+      "summarizedMalformedLayers": 0,
+      "summaryWarnings": 0,
+      "baseline": {
+        "importerSamplesMs": [
+          93.2264,
+          94.8759,
+          93.0632
+        ],
+        "medianImporterMs": 93.2264,
+        "medianProcessWallMs": 122.1129000041401
+      },
+      "fixed": {
+        "importerSamplesMs": [
+          90.9873,
+          93.1758,
+          90.5721
+        ],
+        "medianImporterMs": 90.9873,
+        "medianProcessWallMs": 119.85200000344776
+      },
+      "importerSpeedup": 1.0246089289384341
+    },
+    "required-fatal": {
+      "materials": 1,
+      "usedNames": 2,
+      "requiredNames": 75001,
+      "bytes": 1500719,
+      "sha256": "21d91409b4a726f7fa7bd06f1cd42e659d2c7086cd0514497ae90ebfb3aa51d7",
+      "outcome": "malformed required layer before resource I/O",
+      "returnCode": 1,
+      "detailedFallbackWarnings": 0,
+      "summarizedMalformedLayers": 0,
+      "summaryWarnings": 0,
+      "baseline": {
+        "importerSamplesMs": [
+          47.9271,
+          49.9854,
+          50.2573
+        ],
+        "medianImporterMs": 49.9854,
+        "medianProcessWallMs": 78.37649999419227
+      },
+      "fixed": {
+        "importerSamplesMs": [
+          48.5806,
+          47.7295,
+          49.2416
+        ],
+        "medianImporterMs": 48.5806,
+        "medianProcessWallMs": 76.80510000500362
+      },
+      "importerSpeedup": 1.0289168927514276
+    },
+    "optional-valid-buffer": {
+      "materials": 1,
+      "usedNames": 2,
+      "requiredNames": 1,
+      "bytes": 716,
+      "sha256": "34d6678ac437e1a118304b3fbfd192a40e475ccc0549608b6a5381cc0c2887c2",
+      "outcome": "three-vertex triangle loaded",
+      "returnCode": 0,
+      "detailedFallbackWarnings": 1,
+      "summarizedMalformedLayers": 0,
+      "summaryWarnings": 0,
+      "baseline": {
+        "importerSamplesMs": [
+          2.265,
+          2.1366,
+          2.1535
+        ],
+        "medianImporterMs": 2.1535,
+        "medianProcessWallMs": 29.89369998977054
+      },
+      "fixed": {
+        "importerSamplesMs": [
+          2.3033,
+          2.188,
+          2.2225
+        ],
+        "medianImporterMs": 2.2225,
+        "medianProcessWallMs": 29.78560001065489
+      },
+      "importerSpeedup": 0.9689538807649044
+    }
+  }
+}
