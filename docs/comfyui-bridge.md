@@ -46,7 +46,10 @@ IPv4 loopback. The renderer communicates through local files. [ComfyUI server ro
 2. The status shows the capture, queue, generation, and download stages.
    Cancel discards the local result immediately and requests cancellation of
    that ComfyUI job. With older ComfyUI versions, a queued prompt can be removed
-   by ID and an already running prompt may finish on the server.
+   by ID and an already running prompt may finish on the server. Cancelling
+   during a viewport upload prevents prompt submission once the upload returns.
+   If an acknowledged job disappears from both the queue and history, the
+   bridge reports the missing job so you can start a new request.
 3. Select **Apply generated environment** when a panorama is ready. The normal
    environment importer validates the 2:1 image, generates IBL, and preserves
    the previous environment if import fails.
@@ -83,7 +86,8 @@ been exported.
 Run the loopback protocol regression with
 `python -B tests/validation/comfyui_bridge_regression.py`. The native
 `comfyui_bridge_tests` exercises the renderer worker, captured input, PNG
-decoding, cancellation, and stale responses.
+decoding, cancellation, and stale responses. The loopback regression covers
+queue-to-history transitions, disappeared jobs, and broken HTTP responses.
 
 For scripted testing, add a `comfyUi` capture-sequence event with one of the
 actions `generate-environment`, `restyle-viewport`, `apply-environment` or
@@ -92,4 +96,6 @@ With `"wait": true`, the capture loop continues rendering for up to 30 seconds
 before taking the scheduled screenshot. The event requires
 `CONTAINER_COMFYUI_ROOT`. Ordinary capture sequences omit this event and keep
 the bridge inactive even if the environment variable is set. The native mock
-regression is `tests/validation/comfyui_runtime_regression.py`.
+regression at `tests/validation/comfyui_runtime_regression.py` runs the actual
+adapter against a local HTTP mock. It checks that rendering continues while the
+adapter waits for a response.
