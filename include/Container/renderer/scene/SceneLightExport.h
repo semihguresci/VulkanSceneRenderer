@@ -19,12 +19,10 @@ struct ImportedSceneLightEdits;
     const container::scene::AuthoredSceneLights& authored,
     const SceneLightEdits& edits,
     const glm::mat4& sceneTransform);
-// Full tables include hidden bindings; visible tables identify the active sun.
-// Every authored light and global edit is retained, including inactive/hidden
-// suns that are absent from the live renderer's compact ordinal table.
+// Evaluate the full authored table, including hidden bindings and the global
+// imported edits underneath scene-local manual sun overrides.
 [[nodiscard]] std::vector<EditableLightEntity> evaluateEditableSceneLightsForExport(
     const container::scene::AuthoredSceneLights& full,
-    const container::scene::AuthoredSceneLights& visible,
     const SceneLightEdits& localEdits,
     const ImportedSceneLightEdits& globalImportedEdits,
     const glm::mat4& sceneTransform);
@@ -39,9 +37,9 @@ void exportEditableSceneLights(tinygltf::Model& model,
                                std::span<const int32_t> sourceNodeIndices = {},
                                double importedRangeScale = 1.0);
 // Scene vectors follow model.scenes order. Empty vectors retain source lights.
-// A shared source binding is serialized once; conflicting per-scene edits are
-// rejected without changing the snapshot. Independent bindings may still share
-// one source light definition. The selected default scene is retained.
+// A shared source binding is serialized once and remains bound when one scene
+// selects a manual sun. Conflicting edits to a shared binding reject the save
+// without changing the snapshot. Visible tables identify each scene's active sun.
 void exportEditableSceneLightsForScenes(
     tinygltf::Model& model,
     std::span<const std::vector<EditableLightEntity>> sceneLights,

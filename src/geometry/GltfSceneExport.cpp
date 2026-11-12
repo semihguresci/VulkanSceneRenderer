@@ -15,6 +15,7 @@
 #include "GltfLinkedExportResources.h"
 #include "GltfSkinExportAffine.h"
 #include "GltfSkinExportAnimation.h"
+#include "GltfSourceJson.h"
 
 #include <stb_image_write.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -48,6 +49,12 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__linux__)
+#include <cerrno>
+#include <fcntl.h>
+#include <linux/fs.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #endif
 
 namespace container::geometry::gltf {
@@ -1456,26 +1463,34 @@ void replaceFile(const std::filesystem::path& source,
 void installResource(const std::filesystem::path& staged,
                      const std::filesystem::path& destination,
                      const Bytes& expected) {
-  if (std::filesystem::exists(destination)) {
-    if (!std::filesystem::is_regular_file(destination) || readBytes(destination) != expected)
+  const auto alreadyInstalled = [&] {
+    const auto status = std::filesystem::symlink_status(destination);
+    if (!std::filesystem::exists(status)) return false;
+    if (!std::filesystem::is_regular_file(status) ||
+        std::filesystem::file_size(destination) != expected.size() || readBytes(destination) != expected)
       fail("existing export dependency differs from its content-addressed name");
-    return;
-  }
-  // Both paths are on the same filesystem. A hard link publishes complete
-  // bytes atomically and cannot overwrite an earlier export's dependency.
+    return true;
+  };
+  if (alreadyInstalled()) return;
+  if (std::filesystem::file_size(staged) != expected.size()) fail("serializer produced an incomplete export dependency");
+  // The staged resource is complete and on the destination filesystem.
+  // Publish it exclusively so concurrent saves can safely reuse the winner.
   std::error_code error;
+#ifdef _WIN32
+  if (MoveFileExW(staged.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH)) return;
+  error = {static_cast<int>(GetLastError()), std::system_category()};
+#else
   std::filesystem::create_hard_link(staged, destination, error);
   if (!error) return;
-  if (std::filesystem::exists(destination)) {
-    if (std::filesystem::is_regular_file(destination) && readBytes(destination) == expected)
+#if defined(__linux__) && defined(SYS_renameat2)
+  if (error != std::errc::file_exists) {
+    if (syscall(SYS_renameat2, AT_FDCWD, staged.c_str(), AT_FDCWD, destination.c_str(), RENAME_NOREPLACE) == 0)
       return;
-    fail("export dependency already exists with different content");
+    error = {errno, std::generic_category()};
   }
-  // FAT/network destinations may not support hard links. copy_file's exclusive
-  // creation still protects existing dependencies; final JSON is unpublished.
-  if (!std::filesystem::copy_file(staged, destination,
-                                  std::filesystem::copy_options::none, error))
-    fail("cannot install export dependency: " + error.message());
+#endif
+#endif
+  if (!alreadyInstalled()) fail("cannot install export dependency: " + error.message());
 }
 
 }  // namespace
@@ -1951,6 +1966,24 @@ void writeLinkedSceneManifest(const GltfLinkedCompositionInfo& composition,
 
 namespace {
 
+void verifyStagedGlb(const std::filesystem::path& staged, uint64_t binBytes, uint64_t size) {
+  std::ifstream input(staged, std::ios::binary);
+  std::array<unsigned char, detail::kGlbJsonOffset> prefix{};
+  if (!input.read(reinterpret_cast<char*>(prefix.data()), prefix.size())) fail("staged GLB is missing its header");
+  const auto jsonBytes = detail::GlbJsonChunkLength(prefix, size);
+  if (!jsonBytes || !*jsonBytes || *jsonBytes % 4) fail("staged GLB has an invalid header or JSON chunk");
+  const auto jsonEnd = detail::kGlbJsonOffset + uint64_t(*jsonBytes);
+  const auto paddedBin = (binBytes + 3) & ~uint64_t{3};
+  if (!binBytes && size == jsonEnd) return;
+  if (size - jsonEnd != paddedBin + 8) fail("staged GLB has an incomplete binary chunk");
+  input.seekg(static_cast<std::streamoff>(jsonEnd));
+  std::array<unsigned char, 8> bin{};
+  if (!input.read(reinterpret_cast<char*>(bin.data()), bin.size())) fail("staged GLB is missing its binary chunk header");
+  const auto length = uint32_t(bin[0]) | (uint32_t(bin[1]) << 8) | (uint32_t(bin[2]) << 16) | (uint32_t(bin[3]) << 24);
+  if (length != paddedBin || bin[4] != 'B' || bin[5] != 'I' || bin[6] != 'N' || bin[7] != 0)
+    fail("staged GLB has an invalid binary chunk header");
+}
+
 void writePackedScene(const tinygltf::Model& packedModel,
                       const std::filesystem::path& destination,
                       const GltfLegacyMaterialSerializationLimits& legacyLimits,
@@ -1958,6 +1991,11 @@ void writePackedScene(const tinygltf::Model& packedModel,
   const auto extension = lower(destination.extension().string());
   if (extension != ".gltf" && extension != ".glb")
     fail("destination must have a .gltf or .glb extension");
+  const bool binary = extension == ".glb";
+  if (packedModel.buffers.size() > 1) fail("writeExportModel requires a packed export model");
+  const uint64_t binBytes = packedModel.buffers.empty() ? 0 : packedModel.buffers.front().data.size();
+  if (binary && binBytes > std::numeric_limits<uint32_t>::max() - 32)
+    fail("packed buffer exceeds the GLB container length");
   const auto absolute = std::filesystem::absolute(destination);
   if (!std::filesystem::is_directory(absolute.parent_path()))
     fail("destination parent directory does not exist");
@@ -1972,8 +2010,8 @@ void writePackedScene(const tinygltf::Model& packedModel,
     return retained ? retained->dump() : std::string{};
   }();
   auto model = packedModel;
+  DropEmptyGltfExportAnimations(model);
   if (!xmpPackage.empty()) model.extensions.erase(kGltfXmpExtension);
-  if (model.buffers.size() > 1) fail("writeExportModel requires a packed export model");
   for (const auto& image : model.images)
     if (!image.uri.empty() || image.bufferView < 0)
       fail("writeExportModel requires images packed in buffer views");
@@ -1985,7 +2023,6 @@ void writePackedScene(const tinygltf::Model& packedModel,
   if (!model.buffers.empty()) model.buffers.front().uri.clear();
   StagingDirectory staging(absolute.parent_path());
   const auto stagedFile = staging.path / absolute.filename();
-  const bool binary = extension == ".glb";
   if (binary && !linkedPatch.empty()) fail("linked companions must use .gltf");
   std::string dependency;
   if (!binary && !model.buffers.empty()) {
@@ -1998,11 +2035,13 @@ void writePackedScene(const tinygltf::Model& packedModel,
   if(const auto compatible=StageLegacyMaterialSerialization(model,stagedFile,binary,legacyLimits,xmpPackage))
     replaceFile(*compatible,stagedFile);
   // Verify the serializer closed a complete output before publishing resources.
-  if (!std::filesystem::is_regular_file(stagedFile) ||
-      std::filesystem::file_size(stagedFile) == 0)
+  if (!std::filesystem::is_regular_file(stagedFile))
     fail("serializer produced no scene file");
+  const auto stagedSize = std::filesystem::file_size(stagedFile);
+  if (!stagedSize) fail("serializer produced an empty scene file");
+  if (binary) verifyStagedGlb(stagedFile, binBytes, stagedSize);
   if (!linkedPatch.empty()) {
-    if (std::filesystem::file_size(stagedFile) > legacyLimits.maxJsonBytes)
+    if (stagedSize > legacyLimits.maxJsonBytes)
       fail("staged linked scene exceeds the JSON byte budget");
     std::ifstream input(stagedFile, std::ios::binary);
     auto document = nlohmann::json::parse(input);
@@ -2080,7 +2119,7 @@ void writeLinkedHybridScene(tinygltf::Model model, const GltfLinkedHybridExport&
       if (carrier.outputNode < 0) fail("linked carrier was cut from the export");
     }
     model = std::move(compacted.model);
-    std::erase_if(model.animations, [](const auto& animation) { return animation.channels.empty(); });
+    DropEmptyGltfExportAnimations(model);
   }
   const auto patch = BuildGltfLinkedHybridManifest(options.composition, carriers, destination);
   std::vector<GltfLinkedSourceOwnership> contexts;

@@ -1,0 +1,221 @@
+{
+  "schemaVersion": 1,
+  "rendererRevision": "90b85d85fe086709dd5ca8e5cfab6dcb3f8ebbe7",
+  "rendererSha256": "811b7fa89d23c74bda992fca05a61dcfe6ac473b2c49d2a15dc9ad447b16e919",
+  "platform": "Windows x64",
+  "configuration": "Release",
+  "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+  "driverVersion": 2559967232,
+  "vulkanApiVersion": 4211029,
+  "vulkanValidationLayer": "1.4.363.1",
+  "vulkanSynchronizationValidation": true,
+  "ctestCases": 720,
+  "ctest": [
+    {
+      "target": "gltf_scene_export_tests",
+      "cases": 53,
+      "xmlSha256": "b978f96f6d1cf306a64e9409c31a370c08fa6645b2469e776260c4ae69cb7402"
+    },
+    {
+      "target": "scene_light_export_tests",
+      "cases": 50,
+      "xmlSha256": "2b07b78c11112f4bfb80b3f67cc82a072060ed6acce275dd9ffc42b134edc74f"
+    },
+    {
+      "target": "gltf_node_export_compaction_tests",
+      "cases": 16,
+      "xmlSha256": "a890e6610067850cf0a9d109cc71cc41c292201a2f80611ffb1cce24367860f6"
+    },
+    {
+      "target": "gltf_material_export_compaction_tests",
+      "cases": 15,
+      "xmlSha256": "b001bbb0b7ece3b344624b89c1c908dd2f6f9bca6149626754675e764ce7bfa3"
+    },
+    {
+      "target": "gltf_resource_export_compaction_tests",
+      "cases": 17,
+      "xmlSha256": "c190ef75ed1ec7373b2a61709556465c9329addd79445737f22a6903830556a2"
+    },
+    {
+      "target": "gltf_material_export_tests",
+      "cases": 21,
+      "xmlSha256": "edce912254a60b6151e763cde1668d7faf4e297ad2c5177adc7fb959f7b93e91"
+    },
+    {
+      "target": "gltf_source_material_export_tests",
+      "cases": 8,
+      "xmlSha256": "128b902060e084d3bf9588f6cfdd4916df65c7a1e34f901faedd2494be93e60f"
+    },
+    {
+      "target": "gltf_loader_tests",
+      "cases": 32,
+      "xmlSha256": "76e37993e3a0d3f6277d819c3028376d3a9a148d3d706f06907013b527c0755d"
+    },
+    {
+      "target": "gltf_capabilities_tests",
+      "cases": 47,
+      "xmlSha256": "715f1a5c96eb2e3bc87d9e3f0f341309e9ccc447ec5369ca05d8176cee591684"
+    },
+    {
+      "target": "gltf_camera_authoring_tests",
+      "cases": 40,
+      "xmlSha256": "656fef70ea4950b98e2095e37171e937b2deeba1bf8383dbab8da0cced013b90"
+    },
+    {
+      "target": "gltf_camera_pose_authoring_tests",
+      "cases": 23,
+      "xmlSha256": "e9575594e9fcca98b0878891362a4b21f07faedb8c5632aa4c84b2fac62fd248"
+    },
+    {
+      "target": "gltf_camera_node_rest_tests",
+      "cases": 20,
+      "xmlSha256": "e7706bc7cfff4e827e409b131d04778b3c39f0f91d9efec7a03903f56e9926f7"
+    },
+    {
+      "target": "gltf_animation_tests",
+      "cases": 62,
+      "xmlSha256": "c6b3b3aadad60ac3451a327727b2301bc2bbd9735312c1405127085d259cfe9b"
+    },
+    {
+      "target": "gltf_interactivity_tests",
+      "cases": 12,
+      "xmlSha256": "678960b2581f34f6d2742e2192d5527cff949116522a50bdbd45aa9a0be40c55"
+    },
+    {
+      "target": "gltf_deformation_loader_tests",
+      "cases": 10,
+      "xmlSha256": "acd13b6e27b55f5ab56a69461a39140b263d75eba1f71a5c1aafd12e329a959e"
+    },
+    {
+      "target": "gltf_deformation_scene_tests",
+      "cases": 25,
+      "xmlSha256": "026fc67ddf9202e35d22e9145af098b4a85dff933641523dd8bdbf0cc213dfd8"
+    },
+    {
+      "target": "gltf_deformation_gpu_tests",
+      "cases": 6,
+      "xmlSha256": "9fd0399569c689a5be82e0d922e58928bcddc5680991132caa04a05aff9911f2"
+    },
+    {
+      "target": "scene_merge_generation_gpu_tests",
+      "cases": 90,
+      "xmlSha256": "6b3296ab34447c83887bee42266ea88944193d6b1a949e20556e7876124ee3f3"
+    },
+    {
+      "target": "source_resource_retirement_gpu_tests",
+      "cases": 19,
+      "xmlSha256": "15aaf9e600ddb94e22009741c02a20f78fdbbbf0c5a34375d14825ab2edf6ffe"
+    },
+    {
+      "target": "scene_controller_generation_gpu_tests",
+      "cases": 18,
+      "xmlSha256": "22ecee53e4cf25e40cb8c5a0cab4d8e61c1b938e58de8b2a8fbb62ea80abcbeb"
+    },
+    {
+      "target": "gltf_material_variants_tests",
+      "cases": 26,
+      "xmlSha256": "5da62b80a2242f339ddcb62be6f89da17971b20c79578692a571f3d66da28003"
+    },
+    {
+      "target": "gltf_scene_selection_tests",
+      "cases": 9,
+      "xmlSha256": "82f36362ee1241dfa984d1a5232e93baa91486f0d7313cfa9b981e18ef4e6184"
+    },
+    {
+      "target": "scene_hierarchy_ui_tests",
+      "cases": 42,
+      "xmlSha256": "a6a773dbea5cc929fbae514a5f1eba218768787cc9d08649ed99fb89464b08bd"
+    },
+    {
+      "target": "bim_element_browser_widget_tests",
+      "cases": 9,
+      "xmlSha256": "64529cd536b347b7ee80fc09132e5e6cfda5a591cff7cd9ac86dcedfa2482d1c"
+    },
+    {
+      "target": "ifcx_loader_tests",
+      "cases": 22,
+      "xmlSha256": "cda93ba047c70f51ab860095118da7fcd8d524385b2493e7684df8226845a62e"
+    },
+    {
+      "target": "gltf_xmp_inspector_widget_tests",
+      "cases": 4,
+      "xmlSha256": "64c49c33d5d120b7a978a5533d99dd8138788467e4eae873a4c424ecdb0b891e"
+    },
+    {
+      "target": "gui_model_merge_tests",
+      "cases": 10,
+      "xmlSha256": "40320b043d1051c479a42feba398a7cd9476c6d8c3a6fed681c0a559efd40336"
+    },
+    {
+      "target": "gltf_subtree_clone_tests",
+      "cases": 14,
+      "xmlSha256": "6b82b88b2702562fa8a02be74bcdd36b933df4000f52deec1573b122e58bd6bb"
+    }
+  ],
+  "nativeCaptures": 215,
+  "native": {
+    "sun": {
+      "captures": 20,
+      "processes": 12,
+      "resultSha256": "136b969812bb415a8be471ec0d45c8b6007576ba67799c2b518a36fec8bd59c2",
+      "captureSha256": "5461abae30ca052a31e77ea4373533887e1b6a27a80900cc7db143e122bd9725",
+      "logSha256": "2674215d38e8666a82c297342c9d40d88696de74d4b82bd08e0edfec306eb8d3",
+      "manifestSha256": "745235da8e96c49ca6415b06dd8599cac04fda9e1e75ee5bd68661a506b0c9ad",
+      "manifestEntries": 325,
+      "checks": 18
+    },
+    "safety": {
+      "captures": 7,
+      "processes": 9,
+      "resultSha256": "51482cbefde112594ac3407310a8d8a5ec56b0d368715e64760e4a78e8c1c456",
+      "captureSha256": "597e5b54b35dd6ea14d6684d97625d5e72795141b6d3a26689305a3ba6a60364",
+      "logSha256": "41a6e7b72afebbb5d06d3dbab704a1059eef64beb0c3e1c0cc7203c1f0135ccc",
+      "manifestSha256": "cfd8587bd55ba98cbe49bb5d7512546386a391a9c267ac70daaf23275c1edac6",
+      "manifestEntries": 325,
+      "expectedRejectedExportCaptures": 2
+    },
+    "edited": {
+      "captures": 4,
+      "processes": 4,
+      "resultSha256": "ba653336a6f88e25fd3d6e82d1ae8cf234a326d876760b19c162db75dcb75252",
+      "captureSha256": "95cb5ca2ae828370d0b4209177a39888b3cc98b98931f35ed7f262598eeae0be",
+      "logSha256": "323affe5c85ecb500159dd370df85dbab559e8d599986b61144d6a57f47f18e8",
+      "manifestSha256": "f40aa87c17482d873e82b3865da257ec27f3658382e67b92c297f53301ee7d09",
+      "manifestEntries": 325,
+      "pixelExactRoundTrips": 2
+    },
+    "animation": {
+      "captures": 88,
+      "processes": 88,
+      "resultSha256": "00ee4b7d7eb08e80c715664d2692167421ade6d844c2ad2a6f6486acc61f6ebd",
+      "captureSha256": "5f158c89f57aa8a077d7186215fec8c13e25410bb8a7e7e1a3451c2ebc2da5bd",
+      "logSha256": "5161d2d72906118e10b08c46bdb3297a9bd492ff2ecaa7a1984004685af33724",
+      "manifestSha256": "cfd8587bd55ba98cbe49bb5d7512546386a391a9c267ac70daaf23275c1edac6",
+      "manifestEntries": 325,
+      "imagePairs": 40,
+      "pixelExactPairs": 40
+    },
+    "linked": {
+      "captures": 72,
+      "processes": 48,
+      "resultSha256": "131aadf057d58fa36e74764e124a256056b2a572e23b2aa1bed8f12f6dbff8ea",
+      "captureSha256": "434fbf1fc64aac333a40c3f9415fee058c07b8d6c7c5cef2e3b9bed85ba58149",
+      "logSha256": "f03a53c55c333abbd7be5574c075bc93554c82836cffe40513aa5e5d20547c70",
+      "manifestSha256": "cfd8587bd55ba98cbe49bb5d7512546386a391a9c267ac70daaf23275c1edac6",
+      "manifestEntries": 325,
+      "nestedChecks": 16,
+      "expectedRejectedExportCaptures": 7
+    },
+    "merged": {
+      "captures": 24,
+      "processes": 14,
+      "resultSha256": "214a467c4044d071abf7d5510801401914a036913a440e9593d918b7330028e6",
+      "captureSha256": "bec782ea9f11307b6fde21f373aa9c4f9129b0e352488dad64318a185d9de9ac",
+      "logSha256": "c54b4c432178da8f245854185d35e8b84512d3e88349eb680c00bdcdd2dfcdf8",
+      "manifestSha256": "cfd8587bd55ba98cbe49bb5d7512546386a391a9c267ac70daaf23275c1edac6",
+      "manifestEntries": 325,
+      "checks": 52,
+      "expectedRejectedExportCaptures": 2
+    }
+  }
+}

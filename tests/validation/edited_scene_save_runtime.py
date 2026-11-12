@@ -41,9 +41,11 @@ def prepare_source(directory):
         {'name': 'Hidden mesh', 'mesh': 0, 'translation': [-1.0, 0, .4]},
         {'name': 'Inactive mesh', 'mesh': 0, 'translation': [1.5, 0, .6]},
         {'name': 'New parent', 'translation': [0, -.1, 0]},
+        {'name': 'Original parent', 'children': [0]},
     ])
+    source['nodes'][0]['name'] = 'Moved mesh'
     source['scenes'] = [
-        {'name': 'Editable scene', 'nodes': [0, 1, 2, 4]},
+        {'name': 'Editable scene', 'nodes': [5, 1, 2, 4]},
         {'name': 'Second scene', 'nodes': [3, 1]},
     ]
     source['scene'] = 0
@@ -77,15 +79,16 @@ def main():
         node(2, 'transform', 0, matrix=columns(initial_matrix)),
         node(3, 'visibility', 2, visible=False),
         node(4, 'reparent', 0, parent=4),
-        dict(frame=5, addPrimitive='Cube'),
+        dict(frame=5, addPrimitive=dict(kind='cube', name='Cube')),
         action(6, 'undo'), action(7, 'redo'),
         edit(8, dict(intensity=40)),
+        dict(frame=9, viewportPointer=dict(action='select', pixel=[16, 16])),
     ]
     tests = []
     for technique, extension in (('deferred-raster', 'glb'), ('forward-raster', 'gltf')):
         destination = saved / ('edited.' + extension)
-        original = run(renderer, output, technique + '-edited', source, technique, [8], events,
-                       ('--save-scene', str(destination), '--no-ray-query'), fix_camera=True)[8]
+        original = run(renderer, output, technique + '-edited', source, technique, [10], events,
+                       ('--save-scene', str(destination), '--no-ray-query'), fix_camera=True)[10]
         history(original, 5, 0)
         model = document(destination)
         assert model['scene'] == 0
@@ -96,7 +99,8 @@ def main():
         hidden = next(item for item in nodes if item.get('name') == 'Hidden mesh')
         assert hidden['extensions']['KHR_node_visibility']['visible'] is False
         parent = next(item for item in nodes if item.get('name') == 'New parent')
-        assert len(parent['children']) == 1
+        child, = parent['children']
+        assert nodes[child]['name'] == 'Moved mesh'
         assert all('bufferView' in image and not image.get('uri') for image in model['images'])
         if extension == 'gltf':
             dependency = Path(model['buffers'][0]['uri'])
@@ -108,8 +112,9 @@ def main():
     texture = source.parent / 'pattern.png'
     texture.rename(texture.with_name('source-only.png'))
     for technique, destination, original in tests:
+        clear_selection = [dict(frame=1, viewportPointer=dict(action='select', pixel=[16, 16]))]
         reloaded = run(renderer, output, technique + '-reloaded', destination, technique,
-                       [8], (), ('--no-ray-query',), fix_camera=True)[8]
+                       [10], clear_selection, ('--no-ray-query',), fix_camera=True)[10]
         assert point(reloaded)['intensity'] == 40
         exact(original, reloaded)
         print(f'PASS {technique} edited {destination.suffix} reload without source textures', flush=True)

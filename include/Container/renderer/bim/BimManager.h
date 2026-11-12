@@ -633,6 +633,7 @@ public:
 
   [[nodiscard]] bool hasScene() const;
   [[nodiscard]] const std::string &modelPath() const { return modelPath_; }
+  [[nodiscard]] const std::filesystem::path &loadedSourcePath() const { return loadedSourcePath_; }
   [[nodiscard]] const container::geometry::ImportReport &importReport() const {
     return importReport_;
   }
@@ -947,6 +948,7 @@ private:
   container::gpu::AllocationManager &allocationManager_;
   container::gpu::PipelineManager &pipelineManager_;
   std::string modelPath_{};
+  std::filesystem::path loadedSourcePath_;
   std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions_;
   container::geometry::ImportReport importReport_{};
   std::function<void(std::string_view)> loadProgressCallback_{};

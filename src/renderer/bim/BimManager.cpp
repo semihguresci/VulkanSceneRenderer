@@ -42,6 +42,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -83,6 +84,14 @@ std::string lowerAscii(std::string value) {
     return static_cast<char>(std::tolower(c));
   });
   return value;
+}
+
+std::filesystem::path sourceIdentityPath(const std::filesystem::path &path) {
+  std::error_code error;
+  auto absolute = std::filesystem::absolute(path, error);
+  if (error) return path.lexically_normal();
+  auto canonical = std::filesystem::weakly_canonical(absolute, error);
+  return error ? absolute.lexically_normal() : canonical;
 }
 
 std::string normalizedElementType(std::string_view value) {
@@ -1664,6 +1673,7 @@ void BimManager::clear() {
   semanticColorMode_ = BimSemanticColorMode::Off;
   semanticColorIdsDirty_ = true;
   modelPath_.clear();
+  loadedSourcePath_.clear();
   openVdbOptions_.reset();
   importReport_ = {};
   ++objectDataRevision_;
@@ -3248,6 +3258,7 @@ void BimManager::loadPreparedModel(
     throw std::runtime_error(modelLoadErrorPrefix(format, path));
   }
   rebuildSceneStatisticsCache();
+  loadedSourcePath_ = sourceIdentityPath(path);
 }
 
 std::unique_ptr<BimManager::PreparedDrawData> BimManager::prepareDrawData(
@@ -3855,6 +3866,7 @@ void BimManager::loadGltfFallback(
     throw std::runtime_error(modelLoadErrorPrefix("glTF", path));
   }
   rebuildSceneStatisticsCache();
+  loadedSourcePath_ = sourceIdentityPath(path);
 }
 
 void BimManager::uploadGeometry(

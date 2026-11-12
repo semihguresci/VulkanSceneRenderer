@@ -439,4 +439,27 @@ GltfNodeExportCompactionPlan CompactGltfExportNodes(const tinygltf::Model& sourc
   }
   return result;
 }
+
+void DropEmptyGltfExportAnimations(tinygltf::Model& model) {
+  const auto empty = [](const tinygltf::Animation& animation) { return animation.channels.empty(); };
+  if (!std::ranges::any_of(model.animations, empty)) return;
+
+  if (const auto behavior = model.extensions.find(kGltfInteractivityExtension);
+      behavior != model.extensions.end()) {
+    if (model.animations.size() > INT32_MAX) fail("animation table exceeds the supported index range");
+    std::vector<int32_t> oldToNew(model.animations.size(), -1);
+    int32_t next = 0;
+    for (size_t index = 0; index < model.animations.size(); ++index)
+      if (!empty(model.animations[index])) oldToNew[index] = next++;
+    auto mappings = GltfInteractivityIdentityMappings(model);
+    mappings[size_t(InteractivityIndexDomain::Animation)] = {oldToNew, size_t(next)};
+    try {
+      behavior->second = RemapGltfInteractivity(model, mappings);
+    } catch (const std::invalid_argument& error) {
+      fail("cannot omit an animation with no surviving channels: " + std::string(error.what()));
+    }
+    if (!model.extensions.contains(kGltfXmpExtension)) model.extensions_json_string.clear();
+  }
+  std::erase_if(model.animations, empty);
+}
 } // namespace container::geometry::gltf

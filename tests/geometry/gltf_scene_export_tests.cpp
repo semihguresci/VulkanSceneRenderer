@@ -29,6 +29,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <functional>
 #include <limits>
@@ -296,11 +297,14 @@ TEST(GltfSceneExport, BehaviorSurvivesUnrelatedNodeMaterialAndTextureRetirementA
   auto& output = compacted.model;
   const auto materials = PlanGltfMaterialExportCompaction(output,std::array<int32_t,1>{0});
   ApplyGltfMaterialExportCompaction(output,materials);
+  output.animations.emplace_back().name = "Retired clip";
   ExportDirectory directory;
   for (const auto* suffix : {".gltf",".glb"}) {
     const auto path = directory.root / (std::string("behavior-retirement") + suffix);
     writeExportModel(output,path);
     auto loaded = LoadModelWithSource(path.string()).gltfModel;
+    EXPECT_TRUE(loaded.animations.empty());
+    EXPECT_EQ(output.animations.size(), 1u);
     const auto& extension = loaded.extensions.at(kGltfInteractivityExtension);
     EXPECT_EQ(extension.Get("extras").Get("opaqueReference").Get<std::string>(),"/nodes/917");
     GltfInteractivity behavior(loaded);
@@ -1628,6 +1632,36 @@ TEST(GltfSceneExport, SuccessfulOverwriteKeepsEarlierExportDependenciesIntact) {
   EXPECT_EQ(second.model.indices().size(), sphere.indices().size());
   EXPECT_NE(first.gltfModel.buffers[0].uri, second.gltfModel.buffers[0].uri);
   EXPECT_EQ(readText(dependency), originalDependency);
+}
+
+TEST(GltfSceneExport, ConcurrentSavesReuseTheCompletePortableDependency) {
+  ExportDirectory directory;
+  const auto geometry = Model::MakeSphere(16, 32);
+  const auto graph = cubeGraph();
+  const auto packed = buildExportModel({graph, geometry});
+  ASSERT_EQ(packed.buffers.size(), 1u);
+  constexpr size_t saveCount = 4;
+  std::array<std::filesystem::path, saveCount> destinations;
+  std::array<std::future<void>, saveCount> saves;
+  for (size_t i = 0; i < destinations.size(); ++i) {
+    destinations[i] = directory.root / ("scene-" + std::to_string(i) + ".gltf");
+    saves[i] = std::async(std::launch::async, [&, destination = destinations[i]] {
+      writeExportModel(packed, destination);
+    });
+  }
+  for (auto& save : saves) ASSERT_NO_THROW(save.get());
+
+  std::set<std::string> dependencies;
+  for (const auto& destination : destinations) {
+    const auto loaded = LoadModelWithSource(destination.string());
+    ASSERT_EQ(loaded.gltfModel.buffers.size(), 1u);
+    EXPECT_EQ(loaded.gltfModel.buffers[0].data, packed.buffers[0].data);
+    dependencies.insert(loaded.gltfModel.buffers[0].uri);
+  }
+  ASSERT_EQ(dependencies.size(), 1u);
+  EXPECT_TRUE(std::filesystem::is_regular_file(directory.root / *dependencies.begin()));
+  for (const auto& entry : std::filesystem::directory_iterator(directory.root))
+    EXPECT_FALSE(entry.path().filename().string().starts_with(".container-export-"));
 }
 
 TEST(GltfSceneExport, ConflictingDependencyFailsAfterStagingWithoutReplacingDestination) {

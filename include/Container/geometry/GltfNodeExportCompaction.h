@@ -42,4 +42,9 @@ struct GltfNodeExportCompactionPlan {
     const tinygltf::Model& source, std::span<const int32_t> retiredNodes,
     const GltfMergeLimits& limits = {});
 
+// Finalize a detached model for serialization. Empty clips have no glTF
+// representation. Remap surviving behavior references before changing the
+// animation table and reject references to removed clips.
+void DropEmptyGltfExportAnimations(tinygltf::Model& model);
+
 } // namespace container::geometry::gltf

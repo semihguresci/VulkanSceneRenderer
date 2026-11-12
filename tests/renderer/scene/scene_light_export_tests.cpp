@@ -777,14 +777,104 @@ TEST(SceneLightExport, BatchPreservesSharedSunPriorityAndIgnoresSceneDependentGi
   EXPECT_EQ(exported.scenes[1].nodes,(std::vector<int>{0,2}));
 }
 
-TEST(SceneLightExport, BatchRejectsManualSunReplacingASharedBindingWithoutLosingOtherScenesSun) {
+TEST(SceneLightExport, BatchAddsManualSunWithoutRemovingAnUntouchedSharedBinding) {
   auto source = scene(1); source.scenes.resize(2); source.scenes[1].nodes = {0};
   source.nodes[0].light = 0; source.lights.resize(1); source.lights[0].type = "directional";
   const auto manual = entity(EditableLightType::Directional,EditableLightSource::Manual,0);
   const std::vector<std::vector<EditableLightEntity>> lights{{manual},{}};
   auto exported = source;
-  EXPECT_THROW(exportEditableSceneLightsForScenes(exported,lights),std::runtime_error);
-  EXPECT_EQ(exported,source);
+  exportEditableSceneLightsForScenes(exported,lights);
+  ASSERT_EQ(exported.lights.size(),2u);
+  EXPECT_EQ(exported.nodes[0],source.nodes[0]);
+  EXPECT_EQ(exported.scenes[0].nodes,(std::vector<int>{1,0}));
+  EXPECT_EQ(firstDirectional(exported),1);
+  exported.defaultScene = 1;
+  EXPECT_EQ(exported.scenes[1],source.scenes[1]);
+  EXPECT_EQ(firstDirectional(exported),0);
+}
+
+TEST(SceneLightExport, SceneLocalManualSunsKeepSharedImportedEditsAndAnimation) {
+  using namespace container::geometry::gltf;
+  auto source = scene(3); source.scenes.resize(2);
+  source.scenes[0].nodes = source.scenes[1].nodes = {0};
+  source.nodes[0].children = {1,2};
+  source.nodes[1].light = 1; source.nodes[2].light = 0;
+  source.nodes[1].extensions["KHR_node_visibility"] = Value(Object{{"visible",Value(false)}});
+  source.nodes[2].extras = Value(Object{{"sourceNode",Value(true)}});
+  source.lights.resize(2); source.lights[0].type = source.lights[1].type = "directional";
+  source.lights[0].name = "Shared authored sun";
+  source.lights[0].extras = Value(Object{{"sourceLight",Value(true)}});
+  lightBehavior(source,"intensity");
+  source.extensionsUsed.push_back("KHR_node_visibility");
+  source.extensionsUsed.push_back("KHR_animation_pointer");
+  const int times = floatAccessor(source,TINYGLTF_TYPE_SCALAR,{0,1});
+  const int intensities = floatAccessor(source,TINYGLTF_TYPE_SCALAR,{25,35});
+  source.animations.emplace_back();
+  tinygltf::AnimationSampler sampler; sampler.input = times; sampler.output = intensities;
+  source.animations[0].samplers = {sampler};
+  source.animations[0].channels = {lightChannel(0,"intensity")};
+
+  container::scene::AuthoredSceneLights full,visible;
+  full.directionalBindings = {{1,{}},{2,{}}};
+  full.directionals = {{{0,-1,0,0},{1,1,1,3}},{{0,0,-1,0},{1,1,1,2}}};
+  visible.directionalBindings = {full.directionalBindings.back()};
+  visible.directionals = {full.directionals.back()};
+  const std::array fullTables{full,full};
+  const std::array visibleTables{visible,visible};
+  ImportedSceneLightEdits global;
+  auto imported = entity(EditableLightType::Directional,EditableLightSource::Imported,0);
+  imported.intensity = 13;
+  global.directionals[{2,{}}] = imported;
+  SceneLightEdits first;
+  first.directionalOverride = entity(EditableLightType::Directional,EditableLightSource::Manual,0);
+  first.directionalOverride->intensity = 101;
+
+  for (const bool secondManual : {false,true}) {
+    SCOPED_TRACE(secondManual);
+    SceneLightEdits second;
+    if (secondManual) {
+      second.directionalOverride = first.directionalOverride;
+      second.directionalOverride->intensity = 202;
+    }
+    const std::vector<std::vector<EditableLightEntity>> lights{
+        evaluateEditableSceneLightsForExport(full,first,global,glm::mat4(1)),
+        evaluateEditableSceneLightsForExport(full,second,global,glm::mat4(1))};
+    auto exported = source;
+    exportEditableSceneLightsForScenes(exported,lights,nullptr,{},1,fullTables,visibleTables);
+    ASSERT_EQ(exported.nodes[2].children.size(),1u);
+    const int shared = exported.nodes[exported.nodes[2].children[0]].light;
+    ASSERT_GE(shared,0);
+    EXPECT_EQ(exported.nodes[2].extras,source.nodes[2].extras);
+    EXPECT_EQ(exported.lights[shared].extras,source.lights[0].extras);
+    EXPECT_EQ(exported.lights[shared].name,"Shared authored sun");
+    EXPECT_DOUBLE_EQ(exported.lights[shared].intensity,13);
+    const int firstSun = firstDirectional(exported);
+    ASSERT_GE(firstSun,0);
+    EXPECT_NE(firstSun,shared);
+    EXPECT_DOUBLE_EQ(exported.lights[firstSun].intensity,101);
+    EXPECT_FALSE(exported.lights[firstSun].extras.Has("sourceLight"));
+    exported.defaultScene = 1;
+    const int secondSun = firstDirectional(exported);
+    ASSERT_GE(secondSun,0);
+    if (secondManual) {
+      EXPECT_NE(secondSun,firstSun);
+      EXPECT_NE(secondSun,shared);
+      EXPECT_DOUBLE_EQ(exported.lights[secondSun].intensity,202);
+    } else {
+      EXPECT_EQ(exported.scenes[1].nodes,(std::vector<int>{0}));
+      EXPECT_EQ(secondSun,shared);
+    }
+    auto behaviorModel = exported;
+    GltfInteractivity behavior(behaviorModel);
+    const auto dirty = behavior.advance(behaviorModel,ParseAnimations(behaviorModel),0);
+    EXPECT_EQ(dirty.lights,(std::vector<size_t>{size_t(shared)}));
+    EXPECT_DOUBLE_EQ(behaviorModel.lights[shared].intensity,.75);
+    EXPECT_DOUBLE_EQ(behaviorModel.lights[firstSun].intensity,101);
+    AnimationPlayer player(exported); player.selectClip(exported,0); player.seek(exported,1);
+    EXPECT_DOUBLE_EQ(exported.lights[shared].intensity,35);
+    EXPECT_DOUBLE_EQ(exported.lights[firstSun].intensity,101);
+    if (secondManual) EXPECT_DOUBLE_EQ(exported.lights[secondSun].intensity,202);
+  }
 }
 
 TEST(SceneLightExport, BatchLateInvalidLightLeavesTheCompleteSnapshotUnchanged) {
@@ -1189,7 +1279,7 @@ TEST(SceneLightExport, FullBindingEvaluationRetainsHiddenOverridesAndScaledRange
   global.points[{0,{}}]=pointLightDataFromEditable(point);
   const std::vector<container::scene::AuthoredSceneLights> fullTables{full},visibleTables{visible};
   const std::vector<std::vector<EditableLightEntity>> lights{
-      evaluateEditableSceneLightsForExport(full,visible,SceneLightEdits{},global,glm::mat4(1))};
+      evaluateEditableSceneLightsForExport(full,SceneLightEdits{},global,glm::mat4(1))};
   ASSERT_EQ(lights[0].size(),2u); EXPECT_EQ(lights[0][0].position,point.position);
   auto exported=source;
   exportEditableSceneLightsForScenes(exported,lights,nullptr,{},2,fullTables,visibleTables);
@@ -1216,7 +1306,7 @@ TEST(SceneLightExport, FullSunEvaluationExportsHiddenEditsAndNonzeroFirstVisible
   sun.intensity=41; global.directionals[{1,{}}]=sun;
   const std::vector<container::scene::AuthoredSceneLights> fullTables{full},visibleTables{visible};
   const std::vector<std::vector<EditableLightEntity>> lights{
-      evaluateEditableSceneLightsForExport(full,visible,SceneLightEdits{},global,glm::mat4(1))};
+      evaluateEditableSceneLightsForExport(full,SceneLightEdits{},global,glm::mat4(1))};
   ASSERT_EQ(lights[0].size(),2u); EXPECT_EQ(lights[0][0].id.index,0u); EXPECT_EQ(lights[0][1].id.index,1u);
   auto exported=source;
   exportEditableSceneLightsForScenes(exported,lights,nullptr,{},1,fullTables,visibleTables);
@@ -1248,8 +1338,8 @@ TEST(SceneLightExport, ManualSunReplacesOnlyFirstVisibleBindingAndRetainsHiddenS
     manual.intensity=100; edits.directionalOverride=manual;
     const std::vector<container::scene::AuthoredSceneLights> fullTables{full},visibleTables{visible};
     const std::vector<std::vector<EditableLightEntity>> lights{
-        evaluateEditableSceneLightsForExport(full,visible,edits,global,glm::mat4(1))};
-    ASSERT_EQ(lights[0].size(),allHidden?3u:2u);
+        evaluateEditableSceneLightsForExport(full,edits,global,glm::mat4(1))};
+    ASSERT_EQ(lights[0].size(),3u);
     auto exported=source;
     exportEditableSceneLightsForScenes(exported,lights,nullptr,{},1,fullTables,visibleTables);
     EXPECT_EQ(exported.nodes[0].children,(std::vector<int>{2}));
@@ -1270,7 +1360,7 @@ TEST(SceneLightExport, BindingAwareOverlayResolvesRuntimeReparentedSourceNodesOu
   second.points={pointLightDataFromEditable(entity(EditableLightType::Point,EditableLightSource::Imported,0))};
   const std::vector<container::scene::AuthoredSceneLights> tables{{},second};
   const std::vector<std::vector<EditableLightEntity>> lights{{},
-      evaluateEditableSceneLightsForExport(second,second,SceneLightEdits{},ImportedSceneLightEdits{},glm::mat4(1))};
+      evaluateEditableSceneLightsForExport(second,SceneLightEdits{},ImportedSceneLightEdits{},glm::mat4(1))};
   const std::vector<int32_t> identities{0,1,2};
   exportEditableSceneLightsForScenes(exported,lights,&source,identities,1,tables,tables);
   EXPECT_TRUE(exported.nodes[0].children.empty());
@@ -1290,8 +1380,8 @@ TEST(SceneLightExport, BindingAwareSharedSunDeduplicationIgnoresSceneLocalIndice
   second.directionalBindings={{0,{}},{1,{}}};
   const std::vector<container::scene::AuthoredSceneLights> full{first,second},visible{first,first};
   std::vector<std::vector<EditableLightEntity>> lights{
-      evaluateEditableSceneLightsForExport(first,first,SceneLightEdits{},ImportedSceneLightEdits{},glm::mat4(1)),
-      evaluateEditableSceneLightsForExport(second,first,SceneLightEdits{},ImportedSceneLightEdits{},glm::mat4(1))};
+      evaluateEditableSceneLightsForExport(first,SceneLightEdits{},ImportedSceneLightEdits{},glm::mat4(1)),
+      evaluateEditableSceneLightsForExport(second,SceneLightEdits{},ImportedSceneLightEdits{},glm::mat4(1))};
   auto exported=source;
   exportEditableSceneLightsForScenes(exported,lights,nullptr,{},1,full,visible);
   ASSERT_EQ(exported.lights.size(),4u);
