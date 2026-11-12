@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import math
 import shutil
 import struct
 from pathlib import Path
@@ -92,6 +93,20 @@ def check_portable(path):
     require(sorted(cameras) == ['Imported camera', 'Primary camera'], f'Wrong exported camera bindings: {cameras}')
 
 
+def check_imported_camera(state):
+    graph = {node['graphNode']: node for node in state['gltfMerge']['authoringNodes']}
+    authoring = state['gltfCameraAuthoring']
+    active = {authoring['evaluated'][binding['evaluatedCamera']]['name']: binding for binding in authoring['cameras']}
+    binding = active['Imported camera']
+    definition = authoring['evaluated'][binding['evaluatedCamera']]
+    require(definition['type'] == 'perspective' and definition['values'][0] == 0.9,
+            f'Wrong imported camera projection: {definition}')
+    position = graph[binding['graphNode']]['worldColumns'][3][:3]
+    require(all(math.isclose(value, expected, abs_tol=1e-6)
+                for value, expected in zip(position, translated(IMPORTED_CAMERA), strict=True)),
+            f'Wrong imported camera position: {position}')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--renderer', required=True, type=Path)
@@ -150,12 +165,15 @@ def main():
                     states, (1, 2, 1, 2), (0, 1, 2, 3), ((0, 0), (1, 0), (0, 1), (1, 0)))):
                 state = entry['state']
                 merge = state['gltfMerge']
+                cursor = state.get('sceneEditHistory', dict(undo=0, redo=0)) if index == 0 else state['sceneEditHistory']
                 require(state['scene']['primaryObjectCount'] == 1 and state['lighting']['pointLightCount'] == count and
                         len(state['gltfCameraAuthoring']['cameras']) == count and
                         merge['outcome'] == ('idle' if index == 0 else 'committed') and
                         merge['generationPublications'] == publications and merge['sourceReadCount'] == min(index, 1) and
-                        (state['sceneEditHistory']['undo'], state['sceneEditHistory']['redo']) == history,
+                        (cursor['undo'], cursor['redo']) == history,
                         f'Wrong merge, camera, light, or history state: {entry["telemetry"]}')
+                if count == 2:
+                    check_imported_camera(state)
             before, merged, undone, redone = states
             oracle, = capture(control, 'control', technique)
             metrics = {name: pixels(first['image'], second['image']) for name, first, second in (
@@ -176,6 +194,7 @@ def main():
             match = pixels(merged_captures[technique]['image'], reopened['image'])
             require(match['maximumError'] == 0 and reopened['state']['lighting']['pointLightCount'] == 2 and
                     len(reopened['state']['gltfCameraAuthoring']['cameras']) == 2, f'Portable reload changed: {technique} {match}')
+            check_imported_camera(reopened['state'])
             report['checks'].append(dict(technique=technique, portableReload=match))
         require(len(report['captures']) == report['expectedCaptureCount'], 'Unexpected native capture count')
         verify_runtime_manifest(args.manifest, renderer)

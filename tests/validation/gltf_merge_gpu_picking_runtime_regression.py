@@ -81,7 +81,7 @@ def one(rows, key, value, description):
     return matches[0]
 
 
-def check_pick(row, origin, *, hit_expected=True, placement_expected=False):
+def check_pick(row, origin, *, hit_expected=True, placement_expected=False, exported=False):
     state = row['state']
     probe = state['depthProbe']
     interaction = probe['sceneInteraction']
@@ -101,7 +101,7 @@ def check_pick(row, origin, *, hit_expected=True, placement_expected=False):
     require(raw_id > 0 and probe['opaque'] > 0 and hit is not None and
             hit == cpu['hit'] == gpu['selection'] == cpu['selection'] and selected == hit['graphNode'],
             f'Viewport selection disagrees with rendered GPU and CPU hits in {location}')
-    require(hit['name'] == NAMES[origin] and hit['sourceNode'] >= 0 and hit['sourceMesh'] >= 0 and
+    require(hit['sourceNode'] >= 0 and hit['sourceMesh'] >= 0 and
             hit['sourcePrimitive'] == 0 and hit['sourceInstance'] == -1,
             f'Viewport selected the wrong source primitive in {location}: {hit}')
 
@@ -114,7 +114,9 @@ def check_pick(row, origin, *, hit_expected=True, placement_expected=False):
         node = nodes[current]
         ancestry.append(node['name'])
         current = node['parentGraphNode']
-    require(NAMES[origin] in ancestry and NAMES['B' if origin == 'A' else 'A'] not in ancestry and
+    # The portable exporter writes a mesh leaf under the authored node, so reload can report the leaf name.
+    require(hit['name'] in (ancestry if exported else (NAMES[origin],)) and NAMES[origin] in ancestry and
+            NAMES['B' if origin == 'A' else 'A'] not in ancestry and
             (PARENT in ancestry) == placement_expected, f'Incorrect viewport ancestry in {location}: {ancestry}')
 
     bindings = state['gltfMaterialBindings']
@@ -248,8 +250,9 @@ def main():
             require(len(rows) == count, f'Wrong number of {technique} {label} samples')
             return rows
 
-        def verify(technique, label, row, origin, *, hit=True, placed=False, oracle=None, history_check=None):
-            pick = check_pick(row, origin, hit_expected=hit, placement_expected=placed)
+        def verify(technique, label, row, origin, *, hit=True, placed=False, exported=False,
+                   oracle=None, history_check=None):
+            pick = check_pick(row, origin, hit_expected=hit, placement_expected=placed, exported=exported)
             check = dict(technique=technique, sample=label, telemetry=row['telemetry'], pick=pick)
             if oracle is not None:
                 check['pixels'] = compare(row, oracle)
@@ -286,7 +289,9 @@ def main():
                 merge = check_history(row['state'], live[0]['state'], *history_state)
                 picks.append(verify(technique, label, row, origin, hit=label != 'undo-B',
                                     placed=label in ('merged-B', 'redo-B'), oracle=oracle, history_check=merge))
-            require(picks[0] == picks[1] == picks[5] and picks[2] == picks[4],
+            # GPU IDs are slots in the current draw packet. Compare source and graph identity across compositions.
+            retained = [{key: value for key, value in pick.items() if key != 'rawGpuId'} for pick in (picks[0], picks[1])]
+            require(retained[0] == retained[1] and picks[1] == picks[5] and picks[2] == picks[4],
                     f'Merge/history changed a retained or restored GPU pick identity in {technique}')
             for key in ('rawGpuId', 'graphNode', 'sourceNode', 'sourceMesh', 'firstIndex', 'sourceMaterial',
                         'runtimeMaterial', 'sourceTexture', 'image', 'sampler', 'runtimeTexture'):
@@ -307,7 +312,7 @@ def main():
         for technique in techniques:
             rows = capture(technique, portable[technique], 'portable-reload', controls, 2)
             for row, oracle, origin in zip(rows, merged_controls[technique], NAMES, strict=True):
-                verify(technique, f'portable-{origin}', row, origin, placed=origin == 'B', oracle=oracle)
+                verify(technique, f'portable-{origin}', row, origin, placed=origin == 'B', exported=True, oracle=oracle)
 
         require(report['nativeFreeze'] == verify_runtime_manifest(manifest, renderer) and
                 report['rendererSha256'] == sha(renderer), 'Frozen native input changed during validation')
