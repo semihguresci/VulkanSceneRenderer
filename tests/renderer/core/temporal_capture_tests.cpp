@@ -1275,6 +1275,34 @@ TEST(TemporalCapture, NodeAuthoringFlagsHistoryAndMergeCanUseDistinctEvents) {
   EXPECT_TRUE(sequence.sample(5).event.merge);
 }
 
+TEST(TemporalCapture, ViewportPointerDispatchesOnlyAtTheRequestedFrame) {
+  using Action = container::temporal::CaptureViewportPointer::Action;
+  auto input = json::parse(R"({"schemaVersion":1,"frames":4,"events":[
+    {"frame":2,"viewportPointer":{"action":"hover","pixel":[320,180]}},
+    {"frame":4,"viewportPointer":{"action":"select","pixel":[1,0]},"depthProbe":[1,0]}]})");
+  const CaptureSequence sequence(input);
+  EXPECT_TRUE(sequence.hasViewportPointer());
+  EXPECT_FALSE(sequence.sample(1).event.viewportPointer);
+  const auto hover = sequence.sample(2).event.viewportPointer;
+  ASSERT_TRUE(hover);
+  EXPECT_EQ(hover->action, Action::Hover);
+  EXPECT_EQ(hover->pixel, glm::uvec2(320, 180));
+  EXPECT_FALSE(sequence.sample(3).event.viewportPointer);
+  const auto click = sequence.sample(4).event;
+  ASSERT_TRUE(click.viewportPointer);
+  EXPECT_EQ(click.viewportPointer->action, Action::Select);
+  ASSERT_TRUE(click.depthProbe);
+  EXPECT_EQ(click.viewportPointer->pixel, *click.depthProbe);
+
+  for (const auto& malformed : json::parse(R"([
+    {"action":"drag","pixel":[0,0]}, {"action":"select","pixel":[-1,0]},
+    {"action":"hover","pixel":[0,16385]}, {"action":"hover","pixel":[0.5,0]},
+    {"action":"select"}, {"action":"hover","pixel":[0,0],"extra":true}])")) {
+    input["events"][0]["viewportPointer"] = malformed;
+    EXPECT_THROW((void)CaptureSequence(input), std::invalid_argument) << malformed.dump();
+  }
+}
+
 TEST(TemporalCapture, DeleteHistoryAndMergeRemainValidAsSeparateEvents) {
   const json input{{"schemaVersion", 1}, {"frames", 4}, {"events", json::array({
       {{"frame", 1}, {"nodeAuthoring", {{"action", "delete-subtree"}, {"sourceNode", 0}}}},

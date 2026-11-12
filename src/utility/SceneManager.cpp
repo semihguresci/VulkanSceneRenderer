@@ -2196,6 +2196,12 @@ tinygltf::Model SceneManager::buildSceneExport(const SceneGraph& graph,
        linked ? linked->resourceIndexMaps : nullptr});
 }
 
+container::geometry::gltf::GltfNodeFlagEdit SceneManager::prepareGltfNodeFlagEdit(
+    size_t sourceNode, const std::array<std::optional<bool>, 3>& changes) const {
+  return container::geometry::gltf::PrepareGltfNodeFlagEdit(
+      gltfModel_.nodes.at(sourceNode), exportSource_.nodes.at(sourceNode), changes);
+}
+
 MaterialVariantGraphEdit SceneManager::planMaterialVariant(const SceneGraph& graph,std::optional<size_t> variant) const {
   const auto mapping = ExportSourceMaterialMapping(sourceMaterialToRuntime_,
       gltfModel_.materials.size(), materialManager_.materialCount());

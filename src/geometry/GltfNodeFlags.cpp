@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace container::geometry::gltf {
 namespace {
@@ -56,6 +57,11 @@ void authored(GltfNodeFlags& result, const FlagProperty& flag, bool propertyPres
 void countAuthored(GltfNodeFlagSummary& summary, const GltfNodeFlags& flags) {
   if (flags.authoredExtensions) ++summary.authoredNodes;
   summary.authoredExtensions += std::popcount(static_cast<unsigned>(flags.authoredExtensions));
+}
+
+const tinygltf::Value::Object& flagFields(const tinygltf::Value& extension, const FlagProperty& flag) {
+  if (!extension.IsObject()) fail(flag.extension, "extension must be an object");
+  return extension.Get<tinygltf::Value::Object>();
 }
 
 } // namespace
@@ -132,6 +138,72 @@ GltfNodeFlagData ParseGltfNodeFlags(const tinygltf::Model& source,
     countAuthored(result.summary, flags);
   }
   return result;
+}
+
+GltfNodeFlagEdit PrepareGltfNodeFlagEdit(const tinygltf::Node& evaluated, const tinygltf::Node& archived,
+                                       const std::array<std::optional<bool>, 3>& changes) {
+  GltfNodeFlagEdit edit;
+  for (size_t i = 0; i < kFlags.size(); ++i) {
+    if (!changes[i]) continue;
+    const auto& flag = kFlags[i];
+    const auto extension = evaluated.extensions.find(flag.extension);
+    if (extension == evaluated.extensions.end()) continue;
+    const auto& fields = flagFields(extension->second, flag);
+    const auto existing = fields.find(flag.property);
+    if (existing != fields.end() && !existing->second.IsBool())
+      fail(flag.extension, "flag property must be a boolean");
+    authored(edit.before, flag, existing != fields.end());
+    edit.before.*(flag.value) = existing == fields.end() || existing->second.Get<bool>();
+
+    const auto original = archived.extensions.find(flag.extension);
+    const bool explicitValue = original != archived.extensions.end() &&
+        flagFields(original->second, flag).contains(flag.property);
+    authored(edit.after, flag, explicitValue || !*changes[i]);
+    edit.after.*(flag.value) = *changes[i];
+  }
+  return edit;
+}
+
+void ApplyGltfNodeFlagEdit(tinygltf::Node& evaluated, const GltfNodeFlags& flags) {
+  using Fields = tinygltf::Value::Object;
+  std::array<Fields*, kFlags.size()> fields{};
+  std::array<Fields::iterator, kFlags.size()> existing{};
+  std::array<Fields::node_type, kFlags.size()> insertions;
+  Fields prepared;
+  for (size_t i = 0; i < kFlags.size(); ++i) {
+    const auto& flag = kFlags[i];
+    if (!flags.hasExtension(flag.flag)) continue;
+    const auto extension = evaluated.extensions.find(flag.extension);
+    if (extension == evaluated.extensions.end() || !extension->second.IsObject())
+      fail(flag.extension, "edited extension object is unavailable");
+    fields[i] = &extension->second.Get<Fields>();
+    existing[i] = fields[i]->find(flag.property);
+    if (existing[i] != fields[i]->end()) {
+      if (!existing[i]->second.IsBool()) fail(flag.extension, "flag property must be a boolean");
+    } else if (flags.hasProperty(flag.flag)) {
+      // Prepare every allocation before modifying any flag in a grouped edit.
+      const auto entry = prepared.emplace(flag.property, tinygltf::Value(flags.*(flag.value))).first;
+      insertions[i] = prepared.extract(entry);
+    }
+  }
+  bool changed = false;
+  for (size_t i = 0; i < kFlags.size(); ++i) {
+    if (!fields[i]) continue;
+    if (!insertions[i].empty()) {
+      fields[i]->insert(std::move(insertions[i]));
+    } else if (existing[i] == fields[i]->end()) {
+      continue;
+    } else if (!flags.hasProperty(kFlags[i].flag)) {
+      fields[i]->erase(existing[i]);
+    } else {
+      auto& value = existing[i]->second.Get<bool>();
+      const bool next = flags.*(kFlags[i].value);
+      if (value == next) continue;
+      value = next;
+    }
+    changed = true;
+  }
+  if (changed) evaluated.extensions_json_string.clear();
 }
 
 } // namespace container::geometry::gltf

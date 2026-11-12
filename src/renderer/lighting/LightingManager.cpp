@@ -28,6 +28,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <span>
 #include <stdexcept>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -57,6 +58,7 @@ struct LightEditIdentityState {
   };
   uint64_t asset{},graph{},scene{},generator{},bytes{};
   std::vector<Row> rows;
+  std::vector<Row> inactiveImportedRows;
 };
 struct LightEditAddState {
   uint64_t owner{},asset{},graph{},scene{},birth{},pointPrefixBirth{},areaPrefixBirth{},generator{};
@@ -2451,8 +2453,23 @@ bool editRowKey(const LightEditIdentityState::Row& a,const LightEditIdentityStat
       a.definition==b.definition&&a.extension==b.extension&&
       (a.id.source==EditableLightSource::Imported||a.id.index==b.id.index);
 }
+auto importedEditRowKey(const LightEditIdentityState::Row& row) noexcept {
+  return std::tie(row.nodeBirth,row.sourceNode,row.definition,row.extension,row.id.type);
+}
 bool editEntity(const EditableLightEntity& a,const EditableLightEntity& b) noexcept {
   return a.id==b.id&&a.type==b.type&&a.source==b.source&&LightEditValuesEqual(LightEditValuesFrom(a),LightEditValuesFrom(b));
+}
+bool importedLightSourceMatches(const LightEditIdentityState::Row& row,
+    const container::scene::SceneGraph& graph,const tinygltf::Model& model) noexcept {
+  const auto* graphNode=graph.getNode(row.graphNode);
+  if(!graphNode||graphNode->retired||graphNode->sourceNodeIndex!=row.sourceNode||
+      graph.nodeIncarnation(row.graphNode)!=row.nodeBirth||row.sourceNode<0||size_t(row.sourceNode)>=model.nodes.size())
+    return false;
+  const auto& node=model.nodes[size_t(row.sourceNode)];
+  if(row.extension.empty()) return node.light==row.definition;
+  const auto ext=node.extensions.find(row.extension);
+  return ext!=node.extensions.end()&&ext->second.IsObject()&&ext->second.Get("light").IsInt()&&
+      ext->second.Get("light").Get<int>()==row.definition;
 }
 }
 void LightingManager::synchronizeLightEditIdentities() const {
@@ -2505,12 +2522,16 @@ void LightingManager::synchronizeLightEditIdentities() const {
   };
   const auto old=lightEditIdentities_;
   const bool sameOwner=old&&old->asset==asset&&old->graph==sceneGraph_.identity()&&old->scene==scene;
+  const auto canRetainImported = [&](const LightEditIdentityState::Row& row) {
+    return sceneManager_&&row.id.source==EditableLightSource::Imported&&
+        importedLightSourceMatches(row,sceneGraph_,std::as_const(*sceneManager_).animationSource())&&
+        sceneGraph_.isNodeActive(row.graphNode);
+  };
   bool unchanged=sameOwner&&old->generator==generatedLightRevision_&&old->rows.size()==editableLights_.size();
-  if(unchanged&&lightEditIdentitiesValid()) return;
-  if(unchanged) for(size_t i=0;i<editableLights_.size();++i) {
+  if(unchanged&&!lightEditIdentitiesValid()) for(size_t i=0;i<editableLights_.size();++i) {
     const auto row=makeRow(editableLights_[i],&old->rows[i]);if(row.id!=old->rows[i].id||!editRowKey(row,old->rows[i])) {unchanged=false;break;}
   }
-  if(unchanged) return;
+  if(unchanged&&std::ranges::all_of(old->inactiveImportedRows,canRetainImported)) return;
   auto next=std::make_shared<LightEditIdentityState>();next->asset=asset;next->graph=sceneGraph_.identity();next->scene=scene;next->generator=generatedLightRevision_;
   next->bytes=sizeof(LightEditIdentityState)+256+editableLights_.size()*(sizeof(LightEditIdentityState::Row)+64);
   next->rows.reserve(editableLights_.size());
@@ -2529,7 +2550,30 @@ void LightingManager::synchronizeLightEditIdentities() const {
         if(++work>64ull*1024*1024) throw std::length_error("Light identity matching exceeds its work limit");
         if(editRowKey(row,previous)) {row.birth=previous.birth;break;}
       }
+    if(!row.birth&&sameOwner&&light.source==EditableLightSource::Imported) {
+      const auto key=importedEditRowKey(row);
+      const auto previous=std::ranges::lower_bound(old->inactiveImportedRows,key,{},importedEditRowKey);
+      if(previous!=old->inactiveImportedRows.end()&&importedEditRowKey(*previous)==key)
+        row.birth=previous->birth;
+    }
     if(!row.birth) row.birth=lightIdentity();next->bytes+=row.extension.size()+1;next->rows.push_back(std::move(row));
+  }
+  if(sameOwner) {
+    // Visibility can remove an imported light from the packed runtime table
+    // while its source remains available to earlier history commands.
+    std::vector<uint64_t> activeImportedBirths;
+    for(const auto& row:next->rows)
+      if(row.id.source==EditableLightSource::Imported) activeImportedBirths.push_back(row.birth);
+    std::ranges::sort(activeImportedBirths);
+    const auto retainInactive = [&](const LightEditIdentityState::Row& row) {
+      if(!canRetainImported(row)||std::ranges::binary_search(activeImportedBirths,row.birth)) return;
+      next->inactiveImportedRows.push_back(row);
+      next->bytes+=row.extension.size()+1;
+    };
+    for(const auto& row:old->inactiveImportedRows) retainInactive(row);
+    for(const auto& row:old->rows) retainInactive(row);
+    std::ranges::sort(next->inactiveImportedRows,{},importedEditRowKey);
+    next->bytes+=next->inactiveImportedRows.capacity()*(sizeof(LightEditIdentityState::Row)+64);
   }
   lightEditIdentities_=std::move(next);
 }
@@ -2539,17 +2583,11 @@ bool LightingManager::lightEditIdentitiesValid() const noexcept {
   for(size_t i=0;i<set->rows.size();++i) {
     const auto& row=set->rows[i];if(row.id!=editableLights_[i].id) return false;
     if(row.id.source!=EditableLightSource::Imported) continue;
-    const auto* graphNode=sceneGraph_.getNode(row.graphNode);
-    if(!graphNode||graphNode->retired||graphNode->sourceNodeIndex!=row.sourceNode||sceneGraph_.nodeIncarnation(row.graphNode)!=row.nodeBirth||
-        row.sourceNode<0||size_t(row.sourceNode)>=model.nodes.size()) return false;
+    if(!importedLightSourceMatches(row,sceneGraph_,model)) return false;
     const auto bindings=row.id.type==EditableLightType::Directional?sceneManager_->authoredDirectionalLightBindings():
         row.id.type==EditableLightType::Area?sceneManager_->authoredAreaLightBindings():sceneManager_->authoredPointLightBindings();
     const auto index=row.id.type==EditableLightType::Directional?0u:row.id.index;
     if(index>=bindings.size()||bindings[index].sourceNode!=row.sourceNode||bindings[index].extension!=row.extension) return false;
-    const auto& node=model.nodes[size_t(row.sourceNode)];
-    if(row.extension.empty()) {if(node.light!=row.definition) return false;}
-    else {const auto ext=node.extensions.find(row.extension);
-      if(ext==node.extensions.end()||!ext->second.IsObject()||!ext->second.Get("light").IsInt()||ext->second.Get("light").Get<int>()!=row.definition) return false;}
   }
   return true;
 }

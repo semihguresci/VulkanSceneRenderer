@@ -44,6 +44,10 @@ The hierarchy's Visible, Selectable and Hoverable controls edit local flags.
 Undo/redo retains all three independently; grouped capture edits are one history
 command. A capture event can use
 `{"frame":2,"nodeFlags":{"sourceNode":3,"visible":false,"hoverable":true}}`.
+Use `{"frame":3,"viewportPointer":{"action":"select","pixel":[320,180]}}`
+or `"hover"` to run the normal viewport handler on the completed frame. The
+behavior graph processes that input on the next frame. A sequence with these
+events uses scripted pointer input and retains the fixed timestep and camera track.
 Scene switches retain local edits while clearing selection and hover. Publication
 invalidates hover caches, refreshes visible lights/providers and resets temporal
 history. Light overrides follow source-node/dialect identities when visibility

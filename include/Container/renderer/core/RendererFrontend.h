@@ -48,6 +48,7 @@
 struct GLFWwindow;
 
 namespace container::temporal {
+struct CaptureViewportPointer;
 struct CaptureSample;
 struct CaptureComfyUi;
 struct CapturePhysicsJointCreate;
@@ -184,7 +185,7 @@ public:
   void handleResize();
 
   // Process keyboard / camera input for this tick.
-  void processInput(float deltaTime);
+  void processInput(float deltaTime, bool useViewportInput = true);
 
   // Capture the next submitted frame as an sRGB PNG or scene-linear EXR.
   void requestScreenshot(std::filesystem::path outputPath, bool viewportOnly = false,
@@ -192,6 +193,7 @@ public:
   void saveSceneModel(const std::filesystem::path& outputPath, bool keepLinks = false);
   bool selectMaterialVariant(std::optional<size_t> variant,bool recordHistory=true);
   void applyTemporalCapture(const container::temporal::CaptureSample &sample);
+  void applyCaptureViewportPointer(const container::temporal::CaptureViewportPointer& pointer);
   [[nodiscard]] bool comfyUiCapturePending() const;
   void writeCaptureTelemetry(const std::filesystem::path &path,
                              std::optional<glm::uvec2> depthProbe = std::nullopt);

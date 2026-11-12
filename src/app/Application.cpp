@@ -171,20 +171,23 @@ void Application::screenshotCaptureLoop() {
   const float fixedDt = config_.screenshotFixedTimestepSeconds > 0.0f
                             ? config_.screenshotFixedTimestepSeconds
                             : 1.0f / 60.0f;
+  const bool scriptedViewport = sequence && sequence->hasViewportPointer();
 
   for (uint32_t frameNumber = 1; !window_->shouldClose() &&
        (captureSampleSeries ? checkpoint != sampleSeries.end() : frameNumber <= captureFrame);
        ++frameNumber) {
     window_->pollEvents();
-    renderer_->processInput(captureSampleSeries ? 0.0f : fixedDt);
+    renderer_->processInput(captureSampleSeries ? 0.0f : fixedDt, !scriptedViewport);
     bool skip = false;
     bool waitForComfyUi = false;
     std::optional<glm::uvec2> depthProbe;
+    std::optional<container::temporal::CaptureViewportPointer> viewportPointer;
     if (sequence) {
       const auto sample = sequence->sample(frameNumber);
       renderer_->applyTemporalCapture(sample);
       waitForComfyUi = sample.event.comfyUi && sample.event.comfyUi->wait;
       depthProbe = sample.event.depthProbe;
+      viewportPointer = sample.event.viewportPointer;
       if (sample.event.minimized) {
         minimized = *sample.event.minimized;
         if (minimized)
@@ -257,6 +260,8 @@ void Application::screenshotCaptureLoop() {
     if (!submitted)
       throw std::runtime_error(
           "Capture could not submit after swapchain recovery");
+    if (viewportPointer)
+      renderer_->applyCaptureViewportPointer(*viewportPointer);
     if (!capturePath.empty()) {
       auto telemetryPath = capturePath;
       telemetryPath.replace_extension(".telemetry.json");

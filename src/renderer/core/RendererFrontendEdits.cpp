@@ -387,7 +387,23 @@ void RendererFrontend::ensureSceneEditHistory() {
                 const container::util::SceneEditHistory::Placement& after) {
               return prepareSceneReparent(node,before,after);
             },
-            .beforeNodeMetadata = [this](uint32_t node) { requireEditableSceneNode(node); }});
+            .beforeNodeMetadata = [this](uint32_t node) { requireEditableSceneNode(node); },
+            .prepareNodeFlags = [this](uint32_t node,
+                const container::util::SceneEditHistory::NodeFlagChanges& changes) {
+              using Actions = container::util::SceneEditHistory::NodeFlagActions;
+              const auto& target = *sceneGraph_.getNode(node);
+              if (!subs_.sceneManager || target.sourceNodeIndex < 0) return Actions{};
+              requireEditableSceneNode(node);
+              const auto sourceNode = size_t(target.sourceNodeIndex);
+              const auto edit = subs_.sceneManager->prepareGltfNodeFlagEdit(sourceNode, changes);
+              if (!edit.before.authoredExtensions) return Actions{};
+              const auto apply = [this, sourceNode](const GltfNodeFlags& flags) {
+                ApplyGltfNodeFlagEdit(subs_.sceneManager->animationSource().nodes.at(sourceNode), flags);
+              };
+              return Actions{
+                  [apply, before = edit.before] { apply(before); },
+                  [apply, after = edit.after] { apply(after); }};
+            }});
   }
   sceneEdits_->sync();
 }
