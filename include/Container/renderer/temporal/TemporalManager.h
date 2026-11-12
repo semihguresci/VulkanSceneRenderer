@@ -100,7 +100,7 @@ private:
   void updateUpscaleDescriptors(const Input& input);
   void updateDlssTransparencyDescriptors(const Input& input);
   void recordUpscale(VkCommandBuffer cmd, const FrameRecordParams& frame, const Input& input,
-                     bool hasTransparency);
+                     bool hasTransparency, bool historyValid);
   std::shared_ptr<container::gpu::VulkanDevice> device_;
   container::gpu::AllocationManager &allocator_;
   container::gpu::PipelineManager &pipelines_;
@@ -129,6 +129,8 @@ private:
   VkDescriptorPool pool_{};
   VkSampler sampler_{};
   bool resolveRecorded_{false};
+  bool recordedSceneLinear_{false};
+  bool historySceneLinear_{false};
 };
 
 void registerTemporalPasses(RenderGraphBuilder& graph, RenderPassId predecessor);

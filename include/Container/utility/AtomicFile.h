@@ -70,6 +70,31 @@ replacementMutex(const std::filesystem::path &path) {
 
 enum class AtomicFilePublication { ReplaceExisting, CreateNew };
 
+// The caller supplies a complete file on the destination filesystem.
+inline void replaceFileAtomically(const std::filesystem::path &source,
+                                  const std::filesystem::path &destination) {
+#ifdef _WIN32
+  for (unsigned attempt = 0;; ++attempt) {
+    if (MoveFileExW(source.c_str(), destination.c_str(),
+                    MOVEFILE_WRITE_THROUGH | MOVEFILE_REPLACE_EXISTING))
+      return;
+    const DWORD renameError = GetLastError();
+    const DWORD attributes = GetFileAttributesW(destination.c_str());
+    const bool permanentDestination =
+        attributes != INVALID_FILE_ATTRIBUTES &&
+        (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY));
+    if (attempt >= 20 || permanentDestination ||
+        (renameError != ERROR_SHARING_VIOLATION && renameError != ERROR_ACCESS_DENIED))
+      atomicFileError("replacing destination", renameError);
+    // A concurrent reader or antivirus inspection can briefly hold a file open.
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+#else
+  if (::rename(source.c_str(), destination.c_str()) != 0)
+    atomicFileError("replacing destination", errno);
+#endif
+}
+
 inline void writeFileAtomically(const std::filesystem::path &path, std::string_view contents,
     AtomicFilePublication publication = AtomicFilePublication::ReplaceExisting) {
   // Simultaneous writers in this process share a destination lock. Other
@@ -129,23 +154,11 @@ inline void writeFileAtomically(const std::filesystem::path &path, std::string_v
       atomicFileError("closing temporary file", GetLastError());
     }
     file = INVALID_HANDLE_VALUE;
-    const bool exclusive = publication == AtomicFilePublication::CreateNew;
-    const DWORD flags = MOVEFILE_WRITE_THROUGH | (exclusive ? 0 : MOVEFILE_REPLACE_EXISTING);
-    for (unsigned attempt = 0;; ++attempt) {
-      if (MoveFileExW(temporary.c_str(), path.c_str(), flags))
-        break;
-      const DWORD renameError = GetLastError();
-      const DWORD attributes = GetFileAttributesW(path.c_str());
-      const bool permanentDestination =
-          attributes != INVALID_FILE_ATTRIBUTES &&
-          (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY));
-      if (exclusive || attempt >= 20 || permanentDestination ||
-          (renameError != ERROR_SHARING_VIOLATION &&
-           renameError != ERROR_ACCESS_DENIED))
-        atomicFileError(exclusive ? "publishing a new destination" : "replacing destination", renameError);
-      // Windows may temporarily hold a replaced file open during another
-      // process's atomic rename or antivirus inspection. Retry at most 200 ms.
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if (publication == AtomicFilePublication::CreateNew) {
+      if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_WRITE_THROUGH))
+        atomicFileError("publishing a new destination", GetLastError());
+    } else {
+      replaceFileAtomically(temporary, path);
     }
 #else
     size_t offset = 0;
@@ -169,8 +182,9 @@ inline void writeFileAtomically(const std::filesystem::path &path, std::string_v
         atomicFileError("publishing a new destination", errno);
       if (::unlink(temporary.c_str()) != 0)
         atomicFileError("removing the temporary hard link", errno);
-    } else if (::rename(temporary.c_str(), path.c_str()) != 0)
-      atomicFileError("replacing destination", errno);
+    } else {
+      replaceFileAtomically(temporary, path);
+    }
 #endif
   } catch (...) {
 #ifdef _WIN32

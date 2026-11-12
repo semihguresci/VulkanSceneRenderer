@@ -872,6 +872,10 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
                                     const FrameRecordParams &p) {
   if (!needed(p))
     return;
+  // Editor overlays are rendered into the HDR scene only on display frames.
+  // A raw capture and a display frame cannot share that accumulated color.
+  recordedSceneLinear_ = p.screenshot.sceneLinear;
+  const bool historyValid = state_.valid() && historySceneLinear_ == recordedSceneLinear_;
   if (!upscalingActive()) {
     for (auto& history : histories_) {
       if (!history.initialized) {
@@ -924,13 +928,13 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
   dependency(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
              VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
   if (upscalingActive()) {
-    recordUpscale(cmd, p, input, transparent);
+    recordUpscale(cmd, p, input, transparent, historyValid);
     resolveRecorded_ = true;
     return;
   }
   const ResolveConstants constants{extent_.width,
                                    extent_.height,
-                                   state_.valid() ? 1u : 0u,
+                                   historyValid ? 1u : 0u,
                                    p.camera.orthographic ? 1u : 0u,
                                    settings_.historyWeight,
                                    settings_.depthAbsoluteTolerance,
@@ -953,7 +957,7 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
 }
 
 void TemporalManager::recordUpscale(VkCommandBuffer cmd, const FrameRecordParams& p, const Input& input,
-                                    bool hasTransparency) {
+                                    bool hasTransparency, bool historyValid) {
   const std::array constants{extent_.width, extent_.height};
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, upscaleInputsPipeline_);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, upscaleInputsLayout_, 0, 1,
@@ -986,7 +990,7 @@ void TemporalManager::recordUpscale(VkCommandBuffer cmd, const FrameRecordParams
         .color = dlssImage(input.frame.temporalComposite), .depth = dlssImage(input.upscaleDepth),
         .motion = dlssImage(input.upscaleMotion),
         .output = {input.upscaleOutput.image, input.upscaleOutput.view, input.upscaleOutput.format, upscaleDisplayExtent_},
-        .jitterPixels = upscaleJitter_, .reset = !state_.valid(), .frameMilliseconds = upscaleFrameMilliseconds_});
+        .jitterPixels = upscaleJitter_, .reset = !historyValid, .frameMilliseconds = upscaleFrameMilliseconds_});
     if (result != DlssDispatchResult::Recorded)
       throw std::runtime_error("Could not record the active Vulkan DLSS frame: " + std::string(dlss_->status()));
     if (hasTransparency) {
@@ -1011,7 +1015,7 @@ void TemporalManager::recordUpscale(VkCommandBuffer cmd, const FrameRecordParams
         .output = {input.upscaleOutput.image, input.upscaleOutput.format, upscaleDisplayExtent_},
         .jitterPixels = upscaleJitter_, .cameraNear = p.camera.nearPlane, .cameraFar = p.camera.farPlane,
         .verticalFovRadians = fsrVerticalFov_, .frameMilliseconds = upscaleFrameMilliseconds_,
-        .reset = !state_.valid()});
+        .reset = !historyValid});
     if (result != FsrDispatchResult::Recorded)
       throw std::runtime_error("Could not record the active Vulkan FSR frame: " + std::string(fsr_->status()));
   }
@@ -1030,6 +1034,7 @@ void TemporalManager::recordUpscale(VkCommandBuffer cmd, const FrameRecordParams
 void TemporalManager::commit() {
   if (fsrActive() && resolveRecorded_) fsr_->commit();
   if (dlssActive() && resolveRecorded_) dlss_->commit();
+  if (resolveRecorded_) historySceneLinear_ = recordedSceneLinear_;
   if ((!settings_.enabled && !upscalingActive()) || resolveRecorded_)
     state_.commit();
   else

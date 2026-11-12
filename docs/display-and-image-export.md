@@ -11,13 +11,15 @@ Expand **Export Image** and enter an output path without an extension:
 | Action | Output |
 | --- | --- |
 | Scene EXR | Floating-point RGB scene radiance in linear sRGB, before bloom, exposure, grading and editor overlays. Requires Lit display mode. |
-| Viewport PNG | Displayed image with tone mapping and grading, excluding editor overlays. |
+| Viewport PNG | Displayed image with tone mapping and grading, excluding the editor UI and post-process overlays. Scene diagnostics such as selection outlines can still appear. |
 | Window PNG | Displayed image including enabled editor overlays. |
 
 Each image has a `.capture.json` sidecar recording dimensions, color space,
 source, display settings, and whether UI is included. Transparent raster
-surfaces are composited before EXR readback. Export errors appear in Scene
-Controls; interactive errors leave the application running.
+surfaces are composited before EXR readback. The temporal resolve discards prior
+color when switching between the editor view and EXR capture so selection
+outlines stay out of raw exports. Export errors appear in Scene Controls, and
+interactive errors leave the application running.
 
 Both raster renderers and the progressive path-tracing viewport use the same
 display and capture path. Path-traced EXR metadata identifies its source as
@@ -44,9 +46,12 @@ the first image is `reference.samples-00000004.exr`. Each checkpoint has a
 capture sidecar with the exact requested and accepted samples per pixel, the
 seed and bounce limit, plus a telemetry file. The renderer shortens a batch
 as needed to reach the requested count. It stops the series on an accumulation
-reset or on unsupported or rejected samples at a checkpoint. Use a fixed
-camera and scene, and omit `--path-samples`, `--capture-frame`,
+reset or on unsupported or rejected samples at a checkpoint. It also stops if
+it cannot publish a complete checkpoint. Earlier checkpoints remain available
+for analysis. Use a fixed camera and scene, and omit `--path-samples`, `--capture-frame`,
 `--warmup-frames`, `--capture-sequence`, and `--path-target-ms` for this mode.
+The scene fixtures and independent target seeds for measuring convergence are
+described in the [reference calibration guide](reference-calibration.md).
 
 Presets contain all nine version 1 fields. Loading rejects duplicate or unknown
 fields, unsupported versions, nested malformed data, oversized input, and values
@@ -64,14 +69,22 @@ OpenCV with OpenEXR support. Run on a Vulkan device with validation layers:
 ```text
 python tests/validation/display_grade_runtime_regression.py PATH_TO_EXE OUTPUT_DIRECTORY
 python tests/validation/scene_linear_capture_runtime_regression.py PATH_TO_EXE OUTPUT_DIRECTORY
+python tests/validation/scene_linear_selection_history_runtime_regression.py PATH_TO_EXE OUTPUT_DIRECTORY
 python tests/validation/reference_sample_series_runtime_regression.py PATH_TO_EXE OUTPUT_DIRECTORY
 ```
 
 They check analytic tone curves and emission, transparent coverage, preset
 validation, raw-radiance independence, resize with TAA, and overlay exclusion on
-both raster renderers. The reference series test checks exact checkpoints,
+both raster renderers, including selection outlines from earlier frames. The
+reference series test checks exact checkpoints,
 batch-size independence, GPU-timed adaptive batches, and rejection of diagnosed
-paths.
+paths. It also checks that blocked sidecars preserve earlier checkpoints and
+existing outputs, and that a retry can publish the full checkpoint.
+
+The Windows RTX 2080 SUPER run passed 81 captures with Vulkan synchronization
+validation. Scene-linear EXRs matched clean controls in both raster renderers
+with TAA, FSR and DLSS. The 32-, 128- and 512-sample Cornell EXRs matched the
+accepted convergence baseline byte for byte. [Windows Vulkan results](../tests/visual-regression/scene-linear-export/windows-nvidia/scene-linear-export-results.json)
 
 Adapted tone curves retain their permissive notices in
 `tone-curves-Apache-2.0.txt`; Windows packages include that license.

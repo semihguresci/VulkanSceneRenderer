@@ -1,0 +1,365 @@
+{
+  "schemaVersion": 1,
+  "issue": 115,
+  "platform": "Windows x64",
+  "build": {
+    "revision": "ff334740dc9d9674a657c9a43908beec46609bd4",
+    "configuration": "Release",
+    "compiler": "MSVC-19.51.36260.0"
+  },
+  "rendererSha256": "bcc2d412693e39c0eec8f57d7fdd8cd85c7354b9601d5f13986d2bb0b950f1ec",
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+    "vendorId": 4318,
+    "deviceId": 7809,
+    "driverVersion": 2559967232,
+    "vulkanApiVersion": 4211029
+  },
+  "validation": {
+    "layer": "VK_LAYER_KHRONOS_validation",
+    "packageVersion": "1.4.363.1",
+    "manifestApiVersion": "1.4.363",
+    "manifestSha256": "672a281330703083230ff02cabdd1afd524b600e0a11ae8610119e06e4183b02",
+    "librarySha256": "451ed11cbc799f858cbc0e843766d2990527c03f93f7a85f03bc1e67b605a435",
+    "synchronizationValidation": true
+  },
+  "nativeManifestSha256": "feb5c6b591cab5b154e2eb8ae19203858e5adfc2bf2127c885f298da521aa09f",
+  "nativeManifestEntries": 379,
+  "ctest": {
+    "receiptSha256": "683cdb88c772c847097f6fc678d64e22b91d042af369c653f93e4bfd0ed6f23a",
+    "junitSha256": "36d1f65b77dc6b15030e974012e427937ad7c193e5a9bc6af58f3a1237c40de5",
+    "suites": 7,
+    "casesPassed": 349,
+    "casesSkipped": 0,
+    "casesFailed": 0,
+    "targets": {
+      "ddgi_preset_tests": 23,
+      "path_transport_gpu_tests": 71,
+      "reference_path_trace_gpu_tests": 88,
+      "render_technique_registry_tests": 10,
+      "renderer_mcp_measurement_tests": 4,
+      "screenshot_capture_recorder_tests": 2,
+      "temporal_capture_tests": 151
+    }
+  },
+  "native": {
+    "receiptSha256": "fba81ad7698661ff61f65526fcda93fef6587470ca283e2414e985fa9faee8d4",
+    "captures": 81,
+    "successfulProcesses": 49,
+    "expectedRejectedProcesses": 6,
+    "core": {
+      "captures": 69,
+      "successfulProcesses": 37,
+      "expectedRejectedProcesses": 6
+    },
+    "lanes": {
+      "raster": {
+        "receiptSha256": "c78ca36fb7a396ceb97fbf38eac88e6b292949aa909223632e75d5f28c84fbc4",
+        "captures": 22,
+        "successfulProcesses": 22,
+        "expectedRejectedProcesses": 0,
+        "resultSha256": "c4fb0ffc9bb9fbed8188e653e488bd98563e2ceee972c4721fd0fdfa4f141f97",
+        "analyticEmission": true,
+        "blendCoverage": true,
+        "resizeWithTaa": true,
+        "uiExclusion": true,
+        "techniques": {
+          "deferred-raster": {
+            "linear": {
+              "source": "raster-scene-composite",
+              "colorSpace": "linear-sRGB",
+              "width": 320,
+              "height": 240,
+              "includesUi": false,
+              "exposureApplied": false,
+              "toneMappingApplied": false
+            },
+            "viewportIncludesUi": false,
+            "windowIncludesUi": true,
+            "resizedViewport": [
+              384,
+              200
+            ],
+            "reinhardCenter": {
+              "pixel": [
+                160,
+                120
+              ],
+              "exposure": 0.25,
+              "colorSpace": "sRGB",
+              "actualRgb": [
+                188,
+                156,
+                124
+              ],
+              "expectedRgb": [
+                188,
+                156,
+                124
+              ]
+            }
+          },
+          "forward-raster": {
+            "linear": {
+              "source": "raster-scene-composite",
+              "colorSpace": "linear-sRGB",
+              "width": 320,
+              "height": 240,
+              "includesUi": false,
+              "exposureApplied": false,
+              "toneMappingApplied": false
+            },
+            "viewportIncludesUi": false,
+            "windowIncludesUi": true,
+            "resizedViewport": [
+              384,
+              200
+            ],
+            "reinhardCenter": {
+              "pixel": [
+                160,
+                120
+              ],
+              "exposure": 0.25,
+              "colorSpace": "sRGB",
+              "actualRgb": [
+                188,
+                156,
+                124
+              ],
+              "expectedRgb": [
+                188,
+                156,
+                124
+              ]
+            }
+          }
+        }
+      },
+      "reference-metadata": {
+        "receiptSha256": "38b598a78b18b52b5f74ec1cedbaf538a337d82e7b42c3169a0c17ef1cfced0d",
+        "captures": 2,
+        "successfulProcesses": 2,
+        "expectedRejectedProcesses": 0,
+        "resultSha256": "c817fa1e276f38cc05567ac4d89ebca127862bb4e1798472d3a1e79728e44532",
+        "displayGradeIndependent": true,
+        "attemptedSamplesPerPixel": 128,
+        "analyticRgb": [
+          4,
+          2,
+          1
+        ],
+        "absoluteRadianceTolerance": 0.008,
+        "captureMetadata": {
+          "source": "path-trace-mean",
+          "colorSpace": "linear-sRGB",
+          "width": 640,
+          "height": 360,
+          "includesUi": false,
+          "exposureApplied": false,
+          "toneMappingApplied": false
+        }
+      },
+      "series": {
+        "receiptSha256": "389acdf3e83e7e663ae1d6309d3b9fbbbe7aa1f27a0e213b184776b59177cf08",
+        "captures": 36,
+        "successfulProcesses": 6,
+        "expectedRejectedProcesses": 6,
+        "exrFiles": 36,
+        "exportEvents": 37,
+        "replacedOnRetry": 1,
+        "checkpointSamples": [
+          1,
+          5,
+          13,
+          73
+        ],
+        "batchSizes": [
+          3,
+          7
+        ],
+        "expectedRejections": [
+          "duplicate",
+          "frame-conflict",
+          "adaptive-conflict",
+          "unsupported",
+          "blocked-sidecar",
+          "blocked-telemetry"
+        ],
+        "runnerLogSha256": "dbbe795de05fd7cc3b4af2a03e299abf02150241b894975c222a9db5be469e62"
+      },
+      "selection-history": {
+        "receiptSha256": "c0cb8754b0b9e4e1b63b1df86cf456c022c4274bddb3da5093c26cfc0da58b64",
+        "captures": 6,
+        "successfulProcesses": 6,
+        "expectedRejectedProcesses": 0,
+        "resultSha256": "0a0dc06f2d45b11fc435b4bd905db7727e86cdb66c67de6848fd99bfcc5c0339",
+        "temporalBackend": "taa",
+        "techniques": [
+          {
+            "technique": "deferred-raster",
+            "displayStrokePixels": 2432,
+            "contaminatedPixels": 0,
+            "differingPixels": 0,
+            "maximumChroma": 0.0,
+            "maximumDifference": 0.0
+          },
+          {
+            "technique": "forward-raster",
+            "displayStrokePixels": 2432,
+            "contaminatedPixels": 0,
+            "differingPixels": 0,
+            "maximumChroma": 0.0,
+            "maximumDifference": 0.0
+          }
+        ],
+        "baseline": {
+          "resultSha256": "badce0a5913b1a6ba70b95ad854f9a34dbf1781250e5f355588a3b5caaaec8fa",
+          "rendererRevision": "6e765cec10dc760e2d8baa883c9a15b6e9550cbb",
+          "rendererSha256": "da6aef75bebb3c9f8b325af76192a91a38cc66de1d3ddd8b149563f8c7da4626",
+          "techniques": [
+            {
+              "technique": "deferred-raster",
+              "displayStrokePixels": 2432,
+              "contaminatedPixels": 2719,
+              "differingPixels": 2718,
+              "maximumChroma": 0.622802734375,
+              "maximumDifference": 0.592529296875
+            },
+            {
+              "technique": "forward-raster",
+              "displayStrokePixels": 2432,
+              "contaminatedPixels": 2719,
+              "differingPixels": 2718,
+              "maximumChroma": 0.622802734375,
+              "maximumDifference": 0.592529296875
+            }
+          ]
+        }
+      },
+      "convergence": {
+        "receiptSha256": "10ece85920f8edd534a7d7bea3e1afb5e7f7f37d7ddeda3570388fb9c43423d1",
+        "captures": 3,
+        "successfulProcesses": 1,
+        "expectedRejectedProcesses": 0,
+        "resultSha256": "d53b7da5a2ca3a3989891cc270499d504efcb10f7f669b93f2a27150b70d34ae",
+        "fixtureSha256": "97a64a5b83b37c6c26e28d5d8079528cd4f92f6a3cf16059b95b92f21452eb15",
+        "historicalMatrix": {
+          "rendererSha256": "dfc887d53da4bb81ac75196f7d554ce0e9bf40e8110aaac72a6c592c8b9e84a4",
+          "resultSha256": "d6858577bf4f03fd5fe136a36512a1f760d460208e3c4b8bf42dc9de870d9a60",
+          "launchPlanSha256": "2267a2e16ae48916e0d4bf468a73cf6684d742c62e1cbfa11548a8db70df034b",
+          "captures": 95,
+          "processes": 40
+        },
+        "captureMetadata": {
+          "source": "path-trace-mean",
+          "colorSpace": "linear-sRGB",
+          "width": 256,
+          "height": 192,
+          "includesUi": false,
+          "exposureApplied": false,
+          "toneMappingApplied": false
+        },
+        "seed": 23,
+        "maxBounces": 8,
+        "samplesPerFrame": 64,
+        "historyResets": 1,
+        "checkpoints": [
+          {
+            "requestedSamplesPerPixel": 32,
+            "attemptedSamplesPerPixel": 32,
+            "acceptedSamplesPerPixel": 32,
+            "unsupportedSamples": 0,
+            "rejectedSamples": 0,
+            "sampleLimitReached": false,
+            "decodedFloat32BitsEqual": true,
+            "encodedExrBytesEqual": true,
+            "currentExrSha256": "652b66413bc3c38d7bf81a040f74021f0e25aaee5a5e67772d99ef2cc2f859b3",
+            "acceptedExrSha256": "652b66413bc3c38d7bf81a040f74021f0e25aaee5a5e67772d99ef2cc2f859b3",
+            "lightingGpuMs": null
+          },
+          {
+            "requestedSamplesPerPixel": 128,
+            "attemptedSamplesPerPixel": 128,
+            "acceptedSamplesPerPixel": 128,
+            "unsupportedSamples": 0,
+            "rejectedSamples": 0,
+            "sampleLimitReached": false,
+            "decodedFloat32BitsEqual": true,
+            "encodedExrBytesEqual": true,
+            "currentExrSha256": "ba9fedc842f86a498078681e20484ed9fadcb4ab580c255863860167b452ce19",
+            "acceptedExrSha256": "ba9fedc842f86a498078681e20484ed9fadcb4ab580c255863860167b452ce19",
+            "lightingGpuMs": 128.10943603515625
+          },
+          {
+            "requestedSamplesPerPixel": 512,
+            "attemptedSamplesPerPixel": 512,
+            "acceptedSamplesPerPixel": 512,
+            "unsupportedSamples": 0,
+            "rejectedSamples": 0,
+            "sampleLimitReached": true,
+            "decodedFloat32BitsEqual": true,
+            "encodedExrBytesEqual": true,
+            "currentExrSha256": "c76be41f31b7bc1d2cacaea790f187cfa10a06b909bf21355766d1525f61205c",
+            "acceptedExrSha256": "c76be41f31b7bc1d2cacaea790f187cfa10a06b909bf21355766d1525f61205c",
+            "lightingGpuMs": 96.42521667480469
+          }
+        ]
+      },
+      "selection-fsr": {
+        "receiptSha256": "034c1a100b472484ead61a148ce8fde4d5b2e05367e6239ab5bcedb0444201cf",
+        "captures": 6,
+        "successfulProcesses": 6,
+        "expectedRejectedProcesses": 0,
+        "resultSha256": "9be9cc8454c5b46094e31b785d341082b2998cc881ef7a0c43ecc56b910df95b",
+        "temporalBackend": "fsr",
+        "techniques": [
+          {
+            "technique": "deferred-raster",
+            "displayStrokePixels": 3651,
+            "contaminatedPixels": 0,
+            "differingPixels": 0,
+            "maximumChroma": 0.0,
+            "maximumDifference": 0.0
+          },
+          {
+            "technique": "forward-raster",
+            "displayStrokePixels": 3651,
+            "contaminatedPixels": 0,
+            "differingPixels": 0,
+            "maximumChroma": 0.0,
+            "maximumDifference": 0.0
+          }
+        ],
+        "qualityMode": "quality"
+      },
+      "selection-dlss": {
+        "receiptSha256": "bd177f5be3cb6625a87c347170f268518102f0a87e7f93b4e80b9778a8db22f7",
+        "captures": 6,
+        "successfulProcesses": 6,
+        "expectedRejectedProcesses": 0,
+        "resultSha256": "133f6fd5b9c7cf251f1eb961ca85670af21cb2eae66ff2a5ec30e2e6413fe441",
+        "temporalBackend": "dlss",
+        "techniques": [
+          {
+            "technique": "deferred-raster",
+            "displayStrokePixels": 3866,
+            "contaminatedPixels": 0,
+            "differingPixels": 0,
+            "maximumChroma": 0.0,
+            "maximumDifference": 0.0
+          },
+          {
+            "technique": "forward-raster",
+            "displayStrokePixels": 3866,
+            "contaminatedPixels": 0,
+            "differingPixels": 0,
+            "maximumChroma": 0.0,
+            "maximumDifference": 0.0
+          }
+        ],
+        "qualityMode": "quality"
+      }
+    }
+  }
+}

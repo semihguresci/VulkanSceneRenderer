@@ -3739,7 +3739,12 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
 }
 
 void RendererFrontend::writeCaptureTelemetry(
-    const std::filesystem::path &path, std::optional<glm::uvec2> depthProbe) {
+    const std::filesystem::path &path, std::optional<glm::uvec2> depthProbe,
+    std::optional<uint32_t> referenceSampleTarget) {
+  if (referenceSampleTarget &&
+      (!referencePathActive() || !subs_.referencePathTracePass ||
+       subs_.referencePathTracePass->attemptedSamples() != *referenceSampleTarget))
+    throw std::runtime_error("Reference accumulation changed before checkpoint telemetry");
   auto json = captureTelemetry();
   if (comfyUi_) json["comfyUi"] = comfyUiCaptureTelemetry();
   if (depthProbe) {
@@ -3791,6 +3796,7 @@ void RendererFrontend::writeCaptureTelemetry(
   if (!stream)
     throw std::runtime_error("Cannot write capture telemetry");
   stream << json.dump(2);
+  stream.close();
   if (!stream)
     throw std::runtime_error("Capture telemetry write failed");
 }

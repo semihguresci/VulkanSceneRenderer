@@ -47,12 +47,13 @@ def main():
                                 text=True, errors="replace", timeout=180,
                                 env=dict(os.environ, VK_LAYER_SETTINGS_PATH=str(output)))
         log = result.stdout + result.stderr
-        (output / f"{name}.log").write_text(log, encoding="utf-8")
-        assert not validation_log_error(log), log
+        log_path = output / f"{name}.log"
+        log_path.write_text(log, encoding="utf-8")
+        assert not validation_log_error(log), f"Vulkan validation error in {log_path}"
         if error:
-            assert result.returncode != 0 and error in log, log
+            assert result.returncode != 0 and error in log, f"Expected {error!r}, see {log_path}"
         else:
-            assert result.returncode == 0, log
+            assert result.returncode == 0, f"Renderer exited with {result.returncode}, see {log_path}"
 
     def read_image(path):
         data = cv2.imdecode(np.frombuffer(path.read_bytes(), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
@@ -161,7 +162,52 @@ def main():
     capture("unsupported", unsupported, "--path-sample-series", "1", "--screenshot",
             str(output / "unsupported.exr"), error="unsupported and 0 rejected samples")
     assert not list(output.glob("unsupported.samples-*"))
+
+    def checkpoint_paths(base, count):
+        image = base.with_name(f"{base.stem}.samples-{count:08}.exr")
+        return image, Path(f"{image}.capture.json"), image.with_suffix(".telemetry.json")
+
+    def check_checkpoint(base, count, seed):
+        image, sidecar, telemetry = checkpoint_paths(base, count)
+        read_image(image)
+        reference = json.loads(sidecar.read_bytes())["referencePath"]
+        assert reference["acceptedSamplesPerPixel"] == count and reference["seed"] == seed
+        assert json.loads(telemetry.read_bytes())["referencePath"]["attemptedSamples"] == count
+
+    for lane, blocked_index in (("blocked-sidecar", 1), ("blocked-telemetry", 2)):
+        directory = output / lane
+        directory.mkdir()
+        base = directory / "reference.exr"
+        first = checkpoint_paths(base, 1)
+        second = checkpoint_paths(base, 5)
+        existing = {}
+        if blocked_index == 2:
+            prior = checkpoint_paths(output / "reference-α-3.exr", 5)
+            for source, destination in zip(prior[:2], second[:2]):
+                existing[destination] = source.read_bytes()
+                destination.write_bytes(existing[destination])
+        blocker = second[blocked_index]
+        blocker.mkdir()
+        marker = blocker / "keep.txt"
+        marker.write_text("existing directory", encoding="utf-8")
+        capture(lane, emitter, "--path-spp", "3", "--path-seed", "29", "--path-sample-series", "1,5",
+                "--screenshot", str(base), error="Cannot publish reference checkpoint")
+        check_checkpoint(base, 1, 29)
+        assert marker.read_text(encoding="utf-8") == "existing directory"
+        assert set(directory.iterdir()) == {*first, *existing, blocker}
+        for path, previous in existing.items():
+            assert path.read_bytes() == previous, f"Failed checkpoint overwrote {path}"
+        if existing:
+            marker.unlink()
+            blocker.rmdir()
+            capture("publication-retry", emitter, "--path-spp", "3", "--path-seed", "31",
+                    "--path-sample-series", "1,5", "--screenshot", str(base))
+            check_checkpoint(base, 1, 31)
+            check_checkpoint(base, 5, 31)
+            assert set(directory.iterdir()) == {*first, *second}
+
     print("PASS exact reference checkpoints, GPU-timed adaptive batches, and deterministic export", flush=True)
+    print("PASS failed checkpoint publication preserves complete earlier checkpoints and existing outputs", flush=True)
 
 
 if __name__ == "__main__":
