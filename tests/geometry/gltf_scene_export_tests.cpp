@@ -1376,6 +1376,10 @@ TEST(GltfSceneExport, LinkedDraftRejectsUnsafeAndUnresolvableReferencesWithConte
   rejected(document("missing.gltf"), "missing linked file 'missing.gltf'");
   rejected(document("data:model/gltf+json;base64,e30="), "embedded/data-URI");
   rejected(document("DATA:model/gltf+json;base64,e30="), "embedded/data-URI");
+  auto embedded = document("unused.gltf");
+  embedded["files"][0].erase("uri");
+  embedded["files"][0]["bufferView"] = 0;
+  rejected(embedded, "embedded linked files are unsupported");
   rejected(document("http://localhost/model.gltf"), "relative file URI");
   rejected(document("root.gltf?revision=1"), "without a query or fragment");
   rejected(document("root.gltf#scene"), "without a query or fragment");

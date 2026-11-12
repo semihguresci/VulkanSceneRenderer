@@ -207,8 +207,9 @@ Portable Save As also supports a scene merged from different linked manifests.
 A focused regression checks colliding relative resource names and alias keys,
 merge undo/redo, source-free glTF/GLB reload and protection of both input roots.
 All 24 captures and 52 checks pass in both raster techniques, including 20
-pixel-exact comparisons against independent static controls. Evidence is under
-`build/codex-gltf-validation/linked-merged-export-native/results.json`.
+pixel-exact comparisons against independent static controls. The verification
+also covers distinct GPU picks for nested placements and companion reloads
+with inline edits and animation. [Windows NVIDIA results](../tests/visual-regression/gltf-linked-assets/windows-nvidia/gltf-linked-assets-results.json)
 The hierarchy marks linked payloads read-only and offers **Make Editable**
 for their shared placement family. Detaching the family clears scene edit
 history. Save Linked As writes the detached family and its edits inline while

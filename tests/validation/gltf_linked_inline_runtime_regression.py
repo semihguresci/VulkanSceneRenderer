@@ -40,6 +40,8 @@ def fixture(output, animated):
         positions = asset.accessor('VEC3', [[0, .875, 0], [.5, 1.25, 0]])
         asset.model['animations'] = [dict(name=CLIP, samplers=[dict(input=times, output=positions)],
                                          channels=[dict(sampler=0, target=dict(node=inline, path='translation'))])]
+        # Span two verification read blocks before the original GLB's BIN chunk.
+        asset.model['asset']['extras'] = {'description': 'x' * (70 * 1024)}
         primary = primary.with_suffix('.glb')
         asset.model['buffers'] = [dict(byteLength=len(asset.data))]
         write_glb(primary, asset.model, bytes(asset.data))
@@ -88,10 +90,17 @@ def verify_live(record, selected, clip_count):
     nodes = [node for node in state['gltfNodeFlags']['nodes'] if node['active'] and not node['retired']]
     panel, = (node for node in nodes if node['name'] == PANEL)
     require(not panel['linkedReadOnly'], 'The primary inline panel became read-only')
+    linked_panels = []
     for name, payload in zip(EDITABLE_PLACEMENTS, ('Panel A', 'Panel A', 'Panel B')):
         carrier, = (node for node in nodes if node['name'] == name)
         child, = (node for node in nodes if node['name'] == payload and node['parentGraphNode'] == carrier['graphNode'])
         require(not carrier['linkedReadOnly'] and child['linkedReadOnly'], f'Linked ownership changed for {name}')
+        linked_panels.append(child)
+    if probe := state.get('depthProbe'):
+        interaction = probe['sceneInteraction']
+        hit = interaction['gpu']['selection']
+        require(hit is not None and interaction['rawGpuId'] > 0 and hit['sourceNode'] == linked_panels[0]['sourceIndex'] and
+                hit['graphNode'] == state['gui']['selectedMeshNodeId'], 'The comparison selected a different linked surface')
     animation = state['gltfAnimation']
     if clip_count:
         require(animation['clipCount'] == clip_count and animation['selectedClip'] == selected and
@@ -112,11 +121,15 @@ def capture_case(renderer, output, primary, inline, animated, records):
                   dict(frame=5, animationClip=2, animationTime=.75), dict(frame=7, animationClip=-1)]
         restore_events = events
     else:
-        samples, selected = [1, 5], [-1, -1]
+        samples, selected = [1, 6], [-1, -1]
+        # Create Empty selects the new folder. Match the reopened scene's
+        # selection so its outline does not change the image comparison.
+        pixel = [168, 180]
+        restore_events = [dict(frame=4, viewportPointer=dict(action='select', pixel=pixel)),
+                          dict(frame=6, depthProbe=pixel)]
         events = [node_authoring(2, 'create-empty', inline, FOLDER),
                   dict(frame=3, materialEdit=dict(sourceMaterial=0, values=[
-                      dict(property='pbrMetallicRoughness/baseColorFactor', value=EDITED_COLOR)]))]
-        restore_events = []
+                      dict(property='pbrMetallicRoughness/baseColorFactor', value=EDITED_COLOR)])), *restore_events]
     sequence = output / 'live.json'
     restored_sequence = output / 'restored.json'
     write_json(sequence, dict(schemaVersion=1, frames=samples[-1], sampleFrames=samples, events=events))
