@@ -97,3 +97,7 @@ python -B tests/validation/renderer_mcp_runtime_regression.py --exe out/build/fe
 Use `--endpoint-disabled-only` with a Release build configured with
 `-DENABLE_RENDERER_MCP=OFF` to check interactive startup and scripted capture
 with endpoint environment variables present.
+
+The [Windows Vulkan verification report](../tests/visual-regression/renderer-mcp/windows-nvidia/renderer-mcp-results.json)
+records the loopback tests, GPU measurements, and capture comparisons for both
+build configurations.

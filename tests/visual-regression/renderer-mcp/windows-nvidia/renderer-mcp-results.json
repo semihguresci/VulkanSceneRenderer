@@ -1,0 +1,484 @@
+{
+  "schemaVersion": 1,
+  "issue": 114,
+  "platform": "Windows x64",
+  "build": {
+    "compiler": "MSVC-19.51.36260.0",
+    "configuration": "Release",
+    "revision": "85b12e3dca1bcef80fdd42bbbaf81d3e6e28ea05"
+  },
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+    "vendorId": 4318,
+    "deviceId": 7809,
+    "driverVersion": 2559967232,
+    "vulkanApiVersion": 4211029
+  },
+  "validationLayer": {
+    "name": "VK_LAYER_KHRONOS_validation",
+    "packageVersion": "1.4.363.1",
+    "apiVersion": "1.4.363",
+    "manifestSha256": "672a281330703083230ff02cabdd1afd524b600e0a11ae8610119e06e4183b02",
+    "librarySha256": "451ed11cbc799f858cbc0e843766d2990527c03f93f7a85f03bc1e67b605a435",
+    "synchronizationValidation": true,
+    "instanceAndDeviceVerified": true
+  },
+  "mcpHarnesses": {
+    "enabled": {
+      "revision": "03be623221e6706c03f861275150890c708222e1",
+      "sourceSha256": "2faa66028e32c2844c5158bf412719e19630e27e06a77e746183a12d9c2cee06"
+    },
+    "disabled": {
+      "revision": "e5829dbf54ec2ef06821563b5019a3588466e091",
+      "sourceSha256": "f038bfe3e921cf57481442eadbd3f440c7b049091519088b49455291e85d24e7"
+    }
+  },
+  "sceneLightingHarnessSha256": "979302e06fcfb821150e675f2e2f2011860bb3de9ca73dbaf10284bea1504314",
+  "builds": {
+    "enabled": {
+      "rendererMcpEnabled": true,
+      "rendererMcpServerLinked": true,
+      "winsockLinked": true,
+      "rendererRevision": "85b12e3dca1bcef80fdd42bbbaf81d3e6e28ea05",
+      "rendererSha256": "78bc532378af24c926a57e5497f5377db7a71291a18780b9bc635cf62e6954d9",
+      "cacheSha256": "f0cda70c5ee2d29cbcc51827eb88c4e0a6cf54a2af089d9fb9de989cbac99281",
+      "ninjaSha256": "d5fb19e2f723d99c0c9e801ac8860f0cf0ec97796009c6d32865e53be4f0b5d7",
+      "buildLogSha256": "bb6187bb7cd549dd88282854c9bc9512954145f31a0029028133c708455e70fa",
+      "ctest": {
+        "targetsPassed": 8,
+        "targetsFailed": 1,
+        "casesPassed": 424,
+        "casesFailed": 5,
+        "skips": 0,
+        "junitSha256": "bf8767ab0a27c9fbb93a1f69672a308a8d709e8491eb941ad734a8eec87e2316",
+        "runnerLogSha256": "25015cf972661d251263cf87f9aacb1410cb2e585bce48e6b7e570dc8485c04e",
+        "targets": {
+          "temporal_capture_tests": {
+            "casesPassed": 151,
+            "junitSha256": "eec7a64b52e3c2e1aa572e5625b29d3fd381ddbc101dd7c9562bdd97a656339a",
+            "binarySha256": "62a470dacaf9f167294f15fd35d59bcc43be73c82458a20c8fb5ea951eac9f90",
+            "sourceSha256": "c638642620da1655992981665a1435583c89d09a95c66f1373f13a0968d459d1"
+          },
+          "scene_lighting_defaults_tests": {
+            "casesPassed": 13,
+            "junitSha256": "54a64cbc1909b780483f70d193f6064bc27fe018c2884643fc207442b770b7db",
+            "binarySha256": "0c57a8cf9dadb37da698e936740aaa13b177247b284c1de38163fc6b572ccbbb",
+            "sourceSha256": "e1f3f678a796c5a54223d9a9c09c21898b144e2cd360a69d56f4195659491ada"
+          },
+          "renderer_lighting_cli_tests": {
+            "casesPassed": 45,
+            "gpuInitialized": false,
+            "binarySha256": "78bc532378af24c926a57e5497f5377db7a71291a18780b9bc635cf62e6954d9",
+            "sourceSha256": "e16ff3e0e0510b6348fbe6fe205bca4d4eae3f69282b4c28734522a948f499a2"
+          },
+          "rendering_convention_tests": {
+            "casesPassed": 192,
+            "junitSha256": "6c470617c499f788140345767a67650fb8ce92898a595f70388e0465856b56aa",
+            "binarySha256": "1538a3f972d19c3aa33ff8ab5efce1285d7115a37e86767103dd6336a3c8d9c1",
+            "sourceSha256": "f0cf4489ed936f87581c000c6556b20ed1cb9f1266dfc0a7217cf50b8a0109f6",
+            "casesFailed": 5,
+            "inheritedFailures": [
+              "RenderingConventionTests.BimGenericPropertiesAndGeoreferenceReachUi",
+              "RenderingConventionTests.BimMeshletLodStreamingMetadataIsSurfaced",
+              "RenderingConventionTests.BimNativePointCurveRangesBypassTriangleSurfacePasses",
+              "RenderingConventionTests.BimStoreyMaterialAndHideFiltersArePlumbed",
+              "RenderingConventionTests.BimStoreyRangesFeedFloorSliceUi"
+            ],
+            "baselineRevision": "ee481c001da1040f353d469fe74336ef62d9ade1",
+            "baselineJunitSha256": "67bb5899c7ad12b9f57ad941ae4f95b0ffecfabc4bc313bb7dec175203f2489b",
+            "baselineRunnerLogSha256": "0850937900d1babbaa9c5906ecfe05d2d64f1df40530af7bb17daffa0c04c063"
+          },
+          "screenshot_capture_recorder_tests": {
+            "casesPassed": 2,
+            "junitSha256": "38aae8552f6d993b91bb27fb92319cc0c8ce950b7a51d67bfa27461fd2a3a036",
+            "binarySha256": "0e723626657bcea42ad6eccaaa1ca1f37963a70ce9d299ed17251bfff5189362",
+            "sourceSha256": "74ab88f5775f89d5be6a95c2fc984ffa6fa728d056e303b8c155a8f770df6629"
+          },
+          "renderer_telemetry_tests": {
+            "casesPassed": 8,
+            "junitSha256": "f90dfb9c6efa3f22485d6a91594a665285411eeecad7572c770c625f7c1f8ea8",
+            "binarySha256": "1ef46e06518298f56627aa37c4bf750ec17e061cb328606eb7df40c7c2059b13",
+            "sourceSha256": "cec2f60132d15e54f1b7dcd7388cf0ff0fd86fb5221aa00a25de17c37cfd0b8b"
+          },
+          "renderer_mcp_measurement_tests": {
+            "casesPassed": 4,
+            "junitSha256": "2a9cdde573dc59aafebdd30ec4802e8546687c09435ecd39ede78a9bae3e2b58",
+            "binarySha256": "1bee7b3a8493a8b914facb5495657f5563cf9acb09eb12c3074c5840eb10cc18",
+            "sourceSha256": "0276ad99217de1d2ab8dada9e5e0efa6bd86cfc6b8a98beb49fb9f38529adb16"
+          },
+          "renderer_mcp_transport_tests": {
+            "casesPassed": 5,
+            "junitSha256": "602bbcc3ebf7fd7ba116ab5a680b58968c6cd7565ec0c93b046b901b5d019f78",
+            "binarySha256": "ce4942d56df1b34cdbaf6d54ca954607dbe2834eba786d74da9cb6df8d5d8405",
+            "sourceSha256": "c0f0a8bfc2e835fbd25c52e46ee3b927b26e616c5bdb8e845b645eae9028d332"
+          },
+          "runtime_shader_compiler_tests": {
+            "casesPassed": 4,
+            "junitSha256": "7ae111db1d36e5a87c51dbd4b3f906d745d582e82941cbe8e03d23358411f31d",
+            "binarySha256": "649cca4217e09cc8464e0cf950780b7ad961d4c7283d7f6d38bbc6a1dc4294ca",
+            "sourceSha256": "1886cb70126dae9271ab4f001c95f8440af3c114fac476b49f6a8e22a068227a"
+          }
+        }
+      }
+    },
+    "disabled": {
+      "rendererMcpEnabled": false,
+      "rendererMcpServerLinked": false,
+      "winsockLinked": false,
+      "rendererRevision": "03be623221e6706c03f861275150890c708222e1",
+      "rendererSha256": "947910dcb56832510311996c6a1baacef01338beb74e4c493ace88d5e4e9187b",
+      "cacheSha256": "7692f25c6b19b5a45e4a090e3cfd1fb39b22cb0b209bcdf2b2df2ff58a660fa9",
+      "ninjaSha256": "65fd9f5309e47eb0ae730d2da00b905870ccf852575ae50aae2da9fa3fd5f743",
+      "buildLogSha256": "826740629267b54f86ace4e13143b9ec936f66faea3e6f11c9f5124c821a8b4b",
+      "ctest": {
+        "targetsPassed": 3,
+        "targetsFailed": 0,
+        "casesPassed": 62,
+        "casesFailed": 0,
+        "skips": 0,
+        "junitSha256": "428d913ceb78b134c79b2cc3d991f0a461b2106dd5e508ac34157fa97a2e47a4",
+        "runnerLogSha256": "362d43497837a0c200d450b7dfc17a095d51a80d93627c0eb19198cc45fac405",
+        "targets": {
+          "scene_lighting_defaults_tests": {
+            "casesPassed": 13,
+            "junitSha256": "5452b93a35add7afbe38ce69eea17a123399eb6d2ab6b5fdb11cf99194a81c54",
+            "binarySha256": "0c57a8cf9dadb37da698e936740aaa13b177247b284c1de38163fc6b572ccbbb",
+            "sourceSha256": "e1f3f678a796c5a54223d9a9c09c21898b144e2cd360a69d56f4195659491ada"
+          },
+          "renderer_lighting_cli_tests": {
+            "casesPassed": 45,
+            "gpuInitialized": false,
+            "binarySha256": "947910dcb56832510311996c6a1baacef01338beb74e4c493ace88d5e4e9187b",
+            "sourceSha256": "e16ff3e0e0510b6348fbe6fe205bca4d4eae3f69282b4c28734522a948f499a2"
+          },
+          "renderer_mcp_measurement_tests": {
+            "casesPassed": 4,
+            "junitSha256": "537a2df874624d6f538310b05db1b08522a6432b1c28963dcfeb3e06f1977d13",
+            "binarySha256": "1bee7b3a8493a8b914facb5495657f5563cf9acb09eb12c3074c5840eb10cc18",
+            "sourceSha256": "0276ad99217de1d2ab8dada9e5e0efa6bd86cfc6b8a98beb49fb9f38529adb16"
+          }
+        }
+      }
+    }
+  },
+  "baseline": {
+    "rendererSha256": "590f713405dcb9fba5f16da1f92c67578a5f8c4602d3fb927472226ea28bc151",
+    "rendererRevision": "49553029081debb4b4f4f58a6a7371521c33f9ae",
+    "lighting": {
+      "captures": {
+        "off": {
+          "file": "mcp-lighting-off.exr",
+          "exrSha256": "192e7ec5667701ef7d8baa8d4880287c2d53871073755c1130e783658bf85e36",
+          "metadataSha256": "0b72928889c899049297968fd89b458547128ba1fbd216588c604a9452b243a4",
+          "pixelsSha256": "36bd753facc985aad613c884a2040210d208b1aa520e957b31ba2e1e19cd4185",
+          "centerRgb": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "on": {
+          "file": "mcp-lighting-on.exr",
+          "exrSha256": "192e7ec5667701ef7d8baa8d4880287c2d53871073755c1130e783658bf85e36",
+          "metadataSha256": "0b72928889c899049297968fd89b458547128ba1fbd216588c604a9452b243a4",
+          "pixelsSha256": "36bd753facc985aad613c884a2040210d208b1aa520e957b31ba2e1e19cd4185",
+          "centerRgb": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "onRepeat": {
+          "file": "mcp-lighting-on-repeat.exr",
+          "exrSha256": "192e7ec5667701ef7d8baa8d4880287c2d53871073755c1130e783658bf85e36",
+          "metadataSha256": "0b72928889c899049297968fd89b458547128ba1fbd216588c604a9452b243a4",
+          "pixelsSha256": "36bd753facc985aad613c884a2040210d208b1aa520e957b31ba2e1e19cd4185",
+          "centerRgb": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "offRestored": {
+          "file": "mcp-lighting-off-restored.exr",
+          "exrSha256": "192e7ec5667701ef7d8baa8d4880287c2d53871073755c1130e783658bf85e36",
+          "metadataSha256": "0b72928889c899049297968fd89b458547128ba1fbd216588c604a9452b243a4",
+          "pixelsSha256": "36bd753facc985aad613c884a2040210d208b1aa520e957b31ba2e1e19cd4185",
+          "centerRgb": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "scriptedOff": {
+          "file": "scripted-lighting-off.exr",
+          "exrSha256": "192e7ec5667701ef7d8baa8d4880287c2d53871073755c1130e783658bf85e36",
+          "metadataSha256": "0b72928889c899049297968fd89b458547128ba1fbd216588c604a9452b243a4",
+          "pixelsSha256": "36bd753facc985aad613c884a2040210d208b1aa520e957b31ba2e1e19cd4185",
+          "centerRgb": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "scriptedOn": {
+          "file": "scripted-lighting-on.exr",
+          "exrSha256": "fc04e0439114ed791e9ff5e9c65c2fb180461a0213e207d93b0e541d7e065543",
+          "metadataSha256": "0b72928889c899049297968fd89b458547128ba1fbd216588c604a9452b243a4",
+          "pixelsSha256": "3f8fbf25876fa758e9dbc19ebb38672c87082b4ab9c6e18d977555962e666520",
+          "centerRgb": [
+            0.31591796875,
+            0.31591796875,
+            0.31591796875
+          ]
+        }
+      },
+      "logSha256": {
+        "renderer.log": "050762213765d8f7e0f148dfd2997643258eafb845ff65334c4ea1c64b772aad",
+        "scripted-lighting-off.log": "575c7476a156dc200d5d8b6bec64a241258680352e73a1d8cfdf77036115493a",
+        "scripted-lighting-on.log": "b9e7d464b4b664b6858cf46bfb86fad890f86bcf7a74fa7ed170b1b00cc4553a"
+      },
+      "failureLogSha256": "00517be38547f07807d60f61a3154d9d46a855c3f85a86ebeef5aaff6392bd99"
+    },
+    "transport": {
+      "tests": 5,
+      "failures": [
+        "RendererMcpTransport.AcceptedCommandResponseTimeoutReportsAcceptance",
+        "RendererMcpTransport.GracefulDisconnectBeforeAcceptanceNeverReachesOwner",
+        "RendererMcpTransport.ResetBeforeAcceptanceNeverReachesOwner",
+        "RendererMcpTransport.TimeoutBeforeAcceptanceNeverReachesOwner"
+      ],
+      "junitSha256": "65a5bac08350563e2bc88cf3cf25fa60353b04f4223ba9683a6b7d4eedfcde51",
+      "proofSha256": "87b60f965469289b0c47e3708a95098542f7126f44bd8cd7100a5aef016c5215",
+      "baselineServerRevision": "ee481c001da1040f353d469fe74336ef62d9ade1",
+      "baselineServerSha256": "c6aabe6f705d516306d5b3fdb6e402f7a0f8a3e9ff2f66bff150f0105014f861",
+      "baselineExecutableSha256": "2e3b692a869fd80ea765afd0a3caa490c7b043c105f87915f8b0234185d91308"
+    }
+  },
+  "enabledRuntime": {
+    "captures": {
+      "off": {
+        "file": "mcp-lighting-off.exr",
+        "exrSha256": "192e7ec5667701ef7d8baa8d4880287c2d53871073755c1130e783658bf85e36",
+        "metadataSha256": "0b72928889c899049297968fd89b458547128ba1fbd216588c604a9452b243a4",
+        "pixelsSha256": "36bd753facc985aad613c884a2040210d208b1aa520e957b31ba2e1e19cd4185",
+        "centerRgb": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "on": {
+        "file": "mcp-lighting-on.exr",
+        "exrSha256": "fc04e0439114ed791e9ff5e9c65c2fb180461a0213e207d93b0e541d7e065543",
+        "metadataSha256": "0b72928889c899049297968fd89b458547128ba1fbd216588c604a9452b243a4",
+        "pixelsSha256": "3f8fbf25876fa758e9dbc19ebb38672c87082b4ab9c6e18d977555962e666520",
+        "centerRgb": [
+          0.31591796875,
+          0.31591796875,
+          0.31591796875
+        ]
+      },
+      "onRepeat": {
+        "file": "mcp-lighting-on-repeat.exr",
+        "exrSha256": "fc04e0439114ed791e9ff5e9c65c2fb180461a0213e207d93b0e541d7e065543",
+        "metadataSha256": "0b72928889c899049297968fd89b458547128ba1fbd216588c604a9452b243a4",
+        "pixelsSha256": "3f8fbf25876fa758e9dbc19ebb38672c87082b4ab9c6e18d977555962e666520",
+        "centerRgb": [
+          0.31591796875,
+          0.31591796875,
+          0.31591796875
+        ]
+      },
+      "offRestored": {
+        "file": "mcp-lighting-off-restored.exr",
+        "exrSha256": "192e7ec5667701ef7d8baa8d4880287c2d53871073755c1130e783658bf85e36",
+        "metadataSha256": "0b72928889c899049297968fd89b458547128ba1fbd216588c604a9452b243a4",
+        "pixelsSha256": "36bd753facc985aad613c884a2040210d208b1aa520e957b31ba2e1e19cd4185",
+        "centerRgb": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "scriptedOff": {
+        "file": "scripted-lighting-off.exr",
+        "exrSha256": "192e7ec5667701ef7d8baa8d4880287c2d53871073755c1130e783658bf85e36",
+        "metadataSha256": "0b72928889c899049297968fd89b458547128ba1fbd216588c604a9452b243a4",
+        "pixelsSha256": "36bd753facc985aad613c884a2040210d208b1aa520e957b31ba2e1e19cd4185",
+        "centerRgb": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "scriptedOn": {
+        "file": "scripted-lighting-on.exr",
+        "exrSha256": "fc04e0439114ed791e9ff5e9c65c2fb180461a0213e207d93b0e541d7e065543",
+        "metadataSha256": "0b72928889c899049297968fd89b458547128ba1fbd216588c604a9452b243a4",
+        "pixelsSha256": "3f8fbf25876fa758e9dbc19ebb38672c87082b4ab9c6e18d977555962e666520",
+        "centerRgb": [
+          0.31591796875,
+          0.31591796875,
+          0.31591796875
+        ]
+      }
+    },
+    "captureCount": 7,
+    "processCount": 3,
+    "logSha256": {
+      "renderer.log": "8eee8a7f02c1b63d28f18818ab01e5768792c38a5e73d11bf1bd8465f3782c5d",
+      "scripted-lighting-off.log": "155cb8526f54ace41fa4bb039250e3e982936bf5225ce5f76534a48a27bf0868",
+      "scripted-lighting-on.log": "d93c7cc4112e037acf3a2fb9c4067b8b20e6d242b2dc0a0dce2768df5eee635e"
+    },
+    "resultsSha256": "6ca2750f4a4719a022fc09a94bbab5b06b8b20237d7b3acf9b6329d27df50fc0",
+    "shaderReloadGeneration": 1,
+    "environment": {
+      "file": "mcp-environment.exr",
+      "sha256": "8aa6cc5bb4a5a8f5fa12870cefdd6a6b600072454add837dca45e340c1549d30"
+    },
+    "fixturesSha256": {
+      "startup.gltf": "974555f8fe804b196f04b1a5e57fbeb682e1f8fb18a1e88ecf5968b8eb9fe1f2",
+      "fixture.gltf": "974555f8fe804b196f04b1a5e57fbeb682e1f8fb18a1e88ecf5968b8eb9fe1f2"
+    },
+    "png": {
+      "sha256": "9ac091b7f6f0931cccf11537a58a43ea1d8becdc9935e62f6be5f97fdfdc39d7",
+      "metadataSha256": "854227155015fb07975b4104744824a8e7de773f0829f22dc9b12698c980e481"
+    },
+    "lightingRetainedAcrossModelLoad": true,
+    "lightingBoundaries": {
+      "fields": 4,
+      "acceptedEndpoints": 8,
+      "rejectedAtomicRequests": 10
+    },
+    "lightingAfterEnvironmentLoad": {
+      "bounceIntensity": 0.0,
+      "directionalIntensity": 0.8999999761581421,
+      "environmentIntensity": 0.3499999940395355,
+      "environmentYaw": 15.0
+    },
+    "measurements": [
+      {
+        "timer": "Lighting",
+        "source": "timestamp queries",
+        "status": "complete",
+        "samples": 6,
+        "warmupRemaining": 0,
+        "firstRecordingSerial": 1406,
+        "lastRecordingSerial": 1411,
+        "milliseconds": {
+          "max": 0.05555199831724167,
+          "mean": 0.047546666115522385,
+          "median": 0.046191999688744545,
+          "min": 0.044415999203920364,
+          "stddev": 0.0038453477125231254
+        }
+      },
+      {
+        "timer": "Lighting",
+        "source": "timestamp queries",
+        "status": "complete",
+        "samples": 6,
+        "warmupRemaining": 0,
+        "firstRecordingSerial": 1430,
+        "lastRecordingSerial": 1435,
+        "milliseconds": {
+          "max": 0.05526399984955788,
+          "mean": 0.04897599977751573,
+          "median": 0.04782400093972683,
+          "min": 0.043007999658584595,
+          "stddev": 0.004750563046749438
+        }
+      }
+    ],
+    "timeoutSamples": 0,
+    "timeoutStatus": "timedOut",
+    "cancellationVerifiedByHarness": true
+  },
+  "disabledRuntime": {
+    "build": {
+      "compiler": "MSVC-19.51.36260.0",
+      "configuration": "Release",
+      "revision": "03be623221e6706c03f861275150890c708222e1"
+    },
+    "interactiveListenerAbsent": true,
+    "scriptedListenerAbsent": true,
+    "processCount": 2,
+    "captureCount": 1,
+    "capture": {
+      "file": "endpoint-disabled-scripted.exr",
+      "exrSha256": "fc04e0439114ed791e9ff5e9c65c2fb180461a0213e207d93b0e541d7e065543",
+      "metadataSha256": "0b72928889c899049297968fd89b458547128ba1fbd216588c604a9452b243a4",
+      "pixelsSha256": "3f8fbf25876fa758e9dbc19ebb38672c87082b4ab9c6e18d977555962e666520",
+      "centerRgb": [
+        0.31591796875,
+        0.31591796875,
+        0.31591796875
+      ]
+    },
+    "logSha256": {
+      "endpoint-disabled-interactive.log": "274229ad8d5934c6553707e68b3976cd81ee9cbd5e3327690f945d0ebd6f9b5b",
+      "endpoint-disabled-scripted.log": "bb50942bcbba5d4a8daa68467ca61b253685b7c9f662cc338fccf3f640efda5b"
+    },
+    "resultsSha256": "409d41e8be0b2b63367f8b5805e5569fc18991387b23e137fb9890439807ad01"
+  },
+  "sceneLighting": {
+    "techniques": {
+      "deferred": {
+        "switchVsDirectLinearMae": 0.0,
+        "bimSurfaceLinearMean": 0.6145561933517456,
+        "explicitZeroPreserved": true,
+        "mixedProvidersIlluminated": true,
+        "yellowCornellProfileApplied": true,
+        "synchronizationValidationClean": true
+      },
+      "forward": {
+        "switchVsDirectLinearMae": 0.0,
+        "bimSurfaceLinearMean": 0.6150927543640137,
+        "explicitZeroPreserved": true,
+        "mixedProvidersIlluminated": true,
+        "yellowCornellProfileApplied": true,
+        "synchronizationValidationClean": true
+      }
+    },
+    "captureCount": 18,
+    "processCount": 10,
+    "logSha256": {
+      "deferred-switch.log": "41d915ebfc6aebf68d9ee3a2083bc132ff32084f36ca39ff790d52affb286c40",
+      "deferred-direct.log": "cacb562ebb02bf5b2cd4b21b3fc0066b3cafb8429f76c5efd44713c89eb12416",
+      "deferred-locked.log": "ca221893b7ba7b420144d3f2f0824e87e417da2e3e67897d28e5e3c99a954582",
+      "deferred-mixed.log": "c8890acaa6e0e69685d71d87627c1d3393d078062117124a011c76d0f11041e0",
+      "deferred-yellow.log": "3d2a46dde37c1767dbaf91d27bc698172a290e39f56fea9597f0ab6e195ea9ba",
+      "forward-switch.log": "4fa9c4db35386ed4be4181ad2a0d3cb09ea835eda06ec04fb72ab51d19bff52d",
+      "forward-direct.log": "2f5ac68d25713d7de0a3c6f7f7d993d0d0e5234a156689ebdffa7fe8183a087b",
+      "forward-locked.log": "5003d5229474d775e17611608c1b3e4243672bd692fa83e55651ea1813ca0b75",
+      "forward-mixed.log": "52005282992d65b18dc5148f33a3271b0dd99edae342d788ad3b9911f0db38b8",
+      "forward-yellow.log": "175a3060a16aa1ba840de40d2b8e97708df389fffbbee8b2bde093a2a1d0cd4a"
+    },
+    "capturesSha256": {
+      "deferred-direct.png": "703f79d1ce2c37bf3d25b253a2737503e4084a1545635477ffd287bbdd54847a",
+      "deferred-locked.frame-0008.png": "7947c865beb877f309642118e47d426231c12b19b6073c011c46de06976eb363",
+      "deferred-locked.frame-0022.png": "7674c491b0d4101a8016beda6739c8316bfc8c6883db7c0b952cd1d67a102356",
+      "deferred-locked.png": "f55c862e37799717f70edf5f0be4f4566fc9fe2adf1fa5361fd94ec22510f02a",
+      "deferred-mixed.png": "00405f6480f379de1e885dd1dac4c9496d94e2e783440c8616a3a59e8ee989ce",
+      "deferred-switch.frame-0008.png": "7947c865beb877f309642118e47d426231c12b19b6073c011c46de06976eb363",
+      "deferred-switch.frame-0022.png": "703f79d1ce2c37bf3d25b253a2737503e4084a1545635477ffd287bbdd54847a",
+      "deferred-switch.png": "f55c862e37799717f70edf5f0be4f4566fc9fe2adf1fa5361fd94ec22510f02a",
+      "deferred-yellow.png": "185f1b2a35c72a3647cbf96a6b9a0e9ba2f1d5e9c6f1723a1e523ac6e9aec2fe",
+      "forward-direct.png": "d5c1cb698bb83b6f7f826d9bd2812002de6261b24805b57647a75345a5e1423d",
+      "forward-locked.frame-0008.png": "85b5514108ae585ebfd70be66132cb568d2b4d3784b8ae95cab8e00f0e1eb21a",
+      "forward-locked.frame-0022.png": "a1623e9d5a473368a31cd8cd023c2a48520c69c43aa919d90fc4abbfa5093e0a",
+      "forward-locked.png": "bb15fea161802fd863e49e667210ad7652b90b9f0e16c601a0edfed9620706db",
+      "forward-mixed.png": "8185a3e25cbb9169645789b087087cfb68ca4f7b2e842db813242829f187f939",
+      "forward-switch.frame-0008.png": "85b5514108ae585ebfd70be66132cb568d2b4d3784b8ae95cab8e00f0e1eb21a",
+      "forward-switch.frame-0022.png": "d5c1cb698bb83b6f7f826d9bd2812002de6261b24805b57647a75345a5e1423d",
+      "forward-switch.png": "bb15fea161802fd863e49e667210ad7652b90b9f0e16c601a0edfed9620706db",
+      "forward-yellow.png": "8f49f55a26b288f6c81bdcf8f8310f471a3aeb33f77dfb73fb167180f2595831"
+    },
+    "resultsSha256": "90d17678af49f6c974d1342c6d64af77f895fed6d3a2f8cc32aae04727aa160d"
+  },
+  "nativeTotals": {
+    "captureCount": 26,
+    "processCount": 15
+  }
+}
