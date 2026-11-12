@@ -427,12 +427,12 @@ def main():
         write_float_exr(panorama, [[(.5, .25, .125)] * 16 for _ in range(8)])
         shader = source / "shaders" / "equirect_to_cubemap.slang"
         original_shader = shader.read_text(encoding="utf-8")
-        marker = "float4(radiance, 1.0)"
+        marker = "outCubemap[uint3(dtid.xy, pc.faceIndex)] = color;"
         assert original_shader.count(marker) == 1
         first_source, second_source = (output / f"successive-bake-{stage}.slang" for stage in ("first", "second"))
         for version, scale in ((first_source, ".5"), (second_source, ".125")):
-            version.write_text(original_shader.replace(marker, f"float4(radiance * float3({scale}, 1, 1), 1.0)"),
-                               encoding="utf-8")
+            replacement = f"outCubemap[uint3(dtid.xy, pc.faceIndex)] = color * float4({scale}, 1, 1, 1);"
+            version.write_text(original_shader.replace(marker, replacement), encoding="utf-8")
         started = output / "successive-bake-started.txt"
         # Install each edit before its candidate compiler starts. Capture frames
         # can advance at any speed without racing the source updates.
