@@ -5110,7 +5110,7 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
                                     openVdbOptions = action.openVdbOptions,
                                     merge = action.merge.has_value(),
                                     linked = svc_.config.experimentalGltfLinkedAssets && !remote,
-                                    micromaps = svc_.config.experimentalOpacityMicromaps && !remote,
+                                    micromaps = svc_.ctx.deviceWrapper->opacityMicromapsEnabled() && !remote,
                                     experimental = svc_.config.experimentalGltfMaterials, remote](std::stop_token stop) {
         auto prepared = std::make_unique<ModelLoadState::Prepared>();
         if (isAuxiliaryRenderModelPath(path))

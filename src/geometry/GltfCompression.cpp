@@ -475,18 +475,35 @@ bool HasDracoDecoder() noexcept {
   return false;
 #endif
 }
+bool HasAvailableDracoDecoder(const std::filesystem::path& workerExecutable) noexcept {
+#if defined(CONTAINER_HAS_DRACO)
+  return HasDracoDecoder() && DracoWorkerExecutableAvailable(workerExecutable);
+#else
+  (void)workerExecutable;
+  return false;
+#endif
+}
 bool IsGeometryCompressionExtension(std::string_view name) noexcept {
   return name == kDraco || name == kExt || name == kKhr;
 }
 
-CompressionSourcePlan InspectCompressedGltfSource(const Json& source,bool binary,const CompressionLimits& limits,
-                                                   const std::stop_token& stop) {
+namespace {
+CompressionSourcePlan inspectCompressedGltfSource(const Json& source, bool binary,
+    const CompressionLimits& limits, const std::stop_token& stop,
+    std::optional<bool> preflightDracoAvailability) {
   checkModelImportCancellation(stop);
   try {
     CompressionSourcePlan plan;
+    const bool dracoRequired = listed(source,"extensionsRequired",kDraco);
+    plan.dracoAvailable = (dracoRequired || listed(source,"extensionsUsed",kDraco)) &&
+        (preflightDracoAvailability ? (*preflightDracoAvailability && HasDracoDecoder()) :
+         HasAvailableDracoDecoder(limits.dracoWorkerExecutable));
+    // Keep the required layout checks even when a direct caller lacks a worker.
+    // File imports already check worker availability in the capability gate.
+    const bool useDraco = dracoRequired ? HasDracoDecoder() : plan.dracoAvailable;
     for (const auto* name : {kExt,kKhr,kDraco})
       if (listed(source,"extensionsRequired",name))
-        declaration(source,name,name == kDraco ? HasDracoDecoder() : HasMeshoptDecoder());
+        declaration(source,name,name == kDraco ? useDraco : HasMeshoptDecoder());
     const auto& buffers = table(source,"buffers");
     const auto& views = table(source,"bufferViews");
     std::vector<size_t> references(buffers.size()),compressed(buffers.size()),extReferences(buffers.size()),khrReferences(buffers.size());
@@ -543,20 +560,29 @@ CompressionSourcePlan InspectCompressedGltfSource(const Json& source,bool binary
       for (const auto& primitive : table(mesh,"primitives")) {
         checkModelImportCancellation(stop);
         if (const auto* draco = extension(primitive,kDraco)) {
-          declaration(source,kDraco,HasDracoDecoder());
-          if (!HasDracoDecoder()) continue;
+          declaration(source,kDraco,useDraco);
+          if (!useDraco) continue;
           const auto view = required(*draco,"bufferView");
           (void)at(views,view,"Draco buffer view");
           charge(plan.decodedBytes,dracoBudget(primitive,table(source,"accessors")),limits);
           ++plan.dracoPrimitives;
         }
       }
+    if (dracoRequired && !plan.dracoAvailable)
+      fail(std::string(kDraco) + " is required but the bounded Draco worker executable is unavailable");
     return plan;
   } catch(const Json::exception& error) { fail(std::string("invalid compression metadata: ")+error.what()); }
 }
+} // namespace
+
+CompressionSourcePlan InspectCompressedGltfSource(const Json& source, bool binary,
+    const CompressionLimits& limits, const std::stop_token& stop) {
+  return inspectCompressedGltfSource(source, binary, limits, stop, std::nullopt);
+}
 
 tinygltf::Model DecodeCompressedGltf(tinygltf::Model source,const CompressionLimits& limits,CompressionStatistics* statistics,
-                                    std::span<const CompressionPlaceholder> placeholders, const std::stop_token& stop) {
+                                    std::span<const CompressionPlaceholder> placeholders, const std::stop_token& stop,
+                                    std::optional<bool> preflightDracoAvailability) {
   checkModelImportCancellation(stop);
   const auto hasMap=[&stop](const tinygltf::ExtensionMap& map) {
     checkModelImportCancellation(stop);
@@ -584,7 +610,7 @@ tinygltf::Model DecodeCompressedGltf(tinygltf::Model source,const CompressionLim
     buffer["byteLength"] = placeholder.byteLength;
     buffer.erase("uri");
   }
-  const auto plan = InspectCompressedGltfSource(description,false,limits,stop);
+  const auto plan = inspectCompressedGltfSource(description, false, limits, stop, preflightDracoAvailability);
   if (plan.placeholders.size() != placeholders.size())
     fail("unresolved placeholder buffer was not supplied by source preflight");
   CompressionStatistics completed;
@@ -605,12 +631,13 @@ tinygltf::Model DecodeCompressedGltf(tinygltf::Model source,const CompressionLim
     remove(view.extensions,kExt,view.extensions_json_string);
     remove(view.extensions,kKhr,view.extensions_json_string);
   }
+  const bool useDraco = plan.dracoPrimitives > 0;
   for (size_t mesh=0;mesh<source.meshes.size();++mesh)
     for (size_t p=0;p<source.meshes[mesh].primitives.size();++p) {
       checkModelImportCancellation(stop);
       auto& primitive = source.meshes[mesh].primitives[p];
       if (!primitive.extensions.contains(kDraco)) continue;
-      if (HasDracoDecoder()) {
+      if (useDraco) {
 #if defined(CONTAINER_HAS_DRACO)
         decodeDraco(source,primitive,description.at("meshes").at(mesh).at("primitives").at(p),description.at("accessors"),originalAccessors,limits,stop);
         ++completed.dracoPrimitives;

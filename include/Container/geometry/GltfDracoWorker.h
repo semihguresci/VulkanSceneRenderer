@@ -59,6 +59,7 @@ struct DracoDecodedMesh {
 
 [[nodiscard]] uint32_t DracoScalarByteWidth(DracoScalarType type);
 [[nodiscard]] bool DracoWorkerPlatformSupported() noexcept;
+[[nodiscard]] bool DracoWorkerExecutableAvailable(const std::filesystem::path& workerExecutable = {}) noexcept;
 
 // No decoder is linked into this client. On Windows the child is suspended
 // until a Job Object enforces its process-memory/CPU limits and process count.

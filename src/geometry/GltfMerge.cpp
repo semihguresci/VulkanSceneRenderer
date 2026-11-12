@@ -238,9 +238,10 @@ Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label,bool p
     b.text(name);
     if(!used.insert(name).second) fail(label,"duplicate declaration: "+name);
     if(!supportedDeclaration(name)) {
-      // Destination indices stay stable. Preserve bounded unknown optional
-      // metadata on that side without interpreting or remapping its values.
-      if(!preserveOpaque || extensionCapability(name) ||
+      // Destination indices stay stable. Preserve bounded optional metadata
+      // that the runtime ignores without interpreting or remapping its values.
+      const auto* capability=extensionCapability(name);
+      if(!preserveOpaque || (capability && capability->support!=ExtensionSupport::Unsupported) ||
           std::ranges::find(model.extensionsRequired,name)!=model.extensionsRequired.end())
         fail(label,"unsupported declaration: "+name);
       b.opaqueDestinationExtensions.insert(name);

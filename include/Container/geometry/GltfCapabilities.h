@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <optional>
 #include <span>
 #include <string>
@@ -15,10 +16,12 @@ struct ExtensionCapability {
   ExtensionSupport support;
   std::string_view description;
   std::string_view experimentalEnableHint{};
+  bool supportsRequired{true};
 };
 
 // Describes runtime import/rendering support, not just TinyGLTF JSON parsing.
-// Partial entries are usable, with an explicit approximation warning.
+// Partial entries are usable with an explicit approximation warning. An
+// optional-only entry requires the asset to retain a usable core fallback.
 [[nodiscard]] std::span<const ExtensionCapability> extensionCapabilities();
 [[nodiscard]] const ExtensionCapability* extensionCapability(std::string_view name);
 
@@ -48,7 +51,8 @@ struct CapabilityValidation {
 [[nodiscard]] CapabilityValidation validateCapabilities(
     const AssetRequirements& requirements, std::string_view assetPath,
     std::span<const std::string> unavailableRuntimeExtensions = {},
-    std::span<const std::string_view> enabledExperimentalExtensions = {});
+    std::span<const std::string_view> enabledExperimentalExtensions = {},
+    const std::filesystem::path& dracoWorkerExecutable = {});
 [[nodiscard]] std::string formatCapabilityDiagnostic(
     const CapabilityDiagnostic& diagnostic);
 

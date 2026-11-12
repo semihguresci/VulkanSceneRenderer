@@ -7,6 +7,7 @@
 #include "Container/utility/MaterialSamplerKey.h"
 #include "Container/utility/Platform.h"
 #include "Container/utility/SceneData.h"
+#include <Container/geometry/GltfCapabilities.h>
 #include <Container/geometry/GltfModelLoader.h>
 #include <Container/geometry/GltfExtendedMaterials.h>
 #include <Container/geometry/GltfMaterialTextureAuthoring.h>
@@ -26,6 +27,7 @@
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -825,7 +827,17 @@ MaterialX::DocumentPtr SlangMaterialXBridge::createDocumentFromGltfMaterial(
 
 std::vector<MaterialX::DocumentPtr> SlangMaterialXBridge::loadGltfMaterials(
     const std::string& filename) const {
-  return loadGltfMaterials(container::geometry::gltf::LoadSourceModel(filename));
+  namespace gltf = container::geometry::gltf;
+  // This entry point returns standalone MaterialX graphs. The richer runtime
+  // material binding below consumes the scene loader's retained glTF source.
+  constexpr std::array<std::string_view, 3> graphExtensions{
+      kSpecularGlossinessExtension, "KHR_materials_specular", "KHR_materials_transmission"};
+  gltf::LoadOptions options;
+  for (const auto& capability : gltf::extensionCapabilities()) {
+    if (std::ranges::find(graphExtensions, capability.name) == graphExtensions.end())
+      options.unavailableRuntimeExtensions.emplace_back(capability.name);
+  }
+  return loadGltfMaterials(gltf::LoadSourceModel(filename, options));
 }
 
 std::vector<MaterialX::DocumentPtr> SlangMaterialXBridge::loadGltfMaterials(

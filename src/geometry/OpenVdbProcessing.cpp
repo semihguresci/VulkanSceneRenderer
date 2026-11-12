@@ -390,9 +390,10 @@ dotbim::Model gltfWorldInstances(const std::filesystem::path& input,
   const auto pathUtf8 = input.u8string();
   auto loaded = [&] {
     try {
+      auto loadOptions = gltf::StaticGeometryLoadOptions();
+      loadOptions.maxInputBytes = options.maxInputBytes;
       return gltf::LoadModelWithSource(
-          std::string(pathUtf8.begin(), pathUtf8.end()),
-          {.decodeImages = false, .maxInputBytes = options.maxInputBytes});
+          std::string(pathUtf8.begin(), pathUtf8.end()), loadOptions);
     } catch (const std::runtime_error& error) {
       // The importer now rejects hierarchy defects before our active-scene
       // walk. Preserve that walk's invalid-input category for this diagnostic

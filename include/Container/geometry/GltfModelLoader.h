@@ -51,8 +51,8 @@ struct LoadOptions {
   bool enableExperimentalMaterials{false};
   bool enableOpacityMicromaps{false};
   InstancingLimits instancing;
-  // A source parser can support more extensions than a particular scene
-  // consumer. Restrict that consumer without weakening decoder requirements.
+  // Reject required features unavailable to the consumer and omit their
+  // declared optional payloads before consuming the core fallback.
   std::vector<std::string> unavailableRuntimeExtensions;
   // Remote import keeps embedded buffers and data URIs, and rejects file URIs.
   bool requireSelfContained{false};
@@ -60,6 +60,10 @@ struct LoadOptions {
   bool mergeInput{false};
   std::stop_token stop;
 };
+
+// Capability policy for consumers of static mesh primitives without materials
+// or runtime scene features. Geometry codecs and accessor formats remain active.
+[[nodiscard]] LoadOptions StaticGeometryLoadOptions();
 
 // Source-only consumers (for example material import) share the same version
 // and extension gate, even when the asset has no renderable geometry.

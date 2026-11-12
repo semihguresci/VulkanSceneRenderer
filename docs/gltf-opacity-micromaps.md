@@ -7,6 +7,11 @@ extension and its feature. Other devices and the default launch use sampled
 alpha. The flag only affects ray traversal. Raster material evaluation retains
 its existing coverage path.
 
+Declare `EXT_mesh_opacity_micromap` in `extensionsUsed` and supply the core
+alpha-mask material and texture. The loader rejects a declaration in
+`extensionsRequired` before reading dependent resources. The acceleration
+profile requires the core fallback for techniques and devices that sample alpha.
+
 The loader follows the `EXT_mesh_opacity_micromap` asset layout consumed by the
 pinned NVIDIA renderer. It validates source JSON before integer narrowing,
 then checks packed data, triangle records, usage histograms, primitive

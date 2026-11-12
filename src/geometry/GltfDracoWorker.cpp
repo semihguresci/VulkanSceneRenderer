@@ -112,8 +112,8 @@ private:
   BY_HANDLE_FILE_INFORMATION identity_{};
 };
 
-std::filesystem::path workerPath(const DracoWorkerOptions& options) {
-  std::filesystem::path executable = options.workerExecutable;
+std::filesystem::path workerPath(const std::filesystem::path& workerExecutable) {
+  std::filesystem::path executable = workerExecutable;
   if (executable.empty()) {
     std::wstring module(32768, L'\0');
     const DWORD length = GetModuleFileNameW(nullptr, module.data(), static_cast<DWORD>(module.size()));
@@ -209,13 +209,27 @@ bool DracoWorkerPlatformSupported() noexcept {
 #endif
 }
 
+bool DracoWorkerExecutableAvailable(const std::filesystem::path& workerExecutable) noexcept {
+#ifdef _WIN32
+  try {
+    (void)workerPath(workerExecutable);
+    return true;
+  } catch (const std::exception&) {
+    return false;
+  }
+#else
+  (void)workerExecutable;
+  return false;
+#endif
+}
+
 DracoDecodedMesh DecodeDracoInWorker(std::span<const std::byte> compressed,
     std::span<const DracoAttributeRequest> attributes, const DracoDecodeLimits& limits,
     const DracoWorkerOptions& options, const std::stop_token& stop) {
   checkModelImportCancellation(stop);
   draco_worker::ValidateRequest(compressed, attributes, limits);
 #ifdef _WIN32
-  const auto executable = workerPath(options);
+  const auto executable = workerPath(options.workerExecutable);
   TemporaryDirectory temporary(options.tempRoot);
   draco_worker::WriteRequest(temporary.request(), compressed, attributes, limits);
   runWorker(executable, temporary, limits, stop);

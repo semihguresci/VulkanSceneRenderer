@@ -322,6 +322,36 @@ TEST_F(OpenVdbProcessing, GltfSkipsTextureDecodingAndPreflightsBufferAllocations
   EXPECT_FALSE(std::filesystem::exists(file("external-too-large.vdb")));
 }
 
+TEST_F(OpenVdbProcessing, GltfRejectsRequiredInstancingAndVoxelizesOptionalCoreFallback) {
+  const auto input = gltfCube();
+  nlohmann::json json;
+  { std::ifstream stream(input); stream >> json; }
+  constexpr auto extension = "EXT_mesh_gpu_instancing";
+  json["extensionsUsed"] = {extension};
+  json["nodes"][1]["extensions"][extension]["attributes"]["TRANSLATION"] = 0;
+  { std::ofstream stream(input); stream << json.dump(); }
+
+  const auto fallback = file("optional-instancing.vdb");
+  EXPECT_GT(vdb::VoxelizeModel(input, fallback, 1.0f, options).activeVoxelCount, 0u);
+  EXPECT_LT(vdb::SampleScalar(fallback, {3,2,0}), 0.0);
+  EXPECT_LT(vdb::SampleScalar(fallback, {-3,0,0}), 0.0);
+
+  json["extensionsRequired"] = {extension};
+  json["buffers"][0]["uri"] = "missing.bin";
+  { std::ofstream stream(input); stream << json.dump(); }
+  const auto rejected = file("required-instancing.vdb");
+  try {
+    (void)vdb::VoxelizeModel(input, rejected, 1.0f, options);
+    FAIL() << "Required instancing should be rejected by the static geometry consumer";
+  } catch (const std::runtime_error& error) {
+    const std::string message = error.what();
+    EXPECT_TRUE(message.contains("cube.gltf")) << message;
+    EXPECT_TRUE(message.contains("unsupported_required_extension")) << message;
+    EXPECT_TRUE(message.contains(extension)) << message;
+  }
+  EXPECT_FALSE(std::filesystem::exists(rejected));
+}
+
 TEST_F(OpenVdbProcessing, ResamplingRebuildsWorldDistancesAndEnablesMismatchedCsg) {
   (void)vdb::WriteSphere(file("a.vdb"), {}, options);
   auto other = options;
