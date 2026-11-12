@@ -180,18 +180,22 @@ function(add_slang_output OUTPUTS_VAR SLANG_SOURCE ENTRY_POINT OUTPUT_PATH)
     set(_interface_products)
     set(_fingerprint_command)
     set(_slang_output "${OUTPUT_PATH}")
+    set(_slang_command "${SLANGC_EXECUTABLE}")
     get_filename_component(_source_directory "${SLANG_SOURCE}" DIRECTORY)
     if(_source_directory STREQUAL SHADERS_DIR AND
        _output_directory STREQUAL COMPILED_SHADERS_DIR AND
        NOT _output_name STREQUAL "openvdb_transport_reference.comp.spv")
-        # Keep the output name inside the repro independent of the build path.
-        cmake_path(RELATIVE_PATH _slang_output BASE_DIRECTORY "${CMAKE_BINARY_DIR}")
+        # Slang's repro reader can reject archives with a longer output path.
+        # Use the basename and restore the build-relative target in the depfile.
+        set(_slang_output "${_output_name}")
+        set(_slang_command "${CMAKE_COMMAND}" -E chdir "${_output_directory}" "${SLANGC_EXECUTABLE}")
+        cmake_path(RELATIVE_PATH OUTPUT_PATH BASE_DIRECTORY "${CMAKE_BINARY_DIR}" OUTPUT_VARIABLE _depfile_target)
         set(_lookup_repro "${RELOAD_INTERFACE_DIR}/${_output_name}.slang-repro")
         set(_interface_flags -reflection-json "${_reflection}" -dump-repro "${_lookup_repro}")
         set(_interface_products BYPRODUCTS "${_reflection}" "${_depfile}.sha256" "${_depfile}.lookups")
         set(_fingerprint_command COMMAND "${CMAKE_COMMAND}"
             "-DFINGERPRINT_OUTPUT=${_depfile}.sha256" "-DDEPFILE=${_depfile}"
-            "-DSOURCE_ROOT=${CMAKE_SOURCE_DIR}"
+            "-DDEPFILE_TARGET=${_depfile_target}" "-DSOURCE_ROOT=${CMAKE_SOURCE_DIR}"
             "-DLOOKUP_OUTPUT=${_depfile}.lookups" "-DLOOKUP_REPRO=${_lookup_repro}"
             "-DSLANGC=${SLANGC_EXECUTABLE}"
             -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/ShaderDependencies.cmake")
@@ -207,7 +211,7 @@ function(add_slang_output OUTPUTS_VAR SLANG_SOURCE ENTRY_POINT OUTPUT_PATH)
         ${_interface_products}
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_output_directory}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${RELOAD_INTERFACE_DIR}"
-        COMMAND "${SLANGC_EXECUTABLE}" "${SLANG_SOURCE}"
+        COMMAND ${_slang_command} "${SLANG_SOURCE}"
                 ${SLANG_SPIRV_FLAGS}
                 ${ARGN}
                 -entry "${ENTRY_POINT}"
