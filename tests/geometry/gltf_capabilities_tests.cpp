@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <sstream>
 #include <stdexcept>
 
@@ -56,7 +57,8 @@ class AssetFixture {
       std::filesystem::remove(directory / name, ignored);
     std::filesystem::remove(directory, ignored);
   }
-  std::filesystem::path save(const nlohmann::json& json, bool binary = false) {
+  std::filesystem::path save(const nlohmann::json& json, bool binary = false,
+                            std::string_view bin = {}) {
     const auto path = directory / (binary ? "asset.glb" : "asset.gltf");
     std::ofstream file(path, std::ios::binary);
     std::string text = json.dump();
@@ -66,13 +68,23 @@ class AssetFixture {
         for (int shift = 0; shift < 32; shift += 8)
           file.put(static_cast<char>((value >> shift) & 0xff));
       };
+      const size_t binPadding = (4 - bin.size() % 4) % 4;
+      const size_t binSize = bin.empty() ? 0 : 8 + bin.size() + binPadding;
       word(0x46546c67);
       word(2);
-      word(static_cast<uint32_t>(20 + text.size()));
+      word(static_cast<uint32_t>(20 + text.size() + binSize));
       word(static_cast<uint32_t>(text.size()));
       word(0x4e4f534a);
+      file << text;
+      if (!bin.empty()) {
+        word(static_cast<uint32_t>(bin.size() + binPadding));
+        word(0x004e4942);
+        file.write(bin.data(), static_cast<std::streamsize>(bin.size()));
+        for (size_t i = 0; i < binPadding; ++i) file.put('\0');
+      }
+    } else {
+      file << text;
     }
-    file << text;
     return path;
   }
   nlohmann::json triangle() {
@@ -522,6 +534,89 @@ TEST(GltfCapabilitiesLoader, ConsumerRejectsRequiredInstancingBeforeResourceIo) 
     EXPECT_EQ(optional.capabilityDiagnostics[0].assetPath, optionalPath.string());
     EXPECT_EQ(optional.capabilityDiagnostics[0].code, "unsupported_optional_extension");
     EXPECT_NE(optional.capabilityDiagnostics[0].message.find(extension), std::string::npos);
+  }
+}
+
+TEST(GltfCapabilitiesLoader, InstancingNormalizesIntegralReferencesAndStorage) {
+  AssetFixture fixture;
+  auto json = fixture.triangle();
+  const auto binPath = fixture.directory / "triangle.bin";
+  std::string bytes;
+  {
+    std::ifstream file(binPath, std::ios::binary);
+    bytes.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+  }
+  const uint32_t sparseIndex = 1;
+  const std::array<float, 3> sparseValue{4, 5, 6};
+  bytes.append(reinterpret_cast<const char*>(&sparseIndex), sizeof(sparseIndex));
+  bytes.append(reinterpret_cast<const char*>(sparseValue.data()), sizeof(sparseValue));
+  {
+    std::ofstream file(binPath, std::ios::binary);
+    file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  }
+  constexpr auto extension = "EXT_mesh_gpu_instancing";
+  json["extensionsUsed"] = json["extensionsRequired"] = {extension};
+  json["nodes"][0]["mesh"] = 0.0;
+  json["nodes"][0]["extensions"][extension]["attributes"] = {{"TRANSLATION", 1.0}};
+  json["buffers"][0]["byteLength"] = double(bytes.size());
+  json["bufferViews"] = nlohmann::json::parse(R"([
+    {"buffer":0.0,"byteOffset":0.0,"byteLength":36.0,"byteStride":12.0,"target":34962.0},
+    {"buffer":0.0,"byteOffset":36.0,"byteLength":4.0},
+    {"buffer":0.0,"byteOffset":40.0,"byteLength":12.0}
+  ])");
+  json["accessors"].push_back(nlohmann::json::parse(R"({
+    "bufferView":0.0,"byteOffset":12.0,"componentType":5126.0,"count":2.0,"type":"VEC3",
+    "sparse":{"count":1.0,"indices":{"bufferView":1.0,"byteOffset":0.0,"componentType":5125.0},
+              "values":{"bufferView":2.0,"byteOffset":0.0}}
+  })"));
+  for (bool binary : {false, true}) {
+    if (binary) json["buffers"][0].erase("uri");
+    const auto path = fixture.save(json, binary, bytes);
+    const auto loaded = gltf::LoadModelWithSource(path.string());
+    ASSERT_EQ(loaded.model.vertices().size(), 3u);
+    ASSERT_EQ(loaded.instancing.nodes.size(), 1u);
+    const auto& node = loaded.instancing.nodes.front();
+    EXPECT_EQ(node.sourceMesh, 0u);
+    ASSERT_EQ(node.localMatrices.size(), 2u);
+    EXPECT_EQ(node.localMatrices[0][3], glm::vec4(1, 0, 0, 1));
+    EXPECT_EQ(node.localMatrices[1][3], glm::vec4(4, 5, 6, 1));
+    EXPECT_EQ(loaded.gltfModel.bufferViews.at(0).byteStride, 12u);
+    EXPECT_EQ(loaded.gltfModel.accessors.at(1).byteOffset, 12u);
+  }
+}
+
+TEST(GltfCapabilitiesLoader, InstancingRejectsMalformedStorageAndCountsBeforeResourceReads) {
+  AssetFixture fixture;
+  auto base = fixture.triangle();
+  constexpr auto extension = "EXT_mesh_gpu_instancing";
+  base["extensionsUsed"] = {extension};
+  base["nodes"][0]["extensions"][extension]["attributes"] = {{"TRANSLATION", 0}};
+  base["buffers"][0]["uri"] = "missing-instancing-buffer.bin";
+  const nlohmann::json oversized = uint64_t{1} << 32;
+  const auto reject = [&](const nlohmann::json& json, bool binary, std::string_view context) {
+    const auto path = fixture.save(json, binary);
+    expectLoadError([&] { (void)gltf::LoadModelWithSource(path.string()); }, path,
+                    "EXT_mesh_gpu_instancing node[0]." + std::string(context));
+  };
+  for (bool binary : {false, true}) {
+    auto json = base;
+    json["accessors"][0]["bufferView"] = oversized;
+    reject(json, binary, "TRANSLATION.bufferView");
+    json = base;
+    json["accessors"][0]["byteOffset"] = 0.5;
+    reject(json, binary, "TRANSLATION.byteOffset");
+    json = base;
+    json["bufferViews"][0]["byteStride"] = 12.5;
+    reject(json, binary, "TRANSLATION.bufferView.byteStride");
+    json = base;
+    json["accessors"][0]["sparse"] = {{"count", 1},
+        {"indices", {{"bufferView", oversized}, {"componentType", 5121}}},
+        {"values", {{"bufferView", 0}}}};
+    reject(json, binary, "TRANSLATION.sparse.indices.bufferView");
+    json = base;
+    json["accessors"].push_back({{"componentType", 5126.0}, {"type", "VEC3"}, {"count", 2.0}});
+    json["nodes"][0]["extensions"][extension]["attributes"]["SCALE"] = 1.0;
+    reject(json, binary, "TRANSLATION: all attribute counts must match");
   }
 }
 

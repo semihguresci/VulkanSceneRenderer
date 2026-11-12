@@ -1138,9 +1138,10 @@ void registerRasterTransparentPickPass(
   graph.addPass(RenderPassId::TransparentPick, schedule,
                 [deferred](VkCommandBuffer cmd, const FrameRecordParams &p) {
                   if (deferred != nullptr) {
-                    static_cast<void>(recordTransparentPickFramePassCommands(
+                    const bool recorded = recordTransparentPickFramePassCommands(
                         cmd, deferredRasterTransparentPickInputs(
-                                 p, deferred->sceneExtent(p), *deferred)));
+                                 p, deferred->sceneExtent(p), *deferred));
+                    if (recorded && p.pickIdWritten) *p.pickIdWritten = true;
                   }
                 });
   // The pass clears the ID attachment and writes new IDs in both renderers.
@@ -1439,9 +1440,10 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
 
   graph.addPass(RenderPassId::GBuffer,
                 [deferred](VkCommandBuffer cmd, const FrameRecordParams &p) {
-                  static_cast<void>(recordDeferredRasterScenePassCommands(
+                  const bool recorded = recordDeferredRasterScenePassCommands(
                       cmd, deferredRasterScenePassInputs(
-                               p, SceneRasterPassKind::GBuffer, *deferred)));
+                               p, SceneRasterPassKind::GBuffer, *deferred));
+                  if (recorded && p.pickIdWritten) *p.pickIdWritten = true;
                 });
 
   graph.addPass(RenderPassId::BimGBuffer,

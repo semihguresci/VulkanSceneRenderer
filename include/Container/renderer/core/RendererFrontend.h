@@ -780,6 +780,7 @@ private:
     bool bimPointCloudVisible{true};
     bool bimCurvesVisible{true};
     bool transparentPickDepthValid{false};
+    bool pickIdValid{false};
     uint32_t selectedBimObjectIndex{std::numeric_limits<uint32_t>::max()};
     VkFence renderFence{VK_NULL_HANDLE};
     bool valid{false};
@@ -890,7 +891,8 @@ private:
   void writePendingScreenshot(uint32_t frameSlot, const FrameRecordParams& params);
   void ensureDepthVisibilityReadbackBuffer(uint32_t frameSlot);
   void markDepthVisibilityFrameComplete(uint32_t imageIndex,
-                                        uint32_t frameSlot);
+                                        uint32_t frameSlot,
+                                        bool pickIdWritten);
   [[nodiscard]] bool sampleDepthAtCursor(double cursorX, double cursorY,
                                          float &outDepth);
   [[nodiscard]] bool samplePickDepthAtCursor(double cursorX, double cursorY,

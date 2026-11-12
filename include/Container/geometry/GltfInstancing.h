@@ -51,6 +51,12 @@ struct GltfInstancingData {
     const nlohmann::json& source, const InstancingLimits& limits = {},
     const std::stop_token& stop = {});
 
+// Same gate for the detached loader document. Canonicalizes integer-valued
+// decimal/exponent encodings in instance references and their accessor storage.
+[[nodiscard]] InstancingSummary NormalizeMeshGpuInstancingJson(
+    nlohmann::json& source, bool& rewritten, const InstancingLimits& limits = {},
+    const std::stop_token& stop = {});
+
 // Immutable checked-accessor CPU parser, independent of the renderer/scene graph.
 // FLOAT TRS and normalized signed BYTE/SHORT rotation are supported. Missing
 // TRS components use identity defaults; all attributes (including custom ones)

@@ -2418,7 +2418,9 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     }
   }
 
+  bool pickIdWritten = false;
   FrameRecordParams frameRecordParams = buildFrameRecordParams(imageIndex);
+  frameRecordParams.pickIdWritten = &pickIdWritten;
   attachActiveTechniqueLifecycle(frameRecordParams);
 
   phaseStart = TelemetryClock::now();
@@ -2592,7 +2594,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   } else if (result != VK_SUCCESS) {
     throw std::runtime_error("failed to present swap chain image!");
   } else {
-    markDepthVisibilityFrameComplete(imageIndex, frame_.currentFrame);
+    markDepthVisibilityFrameComplete(imageIndex, frame_.currentFrame,
+                                     pickIdWritten);
   }
 
   if (telemetry) {
@@ -3675,6 +3678,40 @@ void RendererFrontend::writeCaptureTelemetry(
                           ? nlohmann::json(depth) : nlohmann::json(nullptr);
     probe["pick"] = samplePickDepthAtCursor(depthProbe->x, depthProbe->y, depth)
                         ? nlohmann::json(depth) : nlohmann::json(nullptr);
+    if (subs_.sceneController) {
+      const auto describe = [this](uint32_t id) -> nlohmann::json {
+        const auto* hit = sceneGraph_.getNode(id);
+        if (!hit) return nullptr;
+        const auto* source = hit;
+        while (source && source->sourceNodeIndex < 0) source = sceneGraph_.getNode(source->parent);
+        return {{"graphNode", id}, {"sourceNode", source ? source->sourceNodeIndex : -1},
+                {"name", source ? source->name : hit->name}, {"sourceMesh", hit->sourceMeshIndex},
+                {"sourcePrimitive", hit->sourcePrimitiveIndex}, {"sourceInstance", hit->sourceInstanceIndex}};
+      };
+      const auto routes = [&](uint32_t id) -> nlohmann::json {
+        const bool visible = sceneGraph_.isNodeEffectivelyVisible(id);
+        return {{"hit", describe(id)},
+                {"selection", visible ? describe(sceneGraph_.nearestSelectableAncestor(id)) : nullptr},
+                {"hover", visible ? describe(sceneGraph_.nearestHoverableAncestor(id)) : nullptr}};
+      };
+      glm::vec4 sectionPlane{0, 1, 0, 0};
+      const bool sectionEnabled = currentSectionPlaneEquation(subs_.guiManager.get(), sectionPlane);
+      const auto cpuHit = subs_.sceneController->pickRenderableNodeHit(buffers_.cameraData,
+          svc_.swapChainManager.extent(), depthProbe->x, depthProbe->y, sectionEnabled, sectionPlane);
+      auto& interaction = probe["sceneInteraction"];
+      interaction["cpu"] = routes(cpuHit.hit ? cpuHit.nodeIndex : container::scene::SceneGraph::kInvalidNode);
+      interaction["gpu"] = nullptr;
+      interaction["rawGpuId"] = nullptr;
+      uint32_t pickId = container::gpu::kPickIdNone;
+      if (samplePickIdAtCursor(depthProbe->x, depthProbe->y, pickId)) {
+        const auto target = decodeGpuPickId(pickId);
+        const auto node = target.kind == GpuPickTargetKind::Scene
+            ? subs_.sceneController->nodeIndexForObject(target.objectIndex)
+            : container::scene::SceneGraph::kInvalidNode;
+        interaction["gpu"] = routes(node);
+        interaction["rawGpuId"] = pickId;
+      }
+    }
   }
   if (!path.parent_path().empty())
     std::filesystem::create_directories(path.parent_path());
@@ -6711,7 +6748,8 @@ void RendererFrontend::ensureDepthVisibilityReadbackBuffer(uint32_t frameSlot) {
 }
 
 void RendererFrontend::markDepthVisibilityFrameComplete(uint32_t imageIndex,
-                                                        uint32_t frameSlot) {
+                                                        uint32_t frameSlot,
+                                                        bool pickIdWritten) {
   DepthVisibilityFrameSlot& frame =
       ensureDepthVisibilityFrameSlot(frameSlot);
   depthVisibility_.latestFrameSlot = frameSlot;
@@ -6839,6 +6877,7 @@ void RendererFrontend::markDepthVisibilityFrameComplete(uint32_t imageIndex,
   }
   frame.selectedBimObjectIndex = bimFilter.selectedObjectIndex;
   frame.renderFence = frame_.imagesInFlight[imageIndex];
+  frame.pickIdValid = pickIdWritten;
   frame.valid = true;
 }
 
@@ -7363,7 +7402,7 @@ bool RendererFrontend::samplePickIdAtCursor(double cursorX, double cursorY,
   }
   DepthVisibilityFrameSlot* frame =
       depthVisibilityFrameSlot(depthVisibility_.latestFrameSlot);
-  if (frame == nullptr ||
+  if (frame == nullptr || !frame->pickIdValid ||
       frame->imageIndex >= subs_.frameResourceManager->frameCount()) {
     return false;
   }
