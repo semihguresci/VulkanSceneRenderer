@@ -13,6 +13,7 @@
 #include "scene_clip_common.slang"
 #include "object_index_common.slang"
 #include "pbr_material_common.slang"
+#include "alpha_mask_common.slang"
 
 [[vk::push_constant]]
 ConstantBuffer<BindlessPushConstants> pc;
@@ -105,13 +106,13 @@ uint fragMain(VSOutput vertIn) : SV_Target0
         opacityTexCoord, material.opacityTextureTransform);
     baseAlpha = ResolveGpuMaterialAlpha(baseAlpha, material.flags);
 
-    if ((vertIn.flags & kObjectFlagAlphaCutoff) != 0u &&
-        baseAlpha < vertIn.alphaCutoff)
+    const bool alphaMasked = (vertIn.flags & kObjectFlagAlphaCutoff) != 0u;
+    if (alphaMasked && !AlphaMaskPass(baseAlpha, vertIn.alphaCutoff, vertIn.pos))
     {
         discard;
     }
 
-    if (baseAlpha <= 0.01)
+    if (!alphaMasked && baseAlpha <= 0.01)
     {
         discard;
     }

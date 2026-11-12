@@ -28,10 +28,11 @@ float Bayer4x4Threshold(uint2 pixelCoord)
 
 bool AlphaMaskPass(float alpha, float cutoff, float4 pixelPosition)
 {
-    // Shared by depth, G-buffer, and shadow passes so cutout coverage writes
-    // the same depth, material, and shadow silhouettes.
-    float alphaWidth = max(abs(ddx(alpha)) + abs(ddy(alpha)), 1e-4);
-    float coverage = saturate((alpha - cutoff) / alphaWidth + 0.5);
+    // Flat alpha follows the binary glTF threshold. Filter only varying alpha
+    // so equal-to-cutoff interiors have the same coverage in every pass.
+    const float alphaWidth = abs(ddx(alpha)) + abs(ddy(alpha));
+    if (alphaWidth == 0.0) return alpha >= cutoff;
+    float coverage = saturate((alpha - cutoff) / max(alphaWidth, 1e-4) + 0.5);
     if (coverage <= 0.0) return false;
     if (coverage >= 1.0) return true;
     return coverage >= Bayer4x4Threshold(uint2(pixelPosition.xy));

@@ -191,11 +191,12 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
         opacityTexCoord, material.opacityTextureTransform);
     baseAlpha = ResolveGpuMaterialAlpha(baseAlpha, material.flags);
 
-    if ((vertIn.flags & kObjectFlagAlphaMask) != 0u &&
-        !AlphaMaskPass(baseAlpha, vertIn.alphaCutoff, vertIn.pos))
+    const bool alphaMasked = (vertIn.flags & kObjectFlagAlphaMask) != 0u;
+    if (alphaMasked && !AlphaMaskPass(baseAlpha, vertIn.alphaCutoff, vertIn.pos))
     {
         discard;
     }
+    baseAlpha = alphaMasked ? 1.0 : baseAlpha;
 
     float sampledMetallic = EvaluateMetalness(
         vertIn.metallicRoughness.x, vertIn.metallicRoughnessTextureIndex,

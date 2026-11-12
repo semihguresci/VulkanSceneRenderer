@@ -269,12 +269,14 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         opacityTexCoord, material.opacityTextureTransform);
     baseAlpha = ResolveGpuMaterialAlpha(baseAlpha, material.flags);
 
-    if ((vertIn.flags & kObjectFlagAlphaCutoff) != 0u &&
-        !AlphaMaskPass(baseAlpha, vertIn.alphaCutoff, vertIn.pos))
+    const bool alphaMasked = (vertIn.flags & kObjectFlagAlphaCutoff) != 0u;
+    if (alphaMasked && !AlphaMaskPass(baseAlpha, vertIn.alphaCutoff, vertIn.pos))
     {
         discard;
     }
 
+    // A surviving MASK fragment is fully covered before optical transmission.
+    baseAlpha = alphaMasked ? 1.0 : baseAlpha;
     if (baseAlpha <= 0.01)
     {
         discard;
