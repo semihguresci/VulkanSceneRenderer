@@ -1,4 +1,5 @@
 option(ENABLE_TESTS "Enable building and running tests" ON)
+option(ENABLE_RENDERER_MCP "Build the local renderer MCP endpoint" ON)
 option(ENABLE_REFERENCE_OIDN "Build optional reference denoising with the vk_oidn 0.2.0 SDK" OFF)
 option(ENABLE_REFERENCE_OPTIX "Build optional reference denoising with NVIDIA OptiX 9.1" OFF)
 option(ENABLE_FSR_UPSCALING "Build optional Vulkan FSR upscaling with AMD FSR SDK 2.4.0" OFF)

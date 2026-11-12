@@ -2614,6 +2614,17 @@ target_sources(renderer_mcp_measurement_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/renderer/core/RendererMcpMeasurement.cpp
 )
 
+if(ENABLE_RENDERER_MCP)
+    add_custom_test(renderer_mcp_transport_tests
+        ${TEST_RENDERER_CORE_DIR}/renderer_mcp_transport_tests.cpp "" ${TEST_RESULTS_DIR}
+        VulkanSceneRenderer_renderer
+    )
+    if(WIN32)
+        target_link_libraries(renderer_mcp_transport_tests PRIVATE ws2_32)
+    endif()
+    set_tests_properties(renderer_mcp_transport_tests PROPERTIES LABELS "renderer;cpu" TIMEOUT 20)
+endif()
+
 add_custom_test(comfyui_bridge_tests
     ${TEST_RENDERER_CORE_DIR}/comfyui_bridge_tests.cpp "" ${TEST_RESULTS_DIR}
     nlohmann_json::nlohmann_json VulkanSceneRenderer_texture_codecs

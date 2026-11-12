@@ -20,8 +20,9 @@ message per HTTP POST and returns JSON directly. Use
 
 The port is off by default. The listener binds to IPv4 loopback, requires its
 token and rejects browser Origin headers. The application reads its endpoint
-configuration at startup. Scripted screenshot and capture-sequence launches
-keep the endpoint disabled so external commands cannot alter scripted results.
+configuration at startup. Configure CMake with `-DENABLE_RENDERER_MCP=OFF` to
+build the renderer without the listener. Scripted screenshot, capture-sequence
+and path sample series launches keep the endpoint disabled.
 [MCP transport specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
 
 | Tool | Operation |
@@ -50,9 +51,12 @@ scene-default policy used by the editor.
 
 Lighting ranges come from the same metadata used by the editor sliders, CLI
 parser and lighting manager. Every supplied value must be finite and within its
-inclusive range; a request with any invalid field rejects before any lighting
+inclusive range. A request with any invalid field rejects before any lighting
 change is queued. The CLI applies these checks to `--environment-intensity`,
-`--directional-intensity` and `--environment-yaw` as well.
+`--directional-intensity`, `--bounce-intensity` and `--environment-yaw`.
+CLI values seed the session. Accepted editor and MCP edits apply to subsequent
+rendered frames and persist when a different model is loaded. Scene presets
+continue to set fields left at their automatic defaults.
 
 Recent-log capture starts when the authenticated listener is active. The
 64-entry ring keeps the timestamp, source, severity and a fixed event
@@ -74,15 +78,26 @@ Vulkan pass under the current scene and device workload. Keep the viewport
 settings stable during the measurement. A session can time out if the renderer
 stops submitting frames or its timer becomes unavailable.
 
-The network worker validates messages and waits up to two seconds for the
-renderer to accept an individual command. The render thread consumes commands
-at its existing frame-retirement point. Once the renderer accepts a command,
-its queued operation can complete independently of the request connection.
+The network worker validates messages and gives each command a two-second
+response deadline. The render thread accepts commands at its frame-retirement
+point. A request that expires before acceptance reports that the renderer did
+not accept it. If the renderer has already accepted a command, the timeout
+reports acceptance and the queued operation can finish after the connection
+closes. A connection that closes before acceptance releases the pending slot.
 Measurements have explicit cancel and timeout states and retain their last
 result until another session starts.
 
-Run the external regression against a configured Release build:
+Run the external regression against a configured Release build. Pass
+`--environment` with an HDR or EXR fixture to exercise environment import.
 
 ```powershell
 python -B tests/validation/renderer_mcp_runtime_regression.py --exe out/build/feature-parity/VulkanSceneRenderer.exe --output out/mcp-regression --shader-reload
 ```
+
+Use `--endpoint-disabled-only` with a Release build configured with
+`-DENABLE_RENDERER_MCP=OFF` to check interactive startup and scripted capture
+with endpoint environment variables present.
+
+The [Windows Vulkan verification report](../tests/visual-regression/renderer-mcp/windows-nvidia/renderer-mcp-results.json)
+records the loopback tests, GPU measurements, and capture comparisons for both
+build configurations.

@@ -55,7 +55,9 @@
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/core/RenderExtraction.h"
 #include "Container/renderer/core/RenderPassGpuProfiler.h"
+#ifdef CONTAINER_ENABLE_RENDERER_MCP
 #include "Container/renderer/core/RendererMcpServer.h"
+#endif
 #include "Container/renderer/core/RenderTechnique.h"
 #include "Container/renderer/core/RendererMsaa.h"
 #include "Container/renderer/core/RendererTelemetry.h"
@@ -726,7 +728,8 @@ glm::vec3 normalizedOr(const glm::vec3 &value, const glm::vec3 &fallback) {
 
 void applyConfiguredDirectionalLightOverrides(
     container::gpu::LightingData &lightingData,
-    const container::app::AppConfig &config) {
+    const container::app::AppConfig &config,
+    std::optional<float> directionalIntensity) {
   if (config.hasDirectionalDirectionOverride) {
     const glm::vec3 direction = arrayToVec3(config.directionalDirection);
     if (isFiniteVec3(direction)) {
@@ -744,21 +747,15 @@ void applyConfiguredDirectionalLightOverrides(
                     lightingData.directionalColorIntensity.a);
     }
   }
-  if (config.hasDirectionalIntensityOverride &&
-      std::isfinite(config.directionalIntensity)) {
-    lightingData.directionalColorIntensity.a =
-        std::max(config.directionalIntensity, 0.0f);
-  }
+  if (directionalIntensity)
+    lightingData.directionalColorIntensity.a = *directionalIntensity;
 }
 
-void applyConfiguredLightingOverrides(
-    LightingManager *lightingManager, const container::app::AppConfig &config,
+void applyLightingPresentation(
+    container::gpu::LightingData &lighting, const container::app::AppConfig &config,
+    std::optional<float> directionalIntensity,
     const EnvironmentManager* environment) {
-  if (lightingManager == nullptr) {
-    return;
-  }
-  auto& lighting = lightingManager->lightingData();
-  applyConfiguredDirectionalLightOverrides(lighting, config);
+  applyConfiguredDirectionalLightOverrides(lighting, config, directionalIntensity);
   lighting.environmentSunDirection = glm::vec4(0.0f);
   lighting.environmentSunRadiance = glm::vec4(0.0f);
   lighting.aerialGeometry = glm::vec4(0.0f);
@@ -792,8 +789,7 @@ void applyConfiguredLightingOverrides(
                                  -yaw.y * localDirection.x + yaw.x * localDirection.z);
   lighting.directionalDirection = {-worldDirection, 0.0f};
   const float peak = std::max({irradiance.r, irradiance.g, irradiance.b});
-  const float directionalScale = config.hasDirectionalIntensityOverride
-      ? std::max(config.directionalIntensity, 0.0f) : 1.0f;
+  const float directionalScale = directionalIntensity.value_or(1.0f);
   lighting.directionalColorIntensity = peak > 0.0f
       ? glm::vec4(irradiance / peak, peak * lighting.environmentIntensity * directionalScale)
       : glm::vec4(0.0f);
@@ -1596,6 +1592,24 @@ void RendererFrontend::initialize() {
           std::move(vdbSequence_));
     }
   }
+  // Seed the same lighting settings that live controls edit.
+  sceneLightingOverrides_ = {
+      .directionalIntensity = svc_.config.hasDirectionalIntensityOverride,
+      .environmentIntensity = svc_.config.hasEnvironmentIntensityOverride,
+      .bloomEnabled = svc_.config.hasBloomEnabledOverride,
+      .bounceIntensity = svc_.config.hasBounceIntensityOverride};
+  auto initialLighting = subs_.lightingManager->lightingSettings();
+  if (sceneLightingOverrides_.directionalIntensity)
+    initialLighting.directionalIntensity = svc_.config.directionalIntensity;
+  if (sceneLightingOverrides_.environmentIntensity)
+    initialLighting.environmentIntensity = svc_.config.environmentIntensity;
+  if (sceneLightingOverrides_.bounceIntensity)
+    initialLighting.bounceIntensity = svc_.config.bounceIntensity;
+  initialLighting.areaLightingMode = svc_.config.areaLightingMode;
+  initialLighting.areaLightSampleCount = svc_.config.areaLightSampleCount;
+  initialLighting.areaEmitterDebug = svc_.config.areaEmitterDebug;
+  initialLighting.environment = svc_.config.environmentPresentation;
+  subs_.lightingManager->setLightingSettings(initialLighting);
   applySceneLightingDefaults();
   subs_.exposureManager = std::make_unique<ExposureManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
@@ -1630,12 +1644,6 @@ void RendererFrontend::initialize() {
       svc_.swapChainManager.imageFormat());
   subs_.lightingManager->createTiledResources(
       container::util::executableDirectory(), svc_.swapChainManager.extent());
-  auto initialLighting = subs_.lightingManager->lightingSettings();
-  initialLighting.areaLightingMode = svc_.config.areaLightingMode;
-  initialLighting.areaLightSampleCount = svc_.config.areaLightSampleCount;
-  initialLighting.areaEmitterDebug = svc_.config.areaEmitterDebug;
-  initialLighting.environment = svc_.config.environmentPresentation;
-  subs_.lightingManager->setLightingSettings(initialLighting);
   createGraphicsPipelines();
   svc_.swapChainManager.createFramebuffers(resources_.renderPasses.postProcess);
 
@@ -1758,6 +1766,7 @@ void RendererFrontend::initialize() {
 
   initializeScene();
   initializeComfyUi();
+#ifdef CONTAINER_ENABLE_RENDERER_MCP
   if (svc_.config.screenshotCapturePath.empty() &&
       svc_.config.temporalCaptureSequencePath.empty() && svc_.config.pathSampleSeries.empty()) {
     try {
@@ -1768,6 +1777,7 @@ void RendererFrontend::initialize() {
       spdlog::warn("Renderer MCP endpoint disabled: {}", error.what());
     }
   }
+#endif
   if (svc_.config.ddgiFitScene)
     fitDdgiToActiveScene(svc_.config.ddgiFit.maxProbes);
   if (!svc_.config.ddgiDetailNode.empty())
@@ -1922,6 +1932,7 @@ void RendererFrontend::processEnvironmentLoad(bool wait) {
   }
 }
 
+#ifdef CONTAINER_ENABLE_RENDERER_MCP
 void RendererFrontend::processMcpRequests() {
   if (!subs_.mcpServer) return;
   subs_.mcpServer->pump([this](std::string_view tool, const nlohmann::json& args) -> nlohmann::json {
@@ -1956,8 +1967,14 @@ void RendererFrontend::processMcpRequests() {
       settings.directionalIntensity = args.value("directionalIntensity", current.directionalIntensity);
       settings.bounceIntensity = args.value("bounceIntensity", current.bounceIntensity);
       settings.environment.yawDegrees = args.value("environmentYaw", current.environment.yawDegrees);
+      const bool directionalBecameExplicit = args.contains("directionalIntensity") &&
+          !sceneLightingOverrides_.directionalIntensity;
+      sceneLightingOverrides_.directionalIntensity |= args.contains("directionalIntensity");
+      sceneLightingOverrides_.environmentIntensity |= args.contains("environmentIntensity");
+      sceneLightingOverrides_.bounceIntensity |= args.contains("bounceIntensity");
       const bool yawChanged = settings.environment.yawDegrees != current.environment.yawDegrees;
-      if (yawChanged || settings.environmentIntensity != current.environmentIntensity ||
+      if (directionalBecameExplicit || yawChanged ||
+          settings.environmentIntensity != current.environmentIntensity ||
           settings.directionalIntensity != current.directionalIntensity ||
           settings.bounceIntensity != current.bounceIntensity) {
         if (yawChanged && subs_.ddgiManager) subs_.ddgiManager->resetSceneHistory();
@@ -2004,6 +2021,7 @@ void RendererFrontend::processMcpRequests() {
     throw std::invalid_argument("Unknown renderer MCP tool");
   });
 }
+#endif
 
 bool RendererFrontend::drawFrame(bool &framebufferResized) {
   // Commit outside the ImGui frame and before acquiring a swapchain image:
@@ -2060,9 +2078,11 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                            elapsedMilliseconds(phaseStart));
     if (subs_.renderPassGpuProfiler) {
       const auto gpuTimings = subs_.renderPassGpuProfiler->collectLatest();
+#ifdef CONTAINER_ENABLE_RENDERER_MCP
       if (subs_.mcpServer)
         subs_.mcpServer->observeGpuTimings(subs_.renderPassGpuProfiler->latestRecordingSerial(),
             rendererGpuTimingSourceName(subs_.renderPassGpuProfiler->timingSource()), gpuTimings);
+#endif
       if (svc_.config.pathTargetMs > 0.0f) {
         const auto lighting = std::ranges::find(gpuTimings, RenderPassId::Lighting, &RendererPassGpuTiming::id);
         updateReferenceSampleBudget(lighting == gpuTimings.end() ? 0.0f : lighting->milliseconds);
@@ -2080,7 +2100,9 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     }
   }
 
+#ifdef CONTAINER_ENABLE_RENDERER_MCP
   processMcpRequests();
+#endif
   processComfyUi();
   applyPendingRenderTechniqueChange();
   updateOpenVdbSequence();
@@ -2349,8 +2371,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     uploadPreparedObjectData(imageIndex,subs_.sceneController->objectData());
   if (subs_.lightingManager && subs_.cameraController) {
     subs_.lightingManager->updateLightingDataForActiveCamera();
-    applyConfiguredLightingOverrides(subs_.lightingManager.get(),
-                                      svc_.config, subs_.environmentManager.get());
+    applyLightingOverrides();
   }
 
   if (subs_.shadowManager && subs_.lightingManager && subs_.cameraController) {
@@ -5479,7 +5500,9 @@ void RendererFrontend::drawModelLoadProgressFrame() {
 }
 
 void RendererFrontend::shutdown() {
+#ifdef CONTAINER_ENABLE_RENDERER_MCP
   subs_.mcpServer.reset();
+#endif
   if (shaderReloadJob_.valid()) {
     shaderReloadStop_.request_stop();
     shaderReloadJob_.wait();
@@ -5832,26 +5855,24 @@ void RendererFrontend::applySceneLightingDefaults() {
       settings.directionalIntensity, settings.environmentIntensity,
       settings.bounceIntensity, subs_.bloomManager->enabled(),
       settings.localShadowLayerBudget};
-  if (svc_.config.hasDirectionalIntensityOverride)
-    current.directionalIntensity = svc_.config.directionalIntensity;
-  if (svc_.config.hasEnvironmentIntensityOverride)
-    current.environmentIntensity = svc_.config.environmentIntensity;
-  if (svc_.config.hasBounceIntensityOverride)
-    current.bounceIntensity = svc_.config.bounceIntensity;
-  if (svc_.config.hasBloomEnabledOverride)
+  if (sceneLightingOverrides_.bloomEnabled)
     current.bloomEnabled = svc_.config.bloomEnabled;
-  current = sceneLightingDefaults_.apply(
-      current, defaults,
-      {svc_.config.hasDirectionalIntensityOverride,
-       svc_.config.hasEnvironmentIntensityOverride,
-       svc_.config.hasBloomEnabledOverride,
-       svc_.config.hasBounceIntensityOverride});
+  current = sceneLightingDefaults_.apply(current, defaults, sceneLightingOverrides_);
   settings.directionalIntensity = current.directionalIntensity;
   settings.environmentIntensity = current.environmentIntensity;
   settings.bounceIntensity = current.bounceIntensity;
   settings.localShadowLayerBudget = current.localShadowLayerBudget;
   subs_.lightingManager->setLightingSettings(settings);
   subs_.bloomManager->enabled() = current.bloomEnabled;
+}
+
+void RendererFrontend::applyLightingOverrides() {
+  auto& lighting = *subs_.lightingManager;
+  std::optional<float> directionalIntensity;
+  if (sceneLightingOverrides_.directionalIntensity)
+    directionalIntensity = lighting.lightingSettings().directionalIntensity;
+  applyLightingPresentation(lighting.lightingData(), svc_.config,
+                            directionalIntensity, subs_.environmentManager.get());
 }
 
 void RendererFrontend::resetCameraForActiveScene() {
@@ -5934,7 +5955,7 @@ void RendererFrontend::initializeScene() {
   }
   createSceneBuffers();
   subs_.lightingManager->updateLightingData();
-  applyConfiguredLightingOverrides(subs_.lightingManager.get(), svc_.config, subs_.environmentManager.get());
+  applyLightingOverrides();
   subs_.lightingManager->createLightVolumeGeometry();
   createFrameResources();
   if (subs_.environmentManager) {
@@ -6438,8 +6459,7 @@ void RendererFrontend::updateFrameDescriptorSets(
             imageIndex, preparedParams);
 
     if (subs_.lightingManager) {
-      applyConfiguredLightingOverrides(subs_.lightingManager.get(),
-                                        svc_.config, subs_.environmentManager.get());
+      applyLightingOverrides();
       auto &lightingData = subs_.lightingManager->lightingData();
       const container::gpu::ShadowSettings shadowSettings =
           subs_.guiManager ? subs_.guiManager->shadowSettings()
@@ -8632,6 +8652,14 @@ void RendererFrontend::presentSceneControls() {
     const auto &guiLightingSettings = subs_.guiManager->lightingSettings();
     const auto &currentLightingSettings =
         subs_.lightingManager->lightingSettings();
+    const bool directionalIntensityChanged =
+        guiLightingSettings.directionalIntensity !=
+        currentLightingSettings.directionalIntensity;
+    const bool environmentIntensityChanged =
+        guiLightingSettings.environmentIntensity !=
+        currentLightingSettings.environmentIntensity;
+    const bool bounceIntensityChanged =
+        guiLightingSettings.bounceIntensity != currentLightingSettings.bounceIntensity;
     const bool lightingSettingsChanged =
         guiLightingSettings.preset != currentLightingSettings.preset ||
         guiLightingSettings.density != currentLightingSettings.density ||
@@ -8639,13 +8667,9 @@ void RendererFrontend::presentSceneControls() {
             currentLightingSettings.radiusScale ||
         guiLightingSettings.intensityScale !=
             currentLightingSettings.intensityScale ||
-        guiLightingSettings.directionalIntensity !=
-            currentLightingSettings.directionalIntensity ||
-        guiLightingSettings.environmentIntensity !=
-            currentLightingSettings.environmentIntensity ||
+        directionalIntensityChanged || environmentIntensityChanged ||
         guiLightingSettings.environment != currentLightingSettings.environment ||
-        guiLightingSettings.bounceIntensity !=
-            currentLightingSettings.bounceIntensity ||
+        bounceIntensityChanged ||
         guiLightingSettings.localShadowPointBudget !=
             currentLightingSettings.localShadowPointBudget ||
         guiLightingSettings.localShadowLayerBudget !=
@@ -8657,6 +8681,9 @@ void RendererFrontend::presentSceneControls() {
         guiLightingSettings.areaEmitterDebug !=
             currentLightingSettings.areaEmitterDebug;
     if (lightingSettingsChanged) {
+      sceneLightingOverrides_.directionalIntensity |= directionalIntensityChanged;
+      sceneLightingOverrides_.environmentIntensity |= environmentIntensityChanged;
+      sceneLightingOverrides_.bounceIntensity |= bounceIntensityChanged;
       if (subs_.temporalManager)
         subs_.temporalManager->reset("lighting settings changed");
       if (subs_.ddgiManager && guiLightingSettings.environment.yawDegrees !=
