@@ -338,7 +338,7 @@ def validate_log(path):
     return log
 
 
-def scripted_capture(exe, root, model, env, name, intensity, *, endpoint_disabled=False):
+def scripted_capture(exe, root, model, env, name, intensity):
     image, log = root / f"{name}.exr", root / f"{name}.log"
     command = renderer_command(exe, model, intensity)
     command += ["--capture-frame", "3", "--screenshot", str(image)]
@@ -352,9 +352,7 @@ def scripted_capture(exe, root, model, env, name, intensity, *, endpoint_disable
                                      stderr=subprocess.STDOUT, timeout=120)
     assert process.returncode == 0, log
     text = validate_log(log)
-    assert "Renderer MCP endpoint listening" not in text, log
-    if not endpoint_disabled:
-        assert "Renderer MCP endpoint disabled:" not in text, log
+    assert "Renderer MCP endpoint " not in text, log
     return image
 
 
@@ -371,20 +369,20 @@ def verify_endpoint_disabled(exe, root, env, port):
             deadline = time.monotonic() + 1
             while time.monotonic() < deadline:
                 assert process.poll() is None, f"Disabled renderer exited. See {log}"
-                try:
-                    connection = socket.create_connection(("127.0.0.1", port), timeout=.25)
-                except ConnectionRefusedError:
-                    pass
-                else:
-                    connection.close()
-                    raise AssertionError("MCP listened despite being disabled at build time")
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                    if os.name == "nt":
+                        probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                    try:
+                        probe.bind(("127.0.0.1", port))
+                    except OSError as error:
+                        raise AssertionError(f"MCP port {port} is in use with the endpoint disabled") from error
                 time.sleep(.05)
         finally:
             process.terminate()
             process.wait(timeout=20)
-    assert "Renderer MCP endpoint listening" not in validate_log(log), log
+    assert "Renderer MCP endpoint " not in validate_log(log), log
     image = scripted_capture(exe, root, root / "startup.gltf", env,
-                             "endpoint-disabled-scripted", LIT_INTENSITY, endpoint_disabled=True)
+                             "endpoint-disabled-scripted", LIT_INTENSITY)
     center = center_rgb(read_scene_linear(image))
     assert min(center) > .05, center
     return {"interactiveListenerAbsent": True, "scriptedListenerAbsent": True, "scriptedCenterRgb": center,

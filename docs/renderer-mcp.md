@@ -87,8 +87,13 @@ closes. A connection that closes before acceptance releases the pending slot.
 Measurements have explicit cancel and timeout states and retain their last
 result until another session starts.
 
-Run the external regression against a configured Release build:
+Run the external regression against a configured Release build. Pass
+`--environment` with an HDR or EXR fixture to exercise environment import.
 
 ```powershell
 python -B tests/validation/renderer_mcp_runtime_regression.py --exe out/build/feature-parity/VulkanSceneRenderer.exe --output out/mcp-regression --shader-reload
 ```
+
+Use `--endpoint-disabled-only` with a Release build configured with
+`-DENABLE_RENDERER_MCP=OFF` to check interactive startup and scripted capture
+with endpoint environment variables present.
