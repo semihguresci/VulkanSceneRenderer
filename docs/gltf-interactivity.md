@@ -45,9 +45,21 @@ use lexicographic socket order. The first tick reports NaN for the previous
 interval and starts the clock at zero. Later frames process queued input,
 due delays, interpolations, and clip samples before tick handlers. Easing uses
 cubic Bézier control points and node rotations use quaternion interpolation.
-Concurrent graph clips apply in start order. Stopping a clip retains its
-current pose. Manually selected clips retain their independent animation
-controls and apply afterward when both routes are active.
+An explicit `variable/set` or `pointer/set` ends the matching interpolation
+and discards its pending completion flow.
+
+`flow/setDelay` exposes the latest scheduled reference on `lastDelay`, with
+`delay` supported as a legacy spelling. `flow/cancelDelay` cancels one reference.
+A flow into the `cancel` input on `flow/setDelay` clears that node's pending
+activations and resets `lastDelay` to null.
+
+Concurrent graph clips apply in start order. Restarting a clip moves it to the
+end of that order. Stopping a clip immediately retains its current pose.
+`animation/stopAt` owns the completion flow when its time is reached before
+the clip's natural end in the direction of playback. Graph clip endpoints are
+finite times within ±86,400 seconds, speed is positive and finite, and scheduled
+stop times are finite. Manually selected clips retain their independent
+animation controls and apply afterward when both routes are active.
 
 Viewport selection and hover use the renderer's existing eligible ancestor
 route. Matching source ancestors receive events from the hit toward the root.
@@ -99,15 +111,29 @@ and `interactivityEvent` at deterministic frames. The companion
 `gltf_interactivity_runtime_regression.py` fixture checks an authored graph
 in both Vulkan raster techniques. `gltf_interactivity_tests` covers numeric
 and Boolean writes, synchronous order, custom and node events, easing, clip lifecycle,
-malformed graphs, and the execution budget. The native regression accepts
-`--portability` to check saved GLB reload and Import / Merge, including
-undo and redo. CPU cases cover independent-graph rejection, missing placement
-targets, and typed reference remapping.
+malformed graphs, and the execution budget. Use `--scheduler-only` to exercise
+delay cancellation and explicit writes during interpolation in both techniques.
+Use `--viewport-events-only` to replay viewport hover and selection and check
+that GPU picking and CPU hit results agree. The graph changes the material on
+hover entry, hover exit and selection of the authored node. A background click
+clears selection while preserving the material color.
+The native regression accepts `--portability` to check saved GLB reload and
+Import / Merge, including undo and redo. CPU cases cover independent-graph
+rejection, missing placement targets, and typed reference remapping.
+
+`gltf_interactivity_deformation_runtime_regression.py` starts and stops a morph
+clip through custom graph events in both raster techniques. It checks GPU pose
+history against independently evaluated weights and compares raster captures
+with baked meshes. Stopping holds the last pose and resetting restores the
+original pose and resets deformation history.
 
 `gltf_interactivity_export_runtime_regression.py` additionally exercises node
 deletion, material and texture-resource retirement, undo/redo, and portable glTF
 and GLB replay in both raster techniques. Independent graph-free fixtures are
 the exact image controls. Hierarchy, decoded geometry, light bindings, graph
 references, camera matrices and history identities are inspected separately.
-The retained selection handler is checked structurally; this suite does not
-exercise native pointer picking.
+The export suite checks the retained selection handler structurally. The
+viewport replay exercises the handler through native pointer picking.
+
+The [Windows Vulkan verification report](../tests/visual-regression/gltf-interactivity/windows-nvidia/gltf-interactivity-results.json)
+records the scheduler baselines, test results, and 154 validated captures.

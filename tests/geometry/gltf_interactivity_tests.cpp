@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include <cmath>
 #include <string_view>
 
 namespace {
@@ -240,6 +241,183 @@ TEST(GltfInteractivity, CustomEventEasesPointerAndResetRestoresBeforePlayback) {
   EXPECT_FALSE(player.started());
 }
 
+TEST(GltfInteractivity, LastDelayCancelsOnlyTheLatestActivation) {
+  auto graph = Json::parse(R"json({
+    "types":[{"signature":"float"}],"events":[{"id":"schedule"},{"id":"cancel-one"}],
+    "declarations":[{"op":"event/receive"},{"op":"flow/setDelay"},{"op":"flow/cancelDelay"},
+      {"op":"pointer/get"},{"op":"math/add"},{"op":"pointer/set"}],
+    "nodes":[
+      {"declaration":0,"configuration":{"event":{"value":[0]}},"flows":{"out":{"node":2}}},
+      {"declaration":0,"configuration":{"event":{"value":[1]}},"flows":{"out":{"node":3}}},
+      {"declaration":1,"values":{"duration":{"type":0,"value":[1]}},"flows":{"done":{"node":6}}},
+      {"declaration":2,"values":{"delay":{"node":2,"socket":"lastDelay"}}},
+      {"declaration":3,"configuration":{"pointer":{"value":["/nodes/0/translation/0"]},"type":{"value":[0]}}},
+      {"declaration":4,"values":{"a":{"node":4},"b":{"type":0,"value":[1]}}},
+      {"declaration":5,"configuration":{"pointer":{"value":["/nodes/0/translation/0"]},"type":{"value":[0]}},
+        "values":{"value":{"node":5}}}
+    ]})json");
+  for (const char* socket : {"lastDelay", "delay"}) {
+    SCOPED_TRACE(socket);
+    graph["nodes"][3]["values"]["delay"]["socket"] = socket;
+    auto model = asset(graph);
+    model.nodes[0].translation = {0, 0, 0};
+    GltfInteractivity player(model);
+    ASSERT_TRUE(player.queueCustomEvent("cancel-one")); // Null reference before scheduling.
+    ASSERT_TRUE(player.queueCustomEvent("schedule"));
+    ASSERT_TRUE(player.queueCustomEvent("schedule"));
+    ASSERT_TRUE(player.queueCustomEvent("cancel-one"));
+    EXPECT_TRUE(player.advance(model, {}, 0).empty());
+    EXPECT_EQ(player.advance(model, {}, 1).nodes, (std::vector<size_t>{0}));
+    EXPECT_EQ(model.nodes[0].translation[0], 1);
+    ASSERT_TRUE(player.queueCustomEvent("cancel-one")); // Already cancelled reference.
+    EXPECT_TRUE(player.advance(model, {}, 1).empty());
+    EXPECT_TRUE(player.diagnostic().empty()) << player.diagnostic();
+  }
+}
+
+TEST(GltfInteractivity, DelayCancelSocketClearsOnlyTheTargetOwnerAndItsReference) {
+  auto graph = Json::parse(R"json({
+    "types":[{"signature":"float"},{"signature":"ref"}],
+    "events":[{"id":"schedule"},{"id":"cancel-owner"},{"id":"observe"}],
+    "declarations":[{"op":"event/onStart"},{"op":"event/receive"},{"op":"flow/setDelay"},
+      {"op":"ref/eq"},{"op":"pointer/get"},{"op":"math/add"},{"op":"pointer/set"},{"op":"flow/branch"}],
+    "nodes":[
+      {"declaration":0,"flows":{"out":{"node":5}}},
+      {"declaration":1,"configuration":{"event":{"value":[0]}},"flows":{"out":{"node":4}}},
+      {"declaration":1,"configuration":{"event":{"value":[1]}},"flows":{"out":{"node":4,"socket":"cancel"}}},
+      {"declaration":1,"configuration":{"event":{"value":[2]}},"flows":{"out":{"node":10}}},
+      {"declaration":2,"values":{"duration":{"type":0,"value":[1]}},"flows":{"out":{"node":9},"done":{"node":11}}},
+      {"declaration":2,"values":{"duration":{"type":0,"value":[1]}},"flows":{"done":{"node":14}}},
+      {"declaration":3,"values":{"a":{"node":4,"socket":"lastDelay"},"b":{"type":1,"value":[null]}}},
+      {"declaration":4,"configuration":{"pointer":{"value":["/nodes/0/translation/0"]},"type":{"value":[0]}}},
+      {"declaration":5,"values":{"a":{"node":7},"b":{"type":0,"value":[1]}}},
+      {"declaration":6,"configuration":{"pointer":{"value":["/nodes/0/translation/0"]},"type":{"value":[0]}},
+        "values":{"value":{"node":8}}},
+      {"declaration":7,"values":{"condition":{"node":6}},"flows":{"true":{"node":12},"false":{"node":13}}},
+      {"declaration":6,"configuration":{"pointer":{"value":["/nodes/0/translation/1"]},"type":{"value":[0]}},
+        "values":{"value":{"type":0,"value":[9]}}},
+      {"declaration":6,"configuration":{"pointer":{"value":["/nodes/0/translation/2"]},"type":{"value":[0]}},
+        "values":{"value":{"type":0,"value":[1]}}},
+      {"declaration":6,"configuration":{"pointer":{"value":["/nodes/0/translation/2"]},"type":{"value":[0]}},
+        "values":{"value":{"type":0,"value":[-1]}}},
+      {"declaration":6,"configuration":{"pointer":{"value":["/nodes/1/translation/0"]},"type":{"value":[0]}},
+        "values":{"value":{"type":0,"value":[6]}}}
+    ]})json");
+  auto model = asset(graph);
+  model.nodes[0].translation = {0, 0, 0};
+  model.nodes[1].translation = {0, 0, 0};
+  GltfInteractivity player(model);
+  ASSERT_TRUE(player.queueCustomEvent("observe"));
+  player.advance(model, {}, 0);
+  EXPECT_EQ(model.nodes[0].translation[2], 1);
+  ASSERT_TRUE(player.queueCustomEvent("schedule"));
+  ASSERT_TRUE(player.queueCustomEvent("schedule"));
+  ASSERT_TRUE(player.queueCustomEvent("observe"));
+  player.advance(model, {}, 0);
+  EXPECT_EQ(model.nodes[0].translation, (std::vector<double>{2, 0, -1}));
+  ASSERT_TRUE(player.queueCustomEvent("cancel-owner"));
+  ASSERT_TRUE(player.queueCustomEvent("observe"));
+  player.advance(model, {}, 0);
+  EXPECT_EQ(model.nodes[0].translation, (std::vector<double>{2, 0, 1}));
+  EXPECT_EQ(player.advance(model, {}, 1).nodes, (std::vector<size_t>{1}));
+  EXPECT_EQ(model.nodes[0].translation, (std::vector<double>{2, 0, 1}));
+  EXPECT_EQ(model.nodes[1].translation[0], 6);
+  EXPECT_TRUE(player.diagnostic().empty()) << player.diagnostic();
+
+  graph["nodes"][2]["flows"]["out"]["node"] = 11; // A pointer setter has no cancel socket.
+  EXPECT_THROW(ValidateGltfInteractivity(asset(graph)), std::invalid_argument);
+}
+
+TEST(GltfInteractivity, PointerSetStopsOnlyTheMatchingInterpolation) {
+  auto model = asset(Json::parse(R"json({
+    "types":[{"signature":"float"},{"signature":"float3"},{"signature":"int"}],
+    "events":[{"id":"move"},{"id":"override"},{"id":"invalid"}],
+    "declarations":[{"op":"event/receive"},{"op":"flow/sequence"},{"op":"pointer/interpolate"},{"op":"pointer/set"}],
+    "nodes":[
+      {"declaration":0,"configuration":{"event":{"value":[0]}},"flows":{"out":{"node":1}}},
+      {"declaration":1,"flows":{"a":{"node":2},"b":{"node":3}}},
+      {"declaration":2,"configuration":{"pointer":{"value":["/nodes/0/translation"]},"type":{"value":[1]}},
+        "values":{"value":{"type":1,"value":[4,0,0]},"duration":{"type":0,"value":[2]}},"flows":{"done":{"node":8}}},
+      {"declaration":2,"configuration":{"pointer":{"value":["/nodes/1/translation"]},"type":{"value":[1]}},
+        "values":{"value":{"type":1,"value":[0,6,0]},"duration":{"type":0,"value":[2]}},"flows":{"done":{"node":9}}},
+      {"declaration":0,"configuration":{"event":{"value":[1]}},"flows":{"out":{"node":5}}},
+      {"declaration":3,"configuration":{"pointer":{"value":["/nodes/{node}/translation"]},"type":{"value":[1]}},
+        "values":{"node":{"type":2,"value":[0]},"value":{"type":1,"value":[9,0,0]}}},
+      {"declaration":0,"configuration":{"event":{"value":[2]}},"flows":{"out":{"node":7}}},
+      {"declaration":3,"configuration":{"pointer":{"value":["/nodes/0/translation"]},"type":{"value":[1]}},
+        "values":{"value":{"type":0,"value":[3]}},"flows":{"err":{"node":10}}},
+      {"declaration":3,"configuration":{"pointer":{"value":["/materials/0/pbrMetallicRoughness/metallicFactor"]},"type":{"value":[0]}},
+        "values":{"value":{"type":0,"value":[0.5]}}},
+      {"declaration":3,"configuration":{"pointer":{"value":["/materials/0/pbrMetallicRoughness/roughnessFactor"]},"type":{"value":[0]}},
+        "values":{"value":{"type":0,"value":[0.25]}}},
+      {"declaration":3,"configuration":{"pointer":{"value":["/materials/0/pbrMetallicRoughness/metallicFactor"]},"type":{"value":[0]}},
+        "values":{"value":{"type":0,"value":[0.75]}}}
+    ]})json"));
+  GltfInteractivity player(model);
+  auto& material = model.materials[0].pbrMetallicRoughness;
+  ASSERT_TRUE(player.queueCustomEvent("move"));
+  player.advance(model, {}, 0);
+  player.advance(model, {}, .5);
+  ASSERT_EQ(model.nodes[0].translation.size(), 3u);
+  EXPECT_NEAR(model.nodes[0].translation[0], 1, 1e-6);
+  ASSERT_TRUE(player.queueCustomEvent("invalid"));
+  player.advance(model, {}, .5);
+  EXPECT_EQ(material.metallicFactor, .75);
+  EXPECT_NEAR(model.nodes[0].translation[0], 2, 1e-6);
+  ASSERT_TRUE(player.queueCustomEvent("override"));
+  player.advance(model, {}, .25);
+  EXPECT_EQ(model.nodes[0].translation[0], 9);
+  player.advance(model, {}, 1.75);
+  EXPECT_EQ(model.nodes[0].translation[0], 9);
+  EXPECT_EQ(model.nodes[1].translation[1], 6);
+  EXPECT_EQ(material.metallicFactor, .75); // Only the unrelated interpolation completes.
+  EXPECT_EQ(material.roughnessFactor, .25);
+  EXPECT_TRUE(player.diagnostic().empty()) << player.diagnostic();
+}
+
+TEST(GltfInteractivity, VariableSetStopsInterpolationForEveryWrittenVariable) {
+  auto model = asset(Json::parse(R"json({
+    "types":[{"signature":"float"}],"variables":[{"type":0,"value":[0]},{"type":0,"value":[10]}],
+    "events":[{"id":"start"},{"id":"override"}],
+    "declarations":[{"op":"event/receive"},{"op":"flow/sequence"},{"op":"variable/interpolate"},
+      {"op":"variable/set"},{"op":"variable/get"},{"op":"event/onTick"},{"op":"pointer/set"}],
+    "nodes":[
+      {"declaration":0,"configuration":{"event":{"value":[0]}},"flows":{"out":{"node":1}}},
+      {"declaration":1,"flows":{"a":{"node":2},"b":{"node":3}}},
+      {"declaration":2,"configuration":{"variable":{"value":[0]}},
+        "values":{"value":{"type":0,"value":[4]},"duration":{"type":0,"value":[2]}},"flows":{"done":{"node":9}}},
+      {"declaration":2,"configuration":{"variable":{"value":[1]}},
+        "values":{"value":{"type":0,"value":[14]},"duration":{"type":0,"value":[2]}},"flows":{"done":{"node":10}}},
+      {"declaration":0,"configuration":{"event":{"value":[1]}},"flows":{"out":{"node":5}}},
+      {"declaration":3,"configuration":{"variables":{"value":[0,1]}},
+        "values":{"0":{"type":0,"value":[9]},"1":{"type":0,"value":[20]}}},
+      {"declaration":4,"configuration":{"variable":{"value":[0]}}},
+      {"declaration":4,"configuration":{"variable":{"value":[1]}}},
+      {"declaration":5,"flows":{"out":{"node":11}}},
+      {"declaration":6,"configuration":{"pointer":{"value":["/materials/0/pbrMetallicRoughness/metallicFactor"]},"type":{"value":[0]}},
+        "values":{"value":{"type":0,"value":[0.5]}}},
+      {"declaration":6,"configuration":{"pointer":{"value":["/materials/0/pbrMetallicRoughness/roughnessFactor"]},"type":{"value":[0]}},
+        "values":{"value":{"type":0,"value":[0.5]}}},
+      {"declaration":6,"configuration":{"pointer":{"value":["/nodes/0/translation/0"]},"type":{"value":[0]}},
+        "values":{"value":{"node":6}},"flows":{"out":{"node":12}}},
+      {"declaration":6,"configuration":{"pointer":{"value":["/nodes/0/translation/1"]},"type":{"value":[0]}},
+        "values":{"value":{"node":7}}}
+    ]})json"));
+  GltfInteractivity player(model);
+  ASSERT_TRUE(player.queueCustomEvent("start"));
+  player.advance(model, {}, 0);
+  player.advance(model, {}, 1);
+  ASSERT_EQ(model.nodes[0].translation.size(), 3u);
+  EXPECT_NEAR(model.nodes[0].translation[0], 2, 1e-6);
+  EXPECT_NEAR(model.nodes[0].translation[1], 12, 1e-6);
+  ASSERT_TRUE(player.queueCustomEvent("override"));
+  player.advance(model, {}, .25);
+  EXPECT_EQ(model.nodes[0].translation, (std::vector<double>{9, 20, 0}));
+  EXPECT_TRUE(player.advance(model, {}, 2).materials.empty());
+  EXPECT_EQ(model.nodes[0].translation, (std::vector<double>{9, 20, 0}));
+  EXPECT_TRUE(player.diagnostic().empty()) << player.diagnostic();
+}
+
 TEST(GltfInteractivity, ClipStartsSamplesAndStopsWithoutRestoringUntilReset) {
   auto model = asset(Json::parse(R"json({
     "types":[{"signature":"ref"}],"events":[{"id":"stop"}],
@@ -265,6 +443,101 @@ TEST(GltfInteractivity, ClipStartsSamplesAndStopsWithoutRestoringUntilReset) {
   EXPECT_EQ(model.nodes[0].translation[0], 1);
   EXPECT_EQ(player.reset(model).nodes, (std::vector<size_t>{0}));
   EXPECT_EQ(model.nodes[0].translation[0], 0);
+}
+
+TEST(GltfInteractivity, RestartedClipAppliesAfterOtherActiveClips) {
+  auto model = asset(Json::parse(R"json({
+    "types":[{"signature":"ref"}],"events":[{"id":"restart"}],
+    "declarations":[{"op":"event/onStart"},{"op":"animation/start"},{"op":"event/receive"}],
+    "nodes":[
+      {"declaration":0,"flows":{"out":{"node":1}}},
+      {"declaration":1,"values":{"animation":{"type":0,"value":["/animations/0"]}},"flows":{"out":{"node":2}}},
+      {"declaration":1,"values":{"animation":{"type":0,"value":["/animations/1"]}}},
+      {"declaration":2,"configuration":{"event":{"value":[0]}},"flows":{"out":{"node":4}}},
+      {"declaration":1,"values":{"animation":{"type":0,"value":["/animations/0"]}}}
+    ]})json"));
+  const AnimationTarget translation{AnimationTargetKind::NodeTranslation, 0, "translation", 3};
+  AnimationLibrary library;
+  library.clips.push_back({"first", 2.0, {{translation, AnimationInterpolation::Linear, {0, 2}, {1, 0, 0, 1, 0, 0}}}});
+  library.clips.push_back({"second", 2.0, {{translation, AnimationInterpolation::Linear, {0, 2}, {2, 0, 0, 2, 0, 0}}}});
+  GltfInteractivity player(model);
+
+  player.advance(model, library, 0);
+  ASSERT_TRUE(player.diagnostic().empty()) << player.diagnostic();
+  ASSERT_EQ(player.activeClips(), 2);
+  ASSERT_EQ(model.nodes[0].translation, (std::vector<double>{2, 0, 0}));
+  ASSERT_TRUE(player.queueCustomEvent("restart"));
+  player.advance(model, library, .25);
+  EXPECT_TRUE(player.diagnostic().empty()) << player.diagnostic();
+  EXPECT_EQ(player.activeClips(), 2);
+  EXPECT_EQ(model.nodes[0].translation, (std::vector<double>{1, 0, 0}));
+}
+
+TEST(GltfInteractivity, ScheduledClipStopsUseDirectionalIntervalsAndCompletionFlows) {
+  const auto graph = Json::parse(R"json({
+    "types":[{"signature":"ref"},{"signature":"float"},{"signature":"float3"}],"events":[{"id":"stopAt"}],
+    "declarations":[{"op":"event/onStart"},{"op":"animation/start"},{"op":"event/receive"},
+      {"op":"animation/stopAt"},{"op":"pointer/set"}],
+    "nodes":[
+      {"declaration":0,"flows":{"out":{"node":1}}},
+      {"declaration":1,"values":{"animation":{"type":0,"value":["/animations/0"]},
+        "startTime":{"type":1,"value":[0]},"endTime":{"type":1,"value":[0]}},"flows":{"done":{"node":4}}},
+      {"declaration":2,"configuration":{"event":{"value":[0]}},"flows":{"out":{"node":3}}},
+      {"declaration":3,"values":{"animation":{"type":0,"value":["/animations/0"]},
+        "stopTime":{"type":1,"value":[0]}},"flows":{"done":{"node":5}}},
+      {"declaration":4,"configuration":{"pointer":{"value":["/nodes/1/translation"]},"type":{"value":[2]}},
+        "values":{"value":{"type":2,"value":[10,0,0]}}},
+      {"declaration":4,"configuration":{"pointer":{"value":["/nodes/1/translation"]},"type":{"value":[2]}},
+        "values":{"value":{"type":2,"value":[20,0,0]}}}
+    ]})json");
+  const AnimationTarget translation{AnimationTargetKind::NodeTranslation, 0, "translation", 3};
+  AnimationLibrary library;
+  library.clips.push_back({"move", 2.0, {{translation, AnimationInterpolation::Linear, {0, 2}, {0, 0, 0, 4, 0, 0}}}});
+
+  struct Scenario {
+    const char* label;
+    double start, end, stop, elapsed;
+    bool scheduled;
+  };
+  const Scenario cases[]{
+      {"forward before start", .5, 1.5, .25, 0, false},
+      {"forward at start", .5, 1.5, .5, 0, true},
+      {"forward within interval", .5, 1.5, 1, 0, true},
+      {"forward past scheduled stop", .5, 1.5, 1, .75, true},
+      {"forward at natural end", .5, 1.5, 1.5, 0, false},
+      {"forward beyond natural end", .5, 1.5, 1.75, 0, false},
+      {"reverse before start", 1.5, .5, 1.75, 0, false},
+      {"reverse at start", 1.5, .5, 1.5, 0, true},
+      {"reverse within interval", 1.5, .5, 1, 0, true},
+      {"reverse past scheduled stop", 1.5, .5, 1, .75, true},
+      {"reverse at natural end", 1.5, .5, .5, 0, false},
+      {"reverse beyond natural end", 1.5, .5, .25, 0, false},
+  };
+  for (const auto& test : cases) {
+    SCOPED_TRACE(test.label);
+    auto fixture = graph;
+    fixture["nodes"][1]["values"]["startTime"]["value"][0] = test.start;
+    fixture["nodes"][1]["values"]["endTime"]["value"][0] = test.end;
+    fixture["nodes"][3]["values"]["stopTime"]["value"][0] = test.stop;
+    auto model = asset(std::move(fixture));
+    GltfInteractivity player(model);
+    player.advance(model, library, 0);
+    player.advance(model, library, test.elapsed);
+    ASSERT_EQ(player.activeClips(), 1);
+
+    ASSERT_TRUE(player.queueCustomEvent("stopAt"));
+    player.advance(model, library, 0);
+    const bool alreadyReached = test.scheduled && test.elapsed >= std::abs(test.stop - test.start);
+    EXPECT_EQ(player.activeClips(), alreadyReached ? 0u : 1u);
+    if (!alreadyReached) EXPECT_TRUE(model.nodes[1].translation.empty());
+
+    // A frame can cross both a scheduled stop and the natural end.
+    player.advance(model, library, 2);
+    EXPECT_TRUE(player.diagnostic().empty()) << player.diagnostic();
+    EXPECT_EQ(player.activeClips(), 0);
+    EXPECT_EQ(model.nodes[0].translation, (std::vector<double>{2 * (test.scheduled ? test.stop : test.end), 0, 0}));
+    EXPECT_EQ(model.nodes[1].translation, (std::vector<double>{test.scheduled ? 20.0 : 10.0, 0, 0}));
+  }
 }
 
 TEST(GltfInteractivity, SelectionAndHoverUseProvidedSourceChainAndEventValues) {
