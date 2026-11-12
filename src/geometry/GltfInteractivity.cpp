@@ -35,11 +35,12 @@ enum class Op {
 };
 using enum Op;
 struct Input { Value literal; std::optional<size_t> node; std::string socket; };
+struct FlowDestination { size_t node; bool cancelDelay; };
 struct Node {
   Op op{};
   std::string name;
   Sockets<Input> inputs;
-  Sockets<size_t> flows;
+  Sockets<FlowDestination> flows;
   size_t index{};
   std::vector<size_t> variables;
   Type type{};
@@ -242,9 +243,17 @@ Graph compileGraph(const tinygltf::Model& source, const Json& json) {
         const size_t target = index(get(flow, "node"), nodes.size());
         const auto& socket = get(flow, "socket");
         if (target <= i) invalid("flow must target a later node");
-        if (socket.Type() != tinygltf::NULL_TYPE && string(socket) != "in")
+        const auto inputSocket = socket.Type() == tinygltf::NULL_TYPE ? "in" : string(socket);
+        const bool cancelDelay = inputSocket == "cancel";
+        if (inputSocket != "in" && !cancelDelay)
           invalid("unsupported flow input socket");
-        node.flows.emplace(name, target);
+        if (cancelDelay) {
+          const auto& targetDeclaration =
+              declarations[index(get(nodes[target], "declaration"), declarations.size())];
+          if (string(get(targetDeclaration, "op")) != "flow/setDelay")
+            invalid("cancel flow input requires a flow/setDelay target");
+        }
+        node.flows.emplace(name, FlowDestination{target, cancelDelay});
       }
     } catch (const std::invalid_argument& error) {
       invalid("node " + std::to_string(i) + " " + node.name + ": " + error.what());
@@ -397,8 +406,16 @@ struct GltfInteractivity::State {
     return evaluate(frame, *value.node, value.socket);
   }
   void flow(Frame& frame, const Node& node, std::string_view name) {
-    if (const auto destination = node.flows.find(name); destination != node.flows.end())
-      execute(frame, destination->second);
+    const auto destination = node.flows.find(name);
+    if (destination == node.flows.end()) return;
+    const auto& [target, cancelDelay] = destination->second;
+    if (cancelDelay) {
+      Guard guard(*this);
+      std::erase_if(delays, [target](const auto& delay) { return delay.owner == target; });
+      outputs[target].erase("lastDelay");
+    } else {
+      execute(frame, target);
+    }
   }
   std::string path(Frame& frame, const Node& node) {
     std::string result;
@@ -480,7 +497,10 @@ struct GltfInteractivity::State {
 Value GltfInteractivity::State::evaluate(Frame& frame, size_t id, std::string_view socket) {
   Guard guard(*this);
   const auto& node = graph.nodes[id];
+  // Keep graphs authored against the older delay output spelling working.
+  if (node.op == Delay && socket == "delay") socket = "lastDelay";
   if (const auto entry = outputs[id].find(socket); entry != outputs[id].end()) return entry->second;
+  if (node.op == Delay && socket == "lastDelay") return std::string{};
   if (node.op == GetPointer) {
     auto value = initialValue(node.type);
     bool valid = false;
@@ -649,7 +669,7 @@ void GltfInteractivity::State::execute(Frame& frame, size_t id) {
         const double timeout = duration(arg("duration"));
         std::string ref = "#delay/" + std::to_string(++serial);
         delays.push_back({ref, time + timeout, id});
-        outputs[id]["delay"] = std::move(ref);
+        outputs[id]["lastDelay"] = std::move(ref);
         break;
       }
       case CancelDelay: {
@@ -685,14 +705,21 @@ void GltfInteractivity::State::execute(Frame& frame, size_t id) {
           if (!matches(value, variables[variable])) invalid("variable/set value has the wrong type");
           values.push_back(std::move(value));
         }
+        std::erase_if(transitions, [&](const Transition& transition) {
+          return !transition.pointer &&
+              std::ranges::find(node.variables, transition.variable) != node.variables.end();
+        });
         for (size_t i = 0; i < values.size(); ++i) variables[node.variables[i]] = std::move(values[i]);
         break;
       }
       case SetPointer: {
         const auto value = arg("value");
-        auto destination = target(frame, node);
-        if (node.type == Type::Bool) write(frame, std::move(destination), {boolean(value) ? 1.0 : 0.0});
-        else write(frame, std::move(destination), numeric(value));
+        const auto destination = target(frame, node);
+        if (node.type == Type::Bool) write(frame, destination, {boolean(value) ? 1.0 : 0.0});
+        else write(frame, destination, numeric(value));
+        std::erase_if(transitions, [&](const Transition& transition) {
+          return transition.pointer == destination;
+        });
         break;
       }
       case InterpolateVar:
@@ -754,18 +781,18 @@ void GltfInteractivity::State::execute(Frame& frame, size_t id) {
             work += components + 1;
           }
           ClipState entry{*clip, id, work, {}, time, start, end, speed, end};
-          if (active != clips.end()) *active = entry;
-          else {
-            if (clips.size() >= kMaxPending) invalid("active clip budget exceeded");
-            clips.push_back(entry);
-          }
+          if (active != clips.end()) clips.erase(active);
+          else if (clips.size() >= kMaxPending) invalid("active clip budget exceeded");
+          clips.push_back(entry);
         } else if (node.op == StopClip) {
           if (active != clips.end()) clips.erase(active);
-        } else if (active != clips.end()) {
+        } else {
           const double stop = scalar(arg("stopTime"));
           if (!std::isfinite(stop)) invalid("invalid clip stop time");
-          active->stop = std::clamp(stop, std::min(active->start, active->end), std::max(active->start, active->end));
-          active->stopOwner = id;
+          if (active != clips.end()) {
+            active->stop = stop;
+            active->stopOwner = id;
+          }
         }
         break;
       }
@@ -818,12 +845,17 @@ void GltfInteractivity::State::advancePending(Frame& frame) {
     const auto& clip = frame.library.clips.at(entry.index);
     const double distance = (time - entry.beginning) * entry.speed;
     const bool reverse = entry.start > entry.end;
-    const bool stopped = distance >= std::abs(entry.stop - entry.start);
-    const double requested = stopped ? entry.stop : entry.start + (reverse ? -distance : distance);
+    // Only stops reached before the natural end own the completion flow.
+    const bool scheduledStop = entry.stopOwner && (reverse
+        ? entry.stop <= entry.start && entry.stop > entry.end
+        : entry.stop >= entry.start && entry.stop < entry.end);
+    const double endpoint = scheduledStop ? entry.stop : entry.end;
+    const bool stopped = distance >= std::abs(endpoint - entry.start);
+    const double requested = stopped ? endpoint : entry.start + (reverse ? -distance : distance);
     publish(frame, SampleAnimation(clip, effectiveTime(requested, clip.duration)));
     if (!stopped) ++it;
     else {
-      completed.push_back(entry.stopOwner.value_or(entry.owner));
+      completed.push_back(scheduledStop ? *entry.stopOwner : entry.owner);
       it = clips.erase(it);
     }
   }
