@@ -14,6 +14,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 namespace container::geometry::gltf {
 namespace {
@@ -35,21 +36,41 @@ bool listed(const Json& source, const char* table, std::string_view name) {
     return value.is_string() && value.template get_ref<const std::string&>() == name;
   });
 }
-const Json& table(const Json& source, const char* name) {
-  static const Json empty = Json::array();
+template<class Document>
+Document* table(Document& source, const char* name) {
   const auto found = source.find(name);
-  if (found == source.end()) return empty;
+  if (found == source.end()) return nullptr;
   if (!found->is_array()) fail(name, "must be an array");
-  return *found;
+  return &*found;
 }
-uint64_t integer(const Json& value, std::string_view context) {
-  if (!value.is_number_integer() || (!value.is_number_unsigned() && value.get<int64_t>() < 0))
+uint64_t integer(const Json& value, uint64_t maximum, std::string_view context, bool&) {
+  uint64_t result;
+  if (value.is_number_unsigned() || (value.is_number_integer() && value.get<int64_t>() >= 0)) {
+    result = value.get<uint64_t>();
+  } else if (value.is_number_float()) {
+    const auto number = value.get<double>();
+    // UINT64_MAX rounds up when converted to double.
+    if (!(number >= 0 && number < 0x1p64 && std::trunc(number) == number))
+      fail(context, "must be a nonnegative integer within range");
+    result = static_cast<uint64_t>(number);
+  } else {
     fail(context, "must be a nonnegative integer");
-  return value.get<uint64_t>();
+  }
+  if (result > maximum) fail(context, "integer exceeds its range");
+  return result;
 }
-int reference(const Json& value, uint64_t count, std::string_view context) {
-  const auto index = integer(value, context);
-  if (index > INT_MAX || index >= count) fail(context, "index is outside the source table or int range");
+uint64_t integer(Json& value, uint64_t maximum, std::string_view context, bool& rewritten) {
+  const auto result = integer(std::as_const(value), maximum, context, rewritten);
+  if (!value.is_number_unsigned()) {
+    value = result;
+    rewritten = true;
+  }
+  return result;
+}
+template<class Value>
+int reference(Value& value, uint64_t count, std::string_view context, bool& rewritten) {
+  const auto index = integer(value, INT_MAX, context, rewritten);
+  if (index >= count) fail(context, "index is outside the source table");
   return static_cast<int>(index);
 }
 int shape(const std::string& value) {
@@ -158,19 +179,52 @@ bool finiteAffine(const glm::mat4& matrix) {
   return std::abs(matrix[0][3]) <= 1e-5f && std::abs(matrix[1][3]) <= 1e-5f &&
       std::abs(matrix[2][3]) <= 1e-5f && std::abs(matrix[3][3] - 1.f) <= 1e-5f;
 }
-} // namespace
-
-InstancingSummary ValidateMeshGpuInstancingJson(const Json& source, const InstancingLimits& limits,
-                                                const std::stop_token& stop) {
+template<class Document>
+InstancingSummary validateJson(Document& source, const InstancingLimits& limits,
+                               const std::stop_token& stop, bool& rewritten) {
   try {
     Budget budget(limits);
-    const auto& nodes = table(source, "nodes");
-    const auto& meshes = table(source, "meshes");
-    const auto& accessors = table(source, "accessors");
-    if (nodes.size() > UINT32_MAX) fail("nodes", "source node identity exceeds uint32 range");
-    for (size_t i = 0; i < nodes.size(); ++i) {
+    auto* nodes = table(source, "nodes");
+    const auto* meshes = table(source, "meshes");
+    auto* accessors = table(source, "accessors");
+    if (!nodes) return budget.summary;
+    if (nodes->size() > UINT32_MAX) fail("nodes", "source node identity exceeds uint32 range");
+
+    const auto readField = [&](auto& object, const char* field, uint64_t maximum,
+                               const std::string& context, bool required = false) {
+      const auto value = object.find(field);
+      if (value != object.end()) return integer(*value, maximum, context + "." + field, rewritten);
+      if (required) fail(context + "." + field, "field is required");
+      return uint64_t{0};
+    };
+    // The core parser can drop non-integer offsets/strides or narrow an index
+    // into another view. Check the original storage references used by instance
+    // attributes. CheckedAccessor still validates alignment, ranges and bytes.
+    const auto validateStorage = [&](auto& storage, const std::string& context, bool requiredView) {
+      readField(storage, "byteOffset", SIZE_MAX, context);
+      const auto viewIndex = storage.find("bufferView");
+      if (viewIndex == storage.end()) {
+        if (requiredView) fail(context + ".bufferView", "field is required");
+        return;
+      }
+      auto* views = table(source, "bufferViews");
+      const auto viewContext = context + ".bufferView";
+      const auto index = reference(*viewIndex, views ? views->size() : 0, viewContext, rewritten);
+      auto& view = views->at(size_t(index));
+      const auto bufferIndex = view.find("buffer");
+      if (bufferIndex == view.end()) fail(viewContext + ".buffer", "field is required");
+      auto* buffers = table(source, "buffers");
+      const auto buffer = reference(*bufferIndex, buffers ? buffers->size() : 0, viewContext + ".buffer", rewritten);
+      readField(buffers->at(size_t(buffer)), "byteLength", SIZE_MAX, viewContext + ".buffer", true);
+      readField(view, "byteLength", SIZE_MAX, viewContext, true);
+      readField(view, "byteOffset", SIZE_MAX, viewContext);
+      readField(view, "byteStride", SIZE_MAX, viewContext);
+      readField(view, "target", INT_MAX, viewContext);
+    };
+
+    for (size_t i = 0; i < nodes->size(); ++i) {
       if (i % 1024 == 0) checkModelImportCancellation(stop);
-      const auto& node = nodes[i];
+      auto& node = nodes->at(i);
       if (!node.is_object()) fail("nodes", "node must be an object");
       const auto extensions = node.find("extensions");
       if (extensions == node.end()) continue;
@@ -180,31 +234,57 @@ InstancingSummary ValidateMeshGpuInstancingJson(const Json& source, const Instan
       const auto context = label(uint32_t(i));
       if (!listed(source, "extensionsUsed", kExtension)) fail(context, "extension must be declared in extensionsUsed");
       if (!node.contains("mesh")) fail(context, "instancing requires a valid mesh node");
-      const auto mesh = reference(node.at("mesh"), meshes.size(), context + ".mesh");
-      const auto& primitives = meshes[size_t(mesh)].at("primitives");
-      if (!primitives.is_array() || primitives.size() > UINT32_MAX) fail(context, "mesh primitive table is invalid");
+      const auto mesh = reference(node.at("mesh"), meshes ? meshes->size() : 0, context + ".mesh", rewritten);
+      const auto& sourceMesh = meshes->at(size_t(mesh));
+      const auto primitives = sourceMesh.find("primitives");
+      if (primitives == sourceMesh.end() || !primitives->is_array() || primitives->size() > UINT32_MAX)
+        fail(context, "mesh primitive table is invalid");
       if (!extension->is_object() || !extension->contains("attributes") || !extension->at("attributes").is_object())
         fail(context, "extension must contain an attributes object");
-      NodePlan plan{uint32_t(i), uint32_t(mesh), uint32_t(primitives.size())};
-      for (const auto& [semantic, value] : extension->at("attributes").items()) {
+      NodePlan plan{uint32_t(i), uint32_t(mesh), uint32_t(primitives->size())};
+      for (auto&& [semantic, value] : extension->at("attributes").items()) {
         const auto attributeLabel = context + "." + semantic;
-        const auto index = reference(value, accessors.size(), attributeLabel);
-        const auto& accessor = accessors[size_t(index)];
-        if (!accessor.is_object() || !accessor.contains("componentType") || !accessor.contains("count") ||
-            !accessor.contains("type") || !accessor.at("type").is_string())
-          fail(attributeLabel, "accessor must specify count, componentType and shape");
-        const auto component = integer(accessor.at("componentType"), attributeLabel);
-        if (component > INT_MAX) fail(attributeLabel, "component type exceeds int range");
+        const auto index = reference(value, accessors ? accessors->size() : 0, attributeLabel, rewritten);
+        auto& accessor = accessors->at(size_t(index));
+        if (!accessor.contains("type") || !accessor.at("type").is_string())
+          fail(attributeLabel, "accessor must specify its shape");
+        const auto component = readField(accessor, "componentType", INT_MAX, attributeLabel, true);
+        const auto count = readField(accessor, "count", SIZE_MAX, attributeLabel, true);
         if (accessor.contains("normalized") && !accessor.at("normalized").is_boolean()) fail(attributeLabel, "normalized must be boolean");
-        attribute(plan, semantic, index, {shape(accessor.at("type").get<std::string>()), int(component),
-            integer(accessor.at("count"), attributeLabel), accessor.value("normalized", false)},
+        attribute(plan, semantic, index, {shape(accessor.at("type").template get<std::string>()), int(component),
+            count, accessor.value("normalized", false)},
             listed(source, "extensionsRequired", "KHR_accessor_float64"), budget);
+        validateStorage(accessor, attributeLabel, false);
+        if (auto sparse = accessor.find("sparse"); sparse != accessor.end()) {
+          const auto sparseContext = attributeLabel + ".sparse";
+          readField(*sparse, "count", INT_MAX, sparseContext, true);
+          for (const char* field : {"indices", "values"}) {
+            auto storage = sparse->find(field);
+            const auto storageContext = sparseContext + "." + field;
+            if (storage == sparse->end() || !storage->is_object()) fail(storageContext, "must be an object");
+            if (storage.key() == "indices") readField(*storage, "componentType", INT_MAX, storageContext, true);
+            validateStorage(*storage, storageContext, true);
+          }
+        }
       }
       budget.finish(plan);
     }
     return budget.summary;
   } catch (const Json::exception& error) { fail("metadata", error.what()); }
 }
+} // namespace
+
+InstancingSummary ValidateMeshGpuInstancingJson(const Json& source, const InstancingLimits& limits,
+                                                const std::stop_token& stop) {
+  bool rewritten = false;
+  return validateJson(source, limits, stop, rewritten);
+}
+
+InstancingSummary NormalizeMeshGpuInstancingJson(Json& source, bool& rewritten,
+                                                 const InstancingLimits& limits, const std::stop_token& stop) {
+  return validateJson(source, limits, stop, rewritten);
+}
+
 GltfInstancingData ParseMeshGpuInstancing(const tinygltf::Model& source, const InstancingLimits& limits,
                                          const std::stop_token& stop) {
   Budget budget(limits);

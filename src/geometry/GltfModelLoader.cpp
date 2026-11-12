@@ -1681,7 +1681,9 @@ tinygltf::Model loadGltfModel(const std::string& path,
               const auto extendedMaterials = ValidateGltfExtendedMaterialsJson(json);
               const auto experimentalMaterialBytes = options.enableExperimentalMaterials
                   ? ValidateGltfExperimentalMaterialsJson(json) : uint64_t{};
-              const auto instancing = ValidateMeshGpuInstancingJson(json, options.instancing, stop);
+              bool normalizedInstancingFields = false;
+              const auto instancing = NormalizeMeshGpuInstancingJson(
+                  json, normalizedInstancingFields, options.instancing, stop);
               xmp.emplace(json);
               for (const auto& warning : xmp->warnings()) {
                 CapabilityDiagnostic diagnostic{CapabilitySeverity::Warning, "xmp_metadata", path, warning};
@@ -1694,7 +1696,8 @@ tinygltf::Model loadGltfModel(const std::string& path,
                     std::chrono::steady_clock::now().time_since_epoch().count()) + "_" +
                     std::to_string(sequence.fetch_add(1)) + "_";
                 bool rewritten = xmp->rewroteManifest() || normalizedLinkedManifest ||
-                    normalizedSamplerFields || normalizedVariantIndices || discardedMicromaps || omittedOptional;
+                    normalizedSamplerFields || normalizedVariantIndices || normalizedInstancingFields ||
+                    discardedMicromaps || omittedOptional;
                 if (linkedContext) {
                   for (const auto* table : {"buffers", "images"}) {
                     auto records = json.find(table);

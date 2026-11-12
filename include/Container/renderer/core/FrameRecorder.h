@@ -390,6 +390,8 @@ struct FrameRecordParams {
   FramePostProcessState postProcess{};
   ProviderSceneExtraction sceneExtraction{};
   FrameRecordLifecycleHooks lifecycle{};
+  // Set by passes that initialize the full pick ID attachment and leave it shader-readable.
+  bool *pickIdWritten{nullptr};
 
   [[nodiscard]] const FrameResourceBinding *resourceBinding(
       RenderTechniqueId technique, std::string_view name) const;

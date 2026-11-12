@@ -6,7 +6,11 @@ visibility and skin/morph owner. Authored child nodes are instantiated once
 under that owner. There is no additional non-instanced fallback draw.
 
 The detached loader validates extension schemas and accessor IDs before external
-resource reads. Its immutable checked-accessor parser supports FLOAT translation
+resource reads. It accepts integral decimal and exponent encodings for the
+instancing fields defined as integers and validates their storage references
+before TinyGLTF can narrow them. [glTF 2.0 JSON encoding](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#json-encoding).
+
+The checked-accessor parser supports FLOAT translation
 and scale, FLOAT or normalized signed BYTE/SHORT rotation, sparse/strided storage,
 and identity defaults for omitted TRS components. Custom attributes must share the
 instance count; custom-only attributes establish identity instances. Custom IDs
@@ -57,8 +61,35 @@ Native regression entry point:
 ordinary-node references; skinned references duplicate joint subtrees under each
 ordinary transform, preserving transform order without using the extension.
 Separate modes cover parent/owner animation, authored visibility, hard ray shadows
-and DDGI. Native GPU selection readback has no capture action; production CPU
-picks and per-instance graph identities are measured.
+and DDGI. The `--gpu-picking` run samples the rendered Vulkan pick-ID attachment
+through the viewport readback path in both raster techniques. It checks that the
+four independently projected pixels resolve to distinct graph nodes and their
+source node, mesh, primitive and instance IDs, then checks the same pixels after
+hiding and restoring the owner. A separate sample hides every draw. Picking
+uses the ID attachment only when a pass wrote it in the completed frame. A
+rendered background reports ID `0`, and an unavailable GPU result reports
+`null` and lets viewport picking use the CPU fallback. Capture sequences expose
+both routes under `depthProbe.sceneInteraction`.
+
+Run the native checks from the repository root with a Release renderer, Python
+with NumPy and Pillow, `VK_LAYER_KHRONOS_validation`, and Vulkan ray-query
+support for the ray cohort.
+
+```powershell
+$renderer = 'out/build/windows-release/VulkanSceneRenderer.exe'
+$check = 'tests/validation/gltf_instancing_runtime_regression.py'
+python $check --renderer $renderer --output out/validation/instancing/picks --gpu-picking
+python $check --renderer $renderer --output out/validation/instancing/animated --animated --roundtrip
+python $check --renderer $renderer --output out/validation/instancing/hidden --hidden-owner
+python $check --renderer $renderer --output out/validation/instancing/ray --ray
+```
+
+The November 12, 2026 Release run on an NVIDIA GeForce RTX 2080 SUPER passed
+501 test cases across 15 suites without skips. It passed 98 checks across 92
+native captures with zero Vulkan or synchronization validation errors. All 30
+positive image comparisons were pixel-exact. The ray fixtures recorded six
+TLAS placements with two static BLAS or three deformed-owner and receiver BLAS.
+[Windows NVIDIA verification report](../tests/visual-regression/instancing/windows-nvidia/mesh-instancing-results.json).
 
 Global framing bounds also compose every instance and exclude hidden source
 subtrees. The follow-up checkpoint passed 830 cases across 39 executables with
