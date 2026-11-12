@@ -18,9 +18,11 @@ including shadow, selection and velocity consumers, use that SSBO.
 Each swapchain image owns independent local, topology, world, binding and
 metadata buffers. Only changed local records are uploaded on ordinary pose updates.
 Topology changes rebuild the level order; changed object bindings update their
-mapping. A successful graphics submission commits the world cache. Unchanged
-hierarchies skip level dispatches, while a changed compute pipeline invalidates
-the cache. Discarded recordings cannot publish uncomputed worlds.
+mapping. A successful graphics submission commits the world cache with the
+compute shader identity used to record it. Unchanged hierarchies skip level
+dispatches. Each image recomputes its worlds after a shader replacement, even
+if it was inactive during several reloads. Discarded recordings cannot
+publish uncomputed worlds.
 
 World matrices follow GLM/glTF column vectors in the right-handed world. Normal
 matrices use cofactors divided by the determinant, preserving mirrored and
@@ -108,7 +110,9 @@ synchronization validation and reads back worlds and complete object records.
 Set `CONTAINER_RUN_GPU_HIERARCHY=1` to run it. Tests cover unordered forests,
 broad and deep trees, nested rotations, nonuniform/mirrored scales, reparenting,
 scene replacement, image independence, sparse uploads, rejected inputs and
-unsubmitted preparation. Poisoned outputs verify complete record publication;
+unsubmitted preparation. The reload regression verifies that cache commit
+uses the recorded shader identity, including for images that sit out several
+replacements. Poisoned outputs verify complete record publication;
 nonsymmetric previous/diagnostic matrices verify byte layout. The 50,000-node
 test reports an independent CPU matrix-reference time, preparation time,
 hierarchy/metadata input bytes, metadata CPU cost and actual GPU timestamps.
@@ -158,4 +162,7 @@ The CPU mirror and CPU extraction/validation remain in place for existing
 consumers. Reducing object payload does not establish a general speedup: matrix
 validation, input comparison, metadata preparation and compute all have costs.
 CPU remains the default. The versioned measurements and acceptance evidence
-are recorded in `docs/feature-parity-progress.md`.
+are recorded in `docs/feature-parity-progress.md`. The
+[Windows integration report](../tests/visual-regression/gpu-hierarchy/windows-nvidia/gpu-hierarchy-results.json)
+records the current reload regression, native lifecycle and ray checks, and
+large-scene measurements.

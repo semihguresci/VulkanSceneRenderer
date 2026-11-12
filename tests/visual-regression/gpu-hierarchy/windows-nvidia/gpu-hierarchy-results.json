@@ -1,0 +1,1044 @@
+{
+  "schemaVersion": 1,
+  "issue": 119,
+  "platform": "Windows x64",
+  "revision": "f51edea3a6c02001a44bec771e26e407d3346e16",
+  "rendererSha256": "9953237ec2c0076f51c62fc1d107922d7b2e3026d51d815c492a1e981fdeb753",
+  "build": {
+    "compiler": "MSVC-19.51.36260.0",
+    "configuration": "Release",
+    "revision": "f51edea3a6c02001a44bec771e26e407d3346e16"
+  },
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+    "vendorId": 4318,
+    "deviceId": 7809,
+    "driverVersion": 2559967232,
+    "vulkanApiVersion": 4211029
+  },
+  "cmakeCacheSha256": "f0cda70c5ee2d29cbcc51827eb88c4e0a6cf54a2af089d9fb9de989cbac99281",
+  "physicsEnabled": true,
+  "openVdbEnabled": false,
+  "validationLayer": {
+    "name": "VK_LAYER_KHRONOS_validation",
+    "packageVersion": "1.4.363.1",
+    "apiVersion": "1.4.363",
+    "manifestSha256": "672a281330703083230ff02cabdd1afd524b600e0a11ae8610119e06e4183b02",
+    "librarySha256": "451ed11cbc799f858cbc0e843766d2990527c03f93f7a85f03bc1e67b605a435"
+  },
+  "runtime": {
+    "shaderModules": 116,
+    "shadersSha256": "67843925c32d18814738492ecf00d7a949c9922b2554295ccf4f894ebf5a52be",
+    "hierarchyShaderSha256": "b3968e3f8af4e2d90dcfa0be42bc9d6778e5a252ed021326e2b9b62bf3b47cb4",
+    "rayInstanceShaderSha256": "33af88152eb8cf4cceaf98d5fba471af490c17bfd274f818dc37bf4e078c4d6e",
+    "reloadManifestSha256": "0ec8b68c5a4b5bbe8a5e95a51c957d2cff0c8808e83d52cda4fccb93df72a005",
+    "cmakeSha256": "0fcadce961f1b35625191d82b3d9bd2199bebe8a3f7cff1fef1cae454a94c1ef",
+    "slangcSha256": "71d56bcc90709700b318413bfced07a4b7378c76b2bbc539e89f2d2c90b1e5f8",
+    "harnessSha256": {
+      "gpu_light_transform_reuse_runtime_regression.py": "00e0f65befb11ea0659b285b6dfb4f87d1904b1766e56ed6d9e676715e4af993",
+      "hierarchy_large_scene_runtime_benchmark.py": "231ed4fa28e4897bf5e7d90a1ee00c5460f07b273d51f094ba4eaefa2f92fd6b",
+      "hierarchy_transform_runtime_regression.py": "c1f9a268be826d71d02fa6e9cbed58548ee24888427fe615eb5686a46397cfae",
+      "runtime_shader_reload_regression.py": "f82923eb95f286c73ecd2f8c53ed5249128fe7ddb7788986ca9e2d19a17c6976"
+    }
+  },
+  "nativeRunnerSha256": "b677b18513b03d35fb4cf4980f331bc355b56e151b60068b9d9dec39a7c6cff6",
+  "native": {
+    "reload-hierarchy": {
+      "captures": 26,
+      "processes": 9,
+      "synchronizationValidation": true,
+      "runnerLogSha256": "20c7f888bc29ca44853bfc80da5c996dc0a6b4fabe87d28f1bfb6b9d6497f923",
+      "wallSeconds": 103.66,
+      "artifactCount": 101,
+      "artifactSetSha256": "37a32a0af9979841beceb43bea86862e4cc5c87fd6ebb0e2f1befe967b57d6c0",
+      "details": {
+        "sequences": {
+          "deferred-raster-hierarchy": {
+            "frames": [
+              2,
+              6,
+              10,
+              14
+            ],
+            "generations": [
+              0,
+              1,
+              1,
+              1
+            ],
+            "rgb": [
+              [
+                206,
+                165,
+                115
+              ],
+              [
+                0,
+                0,
+                0
+              ],
+              [
+                206,
+                165,
+                115
+              ],
+              [
+                0,
+                0,
+                0
+              ]
+            ],
+            "gpuHierarchyActive": [
+              true,
+              true,
+              false,
+              true
+            ]
+          },
+          "deferred-raster-gpu-tlas": {
+            "frames": [
+              2,
+              6,
+              10,
+              14
+            ],
+            "generations": [
+              0,
+              1,
+              1,
+              1
+            ],
+            "rgb": [
+              [
+                0,
+                0,
+                0
+              ],
+              [
+                232,
+                232,
+                232
+              ],
+              [
+                0,
+                0,
+                0
+              ],
+              [
+                232,
+                232,
+                232
+              ]
+            ],
+            "gpuHierarchyActive": [
+              true,
+              true,
+              false,
+              true
+            ],
+            "gpuRayInstances": [
+              2,
+              2,
+              0,
+              2
+            ]
+          },
+          "deferred-raster-gpu-metadata-cpu-reference": {
+            "frames": [
+              2,
+              8
+            ],
+            "generations": [
+              0,
+              0
+            ],
+            "rgb": [
+              [
+                206,
+                165,
+                115
+              ],
+              [
+                0,
+                0,
+                0
+              ]
+            ],
+            "gpuHierarchyActive": [
+              false,
+              false
+            ]
+          },
+          "deferred-raster-gpu-metadata-recovery": {
+            "frames": [
+              2,
+              8
+            ],
+            "generations": [
+              0,
+              0
+            ],
+            "rgb": [
+              [
+                206,
+                165,
+                115
+              ],
+              [
+                0,
+                0,
+                0
+              ]
+            ],
+            "gpuHierarchyActive": [
+              false,
+              true
+            ]
+          },
+          "forward-raster-hierarchy": {
+            "frames": [
+              2,
+              6,
+              10,
+              14
+            ],
+            "generations": [
+              0,
+              1,
+              1,
+              1
+            ],
+            "rgb": [
+              [
+                206,
+                165,
+                115
+              ],
+              [
+                0,
+                0,
+                0
+              ],
+              [
+                206,
+                165,
+                115
+              ],
+              [
+                0,
+                0,
+                0
+              ]
+            ],
+            "gpuHierarchyActive": [
+              true,
+              true,
+              false,
+              true
+            ]
+          },
+          "forward-raster-gpu-tlas": {
+            "frames": [
+              2,
+              6,
+              10,
+              14
+            ],
+            "generations": [
+              0,
+              1,
+              1,
+              1
+            ],
+            "rgb": [
+              [
+                0,
+                0,
+                0
+              ],
+              [
+                232,
+                232,
+                232
+              ],
+              [
+                0,
+                0,
+                0
+              ],
+              [
+                232,
+                232,
+                232
+              ]
+            ],
+            "gpuHierarchyActive": [
+              true,
+              true,
+              false,
+              true
+            ],
+            "gpuRayInstances": [
+              2,
+              2,
+              0,
+              2
+            ]
+          },
+          "forward-raster-gpu-metadata-cpu-reference": {
+            "frames": [
+              2,
+              8
+            ],
+            "generations": [
+              0,
+              0
+            ],
+            "rgb": [
+              [
+                206,
+                165,
+                115
+              ],
+              [
+                0,
+                0,
+                0
+              ]
+            ],
+            "gpuHierarchyActive": [
+              false,
+              false
+            ]
+          },
+          "forward-raster-gpu-metadata-recovery": {
+            "frames": [
+              2,
+              8
+            ],
+            "generations": [
+              0,
+              0
+            ],
+            "rgb": [
+              [
+                206,
+                165,
+                115
+              ],
+              [
+                0,
+                0,
+                0
+              ]
+            ],
+            "gpuHierarchyActive": [
+              false,
+              true
+            ]
+          }
+        },
+        "simulatedPackageUnavailableReload": true
+      }
+    },
+    "lifecycle": {
+      "captures": 108,
+      "processes": 12,
+      "synchronizationValidation": true,
+      "runnerLogSha256": "f0dac20bb6afb8ead42fd995a65efa2b4ea63a94273c464ac99471ebf75d8e9a",
+      "wallSeconds": 66.835,
+      "artifactCount": 353,
+      "artifactSetSha256": "e0d71868b14891bc106a5af7e9125c5b9777bc757e9576309688c31421c7d1e9",
+      "details": {
+        "cpuGpuPairs": 54,
+        "pixelIdenticalPairs": 54,
+        "maximumChannelDifference": 0,
+        "maximumMeanAbsoluteError": 0.0,
+        "fixtures": [
+          {
+            "technique": "deferred-raster",
+            "fixture": "static",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 9,
+            "maximumChannelDifference": 0,
+            "maximumMeanAbsoluteError": 0.0
+          },
+          {
+            "technique": "forward-raster",
+            "fixture": "static",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 9,
+            "maximumChannelDifference": 0,
+            "maximumMeanAbsoluteError": 0.0
+          },
+          {
+            "technique": "deferred-raster",
+            "fixture": "skin",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 9,
+            "maximumChannelDifference": 0,
+            "maximumMeanAbsoluteError": 0.0
+          },
+          {
+            "technique": "forward-raster",
+            "fixture": "skin",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 9,
+            "maximumChannelDifference": 0,
+            "maximumMeanAbsoluteError": 0.0
+          },
+          {
+            "technique": "deferred-raster",
+            "fixture": "morph",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 9,
+            "maximumChannelDifference": 0,
+            "maximumMeanAbsoluteError": 0.0
+          },
+          {
+            "technique": "forward-raster",
+            "fixture": "morph",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 9,
+            "maximumChannelDifference": 0,
+            "maximumMeanAbsoluteError": 0.0
+          }
+        ],
+        "peakCpuObjectUploadBytes": 1120,
+        "peakGpuObjectMetadataBytes": 560,
+        "peakGpuRayInstances": 0
+      }
+    },
+    "lifecycle-ray": {
+      "captures": 108,
+      "processes": 12,
+      "synchronizationValidation": true,
+      "runnerLogSha256": "f0dac20bb6afb8ead42fd995a65efa2b4ea63a94273c464ac99471ebf75d8e9a",
+      "wallSeconds": 69.403,
+      "artifactCount": 353,
+      "artifactSetSha256": "e5a791114c30ee843865b638e9825033f61dc7e51787fcd1bac29e56293f13fb",
+      "details": {
+        "cpuGpuPairs": 54,
+        "pixelIdenticalPairs": 54,
+        "maximumChannelDifference": 0,
+        "maximumMeanAbsoluteError": 0.0,
+        "fixtures": [
+          {
+            "technique": "deferred-raster",
+            "fixture": "static",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 9,
+            "maximumChannelDifference": 0,
+            "maximumMeanAbsoluteError": 0.0
+          },
+          {
+            "technique": "forward-raster",
+            "fixture": "static",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 9,
+            "maximumChannelDifference": 0,
+            "maximumMeanAbsoluteError": 0.0
+          },
+          {
+            "technique": "deferred-raster",
+            "fixture": "skin",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 9,
+            "maximumChannelDifference": 0,
+            "maximumMeanAbsoluteError": 0.0
+          },
+          {
+            "technique": "forward-raster",
+            "fixture": "skin",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 9,
+            "maximumChannelDifference": 0,
+            "maximumMeanAbsoluteError": 0.0
+          },
+          {
+            "technique": "deferred-raster",
+            "fixture": "morph",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 9,
+            "maximumChannelDifference": 0,
+            "maximumMeanAbsoluteError": 0.0
+          },
+          {
+            "technique": "forward-raster",
+            "fixture": "morph",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 9,
+            "maximumChannelDifference": 0,
+            "maximumMeanAbsoluteError": 0.0
+          }
+        ],
+        "peakCpuObjectUploadBytes": 1344,
+        "peakGpuObjectMetadataBytes": 672,
+        "peakGpuRayInstances": 6
+      }
+    },
+    "lifecycle-taa": {
+      "captures": 108,
+      "processes": 12,
+      "synchronizationValidation": true,
+      "runnerLogSha256": "f0dac20bb6afb8ead42fd995a65efa2b4ea63a94273c464ac99471ebf75d8e9a",
+      "wallSeconds": 66.572,
+      "artifactCount": 353,
+      "artifactSetSha256": "f0c01dc61458a56d19f0db6da7e62eb262bc788cf49ac18c077249d86da2649a",
+      "details": {
+        "cpuGpuPairs": 54,
+        "pixelIdenticalPairs": 54,
+        "maximumChannelDifference": 0,
+        "maximumMeanAbsoluteError": 0.0,
+        "fixtures": [
+          {
+            "technique": "deferred-raster",
+            "fixture": "static",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 9,
+            "maximumChannelDifference": 0,
+            "maximumMeanAbsoluteError": 0.0
+          },
+          {
+            "technique": "forward-raster",
+            "fixture": "static",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 9,
+            "maximumChannelDifference": 0,
+            "maximumMeanAbsoluteError": 0.0
+          },
+          {
+            "technique": "deferred-raster",
+            "fixture": "skin",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 9,
+            "maximumChannelDifference": 0,
+            "maximumMeanAbsoluteError": 0.0
+          },
+          {
+            "technique": "forward-raster",
+            "fixture": "skin",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 9,
+            "maximumChannelDifference": 0,
+            "maximumMeanAbsoluteError": 0.0
+          },
+          {
+            "technique": "deferred-raster",
+            "fixture": "morph",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 9,
+            "maximumChannelDifference": 0,
+            "maximumMeanAbsoluteError": 0.0
+          },
+          {
+            "technique": "forward-raster",
+            "fixture": "morph",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 9,
+            "maximumChannelDifference": 0,
+            "maximumMeanAbsoluteError": 0.0
+          }
+        ],
+        "peakCpuObjectUploadBytes": 2240,
+        "peakGpuObjectMetadataBytes": 560,
+        "peakGpuRayInstances": 0
+      }
+    },
+    "lifecycle-gi": {
+      "captures": 108,
+      "processes": 12,
+      "synchronizationValidation": true,
+      "runnerLogSha256": "f0dac20bb6afb8ead42fd995a65efa2b4ea63a94273c464ac99471ebf75d8e9a",
+      "wallSeconds": 71.006,
+      "artifactCount": 353,
+      "artifactSetSha256": "7642755f7774b515eead0f314246602a7bf9191bcbc6da7e64557f093fd3395f",
+      "details": {
+        "cpuGpuPairs": 54,
+        "pixelIdenticalPairs": 48,
+        "maximumChannelDifference": 1,
+        "maximumMeanAbsoluteError": 1.0127314814814815e-05,
+        "fixtures": [
+          {
+            "technique": "deferred-raster",
+            "fixture": "static",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 8,
+            "maximumChannelDifference": 1,
+            "maximumMeanAbsoluteError": 1.0127314814814815e-05
+          },
+          {
+            "technique": "forward-raster",
+            "fixture": "static",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 8,
+            "maximumChannelDifference": 1,
+            "maximumMeanAbsoluteError": 7.2337962962962966e-06
+          },
+          {
+            "technique": "deferred-raster",
+            "fixture": "skin",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 8,
+            "maximumChannelDifference": 1,
+            "maximumMeanAbsoluteError": 8.680555555555556e-06
+          },
+          {
+            "technique": "forward-raster",
+            "fixture": "skin",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 8,
+            "maximumChannelDifference": 1,
+            "maximumMeanAbsoluteError": 4.340277777777778e-06
+          },
+          {
+            "technique": "deferred-raster",
+            "fixture": "morph",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 8,
+            "maximumChannelDifference": 1,
+            "maximumMeanAbsoluteError": 8.680555555555556e-06
+          },
+          {
+            "technique": "forward-raster",
+            "fixture": "morph",
+            "cpuGpuPairs": 9,
+            "pixelIdenticalPairs": 8,
+            "maximumChannelDifference": 1,
+            "maximumMeanAbsoluteError": 2.8935185185185184e-06
+          }
+        ],
+        "peakCpuObjectUploadBytes": 1344,
+        "peakGpuObjectMetadataBytes": 672,
+        "peakGpuRayInstances": 6
+      }
+    },
+    "light-reuse": {
+      "captures": 16,
+      "processes": 2,
+      "synchronizationValidation": true,
+      "runnerLogSha256": "6679d8b4f8c20c251f499ca8453620f22f6b6fcd77dae561a09a45c5aea034a9",
+      "wallSeconds": 12.654,
+      "artifactCount": 54,
+      "artifactSetSha256": "e9a0b684491dc26a6de06b1ae463ed02c1a2e0f97165d3a8a9033ac4be56436b",
+      "details": {
+        "deferred-raster": {
+          "rayGeneration": 1,
+          "dispatchedLevels": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            3,
+            0,
+            0
+          ],
+          "intensity": {
+            "maximumError": 150,
+            "meanAbsoluteError": 8.588446180555556,
+            "changedPixelFraction": 0.06140625
+          },
+          "translation": {
+            "maximumError": 18,
+            "meanAbsoluteError": 0.49993923611111113,
+            "changedPixelFraction": 0.05911892361111111
+          }
+        },
+        "forward-raster": {
+          "rayGeneration": 1,
+          "dispatchedLevels": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            3,
+            0,
+            0
+          ],
+          "intensity": {
+            "maximumError": 157,
+            "meanAbsoluteError": 8.965685763888889,
+            "changedPixelFraction": 0.06140625
+          },
+          "translation": {
+            "maximumError": 19,
+            "meanAbsoluteError": 0.5373741319444445,
+            "changedPixelFraction": 0.059166666666666666
+          }
+        }
+      }
+    },
+    "large-ray-validation": {
+      "captures": 24,
+      "processes": 4,
+      "synchronizationValidation": true,
+      "runnerLogSha256": "1ebefdb684420395b6673fcd929b55940dc85736acd7e394f9fcf5f8b122610b",
+      "wallSeconds": 134.149,
+      "artifactCount": 80,
+      "artifactSetSha256": "672297ca3acd568fcbb343b3fd4cb2023cf59fdf6f747f79e709c011da94b782",
+      "details": {
+        "cpuGpuPairs": 12,
+        "pixelIdenticalPairs": 12,
+        "maximumChannelDifference": 0,
+        "maximumMeanAbsoluteError": 0.0,
+        "techniques": {
+          "deferred-raster": {
+            "cpu": {
+              "instances": 20000,
+              "warmUncapturedFrames": 35,
+              "cpuPhaseMedianMs": {
+                "Frame": 100.69329833984375,
+                "Frame wait": 0.0019000000320374966,
+                "Scene update": 0.48579999804496765,
+                "Command record": 69.466796875
+              },
+              "frameGraphGpuMedianMs": 4.69276762008667,
+              "cpuObjectUploadBytes": 4480000.0,
+              "rayInstances": 20000,
+              "gpuRayInstances": 0,
+              "blasReusedPerSample": 1
+            },
+            "gpu": {
+              "instances": 20000,
+              "warmUncapturedFrames": 35,
+              "cpuPhaseMedianMs": {
+                "Frame": 101.61959838867188,
+                "Frame wait": 0.0020000000949949026,
+                "Scene update": 1.4753999710083008,
+                "Command record": 69.15740203857422
+              },
+              "frameGraphGpuMedianMs": 4.554144382476807,
+              "cpuObjectUploadBytes": 0.0,
+              "hierarchyPrepareMs": 0.696,
+              "metadataPrepareMs": 0.28559999999999997,
+              "hierarchyGpuMs": 0.334192,
+              "metadataBytes": 2240000.0,
+              "localTopologyBindingBytes": 80.0,
+              "rayInstances": 20000,
+              "gpuRayInstances": 20000,
+              "blasReusedPerSample": 1
+            }
+          },
+          "forward-raster": {
+            "cpu": {
+              "instances": 20000,
+              "warmUncapturedFrames": 35,
+              "cpuPhaseMedianMs": {
+                "Frame": 101.37760162353516,
+                "Frame wait": 0.0020000000949949026,
+                "Scene update": 0.49079999327659607,
+                "Command record": 69.59550476074219
+              },
+              "frameGraphGpuMedianMs": 5.299744129180908,
+              "cpuObjectUploadBytes": 4480000.0,
+              "rayInstances": 20000,
+              "gpuRayInstances": 0,
+              "blasReusedPerSample": 1
+            },
+            "gpu": {
+              "instances": 20000,
+              "warmUncapturedFrames": 35,
+              "cpuPhaseMedianMs": {
+                "Frame": 101.89830780029297,
+                "Frame wait": 0.0020000000949949026,
+                "Scene update": 1.4764000177383423,
+                "Command record": 68.80180358886719
+              },
+              "frameGraphGpuMedianMs": 5.158656597137451,
+              "cpuObjectUploadBytes": 0.0,
+              "hierarchyPrepareMs": 0.66075,
+              "metadataPrepareMs": 0.29025,
+              "hierarchyGpuMs": 0.333392,
+              "metadataBytes": 2240000.0,
+              "localTopologyBindingBytes": 80.0,
+              "rayInstances": 20000,
+              "gpuRayInstances": 20000,
+              "blasReusedPerSample": 1
+            }
+          }
+        },
+        "ray": true,
+        "validationEnabled": true
+      }
+    },
+    "large-raster-timing": {
+      "captures": 24,
+      "processes": 4,
+      "synchronizationValidation": false,
+      "runnerLogSha256": "1ebefdb684420395b6673fcd929b55940dc85736acd7e394f9fcf5f8b122610b",
+      "wallSeconds": 116.994,
+      "artifactCount": 80,
+      "artifactSetSha256": "cd22d684408de3a4742dd2059d835aa82c70a81361052a0eb885d935c060a26d",
+      "details": {
+        "cpuGpuPairs": 12,
+        "pixelIdenticalPairs": 12,
+        "maximumChannelDifference": 0,
+        "maximumMeanAbsoluteError": 0.0,
+        "techniques": {
+          "deferred-raster": {
+            "cpu": {
+              "instances": 20000,
+              "warmUncapturedFrames": 35,
+              "cpuPhaseMedianMs": {
+                "Frame": 15.222100257873535,
+                "Frame wait": 0.0007999999797903001,
+                "Scene update": 0.48089998960494995,
+                "Command record": 1.412500023841858
+              },
+              "frameGraphGpuMedianMs": 3.896352529525757,
+              "cpuObjectUploadBytes": 4480000.0
+            },
+            "gpu": {
+              "instances": 20000,
+              "warmUncapturedFrames": 35,
+              "cpuPhaseMedianMs": {
+                "Frame": 16.55139923095703,
+                "Frame wait": 0.0010000000474974513,
+                "Scene update": 1.4163999557495117,
+                "Command record": 1.4711999893188477
+              },
+              "frameGraphGpuMedianMs": 3.885024070739746,
+              "cpuObjectUploadBytes": 0.0,
+              "hierarchyPrepareMs": 0.6248,
+              "metadataPrepareMs": 0.33185,
+              "hierarchyGpuMs": 0.337312,
+              "metadataBytes": 2240000.0,
+              "localTopologyBindingBytes": 80.0
+            }
+          },
+          "forward-raster": {
+            "cpu": {
+              "instances": 20000,
+              "warmUncapturedFrames": 35,
+              "cpuPhaseMedianMs": {
+                "Frame": 16.128799438476562,
+                "Frame wait": 0.0008999999845400453,
+                "Scene update": 0.49129998683929443,
+                "Command record": 1.3955999612808228
+              },
+              "frameGraphGpuMedianMs": 4.826175689697266,
+              "cpuObjectUploadBytes": 4480000.0
+            },
+            "gpu": {
+              "instances": 20000,
+              "warmUncapturedFrames": 35,
+              "cpuPhaseMedianMs": {
+                "Frame": 17.355300903320312,
+                "Frame wait": 0.0010000000474974513,
+                "Scene update": 1.4194999933242798,
+                "Command record": 1.4290000200271606
+              },
+              "frameGraphGpuMedianMs": 4.677375316619873,
+              "cpuObjectUploadBytes": 0.0,
+              "hierarchyPrepareMs": 0.632,
+              "metadataPrepareMs": 0.2968,
+              "hierarchyGpuMs": 0.33788799999999997,
+              "metadataBytes": 2240000.0,
+              "localTopologyBindingBytes": 80.0
+            }
+          }
+        },
+        "ray": false,
+        "validationEnabled": false
+      }
+    },
+    "large-ray-timing": {
+      "captures": 24,
+      "processes": 4,
+      "synchronizationValidation": false,
+      "runnerLogSha256": "1ebefdb684420395b6673fcd929b55940dc85736acd7e394f9fcf5f8b122610b",
+      "wallSeconds": 118.351,
+      "artifactCount": 80,
+      "artifactSetSha256": "f3185b5f384511a9477316bb477c293bec186d3ed272707a2a32c9509b1acf90",
+      "details": {
+        "cpuGpuPairs": 12,
+        "pixelIdenticalPairs": 12,
+        "maximumChannelDifference": 0,
+        "maximumMeanAbsoluteError": 0.0,
+        "techniques": {
+          "deferred-raster": {
+            "cpu": {
+              "instances": 20000,
+              "warmUncapturedFrames": 35,
+              "cpuPhaseMedianMs": {
+                "Frame": 24.872499465942383,
+                "Frame wait": 0.0008999999845400453,
+                "Scene update": 0.4991999864578247,
+                "Command record": 3.6786000728607178
+              },
+              "frameGraphGpuMedianMs": 4.69331169128418,
+              "cpuObjectUploadBytes": 4480000.0,
+              "rayInstances": 20000,
+              "gpuRayInstances": 0,
+              "blasReusedPerSample": 1
+            },
+            "gpu": {
+              "instances": 20000,
+              "warmUncapturedFrames": 35,
+              "cpuPhaseMedianMs": {
+                "Frame": 25.477100372314453,
+                "Frame wait": 0.0008999999845400453,
+                "Scene update": 1.437600016593933,
+                "Command record": 3.1319000720977783
+              },
+              "frameGraphGpuMedianMs": 4.5524163246154785,
+              "cpuObjectUploadBytes": 0.0,
+              "hierarchyPrepareMs": 0.62405,
+              "metadataPrepareMs": 0.27449999999999997,
+              "hierarchyGpuMs": 0.33289599999999997,
+              "metadataBytes": 2240000.0,
+              "localTopologyBindingBytes": 80.0,
+              "rayInstances": 20000,
+              "gpuRayInstances": 20000,
+              "blasReusedPerSample": 1
+            }
+          },
+          "forward-raster": {
+            "cpu": {
+              "instances": 20000,
+              "warmUncapturedFrames": 35,
+              "cpuPhaseMedianMs": {
+                "Frame": 25.18670082092285,
+                "Frame wait": 0.0010000000474974513,
+                "Scene update": 0.4837000072002411,
+                "Command record": 3.6528000831604004
+              },
+              "frameGraphGpuMedianMs": 5.309056758880615,
+              "cpuObjectUploadBytes": 4480000.0,
+              "rayInstances": 20000,
+              "gpuRayInstances": 0,
+              "blasReusedPerSample": 1
+            },
+            "gpu": {
+              "instances": 20000,
+              "warmUncapturedFrames": 35,
+              "cpuPhaseMedianMs": {
+                "Frame": 25.84480094909668,
+                "Frame wait": 0.0008999999845400453,
+                "Scene update": 1.4127000570297241,
+                "Command record": 3.121299982070923
+              },
+              "frameGraphGpuMedianMs": 5.160896301269531,
+              "cpuObjectUploadBytes": 0.0,
+              "hierarchyPrepareMs": 0.6158,
+              "metadataPrepareMs": 0.30925,
+              "hierarchyGpuMs": 0.332592,
+              "metadataBytes": 2240000.0,
+              "localTopologyBindingBytes": 80.0,
+              "rayInstances": 20000,
+              "gpuRayInstances": 20000,
+              "blasReusedPerSample": 1
+            }
+          }
+        },
+        "ray": true,
+        "validationEnabled": false
+      }
+    }
+  },
+  "ctest": {
+    "targetsPassed": 9,
+    "casesPassed": 193,
+    "gpuCasesPassed": 24,
+    "skipped": 0,
+    "failed": 0,
+    "junitSha256": "8ba5337660a9d6460c500bef9432350bd9c61497625d7acff5b091c971fc122b",
+    "detailedLogSha256": "6c1b47e9df2a8496a0f220a44e3ec80fc5c6561d9192b8d24220774855c79739",
+    "runnerLogSha256": "864b74ffba23646f816f78fdbff590c309faa48f9d59c798f99b5e33b15263cf",
+    "targets": {
+      "gpu_hierarchy_tests": {
+        "casesPassed": 6,
+        "xmlSha256": "21da4c49ee1fe7ee48365763c20a1fb428982566c01e82ddb66075554173ff11",
+        "sourceSha256": "d0b949c7a0cbbe0968afe244606939eafb8b37c24bdacfd65fa770896791e4ca",
+        "binarySha256": "fde5554b9b6c1cb133320dfb975fca85054fabf8d464fd2e699c7a81d7180b3f"
+      },
+      "ray_scene_gpu_tests": {
+        "casesPassed": 8,
+        "xmlSha256": "604aad12d161ee3948e9801dd9567a6c18f8d09b0de13f2bcea99d8f4849cfd3",
+        "sourceSha256": "49a5ca82353332174f71b1a5cfc136cdabaccb6d56593106df2d5d77e4eb417b",
+        "binarySha256": "92879dcd794a803fddbfe838584c1b5c2cc1b54d16c3ff573d22329d9dcbfcdb"
+      },
+      "ray_scene_tests": {
+        "casesPassed": 25,
+        "xmlSha256": "bfe080d770321c5188bbf48af53dee34c1d04db5c147123eb59cebb2bff3cf0b",
+        "sourceSha256": "6d964babc70844ef4424f7fabb153d7f7a27fe691ee21e3b707d3a014b80bbc7",
+        "binarySha256": "d88b76d45e27a41a611597d616bc970b5c7ff8db58bf4faf46cf491b3cbd5b47"
+      },
+      "managed_compute_pipeline_gpu_tests": {
+        "casesPassed": 4,
+        "xmlSha256": "cbe110ca4fb33534f1c4c69b672ac3324f239b2c255240b3c9180bdea683d97b",
+        "sourceSha256": "6ded0aba9c26b04c101d3e2bf44962260dddd3b3d0c791b58e1d21ad6e138e1f",
+        "binarySha256": "fa4d95c92ec463f879f5c4469a4c3c2af078451abad9ccbb170879cfbd6f6e2b"
+      },
+      "gltf_deformation_gpu_tests": {
+        "casesPassed": 6,
+        "xmlSha256": "c7dfc3421ae966d755bc8e725d032f34f0874bdccf6b01900683b456f6378888",
+        "sourceSha256": "840c33f6cbb9b2af9a450706d68a42f3153f6f1ffd8e3951092df8816091eb18",
+        "binarySha256": "8487b23f053168bf1c93c11c3068e152ce69bffa6fdbe80b191c7f011ac525ad"
+      },
+      "gltf_animation_tests": {
+        "casesPassed": 62,
+        "xmlSha256": "87f2e8c4b5861adcbed11b56242d962392186379db4bfae317419c9a9cab9ae9",
+        "sourceSha256": "ca24d5991075d84966963225154822c89101a8e9ac9b6ffb31cf3e3b387cd78e",
+        "binarySha256": "204113f06f547589f7199ef6eb9281300b1dee19cd8ebe5b3d7432cf697ee439"
+      },
+      "gltf_deformation_scene_tests": {
+        "casesPassed": 25,
+        "xmlSha256": "217d9c17b6ed3e463059a7a11fe652282a476eab712d4112bd35cb9c897c798f",
+        "sourceSha256": "0cf31ccd33193f0f9aaf319421271a3bdb03e8bdb097667f359eac6f8d9821be",
+        "binarySha256": "3d1ca8e2df2516ba2ed350649c657236f4d785e709a78a7eb6b21d4419ce3b87"
+      },
+      "temporal_deformed_vertex_tests": {
+        "casesPassed": 8,
+        "xmlSha256": "c2c68652ed694029bbb9f4e7a586ef6b91e7465bc169ad346f8dc7d2ca0d4cc6",
+        "sourceSha256": "42f62d47c8cf8bc6709862685606f7e63e3810ac63cc1555e9d7dd89055bcb2d",
+        "binarySha256": "742ee4da880c1113ce40222fbd53124098100a728e6c0daf5a23619309c7a07a"
+      },
+      "scene_graph_tests": {
+        "casesPassed": 49,
+        "xmlSha256": "3c1424df087c894922670adede550d1529921a63154902e98f7b24149cde7dd4",
+        "sourceSha256": "c30ad1ea97ae4a7f10c6b74fcfcb895501c8798534803110fc51e89800a6fd19",
+        "binarySha256": "5ee14873a709bbb83069d001f9a566343077dbdf92c9b0fbfccc642e561e3059"
+      }
+    },
+    "componentBenchmark": {
+      "nodes": 50000,
+      "levels": 7,
+      "iterations": 6,
+      "cpuReferenceMs": 1.2188,
+      "hierarchyPrepareMs": 2.0636,
+      "hierarchyInputBytes": 41280,
+      "objectMetadataBytes": 5600000,
+      "objectMetadataPrepareMs": 0.897,
+      "gpuHierarchyMs": 0.7183
+    }
+  },
+  "baseline": {
+    "revision": "231ca2b8c2b5a29807b7f72cef2590d363212913",
+    "failedCase": "GpuHierarchyGpu.RetainedWorldsTrackTheRecordedShaderAcrossReloadPublication",
+    "actualDispatchedLevels": 0,
+    "expectedDispatchedLevels": 2,
+    "hierarchySourceSha256": "ad59dda5902fa3e6fd58993730e845a35b1c563300b3c45a7f8bc28a7e8da612",
+    "hierarchyObjectSha256": "458abf657a90ec58a666e55c5dca481c9af55dbc062c911474e31975ffbed056",
+    "testSourceSha256": "d0b949c7a0cbbe0968afe244606939eafb8b37c24bdacfd65fa770896791e4ca",
+    "testExecutableSha256": "1bef643a0ff673d1a48730831ddc11acfcc0a7fc9a3a1c70ebae97e7bdc2938c",
+    "junitSha256": "53fe4af70cdaca7ecbdafbe49e2a1a2bb7bdd54aff53af7e4ec3316c7b689a6c",
+    "logSha256": "5abba1a1251721efc19aef5c31128272a6d00486f753c785d8187b752154b89c"
+  },
+  "buildLogSha256": "8b6c915ad4fe3226c95ea14b2d444da8893b28db68a28b9b96dfbf3297481fd1",
+  "nativeOrchestrationSha256": "49c878e47c1afb3f04ab7321235cc278ff6064450cc45cb793f0b1346f1ba2ba",
+  "nativeTotals": {
+    "synchronizationValidated": {
+      "captures": 498,
+      "processes": 63
+    },
+    "timingWithoutValidation": {
+      "captures": 48,
+      "processes": 8
+    }
+  },
+  "missingEvidence": [],
+  "passed": true
+}
