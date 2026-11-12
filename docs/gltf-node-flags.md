@@ -44,19 +44,50 @@ The hierarchy's Visible, Selectable and Hoverable controls edit local flags.
 Undo/redo retains all three independently; grouped capture edits are one history
 command. A capture event can use
 `{"frame":2,"nodeFlags":{"sourceNode":3,"visible":false,"hoverable":true}}`.
+Edits and their undo/redo update existing authored flag properties in the
+evaluated glTF model, so behavior pointers read the same local values.
+Use `{"frame":3,"viewportPointer":{"action":"select","pixel":[320,180]}}`
+or `"hover"` to run the normal viewport handler on the completed frame. The
+behavior graph processes that input on the next frame. A sequence with these
+events uses scripted pointer input and retains the fixed timestep and camera track.
 Scene switches retain local edits while clearing selection and hover. Publication
 invalidates hover caches, refreshes visible lights/providers and resets temporal
 history. Light overrides follow source-node/dialect identities when visibility
-changes their compact runtime ordinals.
+changes their compact runtime ordinals. Hide and show preserve an authored
+light's edit history while that light's source binding exists.
 
 GLB and ASCII saves retain authored extension presence, empty/defaulted objects,
 explicit true values, unknown properties and extras. Editing a default true
 flag does not add an extension unless its new value is false. Source metadata
 is not copied to synthetic geometry children. Full light export includes hidden
 bindings and their edits/range scaling, while the current visible table selects
-the active authored sun.
+the active authored sun. Generated scene placement nodes carry renderer metadata
+that keeps them out of ancestor routing after reload. The authored root remains
+editable, including when its flags originally blocked selection and hover.
 
 ## Validation
+
+The November 12, 2026 Release build passed 662 test cases across 17 suites
+without skips and 142 native captures on an NVIDIA GeForce RTX 2080 SUPER.
+The run covered both raster techniques, ray shadows, DDGI, path tracing,
+Boolean animation and behavior pointers, scene switching, and the 4,097-draw
+inactive scene. Actual viewport events verified ancestor selection, stationary
+hover after resume, and grouped editor history. Both portable formats retained
+the blocked root and allowed enabling and undoing its authored flags. Vulkan
+and synchronization validation reported zero errors.
+[Windows NVIDIA verification report](../tests/visual-regression/node-flags/windows-nvidia/node-flags-results.json).
+
+Run the viewport, light history, portable reload, and ray checks with Python,
+NumPy, Pillow, an installed Khronos validation layer, and a Vulkan device with
+ray-query support.
+
+```powershell
+python tests/validation/node_flags_runtime.py `
+  --renderer out/build/windows-release/VulkanSceneRenderer.exe `
+  --output out/validation/node-flags --ray
+```
+
+### October 25, 2026 checkpoints
 
 Renderer `71e1b6327cde69f39ce1581b15169fd64c21df27279888ca59f3a409aa481b39`
 passes **904 cases across 40 executables**, with all four real Vulkan paths

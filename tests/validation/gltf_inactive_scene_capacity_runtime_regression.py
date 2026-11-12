@@ -174,6 +174,18 @@ def reject_oversized(renderer, output, source, technique, timeout):
                 diagnostic=CAPACITY_DIAGNOSTIC, log=str(log), command=command)
 
 
+def verify_runtime_manifest(path, renderer):
+    manifest = path.read_bytes()
+    verified = verify_manifest(path)
+    require(verified['sha256'] == hashlib.sha256(manifest).hexdigest(), 'Native freeze manifest changed while verifying')
+    frozen = {Path(name).resolve() for name in json.loads(manifest)['files']}
+    shaders = {shader.resolve() for shader in (renderer.parent / 'spv_shaders').rglob('*.spv') if shader.is_file()}
+    require(shaders, 'Renderer runtime contains no SPIR-V shaders to freeze')
+    missing = ({renderer.resolve()} | shaders) - frozen
+    require(not missing, f'Native freeze manifest omits the executable or shaders: {sorted(map(str, missing))}')
+    return dict(verified, shaderCount=len(shaders))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--renderer', required=True, type=Path)
@@ -208,8 +220,7 @@ def main():
             return
         require(renderer.is_file() and args.manifest is not None, 'Native execution requires renderer and frozen manifest')
         report['rendererSha256'] = hashlib.sha256(renderer.read_bytes()).hexdigest()
-        report['nativeManifestBefore'] = verify_manifest(args.manifest)
-        require(report['nativeManifestBefore']['entryCount'] == 94, 'Expected the complete 94-entry native freeze')
+        report['nativeManifestBefore'] = verify_runtime_manifest(args.manifest, renderer)
         (output / 'vk_layer_settings.txt').write_text('khronos_validation.validate_sync = true\n', encoding='utf-8')
         for technique in techniques:
             prefix = technique + '-capacity'
@@ -241,7 +252,8 @@ def main():
         require(len(report['captures']) == report['expectedCaptureCount'] and
                 len(report['checks']) == report['expectedCheckCount'], 'Incomplete native capacity matrix')
         require(hashlib.sha256(renderer.read_bytes()).hexdigest() == report['rendererSha256'], 'Renderer changed during validation')
-        report['nativeManifestAfter'] = verify_manifest(args.manifest)
+        report['nativeManifestAfter'] = verify_runtime_manifest(args.manifest, renderer)
+        require(report['nativeManifestAfter'] == report['nativeManifestBefore'], 'Frozen native manifest changed during validation')
         report['nativeValidationPerformed'] = True
         report['passed'] = True
     except Exception as error:

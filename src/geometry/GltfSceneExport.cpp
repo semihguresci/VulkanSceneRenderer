@@ -8,6 +8,7 @@
 #include <Container/geometry/GltfInstancing.h>
 #include <Container/geometry/GltfLinkedAssets.h>
 #include <Container/geometry/GltfNodeExportCompaction.h>
+#include <Container/geometry/GltfNodeFlags.h>
 #include <Container/geometry/GltfXmpMetadata.h>
 #include <Container/utility/SourcePrimitiveMapping.h>
 
@@ -457,6 +458,11 @@ bool needsScenePlacement(const ScenePlacement& placement) {
   for (int c=0;c<4;++c) for (int r=0;r<4;++r)
     if (placement.prefix[c][r] != (c == r ? 1.0 : 0.0)) return true;
   return false;
+}
+
+void markScenePlacementBoundary(tinygltf::Node& wrapper) {
+  wrapper.extras = tinygltf::Value(tinygltf::Value::Object{
+      {kScenePlacementBoundaryExtra, tinygltf::Value(true)}});
 }
 
 std::map<uint32_t, ScenePlacement> validateSceneRoots(const SceneExportSnapshot& snapshot) {
@@ -1755,6 +1761,9 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
     wrapper.name = output.nodes[size_t(nodeIndex)].name + " editor transform";
     setMatrix(wrapper, correction);
     wrapper.children = {nodeIndex};
+    const auto* parent = snapshot.graph.getNode(snapshot.graph.getNode(uint32_t(nodeIndex))->parent);
+    if (parent && parent->sourceNodeIndex >= 0 && parent->interactionRootBoundary)
+      markScenePlacementBoundary(wrapper);
     if (output.nodes.size() >= size_t(std::numeric_limits<int>::max())) fail("too many correction nodes");
     entries[nodeIndex] = static_cast<int>(output.nodes.size());
     output.nodes.push_back(std::move(wrapper));
@@ -1768,8 +1777,12 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
         static_cast<size_t>(snapshot.source->defaultScene) < snapshot.source->scenes.size())
       scene = snapshot.source->scenes[static_cast<size_t>(snapshot.source->defaultScene)];
     scene.nodes.assign(snapshot.graph.rootNodes().begin(), snapshot.graph.rootNodes().end());
-    for (auto& root : scene.nodes)
-      if (const auto wrapper = entries.find(root); wrapper != entries.end()) root = wrapper->second;
+    for (auto& root : scene.nodes) {
+      if (const auto wrapper = entries.find(root); wrapper != entries.end()) {
+        root = wrapper->second;
+        markScenePlacementBoundary(output.nodes[size_t(root)]);
+      }
+    }
     output.scenes = {std::move(scene)};
     output.defaultScene = 0;
   } else {
@@ -1779,6 +1792,7 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
     for (auto& [root, placement] : scenePlacements) {
       const auto correction = entries.find(static_cast<int>(root));
       placement.entry = correction == entries.end() ? static_cast<int>(root) : correction->second;
+      if (correction != entries.end()) markScenePlacementBoundary(output.nodes[size_t(correction->second)]);
       const auto parent = snapshot.graph.getNode(root)->parent;
       if (parent != scene::SceneGraph::kInvalidNode)
         std::erase(output.nodes[parent].children, placement.entry);
@@ -1790,6 +1804,7 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
         setLocalNodeFlag(wrapper, "KHR_node_visibility", "visible", placement.visible);
         setLocalNodeFlag(wrapper, "KHR_node_selectability", "selectable", placement.selectable);
         setLocalNodeFlag(wrapper, "KHR_node_hoverability", "hoverable", placement.hoverable);
+        markScenePlacementBoundary(wrapper);
         if (output.nodes.size() >= size_t(std::numeric_limits<int>::max())) fail("too many scene placement nodes");
         placement.entry = static_cast<int>(output.nodes.size());
         output.nodes.push_back(std::move(wrapper));

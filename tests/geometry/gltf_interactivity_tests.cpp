@@ -83,6 +83,48 @@ TEST(GltfInteractivity, BooleanPointersReadWriteAndRestoreAuthoredDefaults) {
   EXPECT_FALSE(player.started());
 }
 
+TEST(GltfInteractivity, BooleanPointersUseEditedFlagsAndHistoryRestoresMetadata) {
+  auto model = asset(Json::parse(R"json({
+    "types":[{"signature":"bool"}],
+    "declarations":[{"op":"event/onStart"},{"op":"pointer/get"},{"op":"flow/branch"},{"op":"pointer/set"}],
+    "nodes":[
+      {"declaration":0,"flows":{"out":{"node":2}}},
+      {"declaration":1,"configuration":{"pointer":{"value":["/nodes/0/extensions/KHR_node_selectability/selectable"]},"type":{"value":[0]}}},
+      {"declaration":2,"values":{"condition":{"node":1}},"flows":{"false":{"node":3}}},
+      {"declaration":3,"configuration":{"pointer":{"value":["/nodes/0/extensions/KHR_node_visibility/visible"]},"type":{"value":[0]}},
+        "values":{"value":{"type":0,"value":[true]}}}
+    ]})json"));
+  auto& node = model.nodes.front();
+  defineNodeFlags(node);
+  node.extensions.erase("KHR_node_hoverability");
+  const auto archive = node;
+  const auto edit = PrepareGltfNodeFlagEdit(node, archive, {false, false, false});
+  ApplyGltfNodeFlagEdit(node, edit.after);
+  EXPECT_FALSE(node.extensions.at("KHR_node_visibility").Get("visible").Get<bool>());
+  EXPECT_FALSE(node.extensions.at("KHR_node_selectability").Get("selectable").Get<bool>());
+  EXPECT_FALSE(node.extensions.contains("KHR_node_hoverability"));
+
+  GltfInteractivity player(model);
+  const auto dirty = player.advance(model, {}, 0);
+  EXPECT_TRUE(player.diagnostic().empty()) << player.diagnostic();
+  ASSERT_EQ(dirty.nodeFlags.size(), 1u);
+  EXPECT_EQ(dirty.nodeFlags.front().node, 0u);
+  EXPECT_EQ(dirty.nodeFlags.front().mask, uint8_t(GltfNodeFlag::Visibility));
+  EXPECT_TRUE(node.extensions.at("KHR_node_visibility").Get("visible").Get<bool>());
+
+  ApplyGltfNodeFlagEdit(node, edit.before);
+  EXPECT_EQ(node.extensions, archive.extensions);
+  ApplyGltfNodeFlagEdit(node, edit.after);
+  const auto restore = PrepareGltfNodeFlagEdit(node, archive, {true, true, std::nullopt});
+  ApplyGltfNodeFlagEdit(node, restore.after);
+  EXPECT_EQ(node.extensions, archive.extensions);
+  ApplyGltfNodeFlagEdit(node, restore.before);
+  EXPECT_FALSE(node.extensions.at("KHR_node_visibility").Get("visible").Get<bool>());
+  EXPECT_FALSE(node.extensions.at("KHR_node_selectability").Get("selectable").Get<bool>());
+  EXPECT_EQ(node.extensions.at("KHR_node_visibility").Get("extras"),
+            archive.extensions.at("KHR_node_visibility").Get("extras"));
+}
+
 TEST(GltfInteractivity, BooleanPointerTypeMismatchesUseInvalidReadAndErrorFlow) {
   auto model = asset(Json::parse(R"json({
     "types":[{"signature":"bool"},{"signature":"float"}],

@@ -1,6 +1,7 @@
 #include "../scene/camera_generation_test_support.h"
 
 #include <Container/ecs/World.h>
+#include <Container/renderer/lighting/ImportedSceneLightEdits.h>
 #include <Container/renderer/lighting/LightingManager.h>
 
 #include <bit>
@@ -143,6 +144,59 @@ TEST_F(LightEditGenerationGpu, ImportedPointPublishesActualDescriptorsForEveryIm
   EXPECT_EQ(manager->generationEpoch(),epoch);EXPECT_EQ(manager->geometryRevision(),geometry);EXPECT_EQ(manager->materialRevision(),material);
   EXPECT_EQ(world.entityCount(),worldCount);EXPECT_EQ(world.activeCamera(),camera);EXPECT_EQ(context.data(),contextBytes);
   EXPECT_EQ(world.registry().ctx().find<std::string>(),&context);
+}
+
+TEST_F(LightEditGenerationGpu, ImportedPointHistorySurvivesVisibilityAndRejectsSourceReplacement) {
+  const auto pointNode=node(5);
+  ASSERT_NE(pointNode,SceneGraph::kInvalidNode);
+  const auto initial=selected(EditableLightType::Point);
+  const auto spot=selected(EditableLightType::Spot);
+  ASSERT_TRUE(initial.available);
+  ASSERT_TRUE(spot.available);
+  auto edit=lighting->prepareLightEdit(initial.target,pointPatch());
+  const auto command=edit.command();
+  ASSERT_TRUE(publish(edit));
+
+  ImportedSceneLightEdits overrides;
+  const auto refresh=[&](auto change) {
+    auto edits=lighting->snapshotSceneLightEdits();
+    overrides.capture(manager->publishedAuthoredSceneLights(),edits);
+    change();
+    manager->refreshActiveScene(graph);
+    lighting->restoreSceneLightEdits(overrides.merge(manager->publishedAuthoredSceneLights(),std::move(edits)));
+    lighting->updateLightingData();
+    lighting->uploadLightingData();
+  };
+  refresh([&] { graph.setVisible(pointNode,false); });
+  const auto packedSpot=selected(EditableLightType::Spot);
+  EXPECT_EQ(packedSpot.target.id.index,initial.target.id.index);
+  EXPECT_EQ(packedSpot.target.incarnation,spot.target.incarnation);
+  EXPECT_THROW((void)lighting->prepareLightEditReplay(command,false),std::invalid_argument);
+  EXPECT_TRUE(command.applied());
+
+  refresh([&] { graph.setVisible(pointNode,true); });
+  EXPECT_EQ(selected(EditableLightType::Point).target.incarnation,initial.target.incarnation);
+  EXPECT_EQ(selected(EditableLightType::Point).light.intensity,11.f);
+  auto undo=lighting->prepareLightEditReplay(command,false);
+  ASSERT_TRUE(publish(undo));
+  EXPECT_EQ(selected(EditableLightType::Point).light.intensity,7.f);
+  auto redo=lighting->prepareLightEditReplay(command,true);
+  ASSERT_TRUE(publish(redo));
+  EXPECT_EQ(selected(EditableLightType::Point).light.intensity,11.f);
+
+  refresh([&] { graph.setVisible(pointNode,false); });
+  auto retirement=graph.prepareRetireSubtree(pointNode);
+  ASSERT_TRUE(retirement);
+  refresh([&] { ASSERT_TRUE(graph.publishRetirement(retirement)); });
+  EXPECT_THROW((void)lighting->prepareLightEditReplay(command,false),std::invalid_argument);
+  EXPECT_TRUE(command.applied());
+
+  resetLighting(lightAsset());
+  const auto replacement=selected(EditableLightType::Point);
+  EXPECT_EQ(replacement.target.id.index,initial.target.id.index);
+  EXPECT_NE(replacement.target.incarnation,initial.target.incarnation);
+  EXPECT_THROW((void)lighting->prepareLightEditReplay(command,false),std::invalid_argument);
+  EXPECT_EQ(selected(EditableLightType::Point).light.intensity,7.f);
 }
 
 TEST_F(LightEditGenerationGpu, AreaBasisAndSizeAndDirectionalUboAreReadFromPublishedSets) {

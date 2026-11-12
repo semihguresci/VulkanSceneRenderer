@@ -1,8 +1,10 @@
 #include <Container/renderer/core/RendererFrontend.h>
 
 #include <Container/renderer/lighting/DdgiManager.h>
+#include <Container/renderer/temporal/TemporalCapture.h>
 #include <Container/utility/GuiManager.h>
 #include <Container/utility/SceneManager.h>
+#include <Container/utility/SwapChainManager.h>
 
 #include <nlohmann/json.hpp>
 
@@ -13,10 +15,22 @@
 namespace container::renderer {
 using namespace container::geometry::gltf;
 
+void RendererFrontend::applyCaptureViewportPointer(const container::temporal::CaptureViewportPointer& pointer) {
+  const auto extent = svc_.swapChainManager.extent();
+  if (pointer.pixel.x >= extent.width || pointer.pixel.y >= extent.height)
+    throw std::invalid_argument("Capture viewportPointer pixel is outside the completed viewport");
+  using Action = container::temporal::CaptureViewportPointer::Action;
+  if (pointer.action == Action::Select)
+    selectMeshNodeAtCursor(pointer.pixel.x, pointer.pixel.y);
+  else
+    hoverMeshNodeAtCursor(pointer.pixel.x, pointer.pixel.y);
+}
+
 void RendererFrontend::resetGltfInteractivity() {
   gltfInteractivity_.reset();
   gltfInteractivityError_.clear();
   gltfInteractivityHoverChain_.clear();
+  hoverPickCache_.valid = false;
   if (!subs_.sceneManager) return;
   try {
     auto player = std::make_unique<GltfInteractivity>(subs_.sceneManager->animationSource());
@@ -29,6 +43,7 @@ void RendererFrontend::resetGltfInteractivity() {
 void RendererFrontend::pauseGltfInteractivity() {
   if (gltfInteractivity_) gltfInteractivity_->setPlaying(false);
   gltfInteractivityHoverChain_.clear();
+  hoverPickCache_.valid = false;
   gltfInteractivityRequest_ = {};
   if (subs_.guiManager) {
     auto& controls = subs_.guiManager->gltfAnimationControls();
@@ -54,11 +69,15 @@ AnimationDirtySet RendererFrontend::updateGltfInteractivity(double delta, bool& 
       dirty = player.reset(source);
       player.setPlaying(false);
       gltfInteractivityHoverChain_.clear();
+      hoverPickCache_.valid = false;
       discontinuity = true;
     }
     if (request.playing) {
+      if (player.playing() != *request.playing) {
+        gltfInteractivityHoverChain_.clear();
+        hoverPickCache_.valid = false;
+      }
       player.setPlaying(*request.playing);
-      if (!*request.playing) gltfInteractivityHoverChain_.clear();
     }
     gltfInteractivityError_.clear();
     if (request.event && !player.queueCustomEvent(*request.event))

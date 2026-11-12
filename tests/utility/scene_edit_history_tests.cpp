@@ -243,6 +243,55 @@ TEST(SceneEditHistory, GroupedNodeFlagsAreOneUndoStepAndRestoreAllLocals) {
   EXPECT_FALSE(graph.getNode(node)->hoverable);
 }
 
+TEST(SceneEditHistory, NodeFlagSourceActionsFollowLocalEditsAndPlayback) {
+  SceneGraph graph;
+  const auto node = graph.createNode(glm::mat4(1), 0);
+  std::array<bool, 3> source{true, true, true};
+  bool rejectPlayback = false;
+  History history(graph, {.prepareNodeFlags = [&](uint32_t target,
+      const History::NodeFlagChanges& changes) {
+    EXPECT_EQ(target, node);
+    const auto before = source;
+    return History::NodeFlagActions{
+        [&, before, changes] {
+          if (rejectPlayback) throw std::runtime_error("source unavailable");
+          for (size_t i = 0; i < before.size(); ++i)
+            if (changes[i]) source[i] = before[i];
+        },
+        [&, changes] {
+          for (size_t i = 0; i < changes.size(); ++i)
+            if (changes[i]) source[i] = *changes[i];
+        }};
+  }});
+  const auto matchesSource = [&] {
+    const auto& current = *graph.getNode(node);
+    EXPECT_EQ(source, (std::array{current.visible, current.selectable, current.hoverable}));
+  };
+
+  ASSERT_TRUE(history.setSelectable(node, false));
+  matchesSource();
+  ASSERT_TRUE(history.setNodeFlags(node, false, false, true));
+  matchesSource();
+  // A behavior write to an unchanged field survives both directions of replay.
+  graph.setHoverable(node, false);
+  source[2] = false;
+  rejectPlayback = true;
+  EXPECT_THROW(history.undo(), std::runtime_error);
+  EXPECT_EQ(source, (std::array{false, false, false}));
+  matchesSource();
+  rejectPlayback = false;
+  ASSERT_TRUE(history.undo());
+  EXPECT_EQ(source, (std::array{true, false, false}));
+  matchesSource();
+  ASSERT_TRUE(history.undo());
+  EXPECT_EQ(source, (std::array{true, true, false}));
+  matchesSource();
+  ASSERT_TRUE(history.redo());
+  ASSERT_TRUE(history.redo());
+  EXPECT_EQ(source, (std::array{false, false, false}));
+  matchesSource();
+}
+
 TEST(SceneEditHistory, TransformPlaybackRetainsExactImportedShear) {
   SceneGraph graph;
   const glm::mat4 before = sheared();

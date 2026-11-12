@@ -3,10 +3,16 @@
 #include <nlohmann/json_fwd.hpp>
 #include <tiny_gltf.h>
 
+#include <array>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace container::geometry::gltf {
+
+// Portable exports can fold import-only ancestry into scene entry wrappers.
+// This extras key identifies those wrappers for interaction routing on reload.
+inline constexpr char kScenePlacementBoundaryExtra[] = "VulkanSceneRenderer.scenePlacementBoundary";
 
 enum class GltfNodeFlag : uint8_t {
   Visibility = 1,
@@ -60,5 +66,17 @@ struct GltfNodeFlagData {
 // source group's flags. Effective values must not replace these local values.
 [[nodiscard]] GltfNodeFlagData ParseGltfNodeFlags(
     const tinygltf::Model& source, const GltfNodeFlagLimits& limits = {});
+
+struct GltfNodeFlagEdit {
+  GltfNodeFlags before, after;
+};
+
+// Keep editor changes on existing Object Model properties in sync with the
+// evaluated source. The archive decides which true values were explicit.
+// History restores exact evaluated property presence and never changes extras.
+[[nodiscard]] GltfNodeFlagEdit PrepareGltfNodeFlagEdit(
+    const tinygltf::Node& evaluated, const tinygltf::Node& authored,
+    const std::array<std::optional<bool>, 3>& changes);
+void ApplyGltfNodeFlagEdit(tinygltf::Node& evaluated, const GltfNodeFlags& flags);
 
 } // namespace container::geometry::gltf

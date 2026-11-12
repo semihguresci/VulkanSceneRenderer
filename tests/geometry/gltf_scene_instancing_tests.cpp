@@ -1,4 +1,5 @@
 #include <Container/utility/GltfSceneInstancing.h>
+#include <Container/geometry/GltfNodeFlags.h>
 #include <gtest/gtest.h>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -322,4 +323,32 @@ TEST(GltfSceneInstancing, EmptyFlagObjectsDefaultTrueAndSyntheticImportBoundarie
   EXPECT_TRUE(fallback.getNode(fallback.getNode(hit)->parent)->interactionRootBoundary);
   EXPECT_EQ(fallback.nearestSelectableAncestor(hit),hit);
   EXPECT_EQ(fallback.nearestHoverableAncestor(hit),hit);
+}
+
+TEST(GltfSceneInstancing, ScenePlacementMarkerRequiresSyntheticSceneEntryContext) {
+  using V = tinygltf::Value;
+  tinygltf::Model source;
+  source.meshes.resize(1);
+  source.meshes[0].primitives.resize(1);
+  source.nodes.resize(5);
+  source.scenes.resize(1);
+  source.scenes[0].nodes = {0, 3};
+  source.nodes[0].children = {1};
+  source.nodes[1].children = {2};
+  source.nodes[2].mesh = 0;
+  source.nodes[3].mesh = 0;
+  source.nodes[3].children = {4};
+  for (const auto index : {0, 1, 3}) {
+    auto& node = source.nodes[index];
+    node.name = "Authored scene placement";
+    node.matrix = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+  }
+  const auto marker = V(V::Object{{gltf::kScenePlacementBoundaryExtra, V(true)}});
+  source.nodes[1].extras = marker; // Nested under an ordinary authored node.
+  source.nodes[3].extras = marker; // A mesh node cannot be a placement wrapper.
+
+  const std::array<uint32_t, 1> materials{0};
+  const auto graph = BuildGltfSceneHierarchy(source, {}, materials);
+  for (uint32_t i = 0; i < graph.nodeCount(); ++i)
+    EXPECT_FALSE(graph.getNode(i)->interactionRootBoundary);
 }

@@ -690,6 +690,8 @@ class SceneManager {
   bool applyMaterialVariant(SceneGraph&,const MaterialVariantGraphEdit&,bool forward=true);
   [[nodiscard]] tinygltf::Model& animationSource() { return gltfModel_; }
   [[nodiscard]] const tinygltf::Model& animationSource() const { return gltfModel_; }
+  [[nodiscard]] container::geometry::gltf::GltfNodeFlagEdit prepareGltfNodeFlagEdit(
+      size_t sourceNode, const std::array<std::optional<bool>, 3>& changes) const;
   [[nodiscard]] container::geometry::gltf::GltfCameraAuthoringSourceView authoredCameraSourceView() const noexcept {
     return container::geometry::gltf::GltfCameraSourceView(exportSource_);
   }

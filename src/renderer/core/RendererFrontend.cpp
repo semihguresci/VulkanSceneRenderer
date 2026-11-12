@@ -3463,6 +3463,8 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   appendPhysicsTelemetry(json);
   appendGltfAnimationTelemetry(json);
   appendGltfInteractivityTelemetry(json);
+  if (sceneEdits_)
+    json["sceneEditHistory"] = {{"undo", sceneEdits_->undoCount()}, {"redo", sceneEdits_->redoCount()}};
   if (subs_.sceneManager) {
     auto& variants=json["gltfMaterialVariants"];
     const auto selected=subs_.sceneManager->selectedMaterialVariant();
@@ -3872,7 +3874,7 @@ void RendererFrontend::updateOpenVdbSequence() {
   vdbLoadedFrame_ = index;
 }
 
-void RendererFrontend::processInput(float deltaTime) {
+void RendererFrontend::processInput(float deltaTime, bool useViewportInput) {
   if (std::isfinite(deltaTime) && deltaTime > 0.0f)
     temporalFrameMilliseconds_ = std::min(deltaTime * 1000.0f, 250.0f);
   if (std::isfinite(deltaTime) && deltaTime > 0.0f)
@@ -3894,6 +3896,10 @@ void RendererFrontend::processInput(float deltaTime) {
   // and G-buffer passes cannot race a previous frame still reading them.
   syncCameraSelectionPivotOverride();
   subs_.cameraController->updateViewAnimation(deltaTime);
+  if (!useViewportInput) {
+    svc_.inputManager.endFrame();
+    return;
+  }
   const bool hasSelectedEditableLight =
       subs_.lightingManager &&
       subs_.lightingManager->selectedEditableLight().has_value();

@@ -141,6 +141,12 @@ struct CaptureComfyUi {
   uint64_t seed{1};
   bool wait{};
 };
+struct CaptureViewportPointer {
+  enum class Action { Select, Hover };
+  Action action{};
+  glm::uvec2 pixel{};
+};
+
 struct CaptureEvent {
   uint32_t frame{0};
   bool reset{false}, skip{false};
@@ -168,6 +174,7 @@ struct CaptureEvent {
   std::optional<float> exposure;
   std::optional<glm::uvec2> resize;
   std::optional<glm::uvec2> depthProbe;
+  std::optional<CaptureViewportPointer> viewportPointer;
   std::string technique{}, reload{}, guiReload{}, guiSampleModel{};
   std::string environment{};
   bool environmentAsync{};
@@ -665,17 +672,19 @@ public:
       }
       if (value.contains("gpuTransforms"))
         event.gpuTransforms = value.at("gpuTransforms").get<bool>();
-      if (value.contains("depthProbe")) {
-        const auto &pixel = value.at("depthProbe");
-        if (!pixel.is_array() || pixel.size() != 2)
-          throw std::invalid_argument("Capture depthProbe requires two pixel coordinates");
-        const auto coordinate = [](const nlohmann::json &component) {
-          if (!component.is_number_integer() || component.get<double>() < 0 ||
-              component.get<double>() > 16384)
-            throw std::invalid_argument("Capture depthProbe coordinates must be integers in [0,16384]");
-          return component.get<uint32_t>();
-        };
-        event.depthProbe = glm::uvec2(coordinate(pixel[0]), coordinate(pixel[1]));
+      if (value.contains("depthProbe"))
+        event.depthProbe = capturePixel(value.at("depthProbe"), "depthProbe");
+      if (value.contains("viewportPointer")) {
+        const auto& pointer = value.at("viewportPointer");
+        nodeFields(pointer, {"action", "pixel"}, "viewport pointer");
+        if (!pointer.contains("action") || !pointer.at("action").is_string() || !pointer.contains("pixel"))
+          throw std::invalid_argument("Capture viewportPointer requires an action and pixel");
+        const auto& action = pointer.at("action").get_ref<const std::string&>();
+        using Action = CaptureViewportPointer::Action;
+        if (action != "select" && action != "hover")
+          throw std::invalid_argument("Capture viewportPointer action must be select or hover");
+        event.viewportPointer = CaptureViewportPointer{action == "select" ? Action::Select : Action::Hover,
+            capturePixel(pointer.at("pixel"), "viewportPointer")};
       }
       event.technique = value.value("technique", std::string{});
       if (!event.technique.empty() && event.technique != "forward-raster" &&
@@ -840,11 +849,25 @@ public:
   [[nodiscard]] bool capturesTelemetry(uint32_t frame) const {
     return std::ranges::binary_search(telemetryFrames_, frame);
   }
+  [[nodiscard]] bool hasViewportPointer() const {
+    return std::ranges::any_of(events_, [](const auto& event) { return event.viewportPointer.has_value(); });
+  }
   uint32_t frameCount{0};
   std::vector<uint32_t> sampleFrames;
 
 private:
   std::vector<uint32_t> telemetryFrames_;
+
+  static glm::uvec2 capturePixel(const nlohmann::json& pixel, const char* label) {
+    if (!pixel.is_array() || pixel.size() != 2)
+      throw std::invalid_argument(std::string("Capture ") + label + " requires two pixel coordinates");
+    const auto coordinate = [label](const nlohmann::json& component) {
+      if (!component.is_number_integer() || component.get<double>() < 0 || component.get<double>() > 16384)
+        throw std::invalid_argument(std::string("Capture ") + label + " coordinates must be integers in [0,16384]");
+      return component.get<uint32_t>();
+    };
+    return {coordinate(pixel[0]), coordinate(pixel[1])};
+  }
 
   static float lightNumber(const nlohmann::json& value) {
     if(!value.is_number()) throw std::invalid_argument("Capture light values require numeric float components");

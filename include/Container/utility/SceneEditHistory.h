@@ -37,6 +37,10 @@ public:
   struct ReparentActions {
     std::function<bool()> undo, redo;
   };
+  using NodeFlagChanges = std::array<std::optional<bool>, 3>; // Visible, Selectable, Hoverable
+  struct NodeFlagActions {
+    std::function<void()> undo, redo;
+  };
 
   struct Callbacks {
     // Validation runs before graph mutation, including during undo/redo.
@@ -51,6 +55,9 @@ public:
     // Empty actions use the built-in graph path; providing only one is invalid.
     std::function<ReparentActions(NodeIndex, const Placement&, const Placement&)> prepareReparent;
     std::function<void(NodeIndex)> beforeNodeMetadata;
+    // Prepare any matching source-property changes before applying the graph edit.
+    // The returned actions publish atomically before the local graph setters.
+    std::function<NodeFlagActions(NodeIndex, const NodeFlagChanges&)> prepareNodeFlags;
   };
 
   explicit SceneEditHistory(scene::SceneGraph &graph, Callbacks callbacks = {},
@@ -102,47 +109,19 @@ public:
   }
 
   bool setVisible(NodeIndex node, bool visible) {
-    sync();
-    const auto *current = graph_.getNode(node);
-    if (!current || current->retired || current->visible == visible)
-      return false;
-    const bool before = current->visible;
-    EditHistory::Command command{
-        "Visibility",
-        [this, node, before] { return applyVisible(node, before); },
-        [this, node, visible] { return applyVisible(node, visible); }};
-    if (!applyVisible(node, visible))
-      return false;
-    history_.record(std::move(command));
-    transformMergeNode_.reset();
-    changed();
-    return true;
+    return setFlags(node, {visible, std::nullopt, std::nullopt}, "Visibility");
   }
 
   bool setSelectable(NodeIndex node, bool selectable) {
-    return setInteractionFlag(node, selectable, false);
+    return setFlags(node, {std::nullopt, selectable, std::nullopt}, "Selectability");
   }
 
   bool setHoverable(NodeIndex node, bool hoverable) {
-    return setInteractionFlag(node, hoverable, true);
+    return setFlags(node, {std::nullopt, std::nullopt, hoverable}, "Hoverability");
   }
 
   bool setNodeFlags(NodeIndex node, bool visible, bool selectable, bool hoverable) {
-    sync();
-    const auto* current = graph_.getNode(node);
-    if (!current || current->retired) return false;
-    const std::array before{current->visible, current->selectable, current->hoverable};
-    const std::array after{visible, selectable, hoverable};
-    if (before == after) return false;
-    EditHistory::Command command{
-        "Node flags",
-        [this, node, before] { return applyNodeFlags(node, before); },
-        [this, node, after] { return applyNodeFlags(node, after); }};
-    if (!applyNodeFlags(node, after)) return false;
-    history_.record(std::move(command));
-    transformMergeNode_.reset();
-    changed();
-    return true;
+    return setFlags(node, {visible, selectable, hoverable}, "Node flags");
   }
 
   // Preserve the current world matrix when choosing a new parent. Playback
@@ -355,43 +334,38 @@ private:
     return true;
   }
 
-  bool applyVisible(NodeIndex node, bool visible) {
+  bool applyFlags(NodeIndex node, const NodeFlagChanges& flags,
+                  const std::function<void()>& applySource) {
     if (!graph_.getNode(node) || graph_.isNodeRetired(node))
       return false;
     if (callbacks_.beforeNodeMetadata) callbacks_.beforeNodeMetadata(node);
-    graph_.setVisible(node, visible);
+    if (applySource) applySource();
+    if (flags[0]) graph_.setVisible(node, *flags[0]);
+    if (flags[1]) graph_.setSelectable(node, *flags[1]);
+    if (flags[2]) graph_.setHoverable(node, *flags[2]);
     return true;
   }
 
-  bool applyInteractionFlag(NodeIndex node, bool value, bool hover) {
-    if (!graph_.getNode(node) || graph_.isNodeRetired(node)) return false;
-    if (callbacks_.beforeNodeMetadata) callbacks_.beforeNodeMetadata(node);
-    if (hover) graph_.setHoverable(node, value);
-    else graph_.setSelectable(node, value);
-    return true;
-  }
-
-  bool applyNodeFlags(NodeIndex node, const std::array<bool, 3>& flags) {
-    if (!graph_.getNode(node) || graph_.isNodeRetired(node)) return false;
-    if (callbacks_.beforeNodeMetadata) callbacks_.beforeNodeMetadata(node);
-    graph_.setVisible(node, flags[0]);
-    graph_.setSelectable(node, flags[1]);
-    graph_.setHoverable(node, flags[2]);
-    return true;
-  }
-
-  bool setInteractionFlag(NodeIndex node, bool value, bool hover) {
+  bool setFlags(NodeIndex node, const NodeFlagChanges& requested, const char* label) {
     sync();
     const auto* current = graph_.getNode(node);
     if (!current || current->retired) return false;
-    const bool before = hover ? current->hoverable : current->selectable;
-    if (before == value) return false;
+    const std::array local{current->visible, current->selectable, current->hoverable};
+    NodeFlagChanges before, after;
+    for (size_t i = 0; i < requested.size(); ++i) {
+      if (!requested[i] || *requested[i] == local[i]) continue;
+      before[i] = local[i];
+      after[i] = requested[i];
+    }
+    if (before == after) return false;
+    auto source = callbacks_.prepareNodeFlags ? callbacks_.prepareNodeFlags(node, after) : NodeFlagActions{};
+    if (bool(source.undo) != bool(source.redo))
+      throw std::logic_error("Incomplete source node flag history actions");
     EditHistory::Command command{
-        hover ? "Hoverability" : "Selectability",
-        [this, node, before, hover] { return applyInteractionFlag(node, before, hover); },
-        [this, node, value, hover] { return applyInteractionFlag(node, value, hover); }};
-    if (!applyInteractionFlag(node, value, hover)) return false;
-    history_.record(std::move(command));
+        label,
+        [this, node, before, apply = std::move(source.undo)] { return applyFlags(node, before, apply); },
+        [this, node, after, apply = std::move(source.redo)] { return applyFlags(node, after, apply); }};
+    if (!history_.execute(std::move(command))) return false;
     transformMergeNode_.reset();
     changed();
     return true;
