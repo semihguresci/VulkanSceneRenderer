@@ -1962,7 +1962,7 @@ struct SceneManager::LinkedSceneBaseline {
 
 void SceneManager::captureLinkedSceneBaseline(const SceneGraph& graph) {
   linkedSceneBaseline_.reset();
-  if (!linkedComposition_ || linkedComposition_->primaryAnimated ||
+  if (!linkedComposition_ || linkedComposition_->primaryAnimated || linkedComposition_->primaryBinary ||
       gltfModel_.extensions.contains("KHR_interactivity")) return;
   constexpr size_t maxBytes = 64 * 1024 * 1024;
   size_t bytes = graph.nodeCount() * sizeof(SceneNode);
@@ -1984,24 +1984,19 @@ void SceneManager::captureLinkedSceneBaseline(const SceneGraph& graph) {
   linkedSceneBaseline_ = std::move(baseline);
 }
 
-void SceneManager::saveLinkedScene(const SceneGraph& graph,
+bool SceneManager::trySaveLinkedSceneManifest(const SceneGraph& graph,
     const std::filesystem::path& destination) const {
   using namespace container::geometry::gltf;
-  if (!linkedComposition_) throw std::runtime_error("The primary scene has no retained linked asset manifest");
-  if (std::ranges::any_of(linkedComposition_->placements, [&](int sourceNode) {
+  if (!linkedComposition_ || !linkedSceneBaseline_ ||
+      std::ranges::any_of(linkedComposition_->placements, [&](int sourceNode) {
         return !isLinkedSourceCarrier(size_t(sourceNode));
       }))
-    throw std::runtime_error("The scene contains an editable linked source. Use portable Save As.");
-  if (!linkedSceneBaseline_)
-    throw std::runtime_error("Linked save requires a static primary manifest within the linked authoring budget. Use portable Save As.");
+    return false;
   const auto& baseline = *linkedSceneBaseline_;
-  const auto refuseEdits = [] {
-    throw std::runtime_error("Linked save can retain primary node transforms and names. Use portable Save As for other scene edits.");
-  };
   if (baseline.graph != graph.identity() || baseline.nodes.size() != graph.nodeCount() ||
       baseline.geometry != geometryRevision_ || baseline.material != materialRevision_ ||
       baseline.authoredMaterial != authoredMaterialRevision_ || baseline.materialResources != materialResourceRevision_ ||
-      baseline.camera != cameraEvaluationRevision_) refuseEdits();
+      baseline.camera != cameraEvaluationRevision_) return false;
   const auto fixedFields = [](const SceneNode& node) {
     return std::tie(node.parent, node.children, node.materialIndex, node.primitiveIndex, node.sourceNodeIndex,
         node.editorSceneRoot, node.meshOwnerGraphNode, node.renderable, node.visible, node.sourceMeshIndex,
@@ -2012,11 +2007,11 @@ void SceneManager::saveLinkedScene(const SceneGraph& graph,
   for (uint32_t id = 0; id < graph.nodeCount(); ++id) {
     const auto& current = *graph.getNode(id);
     const auto& original = baseline.nodes[id];
-    if (fixedFields(current) != fixedFields(original)) refuseEdits();
+    if (fixedFields(current) != fixedFields(original)) return false;
     const bool renamed = current.name != original.name;
     const bool moved = current.localTransform != original.localTransform;
     if (!renamed && !moved) continue;
-    if (current.sourceNodeIndex < 0 || size_t(current.sourceNodeIndex) >= linkedComposition_->primaryNodes) refuseEdits();
+    if (current.sourceNodeIndex < 0 || size_t(current.sourceNodeIndex) >= linkedComposition_->primaryNodes) return false;
     GltfLinkedPlacementEdit edit{current.sourceNodeIndex};
     if (renamed) edit.name = current.name;
     if (moved) {
@@ -2028,6 +2023,7 @@ void SceneManager::saveLinkedScene(const SceneGraph& graph,
     edits.push_back(std::move(edit));
   }
   writeLinkedSceneManifest(*linkedComposition_, edits, selectedScene_, destination);
+  return true;
 }
 
 void SceneManager::compactRetiredMaterialExport(tinygltf::Model& detached) const {

@@ -104,6 +104,162 @@ def verify_picks(state):
         assert pick["resolvedSelection"] == pick["graphNode"], pick
 
 
+NESTED_CARRIER = "Nested panel carrier"
+# Centers at ±.75 project here with the runner's 45-degree FOV, z=4, and 640x360 viewport.
+NESTED_PICK_PIXELS = ([239, 180], [401, 180])
+
+
+def nested_fixture(output):
+    primary, baked = fixture(output)
+    model = json.loads(primary.read_text(encoding="utf-8"))
+    old_buffer = primary.parent / "Shared mesh.bin"
+    old_buffer.rename(old_buffer.with_name("Shared #mesh.bin"))
+    model["files"][1]["uri"] = "Shared%20%23mesh.bin"
+    nested_files = copy.deepcopy(model["files"])
+    nested_files[0]["uri"] = "./Sample%20panel.gltf"
+    for file in nested_files[1:]:
+        file["uri"] = "../" + file["uri"]
+    for alias in nested_files[0]["aliases"]:
+        alias["alias"] = "./" + alias["alias"]
+    write_json(primary.parent / "parts" / "Nested source.gltf", {
+        "asset": {"version": "2.1", "minVersion": "2.1"},
+        "files": nested_files, "externalAssets": [{"file": 0}],
+        "nodes": [{"name": NESTED_CARRIER, "externalAsset": 0, "translation": [.25, 0, 0]}],
+        "scenes": [{"nodes": [0]}], "scene": 0,
+    })
+    model["externalAssets"].append({"file": len(model["files"])})
+    model["files"].append({"uri": "parts/Nested%20source.gltf", "mimeType": "model/gltf+json"})
+    model["nodes"][1].update(externalAsset=1, translation=[.5, 0, 0])
+    write_json(primary, model)
+
+    # Use separate meshes with literal world positions and an embedded texture
+    # so the control shares neither transform composition nor alias resolution.
+    asset = Asset()
+    normals = asset.accessor("VEC3", [[0, 0, 1]] * 4)
+    uv = asset.accessor("VEC2", [[0, 0], [1, 0], [1, 1], [0, 1]])
+    left = mesh(asset, asset.accessor("VEC3", [[-1.05, -.28, 0], [-.45, -.28, 0],
+                                               [-.45, .28, 0], [-1.05, .28, 0]]), normals, uv)
+    right = copy.deepcopy(left)
+    right["attributes"]["POSITION"] = asset.accessor("VEC3", [[.45, -.28, 0], [1.05, -.28, 0],
+                                                              [1.05, .28, 0], [.45, .28, 0]])
+    asset.model["meshes"].append({"primitives": [right]})
+    asset.model["nodes"] = [{"name": f"Placement {i}", "mesh": i} for i in range(2)]
+    asset.model["scenes"][0]["nodes"] = [0, 1]
+    textured_material(asset)
+    asset.write(baked)
+
+    sequence = output / "nested-selection.json"
+    events = []
+    for frame, pixel in zip((3, 6), NESTED_PICK_PIXELS, strict=True):
+        events.extend(({"frame": frame - 2, "viewportPointer": {"action": "select", "pixel": pixel}},
+                       {"frame": frame, "depthProbe": pixel}))
+    write_json(sequence, {"schemaVersion": 1, "frames": 6, "sampleFrames": [3, 6], "events": events})
+    return primary, baked, sequence
+
+
+def verify_nested_picks(rows, *, linked, baked):
+    hits = []
+    for panel, (row, pixel) in enumerate(zip(rows, NESTED_PICK_PIXELS, strict=True)):
+        state = row["state"]
+        geometry = state["gltfInstancing"]
+        assert (geometry["drawCount"], geometry["sourceVertexCount"], geometry["sourceIndexCount"]) == (
+            (2, 8, 12) if baked else (2, 4, 6)), geometry
+        tables = state["gltfMerge"]["sourceTables"]
+        assert tables["meshes"] == (2 if baked else 1), tables
+        assert all(tables[kind] == 1 for kind in ("buffers", "images", "textures", "samplers")), tables
+        if linked:
+            assert tables["materials"] == 1, tables
+
+        probe = state["depthProbe"]
+        assert probe["pixel"] == pixel and probe["opaque"] > 0, probe
+        interaction = probe["sceneInteraction"]
+        raw_id = interaction["rawGpuId"]
+        assert type(raw_id) is int and raw_id > 0 and interaction["gpu"] is not None, interaction
+        hit = interaction["gpu"]["hit"]
+        assert hit is not None and hit == interaction["cpu"]["hit"], interaction
+        assert hit == interaction["gpu"]["selection"] == interaction["cpu"]["selection"], interaction
+        assert state["gui"]["selectedMeshNodeId"] == hit["graphNode"], state["gui"]
+        assert hit["sourceNode"] >= 0 and hit["sourcePrimitive"] == 0 and hit["sourceInstance"] == -1, hit
+
+        flags = state["gltfNodeFlags"]
+        assert not flags["truncated"], flags
+        nodes = {node["graphNode"]: node for node in flags["nodes"]}
+        assert nodes[hit["graphNode"]]["linkedReadOnly"] is linked, hit
+        ancestry = []
+        current = hit["graphNode"]
+        while current != -1:
+            node = nodes[current]
+            ancestry.append(node["name"])
+            current = node["parentGraphNode"]
+        assert f"Placement {panel}" in ancestry and f"Placement {1 - panel}" not in ancestry, ancestry
+        assert (NESTED_CARRIER in ancestry) == (panel == 1 and not baked), ancestry
+
+        bindings = state["gltfMaterialBindings"]
+        assert not bindings["drawsTruncated"] and not bindings["materialsTruncated"], bindings
+        draw, = (draw for draw in bindings["draws"] if draw["graphNode"] == hit["graphNode"])
+        material, = (material for material in bindings["materials"]
+                     if material["runtimeMaterial"] == draw["runtimeMaterial"])
+        assert material["active"] and material["authored"]["pbrMetallicRoughness"]["baseColorTexture"]["index"] == 0, material
+        hits.append({**hit, "pixel": pixel, "rawGpuId": raw_id, "ancestry": ancestry,
+                     "runtimeMaterial": draw["runtimeMaterial"], "firstIndex": draw["firstIndex"]})
+    for key in ("rawGpuId", "graphNode", "sourceNode"):
+        assert hits[0][key] != hits[1][key], hits
+    for key in ("sourceMesh", "firstIndex"):
+        assert (hits[0][key] == hits[1][key]) == (not baked), hits
+    assert hits[0]["runtimeMaterial"] == hits[1]["runtimeMaterial"], hits
+    return hits
+
+
+def run_nested_linked(renderer, output, records, common):
+    primary, baked, sequence = nested_fixture(output / "nested")
+    companion = primary.with_name("nested-companion.gltf")
+    techniques = ("deferred-raster", "forward-raster")
+    portable = {technique: output / f"nested-portable.{suffix}"
+                for technique, suffix in zip(techniques, ("gltf", "glb"), strict=True)}
+    input_hashes = {path.relative_to(primary.parent): hashlib.sha256(path.read_bytes()).hexdigest()
+                    for path in primary.parent.rglob("*") if path.is_file()}
+    references, checks = {}, []
+    options = (*common, "--no-ray-query")
+    linked_options = (*options, "--experimental-gltf-linked-assets")
+
+    def capture(source, technique, case, *, save=None, extra=options, linked=False):
+        rows = run(renderer, output, source, f"nested-{technique}-{case}", technique, "lit", records,
+                   sequence=sequence, save=save, extra=extra, require_validation=True)
+        hits = verify_nested_picks(rows, linked=linked, baked=case == "baked")
+        frames = [pixels(Path(row["image"])) for row in rows]
+        if case == "baked":
+            for frame, (x, y) in zip(frames, NESTED_PICK_PIXELS, strict=True):
+                region = frame[y - 16:y + 16, x - 18:x + 18]
+                assert len(np.unique(region.reshape(-1, 3), axis=0)) > 2, "Aliased texture control is uniform"
+            references[technique] = frames
+        else:
+            for actual, expected in zip(frames, references[technique], strict=True):
+                np.testing.assert_array_equal(actual, expected)
+        checks.extend({"technique": technique, "case": case, **hit} for hit in hits)
+
+    for technique in techniques:
+        capture(baked, technique, "baked")
+        write_companion = technique == techniques[0]
+        capture(primary, technique, "linked", save=None if write_companion else portable[technique], linked=True,
+                extra=(*linked_options, "--save-linked-scene", str(companion)) if write_companion else linked_options)
+        assert json.loads(companion.read_text(encoding="utf-8")) == json.loads(primary.read_text(encoding="utf-8"))
+        capture(companion, technique, "companion", save=portable[technique] if write_companion else None,
+                extra=linked_options, linked=True)
+        model, _ = load_asset(portable[technique])
+        assert model["asset"]["version"] == "2.0" and "files" not in model and "externalAssets" not in model
+        assert len(model["meshes"]) == len(model["textures"]) == len(model["images"]) == 1
+
+    offline = primary.parent.with_name("nested-inputs-offline")
+    primary.parent.rename(offline)
+    assert not primary.exists() and not companion.exists()
+    assert all(hashlib.sha256((offline / path).read_bytes()).hexdigest() == digest
+               for path, digest in input_hashes.items())
+    for technique in techniques:
+        capture(portable[technique], technique, "source-free")
+    assert len(checks) == 16, checks
+    return checks
+
+
 def verify_portable_xmp(model):
     packets = model["extensions"][XMP]["packets"]
     assert [entry["xmp:Label"] for entry in packets] == [
@@ -654,6 +810,7 @@ def main():
     only = parser.add_mutually_exclusive_group()
     only.add_argument("--animated-only", action="store_true")
     only.add_argument("--editable-only", action="store_true")
+    only.add_argument("--nested-only", action="store_true")
     args = parser.parse_args()
     renderer, output = args.renderer.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -661,6 +818,13 @@ def main():
     (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="utf-8")
     records = []
     common = ("--import-scale", "1", "--sky", "plain")
+    if args.nested_only:
+        nested_checks = run_nested_linked(renderer, output, records, common)
+        assert hashlib.sha256(renderer.read_bytes()).hexdigest() == renderer_digest
+        write_json(output / "results.json", {"passed": True, "rendererSha256": renderer_digest,
+                   "captures": records, "nestedChecks": nested_checks})
+        print("PASS nested linked geometry, aliases, GPU picks and source-free reloads", flush=True)
+        return
     if args.animated_only or args.editable_only:
         regression = run_animated_linked if args.animated_only else run_editable_linked
         regression(renderer, output, records, common)
@@ -751,8 +915,10 @@ def main():
         np.testing.assert_array_equal(pixels(Path(flattened["image"])), edited[technique])
     run_animated_linked(renderer, output, records, common)
     run_editable_linked(renderer, output, records, common)
+    nested_checks = run_nested_linked(renderer, output, records, common)
     assert hashlib.sha256(renderer.read_bytes()).hexdigest() == renderer_digest
-    write_json(output / "results.json", {"passed": True, "rendererSha256": renderer_digest, "captures": records})
+    write_json(output / "results.json", {"passed": True, "rendererSha256": renderer_digest,
+               "captures": records, "nestedChecks": nested_checks})
     print("PASS linked geometry, picks, animation, reference preservation and pixel-exact portable reload", flush=True)
 
 

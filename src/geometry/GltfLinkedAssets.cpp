@@ -6,6 +6,8 @@
 #include <Container/geometry/GltfSceneCatalog.h>
 #include <Container/utility/ModelImportCancellation.h>
 
+#include "GltfSourceJson.h"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -51,9 +53,16 @@ int hex(char digit) {
   return -1;
 }
 
+char asciiLower(char value) {
+  return value >= 'A' && value <= 'Z' ? char(value - 'A' + 'a') : value;
+}
+
 Path relativeUri(std::string_view uri, std::string_view context) {
-  if (uri.starts_with("data:")) fail(context, "embedded/data-URI linked files are unsupported");
+  if (std::ranges::equal(uri.substr(0, 5), std::string_view{"data:"}, std::ranges::equal_to{}, asciiLower))
+    fail(context, "embedded/data-URI linked files are unsupported");
   if (uri.empty() || uri.size() > 4096) fail(context, "expected a nonempty bounded relative URI");
+  if (uri.find_first_of("?#") != std::string_view::npos)
+    fail(context, "expected a local relative file URI without a query or fragment");
   std::u8string decoded;
   decoded.reserve(uri.size());
   for (size_t i = 0; i < uri.size(); ++i) {
@@ -65,7 +74,7 @@ Path relativeUri(std::string_view uri, std::string_view context) {
       if (value == '/') fail(context, "encoded path separators are unsupported");
       i += 2;
     }
-    if (value < 32 || value == 127 || value == '\\' || value == ':' || value == '?' || value == '#')
+    if (value < 32 || value == 127 || value == '\\' || value == ':')
       fail(context, "expected a local relative file URI without a query or fragment");
     decoded.push_back(static_cast<char8_t>(value));
   }
@@ -115,10 +124,16 @@ std::string_view stringField(const Json& object, const char* name, std::string_v
 }
 
 size_t index(const Json& value, size_t count, std::string_view context) {
-  if (!value.is_number_integer() || (!value.is_number_unsigned() && value.get<int64_t>() < 0) ||
-      value.get<uint64_t>() >= count)
-    fail(context, "index is outside its source table");
-  return value.get<size_t>();
+  if (value.is_number_integer() && (value.is_number_unsigned() || value.get<int64_t>() >= 0)) {
+    const auto number = value.get<uint64_t>();
+    if (number < count) return static_cast<size_t>(number);
+  } else if (value.is_number_float()) {
+    // glTF permits integral numbers written with a decimal or exponent.
+    const auto number = value.get<double>();
+    if (number >= 0 && number < static_cast<double>(count) && std::trunc(number) == number)
+      return static_cast<size_t>(number);
+  }
+  fail(context, "index is outside its source table");
 }
 
 const Json& table(const Json& manifest, const char* key) {
@@ -459,9 +474,7 @@ class Composition {
     if (std::ranges::any_of(ancestry_, [&](const auto& parent) { return sameFile(parent, path); }))
       fail(utf8(owner.source), "reference cycle through '" + utf8(file.uri) + "'");
     auto extension = utf8(path.extension());
-    std::ranges::transform(extension, extension.begin(), [](char value) {
-      return value >= 'A' && value <= 'Z' ? char(value - 'A' + 'a') : value;
-    });
+    std::ranges::transform(extension, extension.begin(), asciiLower);
     if ((file.mimeType == "model/gltf+json" && extension != ".gltf") ||
         (file.mimeType == "model/gltf-binary" && extension != ".glb"))
       fail(utf8(owner.source), "linked file MIME type and suffix disagree for '" + utf8(file.uri) + "'");
@@ -694,6 +707,7 @@ tinygltf::Model LoadGltfLinkedComposition(const Path& path, const GltfLinkedDocu
     composition->source = primary.source;
     composition->primaryNodes = document.manifest.nodeFiles.size();
     composition->primaryAnimated = !document.model.animations.empty();
+    composition->primaryBinary = document.binary;
     for (size_t node = 0; node < document.manifest.nodeFiles.size(); ++node)
       if (document.manifest.nodeFiles[node] >= 0) composition->placements.push_back(int(node));
   }
@@ -760,15 +774,10 @@ Path linkedSaveTarget(const GltfLinkedCompositionInfo& composition, const Path& 
   const auto targetRoot = std::filesystem::canonical(target.parent_path(), error);
   if (error || !sameFile(targetRoot, composition.source.parent_path()))
     fail(utf8(target), "save beside the original linked manifest to retain relative URIs and aliases");
-  const auto ascii = [](const Path& path) {
-    auto extension = utf8(path.extension());
-    std::ranges::transform(extension, extension.begin(), [](char value) {
-      return value >= 'A' && value <= 'Z' ? char(value - 'A' + 'a') : value;
-    });
-    return extension == ".gltf";
-  };
-  if (!ascii(target) || !ascii(composition.source))
-    fail(utf8(target), "reference-preserving save currently requires ASCII .gltf manifests");
+  auto extension = utf8(target.extension());
+  std::ranges::transform(extension, extension.begin(), asciiLower);
+  if (extension != ".gltf")
+    fail(utf8(target), "reference-preserving save requires an ASCII .gltf companion");
   if (composition.placements.empty() || !composition.inputs.contains(composition.source))
     fail(utf8(target), "no retained linked placement source");
   ValidateGltfLinkedExportDestination(composition, target);
@@ -781,12 +790,15 @@ void verifyResolution(const Path& requested, const Path& canonical) {
     fail(utf8(requested), "linked URI resolution changed after import");
 }
 
-void verifyContents(const Path& path, GltfLinkedFileContents expected, std::string* contents = nullptr) {
+void verifyContents(const Path& path, GltfLinkedFileContents expected, std::string* manifest = nullptr,
+    bool binary = false) {
   std::error_code error;
   if (std::filesystem::file_size(path, error) != expected.size || error)
     fail(utf8(path), "linked input changed after import");
   std::ifstream stream(path, std::ios::binary);
-  if (contents) contents->reserve(size_t(expected.size));
+  const uint64_t jsonBegin = binary ? detail::kGlbJsonOffset : 0;
+  uint64_t jsonEnd = binary ? 0 : expected.size;
+  if (manifest && !binary) manifest->reserve(size_t(expected.size));
   std::array<unsigned char, 64 * 1024> chunk;
   uint64_t hash = kContentHashSeed;
   uint64_t remaining = expected.size;
@@ -794,12 +806,26 @@ void verifyContents(const Path& path, GltfLinkedFileContents expected, std::stri
     const auto count = size_t(std::min<uint64_t>(remaining, chunk.size()));
     if (!stream.read(reinterpret_cast<char*>(chunk.data()), std::streamsize(count)))
       fail(utf8(path), "could not read the imported linked input");
-    hash = hashContent(hash, std::span(chunk).first(count));
-    if (contents) contents->append(reinterpret_cast<const char*>(chunk.data()), count);
+    const auto bytes = std::span(chunk).first(count);
+    hash = hashContent(hash, bytes);
+    if (manifest) {
+      const auto chunkBegin = expected.size - remaining;
+      if (binary && chunkBegin == 0) {
+        if (const auto length = detail::GlbJsonChunkLength(bytes, expected.size)) {
+          jsonEnd = jsonBegin + *length;
+          manifest->reserve(*length);
+        }
+      }
+      const auto begin = std::max(chunkBegin, jsonBegin);
+      const auto end = std::min(chunkBegin + count, jsonEnd);
+      if (begin < end) manifest->append(reinterpret_cast<const char*>(bytes.data() + size_t(begin - chunkBegin)),
+                                        size_t(end - begin));
+    }
     remaining -= count;
   }
   if (!stream || stream.peek() != std::char_traits<char>::eof() || hash != expected.hash)
     fail(utf8(path), "linked input changed after import");
+  if (manifest && binary && !jsonEnd) fail(utf8(path), "invalid GLB header or JSON chunk");
 }
 
 void verifyRetainedPlacements(const GltfLinkedCompositionInfo& composition, std::vector<bool> retained) {
@@ -844,6 +870,8 @@ void verifyRetainedPlacements(const GltfLinkedCompositionInfo& composition, std:
 Json BuildGltfLinkedManifestForSave(const GltfLinkedCompositionInfo& composition,
     std::span<const GltfLinkedPlacementEdit> edits, size_t selectedScene, const Path& destination) {
   const auto target = linkedSaveTarget(composition, destination);
+  if (composition.primaryBinary)
+    fail(utf8(target), "manifest-only save requires an ASCII .gltf source");
   for (const auto& [requested, canonical] : composition.resolutions)
     verifyResolution(requested, canonical);
   std::string manifest;
@@ -879,7 +907,7 @@ Json BuildGltfLinkedHybridManifest(const GltfLinkedCompositionInfo& composition,
     fail(utf8(target), "retained carriers exceed the primary linked placements");
 
   std::string text;
-  verifyContents(composition.source, composition.inputs.at(composition.source), &text);
+  verifyContents(composition.source, composition.inputs.at(composition.source), &text, composition.primaryBinary);
   const auto original = Json::parse(text);
   const auto& nodes = original.at("nodes");
   const auto& files = table(original, "files");

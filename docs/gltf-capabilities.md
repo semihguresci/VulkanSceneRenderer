@@ -24,6 +24,8 @@ using the draft layout. A linked manifest must declare version 2.1 and may
 require 2.0 or 2.1. Primary load and Import / Merge use the same profile.
 Without the option, linked manifests fail with an opt-in diagnostic. This
 profile leaves the normal glTF 2.0 extension and codec gates in place.
+Ordinary documents opened with the option use their usual resource resolver
+and input budget.
 [Pinned reference](https://github.com/nvpro-samples/vk_gltf_renderer/tree/174625d5c621c088bf3610377999f9dbdcf5c3b5),
 [external-assets draft](https://github.com/KhronosGroup/glTF/issues/2586),
 [unified file references draft](https://github.com/KhronosGroup/glTF/issues/2590),
@@ -37,6 +39,8 @@ absolute paths, network URIs, malformed percent escapes, embedded linked files,
 missing references and cycles before scene publication. A detached import has
 limits of 16 link levels, 64 source/alias contexts, 4,096 placements, 262,144
 nodes and 512 MiB of encoded input. The existing merge resource limits also apply.
+Percent-encode a filename's `#` as `%23`. Literal URI queries and fragments
+are rejected. [URI syntax](https://www.rfc-editor.org/rfc/rfc3986#section-2.2)
 
 Repeated placements share mesh, buffer, texture and material definitions from
 the same canonical source and alias context. The selected child scene is copied

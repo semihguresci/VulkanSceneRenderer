@@ -222,21 +222,21 @@ animations share their sample data across placements. Save Linked As keeps
 these definitions in the referenced source files.
 
 **Save Linked As** and `--save-linked-scene PATH` write a companion ASCII
-`.gltf` beside the primary manifest so each relative URI keeps its meaning.
-With all families linked, the companion preserves the original URI, alias,
-and external-asset tables. It records the selected scene and edits to primary
-node names and local transforms.
+`.gltf` beside the primary `.gltf` or `.glb` so each relative URI keeps its
+meaning. A static ASCII primary with only name or local transform edits keeps
+its original URI, alias, and external-asset tables.
 
-After Make Editable, the companion also includes the current editable
-geometry, materials, and hierarchy. It keeps only the URI links and alias
-rows needed by the remaining families, and reloads their clips and resources
+The companion can also include current inline geometry, materials, hierarchy,
+and authored clips. This covers edits to the primary scene and families
+detached through Make Editable. The companion keeps the URI links and alias
+rows needed by the remaining families and reloads their clips and resources
 from those files. Save from the authored rest pose. The writer verifies
 remaining dependencies before replacing the destination. Detached dependency
 files can be absent. Use portable Save As for an active animation, a selected
-material variant, an interactive primary scene, or a copy independent of all
-linked sources. A hybrid companion can retain links from the primary
-manifest. Live links from merged manifests and linked lights with scaled
-ranges or emitter sizes require portable Save As.
+material variant, or a copy independent of all linked sources. Live links from
+merged manifests and linked lights with scaled ranges or emitter sizes require
+portable Save As. Inline export of a scene with interactivity also requires
+portable Save As.
 
 This API exports one primary runtime scene. The UI integration must reject
 mixed BIM/USD content, or clearly name a primary-scene-only export scope.
