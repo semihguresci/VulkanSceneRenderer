@@ -313,10 +313,10 @@ void RendererFrontend::saveSceneModel(const std::filesystem::path& outputPath, b
   if (keepLinks && gltfAnimation_ && gltfAnimation_->selectedClip())
     throw std::runtime_error("Linked save requires the authored rest pose. Use portable Save As for the active animation.");
   const auto* composition = keepLinks ? manager.linkedPrimaryComposition() : nullptr;
-  const bool hybrid = composition && std::ranges::any_of(composition->placements, [&](int source) {
-    return !manager.isLinkedSourceCarrier(size_t(source));
-  });
-  if (keepLinks && !hybrid) {
+  if (keepLinks && !composition)
+    throw std::runtime_error("The primary scene has no retained linked asset manifest");
+  manager.validateSceneExportDestination(outputPath);
+  if (composition) {
     const auto hasEdits = [](const SceneLightEdits& edits) {
       const auto anyOverride = [](const auto& values) {
         return std::ranges::any_of(values, [](const auto& value) { return value.has_value(); });
@@ -331,18 +331,16 @@ void RendererFrontend::saveSceneModel(const std::filesystem::path& outputPath, b
     const auto anyImported = [](const auto& overrides) {
       return std::ranges::any_of(overrides, [](const auto& entry) { return entry.second.has_value(); });
     };
-    if (hasEdits(current) || anyImported(imported.points) || anyImported(imported.areas) || anyImported(imported.directionals) ||
+    const bool hasLightEdits = hasEdits(current) || anyImported(imported.points) ||
+        anyImported(imported.areas) || anyImported(imported.directionals) ||
         std::ranges::any_of(gltfSceneLightEdits_, [&](const auto& entry) {
           return entry.first != active && hasEdits(*entry.second);
-        }))
-      throw std::runtime_error("Linked save cannot retain light edits. Use portable Save As.");
-    manager.saveLinkedScene(sceneGraph_, outputPath);
-    return;
+        });
+    if (!hasLightEdits && manager.trySaveLinkedSceneManifest(sceneGraph_, outputPath)) return;
   }
-  manager.validateSceneExportDestination(outputPath);
   std::optional<LinkedExportPlan> linked;
   GltfLinkedPortableExportOptions projection;
-  if (hybrid) {
+  if (composition) {
     linked = planLinkedExport(manager, sceneGraph_, *composition);
     projection = {linked->linkedGraphNodes, linked->omittedAnimations, &linked->resources};
   }

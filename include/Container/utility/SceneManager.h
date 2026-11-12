@@ -679,7 +679,9 @@ class SceneManager {
   [[nodiscard]] bool canMakeLinkedAssetEditable(const SceneGraph&, uint32_t graphNode) const noexcept;
   size_t makeLinkedAssetEditable(const SceneGraph&, uint32_t graphNode);
   void validateSceneExportDestination(const std::filesystem::path&) const;
-  void saveLinkedScene(const SceneGraph&, const std::filesystem::path&) const;
+  // Return false when live changes need an inline export. Source verification
+  // and write failures throw once the manifest-only path is selected.
+  [[nodiscard]] bool trySaveLinkedSceneManifest(const SceneGraph&, const std::filesystem::path&) const;
   // Raw graph-slot IDs in buildSceneExport's initial node table. Apply this
   // projection only after light/camera overlays; appended export wrappers use
   // different IDs and never belong to a retired graph subtree.

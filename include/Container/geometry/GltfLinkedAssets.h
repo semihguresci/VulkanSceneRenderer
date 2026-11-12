@@ -81,6 +81,7 @@ struct GltfLinkedCompositionInfo {
   std::filesystem::path source;
   size_t primaryNodes{};
   bool primaryAnimated{};
+  bool primaryBinary{};
   std::vector<int> placements;
   std::map<std::filesystem::path, std::filesystem::path> resolutions;
   std::map<std::filesystem::path, GltfLinkedFileContents> inputs;
@@ -139,6 +140,7 @@ struct GltfLinkedReadContext {
 struct GltfLinkedDocument {
   tinygltf::Model model;
   GltfLinkedManifest manifest;
+  bool binary{};
 };
 
 using GltfLinkedDocumentReader = std::function<GltfLinkedDocument(const GltfLinkedReadContext&)>;

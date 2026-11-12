@@ -1375,10 +1375,30 @@ TEST(GltfSceneExport, LinkedDraftRejectsUnsafeAndUnresolvableReferencesWithConte
   };
   rejected(document("missing.gltf"), "missing linked file 'missing.gltf'");
   rejected(document("data:model/gltf+json;base64,e30="), "embedded/data-URI");
+  rejected(document("DATA:model/gltf+json;base64,e30="), "embedded/data-URI");
+  auto embedded = document("unused.gltf");
+  embedded["files"][0].erase("uri");
+  embedded["files"][0]["bufferView"] = 0;
+  rejected(embedded, "embedded linked files are unsupported");
   rejected(document("http://localhost/model.gltf"), "relative file URI");
+  rejected(document("root.gltf?revision=1"), "without a query or fragment");
+  rejected(document("root.gltf#scene"), "without a query or fragment");
   rejected(document("root%zz.gltf"), "malformed percent escape");
   writeText(directory.root / "outside.gltf", document("none.gltf").dump());
   rejected(document("../outside.gltf"), "escapes the primary asset directory");
+  const auto externalSource = directory.root / "escaped-resource.gltf";
+  writeSceneExport({cubeGraph(), Model::MakeCube()}, externalSource);
+  auto externalResource = Json::parse(readText(externalSource));
+  externalResource["buffers"][0]["uri"] = "../" + externalResource["buffers"][0]["uri"].get<std::string>();
+  writeText(root / "child.gltf", externalResource.dump());
+  rejected(document("child.gltf"), "escapes the primary asset directory");
+  const auto primaryTables = document("child.gltf");
+  externalResource["asset"]["version"] = "2.1";
+  externalResource["files"] = primaryTables["files"];
+  externalResource["externalAssets"] = primaryTables["externalAssets"];
+  externalResource["nodes"].push_back({{"externalAsset", 0}});
+  externalResource["scenes"][0]["nodes"].push_back(externalResource["nodes"].size() - 1);
+  rejected(externalResource, "escapes the primary asset directory");
   writeText(root / "inner.gltf", document("./root.gltf").dump());
   rejected(document("inner.gltf"), "reference cycle");
   writeText(root / "behavior.gltf", R"json({
@@ -1398,6 +1418,61 @@ TEST(GltfSceneExport, LinkedDraftRejectsUnsafeAndUnresolvableReferencesWithConte
   for (int i = 1; i <= 17; ++i)
     writeText(root / (std::to_string(i) + ".gltf"), document(std::to_string(i + 1) + ".gltf").dump());
   rejected(document("1.gltf"), "nesting exceeds 16 levels");
+}
+
+TEST(GltfSceneExport, LinkedDraftAcceptsIntegralDecimalAndExponentIndices) {
+  using namespace container::geometry::gltf;
+  using Json = nlohmann::json;
+  ExportDirectory directory;
+  const auto leaf = directory.root / "leaf.gltf";
+  writeSceneExport({cubeGraph(), Model::MakeCube()}, leaf);
+  auto child = Json::parse(readText(leaf));
+  const auto buffer = child["buffers"][0]["uri"].get<std::string>();
+  child["buffers"][0]["uri"] = "aliased.bin";
+  writeText(leaf, child.dump());
+  const auto primary = directory.root / "primary.gltf";
+  const std::string manifest = R"({
+    "asset":{"version":"2.1"},
+    "files":[{"uri":"leaf.gltf","mimeType":"model/gltf+json",
+              "aliases":[{"alias":"aliased.bin","file":1e0}]},
+             {"uri":)" + Json(buffer).dump() + R"(,"mimeType":"application/octet-stream"}],
+    "externalAssets":[{"file":0.0}],"nodes":[{"externalAsset":0e0}],
+    "scenes":[{"nodes":[0]}],"scene":0
+  })";
+  writeText(primary, manifest);
+  LoadOptions options;
+  options.enableLinkedAssets = true;
+  const auto linked = LoadModelWithSource(primary.string(), options);
+  ASSERT_TRUE(linked.linkedComposition);
+  ASSERT_EQ(linked.gltfModel.meshes.size(), 1u);
+  ASSERT_EQ(linked.linkedComposition->placementRecords.size(), 1u);
+  const auto companion = directory.root / "companion.gltf";
+  writeLinkedSceneManifest(*linked.linkedComposition, {}, 0, companion);
+  const auto reopened = LoadModelWithSource(companion.string(), options);
+  ASSERT_EQ(reopened.gltfModel.buffers.size(), 1u);
+  EXPECT_EQ(reopened.gltfModel.buffers[0].data, linked.gltfModel.buffers[0].data);
+  const std::array carriers{GltfLinkedHybridCarrier{0, 0}};
+  const auto hybrid = BuildGltfLinkedHybridManifest(*linked.linkedComposition, carriers,
+      directory.root / "hybrid.gltf");
+  EXPECT_EQ(hybrid.at("files").at(0).at("aliases").at(0).at("file"), 1);
+  EXPECT_EQ(hybrid.at("externalAssets").at(0).at("file"), 0);
+  EXPECT_EQ(hybrid.at("nodeExternalAssets").at(0).at("externalAsset"), 0);
+
+  const auto rejected = [&](const char* field, Json replacement, std::string_view context) {
+    auto invalid = Json::parse(manifest);
+    invalid[Json::json_pointer(field)] = std::move(replacement);
+    writeText(primary, invalid.dump());
+    try {
+      (void)LoadModelWithSource(primary.string(), options);
+      ADD_FAILURE() << "Expected invalid linked index at " << field;
+    } catch (const std::runtime_error& error) {
+      EXPECT_TRUE(std::string_view(error.what()).contains(context)) << error.what();
+      EXPECT_TRUE(std::string_view(error.what()).contains("index is outside its source table")) << error.what();
+    }
+  };
+  rejected("/files/0/aliases/0/file", 1.5, "files[0]");
+  rejected("/externalAssets/0/file", uint64_t(4294967296), "externalAssets[0]");
+  rejected("/nodes/0/externalAsset", -1.0, "nodes[0].externalAsset");
 }
 
 TEST(GltfSceneExport, RoundTripsRgbaVertexColorsThroughPortableGltfAndGlb) {

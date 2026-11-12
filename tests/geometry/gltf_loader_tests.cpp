@@ -1239,6 +1239,40 @@ TEST(GltfIesProfiles, EmbedsValidResourcesAndKeepsOptionalPunctualFallback) {
   EXPECT_THROW(gltf::LoadSourceModel(path.string()), std::runtime_error);
 }
 
+TEST(GltfModelLoader, LinkedOptInPreservesOrdinaryRelativeResourcesAndRequiredIes) {
+  namespace gltf = container::geometry::gltf;
+  const auto original = writeTriangleGltf("ordinary-with-linked-opt-in", {0, 1, 2});
+  const auto child = original.parent_path() / "ordinary-scene";
+  std::filesystem::create_directories(child);
+  std::ofstream(child / "luminaire.ies", std::ios::binary) << kAsymmetricIes;
+  const auto path = child / original.filename();
+  auto source = readGltfJson(original);
+  source["buffers"][0]["uri"] = "../ordinary-with-linked-opt-in.bin";
+  source["extensionsUsed"] = {gltf::kGltfIesExtension};
+  source["extensionsRequired"] = {gltf::kGltfIesExtension};
+  source["extensions"][gltf::kGltfIesExtension]["lights"] = {{{"uri", "luminaire.ies"}}};
+  source["nodes"][0]["extensions"] = {{gltf::kGltfIesExtension, {{"light", 0}}}};
+  gltf::LoadOptions linked;
+  linked.enableLinkedAssets = true;
+  for (const auto version : {"2.0", "2.1", "2.2"}) {
+    SCOPED_TRACE(version);
+    source["asset"] = {{"version", version}, {"minVersion", "2.0"}};
+    writeGltfJson(path, source);
+    const auto ordinary = gltf::LoadModelWithSource(path.string());
+    const auto optedIn = gltf::LoadModelWithSource(path.string(), linked);
+    EXPECT_FALSE(optedIn.linkedComposition);
+    EXPECT_EQ(optedIn.gltfModel.asset.version, version);
+    EXPECT_EQ(optedIn.gltfModel.buffers.at(0).data, ordinary.gltfModel.buffers.at(0).data);
+    EXPECT_EQ(optedIn.gltfModel.extensionsRequired, ordinary.gltfModel.extensionsRequired);
+    const auto* uri = gltf::GltfIesEmbeddedProfileUri(optedIn.gltfModel, 0);
+    ASSERT_NE(uri, nullptr);
+    EXPECT_EQ(gltf::DecodeGltfIesProfileUri(*uri), kAsymmetricIes);
+    ASSERT_EQ(optedIn.capabilityDiagnostics.size(), ordinary.capabilityDiagnostics.size());
+    for (size_t i = 0; i < ordinary.capabilityDiagnostics.size(); ++i)
+      EXPECT_EQ(optedIn.capabilityDiagnostics[i].code, ordinary.capabilityDiagnostics[i].code);
+  }
+}
+
 TEST(GltfIesProfiles, ExternalProfileReadConsumesTheLoaderInputBudget) {
   namespace gltf = container::geometry::gltf;
   const auto path = writeTriangleGltf("ies-profile-budget", {0, 1, 2});

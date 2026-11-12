@@ -207,8 +207,9 @@ Portable Save As also supports a scene merged from different linked manifests.
 A focused regression checks colliding relative resource names and alias keys,
 merge undo/redo, source-free glTF/GLB reload and protection of both input roots.
 All 24 captures and 52 checks pass in both raster techniques, including 20
-pixel-exact comparisons against independent static controls. Evidence is under
-`build/codex-gltf-validation/linked-merged-export-native/results.json`.
+pixel-exact comparisons against independent static controls. The verification
+also covers distinct GPU picks for nested placements and companion reloads
+with inline edits and animation. [Windows NVIDIA results](../tests/visual-regression/gltf-linked-assets/windows-nvidia/gltf-linked-assets-results.json)
 The hierarchy marks linked payloads read-only and offers **Make Editable**
 for their shared placement family. Detaching the family clears scene edit
 history. Save Linked As writes the detached family and its edits inline while
@@ -222,21 +223,21 @@ animations share their sample data across placements. Save Linked As keeps
 these definitions in the referenced source files.
 
 **Save Linked As** and `--save-linked-scene PATH` write a companion ASCII
-`.gltf` beside the primary manifest so each relative URI keeps its meaning.
-With all families linked, the companion preserves the original URI, alias,
-and external-asset tables. It records the selected scene and edits to primary
-node names and local transforms.
+`.gltf` beside the primary `.gltf` or `.glb` so each relative URI keeps its
+meaning. A static ASCII primary with only name or local transform edits keeps
+its original URI, alias, and external-asset tables.
 
-After Make Editable, the companion also includes the current editable
-geometry, materials, and hierarchy. It keeps only the URI links and alias
-rows needed by the remaining families, and reloads their clips and resources
+The companion can also include current inline geometry, materials, hierarchy,
+and authored clips. This covers edits to the primary scene and families
+detached through Make Editable. The companion keeps the URI links and alias
+rows needed by the remaining families and reloads their clips and resources
 from those files. Save from the authored rest pose. The writer verifies
 remaining dependencies before replacing the destination. Detached dependency
 files can be absent. Use portable Save As for an active animation, a selected
-material variant, an interactive primary scene, or a copy independent of all
-linked sources. A hybrid companion can retain links from the primary
-manifest. Live links from merged manifests and linked lights with scaled
-ranges or emitter sizes require portable Save As.
+material variant, or a copy independent of all linked sources. Live links from
+merged manifests and linked lights with scaled ranges or emitter sizes require
+portable Save As. Inline export of a scene with interactivity also requires
+portable Save As.
 
 This API exports one primary runtime scene. The UI integration must reject
 mixed BIM/USD content, or clearly name a primary-scene-only export scope.

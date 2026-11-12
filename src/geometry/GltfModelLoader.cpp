@@ -9,6 +9,8 @@
 #include <Container/geometry/GltfMerge.h>
 #include <Container/geometry/GltfXmpMetadata.h>
 
+#include "GltfSourceJson.h"
+
 #include <Container/geometry/Mesh.h>
 #include <Container/utility/ModelImportCancellation.h>
 
@@ -883,16 +885,10 @@ nlohmann::json parseSourceJson(const std::vector<unsigned char>& bytes, bool bin
                                const std::stop_token& stop) {
   size_t begin = 0, length = bytes.size();
   if (binary) {
-    auto word = [&](size_t offset) {
-      return uint32_t(bytes[offset]) | (uint32_t(bytes[offset + 1]) << 8) |
-             (uint32_t(bytes[offset + 2]) << 16) | (uint32_t(bytes[offset + 3]) << 24);
-    };
-    if (bytes.size() < 20 || word(0) != 0x46546c67 || word(4) != 2 ||
-        word(8) != bytes.size() || word(16) != 0x4e4f534a ||
-        word(12) > bytes.size() - 20)
-      throw std::invalid_argument("invalid GLB header or JSON chunk");
-    begin = 20;
-    length = word(12);
+    const auto chunkLength = detail::GlbJsonChunkLength(bytes, bytes.size());
+    if (!chunkLength) throw std::invalid_argument("invalid GLB header or JSON chunk");
+    begin = detail::kGlbJsonOffset;
+    length = *chunkLength;
   }
   nlohmann::json::parser_callback_t checkpoint;
   if (stop.stop_possible()) {
@@ -1475,8 +1471,10 @@ tinygltf::Model loadGltfModel(const std::string& path,
   ImageSourcePlan imageSources;
   std::vector<ParserImageReference> parserImageReferences;
   std::vector<std::vector<unsigned char>> stagedImages;
-  uintmax_t remainingBytes = options.maxInputBytes;
-  uintmax_t imageAllocationBudget = options.maxInputBytes;
+  const auto* linkedRead = linkedContext && linkedContext->child ? linkedContext : nullptr;
+  uintmax_t inputBudget = linkedRead ? *linkedBudget : options.maxInputBytes;
+  uintmax_t remainingBytes = inputBudget;
+  uintmax_t imageAllocationBudget = inputBudget;
   CompressionSourcePlan compressionPlan;
   std::optional<GltfXmpImport> xmp;
   struct LinkedResource { std::filesystem::path path; std::string originalUri; };
@@ -1530,7 +1528,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
           checkModelImportCancellation(stop);
           if (options.requireSelfContained && sourceRead)
             return syntheticSize(filename).has_value();
-          if (linkedContext && sourceRead)
+          if (linkedRead && sourceRead)
             return syntheticSize(filename).has_value() || linkedResource(filename) != nullptr;
           return syntheticSize(filename).has_value() || tinygltf::FileExists(filename, nullptr);
         }, tinygltf::ExpandFilePath,
@@ -1550,12 +1548,12 @@ tinygltf::Model loadGltfModel(const std::string& path,
             if (error) *error = "self-contained glTF cannot read external resources";
             return false;
           }
-          const auto* resource = linkedContext && sourceRead ? linkedResource(filename) : nullptr;
-          if (linkedContext && sourceRead && !resource) {
+          const auto* resource = linkedRead && sourceRead ? linkedResource(filename) : nullptr;
+          if (linkedRead && sourceRead && !resource) {
             if (error) *error = "unmapped external URI in linked glTF";
             return false;
           }
-          const auto filePath = resource ? resource->path : linkedContext ? linkedContext->source :
+          const auto filePath = resource ? resource->path : !sourceRead && linkedContext ? linkedContext->source :
               std::filesystem::path(std::u8string(filename.begin(), filename.end()));
           std::error_code code;
           const uintmax_t bytes = std::filesystem::file_size(filePath, code);
@@ -1585,8 +1583,8 @@ tinygltf::Model loadGltfModel(const std::string& path,
           }
           remainingBytes -= bytes;
           auto* linkedComposition = linkedContext ? linkedContext->composition : nullptr;
-          if (sourceRead && linkedComposition && !linkedComposition->source.empty())
-            linkedContext->observe(filePath, *output);
+          if (sourceRead && linkedRead && linkedComposition && !linkedComposition->source.empty())
+            linkedRead->observe(filePath, *output);
           if (!sourceRead) {
             try {
               auto json = parseSourceJson(*output, isBinaryGltf(path), stop);
@@ -1605,10 +1603,19 @@ tinygltf::Model loadGltfModel(const std::string& path,
               }
               checkModelImportCancellation(stop);
               auto linked = PrepareGltfLinkedManifest(json, linkedContext != nullptr, stop);
-              if (linkedComposition) {
+              if (linked.normalized && !linkedRead) {
+                // The option also opens ordinary assets. Select the linked
+                // budget and URI sandbox only after identifying a draft.
+                linkedRead = linkedContext;
+                inputBudget = *linkedBudget;
+                if (bytes > inputBudget)
+                  throw std::invalid_argument("glTF linked assets exceed the aggregate encoded input budget");
+                remainingBytes = inputBudget - bytes;
+              }
+              if (linkedRead && linkedComposition) {
                 if (!linked.nodeFiles.empty() && linkedComposition->source.empty())
                   linkedComposition->source = filePath;
-                if (!linkedComposition->source.empty()) linkedContext->observe(filePath, *output);
+                if (!linkedComposition->source.empty()) linkedRead->observe(filePath, *output);
               }
               const bool normalizedLinkedManifest = linked.normalized;
               const bool linkedChild = linkedContext && linkedContext->child;
@@ -1699,7 +1706,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
                 bool rewritten = xmp->rewroteManifest() || normalizedLinkedManifest ||
                     normalizedSamplerFields || normalizedVariantIndices || normalizedHierarchyIndices || normalizedInstancingFields ||
                     discardedMicromaps || omittedOptional;
-                if (linkedContext) {
+                if (linkedRead) {
                   for (const auto* table : {"buffers", "images"}) {
                     auto records = json.find(table);
                     if (records == json.end() || !records->is_array()) continue;
@@ -1709,7 +1716,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
                       const auto& text = uri->get_ref<const std::string&>();
                       if (text.starts_with("data:")) continue;
                       const auto name = prefix + "linked_" + std::to_string(linkedResources.size()) + ".bin";
-                      linkedResources.emplace(name, LinkedResource{linkedContext->resource(text), text});
+                      linkedResources.emplace(name, LinkedResource{linkedRead->resource(text), text});
                       *uri = name;
                       rewritten = true;
                     }
@@ -1726,10 +1733,8 @@ tinygltf::Model loadGltfModel(const std::string& path,
                     throw std::invalid_argument("glTF decoded/instance/node/material output byte count overflows");
                   retainedBytes += bytes;
                 }
-                if (options.maxInputBytes != std::numeric_limits<uintmax_t>::max())
-                  imageAllocationBudget = options.maxInputBytes -
-                      preflightBoundedGltf(json, bytes, options.maxInputBytes,
-                          retainedBytes);
+                if (inputBudget != std::numeric_limits<uintmax_t>::max())
+                  imageAllocationBudget = inputBudget - preflightBoundedGltf(json, bytes, inputBudget, retainedBytes);
                 for (const auto& placeholder : compressionPlan.placeholders) {
                   const auto uri = prefix + std::to_string(placeholder.bufferIndex) + ".bin";
                   syntheticBuffers.emplace(uri, 1);
@@ -1768,7 +1773,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
             if (error) *error = "self-contained glTF cannot read external resources";
             return false;
           }
-          if (linkedContext && sourceRead) {
+          if (linkedRead && sourceRead) {
             const auto* resource = linkedResource(filename);
             if (!resource) {
               if (error) *error = "unmapped external URI in linked glTF";
@@ -1788,7 +1793,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
     if (!loader.SetFsCallbacks(std::move(callbacks), &err))
       throw gltfError("glTF asset '" + path + "'", "Cannot configure glTF input: " + err);
     loader.SetMaxExternalFileSize(static_cast<size_t>(std::min<uintmax_t>(
-        options.maxInputBytes, std::numeric_limits<size_t>::max())));
+        inputBudget, std::numeric_limits<size_t>::max())));
   }
 
   bool loaded = false;
@@ -1828,7 +1833,6 @@ tinygltf::Model loadGltfModel(const std::string& path,
     if (compressionStatistics.dracoPrimitives || compressionStatistics.meshoptViews ||
         compressionStatistics.fallbackPrimitives || compressionStatistics.fallbackViews)
       discardOpacityMicromapMetadata(model);
-    if (linkedBudget) *linkedBudget = remainingBytes;
     for (auto& buffer : model.buffers)
       if (const auto* resource = linkedResource(buffer.uri)) buffer.uri = resource->originalUri;
     for (auto& image : model.images)
@@ -1837,12 +1841,13 @@ tinygltf::Model loadGltfModel(const std::string& path,
     (void)ParseGltfNodeFlags(model);
     const bool iesRequired = std::ranges::find(model.extensionsRequired, kGltfIesExtension) != model.extensionsRequired.end();
     for (const auto& message : PrepareGltfIesProfiles(model, std::filesystem::u8path(path).parent_path(),
-             !options.requireSelfContained && !linkedContext, remainingBytes)) {
+             !options.requireSelfContained && !linkedRead, remainingBytes)) {
       if (iesRequired) throw std::invalid_argument(message);
       CapabilityDiagnostic diagnostic{CapabilitySeverity::Warning, "unsupported_ies_profile", path, message};
       std::clog << formatCapabilityDiagnostic(diagnostic) << std::endl;
       if (diagnostics) diagnostics->push_back(std::move(diagnostic));
     }
+    if (linkedRead) *linkedBudget = remainingBytes;
     try {
       ValidateGltfInteractivity(model);
     } catch (const std::invalid_argument& error) {
@@ -1857,7 +1862,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
     if (!options.decodeImages) return model;
     // Sponza's ordinary source images total about272MiB of decoded RGBA.
     // Keep a finite asset-wide default while retaining per-image codec bounds.
-    uintmax_t remainingDecodedImages = std::min<uintmax_t>(options.maxInputBytes, 512ull * 1024 * 1024);
+    uintmax_t remainingDecodedImages = std::min<uintmax_t>(inputBudget, 512ull * 1024 * 1024);
     std::vector<bool> selectedAlternate(model.images.size());
     for (const auto& selected : imageSources.textures)
       if (selected.kind != TextureImageSourceKind::Core) selectedAlternate[size_t(selected.imageIndex)] = true;
@@ -1940,13 +1945,14 @@ tinygltf::Model loadGltfComposition(const std::string& path, const LoadOptions& 
   if (!options.enableLinkedAssets) return loadGltfModel(path, options, diagnostics);
   uintmax_t remaining = std::min<uintmax_t>(options.maxInputBytes, 512ull * 1024 * 1024);
   const auto reader = [&](const GltfLinkedReadContext& context) {
-    if (!remaining) throw std::runtime_error("glTF linked assets exceed the aggregate encoded input budget");
-    auto bounded = options;
-    bounded.maxInputBytes = remaining;
+    if (context.child && !remaining)
+      throw std::runtime_error("glTF linked assets exceed the aggregate encoded input budget");
     GltfLinkedDocument result;
     std::vector<CapabilityDiagnostic> documentDiagnostics;
     const auto source = context.source.generic_u8string();
-    result.model = loadGltfModel(std::string(source.begin(), source.end()), bounded,
+    const auto documentPath = context.child ? std::string(source.begin(), source.end()) : path;
+    result.binary = isBinaryGltf(documentPath);
+    result.model = loadGltfModel(documentPath, options,
         diagnostics ? &documentDiagnostics : nullptr, &context, &result.manifest, &remaining);
     if (diagnostics)
       diagnostics->insert(diagnostics->end(), std::make_move_iterator(documentDiagnostics.begin()),

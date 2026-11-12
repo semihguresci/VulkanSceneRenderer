@@ -1,0 +1,174 @@
+{
+  "schemaVersion": 1,
+  "rendererRevision": "911ed73d2da827d28526c3f0d26b67d4db3e33de",
+  "rendererSha256": "1bef4bb1318b0d649f2dfc9dbac65053e618a8e79ef77124cb9de4daeb4f197c",
+  "platform": "Windows x64",
+  "configuration": "Release",
+  "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+  "driverVersion": 2559967232,
+  "vulkanApiVersion": 4211029,
+  "vulkanValidationLayer": "1.4.363.1",
+  "vulkanSynchronizationValidation": true,
+  "ctestCases": 593,
+  "ctest": [
+    {
+      "target": "gltf_loader_tests",
+      "cases": 32,
+      "xmlSha256": "699dc13a9f6d1f834fd6fabc31018ae4a5d23a039419a70074217e540d4f8a4c"
+    },
+    {
+      "target": "gltf_capabilities_tests",
+      "cases": 47,
+      "xmlSha256": "905392811b111b703bb3ecb52f4015bbef3360621c8ffa0754d4ffb13fec958b"
+    },
+    {
+      "target": "gltf_scene_export_tests",
+      "cases": 52,
+      "xmlSha256": "c1da505ceacb912a37147c5f18f0d532659b571745bdd439a83e0703d1122f0e"
+    },
+    {
+      "target": "gltf_merge_tests",
+      "cases": 35,
+      "xmlSha256": "ad14ff1ee610178161596404d66ad6a00dfe81142da5d33a20c5d8110ee2def9"
+    },
+    {
+      "target": "gltf_session_merge_tests",
+      "cases": 12,
+      "xmlSha256": "47a51e7b1a1f2b5d987c48ec4e702f468577244f3ecf80a984b0d23d9770022b"
+    },
+    {
+      "target": "gltf_merge_runtime_data_tests",
+      "cases": 19,
+      "xmlSha256": "4fae0dae23298d487572e2cda2bb795fb6aeb4ea5661bd35b189631c579c9451"
+    },
+    {
+      "target": "gltf_merge_graph_tests",
+      "cases": 15,
+      "xmlSha256": "1a67be5f438257c0b12f14ed80af80265ee89b7e1144d125c071ed5999badde7"
+    },
+    {
+      "target": "gltf_merge_geometry_tests",
+      "cases": 6,
+      "xmlSha256": "a3030a834d05dc7dc5e035467878fda0e540e5f19f9568bb7e934659eb97baa1"
+    },
+    {
+      "target": "gltf_node_export_compaction_tests",
+      "cases": 14,
+      "xmlSha256": "331b7cf001f46886f1e637bd92e92abcc976ce4897cb5298165796c8f139cbb4"
+    },
+    {
+      "target": "gltf_resource_export_compaction_tests",
+      "cases": 17,
+      "xmlSha256": "9e5ad1e2ee95db29b9d83f0388f9dbefa6b7458e331e9ea63dade2d4d4d59a25"
+    },
+    {
+      "target": "gltf_material_export_compaction_tests",
+      "cases": 15,
+      "xmlSha256": "8988a5df6e8f18a561148da33de770bbcb24c0bbe403d74daa0e2ef2edd10279"
+    },
+    {
+      "target": "gltf_instancing_tests",
+      "cases": 10,
+      "xmlSha256": "7683c0db8884a95d61592fd7f551200549c807bfc49bf9e7e80679aaf0c39ca2"
+    },
+    {
+      "target": "gltf_scene_selection_tests",
+      "cases": 9,
+      "xmlSha256": "f08f56eb3b6596918908b94cc1cbde3252ca6745ec10a45aa36fd0568610763f"
+    },
+    {
+      "target": "gltf_scene_instancing_tests",
+      "cases": 13,
+      "xmlSha256": "0f06e6bf01766ccc138f155d6da487e2984fc2264cd8259fa152f5b266e1e3c3"
+    },
+    {
+      "target": "gltf_material_variants_tests",
+      "cases": 26,
+      "xmlSha256": "2e33dab03e7cfe5652471c5c7d16b31ba26bf7f593768ab361351795b7175cc3"
+    },
+    {
+      "target": "gltf_interactivity_tests",
+      "cases": 12,
+      "xmlSha256": "91e141279166e3b64f6c169d4bd2b1cab833229bd9e9bcb0b99bca86066fdc30"
+    },
+    {
+      "target": "gltf_animation_tests",
+      "cases": 62,
+      "xmlSha256": "ee3a9e493d528ca9006b4aef129b18399320ebc0d32cdc3d00ff564ddea17fda"
+    },
+    {
+      "target": "gltf_deformation_scene_tests",
+      "cases": 25,
+      "xmlSha256": "c14fb598ec10f4a217f76ba19d2663ca07450f8fc89b6f9bfc75667bf4226d1a"
+    },
+    {
+      "target": "gltf_deformation_loader_tests",
+      "cases": 10,
+      "xmlSha256": "95522dcf573e3e20816fe73902a8145cb70b1dbe46d459328617c2b327ce8331"
+    },
+    {
+      "target": "gltf_texture_resources_tests",
+      "cases": 15,
+      "xmlSha256": "b64ce68a5b0670b9f98ac0a529e04dea4249adc1fcdfb5ce594febdd96323bdf"
+    },
+    {
+      "target": "gltf_image_sources_tests",
+      "cases": 16,
+      "xmlSha256": "e1eabc0660a45cea89d442aa45c5acd8658768bedd076b2a7372efab8c99758a"
+    },
+    {
+      "target": "gltf_xmp_inspector_widget_tests",
+      "cases": 4,
+      "xmlSha256": "2ec37033c16a42ff29aafbb27136a6f91ad3ac5fe6466e944b9a84d0cf7053a6"
+    },
+    {
+      "target": "scene_merge_generation_gpu_tests",
+      "cases": 90,
+      "xmlSha256": "e12ab243eaee89b4282839612ba4a5abe9dff63c04c53278094c9b0d56b6d631"
+    },
+    {
+      "target": "source_resource_retirement_gpu_tests",
+      "cases": 19,
+      "xmlSha256": "783a2682385410a82bb31ab183de3d48d77790ac5aaeffde8815787ec925c401"
+    },
+    {
+      "target": "scene_controller_generation_gpu_tests",
+      "cases": 18,
+      "xmlSha256": "2ce05506b76174d0a71aa7d75834a1ebaafb7960447c4698b38311fc7df083b0"
+    }
+  ],
+  "nativeCaptures": 118,
+  "native": {
+    "linked": {
+      "captures": 72,
+      "processes": 48,
+      "resultSha256": "cb1937e09244ce903a683eaa352e4d4b80a619685a463866bf151e8b129cc44e",
+      "captureSha256": "d7852e6a94f716d6546fac2c28006623ad4167fdc43cd78bdae9f270b5a9e1a1",
+      "logSha256": "5ef531feb750309dbad1a154f2d8c7ddeb68effe71b7c142387fc746d62f588f",
+      "manifestSha256": "792ec468cf9969e918bc093345875bbb5eb046c08584c5a14618a9890fec8659",
+      "manifestEntries": 323,
+      "nestedChecks": 16,
+      "expectedRejectedExportCaptures": 7
+    },
+    "inline": {
+      "captures": 22,
+      "processes": 8,
+      "resultSha256": "f653c19b401e6a1194f52d4e8b99743c4f70d1f22d95342dda7ab927d6d6fdad",
+      "captureSha256": "0e32a7d5de553e62e2c6facc32ac13470cb40bdbaac3aa4301dff1eb85ff78a5",
+      "logSha256": "2de8b5edda8fda190803ad7c74bed3ac032becc20d90877548f82f6589c6f4ed",
+      "manifestSha256": "d7fde4e7c2f3f3406c3fa1de136cd7dd46fd137b2cd0b1297dd18154e305ab40",
+      "manifestEntries": 323
+    },
+    "merged": {
+      "captures": 24,
+      "processes": 14,
+      "resultSha256": "9d82298ba3ded92748bd5bcf344bad4f9a3b6f215ae32254b278b961e5384ca5",
+      "captureSha256": "6dc3f1cc46fb8671f4aa3f3fa57edb756896cfe59164031e0821b1758307bf4e",
+      "logSha256": "c08b3445d650db3bda243488f73c75a228cc71f8406a1569cbb79976fdc52954",
+      "manifestSha256": "792ec468cf9969e918bc093345875bbb5eb046c08584c5a14618a9890fec8659",
+      "manifestEntries": 323,
+      "checks": 52,
+      "expectedRejectedExportCaptures": 2
+    }
+  }
+}
