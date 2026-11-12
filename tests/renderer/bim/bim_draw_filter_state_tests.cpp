@@ -124,6 +124,65 @@ TEST(BimDrawFilterStateTests, FiltersCompactRowsWithoutEscapingTemporaryViews) {
                   .opaqueSingleSidedDrawCommands.empty());
 }
 
+TEST(BimDrawFilterStateTests, CombinesStoreyAndMaterialAndHidesSelectedProduct) {
+  std::array<BimElementMetadata, 5> elements{{
+      {.productIdentityId = 1u,
+       .guid = "shared-wall",
+       .storeyName = "Level 1", .materialName = "Concrete"},
+      {.productIdentityId = 1u,
+       .guid = "shared-wall",
+       .storeyName = "Level 1", .materialName = "Concrete"},
+      {.productIdentityId = 2u,
+       .guid = "other-wall",
+       .storeyName = "Level 1", .materialName = "Concrete"},
+      {.productIdentityId = 3u,
+       .guid = "steel-wall",
+       .storeyName = "Level 1", .materialName = "Steel"},
+      {.productIdentityId = 4u,
+       .guid = "upper-wall",
+       .storeyName = "Level 2", .materialName = "Concrete"},
+  }};
+  container::renderer::BimMetadataStorage storage;
+  std::vector<DrawCommand> draws;
+  for (uint32_t index = 0; index < elements.size(); ++index) {
+    elements[index].objectIndex = index;
+    storage.push_back(elements[index]);
+    draws.push_back({.objectIndex = index,
+                     .firstIndex = 6u * index,
+                     .indexCount = 6u});
+  }
+  storage.seal();
+  const auto inputs = makeInputs(1u, storage, draws);
+
+  BimDrawFilter filter{.storeyFilterEnabled = true,
+                       .storey = "Level 1",
+                       .materialFilterEnabled = true,
+                       .material = "Concrete"};
+  BimDrawFilterState state;
+  const auto expectVisible = [&](const std::array<bool, 5> &visible) {
+    std::vector<uint32_t> expectedObjects;
+    for (uint32_t index = 0; index < visible.size(); ++index) {
+      SCOPED_TRACE(index);
+      EXPECT_EQ(state.objectMatchesFilter(index, filter, inputs), visible[index]);
+      if (visible[index]) {
+        expectedObjects.push_back(index);
+      }
+    }
+    std::vector<uint32_t> drawnObjects;
+    const auto &filtered = state.filteredDrawLists(filter, inputs);
+    for (const auto &draw : filtered.opaqueSingleSidedDrawCommands) {
+      EXPECT_EQ(draw.instanceCount, 1u);
+      drawnObjects.push_back(draw.objectIndex);
+    }
+    EXPECT_EQ(drawnObjects, expectedObjects);
+  };
+
+  expectVisible({true, true, true, false, false});
+  filter.hideSelection = true;
+  filter.selectedObjectIndex = 1u;
+  expectVisible({false, false, true, false, false});
+}
+
 TEST(BimDrawFilterStateTests, CachedListsRefreshOnlyWhenRevisionChanges) {
   std::vector<BimElementMetadata> metadata(2u);
   metadata[0].objectIndex = 0u;
