@@ -35,6 +35,7 @@ extern "C" {
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -1108,6 +1109,61 @@ void validateSceneHierarchyJson(const nlohmann::json& json, const std::stop_toke
   }
 }
 
+// TinyGLTF narrows JSON integers and ignores decimal encodings. glTF permits
+// integral decimals and exponents, so normalize those before parsing. Unknown
+// integer enums still use the normal compatibility defaults.
+bool normalizeTextureSamplerJson(nlohmann::json& json, const std::stop_token& stop) {
+  bool rewritten = false;
+  const auto readInt = [&](nlohmann::json& value) -> std::optional<int> {
+    if (value.is_number_unsigned()) {
+      const auto integer = value.get<uint64_t>();
+      if (integer <= INT_MAX) return static_cast<int>(integer);
+    } else if (value.is_number_integer()) {
+      const auto integer = value.get<int64_t>();
+      if (integer >= INT_MIN && integer <= INT_MAX) return static_cast<int>(integer);
+    } else if (value.is_number_float()) {
+      const auto number = value.get<double>();
+      if (number >= INT_MIN && number <= INT_MAX && std::trunc(number) == number) {
+        const auto integer = static_cast<int>(number);
+        value = integer;
+        rewritten = true;
+        return integer;
+      }
+    }
+    return std::nullopt;
+  };
+  const auto samplers = json.find("samplers");
+  if (samplers != json.end() && !samplers->is_array())
+    throw std::invalid_argument("samplers must be an array");
+  const size_t samplerCount = samplers == json.end() ? 0 : samplers->size();
+  for (size_t i = 0; i < samplerCount; ++i) {
+    checkImportIteration(stop, i);
+    auto& sampler = samplers->at(i);
+    if (!sampler.is_object())
+      throw std::invalid_argument("samplers[" + std::to_string(i) + "] must be an object");
+    for (const char* field : {"minFilter", "magFilter", "wrapS", "wrapT"}) {
+      const auto value = sampler.find(field);
+      if (value != sampler.end() && !readInt(*value))
+        throw std::invalid_argument("samplers[" + std::to_string(i) + "]." + field +
+                                    " must be an integer in the int range");
+    }
+  }
+  // The image-source preflight already validated the texture array and rows.
+  const auto textures = json.find("textures");
+  const size_t textureCount = textures == json.end() ? 0 : textures->size();
+  for (size_t i = 0; i < textureCount; ++i) {
+    checkImportIteration(stop, i);
+    auto& texture = textures->at(i);
+    const auto sampler = texture.find("sampler");
+    if (sampler == texture.end()) continue;
+    const auto index = readInt(*sampler);
+    if (!index || *index < 0 || static_cast<size_t>(*index) >= samplerCount)
+      throw std::invalid_argument("textures[" + std::to_string(i) +
+                                  "].sampler must reference an existing sampler with a nonnegative int index");
+  }
+  return rewritten;
+}
+
 struct ParserImageReference {
   int bufferView{-1};
   std::string mimeType;
@@ -1499,6 +1555,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
               imageCapabilities.webp &= !unavailableInConsumer("EXT_texture_webp");
               imageCapabilities.dds &= !unavailableInConsumer("MSFT_texture_dds");
               imageSources = SelectTextureImageSources(json, imageCapabilities);
+              const bool normalizedSamplerFields = normalizeTextureSamplerJson(json, stop);
               const bool omittedOptional = omitUnavailableOptionalExtensions(
                   json, requirements, unavailable, composing, stop);
               bool discardedMicromaps = false;
@@ -1529,7 +1586,8 @@ tinygltf::Model loadGltfModel(const std::string& path,
                 const std::string prefix = "__container_gltf_" + std::to_string(
                     std::chrono::steady_clock::now().time_since_epoch().count()) + "_" +
                     std::to_string(sequence.fetch_add(1)) + "_";
-                bool rewritten = xmp->rewroteManifest() || normalizedLinkedManifest || discardedMicromaps || omittedOptional;
+                bool rewritten = xmp->rewroteManifest() || normalizedLinkedManifest ||
+                    normalizedSamplerFields || discardedMicromaps || omittedOptional;
                 if (linkedContext) {
                   for (const auto* table : {"buffers", "images"}) {
                     auto records = json.find(table);

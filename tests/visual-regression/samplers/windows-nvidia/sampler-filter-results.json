@@ -1,0 +1,3292 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "3ef3a5588e92571361c4c1651993822fb2f22dda",
+  "build": {
+    "compiler": "MSVC-19.51.36260.0",
+    "configuration": "Release",
+    "revision": "3ef3a5588e92571361c4c1651993822fb2f22dda"
+  },
+  "device": {
+    "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+    "deviceId": 7809,
+    "driverVersion": 2559967232,
+    "vulkanApiVersion": 4211029
+  },
+  "executableSha256": "ca4ae9160055a911ee3db5925db4ffeb607021686d1ba7393fb6aa1e57419bb8",
+  "vulkanSynchronizationValidation": true,
+  "validatedSpirvTarget": "vulkan1.4",
+  "shaderSha256": [
+    {
+      "name": "gbuffer.frag.spv",
+      "sha256": "8c4646044d380c9cfdaf13708317a7435a6a231cc7275dba1092e7b215664f44"
+    },
+    {
+      "name": "forward_opaque.frag.spv",
+      "sha256": "694ea3276eb118f22b234676d4f7d9e9bbae37f64cf80503c37cf564e2db1cad"
+    },
+    {
+      "name": "forward_opaque_no_ddgi.frag.spv",
+      "sha256": "a54ed1cf35a1fe9ce329957fbfecb614d697b752603aa525423cc4230ee10c98"
+    },
+    {
+      "name": "forward_opaque_ray.frag.spv",
+      "sha256": "a6779326c9987c5e6a20024a3f92b549aa3822cfdbd93882672128fae5fc00b0"
+    },
+    {
+      "name": "forward_opaque_ray_no_ddgi.frag.spv",
+      "sha256": "5273175f5e26aa44b10d5e0e737397086d0fbcc458068b044b32a6046bc7a96a"
+    },
+    {
+      "name": "forward_transparent.frag.spv",
+      "sha256": "9c151fbdc6e67b929087f87303ab34beae39de6e550d48a9dd9b3b20d69cc8f4"
+    },
+    {
+      "name": "ray_shadow_trace.comp.spv",
+      "sha256": "795d04d67ed52e6c64f7a4b6973b99ccb30665483789cae363018d4175af83f4"
+    },
+    {
+      "name": "ddgi_trace.comp.spv",
+      "sha256": "706fca6c7f68db4e0e199f22ff7d3f7d0ba78c4a39316ce00f8c726776db3ba4"
+    },
+    {
+      "name": "material_sampler_contract.comp.spv",
+      "sha256": "6bf72f82cb0f55e28b5239bf60ee24471562fd4106d196eb054247ae153518e8"
+    },
+    {
+      "name": "scene_sampler_publication.comp.spv",
+      "sha256": "f8ef064d26792b747a2630851aab671a00e21096707f279a357d413f4acd27fd"
+    }
+  ],
+  "ctestTargets": [
+    {
+      "target": "gltf_loader_tests",
+      "cases": 31,
+      "skipped": 2,
+      "xmlSha256": "7603ad7eb0e1dd3a17ac4999e2cce717b41ec37b260cab2047c77145f432c254",
+      "vulkanSynchronizationValidation": false,
+      "passedCases": [
+        "CancelledRequestsFailBeforeSourceIoAndAllowAReplacement",
+        "LinkedCompositionStopsAfterReadingAnActiveChild",
+        "RepairsTriangleWindingOppositeImportedNormals",
+        "KeepsTriangleWindingAlignedWithImportedNormals",
+        "DoesNotLocallyFlipMixedEvidencePrimitive",
+        "KeepsCullDisabledForIsolatedWindingOutliers",
+        "DisablesCullForDenseOpenReliefTopology",
+        "PreservesValidImportedTangents",
+        "IgnoresSuppliedTangentsWhenBaseNormalsAreMissing",
+        "RepairsInvalidImportedTangentsFromGeometry",
+        "GeneratesMissingTangentsFromNormalTextureUvSelection",
+        "NormalTextureTransformUvOverrideControlsGeneratedTangents",
+        "UvSelectionPreservesAuthoredTangentsAndRepairsOnlyInvalidVertices",
+        "InstancingUsesSharedGeometryAndRejectsBadMetadataBeforeBufferIo",
+        "SceneMetadataPreservesSharedRootsDuplicateNamesAndEmptyScenes",
+        "SceneMetadataRejectsNarrowingAndNonIntegerIndicesBeforeResourceIo",
+        "SceneMetadataValidatesGlobalForestIncludingUnusedComponents",
+        "SceneMetadataRejectsInvalidTableAndReferenceTypesBeforeResourceIo",
+        "SceneMetadataBoundsTablesAndRootReferencesBeforeResourceIo",
+        "SceneMetadataAcceptsDeepImplicitForestWithoutRecursiveTraversal",
+        "AuthoredNodeFlagsSurviveRequiredExtensionLoadingWithoutFlattening",
+        "NodeFlagSchemaRejectsBeforeBufferAndImageIoAtEveryEntryPoint",
+        "NodeFlagStorageCountsInactiveNodesAgainstAggregateInputBudget",
+        "ExtendedMaterialSchemaFailsBeforeExternalResourceIo",
+        "ExtendedMaterialStorageIncludesInactiveMaterialsInInputBudget",
+        "RetainsCandelaAndAsymmetryAcrossMeasuredAngles",
+        "RejectsUnsupportedTiltTypeAndInvalidTables",
+        "EmbedsValidResourcesAndKeepsOptionalPunctualFallback",
+        "ExternalProfileReadConsumesTheLoaderInputBudget"
+      ]
+    },
+    {
+      "target": "gltf_capabilities_tests",
+      "cases": 41,
+      "skipped": 0,
+      "xmlSha256": "c37da167d86339caf394af38a344b73f10dd93c123dd99808ee7eab99d9ce738",
+      "vulkanSynchronizationValidation": false,
+      "passedCases": [
+        "ActiveConsumerRestrictionsCannotPromoteUnsupportedExtensions",
+        "AcceptsCurrentVersionWithoutWarnings",
+        "RejectsUnsupportedMajorVersions",
+        "RejectsMalformedVersionsWithoutThrowing",
+        "WarnsForCompatibleForwardMinorWithOrWithoutMinimum",
+        "RejectsUnsupportedAndMalformedMinimumVersions",
+        "RejectsUnknownRequiredEvenWhenOmittedFromUsed",
+        "WarnsOnceForUnknownOptionalAndGivesRequiredPrecedence",
+        "RegistryMatchesImplementedMaterialsLightsAndUvTransforms",
+        "AcceptsImplementedApproximationsWithExplicitWarning",
+        "RejectsUnavailableDecodersAndUnimplementedRuntimeFeatures",
+        "CompressionRegistryReflectsConfiguredBackends",
+        "TextureRegistryReflectsConfiguredBackendsAndVariants",
+        "NodeFlagRegistryDistinguishesVisibilityFromInteractionApproximation",
+        "ExtendedPbrRequiredSupportNamesItsRenderingApproximations",
+        "MissingDracoWorkerPreservesOptionalCoreGeometry",
+        "EveryGeometryEntryPointRejectsBeforeResourceIo",
+        "BinarySourceUsesTheSameGateAndAllowsMaterialOnlyAssets",
+        "ReturnsAssetScopedWarningsWhileImportingFallbackGeometry",
+        "CompositionOmitsOptionalExtensionsAndKeepsCoreFallback",
+        "CompositionKeepsOnlyDestinationUnremappableOptionalMetadata",
+        "SelfContainedModeRejectsFileUrisAndPreservesEmbeddedData",
+        "ConsumerRejectsRequiredInstancingBeforeResourceIo",
+        "ConsumerUsesCoreTextureWhenAnAvailableCodecIsRestricted",
+        "OptionalAlternateImagesUseDecodedPngFallbacks",
+        "RequiredAlternateImageExtensionsRejectBeforeResourceReads",
+        "AlternateReferencesNeverSuppressOtherCoreImageDecoding",
+        "SharedPngUsesCoreFallbackOrSelectedBasisValidation",
+        "MalformedCoreIndicesCannotAliasSkippedAlternateImages",
+        "RejectsMalformedSamplerReferencesBeforeResourceReads",
+        "RejectsSamplerFieldsThatCouldBeNarrowedOrIgnored",
+        "PreservesAuthoredAndOmittedSamplerMetadata",
+        "UnreferencedOrdinaryImagesKeepDefaultDecodingBehavior",
+        "EnforcesOwnVersionAndMinimumPolicyForJsonFiles",
+        "DiagnosesInvalidMetadataBeforeJsonAndGlbResourceReads",
+        "PreservesEncodedAndDeclaredGeometryBudgets",
+        "RequiredExtendedPbrUsesTheSameJsonAndBinaryMetadataGate",
+        "ExperimentalDraftsGateAndValidateBeforeResourceIo",
+        "ExperimentalScatterReadsLegacyDefaultsAndTextureTransform",
+        "MicromapsRequireCoreFallbackEvenWhenEnabled",
+        "RequiredNodeFlagsUseTheSameJsonAndBinaryMetadataGate"
+      ]
+    },
+    {
+      "target": "material_sampler_key_tests",
+      "cases": 8,
+      "skipped": 0,
+      "xmlSha256": "ec2088ffe1423aec4c1c9672cee2ce8e7acb2ee104d357a126dae66badc122e3",
+      "vulkanSynchronizationValidation": false,
+      "passedCases": [
+        "EveryValidFilterWrapCombinationIsDistinctAndReversible",
+        "PreservesLegacyWrapIdsAndOmittedDefaultPolicy",
+        "UnknownEnumsUseCompatibleDefaultsIndependently",
+        "MapsAllMinificationAndMagnificationModesWithoutAnisotropy",
+        "MapsBothWrapAxesWithoutChangingFiltering",
+        "ReservesAggregatePipelineDescriptorsAndChecksBothDeviceLimits",
+        "ActiveSlotPlansDeduplicateAndForgetPreviousScenePolicies",
+        "CapacityFailuresAndInvalidKeysNeverReturnPartialPlans"
+      ]
+    },
+    {
+      "target": "materialx_integration_tests",
+      "cases": 30,
+      "skipped": 0,
+      "xmlSha256": "c5ab926de9d9dd4068a4e43e1004042e762e8426db4216d835effb3ba63c804e",
+      "vulkanSynchronizationValidation": false,
+      "passedCases": [
+        "FileImportChecksDocumentCapabilities",
+        "BindsSeparateColorAndDataResourcesForTheSameSourceTexture",
+        "SpecularGlossinessKeepsColorRgbAndLinearAlphaRoles",
+        "LoadsSeparateTextureResourcesForDistinctGltfSamplers",
+        "SharedImageRetainsEveryAuthoredFilterPolicy",
+        "UploadsEmbeddedPixelsWithAlphaAndRejectsTruncatedData",
+        "EmbeddedImageCacheIncludesContentAndColorSpace",
+        "ReusesDecodedExternalPixelsAndPreservesFileSamplerColorSpaceCache",
+        "ConvertsDecodedExternalGrayscaleAlphaAndRgbPixels",
+        "FallsBackToFileForUnsupportedExternalDecodedPixels",
+        "ExternalDecodedPixelsStillSupportFileOnlyLoader",
+        "ImportsKhrMaterialsPbrSpecularGlossiness",
+        "ImportsLayeredKhrPbrExtensions",
+        "PhysicalTransmissionPreservesAuthoredAlphaCoverageMode",
+        "PreservesGltfDefaultMetallicWithoutInventingDielectricOverride",
+        "PreservesAuthoredMetallicFactor",
+        "ImportsCoreTextureTransformsAndTexCoordIndices",
+        "ExtendedMaterialDefaultsAndTextureBackedZeroRemainExact",
+        "ExtendedSlotsKeepAuthoredTextureIdentityAndIndependentUvTransforms",
+        "ColorSlotsUseAuthoredTextureIdentityWhenDataHandlesAlias",
+        "PackedSpecularGlossinessAliasesOneColorResourceRegardlessOfOtherDataUses",
+        "SpecularGlossinessWithoutPackedTextureKeepsLegacyRoughnessDataResource",
+        "EveryLegacyTextureAliasInBothMapsImportsCanonicalMappingAndExplicitSource",
+        "LegacyAliasPriorityPrecedesMapLocationAndKeepsTheWinningTransform",
+        "PrimaryPhysicalAndPackedSgTextureTransformsOverrideLegacyFallbackMetadata",
+        "InvalidLegacyMappingIncludingIgnoredFallbackRejectsBeforeAnyMaterialPublication",
+        "ExtendedMaterialValidationPrecedesCallbacksAndMaterialPublication",
+        "LegacyTextureLoaderClassifiesAllThreeExtendedSlots",
+        "SamplerReplacementPreflightUsesOnlyIncomingPolicies",
+        "AlternateOnlyTexturesEnterSamplerBudgetBeforeLiveRetirement"
+      ]
+    },
+    {
+      "target": "material_sampler_gpu_tests",
+      "cases": 5,
+      "skipped": 0,
+      "xmlSha256": "1ad048ad3359f533dd16cbd1e4e11a08e73425d70ead711c6db988ed721fdaa2",
+      "vulkanSynchronizationValidation": true,
+      "passedCases": [
+        "AllMinMagModesSampleSharedImageThroughDenseNonuniformSlots",
+        "WrapModesApplyPerAxisAtTexelAndLinearMipBoundaries",
+        "AOneLevelImageRetainsAuthoredMinificationFilter",
+        "DensePoliciesBeyondTheLegacyWrapPrefixReachTheirOwnSampler",
+        "TexturePresenceKeepsZeroBlackAndHdrFactorsWithoutPromotion"
+      ]
+    },
+    {
+      "target": "scene_sampler_publication_gpu_tests",
+      "cases": 8,
+      "skipped": 0,
+      "xmlSha256": "7345a56601133a4b5f2b709ad023e3efbd399f5eed90e1d0205136e583f13c99",
+      "vulkanSynchronizationValidation": true,
+      "passedCases": [
+        "MiddleTombstoneKeepsExactSurvivorImageAndSamplerSlots",
+        "ZeroAndAllDeadCatalogsHaveExplicitPrivateFallbackDescriptors",
+        "ActiveInvalidCapabilityRejectsInsteadOfResolvingFallback",
+        "ChangedSamplerPolicyRequiresFreshMetadataBeforeDescriptors",
+        "OverBudgetReplacementLeavesThePublishedSceneIntact",
+        "MalformedRetainedTextureRejectsBeforeTheLiveSceneRetires",
+        "MalformedCompressedReloadKeepsLiveGeometryAndDescriptors",
+        "ImageDescriptorBudgetRejectsBeforeTheLiveSceneRetires"
+      ]
+    },
+    {
+      "target": "gltf_material_texture_authoring_tests",
+      "cases": 39,
+      "skipped": 0,
+      "xmlSha256": "e4c2ae17015ed7967175d0798b4acc96a7a84e0a82c99671133c0b24d20b54ce",
+      "vulkanSynchronizationValidation": false,
+      "passedCases": [
+        "RegistryHasAllStableSlotsRolesAndUniquePaths",
+        "EverySlotBindsIndependentAuthoredEvaluatedSourcesAndClears",
+        "CoreBindingAndClearRemoveOnlySelectedRawMirrorsAndReplayExactAliases",
+        "CoreMirrorDoesNotAddFallbackPrecedenceOrMappingOwnership",
+        "SpecularGlossinessDiffuseEditPreservesIndependentCoreMirrors",
+        "ShadowedCoreMirrorsMustBeValidBeforeAnExplicitEdit",
+        "BindingPreservesUnknownTextureMetadataAndIndependentFactors",
+        "ClearAndUndoRetainCoreNormalScaleAndCurrentUnownedEvaluation",
+        "TexCoordEditOwnsBothSelectorsAndUndoRestoresExactOverrideAndCache",
+        "MappingResetPreservesUnknownLeavesAndTransformContainer",
+        "LegacyPrecedenceBindingAndClearCannotRevealOldFallback",
+        "ExistingStandardBindingStillValidatesIgnoredLegacyFallback",
+        "StandardBindRemovesKnownLegacyFallbacksButNotFactorOrOpaqueKeys",
+        "SpecularGlossinessCouplesOneSourceFieldAcrossBothRoles",
+        "ClearingSharedSpecularGlossinessCannotRevealLegacyRoughness",
+        "ClearingAbsentSharedFieldDoesNotEraseIndependentLegacyRoughness",
+        "CoalescedMappingReplaysOnlyOwnedLeavesAtCurrentEvaluation",
+        "CoalescedClearThenBindRetainsContainerMetadataOwnership",
+        "ClearCannotOrphanTextureAnimationTargets",
+        "TransformResetRetainsAnimatedTransformObject",
+        "FourDomainTransitionValidatesBeforeAndAfterIndependently",
+        "ResourceTransitionRejectsBadBeforeEvenWhenItFitsProspectiveAfter",
+        "ResourceTransitionRejectsAfterThatOnlyFitsTheOtherDomain",
+        "TransitionUndoShrinksDomainsAndRedoUsesFreshCurrentEvaluation",
+        "TransitionReplayCanRetainOuterProvedAdditionalResourcePrefix",
+        "PublicReceiptAndTransitionContextForgeryReject",
+        "BadShapesDuplicateSlotsMissingBindingsAndMappingsReject",
+        "MappingRangesFixedChannelsAndFiniteWorkBudgetsReject",
+        "SignedZeroMappingBitsAndMetadataSurviveUndo",
+        "ActualAsciiAndGlbWritersRoundTripAll23SourceBindingsWithoutGpuInverse",
+        "AppendResourcesRemapsEveryKnownLegacyAliasAtBothSourceLocations",
+        "InvalidLegacyAppendRejectsBeforeDestinationResourceMutation",
+        "CustomLegacyExportRequiresExactSourceAndRuntimeBindingProof",
+        "LegacyPhysicalScalarChannelsRemainUnshadowedThroughActualWriter",
+        "GlbCompatibilityProjectionPreservesEntireBinaryChunkStreamExactly",
+        "LegacyWriterFiniteBudgetsAndBadReferencesKeepPublishedDestinationExact",
+        "LegacySerializationRejectsAmbiguousShapesNonfiniteMetadataAndNonfiniteCapacities",
+        "LegacyPreflightRejectsByteReservationsBeforeExportCopyAndBeforeKeyTraversal",
+        "LegacyProjectionBoundsNewPbrAndTextureObjectDepth"
+      ]
+    },
+    {
+      "target": "gltf_source_material_export_tests",
+      "cases": 8,
+      "skipped": 0,
+      "xmlSha256": "f1b29ccb3ea4094a78c05cad62b65a15cf1d607b9e34e97d5c1bf8f08000c8de",
+      "vulkanSynchronizationValidation": false,
+      "passedCases": [
+        "PackedSgRetainsCurrentFactorsAndRemapsAllDormantAndFallbackReferences",
+        "ClearedPackedSgWithNewDiffuseBindingExportsWithoutBakingApproximation",
+        "MixedSgWithoutPackedTextureKeepsStandaloneLegacyRoughnessData",
+        "ActualAsciiAndGlbWriterReloadPreservesSgSourceFactorsAndKnownReferences",
+        "RuntimeDriftAndWrongArchiveRolesOrAuthoredBindingsReject",
+        "MissingAmbiguousAndOutOfRangeSourceMapsReject",
+        "OpaqueExtrasSurviveRemapButUnknownNormativeReferencesReject",
+        "FiniteBudgetsAndUnbackedSgRejectWithoutSourceMutation"
+      ]
+    },
+    {
+      "target": "material_texture_generation_gpu_tests",
+      "cases": 38,
+      "skipped": 0,
+      "xmlSha256": "b90160bfeb304ca22b6d930e41704cd0e81da08747b95ffdc0e3bf28abe4b095",
+      "vulkanSynchronizationValidation": true,
+      "passedCases": [
+        "CountsAndDeniesAllAllocationFormsWithoutAllocatingInTheGuard",
+        "NestedGuardRestoresOuterDenialAndKeepsItsOwnCount",
+        "MaterialSwapExposesMsvcSentinelAllocationDespiteNoexceptMoves",
+        "StaticPrimitiveBasisLookupNeedsSourceIdentityAndActualTexCoordWithoutAllocating",
+        "StaticUv1NormalClearAndUndoRetainTheImportedBasis",
+        "StaticUv1BasisNeverFallsBackToUv0OrFilledVertexCoordinates",
+        "StaticClearedUv1BasisSurvivesDetachedCloneAndMerge",
+        "ImportPreparationIsDetachedAndDiscardReleasesItsAllocations",
+        "ImportAndExactByteReuseKeepExplicitSourceRoles",
+        "SamplerAliasReusesImageLeaseAndStagesDenseMetadata",
+        "AuthoredDefaultFiltersStayOmittedAcrossSamplerEditAndExport",
+        "AuthoredFileSamplerPreservesOmissionAndReusesExactRequests",
+        "ImmediateImportsRemainAvailableAfterIndependentEvaluatedImageDomains",
+        "ArchiveOnlyPromotionForwardsExplicitUnmappedProvenance",
+        "IndependentArchiveAndEvaluatedTextureIdsPublishAndReplayTogether",
+        "FiniteBudgetsAndInvalidInputsLeaveLiveResourcesUntouched",
+        "OwnedTailUndoRedoUsesRetainedPayloadAfterFileDisappears",
+        "NestedHistoryAndBranchVacanciesPreventOldCommandRevival",
+        "HistoryPreservesUnrelatedCurrentPrefixMetadataAndMaterialFactors",
+        "UndoRejectsOtherRuntimeAndRetainedImageSamplerReferences",
+        "UndoRejectsShadowedFallbackTextureReferencesInOtherMaterials",
+        "UnchangedVendorExtensionsAllowUndoButChangedUnknownReferencesReject",
+        "NestedVendorWitnessAllowsTheEditedKnownSiblingToChange",
+        "SamplerAliasUndoRemovesItsCopiedVendorMetadataWithTheOwnedRow",
+        "ResourcesCannotBePairedWithAnotherSelectedMaterialProof",
+        "SelectedRawMutationAfterOuterCanRejectsBothResourceAndMaterialPublication",
+        "AnimationPointersAndNewUnknownExtensionsCannotRetainRemovedTails",
+        "RetainedTexturePointersCannotAnimateOwnedImageOrSamplerIndices",
+        "ResourceGuardsCompareOpaqueMetadataAndImageFormatFieldsWithoutAllocating",
+        "StaleRawReferencesAreRejectedWithoutPublicationAllocations",
+        "CombinedMaterialAndResourcePublicationCoversAllTwentyThreeSlots",
+        "CombinedHistoryShrinksAndGrowsResourceDomainsWithoutRereading",
+        "BoundTailRejectsStandaloneSealAndTheSameCandidatePublishesWithItsPairedUndo",
+        "ManualTexturedProducerPublishesItsOwnLogicalMaterialAndSourceDependencies",
+        "PackedSpecularGlossinessUsesOneColorResourceForBothRuntimeAliasesAndProvenance",
+        "PackedSpecularGlossinessColorOnlyImportAndSourceBindingReplayWithIndependentDataUse",
+        "SpecularGlossinessWithoutPackedTexturePreservesLegacyRoughnessDataProvenance",
+        "SceneSaveRepacksRuntimeScalarsWithoutChangingSharedData"
+      ]
+    }
+  ],
+  "validationScriptsSha256": {
+    "tests/validation/gltf_sampler_filter_runtime_regression.py": "24cb3a35a639fee9e00ff695fd9c400f80d0ba96a7292f2c1eb53b2e0a514a67",
+    "tests/validation/material_sampler_runtime_regression.py": "90c36fe4e5a5a33ff74604ed64d9737965f7789fdddef0e67495748e3c2612d1"
+  },
+  "stagedSampleLoaderChecks": {
+    "passedCases": [
+      "SampleTextureSettingsSingleSidedPrimitiveKeepsCulling",
+      "SampleSponzaLionReliefPrimitivesUseNoCullException"
+    ],
+    "xmlSha256": "7cb72b9b965a0a563fd16d234c4637d67154915bca5f5322b0deca1760b91128",
+    "assetSha256": {
+      "TextureSettingsTest": "dd1f85b4638ffc72f1e09e19b101b7a05d94a0353facced8f59c16a2d9c09447",
+      "Sponza": "646c10cbc8fab990ca29f363e90e2d65155f3a3569506852eb1434a9465b9501"
+    }
+  },
+  "nativeSuites": [
+    {
+      "suite": "live",
+      "captureCount": 12,
+      "validatedProcessCount": 4,
+      "checkCount": 6,
+      "roundTripFullImageExact": {
+        "deferred-raster-sampler-edit-reload.png": true,
+        "forward-raster-sampler-edit-reload.png": true
+      },
+      "fixtureSha256": {
+        "deferred-raster-sampler-edit-saved.glb": "8e4aac2cf6ba7d6f53da977ac098738fa50698f8d2adb04873023fc4a6473a83",
+        "forward-raster-sampler-edit-saved.glb": "8e4aac2cf6ba7d6f53da977ac098738fa50698f8d2adb04873023fc4a6473a83",
+        "sampler-edit-sequence.json": "8aaf4d52b2162e98f48460c8684bdb6779ab2f4b08cb07cb3471e012df7e43ea",
+        "sampler-edit.gltf": "6ee1006dc79581fb8e1a00d46caa930bc2b324f59fe69530080135843f2d3c80"
+      },
+      "captureProofs": [
+        {
+          "image": "deferred-raster-sampler-edit.frame-0004.png",
+          "imageSha256": "acf81c151b75736709d89dbbb7884e79256a4d1e89f836321f47d0d9aad3ad41",
+          "telemetrySha256": "06e7bb9d526cb88c36709fb31a7c3eaf4250c3dec6198d99171448524f3e32c8",
+          "log": "deferred-raster-sampler-edit.log",
+          "technique": "deferred-raster",
+          "asset": "sampler-edit.gltf",
+          "frame": 4
+        },
+        {
+          "image": "deferred-raster-sampler-edit.frame-0008.png",
+          "imageSha256": "67f6ad27074e61e706517d9791507127574eb5f9ff74dff9eb4fd71b8f7d89c2",
+          "telemetrySha256": "44d8002a0da203396117bac16b15a3a7539f4d15a3607d85db4cd31c130ef6a3",
+          "log": "deferred-raster-sampler-edit.log",
+          "technique": "deferred-raster",
+          "asset": "sampler-edit.gltf",
+          "frame": 8
+        },
+        {
+          "image": "deferred-raster-sampler-edit.frame-0012.png",
+          "imageSha256": "acf81c151b75736709d89dbbb7884e79256a4d1e89f836321f47d0d9aad3ad41",
+          "telemetrySha256": "00b129aabad2de0e2f50f6e3632079d36a6c97016ffb330a61bf3a5b0b932f8d",
+          "log": "deferred-raster-sampler-edit.log",
+          "technique": "deferred-raster",
+          "asset": "sampler-edit.gltf",
+          "frame": 12
+        },
+        {
+          "image": "deferred-raster-sampler-edit.frame-0016.png",
+          "imageSha256": "67f6ad27074e61e706517d9791507127574eb5f9ff74dff9eb4fd71b8f7d89c2",
+          "telemetrySha256": "83da748f066bed2416e4c9101857e97eae2b55c39cf59f84a6a43801bc15383c",
+          "log": "deferred-raster-sampler-edit.log",
+          "technique": "deferred-raster",
+          "asset": "sampler-edit.gltf",
+          "frame": 16
+        },
+        {
+          "image": "deferred-raster-sampler-edit.png",
+          "imageSha256": "67f6ad27074e61e706517d9791507127574eb5f9ff74dff9eb4fd71b8f7d89c2",
+          "telemetrySha256": "d9112802367a18e9ef735e6e42c793d6e0fcb1b2e1ac855768c7bf3638c4b138",
+          "log": "deferred-raster-sampler-edit.log",
+          "technique": "deferred-raster",
+          "asset": "sampler-edit.gltf",
+          "frame": 20
+        },
+        {
+          "image": "deferred-raster-sampler-edit-reload.png",
+          "imageSha256": "67f6ad27074e61e706517d9791507127574eb5f9ff74dff9eb4fd71b8f7d89c2",
+          "telemetrySha256": "f5a69fcec19642f1c67473e94cf0a05bde38ab9ff4cb456b2675680eb5e2145c",
+          "log": "deferred-raster-sampler-edit-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-sampler-edit-saved.glb"
+        },
+        {
+          "image": "forward-raster-sampler-edit.frame-0004.png",
+          "imageSha256": "acf81c151b75736709d89dbbb7884e79256a4d1e89f836321f47d0d9aad3ad41",
+          "telemetrySha256": "8fd31e4aee526e624ed7eeaca6feb6e1a08e0ba86e4ce27f54b3a7be432b6786",
+          "log": "forward-raster-sampler-edit.log",
+          "technique": "forward-raster",
+          "asset": "sampler-edit.gltf",
+          "frame": 4
+        },
+        {
+          "image": "forward-raster-sampler-edit.frame-0008.png",
+          "imageSha256": "67f6ad27074e61e706517d9791507127574eb5f9ff74dff9eb4fd71b8f7d89c2",
+          "telemetrySha256": "a360d9379a74e80ad496d1520196ee33a48fdb1ec0ba00dafd4aaa35ec9c6b17",
+          "log": "forward-raster-sampler-edit.log",
+          "technique": "forward-raster",
+          "asset": "sampler-edit.gltf",
+          "frame": 8
+        },
+        {
+          "image": "forward-raster-sampler-edit.frame-0012.png",
+          "imageSha256": "acf81c151b75736709d89dbbb7884e79256a4d1e89f836321f47d0d9aad3ad41",
+          "telemetrySha256": "80c1d4ca2d418d000e0ad645b9e7f3fbdc0470222d5d9a7a06b4aaff94202567",
+          "log": "forward-raster-sampler-edit.log",
+          "technique": "forward-raster",
+          "asset": "sampler-edit.gltf",
+          "frame": 12
+        },
+        {
+          "image": "forward-raster-sampler-edit.frame-0016.png",
+          "imageSha256": "67f6ad27074e61e706517d9791507127574eb5f9ff74dff9eb4fd71b8f7d89c2",
+          "telemetrySha256": "eedb79cd80d84696da36b1b9bfbbf5cb249fd80b2e4431462f85e1808aabd47b",
+          "log": "forward-raster-sampler-edit.log",
+          "technique": "forward-raster",
+          "asset": "sampler-edit.gltf",
+          "frame": 16
+        },
+        {
+          "image": "forward-raster-sampler-edit.png",
+          "imageSha256": "67f6ad27074e61e706517d9791507127574eb5f9ff74dff9eb4fd71b8f7d89c2",
+          "telemetrySha256": "36a367a0def8715ff2b321183a7935643fe7f2fb54de7acefaf69e617abcd48d",
+          "log": "forward-raster-sampler-edit.log",
+          "technique": "forward-raster",
+          "asset": "sampler-edit.gltf",
+          "frame": 20
+        },
+        {
+          "image": "forward-raster-sampler-edit-reload.png",
+          "imageSha256": "67f6ad27074e61e706517d9791507127574eb5f9ff74dff9eb4fd71b8f7d89c2",
+          "telemetrySha256": "ef66c02e2e0cb90194e9a3c242df1dfae01eeaf73050c1b6e401fda9c124fbf9",
+          "log": "forward-raster-sampler-edit-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-sampler-edit-saved.glb"
+        }
+      ],
+      "validationLogSha256": {
+        "deferred-raster-sampler-edit.log": "10d1326202017682f65e792c691073ccb1cd1cd81e140f291a24c1b51c45955a",
+        "deferred-raster-sampler-edit-reload.log": "db76c67300c4804cc82c6344fa4acf277a86bd887b8ccad9c86c7d5758ed49b8",
+        "forward-raster-sampler-edit.log": "dd9a32a15cac25e12782c69e21e0b61888b66f9af652a1f2ea1bd37e82680bda",
+        "forward-raster-sampler-edit-reload.log": "d9f165f881b80a64a1b66014dc409aaa78c6e46f4441f758ef1be4ba602071ee"
+      },
+      "checks": [
+        {
+          "case": "sampler-edit",
+          "technique": "deferred-raster",
+          "check": "sampler-edit-bindings",
+          "before": [
+            {
+              "sourceTexture": 0,
+              "evaluatedTexture": 0,
+              "runtimeTexture": 0,
+              "image": 0,
+              "policy": {
+                "minFilter": 9728,
+                "magFilter": 9728,
+                "wrapS": 33071,
+                "wrapT": 33071
+              }
+            },
+            {
+              "sourceTexture": 1,
+              "evaluatedTexture": 1,
+              "runtimeTexture": 1,
+              "image": 0,
+              "policy": {
+                "minFilter": 9728,
+                "magFilter": 9729,
+                "wrapS": 33071,
+                "wrapT": 33071
+              }
+            }
+          ],
+          "edited": [
+            {
+              "sourceTexture": 2,
+              "evaluatedTexture": 2,
+              "runtimeTexture": 2,
+              "image": 0,
+              "policy": {
+                "minFilter": 9987,
+                "magFilter": 9729,
+                "wrapS": 33071,
+                "wrapT": 33071
+              }
+            },
+            {
+              "sourceTexture": 1,
+              "evaluatedTexture": 1,
+              "runtimeTexture": 1,
+              "image": 0,
+              "policy": {
+                "minFilter": 9728,
+                "magFilter": 9729,
+                "wrapS": 33071,
+                "wrapT": 33071
+              }
+            }
+          ],
+          "undo": [
+            {
+              "sourceTexture": 0,
+              "evaluatedTexture": 0,
+              "runtimeTexture": 0,
+              "image": 0,
+              "policy": {
+                "minFilter": 9728,
+                "magFilter": 9728,
+                "wrapS": 33071,
+                "wrapT": 33071
+              }
+            },
+            {
+              "sourceTexture": 1,
+              "evaluatedTexture": 1,
+              "runtimeTexture": 1,
+              "image": 0,
+              "policy": {
+                "minFilter": 9728,
+                "magFilter": 9729,
+                "wrapS": 33071,
+                "wrapT": 33071
+              }
+            }
+          ],
+          "redo": [
+            {
+              "sourceTexture": 2,
+              "evaluatedTexture": 2,
+              "runtimeTexture": 2,
+              "image": 0,
+              "policy": {
+                "minFilter": 9987,
+                "magFilter": 9729,
+                "wrapS": 33071,
+                "wrapT": 33071
+              }
+            },
+            {
+              "sourceTexture": 1,
+              "evaluatedTexture": 1,
+              "runtimeTexture": 1,
+              "image": 0,
+              "policy": {
+                "minFilter": 9728,
+                "magFilter": 9729,
+                "wrapS": 33071,
+                "wrapT": 33071
+              }
+            }
+          ],
+          "omitted": [
+            {
+              "sourceTexture": 3,
+              "evaluatedTexture": 3,
+              "runtimeTexture": 3,
+              "image": 0,
+              "policy": {
+                "minFilter": -1,
+                "magFilter": -1,
+                "wrapS": 33071,
+                "wrapT": 33071
+              }
+            },
+            {
+              "sourceTexture": 1,
+              "evaluatedTexture": 1,
+              "runtimeTexture": 1,
+              "image": 0,
+              "policy": {
+                "minFilter": 9728,
+                "magFilter": 9729,
+                "wrapS": 33071,
+                "wrapT": 33071
+              }
+            }
+          ],
+          "omittedSamplerSlot": 3
+        },
+        {
+          "case": "sampler-edit",
+          "technique": "deferred-raster",
+          "check": "sampler-edit-pixels",
+          "nearestMixedFraction": 0.0,
+          "linearMixedFraction": 0.919921875,
+          "untouchedPixelsExact": true,
+          "undoPixelsExact": true,
+          "redoPixelsExact": true,
+          "omittedPixelsExact": true
+        },
+        {
+          "case": "sampler-edit",
+          "technique": "deferred-raster",
+          "check": "sampler-edit-roundtrip",
+          "saved": "deferred-raster-sampler-edit-saved.glb",
+          "expectedPolicies": [
+            {
+              "minFilter": -1,
+              "magFilter": -1,
+              "wrapS": 33071,
+              "wrapT": 33071
+            },
+            {
+              "minFilter": 9728,
+              "magFilter": 9729,
+              "wrapS": 33071,
+              "wrapT": 33071
+            }
+          ],
+          "pixelsExact": true
+        },
+        {
+          "case": "sampler-edit",
+          "technique": "forward-raster",
+          "check": "sampler-edit-bindings",
+          "before": [
+            {
+              "sourceTexture": 0,
+              "evaluatedTexture": 0,
+              "runtimeTexture": 0,
+              "image": 0,
+              "policy": {
+                "minFilter": 9728,
+                "magFilter": 9728,
+                "wrapS": 33071,
+                "wrapT": 33071
+              }
+            },
+            {
+              "sourceTexture": 1,
+              "evaluatedTexture": 1,
+              "runtimeTexture": 1,
+              "image": 0,
+              "policy": {
+                "minFilter": 9728,
+                "magFilter": 9729,
+                "wrapS": 33071,
+                "wrapT": 33071
+              }
+            }
+          ],
+          "edited": [
+            {
+              "sourceTexture": 2,
+              "evaluatedTexture": 2,
+              "runtimeTexture": 2,
+              "image": 0,
+              "policy": {
+                "minFilter": 9987,
+                "magFilter": 9729,
+                "wrapS": 33071,
+                "wrapT": 33071
+              }
+            },
+            {
+              "sourceTexture": 1,
+              "evaluatedTexture": 1,
+              "runtimeTexture": 1,
+              "image": 0,
+              "policy": {
+                "minFilter": 9728,
+                "magFilter": 9729,
+                "wrapS": 33071,
+                "wrapT": 33071
+              }
+            }
+          ],
+          "undo": [
+            {
+              "sourceTexture": 0,
+              "evaluatedTexture": 0,
+              "runtimeTexture": 0,
+              "image": 0,
+              "policy": {
+                "minFilter": 9728,
+                "magFilter": 9728,
+                "wrapS": 33071,
+                "wrapT": 33071
+              }
+            },
+            {
+              "sourceTexture": 1,
+              "evaluatedTexture": 1,
+              "runtimeTexture": 1,
+              "image": 0,
+              "policy": {
+                "minFilter": 9728,
+                "magFilter": 9729,
+                "wrapS": 33071,
+                "wrapT": 33071
+              }
+            }
+          ],
+          "redo": [
+            {
+              "sourceTexture": 2,
+              "evaluatedTexture": 2,
+              "runtimeTexture": 2,
+              "image": 0,
+              "policy": {
+                "minFilter": 9987,
+                "magFilter": 9729,
+                "wrapS": 33071,
+                "wrapT": 33071
+              }
+            },
+            {
+              "sourceTexture": 1,
+              "evaluatedTexture": 1,
+              "runtimeTexture": 1,
+              "image": 0,
+              "policy": {
+                "minFilter": 9728,
+                "magFilter": 9729,
+                "wrapS": 33071,
+                "wrapT": 33071
+              }
+            }
+          ],
+          "omitted": [
+            {
+              "sourceTexture": 3,
+              "evaluatedTexture": 3,
+              "runtimeTexture": 3,
+              "image": 0,
+              "policy": {
+                "minFilter": -1,
+                "magFilter": -1,
+                "wrapS": 33071,
+                "wrapT": 33071
+              }
+            },
+            {
+              "sourceTexture": 1,
+              "evaluatedTexture": 1,
+              "runtimeTexture": 1,
+              "image": 0,
+              "policy": {
+                "minFilter": 9728,
+                "magFilter": 9729,
+                "wrapS": 33071,
+                "wrapT": 33071
+              }
+            }
+          ],
+          "omittedSamplerSlot": 3
+        },
+        {
+          "case": "sampler-edit",
+          "technique": "forward-raster",
+          "check": "sampler-edit-pixels",
+          "nearestMixedFraction": 0.0,
+          "linearMixedFraction": 0.919921875,
+          "untouchedPixelsExact": true,
+          "undoPixelsExact": true,
+          "redoPixelsExact": true,
+          "omittedPixelsExact": true
+        },
+        {
+          "case": "sampler-edit",
+          "technique": "forward-raster",
+          "check": "sampler-edit-roundtrip",
+          "saved": "forward-raster-sampler-edit-saved.glb",
+          "expectedPolicies": [
+            {
+              "minFilter": -1,
+              "magFilter": -1,
+              "wrapS": 33071,
+              "wrapT": 33071
+            },
+            {
+              "minFilter": 9728,
+              "magFilter": 9729,
+              "wrapS": 33071,
+              "wrapT": 33071
+            }
+          ],
+          "pixelsExact": true
+        }
+      ]
+    },
+    {
+      "suite": "filter",
+      "captureCount": 94,
+      "validatedProcessCount": 94,
+      "checkCount": 72,
+      "roundTripFullImageExact": {
+        "deferred-raster-mag-1-nearest-timeNone-reload.png": true,
+        "deferred-raster-mag-1-linear-timeNone-reload.png": true,
+        "forward-raster-mag-1-nearest-timeNone-reload.png": true,
+        "forward-raster-mag-1-linear-timeNone-reload.png": true,
+        "deferred-raster-min-4-nearest-timeNone-reload.png": true,
+        "deferred-raster-min-4-linear-timeNone-reload.png": true,
+        "deferred-raster-min-4-nearest_mipmap_nearest-timeNone-reload.png": true,
+        "deferred-raster-min-4-linear_mipmap_nearest-timeNone-reload.png": true,
+        "deferred-raster-min-4-nearest_mipmap_linear-timeNone-reload.png": true,
+        "deferred-raster-min-4-linear_mipmap_linear-timeNone-reload.png": true,
+        "forward-raster-min-4-nearest-timeNone-reload.png": true,
+        "forward-raster-min-4-linear-timeNone-reload.png": true,
+        "forward-raster-min-4-nearest_mipmap_nearest-timeNone-reload.png": true,
+        "forward-raster-min-4-linear_mipmap_nearest-timeNone-reload.png": true,
+        "forward-raster-min-4-nearest_mipmap_linear-timeNone-reload.png": true,
+        "forward-raster-min-4-linear_mipmap_linear-timeNone-reload.png": true,
+        "deferred-raster-min-8-nearest-timeNone-reload.png": true,
+        "deferred-raster-min-8-linear-timeNone-reload.png": true,
+        "deferred-raster-min-8-nearest_mipmap_nearest-timeNone-reload.png": true,
+        "deferred-raster-min-8-linear_mipmap_nearest-timeNone-reload.png": true,
+        "deferred-raster-min-8-nearest_mipmap_linear-timeNone-reload.png": true,
+        "deferred-raster-min-8-linear_mipmap_linear-timeNone-reload.png": true,
+        "forward-raster-min-8-nearest-timeNone-reload.png": true,
+        "forward-raster-min-8-linear-timeNone-reload.png": true,
+        "forward-raster-min-8-nearest_mipmap_nearest-timeNone-reload.png": true,
+        "forward-raster-min-8-linear_mipmap_nearest-timeNone-reload.png": true,
+        "forward-raster-min-8-nearest_mipmap_linear-timeNone-reload.png": true,
+        "forward-raster-min-8-linear_mipmap_linear-timeNone-reload.png": true,
+        "deferred-raster-shared-1-shared-timeNone-reload.png": true,
+        "forward-raster-shared-1-shared-timeNone-reload.png": true,
+        "deferred-raster-transparent-1-nearest-timeNone-reload.png": true,
+        "deferred-raster-transparent-1-linear-timeNone-reload.png": true,
+        "forward-raster-transparent-1-nearest-timeNone-reload.png": true,
+        "forward-raster-transparent-1-linear-timeNone-reload.png": true,
+        "deferred-raster-mask-1-nearest-timeNone-reload.png": true,
+        "deferred-raster-mask-1-linear-timeNone-reload.png": true,
+        "forward-raster-mask-1-nearest-timeNone-reload.png": true,
+        "forward-raster-mask-1-linear-timeNone-reload.png": true,
+        "deferred-raster-edit-1-nearest-time0.0-reload.png": true,
+        "deferred-raster-edit-1-linear-time0.0-reload.png": true,
+        "deferred-raster-edit-1-nearest-time1.0-reload.png": true,
+        "deferred-raster-edit-1-linear-time1.0-reload.png": true,
+        "forward-raster-edit-1-nearest-time0.0-reload.png": true,
+        "forward-raster-edit-1-linear-time0.0-reload.png": true,
+        "forward-raster-edit-1-nearest-time1.0-reload.png": true,
+        "forward-raster-edit-1-linear-time1.0-reload.png": true
+      },
+      "fixtureSha256": {
+        "deferred-raster-edit-1-linear-time0.0-saved.glb": "beed29060558b5770f78c4328243e8eef858220b967feb820bb0d49b324b907d",
+        "deferred-raster-edit-1-linear-time1.0-saved.glb": "cd4764cbe258a911616f6f49bfc40a3230ed87c3796c7a9ab904acff165f4496",
+        "deferred-raster-edit-1-nearest-time0.0-saved.glb": "adfd1c8b1fb73588027e09b8387fed88359093157cde697c783cf044e9e74013",
+        "deferred-raster-edit-1-nearest-time1.0-saved.glb": "aaac2521aaf4daed66e0014952ff13dc9d2be23738d101d88b85d08664275b1f",
+        "deferred-raster-mag-1-linear-timeNone-saved.glb": "bae2f11eaffb3dfe3fa3d00afaf273dad622a012a2e60519bdb1a47e87afd3ae",
+        "deferred-raster-mag-1-nearest-timeNone-saved.glb": "eaabbfa5e9d5d494a9b68718befe4f87da19348f08a3f1f3913c0159f42c3339",
+        "deferred-raster-mask-1-linear-timeNone-saved.glb": "bd1ca6641651e424d7ffba932194e4fdfbae612140eed73b9ebeb48a8ef378b3",
+        "deferred-raster-mask-1-nearest-timeNone-saved.glb": "f8b7125b42e959130ced2c5764bb1a6e7f8a0397128af0c8fe65c0e2d27748c9",
+        "deferred-raster-min-4-linear-timeNone-saved.glb": "5094616c45892ee8451a98c0facc8751ac69469f50b7c25dd83cf79103393757",
+        "deferred-raster-min-4-linear_mipmap_linear-timeNone-saved.glb": "1b4537d373b5072a7f3ac331bbf2cd6197693f6a0e9d93c1b649a6652a9b7853",
+        "deferred-raster-min-4-linear_mipmap_nearest-timeNone-saved.glb": "811722ee9bea54502b5ac877ab4e2934c58f1794ebe023a33291ac4a322fba03",
+        "deferred-raster-min-4-nearest-timeNone-saved.glb": "816e43543de62a8f59cd194f4818b78ba0d03f8fa427023d3fbba2e8c8158dbe",
+        "deferred-raster-min-4-nearest_mipmap_linear-timeNone-saved.glb": "a17ff5662aef9229d2e9ac6aacf6d8bd245fb8de71c5b66a35d097f5783aa0d6",
+        "deferred-raster-min-4-nearest_mipmap_nearest-timeNone-saved.glb": "0f6520f93416bdfda0555348f3229efcc320a0a33c14b4d27c0ecb47c5b68a20",
+        "deferred-raster-min-8-linear-timeNone-saved.glb": "ab981b4194a5731d07cc55c9e91c975aade1b6ea158e7c274f15afe3800773e2",
+        "deferred-raster-min-8-linear_mipmap_linear-timeNone-saved.glb": "362d8ff3d1f95192ed40cf5eeb60ac51cbc3e35c46a3899a88ae97e551af4ec7",
+        "deferred-raster-min-8-linear_mipmap_nearest-timeNone-saved.glb": "c19d9b6897747249f40cac0a6e8258b71b1f27ea95331ce55581f9b617b4cc9f",
+        "deferred-raster-min-8-nearest-timeNone-saved.glb": "a9fc2f9c70763d1eacd40c83edc1b5593e85082bf03b7599ffa3691dac94aef0",
+        "deferred-raster-min-8-nearest_mipmap_linear-timeNone-saved.glb": "e5f7044c346a82afe499df4413cbc28689c8a8e1dff065166cddb5a000315bd1",
+        "deferred-raster-min-8-nearest_mipmap_nearest-timeNone-saved.glb": "cc747677415b26520e207dc182562257edc15bdaee878a880016fd5a96af6cfe",
+        "deferred-raster-shared-1-shared-timeNone-saved.glb": "ec911f5d880de404ee5f758a4ded13d813a6961840043031b344dc9e40b5cbae",
+        "deferred-raster-transparent-1-linear-timeNone-saved.glb": "533b5336bc4957a44edd82a2bb2c33a74523ce3647f3a7a2c9d8345329715535",
+        "deferred-raster-transparent-1-nearest-timeNone-saved.glb": "09817fd1f0ea8fe03b453f0f260446f2ff8ff7de80e63f054657b3a79a36a94c",
+        "edit-1-linear.gltf": "0fc8b14341727869ac4e0598926173e0b3546792d38af06ecb14c50b8325cda9",
+        "edit-1-nearest.gltf": "05a55cd9822fe2e5a5df6867e35ec1c6a6e9eb07519a6ec3dd98d4e50d1d3d0c",
+        "forward-raster-edit-1-linear-time0.0-saved.glb": "beed29060558b5770f78c4328243e8eef858220b967feb820bb0d49b324b907d",
+        "forward-raster-edit-1-linear-time1.0-saved.glb": "cd4764cbe258a911616f6f49bfc40a3230ed87c3796c7a9ab904acff165f4496",
+        "forward-raster-edit-1-nearest-time0.0-saved.glb": "adfd1c8b1fb73588027e09b8387fed88359093157cde697c783cf044e9e74013",
+        "forward-raster-edit-1-nearest-time1.0-saved.glb": "aaac2521aaf4daed66e0014952ff13dc9d2be23738d101d88b85d08664275b1f",
+        "forward-raster-mag-1-linear-timeNone-saved.glb": "bae2f11eaffb3dfe3fa3d00afaf273dad622a012a2e60519bdb1a47e87afd3ae",
+        "forward-raster-mag-1-nearest-timeNone-saved.glb": "eaabbfa5e9d5d494a9b68718befe4f87da19348f08a3f1f3913c0159f42c3339",
+        "forward-raster-mask-1-linear-timeNone-saved.glb": "bd1ca6641651e424d7ffba932194e4fdfbae612140eed73b9ebeb48a8ef378b3",
+        "forward-raster-mask-1-nearest-timeNone-saved.glb": "f8b7125b42e959130ced2c5764bb1a6e7f8a0397128af0c8fe65c0e2d27748c9",
+        "forward-raster-min-4-linear-timeNone-saved.glb": "5094616c45892ee8451a98c0facc8751ac69469f50b7c25dd83cf79103393757",
+        "forward-raster-min-4-linear_mipmap_linear-timeNone-saved.glb": "1b4537d373b5072a7f3ac331bbf2cd6197693f6a0e9d93c1b649a6652a9b7853",
+        "forward-raster-min-4-linear_mipmap_nearest-timeNone-saved.glb": "811722ee9bea54502b5ac877ab4e2934c58f1794ebe023a33291ac4a322fba03",
+        "forward-raster-min-4-nearest-timeNone-saved.glb": "816e43543de62a8f59cd194f4818b78ba0d03f8fa427023d3fbba2e8c8158dbe",
+        "forward-raster-min-4-nearest_mipmap_linear-timeNone-saved.glb": "a17ff5662aef9229d2e9ac6aacf6d8bd245fb8de71c5b66a35d097f5783aa0d6",
+        "forward-raster-min-4-nearest_mipmap_nearest-timeNone-saved.glb": "0f6520f93416bdfda0555348f3229efcc320a0a33c14b4d27c0ecb47c5b68a20",
+        "forward-raster-min-8-linear-timeNone-saved.glb": "ab981b4194a5731d07cc55c9e91c975aade1b6ea158e7c274f15afe3800773e2",
+        "forward-raster-min-8-linear_mipmap_linear-timeNone-saved.glb": "362d8ff3d1f95192ed40cf5eeb60ac51cbc3e35c46a3899a88ae97e551af4ec7",
+        "forward-raster-min-8-linear_mipmap_nearest-timeNone-saved.glb": "c19d9b6897747249f40cac0a6e8258b71b1f27ea95331ce55581f9b617b4cc9f",
+        "forward-raster-min-8-nearest-timeNone-saved.glb": "a9fc2f9c70763d1eacd40c83edc1b5593e85082bf03b7599ffa3691dac94aef0",
+        "forward-raster-min-8-nearest_mipmap_linear-timeNone-saved.glb": "e5f7044c346a82afe499df4413cbc28689c8a8e1dff065166cddb5a000315bd1",
+        "forward-raster-min-8-nearest_mipmap_nearest-timeNone-saved.glb": "cc747677415b26520e207dc182562257edc15bdaee878a880016fd5a96af6cfe",
+        "forward-raster-shared-1-shared-timeNone-saved.glb": "ec911f5d880de404ee5f758a4ded13d813a6961840043031b344dc9e40b5cbae",
+        "forward-raster-transparent-1-linear-timeNone-saved.glb": "533b5336bc4957a44edd82a2bb2c33a74523ce3647f3a7a2c9d8345329715535",
+        "forward-raster-transparent-1-nearest-timeNone-saved.glb": "09817fd1f0ea8fe03b453f0f260446f2ff8ff7de80e63f054657b3a79a36a94c",
+        "mag-1-linear.gltf": "7b4520f0d419b7ecd9378e7822fc859c34a6573bf289291fa4a2df612884582e",
+        "mag-1-nearest.gltf": "0d2884c4c9c330d587fabce3b56ed932fb9d243d09a5cd45983a60d304088776",
+        "mask-1-linear.gltf": "42c041e8089bf8ffa05101b1462210c2f4d1ba5a1c6cf2d056320a8a4960c1f6",
+        "mask-1-nearest.gltf": "4752f471d40044877ad4603ebaa7f4046d22d803b3f1bac451abd208bb208925",
+        "min-4-linear.gltf": "e280caf5c18aa58adc9a4dfb86eea62a77bc1268b3327cc704d96eabded8bb22",
+        "min-4-linear_mipmap_linear.gltf": "b31fa90ff4da689a0f1f7665be96e760874a25b16a81c342e6ae3bdb30cf8a55",
+        "min-4-linear_mipmap_nearest.gltf": "68c36df6061ad4f89ac562d536106e30b8bdb2008c682aab0a3632968086fbc6",
+        "min-4-nearest.gltf": "554ff745eb6ece9e1de3700dcd02cba4036b74f8c3c9620688bb1b678b9e8b29",
+        "min-4-nearest_mipmap_linear.gltf": "1c75b34b7f88b5064201d9c035a286481fdbef061ccc26584d6a9bab20290bb4",
+        "min-4-nearest_mipmap_nearest.gltf": "f47ff375ea810dc0d8deb472503c9bbc49695927f1bf716c4f6ef74754ff853a",
+        "min-8-linear.gltf": "543cc0c7a18c16ccf8fe0051e3098250a7edf13049e76563554f2e7a88057f53",
+        "min-8-linear_mipmap_linear.gltf": "52dd44661b8479fb4e1e7f9d214316129d54a0f3dad82c9c0f003a10afd20ce9",
+        "min-8-linear_mipmap_nearest.gltf": "db9f58017aa4698c8f3e44094fc456e0cadad33e254ee0e2e374fbae04c8654a",
+        "min-8-nearest.gltf": "a7f21b3b2c511d210d5ed2d8e93514c3bb21835db37cb2d44459b2c3c9a2da40",
+        "min-8-nearest_mipmap_linear.gltf": "456cb65112f0666a49f0ada4e7c8e1ba8d1a0f2db8b7c335ed8e470e97164a89",
+        "min-8-nearest_mipmap_nearest.gltf": "5221469c05e597e26963cad1ba91259ee86012875af107aec2a21eeddacfdfa7",
+        "ray-alpha-shared.gltf": "8154f9fce6fbf9f5cded8f37b6a8dec7618c205e45bf7930d2c9b4d6597cb067",
+        "shared-1-shared.gltf": "bba55a3e8489cb4170147bdeb6fd8d5a93526927c1274b8ea1c9fccfa04edf63",
+        "transparent-1-linear.gltf": "35dfa47285890836528177cf63f5531e7b39bb6a4d67456bfd0c9119cf281f17",
+        "transparent-1-nearest.gltf": "dad1079295d9cb0b5c003c235cec1ae18733317a82a2d232634f69016eb2e1eb"
+      },
+      "captureProofs": [
+        {
+          "image": "deferred-raster-mag-1-nearest-timeNone.png",
+          "imageSha256": "3ded43a4a329953c23c924920a55d28f698d8753296e427d218b212667332341",
+          "telemetrySha256": "9302d00e7be3f3658d37b8db74a2e8b14ad43c56647ec745cb4adbb8dc05e6d2",
+          "log": "deferred-raster-mag-1-nearest-timeNone.log",
+          "technique": "deferred-raster",
+          "asset": "mag-1-nearest.gltf"
+        },
+        {
+          "image": "deferred-raster-mag-1-nearest-timeNone-reload.png",
+          "imageSha256": "3ded43a4a329953c23c924920a55d28f698d8753296e427d218b212667332341",
+          "telemetrySha256": "cbe413d880c289321a094fef60728df69ef68ae089c230c06c8a26e71d07a30c",
+          "log": "deferred-raster-mag-1-nearest-timeNone-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-mag-1-nearest-timeNone-saved.glb"
+        },
+        {
+          "image": "deferred-raster-mag-1-linear-timeNone.png",
+          "imageSha256": "d0c4741eee111324732810b43679646fd4271947b51755ebf0778df7353010ca",
+          "telemetrySha256": "67101b5a53885605b2f7d32ea019288e84c808056dba34fa1a34873a5c433b5a",
+          "log": "deferred-raster-mag-1-linear-timeNone.log",
+          "technique": "deferred-raster",
+          "asset": "mag-1-linear.gltf"
+        },
+        {
+          "image": "deferred-raster-mag-1-linear-timeNone-reload.png",
+          "imageSha256": "d0c4741eee111324732810b43679646fd4271947b51755ebf0778df7353010ca",
+          "telemetrySha256": "d6b5062c2c473faaf562dc429bddb801681d45471e4add1416ffd0b6caa4e9a8",
+          "log": "deferred-raster-mag-1-linear-timeNone-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-mag-1-linear-timeNone-saved.glb"
+        },
+        {
+          "image": "forward-raster-mag-1-nearest-timeNone.png",
+          "imageSha256": "3ded43a4a329953c23c924920a55d28f698d8753296e427d218b212667332341",
+          "telemetrySha256": "1d34abf172104252c2c8797ab33690d7e8a4c1835a906e236756cab75e659a0e",
+          "log": "forward-raster-mag-1-nearest-timeNone.log",
+          "technique": "forward-raster",
+          "asset": "mag-1-nearest.gltf"
+        },
+        {
+          "image": "forward-raster-mag-1-nearest-timeNone-reload.png",
+          "imageSha256": "3ded43a4a329953c23c924920a55d28f698d8753296e427d218b212667332341",
+          "telemetrySha256": "ce3ce0b24f95c1f36f48d31aa22d79825cb88fd0e5c28fe81d13524409d84655",
+          "log": "forward-raster-mag-1-nearest-timeNone-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-mag-1-nearest-timeNone-saved.glb"
+        },
+        {
+          "image": "forward-raster-mag-1-linear-timeNone.png",
+          "imageSha256": "d0c4741eee111324732810b43679646fd4271947b51755ebf0778df7353010ca",
+          "telemetrySha256": "a6ecdaf3cc59e9ab6e5cec1ac153c519441cc61d0fe8d9d55f0001f729ab5db9",
+          "log": "forward-raster-mag-1-linear-timeNone.log",
+          "technique": "forward-raster",
+          "asset": "mag-1-linear.gltf"
+        },
+        {
+          "image": "forward-raster-mag-1-linear-timeNone-reload.png",
+          "imageSha256": "d0c4741eee111324732810b43679646fd4271947b51755ebf0778df7353010ca",
+          "telemetrySha256": "8cbb700417f0a992d7cf49cc35dbe8d669979906ef8af431a1d448df987cd327",
+          "log": "forward-raster-mag-1-linear-timeNone-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-mag-1-linear-timeNone-saved.glb"
+        },
+        {
+          "image": "deferred-raster-min-4-nearest-timeNone.png",
+          "imageSha256": "0e8f05c4322e62d45582dcec656c8b942b835f5a93cd99e01f03961af2a4eec9",
+          "telemetrySha256": "ed0f546bccb6fcd367c8dcd04f7a0d47c3f6dedddd4129d2d9c37b71264fc996",
+          "log": "deferred-raster-min-4-nearest-timeNone.log",
+          "technique": "deferred-raster",
+          "asset": "min-4-nearest.gltf"
+        },
+        {
+          "image": "deferred-raster-min-4-nearest-timeNone-reload.png",
+          "imageSha256": "0e8f05c4322e62d45582dcec656c8b942b835f5a93cd99e01f03961af2a4eec9",
+          "telemetrySha256": "541145a339056995e4b5ed605ebb239e09c6bd2de240e61115a73cd135b74183",
+          "log": "deferred-raster-min-4-nearest-timeNone-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-min-4-nearest-timeNone-saved.glb"
+        },
+        {
+          "image": "deferred-raster-min-4-linear-timeNone.png",
+          "imageSha256": "5812ebb0768a168dab3d3786cf5068fe5d097745a8dd64c91f4f4e44cf152f19",
+          "telemetrySha256": "c2374818f83e065457a58d3cc76b1651dccaec409b20557a12d9c7f4c679e3f9",
+          "log": "deferred-raster-min-4-linear-timeNone.log",
+          "technique": "deferred-raster",
+          "asset": "min-4-linear.gltf"
+        },
+        {
+          "image": "deferred-raster-min-4-linear-timeNone-reload.png",
+          "imageSha256": "5812ebb0768a168dab3d3786cf5068fe5d097745a8dd64c91f4f4e44cf152f19",
+          "telemetrySha256": "e7a0bdbd3b22c8ee6a28e8561e39f7d16a309c6f1e88bf0bef01a25b4a87f2fe",
+          "log": "deferred-raster-min-4-linear-timeNone-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-min-4-linear-timeNone-saved.glb"
+        },
+        {
+          "image": "deferred-raster-min-4-nearest_mipmap_nearest-timeNone.png",
+          "imageSha256": "0e8f05c4322e62d45582dcec656c8b942b835f5a93cd99e01f03961af2a4eec9",
+          "telemetrySha256": "0e1470c905c2b5398e00cb8b2678102633c7475f73efd19c84d66dcbfa247f3b",
+          "log": "deferred-raster-min-4-nearest_mipmap_nearest-timeNone.log",
+          "technique": "deferred-raster",
+          "asset": "min-4-nearest_mipmap_nearest.gltf"
+        },
+        {
+          "image": "deferred-raster-min-4-nearest_mipmap_nearest-timeNone-reload.png",
+          "imageSha256": "0e8f05c4322e62d45582dcec656c8b942b835f5a93cd99e01f03961af2a4eec9",
+          "telemetrySha256": "8b02de56976a46272c638ea32c49d1a05b15ca3a2eb03821ffe0505e2141a17b",
+          "log": "deferred-raster-min-4-nearest_mipmap_nearest-timeNone-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-min-4-nearest_mipmap_nearest-timeNone-saved.glb"
+        },
+        {
+          "image": "deferred-raster-min-4-linear_mipmap_nearest-timeNone.png",
+          "imageSha256": "5812ebb0768a168dab3d3786cf5068fe5d097745a8dd64c91f4f4e44cf152f19",
+          "telemetrySha256": "b96848611cd231729a558f49a7dfa742f841259a16d0ccc64e27b65703f963fb",
+          "log": "deferred-raster-min-4-linear_mipmap_nearest-timeNone.log",
+          "technique": "deferred-raster",
+          "asset": "min-4-linear_mipmap_nearest.gltf"
+        },
+        {
+          "image": "deferred-raster-min-4-linear_mipmap_nearest-timeNone-reload.png",
+          "imageSha256": "5812ebb0768a168dab3d3786cf5068fe5d097745a8dd64c91f4f4e44cf152f19",
+          "telemetrySha256": "50161a81bf76772952bcb65930ae5e617a49e45e9d290e5cf3faa74a72e57a63",
+          "log": "deferred-raster-min-4-linear_mipmap_nearest-timeNone-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-min-4-linear_mipmap_nearest-timeNone-saved.glb"
+        },
+        {
+          "image": "deferred-raster-min-4-nearest_mipmap_linear-timeNone.png",
+          "imageSha256": "0e8f05c4322e62d45582dcec656c8b942b835f5a93cd99e01f03961af2a4eec9",
+          "telemetrySha256": "e70694adb0daee192dfb07484ec799978226848013f4650e2e8ee0219948ee1c",
+          "log": "deferred-raster-min-4-nearest_mipmap_linear-timeNone.log",
+          "technique": "deferred-raster",
+          "asset": "min-4-nearest_mipmap_linear.gltf"
+        },
+        {
+          "image": "deferred-raster-min-4-nearest_mipmap_linear-timeNone-reload.png",
+          "imageSha256": "0e8f05c4322e62d45582dcec656c8b942b835f5a93cd99e01f03961af2a4eec9",
+          "telemetrySha256": "d8f40f9205a60af04f3eb008c485308cbb9e3d4c1cca18e70d4f9ee80ed33232",
+          "log": "deferred-raster-min-4-nearest_mipmap_linear-timeNone-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-min-4-nearest_mipmap_linear-timeNone-saved.glb"
+        },
+        {
+          "image": "deferred-raster-min-4-linear_mipmap_linear-timeNone.png",
+          "imageSha256": "08ba21b8a8d5d2b9ddb8833ba4e128ce5aa79b60db4f852e07a1abe89fd2756a",
+          "telemetrySha256": "5ca3a369c31de96330770027c09159721ef9f4fbb2cd314d5ceafddfecefdc79",
+          "log": "deferred-raster-min-4-linear_mipmap_linear-timeNone.log",
+          "technique": "deferred-raster",
+          "asset": "min-4-linear_mipmap_linear.gltf"
+        },
+        {
+          "image": "deferred-raster-min-4-linear_mipmap_linear-timeNone-reload.png",
+          "imageSha256": "08ba21b8a8d5d2b9ddb8833ba4e128ce5aa79b60db4f852e07a1abe89fd2756a",
+          "telemetrySha256": "63d4aff1c5a9300361f01a63450193cdf1909ea18f0e2ec850fff7663c7d22ab",
+          "log": "deferred-raster-min-4-linear_mipmap_linear-timeNone-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-min-4-linear_mipmap_linear-timeNone-saved.glb"
+        },
+        {
+          "image": "forward-raster-min-4-nearest-timeNone.png",
+          "imageSha256": "0e8f05c4322e62d45582dcec656c8b942b835f5a93cd99e01f03961af2a4eec9",
+          "telemetrySha256": "cba1cf6829400781e8fdb1b647d92097d353074df4063b4ef16cdc1bec5d4161",
+          "log": "forward-raster-min-4-nearest-timeNone.log",
+          "technique": "forward-raster",
+          "asset": "min-4-nearest.gltf"
+        },
+        {
+          "image": "forward-raster-min-4-nearest-timeNone-reload.png",
+          "imageSha256": "0e8f05c4322e62d45582dcec656c8b942b835f5a93cd99e01f03961af2a4eec9",
+          "telemetrySha256": "c9fedaa7e4f57db5a9697fb82f52762a4fea76fc3d55698d3701366924907121",
+          "log": "forward-raster-min-4-nearest-timeNone-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-min-4-nearest-timeNone-saved.glb"
+        },
+        {
+          "image": "forward-raster-min-4-linear-timeNone.png",
+          "imageSha256": "5812ebb0768a168dab3d3786cf5068fe5d097745a8dd64c91f4f4e44cf152f19",
+          "telemetrySha256": "d0af435c42e7fbdac7881db843ca916cf829636eadd85633b4a894c70e8cce61",
+          "log": "forward-raster-min-4-linear-timeNone.log",
+          "technique": "forward-raster",
+          "asset": "min-4-linear.gltf"
+        },
+        {
+          "image": "forward-raster-min-4-linear-timeNone-reload.png",
+          "imageSha256": "5812ebb0768a168dab3d3786cf5068fe5d097745a8dd64c91f4f4e44cf152f19",
+          "telemetrySha256": "466468ea03c4ff19db6919b6c918472c7b643a607f1a585ecc38ed3cd5af3f1e",
+          "log": "forward-raster-min-4-linear-timeNone-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-min-4-linear-timeNone-saved.glb"
+        },
+        {
+          "image": "forward-raster-min-4-nearest_mipmap_nearest-timeNone.png",
+          "imageSha256": "0e8f05c4322e62d45582dcec656c8b942b835f5a93cd99e01f03961af2a4eec9",
+          "telemetrySha256": "115fb763a53e79ce6cb27f8412167c481746a6fb44256996aff340cc48e3d57a",
+          "log": "forward-raster-min-4-nearest_mipmap_nearest-timeNone.log",
+          "technique": "forward-raster",
+          "asset": "min-4-nearest_mipmap_nearest.gltf"
+        },
+        {
+          "image": "forward-raster-min-4-nearest_mipmap_nearest-timeNone-reload.png",
+          "imageSha256": "0e8f05c4322e62d45582dcec656c8b942b835f5a93cd99e01f03961af2a4eec9",
+          "telemetrySha256": "f92e77eb706b0ce39bc063779fc651a7cc6d6bbfdafd7472a04baeea781aece7",
+          "log": "forward-raster-min-4-nearest_mipmap_nearest-timeNone-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-min-4-nearest_mipmap_nearest-timeNone-saved.glb"
+        },
+        {
+          "image": "forward-raster-min-4-linear_mipmap_nearest-timeNone.png",
+          "imageSha256": "5812ebb0768a168dab3d3786cf5068fe5d097745a8dd64c91f4f4e44cf152f19",
+          "telemetrySha256": "cfeee775f486fd9408947231c76ecb36621337d625fc42c16807cfef11ca7e99",
+          "log": "forward-raster-min-4-linear_mipmap_nearest-timeNone.log",
+          "technique": "forward-raster",
+          "asset": "min-4-linear_mipmap_nearest.gltf"
+        },
+        {
+          "image": "forward-raster-min-4-linear_mipmap_nearest-timeNone-reload.png",
+          "imageSha256": "5812ebb0768a168dab3d3786cf5068fe5d097745a8dd64c91f4f4e44cf152f19",
+          "telemetrySha256": "f8260683fd7c8ab4fa369ae842a7d0d175566067ebb5ef336bd73bc1b09bf864",
+          "log": "forward-raster-min-4-linear_mipmap_nearest-timeNone-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-min-4-linear_mipmap_nearest-timeNone-saved.glb"
+        },
+        {
+          "image": "forward-raster-min-4-nearest_mipmap_linear-timeNone.png",
+          "imageSha256": "0e8f05c4322e62d45582dcec656c8b942b835f5a93cd99e01f03961af2a4eec9",
+          "telemetrySha256": "fe7e53ade01d87572d34c4270af6f344c93b76a7317e629dc1eeaaee27a9e16d",
+          "log": "forward-raster-min-4-nearest_mipmap_linear-timeNone.log",
+          "technique": "forward-raster",
+          "asset": "min-4-nearest_mipmap_linear.gltf"
+        },
+        {
+          "image": "forward-raster-min-4-nearest_mipmap_linear-timeNone-reload.png",
+          "imageSha256": "0e8f05c4322e62d45582dcec656c8b942b835f5a93cd99e01f03961af2a4eec9",
+          "telemetrySha256": "ddb4ae12ae836cb466ab04f7277e6dca67295ce042245866ea9190bd1821095f",
+          "log": "forward-raster-min-4-nearest_mipmap_linear-timeNone-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-min-4-nearest_mipmap_linear-timeNone-saved.glb"
+        },
+        {
+          "image": "forward-raster-min-4-linear_mipmap_linear-timeNone.png",
+          "imageSha256": "08ba21b8a8d5d2b9ddb8833ba4e128ce5aa79b60db4f852e07a1abe89fd2756a",
+          "telemetrySha256": "cc5980ae74fd234c79184e33f0daf4950d825ea9eab949541e75be130a69cac9",
+          "log": "forward-raster-min-4-linear_mipmap_linear-timeNone.log",
+          "technique": "forward-raster",
+          "asset": "min-4-linear_mipmap_linear.gltf"
+        },
+        {
+          "image": "forward-raster-min-4-linear_mipmap_linear-timeNone-reload.png",
+          "imageSha256": "08ba21b8a8d5d2b9ddb8833ba4e128ce5aa79b60db4f852e07a1abe89fd2756a",
+          "telemetrySha256": "4e87dad86f37be0a867ff5b7940d20954515e4ccd2b379b6df76278fdf7f8450",
+          "log": "forward-raster-min-4-linear_mipmap_linear-timeNone-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-min-4-linear_mipmap_linear-timeNone-saved.glb"
+        },
+        {
+          "image": "deferred-raster-min-8-nearest-timeNone.png",
+          "imageSha256": "5497a8fabbb89a80bc1b31ab33aea6bc0c5182136e8548e7435d1723123be075",
+          "telemetrySha256": "bd8d40b5577641502d5e27f6ea5c89593a62e4f58992ea2871b221e80bf56f1c",
+          "log": "deferred-raster-min-8-nearest-timeNone.log",
+          "technique": "deferred-raster",
+          "asset": "min-8-nearest.gltf"
+        },
+        {
+          "image": "deferred-raster-min-8-nearest-timeNone-reload.png",
+          "imageSha256": "5497a8fabbb89a80bc1b31ab33aea6bc0c5182136e8548e7435d1723123be075",
+          "telemetrySha256": "25d019bbf44f6c86220aaaa4467825cd2e66dafd66ffb5e2b0ab5cbfa7774383",
+          "log": "deferred-raster-min-8-nearest-timeNone-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-min-8-nearest-timeNone-saved.glb"
+        },
+        {
+          "image": "deferred-raster-min-8-linear-timeNone.png",
+          "imageSha256": "7388d750eaac8dc8f4cc3eda9a08e7a39ff668479140cf6a434755bf3743c3ce",
+          "telemetrySha256": "30510a5200a5fe9e93e8c9b24de7591e20e7f1650258036cbe068d86cedc7a2e",
+          "log": "deferred-raster-min-8-linear-timeNone.log",
+          "technique": "deferred-raster",
+          "asset": "min-8-linear.gltf"
+        },
+        {
+          "image": "deferred-raster-min-8-linear-timeNone-reload.png",
+          "imageSha256": "7388d750eaac8dc8f4cc3eda9a08e7a39ff668479140cf6a434755bf3743c3ce",
+          "telemetrySha256": "047db7c8e5fa0a1acc8ba5f4df135aba14698d777491744f1bde6a475a4cb62a",
+          "log": "deferred-raster-min-8-linear-timeNone-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-min-8-linear-timeNone-saved.glb"
+        },
+        {
+          "image": "deferred-raster-min-8-nearest_mipmap_nearest-timeNone.png",
+          "imageSha256": "5497a8fabbb89a80bc1b31ab33aea6bc0c5182136e8548e7435d1723123be075",
+          "telemetrySha256": "be73de71a1212099503bf433a66e90c8903c5baf71a7bb5c537202a07bb412f4",
+          "log": "deferred-raster-min-8-nearest_mipmap_nearest-timeNone.log",
+          "technique": "deferred-raster",
+          "asset": "min-8-nearest_mipmap_nearest.gltf"
+        },
+        {
+          "image": "deferred-raster-min-8-nearest_mipmap_nearest-timeNone-reload.png",
+          "imageSha256": "5497a8fabbb89a80bc1b31ab33aea6bc0c5182136e8548e7435d1723123be075",
+          "telemetrySha256": "cf090731339736aeaef1b6baae3e238e97e72a225a0311beda18685fdd765494",
+          "log": "deferred-raster-min-8-nearest_mipmap_nearest-timeNone-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-min-8-nearest_mipmap_nearest-timeNone-saved.glb"
+        },
+        {
+          "image": "deferred-raster-min-8-linear_mipmap_nearest-timeNone.png",
+          "imageSha256": "f95ffbefa09d78d5f44d35a1dd96c0d97c74628b3d17879e0ca6a3f61ca69dec",
+          "telemetrySha256": "5176a73cca4276fca97ada87eda46bd8a032ded2064d32d848ae73c57d1d9cde",
+          "log": "deferred-raster-min-8-linear_mipmap_nearest-timeNone.log",
+          "technique": "deferred-raster",
+          "asset": "min-8-linear_mipmap_nearest.gltf"
+        },
+        {
+          "image": "deferred-raster-min-8-linear_mipmap_nearest-timeNone-reload.png",
+          "imageSha256": "f95ffbefa09d78d5f44d35a1dd96c0d97c74628b3d17879e0ca6a3f61ca69dec",
+          "telemetrySha256": "89856990c4a4d73741e8e5f7453a4ecc9898094a568ebb732dc2c70f02c8aadd",
+          "log": "deferred-raster-min-8-linear_mipmap_nearest-timeNone-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-min-8-linear_mipmap_nearest-timeNone-saved.glb"
+        },
+        {
+          "image": "deferred-raster-min-8-nearest_mipmap_linear-timeNone.png",
+          "imageSha256": "27ca040e2a3163fc4eda7ceaff17fffea0b61592dc2a2f370c97b8fde650f791",
+          "telemetrySha256": "5e6b1bcd43136e26dba754128840af7af8affa09b95c59fe001d3bc41ac5d090",
+          "log": "deferred-raster-min-8-nearest_mipmap_linear-timeNone.log",
+          "technique": "deferred-raster",
+          "asset": "min-8-nearest_mipmap_linear.gltf"
+        },
+        {
+          "image": "deferred-raster-min-8-nearest_mipmap_linear-timeNone-reload.png",
+          "imageSha256": "27ca040e2a3163fc4eda7ceaff17fffea0b61592dc2a2f370c97b8fde650f791",
+          "telemetrySha256": "c7953bd3b0523d7363996af8c925957b4fe4b077d96587c493f8c5b840d0be92",
+          "log": "deferred-raster-min-8-nearest_mipmap_linear-timeNone-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-min-8-nearest_mipmap_linear-timeNone-saved.glb"
+        },
+        {
+          "image": "deferred-raster-min-8-linear_mipmap_linear-timeNone.png",
+          "imageSha256": "133a6ff661cfbdcde3d0e7e95a8a4ced0a9a5b6ecd40581a3a5a0a194c78c0e0",
+          "telemetrySha256": "b80c97ea14ea5238a9c412868043ffb9ef8e030ef3f0b019719088091a43f131",
+          "log": "deferred-raster-min-8-linear_mipmap_linear-timeNone.log",
+          "technique": "deferred-raster",
+          "asset": "min-8-linear_mipmap_linear.gltf"
+        },
+        {
+          "image": "deferred-raster-min-8-linear_mipmap_linear-timeNone-reload.png",
+          "imageSha256": "133a6ff661cfbdcde3d0e7e95a8a4ced0a9a5b6ecd40581a3a5a0a194c78c0e0",
+          "telemetrySha256": "86ae0c2d4483bc9acab12df37a265288df903b3923bd8736f93ed270d2356ba1",
+          "log": "deferred-raster-min-8-linear_mipmap_linear-timeNone-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-min-8-linear_mipmap_linear-timeNone-saved.glb"
+        },
+        {
+          "image": "forward-raster-min-8-nearest-timeNone.png",
+          "imageSha256": "5497a8fabbb89a80bc1b31ab33aea6bc0c5182136e8548e7435d1723123be075",
+          "telemetrySha256": "8864668d2307788890453b5139cdc080cccbc872c6e02c77b62c9ba206165a5b",
+          "log": "forward-raster-min-8-nearest-timeNone.log",
+          "technique": "forward-raster",
+          "asset": "min-8-nearest.gltf"
+        },
+        {
+          "image": "forward-raster-min-8-nearest-timeNone-reload.png",
+          "imageSha256": "5497a8fabbb89a80bc1b31ab33aea6bc0c5182136e8548e7435d1723123be075",
+          "telemetrySha256": "b0397d96bfd66e9c564e4df1cd4bc45008102cc3b873641eb63b282566169b52",
+          "log": "forward-raster-min-8-nearest-timeNone-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-min-8-nearest-timeNone-saved.glb"
+        },
+        {
+          "image": "forward-raster-min-8-linear-timeNone.png",
+          "imageSha256": "7388d750eaac8dc8f4cc3eda9a08e7a39ff668479140cf6a434755bf3743c3ce",
+          "telemetrySha256": "88d852a5fdb943baba5f0ed8719b1e040b8f4ed3d8b0d9f8079f1546e0d3b652",
+          "log": "forward-raster-min-8-linear-timeNone.log",
+          "technique": "forward-raster",
+          "asset": "min-8-linear.gltf"
+        },
+        {
+          "image": "forward-raster-min-8-linear-timeNone-reload.png",
+          "imageSha256": "7388d750eaac8dc8f4cc3eda9a08e7a39ff668479140cf6a434755bf3743c3ce",
+          "telemetrySha256": "3523adbef48122af9b4fa8d10c6aa5de63a2dd745a148cbfbc49b03f683c19bd",
+          "log": "forward-raster-min-8-linear-timeNone-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-min-8-linear-timeNone-saved.glb"
+        },
+        {
+          "image": "forward-raster-min-8-nearest_mipmap_nearest-timeNone.png",
+          "imageSha256": "5497a8fabbb89a80bc1b31ab33aea6bc0c5182136e8548e7435d1723123be075",
+          "telemetrySha256": "3808d6a9b301eb0e1585e1f672ba011f5054d9de8383e290a225a7c245053c0a",
+          "log": "forward-raster-min-8-nearest_mipmap_nearest-timeNone.log",
+          "technique": "forward-raster",
+          "asset": "min-8-nearest_mipmap_nearest.gltf"
+        },
+        {
+          "image": "forward-raster-min-8-nearest_mipmap_nearest-timeNone-reload.png",
+          "imageSha256": "5497a8fabbb89a80bc1b31ab33aea6bc0c5182136e8548e7435d1723123be075",
+          "telemetrySha256": "85443727a6d42d26c160cdc0a1e496358da57784b5f8c2d45185d7ad27b30b36",
+          "log": "forward-raster-min-8-nearest_mipmap_nearest-timeNone-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-min-8-nearest_mipmap_nearest-timeNone-saved.glb"
+        },
+        {
+          "image": "forward-raster-min-8-linear_mipmap_nearest-timeNone.png",
+          "imageSha256": "f95ffbefa09d78d5f44d35a1dd96c0d97c74628b3d17879e0ca6a3f61ca69dec",
+          "telemetrySha256": "23e9428e62ef94d9b08216ed2c67191fcc639e99b4c60522e72faccdea50ee54",
+          "log": "forward-raster-min-8-linear_mipmap_nearest-timeNone.log",
+          "technique": "forward-raster",
+          "asset": "min-8-linear_mipmap_nearest.gltf"
+        },
+        {
+          "image": "forward-raster-min-8-linear_mipmap_nearest-timeNone-reload.png",
+          "imageSha256": "f95ffbefa09d78d5f44d35a1dd96c0d97c74628b3d17879e0ca6a3f61ca69dec",
+          "telemetrySha256": "745f4a589a4c2be808696a5ed2f4fc8162815c1b744c21788f8e7cf311e020f2",
+          "log": "forward-raster-min-8-linear_mipmap_nearest-timeNone-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-min-8-linear_mipmap_nearest-timeNone-saved.glb"
+        },
+        {
+          "image": "forward-raster-min-8-nearest_mipmap_linear-timeNone.png",
+          "imageSha256": "27ca040e2a3163fc4eda7ceaff17fffea0b61592dc2a2f370c97b8fde650f791",
+          "telemetrySha256": "33603b94427250dfd175c60a790165bb339f2b0ae93bb0b6c531def592c5a0a2",
+          "log": "forward-raster-min-8-nearest_mipmap_linear-timeNone.log",
+          "technique": "forward-raster",
+          "asset": "min-8-nearest_mipmap_linear.gltf"
+        },
+        {
+          "image": "forward-raster-min-8-nearest_mipmap_linear-timeNone-reload.png",
+          "imageSha256": "27ca040e2a3163fc4eda7ceaff17fffea0b61592dc2a2f370c97b8fde650f791",
+          "telemetrySha256": "ee40d52e929dd715330b57d8b93a99469af29630fb559144e5ada8225b08ebb1",
+          "log": "forward-raster-min-8-nearest_mipmap_linear-timeNone-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-min-8-nearest_mipmap_linear-timeNone-saved.glb"
+        },
+        {
+          "image": "forward-raster-min-8-linear_mipmap_linear-timeNone.png",
+          "imageSha256": "133a6ff661cfbdcde3d0e7e95a8a4ced0a9a5b6ecd40581a3a5a0a194c78c0e0",
+          "telemetrySha256": "0e6f7332813772f74455df9170cdfce65d5cb661354ecf2383bea0b52bba7fe6",
+          "log": "forward-raster-min-8-linear_mipmap_linear-timeNone.log",
+          "technique": "forward-raster",
+          "asset": "min-8-linear_mipmap_linear.gltf"
+        },
+        {
+          "image": "forward-raster-min-8-linear_mipmap_linear-timeNone-reload.png",
+          "imageSha256": "133a6ff661cfbdcde3d0e7e95a8a4ced0a9a5b6ecd40581a3a5a0a194c78c0e0",
+          "telemetrySha256": "3c01fddbf892ac5803d65bb5d4c4e41168a683f835d55079596cd6996d28e0c3",
+          "log": "forward-raster-min-8-linear_mipmap_linear-timeNone-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-min-8-linear_mipmap_linear-timeNone-saved.glb"
+        },
+        {
+          "image": "deferred-raster-shared-1-shared-timeNone.png",
+          "imageSha256": "acf81c151b75736709d89dbbb7884e79256a4d1e89f836321f47d0d9aad3ad41",
+          "telemetrySha256": "fd1bafa9104fbb3f4a2102c8b9ea0487c2e3a3aaa0e4e043f9712181ea897557",
+          "log": "deferred-raster-shared-1-shared-timeNone.log",
+          "technique": "deferred-raster",
+          "asset": "shared-1-shared.gltf"
+        },
+        {
+          "image": "deferred-raster-shared-1-shared-timeNone-reload.png",
+          "imageSha256": "acf81c151b75736709d89dbbb7884e79256a4d1e89f836321f47d0d9aad3ad41",
+          "telemetrySha256": "fa42197e8f96c2d754fbf2af229612d3324575b3736b1c361d21529261616c1c",
+          "log": "deferred-raster-shared-1-shared-timeNone-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-shared-1-shared-timeNone-saved.glb"
+        },
+        {
+          "image": "forward-raster-shared-1-shared-timeNone.png",
+          "imageSha256": "acf81c151b75736709d89dbbb7884e79256a4d1e89f836321f47d0d9aad3ad41",
+          "telemetrySha256": "21e0fe68e35a04c0890599b5fbad265fc6bf5101b12e0dc59850c3be732cd843",
+          "log": "forward-raster-shared-1-shared-timeNone.log",
+          "technique": "forward-raster",
+          "asset": "shared-1-shared.gltf"
+        },
+        {
+          "image": "forward-raster-shared-1-shared-timeNone-reload.png",
+          "imageSha256": "acf81c151b75736709d89dbbb7884e79256a4d1e89f836321f47d0d9aad3ad41",
+          "telemetrySha256": "a5d2c2cfe987d318381e23142565443950bf1fa60691f767b787e4d764c25d74",
+          "log": "forward-raster-shared-1-shared-timeNone-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-shared-1-shared-timeNone-saved.glb"
+        },
+        {
+          "image": "deferred-raster-transparent-1-nearest-timeNone.png",
+          "imageSha256": "10d5a028146c108170b615c274c1bbed9f27aa7c1997a77615bc48143826431e",
+          "telemetrySha256": "284f1f7ae98e660466a8f049d23f37d26b7840336f4ecce1358fff65969ebd08",
+          "log": "deferred-raster-transparent-1-nearest-timeNone.log",
+          "technique": "deferred-raster",
+          "asset": "transparent-1-nearest.gltf"
+        },
+        {
+          "image": "deferred-raster-transparent-1-nearest-timeNone-reload.png",
+          "imageSha256": "10d5a028146c108170b615c274c1bbed9f27aa7c1997a77615bc48143826431e",
+          "telemetrySha256": "b6d5e2efda4e3541fce8b62af607b22ddc2e23ca01d363c2d18df6bfeb837f37",
+          "log": "deferred-raster-transparent-1-nearest-timeNone-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-transparent-1-nearest-timeNone-saved.glb"
+        },
+        {
+          "image": "deferred-raster-transparent-1-linear-timeNone.png",
+          "imageSha256": "7fcc88d21071416bfd95433eb70d19a7c4d25cdb84b14a84e6c68a13fa14452a",
+          "telemetrySha256": "52ba00106be834c650cfb6306545319287d1655f508224e1e966f302205d1a9a",
+          "log": "deferred-raster-transparent-1-linear-timeNone.log",
+          "technique": "deferred-raster",
+          "asset": "transparent-1-linear.gltf"
+        },
+        {
+          "image": "deferred-raster-transparent-1-linear-timeNone-reload.png",
+          "imageSha256": "7fcc88d21071416bfd95433eb70d19a7c4d25cdb84b14a84e6c68a13fa14452a",
+          "telemetrySha256": "71d0eb141147366c5291fbb20e528b38ccd370d76b35b0fcf4c4043cbb786a28",
+          "log": "deferred-raster-transparent-1-linear-timeNone-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-transparent-1-linear-timeNone-saved.glb"
+        },
+        {
+          "image": "forward-raster-transparent-1-nearest-timeNone.png",
+          "imageSha256": "10d5a028146c108170b615c274c1bbed9f27aa7c1997a77615bc48143826431e",
+          "telemetrySha256": "ec199ebd1197864afd43e5d72c21305af0f05b19d283668a2e73f76a605cbedc",
+          "log": "forward-raster-transparent-1-nearest-timeNone.log",
+          "technique": "forward-raster",
+          "asset": "transparent-1-nearest.gltf"
+        },
+        {
+          "image": "forward-raster-transparent-1-nearest-timeNone-reload.png",
+          "imageSha256": "10d5a028146c108170b615c274c1bbed9f27aa7c1997a77615bc48143826431e",
+          "telemetrySha256": "2f0c9fd5ead6fcb8f451d61aac57d6e245b115a24eb33e4b69ed1960497a5eb8",
+          "log": "forward-raster-transparent-1-nearest-timeNone-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-transparent-1-nearest-timeNone-saved.glb"
+        },
+        {
+          "image": "forward-raster-transparent-1-linear-timeNone.png",
+          "imageSha256": "7fcc88d21071416bfd95433eb70d19a7c4d25cdb84b14a84e6c68a13fa14452a",
+          "telemetrySha256": "74e474bb40cc00aaabc0d69259149236feca58eb78990a66123ada6dbd32b7c9",
+          "log": "forward-raster-transparent-1-linear-timeNone.log",
+          "technique": "forward-raster",
+          "asset": "transparent-1-linear.gltf"
+        },
+        {
+          "image": "forward-raster-transparent-1-linear-timeNone-reload.png",
+          "imageSha256": "7fcc88d21071416bfd95433eb70d19a7c4d25cdb84b14a84e6c68a13fa14452a",
+          "telemetrySha256": "7c01b4dbc7887c25954ad5f4d26160356e8e599097eab526151a471e1a05d927",
+          "log": "forward-raster-transparent-1-linear-timeNone-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-transparent-1-linear-timeNone-saved.glb"
+        },
+        {
+          "image": "deferred-raster-mask-1-nearest-timeNone.png",
+          "imageSha256": "0d934b9d3798d2f79c6caf5f575211bae2dd3f7cf68b975a0659e5415cc67d4e",
+          "telemetrySha256": "38968a236aca4ea118aa2d85054584a9b3badec9ad8b52e66c40f16965c84aa1",
+          "log": "deferred-raster-mask-1-nearest-timeNone.log",
+          "technique": "deferred-raster",
+          "asset": "mask-1-nearest.gltf"
+        },
+        {
+          "image": "deferred-raster-mask-1-nearest-timeNone-reload.png",
+          "imageSha256": "0d934b9d3798d2f79c6caf5f575211bae2dd3f7cf68b975a0659e5415cc67d4e",
+          "telemetrySha256": "8d674050c6ba251fcf6a4e5b51949d46310bc4b5db61bedac57dd628ae110e8f",
+          "log": "deferred-raster-mask-1-nearest-timeNone-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-mask-1-nearest-timeNone-saved.glb"
+        },
+        {
+          "image": "deferred-raster-mask-1-linear-timeNone.png",
+          "imageSha256": "8ea9d1ea71c64e6c4f933da0399f1137943446f50757a87430e6ab178ee142f4",
+          "telemetrySha256": "609bb76d79c3a2e6ea304ead8fff1abdcb8147d5bbc7c6baed2ba054748279a6",
+          "log": "deferred-raster-mask-1-linear-timeNone.log",
+          "technique": "deferred-raster",
+          "asset": "mask-1-linear.gltf"
+        },
+        {
+          "image": "deferred-raster-mask-1-linear-timeNone-reload.png",
+          "imageSha256": "8ea9d1ea71c64e6c4f933da0399f1137943446f50757a87430e6ab178ee142f4",
+          "telemetrySha256": "c1e93ee7044bbf0eed469f5c9f4acd00336d28c33c45e05ffa9a1b0825067dba",
+          "log": "deferred-raster-mask-1-linear-timeNone-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-mask-1-linear-timeNone-saved.glb"
+        },
+        {
+          "image": "forward-raster-mask-1-nearest-timeNone.png",
+          "imageSha256": "0d934b9d3798d2f79c6caf5f575211bae2dd3f7cf68b975a0659e5415cc67d4e",
+          "telemetrySha256": "c2b336c4bb66314484473847231959c66e966a7ba56adbe96b128ad42c099507",
+          "log": "forward-raster-mask-1-nearest-timeNone.log",
+          "technique": "forward-raster",
+          "asset": "mask-1-nearest.gltf"
+        },
+        {
+          "image": "forward-raster-mask-1-nearest-timeNone-reload.png",
+          "imageSha256": "0d934b9d3798d2f79c6caf5f575211bae2dd3f7cf68b975a0659e5415cc67d4e",
+          "telemetrySha256": "e4cb538af88122c729cb6b5d07d35c3fd200ee739c4b5e61531679087597a673",
+          "log": "forward-raster-mask-1-nearest-timeNone-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-mask-1-nearest-timeNone-saved.glb"
+        },
+        {
+          "image": "forward-raster-mask-1-linear-timeNone.png",
+          "imageSha256": "8ea9d1ea71c64e6c4f933da0399f1137943446f50757a87430e6ab178ee142f4",
+          "telemetrySha256": "ee7e59dee3c57b5e466696c594e3b1da8784a57cea444d706cf2f67c12083e35",
+          "log": "forward-raster-mask-1-linear-timeNone.log",
+          "technique": "forward-raster",
+          "asset": "mask-1-linear.gltf"
+        },
+        {
+          "image": "forward-raster-mask-1-linear-timeNone-reload.png",
+          "imageSha256": "8ea9d1ea71c64e6c4f933da0399f1137943446f50757a87430e6ab178ee142f4",
+          "telemetrySha256": "496709d668d29042692a314438eb4ac261b6580209caa34902d7714789b38f22",
+          "log": "forward-raster-mask-1-linear-timeNone-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-mask-1-linear-timeNone-saved.glb"
+        },
+        {
+          "image": "deferred-raster-edit-1-nearest-time0.0.png",
+          "imageSha256": "3ded43a4a329953c23c924920a55d28f698d8753296e427d218b212667332341",
+          "telemetrySha256": "c0d33fe2f4edcb9d643b1661837c4109bcbfa1e3c1d3771f8ca8be0dc10da20d",
+          "log": "deferred-raster-edit-1-nearest-time0.0.log",
+          "technique": "deferred-raster",
+          "asset": "edit-1-nearest.gltf"
+        },
+        {
+          "image": "deferred-raster-edit-1-nearest-time0.0-reload.png",
+          "imageSha256": "3ded43a4a329953c23c924920a55d28f698d8753296e427d218b212667332341",
+          "telemetrySha256": "25c27d82c1c052ef558842a2891ed286ae885b1416554a0c6ca9c1a3bd7eb398",
+          "log": "deferred-raster-edit-1-nearest-time0.0-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-edit-1-nearest-time0.0-saved.glb"
+        },
+        {
+          "image": "deferred-raster-edit-1-linear-time0.0.png",
+          "imageSha256": "d0c4741eee111324732810b43679646fd4271947b51755ebf0778df7353010ca",
+          "telemetrySha256": "b8cd91e4fc7a09918e079c8f91f2c4992ebfe99f28f068b4483808b1fb070e21",
+          "log": "deferred-raster-edit-1-linear-time0.0.log",
+          "technique": "deferred-raster",
+          "asset": "edit-1-linear.gltf"
+        },
+        {
+          "image": "deferred-raster-edit-1-linear-time0.0-reload.png",
+          "imageSha256": "d0c4741eee111324732810b43679646fd4271947b51755ebf0778df7353010ca",
+          "telemetrySha256": "a932441f4aab91b8a26ec763fd4e99cfc3dd0691d24ab757d7911ec626d3dc6b",
+          "log": "deferred-raster-edit-1-linear-time0.0-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-edit-1-linear-time0.0-saved.glb"
+        },
+        {
+          "image": "deferred-raster-edit-1-nearest-time1.0.png",
+          "imageSha256": "db17c44a39b169f887a08deca9aef89e200de20230d72166e2ab8b569f1572e6",
+          "telemetrySha256": "3ada3bd58b3671d0f43a363da2e633916c9811ce33be57ae5e5089d792d11a2e",
+          "log": "deferred-raster-edit-1-nearest-time1.0.log",
+          "technique": "deferred-raster",
+          "asset": "edit-1-nearest.gltf"
+        },
+        {
+          "image": "deferred-raster-edit-1-nearest-time1.0-reload.png",
+          "imageSha256": "db17c44a39b169f887a08deca9aef89e200de20230d72166e2ab8b569f1572e6",
+          "telemetrySha256": "3451768dd3bc05350a5cf5fcbf2cb15f16234d9e62953db0c1defe8b085a3f13",
+          "log": "deferred-raster-edit-1-nearest-time1.0-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-edit-1-nearest-time1.0-saved.glb"
+        },
+        {
+          "image": "deferred-raster-edit-1-linear-time1.0.png",
+          "imageSha256": "0b1fff20009a31c62c73510a16449f54dd9e0205d82401bcf562cd31fe091fc1",
+          "telemetrySha256": "2004a51864f030eefdf76c751fa65ecb101f3e859feaf275462584ae149200a2",
+          "log": "deferred-raster-edit-1-linear-time1.0.log",
+          "technique": "deferred-raster",
+          "asset": "edit-1-linear.gltf"
+        },
+        {
+          "image": "deferred-raster-edit-1-linear-time1.0-reload.png",
+          "imageSha256": "0b1fff20009a31c62c73510a16449f54dd9e0205d82401bcf562cd31fe091fc1",
+          "telemetrySha256": "b67d62e552555ceff812376573cd880f1fcae2c8a834798876ad8e65692f9dc6",
+          "log": "deferred-raster-edit-1-linear-time1.0-reload.log",
+          "technique": "deferred-raster",
+          "asset": "deferred-raster-edit-1-linear-time1.0-saved.glb"
+        },
+        {
+          "image": "forward-raster-edit-1-nearest-time0.0.png",
+          "imageSha256": "3ded43a4a329953c23c924920a55d28f698d8753296e427d218b212667332341",
+          "telemetrySha256": "efa6c1a92b073cdf31ffd856671409d7f1f74b755cf9116132276f03bf11f6b9",
+          "log": "forward-raster-edit-1-nearest-time0.0.log",
+          "technique": "forward-raster",
+          "asset": "edit-1-nearest.gltf"
+        },
+        {
+          "image": "forward-raster-edit-1-nearest-time0.0-reload.png",
+          "imageSha256": "3ded43a4a329953c23c924920a55d28f698d8753296e427d218b212667332341",
+          "telemetrySha256": "d009af9ff9f5ee25b0d27a1c568e0cda9a15412ac347120a9dd00af9a19a9733",
+          "log": "forward-raster-edit-1-nearest-time0.0-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-edit-1-nearest-time0.0-saved.glb"
+        },
+        {
+          "image": "forward-raster-edit-1-linear-time0.0.png",
+          "imageSha256": "d0c4741eee111324732810b43679646fd4271947b51755ebf0778df7353010ca",
+          "telemetrySha256": "89cf4224d1daf461f64bf074256d7fc3d720039447e20a67aff9d08b9453b882",
+          "log": "forward-raster-edit-1-linear-time0.0.log",
+          "technique": "forward-raster",
+          "asset": "edit-1-linear.gltf"
+        },
+        {
+          "image": "forward-raster-edit-1-linear-time0.0-reload.png",
+          "imageSha256": "d0c4741eee111324732810b43679646fd4271947b51755ebf0778df7353010ca",
+          "telemetrySha256": "2240aaf230f122bc94fc7f0e64eb0a43f0ba068a06ad84d5c0131af4c0a15868",
+          "log": "forward-raster-edit-1-linear-time0.0-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-edit-1-linear-time0.0-saved.glb"
+        },
+        {
+          "image": "forward-raster-edit-1-nearest-time1.0.png",
+          "imageSha256": "db17c44a39b169f887a08deca9aef89e200de20230d72166e2ab8b569f1572e6",
+          "telemetrySha256": "d5ba193359ff4b35568657210cc957064f02a110529dabcc7d45f2274d033dc1",
+          "log": "forward-raster-edit-1-nearest-time1.0.log",
+          "technique": "forward-raster",
+          "asset": "edit-1-nearest.gltf"
+        },
+        {
+          "image": "forward-raster-edit-1-nearest-time1.0-reload.png",
+          "imageSha256": "db17c44a39b169f887a08deca9aef89e200de20230d72166e2ab8b569f1572e6",
+          "telemetrySha256": "9a318395ade11b106d89e722a37db46d768a262c024117ffe8d1a35bef4d32e2",
+          "log": "forward-raster-edit-1-nearest-time1.0-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-edit-1-nearest-time1.0-saved.glb"
+        },
+        {
+          "image": "forward-raster-edit-1-linear-time1.0.png",
+          "imageSha256": "0b1fff20009a31c62c73510a16449f54dd9e0205d82401bcf562cd31fe091fc1",
+          "telemetrySha256": "cb88735df55b75dbd29013253b3afb90e6ca36f5bd29adac0729e64336ab6bba",
+          "log": "forward-raster-edit-1-linear-time1.0.log",
+          "technique": "forward-raster",
+          "asset": "edit-1-linear.gltf"
+        },
+        {
+          "image": "forward-raster-edit-1-linear-time1.0-reload.png",
+          "imageSha256": "0b1fff20009a31c62c73510a16449f54dd9e0205d82401bcf562cd31fe091fc1",
+          "telemetrySha256": "a5ab98ee75b9fa3a190322257d44c88cd1695eb9293b5673a9508065bae2226c",
+          "log": "forward-raster-edit-1-linear-time1.0-reload.log",
+          "technique": "forward-raster",
+          "asset": "forward-raster-edit-1-linear-time1.0-saved.glb"
+        },
+        {
+          "image": "deferred-raster-ray-alpha-shared.png",
+          "imageSha256": "5e9205390d54d4abfed7b12eb4d4eeb04d01a450edab69fc17934a83340dff01",
+          "telemetrySha256": "b536893e35015307aa678d103ab2ef6dd3db840631ca4befa391f4b7876c3345",
+          "log": "deferred-raster-ray-alpha-shared.log",
+          "technique": "deferred-raster",
+          "asset": "ray-alpha-shared.gltf"
+        },
+        {
+          "image": "forward-raster-ray-alpha-shared.png",
+          "imageSha256": "f86238217eababb9077f8391cd4af814fbe495329a7bf853bd78f63c8d7ddad2",
+          "telemetrySha256": "a678032f7e50c2f414c29509b9c38543b2f9e564fceb3444639b2773f3611c83",
+          "log": "forward-raster-ray-alpha-shared.log",
+          "technique": "forward-raster",
+          "asset": "ray-alpha-shared.gltf"
+        }
+      ],
+      "validationLogSha256": {
+        "deferred-raster-mag-1-nearest-timeNone.log": "bc2d18cd4e3c0d9b6b166dda925be78b3e00baf5752b32c25ba7cf32009f1cb9",
+        "deferred-raster-mag-1-nearest-timeNone-reload.log": "b8cd981c8d51f44b4ee07b64c8df246c59b8b92edff8bb45c6a2588b54e874e7",
+        "deferred-raster-mag-1-linear-timeNone.log": "b9eb1e008c5e18693459c7f24c41e77bcec99d380113f922d6337ec0d9a947f7",
+        "deferred-raster-mag-1-linear-timeNone-reload.log": "64e4a79d7ea6e612f1dfbc8ad9d38591db8fff5faf669b18e8aa7fd92ebf81fa",
+        "forward-raster-mag-1-nearest-timeNone.log": "3aa032e5f57b0f9a9b05f93b7dbc87e9c090507dc7ec5ef96710c85b280ac81b",
+        "forward-raster-mag-1-nearest-timeNone-reload.log": "4f9d5f20e3dca0763d79a9c03d374b267076f6d3e6d0334ca1de98121be58f52",
+        "forward-raster-mag-1-linear-timeNone.log": "6da2fc78775a5e8403456814acaf3348a844d0616d47e8c1eed692e22974cd37",
+        "forward-raster-mag-1-linear-timeNone-reload.log": "3ffbbb584d6d9e3a45b34ceabe6cc9bd43c1c7f3e9e4c93f8d68f64a043088a2",
+        "deferred-raster-min-4-nearest-timeNone.log": "c274589f7edd5a5927038cb9e2caa77251bff79730bcb99ea57c2aa7e385d1dc",
+        "deferred-raster-min-4-nearest-timeNone-reload.log": "02194d0fbd1866f7256ac7a19a63f80ee8a79c7d3a3e0a62566ed5a07e70e9db",
+        "deferred-raster-min-4-linear-timeNone.log": "50c6bba813e3167c84116435f96358a7330df7ae31b528865ec3dbfb8269ef51",
+        "deferred-raster-min-4-linear-timeNone-reload.log": "25ef073e2b98d718ae822b8be79823af5563d6ba007ebdba8624d0c599849d3d",
+        "deferred-raster-min-4-nearest_mipmap_nearest-timeNone.log": "e08245f7a16985aea21f2ff17a02aca0c02d5f4cc17465d5cefa531ec4d8412a",
+        "deferred-raster-min-4-nearest_mipmap_nearest-timeNone-reload.log": "c7ec41bfb500ea03f9a46d4170e7124591cfb4515606641094b52ec051f3d602",
+        "deferred-raster-min-4-linear_mipmap_nearest-timeNone.log": "c353a177f7597edcfc8ffffdf0def7c0da15891aa480a3dfd1487773125fb5fa",
+        "deferred-raster-min-4-linear_mipmap_nearest-timeNone-reload.log": "fd9dcb9521e5d067cb4841095f21278f0abba582a6c12b70d7f1dbc0e0abff70",
+        "deferred-raster-min-4-nearest_mipmap_linear-timeNone.log": "8949f4f10ade5462c4dbc214b476afbc3cd790f328863b01ea72a0d6236b0fa0",
+        "deferred-raster-min-4-nearest_mipmap_linear-timeNone-reload.log": "a361aec5330fc4299e792186aafa3629f135cf9753109cc19d213e14c1afd89d",
+        "deferred-raster-min-4-linear_mipmap_linear-timeNone.log": "53e36b9f5a9bb8242c37682074129b99f8ec8823892f3fb53eed81f398911a02",
+        "deferred-raster-min-4-linear_mipmap_linear-timeNone-reload.log": "3ef106dcf739ce9ddea3596984d2815236dfe8ed28d8e0b364c8b19383d4ae1e",
+        "forward-raster-min-4-nearest-timeNone.log": "4598a32c87b77cc60d7332b49fce00899d8d5fd8bb139a164e00d2f5a1920915",
+        "forward-raster-min-4-nearest-timeNone-reload.log": "25cb72e4e446b5b05bfda2aae7be19c06fc3cb99c58f48134bc04c3dbe226d98",
+        "forward-raster-min-4-linear-timeNone.log": "1adbd80daf9c8a8655a2ff3330e80763a6799c8000c1905e7fd4775ff1f27506",
+        "forward-raster-min-4-linear-timeNone-reload.log": "c50169cff6eeaf52a862db4f184efabfe0435c771a1e2278e06f7578c3ad7ac7",
+        "forward-raster-min-4-nearest_mipmap_nearest-timeNone.log": "8cc1cb737dd3ca951421e58da31a73695e8a6e4b97f15ccae2242ae197090568",
+        "forward-raster-min-4-nearest_mipmap_nearest-timeNone-reload.log": "78ab676ab0576e6777844b684021a2a08038c0042f628e836e53ce1a44e2098b",
+        "forward-raster-min-4-linear_mipmap_nearest-timeNone.log": "c068784128c01381cd464d96bd742524f385e3717579d92dffc9978605a93421",
+        "forward-raster-min-4-linear_mipmap_nearest-timeNone-reload.log": "59e4722d81268c6833c00ae0fc3be4ad318128cedf1235ebb80bced25f69f691",
+        "forward-raster-min-4-nearest_mipmap_linear-timeNone.log": "2b88d329073fe6439c5c1931114685af70c862ba3bcb26fe3b2e32797d98b3ef",
+        "forward-raster-min-4-nearest_mipmap_linear-timeNone-reload.log": "63e6e0ab864d7f80be932c2d3101958efba391a02c61fd7e9a89e78fffc4eee1",
+        "forward-raster-min-4-linear_mipmap_linear-timeNone.log": "c1840877d3bcc4d4c2eae5ebc0f85318c90f0baf0b06a830954620759624080d",
+        "forward-raster-min-4-linear_mipmap_linear-timeNone-reload.log": "f0fca3ab4f86acec52cf0677af81c61fbc10adcd90b1781e87b6d0482daaac54",
+        "deferred-raster-min-8-nearest-timeNone.log": "8094c32bde1523a181519e0c7177cff3750b63ec58fff0d8806cc47cd951e81a",
+        "deferred-raster-min-8-nearest-timeNone-reload.log": "771718d8cc02c38c08a19ac85481191e6ce13561fbd36b671d4c1c4bfb999f31",
+        "deferred-raster-min-8-linear-timeNone.log": "c3d3ab1a172a8fdcae2e3dff331d274c7676ae807c310bf8b7aed1d3bbb9bfe9",
+        "deferred-raster-min-8-linear-timeNone-reload.log": "e2e5d0dac85f2aaf78fca0a560e55d97bc031a18b489ab3c26123c0309330419",
+        "deferred-raster-min-8-nearest_mipmap_nearest-timeNone.log": "57f3895764b31f440084c5c38fdc1c921346112256f782efce41ba3f3c544389",
+        "deferred-raster-min-8-nearest_mipmap_nearest-timeNone-reload.log": "c718159a87cdfa73efcdc757437c3fed8577f69efc57795ab76f61a7a193286a",
+        "deferred-raster-min-8-linear_mipmap_nearest-timeNone.log": "4deafb021d6929f1730ff150ddcb0361afc5a13603d87a2ee9110dffceea2290",
+        "deferred-raster-min-8-linear_mipmap_nearest-timeNone-reload.log": "33bb7f2efb608bb83e01a838100b47c84ce6c5757516ed964dca5307291acc7a",
+        "deferred-raster-min-8-nearest_mipmap_linear-timeNone.log": "ef2e39712735db9b24ec403ea3f4b9743b59ba318507f2146d47e281f53d743a",
+        "deferred-raster-min-8-nearest_mipmap_linear-timeNone-reload.log": "230e09ce01b150615dc30ceb430e5896376b82d1b10c5f64a05acd57142f656d",
+        "deferred-raster-min-8-linear_mipmap_linear-timeNone.log": "12edfdea154775a625a01e03fa94688444a282a85279cdab439de8a6c1da6161",
+        "deferred-raster-min-8-linear_mipmap_linear-timeNone-reload.log": "546e0bfa43300f8486655db525e47aac8a4f8bdccbfaf3eea488a4f22d0a1e62",
+        "forward-raster-min-8-nearest-timeNone.log": "a1b50fd2299979055a74a7525e6f8820ef4752b634ac707f9bc5bc60e6fb1825",
+        "forward-raster-min-8-nearest-timeNone-reload.log": "9e360038caca0f7035d96847a7d3089de07878be6a8cc60408564d377fe045e1",
+        "forward-raster-min-8-linear-timeNone.log": "712e9ccf22ed79cd7f974ae08cedaccf8cf251edf6a45e0a0b39c87d4af0c29d",
+        "forward-raster-min-8-linear-timeNone-reload.log": "28699765e64d4970176ecdcad6ba29822c29302ea28262949a5ed8c0bd2a6e39",
+        "forward-raster-min-8-nearest_mipmap_nearest-timeNone.log": "9107012e9a38380acd604aa76c0e49aeb640be18fc0ff977bceafd47091d9099",
+        "forward-raster-min-8-nearest_mipmap_nearest-timeNone-reload.log": "4e914e38d18152170a6deff0723a6946a9cea20a657248ea2974d455b263024d",
+        "forward-raster-min-8-linear_mipmap_nearest-timeNone.log": "b93ae44adf23dfbbf23455c59cdee27e9d794b21afc9d65e72902a0e8171e58b",
+        "forward-raster-min-8-linear_mipmap_nearest-timeNone-reload.log": "e7d81415c0a30892d3838386cfaa22e0e5d5fe819a69c977e9909020f1c83efb",
+        "forward-raster-min-8-nearest_mipmap_linear-timeNone.log": "7b20cc7eeb3d9863e1d1ceac6a3b8820dd59880c4ae517b14f3fa9cf34ac903c",
+        "forward-raster-min-8-nearest_mipmap_linear-timeNone-reload.log": "af081b04a9121b3139f5750149f382ca39d04a6066c9c00fbab5dd88f2ffce87",
+        "forward-raster-min-8-linear_mipmap_linear-timeNone.log": "a901fbacaf402eada4cdfb6b36ee6c5a4c1a983f967c4bc34f702fbcd63c1dc6",
+        "forward-raster-min-8-linear_mipmap_linear-timeNone-reload.log": "5e1d89733227a5942c52b3cc3e4aa7f56bfe39700257f8525d85d66d92ae9d98",
+        "deferred-raster-shared-1-shared-timeNone.log": "c9f1dfcd9b53ed7cf6e0597e799337d673717fb0cbe18a498bb4e434ac837bd1",
+        "deferred-raster-shared-1-shared-timeNone-reload.log": "b462f73d56bd8b577f394441d89be9500f10051642ab9113333bdc30ac2207bf",
+        "forward-raster-shared-1-shared-timeNone.log": "57e4d8faff12c89a472b57b055134ecbc3c7b7f52a468effbf075706590b9470",
+        "forward-raster-shared-1-shared-timeNone-reload.log": "440895d5044248465c0c34aebc1bfe21eb4e5f5c35d7c3f5249acb6a75d22c68",
+        "deferred-raster-transparent-1-nearest-timeNone.log": "ab904c6554af30dd3e7a7a689ad67f8ade7f103298848fb30161916da043971f",
+        "deferred-raster-transparent-1-nearest-timeNone-reload.log": "7259bd31f03352fb2b6eec01d48bf82821a73ca1adc935ba23276dc58494d458",
+        "deferred-raster-transparent-1-linear-timeNone.log": "7a91515a37e4745d5b2ca5d999bc3443fbd1c11867c46f8449a0983c865d411d",
+        "deferred-raster-transparent-1-linear-timeNone-reload.log": "a6c87e1aeff83b837496ecd3b8012139122fcef8d0e9cc0874afa986523ac9af",
+        "forward-raster-transparent-1-nearest-timeNone.log": "88b8b1d38935a37278ba7209d201cab4460d22043dd6aa3299e54444bb8fde1e",
+        "forward-raster-transparent-1-nearest-timeNone-reload.log": "6a4d8ce1751f99d4094f7c031236d6cd9311594adbebcfd303e2f7d86c338987",
+        "forward-raster-transparent-1-linear-timeNone.log": "d9b37f386a76ebf661287caddad16f476be470d37ddf65c0dbf36fbc85a04006",
+        "forward-raster-transparent-1-linear-timeNone-reload.log": "3a36d4d01c9652647a7f43ba96f739375db7adf2975d212ea1347191f20a21c4",
+        "deferred-raster-mask-1-nearest-timeNone.log": "db0bc2e176fff2cf46cc12ef787f84e6bdc7704003784d4da5eb7de35eef1f75",
+        "deferred-raster-mask-1-nearest-timeNone-reload.log": "a4ff0a61662e1601c6f284b9d580a477c3a2f877b720e9efef0cccca9b45620f",
+        "deferred-raster-mask-1-linear-timeNone.log": "80aa9122cbb35a750c7dbac9f45add381ffd3cb06fede01429be455c43ab9854",
+        "deferred-raster-mask-1-linear-timeNone-reload.log": "3a6ae6e36a9d7a9d0ca754f0c0602350f3addb45d523233e1d1bc73c4d3c8c27",
+        "forward-raster-mask-1-nearest-timeNone.log": "241dbf9e83a307e87a7cf26d157939cf8993cac61af024d031dec79ca66a3af8",
+        "forward-raster-mask-1-nearest-timeNone-reload.log": "d805ed2ae3878fa0fc047462fce089c59990e5cb7cf32ab951bd073b00d81e4c",
+        "forward-raster-mask-1-linear-timeNone.log": "b612b6984b322058f8735243115b3e1891e19a2f2ceb20457e3d7bbedc697db8",
+        "forward-raster-mask-1-linear-timeNone-reload.log": "930dfb5eb8a0e4123830c097df9b920cded9b47180802efc1aadbfe4e1cb9e03",
+        "deferred-raster-edit-1-nearest-time0.0.log": "d9bcc430ba6ac4884df0bf6f0954018a5aabedd3e439167c5619696b344ce4a8",
+        "deferred-raster-edit-1-nearest-time0.0-reload.log": "64f553a033ce715991b9befb541426ca34b35540bb07b1d0d310eef132c0bf6b",
+        "deferred-raster-edit-1-linear-time0.0.log": "023a3b9d3e59c759a11ed48ce6a06f86d9c78a69dbf42cb0617005c4238af73b",
+        "deferred-raster-edit-1-linear-time0.0-reload.log": "9e27cb188c6ae1b5119bca18df438f09bd91aadbff272c1147c4c36161f2b1d0",
+        "deferred-raster-edit-1-nearest-time1.0.log": "b31883a074fb37b426651de554b9426e93f8691db4581ac4156b8680130b31fa",
+        "deferred-raster-edit-1-nearest-time1.0-reload.log": "5d1178a0ae9bd33e389e70dc01086ad0edbf4590adb34e06617facdcbb7acb75",
+        "deferred-raster-edit-1-linear-time1.0.log": "bf22621d096215484d8a8cf2586527c262a36f3cf189a7d97440c9abd21c7d85",
+        "deferred-raster-edit-1-linear-time1.0-reload.log": "852f57cba17e4a66a93b1b301865aecc3b25ee63a3cbbefb7940383660391ba9",
+        "forward-raster-edit-1-nearest-time0.0.log": "6265c6fba82d808865ae5b817d5fa0f4eee32a15bf412a61c2e26436801fa470",
+        "forward-raster-edit-1-nearest-time0.0-reload.log": "d2ed5910f67782b3c543a2756780a49c77841d5a7cb4c812e150c8a72ac320d1",
+        "forward-raster-edit-1-linear-time0.0.log": "2ef86c4f2e1f4054e7b8066771fa65121a188fc0741ca0ec691507df3a0628d6",
+        "forward-raster-edit-1-linear-time0.0-reload.log": "d8791e4c6250a315ed096d3abba6b269dcfa032b786921fb649b4f192a41e803",
+        "forward-raster-edit-1-nearest-time1.0.log": "ce52ca98fb9eeab0ad757379b18560c8746ba7d32cd21fd6c373d9af9c984d73",
+        "forward-raster-edit-1-nearest-time1.0-reload.log": "59062b7b64a7dc5ce2a4f457e20d9958da5f6e2f1972047e07048ae29ba995a6",
+        "forward-raster-edit-1-linear-time1.0.log": "42c92f9aec223404185f76f464bab76113ab7dc0159a760bb787f16e62be78e0",
+        "forward-raster-edit-1-linear-time1.0-reload.log": "903353dee5f38b578006b52bfb54a734799cf8badcf3f2c150b5e8bfab13bd4a",
+        "deferred-raster-ray-alpha-shared.log": "7bfc6b5b5c8f1417b151d8b30046b74f676d7af75900c35f99dea6cc454e7c55",
+        "forward-raster-ray-alpha-shared.log": "174e8dd1102485954b61173ad4b2361e2b4f3803a9f49946df7ffc5fad866524"
+      },
+      "checks": [
+        {
+          "case": "mag",
+          "check": "roundtrip",
+          "name": "nearest",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "mag",
+          "check": "roundtrip",
+          "name": "linear",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "mag",
+          "repeat": 1,
+          "time": null,
+          "technique": "deferred-raster",
+          "check": "magnification",
+          "nearestMixedFraction": 0.0,
+          "linearMixedFraction": 0.923828125,
+          "meanAbsolutePixelError": 60.406467013888886,
+          "changedPixelFraction": 0.96484375
+        },
+        {
+          "case": "mag",
+          "check": "roundtrip",
+          "name": "nearest",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "mag",
+          "check": "roundtrip",
+          "name": "linear",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "mag",
+          "repeat": 1,
+          "time": null,
+          "technique": "forward-raster",
+          "check": "magnification",
+          "nearestMixedFraction": 0.0,
+          "linearMixedFraction": 0.923828125,
+          "meanAbsolutePixelError": 60.406467013888886,
+          "changedPixelFraction": 0.96484375
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "nearest",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "linear",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "nearest_mipmap_nearest",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "linear_mipmap_nearest",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "nearest_mipmap_linear",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "linear_mipmap_linear",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "repeat": 4,
+          "time": null,
+          "technique": "deferred-raster",
+          "check": "minification",
+          "first": "nearest",
+          "second": "nearest_mipmap_nearest",
+          "distinct": false,
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "repeat": 4,
+          "time": null,
+          "technique": "deferred-raster",
+          "check": "minification",
+          "first": "linear",
+          "second": "linear_mipmap_nearest",
+          "distinct": false,
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "nearest",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "linear",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "nearest_mipmap_nearest",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "linear_mipmap_nearest",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "nearest_mipmap_linear",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "linear_mipmap_linear",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "repeat": 4,
+          "time": null,
+          "technique": "forward-raster",
+          "check": "minification",
+          "first": "nearest",
+          "second": "nearest_mipmap_nearest",
+          "distinct": false,
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "repeat": 4,
+          "time": null,
+          "technique": "forward-raster",
+          "check": "minification",
+          "first": "linear",
+          "second": "linear_mipmap_nearest",
+          "distinct": false,
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "nearest",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "linear",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "nearest_mipmap_nearest",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "linear_mipmap_nearest",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "nearest_mipmap_linear",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "linear_mipmap_linear",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "repeat": 8,
+          "time": null,
+          "technique": "deferred-raster",
+          "check": "minification",
+          "first": "nearest_mipmap_nearest",
+          "second": "nearest_mipmap_linear",
+          "distinct": true,
+          "meanAbsolutePixelError": 44.666666666666664,
+          "changedPixelFraction": 1.0
+        },
+        {
+          "case": "min",
+          "repeat": 8,
+          "time": null,
+          "technique": "deferred-raster",
+          "check": "minification",
+          "first": "linear_mipmap_nearest",
+          "second": "linear_mipmap_linear",
+          "distinct": true,
+          "meanAbsolutePixelError": 3.8494285300925926,
+          "changedPixelFraction": 0.3350965711805556
+        },
+        {
+          "case": "min",
+          "repeat": 8,
+          "time": null,
+          "technique": "deferred-raster",
+          "check": "minification",
+          "first": "linear",
+          "second": "linear_mipmap_linear",
+          "distinct": true,
+          "meanAbsolutePixelError": 28.45703125,
+          "changedPixelFraction": 0.8107638888888888
+        },
+        {
+          "case": "min",
+          "repeat": 8,
+          "time": null,
+          "technique": "deferred-raster",
+          "check": "minification",
+          "first": "nearest",
+          "second": "linear",
+          "distinct": true,
+          "meanAbsolutePixelError": 42.6626880787037,
+          "changedPixelFraction": 0.7394748263888888
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "nearest",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "linear",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "nearest_mipmap_nearest",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "linear_mipmap_nearest",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "nearest_mipmap_linear",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "check": "roundtrip",
+          "name": "linear_mipmap_linear",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "repeat": 8,
+          "time": null,
+          "technique": "forward-raster",
+          "check": "minification",
+          "first": "nearest_mipmap_nearest",
+          "second": "nearest_mipmap_linear",
+          "distinct": true,
+          "meanAbsolutePixelError": 44.666666666666664,
+          "changedPixelFraction": 1.0
+        },
+        {
+          "case": "min",
+          "repeat": 8,
+          "time": null,
+          "technique": "forward-raster",
+          "check": "minification",
+          "first": "linear_mipmap_nearest",
+          "second": "linear_mipmap_linear",
+          "distinct": true,
+          "meanAbsolutePixelError": 3.8494285300925926,
+          "changedPixelFraction": 0.3350965711805556
+        },
+        {
+          "case": "min",
+          "repeat": 8,
+          "time": null,
+          "technique": "forward-raster",
+          "check": "minification",
+          "first": "linear",
+          "second": "linear_mipmap_linear",
+          "distinct": true,
+          "meanAbsolutePixelError": 28.45703125,
+          "changedPixelFraction": 0.8107638888888888
+        },
+        {
+          "case": "min",
+          "repeat": 8,
+          "time": null,
+          "technique": "forward-raster",
+          "check": "minification",
+          "first": "nearest",
+          "second": "linear",
+          "distinct": true,
+          "meanAbsolutePixelError": 42.6626880787037,
+          "changedPixelFraction": 0.7394748263888888
+        },
+        {
+          "case": "shared",
+          "check": "roundtrip",
+          "name": "shared",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "shared",
+          "repeat": 1,
+          "time": null,
+          "technique": "deferred-raster",
+          "check": "shared-image-sampler-routing",
+          "nearestMixedFraction": 0.0,
+          "linearMixedFraction": 0.9345703125
+        },
+        {
+          "case": "shared",
+          "check": "roundtrip",
+          "name": "shared",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "shared",
+          "repeat": 1,
+          "time": null,
+          "technique": "forward-raster",
+          "check": "shared-image-sampler-routing",
+          "nearestMixedFraction": 0.0,
+          "linearMixedFraction": 0.9345703125
+        },
+        {
+          "case": "transparent",
+          "check": "roundtrip",
+          "name": "nearest",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "transparent",
+          "check": "roundtrip",
+          "name": "linear",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "transparent",
+          "repeat": 1,
+          "time": null,
+          "technique": "deferred-raster",
+          "check": "magnification",
+          "nearestMixedFraction": 0.0,
+          "linearMixedFraction": 0.8922526041666666,
+          "meanAbsolutePixelError": 53.47905815972222,
+          "changedPixelFraction": 0.95703125
+        },
+        {
+          "case": "transparent",
+          "check": "roundtrip",
+          "name": "nearest",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "transparent",
+          "check": "roundtrip",
+          "name": "linear",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "transparent",
+          "repeat": 1,
+          "time": null,
+          "technique": "forward-raster",
+          "check": "magnification",
+          "nearestMixedFraction": 0.0,
+          "linearMixedFraction": 0.8922526041666666,
+          "meanAbsolutePixelError": 53.47905815972222,
+          "changedPixelFraction": 0.95703125
+        },
+        {
+          "case": "mask",
+          "check": "roundtrip",
+          "name": "nearest",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "mask",
+          "check": "roundtrip",
+          "name": "linear",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "mask",
+          "repeat": 1,
+          "time": null,
+          "technique": "deferred-raster",
+          "check": "mask-coverage",
+          "meanAbsolutePixelError": 72.81797055844908,
+          "changedPixelFraction": 0.7954915364583334
+        },
+        {
+          "case": "mask",
+          "check": "roundtrip",
+          "name": "nearest",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "mask",
+          "check": "roundtrip",
+          "name": "linear",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "mask",
+          "repeat": 1,
+          "time": null,
+          "technique": "forward-raster",
+          "check": "mask-coverage",
+          "meanAbsolutePixelError": 72.81797055844908,
+          "changedPixelFraction": 0.7954915364583334
+        },
+        {
+          "case": "edit",
+          "check": "roundtrip",
+          "name": "nearest",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "edit",
+          "check": "roundtrip",
+          "name": "linear",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "edit",
+          "repeat": 1,
+          "time": 0.0,
+          "technique": "deferred-raster",
+          "check": "magnification",
+          "nearestMixedFraction": 0.0,
+          "linearMixedFraction": 0.923828125,
+          "meanAbsolutePixelError": 60.406467013888886,
+          "changedPixelFraction": 0.96484375
+        },
+        {
+          "case": "edit",
+          "check": "roundtrip",
+          "name": "nearest",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "edit",
+          "check": "roundtrip",
+          "name": "linear",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "edit",
+          "repeat": 1,
+          "time": 1.0,
+          "technique": "deferred-raster",
+          "check": "magnification",
+          "nearestMixedFraction": 0.0,
+          "linearMixedFraction": 0.8740234375,
+          "meanAbsolutePixelError": 49.28030960648148,
+          "changedPixelFraction": 0.953125
+        },
+        {
+          "case": "edit",
+          "check": "roundtrip",
+          "name": "nearest",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "edit",
+          "check": "roundtrip",
+          "name": "linear",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "edit",
+          "repeat": 1,
+          "time": 0.0,
+          "technique": "forward-raster",
+          "check": "magnification",
+          "nearestMixedFraction": 0.0,
+          "linearMixedFraction": 0.923828125,
+          "meanAbsolutePixelError": 60.406467013888886,
+          "changedPixelFraction": 0.96484375
+        },
+        {
+          "case": "edit",
+          "check": "roundtrip",
+          "name": "nearest",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "edit",
+          "check": "roundtrip",
+          "name": "linear",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "edit",
+          "repeat": 1,
+          "time": 1.0,
+          "technique": "forward-raster",
+          "check": "magnification",
+          "nearestMixedFraction": 0.0,
+          "linearMixedFraction": 0.8740234375,
+          "meanAbsolutePixelError": 49.28030960648148,
+          "changedPixelFraction": 0.953125
+        },
+        {
+          "case": "ray-alpha-smoke",
+          "technique": "deferred-raster",
+          "rayShadowActive": true,
+          "ddgiTracedRays": 1536
+        },
+        {
+          "case": "ray-alpha-smoke",
+          "technique": "forward-raster",
+          "rayShadowActive": true,
+          "ddgiTracedRays": 1536
+        }
+      ]
+    },
+    {
+      "suite": "dense",
+      "captureCount": 42,
+      "validatedProcessCount": 42,
+      "checkCount": 46,
+      "roundTripFullImageExact": {},
+      "fixtureSha256": {
+        "mag-1-linear.gltf": "7b4520f0d419b7ecd9378e7822fc859c34a6573bf289291fa4a2df612884582e",
+        "mag-1-nearest.gltf": "0d2884c4c9c330d587fabce3b56ed932fb9d243d09a5cd45983a60d304088776",
+        "mask-1-linear.gltf": "42c041e8089bf8ffa05101b1462210c2f4d1ba5a1c6cf2d056320a8a4960c1f6",
+        "mask-1-nearest.gltf": "4752f471d40044877ad4603ebaa7f4046d22d803b3f1bac451abd208bb208925",
+        "min-4-linear.gltf": "e280caf5c18aa58adc9a4dfb86eea62a77bc1268b3327cc704d96eabded8bb22",
+        "min-4-linear_mipmap_linear.gltf": "b31fa90ff4da689a0f1f7665be96e760874a25b16a81c342e6ae3bdb30cf8a55",
+        "min-4-linear_mipmap_nearest.gltf": "68c36df6061ad4f89ac562d536106e30b8bdb2008c682aab0a3632968086fbc6",
+        "min-4-nearest.gltf": "554ff745eb6ece9e1de3700dcd02cba4036b74f8c3c9620688bb1b678b9e8b29",
+        "min-4-nearest_mipmap_linear.gltf": "1c75b34b7f88b5064201d9c035a286481fdbef061ccc26584d6a9bab20290bb4",
+        "min-4-nearest_mipmap_nearest.gltf": "f47ff375ea810dc0d8deb472503c9bbc49695927f1bf716c4f6ef74754ff853a",
+        "min-8-linear.gltf": "543cc0c7a18c16ccf8fe0051e3098250a7edf13049e76563554f2e7a88057f53",
+        "min-8-linear_mipmap_linear.gltf": "52dd44661b8479fb4e1e7f9d214316129d54a0f3dad82c9c0f003a10afd20ce9",
+        "min-8-linear_mipmap_nearest.gltf": "db9f58017aa4698c8f3e44094fc456e0cadad33e254ee0e2e374fbae04c8654a",
+        "min-8-nearest.gltf": "a7f21b3b2c511d210d5ed2d8e93514c3bb21835db37cb2d44459b2c3c9a2da40",
+        "min-8-nearest_mipmap_linear.gltf": "456cb65112f0666a49f0ada4e7c8e1ba8d1a0f2db8b7c335ed8e470e97164a89",
+        "min-8-nearest_mipmap_nearest.gltf": "5221469c05e597e26963cad1ba91259ee86012875af107aec2a21eeddacfdfa7",
+        "ray-alpha.gltf": "3994662f38a8a2819388e508b9f60080e372a3e614a3c8eb28291235df46309c",
+        "shared-1-shared.gltf": "bba55a3e8489cb4170147bdeb6fd8d5a93526927c1274b8ea1c9fccfa04edf63",
+        "transparent-1-linear.gltf": "35dfa47285890836528177cf63f5531e7b39bb6a4d67456bfd0c9119cf281f17",
+        "transparent-1-nearest.gltf": "dad1079295d9cb0b5c003c235cec1ae18733317a82a2d232634f69016eb2e1eb",
+        "twelve-policies.gltf": "ea7df5fccdaaf66bbd1859a2f93cdcdbf88ef9b22f1b680d60f9962f39ff7ae7"
+      },
+      "captureProofs": [
+        {
+          "image": "deferred-raster-mag-1-nearest.png",
+          "imageSha256": "3ded43a4a329953c23c924920a55d28f698d8753296e427d218b212667332341",
+          "telemetrySha256": "35b7a0d44d3481e49ae4301553954d2a876fd56828c64fa15cdacc37cacd6f14",
+          "log": "deferred-raster-mag-1-nearest.log",
+          "technique": "deferred-raster",
+          "asset": "mag-1-nearest.gltf"
+        },
+        {
+          "image": "deferred-raster-mag-1-linear.png",
+          "imageSha256": "d0c4741eee111324732810b43679646fd4271947b51755ebf0778df7353010ca",
+          "telemetrySha256": "b6b395740a0ce54e9e754a1afac61143dbca85fa2d7be7421dd9107baf801398",
+          "log": "deferred-raster-mag-1-linear.log",
+          "technique": "deferred-raster",
+          "asset": "mag-1-linear.gltf"
+        },
+        {
+          "image": "forward-raster-mag-1-nearest.png",
+          "imageSha256": "3ded43a4a329953c23c924920a55d28f698d8753296e427d218b212667332341",
+          "telemetrySha256": "985977b6c3aaf93c8db9c25ede33634fcea3523d24ce189bbce8a0be4ec5f630",
+          "log": "forward-raster-mag-1-nearest.log",
+          "technique": "forward-raster",
+          "asset": "mag-1-nearest.gltf"
+        },
+        {
+          "image": "forward-raster-mag-1-linear.png",
+          "imageSha256": "d0c4741eee111324732810b43679646fd4271947b51755ebf0778df7353010ca",
+          "telemetrySha256": "ee7a3903875ef825cec46a2a5c1c669466eb903bc00a4db150361468162b085b",
+          "log": "forward-raster-mag-1-linear.log",
+          "technique": "forward-raster",
+          "asset": "mag-1-linear.gltf"
+        },
+        {
+          "image": "deferred-raster-min-4-nearest.png",
+          "imageSha256": "0e8f05c4322e62d45582dcec656c8b942b835f5a93cd99e01f03961af2a4eec9",
+          "telemetrySha256": "00c211d799bc9b11c00c44a5a5de9beb640c070c70ce2fc4fff97785f846b0d6",
+          "log": "deferred-raster-min-4-nearest.log",
+          "technique": "deferred-raster",
+          "asset": "min-4-nearest.gltf"
+        },
+        {
+          "image": "deferred-raster-min-4-linear.png",
+          "imageSha256": "5812ebb0768a168dab3d3786cf5068fe5d097745a8dd64c91f4f4e44cf152f19",
+          "telemetrySha256": "9645085cb9dc5acaa573b128aa4bdd41ba616393cc136effeccb1df664e16754",
+          "log": "deferred-raster-min-4-linear.log",
+          "technique": "deferred-raster",
+          "asset": "min-4-linear.gltf"
+        },
+        {
+          "image": "deferred-raster-min-4-nearest_mipmap_nearest.png",
+          "imageSha256": "0e8f05c4322e62d45582dcec656c8b942b835f5a93cd99e01f03961af2a4eec9",
+          "telemetrySha256": "47ebf00ac9030acfd6b4962bcd3dcecad62966e1718611b10e6f64aa62be55ab",
+          "log": "deferred-raster-min-4-nearest_mipmap_nearest.log",
+          "technique": "deferred-raster",
+          "asset": "min-4-nearest_mipmap_nearest.gltf"
+        },
+        {
+          "image": "deferred-raster-min-4-linear_mipmap_nearest.png",
+          "imageSha256": "5812ebb0768a168dab3d3786cf5068fe5d097745a8dd64c91f4f4e44cf152f19",
+          "telemetrySha256": "4a66d3da0bb0fe3de4ded113f4fda1c5e5164afc70a9a18de2b3a0b205b1505f",
+          "log": "deferred-raster-min-4-linear_mipmap_nearest.log",
+          "technique": "deferred-raster",
+          "asset": "min-4-linear_mipmap_nearest.gltf"
+        },
+        {
+          "image": "deferred-raster-min-4-nearest_mipmap_linear.png",
+          "imageSha256": "0e8f05c4322e62d45582dcec656c8b942b835f5a93cd99e01f03961af2a4eec9",
+          "telemetrySha256": "a075f4a6fb58f33945240b9edf96c94f3554a067c0070470bd0d4be05fb4a538",
+          "log": "deferred-raster-min-4-nearest_mipmap_linear.log",
+          "technique": "deferred-raster",
+          "asset": "min-4-nearest_mipmap_linear.gltf"
+        },
+        {
+          "image": "deferred-raster-min-4-linear_mipmap_linear.png",
+          "imageSha256": "08ba21b8a8d5d2b9ddb8833ba4e128ce5aa79b60db4f852e07a1abe89fd2756a",
+          "telemetrySha256": "96432c15f558699660644af64fa5e22b3fbc7e2ae8b5b77c0978d545e569fdf7",
+          "log": "deferred-raster-min-4-linear_mipmap_linear.log",
+          "technique": "deferred-raster",
+          "asset": "min-4-linear_mipmap_linear.gltf"
+        },
+        {
+          "image": "forward-raster-min-4-nearest.png",
+          "imageSha256": "0e8f05c4322e62d45582dcec656c8b942b835f5a93cd99e01f03961af2a4eec9",
+          "telemetrySha256": "a928d9818c066fb64f216d3c34f4d7b81dd194c3b0b42b25010af50901e847f8",
+          "log": "forward-raster-min-4-nearest.log",
+          "technique": "forward-raster",
+          "asset": "min-4-nearest.gltf"
+        },
+        {
+          "image": "forward-raster-min-4-linear.png",
+          "imageSha256": "5812ebb0768a168dab3d3786cf5068fe5d097745a8dd64c91f4f4e44cf152f19",
+          "telemetrySha256": "159c0b27efa6745bc8ad3a5eb008d053068dd3efff0a4ee6b044560bb4a0151f",
+          "log": "forward-raster-min-4-linear.log",
+          "technique": "forward-raster",
+          "asset": "min-4-linear.gltf"
+        },
+        {
+          "image": "forward-raster-min-4-nearest_mipmap_nearest.png",
+          "imageSha256": "0e8f05c4322e62d45582dcec656c8b942b835f5a93cd99e01f03961af2a4eec9",
+          "telemetrySha256": "c56ca2e3c9e42e4feb1f3bb0988d41139ff553c7721a7e68fab5d76eab020003",
+          "log": "forward-raster-min-4-nearest_mipmap_nearest.log",
+          "technique": "forward-raster",
+          "asset": "min-4-nearest_mipmap_nearest.gltf"
+        },
+        {
+          "image": "forward-raster-min-4-linear_mipmap_nearest.png",
+          "imageSha256": "5812ebb0768a168dab3d3786cf5068fe5d097745a8dd64c91f4f4e44cf152f19",
+          "telemetrySha256": "c3080572830ae887ee1a7c5079493cd5ff02c93a8c107150ec0183a5b0017c3b",
+          "log": "forward-raster-min-4-linear_mipmap_nearest.log",
+          "technique": "forward-raster",
+          "asset": "min-4-linear_mipmap_nearest.gltf"
+        },
+        {
+          "image": "forward-raster-min-4-nearest_mipmap_linear.png",
+          "imageSha256": "0e8f05c4322e62d45582dcec656c8b942b835f5a93cd99e01f03961af2a4eec9",
+          "telemetrySha256": "4b3e35c01256e823f8fca87a4d4ddfae918e989e615960bd7364db70eab3094b",
+          "log": "forward-raster-min-4-nearest_mipmap_linear.log",
+          "technique": "forward-raster",
+          "asset": "min-4-nearest_mipmap_linear.gltf"
+        },
+        {
+          "image": "forward-raster-min-4-linear_mipmap_linear.png",
+          "imageSha256": "08ba21b8a8d5d2b9ddb8833ba4e128ce5aa79b60db4f852e07a1abe89fd2756a",
+          "telemetrySha256": "34f513a874307068b5907e6b8f0ee2de381bbf9bcfb2715ccf825200758b5b29",
+          "log": "forward-raster-min-4-linear_mipmap_linear.log",
+          "technique": "forward-raster",
+          "asset": "min-4-linear_mipmap_linear.gltf"
+        },
+        {
+          "image": "deferred-raster-min-8-nearest.png",
+          "imageSha256": "5497a8fabbb89a80bc1b31ab33aea6bc0c5182136e8548e7435d1723123be075",
+          "telemetrySha256": "5a5ac3639d211516e31c690acf91bf21b4e57e11e4654eb6eee7071e638f224d",
+          "log": "deferred-raster-min-8-nearest.log",
+          "technique": "deferred-raster",
+          "asset": "min-8-nearest.gltf"
+        },
+        {
+          "image": "deferred-raster-min-8-linear.png",
+          "imageSha256": "7388d750eaac8dc8f4cc3eda9a08e7a39ff668479140cf6a434755bf3743c3ce",
+          "telemetrySha256": "9e8352fc5c5895fcf07e8beb1a4b27c5e7240ab284c17417cda23eba5d693a1d",
+          "log": "deferred-raster-min-8-linear.log",
+          "technique": "deferred-raster",
+          "asset": "min-8-linear.gltf"
+        },
+        {
+          "image": "deferred-raster-min-8-nearest_mipmap_nearest.png",
+          "imageSha256": "5497a8fabbb89a80bc1b31ab33aea6bc0c5182136e8548e7435d1723123be075",
+          "telemetrySha256": "f70c1f7789df9919fee830c6b29fa24964c0c9bdb8eaaad0dbdeaea94e22901b",
+          "log": "deferred-raster-min-8-nearest_mipmap_nearest.log",
+          "technique": "deferred-raster",
+          "asset": "min-8-nearest_mipmap_nearest.gltf"
+        },
+        {
+          "image": "deferred-raster-min-8-linear_mipmap_nearest.png",
+          "imageSha256": "f95ffbefa09d78d5f44d35a1dd96c0d97c74628b3d17879e0ca6a3f61ca69dec",
+          "telemetrySha256": "8fa54d98a9fb62dff0e5d1c404f71f6e0de3e924c30d182436beee7ef427c6d2",
+          "log": "deferred-raster-min-8-linear_mipmap_nearest.log",
+          "technique": "deferred-raster",
+          "asset": "min-8-linear_mipmap_nearest.gltf"
+        },
+        {
+          "image": "deferred-raster-min-8-nearest_mipmap_linear.png",
+          "imageSha256": "27ca040e2a3163fc4eda7ceaff17fffea0b61592dc2a2f370c97b8fde650f791",
+          "telemetrySha256": "002e3f161b1db9b3e4e2933b2648b43c7f85ce8f57b35d3777990a277eec6b3a",
+          "log": "deferred-raster-min-8-nearest_mipmap_linear.log",
+          "technique": "deferred-raster",
+          "asset": "min-8-nearest_mipmap_linear.gltf"
+        },
+        {
+          "image": "deferred-raster-min-8-linear_mipmap_linear.png",
+          "imageSha256": "133a6ff661cfbdcde3d0e7e95a8a4ced0a9a5b6ecd40581a3a5a0a194c78c0e0",
+          "telemetrySha256": "88265278d01899344cb57aa1e306be8993abe5b18a49a75e864023abbe046197",
+          "log": "deferred-raster-min-8-linear_mipmap_linear.log",
+          "technique": "deferred-raster",
+          "asset": "min-8-linear_mipmap_linear.gltf"
+        },
+        {
+          "image": "forward-raster-min-8-nearest.png",
+          "imageSha256": "5497a8fabbb89a80bc1b31ab33aea6bc0c5182136e8548e7435d1723123be075",
+          "telemetrySha256": "08e81e5031cf5549f4360c0ccb366fcf39a328f7d0c4e4590f7894ca832c5699",
+          "log": "forward-raster-min-8-nearest.log",
+          "technique": "forward-raster",
+          "asset": "min-8-nearest.gltf"
+        },
+        {
+          "image": "forward-raster-min-8-linear.png",
+          "imageSha256": "7388d750eaac8dc8f4cc3eda9a08e7a39ff668479140cf6a434755bf3743c3ce",
+          "telemetrySha256": "7dbc601cf433806b1c5926262a7a65554bc4861e984557b201a4c64aa65ad806",
+          "log": "forward-raster-min-8-linear.log",
+          "technique": "forward-raster",
+          "asset": "min-8-linear.gltf"
+        },
+        {
+          "image": "forward-raster-min-8-nearest_mipmap_nearest.png",
+          "imageSha256": "5497a8fabbb89a80bc1b31ab33aea6bc0c5182136e8548e7435d1723123be075",
+          "telemetrySha256": "17a7a4c372fe70680c3e0035c0399a5c3afdb8d90a29efcfbbb0a2b0d54db200",
+          "log": "forward-raster-min-8-nearest_mipmap_nearest.log",
+          "technique": "forward-raster",
+          "asset": "min-8-nearest_mipmap_nearest.gltf"
+        },
+        {
+          "image": "forward-raster-min-8-linear_mipmap_nearest.png",
+          "imageSha256": "f95ffbefa09d78d5f44d35a1dd96c0d97c74628b3d17879e0ca6a3f61ca69dec",
+          "telemetrySha256": "05dd4a798ba3963de9585032e645e84f2cc9d97eec80938b0faef572278d3fc3",
+          "log": "forward-raster-min-8-linear_mipmap_nearest.log",
+          "technique": "forward-raster",
+          "asset": "min-8-linear_mipmap_nearest.gltf"
+        },
+        {
+          "image": "forward-raster-min-8-nearest_mipmap_linear.png",
+          "imageSha256": "27ca040e2a3163fc4eda7ceaff17fffea0b61592dc2a2f370c97b8fde650f791",
+          "telemetrySha256": "63b51587d4b94ba59b1d821f268e8ab8217afca758576eb0fd329ae21e5f508f",
+          "log": "forward-raster-min-8-nearest_mipmap_linear.log",
+          "technique": "forward-raster",
+          "asset": "min-8-nearest_mipmap_linear.gltf"
+        },
+        {
+          "image": "forward-raster-min-8-linear_mipmap_linear.png",
+          "imageSha256": "133a6ff661cfbdcde3d0e7e95a8a4ced0a9a5b6ecd40581a3a5a0a194c78c0e0",
+          "telemetrySha256": "f756760ab5224a11c8e178a1c3f097366ada1264ee818934a06fe18d8749d951",
+          "log": "forward-raster-min-8-linear_mipmap_linear.log",
+          "technique": "forward-raster",
+          "asset": "min-8-linear_mipmap_linear.gltf"
+        },
+        {
+          "image": "deferred-raster-shared-1-shared.png",
+          "imageSha256": "acf81c151b75736709d89dbbb7884e79256a4d1e89f836321f47d0d9aad3ad41",
+          "telemetrySha256": "a142bb3602af17446d59f7e1da09ab787d53842a839f2a4b9cebaa2f2059b42b",
+          "log": "deferred-raster-shared-1-shared.log",
+          "technique": "deferred-raster",
+          "asset": "shared-1-shared.gltf"
+        },
+        {
+          "image": "forward-raster-shared-1-shared.png",
+          "imageSha256": "acf81c151b75736709d89dbbb7884e79256a4d1e89f836321f47d0d9aad3ad41",
+          "telemetrySha256": "ee8465dbfa176b30d714b22523b555e2e796a5a9b143690a1f148b1a8040582d",
+          "log": "forward-raster-shared-1-shared.log",
+          "technique": "forward-raster",
+          "asset": "shared-1-shared.gltf"
+        },
+        {
+          "image": "deferred-raster-transparent-1-nearest.png",
+          "imageSha256": "10d5a028146c108170b615c274c1bbed9f27aa7c1997a77615bc48143826431e",
+          "telemetrySha256": "c047c685f085de6105c91cbf35c9072e0d4e5ae5c918e8167c636615895c377d",
+          "log": "deferred-raster-transparent-1-nearest.log",
+          "technique": "deferred-raster",
+          "asset": "transparent-1-nearest.gltf"
+        },
+        {
+          "image": "deferred-raster-transparent-1-linear.png",
+          "imageSha256": "7fcc88d21071416bfd95433eb70d19a7c4d25cdb84b14a84e6c68a13fa14452a",
+          "telemetrySha256": "794e39875d4994fa887a4d7c3cd1623b5c671ce854b315e26e20b99c2b75428b",
+          "log": "deferred-raster-transparent-1-linear.log",
+          "technique": "deferred-raster",
+          "asset": "transparent-1-linear.gltf"
+        },
+        {
+          "image": "forward-raster-transparent-1-nearest.png",
+          "imageSha256": "10d5a028146c108170b615c274c1bbed9f27aa7c1997a77615bc48143826431e",
+          "telemetrySha256": "a05866daf312ff4c4c57ac365ee3f1a39c9e13c3774abf1a489462d1ba41ae04",
+          "log": "forward-raster-transparent-1-nearest.log",
+          "technique": "forward-raster",
+          "asset": "transparent-1-nearest.gltf"
+        },
+        {
+          "image": "forward-raster-transparent-1-linear.png",
+          "imageSha256": "7fcc88d21071416bfd95433eb70d19a7c4d25cdb84b14a84e6c68a13fa14452a",
+          "telemetrySha256": "51d5bfb4f4523f1203f5cb0e04f65545dc1b3c530191f259e3dbe42837f10838",
+          "log": "forward-raster-transparent-1-linear.log",
+          "technique": "forward-raster",
+          "asset": "transparent-1-linear.gltf"
+        },
+        {
+          "image": "deferred-raster-mask-1-nearest.png",
+          "imageSha256": "0d934b9d3798d2f79c6caf5f575211bae2dd3f7cf68b975a0659e5415cc67d4e",
+          "telemetrySha256": "621635d99bc423d1c89916deac0055b3b1bbe8412f9d406158b9522a68edd62a",
+          "log": "deferred-raster-mask-1-nearest.log",
+          "technique": "deferred-raster",
+          "asset": "mask-1-nearest.gltf"
+        },
+        {
+          "image": "deferred-raster-mask-1-linear.png",
+          "imageSha256": "8ea9d1ea71c64e6c4f933da0399f1137943446f50757a87430e6ab178ee142f4",
+          "telemetrySha256": "7c72f073f42d31886579044cf316feecb5e83788d03110a58d5ae5234d6dc79f",
+          "log": "deferred-raster-mask-1-linear.log",
+          "technique": "deferred-raster",
+          "asset": "mask-1-linear.gltf"
+        },
+        {
+          "image": "forward-raster-mask-1-nearest.png",
+          "imageSha256": "0d934b9d3798d2f79c6caf5f575211bae2dd3f7cf68b975a0659e5415cc67d4e",
+          "telemetrySha256": "aeb7b6a61a8c12a4004ed24750e19e0d08b100154bf4ab343516322641a5a5d2",
+          "log": "forward-raster-mask-1-nearest.log",
+          "technique": "forward-raster",
+          "asset": "mask-1-nearest.gltf"
+        },
+        {
+          "image": "forward-raster-mask-1-linear.png",
+          "imageSha256": "8ea9d1ea71c64e6c4f933da0399f1137943446f50757a87430e6ab178ee142f4",
+          "telemetrySha256": "c52263737994d8ccae9f7ab8a4ab9fa16b00c847005c21b21e0d0eeb7a90001c",
+          "log": "forward-raster-mask-1-linear.log",
+          "technique": "forward-raster",
+          "asset": "mask-1-linear.gltf"
+        },
+        {
+          "image": "deferred-raster-twelve-policies.png",
+          "imageSha256": "e62fecd75a44a3e159e606e683500390f6aa88398e26865b2ef2bab44092d666",
+          "telemetrySha256": "ce1166ad32372d38543bab592d6dbeba7f87792fab5267e3d22870b00fadc7bd",
+          "log": "deferred-raster-twelve-policies.log",
+          "technique": "deferred-raster",
+          "asset": "twelve-policies.gltf"
+        },
+        {
+          "image": "forward-raster-twelve-policies.png",
+          "imageSha256": "e62fecd75a44a3e159e606e683500390f6aa88398e26865b2ef2bab44092d666",
+          "telemetrySha256": "d6f906c17e23b31c88458b09fcb1c320a43f2bc49d7ef9de8166570f21ab1269",
+          "log": "forward-raster-twelve-policies.log",
+          "technique": "forward-raster",
+          "asset": "twelve-policies.gltf"
+        },
+        {
+          "image": "deferred-raster-ray-alpha.png",
+          "imageSha256": "3720c98e1d4494fa43b462494c530ad4c4a23e5393a43d842761d42da3e6570c",
+          "telemetrySha256": "c6b76acf8bdb35f19c5ead6d4cb03c96754e7eb8b5855608a967d0b293b6d994",
+          "log": "deferred-raster-ray-alpha.log",
+          "technique": "deferred-raster",
+          "asset": "ray-alpha.gltf"
+        },
+        {
+          "image": "forward-raster-ray-alpha.png",
+          "imageSha256": "3720c98e1d4494fa43b462494c530ad4c4a23e5393a43d842761d42da3e6570c",
+          "telemetrySha256": "125a9486e10cf46223280b8cb6473c6b591601b0fe27e1b8e3c13d2f3d97fe85",
+          "log": "forward-raster-ray-alpha.log",
+          "technique": "forward-raster",
+          "asset": "ray-alpha.gltf"
+        }
+      ],
+      "validationLogSha256": {
+        "deferred-raster-mag-1-nearest.log": "70abd6fa59db362ba2535d9c721647c0612065c3370b2e060fc07c6370cd4c48",
+        "deferred-raster-mag-1-linear.log": "cf810eab9beeafd72b98c7bf021a7f469b8bf9d990b2ba87beb02839f4025c05",
+        "forward-raster-mag-1-nearest.log": "cc44b4ec4c37148f0f449f26841e5ed6b8badae8eaeac7368b923b46cf9010bb",
+        "forward-raster-mag-1-linear.log": "a36e5cadb6d6ff045f6e36d68fae7e7e489ede2d07d053003d79cf781d59ac6f",
+        "deferred-raster-min-4-nearest.log": "3273d6583926b4fd08b558d13fc3245d13850bb1dd7a3899afe64f16675f56ba",
+        "deferred-raster-min-4-linear.log": "862942fe3bf115b9b719ac0930ed820a6046d2c7dd3fbcc4431bf29657f23bb0",
+        "deferred-raster-min-4-nearest_mipmap_nearest.log": "375629a42e1e9f7752e874a88c39beee3d925641416404195d576fbfd6a6b87c",
+        "deferred-raster-min-4-linear_mipmap_nearest.log": "6775d895eee5c498d09fa20b7f424bda583b319cf37e857c0e7a8e1a98d80e8e",
+        "deferred-raster-min-4-nearest_mipmap_linear.log": "8093ba56b6a18b8696eaf0367c89b0a034dc510d6a0624c29e45156107190c0f",
+        "deferred-raster-min-4-linear_mipmap_linear.log": "e6d8cdfc0e14dfcb2f7ada579091831ea0ec76f24a072948f40945fe57a55c79",
+        "forward-raster-min-4-nearest.log": "7446a0be7c78d42cfd086926767e23e9bbc5219d541dd3c83ced7f84dd20296a",
+        "forward-raster-min-4-linear.log": "40713e5166979cc60b9010787ebf9145088648f7ccac34ba8f02fcf3884bee9a",
+        "forward-raster-min-4-nearest_mipmap_nearest.log": "a33e72b292991835966a1b9dee39fee96c39b71fe9edccbcc8f014a6c18c81a3",
+        "forward-raster-min-4-linear_mipmap_nearest.log": "70892480f137eff26d548becc1c562ccc00051be299ee36c6a334c29a262c3ac",
+        "forward-raster-min-4-nearest_mipmap_linear.log": "4d5429497e8067adbda68233f98e6d38203a568e1b3bba58a1f4ff8a456f1f27",
+        "forward-raster-min-4-linear_mipmap_linear.log": "b3f3e70839f298aaa2f13c9750f296901c8110dccb2b45ffbdc1193429d2000d",
+        "deferred-raster-min-8-nearest.log": "220a9d7210db907d7d0584166b9c4ddee07e3e154e7c44a341e5d39f45d6261d",
+        "deferred-raster-min-8-linear.log": "b855c83ba2ecc46a2007f31cb22caf73e12528cfccac89c5587e87796c8289ad",
+        "deferred-raster-min-8-nearest_mipmap_nearest.log": "c348e3d67333bc5294a532b193c9a0bb5146ba6c60a87114eb8203a6a40a8c30",
+        "deferred-raster-min-8-linear_mipmap_nearest.log": "84135fa97afef289d143534077a0b11bc60488ac2e97d7cf2fef87b0d199cc46",
+        "deferred-raster-min-8-nearest_mipmap_linear.log": "7819e797bc996757b5cd8ccb729eaa04722d8968c590a63ce0959a2f3f5f22b8",
+        "deferred-raster-min-8-linear_mipmap_linear.log": "c6ad83b14dee8d26525a0608f8a22bce7f11f615a49c6be886d87b758d051b87",
+        "forward-raster-min-8-nearest.log": "8ded17712e1210a6f5278af7e1f083ef8b5e85baf3c6bfd406b6496a6a770fab",
+        "forward-raster-min-8-linear.log": "40ee3a01b8fa45545ddd634b2dbd2f1f2d455ccb70f1000f3cedddf2b21c77ec",
+        "forward-raster-min-8-nearest_mipmap_nearest.log": "7068e0d9fb3c87df1ce269bfc48d79368c32bc00e7b5f7ec78522116aa1bfd39",
+        "forward-raster-min-8-linear_mipmap_nearest.log": "58463e05c31c002700d4b96f42fc5fd2c4ac13d6f9790483f93eb662d47e3c60",
+        "forward-raster-min-8-nearest_mipmap_linear.log": "534356a66da8c3fe4053d6716a0eef8e17a70d0cffad2b32ae8bb2a810cffd70",
+        "forward-raster-min-8-linear_mipmap_linear.log": "dc5be9404e69e1a682735732fb0ec8b3c5f68a913fe75ab41e6722f4155b8840",
+        "deferred-raster-shared-1-shared.log": "e87a6a8b01f21e49fdd0d8a6787e93b257ebd0e49fdf23084cbd797e1c1e7384",
+        "forward-raster-shared-1-shared.log": "96be28e0868d1e2287a98479e1e8eaffe03d81550793911801d03a5a6bd3d1d5",
+        "deferred-raster-transparent-1-nearest.log": "47c7d0988f55dcc53d31be3310ca3bd7b4652b9297f2a32e5136b7171c2fbd47",
+        "deferred-raster-transparent-1-linear.log": "34bba40d28eae0b129ff036925bd3598af1bbd47b6a45d031a785d9316443fba",
+        "forward-raster-transparent-1-nearest.log": "acfb6721ce3ad78bd6404383b5b5e81d95db63a0cb0b9fdef2db9251a3598d14",
+        "forward-raster-transparent-1-linear.log": "9430a285baaa281c4450279ec87002bb44a0e209b125c7967d0e5d3119fc72a5",
+        "deferred-raster-mask-1-nearest.log": "49b3aaf558dcb1419c2e7ccdd6913841f2c15bf77f5a242ca410fa63901b8ca2",
+        "deferred-raster-mask-1-linear.log": "26bc46315c3ee75fd5a22edf1997e4a1d6ce84614dfcab58003308890b2e682c",
+        "forward-raster-mask-1-nearest.log": "2e8364187d9b30f962b96184fbd8ca2fe02cb89c1db7c70f8c7bbd7c61e7b2d7",
+        "forward-raster-mask-1-linear.log": "4ba3b5760f5257dbc978cf0ba3a128cb1ae238296ea7a80231d24395ae53ec6c",
+        "deferred-raster-twelve-policies.log": "3561f650607f79527af287626911795f9f151119e2bcb1c4d685a3a814758044",
+        "forward-raster-twelve-policies.log": "fdef5514b9a1f81bf76d47a53505486801271297f96f1598d2fc391a88f32d9a",
+        "deferred-raster-ray-alpha.log": "c326159e34c7636822311db6b7b2c419bb58c4ec441c7ac4cb6b726aeb956d2a",
+        "forward-raster-ray-alpha.log": "2efbc63787d1fad9d0af0da918ff07843f6c3a5338f0186c40ab9ad1f0f4d49f"
+      },
+      "checks": [
+        {
+          "case": "mag",
+          "technique": "deferred-raster",
+          "nearestMixedFraction": 0.0,
+          "linearMixedFraction": 0.923828125
+        },
+        {
+          "case": "mag",
+          "technique": "forward-raster",
+          "nearestMixedFraction": 0.0,
+          "linearMixedFraction": 0.923828125
+        },
+        {
+          "case": "min",
+          "repeat": 4,
+          "technique": "deferred-raster",
+          "first": "nearest",
+          "second": "nearest_mipmap_nearest",
+          "distinct": false,
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "repeat": 4,
+          "technique": "deferred-raster",
+          "first": "linear",
+          "second": "linear_mipmap_nearest",
+          "distinct": false,
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "repeat": 4,
+          "technique": "forward-raster",
+          "first": "nearest",
+          "second": "nearest_mipmap_nearest",
+          "distinct": false,
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "repeat": 4,
+          "technique": "forward-raster",
+          "first": "linear",
+          "second": "linear_mipmap_nearest",
+          "distinct": false,
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "min",
+          "repeat": 8,
+          "technique": "deferred-raster",
+          "first": "nearest_mipmap_nearest",
+          "second": "nearest_mipmap_linear",
+          "distinct": true,
+          "meanAbsolutePixelError": 44.666666666666664,
+          "changedPixelFraction": 1.0
+        },
+        {
+          "case": "min",
+          "repeat": 8,
+          "technique": "deferred-raster",
+          "first": "linear_mipmap_nearest",
+          "second": "linear_mipmap_linear",
+          "distinct": true,
+          "meanAbsolutePixelError": 3.8494285300925926,
+          "changedPixelFraction": 0.3350965711805556
+        },
+        {
+          "case": "min",
+          "repeat": 8,
+          "technique": "deferred-raster",
+          "first": "linear",
+          "second": "linear_mipmap_linear",
+          "distinct": true,
+          "meanAbsolutePixelError": 28.45703125,
+          "changedPixelFraction": 0.8107638888888888
+        },
+        {
+          "case": "min",
+          "repeat": 8,
+          "technique": "deferred-raster",
+          "first": "nearest",
+          "second": "linear",
+          "distinct": true,
+          "meanAbsolutePixelError": 42.6626880787037,
+          "changedPixelFraction": 0.7394748263888888
+        },
+        {
+          "case": "min",
+          "repeat": 8,
+          "technique": "forward-raster",
+          "first": "nearest_mipmap_nearest",
+          "second": "nearest_mipmap_linear",
+          "distinct": true,
+          "meanAbsolutePixelError": 44.666666666666664,
+          "changedPixelFraction": 1.0
+        },
+        {
+          "case": "min",
+          "repeat": 8,
+          "technique": "forward-raster",
+          "first": "linear_mipmap_nearest",
+          "second": "linear_mipmap_linear",
+          "distinct": true,
+          "meanAbsolutePixelError": 3.8494285300925926,
+          "changedPixelFraction": 0.3350965711805556
+        },
+        {
+          "case": "min",
+          "repeat": 8,
+          "technique": "forward-raster",
+          "first": "linear",
+          "second": "linear_mipmap_linear",
+          "distinct": true,
+          "meanAbsolutePixelError": 28.45703125,
+          "changedPixelFraction": 0.8107638888888888
+        },
+        {
+          "case": "min",
+          "repeat": 8,
+          "technique": "forward-raster",
+          "first": "nearest",
+          "second": "linear",
+          "distinct": true,
+          "meanAbsolutePixelError": 42.6626880787037,
+          "changedPixelFraction": 0.7394748263888888
+        },
+        {
+          "case": "shared",
+          "technique": "deferred-raster",
+          "nearestMixedFraction": 0.0,
+          "linearMixedFraction": 0.9345703125
+        },
+        {
+          "case": "shared",
+          "technique": "forward-raster",
+          "nearestMixedFraction": 0.0,
+          "linearMixedFraction": 0.9345703125
+        },
+        {
+          "case": "transparent",
+          "technique": "deferred-raster",
+          "nearestMixedFraction": 0.0,
+          "linearMixedFraction": 0.8922526041666666
+        },
+        {
+          "case": "transparent",
+          "technique": "forward-raster",
+          "nearestMixedFraction": 0.0,
+          "linearMixedFraction": 0.8922526041666666
+        },
+        {
+          "case": "mask",
+          "technique": "deferred-raster",
+          "meanAbsolutePixelError": 72.81797055844908,
+          "changedPixelFraction": 0.7954915364583334
+        },
+        {
+          "case": "mask",
+          "technique": "forward-raster",
+          "meanAbsolutePixelError": 72.81797055844908,
+          "changedPixelFraction": 0.7954915364583334
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "deferred-raster",
+          "texture": 0,
+          "minFilter": 9728,
+          "magFilter": 9728,
+          "samplerSlot": 1,
+          "samplerCount": 13,
+          "mixedFraction": 0.0
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "deferred-raster",
+          "texture": 1,
+          "minFilter": 9728,
+          "magFilter": 9729,
+          "samplerSlot": 2,
+          "samplerCount": 13,
+          "mixedFraction": 0.9953703703703703
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "deferred-raster",
+          "texture": 2,
+          "minFilter": 9729,
+          "magFilter": 9728,
+          "samplerSlot": 3,
+          "samplerCount": 13,
+          "mixedFraction": 0.0
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "deferred-raster",
+          "texture": 3,
+          "minFilter": 9729,
+          "magFilter": 9729,
+          "samplerSlot": 4,
+          "samplerCount": 13,
+          "mixedFraction": 0.9953703703703703
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "deferred-raster",
+          "texture": 4,
+          "minFilter": 9984,
+          "magFilter": 9728,
+          "samplerSlot": 5,
+          "samplerCount": 13,
+          "mixedFraction": 0.0
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "deferred-raster",
+          "texture": 5,
+          "minFilter": 9984,
+          "magFilter": 9729,
+          "samplerSlot": 6,
+          "samplerCount": 13,
+          "mixedFraction": 0.9953703703703703
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "deferred-raster",
+          "texture": 6,
+          "minFilter": 9985,
+          "magFilter": 9728,
+          "samplerSlot": 7,
+          "samplerCount": 13,
+          "mixedFraction": 0.0
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "deferred-raster",
+          "texture": 7,
+          "minFilter": 9985,
+          "magFilter": 9729,
+          "samplerSlot": 8,
+          "samplerCount": 13,
+          "mixedFraction": 0.9953703703703703
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "deferred-raster",
+          "texture": 8,
+          "minFilter": 9986,
+          "magFilter": 9728,
+          "samplerSlot": 9,
+          "samplerCount": 13,
+          "mixedFraction": 0.0
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "deferred-raster",
+          "texture": 9,
+          "minFilter": 9986,
+          "magFilter": 9729,
+          "samplerSlot": 10,
+          "samplerCount": 13,
+          "mixedFraction": 0.9953703703703703
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "deferred-raster",
+          "texture": 10,
+          "minFilter": 9987,
+          "magFilter": 9728,
+          "samplerSlot": 11,
+          "samplerCount": 13,
+          "mixedFraction": 0.0
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "deferred-raster",
+          "texture": 11,
+          "minFilter": 9987,
+          "magFilter": 9729,
+          "samplerSlot": 12,
+          "samplerCount": 13,
+          "mixedFraction": 0.9953703703703703
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "forward-raster",
+          "texture": 0,
+          "minFilter": 9728,
+          "magFilter": 9728,
+          "samplerSlot": 1,
+          "samplerCount": 13,
+          "mixedFraction": 0.0
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "forward-raster",
+          "texture": 1,
+          "minFilter": 9728,
+          "magFilter": 9729,
+          "samplerSlot": 2,
+          "samplerCount": 13,
+          "mixedFraction": 0.9953703703703703
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "forward-raster",
+          "texture": 2,
+          "minFilter": 9729,
+          "magFilter": 9728,
+          "samplerSlot": 3,
+          "samplerCount": 13,
+          "mixedFraction": 0.0
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "forward-raster",
+          "texture": 3,
+          "minFilter": 9729,
+          "magFilter": 9729,
+          "samplerSlot": 4,
+          "samplerCount": 13,
+          "mixedFraction": 0.9953703703703703
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "forward-raster",
+          "texture": 4,
+          "minFilter": 9984,
+          "magFilter": 9728,
+          "samplerSlot": 5,
+          "samplerCount": 13,
+          "mixedFraction": 0.0
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "forward-raster",
+          "texture": 5,
+          "minFilter": 9984,
+          "magFilter": 9729,
+          "samplerSlot": 6,
+          "samplerCount": 13,
+          "mixedFraction": 0.9953703703703703
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "forward-raster",
+          "texture": 6,
+          "minFilter": 9985,
+          "magFilter": 9728,
+          "samplerSlot": 7,
+          "samplerCount": 13,
+          "mixedFraction": 0.0
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "forward-raster",
+          "texture": 7,
+          "minFilter": 9985,
+          "magFilter": 9729,
+          "samplerSlot": 8,
+          "samplerCount": 13,
+          "mixedFraction": 0.9953703703703703
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "forward-raster",
+          "texture": 8,
+          "minFilter": 9986,
+          "magFilter": 9728,
+          "samplerSlot": 9,
+          "samplerCount": 13,
+          "mixedFraction": 0.0
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "forward-raster",
+          "texture": 9,
+          "minFilter": 9986,
+          "magFilter": 9729,
+          "samplerSlot": 10,
+          "samplerCount": 13,
+          "mixedFraction": 0.9953703703703703
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "forward-raster",
+          "texture": 10,
+          "minFilter": 9987,
+          "magFilter": 9728,
+          "samplerSlot": 11,
+          "samplerCount": 13,
+          "mixedFraction": 0.0
+        },
+        {
+          "case": "twelve-policies",
+          "technique": "forward-raster",
+          "texture": 11,
+          "minFilter": 9987,
+          "magFilter": 9729,
+          "samplerSlot": 12,
+          "samplerCount": 13,
+          "mixedFraction": 0.9953703703703703
+        },
+        {
+          "case": "ray-alpha",
+          "technique": "deferred-raster",
+          "rayShadowActive": true,
+          "ddgiTracedRays": 1536
+        },
+        {
+          "case": "ray-alpha",
+          "technique": "forward-raster",
+          "rayShadowActive": true,
+          "ddgiTracedRays": 1536
+        }
+      ]
+    }
+  ]
+}

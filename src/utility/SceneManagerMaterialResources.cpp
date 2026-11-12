@@ -1,4 +1,5 @@
 #include <Container/utility/SceneManager.h>
+#include <Container/utility/GltfMaterialEditRequest.h>
 #include <Container/utility/GltfRuntimeMaterialAuthoring.h>
 #include <Container/utility/Platform.h>
 #include <Container/utility/VulkanDevice.h>
@@ -1096,7 +1097,14 @@ SceneManager::PreparedMaterialResources SceneManager::prepareMaterialResourcesBa
 
 SceneManager::PreparedMaterialResources SceneManager::prepareMaterialTextureFile(int32_t source,const std::filesystem::path& path,
     MaterialTextureRoles roles,uint32_t sampler,const MaterialResourcesLimits& limits) const {
-  validateResourceLimits(limits);(void)container::material::DecodeMaterialSamplerKey({sampler});
+  const auto policy=container::material::DecodeMaterialSamplerKey({sampler});
+  return prepareMaterialTextureFileWithAuthoredSampler(source,path,roles,
+      container::material::MaterialTextureSamplerDescription{policy.minFilter,policy.magFilter,policy.wrapS,policy.wrapT},limits);
+}
+
+SceneManager::PreparedMaterialResources SceneManager::prepareMaterialTextureFileWithAuthoredSampler(int32_t source,const std::filesystem::path& path,
+    MaterialTextureRoles roles,const container::material::MaterialTextureSamplerDescription& sampler,const MaterialResourcesLimits& limits) const {
+  validateResourceLimits(limits);container::material::ValidateMaterialTextureSampler(sampler);
   if(uint8_t(roles)<1 || uint8_t(roles)>3) throw std::invalid_argument("Material texture roles are invalid");
   auto result=prepareMaterialResourcesBase(source,limits);
   const auto normalized=path.lexically_normal();const auto name=container::util::pathToUtf8(normalized);
@@ -1107,7 +1115,7 @@ SceneManager::PreparedMaterialResources SceneManager::prepareMaterialTextureFile
     throw std::length_error("Material texture encoded bytes exceed their preparation capacity");
   std::vector<std::byte> bytes(static_cast<size_t>(size));stream.seekg(0);
   if(!stream.read(reinterpret_cast<char*>(bytes.data()),std::streamsize(bytes.size()))) throw std::runtime_error("Failed to read material texture: "+name);
-  result.prepareSource({},"file:"+name,name,bytes,roles,sampler);result.finishPreparation();return result;
+  result.prepareSource({},"file:"+name,name,bytes,roles,std::nullopt,&sampler);result.finishPreparation();return result;
 }
 SceneManager::PreparedMaterialResources SceneManager::prepareMaterialTextureBytes(int32_t source,const std::string& name,std::span<const std::byte> bytes,
     MaterialTextureRoles roles,uint32_t sampler,const MaterialResourcesLimits& limits) const {
@@ -1119,13 +1127,25 @@ SceneManager::PreparedMaterialResources SceneManager::prepareMaterialTextureByte
 }
 SceneManager::PreparedMaterialResources SceneManager::prepareMaterialTextureSource(int32_t source,uint32_t texture,
     MaterialTextureRoles roles,std::optional<uint32_t> sampler,const MaterialResourcesLimits& limits) const {
+  return prepareMaterialTextureSource(source,texture,roles,sampler,nullptr,limits);
+}
+
+SceneManager::PreparedMaterialResources SceneManager::prepareMaterialTextureSourceWithAuthoredSampler(int32_t source,uint32_t texture,
+    MaterialTextureRoles roles,const container::material::MaterialTextureSamplerDescription& sampler,const MaterialResourcesLimits& limits) const {
+  return prepareMaterialTextureSource(source,texture,roles,std::nullopt,&sampler,limits);
+}
+
+SceneManager::PreparedMaterialResources SceneManager::prepareMaterialTextureSource(int32_t source,uint32_t texture,
+    MaterialTextureRoles roles,std::optional<uint32_t> sampler,
+    const container::material::MaterialTextureSamplerDescription* authoredSampler,const MaterialResourcesLimits& limits) const {
   validateResourceLimits(limits);
   if(uint8_t(roles)<1 || uint8_t(roles)>3) throw std::invalid_argument("Material texture roles are invalid");
   if(sampler) (void)container::material::DecodeMaterialSamplerKey({*sampler});
+  if(authoredSampler) container::material::ValidateMaterialTextureSampler(*authoredSampler);
   if(texture>=exportSource_.textures.size()) throw std::invalid_argument("Material source texture is unavailable");
   if(!sourceResourceActive({container::util::ResourceDomainKind::Archive,container::util::ResourceKind::Texture,texture}))
     throw std::invalid_argument("A retired source texture requires its original restore receipt");
-  auto result=prepareMaterialResourcesBase(source,limits);result.prepareSource(texture,{}, {},{},roles,sampler);result.finishPreparation();return result;
+  auto result=prepareMaterialResourcesBase(source,limits);result.prepareSource(texture,{}, {},{},roles,sampler,authoredSampler);result.finishPreparation();return result;
 }
 
 SceneManager::PreparedMaterialResources SceneManager::prepareMaterialResourcesChange(const MaterialResourceCommand& command,bool forward,
@@ -1360,15 +1380,28 @@ SceneManager::PreparedMaterialResources SceneManager::prepareMaterialResourcesCh
 }
 
 void SceneManager::PreparedMaterialResources::prepareSource(std::optional<uint32_t> source,const std::string& request,
-    const std::string& name,std::span<const std::byte> bytes,MaterialTextureRoles roles,std::optional<uint32_t> requestedSampler) {
+    const std::string& name,std::span<const std::byte> bytes,MaterialTextureRoles roles,
+    std::optional<uint32_t> requestedSampler,const container::material::MaterialTextureSamplerDescription* authoredSampler) {
   if(!*this || state_->ready) throw std::invalid_argument("Material resource source was already prepared");
   auto& s=*state_;auto& t=s.next;const auto& owner=*s.owner;
   if(uint8_t(roles)<1 || uint8_t(roles)>3) throw std::invalid_argument("Material texture roles are invalid");
   if(requestedSampler) (void)container::material::DecodeMaterialSamplerKey({*requestedSampler});
+  if(authoredSampler) {
+    const auto& policy=*authoredSampler;
+    requestedSampler=container::material::NormalizeMaterialSamplerKey(policy.minFilter,policy.magFilter,policy.wrapS,policy.wrapT).value;
+  }
   if(!source && (bytes.empty() || bytes.size()>s.limits.maxEncodedBytes))
     throw std::length_error("Material texture encoded bytes exceed their capacity");
   s.budget.add(bytes.size(),2);s.budget.add(name.size()+request.size()+128,4);
   uint32_t archive=UINT32_MAX,sampler=requestedSampler.value_or(0),decodeSource=UINT32_MAX;
+  const auto samplerSuffix=[&] {
+    auto suffix="#sampler="+std::to_string(sampler);
+    // Source aliases distinguish omitted defaults from explicit defaults,
+    // while runtime sampler slots still use the canonical key alone.
+    if(authoredSampler && authoredSampler->minFilter==-1) suffix+="#min=omitted";
+    if(authoredSampler && authoredSampler->magFilter==-1) suffix+="#mag=omitted";
+    return suffix;
+  };
   std::string key;
   std::shared_ptr<const uint8_t> inputIdentity;
   bool newSource=false;
@@ -1378,16 +1411,18 @@ void SceneManager::PreparedMaterialResources::prepareSource(std::optional<uint32
     if(!t.aPhases.textures.empty() && (*source>=t.aPhases.textures.size() || t.aPhases.textures[*source]!=1))
       throw std::invalid_argument("Chosen material texture source is retired");
     archive=*source;decodeSource=*source;
+    container::material::MaterialTextureSamplerDescription originalPolicy;
     uint32_t originalSampler{};const auto oldSampler=t.aTextures[archive].sampler;
     if(oldSampler>=0) {
       if(size_t(oldSampler)>=t.aSamplers.size()) throw std::invalid_argument("Chosen material texture sampler is unavailable");
       const auto& old=t.aSamplers[size_t(oldSampler)];
+      originalPolicy={old.minFilter,old.magFilter,old.wrapS,old.wrapT};
       originalSampler=container::material::NormalizeMaterialSamplerKey(old.minFilter,old.magFilter,old.wrapS,old.wrapT).value;
     }
     sampler=requestedSampler.value_or(originalSampler);
-    if(sampler!=originalSampler) {
+    if(authoredSampler ? *authoredSampler!=originalPolicy : sampler!=originalSampler) {
       inputIdentity=t.identities[archive];
-      key="source:"+std::to_string(archive)+"#sampler="+std::to_string(sampler);
+      key="source:"+std::to_string(archive)+samplerSuffix();
       archive=UINT32_MAX;
       for(const auto& cached:t.requests) {
         if(!cached.active) continue;
@@ -1400,7 +1435,7 @@ void SceneManager::PreparedMaterialResources::prepareSource(std::optional<uint32
       newSource=archive==UINT32_MAX;
     }
   } else {
-    key=request+"#sampler="+std::to_string(sampler)+"#size="+std::to_string(bytes.size())+"#bytes="+std::to_string(hashEncoded(bytes));
+    key=request+samplerSuffix()+"#size="+std::to_string(bytes.size())+"#bytes="+std::to_string(hashEncoded(bytes));
     uint64_t comparisons{};
     for(const auto& cached:t.requests) {
       if(!cached.active) continue;
@@ -1475,7 +1510,9 @@ void SceneManager::PreparedMaterialResources::prepareSource(std::optional<uint32
   if(newSource) {
     countGuard(t.aTextures.size());countGuard(t.eTextures.size());countGuard(t.aSamplers.size());countGuard(t.eSamplers.size());countGuard(t.requests.size());
     const auto policy=container::material::DecodeMaterialSamplerKey({sampler});
-    tinygltf::Sampler samplerRecord;samplerRecord.minFilter=policy.minFilter;samplerRecord.magFilter=policy.magFilter;
+    tinygltf::Sampler samplerRecord;
+    samplerRecord.minFilter=authoredSampler?authoredSampler->minFilter:policy.minFilter;
+    samplerRecord.magFilter=authoredSampler?authoredSampler->magFilter:policy.magFilter;
     samplerRecord.wrapS=policy.wrapS;samplerRecord.wrapT=policy.wrapT;s.budget.record(samplerRecord,4);
     tinygltf::Texture aTexture,eTexture;
     if(source) {

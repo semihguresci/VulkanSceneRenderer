@@ -486,20 +486,21 @@ bool RendererFrontend::authorMaterialTexture(const container::material::GltfMate
   const auto& info=GltfMaterialTextureSlotDescription(request.slot);
   const bool colorResource=info.srgb || binding.coupledSlot.has_value();
   const auto roles=colorResource?container::scene::MaterialTextureRoles::Color:container::scene::MaterialTextureRoles::Data;
-  std::optional<uint32_t> sampler;
-  if(request.sampler) {
-    const auto& policy=*request.sampler;
-    sampler=container::material::NormalizeMaterialSamplerKey(policy.minFilter,policy.magFilter,policy.wrapS,policy.wrapT).value;
-  }
   container::scene::MaterialResourcesLimits resourceLimits;
   resourceLimits.maxPreparedCpuBytes=std::min(resourceLimits.maxPreparedCpuBytes,limits.maxPreparedCpuBytes);
   std::optional<Manager::PreparedMaterialResources> resources;
-  if(request.operation==Operation::ImportFile)
-    resources.emplace(manager.prepareMaterialTextureFile(request.sourceMaterial,container::util::pathFromUtf8(*request.path),
-        roles,sampler.value_or(0),resourceLimits));
-  else if(request.operation==Operation::BindExisting || request.operation==Operation::EditSampler)
-    resources.emplace(manager.prepareMaterialTextureSource(request.sourceMaterial,
-        request.operation==Operation::BindExisting?*request.sourceTexture:uint32_t(binding.index),roles,sampler,resourceLimits));
+  if(request.operation==Operation::ImportFile) {
+    const auto sampler=request.sampler?*request.sampler:
+        materialTextureSampler(manager.authoredMaterialResources(),static_cast<uint32_t>(binding.index));
+    resources.emplace(manager.prepareMaterialTextureFileWithAuthoredSampler(request.sourceMaterial,container::util::pathFromUtf8(*request.path),
+        roles,sampler,resourceLimits));
+  } else if(request.operation==Operation::BindExisting || request.operation==Operation::EditSampler) {
+    const auto texture=request.operation==Operation::BindExisting?*request.sourceTexture:uint32_t(binding.index);
+    if(request.sampler) resources.emplace(manager.prepareMaterialTextureSourceWithAuthoredSampler(request.sourceMaterial,
+        texture,roles,*request.sampler,resourceLimits));
+    else resources.emplace(manager.prepareMaterialTextureSource(request.sourceMaterial,
+        texture,roles,std::nullopt,resourceLimits));
+  }
   GltfMaterialTextureEdit edit;edit.slot=request.slot;edit.mapping=request.mapping;
   if(request.operation==Operation::Clear) edit.operation=GltfMaterialTextureOperation::Clear;
   else if(request.operation==Operation::EditMapping) edit.operation=GltfMaterialTextureOperation::Mapping;

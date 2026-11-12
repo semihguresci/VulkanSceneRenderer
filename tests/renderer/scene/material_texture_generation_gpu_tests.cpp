@@ -2,6 +2,7 @@
 #include <Container/geometry/GltfModelLoader.h>
 #include <Container/geometry/GltfSceneExport.h>
 #include <Container/utility/AllocationManager.h>
+#include <Container/utility/GltfMaterialEditRequest.h>
 #include <Container/utility/GltfMaterialConversion.h>
 #include <Container/utility/GltfRuntimeMaterialAuthoring.h>
 #include <Container/utility/MaterialSamplerKey.h>
@@ -488,6 +489,87 @@ TEST_F(MaterialTextureGenerationGpu,SamplerAliasReusesImageLeaseAndStagesDenseMe
   EXPECT_EQ(manager->animationSource().images.size(),images);EXPECT_EQ(manager->animationSource().samplers.size(),samplers+1);
   const auto& record=manager->animationSource().samplers.back();EXPECT_EQ(record.minFilter,TINYGLTF_TEXTURE_FILTER_NEAREST);
   EXPECT_EQ(record.magFilter,TINYGLTF_TEXTURE_FILTER_LINEAR);EXPECT_EQ(record.wrapS,TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE);EXPECT_EQ(record.wrapT,TINYGLTF_TEXTURE_WRAP_MIRRORED_REPEAT);
+}
+
+TEST_F(MaterialTextureGenerationGpu,AuthoredDefaultFiltersStayOmittedAcrossSamplerEditAndExport) {
+  using namespace container::geometry::gltf;
+  using namespace container::material;
+  auto source=triangle("A",31);
+  auto& original=source.gltfModel.samplers[0];
+  original.minFilter=TINYGLTF_TEXTURE_FILTER_LINEAR_MIPMAP_LINEAR;
+  original.magFilter=TINYGLTF_TEXTURE_FILTER_LINEAR;
+  original.wrapS=TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE;
+  original.wrapT=TINYGLTF_TEXTURE_WRAP_MIRRORED_REPEAT;
+  const auto key=NormalizeMaterialSamplerKey(original.minFilter,original.magFilter,original.wrapS,original.wrapT);
+  const MaterialTextureSamplerDescription defaults{-1,-1,original.wrapS,original.wrapT};
+  loadSource(std::move(source));MaterialFrames frames(*allocation);
+  const auto runtime=manager->authoredMaterialResources().colorResources[0];
+  {
+    auto unchanged=manager->prepareMaterialTextureSource(0,0,MaterialTextureRoles::Color,key.value);
+    EXPECT_EQ(unchanged.sourceTexture(),0u);
+    EXPECT_EQ(unchanged.reference(true).runtimeResource(),runtime);
+  }
+  const auto baseline=allocations();
+  auto alias=manager->prepareMaterialTextureSourceWithAuthoredSampler(0,0,MaterialTextureRoles::Color,defaults);
+  const auto reference=alias.reference(true);
+  ASSERT_NE(reference.archiveTexture(),0u);
+  EXPECT_EQ(alias.textures().getTexture(reference.runtimeResource())->imageView,alias.textures().getTexture(runtime)->imageView);
+  EXPECT_EQ(allocations(),baseline+1);
+  const auto* metadata=static_cast<const GpuTextureMetadata*>(alias.metadataBuffer().allocation_info.pMappedData);
+  ASSERT_NE(metadata,nullptr);
+  EXPECT_EQ(metadata[reference.runtimeResource()].samplerIndex,metadata[runtime].samplerIndex);
+
+  const auto command=alias.command();
+  const auto plan=manager->planMaterialTextureEdit(0,texturePatch(alias),&alias);
+  auto stage=manager->prepareMaterialGeneration(plan,nullptr,std::move(alias));
+  ASSERT_TRUE(publishMaterial(*manager,frames,stage));stage={};
+  {
+    auto reuse=manager->prepareMaterialTextureSourceWithAuthoredSampler(0,0,MaterialTextureRoles::Color,defaults);
+    EXPECT_EQ(reuse.reference(true),reference);
+  }
+  for(const auto* extension:{".gltf",".glb"}) {
+    const auto path=temp/(std::string("omitted-defaults")+extension);
+    ASSERT_NO_THROW(manager->saveScene(graph,path));
+    const auto saved=LoadSourceModel(path.string());
+    const auto& material=saved.materials.at(saved.meshes.at(0).primitives.at(0).material);
+    const auto& texture=saved.textures.at(material.pbrMetallicRoughness.baseColorTexture.index);
+    const auto& sampler=saved.samplers.at(texture.sampler);
+    EXPECT_EQ(sampler.minFilter,-1);EXPECT_EQ(sampler.magFilter,-1);
+    EXPECT_EQ(sampler.wrapS,defaults.wrapS);EXPECT_EQ(sampler.wrapT,defaults.wrapT);
+  }
+  for(const bool forward:{false,true}) {
+    auto resources=manager->prepareMaterialResourcesChange(command,forward);
+    const auto rebased=manager->rebaseMaterialTextureEdit(plan,
+        forward?GltfMaterialEditSide::After:GltfMaterialEditSide::Before,&resources);
+    auto replay=manager->prepareMaterialGeneration(rebased,nullptr,std::move(resources));
+    ASSERT_TRUE(publishMaterial(*manager,frames,replay));
+    const auto sourceIndex=manager->authoredMaterial(0).pbrMetallicRoughness.baseColorTexture.index;
+    ASSERT_EQ(sourceIndex,forward?int32_t(reference.archiveTexture()):0);
+    const auto archive=manager->authoredMaterialResources();
+    const auto& sampler=archive.samplers[size_t(archive.textures[size_t(sourceIndex)].sampler)];
+    EXPECT_EQ(sampler.minFilter,forward?-1:TINYGLTF_TEXTURE_FILTER_LINEAR_MIPMAP_LINEAR);
+    EXPECT_EQ(sampler.magFilter,forward?-1:TINYGLTF_TEXTURE_FILTER_LINEAR);
+    EXPECT_EQ(sampler.wrapS,defaults.wrapS);EXPECT_EQ(sampler.wrapT,defaults.wrapT);
+  }
+}
+
+TEST_F(MaterialTextureGenerationGpu,AuthoredFileSamplerPreservesOmissionAndReusesExactRequests) {
+  loadSource(triangle("A",31,false,false));
+  (void)producerPng(temp,"authored-file-sampler");
+  const auto path=temp/"authored-file-sampler.png";
+  const container::material::MaterialTextureSamplerDescription policy{
+      -1,TINYGLTF_TEXTURE_FILTER_NEAREST,TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE,TINYGLTF_TEXTURE_WRAP_MIRRORED_REPEAT};
+  auto initial=manager->prepareMaterialTextureFileWithAuthoredSampler(0,path,MaterialTextureRoles::Color,policy);
+  const auto reference=initial.reference(true);
+  ASSERT_TRUE(publishResources(*manager,initial));initial={};
+  const auto archive=manager->authoredMaterialResources();
+  const auto& sampler=archive.samplers[size_t(archive.textures[reference.archiveTexture()].sampler)];
+  EXPECT_EQ(sampler.minFilter,-1);EXPECT_EQ(sampler.magFilter,policy.magFilter);
+  EXPECT_EQ(sampler.wrapS,policy.wrapS);EXPECT_EQ(sampler.wrapT,policy.wrapT);
+
+  auto repeated=manager->prepareMaterialTextureFileWithAuthoredSampler(0,path,MaterialTextureRoles::Color,policy);
+  EXPECT_EQ(repeated.reference(true),reference);
+  EXPECT_EQ(repeated.textures().textureCount(),manager->materialTextureResourceCount());
 }
 
 TEST_F(MaterialTextureGenerationGpu,ImmediateImportsRemainAvailableAfterIndependentEvaluatedImageDomains) {

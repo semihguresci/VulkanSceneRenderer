@@ -171,13 +171,29 @@ def main():
     model['scenes'][0]['nodes']=list(range(12));path.write_text(json.dumps(model),encoding='utf-8')
     for technique in ['deferred-raster','forward-raster']:
         record=capture(path,technique+'-twelve-policies',technique)
+        state=json.loads(Path(record['telemetry']).read_text(encoding='utf-8-sig'))
+        catalog=state['gltfMaterialTextures']
+        require(state['scene']['primaryObjectCount']==len(policies) and not catalog['resourcesTruncated']
+                and catalog['archiveImageCount']==1, 'Dense fixture did not publish all tiles on one source image')
+        textures={row['sourceTexture']: row for row in catalog['textures']}
+        metadata={row['runtimeTexture']: row for row in catalog['runtimeResources']}
         image=np.asarray(Image.open(record['image']).convert('RGB'))
-        for i,(_,magnification) in enumerate(policies):
+        slots=set()
+        for i,(minification,magnification) in enumerate(policies):
+            texture=textures[i]
+            require((texture['image'],texture['minFilter'],texture['magFilter'],texture['wrapS'],texture['wrapT'])
+                    ==(0,minification,magnification,33071,33071), f'Authored policy changed in tile {i}')
+            sampler=metadata[texture['colorResource']]
+            require(sampler['samplerCount']==len(policies)+1 and 0<sampler['samplerSlot']<sampler['samplerCount'],
+                    f'Tile {i} did not publish a nondefault sampler slot')
+            slots.add(sampler['samplerSlot'])
             x=round(320+103.923048*(-.75+(i%4)*.5));y=round(180-103.923048*(2/3-(i//4)*2/3))
             tile=image[y-24:y+24,x-18:x+18]
             mixed=float(np.mean((tile[:,:,0]>70)&(tile[:,:,1]>70)))
             require(mixed<.03 if magnification==9728 else mixed>.15,f'Wrong sampler in policy tile {i}: {mixed}')
-            checks.append(dict(case='twelve-policies',technique=technique,texture=i,magFilter=magnification,mixedFraction=mixed))
+            checks.append(dict(case='twelve-policies',technique=technique,texture=i,minFilter=minification,
+                magFilter=magnification,samplerSlot=sampler['samplerSlot'],samplerCount=sampler['samplerCount'],mixedFraction=mixed))
+        require(len(slots)==len(policies), 'Distinct authored policies shared a dense sampler slot')
     if args.ray_smoke:
         path=root/'ray-alpha.gltf';write_fixture(path,9986,9728,4,'MASK',shared=True)
         for technique in ['deferred-raster','forward-raster']:
