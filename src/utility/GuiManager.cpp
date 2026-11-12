@@ -3289,6 +3289,40 @@ void GuiManager::setSceneHierarchyNodeExpanded(
   sceneHierarchyCache_.setExpanded(nodeIndex, expanded);
 }
 
+void GuiManager::drawMaterialVariantSelector() {
+  auto &state = materialVariantControls_;
+  if (state.names.empty()) return;
+
+  const auto displayName = [](std::string_view name) {
+    return name.empty() ? std::string_view("Unnamed variant") : name;
+  };
+  const std::string_view preview = state.selected >= 0 && size_t(state.selected) < state.names.size()
+      ? displayName(state.names[size_t(state.selected)]) : "Default";
+  if (ImGui::BeginCombo("Material variant", nullptr)) {
+    if (ImGui::Selectable("Default", state.selected < 0)) state.requested = -1;
+    for (size_t i = 0; i < state.names.size(); ++i) {
+      ImGui::PushID(static_cast<int>(i));
+      const auto label = displayName(state.names[i]);
+      const ImVec2 origin = ImGui::GetCursorScreenPos();
+      // Asset text can contain ImGui's label/ID separators. Keep it separate
+      // from the indexed item ID and draw every character in the name.
+      const ImVec2 size = ImGui::CalcTextSize(label.data(), label.data() + label.size(), false);
+      if (ImGui::Selectable("##variant", state.selected == static_cast<int>(i), 0, size))
+        state.requested = static_cast<int>(i);
+      ImGui::GetWindowDrawList()->AddText(origin, ImGui::GetColorU32(ImGuiCol_Text),
+                                         label.data(), label.data() + label.size());
+      ImGui::PopID();
+    }
+    ImGui::EndCombo();
+  }
+  if (ImGui::BeginComboPreview()) {
+    ImGui::TextUnformatted(preview.data(), preview.data() + preview.size());
+    ImGui::EndComboPreview();
+  }
+  if (ImGui::Button("Restore default materials")) state.requested = -1;
+  if (!state.error.empty()) ImGui::TextWrapped("%s", state.error.c_str());
+}
+
 void GuiManager::drawBimElementBrowser(const BimInspectionState &inspection) {
   const void *source = BimElementMetadataSource(inspection);
   if (!inspection.hasScene || !ImGui::TreeNode("BIM Elements")) {
@@ -4747,23 +4781,7 @@ void GuiManager::drawSceneControls(
   if (sectionAnchor(ControlsSection::Animation)) ImGui::SetNextItemOpen(true);
   DrawGltfAnimationControls(gltfAnimationControls_);
   sectionAnchor(ControlsSection::Variants);
-  if (!materialVariantControls_.names.empty()) {
-    const auto& state=materialVariantControls_;
-    const char* preview=state.selected>=0 && size_t(state.selected)<state.names.size()
-        ? state.names[size_t(state.selected)].c_str():"Default";
-    if (ImGui::BeginCombo("Material variant",preview)) {
-      if (ImGui::Selectable("Default",state.selected<0)) materialVariantControls_.requested=-1;
-      for (size_t i=0;i<state.names.size();++i) {
-        ImGui::PushID(int(i));
-        const auto label=state.names[i].empty()?"Unnamed variant":state.names[i].c_str();
-        if (ImGui::Selectable(label,state.selected==int(i))) materialVariantControls_.requested=int(i);
-        ImGui::PopID();
-      }
-      ImGui::EndCombo();
-    }
-    if (ImGui::Button("Restore default materials")) materialVariantControls_.requested=-1;
-    if (!state.error.empty()) ImGui::TextWrapped("%s",state.error.c_str());
-  }
+  drawMaterialVariantSelector();
 
   if (ImGui::Button("Add Primitive")) {
     ImGui::OpenPopup("Add Primitive Menu");

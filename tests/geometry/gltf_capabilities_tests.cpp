@@ -2,6 +2,7 @@
 #include <Container/geometry/GltfExtendedMaterials.h>
 #include <Container/geometry/GltfModelLoader.h>
 #include <Container/geometry/GltfImageSources.h>
+#include <Container/geometry/GltfMaterialVariants.h>
 #include <Container/geometry/GltfMerge.h>
 #include <Container/utility/TextureImageData.h>
 
@@ -719,6 +720,96 @@ TEST(GltfCapabilitiesLoader, PreservesAuthoredAndOmittedSamplerMetadata) {
     EXPECT_EQ(source.samplers[2].magFilter, -1);
     EXPECT_EQ(source.samplers[2].wrapS, 10497);
     EXPECT_EQ(source.samplers[2].wrapT, 10497);
+  }
+}
+
+nlohmann::json materialVariantAsset(AssetFixture& fixture) {
+  auto json = fixture.triangle();
+  json["extensionsUsed"] = {"KHR_materials_variants"};
+  json["extensions"]["KHR_materials_variants"] = nlohmann::json::parse(R"({
+    "variants":[{"name":"Coating"},{"name":"Coating"},{"name":""}],
+    "extras":{"author":"source"}
+  })");
+  json["materials"] = {{{"name", "Base"}}, {{"name", "Coating"}}};
+  auto& primitive = json["meshes"][0]["primitives"][0];
+  primitive["material"] = 0.0;
+  primitive["extensions"]["KHR_materials_variants"] = nlohmann::json::parse(R"({
+    "mappings":[{"material":1.0,"variants":[0.0,1.0],"extras":{"author":"mapping"}}]
+  })");
+  return json;
+}
+
+TEST(GltfCapabilitiesLoader, LoadsIntegralMaterialVariantIndicesAndPreservesExtras) {
+  AssetFixture fixture;
+  const auto json = materialVariantAsset(fixture);
+  for (bool binary : {false, true}) {
+    const auto path = fixture.save(json, binary);
+    const auto source = gltf::LoadSourceModel(path.string());
+    const auto variants = gltf::ParseMaterialVariants(source);
+    ASSERT_EQ(variants.names().size(), 3u);
+    EXPECT_EQ(variants.names()[0], "Coating");
+    EXPECT_EQ(variants.names()[1], "Coating");
+    EXPECT_TRUE(variants.names()[2].empty());
+    const auto& primitive = variants.primitive(0, 0);
+    EXPECT_EQ(primitive.defaultMaterial, 0);
+    EXPECT_EQ(primitive.mappings, (std::vector<std::pair<size_t, int32_t>>{{0, 1}, {1, 1}}));
+    const auto& root = source.extensions.at("KHR_materials_variants");
+    EXPECT_EQ(root.Get("extras").Get("author").Get<std::string>(), "source");
+    const auto& extension = source.meshes.at(0).primitives.at(0).extensions.at("KHR_materials_variants");
+    EXPECT_EQ(extension.Get("mappings").Get(0).Get("extras").Get("author").Get<std::string>(), "mapping");
+  }
+}
+
+TEST(GltfCapabilitiesLoader, RejectsMalformedMaterialVariantMappingsBeforeResourceReads) {
+  AssetFixture fixture;
+  auto json = materialVariantAsset(fixture);
+  json["buffers"][0]["uri"] = "missing-variant-buffer.bin";
+  const nlohmann::json oversized = uint64_t{1} << 32;
+  const auto invalid = std::to_array<std::pair<nlohmann::json, std::string_view>>({
+      {{{"material", oversized}, {"variants", {0}}}, "mapping 0 material"},
+      {{{"material", 1}, {"variants", {oversized}}}, "mapping 0 variant 0"},
+      {{{"material", 1}, {"variants", {0, nullptr}}}, "mapping 0 variant 1"},
+      {{{"material", 1}, {"variants", {0.5}}}, "mapping 0 variant 0"},
+      {{{"material", 1}, {"variants", {3}}}, "mapping 0 variant 0"},
+      {{{"material", 1}, {"variants", {0, 0.0}}}, "mapping 0: variant 0 is already mapped"}});
+  auto& primitive = json["meshes"][0]["primitives"][0];
+  auto& mappings = primitive["extensions"]["KHR_materials_variants"]["mappings"];
+  const auto original = mappings;
+  const std::string context = "glTF material variants: mesh 0 primitive 0 ";
+  const auto check = [&](bool binary, const std::string& message) {
+    const auto path = fixture.save(json, binary);
+    expectLoadError([&] { (void)gltf::LoadModelWithSource(path.string()); }, path, context + message);
+  };
+  for (bool binary : {false, true}) {
+    for (const auto& [mapping, diagnostic] : invalid) {
+      mappings[0] = mapping;
+      check(binary, std::string(diagnostic));
+    }
+    mappings = original;
+    mappings.push_back(nlohmann::json::object());
+    check(binary, "mapping 1: material is required");
+    mappings[1] = {{"material", 1}, {"variants", {1}}};
+    check(binary, "mapping 1: variant 1 is already mapped");
+    mappings = original;
+    primitive["material"] = oversized;
+    check(binary, "default material");
+    primitive["material"] = 0;
+  }
+}
+
+TEST(GltfCapabilitiesLoader, UnavailableOptionalMaterialVariantsAreStrippedBeforeValidation) {
+  AssetFixture fixture;
+  auto json = materialVariantAsset(fixture);
+  auto& primitive = json["meshes"][0]["primitives"][0];
+  primitive["material"] = 0;
+  primitive["extensions"]["KHR_materials_variants"]["mappings"][0]["variants"] = {nullptr};
+  gltf::LoadOptions options;
+  options.unavailableRuntimeExtensions = {"KHR_materials_variants"};
+  for (bool binary : {false, true}) {
+    const auto path = fixture.save(json, binary);
+    const auto source = gltf::LoadSourceModel(path.string(), options);
+    EXPECT_FALSE(gltf::ParseMaterialVariants(source).hasVariants());
+    EXPECT_EQ(source.meshes.at(0).primitives.at(0).material, 0);
   }
 }
 

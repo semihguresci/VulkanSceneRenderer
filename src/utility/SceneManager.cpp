@@ -2229,6 +2229,7 @@ bool SceneManager::applyMaterialVariant(SceneGraph& graph,const MaterialVariantG
     const auto& primitive=materialVariants_.primitives()[i];
     primitiveIndices.emplace(std::pair{primitive.sourceMesh,primitive.sourcePrimitive},i);
   }
+  std::vector<bool> constrainedNormalTexCoords(texCoords.size());
   for (const auto& assignment:edit.assignments) {
     if (!variantOriginalModel_) break;
     const auto& node=*graph.getNode(assignment.node);
@@ -2238,8 +2239,15 @@ bool SceneManager::applyMaterialVariant(SceneGraph& graph,const MaterialVariantG
     const auto index=found->second;
     const auto& source=gltfModel_.meshes[size_t(node.sourceMeshIndex)].primitives[size_t(node.sourcePrimitiveIndex)];
     if (source.attributes.contains("NORMAL") && source.attributes.contains("TANGENT")) continue;
-    const auto& material=*materialManager_.getMaterial(forward?assignment.after:assignment.before);
-    texCoords[index]=material.normalTextureIndex==std::numeric_limits<uint32_t>::max()?0:material.normalTextureTransform.texCoord;
+    const auto uv=materialNormalTexCoord(forward?assignment.after:assignment.before);
+    // Instances share the same generated tangents. Only normal maps constrain their UV set.
+    if (constrainedNormalTexCoords[index]) {
+      if (uv && *uv!=texCoords[index])
+        throw std::runtime_error("Material variant instances of a shared primitive require conflicting normal texture UV sets");
+    } else {
+      texCoords[index]=uv.value_or(0);
+      constrainedNormalTexCoords[index]=uv.has_value();
+    }
   }
   std::optional<container::geometry::Model> regenerated;
   std::optional<container::geometry::gltf::DeformationData> deformation;

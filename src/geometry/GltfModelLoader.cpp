@@ -1109,29 +1109,29 @@ void validateSceneHierarchyJson(const nlohmann::json& json, const std::stop_toke
   }
 }
 
-// TinyGLTF narrows JSON integers and ignores decimal encodings. glTF permits
-// integral decimals and exponents, so normalize those before parsing. Unknown
-// integer enums still use the normal compatibility defaults.
+// TinyGLTF narrows JSON integers. glTF permits integral decimals and
+// exponents, so normalize those before TinyGLTF interprets the fields.
+std::optional<int> normalizeSourceInteger(nlohmann::json& value, bool& rewritten) {
+  if (value.is_number_unsigned()) {
+    const auto integer = value.get<uint64_t>();
+    if (integer <= INT_MAX) return static_cast<int>(integer);
+  } else if (value.is_number_integer()) {
+    const auto integer = value.get<int64_t>();
+    if (integer >= INT_MIN && integer <= INT_MAX) return static_cast<int>(integer);
+  } else if (value.is_number_float()) {
+    const auto number = value.get<double>();
+    if (number >= INT_MIN && number <= INT_MAX && std::trunc(number) == number) {
+      const auto integer = static_cast<int>(number);
+      value = integer;
+      rewritten = true;
+      return integer;
+    }
+  }
+  return std::nullopt;
+}
+
 bool normalizeTextureSamplerJson(nlohmann::json& json, const std::stop_token& stop) {
   bool rewritten = false;
-  const auto readInt = [&](nlohmann::json& value) -> std::optional<int> {
-    if (value.is_number_unsigned()) {
-      const auto integer = value.get<uint64_t>();
-      if (integer <= INT_MAX) return static_cast<int>(integer);
-    } else if (value.is_number_integer()) {
-      const auto integer = value.get<int64_t>();
-      if (integer >= INT_MIN && integer <= INT_MAX) return static_cast<int>(integer);
-    } else if (value.is_number_float()) {
-      const auto number = value.get<double>();
-      if (number >= INT_MIN && number <= INT_MAX && std::trunc(number) == number) {
-        const auto integer = static_cast<int>(number);
-        value = integer;
-        rewritten = true;
-        return integer;
-      }
-    }
-    return std::nullopt;
-  };
   const auto samplers = json.find("samplers");
   if (samplers != json.end() && !samplers->is_array())
     throw std::invalid_argument("samplers must be an array");
@@ -1143,7 +1143,7 @@ bool normalizeTextureSamplerJson(nlohmann::json& json, const std::stop_token& st
       throw std::invalid_argument("samplers[" + std::to_string(i) + "] must be an object");
     for (const char* field : {"minFilter", "magFilter", "wrapS", "wrapT"}) {
       const auto value = sampler.find(field);
-      if (value != sampler.end() && !readInt(*value))
+      if (value != sampler.end() && !normalizeSourceInteger(*value, rewritten))
         throw std::invalid_argument("samplers[" + std::to_string(i) + "]." + field +
                                     " must be an integer in the int range");
     }
@@ -1156,11 +1156,117 @@ bool normalizeTextureSamplerJson(nlohmann::json& json, const std::stop_token& st
     auto& texture = textures->at(i);
     const auto sampler = texture.find("sampler");
     if (sampler == texture.end()) continue;
-    const auto index = readInt(*sampler);
+    const auto index = normalizeSourceInteger(*sampler, rewritten);
     if (!index || *index < 0 || static_cast<size_t>(*index) >= samplerCount)
       throw std::invalid_argument("textures[" + std::to_string(i) +
                                   "].sampler must reference an existing sampler with a nonnegative int index");
   }
+  return rewritten;
+}
+
+// Validate the source extension before TinyGLTF can narrow its indices or
+// drop nulls and empty containers from extension arrays and objects.
+bool normalizeMaterialVariantsJson(nlohmann::json& json, const std::stop_token& stop) {
+  constexpr auto extensionName = "KHR_materials_variants";
+  const auto fail = [](const std::string& context, const std::string& message) {
+    throw std::invalid_argument("glTF material variants: " + context + ": " + message);
+  };
+  const auto declares = [&](const char* field) {
+    const auto names = json.find(field);
+    return names != json.end() && std::ranges::any_of(*names, [&](const auto& name) {
+      return name == extensionName;
+    });
+  };
+  const auto findExtension = [&](nlohmann::json& property) -> nlohmann::json* {
+    const auto extensions = property.find("extensions");
+    if (extensions == property.end()) return nullptr;
+    const auto extension = extensions->find(extensionName);
+    return extension == extensions->end() ? nullptr : &*extension;
+  };
+  const auto checkProperty = [&](const nlohmann::json& property, const std::string& context) {
+    if (!property.is_object()) fail(context, "must be an object");
+    if (const auto extensions = property.find("extensions");
+        extensions != property.end() && !extensions->is_object())
+      fail(context, "extensions must be an object");
+  };
+  const auto requiredArray = [&](nlohmann::json& property, const char* field,
+                                 const std::string& context) -> nlohmann::json& {
+    const auto array = property.find(field);
+    if (array == property.end() || !array->is_array() || array->empty())
+      fail(context, std::string(field) + " must be a nonempty array");
+    return *array;
+  };
+  bool rewritten = false;
+  const auto checkIndex = [&](nlohmann::json& value, size_t count, const std::string& context) {
+    const auto index = normalizeSourceInteger(value, rewritten);
+    if (!index || *index < 0 || static_cast<size_t>(*index) >= count)
+      fail(context, "must reference an existing entry with a nonnegative int index");
+    return *index;
+  };
+
+  const bool declared = declares("extensionsUsed");
+  auto* root = findExtension(json);
+  size_t variantCount = 0;
+  if (root) {
+    if (!declared) fail("root", "extension is missing from extensionsUsed");
+    checkProperty(*root, "root");
+    const auto& variants = requiredArray(*root, "variants", "root");
+    variantCount = variants.size();
+    for (size_t i = 0; i < variantCount; ++i) {
+      checkImportIteration(stop, i);
+      const auto& variant = variants[i];
+      const auto context = "variant " + std::to_string(i);
+      checkProperty(variant, context);
+      const auto name = variant.find("name");
+      if (name == variant.end() || !name->is_string()) fail(context, "name must be a string");
+    }
+  }
+
+  const auto materials = json.find("materials");
+  const size_t materialCount = materials != json.end() && materials->is_array() ? materials->size() : 0;
+  const auto meshes = json.find("meshes");
+  const size_t meshCount = meshes != json.end() && meshes->is_array() ? meshes->size() : 0;
+  for (size_t meshIndex = 0; meshIndex < meshCount; ++meshIndex) {
+    checkImportIteration(stop, meshIndex);
+    auto& mesh = (*meshes)[meshIndex];
+    const auto primitives = mesh.find("primitives");
+    if (primitives == mesh.end() || !primitives->is_array()) continue;
+    for (size_t primitiveIndex = 0; primitiveIndex < primitives->size(); ++primitiveIndex) {
+      checkImportIteration(stop, primitiveIndex);
+      auto& primitive = (*primitives)[primitiveIndex];
+      auto* extension = findExtension(primitive);
+      if (!root && !extension) continue;
+      const auto context = "mesh " + std::to_string(meshIndex) + " primitive " + std::to_string(primitiveIndex);
+      if (const auto material = primitive.find("material"); material != primitive.end())
+        checkIndex(*material, materialCount, context + " default material");
+      if (!extension) continue;
+      if (!declared) fail(context, "extension is missing from extensionsUsed");
+      if (!root) fail(context, "primitive mappings require a root variants table");
+      checkProperty(*extension, context);
+      auto& mappings = requiredArray(*extension, "mappings", context);
+      std::set<int> seen;
+      for (size_t mappingIndex = 0; mappingIndex < mappings.size(); ++mappingIndex) {
+        checkImportIteration(stop, mappingIndex);
+        auto& mapping = mappings[mappingIndex];
+        const auto mappingContext = context + " mapping " + std::to_string(mappingIndex);
+        checkProperty(mapping, mappingContext);
+        if (const auto name = mapping.find("name"); name != mapping.end() && !name->is_string())
+          fail(mappingContext, "name must be a string");
+        const auto material = mapping.find("material");
+        if (material == mapping.end()) fail(mappingContext, "material is required");
+        checkIndex(*material, materialCount, mappingContext + " material");
+        auto& variants = requiredArray(mapping, "variants", mappingContext);
+        for (size_t i = 0; i < variants.size(); ++i) {
+          checkImportIteration(stop, i);
+          const auto variant = checkIndex(variants[i], variantCount, mappingContext + " variant " + std::to_string(i));
+          if (!seen.insert(variant).second)
+            fail(mappingContext, "variant " + std::to_string(variant) + " is already mapped by this primitive");
+        }
+      }
+    }
+  }
+  if (!root && (declared || declares("extensionsRequired")))
+    fail("root", "declared extension requires a root variants table");
   return rewritten;
 }
 
@@ -1558,6 +1664,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
               const bool normalizedSamplerFields = normalizeTextureSamplerJson(json, stop);
               const bool omittedOptional = omitUnavailableOptionalExtensions(
                   json, requirements, unavailable, composing, stop);
+              const bool normalizedVariantIndices = normalizeMaterialVariantsJson(json, stop);
               bool discardedMicromaps = false;
               if (options.enableOpacityMicromaps) {
                 if (const auto invalid = ValidateGltfOpacityMicromapSourceJson(json)) {
@@ -1587,7 +1694,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
                     std::chrono::steady_clock::now().time_since_epoch().count()) + "_" +
                     std::to_string(sequence.fetch_add(1)) + "_";
                 bool rewritten = xmp->rewroteManifest() || normalizedLinkedManifest ||
-                    normalizedSamplerFields || discardedMicromaps || omittedOptional;
+                    normalizedSamplerFields || normalizedVariantIndices || discardedMicromaps || omittedOptional;
                 if (linkedContext) {
                   for (const auto* table : {"buffers", "images"}) {
                     auto records = json.find(table);

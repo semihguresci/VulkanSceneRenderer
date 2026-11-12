@@ -1768,6 +1768,71 @@ TEST_F(SceneMergeGenerationGpu,MaterialAppendPublishesNoncontiguousSourceRuntime
   stage={};EXPECT_EQ(allocations(),baseline);
 }
 
+TEST_F(SceneMergeGenerationGpu,VariantUndoRestoresSharedTangentsWithUnmappedInstance) {
+  auto asset=triangle("Shared variant tangents",91);
+  auto& source=asset.gltfModel;
+  auto& primitive=source.meshes[0].primitives[0];
+  primitive.attributes["NORMAL"]=cloneAccessor(source,std::array<float,9>{0,0,1,0,0,1,0,0,1},
+      TINYGLTF_TYPE_VEC3,TINYGLTF_COMPONENT_TYPE_FLOAT,3);
+  primitive.attributes["TEXCOORD_1"]=cloneAccessor(source,std::array<float,6>{0,0,0,1,1,0},
+      TINYGLTF_TYPE_VEC2,TINYGLTF_COMPONENT_TYPE_FLOAT,3);
+  source.materials.resize(3,source.materials[0]);
+  source.materials[0].normalTexture.index=0;
+  source.materials[0].normalTexture.texCoord=1;
+  source.materials[1].normalTexture.index=0;
+  source.nodes.push_back(source.nodes[0]);
+  source.scenes[0].nodes.push_back(1);
+  using V=tinygltf::Value;using O=V::Object;using A=V::Array;
+  source.extensionsUsed.push_back("KHR_materials_variants");
+  source.extensions["KHR_materials_variants"]=V(O{{"variants",V(A{V(O{{"name",V(std::string("UV0"))}})})}});
+  primitive.extensions["KHR_materials_variants"]=V(O{{"mappings",V(A{V(O{{"material",V(1)},
+      {"variants",V(A{V(0)})}})})}});
+  loadSource(std::move(asset));
+
+  const auto first=primitiveNode(sourceNode(0));
+  const auto second=primitiveNode(sourceNode(1));
+  ASSERT_LT(first,second);
+  ASSERT_NE(second,SceneGraph::kInvalidNode);
+  const auto runtime=graph.getNode(first)->primitiveIndex;
+  ASSERT_EQ(runtime,graph.getNode(second)->primitiveIndex);
+  const auto materials=manager->sourceMaterialRuntimeMapping();
+  ASSERT_EQ(materials.size(),3u);
+  graph.setMaterialIndex(second,materials[2]);
+  ASSERT_EQ(manager->retainedPrimitiveNormalTexCoord(runtime),std::optional<uint32_t>(1));
+  ASSERT_FALSE(manager->vertices().empty());
+  const auto originalTangent=manager->vertices().front().tangent;
+
+  const auto edit=manager->planMaterialVariant(graph,0);
+  ASSERT_TRUE(manager->applyMaterialVariant(graph,edit));
+  EXPECT_EQ(manager->retainedPrimitiveNormalTexCoord(runtime),std::optional<uint32_t>(0));
+  EXPECT_NE(manager->vertices().front().tangent,originalTangent);
+  EXPECT_EQ(graph.getNode(first)->materialIndex,materials[1]);
+  EXPECT_EQ(graph.getNode(second)->materialIndex,materials[1]);
+
+  ASSERT_TRUE(manager->applyMaterialVariant(graph,edit,false));
+  EXPECT_EQ(graph.getNode(first)->materialIndex,materials[0]);
+  EXPECT_EQ(graph.getNode(second)->materialIndex,materials[2]);
+  EXPECT_EQ(manager->retainedPrimitiveNormalTexCoord(runtime),std::optional<uint32_t>(1));
+  EXPECT_EQ(manager->vertices().front().tangent,originalTangent);
+
+  auto conflictingEdit=edit;
+  const auto secondAssignment=std::ranges::find_if(conflictingEdit.assignments,
+      [second](const auto& assignment){return assignment.node==second;});
+  ASSERT_NE(secondAssignment,conflictingEdit.assignments.end());
+  secondAssignment->after=materials[0];
+  const auto graphRevision=graph.revision();
+  const auto geometryRevision=manager->geometryRevision();
+  const auto materialRevision=manager->materialRevision();
+  EXPECT_THROW(manager->applyMaterialVariant(graph,conflictingEdit),std::runtime_error);
+  EXPECT_EQ(graph.revision(),graphRevision);
+  EXPECT_EQ(manager->geometryRevision(),geometryRevision);
+  EXPECT_EQ(manager->materialRevision(),materialRevision);
+  EXPECT_EQ(manager->selectedMaterialVariant(),std::nullopt);
+  EXPECT_EQ(graph.getNode(first)->materialIndex,materials[0]);
+  EXPECT_EQ(graph.getNode(second)->materialIndex,materials[2]);
+  EXPECT_EQ(manager->vertices().front().tangent,originalTangent);
+}
+
 TEST_F(SceneMergeGenerationGpu,MaterialDuplicateExtendsVariantAuthorityAndExportsBothExistingMappingsAndNewResource) {
   using namespace container::geometry::gltf;
   auto asset=triangle("Variant append",91);auto& source=asset.gltfModel;using V=tinygltf::Value;using O=V::Object;using A=V::Array;
