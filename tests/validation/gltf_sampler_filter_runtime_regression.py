@@ -185,8 +185,17 @@ def verify_saved_shared_policies(path, expected):
     model = read_model(path)
     sources = []
     for name, policy in zip(SHARED_PROBE_NAMES, expected, strict=True):
-        node, = (node for node in model['nodes'] if node.get('name') == name)
-        primitive, = model['meshes'][node['mesh']]['primitives']
+        probe, = (index for index, node in enumerate(model['nodes']) if node.get('name') == name)
+        pending, visited, primitives = [probe], set(), []
+        while pending:
+            index = pending.pop()
+            require(index not in visited, f'Saved probe {name} has a repeated node')
+            visited.add(index)
+            node = model['nodes'][index]
+            if 'mesh' in node:
+                primitives.extend(model['meshes'][node['mesh']]['primitives'])
+            pending.extend(node.get('children', []))
+        primitive, = primitives
         material = model['materials'][primitive['material']]
         texture = model['textures'][material['pbrMetallicRoughness']['baseColorTexture']['index']]
         sampler = model['samplers'][texture['sampler']]

@@ -46,3 +46,30 @@ See [glTF image ingestion](gltf-texture-ingestion.md) for encoded-source
 selection and color/data roles. Raster derivatives select texture mips.
 The hard-ray and DDGI smoke cases check execution of the sampling paths and
 descriptor compatibility. [Ray texture footprints](reference-path-tracing.md)
+
+## Release regression
+
+Set `$build` to a Release build directory and `VK_LAYER_PATH` to the installed
+Khronos validation layer if it is outside the Vulkan loader's search path.
+These captures use synchronization validation.
+
+```powershell
+python -B tests/validation/gltf_sampler_filter_runtime_regression.py --renderer "$build/VulkanSceneRenderer.exe" --output out/sampler-live --case sampler-edit
+python -B tests/validation/gltf_sampler_filter_runtime_regression.py --renderer "$build/VulkanSceneRenderer.exe" --output out/sampler-filter --roundtrip --ray-smoke --case mag --case min --case shared --case transparent --case mask --case edit
+python -B tests/validation/material_sampler_runtime_regression.py "$build/VulkanSceneRenderer.exe" out/sampler-dense --ray-smoke
+```
+
+The live-edit fixture holds the image and wrap modes constant. It changes
+the filters on one probe, checks the other probe's binding and pixels, and
+replays undo and redo. An explicit-to-omitted edit keeps the same effective
+sampler slot and pixels. The saved GLB omits both filter fields for that
+binding and reloads with the same pixels in each raster technique.
+
+The November 12, 2026 Release run on an RTX 2080 SUPER passed 124 checks
+across 148 native captures. All 48 save/reload pairs matched pixel for pixel.
+The twelve-policy fixture reached twelve distinct sampler slots on one source
+image, with the default at slot zero. Both raster paths also completed the
+hard-ray and DDGI smoke cases. Nine focused CTest targets and the two staged
+sample-loader cases passed, totaling 208 C++ cases. Ten sampler consumer and
+contract shaders passed Vulkan 1.4 SPIR-V validation.
+[Release sampler results](../tests/visual-regression/samplers/windows-nvidia/sampler-filter-results.json)
