@@ -131,7 +131,7 @@ and portable save. [Pinned renderer](https://github.com/nvpro-samples/vk_gltf_re
 | --- | --- |
 | `KHR_materials_retroreflection` | `retroreflectionFactor` defaults to zero and is multiplied by the linear R texture channel. |
 | `KHR_materials_scatter` | `scatterStrengthFactor` defaults to zero and is multiplied by the linear A texture channel. `multiscatterColorFactor` defaults to white and multiplies the sRGB-decoded RGB texture. `scatterAnisotropy` defaults to zero and lies strictly between −1 and 1. |
-| `KHR_materials_volume_scatter` | Legacy alias. Strength defaults to one and color to black. `multiscatterColor` is accepted. The current extension takes precedence when both names are authored. |
+| `KHR_materials_volume_scatter` | Legacy alias. Strength defaults to one and color to black. `multiscatterColor` is accepted. The current extension takes precedence when both layers are valid. |
 
 The three texture slots support individual samplers, UV0/UV1 and texture
 transforms. The path tracer mixes the ordinary front-side BRDF with its
@@ -148,6 +148,10 @@ absorption when active draft scattering or retroreflection reaches a closed
 volume. It reports the skipped layer in the renderer log and raw EXR metadata.
 Raster and DDGI use the existing base-material response. The tracer's other
 layer limits still apply. [Participating-media transport (#47)](https://github.com/semihguresci/VulkanSceneRenderer/issues/47)
+
+The [Windows validation report](../tests/visual-regression/gltf-experimental-materials/windows-nvidia/gltf-experimental-materials-results.json)
+records the fallback checks and fixed-lighting comparisons against NVIDIA's
+[v2026.11 release](https://github.com/nvpro-samples/vk_gltf_renderer/releases/tag/v2026.11).
 
 ## Export, animation and validation
 
