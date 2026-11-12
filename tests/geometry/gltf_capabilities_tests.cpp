@@ -651,6 +651,77 @@ TEST(GltfCapabilitiesLoader, MalformedCoreIndicesCannotAliasSkippedAlternateImag
   }
 }
 
+TEST(GltfCapabilitiesLoader, RejectsMalformedSamplerReferencesBeforeResourceReads) {
+  AssetFixture fixture;
+  auto json = fixture.triangle();
+  json["images"] = {{{"uri", "missing-sampler-test.png"}}};
+  json["textures"] = {{{"source", 0}}};
+  json["samplers"] = {{{"minFilter", 9728}}};
+  const std::array invalidReferences{
+      nlohmann::json(uint64_t{1} << 32), nlohmann::json(1), nlohmann::json(-1),
+      nlohmann::json(0.5), nlohmann::json("0"), nlohmann::json(nullptr)};
+  for (bool binary : {false, true}) {
+    for (const auto& invalid : invalidReferences) {
+      json["textures"][0]["sampler"] = invalid;
+      const auto path = fixture.save(json, binary);
+      expectLoadError([&] { (void)gltf::LoadModelWithSource(path.string()); }, path,
+                      "textures[0].sampler");
+    }
+  }
+  json.erase("samplers");
+  json["textures"][0]["sampler"] = 0;
+  const auto path = fixture.save(json);
+  expectLoadError([&] { (void)gltf::LoadModelWithSource(path.string()); }, path,
+                  "textures[0].sampler");
+}
+
+TEST(GltfCapabilitiesLoader, RejectsSamplerFieldsThatCouldBeNarrowedOrIgnored) {
+  AssetFixture fixture;
+  auto json = fixture.triangle();
+  json["images"] = {{{"uri", "missing-sampler-test.png"}}};
+  json["textures"] = {{{"source", 0}, {"sampler", 0}}};
+  const auto invalidFields = nlohmann::json{
+      {"minFilter", (uint64_t{1} << 32) + 9728}, {"magFilter", "9728"},
+      {"wrapS", int64_t{10497} - (int64_t{1} << 32)}, {"wrapT", 10497.5}};
+  for (bool binary : {false, true}) {
+    for (const auto& [field, invalid] : invalidFields.items()) {
+      json["samplers"] = {{{field, invalid}}};
+      const auto path = fixture.save(json, binary);
+      expectLoadError([&] { (void)gltf::LoadSourceModel(path.string()); }, path,
+                      "samplers[0]." + field);
+    }
+  }
+}
+
+TEST(GltfCapabilitiesLoader, PreservesAuthoredAndOmittedSamplerMetadata) {
+  AssetFixture fixture;
+  auto json = fixture.triangle();
+  json["images"] = {{{"uri", kEmbeddedRedPng}}};
+  json["textures"] = {{{"source", 0}, {"sampler", 0.0}}, {{"source", 0}, {"sampler", 1}},
+                       {{"source", 0}, {"sampler", 2}}, {{"source", 0}}};
+  json["samplers"] = {{{"minFilter", 9986.0}, {"magFilter", 9728}, {"wrapS", 33071.0}, {"wrapT", 33648}},
+                      {{"minFilter", 123}}, nlohmann::json::object()};
+  for (bool binary : {false, true}) {
+    const auto path = fixture.save(json, binary);
+    const auto source = gltf::LoadSourceModel(path.string());
+    ASSERT_EQ(source.samplers.size(), 3u);
+    ASSERT_EQ(source.textures.size(), 4u);
+    EXPECT_EQ(source.textures[0].sampler, 0);
+    EXPECT_EQ(source.textures[1].sampler, 1);
+    EXPECT_EQ(source.textures[2].sampler, 2);
+    EXPECT_EQ(source.textures[3].sampler, -1);
+    EXPECT_EQ(source.samplers[0].minFilter, 9986);
+    EXPECT_EQ(source.samplers[0].magFilter, 9728);
+    EXPECT_EQ(source.samplers[0].wrapS, 33071);
+    EXPECT_EQ(source.samplers[0].wrapT, 33648);
+    EXPECT_EQ(source.samplers[1].minFilter, 123);
+    EXPECT_EQ(source.samplers[2].minFilter, -1);
+    EXPECT_EQ(source.samplers[2].magFilter, -1);
+    EXPECT_EQ(source.samplers[2].wrapS, 10497);
+    EXPECT_EQ(source.samplers[2].wrapT, 10497);
+  }
+}
+
 TEST(GltfCapabilitiesLoader, UnreferencedOrdinaryImagesKeepDefaultDecodingBehavior) {
   AssetFixture fixture;
   auto json = alternateTextureAsset(fixture, kAlternateImages[0]);

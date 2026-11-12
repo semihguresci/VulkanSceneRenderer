@@ -55,6 +55,10 @@ class VulkanDevice;
 struct AllocatedBuffer;
 }  // namespace container::gpu
 
+namespace container::material {
+struct MaterialTextureSamplerDescription;
+}
+
 namespace container::scene {
 class SceneGraph;
 }  // namespace container::scene
@@ -241,12 +245,19 @@ class SceneManager {
   [[nodiscard]] PreparedMaterialResources prepareMaterialTextureFile(
       int32_t sourceMaterial, const std::filesystem::path&, MaterialTextureRoles,
       uint32_t samplerKey = 0, const MaterialResourcesLimits& = {}) const;
+  // Authoring keeps omitted filters independently of the canonical GPU key.
+  [[nodiscard]] PreparedMaterialResources prepareMaterialTextureFileWithAuthoredSampler(
+      int32_t sourceMaterial, const std::filesystem::path&, MaterialTextureRoles,
+      const container::material::MaterialTextureSamplerDescription&, const MaterialResourcesLimits& = {}) const;
   [[nodiscard]] PreparedMaterialResources prepareMaterialTextureBytes(
       int32_t sourceMaterial, const std::string& name, std::span<const std::byte>,
       MaterialTextureRoles, uint32_t samplerKey = 0, const MaterialResourcesLimits& = {}) const;
   [[nodiscard]] PreparedMaterialResources prepareMaterialTextureSource(
       int32_t sourceMaterial, uint32_t authoredTexture, MaterialTextureRoles,
       std::optional<uint32_t> samplerKey = std::nullopt, const MaterialResourcesLimits& = {}) const;
+  [[nodiscard]] PreparedMaterialResources prepareMaterialTextureSourceWithAuthoredSampler(
+      int32_t sourceMaterial, uint32_t authoredTexture, MaterialTextureRoles,
+      const container::material::MaterialTextureSamplerDescription&, const MaterialResourcesLimits& = {}) const;
   [[nodiscard]] PreparedMaterialResources prepareMaterialResourcesChange(
       const MaterialResourceCommand&, bool forward, const MaterialResourcesLimits& = {}) const;
   [[nodiscard]] bool canExchangeMaterialResources(const PreparedMaterialResources&) const noexcept;
@@ -924,6 +935,11 @@ class SceneManager {
       const container::geometry::gltf::AnimationPlayer*,const MaterialGenerationLimits&) const;
   [[nodiscard]] PreparedMaterialResources prepareMaterialResourcesBase(
       int32_t sourceMaterial, const MaterialResourcesLimits&,bool resourceOnly=false) const;
+  [[nodiscard]] PreparedMaterialResources prepareMaterialTextureSource(
+      int32_t sourceMaterial, uint32_t authoredTexture, MaterialTextureRoles,
+      std::optional<uint32_t> samplerKey,
+      const container::material::MaterialTextureSamplerDescription* authoredSampler,
+      const MaterialResourcesLimits&) const;
   uint32_t queryTextureDescriptorCapacity() const;
   uint32_t queryMaterialSamplerDescriptorCapacity() const;
   void validateMaterialSamplerPolicies(std::span<const container::material::MaterialSamplerKey> keys) const;
@@ -1223,7 +1239,8 @@ class SceneManager::PreparedMaterialResources {
   std::unique_ptr<State> state_;
   void prepareSource(std::optional<uint32_t> source, const std::string& request,
       const std::string& name, std::span<const std::byte> bytes, MaterialTextureRoles,
-      std::optional<uint32_t> sampler);
+      std::optional<uint32_t> sampler,
+      const container::material::MaterialTextureSamplerDescription* authoredSampler = nullptr);
   void finishPreparation();
 };
 
