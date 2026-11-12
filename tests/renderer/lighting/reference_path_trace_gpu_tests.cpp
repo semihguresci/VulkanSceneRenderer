@@ -1994,9 +1994,13 @@ TEST_F(ReferencePathTraceGpu, CameraInsideVolumeAttenuatesOpaqueHitsBeforeItsExi
   save(pixels,"volume-camera-inside");
   glass.experimentalFactors.y=.5f;
   syncInputs();
-  EXPECT_EQ(render().roi(2),glm::dvec3(1,0,1));
-  EXPECT_GT(tracer->diagnostics(0).unsupportedSamples,0);
-  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples,0);
+  EXPECT_EQ(converge().images, pixels.images);
+  const auto diagnostics = tracer->diagnostics(0);
+  using Diagnostics = ReferencePathTraceDiagnostics;
+  EXPECT_EQ(diagnostics.unsupportedSamples, 0u);
+  EXPECT_EQ(diagnostics.rejectedSamples, 0u);
+  EXPECT_EQ(diagnostics.failureStages & Diagnostics::kExperimentalMaterialFallbackMask,
+            Diagnostics::kClosedVolumeScatterFallback);
 }
 TEST_F(ReferencePathTraceGpu, NestedVolumesRestoreOuterAbsorptionAcrossDifferentMaterials) {
   for(auto& vertex:vertices) vertex.position.z=-1;++revision;
