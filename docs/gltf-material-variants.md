@@ -19,17 +19,25 @@ saves that appearance with the full named variant table.
 
 ## Parsing and selection
 
+The GLTF and GLB loader checks the source JSON before reading dependent buffers
+or images. It validates variant table and mapping shapes, index bounds and
+duplicate assignments before TinyGLTF converts extension values. Integral
+decimal and exponent encodings are normalized to integers. A mapping error
+identifies the asset, mesh, primitive, mapping and offending field when
+applicable. An active consumer that omits the optional extension loads the
+core materials without interpreting that extension's payload.
+
 `ParseMaterialVariants(source)` builds an immutable library. It records the
 source mesh/primitive identity, authored default, named variant indices and
-sparse material mappings. It checks root/primitive extension shapes, required
-fields, table bounds, material IDs and duplicate variant assignments across a
-primitive's complete mapping array. Diagnostics include the offending mesh,
-primitive and mapping. A failure does not modify the source model or resources.
+sparse material mappings. Its in-memory validation also checks extension
+shapes, required fields, table bounds, material IDs and duplicate assignments
+for models supplied directly by callers.
 
-Variant identity is its source array index. Names are presentation strings:
-duplicate names and empty names are legal in the ratified schema. A selector
-must use stable index IDs even when labels match. Default is a separate
-`std::nullopt` selection; named variant index zero is the first variant.
+Variant identity is its source array index. The ratified schema permits
+duplicate and empty names. The Scene Browser uses the index to distinguish
+matching labels and displays `##` and `###` literally in names and previews.
+Empty names appear as **Unnamed variant**. Default is a separate `std::nullopt`
+selection, and named variant index zero is the first variant.
 
 `planMaterialVariantSelection(library, selection, sourceMaterialToRuntime,
 implicitDefaultRuntime)` validates the selection and complete material
@@ -85,6 +93,13 @@ authored tangents remain intact. The geometry revision triggers matching GPU
 bind/current/previous stream rebuilds and ray/probe/temporal invalidation;
 undo/redo resolves and regenerates the restored UV policy too.
 
+All instances of a source primitive share its generated tangent frame. A normal
+map constrains the shared UV set, even when other instances use materials with
+no normal map. If none of the instances use a normal map, the generated frame
+uses UV0. If the assignments to apply or restore require conflicting UV sets
+on a shared primitive, the edit fails before publishing geometry or material
+assignments.
+
 ## Save and reload policy
 
 Saving retains the **current rendered material assignment** in each exported
@@ -98,9 +113,11 @@ session, its imported defaults and undo history remain stable.
 per-primitive mapping metadata onto rebuilt output primitives. It remaps
 alternate material IDs through the complete exported material table, supports
 multiple emitted instances of one source primitive, and leaves current core
-material assignments untouched. Unknown root/variant/mapping extras and
-extensions, mapping order and variant indices are preserved. Validation and
-allocation of replacement metadata finish before the destination is changed.
+material assignments untouched. The export preserves mapping order and variant
+indices and copies root, variant and mapping extras and extensions retained by
+TinyGLTF. When importing opaque metadata, TinyGLTF can omit nulls and empty
+containers or narrow large integers. Validation and allocation of replacement
+metadata finish before the destination is changed.
 
 The export caller must supply the source-to-emitted primitive map and retain all
 alternate material resources. Materials edited while one variant is active must
@@ -115,24 +132,58 @@ defaults, repeated switching, shared material identity, one mapping selecting
 several variants, duplicate/empty names, malformed declarations and tables,
 duplicate/bounds failures, missing alternate material translations, metadata
 remapping, instanced primitives, atomic failure and ASCII glTF/GLB reload with
-saved appearance/default policy and unchanged resource bytes. Native GPU
-invalidation and UI behavior use scene-manager integration checks. The native
-`gltf_material_variants_runtime_regression.py` generates independent analytical
-static/skin/morph frame oracles and multi-primitive shared-instance alpha/culling
-oracles. Its sequences switch, undo, redo, restore defaults, and save/reload the
-selected appearance. Deferred classification captures also enable ray queries
-and DDGI. Reports record renderer hashes, pixels, semantic state and validation
-logs; generation alone does not claim native validation.
+saved appearance/default policy and unchanged resource bytes. Source loader
+fixtures exercise integral and malformed indices, optional consumer fallback
+and rejection before buffer reads in both formats. The Scene Browser and
+scene-manager integration tests exercise literal labels, shared-instance
+tangent restoration and atomic rejection of conflicting tangent UVs.
 
-The validated checkpoint in
-`out/feature-parity/material-variants-runtime-data-uri/results.json` passes 105 native
+The native harness compares rendered frames with independent analytical
+static/skin/morph tangent and shared-instance alpha/culling fixtures. Its
+sequences switch variants, undo, redo, restore defaults, save and reload the
+selected appearance, and select a retained variant after export. It checks
+recovery from a malformed replacement followed by a valid reload. Deferred
+classification captures exercise ray queries and DDGI. The output directory
+contains `results.json`, captured pixels, renderer telemetry and Vulkan
+validation logs.
+
+From the repository root, build and run the focused tests and native harness.
+The example uses the Windows Release build directory configured with
+`ENABLE_WINDOWED_TESTS=ON`. The native run requires Python with NumPy and
+Pillow, a Vulkan device with ray-query support, and `VK_LAYER_KHRONOS_validation`.
+
+```powershell
+$build = 'out/build/windows-release'
+cmake --build $build --target VulkanSceneRenderer gltf_capabilities_tests `
+  gltf_material_variants_tests gltf_primitive_frame_variants_tests scene_hierarchy_ui_tests `
+  scene_graph_tests scene_edit_history_tests temporal_capture_tests scene_merge_generation_gpu_tests
+$env:CONTAINER_RUN_GPU_SCENE_MERGE = '1'
+ctest --test-dir $build --output-on-failure -R '^(gltf_capabilities_tests|gltf_material_variants_tests|gltf_primitive_frame_variants_tests|scene_hierarchy_ui_tests|scene_graph_tests|scene_edit_history_tests|temporal_capture_tests|scene_merge_generation_gpu_tests)$'
+python tests/validation/gltf_material_variants_runtime_regression.py `
+  --renderer "$build/VulkanSceneRenderer.exe" `
+  --output out/validation/gltf-material-variants
+```
+
+Add `--generate-only` to generate fixtures and a report with
+`nativeValidationPerformed` set to `false`.
+
+The November 12, 2026 Release run on an NVIDIA GeForce RTX 2080 SUPER passed
+445 test cases without skips and 94 pixel-exact checks across 120 native
+captures. Vulkan and synchronization validation reported zero errors. The
+report records the tested renderer revision, selective assignments, portable
+exports, and malformed reload recovery.
+[Windows NVIDIA verification report](../tests/visual-regression/variants/windows-nvidia/material-variant-results.json).
+
+The October 25, 2026 checkpoint in
+`out/feature-parity/material-variants-runtime-data-uri/results.json` recorded 105 native
 captures and 81 checks with pixel-exact results on renderer
 `ab019867be34735e8cce236442f2508b86b8eaddba42719d8f30b306ccf62cc2`.
-It covers both raster techniques, deferred normal output, static/skin/morph UV
+That run covered both raster techniques, deferred normal output, static/skin/morph UV
 changes, undo/redo/default restoration, CLI selection, GLB/ASCII save and reload,
 shared primitive instances, alpha/culling classification, temporal epochs,
 ray scene refresh and active DDGI. All 94 executable/shader manifest entries
-remain unchanged and no Vulkan or synchronization validation errors occur.
+were unchanged and the run reported zero Vulkan or synchronization validation
+errors.
 
 Primary references: [ratified specification](https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_materials_variants/README.md),
 [root schema](https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_materials_variants/schema/glTF.KHR_materials_variants.schema.json),

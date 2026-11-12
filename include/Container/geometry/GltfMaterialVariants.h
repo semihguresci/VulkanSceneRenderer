@@ -115,8 +115,8 @@ struct MaterialVariantExportPrimitive {
 // Copies/remaps only variant extension metadata onto rebuilt exported meshes.
 // Current destination primitive.material values are preserved: a saved selected
 // appearance becomes the reloaded file's Default. Root names, mapping order and
-// all unknown extras/extensions are retained. Multiple emitted instances may
-// reference one source primitive. Validation completes before any mutation.
+// extras/extensions present in the source model are retained. Multiple emitted
+// instances may reference one source primitive. Validation precedes mutation.
 void CopyMaterialVariantMetadataForExport(
     tinygltf::Model& destination,const MaterialVariantLibrary& library,
     std::span<const int32_t> sourceMaterialToExport,

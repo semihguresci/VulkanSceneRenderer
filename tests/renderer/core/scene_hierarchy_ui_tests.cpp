@@ -144,6 +144,50 @@ protected:
 
 } // namespace
 
+TEST_F(HierarchyWidgetsTests, MaterialVariantSelectorKeepsIndexedNamesAndRestoresDefault) {
+  container::ui::GuiManager gui;
+  auto &state = gui.materialVariantControls();
+  state.names = {"Shared name", "Shared name", "", "Look ## with suffix"};
+  ImVec2 comboPoint, resetPoint;
+  bool logPreview = false;
+  std::string preview;
+  const auto draw = [&] {
+    const auto start = ImGui::GetCursorScreenPos();
+    comboPoint = ImVec2(start.x + 30.0f, start.y + ImGui::GetFrameHeight() * 0.5f);
+    if (logPreview) ImGui::LogToBuffer();
+    gui.drawMaterialVariantSelector();
+    if (logPreview) {
+      preview = context_->LogBuffer.c_str();
+      ImGui::LogFinish();
+    }
+    const auto minimum = ImGui::GetItemRectMin();
+    const auto maximum = ImGui::GetItemRectMax();
+    resetPoint = ImVec2((minimum.x + maximum.x) * 0.5f, (minimum.y + maximum.y) * 0.5f);
+  };
+  frame(draw);
+  frame(draw);
+  for (int index : {0, 1, 2, 3}) {
+    click(draw, comboPoint);
+    ASSERT_FALSE(context_->OpenPopupStack.empty());
+    const auto *popup = context_->OpenPopupStack.back().Window;
+    ASSERT_NE(popup, nullptr);
+    const auto origin = popup->DC.CursorStartPos;
+    const float rowHeight = ImGui::GetTextLineHeightWithSpacing();
+    click(draw, ImVec2(origin.x + 20.0f, origin.y + rowHeight * (float(index) + 1.5f)));
+    ASSERT_EQ(state.requested, index);
+    state.selected = index;
+    state.requested.reset();
+    if (index >= 2) {
+      logPreview = true;
+      frame(draw);
+      logPreview = false;
+      EXPECT_NE(preview.find(index == 2 ? "Unnamed variant" : "Look ## with suffix"), std::string::npos);
+    }
+  }
+  click(draw, resetPoint);
+  EXPECT_EQ(state.requested, -1);
+}
+
 namespace {
 
 container::renderer::PhysicsDemoNodes makeDemoNodes(SceneGraph &graph) {

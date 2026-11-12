@@ -954,6 +954,7 @@ public:
   void queueResourceRetirementRequest(ResourceRetirementRequest);
   [[nodiscard]] std::optional<ResourceRetirementRequest> consumeResourceRetirementRequest();
   void drawResourceCatalog();
+  void drawMaterialVariantSelector();
   void drawBimElementBrowser(const BimInspectionState &inspection);
   [[nodiscard]] const BimElementSearchCache &bimElementSearchCache() const {
     return bimElementSearchCache_;
