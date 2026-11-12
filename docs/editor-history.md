@@ -65,3 +65,11 @@ deferred raster replay, selection, geometry reuse, and publication to TAA, DDGI
 and ray acceleration. `tests/validation/physics_pending_edit_regression.py
 --case transform-history` verifies a Jolt collider stays aligned with its node
 through transform, reparent, replay and reload in a physics-enabled build.
+
+The Windows x64 Release build at `d44d3c6` passed 1,276 cases in 42 suites and
+378 native captures on an NVIDIA GeForce RTX 2080 SUPER with Jolt enabled.
+The Khronos synchronization validation layer ran in all 54 capture processes.
+The visibility sequence recorded one TAA epoch and one DDGI reset per direct
+edit, undo and redo. Ray acceleration instance counts followed `3, 2, 3, 2`.
+The additional node, material and resource authoring captures used deferred
+raster. [Verification results](../tests/visual-regression/editor-history/windows-nvidia/editor-history-results.json)

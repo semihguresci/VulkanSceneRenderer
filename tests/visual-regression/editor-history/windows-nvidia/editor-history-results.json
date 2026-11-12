@@ -1,0 +1,329 @@
+{
+  "schemaVersion": 1,
+  "rendererRevision": "d44d3c6fb57a4043ea1afd63e223f03a5e4c58eb",
+  "rendererSha256": "e5fb934fec55ea121d30fe45f49f9089e28a755158373b3858fd28afb2066a5e",
+  "rendererManifestSha256": "2e8f97e66213ed7dbc6b9e1accf6b659cb268b5398620d68bd93d1e756c459ce",
+  "rendererManifestEntries": 162,
+  "platform": "Windows x64",
+  "configuration": "Release",
+  "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+  "driverVersion": 2559967232,
+  "vulkanApiVersion": 4211029,
+  "vulkanValidationLayer": "1.4.363.1",
+  "vulkanSynchronizationValidation": true,
+  "physics": "Jolt 5.6.0 (e77f175595e64cb44218cc9d9d56fc365ad0e36a)",
+  "ctestCases": 1276,
+  "ctest": [
+    {
+      "target": "edit_history_tests",
+      "cases": 14,
+      "xmlSha256": "bb8bda8fc2f8b06241bcbafa8f01fc9a4d96a5e9cb12aa50c73081c0a3b73be7"
+    },
+    {
+      "target": "scene_edit_history_tests",
+      "cases": 40,
+      "xmlSha256": "0d099685fcd78c96873521b09bb0d269d0e47d7d90cd2f6f9bf8c3136b40c368"
+    },
+    {
+      "target": "scene_graph_edit_tests",
+      "cases": 45,
+      "xmlSha256": "181086173376d6697f7d763941770b10206e067e2e9424740eac009762eeb420"
+    },
+    {
+      "target": "scene_graph_tests",
+      "cases": 49,
+      "xmlSha256": "5435238eef835e9120af3157dbec4aa21c8f4fe5c0de3b876d389155671bba80"
+    },
+    {
+      "target": "scene_hierarchy_ui_tests",
+      "cases": 41,
+      "xmlSha256": "abc5622f553007009eb8644f6b4f0fcf2af4b060744cf30cff15b7e99ef589d0"
+    },
+    {
+      "target": "scene_node_authoring_policy_tests",
+      "cases": 16,
+      "xmlSha256": "ed5826b783ebd7c42d3ab6072419d4d5241e3f459811748f523ec52bc048dc6c"
+    },
+    {
+      "target": "gui_scene_node_authoring_tests",
+      "cases": 4,
+      "xmlSha256": "516d36ed392c82f14c3e26a11771b77fbe3fe4032eb2111f64ba3b264d728ac5"
+    },
+    {
+      "target": "scene_node_lifetime_tests",
+      "cases": 13,
+      "xmlSha256": "3b9427732ad1647329512edc746dad39b24c9dd2712b004d93152c37bcc5b507"
+    },
+    {
+      "target": "scene_primitives_tests",
+      "cases": 8,
+      "xmlSha256": "4cec81c8b14d73c8f379d3b4216edf1e5e9215ade0c1b531d37f5e5214de6a76"
+    },
+    {
+      "target": "deferred_transform_gizmo_tests",
+      "cases": 3,
+      "xmlSha256": "775dda142ce9f6931beb04e9d479bb414a4b24a0cb4ebf49fce37fbbe7646073"
+    },
+    {
+      "target": "gltf_node_flags_tests",
+      "cases": 8,
+      "xmlSha256": "ed23f189e3ab9b3289890399a17f01ba74e387db180b5800de0c37a0240f34ae"
+    },
+    {
+      "target": "gltf_subtree_clone_tests",
+      "cases": 14,
+      "xmlSha256": "24f9e234bbd242c4254a718b962c7ecf3e21778da367dcd139a7e58843109482"
+    },
+    {
+      "target": "gltf_projected_subtree_clone_tests",
+      "cases": 12,
+      "xmlSha256": "2a952d5766479092c7365124ef7a82b2f9b2f6f039dcac916724e80f8dc391aa"
+    },
+    {
+      "target": "scene_light_export_tests",
+      "cases": 49,
+      "xmlSha256": "48e020a8a2d39bfab56935fde7c62c44ac6c8bc1bee9835f63d5f6ae4d16986b"
+    },
+    {
+      "target": "physics_scene_tests",
+      "cases": 76,
+      "xmlSha256": "134712e46debe1f12fe85f29040143dd20ce2142514a71ae200c9f2584279c3a"
+    },
+    {
+      "target": "physics_world_tests",
+      "cases": 61,
+      "xmlSha256": "1fbacca456ad68f8360165a8f246a31a5c9d6a208ee61de9c54cc91e059434b6"
+    },
+    {
+      "target": "physics_element_bindings_tests",
+      "cases": 24,
+      "xmlSha256": "8e21536d997bdf59a7c8047c46c87f2c025d975ee692d8650bb5c6c22112eca9"
+    },
+    {
+      "target": "physics_controls_widget_tests",
+      "cases": 27,
+      "xmlSha256": "5765f416da263d231520c96132025f019d0c14e73d4082130dbfa989c8039133"
+    },
+    {
+      "target": "light_edit_controls_tests",
+      "cases": 14,
+      "xmlSha256": "aaf2b4499c8315ab068e2acb9e93c2c49cc53cf12fd3e49e165ac6837f5e5aa0"
+    },
+    {
+      "target": "light_edit_receipt_tests",
+      "cases": 24,
+      "xmlSha256": "c73803b715dbc5b4f3d5eaa6e4e637fff86fdb7bc915d290e1038a031c1c6204"
+    },
+    {
+      "target": "light_edit_cache_tests",
+      "cases": 10,
+      "xmlSha256": "3de758b58c84b5c63074a188a89d555ce4b22d25cd3930330d519fc868a1a2f7"
+    },
+    {
+      "target": "input_manager_tests",
+      "cases": 4,
+      "xmlSha256": "fe710b472c0c2d51ffd0151cf7413f8ede937ab8c766330823222435beb35741"
+    },
+    {
+      "target": "transform_gesture_lifecycle_tests",
+      "cases": 7,
+      "xmlSha256": "114e6ed041d3dbbf2eb4c5a8e91ffe578ab437d9c01018ae19348c173321b576"
+    },
+    {
+      "target": "light_edit_generation_gpu_tests",
+      "cases": 12,
+      "xmlSha256": "dee89563f1484eddb97c0f1f64fa59ae896ce460b5a246dc9d6d88a2e414ef0f"
+    },
+    {
+      "target": "lighting_generation_gpu_tests",
+      "cases": 7,
+      "xmlSha256": "87119cd8b7af15833b3e234ab30a13a4d2f58a0560205fdec852cd9535f57de2"
+    },
+    {
+      "target": "material_binding_authoring_tests",
+      "cases": 26,
+      "xmlSha256": "e0d1e73ee5b505ffd94c864ed46af626f035826acf128e370bcc46aa2ac67724"
+    },
+    {
+      "target": "gui_material_authoring_tests",
+      "cases": 56,
+      "xmlSha256": "a7f4995303741461479f48e9bebb59d7be7268705481c228bf5db8c44859a472"
+    },
+    {
+      "target": "gltf_material_authoring_tests",
+      "cases": 55,
+      "xmlSha256": "ba05e19d0d2b91acb47eb04288ecb15a79abc17182be6afba7e53576a441d2ce"
+    },
+    {
+      "target": "gltf_runtime_material_authoring_tests",
+      "cases": 24,
+      "xmlSha256": "09c952606be26506c31cc93c977de8c5b395347e6841f8576976b5ef66f780fb"
+    },
+    {
+      "target": "gltf_material_texture_authoring_tests",
+      "cases": 39,
+      "xmlSha256": "6de59625e456b084995f17c041cf8b9e13a3b4bd1f0bf38fe4cb1c8deca776fc"
+    },
+    {
+      "target": "resource_lifecycle_tests",
+      "cases": 65,
+      "xmlSha256": "a7c1db7a15c2f8a17c54356fe795c9ffe32ed228e780817dc60efe6dacbbbb83"
+    },
+    {
+      "target": "texture_resource_lifecycle_tests",
+      "cases": 52,
+      "xmlSha256": "e08fccea7a01fa737b55c3d180e8aea1de4b05dc5a0eed584c9edc53ef73ba1b"
+    },
+    {
+      "target": "material_tail_references_tests",
+      "cases": 24,
+      "xmlSha256": "3e8e6ec097438dca659bbaf7db943c6d1420f09447e2cfbcee30a0e84e1e7084"
+    },
+    {
+      "target": "material_texture_generation_gpu_tests",
+      "cases": 38,
+      "xmlSha256": "04c827007576cbc573f3344fc34bed43f8e5c5c38881662f836c714964bcfd9d"
+    },
+    {
+      "target": "material_retirement_generation_gpu_tests",
+      "cases": 11,
+      "xmlSha256": "96b4edaf49abd4c59e5afa2a1546a323c7d3c0d66955727c545b98a4d57fac9d"
+    },
+    {
+      "target": "source_resource_retirement_gpu_tests",
+      "cases": 19,
+      "xmlSha256": "6762400d38786550ee32b56bff274026e6ac33e7db75e66652f824327b08558b"
+    },
+    {
+      "target": "gltf_camera_pose_authoring_tests",
+      "cases": 23,
+      "xmlSha256": "2fc0c71002a4df3ec882cdffd12a1a2360ede9461abe683cadaa2838c3b80f76"
+    },
+    {
+      "target": "camera_pose_scene_generation_gpu_tests",
+      "cases": 8,
+      "xmlSha256": "f95b01e87ea5f7a04549b07864a46691ab1884733a0bedbcac45319603487063"
+    },
+    {
+      "target": "scene_merge_generation_gpu_tests",
+      "cases": 88,
+      "xmlSha256": "be61e1cf0d9ae3feb2e49ca63d990ed935b2b53d0851cf55b55347d5ab74e2d3"
+    },
+    {
+      "target": "ddgi_scene_changes_tests",
+      "cases": 7,
+      "xmlSha256": "79fdb9db04185a01beec6c16c76e427424d9a7b5a89ac7e495484ebe4d63fcf3"
+    },
+    {
+      "target": "ray_scene_gpu_tests",
+      "cases": 8,
+      "xmlSha256": "48dc64cbb1860bf64d4bf2e651cc0b24d4a73433e21df981029a6a558d98a471"
+    },
+    {
+      "target": "temporal_capture_tests",
+      "cases": 151,
+      "xmlSha256": "1fd00526113c67cd27ff5eeb023bbc10ed59d817a24854b04ec29e556f37936e"
+    }
+  ],
+  "nativeCaptures": 378,
+  "native": {
+    "nodes": {
+      "captures": 114,
+      "processes": 9,
+      "resultSha256": "06e0b04c2b247ff60a03e0e40122641b61a350d76c2c2a81f38af68eae7feac0",
+      "captureSha256": "f6e65cfe5c6b66f7dce146f259c52ebe8678d11e69ce495ff88dfeed6933ae6b",
+      "logSha256": "7ce98e75dabcf780f0fe6a62339437fb09ab02471e653b54a597b95201f0a530",
+      "directUndoRedo": {
+        "taaEpoch": [
+          4,
+          5,
+          6,
+          7
+        ],
+        "ddgiResets": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "rayInstances": [
+          3,
+          2,
+          3,
+          2
+        ]
+      }
+    },
+    "primitives": {
+      "captures": 78,
+      "processes": 9,
+      "resultSha256": "4207795f6c71cf0c22026dfc5a0a3544e1327f17597ca8a4c25625f790f04100",
+      "captureSha256": "6a82b9268977c701a3f38419848a82704a232b98c69a94aee9c2e7ec46b4dc58",
+      "logSha256": "58ea148964182d5df3dfa93aa53591defa00e448880503ebe18645b35245d8ae"
+    },
+    "lights": {
+      "captures": 64,
+      "processes": 9,
+      "resultSha256": "6853cdbb2ddf5877e604040f9f2bca0ee3d4afa1d992d655bd1048d5174f7623",
+      "captureSha256": "8d1f9a169f9a7f7dde8f960f33abc92735fc46ed8c172203dd0a7cea09c490a6",
+      "logSha256": "82e096eb4f3920433a80fd484a2948db40769a901d8f5fc41805779a2bc76d3a"
+    },
+    "physics": {
+      "captures": 16,
+      "processes": 2,
+      "resultSha256": "ef8c2c3ed3ccabf0d83dd3737c171b699ceb0994b788f4cc463a74c87d3d2555",
+      "captureSha256": "0271e8f890d2c58e08bbbd5c7dbe2366e0818dfeee916d0a2f85bacc07e11113",
+      "logSha256": "6c8e4771b8476f964bf6c6b870deee0761458cc84e1f9889cce7cbf43f6ee140"
+    },
+    "node-authoring": {
+      "captures": 21,
+      "processes": 8,
+      "resultSha256": "bf6600d8164b14f71c4f8050a47bd4e7a694f8760d8e03a3db4f9597a96ceaa2",
+      "captureSha256": "d691a3dbfb196cfa7a3282faba8fc4e19e4efa59daa24e20836b64cefcf05ba7",
+      "logSha256": "da410e22e0c995a0e7ddb358ace376ce2a1cffec9fc9f5e716687cd0259c3f3d",
+      "imageChecks": 20,
+      "stateChecks": 21,
+      "exports": 4
+    },
+    "node-retirement": {
+      "captures": 26,
+      "processes": 7,
+      "resultSha256": "c340a0579b04df5b6d9f964845da0251e48513ddf3c5adabc0f136822bb19906",
+      "captureSha256": "f027ac3ef7d9c5b5aab0bfb7ad553febdcbb6992b6939be087316f3490797492",
+      "logSha256": "a1bb65b15e8155037f9bc2c8d25e9be369024e79cb14488d0154f678704dfeb4",
+      "imageChecks": 21,
+      "stateChecks": 25,
+      "exports": 2
+    },
+    "primitive-clone": {
+      "captures": 6,
+      "processes": 1,
+      "resultSha256": "6c4c8d1c8e83d90afdb5ea7773eac424759d170cfe7535ecb8eb6e9288db612d",
+      "captureSha256": "24811161cd2c52921fbd5fd0327ebe91e26a73c8324783caad80cd022757b1bf",
+      "logSha256": "f944310e5c05c03cfca281f1f63c4384bf7ba1384180886e7f82bdb135ba293e",
+      "imageChecks": 3,
+      "stateChecks": 6,
+      "exports": 0
+    },
+    "material-gestures": {
+      "captures": 14,
+      "processes": 1,
+      "resultSha256": "d99b6b4a44eb1d4ebde038df18b3f8b938d01eadafe593b5b5178ad8a8232d9d",
+      "captureSha256": "464f1964f359c3f6ed5af9159f7970ad2cbc11d74854b4f38f2e70591e65a66c",
+      "logSha256": "fa4ecd9c9f8711c78b3f13e0d8bf9150214f411670b2c35a2da9da39e3689a5d",
+      "imageChecks": 7,
+      "stateChecks": 14,
+      "exports": 0
+    },
+    "resource-retirement": {
+      "captures": 39,
+      "processes": 8,
+      "resultSha256": "4ec50a7a5387e9b35ec7754dbd74c940e783dd7abcef7d033045fa46e81e7c3f",
+      "captureSha256": "0df5910fb7f59337db12c5f9ac3bd5966aaffc2be7a56ef1253c82a698fd65bc",
+      "logSha256": "d7dfb66359f683af82831280fe622b0374954466c6f7d44b3258ae1360500759",
+      "imageChecks": 39,
+      "stateChecks": 34,
+      "exports": 2
+    }
+  }
+}
