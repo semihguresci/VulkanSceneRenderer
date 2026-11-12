@@ -305,6 +305,11 @@ default.
 
 ## Verification
 
+The Windows Release run covers source-free reloads in both raster paths,
+per-scene lighting, animated geometry and materials, linked assets, and
+rejected writes to the active BIM source and a hard-link alias.
+[Windows NVIDIA results](../tests/visual-regression/gltf-scene-export/windows-nvidia/gltf-scene-export-results.json)
+
 `tests/geometry/gltf_scene_export_tests.cpp` reloads exported files through the
 validated glTF loader. It covers hierarchy and matrices, local visibility,
 procedural append, material edits, UV selection/texture transforms, source
