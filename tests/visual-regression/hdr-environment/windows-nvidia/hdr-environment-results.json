@@ -1,0 +1,189 @@
+{
+  "schemaVersion": 1,
+  "rendererRevision": "6e765cec10dc760e2d8baa883c9a15b6e9550cbb",
+  "rendererSha256": "da6aef75bebb3c9f8b325af76192a91a38cc66de1d3ddd8b149563f8c7da4626",
+  "platform": "Windows x64",
+  "configuration": "Release",
+  "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+  "vendorId": 4318,
+  "deviceId": 7809,
+  "driverVersion": 2559967232,
+  "vulkanApiVersion": 4211029,
+  "vulkanValidationLayer": "1.4.363.1",
+  "vulkanSynchronizationValidation": true,
+  "nativeManifestSha256": "74e405b8bdf535d7c016e591f09e6b322baa3857f8f0e3b2f5f2d49b308a8617",
+  "nativeManifestEntries": 332,
+  "frozenShaders": 116,
+  "ctestSuites": 14,
+  "ctestPassedSuites": 13,
+  "ctestCases": 514,
+  "ctestBaselineFailedCases": 5,
+  "ctestSkippedOptionalCases": 2,
+  "ctestSha256": "d3045d35f215d3d982a8af9ac6ceaea0e92d8010219d7925397118af0a7cbf6a",
+  "ctest": [
+    {
+      "target": "ddgi_async_history_tests",
+      "cases": 14,
+      "xmlSha256": "52eedb587d90c6112d9ce86fac95027e3dc1a2873c8a1528376185baecedc07a"
+    },
+    {
+      "target": "ddgi_gpu_tests",
+      "cases": 9,
+      "xmlSha256": "2ab2d036cf580280404ed867502ff24d6f52aadb980ee62046c7a90265da03b7"
+    },
+    {
+      "target": "ddgi_lookup_gpu_tests",
+      "cases": 10,
+      "xmlSha256": "923c8b6da61bfb472a6958a85b0c9c100eed6e996dad15b98725a1c9e48adeb3"
+    },
+    {
+      "target": "ddgi_manager_gpu_tests",
+      "cases": 25,
+      "xmlSha256": "680b6210de416fffa964fc0c5640f902a128a695008d32d563bfff6df48edb1f"
+    },
+    {
+      "target": "ddgi_scene_changes_tests",
+      "cases": 7,
+      "xmlSha256": "2df8e134d044f3632b3dbb439eaf942c0ba7ef2b02b62504c3a995b58fae4a7a"
+    },
+    {
+      "target": "ddgi_settings_tests",
+      "cases": 13,
+      "xmlSha256": "71d7a08d726211df6816b2ab0f91a2e86d339e35fc60da6e4d7c18aa6a5d4c62"
+    },
+    {
+      "target": "ddgi_transport_gpu_tests",
+      "cases": 14,
+      "xmlSha256": "40257620605989acdff9a9a4d3601711a43c1d477ae5d736b31c8508a54fc187"
+    },
+    {
+      "target": "managed_compute_owner_gpu_tests",
+      "cases": 10,
+      "xmlSha256": "5e09ef4c7395205d7d1adc92d5504a2a6d4e791935bfd202c189da4a730ca6e0"
+    },
+    {
+      "target": "managed_compute_pipeline_gpu_tests",
+      "cases": 4,
+      "xmlSha256": "db554ce2fc0410cd7c9a457581ae76fd9e6cb5c20ede3a7a979174b50d8691b1"
+    },
+    {
+      "target": "render_technique_registry_tests",
+      "cases": 10,
+      "xmlSha256": "eb08086c6987677c39fa52fa2f54f8c31a0698aa2a48e1664b350ed9ef14a2fd"
+    },
+    {
+      "target": "rendering_convention_tests",
+      "cases": 192,
+      "xmlSha256": "11525875ef578cb02ef7cdf49f229c4f3c9ccb32e444d40a0f89a7b1ff1f03ca",
+      "baselineComparison": {
+        "mainXmlSha256": "e0a3c4658e57a48c88dad4cd80e0f486ab7ccd7c4e777dfe473aedfda840bb4c",
+        "hdrXmlSha256": "11525875ef578cb02ef7cdf49f229c4f3c9ccb32e444d40a0f89a7b1ff1f03ca",
+        "unfilteredCases": 197
+      },
+      "failedBaselineCases": [
+        {
+          "case": "RenderingConventionTests.BimGenericPropertiesAndGeoreferenceReachUi",
+          "failedAssertions": 1
+        },
+        {
+          "case": "RenderingConventionTests.BimMeshletLodStreamingMetadataIsSurfaced",
+          "failedAssertions": 1
+        },
+        {
+          "case": "RenderingConventionTests.BimNativePointCurveRangesBypassTriangleSurfacePasses",
+          "failedAssertions": 1
+        },
+        {
+          "case": "RenderingConventionTests.BimStoreyMaterialAndHideFiltersArePlumbed",
+          "failedAssertions": 7
+        },
+        {
+          "case": "RenderingConventionTests.BimStoreyRangesFeedFloorSliceUi",
+          "failedAssertions": 2
+        }
+      ]
+    },
+    {
+      "target": "temporal_capture_tests",
+      "cases": 151,
+      "xmlSha256": "9cc46199c2a7635c6e28ed7d48e6a43153de4574f3a07e8c9c5c1024b936371d"
+    },
+    {
+      "target": "temporal_convention_tests",
+      "cases": 32,
+      "xmlSha256": "d2a0a12511b5a5819786dbafb979d141a0e60d3ed1059955abd79413555da645"
+    },
+    {
+      "target": "texture_image_data_tests",
+      "cases": 23,
+      "xmlSha256": "e6da4a964f7f70d700026b0181f9efc87df26ef618f8ccdf732e45090ac13b1b",
+      "skippedOptionalCases": [
+        "TextureImageDataOptional.OfficialBasisEtc1sAndUastcZstdActuallyDecode",
+        "TextureImageDataOptional.OfficialBasisNativeBc7AndAuthoredZstdMips"
+      ]
+    }
+  ],
+  "nativeCaptures": 106,
+  "nativeProcesses": 42,
+  "expectedRejectedProcesses": 4,
+  "native": {
+    "seam": {
+      "captures": 8,
+      "processes": 8,
+      "expectedRejectedProcesses": 0,
+      "capturesSha256": "5eb209b4f4645b5e7a8eb15f78728a98407fed01392de3cb2bf28c4b196282ab",
+      "logsSha256": "707db4976e35bf68cc1857321f7db18059557da1ee9727f7821799d62fd16237",
+      "runnerSha256": "486a0733686622159516e698b091158d8e9867938e4ff3f509461f7f671921d7",
+      "freezeProofSha256": "d1f13af7af7f224c81a2d4a35045f029f16bfee5884b62a4b240116c114f9c64",
+      "resultSha256": "051abff42e4f4c53e5af6fc18af4c272d9f429fd3924711fd3e284205d309ab7",
+      "comparisons": 16,
+      "maximumCodeError": 1,
+      "clampedOracleMaximumCodeError": 65
+    },
+    "startup": {
+      "captures": 6,
+      "processes": 10,
+      "expectedRejectedProcesses": 4,
+      "capturesSha256": "c5374a89b10db9f3f52144a1fbac27292644aea342ebc634bfbc15e1e5684a8c",
+      "logsSha256": "b0654621fb3a8caae7aa9e16267b102242be9d087bb2289a081f21ec561e8132",
+      "runnerSha256": "28dd70740ad516043542201269f649ac563f5b52fc0aa3e56cbea45c4b81dcef",
+      "freezeProofSha256": "d1f13af7af7f224c81a2d4a35045f029f16bfee5884b62a4b240116c114f9c64"
+    },
+    "presentation": {
+      "captures": 10,
+      "processes": 10,
+      "expectedRejectedProcesses": 0,
+      "capturesSha256": "4530b4c10a2cc4a0c3671775e34ec2a9a386aee9ffeb24838d2b381b7264571d",
+      "logsSha256": "2395a6f9d831e5120beafff313032e33d94b38307ba461db9ca41cbccaf17e5c",
+      "runnerSha256": "a08b735dc2722a763d9fe43fc1d428e65e407098fcf390e6b38b03fcb7ac72a4",
+      "freezeProofSha256": "d1f13af7af7f224c81a2d4a35045f029f16bfee5884b62a4b240116c114f9c64"
+    },
+    "live": {
+      "captures": 32,
+      "processes": 2,
+      "expectedRejectedProcesses": 0,
+      "capturesSha256": "8cd3c4ee0d3b7f9a2d0e5cecacb8a31ae53245c713bccd37d5514577292659bb",
+      "logsSha256": "983bbef941614615b2265faa3b7d758b5422f535f8d30bb2a58609455f623d90",
+      "runnerSha256": "87344706de769c09db39e2c9b160cd2c6c04f4bdd78b9ddaa2ade69500a01795",
+      "freezeProofSha256": "d1f13af7af7f224c81a2d4a35045f029f16bfee5884b62a4b240116c114f9c64"
+    },
+    "live-ddgi": {
+      "captures": 32,
+      "processes": 2,
+      "expectedRejectedProcesses": 0,
+      "capturesSha256": "6763f178f51333b1fd462b353aa7bafe2005595bbd10b8945f6bf18a98c3a594",
+      "logsSha256": "b69d650591f719399889cfdef6d488f34ffc34192ec53e8a8102c5aa98f69f82",
+      "runnerSha256": "87344706de769c09db39e2c9b160cd2c6c04f4bdd78b9ddaa2ade69500a01795",
+      "freezeProofSha256": "d1f13af7af7f224c81a2d4a35045f029f16bfee5884b62a4b240116c114f9c64"
+    },
+    "sky": {
+      "captures": 18,
+      "processes": 10,
+      "expectedRejectedProcesses": 0,
+      "capturesSha256": "ca906f0201fc93e392e15f4bb30124922c5062e12fc24da0e5f2755351452622",
+      "logsSha256": "8ffc6188520d1289bc57a74bc72fbe14dcd81896c085cc0fe72776dca8a72369",
+      "runnerSha256": "12d01fe9cb30b355074c02aac3167c14ec7fa6d040e43fdccdcbd4a6de82d3af",
+      "freezeProofSha256": "d1f13af7af7f224c81a2d4a35045f029f16bfee5884b62a4b240116c114f9c64"
+    }
+  }
+}
