@@ -9,3 +9,5 @@ The renderer prepares graphics and compute candidates before publishing them at 
 A compilation, interface, or pipeline preparation failure preserves the current generation and reports the reason. The compiler has a two-minute deadline for the whole candidate. The renderer stops its compiler process tree on timeout or when the editor closes. Timeout diagnostics include the last stage being compiled when available.
 
 `runtime_shader_compiler_tests` exercises candidate lifetime, diagnostics, deadline and cancellation with CMake child processes. The Slang dependency regression checks that a new transitive include can take precedence while unrelated stages reuse their binaries. The capture sequence field `reloadShaders` requests a synchronous reload at the specified frame, so successive captures can compare pixels and generation status reproducibly.
+
+The [Windows Vulkan verification report](../tests/visual-regression/runtime-shader-reload/windows-nvidia/runtime-shader-reload-results.json) records the cache, pipeline, and extracted package checks. The validation build used an RTX 2080 SUPER and had OpenVDB disabled.
