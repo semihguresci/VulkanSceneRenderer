@@ -144,6 +144,44 @@ protected:
 
 } // namespace
 
+TEST_F(HierarchyWidgetsTests, GltfSceneSelectorKeepsLiteralIndexedNames) {
+  container::ui::GuiManager gui;
+  auto& state = gui.gltfSceneControls();
+  state.names = {"Shared", "Shared", "Look ## with ### suffix"};
+  ImVec2 comboPoint;
+  bool logPreview = false;
+  std::string preview;
+  const auto draw = [&] {
+    const auto start = ImGui::GetCursorScreenPos();
+    comboPoint = ImVec2(start.x + 30.0f, start.y + ImGui::GetFrameHeight() * 0.5f);
+    if (logPreview) ImGui::LogToBuffer();
+    gui.drawGltfSceneSelector();
+    if (logPreview) {
+      preview = context_->LogBuffer.c_str();
+      ImGui::LogFinish();
+    }
+  };
+  frame(draw);
+  frame(draw);
+  for (int index : {0, 1, 2}) {
+    click(draw, comboPoint);
+    ASSERT_FALSE(context_->OpenPopupStack.empty());
+    const auto* popup = context_->OpenPopupStack.back().Window;
+    ASSERT_NE(popup, nullptr);
+    const auto origin = popup->DC.CursorStartPos;
+    const float rowHeight = ImGui::GetTextLineHeightWithSpacing();
+    click(draw, ImVec2(origin.x + 20.0f, origin.y + rowHeight * (float(index) + 0.5f)));
+    ASSERT_EQ(state.requested, index);
+    state.selected = index;
+    state.requested.reset();
+
+    logPreview = true;
+    frame(draw);
+    logPreview = false;
+    EXPECT_NE(preview.find(std::to_string(index) + ": " + state.names[index]), std::string::npos);
+  }
+}
+
 TEST_F(HierarchyWidgetsTests, MaterialVariantSelectorKeepsIndexedNamesAndRestoresDefault) {
   container::ui::GuiManager gui;
   auto &state = gui.materialVariantControls();

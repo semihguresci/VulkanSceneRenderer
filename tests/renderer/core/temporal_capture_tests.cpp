@@ -314,7 +314,7 @@ TEST(TemporalCapture, AcceptsEveryPhysicsCommandAndEmptySentinel) {
       EXPECT_TRUE(sequence.sample(2).event.physicsAction.empty());
     }
   }
-  for (const char *action : {"reset", "clear", "detach"}) {
+  for (const char *action : {"reset", "clear", "detach", "demo"}) {
     auto input = json::parse(R"({"schemaVersion":1,"frames":2,"events":[{"frame":1}]})");
     input["events"][0]["physicsAction"] = action;
     EXPECT_NO_THROW(CaptureSequence{input});
@@ -336,7 +336,7 @@ TEST(TemporalCapture, RejectsUnsupportedOrNonStringPhysicsCommands) {
 
 TEST(TemporalCapture, RejectsAttachmentAndConflictingPhysicsRetirement) {
   for (const char *attach : {"static", "kinematic", "dynamic"}) {
-    for (const char *action : {"reset", "clear", "detach"}) {
+    for (const char *action : {"reset", "clear", "detach", "demo"}) {
       auto input = json::parse(R"({"schemaVersion":1,"frames":2,"events":[{"frame":1}]})");
       input["events"][0]["physicsAttach"] = attach;
       input["events"][0]["physicsAction"] = action;
@@ -921,15 +921,25 @@ TEST(TemporalCapture, MaterialVariantAndHistoryEventsApplyOnlyAtTheirNamedFrame)
 
 TEST(TemporalCapture, GltfSceneSwitchIsAValidatedExactEvent) {
   CaptureSequence sequence(json::parse(R"({"schemaVersion":1,"frames":4,
-    "events":[{"frame":2,"gltfScene":0},{"frame":4,"gltfScene":2147483647}]})"));
+    "events":[{"frame":2,"gltfScene":0},{"frame":4,"gltfScene":2147483647,"expectGltfSceneRejection":true}]})"));
   EXPECT_FALSE(sequence.sample(1).event.gltfScene);
   EXPECT_EQ(sequence.sample(2).event.gltfScene,0);
+  EXPECT_FALSE(sequence.sample(2).event.expectGltfSceneRejection);
   EXPECT_FALSE(sequence.sample(3).event.gltfScene);
   EXPECT_EQ(sequence.sample(4).event.gltfScene,2147483647);
+  EXPECT_TRUE(sequence.sample(4).event.expectGltfSceneRejection);
   for(const auto& value:std::vector<json>{-1,1.5,true,nullptr,"0",uint64_t(2147483648)}) {
     const json invalid{{"schemaVersion",1},{"frames",2},
       {"events",json::array({{{"frame",1},{"gltfScene",value}}})}};
     EXPECT_THROW((void)CaptureSequence(invalid),std::invalid_argument);
+  }
+  for (const auto& event : std::vector<json>{
+           {{"expectGltfSceneRejection", true}},
+           {{"gltfScene", 0}, {"expectGltfSceneRejection", "true"}}}) {
+    auto invalid = event;
+    invalid["frame"] = 1;
+    EXPECT_THROW((void)CaptureSequence({{"schemaVersion", 1}, {"frames", 1},
+        {"events", json::array({invalid})}}), std::invalid_argument);
   }
 }
 

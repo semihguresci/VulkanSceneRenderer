@@ -148,12 +148,27 @@ void RendererFrontend::captureImportedLightEdits() {
       subs_.lightingManager->snapshotSceneLightEdits());
 }
 
-void RendererFrontend::selectGltfScene(size_t index) {
+void RendererFrontend::selectGltfScene(size_t index, bool expectRejection) {
+  gltfSceneSelectionError_.clear();
+  if (!subs_.sceneManager) throw std::runtime_error("No primary scene is loaded");
+  if (index == subs_.sceneManager->selectedScene() &&
+      index < subs_.sceneManager->sceneCatalog().entries.size()) {
+    if (expectRejection) throw std::runtime_error("Capture requested rejection of the current glTF scene");
+    return;
+  }
+  container::scene::GltfSceneActivation activation;
+  try {
+    activation = subs_.sceneManager->planSceneSelection(sceneGraph_, index);
+  } catch (const std::invalid_argument& error) {
+    if (!expectRejection) throw;
+    gltfSceneSelectionError_ = error.what();
+    return;
+  }
+  if (expectRejection) throw std::runtime_error("Capture glTF scene selection unexpectedly passed preflight");
+
+  // Rejected requests leave live previews, the journal and the active view intact.
   finishEditGestures();
-  if (pendingSceneRetirement_) publishSceneEdit();
-  if(!subs_.sceneManager) throw std::runtime_error("No primary scene is loaded");
-  if(index==subs_.sceneManager->selectedScene()) return;
-  const auto activation=subs_.sceneManager->planSceneSelection(sceneGraph_,index);
+  if (sceneEditPublicationPending_ || pendingSceneRetirement_) publishSceneEdit();
   if(subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
   if(vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device())!=VK_SUCCESS)
     throw std::runtime_error("Failed to retire scene readers before switching scenes");
@@ -169,7 +184,7 @@ void RendererFrontend::selectGltfScene(size_t index) {
     const auto found=gltfSceneLightEdits_.find(index);
     const auto edits=found==gltfSceneLightEdits_.end()?SceneLightEdits{}:*found->second;
     subs_.lightingManager->restoreSceneLightEdits(gltfImportedLightEdits_->merge(
-        subs_.sceneManager->evaluateAuthoredSceneLights(sceneGraph_,index),edits));
+        subs_.sceneManager->publishedAuthoredSceneLights(),edits));
   }
   if(gltfAnimation_) gltfAnimation_->pause();
   pauseGltfInteractivity();
@@ -198,7 +213,9 @@ void RendererFrontend::selectGltfScene(size_t index) {
   }
   refreshGltfCameraChoices();
   updateGltfDeformation();
-  publishSceneEdit();
+  // The old editable light rows belong to the previous scene. Rebuild them
+  // from the new binding table without capturing the old rows a second time.
+  refreshSceneEditView();
   resetCameraForActiveScene();
   if(subs_.temporalManager) subs_.temporalManager->reset("glTF scene changed");
 }
@@ -209,12 +226,16 @@ void RendererFrontend::updateGltfSceneState() {
   if(gltfSceneGraphIdentity_!=sceneGraph_.identity()) {
     gltfSceneGraphIdentity_=sceneGraph_.identity();
     gltfSceneLightEdits_.clear(); gltfImportedLightEdits_.reset();
+    gltfSceneSelectionError_.clear();
     if(subs_.guiManager) {
       auto& state=subs_.guiManager->gltfSceneControls(); state={};
       for(const auto& entry:subs_.sceneManager->sceneCatalog().entries) state.names.push_back(entry.name);
     }
   }
-  if(const auto requested=std::exchange(captureGltfScene_,{})) selectGltfScene(size_t(*requested));
+  if (const auto requested = std::exchange(captureGltfScene_, {})) {
+    selectGltfScene(requested->index, requested->expectRejection);
+    if (subs_.guiManager) subs_.guiManager->gltfSceneControls().error = gltfSceneSelectionError_;
+  }
   if(subs_.guiManager) subs_.guiManager->gltfSceneControls().selected=int(subs_.sceneManager->selectedScene());
 }
 
@@ -222,8 +243,9 @@ void RendererFrontend::processGltfSceneRequest() {
   if(!subs_.guiManager || !subs_.sceneManager) return;
   auto& state=subs_.guiManager->gltfSceneControls();
   if(const auto requested=std::exchange(state.requested,{})) {
-    try { selectGltfScene(size_t(*requested)); state.error.clear(); }
-    catch(const std::exception& error) { state.error=error.what(); }
+    try { selectGltfScene(size_t(*requested)); }
+    catch(const std::exception& error) { gltfSceneSelectionError_=error.what(); }
+    state.error = gltfSceneSelectionError_;
   }
   state.selected=int(subs_.sceneManager->selectedScene());
 }
@@ -756,6 +778,10 @@ void RendererFrontend::publishSceneEdit() {
   } else if (subs_.sceneManager) {
     subs_.sceneManager->refreshActiveScene(sceneGraph_);
   }
+  refreshSceneEditView();
+}
+
+void RendererFrontend::refreshSceneEditView() {
   selectionNavigationAnchor_ = {};
   clearHoveredMeshNode();
   selectedDrawCommands_.clear();

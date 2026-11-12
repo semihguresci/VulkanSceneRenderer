@@ -7,10 +7,11 @@ several scenes has one global authoring identity. Transform, material and
 imported-light edits on that identity remain shared.
 
 The authored default is selected initially, with scene zero used when no default
-is specified. `--gltf-scene N` selects a zero-based scene index at startup. The
-**glTF scene** combo in Scene Controls shows names and indices, including empty
-scenes. A capture-sequence event such as `{"frame": 3, "gltfScene": 1}` uses the
-same switch path. A file without a scene table retains the legacy implicit view.
+is specified. `--gltf-scene N` selects a zero-based index for the startup asset.
+Each later model load selects the new file's authored default. The **glTF scene**
+combo in Scene Controls shows literal names and indices, including empty scenes.
+A capture-sequence event such as `{"frame": 3, "gltfScene": 1}` uses the same
+switch path. A file without a scene table retains the legacy implicit view.
 
 ## Publication and editing
 
@@ -23,9 +24,9 @@ one million aggregate scene-root references.
 
 The complete CPU graph is independently bounded to 262,144 renderables and
 524,288 graph nodes. A selected view must fit `AppConfig::maxSceneObjects`
-(normally 4096). Planning finishes before changing the active view, so a rejected
-selection retains the previous graph and edits. World transforms use an explicit
-worklist, including for deep inactive trees.
+(normally 4096). Rejected requests and requests for the current scene keep the
+live preview, undo and redo history, and active view. World transforms and source
+bounds use explicit worklists, including for deep hierarchies.
 
 Hierarchy rows, draws, deformation owners, cameras and provider extraction use
 the selected view. Synthetic context ancestors stay visible in the hierarchy
@@ -47,9 +48,9 @@ generated overrides from being restored after global settings change. GPU/editor
 light tables retain authored order when publishing the same records into ECS.
 
 Physics pauses while retaining bindings, joints, authored settings and poses.
-Play/Step is refused while an attached primary body belongs to an inactive scene;
-switch back or detach it before resuming. BIM physics bindings retain their
-separate provider ownership. Per-scene body suspension is not implemented.
+Play, Step and Create Demo require attached primary bodies to belong to the
+active scene. Switch back or detach those bodies before resuming. BIM physics
+bindings retain their separate provider ownership.
 
 ## Saving every scene
 
@@ -76,12 +77,26 @@ Authored scene roots keep their global parent when an asset has multiple scenes.
 Their transforms and children remain editable. This prevents reparenting one
 shared root from silently changing another scene's membership.
 
-## Validation checkpoint
+## Current verification
 
-Issue #99 scope and acceptance are locally complete with the limits below; it
-remains open pending integration. The complete tracker #121 goal continues.
+The Windows x64 Release build at `084e253` passed 1,084 cases in 32 suites and
+245 native captures in 98 processes on an NVIDIA GeForce RTX 2080 SUPER with
+Jolt enabled. The capture logs show Khronos synchronization validation loaded
+and contain zero Vulkan validation errors. The loader suite was also run from
+the sample-asset directory to exercise TextureSettingsTest and Sponza.
 
-The current checkpoint uses renderer
+The scene-switch captures cover both raster techniques, authored cameras and
+lights, active bounds and GPU picking, and every fixture scene after GLB and
+ASCII reload. The capacity fixture checks that requests for the current scene,
+an oversized scene and an invalid index preserve the preview and redo branch.
+The physics fixture checks that inactive bodies stay paused and resume when
+their scene becomes active. The deformation captures verify submitted skin and
+morph streams, ray acceleration and DDGI publication across repeated switches.
+[Verification results](../tests/visual-regression/gltf-scenes/windows-nvidia/gltf-scenes-results.json)
+
+## Historical validation checkpoints
+
+The October 25 state and deformation checkpoint used renderer
 `370f33bb103096889c88f312f57c1dd2a3f7a3122ead15b8db4bd19268ed4914`.
 **866 cases across 39 executables** pass with all four real Vulkan test paths
 enabled and zero failures/skips. The retained XML files independently total the
@@ -137,8 +152,4 @@ three-frame-settled matrices supersede it. Exclusion reasons are recorded in
 `scenes-deformation-runtime/results.json` and
 `scenes-deformation-raster-runtime/results.json`.
 
-Capacity rejection has transactional pure-planner coverage; no native UI action
-exercises that rejection. GPU picking readback has no native capture action.
-Physics retains paused bindings and refuses Play/Step while a primary body is
-inactive. A manual sun replacing a shared authored sun remains an explicit
-transactional export error requiring separate source nodes.
+The original checkpoints covered capacity rejection through the pure planner.

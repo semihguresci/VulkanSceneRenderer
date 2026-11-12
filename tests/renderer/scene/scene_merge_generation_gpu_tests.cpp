@@ -255,11 +255,13 @@ class SceneMergeGenerationGpu : public ::testing::Test {
     }
     loadSource(std::move(initial));
   }
-  void loadSource(GltfLoadResult initial) {
+  void loadSource(GltfLoadResult initial, int startupScene = -1) {
     const auto path=temp/"a.glb";
     tinygltf::TinyGLTF writer;
     ASSERT_TRUE(writer.WriteGltfSceneToFile(&initial.gltfModel,path.string(),true,true,true,true));
-    manager=std::make_unique<SceneManager>(*allocation,*pipelines,device,container::app::AppConfig{});
+    container::app::AppConfig config;
+    config.gltfSceneIndex = startupScene;
+    manager = std::make_unique<SceneManager>(*allocation, *pipelines, device, config);
     manager->initialize(path.string(),2.0f,2);
     manager->populateSceneGraph(graph);
     const auto oldRoots=graph.rootNodes();
@@ -612,6 +614,55 @@ TEST_F(SceneMergeGenerationGpu,MembershipRejectsCatalogResetAndManagerReconstruc
   EXPECT_FALSE(manager->canPublishEditorSceneRootChange(token));
   EXPECT_THROW((void)manager->prepareEditorSceneRootChange(graph,receipt,true),std::invalid_argument);
   EXPECT_EQ(graph.nodeCount(),first);EXPECT_EQ(graph.getNode(editor)->name,"Scene Root");
+}
+
+TEST_F(SceneMergeGenerationGpu, ReplacementUsesItsOwnDefaultAfterExplicitStartupScene) {
+  auto initial = triangle("Startup", 31, false, false);
+  initial.gltfModel.scenes.emplace_back();
+  loadSource(std::move(initial), 1);
+  ASSERT_TRUE(manager);
+  ASSERT_EQ(manager->selectedScene(), 1u);
+  ASSERT_FALSE(manager->modelBounds().valid);
+
+  tinygltf::TinyGLTF writer;
+  auto replacement = triangle("Replacement", 77, false, false);
+  const auto single = temp / "single-scene.glb";
+  ASSERT_TRUE(writer.WriteGltfSceneToFile(&replacement.gltfModel, single.string(), true, true, true, true));
+  ASSERT_TRUE(manager->reloadModel(single.string(), 2, {}, AllocatedBuffer{}));
+  EXPECT_EQ(manager->selectedScene(), 0u);
+  EXPECT_TRUE(manager->modelBounds().valid);
+
+  auto& source = replacement.gltfModel;
+  source.scenes.insert(source.scenes.begin(), 2, tinygltf::Scene{});
+  source.defaultScene = 2;
+  const auto multiple = temp / "authored-default.glb";
+  ASSERT_TRUE(writer.WriteGltfSceneToFile(&source, multiple.string(), true, true, true, true));
+  ASSERT_TRUE(manager->reloadModel(multiple.string(), 2, {}, AllocatedBuffer{}));
+  EXPECT_EQ(manager->selectedScene(), 2u);
+  EXPECT_TRUE(manager->modelBounds().valid);
+}
+
+TEST_F(SceneMergeGenerationGpu, StartupBoundsIncludeDeepActiveSourceTransforms) {
+  auto initial = triangle("Deep", 31, false, false);
+  auto& nodes = initial.gltfModel.nodes;
+  constexpr int depth = 20000;
+  nodes.resize(depth);
+  nodes.front().mesh = -1;
+  nodes.front().translation = {3.0, 0.0, 0.0};
+  for (int index = 0; index + 1 < depth; ++index)
+    nodes[index].children = {index + 1};
+  nodes.back().mesh = 0;
+  nodes.back().translation = {4.0, 0.0, 0.0};
+
+  const auto path = temp / "deep-scene.glb";
+  tinygltf::TinyGLTF writer;
+  ASSERT_TRUE(writer.WriteGltfSceneToFile(&initial.gltfModel, path.string(), true, true, true, true));
+  manager = std::make_unique<SceneManager>(*allocation, *pipelines, device, container::app::AppConfig{});
+  manager->initialize(path.string(), 2.0f, 2);
+  const auto& bounds = manager->modelBounds();
+  ASSERT_TRUE(bounds.valid);
+  EXPECT_EQ(bounds.min, glm::vec3(14, 0, 0));
+  EXPECT_EQ(bounds.max, glm::vec3(16, 2, 0));
 }
 
 TEST_F(SceneMergeGenerationGpu,RetiredSourceSlotsLeaveBoundsLightsAndVariantsButKeepDenseOwnershipForUndo) {

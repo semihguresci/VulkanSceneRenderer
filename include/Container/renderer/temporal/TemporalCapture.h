@@ -203,6 +203,7 @@ struct CaptureEvent {
   std::string physicsJointAction{};
   std::optional<int> materialVariant;
   std::optional<int> gltfScene;
+  bool expectGltfSceneRejection{};
   std::optional<CaptureNodeFlags> nodeFlags;
   std::optional<CaptureMergeRequest> merge;
   std::optional<CaptureNodeAuthoring> nodeAuthoring;
@@ -414,6 +415,12 @@ public:
           throw std::invalid_argument("Capture gltfScene must be an integer in [0,INT_MAX]");
         event.gltfScene=scene.get<int>();
       }
+      if (value.contains("expectGltfSceneRejection")) {
+        const auto& expected = value.at("expectGltfSceneRejection");
+        if (!event.gltfScene || !expected.is_boolean())
+          throw std::invalid_argument("Capture expectGltfSceneRejection requires gltfScene and a boolean");
+        event.expectGltfSceneRejection = expected.get<bool>();
+      }
       if (value.contains("materialVariant")) {
         const auto& variant=value.at("materialVariant");
         if (!variant.is_number_integer() ||
@@ -466,7 +473,7 @@ public:
       physicsCommand("physicsAttach", event.physicsAttach,
                      {"static", "kinematic", "dynamic"});
       physicsCommand("physicsAction", event.physicsAction,
-                     {"play", "pause", "step", "reset", "clear", "detach"});
+                     {"play", "pause", "step", "reset", "clear", "detach", "demo"});
       physicsCommand("physicsJointAction", event.physicsJointAction, {"remove", "clear"});
       if (value.contains("physicsSettings")) {
         if (event.physicsAttach.empty())
@@ -480,15 +487,15 @@ public:
       if (event.physicsJointCreate &&
           (!event.physicsJointAction.empty() || event.physicsJointMotorVelocity ||
            event.physicsAction == "reset" || event.physicsAction == "clear" ||
-           event.physicsAction == "detach"))
-        throw std::invalid_argument("Capture joint creation conflicts with retirement or motor replacement");
+           event.physicsAction == "detach" || event.physicsAction == "demo"))
+        throw std::invalid_argument("Capture joint creation conflicts with physics retirement, reset, demo or motor replacement");
       if (!event.physicsJointAction.empty() && event.physicsJointMotorVelocity)
         throw std::invalid_argument("Capture cannot retire and update a joint motor together");
       if (!event.physicsAttach.empty() &&
           (event.physicsAction == "reset" || event.physicsAction == "clear" ||
-           event.physicsAction == "detach"))
+           event.physicsAction == "detach" || event.physicsAction == "demo"))
         throw std::invalid_argument(
-            "Capture cannot attach and retire/reset physics in one event");
+            "Capture attachment and physics retirement, reset or demo need separate events");
       if (value.contains("physicsNode")) {
         const auto &node = value.at("physicsNode");
         const double index = node.is_number() ? node.get<double>() : -1.0;

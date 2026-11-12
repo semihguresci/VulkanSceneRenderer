@@ -15,15 +15,15 @@ import json
 import math
 import os
 from pathlib import Path
-import re
 import subprocess
 
 import numpy as np
 
 import gltf_deformation_runtime_regression as deformation
 from gltf_accessor_runtime_regression import TECHNIQUES, finite_json, require
+from gltf_extended_materials_runtime_regression import validation_log_error
+from gltf_inactive_scene_capacity_runtime_regression import verify_runtime_manifest
 from gltf_material_variants_runtime_regression import pixels
-from gltf_texture_formats_runtime_regression import verify_manifest
 
 CASES = ('skin', 'morph')
 NAMES = ['Owner A', 'Owner B', 'Both owners', 'Empty']
@@ -151,15 +151,18 @@ def capture(renderer, output, fixture_path, prefix, technique, records, *, seque
                     '--ddgi-rays', '4', '--ddgi-probes-per-frame', '27', '--ddgi-ray-budget', '108', '--ddgi-intensity', '0']
     with log.open('w', encoding='utf-8') as stream:
         process = subprocess.run(command, cwd=renderer.parent, stdout=stream, stderr=subprocess.STDOUT, timeout=240,
-            env=dict(os.environ, VK_LAYER_SETTINGS_PATH=str(output)), creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            env=dict(os.environ, VK_LAYER_SETTINGS_PATH=str(output), VK_LOADER_DEBUG='layer'),
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     text = log.read_text(encoding='utf-8', errors='replace')
     require(process.returncode == 0, f'Native scene deformation capture failed ({process.returncode}): {log}')
-    require(not re.search(r'VUID-|SYNC-HAZARD|Validation Error', text, re.I), f'Vulkan validation failed: {log}')
+    require(not validation_log_error(text), f'Vulkan validation failed: {log}')
+    require('Insert instance layer "VK_LAYER_KHRONOS_validation"' in text, f'Vulkan validation layer did not load: {log}')
     records_out = []
     for telemetry in sorted(output.glob(prefix+'*.telemetry.json')):
         frame_image = telemetry.with_suffix('').with_suffix('.png')
         state = json.loads(telemetry.read_text(encoding='utf-8'))
         require(frame_image.is_file() and finite_json(state) and state['technique'] == technique, f'Invalid capture: {telemetry}')
+        require(state['validationEnabled'], f'Vulkan validation was disabled: {telemetry}')
         record = dict(image=str(frame_image), telemetry=str(telemetry), log=str(log), command=command)
         records.append(record); records_out.append(dict(**record, state=state))
     require(records_out, f'No fresh captures: {log}')
@@ -249,12 +252,12 @@ def main():
                   expectedCaptureCount=len(args.case or CASES)*len(args.technique or TECHNIQUES)*(4+len(SAMPLES)),
                   expectedCheckCount=len(args.case or CASES)*len(args.technique or TECHNIQUES)*(1+len(SAMPLES)),
                   excludedDiagnostics=[str(path.resolve()) for path in args.excluded_diagnostic],
-                  unverified=['GPU picking readback has no native capture action'])
+                  unverified=['Deformed GPU pick identities are not exercised by this harness'])
     def save():
         report.update(captureCount=len(report['captures']), checkCount=len(report['checks']))
         (output/'results.json').write_text(json.dumps(report, indent=2)+'\n', encoding='utf-8')
-    if args.manifest: report['nativeManifestBefore'] = verify_manifest(args.manifest)
     try:
+        if args.manifest: report['nativeManifestBefore'] = verify_runtime_manifest(args.manifest, renderer)
         for case in args.case or CASES:
             source = output/(case+'-multi-scene.gltf')
             model, spec, owners = fixture(source, case, args.ray)
@@ -300,7 +303,9 @@ def main():
                 report['nativeValidationPerformed'] = True
                 save(); print('PASS', prefix, 'ray' if args.ray else 'raster', flush=True)
         require(hashlib.sha256(renderer.read_bytes()).hexdigest() == report['rendererSha256'], 'Renderer changed during validation')
-        if args.manifest: report['nativeManifestAfter'] = verify_manifest(args.manifest)
+        if args.manifest:
+            report['nativeManifestAfter'] = verify_runtime_manifest(args.manifest, renderer)
+            require(report['nativeManifestBefore'] == report['nativeManifestAfter'], 'Native freeze manifest changed during capture')
         report['passed'] = None if args.generate_only else True
     except Exception as error:
         report['failure'] = str(error)

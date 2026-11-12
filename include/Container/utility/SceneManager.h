@@ -951,8 +951,10 @@ class SceneManager {
   void createDescriptorSetLayout();
   void createSampler();
   void loadMaterialXMaterial();
-  void loadGltfAssets(container::geometry::GltfLoadResult* prepared = nullptr,
-      const container::material::PreparedGltfTextures* preparedTextures = nullptr);
+  void loadGltfAssets(int requestedScene,
+      container::geometry::GltfLoadResult* prepared = nullptr,
+      const container::material::PreparedGltfTextures* preparedTextures = nullptr,
+      bool allowMissingScene = false);
   void retainOpacityMicromaps(const container::geometry::gltf::GltfOpacityMicromapAssets& assets);
   [[nodiscard]] uint64_t retainedOpacityMicromapBytes() const noexcept;
   void loadDefaultTestSceneAssets();
