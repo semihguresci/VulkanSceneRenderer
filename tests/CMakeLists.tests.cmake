@@ -1080,9 +1080,13 @@ add_test(NAME ltc_area_light_numeric_oracle
             --output "${TEST_RESULTS_DIR}/ltc-area-numeric")
 set_tests_properties(ltc_area_light_numeric_oracle PROPERTIES
     SKIP_RETURN_CODE 77 TIMEOUT 60 LABELS "lighting;numeric-reference")
+add_test(NAME ltc_area_light_benchmark_statistics
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/test_ltc_benchmark_stats.py")
+set_tests_properties(ltc_area_light_benchmark_statistics PROPERTIES
+    TIMEOUT 30 LABELS "lighting;benchmark")
 add_test(NAME ltc_area_light_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/ltc_area_light_regression.py"
-            --exe "$<TARGET_FILE:VulkanSceneRenderer>" --assets "${CMAKE_SOURCE_DIR}/materials/ltc"
+            --case correctness --exe "$<TARGET_FILE:VulkanSceneRenderer>" --assets "${CMAKE_SOURCE_DIR}/materials/ltc"
             --output "${TEST_RESULTS_DIR}/ltc-area-gpu")
 set_tests_properties(ltc_area_light_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 TIMEOUT 3600 LABELS "requires-vulkan;requires-display;lighting;visual-regression")

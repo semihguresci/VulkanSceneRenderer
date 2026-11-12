@@ -486,6 +486,32 @@ TEST(TemporalCapture, InterpolatesNamedObjectAndCameraAtSubmittedScriptFrame) {
   EXPECT_FALSE(sequence.captures(6));
 }
 
+TEST(TemporalCapture, SelectsTelemetryFramesIndependentlyOfScreenshots) {
+  CaptureSequence sequence(json::parse(
+      R"({"schemaVersion":1,"frames":6,"sampleFrames":[6],"telemetryFrames":[5,2,6]})"));
+  EXPECT_TRUE(sequence.hasTelemetryFrames());
+  EXPECT_TRUE(sequence.capturesTelemetry(2));
+  EXPECT_TRUE(sequence.capturesTelemetry(5));
+  EXPECT_TRUE(sequence.capturesTelemetry(6));
+  EXPECT_FALSE(sequence.capturesTelemetry(3));
+  EXPECT_FALSE(sequence.captures(5));
+  EXPECT_TRUE(sequence.captures(6));
+
+  CaptureSequence timingOnly(json::parse(
+      R"({"schemaVersion":1,"frames":6,"sampleFrames":[],"telemetryFrames":[6]})"));
+  EXPECT_TRUE(timingOnly.capturesTelemetry(6));
+  EXPECT_FALSE(timingOnly.captures(6));
+}
+
+TEST(TemporalCapture, RejectsDuplicateAndOutOfBoundsTelemetryFrames) {
+  for (auto frames : {json::array({3, 3}), json::array({0}), json::array({7}),
+                      json::array({1.5}), json::array({4294967297ULL}),
+                      json::array({-4294967295LL})}) {
+    const json input{{"schemaVersion", 1}, {"frames", 6}, {"telemetryFrames", frames}};
+    EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+  }
+}
+
 TEST(TemporalCapture, ConstantNonzeroTracksPreserveBitsAcrossSixtyFrames) {
   CaptureSequence sequence(json::parse(R"({"schemaVersion":1,"frames":60,
     "camera":[{"frame":1,"position":[2.15,-0.35,4.05],"target":[0.05,0.65,-0.15]},

@@ -1,6 +1,11 @@
 #pragma once
 #include "area_light_common.slang"
 
+#ifdef CONTAINER_PROFILE_LTC_PATHS
+#include "ltc_path_profile.slang"
+static uint areaLtcPathMask;
+#endif
+
 // LTC integration adapts selfshadow/ltc_code (see materials/ltc/LICENSE.txt).
 // Heitz, Dupuy, Hill and Neubelt, "Real-Time Polygonal-Light Shading with
 // Linearly Transformed Cosines", ACM SIGGRAPH 2016.
@@ -221,6 +226,9 @@ float AreaLtcPolygonIntegral(AreaLightFrame frame, float3 worldPosition,
         [branch]
         if (globalRelativeCurvature <= AREA_LTC_DISK_CURVATURE_TOLERANCE)
         {
+#ifdef CONTAINER_PROFILE_LTC_PATHS
+            areaLtcPathMask |= LTC_PROFILE_COARSE_DISK;
+#endif
             // Keep the ordinary distant-disk kernel free of nested adaptive
             // loops. The global bound proves every coarse sector is safe.
             float2 offset = float2(1.0, 0.0);
@@ -240,6 +248,9 @@ float AreaLtcPolygonIntegral(AreaLightFrame frame, float3 worldPosition,
         }
         else
         {
+#ifdef CONTAINER_PROFILE_LTC_PATHS
+            areaLtcPathMask |= LTC_PROFILE_ADAPTIVE_DISK;
+#endif
             float2 sectorStart = float2(1.0, 0.0);
             float3 previous = center + axisX;
             [loop]
@@ -278,6 +289,9 @@ float AreaLtcPolygonIntegral(AreaLightFrame frame, float3 worldPosition,
                 float2 rotation = sectorRotation;
                 if (subdivisions > 1u)
                 {
+#ifdef CONTAINER_PROFILE_LTC_PATHS
+                    areaLtcPathMask |= LTC_PROFILE_SUBDIVIDED_DISK;
+#endif
                     float angle = 2.0 * PI / float(AREA_LTC_DISK_SEGMENTS * subdivisions);
                     rotation = float2(cos(angle), sin(angle));
                 }
@@ -300,6 +314,9 @@ float AreaLtcPolygonIntegral(AreaLightFrame frame, float3 worldPosition,
     }
     else
     {
+#ifdef CONTAINER_PROFILE_LTC_PATHS
+        areaLtcPathMask |= LTC_PROFILE_RECTANGLE;
+#endif
         static const float2 offsets[4] = {
             float2(-1.0, -1.0), float2(1.0, -1.0),
             float2(1.0, 1.0), float2(-1.0, 1.0),
@@ -322,6 +339,10 @@ float AreaLtcPolygonIntegral(AreaLightFrame frame, float3 worldPosition,
             entry, exit, crossesHorizon);
     if (crossesHorizon)
         integral += AreaLtcIntegrateEdge(exit, entry);
+#ifdef CONTAINER_PROFILE_LTC_PATHS
+    if (crossesReceiver || crossesHorizon)
+        areaLtcPathMask |= LTC_PROFILE_HORIZON_CLIP;
+#endif
     // Source sidedness is tested separately against the authored normal;
     // tangent/bitangent handedness must not change emitted radiance.
     return saturate(abs(FiniteScalarOr(integral, 0.0)));

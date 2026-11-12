@@ -2,6 +2,9 @@
 #include "oit_common.slang"
 #include "push_constants_common.slang"
 #include "display_tone_curves.slang"
+#ifdef CONTAINER_PROFILE_LTC_PATHS
+#include "ltc_path_profile.slang"
+#endif
 
 [[vk::binding(0, 0)]] SamplerState gBufferSampler;
 [[vk::binding(1, 0)]] Texture2D<float4> sceneColorTexture;
@@ -556,8 +559,20 @@ float4 fragMain(VSOutput input) : SV_Target0
     float3 compositedColor = sceneColor.rgb;
     if (oitAvailable && (outputMode == 0u || captureSceneLinear) && uCamera.temporalInfo.w == 0u)
         compositedColor = ResolveOitPixel(pixelCoord, sceneColor.rgb).compositedColor;
+#ifdef CONTAINER_PROFILE_LTC_PATHS
+    if (captureSceneLinear)
+    {
+        float mask = sceneColor.a - float(LTC_PROFILE_MARKER);
+        bool marked = mask >= 0.0 && mask < float(LTC_PROFILE_MASK_SIZE);
+        // RGB is preserved in the rendered frame. Only the EXR readback
+        // contains the diagnostic mask and its receiver marker.
+        float3 captureColor = marked ? float3(mask, 1.0, 0.0) : 0.0.xxx;
+        linearCapture[pixelCoord.y * width + pixelCoord.x] = float4(captureColor, 1.0);
+    }
+#else
     if (captureSceneLinear)
         linearCapture[pixelCoord.y * width + pixelCoord.x] = float4(compositedColor, 1.0);
+#endif
 
     if (outputMode >= 100u && outputMode <= 104u) {
         if (uCamera.temporalInfo.w == 0u) return float4(0.0, 0.0, 0.0, 1.0);

@@ -2068,6 +2068,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
           .available = subs_.renderPassGpuProfiler->isReady(),
           .resultLatencyFrames =
               subs_.renderPassGpuProfiler->resultLatencyFrames(),
+          .recordingSerial = subs_.renderPassGpuProfiler->latestRecordingSerial(),
           .status = std::string(subs_.renderPassGpuProfiler->backendStatus()),
       });
     }
@@ -3165,8 +3166,14 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   nlohmann::json json{
       {"schemaVersion", 1},
       {"gpu", gpu.deviceName},
+      {"vendorId", gpu.vendorID},
+      {"deviceId", gpu.deviceID},
       {"driverVersion", gpu.driverVersion},
       {"vulkanApiVersion", gpu.apiVersion},
+      {"build", {{"revision", CONTAINER_GIT_REVISION},
+                 {"configuration", CONTAINER_BUILD_CONFIG},
+                 {"compiler", CONTAINER_BUILD_COMPILER}}},
+      {"validationEnabled", svc_.config.enableValidationLayers},
       {"technique", std::string(subs_.activeTechnique->name())},
       {"hierarchyTransforms", {{"enabled", gpuHierarchyEnabled_}, {"active", gpuHierarchyPrepared_},
                                 {"cpuObjectUploadBytes",cpuObjectUploadBytes_},
@@ -3409,6 +3416,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"source", std::string(rendererGpuTimingSourceName(
                        snapshot.gpuProfiler.source))},
         {"resultLatencyFrames", snapshot.gpuProfiler.resultLatencyFrames},
+        {"recordingSerial", snapshot.gpuProfiler.recordingSerial},
         {"status", snapshot.gpuProfiler.status}};
     json["cpuPhasesMs"] = nlohmann::json::object();
     for (size_t phase = 0; phase < snapshot.timing.cpuMs.size(); ++phase)
@@ -3682,9 +3690,6 @@ void RendererFrontend::startGfxCapture() {
   const auto& capture = svc_.config.gfxrecon;
   if (!capture.enabled()) return;
   auto runtime = captureTelemetry();
-  runtime["build"] = {{"revision", CONTAINER_GIT_REVISION}, {"configuration", CONTAINER_BUILD_CONFIG},
-                      {"compiler", CONTAINER_BUILD_COMPILER}};
-  runtime["validationEnabled"] = svc_.config.enableValidationLayers;
   runtime["fixedTimestepSeconds"] = (svc_.config.screenshotCapturePath.empty() && svc_.config.temporalCaptureSequencePath.empty())
       ? nlohmann::json(nullptr) : nlohmann::json(svc_.config.screenshotFixedTimestepSeconds);
   gfxJournal_.open(capture, std::move(runtime));

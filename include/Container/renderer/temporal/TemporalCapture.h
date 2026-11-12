@@ -245,6 +245,23 @@ public:
         json.value("sampleFrames", std::vector<uint32_t>{frameCount});
     for (auto frame : sampleFrames)
       checkFrame(frame);
+    if (json.contains("telemetryFrames")) {
+      const auto &frames = json.at("telemetryFrames");
+      if (!frames.is_array() || frames.size() > frameCount)
+        throw std::invalid_argument("Invalid capture telemetry frame list");
+      telemetryFrames_.reserve(frames.size());
+      for (const auto &value : frames) {
+        if (!value.is_number_integer())
+          throw std::invalid_argument("Capture telemetry frames must be integers");
+        const auto frame = value.get<uint64_t>();
+        if (frame == 0 || frame > frameCount)
+          throw std::invalid_argument("Capture telemetry frame is out of range");
+        telemetryFrames_.push_back(static_cast<uint32_t>(frame));
+      }
+    }
+    std::ranges::sort(telemetryFrames_);
+    if (std::ranges::adjacent_find(telemetryFrames_) != telemetryFrames_.end())
+      throw std::invalid_argument("Capture telemetry frames must be distinct");
     if (json.contains("camera")) {
       for (const auto &key : json.at("camera")) {
         const uint32_t frame = key.at("frame").get<uint32_t>();
@@ -817,10 +834,18 @@ public:
     return std::find(sampleFrames.begin(), sampleFrames.end(), frame) !=
            sampleFrames.end();
   }
+  [[nodiscard]] bool hasTelemetryFrames() const {
+    return !telemetryFrames_.empty();
+  }
+  [[nodiscard]] bool capturesTelemetry(uint32_t frame) const {
+    return std::ranges::binary_search(telemetryFrames_, frame);
+  }
   uint32_t frameCount{0};
   std::vector<uint32_t> sampleFrames;
 
 private:
+  std::vector<uint32_t> telemetryFrames_;
+
   static float lightNumber(const nlohmann::json& value) {
     if(!value.is_number()) throw std::invalid_argument("Capture light values require numeric float components");
     const double number=value.get<double>();

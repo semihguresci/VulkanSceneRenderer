@@ -741,6 +741,11 @@ def receiver_points(telemetry, pixels=None):
     return points, pixels
 
 
+def reference_exposure(settings):
+    center = numerical_reference([[0, 0, 0]], settings)[0]
+    return .18 / max(float(center.max()), .02)
+
+
 def invert_display(srgb):
     mapped = np.where(srgb <= .04045, srgb / 12.92, ((srgb + .055) / 1.055) ** 2.4)
     a, b, c = 2.43 * mapped - 2.51, .59 * mapped - .03, .14 * mapped
@@ -787,12 +792,17 @@ class Runtime:
 
     def capture(self, name, model, settings, technique, mode, samples=25,
                 exposure=.2, sequence=None, extra=(), width=320, height=240,
-                executable=None, ltc_ready=True, expected_mode=None, expected_samples=None):
+                executable=None, ltc_ready=True, expected_mode=None, expected_samples=None,
+                validation=True, verify_validation=False, image_format="png"):
         executable = executable or self.exe
-        screenshot, log = self.output / (name + ".png"), self.output / (name + ".log")
-        for stale in [screenshot, *self.output.glob(name + ".frame-*.png")]:
+        screenshot = self.output / f"{name}.{image_format}"
+        log = self.output / (name + ".log")
+        for stale in [screenshot, screenshot.with_suffix(".telemetry.json"),
+                      *self.output.glob(name + f".frame-*.{image_format}"),
+                      *self.output.glob(name + ".frame-*.telemetry.json")]:
             stale.unlink(missing_ok=True)
-        command = [str(executable), "--model", str(model), "--hidden", "--no-ui", "--validation",
+        command = [str(executable), "--model", str(model), "--hidden", "--no-ui",
+            "--validation" if validation else "--no-validation",
             "--no-bloom", "--no-taa", "--msaa", "1", "--width", str(width), "--height", str(height),
             "--display-mode", "lit", "--camera-position", *map(str, settings["camera"]),
             "--camera-target", *map(str, settings.get("target", [0, 0, 0])), "--camera-fov", "36",
@@ -804,24 +814,79 @@ class Runtime:
             script = self.output / (name + "-sequence.json")
             script.write_text(json.dumps(sequence))
             command += ["--capture-sequence", str(script)]
+        environment = dict(os.environ, VK_LAYER_SETTINGS_PATH=str(self.output))
+        if verify_validation:
+            environment["VK_LOADER_DEBUG"] = "layer"
         with log.open("w") as stream:
             run = subprocess.run(command, cwd=executable.parent,
-                env=dict(os.environ, VK_LAYER_SETTINGS_PATH=str(self.output)),
+                env=environment,
                 stdout=stream, stderr=subprocess.STDOUT, timeout=240)
         text = log.read_text(errors="replace")
-        assert run.returncode == 0 and "VUID-" not in text and "SYNC-HAZARD" not in text, log
+        assert (run.returncode == 0 and "VUID-" not in text and "SYNC-HAZARD" not in text
+                and "Validation Error" not in text), log
+        if verify_validation:
+            validation_loaded = any("insert instance layer" in line.lower()
+                                    and "VK_LAYER_KHRONOS_validation" in line
+                                    for line in text.splitlines())
+            if validation_loaded != validation:
+                raise RuntimeError(f"Unexpected Vulkan validation layer state in {log}")
         telemetry = json.loads(screenshot.with_suffix(".telemetry.json").read_text())
         final_mode = expected_mode or mode
         self.validate_telemetry(telemetry, final_mode, expected_samples or samples, ltc_ready)
         return screenshot, telemetry
+
+    def check_quality_capture(self, name, image, telemetry, settings, mode, samples, exposure):
+        points, pixels = receiver_points(telemetry)
+        reference = numerical_reference(points, settings) * settings["alpha"]
+        sampled = numerical_reference(points, settings, sampled_count=samples) * settings["alpha"]
+        actual, uncertainty = measured_radiance(image, pixels, exposure)
+        ltc_expected, geometry_weights, ltc_weights = ltc_reference(points, settings, self.matrix,
+            self.amplitude, guarded=True, samples=samples, policy_details=True)
+        ltc_expected *= settings["alpha"]
+        scale = max(float(reference.max()), .01)
+        error = np.maximum(abs(actual - reference) - uncertainty, 0)
+        sampled_error = np.maximum(abs(actual - sampled) - uncertainty, 0)
+        maximum = float(error.max() / scale)
+        sampled_maximum = float(sampled_error.max() / max(float(sampled.max()), .01))
+        policy_maximum = float(np.max(np.maximum(abs(actual - ltc_expected) - uncertainty, 0)) /
+                               max(float(ltc_expected.max()), .01))
+        # The sampled mode must reproduce its independently constructed
+        # quadrature, even when that quadrature is a coarse BRDF reference.
+        if mode == "sampled":
+            assert sampled_maximum < .025, (name, "sampled equation mismatch", sampled_maximum)
+        minimum_roughness = min(settings["roughness"], settings["clearcoatRoughness"]
+            if settings["clearcoat"] > 0 else 1)
+        fallback = (minimum_roughness <= .28 or
+            (settings["alpha"] < 1 and settings["doubleSided"]) or
+            float(geometry_weights.max()) <= 1e-5)
+        if mode == "ltc" and fallback:
+            assert sampled_maximum < .025, (name, "material/geometry fallback mismatch", sampled_maximum)
+        elif mode == "ltc":
+            assert policy_maximum < .025, (name, "guarded LTC equation mismatch", policy_maximum)
+            baseline_error = float(np.max(abs(sampled - reference)) / scale)
+            # Geometrically eligible Schlick-residual paths retain the
+            # strict 6% reference gate, even when their q confidence is zero.
+            envelope = .06 + (1 - float(geometry_weights.min())) * baseline_error
+            assert maximum < envelope, (name, "LTC reference mismatch", maximum, envelope)
+        metrics = dict(
+            referenceMaximumNormalizedError=maximum,
+            sampledMaximumNormalizedError=sampled_maximum,
+            guardedLtcMaximumNormalizedError=policy_maximum if mode == "ltc" else None,
+            perMaterialPolicy="explicit-sampled" if mode == "sampled" else
+                "sampled-fallback" if float(geometry_weights.max()) <= 1e-5 else
+                "ltc" if float(ltc_weights.min()) >= 1 - 1e-5 else
+                "schlick-residual" if float(geometry_weights.min()) >= 1 - 1e-5 else "blend",
+            expectedLtcWeightRange=[float(ltc_weights.min()), float(ltc_weights.max())],
+            expectedGeometryLtcWeightRange=[float(geometry_weights.min()), float(geometry_weights.max())],
+            pixels=len(points))
+        return metrics, (actual, uncertainty, reference, telemetry)
 
     def quality(self, settings, technique="deferred-raster", samples=25):
         key = (settings["name"], technique, samples)
         if key in self.cache: return self.cache[key]
         model = receiver_fixture(self.output / settings["name"] /
             "models/validation/cornell_box_local_light.gltf", settings)
-        reference_at_center = numerical_reference([[0, 0, 0]], settings)[0]
-        exposure = .18 / max(float(reference_at_center.max()), .02)
+        exposure = reference_exposure(settings)
         measurements = {}
         for mode in ("sampled", "ltc"):
             name = f'{settings["name"]}-{technique}-{mode}-n{samples}'
@@ -835,51 +900,11 @@ class Runtime:
             else:
                 image, telemetry = self.capture(name, model, settings, technique, mode,
                     samples=samples, exposure=exposure, extra=("--no-ray-query",))
-            points, pixels = receiver_points(telemetry)
-            reference = numerical_reference(points, settings) * settings["alpha"]
-            sampled = numerical_reference(points, settings, sampled_count=samples) * settings["alpha"]
-            actual, uncertainty = measured_radiance(image, pixels, exposure)
-            ltc_expected, geometry_weights, ltc_weights = ltc_reference(points, settings, self.matrix,
-                self.amplitude, guarded=True, samples=samples, policy_details=True)
-            ltc_expected *= settings["alpha"]
-            scale = max(float(reference.max()), .01)
-            error = np.maximum(abs(actual - reference) - uncertainty, 0)
-            sampled_error = np.maximum(abs(actual - sampled) - uncertainty, 0)
-            maximum = float(error.max() / scale)
-            sampled_maximum = float(sampled_error.max() / max(float(sampled.max()), .01))
-            policy_maximum = float(np.max(np.maximum(abs(actual - ltc_expected) - uncertainty, 0)) /
-                                   max(float(ltc_expected.max()), .01))
-            # The sampled mode must reproduce its independently constructed
-            # quadrature, even when that quadrature is a coarse BRDF reference.
-            if mode == "sampled":
-                assert sampled_maximum < .025, (name, "sampled equation mismatch", sampled_maximum)
-            minimum_roughness = min(settings["roughness"], settings["clearcoatRoughness"]
-                if settings["clearcoat"] > 0 else 1)
-            fallback = (minimum_roughness <= .28 or
-                (settings["alpha"] < 1 and settings["doubleSided"]) or
-                float(geometry_weights.max()) <= 1e-5)
-            if mode == "ltc" and fallback:
-                assert sampled_maximum < .025, (name, "material/geometry fallback mismatch", sampled_maximum)
-            elif mode == "ltc":
-                assert policy_maximum < .025, (name, "guarded LTC equation mismatch", policy_maximum)
-                baseline_error = float(np.max(abs(sampled - reference)) / scale)
-                # Geometrically eligible Schlick-residual paths retain the
-                # strict6% reference gate, even when their q confidence is0.
-                envelope = .06 + (1 - float(geometry_weights.min())) * baseline_error
-                assert maximum < envelope, (name, "LTC reference mismatch", maximum, envelope)
+            metrics, measurements[mode] = self.check_quality_capture(
+                name, image, telemetry, settings, mode, samples, exposure)
             self.record(dict(case="quality", name=settings["name"], technique=technique,
-                mode=mode, samples=samples, referenceMaximumNormalizedError=maximum,
-                sampledMaximumNormalizedError=sampled_maximum,
-                guardedLtcMaximumNormalizedError=policy_maximum if mode == "ltc" else None,
-                perMaterialPolicy="explicit-sampled" if mode == "sampled" else
-                    "sampled-fallback" if float(geometry_weights.max()) <= 1e-5 else
-                    "ltc" if float(ltc_weights.min()) >= 1 - 1e-5 else
-                    "schlick-residual" if float(geometry_weights.min()) >= 1 - 1e-5 else "blend",
-                expectedLtcWeightRange=[float(ltc_weights.min()), float(ltc_weights.max())],
-                expectedGeometryLtcWeightRange=[float(geometry_weights.min()), float(geometry_weights.max())],
-                pixels=len(points), exposure=exposure, lighting=telemetry["lighting"],
-                captureReused=reused, validationClean=True))
-            measurements[mode] = actual, uncertainty, reference, telemetry
+                mode=mode, samples=samples, **metrics, exposure=exposure,
+                lighting=telemetry["lighting"], captureReused=reused, validationClean=True))
         self.cache[key] = measurements
         return measurements
 
@@ -1201,66 +1226,39 @@ class Runtime:
                     historyPolicy="reset" if frame in changed_frames else "retain" if frame in noop_frames else "initial",
                     taaMae=mae, taaP95=p95, validationClean=True))
 
-    def benchmark_group(self, metallic=1., counts=(1, 8, 32, 128)):
-        for disk in (False, True):
-            settings = case("benchmark-disk" if disk else "benchmark-rect", disk=disk,
-                            halfSize=[.4, .4 if disk else .3], metallic=metallic, roughness=.6)
-            for count in counts:
-                model = receiver_fixture(self.output / f'{settings["name"]}-{count}' /
-                    "models/validation/cornell_box_local_light.gltf", settings, count)
-                timings = {}
-                for mode in ("sampled", "ltc"):
-                    frames = [49, 53, 57, 61, 65, 69, 73, 77]
-                    sequence = dict(schemaVersion=1, frames=77, sampleFrames=frames)
-                    name = f'{settings["name"]}-{count}-{mode}'
-                    image, _ = self.capture(name, model, settings, "deferred-raster", mode,
-                        sequence=sequence, extra=("--no-ray-query",), width=960, height=540)
-                    values = []
-                    for frame in frames:
-                        path = image if frame == 77 else image.with_name(image.stem + f".frame-{frame:04d}.png")
-                        telemetry = json.loads(path.with_suffix(".telemetry.json").read_text())
-                        assert telemetry["lighting"]["areaLightCount"] == count
-                        assert telemetry["lighting"]["activeLocalShadowLayers"] == 0
-                        lighting_pass = next(p for p in telemetry["passes"] if p["name"] == "Lighting")
-                        assert lighting_pass["active"] and lighting_pass["gpuTimed"], lighting_pass
-                        values.append(lighting_pass["gpuMs"])
-                    timings[mode] = float(np.median(values))
-                    self.record(dict(case="benchmark", shape="disk" if disk else "rect",
-                        lights=count, mode=mode, lightingMedianGpuMs=timings[mode],
-                        lightingP95GpuMs=float(np.percentile(values, 95)), frames=len(values),
-                        resolution=[960, 540], shadows=False, metallic=metallic,
-                        roughness=settings["roughness"], validationClean=True))
-                self.record(dict(case="benchmark-comparison", shape="disk" if disk else "rect",
-                    lights=count, sampledToLtcSpeedup=timings["sampled"] / max(timings["ltc"], 1e-6)))
-
-
 def main():
+    from ltc_benchmark import add_benchmark_arguments, run_benchmark, validate_benchmark_arguments
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--exe", type=Path)
     parser.add_argument("--assets", type=Path, default=Path("materials/ltc"))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--reuse-quality-results", type=Path,
         help="explicit prior validation-clean quality records whose unchanged captures may be rechecked")
-    parser.add_argument("--benchmark-material", choices=("metallic", "dielectric"), default="metallic")
-    parser.add_argument("--benchmark-lights", type=int, choices=(1, 8, 32, 128), nargs="+", default=(1, 8, 32, 128))
-    parser.add_argument("--case", choices=("cpu", "quality", "parity", "spatial", "disk-rim", "shadows", "benchmark", "assets", "switch", "all"), default="all")
+    add_benchmark_arguments(parser)
+    parser.add_argument("--case", choices=("cpu", "quality", "parity", "spatial", "disk-rim",
+                        "shadows", "benchmark", "assets", "switch", "correctness", "all"),
+                        default="all")
     args = parser.parse_args()
     if args.case != "cpu" and os.environ.get("CONTAINER_RUN_GPU_LTC") != "1":
         print("SKIP: set CONTAINER_RUN_GPU_LTC=1")
         return 77
+    if args.case in ("benchmark", "all"):
+        validate_benchmark_arguments(parser, args)
     oracle_checks(args.assets.resolve(), args.output.resolve())
     if args.case == "cpu": return 0
     if not args.exe: parser.error("--exe is required for GPU cases")
     runtime = Runtime(args.exe, args.output, args.assets, args.reuse_quality_results)
-    if args.case in ("quality", "all"): runtime.quality_group()
-    if args.case in ("parity", "all"): runtime.parity_group()
-    if args.case in ("spatial", "all"): runtime.spatial_group()
-    if args.case in ("disk-rim", "all"): runtime.disk_rim_group()
+    correctness_cases = ("correctness", "all")
+    if args.case in ("quality", *correctness_cases): runtime.quality_group()
+    if args.case in ("parity", *correctness_cases): runtime.parity_group()
+    if args.case in ("spatial", *correctness_cases): runtime.spatial_group()
+    if args.case in ("disk-rim", *correctness_cases): runtime.disk_rim_group()
+    if args.case in ("shadows", *correctness_cases): runtime.shadow_group()
+    if args.case in ("assets", *correctness_cases): runtime.asset_group()
+    if args.case in ("switch", *correctness_cases): runtime.switch_group()
     if args.case in ("benchmark", "all"):
-        runtime.benchmark_group(float(args.benchmark_material == "metallic"), args.benchmark_lights)
-    if args.case in ("shadows", "all"): runtime.shadow_group()
-    if args.case in ("assets", "all"): runtime.asset_group()
-    if args.case in ("switch", "all"): runtime.switch_group()
+        return run_benchmark(runtime, args, case, receiver_fixture, reference_exposure)
     return 0
 
 

@@ -94,6 +94,7 @@ struct RendererGpuProfilerTelemetry {
   RendererGpuTimingSource source{RendererGpuTimingSource::None};
   bool available{false};
   uint32_t resultLatencyFrames{0};
+  uint64_t recordingSerial{0};
   std::string status{};
 };
 

@@ -156,6 +156,8 @@ void Application::screenshotCaptureLoop() {
     if (!stream)
       throw std::runtime_error("Cannot open capture sequence");
     sequence.emplace(nlohmann::json::parse(stream));
+    if (sequence->hasTelemetryFrames() && config_.screenshotCapturePath.empty())
+      throw std::invalid_argument("Capture telemetry frames require a screenshot output path");
   }
   bool minimized = false;
   const uint32_t captureFrame =
@@ -229,7 +231,10 @@ void Application::screenshotCaptureLoop() {
     }
     const bool captureThisFrame = captureSampleSeries ? sampleTarget.has_value()
         : sequence ? sequence->captures(frameNumber) : frameNumber == captureFrame;
-    if (captureThisFrame && !config_.screenshotCapturePath.empty()) {
+    const bool telemetryThisFrame =
+        sequence && sequence->capturesTelemetry(frameNumber);
+    if ((captureThisFrame || telemetryThisFrame) &&
+        !config_.screenshotCapturePath.empty()) {
       capturePath = container::util::pathFromUtf8(config_.screenshotCapturePath);
       if (sampleTarget || (sequence && frameNumber != captureFrame)) {
         std::ostringstream suffix;
@@ -242,7 +247,9 @@ void Application::screenshotCaptureLoop() {
         filename += capturePath.extension();
         capturePath.replace_filename(filename);
       }
-      renderer_->requestScreenshot(capturePath, config_.screenshotViewportOnly, sampleTarget);
+      if (captureThisFrame)
+        renderer_->requestScreenshot(capturePath, config_.screenshotViewportOnly,
+                                     sampleTarget);
     }
     bool submitted = false;
     for (uint32_t retry = 0; retry < 4 && !submitted; ++retry)
