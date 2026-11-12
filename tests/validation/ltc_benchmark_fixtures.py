@@ -28,8 +28,12 @@ _PRESETS = {
                               yaw=math.atan2(-5., 1.25), intensity=30.),
     # Roughness below .28 rejects LTC before evaluating any geometry.
     "sampled-fallback": dict(**_CONTROL, roughness=.15),
+    # Preserve the historical disk sweep geometry as an explicit cohort.
+    "legacy-disk": dict(halfSize=(.4, .4), light=(0, 0, 1.5), camera=(0, 0, 5),
+                        intensity=8., roughness=.6),
 }
 BENCHMARK_DOMAINS = tuple(_PRESETS)
+_DEFAULT_DOMAINS = tuple(domain for domain in BENCHMARK_DOMAINS if domain != "legacy-disk")
 _CONTROL_DOMAINS = ("coarse", "rectangle")
 _MATERIAL_FIELDS = (
     "albedo", "alpha", "metallic", "roughness", "specular", "clearcoat",
@@ -45,6 +49,11 @@ class BenchmarkFixture:
     material: str
     count: int
     settings: dict
+
+    @property
+    def manual_exposure(self):
+        """Use the historical capture exposure for the legacy cohort."""
+        return .2 if self.domain == "legacy-disk" else None
 
     def manifest(self, model, width, height, samples, exposure):
         """Return comparable settings without machine-specific paths."""
@@ -99,12 +108,13 @@ def benchmark_fixtures(make_case, materials=BENCHMARK_MATERIALS,
                        counts=BENCHMARK_COUNTS, domains=None):
     """Yield all control counts and one case per other domain by default.
 
-    An explicit domain selection requests its full material and count matrix.
-    The benchmark uses the same receiver builder as the accuracy checks.
+    An explicit domain selection requests its full material and count matrix
+    and can include the legacy disk sweep. The benchmark uses the same
+    receiver builder as the accuracy checks.
     """
     counts = tuple(dict.fromkeys(counts))
     materials = tuple(dict.fromkeys(materials))
-    selected_domains = BENCHMARK_DOMAINS if domains is None else tuple(dict.fromkeys(domains))
+    selected_domains = _DEFAULT_DOMAINS if domains is None else tuple(dict.fromkeys(domains))
     for domain in selected_domains:
         domain_counts = counts if domains is not None or domain in _CONTROL_DOMAINS else counts[:1]
         disk = domain != "rectangle"
