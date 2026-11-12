@@ -10,8 +10,11 @@ The encoded input and geometry budgets remain active for bounded imports.
 The runtime supports glTF **2.0**. `asset.version` and an authored
 `asset.minVersion` must be decimal `major.minor` strings. Other major versions
 are rejected. A newer 2.x version is accepted with a warning when its minimum
-is absent or 2.0; a newer minimum is rejected. An explicit empty minimum is
-invalid. This is an engine policy, independent of TinyGLTF's parser behavior.
+is absent or 2.0. A minimum above the declared asset version is inconsistent,
+and a minimum the renderer cannot meet is unsupported. Missing or non-string
+`version`, non-string or empty `minVersion`, and malformed extension lists
+receive field-specific errors. GLB files use the version metadata in the JSON
+chunk for these checks. [glTF asset version policy](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#asset)
 
 **Experimental linked assets.** Start the editor with
 `--experimental-gltf-linked-assets` to opt into the URI subset of the glTF
@@ -59,7 +62,8 @@ current edits, supported animation clips, and skins.
 
 `--experimental-opacity-micromaps` lets compatible Vulkan devices use authored
 `EXT_mesh_opacity_micromap` records on static alpha-mask ray geometry. The core
-glTF material provides sampled-alpha fallback. [Supported profile](gltf-opacity-micromaps.md)
+glTF material provides sampled-alpha fallback. The importer rejects required
+micromap declarations even with the option enabled. [Supported profile](gltf-opacity-micromaps.md)
 
 `EXT_lights_ies` imports measured Type C point fixtures from LM-63 files and
 embedded profile data. Optional invalid profiles leave companion punctual
@@ -77,17 +81,19 @@ geometry and materials. It reports instancing, animation pointers, variants,
 node flags, authored lights and XMP as unavailable before reading resources.
 Startup and reload preflight use the same restrictions. The BIM glTF fallback
 publishes decoded primitives as a single default-material object. It accepts
-supported geometry extensions and reports required scene or material extensions
-as unavailable. Optional extensions in either path produce an asset-scoped
-warning and retain the ordinary geometry or material fallback.
+supported geometry extensions and skips image decoding, as does OpenVDB's
+static mesh input. Both reject required scene or material extensions. The
+MaterialX bridge's standalone file import applies the capability gate to the
+material graphs it produces. These consumers report unavailable optional
+features and omit their declared payloads before validating the core fallback.
 
 Import / Merge and linked placement use the same version policy for ordinary
 documents, including compatible 2.x files opened with linked assets enabled.
 When preparing a detached incoming scene or flattening a linked scene, the
-loader omits declared unknown optional extension payloads after reporting the
-asset and extension. It preserves the core fallback, `extras`, and supported
-extension references. Declared unknown optional metadata already present on
-the merge destination stays intact because its source indices are stable.
+loader reports and omits optional payloads it cannot remap. It preserves the
+core fallback, `extras`, and supported extension references. Opaque optional
+metadata already present on the merge destination stays intact when its
+source indices are stable.
 Linked children can fall back to their static scene when
 `KHR_interactivity` is optional. A required graph in a linked child or required
 opacity micromaps in a composition produce a capability error before reading
@@ -111,8 +117,8 @@ Implemented approximations are accepted even when required, with an explicit
 `partial_extension_support` warning. `KHR_materials_pbrSpecularGlossiness`
 retains authored inputs for the [reference BSDF](reference-path-tracing.md)
 and converts them to the metallic-roughness approximation for raster rendering.
-`KHR_lights_area`,
-`EXT_lights_area` and `WEBGI_lights_area` use the existing supported area-light
+`KHR_lights_area`, `EXT_lights_area`, `WEBGI_lights_area` and `WEBGI_area_light`
+use the existing supported area-light
 dialects and renderer approximation. The registry describes import and runtime
 feature availability; it does not promise exact reference-image equivalence
 across lighting techniques.
@@ -161,7 +167,9 @@ Geometry compression is optional and disabled in the default build. Enabling
 explicitly partial KHR release-candidate extension. `ENABLE_GLTF_DRACO` provides
 triangle-list decoding through the bounded Windows worker, with an explicit
 partial-support warning for unsupported primitive modes. The registry reflects
-the configured backend; missing required decoders reject before resource reads.
+the configured backend and checks for the deployed Draco worker. Missing
+required decoders reject before resource reads. Optional Draco data can use
+checked core geometry when the worker is unavailable.
 See [compressed geometry](gltf-compression.md) for budgets, fallback rules,
 dependency pins and portable normalization.
 
@@ -208,3 +216,7 @@ Build and run `gltf_capabilities_tests` and `gltf_loader_tests` for CPU policy
 and loader coverage. The capability tests exercise JSON and GLB fixtures,
 source-only and geometry routes, unavailable decoders, optional fallback,
 version/minimum checks, contextual diagnostics and bounded input regressions.
+`tests/validation/gltf_capability_composition_runtime_regression.py` checks
+primary reload, diagnostic and BIM fallback, merge and linked placement in
+both raster techniques. Rejected replacements preserve the displayed pixels,
+scene identity, resource tables and publication generations.

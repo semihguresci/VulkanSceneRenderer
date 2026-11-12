@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -37,6 +38,7 @@ struct CompressionSourcePlan {
   uint64_t decodedBytes{};
   size_t meshoptViews{};
   size_t dracoPrimitives{};
+  bool dracoAvailable{};
 };
 
 struct CompressionStatistics {
@@ -49,6 +51,7 @@ struct CompressionStatistics {
 
 [[nodiscard]] bool HasMeshoptDecoder() noexcept;
 [[nodiscard]] bool HasDracoDecoder() noexcept;
+[[nodiscard]] bool HasAvailableDracoDecoder(const std::filesystem::path& workerExecutable = {}) noexcept;
 [[nodiscard]] bool IsGeometryCompressionExtension(std::string_view name) noexcept;
 
 // Runs before TinyGLTF allocates declared buffers. Checks compression metadata,
@@ -69,10 +72,12 @@ struct CompressionStatistics {
 // animation, deformation and portable-export paths can then consume the result.
 // Statistics are published only on complete success. Failure never edits an
 // lvalue input or a live scene. TinyGLTF's eager Draco decoder must stay disabled.
+// File callers pass the preflight Draco decision to preserve its output budget.
 [[nodiscard]] tinygltf::Model DecodeCompressedGltf(
     tinygltf::Model source, const CompressionLimits& limits = {},
     CompressionStatistics* statistics = nullptr,
     std::span<const CompressionPlaceholder> placeholders = {},
-    const std::stop_token& stop = {});
+    const std::stop_token& stop = {},
+    std::optional<bool> preflightDracoAvailability = std::nullopt);
 
 } // namespace container::geometry::gltf

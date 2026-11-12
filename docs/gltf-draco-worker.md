@@ -4,8 +4,10 @@
 library is linked only into `ContainerDracoWorker.exe`, beside the application.
 An explicit absolute executable path supports private tests; launch never uses a
 shell or searches `PATH`. Omitting the optional worker reports unavailable
-decoding. Platforms without an equivalent enforced launcher reject bounded
-Draco decoding explicitly; there is no in-process fallback.
+decoding before dependent resource reads. Required Draco rejects the asset.
+Optional Draco uses valid ordinary geometry when the worker is unavailable.
+A launched worker's decode failure rejects the asset. Platforms without an
+equivalent enforced launcher reject bounded Draco decoding explicitly.
 
 On Windows the client creates a hidden, suspended child, assigns a Job Object,
 then resumes it. The job limits process committed memory, CPU time and the

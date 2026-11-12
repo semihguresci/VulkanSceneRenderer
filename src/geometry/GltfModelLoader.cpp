@@ -942,29 +942,44 @@ void replaceSourceJson(std::vector<unsigned char>& bytes,
 
 AssetRequirements sourceRequirements(const nlohmann::json& json) {
   AssetRequirements requirements;
-  const auto& asset = json.at("asset");
-  requirements.version = asset.at("version").get<std::string>();
-  if (asset.contains("minVersion"))
-    requirements.minVersion = asset.at("minVersion").get<std::string>();
-  if (json.contains("extensionsUsed"))
-    requirements.extensionsUsed = json.at("extensionsUsed").get<std::vector<std::string>>();
-  if (json.contains("extensionsRequired"))
-    requirements.extensionsRequired = json.at("extensionsRequired").get<std::vector<std::string>>();
+  const auto asset = json.find("asset");
+  if (asset == json.end() || !asset->is_object())
+    throw std::invalid_argument("invalid_version: asset must be an object with an asset.version string");
+  const auto version = asset->find("version");
+  if (version == asset->end() || !version->is_string())
+    throw std::invalid_argument("invalid_version: asset.version must be a major.minor string");
+  requirements.version = version->get<std::string>();
+  if (const auto minimum = asset->find("minVersion"); minimum != asset->end()) {
+    if (!minimum->is_string())
+      throw std::invalid_argument("invalid_min_version: asset.minVersion must be a major.minor string");
+    requirements.minVersion = minimum->get<std::string>();
+  }
+  auto extensionNames = [&](const char* field) {
+    const auto names = json.find(field);
+    if (names == json.end()) return std::vector<std::string>{};
+    if (!names->is_array() || !std::ranges::all_of(*names, &nlohmann::json::is_string))
+      throw std::invalid_argument(std::string("invalid_extension_declaration: ") + field +
+                                  " must be an array of extension name strings");
+    return names->get<std::vector<std::string>>();
+  };
+  requirements.extensionsUsed = extensionNames("extensionsUsed");
+  requirements.extensionsRequired = extensionNames("extensionsRequired");
   return requirements;
 }
 
-bool omitUnsupportedOptionalCompositionExtensions(nlohmann::json& document,
-    AssetRequirements& requirements, std::span<const std::string_view> unavailable) {
+bool omitUnavailableOptionalExtensions(nlohmann::json& document,
+    AssetRequirements& requirements, std::span<const std::string> unavailable,
+    bool composing, const std::stop_token& stop) {
+  if (!composing && unavailable.empty()) return false;
   const std::set<std::string_view> required(requirements.extensionsRequired.begin(),
                                              requirements.extensionsRequired.end());
   std::set<std::string> omitted;
   for (const auto& name : requirements.extensionsUsed) {
     if (required.contains(name)) continue;
-    const bool unavailableInComposition = std::ranges::find(unavailable, name) != unavailable.end();
-    if (!unavailableInComposition && (GltfMergeSupportsExtension(name) ||
-        extensionCapability(name))) continue;
-    if (!omitted.insert(name).second)
-      throw std::invalid_argument("duplicate optional extension declaration '" + name + "'");
+    const bool unavailableInConsumer = std::ranges::find(unavailable, name) != unavailable.end();
+    const bool opaqueCompositionPayload = composing && !GltfMergeSupportsExtension(name) &&
+        !IsGeometryCompressionExtension(name);
+    if (unavailableInConsumer || opaqueCompositionPayload) omitted.insert(name);
   }
   if (omitted.empty()) return false;
 
@@ -974,7 +989,9 @@ bool omitUnsupportedOptionalCompositionExtensions(nlohmann::json& document,
   // Work on the detached source JSON, not the archive. Remove only the
   // declared extensions; extras may contain arbitrary application metadata.
   std::vector<nlohmann::json*> pending{&document};
+  size_t iteration = 0;
   while (!pending.empty()) {
+    checkImportIteration(stop, iteration++);
     auto& value = *pending.back();
     pending.pop_back();
     if (value.is_object()) {
@@ -1439,16 +1456,25 @@ tinygltf::Model loadGltfModel(const std::string& path,
                   throw std::invalid_argument("linked glTF requires retained image and scene loading");
                 *linkedManifest = std::move(linked);
               }
-              const auto experimental = options.enableExperimentalMaterials
-                  ? std::span<const std::string_view>(kGltfExperimentalMaterialExtensions)
-                  : std::span<const std::string_view>{};
-              std::vector<std::string_view> compositionUnavailable;
-              if (composing) compositionUnavailable.push_back(kGltfOpacityMicromapExtension);
-              if (linkedChild) compositionUnavailable.push_back(kGltfInteractivityExtension);
+              std::vector<std::string_view> experimental;
+              if (options.enableExperimentalMaterials)
+                experimental.assign(kGltfExperimentalMaterialExtensions.begin(),
+                                    kGltfExperimentalMaterialExtensions.end());
+              if (options.enableOpacityMicromaps)
+                experimental.push_back(kGltfOpacityMicromapExtension);
               auto unavailable = options.unavailableRuntimeExtensions;
-              for (const auto name : compositionUnavailable) unavailable.emplace_back(name);
+              if (composing) {
+                for (const auto& capability : extensionCapabilities()) {
+                  if (!GltfMergeSupportsExtension(capability.name) &&
+                      !IsGeometryCompressionExtension(capability.name)) {
+                    unavailable.emplace_back(capability.name);
+                  }
+                }
+              }
+              if (linkedChild) unavailable.emplace_back(kGltfInteractivityExtension);
               auto requirements = sourceRequirements(json);
-              auto validation = validateCapabilities(requirements, path, unavailable, experimental);
+              auto validation = validateCapabilities(requirements, path, unavailable, experimental,
+                                                     options.compression.dracoWorkerExecutable);
               if (normalizedLinkedManifest)
                 validation.diagnostics.push_back({CapabilitySeverity::Warning, "experimental_linked_assets", path,
                     "Using the experimental URI-only glTF 2.1 linked asset profile"});
@@ -1463,6 +1489,18 @@ tinygltf::Model loadGltfModel(const std::string& path,
               }
               if (diagnostics) *diagnostics = std::move(validation.diagnostics);
               if (!errors.empty()) throw std::runtime_error(errors);
+              // Plan from the original image references so alternate-only
+              // payloads stay distinguishable from ordinary unused images.
+              const auto unavailableInConsumer = [&](std::string_view name) {
+                return std::ranges::find(unavailable, name) != unavailable.end();
+              };
+              auto imageCapabilities = DefaultImageSourceCapabilities();
+              imageCapabilities.basisu &= !unavailableInConsumer("KHR_texture_basisu");
+              imageCapabilities.webp &= !unavailableInConsumer("EXT_texture_webp");
+              imageCapabilities.dds &= !unavailableInConsumer("MSFT_texture_dds");
+              imageSources = SelectTextureImageSources(json, imageCapabilities);
+              const bool omittedOptional = omitUnavailableOptionalExtensions(
+                  json, requirements, unavailable, composing, stop);
               bool discardedMicromaps = false;
               if (options.enableOpacityMicromaps) {
                 if (const auto invalid = ValidateGltfOpacityMicromapSourceJson(json)) {
@@ -1479,9 +1517,6 @@ tinygltf::Model loadGltfModel(const std::string& path,
               const auto extendedMaterials = ValidateGltfExtendedMaterialsJson(json);
               const auto experimentalMaterialBytes = options.enableExperimentalMaterials
                   ? ValidateGltfExperimentalMaterialsJson(json) : uint64_t{};
-              imageSources = SelectTextureImageSources(json);
-              const bool omittedOptional = composing &&
-                  omitUnsupportedOptionalCompositionExtensions(json, requirements, compositionUnavailable);
               const auto instancing = ValidateMeshGpuInstancingJson(json, options.instancing, stop);
               xmp.emplace(json);
               for (const auto& warning : xmp->warnings()) {
@@ -1619,7 +1654,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
     }
     CompressionStatistics compressionStatistics;
     model = DecodeCompressedGltf(std::move(model), options.compression, &compressionStatistics,
-                                compressionPlan.placeholders, stop);
+                                compressionPlan.placeholders, stop, compressionPlan.dracoAvailable);
     checkModelImportCancellation(stop);
     if (compressionStatistics.dracoPrimitives || compressionStatistics.meshoptViews ||
         compressionStatistics.fallbackPrimitives || compressionStatistics.fallbackViews)
@@ -1754,6 +1789,22 @@ tinygltf::Model loadGltfComposition(const std::string& path, const LoadOptions& 
 }
 
 }  // namespace
+
+LoadOptions StaticGeometryLoadOptions() {
+  constexpr std::array<std::string_view, 5> geometryExtensions{
+      "KHR_draco_mesh_compression", "EXT_meshopt_compression",
+      "KHR_meshopt_compression", "KHR_mesh_quantization", "KHR_accessor_float64",
+  };
+  LoadOptions options;
+  options.decodeImages = false;
+  for (const auto& capability : extensionCapabilities()) {
+    if (capability.support != ExtensionSupport::Unsupported &&
+        std::ranges::find(geometryExtensions, capability.name) == geometryExtensions.end()) {
+      options.unavailableRuntimeExtensions.emplace_back(capability.name);
+    }
+  }
+  return options;
+}
 
 tinygltf::Model LoadSourceModel(const std::string& path,
                                const LoadOptions& options) {

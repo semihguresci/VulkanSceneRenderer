@@ -105,7 +105,7 @@ TEST(GltfCompression, DefaultsToFiniteDecodedBudgetAndDiagnosesUnavailableRequir
   EXPECT_FALSE(IsGeometryCompressionExtension("KHR_mesh_quantization"));
   for (const auto* name:{kExt,kKhr,kDraco}) {
     const Json document{{"extensionsUsed",{name}},{"extensionsRequired",{name}}};
-    const bool available=name==kDraco?HasDracoDecoder():HasMeshoptDecoder();
+    const bool available=name==kDraco?HasAvailableDracoDecoder():HasMeshoptDecoder();
     if (available) EXPECT_NO_THROW((void)InspectCompressedGltfSource(document,false));
     else EXPECT_THROW((void)InspectCompressedGltfSource(document,false),std::runtime_error);
   }
@@ -401,6 +401,27 @@ TEST(GltfCompression, DracoAllowsSemanticAliasesButRejectsIncompatibleShapesBefo
   auto unavailable=dracoLimits(); unavailable.dracoWorkerExecutable=std::filesystem::absolute("must-not-launch.exe");
   try { (void)DecodeCompressedGltf(fixture.model,unavailable); FAIL()<<"expected shape validation failure"; }
   catch(const std::runtime_error& error) { EXPECT_NE(std::string(error.what()).find("incompatible component counts"),std::string::npos); }
+}
+
+TEST(GltfCompression, DracoNormalizationKeepsThePreflightFallbackDecision) {
+  const auto fixture = dracoTriangle();
+  const auto limits = dracoLimits();
+  ASSERT_TRUE(HasAvailableDracoDecoder(limits.dracoWorkerExecutable));
+  auto source = DecodeCompressedGltf(fixture.model, limits);
+  source.extensionsUsed = {kDraco};
+  source.meshes[0].primitives[0].extensions[kDraco] =
+      fixture.model.meshes[0].primitives[0].extensions.at(kDraco);
+  source.buffers[0].data.front() = 0;
+
+  CompressionStatistics statistics;
+  const auto fallback = DecodeCompressedGltf(source, limits, &statistics, {}, {}, false);
+  EXPECT_EQ(statistics.fallbackPrimitives, 1u);
+  EXPECT_EQ(statistics.dracoPrimitives, 0u);
+  EXPECT_EQ(statistics.decodedBytes, 0u);
+  EXPECT_EQ(fallback.buffers.size(), source.buffers.size());
+  EXPECT_EQ(fallback.accessors[0].bufferView, source.accessors[0].bufferView);
+  EXPECT_TRUE(fallback.meshes[0].primitives[0].extensions.empty());
+  EXPECT_THROW((void)DecodeCompressedGltf(source, limits), std::runtime_error);
 }
 #endif
 } // namespace

@@ -18,6 +18,8 @@ namespace {
 
 using enum ExtensionSupport;
 constexpr std::string_view kExperimentalMaterialFlag = "--experimental-gltf-materials";
+constexpr std::string_view kExperimentalMicromapOptIn =
+    "--experimental-opacity-micromaps on a compatible ray-query device";
 const std::array kExtensions{
     ExtensionCapability{"KHR_texture_transform", Supported,
                         "Per-texture offset, rotation, scale and UV0/UV1 selection"},
@@ -67,6 +69,8 @@ const std::array kExtensions{
                         "Area lights use the engine's supported area-light dialect and shading approximation"},
     ExtensionCapability{"WEBGI_lights_area", Partial,
                         "Area lights use the engine's supported area-light dialect and shading approximation"},
+    ExtensionCapability{"WEBGI_area_light", Partial,
+                        "Area lights use the engine's supported area-light dialect and shading approximation"},
     ExtensionCapability{"KHR_draco_mesh_compression", HasDracoDecoder() ? Partial : Unsupported,
                         HasDracoDecoder()
                           ? "Triangle geometry decoded in a bounded worker; unsupported primitive modes are diagnosed"
@@ -101,8 +105,9 @@ const std::array kExtensions{
                         "Implemented numeric node, material, texture-transform, punctual-light and camera targets and STEP node flags are evaluated; arbitrary Object Model properties are diagnosed as unsupported"},
     ExtensionCapability{"KHR_interactivity", Partial,
                         "Bounded behavior graph execution with a documented operation set and numeric Object Model targets"},
-    ExtensionCapability{kGltfOpacityMicromapExtension, Partial,
-                        "Experimental optional ray acceleration for static alpha-mask primitives; sampled alpha remains available"},
+    ExtensionCapability{.name = kGltfOpacityMicromapExtension, .support = Partial,
+                        .description = "Experimental ray acceleration for static alpha-mask primitives. Core sampled alpha is required",
+                        .experimentalEnableHint = kExperimentalMicromapOptIn, .supportsRequired = false},
     ExtensionCapability{"KHR_materials_variants", Supported,
                         "Validated material mappings, undoable scene selection and portable variant export"},
     ExtensionCapability{kGltfXmpExtension, Supported,
@@ -153,7 +158,8 @@ bool CapabilityValidation::supported() const {
 CapabilityValidation validateCapabilities(const AssetRequirements& requirements,
                                            std::string_view assetPath,
                                            std::span<const std::string> unavailableRuntimeExtensions,
-                                           std::span<const std::string_view> enabledExperimentalExtensions) {
+                                           std::span<const std::string_view> enabledExperimentalExtensions,
+                                           const std::filesystem::path& dracoWorkerExecutable) {
   CapabilityValidation result;
   auto add = [&](CapabilitySeverity severity, std::string code, std::string message) {
     result.diagnostics.push_back(
@@ -175,15 +181,15 @@ CapabilityValidation validateCapabilities(const AssetRequirements& requirements,
       minimumSupported = false;
       add(CapabilitySeverity::Error, "invalid_min_version",
           "asset.minVersion '" + *requirements.minVersion + "' must be a major.minor version");
-    } else if (minimum->major != 2 || minimum->minor != 0) {
-      minimumSupported = false;
-      add(CapabilitySeverity::Error, "unsupported_min_version",
-          "asset.minVersion '" + *requirements.minVersion + "' is unsupported; this runtime supports glTF 2.0");
     } else if (version && (minimum->major > version->major ||
                (minimum->major == version->major && minimum->minor > version->minor))) {
       minimumSupported = false;
       add(CapabilitySeverity::Error, "inconsistent_min_version",
-          "asset.minVersion exceeds asset.version");
+          "asset.minVersion '" + *requirements.minVersion + "' exceeds asset.version '" + requirements.version + "'");
+    } else if (minimum->major != 2 || minimum->minor != 0) {
+      minimumSupported = false;
+      add(CapabilitySeverity::Error, "unsupported_min_version",
+          "asset.minVersion '" + *requirements.minVersion + "' is unsupported; this runtime supports glTF 2.0");
     }
   }
   if (version && version->major == 2 && version->minor > 0 && minimumSupported) {
@@ -206,7 +212,11 @@ CapabilityValidation validateCapabilities(const AssetRequirements& requirements,
       return;
     }
     const auto* capability = extensionCapability(name);
-    if (capability && !capability->experimentalEnableHint.empty() &&
+    if (isRequired && capability && !capability->supportsRequired) {
+      add(CapabilitySeverity::Error, "unsupported_required_extension",
+          "Required extension '" + name + "' is supported only as optional. " +
+              std::string(capability->description));
+    } else if (capability && !capability->experimentalEnableHint.empty() &&
         std::ranges::find(enabledExperimentalExtensions, name) == enabledExperimentalExtensions.end()) {
       add(isRequired ? CapabilitySeverity::Error : CapabilitySeverity::Warning,
           isRequired ? "unsupported_required_extension" : "unsupported_optional_extension",
@@ -221,6 +231,14 @@ CapabilityValidation validateCapabilities(const AssetRequirements& requirements,
       add(isRequired ? CapabilitySeverity::Error : CapabilitySeverity::Warning,
           isRequired ? "unsupported_required_extension" : "unsupported_optional_extension",
           std::move(message));
+    } else if (name == "KHR_draco_mesh_compression" && !HasAvailableDracoDecoder(dracoWorkerExecutable)) {
+      const auto workerPath = dracoWorkerExecutable.empty()
+          ? std::u8string(u8"ContainerDracoWorker.exe beside the application") : dracoWorkerExecutable.u8string();
+      add(isRequired ? CapabilitySeverity::Error : CapabilitySeverity::Warning,
+          isRequired ? "unsupported_required_extension" : "unsupported_optional_extension",
+          std::string(isRequired ? "Required" : "Optional") + " extension '" + name +
+              "' needs an available bounded Draco worker at " + std::string(workerPath.begin(), workerPath.end()) +
+              (isRequired ? "" : ". Importing the asset's fallback"));
     } else if (capability->support == Partial) {
       add(CapabilitySeverity::Warning, "partial_extension_support",
           "Extension '" + name + "': " + std::string(capability->description));

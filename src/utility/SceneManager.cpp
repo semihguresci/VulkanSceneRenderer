@@ -123,7 +123,7 @@ container::geometry::GltfLoadResult prepareDefaultSceneGltfAsset(
       "KHR_node_visibility", "KHR_node_selectability", "KHR_node_hoverability",
       "KHR_interactivity",
       "KHR_lights_punctual", "KHR_lights_area", "EXT_lights_area", "WEBGI_lights_area",
-      "EXT_lights_ies",
+      "WEBGI_area_light", "EXT_lights_ies",
       "KHR_xmp_json_ld",
   };
   return prepareSceneGltfAsset(path, std::move(options));
@@ -1721,7 +1721,7 @@ bool SceneManager::reloadModel(
     } else if (!path.empty()) {
       if (prepared == nullptr) {
         locallyPrepared = prepareGltfModel(path, std::numeric_limits<uintmax_t>::max(),
-            config_.experimentalGltfLinkedAssets, false, experimental, config_.experimentalOpacityMicromaps);
+            config_.experimentalGltfLinkedAssets, false, experimental, deviceWrapper_->opacityMicromapsEnabled());
         prepared = &*locallyPrepared;
       }
       incomingSamplerKeys = container::material::CollectGltfMaterialSamplerKeys(prepared->gltfModel);
@@ -2986,7 +2986,7 @@ void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
       auto result = prepared ? std::move(*prepared)
                              : prepareGltfModel(container::util::pathToUtf8(resolvedPath),
                                  std::numeric_limits<uintmax_t>::max(), config_.experimentalGltfLinkedAssets,
-                                 false, config_.experimentalGltfMaterials, config_.experimentalOpacityMicromaps);
+                                 false, config_.experimentalGltfMaterials, deviceWrapper_->opacityMicromapsEnabled());
       auto variants=container::geometry::gltf::ParseMaterialVariants(result.gltfModel);
       const std::vector<uint32_t> preflightMaterials(result.model.primitiveRanges().size(),0);
       auto catalog=BuildGltfSceneCatalog(result.gltfModel);

@@ -9,7 +9,9 @@
 
 #include <cmath>
 #include <array>
+#include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <limits>
 #include <string_view>
@@ -80,6 +82,40 @@ glm::vec2 applyGltfTextureTransform(
 }
 
 }  // namespace
+
+TEST(MaterialXIntegration, FileImportChecksDocumentCapabilities) {
+  struct TemporaryAsset {
+    std::filesystem::path path = std::filesystem::temp_directory_path() /
+        ("container_materialx_gltf_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()) + ".gltf");
+    ~TemporaryAsset() {
+      std::error_code ignored;
+      std::filesystem::remove(path, ignored);
+    }
+  } asset;
+  auto write = [&](std::string_view contents) {
+    std::ofstream file(asset.path, std::ios::binary);
+    file << contents;
+    ASSERT_TRUE(file.good());
+  };
+
+  const container::material::SlangMaterialXBridge bridge;
+  write(R"({"asset":{"version":"2.0"},"extensionsUsed":["KHR_materials_unlit"],
+      "materials":[{"name":"surface","extensions":{"KHR_materials_unlit":{}}}]})");
+  EXPECT_EQ(bridge.loadGltfMaterials(asset.path.string()).size(), 1u);
+
+  write(R"({"asset":{"version":"2.0"},"extensionsUsed":["KHR_materials_unlit"],
+      "extensionsRequired":["KHR_materials_unlit"],"materials":[{"name":"surface"}]})");
+  try {
+    (void)bridge.loadGltfMaterials(asset.path.string());
+    FAIL() << "Expected an unsupported required extension error";
+  } catch (const std::runtime_error& error) {
+    const std::string message = error.what();
+    EXPECT_NE(message.find(asset.path.filename().string()), std::string::npos);
+    EXPECT_NE(message.find("unsupported_required_extension"), std::string::npos);
+    EXPECT_NE(message.find("KHR_materials_unlit"), std::string::npos);
+  }
+}
 
 TEST(MaterialXIntegration, BindsSeparateColorAndDataResourcesForTheSameSourceTexture) {
   using namespace container::material;

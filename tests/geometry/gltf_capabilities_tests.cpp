@@ -139,8 +139,10 @@ void expectLoadError(Load load, const std::filesystem::path& path,
     FAIL() << "Expected a capability rejection";
   } catch (const std::runtime_error& error) {
     const std::string message = error.what();
+    const auto canonical = std::filesystem::canonical(path);
     EXPECT_TRUE(message.find(path.string()) != std::string::npos ||
-                message.find(path.generic_string()) != std::string::npos) << message;
+                message.find(path.generic_string()) != std::string::npos ||
+                message.find(canonical.generic_string()) != std::string::npos) << message;
     EXPECT_NE(message.find(detail), std::string::npos) << message;
   }
 }
@@ -185,7 +187,7 @@ TEST(GltfCapabilities, WarnsForCompatibleForwardMinorWithOrWithoutMinimum) {
 }
 
 TEST(GltfCapabilities, RejectsUnsupportedAndMalformedMinimumVersions) {
-  for (const char* minimum : {"1.0", "2.1", "3.0"}) {
+  for (const char* minimum : {"1.0", "2.1", "2.7"}) {
     const auto validation = gltf::validateCapabilities({"2.7", minimum}, "minimum.gltf");
     EXPECT_FALSE(validation.supported()) << minimum;
     ASSERT_EQ(validation.diagnostics.size(), 1u);
@@ -197,7 +199,13 @@ TEST(GltfCapabilities, RejectsUnsupportedAndMalformedMinimumVersions) {
     ASSERT_EQ(validation.diagnostics.size(), 1u);
     EXPECT_EQ(validation.diagnostics[0].code, "invalid_min_version");
   }
-  EXPECT_FALSE(gltf::validateCapabilities({"2.0", "2.1"}, "minimum.gltf").supported());
+  for (const char* minimum : {"2.1", "3.0"}) {
+    const auto validation = gltf::validateCapabilities({"2.0", minimum}, "minimum.gltf");
+    EXPECT_FALSE(validation.supported()) << minimum;
+    ASSERT_EQ(validation.diagnostics.size(), 1u);
+    EXPECT_EQ(validation.diagnostics[0].code, "inconsistent_min_version");
+    EXPECT_NE(validation.diagnostics[0].message.find(minimum), std::string::npos);
+  }
 }
 
 TEST(GltfCapabilities, RejectsUnknownRequiredEvenWhenOmittedFromUsed) {
@@ -245,7 +253,7 @@ TEST(GltfCapabilities, RegistryMatchesImplementedMaterialsLightsAndUvTransforms)
 
 TEST(GltfCapabilities, AcceptsImplementedApproximationsWithExplicitWarning) {
   for (const char* extension : {"KHR_materials_pbrSpecularGlossiness", "KHR_materials_iridescence", "KHR_lights_area",
-                                "EXT_lights_area", "WEBGI_lights_area", "KHR_animation_pointer",
+                                "EXT_lights_area", "WEBGI_lights_area", "WEBGI_area_light", "KHR_animation_pointer",
                                 "KHR_mesh_quantization", "KHR_accessor_float64", "MSFT_texture_dds", "EXT_mesh_gpu_instancing"}) {
     const auto validation = gltf::validateCapabilities(
         {"2.0", {}, {extension}, {extension}}, "approximate.gltf");
@@ -286,13 +294,48 @@ TEST(GltfCapabilities, RejectsUnavailableDecodersAndUnimplementedRuntimeFeatures
 TEST(GltfCapabilities, CompressionRegistryReflectsConfiguredBackends) {
   for (const char* extension : {"KHR_draco_mesh_compression", "EXT_meshopt_compression",
                                  "KHR_meshopt_compression"}) {
-    const bool available = std::string_view(extension) == "KHR_draco_mesh_compression"
-        ? gltf::HasDracoDecoder() : gltf::HasMeshoptDecoder();
+    const bool draco = std::string_view(extension) == "KHR_draco_mesh_compression";
+    const bool compiled = draco ? gltf::HasDracoDecoder() : gltf::HasMeshoptDecoder();
     const auto* capability = gltf::extensionCapability(extension);
     ASSERT_NE(capability, nullptr);
-    EXPECT_EQ(capability->support != ExtensionSupport::Unsupported, available);
+    EXPECT_EQ(capability->support != ExtensionSupport::Unsupported, compiled);
     EXPECT_EQ(gltf::validateCapabilities(
-        {"2.0", {}, {extension}, {extension}}, "compression.gltf").supported(), available);
+        {"2.0", {}, {extension}, {extension}}, "compression.gltf").supported(),
+        draco ? gltf::HasAvailableDracoDecoder() : compiled);
+  }
+}
+
+TEST(GltfCapabilitiesLoader, MissingDracoWorkerPreservesOptionalCoreGeometry) {
+  constexpr auto extension = "KHR_draco_mesh_compression";
+  for (const bool binary : {false, true}) {
+    AssetFixture fixture;
+    auto json = fixture.triangle();
+    json["extensionsUsed"] = {extension};
+    json["bufferViews"].push_back({{"buffer", 0}, {"byteLength", 1}});
+    json["meshes"][0]["primitives"][0]["extensions"][extension] = {
+        {"bufferView", 1}, {"attributes", {{"POSITION", 7}}}};
+    gltf::LoadOptions options;
+    options.compression.dracoWorkerExecutable = fixture.directory / "missing-worker.exe";
+    const auto path = fixture.save(json, binary);
+
+    const auto fallback = gltf::LoadModelWithSource(path.string(), options);
+    EXPECT_EQ(fallback.model.vertices().size(), 3u);
+    EXPECT_TRUE(fallback.gltfModel.extensionsUsed.empty());
+    ASSERT_EQ(fallback.capabilityDiagnostics.size(), 1u);
+    const auto& diagnostic = fallback.capabilityDiagnostics[0];
+    EXPECT_EQ(diagnostic.code, "unsupported_optional_extension");
+    EXPECT_NE(diagnostic.message.find(extension), std::string::npos);
+    if (gltf::HasDracoDecoder())
+      EXPECT_NE(diagnostic.message.find("missing-worker.exe"), std::string::npos);
+
+    json["extensionsRequired"] = {extension};
+    json["buffers"][0]["uri"] = "must-not-be-read.bin";
+    fixture.save(json, binary);
+    expectLoadError([&] { (void)gltf::LoadModelWithSource(path.string(), options); }, path,
+                    "unsupported_required_extension");
+    if (gltf::HasDracoDecoder())
+      expectLoadError([&] { (void)gltf::LoadSourceModel(path.string(), options); }, path,
+                      "missing-worker.exe");
   }
 }
 
@@ -342,7 +385,7 @@ TEST(GltfCapabilitiesLoader, CompositionOmitsOptionalExtensionsAndKeepsCoreFallb
   AssetFixture fixture;
   auto json = fixture.triangle();
   json["asset"] = {{"version", "2.1"}, {"minVersion", "2.0"}};
-  json["extensionsUsed"] = {"VENDOR_optional"};
+  json["extensionsUsed"] = {"VENDOR_optional", "VENDOR_optional"};
   json["extensions"]["VENDOR_optional"] = {{"accessor", 99}};
   json["images"] = {{{"uri", kEmbeddedRedPng}}};
   json["textures"] = {{{"source", 0}, {"extensions", {{"VENDOR_optional", {{"source", 99}}}}}}};
@@ -368,10 +411,10 @@ TEST(GltfCapabilitiesLoader, CompositionOmitsOptionalExtensionsAndKeepsCoreFallb
     EXPECT_EQ(source.meshes[0].primitives[0].extras, primary.gltfModel.meshes[0].primitives[0].extras);
     EXPECT_EQ(source.textures[0].source, 0);
     EXPECT_TRUE(source.textures[0].extensions.empty());
-    EXPECT_TRUE(std::ranges::any_of(incoming.capabilityDiagnostics, [&](const auto& diagnostic) {
+    EXPECT_EQ(std::ranges::count_if(incoming.capabilityDiagnostics, [&](const auto& diagnostic) {
       return diagnostic.assetPath == path.string() && diagnostic.code == "unsupported_optional_extension" &&
           diagnostic.message.contains("VENDOR_optional");
-    }));
+    }), 1);
     EXPECT_NO_THROW((void)gltf::PlanGltfMerge(tinygltf::Model{}, source));
   }
 
@@ -386,6 +429,40 @@ TEST(GltfCapabilitiesLoader, CompositionOmitsOptionalExtensionsAndKeepsCoreFallb
   const auto requiredPath = fixture.save(json);
   expectLoadError([&] { (void)gltf::LoadModelWithSource(requiredPath.string(), composition); },
                   requiredPath, "unsupported_required_extension");
+}
+
+TEST(GltfCapabilitiesLoader, CompositionKeepsOnlyDestinationUnremappableOptionalMetadata) {
+  AssetFixture fixture;
+  auto json = alternateTextureAsset(fixture, kAlternateImages[2]);
+  constexpr auto sky = "OMI_environment_sky";
+  constexpr auto avif = "EXT_texture_avif";
+  json["extensionsUsed"].push_back(sky);
+  json["extensions"][sky] = {{"name", "optional authored sky"}};
+  const auto path = fixture.save(json);
+
+  gltf::LoadOptions options;
+  options.retainEncodedImages = true;
+  const auto destination = gltf::LoadModelWithSource(path.string(), options);
+  ASSERT_TRUE(destination.gltfModel.textures.at(0).extensions.contains(avif));
+  ASSERT_TRUE(destination.gltfModel.extensions.contains(sky));
+
+  options.mergeInput = true;
+  const auto incoming = gltf::LoadModelWithSource(path.string(), options);
+  EXPECT_TRUE(incoming.gltfModel.extensionsUsed.empty());
+  EXPECT_TRUE(incoming.gltfModel.textures.at(0).extensions.empty());
+  EXPECT_TRUE(incoming.gltfModel.extensions.empty());
+  for (const auto name : {avif, sky}) {
+    EXPECT_TRUE(std::ranges::any_of(incoming.capabilityDiagnostics, [&](const auto& diagnostic) {
+      return diagnostic.assetPath == path.string() && diagnostic.code == "unsupported_optional_extension" &&
+          diagnostic.message.contains(name);
+    }));
+  }
+
+  const auto merged = gltf::PlanGltfMerge(destination.gltfModel, incoming.gltfModel);
+  EXPECT_TRUE(merged.model.textures.at(0).extensions.contains(avif));
+  EXPECT_TRUE(merged.model.extensions.contains(sky));
+  EXPECT_TRUE(merged.model.textures.at(1).extensions.empty());
+  EXPECT_EQ(merged.model.textures.at(1).source, 2);
 }
 
 TEST(GltfCapabilitiesLoader, SelfContainedModeRejectsFileUrisAndPreservesEmbeddedData) {
@@ -431,13 +508,48 @@ TEST(GltfCapabilitiesLoader, ConsumerRejectsRequiredInstancingBeforeResourceIo) 
                   path, "Required extension 'EXT_mesh_gpu_instancing' is unavailable in the active scene consumer");
 
   json.erase("extensionsRequired");
-  fixture.save(json);
-  const auto optional = gltf::LoadModelWithSource(path.string(), staticComposition);
-  EXPECT_EQ(optional.model.vertices().size(), 3u);
-  ASSERT_EQ(optional.capabilityDiagnostics.size(), 1u);
-  EXPECT_EQ(optional.capabilityDiagnostics[0].assetPath, path.string());
-  EXPECT_EQ(optional.capabilityDiagnostics[0].code, "unsupported_optional_extension");
-  EXPECT_NE(optional.capabilityDiagnostics[0].message.find(extension), std::string::npos);
+  // This consumer cannot use the extension. It should publish the core mesh
+  // even though the optional accessor would fail the instancing validator.
+  json["nodes"][0]["extensions"][extension]["attributes"]["TRANSLATION"] = 99;
+  for (const bool binary : {false, true}) {
+    const auto optionalPath = fixture.save(json, binary);
+    const auto optional = gltf::LoadModelWithSource(optionalPath.string(), staticComposition);
+    EXPECT_EQ(optional.model.vertices().size(), 3u);
+    EXPECT_TRUE(optional.instancing.nodes.empty());
+    EXPECT_FALSE(optional.gltfModel.nodes.at(0).extensions.contains(extension));
+    ASSERT_EQ(optional.capabilityDiagnostics.size(), 1u);
+    EXPECT_EQ(optional.capabilityDiagnostics[0].assetPath, optionalPath.string());
+    EXPECT_EQ(optional.capabilityDiagnostics[0].code, "unsupported_optional_extension");
+    EXPECT_NE(optional.capabilityDiagnostics[0].message.find(extension), std::string::npos);
+  }
+}
+
+TEST(GltfCapabilitiesLoader, ConsumerUsesCoreTextureWhenAnAvailableCodecIsRestricted) {
+  AssetFixture fixture;
+  constexpr AlternateImageFixture alternate{"MSFT_texture_dds", "image/vnd-ms.dds", "AQIDBA=="};
+  auto json = alternateTextureAsset(fixture, alternate);
+  gltf::LoadOptions options;
+  options.unavailableRuntimeExtensions = {alternate.extension};
+
+  for (const bool binary : {false, true}) {
+    const auto path = fixture.save(json, binary);
+    const auto fallback = gltf::LoadModelWithSource(path.string(), options);
+    EXPECT_EQ(fallback.model.vertices().size(), 3u);
+    const auto& source = fallback.gltfModel;
+    ASSERT_EQ(source.images.size(), 2u);
+    EXPECT_EQ(source.images[0].image, (std::vector<unsigned char>{255, 0, 0, 255}));
+    EXPECT_TRUE(source.images[1].image.empty());
+    EXPECT_EQ(source.textures.at(0).source, 0);
+    EXPECT_FALSE(source.textures.at(0).extensions.contains(alternate.extension));
+    ASSERT_EQ(fallback.capabilityDiagnostics.size(), 1u);
+    EXPECT_EQ(fallback.capabilityDiagnostics[0].code, "unsupported_optional_extension");
+  }
+
+  json["extensionsRequired"] = {alternate.extension};
+  json["buffers"][0]["uri"] = "missing.bin";
+  const auto path = fixture.save(json);
+  expectLoadError([&] { (void)gltf::LoadModelWithSource(path.string(), gltf::StaticGeometryLoadOptions()); },
+                  path, "Required extension 'MSFT_texture_dds' is unavailable in the active scene consumer");
 }
 
 TEST(GltfCapabilitiesLoader, OptionalAlternateImagesUseDecodedPngFallbacks) {
@@ -586,6 +698,35 @@ TEST(GltfCapabilitiesLoader, EnforcesOwnVersionAndMinimumPolicyForJsonFiles) {
   path = fixture.save(json);
   expectLoadError([&] { (void)gltf::LoadModelFromFile(path.string()); }, path,
                   "invalid_version");
+}
+
+TEST(GltfCapabilitiesLoader, DiagnosesInvalidMetadataBeforeJsonAndGlbResourceReads) {
+  AssetFixture fixture;
+  auto source = fixture.triangle();
+  source["buffers"][0]["uri"] = "missing-buffer.bin";
+  const auto expectInvalid = [&](const nlohmann::json& json, std::string_view diagnostic) {
+    for (const bool binary : {false, true}) {
+      const auto path = fixture.save(json, binary);
+      expectLoadError([&] { (void)gltf::LoadModelWithSource(path.string()); }, path, diagnostic);
+      expectLoadError([&] { (void)gltf::LoadSourceModel(path.string()); }, path, diagnostic);
+    }
+  };
+  auto json = source;
+  json["asset"].erase("version");
+  expectInvalid(json, "invalid_version: asset.version");
+  json["asset"]["version"] = 2;
+  expectInvalid(json, "invalid_version: asset.version");
+  json["asset"]["version"] = "2.0";
+  json["asset"]["minVersion"] = nullptr;
+  expectInvalid(json, "invalid_min_version: asset.minVersion");
+  json["asset"]["minVersion"] = "2.1";
+  expectInvalid(json, "inconsistent_min_version: asset.minVersion '2.1' exceeds asset.version '2.0'");
+  json = source;
+  json["extensionsRequired"] = "VENDOR_example";
+  expectInvalid(json, "invalid_extension_declaration: extensionsRequired");
+  json = source;
+  json["extensionsUsed"] = nlohmann::json::array({"VENDOR_example", 1});
+  expectInvalid(json, "invalid_extension_declaration: extensionsUsed");
 }
 
 TEST(GltfCapabilitiesLoader, PreservesEncodedAndDeclaredGeometryBudgets) {
@@ -758,6 +899,51 @@ TEST(GltfCapabilitiesLoader, ExperimentalScatterReadsLegacyDefaultsAndTextureTra
   EXPECT_EQ(texture.transform.offset, glm::vec2(.25f, .75f));
   EXPECT_FLOAT_EQ(materials[2].scatterStrength, 0.0f);
   EXPECT_EQ(materials[2].scatterColor, glm::vec3(1));
+}
+
+TEST(GltfCapabilitiesLoader, MicromapsRequireCoreFallbackEvenWhenEnabled) {
+  const std::string extension(gltf::kGltfOpacityMicromapExtension);
+  for (const bool binary : {false, true}) {
+    AssetFixture fixture;
+    auto json = fixture.triangle();
+    json["extensionsUsed"] = {extension};
+    json["extensions"][extension]["micromaps"] = nlohmann::json::array({{
+        {"data", 1}, {"triangles", 2}, {"usageCounts", {1}},
+        {"usageLevels", {0}}, {"usageFormats", {1}}}});
+    json["meshes"][0]["primitives"][0]["extensions"][extension] = {{"micromap", 0}};
+    json["buffers"][0]["byteLength"] = 48;
+    json["bufferViews"].push_back({{"buffer", 0}, {"byteOffset", 36}, {"byteLength", 1}});
+    json["bufferViews"].push_back({{"buffer", 0}, {"byteOffset", 40}, {"byteLength", 8}});
+    {
+      // One byte of packed level-zero coverage, alignment padding and one triangle record.
+      const std::array<char, 12> payload{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0};
+      std::ofstream file(fixture.directory / "triangle.bin", std::ios::binary | std::ios::app);
+      file.write(payload.data(), payload.size());
+    }
+
+    const auto path = fixture.save(json, binary);
+    const auto fallback = gltf::LoadModelWithSource(path.string());
+    ASSERT_EQ(fallback.capabilityDiagnostics.size(), 1u);
+    EXPECT_EQ(fallback.capabilityDiagnostics[0].code, "unsupported_optional_extension");
+    EXPECT_NE(fallback.capabilityDiagnostics[0].message.find("--experimental-opacity-micromaps"), std::string::npos);
+    EXPECT_EQ(fallback.model.vertices().size(), 3u);
+    EXPECT_TRUE(fallback.opacityMicromaps.primitives.empty());
+
+    gltf::LoadOptions enabled;
+    enabled.enableOpacityMicromaps = true;
+    const auto accelerated = gltf::LoadModelWithSource(path.string(), enabled);
+    ASSERT_EQ(accelerated.capabilityDiagnostics.size(), 1u);
+    EXPECT_EQ(accelerated.capabilityDiagnostics[0].code, "partial_extension_support");
+    EXPECT_TRUE(accelerated.opacityMicromaps.find(0, 0));
+
+    json["extensionsRequired"] = {extension};
+    json["buffers"][0]["uri"] = "must-not-be-read.bin";
+    fixture.save(json, binary);
+    expectLoadError([&] { (void)gltf::LoadModelWithSource(path.string()); }, path,
+                    "unsupported_required_extension");
+    expectLoadError([&] { (void)gltf::LoadModelWithSource(path.string(), enabled); }, path,
+                    "Required extension '" + extension + "' is supported only as optional");
+  }
 }
 
 TEST(GltfCapabilitiesLoader, RequiredNodeFlagsUseTheSameJsonAndBinaryMetadataGate) {
