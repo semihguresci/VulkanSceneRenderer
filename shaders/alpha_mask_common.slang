@@ -26,12 +26,44 @@ float Bayer4x4Threshold(uint2 pixelCoord)
     return (float(bayer) + 0.5) / 16.0;
 }
 
-bool AlphaMaskPass(float alpha, float cutoff, float4 pixelPosition)
+float UntexturedAlphaMaskDistance(float vertexAlpha, GpuMaterial material)
 {
-    // Shared by depth, G-buffer, and shadow passes so cutout coverage writes
-    // the same depth, material, and shadow silhouettes.
-    float alphaWidth = max(abs(ddx(alpha)) + abs(ddy(alpha)), 1e-4);
-    float coverage = saturate((alpha - cutoff) / alphaWidth + 0.5);
+    const float alpha = saturate(material.color.a * vertexAlpha * saturate(material.opacityFactor));
+    return ResolveGpuMaterialAlpha(alpha, material.flags) - material.alphaCutoff;
+}
+
+bool AlphaMaskUsesTexture(GpuMaterial material)
+{
+    return material.baseColorTextureIndex != kInvalidGpuMaterialTexture ||
+           material.opacityTextureIndex != kInvalidGpuMaterialTexture;
+}
+
+float RasterBaseAlpha(float interpolatedAlpha, float flatVertexAlpha, GpuMaterial material)
+{
+    if ((material.flags & kGpuMaterialFlagAlphaMask) == 0u || !AlphaMaskUsesTexture(material))
+        return interpolatedAlpha;
+
+    // Perspective interpolation can add roundoff to a constant vertex alpha.
+    // Recover the authored value within that precision before sampling textures.
+    const float flatAlpha = material.color.a * flatVertexAlpha;
+    const float difference = interpolatedAlpha - flatAlpha;
+    const float variation = abs(ddx(difference)) + abs(ddy(difference));
+    const float interpolationTolerance = abs(flatAlpha) * (4.0 * 1.1920928955078125e-7);
+    return abs(difference) + variation <= interpolationTolerance ? flatAlpha : interpolatedAlpha;
+}
+
+bool AlphaMaskPass(float alpha, float untexturedDistance, GpuMaterial material, float4 pixelPosition)
+{
+    if (material.alphaCutoff <= 0.0) return true;
+    if (material.alphaCutoff > 1.0) return false;
+
+    // Interpolate the signed distance for untextured masks. Exact equality
+    // stays zero, and perspective rounding cannot erase a nearby cutoff sign.
+    const float distanceToCutoff = AlphaMaskUsesTexture(material)
+        ? alpha - material.alphaCutoff : untexturedDistance;
+    const float alphaWidth = abs(ddx(distanceToCutoff)) + abs(ddy(distanceToCutoff));
+    if (alphaWidth == 0.0) return distanceToCutoff >= 0.0;
+    float coverage = saturate(distanceToCutoff / alphaWidth + 0.5);
     if (coverage <= 0.0) return false;
     if (coverage >= 1.0) return true;
     return coverage >= Bayer4x4Threshold(uint2(pixelPosition.xy));

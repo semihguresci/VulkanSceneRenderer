@@ -110,7 +110,7 @@ struct VSOutput
     [[vk::location(8)]] float emissiveStrength;
     [[vk::location(9)]] float2 metallicRoughness;
     [[vk::location(10)]] float3 worldPos;
-    [[vk::location(11)]] float alphaCutoff;
+    [[vk::location(11)]] float untexturedMaskDistance;
     [[vk::location(12)]] float normalTextureScale;
     [[vk::location(13)]] float occlusionStrength;
     [[vk::location(14)]] uint flags;
@@ -121,7 +121,7 @@ struct VSOutput
     [[vk::location(19)]] uint specularTextureIndex;
     [[vk::location(20)]] uint opacityTextureIndex;
     [[vk::location(21)]] uint transmissionTextureIndex;
-    [[vk::location(22)]] float opacityFactor;
+    [[vk::location(22)]] nointerpolation float flatVertexAlpha;
     [[vk::location(23)]] float specularFactor;
     [[vk::location(24)]] float transmissionFactor;
     [[vk::location(25)]] uint objectIndex;
@@ -167,7 +167,7 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
     output.emissiveStrength = material.emissiveStrength;
     output.metallicRoughness = material.metallicRoughness;
     output.worldPos = worldPos.xyz;
-    output.alphaCutoff = material.alphaCutoff;
+    output.untexturedMaskDistance = UntexturedAlphaMaskDistance(input.inColorAlpha, material);
     output.normalTextureScale = material.normalTextureScale;
     output.occlusionStrength = material.occlusionStrength;
     output.flags = material.flags | obj.objectInfo.y;
@@ -178,7 +178,7 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
     output.specularTextureIndex = material.specularTextureIndex;
     output.opacityTextureIndex = material.opacityTextureIndex;
     output.transmissionTextureIndex = material.transmissionTextureIndex;
-    output.opacityFactor = material.opacityFactor;
+    output.flatVertexAlpha = input.inColorAlpha;
     output.specularFactor = material.specularFactor;
     output.transmissionFactor = material.transmissionFactor;
     output.objectIndex = objectIndex;
@@ -255,7 +255,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         material.iridescenceThicknessTextureTransform);
 
     float3 baseColor = vertIn.baseColor.rgb;
-    float baseAlpha = vertIn.baseColor.a;
+    float baseAlpha = RasterBaseAlpha(vertIn.baseColor.a, vertIn.flatVertexAlpha, material);
 
     if (vertIn.baseColorTextureIndex != 0xffffffff)
     {
@@ -265,16 +265,18 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         baseAlpha *= texColor.a;
     }
     baseAlpha = EvaluateOpacity(
-        baseAlpha, vertIn.opacityTextureIndex, vertIn.opacityFactor,
+        baseAlpha, vertIn.opacityTextureIndex, material.opacityFactor,
         opacityTexCoord, material.opacityTextureTransform);
     baseAlpha = ResolveGpuMaterialAlpha(baseAlpha, material.flags);
 
-    if ((vertIn.flags & kObjectFlagAlphaCutoff) != 0u &&
-        !AlphaMaskPass(baseAlpha, vertIn.alphaCutoff, vertIn.pos))
+    const bool alphaMasked = (vertIn.flags & kObjectFlagAlphaCutoff) != 0u;
+    if (alphaMasked && !AlphaMaskPass(baseAlpha, vertIn.untexturedMaskDistance, material, vertIn.pos))
     {
         discard;
     }
 
+    // A surviving MASK fragment is fully covered before optical transmission.
+    baseAlpha = alphaMasked ? 1.0 : baseAlpha;
     if (baseAlpha <= 0.01)
     {
         discard;

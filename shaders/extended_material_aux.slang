@@ -52,7 +52,7 @@ struct VSOutput
     [[vk::location(8)]] float emissiveStrength;
     [[vk::location(9)]] float2 metallicRoughness;
     [[vk::location(10)]] float3 worldPos;
-    [[vk::location(11)]] float alphaCutoff;
+    [[vk::location(11)]] float untexturedMaskDistance;
     [[vk::location(12)]] float normalTextureScale;
     [[vk::location(13)]] float occlusionStrength;
     [[vk::location(14)]] uint flags;
@@ -62,7 +62,7 @@ struct VSOutput
     [[vk::location(18)]] uint metalnessTextureIndex;
     [[vk::location(19)]] uint specularTextureIndex;
     [[vk::location(20)]] uint opacityTextureIndex;
-    [[vk::location(21)]] float opacityFactor;
+    [[vk::location(21)]] nointerpolation float flatVertexAlpha;
     [[vk::location(22)]] float specularFactor;
     [[vk::location(23)]] uint objectIndex;
     [[vk::location(24)]] float2 texCoord1;
@@ -113,7 +113,7 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
     output.emissiveStrength = material.emissiveStrength;
     output.metallicRoughness = material.metallicRoughness;
     output.worldPos = worldPos.xyz;
-    output.alphaCutoff = material.alphaCutoff;
+    output.untexturedMaskDistance = UntexturedAlphaMaskDistance(input.inColorAlpha, material);
     output.normalTextureScale = material.normalTextureScale;
     output.occlusionStrength = material.occlusionStrength;
     output.flags = material.flags | obj.objectInfo.y;
@@ -123,7 +123,7 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
     output.metalnessTextureIndex = material.metalnessTextureIndex;
     output.specularTextureIndex = material.specularTextureIndex;
     output.opacityTextureIndex = material.opacityTextureIndex;
-    output.opacityFactor = material.opacityFactor;
+    output.flatVertexAlpha = input.inColorAlpha;
     output.specularFactor = material.specularFactor;
     output.objectIndex = objectIndex;
     return output;
@@ -154,7 +154,7 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
         material.opacityTextureTransform);
 
     float3 baseColor = vertIn.baseColor.rgb;
-    float baseAlpha = vertIn.baseColor.a;
+    float baseAlpha = RasterBaseAlpha(vertIn.baseColor.a, vertIn.flatVertexAlpha, material);
 
     if (vertIn.baseColorTextureIndex != 0xffffffff)
     {
@@ -164,12 +164,12 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
         baseAlpha *= texColor.a;
     }
     baseAlpha = EvaluateOpacity(
-        baseAlpha, vertIn.opacityTextureIndex, vertIn.opacityFactor,
+        baseAlpha, vertIn.opacityTextureIndex, material.opacityFactor,
         opacityTexCoord, material.opacityTextureTransform);
     baseAlpha = ResolveGpuMaterialAlpha(baseAlpha, material.flags);
 
     if ((vertIn.flags & kObjectFlagAlphaMask) != 0u &&
-        !AlphaMaskPass(baseAlpha, vertIn.alphaCutoff, vertIn.pos))
+        !AlphaMaskPass(baseAlpha, vertIn.untexturedMaskDistance, material, vertIn.pos))
     {
         discard;
     }
