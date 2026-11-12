@@ -84,6 +84,13 @@ python $check --renderer $renderer --output out/validation/instancing/hidden --h
 python $check --renderer $renderer --output out/validation/instancing/ray --ray
 ```
 
+The November 12, 2026 Release run on an NVIDIA GeForce RTX 2080 SUPER passed
+501 test cases across 15 suites without skips. It passed 98 checks across 92
+native captures with zero Vulkan or synchronization validation errors. All 30
+positive image comparisons were pixel-exact. The ray fixtures recorded six
+TLAS placements with two static BLAS or three deformed-owner and receiver BLAS.
+[Windows NVIDIA verification report](../tests/visual-regression/instancing/windows-nvidia/mesh-instancing-results.json).
+
 Global framing bounds also compose every instance and exclude hidden source
 subtrees. The follow-up checkpoint passed 830 cases across 39 executables with
 all real GPU paths enabled, and 42 native captures / 44 checks in both raster

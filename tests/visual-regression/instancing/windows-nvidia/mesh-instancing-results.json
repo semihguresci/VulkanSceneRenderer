@@ -1,0 +1,2364 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-12",
+  "issue": 98,
+  "rendererSha256": "05b30d8c6fc1359387709dc643233dc0f6dbc704146e69ae3a1381f03cd73af4",
+  "build": {
+    "compiler": "MSVC-19.51.36260.0",
+    "configuration": "Release",
+    "revision": "59fb56215ce86deec3e070fcbc13a83dbb8cfbc5"
+  },
+  "vulkanDevice": {
+    "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+    "vendorId": 4318,
+    "deviceId": 7809,
+    "driverVersion": 2559967232,
+    "vulkanApiVersion": 4211029
+  },
+  "vulkanValidationLayer": "1.4.363.1",
+  "vulkanValidationErrors": 0,
+  "synchronizationValidation": true,
+  "ctest": [
+    {
+      "target": "gltf_instancing_tests",
+      "passed": 10,
+      "skipped": [],
+      "xmlSha256": "36a2c848f5de04b895636da4c09d3fab4c87f05e88b565e06ad21a09a323260d",
+      "vulkanSynchronizationValidation": false
+    },
+    {
+      "target": "gltf_scene_instancing_tests",
+      "passed": 12,
+      "skipped": [],
+      "xmlSha256": "e2a93d5ff0e7501bd6808060b5fa02259a2bd95638affc2c0c43693c759c14de",
+      "vulkanSynchronizationValidation": false
+    },
+    {
+      "target": "gltf_capabilities_tests",
+      "passed": 46,
+      "skipped": [],
+      "xmlSha256": "4e9fef42a05e37517e371f4e5d897d019488dcceab19a0604d64e76ab052e762",
+      "vulkanSynchronizationValidation": false
+    },
+    {
+      "target": "gltf_scene_export_tests",
+      "passed": 50,
+      "skipped": [],
+      "xmlSha256": "7a6d196930f14aa604ec7c26fa453c2c007d44a5f8204de346d09eb37d0a1929",
+      "vulkanSynchronizationValidation": false
+    },
+    {
+      "target": "gltf_deformation_loader_tests",
+      "passed": 10,
+      "skipped": [],
+      "xmlSha256": "8a3027ff184ce28239da153c6ebde660a3c456e08f30dbe4a939d6711c5ef14a",
+      "vulkanSynchronizationValidation": false
+    },
+    {
+      "target": "gltf_deformation_scene_tests",
+      "passed": 25,
+      "skipped": [],
+      "xmlSha256": "2789e61c459432f3c8f921c0ffb737812dc53d96c5b7017db93277e0aedda024",
+      "vulkanSynchronizationValidation": false
+    },
+    {
+      "target": "gltf_deformation_gpu_tests",
+      "passed": 6,
+      "skipped": [],
+      "xmlSha256": "a90bd5380f3b6ff7a7107d7a51603377c6690931ff9d60a632691af42acc953c",
+      "vulkanSynchronizationValidation": true
+    },
+    {
+      "target": "ray_scene_tests",
+      "passed": 25,
+      "skipped": [],
+      "xmlSha256": "d26689b6af59b513ec1844a295ddb73e55c3edcf6cb4b637ad8c973fc1347050",
+      "vulkanSynchronizationValidation": false
+    },
+    {
+      "target": "ray_scene_gpu_tests",
+      "passed": 8,
+      "skipped": [],
+      "xmlSha256": "6d17032945fc086b0b3e5f7f93d35cf47d8158b6ff08e4c4802cca25afd42e4f",
+      "vulkanSynchronizationValidation": true
+    },
+    {
+      "target": "scene_merge_generation_gpu_tests",
+      "passed": 88,
+      "skipped": [],
+      "xmlSha256": "f361e896115da10cd91d8819b2640efd69078cfd8a28df2433258e281ccfac5f",
+      "vulkanSynchronizationValidation": true
+    },
+    {
+      "target": "gltf_node_flags_tests",
+      "passed": 8,
+      "skipped": [],
+      "xmlSha256": "b708a41d7f7e2a9051914cdcf69da32c5bcaca20c3b859fb4842520f8268ee84",
+      "vulkanSynchronizationValidation": false
+    },
+    {
+      "target": "temporal_capture_tests",
+      "passed": 150,
+      "skipped": [],
+      "xmlSha256": "b96e61e1e8548df89b9fe7812e54051cf48f9ab7b3f201dc3507c188b8a6d83f",
+      "vulkanSynchronizationValidation": false
+    },
+    {
+      "target": "transparent_pick_depth_copy_recorder_tests",
+      "passed": 8,
+      "skipped": [],
+      "xmlSha256": "fe8f8072b6a411884f443f4f4956911b25b2701cb951221c512802abd60a3a85",
+      "vulkanSynchronizationValidation": false
+    },
+    {
+      "target": "transparent_pick_raster_pass_recorder_tests",
+      "passed": 8,
+      "skipped": [],
+      "xmlSha256": "a7560c3076cc5efff1f5fc3e80133be0cb02a61a5b98d37466a4da97e59ff156",
+      "vulkanSynchronizationValidation": false
+    },
+    {
+      "target": "render_graph_tests",
+      "passed": 47,
+      "skipped": [],
+      "xmlSha256": "b804cfe596641f395df88ea9fd2f7f281394acc158a119025b1f1698b57c2181",
+      "vulkanSynchronizationValidation": false
+    }
+  ],
+  "passedTests": 501,
+  "skippedTests": 0,
+  "nativeLanes": [
+    {
+      "lane": "picks",
+      "captureCount": 26,
+      "checkCount": 26,
+      "harnessSourceSha256": "cc4ab626b6d1354f572c74129da3ecc16c5c910f9862d96b019f2fb942e61881",
+      "checks": [
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "gpu-instance-picking",
+          "frame": 3,
+          "phase": "visible",
+          "sourceInstance": 0,
+          "pixel": [
+            244,
+            245
+          ],
+          "rawGpuId": 6,
+          "gpuReadbackAvailable": true,
+          "graphNode": 2,
+          "hit": true
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "gpu-instance-picking",
+          "frame": 4,
+          "phase": "visible",
+          "sourceInstance": 1,
+          "pixel": [
+            405,
+            245
+          ],
+          "rawGpuId": 5,
+          "gpuReadbackAvailable": true,
+          "graphNode": 3,
+          "hit": true
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "gpu-instance-picking",
+          "frame": 5,
+          "phase": "visible",
+          "sourceInstance": 2,
+          "pixel": [
+            250,
+            116
+          ],
+          "rawGpuId": 4,
+          "gpuReadbackAvailable": true,
+          "graphNode": 4,
+          "hit": true
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "gpu-instance-picking",
+          "frame": 6,
+          "phase": "visible",
+          "sourceInstance": 3,
+          "pixel": [
+            400,
+            117
+          ],
+          "rawGpuId": 3,
+          "gpuReadbackAvailable": true,
+          "graphNode": 5,
+          "hit": true
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "gpu-instance-picking",
+          "frame": 9,
+          "phase": "hidden",
+          "sourceInstance": 0,
+          "pixel": [
+            244,
+            245
+          ],
+          "rawGpuId": 0,
+          "gpuReadbackAvailable": true,
+          "graphNode": 2,
+          "hit": false
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "gpu-instance-picking",
+          "frame": 10,
+          "phase": "hidden",
+          "sourceInstance": 1,
+          "pixel": [
+            405,
+            245
+          ],
+          "rawGpuId": 0,
+          "gpuReadbackAvailable": true,
+          "graphNode": 3,
+          "hit": false
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "gpu-instance-picking",
+          "frame": 11,
+          "phase": "hidden",
+          "sourceInstance": 2,
+          "pixel": [
+            250,
+            116
+          ],
+          "rawGpuId": 0,
+          "gpuReadbackAvailable": true,
+          "graphNode": 4,
+          "hit": false
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "gpu-instance-picking",
+          "frame": 12,
+          "phase": "hidden",
+          "sourceInstance": 3,
+          "pixel": [
+            400,
+            117
+          ],
+          "rawGpuId": 0,
+          "gpuReadbackAvailable": true,
+          "graphNode": 5,
+          "hit": false
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "gpu-instance-picking",
+          "frame": 15,
+          "phase": "all-hidden",
+          "sourceInstance": 0,
+          "pixel": [
+            244,
+            245
+          ],
+          "rawGpuId": 0,
+          "gpuReadbackAvailable": true,
+          "graphNode": 2,
+          "hit": false
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "gpu-instance-picking",
+          "frame": 19,
+          "phase": "restored",
+          "sourceInstance": 0,
+          "pixel": [
+            244,
+            245
+          ],
+          "rawGpuId": 6,
+          "gpuReadbackAvailable": true,
+          "graphNode": 2,
+          "hit": true
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "gpu-instance-picking",
+          "frame": 20,
+          "phase": "restored",
+          "sourceInstance": 1,
+          "pixel": [
+            405,
+            245
+          ],
+          "rawGpuId": 5,
+          "gpuReadbackAvailable": true,
+          "graphNode": 3,
+          "hit": true
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "gpu-instance-picking",
+          "frame": 21,
+          "phase": "restored",
+          "sourceInstance": 2,
+          "pixel": [
+            250,
+            116
+          ],
+          "rawGpuId": 4,
+          "gpuReadbackAvailable": true,
+          "graphNode": 4,
+          "hit": true
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "gpu-instance-picking",
+          "frame": 22,
+          "phase": "restored",
+          "sourceInstance": 3,
+          "pixel": [
+            400,
+            117
+          ],
+          "rawGpuId": 3,
+          "gpuReadbackAvailable": true,
+          "graphNode": 5,
+          "hit": true
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "gpu-instance-picking",
+          "frame": 3,
+          "phase": "visible",
+          "sourceInstance": 0,
+          "pixel": [
+            244,
+            245
+          ],
+          "rawGpuId": 6,
+          "gpuReadbackAvailable": true,
+          "graphNode": 2,
+          "hit": true
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "gpu-instance-picking",
+          "frame": 4,
+          "phase": "visible",
+          "sourceInstance": 1,
+          "pixel": [
+            405,
+            245
+          ],
+          "rawGpuId": 5,
+          "gpuReadbackAvailable": true,
+          "graphNode": 3,
+          "hit": true
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "gpu-instance-picking",
+          "frame": 5,
+          "phase": "visible",
+          "sourceInstance": 2,
+          "pixel": [
+            250,
+            116
+          ],
+          "rawGpuId": 4,
+          "gpuReadbackAvailable": true,
+          "graphNode": 4,
+          "hit": true
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "gpu-instance-picking",
+          "frame": 6,
+          "phase": "visible",
+          "sourceInstance": 3,
+          "pixel": [
+            400,
+            117
+          ],
+          "rawGpuId": 3,
+          "gpuReadbackAvailable": true,
+          "graphNode": 5,
+          "hit": true
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "gpu-instance-picking",
+          "frame": 9,
+          "phase": "hidden",
+          "sourceInstance": 0,
+          "pixel": [
+            244,
+            245
+          ],
+          "rawGpuId": 0,
+          "gpuReadbackAvailable": true,
+          "graphNode": 2,
+          "hit": false
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "gpu-instance-picking",
+          "frame": 10,
+          "phase": "hidden",
+          "sourceInstance": 1,
+          "pixel": [
+            405,
+            245
+          ],
+          "rawGpuId": 0,
+          "gpuReadbackAvailable": true,
+          "graphNode": 3,
+          "hit": false
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "gpu-instance-picking",
+          "frame": 11,
+          "phase": "hidden",
+          "sourceInstance": 2,
+          "pixel": [
+            250,
+            116
+          ],
+          "rawGpuId": 0,
+          "gpuReadbackAvailable": true,
+          "graphNode": 4,
+          "hit": false
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "gpu-instance-picking",
+          "frame": 12,
+          "phase": "hidden",
+          "sourceInstance": 3,
+          "pixel": [
+            400,
+            117
+          ],
+          "rawGpuId": 0,
+          "gpuReadbackAvailable": true,
+          "graphNode": 5,
+          "hit": false
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "gpu-instance-picking",
+          "frame": 15,
+          "phase": "all-hidden",
+          "sourceInstance": 0,
+          "pixel": [
+            244,
+            245
+          ],
+          "rawGpuId": null,
+          "gpuReadbackAvailable": false,
+          "graphNode": 2,
+          "hit": false
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "gpu-instance-picking",
+          "frame": 19,
+          "phase": "restored",
+          "sourceInstance": 0,
+          "pixel": [
+            244,
+            245
+          ],
+          "rawGpuId": 6,
+          "gpuReadbackAvailable": true,
+          "graphNode": 2,
+          "hit": true
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "gpu-instance-picking",
+          "frame": 20,
+          "phase": "restored",
+          "sourceInstance": 1,
+          "pixel": [
+            405,
+            245
+          ],
+          "rawGpuId": 5,
+          "gpuReadbackAvailable": true,
+          "graphNode": 3,
+          "hit": true
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "gpu-instance-picking",
+          "frame": 21,
+          "phase": "restored",
+          "sourceInstance": 2,
+          "pixel": [
+            250,
+            116
+          ],
+          "rawGpuId": 4,
+          "gpuReadbackAvailable": true,
+          "graphNode": 4,
+          "hit": true
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "gpu-instance-picking",
+          "frame": 22,
+          "phase": "restored",
+          "sourceInstance": 3,
+          "pixel": [
+            400,
+            117
+          ],
+          "rawGpuId": 3,
+          "gpuReadbackAvailable": true,
+          "graphNode": 5,
+          "hit": true
+        }
+      ],
+      "positivePixelComparisons": [],
+      "captures": [
+        {
+          "image": "deferred-raster-gpu-picking.frame-0003.png",
+          "imageSha256": "01e0864b2304259e2b14038cd9ec6c669d6e98f9372d84d6392aa6f7a76324a8",
+          "telemetrySha256": "f4256c54ad9da55a12f1f97ecc7323cbc0899191b38848eb81fbb8a60d0280cb",
+          "log": "deferred-raster-gpu-picking.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-gpu-picking.frame-0004.png",
+          "imageSha256": "01e0864b2304259e2b14038cd9ec6c669d6e98f9372d84d6392aa6f7a76324a8",
+          "telemetrySha256": "a551cd0438648067cd5c7ca5d0d0f8f4367d930e4be504da4b64951756e4154a",
+          "log": "deferred-raster-gpu-picking.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-gpu-picking.frame-0005.png",
+          "imageSha256": "01e0864b2304259e2b14038cd9ec6c669d6e98f9372d84d6392aa6f7a76324a8",
+          "telemetrySha256": "62192a6c0d452ea0a261c32774847669ab6eced058dda1b41c25b8530f486f58",
+          "log": "deferred-raster-gpu-picking.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-gpu-picking.frame-0006.png",
+          "imageSha256": "01e0864b2304259e2b14038cd9ec6c669d6e98f9372d84d6392aa6f7a76324a8",
+          "telemetrySha256": "bfa1f6ac2fb9ef88ed2592f10d32ddc68a62bd8eb518a66f4119fbe556ea01e3",
+          "log": "deferred-raster-gpu-picking.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-gpu-picking.frame-0009.png",
+          "imageSha256": "e04d355154aa37e01ae03c7c35a9b6d75adc2ae533d97fd303fb136c443fdc5a",
+          "telemetrySha256": "dd6cb91b50d6e81d40d24be1499e8fa79276a4ab192ad6fc7f8c65da2d36829a",
+          "log": "deferred-raster-gpu-picking.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-gpu-picking.frame-0010.png",
+          "imageSha256": "e04d355154aa37e01ae03c7c35a9b6d75adc2ae533d97fd303fb136c443fdc5a",
+          "telemetrySha256": "f18d86e5af5dc7d08b3bd73e6ed58bccd82eff13f1b14df8b3014856757ec02d",
+          "log": "deferred-raster-gpu-picking.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-gpu-picking.frame-0011.png",
+          "imageSha256": "e04d355154aa37e01ae03c7c35a9b6d75adc2ae533d97fd303fb136c443fdc5a",
+          "telemetrySha256": "9e97630e237dc0dedbbb36f499c16705e608f895d8b406370da88692ab2c5211",
+          "log": "deferred-raster-gpu-picking.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-gpu-picking.frame-0012.png",
+          "imageSha256": "e04d355154aa37e01ae03c7c35a9b6d75adc2ae533d97fd303fb136c443fdc5a",
+          "telemetrySha256": "735d40b9e183154cd1d1ae5234caff014a05318d87421e7e3d45c622095cdede",
+          "log": "deferred-raster-gpu-picking.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-gpu-picking.frame-0015.png",
+          "imageSha256": "e04d355154aa37e01ae03c7c35a9b6d75adc2ae533d97fd303fb136c443fdc5a",
+          "telemetrySha256": "aba4708c8f50d56a1097221a369929f49ec04350a6b8a68dc01d36a0c67771f9",
+          "log": "deferred-raster-gpu-picking.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-gpu-picking.frame-0019.png",
+          "imageSha256": "01e0864b2304259e2b14038cd9ec6c669d6e98f9372d84d6392aa6f7a76324a8",
+          "telemetrySha256": "ba794fe09a81554878934dba1edab931ee15916137a4fc327a64d205003dc838",
+          "log": "deferred-raster-gpu-picking.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-gpu-picking.frame-0020.png",
+          "imageSha256": "01e0864b2304259e2b14038cd9ec6c669d6e98f9372d84d6392aa6f7a76324a8",
+          "telemetrySha256": "ceaf83ccf9846ff2cf5d9259d7548b29c4d11a30e01a5944c9df16220efb29aa",
+          "log": "deferred-raster-gpu-picking.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-gpu-picking.frame-0021.png",
+          "imageSha256": "01e0864b2304259e2b14038cd9ec6c669d6e98f9372d84d6392aa6f7a76324a8",
+          "telemetrySha256": "6917696160adafee47830479f15c3d436a355fecdf7234feec295c869122f201",
+          "log": "deferred-raster-gpu-picking.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-gpu-picking.png",
+          "imageSha256": "01e0864b2304259e2b14038cd9ec6c669d6e98f9372d84d6392aa6f7a76324a8",
+          "telemetrySha256": "9edb6070342eef542de0c37671498611b02769779d9b644b552ea69221440f2c",
+          "log": "deferred-raster-gpu-picking.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "forward-raster-gpu-picking.frame-0003.png",
+          "imageSha256": "01e0864b2304259e2b14038cd9ec6c669d6e98f9372d84d6392aa6f7a76324a8",
+          "telemetrySha256": "f84a1808ee806f03ec26bf078b0290a101eb13d44cc4a665ca0ab5913071ab58",
+          "log": "forward-raster-gpu-picking.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-gpu-picking.frame-0004.png",
+          "imageSha256": "01e0864b2304259e2b14038cd9ec6c669d6e98f9372d84d6392aa6f7a76324a8",
+          "telemetrySha256": "6669967784d72df6342ad2ac184d7f4d1446c078baf84d7a7a35cce045e3d5d2",
+          "log": "forward-raster-gpu-picking.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-gpu-picking.frame-0005.png",
+          "imageSha256": "01e0864b2304259e2b14038cd9ec6c669d6e98f9372d84d6392aa6f7a76324a8",
+          "telemetrySha256": "144293c43d5db93a2eefcf76caa26c02096d2c9b477cf7f938f744d807c94b9e",
+          "log": "forward-raster-gpu-picking.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-gpu-picking.frame-0006.png",
+          "imageSha256": "01e0864b2304259e2b14038cd9ec6c669d6e98f9372d84d6392aa6f7a76324a8",
+          "telemetrySha256": "bab4cd31ec60534e318fba618d09c9a1c3312f64ab1e78e1a1f5aef5ebff2893",
+          "log": "forward-raster-gpu-picking.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-gpu-picking.frame-0009.png",
+          "imageSha256": "e04d355154aa37e01ae03c7c35a9b6d75adc2ae533d97fd303fb136c443fdc5a",
+          "telemetrySha256": "58ed7614ae4fd64bdbb14ce0438faff7265c72aa62124401d364c71456b597b1",
+          "log": "forward-raster-gpu-picking.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-gpu-picking.frame-0010.png",
+          "imageSha256": "e04d355154aa37e01ae03c7c35a9b6d75adc2ae533d97fd303fb136c443fdc5a",
+          "telemetrySha256": "8ff0a8e6529ac63fac78b19d45a885622b8eac15eaf2d37ec9ae3bd3df41c349",
+          "log": "forward-raster-gpu-picking.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-gpu-picking.frame-0011.png",
+          "imageSha256": "e04d355154aa37e01ae03c7c35a9b6d75adc2ae533d97fd303fb136c443fdc5a",
+          "telemetrySha256": "fb7a6fdb01df016e15fa2ffb3f9b8e6936a0c956facdf4cbe081f1439cde2bf7",
+          "log": "forward-raster-gpu-picking.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-gpu-picking.frame-0012.png",
+          "imageSha256": "e04d355154aa37e01ae03c7c35a9b6d75adc2ae533d97fd303fb136c443fdc5a",
+          "telemetrySha256": "b68d9bf1042cd3dece650875273abb1fe8e8d4022a2d0c1676251271e70c7f33",
+          "log": "forward-raster-gpu-picking.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-gpu-picking.frame-0015.png",
+          "imageSha256": "e04d355154aa37e01ae03c7c35a9b6d75adc2ae533d97fd303fb136c443fdc5a",
+          "telemetrySha256": "b2da54f730baecdbd0091c849e78349c6db47683275ed2c2ba539decb7825ef4",
+          "log": "forward-raster-gpu-picking.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-gpu-picking.frame-0019.png",
+          "imageSha256": "01e0864b2304259e2b14038cd9ec6c669d6e98f9372d84d6392aa6f7a76324a8",
+          "telemetrySha256": "108d9db63c91a5139c07dbea2312d373a5fad5717c1ccb9c1d7dd0a749396c5c",
+          "log": "forward-raster-gpu-picking.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-gpu-picking.frame-0020.png",
+          "imageSha256": "01e0864b2304259e2b14038cd9ec6c669d6e98f9372d84d6392aa6f7a76324a8",
+          "telemetrySha256": "758410035978c6fb00ff595517358889165f9cac6a83467b4f04c80ba594c1c2",
+          "log": "forward-raster-gpu-picking.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-gpu-picking.frame-0021.png",
+          "imageSha256": "01e0864b2304259e2b14038cd9ec6c669d6e98f9372d84d6392aa6f7a76324a8",
+          "telemetrySha256": "6103ef8e33aebb108ba4f38c89d79ae33c60c2f20ca155a6e10d7fd197c40737",
+          "log": "forward-raster-gpu-picking.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-gpu-picking.png",
+          "imageSha256": "01e0864b2304259e2b14038cd9ec6c669d6e98f9372d84d6392aa6f7a76324a8",
+          "telemetrySha256": "72e73a015273191d787fe207eead3f92bb2c4c5a0e4ff54ad66d391355c1ce9b",
+          "log": "forward-raster-gpu-picking.log",
+          "technique": "forward-raster"
+        }
+      ],
+      "logSha256": {
+        "deferred-raster-gpu-picking.log": "e0d690b13ae8e52fd219e89aa9c630b2e3c0fc5149fbacae1560c1944f1c6503",
+        "forward-raster-gpu-picking.log": "f7b72228271bada51344b6a655dc3a26389cd0912f8c92d099500925e72e69ce"
+      },
+      "assetAndSequenceSha256": {
+        "gpu-picking-source.gltf": "50903188b5b80c5a5f5632294731c6f2625d797eeee144b075970572fd6192cc",
+        "gpu-picking-sequence.json": "a333e785a599f73b688d6ddabb85693b8dde31474b59a47d1ce94d67f5bc0223"
+      }
+    },
+    {
+      "lane": "animated",
+      "captureCount": 30,
+      "checkCount": 30,
+      "harnessSourceSha256": "cc4ab626b6d1354f572c74129da3ecc16c5c910f9862d96b019f2fb942e61881",
+      "checks": [
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "ordinary-repeated-nodes",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "missing-instancing-negative-control",
+          "meanAbsolutePixelError": 14.443755787037038,
+          "changedPixelFraction": 0.08378472222222222
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "shared-geometry-deformation-and-instance-picks",
+          "sourceVertexCount": 3,
+          "sourceIndexCount": 3,
+          "sourceInstances": 4,
+          "productionCpuPicks": 4,
+          "hiddenInstancePickRejections": 0,
+          "framingBoundsMaxError": 0.0,
+          "deformedStreams": 0,
+          "repeatedDeformedStreams": 0
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "glb-reload",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "gltf-reload",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "ordinary-repeated-nodes",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "missing-instancing-negative-control",
+          "meanAbsolutePixelError": 14.443755787037038,
+          "changedPixelFraction": 0.08378472222222222
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "shared-geometry-deformation-and-instance-picks",
+          "sourceVertexCount": 3,
+          "sourceIndexCount": 3,
+          "sourceInstances": 4,
+          "productionCpuPicks": 4,
+          "hiddenInstancePickRejections": 0,
+          "framingBoundsMaxError": 0.0,
+          "deformedStreams": 0,
+          "repeatedDeformedStreams": 0
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "glb-reload",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "gltf-reload",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "skin",
+          "technique": "deferred-raster",
+          "check": "ordinary-repeated-nodes",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "skin",
+          "technique": "deferred-raster",
+          "check": "missing-instancing-negative-control",
+          "meanAbsolutePixelError": 13.900350115740741,
+          "changedPixelFraction": 0.08089409722222222
+        },
+        {
+          "case": "skin",
+          "technique": "deferred-raster",
+          "check": "shared-geometry-deformation-and-instance-picks",
+          "sourceVertexCount": 3,
+          "sourceIndexCount": 3,
+          "sourceInstances": 4,
+          "productionCpuPicks": 4,
+          "hiddenInstancePickRejections": 0,
+          "framingBoundsMaxError": 0.0,
+          "deformedStreams": 1,
+          "repeatedDeformedStreams": 4
+        },
+        {
+          "case": "skin",
+          "technique": "deferred-raster",
+          "check": "glb-reload",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "skin",
+          "technique": "deferred-raster",
+          "check": "gltf-reload",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "skin",
+          "technique": "forward-raster",
+          "check": "ordinary-repeated-nodes",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "skin",
+          "technique": "forward-raster",
+          "check": "missing-instancing-negative-control",
+          "meanAbsolutePixelError": 13.900350115740741,
+          "changedPixelFraction": 0.08089409722222222
+        },
+        {
+          "case": "skin",
+          "technique": "forward-raster",
+          "check": "shared-geometry-deformation-and-instance-picks",
+          "sourceVertexCount": 3,
+          "sourceIndexCount": 3,
+          "sourceInstances": 4,
+          "productionCpuPicks": 4,
+          "hiddenInstancePickRejections": 0,
+          "framingBoundsMaxError": 0.0,
+          "deformedStreams": 1,
+          "repeatedDeformedStreams": 4
+        },
+        {
+          "case": "skin",
+          "technique": "forward-raster",
+          "check": "glb-reload",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "skin",
+          "technique": "forward-raster",
+          "check": "gltf-reload",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "morph",
+          "technique": "deferred-raster",
+          "check": "ordinary-repeated-nodes",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "morph",
+          "technique": "deferred-raster",
+          "check": "missing-instancing-negative-control",
+          "meanAbsolutePixelError": 14.61875,
+          "changedPixelFraction": 0.084921875
+        },
+        {
+          "case": "morph",
+          "technique": "deferred-raster",
+          "check": "shared-geometry-deformation-and-instance-picks",
+          "sourceVertexCount": 3,
+          "sourceIndexCount": 3,
+          "sourceInstances": 4,
+          "productionCpuPicks": 4,
+          "hiddenInstancePickRejections": 0,
+          "framingBoundsMaxError": 0.0,
+          "deformedStreams": 2,
+          "repeatedDeformedStreams": 5
+        },
+        {
+          "case": "morph",
+          "technique": "deferred-raster",
+          "check": "glb-reload",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "morph",
+          "technique": "deferred-raster",
+          "check": "gltf-reload",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "morph",
+          "technique": "forward-raster",
+          "check": "ordinary-repeated-nodes",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "morph",
+          "technique": "forward-raster",
+          "check": "missing-instancing-negative-control",
+          "meanAbsolutePixelError": 14.61875,
+          "changedPixelFraction": 0.084921875
+        },
+        {
+          "case": "morph",
+          "technique": "forward-raster",
+          "check": "shared-geometry-deformation-and-instance-picks",
+          "sourceVertexCount": 3,
+          "sourceIndexCount": 3,
+          "sourceInstances": 4,
+          "productionCpuPicks": 4,
+          "hiddenInstancePickRejections": 0,
+          "framingBoundsMaxError": 0.0,
+          "deformedStreams": 2,
+          "repeatedDeformedStreams": 5
+        },
+        {
+          "case": "morph",
+          "technique": "forward-raster",
+          "check": "glb-reload",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "morph",
+          "technique": "forward-raster",
+          "check": "gltf-reload",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        }
+      ],
+      "positivePixelComparisons": [
+        {
+          "source": "deferred-raster-static-source.png",
+          "reference": "deferred-raster-static-reference.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "deferred-raster-static-source.png",
+          "reference": "deferred-raster-static-glb-reload.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "deferred-raster-static-source.png",
+          "reference": "deferred-raster-static-ascii-reload.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "forward-raster-static-source.png",
+          "reference": "forward-raster-static-reference.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "forward-raster-static-source.png",
+          "reference": "forward-raster-static-glb-reload.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "forward-raster-static-source.png",
+          "reference": "forward-raster-static-ascii-reload.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "deferred-raster-skin-source.png",
+          "reference": "deferred-raster-skin-reference.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "deferred-raster-skin-source.png",
+          "reference": "deferred-raster-skin-glb-reload.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "deferred-raster-skin-source.png",
+          "reference": "deferred-raster-skin-ascii-reload.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "forward-raster-skin-source.png",
+          "reference": "forward-raster-skin-reference.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "forward-raster-skin-source.png",
+          "reference": "forward-raster-skin-glb-reload.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "forward-raster-skin-source.png",
+          "reference": "forward-raster-skin-ascii-reload.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "deferred-raster-morph-source.png",
+          "reference": "deferred-raster-morph-reference.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "deferred-raster-morph-source.png",
+          "reference": "deferred-raster-morph-glb-reload.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "deferred-raster-morph-source.png",
+          "reference": "deferred-raster-morph-ascii-reload.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "forward-raster-morph-source.png",
+          "reference": "forward-raster-morph-reference.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "forward-raster-morph-source.png",
+          "reference": "forward-raster-morph-glb-reload.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "forward-raster-morph-source.png",
+          "reference": "forward-raster-morph-ascii-reload.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        }
+      ],
+      "captures": [
+        {
+          "image": "deferred-raster-static-source.png",
+          "imageSha256": "9364b0b8588aeec682ac333e567a17536b444d34e7340520a4a7219291b5aa14",
+          "telemetrySha256": "f0c5681d9b4d7f68c433b88cd2fe231c1daada4213f57ed07397c5f8deefcd53",
+          "log": "deferred-raster-static-source.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-static-reference.png",
+          "imageSha256": "9364b0b8588aeec682ac333e567a17536b444d34e7340520a4a7219291b5aa14",
+          "telemetrySha256": "73c138c3528048a4c19239f104336d7f7acff22dfea5b7b181b808c771f8d665",
+          "log": "deferred-raster-static-reference.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-static-dropped.png",
+          "imageSha256": "0db383432520b2298e3e2ae37d7abedfd84f78265ce3a5939cc8a2ba7c77e49a",
+          "telemetrySha256": "af87639f2fa18f4923e8588500c8b410523be2a00c63d8f2a6fed2775dd8b591",
+          "log": "deferred-raster-static-dropped.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-static-glb-reload.png",
+          "imageSha256": "9364b0b8588aeec682ac333e567a17536b444d34e7340520a4a7219291b5aa14",
+          "telemetrySha256": "2acd076a223a5f03b8e1c46923165254a17e83819cad579c9492e65fa6ad1136",
+          "log": "deferred-raster-static-glb-reload.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-static-ascii-reload.png",
+          "imageSha256": "9364b0b8588aeec682ac333e567a17536b444d34e7340520a4a7219291b5aa14",
+          "telemetrySha256": "c63752eff6bc6c217ae05b870cf3e8bc970efc9f27d75895486cc9da8df8d05d",
+          "log": "deferred-raster-static-ascii-reload.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "forward-raster-static-source.png",
+          "imageSha256": "9364b0b8588aeec682ac333e567a17536b444d34e7340520a4a7219291b5aa14",
+          "telemetrySha256": "9ae06f8d87a3854dd066af577621a4f4804c9f8a2e7b3374e2e402d40b054212",
+          "log": "forward-raster-static-source.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-static-reference.png",
+          "imageSha256": "9364b0b8588aeec682ac333e567a17536b444d34e7340520a4a7219291b5aa14",
+          "telemetrySha256": "2433b94f869d36743c48c614b7445fbf17f57743514645f7f0f234e723810517",
+          "log": "forward-raster-static-reference.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-static-dropped.png",
+          "imageSha256": "0db383432520b2298e3e2ae37d7abedfd84f78265ce3a5939cc8a2ba7c77e49a",
+          "telemetrySha256": "d44c1b75c521a91c47d5416f5f1336a2fd58d0b2194fd5f207fb92b87ac9e44e",
+          "log": "forward-raster-static-dropped.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-static-glb-reload.png",
+          "imageSha256": "9364b0b8588aeec682ac333e567a17536b444d34e7340520a4a7219291b5aa14",
+          "telemetrySha256": "34987cebafe4955f16abf89f0006223e0f0d61b3b83bcd639e9f6006ba16cb11",
+          "log": "forward-raster-static-glb-reload.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-static-ascii-reload.png",
+          "imageSha256": "9364b0b8588aeec682ac333e567a17536b444d34e7340520a4a7219291b5aa14",
+          "telemetrySha256": "020fbe57ad264612e8ec24b39768027a9c482944b91409f627b42e22bff56d0a",
+          "log": "forward-raster-static-ascii-reload.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "deferred-raster-skin-source.png",
+          "imageSha256": "d735727c4716b2054b4efd25572edc9c9542d7f130204569be0f1a2e49a8e3ac",
+          "telemetrySha256": "b6d2ab1006f40eaea1ebb1b6c2ee0da23f4792718c03be23235257b9e69aae9f",
+          "log": "deferred-raster-skin-source.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-skin-reference.png",
+          "imageSha256": "d735727c4716b2054b4efd25572edc9c9542d7f130204569be0f1a2e49a8e3ac",
+          "telemetrySha256": "b94f75e59919f0a33d4e57049c3fcc081035bb62dafd27895acbd6add044bcb0",
+          "log": "deferred-raster-skin-reference.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-skin-dropped.png",
+          "imageSha256": "d0315ea17a8ae55d0232feb36c0946b76e3ada8786354c7b22be3f0a2e4cce00",
+          "telemetrySha256": "a370e4eeadb852e126f2bbaf15b185872d0b8e29542f250e573ef6e43477194f",
+          "log": "deferred-raster-skin-dropped.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-skin-glb-reload.png",
+          "imageSha256": "d735727c4716b2054b4efd25572edc9c9542d7f130204569be0f1a2e49a8e3ac",
+          "telemetrySha256": "1f69183ea157012fa194b7421df8025843fd297b80a37df7d4610aade6d1337b",
+          "log": "deferred-raster-skin-glb-reload.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-skin-ascii-reload.png",
+          "imageSha256": "d735727c4716b2054b4efd25572edc9c9542d7f130204569be0f1a2e49a8e3ac",
+          "telemetrySha256": "92a90269a1fe0924733cbaa42b9fbbbc3256127b42f2328fe2ffff194d4e5b7f",
+          "log": "deferred-raster-skin-ascii-reload.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "forward-raster-skin-source.png",
+          "imageSha256": "d735727c4716b2054b4efd25572edc9c9542d7f130204569be0f1a2e49a8e3ac",
+          "telemetrySha256": "a827463d7fe875dfffc404af43bf284d579f70ea80a985a2e2d5feb8ab58cc2a",
+          "log": "forward-raster-skin-source.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-skin-reference.png",
+          "imageSha256": "d735727c4716b2054b4efd25572edc9c9542d7f130204569be0f1a2e49a8e3ac",
+          "telemetrySha256": "4dca677eba697a7e145f2ca950f43ad99bc877c373b13547f70dae277fe0d079",
+          "log": "forward-raster-skin-reference.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-skin-dropped.png",
+          "imageSha256": "d0315ea17a8ae55d0232feb36c0946b76e3ada8786354c7b22be3f0a2e4cce00",
+          "telemetrySha256": "09cba8aef855d6e7aab7c5b846a0a536556a1a7cc1910e6eeb97219e42134f25",
+          "log": "forward-raster-skin-dropped.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-skin-glb-reload.png",
+          "imageSha256": "d735727c4716b2054b4efd25572edc9c9542d7f130204569be0f1a2e49a8e3ac",
+          "telemetrySha256": "2d454d461a170982392301b975ca326a385d126358d25fda12b822963327e3af",
+          "log": "forward-raster-skin-glb-reload.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-skin-ascii-reload.png",
+          "imageSha256": "d735727c4716b2054b4efd25572edc9c9542d7f130204569be0f1a2e49a8e3ac",
+          "telemetrySha256": "2a6b0062feb758356fef72477f78cadfb1f4deb085fcf6da1d3828f25de2ec9d",
+          "log": "forward-raster-skin-ascii-reload.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "deferred-raster-morph-source.png",
+          "imageSha256": "c8674e4a233a346bd943a5fa6484f82371635209f415f0c4d8d677da7bbd0475",
+          "telemetrySha256": "99a577e021724a3663e3130171ce376961cbaa515014b4c398df819ff5b24fbf",
+          "log": "deferred-raster-morph-source.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-morph-reference.png",
+          "imageSha256": "c8674e4a233a346bd943a5fa6484f82371635209f415f0c4d8d677da7bbd0475",
+          "telemetrySha256": "a3bd4d27a455bf7350d918d1ccefcc7a25ade8583d9502992fa8ec2541d79fc9",
+          "log": "deferred-raster-morph-reference.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-morph-dropped.png",
+          "imageSha256": "aa17c020912dc7cf06087b1870b26a7fc68b1a02e3e36c975b3154fca6ebe2c9",
+          "telemetrySha256": "1924a6193e75040d70aac3d1b002c72a36b18c2787c2cf10540e38c0e281f3a6",
+          "log": "deferred-raster-morph-dropped.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-morph-glb-reload.png",
+          "imageSha256": "c8674e4a233a346bd943a5fa6484f82371635209f415f0c4d8d677da7bbd0475",
+          "telemetrySha256": "92f679427a10efb2186459631b6ebec619cb325a9d5a77c876bf77405d61712b",
+          "log": "deferred-raster-morph-glb-reload.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-morph-ascii-reload.png",
+          "imageSha256": "c8674e4a233a346bd943a5fa6484f82371635209f415f0c4d8d677da7bbd0475",
+          "telemetrySha256": "57bb61d1ecee932618035450d59d11473ddda1d3d64b24920048ca8a51333391",
+          "log": "deferred-raster-morph-ascii-reload.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "forward-raster-morph-source.png",
+          "imageSha256": "c8674e4a233a346bd943a5fa6484f82371635209f415f0c4d8d677da7bbd0475",
+          "telemetrySha256": "1ceb15c892e0bcbb6362e6fd43a144237ff4601efd8e3d2165065267b613ec77",
+          "log": "forward-raster-morph-source.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-morph-reference.png",
+          "imageSha256": "c8674e4a233a346bd943a5fa6484f82371635209f415f0c4d8d677da7bbd0475",
+          "telemetrySha256": "fe1d369f4d1adbfd4a76e9297c217160cc57cb3b2379ead99dc3718e97010c77",
+          "log": "forward-raster-morph-reference.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-morph-dropped.png",
+          "imageSha256": "aa17c020912dc7cf06087b1870b26a7fc68b1a02e3e36c975b3154fca6ebe2c9",
+          "telemetrySha256": "2a30fd414e534cce9e96bad4ca5a15fd9999cdb6077183a633a8052e437aee71",
+          "log": "forward-raster-morph-dropped.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-morph-glb-reload.png",
+          "imageSha256": "c8674e4a233a346bd943a5fa6484f82371635209f415f0c4d8d677da7bbd0475",
+          "telemetrySha256": "545f2a43a9de45652bc23872044810f8cc35f1b1b124d858e9b4e2cd2f6b4af0",
+          "log": "forward-raster-morph-glb-reload.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-morph-ascii-reload.png",
+          "imageSha256": "c8674e4a233a346bd943a5fa6484f82371635209f415f0c4d8d677da7bbd0475",
+          "telemetrySha256": "fc6448f45dc020681be6f2ceb145c115fdf1fe90b6dc6000ff5904820f2f42a9",
+          "log": "forward-raster-morph-ascii-reload.log",
+          "technique": "forward-raster"
+        }
+      ],
+      "logSha256": {
+        "deferred-raster-static-source.log": "7a5241c40964710968aaaac2c92bdbeaa7203b59439007f0d830642d49211e10",
+        "deferred-raster-static-reference.log": "3c44734cd1075d43bcaf47e47df219255f5aada6836b97ea4053d19bb84175a0",
+        "deferred-raster-static-dropped.log": "ffc46b4d6ee665eeb3205f477143a2f68874685ec932a966edb1dde053a8f40b",
+        "deferred-raster-static-glb-reload.log": "88b0806c27c9877584749c6b0569e1a12ba73a4ddc64dcd05be7a677d9de3210",
+        "deferred-raster-static-ascii-reload.log": "498411ee2c8f8d5ee37f832390de9fbb895ceaba8ddac488d9e5756cb0305046",
+        "forward-raster-static-source.log": "eb3dd4a0d4455ba78b0d64ad815f43cdbb0415a33dee3c8c2e8f28079d89c3b2",
+        "forward-raster-static-reference.log": "27bac17d60267c14e60f12ca159c63037e13cf7755da3a32afdd94f377075e11",
+        "forward-raster-static-dropped.log": "0822fc4881d093df8c8ea41de193f139b38d6073da3e6bb311b95bccd047621d",
+        "forward-raster-static-glb-reload.log": "fb8ab2729171a55087e4981f46cc59cd5c0a662808f310e8fdd841646975ed95",
+        "forward-raster-static-ascii-reload.log": "38056dd2344f2aaf82e0f2117eea69eb91f23f93e307464fe1c1d1ef434ad940",
+        "deferred-raster-skin-source.log": "ef7449e012fb1a8104e12ca8c383ff4048eec4041767e5e61f3d5822090dc960",
+        "deferred-raster-skin-reference.log": "2c52ab944b98f7f7e6402aefd6c96a8515e4de76dc862ae3779d55f9c84f9ea8",
+        "deferred-raster-skin-dropped.log": "aef8a436d45031646c20f7e72b26228c88154be0a2867e6b075cda411e91fd1e",
+        "deferred-raster-skin-glb-reload.log": "da63bf9d2213fa123233352ebeb7a441fb91dd2e63c48c6405bf2065b42191b4",
+        "deferred-raster-skin-ascii-reload.log": "5b19b6051bf21f302adaed667c3487eb3c6649902117070037f5f03709a09404",
+        "forward-raster-skin-source.log": "92b6ddf2afcc83d0269a4969ea096d030d52759d3b871520e42d102c27431c58",
+        "forward-raster-skin-reference.log": "1ca4914004484c5fa893da7537d77b6b82f24e93cf74f117f8159e4399b91cc1",
+        "forward-raster-skin-dropped.log": "8b0c844f9437705cd45ec54791154e7b7b5de08a425bc28582c5569033e3214d",
+        "forward-raster-skin-glb-reload.log": "9bd7d8a1d24a4a04bfa06a6c3d3c52dd7601a4ab0d4e2059c2566c94975b7ba3",
+        "forward-raster-skin-ascii-reload.log": "ab52a1da170f1fd924a280c13e347585b3192a0d7a69bb0b7b456bc1298e3ab3",
+        "deferred-raster-morph-source.log": "c4040ff584a03cb2083ab594fcf42f7908ec4fc0d48a1801b056a2e73f2d1360",
+        "deferred-raster-morph-reference.log": "baa516010505c7ab087955e76b6d413c7f9de8a383ff0da8b9383830662c18c8",
+        "deferred-raster-morph-dropped.log": "84c87f908ff842b119d5e8557d50085d4b3e2046dc4bdc7da322ecc6b44b6ca2",
+        "deferred-raster-morph-glb-reload.log": "7f7d90f8daffd7ed9b293e2600c9a2cfe1049f1dae4333c6ddcc68416aee4fd6",
+        "deferred-raster-morph-ascii-reload.log": "dc3376c5d58ea108aa1b5546a271bb1e6d36352008aecab5e2563c33197c7d6e",
+        "forward-raster-morph-source.log": "497d465a5cb97fe494b67c9d6c251fc0b1cb199dee6a4bf84cb5ae4d55ad38ca",
+        "forward-raster-morph-reference.log": "e6b32e861a84a0ba5cbf326eb66d89dfccdd3a767d053ab1b61ed2d9346d9735",
+        "forward-raster-morph-dropped.log": "2ad6ae5a3dc8b6fc91e09fdfd98820c48015795698a4040289addfc4c7384dd9",
+        "forward-raster-morph-glb-reload.log": "9a80871cd8caf0ff9f64e58bfb3661428bcad93658bb4aeed7e49c15afa204b8",
+        "forward-raster-morph-ascii-reload.log": "c22a6a4722107b652f465c772a41a5c7303b287c244fd213e9ec5262516ed9ae"
+      },
+      "assetAndSequenceSha256": {
+        "static-source.gltf": "0e373c79213b96df59a7daee656cb9e9c7d69fdce4713352fed57ebc4dc40a6c",
+        "deferred-raster-static-saved.glb": "d1df4352f8e6a5c5ceb148d7533adc9fe9f3cf51ffcb5d8bf31d687b9971793c",
+        "static-reference.gltf": "77a4de394c936d56293c0f798a566964dfc718a0ba5fe75b77e9d64cb5928521",
+        "static-dropped.gltf": "871a478d99a4abcf15496d99612ec7ac5857dcbce67e61da06ee3327df94674f",
+        "deferred-raster-static-saved.gltf": "3b494f960e0a414b5884a7e72d7211d1a996210378e206bf9c3353a663f8fe02",
+        "forward-raster-static-saved.glb": "d1df4352f8e6a5c5ceb148d7533adc9fe9f3cf51ffcb5d8bf31d687b9971793c",
+        "forward-raster-static-saved.gltf": "3b494f960e0a414b5884a7e72d7211d1a996210378e206bf9c3353a663f8fe02",
+        "skin-source.gltf": "c475ee89bef40630f348b1431664040a293307a12fd6de06aa778a99ec6fed42",
+        "deferred-raster-skin-saved.glb": "f0a22c94314b106f870550e0e68ef7173f5bc8604474f4bdcca3920da47c47a6",
+        "skin-reference.gltf": "289e9d7bca11b4a7d6afe581ac3e3897e4b94fd500dd13958d91b45ae94ec74a",
+        "skin-dropped.gltf": "5a279cc0be0ec412759931909b28091137f821ba03e03d92bf0a9fd9ca4a0205",
+        "deferred-raster-skin-saved.gltf": "fa6438a7df98c4253d81d342efbf11d3a6905a7825a7e2ef6ffd8806613d6755",
+        "forward-raster-skin-saved.glb": "f0a22c94314b106f870550e0e68ef7173f5bc8604474f4bdcca3920da47c47a6",
+        "forward-raster-skin-saved.gltf": "fa6438a7df98c4253d81d342efbf11d3a6905a7825a7e2ef6ffd8806613d6755",
+        "morph-source.gltf": "294af1945fa8336ede141e67d68b0cf234d57afd2e3f093e634c3dbc0862c3be",
+        "deferred-raster-morph-saved.glb": "203ef70a60faf69ed35be80ce86092092d9695582cbcb8bdeb97ecfa8f3c990c",
+        "morph-reference.gltf": "e16d4c935a3decad71a2476536fee4c87836cd6eb72fa0e9cba5e23ebbb5d180",
+        "morph-dropped.gltf": "fd476d97fdf3eb4d5d88dddfd73821bd24f11cb27a878db79ee9dd991440ce4d",
+        "deferred-raster-morph-saved.gltf": "d301dd12e071f412461aa3ee7906b7b01c0ddd9fea8b716eb103956d17bbd8c5",
+        "forward-raster-morph-saved.glb": "203ef70a60faf69ed35be80ce86092092d9695582cbcb8bdeb97ecfa8f3c990c",
+        "forward-raster-morph-saved.gltf": "d301dd12e071f412461aa3ee7906b7b01c0ddd9fea8b716eb103956d17bbd8c5"
+      }
+    },
+    {
+      "lane": "hidden",
+      "captureCount": 18,
+      "checkCount": 18,
+      "harnessSourceSha256": "ce6bcf01c564658dbff2b147e3ca2c7a66cfbe2e091724c800a098e4b11ec745",
+      "checks": [
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "ordinary-repeated-nodes",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "missing-instancing-negative-control",
+          "meanAbsolutePixelError": 6.922242476851852,
+          "changedPixelFraction": 0.05438368055555556
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "shared-geometry-deformation-and-instance-picks",
+          "sourceVertexCount": 7,
+          "sourceIndexCount": 9,
+          "sourceInstances": 4,
+          "productionCpuPicks": 0,
+          "hiddenInstancePickRejections": 4,
+          "framingBoundsMaxError": 0.0,
+          "deformedStreams": 0,
+          "repeatedDeformedStreams": 0
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "ordinary-repeated-nodes",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "missing-instancing-negative-control",
+          "meanAbsolutePixelError": 6.922242476851852,
+          "changedPixelFraction": 0.05438368055555556
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "shared-geometry-deformation-and-instance-picks",
+          "sourceVertexCount": 7,
+          "sourceIndexCount": 9,
+          "sourceInstances": 4,
+          "productionCpuPicks": 0,
+          "hiddenInstancePickRejections": 4,
+          "framingBoundsMaxError": 0.0,
+          "deformedStreams": 0,
+          "repeatedDeformedStreams": 0
+        },
+        {
+          "case": "skin",
+          "technique": "deferred-raster",
+          "check": "ordinary-repeated-nodes",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "skin",
+          "technique": "deferred-raster",
+          "check": "missing-instancing-negative-control",
+          "meanAbsolutePixelError": 6.923106192129629,
+          "changedPixelFraction": 0.054388020833333335
+        },
+        {
+          "case": "skin",
+          "technique": "deferred-raster",
+          "check": "shared-geometry-deformation-and-instance-picks",
+          "sourceVertexCount": 7,
+          "sourceIndexCount": 9,
+          "sourceInstances": 4,
+          "productionCpuPicks": 0,
+          "hiddenInstancePickRejections": 4,
+          "framingBoundsMaxError": 0.0,
+          "deformedStreams": 1,
+          "repeatedDeformedStreams": 0
+        },
+        {
+          "case": "skin",
+          "technique": "forward-raster",
+          "check": "ordinary-repeated-nodes",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "skin",
+          "technique": "forward-raster",
+          "check": "missing-instancing-negative-control",
+          "meanAbsolutePixelError": 6.923106192129629,
+          "changedPixelFraction": 0.054388020833333335
+        },
+        {
+          "case": "skin",
+          "technique": "forward-raster",
+          "check": "shared-geometry-deformation-and-instance-picks",
+          "sourceVertexCount": 7,
+          "sourceIndexCount": 9,
+          "sourceInstances": 4,
+          "productionCpuPicks": 0,
+          "hiddenInstancePickRejections": 4,
+          "framingBoundsMaxError": 0.0,
+          "deformedStreams": 1,
+          "repeatedDeformedStreams": 0
+        },
+        {
+          "case": "morph",
+          "technique": "deferred-raster",
+          "check": "ordinary-repeated-nodes",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "morph",
+          "technique": "deferred-raster",
+          "check": "missing-instancing-negative-control",
+          "meanAbsolutePixelError": 7.1308796296296295,
+          "changedPixelFraction": 0.05615451388888889
+        },
+        {
+          "case": "morph",
+          "technique": "deferred-raster",
+          "check": "shared-geometry-deformation-and-instance-picks",
+          "sourceVertexCount": 7,
+          "sourceIndexCount": 9,
+          "sourceInstances": 4,
+          "productionCpuPicks": 0,
+          "hiddenInstancePickRejections": 4,
+          "framingBoundsMaxError": 0.0,
+          "deformedStreams": 3,
+          "repeatedDeformedStreams": 1
+        },
+        {
+          "case": "morph",
+          "technique": "forward-raster",
+          "check": "ordinary-repeated-nodes",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "morph",
+          "technique": "forward-raster",
+          "check": "missing-instancing-negative-control",
+          "meanAbsolutePixelError": 7.1308796296296295,
+          "changedPixelFraction": 0.05615451388888889
+        },
+        {
+          "case": "morph",
+          "technique": "forward-raster",
+          "check": "shared-geometry-deformation-and-instance-picks",
+          "sourceVertexCount": 7,
+          "sourceIndexCount": 9,
+          "sourceInstances": 4,
+          "productionCpuPicks": 0,
+          "hiddenInstancePickRejections": 4,
+          "framingBoundsMaxError": 0.0,
+          "deformedStreams": 3,
+          "repeatedDeformedStreams": 1
+        }
+      ],
+      "positivePixelComparisons": [
+        {
+          "source": "deferred-raster-static-source.png",
+          "reference": "deferred-raster-static-reference.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "forward-raster-static-source.png",
+          "reference": "forward-raster-static-reference.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "deferred-raster-skin-source.png",
+          "reference": "deferred-raster-skin-reference.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "forward-raster-skin-source.png",
+          "reference": "forward-raster-skin-reference.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "deferred-raster-morph-source.png",
+          "reference": "deferred-raster-morph-reference.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "forward-raster-morph-source.png",
+          "reference": "forward-raster-morph-reference.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        }
+      ],
+      "captures": [
+        {
+          "image": "deferred-raster-static-source.png",
+          "imageSha256": "29174ae6dcc8cee52d85d2b27c3fcd3b3e8cb0dccfeeb4ab15a39ecbbf1226a5",
+          "telemetrySha256": "7c8c7955ad7751a45f590d417850e9122fe93d07cef99d9caa48804e87021b03",
+          "log": "deferred-raster-static-source.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-static-reference.png",
+          "imageSha256": "29174ae6dcc8cee52d85d2b27c3fcd3b3e8cb0dccfeeb4ab15a39ecbbf1226a5",
+          "telemetrySha256": "cf5b0c31cd3e7488fdb16ab13d2b25f08b72b741a7343345619e96c6985880c0",
+          "log": "deferred-raster-static-reference.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-static-dropped.png",
+          "imageSha256": "8d051ac8ffb2787ee92ddfec346fabe2a2b2a1ac330a4014ac8a4f914df72254",
+          "telemetrySha256": "0f7a2f721e5795f01ec92d9d7f4b01393fdcc4d8fdd471c15c703f39e09e27fe",
+          "log": "deferred-raster-static-dropped.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "forward-raster-static-source.png",
+          "imageSha256": "29174ae6dcc8cee52d85d2b27c3fcd3b3e8cb0dccfeeb4ab15a39ecbbf1226a5",
+          "telemetrySha256": "6c1b0b98ba5b81f8fff1cc788d093142b6ef5a64ee7dfe7c1edc8d5ff2e8ec07",
+          "log": "forward-raster-static-source.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-static-reference.png",
+          "imageSha256": "29174ae6dcc8cee52d85d2b27c3fcd3b3e8cb0dccfeeb4ab15a39ecbbf1226a5",
+          "telemetrySha256": "69990912cfd8114781ecae41b66179649cd4afb054340d3d75dec8fa5be1abd0",
+          "log": "forward-raster-static-reference.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-static-dropped.png",
+          "imageSha256": "8d051ac8ffb2787ee92ddfec346fabe2a2b2a1ac330a4014ac8a4f914df72254",
+          "telemetrySha256": "a99faedd211eb8ba552472adfb20b216a63dc8b276743f93c55c5ab9f6872544",
+          "log": "forward-raster-static-dropped.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "deferred-raster-skin-source.png",
+          "imageSha256": "29174ae6dcc8cee52d85d2b27c3fcd3b3e8cb0dccfeeb4ab15a39ecbbf1226a5",
+          "telemetrySha256": "ef4a3205cfe94663f311f6373d7e5eccfa87533436daeec58c2a28b0534d504b",
+          "log": "deferred-raster-skin-source.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-skin-reference.png",
+          "imageSha256": "29174ae6dcc8cee52d85d2b27c3fcd3b3e8cb0dccfeeb4ab15a39ecbbf1226a5",
+          "telemetrySha256": "5665cb6a901234adbf545c175df069e7b9de3c1bcf6c4ecff93a63ba347bd1b4",
+          "log": "deferred-raster-skin-reference.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-skin-dropped.png",
+          "imageSha256": "76bdf30b899686392b818038d2fd1f9429700ea2bf732b8e74345bf69ac5f746",
+          "telemetrySha256": "8b0bbcb49e8c8103b837eae6f0cabbce4b687ae2825cd40f4ff3591e5621ed51",
+          "log": "deferred-raster-skin-dropped.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "forward-raster-skin-source.png",
+          "imageSha256": "29174ae6dcc8cee52d85d2b27c3fcd3b3e8cb0dccfeeb4ab15a39ecbbf1226a5",
+          "telemetrySha256": "f1e69adee29ee2f6575098fbef468fed8d2c4157a9919873f365138df339bd9f",
+          "log": "forward-raster-skin-source.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-skin-reference.png",
+          "imageSha256": "29174ae6dcc8cee52d85d2b27c3fcd3b3e8cb0dccfeeb4ab15a39ecbbf1226a5",
+          "telemetrySha256": "3078f5186a5eef58e7290f5e2cff3b2e74ab67dfea45f52eed8a9351e55e488b",
+          "log": "forward-raster-skin-reference.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-skin-dropped.png",
+          "imageSha256": "76bdf30b899686392b818038d2fd1f9429700ea2bf732b8e74345bf69ac5f746",
+          "telemetrySha256": "906bf723fea1538d6143b982ea1c2583c2cbcdfc9ea64b00b0304b1b1f49a3ee",
+          "log": "forward-raster-skin-dropped.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "deferred-raster-morph-source.png",
+          "imageSha256": "29174ae6dcc8cee52d85d2b27c3fcd3b3e8cb0dccfeeb4ab15a39ecbbf1226a5",
+          "telemetrySha256": "7a0e508c53f03e03370e50fb54d731aa7fb61af9dc14e694078f6fad9c3988dd",
+          "log": "deferred-raster-morph-source.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-morph-reference.png",
+          "imageSha256": "29174ae6dcc8cee52d85d2b27c3fcd3b3e8cb0dccfeeb4ab15a39ecbbf1226a5",
+          "telemetrySha256": "3d57c7eb4b3e0b5755d66231a46e68df95c2366ab7ac6cf1107dd92e9104bb20",
+          "log": "deferred-raster-morph-reference.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-morph-dropped.png",
+          "imageSha256": "25064db38eb22cdbc17cf02729470502d983cabaf3bcba2fec6538f91d96b165",
+          "telemetrySha256": "4835f5afa9048226f857cbd05c085dc2ce31613a246e9df46eebdf18cc4c69c3",
+          "log": "deferred-raster-morph-dropped.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "forward-raster-morph-source.png",
+          "imageSha256": "29174ae6dcc8cee52d85d2b27c3fcd3b3e8cb0dccfeeb4ab15a39ecbbf1226a5",
+          "telemetrySha256": "6b5153b8d57d131ac8df5cd47628e52c9d5e8e7e6d5fd54aab5e7a3fd34a095f",
+          "log": "forward-raster-morph-source.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-morph-reference.png",
+          "imageSha256": "29174ae6dcc8cee52d85d2b27c3fcd3b3e8cb0dccfeeb4ab15a39ecbbf1226a5",
+          "telemetrySha256": "5170f2942ea5bec3fb66fbf807bdc9883bbc59603ef5ff9215b16dabbd588f43",
+          "log": "forward-raster-morph-reference.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-morph-dropped.png",
+          "imageSha256": "25064db38eb22cdbc17cf02729470502d983cabaf3bcba2fec6538f91d96b165",
+          "telemetrySha256": "6bf88dc95763ad8cd740e984cf1a86e0167390e8374499537a8dfeb8cd7accf1",
+          "log": "forward-raster-morph-dropped.log",
+          "technique": "forward-raster"
+        }
+      ],
+      "logSha256": {
+        "deferred-raster-static-source.log": "ee1023d807fb2db6cd49473f4a0c7bae15339e9a7215d40eea8a8badf3847995",
+        "deferred-raster-static-reference.log": "3e0707833d3821f4e17e746e9e9e7cf2d4fe86e1ab509fd4dff4de7f6320bc2a",
+        "deferred-raster-static-dropped.log": "cc0f14878fbeb200b982954cc1950778aff039c1640b4adb267b589f4d2a958c",
+        "forward-raster-static-source.log": "d49d1b5f7607ed527b155472d586176e1374a14a8774b6dc9bc94418266a4d2c",
+        "forward-raster-static-reference.log": "2b3dd46e3487ead7810b2d291cc9a500f50d2712558ae6855ac2de0b898fd654",
+        "forward-raster-static-dropped.log": "0442f57a6ea5ae408f0ffbdf64679120ec030f74c23c5a2d2018babf4bf6a17a",
+        "deferred-raster-skin-source.log": "441e98741af8bd32c636b485260e112620792861863e005106cea76132a06258",
+        "deferred-raster-skin-reference.log": "3cb63597d4afd4cec6c712d329ce1e8fb9834aadd79d57068ce085d607161af3",
+        "deferred-raster-skin-dropped.log": "8cda3bb841496db1303b75f637f5156e5b2d9faf84665ce47423d59d410cd61b",
+        "forward-raster-skin-source.log": "34d1945890fd08a71fb9f41ac29803e90a8730ba3c4a6b0c572b97297593f3d8",
+        "forward-raster-skin-reference.log": "123dfc6156ab4a5b51690585aafba3879437dbef033c699be5bd74214d92b7fe",
+        "forward-raster-skin-dropped.log": "aac6b14bc5b15968591b87cef97eccc08739b2930fbad1581041807abc83b7c0",
+        "deferred-raster-morph-source.log": "6be8ad94df053282ab66f1b58daaa717083e9c306db5b2d011f81c0ef9819708",
+        "deferred-raster-morph-reference.log": "708a2d40649c7d200ce672706af1aca2effa7575d2c15c630851185ccd3b61a2",
+        "deferred-raster-morph-dropped.log": "018b0641927728c511c1fceabb90fd9fd95975f4040cc1d561d8eebbed7df6f5",
+        "forward-raster-morph-source.log": "941a8f8fe79ac524fa0f31a556454e7935f5152419e050813e3bc511961d8f5f",
+        "forward-raster-morph-reference.log": "88cf29fe30d5e04a10fc9298f492edcc52ad923543958274689522780c567c16",
+        "forward-raster-morph-dropped.log": "484aeaf11e52ebab694badc636f5aee15602b3a269a6159b840e4283f607a80f"
+      },
+      "assetAndSequenceSha256": {
+        "static-source.gltf": "01eb3067a786cc2d68ab1cd2b07c817697960bc03df2cd2e16020b0c318651c7",
+        "static-reference.gltf": "eae271ca70396dac8564a1053336d01d82eb32bc3c04b182d1558ea4ce434d13",
+        "static-dropped.gltf": "93aacc7c001550d9d209871ebf0e24d963fc1791b8ec99212f1653b480d84f2a",
+        "skin-source.gltf": "06ca260f992115e8e57996314a828e038ffe3b03127f214029b23511ad834784",
+        "skin-reference.gltf": "193f244f05082edeb852ff8c1d540591d717f69dcaccdae450242a22c131f6fb",
+        "skin-dropped.gltf": "8eb95a788be286f687c144ffe099517f2d1505046f1afe7e07a3a1cbfdd25500",
+        "morph-source.gltf": "5f393c560502fa2609d27861db09da47152b700abf6250aff6550c0da629e0e7",
+        "morph-reference.gltf": "c66c07ba372eb7d595b58fea93929c3d8468ffef55f221de274d93a210a3a8d8",
+        "morph-dropped.gltf": "e29d766da59f7f58cd3625264baf2237d6db1f92ac82bf17962e44b642f2d95e"
+      }
+    },
+    {
+      "lane": "ray",
+      "captureCount": 18,
+      "checkCount": 24,
+      "harnessSourceSha256": "cc4ab626b6d1354f572c74129da3ecc16c5c910f9862d96b019f2fb942e61881",
+      "checks": [
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "ordinary-repeated-nodes",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "missing-instancing-negative-control",
+          "meanAbsolutePixelError": 17.957845775462964,
+          "changedPixelFraction": 0.19501736111111112
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "shared-geometry-deformation-and-instance-picks",
+          "sourceVertexCount": 7,
+          "sourceIndexCount": 9,
+          "sourceInstances": 4,
+          "productionCpuPicks": 4,
+          "hiddenInstancePickRejections": 0,
+          "framingBoundsMaxError": 0.0,
+          "deformedStreams": 0,
+          "repeatedDeformedStreams": 0
+        },
+        {
+          "case": "static",
+          "technique": "deferred-raster",
+          "check": "shared-blas-and-ddgi",
+          "build": {
+            "asAllocatedBytes": 7424,
+            "blasBuilt": 2,
+            "blasReused": 0,
+            "gpuInstances": 0,
+            "gpuTransformUploadBytes": 0,
+            "inputAllocatedBytes": 1536,
+            "instances": 6,
+            "opacityMicromapBlas": 0,
+            "opacityMicromapBytes": 0,
+            "opacityMicromapFallbackBlas": 0,
+            "opacityMicromaps": 0,
+            "opacityMicromapsBuilt": 0,
+            "scratchAllocatedBytes": 5888
+          },
+          "tracedRays": 2048
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "ordinary-repeated-nodes",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "missing-instancing-negative-control",
+          "meanAbsolutePixelError": 17.935383391203704,
+          "changedPixelFraction": 0.19501736111111112
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "shared-geometry-deformation-and-instance-picks",
+          "sourceVertexCount": 7,
+          "sourceIndexCount": 9,
+          "sourceInstances": 4,
+          "productionCpuPicks": 4,
+          "hiddenInstancePickRejections": 0,
+          "framingBoundsMaxError": 0.0,
+          "deformedStreams": 0,
+          "repeatedDeformedStreams": 0
+        },
+        {
+          "case": "static",
+          "technique": "forward-raster",
+          "check": "shared-blas-and-ddgi",
+          "build": {
+            "asAllocatedBytes": 7424,
+            "blasBuilt": 2,
+            "blasReused": 0,
+            "gpuInstances": 0,
+            "gpuTransformUploadBytes": 0,
+            "inputAllocatedBytes": 1536,
+            "instances": 6,
+            "opacityMicromapBlas": 0,
+            "opacityMicromapBytes": 0,
+            "opacityMicromapFallbackBlas": 0,
+            "opacityMicromaps": 0,
+            "opacityMicromapsBuilt": 0,
+            "scratchAllocatedBytes": 5888
+          },
+          "tracedRays": 2048
+        },
+        {
+          "case": "skin",
+          "technique": "deferred-raster",
+          "check": "ordinary-repeated-nodes",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "skin",
+          "technique": "deferred-raster",
+          "check": "missing-instancing-negative-control",
+          "meanAbsolutePixelError": 17.854521122685185,
+          "changedPixelFraction": 0.18821614583333332
+        },
+        {
+          "case": "skin",
+          "technique": "deferred-raster",
+          "check": "shared-geometry-deformation-and-instance-picks",
+          "sourceVertexCount": 7,
+          "sourceIndexCount": 9,
+          "sourceInstances": 4,
+          "productionCpuPicks": 4,
+          "hiddenInstancePickRejections": 0,
+          "framingBoundsMaxError": 0.0,
+          "deformedStreams": 1,
+          "repeatedDeformedStreams": 4
+        },
+        {
+          "case": "skin",
+          "technique": "deferred-raster",
+          "check": "shared-blas-and-ddgi",
+          "build": {
+            "asAllocatedBytes": 9984,
+            "blasBuilt": 3,
+            "blasReused": 0,
+            "gpuInstances": 0,
+            "gpuTransformUploadBytes": 0,
+            "inputAllocatedBytes": 2048,
+            "instances": 6,
+            "opacityMicromapBlas": 0,
+            "opacityMicromapBytes": 0,
+            "opacityMicromapFallbackBlas": 0,
+            "opacityMicromaps": 0,
+            "opacityMicromapsBuilt": 0,
+            "scratchAllocatedBytes": 7680
+          },
+          "tracedRays": 2048
+        },
+        {
+          "case": "skin",
+          "technique": "forward-raster",
+          "check": "ordinary-repeated-nodes",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "skin",
+          "technique": "forward-raster",
+          "check": "missing-instancing-negative-control",
+          "meanAbsolutePixelError": 17.837350983796295,
+          "changedPixelFraction": 0.18821614583333332
+        },
+        {
+          "case": "skin",
+          "technique": "forward-raster",
+          "check": "shared-geometry-deformation-and-instance-picks",
+          "sourceVertexCount": 7,
+          "sourceIndexCount": 9,
+          "sourceInstances": 4,
+          "productionCpuPicks": 4,
+          "hiddenInstancePickRejections": 0,
+          "framingBoundsMaxError": 0.0,
+          "deformedStreams": 1,
+          "repeatedDeformedStreams": 4
+        },
+        {
+          "case": "skin",
+          "technique": "forward-raster",
+          "check": "shared-blas-and-ddgi",
+          "build": {
+            "asAllocatedBytes": 9984,
+            "blasBuilt": 3,
+            "blasReused": 0,
+            "gpuInstances": 0,
+            "gpuTransformUploadBytes": 0,
+            "inputAllocatedBytes": 2048,
+            "instances": 6,
+            "opacityMicromapBlas": 0,
+            "opacityMicromapBytes": 0,
+            "opacityMicromapFallbackBlas": 0,
+            "opacityMicromaps": 0,
+            "opacityMicromapsBuilt": 0,
+            "scratchAllocatedBytes": 7680
+          },
+          "tracedRays": 2048
+        },
+        {
+          "case": "morph",
+          "technique": "deferred-raster",
+          "check": "ordinary-repeated-nodes",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "morph",
+          "technique": "deferred-raster",
+          "check": "missing-instancing-negative-control",
+          "meanAbsolutePixelError": 18.309071180555556,
+          "changedPixelFraction": 0.19636284722222222
+        },
+        {
+          "case": "morph",
+          "technique": "deferred-raster",
+          "check": "shared-geometry-deformation-and-instance-picks",
+          "sourceVertexCount": 7,
+          "sourceIndexCount": 9,
+          "sourceInstances": 4,
+          "productionCpuPicks": 4,
+          "hiddenInstancePickRejections": 0,
+          "framingBoundsMaxError": 0.0,
+          "deformedStreams": 2,
+          "repeatedDeformedStreams": 5
+        },
+        {
+          "case": "morph",
+          "technique": "deferred-raster",
+          "check": "shared-blas-and-ddgi",
+          "build": {
+            "asAllocatedBytes": 9984,
+            "blasBuilt": 3,
+            "blasReused": 0,
+            "gpuInstances": 0,
+            "gpuTransformUploadBytes": 0,
+            "inputAllocatedBytes": 2048,
+            "instances": 6,
+            "opacityMicromapBlas": 0,
+            "opacityMicromapBytes": 0,
+            "opacityMicromapFallbackBlas": 0,
+            "opacityMicromaps": 0,
+            "opacityMicromapsBuilt": 0,
+            "scratchAllocatedBytes": 7680
+          },
+          "tracedRays": 2048
+        },
+        {
+          "case": "morph",
+          "technique": "forward-raster",
+          "check": "ordinary-repeated-nodes",
+          "meanAbsolutePixelError": 0.0,
+          "changedPixelFraction": 0.0
+        },
+        {
+          "case": "morph",
+          "technique": "forward-raster",
+          "check": "missing-instancing-negative-control",
+          "meanAbsolutePixelError": 18.28947048611111,
+          "changedPixelFraction": 0.19636284722222222
+        },
+        {
+          "case": "morph",
+          "technique": "forward-raster",
+          "check": "shared-geometry-deformation-and-instance-picks",
+          "sourceVertexCount": 7,
+          "sourceIndexCount": 9,
+          "sourceInstances": 4,
+          "productionCpuPicks": 4,
+          "hiddenInstancePickRejections": 0,
+          "framingBoundsMaxError": 0.0,
+          "deformedStreams": 2,
+          "repeatedDeformedStreams": 5
+        },
+        {
+          "case": "morph",
+          "technique": "forward-raster",
+          "check": "shared-blas-and-ddgi",
+          "build": {
+            "asAllocatedBytes": 9984,
+            "blasBuilt": 3,
+            "blasReused": 0,
+            "gpuInstances": 0,
+            "gpuTransformUploadBytes": 0,
+            "inputAllocatedBytes": 2048,
+            "instances": 6,
+            "opacityMicromapBlas": 0,
+            "opacityMicromapBytes": 0,
+            "opacityMicromapFallbackBlas": 0,
+            "opacityMicromaps": 0,
+            "opacityMicromapsBuilt": 0,
+            "scratchAllocatedBytes": 7680
+          },
+          "tracedRays": 2048
+        }
+      ],
+      "positivePixelComparisons": [
+        {
+          "source": "deferred-raster-static-source.png",
+          "reference": "deferred-raster-static-reference.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "forward-raster-static-source.png",
+          "reference": "forward-raster-static-reference.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "deferred-raster-skin-source.png",
+          "reference": "deferred-raster-skin-reference.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "forward-raster-skin-source.png",
+          "reference": "forward-raster-skin-reference.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "deferred-raster-morph-source.png",
+          "reference": "deferred-raster-morph-reference.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        },
+        {
+          "source": "forward-raster-morph-source.png",
+          "reference": "forward-raster-morph-reference.png",
+          "maximumError": 0,
+          "changedPixels": 0
+        }
+      ],
+      "captures": [
+        {
+          "image": "deferred-raster-static-source.png",
+          "imageSha256": "44746dc8b22abd3c431b42ccc8b4220545a5da57457067090bf949f40fb9e1a4",
+          "telemetrySha256": "d64c17861ea13a3023159e68828e8832d4bd7b03b5d5bb6ab46d67dc30772cdd",
+          "log": "deferred-raster-static-source.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-static-reference.png",
+          "imageSha256": "44746dc8b22abd3c431b42ccc8b4220545a5da57457067090bf949f40fb9e1a4",
+          "telemetrySha256": "01b8736b4c498bc35708f5d24ceb6a73ba3e26c2ab10d47b0d3e5e2badeb441c",
+          "log": "deferred-raster-static-reference.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-static-dropped.png",
+          "imageSha256": "2dd7c155f9904f57ee5fe1d1f1e8d56302f44922267debb8e97abd81894856e7",
+          "telemetrySha256": "52f0a8fd85b3142d7cb4dd7b14b100a7ffb5f05a1b1095332c668fbb7a1f6c88",
+          "log": "deferred-raster-static-dropped.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "forward-raster-static-source.png",
+          "imageSha256": "93164e3794e484b59d0bf60586ee827bed4a01410471ebf9f630597c1560fdf4",
+          "telemetrySha256": "7004bf6d84f2ce25ae0e8ede00f3e5d9a0404d658e6429051ef2001cb1a1a3dd",
+          "log": "forward-raster-static-source.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-static-reference.png",
+          "imageSha256": "93164e3794e484b59d0bf60586ee827bed4a01410471ebf9f630597c1560fdf4",
+          "telemetrySha256": "bf2deea698b02cfea66c02c5cd3b37cb6928653d3867f484496928f31e39b9f9",
+          "log": "forward-raster-static-reference.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-static-dropped.png",
+          "imageSha256": "19c974ceb3353b25f36793cbb06e7ffc569e57022d5043f141f75dbd94ac6ebf",
+          "telemetrySha256": "7f6fccfb58483999449610c6f53f3e993b353a69035088c68c08db7e4c4edaff",
+          "log": "forward-raster-static-dropped.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "deferred-raster-skin-source.png",
+          "imageSha256": "e2bbcfcfcc0f87fda893233b1be89afaf3eb94714fbe056f043600b598a65d8a",
+          "telemetrySha256": "bab7e847a1fbf3166cb1d9465163a5f461365192e8d2d25d9bdfb073b887759d",
+          "log": "deferred-raster-skin-source.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-skin-reference.png",
+          "imageSha256": "e2bbcfcfcc0f87fda893233b1be89afaf3eb94714fbe056f043600b598a65d8a",
+          "telemetrySha256": "f6f4be3dfc7fd2e1f9ed209903f256e426c5ed4b16fa67e2625c5876298f36c0",
+          "log": "deferred-raster-skin-reference.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-skin-dropped.png",
+          "imageSha256": "c826f6703c461a44d6d7086793155d34131927dde284159e5d7d212bd4d65fbd",
+          "telemetrySha256": "d043025727957505c055291bf58214d7b93787a79a080330b2a843c4c923d0c7",
+          "log": "deferred-raster-skin-dropped.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "forward-raster-skin-source.png",
+          "imageSha256": "d9f8ea7cafc5c4aaa2d9e14c356a81b09d0b0a8a2af87f8a018868208af65a6e",
+          "telemetrySha256": "67dccfd68549ee622ba834df5270968c2f664069c02e1766bf58eee78d0484e9",
+          "log": "forward-raster-skin-source.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-skin-reference.png",
+          "imageSha256": "d9f8ea7cafc5c4aaa2d9e14c356a81b09d0b0a8a2af87f8a018868208af65a6e",
+          "telemetrySha256": "16db6e9aadf7248c85730d7f52c96b1070331175a479baf2e02a648b3f074647",
+          "log": "forward-raster-skin-reference.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-skin-dropped.png",
+          "imageSha256": "ca7089ea28c0073de09d3058156dab2a06c53ebd9e0944a7b0e3c413c84ddcaa",
+          "telemetrySha256": "a55c6528130ee7655f914b24952ecb6df7844e719aa26e7cd92e97e69ac061b1",
+          "log": "forward-raster-skin-dropped.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "deferred-raster-morph-source.png",
+          "imageSha256": "615ce4cc4847cfae6a9ddb907b62e6bbd23a3b270d770497407457c9cc77bf59",
+          "telemetrySha256": "b32a57355c4d99c41308db39ae98cd35f463fce4be18027eaea47e277ad3670a",
+          "log": "deferred-raster-morph-source.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-morph-reference.png",
+          "imageSha256": "615ce4cc4847cfae6a9ddb907b62e6bbd23a3b270d770497407457c9cc77bf59",
+          "telemetrySha256": "8557e912b31abba074aeae38c285099058dc94f699e16754e77669f6805985bb",
+          "log": "deferred-raster-morph-reference.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "deferred-raster-morph-dropped.png",
+          "imageSha256": "e624b59dacb950c2cbdcf8baeb366b608834ecea1516e9b0b79402c54deb34c5",
+          "telemetrySha256": "ebba476c28ec77b311f1b69bf86687ae2d0fa8778fcf417390d4aa921805c82d",
+          "log": "deferred-raster-morph-dropped.log",
+          "technique": "deferred-raster"
+        },
+        {
+          "image": "forward-raster-morph-source.png",
+          "imageSha256": "7c6ed5c9650c8bfd99d3aee6559735de90f48b7b3fce935226fb287effa28c90",
+          "telemetrySha256": "c8fd1b0aecdb53e572fa7204bd1bec609e7c7315e4b47edb808596343e9dd2a9",
+          "log": "forward-raster-morph-source.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-morph-reference.png",
+          "imageSha256": "7c6ed5c9650c8bfd99d3aee6559735de90f48b7b3fce935226fb287effa28c90",
+          "telemetrySha256": "4a48247b5d82c5bb34b3d23b0efe862bd8f14f532c26f341e7324a2f2d1a762a",
+          "log": "forward-raster-morph-reference.log",
+          "technique": "forward-raster"
+        },
+        {
+          "image": "forward-raster-morph-dropped.png",
+          "imageSha256": "4bfaa6d04fb94b956319b2c709a7ec6708d551fbf8ad84c0c75d968efc4c5f8f",
+          "telemetrySha256": "dbee12f63b6fdc650b200e01778a1af6114bd4256f54a7390cc2927d4e70f600",
+          "log": "forward-raster-morph-dropped.log",
+          "technique": "forward-raster"
+        }
+      ],
+      "logSha256": {
+        "deferred-raster-static-source.log": "c2b4ba7eca4d07961a18a179052d9031628efc63c8add2975eb918d20a335a98",
+        "deferred-raster-static-reference.log": "9248a2d068de106947ab4ef240c0fb9d268188b4a9d30aef56710394f11b7026",
+        "deferred-raster-static-dropped.log": "5e8dde0873d538de6a955df56c0db92a50a1b2656e9994bccc6b9fc078454fbf",
+        "forward-raster-static-source.log": "b520db100ceb6d2a51daf7fe161bbb49eacb1d335366f56bc551c2b1bc3445d0",
+        "forward-raster-static-reference.log": "43f74b91132db5aec50db7855247aca9bc54fc67bf61e00989a1da33e9b1b25b",
+        "forward-raster-static-dropped.log": "4b40a934cd6c3f5c291725f4de9accf95a1a0b70862023fe134efb277a763997",
+        "deferred-raster-skin-source.log": "43a695c1c8487427d65428cc4a63c7a52e9d0047f3070cab89a8d48dd350eb2c",
+        "deferred-raster-skin-reference.log": "08b5593a8b8c3285aa54cd23a469836887209ccc2a520047821e50316c5e4c10",
+        "deferred-raster-skin-dropped.log": "c553bab775dede65b3d6c4e499561251fee7f26e890fc3fd1b5fec0779bec17a",
+        "forward-raster-skin-source.log": "b6a5b61246c275d42febb9275be65ce30bf429d994e65c5ef0d49e27ee06ad7e",
+        "forward-raster-skin-reference.log": "919639d9a62692240c2a31b1ebf4c46baa3424764eae3a4eed4fc46afd4a4b15",
+        "forward-raster-skin-dropped.log": "d298728e20ad300bdfa67e423f786960172301c79fa388966f698dd32c1d2a6c",
+        "deferred-raster-morph-source.log": "f905060401fb8b57f0de0e0a2ef8a7e70661598b194c20c600c6e12b42d2787e",
+        "deferred-raster-morph-reference.log": "f51f20c63766aa0e174e20d471953ca82ff2a58e183c008a5b76a5eb2c5d7085",
+        "deferred-raster-morph-dropped.log": "287115f76ffd1593316e119392e7ef55070fba0607809ce004a536ac652ab365",
+        "forward-raster-morph-source.log": "bef2f368e0aa2742314c6c8f0c587a9cb3931a007964d5e695d1b641018216ff",
+        "forward-raster-morph-reference.log": "ecf969ab510e6bf61d2ee1a37434e2fbaec8adf886da2f9b8b4dbabc50f32619",
+        "forward-raster-morph-dropped.log": "7e86d17a1bcda7f04b8575ef0286336262c13e2a2748147ea80fc000c371862a"
+      },
+      "assetAndSequenceSha256": {
+        "static-source.gltf": "cca025714f1ede0efabff1937f1ec681677a0d114842f837b5577257ba0b0d50",
+        "static-reference.gltf": "9c15e66aad5bcf48a94935eb1275e4e9d6f25cfb2febc8d607453fbf6cbd0e4a",
+        "static-dropped.gltf": "b612719a45e4eb595c2f0122a54853dbd7b6abcc548b86849e6fccce5b0927cf",
+        "skin-source.gltf": "8a2cb356a72f58cc20b8b89024b4eb0086b7a63c81c68afe44b72aa3875b8fd4",
+        "skin-reference.gltf": "85fce367443b6898a158e6e26518d89ec34d6865f4af767709f14fc83a105f2f",
+        "skin-dropped.gltf": "c926aa38257214ba3f3557ee0b830428139a624349d83622c09c33bdeeb3e7bd",
+        "morph-source.gltf": "b3529cb29a1c67357b42d5f714c7cdc3d7e51e5d7126a31e17994e8eee16ee8d",
+        "morph-reference.gltf": "93f402358234bdaa544f6a53acd5d5e6d4d3a637b1567794af6cadaa588dc19d",
+        "morph-dropped.gltf": "7cc10195b9a48ce703ff2e7833c5902c6d0272b75c373b0cd5d42d1c8112b7ae"
+      }
+    }
+  ],
+  "instancingCaptures": 92,
+  "instancingChecks": 98,
+  "positiveImageComparisons": 30,
+  "pixelExactComparisons": 30,
+  "nodeFlagsCompatibility": {
+    "passed": true,
+    "gpuPickRoutes": true,
+    "rasterTechniques": 2,
+    "checks": [
+      {
+        "startTechnique": "deferred-raster",
+        "frame": 1,
+        "route": [
+          "Front panel",
+          "Eligible group",
+          "Front panel"
+        ]
+      },
+      {
+        "startTechnique": "deferred-raster",
+        "frame": 3,
+        "route": [
+          "Front panel",
+          "Front panel",
+          "Eligible group"
+        ]
+      },
+      {
+        "startTechnique": "deferred-raster",
+        "frame": 6,
+        "route": [
+          "Blocked scene root",
+          null,
+          null
+        ]
+      },
+      {
+        "startTechnique": "deferred-raster",
+        "frame": 8,
+        "route": [
+          "Front panel",
+          "Front panel",
+          "Eligible group"
+        ]
+      },
+      {
+        "startTechnique": "deferred-raster",
+        "frame": 10,
+        "route": [
+          "Front panel",
+          "Front panel",
+          "Eligible group"
+        ]
+      },
+      {
+        "startTechnique": "forward-raster",
+        "frame": 1,
+        "route": [
+          "Front panel",
+          "Eligible group",
+          "Front panel"
+        ]
+      },
+      {
+        "startTechnique": "forward-raster",
+        "frame": 3,
+        "route": [
+          "Front panel",
+          "Front panel",
+          "Eligible group"
+        ]
+      },
+      {
+        "startTechnique": "forward-raster",
+        "frame": 6,
+        "route": [
+          "Blocked scene root",
+          null,
+          null
+        ]
+      },
+      {
+        "startTechnique": "forward-raster",
+        "frame": 8,
+        "route": [
+          "Front panel",
+          "Front panel",
+          "Eligible group"
+        ]
+      },
+      {
+        "startTechnique": "forward-raster",
+        "frame": 10,
+        "route": [
+          "Front panel",
+          "Front panel",
+          "Eligible group"
+        ]
+      }
+    ],
+    "captureCount": 10,
+    "telemetrySha256": {
+      "deferred-raster.frame-0001.telemetry.json": "dd5b018499241460afc612528f6076613f7fa9b3ab176059e36664c8cd7938e7",
+      "deferred-raster.frame-0003.telemetry.json": "35c11cd4c7a00649c8b23c468532e57ad7ab83daef917dc9ed56e9f82c50654e",
+      "deferred-raster.frame-0006.telemetry.json": "ec0f12f8abe30370d05f85b69fd76676b96d1cd5d8f5afd6a5e60dd3cc12cae4",
+      "deferred-raster.frame-0008.telemetry.json": "171d3a5fde25bec703c0d49c6408ddf6a9e081bdc85d2db961b100c715f7ed57",
+      "deferred-raster.telemetry.json": "c7ec57e9bf57efe6890aff48bbfebfea00333c1ad8fafa8965697d0f86c5bfb4",
+      "forward-raster.frame-0001.telemetry.json": "3acaff2ec2685a8d6be7857196c23e2aad3ef0d6e7ad9c7a228809b6169cdda5",
+      "forward-raster.frame-0003.telemetry.json": "8122263d0d07e435c0d71d81b2a4309463637cdeea73e2095bc3151462bac7a8",
+      "forward-raster.frame-0006.telemetry.json": "04f627ac45cc54a1acaf3634db2bdbd774a188a6cde7beb41441aa1be0b81d48",
+      "forward-raster.frame-0008.telemetry.json": "ab1ba9f92f163724343c3bd5f346cab5bd9d337baae774eec5e53754de5d7c51",
+      "forward-raster.telemetry.json": "e6cd4a6b670f468518d1b2b39f38a141ca03df14b28b435097a93ddeb31e6935"
+    },
+    "logSha256": {
+      "deferred-raster.log": "5cb79293246230dbd6f53065431edd4899cd83671225ade50a26283a7a5dac6b",
+      "forward-raster.log": "71f887714a2226408f1f258855e1e0916d96e0e2db7f7b49fbe4b36142185df4"
+    },
+    "broaderLightHistoryScenario": {
+      "passed": false,
+      "error": "The original light incarnation no longer exists",
+      "frame": 6,
+      "logSha256": "fe521e024076ffefa3978148ae485aad7f48b14e9f318159dd20961afb1d1379"
+    }
+  }
+}

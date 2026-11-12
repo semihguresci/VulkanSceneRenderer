@@ -80,14 +80,13 @@ def fixture(path,case,kind,ray=False,animated=False,hidden_owner=False):
         a.model['animations']=[dict(name='Parent and owner motion',samplers=[dict(input=time,output=translate),dict(input=time,output=scale)],
             channels=[dict(sampler=0,target=dict(node=1,path='translation')),dict(sampler=1,target=dict(node=0,path='scale'))])]
     if hidden_owner:
-        add_receiver(a,shadow=False)
-        receiver=len(a.model['nodes'])-1
-        # Keep the initially selected primitive offscreen in every variant.
-        # Otherwise the receiver-only oracle acquires a yellow selection
-        # outline that is absent when the selected instance owner is hidden.
+        # Put the offscreen anchor before the receiver in source node order.
+        # The receiver-only oracle then selects the anchor at startup.
         dummy=len(a.model['nodes'])
         a.model['nodes'].append(dict(name='Offscreen selection anchor',mesh=0,translation=[20,0,0]))
         a.model['scenes'][0]['nodes'].insert(0,dummy)
+        add_receiver(a,shadow=False)
+        receiver=len(a.model['nodes'])-1
         if kind=='source':
             owner.setdefault('extensions',{})['KHR_node_visibility']=dict(visible=False)
             a.model.setdefault('extensionsUsed',[]).append('KHR_node_visibility')
@@ -104,6 +103,9 @@ def inspect(actual,reference,case,hidden_owner=False):
     require(len({x['primitiveIndex'] for x in inst['instances']})==1,'Instancing duplicated source primitive')
     require(inst['sourceVertexCount']==reference['state']['gltfInstancing']['sourceVertexCount'],'Source geometry was copied per instance')
     require(inst['sourceIndexCount']==reference['state']['gltfInstancing']['sourceIndexCount'],'Source indices were copied per instance')
+    if hidden_owner:
+        require(inst['drawCount'] == reference['state']['gltfInstancing']['drawCount'] == 2,
+                'Hidden owner published draws beyond the receiver and offscreen anchor')
     bounds,other_bounds=inst['modelBounds'],reference['state']['gltfInstancing']['modelBounds']
     require(bounds['valid'] and other_bounds['valid'],'Missing source framing bounds')
     error=max(abs(a-b) for key in ('min','max','center') for a,b in zip(bounds[key],other_bounds[key]))
@@ -115,7 +117,7 @@ def inspect(actual,reference,case,hidden_owner=False):
             require(not sample['visible'] and (not pick['hit'] or pick.get('hitNode')!=pick['expectedNode']),f'Hidden instance remained selectable: {sample}')
         else:
             require(pick['projected'] and pick['hit'] and pick['hitNode']==pick['expectedNode'],f'Production CPU picking missed instance: {sample}')
-    if case!='static':
+    if case!='static' and not hidden_owner:
         deformed=state['gltfDeformation'];other=reference['state']['gltfDeformation']
         require(deformed['gpuReady'] and deformed['currentBoundToGpu'],'Instance deformation did not execute on GPU')
         require(deformed['instanceCount']<other['instanceCount'],'Owner deformation streams were not shared')
