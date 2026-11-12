@@ -933,7 +933,7 @@ TEST(GltfModelLoader, SceneMetadataRejectsNarrowingAndNonIntegerIndicesBeforeRes
   const auto valid = readGltfJson(path);
   const std::vector<nlohmann::json> invalid = {
       -1, 1, 4294967296ull, 4294967297ull, UINT64_MAX,
-      0.0, 0.5, "0", nullptr, true, nlohmann::json::object(),
+      -1.0, 0.5, 4294967296.0, "0", nullptr, true, nlohmann::json::object(),
       nlohmann::json::array()};
   for (const auto& index : invalid) {
     SCOPED_TRACE(index.dump());

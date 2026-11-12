@@ -1012,11 +1012,32 @@ bool omitUnavailableOptionalExtensions(nlohmann::json& document,
   return true;
 }
 
+// TinyGLTF narrows JSON integers. glTF permits integral decimals and
+// exponents, so normalize those before TinyGLTF interprets the fields.
+std::optional<int> normalizeSourceInteger(nlohmann::json& value, bool& rewritten) {
+  if (value.is_number_unsigned()) {
+    const auto integer = value.get<uint64_t>();
+    if (integer <= INT_MAX) return static_cast<int>(integer);
+  } else if (value.is_number_integer()) {
+    const auto integer = value.get<int64_t>();
+    if (integer >= INT_MIN && integer <= INT_MAX) return static_cast<int>(integer);
+  } else if (value.is_number_float()) {
+    const auto number = value.get<double>();
+    if (number >= INT_MIN && number <= INT_MAX && std::trunc(number) == number) {
+      const auto integer = static_cast<int>(number);
+      value = integer;
+      rewritten = true;
+      return integer;
+    }
+  }
+  return std::nullopt;
+}
+
 // Keep hierarchy indices in their original JSON representation until they are
 // checked. TinyGLTF stores them as int, so validating its model alone cannot
 // detect an oversized source index that narrowed into an otherwise valid one.
 // This runs while reading the source document, before any resource callback.
-void validateSceneHierarchyJson(const nlohmann::json& json, const std::stop_token& stop) {
+bool normalizeSceneHierarchyJson(nlohmann::json& json, const std::stop_token& stop) {
   constexpr size_t maxScenes = 65536;
   constexpr size_t maxNodes = 1'000'000;
   constexpr size_t maxRootReferences = 1'000'000;
@@ -1031,15 +1052,15 @@ void validateSceneHierarchyJson(const nlohmann::json& json, const std::stop_toke
   const size_t sceneCount = scenes == json.end() ? 0 : scenes->size();
   if (nodeCount > maxNodes) fail("node table exceeds its count limit");
   if (sceneCount > maxScenes) fail("scene table exceeds its count limit");
-  const auto checkedIndex = [&](const nlohmann::json& value, size_t count,
+  bool rewritten = false;
+  const auto checkedIndex = [&](nlohmann::json& value, size_t count,
                                 const std::string& label) -> uint32_t {
-    if (!value.is_number_integer() ||
-        (!value.is_number_unsigned() && value.get<int64_t>() < 0))
-      fail(label + " must be a nonnegative integer index");
-    const auto index = value.get<uint64_t>();
-    if (index > INT_MAX || index >= count)
-      fail(label + " references a missing entry or exceeds the int index limit");
-    return static_cast<uint32_t>(index);
+    const auto index = normalizeSourceInteger(value, rewritten);
+    if (!index || *index < 0)
+      fail(label + " must be a nonnegative integer index in the int range");
+    if (static_cast<size_t>(*index) >= count)
+      fail(label + " references a missing entry");
+    return static_cast<uint32_t>(*index);
   };
   if (const auto selected = json.find("scene"); selected != json.end())
     (void)checkedIndex(*selected, sceneCount, "scene");
@@ -1048,7 +1069,7 @@ void validateSceneHierarchyJson(const nlohmann::json& json, const std::stop_toke
   size_t references = 0;
   for (size_t i = 0; i < nodeCount; ++i) {
     checkImportIteration(stop, i);
-    const auto& node = nodes->at(i);
+    auto& node = nodes->at(i);
     const auto label = "nodes[" + std::to_string(i) + "]";
     if (!node.is_object()) fail(label + " must be an object");
     const auto children = node.find("children");
@@ -1056,7 +1077,7 @@ void validateSceneHierarchyJson(const nlohmann::json& json, const std::stop_toke
     if (!children->is_array()) fail(label + ".children must be an array");
     if (children->size() > nodeCount)
       fail(label + ".children exceeds the node count");
-    for (const auto& child : *children) {
+    for (auto& child : *children) {
       checkImportIteration(stop, references++);
       const auto index = checkedIndex(child, nodeCount, label + ".children");
       if (parents[index] >= 0)
@@ -1090,7 +1111,7 @@ void validateSceneHierarchyJson(const nlohmann::json& json, const std::stop_toke
   std::vector<uint32_t> rootScene(nodeCount, UINT32_MAX);
   for (size_t i = 0; i < sceneCount; ++i) {
     checkImportIteration(stop, i);
-    const auto& scene = scenes->at(i);
+    auto& scene = scenes->at(i);
     const auto label = "scenes[" + std::to_string(i) + "]";
     if (!scene.is_object()) fail(label + " must be an object");
     const auto roots = scene.find("nodes");
@@ -1099,7 +1120,7 @@ void validateSceneHierarchyJson(const nlohmann::json& json, const std::stop_toke
     if (roots->size() > maxRootReferences - rootReferences)
       fail("scene roots exceed the aggregate reference limit");
     rootReferences += roots->size();
-    for (const auto& root : *roots) {
+    for (auto& root : *roots) {
       checkImportIteration(stop, references++);
       const auto index = checkedIndex(root, nodeCount, label + ".nodes");
       if (parents[index] >= 0) fail(label + ".nodes root is also a node child");
@@ -1107,27 +1128,7 @@ void validateSceneHierarchyJson(const nlohmann::json& json, const std::stop_toke
       rootScene[index] = static_cast<uint32_t>(i);
     }
   }
-}
-
-// TinyGLTF narrows JSON integers. glTF permits integral decimals and
-// exponents, so normalize those before TinyGLTF interprets the fields.
-std::optional<int> normalizeSourceInteger(nlohmann::json& value, bool& rewritten) {
-  if (value.is_number_unsigned()) {
-    const auto integer = value.get<uint64_t>();
-    if (integer <= INT_MAX) return static_cast<int>(integer);
-  } else if (value.is_number_integer()) {
-    const auto integer = value.get<int64_t>();
-    if (integer >= INT_MIN && integer <= INT_MAX) return static_cast<int>(integer);
-  } else if (value.is_number_float()) {
-    const auto number = value.get<double>();
-    if (number >= INT_MIN && number <= INT_MAX && std::trunc(number) == number) {
-      const auto integer = static_cast<int>(number);
-      value = integer;
-      rewritten = true;
-      return integer;
-    }
-  }
-  return std::nullopt;
+  return rewritten;
 }
 
 bool normalizeTextureSamplerJson(nlohmann::json& json, const std::stop_token& stop) {
@@ -1676,7 +1677,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
                   discardedMicromaps = true;
                 }
               }
-              validateSceneHierarchyJson(json, stop);
+              const bool normalizedHierarchyIndices = normalizeSceneHierarchyJson(json, stop);
               const auto nodeFlags = ValidateGltfNodeFlagsJson(json);
               const auto extendedMaterials = ValidateGltfExtendedMaterialsJson(json);
               const auto experimentalMaterialBytes = options.enableExperimentalMaterials
@@ -1696,7 +1697,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
                     std::chrono::steady_clock::now().time_since_epoch().count()) + "_" +
                     std::to_string(sequence.fetch_add(1)) + "_";
                 bool rewritten = xmp->rewroteManifest() || normalizedLinkedManifest ||
-                    normalizedSamplerFields || normalizedVariantIndices || normalizedInstancingFields ||
+                    normalizedSamplerFields || normalizedVariantIndices || normalizedHierarchyIndices || normalizedInstancingFields ||
                     discardedMicromaps || omittedOptional;
                 if (linkedContext) {
                   for (const auto* table : {"buffers", "images"}) {

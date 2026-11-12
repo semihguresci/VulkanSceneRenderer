@@ -7,10 +7,11 @@ several scenes has one global authoring identity. Transform, material and
 imported-light edits on that identity remain shared.
 
 The authored default is selected initially, with scene zero used when no default
-is specified. `--gltf-scene N` selects a zero-based scene index at startup. The
-**glTF scene** combo in Scene Controls shows names and indices, including empty
-scenes. A capture-sequence event such as `{"frame": 3, "gltfScene": 1}` uses the
-same switch path. A file without a scene table retains the legacy implicit view.
+is specified. `--gltf-scene N` selects a zero-based index for the startup asset.
+Each later model load selects the new file's authored default. The **glTF scene**
+combo in Scene Controls shows literal names and indices, including empty scenes.
+A capture-sequence event such as `{"frame": 3, "gltfScene": 1}` uses the same
+switch path. A file without a scene table retains the legacy implicit view.
 
 ## Publication and editing
 
@@ -23,9 +24,9 @@ one million aggregate scene-root references.
 
 The complete CPU graph is independently bounded to 262,144 renderables and
 524,288 graph nodes. A selected view must fit `AppConfig::maxSceneObjects`
-(normally 4096). Planning finishes before changing the active view, so a rejected
-selection retains the previous graph and edits. World transforms use an explicit
-worklist, including for deep inactive trees.
+(normally 4096). Rejected requests and requests for the current scene keep the
+live preview, undo and redo history, and active view. World transforms and source
+bounds use explicit worklists, including for deep hierarchies.
 
 Hierarchy rows, draws, deformation owners, cameras and provider extraction use
 the selected view. Synthetic context ancestors stay visible in the hierarchy
@@ -47,8 +48,8 @@ generated overrides from being restored after global settings change. GPU/editor
 light tables retain authored order when publishing the same records into ECS.
 
 Physics pauses while retaining bindings, joints, authored settings and poses.
-Play/Step is refused while an attached primary body belongs to an inactive scene;
-switch back or detach it before resuming. BIM physics bindings retain their
+Play, Step and Create Demo require attached primary bodies to belong to the
+active scene. Switch back or detach those bodies before resuming. BIM physics bindings retain their
 separate provider ownership. Per-scene body suspension is not implemented.
 
 ## Saving every scene

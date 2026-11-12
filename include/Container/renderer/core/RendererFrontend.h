@@ -470,12 +470,17 @@ private:
   std::optional<int> captureMaterialVariant_{};
   std::string captureSceneHistory_{};
   uint64_t gltfSceneGraphIdentity_{};
-  std::optional<int> captureGltfScene_{};
+  struct CaptureGltfSceneRequest {
+    size_t index;
+    bool expectRejection;
+  };
+  std::optional<CaptureGltfSceneRequest> captureGltfScene_;
+  std::string gltfSceneSelectionError_;
   std::map<size_t,std::shared_ptr<SceneLightEdits>> gltfSceneLightEdits_{};
   std::shared_ptr<ImportedSceneLightEdits> gltfImportedLightEdits_{};
   void updateGltfSceneState();
   void processGltfSceneRequest();
-  void selectGltfScene(size_t index);
+  void selectGltfScene(size_t index, bool expectRejection = false);
   void captureImportedLightEdits();
   void refreshGltfCameraChoices();
   void updateMaterialVariantState();
@@ -583,6 +588,7 @@ private:
   uint32_t gltfDeformationImageCount_{};
   std::optional<uint32_t> gltfDeformationSubmittedEpoch_{};
   void publishSceneEdit();
+  void refreshSceneEditView();
   void applyEditHistoryRequest();
   void validateSceneNodeTransform(uint32_t node, const glm::mat4 &proposed);
   void requireEditableSceneNode(uint32_t node) const;

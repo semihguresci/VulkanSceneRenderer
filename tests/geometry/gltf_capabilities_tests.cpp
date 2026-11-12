@@ -998,6 +998,31 @@ TEST(GltfCapabilitiesLoader, PreservesEncodedAndDeclaredGeometryBudgets) {
                   "input-memory budget");
 }
 
+TEST(GltfCapabilitiesLoader, NormalizesIntegralSceneIndicesWithJsonAndEmbeddedBinary) {
+  const std::array<float, 9> vertices{0, 0, 0, 1, 0, 0, 0, 1, 0};
+  const std::string_view bin(reinterpret_cast<const char*>(vertices.data()), sizeof(vertices));
+  for (bool binary : {false, true}) {
+    SCOPED_TRACE(binary ? "GLB" : "glTF");
+    AssetFixture fixture;
+    auto json = fixture.triangle();
+    if (binary) json["buffers"][0].erase("uri");
+    json["nodes"][0]["children"] = {1.0};
+    json["nodes"].push_back({{"name", "Child"}});
+    json["scenes"][0]["name"] = "First";
+    json["scenes"].push_back({{"name", "Second"}, {"nodes", {0.0}}});
+    json["scene"] = 1.0;
+
+    const auto path = fixture.save(json, binary, bin);
+    const auto result = gltf::LoadModelWithSource(path.string());
+    EXPECT_EQ(result.model.vertices().size(), 3u);
+    EXPECT_EQ(result.gltfModel.defaultScene, 1);
+    ASSERT_EQ(result.gltfModel.scenes.size(), 2u);
+    EXPECT_EQ(result.gltfModel.scenes[1].name, "Second");
+    EXPECT_EQ(result.gltfModel.scenes[1].nodes, std::vector<int>{0});
+    EXPECT_EQ(result.gltfModel.nodes[0].children, std::vector<int>{1});
+  }
+}
+
 TEST(GltfCapabilities, TextureRegistryReflectsConfiguredBackendsAndVariants) {
   for (const auto& [extension, available] : std::array{
       std::pair{"KHR_texture_basisu", container::material::HasKtxTextureCodec()},

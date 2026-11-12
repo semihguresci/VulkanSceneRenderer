@@ -46,6 +46,7 @@ void RendererFrontend::appendGltfDeformationTelemetry(nlohmann::json& json) cons
       {"authoringNodeCount",sceneGraph_.nodeCount()},
       {"activeRenderableCount",sceneGraph_.renderableNodes().size()},
       {"selected",subs_.sceneManager?int64_t(subs_.sceneManager->selectedScene()):-1},
+      {"selectionError",gltfSceneSelectionError_},
       {"editHistoryDepth",sceneEdits_?sceneEdits_->size():0},
       {"names",nlohmann::json::array()}, {"activeSourceNodes",nlohmann::json::array()}};
   if(subs_.sceneManager) {

@@ -2707,7 +2707,7 @@ void RendererFrontend::applyTemporalCapture(
   if(materialTerminal && !authorMaterial(*event.materialEdit))
     throw std::runtime_error("Capture material gesture could not be completed");
   if(!event.reload.empty() || !event.guiReload.empty() || !event.guiSampleModel.empty() || event.guiUnload || event.merge ||
-      event.materialVariant || event.gltfScene || !event.sceneHistory.empty() || event.nodeFlags || event.nodeAuthoring ||
+      event.materialVariant || !event.sceneHistory.empty() || event.nodeFlags || event.nodeAuthoring ||
       event.nodeReparent || event.nodeTransform || event.addPrimitive || event.animationPlaying || event.animationClip ||
       event.animationTime || !event.physicsAttach.empty() || !event.physicsAction.empty() || event.physicsJointCreate ||
       !event.physicsJointAction.empty() || event.physicsJointMotorVelocity || event.samples || event.resize || !event.technique.empty())
@@ -2926,7 +2926,8 @@ void RendererFrontend::applyTemporalCapture(
     selectBimObject(*event.bimSelectedObject);
   }
   if (event.materialVariant) captureMaterialVariant_=event.materialVariant;
-  if (event.gltfScene) captureGltfScene_=event.gltfScene;
+  if (event.gltfScene)
+    captureGltfScene_ = CaptureGltfSceneRequest{size_t(*event.gltfScene), event.expectGltfSceneRejection};
   if (!event.sceneHistory.empty()) captureSceneHistory_=event.sceneHistory;
   if (event.nodeFlags) {
     uint32_t target = container::scene::SceneGraph::kInvalidNode;

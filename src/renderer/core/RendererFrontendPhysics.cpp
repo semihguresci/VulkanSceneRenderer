@@ -30,6 +30,21 @@
 
 namespace container::renderer {
 
+#if CONTAINER_HAS_JOLT
+namespace {
+void requireActivePrimaryPhysicsBodies(const container::scene::SceneGraph& graph,
+                                      const container::physics::PhysicsScene& physics,
+                                      const container::physics::PhysicsElementBindings* elements) {
+  for (uint32_t node = 0; node < graph.nodeCount(); ++node) {
+    if (physics.hasBody(node) && !graph.isNodeActive(node) &&
+        (!elements || !elements->ownsNode(graph, node)))
+      throw std::invalid_argument(
+          "Physics is paused while bodies belong to another glTF scene; switch back or detach those bodies");
+  }
+}
+} // namespace
+#endif
+
 bool RendererFrontend::applySceneNodeTransform(
     uint32_t node, const container::ui::TransformControls &controls) {
   if (!subs_.cameraController)
@@ -185,6 +200,7 @@ void RendererFrontend::advancePhysics() {
           throw std::invalid_argument("The selected physics joint has no motor");
       }
     }
+    if (!actions.empty()) physicsError_.clear();
     if (!physicsScene_) return;
     physicsScene_->update(sceneGraph_, delta);
     publishBimPhysicsTransforms();
@@ -274,14 +290,15 @@ void RendererFrontend::attachBimPhysicsBody(
 
 void RendererFrontend::performPhysicsAction(std::string_view action,
     std::optional<uint32_t> primaryNode, uint32_t bimObject) {
+  if (action == "demo") {
+    createPhysicsDemo();
+    return;
+  }
   finishEditGestures();
 #if CONTAINER_HAS_JOLT
   if (!physicsScene_) return;
-  if(action=="play" || action=="step")
-    for(uint32_t node=0;node<sceneGraph_.nodeCount();++node)
-      if(physicsScene_->hasBody(node) && !sceneGraph_.isNodeActive(node) &&
-          (!physicsElements_ || !physicsElements_->ownsNode(sceneGraph_,node)))
-        throw std::invalid_argument("Physics is paused while bodies belong to another glTF scene; switch back or detach those bodies");
+  if (action == "play" || action == "step")
+    requireActivePrimaryPhysicsBodies(sceneGraph_, *physicsScene_, physicsElements_.get());
   if (action == "play" || action == "pause") physicsScene_->setPlaying(action == "play");
   else if (action == "step") physicsScene_->singleStep(sceneGraph_);
   else if (action == "reset") physicsScene_->reset(sceneGraph_);
@@ -518,12 +535,16 @@ void RendererFrontend::presentPhysicsControls() {
 }
 
 void RendererFrontend::createPhysicsDemo() {
-  finishEditGestures();
 #if CONTAINER_HAS_JOLT
   if (!subs_.sceneController || !subs_.sceneManager)
     throw std::runtime_error("The scene is not ready for a physics demo");
+  if (physicsScene_)
+    requireActivePrimaryPhysicsBodies(sceneGraph_, *physicsScene_, physicsElements_.get());
+  finishEditGestures();
   constexpr uint32_t demoBodyCount = PhysicsDemoNodes::kBodyCount;
-  const bool reuse = physicsDemoNodes_.reusable(sceneGraph_);
+  const bool reuse = physicsDemoNodes_.reusable(sceneGraph_) &&
+      std::ranges::all_of(physicsDemoNodes_.bodies,
+          [this](uint32_t node) { return sceneGraph_.isNodeActive(node); });
   const auto demoNodes = physicsDemoNodes_.bodies;
   if (!reuse && sceneGraph_.renderableNodes().size() + demoBodyCount > svc_.config.maxSceneObjects)
     throw std::runtime_error("Not enough scene object capacity for the physics demo");

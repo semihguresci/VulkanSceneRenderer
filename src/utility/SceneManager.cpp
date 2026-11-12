@@ -1087,7 +1087,7 @@ void SceneManager::initialize(const std::string& initialModelPath,
 
   config_.modelPath = initialModelPath;
   config_.importScale = sanitizeImportScale(importScale);
-  loadGltfAssets();
+  loadGltfAssets(config_.gltfSceneIndex);
   resetCameraProjectionNamespace();
   resetMaterialLifecycle();
   uploadMaterialBuffer();
@@ -1702,6 +1702,10 @@ bool SceneManager::reloadModel(
     container::geometry::GltfLoadResult* prepared) {
   const std::string previousModelPath = config_.modelPath;
   const float previousImportScale = config_.importScale;
+  const int previousScene = static_cast<int>(selectedScene_);
+  // The command-line override belongs to the startup asset. A replacement
+  // file selects its own authored default.
+  constexpr int replacementScene = -1;
   // Decode and check the incoming sampler budget before retiring live assets.
   // Rejected loads must leave runtime edits and auxiliary registrations intact.
   std::optional<container::geometry::GltfLoadResult> locallyPrepared;
@@ -1728,7 +1732,7 @@ bool SceneManager::reloadModel(
       (void)container::geometry::gltf::ParseMaterialVariants(prepared->gltfModel);
       const std::vector<uint32_t> preflightMaterials(prepared->model.primitiveRanges().size(),0);
       (void)prepareCompleteHierarchy(prepared->gltfModel,prepared->instancing,preflightMaterials,
-          importScaleTransform(importScale),1,prepared->model.meshes().size(),config_.maxSceneObjects,config_.gltfSceneIndex);
+          importScaleTransform(importScale),1,prepared->model.meshes().size(),config_.maxSceneObjects,replacementScene);
       incomingTextures = container::material::PrepareGltfTextures(prepared->gltfModel,
           allocationManager_->textureDecodeOptions(false), container::material::GltfTextureMemoryBytes(config_.textureMemoryMiB), experimental);
       if(container::material::CountPreparedGltfTextureResources(*incomingTextures)>textureDescriptorCapacity_)
@@ -1755,7 +1759,7 @@ bool SceneManager::reloadModel(
     resetForLoad();
     config_.modelPath = path;
     config_.importScale = sanitizeImportScale(importScale);
-    loadGltfAssets(prepared, incomingTextures ? &*incomingTextures : nullptr);
+    loadGltfAssets(replacementScene, prepared, incomingTextures ? &*incomingTextures : nullptr);
     resetCameraProjectionNamespace();
     resetMaterialLifecycle();
     uploadMaterialBuffer();
@@ -1768,7 +1772,9 @@ bool SceneManager::reloadModel(
       resetForLoad();
       config_.modelPath = previousModelPath;
       config_.importScale = previousImportScale;
-      loadGltfAssets();
+      // The runtime may have selected a scene appended by a merge. Recovery
+      // reparses the original file, which may have no such scene.
+      loadGltfAssets(previousScene, nullptr, nullptr, /*allowMissingScene=*/true);
       resetCameraProjectionNamespace();
       resetMaterialLifecycle();
       uploadMaterialBuffer();
@@ -2938,8 +2944,10 @@ void SceneManager::loadMaterialXMaterial() {
   }
 }
 
-void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
-    const container::material::PreparedGltfTextures* preparedTextures) {
+void SceneManager::loadGltfAssets(int requestedScene,
+    container::geometry::GltfLoadResult* prepared,
+    const container::material::PreparedGltfTextures* preparedTextures,
+    bool allowMissingScene) {
   if(materialResourceRevision_==UINT64_MAX) throw std::overflow_error("Material resource revision exhausted");
   materialLifecycle_.reset();materialLifecycleDomain_={};materialLifecycleHandles_.clear();materialLifecycleNextSlot_=0;
   materialResourceDependencies_.clear();textureResourceLifecycle_.reset();archiveResourcePhases_={};gltfResourcePhases_={};
@@ -2984,7 +2992,7 @@ void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
     vertices_ = model_.vertices();
     indices_ = model_.indices();
     sceneCatalog_=BuildGltfSceneCatalog(gltfModel_);
-    if(config_.gltfSceneIndex>0) throw std::invalid_argument("Requested glTF scene is unavailable");
+    if(requestedScene>0 && !allowMissingScene) throw std::invalid_argument("Requested glTF scene is unavailable");
     updateModelBounds();
     indexType_ = VK_INDEX_TYPE_UINT32;
     return;
@@ -3004,9 +3012,11 @@ void SceneManager::loadGltfAssets(container::geometry::GltfLoadResult* prepared,
       auto variants=container::geometry::gltf::ParseMaterialVariants(result.gltfModel);
       const std::vector<uint32_t> preflightMaterials(result.model.primitiveRanges().size(),0);
       auto catalog=BuildGltfSceneCatalog(result.gltfModel);
+      if (allowMissingScene && requestedScene >= 0 && size_t(requestedScene) >= catalog.entries.size())
+        requestedScene = -1;
       (void)prepareCompleteHierarchy(result.gltfModel,result.instancing,preflightMaterials,
-          importScaleTransform(config_.importScale),1,result.model.meshes().size(),config_.maxSceneObjects,config_.gltfSceneIndex);
-      selectedScene_=config_.gltfSceneIndex>=0 ? size_t(config_.gltfSceneIndex) : catalog.defaultScene;
+          importScaleTransform(config_.importScale),1,result.model.meshes().size(),config_.maxSceneObjects,requestedScene);
+      selectedScene_=requestedScene>=0 ? size_t(requestedScene) : catalog.defaultScene;
       sceneCatalog_=std::move(catalog);
       gltfModel_ = std::move(result.gltfModel);
       linkedComposition_ = std::move(result.linkedComposition);
@@ -3715,76 +3725,47 @@ ModelBounds SceneManager::calculateModelBounds(const SceneGraph* graph) const {
                 gltfModel_.meshes[meshIndex].primitives.size());
           }
 
-          std::function<void(int, const glm::mat4&)> traverseNode =
-              [&](int gltfNodeIndex, const glm::mat4& parentTransform) {
-                if (gltfNodeIndex < 0 ||
-                    gltfNodeIndex >= static_cast<int>(gltfModel_.nodes.size())) {
-                  return;
-                }
+          struct NodeWork {
+            int index;
+            glm::mat4 parentTransform;
+          };
+          std::vector<NodeWork> pending;
+          const auto roots = activeSceneRootNodes(gltfModel_);
+          for (auto root = roots.rbegin(); root != roots.rend(); ++root)
+            pending.push_back({*root, rootTransform});
+          while (!pending.empty()) {
+            const auto [index, parentTransform] = pending.back();
+            pending.pop_back();
+            if (index < 0 || size_t(index) >= gltfModel_.nodes.size()) continue;
 
-                const auto& node = gltfModel_.nodes[gltfNodeIndex];
-                const glm::mat4 worldTransform =
-                    parentTransform * nodeLocalTransform(node);
-
-                if(const auto visibility=node.extensions.find("KHR_node_visibility");
-                    visibility!=node.extensions.end() && visibility->second.IsObject()) {
-                  const auto& visible=visibility->second.Get("visible");
-                  if(visible.IsBool() && !visible.Get<bool>()) return;
-                }
-
-                if (node.mesh >= 0 &&
-                    node.mesh < static_cast<int>(gltfModel_.meshes.size())) {
-                  const auto& mesh = gltfModel_.meshes[node.mesh];
-                  const uint32_t basePrimitiveIndex =
-                      meshPrimitiveBase[node.mesh];
-                  for (size_t primitiveInMesh = 0;
-                       primitiveInMesh < mesh.primitives.size();
-                       ++primitiveInMesh) {
-                    const auto sourcePrimitive=basePrimitiveIndex+static_cast<uint32_t>(primitiveInMesh);
-                    if (sourcePrimitive>=sourcePrimitiveToRuntime_.size())
-                      throw std::runtime_error("Model bounds references an unavailable source primitive");
-                    const auto primitive=sourcePrimitiveToRuntime_[sourcePrimitive];
-                    if(const auto* instances=container::geometry::gltf::FindNodeInstancing(
-                        gltfInstancing_,uint32_t(gltfNodeIndex))) {
-                      for(uint32_t instance=0;instance<instances->localMatrices.size();++instance)
-                        emitPrimitive(primitive,container::geometry::gltf::ComposeInstanceWorld(*instances,instance,worldTransform));
-                    } else emitPrimitive(primitive,worldTransform);
-                  }
-                }
-
-                for (int childIndex : node.children) {
-                  traverseNode(childIndex, worldTransform);
-                }
-              };
-
-          if (!gltfModel_.scenes.empty()) {
-            int sceneIndex = gltfModel_.defaultScene;
-            if (sceneIndex < 0 ||
-                sceneIndex >= static_cast<int>(gltfModel_.scenes.size())) {
-              sceneIndex = 0;
+            const auto& node = gltfModel_.nodes[size_t(index)];
+            if (const auto visibility = node.extensions.find("KHR_node_visibility");
+                visibility != node.extensions.end() && visibility->second.IsObject()) {
+              const auto& visible = visibility->second.Get("visible");
+              if (visible.IsBool() && !visible.Get<bool>()) continue;
             }
+            const auto worldTransform = parentTransform * nodeLocalTransform(node);
 
-            for (int rootNodeIndex : gltfModel_.scenes[sceneIndex].nodes) {
-              traverseNode(rootNodeIndex, rootTransform);
-            }
-            return;
-          }
-
-          std::vector<bool> hasParent(gltfModel_.nodes.size(), false);
-          for (const auto& node : gltfModel_.nodes) {
-            for (int childIndex : node.children) {
-              if (childIndex >= 0 &&
-                  childIndex < static_cast<int>(hasParent.size())) {
-                hasParent[childIndex] = true;
+            if (node.mesh >= 0 && size_t(node.mesh) < gltfModel_.meshes.size()) {
+              const auto& mesh = gltfModel_.meshes[size_t(node.mesh)];
+              const auto basePrimitiveIndex = meshPrimitiveBase[size_t(node.mesh)];
+              const auto* instances = container::geometry::gltf::FindNodeInstancing(
+                  gltfInstancing_, static_cast<uint32_t>(index));
+              for (size_t primitiveInMesh = 0; primitiveInMesh < mesh.primitives.size(); ++primitiveInMesh) {
+                const auto sourcePrimitive = basePrimitiveIndex + static_cast<uint32_t>(primitiveInMesh);
+                if (sourcePrimitive >= sourcePrimitiveToRuntime_.size())
+                  throw std::runtime_error("Model bounds references an unavailable source primitive");
+                const auto primitive = sourcePrimitiveToRuntime_[sourcePrimitive];
+                if (instances) {
+                  for (uint32_t instance = 0; instance < instances->localMatrices.size(); ++instance)
+                    emitPrimitive(primitive, container::geometry::gltf::ComposeInstanceWorld(*instances, instance, worldTransform));
+                } else {
+                  emitPrimitive(primitive, worldTransform);
+                }
               }
             }
-          }
-
-          for (size_t nodeIndex = 0; nodeIndex < gltfModel_.nodes.size();
-               ++nodeIndex) {
-            if (!hasParent[nodeIndex]) {
-              traverseNode(static_cast<int>(nodeIndex), rootTransform);
-            }
+            for (auto child = node.children.rbegin(); child != node.children.rend(); ++child)
+              pending.push_back({*child, worldTransform});
           }
           return;
         }

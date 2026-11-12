@@ -174,6 +174,59 @@ def reject_oversized(renderer, output, source, technique, timeout):
                 diagnostic=CAPACITY_DIAGNOSTIC, log=str(log), command=command)
 
 
+def reject_live_switch(renderer, output, source, technique, captures, timeout):
+    target = dict(type='point', source='imported', nodeName='Active light node')
+    matrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, .25, 0, 0, 1]
+    gesture = 91
+    events = [
+        dict(frame=1, nodeTransform=dict(node=dict(sourceNode=0), matrix=matrix)),
+        dict(frame=2, sceneHistory='undo'),
+        dict(frame=3, lightEdit=dict(target=target, phase='begin', gesture=gesture, values=dict(intensity=9))),
+        dict(frame=4, gltfScene=0),
+        dict(frame=5, gltfScene=1, expectGltfSceneRejection=True),
+        dict(frame=6, gltfScene=2, expectGltfSceneRejection=True),
+        dict(frame=7, lightEdit=dict(target=target, phase='cancel', gesture=gesture)),
+        dict(frame=8, sceneHistory='redo'),
+        dict(frame=9, gltfScene=0),
+    ]
+    sequence = output / 'live-rejection.json'
+    sequence.write_text(json.dumps(dict(schemaVersion=1, frames=9, sampleFrames=list(range(1, 10)),
+                                        events=events), indent=2) + '\n', encoding='utf-8')
+    records = run(renderer, output, source, technique + '-live-rejection', technique, 'lit', captures,
+                  sequence=sequence, timeout=timeout, require_validation=True)
+    require(len(records) == 9, 'Incomplete live rejection witness')
+    expected_errors = {5: CAPACITY_DIAGNOSTIC, 6: 'requested scene index is invalid'}
+    first_preview = records[2]['state']
+    for frame, record in enumerate(records, start=1):
+        state = record['state']
+        view = state['gltfScenes']
+        assert_active(state, source=True)
+        require(view['graphIdentity'] == first_preview['gltfScenes']['graphIdentity'],
+                f'Frame {frame} replaced the resident graph')
+        if frame in (4, 9):
+            require(not view['selectionError'], f'Same-scene request reported an error at frame {frame}')
+        elif frame in expected_errors:
+            require(expected_errors[frame] in view['selectionError'], f'Wrong live diagnostic at frame {frame}')
+        undo = frame in (1, 8, 9)
+        require(state['sceneEditHistory'] == dict(undo=int(undo), redo=int(not undo)),
+                f'Live switch changed the history cursor at frame {frame}')
+        node = next(row for row in state['gltfMerge']['authoringNodes'] if row['sourceNode'] == 0)
+        require(node['localColumns'][3] == ([.25, 0, 0, 1] if undo else [0, 0, 0, 1]),
+                f'Frame {frame} changed the existing node transform')
+        previewing = 3 <= frame <= 6
+        light = next(light for light in state['lightEdits']['lights'] if light['source'] == 1 and light['type'] == 1)
+        require(state['lightEdits']['gesture'] == (gesture if previewing else 0) and
+                light['intensity'] == (9 if previewing else LIGHTS[0]['intensity']),
+                f'Frame {frame} committed, lost or changed the active preview')
+        if previewing:
+            require(state['taa']['epoch'] == first_preview['taa']['epoch'],
+                    f'Frame {frame} reset temporal state without switching')
+            require(pixels(record['image'], records[2]['image'])['maximumError'] == 0,
+                    f'Frame {frame} changed the visible scene on rejection')
+    return dict(technique=technique, check='live-rejection-preserves-view-gesture-and-redo',
+                diagnostics=expected_errors, frames=len(records))
+
+
 def verify_runtime_manifest(path, renderer):
     manifest = path.read_bytes()
     verified = verify_manifest(path)
@@ -200,9 +253,8 @@ def main():
     techniques = args.technique or TECHNIQUES
     report = dict(schemaVersion=1, passed=False, nativeValidationPerformed=False, generatedOnly=args.generate_only,
                   renderer=str(renderer), rendererSha256=None, fixtures=[], captures=[], checks=[],
-                  expectedCaptureCount=3 * len(techniques), expectedCheckCount=5 * len(techniques),
-                  expectedRejectedLaunches=len(techniques),
-                  unverified=['No interactive UI capacity rejection or GPU picking readback is exercised'])
+                  expectedCaptureCount=12 * len(techniques), expectedCheckCount=6 * len(techniques),
+                  expectedRejectedLaunches=len(techniques))
     def save():
         report.update(captureCount=len(report['captures']), checkCount=len(report['checks']))
         (output / 'results.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
@@ -247,6 +299,8 @@ def main():
             report['checks'].append(dict(technique=technique, check='glb-active-only-oracle', **error))
             report['checks'].append(dict(technique=technique, check='all-scenes-ascii-metadata', **inspect_asset(ascii_path)))
             report['checks'].append(reject_oversized(renderer, output, source, technique, args.timeout))
+            report['checks'].append(reject_live_switch(renderer, output, source, technique,
+                                                       report['captures'], args.timeout))
             save()
             print('PASS inactive capacity', technique, flush=True)
         require(len(report['captures']) == report['expectedCaptureCount'] and

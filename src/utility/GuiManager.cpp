@@ -3289,6 +3289,45 @@ void GuiManager::setSceneHierarchyNodeExpanded(
   sceneHierarchyCache_.setExpanded(nodeIndex, expanded);
 }
 
+namespace {
+
+bool selectableAssetName(const char* id, std::string_view label, bool selected) {
+  const ImVec2 origin = ImGui::GetCursorScreenPos();
+  // Draw authored names separately from ImGui's label/ID syntax.
+  const ImVec2 size = ImGui::CalcTextSize(label.data(), label.data() + label.size(), false);
+  const bool chosen = ImGui::Selectable(id, selected, 0, size);
+  ImGui::GetWindowDrawList()->AddText(origin, ImGui::GetColorU32(ImGuiCol_Text),
+                                     label.data(), label.data() + label.size());
+  return chosen;
+}
+
+} // namespace
+
+void GuiManager::drawGltfSceneSelector() {
+  auto& state = gltfSceneControls_;
+  if (state.names.empty()) return;
+
+  const auto sceneLabel = [&](size_t index) {
+    return std::to_string(index) + ": " + state.names[index];
+  };
+  const std::string preview = state.selected >= 0 && size_t(state.selected) < state.names.size()
+      ? sceneLabel(size_t(state.selected)) : "Scene";
+  if (ImGui::BeginCombo("glTF scene", nullptr)) {
+    for (size_t i = 0; i < state.names.size(); ++i) {
+      ImGui::PushID(static_cast<int>(i));
+      if (selectableAssetName("##scene", sceneLabel(i), state.selected == static_cast<int>(i)))
+        state.requested = static_cast<int>(i);
+      ImGui::PopID();
+    }
+    ImGui::EndCombo();
+  }
+  if (ImGui::BeginComboPreview()) {
+    ImGui::TextUnformatted(preview.data(), preview.data() + preview.size());
+    ImGui::EndComboPreview();
+  }
+  if (!state.error.empty()) ImGui::TextWrapped("%s", state.error.c_str());
+}
+
 void GuiManager::drawMaterialVariantSelector() {
   auto &state = materialVariantControls_;
   if (state.names.empty()) return;
@@ -3302,15 +3341,8 @@ void GuiManager::drawMaterialVariantSelector() {
     if (ImGui::Selectable("Default", state.selected < 0)) state.requested = -1;
     for (size_t i = 0; i < state.names.size(); ++i) {
       ImGui::PushID(static_cast<int>(i));
-      const auto label = displayName(state.names[i]);
-      const ImVec2 origin = ImGui::GetCursorScreenPos();
-      // Asset text can contain ImGui's label/ID separators. Keep it separate
-      // from the indexed item ID and draw every character in the name.
-      const ImVec2 size = ImGui::CalcTextSize(label.data(), label.data() + label.size(), false);
-      if (ImGui::Selectable("##variant", state.selected == static_cast<int>(i), 0, size))
+      if (selectableAssetName("##variant", displayName(state.names[i]), state.selected == static_cast<int>(i)))
         state.requested = static_cast<int>(i);
-      ImGui::GetWindowDrawList()->AddText(origin, ImGui::GetColorU32(ImGuiCol_Text),
-                                         label.data(), label.data() + label.size());
       ImGui::PopID();
     }
     ImGui::EndCombo();
@@ -4761,23 +4793,11 @@ void GuiManager::drawSceneControls(
   const bool hasGltfSource = gltfSource && (!gltfSource->nodes.empty() || !gltfSource->meshes.empty());
   GltfXmpInspector xmp(gltfSource);
   if (hasGltfSource) xmp.draw("glTF asset metadata", gltfSource->asset.extensions);
-  if(!gltfSceneControls_.names.empty()) {
-    auto& state=gltfSceneControls_;
-    const char* preview=state.selected>=0 && size_t(state.selected)<state.names.size()
-        ? state.names[size_t(state.selected)].c_str():"Scene";
-    if(ImGui::BeginCombo("glTF scene",preview)) {
-      for(size_t i=0;i<state.names.size();++i) {
-        ImGui::PushID(int(i));
-        const auto label=std::to_string(i)+": "+state.names[i];
-        if(ImGui::Selectable(label.c_str(),state.selected==int(i))) state.requested=int(i);
-        ImGui::PopID();
-      }
-      ImGui::EndCombo();
-    }
-    if(!state.error.empty()) ImGui::TextWrapped("%s",state.error.c_str());
-    if (hasGltfSource && state.selected >= 0 && size_t(state.selected) < gltfSource->scenes.size())
-      xmp.draw("glTF scene metadata", gltfSource->scenes[size_t(state.selected)].extensions);
-  }
+  drawGltfSceneSelector();
+  const int selectedGltfScene = gltfSceneControls_.selected;
+  if (hasGltfSource && !gltfSceneControls_.names.empty() && selectedGltfScene >= 0 &&
+      size_t(selectedGltfScene) < gltfSource->scenes.size())
+    xmp.draw("glTF scene metadata", gltfSource->scenes[size_t(selectedGltfScene)].extensions);
   if (sectionAnchor(ControlsSection::Animation)) ImGui::SetNextItemOpen(true);
   DrawGltfAnimationControls(gltfAnimationControls_);
   sectionAnchor(ControlsSection::Variants);
