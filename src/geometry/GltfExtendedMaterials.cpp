@@ -66,6 +66,32 @@ struct View {
 
 struct Declarations { bool anisotropy{}, diffuse{}, transform{}; };
 
+// Only names read by draft material parsing need storage.
+class ExperimentalDeclarations {
+public:
+  void add(std::string_view name) {
+    const size_t index = nameIndex(name);
+    if (index < present_.size()) present_[index] = true;
+  }
+
+  bool contains(std::string_view name) const {
+    const size_t index = nameIndex(name);
+    return index < present_.size() && present_[index];
+  }
+
+private:
+  static constexpr size_t transformIndex = kGltfExperimentalMaterialExtensions.size();
+
+  static size_t nameIndex(std::string_view name) {
+    if (name == kTransform) return transformIndex;
+    const auto& drafts = kGltfExperimentalMaterialExtensions;
+    const auto found = std::ranges::find(drafts, name);
+    return found == drafts.end() ? transformIndex + 1 : static_cast<size_t>(found - drafts.begin());
+  }
+
+  std::array<bool, transformIndex + 1> present_{};
+};
+
 GltfExtendedMaterialSummary checkedSummary(size_t count, const GltfExtendedMaterialLimits& limits) {
   if (!limits.maxMaterials || limits.maxMaterials > INT_MAX || !limits.maxRetainedBytes ||
       limits.maxRetainedBytes == UINT64_MAX)
@@ -222,11 +248,9 @@ uint64_t checkedExperimentalBytes(size_t count, const GltfExtendedMaterialLimits
   return uint64_t(count) * stride;
 }
 
+template <typename IsDeclared>
 GltfExperimentalMaterial parseExperimentalSourceMaterial(const tinygltf::Material& source,
-    std::span<const std::string> extensionsUsed, size_t textureCount, size_t index) {
-  const auto listed = [&](std::string_view name) {
-    return std::ranges::find(extensionsUsed, name) != extensionsUsed.end();
-  };
+    const IsDeclared& listed, size_t textureCount, size_t index) {
   const auto find = [&](const char* name) -> std::optional<View> {
     const auto field = source.extensions.find(name);
     if (field == source.extensions.end()) return std::nullopt;
@@ -304,13 +328,21 @@ GltfExperimentalMaterialNormalization NormalizeGltfExperimentalMaterialsJson(
   if (textures != source.end() && !textures->is_array()) fail("textures", "must be an array");
   if (used != source.end() && !used->is_array()) fail("extensionsUsed", "must be an array");
   if (required != source.end() && !required->is_array()) fail("extensionsRequired", "must be an array");
-  const auto hasName = [&](const auto& names, std::string_view name) {
-    return names != source.end() && std::ranges::any_of(*names, [&](const Json& entry) {
-      return entry.is_string() && entry.get_ref<const std::string&>() == name;
-    });
-  };
-  const auto listed = [&](std::string_view name) { return hasName(used, name); };
   GltfExperimentalMaterialNormalization result{checkedExperimentalBytes(materials->size(), limits), {}};
+  if (materials->empty()) return result;
+  const auto collectDeclarations = [&](const auto& names) {
+    ExperimentalDeclarations declarations;
+    if (names == source.end()) return declarations;
+    size_t index = 0;
+    for (const auto& entry : *names) {
+      if (index++ % 1024 == 0) container::util::checkModelImportCancellation(stop);
+      if (entry.is_string()) declarations.add(entry.get_ref<const std::string&>());
+    }
+    return declarations;
+  };
+  const auto declared = collectDeclarations(used);
+  const auto requiredDrafts = collectDeclarations(required);
+  const auto listed = [&](std::string_view name) { return declared.contains(name); };
   const auto textureCount = textures == source.end() ? 0 : textures->size();
   constexpr size_t maxDetailedWarnings = 32;
   size_t additionalWarnings = 0;
@@ -331,7 +363,7 @@ GltfExperimentalMaterialNormalization NormalizeGltfExperimentalMaterialsJson(
         GltfExperimentalMaterial candidate;
         parseExperimentalLayer(candidate, View(*field), name, index, textureCount, listed, incompatible);
       } catch (const MaterialValidationError& error) {
-        if (hasName(required, name)) throw;
+        if (requiredDrafts.contains(name)) throw;
         if (result.warnings.size() < maxDetailedWarnings)
           result.warnings.emplace_back(std::string(error.what()) + ". Ignoring the optional material layer.");
         else
@@ -348,17 +380,24 @@ GltfExperimentalMaterialNormalization NormalizeGltfExperimentalMaterialsJson(
 std::vector<GltfExperimentalMaterial> ParseGltfExperimentalMaterials(
     const tinygltf::Model& source, const GltfExtendedMaterialLimits& limits) {
   (void)checkedExperimentalBytes(source.materials.size(), limits);
+  if (source.materials.empty()) return {};
+  ExperimentalDeclarations declared;
+  for (const auto& name : source.extensionsUsed) declared.add(name);
+  const auto listed = [&](std::string_view name) { return declared.contains(name); };
   std::vector<GltfExperimentalMaterial> result;
   result.reserve(source.materials.size());
   for (size_t index = 0; index < source.materials.size(); ++index)
     result.push_back(parseExperimentalSourceMaterial(
-        source.materials[index], source.extensionsUsed, source.textures.size(), index));
+        source.materials[index], listed, source.textures.size(), index));
   return result;
 }
 
 GltfExperimentalMaterial ParseGltfExperimentalMaterial(const tinygltf::Material& source,
     std::span<const std::string> extensionsUsed, size_t textureCount) {
-  return parseExperimentalSourceMaterial(source, extensionsUsed, textureCount, 0);
+  const auto listed = [&](std::string_view name) {
+    return std::ranges::find(extensionsUsed, name) != extensionsUsed.end();
+  };
+  return parseExperimentalSourceMaterial(source, listed, textureCount, 0);
 }
 
 } // namespace container::geometry::gltf
