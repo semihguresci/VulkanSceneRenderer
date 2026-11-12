@@ -81,5 +81,10 @@ batch-size independence, GPU-timed adaptive batches, and rejection of diagnosed
 paths. It also checks that blocked sidecars preserve earlier checkpoints and
 existing outputs, and that a retry can publish the full checkpoint.
 
+The Windows RTX 2080 SUPER run passed 81 captures with Vulkan synchronization
+validation. Scene-linear EXRs matched clean controls in both raster renderers
+with TAA, FSR and DLSS. The 32-, 128- and 512-sample Cornell EXRs matched the
+accepted convergence baseline byte for byte. [Windows Vulkan results](../tests/visual-regression/scene-linear-export/windows-nvidia/scene-linear-export-results.json)
+
 Adapted tone curves retain their permissive notices in
 `tone-curves-Apache-2.0.txt`; Windows packages include that license.
