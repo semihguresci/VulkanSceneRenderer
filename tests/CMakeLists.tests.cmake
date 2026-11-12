@@ -1206,6 +1206,13 @@ add_custom_test(gui_material_authoring_tests
 )
 set_tests_properties(gui_material_authoring_tests PROPERTIES LABELS "editor;cpu;gltf;material" TIMEOUT 120)
 
+add_custom_test(gltf_xmp_inspector_widget_tests
+    ${CMAKE_SOURCE_DIR}/tests/ui/gltf_xmp_inspector_widget_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+target_include_directories(gltf_xmp_inspector_widget_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/utility)
+set_tests_properties(gltf_xmp_inspector_widget_tests PROPERTIES LABELS "editor;cpu;gltf;xmp" TIMEOUT 60)
+
 add_custom_test(camera_projection_controls_tests
     ${CMAKE_SOURCE_DIR}/tests/utility/camera_projection_controls_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_ui

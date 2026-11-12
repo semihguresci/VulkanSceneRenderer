@@ -1668,6 +1668,13 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
           if (ownerSource < 0 || size_t(ownerSource) >= snapshot.source->nodes.size())
             fail("deformed mesh owner has no source identity");
           const auto& instance = snapshot.source->nodes[size_t(ownerSource)];
+          // The mesh is exported on a generated node. Keep its source owner's
+          // packet available when the exported surface is picked after reload.
+          if (sourceIndex < 0) {
+            const auto attachment = instance.extensions.find(kGltfXmpExtension);
+            if (attachment != instance.extensions.end())
+              node.extensions.emplace(kGltfXmpExtension, attachment->second);
+          }
           const auto* instances=FindNodeInstancing(sourceInstancing,uint32_t(ownerSource));
           const glm::mat4* instanceLocal=nullptr;
           if (current.sourceInstanceIndex>=0 && !snapshot.graph.isNodeRetired(i)) {

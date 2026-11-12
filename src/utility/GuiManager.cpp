@@ -1,11 +1,11 @@
 #include "Container/utility/GuiManager.h"
 #include "BimRelationshipWidgets.h"
+#include "GltfXmpInspector.h"
 #include "Container/app/RendererLightingSettings.h"
 #include "Container/utility/OpenVdbAuthoring.h"
 
 #include "Container/geometry/OpenVdbLoader.h"
 #include "Container/geometry/GltfMergePlacement.h"
-#include "Container/geometry/GltfXmpMetadata.h"
 #include "Container/renderer/bim/BimCoordinationOverlay.h"
 #include "Container/renderer/bim/BimManager.h"
 #include "Container/renderer/bim/BimMeasurementSnapping.h"
@@ -69,85 +69,6 @@ using container::renderer::EditableLightType;
 using container::renderer::ScenePrimitiveKind;
 
 namespace {
-
-std::string_view xmpPreview(std::string_view value, size_t maxBytes = 2048) {
-  size_t end = std::min(maxBytes, value.size());
-  while (end < value.size() && (static_cast<unsigned char>(value[end]) & 0xc0) == 0x80)
-    --end;
-  return value.substr(0, end);
-}
-
-void drawXmpValue(std::string_view label, const nlohmann::json& value, size_t depth, size_t& rows) {
-  if (!rows || depth > 8) return;
-  --rows;
-  if (auto literal = value.find("@value"); literal != value.end()) {
-    auto language = value.find("@language");
-    auto name = std::string(xmpPreview(label));
-    if (language != value.end() && language->is_string())
-      name += " [" + std::string(xmpPreview(language->get_ref<const std::string&>())) + "]";
-    drawXmpValue(name, *literal, depth + 1, rows);
-    return;
-  }
-  for (const auto* keyword : {"@list", "@set"})
-    if (auto entries = value.find(keyword); entries != value.end() && entries->is_array()) {
-      drawXmpValue(label, *entries, depth + 1, rows);
-      return;
-    }
-  auto line = std::string(xmpPreview(label));
-  if (!value.is_structured()) {
-    const auto encoded = value.is_string() ? std::string{} : value.dump();
-    const std::string_view scalar = value.is_string() ? value.get_ref<const std::string&>() : encoded;
-    if (!line.empty()) line += "   ";
-    line += xmpPreview(scalar);
-    if (scalar.size() > 2048) line += " ...";
-    ImGui::TextWrapped("%s", line.c_str());
-    return;
-  }
-  ImGui::TextUnformatted(line.c_str());
-  if (depth == 8) {
-    ImGui::TextDisabled("Nested values are available in the raw JSON.");
-    return;
-  }
-  ImGui::Indent();
-  for (auto entry = value.begin(); entry != value.end() && rows; ++entry) {
-    if (value.is_array()) drawXmpValue("-", *entry, depth + 1, rows);
-    else if (!entry.key().starts_with('@')) drawXmpValue(entry.key(), *entry, depth + 1, rows);
-  }
-  ImGui::Unindent();
-}
-
-class GltfXmpInspector {
- public:
-  explicit GltfXmpInspector(const tinygltf::Model* model) : model_(model) {}
-
-  void draw(const char* label, const tinygltf::ExtensionMap& extensions) {
-    if (!ImGui::TreeNode(label)) return;
-    using namespace container::geometry::gltf;
-    if (!package_) package_.emplace(ReadGltfXmpPackage(*model_).value_or(nlohmann::json{}));
-    const auto resolved = ResolveGltfXmpPacket(*package_, extensions);
-    if (const auto* packet = resolved.packet) {
-      size_t rows = 128;
-      for (auto entry = packet->begin(); entry != packet->end() && rows; ++entry)
-        if (!entry.key().starts_with('@')) drawXmpValue(entry.key(), *entry, 0, rows);
-      if (!rows) ImGui::TextDisabled("Additional values are available in the raw JSON.");
-      if (ImGui::TreeNode("Raw packet JSON")) {
-        const auto raw = packet->dump(2);
-        if (ImGui::Button("Copy JSON")) ImGui::SetClipboardText(raw.c_str());
-        const auto preview = xmpPreview(raw, 16 * 1024);
-        ImGui::TextUnformatted(preview.data(), preview.data() + preview.size());
-        if (preview.size() < raw.size()) ImGui::TextDisabled("Preview shortened. Copy JSON includes the full packet.");
-        ImGui::TreePop();
-      }
-    } else {
-      ImGui::TextWrapped("%.*s", int(resolved.message.size()), resolved.message.data());
-    }
-    ImGui::TreePop();
-  }
-
- private:
-  const tinygltf::Model* model_;
-  std::optional<nlohmann::json> package_;
-};
 
 constexpr std::string_view kSampleModelsRelativeRoot =
     "models/glTF-Sample-Models/2.0";
@@ -2570,7 +2491,7 @@ std::optional<ResourceRetirementRequest> GuiManager::consumeResourceRetirementRe
   return std::exchange(resourceRetirementRequest_,std::nullopt);
 }
 
-void GuiManager::drawResourceCatalog() {
+void GuiManager::drawResourceCatalog(std::span<const tinygltf::Image> gltfArchiveImages) {
   const auto& snapshot=resourceCatalog_;
   if(!snapshot.available && snapshot.error.empty()) return;
   ImGui::PushID("ResourceCatalog");ImGui::SeparatorText("Resources");
@@ -2598,11 +2519,12 @@ void GuiManager::drawResourceCatalog() {
   if(!snapshot.error.empty()) ImGui::TextWrapped("%s",snapshot.error.c_str());
   if(!resourceCatalogUiError_.empty()) ImGui::TextWrapped("%s",resourceCatalogUiError_.c_str());
   ImGui::TextDisabled("Deletion is undoable. Shared resources stay available while in use.");
+  gltfXmpInspector_->drawImage(snapshot.selected, gltfArchiveImages);
   ImGui::PopID();
 }
 
-void GuiManager::drawMaterialInspector() {
-  drawResourceCatalog();
+void GuiManager::drawMaterialInspector(std::span<const tinygltf::Image> gltfArchiveImages) {
+  drawResourceCatalog(gltfArchiveImages);
   const auto& snapshot=materialInspector_;
   ImGui::PushID("MaterialInspector");
   const std::array<uint64_t,6> ids{snapshot.target.graphIdentity,snapshot.target.assetIdentity,
@@ -2642,6 +2564,7 @@ void GuiManager::drawMaterialInspector() {
     if(!snapshot.materialRetirementReason.empty()) ImGui::TextWrapped("%s",snapshot.materialRetirementReason.c_str());
     if(!snapshot.materialCatalogError.empty()) ImGui::TextWrapped("%s",snapshot.materialCatalogError.c_str());
     ImGui::TextDisabled("Deletion is undoable. Material selection here does not assign it to a surface.");
+    gltfXmpInspector_->drawCatalogMaterial(snapshot.catalogTarget.sourceMaterial);
   } else if(!snapshot.materialCatalogError.empty()) ImGui::TextWrapped("%s",snapshot.materialCatalogError.c_str());
   if(!snapshot.choices.empty()) {
     const auto selected=std::ranges::find(snapshot.choices,snapshot.target.bindingGraphNode,&MaterialBindingChoice::graphNode);
@@ -2659,6 +2582,7 @@ void GuiManager::drawMaterialInspector() {
     }
     ImGui::EndDisabled();
   }
+  gltfXmpInspector_->drawSurfaceMaterial(snapshot.target.sourceMaterial);
   const bool bindingDisabled=!snapshot.bindingOperationsAvailable || materialBindingOperationRequest_.has_value() ||
       materialBindingSelectionRequest_.has_value() || materialTextureEditRequest_.has_value() || materialRetirementRequest_.has_value() || materialCatalogSelectionRequest_.has_value() || resourceCatalogActionPending();
   ImGui::BeginDisabled(bindingDisabled);
@@ -3452,7 +3376,8 @@ CaptureBimMeasurementPointFromSelection(
 }
 
 GuiManager::GuiManager()
-    : openVdbAuthoring_(std::make_unique<OpenVdbAuthoringPanel>()) {}
+    : openVdbAuthoring_(std::make_unique<OpenVdbAuthoringPanel>()),
+      gltfXmpInspector_(std::make_unique<detail::GltfXmpInspector>()) {}
 GuiManager::~GuiManager() = default;
 
 std::span<const container::renderer::BimCoordinationOverlayIssuePin>
@@ -3701,6 +3626,7 @@ void GuiManager::queueModelMergeRequest(std::string path, std::string parentName
 
 void GuiManager::resetModelInspectionState() {
   lightEditControls_.setSnapshot({});
+  gltfXmpInspector_->setSource(nullptr, 0, 0);
   CancelInlineSceneRename(sceneNodeInlineRename_);
   CloseSceneHierarchyRowPopup(sceneHierarchyRowPopup_);
   materialInspector_={};materialEditRequests_.clear();materialBindingSelectionRequest_.reset();
@@ -4510,7 +4436,7 @@ void GuiManager::drawSceneControls(
         &applyMeshTransform,
     const std::function<void(uint32_t, bool)> &setSceneNodeSelectable,
     const std::function<void(uint32_t, bool)> &setSceneNodeHoverable,
-    const tinygltf::Model* gltfSource) {
+    const GltfInspectorSource& gltfSource) {
   if (!initialized_)
     return;
 
@@ -4790,16 +4716,14 @@ void GuiManager::drawSceneControls(
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("Optional compute propagation; keeps CPU state for editing, picking and physics.");
   sectionAnchor(ControlsSection::GltfScene);
-  const bool hasGltfSource = gltfSource && (!gltfSource->nodes.empty() || !gltfSource->meshes.empty());
-  GltfXmpInspector xmp(gltfSource);
-  if (hasGltfSource) xmp.draw("glTF asset metadata", gltfSource->asset.extensions);
+  auto& xmp = *gltfXmpInspector_;
+  xmp.setSource(gltfSource.model, sceneGraph.identity(), gltfSource.generation);
+  xmp.drawAsset();
   drawGltfSceneSelector();
-  const int selectedGltfScene = gltfSceneControls_.selected;
-  if (hasGltfSource && !gltfSceneControls_.names.empty() && selectedGltfScene >= 0 &&
-      size_t(selectedGltfScene) < gltfSource->scenes.size())
-    xmp.draw("glTF scene metadata", gltfSource->scenes[size_t(selectedGltfScene)].extensions);
+  xmp.drawScene(gltfSceneControls_.selected);
   if (sectionAnchor(ControlsSection::Animation)) ImGui::SetNextItemOpen(true);
   DrawGltfAnimationControls(gltfAnimationControls_);
+  xmp.drawAnimation(gltfAnimationControls_.selectedClip);
   sectionAnchor(ControlsSection::Variants);
   drawMaterialVariantSelector();
 
@@ -8716,30 +8640,9 @@ void GuiManager::drawSceneControls(
   }
   drawSceneNodeControls(sceneGraph, selectedMeshNode, meshTransform,
                         selectMeshNode, applyMeshTransform);
-  if (hasGltfSource && !bimInspection.hasSelection) {
-    if (const auto* selected = sceneGraph.getNode(selectedMeshNode); selected && !selected->retired) {
-      const auto* owner = selected->sourceNodeIndex >= 0 ? selected : sceneGraph.getNode(selected->meshOwnerGraphNode);
-      const tinygltf::Node* sourceNode = nullptr;
-      if (owner && !owner->retired && owner->sourceNodeIndex >= 0 &&
-          size_t(owner->sourceNodeIndex) < gltfSource->nodes.size()) {
-        sourceNode = &gltfSource->nodes[size_t(owner->sourceNodeIndex)];
-        xmp.draw("glTF node metadata", sourceNode->extensions);
-      }
-      const int sourceMesh = selected->sourceMeshIndex >= 0 ? selected->sourceMeshIndex : sourceNode ? sourceNode->mesh : -1;
-      if (sourceMesh >= 0 && size_t(sourceMesh) < gltfSource->meshes.size())
-        xmp.draw("glTF mesh metadata", gltfSource->meshes[size_t(sourceMesh)].extensions);
-    }
-  }
+  xmp.drawSelection(sceneGraph, selectedMeshNode, bimInspection.hasSelection);
   sectionAnchor(ControlsSection::Material);
-  drawMaterialInspector();
-  if (hasGltfSource) {
-    const auto selectedMaterial = materialInspector_.target.sourceMaterial;
-    const auto catalogMaterial = materialInspector_.catalogTarget.sourceMaterial;
-    if (selectedMaterial >= 0 && size_t(selectedMaterial) < gltfSource->materials.size())
-      xmp.draw("glTF surface material metadata", gltfSource->materials[size_t(selectedMaterial)].extensions);
-    if (catalogMaterial >= 0 && catalogMaterial != selectedMaterial && size_t(catalogMaterial) < gltfSource->materials.size())
-      xmp.draw("glTF catalog material metadata", gltfSource->materials[size_t(catalogMaterial)].extensions);
-  }
+  drawMaterialInspector(gltfSource.archiveImages);
 
   if (!statusMessage_.empty()) {
     const std::string statusText = WrapLongPathForImGui(statusMessage_);
