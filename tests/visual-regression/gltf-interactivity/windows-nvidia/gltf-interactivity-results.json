@@ -1,0 +1,1300 @@
+{
+  "schemaVersion": 1,
+  "issue": 103,
+  "platform": "Windows x64",
+  "build": {
+    "compiler": "MSVC-19.51.36260.0",
+    "configuration": "Release",
+    "revision": "49553029081debb4b4f4f58a6a7371521c33f9ae"
+  },
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+    "vendorId": 4318,
+    "deviceId": 7809,
+    "driverVersion": 2559967232,
+    "vulkanApiVersion": 4211029
+  },
+  "rendererSha256": "590f713405dcb9fba5f16da1f92c67578a5f8c4602d3fb927472226ea28bc151",
+  "validation": {
+    "layer": "VK_LAYER_KHRONOS_validation",
+    "packageVersion": "1.4.363.1",
+    "manifestApiVersion": "1.4.363",
+    "manifestSha256": "672a281330703083230ff02cabdd1afd524b600e0a11ae8610119e06e4183b02",
+    "librarySha256": "451ed11cbc799f858cbc0e843766d2990527c03f93f7a85f03bc1e67b605a435",
+    "synchronizationValidation": true
+  },
+  "ctest": {
+    "casesPassed": 322,
+    "casesFailed": 0,
+    "casesSkipped": 0,
+    "receiptSha256": "c8fbdb2c914eac6cea94ac58a4a0c60ab0d9af94dfcd99a94be8b3d9edc05cd6",
+    "junitSha256": "fbcd6dfa9bba5b617e1fea7f3e6ea195852ee38616ee381763133bbc554b5b9c",
+    "rawLogSha256": "ab7c4b08746f385d1de774db3fa175fe072112f90c42ea54c66572567f5156a0",
+    "suites": {
+      "temporal_capture_tests": 151,
+      "gltf_merge_tests": 36,
+      "gltf_material_animation_tests": 49,
+      "gltf_animation_tests": 62,
+      "gltf_interactivity_tests": 18,
+      "gltf_deformation_gpu_tests": 6
+    },
+    "gpuValidationInstances": 6
+  },
+  "baseline": {
+    "sourceRevision": "30509a44d39b0b782bd3f1502cd05444c30268f6",
+    "cpu": {
+      "casesPassed": 12,
+      "casesFailed": 6,
+      "junitSha256": "24c320a56b3e3c794cfd5a45db1ab079a08993dabbfa07069f1b5eac781ce25d",
+      "failingCases": [
+        "DelayCancelSocketClearsOnlyTheTargetOwnerAndItsReference",
+        "LastDelayCancelsOnlyTheLatestActivation",
+        "PointerSetStopsOnlyTheMatchingInterpolation",
+        "RestartedClipAppliesAfterOtherActiveClips",
+        "ScheduledClipStopsUseDirectionalIntervalsAndCompletionFlows",
+        "VariableSetStopsInterpolationForEveryWrittenVariable"
+      ]
+    },
+    "native": {
+      "build": {
+        "compiler": "MSVC-19.51.36260.0",
+        "configuration": "Release",
+        "revision": "2cfac46d750a4061ef1ccca69fac5f4a885ed4db"
+      },
+      "rendererSha256": "e1c6a4eaa0950991438fbd7ea903898bbd0220c9e09f3fa7dd729fa44483252d",
+      "resultsSha256": "43bb2e4b396ac20e7710fcb9a30cb9f8cb9fb69e69054564da12eda2b5635699",
+      "captures": 8,
+      "rejectedLaunches": 2,
+      "failedPixelOracles": 2,
+      "cases": {
+        "deferred-raster": {
+          "delays": {
+            "rejectedFlowInput": true,
+            "logSha256": "fd725f32eaccec008fef04d8536038aa0c830fd81fe36bee59fd609b3fa5bef9"
+          },
+          "override": {
+            "samples": [
+              {
+                "frame": 1,
+                "graphTime": 0.0,
+                "centerRgb": [
+                  232,
+                  26,
+                  26
+                ]
+              },
+              {
+                "frame": 3,
+                "graphTime": 0.10000000149011612,
+                "centerRgb": [
+                  221,
+                  26,
+                  177
+                ]
+              },
+              {
+                "frame": 4,
+                "graphTime": 0.15000000223517418,
+                "centerRgb": [
+                  213,
+                  26,
+                  199
+                ]
+              },
+              {
+                "frame": 9,
+                "graphTime": 0.4000000059604645,
+                "centerRgb": [
+                  232,
+                  26,
+                  26
+                ]
+              }
+            ],
+            "logSha256": "0b5ba533c1a1b7361937eecee5c9c984af3e6a464afdc4f3607578e09835948d"
+          }
+        },
+        "forward-raster": {
+          "delays": {
+            "rejectedFlowInput": true,
+            "logSha256": "9764efff039a8ef27ff9c8ee5d757103d3b28299a2593554227a1e26d8ba049a"
+          },
+          "override": {
+            "samples": [
+              {
+                "frame": 1,
+                "graphTime": 0.0,
+                "centerRgb": [
+                  232,
+                  26,
+                  26
+                ]
+              },
+              {
+                "frame": 3,
+                "graphTime": 0.10000000149011612,
+                "centerRgb": [
+                  221,
+                  26,
+                  177
+                ]
+              },
+              {
+                "frame": 4,
+                "graphTime": 0.15000000223517418,
+                "centerRgb": [
+                  213,
+                  26,
+                  199
+                ]
+              },
+              {
+                "frame": 9,
+                "graphTime": 0.4000000059604645,
+                "centerRgb": [
+                  232,
+                  26,
+                  26
+                ]
+              }
+            ],
+            "logSha256": "a843023b01318894088021e0cc68f35e206d76738b87673a8c6aa83705e0e43a"
+          }
+        }
+      }
+    }
+  },
+  "native": {
+    "manifest": {
+      "sha256": "2453b6674cedeae5fdbe59ec0593893efa1f2d2691b5d46fe9455daf10ad2af3",
+      "entries": 373
+    },
+    "captures": 154,
+    "successfulProcesses": 44,
+    "lanes": {
+      "scheduler": {
+        "receiptSha256": "b32e7dd1230145a8375770cd826c38822408c467fb0039c5f25c79da634ad51c",
+        "resultsSha256": "50d7385c86630bba41bf5dbfb4c10676ceb1a00b26ddd5050efe422d74cf303e",
+        "captures": 18,
+        "successfulProcesses": 4,
+        "results": {
+          "deferred-raster": {
+            "delays": {
+              "samples": [
+                {
+                  "frame": 1,
+                  "graphTime": 0.0,
+                  "centerRgb": [
+                    232,
+                    26,
+                    26
+                  ]
+                },
+                {
+                  "frame": 4,
+                  "graphTime": 0.15000000223517418,
+                  "centerRgb": [
+                    26,
+                    232,
+                    26
+                  ]
+                },
+                {
+                  "frame": 7,
+                  "graphTime": 0.30000000447034836,
+                  "centerRgb": [
+                    26,
+                    232,
+                    26
+                  ]
+                },
+                {
+                  "frame": 8,
+                  "graphTime": 0.3500000052154064,
+                  "centerRgb": [
+                    26,
+                    232,
+                    26
+                  ]
+                },
+                {
+                  "frame": 10,
+                  "graphTime": 0.45000000670552254,
+                  "centerRgb": [
+                    26,
+                    232,
+                    26
+                  ]
+                }
+              ]
+            },
+            "override": {
+              "samples": [
+                {
+                  "frame": 1,
+                  "graphTime": 0.0,
+                  "centerRgb": [
+                    232,
+                    26,
+                    26
+                  ]
+                },
+                {
+                  "frame": 3,
+                  "graphTime": 0.10000000149011612,
+                  "centerRgb": [
+                    221,
+                    26,
+                    177
+                  ]
+                },
+                {
+                  "frame": 4,
+                  "graphTime": 0.15000000223517418,
+                  "centerRgb": [
+                    26,
+                    232,
+                    26
+                  ]
+                },
+                {
+                  "frame": 9,
+                  "graphTime": 0.4000000059604645,
+                  "centerRgb": [
+                    26,
+                    232,
+                    26
+                  ]
+                }
+              ]
+            }
+          },
+          "forward-raster": {
+            "delays": {
+              "samples": [
+                {
+                  "frame": 1,
+                  "graphTime": 0.0,
+                  "centerRgb": [
+                    232,
+                    26,
+                    26
+                  ]
+                },
+                {
+                  "frame": 4,
+                  "graphTime": 0.15000000223517418,
+                  "centerRgb": [
+                    26,
+                    232,
+                    26
+                  ]
+                },
+                {
+                  "frame": 7,
+                  "graphTime": 0.30000000447034836,
+                  "centerRgb": [
+                    26,
+                    232,
+                    26
+                  ]
+                },
+                {
+                  "frame": 8,
+                  "graphTime": 0.3500000052154064,
+                  "centerRgb": [
+                    26,
+                    232,
+                    26
+                  ]
+                },
+                {
+                  "frame": 10,
+                  "graphTime": 0.45000000670552254,
+                  "centerRgb": [
+                    26,
+                    232,
+                    26
+                  ]
+                }
+              ]
+            },
+            "override": {
+              "samples": [
+                {
+                  "frame": 1,
+                  "graphTime": 0.0,
+                  "centerRgb": [
+                    232,
+                    26,
+                    26
+                  ]
+                },
+                {
+                  "frame": 3,
+                  "graphTime": 0.10000000149011612,
+                  "centerRgb": [
+                    221,
+                    26,
+                    177
+                  ]
+                },
+                {
+                  "frame": 4,
+                  "graphTime": 0.15000000223517418,
+                  "centerRgb": [
+                    26,
+                    232,
+                    26
+                  ]
+                },
+                {
+                  "frame": 9,
+                  "graphTime": 0.4000000059604645,
+                  "centerRgb": [
+                    26,
+                    232,
+                    26
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      },
+      "numeric": {
+        "receiptSha256": "754c13b5f35c0d031a6f50f9c9f50e795817717bb337cbfccd5b815ce1af254d",
+        "resultsSha256": "04b43fdbd8e818e65c302fe549c12cd5b7461bd1122ccfb2ea1633d5c54320e0",
+        "captures": 36,
+        "successfulProcesses": 8,
+        "results": {
+          "deferred-raster": {
+            "coloredCentroids": [
+              245.8319833625219,
+              272.5,
+              274.5,
+              274.5
+            ],
+            "states": [
+              {
+                "activeClips": 1,
+                "available": true,
+                "customEvents": [
+                  "stop",
+                  "recolor"
+                ],
+                "diagnostic": "",
+                "playing": true,
+                "started": true,
+                "time": 0.0
+              },
+              {
+                "activeClips": 1,
+                "available": true,
+                "customEvents": [
+                  "stop",
+                  "recolor"
+                ],
+                "diagnostic": "",
+                "playing": true,
+                "started": true,
+                "time": 0.18333334289491177
+              },
+              {
+                "activeClips": 0,
+                "available": true,
+                "customEvents": [
+                  "stop",
+                  "recolor"
+                ],
+                "diagnostic": "",
+                "playing": true,
+                "started": true,
+                "time": 0.25000001303851604
+              },
+              {
+                "activeClips": 0,
+                "available": true,
+                "customEvents": [
+                  "stop",
+                  "recolor"
+                ],
+                "diagnostic": "",
+                "playing": true,
+                "started": true,
+                "time": 0.36666668578982353
+              },
+              {
+                "activeClips": 0,
+                "available": true,
+                "customEvents": [
+                  "stop",
+                  "recolor"
+                ],
+                "diagnostic": "",
+                "playing": false,
+                "started": false,
+                "time": 0.0
+              }
+            ],
+            "portability": {
+              "reloaded": 5,
+              "mergeStates": [
+                {
+                  "available": false,
+                  "diagnostic": ""
+                },
+                {
+                  "activeClips": 1,
+                  "available": true,
+                  "customEvents": [
+                    "stop",
+                    "recolor"
+                  ],
+                  "diagnostic": "",
+                  "playing": true,
+                  "started": true,
+                  "time": 0.06666667014360428
+                },
+                {
+                  "activeClips": 1,
+                  "available": true,
+                  "customEvents": [
+                    "stop",
+                    "recolor"
+                  ],
+                  "diagnostic": "",
+                  "playing": true,
+                  "started": true,
+                  "time": 0.18333334289491177
+                },
+                {
+                  "activeClips": 0,
+                  "available": true,
+                  "customEvents": [
+                    "stop",
+                    "recolor"
+                  ],
+                  "diagnostic": "",
+                  "playing": true,
+                  "started": true,
+                  "time": 0.30000001564621925
+                },
+                {
+                  "activeClips": 0,
+                  "available": true,
+                  "customEvents": [
+                    "stop",
+                    "recolor"
+                  ],
+                  "diagnostic": "",
+                  "playing": true,
+                  "started": true,
+                  "time": 0.36666668578982353
+                },
+                {
+                  "available": false,
+                  "diagnostic": ""
+                },
+                {
+                  "activeClips": 1,
+                  "available": true,
+                  "customEvents": [
+                    "stop",
+                    "recolor"
+                  ],
+                  "diagnostic": "",
+                  "playing": true,
+                  "started": true,
+                  "time": 0.03333333507180214
+                }
+              ]
+            }
+          },
+          "forward-raster": {
+            "coloredCentroids": [
+              245.8319833625219,
+              272.5,
+              274.5,
+              274.5
+            ],
+            "states": [
+              {
+                "activeClips": 1,
+                "available": true,
+                "customEvents": [
+                  "stop",
+                  "recolor"
+                ],
+                "diagnostic": "",
+                "playing": true,
+                "started": true,
+                "time": 0.0
+              },
+              {
+                "activeClips": 1,
+                "available": true,
+                "customEvents": [
+                  "stop",
+                  "recolor"
+                ],
+                "diagnostic": "",
+                "playing": true,
+                "started": true,
+                "time": 0.18333334289491177
+              },
+              {
+                "activeClips": 0,
+                "available": true,
+                "customEvents": [
+                  "stop",
+                  "recolor"
+                ],
+                "diagnostic": "",
+                "playing": true,
+                "started": true,
+                "time": 0.25000001303851604
+              },
+              {
+                "activeClips": 0,
+                "available": true,
+                "customEvents": [
+                  "stop",
+                  "recolor"
+                ],
+                "diagnostic": "",
+                "playing": true,
+                "started": true,
+                "time": 0.36666668578982353
+              },
+              {
+                "activeClips": 0,
+                "available": true,
+                "customEvents": [
+                  "stop",
+                  "recolor"
+                ],
+                "diagnostic": "",
+                "playing": false,
+                "started": false,
+                "time": 0.0
+              }
+            ],
+            "portability": {
+              "reloaded": 5,
+              "mergeStates": [
+                {
+                  "available": false,
+                  "diagnostic": ""
+                },
+                {
+                  "activeClips": 1,
+                  "available": true,
+                  "customEvents": [
+                    "stop",
+                    "recolor"
+                  ],
+                  "diagnostic": "",
+                  "playing": true,
+                  "started": true,
+                  "time": 0.06666667014360428
+                },
+                {
+                  "activeClips": 1,
+                  "available": true,
+                  "customEvents": [
+                    "stop",
+                    "recolor"
+                  ],
+                  "diagnostic": "",
+                  "playing": true,
+                  "started": true,
+                  "time": 0.18333334289491177
+                },
+                {
+                  "activeClips": 0,
+                  "available": true,
+                  "customEvents": [
+                    "stop",
+                    "recolor"
+                  ],
+                  "diagnostic": "",
+                  "playing": true,
+                  "started": true,
+                  "time": 0.30000001564621925
+                },
+                {
+                  "activeClips": 0,
+                  "available": true,
+                  "customEvents": [
+                    "stop",
+                    "recolor"
+                  ],
+                  "diagnostic": "",
+                  "playing": true,
+                  "started": true,
+                  "time": 0.36666668578982353
+                },
+                {
+                  "available": false,
+                  "diagnostic": ""
+                },
+                {
+                  "activeClips": 1,
+                  "available": true,
+                  "customEvents": [
+                    "stop",
+                    "recolor"
+                  ],
+                  "diagnostic": "",
+                  "playing": true,
+                  "started": true,
+                  "time": 0.03333333507180214
+                }
+              ]
+            }
+          }
+        }
+      },
+      "boolean": {
+        "receiptSha256": "9c9bdf5bb5e20ed3c4c77364e6fe93d749e92a5bf6d332eac22a246b5518936d",
+        "resultsSha256": "5266fde7fb210b5019d3777a08ded8facdfb0986e85b907581afa8248e2be9d0",
+        "captures": 24,
+        "successfulProcesses": 4,
+        "results": {
+          "deferred-raster": {
+            "samples": [
+              {
+                "frame": 1,
+                "flags": [
+                  true,
+                  true,
+                  true
+                ],
+                "changedPixelFraction": 0.0
+              },
+              {
+                "frame": 2,
+                "flags": [
+                  false,
+                  true,
+                  true
+                ],
+                "changedPixelFraction": 0.09817708333333333
+              },
+              {
+                "frame": 3,
+                "flags": [
+                  true,
+                  true,
+                  true
+                ],
+                "changedPixelFraction": 0.0
+              },
+              {
+                "frame": 5,
+                "flags": [
+                  true,
+                  false,
+                  true
+                ],
+                "changedPixelFraction": 0.0
+              },
+              {
+                "frame": 6,
+                "flags": [
+                  true,
+                  true,
+                  false
+                ],
+                "changedPixelFraction": 0.0
+              },
+              {
+                "frame": 7,
+                "flags": [
+                  true,
+                  true,
+                  true
+                ],
+                "changedPixelFraction": 0.0
+              }
+            ],
+            "portableFormat": ".gltf"
+          },
+          "forward-raster": {
+            "samples": [
+              {
+                "frame": 1,
+                "flags": [
+                  true,
+                  true,
+                  true
+                ],
+                "changedPixelFraction": 0.0
+              },
+              {
+                "frame": 2,
+                "flags": [
+                  false,
+                  true,
+                  true
+                ],
+                "changedPixelFraction": 0.09817708333333333
+              },
+              {
+                "frame": 3,
+                "flags": [
+                  true,
+                  true,
+                  true
+                ],
+                "changedPixelFraction": 0.0
+              },
+              {
+                "frame": 5,
+                "flags": [
+                  true,
+                  false,
+                  true
+                ],
+                "changedPixelFraction": 0.0
+              },
+              {
+                "frame": 6,
+                "flags": [
+                  true,
+                  true,
+                  false
+                ],
+                "changedPixelFraction": 0.0
+              },
+              {
+                "frame": 7,
+                "flags": [
+                  true,
+                  true,
+                  true
+                ],
+                "changedPixelFraction": 0.0
+              }
+            ],
+            "portableFormat": ".glb"
+          }
+        }
+      },
+      "viewport": {
+        "receiptSha256": "8df37213c51f4f2d7844e8f911ffc7badd62617647bd635cf7eb156674e303c5",
+        "resultsSha256": "10900494f93a43275af3b0be8dbc35b7ca0a0926bc77fb3d794ab3112b50d083",
+        "captures": 10,
+        "successfulProcesses": 2,
+        "results": {
+          "deferred-raster": {
+            "samples": [
+              {
+                "frame": 2,
+                "centerRgb": [
+                  232,
+                  26,
+                  26
+                ],
+                "selectedGraphNode": 1,
+                "pointerAction": "hover",
+                "pointerPixel": [
+                  320,
+                  180
+                ],
+                "hit": {
+                  "graphNode": 1,
+                  "name": "Animated cube",
+                  "sourceInstance": -1,
+                  "sourceMesh": 0,
+                  "sourceNode": 0,
+                  "sourcePrimitive": 0
+                },
+                "rawGpuId": 1
+              },
+              {
+                "frame": 3,
+                "centerRgb": [
+                  26,
+                  232,
+                  26
+                ],
+                "selectedGraphNode": 1,
+                "pointerAction": "hover",
+                "pointerPixel": [
+                  24,
+                  24
+                ],
+                "hit": null,
+                "rawGpuId": 0
+              },
+              {
+                "frame": 4,
+                "centerRgb": [
+                  26,
+                  26,
+                  232
+                ],
+                "selectedGraphNode": 4294967295,
+                "pointerAction": "select",
+                "pointerPixel": [
+                  24,
+                  24
+                ],
+                "hit": null,
+                "rawGpuId": 0
+              },
+              {
+                "frame": 5,
+                "centerRgb": [
+                  26,
+                  26,
+                  232
+                ],
+                "selectedGraphNode": 1,
+                "pointerAction": "select",
+                "pointerPixel": [
+                  320,
+                  180
+                ],
+                "hit": {
+                  "graphNode": 1,
+                  "name": "Animated cube",
+                  "sourceInstance": -1,
+                  "sourceMesh": 0,
+                  "sourceNode": 0,
+                  "sourcePrimitive": 0
+                },
+                "rawGpuId": 1
+              },
+              {
+                "frame": 6,
+                "centerRgb": [
+                  232,
+                  232,
+                  26
+                ],
+                "selectedGraphNode": 1
+              }
+            ]
+          },
+          "forward-raster": {
+            "samples": [
+              {
+                "frame": 2,
+                "centerRgb": [
+                  232,
+                  26,
+                  26
+                ],
+                "selectedGraphNode": 1,
+                "pointerAction": "hover",
+                "pointerPixel": [
+                  320,
+                  180
+                ],
+                "hit": {
+                  "graphNode": 1,
+                  "name": "Animated cube",
+                  "sourceInstance": -1,
+                  "sourceMesh": 0,
+                  "sourceNode": 0,
+                  "sourcePrimitive": 0
+                },
+                "rawGpuId": 1
+              },
+              {
+                "frame": 3,
+                "centerRgb": [
+                  26,
+                  232,
+                  26
+                ],
+                "selectedGraphNode": 1,
+                "pointerAction": "hover",
+                "pointerPixel": [
+                  24,
+                  24
+                ],
+                "hit": null,
+                "rawGpuId": 0
+              },
+              {
+                "frame": 4,
+                "centerRgb": [
+                  26,
+                  26,
+                  232
+                ],
+                "selectedGraphNode": 4294967295,
+                "pointerAction": "select",
+                "pointerPixel": [
+                  24,
+                  24
+                ],
+                "hit": null,
+                "rawGpuId": 0
+              },
+              {
+                "frame": 5,
+                "centerRgb": [
+                  26,
+                  26,
+                  232
+                ],
+                "selectedGraphNode": 1,
+                "pointerAction": "select",
+                "pointerPixel": [
+                  320,
+                  180
+                ],
+                "hit": {
+                  "graphNode": 1,
+                  "name": "Animated cube",
+                  "sourceInstance": -1,
+                  "sourceMesh": 0,
+                  "sourceNode": 0,
+                  "sourcePrimitive": 0
+                },
+                "rawGpuId": 1
+              },
+              {
+                "frame": 6,
+                "centerRgb": [
+                  232,
+                  232,
+                  26
+                ],
+                "selectedGraphNode": 1
+              }
+            ]
+          }
+        }
+      },
+      "deformation": {
+        "receiptSha256": "bb50de4deb9d2d4086127e0077aa0b0abd7969854cbf2c9c0167e4d2ad36e4f0",
+        "resultsSha256": "a08e619b4629a1f32b2599ae46d5d95001b856b89e9a77e4bbb0ad40838b4aa3",
+        "captures": 18,
+        "successfulProcesses": 6,
+        "results": {
+          "deferred-raster": {
+            "changedPixels": 4216,
+            "samples": [
+              {
+                "frame": 1,
+                "graphTime": 0.0,
+                "activeClips": 0,
+                "morphWeights": [
+                  0.0,
+                  0.0
+                ],
+                "historyReset": true,
+                "maxPositionDelta": 0.0,
+                "pixelComparison": {
+                  "roiPixels": 4234,
+                  "meanAbsolutePixelError": 0.0,
+                  "badPixelFraction": 0.0,
+                  "imageSha256": [
+                    "133da21ca263b30fcd6f3f371bf49dceae053faa53c4f9108990d88b6aac3ae8",
+                    "133da21ca263b30fcd6f3f371bf49dceae053faa53c4f9108990d88b6aac3ae8"
+                  ]
+                }
+              },
+              {
+                "frame": 2,
+                "graphTime": 0.125,
+                "activeClips": 1,
+                "morphWeights": [
+                  0.0,
+                  0.0
+                ],
+                "historyReset": false,
+                "maxPositionDelta": 0.0,
+                "pixelComparison": {
+                  "roiPixels": 4234,
+                  "meanAbsolutePixelError": 0.0,
+                  "badPixelFraction": 0.0,
+                  "imageSha256": [
+                    "133da21ca263b30fcd6f3f371bf49dceae053faa53c4f9108990d88b6aac3ae8",
+                    "133da21ca263b30fcd6f3f371bf49dceae053faa53c4f9108990d88b6aac3ae8"
+                  ]
+                }
+              },
+              {
+                "frame": 5,
+                "graphTime": 0.5,
+                "activeClips": 1,
+                "morphWeights": [
+                  0.375,
+                  0.24374999105930328
+                ],
+                "historyReset": false,
+                "maxPositionDelta": 0.09445540606975555,
+                "pixelComparison": {
+                  "roiPixels": 4788,
+                  "meanAbsolutePixelError": 0.0,
+                  "badPixelFraction": 0.0,
+                  "imageSha256": [
+                    "ee1660771962281d121de2175839dbd78c6c3f9ee9bf40022a94ec7c5f7cc69d",
+                    "ee1660771962281d121de2175839dbd78c6c3f9ee9bf40022a94ec7c5f7cc69d"
+                  ]
+                }
+              },
+              {
+                "frame": 7,
+                "graphTime": 0.75,
+                "activeClips": 0,
+                "morphWeights": [
+                  0.375,
+                  0.24374999105930328
+                ],
+                "historyReset": false,
+                "maxPositionDelta": 0.0,
+                "pixelComparison": {
+                  "roiPixels": 4788,
+                  "meanAbsolutePixelError": 0.0,
+                  "badPixelFraction": 0.0,
+                  "imageSha256": [
+                    "ee1660771962281d121de2175839dbd78c6c3f9ee9bf40022a94ec7c5f7cc69d",
+                    "ee1660771962281d121de2175839dbd78c6c3f9ee9bf40022a94ec7c5f7cc69d"
+                  ]
+                }
+              },
+              {
+                "frame": 9,
+                "graphTime": 1.0,
+                "activeClips": 0,
+                "morphWeights": [
+                  0.375,
+                  0.24374999105930328
+                ],
+                "historyReset": false,
+                "maxPositionDelta": 0.0,
+                "pixelComparison": {
+                  "roiPixels": 4788,
+                  "meanAbsolutePixelError": 0.0,
+                  "badPixelFraction": 0.0,
+                  "imageSha256": [
+                    "ee1660771962281d121de2175839dbd78c6c3f9ee9bf40022a94ec7c5f7cc69d",
+                    "ee1660771962281d121de2175839dbd78c6c3f9ee9bf40022a94ec7c5f7cc69d"
+                  ]
+                }
+              },
+              {
+                "frame": 10,
+                "graphTime": 0.0,
+                "activeClips": 0,
+                "morphWeights": [
+                  0.0,
+                  0.0
+                ],
+                "historyReset": true,
+                "maxPositionDelta": 0.0,
+                "pixelComparison": {
+                  "roiPixels": 4234,
+                  "meanAbsolutePixelError": 0.0,
+                  "badPixelFraction": 0.0,
+                  "imageSha256": [
+                    "133da21ca263b30fcd6f3f371bf49dceae053faa53c4f9108990d88b6aac3ae8",
+                    "133da21ca263b30fcd6f3f371bf49dceae053faa53c4f9108990d88b6aac3ae8"
+                  ]
+                }
+              },
+              {
+                "frame": 12,
+                "graphTime": 0.0,
+                "activeClips": 0,
+                "morphWeights": [
+                  0.0,
+                  0.0
+                ],
+                "historyReset": false,
+                "maxPositionDelta": 0.0,
+                "pixelComparison": {
+                  "roiPixels": 4234,
+                  "meanAbsolutePixelError": 0.0,
+                  "badPixelFraction": 0.0,
+                  "imageSha256": [
+                    "133da21ca263b30fcd6f3f371bf49dceae053faa53c4f9108990d88b6aac3ae8",
+                    "133da21ca263b30fcd6f3f371bf49dceae053faa53c4f9108990d88b6aac3ae8"
+                  ]
+                }
+              }
+            ]
+          },
+          "forward-raster": {
+            "changedPixels": 4216,
+            "samples": [
+              {
+                "frame": 1,
+                "graphTime": 0.0,
+                "activeClips": 0,
+                "morphWeights": [
+                  0.0,
+                  0.0
+                ],
+                "historyReset": true,
+                "maxPositionDelta": 0.0,
+                "pixelComparison": {
+                  "roiPixels": 4234,
+                  "meanAbsolutePixelError": 0.0,
+                  "badPixelFraction": 0.0,
+                  "imageSha256": [
+                    "133da21ca263b30fcd6f3f371bf49dceae053faa53c4f9108990d88b6aac3ae8",
+                    "133da21ca263b30fcd6f3f371bf49dceae053faa53c4f9108990d88b6aac3ae8"
+                  ]
+                }
+              },
+              {
+                "frame": 2,
+                "graphTime": 0.125,
+                "activeClips": 1,
+                "morphWeights": [
+                  0.0,
+                  0.0
+                ],
+                "historyReset": false,
+                "maxPositionDelta": 0.0,
+                "pixelComparison": {
+                  "roiPixels": 4234,
+                  "meanAbsolutePixelError": 0.0,
+                  "badPixelFraction": 0.0,
+                  "imageSha256": [
+                    "133da21ca263b30fcd6f3f371bf49dceae053faa53c4f9108990d88b6aac3ae8",
+                    "133da21ca263b30fcd6f3f371bf49dceae053faa53c4f9108990d88b6aac3ae8"
+                  ]
+                }
+              },
+              {
+                "frame": 5,
+                "graphTime": 0.5,
+                "activeClips": 1,
+                "morphWeights": [
+                  0.375,
+                  0.24374999105930328
+                ],
+                "historyReset": false,
+                "maxPositionDelta": 0.09445540606975555,
+                "pixelComparison": {
+                  "roiPixels": 4788,
+                  "meanAbsolutePixelError": 0.0,
+                  "badPixelFraction": 0.0,
+                  "imageSha256": [
+                    "ee1660771962281d121de2175839dbd78c6c3f9ee9bf40022a94ec7c5f7cc69d",
+                    "ee1660771962281d121de2175839dbd78c6c3f9ee9bf40022a94ec7c5f7cc69d"
+                  ]
+                }
+              },
+              {
+                "frame": 7,
+                "graphTime": 0.75,
+                "activeClips": 0,
+                "morphWeights": [
+                  0.375,
+                  0.24374999105930328
+                ],
+                "historyReset": false,
+                "maxPositionDelta": 0.0,
+                "pixelComparison": {
+                  "roiPixels": 4788,
+                  "meanAbsolutePixelError": 0.0,
+                  "badPixelFraction": 0.0,
+                  "imageSha256": [
+                    "ee1660771962281d121de2175839dbd78c6c3f9ee9bf40022a94ec7c5f7cc69d",
+                    "ee1660771962281d121de2175839dbd78c6c3f9ee9bf40022a94ec7c5f7cc69d"
+                  ]
+                }
+              },
+              {
+                "frame": 9,
+                "graphTime": 1.0,
+                "activeClips": 0,
+                "morphWeights": [
+                  0.375,
+                  0.24374999105930328
+                ],
+                "historyReset": false,
+                "maxPositionDelta": 0.0,
+                "pixelComparison": {
+                  "roiPixels": 4788,
+                  "meanAbsolutePixelError": 0.0,
+                  "badPixelFraction": 0.0,
+                  "imageSha256": [
+                    "ee1660771962281d121de2175839dbd78c6c3f9ee9bf40022a94ec7c5f7cc69d",
+                    "ee1660771962281d121de2175839dbd78c6c3f9ee9bf40022a94ec7c5f7cc69d"
+                  ]
+                }
+              },
+              {
+                "frame": 10,
+                "graphTime": 0.0,
+                "activeClips": 0,
+                "morphWeights": [
+                  0.0,
+                  0.0
+                ],
+                "historyReset": true,
+                "maxPositionDelta": 0.0,
+                "pixelComparison": {
+                  "roiPixels": 4234,
+                  "meanAbsolutePixelError": 0.0,
+                  "badPixelFraction": 0.0,
+                  "imageSha256": [
+                    "133da21ca263b30fcd6f3f371bf49dceae053faa53c4f9108990d88b6aac3ae8",
+                    "133da21ca263b30fcd6f3f371bf49dceae053faa53c4f9108990d88b6aac3ae8"
+                  ]
+                }
+              },
+              {
+                "frame": 12,
+                "graphTime": 0.0,
+                "activeClips": 0,
+                "morphWeights": [
+                  0.0,
+                  0.0
+                ],
+                "historyReset": false,
+                "maxPositionDelta": 0.0,
+                "pixelComparison": {
+                  "roiPixels": 4234,
+                  "meanAbsolutePixelError": 0.0,
+                  "badPixelFraction": 0.0,
+                  "imageSha256": [
+                    "133da21ca263b30fcd6f3f371bf49dceae053faa53c4f9108990d88b6aac3ae8",
+                    "133da21ca263b30fcd6f3f371bf49dceae053faa53c4f9108990d88b6aac3ae8"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "fixturesSha256": {
+          "graph-morph.gltf": "82551b1f55fbe4346923e4b936b703e7939e46e414814417c6eae583be0c44f6",
+          "graph-morph.sequence.json": "d757dc029245213b086d071167958e63c6b404c2b2905a1f1a75567b6bb2d874",
+          "baked-rest.gltf": "dd59a98122d228b87620e22423b8b8a5fe7465ad34f10155048d4a73e6365897",
+          "baked-held.gltf": "75c4504c016d62ab52397aac84c0d4cc0108adc6f49453951bf9cc1a105cded2"
+        }
+      },
+      "export": {
+        "receiptSha256": "f5ef0971bfccdabae7ad47cfd3330bb157dd477ea68d54c677a938d3c7b5daa4",
+        "resultsSha256": "946880dbd93e18aed83687e63092d5f0c06135bd6bcfed04612c5b4bd9ad2c2a",
+        "captures": 48,
+        "successfulProcesses": 20,
+        "checks": 96,
+        "checkKinds": {
+          "state": 48,
+          "positive-image": 2,
+          "image": 40,
+          "serialized": 6
+        },
+        "portableCopies": 6,
+        "sourceFreeReload": true,
+        "limitations": [
+          "CPU identity/lens/light metadata is separate from GPU readback.",
+          "Retained onSelect references are structurally validated; native picking is not exercised."
+        ]
+      }
+    }
+  }
+}

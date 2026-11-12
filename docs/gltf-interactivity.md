@@ -132,5 +132,8 @@ deletion, material and texture-resource retirement, undo/redo, and portable glTF
 and GLB replay in both raster techniques. Independent graph-free fixtures are
 the exact image controls. Hierarchy, decoded geometry, light bindings, graph
 references, camera matrices and history identities are inspected separately.
-The retained selection handler is checked structurally; this suite does not
-exercise native pointer picking.
+The export suite checks the retained selection handler structurally. The
+viewport replay exercises the handler through native pointer picking.
+
+The [Windows Vulkan verification report](../tests/visual-regression/gltf-interactivity/windows-nvidia/gltf-interactivity-results.json)
+records the scheduler baselines, test results, and 154 validated captures.
