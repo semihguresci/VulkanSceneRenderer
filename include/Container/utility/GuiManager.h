@@ -679,6 +679,12 @@ struct SceneHierarchyParentCandidateCacheState {
   std::vector<SceneHierarchyParentCandidateRow> rows{};
 };
 
+struct SceneHierarchyRowPopupState {
+  uint64_t graphIdentity{};
+  uint32_t nodeIndex{};
+  uint32_t popupId{};
+};
+
 struct SceneHierarchyUiStatistics {
   size_t visibleRows{0};
   size_t submittedRows{0};
@@ -1436,6 +1442,7 @@ private:
       bimCompareChanges_{};
   SceneHierarchyParentCandidateCacheState sceneHierarchyParentCandidateCache_{};
   SceneHierarchyCache sceneHierarchyCache_{};
+  SceneHierarchyRowPopupState sceneHierarchyRowPopup_{};
   SceneNodeAuthoringUiState sceneNodeAuthoringUi_{};
   SceneNodeInlineRenameUiState sceneNodeInlineRename_{};
   uint64_t sceneNodeInlineRenameSession_{};

@@ -92,19 +92,19 @@ class SceneControlsWidgetsTests : public ::testing::Test {
     ImGui::NewFrame();
     ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
     ImGui::SetNextWindowSize(ImVec2(630.0f, 470.0f));
-    ImGui::Begin("Scene controls test", nullptr,
+    ImGui::Begin(kWindowName, nullptr,
                  ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoResize);
     widget();
     ImGui::End();
     ImGui::Render();
   }
 
-  ImGuiTable* tableWithColumns(int columns) {
-    for (int index = 0; index < context_->Tables.GetMapSize(); ++index) {
-      auto* table = context_->Tables.TryGetMapData(index);
-      if (table && table->ColumnsCount == columns) return table;
-    }
-    return nullptr;
+  ImGuiTable* browserTable(const char* treeName, const char* tableName) {
+    const auto* window = ImGui::FindWindowByName(kWindowName);
+    if (!window) return nullptr;
+    const auto treeId = ImHashStr(treeName, 0, window->ID);
+    auto* table = ImGui::TableFindByID(ImHashStr(tableName, 0, treeId));
+    return table && table->LastFrameActive == ImGui::GetFrameCount() ? table : nullptr;
   }
 
   ImGuiWindow* childContaining(std::string_view name) {
@@ -125,6 +125,7 @@ class SceneControlsWidgetsTests : public ::testing::Test {
     frame(widget);
   }
 
+  static constexpr char kWindowName[] = "Scene controls test";
   ImGuiContext* context_{};
   ImGuiContext* previousContext_{};
 };
@@ -177,7 +178,7 @@ TEST_F(SceneControlsWidgetsTests, HierarchyFinalNodeIsReachableAndSelectable) {
   };
   frame(draw);
   frame(draw);
-  auto* table = tableWithColumns(4);
+  auto* table = browserTable("Scene Hierarchy", "SceneHierarchyTable");
   ASSERT_NE(table, nullptr);
   ASSERT_NE(table->InnerWindow, nullptr);
   EXPECT_LE(table->InnerWindow->Size.y, 300.0f);
@@ -271,7 +272,7 @@ TEST_F(SceneControlsWidgetsTests, BimBrowserFinalElementCanBeSelectedAndFocused)
   };
   frame(draw);
   frame(draw);
-  auto* table = tableWithColumns(7);
+  auto* table = browserTable("BIM Elements", "BimElementsTable");
   ASSERT_NE(table, nullptr);
   EXPECT_LE(table->InnerWindow->Size.y, 300.0f);
   EXPECT_GT(table->InnerWindow->ScrollMax.y, 3000.0f);
@@ -646,8 +647,8 @@ TEST(TechniqueDebugModelTests,
 TEST(TechniqueDebugModelTests,
      GuiClampsUnsupportedDisplayModeWhenTechniqueChanges) {
   container::ui::GuiManager guiManager;
-  ASSERT_EQ(guiManager.gBufferViewMode(),
-            container::ui::GBufferViewMode::Overview);
+  guiManager.setGBufferViewMode(container::ui::GBufferViewMode::Overview);
+  ASSERT_EQ(guiManager.gBufferViewMode(), container::ui::GBufferViewMode::Overview);
 
   container::renderer::TechniqueDebugModel debugModel{};
   debugModel.techniqueName = "minimal";

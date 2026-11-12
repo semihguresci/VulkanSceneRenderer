@@ -1022,6 +1022,141 @@ TEST_F(HierarchyWidgetsTests, ArrowExpansionAndReplacementKeepRowsConsistent) {
   EXPECT_EQ(gui.sceneHierarchyStatistics().visibleRows, 1u);
 }
 
+TEST_F(HierarchyWidgetsTests, FocusPressDoesNotActOnAReusedNodeAfterReplacement) {
+  SceneGraph graph;
+  const auto oldNode = addNode(graph, "Old node");
+  container::ui::GuiManager gui;
+  uint32_t focused = SceneGraph::kInvalidNode;
+  const auto draw = [&] {
+    ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    gui.drawSceneHierarchy(graph, oldNode, SceneGraph::kInvalidNode,
+        [](uint32_t) {}, [&](uint32_t node) { focused = node; },
+        [](uint32_t, bool) {}, [](uint32_t, std::optional<uint32_t>) {});
+  };
+  frame(draw);
+  frame(draw);
+  const auto* table = hierarchyTable();
+  ASSERT_NE(table, nullptr);
+  const ImVec2 focusButton(table->Columns[2].WorkMinX + 20.0f,
+                          (table->RowPosY1 + table->RowPosY2) * 0.5f);
+  auto& io = ImGui::GetIO();
+  io.AddMousePosEvent(focusButton.x, focusButton.y);
+  frame(draw);
+  io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+  frame(draw);
+  ASSERT_NE(context_->ActiveId, 0u);
+  ASSERT_EQ(focused, SceneGraph::kInvalidNode);
+
+  graph = SceneGraph{};
+  const auto newNode = addNode(graph, "New node");
+  ASSERT_EQ(newNode, oldNode);
+  gui.resetModelInspectionState();
+  frame(draw);
+  io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+  frame(draw);
+  EXPECT_EQ(focused, SceneGraph::kInvalidNode);
+
+  click(draw, focusButton);
+  EXPECT_EQ(focused, newNode);
+}
+
+TEST_F(HierarchyWidgetsTests, ParentPopupDoesNotCarryAcrossGraphReplacement) {
+  SceneGraph graph;
+  const auto root = addNode(graph, "Old root");
+  const auto node = addNode(graph, "Old node");
+  container::ui::GuiManager gui;
+  const auto draw = [&] {
+    ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    gui.drawSceneHierarchy(graph, root, node, [](uint32_t) {}, [](uint32_t) {},
+        [](uint32_t, bool) {}, [](uint32_t, std::optional<uint32_t>) {});
+  };
+  frame(draw);
+  frame(draw);
+  auto* table = hierarchyTable();
+  ASSERT_NE(table, nullptr);
+  ImGui::SetScrollX(table->InnerWindow, table->InnerWindow->ScrollMax.x);
+  frame(draw);
+  frame(draw);
+  click(draw, ImVec2(table->Columns[3].WorkMinX + 30.0f,
+                     (table->RowPosY1 + table->RowPosY2) * 0.5f));
+  ASSERT_FALSE(context_->OpenPopupStack.empty());
+  const auto* oldPopup = context_->OpenPopupStack.back().Window;
+  ASSERT_NE(oldPopup, nullptr);
+  ASSERT_EQ(oldPopup->LastFrameActive, context_->FrameCount);
+
+  graph = SceneGraph{};
+  ASSERT_EQ(addNode(graph, "Replacement root"), root);
+  ASSERT_EQ(addNode(graph, "Replacement node"), node);
+  frame(draw);
+  EXPECT_LT(oldPopup->LastFrameActive, context_->FrameCount);
+  EXPECT_TRUE(context_->OpenPopupStack.empty());
+  beginInline(draw);
+  ASSERT_NE(context_->ActiveId, 0u);
+  EXPECT_EQ(context_->ActiveId, context_->InputTextState.ID);
+}
+
+TEST_F(HierarchyWidgetsTests, ContextMenuDoesNotBlockKeyboardAfterModelReset) {
+  SceneGraph graph;
+  const auto node = addNode(graph, "Old node");
+  container::ui::GuiManager gui;
+  const auto draw = [&] {
+    ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    gui.drawSceneHierarchy(graph, SceneGraph::kInvalidNode, node,
+        [](uint32_t) {}, [](uint32_t) {}, [](uint32_t, bool) {},
+        [](uint32_t, std::optional<uint32_t>) {});
+  };
+  frame(draw);
+  frame(draw);
+  const auto* table = hierarchyTable();
+  ASSERT_NE(table, nullptr);
+  contextMenu(draw, ImVec2(table->Columns[0].WorkMinX + 65.0f,
+                           (table->RowPosY1 + table->RowPosY2) * 0.5f));
+  ASSERT_FALSE(context_->OpenPopupStack.empty());
+
+  graph = SceneGraph{};
+  ASSERT_EQ(addNode(graph, "Replacement node"), node);
+  gui.resetModelInspectionState();
+  EXPECT_TRUE(context_->OpenPopupStack.empty());
+  frame(draw);
+  beginInline(draw);
+  ASSERT_NE(context_->ActiveId, 0u);
+  EXPECT_EQ(context_->ActiveId, context_->InputTextState.ID);
+}
+
+TEST_F(HierarchyWidgetsTests, RetiringAPopupOwnerLeavesTheLiveHierarchyInteractive) {
+  SceneGraph graph;
+  const auto liveNode = addNode(graph, "Keep this node");
+  const auto retiredNode = addNode(graph, "Retire this node");
+  uint32_t selected = retiredNode;
+  container::ui::GuiManager gui;
+  const auto draw = [&] {
+    ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    gui.drawSceneHierarchy(graph, SceneGraph::kInvalidNode, selected,
+        [](uint32_t) {}, [](uint32_t) {}, [](uint32_t, bool) {},
+        [](uint32_t, std::optional<uint32_t>) {});
+  };
+  frame(draw);
+  frame(draw);
+  const auto* table = hierarchyTable();
+  ASSERT_NE(table, nullptr);
+  contextMenu(draw, ImVec2(table->Columns[0].WorkMinX + 65.0f,
+                           (table->RowPosY1 + table->RowPosY2) * 0.5f));
+  ASSERT_FALSE(context_->OpenPopupStack.empty());
+  const auto identity = graph.identity();
+  auto retirement = graph.prepareRetireSubtree(retiredNode);
+  ASSERT_TRUE(retirement);
+  ASSERT_TRUE(graph.publishRetirement(retirement));
+  ASSERT_EQ(graph.identity(), identity);
+  selected = liveNode;
+
+  frame(draw);
+  EXPECT_TRUE(context_->OpenPopupStack.empty());
+  EXPECT_EQ(gui.sceneHierarchyStatistics().visibleRows, 1u);
+  beginInline(draw);
+  ASSERT_NE(context_->ActiveId, 0u);
+  EXPECT_EQ(context_->ActiveId, context_->InputTextState.ID);
+}
+
 TEST_F(HierarchyWidgetsTests, ReparentComboAppliesAfterRowsAndKeepsSelection) {
   SceneGraph graph;
   const auto root = addNode(graph, "Protected root");

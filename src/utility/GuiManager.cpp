@@ -1,4 +1,5 @@
 #include "Container/utility/GuiManager.h"
+#include "BimRelationshipWidgets.h"
 #include "Container/app/RendererLightingSettings.h"
 #include "Container/utility/OpenVdbAuthoring.h"
 
@@ -353,6 +354,13 @@ void DrawSingleLineBimText(std::string_view text) {
   ShowItemTooltip(text);
 }
 
+const void *BimElementMetadataSource(const BimInspectionState &inspection) {
+  if (!inspection.hasScene)
+    return nullptr;
+  return inspection.metadataSource != nullptr ? inspection.metadataSource
+                                              : inspection.elements.data();
+}
+
 void TextWrappedPathValue(std::string_view label, std::string_view value) {
   const std::string wrappedValue = WrapLongPathForImGui(value);
   if (label.empty()) {
@@ -487,6 +495,7 @@ void RefreshSceneHierarchyParentCandidateCache(
 }
 
 struct SceneHierarchyPanelActions {
+  SceneHierarchyRowPopupState &rowPopup;
   uint32_t rootSceneNode{container::scene::SceneGraph::kInvalidNode};
   uint32_t selectedMeshNode{container::scene::SceneGraph::kInvalidNode};
   const std::function<void(uint32_t)> *selectSceneNode{nullptr};
@@ -505,6 +514,22 @@ struct SceneHierarchyPanelActions {
   const std::function<bool(uint32_t)>* linkedReadOnly{nullptr};
   const std::function<bool(uint32_t)>* canMakeLinkedEditable{nullptr};
 };
+
+void CloseSceneHierarchyRowPopup(SceneHierarchyRowPopupState &popup) {
+  const uint32_t id = std::exchange(popup, {}).popupId;
+  auto *context = ImGui::GetCurrentContext();
+  if (!id || !context)
+    return;
+  for (int level = context->BeginPopupStack.Size;
+       level < context->OpenPopupStack.Size; ++level) {
+    if (context->OpenPopupStack[level].PopupId == id) {
+      // Close the recorded popup and its children. Restoring focus from a
+      // nested popup can dismiss its ancestors, so only do it at the root.
+      ImGui::ClosePopupToLevel(level, level == 0);
+      return;
+    }
+  }
+}
 
 void CancelInlineSceneRename(SceneNodeInlineRenameUiState& edit) {
   if (auto* context = ImGui::GetCurrentContext();
@@ -536,6 +561,8 @@ SceneHierarchyParentChange DrawSceneHierarchyParentCombo(
           ? "None"
           : SceneHierarchyNodeName(sceneGraph, currentParent);
   if (ImGui::BeginCombo("##SceneHierarchyParent", parentPreview.c_str())) {
+    actions.rowPopup = {sceneGraph.identity(), nodeIndex,
+                        ImGui::GetCurrentContext()->BeginPopupStack.back().PopupId};
     candidateCache.popupOpen = true;
     RefreshSceneHierarchyParentCandidateCache(sceneGraph, nodeIndex,
                                               currentParent, candidateCache);
@@ -593,6 +620,12 @@ void DrawSceneHierarchyRow(
                               (*actions.linkedReadOnly)(nodeIndex);
 
   ImGui::PushID(static_cast<int>(nodeIndex));
+  // Expansion is supplied by the hierarchy cache. Reuse the ImGui storage
+  // slot across graph replacements, while isolating interactive widget IDs.
+  const ImGuiID treeStorage = ImGui::GetID("##SceneHierarchyNode");
+  const uint64_t graphIdentity = sceneGraph.identity();
+  ImGui::PushID(static_cast<int>(graphIdentity >> 32));
+  ImGui::PushID(static_cast<int>(graphIdentity));
   ImGui::TableNextRow(ImGuiTableRowFlags_None, rowHeight);
   ImGui::TableNextColumn();
   const bool editing = actions.inlineRename && actions.inlineRename->active &&
@@ -611,6 +644,7 @@ void DrawSceneHierarchyRow(
       static_cast<float>(row.depth) * ImGui::GetStyle().IndentSpacing;
   if (indent > 0.0f)
     ImGui::Indent(indent);
+  ImGui::SetNextItemStorageID(treeStorage);
   ImGui::SetNextItemOpen(row.expanded, ImGuiCond_Always);
   const bool open = ImGui::TreeNodeEx("##SceneHierarchyNode", flags, "%s%s",
       editing ? "" : row.label.c_str(), !editing && linkedReadOnly ? " [Linked]" : "");
@@ -621,6 +655,8 @@ void DrawSceneHierarchyRow(
     (*actions.selectSceneNode)(nodeIndex);
   }
   if (actions.authorSceneNode && ImGui::BeginPopupContextItem("Node actions")) {
+    actions.rowPopup = {sceneGraph.identity(), nodeIndex,
+                        ImGui::GetCurrentContext()->BeginPopupStack.back().PopupId};
     ImGui::BeginDisabled(linkedReadOnly);
     if (actions.beginInlineRename && ImGui::MenuItem("Rename inline", "F2"))
       (*actions.beginInlineRename)(nodeIndex);
@@ -724,6 +760,8 @@ void DrawSceneHierarchyRow(
     ShowItemTooltip("Hover is disabled by a parent");
 
   ImGui::PopID();
+  ImGui::PopID();
+  ImGui::PopID();
 }
 
 void DrawSceneHierarchyPanel(
@@ -789,7 +827,8 @@ void DrawSceneHierarchyPanel(
           row && *row < static_cast<size_t>(std::numeric_limits<int>::max()))
         clipper.IncludeItemByIndex(static_cast<int>(*row));
     }
-    if (candidateCache.popupOpen) {
+    if (candidateCache.popupOpen && candidateCache.source == &sceneGraph &&
+        candidateCache.identity == sceneGraph.identity()) {
       if (const auto row = hierarchyCache.rowForNode(candidateCache.nodeIndex);
           row && *row < static_cast<size_t>(std::numeric_limits<int>::max()))
         clipper.IncludeItemByIndex(static_cast<int>(*row));
@@ -1872,25 +1911,23 @@ bool PropertyMatchesSearch(
          ContainsCaseInsensitive(property.category, search);
 }
 
-std::string RelationshipNodeLabel(
+void DrawRelationshipNodeLabel(
     const container::renderer::BimRelationshipNode &node) {
   if (!node.label.empty()) {
-    return node.label;
+    ImGui::TextWrapped("%s", node.label.c_str());
+  } else if (!node.guid.empty()) {
+    ImGui::TextWrapped("%s", node.guid.c_str());
+  } else if (!node.sourceId.empty()) {
+    ImGui::TextWrapped("%s", node.sourceId.c_str());
+  } else if (node.objectIndex != std::numeric_limits<uint32_t>::max()) {
+    ImGui::TextWrapped("Object %u", node.objectIndex);
+  } else {
+    ImGui::TextWrapped("(unnamed)");
   }
-  if (!node.guid.empty()) {
-    return node.guid;
-  }
-  if (!node.sourceId.empty()) {
-    return node.sourceId;
-  }
-  if (node.objectIndex != std::numeric_limits<uint32_t>::max()) {
-    return "Object " + std::to_string(node.objectIndex);
-  }
-  return "(unnamed)";
 }
 
-bool DrawBimBrowserPageControls(const char *id, BimBrowserPage &page,
-                                size_t rowCount) {
+void DrawBimBrowserPageControls(const char *id, BimBrowserPage &page,
+                               size_t rowCount) {
   page.clamp(rowCount);
   ImGui::PushID(id);
   if (rowCount == 0u) {
@@ -1931,7 +1968,6 @@ bool DrawBimBrowserPageControls(const char *id, BimBrowserPage &page,
     ImGui::TextDisabled("of %zu (100 entries per page)", pageCount);
   }
   ImGui::PopID();
-  return page.takeScrollReset();
 }
 
 void DrawSemanticLegendEntry(container::renderer::BimSemanticColorMode mode,
@@ -1948,6 +1984,45 @@ void DrawSemanticLegendEntry(container::renderer::BimSemanticColorMode mode,
 }
 
 } // namespace
+
+void detail::drawBimGraphSpatialEdges(
+    const renderer::BimRelationshipGraph &graph,
+    BimRelationshipBrowserCache &cache) {
+  const auto nodes = graph.nodes();
+  const auto edges = graph.edges();
+  const auto spatialEdges = cache.spatialEdgeIndices();
+  auto &page = cache.spatialEdgesPage;
+  DrawBimBrowserPageControls("BimSpatialEdgesPage", page, spatialEdges.size());
+  // A clipped table has no active scroll child to receive the reset.
+  if (!ImGui::BeginTable(
+          "BimGraphSpatialEdges", 3,
+          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+              ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_ScrollY |
+              ImGuiTableFlags_ScrollX,
+          ImVec2(0.0f, 180.0f), 900.0f)) {
+    return;
+  }
+  if (page.takeScrollReset()) {
+    ImGui::SetScrollY(0.0f);
+  }
+  ImGui::TableSetupColumn("Parent");
+  ImGui::TableSetupColumn("Child");
+  ImGui::TableSetupColumn("Label");
+  ImGui::TableSetupScrollFreeze(0, 1);
+  ImGui::TableHeadersRow();
+  const size_t end = page.end(spatialEdges.size());
+  for (size_t i = page.begin(spatialEdges.size()); i < end; ++i) {
+    const auto &edge = edges[spatialEdges[i]];
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    DrawRelationshipNodeLabel(nodes[edge.from]);
+    ImGui::TableNextColumn();
+    DrawRelationshipNodeLabel(nodes[edge.to]);
+    ImGui::TableNextColumn();
+    ImGui::TextWrapped("%s", edge.label.c_str());
+  }
+  ImGui::EndTable();
+}
 
 namespace {
 using MaterialProperty = container::geometry::gltf::GltfMaterialProperty;
@@ -3025,6 +3100,10 @@ void GuiManager::drawSceneHierarchy(
         &reparentSceneNode,
     const std::function<void(uint32_t, bool)> &setSceneNodeSelectable,
     const std::function<void(uint32_t, bool)> &setSceneNodeHoverable) {
+  if (sceneHierarchyRowPopup_.popupId &&
+      (sceneHierarchyRowPopup_.graphIdentity != sceneGraph.identity() ||
+       !sceneGraph.isNodeInActiveHierarchy(sceneHierarchyRowPopup_.nodeIndex)))
+    CloseSceneHierarchyRowPopup(sceneHierarchyRowPopup_);
   auto& inlineEdit = sceneNodeInlineRename_;
   const std::function<void()> cancelInline = [this] { CancelInlineSceneRename(sceneNodeInlineRename_); };
   if (inlineEdit.active) {
@@ -3122,7 +3201,8 @@ void GuiManager::drawSceneHierarchy(
       };
   DrawSceneHierarchyPanel(
       sceneGraph,
-      SceneHierarchyPanelActions{.rootSceneNode = rootSceneNode,
+      SceneHierarchyPanelActions{.rowPopup = sceneHierarchyRowPopup_,
+                                 .rootSceneNode = rootSceneNode,
                                  .selectedMeshNode = selectedMeshNode,
                                  .selectSceneNode = &selectSceneNode,
                                  .focusSceneNode = &focusSceneNode,
@@ -3210,19 +3290,17 @@ void GuiManager::setSceneHierarchyNodeExpanded(
 }
 
 void GuiManager::drawBimElementBrowser(const BimInspectionState &inspection) {
-  if (!inspection.hasScene) {
-    bimElementSearchCache_.clear();
+  const void *source = BimElementMetadataSource(inspection);
+  if (!inspection.hasScene || !ImGui::TreeNode("BIM Elements")) {
+    bimElementSearchCache_.invalidateIfStale(
+        source, inspection.metadataRevision, inspection.elements);
     return;
   }
-  if (!ImGui::TreeNode("BIM Elements"))
-    return;
   ImGui::InputTextWithHint("##BimElementSearch",
                            "Search identity, type, name, storey or material",
                            &bimElementSearch_);
-  bimElementSearchCache_.refresh(
-      inspection.metadataSource != nullptr ? inspection.metadataSource
-                                           : inspection.elements.data(),
-      inspection.metadataRevision, inspection.elements);
+  bimElementSearchCache_.refresh(source, inspection.metadataRevision,
+                                inspection.elements);
   const auto matches = bimElementSearchCache_.matches(bimElementSearch_);
   ImGui::Text("%zu / %zu elements", matches.size(), inspection.elements.size());
   if (matches.empty())
@@ -3558,6 +3636,7 @@ void GuiManager::queueModelMergeRequest(std::string path, std::string parentName
 void GuiManager::resetModelInspectionState() {
   lightEditControls_.setSnapshot({});
   CancelInlineSceneRename(sceneNodeInlineRename_);
+  CloseSceneHierarchyRowPopup(sceneHierarchyRowPopup_);
   materialInspector_={};materialEditRequests_.clear();materialBindingSelectionRequest_.reset();
   materialBindingOperationRequest_.reset();materialAssignmentDraft_.reset();
   materialTextureEditRequest_.reset();materialTextureDrafts_={};
@@ -4368,6 +4447,21 @@ void GuiManager::drawSceneControls(
     const tinygltf::Model* gltfSource) {
   if (!initialized_)
     return;
+
+  // The Scene Controls window and BIM tree can both be closed during a model
+  // publication. Retire stale browser data before those drawing gates.
+  const void *metadataSource = BimElementMetadataSource(bimInspection);
+  bimElementSearchCache_.invalidateIfStale(
+      metadataSource, bimInspection.metadataRevision, bimInspection.elements);
+  if (bimRelationshipBrowserCache_.refresh(
+          metadataSource, bimInspection.metadataRevision,
+          bimInspection.hasScene ? bimInspection.relationshipGraph : nullptr)) {
+    selectedBimStoreyRangeIndex_ = -1;
+  }
+  bimRelationshipBrowserCache_.selectObject(
+      bimInspection.hasScene && bimInspection.hasSelection
+          ? bimInspection.selectedObjectIndex
+          : std::numeric_limits<uint32_t>::max());
 
   const ImGuiViewport *viewport = ImGui::GetMainViewport();
   const glm::vec2 workPosition{viewport->WorkPos.x, viewport->WorkPos.y};
@@ -5931,18 +6025,6 @@ void GuiManager::drawSceneControls(
         ImGui::TreePop();
       }
 
-      if (bimRelationshipBrowserCache_.refresh(
-              bimInspection.metadataSource != nullptr
-                  ? bimInspection.metadataSource
-                  : bimInspection.elements.data(),
-              bimInspection.metadataRevision,
-              bimInspection.relationshipGraph)) {
-        selectedBimStoreyRangeIndex_ = -1;
-      }
-      bimRelationshipBrowserCache_.selectObject(
-          bimInspection.hasSelection ? bimInspection.selectedObjectIndex
-                                     : std::numeric_limits<uint32_t>::max());
-
       if (ImGui::TreeNode("Property Browser")) {
         if (bimInspection.hasSelection) {
           auto drawPropertyRow = [](const char *label,
@@ -6015,7 +6097,7 @@ void GuiManager::drawSceneControls(
                       PropertyMatchesSearch);
               auto &propertyPage =
                   bimRelationshipBrowserCache_.extendedPropertiesPage;
-              const bool propertyPageChanged = DrawBimBrowserPageControls(
+              DrawBimBrowserPageControls(
                   "BimExtendedPropertiesPage", propertyPage,
                   matchedProperties.size());
               if (ImGui::BeginTable(
@@ -6024,7 +6106,7 @@ void GuiManager::drawSceneControls(
                           ImGuiTableFlags_SizingStretchProp |
                           ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX,
                       ImVec2(0.0f, 220.0f), 1000.0f)) {
-                if (propertyPageChanged) {
+                if (propertyPage.takeScrollReset()) {
                   ImGui::SetScrollY(0.0f);
                 }
                 ImGui::TableSetupColumn("Set");
@@ -6079,7 +6161,7 @@ void GuiManager::drawSceneControls(
               bimRelationshipBrowserCache_.search(bimRelationshipSearch_);
           if (!bimRelationshipSearch_.empty()) {
             auto &searchPage = bimRelationshipBrowserCache_.searchPage;
-            const bool searchPageChanged = DrawBimBrowserPageControls(
+            DrawBimBrowserPageControls(
                 "BimRelationshipSearchPage", searchPage, hits.size());
             if (hits.empty()) {
               ImGui::TextDisabled("No graph matches");
@@ -6090,7 +6172,7 @@ void GuiManager::drawSceneControls(
                                              ImGuiTableFlags_ScrollY |
                                              ImGuiTableFlags_ScrollX,
                                          ImVec2(0.0f, 140.0f), 800.0f)) {
-              if (searchPageChanged) {
+              if (searchPage.takeScrollReset()) {
                 ImGui::SetScrollY(0.0f);
               }
               ImGui::TableSetupColumn("Object");
@@ -6154,7 +6236,7 @@ void GuiManager::drawSceneControls(
                     bimInspection.selectedObjectIndex);
             auto &selectedEdgesPage =
                 bimRelationshipBrowserCache_.selectedEdgesPage;
-            const bool selectedEdgesPageChanged = DrawBimBrowserPageControls(
+            DrawBimBrowserPageControls(
                 "BimSelectedRelationshipPage", selectedEdgesPage,
                 selectedEdges.size());
             if (!selectedEdges.empty() &&
@@ -6164,7 +6246,7 @@ void GuiManager::drawSceneControls(
                         ImGuiTableFlags_SizingStretchProp |
                         ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX,
                     ImVec2(0.0f, 150.0f), 900.0f)) {
-              if (selectedEdgesPageChanged) {
+              if (selectedEdgesPage.takeScrollReset()) {
                 ImGui::SetScrollY(0.0f);
               }
               ImGui::TableSetupColumn("Relationship");
@@ -6184,17 +6266,13 @@ void GuiManager::drawSceneControls(
                     selectedIsFrom ? nodes[edge.to] : nodes[edge.from];
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
-                ImGui::TextWrapped(
-                    "%s",
-                    std::string(container::renderer::bimRelationshipKindLabel(
-                                    edge.kind))
-                        .c_str());
+                const auto kind = renderer::bimRelationshipKindLabel(edge.kind);
+                ImGui::TextWrapped("%.*s", static_cast<int>(kind.size()),
+                                   kind.data());
                 ImGui::TableNextColumn();
                 ImGui::TextDisabled("%s", selectedIsFrom ? "out" : "in");
                 ImGui::TableNextColumn();
-                const std::string relatedLabel =
-                    RelationshipNodeLabel(relatedNode);
-                ImGui::TextWrapped("%s", relatedLabel.c_str());
+                DrawRelationshipNodeLabel(relatedNode);
                 ImGui::TableNextColumn();
                 ImGui::TextWrapped("%s", edge.label.c_str());
               }
@@ -6286,7 +6364,7 @@ void GuiManager::drawSceneControls(
               if (ImGui::TreeNode(label.c_str())) {
                 auto &groupPage =
                     bimRelationshipBrowserCache_.propertyPage(setIndex);
-                const bool groupPageChanged = DrawBimBrowserPageControls(
+                DrawBimBrowserPageControls(
                     "BimPropertySetPropertiesPage", groupPage,
                     group.properties.size());
                 if (ImGui::BeginTable(
@@ -6295,7 +6373,7 @@ void GuiManager::drawSceneControls(
                             ImGuiTableFlags_SizingStretchProp |
                             ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX,
                         ImVec2(0.0f, 180.0f), 900.0f)) {
-                  if (groupPageChanged) {
+                  if (groupPage.takeScrollReset()) {
                     ImGui::SetScrollY(0.0f);
                   }
                   ImGui::TableSetupColumn("Name");
@@ -6332,16 +6410,15 @@ void GuiManager::drawSceneControls(
                     bimInspection.properties);
             auto &summaryPage =
                 bimRelationshipBrowserCache_.propertySummaryPage;
-            const bool summaryPageChanged =
-                DrawBimBrowserPageControls("BimPropertySetSummaryPage",
-                                           summaryPage, propertySummary.size());
+            DrawBimBrowserPageControls("BimPropertySetSummaryPage", summaryPage,
+                                       propertySummary.size());
             if (ImGui::BeginTable(
                     "BimIfcPropertySetSummary", 3,
                     ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                         ImGuiTableFlags_SizingStretchProp |
                         ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX,
                     ImVec2(0.0f, 160.0f), 800.0f)) {
-              if (summaryPageChanged) {
+              if (summaryPage.takeScrollReset()) {
                 ImGui::SetScrollY(0.0f);
               }
               ImGui::TableSetupColumn("Property set");
@@ -6374,44 +6451,8 @@ void GuiManager::drawSceneControls(
         if (bimInspection.relationshipGraph != nullptr &&
             !bimInspection.relationshipGraph->edges().empty() &&
             ImGui::TreeNode("Graph spatial edges")) {
-          const auto nodes = bimInspection.relationshipGraph->nodes();
-          const auto edges = bimInspection.relationshipGraph->edges();
-          const auto spatialEdges =
-              bimRelationshipBrowserCache_.spatialEdgeIndices();
-          auto &spatialEdgesPage =
-              bimRelationshipBrowserCache_.spatialEdgesPage;
-          const bool spatialEdgesPageChanged = DrawBimBrowserPageControls(
-              "BimSpatialEdgesPage", spatialEdgesPage, spatialEdges.size());
-          if (ImGui::BeginTable(
-                  "BimGraphSpatialEdges", 3,
-                  ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                      ImGuiTableFlags_SizingStretchProp |
-                      ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX,
-                  ImVec2(0.0f, 180.0f), 900.0f)) {
-            if (spatialEdgesPageChanged) {
-              ImGui::SetScrollY(0.0f);
-            }
-            ImGui::TableSetupColumn("Parent");
-            ImGui::TableSetupColumn("Child");
-            ImGui::TableSetupColumn("Label");
-            ImGui::TableSetupScrollFreeze(0, 1);
-            ImGui::TableHeadersRow();
-            for (size_t i = spatialEdgesPage.begin(spatialEdges.size());
-                 i < spatialEdgesPage.end(spatialEdges.size()); ++i) {
-              const auto &edge = edges[spatialEdges[i]];
-              const std::string parent =
-                  RelationshipNodeLabel(nodes[edge.from]);
-              const std::string child = RelationshipNodeLabel(nodes[edge.to]);
-              ImGui::TableNextRow();
-              ImGui::TableNextColumn();
-              ImGui::TextWrapped("%s", parent.c_str());
-              ImGui::TableNextColumn();
-              ImGui::TextWrapped("%s", child.c_str());
-              ImGui::TableNextColumn();
-              ImGui::TextWrapped("%s", edge.label.c_str());
-            }
-            ImGui::EndTable();
-          }
+          detail::drawBimGraphSpatialEdges(*bimInspection.relationshipGraph,
+                                          bimRelationshipBrowserCache_);
           ImGui::TreePop();
         }
         if (bimInspection.elementStoreyRanges.empty() &&
@@ -6533,7 +6574,7 @@ void GuiManager::drawSceneControls(
           }
 
           auto &storeysPage = bimRelationshipBrowserCache_.storeysPage;
-          const bool storeysPageChanged = DrawBimBrowserPageControls(
+          DrawBimBrowserPageControls(
               "BimSpatialStoreysPage", storeysPage,
               bimInspection.elementStoreyRanges.size());
           if (ImGui::BeginTable(
@@ -6542,7 +6583,7 @@ void GuiManager::drawSceneControls(
                       ImGuiTableFlags_SizingStretchProp |
                       ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX,
                   ImVec2(0.0f, 220.0f), 800.0f)) {
-            if (storeysPageChanged) {
+            if (storeysPage.takeScrollReset()) {
               ImGui::SetScrollY(0.0f);
             }
             ImGui::TableSetupColumn("Storey");
@@ -6585,11 +6626,10 @@ void GuiManager::drawSceneControls(
           }
         } else {
           auto &storeysPage = bimRelationshipBrowserCache_.storeysPage;
-          const bool storeysPageChanged =
-              DrawBimBrowserPageControls("BimNamedStoreysPage", storeysPage,
-                                         bimInspection.elementStoreys.size());
+          DrawBimBrowserPageControls("BimNamedStoreysPage", storeysPage,
+                                     bimInspection.elementStoreys.size());
           if (ImGui::BeginChild("BimStoreyList", ImVec2(0.0f, 220.0f))) {
-            if (storeysPageChanged) {
+            if (storeysPage.takeScrollReset()) {
               ImGui::SetScrollY(0.0f);
             }
             for (size_t i =

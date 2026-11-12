@@ -21,7 +21,10 @@ reparenting or renaming a node advances hierarchy revision; transform and
 visibility edits do not rebuild static rows. Copy/move replacement receives an
 independent graph identity, including replacement at the same address with an
 equal revision/count. Valid existing nodes retain their expansion through
-ordinary topology edits. Model inspection reset clears the UI caches.
+ordinary topology edits. Row controls use the graph identity so a held click
+from a replaced model cannot act on a reused node ID. Replacement and node
+retirement dismiss the affected row popup. Model inspection reset clears the
+UI caches.
 
 Use `SceneGraph` mutation methods for tracked fields. Editing a node directly
 through its legacy mutable accessor bypasses revision publication.
@@ -102,9 +105,11 @@ Production inspection state supplies the BIM manager identity and completed
 metadata publication revision. That revision advances on clear before progress
 callbacks, and after a complete installation, even when storage is reused.
 Geometry revision alone is insufficient because it advances before metadata
-construction and does not advance on clear. Read-only widget fixtures may use
-the metadata span as source identity; in-place replacements must publish a new
-revision or reset the inspection state.
+construction and does not advance on clear. A closed panel releases its search
+storage when the publication changes or unloads. It builds the next index when
+the BIM Elements browser opens. Read-only widget fixtures may use the metadata
+span as source identity. In-place replacements must publish a new revision or
+reset the inspection state.
 
 Relationship searches, selected/spatial edge indices, property filtering and
 property-set summaries are cached by publication, graph, query and selection.
@@ -112,6 +117,7 @@ Wrapped relationship, spatial, property and storey tables display at most 100
 rows per page, with first/previous/next/last and page-number controls. This keeps
 full wrapped values readable without assuming a constant row height. Query,
 selection and publication changes reset relevant pages and table scrolling.
+The scroll reset stays pending while its table is clipped.
 The Plan-storey combo clips its uniform-height rows.
 
 Cached normalized text and row labels consume persistent CPU memory in exchange

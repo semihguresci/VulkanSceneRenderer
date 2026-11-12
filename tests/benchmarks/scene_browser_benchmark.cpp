@@ -317,14 +317,14 @@ public:
     frame();
     frame();
     if (widgetCase_ == WidgetCase::HierarchyExpanded) {
-      auto *table = findTable(4);
+      auto *table = findTable();
       if (table == nullptr)
         throw std::runtime_error("hierarchy table absent");
       click(ImVec2(table->Columns[0].WorkMinX + ImGui::GetFontSize() * 0.5f,
                    (table->RowPosY1 + table->RowPosY2) * 0.5f));
       frame();
       frame();
-      table = findTable(4);
+      table = findTable();
       if (table == nullptr || table->InnerWindow->ScrollMax.y < 1000.0f)
         throw std::runtime_error("expanded hierarchy did not expose children");
     }
@@ -333,7 +333,7 @@ public:
       io.AddInputCharactersUTF8("LAST-MATCH");
       frame();
       frame();
-      auto *table = findTable(7);
+      auto *table = findTable();
       if (table == nullptr || table->InnerWindow->ScrollMax.y != 0.0f)
         throw std::runtime_error("BIM input filter did not reduce the table");
       // Deactivate the input before measurement; the fixed filter stays set.
@@ -351,7 +351,7 @@ public:
     ImGui::NewFrame();
     ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
     ImGui::SetNextWindowSize(ImVec2(1080.0f, 660.0f));
-    ImGui::Begin("Scene browser benchmark", nullptr,
+    ImGui::Begin(kWindowName, nullptr,
                  ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoResize);
     ImGui::SetNextItemOpen(widgetCase_ != WidgetCase::HierarchyPanelClosed &&
                                widgetCase_ != WidgetCase::BimPanelClosed,
@@ -455,7 +455,7 @@ private:
   }
 
   void clickRow(float y, uint32_t expected, std::string_view location) {
-    auto *table = findTable(isHierarchy() ? 4 : 7);
+    auto *table = findTable();
     require(table != nullptr, "row interaction table is absent");
     require(
         y > table->BgClipRect.Min.y && y < table->InnerWindow->InnerRect.Max.y,
@@ -471,7 +471,7 @@ private:
             std::string(location) + " selection expected original ID " +
                 std::to_string(expected) + ", received " +
                 std::to_string(selected_));
-    table = findTable(isHierarchy() ? 4 : 7);
+    table = findTable();
     require(table != nullptr, "focus interaction table is absent");
     click(ImVec2(table->Columns[isHierarchy() ? 2 : 1].WorkMinX + 20.0f, y));
     require(focused_ == expected, std::string(location) +
@@ -481,7 +481,7 @@ private:
   }
 
   void verifyMiddleAndFinalRows() {
-    auto *table = findTable(isHierarchy() ? 4 : 7);
+    auto *table = findTable();
     require(table != nullptr, "scroll verification table is absent");
     const float rowHeight =
         ImGui::GetFrameHeight() + ImGui::GetStyle().CellPadding.y * 2.0f;
@@ -491,7 +491,7 @@ private:
         static_cast<float>(static_cast<double>(middle) * rowHeight -
                            table->InnerWindow->InnerRect.GetHeight() * 0.5));
     settle();
-    table = findTable(isHierarchy() ? 4 : 7);
+    table = findTable();
     const double startY =
         static_cast<double>(table->InnerWindow->DC.CursorStartPos.y) +
         table->InnerWindow->DC.CursorStartPosLossyness.y;
@@ -505,16 +505,16 @@ private:
     clickRow(middleY, middleId, "middle");
     middleRowVerified_ = true;
 
-    table = findTable(isHierarchy() ? 4 : 7);
+    table = findTable();
     ImGui::SetScrollY(table->InnerWindow, table->InnerWindow->ScrollMax.y);
     settle();
-    table = findTable(isHierarchy() ? 4 : 7);
+    table = findTable();
     const float finalY = (table->RowPosY1 + table->RowPosY2) * 0.5f;
     const uint32_t finalId = isHierarchy() ? static_cast<uint32_t>(count_ - 1u)
                                            : elementAt(count_ - 1u).objectIndex;
     clickRow(finalY, finalId, "final");
     finalRowVerified_ = true;
-    table = findTable(isHierarchy() ? 4 : 7);
+    table = findTable();
     ImGui::SetScrollY(table->InnerWindow, 0.0f);
     settle();
   }
@@ -551,7 +551,7 @@ private:
         require(matches.size() == 1u && matches.front() == index,
                 "first/middle BIM sentinel search returned the wrong row");
 #endif
-        auto *table = findTable(7);
+        auto *table = findTable();
         require(table != nullptr, "sentinel result table is absent");
         clickRow((table->RowPosY1 + table->RowPosY2) * 0.5f,
                  elementAt(index).objectIndex, "filtered sentinel");
@@ -643,7 +643,7 @@ private:
       require(matches.size() == 1u && matches.front() == count_ - 1u,
               "filtered timing fixture is not the final entity alone");
 #endif
-      auto *table = findTable(7);
+      auto *table = findTable();
       require(table != nullptr, "filtered verification table is absent");
       clickRow((table->RowPosY1 + table->RowPosY2) * 0.5f,
                elementAt(count_ - 1u).objectIndex, "filtered final");
@@ -709,13 +709,18 @@ private:
            widgetCase_ == WidgetCase::HierarchyCollapsed ||
            widgetCase_ == WidgetCase::HierarchyPanelClosed;
   }
-  ImGuiTable *findTable(int columns) {
-    for (int index = 0; index < context_->Tables.GetMapSize(); ++index) {
-      auto *table = context_->Tables.TryGetMapData(index);
-      if (table != nullptr && table->ColumnsCount == columns)
-        return table;
-    }
-    return nullptr;
+  static constexpr char kWindowName[] = "Scene browser benchmark";
+
+  ImGuiTable *findTable() const {
+    const auto *window = ImGui::FindWindowByName(kWindowName);
+    if (!window) return nullptr;
+    // The table is scoped by its production tree node. Use the same ID across
+    // revisions where the hierarchy gained additional columns.
+    const char *treeName = isHierarchy() ? "Scene Hierarchy" : "BIM Elements";
+    const char *tableName = isHierarchy() ? "SceneHierarchyTable" : "BimElementsTable";
+    const auto treeId = ImHashStr(treeName, 0, window->ID);
+    auto *table = ImGui::TableFindByID(ImHashStr(tableName, 0, treeId));
+    return table && table->LastFrameActive == ImGui::GetFrameCount() ? table : nullptr;
   }
   void click(ImVec2 position) {
     auto &io = ImGui::GetIO();
