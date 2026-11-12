@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import time
@@ -16,12 +17,81 @@ from hdr_environment_runtime_regression import write_float_exr
 from display_grade_runtime_regression import expected_rgb
 
 
+def cmake_literal(value):
+    if isinstance(value, Path):
+        value = value.as_posix()
+    delimiter = "=="
+    while f"]{delimiter}]" in value:
+        delimiter += "="
+    return f"[{delimiter}[{value}]{delimiter}]"
+
+
+def manifest_setting(manifest, name):
+    match = re.search(rf"^set\({name} \[==\[(.*)\]==\]\)$", manifest, re.MULTILINE)
+    if not match:
+        raise RuntimeError(f"Shader reload manifest does not define {name}")
+    return match[1]
+
+
+def seed_shadow_baseline(root, runtime, source, output, manifest, shader, shadow):
+    baseline_interfaces = Path(manifest_setting(manifest, "interfaces"))
+    interfaces = output / "shadow baseline interfaces"
+    shutil.copytree(baseline_interfaces, interfaces)
+    spirv = runtime / "spv_shaders"
+    script = output / "seed-shadow-baseline.cmake"
+    body = [
+        "cmake_minimum_required(VERSION 3.23)",
+        f"set(compiler [==[{manifest_setting(manifest, 'compiler')}]==])",
+        f"set(flags [==[{manifest_setting(manifest, 'flags')}]==])",
+    ]
+    fingerprints = cmake_literal(root / "cmake" / "ShaderDependencies.cmake")
+    for entry, suffix in (("vertMain", "vert"), ("fragMain", "frag")):
+        name = f"post_process.{suffix}.spv"
+        binary = cmake_literal(spirv / name)
+        depfile = interfaces / f"{name}.d"
+        repro = interfaces / f"{name}.slang-repro"
+        body += [
+            f'execute_process(COMMAND "${{compiler}}" {cmake_literal(shader)} ${{flags}} -entry {entry}',
+            f"    -o {binary} -depfile {cmake_literal(depfile)}",
+            f"    -reflection-json {cmake_literal(interfaces / f'{name}.json')} -dump-repro {cmake_literal(repro)}",
+            "    COMMAND_ERROR_IS_FATAL ANY)",
+            'execute_process(COMMAND "${CMAKE_COMMAND}"',
+            f"    {cmake_literal(f'-DFINGERPRINT_OUTPUT={depfile.as_posix()}.sha256')}",
+            f"    {cmake_literal(f'-DDEPFILE={depfile.as_posix()}')}",
+            f"    {cmake_literal(f'-DSOURCE_ROOT={source.as_posix()}')}",
+            f"    {cmake_literal(f'-DLOOKUP_OUTPUT={depfile.as_posix()}.lookups')}",
+            f"    {cmake_literal(f'-DLOOKUP_REPRO={repro.as_posix()}')} \"-DSLANGC=${{compiler}}\"",
+            f"    -P {fingerprints} COMMAND_ERROR_IS_FATAL ANY)",
+        ]
+    script.write_text("\n".join(body) + "\n", encoding="utf-8")
+    cmake = (runtime / "runtime_shader_reload_tool.txt").read_text(encoding="utf-8").strip()
+    with (output / "seed-shadow-baseline.log").open("w", encoding="utf-8") as log:
+        subprocess.run([cmake, "-P", str(script)], cwd=runtime, check=True, timeout=120,
+                       stdout=log, stderr=subprocess.STDOUT)
+    for suffix in ("vert", "frag"):
+        depfile = interfaces / f"post_process.{suffix}.spv.d"
+        dependencies = depfile.read_text(encoding="utf-8").replace("\\\\", "/")
+        lookups = depfile.with_name(f"{depfile.name}.lookups").read_text(encoding="utf-8").splitlines()
+        misses = {Path(row[2:]) for row in lookups[1:] if row.startswith("- ")}
+        hits = {Path(row[65:]) for row in lookups[1:] if re.match(r"^[a-f0-9]{64} ", row)}
+        fallback = shader.parent / shadow.name
+        if (f"/shaders/{shadow.name}" not in dependencies or not lookups or
+                lookups[0] != "slang-lookup-v2" or shadow not in misses or fallback not in hits):
+            raise RuntimeError(f"Slang did not witness the fallback hit and nested lookup miss for {depfile.name}")
+    for setting, replacement in (("baseline_spirv", spirv), ("interfaces", interfaces),
+                                 ("baseline_source", source)):
+        old = f"set({setting} [==[{manifest_setting(manifest, setting)}]==])"
+        manifest = manifest.replace(old, f"set({setting} {cmake_literal(replacement)})", 1)
+    return manifest
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("renderer", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--section", action="append", choices=("existing", "bakes", "switch", "hierarchy"),
-                        help="Run selected groups, using all groups by default")
+    parser.add_argument("--section", action="append",
+                        choices=("existing", "bakes", "switch", "hierarchy", "successive-bakes", "include-shadowing"),
+                        help="Run selected groups, using the original matrix by default")
     args = parser.parse_args()
     sections = set(args.section or ("existing", "bakes", "switch", "hierarchy"))
     renderer, output = args.renderer.resolve(), args.output.resolve()
@@ -42,7 +112,8 @@ def main():
     manifest = manifest.replace((root / "shaders").as_posix(), (source / "shaders").as_posix())
     manifest = manifest.replace(f"set(source_root [==[{root.as_posix()}]==])",
                                 f"set(source_root [==[{source.as_posix()}]==])")
-    (runtime / "runtime_shader_reload.cmake").write_text(manifest, encoding="utf-8")
+    runtime_manifest = runtime / "runtime_shader_reload.cmake"
+    runtime_manifest.write_text(manifest, encoding="utf-8")
     shutil.copy2(renderer.parent / "runtime_shader_reload_tool.txt", runtime)
     (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n")
 
@@ -351,6 +422,99 @@ def main():
                 print(f"{technique}: {name} lighting texture rebake passed", flush=True)
             shutil.copy2(root / "shaders" / filename, shader)
 
+    if "successive-bakes" in sections:
+        panorama = output / "successive-bake-source.exr"
+        write_float_exr(panorama, [[(.5, .25, .125)] * 16 for _ in range(8)])
+        shader = source / "shaders" / "equirect_to_cubemap.slang"
+        original_shader = shader.read_text(encoding="utf-8")
+        marker = "float4(radiance, 1.0)"
+        assert original_shader.count(marker) == 1
+        first_source, second_source = (output / f"successive-bake-{stage}.slang" for stage in ("first", "second"))
+        for version, scale in ((first_source, ".5"), (second_source, ".125")):
+            version.write_text(original_shader.replace(marker, f"float4(radiance * float3({scale}, 1, 1), 1.0)"),
+                               encoding="utf-8")
+        started = output / "successive-bake-started.txt"
+        # Install each edit before its candidate compiler starts. Capture frames
+        # can advance at any speed without racing the source updates.
+        preamble = f"""cmake_minimum_required(VERSION 3.23)
+if(EXISTS {cmake_literal(started)})
+    file(COPY_FILE {cmake_literal(second_source)} {cmake_literal(shader)} ONLY_IF_DIFFERENT)
+else()
+    file(COPY_FILE {cmake_literal(first_source)} {cmake_literal(shader)} ONLY_IF_DIFFERENT)
+    file(WRITE {cmake_literal(started)} "1")
+endif()
+"""
+        runtime_manifest.write_text(preamble + manifest, encoding="utf-8")
+        try:
+            for technique in ("deferred-raster", "forward-raster"):
+                started.unlink(missing_ok=True)
+                shutil.copy2(root / "shaders" / shader.name, shader)
+                captures = capture(technique, "bake-successive", [
+                    {"frame": 3, "reloadShaders": True},
+                    {"frame": 7, "reloadShaders": True},
+                    {"frame": 11, "reloadShaders": True},
+                ], [2, 6, 10, 14], extra=("--environment-intensity", "1", "--environment", str(panorama)),
+                    point=(20, 20))
+                generations = [state["shaderReload"]["generation"] for _, state in captures]
+                if generations != [0, 1, 2, 3]:
+                    raise RuntimeError(f"{technique}: successive bake generations were {generations}")
+                for (pixel, _), red in zip(captures, (.5, .25, .0625, .0625), strict=True):
+                    np.testing.assert_allclose(pixel, expected_rgb((red, .25, .125), "aces", 1, 1), atol=2)
+                np.testing.assert_array_equal(captures[2][0], captures[3][0])
+                verify_retirement(captures[1][1], captures[2][1])
+                verify_retirement(captures[2][1], captures[3][1])
+                print(f"{technique}: successive distinct environment bakes and unchanged reload passed", flush=True)
+        finally:
+            shutil.copy2(root / "shaders" / shader.name, shader)
+            runtime_manifest.write_text(manifest, encoding="utf-8")
+
+    if "include-shadowing" in sections:
+        shaders = source / "shaders"
+        shader = shaders / "post_process.slang"
+        post = shader.read_text(encoding="utf-8")
+        helper_dir = shaders / "reload-shadow" / "nested"
+        helper_dir.mkdir(parents=True)
+        witness = "reload_shadow_witness.slang"
+        shadow = helper_dir / witness
+        (helper_dir / "helper.slang").write_text(f'#include "{witness}"\n', encoding="utf-8")
+        (shaders / witness).write_text(
+            "float3 ReloadShadowTint() { return float3(1.0, 1.0, 1.0); }\n", encoding="utf-8")
+        marker = "    float3 positive = clamp(FiniteColorOr(exposedColor,"
+        assert post.count(marker) == 1
+        shader.write_text('#include "reload-shadow/nested/helper.slang"\n' + post.replace(
+            marker, "    exposedColor *= ReloadShadowTint();\n" + marker), encoding="utf-8")
+        failures = []
+        try:
+            shadow_manifest = seed_shadow_baseline(root, runtime, source, output, manifest, shader, shadow)
+            runtime_manifest.write_text(shadow_manifest, encoding="utf-8")
+            # This is the only source-tree change after the baseline compile.
+            # The nested include takes precedence over the original -I hit.
+            shadow.write_text(
+                "float3 ReloadShadowTint() { return float3(0.25, 1.0, 1.0); }\n", encoding="utf-8")
+            for technique in ("deferred-raster", "forward-raster"):
+                before, after, repeated = capture(technique, "include-shadowing", [
+                    {"frame": 3, "reloadShaders": True}, {"frame": 7, "reloadShaders": True},
+                ], [2, 5, 9])
+                status = after[1]["shaderReload"]
+                if status["generation"] != 1 or int(before[0][0]) - int(after[0][0]) < 12:
+                    failures.append(f"{technique}: include shadow did not change red from "
+                                    f"{before[0][0]} to {after[0][0]} with {status['status']}")
+                    continue
+                if repeated[1]["shaderReload"]["generation"] != 2:
+                    raise RuntimeError(f"{technique}: repeated shadowed include did not publish")
+                np.testing.assert_array_equal(before[0][1:], after[0][1:])
+                np.testing.assert_array_equal(after[0], repeated[0])
+                verify_retirement(after[1], repeated[1])
+                print(f"{technique}: a new transitive include shadowed the recorded baseline", flush=True)
+        finally:
+            shutil.copy2(root / "shaders" / shader.name, shader)
+            for suffix in ("vert", "frag"):
+                binary = f"post_process.{suffix}.spv"
+                shutil.copy2(renderer.parent / "spv_shaders" / binary, runtime / "spv_shaders" / binary)
+            runtime_manifest.write_text(manifest, encoding="utf-8")
+        if failures:
+            raise RuntimeError("\n".join(failures))
+
     if "hierarchy" in sections:
         shader = source / "shaders" / "hierarchy_transform.slang"
         original_shader = shader.read_text(encoding="utf-8")
@@ -455,7 +619,7 @@ def main():
             raise RuntimeError("Technique switching did not exercise resize")
         verify_retirement(switches[1][1], switches[3][1])
 
-    (runtime / "runtime_shader_reload.cmake").unlink()
+    runtime_manifest.unlink()
     baseline, unavailable = capture("forward-raster", "packaged", [{"frame": 3, "reloadShaders": True}], [2, 4])
     np.testing.assert_array_equal(baseline[0], unavailable[0])
     status = unavailable[1]["shaderReload"]
