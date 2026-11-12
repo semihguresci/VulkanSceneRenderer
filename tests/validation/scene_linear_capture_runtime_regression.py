@@ -100,10 +100,15 @@ def main():
                 np.testing.assert_allclose(rgb[h // 4, w // 2], expected, atol=.008, rtol=0)
                 np.testing.assert_allclose(rgb[3 * h // 4, w // 2], [0, 0, 0], atol=.008, rtol=0)
                 return rgb
+            tone_mapper = {"aces": 0, "reinhard": 1}[tone]
             if (metadata["source"] != ("viewport" if viewport else "window") or
-                    metadata["manualExposure"] != exposure):
+                    metadata["colorSpace"] not in ("sRGB", "linear-sRGB") or
+                    metadata["exposureMode"] != "manual" or metadata["manualExposure"] != exposure or
+                    metadata["toneMapper"] != tone_mapper):
                 raise RuntimeError(f"Incorrect display metadata for {image}")
             with Image.open(image) as result_image:
+                if result_image.format != "PNG" or result_image.size != (w, h):
+                    raise RuntimeError(f"Incorrect encoded PNG dimensions or format for {image}")
                 return result_image.convert("RGB")
 
         first = capture("linear.exr", (320, 240), 1, "aces", "--no-taa")
@@ -117,9 +122,17 @@ def main():
             raise RuntimeError(f"{technique}: display capture ignored grading")
         viewport = capture("viewport-with-ui.png", (640, 480), 1, "aces",
                            "--no-taa", "--screenshot-viewport", ui=True)
+        no_ui = capture("viewport-without-ui.png", (640, 480), 1, "aces", "--no-taa", "--screenshot-viewport")
+        if ImageChops.difference(viewport, no_ui).getbbox():
+            raise RuntimeError(f"{technique}: enabling UI changed the viewport capture")
         window = capture("window-with-ui.png", (640, 480), 1, "aces", "--no-taa", ui=True)
         if not ImageChops.difference(viewport, window).getbbox():
             raise RuntimeError(f"{technique}: window did not include GUI")
+        viewport = capture("viewport-wide.png", (384, 200), .25, "reinhard",
+                           "--taa", "--screenshot-viewport", ui=True, resize=True)
+        window = capture("window-wide.png", (384, 200), .25, "reinhard", "--taa", ui=True, resize=True)
+        if not ImageChops.difference(viewport, window).getbbox():
+            raise RuntimeError(f"{technique}: resized window did not include GUI")
         print(f"{technique}: float RGB round trip and display transform passed", flush=True)
 
     assert hashlib.sha256(renderer.read_bytes()).hexdigest() == renderer_hash

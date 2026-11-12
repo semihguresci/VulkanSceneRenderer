@@ -198,7 +198,8 @@ public:
   void applyCaptureViewportPointer(const container::temporal::CaptureViewportPointer& pointer);
   [[nodiscard]] bool comfyUiCapturePending() const;
   void writeCaptureTelemetry(const std::filesystem::path &path,
-                             std::optional<glm::uvec2> depthProbe = std::nullopt);
+                             std::optional<glm::uvec2> depthProbe = std::nullopt,
+                             std::optional<uint32_t> referenceSampleTarget = std::nullopt);
   void startGfxCapture();
   void gfxCaptureTick(uint64_t tick, bool skipped);
   [[nodiscard]] bool gfxCaptureComplete() const;

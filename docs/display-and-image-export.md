@@ -11,7 +11,7 @@ Expand **Export Image** and enter an output path without an extension:
 | Action | Output |
 | --- | --- |
 | Scene EXR | Floating-point RGB scene radiance in linear sRGB, before bloom, exposure, grading and editor overlays. Requires Lit display mode. |
-| Viewport PNG | Displayed image with tone mapping and grading, excluding editor overlays. |
+| Viewport PNG | Displayed image with tone mapping and grading, excluding the editor UI and post-process overlays. Scene diagnostics such as selection outlines can still appear. |
 | Window PNG | Displayed image including enabled editor overlays. |
 
 Each image has a `.capture.json` sidecar recording dimensions, color space,
@@ -44,9 +44,12 @@ the first image is `reference.samples-00000004.exr`. Each checkpoint has a
 capture sidecar with the exact requested and accepted samples per pixel, the
 seed and bounce limit, plus a telemetry file. The renderer shortens a batch
 as needed to reach the requested count. It stops the series on an accumulation
-reset or on unsupported or rejected samples at a checkpoint. Use a fixed
-camera and scene, and omit `--path-samples`, `--capture-frame`,
+reset or on unsupported or rejected samples at a checkpoint. It also stops if
+it cannot publish a complete checkpoint. Earlier checkpoints remain available
+for analysis. Use a fixed camera and scene, and omit `--path-samples`, `--capture-frame`,
 `--warmup-frames`, `--capture-sequence`, and `--path-target-ms` for this mode.
+The scene fixtures and independent target seeds for measuring convergence are
+described in the [reference calibration guide](reference-calibration.md).
 
 Presets contain all nine version 1 fields. Loading rejects duplicate or unknown
 fields, unsupported versions, nested malformed data, oversized input, and values
@@ -71,7 +74,8 @@ They check analytic tone curves and emission, transparent coverage, preset
 validation, raw-radiance independence, resize with TAA, and overlay exclusion on
 both raster renderers. The reference series test checks exact checkpoints,
 batch-size independence, GPU-timed adaptive batches, and rejection of diagnosed
-paths.
+paths. It also checks that blocked sidecars preserve earlier checkpoints and
+existing outputs, and that a retry can publish the full checkpoint.
 
 Adapted tone curves retain their permissive notices in
 `tone-curves-Apache-2.0.txt`; Windows packages include that license.

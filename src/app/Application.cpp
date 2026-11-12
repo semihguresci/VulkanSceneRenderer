@@ -7,6 +7,7 @@
 
 #include "Container/common/CommonGLFW.h"
 #include "Container/utility/AllocationManager.h"
+#include "Container/utility/AtomicFile.h"
 #include "Container/utility/InputManager.h"
 #include "Container/utility/PipelineManager.h"
 #include "Container/utility/Platform.h"
@@ -20,12 +21,197 @@
 #include "Container/renderer/resources/CommandBufferManager.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <stdexcept>
 #include <thread>
 #include <utility>
 
+#ifndef _WIN32
+#include <sys/file.h>
+#endif
+
 namespace container::app {
+namespace {
+
+namespace fs = std::filesystem;
+
+fs::path captureTelemetryPath(fs::path image) {
+  return image.replace_extension(".telemetry.json");
+}
+
+fs::path captureMetadataPath(fs::path image) {
+  image += ".capture.json";
+  return image;
+}
+
+[[noreturn]] void checkpointPublicationError(const fs::path& path,
+                                             std::string_view reason) {
+  throw std::runtime_error("Cannot publish reference checkpoint at " +
+      container::util::pathToUtf8(path) + ": " + std::string(reason));
+}
+
+class CheckpointPublicationLock {
+public:
+  explicit CheckpointPublicationLock(const fs::path& image) {
+#ifdef _WIN32
+    auto name = fs::path(".");
+    name += image.filename();
+    name += ".container-lock";
+    const auto lockPath = image.parent_path() / name;
+    handle_ = CreateFileW(lockPath.c_str(), GENERIC_READ | DELETE, 0, nullptr,
+                          CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE,
+                          nullptr);
+    if (handle_ == INVALID_HANDLE_VALUE)
+      checkpointPublicationError(lockPath,
+          std::system_category().message(static_cast<int>(GetLastError())));
+#else
+    const auto parent = image.parent_path().empty() ? fs::path(".") : image.parent_path();
+    // Lock the directory inode so there is no lock file to retire.
+    fd_ = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd_ < 0)
+      checkpointPublicationError(parent, std::system_category().message(errno));
+    int result;
+    do {
+      result = ::flock(fd_, LOCK_EX);
+    } while (result < 0 && errno == EINTR);
+    if (result < 0) {
+      const int error = errno;
+      ::close(fd_);
+      checkpointPublicationError(parent, std::system_category().message(error));
+    }
+#endif
+  }
+
+  CheckpointPublicationLock(const CheckpointPublicationLock&) = delete;
+  CheckpointPublicationLock& operator=(const CheckpointPublicationLock&) = delete;
+
+  ~CheckpointPublicationLock() {
+#ifdef _WIN32
+    CloseHandle(handle_);
+#else
+    ::close(fd_);
+#endif
+  }
+
+private:
+#ifdef _WIN32
+  HANDLE handle_ = INVALID_HANDLE_VALUE;
+#else
+  int fd_ = -1;
+#endif
+};
+
+class ReferenceCheckpointOutput {
+public:
+  explicit ReferenceCheckpointOutput(const fs::path& image)
+      : image_(image) {
+    std::error_code error;
+    const auto parent = image.parent_path();
+    if (!parent.empty()) {
+      fs::create_directories(parent, error);
+      if (error)
+        checkpointPublicationError(parent, error.message());
+    }
+    static std::atomic<uint64_t> serial{0};
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    for (int attempt = 0; attempt < 64; ++attempt) {
+      staging_ = parent / (".container-checkpoint-" + std::to_string(stamp) + "-" +
+                           std::to_string(serial.fetch_add(1)));
+      stagedImage_ = staging_ / "checkpoint.exr";
+      if (fs::create_directory(staging_, error))
+        return;
+      if (error && error != std::errc::file_exists)
+        checkpointPublicationError(staging_, error.message());
+    }
+    checkpointPublicationError(image, "cannot reserve a staging directory");
+  }
+
+  ReferenceCheckpointOutput(const ReferenceCheckpointOutput&) = delete;
+  ReferenceCheckpointOutput& operator=(const ReferenceCheckpointOutput&) = delete;
+
+  ~ReferenceCheckpointOutput() {
+    if (!keepRecoveryFiles_) {
+      std::error_code ignored;
+      fs::remove_all(staging_, ignored);
+    }
+  }
+
+  const fs::path& stagedImage() const { return stagedImage_; }
+
+  void publish() {
+    const CheckpointPublicationLock lock(image_);
+    struct File {
+      fs::path source;
+      fs::path destination;
+      fs::path backup;
+      bool existed = false;
+    };
+    // A failed EXR replacement leaves the original image in place. Publish it
+    // only after both sidecars are installed, and keep their old versions until then.
+    std::array files{
+        File{captureMetadataPath(stagedImage_), captureMetadataPath(image_),
+             staging_ / "previous.capture.json"},
+        File{captureTelemetryPath(stagedImage_), captureTelemetryPath(image_),
+             staging_ / "previous.telemetry.json"},
+        File{stagedImage_, image_, {}}};
+    for (auto& file : files) {
+      std::error_code error;
+      const auto status = fs::symlink_status(file.destination, error);
+      if (error && error != std::errc::no_such_file_or_directory)
+        checkpointPublicationError(file.destination, error.message());
+      file.existed = fs::exists(status);
+      if (file.existed && !fs::is_regular_file(status) && !fs::is_symlink(status))
+        checkpointPublicationError(file.destination, "destination is not a regular file");
+    }
+    for (const auto& file : files) {
+      if (file.existed && !file.backup.empty()) {
+        std::error_code error;
+        fs::copy(file.destination, file.backup, fs::copy_options::copy_symlinks, error);
+        if (error)
+          checkpointPublicationError(file.destination, error.message());
+      }
+    }
+
+    size_t published = 0;
+    try {
+      for (; published < files.size(); ++published) {
+        const auto& file = files[published];
+        container::util::replaceFileAtomically(file.source, file.destination);
+      }
+    } catch (const std::exception& error) {
+      const auto& failed = files[published].destination;
+      while (published > 0) {
+        const auto& file = files[--published];
+        if (file.existed) {
+          try {
+            container::util::replaceFileAtomically(file.backup, file.destination);
+          } catch (const std::exception&) {
+            keepRecoveryFiles_ = true;
+          }
+        } else {
+          std::error_code removalError;
+          fs::remove(file.destination, removalError);
+          keepRecoveryFiles_ |= bool(removalError);
+        }
+      }
+      if (keepRecoveryFiles_)
+        checkpointPublicationError(failed, std::string(error.what()) +
+            ". Rollback failed. Recovery files remain in " +
+            container::util::pathToUtf8(staging_));
+      checkpointPublicationError(failed, error.what());
+    }
+  }
+
+private:
+  fs::path image_;
+  fs::path staging_;
+  fs::path stagedImage_;
+  bool keepRecoveryFiles_ = false;
+};
+
+}  // namespace
 
 Application::Application(AppConfig config)
     : config_(std::move(config)) {
@@ -227,6 +413,7 @@ void Application::screenshotCaptureLoop() {
       continue;
     std::filesystem::path capturePath;
     std::optional<uint32_t> sampleTarget;
+    std::optional<ReferenceCheckpointOutput> checkpointOutput;
     if (checkpoint != sampleSeries.end()) {
       seriesSamples += std::min(config_.pathSamplesPerFrame, *checkpoint - seriesSamples);
       if (seriesSamples == *checkpoint) {
@@ -252,9 +439,12 @@ void Application::screenshotCaptureLoop() {
         filename += capturePath.extension();
         capturePath.replace_filename(filename);
       }
+      if (sampleTarget)
+        checkpointOutput.emplace(capturePath);
       if (captureThisFrame)
-        renderer_->requestScreenshot(capturePath, config_.screenshotViewportOnly,
-                                     sampleTarget);
+        renderer_->requestScreenshot(
+            checkpointOutput ? checkpointOutput->stagedImage() : capturePath,
+            config_.screenshotViewportOnly, sampleTarget);
     }
     bool submitted = false;
     for (uint32_t retry = 0; retry < 4 && !submitted; ++retry)
@@ -264,10 +454,12 @@ void Application::screenshotCaptureLoop() {
           "Capture could not submit after swapchain recovery");
     if (viewportPointer)
       renderer_->applyCaptureViewportPointer(*viewportPointer);
-    if (!capturePath.empty()) {
-      auto telemetryPath = capturePath;
-      telemetryPath.replace_extension(".telemetry.json");
-      renderer_->writeCaptureTelemetry(telemetryPath, depthProbe);
+    if (checkpointOutput) {
+      renderer_->writeCaptureTelemetry(
+          captureTelemetryPath(checkpointOutput->stagedImage()), depthProbe, sampleTarget);
+      checkpointOutput->publish();
+    } else if (!capturePath.empty()) {
+      renderer_->writeCaptureTelemetry(captureTelemetryPath(capturePath), depthProbe);
     }
     if (renderer_->gfxCaptureComplete()) break;
   }
