@@ -760,7 +760,7 @@ add_custom_test(submitted_upload_wait_tests
 
 add_custom_test(ray_scene_tests
     ${TEST_RENDERER_CORE_DIR}/ray_scene_tests.cpp "" ${TEST_RESULTS_DIR}
-    Dep_VulkanCore Dep_Math
+    Dep_VulkanCore Dep_Math Dep_SceneIO
 )
 target_sources(ray_scene_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/renderer/raytracing/RayScene.cpp)
 target_sources(ray_scene_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/renderer/raytracing/RaySceneExtraction.cpp)
