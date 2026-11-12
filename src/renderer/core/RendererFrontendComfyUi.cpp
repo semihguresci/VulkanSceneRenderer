@@ -3,11 +3,9 @@
 #include "Container/common/VulkanObjects.h"
 #include "Container/renderer/core/ComfyUiFrontendState.h"
 #include "Container/renderer/lighting/EnvironmentManager.h"
-#include "Container/renderer/platform/VulkanContextInitializer.h"
 #include "Container/renderer/temporal/TemporalCapture.h"
 #include "Container/utility/AtomicFile.h"
 #include "Container/utility/Platform.h"
-#include "Container/utility/VulkanDevice.h"
 
 #include <imgui.h>
 #include <imgui_impl_vulkan.h>
@@ -156,13 +154,8 @@ void RendererFrontend::processComfyUi() {
   const bool previewInvalid = state.previewDescriptor != VK_NULL_HANDLE &&
       !svc_.allocationManager.textureImageMatches(state.preview);
   if (result || previewInvalid) {
-    if (state.previewDescriptor != VK_NULL_HANDLE) {
-      if (vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device()) != VK_SUCCESS) {
-        state.resultStatus = "Could not retire generated preview readers";
-        return;
-      }
-      removePreview(state);
-    }
+    // drawFrame has retired all graphics frames that could sample the ImGui preview.
+    removePreview(state);
     state.uploadedId.clear();
     if (result) {
       state.result = std::move(result);

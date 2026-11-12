@@ -106,16 +106,45 @@ class ComfyClient:
             data = response.read(limit + 1)
             if len(data) > limit:
                 raise ValueError("ComfyUI response exceeds its size limit")
+            # A bounded read can reach EOF with Content-Length bytes still outstanding.
+            if response.length:
+                raise http.client.IncompleteRead(data, response.length)
             return data
+        except http.client.HTTPException as error:
+            detail = str(error) or type(error).__name__
+            raise RuntimeError(f"Invalid ComfyUI HTTP response: {detail}") from error
         finally:
             connection.close()
 
     def json(self, method, route, payload=None):
         response = self.request(method, route, json.dumps(payload).encode() if payload is not None else None)
-        value = json.loads(response) if response else {}
+        value = json.loads(response) if response or method == "GET" else {}
         if not isinstance(value, dict):
             raise ValueError("Expected a JSON object from ComfyUI")
         return value
+
+    def history(self, prompt_id):
+        response = self.json("GET", f"/history/{quote(prompt_id, safe='')}")
+        if prompt_id not in response:
+            return None
+        record = response[prompt_id]
+        if not isinstance(record, dict) or not isinstance(record.get("status"), dict):
+            raise ValueError("ComfyUI returned an invalid job history record")
+        return record
+
+    def queue_phase(self, prompt_id):
+        queue = self.json("GET", "/queue")
+        phase = None
+        for key, candidate in (("queue_running", "running"), ("queue_pending", "queued")):
+            entries = queue.get(key)
+            if not isinstance(entries, list):
+                raise ValueError("ComfyUI returned an invalid queue response")
+            for entry in entries:
+                if not isinstance(entry, list) or len(entry) < 2 or not isinstance(entry[1], str):
+                    raise ValueError("ComfyUI returned an invalid queue response")
+                if phase is None and entry[1] == prompt_id:
+                    phase = candidate
+        return phase
 
     def upload(self, job_id, source):
         if not source.startswith(PNG):
@@ -279,15 +308,19 @@ class Adapter:
                 not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode()) > 2048 or
                 type(seed) is not int or not 0 <= seed < 2**64 or type(expires) is not int):
             raise ValueError("Invalid Container generation request")
+
+        def cancelled():
+            return (folder / "cancel.json").exists() or time.time() >= expires
+
         prompt_id = old.get("promptId")
         if prompt_id is not None and (not isinstance(prompt_id, str) or not PROMPT_ID.fullmatch(prompt_id)):
             raise ValueError("Invalid persisted ComfyUI prompt ID")
-        if (folder / "cancel.json").exists() or time.time() >= expires:
+        if cancelled():
             try:
                 if prompt_id:
                     self.client.cancel(prompt_id)
                 message = "Generation cancelled or expired"
-            except (OSError, RuntimeError) as error:
+            except (OSError, RuntimeError, ValueError) as error:
                 message = f"Result discarded. ComfyUI cancellation request failed: {error}"
             self.status(folder, "cancelled", message)
             return
@@ -300,29 +333,37 @@ class Adapter:
             self.status(folder, "queued", "Submitting local ComfyUI workflow", .15)
             image = self.client.upload(folder.name, read_bytes(folder / "input.png", MAX_ASSET)) if kind == "restyle" else None
             workflow = fill_workflow(template, request, image)
+            if cancelled():
+                self.status(folder, "cancelled", "Generation cancelled or expired")
+                return
             response = self.client.json("POST", "/prompt", {"prompt": workflow, "client_id": folder.name})
             prompt_id = response.get("prompt_id")
             if not isinstance(prompt_id, str) or not PROMPT_ID.fullmatch(prompt_id):
                 raise ValueError("ComfyUI did not return a valid prompt ID")
             self.status(folder, "queued", "Queued in ComfyUI", .25, promptId=prompt_id)
             return
-        history = self.client.json("GET", f"/history/{quote(prompt_id, safe='')}").get(prompt_id)
+        history = self.client.history(prompt_id)
         if history is None:
-            queue = self.client.json("GET", "/queue")
-            running = any(isinstance(item, list) and len(item) > 1 and item[1] == prompt_id
-                          for item in queue.get("queue_running", []))
-            phase, progress = ("running", .60) if running else ("queued", .25)
-            if old.get("phase") != phase:
-                self.status(folder, phase, "ComfyUI is generating" if running else "Queued in ComfyUI", progress, promptId=prompt_id)
-            return
-        execution = history.get("status", {})
+            phase = self.client.queue_phase(prompt_id)
+            if phase is not None:
+                if old.get("phase") != phase:
+                    message, progress = ("ComfyUI is generating", .60) if phase == "running" else ("Queued in ComfyUI", .25)
+                    self.status(folder, phase, message, progress, promptId=prompt_id)
+                return
+            # ComfyUI may have moved the job to history between the two reads.
+            history = self.client.history(prompt_id)
+            if history is None:
+                if cancelled():
+                    return  # The next poll handles cancellation through the normal path.
+                raise RuntimeError("ComfyUI no longer lists this job in its queue or history. Start a new generation request.")
+        execution = history["status"]
         if execution.get("status_str") != "success" or not execution.get("completed"):
             messages = execution.get("messages", [])
             raise RuntimeError(f"ComfyUI workflow failed: {str(messages)[:700]}")
         self.status(folder, "running", "Downloading generated output", .85, promptId=prompt_id)
         suffix, route = select_output(history, kind)
         suffix, data = convert_output(suffix, self.client.request("GET", route, limit=MAX_ASSET), kind)
-        if (folder / "cancel.json").exists() or time.time() >= expires:
+        if cancelled():
             self.status(folder, "cancelled", "Generated result discarded after cancellation")
             return
         output = "generated" + suffix

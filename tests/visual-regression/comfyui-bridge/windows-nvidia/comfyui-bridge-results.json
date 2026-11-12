@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 1,
+  "issue": 118,
+  "platform": "Windows x64",
+  "build": {
+    "compiler": "MSVC-19.51.36260.0",
+    "configuration": "Release",
+    "revision": "2cfac46d750a4061ef1ccca69fac5f4a885ed4db"
+  },
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+    "vendorId": 4318,
+    "deviceId": 7809,
+    "driverVersion": 2559967232,
+    "vulkanApiVersion": 4211029
+  },
+  "validation": {
+    "layer": "VK_LAYER_KHRONOS_validation",
+    "packageVersion": "1.4.363.1",
+    "manifestApiVersion": "1.4.363",
+    "manifestSha256": "672a281330703083230ff02cabdd1afd524b600e0a11ae8610119e06e4183b02",
+    "librarySha256": "451ed11cbc799f858cbc0e843766d2990527c03f93f7a85f03bc1e67b605a435",
+    "synchronizationValidation": true
+  },
+  "ctest": {
+    "casesPassed": 154,
+    "casesFailed": 0,
+    "casesSkipped": 0,
+    "receiptSha256": "be99ebbfce8c98827eae8a1deb8a6df406561b49996b0bdd6110ab02954d27da",
+    "junitSha256": "d4cf11d76f3577b18cb8219085495451c6a791440dcd44e92cff3b188863c3d8",
+    "suites": {
+      "temporal_capture_tests": 151,
+      "comfyui_bridge_tests": 3
+    },
+    "bridgeCases": [
+      "ComfyUiBridgeTest.CancelledAndInvalidResultsCannotBePublished",
+      "ComfyUiBridgeTest.CaptureErrorsDoNotReachTheAdapter",
+      "ComfyUiBridgeTest.RestyleCapturesFirstAndDecodesGeneratedPng"
+    ]
+  },
+  "protocol": {
+    "loopbackHttp": true,
+    "testsPassed": 11,
+    "adapterSha256": "e6f791a11f4085db2f1a8c08e0c8bfbe4e4c9833b579a2968a683884b81ec939",
+    "harnessSha256": "50ace301914aef76f960f36c5e8300d5c3aba20afa724f04f34e29532df8c172",
+    "fixedLogSha256": "affaf891ed95ab7d5c601ce6119604d255a29abad974c30a380349a80582689f",
+    "baseline": {
+      "revision": "f6ee97d66a838c109f687898184cf44595426380",
+      "logSha256": "48cbf8e77a972f04cabdad028812d30c3e6577440e29faaf52b3802ed36760b0",
+      "adapterSha256": "272f02b7146cfbbc7a9ab18cf6f110f1e41043190f9a9ff3fb1243125167803d",
+      "casesPassed": 5,
+      "casesFailed": 4,
+      "casesErrored": 2,
+      "changedCases": {
+        "test_broken_cancellation_reply_still_discards_the_result": "ERROR",
+        "test_cancel_during_viewport_upload_prevents_prompt_submission": "FAIL",
+        "test_completion_between_history_and_queue_is_downloaded": "FAIL",
+        "test_malformed_queue_has_a_distinct_failure": "FAIL",
+        "test_pending_job_can_run_then_disappear_without_being_requeued": "FAIL",
+        "test_truncated_history_fails_only_that_job": "ERROR"
+      }
+    }
+  },
+  "native": {
+    "receiptSha256": "ae04b1471567cabfea8b6a69d198d240ced42a093f2b84b1d410172d7024f4e2",
+    "fixture": "models/validation/cornell_box_local_light.gltf",
+    "harnessSha256": "cb061d69f81ff8e89725f40b19711ac698737a437f4d44d5619f12315f508394",
+    "rendererSha256": "e1c6a4eaa0950991438fbd7ea903898bbd0220c9e09f3fa7dd729fa44483252d",
+    "fixtureSha256": "8a70d05c4a1bcfbfd9aee215f89db7120357c995f22c8a228b9ab789988e3fa6",
+    "manifest": {
+      "sha256": "c1dad0f86641f86067fa8a070fdaf8ee9d159e600b0af91f299ffd053550d842",
+      "entries": 151
+    },
+    "validation": {
+      "instance": true,
+      "device": true,
+      "logSha256": "b45724082eaa89f0be5d078e1bca4c0f7c0b6544bb3a03de6d61cbb406e0f5c5"
+    },
+    "captures": 12,
+    "successfulProcesses": 1,
+    "mockHttp": true,
+    "generationJobs": 5,
+    "jobs": [
+      "bad-aspect",
+      "lost-job",
+      "mock-failure",
+      "studio",
+      "watercolor"
+    ],
+    "resultStatuses": {
+      "applied": {
+        "phase": "ready",
+        "message": "Generated result is ready",
+        "resultStatus": "Generated environment applied",
+        "previewReady": false
+      },
+      "restyle": {
+        "phase": "ready",
+        "message": "Generated result is ready",
+        "resultStatus": "",
+        "previewReady": true
+      },
+      "rejected": {
+        "phase": "ready",
+        "message": "Generated result is ready",
+        "resultStatus": "Generated HDR environments must be 2:1 equirectangular images: F:\\Projects\\Container\\build\\issue-118\\verified\\native\\bridge\\jobs\\003fc0ed49b261f8fcfeaa4100000003\\generated.hdr",
+        "previewReady": false
+      },
+      "failure": {
+        "phase": "failed",
+        "message": "ComfyUI workflow failed: ['Mock model unavailable']",
+        "resultStatus": "",
+        "previewReady": false
+      },
+      "lostJob": {
+        "phase": "failed",
+        "message": "ComfyUI no longer lists this job in its queue or history. Start a new generation request.",
+        "resultStatus": "",
+        "previewReady": false
+      }
+    },
+    "lostJobInterveningFrames": 28,
+    "previewMsaaTransitions": [
+      1,
+      4,
+      1
+    ],
+    "restyleViewportPixelsMatched": true,
+    "unchangedViewportFrames": [
+      4,
+      9,
+      10,
+      11,
+      12
+    ]
+  },
+  "windowsPackaging": {
+    "recipe": "cmake/package_windows.ps1",
+    "recipeSha256": "09c9742948f39c84af3348bfee36deb0f97d63ef95244ccc2ab29ff6d06996a4",
+    "archiveVerified": true,
+    "assets": {
+      "tools/comfyui_bridge.py": "e6f791a11f4085db2f1a8c08e0c8bfbe4e4c9833b579a2968a683884b81ec939",
+      "comfyui-bridge.md": "762d9762abab54e35691776b3ea63a37807551fcbdace69e43aad1be77ece249",
+      "tools/comfyui_workflows/hdri.json": "ff4931f1272ed66927753aff83c4fa0d67e907737659b68d73b76e67a2589b25",
+      "tools/comfyui_workflows/restyle.json": "28dd739876662021ab92ce8089414b64ab0573d81ca5c3c1bcde06316c0585a4"
+    },
+    "archiveSha256": "5c740b10c382233e2da978aba6764e3a7534694426e106ecf86aa440b7952ebb",
+    "smoke": {
+      "receiptSha256": "3daff365b926f57b84b7a43e3009a762058f3a1ae166b91c494556acc4679cd4",
+      "baseRenderingWithoutAdapter": true,
+      "comfyUiTelemetryAbsent": true,
+      "validationLayer": {
+        "name": "VK_LAYER_KHRONOS_validation",
+        "packageVersion": "1.4.363.1",
+        "apiVersion": "1.4.363",
+        "manifestSha256": "672a281330703083230ff02cabdd1afd524b600e0a11ae8610119e06e4183b02",
+        "librarySha256": "451ed11cbc799f858cbc0e843766d2990527c03f93f7a85f03bc1e67b605a435",
+        "synchronizationValidation": true
+      }
+    }
+  },
+  "scope": "The production adapter and renderer used a localhost HTTP mock and fixed image fixtures.",
+  "realModelInferenceExercised": false
+}
