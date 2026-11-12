@@ -50,7 +50,7 @@ def transform(frame,x):
 def startup_override_reload(renderer,output,technique,startup,oracle_path,oracle,report):
     sequence=output/f'{technique}-startup-override-reload.json'
     sequence.write_text(json.dumps(dict(schemaVersion=1,frames=4,sampleFrames=[1,4],camera=CAMERA,
-        events=[dict(frame=2,guiReload=str(oracle_path),guiWaitForLoad=True)]),indent=2))
+        events=[dict(frame=2,reload=str(oracle_path))]),indent=2))
     records=capture(renderer,output,startup,technique+'-startup-override-reload',technique,'lit',report['captures'],
         sequence=sequence,gltf_scene=1)
     require(len(records)==2,'Missing startup override/reload samples')
@@ -59,7 +59,7 @@ def startup_override_reload(renderer,output,technique,startup,oracle_path,oracle
             'Startup CLI override did not select Right over the authored Left default')
     report['checks'].append(dict(technique=technique,check='startup-only-cli-scene',scene=before['selected']))
     require(after['selected']==0 and after['names']==['Both'] and after['activeRenderableCount']==3 and
-            after['graphIdentity']!=before['graphIdentity'],'GUI reload did not load the replacement scene default')
+            after['graphIdentity']!=before['graphIdentity'],'Model reload did not load the replacement scene default')
     error=pixels(records[1]['image'],oracle['image'])
     require(error['maximumError']==0,f'Replacement scene differs from its independent startup capture: {error}')
     require(pixels(records[0]['image'],records[1]['image'])['meanAbsoluteError']>.5,'Reload witness is visually vacuous')
