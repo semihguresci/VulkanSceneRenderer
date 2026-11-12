@@ -1,0 +1,2713 @@
+{
+  "schemaVersion": 1,
+  "issue": 113,
+  "platform": "Windows x64",
+  "build": {
+    "compiler": "MSVC-19.51.36260.0",
+    "configuration": "Release",
+    "revision": "946e15d82629718986f995384168dc898d6a60dc"
+  },
+  "rendererSha256": "65c375162016d79ffcd39462166a7fa3bf82d8227143e9d441c487ee67ca535b",
+  "shaderBuild": {
+    "shaderModules": 116,
+    "byteIdenticalToBaseline": 116,
+    "reloadStages": 109,
+    "v2LookupMetadata": 109,
+    "shaderModulesSha256": "b49f32c7f8214c24c9cccf00b94907aee87d15949c0fa7e2df38056c4d4455be",
+    "lookupMetadataSha256": "19a3b4f59ffe1ce34626aa01c7dd05b3251ce4655bbaf3f25d1b422bcf04d822",
+    "unchangedReload": {
+      "reusedStages": 109,
+      "compiledStages": 0,
+      "compiledListSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "incrementalBuildLogSha256": "9337ed24141ed7afaee92b4510e730792e4de4b0c0ab523beb4f887e6d9a56a6",
+    "reloadManifestSha256": "0ec8b68c5a4b5bbe8a5e95a51c957d2cff0c8808e83d52cda4fccb93df72a005",
+    "ninjaSha256": "d4c34ced72a55951ffe11a95425046e101254ff7141d14a6261cb46d52a3fd32",
+    "cmakeCacheSha256": "f0cda70c5ee2d29cbcc51827eb88c4e0a6cf54a2af089d9fb9de989cbac99281",
+    "buildLogSha256": "0fcffc0779ee821d020c8eb17f14e83a8c2357696bed919e67b1d17db72c7e78"
+  },
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+    "vendorId": 4318,
+    "deviceId": 7809,
+    "driverVersion": 2559967232,
+    "vulkanApiVersion": 4211029
+  },
+  "validationLayer": {
+    "name": "VK_LAYER_KHRONOS_validation",
+    "packageVersion": "1.4.363.1",
+    "apiVersion": "1.4.363",
+    "manifestSha256": "672a281330703083230ff02cabdd1afd524b600e0a11ae8610119e06e4183b02",
+    "librarySha256": "451ed11cbc799f858cbc0e843766d2990527c03f93f7a85f03bc1e67b605a435",
+    "synchronizationValidation": true,
+    "instanceAndDeviceVerified": true
+  },
+  "ctest": {
+    "targetsPassed": 4,
+    "cppCasesPassed": 18,
+    "gpuCasesPassed": 14,
+    "cppTests": {
+      "runtime_shader_compiler_tests": {
+        "casesPassed": 4,
+        "junitSha256": "0688e29822fe87933e797b4fff13e64f34618a322fe04f3763bf47559a06b45b",
+        "sourceSha256": "1886cb70126dae9271ab4f001c95f8440af3c114fac476b49f6a8e22a068227a",
+        "binarySha256": "230c9aa319dcdfc7ee615fba054b8743b5480021dd464524b111d3d45d359e1d"
+      },
+      "managed_compute_pipeline_gpu_tests": {
+        "casesPassed": 4,
+        "junitSha256": "29239a65c6c42d257c6332af429d090e35e3d68f6ea4d60e78ddd0c198028766",
+        "sourceSha256": "6ded0aba9c26b04c101d3e2bf44962260dddd3b3d0c791b58e1d21ad6e138e1f",
+        "binarySha256": "94cba4317ca12509f3315ca6c5717c9236615bda42295a01a8ce14b62cc58dee"
+      },
+      "managed_compute_owner_gpu_tests": {
+        "casesPassed": 10,
+        "junitSha256": "fee0cb2c5045acf5ffff77277c090684743bd5d2ca3b8f2029caead8fe6332fe",
+        "sourceSha256": "963d079e89b36149bdbdc1d3a579bd4653e2817314837d761b768e81d8ab4972",
+        "binarySha256": "af3278e097a654a165263a6f6f37f6fe5e889076f7d39b33399999cc0c444209"
+      }
+    },
+    "slangLookupFixturePassed": true,
+    "slangLookupFixtureSha256": "2b7d2e2fbdbce21eb015c7d2f0fc2a39c8bc7314acbbd5151d556575b2aedc13",
+    "junitSha256": "784368a96d82539cf40faa8e987d6185e9dfc13aabb5625ddd18e80a4755ba8f",
+    "detailedLogSha256": "7ddb930b34c2e7d70dd81f1b5c714f65ae06b4f833b65564a48eba9e75eef254",
+    "runnerLogSha256": "af8e038370008f0f6fc61328fe87fa83b70064e07a6c26d6a7cddb696522870a"
+  },
+  "baseline": {
+    "rendererRevision": "85b12e3dca1bcef80fdd42bbbaf81d3e6e28ea05",
+    "baseRevision": "1a9733cabb98906f40cd8b7ac4385de3e5f3b2ec",
+    "rendererSha256": "78bc532378af24c926a57e5497f5377db7a71291a18780b9bc635cf62e6954d9",
+    "cpu": {
+      "staleEntrySha256": "ff1b39a623b254ef9e4237a50dd245fabfc2ca2137da8a7f3dbcc73d75a4ae5d",
+      "directEntrySha256": "f9072e1af0bb38e26e6378abffbc2ed01acade05074ae1d782824fc3a307b5ab",
+      "compiledStages": [],
+      "reportSha256": "d24b135ef98e08bfff01abdf4f58c8b39994566042a045f64b6708984ae37bf9"
+    },
+    "shadow": {
+      "captureCount": 6,
+      "processCount": 2,
+      "captures": {
+        "deferred-raster": [
+          {
+            "frame": 2,
+            "file": "deferred-raster-include-shadowing.frame-0002.png",
+            "rgb": [
+              206,
+              165,
+              115
+            ],
+            "pngSha256": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "telemetrySha256": "3f7572a89f11dbc27b4b7d94dfebeb189342e6ac6d2d1338e8498c6d2b4edc68",
+            "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+            "shaderReload": {
+              "generation": 0,
+              "ownedObjects": {
+                "descriptorPools": 17,
+                "descriptorSetLayouts": 22,
+                "imageViews": 123,
+                "pipelineCaches": 81,
+                "pipelineLayouts": 26,
+                "pipelines": 81,
+                "samplers": 12,
+                "shaderModules": 0
+              },
+              "status": "",
+              "vmaAllocations": 188,
+              "vmaBytes": 1419945312
+            }
+          },
+          {
+            "frame": 5,
+            "file": "deferred-raster-include-shadowing.frame-0005.png",
+            "rgb": [
+              206,
+              165,
+              115
+            ],
+            "pngSha256": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "telemetrySha256": "c71875402b7e04892f6a25b4cf9525ab02535af3e67d9d0f72502bbbea026bf4",
+            "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+            "shaderReload": {
+              "generation": 1,
+              "ownedObjects": {
+                "descriptorPools": 17,
+                "descriptorSetLayouts": 22,
+                "imageViews": 123,
+                "pipelineCaches": 81,
+                "pipelineLayouts": 26,
+                "pipelines": 81,
+                "samplers": 12,
+                "shaderModules": 0
+              },
+              "status": "Shaders reloaded (0 stages compiled, 0 managed compute pipelines replaced)",
+              "vmaAllocations": 198,
+              "vmaBytes": 1420258976
+            }
+          },
+          {
+            "frame": 9,
+            "file": "deferred-raster-include-shadowing.png",
+            "rgb": [
+              206,
+              165,
+              115
+            ],
+            "pngSha256": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "telemetrySha256": "663ed6444c3ffd23b20381ff7b1acb32694bfbc3a7954439bf735bd524f0f051",
+            "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+            "shaderReload": {
+              "generation": 2,
+              "ownedObjects": {
+                "descriptorPools": 17,
+                "descriptorSetLayouts": 22,
+                "imageViews": 123,
+                "pipelineCaches": 81,
+                "pipelineLayouts": 26,
+                "pipelines": 81,
+                "samplers": 12,
+                "shaderModules": 0
+              },
+              "status": "Shaders reloaded (0 stages compiled, 0 managed compute pipelines replaced)",
+              "vmaAllocations": 198,
+              "vmaBytes": 1420258976
+            }
+          }
+        ],
+        "forward-raster": [
+          {
+            "frame": 2,
+            "file": "forward-raster-include-shadowing.frame-0002.png",
+            "rgb": [
+              206,
+              165,
+              115
+            ],
+            "pngSha256": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "telemetrySha256": "fdca751539fa7a68df66550057ac410344402ab908d3c4c8561c2071609d46aa",
+            "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+            "shaderReload": {
+              "generation": 0,
+              "ownedObjects": {
+                "descriptorPools": 17,
+                "descriptorSetLayouts": 22,
+                "imageViews": 123,
+                "pipelineCaches": 81,
+                "pipelineLayouts": 26,
+                "pipelines": 81,
+                "samplers": 12,
+                "shaderModules": 0
+              },
+              "status": "",
+              "vmaAllocations": 188,
+              "vmaBytes": 1419945312
+            }
+          },
+          {
+            "frame": 5,
+            "file": "forward-raster-include-shadowing.frame-0005.png",
+            "rgb": [
+              206,
+              165,
+              115
+            ],
+            "pngSha256": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "telemetrySha256": "d72ed380e8a8d873c23628359acf741aa17c8dfd8ac7c31c87d79644172d60f4",
+            "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+            "shaderReload": {
+              "generation": 1,
+              "ownedObjects": {
+                "descriptorPools": 17,
+                "descriptorSetLayouts": 22,
+                "imageViews": 123,
+                "pipelineCaches": 81,
+                "pipelineLayouts": 26,
+                "pipelines": 81,
+                "samplers": 12,
+                "shaderModules": 0
+              },
+              "status": "Shaders reloaded (0 stages compiled, 0 managed compute pipelines replaced)",
+              "vmaAllocations": 198,
+              "vmaBytes": 1420258976
+            }
+          },
+          {
+            "frame": 9,
+            "file": "forward-raster-include-shadowing.png",
+            "rgb": [
+              206,
+              165,
+              115
+            ],
+            "pngSha256": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "telemetrySha256": "7b21a43e051b0996b38cfda864d575f73da4a2acfc3dd52b409ea2f83090e258",
+            "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+            "shaderReload": {
+              "generation": 2,
+              "ownedObjects": {
+                "descriptorPools": 17,
+                "descriptorSetLayouts": 22,
+                "imageViews": 123,
+                "pipelineCaches": 81,
+                "pipelineLayouts": 26,
+                "pipelines": 81,
+                "samplers": 12,
+                "shaderModules": 0
+              },
+              "status": "Shaders reloaded (0 stages compiled, 0 managed compute pipelines replaced)",
+              "vmaAllocations": 198,
+              "vmaBytes": 1420258976
+            }
+          }
+        ]
+      },
+      "logSha256": {
+        "deferred-raster-include-shadowing.log": "6c38b4afdf7e54837cb8a5ec1766d8fe11d4b9127ba26d6b71d4ad301c15f991",
+        "forward-raster-include-shadowing.log": "fafdea6db9107760fc78e52fe79e90ccffd7f007ec52d7bce3a1e2a3d4bd8bd3"
+      },
+      "seededMetadata": {
+        "post_process.vert.spv.d": {
+          "dependencySha256": "6d1f8406974b50c3c6db4bc600709fbda37f79682c654d5fb5a45f27017feb74",
+          "lookupsSha256": "4cb568d12489ff74a21187d9341516bfee509cf5642bf59d04d24cd5b9ba0ff4"
+        },
+        "post_process.frag.spv.d": {
+          "dependencySha256": "f900aa15a298dae60b80ca526f426e2952dc780808b7a04879b04de9733cf5c1",
+          "lookupsSha256": "4cb568d12489ff74a21187d9341516bfee509cf5642bf59d04d24cd5b9ba0ff4"
+        }
+      }
+    },
+    "lazy": {
+      "captureCount": 8,
+      "processCount": 3,
+      "captures": {
+        "reference": [
+          {
+            "frame": 2,
+            "file": "reference.frame-0002.png",
+            "rgb": [
+              102,
+              142,
+              200
+            ],
+            "pngSha256": "637535465479508a94cc09638ef60b1d3616a46bd5914e9a0d7af1e7ccc379a6",
+            "telemetrySha256": "3c5188ad62d4bb0bcfa7d63f869ec103027d30b79ee56b0c226b3f67fc9bac0b",
+            "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+            "shaderReload": {
+              "generation": 0,
+              "ownedObjects": {
+                "descriptorPools": 17,
+                "descriptorSetLayouts": 22,
+                "imageViews": 129,
+                "pipelineCaches": 81,
+                "pipelineLayouts": 26,
+                "pipelines": 81,
+                "samplers": 12,
+                "shaderModules": 0
+              },
+              "status": "",
+              "vmaAllocations": 185,
+              "vmaBytes": 1423870224
+            }
+          },
+          {
+            "frame": 4,
+            "file": "reference.png",
+            "rgb": [
+              76,
+              82,
+              103
+            ],
+            "pngSha256": "17c8dc61f30de2afb551bb51ba5c83aa3e52543ce9689a9197a4bdfc4bb8500e",
+            "telemetrySha256": "4a2036e2147863a1e137f43fe069b5bf85898a83ea2867a3babd899e9cbb714e",
+            "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+            "shaderReload": {
+              "generation": 1,
+              "ownedObjects": {
+                "descriptorPools": 17,
+                "descriptorSetLayouts": 22,
+                "imageViews": 129,
+                "pipelineCaches": 81,
+                "pipelineLayouts": 26,
+                "pipelines": 81,
+                "samplers": 12,
+                "shaderModules": 0
+              },
+              "status": "Shaders reloaded (2 stages compiled, 0 managed compute pipelines replaced)",
+              "vmaAllocations": 194,
+              "vmaBytes": 1423876688
+            }
+          }
+        ],
+        "material": [
+          {
+            "frame": 2,
+            "file": "material.frame-0002.png",
+            "rgb": [
+              180,
+              178,
+              174
+            ],
+            "pngSha256": "55993ede918837416a74603bdea9c596ab868b1d979ad1e9c262bf75bb08db74",
+            "telemetrySha256": "dbbe314fc50d8b14ae9d61fdc3563dbfe29ffd1eaca55336ab69c8a34d62f996",
+            "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+            "shaderReload": {
+              "generation": 0,
+              "ownedObjects": {
+                "descriptorPools": 17,
+                "descriptorSetLayouts": 22,
+                "imageViews": 123,
+                "pipelineCaches": 78,
+                "pipelineLayouts": 25,
+                "pipelines": 78,
+                "samplers": 12,
+                "shaderModules": 0
+              },
+              "status": "",
+              "vmaAllocations": 179,
+              "vmaBytes": 1419938064
+            }
+          },
+          {
+            "frame": 4,
+            "file": "material.frame-0004.png",
+            "rgb": [
+              180,
+              178,
+              174
+            ],
+            "pngSha256": "55993ede918837416a74603bdea9c596ab868b1d979ad1e9c262bf75bb08db74",
+            "telemetrySha256": "c6cd42ba68f7b158418d30a5c235ee90c720536f94fc257c407909e28b756bff",
+            "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+            "shaderReload": {
+              "generation": 1,
+              "ownedObjects": {
+                "descriptorPools": 17,
+                "descriptorSetLayouts": 22,
+                "imageViews": 123,
+                "pipelineCaches": 78,
+                "pipelineLayouts": 25,
+                "pipelines": 78,
+                "samplers": 12,
+                "shaderModules": 0
+              },
+              "status": "Shaders reloaded (2 stages compiled, 0 managed compute pipelines replaced)",
+              "vmaAllocations": 188,
+              "vmaBytes": 1419944528
+            }
+          },
+          {
+            "frame": 7,
+            "file": "material.png",
+            "rgb": [
+              102,
+              142,
+              200
+            ],
+            "pngSha256": "637535465479508a94cc09638ef60b1d3616a46bd5914e9a0d7af1e7ccc379a6",
+            "telemetrySha256": "0ab945c67d961b5c449abbeb7fd66caa385152d5a9a12f7a578ce5a5b4d7f5aa",
+            "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+            "shaderReload": {
+              "generation": 1,
+              "ownedObjects": {
+                "descriptorPools": 16,
+                "descriptorSetLayouts": 22,
+                "imageViews": 129,
+                "pipelineCaches": 81,
+                "pipelineLayouts": 26,
+                "pipelines": 81,
+                "samplers": 12,
+                "shaderModules": 0
+              },
+              "status": "Shaders reloaded (2 stages compiled, 0 managed compute pipelines replaced)",
+              "vmaAllocations": 195,
+              "vmaBytes": 1424183888
+            },
+            "maximumErrorFromReloadedReference": 97
+          }
+        ],
+        "merge": [
+          {
+            "frame": 2,
+            "file": "merge.frame-0002.png",
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "pngSha256": "e5bdf529dbe4356515542e5a3e31bdd536d96e865e0c0d265ed449da5d794f33",
+            "telemetrySha256": "61cf6ce9efa213ce357e65cdba8268cccf1da6d875013600337f98aa63cef37c",
+            "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+            "shaderReload": {
+              "generation": 0,
+              "ownedObjects": {
+                "descriptorPools": 17,
+                "descriptorSetLayouts": 22,
+                "imageViews": 123,
+                "pipelineCaches": 78,
+                "pipelineLayouts": 25,
+                "pipelines": 78,
+                "samplers": 12,
+                "shaderModules": 0
+              },
+              "status": "",
+              "vmaAllocations": 179,
+              "vmaBytes": 1419938064
+            }
+          },
+          {
+            "frame": 4,
+            "file": "merge.frame-0004.png",
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "pngSha256": "e5bdf529dbe4356515542e5a3e31bdd536d96e865e0c0d265ed449da5d794f33",
+            "telemetrySha256": "d11d3e2db3142685a99891883c47728cd64562affb80c017575bd76c4e6139c2",
+            "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+            "shaderReload": {
+              "generation": 1,
+              "ownedObjects": {
+                "descriptorPools": 17,
+                "descriptorSetLayouts": 22,
+                "imageViews": 123,
+                "pipelineCaches": 78,
+                "pipelineLayouts": 25,
+                "pipelines": 78,
+                "samplers": 12,
+                "shaderModules": 0
+              },
+              "status": "Shaders reloaded (2 stages compiled, 0 managed compute pipelines replaced)",
+              "vmaAllocations": 188,
+              "vmaBytes": 1419944528
+            }
+          },
+          {
+            "frame": 7,
+            "file": "merge.png",
+            "rgb": [
+              102,
+              142,
+              200
+            ],
+            "pngSha256": "6cfa4f56cafdd7b9ead709613c4a4d0152f0d5315e01f85ffe579755462545fd",
+            "telemetrySha256": "902eec671a84c7b3701a2edf6cad7ac00c78787fccebe46a53441cca10e2a23a",
+            "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+            "shaderReload": {
+              "generation": 1,
+              "ownedObjects": {
+                "descriptorPools": 17,
+                "descriptorSetLayouts": 22,
+                "imageViews": 129,
+                "pipelineCaches": 81,
+                "pipelineLayouts": 26,
+                "pipelines": 81,
+                "samplers": 13,
+                "shaderModules": 0
+              },
+              "status": "Shaders reloaded (2 stages compiled, 0 managed compute pipelines replaced)",
+              "vmaAllocations": 200,
+              "vmaBytes": 1424192064
+            },
+            "maximumErrorFromReloadedReference": 97
+          }
+        ]
+      },
+      "logSha256": {
+        "reference.log": "7f314dd62fddf9e3c2e0575532e7f70a3d4b93000ebaad394393b01ad5a89b37",
+        "material.log": "90c8444a08f93903dab5f249f5b83d21b77cc38fa63e3470a8e5713ca6f87078",
+        "merge.log": "b3177c30802981d0cf7d71d1a81d8a7bd7f1834b859756f152a4f8e1ae7fee38"
+      },
+      "resultsSha256": "8ed616d2ee9cbf8476d6fa6e1fba478629e8619d90e8d23feec40694776037a1"
+    }
+  },
+  "nativeTotals": {
+    "captureCount": 129,
+    "processCount": 44
+  },
+  "standaloneSlang": {
+    "compilers": [
+      {
+        "version": "2026.21",
+        "compilerSha256": "71d56bcc90709700b318413bfced07a4b7378c76b2bbc539e89f2d2c90b1e5f8"
+      },
+      {
+        "version": "2025.17.2",
+        "compilerSha256": "eec76e0d6a8a33f4979b5ee3e486bcd2d4a26ce8da5432fc482353a5252a32a8"
+      }
+    ],
+    "harnessSha256": "2b7d2e2fbdbce21eb015c7d2f0fc2a39c8bc7314acbbd5151d556575b2aedc13",
+    "resultsSha256": "2d8c0290b9828947f209b3fd824209e417f9c54cb4b4a150439f765bf46d1f72",
+    "passed": true
+  },
+  "matrixHarnessRevision": "2923a327061318ed700665a3e923aea52acf0652",
+  "matrixHarnessSha256": "f82923eb95f286c73ecd2f8c53ed5249128fe7ddb7788986ca9e2d19a17c6976",
+  "lazyHarnessSha256": "9eb126e64d774852afa3d9b627bd015267e6ec584d956be5d49a262a2c61f366",
+  "nativeMatrices": {
+    "verified-main": {
+      "sections": [
+        "existing",
+        "bakes"
+      ],
+      "captureCount": 71,
+      "processCount": 25,
+      "sequences": {
+        "deferred-raster-valid": {
+          "frames": [
+            2,
+            4,
+            6,
+            8
+          ],
+          "generations": [
+            0,
+            1,
+            1,
+            2
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              115,
+              165,
+              115
+            ],
+            [
+              115,
+              165,
+              115
+            ],
+            [
+              115,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-valid.frame-0002.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "deferred-raster-valid.frame-0004.png": "6f07f971f1e7e8277980fb0c6b4d142bc0ac9de93d4227c0f03ece529a6a9cbf",
+            "deferred-raster-valid.frame-0006.png": "a1562568ccc7169f48f9cbbfa37e302b6ed0542737a9aee1032d189981ba5ee3",
+            "deferred-raster-valid.png": "a1562568ccc7169f48f9cbbfa37e302b6ed0542737a9aee1032d189981ba5ee3"
+          },
+          "sequenceSha256": "92636d920f4994a333c838e301184a5c7cb4583e0dc06cb949f977de2f6ed52d",
+          "logSha256": "c9f8c2feb2bee751817b6e9de7651ccb75fc1b6ecbb6d01d13c20fbfda659ed0"
+        },
+        "forward-raster-valid": {
+          "frames": [
+            2,
+            4,
+            6,
+            8
+          ],
+          "generations": [
+            0,
+            1,
+            1,
+            2
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              115,
+              165,
+              115
+            ],
+            [
+              115,
+              165,
+              115
+            ],
+            [
+              115,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "forward-raster-valid.frame-0002.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "forward-raster-valid.frame-0004.png": "6f07f971f1e7e8277980fb0c6b4d142bc0ac9de93d4227c0f03ece529a6a9cbf",
+            "forward-raster-valid.frame-0006.png": "e040fcb6ad4421d21402e6903304853df38c49eb1b4622df9f686b5eff75d41d",
+            "forward-raster-valid.png": "e040fcb6ad4421d21402e6903304853df38c49eb1b4622df9f686b5eff75d41d"
+          },
+          "sequenceSha256": "92636d920f4994a333c838e301184a5c7cb4583e0dc06cb949f977de2f6ed52d",
+          "logSha256": "b60b2f617453cc3bdb2995093dac96c96c3f07ade147dfcae40794cffaf3c470"
+        },
+        "deferred-raster-invalid": {
+          "frames": [
+            2,
+            4
+          ],
+          "generations": [
+            0,
+            0
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-invalid.frame-0002.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "deferred-raster-invalid.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf"
+          },
+          "sequenceSha256": "fb04eac48e115ab81b91a7e4414309bfa28b32be2bd378126cb45f7e06e53081",
+          "logSha256": "2ce479a783526e12ae8692d0b9c21b9c7b785a12a996f4ec48fa37d04dea0c96"
+        },
+        "forward-raster-invalid": {
+          "frames": [
+            2,
+            4
+          ],
+          "generations": [
+            0,
+            0
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "forward-raster-invalid.frame-0002.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "forward-raster-invalid.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf"
+          },
+          "sequenceSha256": "fb04eac48e115ab81b91a7e4414309bfa28b32be2bd378126cb45f7e06e53081",
+          "logSha256": "4a6ab8c1414e0bcc6eafc147954cbf8d11564f5941341bf9fbd2d31c154c16a9"
+        },
+        "deferred-raster-compute": {
+          "frames": [
+            2,
+            5
+          ],
+          "generations": [
+            0,
+            1
+          ],
+          "centerRgb": [
+            [
+              232,
+              232,
+              232
+            ],
+            [
+              115,
+              115,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-compute.frame-0002.png": "81f15f6a34eb8b921a6aef87ff86a25a3fc61e1a3c39794c6c0aab2d7f5f2ea8",
+            "deferred-raster-compute.png": "6a35f853c910a2d42c57709aefa60acb36dcaf746b070bfe6aae20e05011294a"
+          },
+          "sequenceSha256": "b23743a8520a6b09c76f65b9704c1159f8d284370643a5fc841868d8bcb49ba2",
+          "logSha256": "c43300d765098130680ca4c6f1c50a1813fe618c39b6b328ea11f6ecaf156757"
+        },
+        "forward-raster-compute": {
+          "frames": [
+            2,
+            5
+          ],
+          "generations": [
+            0,
+            1
+          ],
+          "centerRgb": [
+            [
+              232,
+              232,
+              232
+            ],
+            [
+              115,
+              115,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "forward-raster-compute.frame-0002.png": "81f15f6a34eb8b921a6aef87ff86a25a3fc61e1a3c39794c6c0aab2d7f5f2ea8",
+            "forward-raster-compute.png": "6a35f853c910a2d42c57709aefa60acb36dcaf746b070bfe6aae20e05011294a"
+          },
+          "sequenceSha256": "b23743a8520a6b09c76f65b9704c1159f8d284370643a5fc841868d8bcb49ba2",
+          "logSha256": "5c5a420195dd9981e1a38a89cd307e6196383af8774f080402c4c6362bc15a94"
+        },
+        "deferred-raster-managed": {
+          "frames": [
+            2,
+            4,
+            6,
+            8
+          ],
+          "generations": [
+            0,
+            1,
+            1,
+            2
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              115,
+              165,
+              115
+            ],
+            [
+              115,
+              165,
+              115
+            ],
+            [
+              115,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-managed.frame-0002.png": "213ad386b6697b726da9c596c6ec60c7d5aa9f241f2ebaad2f4e5ee0a91bc32c",
+            "deferred-raster-managed.frame-0004.png": "07df09c248cb6e5f432c6b2de2b6eafecbbc0030a060b299e308bdf02f8a2f5f",
+            "deferred-raster-managed.frame-0006.png": "afaf4860f90ff1463c41ad1d9f4be6ef33ecb7b2cd167f81310ab56f3c01fabc",
+            "deferred-raster-managed.png": "afaf4860f90ff1463c41ad1d9f4be6ef33ecb7b2cd167f81310ab56f3c01fabc"
+          },
+          "sequenceSha256": "d86ba76695bb85243a431a8d454a2e7864793a31c566478d08506f861ffdfb4e",
+          "logSha256": "00a6224b7b757e7d1afeffc72af376b6eeed9c39c0cdb9afd405061d2bea0758"
+        },
+        "forward-raster-managed": {
+          "frames": [
+            2,
+            4,
+            6,
+            8
+          ],
+          "generations": [
+            0,
+            1,
+            1,
+            2
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              115,
+              165,
+              115
+            ],
+            [
+              115,
+              165,
+              115
+            ],
+            [
+              115,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "forward-raster-managed.frame-0002.png": "213ad386b6697b726da9c596c6ec60c7d5aa9f241f2ebaad2f4e5ee0a91bc32c",
+            "forward-raster-managed.frame-0004.png": "07df09c248cb6e5f432c6b2de2b6eafecbbc0030a060b299e308bdf02f8a2f5f",
+            "forward-raster-managed.frame-0006.png": "afaf4860f90ff1463c41ad1d9f4be6ef33ecb7b2cd167f81310ab56f3c01fabc",
+            "forward-raster-managed.png": "afaf4860f90ff1463c41ad1d9f4be6ef33ecb7b2cd167f81310ab56f3c01fabc"
+          },
+          "sequenceSha256": "d86ba76695bb85243a431a8d454a2e7864793a31c566478d08506f861ffdfb4e",
+          "logSha256": "0deba7abb1c9748076cc048889be802c19ed11e6404e5ad69732634f7257685d"
+        },
+        "deferred-raster-velocity": {
+          "frames": [
+            2,
+            5,
+            8
+          ],
+          "generations": [
+            0,
+            1,
+            1
+          ],
+          "centerRgb": [
+            [
+              188,
+              188,
+              188
+            ],
+            [
+              218,
+              188,
+              188
+            ],
+            [
+              223,
+              188,
+              188
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-velocity.frame-0002.png": "f53be2725bdd618d9e08fa4e5e15bc830ad5d91577908a93344350ed6af5fc01",
+            "deferred-raster-velocity.frame-0005.png": "be65bcb7fc4a3e844935238452a65c0bb971a651aa924acbb1da9f28343c0bf4",
+            "deferred-raster-velocity.png": "e9461856ec0ed12d775c2a799cb9b381eed095b3bb2fecaf0eaf29c092c20e33"
+          },
+          "sequenceSha256": "8bb2abbf74d1af700371fcbae9b653a5f7d358dfc2b09e7f896fc33731ef659a",
+          "logSha256": "fe95d22b88bc513ddb5085804cf6406e92c228468511295995c741fd5bf150be"
+        },
+        "forward-raster-velocity": {
+          "frames": [
+            2,
+            5,
+            8
+          ],
+          "generations": [
+            0,
+            1,
+            1
+          ],
+          "centerRgb": [
+            [
+              188,
+              188,
+              188
+            ],
+            [
+              218,
+              188,
+              188
+            ],
+            [
+              223,
+              188,
+              188
+            ]
+          ],
+          "captureSha256": {
+            "forward-raster-velocity.frame-0002.png": "f53be2725bdd618d9e08fa4e5e15bc830ad5d91577908a93344350ed6af5fc01",
+            "forward-raster-velocity.frame-0005.png": "be65bcb7fc4a3e844935238452a65c0bb971a651aa924acbb1da9f28343c0bf4",
+            "forward-raster-velocity.png": "e9461856ec0ed12d775c2a799cb9b381eed095b3bb2fecaf0eaf29c092c20e33"
+          },
+          "sequenceSha256": "8bb2abbf74d1af700371fcbae9b653a5f7d358dfc2b09e7f896fc33731ef659a",
+          "logSha256": "7ba0f213ce061ed45b26b965830de6bfa8f6abe221843f1dd87d942e3c9d7f45"
+        },
+        "deferred-raster-probe-debug": {
+          "frames": [
+            3,
+            8
+          ],
+          "generations": [
+            0,
+            1
+          ],
+          "centerRgb": [
+            [
+              80,
+              237,
+              137
+            ],
+            [
+              250,
+              58,
+              251
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-probe-debug.frame-0003.png": "ea0f8e182b148fba3e2021c8bc6ebf646a49c3af654126739d0f5fef925039c7",
+            "deferred-raster-probe-debug.png": "7fd70ae8611dc1be193b713bad2c05fea9986d9359c962816b0518fba3d7471e"
+          },
+          "sequenceSha256": "8f1c4aea17a3647074610a91162244d403fdcdc0b740feea7db22e8a7e537205",
+          "logSha256": "4606efaee595b11215ebaceb93d82c03457ebb454900d286b89fb9eb665ed2ca"
+        },
+        "forward-raster-probe-debug": {
+          "frames": [
+            3,
+            8
+          ],
+          "generations": [
+            0,
+            1
+          ],
+          "centerRgb": [
+            [
+              80,
+              237,
+              137
+            ],
+            [
+              250,
+              58,
+              251
+            ]
+          ],
+          "captureSha256": {
+            "forward-raster-probe-debug.frame-0003.png": "ea0f8e182b148fba3e2021c8bc6ebf646a49c3af654126739d0f5fef925039c7",
+            "forward-raster-probe-debug.png": "7fd70ae8611dc1be193b713bad2c05fea9986d9359c962816b0518fba3d7471e"
+          },
+          "sequenceSha256": "8f1c4aea17a3647074610a91162244d403fdcdc0b740feea7db22e8a7e537205",
+          "logSha256": "3bd0e7ae99adae4cd7a23ac709a3b0be778b008b8eaba006fa594ced4e7f40e6"
+        },
+        "deferred-raster-interface": {
+          "frames": [
+            2,
+            4
+          ],
+          "generations": [
+            0,
+            0
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-interface.frame-0002.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "deferred-raster-interface.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf"
+          },
+          "sequenceSha256": "fb04eac48e115ab81b91a7e4414309bfa28b32be2bd378126cb45f7e06e53081",
+          "logSha256": "2c75c0ced396cef5db36e474163606a4f465b9eacb5aab39fbfc6920491f0da6"
+        },
+        "deferred-raster-compute-invalid": {
+          "frames": [
+            2,
+            5
+          ],
+          "generations": [
+            0,
+            0
+          ],
+          "centerRgb": [
+            [
+              232,
+              232,
+              232
+            ],
+            [
+              232,
+              232,
+              232
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-compute-invalid.frame-0002.png": "81f15f6a34eb8b921a6aef87ff86a25a3fc61e1a3c39794c6c0aab2d7f5f2ea8",
+            "deferred-raster-compute-invalid.png": "81f15f6a34eb8b921a6aef87ff86a25a3fc61e1a3c39794c6c0aab2d7f5f2ea8"
+          },
+          "sequenceSha256": "b23743a8520a6b09c76f65b9704c1159f8d284370643a5fc841868d8bcb49ba2",
+          "logSha256": "f554c0cba9b2d7605a9f7b2832f4561dfadd85695565b09a488f473ea857b77e"
+        },
+        "deferred-raster-auxiliary": {
+          "frames": [
+            2,
+            5,
+            8
+          ],
+          "generations": [
+            0,
+            1,
+            1
+          ],
+          "centerRgb": [
+            [
+              171,
+              187,
+              215
+            ],
+            [
+              162,
+              164,
+              172
+            ],
+            [
+              162,
+              164,
+              172
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-auxiliary.frame-0002.png": "473225003f33c6600b8a91586ce6cb9757b9b471cd85d9bc5eb2301795bd4a32",
+            "deferred-raster-auxiliary.frame-0005.png": "df79973524b7ea3038c7650186d10e37e127a7f82a5e114099623599f8e1513b",
+            "deferred-raster-auxiliary.png": "d470f1f4ebc282915ed2a8d0ae6715bc810a7146d80dcc9c9ea7914ca8bba1dd"
+          },
+          "sequenceSha256": "46cc3cf2275bd41565204c116dfc71cd8d9b837ca97f65e1890c0e4c6315f548",
+          "logSha256": "abc8f0bb3bf6156439f5674ec16dd03eed28db22e1548917f9b68ad4f1b9d252"
+        },
+        "deferred-raster-bake-hdr": {
+          "frames": [
+            2,
+            6,
+            10
+          ],
+          "generations": [
+            0,
+            1,
+            2
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-bake-hdr.frame-0002.png": "82df89b2f74ead3b97a6ea0570a42860be6af9400382c324bb374c6169b6a80e",
+            "deferred-raster-bake-hdr.frame-0006.png": "847519a9807a26b5d18d9632dd60809c7ef2660af265d8309f73fdf484bd975d",
+            "deferred-raster-bake-hdr.png": "847519a9807a26b5d18d9632dd60809c7ef2660af265d8309f73fdf484bd975d"
+          },
+          "sequenceSha256": "6e4c59ab1b46d6c4c5f04b1d327ff82fa6e87a138b722e3678cee509cb02fadf",
+          "logSha256": "8a9fe214744200404a81e66fffbb9bd9ecbaf05bd8c6b4b46b3e6011bce657c3"
+        },
+        "forward-raster-bake-hdr": {
+          "frames": [
+            2,
+            6,
+            10
+          ],
+          "generations": [
+            0,
+            1,
+            2
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "forward-raster-bake-hdr.frame-0002.png": "82df89b2f74ead3b97a6ea0570a42860be6af9400382c324bb374c6169b6a80e",
+            "forward-raster-bake-hdr.frame-0006.png": "847519a9807a26b5d18d9632dd60809c7ef2660af265d8309f73fdf484bd975d",
+            "forward-raster-bake-hdr.png": "847519a9807a26b5d18d9632dd60809c7ef2660af265d8309f73fdf484bd975d"
+          },
+          "sequenceSha256": "6e4c59ab1b46d6c4c5f04b1d327ff82fa6e87a138b722e3678cee509cb02fadf",
+          "logSha256": "1662853dcce188bb0869102e4b22061da187b1c11c8efab56620a6f047f368d6"
+        },
+        "deferred-raster-bake-gradient": {
+          "frames": [
+            2,
+            6,
+            10
+          ],
+          "generations": [
+            0,
+            1,
+            2
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-bake-gradient.frame-0002.png": "d69abab49f6269f375a380c3d36331e59fb8950295982f0c8768853c75d8f9cc",
+            "deferred-raster-bake-gradient.frame-0006.png": "f520dd7d83780fe3c27c13f0c77841026b125081e400305bfb55f3f4906f464f",
+            "deferred-raster-bake-gradient.png": "f520dd7d83780fe3c27c13f0c77841026b125081e400305bfb55f3f4906f464f"
+          },
+          "sequenceSha256": "6e4c59ab1b46d6c4c5f04b1d327ff82fa6e87a138b722e3678cee509cb02fadf",
+          "logSha256": "229efdd0bf4102439521ab02e8c23c0a885153152407c9c83ec24342094a786d"
+        },
+        "forward-raster-bake-gradient": {
+          "frames": [
+            2,
+            6,
+            10
+          ],
+          "generations": [
+            0,
+            1,
+            2
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "forward-raster-bake-gradient.frame-0002.png": "d69abab49f6269f375a380c3d36331e59fb8950295982f0c8768853c75d8f9cc",
+            "forward-raster-bake-gradient.frame-0006.png": "f520dd7d83780fe3c27c13f0c77841026b125081e400305bfb55f3f4906f464f",
+            "forward-raster-bake-gradient.png": "f520dd7d83780fe3c27c13f0c77841026b125081e400305bfb55f3f4906f464f"
+          },
+          "sequenceSha256": "6e4c59ab1b46d6c4c5f04b1d327ff82fa6e87a138b722e3678cee509cb02fadf",
+          "logSha256": "bc3618230f00d01acbfe28c4275f62f0627c9431ba819022b01a479caf815a3f"
+        },
+        "deferred-raster-bake-irradiance": {
+          "frames": [
+            2,
+            6,
+            10
+          ],
+          "generations": [
+            0,
+            1,
+            2
+          ],
+          "centerRgb": [
+            [
+              235,
+              212,
+              177
+            ],
+            [
+              135,
+              97,
+              71
+            ],
+            [
+              135,
+              97,
+              71
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-bake-irradiance.frame-0002.png": "e388bf708090c5abd73af25ab24d4557d9fd3d7c847b6bb1353dc7fec04e5752",
+            "deferred-raster-bake-irradiance.frame-0006.png": "69bcd3da7517b9de9e1b82fb9330d2b745a484937698a39c8d063842b0a58593",
+            "deferred-raster-bake-irradiance.png": "69bcd3da7517b9de9e1b82fb9330d2b745a484937698a39c8d063842b0a58593"
+          },
+          "sequenceSha256": "6e4c59ab1b46d6c4c5f04b1d327ff82fa6e87a138b722e3678cee509cb02fadf",
+          "logSha256": "37344f55a321af70840e1375b5d4098628333ae74a21ee69bf9925601808c800"
+        },
+        "forward-raster-bake-irradiance": {
+          "frames": [
+            2,
+            6,
+            10
+          ],
+          "generations": [
+            0,
+            1,
+            2
+          ],
+          "centerRgb": [
+            [
+              234,
+              212,
+              175
+            ],
+            [
+              130,
+              90,
+              61
+            ],
+            [
+              130,
+              90,
+              61
+            ]
+          ],
+          "captureSha256": {
+            "forward-raster-bake-irradiance.frame-0002.png": "37e90642e270ae7ffbfaafd80282826299a0b9b6eac422f05792f3e48404ece7",
+            "forward-raster-bake-irradiance.frame-0006.png": "4527611bd73a02200a0d876687b78c85a76636dce89209ed8a09595d37c3f530",
+            "forward-raster-bake-irradiance.png": "4527611bd73a02200a0d876687b78c85a76636dce89209ed8a09595d37c3f530"
+          },
+          "sequenceSha256": "6e4c59ab1b46d6c4c5f04b1d327ff82fa6e87a138b722e3678cee509cb02fadf",
+          "logSha256": "349c8f264313be892f64c5d489ac043f631920217106713a029084ff0d7671ce"
+        },
+        "deferred-raster-bake-prefilter": {
+          "frames": [
+            2,
+            6,
+            10
+          ],
+          "generations": [
+            0,
+            1,
+            2
+          ],
+          "centerRgb": [
+            [
+              190,
+              149,
+              109
+            ],
+            [
+              78,
+              59,
+              48
+            ],
+            [
+              78,
+              59,
+              48
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-bake-prefilter.frame-0002.png": "234b6718a9a24bb4e94716a6694f60e11dd815865bbfd268f79a39dd85352179",
+            "deferred-raster-bake-prefilter.frame-0006.png": "8357ae179ae62986ad06e6f754edb81e05fcbb9ae13edffebc84446eeb559010",
+            "deferred-raster-bake-prefilter.png": "8357ae179ae62986ad06e6f754edb81e05fcbb9ae13edffebc84446eeb559010"
+          },
+          "sequenceSha256": "6e4c59ab1b46d6c4c5f04b1d327ff82fa6e87a138b722e3678cee509cb02fadf",
+          "logSha256": "c1b92fcdc1b59b769ba088e4c12d17e6e1813f90332442c0e871b0be83836143"
+        },
+        "forward-raster-bake-prefilter": {
+          "frames": [
+            2,
+            6,
+            10
+          ],
+          "generations": [
+            0,
+            1,
+            2
+          ],
+          "centerRgb": [
+            [
+              189,
+              146,
+              102
+            ],
+            [
+              69,
+              49,
+              37
+            ],
+            [
+              69,
+              49,
+              37
+            ]
+          ],
+          "captureSha256": {
+            "forward-raster-bake-prefilter.frame-0002.png": "c643f0367e69fb988e192763b80d2284765ecbcce194e68fa1dff222a94385e7",
+            "forward-raster-bake-prefilter.frame-0006.png": "2912a5e6cb2154d2876637cd1cf9b48e82f96c3b6f4e85d5fed932334feffc00",
+            "forward-raster-bake-prefilter.png": "2912a5e6cb2154d2876637cd1cf9b48e82f96c3b6f4e85d5fed932334feffc00"
+          },
+          "sequenceSha256": "6e4c59ab1b46d6c4c5f04b1d327ff82fa6e87a138b722e3678cee509cb02fadf",
+          "logSha256": "2583b74fad944f930338ed11cc5814e7c46cd6f6c3102db6bdc2b44b67df3efd"
+        },
+        "deferred-raster-bake-brdf": {
+          "frames": [
+            2,
+            6,
+            10
+          ],
+          "generations": [
+            0,
+            1,
+            2
+          ],
+          "centerRgb": [
+            [
+              190,
+              149,
+              109
+            ],
+            [
+              124,
+              89,
+              65
+            ],
+            [
+              124,
+              89,
+              65
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-bake-brdf.frame-0002.png": "234b6718a9a24bb4e94716a6694f60e11dd815865bbfd268f79a39dd85352179",
+            "deferred-raster-bake-brdf.frame-0006.png": "a4bfa16b5e3a80a32235e1b43e70892cffc5357a6fe5e25a4ca55102a1515dc0",
+            "deferred-raster-bake-brdf.png": "a4bfa16b5e3a80a32235e1b43e70892cffc5357a6fe5e25a4ca55102a1515dc0"
+          },
+          "sequenceSha256": "6e4c59ab1b46d6c4c5f04b1d327ff82fa6e87a138b722e3678cee509cb02fadf",
+          "logSha256": "155a1d76b589ee28be5aaeffec985c85bb1dfc1c1a3583f37b897bb1cbb5c396"
+        },
+        "forward-raster-bake-brdf": {
+          "frames": [
+            2,
+            6,
+            10
+          ],
+          "generations": [
+            0,
+            1,
+            2
+          ],
+          "centerRgb": [
+            [
+              189,
+              146,
+              102
+            ],
+            [
+              119,
+              81,
+              56
+            ],
+            [
+              119,
+              81,
+              56
+            ]
+          ],
+          "captureSha256": {
+            "forward-raster-bake-brdf.frame-0002.png": "c643f0367e69fb988e192763b80d2284765ecbcce194e68fa1dff222a94385e7",
+            "forward-raster-bake-brdf.frame-0006.png": "d37a08634432db37a521770aded6c46d8a0afca21d7af18f53485b6a6c7a4c2d",
+            "forward-raster-bake-brdf.png": "d37a08634432db37a521770aded6c46d8a0afca21d7af18f53485b6a6c7a4c2d"
+          },
+          "sequenceSha256": "6e4c59ab1b46d6c4c5f04b1d327ff82fa6e87a138b722e3678cee509cb02fadf",
+          "logSha256": "58f754cdb3f6316e8351e15ae9affd8a211844a5cab4798bba71dc77332deb7e"
+        }
+      },
+      "excludedHarnessAttempt": {
+        "captureCount": 4,
+        "processCount": 1,
+        "reason": "The initial HDR fixture edited the procedural sky branch.",
+        "captureSha256": {
+          "deferred-raster-bake-successive.frame-0002.png": "82df89b2f74ead3b97a6ea0570a42860be6af9400382c324bb374c6169b6a80e",
+          "deferred-raster-bake-successive.frame-0006.png": "82df89b2f74ead3b97a6ea0570a42860be6af9400382c324bb374c6169b6a80e",
+          "deferred-raster-bake-successive.frame-0010.png": "82df89b2f74ead3b97a6ea0570a42860be6af9400382c324bb374c6169b6a80e",
+          "deferred-raster-bake-successive.png": "82df89b2f74ead3b97a6ea0570a42860be6af9400382c324bb374c6169b6a80e"
+        },
+        "logSha256": "3353045a2845d8104e42799121f168effc7f5071d19d30a7b9d3f620430e1648"
+      },
+      "runnerLogSha256": "582cff5b467235be34205fed7ae652d225c999539e32619be03764d950de93ed",
+      "harnessRevision": "946e15d82629718986f995384168dc898d6a60dc",
+      "harnessSourceSha256": "61d48ba5033adb7b2feaaca00cab61205ebc28e02cecadeb33f95f05af37f50c"
+    },
+    "verified-remaining": {
+      "sections": [
+        "successive-bakes",
+        "include-shadowing",
+        "switch",
+        "hierarchy"
+      ],
+      "captureCount": 46,
+      "processCount": 14,
+      "sequences": {
+        "forward-raster-packaged": {
+          "frames": [
+            2,
+            4
+          ],
+          "generations": [
+            0,
+            0
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "forward-raster-packaged.frame-0002.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "forward-raster-packaged.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf"
+          },
+          "sequenceSha256": "fb04eac48e115ab81b91a7e4414309bfa28b32be2bd378126cb45f7e06e53081",
+          "logSha256": "2cfb8ebc9413f372c05fca4d871dc126bc626ad66f7fcc6ca0fc48463e069c49"
+        },
+        "deferred-raster-switch": {
+          "frames": [
+            2,
+            4,
+            6,
+            8,
+            10,
+            12
+          ],
+          "generations": [
+            0,
+            1,
+            1,
+            2,
+            2,
+            2
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-switch.frame-0002.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "deferred-raster-switch.frame-0004.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "deferred-raster-switch.frame-0006.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "deferred-raster-switch.frame-0008.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "deferred-raster-switch.frame-0010.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "deferred-raster-switch.png": "f990db7ae2c31c30d8cd70483c2110f41d6454abc83da3330ce531f413eec775"
+          },
+          "sequenceSha256": "852636383d33652a0448b987ee0f5027bb091af36b7be6dfbfda31ce44c2ca14",
+          "logSha256": "703a093150eac557367128405172c86ec6da6dbfb37712765f27ce1ee715f887"
+        },
+        "deferred-raster-hierarchy": {
+          "frames": [
+            2,
+            6,
+            10,
+            14
+          ],
+          "generations": [
+            0,
+            1,
+            1,
+            1
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              0,
+              0,
+              0
+            ],
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              0,
+              0,
+              0
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-hierarchy.frame-0002.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "deferred-raster-hierarchy.frame-0006.png": "ffacd78018987fd0d7e97f99ccff1d0ad5242bfc1896fb10008ff3dff6e27bec",
+            "deferred-raster-hierarchy.frame-0010.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "deferred-raster-hierarchy.png": "ffacd78018987fd0d7e97f99ccff1d0ad5242bfc1896fb10008ff3dff6e27bec"
+          },
+          "sequenceSha256": "319b08d63de669a01a717fcec396e98f1fbfa3281190c93ebd4e790a43942675",
+          "logSha256": "48f0f882085fcdb8fb945357ac246d892872f54e240ae95a221e8dc4d47acd20"
+        },
+        "forward-raster-hierarchy": {
+          "frames": [
+            2,
+            6,
+            10,
+            14
+          ],
+          "generations": [
+            0,
+            1,
+            1,
+            1
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              0,
+              0,
+              0
+            ],
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              0,
+              0,
+              0
+            ]
+          ],
+          "captureSha256": {
+            "forward-raster-hierarchy.frame-0002.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "forward-raster-hierarchy.frame-0006.png": "ffacd78018987fd0d7e97f99ccff1d0ad5242bfc1896fb10008ff3dff6e27bec",
+            "forward-raster-hierarchy.frame-0010.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "forward-raster-hierarchy.png": "ffacd78018987fd0d7e97f99ccff1d0ad5242bfc1896fb10008ff3dff6e27bec"
+          },
+          "sequenceSha256": "319b08d63de669a01a717fcec396e98f1fbfa3281190c93ebd4e790a43942675",
+          "logSha256": "5f36627aa71a1db47b0e93de95f74835ae25a159468b37ceca3d71536c6b7ddd"
+        },
+        "deferred-raster-gpu-tlas": {
+          "frames": [
+            2,
+            6,
+            10,
+            14
+          ],
+          "generations": [
+            0,
+            1,
+            1,
+            1
+          ],
+          "centerRgb": [
+            [
+              0,
+              0,
+              0
+            ],
+            [
+              232,
+              232,
+              232
+            ],
+            [
+              0,
+              0,
+              0
+            ],
+            [
+              232,
+              232,
+              232
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-gpu-tlas.frame-0002.png": "bf46b4e544488af01cd87012e958c3f056c81c470e3a996ec88316bdef994381",
+            "deferred-raster-gpu-tlas.frame-0006.png": "81f15f6a34eb8b921a6aef87ff86a25a3fc61e1a3c39794c6c0aab2d7f5f2ea8",
+            "deferred-raster-gpu-tlas.frame-0010.png": "bf46b4e544488af01cd87012e958c3f056c81c470e3a996ec88316bdef994381",
+            "deferred-raster-gpu-tlas.png": "81f15f6a34eb8b921a6aef87ff86a25a3fc61e1a3c39794c6c0aab2d7f5f2ea8"
+          },
+          "sequenceSha256": "319b08d63de669a01a717fcec396e98f1fbfa3281190c93ebd4e790a43942675",
+          "logSha256": "80057eaf9648d4102cf6157ba6b3fcde1739fba90f7d91d118f67bc64f51d437"
+        },
+        "forward-raster-gpu-tlas": {
+          "frames": [
+            2,
+            6,
+            10,
+            14
+          ],
+          "generations": [
+            0,
+            1,
+            1,
+            1
+          ],
+          "centerRgb": [
+            [
+              0,
+              0,
+              0
+            ],
+            [
+              232,
+              232,
+              232
+            ],
+            [
+              0,
+              0,
+              0
+            ],
+            [
+              232,
+              232,
+              232
+            ]
+          ],
+          "captureSha256": {
+            "forward-raster-gpu-tlas.frame-0002.png": "bf46b4e544488af01cd87012e958c3f056c81c470e3a996ec88316bdef994381",
+            "forward-raster-gpu-tlas.frame-0006.png": "81f15f6a34eb8b921a6aef87ff86a25a3fc61e1a3c39794c6c0aab2d7f5f2ea8",
+            "forward-raster-gpu-tlas.frame-0010.png": "bf46b4e544488af01cd87012e958c3f056c81c470e3a996ec88316bdef994381",
+            "forward-raster-gpu-tlas.png": "81f15f6a34eb8b921a6aef87ff86a25a3fc61e1a3c39794c6c0aab2d7f5f2ea8"
+          },
+          "sequenceSha256": "319b08d63de669a01a717fcec396e98f1fbfa3281190c93ebd4e790a43942675",
+          "logSha256": "a7614f5fb887acebd0c1fb5f70d7390c74e4e78fc7dcd294d4e9494ab52fd231"
+        },
+        "deferred-raster-gpu-metadata-cpu-reference": {
+          "frames": [
+            2,
+            8
+          ],
+          "generations": [
+            0,
+            0
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-gpu-metadata-cpu-reference.frame-0002.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "deferred-raster-gpu-metadata-cpu-reference.png": "8d804189a77e497279bc4946d065a3856836e71d77374d29754b23f221d96e29"
+          },
+          "sequenceSha256": "cd33330425c47aa8995dc68b1d2988d59ee0b9d784bb431db9d979dd713f59a1",
+          "logSha256": "7ae7ff57e01c73afd08a8d0bb36c136501fcf0e1dc036655731a4821d4665caa"
+        },
+        "forward-raster-gpu-metadata-cpu-reference": {
+          "frames": [
+            2,
+            8
+          ],
+          "generations": [
+            0,
+            0
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "forward-raster-gpu-metadata-cpu-reference.frame-0002.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "forward-raster-gpu-metadata-cpu-reference.png": "8d804189a77e497279bc4946d065a3856836e71d77374d29754b23f221d96e29"
+          },
+          "sequenceSha256": "cd33330425c47aa8995dc68b1d2988d59ee0b9d784bb431db9d979dd713f59a1",
+          "logSha256": "b53828b638e82704947020e1a7ba63e47fba2f63717af7b23b1d2615e57f5ee6"
+        },
+        "deferred-raster-gpu-metadata-recovery": {
+          "frames": [
+            2,
+            8
+          ],
+          "generations": [
+            0,
+            0
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-gpu-metadata-recovery.frame-0002.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "deferred-raster-gpu-metadata-recovery.png": "8d804189a77e497279bc4946d065a3856836e71d77374d29754b23f221d96e29"
+          },
+          "sequenceSha256": "cd33330425c47aa8995dc68b1d2988d59ee0b9d784bb431db9d979dd713f59a1",
+          "logSha256": "95a4f5af99b900253ecbfdf52432d54f497f49d9debafacc2c11d8d37b931911"
+        },
+        "forward-raster-gpu-metadata-recovery": {
+          "frames": [
+            2,
+            8
+          ],
+          "generations": [
+            0,
+            0
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "forward-raster-gpu-metadata-recovery.frame-0002.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "forward-raster-gpu-metadata-recovery.png": "8d804189a77e497279bc4946d065a3856836e71d77374d29754b23f221d96e29"
+          },
+          "sequenceSha256": "cd33330425c47aa8995dc68b1d2988d59ee0b9d784bb431db9d979dd713f59a1",
+          "logSha256": "dc05bff766ca07fb9e5a40e59867349bae4b9b1bde89cd65a5f0110a78552593"
+        },
+        "deferred-raster-include-shadowing": {
+          "frames": [
+            2,
+            5,
+            9
+          ],
+          "generations": [
+            0,
+            1,
+            2
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              115,
+              165,
+              115
+            ],
+            [
+              115,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-include-shadowing.frame-0002.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "deferred-raster-include-shadowing.frame-0005.png": "6f07f971f1e7e8277980fb0c6b4d142bc0ac9de93d4227c0f03ece529a6a9cbf",
+            "deferred-raster-include-shadowing.png": "6f07f971f1e7e8277980fb0c6b4d142bc0ac9de93d4227c0f03ece529a6a9cbf"
+          },
+          "sequenceSha256": "ea11b0fe92570e73d7075f263258275b2bf143c45958bdf91049eaae19cf1a17",
+          "logSha256": "43bb309dc067866a56b7ccb2cc0c4f56d8a5c3da648317dd8091b19860b3af74"
+        },
+        "forward-raster-include-shadowing": {
+          "frames": [
+            2,
+            5,
+            9
+          ],
+          "generations": [
+            0,
+            1,
+            2
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              115,
+              165,
+              115
+            ],
+            [
+              115,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "forward-raster-include-shadowing.frame-0002.png": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+            "forward-raster-include-shadowing.frame-0005.png": "6f07f971f1e7e8277980fb0c6b4d142bc0ac9de93d4227c0f03ece529a6a9cbf",
+            "forward-raster-include-shadowing.png": "6f07f971f1e7e8277980fb0c6b4d142bc0ac9de93d4227c0f03ece529a6a9cbf"
+          },
+          "sequenceSha256": "ea11b0fe92570e73d7075f263258275b2bf143c45958bdf91049eaae19cf1a17",
+          "logSha256": "3cb24eb5f10129ec699e7eeb7f9ce9fc1d30bf6875dd8589ed03b5f65e43fe2a"
+        },
+        "deferred-raster-bake-successive": {
+          "frames": [
+            2,
+            6,
+            10,
+            14
+          ],
+          "generations": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "deferred-raster-bake-successive.frame-0002.png": "82df89b2f74ead3b97a6ea0570a42860be6af9400382c324bb374c6169b6a80e",
+            "deferred-raster-bake-successive.frame-0006.png": "4de25320919829f5dc16201e36ed65d39d74bd325fa614791bc8fdfadd08c58f",
+            "deferred-raster-bake-successive.frame-0010.png": "b7706e2022bbb07f7621529593cf2e31e5193154b9799d29f6af2eec2184a01d",
+            "deferred-raster-bake-successive.png": "b7706e2022bbb07f7621529593cf2e31e5193154b9799d29f6af2eec2184a01d"
+          },
+          "sequenceSha256": "e6aaa2423015e0e451cd39c9795d776775abf2c2bb8aafc2ab9eef8e1d613013",
+          "logSha256": "19caf183f6f3ca27bbbdfa8b90699c8770e6280273eeb15861456f3f7de40d48"
+        },
+        "forward-raster-bake-successive": {
+          "frames": [
+            2,
+            6,
+            10,
+            14
+          ],
+          "generations": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "centerRgb": [
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ],
+            [
+              206,
+              165,
+              115
+            ]
+          ],
+          "captureSha256": {
+            "forward-raster-bake-successive.frame-0002.png": "82df89b2f74ead3b97a6ea0570a42860be6af9400382c324bb374c6169b6a80e",
+            "forward-raster-bake-successive.frame-0006.png": "4de25320919829f5dc16201e36ed65d39d74bd325fa614791bc8fdfadd08c58f",
+            "forward-raster-bake-successive.frame-0010.png": "b7706e2022bbb07f7621529593cf2e31e5193154b9799d29f6af2eec2184a01d",
+            "forward-raster-bake-successive.png": "b7706e2022bbb07f7621529593cf2e31e5193154b9799d29f6af2eec2184a01d"
+          },
+          "sequenceSha256": "e6aaa2423015e0e451cd39c9795d776775abf2c2bb8aafc2ab9eef8e1d613013",
+          "logSha256": "8efac241472e1cc6b15b8ed899edfe1358aa4de02b4c6b19b6a13b5d7462e547"
+        }
+      },
+      "simulatedPackageNoReload": true,
+      "runnerLogSha256": "147a3eae61301b9f37cca62696c3f87d07793937f04ab5bbdc9d2503f4e888a6",
+      "harnessRevision": "2923a327061318ed700665a3e923aea52acf0652",
+      "harnessSourceSha256": "c311cb277ca5a9927a7cddd46789d24a9315841e1e30f785042ade7186d65edc"
+    }
+  },
+  "includeShadowing": {
+    "captureCount": 6,
+    "processCount": 2,
+    "captures": {
+      "deferred-raster": [
+        {
+          "frame": 2,
+          "file": "deferred-raster-include-shadowing.frame-0002.png",
+          "rgb": [
+            206,
+            165,
+            115
+          ],
+          "pngSha256": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+          "telemetrySha256": "a18cbd1abd2b867d3c6821f2aa59e9d06664af1b5505f78f349de57854203fd9",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 0,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 123,
+              "pipelineCaches": 81,
+              "pipelineLayouts": 26,
+              "pipelines": 81,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "",
+            "vmaAllocations": 188,
+            "vmaBytes": 1419945312
+          }
+        },
+        {
+          "frame": 5,
+          "file": "deferred-raster-include-shadowing.frame-0005.png",
+          "rgb": [
+            115,
+            165,
+            115
+          ],
+          "pngSha256": "6f07f971f1e7e8277980fb0c6b4d142bc0ac9de93d4227c0f03ece529a6a9cbf",
+          "telemetrySha256": "3678bc4898d460b22add23b8d9de62baad7af80b03858cfb317d3fdc6a575342",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 1,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 123,
+              "pipelineCaches": 81,
+              "pipelineLayouts": 26,
+              "pipelines": 81,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "Shaders reloaded (2 stages compiled, 0 managed compute pipelines replaced)",
+            "vmaAllocations": 198,
+            "vmaBytes": 1420258976
+          }
+        },
+        {
+          "frame": 9,
+          "file": "deferred-raster-include-shadowing.png",
+          "rgb": [
+            115,
+            165,
+            115
+          ],
+          "pngSha256": "6f07f971f1e7e8277980fb0c6b4d142bc0ac9de93d4227c0f03ece529a6a9cbf",
+          "telemetrySha256": "85dc3fc62477360fbca258dfe96fc1c97793c2619c3a247042c172f60519b052",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 2,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 123,
+              "pipelineCaches": 81,
+              "pipelineLayouts": 26,
+              "pipelines": 81,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "Shaders reloaded (2 stages compiled, 0 managed compute pipelines replaced)",
+            "vmaAllocations": 198,
+            "vmaBytes": 1420258976
+          }
+        }
+      ],
+      "forward-raster": [
+        {
+          "frame": 2,
+          "file": "forward-raster-include-shadowing.frame-0002.png",
+          "rgb": [
+            206,
+            165,
+            115
+          ],
+          "pngSha256": "3308ff4b59a6a9362f1b424f1a379a1a8133723ec74ff153b4f439b0fb6fe8cf",
+          "telemetrySha256": "ddf39bc75eb5669e9bd5d4fdce3b66023ec3a013163c024ce07a2fa544c89820",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 0,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 123,
+              "pipelineCaches": 81,
+              "pipelineLayouts": 26,
+              "pipelines": 81,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "",
+            "vmaAllocations": 188,
+            "vmaBytes": 1419945312
+          }
+        },
+        {
+          "frame": 5,
+          "file": "forward-raster-include-shadowing.frame-0005.png",
+          "rgb": [
+            115,
+            165,
+            115
+          ],
+          "pngSha256": "6f07f971f1e7e8277980fb0c6b4d142bc0ac9de93d4227c0f03ece529a6a9cbf",
+          "telemetrySha256": "a80a1750605c861aa5c7ead073b883199b8bc9b5ccdf8dfebd00c99847c9f21a",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 1,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 123,
+              "pipelineCaches": 81,
+              "pipelineLayouts": 26,
+              "pipelines": 81,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "Shaders reloaded (2 stages compiled, 0 managed compute pipelines replaced)",
+            "vmaAllocations": 198,
+            "vmaBytes": 1420258976
+          }
+        },
+        {
+          "frame": 9,
+          "file": "forward-raster-include-shadowing.png",
+          "rgb": [
+            115,
+            165,
+            115
+          ],
+          "pngSha256": "6f07f971f1e7e8277980fb0c6b4d142bc0ac9de93d4227c0f03ece529a6a9cbf",
+          "telemetrySha256": "2504810bea409651aa76e780d8044566364bd146995cd1ce948f2163b111344a",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 2,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 123,
+              "pipelineCaches": 81,
+              "pipelineLayouts": 26,
+              "pipelines": 81,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "Shaders reloaded (2 stages compiled, 0 managed compute pipelines replaced)",
+            "vmaAllocations": 198,
+            "vmaBytes": 1420258976
+          }
+        }
+      ]
+    },
+    "logSha256": {
+      "deferred-raster-include-shadowing.log": "43bb309dc067866a56b7ccb2cc0c4f56d8a5c3da648317dd8091b19860b3af74",
+      "forward-raster-include-shadowing.log": "3cb24eb5f10129ec699e7eeb7f9ce9fc1d30bf6875dd8589ed03b5f65e43fe2a"
+    },
+    "seededMetadata": {
+      "post_process.vert.spv.d": {
+        "dependencySha256": "aef870eed2c8d0e4e479dbc8c1d4c5580a81777eb7c8dd8ef265d18b7be8c234",
+        "lookupsSha256": "604eaf6f1da32af7e672505c6afd03649e581fc1684e1e06d27aea0f9c62bbd7"
+      },
+      "post_process.frag.spv.d": {
+        "dependencySha256": "ac2a6f1501b33409a756c3f6605f0f2bfe0e62e588b6cb88c752b836fe5027dd",
+        "lookupsSha256": "604eaf6f1da32af7e672505c6afd03649e581fc1684e1e06d27aea0f9c62bbd7"
+      }
+    }
+  },
+  "successiveBakes": {
+    "captureCount": 8,
+    "processCount": 2,
+    "captures": {
+      "deferred-raster": [
+        {
+          "frame": 2,
+          "file": "deferred-raster-bake-successive.frame-0002.png",
+          "rgb": [
+            206,
+            165,
+            115
+          ],
+          "pngSha256": "82df89b2f74ead3b97a6ea0570a42860be6af9400382c324bb374c6169b6a80e",
+          "telemetrySha256": "ea36443b0976bbe1370b642671644c20ab1e597ddbaac4f8da67ccda308c59a5",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 0,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 123,
+              "pipelineCaches": 81,
+              "pipelineLayouts": 26,
+              "pipelines": 81,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "",
+            "vmaAllocations": 188,
+            "vmaBytes": 1419945312
+          }
+        },
+        {
+          "frame": 6,
+          "file": "deferred-raster-bake-successive.frame-0006.png",
+          "rgb": [
+            165,
+            165,
+            115
+          ],
+          "pngSha256": "4de25320919829f5dc16201e36ed65d39d74bd325fa614791bc8fdfadd08c58f",
+          "telemetrySha256": "6c71006c73ccdd29f46da76a732700f6a90bbc2b844e673aedbdfad3b8b7dbbe",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 1,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 123,
+              "pipelineCaches": 81,
+              "pipelineLayouts": 26,
+              "pipelines": 81,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "Shaders reloaded (1 stages compiled, 1 managed compute pipeline replaced)",
+            "vmaAllocations": 197,
+            "vmaBytes": 1419951776
+          }
+        },
+        {
+          "frame": 10,
+          "file": "deferred-raster-bake-successive.frame-0010.png",
+          "rgb": [
+            71,
+            165,
+            115
+          ],
+          "pngSha256": "b7706e2022bbb07f7621529593cf2e31e5193154b9799d29f6af2eec2184a01d",
+          "telemetrySha256": "0f4d776e50054fefa43cc8117f2f650d190fe59686f53055152cd7e97329a634",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 2,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 123,
+              "pipelineCaches": 81,
+              "pipelineLayouts": 26,
+              "pipelines": 81,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "Shaders reloaded (1 stages compiled, 1 managed compute pipeline replaced)",
+            "vmaAllocations": 197,
+            "vmaBytes": 1419951776
+          }
+        },
+        {
+          "frame": 14,
+          "file": "deferred-raster-bake-successive.png",
+          "rgb": [
+            71,
+            165,
+            115
+          ],
+          "pngSha256": "b7706e2022bbb07f7621529593cf2e31e5193154b9799d29f6af2eec2184a01d",
+          "telemetrySha256": "edadf9df1d9803d66b59c7f1efb790ccc48032bf3a491fd08565ae27c3e386a1",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 3,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 123,
+              "pipelineCaches": 81,
+              "pipelineLayouts": 26,
+              "pipelines": 81,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "Shaders reloaded (1 stages compiled, 0 managed compute pipelines replaced)",
+            "vmaAllocations": 197,
+            "vmaBytes": 1419951776
+          }
+        }
+      ],
+      "forward-raster": [
+        {
+          "frame": 2,
+          "file": "forward-raster-bake-successive.frame-0002.png",
+          "rgb": [
+            206,
+            165,
+            115
+          ],
+          "pngSha256": "82df89b2f74ead3b97a6ea0570a42860be6af9400382c324bb374c6169b6a80e",
+          "telemetrySha256": "4c32d216782e02b4ae6c6d68ffe563758c79e4563d7425a984ae7a790090a1cd",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 0,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 123,
+              "pipelineCaches": 81,
+              "pipelineLayouts": 26,
+              "pipelines": 81,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "",
+            "vmaAllocations": 188,
+            "vmaBytes": 1419945312
+          }
+        },
+        {
+          "frame": 6,
+          "file": "forward-raster-bake-successive.frame-0006.png",
+          "rgb": [
+            165,
+            165,
+            115
+          ],
+          "pngSha256": "4de25320919829f5dc16201e36ed65d39d74bd325fa614791bc8fdfadd08c58f",
+          "telemetrySha256": "0b740e255bc217e429fbe60e51ee1ea4421cbb76739b73d9cb9b65c3e66f1d45",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 1,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 123,
+              "pipelineCaches": 81,
+              "pipelineLayouts": 26,
+              "pipelines": 81,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "Shaders reloaded (1 stages compiled, 1 managed compute pipeline replaced)",
+            "vmaAllocations": 197,
+            "vmaBytes": 1419951776
+          }
+        },
+        {
+          "frame": 10,
+          "file": "forward-raster-bake-successive.frame-0010.png",
+          "rgb": [
+            71,
+            165,
+            115
+          ],
+          "pngSha256": "b7706e2022bbb07f7621529593cf2e31e5193154b9799d29f6af2eec2184a01d",
+          "telemetrySha256": "f048180f0cd999f832797d2a10efce96175fd011e994bb465997fccfb0ae588d",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 2,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 123,
+              "pipelineCaches": 81,
+              "pipelineLayouts": 26,
+              "pipelines": 81,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "Shaders reloaded (1 stages compiled, 1 managed compute pipeline replaced)",
+            "vmaAllocations": 197,
+            "vmaBytes": 1419951776
+          }
+        },
+        {
+          "frame": 14,
+          "file": "forward-raster-bake-successive.png",
+          "rgb": [
+            71,
+            165,
+            115
+          ],
+          "pngSha256": "b7706e2022bbb07f7621529593cf2e31e5193154b9799d29f6af2eec2184a01d",
+          "telemetrySha256": "2a31717bd5038ad5636e3c6057ad727fe1868e3a36ae8b3e86ec24c32ed1bdfa",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 3,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 123,
+              "pipelineCaches": 81,
+              "pipelineLayouts": 26,
+              "pipelines": 81,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "Shaders reloaded (1 stages compiled, 0 managed compute pipelines replaced)",
+            "vmaAllocations": 197,
+            "vmaBytes": 1419951776
+          }
+        }
+      ]
+    }
+  },
+  "lazyAuxiliary": {
+    "captureCount": 8,
+    "processCount": 3,
+    "captures": {
+      "reference": [
+        {
+          "frame": 2,
+          "file": "reference.frame-0002.png",
+          "rgb": [
+            102,
+            142,
+            200
+          ],
+          "pngSha256": "637535465479508a94cc09638ef60b1d3616a46bd5914e9a0d7af1e7ccc379a6",
+          "telemetrySha256": "74bd062bbb31fba41984a8d7e0c64048b0caa7f4d6e1f476ba4a1f941f9343d6",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 0,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 129,
+              "pipelineCaches": 81,
+              "pipelineLayouts": 26,
+              "pipelines": 81,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "",
+            "vmaAllocations": 185,
+            "vmaBytes": 1423870224
+          }
+        },
+        {
+          "frame": 4,
+          "file": "reference.png",
+          "rgb": [
+            76,
+            82,
+            103
+          ],
+          "pngSha256": "17c8dc61f30de2afb551bb51ba5c83aa3e52543ce9689a9197a4bdfc4bb8500e",
+          "telemetrySha256": "be8e335f0c43f14a55cc6f72ff45845a61915b19405e0c4429d60351f8f9aecf",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 1,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 129,
+              "pipelineCaches": 81,
+              "pipelineLayouts": 26,
+              "pipelines": 81,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "Shaders reloaded (2 stages compiled, 0 managed compute pipelines replaced)",
+            "vmaAllocations": 194,
+            "vmaBytes": 1423876688
+          }
+        }
+      ],
+      "material": [
+        {
+          "frame": 2,
+          "file": "material.frame-0002.png",
+          "rgb": [
+            180,
+            178,
+            174
+          ],
+          "pngSha256": "55993ede918837416a74603bdea9c596ab868b1d979ad1e9c262bf75bb08db74",
+          "telemetrySha256": "2759def66fcacc807c9fa028168aaf84b7bb45589578354c0111e1893e58fa84",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 0,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 123,
+              "pipelineCaches": 78,
+              "pipelineLayouts": 25,
+              "pipelines": 78,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "",
+            "vmaAllocations": 179,
+            "vmaBytes": 1419938064
+          }
+        },
+        {
+          "frame": 4,
+          "file": "material.frame-0004.png",
+          "rgb": [
+            180,
+            178,
+            174
+          ],
+          "pngSha256": "55993ede918837416a74603bdea9c596ab868b1d979ad1e9c262bf75bb08db74",
+          "telemetrySha256": "da54043d293f6bb93c83d5a6fd5e6f6b183a0808b160bdae1e84f7816b5089bd",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 1,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 123,
+              "pipelineCaches": 78,
+              "pipelineLayouts": 25,
+              "pipelines": 78,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "Shaders reloaded (2 stages compiled, 0 managed compute pipelines replaced)",
+            "vmaAllocations": 188,
+            "vmaBytes": 1419944528
+          }
+        },
+        {
+          "frame": 7,
+          "file": "material.png",
+          "rgb": [
+            76,
+            82,
+            103
+          ],
+          "pngSha256": "17c8dc61f30de2afb551bb51ba5c83aa3e52543ce9689a9197a4bdfc4bb8500e",
+          "telemetrySha256": "bb26cf116f1fde035a4343ed2defa6a964499279d178fd6c322a0b4cc9808657",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 1,
+            "ownedObjects": {
+              "descriptorPools": 16,
+              "descriptorSetLayouts": 22,
+              "imageViews": 129,
+              "pipelineCaches": 81,
+              "pipelineLayouts": 26,
+              "pipelines": 81,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "Shaders reloaded (2 stages compiled, 0 managed compute pipelines replaced)",
+            "vmaAllocations": 195,
+            "vmaBytes": 1424183888
+          },
+          "maximumErrorFromReloadedReference": 0
+        }
+      ],
+      "merge": [
+        {
+          "frame": 2,
+          "file": "merge.frame-0002.png",
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "pngSha256": "e5bdf529dbe4356515542e5a3e31bdd536d96e865e0c0d265ed449da5d794f33",
+          "telemetrySha256": "9125696a49d5ba9e71329ab63d189ccb0d0e430b58703ddaf5dc14db2405e0a4",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 0,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 123,
+              "pipelineCaches": 78,
+              "pipelineLayouts": 25,
+              "pipelines": 78,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "",
+            "vmaAllocations": 179,
+            "vmaBytes": 1419938064
+          }
+        },
+        {
+          "frame": 4,
+          "file": "merge.frame-0004.png",
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "pngSha256": "e5bdf529dbe4356515542e5a3e31bdd536d96e865e0c0d265ed449da5d794f33",
+          "telemetrySha256": "0a0bdbc9152e2b1779804a9f915980d0ca4b71c672d96958e461f72ded6e5598",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 1,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 123,
+              "pipelineCaches": 78,
+              "pipelineLayouts": 25,
+              "pipelines": 78,
+              "samplers": 12,
+              "shaderModules": 0
+            },
+            "status": "Shaders reloaded (2 stages compiled, 0 managed compute pipelines replaced)",
+            "vmaAllocations": 188,
+            "vmaBytes": 1419944528
+          }
+        },
+        {
+          "frame": 7,
+          "file": "merge.png",
+          "rgb": [
+            76,
+            82,
+            103
+          ],
+          "pngSha256": "89d19783fbd2975312f1b3c2c1eebfe90ac9035160a026e8d22949aa4124ada3",
+          "telemetrySha256": "209f1a8b0dfa920f6ab20dd16d3e854c14584bbc821de0b1120713cffe429adc",
+          "metadataSha256": "414b1028ce94add7e7a1cafc6b2b10f3ff8e38b8cf390f55c1135c30aee7da19",
+          "shaderReload": {
+            "generation": 1,
+            "ownedObjects": {
+              "descriptorPools": 17,
+              "descriptorSetLayouts": 22,
+              "imageViews": 129,
+              "pipelineCaches": 81,
+              "pipelineLayouts": 26,
+              "pipelines": 81,
+              "samplers": 13,
+              "shaderModules": 0
+            },
+            "status": "Shaders reloaded (2 stages compiled, 0 managed compute pipelines replaced)",
+            "vmaAllocations": 200,
+            "vmaBytes": 1424192064
+          },
+          "maximumErrorFromReloadedReference": 0
+        }
+      ]
+    },
+    "logSha256": {
+      "reference.log": "e0da6019ff8a7ebdbdf65fe4d521aa182a450ef79f2a881abf024fe61b637f31",
+      "material.log": "1bc8aa052558730a3a8c91b0a49d7c70373e6ae70f2641aed00a21d090cf4a5a",
+      "merge.log": "7582a8dd695c157c60d64b4b4bc6e89c614313d16dc8f8c66b357e9e493e1c47"
+    },
+    "resultsSha256": "5a9e5496087dd14568dffd268cad8e0822a1f2033d57f92b6a730b8812bc078c"
+  },
+  "packagedWindows": {
+    "archive": "VulkanSceneRenderer-0.0.0-shader-reload-validation-windows-x64.zip",
+    "archiveSha256": "d4bc7e67903640998d44bfd1c04380932e89371b552c8411b681452ccb20c15b",
+    "archiveMembers": 235,
+    "runtimeManifestEntries": 134,
+    "packagedSpirvModules": 116,
+    "reloadCompilerInputsAbsent": true,
+    "buildInfoSha256": "c2e1d7da96b9fc2f4ee764130305ca0d1353b9246fb9fbc76c080cb110c9fa3e",
+    "captureCount": 4,
+    "processCount": 2,
+    "lanes": {
+      "smoke": {
+        "captureCount": 2,
+        "processCount": 1,
+        "pinnedValidation": false,
+        "sdkEnvironmentAbsent": true,
+        "pixelIdentical": true,
+        "unavailableDiagnostic": "Shader reload failed: Shader reload requires a source build with its CMake shader manifest",
+        "artifactSha256": {
+          "smoke/capture-sequence.json": "981e02b14b9676b7933325d449c1001a5f9bb2c4b8c35625e0037c88884d725d",
+          "smoke/renderer.log": "3bf927d3b6f6acd980c84873e5cd7efb2732a1537de43fde0906ad9b6c498052",
+          "smoke/reload.frame-0002.png": "317ee366983e87dd9afc497ff121bfe95687ef1d6229e325671b2ef997dffad4",
+          "smoke/reload.frame-0002.telemetry.json": "f5c9ba799ca76712218712afbb4cbbce43b88f4906d858cdef51f0bf69aec0ea",
+          "smoke/reload.frame-0002.png.capture.json": "c8ca655d804554d8b06aa34fd04dd6be9819ce3182b8407508037cebe333deab",
+          "smoke/reload.png": "317ee366983e87dd9afc497ff121bfe95687ef1d6229e325671b2ef997dffad4",
+          "smoke/reload.telemetry.json": "74a8bd8c20fa689d6c3cc84ab1c7903cbdef42f842fa9738ddf8bc4689f749d0",
+          "smoke/reload.png.capture.json": "c8ca655d804554d8b06aa34fd04dd6be9819ce3182b8407508037cebe333deab"
+        },
+        "receiptSha256": "6388550416db7fc28a7224b28c3defe0c3cd318dfba37676c3fd2928815c1cb7"
+      },
+      "validation": {
+        "captureCount": 2,
+        "processCount": 1,
+        "pinnedValidation": true,
+        "sdkEnvironmentAbsent": true,
+        "pixelIdentical": true,
+        "unavailableDiagnostic": "Shader reload failed: Shader reload requires a source build with its CMake shader manifest",
+        "artifactSha256": {
+          "validation/capture-sequence.json": "981e02b14b9676b7933325d449c1001a5f9bb2c4b8c35625e0037c88884d725d",
+          "validation/vk_layer_settings.txt": "e57290b47fc4fd8a787ab547eda3175a88ad4ab05f3b1036d2a58284a832b43f",
+          "validation/renderer.log": "201a3f220dcc782f5e711fb9aa2f3cc9db5c8ae3560f7502b5c6808aa83953ce",
+          "validation/reload.frame-0002.png": "317ee366983e87dd9afc497ff121bfe95687ef1d6229e325671b2ef997dffad4",
+          "validation/reload.frame-0002.telemetry.json": "9dfe4fa1ba24302dfc10f03b27246f0ddd28b69f8786b4011988ba804be33f1d",
+          "validation/reload.frame-0002.png.capture.json": "c8ca655d804554d8b06aa34fd04dd6be9819ce3182b8407508037cebe333deab",
+          "validation/reload.png": "317ee366983e87dd9afc497ff121bfe95687ef1d6229e325671b2ef997dffad4",
+          "validation/reload.telemetry.json": "d9524ca66b5538308d0bdfebf0c7afe350d0dbeabc4c94567fb6e15227229e22",
+          "validation/reload.png.capture.json": "c8ca655d804554d8b06aa34fd04dd6be9819ce3182b8407508037cebe333deab"
+        },
+        "receiptSha256": "efcf98c3f987a85955511a3c8ab9018b777f88fe2245277133848207359055af"
+      }
+    }
+  }
+}

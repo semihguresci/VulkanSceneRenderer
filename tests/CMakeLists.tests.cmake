@@ -2750,6 +2750,13 @@ target_compile_definitions(runtime_shader_compiler_tests PRIVATE
     CONTAINER_TEST_CMAKE="${CMAKE_COMMAND}")
 set_tests_properties(runtime_shader_compiler_tests PROPERTIES LABELS "renderer;shader-reload" TIMEOUT 30)
 
+if(Python3_Interpreter_FOUND AND SLANGC_EXECUTABLE)
+    add_test(NAME runtime_shader_include_lookup_tests
+        COMMAND "${Python3_EXECUTABLE}" "${TEST_VALIDATION_DIR}/runtime_shader_include_lookup_tests.py"
+            --slangc "${SLANGC_EXECUTABLE}" --cmake "${CMAKE_COMMAND}")
+    set_tests_properties(runtime_shader_include_lookup_tests PROPERTIES LABELS "renderer;shader-reload" TIMEOUT 30)
+endif()
+
 if(WIN32)
     find_program(CONTAINER_PACKAGE_PWSH NAMES pwsh)
     if(CONTAINER_PACKAGE_PWSH)
