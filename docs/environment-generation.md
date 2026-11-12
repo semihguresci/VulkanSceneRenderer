@@ -3,9 +3,8 @@
 `EnvironmentManager` owns the unfiltered radiance cubemap, diffuse irradiance,
 specular mip chain, BRDF integration LUT and GTAO resources. The radiance view
 supplies the reference path tracer without sampling its specular approximation.
-The currently published application loads its default HDR through the same API.
-Viewport controls, presentation uniforms, solar scene lighting and the full
-reload controller remain separate publication dependencies.
+The renderer uses the same loading API for its default HDR, `--environment`,
+and live file selection in **Scene Controls → Environment**.
 
 ## Loading and publication
 
@@ -29,6 +28,16 @@ Encoded and decoded data have finite budgets; OpenEXR dimensions, channels and
 data-window arithmetic are checked before image allocation. Components must be
 finite and fit the half-float cubemap. Values above one are preserved. These
 budgets do not bound private codec scratch or driver allocations.
+
+The panorama sampler wraps longitude and clamps latitude. Linear filtering
+blends the first and last columns across the seam and keeps each pole within
+its own edge row. [Vulkan sampler address modes](https://docs.vulkan.org/spec/latest/chapters/samplers.html#VkSamplerAddressMode)
+
+The Windows Vulkan run covered startup and repeated live HDR and EXR replacement,
+malformed input, resize, yaw, background controls, and temporal and DDGI history
+in both raster paths. The seam captures matched the periodic sampling oracle
+within one 8-bit display value. Synchronization validation was enabled for all
+106 captures. [Windows Vulkan results](../tests/visual-regression/hdr-environment/windows-nvidia/hdr-environment-results.json)
 
 `TextureImageData` supplies the CPU Radiance decoder and the complete existing
 typed PNG/DDS/KTX/WebP API. Its optional codecs and notices are configured in
@@ -76,7 +85,9 @@ validation. CPU decoder tests cover exact precision, authored mip data, native
 blocks, optional codecs and invalid inputs; their disabled-codec profile records
 the two optional KTX skips separately.
 
-The environment publication gate passes 234 cases in 11 selected executables
+## Earlier publication profiles
+
+The environment publication gate passed 234 cases in 11 selected executables
 (seven Vulkan), including 26 decoder cases and eight production-owner cases.
 The codec-disabled CPU profile separately passes 23 cases with two expected KTX
 skips. All 96 SPIR-V modules validate; only the equirectangular generator changes
@@ -89,6 +100,5 @@ active bloom and original ACCA raster comparisons also match in both techniques.
 The full local editor separately passes 690 cases in 20 executables (ten Vulkan),
 50 sky/HDR transition captures in 12 clean process logs, and one original ACCA
 path-traced replay at 128 samples with zero diagnostics. Its 105 engine shaders
-are unchanged. The original IFCX is read in place. Viewport, scene-lighting and
-reload-controller publication remains pending. Frozen evidence is recorded in
+were unchanged. The original IFCX was read in place. Frozen evidence is recorded in
 `out/feature-parity/environment-publication-acceptance/results.json`.

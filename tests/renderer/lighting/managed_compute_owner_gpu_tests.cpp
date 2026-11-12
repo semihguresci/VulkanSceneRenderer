@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <numbers>
 #include <stb_image_write.h>
 
 namespace {
@@ -187,22 +188,25 @@ class ManagedComputeOwnerGpu : public ::testing::Test {
   CubeSamples sampleEnvironment(const EnvironmentManager& environment) {
     return sampleCube(environment, environment.radianceView(), cubeAxes());
   }
-  std::filesystem::path writeHdr() {
-    const auto path = scratch / std::filesystem::path(u8"environment-\u00e7.hdr");
+  std::filesystem::path writeHdr(const std::filesystem::path& name, int width, int height,
+                                 const float* pixels) {
+    const auto path = scratch / name;
     std::vector<char> encoded;
     const auto append = [](void* context, void* data, int count) {
       auto& bytes = *static_cast<std::vector<char>*>(context);
       const auto* first = static_cast<const char*>(data);
       bytes.insert(bytes.end(), first, first + count);
     };
-    const std::array<float, 6> pixels{4.0f, 0.5f, 0.25f, 4.0f, 0.5f, 0.25f};
-    EXPECT_NE(stbi_write_hdr_to_func(append, &encoded, 2, 1, 3, pixels.data()), 0);
+    EXPECT_NE(stbi_write_hdr_to_func(append, &encoded, width, height, 3, pixels), 0);
     std::ofstream stream(path, std::ios::binary); stream.write(encoded.data(), encoded.size());
     EXPECT_TRUE(stream);
     return path;
   }
+  std::filesystem::path writeHdr() {
+    const std::array<float, 6> pixels{4.0f, 0.5f, 0.25f, 4.0f, 0.5f, 0.25f};
+    return writeHdr(std::filesystem::path(u8"environment-\u00e7.hdr"), 2, 1, pixels.data());
+  }
   std::filesystem::path writeStripedHdr() {
-    const auto path = scratch / "specular-stripes.hdr";
     // Authored angular period0.703125degrees: sharp reflections should retain
     // alternating bright/dark detail instead of aliasing it into a flat field.
     constexpr int width = 2048, height = 1024;
@@ -213,16 +217,7 @@ class ManagedComputeOwnerGpu : public ::testing::Test {
       pixels[offset + 1] = .5f;
       pixels[offset + 2] = .25f;
     }
-    std::vector<char> encoded;
-    const auto append = [](void* context, void* data, int count) {
-      auto& bytes = *static_cast<std::vector<char>*>(context);
-      const auto* first = static_cast<const char*>(data);
-      bytes.insert(bytes.end(), first, first + count);
-    };
-    EXPECT_NE(stbi_write_hdr_to_func(append, &encoded, width, height, 3, pixels.data()), 0);
-    std::ofstream stream(path, std::ios::binary); stream.write(encoded.data(), encoded.size());
-    EXPECT_TRUE(stream);
-    return path;
+    return writeHdr("specular-stripes.hdr", width, height, pixels.data());
   }
   std::atomic_uint errors{};
   bool started{};
@@ -416,6 +411,41 @@ TEST_F(ManagedComputeOwnerGpu, PlainGradientAndAtmosphereGenerateActualCubeRadia
   float scattering = 0;
   for (const auto& texel : environment.activeAtmosphereLut()) scattering += texel[0]+texel[1]+texel[2];
   EXPECT_GT(scattering, 0.0f);
+}
+
+TEST_F(ManagedComputeOwnerGpu, HdrLongitudeWrapsAndLatitudeClampsInActualCubeRadiance) {
+  EnvironmentManager environment(device, *allocation, *pipelines, *pool);
+  environment.createResources(root);
+  constexpr int width = 8, height = 4;
+  constexpr std::array<float, height> greenByRow{.875f, .5f, .5f, .125f};
+  std::array<float, width * height * 3> pixels{};
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      const auto index = (y * width + x) * 3;
+      pixels[index] = x < width / 2 ? 1.0f : 3.0f;
+      pixels[index + 1] = greenByRow[y];
+      pixels[index + 2] = .25f;
+    }
+  }
+  ASSERT_TRUE(environment.loadHdrEnvironment(writeHdr("seam.hdr", width, height, pixels.data())));
+
+  auto queries = cubeAxes();
+  constexpr float offset = .125f;
+  queries[4] = {-1, 0, offset, 0};
+  queries[5] = {-1, 0, -offset, 0};
+  const auto radiance = sampleCube(environment, environment.radianceView(), queries);
+
+  // +X straddles the interior red transition. At -X both sides must blend
+  // the endpoint columns over the same half-texel interval in longitude.
+  const float redDelta = width * std::atan(offset) / std::numbers::pi_v<float>;
+  EXPECT_NEAR(radiance[0][0], 2.0f, .08f);
+  EXPECT_NEAR(radiance[1][0], 2.0f, .08f);
+  EXPECT_NEAR(radiance[4][0], 2.0f + redDelta, .08f);
+  EXPECT_NEAR(radiance[5][0], 2.0f - redDelta, .08f);
+  EXPECT_NEAR(radiance[2][1], .875f, .005f);
+  EXPECT_NEAR(radiance[3][1], .125f, .005f);
+  for (const auto& pixel : radiance)
+    EXPECT_NEAR(pixel[2], .25f, .005f);
 }
 
 TEST_F(ManagedComputeOwnerGpu, SmoothSpecularReflectionsResolveAuthoredAngularDetailAndRoughnessFiltersIt) {

@@ -198,6 +198,7 @@ class EnvironmentManager {
   uint32_t      prefilteredMipCount_{1};
 
   VkSampler     envSampler_{VK_NULL_HANDLE};
+  VkSampler     equirectSampler_{VK_NULL_HANDLE};
 
   // ---- BRDF LUT compute pipeline ----
   container::gpu::ComputePipeline brdfLutPipeline_{};
