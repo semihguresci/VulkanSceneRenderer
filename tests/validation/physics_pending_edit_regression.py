@@ -1,4 +1,4 @@
-"""Opt-in native same-frame Play and unrelated Detach transform regressions."""
+"""Native pending-edit physics and scene-history transform regressions."""
 import argparse
 import hashlib
 import json
@@ -9,6 +9,8 @@ from physics_auxiliary_regression import cube, matrix
 from physics_scene_diversity_regression import BIM_ROTATION, bim_source_geometry, encode, transform_vertices, translation, write_gltf
 
 CASES = ("pending-play", "pending-detach")
+HISTORY_CASE = "transform-history"
+HISTORY_FRAMES = [2, 4, 6, 8, 10, 12, 14, 16]
 TECHNIQUES = ("deferred-raster", "forward-raster")
 SAMPLE_FRAMES = [1, 2, 7, 8, 9, 10, 11, 20, 24, 30]
 GUID = "pending-edit-unrelated-bim-product"
@@ -41,11 +43,48 @@ def write_unrelated_product(path):
             "color": {"r": 60, "g": 170, "b": 220, "a": 255}, "info": {"Name": "Unrelated detachable product"}}]}), encoding="utf-8")
 
 
+def history_fixture(directory):
+    source = directory / f"{HISTORY_CASE}.gltf"
+    name = "History collider owner"
+    first_parent, second_parent = [-1, 0, 0], [2, 0, .5]
+    rest_local, edited_local = [0, 1, 0], [1.5, 1.25, 0]
+    geometry = write_gltf(source, [
+        dict(name="Initial collider parent", translation=first_parent, children=[1]),
+        dict(name=name, mesh=0, translation=rest_local),
+        dict(name="Second collider parent", translation=second_parent),
+    ], [0, 2])[name]
+    edited_world = [value + parent for value, parent in zip(edited_local, first_parent)]
+    reparented_local = [value - parent for value, parent in zip(edited_world, second_parent)]
+    states = [
+        (2, 0, rest_local, [0, 0]), (4, 0, edited_local, [1, 0]),
+        (6, 2, reparented_local, [2, 0]), (8, 0, edited_local, [1, 1]),
+        (10, 0, rest_local, [0, 2]), (12, 0, edited_local, [1, 1]),
+        (14, 2, reparented_local, [2, 0]), (16, 0, rest_local, [0, 0]),
+    ]
+    sequence = dict(schemaVersion=1, frames=HISTORY_FRAMES[-1], sampleFrames=HISTORY_FRAMES,
+        camera=[dict(frame=1, position=[0, 2, 7], target=[0, 1, 0])], events=[
+            dict(frame=1, physicsAttach="static", physicsNode=geometry["node"], physicsAction="pause"),
+            dict(frame=3, nodeTransform=dict(node=dict(sourceNode=1), matrix=encode(translation(edited_local)))),
+            dict(frame=5, nodeReparent=dict(node=dict(sourceNode=1), parent=dict(sourceNode=2))),
+            dict(frame=7, sceneHistory="undo"), dict(frame=9, sceneHistory="undo"),
+            dict(frame=11, sceneHistory="redo"), dict(frame=13, sceneHistory="redo"),
+            dict(frame=15, reload=str(source)),
+        ])
+    specification = dict(case=HISTORY_CASE, primary=geometry, owner=1, reloadFrame=16,
+        states=[dict(frame=frame, parent=parent, cursor=cursor, local=encode(translation(local)),
+                     world=encode(translation([value + offset for value, offset in
+                         zip(local, first_parent if parent == 0 else second_parent)])))
+                for frame, parent, local, cursor in states])
+    return source, None, sequence, specification
+
+
 def fixture(case, directory):
-    if case not in CASES:
+    if case not in (*CASES, HISTORY_CASE):
         raise ValueError("Unknown pending-edit condition")
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
+    if case == HISTORY_CASE:
+        return history_fixture(directory)
     source, auxiliary = directory / f"{case}.gltf", None
     name = "Pending-edit animated source parent"
     geometry = write_gltf(source, [{"name": name, "mesh": 0, "translation": [0, 1, 0]}], [0])[name]
@@ -76,11 +115,64 @@ def fixture(case, directory):
     return source, auxiliary, sequence, specification
 
 
+def check_history(record):
+    import numpy as np
+    from PIL import Image, ImageChops
+
+    specification = record["fixture"]
+    samples = {sample["frame"]: sample for sample in record["samples"]}
+    assert sorted(samples) == HISTORY_FRAMES and len(samples) == len(record["samples"]), "Incomplete physics history captures"
+    body_id = graph_id = None
+    for expected in specification["states"]:
+        frame = expected["frame"]
+        state = samples[frame]["telemetry"]
+        physics = state["physics"]
+        assert state["validationEnabled"] and physics["available"] and not physics["error"], (frame, physics)
+        assert physics["jointCount"] == physics["totalSteps"] == 0 and not physics["playing"], (frame, physics)
+        assert state["scene"]["primaryObjectCount"] == 1 and state["scene"]["auxiliaryObjectCount"] == 0
+        cursor = state.get("sceneEditHistory", {}) if frame == 2 else state["sceneEditHistory"]
+        assert [cursor.get("undo", 0), cursor.get("redo", 0)] == expected["cursor"], (frame, cursor)
+        graph = state["gltfMerge"]
+        assert not graph["authoringNodesTruncated"]
+        nodes = {row["sourceNode"]: row for row in graph["authoringNodes"] if row["sourceNode"] >= 0}
+        owner = nodes[specification["owner"]]
+        assert owner["parentGraphNode"] == nodes[expected["parent"]]["graphNode"], (frame, owner)
+        local, world = matrix(expected["local"]), matrix(expected["world"])
+        np.testing.assert_allclose(np.asarray(owner["localColumns"]).T, local, atol=1e-6, rtol=0)
+        np.testing.assert_allclose(np.asarray(owner["worldColumns"]).T, world, atol=1e-6, rtol=0)
+        if frame == specification["reloadFrame"]:
+            assert physics["bodyCount"] == 0 and not physics["bodies"], "Reload retained the Jolt body"
+            assert graph["graphIdentity"] != graph_id, "Reload retained the old scene identity"
+            continue
+        assert physics["bodyCount"] == len(physics["bodies"]) == 1
+        body = physics["bodies"][0]
+        assert body["node"] == specification["primary"]["node"] and body["motion"] == 0, (frame, body)
+        if body_id is None:
+            body_id, graph_id = body["id"], graph["graphIdentity"]
+        assert body["id"] == body_id and graph["graphIdentity"] == graph_id, (frame, body)
+        np.testing.assert_allclose(body["position"], world[:3, 3], atol=1e-6, rtol=0)
+        np.testing.assert_allclose(np.abs(body["rotation"]), [0, 0, 0, 1], atol=1e-6, rtol=0)
+        for key in ("sceneWorldMatrix", "renderWorldMatrix"):
+            np.testing.assert_allclose(matrix(body[key]), world, atol=1e-6, rtol=0)
+
+    def changed(first, second):
+        with Image.open(samples[first]["png"]) as a, Image.open(samples[second]["png"]) as b:
+            return ImageChops.difference(a.convert("RGB"), b.convert("RGB")).getbbox() is not None
+
+    assert changed(2, 4), "Transform history never moved the visible collider"
+    assert not changed(2, 10), "Undo did not restore the original pixels"
+    assert all(not changed(4, frame) for frame in (6, 8, 12, 14)), "Keep-world/replayed collider pixels changed"
+    return dict(passed=True, captures=len(samples), bodyId=body_id, worldMatricesMatch=True,
+                restoredPixels=True, reloadRetiredBody=True)
+
+
 def check(record):
     import numpy as np
     assert not record.get("validationErrors"), "Pending-edit capture recorded validation errors"
     specification = record["fixture"]
     case = specification["case"]
+    if case == HISTORY_CASE:
+        return check_history(record)
     assert case in CASES and record["technique"] in TECHNIQUES and record["mode"] == "raster", "Unknown pending-edit capture"
     samples = {sample["frame"]: sample for sample in record["samples"]}
     assert sorted(samples) == SAMPLE_FRAMES and len(samples) == len(record["samples"]), "Incomplete pending-edit captures"
@@ -165,7 +257,7 @@ def check(record):
 
 def check_matrix(results):
     expected = {tuple(case) for case in results["expectedCases"]}
-    supported = {(case, technique) for case in CASES for technique in TECHNIQUES}
+    supported = {(case, technique) for case in (*CASES, HISTORY_CASE) for technique in TECHNIQUES}
     actual = {(record["fixture"]["case"], record["technique"]): record for record in results["cases"]}
     assert expected and expected <= supported and len(expected) == len(results["expectedCases"]), "Unknown or duplicate pending-edit case matrix"
     assert set(actual) == expected and len(actual) == len(results["cases"]), "Incomplete pending-edit case matrix"
@@ -176,7 +268,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--exe", type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--case", choices=CASES)
+    parser.add_argument("--case", choices=(*CASES, HISTORY_CASE))
     parser.add_argument("--technique", choices=TECHNIQUES)
     parser.add_argument("--require-opt-in", action="store_true")
     parser.add_argument("--check-existing", action="store_true")
@@ -213,6 +305,8 @@ def main():
                 # The shared helper puts its 1/60 argument first; the existing
                 # sequential CLI parser deliberately applies this later value.
                 extra = ["--fixed-dt", str(TICKS_PER_FRAME * PHYSICS_DT), "--directional-intensity", "2", "--environment-intensity", "1"]
+                if case == HISTORY_CASE:
+                    extra += ["--no-ui", "--screenshot-viewport"]
                 if auxiliary:
                     extra += ["--bim-model", str(auxiliary)]
                 record = run_lifecycle_capture(exe, output, f"physics-pending-edit-{case}-{technique}", source,

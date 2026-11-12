@@ -1,7 +1,9 @@
 // InputManager.h
 #pragma once
 
+#include <cstdint>
 #include <unordered_set>
+#include <vector>
 
 struct GLFWwindow;
 
@@ -10,6 +12,13 @@ class BaseCamera;
 }
 
 namespace container::window {
+
+struct LeftButtonMotion {
+  uint64_t pressId{};
+  double pressX{}, pressY{};
+  double deltaX{}, deltaY{};
+  bool pressed{}, released{};
+};
 
 struct InputFrameSnapshot {
   double cursorX{0.0};
@@ -29,6 +38,10 @@ struct InputFrameSnapshot {
   std::unordered_set<int> keysReleasedThisFrame{};
   std::unordered_set<int> mouseButtonsPressedThisFrame{};
   std::unordered_set<int> mouseButtonsReleasedThisFrame{};
+  uint64_t leftButtonPressId{};
+  // Press positions are in framebuffer coordinates. Deltas retain the same
+  // window-coordinate units and Y convention as cursorDeltaX/cursorDeltaY.
+  std::vector<LeftButtonMotion> leftButtonMotions;
 
   [[nodiscard]] bool keyDown(int key) const {
     return pressedKeys.contains(key);
@@ -83,6 +96,7 @@ class InputManager {
  private:
   void applyMouseInput();
   void applyKeyboardInput(float deltaTime);
+  LeftButtonMotion& leftButtonMotion();
 
   container::scene::BaseCamera* camera_{nullptr};
   GLFWwindow* window_{nullptr};
@@ -92,6 +106,8 @@ class InputManager {
   std::unordered_set<int> keysReleasedThisFrame_{};
   std::unordered_set<int> mouseButtonsPressedThisFrame_{};
   std::unordered_set<int> mouseButtonsReleasedThisFrame_{};
+  uint64_t leftButtonPressId_{};
+  std::vector<LeftButtonMotion> leftButtonMotions_;
 
   double lastMouseX_{0.0};
   double lastMouseY_{0.0};

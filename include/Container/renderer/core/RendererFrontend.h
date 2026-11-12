@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <glm/vec2.hpp>
@@ -137,6 +138,7 @@ class SwapChainManager;
 namespace container::scene {
 class SceneGraph;
 class SceneManager;
+struct AuthoredLightBinding;
 class SceneProviderRegistry;
 } // namespace container::scene
 
@@ -335,6 +337,7 @@ private:
   bool captureAcquireOutOfDate_{false}, capturePresentSuboptimal_{false};
   std::optional<glm::mat4> captureObjectBase_{};
   uint32_t captureObjectNode_{std::numeric_limits<uint32_t>::max()};
+  std::optional<std::pair<uint64_t, uint32_t>> captureNodeGizmoTarget_;
   // Owned subsystems are listed roughly in construction/use order. shutdown()
   // releases them in dependency-aware order because many destructors touch
   // Vulkan objects owned by earlier services.
@@ -549,6 +552,7 @@ private:
   [[nodiscard]] bool lightEditGestureActive() const noexcept;
   void finishLightEditInput();
   void finishEditGestures();
+  void finishSceneTransformGesture(bool cancel = false);
   void refreshLightEditInspector();
   void reportLightEditError(std::string_view);
   void selectLightForEditing(EditableLightId);
@@ -588,9 +592,20 @@ private:
     uint32_t root, mesh, bim;
     EditableLightId light;
     bool sectionEditable;
+    std::shared_ptr<const container::scene::AuthoredLightBinding> lightBinding;
   };
   [[nodiscard]] SceneEditSelection sceneEditSelection() const;
   void restoreSceneEditSelection(const SceneEditSelection &selection);
+  struct VisibilityLightSelection {
+    EditableLightId light;
+    std::shared_ptr<const container::scene::AuthoredLightBinding> binding;
+    uint32_t node;
+    uint64_t nodeIncarnation, graphIdentity, assetIdentity;
+    size_t scene;
+  };
+  [[nodiscard]] std::optional<VisibilityLightSelection> selectedLightUnder(uint32_t ancestor) const;
+  [[nodiscard]] bool sceneEditSelectionVacant() const;
+  std::optional<VisibilityLightSelection> pendingVisibilityLightSelection_;
 #if CONTAINER_HAS_JOLT
   std::unique_ptr<container::physics::PhysicsScene> physicsScene_;
   std::unique_ptr<container::physics::PhysicsElementBindings> physicsElements_;

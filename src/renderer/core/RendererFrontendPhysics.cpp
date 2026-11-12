@@ -35,21 +35,37 @@ bool RendererFrontend::applySceneNodeTransform(
   if (!subs_.cameraController)
     return false;
   try {
-    const auto proposed = subs_.cameraController->previewNodeTransform(node, controls);
-    if (!proposed) return false;
-    if(const auto* current=sceneGraph_.getNode(node);current && current->localTransform==*proposed) return false;
-    finishEditGestures();
     ensureSceneEditHistory();
     const auto gesture = transformDragSession_.active &&
                                  transformDragSession_.nodeIndex == node
         ? std::optional<uint64_t>{transformDragSession_.historyGesture}
         : subs_.guiManager ? subs_.guiManager->sceneEditGesture() : std::nullopt;
+    const auto proposed = subs_.cameraController->previewNodeTransform(
+        node, controls, sceneEdits_->transformGestureStart(node, gesture));
+    if (!proposed || sceneGraph_.getNode(node)->localTransform == *proposed) return false;
+    finishLightEditInput();
+    finishMaterialGesture();
     return sceneEdits_->setTransform(node, *proposed, gesture);
   } catch (const std::exception &error) {
     if (subs_.guiManager)
       subs_.guiManager->setStatusMessage(
           "Cannot transform scene node " + std::to_string(node) + ": " + error.what());
     return false;
+  }
+}
+
+void RendererFrontend::finishSceneTransformGesture(bool cancel) {
+  transformDragSession_.active = false;
+  if (!sceneEdits_) return;
+  if (cancel) {
+    try {
+      sceneEdits_->cancelTransformGesture();
+    } catch (const std::exception& error) {
+      sceneEdits_->finishGesture();
+      if (subs_.guiManager) subs_.guiManager->setStatusMessage(error.what());
+    }
+  } else {
+    sceneEdits_->finishGesture();
   }
 }
 

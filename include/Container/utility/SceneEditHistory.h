@@ -13,6 +13,7 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -41,6 +42,10 @@ public:
   struct NodeFlagActions {
     std::function<void()> undo, redo;
   };
+  struct MeshSelection {
+    NodeIndex node;
+    bool anotherTargetSelected;
+  };
 
   struct Callbacks {
     // Validation runs before graph mutation, including during undo/redo.
@@ -58,6 +63,9 @@ public:
     // Prepare any matching source-property changes before applying the graph edit.
     // The returned actions publish atomically before the local graph setters.
     std::function<NodeFlagActions(NodeIndex, const NodeFlagChanges&)> prepareNodeFlags;
+    std::function<MeshSelection()> meshSelection;
+    // Selection publication must not throw. The normal scene refresh follows.
+    std::function<void(NodeIndex)> setMeshSelection;
   };
 
   explicit SceneEditHistory(scene::SceneGraph &graph, Callbacks callbacks = {},
@@ -73,14 +81,15 @@ public:
     if (!current || current->retired) return false;
     scene::ValidateSceneNodeName(name);
     if (current->name == name) return false;
+    const auto incarnation = graph_.nodeIncarnation(node);
     const std::string before = current->name;
     EditHistory::Command command{
         "Rename",
-        [this, node, before] { return applyName(node, before); },
-        [this, node, name] { return applyName(node, name); }};
-    if (!applyName(node, name)) return false;
+        [this, node, incarnation, before] { return applyName(node, incarnation, before); },
+        [this, node, incarnation, name] { return applyName(node, incarnation, name); }};
+    if (!command.redo()) return false;
+    finishGesture();
     history_.record(std::move(command));
-    transformMergeNode_.reset();
     changed();
     return true;
   }
@@ -91,21 +100,44 @@ public:
     const auto *current = graph_.getNode(node);
     if (!current || current->retired || current->localTransform == transform || !finite(transform))
       return false;
-    const glm::mat4 before = current->localTransform;
+    const auto incarnation = graph_.nodeIncarnation(node);
+    const auto* start = transformGestureStart(node, mergeId);
+    const glm::mat4 before = start ? *start : current->localTransform;
     EditHistory::Command command{
         "Transform",
-        [this, node, before] { return applyTransform(node, before); },
-        [this, node, transform] { return applyTransform(node, transform); }};
-    if (!applyTransform(node, transform))
+        [this, node, incarnation, before] { return applyTransform(node, incarnation, before); },
+        [this, node, incarnation, transform] { return applyTransform(node, incarnation, transform); }};
+    if (!command.redo())
       return false;
-    // Even an accidentally reused widget ID must not merge different nodes.
-    if (!mergeId || transformMergeNode_ != node)
-      history_.finishGesture();
-    history_.record(std::move(command), mergeId);
-    transformMergeNode_ =
-        mergeId ? std::optional<NodeIndex>(node) : std::nullopt;
+    if (!start) finishGesture();
+    if (mergeId) {
+      transformGesture_ = TransformGesture{node, incarnation, *mergeId, before,
+                                            transform, std::move(command)};
+    } else {
+      history_.record(std::move(command));
+    }
     changed();
     return true;
+  }
+
+  // A live preview publishes normally while leaving the journal untouched.
+  // Use the exact starting matrix as the basis of subsequent widget updates.
+  [[nodiscard]] const glm::mat4* transformGestureStart(
+      NodeIndex node, std::optional<MergeId> id) const noexcept {
+    if (!transformGesture_ || transformGesture_->id != id ||
+        transformGesture_->node != node ||
+        !matchesNode(node, transformGesture_->incarnation)) return nullptr;
+    return &transformGesture_->before;
+  }
+
+  bool cancelTransformGesture() {
+    sync();
+    if (!transformGesture_) return false;
+    const auto& gesture = *transformGesture_;
+    const bool restored = gesture.before != gesture.after && gesture.command.undo();
+    transformGesture_.reset();
+    if (restored) changed();
+    return restored;
   }
 
   bool setVisible(NodeIndex node, bool visible) {
@@ -145,26 +177,30 @@ public:
                                  : graph_.rootNodes().size()};
     if (!finite(after.local))
       return false;
+    const ReparentTargets targets{node, graph_.nodeIncarnation(node), before.parent, after.parent,
+        before.parent ? graph_.nodeIncarnation(*before.parent) : 0,
+        after.parent ? graph_.nodeIncarnation(*after.parent) : 0};
     auto actions = callbacks_.prepareReparent ? callbacks_.prepareReparent(node, before, after) : ReparentActions{};
     if (bool(actions.undo) != bool(actions.redo))
       throw std::invalid_argument("Prepared reparent requires both undo and redo actions");
     EditHistory::Command command;
     command.label = "Reparent";
     if (actions.undo) {
-      command.undo = [this, node, before, action = std::move(actions.undo)] {
-        return applyPreparedPlacement(node, before, action);
+      command.undo = [this, targets, before, action = std::move(actions.undo)] {
+        return applyPreparedPlacement(targets, before, action);
       };
-      command.redo = [this, node, after, action = std::move(actions.redo)] {
-        return applyPreparedPlacement(node, after, action);
+      command.redo = [this, targets, after, action = std::move(actions.redo)] {
+        return applyPreparedPlacement(targets, after, action);
       };
     } else {
-      command.undo = [this, node, before] { return applyPlacement(node, before); };
-      command.redo = [this, node, after] { return applyPlacement(node, after); };
+      command.undo = [this, targets, before] { return applyPlacement(targets, before); };
+      command.redo = [this, targets, after] { return applyPlacement(targets, after); };
     }
+    trackMeshSelection(command);
     if (!command.redo())
       return false;
+    finishGesture();
     history_.record(std::move(command));
-    transformMergeNode_.reset();
     changed();
     return true;
   }
@@ -175,11 +211,9 @@ public:
   bool recordApplied(EditHistory::Command command,
                      std::optional<MergeId> mergeId = std::nullopt) {
     sync();
-    if (transformMergeNode_)
-      history_.finishGesture();
+    if (transformGesture_) finishGesture();
     const bool published = command.selfContainedPublication;
     const bool recorded = history_.record(std::move(command), mergeId);
-    transformMergeNode_.reset();
     if (!published) changed();
     return recorded;
   }
@@ -194,21 +228,20 @@ public:
   }
 
   bool undo() {
-    sync();
+    finishGesture();
     const bool published = history_.undoIsSelfContainedPublication();
     if (!history_.undo())
       return false;
-    transformMergeNode_.reset();
     if (!published) changed();
     return true;
   }
 
   bool redo() {
-    sync();
+    if (transformGesture_) finishGesture();
+    else sync();
     const bool published = history_.redoIsSelfContainedPublication();
     if (!history_.redo())
       return false;
-    transformMergeNode_.reset();
     if (!published) changed();
     return true;
   }
@@ -244,17 +277,24 @@ public:
   [[nodiscard]] std::size_t capacity() const noexcept {
     return history_.capacity();
   }
+  [[nodiscard]] bool transformGestureActive() const noexcept {
+    return transformGesture_.has_value() && graphIdentity_ == graph_.identity();
+  }
 
   void finishGesture() noexcept {
     sync();
     history_.finishGesture();
-    transformMergeNode_.reset();
+    if (!transformGesture_) return;
+    auto gesture = std::move(*transformGesture_);
+    transformGesture_.reset();
+    if (gesture.before != gesture.after && matchesNode(gesture.node, gesture.incarnation))
+      history_.record(std::move(gesture.command));
   }
 
   void clear() noexcept {
     history_.clear();
     graphIdentity_ = graph_.identity();
-    transformMergeNode_.reset();
+    transformGesture_.reset();
   }
 
   // Returns true when an externally replaced graph invalidated the history.
@@ -266,6 +306,14 @@ public:
   }
 
 private:
+  struct TransformGesture {
+    NodeIndex node;
+    std::uint64_t incarnation;
+    MergeId id;
+    glm::mat4 before, after;
+    EditHistory::Command command;
+  };
+
   static Parent parentOf(const scene::SceneNode &node) {
     return node.parent == scene::SceneGraph::kInvalidNode ? std::nullopt
                                                           : Parent(node.parent);
@@ -313,32 +361,37 @@ private:
     return finite(world) ? std::optional<glm::mat4>(world) : std::nullopt;
   }
 
-  bool applyTransform(NodeIndex node, const glm::mat4 &transform) {
-    if (!graph_.getNode(node) || graph_.isNodeRetired(node))
+  [[nodiscard]] bool matchesNode(NodeIndex node, std::uint64_t incarnation) const noexcept {
+    return graphIdentity_ == graph_.identity() && incarnation &&
+           graph_.nodeIncarnation(node) == incarnation && !graph_.isNodeRetired(node);
+  }
+
+  bool applyTransform(NodeIndex node, std::uint64_t incarnation, const glm::mat4 &transform) {
+    if (!matchesNode(node, incarnation))
       return false;
     if (callbacks_.beforeTransform)
       callbacks_.beforeTransform(node, transform);
-    if (graphIdentity_ != graph_.identity() || !graph_.getNode(node) || graph_.isNodeRetired(node))
+    if (!matchesNode(node, incarnation))
       return false;
     graph_.setLocalTransform(node, transform);
     return true;
   }
 
-  bool applyName(NodeIndex node, const std::string& name) {
-    if (graphIdentity_ != graph_.identity() || !graph_.getNode(node) || graph_.isNodeRetired(node))
-      return false;
+  bool applyName(NodeIndex node, std::uint64_t incarnation, const std::string& name) {
+    if (!matchesNode(node, incarnation)) return false;
     if (callbacks_.beforeNodeMetadata) callbacks_.beforeNodeMetadata(node);
+    if (!matchesNode(node, incarnation)) return false;
     // SceneGraph takes the copy before replacing the current string. No new
     // name validation applies here: undo restores exact imported metadata.
     graph_.setName(node, name);
     return true;
   }
 
-  bool applyFlags(NodeIndex node, const NodeFlagChanges& flags,
+  bool applyFlags(NodeIndex node, std::uint64_t incarnation, const NodeFlagChanges& flags,
                   const std::function<void()>& applySource) {
-    if (!graph_.getNode(node) || graph_.isNodeRetired(node))
-      return false;
+    if (!matchesNode(node, incarnation)) return false;
     if (callbacks_.beforeNodeMetadata) callbacks_.beforeNodeMetadata(node);
+    if (!matchesNode(node, incarnation)) return false;
     if (applySource) applySource();
     if (flags[0]) graph_.setVisible(node, *flags[0]);
     if (flags[1]) graph_.setSelectable(node, *flags[1]);
@@ -358,21 +411,77 @@ private:
       after[i] = requested[i];
     }
     if (before == after) return false;
+    const auto incarnation = graph_.nodeIncarnation(node);
     auto source = callbacks_.prepareNodeFlags ? callbacks_.prepareNodeFlags(node, after) : NodeFlagActions{};
     if (bool(source.undo) != bool(source.redo))
       throw std::logic_error("Incomplete source node flag history actions");
     EditHistory::Command command{
         label,
-        [this, node, before, apply = std::move(source.undo)] { return applyFlags(node, before, apply); },
-        [this, node, after, apply = std::move(source.redo)] { return applyFlags(node, after, apply); }};
-    if (!history_.execute(std::move(command))) return false;
-    transformMergeNode_.reset();
+        [this, node, incarnation, before, apply = std::move(source.undo)] {
+          return applyFlags(node, incarnation, before, apply);
+        },
+        [this, node, incarnation, after, apply = std::move(source.redo)] {
+          return applyFlags(node, incarnation, after, apply);
+        }};
+    if (after[1]) trackMeshSelection(command);
+    if (!command.redo()) return false;
+    finishGesture();
+    history_.record(std::move(command));
     changed();
     return true;
   }
 
-  bool applyPlacement(NodeIndex node, const Placement &placement) {
-    if (!graph_.canSetParent(node, placement.parent))
+  struct DisplacedMeshSelection {
+    NodeIndex node{scene::SceneGraph::kInvalidNode};
+    uint64_t incarnation{};
+  };
+
+  void trackMeshSelection(EditHistory::Command& command) {
+    if (!callbacks_.meshSelection || !callbacks_.setMeshSelection) return;
+    auto displaced = std::make_shared<DisplacedMeshSelection>();
+    const auto wrap = [this, displaced](std::function<bool()> apply) {
+      return [this, displaced, apply = std::move(apply)] {
+        constexpr auto none = scene::SceneGraph::kInvalidNode;
+        const auto current = callbacks_.meshSelection();
+        const bool wasSelectable = graph_.isNodeEffectivelySelectable(current.node);
+        const auto incarnation = graph_.nodeIncarnation(current.node);
+        if (current.node == none && displaced->node != none)
+          (void)graph_.isNodeActive(displaced->node);
+        if (!apply()) return false;
+        const auto previous = std::exchange(*displaced, {});
+        // Capture only the selection this direction of the edit invalidates.
+        // Inverse playback can recover it while the selection remains vacant.
+        if (wasSelectable && !graph_.isNodeEffectivelySelectable(current.node)) {
+          *displaced = {current.node, incarnation};
+          callbacks_.setMeshSelection(none);
+        } else if (current.node == none && !current.anotherTargetSelected && previous.node != none &&
+                   graph_.nodeIncarnation(previous.node) == previous.incarnation &&
+                   graph_.isNodeEffectivelySelectable(previous.node)) {
+          callbacks_.setMeshSelection(previous.node);
+        }
+        return true;
+      };
+    };
+    command.undo = wrap(std::move(command.undo));
+    command.redo = wrap(std::move(command.redo));
+  }
+
+  struct ReparentTargets {
+    NodeIndex node;
+    std::uint64_t incarnation;
+    Parent oldParent, newParent;
+    std::uint64_t oldParentIncarnation, newParentIncarnation;
+  };
+
+  [[nodiscard]] bool matchesReparentTargets(const ReparentTargets& targets) const noexcept {
+    return matchesNode(targets.node, targets.incarnation) &&
+        (!targets.oldParent || matchesNode(*targets.oldParent, targets.oldParentIncarnation)) &&
+        (!targets.newParent || matchesNode(*targets.newParent, targets.newParentIncarnation));
+  }
+
+  bool applyPlacement(const ReparentTargets& targets, const Placement &placement) {
+    const auto node = targets.node;
+    if (!matchesReparentTargets(targets) || !graph_.canSetParent(node, placement.parent))
       return false;
     const auto targetParent =
         placement.parent.value_or(scene::SceneGraph::kInvalidNode);
@@ -384,9 +493,16 @@ private:
       return false;
     if (callbacks_.beforeReparent)
       callbacks_.beforeReparent(node, placement.parent, placement.local);
-    if (graphIdentity_ != graph_.identity() ||
+    if (!matchesReparentTargets(targets) ||
         !graph_.canSetParent(node, placement.parent))
       return false;
+    if (callbacks_.meshSelection && callbacks_.setMeshSelection) {
+      // A prepared placement also has its new active membership ready for
+      // selection recovery, so playback needs no allocation after publication.
+      auto prepared = graph_.preparePlacement(node, placement.parent, placement.local,
+          placement.siblingIndex, graph_.activeRoots());
+      return prepared && graph_.publishPlacement(prepared);
+    }
     if (graph_.getNode(node)->parent !=
             placement.parent.value_or(scene::SceneGraph::kInvalidNode) &&
         !graph_.setParent(node, placement.parent))
@@ -396,10 +512,11 @@ private:
     return true;
   }
 
-  bool applyPreparedPlacement(NodeIndex node, const Placement& placement,
+  bool applyPreparedPlacement(const ReparentTargets& targets, const Placement& placement,
                               const std::function<bool()>& action) {
+    const auto node = targets.node;
     const auto valid = [&] {
-      if (graphIdentity_ != graph_.identity() || !finite(placement.local) ||
+      if (!matchesReparentTargets(targets) || !finite(placement.local) ||
           !graph_.canSetParent(node, placement.parent)) return false;
       const auto target = placement.parent.value_or(scene::SceneGraph::kInvalidNode);
       const auto count = placement.parent ? graph_.getNode(*placement.parent)->children.size()
@@ -423,7 +540,7 @@ private:
   Callbacks callbacks_;
   EditHistory history_;
   std::uint64_t graphIdentity_;
-  std::optional<NodeIndex> transformMergeNode_;
+  std::optional<TransformGesture> transformGesture_;
 };
 
 } // namespace container::util

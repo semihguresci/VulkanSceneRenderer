@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <stdexcept>
 #include <vector>
 
@@ -36,34 +37,43 @@ TEST(TransformGestureLifecycle, PhysicalPressAndReleaseHaveOneBoundaryEvenWithou
 
 TEST(TransformGestureLifecycle, EscapeFocusLossAndSelectionLossCancelBeforeDiscardExactlyOnce) {
   for(const auto reason : {Reason::Escape,Reason::FocusLost,Reason::SelectionLost}) {
-    SCOPED_TRACE(int(reason));Controller controller;InputManager input;int cancelled{},ended{};
+    SCOPED_TRACE(int(reason));Controller controller;InputManager input;int cancelled{},ended{},updated{};
     Controller::TransformGestureCallbacks callbacks{{},[&] {++ended;},[&](auto actual) {
       EXPECT_EQ(actual,reason);EXPECT_EQ(controller.state().gesture,ViewportGesture::TransformDrag);++cancelled;
     }};
+    input.enqueueMouseDelta(0,0);
     input.handleMouseButton(GLFW_MOUSE_BUTTON_LEFT,GLFW_PRESS);
     controller.beginTransformGesture(ViewportTool::Rotate,TransformSpace::World,TransformAxis::Free,false,callbacks);
     input.endFrame();
+    input.enqueueMouseDelta(2,3);
+    input.handleMouseButton(GLFW_MOUSE_BUTTON_LEFT,GLFW_RELEASE);
     if(reason==Reason::Escape) input.handleKey(GLFW_KEY_ESCAPE,GLFW_PRESS);
     if(reason==Reason::FocusLost) {input.handleKey(GLFW_KEY_ESCAPE,GLFW_PRESS);input.handleWindowFocus(false);}
-    controller.processTransformGestureLifecycle(input.frameSnapshot(),callbacks,reason!=Reason::SelectionLost);
+    controller.processTransformGestureLifecycle(input.frameSnapshot(),callbacks,reason!=Reason::SelectionLost,
+        [&](auto,auto,auto,bool,double,double) {++updated;});
     controller.processTransformGestureLifecycle(input.frameSnapshot(),callbacks,false);
-    EXPECT_EQ(cancelled,1);EXPECT_EQ(ended,0);EXPECT_EQ(controller.state().gesture,ViewportGesture::None);
+    EXPECT_EQ(cancelled,1);EXPECT_EQ(ended,0);EXPECT_EQ(updated,0);
+    EXPECT_EQ(controller.state().gesture,ViewportGesture::None);
   }
 }
 
 TEST(TransformGestureLifecycle, ToolSpaceAxisAndSnapChangesFinishTheOldGestureWithoutCancellation) {
   for(int change=0;change<4;++change) {
-    SCOPED_TRACE(change);Controller controller;InputManager input;int ended{},cancelled{};
+    SCOPED_TRACE(change);Controller controller;InputManager input;int ended{},cancelled{},updated{};
     Controller::TransformGestureCallbacks callbacks{{},[&] {++ended;},[&](auto) {++cancelled;}};
+    input.enqueueMouseDelta(0,0);
     input.handleMouseButton(GLFW_MOUSE_BUTTON_LEFT,GLFW_PRESS);
     controller.beginTransformGesture(ViewportTool::Translate,TransformSpace::World,TransformAxis::X,false,callbacks);
+    input.enqueueMouseDelta(2,3);
     if(change==0) controller.setTool(ViewportTool::Scale);
     if(change==1) controller.setTransformSpace(TransformSpace::Local);
     if(change==2) controller.setTransformAxis(TransformAxis::Z);
     if(change==3) controller.setTransformSnapEnabled(true);
+    controller.processTransformGestureLifecycle(input.frameSnapshot(),callbacks,true,
+        [&](auto,auto,auto,bool,double,double) {++updated;});
     controller.processTransformGestureLifecycle(input.frameSnapshot(),callbacks);
-    controller.processTransformGestureLifecycle(input.frameSnapshot(),callbacks);
-    EXPECT_EQ(ended,1);EXPECT_EQ(cancelled,0);EXPECT_EQ(controller.state().gesture,ViewportGesture::None);
+    EXPECT_EQ(ended,1);EXPECT_EQ(cancelled,0);EXPECT_EQ(updated,0);
+    EXPECT_EQ(controller.state().gesture,ViewportGesture::None);
   }
 }
 
@@ -86,6 +96,86 @@ TEST(TransformGestureLifecycle, FailedCallbacksKeepOwnershipForPublicationRetry)
   int cancelled{};callbacks.cancel=[&](auto reason) {EXPECT_EQ(reason,Reason::Escape);++cancelled;};
   controller.processTransformGestureLifecycle(input.frameSnapshot(),callbacks);
   EXPECT_EQ(cancelled,1);EXPECT_EQ(controller.state().gesture,ViewportGesture::None);
+}
+
+TEST(TransformGestureLifecycle, AppliesOnlyMotionFromEachPressAndDeliversReleaseDeltaBeforeEnd) {
+  Controller controller;
+  InputManager input;
+  std::vector<std::array<double,2>> deltas;
+  std::vector<size_t> updateCountsAtEnd;
+  Controller::TransformGestureCallbacks callbacks{{},[&] {updateCountsAtEnd.push_back(deltas.size());},{}};
+  const Controller::TransformGestureUpdate update = [&](auto tool,auto space,auto axis,bool snap,double x,double y) {
+    EXPECT_EQ(tool,ViewportTool::Translate);
+    EXPECT_EQ(space,TransformSpace::World);
+    EXPECT_EQ(axis,TransformAxis::X);
+    EXPECT_FALSE(snap);
+    deltas.push_back({x,y});
+  };
+
+  input.enqueueMouseDelta(5,5);
+  input.enqueueMouseDelta(30,20); // Hover motion before the press.
+  input.handleMouseButton(GLFW_MOUSE_BUTTON_LEFT,GLFW_PRESS);
+  input.enqueueMouseDelta(34,17);
+  auto frame=input.frameSnapshot();
+  ASSERT_EQ(frame.leftButtonMotions.size(),1u);
+  EXPECT_EQ(frame.leftButtonMotions[0].pressX,30);
+  EXPECT_EQ(frame.leftButtonMotions[0].pressY,20);
+  controller.beginTransformGesture(ViewportTool::Translate,TransformSpace::World,TransformAxis::X,false,callbacks,
+      GLFW_MOUSE_BUTTON_LEFT,frame.leftButtonPressId);
+  controller.processTransformGestureLifecycle(frame,callbacks,true,update);
+  EXPECT_EQ(deltas,(std::vector<std::array<double,2>>{{4,3}}));
+  EXPECT_TRUE(updateCountsAtEnd.empty());
+  input.endFrame();
+
+  input.enqueueMouseDelta(39,18);
+  input.handleMouseButton(GLFW_MOUSE_BUTTON_LEFT,GLFW_RELEASE);
+  input.enqueueMouseDelta(70,40); // Neither gesture owns this motion.
+  input.handleMouseButton(GLFW_MOUSE_BUTTON_LEFT,GLFW_PRESS);
+  input.enqueueMouseDelta(80,45);
+  input.handleMouseButton(GLFW_MOUSE_BUTTON_LEFT,GLFW_RELEASE);
+  input.enqueueMouseDelta(95,65); // Motion after both releases.
+  frame=input.frameSnapshot();
+  ASSERT_EQ(frame.leftButtonMotions.size(),2u);
+  EXPECT_EQ(frame.leftButtonMotions[1].pressX,70);
+  EXPECT_EQ(frame.leftButtonMotions[1].pressY,40);
+  controller.processTransformGestureLifecycle(frame,callbacks,true,update);
+  EXPECT_EQ(deltas,(std::vector<std::array<double,2>>{{4,3},{5,-1}}));
+  EXPECT_EQ(updateCountsAtEnd,(std::vector<size_t>{2}));
+
+  controller.beginTransformGesture(ViewportTool::Translate,TransformSpace::World,TransformAxis::X,false,callbacks,
+      GLFW_MOUSE_BUTTON_LEFT,frame.leftButtonPressId);
+  controller.processTransformGestureLifecycle(frame,callbacks,true,update);
+  EXPECT_EQ(deltas,(std::vector<std::array<double,2>>{{4,3},{5,-1},{10,-5}}));
+  EXPECT_EQ(updateCountsAtEnd,(std::vector<size_t>{2,3}));
+  EXPECT_EQ(controller.state().gesture,ViewportGesture::None);
+}
+
+TEST(TransformGestureLifecycle, RetryingEndDoesNotApplyTheReleaseDeltaAgain) {
+  Controller controller;
+  InputManager input;
+  int ended{};
+  int updates{};
+  Controller::TransformGestureCallbacks callbacks{{},[&] {
+    EXPECT_EQ(updates,1);
+    if (++ended==1) throw std::runtime_error("Denied End");
+  },{}};
+  const Controller::TransformGestureUpdate update = [&](auto,auto,auto,bool,double x,double y) {
+    EXPECT_EQ(x,9);
+    EXPECT_EQ(y,-7);
+    ++updates;
+  };
+  input.enqueueMouseDelta(1,2);
+  input.handleMouseButton(GLFW_MOUSE_BUTTON_LEFT,GLFW_PRESS);
+  controller.beginTransformGesture(ViewportTool::Translate,TransformSpace::World,TransformAxis::X,false,callbacks);
+  input.enqueueMouseDelta(10,9);
+  input.handleMouseButton(GLFW_MOUSE_BUTTON_LEFT,GLFW_RELEASE);
+  const auto frame=input.frameSnapshot();
+  EXPECT_THROW(controller.processTransformGestureLifecycle(frame,callbacks,true,update),std::runtime_error);
+  EXPECT_EQ(controller.state().gesture,ViewportGesture::TransformDrag);
+  controller.processTransformGestureLifecycle(frame,callbacks,true,update);
+  EXPECT_EQ(updates,1);
+  EXPECT_EQ(ended,2);
+  EXPECT_EQ(controller.state().gesture,ViewportGesture::None);
 }
 
 TEST(TransformGestureLifecycle, DefaultCallbacksPreserveOrdinaryObjectGestureBehavior) {

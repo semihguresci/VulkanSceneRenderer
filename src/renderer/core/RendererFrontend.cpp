@@ -119,6 +119,7 @@
 #include "Container/utility/AtomicFile.h"
 
 #include <tinyexr.h>
+#include <glm/matrix.hpp>
 
 namespace container::renderer {
 
@@ -2986,6 +2987,62 @@ void RendererFrontend::applyTemporalCapture(
         !sceneEdits_->setTransform(node,event.nodeTransform->matrix))
       throw std::invalid_argument("Capture node transform was rejected");
   }
+  if (event.nodeGizmo) {
+    using Action = container::temporal::CaptureNodeGizmo::Operation;
+    using Gizmo = container::temporal::CaptureLightGizmo;
+    using container::ui::TransformAxis;
+    using container::ui::TransformSpace;
+    using container::ui::ViewportTool;
+    const auto& request = *event.nodeGizmo;
+    const auto node = resolveNode(request.node);
+    if (request.operation == Action::Select || request.operation == Action::Begin) {
+      if (!sceneGraph_.isNodeEffectivelySelectable(node))
+        throw std::invalid_argument("Capture node gizmo target cannot be selected");
+      if (request.operation == Action::Begin && transformDragSession_.active)
+        throw std::invalid_argument("Capture node gizmo is already active");
+      finishEditGestures();
+      if (sceneState_.selectedMeshNode != node) {
+        clearSelectedMeshNode();
+        sceneState_.selectedMeshNode = node;
+      }
+    } else if (!transformDragSession_.active || transformDragSession_.nodeIndex != node ||
+               sceneState_.selectedMeshNode != node) {
+      throw std::invalid_argument("Capture node gizmo is not active for the requested node");
+    }
+    switch (request.operation) {
+    case Action::Select:
+      break;
+    case Action::Begin: {
+      const auto tool = request.gizmo.tool == Gizmo::Tool::Translate ? ViewportTool::Translate :
+          request.gizmo.tool == Gizmo::Tool::Rotate ? ViewportTool::Rotate : ViewportTool::Scale;
+      const auto space = request.gizmo.space == Gizmo::Space::Local ? TransformSpace::Local : TransformSpace::World;
+      const auto axis = request.gizmo.axis == Gizmo::Axis::X ? TransformAxis::X :
+          request.gizmo.axis == Gizmo::Axis::Y ? TransformAxis::Y :
+          request.gizmo.axis == Gizmo::Axis::Z ? TransformAxis::Z : TransformAxis::Free;
+      const auto previous = interactionController_.state();
+      interactionController_.setTool(tool);
+      interactionController_.setTransformSpace(space);
+      interactionController_.setTransformAxis(axis);
+      transformSelectedNodeByDrag(tool, space, axis, request.gizmo.snap, request.delta.x, request.delta.y);
+      interactionController_.setTool(previous.tool);
+      interactionController_.setTransformSpace(previous.transformSpace);
+      interactionController_.setTransformAxis(previous.transformAxis);
+      if (!transformDragSession_.active)
+        throw std::runtime_error("Capture node gizmo could not begin");
+      break;
+    }
+    case Action::Update:
+      transformSelectedNodeByDrag(transformDragSession_.tool, transformDragSession_.space,
+                                  transformDragSession_.axis, transformDragSession_.snapEnabled,
+                                  request.delta.x, request.delta.y);
+      break;
+    case Action::End:
+    case Action::Cancel:
+      finishSceneTransformGesture(request.operation == Action::Cancel);
+      break;
+    }
+    captureNodeGizmoTarget_ = std::pair{sceneGraph_.identity(), node};
+  }
   if(event.addPrimitive) {
     const auto& edit=*event.addPrimitive;
     const std::pair<std::string_view,ScenePrimitiveKind> kinds[]={
@@ -3465,6 +3522,13 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   appendGltfInteractivityTelemetry(json);
   if (sceneEdits_)
     json["sceneEditHistory"] = {{"undo", sceneEdits_->undoCount()}, {"redo", sceneEdits_->redoCount()}};
+  if (captureNodeGizmoTarget_ && captureNodeGizmoTarget_->first == sceneGraph_.identity()) {
+    const auto node = captureNodeGizmoTarget_->second;
+    if (const auto sibling = sceneGraph_.siblingIndex(node)) {
+      json["nodeGizmo"] = {{"graphNode", node}, {"siblingIndex", *sibling},
+          {"active", transformDragSession_.active && transformDragSession_.nodeIndex == node}};
+    }
+  }
   if (subs_.sceneManager) {
     auto& variants=json["gltfMaterialVariants"];
     const auto selected=subs_.sceneManager->selectedMaterialVariant();
@@ -3962,20 +4026,26 @@ void RendererFrontend::processInput(float deltaTime, bool useViewportInput) {
           },
       .transformGestureCallbacks = {
           .begin = [this](container::ui::ViewportTool tool,container::ui::TransformSpace space,
-                           container::ui::TransformAxis axis,bool snap) {beginLightGizmoGesture(tool,space,axis,snap);},
-          .end = [this]() {endLightGizmoGesture();},
-          .cancel = [this](RenderSurfaceInteractionController::TransformGestureCancelReason reason) {cancelLightGizmoGesture(reason);}},
+                           container::ui::TransformAxis axis,bool snap) {
+            finishSceneTransformGesture();
+            beginLightGizmoGesture(tool,space,axis,snap);
+          },
+          .end = [this]() {
+            endLightGizmoGesture();
+            if (transformDragSession_.active) finishSceneTransformGesture();
+          },
+          .cancel = [this](RenderSurfaceInteractionController::TransformGestureCancelReason reason) {
+            cancelLightGizmoGesture(reason);
+            if (transformDragSession_.active) finishSceneTransformGesture(true);
+          }},
   });
   } catch (const std::exception& error) {
     if(!hasSelectedEditableLight && !lightEditGestureActive()) throw;
     reportLightEditError(error.what());
   }
-  if (interactionController_.state().gesture !=
-      container::ui::ViewportGesture::TransformDrag) {
-    if (transformDragSession_.active && sceneEdits_)
-      sceneEdits_->finishGesture();
-    transformDragSession_.active = false;
-  }
+  if (transformDragSession_.active && interactionController_.state().gesture !=
+      container::ui::ViewportGesture::TransformDrag)
+    finishSceneTransformGesture();
 }
 
 void RendererFrontend::selectBimObject(uint32_t objectIndex,
@@ -4464,6 +4534,7 @@ void RendererFrontend::transformSelectedNodeByDrag(
   transformDragSession_.accumulatedDeltaY += deltaY;
 
   auto controls = transformDragSession_.startControls;
+  glm::vec3 translationDelta{0.0f};
   const double dragDeltaX = transformDragSession_.accumulatedDeltaX;
   const double dragDeltaY = transformDragSession_.accumulatedDeltaY;
 
@@ -4522,8 +4593,7 @@ void RendererFrontend::transformSelectedNodeByDrag(
     const float dragScale = scaleHint * 0.01f;
     if (axis != container::ui::TransformAxis::Free) {
       const glm::vec3 axisVector = transformAxisVector();
-      controls.position +=
-          axisVector * projectedAxisDragAmount(axisVector, dragScale);
+      translationDelta = axisVector * projectedAxisDragAmount(axisVector, dragScale);
       break;
     }
 
@@ -4531,8 +4601,7 @@ void RendererFrontend::transformSelectedNodeByDrag(
       const glm::vec3 normal =
           normalizedOr(transformDragSession_.startSectionPlane.normal,
                        {0.0f, 1.0f, 0.0f});
-      controls.position +=
-          normal * static_cast<float>(dragDeltaX - dragDeltaY) * dragScale;
+      translationDelta = normal * static_cast<float>(dragDeltaX - dragDeltaY) * dragScale;
       break;
     }
 
@@ -4546,9 +4615,8 @@ void RendererFrontend::transformSelectedNodeByDrag(
       vertical = up;
     }
 
-    controls.position +=
-        horizontal * static_cast<float>(dragDeltaX) * dragScale;
-    controls.position += vertical * static_cast<float>(dragDeltaY) * dragScale;
+    translationDelta = (horizontal * static_cast<float>(dragDeltaX) +
+                        vertical * static_cast<float>(dragDeltaY)) * dragScale;
     break;
   }
   case container::ui::ViewportTool::Rotate: {
@@ -4603,9 +4671,12 @@ void RendererFrontend::transformSelectedNodeByDrag(
   if (snapEnabled) {
     switch (tool) {
     case container::ui::ViewportTool::Translate:
-      controls.position =
-          snapRelativeVec3(transformDragSession_.startControls.position,
-                           controls.position, 0.25f);
+      if (axis == container::ui::TransformAxis::Free) {
+        translationDelta = snapRelativeVec3(glm::vec3(0.0f), translationDelta, 0.25f);
+      } else {
+        const auto worldAxis = transformAxisVector();
+        translationDelta = worldAxis * (std::round(glm::dot(translationDelta, worldAxis) / 0.25f) * 0.25f);
+      }
       break;
     case container::ui::ViewportTool::Rotate:
       controls.rotationDegrees =
@@ -4620,6 +4691,21 @@ void RendererFrontend::transformSelectedNodeByDrag(
     case container::ui::ViewportTool::Select:
       break;
     }
+  }
+
+  if (tool == container::ui::ViewportTool::Translate) {
+    if (const auto* node = sceneGraph_.getNode(selectedNode)) {
+      if (const auto* parent = sceneGraph_.getNode(node->parent)) {
+        // The gizmo axes and camera vectors are in world space. Convert the
+        // displacement to the coordinates used by the node's local transform.
+        const glm::mat3 parentBasis(parent->worldTransform);
+        const float determinant = glm::determinant(parentBasis);
+        if (!std::isfinite(determinant) || determinant == 0.0f) return;
+        translationDelta = glm::inverse(parentBasis) * translationDelta;
+      }
+    }
+    controls.position += translationDelta;
+    if (!isFiniteVec3(controls.position)) return;
   }
 
   if (transformingEditableLight && subs_.lightingManager) {
@@ -7766,9 +7852,10 @@ void RendererFrontend::presentSceneControls() {
   if (!subs_.guiManager)
     return;
   ensureSceneEditHistory();
+  const bool transforming = transformDragSession_.active || sceneEdits_->transformGestureActive();
   subs_.guiManager->setEditHistoryState(
-      sceneEdits_->canUndo() && !transformDragSession_.active,
-      sceneEdits_->canRedo() && !transformDragSession_.active,
+      sceneEdits_->canUndo() && !transforming,
+      sceneEdits_->canRedo() && !transforming,
       std::string(sceneEdits_->undoLabel()), std::string(sceneEdits_->redoLabel()));
   presentPhysicsControls();
   subs_.guiManager->setOpenVdbVolumeState(

@@ -202,15 +202,6 @@ container::scene::SceneNodeAuthoringSubtree validateBindings(const SceneGraph& g
   return closure;
 }
 
-std::optional<container::scene::AuthoredLightBinding> selectedBinding(
-    const container::scene::AuthoredSceneLights& lights, EditableLightId selected) {
-  if (selected.source != EditableLightSource::Imported || !isValidEditableLightId(selected)) return {};
-  const auto* bindings = &lights.pointBindings;
-  if (selected.type == EditableLightType::Area) bindings = &lights.areaBindings;
-  if (selected.type == EditableLightType::Directional) bindings = &lights.directionalBindings;
-  const auto index = selected.type == EditableLightType::Directional ? size_t(0) : size_t(selected.index);
-  return index < bindings->size() ? std::optional((*bindings)[index]) : std::nullopt;
-}
 } // namespace
 
 struct RendererFrontend::SceneRetirementBudget {
@@ -242,7 +233,6 @@ struct RendererFrontend::SceneRetirementHistory {
   SceneLightEdits lightEdits;
   container::geometry::gltf::AnimationDirtySet dirty;
   std::optional<size_t> camera;
-  std::optional<container::scene::AuthoredLightBinding> selectedLight;
   SceneEditSelection before{}, after{};
 
   Publication stage() const {
@@ -342,7 +332,6 @@ bool RendererFrontend::retireSceneNode(uint32_t selected) {
     state->lightEdits = subs_.lightingManager->snapshotSceneLightEdits();
     const auto lights = subs_.sceneManager->publishedAuthoredSceneLights();
     state->saved.imported->capture(lights, state->lightEdits);
-    state->selectedLight = selectedBinding(lights, subs_.lightingManager->selectedEditableLightId());
   }
   for (const auto& [scene, edits] : gltfSceneLightEdits_)
     state->saved.sceneEdits.emplace(scene, std::make_shared<SceneLightEdits>(edits ? *edits : SceneLightEdits{}));
@@ -352,9 +341,9 @@ bool RendererFrontend::retireSceneNode(uint32_t selected) {
   all(state->dirty.cameras, source.cameras.size());
   state->camera = gltfAnimationCameraNode_; state->before = sceneEditSelection(); state->after = state->before;
   if (state->after.mesh < state->closure.size() && state->closure[state->after.mesh]) state->after.mesh = SceneGraph::kInvalidNode;
-  if (state->selectedLight)
+  if (state->before.lightBinding)
     for (uint32_t id = 0; id < state->slotCount; ++id)
-      if (state->closure[id] && sceneGraph_.getNode(id)->sourceNodeIndex == state->selectedLight->sourceNode)
+      if (state->closure[id] && sceneGraph_.getNode(id)->sourceNodeIndex == state->before.lightBinding->sourceNode)
         state->after.light = {};
   auto prepared = sceneGraph_.prepareRetireSubtree(root);
   auto next = state->stage();
@@ -416,17 +405,9 @@ void RendererFrontend::publishSceneRetirementRefresh() {
   if (subs_.lightingManager) {
     subs_.lightingManager->restoreSceneLightEdits(gltfImportedLightEdits_->merge(
         subs_.sceneManager->publishedAuthoredSceneLights(), state->lightEdits));
-    auto selected = (state->retired ? state->after : state->before).light;
-    if (state->selectedLight && selected.source == EditableLightSource::Imported && isValidEditableLightId(selected)) {
-      const auto authored = subs_.sceneManager->publishedAuthoredSceneLights();
-      const auto* bindings = &authored.pointBindings;
-      if (selected.type == EditableLightType::Area) bindings = &authored.areaBindings;
-      if (selected.type == EditableLightType::Directional) bindings = &authored.directionalBindings;
-      const auto found = std::ranges::find(*bindings, *state->selectedLight);
-      if (found == bindings->end()) selected = {};
-      else selected.index = selected.type == EditableLightType::Directional ? 0 : uint32_t(found - bindings->begin());
-    }
-    subs_.lightingManager->selectEditableLight(selected);
+    const auto& selection = state->retired ? state->after : state->before;
+    subs_.lightingManager->selectEditableLight(remapImportedLightSelection(selection.light, selection.lightBinding.get(),
+        authoredLightBindings(*subs_.sceneManager, selection.light.type)));
   }
   if (subs_.guiManager) {
     auto& controls = subs_.guiManager->gltfAnimationControls();

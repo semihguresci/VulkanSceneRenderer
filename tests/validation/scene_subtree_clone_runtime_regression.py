@@ -483,18 +483,24 @@ def primitive_state(state, name):
     draws = 5 if scene == 0 else int(name in ('created', 'redo'))
     replacement = name in ('replacement', 'other-scene')
     nodes, _ = common_state(state, scene=scene, draws=draws, slots=9 if present else 8, sources=3,
-        vertices=20 if replacement else 16, indices=30 if replacement else 24)
+        vertices=16, indices=24)
     roots = [0] if scene == 0 else [8] if draws else []
     require(state['gltfMerge']['activeRoots'] == roots, 'Undone primitive root activated a reused slot in another scene')
     cursor = (0, 0) if name == 'other-scene' else (0, 1) if name in ('undo', 'undo-again') else (1, 0)
     authoring.history_cursor(state, *cursor)
+    active = name in ('created', 'redo', 'replacement')
     if present:
         require(nodes[8]['name'] == ('Replacement other scene' if replacement else 'Temporary empty-scene quad') and
-            nodes[8]['sourceNode'] == -1 and nodes[8]['primitiveIndex'] == (4 if replacement else 3) and
-            nodes[8]['parentGraphNode'] == (0 if replacement else 7), 'Primitive undo/redo or reused-slot ownership changed')
+            nodes[8]['sourceNode'] == -1 and nodes[8]['primitiveIndex'] == 3 and nodes[8]['active'] == active and
+            nodes[8]['parentGraphNode'] == (0 if replacement else 7), 'Primitive replay, geometry reuse or scene ownership changed')
+    bindings = state['gltfMaterialBindings']
+    require(not bindings['drawsTruncated'], 'Primitive draw bindings were truncated')
+    placement_draws = [(row['primitiveIndex'], row['firstIndex'], row['indexCount'])
+                       for row in bindings['draws'] if row['graphNode'] == 8]
+    require(placement_draws == ([(3, 18, 6)] if active else []), 'Primitive did not reuse the resident quad draw range')
     selected = INVALID if name in ('undo', 'undo-again', 'other-scene') else 8
     require(state['gui']['selectedMeshNodeId'] == selected, 'Primitive addition selection/history changed')
-    return dict(passed=True, name=name, activeRoots=roots, graphSlots=len(nodes), runtimeGeometryIdsAppendOnly=True,
+    return dict(passed=True, name=name, activeRoots=roots, graphSlots=len(nodes), residentPrimitiveReused=True,
         reusedSlotDoesNotActivateOtherScene=name == 'other-scene')
 
 

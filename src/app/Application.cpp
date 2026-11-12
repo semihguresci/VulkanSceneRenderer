@@ -171,7 +171,7 @@ void Application::screenshotCaptureLoop() {
   const float fixedDt = config_.screenshotFixedTimestepSeconds > 0.0f
                             ? config_.screenshotFixedTimestepSeconds
                             : 1.0f / 60.0f;
-  const bool scriptedViewport = sequence && sequence->hasViewportPointer();
+  const bool scriptedViewport = sequence && (sequence->hasViewportPointer() || sequence->hasNodeGizmo());
 
   for (uint32_t frameNumber = 1; !window_->shouldClose() &&
        (captureSampleSeries ? checkpoint != sampleSeries.end() : frameNumber <= captureFrame);

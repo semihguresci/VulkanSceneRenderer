@@ -680,12 +680,13 @@ void CameraController::applyCameraTransform(
 }
 
 std::optional<glm::mat4> CameraController::previewNodeTransform(
-    uint32_t nodeIndex, const container::ui::TransformControls &controls) const {
+    uint32_t nodeIndex, const container::ui::TransformControls &controls,
+    const glm::mat4* gestureStart) const {
   const auto *node = sceneGraph_.getNode(nodeIndex);
   if (node == nullptr || node->retired)
     return std::nullopt;
-  const auto previous = decomposeTransform(node->localTransform);
-  auto transform = node->localTransform;
+  auto transform = gestureStart ? *gestureStart : node->localTransform;
+  const auto previous = decomposeTransform(transform);
   if (controls.rotationDegrees == previous.rotationDegrees &&
       controls.scale == previous.scale) {
     // Physics proxies can cancel a rotated, nonuniformly scaled parent using

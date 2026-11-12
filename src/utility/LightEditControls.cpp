@@ -169,6 +169,8 @@ void LightEditControls::draw() {
   };
   const auto section=[](const char* label) {ImGui::Spacing();ImGui::Separator();ImGui::TextUnformatted(label);};
   ImGui::BeginDisabled(!snapshot_.light.editable);
+  // Typed values participate in the same preview gesture as a drag.
+  ImGui::PushItemFlag(ImGuiItemFlags_LiveEditOnInputScalar, true);
   section("Light Transform");
   if(snapshot_.light.iesProfileAddress) {
     ImGui::TextDisabled("Measured fixture. Move or rotate its source node.");
@@ -224,6 +226,7 @@ void LightEditControls::draw() {
     vector("Area Tangent",draft_.tangent,LightEditField::AreaBasis,.01f);
     vector("Area Bitangent",draft_.bitangent,LightEditField::AreaBasis,.01f);
   }
+  ImGui::PopItemFlag();
   ImGui::EndDisabled();
   section("Shadow Eligibility");
   if(snapshot_.light.type==EditableLightType::Directional)

@@ -115,7 +115,8 @@ public:
   // Compose exactly the local matrix applyNodeTransform would commit, without
   // changing graph state. Missing nodes have no proposed transform.
   [[nodiscard]] std::optional<glm::mat4> previewNodeTransform(
-      uint32_t nodeIndex, const container::ui::TransformControls &controls) const;
+      uint32_t nodeIndex, const container::ui::TransformControls &controls,
+      const glm::mat4* gestureStart = nullptr) const;
 
   void
   applyCameraTransform(const container::ui::TransformControls &controls,

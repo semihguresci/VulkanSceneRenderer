@@ -402,6 +402,7 @@ TEST_F(HierarchyWidgetsTests,
   graph.setLocalTransform(selected, original);
   container::util::SceneEditHistory history(graph);
   std::vector<uint64_t> gestures;
+  size_t committedDrags = 0;
   ImVec2 start;
   const auto draw = [&] {
     openTransformEditors();
@@ -415,9 +416,12 @@ TEST_F(HierarchyWidgetsTests,
           EXPECT_NE(context_->ActiveId, 0u);
           gestures.push_back(*gui.sceneEditGesture());
           controls = edited;
-          EXPECT_TRUE(history.setTransform(
-              node, glm::translate(glm::mat4{1}, edited.position),
-              gui.sceneEditGesture()));
+          const auto preview = glm::translate(glm::mat4{1}, edited.position);
+          EXPECT_TRUE(history.setTransform(node, preview, gui.sceneEditGesture()));
+          EXPECT_EQ(graph.getNode(node)->localTransform, preview);
+          EXPECT_TRUE(history.transformGestureActive());
+          EXPECT_EQ(history.undoCount(), committedDrags);
+          EXPECT_EQ(history.redoCount(), 0u);
         });
   };
   frame(draw);
@@ -430,13 +434,15 @@ TEST_F(HierarchyWidgetsTests,
   for (auto gesture : gestures)
     EXPECT_EQ(gesture, firstGesture);
   EXPECT_EQ(context_->ActiveId, 0u);
-  ASSERT_EQ(history.undoCount(), 1u);
+  EXPECT_EQ(history.undoCount(), 0u);
   const auto afterFirstDrag = graph.getNode(selected)->localTransform;
   EXPECT_NE(afterFirstDrag, original);
 
-  // This fixture draws the inspector without GuiManager::startFrame. End its
-  // history gesture explicitly after the synthetic mouse release.
+  // Mirror the frontend's scene-history finish after ImGui releases the item.
   history.finishGesture();
+  ASSERT_EQ(history.undoCount(), 1u);
+  EXPECT_FALSE(history.transformGestureActive());
+  committedDrags = history.undoCount();
   // Re-pressing the same field inside ImGui's double-click interval opens its
   // text editor. Advance idle frames so the next interaction is another drag.
   for (float elapsed = 0; elapsed <= ImGui::GetIO().MouseDoubleClickTime;
@@ -449,16 +455,19 @@ TEST_F(HierarchyWidgetsTests,
   EXPECT_NE(secondGesture, firstGesture);
   for (auto gesture : gestures)
     EXPECT_EQ(gesture, secondGesture);
-  ASSERT_EQ(history.undoCount(), 2u);
+  EXPECT_EQ(context_->ActiveId, 0u);
+  EXPECT_EQ(history.undoCount(), 1u);
   const auto afterSecondDrag = graph.getNode(selected)->localTransform;
   EXPECT_NE(afterSecondDrag, afterFirstDrag);
   history.finishGesture();
+  ASSERT_EQ(history.undoCount(), 2u);
 
   ASSERT_TRUE(history.undo());
   EXPECT_EQ(graph.getNode(selected)->localTransform, afterFirstDrag);
   ASSERT_TRUE(history.undo());
   EXPECT_EQ(graph.getNode(selected)->localTransform, original);
   ASSERT_TRUE(history.redo());
+  EXPECT_EQ(graph.getNode(selected)->localTransform, afterFirstDrag);
   ASSERT_TRUE(history.redo());
   EXPECT_EQ(graph.getNode(selected)->localTransform, afterSecondDrag);
 }
