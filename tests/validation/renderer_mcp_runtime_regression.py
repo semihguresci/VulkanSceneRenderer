@@ -81,7 +81,8 @@ def wait_for(callback, timeout=20, *, startup=False):
 
 
 def triangle(path):
-    data = struct.pack("<18f", -.8, -.5, 0, .8, -.5, 0, 0, .7, 0, *((0, 0, 1) * 3))
+    # Startup and model replacement both frame this face from the default -Z view.
+    data = struct.pack("<18f", -.8, -.5, 0, 0, .7, 0, .8, -.5, 0, *((0, 0, -1) * 3))
     document = {
         "asset": {"version": "2.0"},
         "buffers": [{"byteLength": len(data),
@@ -325,9 +326,8 @@ def renderer_command(exe, model, intensity=0):
         "--width", str(WIDTH), "--height", str(HEIGHT), "--no-taa", "--no-bloom", "--no-ddgi", "--msaa", "1",
         "--render-technique", "deferred-raster", "--display-mode", "lit", "--ray-shadows", "raster",
         "--sky", "plain", "--sky-horizon", "0", "0", "0", "--import-scale", "1",
-        "--camera-position", "0", "0", "4", "--camera-target", "0", "0", "0", "--camera-fov", "45",
         "--environment-intensity", "0", "--directional-intensity", str(intensity), "--bounce-intensity", "0",
-        "--directional-color", "1", "1", "1", "--directional-direction", "0", "0", "-1",
+        "--directional-color", "1", "1", "1", "--directional-direction", "0", "0", "1",
     ]
 
 
