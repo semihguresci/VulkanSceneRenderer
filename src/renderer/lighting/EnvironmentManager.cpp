@@ -211,6 +211,7 @@ void EnvironmentManager::destroy() {
   pipelineManager_.destroyDescriptorSetLayout(iblSetLayout_);
 
   destroySampler(envSampler_);
+  destroySampler(equirectSampler_);
   destroySampler(gtaoSampler_);
 }
 
@@ -909,12 +910,12 @@ bool EnvironmentManager::submitEnvironment(
     return failGeneration("Environment descriptor allocation failed");
 
   auto writeSet = [&](VkDescriptorSet set, VkImageView sampledView,
-                      VkImageLayout sampledLayout, VkImageView storageView) {
+                      VkSampler sampler, VkImageView storageView) {
     VkDescriptorImageInfo sampledInfo{};
     sampledInfo.imageView   = sampledView;
-    sampledInfo.imageLayout = sampledLayout;
+    sampledInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkDescriptorImageInfo samplerInfo{};
-    samplerInfo.sampler = envSampler_;
+    samplerInfo.sampler = sampler;
     VkDescriptorImageInfo storageInfo{};
     storageInfo.imageView   = storageView;
     storageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -934,12 +935,11 @@ bool EnvironmentManager::submitEnvironment(
     vkUpdateDescriptorSets(dev, 3, w.data(), 0, nullptr);
   };
 
-  writeSet(equirectSet,   equirectView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, envStorageView);
-  writeSet(irradianceSet, envCubeView,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, irradianceStorageView);
+  // Only HDR longitudes wrap. The procedural atmosphere LUT has bounded axes.
+  writeSet(equirectSet, equirectView, sky ? envSampler_ : equirectSampler_, envStorageView);
+  writeSet(irradianceSet, envCubeView, envSampler_, irradianceStorageView);
   for (uint32_t m = 0; m < kPrefilterMips; ++m)
-    writeSet(prefilterSets[m], envCubeView,
-             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-             prefilterStorageViews[m]);
+    writeSet(prefilterSets[m], envCubeView, envSampler_, prefilterStorageViews[m]);
 
   // ---- 5. Record everything on a single-use command buffer ------------
   {
@@ -1386,6 +1386,11 @@ void EnvironmentManager::createSamplers() {
     si.maxAnisotropy = 1.0f;
     if (createOwnedSampler(dev, &si, nullptr, &brdfLutSampler_) != VK_SUCCESS)
       throw std::runtime_error("failed to create BRDF LUT sampler");
+
+    // The single-mip HDR panorama is periodic in longitude and clamped at the poles.
+    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    if (createOwnedSampler(dev, &si, nullptr, &equirectSampler_) != VK_SUCCESS)
+      throw std::runtime_error("failed to create HDR panorama sampler");
   }
 
   // Environment cubemap sampler (linear, mip-mapped for prefiltered specular).

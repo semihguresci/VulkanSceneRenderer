@@ -3,9 +3,8 @@
 `EnvironmentManager` owns the unfiltered radiance cubemap, diffuse irradiance,
 specular mip chain, BRDF integration LUT and GTAO resources. The radiance view
 supplies the reference path tracer without sampling its specular approximation.
-The currently published application loads its default HDR through the same API.
-Viewport controls, presentation uniforms, solar scene lighting and the full
-reload controller remain separate publication dependencies.
+The renderer uses the same loading API for its default HDR, `--environment`,
+and live file selection in **Scene Controls → Environment**.
 
 ## Loading and publication
 
@@ -29,6 +28,10 @@ Encoded and decoded data have finite budgets; OpenEXR dimensions, channels and
 data-window arithmetic are checked before image allocation. Components must be
 finite and fit the half-float cubemap. Values above one are preserved. These
 budgets do not bound private codec scratch or driver allocations.
+
+The panorama sampler wraps longitude and clamps latitude. Linear filtering
+blends the first and last columns across the seam and keeps each pole within
+its own edge row. [Vulkan sampler address modes](https://docs.vulkan.org/spec/latest/chapters/samplers.html#VkSamplerAddressMode)
 
 `TextureImageData` supplies the CPU Radiance decoder and the complete existing
 typed PNG/DDS/KTX/WebP API. Its optional codecs and notices are configured in
