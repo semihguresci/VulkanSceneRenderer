@@ -301,6 +301,85 @@ overhead estimates. The same-build repeat of the single metallic coarse disk
 stayed within the default 5% regression threshold. Its change interval was
 −6.76% to +3.22%. [Repeated benchmark results](../tests/visual-regression/ltc/windows-nvidia/repeated-benchmark-results.json)
 
+### Disk integration optimization
+
+The coarse disk path still integrates the same 32 ordered edges. When a
+conservative height bound places the whole disk above both the receiver and
+fitted horizons, it transforms and normalizes each vertex once and shares it
+between adjacent edges. Disks that fail either height test go through the
+existing ordered clipping path. Adaptive integration still uses the physical
+and fitted arc-to-chord bounds with a relative tolerance of 0.002. Each
+power-of-four increase above that tolerance adds two to the exponent of its
+positive FP32 bit pattern. The shader uses that spacing to compute the first
+valid subdivision level directly. The 512-subdivision limit and sampled
+fallback still apply.
+
+The `legacy-disk` benchmark domain reproduces the original metallic receiver
+with roughness 0.6, disk radius 0.4, emitter distance 1.5, manual exposure 0.2
+and 25 integration samples. The matched before/after run uses Release builds,
+validation off for timing, 48 warm-up frames and eight timing samples per
+process at a stride of four. Run five independent process pairs per fixture
+with `--benchmark-domain legacy-disk rectangle --benchmark-material metallic
+--benchmark-repeats 5 --benchmark-seed 70`. The rectangle controls use the
+same receiver, light counts and capture policy. The report also records
+G-buffer timing, the sum of timed passes, GPU driver and Vulkan versions,
+binary hashes, and synchronization-validated reference captures.
+
+The matched Release runs on the RTX 2080 SUPER used raw Vulkan driver version
+`2559967232`. Lighting times are medians in milliseconds. The last column
+compares the two LTC builds and includes the 95% bootstrap interval.
+
+| Fixture | Emitters | Sampled after | LTC before | LTC after | LTC change [95% interval] |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Legacy disk | 1 | 1.740 | 1.382 | 1.227 | −11.21% [−29.70%, +4.95%] |
+| Legacy disk | 8 | 5.535 | 5.224 | 4.213 | −19.34% [−19.64%, −19.07%] |
+| Legacy disk | 32 | 20.737 | 18.918 | 14.876 | −21.36% [−23.09%, −20.49%] |
+| Legacy disk | 128 | 81.718 | 73.951 | 57.694 | −21.98% [−22.39%, −20.98%] |
+| Rectangle | 1 | 1.479 | 1.650 | 1.472 | −10.80% [−25.70%, +4.09%] |
+| Rectangle | 8 | 5.520 | 3.017 | 2.996 | −0.68% [−1.64%, +0.04%] |
+| Rectangle | 32 | 20.487 | 8.722 | 8.691 | −0.35% [−2.59%, +2.90%] |
+| Rectangle | 128 | 80.821 | 32.786 | 32.632 | −0.47% [−1.34%, +1.08%] |
+
+LTC was faster than sampled across the paired timing intervals for all four
+optimized disk counts. The measured
+build-to-build improvements at 8, 32 and 128 disks exceeded run-to-run
+uncertainty. The one-disk interval and all rectangle intervals include zero.
+At 128 disks, G-buffer stayed at 0.180 ms and the LTC timed-pass sum fell
+from 74.506 to 58.247 ms. The renderer supplied pass timestamps only.
+The matched pre-change build already had lower LTC medians than sampled under
+this protocol. The historical 7–12% overhead was measured with validation on
+and an earlier driver. The baseline path flags for the legacy disks showed
+coarse work on all receiver pixels, adaptive work on 10.87%, subdivision on
+4.48% and clipping on 0.33%. These counts overlap.
+
+Shader-only experiments on the RTX 2080 SUPER kept the executable and fixture
+fixed and interleaved three processes per shader variant. At 128 legacy disks,
+the conservative coarse path reduced Lighting from 73.73 to 58.97 ms.
+Specializing the edge-angle case as well took 88.40 ms. The direct subdivision
+calculation alone improved the adaptive near and horizon fixtures by 4–5%.
+Caching fitted endpoints and combining the clipping work each increased
+Lighting time in those fixtures. The clipping variant's deferred SPIR-V was
+15% smaller. Nsight could not collect hardware counters on this system, so
+driver-level register use, occupancy and instruction throughput are unmeasured.
+
+Four single-emitter dielectric fixtures checked the remaining disk paths.
+The near-field fixture improved from 3.378 to 3.181 ms, and the material
+residual fixture improved from 2.269 to 2.120 ms. Both still took more Lighting
+time than sampled integration, as did the tilted horizon fixture. The path
+flags show sampled residual work on every receiver pixel in the residual
+fixture. The horizon and full sampled fallback medians also decreased, with
+build-to-build intervals that crossed the 5% regression limit. The fallback
+fixture's paired LTC-to-sampled ratio was 1.019 [0.925, 1.198].
+
+The existing thresholds passed across 46 CPU oracle cases, 15 CPU disk-rim
+cases, two angular-continuity checks and 232 GPU correctness records from
+216 fresh Vulkan synchronization-validated captures. The independent
+material-layer suite passed 67 records from 52 validation-clean captures.
+The largest measured GPU disk-rim relative error was 0.10%. The maximum
+close-disk annulus errors were 0.23% center-normalized and 0.47% locally
+normalized.
+[Disk optimization results](../tests/visual-regression/ltc/windows-nvidia/disk-optimization-results.json)
+
 ### Historical validation and timings
 
 The October 8, 2026 validation run on an RTX 2080 SUPER passed 136 quality
