@@ -274,7 +274,7 @@ SceneGraph BuildGltfSceneHierarchy(const tinygltf::Model& source,
     const auto parentWorld=pending.parent ? graph.getNode(*pending.parent)->worldTransform : glm::mat4(1);
     const auto world=parentWorld*local;
     if(!finiteAffine(world)) reject("node world transform exceeds finite affine range");
-    const auto id=graph.createNode(local,0,false,SceneGraph::kInvalidNode,node.name.empty()?"glTF Node "+std::to_string(pending.source):node.name);
+    const auto id=graph.createNode(local,0,false,SceneGraph::kInvalidNode,node.name);
     auto& runtime = *graph.getNode(id);
     runtime.sourceNodeIndex=pending.source;
     // Repeated scaled exports and root transform corrections can create a

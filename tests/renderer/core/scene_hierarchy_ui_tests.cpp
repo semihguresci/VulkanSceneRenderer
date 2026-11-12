@@ -92,6 +92,23 @@ protected:
     io.AddMouseButtonEvent(ImGuiMouseButton_Right, false); frame(draw); frame(draw);
   }
 
+  ImGuiWindow* openLastHierarchyRowContextMenu(const std::function<void()>& draw) {
+    frame(draw);
+    frame(draw);
+    const auto* table = hierarchyTable();
+    if (!table) return nullptr;
+    contextMenu(draw, {table->Columns[0].WorkMinX + 35.0f,
+                       (table->RowPosY1 + table->RowPosY2) * 0.5f});
+    return context_->OpenPopupStack.empty() ? nullptr : context_->OpenPopupStack.back().Window;
+  }
+
+  void selectNodeContextAction(const std::function<void()>& draw, const ImGuiWindow& menu, int row) {
+    click(draw, {menu.DC.CursorStartPos.x + 35.0f,
+                 menu.DC.CursorStartPos.y + ImGui::GetTextLineHeightWithSpacing() * (row + 0.5f)});
+    frame(draw);
+    frame(draw);
+  }
+
   void drag(const std::function<void()> &draw, ImVec2 position) {
     ImGui::GetIO().AddMousePosEvent(position.x, position.y);
     frame(draw);
@@ -1520,4 +1537,110 @@ TEST_F(HierarchyWidgetsTests, ContextInlineRenameAndModalFallbackOwnOnlyOneEdito
   frame(draw);frame(draw);ASSERT_FALSE(context_->OpenPopupStack.empty());
   EXPECT_TRUE(context_->OpenPopupStack.back().Window->Flags & ImGuiWindowFlags_Modal);
   EXPECT_FALSE(gui.consumeSceneNodeAuthoringRequest());EXPECT_EQ(graph.getNode(node)->name,"Context target");
+}
+
+TEST_F(HierarchyWidgetsTests, DeleteConfirmationClosesWhenTheSameGraphSlotIsReused) {
+  SceneGraph graph;
+  const auto node = addNode(graph, "Duplicate name");
+  const auto identity = graph.identity();
+  const auto incarnation = graph.nodeIncarnation(node);
+  container::ui::GuiManager gui;
+  const auto draw = [&] {
+    ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    gui.drawSceneHierarchy(graph, SceneGraph::kInvalidNode, node,
+        [](uint32_t) {}, [](uint32_t) {}, [](uint32_t, bool) {},
+        [](uint32_t, std::optional<uint32_t>) {});
+  };
+
+  const auto* menu = openLastHierarchyRowContextMenu(draw);
+  ASSERT_NE(menu, nullptr);
+  selectNodeContextAction(draw, *menu, 4); // Delete subtree...
+  ASSERT_FALSE(context_->OpenPopupStack.empty());
+  ASSERT_TRUE(context_->OpenPopupStack.back().Window->Flags & ImGuiWindowFlags_Modal);
+  EXPECT_FALSE(gui.consumeSceneNodeAuthoringRequest());
+
+  ASSERT_TRUE(graph.detachTail(node));
+  ASSERT_EQ(addNode(graph, "Duplicate name"), node);
+  ASSERT_EQ(graph.identity(), identity);
+  ASSERT_NE(graph.nodeIncarnation(node), incarnation);
+  frame(draw);
+  EXPECT_TRUE(context_->OpenPopupStack.empty());
+  EXPECT_FALSE(gui.consumeSceneNodeAuthoringRequest());
+  EXPECT_FALSE(graph.isNodeRetired(node));
+}
+
+TEST_F(HierarchyWidgetsTests, RenameDialogClosesOnSceneSwitchAndEditsTheNewViewWhenReopened) {
+  SceneGraph graph;
+  const auto previous = addNode(graph, "Previous scene node");
+  const auto current = addNode(graph, "Current scene node");
+  graph.setActiveRoots(std::array{previous});
+  auto selected = previous;
+  container::ui::GuiManager gui;
+  const auto draw = [&] {
+    ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    gui.drawSceneHierarchy(graph, SceneGraph::kInvalidNode, selected,
+        [](uint32_t) {}, [](uint32_t) {}, [](uint32_t, bool) {},
+        [](uint32_t, std::optional<uint32_t>) {});
+  };
+
+  const auto* menu = openLastHierarchyRowContextMenu(draw);
+  ASSERT_NE(menu, nullptr);
+  selectNodeContextAction(draw, *menu, 1); // Rename...
+  ASSERT_FALSE(context_->OpenPopupStack.empty());
+  ASSERT_TRUE(context_->OpenPopupStack.back().Window->Flags & ImGuiWindowFlags_Modal);
+  replaceText(draw, "Stale draft");
+
+  graph.setActiveRoots(std::array{current});
+  selected = current;
+  frame(draw);
+  EXPECT_TRUE(context_->OpenPopupStack.empty());
+  key(draw, ImGuiKey_Enter);
+  EXPECT_FALSE(gui.consumeSceneNodeAuthoringRequest());
+  EXPECT_EQ(graph.getNode(previous)->name, "Previous scene node");
+
+  menu = openLastHierarchyRowContextMenu(draw);
+  ASSERT_NE(menu, nullptr);
+  selectNodeContextAction(draw, *menu, 1);
+  ASSERT_FALSE(context_->OpenPopupStack.empty());
+  ASSERT_TRUE(context_->OpenPopupStack.back().Window->Flags & ImGuiWindowFlags_Modal);
+  graph.setLocalTransform(current, glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 2.0f, 3.0f)));
+  frame(draw);
+  ASSERT_FALSE(context_->OpenPopupStack.empty());
+  replaceText(draw, "Fresh name");
+  key(draw, ImGuiKey_Enter);
+  const auto request = gui.consumeSceneNodeAuthoringRequest();
+  ASSERT_TRUE(request);
+  EXPECT_EQ(request->action, container::ui::SceneNodeAuthoringAction::Rename);
+  EXPECT_EQ(request->graphIdentity, graph.identity());
+  EXPECT_EQ(request->node, current);
+  EXPECT_EQ(request->nodeIncarnation, graph.nodeIncarnation(current));
+  EXPECT_EQ(request->name, "Fresh name");
+  EXPECT_FALSE(gui.consumeSceneNodeAuthoringRequest());
+}
+
+TEST_F(HierarchyWidgetsTests, ContextMenuClosesWhenTheSameGraphSlotIsReused) {
+  SceneGraph graph;
+  const auto node = addNode(graph, "Original node");
+  const auto identity = graph.identity();
+  const auto incarnation = graph.nodeIncarnation(node);
+  container::ui::GuiManager gui;
+  const auto draw = [&] {
+    ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    gui.drawSceneHierarchy(graph, SceneGraph::kInvalidNode, node,
+        [](uint32_t) {}, [](uint32_t) {}, [](uint32_t, bool) {},
+        [](uint32_t, std::optional<uint32_t>) {});
+  };
+
+  ASSERT_NE(openLastHierarchyRowContextMenu(draw), nullptr);
+  ASSERT_TRUE(graph.detachTail(node));
+  ASSERT_EQ(addNode(graph, "Replacement node"), node);
+  ASSERT_EQ(graph.identity(), identity);
+  ASSERT_NE(graph.nodeIncarnation(node), incarnation);
+  frame(draw);
+  EXPECT_TRUE(context_->OpenPopupStack.empty());
+  EXPECT_FALSE(gui.consumeSceneNodeAuthoringRequest());
+
+  beginInline(draw);
+  ASSERT_NE(context_->ActiveId, 0u);
+  EXPECT_EQ(context_->ActiveId, context_->InputTextState.ID);
 }

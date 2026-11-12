@@ -87,7 +87,7 @@ size_t RendererFrontend::cameraNodeByName(std::string_view name) const {
     const auto* node=sceneGraph_.getNode(id);
     if(!node || !sceneGraph_.isNodeActive(id) || node->sourceNodeIndex<0 || size_t(node->sourceNodeIndex)>=source.nodes.size()) continue;
     const auto index=size_t(node->sourceNodeIndex);const auto& row=source.nodes[index];
-    if(row.name!=name || row.camera<0 || size_t(row.camera)>=source.cameras.size()) continue;
+    if(node->name!=name || row.camera<0 || size_t(row.camera)>=source.cameras.size()) continue;
     if(selected && *selected!=index) throw std::invalid_argument("The authored camera node name is ambiguous; use its source index");
     selected=index;
   }

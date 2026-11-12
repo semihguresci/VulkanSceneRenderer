@@ -2964,7 +2964,7 @@ void RendererFrontend::applyTemporalCapture(
         : edit.action == "duplicate-subtree" ? container::ui::SceneNodeAuthoringAction::DuplicateSubtree
         : edit.action == "make-editable" ? container::ui::SceneNodeAuthoringAction::MakeEditable
                                          : container::ui::SceneNodeAuthoringAction::DeleteSubtree,
-        sceneGraph_.identity(), target, edit.name});
+        sceneGraph_.identity(), target, edit.name, sceneGraph_.nodeIncarnation(target)});
   }
   const auto resolveNode=[this](const container::temporal::CaptureNodeReference& reference) {
     auto target=reference.graphNode.value_or(container::scene::SceneGraph::kInvalidNode);

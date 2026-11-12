@@ -16,25 +16,27 @@ TEST(GuiSceneNodeAuthoring, QueuesExactUtf8IdentityAndTargetWithoutAnImGuiContex
   GuiManager gui;
   EXPECT_FALSE(gui.consumeSceneNodeAuthoringRequest());
   gui.queueSceneNodeAuthoringRequest({SceneNodeAuthoringAction::Rename, 37, 12,
-                                      "Fa\xc3\xa7" "ade \xe6\x9d\xb1"});
+                                      "Fa\xc3\xa7" "ade \xe6\x9d\xb1", 51});
   const auto request = gui.consumeSceneNodeAuthoringRequest();
   ASSERT_TRUE(request);
   EXPECT_EQ(request->action, SceneNodeAuthoringAction::Rename);
   EXPECT_EQ(request->graphIdentity, 37u);
   EXPECT_EQ(request->node, 12u);
+  EXPECT_EQ(request->nodeIncarnation, 51u);
   EXPECT_EQ(request->name, "Fa\xc3\xa7" "ade \xe6\x9d\xb1");
   EXPECT_FALSE(gui.consumeSceneNodeAuthoringRequest());
 }
 
 TEST(GuiSceneNodeAuthoring, RejectedReplacementPreservesThePendingEdit) {
   GuiManager gui;
-  gui.queueSceneNodeAuthoringRequest({SceneNodeAuthoringAction::CreateEmpty, 9, 0, "Empty child"});
+  gui.queueSceneNodeAuthoringRequest({SceneNodeAuthoringAction::CreateEmpty, 9, 0, "Empty child", 21});
   for (const auto& request : {
-      SceneNodeAuthoringRequest{SceneNodeAuthoringAction::Rename, 9, 1, "   "},
-      SceneNodeAuthoringRequest{SceneNodeAuthoringAction::Rename, 0, 1, "Valid"},
+      SceneNodeAuthoringRequest{SceneNodeAuthoringAction::Rename, 9, 1, "   ", 31},
+      SceneNodeAuthoringRequest{SceneNodeAuthoringAction::Rename, 0, 1, "Valid", 31},
+      SceneNodeAuthoringRequest{SceneNodeAuthoringAction::Rename, 9, 1, "Valid", 0},
       SceneNodeAuthoringRequest{SceneNodeAuthoringAction::Rename, 9,
-          std::numeric_limits<uint32_t>::max(), "Valid"},
-      SceneNodeAuthoringRequest{static_cast<SceneNodeAuthoringAction>(127), 9, 1, "Valid"}}) {
+          std::numeric_limits<uint32_t>::max(), "Valid", 31},
+      SceneNodeAuthoringRequest{static_cast<SceneNodeAuthoringAction>(127), 9, 1, "Valid", 31}}) {
     EXPECT_THROW(gui.queueSceneNodeAuthoringRequest(request), std::invalid_argument);
   }
   const auto request = gui.consumeSceneNodeAuthoringRequest();
@@ -42,32 +44,34 @@ TEST(GuiSceneNodeAuthoring, RejectedReplacementPreservesThePendingEdit) {
   EXPECT_EQ(request->action, SceneNodeAuthoringAction::CreateEmpty);
   EXPECT_EQ(request->graphIdentity, 9u);
   EXPECT_EQ(request->node, 0u);
+  EXPECT_EQ(request->nodeIncarnation, 21u);
   EXPECT_EQ(request->name, "Empty child");
 }
 
 TEST(GuiSceneNodeAuthoring, DeleteTargetsRetainedIdentityWithoutInventingANewLabel) {
   GuiManager gui;
-  gui.queueSceneNodeAuthoringRequest({SceneNodeAuthoringAction::DeleteSubtree, 19, 7, {}});
+  gui.queueSceneNodeAuthoringRequest({SceneNodeAuthoringAction::DeleteSubtree, 19, 7, {}, 35});
   const auto request = gui.consumeSceneNodeAuthoringRequest();
   ASSERT_TRUE(request);
   EXPECT_EQ(request->action, SceneNodeAuthoringAction::DeleteSubtree);
   EXPECT_EQ(request->graphIdentity, 19u);
   EXPECT_EQ(request->node, 7u);
+  EXPECT_EQ(request->nodeIncarnation, 35u);
   EXPECT_TRUE(request->name.empty());
   EXPECT_FALSE(gui.consumeSceneNodeAuthoringRequest());
 }
 
 TEST(GuiSceneNodeAuthoring, DuplicateAcceptsDefaultOrExactNameAndRejectsInvalidReplacement) {
   GuiManager gui;
-  gui.queueSceneNodeAuthoringRequest({SceneNodeAuthoringAction::DuplicateSubtree,31,4,{}});
+  gui.queueSceneNodeAuthoringRequest({SceneNodeAuthoringAction::DuplicateSubtree,31,4,{},57});
   for(const auto& invalid:std::vector<std::string>{"  ","bad\nlabel",std::string(4097,'x')})
-    EXPECT_THROW(gui.queueSceneNodeAuthoringRequest({SceneNodeAuthoringAction::DuplicateSubtree,31,4,invalid}),
+    EXPECT_THROW(gui.queueSceneNodeAuthoringRequest({SceneNodeAuthoringAction::DuplicateSubtree,31,4,invalid,57}),
         std::invalid_argument);
   auto request=gui.consumeSceneNodeAuthoringRequest();
   ASSERT_TRUE(request); EXPECT_TRUE(request->name.empty());
   EXPECT_EQ(request->action,SceneNodeAuthoringAction::DuplicateSubtree);
   EXPECT_EQ(request->graphIdentity,31u); EXPECT_EQ(request->node,4u);
-  gui.queueSceneNodeAuthoringRequest({SceneNodeAuthoringAction::DuplicateSubtree,31,4,"Copy \xE6\x9D\xB1"});
+  gui.queueSceneNodeAuthoringRequest({SceneNodeAuthoringAction::DuplicateSubtree,31,4,"Copy \xE6\x9D\xB1",57});
   request=gui.consumeSceneNodeAuthoringRequest();
   ASSERT_TRUE(request); EXPECT_EQ(request->name,"Copy \xE6\x9D\xB1");
   EXPECT_FALSE(gui.consumeSceneNodeAuthoringRequest());

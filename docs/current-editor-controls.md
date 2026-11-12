@@ -53,6 +53,7 @@ Open **Go to → Scene hierarchy**. Select a row to inspect it. The hierarchy's 
 
 - Press **F2** on a selected hierarchy item for inline rename; Enter commits and Escape cancels. The context menu also offers **Rename...**.
 - Use the context menu for **Add empty child...**, **Duplicate subtree...** and **Delete subtree...**. **Add empty node** is also available in the hierarchy panel.
+- Hierarchy dialogs close when the active scene changes or the hierarchy changes while the dialog is open. Reopen the action on the current node to continue.
 - Use the parent chooser for reparenting. Use the row's focus action to frame an object.
 - **Add Primitive**, near the import/animation controls, creates a quad, plane, cube, sphere, triangular prism, pyramid or torus.
 

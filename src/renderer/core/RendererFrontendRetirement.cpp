@@ -288,6 +288,8 @@ bool RendererFrontend::retireSceneNode(uint32_t selected) {
       , physicsScene_.get(), physicsElements_.get()
 #endif
       );
+  // A linked carrier can be editable while its descendants still belong to a source asset.
+  for (const auto id : subtree.nodes) requireEditableSceneNode(id);
   SnapshotBudget measured;
   measured.charge(4096);
   measured.tables(source.nodes, source.materials, source.lights, source.cameras);

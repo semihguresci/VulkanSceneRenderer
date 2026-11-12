@@ -56,7 +56,7 @@ struct CapturePhysicsJointCreate;
 struct CaptureEvent;
 struct CaptureLightTarget;
 }
-namespace container::ui { struct SceneNodeAuthoringRequest; }
+namespace container::ui { struct GltfAnimationControls; struct SceneNodeAuthoringRequest; }
 namespace container::asl { class PoseReplayScene; }
 namespace container::geometry {
 struct GltfLoadResult;
@@ -465,6 +465,7 @@ private:
   uint64_t gltfAnimationGraphIdentity_{};
   std::optional<size_t> gltfAnimationCameraNode_{};
   std::optional<container::geometry::gltf::AnimatedCameraState> gltfAnimationCamera_{};
+  bool gltfCameraChoicesDirty_{};
   bool sceneEditPublicationPending_{false};
   uint64_t materialVariantGraphIdentity_{};
   std::optional<int> captureMaterialVariant_{};
@@ -483,6 +484,8 @@ private:
   void selectGltfScene(size_t index, bool expectRejection = false);
   void captureImportedLightEdits();
   void refreshGltfCameraChoices();
+  static void setGltfCameraChoices(const container::scene::SceneGraph&, const tinygltf::Model&,
+      container::ui::GltfAnimationControls&);
   void updateMaterialVariantState();
   void processMaterialVariantRequest();
   uint64_t nextViewportEditGesture_{uint64_t{1} << 63};

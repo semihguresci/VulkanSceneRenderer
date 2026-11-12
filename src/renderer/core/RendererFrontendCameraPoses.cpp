@@ -158,9 +158,9 @@ void RendererFrontend::refreshCameraViewPoseInspector() {
     cameraViewPoseDestination_=*current;
     container::ui::CameraViewPoseSnapshot snapshot;snapshot.target=*current;
     snapshot.viewRevision=refreshCameraViewPoseViewRevision();snapshot.viewportActive=!gltfAnimationCameraNode_;
-    const auto& nodes=subs_.sceneManager->authoredCameraSourceView().nodes;
     const auto source=current->camera.sourceNode;
-    if(source>=0 && size_t(source)<nodes.size()) snapshot.destinationName=poseDisplayName(nodes[size_t(source)].name);
+    if (const auto* node = sceneGraph_.getNode(current->camera.graphNode))
+      snapshot.destinationName = poseDisplayName(node->name);
     if(snapshot.destinationName.empty()) snapshot.destinationName="Camera node "+std::to_string(source);
     if(!snapshot.viewportActive) snapshot.blockReason="Choose Viewport in Camera, then navigate to the pose to write.";
     else if(materialGesture_ || lightEditGestureActive() || transformDragSession_.active || sceneEditPublicationPending_ || pendingSceneRetirement_)
