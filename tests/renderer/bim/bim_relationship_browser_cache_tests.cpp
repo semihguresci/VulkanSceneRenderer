@@ -1,9 +1,12 @@
 #include "Container/utility/BimRelationshipBrowserCache.h"
 
+#include "BimRelationshipWidgets.h"
 #include "Container/geometry/DotBimLoader.h"
 #include "Container/renderer/bim/BimManager.h"
 
 #include <gtest/gtest.h>
+#include <imgui.h>
+#include <imgui_internal.h>
 
 #include <array>
 #include <limits>
@@ -324,6 +327,128 @@ TEST(BimRelationshipBrowserCacheTests, StoreyLookupTracksQueryAndPublication) {
   const std::span<const Storey> empty;
   cache.refresh(nullptr, 3u, nullptr);
   EXPECT_EQ(cache.storeyIndexForLabel(empty, "Replacement"), -1);
+}
+
+class BimSpatialBrowserWidgetTests : public ::testing::Test {
+protected:
+  void SetUp() override {
+    previousContext_ = ImGui::GetCurrentContext();
+    context_ = ImGui::CreateContext();
+    auto &io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    io.DisplaySize = ImVec2(1024.0f, 440.0f);
+    io.DeltaTime = 1.0f / 60.0f;
+    unsigned char *pixels{};
+    int width{}, height{};
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+  }
+
+  void TearDown() override {
+    ImGui::DestroyContext(context_);
+    ImGui::SetCurrentContext(previousContext_);
+  }
+
+  void publish(size_t count) {
+    auto elements = makeElements(count);
+    for (size_t i = 1; i < elements.size(); i += 2) {
+      elements[i].displayName +=
+          "\nA second line with a long authored label that wraps inside the cell";
+    }
+    buildGraph(graph_, elements);
+    ASSERT_TRUE(cache_.refresh(this, ++revision_, &graph_));
+  }
+
+  void frame(bool clipTable = false) {
+    ImGui::NewFrame();
+    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+    ImGui::SetNextWindowSize(ImVec2(960.0f, 400.0f));
+    ImGui::Begin("Spatial browser test", nullptr,
+                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoResize);
+    if (clipTable) {
+      ImGui::SetCursorPosY(ImGui::GetWindowHeight() + 80.0f);
+    }
+    tableId_ = ImGui::GetID("BimGraphSpatialEdges");
+    const auto start = ImGui::GetCursorScreenPos();
+    const auto &style = ImGui::GetStyle();
+    float lastX = start.x;
+    for (const char *label : {"First", "Previous", "Next"}) {
+      lastX += ImGui::CalcTextSize(label).x + 2.0f * style.FramePadding.x +
+               style.ItemSpacing.x;
+    }
+    lineHeight_ = ImGui::GetTextLineHeight();
+    const float buttonY = start.y + ImGui::GetTextLineHeightWithSpacing() +
+                          lineHeight_ * 0.5f;
+    lastButton_ = ImVec2(lastX + style.FramePadding.x + 3.0f, buttonY);
+    container::ui::detail::drawBimGraphSpatialEdges(graph_, cache_);
+    ImGui::End();
+    ImGui::Render();
+  }
+
+  void settle() {
+    frame();
+    frame();
+  }
+
+  void click(ImVec2 position) {
+    auto &io = ImGui::GetIO();
+    io.AddMousePosEvent(position.x, position.y);
+    frame();
+    io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+    frame();
+    io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+    frame();
+  }
+
+  ImGuiTable *table() const { return ImGui::TableFindByID(tableId_); }
+
+  ImGuiContext *previousContext_{};
+  ImGuiContext *context_{};
+  BimRelationshipGraph graph_;
+  BimRelationshipBrowserCache cache_;
+  uint64_t revision_{};
+  ImGuiID tableId_{};
+  ImVec2 lastButton_{};
+  float lineHeight_{};
+};
+
+TEST_F(BimSpatialBrowserWidgetTests, WrappedRowsReachTheLastPartialPage) {
+  publish(10'001u);
+  settle();
+  ASSERT_NE(table(), nullptr);
+  ASSERT_NE(table()->InnerWindow, nullptr);
+  // Row zero is the header. Wrapped rows retain their natural height.
+  EXPECT_EQ(table()->CurrentRow, 100);
+  const float oneLineContentHeight =
+      101.0f * (lineHeight_ + 2.0f * ImGui::GetStyle().CellPadding.y);
+  EXPECT_GT(table()->InnerWindow->ScrollMax.y + table()->InnerWindow->Size.y,
+            oneLineContentHeight);
+  click(lastButton_);
+  settle();
+  EXPECT_EQ(cache_.spatialEdgesPage.index(), 100u);
+  EXPECT_EQ(table()->CurrentRow, 1);
+  EXPECT_GT(table()->RowPosY2 - table()->RowPosY1, 2.0f * lineHeight_);
+
+  publish(0u);
+  settle();
+  EXPECT_EQ(cache_.spatialEdgesPage.index(), 0u);
+  EXPECT_EQ(table()->CurrentRow, 0);
+}
+
+TEST_F(BimSpatialBrowserWidgetTests, ReplacementResetsScrollAfterClippedTable) {
+  publish(205u);
+  settle();
+  ASSERT_NE(table(), nullptr);
+  ASSERT_NE(table()->InnerWindow, nullptr);
+  ImGui::SetScrollY(table()->InnerWindow, table()->InnerWindow->ScrollMax.y);
+  settle();
+  ASSERT_GT(table()->InnerWindow->Scroll.y, 0.0f);
+
+  publish(125u);
+  frame(true);
+  EXPECT_LT(table()->LastFrameActive, ImGui::GetFrameCount());
+  settle();
+  EXPECT_EQ(table()->CurrentRow, 100);
+  EXPECT_EQ(table()->InnerWindow->Scroll.y, 0.0f);
 }
 
 } // namespace

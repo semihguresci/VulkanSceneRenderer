@@ -21,7 +21,10 @@ reparenting or renaming a node advances hierarchy revision; transform and
 visibility edits do not rebuild static rows. Copy/move replacement receives an
 independent graph identity, including replacement at the same address with an
 equal revision/count. Valid existing nodes retain their expansion through
-ordinary topology edits. Model inspection reset clears the UI caches.
+ordinary topology edits. Row controls use the graph identity so a held click
+from a replaced model cannot act on a reused node ID. Replacement and node
+retirement dismiss the affected row popup. Model inspection reset clears the
+UI caches.
 
 Use `SceneGraph` mutation methods for tracked fields. Editing a node directly
 through its legacy mutable accessor bypasses revision publication.
@@ -102,9 +105,11 @@ Production inspection state supplies the BIM manager identity and completed
 metadata publication revision. That revision advances on clear before progress
 callbacks, and after a complete installation, even when storage is reused.
 Geometry revision alone is insufficient because it advances before metadata
-construction and does not advance on clear. Read-only widget fixtures may use
-the metadata span as source identity; in-place replacements must publish a new
-revision or reset the inspection state.
+construction and does not advance on clear. A closed panel releases its search
+storage when the publication changes or unloads. It builds the next index when
+the BIM Elements browser opens. Read-only widget fixtures may use the metadata
+span as source identity. In-place replacements must publish a new revision or
+reset the inspection state.
 
 Relationship searches, selected/spatial edge indices, property filtering and
 property-set summaries are cached by publication, graph, query and selection.
@@ -112,6 +117,7 @@ Wrapped relationship, spatial, property and storey tables display at most 100
 rows per page, with first/previous/next/last and page-number controls. This keeps
 full wrapped values readable without assuming a constant row height. Query,
 selection and publication changes reset relevant pages and table scrolling.
+The scroll reset stays pending while its table is clipped.
 The Plan-storey combo clips its uniform-height rows.
 
 Cached normalized text and row labels consume persistent CPU memory in exchange
@@ -171,6 +177,47 @@ Run `out/scene-browser-validation/baseline/scene_browser_baseline.exe` and
 packaged renderer DLL directory on `PATH`. Each prints JSON. An optional first
 argument selects a fixture count from 100 through 10,000,000. Keep build/test processes idle
 during measurements, and use the same fixture count/toolchain for both variants.
+
+### Current Release widget measurements
+
+The November 12, 2026 run used an AMD Ryzen 9 3900X, MSVC 19.51.36260.0,
+and Dear ImGui 1.93.0. Each view ran in three independent processes. Each
+process measured seven batches of warmed CPU ImGui frames without a Vulkan
+backend. The table reports the median of the process frame-time medians and
+the median peak working set in MiB. Working-set peaks include fixture
+construction and interaction checks.
+
+| View | 10,001 rich µs/frame | 10,001 rich peak MiB | 100,001 compact µs/frame | 100,001 compact peak MiB |
+| --- | ---: | ---: | ---: | ---: |
+| Hierarchy expanded | 43.1 | 12.6 | 38.7 | 50.0 |
+| Hierarchy root collapsed | 10.7 | 12.1 | 10.5 | 50.0 |
+| Hierarchy panel closed | 3.7 | 12.1 | 3.6 | 50.0 |
+| BIM Elements, empty query | 44.0 | 13.6 | 28.1 | 37.5 |
+| BIM Elements, unchanged filtered query | 11.9 | 13.6 | 10.9 | 37.9 |
+| BIM Elements panel closed | 3.3 | 12.2 | 3.3 | 32.0 |
+
+The expanded hierarchy retained an estimated 0.99 MiB of cache capacity at
+10,001 nodes and 8.47 MiB at 100,001 nodes. Its closed-panel fixture kept no
+hierarchy cache. The compact BIM index retained 6.18 MiB with the browser open.
+Warmed compact BIM frames requested no C++ or ImGui allocations for either
+unchanged query. The current hierarchy includes Selectable and Hoverable
+columns, and the historical timings below used ImGui 1.91.8.
+
+All 36 benchmark processes passed their interaction and cache-reuse checks.
+Eight focused Release CTest targets also passed, covering 166 C++ cases and
+14 Python runner checks. The real widgets exercised held clicks and open
+popups across graph replacement, BIM search retirement while closed, and
+paging through 10,001 spatial relationships with wrapped labels.
+[Current measurement record](../tests/benchmarks/results/scene-browser-current-windows.json)
+
+Set `$build` to the Ninja Release build directory configured with
+`ENABLE_SCENE_BROWSER_BENCHMARK=ON`. Run the scale runner three times per
+fixture with a distinct output path for each repeat.
+
+```powershell
+python -B tests/benchmarks/run_scene_browser_scale.py --exe "$build/benchmarks/scene_browser_benchmark.exe" --counts 10001 --fixture rich --sample-interval 0.01 --output out/scene-browser/rich-1.json
+python -B tests/benchmarks/run_scene_browser_scale.py --exe "$build/benchmarks/scene_browser_benchmark.exe" --counts 100001 --fixture compact --sample-interval 0.01 --output out/scene-browser/compact-1.json
+```
 
 ### Initial Release widget measurements, before packed storage
 

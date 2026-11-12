@@ -69,7 +69,7 @@ protected:
                              origin.y + ImGui::GetTextLineHeightWithSpacing() +
                                  ImGui::GetFrameHeight() * 0.5f);
     if (inspection_.hasScene)
-      ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+      ImGui::SetNextItemOpen(browserOpen_, ImGuiCond_Always);
     gui_.drawBimElementBrowser(inspection_);
     ImGui::End();
     ImGui::Render();
@@ -156,6 +156,7 @@ protected:
   ImGuiContext *context_{};
   ImVec2 searchPosition_{};
   int firstModel_{}, secondModel_{};
+  bool browserOpen_{true};
   uint32_t selected_{std::numeric_limits<uint32_t>::max()};
   uint32_t focused_{std::numeric_limits<uint32_t>::max()};
 };
@@ -271,6 +272,49 @@ TEST_F(BimElementBrowserWidgetTests,
   typeQuery("replacement after unloading");
   selectLastVisibleRow();
   EXPECT_EQ(selected_, elements_.back().objectIndex);
+}
+
+TEST_F(BimElementBrowserWidgetTests,
+       ClosedBrowserReleasesRetiredSearchDataWithoutBuildingReplacement) {
+  // The widget can identify read-only metadata fixtures by their view address.
+  inspection_.metadataSource = nullptr;
+  settle();
+  typeQuery("FinalOnly");
+  const auto &cache = gui_.bimElementSearchCache();
+  const auto retainedBytes = cache.estimatedBytes();
+  const auto emptyBytes = container::ui::BimElementSearchCache{}.estimatedBytes();
+  const auto metadataBuilds = cache.metadataBuildCount();
+  const auto matchBuilds = cache.matchBuildCount();
+  ASSERT_GT(retainedBytes, emptyBytes);
+
+  browserOpen_ = false;
+  settle();
+  EXPECT_EQ(cache.estimatedBytes(), retainedBytes);
+  elements_.back().displayName = "Replacement after closing";
+  ++inspection_.metadataRevision;
+  settle();
+  EXPECT_EQ(cache.estimatedBytes(), emptyBytes);
+  EXPECT_EQ(cache.metadataBuildCount(), metadataBuilds);
+  EXPECT_EQ(cache.matchBuildCount(), matchBuilds);
+
+  browserOpen_ = true;
+  settle();
+  ASSERT_NE(table(), nullptr);
+  EXPECT_EQ(table()->CurrentRow, 0);
+  EXPECT_EQ(cache.metadataBuildCount(), metadataBuilds + 1u);
+  EXPECT_EQ(cache.matchBuildCount(), matchBuilds + 1u);
+  typeQuery("replacement after closing");
+  selectLastVisibleRow();
+  EXPECT_EQ(selected_, elements_.back().objectIndex);
+
+  const auto reopenedMetadataBuilds = cache.metadataBuildCount();
+  const auto reopenedMatchBuilds = cache.matchBuildCount();
+  browserOpen_ = false;
+  inspection_.hasScene = false;
+  settle();
+  EXPECT_EQ(cache.estimatedBytes(), emptyBytes);
+  EXPECT_EQ(cache.metadataBuildCount(), reopenedMetadataBuilds);
+  EXPECT_EQ(cache.matchBuildCount(), reopenedMatchBuilds);
 }
 
 TEST_F(BimElementBrowserWidgetTests, InspectionResetClearsAnActiveSearchInput) {

@@ -21,6 +21,9 @@ public:
   // A null source clears the cache. Returns true when metadata was rebuilt.
   bool refresh(const void *source, uint64_t publicationRevision,
                renderer::BimMetadataTableView metadata);
+  // Release retired metadata without building a replacement for a closed view.
+  void invalidateIfStale(const void *source, uint64_t publicationRevision,
+                         renderer::BimMetadataTableView metadata);
   void clear();
 
   // Matches preserve metadata order. Unchanged metadata and case-equivalent
@@ -53,6 +56,9 @@ private:
   static constexpr size_t kSearchFieldCount = 6u;
   static constexpr size_t kIdentityFieldCount = 3u;
   using LabelIds = std::array<uint32_t, 3>;
+  [[nodiscard]] bool isCurrentPublication(
+      const void *source, uint64_t publicationRevision,
+      renderer::BimMetadataTableView metadata) const;
 
   const void *source_{nullptr};
   uint64_t publicationRevision_{0};

@@ -2526,6 +2526,8 @@ add_custom_test(bim_relationship_browser_cache_tests
     ${TEST_RENDERER_BIM_DIR}/bim_relationship_browser_cache_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_renderer
 )
+target_include_directories(bim_relationship_browser_cache_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}/src/utility")
 
 add_custom_test(bim_element_browser_widget_tests
     ${TESTS_DIR}/utility/bim_element_browser_widget_tests.cpp "" ${TEST_RESULTS_DIR}

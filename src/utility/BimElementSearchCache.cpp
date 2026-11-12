@@ -85,6 +85,22 @@ struct NormalizedStringEqual {
 
 } // namespace
 
+bool BimElementSearchCache::isCurrentPublication(
+    const void *source, uint64_t publicationRevision,
+    renderer::BimMetadataTableView metadata) const {
+  return source_ == source && publicationRevision_ == publicationRevision &&
+         metadata_ == metadata.data() && metadataCount_ == metadata.size();
+}
+
+void BimElementSearchCache::invalidateIfStale(
+    const void *source, uint64_t publicationRevision,
+    renderer::BimMetadataTableView metadata) {
+  if ((source_ != nullptr || rawQueryValid_) &&
+      (source == nullptr ||
+       !isCurrentPublication(source, publicationRevision, metadata)))
+    clear();
+}
+
 bool BimElementSearchCache::refresh(
     const void *source, uint64_t publicationRevision,
     renderer::BimMetadataTableView metadata) {
@@ -92,8 +108,7 @@ bool BimElementSearchCache::refresh(
     clear();
     return false;
   }
-  if (source_ == source && publicationRevision_ == publicationRevision &&
-      metadata_ == metadata.data() && metadataCount_ == metadata.size()) {
+  if (isCurrentPublication(source, publicationRevision, metadata)) {
     return false;
   }
 
