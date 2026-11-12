@@ -18,8 +18,10 @@ For deterministic captures, select a zero-based clip and time explicitly:
 `--animation-paused`, the selected clip advances using the application's normal
 or fixed capture delta. A clip is selected only when requested by the UI or
 `--animation-clip`; loading a scene preserves its initial static presentation.
-`--gltf-camera-node N` selects the authored camera attached to source node `N`
-for a capture, independently of clip selection.
+`--gltf-camera-node N` selects the startup scene's authored camera attached to
+source node `N`, independently of clip selection. A model replacement starts
+in the viewport camera and the new model's rest pose. For a scripted capture,
+use camera and animation selection events to select bindings on the replacement.
 
 ## Sampling and source data
 

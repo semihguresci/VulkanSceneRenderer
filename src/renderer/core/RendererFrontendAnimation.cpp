@@ -19,7 +19,7 @@
 #include <utility>
 
 namespace container::renderer {
-void RendererFrontend::resetGltfAnimation() {
+void RendererFrontend::resetGltfAnimation(bool applyStartupOptions) {
   finishEditGestures();
   gltfAnimation_.reset();
   cameraProjectionInspectorCache_.reset();
@@ -34,14 +34,15 @@ void RendererFrontend::resetGltfAnimation() {
     gltfAnimation_ = std::make_unique<container::geometry::gltf::AnimationPlayer>(source);
     gltfAnimation_->setLoop(svc_.config.gltfAnimationLoop);
     gltfAnimation_->setSpeed(svc_.config.gltfAnimationSpeed);
-    if (svc_.config.gltfCameraNode >= 0) {
-      gltfAnimationCameraNode_ = static_cast<size_t>(svc_.config.gltfCameraNode);
+    if (applyStartupOptions && svc_.config.gltfCameraNode >= 0) {
+      const auto sourceNode = static_cast<size_t>(svc_.config.gltfCameraNode);
       const auto extent = svc_.swapChainManager.extent();
-      if (!container::geometry::gltf::EvaluateAnimatedCamera(source,sceneGraph_,*gltfAnimationCameraNode_,
+      if (!container::geometry::gltf::EvaluateAnimatedCamera(source,sceneGraph_,sourceNode,
           extent.height ? float(extent.width)/float(extent.height) : 1.0f))
         throw std::invalid_argument("configured glTF camera node has no active source camera binding");
+      gltfAnimationCameraNode_ = sourceNode;
     }
-    if (svc_.config.gltfAnimationClip >= 0) {
+    if (applyStartupOptions && svc_.config.gltfAnimationClip >= 0) {
       if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
       auto& mutableSource = subs_.sceneManager->animationSource();
       auto dirty = gltfAnimation_->selectClip(mutableSource,static_cast<size_t>(svc_.config.gltfAnimationClip));
@@ -63,7 +64,7 @@ void RendererFrontend::resetGltfAnimation() {
     controls.cameraNode = gltfAnimationCameraNode_ ? static_cast<int>(*gltfAnimationCameraNode_) : -1;
   } catch (const std::exception& error) {
     controls.error = error.what();
-    if (svc_.config.gltfAnimationClip >= 0 || svc_.config.gltfCameraNode >= 0) throw;
+    if (applyStartupOptions) throw;
   }
   if (subs_.guiManager) subs_.guiManager->gltfAnimationControls() = std::move(controls);
   refreshGltfCameraChoices();
@@ -118,7 +119,10 @@ void RendererFrontend::publishGltfAnimationChanges(
 void RendererFrontend::updateGltfAnimation() {
   using namespace container::geometry::gltf;
   if (gltfAnimationGraphIdentity_ != sceneGraph_.identity()) resetGltfAnimation();
-  const double delta = std::exchange(pendingGltfAnimationDeltaSeconds_,0.0);
+  double delta = std::exchange(pendingGltfAnimationDeltaSeconds_,0.0);
+  // Show the configured start time on the first frame, including when a
+  // startup selector initialized playback before the first input tick.
+  if (frame_.submittedFrameCount == 0) delta = 0.0;
   if (!gltfAnimation_ || !subs_.sceneManager) return;
   auto& source = subs_.sceneManager->animationSource();
   auto* controls = subs_.guiManager ? &subs_.guiManager->gltfAnimationControls() : nullptr;

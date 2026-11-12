@@ -877,7 +877,8 @@ void writeGltfJson(const std::filesystem::path& path, const nlohmann::json& sour
 
 void expectSceneRejectionBeforeBufferIo(const std::filesystem::path& path,
                                       nlohmann::json source,
-                                      std::string_view expected) {
+                                      std::string_view expected,
+                                      std::string_view diagnostic = "glTF scene hierarchy:") {
   source["buffers"][0]["uri"] = "scene-metadata-must-not-be-opened.bin";
   writeGltfJson(path, source);
   try {
@@ -885,7 +886,7 @@ void expectSceneRejectionBeforeBufferIo(const std::filesystem::path& path,
     FAIL() << "Expected scene metadata rejection";
   } catch (const std::runtime_error& error) {
     const std::string message(error.what());
-    EXPECT_NE(message.find("glTF scene hierarchy:"), std::string::npos) << message;
+    EXPECT_NE(message.find(diagnostic), std::string::npos) << message;
     EXPECT_NE(message.find(expected), std::string::npos) << message;
     EXPECT_EQ(message.find("scene-metadata-must-not-be-opened.bin"), std::string::npos)
         << "Scene metadata must reject before opening an external buffer";
@@ -1024,6 +1025,147 @@ TEST(GltfModelLoader, SceneMetadataRejectsNarrowingAndNonIntegerIndicesBeforeRes
   auto source = valid;
   source.erase("scenes");
   expectSceneRejectionBeforeBufferIo(path, source, "scene");
+}
+
+TEST(GltfModelLoader, CameraReferencesNormalizeIntegralSpellingsAndKeepSharedDefinitions) {
+  const auto path = writeTriangleGltf("camera-metadata-valid", {0, 1, 2});
+  auto source = readGltfJson(path);
+  source["cameras"] = nlohmann::json::parse(R"([
+    {"type":"perspective", "perspective":{"yfov":0.8,"znear":0.1,"extras":{"zfar":0}},
+     "orthographic":{"xmag":0}},
+    {"type":"orthographic", "orthographic":{"xmag":-3,"ymag":2,"znear":0,"zfar":10}},
+    {"type":"perspective", "perspective":{"yfov":0.6,"znear":0.25,"aspectRatio":1.5,"zfar":50}}
+  ])");
+  source["nodes"][0]["children"] = {1, 2, 3};
+  source["nodes"].push_back({{"camera", 0.0}});
+  source["nodes"].push_back({{"camera", 1.0}});
+  source["nodes"].push_back({{"camera", 2}});
+  source["nodes"].push_back({{"camera", 0}});
+  source["scenes"].push_back({{"nodes", {4}}});
+
+  auto json = source.dump();
+  const std::string decimal = "\"camera\":1.0";
+  const auto index = json.find(decimal);
+  ASSERT_NE(index, std::string::npos);
+  json.replace(index, decimal.size(), "\"camera\":1e0");
+  { std::ofstream file(path); file << json; }
+
+  const auto loaded = container::geometry::gltf::LoadModelWithSource(path.string());
+  const auto& model = loaded.gltfModel;
+  EXPECT_EQ(loaded.model.vertices().size(), 3u);
+  ASSERT_EQ(model.nodes.size(), 5u);
+  EXPECT_EQ(model.nodes[0].camera, -1);
+  EXPECT_EQ(model.nodes[1].camera, 0);
+  EXPECT_EQ(model.nodes[2].camera, 1);
+  EXPECT_EQ(model.nodes[3].camera, 2);
+  EXPECT_EQ(model.nodes[4].camera, model.nodes[1].camera);
+  ASSERT_EQ(model.cameras.size(), 3u);
+  const auto& infinite = model.cameras[0].perspective;
+  EXPECT_DOUBLE_EQ(infinite.aspectRatio, 0.0);
+  EXPECT_DOUBLE_EQ(infinite.zfar, 0.0);
+  EXPECT_DOUBLE_EQ(infinite.znear, 0.1);
+  EXPECT_TRUE(infinite.extras.Has("zfar"));
+  const auto& ortho = model.cameras[1].orthographic;
+  EXPECT_DOUBLE_EQ(ortho.xmag, -3.0);
+  EXPECT_DOUBLE_EQ(ortho.ymag, 2.0);
+  EXPECT_DOUBLE_EQ(ortho.znear, 0.0);
+  EXPECT_DOUBLE_EQ(ortho.zfar, 10.0);
+  const auto& finite = model.cameras[2].perspective;
+  EXPECT_DOUBLE_EQ(finite.aspectRatio, 1.5);
+  EXPECT_DOUBLE_EQ(finite.zfar, 50.0);
+}
+
+TEST(GltfModelLoader, CameraReferencesRejectNarrowingAndMissingDefinitionsBeforeResourceIo) {
+  const auto path = writeTriangleGltf("camera-metadata-indices", {0, 1, 2});
+  auto valid = readGltfJson(path);
+  valid["cameras"] = nlohmann::json::parse(R"([
+    {"type":"perspective","perspective":{"yfov":0.8,"znear":0.1}}
+  ])");
+  valid["nodes"].push_back({{"camera", 0}});
+  valid["scenes"].push_back({{"nodes", {1}}});
+
+  const std::vector<nlohmann::json> invalid = {
+      -1, 1, 4294967296ull, UINT64_MAX, -1.0, 0.5, 4294967296.0, "0", nullptr, true,
+      nlohmann::json::object(), nlohmann::json::array()};
+  for (const auto& index : invalid) {
+    SCOPED_TRACE(index.dump());
+    auto source = valid;
+    source["nodes"][1]["camera"] = index;
+    expectSceneRejectionBeforeBufferIo(path, std::move(source), "nodes[1].camera");
+  }
+  auto source = valid;
+  source["nodes"].push_back({{"camera", 1}});
+  expectSceneRejectionBeforeBufferIo(path, std::move(source), "nodes[2].camera");
+  source = valid;
+  source.erase("cameras");
+  expectSceneRejectionBeforeBufferIo(path, source, "nodes[1].camera");
+  source["cameras"] = nlohmann::json::array();
+  expectSceneRejectionBeforeBufferIo(path, source, "nodes[1].camera");
+
+  source["nodes"][1].erase("camera");
+  writeGltfJson(path, source);
+  EXPECT_TRUE(container::geometry::gltf::LoadSourceModel(path.string()).cameras.empty());
+}
+
+TEST(GltfModelLoader, CameraDefinitionsRejectMalformedTablesAndUnusedRowsBeforeResourceIo) {
+  const auto path = writeTriangleGltf("camera-metadata-shape", {0, 1, 2});
+  auto valid = readGltfJson(path);
+  valid["cameras"] = nlohmann::json::parse(R"([
+    {"type":"perspective","perspective":{"yfov":0.8,"znear":0.1}}
+  ])");
+  valid["nodes"][0]["camera"] = 0;
+  constexpr std::string_view diagnostic = "glTF cameras:";
+  for (const auto& invalid : std::vector<nlohmann::json>{nullptr, 0, true, "camera", nlohmann::json::object()}) {
+    SCOPED_TRACE(invalid.dump());
+    auto source = valid;
+    source["cameras"] = invalid;
+    expectSceneRejectionBeforeBufferIo(path, std::move(source), "cameras", diagnostic);
+  }
+  const auto checkUnused = [&](nlohmann::json row, std::string_view expected) {
+    auto source = valid;
+    source["cameras"].push_back(std::move(row));
+    expectSceneRejectionBeforeBufferIo(path, std::move(source), expected, diagnostic);
+  };
+  checkUnused(0, "cameras[1]");
+  checkUnused(nlohmann::json::object(), "cameras[1].type");
+  checkUnused({{"type", false}}, "cameras[1].type");
+  checkUnused({{"type", "fisheye"}}, "cameras[1].type");
+  checkUnused({{"type", "perspective"}, {"perspective", nullptr}}, "cameras[1].perspective");
+  checkUnused({{"type", "orthographic"}, {"perspective", {{"yfov", 0.8}, {"znear", 0.1}}}},
+      "cameras[1].orthographic");
+}
+
+TEST(GltfModelLoader, CameraDefinitionsRejectInvalidLensValuesBeforeResourceIo) {
+  const auto path = writeTriangleGltf("camera-metadata-lens", {0, 1, 2});
+  auto valid = readGltfJson(path);
+  valid["cameras"] = nlohmann::json::parse(R"([
+    {"type":"perspective", "perspective":{"yfov":0.8,"znear":1,"aspectRatio":1.5,"zfar":10}},
+    {"type":"orthographic", "orthographic":{"xmag":3,"ymag":2,"znear":1,"zfar":10}}
+  ])");
+  const auto check = [&](size_t index, std::string_view lens, std::string_view field,
+                         std::optional<nlohmann::json> value) {
+    const auto label = "cameras[" + std::to_string(index) + "]." + std::string(lens) + "." + std::string(field);
+    SCOPED_TRACE(label + " = " + (value ? value->dump() : "<missing>"));
+    auto source = valid;
+    auto& projection = source["cameras"][index][std::string(lens)];
+    if (value) projection[std::string(field)] = *value;
+    else projection.erase(std::string(field));
+    expectSceneRejectionBeforeBufferIo(path, std::move(source), label, "glTF cameras:");
+  };
+  for (const auto* field : {"yfov", "znear"}) check(0, "perspective", field, std::nullopt);
+  for (const auto* field : {"xmag", "ymag", "znear", "zfar"}) check(1, "orthographic", field, std::nullopt);
+  for (const auto& invalid : std::vector<nlohmann::json>{nullptr, true, "1", nlohmann::json::array()}) {
+    for (const auto* field : {"yfov", "znear", "zfar", "aspectRatio"}) check(0, "perspective", field, invalid);
+    for (const auto* field : {"xmag", "ymag", "znear", "zfar"}) check(1, "orthographic", field, invalid);
+  }
+  for (const auto* field : {"yfov", "znear", "zfar", "aspectRatio"}) check(0, "perspective", field, 0.0);
+  for (const auto* field : {"xmag", "ymag", "zfar"}) check(1, "orthographic", field, 0.0);
+  check(0, "perspective", "aspectRatio", -1.0);
+  check(0, "perspective", "zfar", 0.5);
+  check(0, "perspective", "zfar", 1.0);
+  check(1, "orthographic", "znear", -1.0);
+  check(1, "orthographic", "zfar", 0.5);
+  check(1, "orthographic", "zfar", 1.0);
 }
 
 TEST(GltfModelLoader, SceneMetadataValidatesGlobalForestIncludingUnusedComponents) {

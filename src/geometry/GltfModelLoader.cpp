@@ -1029,6 +1029,58 @@ std::optional<int> normalizeSourceInteger(nlohmann::json& value, bool& rewritten
   return std::nullopt;
 }
 
+size_t validateCameraJson(const nlohmann::json& source, const std::stop_token& stop) {
+  const auto cameras = source.find("cameras");
+  if (cameras == source.end()) return 0;
+  if (!cameras->is_array()) throw gltfError("glTF cameras", "cameras must be an array");
+  if (cameras->size() > 1'000'000) throw gltfError("glTF cameras", "cameras table exceeds its count limit");
+
+  for (size_t i = 0; i < cameras->size(); ++i) {
+    checkImportIteration(stop, i);
+    const auto& camera = cameras->at(i);
+    const auto label = "cameras[" + std::to_string(i) + "]";
+    if (!camera.is_object()) throw gltfError("glTF cameras", label + " must be an object");
+    const auto type = camera.find("type");
+    if (type == camera.end() || !type->is_string() || (*type != "perspective" && *type != "orthographic"))
+      throw gltfError("glTF cameras", label + ".type must be perspective or orthographic");
+    const auto& projection = type->get_ref<const std::string&>();
+    const auto lens = camera.find(projection);
+    const auto lensLabel = label + "." + projection;
+    if (lens == camera.end() || !lens->is_object())
+      throw gltfError("glTF cameras", lensLabel + " must be an object");
+
+    const auto number = [&](const char* name) {
+      const auto value = lens->find(name);
+      if (value == lens->end() || !value->is_number() || !std::isfinite(value->get<double>()))
+        throw gltfError("glTF cameras", lensLabel + "." + name + " must be a finite number");
+      return value->get<double>();
+    };
+    const auto positive = [&](const char* name) {
+      const auto value = number(name);
+      if (value <= 0) throw gltfError("glTF cameras", lensLabel + "." + name + " must be greater than zero");
+      return value;
+    };
+
+    if (projection == "perspective") {
+      (void)positive("yfov");
+      const auto nearPlane = positive("znear");
+      // TinyGLTF uses zero for omitted aspect/far. Check authored values
+      // here so an invalid field cannot turn into an automatic default.
+      if (lens->contains("aspectRatio")) (void)positive("aspectRatio");
+      if (lens->contains("zfar") && number("zfar") <= nearPlane)
+        throw gltfError("glTF cameras", lensLabel + ".zfar must be greater than znear");
+    } else {
+      for (const auto* name : {"xmag", "ymag"})
+        if (number(name) == 0) throw gltfError("glTF cameras", lensLabel + "." + name + " must be nonzero");
+      const auto nearPlane = number("znear");
+      if (nearPlane < 0) throw gltfError("glTF cameras", lensLabel + ".znear must be nonnegative");
+      if (number("zfar") <= nearPlane)
+        throw gltfError("glTF cameras", lensLabel + ".zfar must be greater than znear");
+    }
+  }
+  return cameras->size();
+}
+
 // Keep hierarchy indices in their original JSON representation until they are
 // checked. TinyGLTF stores them as int, so validating its model alone cannot
 // detect an oversized source index that narrowed into an otherwise valid one.
@@ -1052,6 +1104,7 @@ bool normalizeSceneHierarchyJson(nlohmann::json& json, bool mergeInput,
   const size_t sceneCount = scenes == json.end() ? 0 : scenes->size();
   if (nodeCount > maxNodes) fail("node table exceeds its count limit");
   if (sceneCount > maxScenes) fail("scene table exceeds its count limit");
+  const auto cameraCount = validateCameraJson(json, stop);
   bool rewritten = false;
   const auto checkedIndex = [&](nlohmann::json& value, size_t count,
                                 const std::string& label) -> uint32_t {
@@ -1073,6 +1126,8 @@ bool normalizeSceneHierarchyJson(nlohmann::json& json, bool mergeInput,
     const auto label = "nodes[" + std::to_string(i) + "]";
     if (!node.is_object()) fail(label + " must be an object");
     if (geometryFreeMerge && node.contains("mesh")) fail(label + ".mesh references a missing entry");
+    if (const auto camera = node.find("camera"); camera != node.end())
+      (void)checkedIndex(*camera, cameraCount, label + ".camera");
     const auto children = node.find("children");
     if (children == node.end()) continue;
     if (!children->is_array()) fail(label + ".children must be an array");
