@@ -421,6 +421,7 @@ private:
   std::vector<bool> referenceColorBound_;
   std::vector<uint64_t> referenceDiagnosticSeen_;
   uint64_t referenceDiagnosticEpoch_{}, referenceUnsupported_{}, referenceRejected_{};
+  uint32_t referenceExperimentalMaterialFallbacks_{};
   bool referenceRecorded_{};
   uint64_t referenceTimedSubmission_{};
   std::optional<uint32_t> referenceAdaptiveBatch_;

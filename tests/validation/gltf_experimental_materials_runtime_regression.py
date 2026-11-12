@@ -14,6 +14,7 @@ import numpy as np
 
 from gltf_accessor_runtime_regression import Asset, load_asset, mesh
 from gltf_extended_materials_runtime_regression import validation_log_error
+from reference_volume_runtime_regression import fixture as volume_fixture
 
 
 RETRO = "KHR_materials_retroreflection"
@@ -39,9 +40,10 @@ def panel(path, mode):
     else:
         pbr.update(metallicFactor=0, roughnessFactor=0)
         extensions["KHR_materials_specular"] = {"specularFactor": 0}
-        extensions["KHR_materials_transmission"] = {"transmissionFactor": 1}
+        fallback_case = mode in ("scatter-malformed", "scatter-fallback-witness")
+        extensions["KHR_materials_transmission"] = {"transmissionFactor": .5 if fallback_case else 1}
         color_field = "multiscatterColor" if mode == "scatter-legacy" else "multiscatterColorFactor"
-        scatter = {"scatterAnisotropy": .6, color_field: [.25, .7, .5],
+        scatter = {"scatterAnisotropy": 2 if mode == "scatter-malformed" else .6, color_field: [.25, .7, .5],
                    "scatterStrengthTexture": {"index": asset.image(np.array([[[255, 0, 255, 128]]], dtype=np.uint8))},
                    "multiscatterColorTexture": {"index": asset.image(np.array([[[128, 64, 192, 0]]], dtype=np.uint8))}}
         if mode != "scatter-legacy":
@@ -52,17 +54,32 @@ def panel(path, mode):
     asset.write(path)
 
 
+def closed_scatter(path):
+    volume_fixture(path, "world-distance")
+    model = json.loads(path.read_text(encoding="utf-8"))
+    glass = next(material for material in model["materials"] if "KHR_materials_volume" in material["extensions"])
+    glass["extensions"][SCATTER] = {"scatterStrengthFactor": .75, "multiscatterColorFactor": [.25, .7, .5]}
+    model["extensionsUsed"].append(SCATTER)
+    path.write_text(json.dumps(model, indent=2), encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--renderer", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--generate-only", action="store_true")
+    parser.add_argument("--fallback-only", action="store_true", help="Run the malformed optional scattering cases")
     args = parser.parse_args()
     renderer, output = args.renderer.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="utf-8")
     models = {}
-    for mode in ("retro-zero", "retro-factor", "retro-texture", "scatter-current", "scatter-legacy"):
+    modes = ["scatter-malformed", "scatter-fallback-witness"]
+    if not args.fallback_only:
+        modes.extend(("retro-zero", "retro-factor", "retro-texture", "scatter-current", "scatter-legacy"))
+        models["scatter-closed-volume"] = output / "scatter-closed-volume.gltf"
+        closed_scatter(models["scatter-closed-volume"])
+    for mode in modes:
         models[mode] = output / (mode + ".gltf")
         panel(models[mode], mode)
     if args.generate_only:
@@ -70,13 +87,14 @@ def main():
 
     evidence = {}
 
-    def capture(name, model, *, retro=False, enabled=True, back=False, save=None):
+    def capture(name, model, *, retro=False, enabled=True, back=False, save=None, bounces=1,
+                fallback_warning=False, closed_volume_scatter=None):
         image = output / (name + ".exr")
         camera = ("2.4", "0", "3.2") if retro else ("0", "0", "4")
         direction = ("-.6", "0", "-.8") if retro else ("0", "0", "1" if back else "-1")
         command = [str(renderer), "--model", str(model), "--import-scale", "1", "--hidden", "--no-ui",
                    "--validation", "--width", "192", "--height", "144", "--no-bloom", "--render-technique", "path-tracing",
-                   "--display-mode", "lit", "--path-spp", "16", "--path-samples", "16", "--path-bounces", "1",
+                   "--display-mode", "lit", "--path-spp", "16", "--path-samples", "16", "--path-bounces", str(bounces),
                    "--environment-intensity", "0", "--camera-position", *camera, "--camera-target", "0", "0", "0",
                    "--camera-fov", "45", "--directional-intensity", "2", "--directional-direction", *direction,
                    "--directional-color", "1", "1", "1", "--warmup-frames", "0", "--capture-frame", "1",
@@ -87,18 +105,47 @@ def main():
             command.extend(("--save-scene", str(save)))
         log_path = output / (name + ".log")
         with log_path.open("w", encoding="utf-8") as log:
-            subprocess.run(command, cwd=renderer.parent, stdout=log, stderr=subprocess.STDOUT, check=True,
-                           timeout=180, env=dict(os.environ, VK_LAYER_SETTINGS_PATH=str(output)))
-        assert not validation_log_error(log_path.read_text(encoding="utf-8", errors="replace")), log_path
+            process = subprocess.run(command, cwd=renderer.parent, stdout=log, stderr=subprocess.STDOUT,
+                                     timeout=180, env=dict(os.environ, VK_LAYER_SETTINGS_PATH=str(output)))
+        log_text = log_path.read_text(encoding="utf-8", errors="replace")
+        assert process.returncode == 0, (name, process.returncode, log_path)
+        assert not validation_log_error(log_text), log_path
+        warnings = [line for line in log_text.splitlines() if "experimental_material_fallback" in line]
+        if fallback_warning:
+            field = f"material[0].extensions.{SCATTER}.scatterAnisotropy"
+            assert any(field in line for line in warnings), (field, log_path)
+        else:
+            assert not warnings, (warnings, log_path)
         metadata = json.loads(Path(f"{image}.capture.json").read_text(encoding="utf-8"))
-        assert metadata["source"] == "path-trace-mean" and not metadata["referencePath"]["hasDiagnostics"], metadata
-        assert metadata["referencePath"]["attemptedSamplesPerPixel"] == 16, metadata
+        reference = metadata["referencePath"]
+        assert metadata["source"] == "path-trace-mean" and not reference["hasDiagnostics"], metadata
+        assert reference["attemptedSamplesPerPixel"] == 16, metadata
+        assert reference["rejectedSamples"] == reference["unsupportedSamples"] == 0, metadata
+        if closed_volume_scatter is not None:
+            assert reference["experimentalMaterialFallbacks"] == {
+                "closedVolumeRetroreflection": False, "closedVolumeScatter": closed_volume_scatter}, metadata
+            volume_warning = "Closed-volume glTF scatter is unsupported. Using ordinary volume transport."
+            assert (volume_warning in log_text) == closed_volume_scatter, log_path
         pixels = cv2.imdecode(np.frombuffer(image.read_bytes(), np.uint8), cv2.IMREAD_UNCHANGED)
-        assert pixels.shape == (144, 192, 3) and np.isfinite(pixels).all(), image
+        assert pixels.shape == (144, 192, 3) and pixels.dtype == np.float32 and np.isfinite(pixels).all(), image
         center = pixels[71:73, 95:97, ::-1].mean(axis=(0, 1))
         evidence[name] = {"command": command, "center": center.tolist(), "metadata": metadata,
                           "pixelSha256": hashlib.sha256(pixels.tobytes()).hexdigest()}
+        if warnings:
+            evidence[name]["fallbackWarnings"] = warnings
         return center
+
+    disabled = capture("scatter-malformed-disabled", models["scatter-malformed"], enabled=False)
+    fallback = capture("scatter-malformed-enabled", models["scatter-malformed"], fallback_warning=True)
+    witness = capture("scatter-fallback-witness", models["scatter-fallback-witness"])
+    assert np.all(disabled > 0) and np.all(witness > disabled), (disabled, witness)
+    np.testing.assert_array_equal(fallback, disabled)
+    assert evidence["scatter-malformed-enabled"]["pixelSha256"] == evidence["scatter-malformed-disabled"]["pixelSha256"]
+
+    if args.fallback_only:
+        (output / "results.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
+        print("PASS malformed optional scattering warning and exact base-material fallback", flush=True)
+        return
 
     baseline = capture("retro-disabled", models["retro-texture"], retro=True, enabled=False)
     zero = capture("retro-zero", models["retro-zero"], retro=True)
@@ -126,8 +173,16 @@ def main():
     strength = 128 / 255
     np.testing.assert_allclose(front, 2 * albedo * strength * .2 / math.pi, atol=2e-6, rtol=.007)
     np.testing.assert_allclose(back, 2 * albedo * strength * .8 / math.pi, atol=2e-6, rtol=.007)
+
+    volume_control = capture("scatter-closed-volume-disabled", models["scatter-closed-volume"], enabled=False,
+                             bounces=4, closed_volume_scatter=False)
+    volume_fallback = capture("scatter-closed-volume-enabled", models["scatter-closed-volume"], bounces=4,
+                              closed_volume_scatter=True)
+    assert np.all(volume_control > 0), volume_control
+    np.testing.assert_array_equal(volume_fallback, volume_control)
+    assert evidence["scatter-closed-volume-enabled"]["pixelSha256"] == evidence["scatter-closed-volume-disabled"]["pixelSha256"]
     (output / "results.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
-    print("PASS opt-in retroreflection, thin scatter, legacy aliases and portable textures", flush=True)
+    print("PASS experimental materials, portable textures, malformed fallback and unsupported closed scatter", flush=True)
 
 
 if __name__ == "__main__":

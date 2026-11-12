@@ -1868,7 +1868,7 @@ TEST_F(ReferencePathTraceGpu, ClosedIndexMatchedVolumeUsesTracedWorldThicknessAn
   EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples,0);EXPECT_EQ(tracer->diagnostics(0).rejectedSamples,0);
   save(pixels,"volume-world-absorption");
 }
-TEST_F(ReferencePathTraceGpu, ExperimentalMaterialProfilesDiagnoseRefractiveVolumes) {
+TEST_F(ReferencePathTraceGpu, ExperimentalMaterialProfilesPreserveOrdinaryRefractiveVolumes) {
   draws.clear();
   auto& glass = materialValues[0];
   glass.color = {1, 1, 1, 1};
@@ -1882,23 +1882,76 @@ TEST_F(ReferencePathTraceGpu, ExperimentalMaterialProfilesDiagnoseRefractiveVolu
   syncInputs();
   build(0);
   build(1);
-  EXPECT_GT(converge().roi().x, 0.0);
-  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  const auto ordinary = converge();
+  const auto ordinaryDiagnostics = tracer->diagnostics(0);
+  ASSERT_GT(ordinary.roi().x, 0.0);
+  ASSERT_EQ(ordinaryDiagnostics.unsupportedSamples, 0u);
+  ASSERT_EQ(ordinaryDiagnostics.rejectedSamples, 0u);
 
-  glass.experimentalFactors.y = .75f;
+  using Diagnostics = ReferencePathTraceDiagnostics;
+  constexpr auto retro = Diagnostics::kClosedVolumeRetroreflectionFallback;
+  constexpr auto scatter = Diagnostics::kClosedVolumeScatterFallback;
+  constexpr auto mask = Diagnostics::kExperimentalMaterialFallbackMask;
+  EXPECT_EQ(ordinaryDiagnostics.failureStages & mask, 0u);
+  for (const auto& [factors, expected] : std::array{
+           std::pair{glm::vec4(.75f, 0, 0, 0), retro},
+           std::pair{glm::vec4(0, .75f, 0, 0), scatter},
+           std::pair{glm::vec4(.75f, .75f, 0, 0), retro | scatter},
+       }) {
+    SCOPED_TRACE(expected);
+    glass.experimentalFactors = factors;
+    syncInputs();
+    EXPECT_EQ(converge().images, ordinary.images);
+    const auto diagnostics = tracer->diagnostics(0);
+    EXPECT_EQ(diagnostics.acceptedSamples, ordinaryDiagnostics.acceptedSamples);
+    EXPECT_EQ(diagnostics.unsupportedSamples, 0u);
+    EXPECT_EQ(diagnostics.rejectedSamples, 0u);
+    EXPECT_EQ(diagnostics.failureStages & mask, expected);
+  }
+}
+TEST_F(ReferencePathTraceGpu, InteriorVolumeScatterFallbackPreservesAbsorbedEmission) {
+  draws.clear();
+  materialValues[0].flags = kObjectFlagUnlit;
+  materialValues[0].color = {0, 0, 0, 1};
+  materialValues[0].emissiveColor = {4, 2, 1};
+  auto& glass = materialValues.emplace_back();
+  glass.color = {1, 1, 1, 1};
+  glass.metallicRoughness = {0, 0};
+  glass.transmissionFactor = 1;
+  glass.thicknessFactor = 1;
+  glass.ior = 1;
+  glass.specularFactor = 0;
+  glass.attenuationColor = {.5f, .8f, 1, 1};
+  glass.attenuationDistance = 1;
+  addVolumeBox({0, 0, 0}, {2, 2, 1}, 1);
+  addQuad({0, 0, 0}, 1.5f, 1.5f, true, 0);
+  input.data.inverseView = glm::translate(glm::mat4(1), glm::vec3(0, 0, .5f));
+  input.settings.sampleLimit = 64;
+  input.settings.maxBounces = 1;
+  lighting.environmentIntensity = 0;
   syncInputs();
-  auto pixels = render();
-  EXPECT_EQ(pixels.roi(), glm::dvec3(0));
-  EXPECT_EQ(pixels.roi(2), glm::dvec3(1, 0, 1));
-  EXPECT_GT(tracer->diagnostics(0).unsupportedSamples, 0);
-  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+  build(0);
+  build(1);
+  const auto ordinary = converge();
+  const auto ordinaryDiagnostics = tracer->diagnostics(0);
+  ASSERT_GT(ordinary.roi().x, 0.0);
+  ASSERT_LT(ordinary.roi().x, 4.0);
+  ASSERT_EQ(ordinaryDiagnostics.unsupportedSamples, 0u);
+  ASSERT_EQ(ordinaryDiagnostics.rejectedSamples, 0u);
 
-  glass.experimentalFactors = {.75f, 0, 0, 0};
+  using Diagnostics = ReferencePathTraceDiagnostics;
+  constexpr auto mask = Diagnostics::kExperimentalMaterialFallbackMask;
+  EXPECT_EQ(ordinaryDiagnostics.failureStages & mask, 0u);
+  glass.experimentalFactors = {.75f, .75f, 0, 0};
   syncInputs();
-  pixels = render();
-  EXPECT_EQ(pixels.roi(2), glm::dvec3(1, 0, 1));
-  EXPECT_GT(tracer->diagnostics(0).unsupportedSamples, 0);
-  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+  EXPECT_EQ(converge().images, ordinary.images);
+  const auto diagnostics = tracer->diagnostics(0);
+  EXPECT_EQ(diagnostics.acceptedSamples, ordinaryDiagnostics.acceptedSamples);
+  EXPECT_EQ(diagnostics.unsupportedSamples, 0u);
+  EXPECT_EQ(diagnostics.rejectedSamples, 0u);
+  // The camera is already inside the medium and sees the emitter before its
+  // boundary. Only volume scattering would have changed the traveled segment.
+  EXPECT_EQ(diagnostics.failureStages & mask, Diagnostics::kClosedVolumeScatterFallback);
 }
 TEST_F(ReferencePathTraceGpu, MinifiedMetallicVolumeDoesNotCreateABoundaryAtAnOpaqueTexel) {
   ASSERT_NO_FATAL_FAILURE(bindTransportMipTexture());

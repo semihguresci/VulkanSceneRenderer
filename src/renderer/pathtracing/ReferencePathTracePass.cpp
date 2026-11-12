@@ -912,7 +912,8 @@ ReferencePathTraceDiagnostics ReferencePathTracePass::diagnostics(uint32_t image
   std::memcpy(&triangleWitness, &result.autofocus.w, sizeof(triangleWitness));
   if (result.diagnostics.rejectedSamples != 0 && triangleWitness != 0)
     std::fprintf(stderr, "[ReferencePath hit witness] triangle=%u bary=(%a,%a) failureStages=0x%08x\n",
-        triangleWitness - 1, double(result.autofocus.y), double(result.autofocus.z), result.diagnostics.failureStages);
+        triangleWitness - 1, double(result.autofocus.y), double(result.autofocus.z),
+        result.diagnostics.failureStages & ~ReferencePathTraceDiagnostics::kExperimentalMaterialFallbackMask);
   return result.diagnostics;
 }
 VkImage ReferencePathTracePass::displayImage() const {return impl_->display?impl_->display->image:VK_NULL_HANDLE;}
