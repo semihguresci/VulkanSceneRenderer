@@ -179,15 +179,21 @@ function(add_slang_output OUTPUTS_VAR SLANG_SOURCE ENTRY_POINT OUTPUT_PATH)
     set(_interface_flags)
     set(_interface_products)
     set(_fingerprint_command)
+    set(_slang_output "${OUTPUT_PATH}")
     get_filename_component(_source_directory "${SLANG_SOURCE}" DIRECTORY)
     if(_source_directory STREQUAL SHADERS_DIR AND
        _output_directory STREQUAL COMPILED_SHADERS_DIR AND
        NOT _output_name STREQUAL "openvdb_transport_reference.comp.spv")
-        set(_interface_flags -reflection-json "${_reflection}")
-        set(_interface_products BYPRODUCTS "${_reflection}" "${_depfile}.sha256")
+        # Keep the output name inside the repro independent of the build path.
+        cmake_path(RELATIVE_PATH _slang_output BASE_DIRECTORY "${CMAKE_BINARY_DIR}")
+        set(_lookup_repro "${RELOAD_INTERFACE_DIR}/${_output_name}.slang-repro")
+        set(_interface_flags -reflection-json "${_reflection}" -dump-repro "${_lookup_repro}")
+        set(_interface_products BYPRODUCTS "${_reflection}" "${_depfile}.sha256" "${_depfile}.lookups")
         set(_fingerprint_command COMMAND "${CMAKE_COMMAND}"
             "-DFINGERPRINT_OUTPUT=${_depfile}.sha256" "-DDEPFILE=${_depfile}"
             "-DSOURCE_ROOT=${CMAKE_SOURCE_DIR}"
+            "-DLOOKUP_OUTPUT=${_depfile}.lookups" "-DLOOKUP_REPRO=${_lookup_repro}"
+            "-DSLANGC=${SLANGC_EXECUTABLE}"
             -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/ShaderDependencies.cmake")
         set(_reload_args "")
         foreach(_arg IN LISTS ARGN)
@@ -207,7 +213,7 @@ function(add_slang_output OUTPUTS_VAR SLANG_SOURCE ENTRY_POINT OUTPUT_PATH)
                 -entry "${ENTRY_POINT}"
                 -depfile "${_depfile}"
                 ${_interface_flags}
-                -o "${OUTPUT_PATH}"
+                -o "${_slang_output}"
         ${_fingerprint_command}
         DEPFILE "${_depfile}"
         DEPENDS
@@ -217,6 +223,7 @@ function(add_slang_output OUTPUTS_VAR SLANG_SOURCE ENTRY_POINT OUTPUT_PATH)
             "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/ShaderDependencies.cmake"
             "${SLANGC_EXECUTABLE}"
         COMMENT "Compiling ${SLANG_SOURCE} (${ENTRY_POINT})"
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
         VERBATIM
     )
     set(_outputs "${${OUTPUTS_VAR}}")

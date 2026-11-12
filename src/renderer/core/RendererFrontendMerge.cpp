@@ -7,6 +7,7 @@
 #include "Container/renderer/effects/OpenVdbVolumeRenderer.h"
 #include "Container/renderer/lighting/DdgiManager.h"
 #include "Container/renderer/lighting/ImportedSceneLightEdits.h"
+#include "Container/renderer/pipeline/RuntimeShaderCompiler.h"
 #include "Container/renderer/platform/VulkanContextInitializer.h"
 #include "Container/renderer/raytracing/RayShadowManager.h"
 #include "Container/renderer/resources/FrameResourceManager.h"
@@ -399,7 +400,8 @@ bool RendererFrontend::publishSceneMerge(SceneMergeHistory& state,
       depths.push_back(msaaSampleCount_==VK_SAMPLE_COUNT_1_BIT?frame->depthStencil.view:frame->depthStencilMsaa.view);
     }
     auxiliary=std::make_unique<PbrAuxiliaryPass>(svc_.ctx.deviceWrapper,svc_.allocationManager,svc_.pipelineManager);
-    auxiliary->createResources(container::util::executableDirectory(),manager.descriptorSetLayout(),
+    auxiliary->createResources(activeShaderReload_ ? activeShaderReload_->directory : container::util::executableDirectory(),
+        manager.descriptorSetLayout(),
         resources_.gBufferFormats.depthStencil,msaaSampleCount_,depths,svc_.swapChainManager.extent());
     auxiliaryPass=auxiliary.get();
   }
