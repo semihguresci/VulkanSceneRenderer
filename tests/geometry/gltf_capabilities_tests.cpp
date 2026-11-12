@@ -20,6 +20,7 @@
 #include <iterator>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 namespace gltf = container::geometry::gltf;
@@ -1214,6 +1215,83 @@ TEST(GltfCapabilitiesLoader, MalformedOptionalExperimentalLayersPreserveValidLay
     expectLoadError([&] { (void)gltf::LoadSourceModel(fixture.save(json, binary).string(), options); }, path,
                     "material[0].extensions.KHR_materials_volume_scatter.multiscatterColor");
   }
+}
+
+TEST(GltfCapabilitiesLoader, RepeatedDeclarationsKeepOptionalFallbackAndRequiredRejection) {
+  constexpr size_t duplicateCount = 4096;
+  constexpr size_t materialCount = 256;
+  constexpr size_t detailedWarningCount = 32;
+  const std::string scatter(gltf::kGltfScatter);
+  const std::string retroreflection(gltf::kGltfRetroreflection);
+  constexpr const char* ior = "KHR_materials_ior";
+  constexpr const char* textureTransform = "KHR_texture_transform";
+
+  AssetFixture fixture;
+  auto json = fixture.triangle();
+  json["extensionsUsed"] = json["extensionsRequired"] =
+      std::vector<std::string>(duplicateCount, ior);
+  for (const auto& name : {scatter, retroreflection, std::string(textureTransform)})
+    json["extensionsUsed"].push_back(name);
+  json["images"] = {{{"uri", kEmbeddedRedPng}}};
+  json["textures"] = {{{"source", 0}}};
+
+  const nlohmann::json malformed = {{"extensions", {
+      {ior, {{"ior", 1.4}}}, {scatter, {{"scatterAnisotropy", 2}}},
+  }}};
+  auto& sourceMaterials = json["materials"];
+  sourceMaterials = std::vector<nlohmann::json>(materialCount, malformed);
+  for (size_t index : {size_t{0}, materialCount - 1}) {
+    auto& layer = sourceMaterials[index]["extensions"][retroreflection];
+    layer["retroreflectionFactor"] = .4;
+    auto& texture = layer["retroreflectionTexture"];
+    texture["index"] = 0;
+    texture["extensions"][textureTransform] = {{"offset", {.25, .75}}};
+  }
+  json["meshes"][0]["primitives"][0]["material"] = materialCount - 1;
+  gltf::LoadOptions options;
+  options.enableExperimentalMaterials = true;
+  const auto path = fixture.save(json);
+  const auto loaded = gltf::LoadModelWithSource(path.string(), options);
+
+  EXPECT_EQ(loaded.model.vertices().size(), 3u);
+  const auto& materials = loaded.gltfModel.materials;
+  ASSERT_EQ(materials.size(), materialCount);
+  EXPECT_TRUE(std::ranges::none_of(materials, [&](const auto& material) {
+    return material.extensions.contains(scatter);
+  }));
+  const auto layers = gltf::ParseGltfExperimentalMaterials(loaded.gltfModel);
+  ASSERT_EQ(layers.size(), materialCount);
+  for (size_t index : {size_t{0}, materialCount - 1}) {
+    EXPECT_DOUBLE_EQ(materials[index].extensions.at(ior).Get("ior").GetNumberAsDouble(), 1.4);
+    EXPECT_FLOAT_EQ(layers[index].retroreflection, .4f);
+    EXPECT_FLOAT_EQ(layers[index].scatterStrength, 0.f);
+    EXPECT_EQ(layers[index].retroreflectionTexture.sourceTexture, 0);
+    EXPECT_EQ(layers[index].retroreflectionTexture.transform.offset, glm::vec2(.25f, .75f));
+  }
+
+  std::vector<const gltf::CapabilityDiagnostic*> warnings;
+  for (const auto& diagnostic : loaded.capabilityDiagnostics) {
+    if (diagnostic.code == "experimental_material_fallback")
+      warnings.push_back(&diagnostic);
+  }
+  ASSERT_EQ(warnings.size(), detailedWarningCount + 1);
+  for (size_t index = 0; index < detailedWarningCount; ++index) {
+    EXPECT_EQ(warnings[index]->severity, CapabilitySeverity::Warning);
+    EXPECT_TRUE(warnings[index]->message.contains(
+        "material[" + std::to_string(index) + "].extensions." + scatter + ".scatterAnisotropy"));
+  }
+  EXPECT_EQ(warnings.back()->message,
+      "Ignored " + std::to_string(materialCount - detailedWarningCount) +
+      " additional malformed optional material layers.");
+
+  // The declaration and the invalid layer both follow valid entries. The
+  // required-layer error must still take precedence over the missing buffer.
+  for (size_t index = 0; index + 1 < materialCount; ++index)
+    sourceMaterials[index]["extensions"].erase(scatter);
+  json["extensionsRequired"].push_back(scatter);
+  json["buffers"][0]["uri"] = "must-not-be-read.bin";
+  expectLoadError([&] { (void)gltf::LoadSourceModel(fixture.save(json).string(), options); }, path,
+                  "material[" + std::to_string(materialCount - 1) + "].extensions." + scatter + ".scatterAnisotropy");
 }
 
 TEST(GltfCapabilitiesLoader, OptionalExperimentalTextureFallbackPreservesCoreResources) {
