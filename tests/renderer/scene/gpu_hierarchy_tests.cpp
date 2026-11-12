@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -132,7 +133,8 @@ class GpuHierarchyGpu : public ::testing::Test {
   struct Result { std::vector<glm::mat4> worlds; std::vector<ObjectData> objects; double gpuMs{}; };
   Result run(uint32_t image, std::span<const HierarchyLocalTransform> nodes,
              std::span<const uint32_t> mapping,const std::vector<glm::mat4>* cpuWorlds=nullptr,
-             const std::vector<ObjectData>* metadataOverride=nullptr) {
+             const std::vector<ObjectData>* metadataOverride=nullptr,
+             PipelineManager::ComputeReload* reloadBeforeCommit=nullptr) {
     const auto objectBytes=mapping.size()*sizeof(ObjectData);
     auto& destination=destinations.at(image);
     memory->destroyBuffer(destination);
@@ -167,7 +169,13 @@ class GpuHierarchyGpu : public ::testing::Test {
     command.end();
     const vk::CommandBuffer handle=*command;vk::SubmitInfo submit;submit.commandBufferCount=1;submit.pCommandBuffers=&handle;
     vk::raii::Queue queue(device->raii(),device->queueFamilyIndices().graphicsFamily.value(),0);
-    queue.submit(submit,nullptr);pass->commitFrame(image);queue.waitIdle();
+    queue.submit(submit,nullptr);
+    if(reloadBeforeCommit) {
+      queue.waitIdle();
+      pipelines->publishComputeReload(*reloadBeforeCommit);
+    }
+    pass->commitFrame(image);
+    if(!reloadBeforeCommit) queue.waitIdle();
     ASSERT_VK(vmaInvalidateAllocation(memory->allocator(),readback.allocation,0,VK_WHOLE_SIZE));
     std::array<uint64_t,2> ticks{};
     ASSERT_VK(vkGetQueryPoolResults(device->device(),query,0,2,sizeof(ticks),ticks.data(),sizeof(uint64_t),VK_QUERY_RESULT_64_BIT));
@@ -193,8 +201,9 @@ class GpuHierarchyGpu : public ::testing::Test {
       }
     return result;
   }
-  Result verify(uint32_t image,const std::vector<HierarchyLocalTransform>& nodes,const std::vector<uint32_t>& mapping) {
-    const auto expected=reference(nodes);const auto result=run(image,nodes,mapping);
+  Result verify(uint32_t image,const std::vector<HierarchyLocalTransform>& nodes,const std::vector<uint32_t>& mapping,
+                PipelineManager::ComputeReload* reloadBeforeCommit=nullptr) {
+    const auto expected=reference(nodes);const auto result=run(image,nodes,mapping,nullptr,nullptr,reloadBeforeCommit);
     for(size_t i=0;i<nodes.size();++i) {SCOPED_TRACE(i);matrixNear(result.worlds[i],expected[i]);}
     for(size_t i=0;i<mapping.size();++i) {
       SCOPED_TRACE(i);const auto& object=result.objects[i];
@@ -279,6 +288,87 @@ TEST_F(GpuHierarchyGpu, RejectedInputRetainsPreparedFrameAndCancelledRecordingCa
   nodes[0].local[3].x=2;pass->prepareFrame(0,nodes,mapping,target); // Deliberately never record or submit.
   nodes[1].local[3].y=3;verify(0,nodes,mapping);EXPECT_EQ(pass->stats(0).dirtyLocals,1);
 }
+
+TEST_F(GpuHierarchyGpu, RetainedWorldsTrackTheRecordedShaderAcrossReloadPublication) {
+  const auto module=std::filesystem::path("spv_shaders")/"hierarchy_transform.comp.spv";
+  std::ifstream source(shaderDir/module,std::ios::binary|std::ios::ate);
+  const auto size=source.tellg();
+  ASSERT_TRUE(source && size>=std::streamoff(20) && size%4==0);
+  std::vector<uint32_t> code(static_cast<size_t>(size)/4);
+  source.seekg(0);
+  ASSERT_TRUE(source.read(reinterpret_cast<char*>(code.data()),size));
+  ASSERT_EQ(code.front(),0x07230203u);
+
+  const auto root=std::filesystem::temp_directory_path()/
+      ("container-hierarchy-reload-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  ASSERT_TRUE(std::filesystem::create_directory(root));
+  struct Scratch {
+    std::filesystem::path root, module;
+    ~Scratch() {
+      std::error_code error;
+      std::filesystem::remove(root/module,error);
+      std::filesystem::remove(root/module.parent_path(),error);
+      std::filesystem::remove(root,error);
+    }
+  } scratch{root,module};
+  ASSERT_TRUE(std::filesystem::create_directory(root/module.parent_path()));
+  const uint32_t generator=code[2];
+  const auto stage=[&](uint32_t version) {
+    // Vary the generator version while preserving identical executable instructions.
+    code[2]=(generator&0xffff0000u)|((generator+version)&0xffffu);
+    std::ofstream output(root/module,std::ios::binary);
+    output.write(reinterpret_cast<const char*>(code.data()),size);
+    output.close();
+    if(!output) throw std::runtime_error("Could not write hierarchy reload fixture");
+  };
+
+  const std::vector<HierarchyLocalTransform> nodes{
+    {glm::translate(glm::mat4(1),glm::vec3(2,1,0)),UINT32_MAX},
+    {glm::translate(glm::mat4(1),glm::vec3(0,3,4)),0},
+  };
+  const std::vector<uint32_t> mapping{1};
+  verify(1,nodes,mapping);
+  {
+    stage(1);
+    auto replacement=pipelines->prepareComputeReload(root);
+    ASSERT_EQ(replacement.size(),1u);
+    verify(0,nodes,mapping,&replacement);
+  }
+  verify(0,nodes,mapping);
+  EXPECT_EQ(pass->stats(0).uploadedBytes,0);
+  EXPECT_EQ(pass->stats(0).dispatchedLevels,2) << "Commit must retain the recorded shader identity";
+  verify(0,nodes,mapping);
+  EXPECT_EQ(pass->stats(0).dispatchedLevels,0);
+
+  {
+    stage(2);
+    auto replacement=pipelines->prepareComputeReload(root);
+    ASSERT_EQ(replacement.size(),1u);
+    pipelines->publishComputeReload(replacement);
+  }
+  verify(1,nodes,mapping);
+  EXPECT_EQ(pass->stats(1).uploadedBytes,0);
+  EXPECT_EQ(pass->stats(1).dispatchedLevels,2);
+  verify(0,nodes,mapping);
+  EXPECT_EQ(pass->stats(0).dispatchedLevels,2);
+
+  {
+    auto unchanged=pipelines->prepareComputeReload(root);
+    ASSERT_EQ(unchanged.size(),0u);
+    pipelines->publishComputeReload(unchanged);
+  }
+  {
+    stage(3);
+    auto abandoned=pipelines->prepareComputeReload(root);
+    ASSERT_EQ(abandoned.size(),1u);
+  }
+  for(uint32_t image:{0u,1u}) {
+    verify(image,nodes,mapping);
+    EXPECT_EQ(pass->stats(image).uploadedBytes,0);
+    EXPECT_EQ(pass->stats(image).dispatchedLevels,0);
+  }
+}
+
 TEST_F(GpuHierarchyGpu, LargeChangingHierarchyReportsActualCpuUploadAndGpuCosts) {
   std::vector<HierarchyLocalTransform> nodes(50000);std::vector<uint32_t> mapping;
   for(uint32_t i=0;i<nodes.size();++i) {

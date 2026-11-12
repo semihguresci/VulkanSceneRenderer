@@ -18,9 +18,11 @@ including shadow, selection and velocity consumers, use that SSBO.
 Each swapchain image owns independent local, topology, world, binding and
 metadata buffers. Only changed local records are uploaded on ordinary pose updates.
 Topology changes rebuild the level order; changed object bindings update their
-mapping. A successful graphics submission commits the world cache. Unchanged
-hierarchies skip level dispatches, while a changed compute pipeline invalidates
-the cache. Discarded recordings cannot publish uncomputed worlds.
+mapping. A successful graphics submission commits the world cache with the
+compute shader identity used to record it. Unchanged hierarchies skip level
+dispatches. Each image recomputes its worlds after a shader replacement, even
+if it was inactive during several reloads. Discarded recordings cannot
+publish uncomputed worlds.
 
 World matrices follow GLM/glTF column vectors in the right-handed world. Normal
 matrices use cofactors divided by the determinant, preserving mirrored and

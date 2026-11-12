@@ -47,9 +47,9 @@ struct GpuHierarchyPass::Impl {
     std::vector<std::byte> cachedMetadata;
     gpu::BufferSlice objects{};
     HierarchyUploadStats stats{};
-    bool prepared{}, queryRecorded{}, worldsDirty{true}, recorded{};
+    bool prepared{}, worldsDirty{true};
     bool metadataReady{}, fullMetadataUpload{true};
-    VkPipeline submittedPipeline{};
+    std::shared_ptr<const void> recordedPipelineContent, submittedPipelineContent;
   };
   std::shared_ptr<gpu::VulkanDevice> device;
   gpu::VulkanMemoryManager& memory;
@@ -142,7 +142,7 @@ void GpuHierarchyPass::prepareFrame(uint32_t image,std::span<const HierarchyLoca
     fail("storage buffer range exceeds device limit");
   auto& f=s.frames[image];
   double previousGpuMs=-1;
-  if(s.queries && f.queryRecorded) {
+  if(s.queries && f.submittedPipelineContent) {
     std::array<uint64_t,4> values{};
     const auto result=vkGetQueryPoolResults(s.device->device(),s.queries,image*2,2,sizeof(values),values.data(),
         sizeof(uint64_t)*2,VK_QUERY_RESULT_64_BIT|VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
@@ -187,6 +187,7 @@ void GpuHierarchyPass::prepareFrame(uint32_t image,std::span<const HierarchyLoca
     if(!std::isfinite(determinant) || determinant==0) fail("singular local transform");
   }
   f.prepared=false;
+  f.recordedPipelineContent.reset();
   const auto nodeCount=VkDeviceSize(std::max<size_t>(1,input.size()));
   const auto objectCount=VkDeviceSize(std::max<size_t>(1,mapping.size()));
   // Allocate replacements before releasing old buffers. Each frame is fence
@@ -243,7 +244,6 @@ void GpuHierarchyPass::prepareFrame(uint32_t image,std::span<const HierarchyLoca
   }
   f.objects=objects;
   f.worldsDirty |= topologyChanged || f.stats.dirtyLocals!=0;
-  f.recorded=false;
   f.stats.levels=f.levels.empty()?0:uint32_t(f.levels.size()-1);
   if(!mapping.empty()) {
     const std::array<VkDescriptorBufferInfo,6> buffers{{
@@ -294,10 +294,10 @@ void GpuHierarchyPass::record(VkCommandBuffer command,uint32_t image) {
   if(!command || image>=s.frames.size() || !s.frames[image].prepared || !s.frames[image].metadataReady) fail("frame not prepared");
   auto& f=s.frames[image];
   if(!f.stats.objects) return;
+  auto pipelineContent=s.pipeline.contentIdentity();
   if(s.queries) {
     vkCmdResetQueryPool(command,s.queries,image*2,2);
     vkCmdWriteTimestamp(command,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,s.queries,image*2);
-    f.queryRecorded=true;
   }
   barrier(command,VK_PIPELINE_STAGE_HOST_BIT|VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
           VK_ACCESS_HOST_WRITE_BIT|VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT);
@@ -312,7 +312,7 @@ void GpuHierarchyPass::record(VkCommandBuffer command,uint32_t image) {
       vkCmdDispatch(command,(batch+63)/64,1,1);offset+=batch;
     }
   };
-  const bool propagate=f.worldsDirty || f.submittedPipeline!=static_cast<VkPipeline>(s.pipeline);
+  const bool propagate=f.worldsDirty || f.submittedPipelineContent!=pipelineContent;
   f.stats.dispatchedLevels=propagate?f.stats.levels:0;
   if(propagate) for(size_t i=1;i<f.levels.size();++i) {
     dispatch(0,f.levels[i-1],f.levels[i]-f.levels[i-1]);
@@ -323,16 +323,17 @@ void GpuHierarchyPass::record(VkCommandBuffer command,uint32_t image) {
   barrier(command,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
           VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT);
   if(s.queries) vkCmdWriteTimestamp(command,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,s.queries,image*2+1);
-  f.recorded=true;
-  // prepareFrame describes each recording, rather than treating a recording
-  // as submission. Retrying a discarded command recomputes the same worlds.
+  // Commit the shader used by this recording even if a reload publishes
+  // another pipeline before commitFrame.
+  f.recordedPipelineContent=std::move(pipelineContent);
 }
 void GpuHierarchyPass::commitFrame(uint32_t image) noexcept {
   auto& s=*impl_;
   if(image>=s.frames.size()) return;
   auto& f=s.frames[image];
-  if(!f.recorded) return;
-  f.worldsDirty=false;f.submittedPipeline=s.pipeline;f.recorded=false;
+  if(!f.recordedPipelineContent) return;
+  f.worldsDirty=false;
+  f.submittedPipelineContent=std::move(f.recordedPipelineContent);
 }
 gpu::BufferSlice GpuHierarchyPass::worldMatrices(uint32_t image) const {
   if(image>=impl_->frames.size()) return {};
