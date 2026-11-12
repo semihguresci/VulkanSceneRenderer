@@ -99,3 +99,8 @@ the bridge inactive even if the environment variable is set. The native mock
 regression at `tests/validation/comfyui_runtime_regression.py` runs the actual
 adapter against a local HTTP mock. It checks that rendering continues while the
 adapter waits for a response.
+
+The Windows Vulkan run passed 12 viewport captures using the local HTTP mock.
+It verified HDRI publication, preview recreation across MSAA changes, and
+continued frame submission while a job was missing. The extracted package also
+rendered a viewport capture with the bridge disabled. [Validation results](https://github.com/semihguresci/VulkanSceneRenderer/blob/main/tests/visual-regression/comfyui-bridge/windows-nvidia/comfyui-bridge-results.json)
