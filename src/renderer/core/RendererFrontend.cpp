@@ -7852,9 +7852,10 @@ void RendererFrontend::presentSceneControls() {
   if (!subs_.guiManager)
     return;
   ensureSceneEditHistory();
+  const bool transforming = transformDragSession_.active || sceneEdits_->transformGestureActive();
   subs_.guiManager->setEditHistoryState(
-      sceneEdits_->canUndo() && !transformDragSession_.active,
-      sceneEdits_->canRedo() && !transformDragSession_.active,
+      sceneEdits_->canUndo() && !transforming,
+      sceneEdits_->canRedo() && !transforming,
       std::string(sceneEdits_->undoLabel()), std::string(sceneEdits_->redoLabel()));
   presentPhysicsControls();
   subs_.guiManager->setOpenVdbVolumeState(

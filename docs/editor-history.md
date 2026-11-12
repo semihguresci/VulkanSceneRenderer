@@ -5,17 +5,24 @@ also redoes an edit. A focused text input keeps its ordinary text undo.
 Button tooltips name the next action, and rejected actions report their reason
 in the scene status.
 
-The first implementation covers primary scene-node transforms, hierarchical
-visibility, reparenting, and procedural primitive creation. One inspector or
-viewport drag is one action. Independent gestures remain separate, a new edit
-discards the redo branch, and replacing or unloading the scene clears history.
-History retains up to 128 actions.
+The shared history covers scene-node transforms, flags, reparenting and
+procedural primitives, along with node, material, light and resource authoring.
+It retains up to 128 committed actions and clears on scene replacement or
+unload. An inspector or viewport drag previews live and commits one action when
+it ends. An edit that changes the scene discards the redo branch. A drag that
+returns to its starting matrix or is cancelled with **Esc** in the viewport
+keeps the redo branch.
 
-Undo restores exact local matrices, parentage and sibling/root order. It does
-not decompose imported affine transforms back into TRS. Replaying an edit uses
-the same physics/BIM transform validation as authoring it, and rejected replay
-does not advance the history cursor. Dynamic-body edits pause simulation where
-required; simulation itself is not recorded as a sequence of editor commands.
+Undo restores exact local matrices, parentage and sibling/root order. Stored
+matrices preserve imported affine transforms, including shear. Replaying an edit
+uses the same physics/BIM validation as authoring it. Rejected replay keeps the
+history cursor in place. Editing a dynamic body pauses simulation where required.
+Selection cleared by a selectability or reparent edit returns when replay makes
+the same node selectable again and the selection is still empty. Playback checks
+node identities so a newly created node at a reused index cannot receive a stale
+edit. A selected imported light follows its source binding as the visible lights
+are reordered. Undo can restore its selection after an ancestor visibility edit
+when the selection is still empty.
 
 Undoing primitive creation removes the appended nodes from the hierarchy,
 picking and renderable lists. Redo restores their original node IDs and
@@ -39,9 +46,10 @@ reveals the imported light at the current animation time. Redo reapplies the
 edited fields to the current light. **Save As** exports the visible light edits
 with the scene.
 
-`EditHistory` owns bounded command storage and gesture merging.
-`SceneEditHistory` validates and records graph changes and detects graph
-replacement by identity. `RendererFrontendEdits` connects replay with selection,
+`EditHistory` owns bounded command storage. `SceneEditHistory` validates and
+records graph changes, retains the exact endpoints of an active transform
+gesture, and detects graph replacement by identity. `RendererFrontendEdits`
+connects replay with selection,
 physics checks, object/provider refresh, asynchronous DDGI synchronization and
 temporal invalidation. GPU publication occurs after frame readers retire;
 input-time drags only queue publication.
@@ -51,6 +59,9 @@ Build and run `edit_history_tests`, `scene_edit_history_tests`,
 These cover branching/eviction, rejected commands, exact affine replay,
 interleaved reparent/primitive redo, retained topology, real multi-frame ImGui
 drags, graph replacement and prospective-parent physics validation.
-The native `tests/validation/primitive_history_runtime.py --reuse-only`
-regression checks geometry counts and independent placement through divergent
-adds and replay.
+The native `tests/validation/scene_node_history_runtime.py` and
+`tests/validation/primitive_history_runtime.py` regressions cover forward and
+deferred raster replay, selection, geometry reuse, and publication to TAA, DDGI
+and ray acceleration. `tests/validation/physics_pending_edit_regression.py
+--case transform-history` verifies a Jolt collider stays aligned with its node
+through transform, reparent, replay and reload in a physics-enabled build.

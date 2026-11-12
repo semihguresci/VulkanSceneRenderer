@@ -5,6 +5,8 @@
 #include "Container/renderer/debug/DebugRenderState.h"
 #include "Container/utility/InputManager.h"
 
+#include <algorithm>
+
 namespace container::renderer {
 
 namespace {
@@ -117,7 +119,8 @@ void RenderSurfaceInteractionController::setGesture(
 void RenderSurfaceInteractionController::beginTransformGesture(
     container::ui::ViewportTool tool, container::ui::TransformSpace space,
     container::ui::TransformAxis axis, bool snapEnabled,
-    const TransformGestureCallbacks& callbacks, int pointerButton) {
+    const TransformGestureCallbacks& callbacks, int pointerButton,
+    uint64_t leftButtonPressId) {
   if (state_.gesture != container::ui::ViewportGesture::None) return;
   if (callbacks.begin) callbacks.begin(tool, space, axis, snapEnabled);
   state_.tool = tool;
@@ -127,11 +130,15 @@ void RenderSurfaceInteractionController::beginTransformGesture(
   setGesture(container::ui::ViewportGesture::TransformDrag);
   activePointerButton_ = pointerButton;
   transformConfigurationChanged_ = false;
+  transformEnding_ = false;
+  activeLeftButtonPressId_ = leftButtonPressId;
+  if (leftButtonPressId) lastTransformPressId_ = leftButtonPressId;
 }
 
 void RenderSurfaceInteractionController::processTransformGestureLifecycle(
     const container::window::InputFrameSnapshot& input,
-    const TransformGestureCallbacks& callbacks, bool hasSelection) {
+    const TransformGestureCallbacks& callbacks, bool hasSelection,
+    const TransformGestureUpdate& update) {
   if (state_.gesture != container::ui::ViewportGesture::TransformDrag) return;
   std::optional<TransformGestureCancelReason> cancel;
   if (!input.focused) cancel = TransformGestureCancelReason::FocusLost;
@@ -140,14 +147,35 @@ void RenderSurfaceInteractionController::processTransformGestureLifecycle(
   if (cancel) {
     if (callbacks.cancel) callbacks.cancel(*cancel);
   } else {
-    const bool released = activePointerButton_ >= 0 &&
+    bool released = activePointerButton_ >= 0 &&
         (input.mouseButtonReleased(activePointerButton_) || !input.mouseButtonDown(activePointerButton_));
-    if (!released && !transformConfigurationChanged_) return;
+    double deltaX = input.cursorDeltaX;
+    double deltaY = input.cursorDeltaY;
+    if (activePointerButton_ == GLFW_MOUSE_BUTTON_LEFT) {
+      if (!activeLeftButtonPressId_) activeLeftButtonPressId_ = input.leftButtonPressId;
+      const auto motion = std::ranges::find(input.leftButtonMotions, activeLeftButtonPressId_,
+                                            &container::window::LeftButtonMotion::pressId);
+      const bool hasMotion = motion != input.leftButtonMotions.end();
+      deltaX = hasMotion ? motion->deltaX : 0.0;
+      deltaY = hasMotion ? motion->deltaY : 0.0;
+      released = (hasMotion && motion->released) || input.leftButtonPressId != activeLeftButtonPressId_ ||
+                 !input.mouseButtonDown(GLFW_MOUSE_BUTTON_LEFT);
+    }
+    if (!transformEnding_ && !transformConfigurationChanged_ && update && (deltaX != 0.0 || deltaY != 0.0)) {
+      const auto scale = static_cast<double>(transformDragSpeedScale(input));
+      update(state_.tool, state_.transformSpace, state_.transformAxis,
+             state_.transformSnapEnabled, deltaX * scale, deltaY * scale);
+    }
+    if (!transformEnding_ && !released && !transformConfigurationChanged_) return;
+    // A failed End keeps ownership for retry without publishing the final motion twice.
+    transformEnding_ = true;
     if (callbacks.end) callbacks.end();
   }
   setGesture(container::ui::ViewportGesture::None);
   activePointerButton_ = -1;
   transformConfigurationChanged_ = false;
+  transformEnding_ = false;
+  activeLeftButtonPressId_ = 0;
 }
 
 void RenderSurfaceInteractionController::process(Context context) {
@@ -156,7 +184,8 @@ void RenderSurfaceInteractionController::process(Context context) {
   const bool cancelPressed = escapePressed(input);
   const bool hadActiveGesture =
       state_.gesture != container::ui::ViewportGesture::None;
-  processTransformGestureLifecycle(input, context.transformGestureCallbacks, context.hasSelection);
+  processTransformGestureLifecycle(input, context.transformGestureCallbacks,
+                                   context.hasSelection, context.transformSelectedByDrag);
   if (!input.focused) {
     context.inputManager.setLookMode(false);
     setGesture(container::ui::ViewportGesture::None);
@@ -320,6 +349,7 @@ void RenderSurfaceInteractionController::handleToolShortcuts(
 
 void RenderSurfaceInteractionController::handleLookOwnership(
     const container::window::InputFrameSnapshot& input, Context& context) {
+  if (state_.gesture == container::ui::ViewportGesture::TransformDrag) return;
   if (state_.gesture != container::ui::ViewportGesture::None) {
     const bool gestureButtonReleased =
         activePointerButton_ >= 0 &&
@@ -362,15 +392,20 @@ void RenderSurfaceInteractionController::handleLookOwnership(
       context.hasSelection &&
       context.transformSelectedByDrag &&
       context.pickTransformGizmoAxisAtCursor) {
-    if (const auto pickedAxis = context.pickTransformGizmoAxisAtCursor(
-            input.framebufferCursorX, input.framebufferCursorY)) {
+    for (const auto& motion : input.leftButtonMotions) {
+      if (!motion.pressed || motion.pressId <= lastTransformPressId_) continue;
+      const auto pickedAxis = context.pickTransformGizmoAxisAtCursor(motion.pressX, motion.pressY);
+      if (!pickedAxis) continue;
       beginTransformGesture(state_.tool, state_.transformSpace, *pickedAxis,
-          state_.transformSnapEnabled, context.transformGestureCallbacks, GLFW_MOUSE_BUTTON_LEFT);
+          state_.transformSnapEnabled, context.transformGestureCallbacks,
+          GLFW_MOUSE_BUTTON_LEFT, motion.pressId);
       if (context.setStatusMessage) {
         context.setStatusMessage(std::string("Transform axis: ") +
                                  transformAxisLabel(*pickedAxis));
       }
-      return;
+      processTransformGestureLifecycle(input, context.transformGestureCallbacks,
+                                       context.hasSelection, context.transformSelectedByDrag);
+      if (state_.gesture == container::ui::ViewportGesture::TransformDrag) return;
     }
   }
 
@@ -421,16 +456,6 @@ void RenderSurfaceInteractionController::handleViewportActions(
         context.selectedMeshNode, static_cast<float>(input.cursorDeltaX),
         static_cast<float>(input.cursorDeltaY),
         anyShiftKeyDown(input) ? 0.25f : 1.0f);
-  } else if (state_.gesture == container::ui::ViewportGesture::TransformDrag &&
-             (input.cursorDeltaX != 0.0 || input.cursorDeltaY != 0.0) &&
-             context.transformSelectedByDrag) {
-    const double dragScale =
-        static_cast<double>(transformDragSpeedScale(input));
-    context.transformSelectedByDrag(state_.tool, state_.transformSpace,
-                                    state_.transformAxis,
-                                    state_.transformSnapEnabled,
-                                    input.cursorDeltaX * dragScale,
-                                    input.cursorDeltaY * dragScale);
   }
 
   if (state_.gesture == container::ui::ViewportGesture::None &&

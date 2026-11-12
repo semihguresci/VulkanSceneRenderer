@@ -29,6 +29,9 @@ class RenderSurfaceInteractionController {
     std::function<void()> end{};
     std::function<void(TransformGestureCancelReason)> cancel{};
   };
+  using TransformGestureUpdate = std::function<void(
+      container::ui::ViewportTool, container::ui::TransformSpace,
+      container::ui::TransformAxis, bool, double, double)>;
   struct Context {
     container::window::InputManager& inputManager;
     CameraController& cameraController;
@@ -44,12 +47,7 @@ class RenderSurfaceInteractionController {
     std::function<void()> clearSelection{};
     std::function<std::optional<container::ui::TransformAxis>(double, double)>
         pickTransformGizmoAxisAtCursor{};
-    std::function<void(container::ui::ViewportTool,
-                       container::ui::TransformSpace,
-                       container::ui::TransformAxis,
-                       bool,
-                       double,
-                       double)> transformSelectedByDrag{};
+    TransformGestureUpdate transformSelectedByDrag{};
     std::function<void(std::string)> setStatusMessage{};
     std::function<void()> onCullingUnfrozen{};
     TransformGestureCallbacks transformGestureCallbacks{};
@@ -70,9 +68,11 @@ class RenderSurfaceInteractionController {
   // changed; a failed publication leaves the active gesture available.
   void beginTransformGesture(container::ui::ViewportTool tool,
       container::ui::TransformSpace space, container::ui::TransformAxis axis,
-      bool snapEnabled, const TransformGestureCallbacks&, int pointerButton = 0);
+      bool snapEnabled, const TransformGestureCallbacks&, int pointerButton = 0,
+      uint64_t leftButtonPressId = 0);
   void processTransformGestureLifecycle(const container::window::InputFrameSnapshot&,
-      const TransformGestureCallbacks&, bool hasSelection = true);
+      const TransformGestureCallbacks&, bool hasSelection = true,
+      const TransformGestureUpdate& update = {});
 
  private:
   void handleDebugShortcuts(const container::window::InputFrameSnapshot& input,
@@ -90,6 +90,9 @@ class RenderSurfaceInteractionController {
   container::ui::ViewportInteractionState state_{};
   int activePointerButton_{-1};
   bool transformConfigurationChanged_{false};
+  bool transformEnding_{false};
+  uint64_t activeLeftButtonPressId_{};
+  uint64_t lastTransformPressId_{};
 };
 
 }  // namespace container::renderer

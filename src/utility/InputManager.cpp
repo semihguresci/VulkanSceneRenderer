@@ -31,8 +31,8 @@ bool InputManager::update(float deltaTime) {
 }
 
 InputFrameSnapshot InputManager::frameSnapshot() const {
-  double framebufferCursorX = lastMouseX_;
-  double framebufferCursorY = lastMouseY_;
+  double framebufferScaleX = 1.0;
+  double framebufferScaleY = 1.0;
   if (window_) {
     int windowWidth = 0;
     int windowHeight = 0;
@@ -42,20 +42,16 @@ InputFrameSnapshot InputManager::frameSnapshot() const {
     glfwGetFramebufferSize(window_, &framebufferWidth, &framebufferHeight);
     if (windowWidth > 0 && windowHeight > 0 && framebufferWidth > 0 &&
         framebufferHeight > 0) {
-      framebufferCursorX =
-          lastMouseX_ * static_cast<double>(framebufferWidth) /
-          static_cast<double>(windowWidth);
-      framebufferCursorY =
-          lastMouseY_ * static_cast<double>(framebufferHeight) /
-          static_cast<double>(windowHeight);
+      framebufferScaleX = static_cast<double>(framebufferWidth) / windowWidth;
+      framebufferScaleY = static_cast<double>(framebufferHeight) / windowHeight;
     }
   }
 
-  return InputFrameSnapshot{
+  auto snapshot = InputFrameSnapshot{
       .cursorX = lastMouseX_,
       .cursorY = lastMouseY_,
-      .framebufferCursorX = framebufferCursorX,
-      .framebufferCursorY = framebufferCursorY,
+      .framebufferCursorX = lastMouseX_ * framebufferScaleX,
+      .framebufferCursorY = lastMouseY_ * framebufferScaleY,
       .cursorDeltaX = frameMouseDeltaX_,
       .cursorDeltaY = frameMouseDeltaY_,
       .scrollDeltaX = scrollDeltaX_,
@@ -68,7 +64,14 @@ InputFrameSnapshot InputManager::frameSnapshot() const {
       .keysReleasedThisFrame = keysReleasedThisFrame_,
       .mouseButtonsPressedThisFrame = mouseButtonsPressedThisFrame_,
       .mouseButtonsReleasedThisFrame = mouseButtonsReleasedThisFrame_,
+      .leftButtonPressId = leftButtonPressId_,
+      .leftButtonMotions = leftButtonMotions_,
   };
+  for (auto& motion : snapshot.leftButtonMotions) {
+    motion.pressX *= framebufferScaleX;
+    motion.pressY *= framebufferScaleY;
+  }
+  return snapshot;
 }
 
 void InputManager::endFrame() {
@@ -76,6 +79,7 @@ void InputManager::endFrame() {
   keysReleasedThisFrame_.clear();
   mouseButtonsPressedThisFrame_.clear();
   mouseButtonsReleasedThisFrame_.clear();
+  leftButtonMotions_.clear();
   frameMouseDeltaX_ = 0.0;
   frameMouseDeltaY_ = 0.0;
   scrollDeltaX_ = 0.0;
@@ -100,6 +104,11 @@ void InputManager::enqueueMouseDelta(double xpos, double ypos) {
 
   frameMouseDeltaX_ += xoffset;
   frameMouseDeltaY_ += yoffset;
+  if (pressedMouseButtons_.contains(GLFW_MOUSE_BUTTON_LEFT)) {
+    auto& motion = leftButtonMotion();
+    motion.deltaX += xoffset;
+    motion.deltaY += yoffset;
+  }
 
   if (!lookModeActive_) return;
 
@@ -112,17 +121,35 @@ void InputManager::enqueueMouseDelta(double xpos, double ypos) {
   pendingMouseDeltaY_ += yoffset;
 }
 
+LeftButtonMotion& InputManager::leftButtonMotion() {
+  if (leftButtonMotions_.empty() || leftButtonMotions_.back().pressId != leftButtonPressId_)
+    leftButtonMotions_.push_back({.pressId = leftButtonPressId_});
+  return leftButtonMotions_.back();
+}
+
 void InputManager::handleMouseButton(int button, int action) {
   if (action == GLFW_PRESS) {
     const bool alreadyDown = pressedMouseButtons_.contains(button);
     pressedMouseButtons_.insert(button);
     if (!alreadyDown) {
       mouseButtonsPressedThisFrame_.insert(button);
+      if (button == GLFW_MOUSE_BUTTON_LEFT) {
+        if (firstCursorEvent_ && window_) {
+          glfwGetCursorPos(window_, &lastMouseX_, &lastMouseY_);
+          firstCursorEvent_ = false;
+        }
+        ++leftButtonPressId_;
+        auto& motion = leftButtonMotion();
+        motion.pressX = lastMouseX_;
+        motion.pressY = lastMouseY_;
+        motion.pressed = true;
+      }
     }
   } else if (action == GLFW_RELEASE) {
     const bool wasDown = pressedMouseButtons_.erase(button) > 0u;
     if (wasDown) {
       mouseButtonsReleasedThisFrame_.insert(button);
+      if (button == GLFW_MOUSE_BUTTON_LEFT) leftButtonMotion().released = true;
     }
   }
 }
@@ -159,6 +186,7 @@ void InputManager::handleWindowFocus(bool focused) {
   keysReleasedThisFrame_.clear();
   mouseButtonsPressedThisFrame_.clear();
   mouseButtonsReleasedThisFrame_.clear();
+  leftButtonMotions_.clear();
   frameMouseDeltaX_ = 0.0;
   frameMouseDeltaY_ = 0.0;
   scrollDeltaX_ = 0.0;

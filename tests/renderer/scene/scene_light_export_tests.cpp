@@ -996,6 +996,35 @@ TEST(SceneLightExport, GlobalImportedEditsFollowSourceBindingsAcrossSceneLocalOr
   EXPECT_FALSE(merged.importedAreaOverrides[1]); EXPECT_FALSE(merged.importedAreaOverrides[2]);
 }
 
+TEST(SceneLightExport, EditableLightSelectionFollowsOnlyTheSameVisibleBinding) {
+  using Binding = container::scene::AuthoredLightBinding;
+  const EditableLightId point{EditableLightType::Point, EditableLightSource::Imported, 1};
+  const std::array<Binding, 2> before{{{10, {}}, {20, {}}}};
+  const auto selectedPoint = selectedImportedLightBinding(point, before);
+  ASSERT_TRUE(selectedPoint);
+  EXPECT_EQ(selectedPoint->sourceNode, 20);
+  const std::array<Binding, 2> reordered{{{20, {}}, {10, {}}}};
+  EXPECT_EQ(remapImportedLightSelection(point, &*selectedPoint, reordered),
+            (EditableLightId{EditableLightType::Point, EditableLightSource::Imported, 0}));
+  EXPECT_FALSE(isValidEditableLightId(remapImportedLightSelection(point, &*selectedPoint,
+      std::span<const Binding>(before).first(1))));
+
+  const EditableLightId area{EditableLightType::Area, EditableLightSource::Imported, 0};
+  const Binding selectedArea{30, "KHR_lights_area"};
+  const std::array<Binding, 1> otherDialect{{{30, "EXT_lights_area"}}};
+  EXPECT_FALSE(isValidEditableLightId(remapImportedLightSelection(area, &selectedArea, otherDialect)));
+
+  const EditableLightId sun{EditableLightType::Directional, EditableLightSource::Imported, 0};
+  const auto selectedSun = selectedImportedLightBinding(sun, before);
+  ASSERT_TRUE(selectedSun);
+  EXPECT_EQ(remapImportedLightSelection(sun, &*selectedSun, before), sun);
+  EXPECT_FALSE(isValidEditableLightId(remapImportedLightSelection(sun, &*selectedSun, reordered)));
+
+  const EditableLightId manual{EditableLightType::Directional, EditableLightSource::Manual, 0};
+  EXPECT_FALSE(selectedImportedLightBinding(manual, before));
+  EXPECT_EQ(remapImportedLightSelection(manual, nullptr, reordered), manual);
+}
+
 TEST(SceneLightExport, GlobalImportedBindingIdentityIncludesSourceNodeAndExactAreaDialect) {
   container::scene::AuthoredSceneLights source;
   source.pointBindings = {{10,{}}};

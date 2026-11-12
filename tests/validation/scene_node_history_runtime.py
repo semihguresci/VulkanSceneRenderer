@@ -108,10 +108,10 @@ def raster(renderer, output, technique, source, literal):
         grab(25, tool='scale', space='local', delta=(40,0)), node(26, 'end'),
         action(27, 'undo'), action(28, 'redo'),
         node(29, 'select', 3), action(30, 'undo'), action(31, 'redo'),
-        action(32, 'undo'), grab(33, delta=(30, 0)), node(34, 'update', delta=[-30,0]),
-        node(35, 'end'), action(36, 'redo'),
+        action(32, 'undo'), node(33, 'select'), grab(34, delta=(30, 0)),
+        node(35, 'update', delta=[-30,0]), node(36, 'end'), action(37, 'redo'),
     ]
-    captures = run(renderer, output, technique + '-node', source, technique, list(range(2,37)),
+    captures = run(renderer, output, technique + '-node', source, technique, list(range(2,38)),
                    commands, ('--no-ray-query',), fix_camera=True)
     baked = run(renderer, output, technique + '-node-baked', literal, technique, [2],
                 [node(1, 'select')], ('--no-ray-query',), fix_camera=True)[2]
@@ -144,24 +144,29 @@ def raster(renderer, output, technique, source, literal):
     history(captures[19], 3, 0)
     history(captures[22], 3, 0)
     history(captures[26], 4, 0)
-    for frame in (13, 14, 18, 21, 25, 33, 34):
+    for frame in (13, 14, 18, 21, 25, 34, 35):
         assert state(captures[frame])['gizmoActive'], frame
-    for frame in (15, 19, 22, 26, 35):
+    for frame in (15, 19, 22, 26, 36):
         assert not state(captures[frame])['gizmoActive'], frame
     assert np.linalg.det(matrix(state(captures[26])['local'])[:3,:3]) < 0
-    selected = state(captures[26])['graphNode']
-    assert state(captures[29])['selectedGraphNode'] != selected
-    assert state(captures[30])['selectedGraphNode'] == state(captures[31])['selectedGraphNode'] == selected
-    assert state(captures[33])['local'] != state(captures[32])['local']
-    assert state(captures[34])['local'] == state(captures[35])['local'] == state(captures[32])['local']
+    edited = state(captures[26])['graphNode']
+    alternate = state(captures[29])['selectedGraphNode']
+    assert alternate != edited
+    assert state(captures[30])['selectedGraphNode'] == state(captures[31])['selectedGraphNode'] == alternate
+    assert state(captures[30])['local'] == state(captures[24])['local']
+    assert state(captures[31])['local'] == state(captures[26])['local']
+    assert state(captures[33])['selectedGraphNode'] == edited
+    assert state(captures[34])['local'] != state(captures[33])['local']
+    assert state(captures[35])['local'] == state(captures[36])['local'] == state(captures[33])['local']
     history(captures[32], 3, 1)
     history(captures[33], 3, 1)
     history(captures[34], 3, 1)
     history(captures[35], 3, 1)
-    history(captures[36], 4, 0)
+    history(captures[36], 3, 1)
+    history(captures[37], 4, 0)
     for a, b in [(2,4), (3,5), (5,7), (6,8), (9,11), (10,12), (14,15), (12,16),
-                 (15,17), (17,19), (12,20), (20,23), (22,24), (24,27), (26,28), (24,30), (26,31),
-                 (32,34), (32,35), (26,36)]:
+                 (15,17), (17,19), (12,20), (20,23), (22,24), (24,27), (26,28),
+                 (33,35), (33,36), (26,37)]:
         exact(captures[a], captures[b])
     exact(captures[3], baked)
     for a, b in [(2,3), (3,6), (12,15), (17,18), (20,22), (24,26)]:
@@ -202,23 +207,33 @@ def mixed_history(renderer, output, source):
 def stable_light_bindings(renderer, output):
     source = output/'two-lights.gltf'
     build_fixture(source, two_lights=True)
-    commands = [node(1, 'select', 4), edit(3, dict(intensity=45), target=LIGHT),
+    commands = [dict(frame=1, lightSelection=LIGHT), edit(3, dict(intensity=45), target=LIGHT),
                 node(4, 'reparent', 4, parent=1), action(5, 'undo'), action(6, 'undo'),
-                action(7, 'redo'), action(8, 'redo')]
+                action(7, 'redo'), action(8, 'redo'),
+                node(9, 'visibility', 1, visible=False), action(10, 'undo'), action(11, 'redo'),
+                node(12, 'select'), action(13, 'undo')]
     frames = run(renderer, output, 'light-binding-order', source, 'deferred-raster',
-                 list(range(2,9)), commands, ('--no-ray-query',))
+                 list(range(2,14)), commands, ('--no-ray-query',))
     def rows(frame):
         return {item['sourceNode']: item for item in frames[frame][1]['lightEdits']['lights']
                 if item['source'] == 1 and item['type'] == 1}
-    for frame in frames:
+    for frame in (2, 3, 4, 5, 6, 7, 8, 10):
         first, second = (rows(frame)[source] for source in (4, 6))
-        assert (first['index'], second['index']) == ((1, 0) if frame in (4, 8) else (0, 1))
+        assert (first['index'], second['index']) == ((1, 0) if frame in (4, 8, 10) else (0, 1))
+        assert first['selected'] and not second['selected'], (frame, first, second)
         assert second['intensity'] == 12
         near(first['position'], rows(2)[4]['position'])
     assert rows(2)[4]['intensity'] == rows(6)[4]['intensity'] == 24
     assert rows(3)[4]['intensity'] == rows(4)[4]['intensity'] == rows(8)[4]['intensity'] == 45
     history(frames[8], 2, 0)
-    for a,b in [(2,6),(3,5),(3,7),(4,8)]:
+    assert not rows(9) and not rows(11)
+    history(frames[9], 3, 0)
+    history(frames[10], 2, 1)
+    history(frames[11], 3, 0)
+    history(frames[13], 2, 1)
+    assert state(frames[12])['selected'] and state(frames[13])['selected']
+    assert set(rows(13)) == {4, 6} and not any(row['selected'] for row in rows(13).values())
+    for a,b in [(2,6),(3,5),(3,7),(4,8),(8,10),(9,11)]:
         exact(frames[a],frames[b])
     return len(frames)
 
@@ -297,8 +312,9 @@ def main():
         assert all(row['active'] for row in gi)
         assert all(row['active'] for row in ray)
         assert [row['build']['instances'] for row in ray] == [3,2,3,2]
-        assert all(a['historyResets'] < b['historyResets'] for a,b in zip(gi,gi[1:]))
-        assert all(a['epoch'] < b['epoch'] for a,b in zip(taa,taa[1:]))
+        for rows, key in ((gi, 'historyResets'), (taa, 'epoch')):
+            steps = [after[key] - before[key] for before, after in zip(rows, rows[1:])]
+            assert steps == [1, 1, 1], (key, steps)
         counts['taa-ddgi'] = len(samples)
     write_json(output/'results.json', dict(passed=True,captures=counts,renderer=str(renderer)))
     print(f'PASS {sum(counts.values())} native scene node captures', flush=True)

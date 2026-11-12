@@ -277,6 +277,9 @@ public:
   [[nodiscard]] std::size_t capacity() const noexcept {
     return history_.capacity();
   }
+  [[nodiscard]] bool transformGestureActive() const noexcept {
+    return transformGesture_.has_value() && graphIdentity_ == graph_.identity();
+  }
 
   void finishGesture() noexcept {
     sync();

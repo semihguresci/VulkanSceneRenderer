@@ -391,24 +391,38 @@ void RendererFrontend::ensureSceneEditHistory() {
             .prepareNodeFlags = [this](uint32_t node,
                 const container::util::SceneEditHistory::NodeFlagChanges& changes) {
               using Actions = container::util::SceneEditHistory::NodeFlagActions;
-              const auto& target = *sceneGraph_.getNode(node);
-              if (!subs_.sceneManager || target.sourceNodeIndex < 0) return Actions{};
-              requireEditableSceneNode(node);
-              const auto sourceNode = size_t(target.sourceNodeIndex);
-              const auto edit = subs_.sceneManager->prepareGltfNodeFlagEdit(sourceNode, changes);
-              if (!edit.before.authoredExtensions) return Actions{};
-              const auto apply = [this, sourceNode](const GltfNodeFlags& flags) {
-                ApplyGltfNodeFlagEdit(subs_.sceneManager->animationSource().nodes.at(sourceNode), flags);
+              const auto sourceNode = sceneGraph_.getNode(node)->sourceNodeIndex;
+              GltfNodeFlagEdit edit;
+              if (subs_.sceneManager && sourceNode >= 0) {
+                requireEditableSceneNode(node);
+                edit = subs_.sceneManager->prepareGltfNodeFlagEdit(size_t(sourceNode), changes);
+              }
+              std::shared_ptr<std::optional<VisibilityLightSelection>> displaced;
+              if (changes[0] && subs_.sceneManager && subs_.lightingManager)
+                displaced = std::make_shared<std::optional<VisibilityLightSelection>>();
+              if (!edit.before.authoredExtensions && !displaced) return Actions{};
+              const auto apply = [this, node, sourceNode, displaced](const GltfNodeFlags& flags, bool visible) {
+                auto selected = displaced && !visible ? selectedLightUnder(node) : std::nullopt;
+                if (flags.authoredExtensions)
+                  ApplyGltfNodeFlagEdit(subs_.sceneManager->animationSource().nodes.at(size_t(sourceNode)), flags);
+                if (!displaced) return;
+                if (!visible) {
+                  *displaced = std::move(selected);
+                } else if (*displaced) {
+                  auto restore = std::exchange(*displaced, std::nullopt);
+                  if (sceneEditSelectionVacant()) pendingVisibilityLightSelection_ = std::move(restore);
+                }
               };
+              const bool visible = changes[0].value_or(true);
               return Actions{
-                  [apply, before = edit.before] { apply(before); },
-                  [apply, after = edit.after] { apply(after); }};
+                  [apply, before = edit.before, visible] { apply(before, !visible); },
+                  [apply, after = edit.after, visible] { apply(after, visible); }};
             },
             .meshSelection = [this] {
-              const auto selection = sceneEditSelection();
               return container::util::SceneEditHistory::MeshSelection{
-                  selection.mesh, selection.bim != container::scene::SceneGraph::kInvalidNode ||
-                      isValidEditableLightId(selection.light) || selection.sectionEditable};
+                  sceneState_.selectedMeshNode, selectedBimObjectIndex_ != container::scene::SceneGraph::kInvalidNode ||
+                      (subs_.lightingManager && isValidEditableLightId(subs_.lightingManager->selectedEditableLightId())) ||
+                      (subs_.guiManager && subs_.guiManager->sectionPlaneState().visualPlaneEditable)};
             },
             .setMeshSelection = [this](uint32_t node) noexcept { sceneState_.selectedMeshNode = node; }});
   }
@@ -712,16 +726,33 @@ void RendererFrontend::publishSceneEdit() {
   // retire. Probe work can still be using scene buffers asynchronously.
   if (subs_.ddgiManager)
     subs_.ddgiManager->synchronizeAsync();
+  const auto& pendingLight = pendingVisibilityLightSelection_;
   publishSceneRetirementRefresh();
   captureImportedLightEdits();
   if(subs_.sceneManager) subs_.sceneManager->reconcileActiveSceneRoots(sceneGraph_);
   if (subs_.sceneManager && subs_.lightingManager) {
     // Snapshot the old ordinal table before visibility can remove a binding.
-    // Restore overrides by stable source identity into the fresh visible table.
+    // Restore overrides and selection into the fresh visible table.
+    const bool mayRestoreLight = pendingLight && sceneEditSelectionVacant();
+    const auto selected = subs_.lightingManager->selectedEditableLightId();
+    const auto binding = selectedImportedLightBinding(selected, authoredLightBindings(*subs_.sceneManager, selected.type));
     const auto edits = subs_.lightingManager->snapshotSceneLightEdits();
     subs_.sceneManager->refreshActiveScene(sceneGraph_);
     subs_.lightingManager->restoreSceneLightEdits(gltfImportedLightEdits_->merge(
         subs_.sceneManager->publishedAuthoredSceneLights(), edits));
+    auto nextSelection = remapImportedLightSelection(selected, binding ? &*binding : nullptr,
+        authoredLightBindings(*subs_.sceneManager, selected.type));
+    // A visibility command can restore a light only after its binding returns
+    // to the visible table, and only while there is no replacement selection.
+    if (mayRestoreLight && pendingLight->graphIdentity == sceneGraph_.identity() &&
+        pendingLight->assetIdentity == subs_.sceneManager->materialAssetIdentity() &&
+        pendingLight->scene == subs_.sceneManager->selectedScene() &&
+        pendingLight->nodeIncarnation == sceneGraph_.nodeIncarnation(pendingLight->node) &&
+        !sceneGraph_.isNodeRetired(pendingLight->node)) {
+      nextSelection = remapImportedLightSelection(pendingLight->light, pendingLight->binding.get(),
+          authoredLightBindings(*subs_.sceneManager, pendingLight->light.type));
+    }
+    subs_.lightingManager->selectEditableLight(nextSelection);
   } else if (subs_.sceneManager) {
     subs_.sceneManager->refreshActiveScene(sceneGraph_);
   }
@@ -742,18 +773,49 @@ void RendererFrontend::publishSceneEdit() {
   syncSceneProviders();
   if (subs_.temporalManager)
     subs_.temporalManager->reset("scene edit or history playback");
+  pendingVisibilityLightSelection_.reset();
   sceneEditPublicationPending_ = false;
+}
+
+bool RendererFrontend::sceneEditSelectionVacant() const {
+  constexpr auto none = container::scene::SceneGraph::kInvalidNode;
+  return sceneState_.selectedMeshNode == none && selectedBimObjectIndex_ == none &&
+      (!subs_.lightingManager || !isValidEditableLightId(subs_.lightingManager->selectedEditableLightId())) &&
+      (!subs_.guiManager || !subs_.guiManager->sectionPlaneState().visualPlaneEditable);
+}
+
+std::optional<RendererFrontend::VisibilityLightSelection> RendererFrontend::selectedLightUnder(uint32_t ancestor) const {
+  if (!subs_.sceneManager || !subs_.lightingManager) return {};
+  const auto light = subs_.lightingManager->selectedEditableLightId();
+  auto binding = selectedImportedLightBinding(light, authoredLightBindings(*subs_.sceneManager, light.type));
+  if (!binding) return {};
+  for (uint32_t node = 0; node < sceneGraph_.nodeCount(); ++node) {
+    if (sceneGraph_.getNode(node)->sourceNodeIndex != binding->sourceNode ||
+        !sceneGraph_.isNodeEffectivelyVisible(node)) continue;
+    auto parent = node;
+    for (size_t steps = 0; steps < sceneGraph_.nodeCount(); ++steps) {
+      if (parent == ancestor) {
+        return VisibilityLightSelection{light,
+            std::make_shared<const container::scene::AuthoredLightBinding>(std::move(*binding)),
+            node, sceneGraph_.nodeIncarnation(node), sceneGraph_.identity(),
+            subs_.sceneManager->materialAssetIdentity(), subs_.sceneManager->selectedScene()};
+      }
+      const auto* current = sceneGraph_.getNode(parent);
+      if (!current) break;
+      parent = current->parent;
+    }
+  }
+  return {};
 }
 
 RendererFrontend::SceneEditSelection
 RendererFrontend::sceneEditSelection() const {
-  return {sceneState_.rootNode, sceneState_.selectedMeshNode,
-          selectedBimObjectIndex_,
-          subs_.lightingManager
-              ? subs_.lightingManager->selectedEditableLightId()
-              : EditableLightId{},
-          subs_.guiManager &&
-              subs_.guiManager->sectionPlaneState().visualPlaneEditable};
+  const auto light = subs_.lightingManager ? subs_.lightingManager->selectedEditableLightId() : EditableLightId{};
+  auto binding = subs_.sceneManager ?
+      selectedImportedLightBinding(light, authoredLightBindings(*subs_.sceneManager, light.type)) : std::nullopt;
+  return {sceneState_.rootNode, sceneState_.selectedMeshNode, selectedBimObjectIndex_, light,
+          subs_.guiManager && subs_.guiManager->sectionPlaneState().visualPlaneEditable,
+          binding ? std::make_shared<const container::scene::AuthoredLightBinding>(std::move(*binding)) : nullptr};
 }
 
 void RendererFrontend::restoreSceneEditSelection(
@@ -765,7 +827,9 @@ void RendererFrontend::restoreSceneEditSelection(
           : container::scene::SceneGraph::kInvalidNode;
   selectedBimObjectIndex_ = selection.bim;
   if (subs_.lightingManager)
-    subs_.lightingManager->selectEditableLight(selection.light);
+    subs_.lightingManager->selectEditableLight(subs_.sceneManager ?
+        remapImportedLightSelection(selection.light, selection.lightBinding.get(),
+            authoredLightBindings(*subs_.sceneManager, selection.light.type)) : selection.light);
   if (subs_.guiManager)
     subs_.guiManager->setSectionPlaneVisualEditable(selection.sectionEditable);
 }
@@ -776,7 +840,8 @@ void RendererFrontend::applyEditHistoryRequest() {
     return;
   ensureSceneEditHistory();
   const auto request = subs_.guiManager->consumeEditHistoryRequest();
-  if (request == container::ui::GuiManager::EditHistoryRequest::None)
+  if (request == container::ui::GuiManager::EditHistoryRequest::None ||
+      transformDragSession_.active || sceneEdits_->transformGestureActive())
     return;
   finishEditGestures();
   // Complete the gesture before replay. New input starts a new history step.

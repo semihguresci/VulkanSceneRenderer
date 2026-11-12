@@ -138,6 +138,7 @@ class SwapChainManager;
 namespace container::scene {
 class SceneGraph;
 class SceneManager;
+struct AuthoredLightBinding;
 class SceneProviderRegistry;
 } // namespace container::scene
 
@@ -591,9 +592,20 @@ private:
     uint32_t root, mesh, bim;
     EditableLightId light;
     bool sectionEditable;
+    std::shared_ptr<const container::scene::AuthoredLightBinding> lightBinding;
   };
   [[nodiscard]] SceneEditSelection sceneEditSelection() const;
   void restoreSceneEditSelection(const SceneEditSelection &selection);
+  struct VisibilityLightSelection {
+    EditableLightId light;
+    std::shared_ptr<const container::scene::AuthoredLightBinding> binding;
+    uint32_t node;
+    uint64_t nodeIncarnation, graphIdentity, assetIdentity;
+    size_t scene;
+  };
+  [[nodiscard]] std::optional<VisibilityLightSelection> selectedLightUnder(uint32_t ancestor) const;
+  [[nodiscard]] bool sceneEditSelectionVacant() const;
+  std::optional<VisibilityLightSelection> pendingVisibilityLightSelection_;
 #if CONTAINER_HAS_JOLT
   std::unique_ptr<container::physics::PhysicsScene> physicsScene_;
   std::unique_ptr<container::physics::PhysicsElementBindings> physicsElements_;

@@ -48,7 +48,9 @@ def empty_scene(renderer, output, source, sidecar, technique):
     ], (*LIGHT, *extras, '--bim-model', str(sidecar)), fix_camera=True)
     base = topology(frames[2])
     baseline_nodes = graph_nodes(frames[2])
-    assert base[:2] == (2, 0) and not any(node['active'] or node['renderable'] for node in baseline_nodes.values())
+    assert base[0] == len(baseline_nodes) and base[1] == 0
+    assert not any(node['active'] for node in baseline_nodes.values())
+    assert sum(node['renderable'] for node in baseline_nodes.values()) == 1
     assert topology(frames[3])[2] > base[2] and topology(frames[3])[3] > base[3]
     first_slot = base[0]
     for frame in (2, 6, 10, 12):
@@ -229,11 +231,17 @@ def main():
         (output / 'results.json').write_text(json.dumps(dict(passed=True, captures=results), indent=2))
         return
     # Keep one non-primary triangle in the ray scene while editing an empty
-    # primary graph. The triangle sits beyond the camera frustum.
+    # primary view. The triangle sits beyond the camera frustum.
     source, sidecar = output / 'empty-primary.gltf', output / 'sidecar.ifcx'
-    write_json(source, dict(asset=dict(version='2.0'), scene=0,
-                            nodes=[dict(name='Inactive authoring context')],
-                            scenes=[dict(name='Empty active view', nodes=[]), dict(nodes=[0])]))
+    fixture(source)
+    model = json.loads(source.read_text(encoding='utf-8'))
+    # Retain source geometry in an inactive view so the loader can admit an
+    # asset whose selected scene starts with zero renderables.
+    model['nodes'] = [dict(name='Inactive source mesh', mesh=0)]
+    model['scenes'] = [dict(name='Empty active view', nodes=[]), dict(nodes=[0])]
+    model.pop('extensions')
+    model.pop('extensionsUsed')
+    write_json(source, model)
     write_json(sidecar, {'data': [{'path': 'wall', 'attributes': {
         'bsi::ifc::class': {'code': 'IfcWall'},
         'usd::usdgeom::mesh': {'points': [[20, 0, 0], [21, 0, 0], [20, 0, 1]],
