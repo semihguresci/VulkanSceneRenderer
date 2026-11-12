@@ -576,7 +576,10 @@ protected:
       "meshes": [{"mesh_id": 1, "coordinates": [0,0,0, 2,0,0, 0,0,2],
                   "indices": [0,1,2]}],
       "elements": [{"mesh_id": 1, "guid": "wall-guid", "type": "IfcWall",
-                     "storeyName": "Ground floor", "materialName": "Brick"}]
+                     "storeyName": "Ground floor", "materialName": "Brick",
+                     "properties": [{"set": "Pset_WallCommon",
+                                     "name": "FireRating", "value": "2HR",
+                                     "category": "pset"}]}]
     })json";
     file.close();
     ASSERT_TRUE(file);
@@ -620,6 +623,34 @@ TEST_F(BimPreparationTests, CancelsDuringFloorPlanProjection) {
 
 TEST_F(BimPreparationTests, CancelsDuringMetadataIndexing) {
   cancelAt("Indexing BIM objects");
+}
+
+TEST_F(BimPreparationTests, PreservesPropertiesAndEstimatesTriangleMeshlet) {
+  const auto scene = container::renderer::BimManager::prepareScene(
+      container::util::pathToUtf8(fixturePath()), 1.0f);
+  const auto metadata = scene.metadata();
+  ASSERT_EQ(metadata.size(), 1u);
+  const auto wall = metadata.front();
+  EXPECT_EQ(wall.guid, "wall-guid");
+  EXPECT_EQ(wall.meshId, 1u);
+  EXPECT_EQ(wall.storeyName, "Ground floor");
+  EXPECT_EQ(wall.materialName, "Brick");
+  ASSERT_EQ(wall.properties.size(), 1u);
+  const auto &property = wall.properties.front();
+  EXPECT_EQ(property.set, "Pset_WallCommon");
+  EXPECT_EQ(property.name, "FireRating");
+  EXPECT_EQ(property.value, "2HR");
+  EXPECT_EQ(property.category, "pset");
+
+  ASSERT_EQ(scene.meshletClusters.size(), 1u);
+  const auto &cluster = scene.meshletClusters.front();
+  EXPECT_EQ(cluster.meshId, wall.meshId);
+  EXPECT_EQ(cluster.firstIndex, 0u);
+  EXPECT_EQ(cluster.indexCount, 3u);
+  EXPECT_EQ(cluster.triangleCount, 1u);
+  EXPECT_EQ(cluster.lodLevel, 0u);
+  EXPECT_TRUE(cluster.estimated);
+  EXPECT_EQ(scene.optimizedMetadata.estimatedMeshletClusterCount, 1u);
 }
 
 TEST_F(BimPreparationTests, BuildsGroundAndStoreyFloorPlansInOrder) {

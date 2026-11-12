@@ -7592,13 +7592,23 @@ TEST(RenderingConventionTests, BimStoreyMaterialAndHideFiltersArePlumbed) {
   EXPECT_TRUE(contains(bimDrawFilterState, "filter.statusFilterEnabled"));
   EXPECT_TRUE(contains(bimDrawFilterState, "filter.drawBudgetEnabled"));
   EXPECT_TRUE(contains(bimDrawFilterState, "filter.drawBudgetMaxObjects"));
-  EXPECT_TRUE(contains(bimManager, "metadataCatalog_->registerStorey"));
-  EXPECT_TRUE(contains(bimManager, "metadataCatalog_->registerMaterial"));
-  EXPECT_TRUE(contains(bimManager, "metadataCatalog_->registerDiscipline"));
-  EXPECT_TRUE(contains(bimManager, "metadataCatalog_->registerPhase"));
-  EXPECT_TRUE(contains(bimManager, "metadataCatalog_->registerFireRating"));
-  EXPECT_TRUE(contains(bimManager, "metadataCatalog_->registerLoadBearing"));
-  EXPECT_TRUE(contains(bimManager, "metadataCatalog_->registerStatus"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager,
+      "result->catalog.registerStorey(metadataLabelProbe, elementBounds);"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager, "result->catalog.registerMaterial(metadataLabelProbe);"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager, "result->catalog.registerDiscipline(element.discipline);"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager, "result->catalog.registerPhase(element.phase);"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager, "result->catalog.registerFireRating(element.fireRating);"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager, "result->catalog.registerLoadBearing(element.loadBearing);"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager, "result->catalog.registerStatus(element.status);"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager, "*metadataCatalog_ = std::move(prepared.catalog);"));
   EXPECT_TRUE(contains(metadataCatalog, "registerUniqueLabel(storeyIds_"));
   EXPECT_TRUE(contains(metadataCatalog, "registerUniqueLabel(materialIds_"));
   EXPECT_TRUE(contains(metadataCatalog, "registerUniqueLabel(disciplineIds_"));
@@ -7993,8 +8003,14 @@ TEST(RenderingConventionTests, BimStoreyRangesFeedFloorSliceUi) {
   EXPECT_TRUE(contains(bimManagerHeader, "elementStoreyRanges()"));
   EXPECT_TRUE(contains(guiManagerHeader, "elementStoreyRanges"));
   EXPECT_TRUE(contains(guiManagerHeader, "selectedBimStoreyRangeIndex_"));
-  EXPECT_TRUE(contains(bimManager, "metadataCatalog_->registerStorey"));
-  EXPECT_TRUE(contains(bimManager, "metadataCatalog_->sortStoreyRanges"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager,
+      "result->catalog.registerStorey(metadataLabelProbe, elementBounds);"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager, "result->catalog.sortStoreyRanges();"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager, "BimManager::elementStoreyRanges() const {"
+                  "return metadataCatalog_->storeyRanges(); }"));
   EXPECT_TRUE(contains(metadataCatalog, "storeyRanges_.push_back"));
   EXPECT_TRUE(contains(metadataCatalog, "minElevation"));
   EXPECT_TRUE(contains(metadataCatalog, "maxElevation"));
@@ -9053,8 +9069,15 @@ TEST(RenderingConventionTests,
   const std::string rendererFrontend =
       readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
 
-  const size_t drawBuildSwitch =
-      bimManager.find("switch (pending.metadata.geometryKind)");
+  const size_t installStart =
+      bimManager.find("void BimManager::installDrawData");
+  ASSERT_NE(installStart, std::string::npos);
+  const size_t installedMetadata = bimManager.find(
+      "const auto installedMetadata = elementMetadata_[objectIndex];",
+      installStart);
+  ASSERT_NE(installedMetadata, std::string::npos);
+  const size_t drawBuildSwitch = bimManager.find(
+      "switch (installedMetadata.geometryKind)", installedMetadata);
   ASSERT_NE(drawBuildSwitch, std::string::npos);
   const size_t pointCase =
       bimManager.find("case BimGeometryKind::Points:", drawBuildSwitch);
@@ -9070,14 +9093,26 @@ TEST(RenderingConventionTests,
       bimManager.substr(pointCase, curveCase - pointCase);
   const std::string curveBlock =
       bimManager.substr(curveCase, meshCase - curveCase);
-  EXPECT_TRUE(contains(pointBlock, "if (pending.nativeIndexCount > 0u)"));
-  EXPECT_TRUE(contains(pointBlock, "nativePointDrawLists_"));
-  EXPECT_TRUE(contains(pointBlock, "} else {"));
-  EXPECT_TRUE(contains(pointBlock, "pointDrawLists_"));
-  EXPECT_TRUE(contains(curveBlock, "if (pending.nativeIndexCount > 0u)"));
-  EXPECT_TRUE(contains(curveBlock, "nativeCurveDrawLists_"));
-  EXPECT_TRUE(contains(curveBlock, "} else {"));
-  EXPECT_TRUE(contains(curveBlock, "curveDrawLists_"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      pointBlock,
+      "if (pending.nativeIndexCount > 0u) {"
+      "appendDrawCommandToGeometryLists(nativePointDrawLists_, pending.bucket, "
+      "objectIndex, pending.nativeFirstIndex, pending.nativeIndexCount, "
+      "allowMerge);"
+      "} else {"
+      "appendDrawCommandToGeometryLists(pointDrawLists_, pending.bucket, "
+      "objectIndex, pending.firstIndex, pending.indexCount, allowMerge);"
+      "} break;"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      curveBlock,
+      "if (pending.nativeIndexCount > 0u) {"
+      "appendDrawCommandToGeometryLists(nativeCurveDrawLists_, pending.bucket, "
+      "objectIndex, pending.nativeFirstIndex, pending.nativeIndexCount, "
+      "allowMerge);"
+      "} else {"
+      "appendDrawCommandToGeometryLists(curveDrawLists_, pending.bucket, "
+      "objectIndex, pending.firstIndex, pending.indexCount, allowMerge);"
+      "} break;"));
   EXPECT_TRUE(contains(bimManager, "pointCurvePickingCommands"));
   EXPECT_TRUE(contains(bimManager, "geometryDrawListsCoverObject"));
   EXPECT_TRUE(contains(bimManager, "nativePointCurveObjectHasNativeDraw"));
@@ -9418,8 +9453,11 @@ TEST(RenderingConventionTests, BimMeshletLodStreamingMetadataIsSurfaced) {
   EXPECT_TRUE(contains(bimManager, "buildMeshletClusterMetadataForModel"));
   EXPECT_TRUE(contains(bimManager, "model.meshletClusters.size()"));
   EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager, "prepared.meshletClusters = "
+                  "buildMeshletClusterMetadataForModel(prepared.model, stop);"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
       bimManager,
-      "meshletClusters_ = prepared ? prepared->meshletClusters :"
+      "meshletClusters_ = prepared ? std::move(prepared->meshletClusters) :"
       "buildMeshletClusterMetadataForModel(model);"));
   EXPECT_TRUE(
       contains(bimManager, "meshletClusterCount_ = meshletClusters_.size()"));
@@ -10533,7 +10571,11 @@ TEST(RenderingConventionTests, BimGenericPropertiesAndGeoreferenceReachUi) {
       contains(bimMetadataHeader, "std::vector<BimElementProperty> properties"));
   EXPECT_TRUE(contains(
       bimMetadataHeader, "std::span<const BimElementProperty> properties"));
-  EXPECT_TRUE(contains(bimManager, "bimElementProperties(element.properties)"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager,
+      ".properties = bimElementProperties(element.properties, stop),"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManager, "elementMetadata_ = std::move(prepared.metadata);"));
   EXPECT_TRUE(contains(
       bimManager, "bimModelGeoreferenceMetadata(model.georeferenceMetadata)"));
 
@@ -10542,7 +10584,14 @@ TEST(RenderingConventionTests, BimGenericPropertiesAndGeoreferenceReachUi) {
       "std::span<const container::renderer::BimElementProperty> properties"));
   EXPECT_TRUE(contains(guiManagerHeader, "sourceUpAxis"));
   EXPECT_TRUE(contains(guiManagerHeader, "coordinateOffset"));
-  EXPECT_TRUE(contains(rendererFrontend, "bimInspection.properties"));
+  const size_t inspectionProperties =
+      rendererFrontend.find("bimInspection.properties =");
+  ASSERT_NE(inspectionProperties, std::string::npos);
+  const size_t assignmentEnd = rendererFrontend.find(';', inspectionProperties);
+  ASSERT_NE(assignmentEnd, std::string::npos);
+  const auto assignment = std::string_view(rendererFrontend).substr(
+      inspectionProperties, assignmentEnd - inspectionProperties);
+  EXPECT_TRUE(contains(assignment, "metadata->properties"));
   EXPECT_TRUE(contains(rendererFrontend, "modelGeoreferenceMetadata()"));
   EXPECT_TRUE(contains(guiManager, "BimExtendedProperties"));
   EXPECT_TRUE(contains(guiManager, "Source up axis"));
