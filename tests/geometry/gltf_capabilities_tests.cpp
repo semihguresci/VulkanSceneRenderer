@@ -1143,9 +1143,114 @@ TEST(GltfCapabilitiesLoader, ExperimentalDraftsGateAndValidateBeforeResourceIo) 
     EXPECT_EQ(fallback.model.vertices().size(), 3u);
     for (const auto& diagnostic : fallback.capabilityDiagnostics)
       EXPECT_EQ(diagnostic.code, "unsupported_optional_extension");
+    json["extensionsRequired"] = {gltf::kGltfScatter};
     json["buffers"][0]["uri"] = "must-not-be-read.bin";
     path = fixture.save(json, binary);
     expectLoadError([&] { (void)gltf::LoadSourceModel(path.string(), options); }, path, "scatterAnisotropy");
+  }
+}
+
+TEST(GltfCapabilitiesLoader, MalformedOptionalExperimentalLayersPreserveValidLayers) {
+  for (const bool binary : {false, true}) {
+    SCOPED_TRACE(binary ? "GLB" : "glTF");
+    AssetFixture fixture;
+    auto json = fixture.triangle();
+    json["extensionsUsed"] = {gltf::kGltfRetroreflection, gltf::kGltfScatter, gltf::kGltfLegacyScatter,
+                              "KHR_materials_anisotropy"};
+    json["materials"] = nlohmann::json::parse(R"([
+      {"extensions":{
+        "KHR_materials_retroreflection":{"retroreflectionFactor":"invalid"},
+        "KHR_materials_scatter":{"scatterStrengthFactor":0.65},
+        "KHR_materials_volume_scatter":{"multiscatterColor":[0.1,0.2]}}},
+      {"extensions":{
+        "KHR_materials_retroreflection":{"retroreflectionFactor":0.4},
+        "KHR_materials_scatter":{"scatterStrengthFactor":0.75,"scatterAnisotropy":2},
+        "KHR_materials_anisotropy":{"anisotropyStrength":0.25}}},
+      {"extensions":{"KHR_materials_volume_scatter":{"scatterStrengthTexture":{"index":0}}}},
+      {"extensions":{
+        "KHR_materials_scatter":[],
+        "KHR_materials_volume_scatter":{"scatterStrengthFactor":0.5,"multiscatterColor":[0.1,0.2,0.3]}}}
+    ])");
+    json["meshes"][0]["primitives"][0]["material"] = 1;
+    gltf::LoadOptions options;
+    options.enableExperimentalMaterials = true;
+    const auto path = fixture.save(json, binary);
+    const auto loaded = gltf::LoadModelWithSource(path.string(), options);
+    EXPECT_EQ(loaded.model.vertices().size(), 3u);
+    const auto& retained = loaded.gltfModel.materials;
+    ASSERT_EQ(retained.size(), 4u);
+    EXPECT_FALSE(retained[0].extensions.contains(gltf::kGltfRetroreflection.data()));
+    EXPECT_FALSE(retained[0].extensions.contains(gltf::kGltfLegacyScatter.data()));
+    EXPECT_FALSE(retained[1].extensions.contains(gltf::kGltfScatter.data()));
+    EXPECT_FALSE(retained[2].extensions.contains(gltf::kGltfLegacyScatter.data()));
+    EXPECT_FALSE(retained[3].extensions.contains(gltf::kGltfScatter.data()));
+    const auto layers = gltf::ParseGltfExperimentalMaterials(loaded.gltfModel);
+    EXPECT_FLOAT_EQ(layers[0].retroreflection, 0);
+    EXPECT_FLOAT_EQ(layers[0].scatterStrength, .65f);
+    EXPECT_FLOAT_EQ(layers[1].retroreflection, .4f);
+    EXPECT_FLOAT_EQ(layers[1].scatterStrength, 0);
+    EXPECT_FLOAT_EQ(layers[2].scatterStrength, 0);
+    EXPECT_FLOAT_EQ(layers[3].scatterStrength, .5f);
+    EXPECT_EQ(layers[3].scatterColor, glm::vec3(.1f, .2f, .3f));
+    EXPECT_FLOAT_EQ(gltf::ParseGltfExtendedMaterials(loaded.gltfModel).materials[1].anisotropyStrength, .25f);
+
+    const auto isFallback = [](const auto& diagnostic) { return diagnostic.code == "experimental_material_fallback"; };
+    EXPECT_EQ(std::ranges::count_if(loaded.capabilityDiagnostics, isFallback), 5);
+    for (const auto context : {"material[0].extensions.KHR_materials_retroreflection.retroreflectionFactor",
+                               "material[0].extensions.KHR_materials_volume_scatter.multiscatterColor",
+                               "material[1].extensions.KHR_materials_scatter.scatterAnisotropy",
+                               "material[2].extensions.KHR_materials_volume_scatter.scatterStrengthTexture.index",
+                               "material[3].extensions.KHR_materials_scatter"}) {
+      EXPECT_TRUE(std::ranges::any_of(loaded.capabilityDiagnostics, [&](const auto& diagnostic) {
+        return isFallback(diagnostic) && diagnostic.severity == CapabilitySeverity::Warning &&
+            diagnostic.assetPath == path.string() && diagnostic.message.contains(context) &&
+            diagnostic.message.contains("Ignoring the optional material layer");
+      })) << context;
+    }
+
+    // A valid current layer must not hide malformed required legacy data.
+    json["extensionsRequired"] = {gltf::kGltfLegacyScatter};
+    json["buffers"][0]["uri"] = "must-not-be-read.bin";
+    expectLoadError([&] { (void)gltf::LoadSourceModel(fixture.save(json, binary).string(), options); }, path,
+                    "material[0].extensions.KHR_materials_volume_scatter.multiscatterColor");
+  }
+}
+
+TEST(GltfCapabilitiesLoader, OptionalExperimentalTextureFallbackPreservesCoreResources) {
+  for (const bool binary : {false, true}) {
+    SCOPED_TRACE(binary ? "GLB" : "glTF");
+    AssetFixture fixture;
+    auto json = fixture.triangle();
+    json["extensionsUsed"] = {gltf::kGltfRetroreflection};
+    json["images"] = {{{"uri", kEmbeddedRedPng}}};
+    json["textures"] = {{{"source", 0}}};
+    json["materials"] = nlohmann::json::parse(R"([{
+      "pbrMetallicRoughness":{"baseColorTexture":{"index":0}},
+      "extensions":{"KHR_materials_retroreflection":{
+        "retroreflectionFactor":0.75,"retroreflectionTexture":{"index":4294967296}}}
+    }])");
+    json["meshes"][0]["primitives"][0]["material"] = 0;
+    gltf::LoadOptions options;
+    options.enableExperimentalMaterials = true;
+    const auto path = fixture.save(json, binary);
+    const auto loaded = gltf::LoadModelWithSource(path.string(), options);
+    EXPECT_EQ(loaded.gltfModel.materials.at(0).pbrMetallicRoughness.baseColorTexture.index, 0);
+    EXPECT_FALSE(loaded.gltfModel.materials.at(0).extensions.contains(gltf::kGltfRetroreflection.data()));
+    ASSERT_EQ(loaded.gltfModel.textures.size(), 1u);
+    EXPECT_EQ(loaded.gltfModel.textures[0].source, 0);
+    ASSERT_EQ(loaded.gltfModel.images.size(), 1u);
+    EXPECT_FALSE(loaded.gltfModel.images[0].image.empty());
+    EXPECT_TRUE(std::ranges::any_of(loaded.capabilityDiagnostics, [](const auto& diagnostic) {
+      return diagnostic.code == "experimental_material_fallback" &&
+          diagnostic.message.contains("retroreflectionTexture.index");
+    }));
+
+    json["textures"][0]["source"] = 1;
+    expectLoadError([&] { (void)gltf::LoadSourceModel(fixture.save(json, binary).string(), options); }, path, "texture.source");
+    json["textures"][0]["source"] = 0;
+    json["images"][0]["uri"] = "missing-core-image.png";
+    expectLoadError([&] { (void)gltf::LoadSourceModel(fixture.save(json, binary).string(), options); }, path,
+                    "selected texture image could not be read");
   }
 }
 

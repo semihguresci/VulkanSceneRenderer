@@ -1747,8 +1747,14 @@ tinygltf::Model loadGltfModel(const std::string& path,
               const bool normalizedHierarchyIndices = normalizeSceneHierarchyJson(json, options.mergeInput, stop);
               const auto nodeFlags = ValidateGltfNodeFlagsJson(json);
               const auto extendedMaterials = ValidateGltfExtendedMaterialsJson(json);
-              const auto experimentalMaterialBytes = options.enableExperimentalMaterials
-                  ? ValidateGltfExperimentalMaterialsJson(json) : uint64_t{};
+              auto experimentalMaterials = options.enableExperimentalMaterials
+                  ? NormalizeGltfExperimentalMaterialsJson(json, stop) : GltfExperimentalMaterialNormalization{};
+              for (auto& warning : experimentalMaterials.warnings) {
+                CapabilityDiagnostic diagnostic{CapabilitySeverity::Warning, "experimental_material_fallback", path,
+                    std::move(warning)};
+                std::clog << formatCapabilityDiagnostic(diagnostic) << std::endl;
+                if (diagnostics) diagnostics->push_back(std::move(diagnostic));
+              }
               bool normalizedInstancingFields = false;
               const auto instancing = NormalizeMeshGpuInstancingJson(
                   json, normalizedInstancingFields, options.instancing, stop);
@@ -1765,7 +1771,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
                     std::to_string(sequence.fetch_add(1)) + "_";
                 bool rewritten = xmp->rewroteManifest() || normalizedLinkedManifest ||
                     normalizedSamplerFields || normalizedVariantIndices || normalizedHierarchyIndices || normalizedInstancingFields ||
-                    discardedMicromaps || omittedOptional;
+                    discardedMicromaps || omittedOptional || !experimentalMaterials.warnings.empty();
                 if (linkedRead) {
                   for (const auto* table : {"buffers", "images"}) {
                     auto records = json.find(table);
@@ -1787,7 +1793,7 @@ tinygltf::Model loadGltfModel(const std::string& path,
                 compressionPlan = InspectCompressedGltfSource(json, isBinaryGltf(path), options.compression, stop);
                 uint64_t retainedBytes = compressionPlan.decodedBytes;
                 for (const uint64_t bytes : {instancing.decodedBytes, nodeFlags.retainedBytes,
-                                            extendedMaterials.retainedBytes, experimentalMaterialBytes,
+                                            extendedMaterials.retainedBytes, experimentalMaterials.retainedBytes,
                                             uint64_t(xmp->retainedBytes())}) {
                   if (bytes > UINT64_MAX - retainedBytes)
                     throw std::invalid_argument("glTF decoded/instance/node/material output byte count overflows");

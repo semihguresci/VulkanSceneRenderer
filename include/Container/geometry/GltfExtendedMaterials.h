@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <array>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -99,11 +100,15 @@ struct GltfExperimentalMaterial {
   GltfExtendedTextureInfo scatterColorTexture;
 };
 
-// The caller enables this separately from the standard material profiles.
-// Validation precedes resource I/O. The returned byte count is charged to the
-// loader's existing decoded-asset budget.
-[[nodiscard]] uint64_t ValidateGltfExperimentalMaterialsJson(
-    const nlohmann::json& source, const GltfExtendedMaterialLimits& limits = {});
+struct GltfExperimentalMaterialNormalization {
+  uint64_t retainedBytes{};
+  std::vector<std::string> warnings;
+};
+
+// Before resource I/O, remove malformed optional draft layers from the loader's
+// detached JSON. Required drafts and invalid core metadata still fail.
+[[nodiscard]] GltfExperimentalMaterialNormalization NormalizeGltfExperimentalMaterialsJson(
+    nlohmann::json& source, const std::stop_token& stop = {}, const GltfExtendedMaterialLimits& limits = {});
 [[nodiscard]] std::vector<GltfExperimentalMaterial> ParseGltfExperimentalMaterials(
     const tinygltf::Model& source, const GltfExtendedMaterialLimits& limits = {});
 [[nodiscard]] GltfExperimentalMaterial ParseGltfExperimentalMaterial(

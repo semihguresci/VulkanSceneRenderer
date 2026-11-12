@@ -1,4 +1,5 @@
 #include <Container/geometry/GltfExtendedMaterials.h>
+#include <Container/utility/ModelImportCancellation.h>
 
 #include <nlohmann/json.hpp>
 
@@ -19,8 +20,12 @@ constexpr const char* kAnisotropy = "KHR_materials_anisotropy";
 constexpr const char* kDiffuse = "KHR_materials_diffuse_transmission";
 constexpr const char* kTransform = "KHR_texture_transform";
 
+struct MaterialValidationError : std::runtime_error {
+  using std::runtime_error::runtime_error;
+};
+
 [[noreturn]] void fail(std::string_view context, std::string_view reason) {
-  throw std::runtime_error("glTF extended materials " + std::string(context) + ": " + std::string(reason));
+  throw MaterialValidationError("glTF extended materials " + std::string(context) + ": " + std::string(reason));
 }
 
 // A shallow read-only adapter shares validation between original JSON and the
@@ -158,52 +163,54 @@ void accumulate(GltfExtendedMaterialSummary& summary, const GltfExtendedMaterial
       (material.diffuseTransmissionTexture.sourceTexture >= 0) + (material.diffuseTransmissionColorTexture.sourceTexture >= 0);
 }
 
-template <typename FindExtension, typename IsDeclared>
-GltfExperimentalMaterial parseExperimentalMaterial(FindExtension find, IsDeclared listed,
-    size_t materialIndex, size_t textureCount) {
-  GltfExperimentalMaterial result;
-  const auto base = "material[" + std::to_string(materialIndex) + "].extensions.";
-  const auto extension = [&](std::string_view name) {
-    const auto value = find(name.data());
-    if (value) {
-      const auto label = base + std::string(name);
-      if (!listed(name)) fail(label, "extension must be declared in extensionsUsed");
-      if (!value->object()) fail(label, "must be an object");
-      if (find("KHR_materials_unlit") || find("KHR_materials_pbrSpecularGlossiness"))
-        fail(label, "excludes KHR_materials_unlit and KHR_materials_pbrSpecularGlossiness");
-    }
-    return value;
-  };
+template <typename IsDeclared>
+void parseExperimentalLayer(GltfExperimentalMaterial& result, View layer, std::string_view name,
+    size_t materialIndex, size_t textureCount, const IsDeclared& listed, bool incompatible) {
+  const auto label = "material[" + std::to_string(materialIndex) + "].extensions." + std::string(name);
+  if (!listed(name)) fail(label, "extension must be declared in extensionsUsed");
+  if (!layer.object()) fail(label, "must be an object");
+  if (incompatible) fail(label, "excludes KHR_materials_unlit and KHR_materials_pbrSpecularGlossiness");
   const Declarations declared{.transform = listed(kTransform)};
-  if (const auto retro = extension(kGltfRetroreflection)) {
-    const auto label = base + std::string(kGltfRetroreflection);
-    if (const auto factor = retro->member("retroreflectionFactor"))
+  if (name == kGltfRetroreflection) {
+    if (const auto factor = layer.member("retroreflectionFactor"))
       result.retroreflection = scalar(*factor, label + ".retroreflectionFactor", true);
-    if (const auto info = retro->member("retroreflectionTexture"))
+    if (const auto info = layer.member("retroreflectionTexture"))
       textureInfo(*info, result.retroreflectionTexture, textureCount, declared, label + ".retroreflectionTexture");
+    return;
   }
-  auto scatter = extension(kGltfScatter);
-  const bool legacy = !scatter.has_value();
-  if (legacy) scatter = extension(kGltfLegacyScatter);
-  if (!scatter) return result;
-  const auto label = base + std::string(legacy ? kGltfLegacyScatter : kGltfScatter);
+  const bool legacy = name == kGltfLegacyScatter;
   result.scatterStrength = legacy ? 1.0f : 0.0f;
   result.scatterColor = glm::vec3(legacy ? 0.0f : 1.0f);
-  if (const auto strength = scatter->member("scatterStrengthFactor"))
+  if (const auto strength = layer.member("scatterStrengthFactor"))
     result.scatterStrength = scalar(*strength, label + ".scatterStrengthFactor", true);
-  if (const auto anisotropy = scatter->member("scatterAnisotropy")) {
+  if (const auto anisotropy = layer.member("scatterAnisotropy")) {
     result.scatterAnisotropy = scalar(*anisotropy, label + ".scatterAnisotropy");
     if (std::abs(result.scatterAnisotropy) >= 1.0f)
       fail(label + ".scatterAnisotropy", "must lie strictly between -1 and 1");
   }
-  if (const auto color = scatter->member("multiscatterColorFactor"))
+  if (const auto color = layer.member("multiscatterColorFactor"))
     vector(*color, result.scatterColor, label + ".multiscatterColorFactor", true);
-  if (const auto color = scatter->member("multiscatterColor"))
+  if (const auto color = layer.member("multiscatterColor"))
     vector(*color, result.scatterColor, label + ".multiscatterColor", true);
-  if (const auto info = scatter->member("scatterStrengthTexture"))
+  if (const auto info = layer.member("scatterStrengthTexture"))
     textureInfo(*info, result.scatterStrengthTexture, textureCount, declared, label + ".scatterStrengthTexture");
-  if (const auto info = scatter->member("multiscatterColorTexture"))
+  if (const auto info = layer.member("multiscatterColorTexture"))
     textureInfo(*info, result.scatterColorTexture, textureCount, declared, label + ".multiscatterColorTexture");
+}
+
+template <typename FindExtension, typename IsDeclared>
+GltfExperimentalMaterial parseExperimentalMaterial(FindExtension find, IsDeclared listed,
+    size_t materialIndex, size_t textureCount) {
+  GltfExperimentalMaterial result;
+  const bool incompatible = find("KHR_materials_unlit") || find("KHR_materials_pbrSpecularGlossiness");
+  const auto parse = [&](std::string_view name) {
+    const auto value = find(name.data());
+    if (!value) return false;
+    parseExperimentalLayer(result, *value, name, materialIndex, textureCount, listed, incompatible);
+    return true;
+  };
+  parse(kGltfRetroreflection);
+  if (!parse(kGltfScatter)) parse(kGltfLegacyScatter);
   return result;
 }
 
@@ -286,34 +293,56 @@ GltfExtendedMaterialData ParseGltfExtendedMaterials(
   return result;
 }
 
-uint64_t ValidateGltfExperimentalMaterialsJson(const Json& source, const GltfExtendedMaterialLimits& limits) {
+GltfExperimentalMaterialNormalization NormalizeGltfExperimentalMaterialsJson(
+    Json& source, const std::stop_token& stop, const GltfExtendedMaterialLimits& limits) {
   if (!source.is_object()) fail("asset", "source must be an object");
   const auto materials = source.find("materials");
-  if (materials == source.end()) return 0;
-  const auto used = source.find("extensionsUsed"), textures = source.find("textures");
+  if (materials == source.end()) return {};
+  const auto used = source.find("extensionsUsed"), required = source.find("extensionsRequired"),
+      textures = source.find("textures");
   if (!materials->is_array()) fail("materials", "must be an array");
   if (textures != source.end() && !textures->is_array()) fail("textures", "must be an array");
   if (used != source.end() && !used->is_array()) fail("extensionsUsed", "must be an array");
-  const auto listed = [&](std::string_view name) {
-    return used != source.end() && std::ranges::any_of(*used, [&](const Json& entry) {
+  if (required != source.end() && !required->is_array()) fail("extensionsRequired", "must be an array");
+  const auto hasName = [&](const auto& names, std::string_view name) {
+    return names != source.end() && std::ranges::any_of(*names, [&](const Json& entry) {
       return entry.is_string() && entry.get_ref<const std::string&>() == name;
     });
   };
-  const auto bytes = checkedExperimentalBytes(materials->size(), limits);
+  const auto listed = [&](std::string_view name) { return hasName(used, name); };
+  GltfExperimentalMaterialNormalization result{checkedExperimentalBytes(materials->size(), limits), {}};
+  const auto textureCount = textures == source.end() ? 0 : textures->size();
+  constexpr size_t maxDetailedWarnings = 32;
+  size_t additionalWarnings = 0;
   for (size_t index = 0; index < materials->size(); ++index) {
-    const auto& material = materials->at(index);
+    if (index % 1024 == 0) container::util::checkModelImportCancellation(stop);
+    auto& material = materials->at(index);
     if (!material.is_object()) fail("materials", "material entry must be an object");
     const auto extensions = material.find("extensions");
     if (extensions == material.end()) continue;
     if (!extensions->is_object()) fail("materials", "material extensions must be an object");
-    const auto find = [&](const char* name) -> std::optional<View> {
-      const auto field = extensions->find(name);
-      if (field == extensions->end()) return std::nullopt;
-      return View(*field);
-    };
-    (void)parseExperimentalMaterial(find, listed, index, textures == source.end() ? 0 : textures->size());
+    const bool incompatible = extensions->contains("KHR_materials_unlit") ||
+        extensions->contains("KHR_materials_pbrSpecularGlossiness");
+    // Validate each authored alias before applying precedence to the survivors.
+    for (const auto name : kGltfExperimentalMaterialExtensions) {
+      const auto field = extensions->find(name.data());
+      if (field == extensions->end()) continue;
+      try {
+        GltfExperimentalMaterial candidate;
+        parseExperimentalLayer(candidate, View(*field), name, index, textureCount, listed, incompatible);
+      } catch (const MaterialValidationError& error) {
+        if (hasName(required, name)) throw;
+        if (result.warnings.size() < maxDetailedWarnings)
+          result.warnings.emplace_back(std::string(error.what()) + ". Ignoring the optional material layer.");
+        else
+          ++additionalWarnings;
+        extensions->erase(field);
+      }
+    }
   }
-  return bytes;
+  if (additionalWarnings)
+    result.warnings.emplace_back("Ignored " + std::to_string(additionalWarnings) + " additional malformed optional material layers.");
+  return result;
 }
 
 std::vector<GltfExperimentalMaterial> ParseGltfExperimentalMaterials(
