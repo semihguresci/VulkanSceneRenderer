@@ -67,6 +67,28 @@ editable, including when its flags originally blocked selection and hover.
 
 ## Validation
 
+The November 12, 2026 Release build passed 662 test cases across 17 suites
+without skips and 142 native captures on an NVIDIA GeForce RTX 2080 SUPER.
+The run covered both raster techniques, ray shadows, DDGI, path tracing,
+Boolean animation and behavior pointers, scene switching, and the 4,097-draw
+inactive scene. Actual viewport events verified ancestor selection, stationary
+hover after resume, and grouped editor history. Both portable formats retained
+the blocked root and allowed enabling and undoing its authored flags. Vulkan
+and synchronization validation reported zero errors.
+[Windows NVIDIA verification report](../tests/visual-regression/node-flags/windows-nvidia/node-flags-results.json).
+
+Run the viewport, light history, portable reload, and ray checks with Python,
+NumPy, Pillow, an installed Khronos validation layer, and a Vulkan device with
+ray-query support.
+
+```powershell
+python tests/validation/node_flags_runtime.py `
+  --renderer out/build/windows-release/VulkanSceneRenderer.exe `
+  --output out/validation/node-flags --ray
+```
+
+### October 25, 2026 checkpoints
+
 Renderer `71e1b6327cde69f39ce1581b15169fd64c21df27279888ca59f3a409aa481b39`
 passes **904 cases across 40 executables**, with all four real Vulkan paths
 enabled and no failures/skips. Coverage includes strict pre-I/O parsing, local
