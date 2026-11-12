@@ -59,6 +59,11 @@ struct ReferencePathTraceDiagnostics {
   // BSDF sample=32, direct light=64, throughput=128, roulette=256,
   // final radiance=512, initial medium=1024, invalid sampled local view=2048,
   // invalid direct local frame=4096. Bits preserve all nested stages.
+  // Bits 26 and 27 mark nonfatal experimental material fallbacks.
+  static constexpr uint32_t kClosedVolumeRetroreflectionFallback = 1u << 26;
+  static constexpr uint32_t kClosedVolumeScatterFallback = 1u << 27;
+  static constexpr uint32_t kExperimentalMaterialFallbackMask =
+      kClosedVolumeRetroreflectionFallback | kClosedVolumeScatterFallback;
   uint32_t unsupportedSamples{}, rejectedSamples{}, acceptedSamples{}, failureStages{};
 };
 struct ReferenceAutofocusResult {

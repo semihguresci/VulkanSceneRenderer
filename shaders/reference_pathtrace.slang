@@ -79,7 +79,10 @@ struct ReferenceRrFrameData
 #endif
 #endif
 
-void PtMarkTraceFault(uint bit)
+static const uint PT_DIAGNOSTIC_RETRO_VOLUME_FALLBACK = 1u << 26;
+static const uint PT_DIAGNOSTIC_SCATTER_VOLUME_FALLBACK = 1u << 27;
+
+void PtMarkPathDiagnostic(uint bit)
 {
 #if !REFERENCE_DLSS_RR
     InterlockedOr(diagnostics[0].w, bit);
@@ -194,10 +197,10 @@ PtHit PtClosest(RayDesc ray, uint coverageSeed, bool volumeOnly = false,
         float3 position = ray.Origin + ray.Direction * query.CandidateTriangleRayT();
         if (!volumeOnly && (SectionPlaneClips(position, frame.limits.w & 1u, frame.sectionPlane) ||
             BoxClipPlanesClip(position, frame.boxClip))) continue;
-        if (instanceIndex >= frame.limits.x) { result.fault = 2u; PtMarkTraceFault(33554432u); continue; }
+        if (instanceIndex >= frame.limits.x) { result.fault = 2u; PtMarkPathDiagnostic(33554432u); continue; }
         RayInstanceData instance = instances[instanceIndex];
         if (instance.info.x >= frame.limits.y || primitive >= frame.limits.y - instance.info.x ||
-            instance.info.y >= frame.limits.z) { result.fault = 2u; PtMarkTraceFault(33554432u); continue; }
+            instance.info.y >= frame.limits.z) { result.fault = 2u; PtMarkPathDiagnostic(33554432u); continue; }
         if (instanceIndex == targetInstance && instance.info.x + primitive == targetTriangle)
             continue;
         GpuMaterial material = materials[instance.info.y];
@@ -243,7 +246,7 @@ PtHit PtClosest(RayDesc ray, uint coverageSeed, bool volumeOnly = false,
     if (result.point.valid == 0u)
     {
         result.fault = 2u;
-        PtMarkTraceFault(8u | result.point.reconstructionFault);
+        PtMarkPathDiagnostic(8u | result.point.reconstructionFault);
 #if !REFERENCE_DLSS_RR
         // First failed reconstruction witness in this submission. The second
         // readback row already reserves yzw; autofocus owns only its x lane.
@@ -535,7 +538,10 @@ PtMaterial PtResolveMaterial(PtHit hit, float2 texGrad, float3 view, bool visibi
             if (!isfinite(result.retroreflection) || result.retroreflection < 0.0 || result.retroreflection > 1.0)
             { result.fault = 2u; return result; }
             if (result.retroreflection > 0.0 && result.volume != 0u)
-            { result.fault = 1u; return result; }
+            {
+                PtMarkPathDiagnostic(PT_DIAGNOSTIC_RETRO_VOLUME_FALLBACK);
+                result.retroreflection = 0.0;
+            }
         }
         if (m.experimentalFactors.y > 0.0 && metallic < 1.0 && transmission > 0.0)
         {
@@ -550,7 +556,8 @@ PtMaterial PtResolveMaterial(PtHit hit, float2 texGrad, float3 view, bool visibi
                 { result.fault = 2u; return result; }
                 if (result.volume != 0u)
                 {
-                    if (any(color > 0.0.xxx)) { result.fault = 1u; return result; }
+                    if (any(color > 0.0.xxx))
+                        PtMarkPathDiagnostic(PT_DIAGNOSTIC_SCATTER_VOLUME_FALLBACK);
                 }
                 else
                     PtApplyThinScatter(result.bsdf.diffuse, result.diffuseTransmission, result.transmission,
@@ -621,7 +628,7 @@ PtMaterial PtResolveMaterial(PtHit hit, float2 texGrad, float3 view, bool visibi
     }
     if (!PtValidThinBsdf(PtTransport(result)) || !PtValidDirection(result.normal) ||
         !all(isfinite(result.emission)) || any(result.emission < 0.0.xxx))
-    { result.fault = 2u; PtMarkTraceFault(4u); }
+    { result.fault = 2u; PtMarkPathDiagnostic(4u); }
     return result;
 }
 float3 PtLocal(PtMaterial m, float3 value)
@@ -762,8 +769,8 @@ PtMediumState PtInitialMedium(RayDesc ray, uint seed, inout uint fault)
         else
         {
             // An unmatched exit means the ray starts inside this medium.
-            // Reject scattering before even an opaque interior hit can consume
-            // the segment through the absorption-only volume implementation.
+            // Report omitted scattering even if an opaque interior hit keeps
+            // the path from reaching and shading the volume boundary.
             if (material.experimentalFactors.y > 0.0)
             {
                 const float strength = PtScatterStrength(material, hit.point, 0.0.xx);
@@ -773,7 +780,8 @@ PtMediumState PtInitialMedium(RayDesc ray, uint seed, inout uint fault)
                 {
                     const float3 color = PtScatterColor(material, hit.point, 0.0.xx);
                     if (!PtValidDiffuseTransmission(color)) { fault = 2u; return inside; }
-                    if (any(color > 0.0.xxx)) { fault = 1u; return inside; }
+                    if (any(color > 0.0.xxx))
+                        PtMarkPathDiagnostic(PT_DIAGNOSTIC_SCATTER_VOLUME_FALLBACK);
                 }
             }
             if (inside.count == PT_MAX_MEDIA) { fault = 1u; return inside; }
@@ -1152,7 +1160,7 @@ float3 PtDirect(PtHit hit, PtMaterial material, float3 view, float3 geometricNor
     if (evaluated.valid == 0u || !isfinite(pdf) || !all(isfinite(radiance)) || any(radiance < 0.0.xxx))
     {
         if (!PtValidDirection(PtLocal(material, view)) || !PtValidDirection(localDirection))
-            PtMarkTraceFault(4096u);
+            PtMarkPathDiagnostic(4096u);
         fault = 2u; return 0.0.xxx;
     }
     if (all(evaluated.value == 0.0.xxx) || all(radiance == 0.0.xxx)) return 0.0.xxx;
@@ -1359,7 +1367,7 @@ float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault
     bool orthographic = (frame.limits.w & 2u) != 0u;
     PtCameraRay primary = PtGenerateCameraRay(samplePosition, extent,
         frame.inverseProjection, frame.inverseView, orthographic);
-    if (primary.valid == 0u) { fault = 2u; PtMarkTraceFault(16u); return 0.0.xxx; }
+    if (primary.valid == 0u) { fault = 2u; PtMarkPathDiagnostic(16u); return 0.0.xxx; }
     float3 lensOffset = 0.0.xxx;
     [branch] if (frame.trace.z > 0.0)
     {
@@ -1367,7 +1375,7 @@ float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault
         const float2 lensRandom = float2(PtRandom(address, sampleIndex, 0u, 14u, frame.sampling.z),
                                         PtRandom(address, sampleIndex, 0u, 15u, frame.sampling.z));
         if (!PtApplyThinLens(primary, frame.inverseView, lensRandom, frame.trace.z, frame.trace.w, lensOffset))
-        { fault = 2u; PtMarkTraceFault(16u); return 0.0.xxx; }
+        { fault = 2u; PtMarkPathDiagnostic(16u); return 0.0.xxx; }
     }
     uint pointCount, stride, areaCount, materialCount;
     materials.GetDimensions(materialCount, stride);
@@ -1403,7 +1411,7 @@ float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault
     float etaScale = 1.0;
     bool previousDelta = true;
     PtMediumState medium = PtInitialMedium(ray, PtCoverageSeed(address, sampleIndex, 0u, 2u), fault);
-    if (fault != 0u) { if ((fault & 2u) != 0u) PtMarkTraceFault(1024u); return 0.0.xxx; }
+    if (fault != 0u) { if ((fault & 2u) != 0u) PtMarkPathDiagnostic(1024u); return 0.0.xxx; }
     float3 segmentStart = ray.Origin;
     uint depth = 0u, nullSheets = 0u;
     // 0xffffffff marks an RGB path; the first dispersive refractive interface
@@ -1418,7 +1426,7 @@ float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault
     for (uint bounce = 0u; bounce < frame.sampling.x + PT_MAX_NULL_SHEETS; ++bounce)
     {
         PtHit hit = PtClosestSurface(ray, PtCoverageSeed(address, sampleIndex, bounce, 0u));
-        if (hit.fault != 0u) { fault = hit.fault; if ((fault & 2u) != 0u) PtMarkTraceFault(8u); return 0.0.xxx; }
+        if (hit.fault != 0u) { fault = hit.fault; if ((fault & 2u) != 0u) PtMarkPathDiagnostic(8u); return 0.0.xxx; }
         PtEmitterHit emitter = PtAreaHit(ray, counts.w, 0xffffffffu);
         if (emitter.hit != 0u && (hit.hit == 0u || emitter.distance < hit.distance))
         {
@@ -1463,7 +1471,7 @@ float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault
             hit.point.geometricNormal, -ray.Direction);
         RayCone scatteringCone = {worldFoot, cone.spread};
         PtMaterial material = PtResolveMaterial(hit, worldFoot * hit.point.texelDensity, -ray.Direction);
-        if (material.fault != 0u) { fault = material.fault; if ((fault & 2u) != 0u) PtMarkTraceFault(4u); return 0.0.xxx; }
+        if (material.fault != 0u) { fault = material.fault; if ((fault & 2u) != 0u) PtMarkPathDiagnostic(4u); return 0.0.xxx; }
 #if REFERENCE_DENOISE_GUIDES
         if (bounce == 0u)
         {
@@ -1537,7 +1545,7 @@ float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault
         {
             result += throughput * PtDirect(hit, material, view, geometricNormal, address, sampleIndex,
                 bounce, counts, continuePath, medium, spectral, scatteringCone, proposal != 0u, fault);
-            if (fault != 0u) { if ((fault & 2u) != 0u) PtMarkTraceFault(64u); return 0.0.xxx; }
+            if (fault != 0u) { if ((fault & 2u) != 0u) PtMarkPathDiagnostic(64u); return 0.0.xxx; }
         }
         bool canPassNull = material.volume != 0u ? material.eta == 1.0 : material.transmissionRoughness == 0.0;
         if (!continuePath && (!canPassNull || all(material.transmission == 0.0.xxx))) break;
@@ -1547,8 +1555,8 @@ float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault
         PtBsdfSample sampled = PtSampleSurface(material, PtLocal(material, view), u);
         if (sampled.rejected != 0u)
         {
-            if (!PtValidDirection(PtLocal(material, view))) PtMarkTraceFault(2048u);
-            fault = 2u; PtMarkTraceFault(32u); return 0.0.xxx;
+            if (!PtValidDirection(PtLocal(material, view))) PtMarkPathDiagnostic(2048u);
+            fault = 2u; PtMarkPathDiagnostic(32u); return 0.0.xxx;
         }
         if (sampled.valid == 0u) break;
         bool transmission = sampled.direction.z < 0.0;
@@ -1584,7 +1592,7 @@ float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault
             etaScale *= material.eta * material.eta;
         }
         if (!all(isfinite(throughput)) || any(throughput < 0.0.xxx) || !isfinite(etaScale) || etaScale <= 0.0)
-        { fault = 2u; PtMarkTraceFault(128u); return 0.0.xxx; }
+        { fault = 2u; PtMarkPathDiagnostic(128u); return 0.0.xxx; }
         segmentStart = hit.point.position;
         if (nullSheet)
         {
@@ -1601,7 +1609,7 @@ float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault
         {
             ++depth;
             float3 rouletteThroughput = throughput * etaScale;
-            if (!all(isfinite(rouletteThroughput))) { fault = 2u; PtMarkTraceFault(256u); return 0.0.xxx; }
+            if (!all(isfinite(rouletteThroughput))) { fault = 2u; PtMarkPathDiagnostic(256u); return 0.0.xxx; }
             if (!PtRussianRoulette(rouletteThroughput, depth, frame.sampling.y,
                 PtRandom(address, sampleIndex, bounce, 8u, frame.sampling.z))) break;
             throughput = rouletteThroughput / etaScale;
@@ -1615,7 +1623,7 @@ float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault
             cone = scatteringCone;
         }
     }
-    if (!all(isfinite(result)) || any(result < 0.0.xxx)) { fault = 2u; PtMarkTraceFault(512u); return 0.0.xxx; }
+    if (!all(isfinite(result)) || any(result < 0.0.xxx)) { fault = 2u; PtMarkPathDiagnostic(512u); return 0.0.xxx; }
     return result;
 }
 

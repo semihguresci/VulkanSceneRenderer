@@ -1,0 +1,1072 @@
+{
+  "schemaVersion": 1,
+  "issue": 101,
+  "platform": "Windows x64",
+  "build": {
+    "compiler": "MSVC-19.51.36260.0",
+    "configuration": "Release",
+    "revision": "3c49640fa82de46ef88003774385de416e4fe7b1"
+  },
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 2080 SUPER",
+    "vendorId": 4318,
+    "deviceId": 7809,
+    "driverVersion": 2559967232,
+    "vulkanApiVersion": 4211029
+  },
+  "rendererSha256": "71f4eb4121989ad06871d805019c04b5e755d5b265ee43113fa2dcd712396297",
+  "rendererBuild": {
+    "openVdbEnabled": false,
+    "shaderModules": 116,
+    "byteIdenticalToBaseline": 110,
+    "changedShaderModulesSha256": {
+      "reference_background.comp.spv": "7b6ea119e4662abe3b03b050402f4a04d235e9501866433135a6c76e91cc42fe",
+      "reference_guided_background.comp.spv": "00cb56d86b3e68d36aadc042b7a71babe70a3282ba01d183c02e505b3e70752d",
+      "reference_guided_pathtrace.comp.spv": "c60817939d8011caca81e0390a14b046de140a7649051c0b97d65a977990eb5f",
+      "reference_pathtrace.comp.spv": "9b2e3c224c69160b3ee571f3d85e2a2893c298b281e51cc18b31845772f7c10b",
+      "reference_pathtrace_empty_rr.comp.spv": "b13b2baa99cc6185cead19d4cb4dc2a6cd2ba79e9e6c541e08a8e06f8bbcbe2f",
+      "reference_pathtrace_rr.comp.spv": "6dde87258ecf6baadaf82be20157086e84b2939358d2f90cf421bd6baeaf7a75"
+    },
+    "shaderInventorySha256": "fdeba9df020cb81375c67220afa560e77de53adef7553651a27c0ec7f46803d9",
+    "shaderManifestSha256": "0ec8b68c5a4b5bbe8a5e95a51c957d2cff0c8808e83d52cda4fccb93df72a005",
+    "ninjaSha256": "b90bea5a6d79a38b5711224c3f120e150aded3d6dfbd70a0e67ae9335ce76ba0",
+    "cmakeCacheSha256": "f0cda70c5ee2d29cbcc51827eb88c4e0a6cf54a2af089d9fb9de989cbac99281",
+    "logSha256": "356b43d780c80c03e7250c38453da84665785a19f7b159bcecf44d86bdb43a6a",
+    "spirvValidation": {
+      "validatorVersion": "SPIRV-Tools v2025.4 v2025.4-0-g7f2d9ee9",
+      "target": "vulkan1.4",
+      "scalarBlockLayout": true,
+      "validated": [
+        {
+          "module": "reference_background.comp.spv",
+          "sha256": "7b6ea119e4662abe3b03b050402f4a04d235e9501866433135a6c76e91cc42fe"
+        },
+        {
+          "module": "reference_guided_background.comp.spv",
+          "sha256": "00cb56d86b3e68d36aadc042b7a71babe70a3282ba01d183c02e505b3e70752d"
+        },
+        {
+          "module": "reference_guided_pathtrace.comp.spv",
+          "sha256": "c60817939d8011caca81e0390a14b046de140a7649051c0b97d65a977990eb5f"
+        },
+        {
+          "module": "reference_pathtrace.comp.spv",
+          "sha256": "9b2e3c224c69160b3ee571f3d85e2a2893c298b281e51cc18b31845772f7c10b"
+        },
+        {
+          "module": "reference_pathtrace_empty_rr.comp.spv",
+          "sha256": "b13b2baa99cc6185cead19d4cb4dc2a6cd2ba79e9e6c541e08a8e06f8bbcbe2f"
+        },
+        {
+          "module": "reference_pathtrace_rr.comp.spv",
+          "sha256": "6dde87258ecf6baadaf82be20157086e84b2939358d2f90cf421bd6baeaf7a75"
+        }
+      ],
+      "receiptSha256": "1a656fed6e8c525c7bce21a3501e11800a71e002d86a69ce3474b3bf5bc2f745"
+    }
+  },
+  "sourceSha256": {
+    "docs/gltf-extended-materials.md": "ba3d1a55005b9cfcbd327eb86995eaecd30072582d7b0bbccc71ccc50d562bcd",
+    "include/Container/geometry/GltfExtendedMaterials.h": "28f4b0d57106d7a6d572fdc3d8e9412645d0e3b4193ce3afb5fa6eaf3c18fe5a",
+    "include/Container/renderer/core/RendererFrontend.h": "cf0bc411ce2d1d02d58b10c4e42a4f6ebb8e377b85597e775c07378e6081dc01",
+    "include/Container/renderer/pathtracing/ReferencePathTracePass.h": "c3680b289f0539156d9985b7642fc11079e154cf672b47012a78ef30d105971a",
+    "shaders/reference_pathtrace.slang": "09b581a6b634f2cb8fcffa9ae8fbcea0c9067700b05e2d4fb5eae734489b0812",
+    "src/geometry/GltfExtendedMaterials.cpp": "cb379f124bb255447cfdd290cb073aa95b0ab48d81da8c471d43ab0e18b729f8",
+    "src/geometry/GltfModelLoader.cpp": "675cd9cd7e0a67fba3f1b38cec815d45f61d63a063c704557e5f6b459900f902",
+    "src/renderer/core/RendererFrontend.cpp": "f7ca33f54801ce5f7bdb85ab82ad4d888a4f233bbeb4960ced128ea94b3411d3",
+    "src/renderer/core/RendererFrontendReference.cpp": "031eec1637a47d080420fbb530051a92aabe833be7e9247b579710c4f8b2b2e9",
+    "src/renderer/pathtracing/ReferencePathTracePass.cpp": "77ae4bce38d7d9abbb5a3912501941b7fe5a4f4cb8e343a96c83eee34f802f7c",
+    "tests/geometry/gltf_capabilities_tests.cpp": "9a7a42f89f8606f293ec99638032091c41faef3a505ad23789778787a117a2a0",
+    "tests/renderer/lighting/reference_path_trace_gpu_tests.cpp": "2046926b69127ee1ba4bfcb49c2ddb1e9cf17e809e675207198bd9cfe75ffa83",
+    "tests/validation/gltf_experimental_materials_runtime_regression.py": "c2ba7c075a3b85f2d7e3cef2f29b2650f09c5c1820cdffbd391351e924c73f2d"
+  },
+  "harnessSha256": "c2ba7c075a3b85f2d7e3cef2f29b2650f09c5c1820cdffbd391351e924c73f2d",
+  "validationLayer": {
+    "name": "VK_LAYER_KHRONOS_validation",
+    "packageVersion": "1.4.363.1",
+    "apiVersion": "1.4.363",
+    "manifestSha256": "672a281330703083230ff02cabdd1afd524b600e0a11ae8610119e06e4183b02",
+    "librarySha256": "451ed11cbc799f858cbc0e843766d2990527c03f93f7a85f03bc1e67b605a435",
+    "synchronizationValidation": true,
+    "instanceAndDeviceVerified": true
+  },
+  "ctest": {
+    "targetsPassed": 7,
+    "casesPassed": 324,
+    "gpuCasesPassed": 158,
+    "failures": 0,
+    "skips": 0,
+    "junitSha256": "9849f2605c688034e339002b1bc89c6f94557018f1958da5b4d56977eb349003",
+    "detailedLogSha256": "0a0a01f7a6c21481cb74e6458e3d59e47f139353bfa30c4302f2935fad871942",
+    "runnerLogSha256": "c17ed05bb4feaedab24511ba8eb4a9b06d2fc9fb413d94e6d4a24f9c2bca9975",
+    "targets": {
+      "gltf_capabilities_tests": {
+        "casesPassed": 49,
+        "sourceWorktreeSha256": "86ba73c321944082e5660c6609484b96362588720540cbbbdd02a9f38791688a",
+        "junitSha256": "48ce1f265e4e3f93544be2da949883250d9d61903b324f728c909e9b7d297ff3",
+        "executableSha256": "c0ec3c952276fa5052c41346950b6889dc51ba5ac30f079e388c166a7bad93de"
+      },
+      "gltf_extended_materials_tests": {
+        "casesPassed": 12,
+        "sourceWorktreeSha256": "1b37ed167dd7e8e8e33408f28ca2a4cf221577b703392ec01cf07550d61f6a20",
+        "junitSha256": "5f3007b78b7b6a9bd61f09834a0f97e5f24c9d4f718ea3d921b5ec194ecf32bc",
+        "executableSha256": "311451ca5b8918706d2d32867be9f88d585a01963bc68ec3d01cb95d3ae69ddb"
+      },
+      "gltf_material_animation_tests": {
+        "casesPassed": 49,
+        "sourceWorktreeSha256": "e89503cf317dde87ad6809e454fd5060497c3a7cdae23382bc44f32986a431ed",
+        "junitSha256": "ee13f21d4283498b031af474265a6bfd0ff06e587becdc6532e40315d71337ef",
+        "executableSha256": "6afa787c5c561368e6002ed526e280854abcd728c63d2417bd0e8dbc1f4d064c",
+        "includedAllocationTestsWorktreeSha256": "c56d49f2a94fb346bd1e07d73f0857f73cdcd22b5a0b66d46ecfabc12ded0ad5"
+      },
+      "gltf_material_conversion_tests": {
+        "casesPassed": 18,
+        "sourceWorktreeSha256": "230b00d18f1cfa6b0dfe94a4743807a2290c28f5928ceb8e69a49122a84883db",
+        "junitSha256": "f685f93769bfa5e01f6f0705a9d07481af7cb0b0cde91d0a03f1157d67a3a2b4",
+        "executableSha256": "0edaed439741c81ba18a2314593defec147f2229dfefbfc1c3900a6c20348f28"
+      },
+      "gltf_merge_tests": {
+        "casesPassed": 36,
+        "sourceWorktreeSha256": "ea8e6040275ed52c7afba88fb4fd6a3f4b25fcb4b7113cb896965aef8b3e81c3",
+        "junitSha256": "d2658c325726fb17c48b389e86c5baf739d9f9b854dcf2b355bc8ecc38c997bf",
+        "executableSha256": "568760d793a2eed83bcafcdd43e66db587bab7ea481ac6f495afd2e37551a7ca"
+      },
+      "path_transport_gpu_tests": {
+        "casesPassed": 71,
+        "sourceWorktreeSha256": "6631b68878c6fe044cb8d76fb315b63f222db7792d706489d22e73bdef9d69d6",
+        "junitSha256": "f36bcbadcfadc51c1f7864d00ae4b3f70ac8df40449728ca092629c687833dc3",
+        "executableSha256": "3399541c3d5cca8f756b2d143ea0ac2c19a4f1981b39acdbe86060a1e9347104"
+      },
+      "reference_path_trace_gpu_tests": {
+        "casesPassed": 89,
+        "sourceWorktreeSha256": "2c7fae258a66bcc9f9e05dd1b01b3c333221350775bd51e25e18ed205d890f2e",
+        "junitSha256": "fd4cc20aa58581b7145afc7398ef4e961bf12c29c9928b2c5b1615373904915a",
+        "executableSha256": "78218735b1e44454e2c915f3746d4bc18c87d3250813df0f07a12dcd7c2d6aba"
+      }
+    },
+    "referenceTestRevision": "b46a7965d1b64a16686fe29946716088f823bbfa",
+    "referenceTestSourceSha256": "dd02b0aba95654e2dba1aac79bab38cc16ee85efd5eb1e3bc94306515c24969a",
+    "supersededAttempt": {
+      "failedCase": "ReferencePathTraceGpu.CameraInsideVolumeAttenuatesOpaqueHitsBeforeItsExit",
+      "correctedExpectation": "Ordinary volume pixels with a nonfatal scattering fallback warning.",
+      "junitSha256": "135e9a9e6faf2012ca107cf372b6f99916292e3be0d77f5dc4a3bf12662463d1",
+      "runnerLogSha256": "ad3f9acbc1a63a75d4016e2098c2ee86796bbca9b1a7c4ae10374f29cf19ce99"
+    }
+  },
+  "baseline": {
+    "rendererRevision": "946e15d82629718986f995384168dc898d6a60dc",
+    "mainRevision": "cee611695b2ebc0dcdfec77c76cfae45320b5ae4",
+    "rendererSha256": "65c375162016d79ffcd39462166a7fa3bf82d8227143e9d441c487ee67ca535b",
+    "malformedOptional": {
+      "disabledCapture": {
+        "centerRgb": [
+          0.22281691431999207,
+          0.1273239552974701,
+          0.047746483236551285
+        ],
+        "exrSha256": "d97e73d160fa7ba32693cee377128991f0006a0f4566e7cd446554d26d2f7eb9",
+        "decodedBgrSha256": "8a77800c55c1dce98f029ba70f24799411b6dc75d4e290ac5604cfbc48b45d00",
+        "metadataSha256": "28c4e3578cb790ed583675f9052e4baaea2af5e42095231e60cd75341a87a42c",
+        "telemetrySha256": "5f9dc30d187647dfd981436bc7b5f6b810451a0b6b283e7ebfb61e57e0ae0141",
+        "logSha256": "346e5cd6070ee7858678b321780cfdde360b723cea0e2638c5b3fa046751bc31",
+        "unsupportedSamples": 0,
+        "rejectedSamples": 0,
+        "attemptedSamplesPerPixel": 16
+      },
+      "enabledCaptureProduced": false,
+      "errorField": "material[0].extensions.KHR_materials_scatter.scatterAnisotropy",
+      "enabledLogSha256": "130ead78bb37dad2b0f428ef4a638fb82f9826923ddce9fa9a77caf2aeea6d49",
+      "runnerLogSha256": "04444000e4a0f9f43cc02ff9351013067b89540c963383f9a125f5be00929591"
+    },
+    "closedVolume": {
+      "disabled": {
+        "centerRgb": [
+          0.9999845623970032,
+          0.1249961405992508,
+          1.0
+        ],
+        "exrSha256": "401957586042bd51bdca2d93ae7468eaf34c80d4e797a4e9b50b7d5865233016",
+        "decodedBgrSha256": "13890b894075ffe7315240b6d3491a030860164c8e641b49aa49983f7097d62d",
+        "metadataSha256": "3d4bc354d366e640aed5ba26a783c05a7114b5d76a90ddda84ea79af05a641c6",
+        "telemetrySha256": "fb3a12b59b2abe8a5db6f7079ac006f4fa9eb7fb765d9c2fc959a8016293f631",
+        "logSha256": "c625a1d6c1f480b933e32c2ea8e82495f050b216163634051ff21fab156d8751",
+        "unsupportedSamples": 0,
+        "rejectedSamples": 0,
+        "attemptedSamplesPerPixel": 16
+      },
+      "enabled": {
+        "centerRgb": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "exrSha256": "adb18cfb62382631e63c2f7420c6d5328be864cba76409c49072175275bee9c5",
+        "decodedBgrSha256": "a251c7b271e711604c800658cf80ad17ef32328ab9b24fca54438b214224c3d9",
+        "metadataSha256": "edc15750de963ded6b148ad3806f14d128ab7d7d568ea31888cc575f2241be13",
+        "telemetrySha256": "8d796314c38b198bd7c9dc86ae9d7e621eb74e1b1c902e78a4c5a829e85e5d46",
+        "logSha256": "ad149fcf3bb238afb37efa6ec6fee40c4c198a2b7406a792764b5a7fdf678c62",
+        "unsupportedSamples": 442368,
+        "rejectedSamples": 0,
+        "attemptedSamplesPerPixel": 16
+      },
+      "resultsSha256": "def0e3aa028502439a60a18ffdb0ff0a06670f8f28050714d7abb84865090c81"
+    },
+    "loaderTests": {
+      "failedCases": [
+        "MalformedOptionalExperimentalLayersPreserveValidLayers",
+        "OptionalExperimentalTextureFallbackPreservesCoreResources"
+      ],
+      "proofSha256": "74b76058d970dcbadf0db9d919f1e749f8ea93a9fe8bec32e942a626f74b1c44",
+      "baselineArchiveSha256": "5766b888e453bc2c74806f1dcac2fbbef0418a62b0652b6cd3db5aa5a9fb145b",
+      "baselineExecutableSha256": "123c0eb5bb6eb5031efe315146557c914f9f29e8d41c98d4a67e5e09b0ba22c2",
+      "linkMapSha256": "1ca655cc521ab3c3d8dd4ba5fcdbee4f8399f91340022f1f5e6915612bcd99d7",
+      "logSha256": "0c30fed1ae437bbe70710c7f8b1cfdd8ab2544e649a607b9887414980e69fa18",
+      "xmlSha256": "8616ad2fe6f3826d0d3ac0616a5c0788f893f6f2f9ffaa356559710d47416eda",
+      "exactGeometryArchiveSha256": "fbb68aaa4d383f3e6a362245499f2a08c660803e5af90e12d90871fd367ae334",
+      "exactTestExecutableSha256": "c0ec3c952276fa5052c41346950b6889dc51ba5ac30f079e388c166a7bad93de",
+      "exactTestObjectSha256": "55758c998a68b86d9de17b4e9ec3732a8c62472248c8b7781dd616ce52494e6e"
+    }
+  },
+  "native": {
+    "captureCount": 13,
+    "processCount": 13,
+    "captures": {
+      "scatter-malformed-disabled": {
+        "centerRgb": [
+          0.22281691431999207,
+          0.1273239552974701,
+          0.047746483236551285
+        ],
+        "exrSha256": "d97e73d160fa7ba32693cee377128991f0006a0f4566e7cd446554d26d2f7eb9",
+        "decodedBgrSha256": "8a77800c55c1dce98f029ba70f24799411b6dc75d4e290ac5604cfbc48b45d00",
+        "metadataSha256": "3dee131ec685267bf2eaccd5cbbf18d5ddd5533aa3954397857e84c6187e1d0b",
+        "telemetrySha256": "d8fc70cd163f1bae05c94f09b070b78381ae3f85b2f72dbc304a5a0d7700196f",
+        "logSha256": "8974597b48055f37b05a527ec38e83ee7604df1a126138bad4f384d898da1fed",
+        "unsupportedSamples": 0,
+        "rejectedSamples": 0,
+        "attemptedSamplesPerPixel": 16,
+        "experimentalMaterialFallbacks": {
+          "closedVolumeRetroreflection": false,
+          "closedVolumeScatter": false
+        }
+      },
+      "scatter-malformed-enabled": {
+        "centerRgb": [
+          0.22281691431999207,
+          0.1273239552974701,
+          0.047746483236551285
+        ],
+        "exrSha256": "d97e73d160fa7ba32693cee377128991f0006a0f4566e7cd446554d26d2f7eb9",
+        "decodedBgrSha256": "8a77800c55c1dce98f029ba70f24799411b6dc75d4e290ac5604cfbc48b45d00",
+        "metadataSha256": "3dee131ec685267bf2eaccd5cbbf18d5ddd5533aa3954397857e84c6187e1d0b",
+        "telemetrySha256": "01efc44a4a12e17dbad1b3f68565b87735d4cd6dd8cffebcf7f25ea928702084",
+        "logSha256": "01b25d5788a39b4f0dc7fe05b02baceb60ccf1f8efc36315c951733288e3249c",
+        "unsupportedSamples": 0,
+        "rejectedSamples": 0,
+        "attemptedSamplesPerPixel": 16,
+        "experimentalMaterialFallbacks": {
+          "closedVolumeRetroreflection": false,
+          "closedVolumeScatter": false
+        },
+        "malformedLayerWarning": {
+          "code": "experimental_material_fallback",
+          "field": "material[0].extensions.KHR_materials_scatter.scatterAnisotropy"
+        }
+      },
+      "scatter-fallback-witness": {
+        "centerRgb": [
+          0.2245410978794098,
+          0.12847080826759338,
+          0.05617233365774155
+        ],
+        "exrSha256": "a95403c00d3c4130268d003a3a218fc11b9337105a328cf64f08a7284d3c2d12",
+        "decodedBgrSha256": "8f75bc70bf52fc12a3fbc86c90819c1a83c15b2d49a84df1575c5adfacd11ab7",
+        "metadataSha256": "3dee131ec685267bf2eaccd5cbbf18d5ddd5533aa3954397857e84c6187e1d0b",
+        "telemetrySha256": "9f65e66f9e6153a0c0c1ebb914294b727c010b001ce219b2d04f7c20a9bddd71",
+        "logSha256": "f8eb66e2327e24be830ed5df2eaa578d7ef99c7b66a1678fc43e32e64bf24fdd",
+        "unsupportedSamples": 0,
+        "rejectedSamples": 0,
+        "attemptedSamplesPerPixel": 16,
+        "experimentalMaterialFallbacks": {
+          "closedVolumeRetroreflection": false,
+          "closedVolumeScatter": false
+        }
+      },
+      "retro-disabled": {
+        "centerRgb": [
+          0.037840038537979126,
+          0.021622881293296814,
+          0.008108580484986305
+        ],
+        "exrSha256": "ba76451395891b8dffec6a5f58f9437d4857ac40edaafebe0205c77d441bdbfe",
+        "decodedBgrSha256": "a12bf89bd9e320ea6f825df173014ccfb0fdc40fe51e4501e8ffe5d24a25173a",
+        "metadataSha256": "3dee131ec685267bf2eaccd5cbbf18d5ddd5533aa3954397857e84c6187e1d0b",
+        "telemetrySha256": "2ab362a0071257c245046592cf2b34334f5c0d4f0c8b279edb72c059c1764c4b",
+        "logSha256": "7e0be96f10fa771c43a2242b9f98050373371be286ae796d587ad8b168dfc1d1",
+        "unsupportedSamples": 0,
+        "rejectedSamples": 0,
+        "attemptedSamplesPerPixel": 16,
+        "experimentalMaterialFallbacks": {
+          "closedVolumeRetroreflection": false,
+          "closedVolumeScatter": false
+        }
+      },
+      "retro-zero": {
+        "centerRgb": [
+          0.037840038537979126,
+          0.021622881293296814,
+          0.008108580484986305
+        ],
+        "exrSha256": "ba76451395891b8dffec6a5f58f9437d4857ac40edaafebe0205c77d441bdbfe",
+        "decodedBgrSha256": "a12bf89bd9e320ea6f825df173014ccfb0fdc40fe51e4501e8ffe5d24a25173a",
+        "metadataSha256": "3dee131ec685267bf2eaccd5cbbf18d5ddd5533aa3954397857e84c6187e1d0b",
+        "telemetrySha256": "1aa18456d7ba3cef303bea692fefbc559746f9dd1d709a02ec5db02903f7420d",
+        "logSha256": "de41873211e738916b4061f5988226ad24b8dc13257357d29bf12f281acdb477",
+        "unsupportedSamples": 0,
+        "rejectedSamples": 0,
+        "attemptedSamplesPerPixel": 16,
+        "experimentalMaterialFallbacks": {
+          "closedVolumeRetroreflection": false,
+          "closedVolumeScatter": false
+        }
+      },
+      "retro-factor": {
+        "centerRgb": [
+          1.7040232419967651,
+          0.9740579724311829,
+          0.3657536804676056
+        ],
+        "exrSha256": "da72d2ea2befd2656b8ca8ac00bcd07596b27247e663c54cbbd66679dd12acd6",
+        "decodedBgrSha256": "35da0e1aed9dfec17db022e5da7a72dbbd3515ba95b107b8fa2eed0b0c0dc6d8",
+        "metadataSha256": "3dee131ec685267bf2eaccd5cbbf18d5ddd5533aa3954397857e84c6187e1d0b",
+        "telemetrySha256": "9b935d6c8a14182d379b53d11a45f76bfae0511f9a0cedf778c4c6a1aefc935a",
+        "logSha256": "2599c18805bceebb5bfca807e1861070e5ac06200f5e01a13853029d8328e6a4",
+        "unsupportedSamples": 0,
+        "rejectedSamples": 0,
+        "attemptedSamplesPerPixel": 16,
+        "experimentalMaterialFallbacks": {
+          "closedVolumeRetroreflection": false,
+          "closedVolumeScatter": false
+        }
+      },
+      "retro-texture": {
+        "centerRgb": [
+          1.7040232419967651,
+          0.9740579724311829,
+          0.3657536804676056
+        ],
+        "exrSha256": "da72d2ea2befd2656b8ca8ac00bcd07596b27247e663c54cbbd66679dd12acd6",
+        "decodedBgrSha256": "35da0e1aed9dfec17db022e5da7a72dbbd3515ba95b107b8fa2eed0b0c0dc6d8",
+        "metadataSha256": "3dee131ec685267bf2eaccd5cbbf18d5ddd5533aa3954397857e84c6187e1d0b",
+        "telemetrySha256": "742e1bee39ed425a8ea97981c89d3a9228adf811007aa5782e2614d140f9920d",
+        "logSha256": "231c1e6703baafcbba4b2b78d225e513371d4d5bd3f3239da464286138a72b2f",
+        "unsupportedSamples": 0,
+        "rejectedSamples": 0,
+        "attemptedSamplesPerPixel": 16,
+        "experimentalMaterialFallbacks": {
+          "closedVolumeRetroreflection": false,
+          "closedVolumeScatter": false
+        }
+      },
+      "scatter-front": {
+        "centerRgb": [
+          0.0034483568742871284,
+          0.002293703379109502,
+          0.016851698979735374
+        ],
+        "exrSha256": "4a81a03f236bac8fbb088b923137e82d45eb7512f1806544fa06890a85432980",
+        "decodedBgrSha256": "a6334641dd6a85dec8144eb92961ce60f0132be029389c45208af5f4017fd9d7",
+        "metadataSha256": "3dee131ec685267bf2eaccd5cbbf18d5ddd5533aa3954397857e84c6187e1d0b",
+        "telemetrySha256": "b71e96b758bf91d6107c4f5734244e2d7e5a19932881bdf2bf0fd972fabf4211",
+        "logSha256": "08c9ad73610b03bef8127c2b8dd2faa740a9d047c25ab23eb2ca1b2399c9c073",
+        "unsupportedSamples": 0,
+        "rejectedSamples": 0,
+        "attemptedSamplesPerPixel": 16,
+        "experimentalMaterialFallbacks": {
+          "closedVolumeRetroreflection": false,
+          "closedVolumeScatter": false
+        },
+        "pinnedAnalyticCenterRgb": [
+          0.003448999214322518,
+          0.002293700331283558,
+          0.0168443939809051
+        ]
+      },
+      "scatter-back": {
+        "centerRgb": [
+          0.013793429359793663,
+          0.009174814447760582,
+          0.0674068033695221
+        ],
+        "exrSha256": "6376ef05ef479a6593b1b9fd87bdfb11fb80b9ca225a021d82477d9400b2c94c",
+        "decodedBgrSha256": "fb6bcf23f1801e84d478fa15d6c612682d9cd0e434f87b0ea8185858126b53a4",
+        "metadataSha256": "3dee131ec685267bf2eaccd5cbbf18d5ddd5533aa3954397857e84c6187e1d0b",
+        "telemetrySha256": "a63de1757d5330c8baa7bf7ec774231d232b03c6c3e0180a6d3b14dce9cd9f6c",
+        "logSha256": "66d3eed4aa8f29384b2fe00af034a19075f5b0fe9c666a84fa3808b4e40f4cfd",
+        "unsupportedSamples": 0,
+        "rejectedSamples": 0,
+        "attemptedSamplesPerPixel": 16,
+        "experimentalMaterialFallbacks": {
+          "closedVolumeRetroreflection": false,
+          "closedVolumeScatter": false
+        },
+        "pinnedAnalyticCenterRgb": [
+          0.013795996857290072,
+          0.009174801325134232,
+          0.0673775759236204
+        ]
+      },
+      "scatter-legacy": {
+        "centerRgb": [
+          0.013793429359793663,
+          0.009174814447760582,
+          0.0674068033695221
+        ],
+        "exrSha256": "6376ef05ef479a6593b1b9fd87bdfb11fb80b9ca225a021d82477d9400b2c94c",
+        "decodedBgrSha256": "fb6bcf23f1801e84d478fa15d6c612682d9cd0e434f87b0ea8185858126b53a4",
+        "metadataSha256": "3dee131ec685267bf2eaccd5cbbf18d5ddd5533aa3954397857e84c6187e1d0b",
+        "telemetrySha256": "4cf6eb484ecb54ac3ab6ddc1ffbf75661a0ce3477617e6bc0d9aecb80bb0e66c",
+        "logSha256": "3f0c26d7e50f59506a146c712317a10d8d02f2abc304dbc2950f3255642d6e47",
+        "unsupportedSamples": 0,
+        "rejectedSamples": 0,
+        "attemptedSamplesPerPixel": 16,
+        "experimentalMaterialFallbacks": {
+          "closedVolumeRetroreflection": false,
+          "closedVolumeScatter": false
+        }
+      },
+      "scatter-reloaded": {
+        "centerRgb": [
+          0.013793429359793663,
+          0.009174814447760582,
+          0.0674068033695221
+        ],
+        "exrSha256": "6376ef05ef479a6593b1b9fd87bdfb11fb80b9ca225a021d82477d9400b2c94c",
+        "decodedBgrSha256": "fb6bcf23f1801e84d478fa15d6c612682d9cd0e434f87b0ea8185858126b53a4",
+        "metadataSha256": "3dee131ec685267bf2eaccd5cbbf18d5ddd5533aa3954397857e84c6187e1d0b",
+        "telemetrySha256": "be472be2142f082a672c31b9e08a30c14f26a14da36e0765c43b307fdf030fdc",
+        "logSha256": "c8ebed17bb64b0ed7d772ca848617e339c61c548ca7700fe6ed5a3284bafd86e",
+        "unsupportedSamples": 0,
+        "rejectedSamples": 0,
+        "attemptedSamplesPerPixel": 16,
+        "experimentalMaterialFallbacks": {
+          "closedVolumeRetroreflection": false,
+          "closedVolumeScatter": false
+        }
+      },
+      "scatter-closed-volume-disabled": {
+        "centerRgb": [
+          0.9999845623970032,
+          0.1249961405992508,
+          1.0
+        ],
+        "exrSha256": "401957586042bd51bdca2d93ae7468eaf34c80d4e797a4e9b50b7d5865233016",
+        "decodedBgrSha256": "13890b894075ffe7315240b6d3491a030860164c8e641b49aa49983f7097d62d",
+        "metadataSha256": "3c9e38f9e3bcf48955f0e82a07f5dbd18d890d66527748a91dc9193b105b9c9a",
+        "telemetrySha256": "693026263eb3ae77637f8ef6b609a792671df4820402a56d1ffda0afaa664fea",
+        "logSha256": "78bf1808b1dabadbedb41ca31c31a777b122282a577049a11ebef5454a4636a9",
+        "unsupportedSamples": 0,
+        "rejectedSamples": 0,
+        "attemptedSamplesPerPixel": 16,
+        "experimentalMaterialFallbacks": {
+          "closedVolumeRetroreflection": false,
+          "closedVolumeScatter": false
+        }
+      },
+      "scatter-closed-volume-enabled": {
+        "centerRgb": [
+          0.9999845623970032,
+          0.1249961405992508,
+          1.0
+        ],
+        "exrSha256": "401957586042bd51bdca2d93ae7468eaf34c80d4e797a4e9b50b7d5865233016",
+        "decodedBgrSha256": "13890b894075ffe7315240b6d3491a030860164c8e641b49aa49983f7097d62d",
+        "metadataSha256": "0f97cafd0d2d05348d8e5bac660b229cac69833edf124dc62bcc4da26973c33f",
+        "telemetrySha256": "a5d2efc2babbc494673c92b7dab65e02911d11c720d59719293f4001e179f48e",
+        "logSha256": "53f050a127fc21e050897c0660e752545b01852d1b21d8f59aae5c6beae2036a",
+        "unsupportedSamples": 0,
+        "rejectedSamples": 0,
+        "attemptedSamplesPerPixel": 16,
+        "experimentalMaterialFallbacks": {
+          "closedVolumeRetroreflection": false,
+          "closedVolumeScatter": true
+        },
+        "closedVolumeWarning": "Closed-volume glTF scatter is unsupported. Using ordinary volume transport."
+      }
+    },
+    "fixturesSha256": {
+      "retro-factor.gltf": "900c31b3f648cf45b6ccb0b9093a24f74d12dd2d04a2ce6c632e69cc56afe3a8",
+      "retro-texture.gltf": "aa4764b8b45900c5f6a11750bf2835a5e35eb9b8311b2445afc6361b63116537",
+      "retro-zero.gltf": "8ea4f505fff2cd88b144de2ff32e906abf0beb7ba0c5d05190017858f7247cfc",
+      "scatter-closed-volume.gltf": "26459b691e10c31d22fd6d1951e9f527895ef64d06fc7cf4544e24660d5e7814",
+      "scatter-current.gltf": "dbe509c62ea20662ccc9b6102183d54c2b8b4c2ce1cedb842ed47cc3b60a8170",
+      "scatter-fallback-witness.gltf": "2b418d8404d4b5475df0da574b0f900026513fdff60390186dbf9bde0883f11a",
+      "scatter-legacy.gltf": "10d99d454efe35a2fe4ef52b9077e1a49b4f3272bcf5f4b24bbb7e42d6e542c8",
+      "scatter-malformed.gltf": "b7fdf4258ac54b2336eef3f8a1415410100d4449775f7d6d4643a9190ce1a331",
+      "scatter-portable.glb": "03a1b64af4b058768497b387458b9b54cdb79ba80b54483570722a40ba475cba"
+    },
+    "resultsSha256": "e166360e013cd57116f24c9acc54b7bbf1675f32c3457576703aec081f205a57"
+  },
+  "exactContainerCaptureCount": 22,
+  "nvidiaComparison": {
+    "release": "v2026.11",
+    "revision": "174625d5c621c088bf3610377999f9dbdcf5c3b5",
+    "releaseUrl": "https://github.com/nvpro-samples/vk_gltf_renderer/releases/tag/v2026.11",
+    "archive": "vk_gltf_renderer-2026.11-windows-x64.zip",
+    "archiveSha256": "0de9810fdd729cd10be2dc67cd2212830e1964c016fd9d0a5d8a69ac7d7ba0ff",
+    "executableSha256": "72fa6ac75b47078ff404c66ee95403ec2ea5cbe04424cef8bb2e87a786cf414e",
+    "referenceFormat": "Radiance RGBE",
+    "containerFormat": "OpenEXR float32",
+    "fixedLighting": {
+      "illuminanceLux": 2,
+      "horizontalPixels": 192,
+      "verticalPixels": 144,
+      "verticalFovDegrees": 45,
+      "samplesPerPixel": 16,
+      "maxBounces": 1,
+      "exposure": 1,
+      "comparisonRegionPixels": [
+        32,
+        32
+      ]
+    },
+    "experimentalCases": {
+      "captureCount": 14,
+      "vendorCaptureCount": 7,
+      "containerComparisonCaptureCount": 7,
+      "matchedImportedFixtures": true,
+      "regionSize": [
+        32,
+        32
+      ],
+      "comparisonSha256": "bec221344d8e05869f47c87666583021fc58f4421943573eba8bd74eafd4cfff",
+      "captures": {
+        "retro-disabled": {
+          "vendorCenterRgb": [
+            0.0377197265625,
+            0.02154541015625,
+            0.008056640625
+          ],
+          "containerCenterRgb": [
+            0.03784004505723715,
+            0.021622884552925825,
+            0.008108581881970167
+          ],
+          "vendorRegionMeanRgb": [
+            0.038023948669433594,
+            0.021679162979125977,
+            0.008060932159423828
+          ],
+          "containerRegionMeanRgb": [
+            0.03815367882998544,
+            0.021802102752189967,
+            0.008175788716471288
+          ],
+          "vendorMinusContainerRegionMeanRgb": [
+            -0.00012973016055184416,
+            -0.0001229397730639903,
+            -0.00011485655704746023
+          ],
+          "vendorRgbeMeanQuantum": 0.000244140625,
+          "combinedRegionMeanStandardErrorRgb": [
+            0.0001489607468829557,
+            8.497101862675474e-05,
+            3.18477139495215e-05
+          ],
+          "rgbeQuantumPlusThreeCombinedSeRgb": [
+            0.000691022865648867,
+            0.0004990536808802642,
+            0.0003396837668485645
+          ],
+          "withinComparisonBandRgb": [
+            true,
+            true,
+            true
+          ],
+          "centerMaximumDifferenceBeyondRgbeQuantumRgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "vendorHdrSha256": "8b2056412a375758f17a75f96856539c10623050ec5d792fd18320cceb531806",
+          "vendorLogSha256": "5c302a2393049730a91fc0d6fa910f2c58d5c24684a165bc9afe15af5ddbe21c",
+          "vendorPinnedValidation": false,
+          "containerExrSha256": "d25aed1674d96a381bc3b98d44004284dd8bc7fe86ddff9f69e78e782da21d63",
+          "containerLogSha256": "acde6e4ebb5766f552862609951a0fb4e44a457dd89d079578ef4b124ef4b1e6",
+          "fixtureSha256": "4b2f5ea4d8833eb0d7f34779f2f0028d0797fcff4ef1fc103964cf9f970e3582",
+          "sourceFixtureSha256": "aa4764b8b45900c5f6a11750bf2835a5e35eb9b8311b2445afc6361b63116537"
+        },
+        "retro-zero": {
+          "vendorCenterRgb": [
+            0.0377197265625,
+            0.02154541015625,
+            0.008056640625
+          ],
+          "containerCenterRgb": [
+            0.03784004505723715,
+            0.021622884552925825,
+            0.008108581881970167
+          ],
+          "vendorRegionMeanRgb": [
+            0.038023948669433594,
+            0.021679162979125977,
+            0.008060932159423828
+          ],
+          "containerRegionMeanRgb": [
+            0.03815367882998544,
+            0.021802102752189967,
+            0.008175788716471288
+          ],
+          "vendorMinusContainerRegionMeanRgb": [
+            -0.00012973016055184416,
+            -0.0001229397730639903,
+            -0.00011485655704746023
+          ],
+          "vendorRgbeMeanQuantum": 0.000244140625,
+          "combinedRegionMeanStandardErrorRgb": [
+            0.0001489607468829557,
+            8.497101862675474e-05,
+            3.18477139495215e-05
+          ],
+          "rgbeQuantumPlusThreeCombinedSeRgb": [
+            0.000691022865648867,
+            0.0004990536808802642,
+            0.0003396837668485645
+          ],
+          "withinComparisonBandRgb": [
+            true,
+            true,
+            true
+          ],
+          "centerMaximumDifferenceBeyondRgbeQuantumRgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "vendorHdrSha256": "8b2056412a375758f17a75f96856539c10623050ec5d792fd18320cceb531806",
+          "vendorLogSha256": "196f152f599c5114ec09feaba22c7240518dc5512ea5e93363b7a4b2959592e2",
+          "vendorPinnedValidation": false,
+          "containerExrSha256": "d25aed1674d96a381bc3b98d44004284dd8bc7fe86ddff9f69e78e782da21d63",
+          "containerLogSha256": "e68352b8f84b2c90f409148b8797e234b6b9db22e9defdce4b1ac14d988d09cb",
+          "fixtureSha256": "084a7ad6fa48bec90b23538d87e1d887852f202fdb08a9cbad79df3cac4e5b26",
+          "sourceFixtureSha256": "8ea4f505fff2cd88b144de2ff32e906abf0beb7ba0c5d05190017858f7247cfc"
+        },
+        "retro-factor": {
+          "vendorCenterRgb": [
+            1.69921875,
+            0.96875,
+            0.359375
+          ],
+          "containerCenterRgb": [
+            1.7040229737758636,
+            0.9740579277276993,
+            0.3657536208629608
+          ],
+          "vendorRegionMeanRgb": [
+            1.5764541625976562,
+            0.8989639282226562,
+            0.33477020263671875
+          ],
+          "containerRegionMeanRgb": [
+            1.5806979237822816,
+            0.9035886918427423,
+            0.33933097167755477
+          ],
+          "vendorMinusContainerRegionMeanRgb": [
+            -0.004243761184625328,
+            -0.004624763620086014,
+            -0.004560769040836021
+          ],
+          "vendorRgbeMeanQuantum": 0.0078125,
+          "combinedRegionMeanStandardErrorRgb": [
+            0.004189479327694238,
+            0.0023983584522352832,
+            0.0009048958659405123
+          ],
+          "rgbeQuantumPlusThreeCombinedSeRgb": [
+            0.020380937983082714,
+            0.01500757535670585,
+            0.010527187597821537
+          ],
+          "withinComparisonBandRgb": [
+            true,
+            true,
+            true
+          ],
+          "centerMaximumDifferenceBeyondRgbeQuantumRgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "vendorHdrSha256": "114e32b772e5065126cdfb5ec535dc0ab1c095dcc12e431726715d5f5c298919",
+          "vendorLogSha256": "891922aecde4a556b62ef2f5a86d8bf227f7410029395f9b242b8e5cb53c8f44",
+          "vendorPinnedValidation": false,
+          "containerExrSha256": "9a8c3533aed3b1af39f06c26b3297feca81cd0a78bfde1c0cd690af836d3e455",
+          "containerLogSha256": "fd6a4d4f6531b2e7df014211736e963c50bcab9fb13f5f4024bd0defd2c42a8b",
+          "fixtureSha256": "3a33bf08b2f0ca2d976d2b8ba8b33ac91397c9a8630e0bb6bd1000d5815f16ce",
+          "sourceFixtureSha256": "900c31b3f648cf45b6ccb0b9093a24f74d12dd2d04a2ce6c632e69cc56afe3a8"
+        },
+        "retro-texture": {
+          "vendorCenterRgb": [
+            1.69921875,
+            0.96875,
+            0.359375
+          ],
+          "containerCenterRgb": [
+            1.7040229737758636,
+            0.9740579277276993,
+            0.3657536208629608
+          ],
+          "vendorRegionMeanRgb": [
+            1.5764541625976562,
+            0.8989639282226562,
+            0.33477020263671875
+          ],
+          "containerRegionMeanRgb": [
+            1.5806979237822816,
+            0.9035886918427423,
+            0.33933097167755477
+          ],
+          "vendorMinusContainerRegionMeanRgb": [
+            -0.004243761184625328,
+            -0.004624763620086014,
+            -0.004560769040836021
+          ],
+          "vendorRgbeMeanQuantum": 0.0078125,
+          "combinedRegionMeanStandardErrorRgb": [
+            0.004189479327694238,
+            0.0023983584522352832,
+            0.0009048958659405123
+          ],
+          "rgbeQuantumPlusThreeCombinedSeRgb": [
+            0.020380937983082714,
+            0.01500757535670585,
+            0.010527187597821537
+          ],
+          "withinComparisonBandRgb": [
+            true,
+            true,
+            true
+          ],
+          "centerMaximumDifferenceBeyondRgbeQuantumRgb": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "vendorHdrSha256": "114e32b772e5065126cdfb5ec535dc0ab1c095dcc12e431726715d5f5c298919",
+          "vendorLogSha256": "5e9cc83583d35cb53938095c795da42219ac73b6264e00d891bdad15f05c8273",
+          "vendorPinnedValidation": false,
+          "containerExrSha256": "9a8c3533aed3b1af39f06c26b3297feca81cd0a78bfde1c0cd690af836d3e455",
+          "containerLogSha256": "7b6150bff3b81d4a58eec2c8168f0e5620756ea4c3d3bde144190849af25ca43",
+          "fixtureSha256": "7194dbbdf19ed3443e663a90c7fcbd014a9ad567e753e484c8f4ff87a25dac6e",
+          "sourceFixtureSha256": "aa4764b8b45900c5f6a11750bf2835a5e35eb9b8311b2445afc6361b63116537"
+        },
+        "scatter-front": {
+          "vendorCenterRgb": [
+            0.0031890869140625,
+            0.0020904541015625,
+            0.0156402587890625
+          ],
+          "containerCenterRgb": [
+            0.0034483568742871284,
+            0.002293703379109502,
+            0.016851698979735374
+          ],
+          "vendorRegionMeanRgb": [
+            0.0034095048904418945,
+            0.002240300178527832,
+            0.016708016395568848
+          ],
+          "containerRegionMeanRgb": [
+            0.0034483568742871284,
+            0.002293703379109502,
+            0.016851698979735374
+          ],
+          "vendorMinusContainerRegionMeanRgb": [
+            -3.885198384523392e-05,
+            -5.340320058166981e-05,
+            -0.0001436825841665268
+          ],
+          "vendorRgbeMeanQuantum": 0.00010573863983154297,
+          "combinedRegionMeanStandardErrorRgb": [
+            8.092766868430406e-05,
+            5.331682367501365e-05,
+            0.0003983128951964891
+          ],
+          "rgbeQuantumPlusThreeCombinedSeRgb": [
+            0.00034852164588445515,
+            0.00026568911085658395,
+            0.0013006773254210103
+          ],
+          "withinComparisonBandRgb": [
+            true,
+            true,
+            true
+          ],
+          "centerMaximumDifferenceBeyondRgbeQuantumRgb": [
+            0.0034483568742871284,
+            0.002293703379109502,
+            0.016851698979735374
+          ],
+          "vendorHdrSha256": "129fffa568bd0dbe4a83e3892b074355bf70748cf3d7c618d87e33a46ea74056",
+          "vendorLogSha256": "f31718b7f86d8c831bc6aca5027f10f60cadebfc3f1b7b8e662736cb3bb7d7a4",
+          "vendorPinnedValidation": false,
+          "containerExrSha256": "4a81a03f236bac8fbb088b923137e82d45eb7512f1806544fa06890a85432980",
+          "containerLogSha256": "dce0dc6bb156a5ff03fe890477a0a87c0a18e0ea75b5e52e14903c8cd90bc22c",
+          "fixtureSha256": "31fd2d55d090c02974c0c9dc0fa61f7d141213f34842964fc9d5b79be7d2a585",
+          "sourceFixtureSha256": "dbe509c62ea20662ccc9b6102183d54c2b8b4c2ce1cedb842ed47cc3b60a8170"
+        },
+        "scatter-back": {
+          "vendorCenterRgb": [
+            0.165283203125,
+            0.09521484375,
+            0.1048583984375
+          ],
+          "containerCenterRgb": [
+            0.013793429359793663,
+            0.009174814447760582,
+            0.0674068033695221
+          ],
+          "vendorRegionMeanRgb": [
+            0.014302612282335758,
+            0.009419084126420785,
+            0.0678087474880158
+          ],
+          "containerRegionMeanRgb": [
+            0.013793429359793663,
+            0.009174814447760582,
+            0.0674068033695221
+          ],
+          "vendorMinusContainerRegionMeanRgb": [
+            0.0005091829225420952,
+            0.00024426967866020277,
+            0.00040194411849370226
+          ],
+          "vendorRgbeMeanQuantum": 0.00042068959010066465,
+          "combinedRegionMeanStandardErrorRgb": [
+            0.0005056844972621441,
+            0.0002900404432383078,
+            0.000633397616924977
+          ],
+          "rgbeQuantumPlusThreeCombinedSeRgb": [
+            0.001937743081887097,
+            0.0012908109198155882,
+            0.0023208824408755954
+          ],
+          "withinComparisonBandRgb": [
+            true,
+            true,
+            true
+          ],
+          "centerMaximumDifferenceBeyondRgbeQuantumRgb": [
+            0.49011282064020634,
+            0.2759814355522394,
+            0.0849369466304779
+          ],
+          "vendorHdrSha256": "d4270e5e81f8ad1027d0259d5c218ca8524b29c85e027e7f308b3c90793b14ac",
+          "vendorLogSha256": "6aa636475947699b304677b7e0c9694c4dc64234f66ce348ed9c93f5e08bf272",
+          "vendorPinnedValidation": false,
+          "containerExrSha256": "6376ef05ef479a6593b1b9fd87bdfb11fb80b9ca225a021d82477d9400b2c94c",
+          "containerLogSha256": "dd6a9929a9ba2a105f70d5d71cdd0c3984be7a26496a4cf325074ef904b33dd3",
+          "fixtureSha256": "c2b0c4d1f3966d71d3d64bb8ec15d31c04c35b585a857cab811934e5c5f576b3",
+          "sourceFixtureSha256": "dbe509c62ea20662ccc9b6102183d54c2b8b4c2ce1cedb842ed47cc3b60a8170"
+        },
+        "scatter-legacy": {
+          "vendorCenterRgb": [
+            0.165283203125,
+            0.09521484375,
+            0.1048583984375
+          ],
+          "containerCenterRgb": [
+            0.013793429359793663,
+            0.009174814447760582,
+            0.0674068033695221
+          ],
+          "vendorRegionMeanRgb": [
+            0.014302612282335758,
+            0.009419084126420785,
+            0.0678087474880158
+          ],
+          "containerRegionMeanRgb": [
+            0.013793429359793663,
+            0.009174814447760582,
+            0.0674068033695221
+          ],
+          "vendorMinusContainerRegionMeanRgb": [
+            0.0005091829225420952,
+            0.00024426967866020277,
+            0.00040194411849370226
+          ],
+          "vendorRgbeMeanQuantum": 0.00042068959010066465,
+          "combinedRegionMeanStandardErrorRgb": [
+            0.0005056844972621441,
+            0.0002900404432383078,
+            0.000633397616924977
+          ],
+          "rgbeQuantumPlusThreeCombinedSeRgb": [
+            0.001937743081887097,
+            0.0012908109198155882,
+            0.0023208824408755954
+          ],
+          "withinComparisonBandRgb": [
+            true,
+            true,
+            true
+          ],
+          "centerMaximumDifferenceBeyondRgbeQuantumRgb": [
+            0.49011282064020634,
+            0.2759814355522394,
+            0.0849369466304779
+          ],
+          "vendorHdrSha256": "d4270e5e81f8ad1027d0259d5c218ca8524b29c85e027e7f308b3c90793b14ac",
+          "vendorLogSha256": "b9fa86edbf32c4bf975ed8d6766f75f7110a40332bcd472925decd6524072337",
+          "vendorPinnedValidation": false,
+          "containerExrSha256": "6376ef05ef479a6593b1b9fd87bdfb11fb80b9ca225a021d82477d9400b2c94c",
+          "containerLogSha256": "ff5b892e2a5eb3fc15d43113f2f1733f860695595361392166efe3f0c8b8230f",
+          "fixtureSha256": "475c9526ead8c7fb3b57260371948a03f21877f0bb17f490fa2222decb690e5f",
+          "sourceFixtureSha256": "10d99d454efe35a2fe4ef52b9077e1a49b4f3272bcf5f4b24bbb7e42d6e542c8"
+        }
+      }
+    },
+    "fullyScatteredCases": {
+      "captureCount": 4,
+      "vendorCaptureCount": 2,
+      "containerComparisonCaptureCount": 2,
+      "matchedImportedFixtures": true,
+      "regionSize": [
+        32,
+        32
+      ],
+      "comparisonSha256": "f56d3272ff665b21aee8f198471296e6c177f68bd109d49c8405bd91c74e2d3f",
+      "captures": {
+        "scatter-full-front": {
+          "vendorCenterRgb": [
+            0.00640869140625,
+            0.00421142578125,
+            0.03131103515625
+          ],
+          "containerCenterRgb": [
+            0.006869773380458355,
+            0.004569487180560827,
+            0.033571742475032806
+          ],
+          "vendorRegionMeanRgb": [
+            0.006726264953613281,
+            0.00443577766418457,
+            0.03308534622192383
+          ],
+          "containerRegionMeanRgb": [
+            0.006869773380458355,
+            0.004569487180560827,
+            0.033571742475032806
+          ],
+          "vendorMinusContainerRegionMeanRgb": [
+            -0.0001435084268450737,
+            -0.00013370951637625694,
+            -0.00048639625310897827
+          ],
+          "vendorRgbeMeanQuantum": 0.0002090930938720703,
+          "combinedRegionMeanStandardErrorRgb": [
+            0.0001074013591950724,
+            7.141208960415899e-05,
+            0.0005325939198564105
+          ],
+          "rgbeQuantumPlusThreeCombinedSeRgb": [
+            0.0005312971714572875,
+            0.0004233293626845473,
+            0.0018068748534413018
+          ],
+          "withinComparisonBandRgb": [
+            true,
+            true,
+            true
+          ],
+          "centerMaximumDifferenceBeyondRgbeQuantumRgb": [
+            0.002475242130458355,
+            0.0016397996805608273,
+            0.012575648725032806
+          ],
+          "vendorHdrSha256": "babbd4fd1be0a8337c067f52685f69b45c56010e44fc141c971f425fc1ceb9a1",
+          "vendorLogSha256": "fe38e76f9b5895f153b709e6bd8b0995edc7d74aa8f47a02ab74caf057a38f99",
+          "vendorPinnedValidation": false,
+          "containerExrSha256": "2816320a5231687c6a44daf1b184a07aaa2e2bf6af63c422ab0b69c135f02045",
+          "containerLogSha256": "56c930a0a151d81f23652a7330118b35593ba373209ef03f519ec0cbdfa1a5de",
+          "fixtureSha256": "8ad3472c8d55a94d0e64add8df8cc10e75c48be0206842000cf5e7240d0e6f7e",
+          "sourceFixtureSha256": "dbe509c62ea20662ccc9b6102183d54c2b8b4c2ce1cedb842ed47cc3b60a8170"
+        },
+        "scatter-full-back": {
+          "vendorCenterRgb": [
+            0.02734375,
+            0.01806640625,
+            0.1357421875
+          ],
+          "containerCenterRgb": [
+            0.02747909538447857,
+            0.01827794872224331,
+            0.13428698480129242
+          ],
+          "vendorRegionMeanRgb": [
+            0.02699136734008789,
+            0.017957687377929688,
+            0.13408660888671875
+          ],
+          "containerRegionMeanRgb": [
+            0.02747909538447857,
+            0.01827794872224331,
+            0.13428698480129242
+          ],
+          "vendorMinusContainerRegionMeanRgb": [
+            -0.0004877280443906784,
+            -0.0003202613443136215,
+            -0.00020037591457366943
+          ],
+          "vendorRgbeMeanQuantum": 0.0008821487426757812,
+          "combinedRegionMeanStandardErrorRgb": [
+            0.00010401407280712937,
+            6.839468281983259e-05,
+            0.0005361300252588461
+          ],
+          "rgbeQuantumPlusThreeCombinedSeRgb": [
+            0.0011941909610971692,
+            0.0010873327911352791,
+            0.0024905388184523194
+          ],
+          "withinComparisonBandRgb": [
+            true,
+            true,
+            true
+          ],
+          "centerMaximumDifferenceBeyondRgbeQuantumRgb": [
+            0.001111907884478569,
+            0.000699823722243309,
+            0.01122082769870758
+          ],
+          "vendorHdrSha256": "ec3e7834fb277c8e5a26e21a397c828b14c5d33669f773d03936b2b6fa600838",
+          "vendorLogSha256": "f8a90b55ea21c73169b08ca599ae6d8a64719da9cc9420ff0e8f459053dc08e5",
+          "vendorPinnedValidation": false,
+          "containerExrSha256": "8ed668471f64fecf03b78f1307f5025c470501405301969ba921ae0adeb56b90",
+          "containerLogSha256": "0c7b7c6c5fd0700acfbfc002324f29d6537845401736952932bbb2299f1f241c",
+          "fixtureSha256": "748de7be8c0e32345ddde5cb9fed3f7b187e9a6fe3b0b9e518d5d27d148561eb",
+          "sourceFixtureSha256": "dbe509c62ea20662ccc9b6102183d54c2b8b4c2ce1cedb842ed47cc3b60a8170"
+        }
+      },
+      "backToFrontRegionMeanRatios": {
+        "vendor": [
+          4.012831419254218,
+          4.048374092985757,
+          4.052749153275204
+        ],
+        "container": [
+          4.000000271136331,
+          4.0,
+          4.000000443860226
+        ],
+        "pinnedDraft": 4
+      }
+    },
+    "comparisonMethod": "Per-channel central-region mean differences with a descriptive band of one RGBE bin plus three combined regional standard errors.",
+    "vendorCaptureCount": 9,
+    "containerComparisonCaptureCount": 9,
+    "partiallyScatteredHdrComparisonScope": "Residual coherent transmission produced localized vendor center-pixel peaks. Fully scattered controls isolate the diffuse response."
+  }
+}

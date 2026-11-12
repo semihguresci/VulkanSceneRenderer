@@ -120,7 +120,9 @@ option selects the material field definitions used by `vk_gltf_renderer` at
 `174625d5c621`. These are draft profiles. Optional declarations use the base
 material when the option is off. Required declarations need explicit opt-in.
 The loader checks field types, ranges, effective UVs and texture references
-before resource reads. Source fields and texture identities survive Import / Merge
+before resource reads. A malformed optional layer falls back to the remaining
+material and reports the affected material and field. Malformed required layers
+fail loading. Valid source fields and texture identities survive Import / Merge
 and portable save. [Pinned renderer](https://github.com/nvpro-samples/vk_gltf_renderer/tree/174625d5c621c088bf3610377999f9dbdcf5c3b5),
 [retroreflection draft](https://github.com/KhronosGroup/glTF/pull/2610),
 [scattering draft](https://github.com/KhronosGroup/glTF/pull/2579).
@@ -129,7 +131,7 @@ and portable save. [Pinned renderer](https://github.com/nvpro-samples/vk_gltf_re
 | --- | --- |
 | `KHR_materials_retroreflection` | `retroreflectionFactor` defaults to zero and is multiplied by the linear R texture channel. |
 | `KHR_materials_scatter` | `scatterStrengthFactor` defaults to zero and is multiplied by the linear A texture channel. `multiscatterColorFactor` defaults to white and multiplies the sRGB-decoded RGB texture. `scatterAnisotropy` defaults to zero and lies strictly between −1 and 1. |
-| `KHR_materials_volume_scatter` | Legacy alias. Strength defaults to one and color to black. `multiscatterColor` is accepted. The current extension takes precedence when both names are authored. |
+| `KHR_materials_volume_scatter` | Legacy alias. Strength defaults to one and color to black. `multiscatterColor` is accepted. The current extension takes precedence when both layers are valid. |
 
 The three texture slots support individual samplers, UV0/UV1 and texture
 transforms. The path tracer mixes the ordinary front-side BRDF with its
@@ -141,11 +143,15 @@ On a thin dielectric, scattering redistributes part of coherent transmission
 to two Lambertian lobes. The forward share is `(1 + g) / 2`. The reflected
 share receives the rest. The original specular-transmission tint and other
 diffuse contributions stay independent. Zero effective strength preserves the
-underlying material. Positive scattering albedo on closed media and active
-retroreflection on refractive volume boundaries produce reference transport
-diagnostics. Participating-media scattering remains part of #47. Raster and
-DDGI use the existing base-material response. The tracer's existing unsupported
-layer combinations still apply.
+underlying material. The reference path tracer retains ordinary refraction and
+absorption when active draft scattering or retroreflection reaches a closed
+volume. It reports the skipped layer in the renderer log and raw EXR metadata.
+Raster and DDGI use the existing base-material response. The tracer's other
+layer limits still apply. [Participating-media transport (#47)](https://github.com/semihguresci/VulkanSceneRenderer/issues/47)
+
+The [Windows validation report](../tests/visual-regression/gltf-experimental-materials/windows-nvidia/gltf-experimental-materials-results.json)
+records the fallback checks and fixed-lighting comparisons against NVIDIA's
+[v2026.11 release](https://github.com/nvpro-samples/vk_gltf_renderer/releases/tag/v2026.11).
 
 ## Export, animation and validation
 

@@ -89,6 +89,7 @@ void RendererFrontend::ensureReferencePathResources() {
     subs_.referencePathTracePass = std::move(pass);
     referenceDiagnosticSeen_.assign(svc_.swapChainManager.imageCount(), 0);
     referenceDiagnosticEpoch_ = referenceUnsupported_ = referenceRejected_ = 0;
+    referenceExperimentalMaterialFallbacks_ = 0;
     referenceAdaptiveBatch_.reset();
     referenceTimedLightingMs_.reset();
     referenceAutofocusStatus_.clear();
@@ -255,15 +256,26 @@ void RendererFrontend::collectReferenceDiagnostics(uint32_t image) {
   if (referenceDiagnosticEpoch_ != epoch) {
     referenceDiagnosticEpoch_ = epoch;
     referenceUnsupported_ = referenceRejected_ = 0;
+    referenceExperimentalMaterialFallbacks_ = 0;
   }
   const auto diagnostics = pass->diagnostics(image);
   referenceUnsupported_ += diagnostics.unsupportedSamples;
   referenceRejected_ += diagnostics.rejectedSamples;
+  const uint32_t fallbacks = diagnostics.failureStages & ReferencePathTraceDiagnostics::kExperimentalMaterialFallbackMask;
+  const uint32_t newFallbacks = fallbacks & ~referenceExperimentalMaterialFallbacks_;
+  referenceExperimentalMaterialFallbacks_ |= fallbacks;
+  if (newFallbacks & ReferencePathTraceDiagnostics::kClosedVolumeRetroreflectionFallback)
+    container::log::ContainerLogger::instance().renderer()->warn(
+        "Closed-volume glTF retroreflection is unsupported. Using ordinary volume transport.");
+  if (newFallbacks & ReferencePathTraceDiagnostics::kClosedVolumeScatterFallback)
+    container::log::ContainerLogger::instance().renderer()->warn(
+        "Closed-volume glTF scatter is unsupported. Using ordinary volume transport.");
   if (diagnostics.rejectedSamples != 0)
     std::fprintf(stderr,
         "[ReferencePath] rejected=%u accepted=%u unsupported=%u failureStages=0x%08x epoch=%llu submission=%llu\n",
         diagnostics.rejectedSamples, diagnostics.acceptedSamples, diagnostics.unsupportedSamples,
-        diagnostics.failureStages, static_cast<unsigned long long>(epoch), static_cast<unsigned long long>(serial));
+        diagnostics.failureStages & ~ReferencePathTraceDiagnostics::kExperimentalMaterialFallbackMask,
+        static_cast<unsigned long long>(epoch), static_cast<unsigned long long>(serial));
 }
 
 void RendererFrontend::updateReferenceSampleBudget(float lightingMs) {

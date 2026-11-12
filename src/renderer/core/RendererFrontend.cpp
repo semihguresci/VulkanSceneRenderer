@@ -166,6 +166,12 @@ nlohmann::json referenceGroundMetadata(const ReferenceGroundSettings& ground) {
   return metadata;
 }
 
+nlohmann::json referenceExperimentalMaterialFallbackMetadata(uint32_t fallbacks) {
+  return {{"closedVolumeRetroreflection",
+           (fallbacks & ReferencePathTraceDiagnostics::kClosedVolumeRetroreflectionFallback) != 0},
+          {"closedVolumeScatter", (fallbacks & ReferencePathTraceDiagnostics::kClosedVolumeScatterFallback) != 0}};
+}
+
 using TelemetryClock = std::chrono::steady_clock;
 
 std::shared_ptr<const container::geometry::vdb::ImportOptions> vdbOptionsForReload(
@@ -2194,6 +2200,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
       status += std::to_string(subs_.referencePathTracePass->attemptedSamples()) + " samples";
       if (referenceUnsupported_) status += "; unsupported paths (magenta)";
       if (referenceRejected_) status += "; rejected paths (yellow)";
+      if (referenceExperimentalMaterialFallbacks_) status += ". Closed-volume draft layers use ordinary volume transport";
       const bool optix = subs_.referencePathTracePass->optixSelected();
       const bool beauty = referencePathDisplay() == ReferencePathDisplayMode::Beauty;
       if (beauty && (optix || subs_.referencePathTracePass->oidnQuality() != ReferenceOidnQuality::Off)) {
@@ -3316,6 +3323,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"allocatedBytes", path ? path->allocatedBytes() : 0},
         {"diagnosticEpoch", referenceDiagnosticEpoch_},
         {"unsupportedSamples", referenceUnsupported_}, {"rejectedSamples", referenceRejected_},
+        {"experimentalMaterialFallbacks", referenceExperimentalMaterialFallbackMetadata(referenceExperimentalMaterialFallbacks_)},
         {"samplesPerFrame", svc_.config.pathSamplesPerFrame}, {"sampleLimit", svc_.config.pathSampleLimit},
         {"scheduledSamplesPerFrame", referenceAdaptiveBatch_.value_or(svc_.config.pathSamplesPerFrame)},
         {"lastSubmittedSamples", path ? path->lastSubmittedSamples() : 0},
@@ -6815,6 +6823,7 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
         {"focusDistance", lens ? nlohmann::json(lens->focusDistance) : nlohmann::json(nullptr)},
         {"historyResets", referenceCapture->historyResets()},
         {"unsupportedSamples", referenceUnsupported_}, {"rejectedSamples", referenceRejected_},
+        {"experimentalMaterialFallbacks", referenceExperimentalMaterialFallbackMetadata(referenceExperimentalMaterialFallbacks_)},
         {"hasDiagnostics", referenceUnsupported_ != 0 || referenceRejected_ != 0},
         {"status", referenceStatus_}};
     if (const auto target = screenshot_.referenceSampleTarget) {
