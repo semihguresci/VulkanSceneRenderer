@@ -244,8 +244,8 @@ The report also records the capture path's serialized submission policy and
 frames-in-flight setting.
 
 Uncertainty is a descriptive 95% percentile bootstrap of the median of
-independent process medians. Sampled-to-LTC comparisons resample the paired
-ratios. A comparison between builds resamples each build's process medians
+independent process medians. The mode comparison resamples paired LTC /
+sampled ratios. A comparison between builds resamples each build's process medians
 independently. Three repeats are the minimum for a decision and five or more
 are useful when results sit close to a threshold. Re-run with more repeats
 if the interval is wide or crosses the threshold.
@@ -268,6 +268,40 @@ to the final scene-linear EXR. The report counts receiving pixels that took
 each branch at least once across emitters or BRDF terms. A separate matched
 LTC process pair measures the overhead before the EXR capture. The baseline
 timings and regression gate use the ordinary shaders.
+
+#### RTX 2080 SUPER measurements
+
+The November 12, 2026 Release run measured three independent process pairs
+per fixture with 48 warm-up frames and eight timing samples per process.
+The ratios below use paired Lighting medians. Values above 1 indicate longer
+LTC Lighting times. The brackets show the descriptive 95% intervals.
+
+| Fixture | Emitters | Metallic LTC / sampled | Dielectric LTC / sampled |
+| --- | ---: | ---: | ---: |
+| Coarse disk | 1 | 1.088 [1.003, 1.213] | 1.177 [1.105, 1.179] |
+| Coarse disk | 128 | 0.786 [0.785, 0.788] | 0.790 [0.782, 0.794] |
+| Rectangle | 128 | 0.405 [0.403, 0.406] | 0.418 [0.415, 0.421] |
+| Adaptive near field | 1 | 1.532 [1.522, 1.676] | 2.117 [2.088, 2.471] |
+| Adaptive horizon | 1 | 1.276 [1.259, 1.476] | 2.115 [1.819, 2.149] |
+| Material residual | 1 | 1.529 [1.430, 1.629] | 1.644 [1.508, 1.656] |
+| Full sampled fallback | 1 | 1.025 [1.017, 1.034] | 1.012 [0.859, 1.166] |
+
+The coarse disk and rectangle controls used their respective analytic paths
+across all receiving pixels. The near and horizon cases subdivided the disk,
+with horizon clipping on every receiving pixel in the tilted horizon case.
+The material-residual case used coarse disk geometry and sampled residual
+work at every receiver pixel. The fallback case used sampled integration
+at every receiver pixel. At 128 emitters the diagnostic shader increased
+the coarse disk Lighting median by 2.1–3.5% across the two materials in the
+separate process pairs.
+
+The full 24-fixture report includes 1,152 baseline timing samples, 48 matched
+validation-enabled correctness captures, and the diagnostic path counts and
+overhead estimates. The same-build repeat of the single metallic coarse disk
+stayed within the default 5% regression threshold. Its change interval was
+−6.76% to +3.22%. [Repeated benchmark results](../tests/visual-regression/ltc/windows-nvidia/repeated-benchmark-results.json)
+
+### Historical validation and timings
 
 The October 8, 2026 validation run on an RTX 2080 SUPER passed 136 quality
 comparisons and 34 absolute forward/deferred comparisons. The largest measured
