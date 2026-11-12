@@ -597,7 +597,7 @@ void RendererFrontend::createPhysicsDemo() {
   syncSceneProviders();
   // The default Cornell fixture deliberately disables sunlight. Give the
   // explicit demo a usable light unless the caller specified its intensity.
-  if (subs_.lightingManager && !svc_.config.hasDirectionalIntensityOverride) {
+  if (subs_.lightingManager && !sceneLightingOverrides_.directionalIntensity) {
     auto lighting = subs_.lightingManager->lightingSettings();
     lighting.directionalIntensity = std::max(lighting.directionalIntensity, 2.0f);
     subs_.lightingManager->setLightingSettings(lighting);

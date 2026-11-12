@@ -19,7 +19,7 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
+#include <cerrno>
 #include <charconv>
 #include <cmath>
 #include <condition_variable>
@@ -87,6 +87,18 @@ bool makeNonblocking(NativeSocket socket) {
 #else
   const int flags = fcntl(socket, F_GETFL, 0);
   return flags != -1 && fcntl(socket, F_SETFL, flags | O_NONBLOCK) == 0;
+#endif
+}
+
+bool peerDisconnected(NativeSocket socket) {
+  char byte{};
+  const auto received = recv(socket, &byte, 1, MSG_PEEK);
+  if (received >= 0) return received == 0;
+#ifdef _WIN32
+  const auto error = WSAGetLastError();
+  return error != WSAEWOULDBLOCK && error != WSAEINTR;
+#else
+  return errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR;
 #endif
 }
 
@@ -433,8 +445,8 @@ struct PendingCommand {
   std::string toolName;
   Json arguments;
   Clock::time_point deadline;
-  std::atomic<bool> abandoned{false};
-  std::mutex mutex;
+  NativeSocket client;
+  bool disconnected{};
   std::condition_variable ready;
   std::optional<Json> response;
 };
@@ -457,6 +469,8 @@ struct RendererMcpServer::State {
   NetworkRuntime network;
   uint16_t port{};
   Socket listener;
+  // Protects the pending slot, peer checks, and command responses. The worker
+  // keeps each client socket open until it has left the queue under this lock.
   std::mutex commandMutex;
   std::shared_ptr<PendingCommand> pending;
 
@@ -597,25 +611,24 @@ Json RendererMcpServer::State::queue(NativeSocket client, std::string toolName, 
   command->toolName = std::move(toolName);
   command->arguments = std::move(arguments);
   command->deadline = Clock::now() + requestTimeout;
-  {
-    const std::lock_guard lock(commandMutex);
-    pending = command;
+  command->client = client;
+  std::unique_lock lock(commandMutex);
+  pending = command;
+  const auto abandon = [&](std::string message) {
+    if (pending == command) pending.reset();
+    return toolError(std::move(message));
+  };
+  while (!stop.stop_requested()) {
+    if (command->response) return std::move(*command->response);
+    if (command->disconnected || peerDisconnected(client))
+      return abandon("The MCP connection closed");
+    const auto now = Clock::now();
+    if (now >= command->deadline) break;
+    command->ready.wait_until(lock, std::min(now + 25ms, command->deadline));
   }
-  {
-    std::unique_lock lock(command->mutex);
-    while (!stop.stop_requested() && Clock::now() < command->deadline) {
-      if (command->response) return std::move(*command->response);
-      if (socketReady(client, false, 0us) > 0) {
-        char peek{};
-        if (recv(client, &peek, 1, MSG_PEEK) == 0) break;
-      }
-      command->ready.wait_for(lock, 25ms);
-    }
-  }
-  command->abandoned.store(true);
-  const std::lock_guard lock(commandMutex);
-  if (pending == command) pending.reset();
-  return toolError("Renderer command timed out or the MCP connection closed");
+  if (stop.stop_requested()) return abandon("The MCP server is shutting down");
+  if (pending == command) return abandon("Renderer did not accept the command before the request timed out");
+  return toolError("Renderer accepted the command, but its response timed out");
 }
 
 Json RendererMcpServer::State::run(std::string_view name, const Json& arguments,
@@ -691,10 +704,16 @@ void RendererMcpServer::pump(const OwnerHandler& handler) {
   std::shared_ptr<PendingCommand> command;
   {
     const std::unique_lock lock(state_->commandMutex, std::try_to_lock);
-    if (!lock.owns_lock()) return;
-    command = std::exchange(state_->pending, {});
+    if (!lock.owns_lock() || !state_->pending || state_->pending->disconnected) return;
+    auto& pending = state_->pending;
+    if (peerDisconnected(pending->client)) {
+      pending->disconnected = true;
+      pending->ready.notify_one();
+      return;
+    }
+    if (Clock::now() >= pending->deadline) return;
+    command = std::exchange(pending, {});
   }
-  if (!command || command->abandoned.load() || Clock::now() >= command->deadline) return;
   Json result;
   try {
     result = toolResult(state_->run(command->toolName, command->arguments, handler));
@@ -702,7 +721,7 @@ void RendererMcpServer::pump(const OwnerHandler& handler) {
     result = toolError(error.what());
   }
   {
-    const std::lock_guard lock(command->mutex);
+    const std::lock_guard lock(state_->commandMutex);
     command->response = std::move(result);
   }
   command->ready.notify_one();

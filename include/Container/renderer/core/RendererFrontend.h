@@ -383,7 +383,9 @@ private:
     std::unique_ptr<RenderTechniqueRegistry> techniqueRegistry;
     RenderTechnique *activeTechnique{nullptr};
     std::unique_ptr<RenderPassGpuProfiler> renderPassGpuProfiler;
+#ifdef CONTAINER_ENABLE_RENDERER_MCP
     std::unique_ptr<RendererMcpServer> mcpServer;
+#endif
     std::unique_ptr<RendererTelemetry> rendererTelemetry;
     std::unique_ptr<GpuHardwareMonitor> gpuHardwareMonitor;
     std::unique_ptr<container::ui::GuiManager> guiManager;
@@ -730,6 +732,7 @@ private:
   std::vector<DrawCommand> selectedDrawCommands_{};
   std::string activePrimaryModelPath_{};
   container::app::SceneLightingDefaults sceneLightingDefaults_{};
+  container::app::SceneLightingOverrides sceneLightingOverrides_{};
   float activePrimaryImportScale_{1.0f};
   std::string activeAuxiliaryModelPath_{};
   float activeAuxiliaryImportScale_{1.0f};
@@ -862,6 +865,7 @@ private:
   void createCamera();
   void resetCameraForActiveScene();
   void applySceneLightingDefaults();
+  void applyLightingOverrides();
   void syncCameraSelectionPivotOverride();
   void initializeScene();
   void buildSceneGraph();
@@ -889,7 +893,9 @@ private:
   [[nodiscard]] size_t maxSceneObjectCapacity() const;
   void applyBimSemanticColorMode();
   void processEnvironmentLoad(bool wait = false);
+#ifdef CONTAINER_ENABLE_RENDERER_MCP
   void processMcpRequests();
+#endif
   void initializeComfyUi(bool scripted = false);
   void processComfyUi();
   void drawComfyUi();

@@ -97,8 +97,6 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/RendererTelemetry.cpp
     renderer/core/RenderGraph.cpp
     renderer/core/RenderPassGpuProfiler.cpp
-    renderer/core/RendererMcpServer.cpp
-    renderer/core/RendererMcpMeasurement.cpp
     renderer/core/RenderPassScopeRecorder.cpp
     renderer/core/RenderTechnique.cpp
     renderer/core/ScreenshotCaptureRecorder.cpp
@@ -333,8 +331,15 @@ if(CONTAINER_OPTIX_AVAILABLE)
     set_property(SOURCE renderer/pathtracing/ReferenceOptixDenoiser.cpp APPEND PROPERTY
         INCLUDE_DIRECTORIES "${CONTAINER_OPTIX_INCLUDE_DIR}" "${CONTAINER_OPTIX_CUDA_INCLUDE_DIR}")
 endif()
-if(WIN32)
-    target_link_libraries(VulkanSceneRenderer_renderer PRIVATE ws2_32)
+if(ENABLE_RENDERER_MCP)
+    target_sources(VulkanSceneRenderer_renderer PRIVATE
+        renderer/core/RendererMcpServer.cpp
+        renderer/core/RendererMcpMeasurement.cpp
+    )
+    target_compile_definitions(VulkanSceneRenderer_renderer PUBLIC CONTAINER_ENABLE_RENDERER_MCP=1)
+    if(WIN32)
+        target_link_libraries(VulkanSceneRenderer_renderer PRIVATE ws2_32)
+    endif()
 endif()
 
 # Standalone compute reference; the frame renderer retains its interactive path.
