@@ -42,7 +42,7 @@ file(WRITE "${TEST_WORK_DIR}/fixture/shaders/tile_light_cull.slang"
 file(WRITE "${TEST_WORK_DIR}/fixture/shaders/brdf_common.slang"
     "float fixtureCommon() { return 1.0; }\n")
 file(WRITE "${TEST_WORK_DIR}/fixture/include/Container/renderer/debug/SelectionStrokeKernel.h" "// fixture\n")
-foreach(shader IN ITEMS deferred_directional point_light tiled_lighting)
+foreach(shader IN ITEMS deferred_directional point_light tiled_lighting wireframe_debug)
     file(WRITE "${TEST_WORK_DIR}/fixture/shaders/${shader}.slang"
         "void vertMain() {}\nvoid fragMain() {}\n")
 endforeach()
@@ -227,6 +227,9 @@ set(spv_dir "${TEST_WORK_DIR}/build/spv_shaders")
 set(expected_outputs
         gbuffer.vert.spv
         gbuffer.frag.spv
+        wireframe_debug.vert.spv
+        wireframe_debug.frag.spv
+        bim_floor_plan_display_depth.frag.spv
         forward_opaque.vert.spv
         forward_opaque.frag.spv
         forward_opaque_ray.frag.spv
