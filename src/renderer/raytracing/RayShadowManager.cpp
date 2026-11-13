@@ -669,8 +669,9 @@ void RayShadowManager::update(
       sampleCountToSamples(frame.depthStencilMsaa.image != VK_NULL_HANDLE
                                ? frame.depthStencilMsaa.samples
                                : frame.depthStencil.samples);
-  const auto resolveMode =
-      preferredDepthResolveMode(p.msaaSupport.depthResolveModes);
+  const auto resolveMode = chooseRendererDepthStencilResolve(
+      p.msaaSupport.depthResolveModes, p.msaaSupport.stencilResolveModes,
+      p.msaaSupport.independentResolveNone).depth;
   // The shader may verify same-receiver coverage at the standard Vulkan sample
   // positions. Unknown patterns/counts keep conservative fragment queries.
   const uint32_t receiverSamples =

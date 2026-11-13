@@ -254,6 +254,12 @@ rendering, upload, and swapchain retirement work.
 CPU tests are enabled by default through `ENABLE_TESTS`. Window/Vulkan tests are
 opt-in with `ENABLE_WINDOWED_TESTS=ON`.
 
+The raster MSAA menu and `--msaa` use the sample counts supported by the
+renderer’s shared color, integer pick ID, and depth/stencil attachments.
+Requests use the highest supported count at or below the requested value.
+Packed depth/stencil resolves prefer reverse-Z maximum depth and use a
+common mode when the device requires depth and stencil to resolve together.
+
 Build and run the suite:
 
 ```powershell

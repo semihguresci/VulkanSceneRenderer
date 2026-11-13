@@ -2109,6 +2109,11 @@ add_custom_test(dynamic_rendering_tests
     VulkanSceneRenderer_renderer
 )
 
+add_custom_test(renderer_msaa_tests
+    ${TEST_RENDERER_CORE_DIR}/renderer_msaa_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+
 add_custom_test(deferred_raster_lighting_tests
     ${TEST_RENDERER_DEFERRED_DIR}/deferred_raster_lighting_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_renderer

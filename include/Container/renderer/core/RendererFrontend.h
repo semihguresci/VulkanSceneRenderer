@@ -21,6 +21,7 @@
 #include "Container/renderer/bim/BimInspectionCache.h"
 #include "Container/renderer/core/PushConstantBlock.h"
 #include "Container/renderer/core/RendererDeviceCapabilities.h"
+#include "Container/renderer/core/RendererMsaa.h"
 #include "Container/renderer/debug/DebugRenderState.h"
 #include "Container/renderer/lighting/EditableLight.h"
 #include "Container/renderer/lighting/LightEditTypes.h"
@@ -446,6 +447,8 @@ private:
   RenderResources resources_{};
   PushConstantBlock pushConstants_{};
   VkSampleCountFlagBits msaaSampleCount_{VK_SAMPLE_COUNT_1_BIT};
+  VkSampleCountFlags msaaSampleMask_{VK_SAMPLE_COUNT_1_BIT};
+  RendererDepthStencilResolve msaaDepthStencilResolve_{};
   std::vector<uint32_t> supportedMsaaSamples_{1u};
   std::optional<VkSampleCountFlagBits> pendingMsaaSampleCount_{};
   std::optional<RenderTechniqueId> pendingRenderTechniqueChange_{};
