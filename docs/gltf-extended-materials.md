@@ -82,9 +82,10 @@ coverage remains an approximation.
 
 ## DDGI and ray limits
 
-Probe-hit shading samples the same roles/transforms at base LOD. It uses the
-oriented interpolated normal and signed tangent before normal mapping, rather
-than substituting the triangle face normal.
+Probe-hit shading samples the same textures and transforms with gradients from
+the probe ray footprint. Degenerate gradients and alpha coverage checks use
+the base mip. Material evaluation uses the oriented interpolated normal and
+signed tangent before normal mapping.
 
 **DDGI baseline change:** secondary-hit direct lighting previously evaluated
 reflected diffuse only. It now includes full isotropic PBR specular at zero
@@ -168,43 +169,28 @@ It does not add animated texture indices, samplers or UV selectors. Validation
 and application remain atomic. Authored rest values and cross-clip restore
 channels are preserved; saved defaults retain the current appearance.
 
-The [depth-store checkpoint](../out/feature-parity/pbr92-depth-store-validation-checkpoint.json)
-records **1056 cases in 49 executables**, zero failures/skips, nine real GPU
-suites, 24 Python references, 83 math GPU points and 11 actual 4x resolve cases.
-Two additional GPU tests cover seven depth/stencil store combinations, including
-preserved-value readback. Dynamic rendering accounts for implicit STORE and
-DONT_CARE writes when ending a read-only depth/stencil scope.
-Its [100-input frozen manifest](../out/feature-parity/pbr92-depth-store-native-manifest.json)
-identifies renderer SHA256
-`5b3f617a1bf9ddbc2a295cb09e88d2102a2a86e54b05a46fa0a091bde5787b43`.
-Required-extension JSON/GLB acceptance passes. The
-[completion checkpoint](../out/feature-parity/pbr92-completion-validation-checkpoint.json)
-records **132 native captures, 92 image checks, 16 execution checks and four
-export inspections**, all passing on that same binary:
+`gltf_extended_materials_tests` checks import and material layout. The Vulkan
+contracts `extended_pbr_gpu_tests`, `extended_pbr_resolve_gpu_tests`, and
+`ddgi_extended_material_gpu_tests` exercise shader math, four-sample coverage,
+and probe-hit material evaluation. Set `CONTAINER_RUN_GPU_EXTENDED_PBR=1` and
+`CONTAINER_RUN_GPU_DDGI=1` to run the contracts on the GPU with Vulkan validation.
 
-- Both raster techniques cover strict zero/black factors, independent rotated
-  tangents, texture channels/color spaces, UV transforms, mirrored frames,
-  deterministic mixed-material 1x/4x coverage, area/environment lighting,
-  transparency, GPU morphing and animated GLB/ASCII save/reload.
-- Of 52 equivalent-image comparisons, 47 are pixel exact; the remaining five
-  differ by at most one byte. All 24 main negative controls are nonvacuous.
-  Backside occluders block both finite-range raster and hard-ray lights.
-- Sixteen DDGI captures across both techniques publish three ray instances,
-  27 probe updates and 216 rays per update with timed trace/update work and
-  committed history. Fourteen use intensity 4; two use intensity 0 as controls.
-  GI changes every pixel in the receiver ROI, with mean differences above
-  125/255. The independently authored 3x3x3 volume is not an automatic scene fit.
+The [raster regression](../tests/validation/gltf_extended_materials_runtime_regression.py)
+checks both techniques, including zero factors, rotated tangents, texture
+channels and UV transforms, sidedness, mixed-material coverage, lighting,
+transparency, morphing and portable export. The `shadows` cohort also supports
+`--hard-ray` for the backside-occluder controls.
 
-All 132 distinct logs pass the strict scanner and all 100 frozen inputs match
-before/after. Native capture does not read back probe atlases, material buffers
-or GPU picking. Its material deformation fixture covers morphing; skinning has
-separate existing deformation evidence.
+The [DDGI regression](../tests/validation/gltf_extended_materials_ddgi_runtime_regression.py)
+checks textured and scalar equivalents, a rotated tangent control, and a
+visible indirect response against zero GI intensity. Each technique uses an
+explicit 3×3×3 probe volume and requires timed GPU passes and committed probe
+history.
 
-Earlier capture attempts are diagnostic runs with report/oracle problems and a
-depth-store synchronization error. The stricter
-[log audit](../out/feature-parity/pbr92-strict-log-audit.json) supersedes their
-earlier validation-clean fields. The capture harness now rejects newer
-validation-layer hazard wording as well as VUID/SYNC messages.
-
-Changes remain local and uncommitted. Subsequent merge/import foundations are
-uncompiled and are not part of this frozen binary's evidence.
+Run each script with `--self-check` to check its fixtures and assertions
+offline. Native runs take `--renderer`, `--output`, and `--manifest`. Use a new
+output directory and a JSON `files` object mapping absolute paths to SHA-256
+digests for the renderer and its runtime inputs. Include the shader modules
+used by the requested cohort and keep the executable, shaders, DLLs, and assets
+fixed for the entire run. The scripts verify the manifest and write their
+capture results to `results.json`.
