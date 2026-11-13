@@ -3,6 +3,7 @@
 #include "Container/renderer/lighting/DdgiManager.h"
 #include "Container/renderer/temporal/TemporalManager.h"
 
+#include "Container/renderer/bim/BimLightingOverlayRecorder.h"
 #include "Container/renderer/bim/BimSurfaceRasterPassRecorder.h"
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/culling/GpuCullManager.h"
@@ -252,6 +253,18 @@ void registerForwardRasterPipelineRecipes(PipelineRegistry &registry) {
                          {"spv_shaders/post_process.vert.spv",
                           "spv_shaders/post_process.frag.spv"},
                          "post-process");
+  const auto floorPlanDisplayLayout = forwardRasterPipelineLayoutName(
+      ForwardRasterPipelineLayoutId::BimFloorPlanDisplay);
+  registerGraphicsRecipe(
+      forwardRasterPipelineName(ForwardRasterPipelineId::BimFloorPlanDisplayDepth),
+      {"spv_shaders/wireframe_debug.vert.spv",
+       "spv_shaders/bim_floor_plan_display_depth.frag.spv"},
+      floorPlanDisplayLayout);
+  registerGraphicsRecipe(
+      forwardRasterPipelineName(ForwardRasterPipelineId::BimFloorPlanDisplayNoDepth),
+      {"spv_shaders/wireframe_debug.vert.spv",
+       "spv_shaders/wireframe_debug.frag.spv"},
+      floorPlanDisplayLayout);
   registerGraphicsRecipe("light-gizmo",
                          {"spv_shaders/light_gizmo.vert.spv",
                           "spv_shaders/light_gizmo.frag.spv"},
@@ -369,6 +382,17 @@ forwardRasterSceneDepthGeometryReady(const FrameRecordParams &p) {
          p.scene.indexSlice.buffer != VK_NULL_HANDLE;
 }
 
+[[nodiscard]] bool pathTracingFloorPlanVisible(const FrameRecordParams &p) {
+  return p.runtime.activeTechnique == RenderTechniqueId::PathTracing &&
+         !p.screenshot.sceneLinear && p.bim.floorPlan.enabled &&
+         p.bim.floorPlanDrawCommands != nullptr &&
+         !p.bim.floorPlanDrawCommands->empty();
+}
+
+[[nodiscard]] bool pathTracingFloorPlanNeedsDepth(const FrameRecordParams &p) {
+  return pathTracingFloorPlanVisible(p) && p.bim.floorPlan.depthTest;
+}
+
 [[nodiscard]] RenderPassReadiness
 forwardRasterDepthPrepassReadiness(const FrameRecordParams &p) {
   const bool sceneOpaqueDraws = hasOpaqueDrawCommands(p.draws);
@@ -376,7 +400,7 @@ forwardRasterDepthPrepassReadiness(const FrameRecordParams &p) {
   const bool transparentDraws = hasTransparentDrawCommands(p);
   if (!sceneOpaqueDraws && !bimOpaqueDraws && !transparentDraws &&
       !hasForwardRasterNativePrimitiveDraws(p) &&
-      !hasForwardRasterSkyInputs(p)) {
+      !hasForwardRasterSkyInputs(p) && !pathTracingFloorPlanNeedsDepth(p)) {
     return renderPassNotNeeded();
   }
   if (!forwardRasterRenderPassReady(p,
@@ -623,7 +647,7 @@ forwardRasterDepthReadOnlyReadiness(const FrameRecordParams &p) {
   if (!hasOpaqueDrawCommands(p.draws) && !hasBimOpaqueDrawCommands(p.bim) &&
       !hasTransparentDrawCommands(p) &&
       !hasForwardRasterNativePrimitiveDraws(p) &&
-      !hasForwardRasterSkyInputs(p)) {
+      !hasForwardRasterSkyInputs(p) && !pathTracingFloorPlanNeedsDepth(p)) {
     return renderPassNotNeeded();
   }
   return forwardRasterImageReady(p, ForwardRasterImageId::DepthStencil)
@@ -921,6 +945,75 @@ void recordForwardRasterTransformGizmoOverlay(VkCommandBuffer cmd,
   return renderPassReady();
 }
 
+void recordPathTracingFloorPlan(
+    VkCommandBuffer cmd, const FrameRecordParams &p,
+    const DeferredRasterFrameGraphContext &sharedContext, VkExtent2D extent) {
+  if (!pathTracingFloorPlanVisible(p)) {
+    return;
+  }
+  const auto &style = p.bim.floorPlan;
+  const auto layout = forwardRasterPipelineLayout(
+      p, ForwardRasterPipelineLayoutId::BimFloorPlanDisplay);
+  const auto bimSet =
+      forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::BimScene);
+  const auto &geometry = p.bim.scene;
+  if (layout == VK_NULL_HANDLE || bimSet == VK_NULL_HANDLE ||
+      geometry.vertexSlice.buffer == VK_NULL_HANDLE ||
+      geometry.indexSlice.buffer == VK_NULL_HANDLE ||
+      p.pushConstants.wireframe == nullptr) {
+    return;
+  }
+
+  WireframePushConstants overlayPushConstants = *p.pushConstants.wireframe;
+  if (style.depthTest) {
+    const auto frameLighting = forwardRasterDescriptorSet(
+        p, ForwardRasterDescriptorSetId::FrameLighting);
+    const auto *depth =
+        forwardRasterImageBinding(p, ForwardRasterImageId::DepthSamplingView);
+    if (frameLighting == VK_NULL_HANDLE || depth == nullptr ||
+        depth->view == VK_NULL_HANDLE || depth->extent.width != extent.width ||
+        depth->extent.height != extent.height ||
+        !sharedContext.isPassActive(RenderPassId::DepthPrepass) ||
+        !sharedContext.isPassActive(RenderPassId::DepthToReadOnly)) {
+      return;
+    }
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 1, 1,
+                            &frameLighting, 0, nullptr);
+    // Account for UNORM24 quantization when the floor plan coincides with a surface.
+    if (depth->format == VK_FORMAT_D24_UNORM_S8_UINT) {
+      overlayPushConstants.floorPlanDepthTolerance = 2.0f / 16777215.0f;
+    }
+  }
+
+  if (p.pushConstants.bindless != nullptr) {
+    overlayPushConstants.sectionPlaneEnabled =
+        p.pushConstants.bindless->sectionPlaneEnabled;
+    overlayPushConstants.sectionPlane = p.pushConstants.bindless->sectionPlane;
+  }
+  (void)recordBimLightingOverlayFrameCommands(
+      cmd,
+      {.bimGeometryReady = true,
+       .framebufferExtent = extent,
+       .floorPlan = {.enabled = true,
+                     .depthTest = style.depthTest,
+                     .color = style.color,
+                     .opacity = style.opacity,
+                     .lineWidth = style.lineWidth},
+       .draws = {.floorPlan = p.bim.floorPlanDrawCommands},
+       .pipelines = {.bimFloorPlanDepth = forwardRasterPipelineHandle(
+                         p, ForwardRasterPipelineId::BimFloorPlanDisplayDepth),
+                     .bimFloorPlanNoDepth = forwardRasterPipelineHandle(
+                         p, ForwardRasterPipelineId::BimFloorPlanDisplayNoDepth)},
+       .wireframeLayout = layout,
+       .bim = {.descriptorSet = bimSet,
+               .vertexSlice = geometry.vertexSlice,
+               .indexSlice = geometry.indexSlice,
+               .indexType = geometry.indexType},
+       .wireframePushConstants = &overlayPushConstants,
+       .debugOverlay = sharedContext.debugOverlay(),
+       .wireframeWideLinesSupported = p.debug.wireframeWideLinesSupported});
+}
+
 void recordForwardRasterPostProcessPass(
     VkCommandBuffer cmd, const FrameRecordParams &p,
     const DeferredRasterFrameGraphContext &sharedContext) {
@@ -969,8 +1062,9 @@ void recordForwardRasterPostProcessPass(
             .transparentOitActive =
                 sharedContext.isPassActive(RenderPassId::OitResolve)},
        .captureSceneLinear = p.screenshot.sceneLinear,
-       .recordAfterFullscreenDraw = [&sharedContext, &p,
+       .recordAfterFullscreenDraw = [&sharedContext, &p, extent,
                                      postProcessSets](VkCommandBuffer passCmd) {
+         recordPathTracingFloorPlan(passCmd, p, sharedContext, extent);
          if (p.screenshot.viewportOnly) {
            if (auto* gui = sharedContext.guiManager())
              gui->endFrame();
@@ -1439,7 +1533,8 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
          RenderResourceId::SceneDepth},
         {RenderResourceId::DdgiIrradiance, RenderResourceId::TemporalColor,
          RenderResourceId::OitStorage, RenderResourceId::BloomTexture,
-         RenderResourceId::ExposureState, RenderResourceId::ShadowAtlas},
+         RenderResourceId::ExposureState, RenderResourceId::ShadowAtlas,
+         RenderResourceId::BimGeometry, RenderResourceId::BimObjectBuffer},
         {RenderResourceId::SwapchainImage});
     graph.setPassResourceTransitions(
         RenderPassId::PostProcess,

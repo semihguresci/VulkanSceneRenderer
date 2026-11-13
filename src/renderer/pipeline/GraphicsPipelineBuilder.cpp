@@ -1,6 +1,7 @@
 #include "Container/renderer/pipeline/GraphicsPipelineBuilder.h"
 #include "Container/geometry/Model.h"
 #include "Container/renderer/debug/DebugOverlayRenderer.h"
+#include "Container/renderer/forward/ForwardRasterPipelineBridge.h"
 #include "Container/renderer/lighting/LightPushConstants.h"
 #include "Container/utility/FileLoader.h"
 #include "Container/utility/PipelineManager.h"
@@ -143,6 +144,8 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkShaderModule nvFrag = loadModule("spv_shaders/normal_validation.frag.spv");
   VkShaderModule wfVert = loadModule("spv_shaders/wireframe_debug.vert.spv");
   VkShaderModule wfFrag = loadModule("spv_shaders/wireframe_debug.frag.spv");
+  VkShaderModule floorPlanDisplayDepthFrag =
+      loadModule("spv_shaders/bim_floor_plan_display_depth.frag.spv");
   VkShaderModule wfFbVert =
       loadModule("spv_shaders/wireframe_fallback.vert.spv");
   VkShaderModule wfFbGeom =
@@ -666,6 +669,14 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       {descriptorLayouts.postProcess, descriptorLayouts.oit}, {postPCR});
   layouts.wireframe =
       pipelineManager_.createPipelineLayout({descriptorLayouts.scene}, {wfPCR});
+  const VkPipelineLayout floorPlanDisplayLayout =
+      pipelineManager_.createPipelineLayout(
+          {descriptorLayouts.scene, descriptorLayouts.lighting}, {wfPCR});
+  layouts.extraLayouts.push_back({
+      .key = {RenderTechniqueId::ForwardRaster,
+              std::string(forwardRasterPipelineLayoutName(
+                  ForwardRasterPipelineLayoutId::BimFloorPlanDisplay))},
+      .layout = floorPlanDisplayLayout});
   layouts.normalValidation =
       pipelineManager_.createPipelineLayout({descriptorLayouts.scene}, {nvPCR});
   layouts.surfaceNormal =
@@ -729,7 +740,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
 
   // ---- create pipelines -----------------------------------------------------
   auto& pipelines = result.pipelines;
-  pipelines.extraHandles.reserve(7);
+  pipelines.extraHandles.reserve(9);
 
   // Depth prepass
   scenePCI.pVertexInputState = &posTexNormInput;
@@ -1137,6 +1148,33 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   floorPlanPCI.pDepthStencilState = &wfNoDepthDS;
   pipelines.bimFloorPlanNoDepth = pipelineManager_.createGraphicsPipeline(
       floorPlanPCI, "bim_floor_plan_no_depth_pipeline");
+
+  // Composite the floor plan into the display image and preserve its alpha.
+  VkPipelineColorBlendAttachmentState floorPlanDisplayAttach = overlayAttach;
+  floorPlanDisplayAttach.colorWriteMask &= ~VK_COLOR_COMPONENT_A_BIT;
+  const auto floorPlanDisplayBlend = makeBlend(&floorPlanDisplayAttach, 1);
+  RenderingGraphicsPipelineCreateInfo floorPlanDisplayPCI = floorPlanPCI;
+  floorPlanDisplayPCI.layout = floorPlanDisplayLayout;
+  floorPlanDisplayPCI.renderPass = renderPasses.postProcess;
+  floorPlanDisplayPCI.pDepthStencilState = &noDS;
+  floorPlanDisplayPCI.pColorBlendState = &floorPlanDisplayBlend;
+  pipelines.extraHandles.push_back({
+      .key = {RenderTechniqueId::ForwardRaster,
+              std::string(forwardRasterPipelineName(
+                  ForwardRasterPipelineId::BimFloorPlanDisplayNoDepth))},
+      .pipeline = pipelineManager_.createGraphicsPipeline(
+          floorPlanDisplayPCI, "bim_floor_plan_display_no_depth_pipeline")});
+
+  auto floorPlanDisplayDepthStages = wfStages;
+  floorPlanDisplayDepthStages[1] =
+      makeStage(floorPlanDisplayDepthFrag, VK_SHADER_STAGE_FRAGMENT_BIT);
+  floorPlanDisplayPCI.pStages = floorPlanDisplayDepthStages.data();
+  pipelines.extraHandles.push_back({
+      .key = {RenderTechniqueId::ForwardRaster,
+              std::string(forwardRasterPipelineName(
+                  ForwardRasterPipelineId::BimFloorPlanDisplayDepth))},
+      .pipeline = pipelineManager_.createGraphicsPipeline(
+          floorPlanDisplayPCI, "bim_floor_plan_display_depth_pipeline")});
 
   RenderingGraphicsPipelineCreateInfo pointCloudPCI = meshPCI;
   pointCloudPCI.stageCount = static_cast<uint32_t>(wfStages.size());

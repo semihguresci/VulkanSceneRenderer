@@ -10,6 +10,10 @@
 [[vk::binding(4, 0)]] StructuredBuffer<GpuTextureMetadata> uTextureMetadata;
 [[vk::binding(5, 0)]] Texture2D materialTextures[MATERIAL_TEXTURE_DESCRIPTOR_COUNT];
 
+#if defined(BIM_FLOOR_PLAN_DISPLAY_DEPTH)
+[[vk::binding(6, 1)]] Texture2D<float> floorPlanSceneDepth;
+#endif
+
 #include "scene_clip_common.slang"
 #include "object_index_common.slang"
 #include "pbr_material_common.slang"
@@ -63,6 +67,15 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
 [shader("fragment")]
 float4 fragMain(PSInput input) : SV_Target0
 {
+#if defined(BIM_FLOOR_PLAN_DISPLAY_DEPTH)
+    // The swapchain scope has no depth attachment. Read the resolved reverse-Z
+    // prepass depth at the fragment's framebuffer coordinates.
+    if (input.pos.z + pc.floorPlanDepthTolerance <
+        floorPlanSceneDepth.Load(int3(int2(input.pos.xy), 0)))
+    {
+        discard;
+    }
+#endif
     if (SceneClipPlanesClip(input.worldPos, pc.sectionPlaneEnabled, pc.sectionPlane))
     {
         discard;

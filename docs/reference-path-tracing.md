@@ -52,6 +52,70 @@ the mean and moments. The default of zero retains unclamped transport.
 Changing the clamp resets accumulation. EXR metadata records the effective
 limit, since a positive limit biases the accumulated result.
 
+### BIM floor-plan overlay
+
+With a BIM model that contains floor-plan linework, open **BIM** in Scene
+Controls and enable **Floor plan overlay**. **Projected on ground** draws the
+ground projection. **Source elevation** draws each plan at its source height.
+Use **Floor plan depth test** to hide lines behind opaque scene geometry, or
+turn it off to show the full plan over the model. Set the line color, opacity,
+and width in the same panel. Devices without wide-line support use a one-pixel
+stroke.
+
+Path tracing and Deferred raster draw the linework in the viewport, Viewport
+PNG and Window PNG. Scene EXR exports the raw linear image without the linework.
+Changing floor-plan settings updates the Path tracing display while keeping
+the accumulated samples. Section clipping and camera changes affect the
+rendered scene and can restart sampling.
+
+The other BIM routes below describe the renderer bindings. The native
+floor-plan regression exercises the floor-plan row.
+
+| Viewport route | Deferred raster | Path tracing | Forward raster |
+| --- | --- | --- | --- |
+| Floor-plan linework | Drawn | Drawn | Missing |
+| Issue and clash markers, section-plane visual, section cap fill and hatching | Drawn when enabled and geometry is available | Missing | Missing |
+| BIM technical elevation hidden lines | Drawn with the depth-tested lines option | Missing | Missing |
+| Mesh hover and selection | Hover and selection | Missing | Selection |
+| Native BIM points and curves | Drawn, including hover and selection | Outside the traced triangle scene | Drawn, including hover and selection |
+| Styled point and curve placeholder overlays | Drawn when enabled | Missing | Missing; placeholder meshes can still contribute to the raster scene |
+
+Path tracing applies scene clipping to rays. The section-plane visual and cap
+previews are separate display routes. Forward raster parity is tracked in
+[#179](https://github.com/semihguresci/VulkanSceneRenderer/issues/179).
+
+A capture sequence can set the floor-plan display for a fixed camera. Each
+`bimFloorPlan` event supplies all settings and applies them until the next
+event. RGB channels use `[0, 1]`, opacity uses `[0.05, 1]`, and width uses
+`[1, 8]` pixels. The other elevation value is `projected-ground`.
+
+```json
+{
+  "schemaVersion": 1,
+  "frames": 8,
+  "events": [{
+    "frame": 4,
+    "bimFloorPlan": {
+      "enabled": true,
+      "elevation": "source-elevation",
+      "depthTest": false,
+      "color": [0.1, 0.7, 1.0],
+      "opacity": 0.85,
+      "lineWidth": 2.0
+    }
+  }]
+}
+```
+
+On a Vulkan device with ray-query support and validation layers, enable
+`CONTAINER_RUN_GPU_BIM_FLOOR_PLAN=1` and run the opt-in regression. It checks
+both elevations, style, depth, live technique switching, and raw EXR equality
+at matching sample counts.
+
+```text
+ctest --test-dir out/build/windows-release -C Release -R '^bim_floor_plan_gpu_regression$' --output-on-failure
+```
+
 ### Standard-error view
 
 Choose **Standard error** under **Reference display**, use

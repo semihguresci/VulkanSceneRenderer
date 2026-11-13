@@ -185,7 +185,7 @@ struct WireframePushConstants
     float lineWidth;
     float padding7;
     float padding8;
-    float padding9;
+    float floorPlanDepthTolerance;
 };
 
 struct NormalValidationPushConstants

@@ -27,6 +27,8 @@ enum class ForwardRasterPipelineId {
   BimPointCloudNoDepth,
   BimCurveDepth,
   BimCurveNoDepth,
+  BimFloorPlanDisplayDepth,
+  BimFloorPlanDisplayNoDepth,
   SelectionMask,
   SelectionOutline,
   PostProcess,
@@ -81,6 +83,10 @@ forwardRasterPipelineName(ForwardRasterPipelineId id) {
     return "bim-curve-depth";
   case ForwardRasterPipelineId::BimCurveNoDepth:
     return "bim-curve-no-depth";
+  case ForwardRasterPipelineId::BimFloorPlanDisplayDepth:
+    return "bim-floor-plan-display-depth";
+  case ForwardRasterPipelineId::BimFloorPlanDisplayNoDepth:
+    return "bim-floor-plan-display-no-depth";
   case ForwardRasterPipelineId::SelectionMask:
     return "selection-mask";
   case ForwardRasterPipelineId::SelectionOutline:
@@ -111,6 +117,7 @@ enum class ForwardRasterPipelineLayoutId {
   LightGizmo,
   TransformGizmo,
   Wireframe,
+  BimFloorPlanDisplay,
 };
 
 [[nodiscard]] inline std::string_view
@@ -130,6 +137,8 @@ forwardRasterPipelineLayoutName(ForwardRasterPipelineLayoutId id) {
     return "transform-gizmo";
   case ForwardRasterPipelineLayoutId::Wireframe:
     return "wireframe";
+  case ForwardRasterPipelineLayoutId::BimFloorPlanDisplay:
+    return "bim-floor-plan-display";
   }
   return {};
 }

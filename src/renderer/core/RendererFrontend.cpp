@@ -3281,6 +3281,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
           {"vmaBytes", allocationStats.total.statistics.allocationBytes}}},
       {"resolution", {extent.width, extent.height}},
       {"msaaSamples", sampleCountToSamples(msaaSampleCount_)},
+      {"wideLinesSupported", svc_.ctx.wireframeWideLinesSupported},
       {"taa",
        {{"enabled", settings.enabled},
         {"historyWeight", settings.historyWeight},
@@ -9267,8 +9268,10 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         &selectedBimNativePointDrawCommands_;
     p.bim.nativeCurveDraws.selectedDrawCommands =
         &selectedBimNativeCurveDrawCommands_;
-    if (subs_.guiManager != nullptr) {
-      const auto &floorPlan = subs_.guiManager->bimFloorPlanOverlayState();
+    const auto* floorPlanSettings = captureBimFloorPlan_ ? captureBimFloorPlan_.get()
+        : subs_.guiManager ? &subs_.guiManager->bimFloorPlanOverlayState() : nullptr;
+    if (floorPlanSettings) {
+      const auto &floorPlan = *floorPlanSettings;
       p.bim.floorPlanDrawCommands =
           floorPlan.elevationMode ==
                   container::ui::BimFloorPlanElevationMode::SourceElevation
@@ -9281,7 +9284,9 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       p.bim.floorPlan.color = floorPlan.color;
       p.bim.floorPlan.opacity = floorPlan.opacity;
       p.bim.floorPlan.lineWidth = floorPlan.lineWidth;
+    }
 
+    if (subs_.guiManager != nullptr) {
       const bool coordinationLayerRequested =
           bimLayers.clashLayerVisible || bimLayers.markupLayerVisible;
       if (coordinationLayerRequested) {
@@ -9820,6 +9825,10 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     }
   }
   return p;
+}
+
+void RendererFrontend::setCaptureBimFloorPlan(container::ui::BimFloorPlanOverlayState state) {
+  captureBimFloorPlan_ = std::make_shared<const container::ui::BimFloorPlanOverlayState>(state);
 }
 
 void RendererFrontend::attachActiveTechniqueLifecycle(

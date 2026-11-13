@@ -46,6 +46,7 @@ TEST(DeferredRasterDepthReadOnlyTransitionRecorderTests,
             VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
                 VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT);
   EXPECT_EQ(step.dstStageMask, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
                                   VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
                                   VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT);
   EXPECT_EQ(step.barrier.srcAccessMask,

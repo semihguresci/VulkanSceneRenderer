@@ -153,6 +153,15 @@ struct CaptureViewportPointer {
   Action action{};
   glm::uvec2 pixel{};
 };
+struct CaptureBimFloorPlan {
+  enum class Elevation { ProjectedGround, SourceElevation };
+  bool enabled{};
+  bool depthTest{};
+  Elevation elevation{};
+  glm::vec3 color{};
+  float opacity{};
+  float lineWidth{};
+};
 
 struct CaptureEvent {
   uint32_t frame{0};
@@ -176,6 +185,7 @@ struct CaptureEvent {
   std::optional<CapturePhysicsJointCreate> physicsJointCreate;
   std::optional<float> physicsJointMotorVelocity;
   std::optional<int> bimLodBias;
+  std::optional<CaptureBimFloorPlan> bimFloorPlan;
   std::optional<glm::vec4> sectionPlane;
   std::optional<glm::vec3> areaLightPosition;
   std::optional<float> exposure;
@@ -524,6 +534,8 @@ public:
         if (*event.bimLodBias < -8 || *event.bimLodBias > 8)
           throw std::invalid_argument("BIM LOD bias must be in [-8,8]");
       }
+      if (value.contains("bimFloorPlan"))
+        event.bimFloorPlan = bimFloorPlan(value.at("bimFloorPlan"));
       if (value.contains("sectionPlane")) {
         const auto &plane = value.at("sectionPlane");
         if (!plane.is_array() || plane.size() != 4)
@@ -879,6 +891,44 @@ public:
   std::vector<uint32_t> sampleFrames;
 
 private:
+  static CaptureBimFloorPlan bimFloorPlan(const nlohmann::json &value) {
+    constexpr std::array fields{"enabled", "elevation", "depthTest", "color", "opacity", "lineWidth"};
+    if (!value.is_object() || value.size() != fields.size() ||
+        !std::all_of(fields.begin(), fields.end(), [&](const char *field) { return value.contains(field); }))
+      throw std::invalid_argument("Capture bimFloorPlan requires enabled, elevation, depthTest, color, opacity and lineWidth");
+    if (!value.at("enabled").is_boolean() || !value.at("depthTest").is_boolean())
+      throw std::invalid_argument("Capture bimFloorPlan enabled and depthTest must be booleans");
+
+    const auto &elevation = value.at("elevation");
+    CaptureBimFloorPlan::Elevation mode;
+    if (elevation == "projected-ground")
+      mode = CaptureBimFloorPlan::Elevation::ProjectedGround;
+    else if (elevation == "source-elevation")
+      mode = CaptureBimFloorPlan::Elevation::SourceElevation;
+    else
+      throw std::invalid_argument("Capture bimFloorPlan elevation must be projected-ground or source-elevation");
+
+    const auto &color = value.at("color");
+    if (!color.is_array() || color.size() != 3)
+      throw std::invalid_argument("Capture bimFloorPlan color requires three channels");
+    const auto boundedNumber = [](const nlohmann::json &number, double min, double max, const char *field) {
+      if (!number.is_number())
+        throw std::invalid_argument(std::string("Capture bimFloorPlan ") + field + " must be numeric");
+      const double input = number.get<double>();
+      if (!std::isfinite(input) || input < min || input > max)
+        throw std::invalid_argument(std::string("Capture bimFloorPlan ") + field + " is out of range");
+      return static_cast<float>(input);
+    };
+    return {.enabled = value.at("enabled").get<bool>(),
+            .depthTest = value.at("depthTest").get<bool>(),
+            .elevation = mode,
+            .color = {boundedNumber(color[0], 0.0, 1.0, "color"),
+                      boundedNumber(color[1], 0.0, 1.0, "color"),
+                      boundedNumber(color[2], 0.0, 1.0, "color")},
+            .opacity = boundedNumber(value.at("opacity"), 0.05, 1.0, "opacity"),
+            .lineWidth = boundedNumber(value.at("lineWidth"), 1.0, 8.0, "lineWidth")};
+  }
+
   std::vector<uint32_t> telemetryFrames_;
 
   static glm::uvec2 capturePixel(const nlohmann::json& pixel, const char* label) {
