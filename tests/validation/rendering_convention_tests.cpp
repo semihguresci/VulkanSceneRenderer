@@ -4672,7 +4672,7 @@ TEST(RenderingConventionTests, DeferredSceneColorReadBarriersUseRecorder) {
       deferredRasterTechnique.find("RenderPassId::ExposureAdaptation");
   ASSERT_NE(exposureStart, std::string::npos);
   const size_t exposureEnd =
-      deferredRasterTechnique.find("RenderPassId::OitResolve", exposureStart);
+      deferredRasterTechnique.find("RenderPassId::Bloom", exposureStart);
   ASSERT_NE(exposureEnd, std::string::npos);
   const std::string exposureBlock = deferredRasterTechnique.substr(
       exposureStart, exposureEnd - exposureStart);

@@ -1675,7 +1675,7 @@ void FrameResourceManager::publishFrameResourceBindings() {
                      depthSamplingBinding);
     bindSharedImage("scene-color", f.sceneColor,
               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                  VK_IMAGE_USAGE_SAMPLED_BIT);
+                  VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
     bindImage("albedo", f.albedo,
               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                   VK_IMAGE_USAGE_SAMPLED_BIT);

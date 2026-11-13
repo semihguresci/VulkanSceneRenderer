@@ -6259,6 +6259,9 @@ void RendererFrontend::createFrameResources() {
   } else {
     createSceneGrid();
   }
+  subs_.oitManager->prepareNativeComposeResources(
+      svc_.pipelineManager, container::util::executableDirectory(),
+      subs_.frameResourceManager->frameCount());
   if (subs_.environmentManager && subs_.environmentManager->isGtaoReady() &&
       (sceneExtent.width != previousSceneExtent.width || sceneExtent.height != previousSceneExtent.height))
     subs_.environmentManager->recreateGtaoTextures(sceneExtent.width, sceneExtent.height);

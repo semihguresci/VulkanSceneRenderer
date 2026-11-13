@@ -226,11 +226,12 @@ constexpr std::array kTransformGizmosScheduleDependencies{
 constexpr std::array kTemporalVelocityScheduleDependencies{RenderPassId::Lighting};
 constexpr std::array kTemporalResolveScheduleDependencies{RenderPassId::TemporalVelocity};
 constexpr std::array kExposureAdaptationScheduleDependencies{
-    RenderPassId::TransformGizmos,
+    RenderPassId::OitResolve,
 };
 constexpr std::array kOitResolveScheduleDependencies{
+    RenderPassId::Lighting,
     RenderPassId::TransformGizmos,
-    RenderPassId::ExposureAdaptation,
+    RenderPassId::TemporalResolve,
 };
 constexpr std::array kBloomScheduleDependencies{
     RenderPassId::ExposureAdaptation,
@@ -482,6 +483,10 @@ constexpr std::array kExposureAdaptationWrites{
 };
 constexpr std::array kOitResolveReads{
     RenderResourceId::OitStorage,
+    RenderResourceId::SceneColor,
+};
+constexpr std::array kOitResolveWrites{
+    RenderResourceId::SceneColor,
 };
 constexpr std::array kBloomReads{
     RenderResourceId::SceneColor,
@@ -917,6 +922,8 @@ std::span<const RenderResourceId> renderPassResourceWrites(RenderPassId id) {
       return kTransformGizmosWrites;
     case RenderPassId::ExposureAdaptation:
       return kExposureAdaptationWrites;
+    case RenderPassId::OitResolve:
+      return kOitResolveWrites;
     case RenderPassId::Bloom:
       return kBloomWrites;
     case RenderPassId::PostProcess:
