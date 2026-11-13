@@ -81,6 +81,15 @@ batch-size independence, GPU-timed adaptive batches, and rejection of diagnosed
 paths. It also checks that blocked sidecars preserve earlier checkpoints and
 existing outputs, and that a retry can publish the full checkpoint.
 
+On an interactive Windows desktop, the opt-in visibility test compares PNG and
+EXR output with the renderer window visible, half covered, and hidden. It uses
+the local renderer MCP endpoint to request captures after startup.
+
+```powershell
+$env:CONTAINER_RUN_GPU_CAPTURE_VISIBILITY = '1'
+ctest --test-dir out/build/windows-release -C Release -R '^scene_linear_capture_visibility_gpu_regression$' --output-on-failure
+```
+
 The Windows RTX 2080 SUPER run passed 81 captures with Vulkan synchronization
 validation. Scene-linear EXRs matched clean controls in both raster renderers
 with TAA, FSR and DLSS. The 32-, 128- and 512-sample Cornell EXRs matched the

@@ -126,7 +126,9 @@ void SwapChainManager::createSwapChain(VkSwapchainKHR oldSwapchain) {
   createInfo.preTransform = swapChainSupport.capabilities.currentTransform;
   createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
   createInfo.presentMode = presentMode;
-  createInfo.clipped = VK_TRUE;
+  // PNG readback and scene-linear fragment writes need every pixel, including
+  // when a capture is requested after startup or the window is obscured.
+  createInfo.clipped = VK_FALSE;
   createInfo.oldSwapchain = oldSwapchain;
 
   VkSwapchainKHR newSwapchain = VK_NULL_HANDLE;
