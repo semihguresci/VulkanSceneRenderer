@@ -82,9 +82,10 @@ coverage remains an approximation.
 
 ## DDGI and ray limits
 
-Probe-hit shading samples the same roles/transforms at base LOD. It uses the
-oriented interpolated normal and signed tangent before normal mapping, rather
-than substituting the triangle face normal.
+Probe-hit shading samples the same textures and transforms with gradients from
+the probe ray footprint. Degenerate gradients and alpha coverage checks use
+the base mip. Material evaluation uses the oriented interpolated normal and
+signed tangent before normal mapping.
 
 **DDGI baseline change:** secondary-hit direct lighting previously evaluated
 reflected diffuse only. It now includes full isotropic PBR specular at zero
