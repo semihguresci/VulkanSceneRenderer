@@ -71,18 +71,6 @@ deferredRasterTiledLightingDescriptorSet(const FrameRecordParams &p) {
       p, DeferredRasterDescriptorSetId::TiledLighting);
 }
 
-DeferredLightingWireframeSettings deferredLightingWireframeSettings(
-    const container::ui::WireframeSettings &settings) {
-  return {.enabled = settings.enabled,
-          .mode = settings.mode == container::ui::WireframeMode::Full
-                      ? DeferredLightingWireframeMode::Full
-                      : DeferredLightingWireframeMode::Overlay,
-          .depthTest = settings.depthTest,
-          .color = settings.color,
-          .lineWidth = settings.lineWidth,
-          .overlayIntensity = settings.overlayIntensity};
-}
-
 DeferredLightingFrameInputs deferredLightingFrameInputs(
     const FrameRecordParams &p, const container::ui::GuiManager *guiManager,
     container::ui::GBufferViewMode fallbackDisplayMode, bool tileCullPassActive,
@@ -92,17 +80,13 @@ DeferredLightingFrameInputs deferredLightingFrameInputs(
   inputs.displayMode = deferredLightingDisplayMode(
       currentDisplayMode(guiManager, fallbackDisplayMode));
   inputs.guiAvailable = guiManager != nullptr;
-  inputs.wireframeSupported = guiManager != nullptr &&
-                              guiManager->editorOverlaysEnabled() &&
-                              guiManager->wireframeSupported();
+  inputs.wireframeSupported = p.debug.wireframe.enabled;
+  inputs.wireframeSettings = p.debug.wireframe;
   inputs.wireframeWideLinesSupported = p.debug.wireframeWideLinesSupported;
   if (guiManager != nullptr) {
-    inputs.wireframeSettings =
-        deferredLightingWireframeSettings(guiManager->wireframeSettings());
     inputs.normalValidationSettings = guiManager->normalValidationSettings();
     inputs.geometryOverlayRequested = guiManager->showGeometryOverlay();
     if (!guiManager->editorOverlaysEnabled()) {
-      inputs.wireframeSettings.enabled = false;
       inputs.normalValidationSettings.enabled = false;
       inputs.geometryOverlayRequested = false;
     }

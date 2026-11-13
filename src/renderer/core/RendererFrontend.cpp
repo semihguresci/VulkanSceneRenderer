@@ -3177,6 +3177,18 @@ void RendererFrontend::applyTemporalCapture(
   if (event.bimAnnotations)
     captureBimAnnotations_ =
         std::make_shared<const container::temporal::CaptureBimAnnotations>(*event.bimAnnotations);
+  if (const auto& wireframe = event.wireframe) {
+    if (!subs_.guiManager)
+      throw std::runtime_error("Capture wireframe settings require the editor GUI");
+    subs_.guiManager->setWireframeSettings({
+        .enabled = wireframe->enabled,
+        .mode = wireframe->mode == container::temporal::CaptureWireframe::Mode::Full
+            ? container::ui::WireframeMode::Full : container::ui::WireframeMode::Overlay,
+        .depthTest = wireframe->depthTest,
+        .color = wireframe->color,
+        .lineWidth = wireframe->lineWidth,
+        .overlayIntensity = wireframe->intensity});
+  }
   if (event.bimHiddenObject)
     captureBimHiddenObject_ = *event.bimHiddenObject;
   if (event.bimLodBias)
@@ -3335,6 +3347,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
       {"msaaStencilResolveMode", static_cast<uint32_t>(
            resources_.renderPasses.depthPrepass->stencilResolveMode)},
       {"wideLinesSupported", svc_.ctx.deviceWrapper->enabledFeatures().wideLines == VK_TRUE},
+      {"wireframeWideLinesSupported", svc_.ctx.wireframeWideLinesSupported},
       {"taa",
        {{"enabled", settings.enabled},
         {"historyWeight", settings.historyWeight},
@@ -9517,6 +9530,24 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   p.debug.debugVisualizePointLightStencil =
       debugState_.visualizePointLightStencil;
   p.debug.debugFreezeCulling = debugState_.freezeCulling;
+  const RenderTechniqueId technique = p.runtime.activeTechnique;
+  if (subs_.guiManager && subs_.guiManager->editorOverlaysEnabled() &&
+      subs_.guiManager->wireframeSupported() &&
+      !(screenshot_.pending && screenshot_.sceneLinear) &&
+      (technique == RenderTechniqueId::ForwardRaster ||
+       technique == RenderTechniqueId::DeferredRaster)) {
+    const auto& wireframe = subs_.guiManager->wireframeSettings();
+    p.debug.wireframe = {
+        .enabled = wireframe.enabled && !p.bim.technicalElevation.enabled &&
+                   p.pipelineHandle(technique, "wireframe-depth") != VK_NULL_HANDLE &&
+                   p.pipelineHandle(technique, "wireframe-no-depth") != VK_NULL_HANDLE,
+        .mode = wireframe.mode == container::ui::WireframeMode::Full
+            ? DeferredLightingWireframeMode::Full : DeferredLightingWireframeMode::Overlay,
+        .depthTest = wireframe.depthTest,
+        .color = wireframe.color,
+        .lineWidth = svc_.ctx.wireframeWideLinesSupported ? wireframe.lineWidth : 1.0f,
+        .overlayIntensity = wireframe.overlayIntensity};
+  }
   p.debug.wireframeRasterModeSupported = svc_.ctx.wireframeRasterModeSupported;
   p.debug.wireframeWideLinesSupported = svc_.ctx.wireframeWideLinesSupported;
   p.debug.lineListWideLinesSupported = svc_.ctx.deviceWrapper->enabledFeatures().wideLines == VK_TRUE;

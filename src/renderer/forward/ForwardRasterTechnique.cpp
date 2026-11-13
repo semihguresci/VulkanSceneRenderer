@@ -702,7 +702,8 @@ forwardRasterPostProcessDescriptorSets(const FrameRecordParams &p) {
 }
 
 [[nodiscard]] bool forwardRasterHasTransparentWork(const FrameRecordParams &p) {
-  return hasTransparentDrawCommands(p) || hasBimTransparentGeometry(p);
+  return !p.debug.fullWireframe() &&
+         (hasTransparentDrawCommands(p) || hasBimTransparentGeometry(p));
 }
 
 [[nodiscard]] DeferredTransparentOitFrameResourceInputs

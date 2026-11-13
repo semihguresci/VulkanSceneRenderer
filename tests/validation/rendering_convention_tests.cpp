@@ -746,6 +746,8 @@ TEST(RenderingConventionTests,
       "src/renderer/deferred/DeferredRasterLightingPassRecorder.cpp");
   const std::string frameState =
       readRepoTextFile("src/renderer/deferred/DeferredRasterFrameState.cpp");
+  const std::string frontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
 
   EXPECT_TRUE(contains(bridgeHeader, "enum class DeferredRasterPipelineId"));
   EXPECT_TRUE(contains(bridgeHeader, "deferredRasterPipelineHandle("));
@@ -776,7 +778,9 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(
       contains(deferredRasterTechnique, "deferredRasterPipelineHandle(p,"));
   EXPECT_TRUE(contains(lightingPassRecorder, "deferredRasterPipelineHandle("));
-  EXPECT_TRUE(contains(frameState, "deferredRasterPipelineReady(p,"));
+  EXPECT_TRUE(contains(frameState, "p.debug.fullWireframe()"));
+  EXPECT_TRUE(contains(frontend, "p.pipelineHandle(technique, \"wireframe-depth\")"));
+  EXPECT_TRUE(contains(frontend, "p.pipelineHandle(technique, \"wireframe-no-depth\")"));
   EXPECT_TRUE(
       contains(deferredRasterTechnique, "deferredRasterPipelineLayout("));
   EXPECT_TRUE(contains(deferredRasterTechnique,
@@ -3085,8 +3089,14 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(contains(guiManager, "Depth-tested lines"));
   EXPECT_TRUE(contains(guiManager, "Align section plane to elevation"));
   EXPECT_TRUE(contains(guiManager, "requestElevationView"));
-  EXPECT_TRUE(
-      contains(guiManager, "gBufferViewMode_ = GBufferViewMode::Albedo"));
+  const size_t intentBegin =
+      guiManager.find("void GuiManager::applyBimElevationDisplayIntent()");
+  ASSERT_NE(intentBegin, std::string::npos);
+  const size_t styleSwitch =
+      guiManager.find("switch (appliedBimElevationStyle_)", intentBegin);
+  ASSERT_NE(styleSwitch, std::string::npos);
+  EXPECT_TRUE(contains(guiManager.substr(intentBegin, styleSwitch - intentBegin),
+                       "gBufferViewMode_ = GBufferViewMode::Lit"));
   EXPECT_TRUE(contains(guiManager, "wireframeSettings_.depthTest = true"));
   EXPECT_TRUE(
       contains(guiManager, "wireframeSettings_.mode = WireframeMode::Full"));
@@ -5202,7 +5212,11 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(
       contains(lightingPassRecorder, "guiManager->editorOverlaysEnabled()"));
   EXPECT_TRUE(contains(lightingPassRecorder,
-                       "inputs.wireframeSettings.enabled = false"));
+                       "inputs.wireframeSettings = p.debug.wireframe"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      rendererFrontend,
+      "if (subs_.guiManager && subs_.guiManager->editorOverlaysEnabled() && "
+      "subs_.guiManager->wireframeSupported()"));
   EXPECT_TRUE(contains(lightingPassRecorder,
                        "inputs.normalValidationSettings.enabled = false"));
   EXPECT_TRUE(contains(lightingPassRecorder,

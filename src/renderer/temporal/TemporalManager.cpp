@@ -880,7 +880,7 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
     return hasOpaqueDrawCommands(draws) || hasTransparentDrawCommands(draws);
   };
   recordedDisplayOverlays_ = !recordedSceneLinear_ &&
-      (p.debug.temporalForceReactive || p.bim.floorPlan.enabled ||
+      (p.debug.temporalForceReactive || p.debug.wireframe.enabled || p.bim.floorPlan.enabled ||
        p.bim.coordinationMarkers.issueMarkersEnabled ||
        p.bim.coordinationMarkers.clashMarkersEnabled ||
        p.bim.sectionPlaneVisual.enabled || p.bim.sectionClipCapGeometry.valid() ||
@@ -911,12 +911,12 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
   const auto &input = inputs_.at(p.runtime.imageIndex);
   // The OIT producer's storage writes and previous consumers are ordered even
   // if the graph's optional OIT preparation node is inactive.
-  const bool transparent =
-      hasTransparentDrawCommands(p) ||
+  const bool transparent = !p.debug.fullWireframe() &&
+      (hasTransparentDrawCommands(p) ||
       (p.bim.nativePointDraws.transparentDrawCommands &&
        !p.bim.nativePointDraws.transparentDrawCommands->empty()) ||
       (p.bim.nativeCurveDraws.transparentDrawCommands &&
-       !p.bim.nativeCurveDraws.transparentDrawCommands->empty());
+       !p.bim.nativeCurveDraws.transparentDrawCommands->empty()));
   // HDR editor overlays and native primitives do not expose matching surface
   // velocity. Their conservative fallback cannot borrow an opaque surface.
   const bool fallback = recordedDisplayOverlays_ ||

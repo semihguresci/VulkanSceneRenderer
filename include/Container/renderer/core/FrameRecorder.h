@@ -10,6 +10,7 @@
 #include "Container/renderer/core/RenderGraph.h"
 #include "Container/renderer/core/RenderTechnique.h"
 #include "Container/renderer/debug/DebugOverlayPushConstants.h"
+#include "Container/renderer/deferred/DeferredRasterLighting.h"
 #include "Container/renderer/scene/DrawCommand.h"
 #include "Container/renderer/scene/TransformGizmoState.h"
 #include "Container/utility/SceneData.h"
@@ -287,6 +288,7 @@ struct FrameRegistryState {
 
 struct FrameDebugState {
   ScreenReflectionMode screenReflections{};
+  DeferredLightingWireframeSettings wireframe{};
   bool temporalForceReactive{false};
   uint32_t displayMode{0};
   bool debugDirectionalOnly{false};
@@ -295,6 +297,10 @@ struct FrameDebugState {
   bool wireframeRasterModeSupported{false};
   bool wireframeWideLinesSupported{false};
   bool lineListWideLinesSupported{false};
+
+  [[nodiscard]] bool fullWireframe() const {
+    return wireframe.enabled && wireframe.mode == DeferredLightingWireframeMode::Full;
+  }
 };
 
 struct FrameScreenReflectionHistory {

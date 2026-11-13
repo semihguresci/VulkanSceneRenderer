@@ -165,18 +165,20 @@ primitiveDrawLists(const FrameDrawLists &draws) {
                                          ForwardRasterDescriptorSetId::BimScene);
 }
 
-void recordTechnicalElevation(
+void recordForwardWireframe(
     VkCommandBuffer cmd, const FrameRecordParams &p,
     const BimRasterOverlayRecordInputs &overlay) {
   const auto &style = p.bim.technicalElevation;
   if (p.runtime.activeTechnique != RenderTechniqueId::ForwardRaster ||
-      p.screenshot.sceneLinear || !style.enabled) {
+      p.screenshot.sceneLinear || (!style.enabled && !p.debug.wireframe.enabled)) {
     return;
   }
 
   const auto &pipelines = overlay.pipelines;
   const auto state = buildDeferredLightingFrameState(
-      {.wireframeSupported = true,
+      {.guiAvailable = p.debug.wireframe.enabled,
+       .wireframeSupported = true,
+       .wireframeSettings = p.debug.wireframe,
        .bimTechnicalElevation = {.enabled = style.enabled,
                                  .hiddenLineOverlay = style.hiddenLineOverlay,
                                  .depthTestLines = style.depthTestLines,
@@ -185,14 +187,15 @@ void recordTechnicalElevation(
                                  .overlayIntensity = style.overlayIntensity},
        .pipelines = {.wireframeDepth = pipelines.wireframeDepth != VK_NULL_HANDLE,
                      .wireframeNoDepth = pipelines.wireframeNoDepth != VK_NULL_HANDLE}});
-  if (!state.bimTechnicalElevationEnabled) {
+  if (!state.wireframeEnabled) {
     return;
   }
 
   const auto &wireframe = state.wireframeSettings;
   const bool bimReady = hasBimGeometry(p);
   const auto plan = buildDeferredDebugOverlayPlan(
-      {.frameState = {.wireframeOverlayMode = true,
+      {.frameState = {.wireframeFullMode = state.wireframeFullMode,
+                      .wireframeOverlayMode = state.wireframeOverlayMode,
                       .wireframeDepthTest = wireframe.depthTest,
                       .wireframeLineWidth = wireframe.lineWidth},
        .pipelines = {
@@ -217,9 +220,8 @@ void recordTechnicalElevation(
                      .draws = debugOverlayDrawLists(p.bim.curveDraws)}}},
        .sourceCount = kDeferredDebugOverlaySourceCapacity});
 
-  (void)recordDeferredDebugOverlayWireframeOverlayCommands(
-      cmd,
-      {.plan = &plan,
+  const DeferredDebugOverlayRecordInputs inputs{
+       .plan = &plan,
        .pipelines = {.wireframeDepth = pipelines.wireframeDepth,
                      .wireframeNoDepth = pipelines.wireframeNoDepth,
                      .wireframeDepthFrontCull = pipelines.wireframeDepthFrontCull,
@@ -239,7 +241,11 @@ void recordTechnicalElevation(
        .wireframeLineWidth = wireframe.lineWidth,
        .wireframeRasterModeSupported = p.debug.wireframeRasterModeSupported,
        .wireframeWideLinesSupported = p.debug.wireframeWideLinesSupported,
-       .debugOverlay = overlay.debugOverlay});
+       .debugOverlay = overlay.debugOverlay};
+  if (state.wireframeFullMode)
+    (void)recordDeferredDebugOverlayWireframeFullCommands(cmd, inputs);
+  else
+    (void)recordDeferredDebugOverlayWireframeOverlayCommands(cmd, inputs);
 }
 
 void recordForwardBimOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
@@ -288,7 +294,7 @@ void recordForwardBimOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
       .wireframePushConstants = &pushConstants,
       .debugOverlay = &debugOverlay};
 
-  recordTechnicalElevation(cmd, p, overlay);
+  recordForwardWireframe(cmd, p, overlay);
   recordBimRasterOverlays(cmd, p, overlay);
 }
 
@@ -525,6 +531,36 @@ void recordBimSurface(VkCommandBuffer cmd, const FrameRecordParams& p,
             .bimManager = p.services.bimManager});
 }
 
+void recordForwardOpaqueAndSky(VkCommandBuffer cmd, const FrameRecordParams& p,
+                               const DebugOverlayRenderer& debugOverlay) {
+  const auto opaqueLayout = forwardOpaquePipelineLayout(p);
+  const auto opaquePipelineIds = forwardOpaquePipelineIds(p);
+  recordSceneOpaque(cmd, p, opaqueLayout, debugOverlay);
+  recordBimSurface(cmd, p, BimSurfacePassKind::OpaqueLighting,
+                   hasBimOpaqueDraws(p.bim),
+                   forwardRasterPipelineHandle(p, opaquePipelineIds[0]),
+                   forwardRasterPipelineHandle(p, opaquePipelineIds[1]),
+                   forwardRasterPipelineHandle(p, opaquePipelineIds[2]),
+                   opaqueLayout, debugOverlay);
+
+  // Both camera descriptor sets carry the same camera, including empty scenes.
+  const auto cameraSet = forwardRasterDescriptorSetReady(p, ForwardRasterDescriptorSetId::Scene)
+      ? forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::Scene)
+      : forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::BimScene);
+  const auto lightSet = forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::Light);
+  const auto environmentSet = forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::FrameLighting);
+  const auto layout = forwardRasterPipelineLayout(p, ForwardRasterPipelineLayoutId::Transparent);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    forwardRasterPipelineHandle(p, ForwardRasterPipelineId::Sky));
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          layout, 0, 1, &cameraSet, 0, nullptr);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          layout, 1, 1, &lightSet, 0, nullptr);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          layout, 3, 1, &environmentSet, 0, nullptr);
+  vkCmdDraw(cmd, 3, 1, 0, 0);
+}
+
 }  // namespace
 
 bool hasForwardRasterSkyInputs(const FrameRecordParams &p) {
@@ -652,44 +688,9 @@ bool recordForwardRasterLightingPassCommands(VkCommandBuffer commandBuffer,
 
   recordSceneViewportAndScissor(commandBuffer, framebuffer->extent);
   const DebugOverlayRenderer debugOverlay{};
-  const VkPipelineLayout layout = forwardRasterPipelineLayout(
-      p, ForwardRasterPipelineLayoutId::Transparent);
-  const VkPipelineLayout opaqueLayout = forwardOpaquePipelineLayout(p);
-  const auto opaquePipelineIds = forwardOpaquePipelineIds(p);
-
-  recordSceneOpaque(commandBuffer, p, opaqueLayout, debugOverlay);
-
-  const VkPipeline opaquePipeline =
-      forwardRasterPipelineHandle(p, opaquePipelineIds[0]);
-  recordBimSurface(commandBuffer, p, BimSurfacePassKind::OpaqueLighting,
-                   hasBimOpaqueDraws(p.bim), opaquePipeline,
-                   forwardRasterPipelineHandle(
-                       p, opaquePipelineIds[1]),
-                   forwardRasterPipelineHandle(
-                       p, opaquePipelineIds[2]),
-                   opaqueLayout, debugOverlay);
-
-  // The scene and BIM camera descriptors contain the same per-frame camera.
-  // No vertex/object data is read by the sky shader, including empty scenes.
-  const auto cameraSet =
-      forwardRasterDescriptorSetReady(p, ForwardRasterDescriptorSetId::Scene)
-          ? forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::Scene)
-          : forwardRasterDescriptorSet(p,
-                                       ForwardRasterDescriptorSetId::BimScene);
-  const auto lightSet =
-      forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::Light);
-  const auto environmentSet = forwardRasterDescriptorSet(
-      p, ForwardRasterDescriptorSetId::FrameLighting);
-  vkCmdBindPipeline(
-      commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-      forwardRasterPipelineHandle(p, ForwardRasterPipelineId::Sky));
-  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          layout, 0, 1, &cameraSet, 0, nullptr);
-  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          layout, 1, 1, &lightSet, 0, nullptr);
-  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          layout, 3, 1, &environmentSet, 0, nullptr);
-  vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+  const bool fullWireframe = p.debug.fullWireframe();
+  if (!fullWireframe)
+    recordForwardOpaqueAndSky(commandBuffer, p, debugOverlay);
   (void)recordRenderPassEndCommands(commandBuffer);
 
   // OIT uses single-sample storage. Load the resolved opaque color and depth
@@ -706,15 +707,17 @@ bool recordForwardRasterLightingPassCommands(VkCommandBuffer commandBuffer,
   }
   recordSceneViewportAndScissor(commandBuffer, transparentFramebuffer->extent);
 
-  recordSceneTransparent(commandBuffer, p, layout, debugOverlay);
-  recordBimSurface(
-      commandBuffer, p, BimSurfacePassKind::TransparentLighting,
-      hasBimTransparentDraws(p.bim),
-      forwardRasterPipelineHandle(p, ForwardRasterPipelineId::Transparent),
-      forwardRasterPipelineHandle(p,
-                                  ForwardRasterPipelineId::TransparentFrontCull),
-      forwardRasterPipelineHandle(p, ForwardRasterPipelineId::TransparentNoCull),
-      layout, debugOverlay);
+  if (!fullWireframe) {
+    const auto layout = forwardRasterPipelineLayout(p, ForwardRasterPipelineLayoutId::Transparent);
+    recordSceneTransparent(commandBuffer, p, layout, debugOverlay);
+    recordBimSurface(
+        commandBuffer, p, BimSurfacePassKind::TransparentLighting,
+        hasBimTransparentDraws(p.bim),
+        forwardRasterPipelineHandle(p, ForwardRasterPipelineId::Transparent),
+        forwardRasterPipelineHandle(p, ForwardRasterPipelineId::TransparentFrontCull),
+        forwardRasterPipelineHandle(p, ForwardRasterPipelineId::TransparentNoCull),
+        layout, debugOverlay);
+  }
 
   recordForwardBimOverlays(commandBuffer, p, debugOverlay,
                            transparentFramebuffer->extent);
