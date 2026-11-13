@@ -226,6 +226,31 @@ same commit recorded in `build-info.json`. Mark preview builds as prereleases.
 See [GFXReconstruct debugging](gfxreconstruct.md) for optional API capture,
 replay, mapped-memory troubleshooting, and the opt-in GPU replay smoke test.
 
+The frame-resource initialization regression checks startup, resize, and a
+live 1× → 4× → 1× MSAA change with transparency and GPU picking in both raster
+techniques. Run it with the Khronos validation layer available on a device
+that supports 4× MSAA.
+
+```powershell
+$env:CONTAINER_RUN_GPU_FRAME_INITIALIZATION = '1'
+ctest --test-dir out/build/windows-release -C Release -R '^frame_resource_initialization_gpu_regression$' --output-on-failure
+```
+
+To count the initialization submits and waits, run the same Forward fixture
+under the LunarG API dump layer. Pass the directories that contain the
+Khronos validation and LunarG API dump manifests.
+
+```powershell
+python tests/validation/frame_resource_initialization_api_trace.py `
+  --renderer out/build/windows-release/VulkanSceneRenderer.exe `
+  --output out/frame-resource-initialization-trace `
+  --validation-layer "$env:VULKAN_SDK/Bin" --api-dump-layer "$env:VULKAN_SDK/Bin" --batched
+```
+
+Omit `--batched` when tracing a build that predates the batch. The report
+counts the initialization command buffers and their waits separately from
+rendering, upload, and swapchain retirement work.
+
 CPU tests are enabled by default through `ENABLE_TESTS`. Window/Vulkan tests are
 opt-in with `ENABLE_WINDOWED_TESTS=ON`.
 

@@ -105,6 +105,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--technique", choices=TECHNIQUES, action="append")
     parser.add_argument("--managed-output", action="store_true", help="write to a fresh run directory under --output")
+    parser.add_argument("--validation-settings", type=Path, help="additional Vulkan layer settings to use with sync validation")
     args = parser.parse_args()
     if os.environ.get("CONTAINER_RUN_GPU_FRAME_INITIALIZATION") != "1":
         print("SKIP: set CONTAINER_RUN_GPU_FRAME_INITIALIZATION=1 to run GPU captures")
@@ -119,7 +120,10 @@ def main():
         print(f"Captures: {output}", flush=True)
     else:
         output.mkdir(parents=True)
-    (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="utf-8")
+    settings = args.validation_settings.read_text(encoding="utf-8") if args.validation_settings else ""
+    if "khronos_validation.validate_sync = true\n" not in settings:
+        settings += "\nkhronos_validation.validate_sync = true\n"
+    (output / "vk_layer_settings.txt").write_text(settings, encoding="utf-8")
     model, sequence = output / "planes.gltf", output / "lifecycle.json"
     write_scene(model)
     make_sequence(sequence)
