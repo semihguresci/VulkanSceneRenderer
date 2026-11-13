@@ -36,7 +36,7 @@ struct OitMetadata {
   alignas(4) uint32_t nodeCapacity{0};
   alignas(4) uint32_t viewportWidth{0};
   alignas(4) uint32_t viewportHeight{0};
-  alignas(4) uint32_t reserved{0};
+  alignas(4) uint32_t counterLimit{0};
 };
 
 static_assert(sizeof(OitNode) == 32,
@@ -53,8 +53,8 @@ static_assert(offsetof(OitMetadata, viewportWidth) == 4,
               "OitMetadata.viewportWidth offset");
 static_assert(offsetof(OitMetadata, viewportHeight) == 8,
               "OitMetadata.viewportHeight offset");
-static_assert(offsetof(OitMetadata, reserved) == 12,
-              "OitMetadata.reserved offset");
+static_assert(offsetof(OitMetadata, counterLimit) == 12,
+              "OitMetadata.counterLimit offset");
 
 // Aggregated format bundle passed into FrameResourceManager::create().
 struct GBufferFormats {
@@ -177,10 +177,13 @@ class FrameResourceManager {
   // Returns true if the OIT node pool was grown (caller must recreate).
   bool growOitPoolIfNeeded(uint32_t imageIndex);
 
-  [[nodiscard]] uint32_t computeOitNodeCapacity() const;
-  [[nodiscard]] uint32_t oitNodeCapacityFloor() const {
-    return oitNodeCapacityFloor_;
+  [[nodiscard]] uint64_t requestedOitNodeCapacity() const;
+  [[nodiscard]] uint32_t maxOitNodeCapacity() const { return maxOitNodeCapacity_; }
+  [[nodiscard]] bool oitPoolOverflowed() const { return oitPoolOverflowed_; }
+  [[nodiscard]] bool oitStorageRangeLimited() const {
+    return oitPoolCapacityClamped_ || oitPoolOverflowed_;
   }
+  [[nodiscard]] uint64_t oitPoolGrowCount() const { return oitPoolGrowCount_; }
 
   [[nodiscard]] uint32_t frameCount() const {
     return static_cast<uint32_t>(frames_.size());
@@ -281,7 +284,11 @@ class FrameResourceManager {
   // A retained token keeps this identity alive, preventing owner-address ABA.
   std::shared_ptr<const uint8_t> descriptorBindingOwner_{std::make_shared<const uint8_t>(0)};
   uint64_t descriptorBindingEpoch_{1};
-  uint32_t oitNodeCapacityFloor_{0};
+  uint64_t oitNodeCapacityFloor_{0};
+  uint32_t maxOitNodeCapacity_{0};
+  uint64_t oitPoolGrowCount_{0};
+  bool oitPoolCapacityClamped_{false};
+  bool oitPoolOverflowed_{false};
 
   static constexpr uint32_t kOitAvgNodesPerPixel = 2u;
 };

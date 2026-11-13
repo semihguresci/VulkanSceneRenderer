@@ -305,6 +305,7 @@ void printCommandLineHelp() {
   --no-vdb-volume               Keep the loaded volume hidden
   --vdb-volume-scale F          Positive world-space volume scale (1)
   --width N --height N          Window dimensions
+  --borderless                  Remove the window frame and title bar
   --texture-memory-mb N         Decoded glTF texture budget [1,16384] MiB (1024)
   --render-technique NAME       Render technique
   --path-spp N                 Reference samples per frame [1,64] (1)
@@ -1372,6 +1373,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
         throw std::invalid_argument("--max-scene-objects must be 1 to 1000000");
     } else if (arg == "--hidden") {
       config.windowVisible = false;
+    } else if (arg == "--borderless") {
+      config.windowDecorated = false;
     } else if (!arg.starts_with("--") && !positionalModelConsumed) {
       config.modelPath = std::string(arg);
       positionalModelConsumed = true;

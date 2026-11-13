@@ -110,6 +110,26 @@ TEST(DeferredRasterLightingTests,
             container::gpu::kMaxDeferredPointLights);
 }
 
+TEST(DeferredRasterLightingTests,
+     ClusterCapacityFallbackUsesRegularPointShaderWithoutStencilVolume) {
+  auto inputs = litInputs();
+  inputs.clusteredCapacityLimited = true;
+  inputs.depthSamplingReady = true;
+  inputs.pointLightCount = container::gpu::kMaxDeferredPointLights + 2u;
+  inputs.pipelines.pointLight = true;
+  inputs.debugVisualizePointLightStencil = true;
+
+  const auto state = buildDeferredLightingFrameState(inputs);
+
+  EXPECT_EQ(state.pointLighting.path, DeferredPointLightingPath::FullscreenFallback);
+  EXPECT_EQ(state.pointLighting.stencilLightCount,
+            container::gpu::kMaxDeferredPointLights);
+  EXPECT_TRUE(state.directionalLightingEnabled);
+  inputs.pointLightCount = 0;
+  EXPECT_EQ(buildDeferredLightingFrameState(inputs).pointLighting.path,
+            DeferredPointLightingPath::None);
+}
+
 TEST(DeferredRasterLightingTests, TransparentOitDisabledByWireframeFullMode) {
   auto inputs = litInputs();
   inputs.transparentDrawCommandsAvailable = true;

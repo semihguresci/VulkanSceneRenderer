@@ -85,8 +85,9 @@ bool recordDeferredPointLightingCommands(
     return true;
   }
 
+  const bool fullscreen = plan.path == DeferredPointLightingPath::FullscreenFallback;
   if (inputs.lightingLayout == VK_NULL_HANDLE ||
-      inputs.stencilVolumePipeline == VK_NULL_HANDLE ||
+      (!fullscreen && inputs.stencilVolumePipeline == VK_NULL_HANDLE) ||
       !hasReadyDescriptorSets(inputs.pointLightingDescriptorSets) ||
       inputs.lightPushConstants == nullptr ||
       plan.stencilRouteCount == 0u) {
@@ -117,22 +118,31 @@ bool recordDeferredPointLightingCommands(
                             inputs.lightingLayout, 4, 1,
                             &inputs.ddgiDescriptorSet, 0, nullptr);
 
+  if (fullscreen) {
+    // The regular point pipeline shades pixels with nonzero stencil. Seed it
+    // once and let the shader reject invalid depth and out-of-range surfaces.
+    stencilClearAttachment.clearValue.depthStencil.stencil = 1;
+    vkCmdClearAttachments(cmd, 1, &stencilClearAttachment, 1,
+                          &stencilClearRect);
+  }
   for (uint32_t routeIndex = 0u; routeIndex < plan.stencilRouteCount;
        ++routeIndex) {
     const container::gpu::PointLightData &light =
         plan.stencilRoutes[routeIndex].light;
-    vkCmdClearAttachments(cmd, 1, &stencilClearAttachment, 1,
-                          &stencilClearRect);
     copyLightPushConstants(*inputs.lightPushConstants, light,
                            plan.contactVisibilityEnabled,
                            plan.localShadowEnabled, plan.bounceIntensity);
     inputs.lightPushConstants->padding2 = routeIndex;
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      inputs.stencilVolumePipeline);
-    vkCmdPushConstants(cmd, inputs.lightingLayout, kLightPushStages, 0,
-                       sizeof(LightPushConstants), inputs.lightPushConstants);
-    vkCmdDraw(cmd, plan.lightVolumeIndexCount, 1, 0, 0);
+    if (!fullscreen) {
+      vkCmdClearAttachments(cmd, 1, &stencilClearAttachment, 1,
+                            &stencilClearRect);
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        inputs.stencilVolumePipeline);
+      vkCmdPushConstants(cmd, inputs.lightingLayout, kLightPushStages, 0,
+                         sizeof(LightPushConstants), inputs.lightPushConstants);
+      vkCmdDraw(cmd, plan.lightVolumeIndexCount, 1, 0, 0);
+    }
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       activePointPipeline);

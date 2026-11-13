@@ -1,6 +1,7 @@
 #include "Container/renderer/resources/FrameResourceManager.h"
 
 #include "Container/common/CommonVMA.h"
+#include "Container/renderer/effects/OitManager.h"
 #include "Container/renderer/lighting/SubmittedUploadWait.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/PipelineManager.h"
@@ -11,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -353,15 +355,12 @@ void FrameResourceManager::validatePickIdFormatSupport() const {
 }
 
 // -----------------------------------------------------------------------
-uint32_t FrameResourceManager::computeOitNodeCapacity() const {
-  const VkExtent2D ext = sceneExtent_.width ? sceneExtent_ : swapChain_->extent();
-  const uint64_t   px  = static_cast<uint64_t>(ext.width) *
-                         static_cast<uint64_t>(ext.height);
-  const uint64_t desired =
-      std::min<uint64_t>(std::max<uint64_t>(1, px * kOitAvgNodesPerPixel),
-                         static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()));
-  return std::max<uint32_t>(static_cast<uint32_t>(desired),
-                            oitNodeCapacityFloor_);
+uint64_t FrameResourceManager::requestedOitNodeCapacity() const {
+  const uint64_t pixels = static_cast<uint64_t>(sceneExtent_.width) * sceneExtent_.height;
+  const uint64_t desired = std::min(pixels, std::numeric_limits<uint64_t>::max() /
+                                               kOitAvgNodesPerPixel) *
+                           kOitAvgNodesPerPixel;
+  return std::max({uint64_t{1}, desired, oitNodeCapacityFloor_});
 }
 
 // -----------------------------------------------------------------------
@@ -376,18 +375,26 @@ bool FrameResourceManager::growOitPoolIfNeeded(uint32_t imageIndex) {
 
   if (vmaInvalidateAllocation(allocationMgr_->memoryManager()->allocator(),
                                frame.oitCounterBuffer.allocation, 0,
-                               sizeof(uint32_t)) != VK_SUCCESS)
+                               kOitCounterBufferSize) != VK_SUCCESS)
     throw std::runtime_error("failed to invalidate OIT counter buffer");
 
-  const uint32_t required = mapped[0];
-  if (required <= frame.oitNodeCapacity) return false;
+  const auto counters =
+      std::span<const uint32_t, kOitCounterWordCount>(mapped, kOitCounterWordCount);
+  const uint64_t required =
+      requiredOitNodeCapacityAfterOverflow(counters, frame.oitNodeCapacity);
+  if (required == 0) return false;
 
-  const uint64_t doubledCapacity =
-      static_cast<uint64_t>(frame.oitNodeCapacity) * 2ull;
-  const uint64_t nextCapacity =
-      std::max<uint64_t>(required, doubledCapacity);
-  oitNodeCapacityFloor_ = static_cast<uint32_t>(std::min<uint64_t>(
-      nextCapacity, std::numeric_limits<uint32_t>::max()));
+  if (frame.oitNodeCapacity >= maxOitNodeCapacity_) {
+    if (!oitPoolOverflowed_)
+      spdlog::warn("OIT storage reached the device limit of {} nodes. "
+                   "Some transparent fragments were dropped.",
+                   maxOitNodeCapacity_);
+    oitPoolOverflowed_ = true;
+    return false;
+  }
+
+  oitNodeCapacityFloor_ = std::max<uint64_t>(required, uint64_t{frame.oitNodeCapacity} * 2);
+  ++oitPoolGrowCount_;
   return true;
 }
 
@@ -409,11 +416,33 @@ void FrameResourceManager::create(
     std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
     const container::gpu::AllocatedBuffer& objectBuffer,
     VkExtent2D sceneExtent) {
+  const bool wasRangeLimited = oitStorageRangeLimited();
+  const VkExtent2D previousExtent = sceneExtent_;
   destroy();
   const VkExtent2D displayExtent = swapChain_->extent();
   sceneExtent_ = sceneExtent.width && sceneExtent.height ? sceneExtent : displayExtent;
   if (sceneExtent_.width > displayExtent.width || sceneExtent_.height > displayExtent.height)
     throw std::invalid_argument("scene extent cannot exceed the presentation extent");
+
+  VkPhysicalDeviceProperties properties{};
+  vkGetPhysicalDeviceProperties(device_->physicalDevice(), &properties);
+  // This Vulkan limit is a 32-bit byte count. It also keeps every Slang
+  // structured-buffer byte offset and the counter's overflow value in range.
+  maxOitNodeCapacity_ = properties.limits.maxStorageBufferRange / sizeof(OitNode);
+  if (maxOitNodeCapacity_ == 0)
+    throw std::runtime_error("storage buffer range cannot fit an OIT node");
+  if (properties.limits.maxStorageBufferRange < kOitCounterBufferSize)
+    throw std::runtime_error("storage buffer range cannot fit the OIT allocation counters");
+  oitPoolOverflowed_ = false;
+  const auto requestedCapacity = requestedOitNodeCapacity();
+  const auto nodeCapacity = static_cast<uint32_t>(
+      std::min<uint64_t>(requestedCapacity, maxOitNodeCapacity_));
+  oitPoolCapacityClamped_ = requestedCapacity > maxOitNodeCapacity_;
+  if (oitPoolCapacityClamped_ &&
+      (!wasRangeLimited || previousExtent.width != sceneExtent_.width ||
+       previousExtent.height != sceneExtent_.height))
+    spdlog::warn("OIT node pool limited to {} of {} requested nodes per image "
+                 "by the storage buffer range limit", nodeCapacity, requestedCapacity);
 
   formats_         = formats;
   depthPrepassPass_ = depthPrepassPass;
@@ -575,7 +604,7 @@ void FrameResourceManager::create(
                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
 
-    f.oitNodeCapacity = computeOitNodeCapacity();
+    f.oitNodeCapacity = nodeCapacity;
     f.linearCaptureFallback = allocationMgr_->createBuffer(
         sizeof(glm::vec4), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO);
     f.oitNodeBuffer = allocationMgr_->createBuffer(
@@ -583,12 +612,12 @@ void FrameResourceManager::create(
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
     f.oitCounterBuffer = allocationMgr_->createBuffer(
-        sizeof(uint32_t),
+        kOitCounterBufferSize,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         VMA_MEMORY_USAGE_AUTO,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
             VMA_ALLOCATION_CREATE_MAPPED_BIT);
-    // Pool growth reads this counter before recording the frame's GPU clear.
+    // Pool growth reads the counters before recording the frame's GPU clear.
     // A newly created frame (also after MSAA/resize) has no prior submission,
     // so initialize its mapped occupancy rather than interpreting reused
     // allocation contents as an overflow and growing the pool to that value.
@@ -596,10 +625,10 @@ void FrameResourceManager::create(
         f.oitCounterBuffer.allocation_info.pMappedData);
     if (!initialCounter)
       throw std::runtime_error("OIT counter buffer is not persistently mapped");
-    *initialCounter = 0;
+    std::fill_n(initialCounter, kOitCounterWordCount, 0u);
     if (vmaFlushAllocation(allocationMgr_->memoryManager()->allocator(),
                            f.oitCounterBuffer.allocation, 0,
-                           sizeof(uint32_t)) != VK_SUCCESS)
+                           kOitCounterBufferSize) != VK_SUCCESS)
       throw std::runtime_error("failed to initialize OIT counter buffer");
     f.oitMetadataBuffer = allocationMgr_->createBuffer(
         sizeof(OitMetadata),
@@ -1350,7 +1379,8 @@ void FrameResourceManager::updateDescriptorSets(
 
       VkDescriptorBufferInfo nodeInfo{f.oitNodeBuffer.buffer, 0,
                                       sizeof(OitNode) * f.oitNodeCapacity};
-      VkDescriptorBufferInfo counterInfo{f.oitCounterBuffer.buffer, 0, sizeof(uint32_t)};
+      VkDescriptorBufferInfo counterInfo{f.oitCounterBuffer.buffer, 0,
+                                         kOitCounterBufferSize};
       VkDescriptorBufferInfo metaInfo{f.oitMetadataBuffer.buffer, 0, sizeof(OitMetadata)};
 
       std::array<VkWriteDescriptorSet, 4> w{};
@@ -1524,7 +1554,7 @@ void FrameResourceManager::initializeFrameImages(
 void FrameResourceManager::writeOitMetadata(FrameResources& frame) const {
   if (frame.oitMetadataBuffer.buffer == VK_NULL_HANDLE) return;
   const VkExtent2D ext = sceneExtent_;
-  const OitMetadata meta{frame.oitNodeCapacity, ext.width, ext.height, 0u};
+  const OitMetadata meta{frame.oitNodeCapacity, ext.width, ext.height, maxOitNodeCapacity_ + 1u};
   void* mapped = frame.oitMetadataBuffer.allocation_info.pMappedData;
   bool mappedHere = false;
   if (!mapped) {
@@ -1684,7 +1714,7 @@ void FrameResourceManager::publishFrameResourceBindings() {
                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                    VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     bindSharedBuffer("oit-counter-buffer", f.oitCounterBuffer.buffer,
-               sizeof(uint32_t),
+               kOitCounterBufferSize,
                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                    VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     bindSharedBuffer("oit-metadata-buffer", f.oitMetadataBuffer.buffer,

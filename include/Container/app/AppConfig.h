@@ -91,6 +91,7 @@ struct AppConfig {
   container::renderer::ReferenceOidnSettings pathOidn{};
   bool physicsDemo{false};
   bool windowVisible{true};
+  bool windowDecorated{true};
   uint32_t msaaSamples{1};
   uint32_t areaShadowQuality{2};
   uint32_t areaLightingMode{1};

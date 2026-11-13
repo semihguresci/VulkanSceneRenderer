@@ -53,7 +53,8 @@ def layer_files(directory, name):
                      "librarySha256": sha(library)}
 
 
-def layer_environment(output, overrides, validation, profiles):
+def layer_environment(output, overrides, validation, profiles, *, profile_name=PROFILE_NAME,
+                      property_structure="VkPhysicalDeviceVulkan12Properties"):
     settings = ["khronos_validation.validate_sync = true"]
     layer_paths = [validation]
     instance_layers = [VALIDATION]
@@ -62,16 +63,16 @@ def layer_environment(output, overrides, validation, profiles):
     if overrides:
         profile = {
             "$schema": "https://schema.khronos.org/vulkan/profiles-0.8.2-276.json#",
-            "capabilities": {"test": {"properties": {"VkPhysicalDeviceVulkan12Properties": overrides}}},
-            "profiles": {PROFILE_NAME: {
-                "version": 1, "api-version": "1.2.0", "label": "Container MSAA regression",
-                "description": "Simulate constrained MSAA capabilities",
+            "capabilities": {"test": {"properties": {property_structure: overrides}}},
+            "profiles": {profile_name: {
+                "version": 1, "api-version": "1.2.0", "label": "Container Vulkan capability regression",
+                "description": "Simulate constrained physical-device properties",
                 "contributors": {"Container": {"company": "Container"}},
                 "history": [{"revision": 1, "date": "2026-11-13", "author": "Container", "comment": "Initial test"}],
                 "capabilities": ["test"],
             }},
         }
-        path = output / f"{PROFILE_NAME}.json"
+        path = output / f"{profile_name}.json"
         path.write_text(json.dumps(profile, indent=2) + "\n", encoding="utf-8")
         layer_paths.append(profiles)
         # Vulkan Validation must see physical-device properties after Profiles has overridden them.
@@ -79,12 +80,12 @@ def layer_environment(output, overrides, validation, profiles):
         settings.extend([
             "khronos_profiles.profile_emulation = true",
             f"khronos_profiles.profile_file = {path.as_posix()}",
-            f"khronos_profiles.profile_name = {PROFILE_NAME}",
+            f"khronos_profiles.profile_name = {profile_name}",
             "khronos_profiles.simulate_capabilities = SIMULATE_PROPERTIES_BIT",
             "khronos_profiles.emulate_portability = false",
             "khronos_profiles.debug_actions = DEBUG_ACTION_STDOUT_BIT",
         ])
-        env.update(VK_KHRONOS_PROFILES_PROFILE_FILE=str(path), VK_KHRONOS_PROFILES_PROFILE_NAME=PROFILE_NAME,
+        env.update(VK_KHRONOS_PROFILES_PROFILE_FILE=str(path), VK_KHRONOS_PROFILES_PROFILE_NAME=profile_name,
                    VK_KHRONOS_PROFILES_SIMULATE_CAPABILITIES="SIMULATE_PROPERTIES_BIT",
                    VK_KHRONOS_PROFILES_EMULATE_PORTABILITY="false",
                    VK_KHRONOS_PROFILES_DEBUG_ACTIONS="DEBUG_ACTION_STDOUT_BIT",
@@ -95,7 +96,7 @@ def layer_environment(output, overrides, validation, profiles):
                 VK_LAYER_SETTINGS_PATH=str(output))
 
 
-def verify_layers(log, validation_library, profiles_library):
+def verify_layers(log, validation_library, profiles_library, *, profile_name=PROFILE_NAME):
     for kind in ("Insert instance", "Inserted device"):
         match = re.search(rf'{kind} layer "{VALIDATION}" \(([^\r\n]+)\)', log)
         require(match and Path(match[1]).resolve() == validation_library, "The pinned validation layer was not used")
@@ -104,7 +105,7 @@ def verify_layers(log, validation_library, profiles_library):
         require(not match, "Profiles was enabled for the unmodified device control")
     else:
         require(match and Path(match[1]).resolve() == profiles_library and
-                f"Overriding device capabilities with the '{PROFILE_NAME}' profile capabilities." in log and
+                f"Overriding device capabilities with the '{profile_name}' profile capabilities." in log and
                 "simulate_capabilities: SIMULATE_PROPERTIES_BIT" in log and "PROFILES ERROR:" not in log,
                 "The pinned Profiles layer did not apply the expected property override")
 

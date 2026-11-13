@@ -70,6 +70,9 @@ struct RendererResourceTelemetry {
   uint32_t cameraBufferCount{0};
   uint32_t objectBufferCapacity{0};
   uint32_t oitNodeCapacity{0};
+  bool oitStorageRangeLimited{false};
+  bool oitPoolOverflowed{false};
+  bool clusteredLightingFallback{false};
 };
 
 struct RendererSyncTelemetry {

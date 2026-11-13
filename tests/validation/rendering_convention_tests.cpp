@@ -969,7 +969,7 @@ TEST(RenderingConventionTests, TransparentOitWritesAreDepthTestedEarly) {
   EXPECT_TRUE(
       contains(pipelineBuilder, "transparentDS.depthWriteEnable = VK_FALSE"));
   EXPECT_TRUE(contains(transparent, "[earlydepthstencil]"));
-  EXPECT_TRUE(contains(transparent, "InterlockedAdd(nodeCounter[0]"));
+  EXPECT_TRUE(contains(transparent, "InterlockedCompareExchange(nodeCounter[stripe]"));
   EXPECT_TRUE(contains(transparent,
                        "InterlockedExchange(headPointerImage[pixelCoord]"));
 }
@@ -7264,6 +7264,7 @@ TEST(RenderingConventionTests, DefaultConfigUsesCornellBoxScene) {
   EXPECT_EQ(container::app::kDefaultModelRelativePath, kCornellBoxScene);
   EXPECT_NE(config.modelPath, container::app::kDefaultSceneModelToken);
   EXPECT_FALSE(config.enableValidationLayers);
+  EXPECT_TRUE(config.windowDecorated);
 }
 
 TEST(RenderingConventionTests, DefaultCornellSceneIsCopiedToBuildModels) {

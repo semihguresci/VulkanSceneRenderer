@@ -1140,6 +1140,14 @@ set_tests_properties(msaa_attachment_capabilities_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 1200
     LABELS "requires-vulkan;requires-display;visual-regression")
 
+add_test(NAME storage_buffer_range_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/storage_buffer_range_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/storage-buffer-range" --managed-output)
+set_tests_properties(storage_buffer_range_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 1200
+    LABELS "requires-vulkan;requires-display;visual-regression")
+
 add_test(NAME forward_sky_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/forward_sky_regression.py"
             --exe "$<TARGET_FILE:VulkanSceneRenderer>"
@@ -2781,6 +2789,9 @@ add_custom_test(light_edit_generation_gpu_tests
 target_compile_definitions(light_edit_generation_gpu_tests PRIVATE
     CONTAINER_LIGHT_EDIT_SHADER_PATH="${CONTAINER_LIGHT_EDIT_SPIRV}"
     CONTAINER_LIGHTING_SHADER_ROOT="${CMAKE_BINARY_DIR}")
+add_custom_test(clustered_lighting_capacity_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/clustered_lighting_capacity_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer)
 add_custom_test(lighting_scratch_recovery_gpu_tests
     ${CMAKE_SOURCE_DIR}/tests/renderer/lighting/lighting_scratch_recovery_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_renderer)

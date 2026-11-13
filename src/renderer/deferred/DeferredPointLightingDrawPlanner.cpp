@@ -29,7 +29,8 @@ DeferredPointLightingDrawPlan buildDeferredPointLightingDrawPlan(
                                                        : 0.0f,
                  0.0f, 2.0f);
   plan.stencilPipeline =
-      inputs.debugVisualizePointLightStencil
+      inputs.state.path == DeferredPointLightingPath::Stencil &&
+              inputs.debugVisualizePointLightStencil
           ? DeferredPointLightingStencilPipeline::PointLightStencilDebug
           : DeferredPointLightingStencilPipeline::PointLight;
 
@@ -47,11 +48,13 @@ DeferredPointLightingDrawPlan buildDeferredPointLightingDrawPlan(
     return plan;
   }
 
-  if (inputs.state.path != DeferredPointLightingPath::Stencil) {
+  if (inputs.state.path != DeferredPointLightingPath::Stencil &&
+      inputs.state.path != DeferredPointLightingPath::FullscreenFallback) {
     return plan;
   }
 
-  plan.lightVolumeIndexCount = inputs.lightVolumeIndexCount;
+  if (inputs.state.path == DeferredPointLightingPath::Stencil)
+    plan.lightVolumeIndexCount = inputs.lightVolumeIndexCount;
   const uint32_t requestedLightCount =
       std::min(inputs.state.stencilLightCount,
                container::gpu::kMaxDeferredPointLights);

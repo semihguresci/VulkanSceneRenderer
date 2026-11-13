@@ -797,10 +797,38 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         return 0.0.xxxx;
     }
 
-    uint nodeIndex = 0u;
-    InterlockedAdd(nodeCounter[0], 1u, nodeIndex);
+    if (IsHelperLane())
+    {
+        return 0.0.xxxx;
+    }
+
+    // Interleave neighboring pixels across independent counters. Saturation
+    // preserves overflow demand without ever reusing an index in this frame.
+    uint stripe = (pixelCoord.x + 23u * pixelCoord.y) %
+                  min(OIT_COUNTER_STRIPE_COUNT, uOit.nodeCapacity);
+    uint stripeLimit = (uOit.counterLimit - 2u - stripe) / OIT_COUNTER_STRIPE_COUNT + 2u;
+    uint ordinal;
+    InterlockedAdd(nodeCounter[stripe], 0u, ordinal);
+    [loop]
+    while (ordinal < stripeLimit)
+    {
+        uint previousCount;
+        InterlockedCompareExchange(nodeCounter[stripe], ordinal, ordinal + 1u, previousCount);
+        if (previousCount == ordinal)
+        {
+            break;
+        }
+        ordinal = previousCount;
+    }
+    uint nodeIndex = ordinal * OIT_COUNTER_STRIPE_COUNT + stripe;
     if (nodeIndex >= uOit.nodeCapacity)
     {
+        // One fragment per stripe is sufficient to flag any dropped nodes.
+        uint stripeCapacity = (uOit.nodeCapacity - 1u - stripe) / OIT_COUNTER_STRIPE_COUNT + 1u;
+        if (ordinal == stripeCapacity)
+        {
+            InterlockedOr(nodeCounter[OIT_COUNTER_OVERFLOW_INDEX], 1u);
+        }
         return 0.0.xxxx;
     }
 

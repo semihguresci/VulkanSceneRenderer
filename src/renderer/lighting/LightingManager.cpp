@@ -10,6 +10,7 @@
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/Camera.h"
 #include "Container/utility/FileLoader.h"
+#include "Container/utility/Logger.h"
 #include "Container/utility/PipelineManager.h"
 #include "Container/utility/Platform.h"
 #include "Container/utility/SceneManager.h"
@@ -39,6 +40,7 @@ using container::gpu::AreaLightData;
 using container::gpu::kClusterDepthSlices;
 using container::gpu::kMaxAreaLights;
 using container::gpu::kMaxClusteredLights;
+using container::gpu::kMaxDeferredPointLights;
 using container::gpu::kMaxLightsPerTile;
 using container::gpu::kMaxShadowedLocalLightLayers;
 using container::gpu::kTileSize;
@@ -240,23 +242,24 @@ void writeTiledDescriptors(VkDevice device,
     const container::gpu::AllocatedBuffer& lightSsbo_,
     const container::gpu::AllocatedBuffer& tileGridSsbo_,
     const container::gpu::AllocatedBuffer& lightIndexListSsbo_,
-    const container::gpu::AllocatedBuffer& lightStatsBuffer_, uint32_t maxClusterCount_) noexcept {
-  if (tileCullSet1_ == VK_NULL_HANDLE || tileCullSet2_ == VK_NULL_HANDLE ||
+    const container::gpu::AllocatedBuffer& lightStatsBuffer_,
+    const ClusteredLightCapacity& capacity) noexcept {
+  if (!capacity.available() || tileCullSet1_ == VK_NULL_HANDLE ||
+      tileCullSet2_ == VK_NULL_HANDLE ||
       tiledDescriptorSet_ == VK_NULL_HANDLE ||
       lightSsbo_.buffer == VK_NULL_HANDLE ||
       tileGridSsbo_.buffer == VK_NULL_HANDLE ||
       lightIndexListSsbo_.buffer == VK_NULL_HANDLE ||
-      lightStatsBuffer_.buffer == VK_NULL_HANDLE || maxClusterCount_ == 0) {
+      lightStatsBuffer_.buffer == VK_NULL_HANDLE) {
     return;
   }
 
   VkDescriptorBufferInfo lightInfo{
       lightSsbo_.buffer, 0, sizeof(PointLightData) * kMaxClusteredLights};
   VkDescriptorBufferInfo tileGridInfo{tileGridSsbo_.buffer, 0,
-                                      sizeof(TileLightGrid) * maxClusterCount_};
+                                      capacity.tileGridBytes};
   VkDescriptorBufferInfo indexListInfo{lightIndexListSsbo_.buffer, 0,
-                                       sizeof(uint32_t) * maxClusterCount_ *
-                                           kMaxLightsPerTile};
+                                       capacity.lightIndexListBytes};
   VkDescriptorBufferInfo statsInfo{lightStatsBuffer_.buffer, 0,
                                    sizeof(uint32_t) * 4};
 
@@ -335,6 +338,62 @@ void writeRayShadowBindings(VkDevice device, VkDescriptorSet set,
 }
 
 } // namespace
+
+ClusteredLightCapacity planClusteredLightCapacity(
+    VkExtent2D extent, VkDeviceSize storageRangeLimit,
+    const std::array<uint32_t, 3> &dispatchLimits) noexcept {
+  ClusteredLightCapacity result{};
+  result.storageRangeLimit = storageRangeLimit;
+  const auto tileCount = [](uint32_t pixels) {
+    return static_cast<uint32_t>(std::max<uint64_t>(
+        1, (uint64_t(pixels) + kTileSize - 1u) / kTileSize));
+  };
+  result.tileCountX = tileCount(extent.width);
+  result.tileCountY = tileCount(extent.height);
+  result.clusterCount = uint64_t(result.tileCountX) * result.tileCountY *
+                        kClusterDepthSlices;
+  if (result.clusterCount > UINT32_MAX) {
+    result.status = ClusteredLightCapacityStatus::ShaderIndexLimitExceeded;
+    return result;
+  }
+
+  result.tileGridBytes = result.clusterCount * sizeof(TileLightGrid);
+  const uint64_t indexCount = result.clusterCount * kMaxLightsPerTile;
+  result.lightIndexListBytes = indexCount * sizeof(uint32_t);
+  // The shaders and storage-buffer addressing use 32-bit indices and offsets.
+  constexpr uint64_t kShaderAddressSpaceBytes = uint64_t(UINT32_MAX) + 1u;
+  if (result.tileGridBytes > kShaderAddressSpaceBytes ||
+      result.lightIndexListBytes > kShaderAddressSpaceBytes) {
+    result.status = ClusteredLightCapacityStatus::ShaderIndexLimitExceeded;
+  } else if (result.tileGridBytes > storageRangeLimit ||
+             result.lightIndexListBytes > storageRangeLimit) {
+    result.status = ClusteredLightCapacityStatus::StorageRangeExceeded;
+  } else if (result.tileCountX > dispatchLimits[0] ||
+             result.tileCountY > dispatchLimits[1] ||
+             kClusterDepthSlices > dispatchLimits[2]) {
+    result.status = ClusteredLightCapacityStatus::DispatchLimitExceeded;
+  } else {
+    result.status = ClusteredLightCapacityStatus::Available;
+  }
+  return result;
+}
+
+std::string_view clusteredLightCapacityStatusName(
+    ClusteredLightCapacityStatus status) noexcept {
+  switch (status) {
+  case ClusteredLightCapacityStatus::NotInitialized:
+    return "notInitialized";
+  case ClusteredLightCapacityStatus::Available:
+    return "available";
+  case ClusteredLightCapacityStatus::StorageRangeExceeded:
+    return "storageRangeExceeded";
+  case ClusteredLightCapacityStatus::DispatchLimitExceeded:
+    return "dispatchLimitExceeded";
+  case ClusteredLightCapacityStatus::ShaderIndexLimitExceeded:
+    return "shaderIndexLimitExceeded";
+  }
+  return "unknown";
+}
 
 LightingManager::LightingManager(
     std::shared_ptr<container::gpu::VulkanDevice> device,
@@ -619,7 +678,7 @@ LightingManager::PreparedGeneration LightingManager::prepareGenerationImpl(
   const bool tiled = tileCullPipeline_ != VK_NULL_HANDLE;
   if (tiled && (tileCullSet0Layout_ == VK_NULL_HANDLE || tileCullSet1Layout_ == VK_NULL_HANDLE ||
       tileCullSet2Layout_ == VK_NULL_HANDLE || tiledDescriptorSetLayout_ == VK_NULL_HANDLE ||
-      !tiledScratchResourcesReady()))
+      (!tiledCapacityLimited() && !tiledScratchResourcesReady())))
     reject("live tiled resources are incomplete");
 
   uint64_t cpuBytes{},gpuBytes{};
@@ -790,19 +849,23 @@ LightingManager::PreparedGeneration LightingManager::prepareGenerationImpl(
     next.tileCullSet0_ = sets[0]; next.tileCullSet1_ = sets[1]; next.tileCullSet2_ = sets[2];
     next.tiledDescriptorSet_ = sets[3];
     writeTiledDescriptors(device_->device(), next.tileCullSet1_, next.tileCullSet2_, next.tiledDescriptorSet_,
-        next.lightSsbo_, tileGridSsbo_, lightIndexListSsbo_, lightStatsBuffer_, maxClusterCount_);
+        next.lightSsbo_, tileGridSsbo_, lightIndexListSsbo_, lightStatsBuffer_, clusteredLightCapacity_);
   }
   return result;
+}
+
+bool LightingManager::tiledCapacityLimited() const noexcept {
+  return clusteredLightCapacity_.status != ClusteredLightCapacityStatus::NotInitialized &&
+         !clusteredLightCapacity_.available();
 }
 
 bool LightingManager::tiledScratchResourcesReady() const noexcept {
   const auto sufficient=[](const container::gpu::AllocatedBuffer& buffer,VkDeviceSize bytes) noexcept {
     return bytes && buffer.buffer!=VK_NULL_HANDLE && buffer.allocation && buffer.allocation_info.size>=bytes;
   };
-  return maxTileCount_ && maxClusterCount_ &&
-      uint64_t(maxTileCount_)*kClusterDepthSlices==maxClusterCount_ &&
-      sufficient(tileGridSsbo_,VkDeviceSize(sizeof(TileLightGrid))*maxClusterCount_) &&
-      sufficient(lightIndexListSsbo_,VkDeviceSize(sizeof(uint32_t))*maxClusterCount_*kMaxLightsPerTile) &&
+  return clusteredLightCapacity_.available() &&
+      sufficient(tileGridSsbo_, clusteredLightCapacity_.tileGridBytes) &&
+      sufficient(lightIndexListSsbo_, clusteredLightCapacity_.lightIndexListBytes) &&
       // GPU stats contain four counters; submitted count and timings in the
       // public CPU LightCullingStats are derived separately during collection.
       sufficient(lightStatsBuffer_,4*sizeof(uint32_t));
@@ -819,7 +882,7 @@ bool LightingManager::generationResourcesReady(const PreparedGeneration& value) 
       state.tiledLayout == tiledDescriptorSetLayout_ &&
       next.lightDescriptorSets_.size() == lightingBuffers_.size() &&
       (next.tileCullDescriptorPool_ != VK_NULL_HANDLE) == (tileCullPipeline_ != VK_NULL_HANDLE) &&
-      (tileCullPipeline_==VK_NULL_HANDLE || (tiledScratchResourcesReady() &&
+      (tileCullPipeline_==VK_NULL_HANDLE || ((tiledCapacityLimited() || tiledScratchResourcesReady()) &&
           next.tileCullSet0_!=VK_NULL_HANDLE && next.tileCullSet1_!=VK_NULL_HANDLE &&
           next.tileCullSet2_!=VK_NULL_HANDLE && next.tiledDescriptorSet_!=VK_NULL_HANDLE));
 }
@@ -869,7 +932,7 @@ void LightingManager::exchangeGenerationPayload(PreparedGeneration& value) noexc
   // only. Legacy reversible generations still rebind after viewport resize.
   if (tileCullPipeline_ != VK_NULL_HANDLE && !value.state_->graphPose && !value.state_->lightOnly)
     writeTiledDescriptors(device_->device(), next.tileCullSet1_, next.tileCullSet2_, next.tiledDescriptorSet_,
-        next.lightSsbo_, tileGridSsbo_, lightIndexListSsbo_, lightStatsBuffer_, maxClusterCount_);
+        next.lightSsbo_, tileGridSsbo_, lightIndexListSsbo_, lightStatsBuffer_, clusteredLightCapacity_);
   using std::swap;
   static_assert(std::is_nothrow_swappable_v<LightingData>);
   static_assert(std::is_nothrow_swappable_v<LightingSettings>);
@@ -877,6 +940,8 @@ void LightingManager::exchangeGenerationPayload(PreparedGeneration& value) noexc
   static_assert(std::is_nothrow_swappable_v<decltype(lightSsbo_)>);
   swap(lightingData_, next.lightingData_); swap(lightingSettings_, next.lightingSettings_);
   swap(rootNode_, next.rootNode_); swap(lastStats_, next.lastStats_);
+  if (tiledCapacityLimited())
+    lastStats_ = {};
   pointLightsSsbo_.swap(next.pointLightsSsbo_); areaLightsSsbo_.swap(next.areaLightsSsbo_);
   editableLights_.swap(next.editableLights_); swap(selectedEditableLight_, next.selectedEditableLight_);
   directionalOverride_.swap(next.directionalOverride_);
@@ -1411,8 +1476,7 @@ void LightingManager::clearSceneLightOverrides() {
 }
 
 void LightingManager::collectStats() {
-  if (lightStatsBuffer_.buffer == VK_NULL_HANDLE ||
-      lightStatsBuffer_.allocation == nullptr) {
+  if (!isTiledLightingReady() || lastDispatchClusterCount_ == 0) {
     return;
   }
 
@@ -2038,16 +2102,21 @@ void LightingManager::drawLightGizmoPickIds(
 // ---------------------------------------------------------------------------
 
 void LightingManager::allocateClusterBuffers(VkExtent2D extent) {
-  const uint64_t tileCountX =
-      std::max<uint64_t>(1, (uint64_t(extent.width) + kTileSize - 1u) / kTileSize);
-  const uint64_t tileCountY =
-      std::max<uint64_t>(1, (uint64_t(extent.height) + kTileSize - 1u) / kTileSize);
-  if (tileCountX * tileCountY > UINT32_MAX / kClusterDepthSlices)
+  const auto capacity = planClusteredLightCapacity(
+      extent, clusteredStorageRangeLimit_, clusteredDispatchLimits_);
+  if (capacity.clusterCount > UINT32_MAX)
     throw std::length_error("Tiled lighting extent exceeds its cluster address space");
-  const uint32_t requiredTileCount = uint32_t(tileCountX * tileCountY);
-  const uint32_t requiredClusterCount = requiredTileCount * kClusterDepthSlices;
 
-  if (requiredClusterCount == maxClusterCount_ && tiledScratchResourcesReady()) {
+  const bool wasLimited = tiledCapacityLimited();
+  const auto previousStatus = clusteredLightCapacity_.status;
+  if (capacity.available() &&
+      capacity.clusterCount == clusteredLightCapacity_.clusterCount &&
+      tiledScratchResourcesReady()) {
+    clusteredLightCapacity_ = capacity;
+    return;
+  }
+  if (!capacity.available() && wasLimited && capacity.status == previousStatus) {
+    clusteredLightCapacity_ = capacity;
     return;
   }
 
@@ -2060,9 +2129,20 @@ void LightingManager::allocateClusterBuffers(VkExtent2D extent) {
   invalidateRayShadowBindingPreparations();
   allocationManager_.destroyBuffer(lightIndexListSsbo_);
   allocationManager_.destroyBuffer(tileGridSsbo_);
-
-  maxTileCount_ = requiredTileCount;
-  maxClusterCount_ = requiredClusterCount;
+  clusteredLightCapacity_ = capacity;
+  lastStats_ = {};
+  lastDispatchClusterCount_ = 0;
+  timingQueriesWritten_ = false;
+  if (!capacity.available()) {
+    container::log::ContainerLogger::instance().renderer()->warn(
+        "Clustered lighting disabled at {}x{} ({}): grid {} bytes, light indices "
+        "{} bytes, maxStorageBufferRange {} bytes. Deferred uses up to {} fullscreen "
+        "point lights. Forward uses its regular point light list.",
+        extent.width, extent.height, clusteredLightCapacityStatusName(capacity.status),
+        capacity.tileGridBytes, capacity.lightIndexListBytes,
+        capacity.storageRangeLimit, kMaxDeferredPointLights);
+    return;
+  }
 
   const auto allocationCheckpoint=[&](uint8_t point) {
     if(scratchAllocationFailureForTest_==point) {
@@ -2070,23 +2150,21 @@ void LightingManager::allocateClusterBuffers(VkExtent2D extent) {
       throw std::bad_alloc();
     }
   };
-  const VkDeviceSize tileGridSize = sizeof(TileLightGrid) * maxClusterCount_;
   allocationCheckpoint(1);
   tileGridSsbo_ = allocationManager_.createBuffer(
-      tileGridSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+      capacity.tileGridBytes,
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
       VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
 
-  const VkDeviceSize lightIndexListSize =
-      sizeof(uint32_t) * maxClusterCount_ * kMaxLightsPerTile;
   allocationCheckpoint(2);
   lightIndexListSsbo_ = allocationManager_.createBuffer(
-      lightIndexListSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+      capacity.lightIndexListBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
       VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
 }
 
 void LightingManager::writeTiledResourceDescriptors() const noexcept {
   writeTiledDescriptors(device_->device(), tileCullSet1_, tileCullSet2_, tiledDescriptorSet_,
-      lightSsbo_, tileGridSsbo_, lightIndexListSsbo_, lightStatsBuffer_, maxClusterCount_);
+      lightSsbo_, tileGridSsbo_, lightIndexListSsbo_, lightStatsBuffer_, clusteredLightCapacity_);
 }
 
 void LightingManager::resizeTiledResources(VkExtent2D extent) {
@@ -2135,9 +2213,12 @@ void LightingManager::createTiledResources(
                                  zeroStats.data(),
                                  sizeof(uint32_t) * zeroStats.size());
 
+  VkPhysicalDeviceProperties deviceProperties{};
+  vkGetPhysicalDeviceProperties(device_->physicalDevice(), &deviceProperties);
+  clusteredStorageRangeLimit_ = deviceProperties.limits.maxStorageBufferRange;
+  std::copy_n(deviceProperties.limits.maxComputeWorkGroupCount,
+              clusteredDispatchLimits_.size(), clusteredDispatchLimits_.begin());
   if (timestampQueryPool_ == VK_NULL_HANDLE) {
-    VkPhysicalDeviceProperties deviceProperties{};
-    vkGetPhysicalDeviceProperties(device_->physicalDevice(), &deviceProperties);
     timestampPeriodNs_ = deviceProperties.limits.timestampPeriod;
 
     uint32_t queueFamilyCount = 0;
@@ -2297,27 +2378,23 @@ void LightingManager::dispatchTileCull(VkCommandBuffer cmd,
   if (!isTiledLightingReady())
     return;
 
-  const uint32_t tileCountX =
-      std::max(1u, (screenExtent.width + kTileSize - 1u) / kTileSize);
-  const uint32_t tileCountY =
-      std::max(1u, (screenExtent.height + kTileSize - 1u) / kTileSize);
-  const uint32_t totalLights = std::min(
-      static_cast<uint32_t>(pointLightsSsbo_.size()), kMaxClusteredLights);
-  lastDispatchClusterCount_ = tileCountX * tileCountY * kClusterDepthSlices;
-  if (lastDispatchClusterCount_ > maxClusterCount_ ||
-      tileGridSsbo_.buffer == VK_NULL_HANDLE ||
-      lightIndexListSsbo_.buffer == VK_NULL_HANDLE ||
-      lightStatsBuffer_.buffer == VK_NULL_HANDLE) {
+  const auto dispatch = planClusteredLightCapacity(
+      screenExtent, clusteredStorageRangeLimit_, clusteredDispatchLimits_);
+  if (!dispatch.available() ||
+      dispatch.clusterCount > clusteredLightCapacity_.clusterCount) {
     lastDispatchClusterCount_ = 0;
     return;
   }
+  const uint32_t totalLights = std::min(
+      static_cast<uint32_t>(pointLightsSsbo_.size()), kMaxClusteredLights);
+  lastDispatchClusterCount_ = static_cast<uint32_t>(dispatch.clusterCount);
 
   vkCmdFillBuffer(cmd, lightStatsBuffer_.buffer, 0, sizeof(uint32_t) * 4, 0u);
   if (totalLights == 0u) {
     // No point lights: keep the downstream tiled-lighting descriptor valid but
     // make every cluster empty without launching one workgroup per cluster.
     vkCmdFillBuffer(cmd, tileGridSsbo_.buffer, 0,
-                    sizeof(TileLightGrid) * lastDispatchClusterCount_, 0u);
+                    dispatch.tileGridBytes, 0u);
 
     VkMemoryBarrier clearBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     clearBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -2366,8 +2443,8 @@ void LightingManager::dispatchTileCull(VkCommandBuffer cmd,
   }
 
   TileCullPushConstants pc{};
-  pc.tileCountX = tileCountX;
-  pc.tileCountY = tileCountY;
+  pc.tileCountX = dispatch.tileCountX;
+  pc.tileCountY = dispatch.tileCountY;
   pc.depthSliceCount = kClusterDepthSlices;
   pc.totalLights = totalLights;
   pc.cameraNear = cameraNear;
@@ -2384,7 +2461,7 @@ void LightingManager::dispatchTileCull(VkCommandBuffer cmd,
   vkCmdPushConstants(cmd, tileCullPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
                      0, sizeof(TileCullPushConstants), &pc);
 
-  vkCmdDispatch(cmd, tileCountX, tileCountY, kClusterDepthSlices);
+  vkCmdDispatch(cmd, dispatch.tileCountX, dispatch.tileCountY, kClusterDepthSlices);
 
   // Pipeline barrier: compute writes → fragment reads on the tile SSBOs.
   VkMemoryBarrier barrier{};

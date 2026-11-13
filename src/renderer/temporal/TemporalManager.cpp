@@ -7,6 +7,7 @@
 #include "Container/renderer/core/RenderGraph.h"
 #include "Container/renderer/culling/GpuCullManager.h"
 #include "Container/renderer/deferred/DeferredRasterFrameState.h"
+#include "Container/renderer/effects/OitManager.h"
 #include "Container/renderer/effects/OpenVdbVolumeRenderer.h"
 #include "Container/renderer/resources/FrameResourceManager.h"
 #include "Container/renderer/resources/FrameResourceRegistry.h"
@@ -679,7 +680,7 @@ void TemporalManager::updateDescriptors(
        {{}, input.dlssOitLayer.view, VK_IMAGE_LAYOUT_GENERAL}}};
   const std::array<VkDescriptorBufferInfo, 3> buffers = {
       {{frame.oitNodeBuffer.buffer, 0, VK_WHOLE_SIZE},
-       {frame.oitCounterBuffer.buffer, 0, sizeof(uint32_t)},
+       {frame.oitCounterBuffer.buffer, 0, kOitCounterBufferSize},
        {frame.oitMetadataBuffer.buffer, 0, sizeof(OitMetadata)}}};
   std::array<VkWriteDescriptorSet, 9> writes{};
   const uint32_t composeWrites = dlssActive() ? 9u : 8u;

@@ -24,6 +24,7 @@ enum class DeferredPointLightingPath : uint32_t {
   None = 0,
   Tiled = 1,
   Stencil = 2,
+  FullscreenFallback = 3,
 };
 
 struct DeferredLightingPipelineReadiness {
@@ -71,6 +72,7 @@ struct DeferredLightingFrameInputs {
   bool debugVisualizePointLightStencil{false};
   bool tileCullPassActive{false};
   bool tiledLightingReady{false};
+  bool clusteredCapacityLimited{false};
   bool depthSamplingReady{false};
   bool tiledDescriptorSetReady{false};
   bool transparentDrawCommandsAvailable{false};

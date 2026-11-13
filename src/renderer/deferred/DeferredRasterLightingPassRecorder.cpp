@@ -86,7 +86,8 @@ DeferredLightingWireframeSettings deferredLightingWireframeSettings(
 DeferredLightingFrameInputs deferredLightingFrameInputs(
     const FrameRecordParams &p, const container::ui::GuiManager *guiManager,
     container::ui::GBufferViewMode fallbackDisplayMode, bool tileCullPassActive,
-    bool tiledLightingReady, uint32_t pointLightCount) {
+    bool tiledLightingReady, bool clusteredCapacityLimited,
+    uint32_t pointLightCount) {
   DeferredLightingFrameInputs inputs{};
   inputs.displayMode = deferredLightingDisplayMode(
       currentDisplayMode(guiManager, fallbackDisplayMode));
@@ -130,6 +131,7 @@ DeferredLightingFrameInputs deferredLightingFrameInputs(
   }
   inputs.tileCullPassActive = tileCullPassActive;
   inputs.tiledLightingReady = tiledLightingReady;
+  inputs.clusteredCapacityLimited = clusteredCapacityLimited;
   inputs.depthSamplingReady =
       deferredRasterImageViewReady(p, DeferredRasterImageId::DepthSamplingView);
   inputs.tiledDescriptorSetReady =
@@ -417,6 +419,7 @@ void DeferredRasterLightingPassRecorder::record(
                                   services_.tileCullPassActive,
                                   lightingManager &&
                                       lightingManager->isTiledLightingReady(),
+                                  lightingManager && lightingManager->tiledCapacityLimited(),
                                   pointLightCount);
   const DeferredLightingFrameState lightingState =
       buildDeferredLightingFrameState(lightingInputs);
