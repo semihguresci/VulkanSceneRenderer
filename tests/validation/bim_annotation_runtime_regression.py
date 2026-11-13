@@ -41,8 +41,14 @@ def fixtures(folder):
     bim = folder / "annotations.bim"
     points, _, indices = cube()
     meshes, elements = [], []
-    for index, center in enumerate(((-1.2, 1., 0.), (-.35, .9, -.35))):
-        points_world = [(1.2 * x + center[0], 1.5 * y + center[1], 1.6 * z + center[2]) for x, y, z in points]
+    boxes = [((-1.2, 1., 0.), (1.2, 1.5, 1.6)),
+             ((-.35, .9, -.35), (1.2, 1.5, 1.6)),
+             # Entirely behind the clipped left wall from the fixed camera.
+             # Only the no-depth Technical route should show its wireframe.
+             ((-1.35, 1., -1.3), (.62, .62, .35))]
+    for index, (center, size) in enumerate(boxes):
+        points_world = [(size[0] * x + center[0], size[1] * y + center[1], size[2] * z + center[2])
+                        for x, y, z in points]
         # DotBIM has Z up and Y forward. Author coordinates in its native axes.
         coordinates = [component for x, y, z in points_world for component in (x, -z, y)]
         meshes.append(dict(mesh_id=index, coordinates=coordinates, indices=indices))
@@ -125,7 +131,7 @@ def record(renderer, output, model, bim, sequence, frames, technique, extension,
     for kind, frame in frames.items():
         image = screenshot if frame == max(frames.values()) else output / f"{name}.frame-{frame:04}.{extension}"
         pixels, state = read_capture(image, technique)
-        require(Path(state["scene"]["auxiliary"]).resolve() == bim and state["scene"]["auxiliaryObjectCount"] >= 2,
+        require(Path(state["scene"]["auxiliary"]).resolve() == bim and state["scene"]["auxiliaryObjectCount"] >= 3,
                 f"Incomplete fixture in {image}")
         images[kind] = pixels
         row["captures"].append(dict(kind=kind, frame=frame, image=str(image), revision=state["build"]["revision"],
@@ -172,6 +178,10 @@ def inspect(png, exr, missing_previews):
             require(changed == 0, "The control changed Technical elevation with the depth toggle")
         else:
             require(changed >= 12, f"The Technical elevation depth toggle changed only {changed} pixels")
+            hidden_pixels = results["technical-depth"]["changedPixels"]
+            visible_pixels = results["technical-no-depth"]["changedPixels"]
+            require(visible_pixels - hidden_pixels >= 12,
+                    f"Disabling depth should reveal the occluded box: {hidden_pixels} to {visible_pixels} pixels")
         checks["technicalDepthTogglePixels"] = changed
     return checks
 
