@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -85,28 +86,8 @@ ExposureManager::~ExposureManager() {
 void ExposureManager::createResources(const std::filesystem::path& shaderDir,
                                       uint32_t descriptorSetCount) {
   createPipeline(shaderDir);
-  const uint32_t imageCount = std::max<uint32_t>(1u, descriptorSetCount);
-  resizeFrameResources(imageCount);
-
-  const std::array<VkDescriptorPoolSize, 2> poolSizes = {{
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, imageCount},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, imageCount * 2u},
-  }};
-  descriptorPool_ = pipelineManager_.createDescriptorPool(
-      {poolSizes.begin(), poolSizes.end()}, imageCount);
-
-  std::vector<VkDescriptorSetLayout> layouts(imageCount, setLayout_);
-  descriptorSets_.assign(imageCount, VK_NULL_HANDLE);
-
-  VkDescriptorSetAllocateInfo allocateInfo{
-      VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-  allocateInfo.descriptorPool = descriptorPool_;
-  allocateInfo.descriptorSetCount = imageCount;
-  allocateInfo.pSetLayouts = layouts.data();
-  if (vkAllocateDescriptorSets(device_->device(), &allocateInfo,
-                               descriptorSets_.data()) != VK_SUCCESS) {
-    throw std::runtime_error("failed to allocate exposure descriptor set");
-  }
+  createExposureStateBuffer(exposureStateBuffer_);
+  resizeFrameResources(descriptorSetCount);
 }
 
 void ExposureManager::dispatch(
@@ -277,12 +258,11 @@ VkDeviceSize ExposureManager::exposureStateBufferSize() const {
 
 void ExposureManager::destroy() {
   destroyFrameResources();
+  destroyBufferIfAllocated(allocationManager_, exposureStateBuffer_);
   pipelineManager_.destroyPipeline(histogramPipeline_);
   pipelineManager_.destroyPipeline(adaptPipeline_);
   pipelineManager_.destroyPipelineLayout(pipelineLayout_);
-  pipelineManager_.destroyDescriptorPool(descriptorPool_);
   pipelineManager_.destroyDescriptorSetLayout(setLayout_);
-  descriptorSets_.clear();
   hasCurrentExposure_ = false;
 }
 
@@ -314,31 +294,56 @@ void ExposureManager::createPipeline(const std::filesystem::path& shaderDir) {
 }
 
 void ExposureManager::resizeFrameResources(uint32_t descriptorSetCount) {
-  destroyFrameResources();
   const uint32_t imageCount = std::max<uint32_t>(1u, descriptorSetCount);
-  histogramBuffers_.resize(imageCount);
-  for (uint32_t imageIndex = 0; imageIndex < imageCount; ++imageIndex) {
-    createHistogramBuffer(histogramBuffers_[imageIndex]);
+  if (descriptorSets_.size() == imageCount)
+    return;
+  if (setLayout_ == VK_NULL_HANDLE || exposureStateBuffer_.buffer == VK_NULL_HANDLE)
+    throw std::logic_error("Exposure resources must be initialized before resize");
+  if (imageCount > std::numeric_limits<uint32_t>::max() / 2u)
+    throw std::length_error("Exposure descriptor count is too large");
+
+  std::vector<VkDescriptorSetLayout> layouts(imageCount, setLayout_);
+  std::vector<VkDescriptorSet> sets(imageCount, VK_NULL_HANDLE);
+  std::vector<container::gpu::AllocatedBuffer> histograms(imageCount);
+  VkDescriptorPool pool = pipelineManager_.createDescriptorPool(
+      {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, imageCount},
+       {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, imageCount * 2u}}, imageCount);
+  try {
+    const VkDescriptorSetAllocateInfo allocateInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = pool,
+        .descriptorSetCount = imageCount,
+        .pSetLayouts = layouts.data()};
+    if (vkAllocateDescriptorSets(device_->device(), &allocateInfo, sets.data()) !=
+        VK_SUCCESS) {
+      throw std::runtime_error("failed to allocate exposure descriptor sets");
+    }
+    for (auto& histogram : histograms) {
+      histogram = allocationManager_.createBuffer(
+          sizeof(uint32_t) * (kHistogramBinCount + 1u),
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+          VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
+    }
+  } catch (...) {
+    for (auto& histogram : histograms)
+      destroyBufferIfAllocated(allocationManager_, histogram);
+    pipelineManager_.destroyDescriptorPool(pool);
+    throw;
   }
-  createExposureStateBuffer(exposureStateBuffer_);
+
+  destroyFrameResources();
+  descriptorPool_ = pool;
+  descriptorSets_.swap(sets);
+  histogramBuffers_.swap(histograms);
 }
 
 void ExposureManager::destroyFrameResources() {
+  pipelineManager_.destroyDescriptorPool(descriptorPool_);
+  descriptorSets_.clear();
   for (auto& histogramBuffer : histogramBuffers_) {
     destroyBufferIfAllocated(allocationManager_, histogramBuffer);
   }
   histogramBuffers_.clear();
-  destroyBufferIfAllocated(allocationManager_, exposureStateBuffer_);
-}
-
-void ExposureManager::createHistogramBuffer(
-    container::gpu::AllocatedBuffer& buffer) {
-  destroyBufferIfAllocated(allocationManager_, buffer);
-
-  buffer = allocationManager_.createBuffer(
-      sizeof(uint32_t) * (kHistogramBinCount + 1u),
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-      VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
 }
 
 void ExposureManager::createExposureStateBuffer(

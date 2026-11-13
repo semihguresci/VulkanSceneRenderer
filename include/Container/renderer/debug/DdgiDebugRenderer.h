@@ -26,11 +26,13 @@ public:
   DdgiDebugRenderer(const DdgiDebugRenderer &) = delete;
   DdgiDebugRenderer &operator=(const DdgiDebugRenderer &) = delete;
 
+  [[nodiscard]] VkFormat colorFormat() const { return colorFormat_; }
   void record(VkCommandBuffer cmd, VkDescriptorSet postSet,
               VkDescriptorSet ddgiSet, uint32_t probeCount, DdgiDebugView view,
               float radius) const;
 
 private:
+  const VkFormat colorFormat_;
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

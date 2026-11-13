@@ -974,7 +974,11 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   if (createRenderingPass(dev, &rpInfo, nullptr, &passes_.shadow) != VK_SUCCESS)
     throw std::runtime_error("failed to create shadow render pass");
 
-  // ---- Post Process ----
+  publishPostProcess(preparePostProcess(swapchainFormat));
+}
+
+std::unique_ptr<container::gpu::RenderingPass>
+RenderPassManager::preparePostProcess(VkFormat swapchainFormat) const {
   VkAttachmentDescription swapAttachment{};
   swapAttachment.format         = swapchainFormat;
   swapAttachment.samples        = VK_SAMPLE_COUNT_1_BIT;
@@ -1007,13 +1011,23 @@ void RenderPassManager::create(VkFormat swapchainFormat,
       VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
       VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0);
 
+  VkRenderPassCreateInfo rpInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
   rpInfo.attachmentCount = 1;
   rpInfo.pAttachments    = &swapAttachment;
+  rpInfo.subpassCount    = 1;
   rpInfo.pSubpasses      = &postSubpass;
   rpInfo.dependencyCount = static_cast<uint32_t>(postDeps.size());
   rpInfo.pDependencies   = postDeps.data();
-  if (createRenderingPass(dev, &rpInfo, nullptr, &passes_.postProcess) != VK_SUCCESS)
+  RenderingPassHandle pass = VK_NULL_HANDLE;
+  if (createRenderingPass(device_->device(), &rpInfo, nullptr, &pass) != VK_SUCCESS)
     throw std::runtime_error("failed to create post-process render pass");
+  return std::unique_ptr<container::gpu::RenderingPass>(pass);
+}
+
+void RenderPassManager::publishPostProcess(
+    std::unique_ptr<container::gpu::RenderingPass> pass) noexcept {
+  destroyRenderingPass(device_->device(), passes_.postProcess, nullptr);
+  passes_.postProcess = pass.release();
 }
 
 void RenderPassManager::destroy() {

@@ -784,7 +784,14 @@ public:
                   float defaultImportScale);
 
   void shutdown(VkDevice device);
-  void updateSwapchainImageCount(uint32_t imageCount);
+  // Call after retiring the GUI's GPU work and any app texture descriptors
+  // when the swapchain image count changes.
+  void updateSwapchainRendering(RenderingPassHandle renderPass,
+                                uint32_t imageCount);
+  [[nodiscard]] uint32_t swapchainImageCount() const { return swapchainImageCount_; }
+  [[nodiscard]] uint64_t swapchainRenderingGeneration() const {
+    return swapchainRenderingGeneration_;
+  }
   void setMsaaSampleState(std::span<const uint32_t> options,
                           uint32_t activeSamples);
   [[nodiscard]] std::optional<uint32_t> consumeMsaaSampleChange();
@@ -1312,8 +1319,19 @@ private:
   };
 
   void applyBimElevationDisplayIntent();
+  void initializeVulkanBackend(RenderingPassHandle renderPass, uint32_t imageCount);
 
+  struct VulkanBackendContext {
+    VkInstance instance{VK_NULL_HANDLE};
+    VkDevice device{VK_NULL_HANDLE};
+    VkPhysicalDevice physicalDevice{VK_NULL_HANDLE};
+    VkQueue graphicsQueue{VK_NULL_HANDLE};
+    uint32_t graphicsQueueFamily{};
+  } vulkanBackendContext_{};
   VkDescriptorPool descriptorPool_{VK_NULL_HANDLE};
+  VkFormat swapchainColorFormat_{VK_FORMAT_UNDEFINED};
+  uint32_t swapchainImageCount_{};
+  uint64_t swapchainRenderingGeneration_{};
   bool initialized_{false};
   bool imguiFrameOpen_{false};
   bool showGeometryOverlay_{false};

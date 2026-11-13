@@ -21,6 +21,36 @@ TEST(TemporalCapture, ReferenceRendererSwitchIsOneShotAndRejectsUnknownNames) {
   EXPECT_THROW(CaptureSequence{invalid},std::invalid_argument);
 }
 
+TEST(TemporalCapture, SwapchainFormatRequestsAreTypedAndOneShot) {
+  using Format = container::temporal::CaptureSwapchainFormat;
+  const auto input = json::parse(R"({"schemaVersion":1,"frames":7,"events":[
+    {"frame":2,"swapchainFormat":"bgra8-srgb"},
+    {"frame":3,"swapchainFormat":"rgba8-srgb","resize":[384,200]},
+    {"frame":5,"swapchainFormat":"bgra8-unorm","technique":"forward-raster"},
+    {"frame":6,"swapchainFormat":"rgba8-unorm"}
+  ]})");
+  const CaptureSequence sequence(input);
+  EXPECT_FALSE(sequence.sample(1).event.swapchainFormat);
+  EXPECT_EQ(sequence.sample(2).event.swapchainFormat, Format::Bgra8Srgb);
+  EXPECT_EQ(sequence.sample(3).event.swapchainFormat, Format::Rgba8Srgb);
+  EXPECT_EQ(sequence.sample(3).event.resize, glm::uvec2(384, 200));
+  EXPECT_FALSE(sequence.sample(4).event.swapchainFormat);
+  EXPECT_EQ(sequence.sample(5).event.swapchainFormat, Format::Bgra8Unorm);
+  EXPECT_EQ(sequence.sample(5).event.technique, "forward-raster");
+  EXPECT_EQ(sequence.sample(6).event.swapchainFormat, Format::Rgba8Unorm);
+  EXPECT_FALSE(sequence.sample(7).event.swapchainFormat);
+}
+
+TEST(TemporalCapture, RejectsUnknownOrMalformedSwapchainFormats) {
+  json input{{"schemaVersion", 1}, {"frames", 1},
+             {"events", json::array({{{"frame", 1}}})}};
+  for (const auto &invalid : {json(""), json("rgba16-float"), json(44),
+                              json(nullptr), json::array({"bgra8-srgb"})}) {
+    input["events"][0]["swapchainFormat"] = invalid;
+    EXPECT_THROW((void)CaptureSequence(input), std::invalid_argument) << invalid;
+  }
+}
+
 TEST(TemporalCapture, ReferenceDisplaySwitchIsOneShotAndRejectsInvalidModes) {
   using container::renderer::ReferencePathDisplayMode;
   auto input = json::parse(R"({"schemaVersion":1,"frames":4,"events":[

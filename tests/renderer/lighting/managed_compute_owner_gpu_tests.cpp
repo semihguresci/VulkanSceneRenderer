@@ -310,16 +310,16 @@ TEST_F(ManagedComputeOwnerGpu, ExposureDispatchRetainsHistogramAndAdaptationAcro
   submit();
   ExposureSettings settings;
   settings.mode = kExposureModeAuto;
-  const auto dispatch = [&] {
+  const auto dispatch = [&](uint32_t imageIndex = 0u) {
     command.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
-    exposure.dispatch(0, *command, *view, 32, 32, settings);
+    exposure.dispatch(imageIndex, *command, *view, 32, 32, settings);
     VkMemoryBarrier host{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     host.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
     vkCmdPipelineBarrier(*command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
                          0, 1, &host, 0, nullptr, 0, nullptr);
     submit();
-    exposure.collectReadback(0, settings);
+    exposure.collectReadback(imageIndex, settings);
     EXPECT_TRUE(exposure.hasExposureDebugState());
     // Histogram bin quantization brackets the constant four-nit input.
     EXPECT_GT(exposure.averageLuminance(), 3.0f);
@@ -336,6 +336,10 @@ TEST_F(ManagedComputeOwnerGpu, ExposureDispatchRetainsHistogramAndAdaptationAcro
   pipelines->publishComputeReload(reload);
   EXPECT_FLOAT_EQ(dispatch(), initial);
   reload = {};
+  const auto exposureState = exposure.exposureStateBuffer(0);
+  exposure.resizeFrameResources(3);
+  ASSERT_EQ(exposure.exposureStateBuffer(2), exposureState);
+  EXPECT_FLOAT_EQ(dispatch(2), initial);
   exposure.destroy();
   EXPECT_EQ(pipelines->prepareComputeReload(root).size(), 0u);
 }

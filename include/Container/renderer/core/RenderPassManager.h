@@ -45,6 +45,10 @@ class RenderPassManager {
               VkSampleCountFlagBits msaaSamples,
               RendererDepthStencilResolve depthStencilResolve);
 
+  [[nodiscard]] std::unique_ptr<container::gpu::RenderingPass>
+  preparePostProcess(VkFormat swapchainFormat) const;
+  void publishPostProcess(
+      std::unique_ptr<container::gpu::RenderingPass> pass) noexcept;
   void destroy();
 
   [[nodiscard]] const RenderPasses& passes() const { return passes_; }

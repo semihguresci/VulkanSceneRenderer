@@ -175,7 +175,6 @@ struct DdgiManager::Impl {
   vk::raii::Pipeline tracePipeline{nullptr}, updatePipeline{nullptr};
   std::unique_ptr<DdgiDebugRenderer> debugRenderer;
   VkDescriptorSetLayout debugPostProcess{};
-  VkFormat debugColorFormat{VK_FORMAT_UNDEFINED};
   vk::raii::Sampler sampler{nullptr};
   vk::raii::DescriptorPool pool{nullptr};
   std::vector<vk::raii::DescriptorSet> sets;
@@ -762,8 +761,7 @@ void DdgiManager::createPipelines(const std::filesystem::path &root,
       vk::SamplerAddressMode::eClampToEdge;
   p.sampler = vk::raii::Sampler(vk, sampler);
   p.debugPostProcess = postProcess;
-  p.debugColorFormat = colorFormat;
-  publishDebugReload(prepareDebugReload(root));
+  publishDebugReload(prepareDebugReload(root, colorFormat));
   if (!p.support)
     return;
   bindings.clear();
@@ -798,12 +796,18 @@ void DdgiManager::createPipelines(const std::filesystem::path &root,
 
 std::unique_ptr<DdgiDebugRenderer> DdgiManager::prepareDebugReload(
     const std::filesystem::path& root) const {
+  const auto& debug = impl_->debugRenderer;
+  return debug ? prepareDebugReload(root, debug->colorFormat()) : nullptr;
+}
+
+std::unique_ptr<DdgiDebugRenderer> DdgiManager::prepareDebugReload(
+    const std::filesystem::path& root, VkFormat colorFormat) const {
   const auto& p = *impl_;
-  if (!p.readSupported || !p.debugPostProcess || p.debugColorFormat == VK_FORMAT_UNDEFINED)
+  if (!p.readSupported || !p.debugPostProcess || colorFormat == VK_FORMAT_UNDEFINED)
     return {};
   return std::make_unique<DdgiDebugRenderer>(
       p.device, root, p.debugPostProcess, static_cast<VkDescriptorSetLayout>(*p.layout),
-      p.debugColorFormat);
+      colorFormat);
 }
 
 void DdgiManager::publishDebugReload(std::unique_ptr<DdgiDebugRenderer> candidate) noexcept {

@@ -95,6 +95,7 @@ struct DeferredPostProcessPassRecordInputs {
   std::array<VkDescriptorSet, 2> descriptorSets{};
   DeferredPostProcessFrameInputs frameInputs{};
   bool captureSceneLinear{false};
+  bool encodeSrgbOutput{false};
   std::function<void(VkCommandBuffer)> recordAfterFullscreenDraw{};
 };
 

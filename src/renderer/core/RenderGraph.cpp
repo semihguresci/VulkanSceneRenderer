@@ -1660,6 +1660,7 @@ uint64_t RenderGraph::computePreparedFrameSignature(
           ? static_cast<uint64_t>(reinterpret_cast<uintptr_t>(
                 params.postProcess.renderPass))
           : 0u);
+  mix(params.postProcess.encodeSrgbOutput ? 1u : 0u);
   const auto& exposureSettings = params.postProcess.exposureSettings;
   mix(exposureSettings.mode);
   mix(static_cast<uint32_t>(params.postProcess.displayGrade.toneMapper));

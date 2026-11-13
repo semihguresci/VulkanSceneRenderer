@@ -38,6 +38,17 @@ namespace {
 
 namespace fs = std::filesystem;
 
+VkFormat captureSwapchainFormat(container::temporal::CaptureSwapchainFormat format) {
+  using container::temporal::CaptureSwapchainFormat;
+  switch (format) {
+  case CaptureSwapchainFormat::Bgra8Srgb: return VK_FORMAT_B8G8R8A8_SRGB;
+  case CaptureSwapchainFormat::Rgba8Srgb: return VK_FORMAT_R8G8B8A8_SRGB;
+  case CaptureSwapchainFormat::Bgra8Unorm: return VK_FORMAT_B8G8R8A8_UNORM;
+  case CaptureSwapchainFormat::Rgba8Unorm: return VK_FORMAT_R8G8B8A8_UNORM;
+  }
+  throw std::logic_error("Unknown capture swapchain format");
+}
+
 fs::path captureTelemetryPath(fs::path image) {
   return image.replace_extension(".telemetry.json");
 }
@@ -349,6 +360,8 @@ void Application::screenshotCaptureLoop() {
       throw std::invalid_argument("Capture telemetry frames require a screenshot output path");
   }
   bool minimized = false;
+  bool resizePending = false;
+  std::optional<VkFormat> requestedSwapchainFormat;
   const uint32_t captureFrame =
       sequence ? sequence->frameCount
                : std::max(config_.screenshotCaptureFrame,
@@ -401,7 +414,14 @@ void Application::screenshotCaptureLoop() {
         window_->setSize(static_cast<int>(sample.event.resize->x),
                          static_cast<int>(sample.event.resize->y));
         window_->pollEvents();
-        renderer_->handleResize();
+        resizePending = true;
+      }
+      if (sample.event.swapchainFormat)
+        requestedSwapchainFormat = captureSwapchainFormat(*sample.event.swapchainFormat);
+      if (!minimized && (resizePending || requestedSwapchainFormat)) {
+        renderer_->handleResize(requestedSwapchainFormat);
+        requestedSwapchainFormat.reset();
+        resizePending = false;
         framebufferResized_ = false;
       }
       skip = sample.event.skip || minimized;

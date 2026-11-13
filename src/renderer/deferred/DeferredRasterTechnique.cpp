@@ -1829,6 +1829,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
               .transparentOitActive =
                   deferred->isPassActive(RenderPassId::OitResolve)},
          .captureSceneLinear = p.screenshot.sceneLinear,
+         .encodeSrgbOutput = p.postProcess.encodeSrgbOutput,
          .recordAfterFullscreenDraw = [deferred, &p,
                                        ppSets](VkCommandBuffer passCmd) {
            if (p.screenshot.viewportOnly) {
