@@ -13,6 +13,9 @@
 namespace container::renderer {
 struct LightingScratchRecoveryTestAccess {
   static void failNext(LightingManager& manager,uint8_t allocation) {manager.scratchAllocationFailureForTest_=allocation;}
+  static void limitStorageRange(LightingManager& manager, VkDeviceSize range) {
+    manager.clusteredStorageRangeLimit_ = range;
+  }
   static uint64_t epoch(const LightingManager& manager) {return manager.descriptorBindingEpoch_;}
   static bool ready(const LightingManager& manager) {return manager.tiledScratchResourcesReady();}
   static const auto& grid(const LightingManager& manager) {return manager.tileGridSsbo_;}
@@ -160,6 +163,41 @@ TEST_F(LightingScratchRecoveryGpu, GenuineSameGridNoopAndRejectedOversizedExtent
     done=lighting->exchangeLightEdit(prepared);attempts=deny.allocations();}
   EXPECT_TRUE(ready);EXPECT_TRUE(done);EXPECT_EQ(attempts,0u);
   EXPECT_EQ(probe(),glm::uvec4(0x12345678,0x23456789,0x3456789a,0x456789ab));
+}
+TEST_F(LightingScratchRecoveryGpu, RangeLimitedResizePreservesLightEditsAndRecoversDescriptors) {
+  const auto oldEpoch = Access::epoch(*lighting);
+  const auto tiledLayout = lighting->tiledDescriptorSetLayout();
+  auto staleEdit = lighting->prepareLightEdit(selected().target, patch());
+  ASSERT_TRUE(lighting->canExchangeLightEdit(staleEdit));
+
+  Access::limitStorageRange(*lighting, 128ull * 1024 * 1024);
+  lighting->resizeTiledResources({3840, 2160});
+  EXPECT_EQ(lighting->clusteredLightCapacity().status,
+            ClusteredLightCapacityStatus::StorageRangeExceeded);
+  EXPECT_EQ(lighting->clusteredLightCapacity().lightIndexListBytes, 265420800u);
+  EXPECT_GT(Access::epoch(*lighting), oldEpoch);
+  EXPECT_FALSE(lighting->isTiledLightingReady());
+  EXPECT_EQ(lighting->tileGridBufferSize(), 0u);
+  EXPECT_EQ(Access::grid(*lighting).buffer, VK_NULL_HANDLE);
+  EXPECT_EQ(Access::indices(*lighting).buffer, VK_NULL_HANDLE);
+  EXPECT_EQ(lighting->tiledDescriptorSetLayout(), tiledLayout);
+  EXPECT_FALSE(lighting->canExchangeLightEdit(staleEdit));
+
+  auto fallbackEdit = lighting->prepareLightEdit(selected().target, patch());
+  ASSERT_TRUE(lighting->canExchangeLightEdit(fallbackEdit));
+  const auto fallbackEpoch = Access::epoch(*lighting);
+  lighting->resizeTiledResources({3840, 2160});
+  EXPECT_EQ(Access::epoch(*lighting), fallbackEpoch);
+  ASSERT_TRUE(lighting->exchangeLightEdit(fallbackEdit));
+  ASSERT_FALSE(lighting->pointLightsSsbo().empty());
+  EXPECT_FLOAT_EQ(lighting->pointLightsSsbo().front().colorIntensity.a, 11.0f);
+
+  lighting->resizeTiledResources({48, 32});
+  EXPECT_GT(Access::epoch(*lighting), fallbackEpoch);
+  ASSERT_TRUE(lighting->isTiledLightingReady());
+  EXPECT_EQ(lighting->tileGridBufferSize(), 768u);
+  EXPECT_EQ(lighting->tiledDescriptorSetLayout(), tiledLayout);
+  EXPECT_EQ(probe(), glm::uvec4(0x12345678, 0x23456789, 0x3456789a, 0x456789ab));
 }
 TEST_F(LightingScratchRecoveryGpu, OriginalManualSunUndoRevealsTodaysGeneratedBirthAndRedoKeepsOriginalManualBirth) {
   const auto directional=[&](EditableLightSource source) {

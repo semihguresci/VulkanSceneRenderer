@@ -7264,6 +7264,7 @@ TEST(RenderingConventionTests, DefaultConfigUsesCornellBoxScene) {
   EXPECT_EQ(container::app::kDefaultModelRelativePath, kCornellBoxScene);
   EXPECT_NE(config.modelPath, container::app::kDefaultSceneModelToken);
   EXPECT_FALSE(config.enableValidationLayers);
+  EXPECT_TRUE(config.windowDecorated);
 }
 
 TEST(RenderingConventionTests, DefaultCornellSceneIsCopiedToBuildModels) {

@@ -2670,10 +2670,12 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     resources.objectBufferCapacity = saturatingU32(maxSceneObjectCapacity());
     resources.oitNodeCapacity = deferredRasterRuntimeOitNodeCapacity(
         subs_.frameResourceManager.get(), imageIndex);
-    resources.oitStorageRangeLimited = subs_.frameResourceManager->oitStorageRangeLimited();
+    resources.oitStorageRangeLimited =
+        subs_.frameResourceManager->oitStorageRangeLimited();
     resources.oitPoolOverflowed = subs_.frameResourceManager->oitPoolOverflowed();
     resources.clusteredLightingFallback =
-        subs_.lightingManager->clusteredLightCapacity().status != ClusteredLightCapacityStatus::Available;
+        subs_.activeTechnique->id() == RenderTechniqueId::DeferredRaster &&
+        !subs_.lightingManager->clusteredLightCapacity().available();
     telemetry->setResources(resources);
     telemetry->setCpuPhase(RendererTelemetryPhase::Frame,
                            elapsedMilliseconds(frameStart));
@@ -3326,8 +3328,12 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
                  {"overflowed", frameResources.oitPoolOverflowed()},
                  {"growCount", frameResources.oitPoolGrowCount()}};
   const auto& clustered = subs_.lightingManager->clusteredLightCapacity();
+  const bool clusteredActive =
+      subs_.activeTechnique->id() == RenderTechniqueId::DeferredRaster &&
+      subs_.lightingManager->isTiledLightingReady() &&
+      subs_.lightingManager->lightingData().tileCullEnabled != 0u;
   json["clusteredLighting"] = {{"status", clusteredLightCapacityStatusName(clustered.status)},
-                               {"active", subs_.lightingManager->isTiledLightingReady()},
+                               {"active", clusteredActive},
                                {"tileGridBytes", clustered.tileGridBytes},
                                {"lightIndexListBytes", clustered.lightIndexListBytes}};
   const auto sceneExtent = sceneRenderExtent();
@@ -5676,9 +5682,7 @@ PipelineBuildResult RendererFrontend::buildGraphicsPipelines(
       subs_.frameResourceManager->lightingLayout(),
       subs_.lightingManager->lightDescriptorSetLayout(),
       subs_.lightingManager->lightGizmoIconDescriptorSetLayout(),
-      // Some tests or fallback configurations may not create tiled lighting
-      // resources. Reuse the regular light layout so pipeline layout creation
-      // stays well-formed even when the tiled path is unavailable.
+      // Keep the tiled pipeline layout compatible across viewport resizes.
       subs_.lightingManager->tiledDescriptorSetLayout() != VK_NULL_HANDLE
           ? subs_.lightingManager->tiledDescriptorSetLayout()
           : subs_.lightingManager->lightDescriptorSetLayout(),
@@ -6640,9 +6644,10 @@ bool RendererFrontend::growExactOitNodePoolIfNeeded(uint32_t imageIndex) {
     createFrameResources();
     updateFrameDescriptorSets();
     if (subs_.guiManager) {
+      const auto capacity = deferredRasterRuntimeOitNodeCapacity(
+          subs_.frameResourceManager.get(), imageIndex);
       subs_.guiManager->setStatusMessage(
-          "Expanded exact OIT node pool to " +
-          std::to_string(deferredRasterRuntimeOitNodeCapacity(subs_.frameResourceManager.get(), imageIndex)));
+          "Expanded exact OIT node pool to " + std::to_string(capacity));
     }
   }
   return grew;

@@ -19,6 +19,7 @@ using container::renderer::DrawCommand;
 using container::renderer::OitManager;
 using container::renderer::SceneTransparentDrawPipeline;
 using container::renderer::SceneTransparentDrawPlan;
+using container::renderer::makeOitCounterReadBarrier;
 using container::renderer::recordDeferredTransparentOitClearCommands;
 using container::renderer::recordDeferredTransparentOitCommands;
 using container::renderer::recordDeferredTransparentOitResolvePreparationCommands;
@@ -55,6 +56,26 @@ void makeBimGeometryReady(DeferredTransparentOitRecordInputs &inputs) {
 }
 
 } // namespace
+
+TEST(DeferredTransparentOitRecorderTests,
+     CounterClearAndFragmentWritesAreVisibleToRetiredHostReads) {
+  const VkBuffer counter = fakeHandle<VkBuffer>(0x1);
+  const auto barrier = makeOitCounterReadBarrier(counter);
+
+  EXPECT_EQ(barrier.buffer, counter);
+  EXPECT_EQ(barrier.offset, 0u);
+  EXPECT_EQ(barrier.size, VK_WHOLE_SIZE);
+  EXPECT_EQ(barrier.srcStageMask, VK_PIPELINE_STAGE_2_CLEAR_BIT |
+                                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+  EXPECT_EQ(barrier.srcAccessMask, VK_ACCESS_2_TRANSFER_WRITE_BIT |
+                                      VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+  EXPECT_EQ(barrier.dstStageMask, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                     VK_PIPELINE_STAGE_2_HOST_BIT);
+  EXPECT_EQ(barrier.dstAccessMask, VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                                      VK_ACCESS_2_HOST_READ_BIT);
+  EXPECT_EQ(barrier.srcQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
+  EXPECT_EQ(barrier.dstQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
+}
 
 TEST(DeferredTransparentOitRecorderTests, EmptyInputsReturnFalse) {
   EXPECT_FALSE(recordDeferredTransparentOitCommands(VK_NULL_HANDLE, {}));
