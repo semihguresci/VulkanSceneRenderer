@@ -44,6 +44,10 @@ def check(exe: Path):
     invoke(["--bounce-intensity", "2e0"], None)
     invoke(["--environment-intensity", "16", "--directional-intensity", "0",
             "--bounce-intensity", "0", "--environment-yaw", "-180"], None)
+    invoke(["--auto-exposure"], None)
+    invoke(["--exposure", "0.5", "--auto-exposure"], None)
+    invoke(["--auto-exposure", "--exposure", "0.5"], None)
+    invoke(["--auto-exposure", "--exposure", "nan"], "invalid float for --exposure")
     return dict(passed=True, gpuInitialized=False, caseCount=len(cases), cases=cases)
 
 

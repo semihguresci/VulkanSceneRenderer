@@ -139,6 +139,7 @@ class AllocationManager;
 class FrameSyncManager;
 class PipelineManager;
 class SwapChainManager;
+struct ExposureSettings;
 } // namespace container::gpu
 
 namespace container::scene {
@@ -313,6 +314,7 @@ private:
   void drawModelLoadProgressFrame();
   container::capture::Journal gfxJournal_;
   [[nodiscard]] nlohmann::json captureTelemetry() const;
+  [[nodiscard]] container::gpu::ExposureSettings effectiveExposureSettings() const;
   std::optional<float> captureExposure_{};
   std::optional<UpscaleSelection> captureUpscaling_{};
   struct UpscaleResourceRequest {
