@@ -201,12 +201,8 @@ class FrameResourceManager {
                                    VkSampleCountFlagBits samples =
                                        VK_SAMPLE_COUNT_1_BIT) const;
   void            destroyAttachment(AttachmentImage& a) const;
-  void            transitionToGeneral(VkImage image, VkImageAspectFlags mask) const;
-  void            transitionToDepthAttachment(VkImage image,
-                                              VkImageAspectFlags mask) const;
-  void            transitionToShaderReadOnly(VkImage image,
-                                             VkImageAspectFlags mask,
-                                             uint32_t layerCount) const;
+  void            initializeFrameImages(VkImage newFallbackShadow,
+                                        VkImage newFallbackLocalShadow) const;
   void            writeOitMetadata(FrameResources& frame) const;
   void            publishFrameResourceBindings();
   void            ensureFallbackTileGridBuffer();
@@ -215,8 +211,6 @@ class FrameResourceManager {
   void            ensureFallbackShadowResources();
   void            ensureFallbackLocalShadowDataBuffer();
   void            ensureFallbackLocalShadowResources();
-  VkCommandBuffer beginImmediate() const;
-  void            endImmediate(VkCommandBuffer cmd) const;
 
   struct DescriptorUpdateKey {
     std::vector<VkBuffer> cameraBuffers{};
