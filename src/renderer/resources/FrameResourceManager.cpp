@@ -1,6 +1,7 @@
 #include "Container/renderer/resources/FrameResourceManager.h"
 
 #include "Container/common/CommonVMA.h"
+#include "Container/renderer/lighting/SubmittedUploadWait.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/PipelineManager.h"
 #include "Container/utility/SceneData.h"
@@ -430,8 +431,6 @@ void FrameResourceManager::create(
   validatePickIdFormatSupport();
   ensureFallbackTileGridBuffer();
   ensureFallbackExposureStateBuffer();
-  ensureFallbackShadowResources();
-  ensureFallbackLocalShadowResources();
 
   const uint32_t n = static_cast<uint32_t>(swapChain_->imageCount());
   if (n == 0) return;
@@ -572,44 +571,9 @@ void FrameResourceManager::create(
           VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
           sampleCount_);
     }
-    // Forward rendering skips the G-buffer pass, but the shared post-process
-    // shader still declares these sampled resources for debug views. Scene
-    // color and picking also need valid initial values while resources are
-    // loading.
-    {
-      const VkCommandBuffer cmd = beginImmediate();
-      for (VkImage image : {f.albedo.image, f.normal.image, f.material.image,
-                            f.emissive.image, f.specular.image, f.sceneColor.image,
-                            f.pickId.image, f.materialLayers.image,
-                            f.materialSheen.image}) {
-        VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = image;
-        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 0u, 1u};
-        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0u,
-                             0u, nullptr, 0u, nullptr, 1u, &barrier);
-        const VkClearColorValue clear{};
-        vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                             &clear, 1u, &barrier.subresourceRange);
-        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0u,
-                             0u, nullptr, 0u, nullptr, 1u, &barrier);
-      }
-      endImmediate(cmd);
-    }
     f.oitHeadPointers = createAttachment(formats_.oitHeadPointer,
                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
-    transitionToGeneral(f.oitHeadPointers.image, VK_IMAGE_ASPECT_COLOR_BIT);
 
     f.oitNodeCapacity = computeOitNodeCapacity();
     f.linearCaptureFallback = allocationMgr_->createBuffer(
@@ -659,9 +623,6 @@ void FrameResourceManager::create(
                        VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                    VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
-    transitionToDepthAttachment(
-        f.pickDepth.image,
-        VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
 
     // Create a depth-only image view for shader sampling.
     {
@@ -836,8 +797,29 @@ void FrameResourceManager::create(
     }
   }
 
-  publishFrameResourceBindings();
-  updateDescriptorSets(cameraBuffers, objectBuffer);
+  const bool newFallbackShadow = fallbackShadowAtlas_.image == VK_NULL_HANDLE ||
+                                 fallbackShadowAtlas_.format != formats_.depthStencil;
+  const bool newFallbackLocalShadow =
+      fallbackLocalShadowAtlas_.image == VK_NULL_HANDLE ||
+      fallbackLocalShadowAtlas_.format != formats_.depthStencil;
+  try {
+    ensureFallbackShadowResources();
+    ensureFallbackLocalShadowResources();
+    initializeFrameImages(
+        newFallbackShadow ? fallbackShadowAtlas_.image : VK_NULL_HANDLE,
+        newFallbackLocalShadow ? fallbackLocalShadowAtlas_.image : VK_NULL_HANDLE);
+    updateDescriptorSets(cameraBuffers, objectBuffer);
+    publishFrameResourceBindings();
+  } catch (...) {
+    // A resource recreation may retry with a different extent. Discard
+    // fallback images whose initial layout may never have been established.
+    if (newFallbackShadow)
+      destroyAttachment(fallbackShadowAtlas_);
+    if (newFallbackLocalShadow)
+      destroyAttachment(fallbackLocalShadowAtlas_);
+    destroy();
+    throw;
+  }
 }
 
 // -----------------------------------------------------------------------
@@ -1443,72 +1425,100 @@ void FrameResourceManager::destroyAttachment(AttachmentImage& a) const {
   a = {};
 }
 
-void FrameResourceManager::transitionToGeneral(VkImage image,
-                                                VkImageAspectFlags mask) const {
-  VkCommandBuffer cmd = beginImmediate();
+void FrameResourceManager::initializeFrameImages(
+    VkImage newFallbackShadow, VkImage newFallbackLocalShadow) const {
+  const auto &device = device_->raii();
+  const auto commands = device.allocateCommandBuffers(vk::CommandBufferAllocateInfo(
+      commandPool_, vk::CommandBufferLevel::ePrimary, 1));
+  const auto &command = commands.front();
+  command.begin(vk::CommandBufferBeginInfo(
+      vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+  const VkCommandBuffer cmd = *command;
 
-  VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-  b.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
-  b.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
-  b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  b.image               = image;
-  b.subresourceRange    = {mask, 0, 1, 0, 1};
-  b.srcAccessMask       = 0;
-  b.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT |
-                          VK_ACCESS_SHADER_WRITE_BIT |
-                          VK_ACCESS_TRANSFER_WRITE_BIT;
+  constexpr VkImageAspectFlags depthStencil =
+      VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+  const auto recordInitialTransition =
+      [cmd](VkImage image, VkImageAspectFlags aspect, VkImageLayout layout,
+            VkPipelineStageFlags dstStage, VkAccessFlags dstAccess) {
+        const VkImageMemoryBarrier barrier{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .dstAccessMask = dstAccess,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = layout,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = image,
+            .subresourceRange = {aspect, 0u, 1u, 0u, 1u}};
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, dstStage,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+      };
 
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-                           VK_PIPELINE_STAGE_TRANSFER_BIT,
-                       0, 0, nullptr, 0, nullptr, 1, &b);
+  for (VkImage image : {newFallbackShadow, newFallbackLocalShadow}) {
+    if (image != VK_NULL_HANDLE) {
+      recordInitialTransition(image, depthStencil,
+                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              VK_ACCESS_SHADER_READ_BIT);
+    }
+  }
 
-  endImmediate(cmd);
-}
+  for (const auto &frame : frames_) {
+    // Forward skips the G-buffer pass. The shared post-process shader and
+    // picking still need initialized single-sample resources.
+    for (VkImage image : {frame.albedo.image, frame.normal.image,
+                          frame.material.image, frame.emissive.image,
+                          frame.specular.image, frame.sceneColor.image,
+                          frame.pickId.image, frame.materialLayers.image,
+                          frame.materialSheen.image}) {
+      recordInitialTransition(image, VK_IMAGE_ASPECT_COLOR_BIT,
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              VK_PIPELINE_STAGE_TRANSFER_BIT,
+                              VK_ACCESS_TRANSFER_WRITE_BIT);
+      constexpr VkClearColorValue clear{};
+      const VkImageMemoryBarrier shaderRead{
+          .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+          .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+          .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+          .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+          .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+          .image = image,
+          .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 0u, 1u}};
+      vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           &clear, 1, &shaderRead.subresourceRange);
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                           0, 0, nullptr, 0, nullptr, 1, &shaderRead);
+    }
+    recordInitialTransition(frame.oitHeadPointers.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                            VK_IMAGE_LAYOUT_GENERAL,
+                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                                VK_ACCESS_TRANSFER_WRITE_BIT);
+    recordInitialTransition(frame.pickDepth.image, depthStencil,
+                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+  }
 
-void FrameResourceManager::transitionToDepthAttachment(
-    VkImage image, VkImageAspectFlags mask) const {
-  VkCommandBuffer cmd = beginImmediate();
-
-  VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-  b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  b.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-  b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  b.image = image;
-  b.subresourceRange = {mask, 0, 1, 0, 1};
-  b.srcAccessMask = 0;
-  b.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                       VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
-                           VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                       0, 0, nullptr, 0, nullptr, 1, &b);
-
-  endImmediate(cmd);
-}
-
-void FrameResourceManager::transitionToShaderReadOnly(
-    VkImage image, VkImageAspectFlags mask, uint32_t layerCount) const {
-  VkCommandBuffer cmd = beginImmediate();
-
-  VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-  b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  b.image = image;
-  b.subresourceRange = {mask, 0, 1, 0, layerCount};
-  b.srcAccessMask = 0;
-  b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                       0, 0, nullptr, 0, nullptr, 1, &b);
-
-  endImmediate(cmd);
+  command.end();
+  const vk::raii::Fence fence(device, vk::FenceCreateInfo{});
+  const vk::raii::Queue queue(device, device_->graphicsQueue());
+  const vk::CommandBufferSubmitInfo commandInfo(*command);
+  vk::SubmitInfo2 submit{};
+  submit.commandBufferInfoCount = 1;
+  submit.pCommandBufferInfos = &commandInfo;
+  queue.submit2(submit, *fence);
+  detail::waitForSubmittedUpload(
+      [&] {
+        if (device.waitForFences(*fence, true, UINT64_MAX) != vk::Result::eSuccess)
+          throw std::runtime_error("frame image initialization fence wait failed");
+      },
+      [&] { queue.waitIdle(); });
 }
 
 void FrameResourceManager::writeOitMetadata(FrameResources& frame) const {
@@ -1876,8 +1886,6 @@ void FrameResourceManager::ensureFallbackShadowResources() {
     }
 
     fallbackShadowAtlas_ = atlas;
-    transitionToShaderReadOnly(fallbackShadowAtlas_.image,
-                               VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 1u);
   }
 
   if (fallbackShadowSampler_ == VK_NULL_HANDLE) {
@@ -1985,8 +1993,6 @@ void FrameResourceManager::ensureFallbackLocalShadowResources() {
     }
 
     fallbackLocalShadowAtlas_ = atlas;
-    transitionToShaderReadOnly(fallbackLocalShadowAtlas_.image,
-                               VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 1u);
   }
 
   if (fallbackLocalShadowSampler_ == VK_NULL_HANDLE) {
@@ -2009,41 +2015,6 @@ void FrameResourceManager::ensureFallbackLocalShadowResources() {
           "failed to create fallback local shadow sampler");
     }
   }
-}
-
-VkCommandBuffer FrameResourceManager::beginImmediate() const {
-  VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-  ai.commandPool        = commandPool_;
-  ai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-  ai.commandBufferCount = 1;
-
-  VkCommandBuffer cmd{VK_NULL_HANDLE};
-  if (vkAllocateCommandBuffers(device_->device(), &ai, &cmd) != VK_SUCCESS)
-    throw std::runtime_error("failed to allocate immediate command buffer");
-
-  VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-  bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  if (vkBeginCommandBuffer(cmd, &bi) != VK_SUCCESS) {
-    vkFreeCommandBuffers(device_->device(), commandPool_, 1, &cmd);
-    throw std::runtime_error("failed to begin immediate command buffer");
-  }
-  return cmd;
-}
-
-void FrameResourceManager::endImmediate(VkCommandBuffer cmd) const {
-  if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
-    vkFreeCommandBuffers(device_->device(), commandPool_, 1, &cmd);
-    throw std::runtime_error("failed to end immediate command buffer");
-  }
-  VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-  si.commandBufferCount = 1;
-  si.pCommandBuffers    = &cmd;
-  if (vkQueueSubmit(device_->graphicsQueue(), 1, &si, VK_NULL_HANDLE) != VK_SUCCESS) {
-    vkFreeCommandBuffers(device_->device(), commandPool_, 1, &cmd);
-    throw std::runtime_error("failed to submit immediate command buffer");
-  }
-  vkQueueWaitIdle(device_->graphicsQueue());
-  vkFreeCommandBuffers(device_->device(), commandPool_, 1, &cmd);
 }
 
 }  // namespace container::renderer
