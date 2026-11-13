@@ -96,6 +96,19 @@ $env:CONTAINER_RUN_GPU_CAPTURE_VISIBILITY = '1'
 ctest --test-dir out/build/windows-release -C Release -R '^scene_linear_capture_visibility_gpu_regression$' --output-on-failure
 ```
 
+The separate Windows clipping regression uses a test-only Vulkan layer. It
+checks the clipping flag at startup and after resize, then emulates a partly
+or fully clipped drawable when the test forces `clipped = VK_TRUE`. The
+forced controls detect missing PNG pixels and stale EXR values. An application
+that requests `VK_FALSE` must preserve both PNG scopes and every EXR pixel. The
+desktop test above exercises actual window visibility on the installed driver.
+
+```powershell
+cmake --build out/build/windows-release --config Release --target swapchain_capture_clip_layer VulkanSceneRenderer
+$env:CONTAINER_RUN_GPU_CAPTURE_CLIPPING = '1'
+ctest --test-dir out/build/windows-release -C Release -R '^swapchain_capture_clipping_gpu_regression$' --output-on-failure
+```
+
 The Windows RTX 2080 SUPER run passed 81 captures with Vulkan synchronization
 validation. Scene-linear EXRs matched clean controls in both raster renderers
 with TAA, FSR and DLSS. The 32-, 128- and 512-sample Cornell EXRs matched the

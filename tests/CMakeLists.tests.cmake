@@ -2728,13 +2728,37 @@ target_sources(renderer_mcp_measurement_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/renderer/core/RendererMcpMeasurement.cpp
 )
 
+if(WIN32 AND Python3_Interpreter_FOUND)
+    add_library(swapchain_capture_clip_layer MODULE EXCLUDE_FROM_ALL
+        "${TEST_VALIDATION_DIR}/fixtures/swapchain_capture_clip_layer.cpp"
+        "${TEST_VALIDATION_DIR}/fixtures/swapchain_capture_clip_layer.def")
+    target_include_directories(swapchain_capture_clip_layer PRIVATE ${Vulkan_INCLUDE_DIRS})
+    set_target_properties(swapchain_capture_clip_layer PROPERTIES
+        PREFIX ""
+        OUTPUT_NAME VkLayer_clip_fixture
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test-fixtures/swapchain-capture-clip/$<CONFIG>"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test-fixtures/swapchain-capture-clip/$<CONFIG>")
+    file(GENERATE OUTPUT "$<TARGET_FILE_DIR:swapchain_capture_clip_layer>/VkLayer_clip_fixture.json"
+        INPUT "${TEST_VALIDATION_DIR}/fixtures/VkLayer_clip_fixture.json")
+
+    add_test(NAME swapchain_capture_clipping_gpu_regression
+        COMMAND "${Python3_EXECUTABLE}" -B
+            "${TEST_VALIDATION_DIR}/swapchain_capture_clipping_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --layer-dir "$<TARGET_FILE_DIR:swapchain_capture_clip_layer>"
+            --output "${TEST_RESULTS_DIR}/swapchain-capture-clipping")
+    set_tests_properties(swapchain_capture_clipping_gpu_regression PROPERTIES
+        LABELS "requires-vulkan;requires-display;visual-regression"
+        RUN_SERIAL TRUE SKIP_RETURN_CODE 77 TIMEOUT 1200)
+endif()
+
 if(ENABLE_RENDERER_MCP)
     if(WIN32 AND Python3_Interpreter_FOUND)
         add_test(NAME scene_linear_capture_visibility_gpu_regression
             COMMAND "${Python3_EXECUTABLE}" -B
                 "${TEST_VALIDATION_DIR}/scene_linear_capture_visibility_runtime_regression.py"
                 "$<TARGET_FILE:VulkanSceneRenderer>"
-                "${TEST_RESULTS_DIR}/scene-linear-capture-visibility")
+                "${TEST_RESULTS_DIR}/scene-linear-capture-visibility" --managed-output)
         set_tests_properties(scene_linear_capture_visibility_gpu_regression PROPERTIES
             LABELS "requires-vulkan;requires-display;visual-regression"
             RUN_SERIAL TRUE SKIP_RETURN_CODE 77 TIMEOUT 600)
