@@ -39,7 +39,10 @@ target_link_libraries(VulkanSceneRenderer_vulkan_device PUBLIC
     Dep_Math
     Dep_Windowing
 )
-target_link_libraries(VulkanSceneRenderer_vulkan_device PRIVATE VulkanSceneRenderer_dlss)
+target_link_libraries(VulkanSceneRenderer_vulkan_device PRIVATE
+    VulkanSceneRenderer_dlss
+    VulkanSceneRenderer_log
+)
 
 # ── 3. GPU resources (memory, buffers, textures, pipelines) ──────────────────
 add_library(VulkanSceneRenderer_gpu_resource

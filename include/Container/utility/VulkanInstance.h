@@ -22,6 +22,7 @@ struct InstanceCreateInfo {
   const void* next{nullptr};
   bool enableDlssUpscaling{false};
   bool enableDlssRayReconstruction{false};
+  bool enableSurfaceMaintenance1{false};
 };
 
 class VulkanInstance {
@@ -38,6 +39,8 @@ class VulkanInstance {
   [[nodiscard]] const vk::raii::Instance& raii() const noexcept { return ownedInstance_; }
   [[nodiscard]] const std::string& dlssUpscalingStatus() const noexcept { return dlssUpscalingStatus_; }
   [[nodiscard]] const std::string& dlssRayReconstructionStatus() const noexcept { return dlssRayReconstructionStatus_; }
+  [[nodiscard]] bool khrSurfaceMaintenance1Enabled() const noexcept { return khrSurfaceMaintenance1Enabled_; }
+  [[nodiscard]] bool extSurfaceMaintenance1Enabled() const noexcept { return extSurfaceMaintenance1Enabled_; }
 
  private:
   static bool checkValidationLayerSupport(
@@ -48,6 +51,8 @@ class VulkanInstance {
   VkInstance instance_{nullptr};
   std::string dlssUpscalingStatus_{"DLSS Vulkan extension discovery was not requested"};
   std::string dlssRayReconstructionStatus_{"DLSS Ray Reconstruction Vulkan extension discovery was not requested"};
+  bool khrSurfaceMaintenance1Enabled_{false};
+  bool extSurfaceMaintenance1Enabled_{false};
 };
 
 }  // namespace container::gpu

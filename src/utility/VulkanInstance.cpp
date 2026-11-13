@@ -6,11 +6,55 @@
 #include <algorithm>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 namespace container::gpu {
 namespace {
+
+bool hasExtension(const std::vector<const char*>& extensions,
+                  std::string_view name) {
+  return std::ranges::any_of(extensions, [name](const char* extension) {
+    return extension != nullptr && name == extension;
+  });
+}
+
+void addSurfaceMaintenance1Extensions(std::vector<const char*>& enabled) {
+  if (!hasExtension(enabled, VK_KHR_SURFACE_EXTENSION_NAME)) return;
+
+  uint32_t count = 0;
+  if (vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr) != VK_SUCCESS)
+    return;
+  std::vector<VkExtensionProperties> available(count);
+  if (vkEnumerateInstanceExtensionProperties(nullptr, &count, available.data()) != VK_SUCCESS)
+    return;
+  available.resize(count);
+
+  const auto supported = [&available, &enabled](std::string_view name) {
+    return hasExtension(enabled, name) ||
+           std::ranges::any_of(available, [name](const auto& extension) {
+             return name == extension.extensionName;
+           });
+  };
+  if (!supported(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME)) return;
+
+  const auto enable = [&enabled](const char* name) {
+    if (!hasExtension(enabled, name)) enabled.push_back(name);
+  };
+  // The device may expose only one spelling. Enable both available instance
+  // prerequisites so device creation can choose a matching extension.
+  const auto enableMaintenance = [&supported, &enable](const char* name) {
+    if (supported(name)) {
+      enable(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+      enable(name);
+    }
+  };
+#ifdef VK_KHR_surface_maintenance1
+  enableMaintenance(VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
+#endif
+  enableMaintenance(VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
+}
 
 std::string addDlssInstanceExtensions(std::vector<const char*>& enabled,
                                       const std::vector<std::string>& required) {
@@ -23,13 +67,8 @@ std::string addDlssInstanceExtensions(std::vector<const char*>& enabled,
   if (vkEnumerateInstanceExtensionProperties(nullptr, &count, available.data()) != VK_SUCCESS)
     return "Could not enumerate Vulkan instance extensions for DLSS";
 
-  const auto alreadyEnabled = [&enabled](const std::string& name) {
-    return std::ranges::any_of(enabled, [&name](const char* extension) {
-      return extension && name == extension;
-    });
-  };
   for (const auto& name : required) {
-    if (!alreadyEnabled(name) &&
+    if (!hasExtension(enabled, name) &&
         std::ranges::none_of(available, [&name](const VkExtensionProperties& extension) {
           return name == extension.extensionName;
         })) {
@@ -37,7 +76,7 @@ std::string addDlssInstanceExtensions(std::vector<const char*>& enabled,
     }
   }
   for (const auto& name : required) {
-    if (!alreadyEnabled(name)) enabled.push_back(name.c_str());
+    if (!hasExtension(enabled, name)) enabled.push_back(name.c_str());
   }
   return {};
 }
@@ -57,6 +96,14 @@ VulkanInstance::VulkanInstance(const InstanceCreateInfo& createInfo) {
     throw std::runtime_error("Requested Vulkan instance layer unavailable; check validation installation or GFXReconstruct layer path");
 
   auto extensions = createInfo.requiredExtensions;
+  if (createInfo.enableSurfaceMaintenance1)
+    addSurfaceMaintenance1Extensions(extensions);
+#ifdef VK_KHR_surface_maintenance1
+  khrSurfaceMaintenance1Enabled_ =
+      hasExtension(extensions, VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
+#endif
+  extSurfaceMaintenance1Enabled_ =
+      hasExtension(extensions, VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
   renderer::DlssExtensionRequirements dlssExtensions;
   renderer::DlssExtensionRequirements dlssRrExtensions;
   if (createInfo.enableDlssUpscaling) {
@@ -106,7 +153,9 @@ VulkanInstance::VulkanInstance(VulkanInstance&& other) noexcept
     : context_(std::move(other.context_)), ownedInstance_(std::move(other.ownedInstance_)),
       instance_{std::exchange(other.instance_, VK_NULL_HANDLE)},
       dlssUpscalingStatus_(std::move(other.dlssUpscalingStatus_)),
-      dlssRayReconstructionStatus_(std::move(other.dlssRayReconstructionStatus_)) {}
+      dlssRayReconstructionStatus_(std::move(other.dlssRayReconstructionStatus_)),
+      khrSurfaceMaintenance1Enabled_(std::exchange(other.khrSurfaceMaintenance1Enabled_, false)),
+      extSurfaceMaintenance1Enabled_(std::exchange(other.extSurfaceMaintenance1Enabled_, false)) {}
 
 VulkanInstance& VulkanInstance::operator=(VulkanInstance&& other) noexcept {
   if (this != &other) {
@@ -118,6 +167,8 @@ VulkanInstance& VulkanInstance::operator=(VulkanInstance&& other) noexcept {
     context_ = std::move(other.context_);
     dlssUpscalingStatus_ = std::move(other.dlssUpscalingStatus_);
     dlssRayReconstructionStatus_ = std::move(other.dlssRayReconstructionStatus_);
+    khrSurfaceMaintenance1Enabled_ = std::exchange(other.khrSurfaceMaintenance1Enabled_, false);
+    extSurfaceMaintenance1Enabled_ = std::exchange(other.extSurfaceMaintenance1Enabled_, false);
   }
   return *this;
 }

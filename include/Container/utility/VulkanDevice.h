@@ -23,6 +23,7 @@ struct DeviceCreateInfo {
   VkPhysicalDeviceFeatures enabledFeatures{};  // Required features.
   VkPhysicalDeviceFeatures optionalFeatures{}; // Enabled when supported.
   const void* next{nullptr};
+  bool enableSwapchainMaintenance1{false};
 };
 
 class VulkanDevice {
@@ -69,6 +70,8 @@ class VulkanDevice {
   [[nodiscard]] const std::string& dlssUpscalingStatus() const noexcept { return dlssUpscalingStatus_; }
   [[nodiscard]] bool dlssRayReconstructionEnabled() const noexcept { return dlssRayReconstructionStatus_.empty(); }
   [[nodiscard]] const std::string& dlssRayReconstructionStatus() const noexcept { return dlssRayReconstructionStatus_; }
+  [[nodiscard]] bool swapchainMaintenance1Enabled() const noexcept { return swapchainMaintenance1Extension_ != nullptr; }
+  [[nodiscard]] const char* swapchainMaintenance1Extension() const noexcept { return swapchainMaintenance1Extension_; }
 
  private:
   std::optional<QueueFamilyIndices> suitableDeviceQueues(VkPhysicalDevice device) const;
@@ -100,6 +103,7 @@ class VulkanDevice {
   bool fsrUpscalingEnabled_{false};
   std::string dlssUpscalingStatus_;
   std::string dlssRayReconstructionStatus_;
+  const char* swapchainMaintenance1Extension_{nullptr};
 };
 
 }  // namespace container::gpu

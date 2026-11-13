@@ -517,6 +517,11 @@ add_custom_test(queue_family_selection_tests
     Dep_VulkanCore)
 set_tests_properties(queue_family_selection_tests PROPERTIES LABELS "cpu;vulkan")
 
+add_custom_test(swapchain_present_result_tests
+    ${CMAKE_SOURCE_DIR}/tests/utility/swapchain_present_result_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_VulkanCore)
+set_tests_properties(swapchain_present_result_tests PROPERTIES LABELS "cpu;vulkan")
+
 add_test(NAME ddgi_python_regressions
     COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover
             -s "${CMAKE_SOURCE_DIR}/tests/visual-regression/ddgi" -p "test_*.py"
@@ -2750,6 +2755,15 @@ if(WIN32 AND Python3_Interpreter_FOUND)
     set_tests_properties(swapchain_capture_clipping_gpu_regression PROPERTIES
         LABELS "requires-vulkan;requires-display;visual-regression"
         RUN_SERIAL TRUE SKIP_RETURN_CODE 77 TIMEOUT 1200)
+
+    add_test(NAME swapchain_retirement_gpu_regression
+        COMMAND "${Python3_EXECUTABLE}" -B
+            "${TEST_VALIDATION_DIR}/swapchain_retirement_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/swapchain-retirement" --managed-output)
+    set_tests_properties(swapchain_retirement_gpu_regression PROPERTIES
+        LABELS "requires-vulkan;requires-display"
+        RUN_SERIAL TRUE SKIP_RETURN_CODE 77 TIMEOUT 600)
 endif()
 
 if(ENABLE_RENDERER_MCP)

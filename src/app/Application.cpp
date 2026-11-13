@@ -287,7 +287,9 @@ void Application::initVulkan() {
       ctx.deviceWrapper->physicalDevice(),
       ctx.deviceWrapper->device(),
       ctx.surface,
-      ctx.deviceWrapper->queueFamilyIndices());
+      ctx.deviceWrapper->queueFamilyIndices(),
+      ctx.deviceWrapper->swapchainMaintenance1Enabled(),
+      config_.maxFramesInFlight);
   swapChainManager_->initialize();
 
   commandBufferManager_ = std::make_unique<container::renderer::CommandBufferManager>(

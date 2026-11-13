@@ -103,6 +103,22 @@ Prefer adding new behavior to the narrowest manager that already owns the data
 being mutated. Keep `RendererFrontend` as orchestration code rather than a home
 for feature-specific Vulkan resources.
 
+## Swapchain presentation lifetime
+
+`SwapChainManager` owns each generation's swapchain and per-image render-finished
+semaphores. Resize drains graphics work before rebuilding render targets. When
+the device enables KHR or EXT swapchain maintenance1, the manager keeps retired
+generations until the present fences for their enqueued operations signal. The
+same fences are drained at shutdown.
+
+With base WSI, a retired generation that submitted a present stays alive until
+an acquire fence confirms reacquisition of a successfully presented image in a
+newer generation. Repeated resizes can retain several generations until that
+proof arrives. At shutdown there may be no future acquire, and base WSI offers
+no portable proof of final presentation completion. Teardown uses device idle
+for this case. See the [Khronos swapchain recreation sample](https://docs.vulkan.org/samples/latest/samples/api/swapchain_recreation/README.html)
+and [swapchain semaphore reuse guide](https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html).
+
 ## MSAA
 
 The planned motion-vector and TAA work follows

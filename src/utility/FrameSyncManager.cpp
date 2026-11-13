@@ -10,11 +10,9 @@ FrameSyncManager::FrameSyncManager(VkDevice device, size_t framesInFlight)
 
 FrameSyncManager::~FrameSyncManager() { cleanup(); }
 
-void FrameSyncManager::initialize(size_t swapChainImageCount) {
+void FrameSyncManager::initialize() {
   // If someone calls initialize twice, don't accumulate resources.
   cleanup();
-
-  swapChainImageCount_ = swapChainImageCount;
 
   VkSemaphoreCreateInfo semaphoreInfo{};
   semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -32,15 +30,6 @@ void FrameSyncManager::initialize(size_t swapChainImageCount) {
     }
   }
 
-  renderFinishedSemaphores_.resize(swapChainImageCount_);
-  for (size_t i = 0; i < swapChainImageCount_; ++i) {
-    VkResult res = createOwnedSemaphore(device_, &semaphoreInfo, nullptr,
-                                     &renderFinishedSemaphores_[i]);
-    if (res != VK_SUCCESS) {
-      throw std::runtime_error("Failed to create renderFinished semaphore!");
-    }
-  }
-
   inFlightFences_.resize(framesInFlight_);
   for (size_t i = 0; i < framesInFlight_; ++i) {
     VkResult res =
@@ -52,8 +41,6 @@ void FrameSyncManager::initialize(size_t swapChainImageCount) {
 }
 
 void FrameSyncManager::cleanup() {
-  destroyRenderFinishedSemaphores();
-
   for (VkSemaphore sem : imageAvailableSemaphores_) {
     if (sem != VK_NULL_HANDLE) {
       destroyOwnedSemaphore(device_, sem, nullptr);
@@ -67,16 +54,10 @@ void FrameSyncManager::cleanup() {
     }
   }
   inFlightFences_.clear();
-
-  swapChainImageCount_ = 0;
 }
 
 VkSemaphore FrameSyncManager::imageAvailable(size_t frameIndex) const {
   return imageAvailableSemaphores_.at(frameIndex);
-}
-
-VkSemaphore FrameSyncManager::renderFinishedForImage(size_t imageIndex) const {
-  return renderFinishedSemaphores_.at(imageIndex);
 }
 
 VkFence FrameSyncManager::fence(size_t frameIndex) const {
@@ -113,34 +94,6 @@ void FrameSyncManager::resetFence(size_t frameIndex) const {
   if (res != VK_SUCCESS) {
     throw std::runtime_error("Failed to reset fence!");
   }
-}
-
-void FrameSyncManager::recreateRenderFinishedSemaphores(
-    size_t swapChainImageCount) {
-  destroyRenderFinishedSemaphores();
-
-  swapChainImageCount_ = swapChainImageCount;
-
-  VkSemaphoreCreateInfo semaphoreInfo{};
-  semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-
-  renderFinishedSemaphores_.resize(swapChainImageCount_);
-  for (size_t i = 0; i < swapChainImageCount_; ++i) {
-    VkResult res = createOwnedSemaphore(device_, &semaphoreInfo, nullptr,
-                                     &renderFinishedSemaphores_[i]);
-    if (res != VK_SUCCESS) {
-      throw std::runtime_error("Failed to recreate renderFinished semaphore!");
-    }
-  }
-}
-
-void FrameSyncManager::destroyRenderFinishedSemaphores() {
-  for (VkSemaphore sem : renderFinishedSemaphores_) {
-    if (sem != VK_NULL_HANDLE) {
-      destroyOwnedSemaphore(device_, sem, nullptr);
-    }
-  }
-  renderFinishedSemaphores_.clear();
 }
 
 }  // namespace container::gpu
