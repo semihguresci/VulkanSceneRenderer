@@ -2,6 +2,8 @@
 
 static const uint INVALID_NODE_INDEX = 0xffffffffu;
 static const uint MAX_OIT_NODES_PER_PIXEL = 64u;
+static const uint OIT_COUNTER_STRIPE_COUNT = 64u;
+static const uint OIT_COUNTER_OVERFLOW_INDEX = OIT_COUNTER_STRIPE_COUNT;
 
 struct TransparentNode
 {

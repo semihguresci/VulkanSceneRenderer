@@ -21,6 +21,7 @@
 #include "Container/renderer/effects/BloomManager.h"
 #include "Container/renderer/effects/OpenVdbVolumeRenderer.h"
 #include "Container/renderer/effects/ExposureManager.h"
+#include "Container/renderer/effects/OitManager.h"
 #include "Container/renderer/effects/VolumetricFogPass.h"
 #include "Container/renderer/forward/ForwardRasterLightingPassRecorder.h"
 #include "Container/renderer/forward/ForwardRasterPipelineBridge.h"
@@ -139,7 +140,7 @@ void registerForwardRasterFrameResources(FrameResourceRegistry &registry) {
       FrameResourceLifetime::PerFrame);
   registry.registerBuffer(
       kForwardRasterTechnique, "oit-counter-buffer",
-      FrameBufferDesc{.size = sizeof(uint32_t),
+      FrameBufferDesc{.size = kOitCounterBufferSize,
                       .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                VK_BUFFER_USAGE_TRANSFER_DST_BIT},
       FrameResourceLifetime::PerFrame);

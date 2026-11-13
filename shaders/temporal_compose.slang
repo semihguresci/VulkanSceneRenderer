@@ -51,7 +51,7 @@ void computeMain(uint3 id : SV_DispatchThreadID)
         // One velocity cannot describe multiple layers. Reject history for any
         // covered transparent pixel, including pool overflow/partial lists.
         if (headPointerImage.Load(int2(pixel)) != INVALID_NODE_INDEX ||
-            nodeCounter[0] >= uOit.nodeCapacity)
+            nodeCounter[OIT_COUNTER_OVERFLOW_INDEX] != 0u)
             reactive = 1.0;
     }
 #if DLSS_TRANSPARENCY

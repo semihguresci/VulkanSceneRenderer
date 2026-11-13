@@ -9319,7 +9319,8 @@ void GuiManager::drawRendererTelemetryWindow() {
     if (latest.resources.oitPoolOverflowed)
       ImGui::TextUnformatted("Transparency exceeded the node pool. Some fragments were dropped.");
     if (latest.resources.clusteredLightingFallback)
-      ImGui::TextUnformatted("Clustered lighting unavailable at this resolution. Using raster lighting.");
+      ImGui::Text("Clustered lighting unavailable at this resolution. Using up to %u fullscreen point lights.",
+                  kMaxDeferredPointLights);
 
     const uint32_t frustumCulled =
         latest.culling.inputCount >= latest.culling.frustumPassedCount

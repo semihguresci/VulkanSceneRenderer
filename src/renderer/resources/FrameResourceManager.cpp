@@ -1,6 +1,7 @@
 #include "Container/renderer/resources/FrameResourceManager.h"
 
 #include "Container/common/CommonVMA.h"
+#include "Container/renderer/effects/OitManager.h"
 #include "Container/renderer/lighting/SubmittedUploadWait.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/PipelineManager.h"
@@ -374,16 +375,20 @@ bool FrameResourceManager::growOitPoolIfNeeded(uint32_t imageIndex) {
 
   if (vmaInvalidateAllocation(allocationMgr_->memoryManager()->allocator(),
                                frame.oitCounterBuffer.allocation, 0,
-                               sizeof(uint32_t)) != VK_SUCCESS)
+                               kOitCounterBufferSize) != VK_SUCCESS)
     throw std::runtime_error("failed to invalidate OIT counter buffer");
 
-  const uint32_t required = mapped[0];
-  if (required <= frame.oitNodeCapacity) return false;
+  const auto counters =
+      std::span<const uint32_t, kOitCounterWordCount>(mapped, kOitCounterWordCount);
+  const uint64_t required =
+      requiredOitNodeCapacityAfterOverflow(counters, frame.oitNodeCapacity);
+  if (required == 0) return false;
 
   if (frame.oitNodeCapacity >= maxOitNodeCapacity_) {
     if (!oitPoolOverflowed_)
-      spdlog::warn("OIT node pool reached the storage buffer range limit of {} nodes. "
-                   "Additional transparent fragments were dropped.", maxOitNodeCapacity_);
+      spdlog::warn("OIT storage reached the device limit of {} nodes. "
+                   "Some transparent fragments were dropped.",
+                   maxOitNodeCapacity_);
     oitPoolOverflowed_ = true;
     return false;
   }
@@ -426,6 +431,8 @@ void FrameResourceManager::create(
   maxOitNodeCapacity_ = properties.limits.maxStorageBufferRange / sizeof(OitNode);
   if (maxOitNodeCapacity_ == 0)
     throw std::runtime_error("storage buffer range cannot fit an OIT node");
+  if (properties.limits.maxStorageBufferRange < kOitCounterBufferSize)
+    throw std::runtime_error("storage buffer range cannot fit the OIT allocation counters");
   oitPoolOverflowed_ = false;
   const auto requestedCapacity = requestedOitNodeCapacity();
   const auto nodeCapacity = static_cast<uint32_t>(
@@ -605,12 +612,12 @@ void FrameResourceManager::create(
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
     f.oitCounterBuffer = allocationMgr_->createBuffer(
-        sizeof(uint32_t),
+        kOitCounterBufferSize,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         VMA_MEMORY_USAGE_AUTO,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
             VMA_ALLOCATION_CREATE_MAPPED_BIT);
-    // Pool growth reads this counter before recording the frame's GPU clear.
+    // Pool growth reads the counters before recording the frame's GPU clear.
     // A newly created frame (also after MSAA/resize) has no prior submission,
     // so initialize its mapped occupancy rather than interpreting reused
     // allocation contents as an overflow and growing the pool to that value.
@@ -618,10 +625,10 @@ void FrameResourceManager::create(
         f.oitCounterBuffer.allocation_info.pMappedData);
     if (!initialCounter)
       throw std::runtime_error("OIT counter buffer is not persistently mapped");
-    *initialCounter = 0;
+    std::fill_n(initialCounter, kOitCounterWordCount, 0u);
     if (vmaFlushAllocation(allocationMgr_->memoryManager()->allocator(),
                            f.oitCounterBuffer.allocation, 0,
-                           sizeof(uint32_t)) != VK_SUCCESS)
+                           kOitCounterBufferSize) != VK_SUCCESS)
       throw std::runtime_error("failed to initialize OIT counter buffer");
     f.oitMetadataBuffer = allocationMgr_->createBuffer(
         sizeof(OitMetadata),
@@ -1372,7 +1379,8 @@ void FrameResourceManager::updateDescriptorSets(
 
       VkDescriptorBufferInfo nodeInfo{f.oitNodeBuffer.buffer, 0,
                                       sizeof(OitNode) * f.oitNodeCapacity};
-      VkDescriptorBufferInfo counterInfo{f.oitCounterBuffer.buffer, 0, sizeof(uint32_t)};
+      VkDescriptorBufferInfo counterInfo{f.oitCounterBuffer.buffer, 0,
+                                         kOitCounterBufferSize};
       VkDescriptorBufferInfo metaInfo{f.oitMetadataBuffer.buffer, 0, sizeof(OitMetadata)};
 
       std::array<VkWriteDescriptorSet, 4> w{};
@@ -1706,7 +1714,7 @@ void FrameResourceManager::publishFrameResourceBindings() {
                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                    VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     bindSharedBuffer("oit-counter-buffer", f.oitCounterBuffer.buffer,
-               sizeof(uint32_t),
+               kOitCounterBufferSize,
                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                    VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     bindSharedBuffer("oit-metadata-buffer", f.oitMetadataBuffer.buffer,

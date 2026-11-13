@@ -969,7 +969,7 @@ TEST(RenderingConventionTests, TransparentOitWritesAreDepthTestedEarly) {
   EXPECT_TRUE(
       contains(pipelineBuilder, "transparentDS.depthWriteEnable = VK_FALSE"));
   EXPECT_TRUE(contains(transparent, "[earlydepthstencil]"));
-  EXPECT_TRUE(contains(transparent, "InterlockedAdd(nodeCounter[0]"));
+  EXPECT_TRUE(contains(transparent, "InterlockedCompareExchange(nodeCounter[stripe]"));
   EXPECT_TRUE(contains(transparent,
                        "InterlockedExchange(headPointerImage[pixelCoord]"));
 }

@@ -1,5 +1,6 @@
 #include "Container/renderer/effects/OitManager.h"
 
+#include <algorithm>
 #include <array>
 
 namespace container::renderer {
@@ -20,7 +21,27 @@ VkBufferMemoryBarrier2 makeOitCounterReadBarrier(VkBuffer counterBuffer) {
       .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
       .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
       .buffer = counterBuffer,
-      .size = VK_WHOLE_SIZE};
+      .size = kOitCounterBufferSize};
+}
+
+uint64_t requiredOitNodeCapacityAfterOverflow(
+    std::span<const uint32_t, kOitCounterWordCount> counters,
+    uint32_t currentCapacity) {
+  if (counters[kOitCounterOverflowIndex] == 0)
+    return 0;
+
+  uint64_t required = uint64_t{currentCapacity} + 1;
+  for (uint32_t stripe = 0; stripe < kOitCounterStripeCount; ++stripe) {
+    const uint32_t attempts = counters[stripe];
+    if (attempts == 0)
+      continue;
+    // Stripe s allocates nodes s, s + stripeCount, and so on. Capacity is
+    // one past the largest attempted index across the stripes.
+    const uint64_t stripeRequired =
+        uint64_t{attempts - 1} * kOitCounterStripeCount + stripe + 1;
+    required = std::max(required, stripeRequired);
+  }
+  return required;
 }
 
 OitManager::OitManager(std::shared_ptr<container::gpu::VulkanDevice> device)
@@ -52,7 +73,7 @@ void OitManager::clearResources(VkCommandBuffer cmd,
   counterClear.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   counterClear.buffer              = resources.counterBuffer;
   counterClear.offset              = 0;
-  counterClear.size                = sizeof(uint32_t);
+  counterClear.size                = kOitCounterBufferSize;
   counterClear.srcAccessMask       = 0;
   counterClear.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
 
@@ -65,7 +86,7 @@ void OitManager::clearResources(VkCommandBuffer cmd,
   const VkImageSubresourceRange clearRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
   vkCmdClearColorImage(cmd, resources.headPointerImage,
                        VK_IMAGE_LAYOUT_GENERAL, &clearColor, 1, &clearRange);
-  vkCmdFillBuffer(cmd, resources.counterBuffer, 0, sizeof(uint32_t), 0u);
+  vkCmdFillBuffer(cmd, resources.counterBuffer, 0, kOitCounterBufferSize, 0u);
 
   VkImageMemoryBarrier headReady = headClear;
   headReady.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;

@@ -802,30 +802,33 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         return 0.0.xxxx;
     }
 
-    // Reserve one range for the active lanes to reduce contention on the
-    // counter. Saturate beyond the largest pool so indices cannot wrap.
-    uint laneCount = WaveActiveCountBits(true);
-    uint laneOffset = WavePrefixCountBits(true);
-    uint firstNode = 0u;
-    if (WaveIsFirstLane())
+    // Interleave neighboring pixels across independent counters. Saturation
+    // preserves overflow demand without ever reusing an index in this frame.
+    uint stripe = (pixelCoord.x + 23u * pixelCoord.y) %
+                  min(OIT_COUNTER_STRIPE_COUNT, uOit.nodeCapacity);
+    uint stripeLimit = (uOit.counterLimit - 2u - stripe) / OIT_COUNTER_STRIPE_COUNT + 2u;
+    uint ordinal;
+    InterlockedAdd(nodeCounter[stripe], 0u, ordinal);
+    [loop]
+    while (ordinal < stripeLimit)
     {
-        InterlockedAdd(nodeCounter[0], 0u, firstNode);
-        [loop]
-        while (firstNode < uOit.counterLimit)
+        uint previousCount;
+        InterlockedCompareExchange(nodeCounter[stripe], ordinal, ordinal + 1u, previousCount);
+        if (previousCount == ordinal)
         {
-            uint next = firstNode + min(laneCount, uOit.counterLimit - firstNode);
-            uint previousCount;
-            InterlockedCompareExchange(nodeCounter[0], firstNode, next, previousCount);
-            if (previousCount == firstNode)
-            {
-                break;
-            }
-            firstNode = previousCount;
+            break;
         }
+        ordinal = previousCount;
     }
-    uint nodeIndex = WaveReadLaneFirst(firstNode) + laneOffset;
+    uint nodeIndex = ordinal * OIT_COUNTER_STRIPE_COUNT + stripe;
     if (nodeIndex >= uOit.nodeCapacity)
     {
+        // One fragment per stripe is sufficient to flag any dropped nodes.
+        uint stripeCapacity = (uOit.nodeCapacity - 1u - stripe) / OIT_COUNTER_STRIPE_COUNT + 1u;
+        if (ordinal == stripeCapacity)
+        {
+            InterlockedOr(nodeCounter[OIT_COUNTER_OVERFLOW_INDEX], 1u);
+        }
         return 0.0.xxxx;
     }
 
