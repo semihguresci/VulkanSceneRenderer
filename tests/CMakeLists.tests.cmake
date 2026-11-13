@@ -512,6 +512,11 @@ add_custom_test(async_model_preparation_tests
 
 # ── CPU-only tests (no shaders needed) ───────────────────────────────────────
 
+add_custom_test(queue_family_selection_tests
+    ${CMAKE_SOURCE_DIR}/tests/utility/queue_family_selection_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_VulkanCore)
+set_tests_properties(queue_family_selection_tests PROPERTIES LABELS "cpu;vulkan")
+
 add_test(NAME ddgi_python_regressions
     COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover
             -s "${CMAKE_SOURCE_DIR}/tests/visual-regression/ddgi" -p "test_*.py"

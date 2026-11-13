@@ -11,6 +11,7 @@ namespace container::gpu {
 // Vulkan queue family indices discovered during physical device selection.
 // Shared between VulkanDevice, SwapChainManager, and other subsystems.
 struct QueueFamilyIndices {
+  // The renderer records both graphics and compute commands on this family.
   std::optional<uint32_t> graphicsFamily;
   std::optional<uint32_t> presentFamily;
 

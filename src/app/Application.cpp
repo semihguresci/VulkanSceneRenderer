@@ -273,7 +273,8 @@ void Application::initVulkan() {
       window_->getNativeWindow(),
       ctx.deviceWrapper->physicalDevice(),
       ctx.deviceWrapper->device(),
-      ctx.surface);
+      ctx.surface,
+      ctx.deviceWrapper->queueFamilyIndices());
   swapChainManager_->initialize();
 
   commandBufferManager_ = std::make_unique<container::renderer::CommandBufferManager>(

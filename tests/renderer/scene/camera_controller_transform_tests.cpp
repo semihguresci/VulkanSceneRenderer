@@ -42,7 +42,8 @@ protected:
   // These transform APIs only use the graph. Default allocation state and a
   // null-handle swapchain require no Vulkan instance, window or device.
   container::gpu::AllocationManager allocation;
-  container::gpu::SwapChainManager swapchain{nullptr, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
+  container::gpu::SwapChainManager swapchain{nullptr, VK_NULL_HANDLE,
+                                             VK_NULL_HANDLE, VK_NULL_HANDLE, {}};
   container::scene::SceneGraph graph;
   container::ecs::World world;
   container::window::InputManager input;

@@ -5,6 +5,7 @@
 #include "Container/utility/RayQuerySupport.h"
 #include "Container/utility/VulkanInstance.h"
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -70,7 +71,7 @@ class VulkanDevice {
   [[nodiscard]] const std::string& dlssRayReconstructionStatus() const noexcept { return dlssRayReconstructionStatus_; }
 
  private:
-  bool isDeviceSuitable(VkPhysicalDevice device) const;
+  std::optional<QueueFamilyIndices> suitableDeviceQueues(VkPhysicalDevice device) const;
   bool checkDeviceExtensionSupport(VkPhysicalDevice device) const;
   bool supportsRequestedFeatures(VkPhysicalDevice device) const;
 
