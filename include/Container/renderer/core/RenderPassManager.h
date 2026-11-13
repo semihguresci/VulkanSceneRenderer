@@ -7,6 +7,8 @@
 
 namespace container::renderer {
 
+struct RendererDepthStencilResolve;
+
 struct RenderPasses {
   RenderingPassHandle depthPrepass{VK_NULL_HANDLE};
   RenderingPassHandle bimDepthPrepass{VK_NULL_HANDLE};
@@ -40,7 +42,8 @@ class RenderPassManager {
               VkFormat pickIdFormat,
               VkFormat materialLayersFormat,
               VkFormat materialSheenFormat,
-              VkSampleCountFlagBits msaaSamples);
+              VkSampleCountFlagBits msaaSamples,
+              RendererDepthStencilResolve depthStencilResolve);
 
   void destroy();
 

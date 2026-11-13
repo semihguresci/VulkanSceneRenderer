@@ -146,7 +146,8 @@ void RenderPassManager::create(VkFormat swapchainFormat,
                                VkFormat pickIdFormat,
                                VkFormat materialLayersFormat,
                                VkFormat materialSheenFormat,
-                               VkSampleCountFlagBits msaaSamples) {
+                               VkSampleCountFlagBits msaaSamples,
+                               RendererDepthStencilResolve depthStencilResolve) {
   VkDevice dev = device_->device();
   VkPhysicalDeviceProperties properties{};
   vkGetPhysicalDeviceProperties(device_->physicalDevice(), &properties);
@@ -154,9 +155,9 @@ void RenderPassManager::create(VkFormat swapchainFormat,
     throw std::runtime_error(
         "Deferred material layers require eight color attachments");
   const bool useMsaa = msaaSamples != VK_SAMPLE_COUNT_1_BIT;
-  const VkResolveModeFlagBits depthResolveMode = preferredDepthResolveMode(
-      queryRendererMsaaDeviceSupport(device_->physicalDevice())
-          .depthResolveModes);
+  if (useMsaa && depthStencilResolve.depth == VK_RESOLVE_MODE_NONE) {
+    throw std::invalid_argument("MSAA render passes require a depth resolve mode");
+  }
 
   // ---- Depth Prepass ----
   VkAttachmentDescription ds{};
@@ -205,8 +206,8 @@ void RenderPassManager::create(VkFormat swapchainFormat,
     depthAttachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
     depthAttachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     depthAttachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    depthResolve.depthResolveMode = depthResolveMode;
-    depthResolve.stencilResolveMode = VK_RESOLVE_MODE_NONE;
+    depthResolve.depthResolveMode = depthStencilResolve.depth;
+    depthResolve.stencilResolveMode = depthStencilResolve.stencil;
     auto depthAttachments2 = MakeAttachmentDescriptions2(depthAttachments);
     auto depthDeps2 = MakeDependencies2(depthDeps);
     const VkAttachmentReference2 dsRef2 = MakeAttachmentReference2(dsRef);
@@ -283,8 +284,8 @@ void RenderPassManager::create(VkFormat swapchainFormat,
         VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     bimDepthAttachments[1].finalLayout =
         VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    bimDepthResolve.depthResolveMode = depthResolveMode;
-    bimDepthResolve.stencilResolveMode = VK_RESOLVE_MODE_NONE;
+    bimDepthResolve.depthResolveMode = depthStencilResolve.depth;
+    bimDepthResolve.stencilResolveMode = depthStencilResolve.stencil;
     auto bimDepthAttachments2 =
         MakeAttachmentDescriptions2(bimDepthAttachments);
     auto bimDepthDeps2 = MakeDependencies2(bimDepthDeps);
@@ -473,8 +474,8 @@ void RenderPassManager::create(VkFormat swapchainFormat,
         MakeAttachmentReference2(gbDsRef);
     const VkAttachmentReference2 gbDepthResolveRef2 =
         MakeAttachmentReference2(gbDepthResolveRef);
-    gbDepthResolve.depthResolveMode = depthResolveMode;
-    gbDepthResolve.stencilResolveMode = VK_RESOLVE_MODE_NONE;
+    gbDepthResolve.depthResolveMode = depthStencilResolve.depth;
+    gbDepthResolve.stencilResolveMode = depthStencilResolve.stencil;
     gbDepthResolve.pDepthStencilResolveAttachment = &gbDepthResolveRef2;
     VkSubpassDescription2 gbSubpass2{
         VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2};
@@ -648,8 +649,8 @@ void RenderPassManager::create(VkFormat swapchainFormat,
         MakeAttachmentReference2(gbDepthResolveRef);
     VkSubpassDescriptionDepthStencilResolve bimGbDepthResolve{
         VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE};
-    bimGbDepthResolve.depthResolveMode = depthResolveMode;
-    bimGbDepthResolve.stencilResolveMode = VK_RESOLVE_MODE_NONE;
+    bimGbDepthResolve.depthResolveMode = depthStencilResolve.depth;
+    bimGbDepthResolve.stencilResolveMode = depthStencilResolve.stencil;
     bimGbDepthResolve.pDepthStencilResolveAttachment =
         &gbDepthResolveRef2;
     VkSubpassDescription2 bimGbSubpass2{

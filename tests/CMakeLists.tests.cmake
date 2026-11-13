@@ -1132,6 +1132,14 @@ set_tests_properties(frame_resource_initialization_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 420
     LABELS "requires-vulkan;requires-display;visual-regression")
 
+add_test(NAME msaa_attachment_capabilities_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/msaa_attachment_capabilities_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/msaa-attachment-capabilities" --managed-output)
+set_tests_properties(msaa_attachment_capabilities_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 1200
+    LABELS "requires-vulkan;requires-display;visual-regression")
+
 add_test(NAME forward_sky_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/forward_sky_regression.py"
             --exe "$<TARGET_FILE:VulkanSceneRenderer>"
@@ -2106,6 +2114,11 @@ add_custom_test(deferred_raster_post_process_tests
 
 add_custom_test(dynamic_rendering_tests
     ${TEST_RENDERER_CORE_DIR}/dynamic_rendering_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+
+add_custom_test(renderer_msaa_tests
+    ${TEST_RENDERER_CORE_DIR}/renderer_msaa_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_renderer
 )
 

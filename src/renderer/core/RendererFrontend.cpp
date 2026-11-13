@@ -1443,18 +1443,26 @@ void RendererFrontend::initialize() {
   subs_.renderPassManager =
       std::make_unique<RenderPassManager>(svc_.ctx.deviceWrapper);
   subs_.oitManager = std::make_unique<OitManager>(svc_.ctx.deviceWrapper);
+  resources_.gBufferFormats.depthStencil =
+      subs_.renderPassManager->findDepthStencilFormat();
   {
+    const auto physicalDevice = svc_.ctx.deviceWrapper->physicalDevice();
     const RendererMsaaDeviceSupport msaaSupport =
-        queryRendererMsaaDeviceSupport(svc_.ctx.deviceWrapper->physicalDevice());
+        queryRendererMsaaDeviceSupport(physicalDevice);
+    msaaDepthStencilResolve_ = chooseRendererDepthStencilResolve(
+        msaaSupport.depthResolveModes, msaaSupport.stencilResolveModes,
+        msaaSupport.independentResolveNone);
+    msaaSampleMask_ = queryRendererMsaaSampleMask(
+        physicalDevice, resources_.gBufferFormats, msaaSupport);
     const auto supportedSampleCounts =
-        supportedMsaaSampleCounts(msaaSupport.color, msaaSupport.depth);
+        supportedMsaaSampleCounts(msaaSampleMask_);
     supportedMsaaSamples_.clear();
     supportedMsaaSamples_.reserve(supportedSampleCounts.size());
     for (VkSampleCountFlagBits sampleCount : supportedSampleCounts) {
       supportedMsaaSamples_.push_back(sampleCountToSamples(sampleCount));
     }
-    msaaSampleCount_ = clampMsaaSampleCount(
-        svc_.config.msaaSamples, msaaSupport.color, msaaSupport.depth);
+    msaaSampleCount_ =
+        clampMsaaSampleCount(svc_.config.msaaSamples, msaaSampleMask_);
   }
   createRenderPasses();
 
@@ -3285,6 +3293,11 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
           {"vmaBytes", allocationStats.total.statistics.allocationBytes}}},
       {"resolution", {extent.width, extent.height}},
       {"msaaSamples", sampleCountToSamples(msaaSampleCount_)},
+      {"supportedMsaaSamples", supportedMsaaSamples_},
+      {"msaaDepthResolveMode", static_cast<uint32_t>(
+           resources_.renderPasses.depthPrepass->depthResolveMode)},
+      {"msaaStencilResolveMode", static_cast<uint32_t>(
+           resources_.renderPasses.depthPrepass->stencilResolveMode)},
       {"wideLinesSupported", svc_.ctx.deviceWrapper->enabledFeatures().wideLines == VK_TRUE},
       {"taa",
        {{"enabled", settings.enabled},
@@ -5616,8 +5629,6 @@ void RendererFrontend::shutdown() {
 // ---------------------------------------------------------------------------
 
 void RendererFrontend::createRenderPasses() {
-  resources_.gBufferFormats.depthStencil =
-      subs_.renderPassManager->findDepthStencilFormat();
   subs_.renderPassManager->create(
       svc_.swapChainManager.imageFormat(),
       resources_.gBufferFormats.depthStencil,
@@ -5625,7 +5636,8 @@ void RendererFrontend::createRenderPasses() {
       resources_.gBufferFormats.normal, resources_.gBufferFormats.material,
       resources_.gBufferFormats.emissive, resources_.gBufferFormats.specular,
       resources_.gBufferFormats.pickId, resources_.gBufferFormats.materialLayers,
-      resources_.gBufferFormats.materialSheen, msaaSampleCount_);
+      resources_.gBufferFormats.materialSheen, msaaSampleCount_,
+      msaaDepthStencilResolve_);
   resources_.renderPasses = subs_.renderPassManager->passes();
 }
 
@@ -5776,6 +5788,8 @@ void RendererFrontend::processShaderReload(bool request, bool wait) {
 
 void RendererFrontend::recreateMsaaResources(
     VkSampleCountFlagBits sampleCount) {
+  sampleCount = clampMsaaSampleCount(sampleCountToSamples(sampleCount),
+                                    msaaSampleMask_);
   if (subs_.temporalManager && subs_.temporalManager->settings().enabled &&
       sampleCount != VK_SAMPLE_COUNT_1_BIT) {
     if (subs_.guiManager)
@@ -8442,10 +8456,8 @@ void RendererFrontend::presentSceneControls() {
   }
 
   if (auto msaaRequest = subs_.guiManager->consumeMsaaSampleChange()) {
-    const RendererMsaaDeviceSupport msaaSupport =
-        queryRendererMsaaDeviceSupport(svc_.ctx.deviceWrapper->physicalDevice());
-    const VkSampleCountFlagBits requestedSampleCount = clampMsaaSampleCount(
-        *msaaRequest, msaaSupport.color, msaaSupport.depth);
+    const VkSampleCountFlagBits requestedSampleCount =
+        clampMsaaSampleCount(*msaaRequest, msaaSampleMask_);
     if (requestedSampleCount != msaaSampleCount_) {
       pendingMsaaSampleCount_ = requestedSampleCount;
     }
