@@ -3596,9 +3596,9 @@ TEST(RenderingConventionTests, PostProcessShaderUsesExposurePushConstant) {
   EXPECT_NE(postProcess.find("pc.maxExposure"), std::string::npos);
   EXPECT_NE(postProcess.find("FiniteColorOr(finalHdr, 0.0.xxx) *"),
             std::string::npos);
-  EXPECT_NE(postProcess.find("compositedColor * resolvedExposure"),
+  EXPECT_NE(postProcess.find("litColor * resolvedExposure"),
             std::string::npos);
-  EXPECT_NE(postProcess.find("overviewCompositedColor * resolvedExposure"),
+  EXPECT_NE(postProcess.find("sceneColor.rgb * resolvedExposure"),
             std::string::npos);
   EXPECT_EQ(postProcess.find("finalHdr * 0.25"), std::string::npos);
   EXPECT_EQ(postProcess.find("litColor *= 0.25"), std::string::npos);

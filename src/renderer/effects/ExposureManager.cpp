@@ -192,12 +192,27 @@ void ExposureManager::dispatch(
                      sizeof(adaptPc), &adaptPc);
   vkCmdDispatch(cmd, 1, 1, 1);
 
-  VkMemoryBarrier postProcessBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-  postProcessBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-  postProcessBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1,
-                       &postProcessBarrier, 0, nullptr, 0, nullptr);
+  // The tone mapper, the next adaptation dispatch and the fenced CPU readback
+  // all consume this shared state.
+  const VkBufferMemoryBarrier2 exposureStateReady{
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+      .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                      VK_PIPELINE_STAGE_2_HOST_BIT,
+      .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                       VK_ACCESS_2_HOST_READ_BIT,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .buffer = exposureStateBuffer.buffer,
+      .size = sizeof(ExposureStateData)};
+  const VkDependencyInfo exposureDependency{
+      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+      .bufferMemoryBarrierCount = 1,
+      .pBufferMemoryBarriers = &exposureStateReady};
+  vkCmdPipelineBarrier2(cmd, &exposureDependency);
 }
 
 void ExposureManager::collectReadback(uint32_t imageIndex,

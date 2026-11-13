@@ -16,7 +16,8 @@ Expand **Export Image** and enter an output path without an extension:
 
 Each image has a `.capture.json` sidecar recording dimensions, color space,
 source, display settings, and whether UI is included. Transparent raster
-surfaces are composited before EXR readback. The temporal resolve discards prior
+surfaces contribute to scene HDR before bloom, auto exposure, and EXR readback
+with or without TAA. The temporal resolve discards prior
 color when switching between the editor view and EXR capture so selection
 outlines stay out of raw exports. Export errors appear in Scene Controls, and
 interactive errors leave the application running.
@@ -40,6 +41,7 @@ VulkanSceneRenderer.exe --tone-map neutral --save-display-grade grade.json
 VulkanSceneRenderer.exe --display-grade grade.json
 VulkanSceneRenderer.exe --display-mode lit --capture-frame 9 --screenshot scene.exr
 VulkanSceneRenderer.exe --capture-frame 9 --screenshot-viewport --screenshot viewport.png
+VulkanSceneRenderer.exe --auto-exposure --capture-frame 32 --screenshot viewport.png
 VulkanSceneRenderer.exe --render-technique path-tracing --path-spp 8 --path-sample-series 4,16,64 --screenshot reference.exr
 ```
 
