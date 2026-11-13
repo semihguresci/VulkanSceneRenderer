@@ -3147,6 +3147,9 @@ void RendererFrontend::applyTemporalCapture(
   capturePresentSuboptimal_ = event.presentSuboptimal;
   if (event.sectionPlane)
     captureSectionPlane_ = *event.sectionPlane;
+  if (event.bimAnnotations)
+    captureBimAnnotations_ =
+        std::make_shared<const container::temporal::CaptureBimAnnotations>(*event.bimAnnotations);
   if (event.bimHiddenObject)
     captureBimHiddenObject_ = *event.bimHiddenObject;
   if (event.bimLodBias)
@@ -9286,18 +9289,38 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       p.bim.floorPlan.lineWidth = floorPlan.lineWidth;
     }
 
-    if (subs_.guiManager != nullptr) {
-      const bool coordinationLayerRequested =
-          bimLayers.clashLayerVisible || bimLayers.markupLayerVisible;
-      if (coordinationLayerRequested) {
-        const auto issuePins = subs_.guiManager->bimIssueOverlayPins();
+    if (captureBimAnnotations_ || subs_.guiManager != nullptr) {
+      const bool issueMarkers = captureBimAnnotations_
+          ? captureBimAnnotations_->issuePin.has_value() : bimLayers.markupLayerVisible;
+      const bool clashMarkers = captureBimAnnotations_
+          ? captureBimAnnotations_->clash.has_value() : bimLayers.clashLayerVisible;
+      if (issueMarkers || clashMarkers) {
+        BimCoordinationOverlayIssuePin capturePin;
+        BimCoordinationOverlayClashPair captureClash;
+        std::span<const BimCoordinationOverlayIssuePin> issuePins;
+        std::span<const BimCoordinationOverlayClashPair> clashPairs;
+        if (captureBimAnnotations_) {
+          if (const auto &pin = captureBimAnnotations_->issuePin) {
+            capturePin.position = *pin;
+            issuePins = {&capturePin, 1};
+          }
+          if (const auto &clash = captureBimAnnotations_->clash) {
+            captureClash = {.primaryObjectIndex = clash->objects[0],
+                            .secondaryObjectIndex = clash->objects[1],
+                            .hasPosition = true,
+                            .position = clash->position};
+            clashPairs = {&captureClash, 1};
+          }
+        } else {
+          issuePins = subs_.guiManager->bimIssueOverlayPins();
+        }
         const BimCoordinationOverlayResult coordinationOverlay =
             subs_.bimManager->buildCoordinationOverlay(
                 {.spacesEnabled = false,
                  .mepXrayEnabled = false,
-                 .clashesEnabled = bimLayers.clashLayerVisible,
-                 .issuePinsEnabled = bimLayers.markupLayerVisible},
-                std::span<const BimCoordinationOverlayClashPair>{}, issuePins);
+                 .clashesEnabled = clashMarkers,
+                 .issuePinsEnabled = issueMarkers},
+                clashPairs, issuePins);
         if (coordinationOverlay.markers.empty()) {
           subs_.bimManager->clearCoordinationMarkerGeometry();
         } else if (subs_.bimManager->rebuildCoordinationMarkerGeometry(
@@ -9321,27 +9344,27 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
           p.bim.coordinationClashMarkerDrawCommands =
               &markerDrawData.clashDrawCommands;
           p.bim.coordinationMarkers.issueMarkersEnabled =
-              bimLayers.markupLayerVisible &&
-              !markerDrawData.issuePinDrawCommands.empty();
+              issueMarkers && !markerDrawData.issuePinDrawCommands.empty();
           p.bim.coordinationMarkers.clashMarkersEnabled =
-              bimLayers.clashLayerVisible &&
-              !markerDrawData.clashDrawCommands.empty();
+              clashMarkers && !markerDrawData.clashDrawCommands.empty();
         }
       } else {
         subs_.bimManager->clearCoordinationMarkerGeometry();
       }
 
-      const auto &elevation = subs_.guiManager->bimElevationViewState();
-      const bool hiddenLineElevation =
-          elevation.style ==
-          container::ui::BimElevationTechnicalStyle::HiddenLine;
+      const auto elevation = subs_.guiManager ? subs_.guiManager->bimElevationViewState()
+                                              : container::ui::BimElevationViewState{};
+      const bool hiddenLineElevation = captureBimAnnotations_ ? captureBimAnnotations_->hiddenLines
+          : elevation.style == container::ui::BimElevationTechnicalStyle::HiddenLine;
       // Hidden-line elevation is a renderer composition mode: camera presets
       // stay in the camera controller, while the frame asks lighting to draw a
       // depth-tested line overlay and lets clipped views reuse section caps.
       p.bim.technicalElevation.enabled = hiddenLineElevation;
       p.bim.technicalElevation.hiddenLineOverlay = hiddenLineElevation;
       p.bim.technicalElevation.depthTestLines =
-          hiddenLineElevation && elevation.useDepthTestedLines;
+          hiddenLineElevation && (captureBimAnnotations_ || elevation.useDepthTestedLines);
+      if (captureBimAnnotations_)
+        p.bim.technicalElevation.sectionCapsEnabled = false;
     }
   }
   p.transformGizmo = buildTransformGizmoState();
@@ -9393,8 +9416,11 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   if (subs_.sceneManager != nullptr) {
     subs_.sceneManager->updateSceneClipState(sceneClipState);
   }
-  if (subs_.bimManager != nullptr && subs_.guiManager != nullptr) {
-    const auto &sectionPlane = subs_.guiManager->sectionPlaneState();
+  if (subs_.bimManager != nullptr && (captureBimAnnotations_ || subs_.guiManager != nullptr)) {
+    auto sectionPlane = subs_.guiManager ? subs_.guiManager->sectionPlaneState()
+                                         : container::ui::SectionPlaneState{};
+    if (captureBimAnnotations_)
+      sectionPlane.visualPlaneVisible = captureBimAnnotations_->sectionVisual;
     const bool sectionPlaneVisualEnabled =
         sectionPlaneActive && sectionPlane.visualPlaneVisible;
     p.bim.sectionPlaneVisual.enabled = sectionPlaneVisualEnabled;
@@ -9426,7 +9452,13 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       subs_.bimManager->clearSectionPlaneVisualGeometry();
     }
 
-    const auto &capUi = subs_.guiManager->bimClipCapHatchingUiState();
+    auto capUi = subs_.guiManager ? subs_.guiManager->bimClipCapHatchingUiState()
+                                  : container::ui::BimClipCapHatchingUiState{};
+    if (captureBimAnnotations_) {
+      capUi.capPreview = captureBimAnnotations_->capFill;
+      capUi.hatchingPreview = captureBimAnnotations_->capHatch;
+      capUi.sectionMarkersPreview = captureBimAnnotations_->sectionMarkers;
+    }
     const bool technicalCapsEnabled =
         p.bim.technicalElevation.enabled &&
         p.bim.technicalElevation.sectionCapsEnabled;
