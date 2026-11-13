@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
@@ -602,8 +603,7 @@ void GpuCullManager::ensureHiZImage(uint32_t imageIndex, uint32_t width,
 
   hizWidth_ = width;
   hizHeight_ = height;
-  hizMipLevels_ = static_cast<uint32_t>(
-      std::floor(std::log2(static_cast<float>(std::max(width, height))))) + 1;
+  hizMipLevels_ = static_cast<uint32_t>(std::bit_width(std::max(width, height)));
   hizFrames_.assign(imageCount, {});
 
   VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -615,7 +615,7 @@ void GpuCullManager::ensureHiZImage(uint32_t imageIndex, uint32_t width,
   ci.samples = VK_SAMPLE_COUNT_1_BIT;
   ci.tiling = VK_IMAGE_TILING_OPTIMAL;
   ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
-             VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
   ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
   VmaAllocationCreateInfo ai{};
@@ -697,7 +697,7 @@ void GpuCullManager::dispatchHiZGenerate(VkCommandBuffer cmd,
   if (imageIndex >= hizFrames_.size()) return;
   auto& hizFrame = hizFrames_[imageIndex];
   hizFrame.generatedThisFrame = false;
-  if (width == 0 || height == 0) return;
+  if (width != hizWidth_ || height != hizHeight_) return;
 
   if (hizPipeline_ == VK_NULL_HANDLE || hizFrame.image == VK_NULL_HANDLE ||
       hizFrame.mipViews.empty() ||
@@ -780,10 +780,8 @@ void GpuCullManager::dispatchHiZGenerate(VkCommandBuffer cmd,
     vkCmdPushConstants(cmd, hizPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(HiZPushConstants), &hpc);
 
-    const uint32_t dstW =
-        (mip == 0) ? srcW : std::max((srcW + 1u) >> 1, 1u);
-    const uint32_t dstH =
-        (mip == 0) ? srcH : std::max((srcH + 1u) >> 1, 1u);
+    const uint32_t dstW = std::max(width >> mip, 1u);
+    const uint32_t dstH = std::max(height >> mip, 1u);
     vkCmdDispatch(cmd, (dstW + 7) / 8, (dstH + 7) / 8, 1);
 
     // Barrier between mip levels.
