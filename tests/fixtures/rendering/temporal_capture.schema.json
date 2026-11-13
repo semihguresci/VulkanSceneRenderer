@@ -78,6 +78,18 @@
           "opacity": {"type": "number", "minimum": 0.05, "maximum": 1},
           "lineWidth": {"type": "number", "minimum": 1, "maximum": 8}
         }},
+      "wireframe": {"type": "object", "additionalProperties": false,
+        "description": "Replace the Scene Controls wireframe settings for subsequent capture frames.",
+        "required": ["enabled", "mode", "depthTest", "color", "intensity", "lineWidth"],
+        "properties": {
+          "enabled": {"type": "boolean"},
+          "mode": {"enum": ["overlay", "full"]},
+          "depthTest": {"type": "boolean"},
+          "color": {"type": "array", "minItems": 3, "maxItems": 3,
+            "items": {"type": "number", "minimum": 0, "maximum": 1}},
+          "intensity": {"type": "number", "minimum": 0, "maximum": 1},
+          "lineWidth": {"type": "number", "minimum": 1, "maximum": 8}
+        }},
       "areaLightPosition": {"$ref": "#/$defs/vec3"},
       "rayShadows": {"enum": ["raster", "hard", "soft"]},
       "rayShadowSamples": {"type": "integer", "minimum": 1, "maximum": 32},

@@ -1019,6 +1019,9 @@ public:
   [[nodiscard]] const WireframeSettings &wireframeSettings() const {
     return wireframeSettings_;
   }
+  void setWireframeSettings(WireframeSettings settings) {
+    wireframeSettings_ = settings;
+  }
   [[nodiscard]] const BimFilterState &bimFilterState() const {
     return bimFilterState_;
   }

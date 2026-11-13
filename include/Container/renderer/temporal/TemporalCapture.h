@@ -155,6 +155,16 @@ struct CaptureViewportPointer {
 };
 enum class CaptureSwapchainFormat { Bgra8Srgb, Rgba8Srgb, Bgra8Unorm, Rgba8Unorm };
 
+struct CaptureWireframe {
+  enum class Mode { Overlay, Full };
+  bool enabled{};
+  Mode mode{};
+  bool depthTest{};
+  glm::vec3 color{};
+  float intensity{};
+  float lineWidth{};
+};
+
 struct CaptureBimFloorPlan {
   enum class Elevation { ProjectedGround, SourceElevation };
   bool enabled{};
@@ -204,6 +214,7 @@ struct CaptureEvent {
   std::optional<int> bimLodBias;
   std::optional<CaptureBimFloorPlan> bimFloorPlan;
   std::optional<CaptureBimAnnotations> bimAnnotations;
+  std::optional<CaptureWireframe> wireframe;
   std::optional<glm::vec4> sectionPlane;
   std::optional<glm::vec3> areaLightPosition;
   std::optional<float> exposure;
@@ -557,6 +568,8 @@ public:
         event.bimFloorPlan = bimFloorPlan(value.at("bimFloorPlan"));
       if (value.contains("bimAnnotations"))
         event.bimAnnotations = bimAnnotations(value.at("bimAnnotations"));
+      if (value.contains("wireframe"))
+        event.wireframe = wireframe(value.at("wireframe"));
       if (value.contains("sectionPlane")) {
         const auto &plane = value.at("sectionPlane");
         if (!plane.is_array() || plane.size() != 4)
@@ -979,6 +992,44 @@ private:
     return result;
   }
 
+  static float overlayStyleNumber(const nlohmann::json &number, double min, double max,
+                                  const char *event, const char *field) {
+    if (!number.is_number())
+      throw std::invalid_argument(std::string("Capture ") + event + " " + field + " must be numeric");
+    const double input = number.get<double>();
+    if (!std::isfinite(input) || input < min || input > max)
+      throw std::invalid_argument(std::string("Capture ") + event + " " + field + " is out of range");
+    return static_cast<float>(input);
+  }
+
+  static glm::vec3 overlayStyleColor(const nlohmann::json &color, const char *event) {
+    if (!color.is_array() || color.size() != 3)
+      throw std::invalid_argument(std::string("Capture ") + event + " color requires three channels");
+    return {overlayStyleNumber(color[0], 0.0, 1.0, event, "color"),
+            overlayStyleNumber(color[1], 0.0, 1.0, event, "color"),
+            overlayStyleNumber(color[2], 0.0, 1.0, event, "color")};
+  }
+
+  static CaptureWireframe wireframe(const nlohmann::json &value) {
+    constexpr std::array fields{"enabled", "mode", "depthTest", "color", "intensity", "lineWidth"};
+    if (!value.is_object() || value.size() != fields.size() ||
+        !std::all_of(fields.begin(), fields.end(), [&](const char *field) { return value.contains(field); }))
+      throw std::invalid_argument("Capture wireframe requires enabled, mode, depthTest, color, intensity and lineWidth");
+    if (!value.at("enabled").is_boolean() || !value.at("depthTest").is_boolean())
+      throw std::invalid_argument("Capture wireframe enabled and depthTest must be booleans");
+
+    const auto &mode = value.at("mode");
+    if (mode != "overlay" && mode != "full")
+      throw std::invalid_argument("Capture wireframe mode must be overlay or full");
+
+    return {.enabled = value.at("enabled").get<bool>(),
+            .mode = mode == "overlay" ? CaptureWireframe::Mode::Overlay : CaptureWireframe::Mode::Full,
+            .depthTest = value.at("depthTest").get<bool>(),
+            .color = overlayStyleColor(value.at("color"), "wireframe"),
+            .intensity = overlayStyleNumber(value.at("intensity"), 0.0, 1.0, "wireframe", "intensity"),
+            .lineWidth = overlayStyleNumber(value.at("lineWidth"), 1.0, 8.0, "wireframe", "lineWidth")};
+  }
+
   static CaptureBimFloorPlan bimFloorPlan(const nlohmann::json &value) {
     constexpr std::array fields{"enabled", "elevation", "depthTest", "color", "opacity", "lineWidth"};
     if (!value.is_object() || value.size() != fields.size() ||
@@ -996,25 +1047,12 @@ private:
     else
       throw std::invalid_argument("Capture bimFloorPlan elevation must be projected-ground or source-elevation");
 
-    const auto &color = value.at("color");
-    if (!color.is_array() || color.size() != 3)
-      throw std::invalid_argument("Capture bimFloorPlan color requires three channels");
-    const auto boundedNumber = [](const nlohmann::json &number, double min, double max, const char *field) {
-      if (!number.is_number())
-        throw std::invalid_argument(std::string("Capture bimFloorPlan ") + field + " must be numeric");
-      const double input = number.get<double>();
-      if (!std::isfinite(input) || input < min || input > max)
-        throw std::invalid_argument(std::string("Capture bimFloorPlan ") + field + " is out of range");
-      return static_cast<float>(input);
-    };
     return {.enabled = value.at("enabled").get<bool>(),
             .depthTest = value.at("depthTest").get<bool>(),
             .elevation = mode,
-            .color = {boundedNumber(color[0], 0.0, 1.0, "color"),
-                      boundedNumber(color[1], 0.0, 1.0, "color"),
-                      boundedNumber(color[2], 0.0, 1.0, "color")},
-            .opacity = boundedNumber(value.at("opacity"), 0.05, 1.0, "opacity"),
-            .lineWidth = boundedNumber(value.at("lineWidth"), 1.0, 8.0, "lineWidth")};
+            .color = overlayStyleColor(value.at("color"), "bimFloorPlan"),
+            .opacity = overlayStyleNumber(value.at("opacity"), 0.05, 1.0, "bimFloorPlan", "opacity"),
+            .lineWidth = overlayStyleNumber(value.at("lineWidth"), 1.0, 8.0, "bimFloorPlan", "lineWidth")};
   }
 
   std::vector<uint32_t> telemetryFrames_;

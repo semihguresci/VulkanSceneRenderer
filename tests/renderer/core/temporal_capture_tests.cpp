@@ -125,6 +125,77 @@ TEST(TemporalCapture, RejectsInvalidBimFloorPlanFieldsAndBounds) {
   EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
 }
 
+TEST(TemporalCapture, WireframeSettingsAreTypedAndOneShotAcrossTechniqueSwitches) {
+  using Mode = container::temporal::CaptureWireframe::Mode;
+  const CaptureSequence sequence(json::parse(R"({"schemaVersion":1,"frames":6,"events":[
+    {"frame":2,"wireframe":{"enabled":true,"mode":"overlay","depthTest":false,
+      "color":[1,0.25,0],"intensity":1,"lineWidth":8}},
+    {"frame":4,"technique":"forward-raster","wireframe":{"enabled":true,"mode":"full",
+      "depthTest":true,"color":[0,0,1],"intensity":0.5,"lineWidth":2}},
+    {"frame":6,"wireframe":{"enabled":false,"mode":"overlay","depthTest":false,
+      "color":[0,0,0],"intensity":0,"lineWidth":1}}
+  ]})"));
+  EXPECT_FALSE(sequence.sample(1).event.wireframe);
+  const auto overlay = sequence.sample(2).event.wireframe;
+  ASSERT_TRUE(overlay);
+  EXPECT_TRUE(overlay->enabled);
+  EXPECT_EQ(overlay->mode, Mode::Overlay);
+  EXPECT_FALSE(overlay->depthTest);
+  EXPECT_EQ(overlay->color, glm::vec3(1.0f, 0.25f, 0.0f));
+  EXPECT_FLOAT_EQ(overlay->intensity, 1.0f);
+  EXPECT_FLOAT_EQ(overlay->lineWidth, 8.0f);
+  EXPECT_FALSE(sequence.sample(3).event.wireframe);
+  const auto switched = sequence.sample(4).event;
+  EXPECT_EQ(switched.technique, "forward-raster");
+  ASSERT_TRUE(switched.wireframe);
+  EXPECT_TRUE(switched.wireframe->enabled);
+  EXPECT_EQ(switched.wireframe->mode, Mode::Full);
+  EXPECT_TRUE(switched.wireframe->depthTest);
+  EXPECT_EQ(switched.wireframe->color, glm::vec3(0.0f, 0.0f, 1.0f));
+  EXPECT_FLOAT_EQ(switched.wireframe->intensity, 0.5f);
+  EXPECT_FLOAT_EQ(switched.wireframe->lineWidth, 2.0f);
+  EXPECT_FALSE(sequence.sample(5).event.wireframe);
+  const auto disabled = sequence.sample(6).event.wireframe;
+  ASSERT_TRUE(disabled);
+  EXPECT_FALSE(disabled->enabled);
+  EXPECT_FLOAT_EQ(disabled->intensity, 0.0f);
+  EXPECT_FLOAT_EQ(disabled->lineWidth, 1.0f);
+}
+
+TEST(TemporalCapture, RejectsIncompleteOrMalformedWireframeSettings) {
+  auto input = json::parse(R"({"schemaVersion":1,"frames":1,"events":[
+    {"frame":1,"wireframe":{"enabled":true,"mode":"overlay","depthTest":false,
+      "color":[1,0.25,0],"intensity":0.5,"lineWidth":2}}
+  ]})");
+  auto &wireframe = input["events"][0]["wireframe"];
+  const auto valid = wireframe;
+  for (const auto &[field, encoded] : std::array{
+           std::pair{"enabled", "1"}, std::pair{"depthTest", "null"},
+           std::pair{"mode", R"("unknown")"}, std::pair{"mode", "0"},
+           std::pair{"color", "[1,0]"}, std::pair{"color", "[1,0,false]"},
+           std::pair{"color", "[1,0,-0.01]"}, std::pair{"color", "[1.01,0,0]"},
+           std::pair{"intensity", "-0.01"}, std::pair{"intensity", "1.000000001"},
+           std::pair{"lineWidth", "0.999999999"}, std::pair{"lineWidth", "8.000000001"}}) {
+    SCOPED_TRACE(field);
+    wireframe = valid;
+    wireframe[field] = json::parse(encoded);
+    EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+  }
+  wireframe = valid;
+  wireframe.erase("color");
+  EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+  wireframe["colour"] = valid["color"];
+  EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+  wireframe = valid;
+  wireframe["extra"] = false;
+  EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+  wireframe = valid;
+  wireframe["intensity"] = std::numeric_limits<double>::infinity();
+  EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+  wireframe = nullptr;
+  EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+}
+
 TEST(TemporalCapture, BimAnnotationPreviewEventCarriesIndependentRoutes) {
   const CaptureSequence sequence(json::parse(R"({"schemaVersion":1,"frames":6,"events":[
     {"frame":1,"sectionPlane":[0,0,-1,0],"bimAnnotations":{"issuePin":[1,2,3],

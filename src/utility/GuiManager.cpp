@@ -3438,13 +3438,12 @@ void GuiManager::setSectionPlaneVisualEditable(bool editable) {
 
 void GuiManager::applyBimElevationDisplayIntent() {
   appliedBimElevationStyle_ = bimElevationViewState_.style;
+  gBufferViewMode_ = GBufferViewMode::Lit;
   switch (appliedBimElevationStyle_) {
   case BimElevationTechnicalStyle::Shaded:
-    gBufferViewMode_ = GBufferViewMode::Overview;
     wireframeSettings_.enabled = false;
     break;
   case BimElevationTechnicalStyle::ShadedWithLines:
-    gBufferViewMode_ = GBufferViewMode::Overview;
     wireframeSettings_.enabled = wireframeSupported_;
     wireframeSettings_.mode = WireframeMode::Overlay;
     wireframeSettings_.depthTest = bimElevationViewState_.useDepthTestedLines;
@@ -3453,10 +3452,6 @@ void GuiManager::applyBimElevationDisplayIntent() {
     wireframeSettings_.lineWidth = wireframeWideLineSupported_ ? 1.25f : 1.0f;
     break;
   case BimElevationTechnicalStyle::HiddenLine:
-    gBufferViewMode_ =
-        activeRenderEngine_ == container::renderer::RenderTechniqueId::ForwardRaster
-            ? GBufferViewMode::Lit
-            : GBufferViewMode::Albedo;
     wireframeSettings_.enabled = wireframeSupported_;
     wireframeSettings_.mode = WireframeMode::Full;
     wireframeSettings_.depthTest = true;
@@ -5719,10 +5714,8 @@ void GuiManager::drawSceneControls(
           }
           ImGui::EndTable();
         }
-        ImGui::Text(
-            "Active style: %s, %s lines",
-            BimElevationTechnicalStyleLabel(bimElevationViewState_.style),
-            wireframeSettings_.depthTest ? "hidden" : "x-ray");
+        ImGui::Text("Active style: %s",
+                    BimElevationTechnicalStyleLabel(appliedBimElevationStyle_));
         ImGui::TreePop();
       }
 

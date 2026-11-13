@@ -1579,6 +1579,7 @@ uint64_t RenderGraph::computePreparedFrameSignature(
   mixPointer(params.registries.pipelineHandles);
   mixPointer(params.registries.pipelineLayouts);
   mix(params.debug.displayMode);
+  mix(params.debug.fullWireframe());
   mix(static_cast<uint32_t>(params.debug.screenReflections));
   mix(params.debug.debugDirectionalOnly ? 1u : 0u);
   mix(params.debug.debugVisualizePointLightStencil ? 1u : 0u);

@@ -169,20 +169,7 @@ bool shouldRecordTransparentOit(
     return false;
   }
 
-  const auto wireframeSettings = guiManager
-                                     ? guiManager->wireframeSettings()
-                                     : container::ui::WireframeSettings{};
-  const bool editorOverlaysEnabled =
-      guiManager == nullptr || guiManager->editorOverlaysEnabled();
-  const bool wireframeFullMode =
-      guiManager && editorOverlaysEnabled && guiManager->wireframeSupported() &&
-      wireframeSettings.enabled &&
-      wireframeSettings.mode == container::ui::WireframeMode::Full &&
-      deferredRasterPipelineReady(p,
-                                  DeferredRasterPipelineId::WireframeDepth) &&
-      deferredRasterPipelineReady(p,
-                                  DeferredRasterPipelineId::WireframeNoDepth);
-  return !wireframeFullMode;
+  return !p.debug.fullWireframe();
 }
 
 RenderPassReadiness renderPassReady() { return {}; }
