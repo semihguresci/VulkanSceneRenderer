@@ -69,8 +69,8 @@ Changing floor-plan settings updates the Path tracing display while keeping
 the accumulated samples. Section clipping and camera changes affect the
 rendered scene and can restart sampling.
 
-The other BIM routes below describe the renderer bindings. The native
-floor-plan regression exercises the floor-plan row.
+The floor-plan and annotation regressions exercise these renderer bindings
+using fixed cameras and paired viewport and scene-linear captures.
 
 | Viewport route | Deferred raster | Path tracing | Forward raster |
 | --- | --- | --- | --- |
@@ -108,13 +108,14 @@ event. RGB channels use `[0, 1]`, opacity uses `[0.05, 1]`, and width uses
 }
 ```
 
-On a Vulkan device with ray-query support and validation layers, enable
-`CONTAINER_RUN_GPU_BIM_FLOOR_PLAN=1` and run the opt-in regression. It checks
-both elevations, style, depth, live technique switching, and raw EXR equality
-at matching sample counts.
+Enable `CONTAINER_RUN_GPU_BIM_FLOOR_PLAN=1` and run the opt-in regressions
+on a Vulkan device with validation layers. The Path tracing test also requires
+ray queries. The floor-plan tests check elevations, style, depth, live
+technique switching, and raw EXR equality. The raster annotation test checks
+issue and clash markers, section previews, hidden lines, and hover outlines.
 
 ```text
-ctest --test-dir out/build/windows-release -C Release -R '^bim_floor_plan_gpu_regression$' --output-on-failure
+ctest --test-dir out/build/windows-release -C Release -R '^bim_(floor_plan(_forward)?|annotation)_gpu_regression$' --output-on-failure
 ```
 
 ### Standard-error view
