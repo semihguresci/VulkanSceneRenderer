@@ -30,7 +30,7 @@ DdgiDebugRenderer::DdgiDebugRenderer(
     std::shared_ptr<container::gpu::VulkanDevice> device,
     const std::filesystem::path &root, VkDescriptorSetLayout postProcess,
     VkDescriptorSetLayout ddgi, VkFormat colorFormat)
-    : impl_(std::make_unique<Impl>()) {
+    : colorFormat_(colorFormat), impl_(std::make_unique<Impl>()) {
   auto &p = *impl_;
   p.device = std::move(device);
   if (!p.device || postProcess == VK_NULL_HANDLE || ddgi == VK_NULL_HANDLE ||

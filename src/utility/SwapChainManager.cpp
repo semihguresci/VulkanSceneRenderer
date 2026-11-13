@@ -1,7 +1,7 @@
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <stdexcept>
-#include <utility>
 
 #include "Container/utility/SwapChainManager.h"
 #include "Container/utility/QueueFamilySelection.h"
@@ -21,25 +21,12 @@ SwapChainManager::SwapChainManager(GLFWwindow* window,
 SwapChainManager::~SwapChainManager() { cleanup(); }
 
 void SwapChainManager::initialize() {
-  waitForNonZeroFramebufferExtent();
-  createSwapChain();
-  createImageViews();
+  recreate();
 }
 
-void SwapChainManager::recreate(RenderingPassHandle renderPass) {
+void SwapChainManager::recreate(std::optional<VkFormat> requestedFormat) {
   waitForNonZeroFramebufferExtent();
-
-  const VkSwapchainKHR oldSwapchain = swapChain_;
-  createSwapChain(oldSwapchain);
-
-  destroyFramebuffers();
-  destroyImageViews();
-  if (oldSwapchain != VK_NULL_HANDLE) {
-    destroyOwnedSwapchainKHR(device_, oldSwapchain, nullptr);
-  }
-
-  createImageViews();
-  createFramebuffers(renderPass);
+  createSwapChain(requestedFormat);
 }
 
 void SwapChainManager::cleanup() {
@@ -51,6 +38,9 @@ void SwapChainManager::cleanup() {
     swapChain_ = VK_NULL_HANDLE;
   }
   swapChainImages_.clear();
+  surfaceFormat_ = {VK_FORMAT_UNDEFINED, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+  swapChainExtent_ = {};
+  supportsTransferSrc_ = false;
 }
 
 void SwapChainManager::destroyFramebuffers() {
@@ -77,12 +67,14 @@ void SwapChainManager::waitForNonZeroFramebufferExtent() const {
   }
 }
 
-void SwapChainManager::createSwapChain(VkSwapchainKHR oldSwapchain) {
-  SwapChainSupportDetails swapChainSupport =
+void SwapChainManager::createSwapChain(std::optional<VkFormat> requestedFormat) {
+  const SwapChainSupportDetails swapChainSupport =
       QuerySwapChainSupport(physicalDevice_, surface_);
+  if (swapChainSupport.formats.empty() || swapChainSupport.presentModes.empty())
+    throw std::runtime_error("failed to query swap chain surface support");
 
   VkSurfaceFormatKHR surfaceFormat =
-      chooseSwapSurfaceFormat(swapChainSupport.formats);
+      chooseSwapSurfaceFormat(swapChainSupport.formats, requestedFormat);
   VkPresentModeKHR presentMode =
       chooseSwapPresentMode(swapChainSupport.presentModes);
   VkExtent2D extent = chooseSwapExtent(swapChainSupport.capabilities);
@@ -105,12 +97,19 @@ void SwapChainManager::createSwapChain(VkSwapchainKHR oldSwapchain) {
   createInfo.imageExtent = extent;
   createInfo.imageArrayLayers = 1;
   createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-  supportsTransferSrc_ =
+  constexpr auto captureUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  VkImageFormatProperties captureProperties{};
+  const bool supportsTransferSrc =
       (swapChainSupport.capabilities.supportedUsageFlags &
-       VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
-  if (supportsTransferSrc_) {
-    createInfo.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-  }
+       VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0 &&
+      vkGetPhysicalDeviceImageFormatProperties(
+          physicalDevice_, surfaceFormat.format, VK_IMAGE_TYPE_2D,
+          VK_IMAGE_TILING_OPTIMAL, captureUsage, 0, &captureProperties) == VK_SUCCESS &&
+      extent.width <= captureProperties.maxExtent.width &&
+      extent.height <= captureProperties.maxExtent.height;
+  if (supportsTransferSrc)
+    createInfo.imageUsage = captureUsage;
 
   const uint32_t queueFamilyIndices[] = {queueFamilies_.graphicsFamily.value(),
                                          queueFamilies_.presentFamily.value()};
@@ -129,27 +128,42 @@ void SwapChainManager::createSwapChain(VkSwapchainKHR oldSwapchain) {
   // PNG readback and scene-linear fragment writes need every pixel, including
   // when a capture is requested after startup or the window is obscured.
   createInfo.clipped = VK_FALSE;
-  createInfo.oldSwapchain = oldSwapchain;
+  createInfo.oldSwapchain = swapChain_;
 
   VkSwapchainKHR newSwapchain = VK_NULL_HANDLE;
-  VkResult res =
-      createOwnedSwapchainKHR(device_, &createInfo, nullptr, &newSwapchain);
-
-  if (res != VK_SUCCESS) {
-    throw std::runtime_error("failed to create swap chain!");
+  VkResult res;
+  try {
+    res = createOwnedSwapchainKHR(device_, &createInfo, nullptr, &newSwapchain);
+  } catch (...) {
+    cleanup();
+    throw;
   }
-
-  uint32_t swapImageCount = 0;
-  vkGetSwapchainImagesKHR(device_, newSwapchain, &swapImageCount, nullptr);
-
-  std::vector<VkImage> newImages(swapImageCount);
-  vkGetSwapchainImagesKHR(device_, newSwapchain, &swapImageCount,
-                          newImages.data());
+  // Vulkan retires oldSwapchain when creation is attempted, even on failure.
+  cleanup();
+  if (res != VK_SUCCESS)
+    throw std::runtime_error("failed to create swap chain");
 
   swapChain_ = newSwapchain;
-  swapChainImages_ = std::move(newImages);
-  swapChainImageFormat_ = surfaceFormat.format;
+  surfaceFormat_ = surfaceFormat;
   swapChainExtent_ = extent;
+  supportsTransferSrc_ = supportsTransferSrc;
+  try {
+    uint32_t swapImageCount = 0;
+    if (vkGetSwapchainImagesKHR(device_, swapChain_, &swapImageCount, nullptr) !=
+            VK_SUCCESS || swapImageCount == 0)
+      throw std::runtime_error("failed to query swap chain image count");
+    swapChainImages_.resize(swapImageCount);
+    if (vkGetSwapchainImagesKHR(device_, swapChain_, &swapImageCount,
+                               swapChainImages_.data()) != VK_SUCCESS)
+      throw std::runtime_error("failed to query swap chain images");
+    swapChainImages_.resize(swapImageCount);
+    createImageViews();
+  } catch (...) {
+    cleanup();
+    throw;
+  }
+  if (requestedFormat)
+    preferredFormat_ = requestedFormat;
 }
 
 void SwapChainManager::createImageViews() {
@@ -160,7 +174,7 @@ void SwapChainManager::createImageViews() {
     createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     createInfo.image = swapChainImages_[i];
     createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    createInfo.format = swapChainImageFormat_;
+    createInfo.format = imageFormat();
 
     createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
     createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -222,28 +236,25 @@ VkResult SwapChainManager::present(VkQueue presentQueue, uint32_t imageIndex,
 SwapChainSupportDetails SwapChainManager::QuerySwapChainSupport(
     VkPhysicalDevice device, VkSurfaceKHR surface) {
   SwapChainSupportDetails details{};
+  if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface,
+                                               &details.capabilities) != VK_SUCCESS)
+    return {};
 
-  vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface,
-                                            &details.capabilities);
-
-  uint32_t formatCount = 0;
-  vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, nullptr);
-
-  if (formatCount != 0) {
-    details.formats.resize(formatCount);
-    vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount,
-                                         details.formats.data());
-  }
-
-  uint32_t presentModeCount = 0;
-  vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentModeCount,
-                                            nullptr);
-
-  if (presentModeCount != 0) {
-    details.presentModes.resize(presentModeCount);
-    vkGetPhysicalDeviceSurfacePresentModesKHR(
-        device, surface, &presentModeCount, details.presentModes.data());
-  }
+  const auto queryList = [&](auto query, auto& values) {
+    VkResult result;
+    do {
+      uint32_t count = 0;
+      if (query(device, surface, &count, nullptr) != VK_SUCCESS || count == 0) {
+        values.clear();
+        return;
+      }
+      values.resize(count);
+      result = query(device, surface, &count, values.data());
+      values.resize(result == VK_SUCCESS ? count : 0);
+    } while (result == VK_INCOMPLETE);
+  };
+  queryList(vkGetPhysicalDeviceSurfaceFormatsKHR, details.formats);
+  queryList(vkGetPhysicalDeviceSurfacePresentModesKHR, details.presentModes);
 
   return details;
 }
@@ -272,15 +283,59 @@ QueueFamilyIndices SwapChainManager::FindQueueFamilies(VkPhysicalDevice device,
 }
 
 VkSurfaceFormatKHR SwapChainManager::chooseSwapSurfaceFormat(
-    const std::vector<VkSurfaceFormatKHR>& availableFormats) {
-  for (const auto& availableFormat : availableFormats) {
-    if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB &&
-        availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-      return availableFormat;
-    }
+    const std::vector<VkSurfaceFormatKHR>& availableFormats,
+    std::optional<VkFormat> requestedFormat) const {
+  const auto isSrgbSpace = [](const VkSurfaceFormatKHR& format) {
+    return format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+  };
+  const auto findSrgb = [&](VkFormat format) {
+    return std::ranges::find_if(availableFormats, [&](const auto& available) {
+      return available.format == format && isSrgbSpace(available);
+    });
+  };
+  if (requestedFormat || preferredFormat_) {
+    const auto match = findSrgb(requestedFormat ? *requestedFormat : *preferredFormat_);
+    if (match != availableFormats.end())
+      return *match;
+    if (requestedFormat)
+      throw std::runtime_error("requested sRGB swap chain format is unavailable");
   }
 
-  return availableFormats[0];
+  constexpr std::array preferredSdrFormats{
+      VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R8G8B8A8_SRGB,
+      VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
+  for (const VkFormat format : preferredSdrFormats) {
+    const auto match = findSrgb(format);
+    if (match != availableFormats.end())
+      return *match;
+  }
+  const auto sdr = std::ranges::find_if(availableFormats, isSrgbSpace);
+  if (sdr != availableFormats.end())
+    return *sdr;
+  const auto linear = std::ranges::find_if(availableFormats, [](const auto& format) {
+    return format.colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT &&
+           format.format == VK_FORMAT_R16G16B16A16_SFLOAT;
+  });
+  if (linear != availableFormats.end())
+    return *linear;
+  throw std::runtime_error("surface has no supported sRGB color space");
+}
+
+bool SwapChainManager::needsShaderSrgbEncoding() const {
+  if (surfaceFormat_.colorSpace != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+    return false;
+  switch (imageFormat()) {
+  case VK_FORMAT_R8_SRGB:
+  case VK_FORMAT_R8G8_SRGB:
+  case VK_FORMAT_R8G8B8_SRGB:
+  case VK_FORMAT_B8G8R8_SRGB:
+  case VK_FORMAT_R8G8B8A8_SRGB:
+  case VK_FORMAT_B8G8R8A8_SRGB:
+  case VK_FORMAT_A8B8G8R8_SRGB_PACK32:
+    return false;
+  default:
+    return true;
+  }
 }
 
 VkPresentModeKHR SwapChainManager::chooseSwapPresentMode(

@@ -191,7 +191,7 @@ public:
   bool drawFrame(bool &framebufferResized);
 
   // Handle window resize / suboptimal swapchain.
-  void handleResize();
+  void handleResize(std::optional<VkFormat> requestedFormat = std::nullopt);
 
   // Process keyboard / camera input for this tick.
   void processInput(float deltaTime, bool useViewportInput = true);
@@ -860,7 +860,11 @@ private:
   // --------------------------------------------------
   void createRenderPasses();
   void createGraphicsPipelines();
-  PipelineBuildResult buildGraphicsPipelines(const std::filesystem::path& shaderDirectory);
+  PipelineBuildResult buildGraphicsPipelines(
+      const std::filesystem::path& shaderDirectory,
+      RenderingPassHandle postProcessPass);
+  void updateSwapchainRendering(VkFormat previousFormat);
+  uint64_t presentationPipelineGeneration_{};
   void destroyGraphicsPipelines();
   void processShaderReload(bool request, bool wait = false);
   std::future<std::shared_ptr<ShaderReloadCandidate>> shaderReloadJob_;
@@ -897,7 +901,8 @@ private:
   // ------------------------------------------------------
   void updateCameraBuffer(uint32_t imageIndex);
   void refreshSceneObjectData();
-  void updateObjectBuffer(uint32_t imageIndex, bool deferUploadToGpu = false);
+  bool updateObjectBuffer(uint32_t imageIndex, bool deferUploadToGpu = false);
+  void publishSceneObjectDescriptors();
   void prepareGpuHierarchyFrame(uint32_t imageIndex);
   void uploadPreparedObjectData(uint32_t imageIndex,std::span<const container::gpu::ObjectData>);
   void updateAllObjectBuffers();

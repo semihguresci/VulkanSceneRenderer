@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "Container/common/CommonGLFW.h"
@@ -22,7 +23,7 @@ class SwapChainManager {
   SwapChainManager& operator=(SwapChainManager&&) = delete;
 
   void initialize();
-  void recreate(RenderingPassHandle renderPass);
+  void recreate(std::optional<VkFormat> requestedFormat = std::nullopt);
   void cleanup();
   void createFramebuffers(RenderingPassHandle renderPass);
   void destroyFramebuffers();
@@ -41,11 +42,13 @@ class SwapChainManager {
   [[nodiscard]] const std::vector<RenderingTargetHandle>& framebuffers() const {
     return swapChainFramebuffers_;
   }
-  [[nodiscard]] VkFormat imageFormat() const { return swapChainImageFormat_; }
+  [[nodiscard]] VkFormat imageFormat() const { return surfaceFormat_.format; }
+  [[nodiscard]] VkSurfaceFormatKHR surfaceFormat() const { return surfaceFormat_; }
   [[nodiscard]] VkExtent2D extent() const { return swapChainExtent_; }
   [[nodiscard]] bool supportsTransferSrc() const {
     return supportsTransferSrc_;
   }
+  [[nodiscard]] bool needsShaderSrgbEncoding() const;
 
   static SwapChainSupportDetails QuerySwapChainSupport(VkPhysicalDevice device,
                                                        VkSurfaceKHR surface);
@@ -54,13 +57,14 @@ class SwapChainManager {
                                               VkSurfaceKHR surface);
 
  private:
-  void createSwapChain(VkSwapchainKHR oldSwapchain = VK_NULL_HANDLE);
+  void createSwapChain(std::optional<VkFormat> requestedFormat);
   void createImageViews();
   void destroyImageViews();
   void waitForNonZeroFramebufferExtent() const;
 
   VkSurfaceFormatKHR chooseSwapSurfaceFormat(
-      const std::vector<VkSurfaceFormatKHR>& availableFormats);
+      const std::vector<VkSurfaceFormatKHR>& availableFormats,
+      std::optional<VkFormat> requestedFormat) const;
 
   VkPresentModeKHR chooseSwapPresentMode(
       const std::vector<VkPresentModeKHR>& availablePresentModes);
@@ -75,7 +79,9 @@ class SwapChainManager {
 
   VkSwapchainKHR swapChain_{VK_NULL_HANDLE};
   std::vector<VkImage> swapChainImages_;
-  VkFormat swapChainImageFormat_{VK_FORMAT_UNDEFINED};
+  VkSurfaceFormatKHR surfaceFormat_{VK_FORMAT_UNDEFINED,
+                                    VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+  std::optional<VkFormat> preferredFormat_;
   VkExtent2D swapChainExtent_{};
   std::vector<VkImageView> swapChainImageViews_;
   std::vector<RenderingTargetHandle> swapChainFramebuffers_;

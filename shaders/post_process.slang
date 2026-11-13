@@ -75,8 +75,7 @@ float3 ToneMapACES(float3 color)
 
 float3 ToSwapchainLinear(float3 color)
 {
-    // The swapchain is created with an sRGB format, so Vulkan performs the
-    // final linear-to-sRGB conversion when this fragment output is stored.
+    // Keep display colors linear until the fragment output is encoded.
     return saturate(color);
 }
 
@@ -531,8 +530,7 @@ VSOutput vertMain(uint vertexIndex : SV_VertexID)
     return output;
 }
 
-[shader("fragment")]
-float4 fragMain(VSOutput input) : SV_Target0
+float4 DisplayLinearColor(VSOutput input)
 {
     uint width = 0u;
     uint height = 0u;
@@ -546,7 +544,7 @@ float4 fragMain(VSOutput input) : SV_Target0
     sceneColor.a = FiniteOr(sceneColor.a, 1.0);
 
     bool captureSceneLinear = (pc.outputMode & 0x80000000u) != 0u;
-    uint outputMode = pc.outputMode & 0x7fffffffu;
+    uint outputMode = pc.outputMode & 0x3fffffffu;
     bool oitAvailable = pc.oitEnabled != 0u;
 #ifdef CONTAINER_PROFILE_LTC_PATHS
     if (captureSceneLinear)
@@ -674,4 +672,18 @@ float4 fragMain(VSOutput input) : SV_Target0
     }
 
     return float4(MapSceneColor(FiniteColorOr(finalHdr, 0.0.xxx) * resolvedExposure), 1.0);
+}
+
+[shader("fragment")]
+float4 fragMain(VSOutput input) : SV_Target0
+{
+    float4 color = DisplayLinearColor(input);
+    // Non-sRGB attachments for an sRGB surface require an explicit transfer.
+    if ((pc.outputMode & 0x40000000u) != 0u)
+    {
+        float3 linear = saturate(color.rgb);
+        color.rgb = select(linear <= 0.0031308.xxx, 12.92 * linear,
+                           1.055 * pow(linear, 1.0 / 2.4) - 0.055);
+    }
+    return color;
 }

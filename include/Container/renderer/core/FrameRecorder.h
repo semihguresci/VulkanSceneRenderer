@@ -369,6 +369,7 @@ struct FramePostProcessState {
   RenderingPassHandle renderPass{VK_NULL_HANDLE};
   container::gpu::ExposureSettings exposureSettings{};
   DisplayGrade displayGrade{};
+  bool encodeSrgbOutput{false};
 };
 
 // All per-frame render state needed by FrameRecorder::record().

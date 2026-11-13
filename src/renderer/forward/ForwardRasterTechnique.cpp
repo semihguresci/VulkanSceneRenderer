@@ -1069,6 +1069,7 @@ void recordForwardRasterPostProcessPass(
             .transparentOitActive =
                 sharedContext.isPassActive(RenderPassId::OitResolve)},
        .captureSceneLinear = p.screenshot.sceneLinear,
+       .encodeSrgbOutput = p.postProcess.encodeSrgbOutput,
        .recordAfterFullscreenDraw = [&sharedContext, &p, extent,
                                      postProcessSets](VkCommandBuffer passCmd) {
          recordPathTracingFloorPlan(passCmd, p, sharedContext, extent);

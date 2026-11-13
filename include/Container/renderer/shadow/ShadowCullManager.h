@@ -65,7 +65,9 @@ class ShadowCullManager {
 
   void createResources(const std::filesystem::path& shaderDir,
 					   uint32_t descriptorSetCount);
-  void recreatePerFrameResources(uint32_t descriptorSetCount);
+  // Pass false when the caller replaces the borrowed object buffers.
+  void recreatePerFrameResources(uint32_t descriptorSetCount,
+                                 bool preserveObjectBindings = true);
   bool ensureBufferCapacity(uint32_t maxDrawCount);
   bool ensureBufferCapacity(uint32_t imageIndex, uint32_t maxDrawCount);
   void uploadDrawCommands(uint32_t imageIndex,

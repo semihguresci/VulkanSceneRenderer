@@ -153,6 +153,8 @@ struct CaptureViewportPointer {
   Action action{};
   glm::uvec2 pixel{};
 };
+enum class CaptureSwapchainFormat { Bgra8Srgb, Rgba8Srgb, Bgra8Unorm, Rgba8Unorm };
+
 struct CaptureBimFloorPlan {
   enum class Elevation { ProjectedGround, SourceElevation };
   bool enabled{};
@@ -206,6 +208,7 @@ struct CaptureEvent {
   std::optional<glm::vec3> areaLightPosition;
   std::optional<float> exposure;
   std::optional<glm::uvec2> resize;
+  std::optional<CaptureSwapchainFormat> swapchainFormat;
   std::optional<glm::uvec2> depthProbe;
   std::optional<CaptureViewportPointer> viewportPointer;
   std::string technique{}, reload{}, guiReload{}, guiSampleModel{};
@@ -367,7 +370,7 @@ public:
         // A typed action has a closed envelope. In particular, false-valued
         // mutation keys cannot bypass isolation by looking inert after parse.
         nodeFields(value,{"frame","lightEdit","lightSelection","lightAdd","expectLightEditFailure",
-            "taa","fsr","dlss","exposure","resize","depthProbe","environment","environmentAsync","environmentYaw","proceduralSky","technique","rayShadows","rayShadowSamples","rayShadowDenoise","reloadShaders","gpuTransforms",
+            "taa","fsr","dlss","exposure","resize","swapchainFormat","depthProbe","environment","environmentAsync","environmentYaw","proceduralSky","technique","rayShadows","rayShadowSamples","rayShadowDenoise","reloadShaders","gpuTransforms",
             "areaLighting","areaLightSamples","ddgiPaused","ddgiEnabled","ddgiIntensity","samples","reset"},"light action event");
       }
       for(const auto& [field,present,destination]:{
@@ -664,6 +667,19 @@ public:
         if (!event.resize->x || !event.resize->y || event.resize->x > 16384 ||
             event.resize->y > 16384)
           throw std::invalid_argument("Invalid capture resize dimensions");
+      }
+      if (value.contains("swapchainFormat")) {
+        const auto &format = value.at("swapchainFormat");
+        if (format == "bgra8-srgb")
+          event.swapchainFormat = CaptureSwapchainFormat::Bgra8Srgb;
+        else if (format == "rgba8-srgb")
+          event.swapchainFormat = CaptureSwapchainFormat::Rgba8Srgb;
+        else if (format == "bgra8-unorm")
+          event.swapchainFormat = CaptureSwapchainFormat::Bgra8Unorm;
+        else if (format == "rgba8-unorm")
+          event.swapchainFormat = CaptureSwapchainFormat::Rgba8Unorm;
+        else
+          throw std::invalid_argument("Invalid capture swapchainFormat");
       }
       if (value.contains("reloadShaders"))
         event.reloadShaders = value.at("reloadShaders").get<bool>();

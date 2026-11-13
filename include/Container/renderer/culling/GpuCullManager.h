@@ -77,7 +77,10 @@ class GpuCullManager {
   // Create compute pipelines and descriptor resources.
   void createResources(const std::filesystem::path& shaderDir,
                        uint32_t descriptorSetCount = 1);
-  void recreatePerFrameResources(uint32_t descriptorSetCount);
+  // Disable binding replay when the caller is replacing the object buffers.
+  // The new sets need current object bindings before dispatch.
+  void recreatePerFrameResources(uint32_t descriptorSetCount,
+                                 bool preserveObjectBindings = true);
 
   // Ensure indirect draw buffers are large enough for the given object count.
   // Returns true if buffers were recreated (descriptor sets need re-write).

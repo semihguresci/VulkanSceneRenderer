@@ -39,6 +39,9 @@ public:
   [[nodiscard]] RayEffectPipelines prepareShaderReload(const std::filesystem::path& root) const;
   void publishShaderReload(RayEffectPipelines candidate) noexcept;
   [[nodiscard]] std::unique_ptr<DdgiDebugRenderer> prepareDebugReload(const std::filesystem::path& root) const;
+  [[nodiscard]] std::unique_ptr<DdgiDebugRenderer> prepareDebugReload(
+      const std::filesystem::path& root, VkFormat colorFormat) const;
+  // Retire graphics readers before replacing the debug presentation pipeline.
   void publishDebugReload(std::unique_ptr<DdgiDebugRenderer> candidate) noexcept;
   // Call between frames, before assembling their descriptor snapshots. Invalid
   // settings leave the current configuration untouched. Allocation changes

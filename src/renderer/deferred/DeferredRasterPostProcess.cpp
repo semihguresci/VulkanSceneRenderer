@@ -189,6 +189,8 @@ bool recordDeferredPostProcessPassCommands(
   // Keep the 128-byte push constant ABI. The low bits still select the display mode.
   if (inputs.captureSceneLinear)
     postProcessState.pushConstants.outputMode |= 0x80000000u;
+  if (inputs.encodeSrgbOutput)
+    postProcessState.pushConstants.outputMode |= 0x40000000u;
 
   const DeferredPostProcessPassScope postProcessPass(
       {.commandBuffer = inputs.commandBuffer,

@@ -38,6 +38,8 @@ class ExposureManager {
 
   void createResources(const std::filesystem::path& shaderDir,
                        uint32_t descriptorSetCount = 1);
+  // Retire all GPU readers before changing the per-image resources.
+  void resizeFrameResources(uint32_t descriptorSetCount);
   void dispatch(uint32_t imageIndex,
                 VkCommandBuffer cmd,
                 VkImageView sceneColorView,
@@ -75,8 +77,6 @@ class ExposureManager {
 
  private:
   void createPipeline(const std::filesystem::path& shaderDir);
-  void resizeFrameResources(uint32_t descriptorSetCount);
-  void createHistogramBuffer(container::gpu::AllocatedBuffer& buffer);
   void createExposureStateBuffer(container::gpu::AllocatedBuffer& buffer);
   void destroyFrameResources();
   void updateDescriptorSet(uint32_t imageIndex, VkImageView sceneColorView,

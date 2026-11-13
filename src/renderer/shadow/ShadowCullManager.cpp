@@ -246,7 +246,8 @@ void ShadowCullManager::createResources(const std::filesystem::path& shaderDir,
   }
 }
 
-void ShadowCullManager::recreatePerFrameResources(uint32_t descriptorSetCount) {
+void ShadowCullManager::recreatePerFrameResources(uint32_t descriptorSetCount,
+                                                  bool preserveObjectBindings) {
 	const uint32_t setCount = std::max<uint32_t>(1u, descriptorSetCount);
 	const std::vector<uint32_t> previousCapacities = drawCapacities_;
 	const uint32_t previousCapacity = maxDrawCount_;
@@ -262,17 +263,23 @@ void ShadowCullManager::recreatePerFrameResources(uint32_t descriptorSetCount) {
   } else shadowCullPool_=pipelineManager_.createDescriptorPool(
       {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,total},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,total*4}},total,0);
 
-	const VkBuffer fallbackObjectBuffer =
-		objectSsboBuffers_.empty() ? VK_NULL_HANDLE : objectSsboBuffers_.back();
-	const VkDeviceSize fallbackObjectSize =
-		objectSsboSizes_.empty() ? 0 : objectSsboSizes_.back();
-	const uint32_t fallbackObjectCount =
-		objectCounts_.empty() ? 0 : objectCounts_.back();
+	if (preserveObjectBindings) {
+	  const VkBuffer fallbackObjectBuffer =
+		  objectSsboBuffers_.empty() ? VK_NULL_HANDLE : objectSsboBuffers_.back();
+	  const VkDeviceSize fallbackObjectSize =
+		  objectSsboSizes_.empty() ? 0 : objectSsboSizes_.back();
+	  const uint32_t fallbackObjectCount =
+		  objectCounts_.empty() ? 0 : objectCounts_.back();
+	  objectSsboBuffers_.resize(setCount, fallbackObjectBuffer);
+	  objectSsboSizes_.resize(setCount, fallbackObjectSize);
+	  objectCounts_.resize(setCount, fallbackObjectCount);
+	} else {
+	  objectSsboBuffers_.assign(setCount, VK_NULL_HANDLE);
+	  objectSsboSizes_.assign(setCount, 0);
+	  objectCounts_.assign(setCount, 0);
+	}
 	shadowCullSets_.assign(setCount * container::gpu::kShadowCascadeCount, VK_NULL_HANDLE);
 	shadowCullBuffers_.assign(setCount, ownedShadowCullUbo_.buffer);
-	objectSsboBuffers_.resize(setCount, fallbackObjectBuffer);
-	objectSsboSizes_.resize(setCount, fallbackObjectSize);
-	objectCounts_.resize(setCount, fallbackObjectCount);
 	resizePerImageBufferState(setCount);
 	lastUploadSourceData_.assign(setCount, nullptr);
 	lastUploadSourceSize_.assign(setCount, 0u);

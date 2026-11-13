@@ -1131,6 +1131,17 @@ void CheckVkResult(VkResult result) {
   }
 }
 
+ImGui_ImplVulkan_PipelineInfo guiPipelineInfo(RenderingPassHandle renderPass) {
+  if (!renderPass || renderPass->colorFormats.size() != 1 ||
+      renderPass->colorFormats.front() == VK_FORMAT_UNDEFINED) {
+    throw std::invalid_argument("ImGui requires a post-process color attachment");
+  }
+  ImGui_ImplVulkan_PipelineInfo info{};
+  info.PipelineRenderingCreateInfo = renderPass->pipelineInfo();
+  info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+  return info;
+}
+
 constexpr size_t TelemetryPhaseIndex(GuiRendererTelemetryPhase phase) {
   return static_cast<size_t>(phase);
 }
@@ -3470,7 +3481,13 @@ void GuiManager::initialize(VkInstance instance, VkDevice device,
   ImGui::CreateContext();
   ImGui::StyleColorsDark();
 
-  ImGui_ImplGlfw_InitForVulkan(window, true);
+  if (!ImGui_ImplGlfw_InitForVulkan(window, true)) {
+    ImGui::DestroyContext();
+    throw std::runtime_error("Failed to initialize ImGui GLFW backend");
+  }
+  initialized_ = true;
+  vulkanBackendContext_ = {instance, device, physicalDevice, graphicsQueue,
+                           graphicsQueueFamily};
 
   std::array<VkDescriptorPoolSize, 11> poolSizes = {{
       {VK_DESCRIPTOR_TYPE_SAMPLER, 1000},
@@ -3493,40 +3510,53 @@ void GuiManager::initialize(VkInstance instance, VkDevice device,
   poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
   poolInfo.pPoolSizes = poolSizes.data();
 
-  if (createOwnedDescriptorPool(device, &poolInfo, nullptr, &descriptorPool_) !=
-      VK_SUCCESS) {
-    throw std::runtime_error("Failed to create ImGui descriptor pool");
-  }
+  try {
+    if (createOwnedDescriptorPool(device, &poolInfo, nullptr, &descriptorPool_) !=
+        VK_SUCCESS) {
+      throw std::runtime_error("Failed to create ImGui descriptor pool");
+    }
+    initializeVulkanBackend(renderPass, imageCount);
 
+    defaultModelPath_ = defaultModelPath;
+    modelPathInput_ = defaultModelPath;
+    const auto importScaleIt =
+        std::ranges::find(kImportScaleValues, defaultImportScale);
+    importScaleIndex_ =
+        importScaleIt != kImportScaleValues.end()
+            ? static_cast<int>(importScaleIt - kImportScaleValues.begin())
+            : 0;
+    importScale_ = kImportScaleValues[static_cast<size_t>(importScaleIndex_)];
+    discoverSampleModels();
+  } catch (...) {
+    shutdown(device);
+    throw;
+  }
+}
+
+void GuiManager::initializeVulkanBackend(RenderingPassHandle renderPass,
+                                         uint32_t imageCount) {
+  if (imageCount < 2)
+    throw std::invalid_argument("ImGui requires at least two swapchain images");
+  const auto& context = vulkanBackendContext_;
   ImGui_ImplVulkan_InitInfo initInfo{};
   initInfo.ApiVersion = VK_API_VERSION_1_4;
-  initInfo.Instance = instance;
-  initInfo.PhysicalDevice = physicalDevice;
-  initInfo.Device = device;
-  initInfo.QueueFamily = graphicsQueueFamily;
-  initInfo.Queue = graphicsQueue;
+  initInfo.Instance = context.instance;
+  initInfo.PhysicalDevice = context.physicalDevice;
+  initInfo.Device = context.device;
+  initInfo.QueueFamily = context.graphicsQueueFamily;
+  initInfo.Queue = context.graphicsQueue;
   initInfo.DescriptorPool = descriptorPool_;
   initInfo.UseDynamicRendering = true;
-  initInfo.PipelineInfoMain.PipelineRenderingCreateInfo = renderPass->pipelineInfo();
-  initInfo.PipelineInfoMain.Subpass = 0;
+  initInfo.PipelineInfoMain = guiPipelineInfo(renderPass);
   initInfo.MinImageCount = imageCount;
   initInfo.ImageCount = imageCount;
-  initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
   initInfo.CheckVkResultFn = CheckVkResult;
 
-  ImGui_ImplVulkan_Init(&initInfo);
-
-  defaultModelPath_ = defaultModelPath;
-  modelPathInput_ = defaultModelPath;
-  const auto importScaleIt =
-      std::ranges::find(kImportScaleValues, defaultImportScale);
-  importScaleIndex_ =
-      importScaleIt != kImportScaleValues.end()
-          ? static_cast<int>(importScaleIt - kImportScaleValues.begin())
-          : 0;
-  importScale_ = kImportScaleValues[static_cast<size_t>(importScaleIndex_)];
-  discoverSampleModels();
-  initialized_ = true;
+  if (!ImGui_ImplVulkan_Init(&initInfo))
+    throw std::runtime_error("Failed to initialize ImGui Vulkan backend");
+  swapchainColorFormat_ = renderPass->colorFormats.front();
+  swapchainImageCount_ = imageCount;
+  ++swapchainRenderingGeneration_;
 }
 
 void GuiManager::discoverSampleModels() {
@@ -3724,7 +3754,8 @@ void GuiManager::shutdown(VkDevice device) {
     return;
 
   endFrame();
-  ImGui_ImplVulkan_Shutdown();
+  if (ImGui::GetIO().BackendRendererUserData != nullptr)
+    ImGui_ImplVulkan_Shutdown();
   ImGui_ImplGlfw_Shutdown();
   ImGui::DestroyContext();
 
@@ -3735,12 +3766,34 @@ void GuiManager::shutdown(VkDevice device) {
 
   initialized_ = false;
   imguiFrameOpen_ = false;
+  swapchainColorFormat_ = VK_FORMAT_UNDEFINED;
+  swapchainImageCount_ = 0;
+  vulkanBackendContext_ = {};
 }
 
-void GuiManager::updateSwapchainImageCount(uint32_t imageCount) {
+void GuiManager::updateSwapchainRendering(RenderingPassHandle renderPass,
+                                          uint32_t imageCount) {
   if (!initialized_)
     return;
-  ImGui_ImplVulkan_SetMinImageCount(imageCount);
+
+  const auto pipeline = guiPipelineInfo(renderPass);
+  const auto colorFormat = renderPass->colorFormats.front();
+  if (colorFormat == swapchainColorFormat_ && imageCount == swapchainImageCount_)
+    return;
+  if (imageCount < 2)
+    throw std::invalid_argument("ImGui requires at least two swapchain images");
+
+  endFrame();
+  if (imageCount != swapchainImageCount_) {
+    // SetMinImageCount leaves the backend's actual upload-buffer ring size
+    // unchanged. Restart only the Vulkan backend to change ImageCount.
+    ImGui_ImplVulkan_Shutdown();
+    initializeVulkanBackend(renderPass, imageCount);
+  } else {
+    ImGui_ImplVulkan_CreateMainPipeline(&pipeline);
+    swapchainColorFormat_ = colorFormat;
+    ++swapchainRenderingGeneration_;
+  }
 }
 
 void GuiManager::setMsaaSampleState(std::span<const uint32_t> options,

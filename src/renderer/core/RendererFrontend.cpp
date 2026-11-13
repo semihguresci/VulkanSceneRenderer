@@ -512,6 +512,15 @@ bool isSupportedScreenshotFormat(VkFormat format) {
   }
 }
 
+void requireSwapchainPngSupport(const container::gpu::SwapChainManager& swapchain) {
+  if (!swapchain.supportsTransferSrc())
+    throw std::runtime_error("swapchain does not support VK_IMAGE_USAGE_TRANSFER_SRC_BIT");
+  const auto surface = swapchain.surfaceFormat();
+  if (!isSupportedScreenshotFormat(surface.format) ||
+      surface.colorSpace != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+    throw std::runtime_error("unsupported swapchain screenshot format or color space");
+}
+
 std::vector<unsigned char> convertSwapchainBytesToRgba(const unsigned char *src,
                                                        size_t pixelCount,
                                                        VkFormat format) {
@@ -2340,7 +2349,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   cpuObjectUploadBytes_=0;
   if(subs_.guiManager) gpuHierarchyEnabled_=subs_.guiManager->gpuHierarchyTransforms();
   gpuObjectUploadDeferred_=gpuHierarchyEnabled_;
-  updateObjectBuffer(imageIndex,gpuObjectUploadDeferred_);
+  if (updateObjectBuffer(imageIndex, gpuObjectUploadDeferred_))
+    publishSceneObjectDescriptors();
   prepareGpuHierarchyFrame(imageIndex);
   if (frameTemporalSettings.enabled) {
     auto objects = subs_.sceneController->objectData();
@@ -2443,6 +2453,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   if (screenshotThisFrame) {
     phaseStart = TelemetryClock::now();
     try {
+      if (!screenshot_.sceneLinear)
+        requireSwapchainPngSupport(svc_.swapChainManager);
       ensureScreenshotReadbackBuffer(frame_.currentFrame, svc_.swapChainManager.extent(),
           screenshot_.sceneLinear ? VK_FORMAT_R32G32B32A32_SFLOAT
                                   : svc_.swapChainManager.imageFormat());
@@ -2757,7 +2769,8 @@ void RendererFrontend::applyTemporalCapture(
       event.materialVariant || !event.sceneHistory.empty() || event.nodeFlags || event.nodeAuthoring ||
       event.nodeReparent || event.nodeTransform || event.addPrimitive || event.animationPlaying || event.animationClip ||
       event.animationTime || !event.physicsAttach.empty() || !event.physicsAction.empty() || event.physicsJointCreate ||
-      !event.physicsJointAction.empty() || event.physicsJointMotorVelocity || event.samples || event.resize || !event.technique.empty())
+      !event.physicsJointAction.empty() || event.physicsJointMotorVelocity || event.samples || event.resize ||
+      event.swapchainFormat || !event.technique.empty())
     finishEditGestures();
   if (event.ddgiFitProbes)
     pendingDdgiSceneFit_ = *event.ddgiFitProbes;
@@ -3279,6 +3292,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   const auto &temporal = *subs_.temporalManager;
   const auto &settings = temporal.settings();
   const auto extent = svc_.swapChainManager.extent();
+  const auto surfaceFormat = svc_.swapChainManager.surfaceFormat();
   VkPhysicalDeviceProperties gpu{};
   vkGetPhysicalDeviceProperties(svc_.ctx.deviceWrapper->physicalDevice(), &gpu);
   const auto owned = container::gpu::ownedVulkanObjectCounts(svc_.ctx.deviceWrapper->device());
@@ -3286,6 +3300,12 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   vmaCalculateStatistics(svc_.allocationManager.memoryManager()->allocator(), &allocationStats);
   nlohmann::json json{
       {"schemaVersion", 1},
+      {"swapchainFormat", static_cast<int32_t>(surfaceFormat.format)},
+      {"swapchainColorSpace", static_cast<int32_t>(surfaceFormat.colorSpace)},
+      {"swapchainSupportsTransferSrc", svc_.swapChainManager.supportsTransferSrc()},
+      {"presentationPipelineGeneration", presentationPipelineGeneration_},
+      {"guiPipelineGeneration", subs_.guiManager
+           ? subs_.guiManager->swapchainRenderingGeneration() : 0u},
       {"gpu", gpu.deviceName},
       {"vendorId", gpu.vendorID},
       {"deviceId", gpu.deviceID},
@@ -3918,58 +3938,64 @@ bool RendererFrontend::gfxCaptureComplete() const {
   return end != 0 && gfxJournal_.presentCalls() >= end;
 }
 
-void RendererFrontend::handleResize() {
-  if (subs_.rendererTelemetry) {
+void RendererFrontend::handleResize(std::optional<VkFormat> requestedFormat) {
+  if (vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device()) != VK_SUCCESS)
+    throw std::runtime_error("Failed to retire frames before recreating the swapchain");
+  if (subs_.rendererTelemetry)
     subs_.rendererTelemetry->noteDeviceWaitIdle();
+
+  auto& swapchain = svc_.swapChainManager;
+  const VkFormat previousFormat = swapchain.imageFormat();
+  const VkExtent2D previousExtent = swapchain.extent();
+  const size_t previousImageCount = swapchain.imageCount();
+  swapchain.recreate(requestedFormat);
+  if (subs_.rendererTelemetry)
     subs_.rendererTelemetry->noteSwapchainRecreate();
-  }
-  vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device());
+
+  updateSwapchainRendering(previousFormat);
+  swapchain.createFramebuffers(resources_.renderPasses.postProcess);
+  subs_.frameSyncManager->recreateRenderFinishedSemaphores(swapchain.imageCount());
+  frame_.imagesInFlight.assign(swapchain.imageCount(), VK_NULL_HANDLE);
+  invalidateDepthVisibilityFrames();
+
+  const VkExtent2D extent = swapchain.extent();
+  const uint32_t imageCount = static_cast<uint32_t>(swapchain.imageCount());
+  // Offscreen resources, including temporal and GI histories, still match a
+  // format-only replacement with the same extent and image count.
+  if (previousFormat != swapchain.imageFormat() &&
+      previousExtent.width == extent.width && previousExtent.height == extent.height &&
+      previousImageCount == imageCount)
+    return;
 
   destroyGBufferResources();
   subs_.gpuHierarchyPass.reset();
   gpuHierarchyPrepared_ = false;
   gpuHierarchyObjectBuffers_.clear();
-  invalidateDepthVisibilityFrames();
-  svc_.swapChainManager.recreate(resources_.renderPasses.postProcess);
   ensureCameraBuffers();
   if (subs_.lightingManager) {
-    subs_.lightingManager->createDescriptorResources(
-        static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
+    subs_.lightingManager->createDescriptorResources(imageCount);
   }
   if (subs_.shadowManager) {
-    subs_.shadowManager->recreatePerFrameResources(
-        static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
+    subs_.shadowManager->recreatePerFrameResources(imageCount);
   }
   if (subs_.shadowCullManager) {
-    subs_.shadowCullManager->recreatePerFrameResources(
-        static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
+    subs_.shadowCullManager->recreatePerFrameResources(imageCount,
+                                                       previousImageCount == imageCount);
     std::fill(buffers_.shadowObjectDescriptorReady.begin(),
               buffers_.shadowObjectDescriptorReady.end(), false);
   }
   if (subs_.gpuCullManager) {
-    subs_.gpuCullManager->recreatePerFrameResources(
-        static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
+    subs_.gpuCullManager->recreatePerFrameResources(imageCount,
+                                                    previousImageCount == imageCount);
   }
+  if (subs_.exposureManager && previousImageCount != imageCount)
+    subs_.exposureManager->resizeFrameResources(imageCount);
   createFrameResources();
-  if (subs_.bloomManager) {
-    const VkExtent2D ext = svc_.swapChainManager.extent();
-    subs_.bloomManager->createTextures(ext.width, ext.height);
-  }
-  svc_.commandBufferManager.reallocate(svc_.swapChainManager.imageCount());
-
-  const uint32_t imageCount =
-      static_cast<uint32_t>(svc_.swapChainManager.imageCount());
-  if (subs_.guiManager)
-    subs_.guiManager->updateSwapchainImageCount(imageCount);
-
-  subs_.frameSyncManager->recreateRenderFinishedSemaphores(
-      svc_.swapChainManager.imageCount());
-  frame_.imagesInFlight.assign(svc_.swapChainManager.imageCount(),
-                               VK_NULL_HANDLE);
-  if (subs_.renderPassGpuProfiler) {
-    subs_.renderPassGpuProfiler->recreate(
-        static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
-  }
+  if (subs_.bloomManager)
+    subs_.bloomManager->createTextures(extent.width, extent.height);
+  svc_.commandBufferManager.reallocate(imageCount);
+  if (subs_.renderPassGpuProfiler)
+    subs_.renderPassGpuProfiler->recreate(imageCount);
 
   for (uint32_t imageIndex = 0;
        imageIndex < static_cast<uint32_t>(buffers_.cameras.size());
@@ -3977,13 +4003,9 @@ void RendererFrontend::handleResize() {
     updateCameraBuffer(imageIndex);
   }
   updateAllObjectBuffers();
-  if (subs_.sceneManager) {
-    subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.objects);
-    if (subs_.bimManager && subs_.bimManager->hasScene()) {
-      subs_.sceneManager->updateAuxiliaryDescriptorSets(
-          buffers_.cameras, subs_.bimManager->objectAllocatedBuffer());
-    }
-  }
+  if (subs_.sceneManager && subs_.bimManager && subs_.bimManager->hasScene())
+    subs_.sceneManager->updateAuxiliaryDescriptorSets(
+        buffers_.cameras, subs_.bimManager->objectAllocatedBuffer());
   updateFrameDescriptorSets();
 }
 
@@ -5080,13 +5102,8 @@ void RendererFrontend::requestScreenshot(std::filesystem::path outputPath, bool 
       frontendDisplayMode(subs_.guiManager.get(), configuredDisplayMode(svc_.config)) !=
           container::ui::GBufferViewMode::Lit)
     throw std::runtime_error("select Lit view before exporting a scene-linear EXR");
-  if (!sceneLinear && !svc_.swapChainManager.supportsTransferSrc()) {
-    throw std::runtime_error(
-        "swapchain does not support VK_IMAGE_USAGE_TRANSFER_SRC_BIT");
-  }
-  if (!sceneLinear && !isSupportedScreenshotFormat(svc_.swapChainManager.imageFormat())) {
-    throw std::runtime_error("unsupported swapchain screenshot format");
-  }
+  if (!sceneLinear)
+    requireSwapchainPngSupport(svc_.swapChainManager);
 
   screenshot_.outputPath = std::move(outputPath);
   screenshot_.referenceSampleTarget = referenceSampleTarget;
@@ -5159,7 +5176,6 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
       }
     }
     updateAllObjectBuffers();
-    subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.objects);
     if (subs_.bimManager && subs_.bimManager->hasScene()) {
       subs_.sceneManager->updateAuxiliaryDescriptorSets(
           buffers_.cameras, subs_.bimManager->objectAllocatedBuffer());
@@ -5687,11 +5703,14 @@ void RendererFrontend::createRenderPasses() {
 
 void RendererFrontend::createGraphicsPipelines() {
   resources_.builtPipelines = buildGraphicsPipelines(
-      activeShaderReload_ ? activeShaderReload_->directory : container::util::executableDirectory());
+      activeShaderReload_ ? activeShaderReload_->directory : container::util::executableDirectory(),
+      resources_.renderPasses.postProcess);
+  ++presentationPipelineGeneration_;
 }
 
 PipelineBuildResult RendererFrontend::buildGraphicsPipelines(
-    const std::filesystem::path& shaderDirectory) {
+    const std::filesystem::path& shaderDirectory,
+    RenderingPassHandle postProcessPass) {
   if (!subs_.pipelineBuilder) {
     subs_.pipelineBuilder = std::make_unique<GraphicsPipelineBuilder>(
         svc_.ctx.deviceWrapper, svc_.pipelineManager);
@@ -5719,11 +5738,49 @@ PipelineBuildResult RendererFrontend::buildGraphicsPipelines(
                                 resources_.renderPasses.shadow,
                                 resources_.renderPasses.lighting,
                                 resources_.renderPasses.transformGizmos,
-                                resources_.renderPasses.postProcess,
+                                postProcessPass,
                                 resources_.renderPasses.forwardLighting};
   auto result = subs_.pipelineBuilder->build(shaderDirectory, descLayouts, rp, msaaSampleCount_);
   result.pipelines.layoutRegistry = result.layouts.layoutRegistry;
   return result;
+}
+
+void RendererFrontend::updateSwapchainRendering(VkFormat previousFormat) {
+  const auto format = svc_.swapChainManager.imageFormat();
+  const auto imageCount = static_cast<uint32_t>(svc_.swapChainManager.imageCount());
+  const auto updateGui = [&](RenderingPassHandle pass) {
+    if (subs_.guiManager) {
+      if (subs_.guiManager->swapchainImageCount() != imageCount)
+        retireComfyUiPreview();
+      subs_.guiManager->updateSwapchainRendering(pass, imageCount);
+    }
+  };
+  if (previousFormat == format) {
+    updateGui(resources_.renderPasses.postProcess);
+    return;
+  }
+
+  const auto shaderDirectory = activeShaderReload_ ? activeShaderReload_->directory
+                                                  : container::util::executableDirectory();
+  auto pass = subs_.renderPassManager->preparePostProcess(format);
+  auto ddgiDebug = subs_.ddgiManager
+      ? subs_.ddgiManager->prepareDebugReload(shaderDirectory, format) : nullptr;
+  // Rebuild the graphics bundle as one unit. Post-process and its overlays
+  // share pipeline layouts and the per-technique handle registry.
+  auto candidate = buildGraphicsPipelines(shaderDirectory, pass.get());
+  try {
+    updateGui(pass.get());
+  } catch (...) {
+    subs_.pipelineBuilder->destroy(candidate);
+    throw;
+  }
+  if (subs_.ddgiManager)
+    subs_.ddgiManager->publishDebugReload(std::move(ddgiDebug));
+  subs_.renderPassManager->publishPostProcess(std::move(pass));
+  resources_.renderPasses = subs_.renderPassManager->passes();
+  std::swap(resources_.builtPipelines, candidate);
+  subs_.pipelineBuilder->destroy(candidate);
+  ++presentationPipelineGeneration_;
 }
 
 void RendererFrontend::destroyGraphicsPipelines() {
@@ -5780,7 +5837,8 @@ void RendererFrontend::processShaderReload(bool request, bool wait) {
         ? subs_.ddgiManager->prepareSceneHistoryReset() : DdgiManager::PreparedSceneHistoryReset{};
     if (subs_.ddgiManager)
       subs_.ddgiManager->synchronizeAsync();
-    auto candidate = buildGraphicsPipelines(compiled->directory);
+    auto candidate = buildGraphicsPipelines(compiled->directory,
+                                            resources_.renderPasses.postProcess);
     if (vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device()) != VK_SUCCESS) {
       subs_.pipelineBuilder->destroy(candidate);
       throw std::runtime_error("Failed to retire in-flight graphics pipelines");
@@ -5795,6 +5853,7 @@ void RendererFrontend::processShaderReload(bool request, bool wait) {
     }
     std::swap(resources_.builtPipelines, candidate);
     subs_.pipelineBuilder->destroy(candidate);
+    ++presentationPipelineGeneration_;
     svc_.pipelineManager.publishComputeReload(computeCandidate);
     if (subs_.temporalManager)
       subs_.temporalManager->publishVelocityReload(velocityCandidate);
@@ -6423,13 +6482,13 @@ void RendererFrontend::uploadPreparedObjectData(uint32_t imageIndex,std::span<co
   }
 }
 
-void RendererFrontend::updateObjectBuffer(uint32_t imageIndex, bool deferUploadToGpu) {
+bool RendererFrontend::updateObjectBuffer(uint32_t imageIndex, bool deferUploadToGpu) {
   if (!subs_.sceneController)
-    return;
+    return false;
   ensureObjectBuffers();
   if (imageIndex >= buffers_.objects.size() ||
       imageIndex >= buffers_.objectCapacities.size()) {
-    return;
+    return false;
   }
 
   const auto cameraBuffer =
@@ -6449,14 +6508,17 @@ void RendererFrontend::updateObjectBuffer(uint32_t imageIndex, bool deferUploadT
             buffers_.objectCapacities[imageIndex]);
     buffers_.shadowObjectDescriptorReady[imageIndex] = true;
   }
-  if (recreated && subs_.sceneManager) {
+  sceneState_.diagCubeObjectIndex = subs_.sceneController->diagCubeObjectIndex();
+  return recreated;
+}
+
+void RendererFrontend::publishSceneObjectDescriptors() {
+  if (subs_.sceneManager) {
     // All scene sets share material/texture bindings. An image graphics fence
     // alone does not retire compute work borrowing another image's set.
     if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
     subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.objects);
   }
-  sceneState_.diagCubeObjectIndex =
-      subs_.sceneController->diagCubeObjectIndex();
 }
 
 void RendererFrontend::updateAllObjectBuffers() {
@@ -6467,6 +6529,9 @@ void RendererFrontend::updateAllObjectBuffers() {
   for (uint32_t imageIndex = 0; imageIndex < imageCount; ++imageIndex) {
     updateObjectBuffer(imageIndex);
   }
+  // A change in image count replaces all slots. Publish the scene descriptor
+  // sets only after every object buffer has a valid binding.
+  publishSceneObjectDescriptors();
 }
 
 container::gpu::AllocatedBuffer RendererFrontend::sceneObjectBuffer(
@@ -6863,11 +6928,9 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
   screenshot_.pending = false;
   auto metadataPath = screenshot_.outputPath;
   metadataPath += ".capture.json";
-  const bool srgb = readback.format == VK_FORMAT_B8G8R8A8_SRGB ||
-                    readback.format == VK_FORMAT_R8G8B8A8_SRGB;
   nlohmann::json metadata{{"schemaVersion", 1},
                           {"width", readback.extent.width}, {"height", readback.extent.height},
-                          {"colorSpace", screenshot_.sceneLinear ? "linear-sRGB" : srgb ? "sRGB" : "linear-sRGB"},
+                          {"colorSpace", screenshot_.sceneLinear ? "linear-sRGB" : "sRGB"},
                           {"includesUi", !screenshot_.sceneLinear && !screenshot_.viewportOnly && subs_.guiManager != nullptr}};
   if (referenceCapture) {
     const auto lens = referenceCapture->effectiveLens();
@@ -9738,6 +9801,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   p.postProcess.displayGrade = subs_.guiManager ? subs_.guiManager->displayGrade()
                                                : svc_.config.displayGrade;
   p.postProcess.renderPass = resources_.renderPasses.postProcess;
+  p.postProcess.encodeSrgbOutput = svc_.swapChainManager.needsShaderSrgbEncoding();
   if (subs_.sceneProviderRegistry) {
     p.sceneExtraction = extractProviderSceneFrameInputs(
         *subs_.sceneProviderRegistry);
