@@ -1708,6 +1708,19 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                       cmd, p, deferred->sceneExtent(p));
                 });
 
+  graph.addPass(RenderPassId::OitResolve,
+                {RenderPassId::VolumetricFog, RenderPassId::TemporalResolve,
+                 RenderPassId::TransformGizmos},
+                [deferred, transparentOit](VkCommandBuffer cmd,
+                                           const FrameRecordParams &p) {
+    if (!transparentOit.recordResolvePreparation(cmd, p) ||
+        temporalSceneColorLayout(p) == VK_IMAGE_LAYOUT_GENERAL) {
+      return;
+    }
+    static_cast<void>(deferred->oitManager()->recordNativeComposition(
+        cmd, oitNativeComposeInputs(p)));
+  });
+
   graph.addPass(
       RenderPassId::ExposureAdaptation,
       [deferred](VkCommandBuffer cmd, const FrameRecordParams &p) {
@@ -1740,12 +1753,6 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                                               sceneColorView, extent.width,
                                               extent.height,
                                               exposureSettings, temporalSceneColorLayout(p));
-      });
-
-  graph.addPass(
-      RenderPassId::OitResolve,
-      [transparentOit](VkCommandBuffer cmd, const FrameRecordParams &p) {
-        static_cast<void>(transparentOit.recordResolvePreparation(cmd, p));
       });
 
   graph.addPass(RenderPassId::Bloom, [deferred](VkCommandBuffer cmd,
@@ -2100,10 +2107,17 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
         return renderPassReady();
       });
 
-  graph.setPassReadiness(RenderPassId::OitResolve,
-                         [transparentOit](const FrameRecordParams &p) {
-                           return transparentOit.readiness(p);
-                         });
+  graph.setPassReadiness(
+      RenderPassId::OitResolve,
+      [deferred, transparentOit](const FrameRecordParams &p) {
+        auto readiness = transparentOit.readiness(p);
+        if (readiness.ready &&
+            temporalSceneColorLayout(p) != VK_IMAGE_LAYOUT_GENERAL &&
+            !deferred->oitManager()->nativeCompositionReady(oitNativeComposeInputs(p))) {
+          return renderPassMissingResource(RenderResourceId::SceneColor);
+        }
+        return readiness;
+      });
 
   graph.setPassReadiness(RenderPassId::Bloom, [deferred](
                                                   const FrameRecordParams &p) {

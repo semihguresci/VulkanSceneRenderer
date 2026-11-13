@@ -407,10 +407,10 @@ TEST(ForwardRasterTechniqueTests, BuildsForwardGraphWithoutGBufferOnlyPasses) {
   EXPECT_LT(executionPosition(graph, RenderPassId::Lighting),
             executionPosition(graph, RenderPassId::TransformGizmos));
   EXPECT_LT(executionPosition(graph, RenderPassId::TransformGizmos),
-            executionPosition(graph, RenderPassId::ExposureAdaptation));
-  EXPECT_LT(executionPosition(graph, RenderPassId::ExposureAdaptation),
             executionPosition(graph, RenderPassId::OitResolve));
   EXPECT_LT(executionPosition(graph, RenderPassId::OitResolve),
+            executionPosition(graph, RenderPassId::ExposureAdaptation));
+  EXPECT_LT(executionPosition(graph, RenderPassId::ExposureAdaptation),
             executionPosition(graph, RenderPassId::Bloom));
   EXPECT_LT(executionPosition(graph, RenderPassId::Bloom),
             executionPosition(graph, RenderPassId::PostProcess));

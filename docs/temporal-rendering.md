@@ -88,8 +88,10 @@ identity (4), reactive (1), HDR composite (8) and diagnostics (8): **37 bytes/pi
 per swapchain image**. The payload is `width × height × (40 + 37 × imageCount)`;
 telemetry also reports actual VMA allocation bytes including alignment. Resources
 are allocated only on first TAA use, retained while disabled, and recreated on
-extent/image-count changes. Disabled TAA executes no velocity/compose/resolve
-passes. The extra velocity rasterization and two HDR compute dispatches trade
+extent/image-count changes. With TAA disabled, the native OIT resolve composites
+transparent layers into scene HDR before bloom and auto exposure. It uses the
+existing scene image and allocates no temporal attachments. The extra velocity
+rasterization and two temporal HDR compute dispatches trade
 bandwidth and memory for a shared implementation independent of G-buffer MRT
 limits. Full-width motion/depth preserve signed range and expected-depth precision.
 
@@ -334,7 +336,7 @@ policy when the runtime feature exists.
 | `TemporalManager` | Three-MRT dynamic velocity pass, HDR OIT compose, compute resolve, ping-pong histories, descriptors and queue barriers |
 | `FrameResourceManager` | Five current-frame attachments per swapchain image, allocated lazily for TAA |
 | Shared render graph registration | `Lighting -> TemporalVelocity -> TemporalResolve -> Exposure -> Bloom -> PostProcess` in both techniques |
-| `post_process.slang` | Uses resolved HDR with OIT already composed when TAA runs; native path retains its original OIT composition |
+| `post_process.slang` | Reads composed HDR for display and EXR, and samples OIT lists for Transparency and Revealage diagnostics |
 | Deterministic capture runner | Fixed-step keyframes, lifecycle events, selected PNGs and effective configuration/timing/memory JSON sidecars |
 
 The architecture above is implemented by `TemporalManager` and `TemporalState`. Shared helper result structs are local math values, not buffer layouts.

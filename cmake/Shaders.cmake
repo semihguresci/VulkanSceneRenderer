@@ -118,6 +118,7 @@ set(SLANG_COMPUTE_SHADER_NAMES
     bloom_downsample.slang
     bloom_upsample.slang
     exposure_histogram.slang
+    oit_native_compose.slang
     temporal_compose.slang
     fsr_inputs.slang
     openvdb_volume.slang

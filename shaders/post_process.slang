@@ -287,27 +287,19 @@ uint CascadeIndexForViewDepth(float viewZ)
     return cascadeIndex;
 }
 
-float3 LitViewColor(float2 uv, uint2 pixelCoord, float resolvedExposure,
-                    bool oitAvailable)
+float3 LitViewColor(float2 uv, float resolvedExposure)
 {
     float3 litColor =
         FiniteColorOr(sceneColorTexture.SampleLevel(gBufferSampler, uv, 0.0).rgb,
                       0.0.xxx);
-    float3 compositedColor = litColor;
-    if (oitAvailable && uCamera.temporalInfo.w == 0u)
-    {
-        OitResolveResult oit = ResolveOitPixel(pixelCoord, litColor);
-        compositedColor = oit.compositedColor;
-    }
-
     if (pc.bloomEnabled != 0u)
     {
         float3 bloom = FiniteColorOr(
             gBloomTexture.SampleLevel(bloomSampler, uv, 0.0).rgb, 0.0.xxx);
-        compositedColor += bloom * max(FiniteOr(pc.bloomIntensity, 0.0), 0.0);
+        litColor += bloom * max(FiniteOr(pc.bloomIntensity, 0.0), 0.0);
     }
 
-    return MapSceneColor(compositedColor * resolvedExposure);
+    return MapSceneColor(litColor * resolvedExposure);
 }
 
 float3 ShadowCascadeViewColor(uint2 pixelCoord, float3 sceneRgb)
@@ -442,7 +434,7 @@ float3 DebugTextureViewColor(uint mode, float2 uv, uint2 pixelCoord,
 {
     if (mode == 0u)
     {
-        return LitViewColor(uv, pixelCoord, resolvedExposure, oitAvailable);
+        return LitViewColor(uv, resolvedExposure);
     }
     if (mode == 1u)
     {
@@ -556,9 +548,6 @@ float4 fragMain(VSOutput input) : SV_Target0
     bool captureSceneLinear = (pc.outputMode & 0x80000000u) != 0u;
     uint outputMode = pc.outputMode & 0x7fffffffu;
     bool oitAvailable = pc.oitEnabled != 0u;
-    float3 compositedColor = sceneColor.rgb;
-    if (oitAvailable && (outputMode == 0u || captureSceneLinear) && uCamera.temporalInfo.w == 0u)
-        compositedColor = ResolveOitPixel(pixelCoord, sceneColor.rgb).compositedColor;
 #ifdef CONTAINER_PROFILE_LTC_PATHS
     if (captureSceneLinear)
     {
@@ -571,7 +560,7 @@ float4 fragMain(VSOutput input) : SV_Target0
     }
 #else
     if (captureSceneLinear)
-        linearCapture[pixelCoord.y * width + pixelCoord.x] = float4(compositedColor, 1.0);
+        linearCapture[pixelCoord.y * width + pixelCoord.x] = float4(sceneColor.rgb, 1.0);
 #endif
 
     if (outputMode >= 100u && outputMode <= 104u) {
@@ -664,14 +653,7 @@ float4 fragMain(VSOutput input) : SV_Target0
                                                 oitAvailable), 1.0);
         }
 
-        float3 overviewCompositedColor = sceneColor.rgb;
-        if (oitAvailable && uCamera.temporalInfo.w == 0u)
-        {
-            OitResolveResult overviewOit =
-                ResolveOitPixel(pixelCoord, sceneColor.rgb);
-            overviewCompositedColor = overviewOit.compositedColor;
-        }
-        float3 overviewBackground = MapSceneColor(overviewCompositedColor * resolvedExposure);
+        float3 overviewBackground = MapSceneColor(sceneColor.rgb * resolvedExposure);
         overviewBackground = lerp(overviewBackground, panelTileBackgroundColor, 0.35);
         return float4(overviewBackground, 1.0);
     }
@@ -682,7 +664,7 @@ float4 fragMain(VSOutput input) : SV_Target0
     }
 
     // Add bloom contribution before tone mapping.
-    float3 finalHdr = compositedColor;
+    float3 finalHdr = sceneColor.rgb;
     if (pc.bloomEnabled != 0)
     {
         float3 bloom =

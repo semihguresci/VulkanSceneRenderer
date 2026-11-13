@@ -161,6 +161,7 @@ struct AppConfig {
   std::array<float, 3> cameraPosition{0.0f, 0.0f, 3.0f};
   std::array<float, 3> cameraTarget{0.0f, 0.0f, 0.0f};
   float cameraVerticalFovDegrees{60.0f};
+  bool autoExposure{false};
   bool hasManualExposureOverride{false};
   float manualExposure{0.25f};
   container::renderer::DisplayGrade displayGrade{};

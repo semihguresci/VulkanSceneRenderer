@@ -390,8 +390,9 @@ glm::vec3 arrayToVec3(const std::array<float, 3> &value) {
 container::gpu::ExposureSettings
 exposureSettingsFromConfig(const container::app::AppConfig &config) {
   container::gpu::ExposureSettings settings{};
-  if (config.hasManualExposureOverride) {
-    settings.mode = container::gpu::kExposureModeManual;
+  if (config.autoExposure) {
+    settings.mode = container::gpu::kExposureModeAuto;
+  } else if (config.hasManualExposureOverride) {
     settings.manualExposure = std::max(config.manualExposure, 0.0f);
   }
   return settings;
@@ -1705,7 +1706,7 @@ void RendererFrontend::initialize() {
     subs_.guiManager->setReferencePathDisplay(svc_.config.pathDisplay);
     subs_.guiManager->setReferenceGround(svc_.config.pathGround);
     subs_.guiManager->setReferenceOidn(svc_.config.pathOidn);
-    if (svc_.config.hasManualExposureOverride)
+    if (svc_.config.autoExposure || svc_.config.hasManualExposureOverride)
       subs_.guiManager->setExposureSettings(exposureSettingsFromConfig(svc_.config));
     if (authoredSky)
       subs_.guiManager->setSkyDraft(*authoredSky);
@@ -2231,9 +2232,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   }
 
   if (subs_.exposureManager) {
-    subs_.exposureManager->collectReadback(
-        imageIndex, subs_.guiManager ? subs_.guiManager->exposureSettings()
-                                     : container::gpu::ExposureSettings{});
+    subs_.exposureManager->collectReadback(imageIndex, effectiveExposureSettings());
   }
 
   phaseStart = TelemetryClock::now();
@@ -3266,6 +3265,16 @@ void RendererFrontend::applyTemporalCapture(
   }
 }
 
+container::gpu::ExposureSettings RendererFrontend::effectiveExposureSettings() const {
+  auto settings = subs_.guiManager ? subs_.guiManager->exposureSettings()
+                                   : exposureSettingsFromConfig(svc_.config);
+  if (captureExposure_) {
+    settings.mode = container::gpu::kExposureModeManual;
+    settings.manualExposure = *captureExposure_;
+  }
+  return settings;
+}
+
 nlohmann::json RendererFrontend::captureTelemetry() const {
   const auto &temporal = *subs_.temporalManager;
   const auto &settings = temporal.settings();
@@ -3336,6 +3345,16 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
                                {"active", clusteredActive},
                                {"tileGridBytes", clustered.tileGridBytes},
                                {"lightIndexListBytes", clustered.lightIndexListBytes}};
+  if (subs_.exposureManager) {
+    const auto exposure = sanitizeExposureSettings(effectiveExposureSettings());
+    const bool automatic = exposure.mode == container::gpu::kExposureModeAuto;
+    json["exposure"] = {
+        {"mode", automatic ? "auto" : "manual"},
+        {"resolvedExposure", subs_.exposureManager->resolvedExposure(exposure)},
+        {"averageLuminance", automatic && subs_.exposureManager->hasExposureDebugState()
+                                 ? nlohmann::json(subs_.exposureManager->averageLuminance())
+                                 : nlohmann::json(nullptr)}};
+  }
   const auto sceneExtent = sceneRenderExtent();
   const auto upscaleTelemetry = [&](UpscaleBackend backend, bool active) {
     const auto& selection = upscaleResourceRequest_.selection;
@@ -6240,6 +6259,9 @@ void RendererFrontend::createFrameResources() {
   } else {
     createSceneGrid();
   }
+  subs_.oitManager->prepareNativeComposeResources(
+      svc_.pipelineManager, container::util::executableDirectory(),
+      subs_.frameResourceManager->frameCount());
   if (subs_.environmentManager && subs_.environmentManager->isGtaoReady() &&
       (sceneExtent.width != previousSceneExtent.width || sceneExtent.height != previousSceneExtent.height))
     subs_.environmentManager->recreateGtaoTextures(sceneExtent.width, sceneExtent.height);
@@ -9712,13 +9734,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   p.services.ddgiManager = subs_.ddgiManager.get();
   p.services.ddgiReadDescriptorSet = subs_.ddgiManager
       ? subs_.ddgiManager->readDescriptors(imageIndex) : VK_NULL_HANDLE;
-  p.postProcess.exposureSettings =
-      subs_.guiManager ? subs_.guiManager->exposureSettings()
-                       : exposureSettingsFromConfig(svc_.config);
-  if (captureExposure_) {
-    p.postProcess.exposureSettings.mode = container::gpu::kExposureModeManual;
-    p.postProcess.exposureSettings.manualExposure = *captureExposure_;
-  }
+  p.postProcess.exposureSettings = effectiveExposureSettings();
   p.postProcess.displayGrade = subs_.guiManager ? subs_.guiManager->displayGrade()
                                                : svc_.config.displayGrade;
   p.postProcess.renderPass = resources_.renderPasses.postProcess;

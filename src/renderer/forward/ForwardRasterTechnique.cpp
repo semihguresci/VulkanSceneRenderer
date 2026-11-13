@@ -1476,7 +1476,7 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
 
   if (context.deferredRaster != nullptr) {
     graph.addPass(
-        RenderPassId::ExposureAdaptation, {RenderPassId::TransformGizmos},
+        RenderPassId::ExposureAdaptation, {RenderPassId::OitResolve},
         [sharedContext = context.deferredRaster](VkCommandBuffer cmd,
                                                  const FrameRecordParams &p) {
           recordForwardRasterExposureAdaptation(cmd, p, *sharedContext);
@@ -1488,29 +1488,38 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
         });
   } else {
     addForwardShellPass(graph, RenderPassId::ExposureAdaptation,
-                        {RenderPassId::TransformGizmos});
+                        {RenderPassId::OitResolve});
   }
   if (context.deferredRaster != nullptr) {
-    graph.addPass(RenderPassId::OitResolve, {RenderPassId::ExposureAdaptation},
+    graph.addPass(RenderPassId::OitResolve,
+                  {RenderPassId::VolumetricFog, RenderPassId::TemporalResolve,
+                   RenderPassId::TransformGizmos},
                   [sharedContext = context.deferredRaster](
                       VkCommandBuffer cmd, const FrameRecordParams &p) {
-                    static_cast<void>(recordForwardRasterOitResolvePreparation(
-                        cmd, p, *sharedContext));
+                    if (!recordForwardRasterOitResolvePreparation(cmd, p, *sharedContext) ||
+                        temporalSceneColorLayout(p) == VK_IMAGE_LAYOUT_GENERAL) {
+                      return;
+                    }
+                    static_cast<void>(sharedContext->oitManager()->recordNativeComposition(
+                        cmd, oitNativeComposeInputs(p)));
                   });
     graph.setPassReadiness(
         RenderPassId::OitResolve,
         [sharedContext = context.deferredRaster](const FrameRecordParams &p) {
-          return forwardRasterOitReadiness(p, *sharedContext);
+          auto readiness = forwardRasterOitReadiness(p, *sharedContext);
+          if (readiness.ready && temporalSceneColorLayout(p) != VK_IMAGE_LAYOUT_GENERAL &&
+              !sharedContext->oitManager()->nativeCompositionReady(oitNativeComposeInputs(p))) {
+            return renderPassMissingResource(RenderResourceId::SceneColor);
+          }
+          return readiness;
         });
-    graph.setPassResourceAccess(RenderPassId::OitResolve,
-                                {RenderResourceId::OitStorage}, {}, {});
     graph.setPassResourceTransitions(RenderPassId::OitResolve, {});
   } else {
     addForwardShellPass(graph, RenderPassId::OitResolve,
-                        {RenderPassId::ExposureAdaptation});
+                        {RenderPassId::TemporalResolve, RenderPassId::TransformGizmos});
   }
   if (context.deferredRaster != nullptr) {
-    graph.addPass(RenderPassId::Bloom, {RenderPassId::OitResolve},
+    graph.addPass(RenderPassId::Bloom, {RenderPassId::ExposureAdaptation},
                   [sharedContext = context.deferredRaster](
                       VkCommandBuffer cmd, const FrameRecordParams &p) {
                     recordForwardRasterBloom(cmd, p, *sharedContext);
@@ -1521,7 +1530,7 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
           return forwardRasterBloomReadiness(p, *sharedContext);
         });
   } else {
-    addForwardShellPass(graph, RenderPassId::Bloom, {RenderPassId::OitResolve});
+    addForwardShellPass(graph, RenderPassId::Bloom, {RenderPassId::ExposureAdaptation});
   }
   if (context.deferredRaster != nullptr) {
     graph.addPass(RenderPassId::PostProcess, {RenderPassId::Bloom},

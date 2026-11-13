@@ -394,6 +394,7 @@ void printCommandLineHelp() {
   --camera-target X Y Z          Override world-space camera target
   --camera-fov F                 Camera vertical field of view in degrees
   --exposure F                   Manual exposure
+  --auto-exposure                Meter scene luminance for automatic exposure
   --tone-map NAME                aces, reinhard, clip, filmic, uncharted, agx, or neutral
   --saturation F                 Display saturation (0 to 2)
   --contrast F                   Display contrast (0.5 to 2)
@@ -1211,6 +1212,10 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     } else if (arg == "--exposure") {
       config.manualExposure = parseFloat(requireValue(argc, argv, i, arg), arg);
       config.hasManualExposureOverride = true;
+      config.autoExposure = false;
+    } else if (arg == "--auto-exposure") {
+      config.autoExposure = true;
+      config.hasManualExposureOverride = false;
     } else if (arg == "--tone-map") {
       config.displayGrade.toneMapper =
           container::renderer::parseToneMapper(requireValue(argc, argv, i, arg));
