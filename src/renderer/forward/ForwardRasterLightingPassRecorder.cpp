@@ -6,6 +6,9 @@
 #include "Container/renderer/core/RenderPassScopeRecorder.h"
 #include "Container/renderer/culling/GpuCullManager.h"
 #include "Container/renderer/debug/DebugOverlayRenderer.h"
+#include "Container/renderer/deferred/DeferredRasterDebugOverlayRecorder.h"
+#include "Container/renderer/deferred/DeferredRasterFrameState.h"
+#include "Container/renderer/deferred/DeferredRasterLighting.h"
 #include "Container/renderer/forward/ForwardRasterPipelineBridge.h"
 #include "Container/renderer/forward/ForwardRasterResourceBridge.h"
 #include "Container/renderer/raytracing/RayShadowManager.h"
@@ -22,10 +25,6 @@
 namespace container::renderer {
 
 namespace {
-
-[[nodiscard]] bool hasDrawCommands(const std::vector<DrawCommand>* commands) {
-  return commands != nullptr && !commands->empty();
-}
 
 [[nodiscard]] RenderPassReadiness ready() { return {}; }
 
@@ -151,118 +150,140 @@ primitiveDrawLists(const FrameDrawLists &draws) {
              primitiveDrawLists(p.bim.nativeCurveDraws));
 }
 
-void recordNativePrimitivesAndSelection(
+[[nodiscard]] bool hasSceneGeometry(const FrameRecordParams& p) {
+  return p.pushConstants.bindless != nullptr &&
+         p.scene.vertexSlice.buffer != VK_NULL_HANDLE &&
+         p.scene.indexSlice.buffer != VK_NULL_HANDLE &&
+         forwardRasterDescriptorSetReady(p, ForwardRasterDescriptorSetId::Scene);
+}
+
+[[nodiscard]] bool hasBimGeometry(const FrameRecordParams& p) {
+  return p.pushConstants.bindless != nullptr &&
+         p.bim.scene.vertexSlice.buffer != VK_NULL_HANDLE &&
+         p.bim.scene.indexSlice.buffer != VK_NULL_HANDLE &&
+         forwardRasterDescriptorSetReady(p,
+                                         ForwardRasterDescriptorSetId::BimScene);
+}
+
+void recordTechnicalElevation(
     VkCommandBuffer cmd, const FrameRecordParams &p,
-    const DebugOverlayRenderer &overlay, VkExtent2D extent) {
-  const auto layout =
-      forwardRasterPipelineLayout(p, ForwardRasterPipelineLayoutId::Wireframe);
-  const BimPrimitivePassGeometryBinding geometry{
-      .sceneDescriptorSet =
-          forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::BimScene),
-      .vertexSlice = p.bim.scene.vertexSlice,
-      .indexSlice = p.bim.scene.indexSlice,
-      .indexType = p.bim.scene.indexType};
-  const auto &points = p.bim.primitivePasses.pointCloud;
-  const auto &curves = p.bim.primitivePasses.curves;
-  const auto pointDepth = forwardRasterPipelineHandle(
-      p, ForwardRasterPipelineId::BimPointCloudDepth);
-  const auto curveDepth =
-      forwardRasterPipelineHandle(p, ForwardRasterPipelineId::BimCurveDepth);
-  // Depth remains read-only in this single-sample scope; stencil is writable.
-  // Clear only stencil so the selected silhouette preserves resolved depth.
-  VkClearAttachment selectionStencilClear{};
-  selectionStencilClear.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
-  selectionStencilClear.clearValue.depthStencil = {0.0f, 0u};
-  const VkClearRect selectionStencilClearRect{
-      .rect = {.offset = {0, 0}, .extent = extent},
-      .baseArrayLayer = 0u,
-      .layerCount = 1u};
-  WireframePushConstants overlayPushConstants =
-      p.pushConstants.wireframe != nullptr ? *p.pushConstants.wireframe
-                                          : WireframePushConstants{};
-  if (p.pushConstants.bindless != nullptr) {
-    overlayPushConstants.sectionPlaneEnabled =
-        p.pushConstants.bindless->sectionPlaneEnabled;
-    overlayPushConstants.sectionPlane = p.pushConstants.bindless->sectionPlane;
+    const BimRasterOverlayRecordInputs &overlay) {
+  const auto &style = p.bim.technicalElevation;
+  if (p.runtime.activeTechnique != RenderTechniqueId::ForwardRaster ||
+      p.screenshot.sceneLinear || !style.enabled) {
+    return;
   }
-  (void)recordBimPrimitiveFramePassCommands(
+
+  const auto &pipelines = overlay.pipelines;
+  const auto state = buildDeferredLightingFrameState(
+      {.wireframeSupported = true,
+       .bimTechnicalElevation = {.enabled = style.enabled,
+                                 .hiddenLineOverlay = style.hiddenLineOverlay,
+                                 .depthTestLines = style.depthTestLines,
+                                 .lineColor = style.lineColor,
+                                 .lineWidth = style.lineWidth,
+                                 .overlayIntensity = style.overlayIntensity},
+       .pipelines = {.wireframeDepth = pipelines.wireframeDepth != VK_NULL_HANDLE}});
+  if (!state.bimTechnicalElevationEnabled) {
+    return;
+  }
+
+  const auto &wireframe = state.wireframeSettings;
+  const bool bimReady = hasBimGeometry(p);
+  const auto plan = buildDeferredDebugOverlayPlan(
+      {.frameState = {.wireframeOverlayMode = true,
+                      .wireframeDepthTest = wireframe.depthTest,
+                      .wireframeLineWidth = wireframe.lineWidth},
+       .pipelines = {
+           .wireframeDepth = true,
+           .wireframeDepthFrontCull =
+               pipelines.wireframeDepthFrontCull != VK_NULL_HANDLE},
+       .wireframePushConstantsReady = overlay.wireframePushConstants != nullptr,
+       .sources = {{{.source = DeferredDebugOverlaySource::Scene,
+                     .geometryReady = hasSceneGeometry(p),
+                     .draws = debugOverlayDrawLists(p.draws)},
+                    {.source = DeferredDebugOverlaySource::BimMesh,
+                     .geometryReady = bimReady,
+                     .draws = debugOverlayDrawLists(p.bim.draws)},
+                    {.source = DeferredDebugOverlaySource::BimPointPlaceholders,
+                     .geometryReady = bimReady,
+                     .draws = debugOverlayDrawLists(p.bim.pointDraws)},
+                    {.source = DeferredDebugOverlaySource::BimCurvePlaceholders,
+                     .geometryReady = bimReady,
+                     .draws = debugOverlayDrawLists(p.bim.curveDraws)}}},
+       .sourceCount = kDeferredDebugOverlaySourceCapacity});
+
+  (void)recordDeferredDebugOverlayWireframeOverlayCommands(
       cmd,
-      {.style = {.kind = BimPrimitivePassKind::Points,
-                 .enabled = points.enabled,
-                 .depthTest = points.depthTest,
-                 .nativeDrawsUseGpuVisibility =
-                     p.bim.nativePointDrawsUseGpuVisibility,
-                 .opacity = points.opacity,
-                 .primitiveSize = points.pointSize,
-                 .color = points.color},
-       .nativeDraws = primitiveDrawLists(p.bim.nativePointDraws),
-       .geometry = geometry,
-       .pipelines = {.depth = pointDepth,
-                     .noDepth = forwardRasterPipelineHandle(
-                         p, ForwardRasterPipelineId::BimPointCloudNoDepth)},
-       .wireframeLayout = layout,
-       .pushConstants = p.pushConstants.wireframe,
-       .debugOverlay = &overlay,
-       .bimManager = p.services.bimManager});
-  (void)recordBimPrimitiveFramePassCommands(
-      cmd,
-      {.style = {.kind = BimPrimitivePassKind::Curves,
-                 .enabled = curves.enabled,
-                 .depthTest = curves.depthTest,
-                 .nativeDrawsUseGpuVisibility =
-                     p.bim.nativeCurveDrawsUseGpuVisibility,
-                 .opacity = curves.opacity,
-                 .primitiveSize = curves.lineWidth,
-                 .color = curves.color,
-                 .recordLineWidth = true,
-                 .wideLinesSupported = p.debug.wireframeWideLinesSupported},
-       .nativeDraws = primitiveDrawLists(p.bim.nativeCurveDraws),
-       .geometry = geometry,
-       .pipelines = {.depth = curveDepth,
-                     .noDepth = forwardRasterPipelineHandle(
-                         p, ForwardRasterPipelineId::BimCurveNoDepth)},
-       .wireframeLayout = layout,
-       .pushConstants = p.pushConstants.wireframe,
-       .debugOverlay = &overlay,
-       .bimManager = p.services.bimManager});
-  if (p.screenshot.sceneLinear) return;
-  (void)recordBimLightingOverlayFrameCommands(
-      cmd,
-      {.bimGeometryReady = hasBimPrimitiveFramePassGeometry(geometry),
-       .framebufferExtent = extent,
-       .draws = {.sceneSelection = p.draws.selectedDrawCommands,
-                 .bimSelection = p.bim.draws.selectedDrawCommands,
-                 .nativePointHover = p.bim.nativePointDraws.hoveredDrawCommands,
-                 .nativeCurveHover = p.bim.nativeCurveDraws.hoveredDrawCommands,
-                 .nativePointSelection =
-                     p.bim.nativePointDraws.selectedDrawCommands,
-                 .nativeCurveSelection =
-                     p.bim.nativeCurveDraws.selectedDrawCommands},
-       .nativePointSize = points.pointSize,
-       .nativeCurveLineWidth = curves.lineWidth,
-       .pipelines = {.bimPointCloudDepth = pointDepth,
-                     .bimCurveDepth = curveDepth,
-                     .selectionMask = forwardRasterPipelineHandle(
-                         p, ForwardRasterPipelineId::SelectionMask),
-                     .selectionOutline = forwardRasterPipelineHandle(
-                         p, ForwardRasterPipelineId::SelectionOutline)},
-       .wireframeLayout = layout,
-       .scene = {.descriptorSet = forwardRasterDescriptorSet(
-                     p, ForwardRasterDescriptorSetId::Scene),
+      {.plan = &plan,
+       .pipelines = {.wireframeDepth = pipelines.wireframeDepth,
+                     .wireframeDepthFrontCull = pipelines.wireframeDepthFrontCull},
+       .wireframeLayout = overlay.wireframeLayout,
+       .scene = {.descriptorSet = overlay.sceneDescriptorSet,
                  .vertexSlice = p.scene.vertexSlice,
                  .indexSlice = p.scene.indexSlice,
                  .indexType = p.scene.indexType},
-       .bim = {.descriptorSet = geometry.sceneDescriptorSet,
-               .vertexSlice = geometry.vertexSlice,
-               .indexSlice = geometry.indexSlice,
-               .indexType = geometry.indexType},
-       .selectionStencilClearAttachment = selectionStencilClear,
-       .selectionStencilClearRect = selectionStencilClearRect,
-       .wireframePushConstants = p.pushConstants.wireframe != nullptr
-                                     ? &overlayPushConstants
-                                     : nullptr,
-       .debugOverlay = &overlay,
-       .wireframeWideLinesSupported = p.debug.wireframeWideLinesSupported});
+       .bim = {.descriptorSet = overlay.bimDescriptorSet,
+               .vertexSlice = p.bim.scene.vertexSlice,
+               .indexSlice = p.bim.scene.indexSlice,
+               .indexType = p.bim.scene.indexType},
+       .wireframePushConstants = overlay.wireframePushConstants,
+       .wireframeColor = wireframe.color,
+       .wireframeIntensity = state.wireframeIntensity,
+       .wireframeLineWidth = wireframe.lineWidth,
+       .wireframeRasterModeSupported = p.debug.wireframeRasterModeSupported,
+       .wireframeWideLinesSupported = p.debug.wireframeWideLinesSupported,
+       .debugOverlay = overlay.debugOverlay});
+}
+
+void recordForwardBimOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
+                              const DebugOverlayRenderer &debugOverlay,
+                              VkExtent2D extent) {
+  if (p.pushConstants.wireframe == nullptr) {
+    return;
+  }
+
+  WireframePushConstants pushConstants = *p.pushConstants.wireframe;
+  if (p.pushConstants.bindless != nullptr) {
+    pushConstants.sectionPlaneEnabled =
+        p.pushConstants.bindless->sectionPlaneEnabled;
+    pushConstants.sectionPlane = p.pushConstants.bindless->sectionPlane;
+  }
+
+  const auto pipeline = [&p](ForwardRasterPipelineId id) {
+    return forwardRasterPipelineHandle(p, id);
+  };
+  const BimRasterOverlayRecordInputs overlay{
+      .sceneDescriptorSet =
+          forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::Scene),
+      .bimDescriptorSet =
+          forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::BimScene),
+      .extent = extent,
+      .wireframeLayout = forwardRasterPipelineLayout(
+          p, ForwardRasterPipelineLayoutId::Wireframe),
+      .pipelines = {
+          .wireframeDepth = pipeline(ForwardRasterPipelineId::WireframeDepth),
+          .wireframeNoDepth = pipeline(ForwardRasterPipelineId::WireframeNoDepth),
+          .wireframeDepthFrontCull =
+              pipeline(ForwardRasterPipelineId::WireframeDepthFrontCull),
+          .wireframeNoDepthFrontCull =
+              pipeline(ForwardRasterPipelineId::WireframeNoDepthFrontCull),
+          .bimFloorPlanDepth = pipeline(ForwardRasterPipelineId::BimFloorPlanDepth),
+          .bimFloorPlanNoDepth =
+              pipeline(ForwardRasterPipelineId::BimFloorPlanNoDepth),
+          .bimPointCloudDepth = pipeline(ForwardRasterPipelineId::BimPointCloudDepth),
+          .bimCurveDepth = pipeline(ForwardRasterPipelineId::BimCurveDepth),
+          .selectionMask = pipeline(ForwardRasterPipelineId::SelectionMask),
+          .selectionOutline = pipeline(ForwardRasterPipelineId::SelectionOutline)},
+      .pointCloudNoDepth = pipeline(ForwardRasterPipelineId::BimPointCloudNoDepth),
+      .curveNoDepth = pipeline(ForwardRasterPipelineId::BimCurveNoDepth),
+      .capFill = pipeline(ForwardRasterPipelineId::BimSectionClipCapFill),
+      .capHatch = pipeline(ForwardRasterPipelineId::BimSectionClipCapHatch),
+      .wireframePushConstants = &pushConstants,
+      .debugOverlay = &debugOverlay};
+
+  recordTechnicalElevation(cmd, p, overlay);
+  recordBimRasterOverlays(cmd, p, overlay);
 }
 
 [[nodiscard]] bool hasLightingFramebuffer(const FrameRecordParams& p,
@@ -283,21 +304,6 @@ void recordNativePrimitivesAndSelection(
 [[nodiscard]] bool hasForwardTransparentSets(const FrameRecordParams& p) {
   return hasForwardLightSets(p) &&
          forwardRasterDescriptorSetReady(p, ForwardRasterDescriptorSetId::Oit);
-}
-
-[[nodiscard]] bool hasSceneGeometry(const FrameRecordParams& p) {
-  return p.pushConstants.bindless != nullptr &&
-         p.scene.vertexSlice.buffer != VK_NULL_HANDLE &&
-         p.scene.indexSlice.buffer != VK_NULL_HANDLE &&
-         forwardRasterDescriptorSetReady(p, ForwardRasterDescriptorSetId::Scene);
-}
-
-[[nodiscard]] bool hasBimGeometry(const FrameRecordParams& p) {
-  return p.pushConstants.bindless != nullptr &&
-         p.bim.scene.vertexSlice.buffer != VK_NULL_HANDLE &&
-         p.bim.scene.indexSlice.buffer != VK_NULL_HANDLE &&
-         forwardRasterDescriptorSetReady(p,
-                                         ForwardRasterDescriptorSetId::BimScene);
 }
 
 [[nodiscard]] bool usesForwardRayQueries(const FrameRecordParams& p) {
@@ -704,8 +710,8 @@ bool recordForwardRasterLightingPassCommands(VkCommandBuffer commandBuffer,
       forwardRasterPipelineHandle(p, ForwardRasterPipelineId::TransparentNoCull),
       layout, debugOverlay);
 
-  recordNativePrimitivesAndSelection(commandBuffer, p, debugOverlay,
-                                    transparentFramebuffer->extent);
+  recordForwardBimOverlays(commandBuffer, p, debugOverlay,
+                           transparentFramebuffer->extent);
 
   (void)recordRenderPassEndCommands(commandBuffer);
   return true;

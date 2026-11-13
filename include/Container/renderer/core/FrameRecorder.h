@@ -294,6 +294,7 @@ struct FrameDebugState {
   bool debugFreezeCulling{false};
   bool wireframeRasterModeSupported{false};
   bool wireframeWideLinesSupported{false};
+  bool lineListWideLinesSupported{false};
 };
 
 struct FrameScreenReflectionHistory {

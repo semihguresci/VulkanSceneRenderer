@@ -162,6 +162,19 @@ struct CaptureBimFloorPlan {
   float opacity{};
   float lineWidth{};
 };
+struct CaptureBimAnnotations {
+  struct Clash {
+    std::array<uint32_t, 2> objects{};
+    glm::vec3 position{};
+  };
+  std::optional<glm::vec3> issuePin;
+  std::optional<Clash> clash;
+  bool sectionVisual{};
+  bool capFill{};
+  bool capHatch{};
+  bool sectionMarkers{};
+  bool hiddenLines{};
+};
 
 struct CaptureEvent {
   uint32_t frame{0};
@@ -186,6 +199,7 @@ struct CaptureEvent {
   std::optional<float> physicsJointMotorVelocity;
   std::optional<int> bimLodBias;
   std::optional<CaptureBimFloorPlan> bimFloorPlan;
+  std::optional<CaptureBimAnnotations> bimAnnotations;
   std::optional<glm::vec4> sectionPlane;
   std::optional<glm::vec3> areaLightPosition;
   std::optional<float> exposure;
@@ -536,6 +550,8 @@ public:
       }
       if (value.contains("bimFloorPlan"))
         event.bimFloorPlan = bimFloorPlan(value.at("bimFloorPlan"));
+      if (value.contains("bimAnnotations"))
+        event.bimAnnotations = bimAnnotations(value.at("bimAnnotations"));
       if (value.contains("sectionPlane")) {
         const auto &plane = value.at("sectionPlane");
         if (!plane.is_array() || plane.size() != 4)
@@ -891,6 +907,53 @@ public:
   std::vector<uint32_t> sampleFrames;
 
 private:
+  static CaptureBimAnnotations bimAnnotations(const nlohmann::json &value) {
+    nodeFields(value, {"issuePin", "clash", "sectionVisual", "capFill", "capHatch",
+                       "sectionMarkers", "hiddenLines"}, "bimAnnotations");
+    CaptureBimAnnotations result;
+    for (const auto &[field, output] : {
+             std::pair{"sectionVisual", &result.sectionVisual},
+             std::pair{"capFill", &result.capFill},
+             std::pair{"capHatch", &result.capHatch},
+             std::pair{"sectionMarkers", &result.sectionMarkers},
+             std::pair{"hiddenLines", &result.hiddenLines}}) {
+      if (!value.contains(field))
+        continue;
+      if (!value.at(field).is_boolean())
+        throw std::invalid_argument(std::string("Capture bimAnnotations ") + field + " must be a boolean");
+      *output = value.at(field).get<bool>();
+    }
+    const auto position = [](const nlohmann::json &input) {
+      if (!input.is_array() || input.size() != 3 ||
+          !std::all_of(input.begin(), input.end(), [](const auto &component) { return component.is_number(); }))
+        throw std::invalid_argument("Capture BIM annotation position requires three numeric components");
+      return vec3(input);
+    };
+    if (value.contains("issuePin"))
+      result.issuePin = position(value.at("issuePin"));
+    if (value.contains("clash")) {
+      const auto &clash = value.at("clash");
+      nodeFields(clash, {"objects", "position"}, "bimAnnotations clash");
+      if (!clash.contains("objects") || !clash.contains("position"))
+        throw std::invalid_argument("Capture BIM clash requires objects and position");
+      const auto &objects = clash.at("objects");
+      if (!objects.is_array() || objects.size() != 2)
+        throw std::invalid_argument("Capture BIM clash requires two object indices");
+      const auto index = [](const nlohmann::json &input) {
+        if (!input.is_number_integer() || input.get<double>() < 0.0 ||
+            input.get<double>() >= std::numeric_limits<uint32_t>::max())
+          throw std::invalid_argument("Capture BIM clash object index must be a valid uint32 index");
+        return input.get<uint32_t>();
+      };
+      const auto first = index(objects[0]);
+      const auto second = index(objects[1]);
+      if (first == second)
+        throw std::invalid_argument("Capture BIM clash requires distinct objects");
+      result.clash = CaptureBimAnnotations::Clash{{first, second}, position(clash.at("position"))};
+    }
+    return result;
+  }
+
   static CaptureBimFloorPlan bimFloorPlan(const nlohmann::json &value) {
     constexpr std::array fields{"enabled", "elevation", "depthTest", "color", "opacity", "lineWidth"};
     if (!value.is_object() || value.size() != fields.size() ||

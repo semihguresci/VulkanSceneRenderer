@@ -1,11 +1,67 @@
 #include "Container/renderer/bim/BimLightingOverlayRecorder.h"
 
+#include "Container/renderer/bim/BimPrimitivePassRecorder.h"
+#include "Container/renderer/bim/BimSectionClipCapPassRecorder.h"
+#include "Container/renderer/core/FrameRecorder.h"
+
+#include <algorithm>
+
 namespace container::renderer {
 
 namespace {
 
 [[nodiscard]] bool hasDrawCommands(const std::vector<DrawCommand> *commands) {
   return commands != nullptr && !commands->empty();
+}
+
+BimLightingOverlayGeometryBinding overlayGeometry(
+    VkDescriptorSet descriptorSet, const FrameSceneGeometry &scene) {
+  return {.descriptorSet = descriptorSet,
+          .vertexSlice = scene.vertexSlice,
+          .indexSlice = scene.indexSlice,
+          .indexType = scene.indexType};
+}
+
+BimPrimitivePassDrawLists primitiveDrawLists(const FrameDrawLists &draws) {
+  return {.opaqueDrawCommands = draws.opaqueDrawCommands,
+          .opaqueSingleSidedDrawCommands = draws.opaqueSingleSidedDrawCommands,
+          .opaqueWindingFlippedDrawCommands = draws.opaqueWindingFlippedDrawCommands,
+          .opaqueDoubleSidedDrawCommands = draws.opaqueDoubleSidedDrawCommands,
+          .transparentDrawCommands = draws.transparentDrawCommands,
+          .transparentSingleSidedDrawCommands = draws.transparentSingleSidedDrawCommands,
+          .transparentWindingFlippedDrawCommands = draws.transparentWindingFlippedDrawCommands,
+          .transparentDoubleSidedDrawCommands = draws.transparentDoubleSidedDrawCommands};
+}
+
+BimLightingOverlayDrawLists overlayDrawLists(const FrameDrawLists &draws) {
+  return {.opaqueSingleSidedDrawCommands = draws.opaqueSingleSidedDrawCommands,
+          .transparentSingleSidedDrawCommands = draws.transparentSingleSidedDrawCommands,
+          .opaqueWindingFlippedDrawCommands = draws.opaqueWindingFlippedDrawCommands,
+          .transparentWindingFlippedDrawCommands = draws.transparentWindingFlippedDrawCommands,
+          .opaqueDoubleSidedDrawCommands = draws.opaqueDoubleSidedDrawCommands,
+          .transparentDoubleSidedDrawCommands = draws.transparentDoubleSidedDrawCommands};
+}
+
+BimSectionClipCapFramePassStyle sectionClipCapStyle(
+    const FrameBimResources &bim, bool wideLinesSupported) {
+  const auto &style = bim.sectionClipCaps;
+  const auto &elevation = bim.technicalElevation;
+  const auto &geometry = bim.sectionClipCapGeometry;
+  const bool technicalCaps = elevation.enabled && elevation.sectionCapsEnabled;
+  return {.enabled = style.enabled || technicalCaps,
+          .fillEnabled = technicalCaps ? elevation.capFillEnabled : style.fillEnabled,
+          .hatchEnabled = technicalCaps ? elevation.capHatchingEnabled : style.hatchEnabled,
+          .wideLinesSupported = wideLinesSupported,
+          .fillColor = style.fillColor,
+          .hatchColor = style.hatchColor,
+          .hatchLineWidth = technicalCaps
+                                ? std::max(style.hatchLineWidth, elevation.lineWidth)
+                                : style.hatchLineWidth,
+          .fillDrawCommands = geometry.fillDrawCommands,
+          .hatchDrawCommands = geometry.hatchDrawCommands,
+          .fillDrawStyles = geometry.fillDrawStyles,
+          .hatchDrawStyles = geometry.hatchDrawStyles,
+          .sectionMarkerLines = geometry.sectionMarkerLines};
 }
 
 [[nodiscard]] bool
@@ -167,7 +223,10 @@ bool drawOverlayPlan(VkCommandBuffer cmd,
   } else {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     if (plan.rasterLineWidthApplies) {
-      vkCmdSetLineWidth(cmd, plan.rasterLineWidth);
+      const float lineWidth = inputs.lineListWideLinesSupported
+                                  ? plan.drawLineWidth
+                                  : 1.0f;
+      vkCmdSetLineWidth(cmd, lineWidth);
     }
   }
   WireframePushConstants drawPushConstants = pushConstants;
@@ -337,7 +396,172 @@ bool recordBimLightingOverlayFrameCommands(
             .wireframePushConstants = inputs.wireframePushConstants,
             .debugOverlay = inputs.debugOverlay,
             .wireframeRasterModeSupported = inputs.wireframeRasterModeSupported,
-            .wireframeWideLinesSupported = inputs.wireframeWideLinesSupported});
+            .wireframeWideLinesSupported = inputs.wireframeWideLinesSupported,
+            .lineListWideLinesSupported = inputs.lineListWideLinesSupported});
+}
+
+void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
+                             const BimRasterOverlayRecordInputs &inputs) {
+  const auto &bim = p.bim;
+  const bool display = !p.screenshot.sceneLinear;
+  const bool lineListWideLinesSupported = p.debug.lineListWideLinesSupported;
+  if (display) {
+    const auto &cap = bim.sectionClipCapGeometry.scene;
+    (void)recordBimSectionClipCapFramePassCommands(
+        cmd, {.style = sectionClipCapStyle(bim, lineListWideLinesSupported),
+              .geometry = {.sceneDescriptorSet = inputs.bimDescriptorSet,
+                           .vertexSlice = cap.vertexSlice,
+                           .indexSlice = cap.indexSlice,
+                           .indexType = cap.indexType},
+              .fillPipeline = inputs.capFill,
+              .hatchPipeline = inputs.capHatch,
+              .wireframeLayout = inputs.wireframeLayout,
+              .pushConstants = inputs.wireframePushConstants,
+              .debugOverlay = inputs.debugOverlay});
+  }
+
+  const BimPrimitivePassGeometryBinding primitiveGeometry{
+      .sceneDescriptorSet = inputs.bimDescriptorSet,
+      .vertexSlice = bim.scene.vertexSlice,
+      .indexSlice = bim.scene.indexSlice,
+      .indexType = bim.scene.indexType};
+  const auto &points = bim.primitivePasses.pointCloud;
+  (void)recordBimPrimitiveFramePassCommands(
+      cmd, {.style = {.kind = BimPrimitivePassKind::Points,
+                      .enabled = points.enabled,
+                      .depthTest = points.depthTest,
+                      .placeholderRangePreviewEnabled =
+                          display && points.placeholderRangePreviewEnabled,
+                      .nativeDrawsUseGpuVisibility = bim.nativePointDrawsUseGpuVisibility,
+                      .opacity = points.opacity,
+                      .primitiveSize = points.pointSize,
+                      .color = points.color},
+            .placeholderDraws = primitiveDrawLists(bim.pointDraws),
+            .nativeDraws = primitiveDrawLists(bim.nativePointDraws),
+            .geometry = primitiveGeometry,
+            .pipelines = {.depth = inputs.pipelines.bimPointCloudDepth,
+                          .noDepth = inputs.pointCloudNoDepth},
+            .wireframeLayout = inputs.wireframeLayout,
+            .pushConstants = inputs.wireframePushConstants,
+            .debugOverlay = inputs.debugOverlay,
+            .bimManager = p.services.bimManager});
+
+  const auto &curves = bim.primitivePasses.curves;
+  (void)recordBimPrimitiveFramePassCommands(
+      cmd, {.style = {.kind = BimPrimitivePassKind::Curves,
+                      .enabled = curves.enabled,
+                      .depthTest = curves.depthTest,
+                      .placeholderRangePreviewEnabled =
+                          display && curves.placeholderRangePreviewEnabled,
+                      .nativeDrawsUseGpuVisibility = bim.nativeCurveDrawsUseGpuVisibility,
+                      .opacity = curves.opacity,
+                      .primitiveSize = curves.lineWidth,
+                      .color = curves.color,
+                      .recordLineWidth = true,
+                      .wideLinesSupported = lineListWideLinesSupported},
+            .placeholderDraws = primitiveDrawLists(bim.curveDraws),
+            .nativeDraws = primitiveDrawLists(bim.nativeCurveDraws),
+            .geometry = primitiveGeometry,
+            .pipelines = {.depth = inputs.pipelines.bimCurveDepth,
+                          .noDepth = inputs.curveNoDepth},
+            .wireframeLayout = inputs.wireframeLayout,
+            .pushConstants = inputs.wireframePushConstants,
+            .debugOverlay = inputs.debugOverlay,
+            .bimManager = p.services.bimManager});
+
+  if (!display) {
+    return;
+  }
+
+  const auto &pointStyle = bim.pointCurveStyle.points;
+  const auto &curveStyle = bim.pointCurveStyle.curves;
+  const auto &floorPlan = bim.floorPlan;
+  const auto &markers = bim.coordinationMarkers;
+  const auto &plane = bim.sectionPlaneVisual;
+  const auto markerGeometry = overlayGeometry(inputs.bimDescriptorSet,
+                                              bim.coordinationMarkerScene);
+  const auto planeGeometry = overlayGeometry(inputs.bimDescriptorSet,
+                                             bim.sectionPlaneVisualScene);
+  const VkClearAttachment selectionClear{
+      .aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT,
+      .clearValue = {.depthStencil = {0.0f, 0u}}};
+  const VkClearRect selectionRect{
+      .rect = {.offset = {0, 0}, .extent = inputs.extent},
+      .baseArrayLayer = 0u,
+      .layerCount = 1u};
+  // Path tracing composites the floor plan in its presentation pass.
+  const bool floorPlanEnabled = floorPlan.enabled &&
+      p.runtime.activeTechnique != RenderTechniqueId::PathTracing;
+  (void)recordBimLightingOverlayFrameCommands(
+      cmd, {.bimGeometryReady = hasBimPrimitiveFramePassGeometry(primitiveGeometry),
+            .framebufferExtent = inputs.extent,
+            .points = {.enabled = pointStyle.enabled,
+                       .depthTest = pointStyle.depthTest,
+                       .color = pointStyle.color,
+                       .opacity = pointStyle.opacity,
+                       .lineWidth = pointStyle.pointSize},
+            .curves = {.enabled = curveStyle.enabled,
+                       .depthTest = curveStyle.depthTest,
+                       .color = curveStyle.color,
+                       .opacity = curveStyle.opacity,
+                       .lineWidth = curveStyle.lineWidth},
+            .floorPlan = {.enabled = floorPlanEnabled,
+                          .depthTest = floorPlan.depthTest,
+                          .color = floorPlan.color,
+                          .opacity = floorPlan.opacity,
+                          .lineWidth = floorPlan.lineWidth},
+            .coordinationIssueMarkers = {.enabled = markers.issueMarkersEnabled,
+                                         .depthTest = markers.depthTest,
+                                         .color = markers.issueColor,
+                                         .opacity = markers.issueOpacity,
+                                         .lineWidth = markers.issueLineWidth},
+            .coordinationClashMarkers = {.enabled = markers.clashMarkersEnabled,
+                                         .depthTest = markers.depthTest,
+                                         .color = markers.clashColor,
+                                         .opacity = markers.clashOpacity,
+                                         .lineWidth = markers.clashLineWidth},
+            .sectionPlaneVisual = {.enabled = plane.enabled,
+                                   .depthTest = plane.depthTest,
+                                   .color = plane.color,
+                                   .opacity = plane.opacity,
+                                   .lineWidth = plane.lineWidth},
+            .draws = {.points = overlayDrawLists(bim.pointDraws),
+                      .curves = overlayDrawLists(bim.curveDraws),
+                      .floorPlan = bim.floorPlanDrawCommands,
+                      .sceneHover = p.draws.hoveredDrawCommands,
+                      .bimHover = bim.draws.hoveredDrawCommands,
+                      .sceneSelection = p.draws.selectedDrawCommands,
+                      .bimSelection = bim.draws.selectedDrawCommands,
+                      .nativePointHover = bim.nativePointDraws.hoveredDrawCommands,
+                      .nativeCurveHover = bim.nativeCurveDraws.hoveredDrawCommands,
+                      .nativePointSelection = bim.nativePointDraws.selectedDrawCommands,
+                      .nativeCurveSelection = bim.nativeCurveDraws.selectedDrawCommands,
+                      .coordinationIssueMarkers = bim.coordinationIssueMarkerDrawCommands,
+                      .coordinationClashMarkers = bim.coordinationClashMarkerDrawCommands,
+                      .sectionPlaneVisual = bim.sectionPlaneVisualDrawCommands},
+            .nativePointSize = points.pointSize,
+            .nativeCurveLineWidth = curves.lineWidth,
+            .coordinationMarkerGeometryReady =
+                markerGeometry.descriptorSet != VK_NULL_HANDLE &&
+                markerGeometry.vertexSlice.buffer != VK_NULL_HANDLE &&
+                markerGeometry.indexSlice.buffer != VK_NULL_HANDLE,
+            .sectionPlaneVisualGeometryReady =
+                planeGeometry.descriptorSet != VK_NULL_HANDLE &&
+                planeGeometry.vertexSlice.buffer != VK_NULL_HANDLE &&
+                planeGeometry.indexSlice.buffer != VK_NULL_HANDLE,
+            .pipelines = inputs.pipelines,
+            .wireframeLayout = inputs.wireframeLayout,
+            .scene = overlayGeometry(inputs.sceneDescriptorSet, p.scene),
+            .bim = overlayGeometry(inputs.bimDescriptorSet, bim.scene),
+            .coordinationMarkers = markerGeometry,
+            .sectionPlaneVisualGeometry = planeGeometry,
+            .selectionStencilClearAttachment = selectionClear,
+            .selectionStencilClearRect = selectionRect,
+            .wireframePushConstants = inputs.wireframePushConstants,
+            .debugOverlay = inputs.debugOverlay,
+            .wireframeRasterModeSupported = p.debug.wireframeRasterModeSupported,
+            .wireframeWideLinesSupported = p.debug.wireframeWideLinesSupported,
+            .lineListWideLinesSupported = lineListWideLinesSupported});
 }
 
 } // namespace container::renderer

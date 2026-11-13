@@ -62,27 +62,28 @@ turn it off to show the full plan over the model. Set the line color, opacity,
 and width in the same panel. Devices without wide-line support use a one-pixel
 stroke.
 
-Path tracing and Deferred raster draw the linework in the viewport, Viewport
-PNG and Window PNG. Scene EXR exports the raw linear image without the linework.
+Path tracing, Deferred raster, and Forward raster draw the linework in the
+viewport, Viewport PNG and Window PNG. Scene EXR exports the raw linear image
+without the linework.
 Changing floor-plan settings updates the Path tracing display while keeping
 the accumulated samples. Section clipping and camera changes affect the
 rendered scene and can restart sampling.
 
-The other BIM routes below describe the renderer bindings. The native
-floor-plan regression exercises the floor-plan row.
+The floor-plan and annotation regressions exercise these renderer bindings
+using fixed cameras and paired viewport and scene-linear captures.
 
 | Viewport route | Deferred raster | Path tracing | Forward raster |
 | --- | --- | --- | --- |
-| Floor-plan linework | Drawn | Drawn | Missing |
-| Issue and clash markers, section-plane visual, section cap fill and hatching | Drawn when enabled and geometry is available | Missing | Missing |
-| BIM technical elevation hidden lines | Drawn with the depth-tested lines option | Missing | Missing |
-| Mesh hover and selection | Hover and selection | Missing | Selection |
+| Floor-plan linework | Drawn | Drawn | Drawn |
+| Issue and clash markers, section-plane visual, section cap fill and hatching | Drawn when enabled and geometry is available | Missing | Drawn when enabled and geometry is available |
+| BIM technical elevation hidden lines | Drawn with the depth-tested lines option | Missing | Drawn with the depth-tested lines option |
+| Mesh hover and selection | Hover and selection | Missing | Hover and selection |
 | Native BIM points and curves | Drawn, including hover and selection | Outside the traced triangle scene | Drawn, including hover and selection |
-| Styled point and curve placeholder overlays | Drawn when enabled | Missing | Missing; placeholder meshes can still contribute to the raster scene |
+| Styled point and curve placeholder overlays | Drawn when enabled | Missing | Drawn when enabled |
 
 Path tracing applies scene clipping to rays. The section-plane visual and cap
-previews are separate display routes. Forward raster parity is tracked in
-[#179](https://github.com/semihguresci/VulkanSceneRenderer/issues/179).
+previews are separate display routes. Interactive hard-clash detection is
+tracked in [#155](https://github.com/semihguresci/VulkanSceneRenderer/issues/155).
 
 A capture sequence can set the floor-plan display for a fixed camera. Each
 `bimFloorPlan` event supplies all settings and applies them until the next
@@ -107,13 +108,14 @@ event. RGB channels use `[0, 1]`, opacity uses `[0.05, 1]`, and width uses
 }
 ```
 
-On a Vulkan device with ray-query support and validation layers, enable
-`CONTAINER_RUN_GPU_BIM_FLOOR_PLAN=1` and run the opt-in regression. It checks
-both elevations, style, depth, live technique switching, and raw EXR equality
-at matching sample counts.
+Enable `CONTAINER_RUN_GPU_BIM_FLOOR_PLAN=1` and run the opt-in regressions
+on a Vulkan device with validation layers. The Path tracing test also requires
+ray queries. The floor-plan tests check elevations, style, depth, live
+technique switching, and raw EXR equality. The raster annotation test checks
+issue and clash markers, section previews, hidden lines, and hover outlines.
 
 ```text
-ctest --test-dir out/build/windows-release -C Release -R '^bim_floor_plan_gpu_regression$' --output-on-failure
+ctest --test-dir out/build/windows-release -C Release -R '^bim_(floor_plan(_forward)?|annotation)_gpu_regression$' --output-on-failure
 ```
 
 ### Standard-error view

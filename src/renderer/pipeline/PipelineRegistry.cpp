@@ -343,6 +343,24 @@ buildGraphicsPipelineHandleRegistry(const GraphicsPipelines &pipelines) {
   // Forward's resolved transparency scope has the same single-sample color
   // and depth/stencil formats as deferred lighting, including writable stencil.
   registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "wireframe-depth", pipelines.wireframeDepth);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "wireframe-no-depth", pipelines.wireframeNoDepth);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "wireframe-depth-front-cull",
+                    pipelines.wireframeDepthFrontCull);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "wireframe-no-depth-front-cull",
+                    pipelines.wireframeNoDepthFrontCull);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "bim-floor-plan-depth", pipelines.bimFloorPlanDepth);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "bim-floor-plan-no-depth", pipelines.bimFloorPlanNoDepth);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "bim-section-clip-cap-fill", pipelines.bimSectionClipCapFill);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "bim-section-clip-cap-hatch", pipelines.bimSectionClipCapHatch);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
                     "selection-mask", pipelines.selectionMask);
   registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
                     "selection-outline", pipelines.selectionOutline);

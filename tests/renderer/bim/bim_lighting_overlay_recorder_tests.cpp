@@ -212,6 +212,64 @@ TEST(BimLightingOverlayRecorderTests,
 }
 
 TEST(BimLightingOverlayRecorderTests,
+     StyledPointAndCurvePlaceholdersKeepSeparateDrawRoutes) {
+  const std::vector<DrawCommand> pointCommands{
+      {.objectIndex = 3u, .firstIndex = 6u, .indexCount = 24u}};
+  const std::vector<DrawCommand> curveCommands{
+      {.objectIndex = 11u, .firstIndex = 30u, .indexCount = 36u}};
+  const WireframePushConstants pushConstants{};
+  const DebugOverlayRenderer debugOverlay{};
+  BimLightingOverlayFrameRecordInputs inputs{
+      .bimGeometryReady = true,
+      .points = {.enabled = true, .depthTest = true, .color = {1, 0, 0},
+                 .opacity = 0.5f, .lineWidth = 3.0f},
+      .curves = {.enabled = true, .depthTest = false, .color = {0, 1, 0},
+                 .opacity = 0.75f, .lineWidth = 4.0f},
+      .draws = {.points = {.opaqueSingleSidedDrawCommands = &pointCommands},
+                .curves = {.opaqueWindingFlippedDrawCommands = &curveCommands}},
+      .pipelines = {.wireframeDepth = fakeHandle<VkPipeline>(0x1),
+                    .wireframeNoDepth = fakeHandle<VkPipeline>(0x2),
+                    .wireframeNoDepthFrontCull = fakeHandle<VkPipeline>(0x3)},
+      .wireframeLayout = fakeHandle<VkPipelineLayout>(0x4),
+      .wireframePushConstants = &pushConstants,
+      .debugOverlay = &debugOverlay,
+      .wireframeRasterModeSupported = true,
+      .wireframeWideLinesSupported = true};
+
+  const auto plan = buildBimLightingOverlayFramePlan(inputs);
+  ASSERT_TRUE(plan.pointStyle.active);
+  ASSERT_EQ(plan.pointStyle.routeCount, 1u);
+  EXPECT_EQ(plan.pointStyle.routes[0].commands, &pointCommands);
+  EXPECT_EQ(plan.pointStyle.routes[0].pipeline,
+            BimLightingOverlayPipeline::WireframeDepth);
+  EXPECT_EQ(plan.pointStyle.color, glm::vec3(1, 0, 0));
+  EXPECT_FLOAT_EQ(plan.pointStyle.opacity, 0.5f);
+  EXPECT_FLOAT_EQ(plan.pointStyle.routes[0].rasterLineWidth, 3.0f);
+  ASSERT_TRUE(plan.curveStyle.active);
+  ASSERT_EQ(plan.curveStyle.routeCount, 1u);
+  EXPECT_EQ(plan.curveStyle.routes[0].commands, &curveCommands);
+  EXPECT_EQ(plan.curveStyle.routes[0].pipeline,
+            BimLightingOverlayPipeline::WireframeNoDepthFrontCull);
+  EXPECT_EQ(plan.curveStyle.color, glm::vec3(0, 1, 0));
+  EXPECT_FLOAT_EQ(plan.curveStyle.opacity, 0.75f);
+  EXPECT_FLOAT_EQ(plan.curveStyle.routes[0].rasterLineWidth, 4.0f);
+
+  inputs.points.enabled = false;
+  inputs.wireframeRasterModeSupported = false;
+  inputs.wireframeWideLinesSupported = false;
+  const auto fallback = buildBimLightingOverlayFramePlan(inputs);
+  EXPECT_FALSE(fallback.pointStyle.active);
+  EXPECT_EQ(fallback.pointStyle.routeCount, 0u);
+  ASSERT_TRUE(fallback.curveStyle.active);
+  ASSERT_EQ(fallback.curveStyle.routeCount, 1u);
+  EXPECT_EQ(fallback.curveStyle.routes[0].commands, &curveCommands);
+  EXPECT_EQ(fallback.curveStyle.routes[0].pipeline,
+            BimLightingOverlayPipeline::WireframeNoDepthFrontCull);
+  EXPECT_FLOAT_EQ(fallback.curveStyle.drawLineWidth, 4.0f);
+  EXPECT_FLOAT_EQ(fallback.curveStyle.routes[0].rasterLineWidth, 1.0f);
+}
+
+TEST(BimLightingOverlayRecorderTests,
      FrameOverlayRejectsNullCommandBufferBeforeRecording) {
   const BimLightingOverlayFrameRecordInputs inputs{
       .wireframeLayout = fakeHandle<VkPipelineLayout>(0x1)};

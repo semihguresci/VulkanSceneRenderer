@@ -1,10 +1,29 @@
 #include "Container/renderer/deferred/DeferredRasterDebugOverlayPlanner.h"
 
+#include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/scene/DrawCommand.h"
 
 #include <algorithm>
 
 namespace container::renderer {
+
+DeferredDebugOverlayDrawLists
+debugOverlayDrawLists(const FrameDrawLists &draws) {
+  return {
+      .opaqueDrawCommands = draws.opaqueDrawCommands,
+      .transparentDrawCommands = draws.transparentDrawCommands,
+      .opaqueSingleSidedDrawCommands = draws.opaqueSingleSidedDrawCommands,
+      .transparentSingleSidedDrawCommands =
+          draws.transparentSingleSidedDrawCommands,
+      .opaqueWindingFlippedDrawCommands =
+          draws.opaqueWindingFlippedDrawCommands,
+      .transparentWindingFlippedDrawCommands =
+          draws.transparentWindingFlippedDrawCommands,
+      .opaqueDoubleSidedDrawCommands = draws.opaqueDoubleSidedDrawCommands,
+      .transparentDoubleSidedDrawCommands =
+          draws.transparentDoubleSidedDrawCommands,
+  };
+}
 
 namespace {
 

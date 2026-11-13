@@ -1,4 +1,4 @@
-"""Check BIM floor-plan display, depth, and scene-linear capture in both renderers."""
+"""Check BIM floor-plan display, depth, and scene-linear capture across techniques."""
 
 import argparse
 import hashlib
@@ -16,7 +16,7 @@ WIDTH, HEIGHT = 320, 240
 POSITION, TARGET = [0, 3, 8], [0, 1, 0]
 FOV = 45
 FRAMES = {"off": 4, "ground": 5, "source": 6, "dim": 7, "narrow": 8, "depth": 9, "off-again": 10}
-TECHNIQUES = ("deferred-raster", "path-tracing")
+COMPARISONS = ("path-tracing", "forward-raster")
 
 
 def require(condition, message):
@@ -51,7 +51,7 @@ def settings(*, enabled=True, elevation="projected-ground", depth=False, color=(
             "color": list(color), "opacity": opacity, "lineWidth": width}
 
 
-def sequence_plan(mode):
+def sequence_plan(mode, comparison):
     if mode == "styled":
         events = [
             (4, settings(enabled=False)),
@@ -75,7 +75,7 @@ def sequence_plan(mode):
     if mode == "switch":
         return [4, 8, 12], [
             {"frame": 1, "bimFloorPlan": settings(elevation="source-elevation", color=(0, 0, 1))},
-            {"frame": 5, "technique": "path-tracing"},
+            {"frame": 5, "technique": comparison},
             {"frame": 9, "technique": "deferred-raster"},
         ]
     raise ValueError(mode)
@@ -107,8 +107,8 @@ def read_capture(image, frame, technique):
             "metadata": metadata, "decodedSha256": hashlib.sha256(pixels.tobytes()).hexdigest()}
 
 
-def record(renderer, model, output, technique, mode, report, *, generate_only):
-    frames, events = sequence_plan(mode)
+def record(renderer, model, output, technique, mode, report, *, comparison, generate_only):
+    frames, events = sequence_plan(mode, comparison)
     name = f"{technique}-{mode}"
     sequence = output / f"{name}.sequence.json"
     sequence.write_text(json.dumps({"schemaVersion": 1, "frames": frames[-1], "sampleFrames": frames,
@@ -141,7 +141,7 @@ def record(renderer, model, output, technique, mode, report, *, generate_only):
     samples = []
     for frame in frames:
         image = screenshot if frame == frames[-1] else output / f"{name}.frame-{frame:04}.{extension}"
-        active_technique = "path-tracing" if mode == "switch" and frame == 8 else technique
+        active_technique = comparison if mode == "switch" and frame == 8 else technique
         sample = read_capture(image, frame, active_technique)
         state = sample["state"]
         require(Path(state["scene"]["auxiliary"]).resolve() == model, "The authored BIM fixture was not loaded")
@@ -253,11 +253,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--renderer", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--comparison", choices=COMPARISONS, default="path-tracing",
+                        help="compare this technique with Deferred raster")
     parser.add_argument("--generate-only", action="store_true")
     parser.add_argument("--managed-output", action="store_true", help="write to a new run directory under --output")
-    parser.add_argument("--expect-missing-path-overlay", action="store_true",
-                        help="expect the pre-fix Path tracing behavior on a build with capture controls")
+    baseline = parser.add_mutually_exclusive_group()
+    baseline.add_argument("--expect-missing-path-overlay", action="store_true",
+                          help="expect the pre-fix Path tracing behavior on a build with capture controls")
+    baseline.add_argument("--expect-missing-forward-overlay", action="store_true",
+                          help="expect the pre-fix Forward raster behavior on a build with capture controls")
     args = parser.parse_args()
+    if ((args.expect_missing_path_overlay and args.comparison != "path-tracing") or
+            (args.expect_missing_forward_overlay and args.comparison != "forward-raster")):
+        parser.error("The baseline option must match --comparison")
+    expect_missing = args.expect_missing_path_overlay or args.expect_missing_forward_overlay
     if not args.generate_only and os.environ.get("CONTAINER_RUN_GPU_BIM_FLOOR_PLAN") != "1":
         print("SKIP: set CONTAINER_RUN_GPU_BIM_FLOOR_PLAN=1 to run GPU captures")
         return 77
@@ -272,23 +281,26 @@ def main():
     (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="utf-8")
     model = output / "floor-plan.bim"
     fixture(model)
-    report = {"fixture": str(model), "expectedMissingPathOverlay": args.expect_missing_path_overlay,
+    report = {"fixture": str(model), "comparison": args.comparison,
+              "expectedMissingPathOverlay": args.expect_missing_path_overlay,
+              "expectedMissingForwardOverlay": args.expect_missing_forward_overlay,
               "passed": False, "runs": [], "checks": {}}
     if not args.generate_only:
         report["executableSha256"] = hashlib.sha256(renderer.read_bytes()).hexdigest()
     try:
-        for technique in TECHNIQUES:
+        for technique in ("deferred-raster", args.comparison):
             styled, linear, controls = (record(renderer, model, output, technique, mode, report,
-                                               generate_only=args.generate_only)
+                                               comparison=args.comparison, generate_only=args.generate_only)
                                         for mode in ("styled", "linear", "linear-control"))
             if args.generate_only:
                 continue
             path = technique == "path-tracing"
-            missing = path and args.expect_missing_path_overlay
+            missing = technique == args.comparison and expect_missing
             report["checks"][technique] = {"viewport": check_styled(styled, missing=missing),
                                            "sceneLinear": check_linear(linear, controls, path=path)}
             print(technique, report["checks"][technique], flush=True)
-        switched = record(renderer, model, output, "deferred-raster", "switch", report, generate_only=args.generate_only)
+        switched = record(renderer, model, output, "deferred-raster", "switch", report,
+                          comparison=args.comparison, generate_only=args.generate_only)
         if args.generate_only:
             return 0
         import numpy as np
@@ -296,7 +308,7 @@ def main():
         fixed_camera(switched)
         np.testing.assert_array_equal(switched[0]["pixels"], switched[2]["pixels"])
         blue = [int(np.count_nonzero(line_mask(sample["pixels"], channel=2))) for sample in switched]
-        require(blue[0] == blue[2] and blue[0] > 100 and (blue[1] == 0 if args.expect_missing_path_overlay else blue[1] > 100),
+        require(blue[0] == blue[2] and blue[0] > 100 and (blue[1] == 0 if expect_missing else blue[1] > 100),
                 f"Unexpected source-elevation overlay after switching renderers: {blue}")
         report["checks"]["liveTechniqueSwitchSourcePixels"] = blue
         require(hashlib.sha256(renderer.read_bytes()).hexdigest() == report["executableSha256"],

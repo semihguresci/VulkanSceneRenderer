@@ -7,6 +7,8 @@
 
 namespace container::renderer {
 
+struct FrameRecordParams;
+
 struct BimLightingOverlayGeometryBinding {
   VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
   container::gpu::BufferSlice vertexSlice{};
@@ -41,6 +43,7 @@ struct BimLightingOverlayRecordInputs {
   const DebugOverlayRenderer *debugOverlay{nullptr};
   bool wireframeRasterModeSupported{false};
   bool wireframeWideLinesSupported{false};
+  bool lineListWideLinesSupported{false};
 };
 
 struct BimLightingOverlayFrameStyleState {
@@ -94,6 +97,21 @@ struct BimLightingOverlayFrameRecordInputs {
   const DebugOverlayRenderer *debugOverlay{nullptr};
   bool wireframeRasterModeSupported{false};
   bool wireframeWideLinesSupported{false};
+  bool lineListWideLinesSupported{false};
+};
+
+struct BimRasterOverlayRecordInputs {
+  VkDescriptorSet sceneDescriptorSet{VK_NULL_HANDLE};
+  VkDescriptorSet bimDescriptorSet{VK_NULL_HANDLE};
+  VkExtent2D extent{};
+  VkPipelineLayout wireframeLayout{VK_NULL_HANDLE};
+  BimLightingOverlayPipelineHandles pipelines{};
+  VkPipeline pointCloudNoDepth{VK_NULL_HANDLE};
+  VkPipeline curveNoDepth{VK_NULL_HANDLE};
+  VkPipeline capFill{VK_NULL_HANDLE};
+  VkPipeline capHatch{VK_NULL_HANDLE};
+  const WireframePushConstants *wireframePushConstants{nullptr};
+  const DebugOverlayRenderer *debugOverlay{nullptr};
 };
 
 [[nodiscard]] BimLightingOverlayInputs buildBimLightingOverlayFramePlanInputs(
@@ -108,5 +126,8 @@ recordBimLightingOverlayCommands(VkCommandBuffer cmd,
 
 [[nodiscard]] bool recordBimLightingOverlayFrameCommands(
     VkCommandBuffer cmd, const BimLightingOverlayFrameRecordInputs &inputs);
+
+void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
+                             const BimRasterOverlayRecordInputs &inputs);
 
 } // namespace container::renderer

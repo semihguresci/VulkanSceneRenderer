@@ -51,6 +51,7 @@ struct GLFWwindow;
 namespace container::temporal {
 struct CaptureViewportPointer;
 struct CaptureSample;
+struct CaptureBimAnnotations;
 struct CaptureComfyUi;
 struct CapturePhysicsJointCreate;
 struct CaptureEvent;
@@ -479,6 +480,7 @@ private:
   uint64_t materialVariantGraphIdentity_{};
   std::optional<int> captureMaterialVariant_{};
   std::shared_ptr<const container::ui::BimFloorPlanOverlayState> captureBimFloorPlan_;
+  std::shared_ptr<const container::temporal::CaptureBimAnnotations> captureBimAnnotations_;
   std::string captureSceneHistory_{};
   uint64_t gltfSceneGraphIdentity_{};
   struct CaptureGltfSceneRequest {

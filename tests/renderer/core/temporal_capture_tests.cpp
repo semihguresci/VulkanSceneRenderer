@@ -95,6 +95,41 @@ TEST(TemporalCapture, RejectsInvalidBimFloorPlanFieldsAndBounds) {
   EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
 }
 
+TEST(TemporalCapture, BimAnnotationPreviewEventCarriesIndependentRoutes) {
+  const CaptureSequence sequence(json::parse(R"({"schemaVersion":1,"frames":4,"events":[
+    {"frame":1,"sectionPlane":[0,0,-1,0],"bimAnnotations":{"issuePin":[1,2,3],
+      "clash":{"objects":[0,1],"position":[-1,0,2]},"sectionVisual":true,"capHatch":true,
+      "sectionMarkers":true,"hiddenLines":true}},
+    {"frame":3,"bimAnnotations":{}}
+  ]})"));
+  const auto visible = sequence.sample(1).event.bimAnnotations;
+  ASSERT_TRUE(visible && visible->issuePin && visible->clash);
+  EXPECT_EQ(*visible->issuePin, glm::vec3(1, 2, 3));
+  EXPECT_EQ(visible->clash->objects, (std::array<uint32_t, 2>{0, 1}));
+  EXPECT_EQ(visible->clash->position, glm::vec3(-1, 0, 2));
+  EXPECT_TRUE(visible->sectionVisual && visible->capHatch && visible->sectionMarkers && visible->hiddenLines);
+  EXPECT_FALSE(visible->capFill);
+  EXPECT_FALSE(sequence.sample(2).event.bimAnnotations);
+  const auto clear = sequence.sample(3).event.bimAnnotations;
+  ASSERT_TRUE(clear);
+  EXPECT_FALSE(clear->issuePin || clear->clash || clear->sectionVisual || clear->capFill ||
+               clear->capHatch || clear->sectionMarkers || clear->hiddenLines);
+  EXPECT_FALSE(sequence.sample(4).event.bimAnnotations);
+}
+
+TEST(TemporalCapture, RejectsMalformedBimAnnotationPreviews) {
+  auto input = json::parse(R"({"schemaVersion":1,"frames":1,"events":[{"frame":1}]})");
+  for (const char *invalid : {"false", R"({"capFill":1})", R"({"missing":true})",
+      R"({"issuePin":[1,2]})", R"({"issuePin":[1,2,true]})", R"({"issuePin":[1e39,0,0]})",
+      R"({"clash":{"objects":[0,1]}})", R"({"clash":{"objects":[0,0],"position":[1,2,3]}})",
+      R"({"clash":{"objects":[0,-1],"position":[1,2,3]}})",
+      R"({"clash":{"objects":[0,4294967295],"position":[1,2,3]}})"}) {
+    SCOPED_TRACE(invalid);
+    input["events"][0]["bimAnnotations"] = json::parse(invalid);
+    EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+  }
+}
+
 TEST(TemporalCapture, FsrModesSelectIndependentSceneGrids) {
   using container::renderer::UpscaleBackend;
   using container::renderer::UpscaleMode;

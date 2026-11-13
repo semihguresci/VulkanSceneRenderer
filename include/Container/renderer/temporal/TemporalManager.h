@@ -131,6 +131,8 @@ private:
   bool resolveRecorded_{false};
   bool recordedSceneLinear_{false};
   bool historySceneLinear_{false};
+  bool recordedDisplayOverlays_{false};
+  bool historyDisplayOverlays_{false};
 };
 
 void registerTemporalPasses(RenderGraphBuilder& graph, RenderPassId predecessor);
