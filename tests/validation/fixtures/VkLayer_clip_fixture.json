@@ -1,0 +1,11 @@
+{
+  "file_format_version": "1.1.0",
+  "layer": {
+    "name": "VK_LAYER_CONTAINER_clip_fixture",
+    "type": "INSTANCE",
+    "library_path": ".\\VkLayer_clip_fixture.dll",
+    "api_version": "1.4.328",
+    "implementation_version": "1",
+    "description": "Test-only emulation of obscured swapchain pixels through dynamic scissoring"
+  }
+}

@@ -10,6 +10,7 @@ from pathlib import Path
 import secrets
 import socket
 import subprocess
+import tempfile
 import time
 
 from display_capture_test_support import emitter_fixture, validation_log_error
@@ -310,13 +311,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("renderer", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--managed-output", action="store_true",
+                        help="write to a fresh run directory under output")
     args = parser.parse_args()
     if os.name != "nt" or os.environ.get("CONTAINER_RUN_GPU_CAPTURE_VISIBILITY") != "1":
         print("SKIP: requires Windows desktop and CONTAINER_RUN_GPU_CAPTURE_VISIBILITY=1")
         return 77
     os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
     renderer, output = args.renderer.resolve(strict=True), args.output.resolve()
-    output.mkdir(parents=True)
+    if args.managed_output:
+        output.mkdir(parents=True, exist_ok=True)
+        output = Path(tempfile.mkdtemp(prefix="run-", dir=output))
+        print(f"Captures: {output}", flush=True)
+    else:
+        output.mkdir(parents=True)
     (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="utf-8")
     emitter_fixture(output / "emitter.gltf", {
         "emissiveFactor": [.5, .25, .125],
