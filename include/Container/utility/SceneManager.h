@@ -1031,6 +1031,7 @@ class SceneManager {
   container::geometry::Model model_{};
   struct OpacityMicromapState;
   std::shared_ptr<const OpacityMicromapState> opacityMicromapState_;
+  std::optional<uint64_t> opacityMicromapGeometryRevision_;
   struct LinkedSceneBaseline;
   std::shared_ptr<const container::geometry::gltf::GltfLinkedCompositionInfo> linkedComposition_;
   std::shared_ptr<const LinkedSceneBaseline> linkedSceneBaseline_;

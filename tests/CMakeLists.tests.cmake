@@ -1169,6 +1169,14 @@ set_tests_properties(storage_buffer_range_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 1200
     LABELS "requires-vulkan;requires-display;visual-regression")
 
+add_test(NAME gltf_opacity_micromap_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/gltf_opacity_micromap_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/gltf-opacity-micromaps" --managed-output)
+set_tests_properties(gltf_opacity_micromap_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 1200
+    LABELS "requires-vulkan;requires-display;ray-query;visual-regression")
+
 add_test(NAME transparent_post_process_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/transparent_post_process_runtime_regression.py"
             --renderer "$<TARGET_FILE:VulkanSceneRenderer>"

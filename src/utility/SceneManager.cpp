@@ -2950,6 +2950,7 @@ void SceneManager::loadGltfAssets(int requestedScene,
   invalidateEditorSceneRootMembership();
   model_ = container::geometry::Model{};
   opacityMicromapState_.reset();
+  opacityMicromapGeometryRevision_.reset();
   sourcePrimitiveToRuntime_.clear(); runtimePrimitiveToSource_.clear();
   gltfModel_ = tinygltf::Model{};
   sourceMaterialToRuntime_.clear();
@@ -3992,6 +3993,7 @@ void SceneManager::writeMaterialDescriptorSetContents(
 
 void SceneManager::resetLoadedAssets() {
   opacityMicromapState_.reset();
+  opacityMicromapGeometryRevision_.reset();
   linkedComposition_.reset();
   linkedSceneBaseline_.reset();
   linkedAssetState_.reset();
