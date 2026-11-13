@@ -2651,6 +2651,16 @@ target_sources(renderer_mcp_measurement_tests PRIVATE
 )
 
 if(ENABLE_RENDERER_MCP)
+    if(WIN32 AND Python3_Interpreter_FOUND)
+        add_test(NAME scene_linear_capture_visibility_gpu_regression
+            COMMAND "${Python3_EXECUTABLE}" -B
+                "${TEST_VALIDATION_DIR}/scene_linear_capture_visibility_runtime_regression.py"
+                "$<TARGET_FILE:VulkanSceneRenderer>"
+                "${TEST_RESULTS_DIR}/scene-linear-capture-visibility")
+        set_tests_properties(scene_linear_capture_visibility_gpu_regression PROPERTIES
+            LABELS "requires-vulkan;requires-display;visual-regression"
+            RUN_SERIAL TRUE SKIP_RETURN_CODE 77 TIMEOUT 600)
+    endif()
     add_custom_test(renderer_mcp_transport_tests
         ${TEST_RENDERER_CORE_DIR}/renderer_mcp_transport_tests.cpp "" ${TEST_RESULTS_DIR}
         VulkanSceneRenderer_renderer
