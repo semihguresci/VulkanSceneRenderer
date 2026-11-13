@@ -18,6 +18,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 namespace container::gpu {
@@ -71,6 +72,34 @@ struct LightingGraphPoseGenerationLimits {
   uint64_t maxPreparedGpuBytes{256ull * 1024 * 1024};
   uint64_t maxGraphNodes{1'000'000};
 };
+
+enum class ClusteredLightCapacityStatus {
+  NotInitialized,
+  Available,
+  StorageRangeExceeded,
+  DispatchLimitExceeded,
+  ShaderIndexLimitExceeded,
+};
+
+struct ClusteredLightCapacity {
+  ClusteredLightCapacityStatus status{ClusteredLightCapacityStatus::NotInitialized};
+  VkDeviceSize storageRangeLimit{};
+  VkDeviceSize tileGridBytes{};
+  VkDeviceSize lightIndexListBytes{};
+  uint32_t tileCountX{};
+  uint32_t tileCountY{};
+  uint64_t clusterCount{};
+
+  [[nodiscard]] bool available() const noexcept {
+    return status == ClusteredLightCapacityStatus::Available;
+  }
+};
+
+[[nodiscard]] ClusteredLightCapacity planClusteredLightCapacity(
+    VkExtent2D extent, VkDeviceSize storageRangeLimit,
+    const std::array<uint32_t, 3> &dispatchLimits) noexcept;
+[[nodiscard]] std::string_view clusteredLightCapacityStatusName(
+    ClusteredLightCapacityStatus status) noexcept;
 
 // Manages the LightingData uniform buffer, directional + point/area lights,
 // tiled light culling resources, and the light-gizmo draw helper.
@@ -329,8 +358,15 @@ public:
   void setRootNode(uint32_t rootNode) { rootNode_ = rootNode; }
 
   // ---- Tiled lighting accessors -------------------------------------------
-  bool isTiledLightingReady() const {
-    return tileCullPipeline_ != VK_NULL_HANDLE;
+  bool isTiledLightingReady() const noexcept {
+    return tileCullPipeline_ != VK_NULL_HANDLE &&
+           tileCullPipelineLayout_ != VK_NULL_HANDLE &&
+           tileCullSet0_ != VK_NULL_HANDLE && tileCullSet1_ != VK_NULL_HANDLE &&
+           tileCullSet2_ != VK_NULL_HANDLE && tiledDescriptorSet_ != VK_NULL_HANDLE &&
+           tiledScratchResourcesReady();
+  }
+  [[nodiscard]] const ClusteredLightCapacity &clusteredLightCapacity() const noexcept {
+    return clusteredLightCapacity_;
   }
   VkDescriptorSetLayout tiledDescriptorSetLayout() const {
     return tiledDescriptorSetLayout_;
@@ -371,7 +407,7 @@ public:
   // Tile grid SSBO accessors for debug visualization (heat map).
   VkBuffer tileGridBuffer() const { return tileGridSsbo_.buffer; }
   VkDeviceSize tileGridBufferSize() const {
-    return sizeof(container::gpu::TileLightGrid) * maxClusterCount_;
+    return tiledScratchResourcesReady() ? clusteredLightCapacity_.tileGridBytes : 0;
   }
 
 private:
@@ -396,6 +432,7 @@ private:
       const LightEditCommand*,bool replay,bool applied,const LightEditLimits&) const;
   [[nodiscard]] PreparedLightEdit prepareLightAddImpl(EditableLightType,const LightEditCommand*,bool applied,const LightEditLimits&) const;
   [[nodiscard]] bool generationResourcesReady(const PreparedGeneration&) const noexcept;
+  [[nodiscard]] bool tiledCapacityLimited() const noexcept;
   [[nodiscard]] bool tiledScratchResourcesReady() const noexcept;
   [[nodiscard]] bool graphPoseGenerationMatches(const PreparedGeneration&, bool prospective) const noexcept;
   bool applyAuthoredDirectionalLight(const SceneLightingAnchor &anchor);
@@ -524,8 +561,9 @@ private:
   VkSampler lightGizmoIconSampler_{VK_NULL_HANDLE};
   bool lightGizmoIconsReady_{false};
 
-  uint32_t maxTileCount_{0};
-  uint32_t maxClusterCount_{0};
+  VkDeviceSize clusteredStorageRangeLimit_{};
+  std::array<uint32_t, 3> clusteredDispatchLimits_{};
+  ClusteredLightCapacity clusteredLightCapacity_{};
   mutable uint32_t lastDispatchClusterCount_{0};
 
   void uploadLightSsbo() const;

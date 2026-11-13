@@ -797,8 +797,25 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         return 0.0.xxxx;
     }
 
-    uint nodeIndex = 0u;
-    InterlockedAdd(nodeCounter[0], 1u, nodeIndex);
+    // Preserve demand for pool growth and saturate at one past the device's
+    // maximum capacity so excess fragments can never recycle live indices.
+    if (IsHelperLane())
+    {
+        return 0.0.xxxx;
+    }
+    uint nodeIndex;
+    InterlockedAdd(nodeCounter[0], 0u, nodeIndex);
+    [loop]
+    while (nodeIndex < uOit.counterLimit)
+    {
+        uint previousCount;
+        InterlockedCompareExchange(nodeCounter[0], nodeIndex, nodeIndex + 1u, previousCount);
+        if (previousCount == nodeIndex)
+        {
+            break;
+        }
+        nodeIndex = previousCount;
+    }
     if (nodeIndex >= uOit.nodeCapacity)
     {
         return 0.0.xxxx;

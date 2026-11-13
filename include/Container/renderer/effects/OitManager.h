@@ -13,6 +13,9 @@ struct OitFrameResources {
   VkBuffer counterBuffer{VK_NULL_HANDLE};
 };
 
+[[nodiscard]] VkBufferMemoryBarrier2
+makeOitCounterReadBarrier(VkBuffer counterBuffer);
+
 // Handles OIT buffer clear, barrier, and resolve-prepare barriers.
 // Does not own any resources; operates on per-frame handles passed in.
 class OitManager {

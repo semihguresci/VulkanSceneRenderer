@@ -2670,6 +2670,10 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     resources.objectBufferCapacity = saturatingU32(maxSceneObjectCapacity());
     resources.oitNodeCapacity = deferredRasterRuntimeOitNodeCapacity(
         subs_.frameResourceManager.get(), imageIndex);
+    resources.oitStorageRangeLimited = subs_.frameResourceManager->oitStorageRangeLimited();
+    resources.oitPoolOverflowed = subs_.frameResourceManager->oitPoolOverflowed();
+    resources.clusteredLightingFallback =
+        subs_.lightingManager->clusteredLightCapacity().status != ClusteredLightCapacityStatus::Available;
     telemetry->setResources(resources);
     telemetry->setCpuPhase(RendererTelemetryPhase::Frame,
                            elapsedMilliseconds(frameStart));
@@ -3276,6 +3280,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
       {"deviceId", gpu.deviceID},
       {"driverVersion", gpu.driverVersion},
       {"vulkanApiVersion", gpu.apiVersion},
+      {"storageBufferRangeLimit", gpu.limits.maxStorageBufferRange},
       {"build", {{"revision", CONTAINER_GIT_REVISION},
                  {"configuration", CONTAINER_BUILD_CONFIG},
                  {"compiler", CONTAINER_BUILD_COMPILER}}},
@@ -3311,6 +3316,20 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"resetReason", temporal.state().resetReason()},
         {"imagePayloadBytes", temporal.memoryBytes()},
         {"allocatedImageBytes", temporal.allocatedBytes()}}}};
+  const auto& frameResources = *subs_.frameResourceManager;
+  const auto oitNodes = deferredRasterRuntimeOitNodeCapacity(&frameResources, 0);
+  json["oit"] = {{"nodeCapacity", oitNodes},
+                 {"nodeBufferBytes", sizeof(OitNode) * static_cast<uint64_t>(oitNodes)},
+                 {"requestedNodeCapacity", frameResources.requestedOitNodeCapacity()},
+                 {"maxNodeCapacity", frameResources.maxOitNodeCapacity()},
+                 {"storageRangeLimited", frameResources.oitStorageRangeLimited()},
+                 {"overflowed", frameResources.oitPoolOverflowed()},
+                 {"growCount", frameResources.oitPoolGrowCount()}};
+  const auto& clustered = subs_.lightingManager->clusteredLightCapacity();
+  json["clusteredLighting"] = {{"status", clusteredLightCapacityStatusName(clustered.status)},
+                               {"active", subs_.lightingManager->isTiledLightingReady()},
+                               {"tileGridBytes", clustered.tileGridBytes},
+                               {"lightIndexListBytes", clustered.lightIndexListBytes}};
   const auto sceneExtent = sceneRenderExtent();
   const auto upscaleTelemetry = [&](UpscaleBackend backend, bool active) {
     const auto& selection = upscaleResourceRequest_.selection;
@@ -5660,7 +5679,7 @@ PipelineBuildResult RendererFrontend::buildGraphicsPipelines(
       // Some tests or fallback configurations may not create tiled lighting
       // resources. Reuse the regular light layout so pipeline layout creation
       // stays well-formed even when the tiled path is unavailable.
-      subs_.lightingManager->isTiledLightingReady()
+      subs_.lightingManager->tiledDescriptorSetLayout() != VK_NULL_HANDLE
           ? subs_.lightingManager->tiledDescriptorSetLayout()
           : subs_.lightingManager->lightDescriptorSetLayout(),
       subs_.shadowManager->descriptorSetLayout(),
@@ -6615,13 +6634,15 @@ bool RendererFrontend::growExactOitNodePoolIfNeeded(uint32_t imageIndex) {
     return false;
   const bool grew = subs_.frameResourceManager->growOitPoolIfNeeded(imageIndex);
   if (grew) {
-    vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device());
+    if (vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device()) != VK_SUCCESS)
+      throw std::runtime_error("Failed to retire frames before growing the OIT node pool");
+    if (subs_.rendererTelemetry) subs_.rendererTelemetry->noteDeviceWaitIdle();
     createFrameResources();
     updateFrameDescriptorSets();
     if (subs_.guiManager) {
       subs_.guiManager->setStatusMessage(
           "Expanded exact OIT node pool to " +
-          std::to_string(subs_.frameResourceManager->oitNodeCapacityFloor()));
+          std::to_string(deferredRasterRuntimeOitNodeCapacity(subs_.frameResourceManager.get(), imageIndex)));
     }
   }
   return grew;

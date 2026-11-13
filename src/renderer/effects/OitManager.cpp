@@ -4,6 +4,25 @@
 
 namespace container::renderer {
 
+VkBufferMemoryBarrier2 makeOitCounterReadBarrier(VkBuffer counterBuffer) {
+  // The retired frame's mapped counter is also read by the host. Include the
+  // transfer clear, which is the last write when no fragments reach the pool.
+  return {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                      VK_PIPELINE_STAGE_2_CLEAR_BIT,
+      .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                       VK_ACCESS_2_TRANSFER_WRITE_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                      VK_PIPELINE_STAGE_2_HOST_BIT,
+      .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                       VK_ACCESS_2_HOST_READ_BIT,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .buffer = counterBuffer,
+      .size = VK_WHOLE_SIZE};
+}
+
 OitManager::OitManager(std::shared_ptr<container::gpu::VulkanDevice> device)
     : device_(std::move(device)) {}
 
@@ -70,44 +89,41 @@ void OitManager::prepareResolve(VkCommandBuffer cmd,
     return;
   }
 
-  VkImageMemoryBarrier headBarrier{};
-  headBarrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-  headBarrier.oldLayout           = VK_IMAGE_LAYOUT_GENERAL;
-  headBarrier.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
-  headBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  headBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  headBarrier.image               = resources.headPointerImage;
-  headBarrier.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-  headBarrier.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-  headBarrier.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-
-  VkBufferMemoryBarrier nodeBarrier{};
-  nodeBarrier.sType               = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-  nodeBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  nodeBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  nodeBarrier.buffer              = resources.nodeBuffer;
-  nodeBarrier.offset              = 0;
-  nodeBarrier.size                = VK_WHOLE_SIZE;
-  nodeBarrier.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-  nodeBarrier.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-
-  VkBufferMemoryBarrier counterBarrier{};
-  counterBarrier.sType               = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-  counterBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  counterBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  counterBarrier.buffer              = resources.counterBuffer;
-  counterBarrier.offset              = 0;
-  counterBarrier.size                = sizeof(uint32_t);
-  counterBarrier.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-  counterBarrier.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
-
-  std::array<VkBufferMemoryBarrier, 2> bufBarriers = {nodeBarrier, counterBarrier};
-  vkCmdPipelineBarrier(cmd,
-                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                       0, 0, nullptr,
-                       static_cast<uint32_t>(bufBarriers.size()),
-                        bufBarriers.data(), 1, &headBarrier);
+  constexpr VkPipelineStageFlags2 fragment =
+      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  constexpr VkAccessFlags2 shaderWrite = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+  constexpr VkAccessFlags2 shaderReadWrite =
+      VK_ACCESS_2_SHADER_STORAGE_READ_BIT | shaderWrite;
+  const VkImageMemoryBarrier2 headBarrier{
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+      .srcStageMask = fragment,
+      .srcAccessMask = shaderWrite,
+      .dstStageMask = fragment,
+      .dstAccessMask = shaderReadWrite,
+      .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+      .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = resources.headPointerImage,
+      .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+  const std::array<VkBufferMemoryBarrier2, 2> bufferBarriers{{
+      {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+       .srcStageMask = fragment,
+       .srcAccessMask = shaderWrite,
+       .dstStageMask = fragment,
+       .dstAccessMask = shaderReadWrite,
+       .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+       .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+       .buffer = resources.nodeBuffer,
+       .size = VK_WHOLE_SIZE},
+      makeOitCounterReadBarrier(resources.counterBuffer)}};
+  const VkDependencyInfo dependency{
+      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+      .bufferMemoryBarrierCount = static_cast<uint32_t>(bufferBarriers.size()),
+      .pBufferMemoryBarriers = bufferBarriers.data(),
+      .imageMemoryBarrierCount = 1,
+      .pImageMemoryBarriers = &headBarrier};
+  vkCmdPipelineBarrier2(cmd, &dependency);
 }
 
 }  // namespace container::renderer

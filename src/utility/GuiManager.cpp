@@ -1237,7 +1237,10 @@ GuiRendererTelemetryView GuiRendererTelemetry(
       .swapchainImageCount = source.resources.swapchainImageCount,
       .cameraBufferCount = source.resources.cameraBufferCount,
       .objectBufferCapacity = source.resources.objectBufferCapacity,
-      .oitNodeCapacity = source.resources.oitNodeCapacity};
+      .oitNodeCapacity = source.resources.oitNodeCapacity,
+      .oitStorageRangeLimited = source.resources.oitStorageRangeLimited,
+      .oitPoolOverflowed = source.resources.oitPoolOverflowed,
+      .clusteredLightingFallback = source.resources.clusteredLightingFallback};
   latest.sync = {.frameSlot = source.sync.frameSlot,
                  .maxFramesInFlight = source.sync.maxFramesInFlight,
                  .serializedConcurrency = source.sync.serializedConcurrency,
@@ -9311,6 +9314,12 @@ void GuiManager::drawRendererTelemetryWindow() {
                 latest.workload.totalDrawCount, latest.workload.opaqueDrawCount,
                 latest.workload.transparentDrawCount);
     ImGui::Text("OIT nodes: %u", latest.resources.oitNodeCapacity);
+    if (latest.resources.oitStorageRangeLimited)
+      ImGui::TextUnformatted("Transparency storage is limited by the GPU buffer range.");
+    if (latest.resources.oitPoolOverflowed)
+      ImGui::TextUnformatted("Transparency exceeded the node pool. Some fragments were dropped.");
+    if (latest.resources.clusteredLightingFallback)
+      ImGui::TextUnformatted("Clustered lighting unavailable at this resolution. Using raster lighting.");
 
     const uint32_t frustumCulled =
         latest.culling.inputCount >= latest.culling.frustumPassedCount

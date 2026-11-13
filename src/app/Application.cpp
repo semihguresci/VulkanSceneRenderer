@@ -244,6 +244,7 @@ void Application::initWindow() {
   windowConfig.height = config_.windowHeight;
   windowConfig.title = "Vulkan";
   windowConfig.visible = config_.windowVisible;
+  windowConfig.decorated = config_.windowDecorated;
   windowConfig.focused = config_.windowVisible;
   windowConfig.focusOnShow = config_.windowVisible;
   window_ = windowManager_->createWindow(windowConfig);

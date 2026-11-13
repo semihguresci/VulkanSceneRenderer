@@ -17,5 +17,5 @@ struct OitMetadataBuffer
     uint nodeCapacity;
     uint viewportWidth;
     uint viewportHeight;
-    uint reserved;
+    uint counterLimit;
 };
