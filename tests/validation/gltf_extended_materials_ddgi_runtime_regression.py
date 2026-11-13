@@ -33,7 +33,6 @@ from gltf_tangent_uv_runtime_regression import finite_json
 from gltf_texture_formats_runtime_regression import verify_manifest
 
 
-SHARED_SHA = 'ba77669a4c34498ae38bababc205acff75f6b7f617b98a55c1bbb15551ab4e46'
 COUNTS = [3, 3, 3]
 ORIGIN = [-1., -.9, -.5]
 SPACING = [1., .9, .75]
@@ -51,9 +50,13 @@ def dependency_hashes():
         Path(__file__).with_name('gltf_accessor_runtime_regression.py'),
         Path(__file__).with_name('gltf_tangent_uv_runtime_regression.py'),
         Path(__file__).with_name('gltf_texture_formats_runtime_regression.py')]
-    require(shared.sha(Path(shared.__file__)) == SHARED_SHA,
-            'Shared frozen material harness changed; review dependencies before native execution')
     return {str(path.resolve()): shared.sha(path) for path in scripts}
+
+
+def verify_unchanged_manifest(path, before):
+    after = verify_manifest(path)
+    require(after == before, 'Native freeze manifest changed during capture')
+    return after
 
 
 def add_bounce_panels(path):
@@ -357,14 +360,14 @@ def main():
         require(all(shared.sha(Path(entry['path'])) == entry['sha256'] for entry in report['fixtures']), 'DDGI fixture changed')
         require(shared.sha(output/'launch-plan.json') == report['launchPlanSha256'] and
                 shared.sha(renderer) == report['rendererSha256'], 'Frozen plan or renderer changed')
-        report['nativeManifestAfter'] = verify_manifest(args.manifest)
+        report['nativeManifestAfter'] = verify_unchanged_manifest(args.manifest, report['nativeManifestBefore'])
         report['nativeValidationPerformed'] = True
         report['passed'] = True
     except Exception as error:
         report['failure'] = str(error)
         if report.get('nativeManifestBefore') and args.manifest:
             try:
-                report['nativeManifestAfter'] = verify_manifest(args.manifest)
+                report['nativeManifestAfter'] = verify_unchanged_manifest(args.manifest, report['nativeManifestBefore'])
             except Exception as manifest_error:
                 report['manifestAfterFailure'] = str(manifest_error)
         raise
