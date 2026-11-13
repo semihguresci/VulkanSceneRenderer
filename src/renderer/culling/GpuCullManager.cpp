@@ -311,10 +311,13 @@ void GpuCullManager::resizePerImageState(uint32_t imageCount) {
   statsReadbackSubmitted_.assign(count, false);
 }
 
-void GpuCullManager::recreatePerFrameResources(uint32_t descriptorSetCount) {
+void GpuCullManager::recreatePerFrameResources(uint32_t descriptorSetCount,
+                                               bool preserveObjectBindings) {
   const uint32_t setCount = std::max<uint32_t>(1u, descriptorSetCount);
-  const std::vector<VkBuffer> previousObjectBuffers = objectSsboBuffers_;
-  const std::vector<VkDeviceSize> previousObjectSizes = objectSsboSizes_;
+  const auto previousObjectBuffers = preserveObjectBindings
+      ? objectSsboBuffers_ : std::vector<VkBuffer>{};
+  const auto previousObjectSizes = preserveObjectBindings
+      ? objectSsboSizes_ : std::vector<VkDeviceSize>{};
   const uint32_t previousCapacity = maxObjectCount_;
   if (frustumCullSetLayout_ != VK_NULL_HANDLE) {
     allocateFrustumCullDescriptorSets(setCount);
@@ -497,6 +500,10 @@ void GpuCullManager::dispatchFrustumCull(VkCommandBuffer cmd,
   if (frustumCullPipeline_ == VK_NULL_HANDLE ||
       !bufferReadyAt(indirectDrawBuffers_, imageIndex) ||
       !bufferReadyAt(drawCountBuffers_, imageIndex) ||
+      imageIndex >= objectSsboBuffers_.size() ||
+      imageIndex >= objectSsboSizes_.size() ||
+      objectSsboBuffers_[imageIndex] == VK_NULL_HANDLE ||
+      objectSsboSizes_[imageIndex] == 0 ||
       frustumCullSet == VK_NULL_HANDLE ||
       objectCount == 0) return;
   const auto& drawCountBuffer = drawCountBuffers_[imageIndex];

@@ -901,7 +901,8 @@ private:
   // ------------------------------------------------------
   void updateCameraBuffer(uint32_t imageIndex);
   void refreshSceneObjectData();
-  void updateObjectBuffer(uint32_t imageIndex, bool deferUploadToGpu = false);
+  bool updateObjectBuffer(uint32_t imageIndex, bool deferUploadToGpu = false);
+  void publishSceneObjectDescriptors();
   void prepareGpuHierarchyFrame(uint32_t imageIndex);
   void uploadPreparedObjectData(uint32_t imageIndex,std::span<const container::gpu::ObjectData>);
   void updateAllObjectBuffers();

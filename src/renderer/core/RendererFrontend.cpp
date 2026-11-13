@@ -2349,7 +2349,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   cpuObjectUploadBytes_=0;
   if(subs_.guiManager) gpuHierarchyEnabled_=subs_.guiManager->gpuHierarchyTransforms();
   gpuObjectUploadDeferred_=gpuHierarchyEnabled_;
-  updateObjectBuffer(imageIndex,gpuObjectUploadDeferred_);
+  if (updateObjectBuffer(imageIndex, gpuObjectUploadDeferred_))
+    publishSceneObjectDescriptors();
   prepareGpuHierarchyFrame(imageIndex);
   if (frameTemporalSettings.enabled) {
     auto objects = subs_.sceneController->objectData();
@@ -3978,12 +3979,14 @@ void RendererFrontend::handleResize(std::optional<VkFormat> requestedFormat) {
     subs_.shadowManager->recreatePerFrameResources(imageCount);
   }
   if (subs_.shadowCullManager) {
-    subs_.shadowCullManager->recreatePerFrameResources(imageCount);
+    subs_.shadowCullManager->recreatePerFrameResources(imageCount,
+                                                       previousImageCount == imageCount);
     std::fill(buffers_.shadowObjectDescriptorReady.begin(),
               buffers_.shadowObjectDescriptorReady.end(), false);
   }
   if (subs_.gpuCullManager) {
-    subs_.gpuCullManager->recreatePerFrameResources(imageCount);
+    subs_.gpuCullManager->recreatePerFrameResources(imageCount,
+                                                    previousImageCount == imageCount);
   }
   if (subs_.exposureManager && previousImageCount != imageCount)
     subs_.exposureManager->resizeFrameResources(imageCount);
@@ -4000,13 +4003,9 @@ void RendererFrontend::handleResize(std::optional<VkFormat> requestedFormat) {
     updateCameraBuffer(imageIndex);
   }
   updateAllObjectBuffers();
-  if (subs_.sceneManager) {
-    subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.objects);
-    if (subs_.bimManager && subs_.bimManager->hasScene()) {
-      subs_.sceneManager->updateAuxiliaryDescriptorSets(
-          buffers_.cameras, subs_.bimManager->objectAllocatedBuffer());
-    }
-  }
+  if (subs_.sceneManager && subs_.bimManager && subs_.bimManager->hasScene())
+    subs_.sceneManager->updateAuxiliaryDescriptorSets(
+        buffers_.cameras, subs_.bimManager->objectAllocatedBuffer());
   updateFrameDescriptorSets();
 }
 
@@ -5177,7 +5176,6 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
       }
     }
     updateAllObjectBuffers();
-    subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.objects);
     if (subs_.bimManager && subs_.bimManager->hasScene()) {
       subs_.sceneManager->updateAuxiliaryDescriptorSets(
           buffers_.cameras, subs_.bimManager->objectAllocatedBuffer());
@@ -6484,13 +6482,13 @@ void RendererFrontend::uploadPreparedObjectData(uint32_t imageIndex,std::span<co
   }
 }
 
-void RendererFrontend::updateObjectBuffer(uint32_t imageIndex, bool deferUploadToGpu) {
+bool RendererFrontend::updateObjectBuffer(uint32_t imageIndex, bool deferUploadToGpu) {
   if (!subs_.sceneController)
-    return;
+    return false;
   ensureObjectBuffers();
   if (imageIndex >= buffers_.objects.size() ||
       imageIndex >= buffers_.objectCapacities.size()) {
-    return;
+    return false;
   }
 
   const auto cameraBuffer =
@@ -6510,14 +6508,17 @@ void RendererFrontend::updateObjectBuffer(uint32_t imageIndex, bool deferUploadT
             buffers_.objectCapacities[imageIndex]);
     buffers_.shadowObjectDescriptorReady[imageIndex] = true;
   }
-  if (recreated && subs_.sceneManager) {
+  sceneState_.diagCubeObjectIndex = subs_.sceneController->diagCubeObjectIndex();
+  return recreated;
+}
+
+void RendererFrontend::publishSceneObjectDescriptors() {
+  if (subs_.sceneManager) {
     // All scene sets share material/texture bindings. An image graphics fence
     // alone does not retire compute work borrowing another image's set.
     if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
     subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.objects);
   }
-  sceneState_.diagCubeObjectIndex =
-      subs_.sceneController->diagCubeObjectIndex();
 }
 
 void RendererFrontend::updateAllObjectBuffers() {
@@ -6528,6 +6529,9 @@ void RendererFrontend::updateAllObjectBuffers() {
   for (uint32_t imageIndex = 0; imageIndex < imageCount; ++imageIndex) {
     updateObjectBuffer(imageIndex);
   }
+  // A change in image count replaces all slots. Publish the scene descriptor
+  // sets only after every object buffer has a valid binding.
+  publishSceneObjectDescriptors();
 }
 
 container::gpu::AllocatedBuffer RendererFrontend::sceneObjectBuffer(
