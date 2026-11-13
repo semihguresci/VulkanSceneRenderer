@@ -152,4 +152,26 @@ TEST(DeferredPointLightingDrawPlannerTests,
             DeferredPointLightingStencilPipeline::PointLightStencilDebug);
 }
 
+TEST(DeferredPointLightingDrawPlannerTests,
+     FullscreenFallbackKeepsLightOrderAndUnboundedRangeWithoutVolume) {
+  std::vector<container::gpu::PointLightData> lights;
+  for (uint32_t i = 0; i < container::gpu::kMaxDeferredPointLights + 1u; ++i)
+    lights.push_back(light(static_cast<float>(i)));
+  lights.front().positionRadius.w = 0.0f;
+
+  const auto plan = buildDeferredPointLightingDrawPlan(
+      {.state = {.path = DeferredPointLightingPath::FullscreenFallback,
+                 .stencilLightCount = static_cast<uint32_t>(lights.size())},
+       .debugVisualizePointLightStencil = true,
+       .pointLights = lights,
+       .lightVolumeIndexCount = 36u});
+
+  EXPECT_EQ(plan.path, DeferredPointLightingPath::FullscreenFallback);
+  EXPECT_EQ(plan.stencilPipeline, DeferredPointLightingStencilPipeline::PointLight);
+  EXPECT_EQ(plan.lightVolumeIndexCount, 0u);
+  ASSERT_EQ(plan.stencilRouteCount, container::gpu::kMaxDeferredPointLights);
+  for (uint32_t i = 0; i < plan.stencilRouteCount; ++i)
+    expectLightEq(plan.stencilRoutes[i].light, lights[i]);
+}
+
 } // namespace

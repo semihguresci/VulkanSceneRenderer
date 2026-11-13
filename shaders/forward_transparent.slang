@@ -797,25 +797,33 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         return 0.0.xxxx;
     }
 
-    // Preserve demand for pool growth and saturate at one past the device's
-    // maximum capacity so excess fragments can never recycle live indices.
     if (IsHelperLane())
     {
         return 0.0.xxxx;
     }
-    uint nodeIndex;
-    InterlockedAdd(nodeCounter[0], 0u, nodeIndex);
-    [loop]
-    while (nodeIndex < uOit.counterLimit)
+
+    // Reserve one range for the active lanes to reduce contention on the
+    // counter. Saturate beyond the largest pool so indices cannot wrap.
+    uint laneCount = WaveActiveCountBits(true);
+    uint laneOffset = WavePrefixCountBits(true);
+    uint firstNode = 0u;
+    if (WaveIsFirstLane())
     {
-        uint previousCount;
-        InterlockedCompareExchange(nodeCounter[0], nodeIndex, nodeIndex + 1u, previousCount);
-        if (previousCount == nodeIndex)
+        InterlockedAdd(nodeCounter[0], 0u, firstNode);
+        [loop]
+        while (firstNode < uOit.counterLimit)
         {
-            break;
+            uint next = firstNode + min(laneCount, uOit.counterLimit - firstNode);
+            uint previousCount;
+            InterlockedCompareExchange(nodeCounter[0], firstNode, next, previousCount);
+            if (previousCount == firstNode)
+            {
+                break;
+            }
+            firstNode = previousCount;
         }
-        nodeIndex = previousCount;
     }
+    uint nodeIndex = WaveReadLaneFirst(firstNode) + laneOffset;
     if (nodeIndex >= uOit.nodeCapacity)
     {
         return 0.0.xxxx;

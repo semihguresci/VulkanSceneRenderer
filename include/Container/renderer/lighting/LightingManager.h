@@ -368,6 +368,7 @@ public:
   [[nodiscard]] const ClusteredLightCapacity &clusteredLightCapacity() const noexcept {
     return clusteredLightCapacity_;
   }
+  [[nodiscard]] bool tiledCapacityLimited() const noexcept;
   VkDescriptorSetLayout tiledDescriptorSetLayout() const {
     return tiledDescriptorSetLayout_;
   }
@@ -432,7 +433,6 @@ private:
       const LightEditCommand*,bool replay,bool applied,const LightEditLimits&) const;
   [[nodiscard]] PreparedLightEdit prepareLightAddImpl(EditableLightType,const LightEditCommand*,bool applied,const LightEditLimits&) const;
   [[nodiscard]] bool generationResourcesReady(const PreparedGeneration&) const noexcept;
-  [[nodiscard]] bool tiledCapacityLimited() const noexcept;
   [[nodiscard]] bool tiledScratchResourcesReady() const noexcept;
   [[nodiscard]] bool graphPoseGenerationMatches(const PreparedGeneration&, bool prospective) const noexcept;
   bool applyAuthoredDirectionalLight(const SceneLightingAnchor &anchor);

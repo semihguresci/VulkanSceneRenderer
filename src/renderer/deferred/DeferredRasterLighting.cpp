@@ -112,6 +112,12 @@ DeferredLightingFrameState buildDeferredLightingFrameState(
       inputs.tiledDescriptorSetReady && inputs.pipelines.tiledPointLight;
   if (tiledPointLightingReady) {
     state.pointLighting.path = DeferredPointLightingPath::Tiled;
+  } else if (pointLightingAllowed && inputs.clusteredCapacityLimited &&
+             inputs.depthSamplingReady && inputs.pipelines.pointLight) {
+    state.pointLighting.path = DeferredPointLightingPath::FullscreenFallback;
+    state.pointLighting.stencilLightCount =
+        std::min(inputs.pointLightCount,
+                 container::gpu::kMaxDeferredPointLights);
   } else if (pointLightingAllowed && inputs.pipelines.stencilVolume &&
              pointLightPipelineReady(inputs)) {
     state.pointLighting.path = DeferredPointLightingPath::Stencil;

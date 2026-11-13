@@ -2136,8 +2136,8 @@ void LightingManager::allocateClusterBuffers(VkExtent2D extent) {
   if (!capacity.available()) {
     container::log::ContainerLogger::instance().renderer()->warn(
         "Clustered lighting disabled at {}x{} ({}): grid {} bytes, light indices "
-        "{} bytes, maxStorageBufferRange {} bytes. Deferred uses up to {} stencil "
-        "lights. Forward uses its regular point light list.",
+        "{} bytes, maxStorageBufferRange {} bytes. Deferred uses up to {} fullscreen "
+        "point lights. Forward uses its regular point light list.",
         extent.width, extent.height, clusteredLightCapacityStatusName(capacity.status),
         capacity.tileGridBytes, capacity.lightIndexListBytes,
         capacity.storageRangeLimit, kMaxDeferredPointLights);
