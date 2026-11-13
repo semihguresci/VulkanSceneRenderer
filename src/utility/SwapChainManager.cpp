@@ -2,41 +2,114 @@
 #include <array>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 #include "Container/utility/SwapChainManager.h"
+#include "Container/utility/Logger.h"
 #include "Container/utility/QueueFamilySelection.h"
+#include "Container/utility/SwapchainPresentResult.h"
 
 namespace container::gpu {
+
+namespace {
+
+VkResult drainFence(VkDevice device, VkFence fence) {
+  // An allocation failure in the host wait gives no completion proof. Keep
+  // waiting on that fence until completion or terminal device loss.
+  VkResult result;
+  do {
+    result = vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+    if (result == VK_ERROR_OUT_OF_HOST_MEMORY || result == VK_ERROR_OUT_OF_DEVICE_MEMORY)
+      result = vkGetFenceStatus(device, fence);
+  } while (result == VK_NOT_READY || result == VK_TIMEOUT ||
+           result == VK_ERROR_OUT_OF_HOST_MEMORY || result == VK_ERROR_OUT_OF_DEVICE_MEMORY);
+  return result;
+}
+
+}  // namespace
 
 SwapChainManager::SwapChainManager(GLFWwindow* window,
                                    VkPhysicalDevice physicalDevice,
                                    VkDevice device, VkSurfaceKHR surface,
-                                   QueueFamilyIndices queueFamilies)
+                                   QueueFamilyIndices queueFamilies,
+                                   bool presentFencesEnabled,
+                                   size_t framesInFlight)
     : window_(window),
       physicalDevice_(physicalDevice),
       device_(device),
       surface_(surface),
-      queueFamilies_(queueFamilies) {}
+      queueFamilies_(queueFamilies),
+      presentFencesEnabled_(presentFencesEnabled),
+      acquires_(framesInFlight) {}
 
 SwapChainManager::~SwapChainManager() { cleanup(); }
 
 void SwapChainManager::initialize() {
-  recreate();
+  VkFenceCreateInfo info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+  for (auto& slot : acquires_) {
+    if (slot.fence == VK_NULL_HANDLE &&
+        createOwnedFence(device_, &info, nullptr, &slot.fence) != VK_SUCCESS)
+      throw std::runtime_error("failed to create swapchain acquire fence");
+  }
+  if (!recreate())
+    throw std::runtime_error("window closed before creating the swapchain");
 }
 
-void SwapChainManager::recreate(std::optional<VkFormat> requestedFormat) {
-  waitForNonZeroFramebufferExtent();
+bool SwapChainManager::recreate(std::optional<VkFormat> requestedFormat) {
+  if (!waitForNonZeroFramebufferExtent())
+    return false;
+  // Resize callers have drained graphics work. Complete acquire signals before
+  // releasing swapchain image views or reusing their synchronization slots.
+  for (auto& slot : acquires_) {
+    if (finishAcquire(slot, true) != VK_SUCCESS)
+      throw std::runtime_error("failed to retire swapchain acquire before recreation");
+  }
   createSwapChain(requestedFormat);
+  collectRetiredGenerations();
+  return true;
 }
 
 void SwapChainManager::cleanup() {
+  drainAcquires();
+  clearRenderTargets();
+
+  // With base WSI there may be no later acquire to prove that the final
+  // presentation released its resources. Shutdown already idles the device.
+  for (auto& generation : retired_)
+    destroyGeneration(generation);
+  retired_.clear();
+  destroyGeneration(active_);
+  for (auto& slot : acquires_) {
+    destroyOwnedFence(device_, slot.fence, nullptr);
+    slot = {};
+  }
+}
+
+void SwapChainManager::drainAcquires() {
+  for (auto& slot : acquires_) {
+    const VkResult result = finishAcquire(slot, true);
+    if (result != VK_SUCCESS)
+      container::log::check_vk_result(result, "drain swapchain acquire fence");
+  }
+}
+
+void SwapChainManager::destroyGeneration(Generation& generation) {
+  for (const auto& image : generation.images) {
+    if (image.fencePending) {
+      const VkResult result = drainFence(device_, image.presentFence);
+      if (result != VK_SUCCESS)
+        container::log::check_vk_result(result, "drain swapchain present fence");
+    }
+    destroyOwnedFence(device_, image.presentFence, nullptr);
+    destroyOwnedSemaphore(device_, image.renderFinished, nullptr);
+  }
+  destroyOwnedSwapchainKHR(device_, generation.handle, nullptr);
+  generation = {};
+}
+
+void SwapChainManager::clearRenderTargets() {
   destroyFramebuffers();
   destroyImageViews();
-
-  if (swapChain_ != VK_NULL_HANDLE) {
-    destroyOwnedSwapchainKHR(device_, swapChain_, nullptr);
-    swapChain_ = VK_NULL_HANDLE;
-  }
   swapChainImages_.clear();
   surfaceFormat_ = {VK_FORMAT_UNDEFINED, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
   swapChainExtent_ = {};
@@ -57,7 +130,7 @@ void SwapChainManager::destroyImageViews() {
   swapChainImageViews_.clear();
 }
 
-void SwapChainManager::waitForNonZeroFramebufferExtent() const {
+bool SwapChainManager::waitForNonZeroFramebufferExtent() const {
   int width = 0;
   int height = 0;
   glfwGetFramebufferSize(window_, &width, &height);
@@ -65,6 +138,7 @@ void SwapChainManager::waitForNonZeroFramebufferExtent() const {
     glfwWaitEvents();
     glfwGetFramebufferSize(window_, &width, &height);
   }
+  return !glfwWindowShouldClose(window_);
 }
 
 void SwapChainManager::createSwapChain(std::optional<VkFormat> requestedFormat) {
@@ -128,42 +202,68 @@ void SwapChainManager::createSwapChain(std::optional<VkFormat> requestedFormat) 
   // PNG readback and scene-linear fragment writes need every pixel, including
   // when a capture is requested after startup or the window is obscured.
   createInfo.clipped = VK_FALSE;
-  createInfo.oldSwapchain = swapChain_;
+  createInfo.oldSwapchain = active_.handle;
 
+  // Allocate the retirement node before the call that retires oldSwapchain,
+  // including when it fails. Graphics work is already idle on this path.
+  Generation* previous = active_.handle != VK_NULL_HANDLE
+                             ? &retired_.emplace_back()
+                             : nullptr;
+  const auto detachPrevious = [&] {
+    if (previous)
+      *previous = std::exchange(active_, Generation{});
+    clearRenderTargets();
+  };
   VkSwapchainKHR newSwapchain = VK_NULL_HANDLE;
   VkResult res;
   try {
     res = createOwnedSwapchainKHR(device_, &createInfo, nullptr, &newSwapchain);
   } catch (...) {
-    cleanup();
+    detachPrevious();
     throw;
   }
-  // Vulkan retires oldSwapchain when creation is attempted, even on failure.
-  cleanup();
+  detachPrevious();
   if (res != VK_SUCCESS)
     throw std::runtime_error("failed to create swap chain");
 
-  swapChain_ = newSwapchain;
+  active_.handle = newSwapchain;
+  active_.id = ++generationCounter_;
   surfaceFormat_ = surfaceFormat;
   swapChainExtent_ = extent;
   supportsTransferSrc_ = supportsTransferSrc;
   try {
     uint32_t swapImageCount = 0;
-    if (vkGetSwapchainImagesKHR(device_, swapChain_, &swapImageCount, nullptr) !=
+    if (vkGetSwapchainImagesKHR(device_, active_.handle, &swapImageCount, nullptr) !=
             VK_SUCCESS || swapImageCount == 0)
       throw std::runtime_error("failed to query swap chain image count");
     swapChainImages_.resize(swapImageCount);
-    if (vkGetSwapchainImagesKHR(device_, swapChain_, &swapImageCount,
+    if (vkGetSwapchainImagesKHR(device_, active_.handle, &swapImageCount,
                                swapChainImages_.data()) != VK_SUCCESS)
       throw std::runtime_error("failed to query swap chain images");
     swapChainImages_.resize(swapImageCount);
     createImageViews();
+    createPresentationResources();
   } catch (...) {
-    cleanup();
+    clearRenderTargets();
+    destroyGeneration(active_);
     throw;
   }
   if (requestedFormat)
     preferredFormat_ = requestedFormat;
+}
+
+void SwapChainManager::createPresentationResources() {
+  const VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+  const VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+  active_.images.resize(swapChainImages_.size());
+  for (auto& image : active_.images) {
+    if (createOwnedSemaphore(device_, &semaphore, nullptr, &image.renderFinished) !=
+        VK_SUCCESS)
+      throw std::runtime_error("failed to create swapchain render-finished semaphore");
+    if (presentFencesEnabled_ &&
+        createOwnedFence(device_, &fence, nullptr, &image.presentFence) != VK_SUCCESS)
+      throw std::runtime_error("failed to create swapchain present fence");
+  }
 }
 
 void SwapChainManager::createImageViews() {
@@ -220,17 +320,113 @@ void SwapChainManager::createFramebuffers(RenderingPassHandle renderPass) {
   }
 }
 
-VkResult SwapChainManager::present(VkQueue presentQueue, uint32_t imageIndex,
-                                   VkSemaphore waitSemaphore) const {
+VkResult SwapChainManager::finishAcquire(AcquireSlot& slot, bool wait) {
+  if (slot.generation == 0)
+    return VK_SUCCESS;
+  const VkResult result = wait ? drainFence(device_, slot.fence)
+                               : vkGetFenceStatus(device_, slot.fence);
+  if (result != VK_SUCCESS)
+    return result;
+
+  if (slot.provesPresentation)
+    latestReacquiredGeneration_ = std::max(latestReacquiredGeneration_, slot.generation);
+  slot.generation = 0;
+  slot.provesPresentation = false;
+  return vkResetFences(device_, 1, &slot.fence);
+}
+
+void SwapChainManager::collectRetiredGenerations() {
+  if (!presentFencesEnabled_ && !retired_.empty()) {
+    for (auto& slot : acquires_) {
+      if (!slot.provesPresentation)
+        continue;
+      const auto result = finishAcquire(slot, false);
+      if (result != VK_SUCCESS && result != VK_NOT_READY)
+        throw std::runtime_error("failed to query swapchain acquire fence");
+    }
+  }
+
+  for (auto it = retired_.begin(); it != retired_.end();) {
+    auto& generation = *it;
+    bool ready = !generation.enqueuedPresent ||
+                 generation.id < latestReacquiredGeneration_;
+    if (presentFencesEnabled_ && !ready) {
+      ready = true;
+      for (auto& image : generation.images) {
+        if (!image.fencePending)
+          continue;
+        const auto status = vkGetFenceStatus(device_, image.presentFence);
+        if (status != VK_SUCCESS && status != VK_NOT_READY)
+          throw std::runtime_error("failed to query swapchain present fence");
+        image.fencePending = status == VK_NOT_READY;
+        ready &= !image.fencePending;
+      }
+    }
+    if (ready) {
+      destroyGeneration(generation);
+      it = retired_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+VkResult SwapChainManager::acquire(uint64_t timeout, size_t frameIndex,
+                                   VkSemaphore imageAvailable,
+                                   uint32_t& imageIndex) {
+  if (active_.outOfDate)
+    return VK_ERROR_OUT_OF_DATE_KHR;
+
+  auto& slot = acquires_.at(frameIndex);
+  const auto previous = finishAcquire(slot, true);
+  if (previous != VK_SUCCESS)
+    throw std::runtime_error("failed to retire swapchain acquire fence");
+  collectRetiredGenerations();
+
+  const auto result = vkAcquireNextImageKHR(device_, active_.handle, timeout,
+                                             imageAvailable, slot.fence, &imageIndex);
+  if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
+    slot.generation = active_.id;
+    // Reacquiring a successfully presented image of the replacement proves
+    // progress once this acquire fence signals. First acquire alone is insufficient.
+    slot.provesPresentation = !presentFencesEnabled_ && active_.images[imageIndex].presented;
+  }
+  active_.outOfDate = result == VK_ERROR_OUT_OF_DATE_KHR;
+  return result;
+}
+
+VkResult SwapChainManager::present(VkQueue presentQueue, uint32_t imageIndex) {
+  auto& image = active_.images.at(imageIndex);
+  VkSwapchainPresentFenceInfoEXT fenceInfo{VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT};
+  if (presentFencesEnabled_) {
+    if (image.fencePending) {
+      if (drainFence(device_, image.presentFence) != VK_SUCCESS)
+        throw std::runtime_error("failed to retire previous swapchain present fence");
+      image.fencePending = false;
+      if (vkResetFences(device_, 1, &image.presentFence) != VK_SUCCESS)
+        throw std::runtime_error("failed to reset swapchain present fence");
+    }
+    fenceInfo.swapchainCount = 1;
+    fenceInfo.pFences = &image.presentFence;
+  }
+
   VkPresentInfoKHR presentInfo{};
   presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+  presentInfo.pNext = presentFencesEnabled_ ? &fenceInfo : nullptr;
   presentInfo.waitSemaphoreCount = 1;
-  presentInfo.pWaitSemaphores = &waitSemaphore;
+  presentInfo.pWaitSemaphores = &image.renderFinished;
   presentInfo.swapchainCount = 1;
-  presentInfo.pSwapchains = &swapChain_;
+  presentInfo.pSwapchains = &active_.handle;
   presentInfo.pImageIndices = &imageIndex;
 
-  return vkQueuePresentKHR(presentQueue, &presentInfo);
+  const auto result = vkQueuePresentKHR(presentQueue, &presentInfo);
+  const auto outcome = classifySwapchainPresentResult(result);
+  const bool enqueued = outcome != SwapchainPresentOutcome::Failed;
+  active_.enqueuedPresent |= enqueued;
+  active_.outOfDate = result == VK_ERROR_OUT_OF_DATE_KHR;
+  image.fencePending = presentFencesEnabled_ && enqueued;
+  image.presented = outcome == SwapchainPresentOutcome::Accepted;
+  return result;
 }
 
 SwapChainSupportDetails SwapChainManager::QuerySwapChainSupport(

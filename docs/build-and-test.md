@@ -254,6 +254,18 @@ rendering, upload, and swapchain retirement work.
 CPU tests are enabled by default through `ENABLE_TESTS`. Window/Vulkan tests are
 opt-in with `ENABLE_WINDOWED_TESTS=ON`.
 
+The Windows swapchain retirement regression traces resize, minimize/restore,
+and exit on a device with swapchain maintenance1. It also forces the base-WSI
+path on the same device and verifies that older swapchains and their present
+semaphores are reclaimed after the appropriate Vulkan fence signals.
+
+```powershell
+$env:CONTAINER_RUN_GPU_SWAPCHAIN_RETIREMENT = '1'
+$env:CONTAINER_SWAPCHAIN_RETIREMENT_VALIDATION_LAYER_DIR = "$env:VULKAN_SDK/Bin"
+$env:CONTAINER_SWAPCHAIN_RETIREMENT_API_DUMP_LAYER_DIR = "$env:VULKAN_SDK/Bin"
+ctest --test-dir out/build/windows-release -C Release -R '^swapchain_retirement_gpu_regression$' --output-on-failure
+```
+
 The raster MSAA menu and `--msaa` use the sample counts supported by the
 renderer’s shared color, integer pick ID, and depth/stencil attachments.
 Requests use the highest supported count at or below the requested value.

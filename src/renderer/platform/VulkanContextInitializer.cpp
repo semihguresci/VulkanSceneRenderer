@@ -11,7 +11,9 @@
 #include "Container/utility/VulkanDevice.h"
 #include "Container/utility/VulkanInstance.h"
 
+#include <cstdlib>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 
 namespace container::renderer {
@@ -28,6 +30,9 @@ VulkanContextResult VulkanContextInitializer::initialize(
     const std::vector<const char*>& requiredWindowExtensions,
     GLFWwindow* nativeWindow) const {
   VulkanContextResult result{};
+  const char* disableMaintenance1 = std::getenv("CONTAINER_DISABLE_SWAPCHAIN_MAINTENANCE1");
+  const bool enableMaintenance1 =
+      disableMaintenance1 == nullptr || std::string_view(disableMaintenance1) != "1";
 
   // --- Instance ---
   {
@@ -40,6 +45,7 @@ VulkanContextResult VulkanContextInitializer::initialize(
     ci.requiredExtensions     = requiredWindowExtensions;
     ci.enableDlssUpscaling     = DlssUpscaler::builtWithSdk();
     ci.enableDlssRayReconstruction = ReferenceDlssReconstructor::builtWithSdk();
+    ci.enableSurfaceMaintenance1 = enableMaintenance1;
     if (config_.gfxrecon.enabled())
       ci.additionalLayers.push_back(container::capture::kLayerName);
     if (config_.enableValidationLayers || config_.gfxrecon.enabled()) {
@@ -100,6 +106,7 @@ VulkanContextResult VulkanContextInitializer::initialize(
     ci.enableRayQueries = config_.enableRayQueries;
     ci.enableOpacityMicromaps = config_.experimentalOpacityMicromaps;
     ci.enableFsrUpscaling = FsrUpscaler::builtWithSdk();
+    ci.enableSwapchainMaintenance1 = enableMaintenance1;
 #if CONTAINER_HAS_VK_OIDN
     ci.enableReferenceOidn = config_.enableRayQueries;
 #endif
@@ -160,6 +167,9 @@ VulkanContextResult VulkanContextInitializer::initialize(
         "Vulkan {}.{}.{} on {}: dynamic rendering, synchronization2, GPU indirect counts, Slang SPIR-V 1.6",
         VK_API_VERSION_MAJOR(properties.apiVersion), VK_API_VERSION_MINOR(properties.apiVersion),
         VK_API_VERSION_PATCH(properties.apiVersion), properties.deviceName);
+    const char* maintenance1 = result.deviceWrapper->swapchainMaintenance1Extension();
+    container::log::ContainerLogger::instance().renderer()->info(
+        "Swapchain presentation retirement: {}", maintenance1 ? maintenance1 : "image reacquisition");
 
     const auto& enabled                 = result.deviceWrapper->enabledFeatures();
     const auto &raySupport = result.deviceWrapper->rayQuerySupport();

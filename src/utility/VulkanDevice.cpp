@@ -53,6 +53,20 @@ bool hasExtensionName(const std::vector<const char*>& extensions,
   });
 }
 
+const char* supportedSwapchainMaintenance1Extension(
+    const VulkanInstance& instance,
+    std::span<const VkExtensionProperties> extensions) {
+#ifdef VK_KHR_swapchain_maintenance1
+  if (instance.khrSurfaceMaintenance1Enabled() &&
+      hasExtension(extensions, VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME))
+    return VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME;
+#endif
+  if (instance.extSurfaceMaintenance1Enabled() &&
+      hasExtension(extensions, VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME))
+    return VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME;
+  return nullptr;
+}
+
 bool supportsPerformanceQueryFeature(VkPhysicalDevice device) {
   VkPhysicalDevicePerformanceQueryFeaturesKHR performanceFeatures{};
   performanceFeatures.sType =
@@ -342,6 +356,21 @@ void VulkanDevice::createLogicalDevice() {
 
   const std::vector<VkExtensionProperties> availableExtensions =
       enumerateDeviceExtensions(physicalDevice_);
+  const char* maintenanceExtension =
+      createInfo_.enableSwapchainMaintenance1 && surface_ != VK_NULL_HANDLE &&
+              hasExtensionName(createInfo_.requiredExtensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME)
+          ? supportedSwapchainMaintenance1Extension(instanceOwner_, availableExtensions)
+          : nullptr;
+  VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenanceFeatures{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT};
+  if (maintenanceExtension) {
+    // The KHR and EXT feature structs have the same structure type.
+    VkPhysicalDeviceFeatures2 supported{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &maintenanceFeatures};
+    vkGetPhysicalDeviceFeatures2(physicalDevice_, &supported);
+    if (maintenanceFeatures.swapchainMaintenance1 != VK_TRUE)
+      maintenanceExtension = nullptr;
+  }
   rayQuerySupport_.accelerationStructureExtension = hasExtension(
       availableExtensions, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
   rayQuerySupport_.rayQueryExtension =
@@ -392,6 +421,7 @@ void VulkanDevice::createLogicalDevice() {
   for (const char* requiredExtension : createInfo_.requiredExtensions) {
     addEnabledExtension(requiredExtension);
   }
+  addEnabledExtension(maintenanceExtension);
   if (rayQueriesEnabled_) {
     addEnabledExtension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
     addEnabledExtension(VK_KHR_RAY_QUERY_EXTENSION_NAME);
@@ -525,6 +555,10 @@ void VulkanDevice::createLogicalDevice() {
     enabledOpacityMicromap.pNext = const_cast<void*>(featureChain);
     featureChain = &enabledOpacityMicromap;
   }
+  if (maintenanceExtension) {
+    maintenanceFeatures.pNext = const_cast<void*>(featureChain);
+    featureChain = &maintenanceFeatures;
+  }
 
   VkDeviceCreateInfo deviceCreateInfo{};
   deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -546,6 +580,7 @@ void VulkanDevice::createLogicalDevice() {
   ownedDevice_ = vk::raii::Device(physical,
       reinterpret_cast<const vk::DeviceCreateInfo&>(deviceCreateInfo));
   device_ = static_cast<VkDevice>(*ownedDevice_);
+  swapchainMaintenance1Extension_ = maintenanceExtension;
 
   vkGetDeviceQueue(device_, queueFamilyIndices_.graphicsFamily.value(), 0,
                    &graphicsQueue_);

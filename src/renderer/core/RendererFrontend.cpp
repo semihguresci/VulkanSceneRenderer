@@ -1775,8 +1775,7 @@ void RendererFrontend::initialize() {
       static_cast<uint32_t>(shadowCascadePassIds().size()), 1);
   subs_.frameSyncManager = std::make_unique<container::gpu::FrameSyncManager>(
       svc_.ctx.deviceWrapper->device(), svc_.config.maxFramesInFlight);
-  subs_.frameSyncManager->initialize(
-      static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
+  subs_.frameSyncManager->initialize();
   frame_.imagesInFlight.assign(svc_.swapChainManager.imageCount(),
                                VK_NULL_HANDLE);
   subs_.renderPassGpuProfiler = std::make_unique<RenderPassGpuProfiler>();
@@ -2166,10 +2165,9 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   VkResult result =
       std::exchange(captureAcquireOutOfDate_, false)
           ? VK_ERROR_OUT_OF_DATE_KHR
-          : vkAcquireNextImageKHR(
-      svc_.ctx.deviceWrapper->device(), svc_.swapChainManager.swapChain(),
-      UINT64_MAX, subs_.frameSyncManager->imageAvailable(frame_.currentFrame),
-      VK_NULL_HANDLE, &imageIndex);
+          : svc_.swapChainManager.acquire(
+                UINT64_MAX, frame_.currentFrame,
+                subs_.frameSyncManager->imageAvailable(frame_.currentFrame), imageIndex);
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::AcquireImage,
                            elapsedMilliseconds(phaseStart));
@@ -2526,7 +2524,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   submitInfo.pCommandBufferInfos = &commandInfo;
 
   VkSemaphoreSubmitInfo signalInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-  signalInfo.semaphore = subs_.frameSyncManager->renderFinishedForImage(imageIndex);
+  signalInfo.semaphore = svc_.swapChainManager.renderFinishedForImage(imageIndex);
   signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
   std::array<VkSemaphoreSubmitInfo, 2> frameSignals{signalInfo};
   submitInfo.signalSemaphoreInfoCount = 1;
@@ -2622,8 +2620,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
 
   phaseStart = TelemetryClock::now();
   result = svc_.swapChainManager.present(
-      svc_.ctx.deviceWrapper->presentQueue(), imageIndex,
-      subs_.frameSyncManager->renderFinishedForImage(imageIndex));
+      svc_.ctx.deviceWrapper->presentQueue(), imageIndex);
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::Present,
                            elapsedMilliseconds(phaseStart));
@@ -2636,8 +2633,10 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     gfxJournal_.presented(static_cast<int32_t>(actualPresentResult),
                           static_cast<int32_t>(result), imageIndex,
                           frame_.currentFrame, captureTelemetry());
-  if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
-      framebufferResized) {
+  if (result != VK_SUCCESS && result != VK_ERROR_OUT_OF_DATE_KHR &&
+      result != VK_SUBOPTIMAL_KHR)
+    throw std::runtime_error("failed to present swap chain image!");
+  if (result != VK_SUCCESS || framebufferResized) {
     framebufferResized = false;
     phaseStart = TelemetryClock::now();
     handleResize();
@@ -2645,8 +2644,6 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
       telemetry->addCpuPhase(RendererTelemetryPhase::ResourceGrowth,
                              elapsedMilliseconds(phaseStart));
     }
-  } else if (result != VK_SUCCESS) {
-    throw std::runtime_error("failed to present swap chain image!");
   } else {
     markDepthVisibilityFrameComplete(imageIndex, frame_.currentFrame,
                                      pickIdWritten);
@@ -3961,13 +3958,13 @@ void RendererFrontend::handleResize(std::optional<VkFormat> requestedFormat) {
   const VkFormat previousFormat = swapchain.imageFormat();
   const VkExtent2D previousExtent = swapchain.extent();
   const size_t previousImageCount = swapchain.imageCount();
-  swapchain.recreate(requestedFormat);
+  if (!swapchain.recreate(requestedFormat))
+    return;
   if (subs_.rendererTelemetry)
     subs_.rendererTelemetry->noteSwapchainRecreate();
 
   updateSwapchainRendering(previousFormat);
   swapchain.createFramebuffers(resources_.renderPasses.postProcess);
-  subs_.frameSyncManager->recreateRenderFinishedSemaphores(swapchain.imageCount());
   frame_.imagesInFlight.assign(swapchain.imageCount(), VK_NULL_HANDLE);
   invalidateDepthVisibilityFrames();
 
@@ -5530,14 +5527,13 @@ void RendererFrontend::drawModelLoadProgressFrame() {
   int width = 0, height = 0;
   if (svc_.nativeWindow) glfwGetFramebufferSize(svc_.nativeWindow, &width, &height);
   if (width <= 0 || height <= 0) return;
-  const auto device = svc_.ctx.deviceWrapper->device();
   subs_.frameSyncManager->waitForAllFrames();
   uint32_t imageIndex = 0;
   // A resized/minimized surface is recovered by the regular frame loop after
   // commit. Bounded acquire keeps event processing alive in the meantime.
-  const auto acquire = vkAcquireNextImageKHR(device, svc_.swapChainManager.swapChain(),
-      1000000, subs_.frameSyncManager->imageAvailable(frame_.currentFrame),
-      VK_NULL_HANDLE, &imageIndex);
+  const auto acquire = svc_.swapChainManager.acquire(
+      1000000, frame_.currentFrame,
+      subs_.frameSyncManager->imageAvailable(frame_.currentFrame), imageIndex);
   if (acquire == VK_TIMEOUT || acquire == VK_NOT_READY || acquire == VK_ERROR_OUT_OF_DATE_KHR)
     return;
   if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR)
@@ -5572,7 +5568,7 @@ void RendererFrontend::drawModelLoadProgressFrame() {
   wait.semaphore = subs_.frameSyncManager->imageAvailable(frame_.currentFrame);
   wait.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-  signal.semaphore = subs_.frameSyncManager->renderFinishedForImage(imageIndex);
+  signal.semaphore = svc_.swapChainManager.renderFinishedForImage(imageIndex);
   signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
   VkCommandBufferSubmitInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
   commandInfo.commandBuffer = command;
@@ -5589,7 +5585,7 @@ void RendererFrontend::drawModelLoadProgressFrame() {
     throw std::runtime_error("Failed to submit loading view");
   frame_.imagesInFlight[imageIndex] = fence;
   const auto present = svc_.swapChainManager.present(svc_.ctx.deviceWrapper->presentQueue(),
-      imageIndex, signal.semaphore);
+      imageIndex);
   if (present != VK_SUCCESS && present != VK_SUBOPTIMAL_KHR && present != VK_ERROR_OUT_OF_DATE_KHR)
     throw std::runtime_error("Failed to present loading view");
   // Keep loading-view submissions out of scene temporal/history counters.
@@ -5620,6 +5616,7 @@ void RendererFrontend::shutdown() {
     return;
 
   vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device());
+  svc_.swapChainManager.drainAcquires();
 
   // History may own inactive scene generations and descriptor pools. Release
   // them while their allocator/pipeline services and live managers still exist.
