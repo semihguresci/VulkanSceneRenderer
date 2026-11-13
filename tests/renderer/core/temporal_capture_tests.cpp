@@ -96,11 +96,13 @@ TEST(TemporalCapture, RejectsInvalidBimFloorPlanFieldsAndBounds) {
 }
 
 TEST(TemporalCapture, BimAnnotationPreviewEventCarriesIndependentRoutes) {
-  const CaptureSequence sequence(json::parse(R"({"schemaVersion":1,"frames":4,"events":[
+  const CaptureSequence sequence(json::parse(R"({"schemaVersion":1,"frames":6,"events":[
     {"frame":1,"sectionPlane":[0,0,-1,0],"bimAnnotations":{"issuePin":[1,2,3],
       "clash":{"objects":[0,1],"position":[-1,0,2]},"sectionVisual":true,"capHatch":true,
       "sectionMarkers":true,"hiddenLines":true}},
-    {"frame":3,"bimAnnotations":{}}
+    {"frame":3,"bimAnnotations":{"technicalLines":true}},
+    {"frame":4,"bimAnnotations":{"hiddenLines":false,"technicalLines":false}},
+    {"frame":5,"bimAnnotations":{}}
   ]})"));
   const auto visible = sequence.sample(1).event.bimAnnotations;
   ASSERT_TRUE(visible && visible->issuePin && visible->clash);
@@ -109,17 +111,28 @@ TEST(TemporalCapture, BimAnnotationPreviewEventCarriesIndependentRoutes) {
   EXPECT_EQ(visible->clash->position, glm::vec3(-1, 0, 2));
   EXPECT_TRUE(visible->sectionVisual && visible->capHatch && visible->sectionMarkers && visible->hiddenLines);
   EXPECT_FALSE(visible->capFill);
+  EXPECT_FALSE(visible->technicalLines.has_value());
   EXPECT_FALSE(sequence.sample(2).event.bimAnnotations);
-  const auto clear = sequence.sample(3).event.bimAnnotations;
+  const auto depthTested = sequence.sample(3).event.bimAnnotations;
+  ASSERT_TRUE(depthTested);
+  EXPECT_EQ(depthTested->technicalLines, std::optional{true});
+  EXPECT_FALSE(depthTested->hiddenLines);
+  const auto throughOccluders = sequence.sample(4).event.bimAnnotations;
+  ASSERT_TRUE(throughOccluders);
+  EXPECT_EQ(throughOccluders->technicalLines, std::optional{false});
+  EXPECT_FALSE(throughOccluders->hiddenLines);
+  const auto clear = sequence.sample(5).event.bimAnnotations;
   ASSERT_TRUE(clear);
   EXPECT_FALSE(clear->issuePin || clear->clash || clear->sectionVisual || clear->capFill ||
-               clear->capHatch || clear->sectionMarkers || clear->hiddenLines);
-  EXPECT_FALSE(sequence.sample(4).event.bimAnnotations);
+               clear->capHatch || clear->sectionMarkers || clear->hiddenLines || clear->technicalLines);
+  EXPECT_FALSE(sequence.sample(6).event.bimAnnotations);
 }
 
 TEST(TemporalCapture, RejectsMalformedBimAnnotationPreviews) {
   auto input = json::parse(R"({"schemaVersion":1,"frames":1,"events":[{"frame":1}]})");
   for (const char *invalid : {"false", R"({"capFill":1})", R"({"missing":true})",
+      R"({"technicalLines":1})", R"({"technicalLines":null})",
+      R"({"hiddenLines":true,"technicalLines":true})", R"({"hiddenLines":true,"technicalLines":false})",
       R"({"issuePin":[1,2]})", R"({"issuePin":[1,2,true]})", R"({"issuePin":[1e39,0,0]})",
       R"({"clash":{"objects":[0,1]}})", R"({"clash":{"objects":[0,0],"position":[1,2,3]}})",
       R"({"clash":{"objects":[0,-1],"position":[1,2,3]}})",

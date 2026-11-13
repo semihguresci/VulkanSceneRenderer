@@ -19,6 +19,8 @@ FRAMES = {
     "cap-fill": 8, "cap-hatching": 9, "section-markers": 10, "hidden-lines": 11,
     "bim-hover": 12, "mesh-hover": 13, "off-again": 14,
 }
+TECHNICAL_FRAMES = {"technical-depth": 15, "technical-no-depth": 16, "technical-off": 17}
+TECHNICAL_PREVIEWS = ("technical-depth", "technical-no-depth")
 
 
 def require(condition, message):
@@ -50,7 +52,7 @@ def fixtures(folder):
     return mesh, bim
 
 
-def sequence_plan():
+def sequence_plan(frames):
     snapshots = {
         "off": {}, "issue-pin": {"issuePin": [-1.8, 2.45, -.25]},
         "clash-marker": {"clash": {"objects": [0, 1], "position": [1.8, 2.45, -.25]}},
@@ -58,14 +60,17 @@ def sequence_plan():
         "cap-hatching": {"capHatch": True}, "section-markers": {"sectionMarkers": True},
         "hidden-lines": {"hiddenLines": True}, "bim-hover": {},
     }
-    events = {FRAMES[name]: {"frame": FRAMES[name], "bimAnnotations": state} for name, state in snapshots.items()}
+    if "technical-depth" in frames:
+        snapshots.update({"technical-depth": {"technicalLines": True},
+                          "technical-no-depth": {"technicalLines": False}, "technical-off": {}})
+    events = {frames[name]: {"frame": frames[name], "bimAnnotations": state} for name, state in snapshots.items()}
     # Hold the real section plane fixed for all preview and raw captures. Hover
     # is resolved against the completed frame and affects the following draw.
     events[1] = {"frame": 1, "sectionPlane": [0, 0, -1, .15], "bimAnnotations": {},
                  "viewportPointer": {"action": "select", "pixel": [4, 4]}}
     for frame, pixel in ((11, [114, 120]), (12, [217, 120]), (13, [4, 4])):
         events.setdefault(frame, {"frame": frame})["viewportPointer"] = {"action": "hover", "pixel": pixel}
-    return dict(schemaVersion=1, frames=max(FRAMES.values()), sampleFrames=list(FRAMES.values()),
+    return dict(schemaVersion=1, frames=max(frames.values()), sampleFrames=list(frames.values()),
                 events=[events[frame] for frame in sorted(events)])
 
 
@@ -91,7 +96,7 @@ def read_capture(path, technique):
         return np.asarray(image.convert("RGB")), state
 
 
-def record(renderer, output, model, bim, sequence, technique, extension, report, generate_only):
+def record(renderer, output, model, bim, sequence, frames, technique, extension, report, generate_only):
     name = f"{technique}-{extension}"
     screenshot = output / f"{name}.{extension}"
     log = output / f"{name}.log"
@@ -117,8 +122,8 @@ def record(renderer, output, model, bim, sequence, technique, extension, report,
     if os.environ.get("VK_LOADER_DEBUG") == "layer":
         require('Insert instance layer "VK_LAYER_KHRONOS_validation"' in text, f"Missing validation layer: {log}")
     images = {}
-    for kind, frame in FRAMES.items():
-        image = screenshot if frame == max(FRAMES.values()) else output / f"{name}.frame-{frame:04}.{extension}"
+    for kind, frame in frames.items():
+        image = screenshot if frame == max(frames.values()) else output / f"{name}.frame-{frame:04}.{extension}"
         pixels, state = read_capture(image, technique)
         require(Path(state["scene"]["auxiliary"]).resolve() == bim and state["scene"]["auxiliaryObjectCount"] >= 2,
                 f"Incomplete fixture in {image}")
@@ -128,23 +133,26 @@ def record(renderer, output, model, bim, sequence, technique, extension, report,
     return images
 
 
-def inspect(png, exr, expect_missing):
+def inspect(png, exr, missing_previews):
     import numpy as np
 
     require(float(np.max(exr["off"])) > .1, "The raw reference is empty")
     for name, image in exr.items():
         np.testing.assert_array_equal(image, exr["off"], err_msg=f"{name} entered raw scene-linear export")
     np.testing.assert_array_equal(png["off"], png["off-again"], err_msg="Toggling previews left stale pixels")
+    if "technical-off" in png:
+        np.testing.assert_array_equal(png["off"], png["technical-off"],
+                                      err_msg="Disabling Technical elevation left stale pixels")
     background = png["off"].astype(np.int16)
     results = {}
     for name, image in png.items():
-        if name in ("off", "off-again"):
+        if name in ("off", "off-again", "technical-off"):
             continue
         diff = np.max(np.abs(image.astype(np.int16) - background), axis=2) > 4
         yy, xx = np.nonzero(diff)
         results[name] = dict(changedPixels=len(xx), bounds=None if not len(xx) else
                              [int(xx.min()), int(yy.min()), int(xx.max()), int(yy.max())])
-        if expect_missing:
+        if name in missing_previews:
             np.testing.assert_array_equal(image, png["off"], err_msg=f"Expected baseline Forward raster to omit {name}")
             continue
         require(len(xx) >= 12, f"No visible {name} contribution: {results[name]}")
@@ -156,7 +164,16 @@ def inspect(png, exr, expect_missing):
             color = image.astype(np.int16)
             require(np.count_nonzero(diff & ((color[:, :, channel] - color[:, :, other]) > 12)) >= 10,
                     f"{name} did not produce its expected highlight color")
-    return dict(viewport=results, sceneLinearIdentical=len(exr))
+    checks = dict(viewport=results, sceneLinearIdentical=len(exr))
+    if "technical-depth" in png:
+        depth_delta = np.abs(png["technical-depth"].astype(np.int16) - png["technical-no-depth"])
+        changed = int(np.count_nonzero(np.max(depth_delta, axis=2) > 4))
+        if "technical-depth" in missing_previews:
+            require(changed == 0, "The control changed Technical elevation with the depth toggle")
+        else:
+            require(changed >= 12, f"The Technical elevation depth toggle changed only {changed} pixels")
+        checks["technicalDepthTogglePixels"] = changed
+    return checks
 
 
 def main():
@@ -165,7 +182,11 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--generate-only", action="store_true")
     parser.add_argument("--managed-output", action="store_true", help="Make a fresh run directory beneath the output.")
-    parser.add_argument("--expect-missing-forward-annotations", action="store_true")
+    baseline = parser.add_mutually_exclusive_group()
+    baseline.add_argument("--expect-missing-forward-annotations", action="store_true",
+                          help="check the older capture format on a build without Forward annotations")
+    baseline.add_argument("--expect-missing-forward-technical", action="store_true",
+                          help="expect only Technical elevation to be missing from Forward raster")
     args = parser.parse_args()
     if not args.generate_only and os.environ.get("CONTAINER_RUN_GPU_BIM_FLOOR_PLAN") != "1":
         print("SKIP: set CONTAINER_RUN_GPU_BIM_FLOOR_PLAN=1 to run GPU captures")
@@ -178,18 +199,26 @@ def main():
     else:
         output.mkdir(parents=True)
     model, bim = fixtures(output)
+    frames = FRAMES if args.expect_missing_forward_annotations else FRAMES | TECHNICAL_FRAMES
     sequence = output / "annotations.sequence.json"
-    sequence.write_text(json.dumps(sequence_plan(), indent=2) + "\n", encoding="utf-8")
+    sequence.write_text(json.dumps(sequence_plan(frames), indent=2) + "\n", encoding="utf-8")
     (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="utf-8")
-    report = dict(passed=False, runs=[], checks={}, expectedMissingForwardAnnotations=args.expect_missing_forward_annotations)
+    report = dict(passed=False, runs=[], checks={}, expectedMissingForwardAnnotations=args.expect_missing_forward_annotations,
+                  expectedMissingForwardTechnical=args.expect_missing_forward_technical)
     if not args.generate_only:
         report["rendererSha256"] = hashlib.sha256(renderer.read_bytes()).hexdigest()
     try:
         for technique in TECHNIQUES:
-            png, exr = (record(renderer, output, model, bim, sequence, technique, extension, report, args.generate_only)
+            png, exr = (record(renderer, output, model, bim, sequence, frames, technique, extension, report, args.generate_only)
                         for extension in ("png", "exr"))
             if not args.generate_only:
-                checks = inspect(png, exr, args.expect_missing_forward_annotations and technique == "forward-raster")
+                missing_previews = ()
+                if technique == "forward-raster":
+                    if args.expect_missing_forward_annotations:
+                        missing_previews = frames
+                    elif args.expect_missing_forward_technical:
+                        missing_previews = TECHNICAL_PREVIEWS
+                checks = inspect(png, exr, missing_previews)
                 report["checks"][technique] = checks
                 print(technique, checks, flush=True)
         if not args.generate_only:

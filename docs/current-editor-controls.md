@@ -163,6 +163,10 @@ For models with plan linework, **Floor plan overlay** shows it in Deferred
 raster, Forward raster, and Path tracing. Choose the projection, depth test, color, opacity,
 and line width in the BIM panel. [BIM floor-plan overlay](reference-path-tracing.md#bim-floor-plan-overlay)
 
+In **BIM Elevation View**, choose **Technical** and apply the view to draw lines
+over the shaded model in Deferred or Forward raster. **Depth-tested lines**
+hides lines behind filled geometry.
+
 ## Rendering, lighting and diagnostics
 
 | Go to destination | What to use there |

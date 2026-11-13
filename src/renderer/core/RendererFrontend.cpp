@@ -9394,18 +9394,36 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
 
       const auto elevation = subs_.guiManager ? subs_.guiManager->bimElevationViewState()
                                               : container::ui::BimElevationViewState{};
-      const bool hiddenLineElevation = captureBimAnnotations_ ? captureBimAnnotations_->hiddenLines
-          : subs_.guiManager->editorOverlaysEnabled() && subs_.guiManager->wireframeSupported() &&
-                elevation.style == container::ui::BimElevationTechnicalStyle::HiddenLine;
-      // Hidden-line elevation is a renderer composition mode: camera presets
-      // stay in the camera controller, while the frame asks lighting to draw a
-      // depth-tested line overlay and lets clipped views reuse section caps.
-      p.bim.technicalElevation.enabled = hiddenLineElevation;
-      p.bim.technicalElevation.hiddenLineOverlay = hiddenLineElevation;
-      p.bim.technicalElevation.depthTestLines =
-          hiddenLineElevation && (captureBimAnnotations_ || elevation.useDepthTestedLines);
-      if (captureBimAnnotations_)
-        p.bim.technicalElevation.sectionCapsEnabled = false;
+      auto& technical = p.bim.technicalElevation;
+      if (captureBimAnnotations_) {
+        technical.hiddenLineOverlay = captureBimAnnotations_->hiddenLines;
+        const auto depthTest = captureBimAnnotations_->technicalLines;
+        technical.enabled = technical.hiddenLineOverlay || depthTest.has_value();
+        technical.depthTestLines = depthTest.value_or(true);
+        technical.sectionCapsEnabled = false;
+        if (depthTest.has_value()) {
+          technical.lineColor = glm::vec3(0.02f);
+          technical.overlayIntensity = 0.70f;
+        }
+      } else if (subs_.guiManager->editorOverlaysEnabled() &&
+                 subs_.guiManager->wireframeSupported()) {
+        const auto& wireframe = subs_.guiManager->wireframeSettings();
+        technical.hiddenLineOverlay =
+            elevation.style == container::ui::BimElevationTechnicalStyle::HiddenLine;
+        const bool shadedWithLines =
+            elevation.style == container::ui::BimElevationTechnicalStyle::ShadedWithLines &&
+            wireframe.enabled && wireframe.mode == container::ui::WireframeMode::Overlay;
+        technical.enabled = technical.hiddenLineOverlay || shadedWithLines;
+        technical.depthTestLines = technical.hiddenLineOverlay
+                                       ? elevation.useDepthTestedLines
+                                       : wireframe.depthTest;
+        technical.sectionCapsEnabled = technical.hiddenLineOverlay;
+        if (shadedWithLines) {
+          technical.lineColor = wireframe.color;
+          technical.lineWidth = wireframe.lineWidth;
+          technical.overlayIntensity = wireframe.overlayIntensity;
+        }
+      }
     }
   }
   p.transformGizmo = buildTransformGizmoState();

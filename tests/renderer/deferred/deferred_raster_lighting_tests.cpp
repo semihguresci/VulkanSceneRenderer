@@ -209,4 +209,25 @@ TEST(DeferredRasterLightingTests,
                    .bimTechnicalElevationEnabled);
 }
 
+TEST(DeferredRasterLightingTests, BimTechnicalLinesUseTheRequestedDepthVariant) {
+  auto inputs = litInputs();
+  inputs.guiAvailable = false;
+  inputs.bimTechnicalElevation.enabled = true;
+  inputs.bimTechnicalElevation.hiddenLineOverlay = false;
+
+  for (bool depthTest : {false, true}) {
+    inputs.bimTechnicalElevation.depthTestLines = depthTest;
+    inputs.pipelines.wireframeDepth = depthTest;
+    inputs.pipelines.wireframeNoDepth = !depthTest;
+    const auto state = buildDeferredLightingFrameState(inputs);
+    EXPECT_TRUE(state.bimTechnicalElevationEnabled);
+    EXPECT_TRUE(state.wireframeOverlayMode);
+    EXPECT_FALSE(state.wireframeFullMode);
+    EXPECT_EQ(state.wireframeSettings.depthTest, depthTest);
+  }
+
+  inputs.pipelines.wireframeDepth = false;
+  EXPECT_FALSE(buildDeferredLightingFrameState(inputs).bimTechnicalElevationEnabled);
+}
+
 } // namespace
