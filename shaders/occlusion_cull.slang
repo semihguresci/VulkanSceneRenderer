@@ -8,6 +8,7 @@
 #include "draw_indirect_common.slang"
 
 #include "object_data_common.slang"
+#include "occlusion_sphere_common.slang"
 
 [[vk::push_constant]]
 ConstantBuffer<CullPushConstants> pc;
@@ -20,89 +21,6 @@ ConstantBuffer<CullPushConstants> pc;
 [[vk::binding(5, 0)]] Texture2D<float>                             gHiZPyramid;
 [[vk::binding(6, 0)]] StructuredBuffer<uint>                       uInputDrawCount;
 [[vk::binding(7, 0)]] SamplerState                                 gHiZSampler;
-
-float ReverseZDepthFromWorldPoint(float4x4 viewProj, float3 worldPoint)
-{
-    if (!all(isfinite(worldPoint)))
-    {
-        return 1.0;
-    }
-
-    float4 clip = mul(viewProj, float4(worldPoint, 1.0));
-    if (!all(isfinite(clip)) || clip.w <= 1e-6)
-    {
-        return 1.0;
-    }
-    float depth = clip.z / clip.w;
-    return isfinite(depth) ? saturate(depth) : 1.0;
-}
-
-// Project a world-space bounding sphere to a conservative screen-space AABB.
-// The bounds intentionally over-estimate the footprint by using the nearest
-// possible camera depth for the sphere. closestDepth is the reverse-Z depth of
-// the sphere point nearest the camera (largest depth value on the sphere).
-bool ProjectSphere(float4x4 viewProj, float3 cameraWorldPosition,
-                   float3 center, float radius,
-                   out float2 minUV, out float2 maxUV, out float closestDepth)
-{
-    minUV = float2(0.0, 0.0);
-    maxUV = float2(1.0, 1.0);
-    closestDepth = 1.0;
-
-    if (!all(isfinite(center)) || !isfinite(radius) || radius <= 0.0 ||
-        !all(isfinite(cameraWorldPosition)))
-    {
-        return true;
-    }
-
-    float4 clipCenter = mul(viewProj, float4(center, 1.0));
-    float3 cameraToCenter = center - cameraWorldPosition;
-    float cameraDistance = length(cameraToCenter);
-
-    // If the sphere contains the camera, straddles the near plane, or the
-    // center is behind the eye, conservatively keep it visible.
-    if (!all(isfinite(clipCenter)) ||
-        !isfinite(cameraDistance) ||
-        cameraDistance <= radius ||
-        clipCenter.w <= radius ||
-        clipCenter.w <= 0.0)
-    {
-        return true;
-    }
-
-    float3 ndc = clipCenter.xyz / clipCenter.w;
-    if (!all(isfinite(ndc)))
-    {
-        return true;
-    }
-
-    // In Slang, matrix indexing is row-first. For a perspective view-projection
-    // matrix, the XYZ lengths of rows 0/1 yield the horizontal/vertical
-    // projection scale because the view rows are orthonormal.
-    float projScaleX = length(float3(viewProj[0][0], viewProj[0][1], viewProj[0][2]));
-    float projScaleY = length(float3(viewProj[1][0], viewProj[1][1], viewProj[1][2]));
-    if (!isfinite(projScaleX) || !isfinite(projScaleY))
-    {
-        return true;
-    }
-
-    float nearestDepth = max(clipCenter.w - radius, 1e-4);
-    float2 projRadius = float2(projScaleX, projScaleY) * (radius / nearestDepth);
-
-    float2 ndcMin = max(ndc.xy - projRadius, float2(-1.0, -1.0));
-    float2 ndcMax = min(ndc.xy + projRadius, float2( 1.0,  1.0));
-
-    // Scene passes use a negative-height viewport, so framebuffer UV flips Y
-    // relative to scene NDC.
-    minUV = float2(ndcMin.x * 0.5 + 0.5, (-ndcMax.y) * 0.5 + 0.5);
-    maxUV = float2(ndcMax.x * 0.5 + 0.5, (-ndcMin.y) * 0.5 + 0.5);
-
-    float3 closestPoint =
-        center - cameraToCenter * (radius / max(cameraDistance, 1e-6));
-    closestDepth = ReverseZDepthFromWorldPoint(viewProj, closestPoint);
-
-    return true;
-}
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -125,15 +43,13 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
     {
         float2 minUV, maxUV;
         float closestDepth;
-        if (ProjectSphere(uCamera.viewProj, uCamera.cameraWorldPosition.xyz,
-                          center, radius, minUV, maxUV, closestDepth))
+        if (ProjectSphere(uCamera.viewProj, center, radius, minUV, maxUV, closestDepth))
         {
             uint hizW, hizH;
             gHiZPyramid.GetDimensions(hizW, hizH);
 
             float2 sizePixels = (maxUV - minUV) * float2(hizW, hizH);
             float maxExtent = max(sizePixels.x, sizePixels.y);
-            float mipLevel = max(0.0, ceil(log2(maxExtent)) - 1.0);
 
             // Large projected bounds are poor occlusion-cull candidates with a
             // current-frame Hi-Z pyramid: wall reliefs and other attached
@@ -143,6 +59,7 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
             const float largeProjectedExtentPixels = 96.0;
             if (maxExtent <= largeProjectedExtentPixels)
             {
+                float mipLevel = max(0.0, ceil(log2(max(1.0, maxExtent))) - 1.0);
                 float2 centerUV = (minUV + maxUV) * 0.5;
                 float2 minMaxXUV = float2(maxUV.x, minUV.y);
                 float2 maxMinXUV = float2(minUV.x, maxUV.y);

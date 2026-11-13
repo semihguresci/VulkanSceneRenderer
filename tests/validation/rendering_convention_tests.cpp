@@ -7240,15 +7240,19 @@ TEST(RenderingConventionTests,
   const std::string shadowCull = readRepoTextFile("shaders/shadow_cull.slang");
   const std::string occlusionCull =
       readRepoTextFile("shaders/occlusion_cull.slang");
+  const std::string occlusionSphere =
+      readRepoTextFile("shaders/occlusion_sphere_common.slang");
 
   EXPECT_TRUE(contains(shadowCull, "!all(isfinite(boundingSphere))"));
   EXPECT_TRUE(contains(shadowCull, "!all(isfinite(sphere))"));
   EXPECT_TRUE(contains(shadowCull, "!all(isfinite(center))"));
   EXPECT_TRUE(contains(shadowCull, "!all(isfinite(cascade.casterMinBounds))"));
-  EXPECT_TRUE(contains(occlusionCull, "!all(isfinite(worldPoint))"));
-  EXPECT_TRUE(contains(occlusionCull, "!all(isfinite(clip))"));
-  EXPECT_TRUE(contains(occlusionCull, "!all(isfinite(clipCenter))"));
-  EXPECT_TRUE(contains(occlusionCull, "!all(isfinite(ndc))"));
+  EXPECT_TRUE(contains(occlusionCull, "if (ProjectSphere(uCamera.viewProj"));
+  EXPECT_TRUE(contains(occlusionSphere, "!all(isfinite(center))"));
+  EXPECT_TRUE(contains(occlusionSphere, "!all(isfinite(clipCenter))"));
+  EXPECT_TRUE(contains(occlusionSphere, "!all(isfinite(ndcX))"));
+  EXPECT_TRUE(contains(occlusionSphere, "!all(isfinite(ndcY))"));
+  EXPECT_TRUE(contains(occlusionSphere, "!isfinite(ndcZ.y)"));
 }
 
 TEST(RenderingConventionTests, DefaultConfigUsesCornellBoxScene) {

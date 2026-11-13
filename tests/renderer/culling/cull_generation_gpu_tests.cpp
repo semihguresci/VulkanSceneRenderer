@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -42,6 +43,14 @@ class CullGenerationGpu : public ::testing::Test {
     VkExtent2D extent;
     std::vector<float> depths;
   };
+
+  bool supportsDepthUpload() const {
+    VkFormatProperties format{};
+    vkGetPhysicalDeviceFormatProperties(device->physicalDevice(), VK_FORMAT_D32_SFLOAT, &format);
+    constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+        VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    return (format.optimalTilingFeatures & required) == required;
+  }
 
   static std::vector<DepthMip> expectedHiZMips(VkExtent2D extent) {
     DepthMip base{extent, std::vector<float>(size_t(extent.width) * extent.height)};
@@ -223,11 +232,11 @@ class CullGenerationGpu : public ::testing::Test {
     std::vector<T> result(count);
     std::memcpy(result.data(),output.buffer.allocation_info.pMappedData,bytes);return result;
   }
-  void checkHiZMips(VkExtent2D extent) {
-    const auto expected = expectedHiZMips(extent);
-    SCOPED_TRACE(::testing::Message() << extent.width << 'x' << extent.height);
+  void generateHiZ(VkExtent2D extent, std::span<const float> depths,
+                   const std::function<void(VkCommandBuffer)>& afterGeneration = {}) {
     auto& memory = *allocation->memoryManager();
-    const auto sourceBytes = std::as_bytes(std::span(expected.front().depths));
+    ASSERT_EQ(depths.size(), size_t(extent.width) * extent.height);
+    const auto sourceBytes = std::as_bytes(depths);
     StagingBuffer upload(memory, sourceBytes.size());
     upload.upload(sourceBytes);
 
@@ -265,6 +274,44 @@ class CullGenerationGpu : public ::testing::Test {
         vk::SamplerAddressMode::eClampToEdge;
     const vk::raii::Sampler depthSampler(device->raii(), samplerInfo);
 
+    constexpr uint32_t imageIndex = 0;
+    primary->ensureHiZImage(imageIndex, extent.width, extent.height);
+    primary->beginFrameCulling(imageIndex);
+    allocation->executeStagedCommands([&](VkCommandBuffer command) {
+      VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+      barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      barrier.image = depth.image;
+      barrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+      barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           0, 0, nullptr, 0, nullptr, 1, &barrier);
+      VkBufferImageCopy copy{};
+      copy.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+      copy.imageExtent = depthInfo.extent;
+      vkCmdCopyBufferToImage(command, upload.buffer().buffer, depth.image,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+
+      barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+      vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                           0, 0, nullptr, 0, nullptr, 1, &barrier);
+      primary->dispatchHiZGenerate(command, imageIndex, *depthView, *depthSampler,
+                                   extent.width, extent.height);
+      if (afterGeneration && primary->hizGeneratedThisFrame(imageIndex))
+        afterGeneration(command);
+    });
+    ASSERT_TRUE(primary->hizGeneratedThisFrame(imageIndex));
+  }
+
+  void checkHiZMips(VkExtent2D extent) {
+    const auto expected = expectedHiZMips(extent);
+    SCOPED_TRACE(::testing::Message() << extent.width << 'x' << extent.height);
+    auto& memory = *allocation->memoryManager();
+
     std::vector<VkBufferImageCopy> copies;
     VkDeviceSize readbackBytes = 0;
     for (uint32_t level = 0; level < expected.size(); ++level) {
@@ -284,37 +331,11 @@ class CullGenerationGpu : public ::testing::Test {
         VMA_MEMORY_USAGE_AUTO_PREFER_HOST, VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
         VMA_ALLOCATION_CREATE_MAPPED_BIT)};
 
-    constexpr uint32_t imageIndex = 0;
-    primary->ensureHiZImage(imageIndex, extent.width, extent.height);
-    primary->beginFrameCulling(imageIndex);
-    const VkImage pyramid = primary->hiZImage(imageIndex);
-    ASSERT_NE(pyramid, VK_NULL_HANDLE);
-    allocation->executeStagedCommands([&](VkCommandBuffer command) {
+    ASSERT_NO_FATAL_FAILURE(generateHiZ(extent, expected.front().depths, [&](VkCommandBuffer command) {
+      const VkImage pyramid = primary->hiZImage(0);
+      ASSERT_NE(pyramid, VK_NULL_HANDLE);
       VkImageMemoryBarrier imageBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
       imageBarrier.srcQueueFamilyIndex = imageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      imageBarrier.image = depth.image;
-      imageBarrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
-      imageBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-      imageBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-      imageBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-      vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                           0, 0, nullptr, 0, nullptr, 1, &imageBarrier);
-      VkBufferImageCopy sourceCopy{};
-      sourceCopy.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
-      sourceCopy.imageExtent = depthInfo.extent;
-      vkCmdCopyBufferToImage(command, upload.buffer().buffer, depth.image,
-                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &sourceCopy);
-
-      imageBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-      imageBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-      imageBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-      imageBarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-      vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                           0, 0, nullptr, 0, nullptr, 1, &imageBarrier);
-      primary->dispatchHiZGenerate(command, imageIndex, *depthView, *depthSampler,
-                                   extent.width, extent.height);
-      if (!primary->hizGeneratedThisFrame(imageIndex)) return;
-
       imageBarrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
       imageBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
       imageBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -339,8 +360,7 @@ class CullGenerationGpu : public ::testing::Test {
       vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_HOST_BIT,
                            0, 0, nullptr, 1, &host, 1, &imageBarrier);
-    });
-    ASSERT_TRUE(primary->hizGeneratedThisFrame(imageIndex));
+    }));
     ASSERT_EQ(vmaInvalidateAllocation(memory.allocator(), readback.buffer.allocation, 0, VK_WHOLE_SIZE),
               VK_SUCCESS);
 
@@ -364,6 +384,26 @@ class CullGenerationGpu : public ::testing::Test {
     std::printf("HIZ_MIP_READBACK extent=%ux%u levels=%zu texels=%llu mismatchedLevels=%zu\n",
                 extent.width, extent.height, expected.size(),
                 static_cast<unsigned long long>(readbackBytes / sizeof(float)), mismatchedLevels);
+  }
+  void checkOcclusion(const char* name, const CameraData& camera, glm::vec4 sphere, bool visible) {
+    SCOPED_TRACE(name);
+    constexpr uint32_t imageIndex = 0;
+    ObjectData object;
+    object.boundingSphere = sphere;
+    SceneController::writeToBuffer(*allocation, liveObjects[imageIndex], &object, sizeof(object));
+    SceneController::writeToBuffer(*allocation, cameras[imageIndex], &camera, sizeof(camera));
+    allocation->executeStagedCommands([&](VkCommandBuffer command) {
+      primary->dispatchFrustumCull(command, imageIndex, cameras[imageIndex].buffer, sizeof(camera), 1);
+      primary->dispatchOcclusionCull(command, imageIndex, cameras[imageIndex].buffer, sizeof(camera), 1);
+      primary->scheduleStatsReadback(command, imageIndex);
+    });
+    ASSERT_TRUE(primary->occlusionDrawsValid(imageIndex));
+    primary->collectStats();
+    const auto stats = primary->cullStats();
+    std::printf("OCCLUSION_SPHERE case=%s frustum=%u occlusion=%u expected=%u\n", name,
+                stats.frustumPassedCount, stats.occlusionPassedCount, uint32_t(visible));
+    EXPECT_EQ(stats.frustumPassedCount, 1u);
+    EXPECT_EQ(stats.occlusionPassedCount, uint32_t(visible));
   }
   void checkPrimary(GpuCullManager& manager,std::span<const DrawCommand> draws,bool staged) {
     for(uint32_t image=0;image<2;++image) {
@@ -423,17 +463,72 @@ class CullGenerationGpu : public ::testing::Test {
 };
 
 TEST_F(CullGenerationGpu, HiZMipsMatchNormalizedFootprintMinimaAtActualExtents) {
-  VkFormatProperties format{};
-  vkGetPhysicalDeviceFormatProperties(device->physicalDevice(), VK_FORMAT_D32_SFLOAT, &format);
-  constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-      VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
-  if ((format.optimalTilingFeatures & required) != required)
+  if (!supportsDepthUpload())
     GTEST_SKIP() << "D32 depth upload and sampling are unavailable";
 
   constexpr std::array extents{VkExtent2D{17, 9}, VkExtent2D{1, 17},
                                VkExtent2D{17, 1}, VkExtent2D{1920, 1080}};
   for (const auto extent : extents)
     checkHiZMips(extent);
+}
+
+TEST_F(CullGenerationGpu, SphereOcclusionKeepsPerspectiveExtremesAndNearPlaneIntersections) {
+  if (!supportsDepthUpload())
+    GTEST_SKIP() << "D32 depth upload and sampling are unavailable";
+
+  // Infinite reverse-Z perspective, 60-degree vertical FOV, 16:9 aspect.
+  constexpr float verticalScale = 1.7320508075688772f;
+  CameraData perspective;
+  perspective.viewProj = glm::mat4(0.f);
+  perspective.viewProj[0][0] = verticalScale * (9.f / 16.f);
+  perspective.viewProj[1][1] = verticalScale;
+  perspective.viewProj[2][3] = -1.f;
+  perspective.viewProj[3][2] = .1f;
+  perspective.unjitteredViewProj = perspective.viewProj;
+  const glm::vec4 issueSphere(.12f, 0, -.12f, .005f);
+
+  constexpr VkExtent2D wide{2048, 1024};
+  std::vector<float> depth(size_t(wide.width) * wide.height, .866f);
+  ASSERT_NO_FATAL_FAILURE(generateHiZ(wide, depth));
+  // The old eye-vector depth was .85863, while the nearest view-axis
+  // depth is .1 / (.12 - .005) = .86956. The entire pyramid is .866.
+  checkOcclusion("off-axis-depth", perspective, issueSphere, true);
+  checkOcclusion("centered-visible", perspective, {0, 0, -.114f, .003f}, true);
+  checkOcclusion("centered-occluded", perspective, {0, 0, -.14f, .005f}, false);
+
+  CameraData asymmetric = perspective;
+  asymmetric.viewProj[2][0] = -.01f;
+  asymmetric.temporalInfo.w = 1u;
+  asymmetric.renderExtent = {wide.width, wide.height, 1.f / wide.width, 1.f / wide.height};
+  // The true tangent begins around pixel 1975, while the old centered
+  // footprint begins around 1989. At mip 6, their first samples fall on
+  // opposite sides of x=1984. Depth .95 alone would occlude either sphere.
+  constexpr uint32_t clearEnd = 1984;
+  for (uint32_t y = 0; y < wide.height; ++y) {
+    auto first = depth.begin() + size_t(y) * wide.width;
+    std::fill(first, first + clearEnd, 0.f);
+    std::fill(first + clearEnd, first + wide.width, .95f);
+  }
+  ASSERT_NO_FATAL_FAILURE(generateHiZ(wide, depth));
+  checkOcclusion("asymmetric-footprint", asymmetric, issueSphere, true);
+  checkOcclusion("asymmetric-occluded", asymmetric, {.12f, 0, -.12f, .002f}, false);
+
+  constexpr VkExtent2D small{256, 256};
+  depth.assign(size_t(small.width) * small.height, 1.f);
+  ASSERT_NO_FATAL_FAILURE(generateHiZ(small, depth));
+  checkOcclusion("near-plane-intersection", perspective, {.10f, 0, -.122f, .023f}, true);
+  checkOcclusion("near-plane-occluded", perspective, {.10f, 0, -.122f, .005f}, false);
+
+  // Orthographic reverse-Z near=.1 and far=10. A true occluded draw
+  // prevents a path that simply treats every orthographic sphere as visible.
+  CameraData orthographic;
+  orthographic.viewProj[2][2] = 1.f / 9.9f;
+  orthographic.viewProj[3][2] = 10.f / 9.9f;
+  orthographic.unjitteredViewProj = orthographic.viewProj;
+  std::fill(depth.begin(), depth.end(), .866f);
+  ASSERT_NO_FATAL_FAILURE(generateHiZ(small, depth));
+  checkOcclusion("orthographic-visible", orthographic, {.7f, 0, -1.f, .05f}, true);
+  checkOcclusion("orthographic-occluded", orthographic, {.7f, 0, -2.f, .05f}, false);
 }
 
 TEST_F(CullGenerationGpu,PrimaryStagesRealOutputsAndPublishesWithoutCapacityGrowth) {

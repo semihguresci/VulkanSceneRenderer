@@ -76,6 +76,7 @@ set(SLANG_INCLUDE_SHADER_NAMES
     openvdb_transparency.slang
     openvdb_sparse.slang
     draw_indirect_common.slang
+    occlusion_sphere_common.slang
     oit_resolve_common.slang
     temporal_common.slang
     environment_sky_common.slang

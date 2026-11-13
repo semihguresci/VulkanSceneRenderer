@@ -243,7 +243,7 @@ Rules:
 | Tiled point light | Negative height | Samples main depth | Scene UV -> scene NDC | Same reconstruction as directional |
 | GTAO | Compute | Samples main depth | Scene NDC -> scene UV when reprojecting | Y flip required |
 | Frustum cull | Compute | N/A | Clip planes come from Slang row access on `viewProj` | Do not use GLSL-style column extraction |
-| Occlusion cull | Compute | Samples Hi-Z | Scene NDC -> scene UV | Y flip required; sphere bounds must use projection scale and nearest-point reverse-Z depth |
+| Occlusion cull | Compute | Samples Hi-Z | Scene NDC -> scene UV | Bound the sphere's clip ratios with the jittered view-projection matrix. Use the largest reverse-Z depth and keep near-plane intersections visible. |
 | Tile light cull | Compute | Samples main depth | Scene UV -> scene NDC for tile corners | Y flip required |
 | Shadow depth | Positive height | Reverse-Z write | None | Uses light-space orthographic projection and matches alpha-mask discard |
 | Shadow lookup | N/A | Samples shadow atlas | Shadow NDC -> shadow UV | No scene-style Y flip |
