@@ -259,6 +259,17 @@ renderer’s shared color, integer pick ID, and depth/stencil attachments.
 Requests use the highest supported count at or below the requested value.
 Packed depth/stencil resolves prefer reverse-Z maximum depth and use a
 common mode when the device requires depth and stencil to resolve together.
+The opt-in capability test runs Forward and Deferred on the physical device,
+then uses Khronos Profiles to require paired resolves and to limit integer
+attachments to 1×. It checks the selected counts and modes at startup and
+after live changes, as well as transparent object picking.
+
+```powershell
+$env:CONTAINER_RUN_GPU_MSAA_CAPABILITIES = '1'
+$env:CONTAINER_MSAA_VALIDATION_LAYER = "$env:VULKAN_SDK/Bin"
+$env:CONTAINER_MSAA_PROFILES_LAYER = "$env:VULKAN_SDK/Bin"
+ctest --test-dir out/build/windows-release -C Release -R '^msaa_attachment_capabilities_gpu_regression$' --output-on-failure
+```
 
 Build and run the suite:
 

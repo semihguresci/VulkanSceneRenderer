@@ -28,24 +28,28 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
-def make_sequence(path):
-    frames = [frame for _, frame, *_ in PHASES]
+def make_sequence(path, phases=PHASES):
+    frames = [frame for _, frame, *_ in phases]
     events = [{"frame": frame, "depthProbe": [width // 2, height // 2], **dict(options)}
-              for _, frame, (width, height), _, _, options in PHASES]
+              for _, frame, (width, height), _, _, options in phases]
     path.write_text(json.dumps({"schemaVersion": 1, "frames": frames[-1], "sampleFrames": frames,
                                 "events": events}, indent=2) + "\n", encoding="utf-8")
 
 
-def capture(renderer, model, sequence, output, technique):
-    image = output / f"{technique}.png"
-    log = image.with_suffix(".log")
-    command = [str(renderer), "--model", str(model), "--import-scale", "1", "--hidden", "--no-ui", "--validation",
-               "--no-taa", "--no-ray-query", "--no-ddgi", "--no-bloom", "--msaa", "1", "--display-mode", "lit",
+def capture_command(renderer, model, sequence, image, technique, startup_samples=1):
+    return [str(renderer), "--model", str(model), "--import-scale", "1", "--hidden", "--no-ui", "--validation",
+               "--no-taa", "--no-ray-query", "--no-ddgi", "--no-bloom", "--msaa", str(startup_samples), "--display-mode", "lit",
                "--width", str(START[0]), "--height", str(START[1]), "--render-technique", technique,
                "--camera-position", "0", "0", "6", "--camera-target", "0", "0", "0", "--camera-fov", "45",
                "--sky", "plain", "--sky-horizon", "0", "0", "0", "--environment-intensity", "0", "--bounce-intensity", "0",
                "--directional-intensity", "3", "--directional-direction", "0", "0", "-1", "--exposure", "1",
                "--fixed-dt", ".016666667", "--screenshot-viewport", "--capture-sequence", str(sequence), "--screenshot", str(image)]
+
+
+def capture(renderer, model, sequence, output, technique):
+    image = output / f"{technique}.png"
+    log = image.with_suffix(".log")
+    command = capture_command(renderer, model, sequence, image, technique)
     with log.open("w", encoding="utf-8") as stream:
         result = subprocess.run(command, cwd=renderer.parent, env=dict(os.environ, VK_LAYER_SETTINGS_PATH=str(output)),
                                 stdout=stream, stderr=subprocess.STDOUT, timeout=180,
@@ -57,12 +61,12 @@ def capture(renderer, model, sequence, output, technique):
     return {"technique": technique, "command": command, "log": str(log), "captures": []}
 
 
-def check_capture(output, technique, phase):
+def check_capture(output, technique, phase, final_frame=PHASES[-1][1]):
     from gltf_pick_depth_runtime_regression import projected_depth
     from PIL import Image
 
     name, frame, extent, samples, transparent, _ = phase
-    stem = f"{technique}.frame-{frame:04d}" if frame != PHASES[-1][1] else technique
+    stem = f"{technique}.frame-{frame:04d}" if frame != final_frame else technique
     path = output / f"{stem}.png"
     state = json.loads(path.with_suffix(".telemetry.json").read_bytes())
     metadata = json.loads(Path(f"{path}.capture.json").read_bytes())
