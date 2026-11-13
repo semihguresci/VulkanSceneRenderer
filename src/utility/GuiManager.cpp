@@ -3438,7 +3438,10 @@ void GuiManager::applyBimElevationDisplayIntent() {
     wireframeSettings_.lineWidth = wireframeWideLineSupported_ ? 1.25f : 1.0f;
     break;
   case BimElevationTechnicalStyle::HiddenLine:
-    gBufferViewMode_ = GBufferViewMode::Albedo;
+    gBufferViewMode_ =
+        activeRenderEngine_ == container::renderer::RenderTechniqueId::ForwardRaster
+            ? GBufferViewMode::Lit
+            : GBufferViewMode::Albedo;
     wireframeSettings_.enabled = wireframeSupported_;
     wireframeSettings_.mode = WireframeMode::Full;
     wireframeSettings_.depthTest = true;
@@ -7122,7 +7125,7 @@ void GuiManager::drawSceneControls(
         ImGui::SliderFloat("Floor plan opacity",
                            &bimFloorPlanOverlayState_.opacity, 0.05f, 1.0f,
                            "%.2f");
-        if (wireframeWideLineSupported_) {
+        if (lineListWideLinesSupported_) {
           ImGui::SliderFloat("Floor plan line width",
                              &bimFloorPlanOverlayState_.lineWidth, 1.0f, 8.0f,
                              "%.1f");
@@ -9428,10 +9431,12 @@ bool GuiManager::isCapturingKeyboard() const {
 
 void GuiManager::setWireframeCapabilities(bool supported,
                                           bool rasterModeSupported,
-                                          bool wideLineSupported) {
+                                          bool wideLineSupported,
+                                          bool lineListWideLinesSupported) {
   wireframeSupported_ = supported;
   wireframeRasterModeSupported_ = supported && rasterModeSupported;
   wireframeWideLineSupported_ = wideLineSupported;
+  lineListWideLinesSupported_ = lineListWideLinesSupported;
   if (!wireframeSupported_) {
     wireframeSettings_.enabled = false;
   }

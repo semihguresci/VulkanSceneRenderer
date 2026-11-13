@@ -26,10 +26,6 @@ namespace container::renderer {
 
 namespace {
 
-[[nodiscard]] bool hasDrawCommands(const std::vector<DrawCommand>* commands) {
-  return commands != nullptr && !commands->empty();
-}
-
 [[nodiscard]] RenderPassReadiness ready() { return {}; }
 
 [[nodiscard]] RenderPassReadiness notNeeded() {

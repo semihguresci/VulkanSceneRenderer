@@ -1675,7 +1675,8 @@ void RendererFrontend::initialize() {
         svc_.nativeWindow, svc_.config.modelPath, svc_.config.importScale);
     subs_.guiManager->setWireframeCapabilities(
         svc_.ctx.wireframeSupported, svc_.ctx.wireframeRasterModeSupported,
-        svc_.ctx.wireframeWideLinesSupported);
+        svc_.ctx.wireframeWideLinesSupported,
+        svc_.ctx.deviceWrapper->enabledFeatures().wideLines == VK_TRUE);
     subs_.guiManager->setAreaShadowQuality(svc_.config.areaShadowQuality);
     subs_.guiManager->setLtcStatus(subs_.lightingManager->ltcStatus());
     subs_.guiManager->rayShadowSettings() = svc_.config.rayShadows;
@@ -5813,7 +5814,8 @@ void RendererFrontend::recreateMsaaResources(
         svc_.nativeWindow, svc_.config.modelPath, svc_.config.importScale);
     subs_.guiManager->setWireframeCapabilities(
         svc_.ctx.wireframeSupported, svc_.ctx.wireframeRasterModeSupported,
-        svc_.ctx.wireframeWideLinesSupported);
+        svc_.ctx.wireframeWideLinesSupported,
+        svc_.ctx.deviceWrapper->enabledFeatures().wideLines == VK_TRUE);
     if (subs_.environmentManager) {
       subs_.guiManager->setEnvironmentStatus(
           subs_.environmentManager->environmentStatus());

@@ -875,7 +875,22 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
   // Editor overlays are rendered into the HDR scene only on display frames.
   // A raw capture and a display frame cannot share that accumulated color.
   recordedSceneLinear_ = p.screenshot.sceneLinear;
-  const bool historyValid = state_.valid() && historySceneLinear_ == recordedSceneLinear_;
+  const auto hasDraws = [](const FrameDrawLists &draws) {
+    return hasOpaqueDrawCommands(draws) || hasTransparentDrawCommands(draws);
+  };
+  recordedDisplayOverlays_ = !recordedSceneLinear_ &&
+      (p.debug.temporalForceReactive || p.bim.floorPlan.enabled ||
+       p.bim.coordinationMarkers.issueMarkersEnabled ||
+       p.bim.coordinationMarkers.clashMarkersEnabled ||
+       p.bim.sectionPlaneVisual.enabled || p.bim.sectionClipCapGeometry.valid() ||
+       (p.bim.technicalElevation.enabled && p.bim.technicalElevation.depthTestLines) ||
+       hasDrawCommands(p.draws.hoveredDrawCommands) ||
+       hasDrawCommands(p.bim.draws.hoveredDrawCommands) ||
+       (p.bim.pointCurveStyle.points.enabled && hasDraws(p.bim.pointDraws)) ||
+       (p.bim.pointCurveStyle.curves.enabled && hasDraws(p.bim.curveDraws)));
+  const bool historyValid =
+      state_.valid() && historySceneLinear_ == recordedSceneLinear_ &&
+      historyDisplayOverlays_ == recordedDisplayOverlays_;
   if (!upscalingActive()) {
     for (auto& history : histories_) {
       if (!history.initialized) {
@@ -902,12 +917,7 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
        !p.bim.nativeCurveDraws.transparentDrawCommands->empty());
   // HDR editor overlays and native primitives do not expose matching surface
   // velocity. Their conservative fallback cannot borrow an opaque surface.
-  const bool fallback = p.debug.temporalForceReactive ||
-                        p.bim.floorPlan.enabled ||
-                        (p.bim.coordinationMarkers.issueMarkersEnabled ||
-                         p.bim.coordinationMarkers.clashMarkersEnabled) ||
-                        p.bim.sectionPlaneVisual.enabled ||
-                        p.bim.sectionClipCapGeometry.valid() ||
+  const bool fallback = recordedDisplayOverlays_ ||
                         hasOpaqueDrawCommands(p.bim.nativePointDraws) ||
                         hasOpaqueDrawCommands(p.bim.nativeCurveDraws);
   // The volume pass writes exact visible coverage into spare HDR alpha. Merge
@@ -1034,7 +1044,10 @@ void TemporalManager::recordUpscale(VkCommandBuffer cmd, const FrameRecordParams
 void TemporalManager::commit() {
   if (fsrActive() && resolveRecorded_) fsr_->commit();
   if (dlssActive() && resolveRecorded_) dlss_->commit();
-  if (resolveRecorded_) historySceneLinear_ = recordedSceneLinear_;
+  if (resolveRecorded_) {
+    historySceneLinear_ = recordedSceneLinear_;
+    historyDisplayOverlays_ = recordedDisplayOverlays_;
+  }
   if ((!settings_.enabled && !upscalingActive()) || resolveRecorded_)
     state_.commit();
   else

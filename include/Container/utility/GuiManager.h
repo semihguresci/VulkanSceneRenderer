@@ -1085,7 +1085,8 @@ public:
   [[nodiscard]] bool consumeAuthoredSkyRequest();
   void setSkyDraft(container::renderer::SkySettings settings) { skyDraft_ = settings; }
   void setWireframeCapabilities(bool supported, bool rasterModeSupported,
-                                bool wideLineSupported);
+                                bool wideLineSupported,
+                                bool lineListWideLinesSupported);
   void setCullStats(uint32_t total, uint32_t frustumPassed,
                     uint32_t occlusionPassed);
   void setLightCullingStats(const container::gpu::LightCullingStats &stats);
@@ -1321,6 +1322,7 @@ private:
   bool wireframeSupported_{false};
   bool wireframeRasterModeSupported_{false};
   bool wireframeWideLineSupported_{false};
+  bool lineListWideLinesSupported_{false};
   GBufferViewMode gBufferViewMode_{GBufferViewMode::Lit};
   SceneViewportMode sceneViewportMode_{SceneViewportMode::Editor};
   WireframeSettings wireframeSettings_{};
