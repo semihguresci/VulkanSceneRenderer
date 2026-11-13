@@ -1387,6 +1387,16 @@ TEST_F(PathTransportGpu, RayConeFootprintMatchesReferenceSlantGeometry) {
   q.footprintA = {.25f, 0.f, 4.f, 0};
   const auto carried = run(std::array{q});
   EXPECT_FLOAT_EQ(float(carried[0].valuePdf.x), .25f);
+
+  Query slantOverflow = q;
+  slantOverflow.view = {1, 0, 0, 0};
+  slantOverflow.footprintA = {1e37f, .01f, 4.f, 0};
+  Query travelOverflow = q;
+  travelOverflow.footprintA = {2e38f, 2e38f, 1.f, 0};
+  const auto overflow = run(std::array{slantOverflow, travelOverflow});
+  ASSERT_EQ(overflow.size(), 2u);
+  EXPECT_FLOAT_EQ(overflow[0].valuePdf.x, 0.f);
+  EXPECT_FLOAT_EQ(overflow[1].valuePdf.x, 0.f);
 }
 TEST_F(PathTransportGpu, ReconstructedSurfaceCarriesPerSetTexelDensity) {
   // A unit world triangle: UV0 is stretched 2x per world unit, UV1 is
