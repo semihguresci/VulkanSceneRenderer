@@ -56,7 +56,11 @@ struct CapturePhysicsJointCreate;
 struct CaptureEvent;
 struct CaptureLightTarget;
 }
-namespace container::ui { struct GltfAnimationControls; struct SceneNodeAuthoringRequest; }
+namespace container::ui {
+struct BimFloorPlanOverlayState;
+struct GltfAnimationControls;
+struct SceneNodeAuthoringRequest;
+}
 namespace container::asl { class PoseReplayScene; }
 namespace container::geometry {
 struct GltfLoadResult;
@@ -195,6 +199,7 @@ public:
   void saveSceneModel(const std::filesystem::path& outputPath, bool keepLinks = false);
   bool selectMaterialVariant(std::optional<size_t> variant,bool recordHistory=true);
   void applyTemporalCapture(const container::temporal::CaptureSample &sample);
+  void setCaptureBimFloorPlan(container::ui::BimFloorPlanOverlayState state);
   void applyCaptureViewportPointer(const container::temporal::CaptureViewportPointer& pointer);
   [[nodiscard]] bool comfyUiCapturePending() const;
   void writeCaptureTelemetry(const std::filesystem::path &path,
@@ -473,6 +478,7 @@ private:
   bool sceneEditPublicationPending_{false};
   uint64_t materialVariantGraphIdentity_{};
   std::optional<int> captureMaterialVariant_{};
+  std::shared_ptr<const container::ui::BimFloorPlanOverlayState> captureBimFloorPlan_;
   std::string captureSceneHistory_{};
   uint64_t gltfSceneGraphIdentity_{};
   struct CaptureGltfSceneRequest {

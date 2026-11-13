@@ -45,6 +45,18 @@
       "bimHiddenObject": {"type": "integer", "minimum": 0, "maximum": 4294967295},
       "bimSelectedObject": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Select a BIM object through the browser/viewport selection path"},
       "bimLodBias": {"type": "integer", "minimum": -8, "maximum": 8},
+      "bimFloorPlan": {"type": "object", "additionalProperties": false,
+        "description": "Replace the capture floor-plan overlay state until the next bimFloorPlan event.",
+        "required": ["enabled", "elevation", "depthTest", "color", "opacity", "lineWidth"],
+        "properties": {
+          "enabled": {"type": "boolean"},
+          "elevation": {"enum": ["projected-ground", "source-elevation"]},
+          "depthTest": {"type": "boolean"},
+          "color": {"type": "array", "minItems": 3, "maxItems": 3,
+            "items": {"type": "number", "minimum": 0, "maximum": 1}},
+          "opacity": {"type": "number", "minimum": 0.05, "maximum": 1},
+          "lineWidth": {"type": "number", "minimum": 1, "maximum": 8}
+        }},
       "areaLightPosition": {"$ref": "#/$defs/vec3"},
       "rayShadows": {"enum": ["raster", "hard", "soft"]},
       "rayShadowSamples": {"type": "integer", "minimum": 1, "maximum": 32},

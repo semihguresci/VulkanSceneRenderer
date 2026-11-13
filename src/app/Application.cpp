@@ -8,6 +8,7 @@
 #include "Container/common/CommonGLFW.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/AtomicFile.h"
+#include "Container/utility/GuiManager.h"
 #include "Container/utility/InputManager.h"
 #include "Container/utility/PipelineManager.h"
 #include "Container/utility/Platform.h"
@@ -372,6 +373,19 @@ void Application::screenshotCaptureLoop() {
     if (sequence) {
       const auto sample = sequence->sample(frameNumber);
       renderer_->applyTemporalCapture(sample);
+      if (const auto &floorPlan = sample.event.bimFloorPlan) {
+        using container::temporal::CaptureBimFloorPlan;
+        using container::ui::BimFloorPlanElevationMode;
+        renderer_->setCaptureBimFloorPlan({
+            .enabled = floorPlan->enabled,
+            .depthTest = floorPlan->depthTest,
+            .elevationMode = floorPlan->elevation == CaptureBimFloorPlan::Elevation::SourceElevation
+                ? BimFloorPlanElevationMode::SourceElevation
+                : BimFloorPlanElevationMode::ProjectedGround,
+            .color = floorPlan->color,
+            .opacity = floorPlan->opacity,
+            .lineWidth = floorPlan->lineWidth});
+      }
       waitForComfyUi = sample.event.comfyUi && sample.event.comfyUi->wait;
       depthProbe = sample.event.depthProbe;
       viewportPointer = sample.event.viewportPointer;

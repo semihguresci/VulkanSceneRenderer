@@ -37,6 +37,64 @@ TEST(TemporalCapture, ReferenceDisplaySwitchIsOneShotAndRejectsInvalidModes) {
   }
 }
 
+TEST(TemporalCapture, BimFloorPlanReplacesOverlayStateOnItsNamedFrames) {
+  using Elevation = container::temporal::CaptureBimFloorPlan::Elevation;
+  const CaptureSequence sequence(json::parse(R"({"schemaVersion":1,"frames":5,"events":[
+    {"frame":2,"bimFloorPlan":{"enabled":true,"elevation":"source-elevation",
+      "depthTest":false,"color":[1,0.25,0],"opacity":1,"lineWidth":8}},
+    {"frame":4,"technique":"path-tracing","bimFloorPlan":{"enabled":false,
+      "elevation":"projected-ground","depthTest":true,"color":[0,0,1],"opacity":0.05,"lineWidth":1}}
+  ]})"));
+  EXPECT_FALSE(sequence.sample(1).event.bimFloorPlan);
+  const auto first = sequence.sample(2).event.bimFloorPlan;
+  ASSERT_TRUE(first);
+  EXPECT_TRUE(first->enabled);
+  EXPECT_FALSE(first->depthTest);
+  EXPECT_EQ(first->elevation, Elevation::SourceElevation);
+  EXPECT_EQ(first->color, glm::vec3(1.0f, 0.25f, 0.0f));
+  EXPECT_FLOAT_EQ(first->opacity, 1.0f);
+  EXPECT_FLOAT_EQ(first->lineWidth, 8.0f);
+  EXPECT_FALSE(sequence.sample(3).event.bimFloorPlan);
+  const auto last = sequence.sample(4).event.bimFloorPlan;
+  ASSERT_TRUE(last);
+  EXPECT_FALSE(last->enabled);
+  EXPECT_TRUE(last->depthTest);
+  EXPECT_EQ(last->elevation, Elevation::ProjectedGround);
+  EXPECT_EQ(last->color, glm::vec3(0.0f, 0.0f, 1.0f));
+  EXPECT_FLOAT_EQ(last->opacity, 0.05f);
+  EXPECT_FLOAT_EQ(last->lineWidth, 1.0f);
+  EXPECT_FALSE(sequence.sample(5).event.bimFloorPlan);
+}
+
+TEST(TemporalCapture, RejectsInvalidBimFloorPlanFieldsAndBounds) {
+  auto input = json::parse(R"({"schemaVersion":1,"frames":1,"events":[
+    {"frame":1,"bimFloorPlan":{"enabled":true,"elevation":"source-elevation",
+      "depthTest":false,"color":[1,0.25,0],"opacity":0.5,"lineWidth":2}}
+  ]})");
+  auto &floorPlan = input["events"][0]["bimFloorPlan"];
+  const auto valid = floorPlan;
+  for (const auto &[field, encoded] : std::array{
+           std::pair{"enabled", "1"}, std::pair{"depthTest", "null"},
+           std::pair{"elevation", R"("ground")"}, std::pair{"elevation", "0"},
+           std::pair{"color", "[1,0]"}, std::pair{"color", "[1,0,false]"},
+           std::pair{"color", "[1,0,-0.01]"}, std::pair{"color", "[1.01,0,0]"},
+           std::pair{"opacity", "0.049999999"}, std::pair{"opacity", "1.1"},
+           std::pair{"lineWidth", "0.9"}, std::pair{"lineWidth", "8.1"}}) {
+    SCOPED_TRACE(field);
+    floorPlan = valid;
+    floorPlan[field] = json::parse(encoded);
+    EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+  }
+  floorPlan = valid;
+  floorPlan.erase("color");
+  EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+  floorPlan["colour"] = valid["color"];
+  EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+  floorPlan = valid;
+  floorPlan["opacity"] = std::numeric_limits<double>::infinity();
+  EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+}
+
 TEST(TemporalCapture, FsrModesSelectIndependentSceneGrids) {
   using container::renderer::UpscaleBackend;
   using container::renderer::UpscaleMode;
