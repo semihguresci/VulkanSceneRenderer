@@ -9392,8 +9392,6 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         subs_.bimManager->clearCoordinationMarkerGeometry();
       }
 
-      const auto elevation = subs_.guiManager ? subs_.guiManager->bimElevationViewState()
-                                              : container::ui::BimElevationViewState{};
       auto& technical = p.bim.technicalElevation;
       if (captureBimAnnotations_) {
         technical.hiddenLineOverlay = captureBimAnnotations_->hiddenLines;
@@ -9407,16 +9405,15 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         }
       } else if (subs_.guiManager->editorOverlaysEnabled() &&
                  subs_.guiManager->wireframeSupported()) {
+        const auto elevationStyle = subs_.guiManager->appliedBimElevationStyle();
         const auto& wireframe = subs_.guiManager->wireframeSettings();
         technical.hiddenLineOverlay =
-            elevation.style == container::ui::BimElevationTechnicalStyle::HiddenLine;
+            elevationStyle == container::ui::BimElevationTechnicalStyle::HiddenLine;
         const bool shadedWithLines =
-            elevation.style == container::ui::BimElevationTechnicalStyle::ShadedWithLines &&
+            elevationStyle == container::ui::BimElevationTechnicalStyle::ShadedWithLines &&
             wireframe.enabled && wireframe.mode == container::ui::WireframeMode::Overlay;
         technical.enabled = technical.hiddenLineOverlay || shadedWithLines;
-        technical.depthTestLines = technical.hiddenLineOverlay
-                                       ? elevation.useDepthTestedLines
-                                       : wireframe.depthTest;
+        technical.depthTestLines = technical.hiddenLineOverlay || wireframe.depthTest;
         technical.sectionCapsEnabled = technical.hiddenLineOverlay;
         if (shadedWithLines) {
           technical.lineColor = wireframe.color;
