@@ -3426,7 +3426,8 @@ void GuiManager::setSectionPlaneVisualEditable(bool editable) {
 }
 
 void GuiManager::applyBimElevationDisplayIntent() {
-  switch (bimElevationViewState_.style) {
+  appliedBimElevationStyle_ = bimElevationViewState_.style;
+  switch (appliedBimElevationStyle_) {
   case BimElevationTechnicalStyle::Shaded:
     gBufferViewMode_ = GBufferViewMode::Overview;
     wireframeSettings_.enabled = false;
@@ -3671,6 +3672,7 @@ void GuiManager::resetModelInspectionState() {
   bimPhaseTimelineUiState_ = {};
   bimFloorPlanOverlayState_ = {};
   bimElevationViewState_ = {};
+  appliedBimElevationStyle_ = BimElevationTechnicalStyle::Shaded;
   bimElevationViewRequest_.reset();
   bimDrawingExportUiState_.exportRequested = false;
   bimLayerVisibilityState_ = {};
@@ -5633,8 +5635,11 @@ void GuiManager::drawSceneControls(
         }
         ImGui::Checkbox("Force orthographic",
                         &bimElevationViewState_.forceOrthographic);
-        ImGui::Checkbox("Depth-tested lines",
-                        &bimElevationViewState_.useDepthTestedLines);
+        if (bimElevationViewState_.style ==
+            BimElevationTechnicalStyle::ShadedWithLines) {
+          ImGui::Checkbox("Depth-tested lines",
+                          &bimElevationViewState_.useDepthTestedLines);
+        }
         ImGui::Checkbox("Align section plane to elevation",
                         &bimElevationViewState_.syncSectionPlaneToView);
         if (ImGui::Button("Apply elevation view")) {

@@ -183,7 +183,8 @@ void recordTechnicalElevation(
                                  .lineColor = style.lineColor,
                                  .lineWidth = style.lineWidth,
                                  .overlayIntensity = style.overlayIntensity},
-       .pipelines = {.wireframeDepth = pipelines.wireframeDepth != VK_NULL_HANDLE}});
+       .pipelines = {.wireframeDepth = pipelines.wireframeDepth != VK_NULL_HANDLE,
+                     .wireframeNoDepth = pipelines.wireframeNoDepth != VK_NULL_HANDLE}});
   if (!state.bimTechnicalElevationEnabled) {
     return;
   }
@@ -195,9 +196,12 @@ void recordTechnicalElevation(
                       .wireframeDepthTest = wireframe.depthTest,
                       .wireframeLineWidth = wireframe.lineWidth},
        .pipelines = {
-           .wireframeDepth = true,
+           .wireframeDepth = pipelines.wireframeDepth != VK_NULL_HANDLE,
+           .wireframeNoDepth = pipelines.wireframeNoDepth != VK_NULL_HANDLE,
            .wireframeDepthFrontCull =
-               pipelines.wireframeDepthFrontCull != VK_NULL_HANDLE},
+               pipelines.wireframeDepthFrontCull != VK_NULL_HANDLE,
+           .wireframeNoDepthFrontCull =
+               pipelines.wireframeNoDepthFrontCull != VK_NULL_HANDLE},
        .wireframePushConstantsReady = overlay.wireframePushConstants != nullptr,
        .sources = {{{.source = DeferredDebugOverlaySource::Scene,
                      .geometryReady = hasSceneGeometry(p),
@@ -217,7 +221,9 @@ void recordTechnicalElevation(
       cmd,
       {.plan = &plan,
        .pipelines = {.wireframeDepth = pipelines.wireframeDepth,
-                     .wireframeDepthFrontCull = pipelines.wireframeDepthFrontCull},
+                     .wireframeNoDepth = pipelines.wireframeNoDepth,
+                     .wireframeDepthFrontCull = pipelines.wireframeDepthFrontCull,
+                     .wireframeNoDepthFrontCull = pipelines.wireframeNoDepthFrontCull},
        .wireframeLayout = overlay.wireframeLayout,
        .scene = {.descriptorSet = overlay.sceneDescriptorSet,
                  .vertexSlice = p.scene.vertexSlice,

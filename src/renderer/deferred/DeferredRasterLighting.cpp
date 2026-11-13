@@ -33,15 +33,17 @@ namespace {
              : inputs.pipelines.pointLight;
 }
 
-[[nodiscard]] bool bimTechnicalElevationHiddenLineReady(
+[[nodiscard]] bool bimTechnicalElevationReady(
     const DeferredLightingFrameInputs &inputs) {
-  return inputs.bimTechnicalElevation.enabled &&
-         inputs.bimTechnicalElevation.hiddenLineOverlay &&
-         inputs.bimTechnicalElevation.depthTestLines &&
-         inputs.wireframeSupported && inputs.pipelines.wireframeDepth;
+  const auto &style = inputs.bimTechnicalElevation;
+  const bool pipelineReady = style.depthTestLines
+                                 ? inputs.pipelines.wireframeDepth
+                                 : inputs.pipelines.wireframeNoDepth;
+  return style.enabled && inputs.wireframeSupported && pipelineReady &&
+         (!style.hiddenLineOverlay || style.depthTestLines);
 }
 
-void applyBimTechnicalElevationHiddenLineStyle(
+void applyBimTechnicalElevationStyle(
     DeferredLightingFrameState &state,
     const DeferredLightingBimTechnicalElevationSettings &style) {
   state.wireframeEnabled = true;
@@ -49,8 +51,7 @@ void applyBimTechnicalElevationHiddenLineStyle(
   state.wireframeOverlayMode = true;
   state.wireframeSettings.enabled = true;
   state.wireframeSettings.mode = DeferredLightingWireframeMode::Overlay;
-  // Technical elevations use the filled prepass as the hidden-line mask.
-  state.wireframeSettings.depthTest = true;
+  state.wireframeSettings.depthTest = style.depthTestLines;
   state.wireframeSettings.color = style.lineColor;
   state.wireframeSettings.lineWidth = sanitizeLineWidth(style.lineWidth);
   state.wireframeSettings.overlayIntensity =
@@ -73,7 +74,7 @@ DeferredLightingFrameState buildDeferredLightingFrameState(
   state.normalValidationSettings.lineWidth =
       sanitizeLineWidth(state.normalValidationSettings.lineWidth);
   state.bimTechnicalElevationEnabled =
-      bimTechnicalElevationHiddenLineReady(inputs);
+      bimTechnicalElevationReady(inputs);
 
   const bool guiWireframeEnabled =
       inputs.guiAvailable && inputs.wireframeSupported &&
@@ -82,8 +83,7 @@ DeferredLightingFrameState buildDeferredLightingFrameState(
   state.wireframeEnabled =
       guiWireframeEnabled || state.bimTechnicalElevationEnabled;
   if (state.bimTechnicalElevationEnabled) {
-    applyBimTechnicalElevationHiddenLineStyle(
-        state, inputs.bimTechnicalElevation);
+    applyBimTechnicalElevationStyle(state, inputs.bimTechnicalElevation);
   } else {
     state.wireframeFullMode =
         state.wireframeEnabled &&

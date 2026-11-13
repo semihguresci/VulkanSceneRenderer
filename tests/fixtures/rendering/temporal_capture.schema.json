@@ -47,6 +47,8 @@
       "bimLodBias": {"type": "integer", "minimum": -8, "maximum": 8},
       "bimAnnotations": {"type": "object", "additionalProperties": false,
         "description": "Replace BIM annotation preview settings for subsequent capture frames. Omitted annotations are disabled.",
+        "not": {"required": ["hiddenLines", "technicalLines"],
+          "properties": {"hiddenLines": {"const": true}}},
         "properties": {
           "issuePin": {"$ref": "#/$defs/vec3"},
           "clash": {"type": "object", "additionalProperties": false, "required": ["objects", "position"],
@@ -59,7 +61,9 @@
           "capFill": {"type": "boolean"},
           "capHatch": {"type": "boolean"},
           "sectionMarkers": {"type": "boolean"},
-          "hiddenLines": {"type": "boolean"}
+          "hiddenLines": {"type": "boolean"},
+          "technicalLines": {"type": "boolean",
+            "description": "Enable Technical elevation lines. True tests depth, false draws through occluders."}
         }},
       "bimFloorPlan": {"type": "object", "additionalProperties": false,
         "description": "Replace the capture floor-plan overlay state until the next bimFloorPlan event.",

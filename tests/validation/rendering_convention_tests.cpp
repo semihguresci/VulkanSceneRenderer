@@ -10376,7 +10376,7 @@ TEST(RenderingConventionTests, BimElevationViewUiReusesCameraAndRenderState) {
   EXPECT_TRUE(
       contains(guiManagerHeader, "enum class BimElevationTechnicalStyle"));
   EXPECT_TRUE(contains(guiManagerHeader, "struct BimElevationViewState"));
-  EXPECT_TRUE(contains(guiManagerHeader, "bimElevationViewState()"));
+  EXPECT_TRUE(contains(guiManagerHeader, "appliedBimElevationStyle()"));
   EXPECT_TRUE(contains(guiManagerHeader, "consumeBimElevationViewRequest()"));
 
   EXPECT_TRUE(contains(guiManager, "BIM Elevation View"));

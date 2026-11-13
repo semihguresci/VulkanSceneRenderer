@@ -174,6 +174,8 @@ struct CaptureBimAnnotations {
   bool capHatch{};
   bool sectionMarkers{};
   bool hiddenLines{};
+  // A value enables Technical elevation lines and selects depth testing.
+  std::optional<bool> technicalLines;
 };
 
 struct CaptureEvent {
@@ -909,7 +911,7 @@ public:
 private:
   static CaptureBimAnnotations bimAnnotations(const nlohmann::json &value) {
     nodeFields(value, {"issuePin", "clash", "sectionVisual", "capFill", "capHatch",
-                       "sectionMarkers", "hiddenLines"}, "bimAnnotations");
+                       "sectionMarkers", "hiddenLines", "technicalLines"}, "bimAnnotations");
     CaptureBimAnnotations result;
     for (const auto &[field, output] : {
              std::pair{"sectionVisual", &result.sectionVisual},
@@ -922,6 +924,13 @@ private:
       if (!value.at(field).is_boolean())
         throw std::invalid_argument(std::string("Capture bimAnnotations ") + field + " must be a boolean");
       *output = value.at(field).get<bool>();
+    }
+    if (const auto technicalLines = value.find("technicalLines"); technicalLines != value.end()) {
+      if (!technicalLines->is_boolean())
+        throw std::invalid_argument("Capture bimAnnotations technicalLines must be a boolean");
+      if (result.hiddenLines)
+        throw std::invalid_argument("Capture bimAnnotations cannot enable both hiddenLines and technicalLines");
+      result.technicalLines = technicalLines->get<bool>();
     }
     const auto position = [](const nlohmann::json &input) {
       if (!input.is_array() || input.size() != 3 ||

@@ -205,8 +205,8 @@ struct FrameSectionClipCapGeometry {
 
 struct FrameBimTechnicalElevationState {
   bool enabled{false};
-  // Hidden-line elevation is a depth-tested wire overlay on the normal shaded
-  // pass, so occluded BIM edges stay hidden by the filled depth buffer.
+  // Hidden-line elevation requires the filled depth buffer. Technical
+  // elevation can also draw lines without depth testing.
   bool hiddenLineOverlay{true};
   bool depthTestLines{true};
   bool sectionCapsEnabled{true};

@@ -1023,8 +1023,8 @@ public:
   bimFloorPlanOverlayState() const {
     return bimFloorPlanOverlayState_;
   }
-  [[nodiscard]] const BimElevationViewState &bimElevationViewState() const {
-    return bimElevationViewState_;
+  [[nodiscard]] BimElevationTechnicalStyle appliedBimElevationStyle() const {
+    return appliedBimElevationStyle_;
   }
   [[nodiscard]] std::optional<BimElevationViewRequest>
   consumeBimElevationViewRequest() {
@@ -1418,6 +1418,8 @@ private:
   BimPhaseTimelineUiState bimPhaseTimelineUiState_{};
   BimFloorPlanOverlayState bimFloorPlanOverlayState_{};
   BimElevationViewState bimElevationViewState_{};
+  BimElevationTechnicalStyle appliedBimElevationStyle_{
+      BimElevationTechnicalStyle::Shaded};
   std::optional<BimElevationViewRequest> bimElevationViewRequest_{};
   BimDrawingExportUiState bimDrawingExportUiState_{};
   BimLayerVisibilityState bimLayerVisibilityState_{};

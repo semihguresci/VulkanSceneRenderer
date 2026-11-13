@@ -884,7 +884,8 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
        p.bim.coordinationMarkers.issueMarkersEnabled ||
        p.bim.coordinationMarkers.clashMarkersEnabled ||
        p.bim.sectionPlaneVisual.enabled || p.bim.sectionClipCapGeometry.valid() ||
-       (p.bim.technicalElevation.enabled && p.bim.technicalElevation.depthTestLines) ||
+       (p.bim.technicalElevation.enabled &&
+        (!p.bim.technicalElevation.hiddenLineOverlay || p.bim.technicalElevation.depthTestLines)) ||
        hasDrawCommands(p.draws.hoveredDrawCommands) ||
        hasDrawCommands(p.bim.draws.hoveredDrawCommands) ||
        (p.bim.pointCurveStyle.points.enabled && hasDraws(p.bim.pointDraws)) ||
