@@ -47,8 +47,10 @@ footprints: each of `rayCount` equal-solid-angle sphere samples owns
 filtering through per-coordinate-set UV gradients, and refracted continuations
 inherit the slant-corrected footprint of the surface they left. Coverage
 candidates and visibility shadow connections keep base-mip reads. A missing,
-nonfinite, or overflowing transformed footprint also uses an explicit base-mip
-sample. The optional
+nonfinite, or overflowing footprint uses an explicit base-mip sample for its
+UV set. Finite hit coordinates and the other UV set remain usable. Sampling
+respects the material sampler and the mip range exposed by the texture view.
+The optional
 glass policies below add straight-through
 thin-sheet or bounded refractive secondary paths; transmissive primary receivers
 keep fallback.

@@ -1415,6 +1415,33 @@ TEST_F(PathTransportGpu, ReconstructedSurfaceCarriesPerSetTexelDensity) {
   EXPECT_NEAR(float(scaled[0].valuePdf.x), 1.f, 1e-6f);
   EXPECT_NEAR(float(scaled[0].directionPdf.x), .5f, 1e-6f);
 }
+TEST_F(PathTransportGpu, OverflowingTexelDensityKeepsFiniteSurfaceAttributes) {
+  Query determinantOverflow;
+  determinantOverflow.controls = {25, 1, 0, 0};
+  determinantOverflow.view = {0, 0, 0, 1};
+  determinantOverflow.light = {1, 0, 0, 1};
+  determinantOverflow.previousMean = {0, 1, 0, 1};
+  // The hit is at corner 0, so the sampled UVs stay ordinary. The other
+  // corners give UV0 an area beyond binary32's range while UV1 stays usable.
+  determinantOverflow.footprintA = {.25f, .25f, 0, 0};
+  determinantOverflow.footprintB = {2e20f, .25f, 1, 0};
+  determinantOverflow.footprintC = {.25f, 2e20f, 0, 1};
+
+  auto ratioOverflow = determinantOverflow;
+  ratioOverflow.footprintB.x = ratioOverflow.footprintC.y = 3e18f;
+  // UV0 area is now finite, but dividing by world area 1/64 overflows.
+  ratioOverflow.inverseView = glm::scale(glm::mat4(1), glm::vec3(.125f));
+
+  auto invalidUv = determinantOverflow;
+  invalidUv.footprintB.x = std::numeric_limits<float>::quiet_NaN();
+  const auto output = run(std::array{determinantOverflow, ratioOverflow, invalidUv});
+  ASSERT_EQ(output.size(), 3u);
+  EXPECT_EQ(output[0].valuePdf, glm::vec4(0, 1, 0, 1));
+  EXPECT_EQ(output[1].valuePdf, glm::vec4(0, 8, 0, 1));
+  EXPECT_EQ(output[0].directionPdf, determinantOverflow.footprintA);
+  EXPECT_EQ(output[1].directionPdf, ratioOverflow.footprintA);
+  EXPECT_FLOAT_EQ(output[2].valuePdf.w, 0.f);
+}
 TEST_F(PathTransportGpu, CommittedHitEdgeRoundoffUsesOneUlpBoundWithoutAcceptingOutsideCoordinates) {
   // Actual 1920x1080 Sponza hit from the first eight samples: the exact sum
   // of these float32 values exceeds unity by 0.75 ULP, while their rounded
