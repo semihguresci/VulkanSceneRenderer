@@ -965,6 +965,29 @@ set_tests_properties(cull_generation_gpu_tests PROPERTIES
     LABELS "requires-vulkan;requires-display;scene;culling;merge"
     TIMEOUT 120 RUN_SERIAL TRUE)
 
+set(OCCLUSION_SPHERE_CONTRACT_SPIRV "${CMAKE_BINARY_DIR}/test_shaders/occlusion_sphere_contract.comp.spv")
+add_custom_command(
+    OUTPUT "${OCCLUSION_SPHERE_CONTRACT_SPIRV}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/test_shaders"
+    COMMAND "${SLANGC_EXECUTABLE}" "${DEFAULT_SHADER_DIR}/occlusion_sphere_contract.slang"
+            ${SLANG_SPIRV_FLAGS} -entry computeMain -o "${OCCLUSION_SPHERE_CONTRACT_SPIRV}"
+    DEPENDS "${DEFAULT_SHADER_DIR}/occlusion_sphere_contract.slang"
+            "${CMAKE_SOURCE_DIR}/shaders/occlusion_sphere_common.slang"
+            "${CMAKE_CURRENT_LIST_FILE}" "${SLANGC_EXECUTABLE}"
+    VERBATIM
+)
+add_custom_target(occlusion_sphere_contract_shader DEPENDS "${OCCLUSION_SPHERE_CONTRACT_SPIRV}")
+add_custom_test(occlusion_sphere_projection_gpu_tests
+    ${CMAKE_SOURCE_DIR}/tests/renderer/culling/occlusion_sphere_projection_gpu_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_gpu_resource VulkanSceneRenderer_geometry Dep_Windowing Dep_Math
+)
+target_compile_definitions(occlusion_sphere_projection_gpu_tests PRIVATE
+    CONTAINER_OCCLUSION_SPHERE_SPIRV="${OCCLUSION_SPHERE_CONTRACT_SPIRV}")
+add_dependencies(occlusion_sphere_projection_gpu_tests occlusion_sphere_contract_shader)
+set_tests_properties(occlusion_sphere_projection_gpu_tests PROPERTIES
+    LABELS "requires-vulkan;requires-display;scene;culling"
+    TIMEOUT 120 RUN_SERIAL TRUE)
+
 add_custom_test(glm_tests
     ${TEST_CORE_DIR}/glm_tests.cpp  ""  ${TEST_RESULTS_DIR}
     Dep_Math
