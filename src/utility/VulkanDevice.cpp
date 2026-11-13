@@ -270,21 +270,21 @@ void VulkanDevice::pickPhysicalDevice() {
   }
 
   for (VkPhysicalDevice dev : devices) {
-    if (isDeviceSuitable(dev)) {
+    if (const auto queues = suitableDeviceQueues(dev)) {
       physicalDevice_ = dev;
+      queueFamilyIndices_ = *queues;
       break;
     }
   }
 
   if (physicalDevice_ == VK_NULL_HANDLE) {
-    throw std::runtime_error("Vulkan 1.4 GPU with dynamic rendering, synchronization2, descriptor indexing, and indirect counts required");
+    throw std::runtime_error(
+        "Vulkan 1.4 GPU with dynamic rendering, synchronization2, descriptor indexing, and indirect counts required"
+        " (graphics and compute must share a queue family, with presentation support on the device)");
   }
 }
 
 void VulkanDevice::createLogicalDevice() {
-  queueFamilyIndices_ =
-      SwapChainManager::FindQueueFamilies(physicalDevice_, surface_);
-
   std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
 
   std::set<uint32_t> uniqueQueueFamilies = {
@@ -435,10 +435,6 @@ void VulkanDevice::createLogicalDevice() {
       DlssFeatureExtensions{dlssRayReconstructionStatus_, renderer::ReferenceDlssReconstructor::queryDeviceExtensions, {}}};
   for (auto& feature : dlssFeaturesByMode) {
     if (!feature.status.empty()) continue;
-    if (!(families[queueFamilyIndices_.graphicsFamily.value()].queueFlags & VK_QUEUE_COMPUTE_BIT)) {
-      feature.status = "DLSS requires compute support on the graphics queue";
-      continue;
-    }
     feature.extensions = feature.query(instance_, physicalDevice_, util::executableDirectory());
     feature.status = std::move(feature.extensions.status);
     if (!feature.status.empty()) continue;
@@ -465,7 +461,6 @@ void VulkanDevice::createLogicalDevice() {
 
   FsrFeatures fsr;
   if (createInfo_.enableFsrUpscaling &&
-      (families[queueFamilyIndices_.graphicsFamily.value()].queueFlags & VK_QUEUE_COMPUTE_BIT) &&
       fsr.enable(physicalDevice_, availableExtensions, coreFeatureChain, enabledFeatures_)) {
     fsrUpscalingEnabled_ = true;
     addEnabledExtension(VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME);
@@ -561,10 +556,11 @@ void VulkanDevice::createLogicalDevice() {
                      *asyncIndex, &asyncComputeQueue_);
 }
 
-bool VulkanDevice::isDeviceSuitable(VkPhysicalDevice device) const {
+std::optional<QueueFamilyIndices> VulkanDevice::suitableDeviceQueues(
+    VkPhysicalDevice device) const {
   VkPhysicalDeviceProperties properties{};
   vkGetPhysicalDeviceProperties(device, &properties);
-  if (properties.apiVersion < VK_API_VERSION_1_4) return false;
+  if (properties.apiVersion < VK_API_VERSION_1_4) return std::nullopt;
   VkPhysicalDeviceVulkan13Features modernFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
   VkPhysicalDeviceVulkan14Features newestFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES};
   modernFeatures.pNext = &newestFeatures;
@@ -574,22 +570,20 @@ bool VulkanDevice::isDeviceSuitable(VkPhysicalDevice device) const {
   if (!modernFeatures.dynamicRendering || !modernFeatures.synchronization2 ||
       !modernFeatures.maintenance4 || !modernFeatures.shaderDemoteToHelperInvocation ||
       !newestFeatures.maintenance5 || !newestFeatures.maintenance6)
-    return false;
-  QueueFamilyIndices indices =
+    return std::nullopt;
+  const QueueFamilyIndices indices =
       SwapChainManager::FindQueueFamilies(device, surface_);
-
-  bool extensionsSupported = checkDeviceExtensionSupport(device);
-
-  bool swapChainAdequate = false;
-  if (extensionsSupported) {
-    SwapChainSupportDetails swapChainSupport =
-        SwapChainManager::QuerySwapChainSupport(device, surface_);
-    swapChainAdequate = !swapChainSupport.formats.empty() &&
-                        !swapChainSupport.presentModes.empty();
+  if (!indices.isComplete() || !checkDeviceExtensionSupport(device)) {
+    return std::nullopt;
   }
 
-  return indices.isComplete() && extensionsSupported && swapChainAdequate &&
-         supportsRequestedFeatures(device);
+  const auto swapChainSupport =
+      SwapChainManager::QuerySwapChainSupport(device, surface_);
+  if (swapChainSupport.formats.empty() || swapChainSupport.presentModes.empty() ||
+      !supportsRequestedFeatures(device)) {
+    return std::nullopt;
+  }
+  return indices;
 }
 
 bool VulkanDevice::checkDeviceExtensionSupport(VkPhysicalDevice device) const {

@@ -12,7 +12,8 @@ namespace container::gpu {
 class SwapChainManager {
  public:
   SwapChainManager(GLFWwindow* window, VkPhysicalDevice physicalDevice,
-                   VkDevice device, VkSurfaceKHR surface);
+                   VkDevice device, VkSurfaceKHR surface,
+                   QueueFamilyIndices queueFamilies);
   ~SwapChainManager();
 
   SwapChainManager(const SwapChainManager&) = delete;
@@ -70,6 +71,7 @@ class SwapChainManager {
   VkPhysicalDevice physicalDevice_{VK_NULL_HANDLE};
   VkDevice device_{VK_NULL_HANDLE};
   VkSurfaceKHR surface_{VK_NULL_HANDLE};
+  const QueueFamilyIndices queueFamilies_;
 
   VkSwapchainKHR swapChain_{VK_NULL_HANDLE};
   std::vector<VkImage> swapChainImages_;

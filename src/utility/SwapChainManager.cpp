@@ -4,16 +4,19 @@
 #include <utility>
 
 #include "Container/utility/SwapChainManager.h"
+#include "Container/utility/QueueFamilySelection.h"
 
 namespace container::gpu {
 
 SwapChainManager::SwapChainManager(GLFWwindow* window,
                                    VkPhysicalDevice physicalDevice,
-                                   VkDevice device, VkSurfaceKHR surface)
+                                   VkDevice device, VkSurfaceKHR surface,
+                                   QueueFamilyIndices queueFamilies)
     : window_(window),
       physicalDevice_(physicalDevice),
       device_(device),
-      surface_(surface) {}
+      surface_(surface),
+      queueFamilies_(queueFamilies) {}
 
 SwapChainManager::~SwapChainManager() { cleanup(); }
 
@@ -109,11 +112,10 @@ void SwapChainManager::createSwapChain(VkSwapchainKHR oldSwapchain) {
     createInfo.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
   }
 
-  QueueFamilyIndices indices = FindQueueFamilies(physicalDevice_, surface_);
-  uint32_t queueFamilyIndices[] = {indices.graphicsFamily.value(),
-                                   indices.presentFamily.value()};
+  const uint32_t queueFamilyIndices[] = {queueFamilies_.graphicsFamily.value(),
+                                         queueFamilies_.presentFamily.value()};
 
-  if (indices.graphicsFamily != indices.presentFamily) {
+  if (queueFamilies_.graphicsFamily != queueFamilies_.presentFamily) {
     createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
     createInfo.queueFamilyIndexCount = 2;
     createInfo.pQueueFamilyIndices = queueFamilyIndices;
@@ -246,8 +248,6 @@ SwapChainSupportDetails SwapChainManager::QuerySwapChainSupport(
 
 QueueFamilyIndices SwapChainManager::FindQueueFamilies(VkPhysicalDevice device,
                                                        VkSurfaceKHR surface) {
-  QueueFamilyIndices indices{};
-
   uint32_t queueFamilyCount = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
 
@@ -255,24 +255,18 @@ QueueFamilyIndices SwapChainManager::FindQueueFamilies(VkPhysicalDevice device,
   vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount,
                                            queueFamilies.data());
 
+  std::vector<QueueFamilySupport> families;
+  families.reserve(queueFamilyCount);
   for (uint32_t i = 0; i < queueFamilyCount; ++i) {
-    if (queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-      indices.graphicsFamily = i;
-    }
-
+    const auto& family = queueFamilies[i];
     VkBool32 presentSupport = VK_FALSE;
-    vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
-
-    if (presentSupport) {
-      indices.presentFamily = i;
-    }
-
-    if (indices.isComplete()) {
-      break;
-    }
+    const VkResult result =
+        vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
+    families.push_back({family.queueFlags, family.queueCount,
+                        result == VK_SUCCESS && presentSupport == VK_TRUE});
   }
 
-  return indices;
+  return selectQueueFamilies(families);
 }
 
 VkSurfaceFormatKHR SwapChainManager::chooseSwapSurfaceFormat(
