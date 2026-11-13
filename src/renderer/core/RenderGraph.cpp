@@ -1604,6 +1604,12 @@ uint64_t RenderGraph::computePreparedFrameSignature(
   mixDrawList(params.bim.draws.transparentSingleSidedDrawCommands);
   mixDrawList(params.bim.draws.transparentWindingFlippedDrawCommands);
   mixDrawList(params.bim.draws.transparentDoubleSidedDrawCommands);
+  if (params.runtime.activeTechnique == RenderTechniqueId::PathTracing) {
+    mix(params.screenshot.sceneLinear);
+    mix(params.bim.floorPlan.enabled);
+    mix(params.bim.floorPlan.depthTest);
+    mixDrawList(params.bim.floorPlanDrawCommands);
+  }
   mix(params.shadows.localShadowLayerCount);
   mix(params.shadows.useGpuShadowCull ? 1u : 0u);
   mix(params.shadows.useShadowSecondaryCommandBuffers ? 1u : 0u);

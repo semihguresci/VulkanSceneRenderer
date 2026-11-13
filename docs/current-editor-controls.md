@@ -159,6 +159,10 @@ When a volume is loaded, **OpenVDB volume** exposes visibility, geometry shadows
 
 **BIM:** load a supported BIM model, then use **Go to → BIM**. Its existing sections include elements, spatial/storey browsing, search/filters, properties/IFC relationships, schedules/quantities, model comparison, selection sets, phases, layers, clipping, measurements, viewpoints/BCF and drawing export. Expand the relevant section. Controls depend on the loaded metadata and selection; unavailable data is reported in place. BIM measurements/drawing exports and primary glTF scene export have different scopes.
 
+For models with plan linework, **Floor plan overlay** shows it in Deferred
+raster and Path tracing. Choose the projection, depth test, color, opacity,
+and line width in the BIM panel. [BIM floor-plan overlay](reference-path-tracing.md#bim-floor-plan-overlay)
+
 ## Rendering, lighting and diagnostics
 
 | Go to destination | What to use there |

@@ -183,7 +183,7 @@ struct WireframePushConstants
     float4 sectionPlane;
     float4 colorIntensity;
     float lineWidth;
-    float padding7;
+    float floorPlanDepthTolerance;
     float padding8;
     float padding9;
 };

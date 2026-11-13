@@ -15,7 +15,7 @@ struct WireframePushConstants {
   alignas(16) glm::vec4 sectionPlane{0.0f, 1.0f, 0.0f, 0.0f};
   alignas(16) glm::vec4 colorIntensity{0.0f, 1.0f, 0.0f, 1.0f};
   alignas(4) float lineWidth{1.0f};
-  alignas(4) float padding7{0.0f};
+  alignas(4) float floorPlanDepthTolerance{0.0f};
   alignas(4) float padding8{0.0f};
   alignas(4) float padding9{0.0f};
 };
@@ -26,7 +26,7 @@ static_assert(offsetof(WireframePushConstants, padding1) == 12);
 static_assert(offsetof(WireframePushConstants, sectionPlane) == 16);
 static_assert(offsetof(WireframePushConstants, colorIntensity) == 32);
 static_assert(offsetof(WireframePushConstants, lineWidth) == 48);
-static_assert(offsetof(WireframePushConstants, padding7) == 52);
+static_assert(offsetof(WireframePushConstants, floorPlanDepthTolerance) == 52);
 static_assert(offsetof(WireframePushConstants, padding8) == 56);
 static_assert(offsetof(WireframePushConstants, padding9) == 60);
 static_assert(sizeof(WireframePushConstants) == 64);

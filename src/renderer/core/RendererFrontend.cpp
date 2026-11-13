@@ -3281,6 +3281,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
           {"vmaBytes", allocationStats.total.statistics.allocationBytes}}},
       {"resolution", {extent.width, extent.height}},
       {"msaaSamples", sampleCountToSamples(msaaSampleCount_)},
+      {"wideLinesSupported", svc_.ctx.wireframeWideLinesSupported},
       {"taa",
        {{"enabled", settings.enabled},
         {"historyWeight", settings.historyWeight},

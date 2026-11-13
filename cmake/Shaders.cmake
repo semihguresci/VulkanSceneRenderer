@@ -247,6 +247,11 @@ foreach(SLANG_SOURCE ${SLANG_SOURCES})
         SLANG_OUTPUTS "${SLANG_SOURCE}" "fragMain" "${FRAG_OUTPUT}")
 endforeach()
 
+add_slang_output(
+    SLANG_OUTPUTS "${SHADERS_DIR}/wireframe_debug.slang" "fragMain"
+    "${COMPILED_SHADERS_DIR}/bim_floor_plan_display_depth.frag.spv"
+    -DBIM_FLOOR_PLAN_DISPLAY_DEPTH=1)
+
 # Optional forward fragment queries handle opaque MSAA receivers that differ
 # from the single resolved-depth visibility buffer. Baseline lighting shaders
 # remain usable on devices without ray-query support.

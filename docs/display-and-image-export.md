@@ -11,7 +11,7 @@ Expand **Export Image** and enter an output path without an extension:
 | Action | Output |
 | --- | --- |
 | Scene EXR | Floating-point RGB scene radiance in linear sRGB, before bloom, exposure, grading and editor overlays. Requires Lit display mode. |
-| Viewport PNG | Displayed image with tone mapping and grading, excluding the editor UI and post-process overlays. Scene diagnostics such as selection outlines can still appear. |
+| Viewport PNG | Displayed image with tone mapping and grading, excluding the editor UI and its gizmos. Scene diagnostics such as selection outlines and enabled BIM floor-plan linework can still appear. |
 | Window PNG | Displayed image including enabled editor overlays. |
 
 Each image has a `.capture.json` sidecar recording dimensions, color space,
@@ -27,6 +27,10 @@ display and capture path. Path-traced EXR metadata identifies its source as
 An analytic shadow matte exports as `path-trace-shadow-matte` with
 `linear-mask` values for compositing. The sidecar records ground mode and
 the effective firefly clamp.
+
+In Deferred raster and Path tracing, the BIM floor plan appears in display
+PNGs and stays out of raw EXR. Path tracing keeps its accumulated radiance
+when floor-plan settings change. [BIM floor-plan overlay](reference-path-tracing.md#bim-floor-plan-overlay)
 
 Command-line examples:
 
